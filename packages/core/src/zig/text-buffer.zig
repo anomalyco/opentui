@@ -31,8 +31,8 @@ pub const TextBuffer = struct {
     default_attributes: ?u8,
     allocator: Allocator,
 
-    line_starts: std.ArrayList(u32),
-    line_widths: std.ArrayList(u32),
+    line_starts: std.ArrayListUnmanaged(u32),
+    line_widths: std.ArrayListUnmanaged(u32),
     current_line_width: u32,
 
     pub fn init(allocator: Allocator, length: u32) TextBufferError!*TextBuffer {
@@ -53,8 +53,8 @@ pub const TextBuffer = struct {
             .default_bg = null,
             .default_attributes = null,
             .allocator = allocator,
-            .line_starts = std.ArrayList(u32).init(allocator),
-            .line_widths = std.ArrayList(u32).init(allocator),
+            .line_starts = std.ArrayListUnmanaged(u32){},
+            .line_widths = std.ArrayListUnmanaged(u32){},
             .current_line_width = 0,
         };
 
@@ -63,7 +63,7 @@ pub const TextBuffer = struct {
         @memset(self.bg, .{ 0.0, 0.0, 0.0, 0.0 });
         @memset(self.attributes, 0);
 
-        self.line_starts.append(0) catch return TextBufferError.OutOfMemory;
+        self.line_starts.append(allocator, 0) catch return TextBufferError.OutOfMemory;
 
         return self;
     }
@@ -73,8 +73,8 @@ pub const TextBuffer = struct {
         self.allocator.free(self.fg);
         self.allocator.free(self.bg);
         self.allocator.free(self.attributes);
-        self.line_starts.deinit();
-        self.line_widths.deinit();
+        self.line_starts.deinit(self.allocator);
+        self.line_widths.deinit(self.allocator);
         self.allocator.destroy(self);
     }
 
@@ -131,17 +131,17 @@ pub const TextBuffer = struct {
         result.line_starts.clearRetainingCapacity();
         result.line_widths.clearRetainingCapacity();
         for (self.line_starts.items) |start| {
-            result.line_starts.append(start) catch {};
+            result.line_starts.append(result.allocator, start) catch {};
         }
         for (self.line_widths.items) |width| {
-            result.line_widths.append(width) catch {};
+            result.line_widths.append(result.allocator, width) catch {};
         }
 
         for (other.line_starts.items[1..]) |start| {
-            result.line_starts.append(start + self.cursor) catch {};
+            result.line_starts.append(result.allocator, start + self.cursor) catch {};
         }
         for (other.line_widths.items) |width| {
-            result.line_widths.append(width) catch {};
+            result.line_widths.append(result.allocator, width) catch {};
         }
 
         result.current_line_width = other.current_line_width;
@@ -154,7 +154,7 @@ pub const TextBuffer = struct {
         self.line_starts.clearRetainingCapacity();
         self.line_widths.clearRetainingCapacity();
         self.current_line_width = 0;
-        self.line_starts.append(0) catch {};
+        self.line_starts.append(self.allocator, 0) catch {};
     }
 
     pub fn setSelection(self: *TextBuffer, start: u32, end: u32, bgColor: ?RGBA, fgColor: ?RGBA) void {
@@ -244,8 +244,8 @@ pub const TextBuffer = struct {
             try self.setCell(self.cursor, codepoint, useFg, useBg, attrValue);
 
             if (codepoint == '\n') {
-                self.line_widths.append(self.current_line_width) catch {};
-                self.line_starts.append(self.cursor + 1) catch {};
+                self.line_widths.append(self.allocator, self.current_line_width) catch {};
+                self.line_starts.append(self.allocator, self.cursor + 1) catch {};
                 self.current_line_width = 0;
             } else {
                 self.current_line_width += 1;
@@ -261,7 +261,7 @@ pub const TextBuffer = struct {
 
     pub fn finalizeLineInfo(self: *TextBuffer) void {
         if (self.current_line_width > 0 or self.cursor == 0) {
-            self.line_widths.append(self.current_line_width) catch {};
+            self.line_widths.append(self.allocator, self.current_line_width) catch {};
         }
     }
 

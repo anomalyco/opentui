@@ -8,9 +8,7 @@ const SupportedZigVersion = struct {
 };
 
 const SUPPORTED_ZIG_VERSIONS = [_]SupportedZigVersion{
-    .{ .major = 0, .minor = 14, .patch = 0 },
-    .{ .major = 0, .minor = 14, .patch = 1 },
-    // .{ .major = 0, .minor = 15, .patch = 0 },
+    .{ .major = 0, .minor = 15, .patch = 1 },
 };
 
 const SupportedTarget = struct {

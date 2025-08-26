@@ -78,11 +78,13 @@ if (missingRequired.length > 0) {
   process.exit(1)
 }
 
+const zigExe = process.env.ZIG ?? "zig"
+
 if (buildNative) {
   console.log(`Building native ${isDev ? "dev" : "prod"} binaries...`)
 
   const zigBuild: SpawnSyncReturns<Buffer> = spawnSync(
-    "zig",
+    zigExe,
     ["build", `-Doptimize=${isDev ? "Debug" : "ReleaseFast"}`],
     {
       cwd: join(rootDir, "src", "zig"),

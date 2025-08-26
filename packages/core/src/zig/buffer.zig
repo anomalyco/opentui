@@ -367,7 +367,7 @@ pub const OptimizedBuffer = struct {
         while (utf8_it.nextCodepoint()) |codepoint| : (i += 1) {
             const charX = x + i;
             if (charX >= self.width) break;
-            
+
             // Use provided background or get existing background
             var bgColor: RGBA = undefined;
             if (bg) |b| {
