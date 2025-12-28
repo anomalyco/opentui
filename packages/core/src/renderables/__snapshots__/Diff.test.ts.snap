@@ -1,101 +1,5 @@
 // Bun Snapshot v1, https://bun.sh/docs/test/snapshots
 
-exports[`DiffRenderable - can toggle conceal with markdown diff: markdown diff with conceal enabled 1`] = `
-" 1   First line                                                                 
- 2 - Some text old**                                                            
- 2 + So text**boldext** and *italic*                                            
- 3   End line                                                                   
-                                                                                
-                                                                                
-                                                                                
-                                                                                
-                                                                                
-                                                                                
-                                                                                
-                                                                                
-                                                                                
-                                                                                
-                                                                                
-                                                                                
-                                                                                
-                                                                                
-                                                                                
-                                                                                
-"
-`;
-
-exports[`DiffRenderable - can toggle conceal with markdown diff: markdown diff with conceal disabled 1`] = `
-" 1   First line                                                                 
- 2 - Some text **old**                                                          
- 2 + Some text **boldtext** and *italic*                                        
- 3   End line                                                                   
-                                                                                
-                                                                                
-                                                                                
-                                                                                
-                                                                                
-                                                                                
-                                                                                
-                                                                                
-                                                                                
-                                                                                
-                                                                                
-                                                                                
-                                                                                
-                                                                                
-                                                                                
-                                                                                
-"
-`;
-
-exports[`DiffRenderable - conceal works in split view: split view markdown diff with conceal enabled 1`] = `
-" 1   First line                          1   First line                         
- 2 - Some old text                       2 + Some new text                      
- 3   End line                            3   End line                           
-                                                                                
-                                                                                
-                                                                                
-                                                                                
-                                                                                
-                                                                                
-                                                                                
-                                                                                
-                                                                                
-                                                                                
-                                                                                
-                                                                                
-                                                                                
-                                                                                
-                                                                                
-                                                                                
-                                                                                
-"
-`;
-
-exports[`DiffRenderable - conceal works in split view: split view markdown diff with conceal disabled 1`] = `
-" 1   First line                          1   First line                         
- 2 - Some **old** text                   2 + Some **new** text                  
- 3   End line                            3   End line                           
-                                                                                
-                                                                                
-                                                                                
-                                                                                
-                                                                                
-                                                                                
-                                                                                
-                                                                                
-                                                                                
-                                                                                
-                                                                                
-                                                                                
-                                                                                
-                                                                                
-                                                                                
-                                                                                
-                                                                                
-"
-`;
-
 exports[`DiffRenderable - unified view renders correctly: unified view simple diff 1`] = `
 " 1   function hello() {                                                         
  2 -   console.log("Hello");                                                    
@@ -678,6 +582,102 @@ exports[`DiffRenderable - diff with only context lines (no changes): diff with o
  3 line3                                                                        
  4 line4                                                                        
  5 line5                                                                        
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+"
+`;
+
+exports[`DiffRenderable - can toggle conceal with markdown diff: markdown diff with conceal enabled 1`] = `
+" 1   First line                                                                 
+ 2 - Some text old**                                                            
+ 2 + So text**boldext** and *italic*                                            
+ 3   End line                                                                   
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+"
+`;
+
+exports[`DiffRenderable - can toggle conceal with markdown diff: markdown diff with conceal disabled 1`] = `
+" 1   First line                                                                 
+ 2 - Some text **old**                                                          
+ 2 + Some text **boldtext** and *italic*                                        
+ 3   End line                                                                   
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+"
+`;
+
+exports[`DiffRenderable - conceal works in split view: split view markdown diff with conceal enabled 1`] = `
+" 1   First line                          1   First line                         
+ 2 - Some old text                       2 + Some new text                      
+ 3   End line                            3   End line                           
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+"
+`;
+
+exports[`DiffRenderable - conceal works in split view: split view markdown diff with conceal disabled 1`] = `
+" 1   First line                          1   First line                         
+ 2 - Some **old** text                   2 + Some **new** text                  
+ 3   End line                            3   End line                           
+                                                                                
+                                                                                
                                                                                 
                                                                                 
                                                                                 

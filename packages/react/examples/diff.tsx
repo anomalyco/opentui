@@ -130,8 +130,10 @@ const themes: DiffTheme[] = [
 
 const exampleDiff = `--- a/calculator.ts
 +++ b/calculator.ts
-@@ -1,13 +1,20 @@
+@@ -1,17 +1,24 @@
  class Calculator {
+-  // Basic math operations 🔢
++  // Basic math operations ➕➗
    add(a: number, b: number): number {
      return a + b;
    }
@@ -148,10 +150,15 @@ const exampleDiff = `--- a/calculator.ts
 +
 +  divide(a: number, b: number): number {
 +    if (b === 0) {
-+      throw new Error("Division by zero");
++      throw new Error("Division by zero ❌");
 +    }
 +    return a / b;
 +  }
+
+-  // Status: 👍 working
+-  // 日本語コメント
++  // Status: ✅ all tests pass
++  // 中文注释 Chinese comment
  }`
 
 const HelpModal = ({ theme, visible }: { theme: DiffTheme; visible: boolean }) => {

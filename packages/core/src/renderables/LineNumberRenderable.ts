@@ -16,6 +16,18 @@ export interface LineColorConfig {
   content?: string | RGBA
 }
 
+/**
+ * Represents a highlighted span within a line for word-level diff highlighting.
+ */
+export interface LineInlineHighlight {
+  /** Starting column (0-based, in display characters) */
+  startCol: number
+  /** Ending column (exclusive, in display characters) */
+  endCol: number
+  /** Background color for this highlight */
+  bg: RGBA
+}
+
 export interface LineNumberOptions extends RenderableOptions<LineNumberRenderable> {
   target?: Renderable & LineInfoProvider
   fg?: string | RGBA
@@ -28,6 +40,8 @@ export interface LineNumberOptions extends RenderableOptions<LineNumberRenderabl
   hideLineNumbers?: Set<number>
   lineNumbers?: Map<number, number>
   showLineNumbers?: boolean
+  /** Inline highlights for word-level diff highlighting (per logical line) */
+  inlineHighlights?: Map<number, LineInlineHighlight[]>
 }
 
 class GutterRenderable extends Renderable {
@@ -327,6 +341,7 @@ export class LineNumberRenderable extends Renderable {
   private _lineColorsGutter: Map<number, RGBA>
   private _lineColorsContent: Map<number, RGBA>
   private _lineSigns: Map<number, LineSign>
+  private _inlineHighlights: Map<number, LineInlineHighlight[]>
   private _fg: RGBA
   private _bg: RGBA
   private _minWidth: number
@@ -391,6 +406,13 @@ export class LineNumberRenderable extends Renderable {
     if (options.lineSigns) {
       for (const [line, sign] of options.lineSigns) {
         this._lineSigns.set(line, sign)
+      }
+    }
+
+    this._inlineHighlights = new Map<number, LineInlineHighlight[]>()
+    if (options.inlineHighlights) {
+      for (const [line, highlights] of options.inlineHighlights) {
+        this._inlineHighlights.set(line, highlights)
       }
     }
 
@@ -512,6 +534,7 @@ export class LineNumberRenderable extends Renderable {
     // Calculate the area to fill: from after the gutter (if visible) to the end of our width
     const gutterWidth = this.gutter.visible ? this.gutter.width : 0
     const contentWidth = this.width - gutterWidth
+    const contentStartX = this.x + gutterWidth
 
     // Draw full-width background colors for lines with custom colors
     for (let i = 0; i < this.height; i++) {
@@ -523,7 +546,42 @@ export class LineNumberRenderable extends Renderable {
 
       if (lineBg) {
         // Fill from after gutter to the end of the LineNumberRenderable
-        buffer.fillRect(this.x + gutterWidth, this.y + i, contentWidth, 1, lineBg)
+        buffer.fillRect(contentStartX, this.y + i, contentWidth, 1, lineBg)
+      }
+
+      const inlineHighlights = this._inlineHighlights.get(logicalLine)
+      if (inlineHighlights && inlineHighlights.length > 0) {
+        const scrollX = (this.target as any).scrollX ?? 0
+        const wrapIndex = lineInfo.lineWraps?.[visualLineIndex] ?? 0
+
+        // Sum widths of previous wrapped segments to get column offset
+        let columnOffset = 0
+        if (wrapIndex > 0 && lineInfo.lineWidths) {
+          for (let j = visualLineIndex - 1; j >= 0 && sources[j] === logicalLine; j--) {
+            columnOffset += lineInfo.lineWidths[j] ?? 0
+          }
+        }
+
+        const thisLineWidth = lineInfo.lineWidths?.[visualLineIndex] ?? contentWidth
+
+        for (const highlight of inlineHighlights) {
+          if (highlight.endCol <= columnOffset || highlight.startCol >= columnOffset + thisLineWidth) {
+            continue
+          }
+
+          const visibleStartCol = Math.max(highlight.startCol, columnOffset) - columnOffset
+          const visibleEndCol = Math.min(highlight.endCol, columnOffset + thisLineWidth) - columnOffset
+          const highlightStartX = contentStartX + visibleStartCol - scrollX
+          const highlightWidth = visibleEndCol - visibleStartCol
+
+          const clampedStartX = Math.max(highlightStartX, contentStartX)
+          const clampedEndX = Math.min(highlightStartX + highlightWidth, contentStartX + contentWidth)
+          const clampedWidth = clampedEndX - clampedStartX
+
+          if (clampedWidth > 0) {
+            buffer.fillRect(clampedStartX, this.y + i, clampedWidth, 1, highlight.bg)
+          }
+        }
       }
     }
   }
@@ -652,5 +710,49 @@ export class LineNumberRenderable extends Renderable {
 
   public getLineNumbers(): Map<number, number> {
     return this._lineNumbers
+  }
+
+  /**
+   * Sets inline highlights for word-level diff highlighting.
+   *
+   * @param inlineHighlights - Map from logical line index to array of highlights
+   */
+  public setInlineHighlights(inlineHighlights: Map<number, LineInlineHighlight[]>): void {
+    this._inlineHighlights = inlineHighlights
+    this.requestRender()
+  }
+
+  /**
+   * Gets the current inline highlights.
+   */
+  public getInlineHighlights(): Map<number, LineInlineHighlight[]> {
+    return this._inlineHighlights
+  }
+
+  /**
+   * Clears all inline highlights.
+   */
+  public clearInlineHighlights(): void {
+    this._inlineHighlights.clear()
+    this.requestRender()
+  }
+
+  /**
+   * Sets inline highlights for a specific line.
+   *
+   * @param line - Logical line index
+   * @param highlights - Array of highlights for this line
+   */
+  public setLineInlineHighlights(line: number, highlights: LineInlineHighlight[]): void {
+    this._inlineHighlights.set(line, highlights)
+    this.requestRender()
+  }
+
+  /**
+   * Clears inline highlights for a specific line.
+   */
+  public clearLineInlineHighlights(line: number): void {
+    this._inlineHighlights.delete(line)
+    this.requestRender()
   }
 }
