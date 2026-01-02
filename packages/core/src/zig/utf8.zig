@@ -60,16 +60,18 @@ pub const LineBreak = struct {
 };
 
 pub const LineBreakResult = struct {
-    breaks: std.ArrayList(LineBreak),
+    breaks: std.ArrayListUnmanaged(LineBreak),
+    allocator: std.mem.Allocator,
 
     pub fn init(allocator: std.mem.Allocator) LineBreakResult {
         return .{
-            .breaks = std.ArrayList(LineBreak).init(allocator),
+            .breaks = .{},
+            .allocator = allocator,
         };
     }
 
     pub fn deinit(self: *LineBreakResult) void {
-        self.breaks.deinit();
+        self.breaks.deinit(self.allocator);
     }
 
     pub fn reset(self: *LineBreakResult) void {
@@ -78,16 +80,18 @@ pub const LineBreakResult = struct {
 };
 
 pub const TabStopResult = struct {
-    positions: std.ArrayList(usize),
+    positions: std.ArrayListUnmanaged(usize),
+    allocator: std.mem.Allocator,
 
     pub fn init(allocator: std.mem.Allocator) TabStopResult {
         return .{
-            .positions = std.ArrayList(usize).init(allocator),
+            .positions = .{},
+            .allocator = allocator,
         };
     }
 
     pub fn deinit(self: *TabStopResult) void {
-        self.positions.deinit();
+        self.positions.deinit(self.allocator);
     }
 
     pub fn reset(self: *TabStopResult) void {
@@ -101,16 +105,18 @@ pub const WrapBreak = struct {
 };
 
 pub const WrapBreakResult = struct {
-    breaks: std.ArrayList(WrapBreak),
+    breaks: std.ArrayListUnmanaged(WrapBreak),
+    allocator: std.mem.Allocator,
 
     pub fn init(allocator: std.mem.Allocator) WrapBreakResult {
         return .{
-            .breaks = std.ArrayList(WrapBreak).init(allocator),
+            .breaks = .{},
+            .allocator = allocator,
         };
     }
 
     pub fn deinit(self: *WrapBreakResult) void {
-        self.breaks.deinit();
+        self.breaks.deinit(self.allocator);
     }
 
     pub fn reset(self: *WrapBreakResult) void {
@@ -233,7 +239,7 @@ pub fn findWrapBreaks(text: []const u8, result: *WrapBreakResult, width_method: 
             // Use bit manipulation to extract positions
             while (bitmask != 0) {
                 const bit_pos = @ctz(bitmask);
-                try result.breaks.append(.{
+                try result.breaks.append(result.allocator, .{
                     .byte_offset = @intCast(pos + bit_pos),
                     .char_offset = char_offset + @as(u16, @intCast(bit_pos)),
                 });
@@ -261,7 +267,7 @@ pub fn findWrapBreaks(text: []const u8, result: *WrapBreakResult, width_method: 
                 } else true;
 
                 if (isAsciiWrapBreak(b0)) {
-                    try result.breaks.append(.{
+                    try result.breaks.append(result.allocator, .{
                         .byte_offset = @intCast(pos + i),
                         .char_offset = char_offset,
                     });
@@ -283,7 +289,7 @@ pub fn findWrapBreaks(text: []const u8, result: *WrapBreakResult, width_method: 
                 } else true;
 
                 if (isUnicodeWrapBreak(dec.cp)) {
-                    try result.breaks.append(.{
+                    try result.breaks.append(result.allocator, .{
                         .byte_offset = @intCast(pos + i),
                         .char_offset = char_offset,
                     });
@@ -310,7 +316,7 @@ pub fn findWrapBreaks(text: []const u8, result: *WrapBreakResult, width_method: 
             } else true;
 
             if (isAsciiWrapBreak(b0)) {
-                try result.breaks.append(.{
+                try result.breaks.append(result.allocator, .{
                     .byte_offset = @intCast(i),
                     .char_offset = char_offset,
                 });
@@ -330,7 +336,7 @@ pub fn findWrapBreaks(text: []const u8, result: *WrapBreakResult, width_method: 
             } else true;
 
             if (isUnicodeWrapBreak(dec.cp)) {
-                try result.breaks.append(.{
+                try result.breaks.append(result.allocator, .{
                     .byte_offset = @intCast(i),
                     .char_offset = char_offset,
                 });
@@ -361,7 +367,7 @@ pub fn findTabStops(text: []const u8, result: *TabStopResult) !void {
             var i: usize = 0;
             while (i < vector_len) : (i += 1) {
                 if (text[pos + i] == '\t') {
-                    try result.positions.append(pos + i);
+                    try result.positions.append(result.allocator, pos + i);
                 }
             }
         }
@@ -370,7 +376,7 @@ pub fn findTabStops(text: []const u8, result: *TabStopResult) !void {
 
     while (pos < text.len) : (pos += 1) {
         if (text[pos] == '\t') {
-            try result.positions.append(pos);
+            try result.positions.append(result.allocator, pos);
         }
     }
 }
@@ -408,14 +414,14 @@ pub fn findLineBreaks(text: []const u8, result: *LineBreakResult) !void {
                     }
                     // Check if this is part of CRLF
                     const kind: LineBreakKind = if (absolute_index > 0 and text[absolute_index - 1] == '\r') .CRLF else .LF;
-                    try result.breaks.append(.{ .pos = absolute_index, .kind = kind });
+                    try result.breaks.append(result.allocator, .{ .pos = absolute_index, .kind = kind });
                 } else if (b == '\r') {
                     // Check for CRLF
                     if (absolute_index + 1 < text.len and text[absolute_index + 1] == '\n') {
-                        try result.breaks.append(.{ .pos = absolute_index + 1, .kind = .CRLF });
+                        try result.breaks.append(result.allocator, .{ .pos = absolute_index + 1, .kind = .CRLF });
                         i += 1; // Skip the \n in next iteration
                     } else {
-                        try result.breaks.append(.{ .pos = absolute_index, .kind = .CR });
+                        try result.breaks.append(result.allocator, .{ .pos = absolute_index, .kind = .CR });
                     }
                 }
             }
@@ -440,13 +446,13 @@ pub fn findLineBreaks(text: []const u8, result: *LineBreakResult) !void {
                 }
             }
             const kind: LineBreakKind = if (pos > 0 and text[pos - 1] == '\r') .CRLF else .LF;
-            try result.breaks.append(.{ .pos = pos, .kind = kind });
+            try result.breaks.append(result.allocator, .{ .pos = pos, .kind = kind });
         } else if (b == '\r') {
             if (pos + 1 < text.len and text[pos + 1] == '\n') {
-                try result.breaks.append(.{ .pos = pos + 1, .kind = .CRLF });
+                try result.breaks.append(result.allocator, .{ .pos = pos + 1, .kind = .CRLF });
                 pos += 1;
             } else {
-                try result.breaks.append(.{ .pos = pos, .kind = .CR });
+                try result.breaks.append(result.allocator, .{ .pos = pos, .kind = .CR });
             }
         }
         prev_was_cr = false;
@@ -1711,11 +1717,12 @@ pub fn findGraphemeInfo(
     tab_width: u8,
     isASCIIOnly: bool,
     width_method: WidthMethod,
-    result: *std.ArrayList(GraphemeInfo),
+    allocator: std.mem.Allocator,
+    result: *std.ArrayListUnmanaged(GraphemeInfo),
 ) !void {
     switch (width_method) {
-        .unicode, .no_zwj => try findGraphemeInfoUnicode(text, tab_width, isASCIIOnly, width_method, result),
-        .wcwidth => try findGraphemeInfoWCWidth(text, tab_width, isASCIIOnly, result),
+        .unicode, .no_zwj => try findGraphemeInfoUnicode(text, tab_width, isASCIIOnly, width_method, allocator, result),
+        .wcwidth => try findGraphemeInfoWCWidth(text, tab_width, isASCIIOnly, allocator, result),
     }
 }
 
@@ -1726,7 +1733,8 @@ fn findGraphemeInfoUnicode(
     tab_width: u8,
     isASCIIOnly: bool,
     width_method: WidthMethod,
-    result: *std.ArrayList(GraphemeInfo),
+    allocator: std.mem.Allocator,
+    result: *std.ArrayListUnmanaged(GraphemeInfo),
 ) !void {
     if (isASCIIOnly) {
         return;
@@ -1768,7 +1776,7 @@ fn findGraphemeInfoUnicode(
                     if (prev_cp != null and (cluster_is_multibyte or cluster_is_tab)) {
                         if (cluster_width_state.width > 0 or width_method != .wcwidth) {
                             const cluster_byte_len = (pos + i) - cluster_start;
-                            try result.append(GraphemeInfo{
+                            try result.append(allocator, GraphemeInfo{
                                 .byte_offset = @intCast(cluster_start),
                                 .byte_len = @intCast(cluster_byte_len),
                                 .width = @intCast(cluster_width_state.width),
@@ -1819,7 +1827,7 @@ fn findGraphemeInfoUnicode(
                 if (prev_cp != null and (cluster_is_multibyte or cluster_is_tab)) {
                     if (cluster_width_state.width > 0 or width_method != .wcwidth) {
                         const cluster_byte_len = (pos + i) - cluster_start;
-                        try result.append(GraphemeInfo{
+                        try result.append(allocator, GraphemeInfo{
                             .byte_offset = @intCast(cluster_start),
                             .byte_len = @intCast(cluster_byte_len),
                             .width = @intCast(cluster_width_state.width),
@@ -1870,7 +1878,7 @@ fn findGraphemeInfoUnicode(
             if (prev_cp != null and (cluster_is_multibyte or cluster_is_tab)) {
                 if (cluster_width_state.width > 0 or width_method != .wcwidth) {
                     const cluster_byte_len = pos - cluster_start;
-                    try result.append(GraphemeInfo{
+                    try result.append(allocator, GraphemeInfo{
                         .byte_offset = @intCast(cluster_start),
                         .byte_len = @intCast(cluster_byte_len),
                         .width = @intCast(cluster_width_state.width),
@@ -1908,7 +1916,7 @@ fn findGraphemeInfoUnicode(
     if (prev_cp != null and (cluster_is_multibyte or cluster_is_tab)) {
         if (cluster_width_state.width > 0 or width_method != .wcwidth) {
             const cluster_byte_len = text.len - cluster_start;
-            try result.append(GraphemeInfo{
+            try result.append(allocator, GraphemeInfo{
                 .byte_offset = @intCast(cluster_start),
                 .byte_len = @intCast(cluster_byte_len),
                 .width = @intCast(cluster_width_state.width),
@@ -1924,7 +1932,8 @@ fn findGraphemeInfoWCWidth(
     text: []const u8,
     tab_width: u8,
     isASCIIOnly: bool,
-    result: *std.ArrayList(GraphemeInfo),
+    allocator: std.mem.Allocator,
+    result: *std.ArrayListUnmanaged(GraphemeInfo),
 ) !void {
     if (isASCIIOnly) {
         return;
@@ -1955,7 +1964,7 @@ fn findGraphemeInfoWCWidth(
         const is_multibyte = (cp_len != 1);
 
         if ((is_multibyte or is_tab) and cp_width > 0) {
-            try result.append(GraphemeInfo{
+            try result.append(allocator, GraphemeInfo{
                 .byte_offset = @intCast(pos),
                 .byte_len = @intCast(cp_len),
                 .width = @intCast(cp_width),

@@ -58,5 +58,6 @@ comptime {
     _ = terminal_tests;
     _ = mem_registry_tests;
     _ = memory_leak_regression_tests;
+
     // _ = example_tests;
 }

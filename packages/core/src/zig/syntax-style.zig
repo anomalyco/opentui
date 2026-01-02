@@ -109,7 +109,7 @@ pub const SyntaxStyle = struct {
 
         for (ids, 0..) |id, i| {
             if (i > 0) writer.writeByte(':') catch return SyntaxStyleError.OutOfMemory;
-            std.fmt.formatInt(id, 10, .lower, .{}, writer) catch return SyntaxStyleError.OutOfMemory;
+            writer.print("{d}", .{id}) catch return SyntaxStyleError.OutOfMemory;
         }
 
         const cache_key = cache_key_stream.getWritten();

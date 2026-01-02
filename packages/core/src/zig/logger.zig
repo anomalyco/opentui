@@ -7,9 +7,9 @@ pub const LogLevel = enum(u8) {
     debug = 3,
 };
 
-var global_log_callback: ?*const fn (level: u8, msgPtr: [*]const u8, msgLen: usize) callconv(.C) void = null;
+var global_log_callback: ?*const fn (level: u8, msgPtr: [*]const u8, msgLen: usize) callconv(.c) void = null;
 
-pub fn setLogCallback(callback: ?*const fn (level: u8, msgPtr: [*]const u8, msgLen: usize) callconv(.C) void) void {
+pub fn setLogCallback(callback: ?*const fn (level: u8, msgPtr: [*]const u8, msgLen: usize) callconv(.c) void) void {
     global_log_callback = callback;
 }
 

@@ -69,18 +69,18 @@ pub const CliRenderer = struct {
         frameCallbackTime: ?f64,
     },
     statSamples: struct {
-        lastFrameTime: std.ArrayList(f64),
-        renderTime: std.ArrayList(f64),
-        overallFrameTime: std.ArrayList(f64),
-        bufferResetTime: std.ArrayList(f64),
-        stdoutWriteTime: std.ArrayList(f64),
-        cellsUpdated: std.ArrayList(u32),
-        frameCallbackTime: std.ArrayList(f64),
+        lastFrameTime: std.ArrayListUnmanaged(f64),
+        renderTime: std.ArrayListUnmanaged(f64),
+        overallFrameTime: std.ArrayListUnmanaged(f64),
+        bufferResetTime: std.ArrayListUnmanaged(f64),
+        stdoutWriteTime: std.ArrayListUnmanaged(f64),
+        cellsUpdated: std.ArrayListUnmanaged(u32),
+        frameCallbackTime: std.ArrayListUnmanaged(f64),
     },
     lastRenderTime: i64,
     allocator: Allocator,
     renderThread: ?std.Thread = null,
-    stdoutWriter: std.io.BufferedWriter(4096, std.fs.File.Writer),
+    stdoutBuffer: [4096]u8,
     debugOverlay: struct {
         enabled: bool,
         corner: DebugOverlayCorner,
@@ -130,7 +130,9 @@ pub const CliRenderer = struct {
             return data.len;
         }
 
-        pub fn writer() std.io.Writer(void, error{BufferFull}, write) {
+        // TODO: std.io.GenericWriter is deprecated, however the "correct" option seems to be much more involved
+        // So I have simply used GenericWriter here, and then the proper migration can be done later
+        pub fn writer() std.io.GenericWriter(void, error{BufferFull}, write) {
             return .{ .context = {} };
         }
     };
@@ -141,35 +143,22 @@ pub const CliRenderer = struct {
         const currentBuffer = try OptimizedBuffer.init(allocator, width, height, .{ .pool = pool, .width_method = .unicode, .id = "current buffer" });
         const nextBuffer = try OptimizedBuffer.init(allocator, width, height, .{ .pool = pool, .width_method = .unicode, .id = "next buffer" });
 
-        const stdoutWriter = if (testing) blk: {
-            // In testing mode, use /dev/null to discard output
-            const devnull = std.fs.openFileAbsolute("/dev/null", .{ .mode = .write_only }) catch {
-                // Fallback to stdout if /dev/null can't be opened
-                logger.warn("Failed to open /dev/null, falling back to stdout\n", .{});
-                break :blk std.io.BufferedWriter(4096, std.fs.File.Writer){ .unbuffered_writer = std.io.getStdOut().writer() };
-            };
-            break :blk std.io.BufferedWriter(4096, std.fs.File.Writer){ .unbuffered_writer = devnull.writer() };
-        } else blk: {
-            const stdout = std.io.getStdOut();
-            break :blk std.io.BufferedWriter(4096, std.fs.File.Writer){ .unbuffered_writer = stdout.writer() };
-        };
-
         // stat sample arrays
-        var lastFrameTime = std.ArrayList(f64).init(allocator);
-        var renderTime = std.ArrayList(f64).init(allocator);
-        var overallFrameTime = std.ArrayList(f64).init(allocator);
-        var bufferResetTime = std.ArrayList(f64).init(allocator);
-        var stdoutWriteTime = std.ArrayList(f64).init(allocator);
-        var cellsUpdated = std.ArrayList(u32).init(allocator);
-        var frameCallbackTimes = std.ArrayList(f64).init(allocator);
+        var lastFrameTime: std.ArrayListUnmanaged(f64) = .{};
+        var renderTime: std.ArrayListUnmanaged(f64) = .{};
+        var overallFrameTime: std.ArrayListUnmanaged(f64) = .{};
+        var bufferResetTime: std.ArrayListUnmanaged(f64) = .{};
+        var stdoutWriteTime: std.ArrayListUnmanaged(f64) = .{};
+        var cellsUpdated: std.ArrayListUnmanaged(u32) = .{};
+        var frameCallbackTimes: std.ArrayListUnmanaged(f64) = .{};
 
-        try lastFrameTime.ensureTotalCapacity(STAT_SAMPLE_CAPACITY);
-        try renderTime.ensureTotalCapacity(STAT_SAMPLE_CAPACITY);
-        try overallFrameTime.ensureTotalCapacity(STAT_SAMPLE_CAPACITY);
-        try bufferResetTime.ensureTotalCapacity(STAT_SAMPLE_CAPACITY);
-        try stdoutWriteTime.ensureTotalCapacity(STAT_SAMPLE_CAPACITY);
-        try cellsUpdated.ensureTotalCapacity(STAT_SAMPLE_CAPACITY);
-        try frameCallbackTimes.ensureTotalCapacity(STAT_SAMPLE_CAPACITY);
+        try lastFrameTime.ensureTotalCapacity(allocator, STAT_SAMPLE_CAPACITY);
+        try renderTime.ensureTotalCapacity(allocator, STAT_SAMPLE_CAPACITY);
+        try overallFrameTime.ensureTotalCapacity(allocator, STAT_SAMPLE_CAPACITY);
+        try bufferResetTime.ensureTotalCapacity(allocator, STAT_SAMPLE_CAPACITY);
+        try stdoutWriteTime.ensureTotalCapacity(allocator, STAT_SAMPLE_CAPACITY);
+        try cellsUpdated.ensureTotalCapacity(allocator, STAT_SAMPLE_CAPACITY);
+        try frameCallbackTimes.ensureTotalCapacity(allocator, STAT_SAMPLE_CAPACITY);
 
         const hitGridSize = width * height;
         const currentHitGrid = try allocator.alloc(u32, hitGridSize);
@@ -217,7 +206,7 @@ pub const CliRenderer = struct {
             },
             .lastRenderTime = std.time.microTimestamp(),
             .allocator = allocator,
-            .stdoutWriter = stdoutWriter,
+            .stdoutBuffer = undefined,
             .currentHitGrid = currentHitGrid,
             .nextHitGrid = nextHitGrid,
             .hitGridWidth = width,
@@ -251,13 +240,13 @@ pub const CliRenderer = struct {
         self.nextRenderBuffer.deinit();
 
         // Free stat sample arrays
-        self.statSamples.lastFrameTime.deinit();
-        self.statSamples.renderTime.deinit();
-        self.statSamples.overallFrameTime.deinit();
-        self.statSamples.bufferResetTime.deinit();
-        self.statSamples.stdoutWriteTime.deinit();
-        self.statSamples.cellsUpdated.deinit();
-        self.statSamples.frameCallbackTime.deinit();
+        self.statSamples.lastFrameTime.deinit(self.allocator);
+        self.statSamples.renderTime.deinit(self.allocator);
+        self.statSamples.overallFrameTime.deinit(self.allocator);
+        self.statSamples.bufferResetTime.deinit(self.allocator);
+        self.statSamples.stdoutWriteTime.deinit(self.allocator);
+        self.statSamples.cellsUpdated.deinit(self.allocator);
+        self.statSamples.frameCallbackTime.deinit(self.allocator);
 
         self.allocator.free(self.currentHitGrid);
         self.allocator.free(self.nextHitGrid);
@@ -269,8 +258,8 @@ pub const CliRenderer = struct {
         self.useAlternateScreen = useAlternateScreen;
         self.terminalSetup = true;
 
-        var bufferedWriter = &self.stdoutWriter;
-        const writer = bufferedWriter.writer();
+        var stdoutWriter = std.fs.File.stdout().writer(&self.stdoutBuffer);
+        const writer = &stdoutWriter.interface;
 
         self.terminal.queryTerminalSend(writer) catch {
             logger.warn("Failed to query terminal capabilities", .{});
@@ -280,8 +269,8 @@ pub const CliRenderer = struct {
     }
 
     fn setupTerminalWithoutDetection(self: *CliRenderer, useAlternateScreen: bool) void {
-        var bufferedWriter = &self.stdoutWriter;
-        const writer = bufferedWriter.writer();
+        var stdoutWriter = std.fs.File.stdout().writer(&self.stdoutBuffer);
+        const writer = &stdoutWriter.interface;
 
         writer.writeAll(ansi.ANSI.saveCursorState) catch {};
 
@@ -295,7 +284,7 @@ pub const CliRenderer = struct {
         const useKitty = self.terminal.opts.kitty_keyboard_flags > 0;
         self.terminal.enableDetectedFeatures(writer, useKitty) catch {};
 
-        bufferedWriter.flush() catch {};
+        writer.flush() catch {};
     }
 
     pub fn suspendRenderer(self: *CliRenderer) void {
@@ -311,16 +300,17 @@ pub const CliRenderer = struct {
     pub fn performShutdownSequence(self: *CliRenderer) void {
         if (!self.terminalSetup) return;
 
-        const direct = self.stdoutWriter.writer();
+        var stdoutWriter = std.fs.File.stdout().writer(&self.stdoutBuffer);
+        const direct = &stdoutWriter.interface;
         self.terminal.resetState(direct) catch {
             logger.warn("Failed to reset terminal state", .{});
         };
 
         if (self.useAlternateScreen) {
-            self.stdoutWriter.flush() catch {};
+            direct.flush() catch {};
         } else if (self.renderOffset == 0) {
             direct.writeAll("\x1b[H\x1b[J") catch {};
-            self.stdoutWriter.flush() catch {};
+            direct.flush() catch {};
         } else if (self.renderOffset > 0) {
             // Currently still handled in typescript
             // const consoleEndLine = self.height - self.renderOffset;
@@ -335,22 +325,22 @@ pub const CliRenderer = struct {
         direct.writeAll(ansi.ANSI.defaultCursorStyle) catch {};
         // Workaround for Ghostty not showing the cursor after shutdown for some reason
         direct.writeAll(ansi.ANSI.showCursor) catch {};
-        self.stdoutWriter.flush() catch {};
-        std.time.sleep(10 * std.time.ns_per_ms);
+        direct.flush() catch {};
+        std.Thread.sleep(10 * std.time.ns_per_ms);
         direct.writeAll(ansi.ANSI.showCursor) catch {};
-        self.stdoutWriter.flush() catch {};
-        std.time.sleep(10 * std.time.ns_per_ms);
+        direct.flush() catch {};
+        std.Thread.sleep(10 * std.time.ns_per_ms);
     }
 
-    fn addStatSample(comptime T: type, samples: *std.ArrayList(T), value: T) void {
-        samples.append(value) catch return;
+    fn addStatSample(self: *CliRenderer, comptime T: type, samples: *std.ArrayListUnmanaged(T), value: T) void {
+        samples.append(self.allocator, value) catch return;
 
         if (samples.items.len > MAX_STAT_SAMPLES) {
             _ = samples.orderedRemove(0);
         }
     }
 
-    fn getStatAverage(comptime T: type, samples: *const std.ArrayList(T)) T {
+    fn getStatAverage(comptime T: type, samples: *const std.ArrayListUnmanaged(T)) T {
         if (samples.items.len == 0) {
             return 0;
         }
@@ -406,8 +396,8 @@ pub const CliRenderer = struct {
         self.renderStats.fps = fps;
         self.renderStats.frameCallbackTime = frameCallbackTime;
 
-        addStatSample(f64, &self.statSamples.overallFrameTime, time);
-        addStatSample(f64, &self.statSamples.frameCallbackTime, frameCallbackTime);
+        self.addStatSample(f64, &self.statSamples.overallFrameTime, time);
+        self.addStatSample(f64, &self.statSamples.frameCallbackTime, frameCallbackTime);
     }
 
     pub fn updateMemoryStats(self: *CliRenderer, heapUsed: u32, heapTotal: u32, arrayBuffers: u32) void {
@@ -474,10 +464,12 @@ pub const CliRenderer = struct {
             const outputLen = self.currentOutputLen;
 
             const writeStart = std.time.microTimestamp();
-            if (outputLen > 0) {
-                var bufferedWriter = &self.stdoutWriter;
-                bufferedWriter.writer().writeAll(outputData[0..outputLen]) catch {};
-                bufferedWriter.flush() catch {};
+            // Skip stdout writes in testing mode to avoid blocking
+            if (outputLen > 0 and !self.testing) {
+                var stdoutWriter = std.fs.File.stdout().writer(&self.stdoutBuffer);
+                const w = &stdoutWriter.interface;
+                w.writeAll(outputData[0..outputLen]) catch {};
+                w.flush() catch {};
             }
 
             // Signal that rendering is complete
@@ -521,26 +513,30 @@ pub const CliRenderer = struct {
             self.renderMutex.unlock();
         } else {
             const writeStart = std.time.microTimestamp();
-            var bufferedWriter = &self.stdoutWriter;
-            bufferedWriter.writer().writeAll(outputBuffer[0..outputBufferLen]) catch {};
-            bufferedWriter.flush() catch {};
+            // Skip stdout writes in testing mode to avoid blocking
+            if (!self.testing) {
+                var stdoutWriter = std.fs.File.stdout().writer(&self.stdoutBuffer);
+                const w = &stdoutWriter.interface;
+                w.writeAll(outputBuffer[0..outputBufferLen]) catch {};
+                w.flush() catch {};
+            }
             self.renderStats.stdoutWriteTime = @as(f64, @floatFromInt(std.time.microTimestamp() - writeStart));
         }
 
         self.renderStats.lastFrameTime = deltaTime * 1000.0;
         self.renderStats.frameCount += 1;
 
-        addStatSample(f64, &self.statSamples.lastFrameTime, deltaTime * 1000.0);
+        self.addStatSample(f64, &self.statSamples.lastFrameTime, deltaTime * 1000.0);
         if (self.renderStats.renderTime) |rt| {
-            addStatSample(f64, &self.statSamples.renderTime, rt);
+            self.addStatSample(f64, &self.statSamples.renderTime, rt);
         }
         if (self.renderStats.bufferResetTime) |brt| {
-            addStatSample(f64, &self.statSamples.bufferResetTime, brt);
+            self.addStatSample(f64, &self.statSamples.bufferResetTime, brt);
         }
         if (self.renderStats.stdoutWriteTime) |swt| {
-            addStatSample(f64, &self.statSamples.stdoutWriteTime, swt);
+            self.addStatSample(f64, &self.statSamples.stdoutWriteTime, swt);
         }
-        addStatSample(u32, &self.statSamples.cellsUpdated, self.renderStats.cellsUpdated);
+        self.addStatSample(u32, &self.statSamples.cellsUpdated, self.renderStats.cellsUpdated);
     }
 
     pub fn getNextBuffer(self: *CliRenderer) *OptimizedBuffer {
@@ -790,9 +786,10 @@ pub const CliRenderer = struct {
     }
 
     pub fn clearTerminal(self: *CliRenderer) void {
-        var bufferedWriter = &self.stdoutWriter;
-        bufferedWriter.writer().writeAll(ansi.ANSI.clearAndHome) catch {};
-        bufferedWriter.flush() catch {};
+        var stdoutWriter = std.fs.File.stdout().writer(&self.stdoutBuffer);
+        const w = &stdoutWriter.interface;
+        w.writeAll(ansi.ANSI.clearAndHome) catch {};
+        w.flush() catch {};
     }
 
     pub fn addToHitGrid(self: *CliRenderer, x: i32, y: i32, width: u32, height: u32, id: u32) void {
@@ -834,7 +831,9 @@ pub const CliRenderer = struct {
         const file = std.fs.cwd().createFile(filename, .{}) catch return;
         defer file.close();
 
-        const writer = file.writer();
+        var fileBuffer: [4096]u8 = undefined;
+        var fileWriter = file.writer(&fileBuffer);
+        const writer = &fileWriter.interface;
 
         for (0..self.hitGridHeight) |y| {
             for (0..self.hitGridWidth) |x| {
@@ -846,6 +845,7 @@ pub const CliRenderer = struct {
             }
             writer.writeByte('\n') catch return;
         }
+        writer.flush() catch {};
     }
 
     fn dumpSingleBuffer(self: *CliRenderer, buffer: *OptimizedBuffer, buffer_name: []const u8, timestamp: i64) void {
@@ -860,7 +860,9 @@ pub const CliRenderer = struct {
         const file = std.fs.cwd().createFile(filename, .{}) catch return;
         defer file.close();
 
-        const writer = file.writer();
+        var fileBuffer: [4096]u8 = undefined;
+        var fileWriter = file.writer(&fileBuffer);
+        const writer = &fileWriter.interface;
 
         writer.print("{s} Buffer ({d}x{d}):\n", .{ buffer_name, self.width, self.height }) catch return;
         writer.writeAll("Characters:\n") catch return;
@@ -886,6 +888,7 @@ pub const CliRenderer = struct {
             }
             writer.writeByte('\n') catch return;
         }
+        writer.flush() catch {};
     }
 
     pub fn getLastOutputForTest(_: *CliRenderer) []const u8 {
@@ -909,7 +912,9 @@ pub const CliRenderer = struct {
         const file = std.fs.cwd().createFile(filename, .{}) catch return;
         defer file.close();
 
-        const writer = file.writer();
+        var fileBuffer: [4096]u8 = undefined;
+        var fileWriter = file.writer(&fileBuffer);
+        const writer = &fileWriter.interface;
 
         writer.print("Stdout Buffer Output (timestamp: {d}):\n", .{timestamp}) catch return;
         writer.writeAll("Last Rendered ANSI Output:\n") catch return;
@@ -927,6 +932,7 @@ pub const CliRenderer = struct {
         writer.writeAll("\n================\n") catch return;
         writer.print("Buffer size: {d} bytes\n", .{lastLen}) catch return;
         writer.print("Active buffer: {s}\n", .{if (activeBuffer == .A) "A" else "B"}) catch return;
+        writer.flush() catch {};
     }
 
     pub fn dumpBuffers(self: *CliRenderer, timestamp: i64) void {
@@ -937,46 +943,46 @@ pub const CliRenderer = struct {
 
     pub fn enableMouse(self: *CliRenderer, enableMovement: bool) void {
         _ = enableMovement; // TODO: Use this to control motion tracking levels
-        var bufferedWriter = &self.stdoutWriter;
-        const writer = bufferedWriter.writer();
+        var stdoutWriter = std.fs.File.stdout().writer(&self.stdoutBuffer);
+        const writer = &stdoutWriter.interface;
 
         self.terminal.setMouseMode(writer, true) catch {};
 
-        bufferedWriter.flush() catch {};
+        writer.flush() catch {};
     }
 
     pub fn queryPixelResolution(self: *CliRenderer) void {
-        var bufferedWriter = &self.stdoutWriter;
-        const writer = bufferedWriter.writer();
+        var stdoutWriter = std.fs.File.stdout().writer(&self.stdoutBuffer);
+        const writer = &stdoutWriter.interface;
 
         writer.writeAll(ansi.ANSI.queryPixelSize) catch {};
 
-        bufferedWriter.flush() catch {};
+        writer.flush() catch {};
     }
 
     pub fn disableMouse(self: *CliRenderer) void {
-        var bufferedWriter = &self.stdoutWriter;
-        const writer = bufferedWriter.writer();
+        var stdoutWriter = std.fs.File.stdout().writer(&self.stdoutBuffer);
+        const writer = &stdoutWriter.interface;
 
         self.terminal.setMouseMode(writer, false) catch {};
 
-        bufferedWriter.flush() catch {};
+        writer.flush() catch {};
     }
 
     pub fn enableKittyKeyboard(self: *CliRenderer, flags: u8) void {
-        var bufferedWriter = &self.stdoutWriter;
-        const writer = bufferedWriter.writer();
+        var stdoutWriter = std.fs.File.stdout().writer(&self.stdoutBuffer);
+        const writer = &stdoutWriter.interface;
 
         self.terminal.setKittyKeyboard(writer, true, flags) catch {};
-        bufferedWriter.flush() catch {};
+        writer.flush() catch {};
     }
 
     pub fn disableKittyKeyboard(self: *CliRenderer) void {
-        var bufferedWriter = &self.stdoutWriter;
-        const writer = bufferedWriter.writer();
+        var stdoutWriter = std.fs.File.stdout().writer(&self.stdoutBuffer);
+        const writer = &stdoutWriter.interface;
 
         self.terminal.setKittyKeyboard(writer, false, 0) catch {};
-        bufferedWriter.flush() catch {};
+        writer.flush() catch {};
     }
 
     pub fn getTerminalCapabilities(self: *CliRenderer) Terminal.Capabilities {
@@ -985,7 +991,8 @@ pub const CliRenderer = struct {
 
     pub fn processCapabilityResponse(self: *CliRenderer, response: []const u8) void {
         self.terminal.processCapabilityResponse(response);
-        const writer = self.stdoutWriter.writer();
+        var stdoutWriter = std.fs.File.stdout().writer(&self.stdoutBuffer);
+        const writer = &stdoutWriter.interface;
         const useKitty = self.terminal.opts.kitty_keyboard_flags > 0;
         self.terminal.enableDetectedFeatures(writer, useKitty) catch {};
     }

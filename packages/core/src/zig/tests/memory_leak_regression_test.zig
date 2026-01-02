@@ -23,15 +23,15 @@ test "GraphemePool - defer cleanup on failure path" {
     var pool = GraphemePool.init(std.testing.allocator);
     defer pool.deinit();
 
-    var allocated_ids = std.ArrayList(u32).init(std.testing.allocator);
-    defer allocated_ids.deinit();
+    var allocated_ids: std.ArrayListUnmanaged(u32) = .{};
+    defer allocated_ids.deinit(std.testing.allocator);
 
     for (0..5) |i| {
         var buffer: [8]u8 = undefined;
-        const len = std.fmt.formatIntBuf(&buffer, i, 10, .lower, .{});
-        const gid = try pool.alloc(buffer[0..len]);
+        const slice = std.fmt.bufPrint(&buffer, "{d}", .{i}) catch unreachable;
+        const gid = try pool.alloc(slice);
         try pool.incref(gid);
-        try allocated_ids.append(gid);
+        try allocated_ids.append(std.testing.allocator, gid);
     }
 
     // Simulate failure cleanup
@@ -53,8 +53,8 @@ test "GraphemePool - pending grapheme cleanup on failure" {
     var pool = GraphemePool.init(std.testing.allocator);
     defer pool.deinit();
 
-    var result_graphemes = std.ArrayList(u32).init(std.testing.allocator);
-    defer result_graphemes.deinit();
+    var result_graphemes: std.ArrayListUnmanaged(u32) = .{};
+    defer result_graphemes.deinit(std.testing.allocator);
 
     var pending_gid: ?u32 = null;
     const success = false; // intentionally never true to test cleanup path
@@ -73,7 +73,7 @@ test "GraphemePool - pending grapheme cleanup on failure" {
     const gid1 = try pool.alloc("grapheme1");
     pending_gid = gid1;
     try pool.incref(gid1);
-    try result_graphemes.append(gid1);
+    try result_graphemes.append(std.testing.allocator, gid1);
     pending_gid = null;
 
     const gid2 = try pool.alloc("grapheme2");

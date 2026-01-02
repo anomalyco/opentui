@@ -55,16 +55,17 @@ test "walkLines - single text segment" {
     });
 
     const Context = struct {
-        lines: std.ArrayList(LineInfo),
+        lines: std.ArrayListUnmanaged(LineInfo),
+        allocator: std.mem.Allocator,
 
         fn callback(ctx_ptr: *anyopaque, line_info: LineInfo) void {
             const ctx = @as(*@This(), @ptrCast(@alignCast(ctx_ptr)));
-            ctx.lines.append(line_info) catch {};
+            ctx.lines.append(ctx.allocator, line_info) catch {};
         }
     };
 
-    var ctx = Context{ .lines = std.ArrayList(LineInfo).init(allocator) };
-    defer ctx.lines.deinit();
+    var ctx = Context{ .lines = .{}, .allocator = allocator };
+    defer ctx.lines.deinit(allocator);
 
     iter_mod.walkLines(&rope, &ctx, Context.callback, true);
 
@@ -101,16 +102,17 @@ test "walkLines - text + break + text" {
     });
 
     const Context = struct {
-        lines: std.ArrayList(LineInfo),
+        lines: std.ArrayListUnmanaged(LineInfo),
+        allocator: std.mem.Allocator,
 
         fn callback(ctx_ptr: *anyopaque, line_info: LineInfo) void {
             const ctx = @as(*@This(), @ptrCast(@alignCast(ctx_ptr)));
-            ctx.lines.append(line_info) catch {};
+            ctx.lines.append(ctx.allocator, line_info) catch {};
         }
     };
 
-    var ctx = Context{ .lines = std.ArrayList(LineInfo).init(allocator) };
-    defer ctx.lines.deinit();
+    var ctx = Context{ .lines = .{}, .allocator = allocator };
+    defer ctx.lines.deinit(allocator);
 
     iter_mod.walkLines(&rope, &ctx, Context.callback, true);
 
@@ -154,16 +156,17 @@ test "walkLines - exclude newlines in offset" {
     });
 
     const Context = struct {
-        lines: std.ArrayList(LineInfo),
+        lines: std.ArrayListUnmanaged(LineInfo),
+        allocator: std.mem.Allocator,
 
         fn callback(ctx_ptr: *anyopaque, line_info: LineInfo) void {
             const ctx = @as(*@This(), @ptrCast(@alignCast(ctx_ptr)));
-            ctx.lines.append(line_info) catch {};
+            ctx.lines.append(ctx.allocator, line_info) catch {};
         }
     };
 
-    var ctx = Context{ .lines = std.ArrayList(LineInfo).init(allocator) };
-    defer ctx.lines.deinit();
+    var ctx = Context{ .lines = .{}, .allocator = allocator };
+    defer ctx.lines.deinit(allocator);
 
     iter_mod.walkLines(&rope, &ctx, Context.callback, false);
 

@@ -13,11 +13,17 @@ import MouseScene from "./mouse-demo.tsx"
 import { ScrollDemo, ScrollDemoIndex } from "./scroll-demo.tsx"
 import { CustomScrollAccelDemo } from "./custom-scroll-accel-demo.tsx"
 import TabSelectDemo from "./tab-select-demo.tsx"
+import TerminalGridDemo from "./terminal-grid-demo.tsx"
 import TextSelectionDemo from "./text-selection-demo.tsx"
 import TextStyleScene from "./text-style-demo.tsx"
 import { TextareaDemo } from "./textarea-demo.tsx"
 
 const EXAMPLES = [
+  {
+    name: "Terminal Grid Demo",
+    description: "2x2 grid of interactive terminals with focus switching",
+    scene: "terminal-grid-demo",
+  },
   {
     name: "Diff Viewer Demo",
     description: "Unified and split diff view with syntax highlighting",
@@ -150,6 +156,9 @@ const ExampleSelector = () => {
 
   return (
     <Switch>
+      <Match when={selectedScene() === "terminal-grid-demo"}>
+        <TerminalGridDemo />
+      </Match>
       <Match when={selectedScene() === "diff-demo"}>
         <DiffDemo />
       </Match>

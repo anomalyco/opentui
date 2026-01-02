@@ -29,6 +29,7 @@
     "@types/bun": "latest",
     "@types/node": "^24.0.0",
     "@types/three": "0.177.0",
+    "bun-pty": "^0.4.2",
     "commander": "^13.1.0",
     "typescript": "^5",
     "web-tree-sitter": "0.25.10"

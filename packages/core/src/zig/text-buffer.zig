@@ -347,7 +347,7 @@ pub const UnifiedTextBuffer = struct {
 
         // The rope's boundary rewrite will handle normalization at join points
         var result = try self.textToSegments(self.global_allocator, text, mem_id, 0, false);
-        defer result.segments.deinit();
+        defer result.segments.deinit(result.allocator);
 
         const insert_pos = self.rope.count();
         try self.rope.insert_slice(insert_pos, result.segments.items);
@@ -363,7 +363,7 @@ pub const UnifiedTextBuffer = struct {
         }
 
         var result = try self.textToSegments(self.global_allocator, text, mem_id, 0, true);
-        defer result.segments.deinit();
+        defer result.segments.deinit(result.allocator);
 
         try self.rope.setSegments(result.segments.items);
 
@@ -406,16 +406,16 @@ pub const UnifiedTextBuffer = struct {
         mem_id: u8,
         byte_offset: u32,
         prepend_linestart: bool,
-    ) TextBufferError!struct { segments: std.ArrayList(Segment), total_width: u32 } {
+    ) TextBufferError!struct { segments: std.ArrayListUnmanaged(Segment), total_width: u32, allocator: Allocator } {
         var break_result = utf8.LineBreakResult.init(allocator);
         defer break_result.deinit();
         try utf8.findLineBreaks(text, &break_result);
 
-        var segments = std.ArrayList(Segment).init(allocator);
-        errdefer segments.deinit();
+        var segments: std.ArrayListUnmanaged(Segment) = .{};
+        errdefer segments.deinit(allocator);
 
         if (prepend_linestart) {
-            try segments.append(Segment{ .linestart = {} });
+            try segments.append(allocator, Segment{ .linestart = {} });
         }
 
         var local_start: u32 = 0;
@@ -430,23 +430,23 @@ pub const UnifiedTextBuffer = struct {
 
             if (local_end > local_start) {
                 const chunk = self.createChunk(mem_id, byte_offset + local_start, byte_offset + local_end);
-                try segments.append(Segment{ .text = chunk });
+                try segments.append(allocator, Segment{ .text = chunk });
                 total_width += chunk.width;
             }
 
-            try segments.append(Segment{ .brk = {} });
-            try segments.append(Segment{ .linestart = {} });
+            try segments.append(allocator, Segment{ .brk = {} });
+            try segments.append(allocator, Segment{ .linestart = {} });
 
             local_start = break_pos + 1;
         }
 
         if (local_start < text.len) {
             const chunk = self.createChunk(mem_id, byte_offset + local_start, byte_offset + @as(u32, @intCast(text.len)));
-            try segments.append(Segment{ .text = chunk });
+            try segments.append(allocator, Segment{ .text = chunk });
             total_width += chunk.width;
         }
 
-        return .{ .segments = segments, .total_width = total_width };
+        return .{ .segments = segments, .total_width = total_width, .allocator = allocator };
     }
 
     pub fn getLineCount(self: *const Self) u32 {
@@ -645,12 +645,12 @@ pub const UnifiedTextBuffer = struct {
             hl_idx: usize,
         };
 
-        var events = std.ArrayList(Event).init(self.global_allocator);
-        defer events.deinit();
+        var events: std.ArrayListUnmanaged(Event) = .{};
+        defer events.deinit(self.global_allocator);
 
         for (highlights, 0..) |hl, idx| {
-            try events.append(.{ .col = hl.col_start, .is_start = true, .hl_idx = idx });
-            try events.append(.{ .col = hl.col_end, .is_start = false, .hl_idx = idx });
+            try events.append(self.global_allocator, .{ .col = hl.col_start, .is_start = true, .hl_idx = idx });
+            try events.append(self.global_allocator, .{ .col = hl.col_end, .is_start = false, .hl_idx = idx });
         }
 
         // Sort by column, ends before starts at same position

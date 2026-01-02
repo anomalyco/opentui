@@ -19,9 +19,13 @@ import type {
   SelectOption,
   SelectRenderable,
   SelectRenderableOptions,
+  StatelessTerminalOptions,
+  StatelessTerminalRenderable,
   TabSelectOption,
   TabSelectRenderable,
   TabSelectRenderableOptions,
+  TerminalOptions,
+  TerminalRenderable,
   TextareaOptions,
   TextareaRenderable,
   TextNodeOptions,
@@ -143,6 +147,10 @@ export type TextareaProps = ComponentProps<TextareaOptions, TextareaRenderable> 
 export type CodeProps = ComponentProps<CodeOptions, CodeRenderable>
 
 export type DiffProps = ComponentProps<DiffRenderableOptions, DiffRenderable>
+
+export type TerminalProps = ComponentProps<TerminalOptions, TerminalRenderable>
+
+export type StatelessTerminalProps = ComponentProps<StatelessTerminalOptions, StatelessTerminalRenderable>
 
 export type SelectProps = ComponentProps<SelectRenderableOptions, SelectRenderable> & {
   focused?: boolean

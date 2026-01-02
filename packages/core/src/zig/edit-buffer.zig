@@ -270,7 +270,7 @@ pub const EditBuffer = struct {
         const base_start = chunk_ref.start;
 
         var result = try self.tb.textToSegments(self.allocator, bytes, base_mem_id, base_start, false);
-        defer result.segments.deinit();
+        defer result.segments.deinit(result.allocator);
 
         const inserted_width = result.total_width;
 

@@ -40,6 +40,7 @@ const args = process.argv.slice(2)
 const buildLib = args.find((arg) => arg === "--lib")
 const buildNative = args.find((arg) => arg === "--native")
 const isDev = args.includes("--dev")
+const buildAll = args.includes("--all") // Build for all platforms (requires macOS or cross-compilation setup)
 
 const variants: Variant[] = [
   { platform: "darwin", arch: "x64" },
@@ -78,16 +79,17 @@ if (missingRequired.length > 0) {
 }
 
 if (buildNative) {
-  console.log(`Building native ${isDev ? "dev" : "prod"} binaries...`)
+  console.log(`Building native ${isDev ? "dev" : "prod"} binaries${buildAll ? " for all platforms" : ""}...`)
 
-  const zigBuild: SpawnSyncReturns<Buffer> = spawnSync(
-    "zig",
-    ["build", `-Doptimize=${isDev ? "Debug" : "ReleaseFast"}`],
-    {
-      cwd: join(rootDir, "src", "zig"),
-      stdio: "inherit",
-    },
-  )
+  const zigArgs = ["build", `-Doptimize=${isDev ? "Debug" : "ReleaseFast"}`]
+  if (buildAll) {
+    zigArgs.push("-Dall")
+  }
+
+  const zigBuild: SpawnSyncReturns<Buffer> = spawnSync("zig", zigArgs, {
+    cwd: join(rootDir, "src", "zig"),
+    stdio: "inherit",
+  })
 
   if (zigBuild.error) {
     console.error("Error: Zig is not installed or not in PATH")
@@ -124,16 +126,10 @@ if (buildNative) {
     }
 
     if (copiedFiles === 0) {
-      console.error(`Error: No dynamic libraries found for ${platform}-${arch} in ${libDir}`)
-      console.error(`Expected to find files like: libopentui.so, libopentui.dylib, opentui.dll`)
-      console.error(`Found files in ${libDir}:`)
-      if (existsSync(libDir)) {
-        const files = spawnSync("ls", ["-la", libDir], { stdio: "pipe" })
-        if (files.stdout) console.error(files.stdout.toString())
-      } else {
-        console.error("Directory does not exist")
-      }
-      process.exit(1)
+      // Skip platforms that weren't built (e.g., macOS when cross-compiling from Linux)
+      console.log(`Skipping ${platform}-${arch}: no libraries found (cross-compilation may not be supported)`)
+      rmSync(nativeDir, { recursive: true, force: true })
+      continue
     }
 
     const indexTsContent = `const module = await import("./${libraryFileName}", { with: { type: "file" } })
