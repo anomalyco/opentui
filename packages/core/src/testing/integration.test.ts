@@ -24,16 +24,10 @@ function parseAllEvents(emittedData: Buffer, parser: MouseParser) {
   const parsedEvents: NonNullable<ReturnType<MouseParser["parseMouseEvent"]>>[] = []
   let offset = 0
   while (offset < emittedData.length) {
-    const event = parser.parseMouseEvent(emittedData.subarray(offset))
-    if (event) {
-      parsedEvents.push(event)
-      const str = emittedData.subarray(offset).toString()
-      const match = str.match(/\x1b\[<[^Mm]*[Mm]/)
-      if (match) {
-        offset += match[0].length
-      } else {
-        break
-      }
+    const result = parser.parseMouseEventWithConsumed(emittedData.subarray(offset))
+    if (result) {
+      parsedEvents.push(result.event)
+      offset += result.consumed
     } else {
       break
     }

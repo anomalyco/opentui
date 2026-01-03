@@ -1039,9 +1039,18 @@ export class CliRenderer extends EventEmitter implements RenderContext {
   }
 
   private handleMouseData(data: Buffer): boolean {
-    const mouseEvent = this.mouseParser.parseMouseEvent(data)
+    const result = this.mouseParser.parseMouseEventWithConsumed(data)
 
-    if (mouseEvent) {
+    if (result) {
+      const { event: mouseEvent, consumed } = result
+
+      // Process any remaining data in the buffer (e.g., paste data that follows a mouse event)
+      // This handles terminals like Alacritty that combine mouse events with other sequences
+      if (consumed < data.length) {
+        const remaining = data.slice(consumed)
+        this._stdinBuffer.process(remaining)
+      }
+
       if (this._splitHeight > 0) {
         if (mouseEvent.y < this.renderOffset) {
           return false
