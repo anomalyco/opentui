@@ -1,0 +1,96 @@
+{
+  "$ref": "#/definitions/ThreeCliRendererOptions",
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "definitions": {
+    "RGBA": {
+      "additionalProperties": false,
+      "properties": {
+        "buffer": {
+          "additionalProperties": {
+            "type": "number"
+          },
+          "properties": {
+            "BYTES_PER_ELEMENT": {
+              "type": "number"
+            },
+            "buffer": {
+              "additionalProperties": false,
+              "properties": {
+                "byteLength": {
+                  "type": "number"
+                }
+              },
+              "required": [
+                "byteLength"
+              ],
+              "type": "object"
+            },
+            "byteLength": {
+              "type": "number"
+            },
+            "byteOffset": {
+              "type": "number"
+            },
+            "length": {
+              "type": "number"
+            }
+          },
+          "required": [
+            "BYTES_PER_ELEMENT",
+            "buffer",
+            "byteLength",
+            "byteOffset",
+            "length"
+          ],
+          "type": "object"
+        }
+      },
+      "required": [
+        "buffer"
+      ],
+      "type": "object"
+    },
+    "SuperSampleType": {
+      "enum": [
+        "none",
+        "gpu",
+        "cpu"
+      ],
+      "type": "string"
+    },
+    "ThreeCliRendererOptions": {
+      "additionalProperties": false,
+      "properties": {
+        "alpha": {
+          "type": "boolean"
+        },
+        "autoResize": {
+          "type": "boolean"
+        },
+        "backgroundColor": {
+          "$ref": "#/definitions/RGBA"
+        },
+        "focalLength": {
+          "type": "number"
+        },
+        "height": {
+          "type": "number"
+        },
+        "libPath": {
+          "type": "string"
+        },
+        "superSample": {
+          "$ref": "#/definitions/SuperSampleType"
+        },
+        "width": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "width",
+        "height"
+      ],
+      "type": "object"
+    }
+  }
+}

@@ -1,0 +1,731 @@
+{
+  "$ref": "#/definitions/InputRenderableOptions",
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "definitions": {
+    "AlignString": {
+      "enum": [
+        "auto",
+        "flex-start",
+        "center",
+        "flex-end",
+        "stretch",
+        "baseline",
+        "space-between",
+        "space-around",
+        "space-evenly"
+      ],
+      "type": "string"
+    },
+    "ColorInput": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "$ref": "#/definitions/RGBA"
+        }
+      ]
+    },
+    "FlexDirectionString": {
+      "enum": [
+        "column",
+        "column-reverse",
+        "row",
+        "row-reverse"
+      ],
+      "type": "string"
+    },
+    "InputRenderableOptions": {
+      "additionalProperties": false,
+      "properties": {
+        "alignItems": {
+          "$ref": "#/definitions/AlignString"
+        },
+        "backgroundColor": {
+          "$ref": "#/definitions/ColorInput"
+        },
+        "bottom": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "const": "auto",
+              "type": "string"
+            },
+            {
+              "type": "string"
+            }
+          ]
+        },
+        "buffered": {
+          "type": "boolean"
+        },
+        "cursorColor": {
+          "$ref": "#/definitions/ColorInput"
+        },
+        "enableLayout": {
+          "type": "boolean"
+        },
+        "flexBasis": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "const": "auto",
+              "type": "string"
+            }
+          ]
+        },
+        "flexDirection": {
+          "$ref": "#/definitions/FlexDirectionString"
+        },
+        "flexGrow": {
+          "type": "number"
+        },
+        "flexShrink": {
+          "type": "number"
+        },
+        "focusedBackgroundColor": {
+          "$ref": "#/definitions/ColorInput"
+        },
+        "focusedTextColor": {
+          "$ref": "#/definitions/ColorInput"
+        },
+        "height": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "const": "auto",
+              "type": "string"
+            },
+            {
+              "type": "string"
+            }
+          ]
+        },
+        "justifyContent": {
+          "$ref": "#/definitions/JustifyString"
+        },
+        "left": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "const": "auto",
+              "type": "string"
+            },
+            {
+              "type": "string"
+            }
+          ]
+        },
+        "live": {
+          "type": "boolean"
+        },
+        "margin": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "const": "auto",
+              "type": "string"
+            },
+            {
+              "type": "string"
+            }
+          ]
+        },
+        "marginBottom": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "const": "auto",
+              "type": "string"
+            },
+            {
+              "type": "string"
+            }
+          ]
+        },
+        "marginLeft": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "const": "auto",
+              "type": "string"
+            },
+            {
+              "type": "string"
+            }
+          ]
+        },
+        "marginRight": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "const": "auto",
+              "type": "string"
+            },
+            {
+              "type": "string"
+            }
+          ]
+        },
+        "marginTop": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "const": "auto",
+              "type": "string"
+            },
+            {
+              "type": "string"
+            }
+          ]
+        },
+        "maxHeight": {
+          "type": "number"
+        },
+        "maxLength": {
+          "type": "number"
+        },
+        "maxWidth": {
+          "type": "number"
+        },
+        "minHeight": {
+          "type": "number"
+        },
+        "minWidth": {
+          "type": "number"
+        },
+        "onKeyDown": {
+          "$comment": "(key: ParsedKey) => void",
+          "properties": {
+            "namedArgs": {
+              "additionalProperties": false,
+              "properties": {
+                "key": {
+                  "$ref": "#/definitions/ParsedKey"
+                }
+              },
+              "required": [
+                "key"
+              ],
+              "type": "object"
+            }
+          },
+          "type": "object"
+        },
+        "onMouseDown": {
+          "$comment": "(event: MouseEvent) => void",
+          "properties": {
+            "namedArgs": {
+              "additionalProperties": false,
+              "properties": {
+                "event": {
+                  "$ref": "#/definitions/MouseEvent"
+                }
+              },
+              "required": [
+                "event"
+              ],
+              "type": "object"
+            }
+          },
+          "type": "object"
+        },
+        "onMouseDrag": {
+          "$comment": "(event: MouseEvent) => void",
+          "properties": {
+            "namedArgs": {
+              "additionalProperties": false,
+              "properties": {
+                "event": {
+                  "$ref": "#/definitions/MouseEvent"
+                }
+              },
+              "required": [
+                "event"
+              ],
+              "type": "object"
+            }
+          },
+          "type": "object"
+        },
+        "onMouseDragEnd": {
+          "$comment": "(event: MouseEvent) => void",
+          "properties": {
+            "namedArgs": {
+              "additionalProperties": false,
+              "properties": {
+                "event": {
+                  "$ref": "#/definitions/MouseEvent"
+                }
+              },
+              "required": [
+                "event"
+              ],
+              "type": "object"
+            }
+          },
+          "type": "object"
+        },
+        "onMouseDrop": {
+          "$comment": "(event: MouseEvent) => void",
+          "properties": {
+            "namedArgs": {
+              "additionalProperties": false,
+              "properties": {
+                "event": {
+                  "$ref": "#/definitions/MouseEvent"
+                }
+              },
+              "required": [
+                "event"
+              ],
+              "type": "object"
+            }
+          },
+          "type": "object"
+        },
+        "onMouseMove": {
+          "$comment": "(event: MouseEvent) => void",
+          "properties": {
+            "namedArgs": {
+              "additionalProperties": false,
+              "properties": {
+                "event": {
+                  "$ref": "#/definitions/MouseEvent"
+                }
+              },
+              "required": [
+                "event"
+              ],
+              "type": "object"
+            }
+          },
+          "type": "object"
+        },
+        "onMouseOut": {
+          "$comment": "(event: MouseEvent) => void",
+          "properties": {
+            "namedArgs": {
+              "additionalProperties": false,
+              "properties": {
+                "event": {
+                  "$ref": "#/definitions/MouseEvent"
+                }
+              },
+              "required": [
+                "event"
+              ],
+              "type": "object"
+            }
+          },
+          "type": "object"
+        },
+        "onMouseOver": {
+          "$comment": "(event: MouseEvent) => void",
+          "properties": {
+            "namedArgs": {
+              "additionalProperties": false,
+              "properties": {
+                "event": {
+                  "$ref": "#/definitions/MouseEvent"
+                }
+              },
+              "required": [
+                "event"
+              ],
+              "type": "object"
+            }
+          },
+          "type": "object"
+        },
+        "onMouseScroll": {
+          "$comment": "(event: MouseEvent) => void",
+          "properties": {
+            "namedArgs": {
+              "additionalProperties": false,
+              "properties": {
+                "event": {
+                  "$ref": "#/definitions/MouseEvent"
+                }
+              },
+              "required": [
+                "event"
+              ],
+              "type": "object"
+            }
+          },
+          "type": "object"
+        },
+        "onMouseUp": {
+          "$comment": "(event: MouseEvent) => void",
+          "properties": {
+            "namedArgs": {
+              "additionalProperties": false,
+              "properties": {
+                "event": {
+                  "$ref": "#/definitions/MouseEvent"
+                }
+              },
+              "required": [
+                "event"
+              ],
+              "type": "object"
+            }
+          },
+          "type": "object"
+        },
+        "padding": {
+          "type": [
+            "number",
+            "string"
+          ]
+        },
+        "paddingBottom": {
+          "type": [
+            "number",
+            "string"
+          ]
+        },
+        "paddingLeft": {
+          "type": [
+            "number",
+            "string"
+          ]
+        },
+        "paddingRight": {
+          "type": [
+            "number",
+            "string"
+          ]
+        },
+        "paddingTop": {
+          "type": [
+            "number",
+            "string"
+          ]
+        },
+        "placeholder": {
+          "type": "string"
+        },
+        "placeholderColor": {
+          "$ref": "#/definitions/ColorInput"
+        },
+        "position": {
+          "$ref": "#/definitions/PositionTypeString"
+        },
+        "right": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "const": "auto",
+              "type": "string"
+            },
+            {
+              "type": "string"
+            }
+          ]
+        },
+        "textColor": {
+          "$ref": "#/definitions/ColorInput"
+        },
+        "top": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "const": "auto",
+              "type": "string"
+            },
+            {
+              "type": "string"
+            }
+          ]
+        },
+        "value": {
+          "type": "string"
+        },
+        "visible": {
+          "type": "boolean"
+        },
+        "width": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "const": "auto",
+              "type": "string"
+            },
+            {
+              "type": "string"
+            }
+          ]
+        },
+        "zIndex": {
+          "type": "number"
+        }
+      },
+      "type": "object"
+    },
+    "JustifyString": {
+      "enum": [
+        "flex-start",
+        "center",
+        "flex-end",
+        "space-between",
+        "space-around",
+        "space-evenly"
+      ],
+      "type": "string"
+    },
+    "MouseEvent": {
+      "additionalProperties": false,
+      "properties": {
+        "button": {
+          "type": "number"
+        },
+        "modifiers": {
+          "additionalProperties": false,
+          "properties": {
+            "alt": {
+              "type": "boolean"
+            },
+            "ctrl": {
+              "type": "boolean"
+            },
+            "shift": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "shift",
+            "alt",
+            "ctrl"
+          ],
+          "type": "object"
+        },
+        "scroll": {
+          "$ref": "#/definitions/ScrollInfo"
+        },
+        "source": {
+          "$ref": "#/definitions/Renderable"
+        },
+        "target": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/Renderable"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "type": {
+          "$ref": "#/definitions/MouseEventType"
+        },
+        "x": {
+          "type": "number"
+        },
+        "y": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "type",
+        "button",
+        "x",
+        "y",
+        "modifiers",
+        "target"
+      ],
+      "type": "object"
+    },
+    "MouseEventType": {
+      "enum": [
+        "down",
+        "up",
+        "move",
+        "drag",
+        "drag-end",
+        "drop",
+        "over",
+        "out",
+        "scroll"
+      ],
+      "type": "string"
+    },
+    "ParsedKey": {
+      "additionalProperties": false,
+      "properties": {
+        "code": {
+          "type": "string"
+        },
+        "ctrl": {
+          "type": "boolean"
+        },
+        "meta": {
+          "type": "boolean"
+        },
+        "name": {
+          "type": "string"
+        },
+        "number": {
+          "type": "boolean"
+        },
+        "option": {
+          "type": "boolean"
+        },
+        "raw": {
+          "type": "string"
+        },
+        "sequence": {
+          "type": "string"
+        },
+        "shift": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "name",
+        "ctrl",
+        "meta",
+        "shift",
+        "option",
+        "sequence",
+        "number",
+        "raw"
+      ],
+      "type": "object"
+    },
+    "PositionTypeString": {
+      "enum": [
+        "static",
+        "relative",
+        "absolute"
+      ],
+      "type": "string"
+    },
+    "RGBA": {
+      "additionalProperties": false,
+      "properties": {
+        "buffer": {
+          "additionalProperties": {
+            "type": "number"
+          },
+          "properties": {
+            "BYTES_PER_ELEMENT": {
+              "type": "number"
+            },
+            "buffer": {
+              "additionalProperties": false,
+              "properties": {
+                "byteLength": {
+                  "type": "number"
+                }
+              },
+              "required": [
+                "byteLength"
+              ],
+              "type": "object"
+            },
+            "byteLength": {
+              "type": "number"
+            },
+            "byteOffset": {
+              "type": "number"
+            },
+            "length": {
+              "type": "number"
+            }
+          },
+          "required": [
+            "BYTES_PER_ELEMENT",
+            "buffer",
+            "byteLength",
+            "byteOffset",
+            "length"
+          ],
+          "type": "object"
+        }
+      },
+      "required": [
+        "buffer"
+      ],
+      "type": "object"
+    },
+    "Renderable": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "num": {
+          "type": "number"
+        },
+        "parent": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/Renderable"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "selectable": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "id",
+        "num",
+        "selectable",
+        "parent"
+      ],
+      "type": "object"
+    },
+    "ScrollInfo": {
+      "additionalProperties": false,
+      "properties": {
+        "delta": {
+          "type": "number"
+        },
+        "direction": {
+          "enum": [
+            "up",
+            "down",
+            "left",
+            "right"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [
+        "direction",
+        "delta"
+      ],
+      "type": "object"
+    }
+  }
+}

@@ -1,0 +1,67 @@
+{
+  "compilerOptions": {
+    // IDE Support
+    "plugins": [
+      {
+        "name": "typescript-plugin-css-modules"
+      }
+    ],
+    
+    // Enhanced IntelliSense
+    "strict": true,
+    "strictNullChecks": true,
+    "strictFunctionTypes": true,
+    "strictBindCallApply": true,
+    "strictPropertyInitialization": true,
+    "noImplicitThis": true,
+    "noImplicitAny": true,
+    
+    // Module Resolution
+    "moduleResolution": "node",
+    "esModuleInterop": true,
+    "allowSyntheticDefaultImports": true,
+    "resolveJsonModule": true,
+    
+    // Type Checking
+    "skipLibCheck": false,
+    "forceConsistentCasingInFileNames": true,
+    "declaration": true,
+    "declarationMap": true,
+    "sourceMap": true,
+    
+    // Paths for IntelliSense
+    "baseUrl": ".",
+    "paths": {
+      "@opentui/core": ["./packages/core/src/index.ts"],
+      "@opentui/core/*": ["./packages/core/src/*"],
+      "@opentui/react": ["./packages/react/src/index.ts"],
+      "@opentui/react/*": ["./packages/react/src/*"],
+      "@opentui/solid": ["./packages/solid/src/index.ts"],
+      "@opentui/solid/*": ["./packages/solid/src/*"]
+    },
+    
+    // Include type definitions
+    "types": [
+      "node"
+    ],
+    "typeRoots": [
+      "./node_modules/@types",
+      "./packages/core/src/types"
+    ]
+  },
+  
+  "include": [
+    "packages/*/src/**/*",
+    "packages/*/docs/**/*",
+    "scripts/**/*"
+  ],
+  
+  "exclude": [
+    "node_modules",
+    "**/node_modules",
+    "dist",
+    "**/dist",
+    "build",
+    "**/build"
+  ]
+}

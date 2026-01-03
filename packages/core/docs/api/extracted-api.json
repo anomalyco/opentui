@@ -1,0 +1,2262 @@
+{
+  "classes": [
+    {
+      "name": "Renderable",
+      "methods": [
+        {
+          "name": "hasSelection",
+          "returnType": "boolean",
+          "parameters": []
+        },
+        {
+          "name": "onSelectionChanged",
+          "returnType": "boolean",
+          "parameters": [
+            {
+              "name": "selection",
+              "type": "SelectionState | null"
+            }
+          ]
+        },
+        {
+          "name": "getSelectedText",
+          "returnType": "string",
+          "parameters": []
+        },
+        {
+          "name": "shouldStartSelection",
+          "returnType": "boolean",
+          "parameters": [
+            {
+              "name": "x",
+              "type": "number"
+            },
+            {
+              "name": "y",
+              "type": "number"
+            }
+          ]
+        },
+        {
+          "name": "focus",
+          "returnType": "void",
+          "parameters": []
+        },
+        {
+          "name": "blur",
+          "returnType": "void",
+          "parameters": []
+        },
+        {
+          "name": "handleKeyPress",
+          "returnType": "boolean",
+          "parameters": [
+            {
+              "name": "key",
+              "type": "ParsedKey | string"
+            }
+          ]
+        },
+        {
+          "name": "needsUpdate",
+          "returnType": "void",
+          "parameters": []
+        },
+        {
+          "name": "requestZIndexSort",
+          "returnType": "void",
+          "parameters": []
+        },
+        {
+          "name": "setPosition",
+          "returnType": "void",
+          "parameters": [
+            {
+              "name": "position",
+              "type": "Position"
+            }
+          ]
+        },
+        {
+          "name": "getLayoutNode",
+          "returnType": "TrackedNode<NodeMetadata>",
+          "parameters": []
+        },
+        {
+          "name": "updateFromLayout",
+          "returnType": "void",
+          "parameters": []
+        },
+        {
+          "name": "add",
+          "returnType": "number",
+          "parameters": [
+            {
+              "name": "obj",
+              "type": "Renderable"
+            },
+            {
+              "name": "index",
+              "type": "number"
+            }
+          ]
+        },
+        {
+          "name": "insertBefore",
+          "returnType": "number",
+          "parameters": [
+            {
+              "name": "obj",
+              "type": "Renderable"
+            },
+            {
+              "name": "anchor",
+              "type": "Renderable"
+            }
+          ]
+        },
+        {
+          "name": "propagateContext",
+          "returnType": "void",
+          "parameters": [
+            {
+              "name": "ctx",
+              "type": "RenderContext | null"
+            }
+          ]
+        },
+        {
+          "name": "getRenderable",
+          "returnType": "Renderable",
+          "parameters": [
+            {
+              "name": "id",
+              "type": "string"
+            }
+          ]
+        },
+        {
+          "name": "remove",
+          "returnType": "void",
+          "parameters": [
+            {
+              "name": "id",
+              "type": "string"
+            }
+          ]
+        },
+        {
+          "name": "getChildren",
+          "returnType": "Renderable[]",
+          "parameters": []
+        },
+        {
+          "name": "render",
+          "returnType": "void",
+          "parameters": [
+            {
+              "name": "buffer",
+              "type": "OptimizedBuffer"
+            },
+            {
+              "name": "deltaTime",
+              "type": "number"
+            }
+          ]
+        },
+        {
+          "name": "destroy",
+          "returnType": "void",
+          "parameters": []
+        },
+        {
+          "name": "destroyRecursively",
+          "returnType": "void",
+          "parameters": []
+        },
+        {
+          "name": "processMouseEvent",
+          "returnType": "void",
+          "parameters": [
+            {
+              "name": "event",
+              "type": "MouseEvent"
+            }
+          ]
+        }
+      ],
+      "properties": [
+        {
+          "name": "renderablesByNumber",
+          "type": "Map<number, Renderable>"
+        },
+        {
+          "name": "id",
+          "type": "string"
+        },
+        {
+          "name": "num",
+          "type": "number"
+        },
+        {
+          "name": "selectable",
+          "type": "boolean"
+        },
+        {
+          "name": "parent",
+          "type": "Renderable | null"
+        }
+      ],
+      "constructor": {
+        "parameters": [
+          {
+            "name": "id",
+            "type": "string"
+          },
+          {
+            "name": "options",
+            "type": "RenderableOptions"
+          }
+        ]
+      }
+    },
+    {
+      "name": "RootRenderable",
+      "methods": [
+        {
+          "name": "requestLayout",
+          "returnType": "void",
+          "parameters": []
+        },
+        {
+          "name": "calculateLayout",
+          "returnType": "void",
+          "parameters": []
+        },
+        {
+          "name": "resize",
+          "returnType": "void",
+          "parameters": [
+            {
+              "name": "width",
+              "type": "number"
+            },
+            {
+              "name": "height",
+              "type": "number"
+            }
+          ]
+        }
+      ],
+      "properties": [],
+      "constructor": {
+        "parameters": [
+          {
+            "name": "width",
+            "type": "number"
+          },
+          {
+            "name": "height",
+            "type": "number"
+          },
+          {
+            "name": "ctx",
+            "type": "RenderContext"
+          },
+          {
+            "name": "rootContext",
+            "type": "RootContext"
+          }
+        ]
+      }
+    },
+    {
+      "name": "MouseEvent",
+      "methods": [
+        {
+          "name": "preventDefault",
+          "returnType": "void",
+          "parameters": []
+        }
+      ],
+      "properties": [
+        {
+          "name": "type",
+          "type": "MouseEventType"
+        },
+        {
+          "name": "button",
+          "type": "number"
+        },
+        {
+          "name": "x",
+          "type": "number"
+        },
+        {
+          "name": "y",
+          "type": "number"
+        },
+        {
+          "name": "source",
+          "type": "Renderable"
+        },
+        {
+          "name": "modifiers",
+          "type": "{\n    shift: boolean\n    alt: boolean\n    ctrl: boolean\n  }"
+        },
+        {
+          "name": "scroll",
+          "type": "ScrollInfo"
+        },
+        {
+          "name": "target",
+          "type": "Renderable | null"
+        }
+      ],
+      "constructor": {
+        "parameters": [
+          {
+            "name": "target",
+            "type": "Renderable | null"
+          },
+          {
+            "name": "attributes",
+            "type": "RawMouseEvent & { source?: Renderable }"
+          }
+        ]
+      }
+    },
+    {
+      "name": "CliRenderer",
+      "methods": [
+        {
+          "name": "needsUpdate",
+          "returnType": "void",
+          "parameters": []
+        },
+        {
+          "name": "setMemorySnapshotInterval",
+          "returnType": "void",
+          "parameters": [
+            {
+              "name": "interval",
+              "type": "number"
+            }
+          ]
+        },
+        {
+          "name": "setBackgroundColor",
+          "returnType": "void",
+          "parameters": [
+            {
+              "name": "color",
+              "type": "ColorInput"
+            }
+          ]
+        },
+        {
+          "name": "toggleDebugOverlay",
+          "returnType": "void",
+          "parameters": []
+        },
+        {
+          "name": "configureDebugOverlay",
+          "returnType": "void",
+          "parameters": [
+            {
+              "name": "options",
+              "type": "{ enabled?: boolean; corner?: DebugOverlayCorner }"
+            }
+          ]
+        },
+        {
+          "name": "clearTerminal",
+          "returnType": "void",
+          "parameters": []
+        },
+        {
+          "name": "dumpHitGrid",
+          "returnType": "void",
+          "parameters": []
+        },
+        {
+          "name": "dumpBuffers",
+          "returnType": "void",
+          "parameters": [
+            {
+              "name": "timestamp",
+              "type": "number"
+            }
+          ]
+        },
+        {
+          "name": "dumpStdoutBuffer",
+          "returnType": "void",
+          "parameters": [
+            {
+              "name": "timestamp",
+              "type": "number"
+            }
+          ]
+        },
+        {
+          "name": "setCursorPosition",
+          "returnType": "void",
+          "parameters": [
+            {
+              "name": "x",
+              "type": "number"
+            },
+            {
+              "name": "y",
+              "type": "number"
+            },
+            {
+              "name": "visible",
+              "type": "boolean"
+            }
+          ]
+        },
+        {
+          "name": "setCursorStyle",
+          "returnType": "void",
+          "parameters": [
+            {
+              "name": "style",
+              "type": "CursorStyle"
+            },
+            {
+              "name": "blinking",
+              "type": "boolean"
+            },
+            {
+              "name": "color",
+              "type": "RGBA"
+            }
+          ]
+        },
+        {
+          "name": "setCursorColor",
+          "returnType": "void",
+          "parameters": [
+            {
+              "name": "color",
+              "type": "RGBA"
+            }
+          ]
+        },
+        {
+          "name": "setCursorPosition",
+          "returnType": "void",
+          "parameters": [
+            {
+              "name": "x",
+              "type": "number"
+            },
+            {
+              "name": "y",
+              "type": "number"
+            },
+            {
+              "name": "visible",
+              "type": "boolean"
+            }
+          ]
+        },
+        {
+          "name": "setCursorStyle",
+          "returnType": "void",
+          "parameters": [
+            {
+              "name": "style",
+              "type": "CursorStyle"
+            },
+            {
+              "name": "blinking",
+              "type": "boolean"
+            },
+            {
+              "name": "color",
+              "type": "RGBA"
+            }
+          ]
+        },
+        {
+          "name": "setCursorColor",
+          "returnType": "void",
+          "parameters": [
+            {
+              "name": "color",
+              "type": "RGBA"
+            }
+          ]
+        },
+        {
+          "name": "addPostProcessFn",
+          "returnType": "void",
+          "parameters": [
+            {
+              "name": "processFn",
+              "type": "(buffer: OptimizedBuffer, deltaTime: number) => void"
+            }
+          ]
+        },
+        {
+          "name": "removePostProcessFn",
+          "returnType": "void",
+          "parameters": [
+            {
+              "name": "processFn",
+              "type": "(buffer: OptimizedBuffer, deltaTime: number) => void"
+            }
+          ]
+        },
+        {
+          "name": "clearPostProcessFns",
+          "returnType": "void",
+          "parameters": []
+        },
+        {
+          "name": "setFrameCallback",
+          "returnType": "void",
+          "parameters": [
+            {
+              "name": "callback",
+              "type": "(deltaTime: number) => Promise<void>"
+            }
+          ]
+        },
+        {
+          "name": "removeFrameCallback",
+          "returnType": "void",
+          "parameters": [
+            {
+              "name": "callback",
+              "type": "(deltaTime: number) => Promise<void>"
+            }
+          ]
+        },
+        {
+          "name": "clearFrameCallbacks",
+          "returnType": "void",
+          "parameters": []
+        },
+        {
+          "name": "requestLive",
+          "returnType": "void",
+          "parameters": []
+        },
+        {
+          "name": "dropLive",
+          "returnType": "void",
+          "parameters": []
+        },
+        {
+          "name": "start",
+          "returnType": "void",
+          "parameters": []
+        },
+        {
+          "name": "pause",
+          "returnType": "void",
+          "parameters": []
+        },
+        {
+          "name": "stop",
+          "returnType": "void",
+          "parameters": []
+        },
+        {
+          "name": "destroy",
+          "returnType": "void",
+          "parameters": []
+        },
+        {
+          "name": "intermediateRender",
+          "returnType": "void",
+          "parameters": []
+        },
+        {
+          "name": "getStats",
+          "returnType": "{ fps: number; frameCount: number; frameTimes: number[]; averageFrameTime: number; minFrameTime: number; maxFrameTime: number; }",
+          "parameters": []
+        },
+        {
+          "name": "resetStats",
+          "returnType": "void",
+          "parameters": []
+        },
+        {
+          "name": "setGatherStats",
+          "returnType": "void",
+          "parameters": [
+            {
+              "name": "enabled",
+              "type": "boolean"
+            }
+          ]
+        },
+        {
+          "name": "getSelection",
+          "returnType": "Selection",
+          "parameters": []
+        },
+        {
+          "name": "getSelectionContainer",
+          "returnType": "Renderable",
+          "parameters": []
+        },
+        {
+          "name": "hasSelection",
+          "returnType": "boolean",
+          "parameters": []
+        },
+        {
+          "name": "clearSelection",
+          "returnType": "void",
+          "parameters": []
+        }
+      ],
+      "properties": [
+        {
+          "name": "rendererPtr",
+          "type": "Pointer"
+        },
+        {
+          "name": "nextRenderBuffer",
+          "type": "OptimizedBuffer"
+        },
+        {
+          "name": "currentRenderBuffer",
+          "type": "OptimizedBuffer"
+        },
+        {
+          "name": "root",
+          "type": "RootRenderable"
+        },
+        {
+          "name": "width",
+          "type": "number"
+        },
+        {
+          "name": "height",
+          "type": "number"
+        },
+        {
+          "name": "debugOverlay",
+          "type": "any"
+        }
+      ],
+      "constructor": {
+        "parameters": [
+          {
+            "name": "lib",
+            "type": "RenderLib"
+          },
+          {
+            "name": "rendererPtr",
+            "type": "Pointer"
+          },
+          {
+            "name": "stdin",
+            "type": "NodeJS.ReadStream"
+          },
+          {
+            "name": "stdout",
+            "type": "NodeJS.WriteStream"
+          },
+          {
+            "name": "width",
+            "type": "number"
+          },
+          {
+            "name": "height",
+            "type": "number"
+          },
+          {
+            "name": "config",
+            "type": "CliRendererConfig"
+          }
+        ]
+      }
+    },
+    {
+      "name": "OptimizedBuffer",
+      "methods": [
+        {
+          "name": "create",
+          "returnType": "OptimizedBuffer",
+          "parameters": [
+            {
+              "name": "width",
+              "type": "number"
+            },
+            {
+              "name": "height",
+              "type": "number"
+            },
+            {
+              "name": "options",
+              "type": "{ respectAlpha?: boolean }"
+            }
+          ]
+        },
+        {
+          "name": "getWidth",
+          "returnType": "number",
+          "parameters": []
+        },
+        {
+          "name": "getHeight",
+          "returnType": "number",
+          "parameters": []
+        },
+        {
+          "name": "setRespectAlpha",
+          "returnType": "void",
+          "parameters": [
+            {
+              "name": "respectAlpha",
+              "type": "boolean"
+            }
+          ]
+        },
+        {
+          "name": "clear",
+          "returnType": "void",
+          "parameters": [
+            {
+              "name": "bg",
+              "type": "RGBA"
+            },
+            {
+              "name": "clearChar",
+              "type": "string"
+            }
+          ]
+        },
+        {
+          "name": "clearLocal",
+          "returnType": "void",
+          "parameters": [
+            {
+              "name": "bg",
+              "type": "RGBA"
+            },
+            {
+              "name": "clearChar",
+              "type": "string"
+            }
+          ]
+        },
+        {
+          "name": "setCell",
+          "returnType": "void",
+          "parameters": [
+            {
+              "name": "x",
+              "type": "number"
+            },
+            {
+              "name": "y",
+              "type": "number"
+            },
+            {
+              "name": "char",
+              "type": "string"
+            },
+            {
+              "name": "fg",
+              "type": "RGBA"
+            },
+            {
+              "name": "bg",
+              "type": "RGBA"
+            },
+            {
+              "name": "attributes",
+              "type": "number"
+            }
+          ]
+        },
+        {
+          "name": "get",
+          "returnType": "{ char: number; fg: RGBA; bg: RGBA; attributes: number; }",
+          "parameters": [
+            {
+              "name": "x",
+              "type": "number"
+            },
+            {
+              "name": "y",
+              "type": "number"
+            }
+          ]
+        },
+        {
+          "name": "setCellWithAlphaBlending",
+          "returnType": "void",
+          "parameters": [
+            {
+              "name": "x",
+              "type": "number"
+            },
+            {
+              "name": "y",
+              "type": "number"
+            },
+            {
+              "name": "char",
+              "type": "string"
+            },
+            {
+              "name": "fg",
+              "type": "RGBA"
+            },
+            {
+              "name": "bg",
+              "type": "RGBA"
+            },
+            {
+              "name": "attributes",
+              "type": "number"
+            }
+          ]
+        },
+        {
+          "name": "setCellWithAlphaBlendingLocal",
+          "returnType": "void",
+          "parameters": [
+            {
+              "name": "x",
+              "type": "number"
+            },
+            {
+              "name": "y",
+              "type": "number"
+            },
+            {
+              "name": "char",
+              "type": "string"
+            },
+            {
+              "name": "fg",
+              "type": "RGBA"
+            },
+            {
+              "name": "bg",
+              "type": "RGBA"
+            },
+            {
+              "name": "attributes",
+              "type": "number"
+            }
+          ]
+        },
+        {
+          "name": "drawText",
+          "returnType": "void",
+          "parameters": [
+            {
+              "name": "text",
+              "type": "string"
+            },
+            {
+              "name": "x",
+              "type": "number"
+            },
+            {
+              "name": "y",
+              "type": "number"
+            },
+            {
+              "name": "fg",
+              "type": "RGBA"
+            },
+            {
+              "name": "bg",
+              "type": "RGBA"
+            },
+            {
+              "name": "attributes",
+              "type": "number"
+            },
+            {
+              "name": "selection",
+              "type": "{ start: number; end: number; bgColor?: RGBA; fgColor?: RGBA } | null"
+            }
+          ]
+        },
+        {
+          "name": "fillRect",
+          "returnType": "void",
+          "parameters": [
+            {
+              "name": "x",
+              "type": "number"
+            },
+            {
+              "name": "y",
+              "type": "number"
+            },
+            {
+              "name": "width",
+              "type": "number"
+            },
+            {
+              "name": "height",
+              "type": "number"
+            },
+            {
+              "name": "bg",
+              "type": "RGBA"
+            }
+          ]
+        },
+        {
+          "name": "fillRectLocal",
+          "returnType": "void",
+          "parameters": [
+            {
+              "name": "x",
+              "type": "number"
+            },
+            {
+              "name": "y",
+              "type": "number"
+            },
+            {
+              "name": "width",
+              "type": "number"
+            },
+            {
+              "name": "height",
+              "type": "number"
+            },
+            {
+              "name": "bg",
+              "type": "RGBA"
+            }
+          ]
+        },
+        {
+          "name": "drawFrameBuffer",
+          "returnType": "void",
+          "parameters": [
+            {
+              "name": "destX",
+              "type": "number"
+            },
+            {
+              "name": "destY",
+              "type": "number"
+            },
+            {
+              "name": "frameBuffer",
+              "type": "OptimizedBuffer"
+            },
+            {
+              "name": "sourceX",
+              "type": "number"
+            },
+            {
+              "name": "sourceY",
+              "type": "number"
+            },
+            {
+              "name": "sourceWidth",
+              "type": "number"
+            },
+            {
+              "name": "sourceHeight",
+              "type": "number"
+            }
+          ]
+        },
+        {
+          "name": "drawFrameBufferLocal",
+          "returnType": "void",
+          "parameters": [
+            {
+              "name": "destX",
+              "type": "number"
+            },
+            {
+              "name": "destY",
+              "type": "number"
+            },
+            {
+              "name": "frameBuffer",
+              "type": "OptimizedBuffer"
+            },
+            {
+              "name": "sourceX",
+              "type": "number"
+            },
+            {
+              "name": "sourceY",
+              "type": "number"
+            },
+            {
+              "name": "sourceWidth",
+              "type": "number"
+            },
+            {
+              "name": "sourceHeight",
+              "type": "number"
+            }
+          ]
+        },
+        {
+          "name": "destroy",
+          "returnType": "void",
+          "parameters": []
+        },
+        {
+          "name": "drawTextBuffer",
+          "returnType": "void",
+          "parameters": [
+            {
+              "name": "textBuffer",
+              "type": "TextBuffer"
+            },
+            {
+              "name": "x",
+              "type": "number"
+            },
+            {
+              "name": "y",
+              "type": "number"
+            },
+            {
+              "name": "clipRect",
+              "type": "{ x: number; y: number; width: number; height: number }"
+            }
+          ]
+        },
+        {
+          "name": "drawSuperSampleBuffer",
+          "returnType": "void",
+          "parameters": [
+            {
+              "name": "x",
+              "type": "number"
+            },
+            {
+              "name": "y",
+              "type": "number"
+            },
+            {
+              "name": "pixelDataPtr",
+              "type": "Pointer"
+            },
+            {
+              "name": "pixelDataLength",
+              "type": "number"
+            },
+            {
+              "name": "format",
+              "type": "\"bgra8unorm\" | \"rgba8unorm\""
+            },
+            {
+              "name": "alignedBytesPerRow",
+              "type": "number"
+            }
+          ]
+        },
+        {
+          "name": "drawSuperSampleBufferFFI",
+          "returnType": "void",
+          "parameters": [
+            {
+              "name": "x",
+              "type": "number"
+            },
+            {
+              "name": "y",
+              "type": "number"
+            },
+            {
+              "name": "pixelDataPtr",
+              "type": "Pointer"
+            },
+            {
+              "name": "pixelDataLength",
+              "type": "number"
+            },
+            {
+              "name": "format",
+              "type": "\"bgra8unorm\" | \"rgba8unorm\""
+            },
+            {
+              "name": "alignedBytesPerRow",
+              "type": "number"
+            }
+          ]
+        },
+        {
+          "name": "drawPackedBuffer",
+          "returnType": "void",
+          "parameters": [
+            {
+              "name": "dataPtr",
+              "type": "Pointer"
+            },
+            {
+              "name": "dataLen",
+              "type": "number"
+            },
+            {
+              "name": "posX",
+              "type": "number"
+            },
+            {
+              "name": "posY",
+              "type": "number"
+            },
+            {
+              "name": "terminalWidthCells",
+              "type": "number"
+            },
+            {
+              "name": "terminalHeightCells",
+              "type": "number"
+            }
+          ]
+        },
+        {
+          "name": "setCellWithAlphaBlendingFFI",
+          "returnType": "void",
+          "parameters": [
+            {
+              "name": "x",
+              "type": "number"
+            },
+            {
+              "name": "y",
+              "type": "number"
+            },
+            {
+              "name": "char",
+              "type": "string"
+            },
+            {
+              "name": "fg",
+              "type": "RGBA"
+            },
+            {
+              "name": "bg",
+              "type": "RGBA"
+            },
+            {
+              "name": "attributes",
+              "type": "number"
+            }
+          ]
+        },
+        {
+          "name": "fillRectFFI",
+          "returnType": "void",
+          "parameters": [
+            {
+              "name": "x",
+              "type": "number"
+            },
+            {
+              "name": "y",
+              "type": "number"
+            },
+            {
+              "name": "width",
+              "type": "number"
+            },
+            {
+              "name": "height",
+              "type": "number"
+            },
+            {
+              "name": "bg",
+              "type": "RGBA"
+            }
+          ]
+        },
+        {
+          "name": "resize",
+          "returnType": "void",
+          "parameters": [
+            {
+              "name": "width",
+              "type": "number"
+            },
+            {
+              "name": "height",
+              "type": "number"
+            }
+          ]
+        },
+        {
+          "name": "clearFFI",
+          "returnType": "void",
+          "parameters": [
+            {
+              "name": "bg",
+              "type": "RGBA"
+            }
+          ]
+        },
+        {
+          "name": "drawTextFFI",
+          "returnType": "void",
+          "parameters": [
+            {
+              "name": "text",
+              "type": "string"
+            },
+            {
+              "name": "x",
+              "type": "number"
+            },
+            {
+              "name": "y",
+              "type": "number"
+            },
+            {
+              "name": "fg",
+              "type": "RGBA"
+            },
+            {
+              "name": "bg",
+              "type": "RGBA"
+            },
+            {
+              "name": "attributes",
+              "type": "number"
+            }
+          ]
+        },
+        {
+          "name": "drawFrameBufferFFI",
+          "returnType": "void",
+          "parameters": [
+            {
+              "name": "destX",
+              "type": "number"
+            },
+            {
+              "name": "destY",
+              "type": "number"
+            },
+            {
+              "name": "frameBuffer",
+              "type": "OptimizedBuffer"
+            },
+            {
+              "name": "sourceX",
+              "type": "number"
+            },
+            {
+              "name": "sourceY",
+              "type": "number"
+            },
+            {
+              "name": "sourceWidth",
+              "type": "number"
+            },
+            {
+              "name": "sourceHeight",
+              "type": "number"
+            }
+          ]
+        },
+        {
+          "name": "drawBox",
+          "returnType": "void",
+          "parameters": [
+            {
+              "name": "options",
+              "type": "{\n    x: number\n    y: number\n    width: number\n    height: number\n    borderStyle?: BorderStyle\n    customBorderChars?: Uint32Array\n    border: boolean | BorderSides[]\n    borderColor: RGBA\n    backgroundColor: RGBA\n    shouldFill?: boolean\n    title?: string\n    titleAlignment?: \"left\" | \"center\" | \"right\"\n  }"
+            }
+          ]
+        }
+      ],
+      "properties": [
+        {
+          "name": "id",
+          "type": "string"
+        },
+        {
+          "name": "lib",
+          "type": "RenderLib"
+        },
+        {
+          "name": "respectAlpha",
+          "type": "boolean"
+        }
+      ],
+      "constructor": {
+        "parameters": [
+          {
+            "name": "lib",
+            "type": "RenderLib"
+          },
+          {
+            "name": "ptr",
+            "type": "Pointer"
+          },
+          {
+            "name": "buffer",
+            "type": "{\n      char: Uint32Array\n      fg: Float32Array\n      bg: Float32Array\n      attributes: Uint8Array\n    }"
+          },
+          {
+            "name": "width",
+            "type": "number"
+          },
+          {
+            "name": "height",
+            "type": "number"
+          },
+          {
+            "name": "options",
+            "type": "{ respectAlpha?: boolean }"
+          }
+        ]
+      }
+    },
+    {
+      "name": "BoxRenderable",
+      "methods": [],
+      "properties": [
+        {
+          "name": "shouldFill",
+          "type": "boolean"
+        }
+      ],
+      "constructor": {
+        "parameters": [
+          {
+            "name": "id",
+            "type": "string"
+          },
+          {
+            "name": "options",
+            "type": "BoxOptions"
+          }
+        ]
+      }
+    },
+    {
+      "name": "TextRenderable",
+      "methods": [
+        {
+          "name": "shouldStartSelection",
+          "returnType": "boolean",
+          "parameters": [
+            {
+              "name": "x",
+              "type": "number"
+            },
+            {
+              "name": "y",
+              "type": "number"
+            }
+          ]
+        },
+        {
+          "name": "onSelectionChanged",
+          "returnType": "boolean",
+          "parameters": [
+            {
+              "name": "selection",
+              "type": "SelectionState | null"
+            }
+          ]
+        },
+        {
+          "name": "getSelectedText",
+          "returnType": "string",
+          "parameters": []
+        },
+        {
+          "name": "hasSelection",
+          "returnType": "boolean",
+          "parameters": []
+        },
+        {
+          "name": "destroy",
+          "returnType": "void",
+          "parameters": []
+        }
+      ],
+      "properties": [
+        {
+          "name": "selectable",
+          "type": "boolean"
+        }
+      ],
+      "constructor": {
+        "parameters": [
+          {
+            "name": "id",
+            "type": "string"
+          },
+          {
+            "name": "options",
+            "type": "TextOptions"
+          }
+        ]
+      }
+    },
+    {
+      "name": "ASCIIFontRenderable",
+      "methods": [
+        {
+          "name": "shouldStartSelection",
+          "returnType": "boolean",
+          "parameters": [
+            {
+              "name": "x",
+              "type": "number"
+            },
+            {
+              "name": "y",
+              "type": "number"
+            }
+          ]
+        },
+        {
+          "name": "onSelectionChanged",
+          "returnType": "boolean",
+          "parameters": [
+            {
+              "name": "selection",
+              "type": "SelectionState | null"
+            }
+          ]
+        },
+        {
+          "name": "getSelectedText",
+          "returnType": "string",
+          "parameters": []
+        },
+        {
+          "name": "hasSelection",
+          "returnType": "boolean",
+          "parameters": []
+        }
+      ],
+      "properties": [
+        {
+          "name": "selectable",
+          "type": "boolean"
+        }
+      ],
+      "constructor": {
+        "parameters": [
+          {
+            "name": "id",
+            "type": "string"
+          },
+          {
+            "name": "options",
+            "type": "ASCIIFontOptions"
+          }
+        ]
+      }
+    },
+    {
+      "name": "InputRenderable",
+      "methods": [
+        {
+          "name": "focus",
+          "returnType": "void",
+          "parameters": []
+        },
+        {
+          "name": "blur",
+          "returnType": "void",
+          "parameters": []
+        },
+        {
+          "name": "handleKeyPress",
+          "returnType": "boolean",
+          "parameters": [
+            {
+              "name": "key",
+              "type": "ParsedKey | string"
+            }
+          ]
+        }
+      ],
+      "properties": [],
+      "constructor": {
+        "parameters": [
+          {
+            "name": "id",
+            "type": "string"
+          },
+          {
+            "name": "options",
+            "type": "InputRenderableOptions"
+          }
+        ]
+      }
+    },
+    {
+      "name": "Timeline",
+      "methods": [
+        {
+          "name": "add",
+          "returnType": "this",
+          "parameters": [
+            {
+              "name": "target",
+              "type": "any"
+            },
+            {
+              "name": "properties",
+              "type": "AnimationOptions"
+            },
+            {
+              "name": "startTime",
+              "type": "number | string"
+            }
+          ]
+        },
+        {
+          "name": "once",
+          "returnType": "this",
+          "parameters": [
+            {
+              "name": "target",
+              "type": "any"
+            },
+            {
+              "name": "properties",
+              "type": "AnimationOptions"
+            }
+          ]
+        },
+        {
+          "name": "call",
+          "returnType": "this",
+          "parameters": [
+            {
+              "name": "callback",
+              "type": "() => void"
+            },
+            {
+              "name": "startTime",
+              "type": "number | string"
+            }
+          ]
+        },
+        {
+          "name": "sync",
+          "returnType": "this",
+          "parameters": [
+            {
+              "name": "timeline",
+              "type": "Timeline"
+            },
+            {
+              "name": "startTime",
+              "type": "number"
+            }
+          ]
+        },
+        {
+          "name": "play",
+          "returnType": "this",
+          "parameters": []
+        },
+        {
+          "name": "pause",
+          "returnType": "this",
+          "parameters": []
+        },
+        {
+          "name": "resetItems",
+          "returnType": "void",
+          "parameters": []
+        },
+        {
+          "name": "restart",
+          "returnType": "this",
+          "parameters": []
+        },
+        {
+          "name": "update",
+          "returnType": "void",
+          "parameters": [
+            {
+              "name": "deltaTime",
+              "type": "number"
+            }
+          ]
+        }
+      ],
+      "properties": [
+        {
+          "name": "items",
+          "type": "(TimelineAnimationItem | TimelineCallbackItem)[]"
+        },
+        {
+          "name": "subTimelines",
+          "type": "TimelineTimelineItem[]"
+        },
+        {
+          "name": "currentTime",
+          "type": "number"
+        },
+        {
+          "name": "isPlaying",
+          "type": "boolean"
+        },
+        {
+          "name": "isComplete",
+          "type": "boolean"
+        },
+        {
+          "name": "duration",
+          "type": "number"
+        },
+        {
+          "name": "loop",
+          "type": "boolean"
+        },
+        {
+          "name": "synced",
+          "type": "boolean"
+        }
+      ],
+      "constructor": {
+        "parameters": [
+          {
+            "name": "options",
+            "type": "TimelineOptions"
+          }
+        ]
+      }
+    }
+  ],
+  "interfaces": [
+    {
+      "name": "RootContext",
+      "members": [
+        {
+          "name": "requestLive",
+          "type": "void"
+        },
+        {
+          "name": "dropLive",
+          "type": "void"
+        }
+      ]
+    },
+    {
+      "name": "Position",
+      "members": [
+        {
+          "name": "top",
+          "type": "number | \"auto\" | `${number}%`"
+        },
+        {
+          "name": "right",
+          "type": "number | \"auto\" | `${number}%`"
+        },
+        {
+          "name": "bottom",
+          "type": "number | \"auto\" | `${number}%`"
+        },
+        {
+          "name": "left",
+          "type": "number | \"auto\" | `${number}%`"
+        }
+      ]
+    },
+    {
+      "name": "LayoutOptions",
+      "members": [
+        {
+          "name": "flexGrow",
+          "type": "number"
+        },
+        {
+          "name": "flexShrink",
+          "type": "number"
+        },
+        {
+          "name": "flexDirection",
+          "type": "FlexDirectionString"
+        },
+        {
+          "name": "alignItems",
+          "type": "AlignString"
+        },
+        {
+          "name": "justifyContent",
+          "type": "JustifyString"
+        },
+        {
+          "name": "flexBasis",
+          "type": "number | \"auto\" | undefined"
+        },
+        {
+          "name": "position",
+          "type": "PositionTypeString"
+        },
+        {
+          "name": "top",
+          "type": "number | \"auto\" | `${number}%`"
+        },
+        {
+          "name": "right",
+          "type": "number | \"auto\" | `${number}%`"
+        },
+        {
+          "name": "bottom",
+          "type": "number | \"auto\" | `${number}%`"
+        },
+        {
+          "name": "left",
+          "type": "number | \"auto\" | `${number}%`"
+        },
+        {
+          "name": "minWidth",
+          "type": "number"
+        },
+        {
+          "name": "minHeight",
+          "type": "number"
+        },
+        {
+          "name": "maxWidth",
+          "type": "number"
+        },
+        {
+          "name": "maxHeight",
+          "type": "number"
+        },
+        {
+          "name": "margin",
+          "type": "number | \"auto\" | `${number}%`"
+        },
+        {
+          "name": "marginTop",
+          "type": "number | \"auto\" | `${number}%`"
+        },
+        {
+          "name": "marginRight",
+          "type": "number | \"auto\" | `${number}%`"
+        },
+        {
+          "name": "marginBottom",
+          "type": "number | \"auto\" | `${number}%`"
+        },
+        {
+          "name": "marginLeft",
+          "type": "number | \"auto\" | `${number}%`"
+        },
+        {
+          "name": "padding",
+          "type": "number | `${number}%`"
+        },
+        {
+          "name": "paddingTop",
+          "type": "number | `${number}%`"
+        },
+        {
+          "name": "paddingRight",
+          "type": "number | `${number}%`"
+        },
+        {
+          "name": "paddingBottom",
+          "type": "number | `${number}%`"
+        },
+        {
+          "name": "paddingLeft",
+          "type": "number | `${number}%`"
+        },
+        {
+          "name": "enableLayout",
+          "type": "boolean"
+        }
+      ]
+    },
+    {
+      "name": "RenderableOptions",
+      "members": [
+        {
+          "name": "width",
+          "type": "number | \"auto\" | `${number}%`"
+        },
+        {
+          "name": "height",
+          "type": "number | \"auto\" | `${number}%`"
+        },
+        {
+          "name": "zIndex",
+          "type": "number"
+        },
+        {
+          "name": "visible",
+          "type": "boolean"
+        },
+        {
+          "name": "buffered",
+          "type": "boolean"
+        },
+        {
+          "name": "live",
+          "type": "boolean"
+        },
+        {
+          "name": "onMouseDown",
+          "type": "(event: MouseEvent) => void"
+        },
+        {
+          "name": "onMouseUp",
+          "type": "(event: MouseEvent) => void"
+        },
+        {
+          "name": "onMouseMove",
+          "type": "(event: MouseEvent) => void"
+        },
+        {
+          "name": "onMouseDrag",
+          "type": "(event: MouseEvent) => void"
+        },
+        {
+          "name": "onMouseDragEnd",
+          "type": "(event: MouseEvent) => void"
+        },
+        {
+          "name": "onMouseDrop",
+          "type": "(event: MouseEvent) => void"
+        },
+        {
+          "name": "onMouseOver",
+          "type": "(event: MouseEvent) => void"
+        },
+        {
+          "name": "onMouseOut",
+          "type": "(event: MouseEvent) => void"
+        },
+        {
+          "name": "onMouseScroll",
+          "type": "(event: MouseEvent) => void"
+        },
+        {
+          "name": "onKeyDown",
+          "type": "(key: ParsedKey) => void"
+        }
+      ]
+    },
+    {
+      "name": "CliRendererConfig",
+      "members": [
+        {
+          "name": "stdin",
+          "type": "NodeJS.ReadStream"
+        },
+        {
+          "name": "stdout",
+          "type": "NodeJS.WriteStream"
+        },
+        {
+          "name": "exitOnCtrlC",
+          "type": "boolean"
+        },
+        {
+          "name": "debounceDelay",
+          "type": "number"
+        },
+        {
+          "name": "targetFps",
+          "type": "number"
+        },
+        {
+          "name": "memorySnapshotInterval",
+          "type": "number"
+        },
+        {
+          "name": "useThread",
+          "type": "boolean"
+        },
+        {
+          "name": "gatherStats",
+          "type": "boolean"
+        },
+        {
+          "name": "maxStatSamples",
+          "type": "number"
+        },
+        {
+          "name": "consoleOptions",
+          "type": "ConsoleOptions"
+        },
+        {
+          "name": "postProcessFns",
+          "type": "((buffer: OptimizedBuffer, deltaTime: number) => void)[]"
+        },
+        {
+          "name": "enableMouseMovement",
+          "type": "boolean"
+        },
+        {
+          "name": "useMouse",
+          "type": "boolean"
+        },
+        {
+          "name": "useAlternateScreen",
+          "type": "boolean"
+        },
+        {
+          "name": "useConsole",
+          "type": "boolean"
+        },
+        {
+          "name": "experimental_splitHeight",
+          "type": "number"
+        }
+      ]
+    },
+    {
+      "name": "BoxOptions",
+      "members": [
+        {
+          "name": "backgroundColor",
+          "type": "string | RGBA"
+        },
+        {
+          "name": "borderStyle",
+          "type": "BorderStyle"
+        },
+        {
+          "name": "border",
+          "type": "boolean | BorderSides[]"
+        },
+        {
+          "name": "borderColor",
+          "type": "string | RGBA"
+        },
+        {
+          "name": "customBorderChars",
+          "type": "BorderCharacters"
+        },
+        {
+          "name": "shouldFill",
+          "type": "boolean"
+        },
+        {
+          "name": "title",
+          "type": "string"
+        },
+        {
+          "name": "titleAlignment",
+          "type": "\"left\" | \"center\" | \"right\""
+        },
+        {
+          "name": "focusedBorderColor",
+          "type": "ColorInput"
+        }
+      ]
+    },
+    {
+      "name": "TextOptions",
+      "members": [
+        {
+          "name": "content",
+          "type": "StyledText | string"
+        },
+        {
+          "name": "fg",
+          "type": "string | RGBA"
+        },
+        {
+          "name": "bg",
+          "type": "string | RGBA"
+        },
+        {
+          "name": "selectionBg",
+          "type": "string | RGBA"
+        },
+        {
+          "name": "selectionFg",
+          "type": "string | RGBA"
+        },
+        {
+          "name": "selectable",
+          "type": "boolean"
+        },
+        {
+          "name": "attributes",
+          "type": "number"
+        }
+      ]
+    },
+    {
+      "name": "ASCIIFontOptions",
+      "members": [
+        {
+          "name": "text",
+          "type": "string"
+        },
+        {
+          "name": "font",
+          "type": "\"tiny\" | \"block\" | \"shade\" | \"slick\""
+        },
+        {
+          "name": "fg",
+          "type": "RGBA | RGBA[]"
+        },
+        {
+          "name": "bg",
+          "type": "RGBA"
+        },
+        {
+          "name": "selectionBg",
+          "type": "string | RGBA"
+        },
+        {
+          "name": "selectionFg",
+          "type": "string | RGBA"
+        },
+        {
+          "name": "selectable",
+          "type": "boolean"
+        }
+      ]
+    },
+    {
+      "name": "InputRenderableOptions",
+      "members": [
+        {
+          "name": "backgroundColor",
+          "type": "ColorInput"
+        },
+        {
+          "name": "textColor",
+          "type": "ColorInput"
+        },
+        {
+          "name": "focusedBackgroundColor",
+          "type": "ColorInput"
+        },
+        {
+          "name": "focusedTextColor",
+          "type": "ColorInput"
+        },
+        {
+          "name": "placeholder",
+          "type": "string"
+        },
+        {
+          "name": "placeholderColor",
+          "type": "ColorInput"
+        },
+        {
+          "name": "cursorColor",
+          "type": "ColorInput"
+        },
+        {
+          "name": "maxLength",
+          "type": "number"
+        },
+        {
+          "name": "value",
+          "type": "string"
+        }
+      ]
+    },
+    {
+      "name": "TimelineOptions",
+      "members": [
+        {
+          "name": "duration",
+          "type": "number"
+        },
+        {
+          "name": "loop",
+          "type": "boolean"
+        },
+        {
+          "name": "autoplay",
+          "type": "boolean"
+        },
+        {
+          "name": "onComplete",
+          "type": "() => void"
+        },
+        {
+          "name": "onPause",
+          "type": "() => void"
+        }
+      ]
+    },
+    {
+      "name": "AnimationOptions",
+      "members": [
+        {
+          "name": "duration",
+          "type": "number"
+        },
+        {
+          "name": "ease",
+          "type": "EasingFunctions"
+        },
+        {
+          "name": "onUpdate",
+          "type": "(animation: JSAnimation) => void"
+        },
+        {
+          "name": "onComplete",
+          "type": "() => void"
+        },
+        {
+          "name": "onStart",
+          "type": "() => void"
+        },
+        {
+          "name": "onLoop",
+          "type": "() => void"
+        },
+        {
+          "name": "loop",
+          "type": "boolean | number"
+        },
+        {
+          "name": "loopDelay",
+          "type": "number"
+        },
+        {
+          "name": "alternate",
+          "type": "boolean"
+        },
+        {
+          "name": "once",
+          "type": "boolean"
+        },
+        {
+          "name": "",
+          "type": "any"
+        }
+      ]
+    },
+    {
+      "name": "JSAnimation",
+      "members": [
+        {
+          "name": "targets",
+          "type": "any[]"
+        },
+        {
+          "name": "deltaTime",
+          "type": "number"
+        },
+        {
+          "name": "progress",
+          "type": "number"
+        },
+        {
+          "name": "currentTime",
+          "type": "number"
+        }
+      ]
+    }
+  ],
+  "functions": [
+    {
+      "name": "isMarginType",
+      "parameters": [
+        {
+          "name": "value",
+          "type": "any"
+        }
+      ],
+      "returnType": "value is number | \"auto\" | `${number}%`"
+    },
+    {
+      "name": "isPaddingType",
+      "parameters": [
+        {
+          "name": "value",
+          "type": "any"
+        }
+      ],
+      "returnType": "value is number | `${number}%`"
+    },
+    {
+      "name": "isPositionType",
+      "parameters": [
+        {
+          "name": "value",
+          "type": "any"
+        }
+      ],
+      "returnType": "value is number | \"auto\" | `${number}%`"
+    },
+    {
+      "name": "isPostionTypeType",
+      "parameters": [
+        {
+          "name": "value",
+          "type": "any"
+        }
+      ],
+      "returnType": "value is PositionTypeString"
+    },
+    {
+      "name": "isDimensionType",
+      "parameters": [
+        {
+          "name": "value",
+          "type": "any"
+        }
+      ],
+      "returnType": "value is number | \"auto\" | `${number}%`"
+    },
+    {
+      "name": "isFlexBasisType",
+      "parameters": [
+        {
+          "name": "value",
+          "type": "any"
+        }
+      ],
+      "returnType": "value is number | \"auto\" | undefined"
+    },
+    {
+      "name": "isSizeType",
+      "parameters": [
+        {
+          "name": "value",
+          "type": "any"
+        }
+      ],
+      "returnType": "value is number | `${number}%` | undefined"
+    },
+    {
+      "name": "createCliRenderer",
+      "parameters": [
+        {
+          "name": "config",
+          "type": "CliRendererConfig"
+        }
+      ],
+      "returnType": "Promise<CliRenderer>"
+    },
+    {
+      "name": "createTimeline",
+      "parameters": [
+        {
+          "name": "options",
+          "type": "TimelineOptions"
+        }
+      ],
+      "returnType": "Timeline"
+    }
+  ],
+  "enums": [],
+  "types": []
+}

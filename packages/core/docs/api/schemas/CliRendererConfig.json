@@ -1,0 +1,2332 @@
+{
+  "$ref": "#/definitions/CliRendererConfig",
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "definitions": {
+    "CliRendererConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "consoleOptions": {
+          "$ref": "#/definitions/ConsoleOptions"
+        },
+        "debounceDelay": {
+          "type": "number"
+        },
+        "enableMouseMovement": {
+          "type": "boolean"
+        },
+        "exitOnCtrlC": {
+          "type": "boolean"
+        },
+        "experimental_splitHeight": {
+          "type": "number"
+        },
+        "gatherStats": {
+          "type": "boolean"
+        },
+        "maxStatSamples": {
+          "type": "number"
+        },
+        "memorySnapshotInterval": {
+          "type": "number"
+        },
+        "postProcessFns": {
+          "items": {
+            "$comment": "(buffer: OptimizedBuffer, deltaTime: number) => void",
+            "properties": {
+              "namedArgs": {
+                "additionalProperties": false,
+                "properties": {
+                  "buffer": {
+                    "$ref": "#/definitions/OptimizedBuffer"
+                  },
+                  "deltaTime": {
+                    "type": "number"
+                  }
+                },
+                "required": [
+                  "buffer",
+                  "deltaTime"
+                ],
+                "type": "object"
+              }
+            },
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "stdin": {
+          "$ref": "#/definitions/global.NodeJS.ReadStream"
+        },
+        "stdout": {
+          "$ref": "#/definitions/global.NodeJS.WriteStream"
+        },
+        "targetFps": {
+          "type": "number"
+        },
+        "useAlternateScreen": {
+          "type": "boolean"
+        },
+        "useConsole": {
+          "type": "boolean"
+        },
+        "useMouse": {
+          "type": "boolean"
+        },
+        "useThread": {
+          "type": "boolean"
+        }
+      },
+      "type": "object"
+    },
+    "ColorInput": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "$ref": "#/definitions/RGBA"
+        }
+      ]
+    },
+    "ConsoleOptions": {
+      "additionalProperties": false,
+      "properties": {
+        "backgroundColor": {
+          "$ref": "#/definitions/ColorInput"
+        },
+        "colorDebug": {
+          "$ref": "#/definitions/ColorInput"
+        },
+        "colorDefault": {
+          "$ref": "#/definitions/ColorInput"
+        },
+        "colorError": {
+          "$ref": "#/definitions/ColorInput"
+        },
+        "colorInfo": {
+          "$ref": "#/definitions/ColorInput"
+        },
+        "colorWarn": {
+          "$ref": "#/definitions/ColorInput"
+        },
+        "cursorColor": {
+          "$ref": "#/definitions/ColorInput"
+        },
+        "maxDisplayLines": {
+          "type": "number"
+        },
+        "maxStoredLogs": {
+          "type": "number"
+        },
+        "position": {
+          "$ref": "#/definitions/ConsolePosition"
+        },
+        "sizePercent": {
+          "type": "number"
+        },
+        "startInDebugMode": {
+          "type": "boolean"
+        },
+        "title": {
+          "type": "string"
+        },
+        "titleBarColor": {
+          "$ref": "#/definitions/ColorInput"
+        },
+        "titleBarTextColor": {
+          "$ref": "#/definitions/ColorInput"
+        },
+        "zIndex": {
+          "type": "number"
+        }
+      },
+      "type": "object"
+    },
+    "ConsolePosition": {
+      "enum": [
+        "top",
+        "bottom",
+        "left",
+        "right"
+      ],
+      "type": "string"
+    },
+    "CursorStyle": {
+      "enum": [
+        "block",
+        "line",
+        "underline"
+      ],
+      "type": "string"
+    },
+    "DebugOverlayCorner": {
+      "enum": [
+        0,
+        1,
+        2,
+        3
+      ],
+      "type": "number"
+    },
+    "OptimizedBuffer": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "lib": {
+          "$ref": "#/definitions/RenderLib"
+        },
+        "respectAlpha": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "id",
+        "lib",
+        "respectAlpha"
+      ],
+      "type": "object"
+    },
+    "Pointer": {
+      "type": "number"
+    },
+    "RGBA": {
+      "additionalProperties": false,
+      "properties": {
+        "buffer": {
+          "additionalProperties": {
+            "type": "number"
+          },
+          "properties": {
+            "BYTES_PER_ELEMENT": {
+              "type": "number"
+            },
+            "buffer": {
+              "additionalProperties": false,
+              "properties": {
+                "byteLength": {
+                  "type": "number"
+                }
+              },
+              "required": [
+                "byteLength"
+              ],
+              "type": "object"
+            },
+            "byteLength": {
+              "type": "number"
+            },
+            "byteOffset": {
+              "type": "number"
+            },
+            "length": {
+              "type": "number"
+            }
+          },
+          "required": [
+            "BYTES_PER_ELEMENT",
+            "buffer",
+            "byteLength",
+            "byteOffset",
+            "length"
+          ],
+          "type": "object"
+        }
+      },
+      "required": [
+        "buffer"
+      ],
+      "type": "object"
+    },
+    "RenderLib": {
+      "additionalProperties": false,
+      "properties": {
+        "addToHitGrid": {
+          "$comment": "(renderer: Pointer, x: number, y: number, width: number, height: number, id: number) => void",
+          "properties": {
+            "namedArgs": {
+              "additionalProperties": false,
+              "properties": {
+                "height": {
+                  "type": "number"
+                },
+                "id": {
+                  "type": "number"
+                },
+                "renderer": {
+                  "$ref": "#/definitions/Pointer"
+                },
+                "width": {
+                  "type": "number"
+                },
+                "x": {
+                  "type": "number"
+                },
+                "y": {
+                  "type": "number"
+                }
+              },
+              "required": [
+                "renderer",
+                "x",
+                "y",
+                "width",
+                "height",
+                "id"
+              ],
+              "type": "object"
+            }
+          },
+          "type": "object"
+        },
+        "bufferClear": {
+          "$comment": "(buffer: Pointer, color: RGBA) => void",
+          "properties": {
+            "namedArgs": {
+              "additionalProperties": false,
+              "properties": {
+                "buffer": {
+                  "$ref": "#/definitions/Pointer"
+                },
+                "color": {
+                  "$ref": "#/definitions/RGBA"
+                }
+              },
+              "required": [
+                "buffer",
+                "color"
+              ],
+              "type": "object"
+            }
+          },
+          "type": "object"
+        },
+        "bufferDrawBox": {
+          "$comment": "(\n    buffer: Pointer,\n    x: number,\n    y: number,\n    width: number,\n    height: number,\n    borderChars: Uint32Array,\n    packedOptions: number,\n    borderColor: RGBA,\n    backgroundColor: RGBA,\n    title: string | null) => void",
+          "properties": {
+            "namedArgs": {
+              "additionalProperties": false,
+              "properties": {
+                "backgroundColor": {
+                  "$ref": "#/definitions/RGBA"
+                },
+                "borderChars": {
+                  "additionalProperties": {
+                    "type": "number"
+                  },
+                  "properties": {
+                    "BYTES_PER_ELEMENT": {
+                      "type": "number"
+                    },
+                    "buffer": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "byteLength": {
+                          "type": "number"
+                        }
+                      },
+                      "required": [
+                        "byteLength"
+                      ],
+                      "type": "object"
+                    },
+                    "byteLength": {
+                      "type": "number"
+                    },
+                    "byteOffset": {
+                      "type": "number"
+                    },
+                    "length": {
+                      "type": "number"
+                    }
+                  },
+                  "required": [
+                    "BYTES_PER_ELEMENT",
+                    "buffer",
+                    "byteLength",
+                    "byteOffset",
+                    "length"
+                  ],
+                  "type": "object"
+                },
+                "borderColor": {
+                  "$ref": "#/definitions/RGBA"
+                },
+                "buffer": {
+                  "$ref": "#/definitions/Pointer"
+                },
+                "height": {
+                  "type": "number"
+                },
+                "packedOptions": {
+                  "type": "number"
+                },
+                "title": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "width": {
+                  "type": "number"
+                },
+                "x": {
+                  "type": "number"
+                },
+                "y": {
+                  "type": "number"
+                }
+              },
+              "required": [
+                "buffer",
+                "x",
+                "y",
+                "width",
+                "height",
+                "borderChars",
+                "packedOptions",
+                "borderColor",
+                "backgroundColor",
+                "title"
+              ],
+              "type": "object"
+            }
+          },
+          "type": "object"
+        },
+        "bufferDrawPackedBuffer": {
+          "$comment": "(\n    buffer: Pointer,\n    dataPtr: Pointer,\n    dataLen: number,\n    posX: number,\n    posY: number,\n    terminalWidthCells: number,\n    terminalHeightCells: number) => void",
+          "properties": {
+            "namedArgs": {
+              "additionalProperties": false,
+              "properties": {
+                "buffer": {
+                  "$ref": "#/definitions/Pointer"
+                },
+                "dataLen": {
+                  "type": "number"
+                },
+                "dataPtr": {
+                  "$ref": "#/definitions/Pointer"
+                },
+                "posX": {
+                  "type": "number"
+                },
+                "posY": {
+                  "type": "number"
+                },
+                "terminalHeightCells": {
+                  "type": "number"
+                },
+                "terminalWidthCells": {
+                  "type": "number"
+                }
+              },
+              "required": [
+                "buffer",
+                "dataPtr",
+                "dataLen",
+                "posX",
+                "posY",
+                "terminalWidthCells",
+                "terminalHeightCells"
+              ],
+              "type": "object"
+            }
+          },
+          "type": "object"
+        },
+        "bufferDrawSuperSampleBuffer": {
+          "$comment": "(\n    buffer: Pointer,\n    x: number,\n    y: number,\n    pixelDataPtr: Pointer,\n    pixelDataLength: number,\n    format: \"bgra8unorm\" | \"rgba8unorm\",\n    alignedBytesPerRow: number) => void",
+          "properties": {
+            "namedArgs": {
+              "additionalProperties": false,
+              "properties": {
+                "alignedBytesPerRow": {
+                  "type": "number"
+                },
+                "buffer": {
+                  "$ref": "#/definitions/Pointer"
+                },
+                "format": {
+                  "enum": [
+                    "bgra8unorm",
+                    "rgba8unorm"
+                  ],
+                  "type": "string"
+                },
+                "pixelDataLength": {
+                  "type": "number"
+                },
+                "pixelDataPtr": {
+                  "$ref": "#/definitions/Pointer"
+                },
+                "x": {
+                  "type": "number"
+                },
+                "y": {
+                  "type": "number"
+                }
+              },
+              "required": [
+                "buffer",
+                "x",
+                "y",
+                "pixelDataPtr",
+                "pixelDataLength",
+                "format",
+                "alignedBytesPerRow"
+              ],
+              "type": "object"
+            }
+          },
+          "type": "object"
+        },
+        "bufferDrawText": {
+          "$comment": "(\n    buffer: Pointer,\n    text: string,\n    x: number,\n    y: number,\n    color: RGBA,\n    bgColor?: RGBA,\n    attributes?: number) => void",
+          "properties": {
+            "namedArgs": {
+              "additionalProperties": false,
+              "properties": {
+                "attributes": {
+                  "type": "number"
+                },
+                "bgColor": {
+                  "$ref": "#/definitions/RGBA"
+                },
+                "buffer": {
+                  "$ref": "#/definitions/Pointer"
+                },
+                "color": {
+                  "$ref": "#/definitions/RGBA"
+                },
+                "text": {
+                  "type": "string"
+                },
+                "x": {
+                  "type": "number"
+                },
+                "y": {
+                  "type": "number"
+                }
+              },
+              "required": [
+                "buffer",
+                "text",
+                "x",
+                "y",
+                "color"
+              ],
+              "type": "object"
+            }
+          },
+          "type": "object"
+        },
+        "bufferDrawTextBuffer": {
+          "$comment": "(\n    buffer: Pointer,\n    textBuffer: Pointer,\n    x: number,\n    y: number,\n    clipRect?: { x: number; y: number; width: number; height: number }) => void",
+          "properties": {
+            "namedArgs": {
+              "additionalProperties": false,
+              "properties": {
+                "buffer": {
+                  "$ref": "#/definitions/Pointer"
+                },
+                "clipRect": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "height": {
+                      "type": "number"
+                    },
+                    "width": {
+                      "type": "number"
+                    },
+                    "x": {
+                      "type": "number"
+                    },
+                    "y": {
+                      "type": "number"
+                    }
+                  },
+                  "required": [
+                    "x",
+                    "y",
+                    "width",
+                    "height"
+                  ],
+                  "type": "object"
+                },
+                "textBuffer": {
+                  "$ref": "#/definitions/Pointer"
+                },
+                "x": {
+                  "type": "number"
+                },
+                "y": {
+                  "type": "number"
+                }
+              },
+              "required": [
+                "buffer",
+                "textBuffer",
+                "x",
+                "y"
+              ],
+              "type": "object"
+            }
+          },
+          "type": "object"
+        },
+        "bufferFillRect": {
+          "$comment": "(buffer: Pointer, x: number, y: number, width: number, height: number, color: RGBA) => void",
+          "properties": {
+            "namedArgs": {
+              "additionalProperties": false,
+              "properties": {
+                "buffer": {
+                  "$ref": "#/definitions/Pointer"
+                },
+                "color": {
+                  "$ref": "#/definitions/RGBA"
+                },
+                "height": {
+                  "type": "number"
+                },
+                "width": {
+                  "type": "number"
+                },
+                "x": {
+                  "type": "number"
+                },
+                "y": {
+                  "type": "number"
+                }
+              },
+              "required": [
+                "buffer",
+                "x",
+                "y",
+                "width",
+                "height",
+                "color"
+              ],
+              "type": "object"
+            }
+          },
+          "type": "object"
+        },
+        "bufferGetAttributesPtr": {
+          "$comment": "(buffer: Pointer) => Pointer",
+          "properties": {
+            "namedArgs": {
+              "additionalProperties": false,
+              "properties": {
+                "buffer": {
+                  "$ref": "#/definitions/Pointer"
+                }
+              },
+              "required": [
+                "buffer"
+              ],
+              "type": "object"
+            }
+          },
+          "type": "object"
+        },
+        "bufferGetBgPtr": {
+          "$comment": "(buffer: Pointer) => Pointer",
+          "properties": {
+            "namedArgs": {
+              "additionalProperties": false,
+              "properties": {
+                "buffer": {
+                  "$ref": "#/definitions/Pointer"
+                }
+              },
+              "required": [
+                "buffer"
+              ],
+              "type": "object"
+            }
+          },
+          "type": "object"
+        },
+        "bufferGetCharPtr": {
+          "$comment": "(buffer: Pointer) => Pointer",
+          "properties": {
+            "namedArgs": {
+              "additionalProperties": false,
+              "properties": {
+                "buffer": {
+                  "$ref": "#/definitions/Pointer"
+                }
+              },
+              "required": [
+                "buffer"
+              ],
+              "type": "object"
+            }
+          },
+          "type": "object"
+        },
+        "bufferGetFgPtr": {
+          "$comment": "(buffer: Pointer) => Pointer",
+          "properties": {
+            "namedArgs": {
+              "additionalProperties": false,
+              "properties": {
+                "buffer": {
+                  "$ref": "#/definitions/Pointer"
+                }
+              },
+              "required": [
+                "buffer"
+              ],
+              "type": "object"
+            }
+          },
+          "type": "object"
+        },
+        "bufferGetRespectAlpha": {
+          "$comment": "(buffer: Pointer) => boolean",
+          "properties": {
+            "namedArgs": {
+              "additionalProperties": false,
+              "properties": {
+                "buffer": {
+                  "$ref": "#/definitions/Pointer"
+                }
+              },
+              "required": [
+                "buffer"
+              ],
+              "type": "object"
+            }
+          },
+          "type": "object"
+        },
+        "bufferResize": {
+          "$comment": "(\n    buffer: Pointer,\n    width: number,\n    height: number) => {\n    char: Uint32Array\n    fg: Float32Array\n    bg: Float32Array\n    attributes: Uint8Array\n  }",
+          "properties": {
+            "namedArgs": {
+              "additionalProperties": false,
+              "properties": {
+                "buffer": {
+                  "$ref": "#/definitions/Pointer"
+                },
+                "height": {
+                  "type": "number"
+                },
+                "width": {
+                  "type": "number"
+                }
+              },
+              "required": [
+                "buffer",
+                "width",
+                "height"
+              ],
+              "type": "object"
+            }
+          },
+          "type": "object"
+        },
+        "bufferSetCellWithAlphaBlending": {
+          "$comment": "(\n    buffer: Pointer,\n    x: number,\n    y: number,\n    char: string,\n    color: RGBA,\n    bgColor: RGBA,\n    attributes?: number) => void",
+          "properties": {
+            "namedArgs": {
+              "additionalProperties": false,
+              "properties": {
+                "attributes": {
+                  "type": "number"
+                },
+                "bgColor": {
+                  "$ref": "#/definitions/RGBA"
+                },
+                "buffer": {
+                  "$ref": "#/definitions/Pointer"
+                },
+                "char": {
+                  "type": "string"
+                },
+                "color": {
+                  "$ref": "#/definitions/RGBA"
+                },
+                "x": {
+                  "type": "number"
+                },
+                "y": {
+                  "type": "number"
+                }
+              },
+              "required": [
+                "buffer",
+                "x",
+                "y",
+                "char",
+                "color",
+                "bgColor"
+              ],
+              "type": "object"
+            }
+          },
+          "type": "object"
+        },
+        "bufferSetRespectAlpha": {
+          "$comment": "(buffer: Pointer, respectAlpha: boolean) => void",
+          "properties": {
+            "namedArgs": {
+              "additionalProperties": false,
+              "properties": {
+                "buffer": {
+                  "$ref": "#/definitions/Pointer"
+                },
+                "respectAlpha": {
+                  "type": "boolean"
+                }
+              },
+              "required": [
+                "buffer",
+                "respectAlpha"
+              ],
+              "type": "object"
+            }
+          },
+          "type": "object"
+        },
+        "checkHit": {
+          "$comment": "(renderer: Pointer, x: number, y: number) => number",
+          "properties": {
+            "namedArgs": {
+              "additionalProperties": false,
+              "properties": {
+                "renderer": {
+                  "$ref": "#/definitions/Pointer"
+                },
+                "x": {
+                  "type": "number"
+                },
+                "y": {
+                  "type": "number"
+                }
+              },
+              "required": [
+                "renderer",
+                "x",
+                "y"
+              ],
+              "type": "object"
+            }
+          },
+          "type": "object"
+        },
+        "clearTerminal": {
+          "$comment": "(renderer: Pointer) => void",
+          "properties": {
+            "namedArgs": {
+              "additionalProperties": false,
+              "properties": {
+                "renderer": {
+                  "$ref": "#/definitions/Pointer"
+                }
+              },
+              "required": [
+                "renderer"
+              ],
+              "type": "object"
+            }
+          },
+          "type": "object"
+        },
+        "createOptimizedBuffer": {
+          "$comment": "(width: number, height: number, respectAlpha?: boolean) => OptimizedBuffer",
+          "properties": {
+            "namedArgs": {
+              "additionalProperties": false,
+              "properties": {
+                "height": {
+                  "type": "number"
+                },
+                "respectAlpha": {
+                  "type": "boolean"
+                },
+                "width": {
+                  "type": "number"
+                }
+              },
+              "required": [
+                "width",
+                "height"
+              ],
+              "type": "object"
+            }
+          },
+          "type": "object"
+        },
+        "createRenderer": {
+          "$comment": "(width: number, height: number) => Pointer | null",
+          "properties": {
+            "namedArgs": {
+              "additionalProperties": false,
+              "properties": {
+                "height": {
+                  "type": "number"
+                },
+                "width": {
+                  "type": "number"
+                }
+              },
+              "required": [
+                "width",
+                "height"
+              ],
+              "type": "object"
+            }
+          },
+          "type": "object"
+        },
+        "createTextBuffer": {
+          "$comment": "(capacity: number) => TextBuffer",
+          "properties": {
+            "namedArgs": {
+              "additionalProperties": false,
+              "properties": {
+                "capacity": {
+                  "type": "number"
+                }
+              },
+              "required": [
+                "capacity"
+              ],
+              "type": "object"
+            }
+          },
+          "type": "object"
+        },
+        "destroyOptimizedBuffer": {
+          "$comment": "(bufferPtr: Pointer) => void",
+          "properties": {
+            "namedArgs": {
+              "additionalProperties": false,
+              "properties": {
+                "bufferPtr": {
+                  "$ref": "#/definitions/Pointer"
+                }
+              },
+              "required": [
+                "bufferPtr"
+              ],
+              "type": "object"
+            }
+          },
+          "type": "object"
+        },
+        "destroyRenderer": {
+          "$comment": "(renderer: Pointer, useAlternateScreen: boolean, splitHeight: number) => void",
+          "properties": {
+            "namedArgs": {
+              "additionalProperties": false,
+              "properties": {
+                "renderer": {
+                  "$ref": "#/definitions/Pointer"
+                },
+                "splitHeight": {
+                  "type": "number"
+                },
+                "useAlternateScreen": {
+                  "type": "boolean"
+                }
+              },
+              "required": [
+                "renderer",
+                "useAlternateScreen",
+                "splitHeight"
+              ],
+              "type": "object"
+            }
+          },
+          "type": "object"
+        },
+        "destroyTextBuffer": {
+          "$comment": "(buffer: Pointer) => void",
+          "properties": {
+            "namedArgs": {
+              "additionalProperties": false,
+              "properties": {
+                "buffer": {
+                  "$ref": "#/definitions/Pointer"
+                }
+              },
+              "required": [
+                "buffer"
+              ],
+              "type": "object"
+            }
+          },
+          "type": "object"
+        },
+        "disableMouse": {
+          "$comment": "(renderer: Pointer) => void",
+          "properties": {
+            "namedArgs": {
+              "additionalProperties": false,
+              "properties": {
+                "renderer": {
+                  "$ref": "#/definitions/Pointer"
+                }
+              },
+              "required": [
+                "renderer"
+              ],
+              "type": "object"
+            }
+          },
+          "type": "object"
+        },
+        "drawFrameBuffer": {
+          "$comment": "(\n    targetBufferPtr: Pointer,\n    destX: number,\n    destY: number,\n    bufferPtr: Pointer,\n    sourceX?: number,\n    sourceY?: number,\n    sourceWidth?: number,\n    sourceHeight?: number) => void",
+          "properties": {
+            "namedArgs": {
+              "additionalProperties": false,
+              "properties": {
+                "bufferPtr": {
+                  "$ref": "#/definitions/Pointer"
+                },
+                "destX": {
+                  "type": "number"
+                },
+                "destY": {
+                  "type": "number"
+                },
+                "sourceHeight": {
+                  "type": "number"
+                },
+                "sourceWidth": {
+                  "type": "number"
+                },
+                "sourceX": {
+                  "type": "number"
+                },
+                "sourceY": {
+                  "type": "number"
+                },
+                "targetBufferPtr": {
+                  "$ref": "#/definitions/Pointer"
+                }
+              },
+              "required": [
+                "targetBufferPtr",
+                "destX",
+                "destY",
+                "bufferPtr"
+              ],
+              "type": "object"
+            }
+          },
+          "type": "object"
+        },
+        "dumpBuffers": {
+          "$comment": "(renderer: Pointer, timestamp?: number) => void",
+          "properties": {
+            "namedArgs": {
+              "additionalProperties": false,
+              "properties": {
+                "renderer": {
+                  "$ref": "#/definitions/Pointer"
+                },
+                "timestamp": {
+                  "type": "number"
+                }
+              },
+              "required": [
+                "renderer"
+              ],
+              "type": "object"
+            }
+          },
+          "type": "object"
+        },
+        "dumpHitGrid": {
+          "$comment": "(renderer: Pointer) => void",
+          "properties": {
+            "namedArgs": {
+              "additionalProperties": false,
+              "properties": {
+                "renderer": {
+                  "$ref": "#/definitions/Pointer"
+                }
+              },
+              "required": [
+                "renderer"
+              ],
+              "type": "object"
+            }
+          },
+          "type": "object"
+        },
+        "dumpStdoutBuffer": {
+          "$comment": "(renderer: Pointer, timestamp?: number) => void",
+          "properties": {
+            "namedArgs": {
+              "additionalProperties": false,
+              "properties": {
+                "renderer": {
+                  "$ref": "#/definitions/Pointer"
+                },
+                "timestamp": {
+                  "type": "number"
+                }
+              },
+              "required": [
+                "renderer"
+              ],
+              "type": "object"
+            }
+          },
+          "type": "object"
+        },
+        "enableMouse": {
+          "$comment": "(renderer: Pointer, enableMovement: boolean) => void",
+          "properties": {
+            "namedArgs": {
+              "additionalProperties": false,
+              "properties": {
+                "enableMovement": {
+                  "type": "boolean"
+                },
+                "renderer": {
+                  "$ref": "#/definitions/Pointer"
+                }
+              },
+              "required": [
+                "renderer",
+                "enableMovement"
+              ],
+              "type": "object"
+            }
+          },
+          "type": "object"
+        },
+        "getBufferHeight": {
+          "$comment": "(buffer: Pointer) => number",
+          "properties": {
+            "namedArgs": {
+              "additionalProperties": false,
+              "properties": {
+                "buffer": {
+                  "$ref": "#/definitions/Pointer"
+                }
+              },
+              "required": [
+                "buffer"
+              ],
+              "type": "object"
+            }
+          },
+          "type": "object"
+        },
+        "getBufferWidth": {
+          "$comment": "(buffer: Pointer) => number",
+          "properties": {
+            "namedArgs": {
+              "additionalProperties": false,
+              "properties": {
+                "buffer": {
+                  "$ref": "#/definitions/Pointer"
+                }
+              },
+              "required": [
+                "buffer"
+              ],
+              "type": "object"
+            }
+          },
+          "type": "object"
+        },
+        "getCurrentBuffer": {
+          "$comment": "(renderer: Pointer) => OptimizedBuffer",
+          "properties": {
+            "namedArgs": {
+              "additionalProperties": false,
+              "properties": {
+                "renderer": {
+                  "$ref": "#/definitions/Pointer"
+                }
+              },
+              "required": [
+                "renderer"
+              ],
+              "type": "object"
+            }
+          },
+          "type": "object"
+        },
+        "getNextBuffer": {
+          "$comment": "(renderer: Pointer) => OptimizedBuffer",
+          "properties": {
+            "namedArgs": {
+              "additionalProperties": false,
+              "properties": {
+                "renderer": {
+                  "$ref": "#/definitions/Pointer"
+                }
+              },
+              "required": [
+                "renderer"
+              ],
+              "type": "object"
+            }
+          },
+          "type": "object"
+        },
+        "getTextBufferArrays": {
+          "$comment": "(\n    buffer: Pointer,\n    size: number) => {\n    char: Uint32Array\n    fg: Float32Array\n    bg: Float32Array\n    attributes: Uint16Array\n  }",
+          "properties": {
+            "namedArgs": {
+              "additionalProperties": false,
+              "properties": {
+                "buffer": {
+                  "$ref": "#/definitions/Pointer"
+                },
+                "size": {
+                  "type": "number"
+                }
+              },
+              "required": [
+                "buffer",
+                "size"
+              ],
+              "type": "object"
+            }
+          },
+          "type": "object"
+        },
+        "render": {
+          "$comment": "(renderer: Pointer, force: boolean) => void",
+          "properties": {
+            "namedArgs": {
+              "additionalProperties": false,
+              "properties": {
+                "force": {
+                  "type": "boolean"
+                },
+                "renderer": {
+                  "$ref": "#/definitions/Pointer"
+                }
+              },
+              "required": [
+                "renderer",
+                "force"
+              ],
+              "type": "object"
+            }
+          },
+          "type": "object"
+        },
+        "resizeRenderer": {
+          "$comment": "(renderer: Pointer, width: number, height: number) => void",
+          "properties": {
+            "namedArgs": {
+              "additionalProperties": false,
+              "properties": {
+                "height": {
+                  "type": "number"
+                },
+                "renderer": {
+                  "$ref": "#/definitions/Pointer"
+                },
+                "width": {
+                  "type": "number"
+                }
+              },
+              "required": [
+                "renderer",
+                "width",
+                "height"
+              ],
+              "type": "object"
+            }
+          },
+          "type": "object"
+        },
+        "setBackgroundColor": {
+          "$comment": "(renderer: Pointer, color: RGBA) => void",
+          "properties": {
+            "namedArgs": {
+              "additionalProperties": false,
+              "properties": {
+                "color": {
+                  "$ref": "#/definitions/RGBA"
+                },
+                "renderer": {
+                  "$ref": "#/definitions/Pointer"
+                }
+              },
+              "required": [
+                "renderer",
+                "color"
+              ],
+              "type": "object"
+            }
+          },
+          "type": "object"
+        },
+        "setCursorColor": {
+          "$comment": "(color: RGBA) => void",
+          "properties": {
+            "namedArgs": {
+              "additionalProperties": false,
+              "properties": {
+                "color": {
+                  "$ref": "#/definitions/RGBA"
+                }
+              },
+              "required": [
+                "color"
+              ],
+              "type": "object"
+            }
+          },
+          "type": "object"
+        },
+        "setCursorPosition": {
+          "$comment": "(x: number, y: number, visible: boolean) => void",
+          "properties": {
+            "namedArgs": {
+              "additionalProperties": false,
+              "properties": {
+                "visible": {
+                  "type": "boolean"
+                },
+                "x": {
+                  "type": "number"
+                },
+                "y": {
+                  "type": "number"
+                }
+              },
+              "required": [
+                "x",
+                "y",
+                "visible"
+              ],
+              "type": "object"
+            }
+          },
+          "type": "object"
+        },
+        "setCursorStyle": {
+          "$comment": "(style: CursorStyle, blinking: boolean) => void",
+          "properties": {
+            "namedArgs": {
+              "additionalProperties": false,
+              "properties": {
+                "blinking": {
+                  "type": "boolean"
+                },
+                "style": {
+                  "$ref": "#/definitions/CursorStyle"
+                }
+              },
+              "required": [
+                "style",
+                "blinking"
+              ],
+              "type": "object"
+            }
+          },
+          "type": "object"
+        },
+        "setDebugOverlay": {
+          "$comment": "(renderer: Pointer, enabled: boolean, corner: DebugOverlayCorner) => void",
+          "properties": {
+            "namedArgs": {
+              "additionalProperties": false,
+              "properties": {
+                "corner": {
+                  "$ref": "#/definitions/DebugOverlayCorner"
+                },
+                "enabled": {
+                  "type": "boolean"
+                },
+                "renderer": {
+                  "$ref": "#/definitions/Pointer"
+                }
+              },
+              "required": [
+                "renderer",
+                "enabled",
+                "corner"
+              ],
+              "type": "object"
+            }
+          },
+          "type": "object"
+        },
+        "setRenderOffset": {
+          "$comment": "(renderer: Pointer, offset: number) => void",
+          "properties": {
+            "namedArgs": {
+              "additionalProperties": false,
+              "properties": {
+                "offset": {
+                  "type": "number"
+                },
+                "renderer": {
+                  "$ref": "#/definitions/Pointer"
+                }
+              },
+              "required": [
+                "renderer",
+                "offset"
+              ],
+              "type": "object"
+            }
+          },
+          "type": "object"
+        },
+        "setUseThread": {
+          "$comment": "(renderer: Pointer, useThread: boolean) => void",
+          "properties": {
+            "namedArgs": {
+              "additionalProperties": false,
+              "properties": {
+                "renderer": {
+                  "$ref": "#/definitions/Pointer"
+                },
+                "useThread": {
+                  "type": "boolean"
+                }
+              },
+              "required": [
+                "renderer",
+                "useThread"
+              ],
+              "type": "object"
+            }
+          },
+          "type": "object"
+        },
+        "textBufferConcat": {
+          "$comment": "(buffer1: Pointer, buffer2: Pointer) => TextBuffer",
+          "properties": {
+            "namedArgs": {
+              "additionalProperties": false,
+              "properties": {
+                "buffer1": {
+                  "$ref": "#/definitions/Pointer"
+                },
+                "buffer2": {
+                  "$ref": "#/definitions/Pointer"
+                }
+              },
+              "required": [
+                "buffer1",
+                "buffer2"
+              ],
+              "type": "object"
+            }
+          },
+          "type": "object"
+        },
+        "textBufferFinalizeLineInfo": {
+          "$comment": "(buffer: Pointer) => void",
+          "properties": {
+            "namedArgs": {
+              "additionalProperties": false,
+              "properties": {
+                "buffer": {
+                  "$ref": "#/definitions/Pointer"
+                }
+              },
+              "required": [
+                "buffer"
+              ],
+              "type": "object"
+            }
+          },
+          "type": "object"
+        },
+        "textBufferGetAttributesPtr": {
+          "$comment": "(buffer: Pointer) => Pointer",
+          "properties": {
+            "namedArgs": {
+              "additionalProperties": false,
+              "properties": {
+                "buffer": {
+                  "$ref": "#/definitions/Pointer"
+                }
+              },
+              "required": [
+                "buffer"
+              ],
+              "type": "object"
+            }
+          },
+          "type": "object"
+        },
+        "textBufferGetBgPtr": {
+          "$comment": "(buffer: Pointer) => Pointer",
+          "properties": {
+            "namedArgs": {
+              "additionalProperties": false,
+              "properties": {
+                "buffer": {
+                  "$ref": "#/definitions/Pointer"
+                }
+              },
+              "required": [
+                "buffer"
+              ],
+              "type": "object"
+            }
+          },
+          "type": "object"
+        },
+        "textBufferGetCapacity": {
+          "$comment": "(buffer: Pointer) => number",
+          "properties": {
+            "namedArgs": {
+              "additionalProperties": false,
+              "properties": {
+                "buffer": {
+                  "$ref": "#/definitions/Pointer"
+                }
+              },
+              "required": [
+                "buffer"
+              ],
+              "type": "object"
+            }
+          },
+          "type": "object"
+        },
+        "textBufferGetCharPtr": {
+          "$comment": "(buffer: Pointer) => Pointer",
+          "properties": {
+            "namedArgs": {
+              "additionalProperties": false,
+              "properties": {
+                "buffer": {
+                  "$ref": "#/definitions/Pointer"
+                }
+              },
+              "required": [
+                "buffer"
+              ],
+              "type": "object"
+            }
+          },
+          "type": "object"
+        },
+        "textBufferGetFgPtr": {
+          "$comment": "(buffer: Pointer) => Pointer",
+          "properties": {
+            "namedArgs": {
+              "additionalProperties": false,
+              "properties": {
+                "buffer": {
+                  "$ref": "#/definitions/Pointer"
+                }
+              },
+              "required": [
+                "buffer"
+              ],
+              "type": "object"
+            }
+          },
+          "type": "object"
+        },
+        "textBufferGetLength": {
+          "$comment": "(buffer: Pointer) => number",
+          "properties": {
+            "namedArgs": {
+              "additionalProperties": false,
+              "properties": {
+                "buffer": {
+                  "$ref": "#/definitions/Pointer"
+                }
+              },
+              "required": [
+                "buffer"
+              ],
+              "type": "object"
+            }
+          },
+          "type": "object"
+        },
+        "textBufferGetLineInfo": {
+          "$comment": "(buffer: Pointer) => { lineStarts: number[]; lineWidths: number[] }",
+          "properties": {
+            "namedArgs": {
+              "additionalProperties": false,
+              "properties": {
+                "buffer": {
+                  "$ref": "#/definitions/Pointer"
+                }
+              },
+              "required": [
+                "buffer"
+              ],
+              "type": "object"
+            }
+          },
+          "type": "object"
+        },
+        "textBufferReset": {
+          "$comment": "(buffer: Pointer) => void",
+          "properties": {
+            "namedArgs": {
+              "additionalProperties": false,
+              "properties": {
+                "buffer": {
+                  "$ref": "#/definitions/Pointer"
+                }
+              },
+              "required": [
+                "buffer"
+              ],
+              "type": "object"
+            }
+          },
+          "type": "object"
+        },
+        "textBufferResetDefaults": {
+          "$comment": "(buffer: Pointer) => void",
+          "properties": {
+            "namedArgs": {
+              "additionalProperties": false,
+              "properties": {
+                "buffer": {
+                  "$ref": "#/definitions/Pointer"
+                }
+              },
+              "required": [
+                "buffer"
+              ],
+              "type": "object"
+            }
+          },
+          "type": "object"
+        },
+        "textBufferResetSelection": {
+          "$comment": "(buffer: Pointer) => void",
+          "properties": {
+            "namedArgs": {
+              "additionalProperties": false,
+              "properties": {
+                "buffer": {
+                  "$ref": "#/definitions/Pointer"
+                }
+              },
+              "required": [
+                "buffer"
+              ],
+              "type": "object"
+            }
+          },
+          "type": "object"
+        },
+        "textBufferResize": {
+          "$comment": "(\n    buffer: Pointer,\n    newLength: number) => {\n    char: Uint32Array\n    fg: Float32Array\n    bg: Float32Array\n    attributes: Uint16Array\n  }",
+          "properties": {
+            "namedArgs": {
+              "additionalProperties": false,
+              "properties": {
+                "buffer": {
+                  "$ref": "#/definitions/Pointer"
+                },
+                "newLength": {
+                  "type": "number"
+                }
+              },
+              "required": [
+                "buffer",
+                "newLength"
+              ],
+              "type": "object"
+            }
+          },
+          "type": "object"
+        },
+        "textBufferSetCell": {
+          "$comment": "(\n    buffer: Pointer,\n    index: number,\n    char: number,\n    fg: Float32Array,\n    bg: Float32Array,\n    attr: number) => void",
+          "properties": {
+            "namedArgs": {
+              "additionalProperties": false,
+              "properties": {
+                "attr": {
+                  "type": "number"
+                },
+                "bg": {
+                  "additionalProperties": {
+                    "type": "number"
+                  },
+                  "properties": {
+                    "BYTES_PER_ELEMENT": {
+                      "type": "number"
+                    },
+                    "buffer": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "byteLength": {
+                          "type": "number"
+                        }
+                      },
+                      "required": [
+                        "byteLength"
+                      ],
+                      "type": "object"
+                    },
+                    "byteLength": {
+                      "type": "number"
+                    },
+                    "byteOffset": {
+                      "type": "number"
+                    },
+                    "length": {
+                      "type": "number"
+                    }
+                  },
+                  "required": [
+                    "BYTES_PER_ELEMENT",
+                    "buffer",
+                    "byteLength",
+                    "byteOffset",
+                    "length"
+                  ],
+                  "type": "object"
+                },
+                "buffer": {
+                  "$ref": "#/definitions/Pointer"
+                },
+                "char": {
+                  "type": "number"
+                },
+                "fg": {
+                  "additionalProperties": {
+                    "type": "number"
+                  },
+                  "properties": {
+                    "BYTES_PER_ELEMENT": {
+                      "type": "number"
+                    },
+                    "buffer": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "byteLength": {
+                          "type": "number"
+                        }
+                      },
+                      "required": [
+                        "byteLength"
+                      ],
+                      "type": "object"
+                    },
+                    "byteLength": {
+                      "type": "number"
+                    },
+                    "byteOffset": {
+                      "type": "number"
+                    },
+                    "length": {
+                      "type": "number"
+                    }
+                  },
+                  "required": [
+                    "BYTES_PER_ELEMENT",
+                    "buffer",
+                    "byteLength",
+                    "byteOffset",
+                    "length"
+                  ],
+                  "type": "object"
+                },
+                "index": {
+                  "type": "number"
+                }
+              },
+              "required": [
+                "buffer",
+                "index",
+                "char",
+                "fg",
+                "bg",
+                "attr"
+              ],
+              "type": "object"
+            }
+          },
+          "type": "object"
+        },
+        "textBufferSetDefaultAttributes": {
+          "$comment": "(buffer: Pointer, attributes: number | null) => void",
+          "properties": {
+            "namedArgs": {
+              "additionalProperties": false,
+              "properties": {
+                "attributes": {
+                  "type": [
+                    "number",
+                    "null"
+                  ]
+                },
+                "buffer": {
+                  "$ref": "#/definitions/Pointer"
+                }
+              },
+              "required": [
+                "buffer",
+                "attributes"
+              ],
+              "type": "object"
+            }
+          },
+          "type": "object"
+        },
+        "textBufferSetDefaultBg": {
+          "$comment": "(buffer: Pointer, bg: RGBA | null) => void",
+          "properties": {
+            "namedArgs": {
+              "additionalProperties": false,
+              "properties": {
+                "bg": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/definitions/RGBA"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "buffer": {
+                  "$ref": "#/definitions/Pointer"
+                }
+              },
+              "required": [
+                "buffer",
+                "bg"
+              ],
+              "type": "object"
+            }
+          },
+          "type": "object"
+        },
+        "textBufferSetDefaultFg": {
+          "$comment": "(buffer: Pointer, fg: RGBA | null) => void",
+          "properties": {
+            "namedArgs": {
+              "additionalProperties": false,
+              "properties": {
+                "buffer": {
+                  "$ref": "#/definitions/Pointer"
+                },
+                "fg": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/definitions/RGBA"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                }
+              },
+              "required": [
+                "buffer",
+                "fg"
+              ],
+              "type": "object"
+            }
+          },
+          "type": "object"
+        },
+        "textBufferSetSelection": {
+          "$comment": "(\n    buffer: Pointer,\n    start: number,\n    end: number,\n    bgColor: RGBA | null,\n    fgColor: RGBA | null) => void",
+          "properties": {
+            "namedArgs": {
+              "additionalProperties": false,
+              "properties": {
+                "bgColor": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/definitions/RGBA"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "buffer": {
+                  "$ref": "#/definitions/Pointer"
+                },
+                "end": {
+                  "type": "number"
+                },
+                "fgColor": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/definitions/RGBA"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "start": {
+                  "type": "number"
+                }
+              },
+              "required": [
+                "buffer",
+                "start",
+                "end",
+                "bgColor",
+                "fgColor"
+              ],
+              "type": "object"
+            }
+          },
+          "type": "object"
+        },
+        "textBufferWriteChunk": {
+          "$comment": "(\n    buffer: Pointer,\n    textBytes: Uint8Array,\n    fg: RGBA | null,\n    bg: RGBA | null,\n    attributes: number | null) => number",
+          "properties": {
+            "namedArgs": {
+              "additionalProperties": false,
+              "properties": {
+                "attributes": {
+                  "type": [
+                    "number",
+                    "null"
+                  ]
+                },
+                "bg": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/definitions/RGBA"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "buffer": {
+                  "$ref": "#/definitions/Pointer"
+                },
+                "fg": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/definitions/RGBA"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "textBytes": {
+                  "additionalProperties": {
+                    "type": "number"
+                  },
+                  "properties": {
+                    "BYTES_PER_ELEMENT": {
+                      "type": "number"
+                    },
+                    "buffer": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "byteLength": {
+                          "type": "number"
+                        }
+                      },
+                      "required": [
+                        "byteLength"
+                      ],
+                      "type": "object"
+                    },
+                    "byteLength": {
+                      "type": "number"
+                    },
+                    "byteOffset": {
+                      "type": "number"
+                    },
+                    "length": {
+                      "type": "number"
+                    }
+                  },
+                  "required": [
+                    "BYTES_PER_ELEMENT",
+                    "buffer",
+                    "byteLength",
+                    "byteOffset",
+                    "length"
+                  ],
+                  "type": "object"
+                }
+              },
+              "required": [
+                "buffer",
+                "textBytes",
+                "fg",
+                "bg",
+                "attributes"
+              ],
+              "type": "object"
+            }
+          },
+          "type": "object"
+        },
+        "updateMemoryStats": {
+          "$comment": "(renderer: Pointer, heapUsed: number, heapTotal: number, arrayBuffers: number) => void",
+          "properties": {
+            "namedArgs": {
+              "additionalProperties": false,
+              "properties": {
+                "arrayBuffers": {
+                  "type": "number"
+                },
+                "heapTotal": {
+                  "type": "number"
+                },
+                "heapUsed": {
+                  "type": "number"
+                },
+                "renderer": {
+                  "$ref": "#/definitions/Pointer"
+                }
+              },
+              "required": [
+                "renderer",
+                "heapUsed",
+                "heapTotal",
+                "arrayBuffers"
+              ],
+              "type": "object"
+            }
+          },
+          "type": "object"
+        },
+        "updateStats": {
+          "$comment": "(renderer: Pointer, time: number, fps: number, frameCallbackTime: number) => void",
+          "properties": {
+            "namedArgs": {
+              "additionalProperties": false,
+              "properties": {
+                "fps": {
+                  "type": "number"
+                },
+                "frameCallbackTime": {
+                  "type": "number"
+                },
+                "renderer": {
+                  "$ref": "#/definitions/Pointer"
+                },
+                "time": {
+                  "type": "number"
+                }
+              },
+              "required": [
+                "renderer",
+                "time",
+                "fps",
+                "frameCallbackTime"
+              ],
+              "type": "object"
+            }
+          },
+          "type": "object"
+        }
+      },
+      "required": [
+        "createRenderer",
+        "destroyRenderer",
+        "setUseThread",
+        "setBackgroundColor",
+        "setRenderOffset",
+        "updateStats",
+        "updateMemoryStats",
+        "render",
+        "getNextBuffer",
+        "getCurrentBuffer",
+        "createOptimizedBuffer",
+        "destroyOptimizedBuffer",
+        "drawFrameBuffer",
+        "getBufferWidth",
+        "getBufferHeight",
+        "bufferClear",
+        "bufferGetCharPtr",
+        "bufferGetFgPtr",
+        "bufferGetBgPtr",
+        "bufferGetAttributesPtr",
+        "bufferGetRespectAlpha",
+        "bufferSetRespectAlpha",
+        "bufferDrawText",
+        "bufferSetCellWithAlphaBlending",
+        "bufferFillRect",
+        "bufferDrawSuperSampleBuffer",
+        "bufferDrawPackedBuffer",
+        "bufferDrawBox",
+        "bufferResize",
+        "resizeRenderer",
+        "setCursorPosition",
+        "setCursorStyle",
+        "setCursorColor",
+        "setDebugOverlay",
+        "clearTerminal",
+        "addToHitGrid",
+        "checkHit",
+        "dumpHitGrid",
+        "dumpBuffers",
+        "dumpStdoutBuffer",
+        "enableMouse",
+        "disableMouse",
+        "createTextBuffer",
+        "destroyTextBuffer",
+        "textBufferGetCharPtr",
+        "textBufferGetFgPtr",
+        "textBufferGetBgPtr",
+        "textBufferGetAttributesPtr",
+        "textBufferGetLength",
+        "textBufferSetCell",
+        "textBufferConcat",
+        "textBufferResize",
+        "textBufferReset",
+        "textBufferSetSelection",
+        "textBufferResetSelection",
+        "textBufferSetDefaultFg",
+        "textBufferSetDefaultBg",
+        "textBufferSetDefaultAttributes",
+        "textBufferResetDefaults",
+        "textBufferWriteChunk",
+        "textBufferGetCapacity",
+        "textBufferFinalizeLineInfo",
+        "textBufferGetLineInfo",
+        "getTextBufferArrays",
+        "bufferDrawTextBuffer"
+      ],
+      "type": "object"
+    },
+    "SocketReadyState": {
+      "enum": [
+        "opening",
+        "open",
+        "readOnly",
+        "writeOnly",
+        "closed"
+      ],
+      "type": "string"
+    },
+    "global.NodeJS.ReadStream": {
+      "additionalProperties": false,
+      "properties": {
+        "allowHalfOpen": {
+          "description": "If `false` then the stream will automatically end the writable side when the readable side ends. Set initially by the `allowHalfOpen` constructor option, which defaults to `true`.\n\nThis can be changed manually to change the half-open behavior of an existing `Duplex` stream instance, but must be changed before the `'end'` event is emitted.",
+          "type": "boolean"
+        },
+        "autoSelectFamilyAttemptedAddresses": {
+          "description": "This property is only present if the family autoselection algorithm is enabled in `socket.connect(options)` and it is an array of the addresses that have been attempted.\n\nEach address is a string in the form of `$IP:$PORT`. If the connection was successful, then the last address is the one that the socket is currently connected to.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "bufferSize": {
+          "deprecated": "Since v14.6.0 - Use `writableLength` instead.",
+          "description": "This property shows the number of characters buffered for writing. The buffer may contain strings whose length after encoding is not yet known. So this number is only an approximation of the number of bytes in the buffer.\n\n`net.Socket` has the property that `socket.write()` always works. This is to help users get up and running quickly. The computer cannot always keep up with the amount of data that is written to a socket. The network connection simply might be too slow. Node.js will internally queue up the data written to a socket and send it out over the wire when it is possible.\n\nThe consequence of this internal buffering is that memory may grow. Users who experience large or growing `bufferSize` should attempt to \"throttle\" the data flows in their program with `socket.pause()` and `socket.resume()`.",
+          "type": "number"
+        },
+        "bytesRead": {
+          "description": "The amount of received bytes.",
+          "type": "number"
+        },
+        "bytesWritten": {
+          "description": "The amount of bytes sent.",
+          "type": "number"
+        },
+        "connecting": {
+          "description": "If `true`, `socket.connect(options[, connectListener])` was called and has not yet finished. It will stay `true` until the socket becomes connected, then it is set to `false` and the `'connect'` event is emitted. Note that the `socket.connect(options[, connectListener])` callback is a listener for the `'connect'` event.",
+          "type": "boolean"
+        },
+        "destroyed": {
+          "description": "See `writable.destroyed` for further details.",
+          "type": "boolean"
+        },
+        "isRaw": {
+          "description": "A `boolean` that is `true` if the TTY is currently configured to operate as a raw device.\n\nThis flag is always `false` when a process starts, even if the terminal is operating in raw mode. Its value will change with subsequent calls to `setRawMode`.",
+          "type": "boolean"
+        },
+        "isTTY": {
+          "description": "A `boolean` that is always `true` for `tty.ReadStream` instances.",
+          "type": "boolean"
+        },
+        "localAddress": {
+          "description": "The string representation of the local IP address the remote client is connecting on. For example, in a server listening on `'0.0.0.0'`, if a client connects on `'192.168.1.1'`, the value of `socket.localAddress` would be`'192.168.1.1'`.",
+          "type": "string"
+        },
+        "localFamily": {
+          "description": "The string representation of the local IP family. `'IPv4'` or `'IPv6'`.",
+          "type": "string"
+        },
+        "localPort": {
+          "description": "The numeric representation of the local port. For example, `80` or `21`.",
+          "type": "number"
+        },
+        "pending": {
+          "description": "This is `true` if the socket is not connected yet, either because `.connect()`has not yet been called or because it is still in the process of connecting (see `socket.connecting`).",
+          "type": "boolean"
+        },
+        "readable": {
+          "type": "boolean"
+        },
+        "readyState": {
+          "$ref": "#/definitions/SocketReadyState",
+          "description": "This property represents the state of the connection as a string.\n\n* If the stream is connecting `socket.readyState` is `opening`.\n* If the stream is readable and writable, it is `open`.\n* If the stream is readable and not writable, it is `readOnly`.\n* If the stream is not readable and writable, it is `writeOnly`."
+        },
+        "remoteAddress": {
+          "description": "The string representation of the remote IP address. For example,`'74.125.127.100'` or `'2001:4860:a005::68'`. Value may be `undefined` if the socket is destroyed (for example, if the client disconnected).",
+          "type": "string"
+        },
+        "remoteFamily": {
+          "description": "The string representation of the remote IP family. `'IPv4'` or `'IPv6'`. Value may be `undefined` if the socket is destroyed (for example, if the client disconnected).",
+          "type": "string"
+        },
+        "remotePort": {
+          "description": "The numeric representation of the remote port. For example, `80` or `21`. Value may be `undefined` if the socket is destroyed (for example, if the client disconnected).",
+          "type": "number"
+        },
+        "timeout": {
+          "description": "The socket timeout in milliseconds as set by `socket.setTimeout()`. It is `undefined` if a timeout has not been set.",
+          "type": "number"
+        },
+        "writable": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "allowHalfOpen",
+        "autoSelectFamilyAttemptedAddresses",
+        "bufferSize",
+        "bytesRead",
+        "bytesWritten",
+        "connecting",
+        "destroyed",
+        "isRaw",
+        "isTTY",
+        "pending",
+        "readable",
+        "readyState",
+        "writable"
+      ],
+      "type": "object"
+    },
+    "global.NodeJS.WriteStream": {
+      "additionalProperties": false,
+      "properties": {
+        "allowHalfOpen": {
+          "description": "If `false` then the stream will automatically end the writable side when the readable side ends. Set initially by the `allowHalfOpen` constructor option, which defaults to `true`.\n\nThis can be changed manually to change the half-open behavior of an existing `Duplex` stream instance, but must be changed before the `'end'` event is emitted.",
+          "type": "boolean"
+        },
+        "autoSelectFamilyAttemptedAddresses": {
+          "description": "This property is only present if the family autoselection algorithm is enabled in `socket.connect(options)` and it is an array of the addresses that have been attempted.\n\nEach address is a string in the form of `$IP:$PORT`. If the connection was successful, then the last address is the one that the socket is currently connected to.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "bufferSize": {
+          "deprecated": "Since v14.6.0 - Use `writableLength` instead.",
+          "description": "This property shows the number of characters buffered for writing. The buffer may contain strings whose length after encoding is not yet known. So this number is only an approximation of the number of bytes in the buffer.\n\n`net.Socket` has the property that `socket.write()` always works. This is to help users get up and running quickly. The computer cannot always keep up with the amount of data that is written to a socket. The network connection simply might be too slow. Node.js will internally queue up the data written to a socket and send it out over the wire when it is possible.\n\nThe consequence of this internal buffering is that memory may grow. Users who experience large or growing `bufferSize` should attempt to \"throttle\" the data flows in their program with `socket.pause()` and `socket.resume()`.",
+          "type": "number"
+        },
+        "bytesRead": {
+          "description": "The amount of received bytes.",
+          "type": "number"
+        },
+        "bytesWritten": {
+          "description": "The amount of bytes sent.",
+          "type": "number"
+        },
+        "columns": {
+          "description": "A `number` specifying the number of columns the TTY currently has. This property is updated whenever the `'resize'` event is emitted.",
+          "type": "number"
+        },
+        "connecting": {
+          "description": "If `true`, `socket.connect(options[, connectListener])` was called and has not yet finished. It will stay `true` until the socket becomes connected, then it is set to `false` and the `'connect'` event is emitted. Note that the `socket.connect(options[, connectListener])` callback is a listener for the `'connect'` event.",
+          "type": "boolean"
+        },
+        "destroyed": {
+          "description": "See `writable.destroyed` for further details.",
+          "type": "boolean"
+        },
+        "isTTY": {
+          "description": "A `boolean` that is always `true`.",
+          "type": "boolean"
+        },
+        "localAddress": {
+          "description": "The string representation of the local IP address the remote client is connecting on. For example, in a server listening on `'0.0.0.0'`, if a client connects on `'192.168.1.1'`, the value of `socket.localAddress` would be`'192.168.1.1'`.",
+          "type": "string"
+        },
+        "localFamily": {
+          "description": "The string representation of the local IP family. `'IPv4'` or `'IPv6'`.",
+          "type": "string"
+        },
+        "localPort": {
+          "description": "The numeric representation of the local port. For example, `80` or `21`.",
+          "type": "number"
+        },
+        "pending": {
+          "description": "This is `true` if the socket is not connected yet, either because `.connect()`has not yet been called or because it is still in the process of connecting (see `socket.connecting`).",
+          "type": "boolean"
+        },
+        "readable": {
+          "type": "boolean"
+        },
+        "readyState": {
+          "$ref": "#/definitions/SocketReadyState",
+          "description": "This property represents the state of the connection as a string.\n\n* If the stream is connecting `socket.readyState` is `opening`.\n* If the stream is readable and writable, it is `open`.\n* If the stream is readable and not writable, it is `readOnly`.\n* If the stream is not readable and writable, it is `writeOnly`."
+        },
+        "remoteAddress": {
+          "description": "The string representation of the remote IP address. For example,`'74.125.127.100'` or `'2001:4860:a005::68'`. Value may be `undefined` if the socket is destroyed (for example, if the client disconnected).",
+          "type": "string"
+        },
+        "remoteFamily": {
+          "description": "The string representation of the remote IP family. `'IPv4'` or `'IPv6'`. Value may be `undefined` if the socket is destroyed (for example, if the client disconnected).",
+          "type": "string"
+        },
+        "remotePort": {
+          "description": "The numeric representation of the remote port. For example, `80` or `21`. Value may be `undefined` if the socket is destroyed (for example, if the client disconnected).",
+          "type": "number"
+        },
+        "rows": {
+          "description": "A `number` specifying the number of rows the TTY currently has. This property is updated whenever the `'resize'` event is emitted.",
+          "type": "number"
+        },
+        "timeout": {
+          "description": "The socket timeout in milliseconds as set by `socket.setTimeout()`. It is `undefined` if a timeout has not been set.",
+          "type": "number"
+        },
+        "writable": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "allowHalfOpen",
+        "autoSelectFamilyAttemptedAddresses",
+        "bufferSize",
+        "bytesRead",
+        "bytesWritten",
+        "columns",
+        "connecting",
+        "destroyed",
+        "isTTY",
+        "pending",
+        "readable",
+        "readyState",
+        "rows",
+        "writable"
+      ],
+      "type": "object"
+    }
+  }
+}

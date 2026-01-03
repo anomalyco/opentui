@@ -1,0 +1,5 @@
+{
+  "name": "@opentui/core/types",
+  "types": "./index.d.ts",
+  "description": "TypeScript type definitions for OpenTUI"
+}

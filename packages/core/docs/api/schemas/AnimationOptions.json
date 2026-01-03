@@ -1,0 +1,108 @@
+{
+  "$ref": "#/definitions/AnimationOptions",
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "definitions": {
+    "AnimationOptions": {
+      "properties": {
+        "alternate": {
+          "type": "boolean"
+        },
+        "duration": {
+          "type": "number"
+        },
+        "ease": {
+          "$ref": "#/definitions/EasingFunctions"
+        },
+        "loop": {
+          "type": [
+            "boolean",
+            "number"
+          ]
+        },
+        "loopDelay": {
+          "type": "number"
+        },
+        "onComplete": {
+          "$comment": "() => void"
+        },
+        "onLoop": {
+          "$comment": "() => void"
+        },
+        "onStart": {
+          "$comment": "() => void"
+        },
+        "onUpdate": {
+          "$comment": "(animation: JSAnimation) => void",
+          "properties": {
+            "namedArgs": {
+              "additionalProperties": false,
+              "properties": {
+                "animation": {
+                  "$ref": "#/definitions/JSAnimation"
+                }
+              },
+              "required": [
+                "animation"
+              ],
+              "type": "object"
+            }
+          },
+          "type": "object"
+        },
+        "once": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "duration"
+      ],
+      "type": "object"
+    },
+    "EasingFunctions": {
+      "enum": [
+        "linear",
+        "inQuad",
+        "outQuad",
+        "inOutQuad",
+        "inExpo",
+        "outExpo",
+        "inOutSine",
+        "outBounce",
+        "outElastic",
+        "inBounce",
+        "inCirc",
+        "outCirc",
+        "inOutCirc",
+        "inBack",
+        "outBack",
+        "inOutBack"
+      ],
+      "type": "string"
+    },
+    "JSAnimation": {
+      "additionalProperties": false,
+      "properties": {
+        "currentTime": {
+          "type": "number"
+        },
+        "deltaTime": {
+          "type": "number"
+        },
+        "progress": {
+          "type": "number"
+        },
+        "targets": {
+          "items": {},
+          "type": "array"
+        }
+      },
+      "required": [
+        "targets",
+        "deltaTime",
+        "progress",
+        "currentTime"
+      ],
+      "type": "object"
+    }
+  }
+}

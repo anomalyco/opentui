@@ -1,0 +1,219 @@
+{
+  // OpenTUI Component Snippets
+  
+  "OpenTUI Box Component": {
+    "prefix": "tui-box",
+    "body": [
+      "const ${1:box} = new BoxRenderable('${2:id}', {",
+      "  width: ${3:'100%'},",
+      "  height: ${4:10},",
+      "  border: ${5:true},",
+      "  borderStyle: '${6|single,double,rounded,heavy|}',",
+      "  padding: ${7:1}",
+      "});",
+      "$0"
+    ],
+    "description": "Create a BoxRenderable component"
+  },
+  
+  "OpenTUI Text Component": {
+    "prefix": "tui-text",
+    "body": [
+      "const ${1:text} = new TextRenderable('${2:id}', {",
+      "  text: '${3:Hello World}',",
+      "  color: ${4:'#ffffff'},",
+      "  align: '${5|left,center,right|}',",
+      "  wrap: ${6:true}",
+      "});",
+      "$0"
+    ],
+    "description": "Create a TextRenderable component"
+  },
+  
+  "OpenTUI Input Component": {
+    "prefix": "tui-input",
+    "body": [
+      "const ${1:input} = new InputRenderable('${2:id}', {",
+      "  placeholder: '${3:Enter text...}',",
+      "  value: '${4:}',",
+      "  maxLength: ${5:50},",
+      "  onChange: (value) => {",
+      "    ${6:console.log(value);}",
+      "  },",
+      "  onSubmit: (value) => {",
+      "    ${7:// Handle submit}",
+      "  }",
+      "});",
+      "$0"
+    ],
+    "description": "Create an InputRenderable component"
+  },
+  
+  "OpenTUI ASCII Font": {
+    "prefix": "tui-ascii",
+    "body": [
+      "const ${1:title} = new ASCIIFontRenderable('${2:id}', {",
+      "  text: '${3:TITLE}',",
+      "  font: '${4|default,bulky,chrome,huge|}',",
+      "  color: '${5:#00ff00}',",
+      "  align: '${6|left,center,right|}'",
+      "});",
+      "$0"
+    ],
+    "description": "Create ASCII art text"
+  },
+  
+  "OpenTUI Application": {
+    "prefix": "tui-app",
+    "body": [
+      "import { CliRenderer, BoxRenderable, TextRenderable } from '@opentui/core';",
+      "",
+      "// Create renderer",
+      "const renderer = new CliRenderer(",
+      "  lib,",
+      "  rendererPtr,",
+      "  process.stdin,",
+      "  process.stdout,",
+      "  ${1:80}, // width",
+      "  ${2:24}, // height",
+      "  {",
+      "    backgroundColor: '${3:#1e1e1e}'",
+      "  }",
+      ");",
+      "",
+      "// Create main container",
+      "const mainBox = new BoxRenderable('main', {",
+      "  width: '100%',",
+      "  height: '100%',",
+      "  border: true,",
+      "  borderStyle: 'rounded',",
+      "  padding: 2",
+      "});",
+      "",
+      "// Add components",
+      "${4:// Your components here}",
+      "",
+      "// Build tree",
+      "renderer.root.add(mainBox, 0);",
+      "",
+      "// Start rendering",
+      "renderer.start();",
+      "$0"
+    ],
+    "description": "Create a complete OpenTUI application"
+  },
+  
+  "OpenTUI Flexbox Layout": {
+    "prefix": "tui-flex",
+    "body": [
+      "const ${1:container} = new BoxRenderable('${2:flex-container}', {",
+      "  width: '100%',",
+      "  height: '100%',",
+      "  flexDirection: '${3|row,column,row-reverse,column-reverse|}',",
+      "  justifyContent: '${4|flex-start,flex-end,center,space-between,space-around,space-evenly|}',",
+      "  alignItems: '${5|flex-start,flex-end,center,stretch,baseline|}',",
+      "  gap: ${6:1}",
+      "});",
+      "$0"
+    ],
+    "description": "Create a flexbox container"
+  },
+  
+  "OpenTUI Animation Timeline": {
+    "prefix": "tui-timeline",
+    "body": [
+      "const timeline = new Timeline({",
+      "  duration: ${1:1000},",
+      "  loop: ${2:false},",
+      "  autoplay: ${3:true}",
+      "});",
+      "",
+      "timeline.add({",
+      "  target: ${4:component},",
+      "  properties: {",
+      "    ${5:x}: { from: ${6:0}, to: ${7:100} },",
+      "    ${8:opacity}: { from: ${9:0}, to: ${10:1} }",
+      "  },",
+      "  duration: ${11:500},",
+      "  easing: '${12|linear,easeInQuad,easeOutQuad,easeInOutQuad,easeInCubic,easeOutCubic,easeInOutCubic|}'",
+      "});",
+      "$0"
+    ],
+    "description": "Create an animation timeline"
+  },
+  
+  "OpenTUI Event Handler": {
+    "prefix": "tui-event",
+    "body": [
+      "on${1|MouseDown,MouseUp,MouseMove,MouseDrag,MouseScroll,KeyDown,KeyUp|}: (${2:event}) => {",
+      "  ${3:// Handle event}",
+      "  ${4:return true; // Prevent bubbling}",
+      "}"
+    ],
+    "description": "Add an event handler"
+  },
+  
+  "OpenTUI Custom Component": {
+    "prefix": "tui-component",
+    "body": [
+      "class ${1:MyComponent} extends ${2|Renderable,BoxRenderable,TextRenderable|} {",
+      "  constructor(id: string, options: ${3:RenderableOptions}) {",
+      "    super(id, options);",
+      "    ${4:// Initialize}",
+      "  }",
+      "",
+      "  protected renderSelf(buffer: OptimizedBuffer, deltaTime: number): void {",
+      "    super.renderSelf(buffer, deltaTime);",
+      "    ${5:// Custom rendering}",
+      "  }",
+      "",
+      "  handleKeyPress(key: ParsedKey | string): boolean {",
+      "    ${6:// Handle keyboard input}",
+      "    return super.handleKeyPress(key);",
+      "  }",
+      "}",
+      "$0"
+    ],
+    "description": "Create a custom OpenTUI component"
+  },
+  
+  "OpenTUI Form": {
+    "prefix": "tui-form",
+    "body": [
+      "class ${1:LoginForm} extends BoxRenderable {",
+      "  private ${2:username}Input: InputRenderable;",
+      "  private ${3:password}Input: InputRenderable;",
+      "",
+      "  constructor() {",
+      "    super('${4:form}', {",
+      "      flexDirection: 'column',",
+      "      gap: 1,",
+      "      padding: 2,",
+      "      border: true,",
+      "      title: '${5:Form Title}'",
+      "    });",
+      "",
+      "    this.${2}Input = new InputRenderable('${2}', {",
+      "      placeholder: '${6:Username}',",
+      "      onSubmit: () => this.${3}Input.focus()",
+      "    });",
+      "",
+      "    this.${3}Input = new InputRenderable('${3}', {",
+      "      placeholder: '${7:Password}',",
+      "      password: true,",
+      "      onSubmit: () => this.submit()",
+      "    });",
+      "",
+      "    this.add(this.${2}Input, 0);",
+      "    this.add(this.${3}Input, 1);",
+      "  }",
+      "",
+      "  private submit() {",
+      "    ${8:// Handle form submission}",
+      "  }",
+      "}",
+      "$0"
+    ],
+    "description": "Create a form with inputs"
+  }
+}

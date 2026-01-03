@@ -1,0 +1,127 @@
+{
+  "$ref": "#/definitions/ConsoleOptions",
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "definitions": {
+    "ColorInput": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "$ref": "#/definitions/RGBA"
+        }
+      ]
+    },
+    "ConsoleOptions": {
+      "additionalProperties": false,
+      "properties": {
+        "backgroundColor": {
+          "$ref": "#/definitions/ColorInput"
+        },
+        "colorDebug": {
+          "$ref": "#/definitions/ColorInput"
+        },
+        "colorDefault": {
+          "$ref": "#/definitions/ColorInput"
+        },
+        "colorError": {
+          "$ref": "#/definitions/ColorInput"
+        },
+        "colorInfo": {
+          "$ref": "#/definitions/ColorInput"
+        },
+        "colorWarn": {
+          "$ref": "#/definitions/ColorInput"
+        },
+        "cursorColor": {
+          "$ref": "#/definitions/ColorInput"
+        },
+        "maxDisplayLines": {
+          "type": "number"
+        },
+        "maxStoredLogs": {
+          "type": "number"
+        },
+        "position": {
+          "$ref": "#/definitions/ConsolePosition"
+        },
+        "sizePercent": {
+          "type": "number"
+        },
+        "startInDebugMode": {
+          "type": "boolean"
+        },
+        "title": {
+          "type": "string"
+        },
+        "titleBarColor": {
+          "$ref": "#/definitions/ColorInput"
+        },
+        "titleBarTextColor": {
+          "$ref": "#/definitions/ColorInput"
+        },
+        "zIndex": {
+          "type": "number"
+        }
+      },
+      "type": "object"
+    },
+    "ConsolePosition": {
+      "enum": [
+        "top",
+        "bottom",
+        "left",
+        "right"
+      ],
+      "type": "string"
+    },
+    "RGBA": {
+      "additionalProperties": false,
+      "properties": {
+        "buffer": {
+          "additionalProperties": {
+            "type": "number"
+          },
+          "properties": {
+            "BYTES_PER_ELEMENT": {
+              "type": "number"
+            },
+            "buffer": {
+              "additionalProperties": false,
+              "properties": {
+                "byteLength": {
+                  "type": "number"
+                }
+              },
+              "required": [
+                "byteLength"
+              ],
+              "type": "object"
+            },
+            "byteLength": {
+              "type": "number"
+            },
+            "byteOffset": {
+              "type": "number"
+            },
+            "length": {
+              "type": "number"
+            }
+          },
+          "required": [
+            "BYTES_PER_ELEMENT",
+            "buffer",
+            "byteLength",
+            "byteOffset",
+            "length"
+          ],
+          "type": "object"
+        }
+      },
+      "required": [
+        "buffer"
+      ],
+      "type": "object"
+    }
+  }
+}

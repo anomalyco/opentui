@@ -1,0 +1,95 @@
+{
+  "$ref": "#/definitions/ExplosionEffectParameters",
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "definitions": {
+    "ExplosionEffectParameters": {
+      "additionalProperties": false,
+      "properties": {
+        "angularVelocityMax": {
+          "$ref": "#/definitions/Vector3"
+        },
+        "angularVelocityMin": {
+          "$ref": "#/definitions/Vector3"
+        },
+        "durationMs": {
+          "type": "number"
+        },
+        "fadeOut": {
+          "type": "boolean"
+        },
+        "gravity": {
+          "type": "number"
+        },
+        "gravityScale": {
+          "type": "number"
+        },
+        "initialVelocityYBoost": {
+          "type": "number"
+        },
+        "materialFactory": {
+          "$comment": "() => NodeMaterial"
+        },
+        "numCols": {
+          "type": "number"
+        },
+        "numRows": {
+          "type": "number"
+        },
+        "strength": {
+          "type": "number"
+        },
+        "strengthVariation": {
+          "type": "number"
+        },
+        "zVariationStrength": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "numRows",
+        "numCols",
+        "durationMs",
+        "strength",
+        "strengthVariation",
+        "gravity",
+        "gravityScale",
+        "fadeOut",
+        "angularVelocityMin",
+        "angularVelocityMax",
+        "initialVelocityYBoost",
+        "zVariationStrength",
+        "materialFactory"
+      ],
+      "type": "object"
+    },
+    "Vector3": {
+      "additionalProperties": false,
+      "description": "3D vector.\n\nsee  {@link  https://github.com/mrdoob/three.js/blob/master/src/math/Vector3.js }",
+      "properties": {
+        "isVector3": {
+          "const": true,
+          "type": "boolean"
+        },
+        "x": {
+          "default": 0,
+          "type": "number"
+        },
+        "y": {
+          "default": 0,
+          "type": "number"
+        },
+        "z": {
+          "default": 0,
+          "type": "number"
+        }
+      },
+      "required": [
+        "x",
+        "y",
+        "z",
+        "isVector3"
+      ],
+      "type": "object"
+    }
+  }
+}

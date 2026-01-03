@@ -1,0 +1,27 @@
+{
+  "$ref": "#/definitions/TimelineOptions",
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "definitions": {
+    "TimelineOptions": {
+      "additionalProperties": false,
+      "properties": {
+        "autoplay": {
+          "type": "boolean"
+        },
+        "duration": {
+          "type": "number"
+        },
+        "loop": {
+          "type": "boolean"
+        },
+        "onComplete": {
+          "$comment": "() => void"
+        },
+        "onPause": {
+          "$comment": "() => void"
+        }
+      },
+      "type": "object"
+    }
+  }
+}

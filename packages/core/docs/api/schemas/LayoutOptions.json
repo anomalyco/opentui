@@ -1,0 +1,254 @@
+{
+  "$ref": "#/definitions/LayoutOptions",
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "definitions": {
+    "AlignString": {
+      "enum": [
+        "auto",
+        "flex-start",
+        "center",
+        "flex-end",
+        "stretch",
+        "baseline",
+        "space-between",
+        "space-around",
+        "space-evenly"
+      ],
+      "type": "string"
+    },
+    "FlexDirectionString": {
+      "enum": [
+        "column",
+        "column-reverse",
+        "row",
+        "row-reverse"
+      ],
+      "type": "string"
+    },
+    "JustifyString": {
+      "enum": [
+        "flex-start",
+        "center",
+        "flex-end",
+        "space-between",
+        "space-around",
+        "space-evenly"
+      ],
+      "type": "string"
+    },
+    "LayoutOptions": {
+      "additionalProperties": false,
+      "properties": {
+        "alignItems": {
+          "$ref": "#/definitions/AlignString"
+        },
+        "bottom": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "const": "auto",
+              "type": "string"
+            },
+            {
+              "type": "string"
+            }
+          ]
+        },
+        "enableLayout": {
+          "type": "boolean"
+        },
+        "flexBasis": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "const": "auto",
+              "type": "string"
+            }
+          ]
+        },
+        "flexDirection": {
+          "$ref": "#/definitions/FlexDirectionString"
+        },
+        "flexGrow": {
+          "type": "number"
+        },
+        "flexShrink": {
+          "type": "number"
+        },
+        "justifyContent": {
+          "$ref": "#/definitions/JustifyString"
+        },
+        "left": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "const": "auto",
+              "type": "string"
+            },
+            {
+              "type": "string"
+            }
+          ]
+        },
+        "margin": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "const": "auto",
+              "type": "string"
+            },
+            {
+              "type": "string"
+            }
+          ]
+        },
+        "marginBottom": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "const": "auto",
+              "type": "string"
+            },
+            {
+              "type": "string"
+            }
+          ]
+        },
+        "marginLeft": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "const": "auto",
+              "type": "string"
+            },
+            {
+              "type": "string"
+            }
+          ]
+        },
+        "marginRight": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "const": "auto",
+              "type": "string"
+            },
+            {
+              "type": "string"
+            }
+          ]
+        },
+        "marginTop": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "const": "auto",
+              "type": "string"
+            },
+            {
+              "type": "string"
+            }
+          ]
+        },
+        "maxHeight": {
+          "type": "number"
+        },
+        "maxWidth": {
+          "type": "number"
+        },
+        "minHeight": {
+          "type": "number"
+        },
+        "minWidth": {
+          "type": "number"
+        },
+        "padding": {
+          "type": [
+            "number",
+            "string"
+          ]
+        },
+        "paddingBottom": {
+          "type": [
+            "number",
+            "string"
+          ]
+        },
+        "paddingLeft": {
+          "type": [
+            "number",
+            "string"
+          ]
+        },
+        "paddingRight": {
+          "type": [
+            "number",
+            "string"
+          ]
+        },
+        "paddingTop": {
+          "type": [
+            "number",
+            "string"
+          ]
+        },
+        "position": {
+          "$ref": "#/definitions/PositionTypeString"
+        },
+        "right": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "const": "auto",
+              "type": "string"
+            },
+            {
+              "type": "string"
+            }
+          ]
+        },
+        "top": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "const": "auto",
+              "type": "string"
+            },
+            {
+              "type": "string"
+            }
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "PositionTypeString": {
+      "enum": [
+        "static",
+        "relative",
+        "absolute"
+      ],
+      "type": "string"
+    }
+  }
+}

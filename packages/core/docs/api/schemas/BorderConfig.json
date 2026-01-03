@@ -1,0 +1,166 @@
+{
+  "$ref": "#/definitions/BorderConfig",
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "definitions": {
+    "BorderCharacters": {
+      "additionalProperties": false,
+      "properties": {
+        "bottomLeft": {
+          "type": "string"
+        },
+        "bottomRight": {
+          "type": "string"
+        },
+        "bottomT": {
+          "type": "string"
+        },
+        "cross": {
+          "type": "string"
+        },
+        "horizontal": {
+          "type": "string"
+        },
+        "leftT": {
+          "type": "string"
+        },
+        "rightT": {
+          "type": "string"
+        },
+        "topLeft": {
+          "type": "string"
+        },
+        "topRight": {
+          "type": "string"
+        },
+        "topT": {
+          "type": "string"
+        },
+        "vertical": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "topLeft",
+        "topRight",
+        "bottomLeft",
+        "bottomRight",
+        "horizontal",
+        "vertical",
+        "topT",
+        "bottomT",
+        "leftT",
+        "rightT",
+        "cross"
+      ],
+      "type": "object"
+    },
+    "BorderConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "border": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "items": {
+                "$ref": "#/definitions/BorderSides"
+              },
+              "type": "array"
+            }
+          ]
+        },
+        "borderColor": {
+          "$ref": "#/definitions/ColorInput"
+        },
+        "borderStyle": {
+          "$ref": "#/definitions/BorderStyle"
+        },
+        "customBorderChars": {
+          "$ref": "#/definitions/BorderCharacters"
+        }
+      },
+      "required": [
+        "borderStyle",
+        "border"
+      ],
+      "type": "object"
+    },
+    "BorderSides": {
+      "enum": [
+        "top",
+        "right",
+        "bottom",
+        "left"
+      ],
+      "type": "string"
+    },
+    "BorderStyle": {
+      "enum": [
+        "single",
+        "double",
+        "rounded",
+        "heavy"
+      ],
+      "type": "string"
+    },
+    "ColorInput": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "$ref": "#/definitions/RGBA"
+        }
+      ]
+    },
+    "RGBA": {
+      "additionalProperties": false,
+      "properties": {
+        "buffer": {
+          "additionalProperties": {
+            "type": "number"
+          },
+          "properties": {
+            "BYTES_PER_ELEMENT": {
+              "type": "number"
+            },
+            "buffer": {
+              "additionalProperties": false,
+              "properties": {
+                "byteLength": {
+                  "type": "number"
+                }
+              },
+              "required": [
+                "byteLength"
+              ],
+              "type": "object"
+            },
+            "byteLength": {
+              "type": "number"
+            },
+            "byteOffset": {
+              "type": "number"
+            },
+            "length": {
+              "type": "number"
+            }
+          },
+          "required": [
+            "BYTES_PER_ELEMENT",
+            "buffer",
+            "byteLength",
+            "byteOffset",
+            "length"
+          ],
+          "type": "object"
+        }
+      },
+      "required": [
+        "buffer"
+      ],
+      "type": "object"
+    }
+  }
+}
