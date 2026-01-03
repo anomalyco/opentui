@@ -1,0 +1,48 @@
+name: Publish Preview Packages
+
+on:
+  pull_request:
+  push:
+    branches:
+      - "**"
+    tags:
+      - "!**"
+
+permissions: {}
+
+jobs:
+  publish:
+    name: Publish Preview
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Setup Zig
+        uses: goto-bus-stop/setup-zig@v2
+        with:
+          version: 0.14.1
+
+      - name: Install dependencies
+        run: bun install
+
+      - name: Build core
+        run: bun run build
+        working-directory: packages/core
+
+      - name: Build react
+        run: bun run build --ci
+        working-directory: packages/react
+
+      - name: Build solid
+        run: bun run build --ci
+        working-directory: packages/solid
+
+      - name: Publish preview packages
+        run: npx pkg-pr-new publish --no-template './packages/core/dist' './packages/react/dist' './packages/solid/dist'
