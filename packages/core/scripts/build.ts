@@ -182,11 +182,6 @@ if (buildLib) {
   rmSync(distDir, { recursive: true, force: true })
   mkdirSync(distDir, { recursive: true })
 
-  const externalDeps: string[] = [
-    ...Object.keys(packageJson.optionalDependencies || {}),
-    ...Object.keys(packageJson.peerDependencies || {}),
-  ]
-
   // Build main entry point
   if (!packageJson.module) {
     console.error("Error: 'module' field not found in package.json")
@@ -195,11 +190,9 @@ if (buildLib) {
 
   const entryPoints: string[] = [packageJson.module, "src/3d.ts", "src/testing.ts"]
 
-  // Build main entry points with code splitting
   // External patterns to prevent bundling tree-sitter assets and default-parsers
   // to allow standalone executables to work
   const externalPatterns = [
-    ...externalDeps,
     "*.wasm",
     "*.scm",
     "./lib/tree-sitter/assets/*",
@@ -207,6 +200,8 @@ if (buildLib) {
     "./lib/tree-sitter/default-parsers.ts",
   ]
 
+  // Build main entry points with code splitting
+  // Use --packages=external to externalize all dependencies
   spawnSync(
     "bun",
     [
@@ -215,6 +210,7 @@ if (buildLib) {
       "--splitting",
       "--outdir=dist",
       "--sourcemap",
+      "--packages=external",
       ...externalPatterns.flatMap((dep) => ["--external", dep]),
       ...entryPoints,
     ],
@@ -225,7 +221,7 @@ if (buildLib) {
   )
 
   // Build parser worker as standalone bundle (no splitting) so it can be loaded as a Worker
-  // Make web-tree-sitter external so it loads from node_modules with its WASM file
+  // Use --packages=external to externalize all dependencies
   spawnSync(
     "bun",
     [
@@ -233,9 +229,7 @@ if (buildLib) {
       "--target=bun",
       "--outdir=dist",
       "--sourcemap",
-      ...externalDeps.flatMap((dep) => ["--external", dep]),
-      "--external",
-      "web-tree-sitter",
+      "--packages=external",
       "src/lib/tree-sitter/parser.worker.ts",
     ],
     {

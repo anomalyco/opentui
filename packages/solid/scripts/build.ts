@@ -58,11 +58,6 @@ const distDir = join(rootDir, "dist")
 rmSync(distDir, { recursive: true, force: true })
 mkdirSync(distDir, { recursive: true })
 
-const externalDeps: string[] = [
-  ...Object.keys(packageJson.dependencies || {}),
-  ...Object.keys(packageJson.peerDependencies || {}),
-]
-
 if (!packageJson.module) {
   console.error("Error: 'module' field not found in package.json")
   process.exit(1)
@@ -73,7 +68,7 @@ const mainBuildResult = await Bun.build({
   entrypoints: [join(rootDir, packageJson.module)],
   target: "bun",
   outdir: join(rootDir, "dist"),
-  external: externalDeps,
+  packages: "external",
   plugins: [solidTransformPlugin],
   splitting: true,
 })
