@@ -285,16 +285,16 @@ test "GraphemePool - many allocations" {
 
     for (0..count) |i| {
         var buffer: [8]u8 = undefined;
-        const len = std.fmt.formatIntBuf(&buffer, i, 10, .lower, .{});
-        ids[i] = try pool.alloc(buffer[0..len]);
+        const slice = std.fmt.bufPrint(&buffer, "{d}", .{i}) catch unreachable;
+        ids[i] = try pool.alloc(slice);
         try pool.incref(ids[i]);
     }
 
     for (ids, 0..count) |id, i| {
         const retrieved = try pool.get(id);
         var buffer: [8]u8 = undefined;
-        const len = std.fmt.formatIntBuf(&buffer, i, 10, .lower, .{});
-        try std.testing.expectEqualSlices(u8, buffer[0..len], retrieved);
+        const slice = std.fmt.bufPrint(&buffer, "{d}", .{i}) catch unreachable;
+        try std.testing.expectEqualSlices(u8, slice, retrieved);
     }
 
     for (ids) |id| {
@@ -306,8 +306,8 @@ test "GraphemePool - allocations with varying sizes" {
     var pool = GraphemePool.init(std.testing.allocator);
     defer pool.deinit();
 
-    var ids = std.ArrayList(u32).init(std.testing.allocator);
-    defer ids.deinit();
+    var ids: std.ArrayListUnmanaged(u32) = .{};
+    defer ids.deinit(std.testing.allocator);
 
     for (0..50) |i| {
         const size = (i % 5) * 16 + 5; // Vary sizes: 5, 21, 37, 53, 69...
@@ -315,7 +315,7 @@ test "GraphemePool - allocations with varying sizes" {
         @memset(buffer[0..size], @intCast(i % 256));
         const id = try pool.alloc(buffer[0..size]);
         try pool.incref(id);
-        try ids.append(id);
+        try ids.append(std.testing.allocator, id);
     }
 
     for (ids.items, 0..50) |id, i| {
@@ -338,12 +338,12 @@ test "GraphemePool - reuse many slots" {
 
     for (0..100) |i| {
         var buffer: [8]u8 = undefined;
-        const len = std.fmt.formatIntBuf(&buffer, i, 10, .lower, .{});
-        const id = try pool.alloc(buffer[0..len]);
+        const slice = std.fmt.bufPrint(&buffer, "{d}", .{i}) catch unreachable;
+        const id = try pool.alloc(slice);
         try pool.incref(id);
 
         const retrieved = try pool.get(id);
-        try std.testing.expectEqualSlices(u8, buffer[0..len], retrieved);
+        try std.testing.expectEqualSlices(u8, slice, retrieved);
 
         try pool.decref(id);
     }
@@ -427,8 +427,8 @@ test "GraphemePool - IDs remain unique across many allocations" {
 
     for (0..count) |i| {
         var buffer: [8]u8 = undefined;
-        const len = std.fmt.formatIntBuf(&buffer, i, 10, .lower, .{});
-        ids[i] = try pool.alloc(buffer[0..len]);
+        const slice = std.fmt.bufPrint(&buffer, "{d}", .{i}) catch unreachable;
+        ids[i] = try pool.alloc(slice);
         try pool.incref(ids[i]);
     }
 
@@ -827,8 +827,8 @@ test "GraphemeTracker - stress test many graphemes" {
     // Add many graphemes
     for (0..count) |i| {
         var buffer: [8]u8 = undefined;
-        const len = std.fmt.formatIntBuf(&buffer, i, 10, .lower, .{});
-        ids[i] = try pool.alloc(buffer[0..len]);
+        const slice = std.fmt.bufPrint(&buffer, "{d}", .{i}) catch unreachable;
+        ids[i] = try pool.alloc(slice);
         tracker.add(ids[i]);
     }
 

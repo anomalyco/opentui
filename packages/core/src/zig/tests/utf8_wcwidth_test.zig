@@ -3,26 +3,26 @@ const testing = std.testing;
 const utf8 = @import("../utf8.zig");
 
 test "findGraphemeInfo wcwidth: empty string" {
-    var result = std.ArrayList(utf8.GraphemeInfo).init(testing.allocator);
-    defer result.deinit();
+    var result: std.ArrayListUnmanaged(utf8.GraphemeInfo) = .{};
+    defer result.deinit(testing.allocator);
 
-    try utf8.findGraphemeInfo("", 4, true, .wcwidth, &result);
+    try utf8.findGraphemeInfo("", 4, true, .wcwidth, testing.allocator, &result);
     try testing.expectEqual(@as(usize, 0), result.items.len);
 }
 
 test "findGraphemeInfo wcwidth: ASCII-only returns empty" {
-    var result = std.ArrayList(utf8.GraphemeInfo).init(testing.allocator);
-    defer result.deinit();
+    var result: std.ArrayListUnmanaged(utf8.GraphemeInfo) = .{};
+    defer result.deinit(testing.allocator);
 
-    try utf8.findGraphemeInfo("hello world", 4, true, .wcwidth, &result);
+    try utf8.findGraphemeInfo("hello world", 4, true, .wcwidth, testing.allocator, &result);
     try testing.expectEqual(@as(usize, 0), result.items.len);
 }
 
 test "findGraphemeInfo wcwidth: ASCII with tab" {
-    var result = std.ArrayList(utf8.GraphemeInfo).init(testing.allocator);
-    defer result.deinit();
+    var result: std.ArrayListUnmanaged(utf8.GraphemeInfo) = .{};
+    defer result.deinit(testing.allocator);
 
-    try utf8.findGraphemeInfo("hello\tworld", 4, false, .wcwidth, &result);
+    try utf8.findGraphemeInfo("hello\tworld", 4, false, .wcwidth, testing.allocator, &result);
 
     // Should have one entry for the tab
     try testing.expectEqual(@as(usize, 1), result.items.len);
@@ -33,11 +33,11 @@ test "findGraphemeInfo wcwidth: ASCII with tab" {
 }
 
 test "findGraphemeInfo wcwidth: CJK characters" {
-    var result = std.ArrayList(utf8.GraphemeInfo).init(testing.allocator);
-    defer result.deinit();
+    var result: std.ArrayListUnmanaged(utf8.GraphemeInfo) = .{};
+    defer result.deinit(testing.allocator);
 
     const text = "hello世界";
-    try utf8.findGraphemeInfo(text, 4, false, .wcwidth, &result);
+    try utf8.findGraphemeInfo(text, 4, false, .wcwidth, testing.allocator, &result);
 
     // Should have two entries for the CJK characters (each codepoint separately)
     try testing.expectEqual(@as(usize, 2), result.items.len);
@@ -56,11 +56,11 @@ test "findGraphemeInfo wcwidth: CJK characters" {
 }
 
 test "findGraphemeInfo wcwidth: emoji with skin tone - each codepoint separate" {
-    var result = std.ArrayList(utf8.GraphemeInfo).init(testing.allocator);
-    defer result.deinit();
+    var result: std.ArrayListUnmanaged(utf8.GraphemeInfo) = .{};
+    defer result.deinit(testing.allocator);
 
     const text = "👋🏿"; // Wave (4 bytes) + skin tone modifier (4 bytes)
-    try utf8.findGraphemeInfo(text, 4, false, .wcwidth, &result);
+    try utf8.findGraphemeInfo(text, 4, false, .wcwidth, testing.allocator, &result);
 
     // In wcwidth mode, these are TWO separate codepoints
     try testing.expectEqual(@as(usize, 2), result.items.len);
@@ -77,11 +77,11 @@ test "findGraphemeInfo wcwidth: emoji with skin tone - each codepoint separate" 
 }
 
 test "findGraphemeInfo wcwidth: emoji with ZWJ - each codepoint separate" {
-    var result = std.ArrayList(utf8.GraphemeInfo).init(testing.allocator);
-    defer result.deinit();
+    var result: std.ArrayListUnmanaged(utf8.GraphemeInfo) = .{};
+    defer result.deinit(testing.allocator);
 
     const text = "👩‍🚀"; // Woman + ZWJ + Rocket
-    try utf8.findGraphemeInfo(text, 4, false, .wcwidth, &result);
+    try utf8.findGraphemeInfo(text, 4, false, .wcwidth, testing.allocator, &result);
 
     // In wcwidth mode, we see woman (width 2) and rocket (width 2)
     // ZWJ has width 0 so it's not in the list
@@ -89,11 +89,11 @@ test "findGraphemeInfo wcwidth: emoji with ZWJ - each codepoint separate" {
 }
 
 test "findGraphemeInfo wcwidth: combining mark - base and mark separate" {
-    var result = std.ArrayList(utf8.GraphemeInfo).init(testing.allocator);
-    defer result.deinit();
+    var result: std.ArrayListUnmanaged(utf8.GraphemeInfo) = .{};
+    defer result.deinit(testing.allocator);
 
     const text = "e\u{0301}test"; // e + combining acute accent
-    try utf8.findGraphemeInfo(text, 4, false, .wcwidth, &result);
+    try utf8.findGraphemeInfo(text, 4, false, .wcwidth, testing.allocator, &result);
 
     // In wcwidth mode, combining mark is a separate codepoint with width 0
     // So we don't see it in the results (only non-zero width codepoints)
@@ -102,15 +102,15 @@ test "findGraphemeInfo wcwidth: combining mark - base and mark separate" {
 }
 
 test "findGraphemeInfo wcwidth vs unicode: emoji with skin tone" {
-    var result_wcwidth = std.ArrayList(utf8.GraphemeInfo).init(testing.allocator);
-    defer result_wcwidth.deinit();
-    var result_unicode = std.ArrayList(utf8.GraphemeInfo).init(testing.allocator);
-    defer result_unicode.deinit();
+    var result_wcwidth: std.ArrayListUnmanaged(utf8.GraphemeInfo) = .{};
+    defer result_wcwidth.deinit(testing.allocator);
+    var result_unicode: std.ArrayListUnmanaged(utf8.GraphemeInfo) = .{};
+    defer result_unicode.deinit(testing.allocator);
 
     const text = "Hi👋🏿Bye";
 
-    try utf8.findGraphemeInfo(text, 4, false, .wcwidth, &result_wcwidth);
-    try utf8.findGraphemeInfo(text, 4, false, .unicode, &result_unicode);
+    try utf8.findGraphemeInfo(text, 4, false, .wcwidth, testing.allocator, &result_wcwidth);
+    try utf8.findGraphemeInfo(text, 4, false, .unicode, testing.allocator, &result_unicode);
 
     // wcwidth: 2 codepoints (wave + skin tone)
     try testing.expectEqual(@as(usize, 2), result_wcwidth.items.len);
@@ -122,15 +122,15 @@ test "findGraphemeInfo wcwidth vs unicode: emoji with skin tone" {
 }
 
 test "findGraphemeInfo wcwidth vs unicode: flag emoji" {
-    var result_wcwidth = std.ArrayList(utf8.GraphemeInfo).init(testing.allocator);
-    defer result_wcwidth.deinit();
-    var result_unicode = std.ArrayList(utf8.GraphemeInfo).init(testing.allocator);
-    defer result_unicode.deinit();
+    var result_wcwidth: std.ArrayListUnmanaged(utf8.GraphemeInfo) = .{};
+    defer result_wcwidth.deinit(testing.allocator);
+    var result_unicode: std.ArrayListUnmanaged(utf8.GraphemeInfo) = .{};
+    defer result_unicode.deinit(testing.allocator);
 
     const text = "🇺🇸"; // US flag (two regional indicators)
 
-    try utf8.findGraphemeInfo(text, 4, false, .wcwidth, &result_wcwidth);
-    try utf8.findGraphemeInfo(text, 4, false, .unicode, &result_unicode);
+    try utf8.findGraphemeInfo(text, 4, false, .wcwidth, testing.allocator, &result_wcwidth);
+    try utf8.findGraphemeInfo(text, 4, false, .unicode, testing.allocator, &result_unicode);
 
     // wcwidth: 2 codepoints (two regional indicators, each width 1)
     try testing.expectEqual(@as(usize, 2), result_wcwidth.items.len);

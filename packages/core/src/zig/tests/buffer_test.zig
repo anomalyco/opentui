@@ -251,14 +251,14 @@ test "OptimizedBuffer - large text buffer with wrapping repeated render" {
     var view = try TextBufferView.init(std.testing.allocator, tb);
     defer view.deinit();
 
-    var text_builder = std.ArrayList(u8).init(std.testing.allocator);
-    defer text_builder.deinit();
+    var text_builder: std.ArrayListUnmanaged(u8) = .{};
+    defer text_builder.deinit(std.testing.allocator);
 
     var line: u32 = 0;
     while (line < 20) : (line += 1) {
-        try text_builder.appendSlice("Line ");
-        try std.fmt.format(text_builder.writer(), "{d}", .{line});
-        try text_builder.appendSlice(": 🌟 测试 🎨 Test 🚀\n");
+        try text_builder.appendSlice(std.testing.allocator, "Line ");
+        try text_builder.writer(std.testing.allocator).print("{d}", .{line});
+        try text_builder.appendSlice(std.testing.allocator, ": 🌟 测试 🎨 Test 🚀\n");
     }
 
     try tb.setText(text_builder.items);
@@ -416,12 +416,12 @@ test "OptimizedBuffer - stress test with many graphemes" {
     var view = try TextBufferView.init(std.testing.allocator, tb);
     defer view.deinit();
 
-    var text_builder = std.ArrayList(u8).init(std.testing.allocator);
-    defer text_builder.deinit();
+    var text_builder: std.ArrayListUnmanaged(u8) = .{};
+    defer text_builder.deinit(std.testing.allocator);
 
     var line: u32 = 0;
     while (line < 10) : (line += 1) {
-        try text_builder.appendSlice("🌟🎨🚀🍕🍔🍟🌈🎭🎪🎨🎬🎤🎧🎼🎹🎺🎸🎻\n");
+        try text_builder.appendSlice(std.testing.allocator, "🌟🎨🚀🍕🍔🍟🌈🎭🎪🎨🎬🎤🎧🎼🎹🎺🎸🎻\n");
     }
 
     try tb.setText(text_builder.items);
@@ -515,8 +515,8 @@ test "OptimizedBuffer - many unique graphemes with small pool" {
     var failure_count: u32 = 0;
 
     while (render_count < 1000) : (render_count += 1) {
-        var text_builder = std.ArrayList(u8).init(std.testing.allocator);
-        defer text_builder.deinit();
+        var text_builder: std.ArrayListUnmanaged(u8) = .{};
+        defer text_builder.deinit(std.testing.allocator);
 
         const base_codepoint: u21 = 0x2600 + @as(u21, @intCast(render_count % 500));
         const char_bytes = [_]u8{
@@ -524,9 +524,9 @@ test "OptimizedBuffer - many unique graphemes with small pool" {
             @intCast(0x80 | ((base_codepoint >> 6) & 0x3F)),
             @intCast(0x80 | (base_codepoint & 0x3F)),
         };
-        try text_builder.appendSlice(&char_bytes);
-        try text_builder.appendSlice(" ");
-        try text_builder.appendSlice(&char_bytes);
+        try text_builder.appendSlice(std.testing.allocator, &char_bytes);
+        try text_builder.appendSlice(std.testing.allocator, " ");
+        try text_builder.appendSlice(std.testing.allocator, &char_bytes);
 
         tb.setText(text_builder.items) catch {
             failure_count += 1;

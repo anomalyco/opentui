@@ -5,6 +5,16 @@
 - [Bun](https://bun.sh) - JavaScript runtime and package manager
 - [Zig](https://ziglang.org/learn/getting-started/) - Required for building native modules
 
+### macOS
+
+Building native modules on macOS requires Xcode (not just Command Line Tools) because the ghostty dependency builds an XCFramework that needs the iOS SDK.
+
+1. Install Xcode from the Mac App Store
+2. Set the developer directory:
+   ```bash
+   sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
+   ```
+
 ## Setup
 
 ```bash

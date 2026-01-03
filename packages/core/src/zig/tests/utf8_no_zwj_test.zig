@@ -91,15 +91,15 @@ test "no_zwj: mixed text with ZWJ emoji" {
 }
 
 test "no_zwj: findGraphemeInfo splits ZWJ sequences" {
-    var result_unicode = std.ArrayList(utf8.GraphemeInfo).init(testing.allocator);
-    defer result_unicode.deinit();
-    var result_no_zwj = std.ArrayList(utf8.GraphemeInfo).init(testing.allocator);
-    defer result_no_zwj.deinit();
+    var result_unicode: std.ArrayListUnmanaged(utf8.GraphemeInfo) = .{};
+    defer result_unicode.deinit(testing.allocator);
+    var result_no_zwj: std.ArrayListUnmanaged(utf8.GraphemeInfo) = .{};
+    defer result_no_zwj.deinit(testing.allocator);
 
     const text = "Hi👩‍🚀Bye";
 
-    try utf8.findGraphemeInfo(text, 4, false, .unicode, &result_unicode);
-    try utf8.findGraphemeInfo(text, 4, false, .no_zwj, &result_no_zwj);
+    try utf8.findGraphemeInfo(text, 4, false, .unicode, testing.allocator, &result_unicode);
+    try utf8.findGraphemeInfo(text, 4, false, .no_zwj, testing.allocator, &result_no_zwj);
 
     // unicode: 1 grapheme (the whole ZWJ sequence)
     try testing.expectEqual(@as(usize, 1), result_unicode.items.len);

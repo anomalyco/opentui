@@ -2100,26 +2100,26 @@ test "calculateTextWidth: U+269B atom symbol should be width 2" {
 // ============================================================================
 
 test "findGraphemeInfo: empty string" {
-    var result = std.ArrayList(utf8.GraphemeInfo).init(testing.allocator);
-    defer result.deinit();
+    var result: std.ArrayListUnmanaged(utf8.GraphemeInfo) = .{};
+    defer result.deinit(testing.allocator);
 
-    try utf8.findGraphemeInfo("", 4, true, .unicode, &result);
+    try utf8.findGraphemeInfo("", 4, true, .unicode, testing.allocator, &result);
     try testing.expectEqual(@as(usize, 0), result.items.len);
 }
 
 test "findGraphemeInfo: ASCII-only returns empty" {
-    var result = std.ArrayList(utf8.GraphemeInfo).init(testing.allocator);
-    defer result.deinit();
+    var result: std.ArrayListUnmanaged(utf8.GraphemeInfo) = .{};
+    defer result.deinit(testing.allocator);
 
-    try utf8.findGraphemeInfo("hello world", 4, true, .unicode, &result);
+    try utf8.findGraphemeInfo("hello world", 4, true, .unicode, testing.allocator, &result);
     try testing.expectEqual(@as(usize, 0), result.items.len);
 }
 
 test "findGraphemeInfo: ASCII with tab" {
-    var result = std.ArrayList(utf8.GraphemeInfo).init(testing.allocator);
-    defer result.deinit();
+    var result: std.ArrayListUnmanaged(utf8.GraphemeInfo) = .{};
+    defer result.deinit(testing.allocator);
 
-    try utf8.findGraphemeInfo("hello\tworld", 4, false, .unicode, &result);
+    try utf8.findGraphemeInfo("hello\tworld", 4, false, .unicode, testing.allocator, &result);
 
     // Should have one entry for the tab
     try testing.expectEqual(@as(usize, 1), result.items.len);
@@ -2130,10 +2130,10 @@ test "findGraphemeInfo: ASCII with tab" {
 }
 
 test "findGraphemeInfo: multiple tabs" {
-    var result = std.ArrayList(utf8.GraphemeInfo).init(testing.allocator);
-    defer result.deinit();
+    var result: std.ArrayListUnmanaged(utf8.GraphemeInfo) = .{};
+    defer result.deinit(testing.allocator);
 
-    try utf8.findGraphemeInfo("a\tb\tc", 4, false, .unicode, &result);
+    try utf8.findGraphemeInfo("a\tb\tc", 4, false, .unicode, testing.allocator, &result);
 
     // Should have two entries for the tabs
     try testing.expectEqual(@as(usize, 2), result.items.len);
@@ -2152,11 +2152,11 @@ test "findGraphemeInfo: multiple tabs" {
 }
 
 test "findGraphemeInfo: CJK characters" {
-    var result = std.ArrayList(utf8.GraphemeInfo).init(testing.allocator);
-    defer result.deinit();
+    var result: std.ArrayListUnmanaged(utf8.GraphemeInfo) = .{};
+    defer result.deinit(testing.allocator);
 
     const text = "hello世界";
-    try utf8.findGraphemeInfo(text, 4, false, .unicode, &result);
+    try utf8.findGraphemeInfo(text, 4, false, .unicode, testing.allocator, &result);
 
     // Should have two entries for the CJK characters
     try testing.expectEqual(@as(usize, 2), result.items.len);
@@ -2175,11 +2175,11 @@ test "findGraphemeInfo: CJK characters" {
 }
 
 test "findGraphemeInfo: emoji with skin tone" {
-    var result = std.ArrayList(utf8.GraphemeInfo).init(testing.allocator);
-    defer result.deinit();
+    var result: std.ArrayListUnmanaged(utf8.GraphemeInfo) = .{};
+    defer result.deinit(testing.allocator);
 
     const text = "Hi👋🏿Bye"; // Hi + wave + dark skin tone + Bye
-    try utf8.findGraphemeInfo(text, 4, false, .unicode, &result);
+    try utf8.findGraphemeInfo(text, 4, false, .unicode, testing.allocator, &result);
 
     // Should have one entry for the emoji cluster
     try testing.expectEqual(@as(usize, 1), result.items.len);
@@ -2191,11 +2191,11 @@ test "findGraphemeInfo: emoji with skin tone" {
 }
 
 test "findGraphemeInfo: emoji with ZWJ" {
-    var result = std.ArrayList(utf8.GraphemeInfo).init(testing.allocator);
-    defer result.deinit();
+    var result: std.ArrayListUnmanaged(utf8.GraphemeInfo) = .{};
+    defer result.deinit(testing.allocator);
 
     const text = "a👩‍🚀b"; // a + woman astronaut + b
-    try utf8.findGraphemeInfo(text, 4, false, .unicode, &result);
+    try utf8.findGraphemeInfo(text, 4, false, .unicode, testing.allocator, &result);
 
     // Should have one entry for the emoji cluster
     try testing.expectEqual(@as(usize, 1), result.items.len);
@@ -2206,11 +2206,11 @@ test "findGraphemeInfo: emoji with ZWJ" {
 }
 
 test "findGraphemeInfo: combining mark" {
-    var result = std.ArrayList(utf8.GraphemeInfo).init(testing.allocator);
-    defer result.deinit();
+    var result: std.ArrayListUnmanaged(utf8.GraphemeInfo) = .{};
+    defer result.deinit(testing.allocator);
 
     const text = "cafe\u{0301}"; // café with combining acute
-    try utf8.findGraphemeInfo(text, 4, false, .unicode, &result);
+    try utf8.findGraphemeInfo(text, 4, false, .unicode, testing.allocator, &result);
 
     // Should have one entry for e + combining mark
     try testing.expectEqual(@as(usize, 1), result.items.len);
@@ -2222,11 +2222,11 @@ test "findGraphemeInfo: combining mark" {
 }
 
 test "findGraphemeInfo: flag emoji" {
-    var result = std.ArrayList(utf8.GraphemeInfo).init(testing.allocator);
-    defer result.deinit();
+    var result: std.ArrayListUnmanaged(utf8.GraphemeInfo) = .{};
+    defer result.deinit(testing.allocator);
 
     const text = "US🇺🇸"; // US + flag
-    try utf8.findGraphemeInfo(text, 4, false, .unicode, &result);
+    try utf8.findGraphemeInfo(text, 4, false, .unicode, testing.allocator, &result);
 
     // Should have one entry for the flag (two regional indicators)
     try testing.expectEqual(@as(usize, 1), result.items.len);
@@ -2238,11 +2238,11 @@ test "findGraphemeInfo: flag emoji" {
 }
 
 test "findGraphemeInfo: mixed content" {
-    var result = std.ArrayList(utf8.GraphemeInfo).init(testing.allocator);
-    defer result.deinit();
+    var result: std.ArrayListUnmanaged(utf8.GraphemeInfo) = .{};
+    defer result.deinit(testing.allocator);
 
     const text = "Hi\t世界!"; // Hi + tab + CJK + !
-    try utf8.findGraphemeInfo(text, 4, false, .unicode, &result);
+    try utf8.findGraphemeInfo(text, 4, false, .unicode, testing.allocator, &result);
 
     // Should have three entries: tab, 世, 界
     try testing.expectEqual(@as(usize, 3), result.items.len);
@@ -2267,21 +2267,21 @@ test "findGraphemeInfo: mixed content" {
 }
 
 test "findGraphemeInfo: only ASCII letters no cache" {
-    var result = std.ArrayList(utf8.GraphemeInfo).init(testing.allocator);
-    defer result.deinit();
+    var result: std.ArrayListUnmanaged(utf8.GraphemeInfo) = .{};
+    defer result.deinit(testing.allocator);
 
-    try utf8.findGraphemeInfo("abcdefghij", 4, false, .unicode, &result);
+    try utf8.findGraphemeInfo("abcdefghij", 4, false, .unicode, testing.allocator, &result);
 
     // No special characters, should be empty
     try testing.expectEqual(@as(usize, 0), result.items.len);
 }
 
 test "findGraphemeInfo: emoji with VS16" {
-    var result = std.ArrayList(utf8.GraphemeInfo).init(testing.allocator);
-    defer result.deinit();
+    var result: std.ArrayListUnmanaged(utf8.GraphemeInfo) = .{};
+    defer result.deinit(testing.allocator);
 
     const text = "I ❤️ U"; // I + space + heart + VS16 + space + U
-    try utf8.findGraphemeInfo(text, 4, false, .unicode, &result);
+    try utf8.findGraphemeInfo(text, 4, false, .unicode, testing.allocator, &result);
 
     // Should have one entry for the emoji cluster
     try testing.expectEqual(@as(usize, 1), result.items.len);
@@ -2292,22 +2292,22 @@ test "findGraphemeInfo: emoji with VS16" {
 }
 
 test "findGraphemeInfo: realistic text" {
-    var result = std.ArrayList(utf8.GraphemeInfo).init(testing.allocator);
-    defer result.deinit();
+    var result: std.ArrayListUnmanaged(utf8.GraphemeInfo) = .{};
+    defer result.deinit(testing.allocator);
 
     const text = "function test() {\n\tconst 世界 = 10;\n}";
-    try utf8.findGraphemeInfo(text, 4, false, .unicode, &result);
+    try utf8.findGraphemeInfo(text, 4, false, .unicode, testing.allocator, &result);
 
     // Should have entries for: tab, 世, 界
     try testing.expectEqual(@as(usize, 3), result.items.len);
 }
 
 test "findGraphemeInfo: hiragana" {
-    var result = std.ArrayList(utf8.GraphemeInfo).init(testing.allocator);
-    defer result.deinit();
+    var result: std.ArrayListUnmanaged(utf8.GraphemeInfo) = .{};
+    defer result.deinit(testing.allocator);
 
     const text = "こんにちは";
-    try utf8.findGraphemeInfo(text, 4, false, .unicode, &result);
+    try utf8.findGraphemeInfo(text, 4, false, .unicode, testing.allocator, &result);
 
     // Should have 5 entries (each hiragana is 3 bytes, width 2)
     try testing.expectEqual(@as(usize, 5), result.items.len);
@@ -2319,8 +2319,8 @@ test "findGraphemeInfo: hiragana" {
 }
 
 test "findGraphemeInfo: at SIMD boundary" {
-    var result = std.ArrayList(utf8.GraphemeInfo).init(testing.allocator);
-    defer result.deinit();
+    var result: std.ArrayListUnmanaged(utf8.GraphemeInfo) = .{};
+    defer result.deinit(testing.allocator);
 
     // Create text with multibyte char near SIMD boundary (16 bytes)
     var buf: [32]u8 = undefined;
@@ -2328,7 +2328,7 @@ test "findGraphemeInfo: at SIMD boundary" {
     const cjk = "世";
     @memcpy(buf[14..17], cjk); // Place CJK char at boundary
 
-    try utf8.findGraphemeInfo(&buf, 4, false, .unicode, &result);
+    try utf8.findGraphemeInfo(&buf, 4, false, .unicode, testing.allocator, &result);
 
     // Should find the CJK character
     var found = false;
@@ -2942,14 +2942,14 @@ test "calculateTextWidth: surrogate pair edge cases" {
 
 test "calculateTextWidth: long grapheme cluster chain" {
     // Create a base + many combining marks
-    var text = std.ArrayList(u8).init(testing.allocator);
-    defer text.deinit();
+    var text: std.ArrayListUnmanaged(u8) = .{};
+    defer text.deinit(testing.allocator);
 
-    try text.appendSlice("e");
+    try text.appendSlice(testing.allocator, "e");
     // Add 10 combining marks
     var i: usize = 0;
     while (i < 10) : (i += 1) {
-        try text.appendSlice("\u{0301}"); // Combining acute accent
+        try text.appendSlice(testing.allocator, "\u{0301}"); // Combining acute accent
     }
 
     const width = utf8.calculateTextWidth(text.items, 4, false, .unicode);
@@ -3532,32 +3532,28 @@ test "calculateTextWidth: complex text with emojis and multiple scripts" {
 
 test "calculateTextWidth: validate against unicode-width-map.zon" {
     const zon_content = @embedFile("unicode-width-map.zon");
-    const zon_with_null = try testing.allocator.dupeZ(u8, zon_content);
-    defer testing.allocator.free(zon_with_null);
+
+    // Use arena allocator to avoid memory leaks from ZON parser string allocations
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    const zon_with_null = try allocator.dupeZ(u8, zon_content);
 
     const WidthEntry = struct {
         codepoint: []const u8,
         width: i32,
     };
 
-    var status: std.zon.parse.Status = .{};
-    defer status.deinit(testing.allocator);
-
     const width_entries = std.zon.parse.fromSlice(
         []const WidthEntry,
-        testing.allocator,
+        allocator,
         zon_with_null,
-        &status,
+        null,
         .{},
     ) catch |err| {
         return err;
     };
-    defer {
-        for (width_entries) |entry| {
-            testing.allocator.free(entry.codepoint);
-        }
-        testing.allocator.free(width_entries);
-    }
 
     var successes: usize = 0;
     var failures: usize = 0;
@@ -3615,10 +3611,10 @@ test "findGraphemeInfo: comprehensive multilingual text" {
 
     const expected_width = utf8.calculateTextWidth(text, 4, false, .unicode);
 
-    var result = std.ArrayList(utf8.GraphemeInfo).init(testing.allocator);
-    defer result.deinit();
+    var result: std.ArrayListUnmanaged(utf8.GraphemeInfo) = .{};
+    defer result.deinit(testing.allocator);
 
-    try utf8.findGraphemeInfo(text, 4, false, .unicode, &result);
+    try utf8.findGraphemeInfo(text, 4, false, .unicode, testing.allocator, &result);
     try testing.expect(result.items.len > 0);
 
     var prev_end_byte: usize = 0;

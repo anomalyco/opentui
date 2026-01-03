@@ -455,9 +455,9 @@ test "drawTextBuffer - very long unwrapped line clipping" {
     var view = try TextBufferView.init(std.testing.allocator, tb);
     defer view.deinit();
 
-    var long_text = std.ArrayList(u8).init(std.testing.allocator);
-    defer long_text.deinit();
-    try long_text.appendNTimes('A', 200);
+    var long_text: std.ArrayListUnmanaged(u8) = .{};
+    defer long_text.deinit(std.testing.allocator);
+    try long_text.appendNTimes(std.testing.allocator, 'A', 200);
 
     try tb.setText(long_text.items);
     view.setWrapMode(.word);
@@ -1358,9 +1358,9 @@ test "drawTextBuffer - horizontal viewport width limits rendering (efficiency te
     var view = try TextBufferView.init(std.testing.allocator, tb);
     defer view.deinit();
 
-    var long_line = std.ArrayList(u8).init(std.testing.allocator);
-    defer long_line.deinit();
-    try long_line.appendNTimes('A', 1000);
+    var long_line: std.ArrayListUnmanaged(u8) = .{};
+    defer long_line.deinit(std.testing.allocator);
+    try long_line.appendNTimes(std.testing.allocator, 'A', 1000);
 
     try tb.setText(long_line.items);
 

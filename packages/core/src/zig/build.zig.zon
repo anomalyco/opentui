@@ -2,11 +2,15 @@
     .name = .opentui,
     .version = "0.1.11",
     .fingerprint = 0x5445027d063f5083,
-    .minimum_zig_version = "0.14.1",
+    .minimum_zig_version = "0.15.2",
     .dependencies = .{
         .uucode = .{
-            .url = "https://github.com/jacobsandlund/uucode/archive/refs/tags/v0.1.0-zig-0.14.tar.gz",
-            .hash = "uucode-0.1.0-ZZjBPpAFQABNCvd9cVPBg4I7233Ays-NWfWphPNqGbyE",
+            .url = "https://github.com/jacobsandlund/uucode/archive/refs/tags/v0.1.0.tar.gz",
+            .hash = "uucode-0.1.0-ZZjBPvoGQACkgWDKIrtI8CQcSXIufU3Kvty-pIfh02i2",
+        },
+        .ghostty = .{
+            .url = "git+https://github.com/ghostty-org/ghostty.git#fbed63b0474ce0fff66859c1563a0359589ef179",
+            .hash = "ghostty-1.3.0-dev-5UdBC_dRRAS-mGtQa1JGeQPgcubWBeell0hGr_47fW75",
         },
     },
     .paths = .{

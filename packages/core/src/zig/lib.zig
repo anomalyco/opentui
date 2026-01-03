@@ -16,17 +16,18 @@ const utf8 = @import("utf8.zig");
 const logger = @import("logger.zig");
 const event_bus = @import("event-bus.zig");
 const utils = @import("utils.zig");
+const ghostty = @import("ghostty-vt");
 
 pub const OptimizedBuffer = buffer.OptimizedBuffer;
 pub const CliRenderer = renderer.CliRenderer;
 pub const Terminal = terminal.Terminal;
 pub const RGBA = buffer.RGBA;
 
-export fn setLogCallback(callback: ?*const fn (level: u8, msgPtr: [*]const u8, msgLen: usize) callconv(.C) void) void {
+export fn setLogCallback(callback: ?*const fn (level: u8, msgPtr: [*]const u8, msgLen: usize) callconv(.c) void) void {
     logger.setLogCallback(callback);
 }
 
-export fn setEventCallback(callback: ?*const fn (namePtr: [*]const u8, nameLen: usize, dataPtr: [*]const u8, dataLen: usize) callconv(.C) void) void {
+export fn setEventCallback(callback: ?*const fn (namePtr: [*]const u8, nameLen: usize, dataPtr: [*]const u8, dataLen: usize) callconv(.c) void) void {
     event_bus.setEventCallback(callback);
 }
 
@@ -256,9 +257,9 @@ export fn clearTerminal(rendererPtr: *renderer.CliRenderer) void {
 
 export fn setTerminalTitle(rendererPtr: *renderer.CliRenderer, titlePtr: [*]const u8, titleLen: usize) void {
     const title = titlePtr[0..titleLen];
-    var bufferedWriter = &rendererPtr.stdoutWriter;
-    const writer = bufferedWriter.writer();
-    rendererPtr.terminal.setTerminalTitle(writer.any(), title);
+    var stdoutWriter = std.fs.File.stdout().writer(&rendererPtr.stdoutBuffer);
+    const writer = &stdoutWriter.interface;
+    rendererPtr.terminal.setTerminalTitle(writer, title);
 }
 
 // Buffer functions
@@ -1408,11 +1409,11 @@ export fn encodeUnicode(
     const is_ascii_only = utf8.isAsciiOnly(text);
 
     // Find grapheme info
-    var grapheme_list = std.ArrayList(utf8.GraphemeInfo).init(globalAllocator);
-    defer grapheme_list.deinit();
+    var grapheme_list: std.ArrayListUnmanaged(utf8.GraphemeInfo) = .{};
+    defer grapheme_list.deinit(globalAllocator);
 
     const tab_width: u8 = 2;
-    utf8.findGraphemeInfo(text, tab_width, is_ascii_only, wMethod, &grapheme_list) catch return false;
+    utf8.findGraphemeInfo(text, tab_width, is_ascii_only, wMethod, globalAllocator, &grapheme_list) catch return false;
     const specials = grapheme_list.items;
 
     // Allocate output array
@@ -1545,4 +1546,9 @@ export fn bufferDrawChar(
     const rgbaFg = utils.f32PtrToRGBA(fg);
     const rgbaBg = utils.f32PtrToRGBA(bg);
     bufferPtr.drawChar(char, x, y, rgbaFg, rgbaBg, attributes) catch {};
+}
+
+// Temp: ensures ghostty-vt gets bundled into lib to test build works
+export fn ghosttyGetTerminalSize() usize {
+    return @sizeOf(ghostty.Terminal);
 }

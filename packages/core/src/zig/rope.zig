@@ -38,13 +38,13 @@ pub fn Rope(comptime T: type) type {
         };
         pub const MarkerCache = if (marker_enabled) struct {
             // Flat arrays of positions for each marker type
-            positions: std.AutoHashMap(std.meta.Tag(T), std.ArrayList(MarkerPosition)),
+            positions: std.AutoHashMap(std.meta.Tag(T), std.ArrayListUnmanaged(MarkerPosition)),
             version: u64, // Rope version when cache was built
             allocator: Allocator,
 
             pub fn init(allocator: Allocator) MarkerCache {
                 return .{
-                    .positions = std.AutoHashMap(std.meta.Tag(T), std.ArrayList(MarkerPosition)).init(allocator),
+                    .positions = std.AutoHashMap(std.meta.Tag(T), std.ArrayListUnmanaged(MarkerPosition)).init(allocator),
                     .version = std.math.maxInt(u64), // Sentinel: cache is invalid until first rebuild
                     .allocator = allocator,
                 };
@@ -53,7 +53,7 @@ pub fn Rope(comptime T: type) type {
             pub fn deinit(self: *MarkerCache) void {
                 var iter = self.positions.valueIterator();
                 while (iter.next()) |list| {
-                    list.deinit();
+                    list.deinit(self.allocator);
                 }
                 self.positions.deinit();
             }
@@ -291,13 +291,13 @@ pub fn Rope(comptime T: type) type {
                 };
             }
 
-            fn collect(self: *const Node, list: *std.ArrayList(*const Node)) !void {
+            fn collect(self: *const Node, list: *std.ArrayListUnmanaged(*const Node), allocator: Allocator) !void {
                 switch (self.*) {
                     .branch => |*b| {
-                        try b.left.collect(list);
-                        try b.right.collect(list);
+                        try b.left.collect(list, allocator);
+                        try b.right.collect(list, allocator);
                     },
-                    .leaf => try list.append(self),
+                    .leaf => try list.append(allocator, self),
                 }
             }
 
@@ -318,11 +318,11 @@ pub fn Rope(comptime T: type) type {
             pub fn rebalance(self: *const Node, allocator: Allocator, tmp_allocator: Allocator) !*const Node {
                 if (self.is_balanced()) return self;
 
-                var leaves = std.ArrayList(*const Node).init(tmp_allocator);
-                defer leaves.deinit();
+                var leaves: std.ArrayListUnmanaged(*const Node) = .{};
+                defer leaves.deinit(tmp_allocator);
 
-                try leaves.ensureTotalCapacity(self.count());
-                try self.collect(&leaves);
+                try leaves.ensureTotalCapacity(tmp_allocator, self.count());
+                try self.collect(&leaves, tmp_allocator);
 
                 return try merge_leaves(leaves.items, allocator);
             }
@@ -524,12 +524,13 @@ pub fn Rope(comptime T: type) type {
                 return try initWithConfig(allocator, config);
             }
 
-            var leaves = try std.ArrayList(*const Node).initCapacity(allocator, items.len);
-            defer leaves.deinit();
+            var leaves: std.ArrayListUnmanaged(*const Node) = .{};
+            defer leaves.deinit(allocator);
+            try leaves.ensureTotalCapacity(allocator, items.len);
 
             for (items) |item| {
                 const leaf = try Node.new_leaf(allocator, item);
-                try leaves.append(leaf);
+                try leaves.append(allocator, leaf);
             }
 
             const root = try Node.merge_leaves(leaves.items, allocator);
@@ -669,7 +670,8 @@ pub fn Rope(comptime T: type) type {
             if (start >= end) return &[_]T{};
 
             const SliceContext = struct {
-                items: std.ArrayList(T),
+                items: std.ArrayListUnmanaged(T),
+                allocator: Allocator,
                 start: u32,
                 end: u32,
                 current_index: u32 = 0,
@@ -678,7 +680,7 @@ pub fn Rope(comptime T: type) type {
                     _ = idx;
                     const context = @as(*@This(), @ptrCast(@alignCast(ctx)));
                     if (context.current_index >= context.start and context.current_index < context.end) {
-                        context.items.append(data.*) catch |e| return .{ .err = e };
+                        context.items.append(context.allocator, data.*) catch |e| return .{ .err = e };
                     }
                     context.current_index += 1;
                     if (context.current_index >= context.end) {
@@ -689,14 +691,15 @@ pub fn Rope(comptime T: type) type {
             };
 
             var context = SliceContext{
-                .items = std.ArrayList(T).init(allocator),
+                .items = .{},
+                .allocator = allocator,
                 .start = start,
                 .end = end,
             };
-            errdefer context.items.deinit();
+            errdefer context.items.deinit(allocator);
 
             try self.walk(&context, SliceContext.walker);
-            return context.items.toOwnedSlice();
+            return context.items.toOwnedSlice(allocator);
         }
 
         pub fn delete_range(self: *Self, start: u32, end: u32) !void {
@@ -727,47 +730,49 @@ pub fn Rope(comptime T: type) type {
 
         pub fn to_array(self: *const Self, allocator: Allocator) ![]T {
             const ToArrayContext = struct {
-                items: std.ArrayList(T),
+                items: std.ArrayListUnmanaged(T),
+                allocator: Allocator,
 
                 fn walker(ctx: *anyopaque, data: *const T, idx: u32) Node.WalkerResult {
                     _ = idx;
                     const context = @as(*@This(), @ptrCast(@alignCast(ctx)));
-                    context.items.append(data.*) catch |e| return .{ .err = e };
+                    context.items.append(context.allocator, data.*) catch |e| return .{ .err = e };
                     return .{};
                 }
             };
 
             var context = ToArrayContext{
-                .items = std.ArrayList(T).init(allocator),
+                .items = .{},
+                .allocator = allocator,
             };
-            errdefer context.items.deinit();
+            errdefer context.items.deinit(allocator);
 
             try self.walk(&context, ToArrayContext.walker);
-            return context.items.toOwnedSlice();
+            return context.items.toOwnedSlice(allocator);
         }
 
         pub fn toText(self: *const Self, allocator: Allocator) ![]u8 {
-            var buffer = std.ArrayList(u8).init(allocator);
-            errdefer buffer.deinit();
+            var buffer: std.ArrayListUnmanaged(u8) = .{};
+            errdefer buffer.deinit(allocator);
 
-            try buffer.appendSlice("[root");
-            try nodeToText(self.root, &buffer);
-            try buffer.append(']');
+            try buffer.appendSlice(allocator, "[root");
+            try nodeToText(self.root, &buffer, allocator);
+            try buffer.append(allocator, ']');
 
-            return buffer.toOwnedSlice();
+            return buffer.toOwnedSlice(allocator);
         }
 
-        fn nodeToText(node: *const Node, buffer: *std.ArrayList(u8)) !void {
+        fn nodeToText(node: *const Node, buffer: *std.ArrayListUnmanaged(u8), allocator: Allocator) !void {
             switch (node.*) {
                 .branch => |*b| {
-                    try buffer.appendSlice("[branch");
-                    try nodeToText(b.left, buffer);
-                    try nodeToText(b.right, buffer);
-                    try buffer.append(']');
+                    try buffer.appendSlice(allocator, "[branch");
+                    try nodeToText(b.left, buffer, allocator);
+                    try nodeToText(b.right, buffer, allocator);
+                    try buffer.append(allocator, ']');
                 },
                 .leaf => |*l| {
                     if (l.is_sentinel) {
-                        try buffer.appendSlice("[empty]");
+                        try buffer.appendSlice(allocator, "[empty]");
                         return;
                     }
 
@@ -775,31 +780,31 @@ pub fn Rope(comptime T: type) type {
                         const tag = std.meta.activeTag(l.data);
                         const tag_name = @tagName(tag);
 
-                        try buffer.append('[');
-                        try buffer.appendSlice(tag_name);
+                        try buffer.append(allocator, '[');
+                        try buffer.appendSlice(allocator, tag_name);
 
                         if (@hasDecl(T, "Metrics")) {
                             const metrics = l.metrics();
-                            try buffer.append(':');
-                            try std.fmt.format(buffer.writer(), "w{d}", .{metrics.weight()});
+                            try buffer.append(allocator, ':');
+                            try buffer.writer(allocator).print("w{d}", .{metrics.weight()});
 
                             if (@hasDecl(T.Metrics, "total_width")) {
-                                try std.fmt.format(buffer.writer(), ",tw{d}", .{metrics.custom.total_width});
+                                try buffer.writer(allocator).print(",tw{d}", .{metrics.custom.total_width});
                             }
                             if (@hasDecl(T.Metrics, "total_bytes")) {
-                                try std.fmt.format(buffer.writer(), ",b{d}", .{metrics.custom.total_bytes});
+                                try buffer.writer(allocator).print(",b{d}", .{metrics.custom.total_bytes});
                             }
                         }
 
-                        try buffer.append(']');
+                        try buffer.append(allocator, ']');
                     } else {
-                        try buffer.appendSlice("[leaf");
+                        try buffer.appendSlice(allocator, "[leaf");
                         if (@hasDecl(T, "Metrics")) {
                             const metrics = l.metrics();
-                            try buffer.append(':');
-                            try std.fmt.format(buffer.writer(), "w{d}", .{metrics.weight()});
+                            try buffer.append(allocator, ':');
+                            try buffer.writer(allocator).print("w{d}", .{metrics.weight()});
                         }
-                        try buffer.append(']');
+                        try buffer.append(allocator, ']');
                     }
                 },
             }
@@ -925,12 +930,13 @@ pub fn Rope(comptime T: type) type {
 
             // Handle insertion
             if (action.insert_between.len > 0) {
-                var leaves = try std.ArrayList(*const Node).initCapacity(self.allocator, action.insert_between.len);
-                defer leaves.deinit();
+                var leaves: std.ArrayListUnmanaged(*const Node) = .{};
+                defer leaves.deinit(self.allocator);
+                try leaves.ensureTotalCapacity(self.allocator, action.insert_between.len);
 
                 for (action.insert_between) |item| {
                     const leaf = try Node.new_leaf(self.allocator, item);
-                    try leaves.append(leaf);
+                    try leaves.append(self.allocator, leaf);
                 }
 
                 const insert_root = try Node.merge_leaves(leaves.items, self.allocator);
@@ -1115,12 +1121,13 @@ pub fn Rope(comptime T: type) type {
                 return;
             }
 
-            var leaves = try std.ArrayList(*const Node).initCapacity(self.allocator, items.len);
-            defer leaves.deinit();
+            var leaves: std.ArrayListUnmanaged(*const Node) = .{};
+            defer leaves.deinit(self.allocator);
+            try leaves.ensureTotalCapacity(self.allocator, items.len);
 
             for (items) |item| {
                 const leaf = try Node.new_leaf(self.allocator, item);
-                try leaves.append(leaf);
+                try leaves.append(self.allocator, leaf);
             }
 
             self.root = try Node.merge_leaves(leaves.items, self.allocator);
@@ -1164,10 +1171,10 @@ pub fn Rope(comptime T: type) type {
                             return .{ .keep_walking = false, .err = e };
                         };
                         if (!gop.found_existing) {
-                            gop.value_ptr.* = std.ArrayList(MarkerPosition).init(context.cache.allocator);
+                            gop.value_ptr.* = .{};
                         }
 
-                        gop.value_ptr.append(.{
+                        gop.value_ptr.append(context.cache.allocator, .{
                             .leaf_index = context.current_leaf,
                             .global_weight = context.current_weight,
                         }) catch |e| {
