@@ -1,4 +1,4 @@
-import { test, expect, describe, mock, beforeEach } from "bun:test"
+import { test, expect, describe, mock, beforeEach, afterEach } from "bun:test"
 import { TerminalConsole, ConsolePosition } from "./console"
 import { MouseEvent } from "./renderer"
 
@@ -36,7 +36,7 @@ function createMouseEvent(
 
 describe("TerminalConsole", () => {
   let mockRenderer: MockRenderer
-  let terminalConsole: TerminalConsole
+  let terminalConsole: TerminalConsole | undefined
 
   beforeEach(() => {
     mockRenderer = {
@@ -52,6 +52,10 @@ describe("TerminalConsole", () => {
         off: mock(() => {}),
       },
     }
+  })
+
+  afterEach(() => {
+    terminalConsole?.destroy()
   })
 
   describe("resize", () => {

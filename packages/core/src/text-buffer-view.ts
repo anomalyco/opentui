@@ -3,6 +3,10 @@ import { resolveRenderLib, type LineInfo, type RenderLib } from "./zig"
 import { type Pointer } from "bun:ffi"
 import type { TextBuffer } from "./text-buffer"
 
+export interface TextBufferViewNativeMetrics {
+  arenaBytes: number
+}
+
 export class TextBufferView {
   private lib: RenderLib
   private viewPtr: Pointer
@@ -174,6 +178,13 @@ export class TextBufferView {
   public getVirtualLineCount(): number {
     this.guard()
     return this.lib.textBufferViewGetVirtualLineCount(this.viewPtr)
+  }
+
+  public getNativeMetrics(): TextBufferViewNativeMetrics {
+    this.guard()
+    return {
+      arenaBytes: this.lib.textBufferViewGetArenaAllocatedBytes(this.viewPtr),
+    }
   }
 
   public destroy(): void {

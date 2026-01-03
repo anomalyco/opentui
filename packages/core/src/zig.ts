@@ -109,6 +109,30 @@ function getOpenTUILib(libPath?: string) {
       args: ["ptr", "u32", "u32", "u32"],
       returns: "void",
     },
+    graphemePoolGetTotalSlots: {
+      args: [],
+      returns: "u32",
+    },
+    graphemePoolGetUsedSlots: {
+      args: [],
+      returns: "u32",
+    },
+    graphemePoolGetTotalBytes: {
+      args: [],
+      returns: "usize",
+    },
+    graphemePoolGetClassSlots: {
+      args: ["u8"],
+      returns: "u32",
+    },
+    graphemePoolGetClassUsedSlots: {
+      args: ["u8"],
+      returns: "u32",
+    },
+    graphemePoolGetClassBytes: {
+      args: ["u8"],
+      returns: "usize",
+    },
     render: {
       args: ["ptr", "bool"],
       returns: "void",
@@ -382,6 +406,54 @@ function getOpenTUILib(libPath?: string) {
       args: ["ptr"],
       returns: "u32",
     },
+    textBufferGetArenaAllocatedBytes: {
+      args: ["ptr"],
+      returns: "usize",
+    },
+    textBufferGetRopeSegmentCount: {
+      args: ["ptr"],
+      returns: "usize",
+    },
+    textBufferGetMemRegistryUsedSlots: {
+      args: ["ptr"],
+      returns: "usize",
+    },
+    textBufferGetMemRegistryFreeSlots: {
+      args: ["ptr"],
+      returns: "usize",
+    },
+    textBufferGetStyledCapacity: {
+      args: ["ptr"],
+      returns: "usize",
+    },
+    textBufferGetHighlightLineCount: {
+      args: ["ptr"],
+      returns: "usize",
+    },
+    textBufferGetHighlightLineCapacity: {
+      args: ["ptr"],
+      returns: "usize",
+    },
+    textBufferGetHighlightCapacityTotal: {
+      args: ["ptr"],
+      returns: "usize",
+    },
+    textBufferGetSpanLineCount: {
+      args: ["ptr"],
+      returns: "usize",
+    },
+    textBufferGetSpanLineCapacity: {
+      args: ["ptr"],
+      returns: "usize",
+    },
+    textBufferGetSpanCapacityTotal: {
+      args: ["ptr"],
+      returns: "usize",
+    },
+    textBufferGetDirtySpanLineCount: {
+      args: ["ptr"],
+      returns: "usize",
+    },
 
     textBufferReset: {
       args: ["ptr"],
@@ -428,6 +500,10 @@ function getOpenTUILib(libPath?: string) {
       returns: "void",
     },
     textBufferSetTextFromMem: {
+      args: ["ptr", "u8"],
+      returns: "void",
+    },
+    textBufferSetTextFromMemReset: {
       args: ["ptr", "u8"],
       returns: "void",
     },
@@ -556,6 +632,10 @@ function getOpenTUILib(libPath?: string) {
     textBufferViewGetVirtualLineCount: {
       args: ["ptr"],
       returns: "u32",
+    },
+    textBufferViewGetArenaAllocatedBytes: {
+      args: ["ptr"],
+      returns: "usize",
     },
     textBufferViewGetLineInfoDirect: {
       args: ["ptr", "ptr"],
@@ -1214,6 +1294,12 @@ export interface RenderLib {
   setRenderOffset: (renderer: Pointer, offset: number) => void
   updateStats: (renderer: Pointer, time: number, fps: number, frameCallbackTime: number) => void
   updateMemoryStats: (renderer: Pointer, heapUsed: number, heapTotal: number, arrayBuffers: number) => void
+  graphemePoolGetTotalSlots: () => number
+  graphemePoolGetUsedSlots: () => number
+  graphemePoolGetTotalBytes: () => number
+  graphemePoolGetClassSlots: (classId: number) => number
+  graphemePoolGetClassUsedSlots: (classId: number) => number
+  graphemePoolGetClassBytes: (classId: number) => number
   render: (renderer: Pointer, force: boolean) => void
   getNextBuffer: (renderer: Pointer) => OptimizedBuffer
   getCurrentBuffer: (renderer: Pointer) => OptimizedBuffer
@@ -1335,6 +1421,18 @@ export interface RenderLib {
   destroyTextBuffer: (buffer: Pointer) => void
   textBufferGetLength: (buffer: Pointer) => number
   textBufferGetByteSize: (buffer: Pointer) => number
+  textBufferGetArenaAllocatedBytes: (buffer: Pointer) => number
+  textBufferGetRopeSegmentCount: (buffer: Pointer) => number
+  textBufferGetMemRegistryUsedSlots: (buffer: Pointer) => number
+  textBufferGetMemRegistryFreeSlots: (buffer: Pointer) => number
+  textBufferGetStyledCapacity: (buffer: Pointer) => number
+  textBufferGetHighlightLineCount: (buffer: Pointer) => number
+  textBufferGetHighlightLineCapacity: (buffer: Pointer) => number
+  textBufferGetHighlightCapacityTotal: (buffer: Pointer) => number
+  textBufferGetSpanLineCount: (buffer: Pointer) => number
+  textBufferGetSpanLineCapacity: (buffer: Pointer) => number
+  textBufferGetSpanCapacityTotal: (buffer: Pointer) => number
+  textBufferGetDirtySpanLineCount: (buffer: Pointer) => number
 
   textBufferReset: (buffer: Pointer) => void
   textBufferClear: (buffer: Pointer) => void
@@ -1342,6 +1440,7 @@ export interface RenderLib {
   textBufferReplaceMemBuffer: (buffer: Pointer, memId: number, bytes: Uint8Array, owned?: boolean) => boolean
   textBufferClearMemRegistry: (buffer: Pointer) => void
   textBufferSetTextFromMem: (buffer: Pointer, memId: number) => void
+  textBufferSetTextFromMemReset: (buffer: Pointer, memId: number) => void
   textBufferAppend: (buffer: Pointer, bytes: Uint8Array) => void
   textBufferAppendFromMemId: (buffer: Pointer, memId: number) => void
   textBufferLoadFile: (buffer: Pointer, path: string) => boolean
@@ -1420,6 +1519,7 @@ export interface RenderLib {
     height: number,
   ) => { lineCount: number; maxWidth: number } | null
   textBufferViewGetVirtualLineCount: (view: Pointer) => number
+  textBufferViewGetArenaAllocatedBytes: (view: Pointer) => number
 
   readonly encoder: TextEncoder
   readonly decoder: TextDecoder
@@ -1606,6 +1706,10 @@ class FFIRenderLib implements RenderLib {
     this.setupEventBus()
   }
 
+  private toNumber(value: number | bigint): number {
+    return typeof value === "bigint" ? Number(value) : value
+  }
+
   private setupLogging() {
     if (this.logCallbackWrapper) {
       return
@@ -1745,6 +1849,30 @@ class FFIRenderLib implements RenderLib {
 
   public updateMemoryStats(renderer: Pointer, heapUsed: number, heapTotal: number, arrayBuffers: number) {
     this.opentui.symbols.updateMemoryStats(renderer, heapUsed, heapTotal, arrayBuffers)
+  }
+
+  public graphemePoolGetTotalSlots(): number {
+    return this.opentui.symbols.graphemePoolGetTotalSlots()
+  }
+
+  public graphemePoolGetUsedSlots(): number {
+    return this.opentui.symbols.graphemePoolGetUsedSlots()
+  }
+
+  public graphemePoolGetTotalBytes(): number {
+    return this.toNumber(this.opentui.symbols.graphemePoolGetTotalBytes())
+  }
+
+  public graphemePoolGetClassSlots(classId: number): number {
+    return this.opentui.symbols.graphemePoolGetClassSlots(classId)
+  }
+
+  public graphemePoolGetClassUsedSlots(classId: number): number {
+    return this.opentui.symbols.graphemePoolGetClassUsedSlots(classId)
+  }
+
+  public graphemePoolGetClassBytes(classId: number): number {
+    return this.toNumber(this.opentui.symbols.graphemePoolGetClassBytes(classId))
   }
 
   public getNextBuffer(renderer: Pointer): OptimizedBuffer {
@@ -2185,6 +2313,54 @@ class FFIRenderLib implements RenderLib {
     return this.opentui.symbols.textBufferGetByteSize(buffer)
   }
 
+  public textBufferGetArenaAllocatedBytes(buffer: Pointer): number {
+    return this.toNumber(this.opentui.symbols.textBufferGetArenaAllocatedBytes(buffer))
+  }
+
+  public textBufferGetRopeSegmentCount(buffer: Pointer): number {
+    return this.toNumber(this.opentui.symbols.textBufferGetRopeSegmentCount(buffer))
+  }
+
+  public textBufferGetMemRegistryUsedSlots(buffer: Pointer): number {
+    return this.toNumber(this.opentui.symbols.textBufferGetMemRegistryUsedSlots(buffer))
+  }
+
+  public textBufferGetMemRegistryFreeSlots(buffer: Pointer): number {
+    return this.toNumber(this.opentui.symbols.textBufferGetMemRegistryFreeSlots(buffer))
+  }
+
+  public textBufferGetStyledCapacity(buffer: Pointer): number {
+    return this.toNumber(this.opentui.symbols.textBufferGetStyledCapacity(buffer))
+  }
+
+  public textBufferGetHighlightLineCount(buffer: Pointer): number {
+    return this.toNumber(this.opentui.symbols.textBufferGetHighlightLineCount(buffer))
+  }
+
+  public textBufferGetHighlightLineCapacity(buffer: Pointer): number {
+    return this.toNumber(this.opentui.symbols.textBufferGetHighlightLineCapacity(buffer))
+  }
+
+  public textBufferGetHighlightCapacityTotal(buffer: Pointer): number {
+    return this.toNumber(this.opentui.symbols.textBufferGetHighlightCapacityTotal(buffer))
+  }
+
+  public textBufferGetSpanLineCount(buffer: Pointer): number {
+    return this.toNumber(this.opentui.symbols.textBufferGetSpanLineCount(buffer))
+  }
+
+  public textBufferGetSpanLineCapacity(buffer: Pointer): number {
+    return this.toNumber(this.opentui.symbols.textBufferGetSpanLineCapacity(buffer))
+  }
+
+  public textBufferGetSpanCapacityTotal(buffer: Pointer): number {
+    return this.toNumber(this.opentui.symbols.textBufferGetSpanCapacityTotal(buffer))
+  }
+
+  public textBufferGetDirtySpanLineCount(buffer: Pointer): number {
+    return this.toNumber(this.opentui.symbols.textBufferGetDirtySpanLineCount(buffer))
+  }
+
   public textBufferReset(buffer: Pointer): void {
     this.opentui.symbols.textBufferReset(buffer)
   }
@@ -2243,6 +2419,10 @@ class FFIRenderLib implements RenderLib {
 
   public textBufferSetTextFromMem(buffer: Pointer, memId: number): void {
     this.opentui.symbols.textBufferSetTextFromMem(buffer, memId)
+  }
+
+  public textBufferSetTextFromMemReset(buffer: Pointer, memId: number): void {
+    this.opentui.symbols.textBufferSetTextFromMemReset(buffer, memId)
   }
 
   public textBufferAppend(buffer: Pointer, bytes: Uint8Array): void {
@@ -2491,6 +2671,10 @@ class FFIRenderLib implements RenderLib {
 
   public textBufferViewGetVirtualLineCount(view: Pointer): number {
     return this.opentui.symbols.textBufferViewGetVirtualLineCount(view)
+  }
+
+  public textBufferViewGetArenaAllocatedBytes(view: Pointer): number {
+    return this.toNumber(this.opentui.symbols.textBufferViewGetArenaAllocatedBytes(view))
   }
 
   private textBufferViewGetLineInfoDirect(view: Pointer, outPtr: Pointer): void {

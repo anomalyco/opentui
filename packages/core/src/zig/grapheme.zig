@@ -154,6 +154,55 @@ pub const GraphemePool = struct {
         return self.classes[class_id].getRefcount(slot_index, generation);
     }
 
+    pub fn getTotalSlots(self: *const GraphemePool) u32 {
+        var total: u32 = 0;
+        var i: usize = 0;
+        while (i < MAX_CLASSES) : (i += 1) {
+            total += self.classes[i].num_slots;
+        }
+        return total;
+    }
+
+    pub fn getUsedSlots(self: *const GraphemePool) u32 {
+        var total: u32 = 0;
+        var i: usize = 0;
+        while (i < MAX_CLASSES) : (i += 1) {
+            const class_pool = self.classes[i];
+            const free_len: u32 = @intCast(class_pool.free_list.items.len);
+            if (class_pool.num_slots > free_len) {
+                total += class_pool.num_slots - free_len;
+            }
+        }
+        return total;
+    }
+
+    pub fn getTotalBytes(self: *const GraphemePool) usize {
+        var total: usize = 0;
+        var i: usize = 0;
+        while (i < MAX_CLASSES) : (i += 1) {
+            total += self.classes[i].slots.items.len;
+        }
+        return total;
+    }
+
+    pub fn getClassSlots(self: *const GraphemePool, class_id: u8) u32 {
+        if (class_id >= MAX_CLASSES) return 0;
+        return self.classes[class_id].num_slots;
+    }
+
+    pub fn getClassUsedSlots(self: *const GraphemePool, class_id: u8) u32 {
+        if (class_id >= MAX_CLASSES) return 0;
+        const class_pool = self.classes[class_id];
+        const free_len: u32 = @intCast(class_pool.free_list.items.len);
+        if (class_pool.num_slots <= free_len) return 0;
+        return class_pool.num_slots - free_len;
+    }
+
+    pub fn getClassBytes(self: *const GraphemePool, class_id: u8) usize {
+        if (class_id >= MAX_CLASSES) return 0;
+        return self.classes[class_id].slots.items.len;
+    }
+
     const ClassPool = struct {
         allocator: std.mem.Allocator,
         slot_capacity: u32,
@@ -389,6 +438,11 @@ pub fn deinitGlobalPool() void {
         p.deinit();
         GLOBAL_POOL_STORAGE = null;
     }
+}
+
+pub fn getGlobalPool() ?*GraphemePool {
+    if (GLOBAL_POOL_STORAGE) |*p| return p;
+    return null;
 }
 
 pub const GraphemeTracker = struct {

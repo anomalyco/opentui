@@ -39,6 +39,36 @@ export fn getArenaAllocatedBytes() usize {
     return arena.queryCapacity();
 }
 
+export fn graphemePoolGetTotalSlots() u32 {
+    const pool = gp.initGlobalPool(globalArena);
+    return pool.getTotalSlots();
+}
+
+export fn graphemePoolGetUsedSlots() u32 {
+    const pool = gp.initGlobalPool(globalArena);
+    return pool.getUsedSlots();
+}
+
+export fn graphemePoolGetTotalBytes() usize {
+    const pool = gp.initGlobalPool(globalArena);
+    return pool.getTotalBytes();
+}
+
+export fn graphemePoolGetClassSlots(class_id: u8) u32 {
+    const pool = gp.initGlobalPool(globalArena);
+    return pool.getClassSlots(class_id);
+}
+
+export fn graphemePoolGetClassUsedSlots(class_id: u8) u32 {
+    const pool = gp.initGlobalPool(globalArena);
+    return pool.getClassUsedSlots(class_id);
+}
+
+export fn graphemePoolGetClassBytes(class_id: u8) usize {
+    const pool = gp.initGlobalPool(globalArena);
+    return pool.getClassBytes(class_id);
+}
+
 export fn createRenderer(width: u32, height: u32, testing: bool) ?*renderer.CliRenderer {
     if (width == 0 or height == 0) {
         logger.warn("Invalid renderer dimensions: {}x{}", .{ width, height });
@@ -525,6 +555,54 @@ export fn textBufferGetByteSize(tb: *text_buffer.UnifiedTextBuffer) u32 {
     return tb.getByteSize();
 }
 
+export fn textBufferGetArenaAllocatedBytes(tb: *text_buffer.UnifiedTextBuffer) usize {
+    return tb.getArenaAllocatedBytes();
+}
+
+export fn textBufferGetRopeSegmentCount(tb: *text_buffer.UnifiedTextBuffer) usize {
+    return tb.getRopeSegmentCount();
+}
+
+export fn textBufferGetMemRegistryUsedSlots(tb: *text_buffer.UnifiedTextBuffer) usize {
+    return tb.getMemRegistryUsedSlots();
+}
+
+export fn textBufferGetMemRegistryFreeSlots(tb: *text_buffer.UnifiedTextBuffer) usize {
+    return tb.getMemRegistryFreeSlots();
+}
+
+export fn textBufferGetStyledCapacity(tb: *text_buffer.UnifiedTextBuffer) usize {
+    return tb.getStyledCapacity();
+}
+
+export fn textBufferGetHighlightLineCount(tb: *text_buffer.UnifiedTextBuffer) usize {
+    return tb.getHighlightLineCount();
+}
+
+export fn textBufferGetHighlightLineCapacity(tb: *text_buffer.UnifiedTextBuffer) usize {
+    return tb.getHighlightLineCapacity();
+}
+
+export fn textBufferGetHighlightCapacityTotal(tb: *text_buffer.UnifiedTextBuffer) usize {
+    return tb.getHighlightCapacityTotal();
+}
+
+export fn textBufferGetSpanLineCount(tb: *text_buffer.UnifiedTextBuffer) usize {
+    return tb.getSpanLineCount();
+}
+
+export fn textBufferGetSpanLineCapacity(tb: *text_buffer.UnifiedTextBuffer) usize {
+    return tb.getSpanLineCapacity();
+}
+
+export fn textBufferGetSpanCapacityTotal(tb: *text_buffer.UnifiedTextBuffer) usize {
+    return tb.getSpanCapacityTotal();
+}
+
+export fn textBufferGetDirtySpanLineCount(tb: *text_buffer.UnifiedTextBuffer) usize {
+    return tb.getDirtySpanLineCount();
+}
+
 export fn textBufferReset(tb: *text_buffer.UnifiedTextBuffer) void {
     tb.reset();
 }
@@ -578,6 +656,10 @@ export fn textBufferClearMemRegistry(tb: *text_buffer.UnifiedTextBuffer) void {
 
 export fn textBufferSetTextFromMem(tb: *text_buffer.UnifiedTextBuffer, id: u8) void {
     tb.setTextFromMemId(id) catch {};
+}
+
+export fn textBufferSetTextFromMemReset(tb: *text_buffer.UnifiedTextBuffer, id: u8) void {
+    tb.setTextFromMemIdReset(id) catch {};
 }
 
 export fn textBufferAppend(tb: *text_buffer.UnifiedTextBuffer, dataPtr: [*]const u8, dataLen: usize) void {
@@ -691,6 +773,10 @@ export fn textBufferViewSetViewport(view: *text_buffer_view.UnifiedTextBufferVie
 
 export fn textBufferViewGetVirtualLineCount(view: *text_buffer_view.UnifiedTextBufferView) u32 {
     return view.getVirtualLineCount();
+}
+
+export fn textBufferViewGetArenaAllocatedBytes(view: *text_buffer_view.UnifiedTextBufferView) usize {
+    return view.getArenaAllocatedBytes();
 }
 
 export fn textBufferViewGetLineInfoDirect(view: *text_buffer_view.UnifiedTextBufferView, outPtr: *ExternalLineInfo) void {

@@ -3,15 +3,9 @@
 
 const g = globalThis as any
 
-// Only polyfill WebSocket if not natively available (Node.js < 21)
 // Bun and Node.js 21+ should have native WebSocket support
 if (typeof g.WebSocket === "undefined") {
-  try {
-    const ws = await import("ws")
-    g.WebSocket = ws.default
-  } catch {
-    // ws not installed - will fail later if DevTools actually needs it
-  }
+  console.warn("WebSocket is not available; react-devtools-core requires a global WebSocket implementation.")
 }
 
 // react-devtools-core expects browser-like globals

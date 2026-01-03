@@ -14,6 +14,22 @@ export interface TextChunk {
   link?: { url: string }
 }
 
+export interface TextBufferNativeMetrics {
+  arenaBytes: number
+  ropeSegments: number
+  memRegistryUsedSlots: number
+  memRegistryFreeSlots: number
+  styledCapacity: number
+  highlightLineCount: number
+  highlightLineCapacity: number
+  highlightCapacityTotal: number
+  spanLineCount: number
+  spanLineCapacity: number
+  spanCapacityTotal: number
+  dirtySpanLineCount: number
+  highlightCount: number
+}
+
 export class TextBuffer {
   private lib: RenderLib
   private bufferPtr: Pointer
@@ -43,7 +59,7 @@ export class TextBuffer {
     if (this._destroyed) throw new Error("TextBuffer is destroyed")
   }
 
-  public setText(text: string): void {
+  public setText(text: string, options?: { reset?: boolean }): void {
     this.guard()
     this._textBytes = this.lib.encoder.encode(text)
 
@@ -53,7 +69,11 @@ export class TextBuffer {
       this.lib.textBufferReplaceMemBuffer(this.bufferPtr, this._memId, this._textBytes, false)
     }
 
-    this.lib.textBufferSetTextFromMem(this.bufferPtr, this._memId)
+    if (options?.reset) {
+      this.lib.textBufferSetTextFromMemReset(this.bufferPtr, this._memId)
+    } else {
+      this.lib.textBufferSetTextFromMem(this.bufferPtr, this._memId)
+    }
     this._length = this.lib.textBufferGetLength(this.bufferPtr)
     this._byteSize = this.lib.textBufferGetByteSize(this.bufferPtr)
     this._lineInfo = undefined
@@ -212,6 +232,25 @@ export class TextBuffer {
     this.guard()
     this._syntaxStyle = style ?? undefined
     this.lib.textBufferSetSyntaxStyle(this.bufferPtr, style?.ptr ?? null)
+  }
+
+  public getNativeMetrics(): TextBufferNativeMetrics {
+    this.guard()
+    return {
+      arenaBytes: this.lib.textBufferGetArenaAllocatedBytes(this.bufferPtr),
+      ropeSegments: this.lib.textBufferGetRopeSegmentCount(this.bufferPtr),
+      memRegistryUsedSlots: this.lib.textBufferGetMemRegistryUsedSlots(this.bufferPtr),
+      memRegistryFreeSlots: this.lib.textBufferGetMemRegistryFreeSlots(this.bufferPtr),
+      styledCapacity: this.lib.textBufferGetStyledCapacity(this.bufferPtr),
+      highlightLineCount: this.lib.textBufferGetHighlightLineCount(this.bufferPtr),
+      highlightLineCapacity: this.lib.textBufferGetHighlightLineCapacity(this.bufferPtr),
+      highlightCapacityTotal: this.lib.textBufferGetHighlightCapacityTotal(this.bufferPtr),
+      spanLineCount: this.lib.textBufferGetSpanLineCount(this.bufferPtr),
+      spanLineCapacity: this.lib.textBufferGetSpanLineCapacity(this.bufferPtr),
+      spanCapacityTotal: this.lib.textBufferGetSpanCapacityTotal(this.bufferPtr),
+      dirtySpanLineCount: this.lib.textBufferGetDirtySpanLineCount(this.bufferPtr),
+      highlightCount: this.getHighlightCount(),
+    }
   }
 
   public getSyntaxStyle(): SyntaxStyle | null {

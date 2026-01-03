@@ -32,7 +32,7 @@ $ bun add react-devtools-core@7 -d
 reconciler.injectIntoDevTools()
 
 export function _render(element: React.ReactNode, root: RootRenderable) {
-  const container = reconciler.createContainer(
+  const container = (reconciler as any).createContainer(
     root,
     ConcurrentRoot,
     null,

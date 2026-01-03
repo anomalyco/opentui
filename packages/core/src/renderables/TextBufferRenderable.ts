@@ -38,6 +38,7 @@ export abstract class TextBufferRenderable extends Renderable implements LineInf
 
   protected textBuffer: TextBuffer
   protected textBufferView: TextBufferView
+  private _bufferSyntaxStyle: SyntaxStyle
 
   protected _defaultOptions = {
     fg: RGBA.fromValues(1, 1, 1, 1),
@@ -69,8 +70,8 @@ export abstract class TextBufferRenderable extends Renderable implements LineInf
     this.textBuffer = TextBuffer.create(this._ctx.widthMethod)
     this.textBufferView = TextBufferView.create(this.textBuffer)
 
-    const style = SyntaxStyle.create()
-    this.textBuffer.setSyntaxStyle(style)
+    this._bufferSyntaxStyle = SyntaxStyle.create()
+    this.textBuffer.setSyntaxStyle(this._bufferSyntaxStyle)
 
     this.textBufferView.setWrapMode(this._wrapMode)
     this.setupMeasureFunc()
@@ -476,6 +477,8 @@ export abstract class TextBufferRenderable extends Renderable implements LineInf
   }
 
   destroy(): void {
+    this.textBuffer.setSyntaxStyle(null)
+    this._bufferSyntaxStyle.destroy()
     this.textBufferView.destroy()
     this.textBuffer.destroy()
     super.destroy()

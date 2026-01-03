@@ -2,6 +2,7 @@ import { describe, expect, it, beforeEach, afterEach } from "bun:test"
 import { TextBuffer } from "./text-buffer"
 import { StyledText, stringToStyledText } from "./lib/styled-text"
 import { RGBA } from "./lib/RGBA"
+import { SyntaxStyle } from "./syntax-style"
 
 describe("TextBuffer", () => {
   let buffer: TextBuffer
@@ -42,6 +43,42 @@ describe("TextBuffer", () => {
       buffer.setText(text)
 
       expect(buffer.length).toBe(18) // 6 + 6 + 6 chars (newlines not counted)
+    })
+
+    it("reuses syntax style ids for identical chunk styles", () => {
+      const syntaxStyle = SyntaxStyle.create()
+      buffer.setSyntaxStyle(syntaxStyle)
+
+      const fgA = RGBA.fromInts(120, 120, 120, 255)
+      const fgB = RGBA.fromInts(200, 200, 200, 255)
+      const bgA = RGBA.fromInts(10, 10, 10, 255)
+      const bgB = RGBA.fromInts(20, 20, 20, 255)
+
+      const baseChunks = [
+        { __isChunk: true, text: "A", fg: fgA, bg: bgA, attributes: 0 },
+        { __isChunk: true, text: "B", fg: fgB, bg: bgB, attributes: 0 },
+      ]
+      buffer.setStyledText(new StyledText(baseChunks))
+      const baseCount = syntaxStyle.getStyleCount()
+
+      const chunks = Array.from({ length: 200 }, (_, index) => {
+        const useA = index % 2 === 0
+        return {
+          __isChunk: true,
+          text: useA ? "A" : "B",
+          fg: useA ? fgA : fgB,
+          bg: useA ? bgA : bgB,
+          attributes: 0,
+        }
+      })
+
+      buffer.setStyledText(new StyledText(chunks))
+      const finalCount = syntaxStyle.getStyleCount()
+
+      expect(finalCount).toBe(baseCount)
+
+      buffer.setSyntaxStyle(null)
+      syntaxStyle.destroy()
     })
   })
 

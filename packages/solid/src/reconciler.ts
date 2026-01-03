@@ -116,12 +116,9 @@ function _removeNode(parent: DomNode, node: DomNode): void {
 
   parent.remove(node.id)
 
-  process.nextTick(() => {
-    if (node instanceof BaseRenderable && !node.parent) {
-      node.destroyRecursively()
-      return
-    }
-  })
+  if (node instanceof BaseRenderable && !node.parent) {
+    node.destroyRecursively()
+  }
 }
 
 function _createTextNode(value: string | number): TextNode {

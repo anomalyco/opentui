@@ -25,6 +25,7 @@ export class CodeRenderable extends TextBufferRenderable {
   private _treeSitterClient: TreeSitterClient
   private _highlightsDirty: boolean = false
   private _highlightSnapshotId: number = 0
+  private _highlightQueued: boolean = false
   private _conceal: boolean
   private _drawUnstyledText: boolean
   private _shouldRenderTextBuffer: boolean = true
@@ -51,7 +52,7 @@ export class CodeRenderable extends TextBufferRenderable {
     this._streaming = options.streaming ?? this._contentDefaultOptions.streaming
 
     if (this._content.length > 0) {
-      this.textBuffer.setText(this._content)
+      this.textBuffer.setText(this._content, { reset: true })
       this.updateTextInfo()
       this._shouldRenderTextBuffer = this._drawUnstyledText || !this._filetype
     }
@@ -73,7 +74,7 @@ export class CodeRenderable extends TextBufferRenderable {
         return
       }
 
-      this.textBuffer.setText(value)
+      this.textBuffer.setText(value, { reset: true })
       this.updateTextInfo()
     }
   }
@@ -166,7 +167,7 @@ export class CodeRenderable extends TextBufferRenderable {
     if (this._streaming && !isInitialContent) {
       this._shouldRenderTextBuffer = true
     } else if (shouldDrawUnstyledNow) {
-      this.textBuffer.setText(content)
+      this.textBuffer.setText(content, { reset: true })
       this._shouldRenderTextBuffer = true
     } else {
       this._shouldRenderTextBuffer = false
@@ -174,6 +175,11 @@ export class CodeRenderable extends TextBufferRenderable {
   }
 
   private async startHighlight(): Promise<void> {
+    if (this._isHighlighting) {
+      this._highlightQueued = true
+      return
+    }
+
     const content = this._content
     const filetype = this._filetype
     const snapshotId = ++this._highlightSnapshotId
@@ -207,11 +213,10 @@ export class CodeRenderable extends TextBufferRenderable {
         const styledText = new StyledText(chunks)
         this.textBuffer.setStyledText(styledText)
       } else {
-        this.textBuffer.setText(content)
+        this.textBuffer.setText(content, { reset: true })
       }
 
       this._shouldRenderTextBuffer = true
-      this._isHighlighting = false
       this._highlightsDirty = false
       this.updateTextInfo()
       this.requestRender()
@@ -222,12 +227,25 @@ export class CodeRenderable extends TextBufferRenderable {
 
       console.warn("Code highlighting failed, falling back to plain text:", error)
       if (this.isDestroyed) return
-      this.textBuffer.setText(content)
+      this.textBuffer.setText(content, { reset: true })
       this._shouldRenderTextBuffer = true
-      this._isHighlighting = false
       this._highlightsDirty = false
       this.updateTextInfo()
       this.requestRender()
+    } finally {
+      this._isHighlighting = false
+
+      if (this._highlightQueued && !this.isDestroyed) {
+        this._highlightQueued = false
+
+        if (this._content.length === 0 || !this._filetype) {
+          return
+        }
+
+        this.ensureVisibleTextBeforeHighlight()
+        this._highlightsDirty = false
+        void this.startHighlight()
+      }
     }
   }
 

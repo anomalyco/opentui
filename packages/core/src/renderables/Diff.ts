@@ -59,6 +59,7 @@ export class DiffRenderable extends Renderable {
   private _fg?: RGBA
   private _filetype?: string
   private _syntaxStyle?: SyntaxStyle
+  private _ownedSyntaxStyle: SyntaxStyle | null = null
   private _wrapMode?: "word" | "char" | "none"
   private _conceal: boolean
   private _selectionBg?: RGBA
@@ -99,6 +100,7 @@ export class DiffRenderable extends Renderable {
 
   private _waitingForHighlight: boolean = false
   private _lineInfoChangeHandler: (() => void) | null = null
+  private _cleanupDone: boolean = false
 
   constructor(ctx: RenderContext, options: DiffRenderableOptions) {
     super(ctx, {
@@ -113,6 +115,7 @@ export class DiffRenderable extends Renderable {
     this._fg = options.fg ? parseColor(options.fg) : undefined
     this._filetype = options.filetype
     this._syntaxStyle = options.syntaxStyle
+    this.ensureSyntaxStyle()
     this._wrapMode = options.wrapMode
     this._conceal = options.conceal ?? false
     this._selectionBg = options.selectionBg ? parseColor(options.selectionBg) : undefined
@@ -251,12 +254,39 @@ export class DiffRenderable extends Renderable {
     this._lineInfoChangeHandler = null
   }
 
-  public override destroyRecursively(): void {
+  private ensureSyntaxStyle(): SyntaxStyle {
+    if (this._syntaxStyle) return this._syntaxStyle
+
+    if (!this._ownedSyntaxStyle) {
+      this._ownedSyntaxStyle = SyntaxStyle.create()
+    }
+
+    this._syntaxStyle = this._ownedSyntaxStyle
+    return this._syntaxStyle
+  }
+
+  private cleanupResources(): void {
+    if (this._cleanupDone) return
+    this._cleanupDone = true
+
     this.detachLineInfoListeners()
     this.pendingRebuild = false
     this.leftSideAdded = false
     this.rightSideAdded = false
+
+    if (this._ownedSyntaxStyle) {
+      this._ownedSyntaxStyle.destroy()
+      this._ownedSyntaxStyle = null
+    }
+  }
+
+  public override destroyRecursively(): void {
+    this.cleanupResources()
     super.destroyRecursively()
+  }
+
+  protected override destroySelf(): void {
+    this.cleanupResources()
   }
 
   private buildErrorView(): void {
@@ -290,11 +320,12 @@ export class DiffRenderable extends Renderable {
     }
 
     if (!this.errorCodeRenderable) {
+      const syntaxStyle = this.ensureSyntaxStyle()
       this.errorCodeRenderable = new CodeRenderable(this.ctx, {
         id: this.id ? `${this.id}-error-code` : undefined,
         content: this._diff,
         filetype: "diff",
-        syntaxStyle: this._syntaxStyle ?? SyntaxStyle.create(),
+        syntaxStyle,
         wrapMode: this._wrapMode,
         conceal: this._conceal,
         width: "100%",
@@ -324,6 +355,8 @@ export class DiffRenderable extends Renderable {
   ): CodeRenderable {
     const existingRenderable = side === "left" ? this.leftCodeRenderable : this.rightCodeRenderable
 
+    const syntaxStyle = this.ensureSyntaxStyle()
+
     if (!existingRenderable) {
       const codeOptions: CodeOptions = {
         id: this.id ? `${this.id}-${side}-code` : undefined,
@@ -331,7 +364,7 @@ export class DiffRenderable extends Renderable {
         filetype: this._filetype,
         wrapMode,
         conceal: this._conceal,
-        syntaxStyle: this._syntaxStyle ?? SyntaxStyle.create(),
+        syntaxStyle,
         width: "100%",
         height: "100%",
         ...(this._fg !== undefined && { fg: this._fg }),
@@ -893,7 +926,16 @@ export class DiffRenderable extends Renderable {
 
   public set syntaxStyle(value: SyntaxStyle | undefined) {
     if (this._syntaxStyle !== value) {
-      this._syntaxStyle = value
+      if (value) {
+        if (this._ownedSyntaxStyle && value !== this._ownedSyntaxStyle) {
+          this._ownedSyntaxStyle.destroy()
+          this._ownedSyntaxStyle = null
+        }
+        this._syntaxStyle = value
+      } else {
+        this._syntaxStyle = undefined
+        this.ensureSyntaxStyle()
+      }
       this.rebuildView()
     }
   }

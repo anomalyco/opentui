@@ -241,6 +241,13 @@ pub const UnifiedTextBuffer = struct {
         self.markAllViewsDirty();
     }
 
+    /// Reset rope storage before replacing full text.
+    fn resetForSetText(self: *Self) TextBufferError!void {
+        _ = self.arena.reset(.retain_capacity);
+        self.rope = UnifiedRope.init(self.allocator) catch return TextBufferError.OutOfMemory;
+        self.markAllViewsDirty();
+    }
+
     pub fn reset(self: *Self) void {
         // Free highlight/span arrays (they use global_allocator, not arena)
         for (self.line_highlights.items) |*hl_list| {
@@ -320,6 +327,13 @@ pub const UnifiedTextBuffer = struct {
     pub fn setTextFromMemId(self: *Self, mem_id: u8) TextBufferError!void {
         const text = self.mem_registry.get(mem_id) orelse return TextBufferError.InvalidMemId;
         self.clear();
+        try self.setTextInternal(mem_id, text);
+    }
+
+    /// Set text from a pre-registered memory ID with a rope reset to avoid arena growth.
+    pub fn setTextFromMemIdReset(self: *Self, mem_id: u8) TextBufferError!void {
+        const text = self.mem_registry.get(mem_id) orelse return TextBufferError.InvalidMemId;
+        try self.resetForSetText();
         try self.setTextInternal(mem_id, text);
     }
 
@@ -495,6 +509,58 @@ pub const UnifiedTextBuffer = struct {
 
     pub fn getArenaAllocatedBytes(self: *const Self) usize {
         return self.arena.queryCapacity();
+    }
+
+    pub fn getRopeSegmentCount(self: *const Self) usize {
+        return self.rope.count();
+    }
+
+    pub fn getMemRegistryUsedSlots(self: *const Self) usize {
+        return self.mem_registry.getUsedSlots();
+    }
+
+    pub fn getMemRegistryFreeSlots(self: *const Self) usize {
+        return self.mem_registry.getFreeSlots();
+    }
+
+    pub fn getStyledCapacity(self: *const Self) usize {
+        return self.styled_capacity;
+    }
+
+    pub fn getHighlightLineCount(self: *const Self) usize {
+        return self.line_highlights.items.len;
+    }
+
+    pub fn getHighlightLineCapacity(self: *const Self) usize {
+        return self.line_highlights.capacity;
+    }
+
+    pub fn getHighlightCapacityTotal(self: *const Self) usize {
+        var total: usize = 0;
+        for (self.line_highlights.items) |hl_list| {
+            total += hl_list.capacity;
+        }
+        return total;
+    }
+
+    pub fn getSpanLineCount(self: *const Self) usize {
+        return self.line_spans.items.len;
+    }
+
+    pub fn getSpanLineCapacity(self: *const Self) usize {
+        return self.line_spans.capacity;
+    }
+
+    pub fn getSpanCapacityTotal(self: *const Self) usize {
+        var total: usize = 0;
+        for (self.line_spans.items) |span_list| {
+            total += span_list.capacity;
+        }
+        return total;
+    }
+
+    pub fn getDirtySpanLineCount(self: *const Self) usize {
+        return self.dirty_span_lines.count();
     }
 
     /// Extract all text as UTF-8 bytes into provided output buffer
@@ -885,10 +951,7 @@ pub const UnifiedTextBuffer = struct {
 
         self.clear();
         self.clearAllHighlights();
-
-        _ = self.arena.reset(.retain_capacity);
-
-        self.rope = UnifiedRope.init(self.allocator) catch return TextBufferError.OutOfMemory;
+        try self.resetForSetText();
 
         if (total_len > self.styled_capacity) {
             if (self.styled_buffer) |old_buf| {
@@ -924,7 +987,7 @@ pub const UnifiedTextBuffer = struct {
             defer self.endHighlightsTransaction();
 
             var char_pos: u32 = 0;
-            for (chunks, 0..) |chunk, i| {
+            for (chunks) |chunk| {
                 const chunk_text = chunk.text_ptr[0..chunk.text_len];
                 const chunk_len = self.measureText(chunk_text);
 
@@ -932,9 +995,7 @@ pub const UnifiedTextBuffer = struct {
                     const fg = if (chunk.fg_ptr) |fgPtr| utils.f32PtrToRGBA(fgPtr) else null;
                     const bg = if (chunk.bg_ptr) |bgPtr| utils.f32PtrToRGBA(bgPtr) else null;
 
-                    var style_name_buf: [64]u8 = undefined;
-                    const style_name = std.fmt.bufPrint(&style_name_buf, "chunk{d}", .{i}) catch continue;
-                    const style_id = (@constCast(style)).registerStyle(style_name, fg, bg, chunk.attributes) catch continue;
+                    const style_id = (@constCast(style)).registerStyleByValue(fg, bg, chunk.attributes) catch continue;
 
                     self.addHighlightByCharRange(char_pos, char_pos + chunk_len, style_id, 1, 0) catch {};
                 }

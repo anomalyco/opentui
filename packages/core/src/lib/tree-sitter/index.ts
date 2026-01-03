@@ -19,9 +19,17 @@ export function getTreeSitterClient(): TreeSitterClient {
   return singleton("tree-sitter-client", () => {
     const client = new TreeSitterClient(defaultOptions)
 
-    dataPathsManager.on("paths:changed", (paths) => {
+    const handlePathsChanged = (paths: { globalDataPath: string }) => {
       client.setDataPath(paths.globalDataPath)
-    })
+    }
+
+    dataPathsManager.on("paths:changed", handlePathsChanged)
+
+    const originalDestroy = client.destroy.bind(client)
+    client.destroy = async () => {
+      dataPathsManager.off("paths:changed", handlePathsChanged)
+      await originalDestroy()
+    }
 
     return client
   })

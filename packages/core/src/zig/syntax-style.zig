@@ -11,6 +11,28 @@ pub const StyleDefinition = struct {
     attributes: u32,
 };
 
+const ColorKey = struct {
+    r: u32,
+    g: u32,
+    b: u32,
+    a: u32,
+};
+
+const StyleKey = struct {
+    fg: ?ColorKey,
+    bg: ?ColorKey,
+    attributes: u32,
+};
+
+fn colorToKey(color: RGBA) ColorKey {
+    return .{
+        .r = @as(u32, @bitCast(color[0])),
+        .g = @as(u32, @bitCast(color[1])),
+        .b = @as(u32, @bitCast(color[2])),
+        .a = @as(u32, @bitCast(color[3])),
+    };
+}
+
 pub const SyntaxStyleError = error{
     OutOfMemory,
     InvalidId,
@@ -26,6 +48,7 @@ pub const SyntaxStyle = struct {
 
     name_to_id: std.StringHashMapUnmanaged(u32),
     id_to_style: std.AutoHashMapUnmanaged(u32, StyleDefinition),
+    value_to_id: std.AutoHashMapUnmanaged(StyleKey, u32),
     next_id: u32,
 
     merged_cache: std.StringHashMapUnmanaged(StyleDefinition),
@@ -48,6 +71,7 @@ pub const SyntaxStyle = struct {
             .arena = internal_arena,
             .name_to_id = .{},
             .id_to_style = .{},
+            .value_to_id = .{},
             .next_id = 1, // Start from 1, 0 can be used as "invalid"
             .merged_cache = .{},
             .emitter = events.EventEmitter(Event).init(internal_allocator),
@@ -59,6 +83,7 @@ pub const SyntaxStyle = struct {
     pub fn deinit(self: *SyntaxStyle) void {
         self.emitter.emit(.Destroy);
         self.emitter.deinit();
+        self.value_to_id.deinit(self.allocator);
         self.arena.deinit();
         self.global_allocator.destroy(self.arena);
         self.global_allocator.destroy(self);
@@ -85,6 +110,32 @@ pub const SyntaxStyle = struct {
             .bg = bg,
             .attributes = attributes,
         });
+
+        return id;
+    }
+
+    pub fn registerStyleByValue(self: *SyntaxStyle, fg: ?RGBA, bg: ?RGBA, attributes: u32) SyntaxStyleError!u32 {
+        const style = StyleDefinition{
+            .fg = fg,
+            .bg = bg,
+            .attributes = attributes,
+        };
+
+        const style_key = StyleKey{
+            .fg = if (fg) |value| colorToKey(value) else null,
+            .bg = if (bg) |value| colorToKey(value) else null,
+            .attributes = attributes,
+        };
+
+        if (self.value_to_id.get(style_key)) |existing_id| {
+            return existing_id;
+        }
+
+        const id = self.next_id;
+        self.next_id += 1;
+
+        try self.id_to_style.put(self.allocator, id, style);
+        try self.value_to_id.put(self.allocator, style_key, id);
 
         return id;
     }
