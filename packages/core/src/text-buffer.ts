@@ -25,6 +25,7 @@ export class TextBuffer {
   private _textBytes?: Uint8Array
   private _memId?: number
   private _appendedChunks: Uint8Array[] = []
+  private _version: number = 0
 
   constructor(lib: RenderLib, ptr: Pointer) {
     this.lib = lib
@@ -45,6 +46,7 @@ export class TextBuffer {
 
   public setText(text: string): void {
     this.guard()
+    this._version++
     this._textBytes = this.lib.encoder.encode(text)
 
     if (this._memId === undefined) {
@@ -62,6 +64,7 @@ export class TextBuffer {
 
   public append(text: string): void {
     this.guard()
+    this._version++
     const textBytes = this.lib.encoder.encode(text)
     // Keep the bytes alive to prevent garbage collection
     this._appendedChunks.push(textBytes)
@@ -73,6 +76,7 @@ export class TextBuffer {
 
   public loadFile(path: string): void {
     this.guard()
+    this._version++
     const success = this.lib.textBufferLoadFile(this.bufferPtr, path)
     if (!success) {
       throw new Error(`Failed to load file: ${path}`)
@@ -85,6 +89,7 @@ export class TextBuffer {
 
   public setStyledText(text: StyledText): void {
     this.guard()
+    this._version++
 
     // TODO: This should not be necessary anymore, the struct packing should take care of this
     const chunks = text.chunks.map((chunk) => ({
@@ -135,6 +140,10 @@ export class TextBuffer {
   public get byteSize(): number {
     this.guard()
     return this._byteSize
+  }
+
+  public get version(): number {
+    return this._version
   }
 
   public get ptr(): Pointer {
@@ -221,6 +230,7 @@ export class TextBuffer {
 
   public setTabWidth(width: number): void {
     this.guard()
+    this._version++
     this.lib.textBufferSetTabWidth(this.bufferPtr, width)
   }
 
@@ -231,6 +241,7 @@ export class TextBuffer {
 
   public clear(): void {
     this.guard()
+    this._version++
     this.lib.textBufferClear(this.bufferPtr)
     this._length = 0
     this._byteSize = 0
@@ -242,6 +253,7 @@ export class TextBuffer {
 
   public reset(): void {
     this.guard()
+    this._version++
     this.lib.textBufferReset(this.bufferPtr)
     this._length = 0
     this._byteSize = 0

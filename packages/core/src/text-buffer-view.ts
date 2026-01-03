@@ -9,6 +9,9 @@ export class TextBufferView {
   private textBuffer: TextBuffer
   private _destroyed: boolean = false
 
+  private _measureCache: Map<number, { lineCount: number; maxWidth: number }> = new Map()
+  private _measureCacheVersion: number = -1
+
   constructor(lib: RenderLib, ptr: Pointer, textBuffer: TextBuffer) {
     this.lib = lib
     this.viewPtr = ptr
@@ -103,21 +106,25 @@ export class TextBufferView {
 
   public setWrapWidth(width: number | null): void {
     this.guard()
+    this._measureCache.clear()
     this.lib.textBufferViewSetWrapWidth(this.viewPtr, width ?? 0)
   }
 
   public setWrapMode(mode: "none" | "char" | "word"): void {
     this.guard()
+    this._measureCache.clear()
     this.lib.textBufferViewSetWrapMode(this.viewPtr, mode)
   }
 
   public setViewportSize(width: number, height: number): void {
     this.guard()
+    this._measureCache.clear()
     this.lib.textBufferViewSetViewportSize(this.viewPtr, width, height)
   }
 
   public setViewport(x: number, y: number, width: number, height: number): void {
     this.guard()
+    this._measureCache.clear()
     this.lib.textBufferViewSetViewport(this.viewPtr, x, y, width, height)
   }
 
@@ -168,7 +175,25 @@ export class TextBufferView {
 
   public measureForDimensions(width: number, height: number): { lineCount: number; maxWidth: number } | null {
     this.guard()
-    return this.lib.textBufferViewMeasureForDimensions(this.viewPtr, width, height)
+
+    const flooredWidth = Math.floor(width)
+    const version = this.textBuffer.version
+    if (version !== this._measureCacheVersion) {
+      this._measureCache.clear()
+      this._measureCacheVersion = version
+    }
+
+    const cached = this._measureCache.get(flooredWidth)
+    if (cached) {
+      return cached
+    }
+
+    const result = this.lib.textBufferViewMeasureForDimensions(this.viewPtr, flooredWidth, Math.floor(height))
+    if (result) {
+      this._measureCache.set(flooredWidth, result)
+    }
+
+    return result
   }
 
   public getVirtualLineCount(): number {

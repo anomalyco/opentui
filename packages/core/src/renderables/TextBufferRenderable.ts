@@ -373,11 +373,7 @@ export abstract class TextBufferRenderable extends Renderable implements LineInf
       }
 
       const effectiveHeight = isNaN(height) ? 1 : height
-
-      const measureResult = this.textBufferView.measureForDimensions(
-        Math.floor(effectiveWidth),
-        Math.floor(effectiveHeight),
-      )
+      const measureResult = this.textBufferView.measureForDimensions(effectiveWidth, effectiveHeight)
 
       const measuredWidth = measureResult ? Math.max(1, measureResult.maxWidth) : 1
       const measuredHeight = measureResult ? Math.max(1, measureResult.lineCount) : 1
