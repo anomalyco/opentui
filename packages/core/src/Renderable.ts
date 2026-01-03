@@ -605,7 +605,13 @@ export abstract class Renderable extends BaseRenderable {
 
   private ensureZIndexSorted(): void {
     if (this.needsZIndexSort) {
-      this._childrenInZIndexOrder.sort((a, b) => (a.zIndex > b.zIndex ? 1 : a.zIndex < b.zIndex ? -1 : 0))
+      const layoutIndexes = new Map<Renderable, number>()
+      for (let i = 0; i < this._childrenInLayoutOrder.length; i++) {
+        layoutIndexes.set(this._childrenInLayoutOrder[i], i)
+      }
+      this._childrenInZIndexOrder.sort((a, b) =>
+        a.zIndex > b.zIndex ? 1 : a.zIndex < b.zIndex ? -1 : (layoutIndexes.get(a) ?? 0) - (layoutIndexes.get(b) ?? 0),
+      )
       this.needsZIndexSort = false
     }
   }
