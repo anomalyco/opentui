@@ -5,6 +5,7 @@ import {
   DiffRenderable,
   InputRenderable,
   LineNumberRenderable,
+  MarkdownRenderable,
   ScrollBoxRenderable,
   SelectRenderable,
   TabSelectRenderable,
@@ -102,6 +103,7 @@ export const baseComponents = {
   code: CodeRenderable,
   diff: DiffRenderable,
   line_number: LineNumberRenderable,
+  markdown: MarkdownRenderable,
 
   span: SpanRenderable,
   strong: BoldSpanRenderable,

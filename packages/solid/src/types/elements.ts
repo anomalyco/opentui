@@ -8,6 +8,9 @@ import type {
   CodeRenderable,
   InputRenderable,
   InputRenderableOptions,
+  KeyEvent,
+  MarkdownOptions,
+  MarkdownRenderable,
   RenderableOptions,
   RenderContext,
   ScrollBoxOptions,
@@ -23,7 +26,6 @@ import type {
   TextNodeRenderable,
   TextOptions,
   TextRenderable,
-  KeyEvent,
 } from "@opentui/core"
 import type { Ref } from "solid-js"
 import type { JSX } from "../../jsx-runtime"
@@ -79,7 +81,9 @@ export type GetNonStyledProperties<TConstructor> =
           ? NonStyledProps | "placeholder" | "value"
           : TConstructor extends RenderableConstructor<CodeRenderable>
             ? NonStyledProps | "content" | "filetype" | "syntaxStyle" | "treeSitterClient"
-            : NonStyledProps
+            : TConstructor extends RenderableConstructor<MarkdownRenderable>
+              ? NonStyledProps | "content" | "syntaxStyle" | "treeSitterClient" | "conceal" | "renderNode"
+              : NonStyledProps
 
 // ============================================================================
 // Component Props System
@@ -151,6 +155,8 @@ export type ScrollBoxProps = ComponentProps<ContainerProps<ScrollBoxOptions>, Sc
 }
 
 export type CodeProps = ComponentProps<CodeOptions, CodeRenderable>
+
+export type MarkdownProps = ComponentProps<MarkdownOptions, MarkdownRenderable>
 
 // ============================================================================
 // Extended/Dynamic Component System

@@ -37,6 +37,7 @@
     "bun-ffi-structs": "0.1.2",
     "diff": "8.0.2",
     "jimp": "1.6.0",
+    "marked": "17.0.1",
     "yoga-layout": "3.2.1"
   },
   "peerDependencies": {
