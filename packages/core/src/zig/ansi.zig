@@ -279,7 +279,7 @@ pub const ANSI = struct {
 
     pub const resetCursorColor = "\x1b]112\x07";
     pub const resetCursorColorFallback = "\x1b]12;default\x07";
-    pub const resetMousePointer = "\x1b]22;\x07";
+    pub const resetMousePointer = "\x1b]22;\x1b\\";
 
     // OSC 11 - Set terminal background color
     pub fn setTerminalBgColorOutput(writer: anytype, r: u8, g: u8, b: u8) AnsiError!void {
@@ -292,7 +292,7 @@ pub const ANSI = struct {
     pub const restoreCursorState = "\x1b[u";
 
     pub fn setMousePointerOutput(writer: anytype, shape: []const u8) AnsiError!void {
-        writer.print("\x1b]22;{s}\x07", .{shape}) catch return AnsiError.WriteFailed;
+        writer.print("\x1b]22;{s}\x1b\\", .{shape}) catch return AnsiError.WriteFailed;
     }
 
     pub const switchToAlternateScreen = "\x1b[?1049h";
@@ -509,4 +509,17 @@ test "packed RGBA stores metadata" {
     try std.testing.expectEqual(@as(u8, 255), red(color));
     try std.testing.expectEqual(@as(u8, 9), slot(color));
     try std.testing.expectEqual(ColorIntent.indexed, intent(color));
+}
+
+test "OSC 22 mouse pointer uses ST terminator" {
+    var buffer: [64]u8 = undefined;
+    var stream = std.io.fixedBufferStream(&buffer);
+
+    try ANSI.setMousePointerOutput(stream.writer(), "pointer");
+
+    try std.testing.expectEqualStrings("\x1b]22;pointer\x1b\\", stream.getWritten());
+}
+
+test "OSC 22 mouse pointer reset uses ST terminator" {
+    try std.testing.expectEqualStrings("\x1b]22;\x1b\\", ANSI.resetMousePointer);
 }

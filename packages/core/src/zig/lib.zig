@@ -522,7 +522,7 @@ export fn setCursorStyleOptions(rendererPtr: *renderer.CliRenderer, options: *co
     if (options.color) |rgba| {
         rendererPtr.terminal.setCursorColor(ptrToRGBA(rgba));
     }
-    if (options.cursor <= 5) {
+    if (options.cursor <= 35) {
         rendererPtr.terminal.setMousePointerStyle(@enumFromInt(options.cursor));
     }
 }
