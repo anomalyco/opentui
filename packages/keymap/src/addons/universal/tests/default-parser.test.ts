@@ -58,7 +58,9 @@ describe("default parser addon", () => {
     mockInput.pressKey("x", { ctrl: true })
     mockInput.pressKey("d")
 
-    expect(takeWarnings().warnings).toEqual(['[Keymap] Unknown token "leader" in key sequence "<leader>d" was ignored'])
+    expect(takeWarnings().warnings).toEqual([
+      '[Keymap] Unknown token "leader" in key sequence "<leader>d"; binding was skipped until the token is registered',
+    ])
     expect(calls).toEqual(["run"])
   })
 

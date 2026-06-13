@@ -13,6 +13,16 @@ class TestRenderable extends Renderable {
   }
 }
 
+function expectFirstChildToBe(slot: { getChildren(): Renderable[] }, renderable: TestRenderable | null): void {
+  expect(renderable).not.toBeNull()
+  expect(slot.getChildren()[0]).toBe(renderable as TestRenderable)
+}
+
+function expectRenderableDestroyed(renderable: Renderable | null, expected: boolean): void {
+  expect(renderable).not.toBeNull()
+  expect(renderable!.isDestroyed).toBe(expected)
+}
+
 let renderer: TestRenderer
 
 beforeEach(async () => {
@@ -120,13 +130,13 @@ describe("Core slot binding", () => {
     renderer.root.add(slot)
 
     expect(pluginCreateCount).toBe(1)
-    expect(slot.getChildren()[0]).toBe(pluginNode)
+    expectFirstChildToBe(slot, pluginNode)
 
     slot.refresh()
     registry.updateOrder("plugin-a", 10)
 
     expect(pluginCreateCount).toBe(1)
-    expect(slot.getChildren()[0]).toBe(pluginNode)
+    expectFirstChildToBe(slot, pluginNode)
 
     slot.destroy()
   })
@@ -317,7 +327,7 @@ describe("Core slot binding", () => {
     registry.updateOrder("plugin-b", -1)
 
     expect(slot.getChildren().map((child) => child.id)).toEqual(["plugin-b-object"])
-    expect(pluginANode?.isDestroyed).toBe(false)
+    expectRenderableDestroyed(pluginANode, false)
 
     registry.updateOrder("plugin-a", -2)
 
@@ -327,8 +337,8 @@ describe("Core slot binding", () => {
 
     slot.destroy()
 
-    expect(pluginANode?.isDestroyed).toBe(false)
-    expect(pluginBNode?.isDestroyed).toBe(false)
+    expectRenderableDestroyed(pluginANode, false)
+    expectRenderableDestroyed(pluginBNode, false)
     expect(lifecycleEvents).toEqual([
       "a:activate",
       "a:deactivate",
@@ -379,7 +389,7 @@ describe("Core slot binding", () => {
     registry.unregister("plugin-object")
 
     expect(slot.getChildren()).toEqual([])
-    expect(pluginNode?.isDestroyed).toBe(false)
+    expectRenderableDestroyed(pluginNode, false)
     expect(lifecycleEvents).toEqual(["activate", "deactivate", "dispose"])
 
     slot.destroy()
@@ -568,7 +578,7 @@ describe("Core slot binding", () => {
 
     expect(fallbackCreateCount).toBe(1)
     expect(slot.getChildren().map((child) => child.id)).toEqual(["fallback"])
-    expect(pluginNode?.isDestroyed).toBe(true)
+    expectRenderableDestroyed(pluginNode, true)
 
     slot.destroy()
   })
@@ -605,7 +615,7 @@ describe("Core slot binding", () => {
 
     expect(fallbackCreateCount).toBe(1)
     expect(slot.getChildren().map((child) => child.id)).toEqual(["fallback"])
-    expect(pluginNode?.isDestroyed).toBe(true)
+    expectRenderableDestroyed(pluginNode, true)
 
     slot.destroy()
   })
@@ -691,8 +701,8 @@ describe("Core slot binding", () => {
 
     slot.destroy()
 
-    expect(fallbackNode?.isDestroyed).toBe(true)
-    expect(pluginNode?.isDestroyed).toBe(true)
+    expectRenderableDestroyed(fallbackNode, true)
+    expectRenderableDestroyed(pluginNode, true)
 
     registerCorePlugin(registry, {
       id: "plugin-b",
@@ -947,6 +957,6 @@ describe("Core slot binding", () => {
       })
     }).toThrow("async value")
 
-    expect(pluginNode?.isDestroyed).toBe(true)
+    expectRenderableDestroyed(pluginNode, true)
   })
 })

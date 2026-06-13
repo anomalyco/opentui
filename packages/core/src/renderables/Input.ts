@@ -17,6 +17,8 @@ export interface InputRenderableOptions extends Omit<
 > {
   /** Initial text value (newlines are stripped) */
   value?: string
+  /** Minimum number of characters allowed */
+  minLength?: number
   /** Maximum number of characters allowed */
   maxLength?: number
   /** Placeholder text (Input only supports string, not StyledText) */
@@ -43,6 +45,7 @@ export enum InputRenderableEvents {
  */
 export class InputRenderable extends TextareaRenderable {
   private _maxLength: number
+  private _minLength: number
   private _lastCommittedValue: string = ""
 
   // Only specify defaults that differ from TextareaRenderable/EditBufferRenderable
@@ -51,15 +54,21 @@ export class InputRenderable extends TextareaRenderable {
     placeholder: "",
     // Input-specific
     maxLength: 1000,
+    minLength: 0,
     value: "",
   } satisfies Partial<InputRenderableOptions>
 
   constructor(ctx: RenderContext, options: InputRenderableOptions) {
     const defaults = InputRenderable.defaultOptions
     const maxLength = options.maxLength ?? defaults.maxLength
+    const minLength = options.minLength ?? defaults.minLength
     // Sanitize initial value: strip newlines and enforce maxLength
     const rawValue = options.value ?? defaults.value
     const initialValue = rawValue.replace(/[\n\r]/g, "").substring(0, maxLength)
+
+    if (minLength > maxLength) {
+      throw new Error(`InputRenderable: minLength (${minLength}) cannot be greater than maxLength (${maxLength})`)
+    }
 
     super(ctx, {
       ...options,
@@ -71,12 +80,14 @@ export class InputRenderable extends TextareaRenderable {
       // Override return/linefeed to submit instead of newline
       keyBindings: [
         { name: "return", action: "submit" },
+        { name: "kpenter", action: "submit" },
         { name: "linefeed", action: "submit" },
         ...(options.keyBindings || []),
       ],
     })
 
     this._maxLength = maxLength
+    this._minLength = minLength
     this._lastCommittedValue = this.plainText
 
     // Set cursor to end of initial value
@@ -150,6 +161,10 @@ export class InputRenderable extends TextareaRenderable {
 
   public override submit(): boolean {
     const currentValue = this.plainText
+    if (currentValue.length < this._minLength) {
+      return false
+    }
+
     if (currentValue !== this._lastCommittedValue) {
       this._lastCommittedValue = currentValue
       this.emit(InputRenderableEvents.CHANGE, currentValue)
@@ -230,6 +245,17 @@ export class InputRenderable extends TextareaRenderable {
 
   public get maxLength(): number {
     return this._maxLength
+  }
+
+  public set minLength(minLength: number) {
+    if (minLength > this._maxLength) {
+      throw new Error(`InputRenderable: minLength (${minLength}) cannot be greater than maxLength (${this._maxLength})`)
+    }
+    this._minLength = minLength
+  }
+
+  public get minLength(): number {
+    return this._minLength
   }
 
   public override set placeholder(placeholder: string) {

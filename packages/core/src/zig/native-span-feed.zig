@@ -53,14 +53,43 @@ const SpanRing = struct {
         return self.tail -% self.head;
     }
 
+    fn grow(self: *SpanRing, stream: *Stream) StreamError!void {
+        if (stream.options.growth_policy == @intFromEnum(GrowthPolicy.block)) {
+            return StreamError.NoSpace;
+        }
+
+        const old_capacity = self.capacity;
+        const old_count = self.count();
+        const new_capacity = if (old_capacity == 0) 1 else old_capacity * 2;
+        const new_buffer = stream.allocator.alloc(SpanInfo, new_capacity) catch return StreamError.OutOfMemory;
+
+        var i: u32 = 0;
+        while (i < old_count) : (i += 1) {
+            const old_index = (self.head +% i) % old_capacity;
+            new_buffer[i] = self.buffer[old_index];
+        }
+
+        if (old_capacity > 0) {
+            stream.allocator.free(self.buffer);
+        }
+        self.buffer = new_buffer;
+        self.capacity = new_capacity;
+        self.head = 0;
+        self.tail = old_count;
+    }
+
     pub fn push(self: *SpanRing, stream: *Stream, span: SpanInfo, notify: *bool) StreamError!void {
-        const capacity = self.capacity;
-        const head = self.head;
+        var capacity = self.capacity;
+        var head = self.head;
         var tail = self.tail;
-        const queued = tail -% head;
+        var queued = tail -% head;
 
         if (queued >= capacity) {
-            return StreamError.NoSpace;
+            try self.grow(stream);
+            capacity = self.capacity;
+            head = self.head;
+            tail = self.tail;
+            queued = tail -% head;
         }
 
         const index = tail % capacity;
@@ -297,6 +326,10 @@ pub const Stream = struct {
         return out;
     }
 
+    pub fn hasPendingBytes(self: *Stream) bool {
+        return self.pending_len > 0;
+    }
+
     /// Apply only runtime-safe options; creation-time fields are ignored.
     pub fn setOptions(self: *Stream, options: Options) StreamError!void {
         if (self.closed) return StreamError.Invalid;
@@ -406,18 +439,23 @@ pub const Stream = struct {
             .chunk_index = @intCast(self.pending_chunk_index),
             .reserved = 0,
         };
+
         try self.span_ring.push(self, info, notify);
-        if (self.pending_chunk_index < self.state_capacity) {
-            self.state_buffer[self.pending_chunk_index] +|= 1;
-            // Avoid refcount saturation, which can corrupt data.
-            if (self.state_buffer[self.pending_chunk_index] == 255) {
-                self.write_offset = self.options.chunk_size;
-            }
-        }
+        self.markSpanPending(info.chunk_index);
         self.stats.spans_committed += 1;
         self.pending_len = 0;
         self.pending_offset = self.write_offset;
         self.pending_chunk_index = self.current_chunk_index;
+    }
+
+    fn markSpanPending(self: *Stream, chunk_index: u32) void {
+        if (chunk_index < self.state_capacity) {
+            self.state_buffer[chunk_index] +|= 1;
+            // Avoid refcount saturation, which can corrupt data.
+            if (self.state_buffer[chunk_index] == 255) {
+                self.write_offset = self.options.chunk_size;
+            }
+        }
     }
 
     pub fn reserveLocked(self: *Stream, min_len: u32) StreamError!ReserveInfo {
@@ -642,11 +680,12 @@ pub export fn destroyNativeSpanFeed(stream: ?*Stream) void {
 /// but a write that would exceed it returns err_no_space without writing
 /// any bytes. A write that exactly fills the chunk succeeds; the next
 /// write will move to a new chunk (committing the full one first).
-pub export fn streamWrite(stream: ?*Stream, src_ptr: ?*const u8, len: usize) i32 {
-    if (stream == null or src_ptr == null) return Status.err_invalid;
+pub export fn streamWrite(stream: ?*Stream, src_ptr: ?[*]const u8, len: u32) i32 {
+    if (stream == null) return Status.err_invalid;
     const s = stream.?;
     if (len == 0) return Status.ok;
-    const src = @as([*]const u8, @ptrCast(src_ptr.?))[0..len];
+    if (src_ptr == null) return Status.err_invalid;
+    const src = src_ptr.?[0..@as(usize, len)];
     s.write(src) catch |err| return errorToStatus(err);
     return Status.ok;
 }

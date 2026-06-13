@@ -1,6 +1,6 @@
 {
   "name": "@opentui/react",
-  "version": "0.2.6",
+  "version": "0.4.1",
   "description": "React renderer for building terminal user interfaces using OpenTUI core",
   "license": "MIT",
   "repository": {

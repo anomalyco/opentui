@@ -1,8 +1,10 @@
 import { describe, expect, it, afterEach } from "bun:test"
+
 import { TextareaRenderable } from "../renderables/Textarea.js"
 import { createTestRenderer, type TestRenderer, type MockInput } from "../testing/test-renderer.js"
 import { type ExtmarksController } from "./extmarks.js"
 import { SyntaxStyle } from "../syntax-style.js"
+import { stringWidth } from "../platform/runtime.js"
 import { RGBA } from "./RGBA.js"
 
 let currentRenderer: TestRenderer
@@ -64,12 +66,12 @@ describe("ExtmarksController - Multi-width Graphemes", () => {
         if (text[i] === "\n") {
           displayOffset += 1
         } else {
-          displayOffset += Bun.stringWidth(text[i])
+          displayOffset += stringWidth(text[i])
         }
       }
 
       const mentionText = "@git-committer"
-      const mentionDisplayWidth = Bun.stringWidth(mentionText)
+      const mentionDisplayWidth = stringWidth(mentionText)
       const mentionStart = displayOffset // Should be 11
       const mentionEnd = displayOffset + mentionDisplayWidth // Should be 25
 

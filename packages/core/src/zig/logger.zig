@@ -7,9 +7,9 @@ pub const LogLevel = enum(u8) {
     debug = 3,
 };
 
-var global_log_callback: ?*const fn (level: u8, msgPtr: [*]const u8, msgLen: usize) callconv(.c) void = null;
+var global_log_callback: ?*const fn (level: u8, msgPtr: [*]const u8, msgLen: u32) callconv(.c) void = null;
 
-pub fn setLogCallback(callback: ?*const fn (level: u8, msgPtr: [*]const u8, msgLen: usize) callconv(.c) void) void {
+pub fn setLogCallback(callback: ?*const fn (level: u8, msgPtr: [*]const u8, msgLen: u32) callconv(.c) void) void {
     global_log_callback = callback;
 }
 
@@ -19,10 +19,10 @@ pub fn logMessage(level: LogLevel, comptime format: []const u8, args: anytype) v
         var buf: [4096]u8 = undefined;
         const msg = std.fmt.bufPrint(&buf, format, args) catch {
             const fallback = "Log formatting failed";
-            callback(@intFromEnum(LogLevel.err), fallback.ptr, fallback.len);
+            callback(@intFromEnum(LogLevel.err), fallback.ptr, std.math.cast(u32, fallback.len) orelse return);
             return;
         };
-        callback(@intFromEnum(level), msg.ptr, msg.len);
+        callback(@intFromEnum(level), msg.ptr, std.math.cast(u32, msg.len) orelse return);
     }
 }
 

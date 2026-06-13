@@ -376,8 +376,15 @@ export const {
       log("No parent found for node:", logId(node))
       return undefined
     }
-    const siblings = getNodeChildren(parent)
 
+    if (node instanceof SlotRenderable) {
+      const layoutSlotNode = node.getSlotChildForRemoval(parent)
+      if (layoutSlotNode) {
+        node = layoutSlotNode
+      }
+    }
+
+    const siblings = getNodeChildren(parent)
     const index = siblings.indexOf(node)
 
     if (index === -1 || index === siblings.length - 1) {

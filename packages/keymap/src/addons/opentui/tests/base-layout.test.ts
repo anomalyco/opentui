@@ -78,6 +78,39 @@ describe("base layout fallback addon", () => {
     expect(calls).toEqual(["direct"])
   })
 
+  test("keeps lower-layer direct stroke matches ahead of higher-layer base-layout fallbacks", () => {
+    const keymap = getKeymap(renderer)
+    const calls: string[] = []
+
+    registerBaseLayoutFallback(keymap)
+    keymap.registerLayer({
+      commands: [
+        {
+          name: "delete-to-end",
+          run() {
+            calls.push("delete-to-end")
+          },
+        },
+      ],
+      bindings: [{ key: "ctrl+k", cmd: "delete-to-end" }],
+    })
+    keymap.registerLayer({
+      commands: [
+        {
+          name: "paste",
+          run() {
+            calls.push("paste")
+          },
+        },
+      ],
+      bindings: [{ key: "ctrl+v", cmd: "paste" }],
+    })
+
+    renderer.stdin.emit("data", Buffer.from("\x1b[107::118;5u"))
+
+    expect(calls).toEqual(["delete-to-end"])
+  })
+
   test("can be disposed to stop base-layout fallback matching", () => {
     const keymap = getKeymap(renderer)
     const calls: string[] = []

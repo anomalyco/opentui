@@ -32,6 +32,8 @@ import * as opentuiAddons from "@opentui/keymap/addons/opentui"
 
 The shared default parser accepts single-stroke named keys, modifier chords, literal punctuation, `" "` for space, `"+"` as a literal plus key, `<token>` aliases, and `{pattern}` runtime captures. It parses concatenated multi-stroke sequences such as `dd`, `<leader>s`, or `{count}j`.
 
+If a parsed sequence references an unknown token, that expanded binding is skipped until the token is registered. This is a fail-closed behavior: `<leader>s` without a registered `leader` token does not become plain `s`.
+
 Recognized modifier prefixes (case-insensitive, joined with `+`):
 
 | Modifier | Aliases         |
@@ -86,7 +88,9 @@ Options:
 
 Register disambiguation addons before registering same-layer exact/prefix bindings such as `g` and `gg`.
 
-Leader `trigger` accepts a key string, key object, binding-like `{ key }`, or a single binding lookup result from `createBindingLookup().get(...)`.
+Leader `trigger` accepts a key string, key object, binding-like `{ key }`, or a single binding lookup result from `createBindingLookup().get(...)`. Empty lookup results are treated as disabled and return a no-op disposer; lookup results with more than one binding are rejected.
+
+Apps that support disabling leader keys can omit the leader addon or pass an empty lookup result. Any `<leader>...` bindings will remain dormant because unresolved tokens are skipped.
 
 ### Diagnostics
 
@@ -142,7 +146,7 @@ keymap.registerLayer({
 
 ### `registerBaseLayoutFallback()`
 
-Adds an event match resolver that falls back to `KeyEvent.baseCode` so bindings can ignore active keyboard layout changes when Kitty base-layout reporting is available. Direct stroke matches still win ahead of the fallback.
+Adds an event match resolver that falls back to `KeyEvent.baseCode` so bindings can ignore active keyboard layout changes when Kitty base-layout reporting is available. Direct stroke matches win before base-layout fallback matches, even across active layers.
 
 ### Edit buffer helpers
 

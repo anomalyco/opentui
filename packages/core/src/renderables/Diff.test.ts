@@ -3099,3 +3099,115 @@ test("DiffRenderable - line highlighting works in split view", async () => {
   diffRenderable.clearHighlightLines(0, 2)
   diffRenderable.clearAllLineColors()
 })
+
+const threeHunkDiff = `--- a/file.js
++++ b/file.js
+@@ -1,3 +1,3 @@
+ function first() {
+-  return 1;
++  return "one";
+ }
+@@ -15,4 +15,5 @@
+ function second() {
+   var x = 10;
++  var y = 20;
+   return x;
+ }
+@@ -30,3 +31,3 @@
+ function third() {
+-  console.log("old");
++  console.log("new");
+ }`
+
+test("DiffRenderable - getHunkRowOffsets returns the first row of each hunk (unified)", async () => {
+  const syntaxStyle = SyntaxStyle.fromStyles({ default: { fg: RGBA.fromValues(1, 1, 1, 1) } })
+
+  const diffRenderable = new DiffRenderable(currentRenderer, {
+    id: "test-diff",
+    diff: threeHunkDiff,
+    view: "unified",
+    syntaxStyle,
+    showLineNumbers: true,
+    width: "100%",
+    height: "100%",
+  })
+
+  currentRenderer.root.add(diffRenderable)
+  await renderOnce()
+
+  // Hunks flatten into one column: 4 lines, then 5 lines, then 4 lines.
+  expect(diffRenderable.getHunkRowOffsets()).toEqual([0, 4, 9])
+})
+
+test("DiffRenderable - getHunkRowOffsets accounts for wrapped lines (unified)", async () => {
+  const syntaxStyle = SyntaxStyle.fromStyles({ default: { fg: RGBA.fromValues(1, 1, 1, 1) } })
+
+  const longLine = "x".repeat(220)
+  const wrappingDiff = `--- a/file.js
++++ b/file.js
+@@ -1,3 +1,3 @@
+ const short = 1;
+-const removed = 2;
++const ${longLine} = 2;
+ const after = 3;
+@@ -20,3 +20,4 @@
+ function second() {
+   var value = 10;
++  var added = 20;
+   return value;
+@@ -40,3 +41,3 @@
+ function third() {
+-  console.log("old");
++  console.log("new");
+ }`
+
+  const diffRenderable = new DiffRenderable(currentRenderer, {
+    id: "test-diff",
+    diff: wrappingDiff,
+    view: "unified",
+    syntaxStyle,
+    showLineNumbers: true,
+    wrapMode: "char",
+    width: "100%",
+    height: "100%",
+  })
+
+  currentRenderer.root.add(diffRenderable)
+  await renderOnce()
+
+  const leftCode = (diffRenderable as any).leftCodeRenderable
+  const sources: number[] = leftCode.lineInfo.lineSources
+
+  // The wrapped line in the first hunk pushes the later hunks down by extra visual rows.
+  expect(sources.length).toBeGreaterThan(12)
+  expect(diffRenderable.getHunkRowOffsets()).toEqual([sources.indexOf(0), sources.indexOf(4), sources.indexOf(8)])
+})
+
+test("DiffRenderable - getHunkRowOffsets uses split-view rows (split)", async () => {
+  const syntaxStyle = SyntaxStyle.fromStyles({ default: { fg: RGBA.fromValues(1, 1, 1, 1) } })
+
+  const diffRenderable = new DiffRenderable(currentRenderer, {
+    id: "test-diff",
+    diff: threeHunkDiff,
+    view: "split",
+    syntaxStyle,
+    showLineNumbers: true,
+    width: "100%",
+    height: "100%",
+  })
+
+  currentRenderer.root.add(diffRenderable)
+  await renderOnce()
+
+  // Split view pairs adds/removes side by side, so the add-only second hunk leaves the
+  // left column one row shorter than the unified flattening.
+  expect(diffRenderable.getHunkRowOffsets()).toEqual([0, 3, 8])
+})
+
+test("DiffRenderable - getHunkRowOffsets is empty without a diff", async () => {
+  const diffRenderable = new DiffRenderable(currentRenderer, { id: "test-diff" })
+  currentRenderer.root.add(diffRenderable)
+  await renderOnce()
+
+  expect(diffRenderable.getHunkRowOffsets()).toEqual([])
+})

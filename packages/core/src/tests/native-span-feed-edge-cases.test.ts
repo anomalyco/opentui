@@ -85,6 +85,33 @@ test("attach with pre-queued data waits for onData", () => {
   stream.close()
 })
 
+test("streamWrite accepts empty JS-owned byte slices", () => {
+  const stream = NativeSpanFeed.create({ chunkSize: 64, initialChunks: 1 })
+  const received: string[] = []
+
+  stream.onData((data) => {
+    received.push(new TextDecoder().decode(data))
+  })
+
+  expect(lib.streamWrite(stream.streamPtr, new Uint8Array())).toBe(0)
+  expect(lib.streamWrite(stream.streamPtr, "")).toBe(0)
+  expect(lib.streamCommit(stream.streamPtr)).toBe(0)
+  stream.drainAll()
+  expect(received).toEqual([])
+
+  stream.close()
+})
+
+test("streamWrite rejects null pointers for non-zero writes without trapping", () => {
+  const stream = NativeSpanFeed.create({ chunkSize: 64, initialChunks: 1 })
+
+  const rawStatus = (lib as any).opentui.symbols.streamWrite(stream.streamPtr, null, 1)
+
+  expect(rawStatus).toBe(-3)
+
+  stream.close()
+})
+
 test("decrementRefcount with out-of-bounds chunkIndex does not crash or corrupt", () => {
   const stream = NativeSpanFeed.create({ chunkSize: 64, initialChunks: 1 })
 
@@ -293,10 +320,15 @@ test("throwing handler does not skip remaining handlers for the same span", () =
     calls.push("B:" + new TextDecoder().decode(data))
   })
 
+  let caughtError: unknown
   try {
     produceData(stream, "msg1")
     stream.drainAll()
-  } catch {}
+  } catch (error) {
+    caughtError = error
+  }
+  expect(caughtError).toBeInstanceOf(Error)
+  expect((caughtError as Error).message).toBe("handler A error")
   expect(calls).toEqual(["A", "B:msg1"])
 
   stream.close()

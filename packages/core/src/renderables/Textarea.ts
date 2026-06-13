@@ -92,8 +92,10 @@ export const defaultTextareaKeyBindings: KeyBinding[] = [
   { name: "delete", action: "delete" },
   { name: "delete", shift: true, action: "delete" },
   { name: "return", action: "newline" },
+  { name: "kpenter", action: "newline" },
   { name: "linefeed", action: "newline" },
   { name: "return", meta: true, action: "submit" },
+  { name: "kpenter", meta: true, action: "submit" },
 
   // undo/redo
   { name: "-", ctrl: true, action: "undo" },

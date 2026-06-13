@@ -13,31 +13,41 @@ OpenTUI reads environment variables at runtime. Bun loads `.env` automatically, 
 
 ## Variables
 
-| Variable                       | Type      | Default | Description                                                   |
-| ------------------------------ | --------- | ------- | ------------------------------------------------------------- |
-| `OTUI_TS_STYLE_WARN`           | `string`  | `false` | Enable warnings for missing syntax styles                     |
-| `OTUI_TREE_SITTER_WORKER_PATH` | `string`  | `""`    | Path to the Tree-sitter worker                                |
-| `XDG_CONFIG_HOME`              | `string`  | `""`    | Base directory for user-specific configuration files          |
-| `XDG_DATA_HOME`                | `string`  | `""`    | Base directory for user-specific data files                   |
-| `OTUI_PALETTE_IDLE_TIMEOUT_MS` | `number`  | `300`   | Milliseconds of silence after palette queries before fallback |
-| `OTUI_DEBUG_FFI`               | `boolean` | `false` | Enable debug logging for the FFI bindings                     |
-| `OTUI_SHOW_STATS`              | `boolean` | `false` | Show the debug overlay at startup                             |
-| `OTUI_TRACE_FFI`               | `boolean` | `false` | Enable tracing for the FFI bindings                           |
-| `OPENTUI_FORCE_WCWIDTH`        | `boolean` | `false` | Use wcwidth for character width calculations                  |
-| `OPENTUI_FORCE_UNICODE`        | `boolean` | `false` | Force Mode 2026 Unicode support in terminal capabilities      |
-| `OPENTUI_GRAPHICS`             | `boolean` | `true`  | Enable Kitty graphics protocol detection                      |
-| `OPENTUI_FORCE_NOZWJ`          | `boolean` | `false` | Use no_zwj width method (Unicode without ZWJ joining)         |
-| `OPENTUI_FORCE_EXPLICIT_WIDTH` | `string`  | -       | Force explicit width detection (`true`/`1` or `false`/`0`)    |
-| `OTUI_USE_CONSOLE`             | `boolean` | `true`  | Enable global `console.*` capture for the built-in overlay    |
-| `SHOW_CONSOLE`                 | `boolean` | `false` | Open the built-in console overlay at startup                  |
-| `OTUI_DUMP_CAPTURES`           | `boolean` | `false` | Dump captured stdout and console caches from the exit handler |
-| `OTUI_NO_NATIVE_RENDER`        | `boolean` | `false` | Skip the Zig/native frame renderer                            |
-| `OTUI_DEBUG`                   | `boolean` | `false` | Capture all raw stdin input for debugging                     |
+| Variable                        | Type      | Default | Description                                                     |
+| ------------------------------- | --------- | ------- | --------------------------------------------------------------- |
+| `OTUI_TS_STYLE_WARN`            | `string`  | `false` | Enable warnings for missing syntax styles                       |
+| `OTUI_TREE_SITTER_WORKER_PATH`  | `string`  | `""`    | Path to the Tree-sitter worker                                  |
+| `XDG_CONFIG_HOME`               | `string`  | `""`    | Base directory for user-specific configuration files            |
+| `XDG_DATA_HOME`                 | `string`  | `""`    | Base directory for user-specific data files                     |
+| `OTUI_PALETTE_IDLE_TIMEOUT_MS`  | `number`  | `300`   | Milliseconds of silence after palette queries before fallback   |
+| `OTUI_DEBUG_FFI`                | `boolean` | `false` | Enable debug logging for the FFI bindings                       |
+| `OTUI_SHOW_STATS`               | `boolean` | `false` | Show the debug overlay at startup                               |
+| `OTUI_TRACE_FFI`                | `boolean` | `false` | Enable tracing for the FFI bindings                             |
+| `OPENTUI_FORCE_WCWIDTH`         | `boolean` | `false` | Use wcwidth for character width calculations                    |
+| `OPENTUI_FORCE_UNICODE`         | `boolean` | `false` | Force Mode 2026 Unicode support in terminal capabilities        |
+| `OPENTUI_GRAPHICS`              | `boolean` | `true`  | Enable Kitty graphics protocol detection                        |
+| `OPENTUI_FORCE_NOZWJ`           | `boolean` | `false` | Use no_zwj width method (Unicode without ZWJ joining)           |
+| `OPENTUI_LIBC`                  | `string`  | unset   | Select Linux native libc package (`glibc`, `musl`)              |
+| `OPENTUI_FORCE_EXPLICIT_WIDTH`  | `string`  | -       | Force explicit width detection (`true`/`1` or `false`/`0`)      |
+| `OPENTUI_NOTIFICATION_PROTOCOL` | `string`  | `auto`  | Force notification protocol (`osc9`, `osc777`, `osc99`, `none`) |
+| `OPENTUI_NOTIFICATIONS`         | `boolean` | `true`  | Disable terminal notification detection when false              |
+| `OTUI_USE_CONSOLE`              | `boolean` | `true`  | Enable global `console.*` capture for the built-in overlay      |
+| `SHOW_CONSOLE`                  | `boolean` | `false` | Open the built-in console overlay at startup                    |
+| `OTUI_DUMP_CAPTURES`            | `boolean` | `false` | Dump captured stdout and console caches from the exit handler   |
+| `OTUI_NO_NATIVE_RENDER`         | `boolean` | `false` | Skip the Zig/native frame renderer                              |
+| `OTUI_USE_ALTERNATE_SCREEN`     | `boolean` | unset   | Force alternate-screen or main-screen mode when set             |
+| `OTUI_OVERRIDE_STDOUT`          | `boolean` | unset   | Force stdout capture/passthrough routing when set               |
+| `OTUI_DEBUG`                    | `boolean` | `false` | Capture all raw stdin input for debugging                       |
 
 ## Notes
 
 - `OPENTUI_FORCE_EXPLICIT_WIDTH=false` skips OSC 66 queries on older terminals.
+- Linux uses the glibc native package by default. Set `OPENTUI_LIBC=musl` before importing OpenTUI, or define `process.env.OPENTUI_LIBC` as `"musl"` at standalone build time, to use the musl native package. See [Standalone Executables](/docs/reference/standalone-executables).
+- `OPENTUI_NOTIFICATION_PROTOCOL=none` disables notifications. Protocol overrides should only be used when terminal detection cannot identify a supported notification protocol.
+- `OPENTUI_NOTIFICATIONS=0`, `false`, or `off` disables notifications without changing other terminal capability detection.
 - `OTUI_PALETTE_IDLE_TIMEOUT_MS` bounds palette detection when a terminal reports OSC support but does not answer follow-up color queries.
 - Disable global `console.*` capture with `OTUI_USE_CONSOLE=false`. `consoleMode` only changes the overlay surface.
-- `OTUI_NO_NATIVE_RENDER` still runs the render loop. In `"split-footer"` mode, the current stdout flush path can still emit ANSI cursor movement and clear sequences.
+- `OTUI_USE_ALTERNATE_SCREEN=false` forces `"main-screen"`; `true` forces `"alternate-screen"`. When set, it overrides `screenMode`.
+- `OTUI_OVERRIDE_STDOUT=true` captures only in `"split-footer"`; `false` forces passthrough. When set, it overrides `externalOutputMode`.
+- `OTUI_NO_NATIVE_RENDER` still runs the render loop. In `"split-footer"` mode, the current output flush path can still emit ANSI cursor movement and clear sequences.
 - `OTUI_DUMP_CAPTURES` runs from the renderer exit handler. A direct `renderer.destroy()` call does not trigger it by itself.

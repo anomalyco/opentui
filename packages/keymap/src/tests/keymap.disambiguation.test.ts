@@ -751,12 +751,13 @@ describe("keymap: disambiguation", () => {
     keymap.registerLayer({
       bindings: [
         { key: "a", cmd: "plain" },
+        { key: "ac", cmd: "plain" },
         { key: "<leader>ab", cmd: "leader-action" },
       ],
     })
 
     expect(takeWarnings().warnings).toEqual([
-      '[Keymap] Unknown token "leader" in key sequence "<leader>ab" was ignored',
+      '[Keymap] Unknown token "leader" in key sequence "<leader>ab"; binding was skipped until the token is registered',
     ])
 
     mockInput.pressKey("a")

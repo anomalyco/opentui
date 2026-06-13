@@ -93,8 +93,8 @@ describe("dead binding warnings addon", () => {
     keymap.registerToken({ name: "leader", key: { name: "space" } })
 
     expect(capture.takeWarnings().warnings).toEqual([
-      '[Keymap] Unknown token "leader" in key sequence "<leader>x" was ignored',
-      '[Keymap] Binding "x" has no command and no reachable continuations; it will never trigger',
+      '[Keymap] Unknown token "leader" in key sequence "<leader>x"; binding was skipped until the token is registered',
+      '[Keymap] Binding "<leader>x" has no command and no reachable continuations; it will never trigger',
     ])
   })
 

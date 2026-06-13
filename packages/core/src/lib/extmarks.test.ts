@@ -468,6 +468,60 @@ describe("ExtmarksController", () => {
       expect(extmark?.start).toBe(0)
       expect(extmark?.end).toBe(5)
     })
+
+    it("should adjust extmark positions by display width after multi-width text insertion before extmark", async () => {
+      await setup("abc")
+
+      const id = extmarks.create({
+        start: 1,
+        end: 3,
+      })
+
+      textarea.focus()
+      textarea.cursorOffset = 0
+      textarea.insertText("한글")
+
+      const extmark = extmarks.get(id)
+      expect(textarea.plainText).toBe("한글abc")
+      expect(extmark?.start).toBe(5)
+      expect(extmark?.end).toBe(7)
+    })
+
+    it("should adjust extmark positions by display width after multi-width char insertion before extmark", async () => {
+      await setup("abc")
+
+      const id = extmarks.create({
+        start: 1,
+        end: 3,
+      })
+
+      textarea.focus()
+      textarea.cursorOffset = 0
+      textarea.insertChar("한")
+
+      const extmark = extmarks.get(id)
+      expect(textarea.plainText).toBe("한abc")
+      expect(extmark?.start).toBe(3)
+      expect(extmark?.end).toBe(5)
+    })
+
+    it("should count newlines in display offsets after multi-line multi-width insertion before extmark", async () => {
+      await setup("abc")
+
+      const id = extmarks.create({
+        start: 1,
+        end: 3,
+      })
+
+      textarea.focus()
+      textarea.cursorOffset = 0
+      textarea.insertText("한\n글")
+
+      const extmark = extmarks.get(id)
+      expect(textarea.plainText).toBe("한\n글abc")
+      expect(extmark?.start).toBe(6)
+      expect(extmark?.end).toBe(8)
+    })
   })
 
   describe("Extmark Position Adjustment - Deletion", () => {
@@ -501,6 +555,42 @@ describe("ExtmarksController", () => {
       textarea.deleteRange(0, 6, 0, 11)
 
       expect(extmarks.get(id)).toBeNull()
+    })
+
+    it("should adjust extmark positions by display width after backspacing multi-width text before extmark", async () => {
+      await setup("한글abc")
+
+      const id = extmarks.create({
+        start: 4,
+        end: 7,
+      })
+
+      textarea.focus()
+      textarea.cursorOffset = 4
+      currentMockInput.pressBackspace()
+
+      const extmark = extmarks.get(id)
+      expect(textarea.plainText).toBe("한abc")
+      expect(extmark?.start).toBe(2)
+      expect(extmark?.end).toBe(5)
+    })
+
+    it("should adjust extmark positions by display width after deleting multi-width text before extmark", async () => {
+      await setup("한abc")
+
+      const id = extmarks.create({
+        start: 2,
+        end: 5,
+      })
+
+      textarea.focus()
+      textarea.cursorOffset = 0
+      currentMockInput.pressKey("DELETE")
+
+      const extmark = extmarks.get(id)
+      expect(textarea.plainText).toBe("abc")
+      expect(extmark?.start).toBe(0)
+      expect(extmark?.end).toBe(3)
     })
   })
 

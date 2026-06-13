@@ -1830,7 +1830,7 @@
     .{ .codepoint = "U+269D", .width = 1 },
     .{ .codepoint = "U+269E", .width = 1 },
     .{ .codepoint = "U+269F", .width = 1 },
-    .{ .codepoint = "U+26A0", .width = 2 },
+    .{ .codepoint = "U+26A0", .width = 1 },
     .{ .codepoint = "U+26A1", .width = 2 },
     .{ .codepoint = "U+26A2", .width = 1 },
     .{ .codepoint = "U+26A3", .width = 1 },

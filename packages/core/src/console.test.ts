@@ -115,7 +115,7 @@ describe("TerminalConsole", () => {
 
       terminalConsole.resize(100, 10)
 
-      expect(terminalConsole["consoleHeight"]).toBeGreaterThanOrEqual(1)
+      expect(terminalConsole["consoleHeight"] >= 1).toBe(true)
     })
   })
 
@@ -461,7 +461,7 @@ describe("TerminalConsole", () => {
       clock.advance(100)
 
       // Should have scrolled up
-      expect(terminalConsole["scrollTopIndex"]).toBeLessThan(20)
+      expect(terminalConsole["scrollTopIndex"] < 20).toBe(true)
 
       // Stop selecting
       terminalConsole.handleMouse(createMouseEvent(bounds.x + 1, bounds.y + 1, "up", 0))
@@ -505,7 +505,7 @@ describe("TerminalConsole", () => {
       clock.advance(100)
 
       // Should have scrolled down
-      expect(terminalConsole["scrollTopIndex"]).toBeGreaterThan(0)
+      expect(terminalConsole["scrollTopIndex"] > 0).toBe(true)
 
       // Stop selecting
       terminalConsole.handleMouse(createMouseEvent(bounds.x + 1, bounds.y + logAreaHeight, "up", 0))
@@ -576,7 +576,7 @@ describe("TerminalConsole", () => {
 
       // Selection end should have moved with the scroll
       const endLine = terminalConsole["_selectionEnd"]?.line
-      expect(endLine).toBeLessThan(initialStartLine!)
+      expect(endLine! < initialStartLine!).toBe(true)
 
       // Stop selecting
       terminalConsole.handleMouse(createMouseEvent(bounds.x + 1, bounds.y + 1, "up", 0))

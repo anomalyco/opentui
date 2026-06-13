@@ -11,7 +11,7 @@ jobs:
       github.event.issue.state == 'open' &&
       github.event.comment.body == '/fmt' &&
       contains(fromJson('["OWNER","MEMBER"]'), github.event.comment.author_association)
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     permissions:
       contents: write
       issues: write
@@ -72,7 +72,7 @@ jobs:
 
       - name: Checkout PR branch
         if: steps.run-mode.outputs.run == 'true'
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           ref: ${{ steps.pr-details.outputs.head_ref }}
           fetch-depth: 0
@@ -81,7 +81,7 @@ jobs:
         if: steps.run-mode.outputs.run == 'true'
         uses: oven-sh/setup-bun@v2
         with:
-          bun-version: latest
+          bun-version: 1.3.14
 
       - name: Install dependencies
         if: steps.run-mode.outputs.run == 'true'

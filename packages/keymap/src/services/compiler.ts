@@ -112,6 +112,10 @@ export function createCompilerService<TTarget extends object, TEvent extends Key
       options.warnUnknownToken(tokenName, key)
     }
 
+    if (parsed.unknownTokens.length > 0) {
+      return []
+    }
+
     return parsed.parts
   }
 
@@ -178,6 +182,10 @@ export function createCompilerService<TTarget extends object, TEvent extends Key
 
         for (const tokenName of parsed.unknownTokens) {
           warnUnknownToken(tokenName, typeof expandedKey === "string" ? expandedKey : String(expandedKey.name))
+        }
+
+        if (parsed.unknownTokens.length > 0) {
+          continue
         }
 
         for (const compiledInput of applyBindingTransformers(

@@ -144,10 +144,11 @@ describe("TextRenderable Selection", () => {
       const selection = text.getSelection()
       expect(selection).not.toBe(null)
       // With newline-aware offsets: Line 0 (0-5) + newline (6) + Line 1 (7-12) + newline (13) + Line 2 empty (14)
-      // Selecting to (col=2, row=2) on empty line clamps to col=0, so end=14
+      // Selecting to (col=2, row=2) on empty line clamps to col=0, so end=14.
+      // The range includes the line break before the empty logical line.
       expect(selection!.start).toBe(0)
       expect(selection!.end).toBe(14)
-      expect(text.getSelectedText()).toBe("Line 1\nLine 2")
+      expect(text.getSelectedText()).toBe("Line 1\nLine 2\n")
     })
 
     it("should handle selection ending in empty line", async () => {
@@ -163,10 +164,11 @@ describe("TextRenderable Selection", () => {
       const selection = text.getSelection()
       expect(selection).not.toBe(null)
       // With newline-aware offsets: Line 0 (0-5) + newline (6) + Line 1 empty (7)
-      // Selecting to (col=3, row=1) on empty line clamps to col=0, so end=7
+      // Selecting to (col=3, row=1) on empty line clamps to col=0, so end=7.
+      // The range includes the line break before the empty logical line.
       expect(selection!.start).toBe(0)
       expect(selection!.end).toBe(7)
-      expect(text.getSelectedText()).toBe("Line 1")
+      expect(text.getSelectedText()).toBe("Line 1\n")
     })
 
     it("should handle selection spanning multiple lines completely", async () => {

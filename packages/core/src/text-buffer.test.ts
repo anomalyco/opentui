@@ -1,7 +1,15 @@
 import { describe, expect, it, beforeEach, afterEach } from "bun:test"
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
 import { TextBuffer } from "./text-buffer.js"
+import { resolveRenderLib } from "./zig.js"
 import { StyledText, stringToStyledText } from "./lib/styled-text.js"
 import { RGBA } from "./lib/RGBA.js"
+import { SyntaxStyle } from "./syntax-style.js"
+
+const MALFORMED_UTF8_ABOVE_UNICODE_RANGE = new Uint8Array([0x41, 0xf4, 0x90, 0x80, 0x80, 0x42])
+const MALFORMED_UTF8_TEXT = "A" + "\uFFFD".repeat(4) + "B"
 
 describe("TextBuffer", () => {
   let buffer: TextBuffer
@@ -31,6 +39,21 @@ describe("TextBuffer", () => {
     })
 
     it("should handle empty text", () => {
+      buffer.setText("")
+
+      expect(buffer.length).toBe(0)
+      expect(buffer.getPlainText()).toBe("")
+    })
+
+    it("should replace existing text with empty text", () => {
+      buffer.setText("Hello World")
+      buffer.setText("")
+
+      expect(buffer.length).toBe(0)
+      expect(buffer.getPlainText()).toBe("")
+    })
+
+    it("should handle empty styled text", () => {
       const emptyText = stringToStyledText("")
       buffer.setStyledText(emptyText)
 
@@ -99,6 +122,52 @@ describe("TextBuffer", () => {
 
       const plainText = buffer.getPlainText()
       expect(plainText).toBe("Red\nBlue")
+    })
+
+    it("should return null bytes for zero-length plain-text output buffer", () => {
+      buffer.setText("Hello World")
+
+      const plainBytes = (buffer as any).lib.getPlainTextBytes(buffer.ptr, 0)
+
+      expect(plainBytes).toBeNull()
+    })
+  })
+
+  describe("getTextRange", () => {
+    it("should return null bytes for zero-length range output buffers", () => {
+      buffer.setText("Hello World")
+
+      const lib = (buffer as any).lib
+
+      expect(lib.textBufferGetTextRange(buffer.ptr, 0, 5, 0)).toBeNull()
+      expect(lib.textBufferGetTextRangeByCoords(buffer.ptr, 0, 0, 0, 5, 0)).toBeNull()
+    })
+  })
+
+  describe("line highlights", () => {
+    it("should return an empty list when a line has no highlights", () => {
+      buffer.setText("Hello\nWorld")
+
+      expect(buffer.getLineHighlights(0)).toEqual([])
+      expect(buffer.getLineHighlights(1)).toEqual([])
+    })
+
+    it("should round-trip line highlights through the native highlight buffer", () => {
+      const style = SyntaxStyle.create()
+
+      try {
+        const styleId = style.registerStyle("highlight", {
+          fg: RGBA.fromValues(1, 0, 0, 1),
+        })
+
+        buffer.setSyntaxStyle(style)
+        buffer.setText("Hello World")
+        buffer.addHighlight(0, { start: 0, end: 5, styleId, priority: 7, hlRef: 42 })
+
+        expect(buffer.getLineHighlights(0)).toEqual([{ start: 0, end: 5, styleId, priority: 7, hlRef: 42 }])
+      } finally {
+        style.destroy()
+      }
     })
   })
 
@@ -204,6 +273,47 @@ describe("TextBuffer", () => {
       expect(buffer.getPlainText()).toBe("New Text")
     })
 
+    it("setText should clear styled text chunk highlights", () => {
+      const syntaxStyle = SyntaxStyle.create()
+      buffer.setSyntaxStyle(syntaxStyle)
+      buffer.setStyledText(
+        new StyledText([
+          {
+            __isChunk: true,
+            text: "Styled",
+            fg: RGBA.fromValues(1, 0, 0, 1),
+          },
+        ]),
+      )
+
+      expect(buffer.getHighlightCount()).toBe(1)
+
+      buffer.setText("Plain")
+
+      expect(buffer.getPlainText()).toBe("Plain")
+      expect(buffer.getHighlightCount()).toBe(0)
+
+      syntaxStyle.destroy()
+    })
+
+    it("setText should preserve user highlights including max hlRef", () => {
+      const syntaxStyle = SyntaxStyle.create()
+      const styleId = syntaxStyle.registerStyle("user-highlight", { fg: RGBA.fromValues(0, 1, 0, 1) })
+      buffer.setSyntaxStyle(syntaxStyle)
+      buffer.setText("Hello World")
+      buffer.addHighlight(0, { start: 0, end: 5, styleId, priority: 0, hlRef: 65535 })
+
+      expect(buffer.getHighlightCount()).toBe(1)
+
+      buffer.setText("New Text")
+
+      expect(buffer.getPlainText()).toBe("New Text")
+      expect(buffer.getHighlightCount()).toBe(1)
+      expect(buffer.getLineHighlights(0)[0]?.hlRef).toBe(65535)
+
+      syntaxStyle.destroy()
+    })
+
     it("setStyledText should preserve content across calls", () => {
       const firstText = stringToStyledText("First")
       buffer.setStyledText(firstText)
@@ -251,6 +361,54 @@ describe("TextBuffer", () => {
       expect(buffer.length).toBe(11)
       expect(buffer.getPlainText()).toBe("After reset")
     })
+
+    it("recovers if the native memory registry entry was cleared", () => {
+      buffer.setText("Hello World")
+
+      resolveRenderLib().textBufferClearMemRegistry(buffer.ptr)
+
+      buffer.setText("Recovered")
+
+      expect(buffer.length).toBe(9)
+      expect(buffer.byteSize).toBe(9)
+      expect(buffer.getPlainText()).toBe("Recovered")
+    })
+  })
+
+  describe("malformed UTF-8 bytes", () => {
+    it("loadFile should preserve malformed UTF-8 bytes without panicking", () => {
+      const dir = mkdtempSync(join(process.env.OTUI_TEXT_BUFFER_TEST_TMPDIR ?? tmpdir(), "opentui-text-buffer-"))
+      const path = join(dir, "malformed.txt")
+      const unicodeBuffer = TextBuffer.create("unicode")
+
+      try {
+        writeFileSync(path, MALFORMED_UTF8_ABOVE_UNICODE_RANGE)
+
+        unicodeBuffer.loadFile(path)
+
+        expect(unicodeBuffer.byteSize).toBe(6)
+        expect(unicodeBuffer.length).toBe(2)
+        expect(unicodeBuffer.getLineCount()).toBe(1)
+        expect(unicodeBuffer.getPlainText()).toBe(MALFORMED_UTF8_TEXT)
+      } finally {
+        unicodeBuffer.destroy()
+        rmSync(dir, { recursive: true, force: true })
+      }
+    })
+
+    it("textBufferAppend should preserve malformed UTF-8 bytes without panicking", () => {
+      const lib = resolveRenderLib()
+      const unicodeBuffer = TextBuffer.create("unicode")
+
+      try {
+        lib.textBufferAppend(unicodeBuffer.ptr, MALFORMED_UTF8_ABOVE_UNICODE_RANGE)
+
+        expect(lib.textBufferGetByteSize(unicodeBuffer.ptr)).toBe(6)
+        expect(lib.textBufferGetLength(unicodeBuffer.ptr)).toBe(2)
+      } finally {
+        unicodeBuffer.destroy()
+      }
+    })
   })
 
   describe("append()", () => {
@@ -286,6 +444,13 @@ describe("TextBuffer", () => {
       buffer.append("")
       expect(buffer.length).toBe(lengthBefore)
       expect(buffer.getPlainText()).toBe("Hello")
+    })
+
+    it("should append empty string to an empty buffer", () => {
+      buffer.append("")
+
+      expect(buffer.length).toBe(0)
+      expect(buffer.getPlainText()).toBe("")
     })
 
     it("should append unicode content", () => {

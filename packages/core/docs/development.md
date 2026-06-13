@@ -83,7 +83,7 @@ Link your local OpenTUI to another project:
 The script automatically links:
 
 - Main packages: `@opentui/core`, `@opentui/solid`, `@opentui/react`
-- Peer dependencies: `yoga-layout`, `solid-js`, `react`, `react-dom`, `react-reconciler`
+- Peer dependencies: `solid-js`, `react`, `react-dom`, `react-reconciler`
 - Subdependencies (with `--subdeps`): Packages like `opentui-spinner` that depend on opentui
 
 **Requirements:** Target project must have `node_modules` (run `bun install` first).

@@ -1,4 +1,6 @@
-import RAPIER from "@dimforge/rapier2d-simd-compat"
+import type { RigidBody, World } from "@dimforge/rapier2d-simd-compat"
+// @ts-expect-error Rapier does not publish types for its ESM subpath.
+import * as RAPIER from "@dimforge/rapier2d-simd-compat/rapier.es.js"
 import type {
   PhysicsVector2,
   PhysicsRigidBodyDesc,
@@ -8,7 +10,7 @@ import type {
 } from "./physics-interface.js"
 
 export class RapierRigidBody implements PhysicsRigidBody {
-  constructor(private rapierBody: RAPIER.RigidBody) {}
+  constructor(private rapierBody: RigidBody) {}
 
   applyImpulse(force: PhysicsVector2): void {
     this.rapierBody.applyImpulse(force, true)
@@ -27,13 +29,13 @@ export class RapierRigidBody implements PhysicsRigidBody {
     return this.rapierBody.rotation()
   }
 
-  get nativeBody(): RAPIER.RigidBody {
+  get nativeBody(): RigidBody {
     return this.rapierBody
   }
 }
 
 export class RapierPhysicsWorld implements PhysicsWorld {
-  constructor(private rapierWorld: RAPIER.World) {}
+  constructor(private rapierWorld: World) {}
 
   createRigidBody(desc: PhysicsRigidBodyDesc): PhysicsRigidBody {
     const rigidBodyDesc = RAPIER.RigidBodyDesc.dynamic()
@@ -60,7 +62,7 @@ export class RapierPhysicsWorld implements PhysicsWorld {
     this.rapierWorld.removeRigidBody(rapierRigidBody)
   }
 
-  static createFromRapierWorld(rapierWorld: RAPIER.World): RapierPhysicsWorld {
+  static createFromRapierWorld(rapierWorld: World): RapierPhysicsWorld {
     return new RapierPhysicsWorld(rapierWorld)
   }
 }

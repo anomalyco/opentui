@@ -534,16 +534,16 @@ export function createDispatchService<TTarget extends object, TEvent extends Key
     const matchKeys = resolveEventMatchKeys(event)
     let outcome = noMatchOutcome()
 
-    layerLoop: for (const layer of activeLayers) {
-      if (layer.bindings.length === 0) {
-        continue
-      }
+    for (const strokeKey of matchKeys) {
+      layerLoop: for (const layer of activeLayers) {
+        if (layer.bindings.length === 0) {
+          continue
+        }
 
-      if (!conditions.matchesConditions(layer)) {
-        continue
-      }
+        if (!conditions.matchesConditions(layer)) {
+          continue
+        }
 
-      for (const strokeKey of matchKeys) {
         const result = runReleaseBindings(layer, strokeKey, event, focused)
         outcome = preferDispatchOutcome(outcome, result.outcome)
         if (!result.handled) {
@@ -571,7 +571,17 @@ export function createDispatchService<TTarget extends object, TEvent extends Key
     }
 
     const activeLayers = activation.getActiveLayers(focused)
-    return dispatchFromRoot(activeLayers, matchKeys, event, focused)
+    let outcome = noMatchOutcome()
+
+    for (const matchKey of matchKeys) {
+      const result = dispatchFromRoot(activeLayers, [matchKey], event, focused)
+      outcome = preferDispatchOutcome(outcome, result)
+      if (result.handled) {
+        return outcome
+      }
+    }
+
+    return outcome
   }
 
   function dispatchPendingSequence(

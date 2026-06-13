@@ -1,0 +1,132 @@
+---
+title: Native audio
+description: Load, play, mix, and inspect audio with the native miniaudio backend
+order: 11
+skill:
+  entry: true
+  intents: [audio, native-audio, sound, playback, pcm, fft]
+---
+
+# Native audio
+
+OpenTUI exposes a native miniaudio-backed `Audio` engine from `@opentui/core`. It can decode audio bytes or files, play sounds through named groups, choose playback devices, mix into PCM buffers, and expose recent mixed frames for visualization.
+
+## Basic usage
+
+```typescript
+import { Audio } from "@opentui/core"
+
+const audio = Audio.create({ autoStart: false })
+
+audio.on("error", (error, context) => {
+  console.error(`${context.action}: ${error.message}`)
+})
+
+const sound = await audio.loadSoundFile("click.wav")
+if (sound != null && audio.start()) {
+  audio.play(sound, { volume: 0.8, pan: 0, loop: false })
+}
+
+audio.dispose()
+```
+
+Use `setupAudio(options?)` when you prefer a function wrapper around `Audio.create(options?)`.
+
+## Engine options
+
+| Option             | Default  | Description                                    |
+| ------------------ | -------- | ---------------------------------------------- |
+| `autoStart`        | `false`  | Call `start()` during creation                 |
+| `sampleRate`       | `48000`  | Engine sample rate                             |
+| `playbackChannels` | `2`      | Requested playback channel count               |
+| `startOptions`     | defaults | Options passed to `start()` when auto-starting |
+
+Create a new `Audio` instance to change `sampleRate` or `playbackChannels`.
+
+## Sounds and voices
+
+| Method                          | Description                                                   |
+| ------------------------------- | ------------------------------------------------------------- |
+| `loadSound(data)`               | Decode `Uint8Array` or `ArrayBuffer`; returns `AudioSound`    |
+| `loadSoundFile(path)`           | Read and decode a file; returns `Promise<AudioSound \| null>` |
+| `unloadSound(sound)`            | Free a loaded sound and stop voices using it                  |
+| `play(sound, options?)`         | Start a voice; returns `AudioVoice \| null`                   |
+| `stopVoice(voice)`              | Stop one active voice                                         |
+| `group(name)`                   | Create or reuse a named group; group `0` is the default group |
+| `setVoiceGroup(voice, group)`   | Move a voice to another group                                 |
+| `setGroupVolume(group, volume)` | Set group volume                                              |
+| `setMasterVolume(volume)`       | Set master volume                                             |
+
+`play()` accepts `{ volume, pan, loop, groupId }`. Native playback clamps `volume` to `0..4` and `pan` to `-1..1`. The engine has 32 voice slots.
+
+## Starting audio
+
+`start()` starts native playback and returns `false` when no output device is available. Use `isStarted()` to check native playback state.
+
+For headless mixing, tests, benchmarks, or manual `mixFrames()` output, use `startMixer()`. It starts the mixer without opening a playback device. Use `isMixerStarted()` to check either mode.
+
+## Bun standalone executables
+
+Bun embeds files in `bun build --compile` executables when they are imported with `with { type: "file" }`. Read the embedded file as bytes and pass it to `loadSound()` so audio decodes from memory instead of a file path.
+
+```typescript
+import { file } from "bun"
+import { Audio } from "@opentui/core"
+import clickPath from "./click.wav" with { type: "file" }
+
+const audio = Audio.create({ autoStart: false })
+const clickBytes = await file(clickPath).bytes()
+const click = audio.loadSound(clickBytes)
+
+if (click != null && audio.start()) {
+  audio.play(click)
+}
+```
+
+Compile the app normally with `bun build --compile ./app.ts --outfile app`.
+
+## Node.js standalone executables
+
+Coming soon.
+
+## Devices
+
+Select devices before starting the engine:
+
+```typescript
+const audio = Audio.create({ autoStart: false })
+const devices = audio.listPlaybackDevices() ?? []
+const device = devices.find((item) => item.isDefault) ?? devices[0]
+
+if (device) {
+  audio.selectPlaybackDevice(device.index)
+}
+
+if (!audio.start()) {
+  console.error("No playback device available")
+}
+```
+
+`listPlaybackDevices()` returns `{ index, name, isDefault }[] | null`. Use `clearPlaybackDeviceSelection()` to return to the default device selection.
+
+## Mixing and analysis
+
+| Method                                  | Description                                                                                |
+| --------------------------------------- | ------------------------------------------------------------------------------------------ |
+| `mixFrames(frameCount, channels=2)`     | Mix into a `Float32Array`; mono downmixes, channels above stereo keep extras zero          |
+| `getStats()`                            | Returns `soundsLoaded`, `voicesActive`, `framesMixed`, `lockMisses`, `lastPeak`, `lastRms` |
+| `enableTap(capacityFrames=8192)`        | Enable a fixed-size native ring buffer of recent mixed frames                              |
+| `readTapFrames(frameCount, channels=2)` | Copy the latest tapped frames; returns `{ frames, framesRead }`                            |
+| `disableTap()`                          | Free the tap buffer                                                                        |
+
+The tap is disabled by default. When enabled, it stores the latest frames and overwrites old data; reads do not drain it. OpenTUI does not compute FFT natively. For spectrum visualization, read tap frames and run FFT in TypeScript.
+
+## Start options
+
+`start(options?)` accepts low-level device options: `periodSizeInFrames`, `periodSizeInMilliseconds`, `periods`, `performanceProfile`, `shareMode`, `noPreSilencedOutputBuffer`, `noClip`, `noDisableDenormals`, `noFixedSizedCallback`, `wasapiNoAutoConvertSrc`, `wasapiNoDefaultQualitySrc`, `alsaNoMMap`, `alsaNoAutoFormat`, `alsaNoAutoChannels`, and `alsaNoAutoResample`.
+
+`performanceProfile` uses `0` for low latency and `1` for conservative. `shareMode` uses `0` for shared and `1` for exclusive.
+
+## Lifecycle and errors
+
+Use `start()`, `startMixer()`, `stop()`, `isStarted()`, `isMixerStarted()`, and `dispose()` for lifecycle. `Audio` emits `started`, `mixerStarted`, `stopped`, `disposed`, and `error`. Methods that fail return `false` or `null` and emit `error` with `{ action, status }` context.

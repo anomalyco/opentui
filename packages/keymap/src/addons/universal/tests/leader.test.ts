@@ -119,8 +119,10 @@ describe("leader addon", () => {
 
     mockInput.pressKey("a")
 
-    expect(takeWarnings().warnings).toEqual(['[Keymap] Unknown token "leader" in key sequence "<leader>a" was ignored'])
-    expect(calls).toEqual(["leader"])
+    expect(takeWarnings().warnings).toEqual([
+      '[Keymap] Unknown token "leader" in key sequence "<leader>a"; binding was skipped until the token is registered',
+    ])
+    expect(calls).toEqual([])
 
     registerLeader(keymap, {
       trigger: { name: "x", ctrl: true },
@@ -128,12 +130,12 @@ describe("leader addon", () => {
 
     mockInput.pressKey("a")
 
-    expect(calls).toEqual(["leader"])
+    expect(calls).toEqual([])
 
     mockInput.pressKey("x", { ctrl: true })
     mockInput.pressKey("a")
 
-    expect(calls).toEqual(["leader", "leader"])
+    expect(calls).toEqual(["leader"])
   })
 
   test("can be disposed to remove the leader token mapping", () => {
@@ -165,7 +167,9 @@ describe("leader addon", () => {
 
     offLeader()
 
-    expect(takeWarnings().warnings).toEqual(['[Keymap] Unknown token "leader" in key sequence "<leader>" was ignored'])
+    expect(takeWarnings().warnings).toEqual([
+      '[Keymap] Unknown token "leader" in key sequence "<leader>"; binding was skipped until the token is registered',
+    ])
 
     mockInput.pressKey("x", { ctrl: true })
     expect(calls).toEqual(["leader"])

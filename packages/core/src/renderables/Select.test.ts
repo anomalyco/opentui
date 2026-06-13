@@ -240,7 +240,7 @@ describe("SelectRenderable", () => {
       expect(select.getSelectedOption()).toEqual(sampleOptions[3])
       expect(selectionChangedFired).toBe(true)
       expect(selectionIndex).toBe(3)
-      expect(selectionOption).toEqual(sampleOptions[3])
+      expect(selectionOption!).toEqual(sampleOptions[3])
     })
 
     test("should ignore invalid selected index", async () => {
@@ -356,7 +356,7 @@ describe("SelectRenderable", () => {
 
       expect(itemSelectedFired).toBe(true)
       expect(selectedIndex).toBe(2)
-      expect(selectedOption).toEqual(sampleOptions[2])
+      expect(selectedOption!).toEqual(sampleOptions[2])
     })
 
     test("should not select when no options available", async () => {
@@ -661,12 +661,12 @@ describe("SelectRenderable", () => {
       select.moveDown()
       expect(eventCount).toBe(1)
       expect(lastIndex).toBe(2)
-      expect(lastOption).toEqual(sampleOptions[2])
+      expect(lastOption!).toEqual(sampleOptions[2])
 
       select.moveUp()
       expect(eventCount).toBe(2)
       expect(lastIndex).toBe(1)
-      expect(lastOption).toEqual(sampleOptions[1])
+      expect(lastOption!).toEqual(sampleOptions[1])
     })
 
     test("should emit ITEM_SELECTED when selecting", async () => {
@@ -690,7 +690,7 @@ describe("SelectRenderable", () => {
       select.selectCurrent()
       expect(eventCount).toBe(1)
       expect(lastIndex).toBe(2)
-      expect(lastOption).toEqual(sampleOptions[2])
+      expect(lastOption!).toEqual(sampleOptions[2])
     })
 
     test("should not reuse the same keypress after focusing another select", async () => {

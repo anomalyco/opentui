@@ -16,6 +16,10 @@ export function registerTimedLeader<TTarget extends object, TEvent extends Keyma
   options: TimedLeaderOptions,
 ): () => void {
   const trigger = resolveLeaderTrigger(options.trigger)
+  if (trigger === undefined) {
+    return () => {}
+  }
+
   const matchesTrigger = keymap.createKeyMatcher(trigger)
   const timeoutMs = options.timeoutMs ?? 1500
 

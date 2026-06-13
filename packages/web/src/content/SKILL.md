@@ -1,6 +1,6 @@
 ---
 name: opentui
-description: Build terminal UIs with OpenTUI. Covers the core API, keymaps, React and Solid bindings, components, layout, keyboard input, plugins, and testing.
+description: Build terminal UIs with OpenTUI. Covers the core API, native audio, keymaps, React and Solid bindings, components, layout, keyboard input, plugins, and testing.
 ---
 
 # OpenTUI Skill
@@ -18,6 +18,8 @@ Inside the OpenTUI repo, this skill root lives at `packages/web/src/content/`, s
 
 - Getting started: `/docs/getting-started`
 - Core: `/docs/core-concepts/renderer`
+- Testing: `/docs/core-concepts/testing`
+- Audio: `/docs/core-concepts/audio`
 - Keymap: `/docs/keymap/overview`
 - React: `/docs/bindings/react`
 - Solid: `/docs/bindings/solid`
@@ -33,9 +35,11 @@ Inside the OpenTUI repo, this skill root lives at `packages/web/src/content/`, s
 | ---------------------------------------------------------- | --------------------------------- |
 | `getting-started`, `installation`, `quickstart`, `intro`   | `docs/getting-started.mdx`        |
 | `core`, `renderer`, `terminal`, `scrollback`, `lifecycle`  | `docs/core-concepts/renderer.mdx` |
+| `audio`, `native-audio`, `sound`, `playback`, `pcm`, `fft` | `docs/core-concepts/audio.mdx`    |
 | `keymap`, `keybindings`, `shortcuts`, `commands`, `leader` | `docs/keymap/overview.mdx`        |
 | `layout`, `flexbox`, `yoga`, `positioning`                 | `docs/core-concepts/layout.mdx`   |
 | `keyboard`, `input`, `keybindings`, `paste`, `focus`       | `docs/core-concepts/keyboard.mdx` |
+| `testing`, `test-renderer`, `snapshots`, `frames`          | `docs/core-concepts/testing.mdx`  |
 | `react`, `jsx`, `hooks`, `animation`, `testing`            | `docs/bindings/react.mdx`         |
 | `solid`, `signals`, `jsx`, `hooks`, `animation`, `testing` | `docs/bindings/solid.mdx`         |
 | `plugins`, `plugin`, `slots`, `registry`, `extensions`     | `docs/plugins/slots.mdx`          |
@@ -49,6 +53,7 @@ For concrete component requests, jump straight to `docs/components/<name>.mdx` a
 
 - `docs/getting-started.mdx`
 - `docs/core-concepts/renderer.mdx`
+- `docs/core-concepts/audio.mdx`
 - `docs/keymap/overview.mdx`
 - `docs/core-concepts/layout.mdx`
 - `docs/core-concepts/keyboard.mdx`

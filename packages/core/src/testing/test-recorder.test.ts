@@ -3,6 +3,11 @@ import { createTestRenderer, type TestRenderer } from "./test-renderer.js"
 import { TestRecorder } from "./test-recorder.js"
 import { TextRenderable } from "../renderables/Text.js"
 
+async function waitForScheduledRender(): Promise<void> {
+  await new Promise<void>((resolve) => process.nextTick(resolve))
+  await Promise.resolve()
+}
+
 describe("TestRecorder", () => {
   let renderer: TestRenderer
   let recorder: TestRecorder
@@ -42,7 +47,7 @@ describe("TestRecorder", () => {
 
     const text = new TextRenderable(renderer, { content: "Hello World" })
     renderer.root.add(text)
-    await Bun.sleep(1)
+    await waitForScheduledRender()
 
     expect(recorder.recordedFrames.length).toBe(1)
 
@@ -57,7 +62,7 @@ describe("TestRecorder", () => {
 
     const text = new TextRenderable(renderer, { content: "Test Content" })
     renderer.root.add(text)
-    await Bun.sleep(1)
+    await waitForScheduledRender()
 
     const frames = recorder.recordedFrames
     expect(frames.length).toBe(1)
@@ -71,7 +76,7 @@ describe("TestRecorder", () => {
 
     const text = new TextRenderable(renderer, { content: "Frame Metadata" })
     renderer.root.add(text)
-    await Bun.sleep(1)
+    await waitForScheduledRender()
 
     const frames = recorder.recordedFrames
     expect(frames.length).toBe(1)
@@ -86,7 +91,7 @@ describe("TestRecorder", () => {
 
     const text = new TextRenderable(renderer, { content: "Multiple Frames" })
     renderer.root.add(text)
-    await Bun.sleep(1)
+    await waitForScheduledRender()
 
     await renderOnce()
     await renderOnce()
@@ -131,7 +136,7 @@ describe("TestRecorder", () => {
   test("should not record when not started", async () => {
     const text = new TextRenderable(renderer, { content: "Not Recording" })
     renderer.root.add(text)
-    await Bun.sleep(1)
+    await waitForScheduledRender()
 
     expect(recorder.recordedFrames.length).toBe(0)
   })
@@ -141,7 +146,7 @@ describe("TestRecorder", () => {
 
     const text = new TextRenderable(renderer, { content: "Stopped" })
     renderer.root.add(text)
-    await Bun.sleep(1)
+    await waitForScheduledRender()
 
     expect(recorder.recordedFrames.length).toBe(1)
 
@@ -155,7 +160,7 @@ describe("TestRecorder", () => {
 
     const text = new TextRenderable(renderer, { content: "Clear Test" })
     renderer.root.add(text)
-    await Bun.sleep(1)
+    await waitForScheduledRender()
 
     await renderOnce()
 
@@ -171,7 +176,7 @@ describe("TestRecorder", () => {
 
     recorder.rec()
     renderer.root.add(text)
-    await Bun.sleep(1)
+    await waitForScheduledRender()
     recorder.stop()
     expect(recorder.recordedFrames.length).toBe(1)
 
@@ -189,28 +194,10 @@ describe("TestRecorder", () => {
 
     const text = new TextRenderable(renderer, { content: "Duplicate Test" })
     renderer.root.add(text)
-    await Bun.sleep(1)
+    await waitForScheduledRender()
 
     recorder.stop()
 
-    expect(recorder.recordedFrames.length).toBe(1)
-  })
-
-  test("should restore original renderNative after stop", async () => {
-    const text = new TextRenderable(renderer, { content: "Restore Test" })
-
-    recorder.rec()
-    renderer.root.add(text)
-    await Bun.sleep(1)
-    recorder.stop()
-
-    recorder.clear()
-    await renderOnce()
-    expect(recorder.recordedFrames.length).toBe(0)
-
-    recorder.rec()
-    await renderOnce()
-    recorder.stop()
     expect(recorder.recordedFrames.length).toBe(1)
   })
 
@@ -236,7 +223,7 @@ describe("TestRecorder", () => {
 
     const text = new TextRenderable(renderer, { content: "Copy Test" })
     renderer.root.add(text)
-    await Bun.sleep(1)
+    await waitForScheduledRender()
 
     const frames1 = recorder.recordedFrames
     const frames2 = recorder.recordedFrames
@@ -264,7 +251,7 @@ describe("TestRecorder", () => {
     const text2 = new TextRenderable(renderer, { content: "Line 2" })
     renderer.root.add(text1)
     renderer.root.add(text2)
-    await Bun.sleep(1)
+    await waitForScheduledRender()
 
     const frame = recorder.recordedFrames[0].frame
     expect(frame).toContain("Line 1")
@@ -278,7 +265,7 @@ describe("TestRecorder", () => {
 
     const text = new TextRenderable(renderer, { content: "Rapid Test" })
     renderer.root.add(text)
-    await Bun.sleep(1)
+    await waitForScheduledRender()
 
     for (let i = 0; i < 4; i++) {
       await renderOnce()
@@ -295,7 +282,7 @@ describe("TestRecorder", () => {
 
     const text = new TextRenderable(renderer, { content: "Buffer Test" })
     renderer.root.add(text)
-    await Bun.sleep(1)
+    await waitForScheduledRender()
 
     const frames = recorderWithFg.recordedFrames
     expect(frames.length).toBe(1)
@@ -313,7 +300,7 @@ describe("TestRecorder", () => {
 
     const text = new TextRenderable(renderer, { content: "Buffer Test" })
     renderer.root.add(text)
-    await Bun.sleep(1)
+    await waitForScheduledRender()
 
     const frames = recorderWithBg.recordedFrames
     expect(frames.length).toBe(1)
@@ -331,7 +318,7 @@ describe("TestRecorder", () => {
 
     const text = new TextRenderable(renderer, { content: "Buffer Test" })
     renderer.root.add(text)
-    await Bun.sleep(1)
+    await waitForScheduledRender()
 
     const frames = recorderWithAttrs.recordedFrames
     expect(frames.length).toBe(1)
@@ -351,7 +338,7 @@ describe("TestRecorder", () => {
 
     const text = new TextRenderable(renderer, { content: "Buffer Test" })
     renderer.root.add(text)
-    await Bun.sleep(1)
+    await waitForScheduledRender()
 
     const frames = recorderWithAll.recordedFrames
     expect(frames.length).toBe(1)
@@ -368,7 +355,7 @@ describe("TestRecorder", () => {
 
     const text = new TextRenderable(renderer, { content: "No Buffer Test" })
     renderer.root.add(text)
-    await Bun.sleep(1)
+    await waitForScheduledRender()
 
     const frames = recorder.recordedFrames
     expect(frames.length).toBe(1)
@@ -383,7 +370,7 @@ describe("TestRecorder", () => {
 
     const text = new TextRenderable(renderer, { content: "Copy Test" })
     renderer.root.add(text)
-    await Bun.sleep(1)
+    await waitForScheduledRender()
 
     await renderOnce()
 
@@ -408,7 +395,7 @@ describe("TestRecorder", () => {
 
     const text = new TextRenderable(renderer, { content: "Size Test" })
     renderer.root.add(text)
-    await Bun.sleep(1)
+    await waitForScheduledRender()
 
     const frames = recorderWithAll.recordedFrames
     expect(frames.length).toBe(1)

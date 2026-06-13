@@ -531,7 +531,7 @@ export class Keymap<TTarget extends object, TEvent extends KeymapEvent = KeymapE
       `token:${token}`,
       "unknown-token",
       { token, sequence },
-      `[Keymap] Unknown token "${token}" in key sequence "${sequence}" was ignored`,
+      `[Keymap] Unknown token "${token}" in key sequence "${sequence}"; binding was skipped until the token is registered`,
     )
   }
 

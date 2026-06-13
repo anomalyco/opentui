@@ -1,4 +1,4 @@
-import { Edge, Gutter } from "yoga-layout"
+import { Edge, Gutter } from "../yoga.js"
 import { type RenderableOptions, Renderable } from "../Renderable.js"
 import type { OptimizedBuffer } from "../buffer.js"
 import {
@@ -22,6 +22,7 @@ export interface BoxOptions<TRenderable extends Renderable = BoxRenderable> exte
   customBorderChars?: BorderCharacters
   shouldFill?: boolean
   title?: string
+  titleColor?: string | RGBA
   titleAlignment?: "left" | "center" | "right"
   bottomTitle?: string
   bottomTitleAlignment?: "left" | "center" | "right"
@@ -53,6 +54,7 @@ export class BoxRenderable extends Renderable {
   protected borderSides: BorderSidesConfig
   public shouldFill: boolean
   protected _title?: string
+  protected _titleColor?: RGBA
   protected _titleAlignment: "left" | "center" | "right"
   protected _bottomTitle?: string
   protected _bottomTitleAlignment: "left" | "center" | "right"
@@ -91,6 +93,7 @@ export class BoxRenderable extends Renderable {
     this.borderSides = getBorderSides(this._border)
     this.shouldFill = options.shouldFill ?? this._defaultOptions.shouldFill
     this._title = options.title
+    this._titleColor = options.titleColor ? parseColor(options.titleColor) : undefined
     this._titleAlignment = options.titleAlignment || this._defaultOptions.titleAlignment
     this._bottomTitle = options.bottomTitle
     this._bottomTitleAlignment = options.bottomTitleAlignment || this._defaultOptions.bottomTitleAlignment
@@ -204,6 +207,18 @@ export class BoxRenderable extends Renderable {
     }
   }
 
+  public get titleColor(): RGBA | undefined {
+    return this._titleColor
+  }
+
+  public set titleColor(value: string | RGBA | undefined) {
+    const newColor = value ? parseColor(value) : undefined
+    if (this._titleColor !== newColor) {
+      this._titleColor = newColor
+      this.requestRender()
+    }
+  }
+
   public get titleAlignment(): "left" | "center" | "right" {
     return this._titleAlignment
   }
@@ -263,6 +278,7 @@ export class BoxRenderable extends Renderable {
       backgroundColor: this._backgroundColor,
       shouldFill: this.shouldFill,
       title: this._title,
+      titleColor: this._titleColor ?? currentBorderColor,
       titleAlignment: this._titleAlignment,
       bottomTitle: this._bottomTitle,
       bottomTitleAlignment: this._bottomTitleAlignment,

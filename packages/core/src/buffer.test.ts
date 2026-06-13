@@ -236,9 +236,9 @@ describe("OptimizedBuffer", () => {
       buffer.drawChar(65, 0, 0, fg, bg) // 'A'
 
       const fgBuffer = buffer.buffers.fg
-      // Source-over into a transparent destination keeps the source channel and alpha.
-      expect(fgBuffer[0] & 0xff).toBe(255)
-      expect(fgBuffer[3] & 0xff).toBe(128)
+      // Foreground alpha is flattened against the final opaque cell background.
+      expect(fgBuffer[0] & 0xff).toBe(128)
+      expect(fgBuffer[3] & 0xff).toBe(255)
     })
 
     it("should blend semi-transparent background", () => {

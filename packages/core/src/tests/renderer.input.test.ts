@@ -5,13 +5,15 @@ import { type KeyEvent } from "../lib/KeyHandler.js"
 import { Buffer } from "node:buffer"
 import { Renderable, type RenderableOptions } from "../Renderable.js"
 import { createTestRenderer, type TestRenderer, type TestRendererOptions } from "../testing/test-renderer.js"
+import { createTerminalCapabilities } from "../testing/terminal-capabilities.js"
 import { ManualClock } from "../testing/manual-clock.js"
 import type { RenderContext } from "../types.js"
+import type { RenderLib } from "../zig.js"
 
 let currentRenderer: TestRenderer
 let kittyRenderer: TestRenderer
 let mockProcessCapabilityResponse: any
-let mockGetTerminalCapabilities: any
+let mockGetTerminalCapabilities: RenderLib["getTerminalCapabilities"]
 let currentClock: ManualClock
 let kittyClock: ManualClock
 
@@ -30,12 +32,12 @@ beforeEach(async () => {
   // @ts-expect-error - mocking for test
   currentRenderer.lib.processCapabilityResponse = () => {}
   // @ts-expect-error - mocking for test
-  currentRenderer.lib.getTerminalCapabilities = () => ({ unicode: "unicode" })
+  currentRenderer.lib.getTerminalCapabilities = () => createTerminalCapabilities()
 
   // @ts-expect-error - mocking for test
   kittyRenderer.lib.processCapabilityResponse = () => {}
   // @ts-expect-error - mocking for test
-  kittyRenderer.lib.getTerminalCapabilities = () => ({ unicode: "unicode" })
+  kittyRenderer.lib.getTerminalCapabilities = () => createTerminalCapabilities()
 })
 
 afterEach(() => {
@@ -146,7 +148,7 @@ async function createThemeQueryRenderer(): Promise<{
   // @ts-expect-error - mocking for test
   renderer.lib.processCapabilityResponse = () => {}
   // @ts-expect-error - mocking for test
-  renderer.lib.getTerminalCapabilities = () => ({ unicode: "unicode" })
+  renderer.lib.getTerminalCapabilities = () => createTerminalCapabilities()
 
   const queryThemeColorsCalls = { count: 0 }
   // @ts-expect-error - mocking for test
@@ -789,7 +791,7 @@ test("Kitty keyboard shift+space via keyInput events", async () => {
   const result = await triggerKittyInput("\x1b[32;2u")
   expect(result).toMatchObject({
     eventType: "press",
-    name: " ",
+    name: "space",
     ctrl: false,
     meta: false,
     shift: true,
@@ -797,6 +799,25 @@ test("Kitty keyboard shift+space via keyInput events", async () => {
     number: false,
     sequence: " ",
     raw: "\x1b[32;2u",
+    super: false,
+    hyper: false,
+    capsLock: false,
+    numLock: false,
+  })
+})
+
+test("Kitty keyboard ctrl+space via keyInput events", async () => {
+  const result = await triggerKittyInput("\x1b[32;5u")
+  expect(result).toMatchObject({
+    eventType: "press",
+    name: "space",
+    ctrl: true,
+    meta: false,
+    shift: false,
+    option: false,
+    number: false,
+    sequence: " ",
+    raw: "\x1b[32;5u",
     super: false,
     hyper: false,
     capsLock: false,
@@ -1106,11 +1127,41 @@ test("Kitty keyboard emoji via keyInput events", async () => {
 })
 
 test("Kitty keyboard keypad keys via keyInput events", async () => {
-  const kp0 = await triggerKittyInput("\x1b[57399u")
-  expect(kp0?.name).toBe("kp0")
+  const printableKeys = [
+    ["\x1b[57399u", "kp0", "0"],
+    ["\x1b[57400u", "kp1", "1"],
+    ["\x1b[57401u", "kp2", "2"],
+    ["\x1b[57402u", "kp3", "3"],
+    ["\x1b[57403u", "kp4", "4"],
+    ["\x1b[57404u", "kp5", "5"],
+    ["\x1b[57405u", "kp6", "6"],
+    ["\x1b[57406u", "kp7", "7"],
+    ["\x1b[57407u", "kp8", "8"],
+    ["\x1b[57408u", "kp9", "9"],
+    ["\x1b[57409u", "kpdecimal", "."],
+    ["\x1b[57410u", "kpdivide", "/"],
+    ["\x1b[57411u", "kpmultiply", "*"],
+    ["\x1b[57412u", "kpminus", "-"],
+    ["\x1b[57413u", "kpplus", "+"],
+    ["\x1b[57415u", "kpequal", "="],
+    ["\x1b[57416u", "kpseparator", ","],
+  ] as const
+
+  for (const [sequence, name, text] of printableKeys) {
+    const key = await triggerKittyInput(sequence)
+    expect(key).toMatchObject({ name, sequence: text })
+  }
 
   const kpEnter = await triggerKittyInput("\x1b[57414u")
   expect(kpEnter?.name).toBe("kpenter")
+  expect(kpEnter?.sequence).toBe("\x1b[57414u")
+
+  const kpleft = await triggerKittyInput("\x1b[57417u")
+  expect(kpleft?.name).toBe("kpleft")
+  expect(kpleft?.sequence).toBe("\x1b[57417u")
+
+  const explicitText = await triggerKittyInput("\x1b[57400;1;120u")
+  expect(explicitText).toMatchObject({ name: "kp1", sequence: "x" })
 })
 
 test("Kitty keyboard media keys via keyInput events", async () => {

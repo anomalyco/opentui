@@ -165,6 +165,8 @@ import { Dynamic } from "@opentui/solid"
 - `scrollbox`: scrollable container
 - `ascii_font`: ASCII art text renderer
 
+QR code support is available from `@opentui/qrcode/solid` and must be registered explicitly with `registerQRCode()`.
+
 ### Input
 
 - `input`: single-line text input

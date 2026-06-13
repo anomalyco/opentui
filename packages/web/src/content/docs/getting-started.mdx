@@ -14,13 +14,25 @@ OpenTUI is a native terminal UI core written in Zig with TypeScript bindings. Th
 
 ## Installation
 
-OpenTUI is currently [Bun](https://bun.sh) exclusive but Deno and Node support in-progress.
+OpenTUI's renderer examples use [Bun](https://bun.sh). You can import portable entry points such as `@opentui/keymap` and
+`@opentui/core` in Node.js without installing Bun or enabling FFI. These imports do not create a native renderer. To
+create a native renderer in Node.js, you need Node.js 26.3.0 with experimental FFI enabled.
 
 ```bash
 mkdir my-tui && cd my-tui
 bun init -y
 bun add @opentui/core
 ```
+
+## Runtime support
+
+Importing packages does not require native FFI. For example, Node.js can load
+`await import("@opentui/keymap")` and `await import("@opentui/core")` without `--experimental-ffi`.
+
+Creating a native renderer requires FFI. This includes calling `createCliRenderer()` or any other API that loads and calls
+OpenTUI's native Zig renderer. In Node.js, use Node.js 26.3.0 with `--experimental-ffi`. If you use Node.js permissions,
+you must also add `--allow-ffi` and the filesystem permissions your app needs. OpenTUI does not install Node.js, so select
+the required version before you run Node.js-specific examples or scripts.
 
 ## Hello world
 
@@ -85,6 +97,9 @@ renderer.root.add(
 - [Input](/docs/components/input), [Select](/docs/components/select) - User interaction
 
 ### Framework bindings
+
+The OpenTUI monorepo includes `@opentui/react` and `@opentui/solid`. Other language and framework bindings live in
+separate repositories.
 
 - [React](/docs/bindings/react)
 - [Solid.js](/docs/bindings/solid)

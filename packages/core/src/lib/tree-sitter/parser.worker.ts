@@ -9,12 +9,19 @@ import type {
   FiletypeParserOptions,
   PerformanceStats,
   InjectionMapping,
+  TreeSitterWorkerLogType,
+  TreeSitterWorkerRequest,
+  TreeSitterWorkerResponse,
 } from "./types.js"
 import { DownloadUtils } from "./download-utils.js"
-import { isMainThread } from "worker_threads"
 import { isBunfsPath, normalizeBunfsPath } from "../bunfs.js"
-
-const self = globalThis
+import { resolveBundledFilePath } from "../../platform/runtime.js"
+import {
+  isWorkerRuntime,
+  postWorkerMessage,
+  setWorkerMessageHandler,
+  type WorkerMessageEvent,
+} from "../../platform/worker.js"
 
 type ParserState = {
   parser: Parser
@@ -88,9 +95,11 @@ class ParserWorker {
       await mkdir(path.join(this.tsDataPath, "languages"), { recursive: true })
       await mkdir(path.join(this.tsDataPath, "queries"), { recursive: true })
 
-      let { default: treeWasm } = await import("web-tree-sitter/tree-sitter.wasm" as string, {
-        with: { type: "wasm" },
-      })
+      let treeWasm = await resolveBundledFilePath(
+        () => import("web-tree-sitter/tree-sitter.wasm" as string, { with: { type: "wasm" } }),
+        () => import.meta.resolve("web-tree-sitter/tree-sitter.wasm"),
+        import.meta.url,
+      )
 
       if (isBunfsPath(treeWasm)) {
         treeWasm = normalizeBunfsPath(path.parse(treeWasm).base)
@@ -323,7 +332,7 @@ class ParserWorker {
     const filetypeParser = await this.resolveFiletypeParser(filetype)
 
     if (!filetypeParser) {
-      self.postMessage({
+      postWorkerMessage({
         type: "PARSER_INIT_RESPONSE",
         bufferId,
         messageId,
@@ -337,7 +346,7 @@ class ParserWorker {
     parser.setLanguage(filetypeParser.language)
     const tree = parser.parse(content)
     if (!tree) {
-      self.postMessage({
+      postWorkerMessage({
         type: "PARSER_INIT_RESPONSE",
         bufferId,
         messageId,
@@ -357,14 +366,14 @@ class ParserWorker {
     }
     this.bufferParsers.set(bufferId, parserState)
 
-    self.postMessage({
+    postWorkerMessage({
       type: "PARSER_INIT_RESPONSE",
       bufferId,
       messageId,
       hasParser: true,
     })
     const highlights = await this.initialQuery(parserState)
-    self.postMessage({
+    postWorkerMessage({
       type: "HIGHLIGHT_RESPONSE",
       bufferId,
       version,
@@ -811,7 +820,7 @@ class ParserWorker {
     const reusableState = await this.getReusableParser(filetype)
 
     if (!reusableState) {
-      self.postMessage({
+      postWorkerMessage({
         type: "ONESHOT_HIGHLIGHT_RESPONSE",
         messageId,
         hasParser: false,
@@ -827,7 +836,7 @@ class ParserWorker {
     const tree = reusableState.parser.parse(parseContent)
 
     if (!tree) {
-      self.postMessage({
+      postWorkerMessage({
         type: "ONESHOT_HIGHLIGHT_RESPONSE",
         messageId,
         hasParser: false,
@@ -857,7 +866,7 @@ class ParserWorker {
 
       const highlights = this.getSimpleHighlights(matches, injectionRanges)
 
-      self.postMessage({
+      postWorkerMessage({
         type: "ONESHOT_HIGHLIGHT_RESPONSE",
         messageId,
         hasParser: true,
@@ -904,125 +913,186 @@ class ParserWorker {
     }
   }
 }
-if (!isMainThread) {
+
+function logMessage(type: TreeSitterWorkerLogType, ...args: unknown[]): void {
+  postWorkerMessage({
+    type: "WORKER_LOG",
+    logType: type,
+    data: args,
+  } satisfies TreeSitterWorkerResponse)
+}
+
+function postWorkerError(bufferId: number | undefined, error: unknown): void {
+  postWorkerMessage({
+    type: "ERROR",
+    bufferId,
+    error: error instanceof Error ? error.stack || error.message : String(error),
+  } satisfies TreeSitterWorkerResponse)
+}
+
+if (isWorkerRuntime) {
   const worker = new ParserWorker()
 
-  function logMessage(type: "log" | "error" | "warn", ...args: any[]) {
-    self.postMessage({
-      type: "WORKER_LOG",
-      logType: type,
-      data: args,
-    })
-  }
   console.log = (...args) => logMessage("log", ...args)
   console.error = (...args) => logMessage("error", ...args)
   console.warn = (...args) => logMessage("warn", ...args)
 
-  // @ts-ignore - we'll fix this in the future for sure
-  self.onmessage = async (e: MessageEvent) => {
-    const { type, bufferId, version, content, filetype, edits, filetypeParser, messageId, dataPath } = e.data
+  setWorkerMessageHandler<TreeSitterWorkerRequest>(async (event: WorkerMessageEvent<TreeSitterWorkerRequest>) => {
+    const message = event.data
+    const messageType = String((event.data as { type?: unknown }).type ?? "unknown")
 
     try {
-      switch (type) {
+      switch (message.type) {
         case "INIT":
           try {
-            await worker.initialize({ dataPath })
-            self.postMessage({ type: "INIT_RESPONSE" })
+            await worker.initialize({ dataPath: message.dataPath })
+            postWorkerMessage({ type: "INIT_RESPONSE" } satisfies TreeSitterWorkerResponse)
           } catch (error) {
-            self.postMessage({
+            postWorkerMessage({
               type: "INIT_RESPONSE",
               error: error instanceof Error ? error.stack || error.message : String(error),
-            })
+            } satisfies TreeSitterWorkerResponse)
           }
           break
 
         case "ADD_FILETYPE_PARSER":
-          worker.addFiletypeParser(filetypeParser)
+          worker.addFiletypeParser(message.filetypeParser)
           break
 
-        case "PRELOAD_PARSER":
-          const maybeParser = await worker.preloadParser(filetype)
-          self.postMessage({ type: "PRELOAD_PARSER_RESPONSE", messageId, hasParser: !!maybeParser })
+        case "PRELOAD_PARSER": {
+          const maybeParser = await worker.preloadParser(message.filetype)
+          postWorkerMessage({
+            type: "PRELOAD_PARSER_RESPONSE",
+            messageId: message.messageId,
+            hasParser: !!maybeParser,
+          } satisfies TreeSitterWorkerResponse)
           break
+        }
 
         case "INITIALIZE_PARSER":
-          await worker.handleInitializeParser(bufferId, version, content, filetype, messageId)
+          await worker.handleInitializeParser(
+            message.bufferId,
+            message.version,
+            message.content,
+            message.filetype,
+            message.messageId,
+          )
           break
 
-        case "HANDLE_EDITS":
-          const response = await worker.handleEdits(bufferId, content, edits)
+        case "HANDLE_EDITS": {
+          const response = await worker.handleEdits(message.bufferId, message.content, message.edits)
           if (response.highlights && response.highlights.length > 0) {
-            self.postMessage({ type: "HIGHLIGHT_RESPONSE", bufferId, version, ...response })
+            postWorkerMessage({
+              type: "HIGHLIGHT_RESPONSE",
+              bufferId: message.bufferId,
+              version: message.version,
+              highlights: response.highlights,
+            } satisfies TreeSitterWorkerResponse)
           } else if (response.warning) {
-            self.postMessage({ type: "WARNING", bufferId, warning: response.warning })
+            postWorkerMessage({
+              type: "WARNING",
+              bufferId: message.bufferId,
+              warning: response.warning,
+            } satisfies TreeSitterWorkerResponse)
           } else if (response.error) {
-            self.postMessage({ type: "ERROR", bufferId, error: response.error })
+            postWorkerMessage({
+              type: "ERROR",
+              bufferId: message.bufferId,
+              error: response.error,
+            } satisfies TreeSitterWorkerResponse)
           }
           break
+        }
 
         case "GET_PERFORMANCE":
-          self.postMessage({ type: "PERFORMANCE_RESPONSE", performance: worker.performance, messageId })
+          postWorkerMessage({
+            type: "PERFORMANCE_RESPONSE",
+            performance: worker.performance,
+            messageId: message.messageId,
+          } satisfies TreeSitterWorkerResponse)
           break
 
-        case "RESET_BUFFER":
-          const resetResponse = await worker.handleResetBuffer(bufferId, version, content)
+        case "RESET_BUFFER": {
+          const resetResponse = await worker.handleResetBuffer(message.bufferId, message.version, message.content)
           if (resetResponse.highlights && resetResponse.highlights.length > 0) {
-            self.postMessage({ type: "HIGHLIGHT_RESPONSE", bufferId, version, ...resetResponse })
+            postWorkerMessage({
+              type: "HIGHLIGHT_RESPONSE",
+              bufferId: message.bufferId,
+              version: message.version,
+              highlights: resetResponse.highlights,
+            } satisfies TreeSitterWorkerResponse)
           } else if (resetResponse.warning) {
-            self.postMessage({ type: "WARNING", bufferId, warning: resetResponse.warning })
+            postWorkerMessage({
+              type: "WARNING",
+              bufferId: message.bufferId,
+              warning: resetResponse.warning,
+            } satisfies TreeSitterWorkerResponse)
           } else if (resetResponse.error) {
-            self.postMessage({ type: "ERROR", bufferId, error: resetResponse.error })
+            postWorkerMessage({
+              type: "ERROR",
+              bufferId: message.bufferId,
+              error: resetResponse.error,
+            } satisfies TreeSitterWorkerResponse)
           }
           break
+        }
 
         case "DISPOSE_BUFFER":
-          worker.disposeBuffer(bufferId)
-          self.postMessage({ type: "BUFFER_DISPOSED", bufferId })
+          worker.disposeBuffer(message.bufferId)
+          postWorkerMessage({
+            type: "BUFFER_DISPOSED",
+            bufferId: message.bufferId,
+          } satisfies TreeSitterWorkerResponse)
           break
 
         case "ONESHOT_HIGHLIGHT":
-          await worker.handleOneShotHighlight(content, filetype, messageId)
+          await worker.handleOneShotHighlight(message.content, message.filetype, message.messageId)
           break
 
         case "UPDATE_DATA_PATH":
           try {
-            await worker.updateDataPath(dataPath)
-            self.postMessage({ type: "UPDATE_DATA_PATH_RESPONSE", messageId })
-          } catch (error) {
-            self.postMessage({
+            await worker.updateDataPath(message.dataPath)
+            postWorkerMessage({
               type: "UPDATE_DATA_PATH_RESPONSE",
-              messageId,
+              messageId: message.messageId,
+            } satisfies TreeSitterWorkerResponse)
+          } catch (error) {
+            postWorkerMessage({
+              type: "UPDATE_DATA_PATH_RESPONSE",
+              messageId: message.messageId,
               error: error instanceof Error ? error.message : String(error),
-            })
+            } satisfies TreeSitterWorkerResponse)
           }
           break
 
         case "CLEAR_CACHE":
           try {
             await worker.clearCache()
-            self.postMessage({ type: "CLEAR_CACHE_RESPONSE", messageId })
-          } catch (error) {
-            self.postMessage({
+            postWorkerMessage({
               type: "CLEAR_CACHE_RESPONSE",
-              messageId,
+              messageId: message.messageId,
+            } satisfies TreeSitterWorkerResponse)
+          } catch (error) {
+            postWorkerMessage({
+              type: "CLEAR_CACHE_RESPONSE",
+              messageId: message.messageId,
               error: error instanceof Error ? error.message : String(error),
-            })
+            } satisfies TreeSitterWorkerResponse)
           }
           break
 
         default:
-          self.postMessage({
+          postWorkerMessage({
             type: "ERROR",
-            bufferId,
-            error: `Unknown message type: ${type}`,
-          })
+            error: `Unknown message type: ${messageType}`,
+          } satisfies TreeSitterWorkerResponse)
       }
     } catch (error) {
-      self.postMessage({
-        type: "ERROR",
-        bufferId,
-        error: error instanceof Error ? error.stack || error.message : String(error),
-      })
+      if ("bufferId" in message) {
+        postWorkerError(message.bufferId, error)
+      } else {
+        postWorkerError(undefined, error)
+      }
     }
-  }
+  })
 }

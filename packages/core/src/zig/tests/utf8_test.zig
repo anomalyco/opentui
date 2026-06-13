@@ -2304,9 +2304,12 @@ test "calculateTextWidth: Devanagari नमस्ते width 4" {
 // UNICODE WARNING SIGNS WIDTH TESTS
 // ============================================================================
 
-test "calculateTextWidth: U+26A0 warning sign should be width 2" {
+test "calculateTextWidth: U+26A0 warning sign should be width 1" {
+    // U+26A0 has EAW=N (Neutral) and Emoji_Presentation=No per UAX #11 /
+    // UTS #51. Without an explicit VS16 (U+FE0F) selector, its default
+    // presentation is text → 1 cell.
     const result = utf8.calculateTextWidth("⚠", 4, false, .unicode);
-    try testing.expectEqual(@as(u32, 2), result);
+    try testing.expectEqual(@as(u32, 1), result);
 }
 
 test "calculateTextWidth: U+2049 exclamation question mark should be width 2" {

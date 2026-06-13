@@ -7,33 +7,40 @@ on:
         description: "Version being released"
         required: true
         type: string
-      isDryRun:
-        description: "Whether this is a dry run release"
-        required: false
-        type: boolean
-        default: false
+
+permissions:
+  contents: read
 
 env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
   ZIG_VERSION: 0.15.2
 
 jobs:
   build-native:
     name: Build Native Libraries
-    runs-on: macos-latest
+    runs-on: blacksmith-12vcpu-macos-15
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
         with:
-          bun-version: latest
+          bun-version: 1.3.14
 
       - name: Setup Zig
         uses: mlugg/setup-zig@v2
         with:
           version: ${{ env.ZIG_VERSION }}
+          use-cache: false
+
+      - name: Restore Zig cache
+        uses: actions/cache@v5
+        with:
+          path: .zig-cache
+          key: zig-v1-${{ runner.os }}-${{ env.ZIG_VERSION }}-${{ github.run_id }}-${{ github.job }}
+          restore-keys: zig-v1-${{ runner.os }}-${{ env.ZIG_VERSION }}-
 
       - name: Install dependencies
         run: bun install
@@ -43,6 +50,8 @@ jobs:
           cd packages/core
           bun run build:native --all
           bun run build:lib
+          cd ../qrcode
+          bun run build
           cd ../three
           bun run build
           cd ../react
@@ -50,6 +59,8 @@ jobs:
           cd ../solid
           bun run build
           cd ../keymap
+          bun run build
+          cd ../ssh
           bun run build
 
       - name: Verify build outputs
@@ -60,19 +71,23 @@ jobs:
           echo "Checking for dist packages..."
           ls -lah packages/*/dist/
 
-          # Verify critical files exist (all 6 platforms)
+          # Verify critical files exist (all native targets)
           echo ""
           echo "Verifying native binaries exist..."
           test -f packages/core/node_modules/@opentui/core-darwin-x64/libopentui.dylib || (echo "❌ darwin-x64 binary missing!" && exit 1)
           test -f packages/core/node_modules/@opentui/core-darwin-arm64/libopentui.dylib || (echo "❌ darwin-arm64 binary missing!" && exit 1)
           test -f packages/core/node_modules/@opentui/core-linux-x64/libopentui.so || (echo "❌ linux-x64 binary missing!" && exit 1)
           test -f packages/core/node_modules/@opentui/core-linux-arm64/libopentui.so || (echo "❌ linux-arm64 binary missing!" && exit 1)
+          test -f packages/core/node_modules/@opentui/core-linux-x64-musl/libopentui.so || (echo "❌ linux-x64-musl binary missing!" && exit 1)
+          test -f packages/core/node_modules/@opentui/core-linux-arm64-musl/libopentui.so || (echo "❌ linux-arm64-musl binary missing!" && exit 1)
           test -f packages/core/node_modules/@opentui/core-win32-x64/opentui.dll || (echo "❌ windows-x64 binary missing!" && exit 1)
           test -f packages/core/node_modules/@opentui/core-win32-arm64/opentui.dll || (echo "❌ windows-arm64 binary missing!" && exit 1)
 
           echo "Verifying dist packages exist..."
           test -d packages/core/dist || (echo "❌ core dist missing!" && exit 1)
           test -f packages/core/dist/package.json || (echo "❌ core dist/package.json missing!" && exit 1)
+          test -d packages/qrcode/dist || (echo "❌ qrcode dist missing!" && exit 1)
+          test -f packages/qrcode/dist/package.json || (echo "❌ qrcode dist/package.json missing!" && exit 1)
           test -d packages/three/dist || (echo "❌ three dist missing!" && exit 1)
           test -f packages/three/dist/package.json || (echo "❌ three dist/package.json missing!" && exit 1)
           test -d packages/react/dist || (echo "❌ react dist missing!" && exit 1)
@@ -81,8 +96,10 @@ jobs:
           test -f packages/solid/dist/package.json || (echo "❌ solid dist/package.json missing!" && exit 1)
           test -d packages/keymap/dist || (echo "❌ keymap dist missing!" && exit 1)
           test -f packages/keymap/dist/package.json || (echo "❌ keymap dist/package.json missing!" && exit 1)
+          test -d packages/ssh/dist || (echo "❌ ssh dist missing!" && exit 1)
+          test -f packages/ssh/dist/package.json || (echo "❌ ssh dist/package.json missing!" && exit 1)
 
-          echo "✅ All required build outputs verified (6 native platforms, 5 package dists)"
+          echo "✅ All required build outputs verified (8 native targets, 7 package dists)"
 
       # Create separate zips for each platform's native binaries
       - name: Package native binaries - darwin-x64
@@ -118,6 +135,17 @@ jobs:
           test -s native-linux-x64.zip || (echo "❌ linux-x64 zip is empty" && exit 1)
           echo "✅ linux-x64 packaged successfully ($(du -h native-linux-x64.zip | cut -f1))"
 
+      - name: Package native binaries - linux-x64-musl
+        run: |
+          set -e
+          mkdir -p artifacts/native-linux-x64-musl
+          cp packages/core/node_modules/@opentui/core-linux-x64-musl/libopentui.so artifacts/native-linux-x64-musl/
+          cd artifacts
+          zip -r native-linux-x64-musl.zip native-linux-x64-musl/
+          test -f native-linux-x64-musl.zip || (echo "❌ Failed to create linux-x64-musl zip" && exit 1)
+          test -s native-linux-x64-musl.zip || (echo "❌ linux-x64-musl zip is empty" && exit 1)
+          echo "✅ linux-x64-musl packaged successfully ($(du -h native-linux-x64-musl.zip | cut -f1))"
+
       - name: Package native binaries - windows-x64
         run: |
           set -e
@@ -139,6 +167,17 @@ jobs:
           test -f native-linux-arm64.zip || (echo "❌ Failed to create linux-arm64 zip" && exit 1)
           test -s native-linux-arm64.zip || (echo "❌ linux-arm64 zip is empty" && exit 1)
           echo "✅ linux-arm64 packaged successfully ($(du -h native-linux-arm64.zip | cut -f1))"
+
+      - name: Package native binaries - linux-arm64-musl
+        run: |
+          set -e
+          mkdir -p artifacts/native-linux-arm64-musl
+          cp packages/core/node_modules/@opentui/core-linux-arm64-musl/libopentui.so artifacts/native-linux-arm64-musl/
+          cd artifacts
+          zip -r native-linux-arm64-musl.zip native-linux-arm64-musl/
+          test -f native-linux-arm64-musl.zip || (echo "❌ Failed to create linux-arm64-musl zip" && exit 1)
+          test -s native-linux-arm64-musl.zip || (echo "❌ linux-arm64-musl zip is empty" && exit 1)
+          echo "✅ linux-arm64-musl packaged successfully ($(du -h native-linux-arm64-musl.zip | cut -f1))"
 
       - name: Package native binaries - windows-arm64
         run: |
@@ -166,6 +205,10 @@ jobs:
           cp -r packages/three/dist artifacts/npm-packages/three-dist
           test -f artifacts/npm-packages/three-dist/package.json || (echo "❌ three dist/package.json missing after copy!" && exit 1)
 
+          echo "Packaging qrcode dist..."
+          cp -r packages/qrcode/dist artifacts/npm-packages/qrcode-dist
+          test -f artifacts/npm-packages/qrcode-dist/package.json || (echo "❌ qrcode dist/package.json missing after copy!" && exit 1)
+
           echo "Packaging core native packages..."
           mkdir -p artifacts/npm-packages/core-native-packages
           cp -r \
@@ -173,9 +216,13 @@ jobs:
             packages/core/node_modules/@opentui/core-darwin-arm64 \
             packages/core/node_modules/@opentui/core-linux-x64 \
             packages/core/node_modules/@opentui/core-linux-arm64 \
+            packages/core/node_modules/@opentui/core-linux-x64-musl \
+            packages/core/node_modules/@opentui/core-linux-arm64-musl \
             packages/core/node_modules/@opentui/core-win32-x64 \
             packages/core/node_modules/@opentui/core-win32-arm64 \
             artifacts/npm-packages/core-native-packages
+          test -d artifacts/npm-packages/core-native-packages/core-linux-x64-musl || (echo "❌ core-linux-x64-musl package missing from npm artifact!" && exit 1)
+          test -d artifacts/npm-packages/core-native-packages/core-linux-arm64-musl || (echo "❌ core-linux-arm64-musl package missing from npm artifact!" && exit 1)
 
           # Copy other package dists (optional - don't fail if missing)
           echo "Packaging remaining package dists..."
@@ -200,6 +247,13 @@ jobs:
             echo "⚠️  Keymap dist not found (skipping)"
           fi
 
+          if [ -d packages/ssh/dist ]; then
+            cp -r packages/ssh/dist artifacts/npm-packages/ssh-dist
+            echo "✅ SSH dist packaged"
+          else
+            echo "⚠️  SSH dist not found (skipping)"
+          fi
+
           cd artifacts
           zip -r npm-packages.zip npm-packages/
           test -f npm-packages.zip || (echo "❌ Failed to create npm-packages zip" && exit 1)
@@ -214,16 +268,18 @@ jobs:
           test -f artifacts/native-darwin-arm64.zip || (echo "❌ native-darwin-arm64.zip missing!" && exit 1)
           test -f artifacts/native-linux-x64.zip || (echo "❌ native-linux-x64.zip missing!" && exit 1)
           test -f artifacts/native-linux-arm64.zip || (echo "❌ native-linux-arm64.zip missing!" && exit 1)
+          test -f artifacts/native-linux-x64-musl.zip || (echo "❌ native-linux-x64-musl.zip missing!" && exit 1)
+          test -f artifacts/native-linux-arm64-musl.zip || (echo "❌ native-linux-arm64-musl.zip missing!" && exit 1)
           test -f artifacts/native-windows-x64.zip || (echo "❌ native-windows-x64.zip missing!" && exit 1)
           test -f artifacts/native-windows-arm64.zip || (echo "❌ native-windows-arm64.zip missing!" && exit 1)
           test -f artifacts/npm-packages.zip || (echo "❌ npm-packages.zip missing!" && exit 1)
 
           echo ""
-          echo "✅ All 6 platform artifacts verified. Ready to upload:"
+          echo "✅ All 8 native artifacts verified. Ready to upload:"
           ls -lah artifacts/*.zip
 
       - name: Upload native binaries artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: native-binaries-${{ inputs.version }}
           path: |
@@ -231,13 +287,15 @@ jobs:
             artifacts/native-darwin-arm64.zip
             artifacts/native-linux-x64.zip
             artifacts/native-linux-arm64.zip
+            artifacts/native-linux-x64-musl.zip
+            artifacts/native-linux-arm64-musl.zip
             artifacts/native-windows-x64.zip
             artifacts/native-windows-arm64.zip
           if-no-files-found: error
           retention-days: 30
 
       - name: Upload npm packages artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: npm-packages-${{ inputs.version }}
           path: artifacts/npm-packages.zip

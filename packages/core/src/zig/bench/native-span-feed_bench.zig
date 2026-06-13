@@ -1,6 +1,16 @@
 const std = @import("std");
 const raw = @import("../native-span-feed.zig");
 
+fn streamErrorToStatus(err: raw.StreamError) i32 {
+    return switch (err) {
+        raw.StreamError.NoSpace => raw.Status.err_no_space,
+        raw.StreamError.MaxBytes => raw.Status.err_max_bytes,
+        raw.StreamError.Invalid => raw.Status.err_invalid,
+        raw.StreamError.OutOfMemory => raw.Status.err_alloc,
+        raw.StreamError.Busy => raw.Status.err_busy,
+    };
+}
+
 /// Zero-copy benchmark producer (reserve/commit).
 pub export fn benchProduce(
     stream: ?*raw.Stream,
@@ -11,6 +21,7 @@ pub export fn benchProduce(
 ) callconv(.c) i32 {
     if (stream == null) return raw.Status.err_invalid;
     if (total_bytes == 0) return raw.Status.ok;
+    const s = stream.?;
 
     var pattern_slice: []const u8 = raw.default_pattern;
     if (pattern_ptr != null and pattern_len > 0) {
@@ -27,8 +38,7 @@ pub export fn benchProduce(
         else
             @as(usize, @intCast(remaining));
 
-        const reserve_status = raw.streamReserve(stream, 1, &reserve_info);
-        if (reserve_status != raw.Status.ok) return reserve_status;
+        reserve_info = s.reserve(1) catch |err| return streamErrorToStatus(err);
 
         const available: usize = @intCast(reserve_info.len);
         const to_write = @min(available, remaining_usize);
@@ -41,8 +51,7 @@ pub export fn benchProduce(
             dest_index += copy_len;
         }
 
-        const commit_status = raw.streamCommitReserved(stream, @intCast(to_write));
-        if (commit_status != raw.Status.ok) return commit_status;
+        s.commitReserved(@intCast(to_write)) catch |err| return streamErrorToStatus(err);
 
         remaining -= @as(u64, to_write);
     }
@@ -61,6 +70,7 @@ pub export fn benchProduceWrite(
 ) callconv(.c) i32 {
     if (stream == null) return raw.Status.err_invalid;
     if (total_bytes == 0) return raw.Status.ok;
+    const s = stream.?;
 
     var pattern_slice: []const u8 = raw.default_pattern;
     if (pattern_ptr != null and pattern_len > 0) {
@@ -78,22 +88,19 @@ pub export fn benchProduceWrite(
             @as(usize, @intCast(remaining));
 
         const to_write = @min(pattern_slice.len, remaining_usize);
-        const status = raw.streamWrite(stream, @ptrCast(pattern_slice.ptr), to_write);
-        if (status != raw.Status.ok) return status;
+        s.write(pattern_slice[0..to_write]) catch |err| return streamErrorToStatus(err);
 
         bytes_since_commit += @as(u64, to_write);
         remaining -= @as(u64, to_write);
 
         if (commit_every != 0 and bytes_since_commit >= commit_every) {
-            const commit_status = raw.streamCommit(stream);
-            if (commit_status != raw.Status.ok) return commit_status;
+            s.commit() catch |err| return streamErrorToStatus(err);
             bytes_since_commit = 0;
         }
     }
 
     if (commit_every != 0 and bytes_since_commit > 0) {
-        const commit_status = raw.streamCommit(stream);
-        if (commit_status != raw.Status.ok) return commit_status;
+        s.commit() catch |err| return streamErrorToStatus(err);
     }
 
     return raw.Status.ok;

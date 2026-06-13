@@ -113,6 +113,8 @@ const scrollbox = new ScrollBoxRenderable(renderer, {
 })
 ```
 
+Viewport culling skips render calls for offscreen children, so their `renderBefore` and `renderAfter` hooks do not run. Do not make layout or state depend on render hooks; disable `viewportCulling` if every child must run a render hook.
+
 ## Customizing scrollbars
 
 Style the scrollbars using nested options:

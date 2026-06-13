@@ -92,11 +92,42 @@ export enum TargetChannel {
 }
 
 export type WidthMethod = "wcwidth" | "unicode"
+export type TerminalMultiplexer = "none" | "tmux" | "zellij" | "screen" | "unknown"
+
+export interface TerminalInfo {
+  name: string
+  version: string
+  from_xtversion: boolean
+}
+
+export interface TerminalCapabilities {
+  kitty_keyboard: boolean
+  kitty_graphics: boolean
+  rgb: boolean
+  ansi256: boolean
+  unicode: WidthMethod
+  sgr_pixels: boolean
+  color_scheme_updates: boolean
+  explicit_width: boolean
+  scaled_text: boolean
+  sixel: boolean
+  focus_tracking: boolean
+  sync: boolean
+  bracketed_paste: boolean
+  hyperlinks: boolean
+  osc52: boolean
+  notifications: boolean
+  explicit_cursor_positioning: boolean
+  remote: boolean
+  multiplexer: TerminalMultiplexer
+  terminal: TerminalInfo
+}
 
 export interface RendererEvents {
   resize: (width: number, height: number) => void
   key: (data: Buffer) => void
   "memory:snapshot": (snapshot: { heapUsed: number; heapTotal: number; arrayBuffers: number }) => void
+  capabilities: (capabilities: TerminalCapabilities) => void
   selection: (selection: Selection) => void
   focused_renderable: (current: Renderable | null, previous: Renderable | null) => void
   focused_editor: (current: EditBufferRenderable | null, previous: EditBufferRenderable | null) => void
@@ -119,7 +150,7 @@ export interface RenderContext extends EventEmitter {
   setCursorColor: (color: RGBA) => void
   setMousePointer: (shape: MousePointerStyle) => void
   widthMethod: WidthMethod
-  capabilities: any | null
+  capabilities: TerminalCapabilities | null
   requestLive: () => void
   dropLive: () => void
   hasSelection: boolean

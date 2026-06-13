@@ -1,0 +1,136 @@
+name: Build SSH
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+  NODE_VERSION: 26.3.0
+
+jobs:
+  test:
+    name: Test (${{ matrix.os }})
+    strategy:
+      matrix:
+        os: [blacksmith-12vcpu-macos-15, blacksmith-8vcpu-ubuntu-2404, blacksmith-8vcpu-windows-2025]
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.14
+
+      - name: Setup Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.15.2
+          # Keep Zig's cache path on the workspace drive, but do not restore/save
+          # stale .zig-cache archives on Windows; Zig 0.15.2 can fail with missing cache files.
+          use-cache: ${{ runner.os != 'Windows' }}
+          cache-key: build-ssh
+
+      - name: Install dependencies
+        run: bun install
+
+      - name: Build core
+        run: |
+          cd packages/core
+          bun run build
+
+      - name: Build framework declarations
+        run: |
+          cd packages/react
+          bun run build
+          cd ../solid
+          bun run build
+
+      - name: Build
+        run: |
+          cd packages/ssh
+          bun run build
+
+      - name: Typecheck
+        run: |
+          cd packages/ssh
+          bun run typecheck
+
+      - name: Run tests
+        run: |
+          cd packages/ssh
+          bun run test
+
+  packed-consumer:
+    name: Packed Node Consumer
+    runs-on: blacksmith-8vcpu-ubuntu-2404
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.14
+
+      - name: Setup Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Setup Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.15.2
+          cache-key: build-ssh-packed
+
+      - name: Install dependencies
+        run: bun install
+
+      - name: Build core
+        working-directory: packages/core
+        run: bun run build
+
+      - name: Build SSH
+        working-directory: packages/ssh
+        run: bun run build
+
+      - name: Test packed distribution
+        working-directory: packages/ssh
+        run: bun run test:dist
+
+  # Gate job for branch protection
+  build-complete:
+    name: SSH - Build and Test
+    needs: [test, packed-consumer]
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    if: always()
+    steps:
+      - name: Check test results
+        run: |
+          if [ "${{ needs.test.result }}" != "success" ]; then
+            echo "Tests failed"
+            exit 1
+          fi
+          if [ "${{ needs.packed-consumer.result }}" != "success" ]; then
+            echo "Packed consumer failed"
+            exit 1
+          fi
+          echo "All tests passed"

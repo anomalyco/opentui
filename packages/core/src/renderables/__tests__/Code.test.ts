@@ -25,21 +25,31 @@ describe("CodeRenderable", () => {
       treeSitterClient: client,
     })
 
-    renderer.root.add(code)
-    await renderOnce()
+    try {
+      renderer.root.add(code)
+      await renderOnce()
 
-    // Set content in streaming mode — this should schedule a render
-    code.content = 'console.log("hello")'
+      // Set content in streaming mode — this should schedule a render
+      code.content = 'console.log("hello")'
 
-    // Render once — this should trigger startHighlight because highlights are dirty
-    await renderOnce()
+      // Render once — this should trigger startHighlight because highlights are dirty
+      await renderOnce()
 
-    // Highlighting should have started (mock client hasn't resolved yet)
-    expect(code.isHighlighting).toBe(true)
-    expect(client.isHighlighting()).toBe(true)
+      // Highlighting should have started (mock client hasn't resolved yet)
+      expect(code.isHighlighting).toBe(true)
+      expect(client.isHighlighting()).toBe(true)
 
-    // Resolve the highlight so the test cleans up properly
-    client.resolveAllHighlightOnce()
-    await code.highlightingDone
+      client.resolveAllHighlightOnce()
+      await code.highlightingDone
+    } finally {
+      if (client.isHighlighting()) {
+        client.resolveAllHighlightOnce()
+      }
+
+      await code.highlightingDone.catch(() => undefined)
+      renderer.destroy()
+      await client.destroy()
+      syntaxStyle.destroy()
+    }
   })
 })

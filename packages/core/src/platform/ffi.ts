@@ -1,3 +1,4 @@
+import { createRequire } from "node:module"
 import { fileURLToPath } from "node:url"
 
 declare const pointerBrand: unique symbol
@@ -123,8 +124,8 @@ interface BunFfiBackend {
 }
 
 interface NodeFFIFunction {
-  readonly parameters: readonly string[]
-  readonly result: string
+  readonly arguments: readonly string[]
+  readonly return: string
 }
 
 interface NodeDynamicLibrary {
@@ -152,11 +153,14 @@ export const NODE_CALLBACK_THREADSAFE =
   "Node FFI callbacks are same-thread only and do not support threadsafe callbacks"
 export const NODE_NAPI_UNSUPPORTED = "Node FFI backend does not support Bun N-API FFI types"
 export const NODE_POINTER_OVERRIDE = "Node FFI backend does not support FFIFunction.ptr overrides"
+export const NODE_POINTER_ARGUMENT = "Node FFI pointer arguments must be a Pointer, ArrayBuffer, or ArrayBufferView"
 export const NODE_PTR_VALUE =
   "node:ffi ptr() only supports ArrayBuffer and ArrayBufferView values backed by ArrayBuffer"
 export const NODE_STRING_RETURN = "Node FFI backend does not normalize string return values (yet)"
-export const NODE_USIZE_UNSUPPORTED = "Node FFI backend does not support usize until (yet)"
+export const NODE_USIZE_UNSUPPORTED = "Node FFI backend does not support usize yet"
 export const POINTER_NEGATIVE = "Pointer must be non-negative"
+export const POINTER_OFFSET_NEGATIVE = "Pointer offset must be non-negative"
+export const POINTER_OFFSET_UNSAFE = "Pointer offset must be a safe integer"
 export const POINTER_UNSAFE = "Pointer exceeds safe integer range"
 
 function unavailable(cause?: unknown): never {
@@ -185,21 +189,18 @@ const isBun =
   process.versions !== null &&
   typeof process.versions.bun === "string"
 
-const backend = await loadBackend()
+const requireModule = createRequire(import.meta.url)
+const backend = loadBackend()
 
-function importModule<T>(specifier: string): Promise<T> {
-  return import(specifier) as Promise<T>
-}
-
-async function loadBackend(): Promise<FfiBackend> {
+function loadBackend(): FfiBackend {
   // Keep the Bun module import behind the runtime check so Node does not
   // resolve bun:ffi during import.
   if (isBun) {
-    return createBunBackend(await importModule<BunFfiBackend>("bun:ffi"))
+    return createBunBackend(requireModule("bun:ffi") as BunFfiBackend)
   }
 
   try {
-    const nodeFfi = await importModule<NodeFfiBackend & { default?: NodeFfiBackend }>("node:ffi")
+    const nodeFfi = requireModule("node:ffi") as NodeFfiBackend & { default?: NodeFfiBackend }
     return createNodeBackend(nodeFfi.default ?? nodeFfi)
   } catch (error) {
     return createUnsupportedBackend(error)
@@ -379,7 +380,7 @@ export function createNodeBackend(nodeFfi: NodeFfiBackend): FfiBackend {
       let libraryClosed = false
 
       return {
-        symbols: functions as { [K in keyof typeof symbols]: (...args: any[]) => any },
+        symbols: wrapNodeSymbols(functions, symbols, nodeFfi),
         createCallback(callback, definition) {
           if (closed) {
             throw new Error(LIBRARY_CLOSED)
@@ -421,23 +422,11 @@ export function createNodeBackend(nodeFfi: NodeFfiBackend): FfiBackend {
       }
     },
     ptr(value) {
-      if (ArrayBuffer.isView(value)) {
-        if (!(value.buffer instanceof ArrayBuffer)) {
-          throw new TypeError(NODE_PTR_VALUE)
-        }
-
-        return (nodeFfi.getRawPointer(value.buffer) + BigInt(value.byteOffset)) as Pointer
-      }
-
-      if (value instanceof ArrayBuffer) {
-        return nodeFfi.getRawPointer(value) as Pointer
-      }
-
-      throw new TypeError(NODE_PTR_VALUE)
+      return toNodeSourcePointer(nodeFfi, value) as Pointer
     },
     suffix: nodeFfi.suffix,
     toArrayBuffer(pointer, offset, length) {
-      return nodeFfi.toArrayBuffer(toBigIntPointer(pointer) + BigInt(offset ?? 0), length, false)
+      return nodeFfi.toArrayBuffer(toBigIntPointer(pointer) + toNodePointerOffset(offset), length, false)
     },
   }
 }
@@ -454,14 +443,112 @@ function normalizeNodeDefinitions<Fns extends Record<string, FFIFunction>>(
   )
 }
 
+function wrapNodeSymbols<Fns extends Record<string, FFIFunction>>(
+  functions: Record<string, (...args: any[]) => any>,
+  definitions: Fns,
+  nodeFfi: NodeFfiBackend,
+): { [K in keyof Fns]: (...args: any[]) => any } {
+  return Object.fromEntries(
+    Object.entries(functions).map(([name, fn]) => [name, wrapNodeSymbol(fn, definitions[name], nodeFfi)]),
+  ) as { [K in keyof Fns]: (...args: any[]) => any }
+}
+
+function wrapNodeSymbol(
+  fn: (...args: any[]) => any,
+  definition: FFIFunction,
+  nodeFfi: NodeFfiBackend,
+): (...args: any[]) => any {
+  const pointerArgIndexes = (definition.args ?? []).flatMap((type, index) =>
+    isNodePointerArgumentType(type) ? [index] : [],
+  )
+
+  if (pointerArgIndexes.length === 0) {
+    return fn
+  }
+
+  return (...args: any[]) => {
+    const normalizedArgs = args.slice()
+
+    for (const index of pointerArgIndexes) {
+      normalizedArgs[index] = toNodePointerArgument(nodeFfi, normalizedArgs[index])
+    }
+
+    return fn(...normalizedArgs)
+  }
+}
+
+function isNodePointerArgumentType(type: FFITypeOrString): boolean {
+  return type === FFIType.ptr || type === FFIType.pointer || type === FFIType.function || type === FFIType.callback
+}
+
+function toNodePointerArgument(nodeFfi: NodeFfiBackend, value: unknown): bigint {
+  if (value == null) {
+    return 0n
+  }
+
+  if (typeof value === "number" || typeof value === "bigint") {
+    return toBigIntPointer(value as Pointer)
+  }
+
+  if (ArrayBuffer.isView(value)) {
+    if (value.byteLength === 0) {
+      return 0n
+    }
+
+    return toNodeSourcePointer(nodeFfi, value)
+  }
+
+  if (value instanceof ArrayBuffer) {
+    if (value.byteLength === 0) {
+      return 0n
+    }
+
+    return toNodeSourcePointer(nodeFfi, value)
+  }
+
+  throw new TypeError(NODE_POINTER_ARGUMENT)
+}
+
+function toNodeSourcePointer(nodeFfi: NodeFfiBackend, value: PointerSource): bigint {
+  if (ArrayBuffer.isView(value)) {
+    if (!(value.buffer instanceof ArrayBuffer)) {
+      throw new TypeError(NODE_PTR_VALUE)
+    }
+
+    return nodeFfi.getRawPointer(value.buffer) + BigInt(value.byteOffset)
+  }
+
+  if (value instanceof ArrayBuffer) {
+    return nodeFfi.getRawPointer(value)
+  }
+
+  throw new TypeError(NODE_PTR_VALUE)
+}
+
+function toNodePointerOffset(offset: number | undefined): bigint {
+  if (offset == null) {
+    return 0n
+  }
+
+  if (offset < 0) {
+    throw new Error(POINTER_OFFSET_NEGATIVE)
+  }
+
+  if (!Number.isSafeInteger(offset)) {
+    throw new Error(POINTER_OFFSET_UNSAFE)
+  }
+
+  return BigInt(offset)
+}
+
 function normalizeNodeDefinition(definition: FFIFunction): NodeFFIFunction {
   if (definition.ptr != null) {
     throw new Error(NODE_POINTER_OVERRIDE)
   }
 
   return {
-    parameters: (definition.args ?? []).map((type) => toNodeFFIType(type, "parameter")),
-    result: toNodeFFIType(definition.returns ?? FFIType.void, "result"),
+    arguments: (definition.args ?? []).map((type) => toNodeFFIType(type, "parameter")),
+    return: toNodeFFIType(definition.returns ?? FFIType.void, "result"),
   }
 }
 
@@ -550,7 +637,15 @@ function unsupportedNodeFFIType(type: never): never {
 }
 
 function toBigIntPointer(pointer: Pointer): bigint {
-  return typeof pointer === "bigint" ? pointer : BigInt(pointer)
+  if (typeof pointer === "bigint") {
+    if (pointer < 0n) {
+      throw new Error(POINTER_NEGATIVE)
+    }
+
+    return pointer
+  }
+
+  return toSafeBigIntPointer(pointer)
 }
 
 export const dlopen = backend.dlopen

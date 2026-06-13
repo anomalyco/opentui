@@ -5,7 +5,7 @@ import { TextBufferView } from "../text-buffer-view.js"
 import { RGBA, parseColor } from "../lib/RGBA.js"
 import { type RenderContext, type LineInfoProvider } from "../types.js"
 import type { OptimizedBuffer } from "../buffer.js"
-import { MeasureMode } from "yoga-layout"
+import { MeasureMode } from "../yoga.js"
 import type { LineInfo } from "../zig.js"
 import { SyntaxStyle } from "../syntax-style.js"
 

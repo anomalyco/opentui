@@ -84,6 +84,7 @@ pub const UnifiedTextBuffer = struct {
     // Maps line_idx to highlights for that line
     line_highlights: std.ArrayListUnmanaged(std.ArrayListUnmanaged(Highlight)),
     line_spans: std.ArrayListUnmanaged(std.ArrayListUnmanaged(StyleSpan)),
+    internal_highlight_count: usize,
     highlight_batch_depth: u32,
     dirty_span_lines: std.AutoHashMap(usize, void),
 
@@ -218,6 +219,7 @@ pub const UnifiedTextBuffer = struct {
             .content_epoch = 0,
             .line_highlights = .{},
             .line_spans = .{},
+            .internal_highlight_count = 0,
             .highlight_batch_depth = 0,
             .dirty_span_lines = dirty_span_lines,
             .styled_text_mem_id = null,
@@ -364,6 +366,7 @@ pub const UnifiedTextBuffer = struct {
             hl_list.deinit(self.global_allocator);
         }
         self.line_highlights.clearRetainingCapacity();
+        self.internal_highlight_count = 0;
 
         for (self.line_spans.items) |*span_list| {
             span_list.deinit(self.global_allocator);
@@ -413,13 +416,15 @@ pub const UnifiedTextBuffer = struct {
     }
 
     pub fn setSyntaxStyle(self: *Self, syntax_style: ?*const SyntaxStyle) void {
+        if (self.syntax_style == syntax_style) return;
+
+        if (syntax_style) |style| {
+            (@constCast(style)).onDestroy(@ptrCast(self), onSyntaxStyleDestroyed) catch return;
+        }
         if (self.syntax_style) |prev| {
             (@constCast(prev)).offDestroy(@ptrCast(self), onSyntaxStyleDestroyed);
         }
         self.syntax_style = syntax_style;
-        if (syntax_style) |style| {
-            _ = (@constCast(style)).onDestroy(@ptrCast(self), onSyntaxStyleDestroyed) catch {};
-        }
     }
 
     pub fn getSyntaxStyle(self: *const Self) ?*const SyntaxStyle {
@@ -442,6 +447,7 @@ pub const UnifiedTextBuffer = struct {
 
     /// Set the text content using SIMD-optimized line break detection
     pub fn setText(self: *Self, text: []const u8) TextBufferError!void {
+        self.clearInternalHighlights();
         self.clear();
         const mem_id = try self.mem_registry.register(text, false);
         try self.setTextInternal(mem_id, text);
@@ -450,6 +456,7 @@ pub const UnifiedTextBuffer = struct {
     /// Set text from a pre-registered memory ID
     pub fn setTextFromMemId(self: *Self, mem_id: u8) TextBufferError!void {
         const text = self.mem_registry.get(mem_id) orelse return TextBufferError.InvalidMemId;
+        self.clearInternalHighlights();
         self.clear();
         try self.setTextInternal(mem_id, text);
     }
@@ -722,6 +729,19 @@ pub const UnifiedTextBuffer = struct {
         priority: u8,
         hl_ref: u16,
     ) TextBufferError!void {
+        return self.addHighlightInternal(line_idx, col_start, col_end, style_id, priority, hl_ref, false);
+    }
+
+    fn addHighlightInternal(
+        self: *Self,
+        line_idx: usize,
+        col_start: u32,
+        col_end: u32,
+        style_id: u32,
+        priority: u8,
+        hl_ref: u16,
+        internal: bool,
+    ) TextBufferError!void {
         const line_count = self.getLineCount();
         if (line_idx >= line_count) {
             return TextBufferError.InvalidIndex;
@@ -739,9 +759,13 @@ pub const UnifiedTextBuffer = struct {
             .style_id = style_id,
             .priority = priority,
             .hl_ref = hl_ref,
+            .internal = internal,
         };
 
         try self.line_highlights.items[line_idx].append(self.global_allocator, hl);
+        if (internal) {
+            self.internal_highlight_count += 1;
+        }
 
         if (self.highlight_batch_depth == 0) {
             try self.rebuildLineSpans(line_idx);
@@ -879,6 +903,18 @@ pub const UnifiedTextBuffer = struct {
         priority: u8,
         hl_ref: u16,
     ) TextBufferError!void {
+        return self.addHighlightByCharRangeInternal(char_start, char_end, style_id, priority, hl_ref, false);
+    }
+
+    fn addHighlightByCharRangeInternal(
+        self: *Self,
+        char_start: u32,
+        char_end: u32,
+        style_id: u32,
+        priority: u8,
+        hl_ref: u16,
+        internal: bool,
+    ) TextBufferError!void {
         const line_count = self.getLineCount();
         if (char_start >= char_end or line_count == 0) {
             return;
@@ -892,6 +928,7 @@ pub const UnifiedTextBuffer = struct {
             style_id: u32,
             priority: u8,
             hl_ref: u16,
+            internal: bool,
             start_line_idx: ?usize = null,
 
             fn callback(ctx_ptr: *anyopaque, line_info: LineInfo) void {
@@ -915,13 +952,14 @@ pub const UnifiedTextBuffer = struct {
                 else
                     line_info.width_cols;
 
-                ctx.buffer.addHighlight(
+                ctx.buffer.addHighlightInternal(
                     line_info.line_idx,
                     col_start,
                     col_end,
                     ctx.style_id,
                     ctx.priority,
                     ctx.hl_ref,
+                    ctx.internal,
                 ) catch {};
             }
         };
@@ -933,8 +971,38 @@ pub const UnifiedTextBuffer = struct {
             .style_id = style_id,
             .priority = priority,
             .hl_ref = hl_ref,
+            .internal = internal,
         };
         iter_mod.walkLines(&self._rope, &ctx, Context.callback, false);
+    }
+
+    fn clearInternalHighlights(self: *Self) void {
+        if (self.internal_highlight_count == 0) return;
+
+        var remaining = self.internal_highlight_count;
+        for (self.line_highlights.items, 0..) |*hl_list, line_idx| {
+            var i: usize = 0;
+            var changed = false;
+            while (i < hl_list.items.len) {
+                if (hl_list.items[i].internal) {
+                    _ = hl_list.orderedRemove(i);
+                    remaining -= 1;
+                    changed = true;
+                    continue;
+                }
+                i += 1;
+            }
+            if (changed) {
+                if (self.highlight_batch_depth == 0) {
+                    self.rebuildLineSpans(line_idx) catch {};
+                } else {
+                    self.markLineSpansDirty(line_idx);
+                }
+            }
+            if (remaining == 0) break;
+        }
+
+        self.internal_highlight_count = 0;
     }
 
     /// Remove all highlights with a specific reference ID
@@ -944,6 +1012,9 @@ pub const UnifiedTextBuffer = struct {
             var changed = false;
             while (i < hl_list.items.len) {
                 if (hl_list.items[i].hl_ref == hl_ref) {
+                    if (hl_list.items[i].internal and self.internal_highlight_count > 0) {
+                        self.internal_highlight_count -= 1;
+                    }
                     _ = hl_list.orderedRemove(i);
                     changed = true;
                     continue;
@@ -963,6 +1034,11 @@ pub const UnifiedTextBuffer = struct {
     /// Clear all highlights from a specific line
     pub fn clearLineHighlights(self: *Self, line_idx: usize) void {
         if (line_idx < self.line_highlights.items.len) {
+            for (self.line_highlights.items[line_idx].items) |hl| {
+                if (hl.internal and self.internal_highlight_count > 0) {
+                    self.internal_highlight_count -= 1;
+                }
+            }
             self.line_highlights.items[line_idx].clearRetainingCapacity();
         }
         if (line_idx < self.line_spans.items.len) {
@@ -975,6 +1051,7 @@ pub const UnifiedTextBuffer = struct {
         for (self.line_highlights.items) |*hl_list| {
             hl_list.clearRetainingCapacity();
         }
+        self.internal_highlight_count = 0;
         for (self.line_spans.items) |*span_list| {
             span_list.clearRetainingCapacity();
         }
@@ -1099,7 +1176,7 @@ pub const UnifiedTextBuffer = struct {
                         .attributes = attributes,
                     }) catch continue;
 
-                    self.addHighlightByCharRange(char_pos, char_pos + chunk_len, style_id, 1, 0) catch {};
+                    self.addHighlightByCharRangeInternal(char_pos, char_pos + chunk_len, style_id, 1, 0, true) catch {};
                 }
 
                 char_pos += chunk_len;

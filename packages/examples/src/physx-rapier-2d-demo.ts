@@ -15,7 +15,9 @@ import { SpriteAnimator, TiledSprite, type SpriteDefinition, type AnimationDefin
 import { SpriteResourceManager, type ResourceConfig } from "@opentui/three"
 import { PhysicsExplosionManager, type PhysicsExplosionHandle } from "@opentui/three"
 import { RapierPhysicsWorld } from "@opentui/three"
-import RAPIER from "@dimforge/rapier2d-simd-compat"
+import type { Collider, RigidBody, World } from "@dimforge/rapier2d-simd-compat"
+// @ts-expect-error Rapier does not publish types for its ESM subpath.
+import * as RAPIER from "@dimforge/rapier2d-simd-compat/rapier.es.js"
 import { MeshLambertNodeMaterial } from "three/webgpu"
 import { ThreeCliRenderer } from "@opentui/three"
 
@@ -29,7 +31,7 @@ const EXPLOSION_FORCE_VARIATION = 0.2
 const TORQUE_STRENGTH = 2.0
 
 interface PhysicsBox {
-  rigidBody: RAPIER.RigidBody
+  rigidBody: RigidBody
   sprite: TiledSprite
   width: number
   height: number
@@ -37,8 +39,8 @@ interface PhysicsBox {
 }
 
 interface PhysicsWorld {
-  world: RAPIER.World
-  ground: RAPIER.Collider
+  world: World
+  ground: Collider
   boxes: PhysicsBox[]
 }
 

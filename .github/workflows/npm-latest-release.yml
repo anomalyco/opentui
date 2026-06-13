@@ -17,29 +17,36 @@ on:
         required: true
 
 permissions:
-  contents: write
-  pull-requests: write
+  contents: read
+
+env:
+  NODE_VERSION: 26.3.0
 
 jobs:
   publish:
-    runs-on: macos-latest
+    runs-on: blacksmith-6vcpu-macos-15
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           fetch-depth: 0
+
+      - name: Setup Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: ${{ env.NODE_VERSION }}
 
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
         with:
-          bun-version: latest
+          bun-version: 1.3.14
 
       - name: Install dependencies
         run: bun install
 
       - name: Download npm packages artifact
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: npm-packages-${{ inputs.version }}
 
@@ -59,6 +66,11 @@ jobs:
             echo "Copied three dist"
           fi
 
+          if [ -d "npm-packages/qrcode-dist" ]; then
+            cp -r npm-packages/qrcode-dist packages/qrcode/dist
+            echo "Copied qrcode dist"
+          fi
+
           # Copy native packages to core's node_modules
           if [ -d "npm-packages/core-native-packages" ]; then
             mkdir -p packages/core/node_modules/@opentui
@@ -68,6 +80,8 @@ jobs:
             rm -rf packages/core/node_modules/@opentui/core-darwin-arm64
             rm -rf packages/core/node_modules/@opentui/core-linux-x64
             rm -rf packages/core/node_modules/@opentui/core-linux-arm64
+            rm -rf packages/core/node_modules/@opentui/core-linux-x64-musl
+            rm -rf packages/core/node_modules/@opentui/core-linux-arm64-musl
             rm -rf packages/core/node_modules/@opentui/core-win32-x64
             rm -rf packages/core/node_modules/@opentui/core-win32-arm64
 
@@ -91,7 +105,23 @@ jobs:
             echo "Copied keymap dist"
           fi
 
+          if [ -d "npm-packages/ssh-dist" ]; then
+            cp -r npm-packages/ssh-dist packages/ssh/dist
+            echo "Copied ssh dist"
+          fi
+
           echo "Package extraction complete"
+
+      - name: Run packed Node smoke tests
+        run: |
+          cd packages/core
+          bun run test:dist --skip-build
+          cd ../solid
+          bun run test:dist --skip-build
+          cd ../keymap
+          bun run test:dist --skip-build
+          cd ../ssh
+          bun run test:dist --skip-build
 
       - name: Publish packages (dry-run)
         if: ${{ inputs.isDryRun }}
@@ -115,6 +145,10 @@ jobs:
           cd ../../three/dist && npm pack --dry-run
 
           echo ""
+          echo "📦 Checking @opentui/qrcode..."
+          cd ../../qrcode/dist && npm pack --dry-run
+
+          echo ""
           echo "📦 Checking @opentui/react..."
           cd ../../react/dist && npm pack --dry-run
 
@@ -125,6 +159,10 @@ jobs:
           echo ""
           echo "📦 Checking @opentui/keymap..."
           cd ../../keymap/dist && npm pack --dry-run
+
+          echo ""
+          echo "📦 Checking @opentui/ssh..."
+          cd ../../ssh/dist && npm pack --dry-run
 
           echo ""
           echo "=========================================="
@@ -141,10 +179,7 @@ jobs:
           echo "PRODUCTION MODE - Publishing to npm"
           echo "=========================================="
 
-          # Run pre-publish validation
-          bun run pre-publish
-
-          # Publish packages
+          # The publish script runs pre-publish validation before publishing.
           bun run publish
 
           echo ""

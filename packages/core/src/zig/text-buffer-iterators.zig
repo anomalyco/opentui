@@ -414,7 +414,6 @@ pub fn extractTextBetweenOffsets(
         start: u32,
         end: u32,
         line_count: u32,
-        line_had_content: bool = false,
 
         fn segment_callback(ctx_ptr: *anyopaque, line_idx: u32, chunk: *const TextChunk, chunk_idx_in_line: u32) void {
             _ = line_idx;
@@ -429,8 +428,6 @@ pub fn extractTextBetweenOffsets(
                 ctx.col_offset.* = chunk_end_offset;
                 return;
             }
-
-            ctx.line_had_content = true;
 
             const chunk_bytes = chunk.getBytes(ctx.mem_registry);
             const is_ascii_only = (chunk.flags & TextChunk.Flags.ASCII_ONLY) != 0;
@@ -468,16 +465,16 @@ pub fn extractTextBetweenOffsets(
         fn line_end_callback(ctx_ptr: *anyopaque, line_info: LineInfo) void {
             const ctx = @as(*@This(), @ptrCast(@alignCast(ctx_ptr)));
 
-            // Add newline if we had content and range extends beyond this line's newline
-            if (ctx.line_had_content and line_info.line_idx < ctx.line_count - 1 and ctx.col_offset.* + 1 < ctx.end and ctx.out_index.* < ctx.out_buffer.len) {
+            // Add newline when the newline offset is inside the selected range,
+            // even for empty logical lines.
+            const newline_offset = ctx.col_offset.*;
+            if (line_info.line_idx < ctx.line_count - 1 and newline_offset >= ctx.start and newline_offset < ctx.end and ctx.out_index.* < ctx.out_buffer.len) {
                 ctx.out_buffer[ctx.out_index.*] = '\n';
                 ctx.out_index.* += 1;
             }
 
             // Account for newline in display offset
             ctx.col_offset.* += 1;
-
-            ctx.line_had_content = false;
         }
     };
 

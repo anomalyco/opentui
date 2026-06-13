@@ -30,6 +30,7 @@ report.[0-9]_.[0-9]_.[0-9]_.[0-9]_.json
 # caches
 .eslintcache
 .cache
+.node
 *.tsbuildinfo
 
 # IntelliJ based IDEs
@@ -39,3 +40,9 @@ report.[0-9]_.[0-9]_.[0-9]_.[0-9]_.json
 .DS_Store
 
 screenshot-*.png
+
+# SSH host keys — never commit private keys. @opentui/ssh examples write a
+# `host_key` relative to the cwd, so a run from the repo root drops one here.
+host_key
+host_key.pub
+*.host_key

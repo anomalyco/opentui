@@ -31,6 +31,10 @@ const wrap_cache_perf_tests = @import("tests/wrap-cache-perf_test.zig");
 const native_span_feed_tests = @import("tests/native-span-feed_test.zig");
 const buffer_methods_tests = @import("tests/buffer-methods_test.zig");
 const split_scrollback_tests = @import("tests/split-scrollback_test.zig");
+const audio_tests = @import("tests/audio_test.zig");
+const handles_tests = @import("tests/handles_test.zig");
+const yoga_tests = @import("tests/yoga_test.zig");
+const ansi_tests = @import("tests/ansi_test.zig");
 // const example_tests = @import("example_test.zig");
 
 // Re-export test declarations from individual test files
@@ -68,5 +72,9 @@ comptime {
     _ = native_span_feed_tests;
     _ = buffer_methods_tests;
     _ = split_scrollback_tests;
+    _ = audio_tests;
+    _ = handles_tests;
+    _ = yoga_tests;
+    _ = ansi_tests;
     // _ = example_tests;
 }

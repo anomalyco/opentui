@@ -487,6 +487,13 @@ function concatBytes(left: Uint8Array, right: Uint8Array): Uint8Array {
   return combined
 }
 
+function withEscPrefix(bytes: Uint8Array): Uint8Array {
+  const prefixed = new Uint8Array(bytes.length + 1)
+  prefixed[0] = ESC
+  prefixed.set(bytes, 1)
+  return prefixed
+}
+
 function indexOfBytes(haystack: Uint8Array, needle: Uint8Array): number {
   if (needle.length === 0) {
     return 0
@@ -1692,8 +1699,9 @@ export class StdinParser {
         }
 
         // Delayed SGR mouse continuation after `esc_recovery` has consumed the
-        // leading `[`. Consume the rest of `<digits;digits;digitsM/m` as one
-        // opaque response so split mouse bytes never leak into text.
+        // leading `[`. Reconstruct the already-flushed ESC for valid mouse
+        // reports so wheel/click input still works; keep malformed or partial
+        // bytes opaque so they never leak into text input.
         case "esc_less_mouse": {
           if (this.cursor >= bytes.length) {
             if (!this.forceFlush) {
@@ -1714,7 +1722,13 @@ export class StdinParser {
 
           if (byte === 0x4d || byte === 0x6d) {
             const end = this.cursor + 1
-            this.emitOpaqueResponse("unknown", bytes.subarray(this.unitStart, end))
+            const rawBytes = bytes.subarray(this.unitStart, end)
+            const prefixed = withEscPrefix(rawBytes)
+            if (isMouseSgrSequence(prefixed)) {
+              this.emitMouse(prefixed, "sgr")
+            } else {
+              this.emitOpaqueResponse("unknown", rawBytes)
+            }
             this.state = { tag: "ground" }
             this.consumePrefix(end)
             continue
@@ -1727,8 +1741,9 @@ export class StdinParser {
         }
 
         // Delayed X10 mouse continuation after `esc_recovery` has consumed the
-        // leading `[`. Consume `[M` plus its three raw payload bytes as one
-        // opaque response so split mouse bytes never leak into text.
+        // leading `[`. Reconstruct the already-flushed ESC for valid mouse
+        // reports so wheel/click input still works; keep malformed or partial
+        // bytes opaque so they never leak into text input.
         case "esc_less_x10_mouse": {
           const end = this.unitStart + 5
 
@@ -1744,7 +1759,8 @@ export class StdinParser {
             continue
           }
 
-          this.emitOpaqueResponse("unknown", bytes.subarray(this.unitStart, end))
+          const rawBytes = bytes.subarray(this.unitStart, end)
+          this.emitMouse(withEscPrefix(rawBytes), "x10")
           this.state = { tag: "ground" }
           this.consumePrefix(end)
           continue

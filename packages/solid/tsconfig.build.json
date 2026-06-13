@@ -21,10 +21,13 @@
   },
   "include": [
     "index.ts",
+    "components.ts",
     "src/**/*",
     "jsx-runtime.d.ts",
+    "jsx-dev-runtime.d.ts",
     // See the comment below
     "scripts/solid-plugin.ts",
+    "scripts/solid-transform.ts",
     "scripts/runtime-plugin-support.ts",
     "scripts/runtime-plugin-support-configure.ts"
   ],

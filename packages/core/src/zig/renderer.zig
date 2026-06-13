@@ -7,17 +7,34 @@ const link = @import("link.zig");
 const split_scrollback = @import("split-scrollback.zig");
 const Terminal = @import("terminal.zig");
 const logger = @import("logger.zig");
+const NativeSpanFeed = @import("native-span-feed.zig");
+const output = @import("renderer-output.zig");
 
 pub const RGBA = ansi.RGBA;
 pub const OptimizedBuffer = buf.OptimizedBuffer;
 pub const TextAttributes = ansi.TextAttributes;
 pub const CursorStyle = Terminal.CursorStyle;
+pub const OutputBackend = output.OutputBackend;
+pub const BufferedBackend = output.BufferedBackend;
+pub const BufferedOutput = output.BufferedOutput;
+pub const StdoutOutput = output.StdoutOutput;
+pub const FeedBackend = output.FeedBackend;
+pub const OUTPUT_BUFFER_SIZE = output.OUTPUT_BUFFER_SIZE;
+
+pub const RenderStatus = enum(u8) {
+    rendered = 0,
+    skipped = 1,
+    failed = 2,
+};
+
+pub const RenderResult = struct {
+    renderOffset: u32,
+    status: RenderStatus,
+};
 
 const CLEAR_CHAR = '\u{0a00}';
 const MAX_STAT_SAMPLES = 30;
 const STAT_SAMPLE_CAPACITY = 30;
-
-const OUTPUT_BUFFER_SIZE = 1024 * 1024 * 2; // 2MB
 
 pub const RendererError = error{
     OutOfMemory,
@@ -69,6 +86,16 @@ pub const SplitFooterTransitionMode = enum(u8) {
     clear_stale_rows = 2,
 };
 
+pub const RenderStatsSnapshot = struct {
+    lastFrameTime: f64,
+    averageFrameTime: f64,
+    frameCount: u64,
+    cellsUpdated: u32,
+    averageCellsUpdated: u32,
+    renderTime: ?f64,
+    outputWriteTime: ?f64,
+};
+
 const SplitFooterTransition = struct {
     mode: SplitFooterTransitionMode = .none,
     source_top_line: u32 = 0,
@@ -91,10 +118,21 @@ pub const CliRenderer = struct {
     backgroundColor: RGBA,
     renderOffset: u32,
     terminal: Terminal,
-    testing: bool = false,
     useAlternateScreen: bool = true,
     terminalSetup: bool = false,
     clearOnShutdown: bool = true,
+
+    splitScrollback: split_scrollback.SplitScrollback = .{},
+    // Batch state for split-footer commit flushing. A single JS render tick can
+    // enqueue multiple stdout snapshots; batching keeps all of them inside one
+    // sync frame so terminals do not repeatedly enter/exit synchronized update.
+    splitBatchActive: bool = false,
+    splitBatchRedrawFooter: bool = false,
+    splitBatchDeltaTime: f64 = 0,
+    pendingSplitFooterTransition: SplitFooterTransition = .{},
+
+    /// Output transport. Owned by the renderer; destroyed in `destroy()`.
+    backend: OutputBackend,
 
     renderStats: struct {
         lastFrameTime: f64,
@@ -105,7 +143,7 @@ pub const CliRenderer = struct {
         renderTime: ?f64,
         overallFrameTime: ?f64,
         bufferResetTime: ?f64,
-        stdoutWriteTime: ?f64,
+        outputWriteTime: ?f64,
         heapUsed: u32,
         heapTotal: u32,
         arrayBuffers: u32,
@@ -116,14 +154,12 @@ pub const CliRenderer = struct {
         renderTime: std.ArrayListUnmanaged(f64),
         overallFrameTime: std.ArrayListUnmanaged(f64),
         bufferResetTime: std.ArrayListUnmanaged(f64),
-        stdoutWriteTime: std.ArrayListUnmanaged(f64),
+        outputWriteTime: std.ArrayListUnmanaged(f64),
         cellsUpdated: std.ArrayListUnmanaged(u32),
         frameCallbackTime: std.ArrayListUnmanaged(f64),
     },
     lastRenderTime: i64,
     allocator: Allocator,
-    renderThread: ?std.Thread = null,
-    stdoutBuffer: [4096]u8,
     writeOutBuf: [1024]u8 = undefined,
     debugOverlay: struct {
         enabled: bool,
@@ -132,23 +168,6 @@ pub const CliRenderer = struct {
         .enabled = false,
         .corner = .bottomRight,
     },
-    // Threading
-    useThread: bool = false,
-    renderMutex: std.Thread.Mutex = .{},
-    renderCondition: std.Thread.Condition = .{},
-    renderRequested: bool = false,
-    shouldTerminate: bool = false,
-    renderInProgress: bool = false,
-    currentOutputBuffer: []u8 = &[_]u8{},
-    currentOutputLen: usize = 0,
-    splitScrollback: split_scrollback.SplitScrollback = .{},
-    // Batch state for split-footer commit flushing. A single JS render tick can
-    // enqueue multiple stdout snapshots; batching keeps all of them inside one
-    // sync frame so terminals do not repeatedly enter/exit synchronized update.
-    splitBatchActive: bool = false,
-    splitBatchRedrawFooter: bool = false,
-    splitBatchDeltaTime: f64 = 0,
-    pendingSplitFooterTransition: SplitFooterTransition = .{},
 
     // Hit grid for mouse event dispatch.
     //
@@ -174,6 +193,7 @@ pub const CliRenderer = struct {
     hitGridHeight: u32,
     hitScissorStack: std.ArrayListUnmanaged(buf.ClipRect),
     hitGridDirty: bool = false,
+    hitGridResizeInvalidated: bool = false,
 
     lastCursorStyleTag: ?u8 = null,
     lastCursorBlinking: ?bool = null,
@@ -192,38 +212,23 @@ pub const CliRenderer = struct {
     force_full_repaint: bool = false,
     palette_index_cache: std.AutoHashMapUnmanaged(u64, u8) = .{},
 
-    // Preallocated output buffer
-    var outputBuffer: [OUTPUT_BUFFER_SIZE]u8 = undefined;
-    var outputBufferLen: usize = 0;
-    var outputBufferB: [OUTPUT_BUFFER_SIZE]u8 = undefined;
-    var outputBufferBLen: usize = 0;
-    var activeBuffer: enum { A, B } = .A;
-
-    const OutputBufferWriter = struct {
-        pub fn write(_: void, data: []const u8) !usize {
-            const bufferLen = if (activeBuffer == .A) &outputBufferLen else &outputBufferBLen;
-            const buffer = if (activeBuffer == .A) &outputBuffer else &outputBufferB;
-
-            if (bufferLen.* + data.len > buffer.len) {
-                // TODO: Resize buffer when necessary
-                return error.BufferFull;
-            }
-
-            @memcpy(buffer.*[bufferLen.*..][0..data.len], data);
-            bufferLen.* += data.len;
-
-            return data.len;
-        }
-
-        // TODO: std.io.GenericWriter is deprecated, however the "correct" option seems to be much more involved
-        // So I have simply used GenericWriter here, and then the proper migration can be done later
-        pub fn writer() std.io.GenericWriter(void, error{BufferFull}, write) {
-            return .{ .context = {} };
-        }
+    pub const OutputTarget = union(enum) {
+        stdout,
+        memory,
+        buffered: BufferedOutput,
+        feed: *NativeSpanFeed.Stream,
     };
 
-    pub fn create(allocator: Allocator, width: u32, height: u32, pool: *gp.GraphemePool, testing: bool) !*CliRenderer {
-        return createWithOptions(allocator, width, height, pool, testing, false);
+    /// Full set of options for `createWithOptions`. `output` determines the
+    /// backend variant: buffered stdout, injected buffered output, or feed.
+    pub const CreateOptions = struct {
+        remote_mode: Terminal.RemoteMode = .local,
+        output: OutputTarget = .stdout,
+        clearOnShutdown: bool = true,
+    };
+
+    pub fn create(allocator: Allocator, width: u32, height: u32, pool: *gp.GraphemePool) !*CliRenderer {
+        return createWithOptions(allocator, width, height, pool, .{});
     }
 
     pub fn createWithOptions(
@@ -231,8 +236,7 @@ pub const CliRenderer = struct {
         width: u32,
         height: u32,
         pool: *gp.GraphemePool,
-        testing: bool,
-        remote: bool,
+        opts: CreateOptions,
     ) !*CliRenderer {
         const self = try allocator.create(CliRenderer);
         errdefer allocator.destroy(self);
@@ -251,8 +255,8 @@ pub const CliRenderer = struct {
         errdefer overallFrameTime.deinit(allocator);
         var bufferResetTime: std.ArrayListUnmanaged(f64) = .{};
         errdefer bufferResetTime.deinit(allocator);
-        var stdoutWriteTime: std.ArrayListUnmanaged(f64) = .{};
-        errdefer stdoutWriteTime.deinit(allocator);
+        var outputWriteTime: std.ArrayListUnmanaged(f64) = .{};
+        errdefer outputWriteTime.deinit(allocator);
         var cellsUpdated: std.ArrayListUnmanaged(u32) = .{};
         errdefer cellsUpdated.deinit(allocator);
         var frameCallbackTimes: std.ArrayListUnmanaged(f64) = .{};
@@ -262,7 +266,7 @@ pub const CliRenderer = struct {
         try renderTime.ensureTotalCapacity(allocator, STAT_SAMPLE_CAPACITY);
         try overallFrameTime.ensureTotalCapacity(allocator, STAT_SAMPLE_CAPACITY);
         try bufferResetTime.ensureTotalCapacity(allocator, STAT_SAMPLE_CAPACITY);
-        try stdoutWriteTime.ensureTotalCapacity(allocator, STAT_SAMPLE_CAPACITY);
+        try outputWriteTime.ensureTotalCapacity(allocator, STAT_SAMPLE_CAPACITY);
         try cellsUpdated.ensureTotalCapacity(allocator, STAT_SAMPLE_CAPACITY);
         try frameCallbackTimes.ensureTotalCapacity(allocator, STAT_SAMPLE_CAPACITY);
 
@@ -275,6 +279,15 @@ pub const CliRenderer = struct {
         @memset(nextHitGrid, 0);
         const hitScissorStack: std.ArrayListUnmanaged(buf.ClipRect) = .{};
 
+        // Backend variant selected once by opts.output.
+        var backend: OutputBackend = switch (opts.output) {
+            .stdout => .{ .buffered = try BufferedBackend.createStdout(allocator) },
+            .memory => .{ .buffered = try BufferedBackend.createMemory(allocator) },
+            .buffered => |buffered_output| .{ .buffered = try BufferedBackend.create(allocator, buffered_output) },
+            .feed => |feed_ptr| .{ .feed = FeedBackend.create(feed_ptr) },
+        };
+        errdefer backend.deinit(allocator);
+
         self.* = .{
             .width = width,
             .height = height,
@@ -283,8 +296,9 @@ pub const CliRenderer = struct {
             .pool = pool,
             .backgroundColor = ansi.rgbColor(0, 0, 0, 0),
             .renderOffset = 0,
-            .terminal = Terminal.init(.{ .remote = remote }),
-            .testing = testing,
+            .terminal = Terminal.init(.{ .remote_mode = opts.remote_mode }),
+            .clearOnShutdown = opts.clearOnShutdown,
+            .backend = backend,
             .lastCursorStyleTag = null,
             .lastCursorBlinking = null,
             .lastCursorColorRGB = null,
@@ -298,7 +312,7 @@ pub const CliRenderer = struct {
                 .renderTime = null,
                 .overallFrameTime = null,
                 .bufferResetTime = null,
-                .stdoutWriteTime = null,
+                .outputWriteTime = null,
                 .heapUsed = 0,
                 .heapTotal = 0,
                 .arrayBuffers = 0,
@@ -309,13 +323,12 @@ pub const CliRenderer = struct {
                 .renderTime = renderTime,
                 .overallFrameTime = overallFrameTime,
                 .bufferResetTime = bufferResetTime,
-                .stdoutWriteTime = stdoutWriteTime,
+                .outputWriteTime = outputWriteTime,
                 .cellsUpdated = cellsUpdated,
                 .frameCallbackTime = frameCallbackTimes,
             },
             .lastRenderTime = std.time.microTimestamp(),
             .allocator = allocator,
-            .stdoutBuffer = undefined,
             .currentHitGrid = currentHitGrid,
             .nextHitGrid = nextHitGrid,
             .hitGridWidth = width,
@@ -337,21 +350,13 @@ pub const CliRenderer = struct {
     }
 
     pub fn destroy(self: *CliRenderer) void {
-        self.renderMutex.lock();
-        while (self.renderInProgress) {
-            self.renderCondition.wait(&self.renderMutex);
-        }
-
-        self.shouldTerminate = true;
-        self.renderRequested = true;
-        self.renderCondition.signal();
-        self.renderMutex.unlock();
-
-        if (self.renderThread) |thread| {
-            thread.join();
-        }
-
+        // Order matters: performShutdownSequence writes cleanup ANSI through
+        // the backend. backend.deinit then joins the render thread using a
+        // terminate-only signal (no renderRequested) so the thread exits
+        // without replaying the stale last-frame buffer on top of the
+        // freshly-restored terminal.
         self.performShutdownSequence();
+        self.backend.deinit(self.allocator);
         self.terminal.deinit();
 
         self.currentRenderBuffer.deinit();
@@ -362,7 +367,7 @@ pub const CliRenderer = struct {
         self.statSamples.renderTime.deinit(self.allocator);
         self.statSamples.overallFrameTime.deinit(self.allocator);
         self.statSamples.bufferResetTime.deinit(self.allocator);
-        self.statSamples.stdoutWriteTime.deinit(self.allocator);
+        self.statSamples.outputWriteTime.deinit(self.allocator);
         self.statSamples.cellsUpdated.deinit(self.allocator);
         self.statSamples.frameCallbackTime.deinit(self.allocator);
         self.palette_index_cache.deinit(self.allocator);
@@ -378,20 +383,22 @@ pub const CliRenderer = struct {
         self.useAlternateScreen = useAlternateScreen;
         self.terminalSetup = true;
 
-        var stdoutWriter = std.fs.File.stdout().writer(&self.stdoutBuffer);
-        const writer = &stdoutWriter.interface;
-
-        self.terminal.queryTerminalSend(writer) catch {
+        // Build capability query into a stack buffer, then emit via backend.
+        // Buffer sized to accommodate all capability-query sequences with margin.
+        var queryBuf: [4096]u8 = undefined;
+        var stream = std.io.fixedBufferStream(&queryBuf);
+        self.terminal.queryTerminalSend(stream.writer()) catch {
             logger.warn("Failed to query terminal capabilities", .{});
         };
-        writer.flush() catch {};
+        self.backend.writeOut(stream.getWritten());
 
         self.setupTerminalWithoutDetection(useAlternateScreen, true);
     }
 
     fn setupTerminalWithoutDetection(self: *CliRenderer, useAlternateScreen: bool, reserve_non_alt_surface: bool) void {
-        var stdoutWriter = std.fs.File.stdout().writer(&self.stdoutBuffer);
-        const writer = &stdoutWriter.interface;
+        var setupBuf: [4096]u8 = undefined;
+        var stream = std.io.fixedBufferStream(&setupBuf);
+        const writer = stream.writer();
 
         writer.writeAll(ansi.ANSI.saveCursorState) catch {};
 
@@ -405,16 +412,12 @@ pub const CliRenderer = struct {
         const useKitty = self.terminal.opts.kitty_keyboard_flags > 0;
         self.terminal.enableDetectedFeatures(writer, useKitty) catch {};
 
-        writer.flush() catch {};
+        self.backend.writeOut(stream.getWritten());
     }
 
     pub fn suspendRenderer(self: *CliRenderer) void {
         if (!self.terminalSetup) return;
         self.performShutdownSequence();
-    }
-
-    pub fn setClearOnShutdown(self: *CliRenderer, clear: bool) void {
-        self.clearOnShutdown = clear;
     }
 
     pub fn resumeRenderer(self: *CliRenderer) void {
@@ -435,35 +438,42 @@ pub const CliRenderer = struct {
     pub fn performShutdownSequence(self: *CliRenderer) void {
         if (!self.terminalSetup) return;
 
-        var stdoutWriter = std.fs.File.stdout().writer(&self.stdoutBuffer);
-        const direct = &stdoutWriter.interface;
-        self.terminal.resetState(direct) catch {
+        // Build the shutdown ANSI sequence into a stack buffer, then emit.
+        var shutdownBuf: [4096]u8 = undefined;
+        var stream = std.io.fixedBufferStream(&shutdownBuf);
+        const writer = stream.writer();
+
+        self.terminal.resetState(writer) catch {
             logger.warn("Failed to reset terminal state", .{});
         };
 
         if (self.useAlternateScreen) {
-            direct.flush() catch {};
+            // Alt screen: resetState already exited alt screen; just flush.
         } else if (self.clearOnShutdown and self.renderOffset == 0) {
-            direct.writeAll("\x1b[H\x1b[J") catch {};
-            direct.flush() catch {};
+            writer.writeAll("\x1b[H\x1b[J") catch {};
         } else if (self.clearOnShutdown and self.renderOffset > 0) {
-            self.clearSplitFooterSurface(direct);
-            direct.flush() catch {};
+            self.clearSplitFooterSurface(writer);
         }
 
         // NOTE: This messes up state after shutdown, but might be necessary for windows?
-        // direct.writeAll(ansi.ANSI.restoreCursorState) catch {};
+        // writer.writeAll(ansi.ANSI.restoreCursorState) catch {};
 
-        direct.writeAll(ansi.ANSI.resetCursorColorFallback) catch {};
-        direct.writeAll(ansi.ANSI.resetCursorColor) catch {};
-        direct.writeAll(ansi.ANSI.defaultCursorStyle) catch {};
-        // Workaround for Ghostty not showing the cursor after shutdown for some reason
-        direct.writeAll(ansi.ANSI.showCursor) catch {};
-        direct.flush() catch {};
+        writer.writeAll(ansi.ANSI.resetCursorColorFallback) catch {};
+        writer.writeAll(ansi.ANSI.resetCursorColor) catch {};
+        writer.writeAll(ansi.ANSI.defaultCursorStyle) catch {};
+        writer.writeAll(ansi.ANSI.showCursor) catch {};
+
+        self.backend.writeOut(stream.getWritten());
+
+        // Workaround for Ghostty not showing the cursor after shutdown for some reason.
+        // Keep this backend-agnostic: the active output transport owns delivery.
         std.Thread.sleep(10 * std.time.ns_per_ms);
-        direct.writeAll(ansi.ANSI.showCursor) catch {};
-        direct.flush() catch {};
+        self.backend.writeOut(ansi.ANSI.showCursor);
         std.Thread.sleep(10 * std.time.ns_per_ms);
+    }
+
+    pub fn setClearOnShutdown(self: *CliRenderer, clear: bool) void {
+        self.clearOnShutdown = clear;
     }
 
     fn addStatSample(self: *CliRenderer, comptime T: type, samples: *std.ArrayListUnmanaged(T), value: T) void {
@@ -491,38 +501,35 @@ pub const CliRenderer = struct {
         }
     }
 
-    pub fn setUseThread(self: *CliRenderer, useThread: bool) void {
-        if (self.useThread == useThread) return;
-
-        if (useThread) {
-            if (self.renderThread == null) {
-                self.renderThread = std.Thread.spawn(.{}, renderThreadFn, .{self}) catch |err| {
-                    std.log.warn("Failed to spawn render thread: {}, falling back to non-threaded mode", .{err});
-                    self.useThread = false;
-                    return;
-                };
-            }
-        } else {
-            if (self.renderThread) |thread| {
-                // Signal the render thread to terminate (same pattern as destroy)
-                self.renderMutex.lock();
-                while (self.renderInProgress) {
-                    self.renderCondition.wait(&self.renderMutex);
-                }
-                self.shouldTerminate = true;
-                self.renderRequested = true;
-                self.renderCondition.signal();
-                self.renderMutex.unlock();
-
-                thread.join();
-                self.renderThread = null;
-
-                // Reset termination flag so thread can be re-enabled later
-                self.shouldTerminate = false;
-            }
+    fn collectFrameStats(self: *CliRenderer, deltaTime: f64) void {
+        if (self.backend.getLastWriteTimeUs()) |wt| {
+            self.renderStats.outputWriteTime = wt;
         }
 
-        self.useThread = useThread;
+        self.renderStats.lastFrameTime = deltaTime * 1000.0;
+        self.renderStats.frameCount += 1;
+
+        self.addStatSample(f64, &self.statSamples.lastFrameTime, deltaTime * 1000.0);
+        if (self.renderStats.renderTime) |rt| {
+            self.addStatSample(f64, &self.statSamples.renderTime, rt);
+        }
+        if (self.renderStats.bufferResetTime) |brt| {
+            self.addStatSample(f64, &self.statSamples.bufferResetTime, brt);
+        }
+        if (self.renderStats.outputWriteTime) |swt| {
+            self.addStatSample(f64, &self.statSamples.outputWriteTime, swt);
+        }
+        self.addStatSample(u32, &self.statSamples.cellsUpdated, self.renderStats.cellsUpdated);
+    }
+
+    pub fn setUseThread(self: *CliRenderer, useThread: bool) void {
+        if (!self.backend.supportsThreading() and useThread) return;
+        self.backend.setUseThread(useThread);
+    }
+
+    /// Whether the backend is currently running a write thread (for debug overlay).
+    pub fn isUseThread(self: *CliRenderer) bool {
+        return self.backend.isUseThread();
     }
 
     pub fn updateStats(self: *CliRenderer, time: f64, fps: u32, frameCallbackTime: f64) void {
@@ -538,6 +545,18 @@ pub const CliRenderer = struct {
         self.renderStats.heapUsed = heapUsed;
         self.renderStats.heapTotal = heapTotal;
         self.renderStats.arrayBuffers = arrayBuffers;
+    }
+
+    pub fn getRenderStats(self: *const CliRenderer) RenderStatsSnapshot {
+        return .{
+            .lastFrameTime = self.renderStats.lastFrameTime,
+            .averageFrameTime = getStatAverage(f64, &self.statSamples.lastFrameTime),
+            .frameCount = self.renderStats.frameCount,
+            .cellsUpdated = self.renderStats.cellsUpdated,
+            .averageCellsUpdated = getStatAverage(u32, &self.statSamples.cellsUpdated),
+            .renderTime = self.renderStats.renderTime,
+            .outputWriteTime = self.renderStats.outputWriteTime,
+        };
     }
 
     pub fn resize(self: *CliRenderer, width: u32, height: u32) !void {
@@ -559,14 +578,16 @@ pub const CliRenderer = struct {
             const newCurrentHitGrid = try self.allocator.alloc(u32, newHitGridSize);
             errdefer self.allocator.free(newCurrentHitGrid);
             const newNextHitGrid = try self.allocator.alloc(u32, newHitGridSize);
-            @memset(newCurrentHitGrid, 0);
-            @memset(newNextHitGrid, 0);
 
             self.allocator.free(self.currentHitGrid);
             self.allocator.free(self.nextHitGrid);
             self.currentHitGrid = newCurrentHitGrid;
             self.nextHitGrid = newNextHitGrid;
         }
+
+        @memset(self.currentHitGrid, 0);
+        @memset(self.nextHitGrid, 0);
+        self.hitGridResizeInvalidated = true;
 
         // Always update dimensions. The backing buffer is at least as large as
         // width*height, so this is safe even when the terminal shrinks. Without
@@ -686,13 +707,77 @@ pub const CliRenderer = struct {
 
     pub fn setRenderOffset(self: *CliRenderer, offset: u32) void {
         if (self.terminalSetup and !self.useAlternateScreen and self.renderOffset > 0 and offset == 0) {
-            var stdoutWriter = std.fs.File.stdout().writer(&self.stdoutBuffer);
-            const writer = &stdoutWriter.interface;
+            var clearBuf: [256]u8 = undefined;
+            var stream = std.io.fixedBufferStream(&clearBuf);
+            const writer = stream.writer();
             self.clearSplitFooterSurface(writer);
-            writer.flush() catch {};
+            self.backend.writeOut(stream.getWritten());
         }
 
         self.renderOffset = offset;
+    }
+
+    fn renderStatusFromWrite(status: output.WriteStatus) RenderStatus {
+        return switch (status) {
+            .ok => .rendered,
+            .skipped => .skipped,
+            .failed => .failed,
+        };
+    }
+
+    fn clearSkippedFrameState(self: *CliRenderer) void {
+        self.nextRenderBuffer.clear(self.backgroundColor, null);
+        @memset(self.nextHitGrid, 0);
+    }
+
+    fn finishSkippedFrame(self: *CliRenderer) RenderStatus {
+        self.clearSkippedFrameState();
+        return .skipped;
+    }
+
+    fn finishFailedFrame(self: *CliRenderer) RenderStatus {
+        self.force_full_repaint = true;
+        return .failed;
+    }
+
+    fn renderResult(self: *CliRenderer, status: RenderStatus) RenderResult {
+        return .{ .renderOffset = self.renderOffset, .status = status };
+    }
+
+    // One code path; backend selects writer type at compile time.
+    pub fn render(self: *CliRenderer, force: bool) RenderStatus {
+        // Backpressure: skipping must NOT update lastRenderTime so the next
+        // successful render sees the full accumulated delta (catch-up).
+        if (self.backend.prepareFrame() != .ok) {
+            return self.finishSkippedFrame();
+        }
+
+        const now = std.time.microTimestamp();
+        const deltaTimeMs = @as(f64, @floatFromInt(now - self.lastRenderTime));
+        const deltaTime = deltaTimeMs / 1000.0;
+
+        self.lastRenderTime = now;
+        self.renderDebugOverlay();
+
+        // `inline else` monomorphizes the writer type per variant — one
+        // dispatch site, zero vtable cost.
+        var write_status: output.WriteStatus = .ok;
+        switch (self.backend) {
+            inline else => |*b| {
+                b.beginFrame();
+                var w = b.writer();
+                self.prepareRenderFrameWithWriter(&w, force, false);
+                write_status = b.endFrame();
+            },
+        }
+
+        const status = renderStatusFromWrite(write_status);
+        if (status == .failed) {
+            return self.finishFailedFrame();
+        }
+
+        self.collectFrameStats(deltaTime);
+        return status;
     }
 
     fn splitOutputOffset(self: *const CliRenderer, surface_offset: u32) u32 {
@@ -786,81 +871,32 @@ pub const CliRenderer = struct {
         }
     }
 
-    fn resetActiveOutputBuffer() void {
-        // TODO: check if we need to guard this with a mutex when threading is enabled. It should be safe as long as the
-        // render thread only reads from the current buffer after the main thread has finished writing and signaled
-        if (activeBuffer == .A) {
-            outputBufferLen = 0;
-        } else {
-            outputBufferBLen = 0;
-        }
-    }
-
-    fn renderThreadFn(self: *CliRenderer) void {
-        while (true) {
-            self.renderMutex.lock();
-            while (!self.renderRequested and !self.shouldTerminate) {
-                self.renderCondition.wait(&self.renderMutex);
-            }
-
-            if (self.shouldTerminate and !self.renderRequested) {
-                self.renderMutex.unlock();
-                break;
-            }
-
-            self.renderRequested = false;
-
-            const outputData = self.currentOutputBuffer;
-            const outputLen = self.currentOutputLen;
-
-            const writeStart = std.time.microTimestamp();
-
-            if (outputLen > 0 and !self.testing) {
-                var stdoutWriter = std.fs.File.stdout().writer(&self.stdoutBuffer);
-                const w = &stdoutWriter.interface;
-                w.writeAll(outputData[0..outputLen]) catch {};
-                w.flush() catch {};
-            }
-
-            // Signal that rendering is complete
-            self.renderStats.stdoutWriteTime = @as(f64, @floatFromInt(std.time.microTimestamp() - writeStart));
-            self.renderInProgress = false;
-            self.renderCondition.signal();
-            self.renderMutex.unlock();
-        }
-    }
-
-    // Render once with current state
-    pub fn render(self: *CliRenderer, force: bool) void {
-        const now = std.time.microTimestamp();
-        const deltaTimeMs = @as(f64, @floatFromInt(now - self.lastRenderTime));
-        const deltaTime = deltaTimeMs / 1000.0; // Convert to seconds
-
-        self.lastRenderTime = now;
-        self.renderDebugOverlay();
-
-        self.prepareRenderFrame(force, true, false);
-
-        self.finalizeRender(deltaTime);
-    }
-
     pub fn repaintSplitFooter(
         self: *CliRenderer,
         pinned_render_offset: u32,
         force: bool,
-    ) u32 {
+    ) RenderResult {
+        if (self.backend.prepareFrame() != .ok) {
+            const status = self.finishSkippedFrame();
+            return self.renderResult(status);
+        }
+
         const now = std.time.microTimestamp();
         const deltaTimeMs = @as(f64, @floatFromInt(now - self.lastRenderTime));
-        const deltaTime = deltaTimeMs / 1000.0; // Convert to seconds
+        const deltaTime = deltaTimeMs / 1000.0;
 
         self.lastRenderTime = now;
         self.renderDebugOverlay();
 
-        self.prepareSplitFooterRepaintFrame(pinned_render_offset, force);
+        const status = self.prepareSplitFooterRepaintFrame(pinned_render_offset, force);
+        var result_status = status;
+        if (status == .failed) {
+            result_status = self.finishFailedFrame();
+        } else {
+            self.collectFrameStats(deltaTime);
+        }
 
-        self.finalizeRender(deltaTime);
-
-        return self.renderOffset;
+        return self.renderResult(result_status);
     }
 
     pub fn commitSplitFooterSnapshotBatched(
@@ -873,13 +909,18 @@ pub const CliRenderer = struct {
         force: bool,
         begin_frame: bool,
         finalize_frame: bool,
-    ) u32 {
+    ) RenderResult {
         // Batched commit protocol:
         // - first call starts frame and appends payload
         // - middle calls append payload only
         // - final call renders footer diff/cursor and closes frame
         // This avoids repeated syncSet/syncReset and cursor toggles per chunk.
         if (begin_frame) {
+            if (self.backend.prepareFrame() != .ok) {
+                const status = self.finishSkippedFrame();
+                return self.renderResult(status);
+            }
+
             const now = std.time.microTimestamp();
             const deltaTimeMs = @as(f64, @floatFromInt(now - self.lastRenderTime));
             const deltaTime = deltaTimeMs / 1000.0;
@@ -887,39 +928,54 @@ pub const CliRenderer = struct {
             self.lastRenderTime = now;
             self.renderDebugOverlay();
 
-            resetActiveOutputBuffer();
-            const writer = OutputBufferWriter.writer();
-            beginRenderFrame(writer);
-            var frame_started = true;
-            self.applyPendingSplitFooterTransition(writer, &frame_started);
+            var write_status: output.WriteStatus = .ok;
+            var result_status: RenderStatus = .rendered;
+            switch (self.backend) {
+                inline else => |*b| {
+                    b.beginFrame();
+                    var w = b.writer();
+                    beginRenderFrame(&w);
+                    var frame_started = true;
+                    self.applyPendingSplitFooterTransition(&w, &frame_started);
 
-            // Track batch lifetime so subsequent calls can append into the same
-            // output buffer without restarting frame state.
-            self.splitBatchActive = !finalize_frame;
-            self.splitBatchRedrawFooter = false;
-            self.splitBatchDeltaTime = deltaTime;
+                    // Track batch lifetime so subsequent calls can append into the same
+                    // output buffer without restarting frame state.
+                    self.splitBatchActive = !finalize_frame;
+                    self.splitBatchRedrawFooter = false;
+                    self.splitBatchDeltaTime = deltaTime;
 
-            const redraw_footer = self.appendSplitFooterSnapshotCommit(
-                writer,
-                snapshot,
-                row_columns,
-                start_on_new_line,
-                trailing_newline,
-                pinned_render_offset,
-                force,
-            );
+                    const redraw_footer = self.appendSplitFooterSnapshotCommit(
+                        &w,
+                        snapshot,
+                        row_columns,
+                        start_on_new_line,
+                        trailing_newline,
+                        pinned_render_offset,
+                        force,
+                    );
 
-            if (finalize_frame) {
-                self.prepareRenderFrame(redraw_footer, false, true);
-                self.finalizeRender(deltaTime);
-                self.splitBatchActive = false;
-                self.splitBatchRedrawFooter = false;
-                self.splitBatchDeltaTime = 0;
-            } else {
-                self.splitBatchRedrawFooter = redraw_footer;
+                    if (finalize_frame) {
+                        self.prepareRenderFrameWithWriter(&w, redraw_footer, true);
+                        write_status = b.endFrame();
+                        const status = renderStatusFromWrite(write_status);
+                        if (status == .failed) {
+                            result_status = self.finishFailedFrame();
+                        } else {
+                            result_status = status;
+                            self.collectFrameStats(deltaTime);
+                        }
+
+                        self.splitBatchActive = false;
+                        self.splitBatchRedrawFooter = false;
+                        self.splitBatchDeltaTime = 0;
+                    } else {
+                        result_status = .rendered;
+                        self.splitBatchRedrawFooter = redraw_footer;
+                    }
+                },
             }
 
-            return self.renderOffset;
+            return self.renderResult(result_status);
         }
 
         // Defensive fallback: if caller forgot begin_frame, execute through a
@@ -937,99 +993,44 @@ pub const CliRenderer = struct {
             );
         }
 
-        const writer = OutputBufferWriter.writer();
-        const redraw_footer = self.appendSplitFooterSnapshotCommit(
-            writer,
-            snapshot,
-            row_columns,
-            start_on_new_line,
-            trailing_newline,
-            pinned_render_offset,
-            force,
-        );
-        self.splitBatchRedrawFooter = self.splitBatchRedrawFooter or redraw_footer;
+        var write_status: output.WriteStatus = .ok;
+        var result_status: RenderStatus = .rendered;
+        switch (self.backend) {
+            inline else => |*b| {
+                var w = b.writer();
+                const redraw_footer = self.appendSplitFooterSnapshotCommit(
+                    &w,
+                    snapshot,
+                    row_columns,
+                    start_on_new_line,
+                    trailing_newline,
+                    pinned_render_offset,
+                    force,
+                );
+                self.splitBatchRedrawFooter = self.splitBatchRedrawFooter or redraw_footer;
 
-        if (finalize_frame) {
-            self.prepareRenderFrame(self.splitBatchRedrawFooter, false, true);
-            self.finalizeRender(self.splitBatchDeltaTime);
-            self.splitBatchActive = false;
-            self.splitBatchRedrawFooter = false;
-            self.splitBatchDeltaTime = 0;
+                if (finalize_frame) {
+                    self.prepareRenderFrameWithWriter(&w, self.splitBatchRedrawFooter, true);
+                    write_status = b.endFrame();
+
+                    const status = renderStatusFromWrite(write_status);
+                    if (status == .failed) {
+                        result_status = self.finishFailedFrame();
+                    } else {
+                        result_status = status;
+                        self.collectFrameStats(self.splitBatchDeltaTime);
+                    }
+
+                    self.splitBatchActive = false;
+                    self.splitBatchRedrawFooter = false;
+                    self.splitBatchDeltaTime = 0;
+                } else {
+                    result_status = .rendered;
+                }
+            },
         }
 
-        return self.renderOffset;
-    }
-
-    fn finalizeRender(self: *CliRenderer, deltaTime: f64) void {
-        if (self.useThread) {
-            self.renderMutex.lock();
-            while (self.renderInProgress) {
-                self.renderCondition.wait(&self.renderMutex);
-            }
-
-            if (activeBuffer == .A) {
-                activeBuffer = .B;
-                self.currentOutputBuffer = &outputBuffer;
-                self.currentOutputLen = outputBufferLen;
-            } else {
-                activeBuffer = .A;
-                self.currentOutputBuffer = &outputBufferB;
-                self.currentOutputLen = outputBufferBLen;
-            }
-
-            self.renderRequested = true;
-            self.renderInProgress = true;
-            self.renderCondition.signal();
-            self.renderMutex.unlock();
-        } else {
-            const writeStart = std.time.microTimestamp();
-            const output = if (activeBuffer == .A) outputBuffer[0..outputBufferLen] else outputBufferB[0..outputBufferBLen];
-            if (!self.testing) {
-                var stdoutWriter = std.fs.File.stdout().writer(&self.stdoutBuffer);
-                const w = &stdoutWriter.interface;
-                w.writeAll(output) catch {};
-                w.flush() catch {};
-            }
-            self.renderStats.stdoutWriteTime = @as(f64, @floatFromInt(std.time.microTimestamp() - writeStart));
-        }
-
-        self.renderStats.lastFrameTime = deltaTime * 1000.0;
-        self.renderStats.frameCount += 1;
-
-        self.addStatSample(f64, &self.statSamples.lastFrameTime, deltaTime * 1000.0);
-        if (self.renderStats.renderTime) |rt| {
-            self.addStatSample(f64, &self.statSamples.renderTime, rt);
-        }
-        if (self.renderStats.bufferResetTime) |brt| {
-            self.addStatSample(f64, &self.statSamples.bufferResetTime, brt);
-        }
-        if (self.renderStats.stdoutWriteTime) |swt| {
-            self.addStatSample(f64, &self.statSamples.stdoutWriteTime, swt);
-        }
-        self.addStatSample(u32, &self.statSamples.cellsUpdated, self.renderStats.cellsUpdated);
-    }
-
-    fn prepareSplitFooterRepaintFrame(
-        self: *CliRenderer,
-        pinned_render_offset: u32,
-        force: bool,
-    ) void {
-        const transition = self.pendingSplitFooterTransition;
-        const hasPendingViewportTarget = transition.mode == .viewport_scroll and
-            transition.target_top_line > 0 and
-            transition.scroll_lines > 0;
-        const previousRenderOffset = self.renderOffset;
-        const next_render_offset = if (hasPendingViewportTarget)
-            transition.target_top_line - 1
-        else
-            self.clampSplitSurfaceOffset(previousRenderOffset, pinned_render_offset);
-        const redraw_footer = force or previousRenderOffset != next_render_offset;
-
-        self.renderOffset = next_render_offset;
-        // Do not pre-start sync frame here. prepareRenderFrame now lazily starts
-        // frame output only when something actually changes; this prevents no-op
-        // repaint ticks from emitting hide/show cursor and sync envelopes.
-        self.prepareRenderFrame(redraw_footer, true, false);
+        return self.renderResult(result_status);
     }
 
     /// Serialization for one split append payload.
@@ -1053,7 +1054,7 @@ pub const CliRenderer = struct {
     ) void {
         var currentFg: ?RGBA = null;
         var currentBg: ?RGBA = null;
-        var currentAttributes: i32 = -1;
+        var currentAttributes: ?u32 = null;
         var currentLinkId: u32 = 0;
         var utf8Buf: [4]u8 = undefined;
 
@@ -1070,7 +1071,7 @@ pub const CliRenderer = struct {
 
                 const fgMatch = currentFg != null and buf.rgbaEqual(currentFg.?, cell.fg);
                 const bgMatch = currentBg != null and buf.rgbaEqual(currentBg.?, cell.bg);
-                const sameAttributes = fgMatch and bgMatch and @as(i32, @intCast(cell.attributes)) == currentAttributes;
+                const sameAttributes = fgMatch and bgMatch and currentAttributes != null and cell.attributes == currentAttributes.?;
 
                 const linkId = if (hyperlinksEnabled) ansi.TextAttributes.getLinkId(cell.attributes) else 0;
                 if (hyperlinksEnabled and linkId != currentLinkId) {
@@ -1093,7 +1094,7 @@ pub const CliRenderer = struct {
 
                     currentFg = cell.fg;
                     currentBg = cell.bg;
-                    currentAttributes = @as(i32, @intCast(cell.attributes));
+                    currentAttributes = cell.attributes;
 
                     self.emitColor(writer, cell.fg, false);
                     self.emitColor(writer, cell.bg, true);
@@ -1140,7 +1141,7 @@ pub const CliRenderer = struct {
             writer.writeAll(ansi.ANSI.eraseToEndOfLine) catch {};
             currentFg = null;
             currentBg = null;
-            currentAttributes = -1;
+            currentAttributes = null;
 
             const is_last_row = @as(u32, @intCast(uy + 1)) >= snapshot.height;
             if (!is_last_row or trailing_newline) {
@@ -1265,6 +1266,43 @@ pub const CliRenderer = struct {
         return redraw_footer;
     }
 
+    fn beginRenderFrame(writer: anytype) void {
+        writer.writeAll(ansi.ANSI.syncSet) catch {};
+        writer.writeAll(ansi.ANSI.hideCursor) catch {};
+    }
+
+    fn prepareSplitFooterRepaintFrame(
+        self: *CliRenderer,
+        pinned_render_offset: u32,
+        force: bool,
+    ) RenderStatus {
+        const transition = self.pendingSplitFooterTransition;
+        const hasPendingViewportTarget = transition.mode == .viewport_scroll and
+            transition.target_top_line > 0 and
+            transition.scroll_lines > 0;
+        const previousRenderOffset = self.renderOffset;
+        const next_render_offset = if (hasPendingViewportTarget)
+            transition.target_top_line - 1
+        else
+            self.clampSplitSurfaceOffset(previousRenderOffset, pinned_render_offset);
+        const redraw_footer = force or previousRenderOffset != next_render_offset;
+
+        self.renderOffset = next_render_offset;
+        // Do not pre-start sync frame here. prepareRenderFrameWithWriter now lazily starts
+        // frame output only when something actually changes; this prevents no-op
+        // repaint ticks from emitting hide/show cursor and sync envelopes.
+        var write_status: output.WriteStatus = .ok;
+        switch (self.backend) {
+            inline else => |*b| {
+                b.beginFrame();
+                var w = b.writer();
+                self.prepareRenderFrameWithWriter(&w, redraw_footer, false);
+                write_status = b.endFrame();
+            },
+        }
+        return renderStatusFromWrite(write_status);
+    }
+
     pub fn getNextBuffer(self: *CliRenderer) *OptimizedBuffer {
         return self.nextRenderBuffer;
     }
@@ -1273,22 +1311,16 @@ pub const CliRenderer = struct {
         return self.currentRenderBuffer;
     }
 
-    fn beginRenderFrame(writer: anytype) void {
-        writer.writeAll(ansi.ANSI.syncSet) catch {};
-        writer.writeAll(ansi.ANSI.hideCursor) catch {};
-    }
-
-    fn prepareRenderFrame(self: *CliRenderer, force: bool, reset_output_buffer: bool, sync_started: bool) void {
+    /// Generic over the writer type so each backend can provide its own writer
+    /// (buffered frame append or feed streaming) without dispatch in the render path.
+    /// `sync_started` is true only when the caller already opened the
+    /// synchronized-update envelope for a batched split-footer commit.
+    pub fn prepareRenderFrameWithWriter(self: *CliRenderer, writer: anytype, force: bool, sync_started: bool) void {
         const renderStartTime = std.time.microTimestamp();
         var cellsUpdated: u32 = 0;
         const palette_force = self.last_rendered_palette_epoch == null or self.last_rendered_palette_epoch.? != self.palette_epoch;
         const should_force = force or self.force_full_repaint or palette_force;
 
-        if (reset_output_buffer) {
-            resetActiveOutputBuffer();
-        }
-
-        var writer = OutputBufferWriter.writer();
         // Lazy frame start is the core no-op suppression mechanism. If diffing,
         // cursor state, and pointer state are unchanged, frame_started stays false
         // and we emit nothing at all for this tick.
@@ -1297,7 +1329,7 @@ pub const CliRenderer = struct {
 
         var currentFg: ?RGBA = null;
         var currentBg: ?RGBA = null;
-        var currentAttributes: i32 = -1;
+        var currentAttributes: ?u32 = null;
         var currentLinkId: u32 = 0;
         var utf8Buf: [4]u8 = undefined;
 
@@ -1342,7 +1374,7 @@ pub const CliRenderer = struct {
 
                 const fgMatch = currentFg != null and buf.rgbaEqual(currentFg.?, cell.fg);
                 const bgMatch = currentBg != null and buf.rgbaEqual(currentBg.?, cell.bg);
-                const sameAttributes = fgMatch and bgMatch and @as(i32, @intCast(cell.attributes)) == currentAttributes;
+                const sameAttributes = fgMatch and bgMatch and currentAttributes != null and cell.attributes == currentAttributes.?;
 
                 const linkId = if (hyperlinksEnabled) ansi.TextAttributes.getLinkId(cell.attributes) else 0;
 
@@ -1372,7 +1404,7 @@ pub const CliRenderer = struct {
 
                     currentFg = cell.fg;
                     currentBg = cell.bg;
-                    currentAttributes = @as(i32, @intCast(cell.attributes));
+                    currentAttributes = cell.attributes;
 
                     ansi.ANSI.moveToOutput(writer, x + 1, y + 1 + self.renderOffset) catch {};
 
@@ -1551,7 +1583,7 @@ pub const CliRenderer = struct {
 
         // Compare hit grids before swap to detect changes. This allows TypeScript to
         // know if hover state needs rechecking without manually tracking dirty state.
-        self.hitGridDirty = !std.mem.eql(u32, self.currentHitGrid, self.nextHitGrid);
+        self.hitGridDirty = self.hitGridResizeInvalidated or !std.mem.eql(u32, self.currentHitGrid, self.nextHitGrid);
 
         // Swap hit grids: nextHitGrid (built this frame) becomes the active grid for
         // hit testing. The old currentHitGrid becomes nextHitGrid and is cleared for
@@ -1572,47 +1604,11 @@ pub const CliRenderer = struct {
     }
 
     pub fn writeOut(self: *CliRenderer, data: []const u8) void {
-        if (data.len == 0) return;
-        if (self.testing) return;
-
-        if (self.useThread) {
-            self.renderMutex.lock();
-            while (self.renderInProgress) {
-                self.renderCondition.wait(&self.renderMutex);
-            }
-            self.renderMutex.unlock();
-        }
-
-        var stdoutWriter = std.fs.File.stdout().writer(&self.stdoutBuffer);
-        const w = &stdoutWriter.interface;
-        w.writeAll(data) catch {};
-        w.flush() catch {};
+        self.backend.writeOut(data);
     }
 
     pub fn writeOutMultiple(self: *CliRenderer, data_slices: []const []const u8) void {
-        if (self.testing) return;
-
-        if (self.useThread) {
-            self.renderMutex.lock();
-            while (self.renderInProgress) {
-                self.renderCondition.wait(&self.renderMutex);
-            }
-            self.renderMutex.unlock();
-        }
-
-        var totalLen: usize = 0;
-        for (data_slices) |slice| {
-            totalLen += slice.len;
-        }
-
-        if (totalLen == 0) return;
-
-        var stdoutWriter = std.fs.File.stdout().writer(&self.stdoutBuffer);
-        const w = &stdoutWriter.interface;
-        for (data_slices) |slice| {
-            w.writeAll(slice) catch {};
-        }
-        w.flush() catch {};
+        self.backend.writeOutMultiple(data_slices);
     }
 
     /// Write a renderable's bounds to nextHitGrid for the upcoming frame.
@@ -1662,7 +1658,9 @@ pub const CliRenderer = struct {
     /// This is set by comparing the previous and current hit grids after render.
     /// TypeScript can use this to decide if hover state needs rechecking.
     pub fn getHitGridDirty(self: *CliRenderer) bool {
-        return self.hitGridDirty;
+        const dirty = self.hitGridDirty;
+        self.hitGridResizeInvalidated = false;
+        return dirty;
     }
 
     /// Return the renderable ID at screen position (x, y), or 0 if none.
@@ -1847,23 +1845,16 @@ pub const CliRenderer = struct {
         writer.flush() catch {};
     }
 
-    pub fn getLastOutputForTest(_: *CliRenderer) []const u8 {
-        // In non-threaded mode, we want the current active buffer
-        // In threaded mode, we want the previously rendered buffer
-        const currentBuffer = if (activeBuffer == .A) &outputBuffer else &outputBufferB;
-        const currentLen = if (activeBuffer == .A) outputBufferLen else outputBufferBLen;
-        return currentBuffer.*[0..currentLen];
-    }
-
-    pub fn dumpStdoutBuffer(self: *CliRenderer, timestamp: i64) void {
-        _ = self;
+    /// Dump the last rendered output to a file. Backend-specific formatting
+    /// is delegated to `backend.dumpTo(writer)` — no tag inspection here.
+    pub fn dumpOutputBuffer(self: *CliRenderer, timestamp: i64) void {
         std.fs.cwd().makeDir("buffer_dump") catch |err| switch (err) {
             error.PathAlreadyExists => {},
             else => return,
         };
 
         var filename_buf: [128]u8 = undefined;
-        const filename = std.fmt.bufPrint(&filename_buf, "buffer_dump/stdout_buffer_{d}.txt", .{timestamp}) catch return;
+        const filename = std.fmt.bufPrint(&filename_buf, "buffer_dump/output_buffer_{d}.txt", .{timestamp}) catch return;
 
         const file = std.fs.cwd().createFile(filename, .{}) catch return;
         defer file.close();
@@ -1872,29 +1863,19 @@ pub const CliRenderer = struct {
         var fileWriter = file.writer(&fileBuffer);
         const writer = &fileWriter.interface;
 
-        writer.print("Stdout Buffer Output (timestamp: {d}):\n", .{timestamp}) catch return;
+        writer.print("Output Buffer Dump (timestamp: {d}):\n", .{timestamp}) catch return;
         writer.writeAll("Last Rendered ANSI Output:\n") catch return;
         writer.writeAll("================\n") catch return;
 
-        const lastBuffer = if (activeBuffer == .A) &outputBufferB else &outputBuffer;
-        const lastLen = if (activeBuffer == .A) outputBufferBLen else outputBufferLen;
+        self.backend.dumpTo(writer);
 
-        if (lastLen > 0) {
-            writer.writeAll(lastBuffer.*[0..lastLen]) catch return;
-        } else {
-            writer.writeAll("(no output rendered yet)\n") catch return;
-        }
-
-        writer.writeAll("\n================\n") catch return;
-        writer.print("Buffer size: {d} bytes\n", .{lastLen}) catch return;
-        writer.print("Active buffer: {s}\n", .{if (activeBuffer == .A) "A" else "B"}) catch return;
         writer.flush() catch {};
     }
 
     pub fn dumpBuffers(self: *CliRenderer, timestamp: i64) void {
         self.dumpSingleBuffer(self.currentRenderBuffer, "current", timestamp);
         self.dumpSingleBuffer(self.nextRenderBuffer, "next", timestamp);
-        self.dumpStdoutBuffer(timestamp);
+        self.dumpOutputBuffer(timestamp);
     }
 
     pub fn restoreTerminalModes(self: *CliRenderer) void {
@@ -1986,6 +1967,16 @@ pub const CliRenderer = struct {
         return true;
     }
 
+    pub fn triggerNotification(self: *CliRenderer, message: []const u8, title: ?[]const u8) bool {
+        var stream: std.ArrayListUnmanaged(u8) = .{};
+        defer stream.deinit(self.allocator);
+
+        const ok = self.terminal.writeNotification(self.allocator, stream.writer(self.allocator), message, title) catch return false;
+        if (!ok) return false;
+        self.writeOut(stream.items);
+        return true;
+    }
+
     fn renderDebugOverlay(self: *CliRenderer) void {
         if (!self.debugOverlay.enabled) return;
 
@@ -2027,7 +2018,7 @@ pub const CliRenderer = struct {
         const renderTimeAvg = getStatAverage(f64, &self.statSamples.renderTime);
         const overallFrameTimeAvg = getStatAverage(f64, &self.statSamples.overallFrameTime);
         const bufferResetTimeAvg = getStatAverage(f64, &self.statSamples.bufferResetTime);
-        const stdoutWriteTimeAvg = getStatAverage(f64, &self.statSamples.stdoutWriteTime);
+        const outputWriteTimeAvg = getStatAverage(f64, &self.statSamples.outputWriteTime);
         const cellsUpdatedAvg = getStatAverage(u32, &self.statSamples.cellsUpdated);
         const frameCallbackTimeAvg = getStatAverage(f64, &self.statSamples.frameCallbackTime);
 
@@ -2075,10 +2066,10 @@ pub const CliRenderer = struct {
             row += 1;
         }
 
-        // Stdout Write Time
-        if (self.renderStats.stdoutWriteTime) |writeTime| {
+        // Output Write Time
+        if (self.renderStats.outputWriteTime) |writeTime| {
             var writeTimeText: [64]u8 = undefined;
-            const writeTimeLen = std.fmt.bufPrint(&writeTimeText, "Stdout: {d:.3}ms (avg: {d:.3}ms)", .{ writeTime / 1000.0, stdoutWriteTimeAvg / 1000.0 }) catch return;
+            const writeTimeLen = std.fmt.bufPrint(&writeTimeText, "Output: {d:.3}ms (avg: {d:.3}ms)", .{ writeTime / 1000.0, outputWriteTimeAvg / 1000.0 }) catch return;
             self.nextRenderBuffer.drawText(writeTimeLen, x + 1, y + row, fg, bg, 0) catch {};
             row += 1;
         }
@@ -2098,7 +2089,7 @@ pub const CliRenderer = struct {
 
         // Is threaded?
         var isThreadedText: [64]u8 = undefined;
-        const isThreadedLen = std.fmt.bufPrint(&isThreadedText, "Threaded: {s}", .{if (self.useThread) "Yes" else "No"}) catch return;
+        const isThreadedLen = std.fmt.bufPrint(&isThreadedText, "Threaded: {s}", .{if (self.backend.isUseThread()) "Yes" else "No"}) catch return;
         self.nextRenderBuffer.drawText(isThreadedLen, x + 1, y + row, fg, bg, 0) catch {};
         row += 1;
     }

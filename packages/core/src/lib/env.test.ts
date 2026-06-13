@@ -1,5 +1,5 @@
 import { describe, test, expect, beforeEach, afterEach } from "bun:test"
-import { envRegistry, registerEnvVar, env, clearEnvCache } from "./env.ts"
+import { envRegistry, registerEnvVar, env, clearEnvCache } from "./env.js"
 
 // Backup and restore registry to avoid interfering with module-level registrations
 let registryBackup: Record<string, any> = {}

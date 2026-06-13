@@ -73,6 +73,7 @@ type DrawBoxOptions = {
   border: boolean | Array<"top" | "right" | "bottom" | "left">
   borderColor: RGBA
   backgroundColor: RGBA
+  titleColor?: RGBA
   shouldFill?: boolean
   title?: string
   titleAlignment?: "left" | "center" | "right"

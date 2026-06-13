@@ -1,6 +1,6 @@
 {
   "name": "@opentui/solid",
-  "version": "0.2.6",
+  "version": "0.4.1",
   "description": "SolidJS renderer for OpenTUI",
   "repository": {
     "type": "git",
@@ -16,6 +16,8 @@
     "build": "bun scripts/build.ts",
     "build:examples": "bun examples/build.ts",
     "publish": "bun scripts/publish.ts",
+    "test:dist": "bun scripts/test-packed-consumer.ts",
+    "test:js:node": "bun scripts/test-node.ts",
     "test": "bun test"
   },
   "exports": {
@@ -37,8 +39,18 @@
       "types": "./scripts/runtime-plugin-support-configure.ts",
       "import": "./scripts/runtime-plugin-support-configure.ts"
     },
-    "./jsx-runtime": "./jsx-runtime.d.ts",
-    "./jsx-dev-runtime": "./jsx-runtime.d.ts"
+    "./components": {
+      "types": "./components.ts",
+      "import": "./components.ts"
+    },
+    "./jsx-runtime": {
+      "types": "./jsx-runtime.d.ts",
+      "import": "./jsx-runtime.ts"
+    },
+    "./jsx-dev-runtime": {
+      "types": "./jsx-dev-runtime.d.ts",
+      "import": "./jsx-dev-runtime.ts"
+    }
   },
   "devDependencies": {
     "@opentui/keymap": "workspace:*",

@@ -34,6 +34,10 @@ afterEach(async () => {
   if (currentRenderer) {
     currentRenderer.destroy()
   }
+  if (mockClient) {
+    mockClient.resolveAllHighlightOnce()
+    await mockClient.destroy()
+  }
 })
 
 // When highlights conceal formatting characters (like **), line lengths change,
@@ -223,4 +227,155 @@ test("DiffRenderable - line number alignment and gutter heights in split view wi
   expect(splitWrapFrame2).toContain("2 - Short")
   expect(splitWrapFrame2).toContain("2 + More text")
   expect(splitWrapFrame2).toContain("formats")
+})
+
+test("DiffRenderable - hunk row offsets account for concealed markdown lines", async () => {
+  const syntaxStyle = SyntaxStyle.fromStyles({
+    default: { fg: RGBA.fromValues(1, 1, 1, 1) },
+  })
+
+  const markdownDiff = `--- a/test.md
++++ b/test.md
+@@ -1,3 +1,3 @@
+ \`\`\`ts
+-const old = 1
++const new = 1
+ \`\`\`
+@@ -10,2 +10,2 @@
+-second old
++second new
+ tail`
+
+  const content = "```ts\nconst old = 1\nconst new = 1\n```\nsecond old\nsecond new\ntail"
+  const mockHighlights: SimpleHighlight[] = [
+    [0, 5, "markup.raw.block", { conceal: "", concealLines: "" }],
+    [content.indexOf("```", 5), content.indexOf("```", 5) + 3, "markup.raw.block", { conceal: "", concealLines: "" }],
+  ]
+
+  mockClient.setMockResult({ highlights: mockHighlights })
+
+  const diffRenderable = new DiffRenderable(currentRenderer, {
+    id: "test-diff",
+    diff: markdownDiff,
+    syntaxStyle,
+    filetype: "markdown",
+    conceal: true,
+    treeSitterClient: mockClient,
+  })
+
+  currentRenderer.root.add(diffRenderable)
+  await settleDiffHighlighting(diffRenderable, mockClient, renderOnce)
+
+  expect(diffRenderable.getHunkRowOffsets()).toEqual([0, 2])
+
+  const splitContent = "```ts\nconst old = 1\n```\nsecond old\ntail"
+  mockClient.setMockResult({
+    highlights: [
+      [0, 5, "markup.raw.block", { conceal: "", concealLines: "" }],
+      [
+        splitContent.indexOf("```", 5),
+        splitContent.indexOf("```", 5) + 3,
+        "markup.raw.block",
+        {
+          conceal: "",
+          concealLines: "",
+        },
+      ],
+    ],
+  })
+  diffRenderable.view = "split"
+  diffRenderable.wrapMode = "none"
+  await settleDiffHighlighting(diffRenderable, mockClient, renderOnce)
+
+  expect(diffRenderable.getHunkRowOffsets()).toEqual([0, 1])
+})
+
+test("DiffRenderable - hunk row offsets map concealed hunk starts to the next visible line", async () => {
+  const syntaxStyle = SyntaxStyle.fromStyles({
+    default: { fg: RGBA.fromValues(1, 1, 1, 1) },
+  })
+  const fenceHighlights = (content: string): SimpleHighlight[] => {
+    const highlights: SimpleHighlight[] = []
+    let start = content.indexOf("```")
+
+    while (start !== -1) {
+      const end = content.startsWith("```ts", start) ? start + 5 : start + 3
+      highlights.push([start, end, "markup.raw.block", { conceal: "", concealLines: "" }])
+      start = content.indexOf("```", end)
+    }
+
+    return highlights
+  }
+
+  const markdownDiff = `--- a/test.md
++++ b/test.md
+@@ -1,3 +1,3 @@
+ \`\`\`ts
+-first old
++first new
+ \`\`\`
+@@ -10,3 +10,3 @@
+ \`\`\`ts
+-second old
++second new
+ \`\`\``
+
+  const content = "```ts\nfirst old\nfirst new\n```\n```ts\nsecond old\nsecond new\n```"
+  mockClient.setMockResult({ highlights: fenceHighlights(content) })
+
+  const diffRenderable = new DiffRenderable(currentRenderer, {
+    id: "test-diff",
+    diff: markdownDiff,
+    syntaxStyle,
+    filetype: "markdown",
+    conceal: true,
+    treeSitterClient: mockClient,
+  })
+
+  currentRenderer.root.add(diffRenderable)
+  await settleDiffHighlighting(diffRenderable, mockClient, renderOnce)
+
+  expect(diffRenderable.getHunkRowOffsets()).toEqual([0, 2])
+
+  const splitContent = "```ts\nfirst old\n```\n```ts\nsecond old\n```"
+  mockClient.setMockResult({ highlights: fenceHighlights(splitContent) })
+
+  diffRenderable.view = "split"
+  diffRenderable.wrapMode = "none"
+  await settleDiffHighlighting(diffRenderable, mockClient, renderOnce)
+
+  expect(diffRenderable.getHunkRowOffsets()).toEqual([0, 1])
+})
+
+test("DiffRenderable - hunk row offsets account for multiline concealed ranges", async () => {
+  const syntaxStyle = SyntaxStyle.fromStyles({
+    default: { fg: RGBA.fromValues(1, 1, 1, 1) },
+  })
+
+  const diff = `--- a/test.txt
++++ b/test.txt
+@@ -1,2 +1,2 @@
+ a
+-b
++c
+@@ -10,1 +10,1 @@
+ d`
+
+  mockClient.setMockResult({
+    highlights: [[0, 3, "conceal", { conceal: "", concealLines: "" }]],
+  })
+
+  const diffRenderable = new DiffRenderable(currentRenderer, {
+    id: "test-diff",
+    diff,
+    syntaxStyle,
+    filetype: "text",
+    conceal: true,
+    treeSitterClient: mockClient,
+  })
+
+  currentRenderer.root.add(diffRenderable)
+  await settleDiffHighlighting(diffRenderable, mockClient, renderOnce)
+
+  expect(diffRenderable.getHunkRowOffsets()).toEqual([0, 1])
 })

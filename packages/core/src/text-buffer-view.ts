@@ -1,15 +1,14 @@
 import { RGBA } from "./lib/RGBA.js"
-import { resolveRenderLib, type LineInfo, type RenderLib } from "./zig.js"
-import { type Pointer } from "./platform/ffi.js"
+import { resolveRenderLib, type LineInfo, type RenderLib, type TextBufferViewHandle } from "./zig.js"
 import type { TextBuffer } from "./text-buffer.js"
 
 export class TextBufferView {
   private lib: RenderLib
-  private viewPtr: Pointer
+  private viewPtr: TextBufferViewHandle
   private textBuffer: TextBuffer
   private _destroyed: boolean = false
 
-  constructor(lib: RenderLib, ptr: Pointer, textBuffer: TextBuffer) {
+  constructor(lib: RenderLib, ptr: TextBufferViewHandle, textBuffer: TextBuffer) {
     this.lib = lib
     this.viewPtr = ptr
     this.textBuffer = textBuffer
@@ -26,7 +25,7 @@ export class TextBufferView {
     if (this._destroyed) throw new Error("TextBufferView is destroyed")
   }
 
-  public get ptr(): Pointer {
+  public get ptr(): TextBufferViewHandle {
     this.guard()
     return this.viewPtr
   }

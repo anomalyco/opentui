@@ -1,6 +1,6 @@
 {
   "name": "@opentui/three",
-  "version": "0.2.6",
+  "version": "0.4.1",
   "description": "Three.js WebGPU renderer for OpenTUI",
   "license": "MIT",
   "repository": {

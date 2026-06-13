@@ -1,6 +1,12 @@
 import { RGBA } from "./lib/RGBA.js"
-import { resolveRenderLib, type RenderLib, type VisualCursor, type LineInfo } from "./zig.js"
-import { type Pointer } from "./platform/ffi.js"
+import {
+  resolveRenderLib,
+  type EditorViewHandle,
+  type RenderLib,
+  type TextBufferViewHandle,
+  type VisualCursor,
+  type LineInfo,
+} from "./zig.js"
 import type { EditBuffer } from "./edit-buffer.js"
 import { createExtmarksController } from "./lib/index.js"
 
@@ -15,13 +21,13 @@ export type { VisualCursor }
 
 export class EditorView {
   private lib: RenderLib
-  private viewPtr: Pointer
+  private viewPtr: EditorViewHandle
   private editBuffer: EditBuffer
   private _destroyed: boolean = false
   private _extmarksController?: any
-  private _textBufferViewPtr?: Pointer
+  private _textBufferViewPtr?: TextBufferViewHandle
 
-  constructor(lib: RenderLib, ptr: Pointer, editBuffer: EditBuffer) {
+  constructor(lib: RenderLib, ptr: EditorViewHandle, editBuffer: EditBuffer) {
     this.lib = lib
     this.viewPtr = ptr
     this.editBuffer = editBuffer
@@ -37,7 +43,7 @@ export class EditorView {
     if (this._destroyed) throw new Error("EditorView is destroyed")
   }
 
-  public get ptr(): Pointer {
+  public get ptr(): EditorViewHandle {
     this.guard()
     return this.viewPtr
   }

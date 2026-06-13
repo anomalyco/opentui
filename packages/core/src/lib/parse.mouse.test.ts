@@ -1,5 +1,5 @@
 import { describe, test, expect, beforeEach } from "bun:test"
-import { MouseParser, type RawMouseEvent } from "./parse.mouse"
+import { MouseParser } from "./parse.mouse.js"
 
 // Encode a basic/X10 mouse event: ESC [ M Cb Cx Cy
 // buttonByte is the logical value (before the +32 wire offset), x/y are 0-based.

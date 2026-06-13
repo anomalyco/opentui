@@ -1,0 +1,79 @@
+name: Native Benchmark Smoke
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+  BUN_VERSION: 1.3.14
+  ZIG_VERSION: 0.15.2
+
+jobs:
+  bench-native-smoke:
+    name: Native Benchmark Smoke
+    runs-on: blacksmith-12vcpu-macos-15
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+
+      - name: Setup Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: ${{ env.ZIG_VERSION }}
+          use-cache: false
+
+      - name: Restore Zig cache
+        uses: actions/cache@v5
+        with:
+          path: .zig-cache
+          key: zig-v1-${{ runner.os }}-${{ env.ZIG_VERSION }}-${{ github.run_id }}-${{ github.job }}
+          restore-keys: zig-v1-${{ runner.os }}-${{ env.ZIG_VERSION }}-
+
+      - name: Install dependencies
+        run: bun install
+
+      - name: Run native benchmark smoke test
+        working-directory: packages/core
+        run: |
+          set -euo pipefail
+          output="$(bun run bench:native --mem --filter "UTF-8 Operations" --bench "isAsciiOnly: ASCII text (1KB)" --json)"
+          printf '%s\n' "$output"
+          OUTPUT="$output" bun -e '
+            const output = process.env.OUTPUT ?? ""
+            const lines = output.split(/\r?\n/)
+            let jsonLine = ""
+            for (let i = lines.length - 1; i >= 0; i--) {
+              const line = lines[i].trim()
+              if (line.startsWith("{")) {
+                jsonLine = line
+                break
+              }
+            }
+            if (!jsonLine) throw new Error("Native benchmark smoke test produced no JSON output")
+
+            const data = JSON.parse(jsonLine)
+            if (data.benchmark !== "UTF-8 Operations") {
+              throw new Error(`Unexpected benchmark category: ${data.benchmark}`)
+            }
+            if (!Array.isArray(data.results) || data.results.length !== 1) {
+              throw new Error(`Expected exactly one benchmark result, got ${data.results?.length ?? 0}`)
+            }
+            if (data.results[0].name !== "isAsciiOnly: ASCII text (1KB)") {
+              throw new Error(`Unexpected benchmark result: ${data.results[0].name}`)
+            }
+          '

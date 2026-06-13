@@ -229,6 +229,23 @@ describe("TextBufferView", () => {
       view.resetSelection()
       expect(view.getSelectedText()).toBe("")
     })
+
+    it("should return null bytes for zero-length selected-text output buffer", () => {
+      buffer.setText("Hello World")
+      view.setSelection(0, 5)
+
+      const selectedBytes = (view as any).lib.textBufferViewGetSelectedTextBytes(view.ptr, 0)
+
+      expect(selectedBytes).toBeNull()
+    })
+
+    it("should return null bytes for zero-length plain-text output buffer", () => {
+      buffer.setText("Hello World")
+
+      const plainBytes = (view as any).lib.textBufferViewGetPlainTextBytes(view.ptr, 0)
+
+      expect(plainBytes).toBeNull()
+    })
   })
 
   describe("selection state", () => {

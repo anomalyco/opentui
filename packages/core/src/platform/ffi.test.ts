@@ -7,11 +7,14 @@ import {
   LIBRARY_CLOSED,
   NODE_CALLBACK_THREADSAFE,
   NODE_NAPI_UNSUPPORTED,
+  NODE_POINTER_ARGUMENT,
   NODE_POINTER_OVERRIDE,
   NODE_PTR_VALUE,
   NODE_STRING_RETURN,
   NODE_USIZE_UNSUPPORTED,
   POINTER_NEGATIVE,
+  POINTER_OFFSET_NEGATIVE,
+  POINTER_OFFSET_UNSAFE,
   POINTER_UNSAFE,
   createBunBackend,
   createNodeBackend,
@@ -20,6 +23,8 @@ import {
   type FFICallbackInstance,
   type Pointer,
 } from "./ffi.js"
+
+const IS_BUN = typeof process.versions?.bun === "string"
 
 function createMockBackend() {
   const events: string[] = []
@@ -85,6 +90,7 @@ function createMockNodeBackend(options: MockNodeBackendOptions = {}) {
   const events: string[] = []
   const paths: Array<string | null> = []
   const symbolDefinitions: unknown[] = []
+  const functionCalls: Array<{ name: string; args: any[] }> = []
   const callbackDefinitions: unknown[] = []
   const toArrayBufferCalls: Array<{ pointer: bigint; length: number; copy: boolean | undefined }> = []
   const rawPointers = new WeakMap<ArrayBuffer, bigint>()
@@ -94,7 +100,7 @@ function createMockNodeBackend(options: MockNodeBackendOptions = {}) {
   const backend = createNodeBackend({
     dlopen(
       path: string | null,
-      symbols: Record<string, { readonly parameters: readonly string[]; readonly result: string }>,
+      symbols: Record<string, { readonly arguments: readonly string[]; readonly return: string }>,
     ) {
       paths.push(path)
       symbolDefinitions.push(symbols)
@@ -108,7 +114,7 @@ function createMockNodeBackend(options: MockNodeBackendOptions = {}) {
             }
           },
           registerCallback(
-            signature: { readonly parameters: readonly string[]; readonly result: string },
+            signature: { readonly arguments: readonly string[]; readonly return: string },
             _callback: (...args: any[]) => any,
           ) {
             const pointer = nextCallbackPtr++
@@ -120,7 +126,9 @@ function createMockNodeBackend(options: MockNodeBackendOptions = {}) {
             events.push(`callback.unregister:${pointer}`)
           },
         },
-        functions: Object.fromEntries(Object.keys(symbols).map((name) => [name, () => undefined])),
+        functions: Object.fromEntries(
+          Object.keys(symbols).map((name) => [name, (...args: any[]) => void functionCalls.push({ name, args })]),
+        ),
       }
     },
     getRawPointer(source: ArrayBuffer) {
@@ -144,6 +152,7 @@ function createMockNodeBackend(options: MockNodeBackendOptions = {}) {
     backend,
     callbackDefinitions,
     events,
+    functionCalls,
     paths,
     symbolDefinitions,
     toArrayBufferCalls,
@@ -222,9 +231,16 @@ describe("platform/ffi", () => {
     const unsafePointer = (BigInt(Number.MAX_SAFE_INTEGER) + 1n) as Pointer
     const negativePointer = -1n as Pointer
 
-    expect(toPointer(1n)).toBe(1 as Pointer)
-    expect(() => toPointer(BigInt(Number.MAX_SAFE_INTEGER) + 1n)).toThrow(POINTER_UNSAFE)
-    expect(() => toPointer(-1n)).toThrow(POINTER_NEGATIVE)
+    expect(toPointer(1n)).toBe((IS_BUN ? 1 : 1n) as Pointer)
+
+    if (IS_BUN) {
+      expect(() => toPointer(BigInt(Number.MAX_SAFE_INTEGER) + 1n)).toThrow(POINTER_UNSAFE)
+      expect(() => toPointer(-1n)).toThrow(POINTER_NEGATIVE)
+    } else {
+      expect(toPointer(unsafePointer)).toBe(unsafePointer)
+      expect(toPointer(negativePointer)).toBe(negativePointer)
+    }
+
     expect(() => backend.toArrayBuffer(unsafePointer, 0, 1)).toThrow(POINTER_UNSAFE)
     expect(() => backend.dlopen("mock", { withPtr: { ptr: unsafePointer } })).toThrow(POINTER_UNSAFE)
 
@@ -278,7 +294,7 @@ describe("platform/ffi", () => {
     expect(symbolDefinitions).toEqual([
       {
         primitives: {
-          parameters: [
+          arguments: [
             "char",
             "i8",
             "i8",
@@ -299,7 +315,7 @@ describe("platform/ffi", () => {
             "u64",
             "bool",
           ],
-          result: "void",
+          return: "void",
         },
       },
     ])
@@ -318,8 +334,8 @@ describe("platform/ffi", () => {
     expect(symbolDefinitions).toEqual([
       {
         floats: {
-          parameters: ["f32", "f32", "f64", "f64"],
-          result: "void",
+          arguments: ["f32", "f32", "f64", "f64"],
+          return: "void",
         },
       },
     ])
@@ -338,8 +354,8 @@ describe("platform/ffi", () => {
     expect(symbolDefinitions).toEqual([
       {
         pointers: {
-          parameters: ["pointer", "pointer", "pointer", "pointer", "buffer", "string"],
-          result: "void",
+          arguments: ["pointer", "pointer", "pointer", "pointer", "buffer", "string"],
+          return: "void",
         },
       },
     ])
@@ -350,6 +366,8 @@ describe("platform/ffi", () => {
     const buffer = new ArrayBuffer(16)
     const view = new Uint8Array(buffer, 4, 8)
     const otherBuffer = new ArrayBuffer(16)
+    const unsafeNumericPointer = (Number.MAX_SAFE_INTEGER + 1) as Pointer
+    const negativeBigIntPointer = -1n as Pointer
 
     expect(backend.ptr(buffer)).toBe(1000n as Pointer)
     expect(backend.ptr(view)).toBe(1004n as Pointer)
@@ -359,6 +377,8 @@ describe("platform/ffi", () => {
 
     backend.toArrayBuffer(2000n as Pointer, 8, 32)
     backend.toArrayBuffer(3000n as Pointer, undefined, 16)
+    expect(() => backend.toArrayBuffer(unsafeNumericPointer, 0, 1)).toThrow(POINTER_UNSAFE)
+    expect(() => backend.toArrayBuffer(negativeBigIntPointer, 0, 1)).toThrow(POINTER_NEGATIVE)
 
     expect(toArrayBufferCalls).toEqual([
       { pointer: 2008n, length: 32, copy: false },
@@ -366,14 +386,58 @@ describe("platform/ffi", () => {
     ])
   })
 
+  test("normalizes Node ptr-like arguments from pointers, views, and null", () => {
+    const { backend, functionCalls } = createMockNodeBackend()
+    const buffer = new ArrayBuffer(16)
+    const view = new Uint8Array(buffer, 4, 8)
+    const emptyView = new Uint8Array(buffer, 0, 0)
+    const library = backend.dlopen("mock", {
+      pointers: {
+        args: [FFIType.ptr, FFIType.pointer, FFIType.callback, FFIType.function],
+        returns: FFIType.void,
+      },
+    })
+
+    library.symbols.pointers(view, null, 77 as Pointer, emptyView)
+
+    expect(functionCalls).toEqual([
+      {
+        name: "pointers",
+        args: [1004n, 0n, 77n, 0n],
+      },
+    ])
+  })
+
+  test("rejects invalid Node ptr-like arguments deterministically", () => {
+    const { backend } = createMockNodeBackend()
+    const library = backend.dlopen("mock", {
+      pointers: {
+        args: [FFIType.ptr],
+        returns: FFIType.void,
+      },
+    })
+
+    expect(() => library.symbols.pointers({})).toThrow(NODE_POINTER_ARGUMENT)
+    expect(() => library.symbols.pointers(-1n as Pointer)).toThrow(POINTER_NEGATIVE)
+    expect(() => library.symbols.pointers((Number.MAX_SAFE_INTEGER + 1) as Pointer)).toThrow(POINTER_UNSAFE)
+  })
+
+  test("validates Node pointer offsets before BigInt arithmetic", () => {
+    const { backend } = createMockNodeBackend()
+
+    expect(() => backend.toArrayBuffer(2000n as Pointer, -1, 1)).toThrow(POINTER_OFFSET_NEGATIVE)
+    expect(() => backend.toArrayBuffer(2000n as Pointer, 1.5, 1)).toThrow(POINTER_OFFSET_UNSAFE)
+    expect(() => backend.toArrayBuffer(2000n as Pointer, Number.MAX_SAFE_INTEGER + 1, 1)).toThrow(POINTER_OFFSET_UNSAFE)
+  })
+
   test("passes dlopen(null) to Node and rejects it in Bun", () => {
     const bun = createMockBackend()
     const node = createMockNodeBackend()
 
-    node.backend.dlopen(null, {})
+    node.backend.dlopen(null as unknown as string, {})
     expect(node.paths).toEqual([null])
 
-    expect(() => bun.backend.dlopen(null, {})).toThrow(BUN_DLOPEN_NULL)
+    expect(() => bun.backend.dlopen(null as unknown as string, {})).toThrow(BUN_DLOPEN_NULL)
   })
 
   test("manages Node callbacks through the loaded library", () => {
@@ -383,7 +447,7 @@ describe("platform/ffi", () => {
 
     expect(callback.ptr).toBe(9000n as Pointer)
     expect(callback.threadsafe).toBe(false)
-    expect(callbackDefinitions).toEqual([{ parameters: ["i32"], result: "i32" }])
+    expect(callbackDefinitions).toEqual([{ arguments: ["i32"], return: "i32" }])
 
     callback.close()
     callback.close()

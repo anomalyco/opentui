@@ -30,7 +30,7 @@ if [ -z "$TARGET_ROOT" ]; then
   echo "Example: $0 /path/to/your/project --react"
   echo ""
   echo "This script links OpenTUI dev packages into Bun's cache directory."
-  echo "@opentui/core and @opentui/keymap are always linked."
+  echo "@opentui/core, @opentui/keymap, and @opentui/qrcode are always linked."
   echo "Framework packages can be linked with the flags below."
   echo ""
   echo "Options:"
@@ -105,15 +105,9 @@ link_in_bun_cache "@opentui+core@*" "@opentui/core" "$OPENTUI_ROOT/packages/core
 echo "Linking @opentui/keymap..."
 link_in_bun_cache "@opentui+keymap@*" "@opentui/keymap" "$OPENTUI_ROOT/packages/keymap"
 
-# Link yoga-layout (required by core)
-echo "Linking yoga-layout..."
-if [ -d "$OPENTUI_ROOT/node_modules/yoga-layout" ]; then
-  link_in_bun_cache "yoga-layout@*" "yoga-layout" "$OPENTUI_ROOT/node_modules/yoga-layout"
-elif [ -d "$OPENTUI_ROOT/packages/core/node_modules/yoga-layout" ]; then
-  link_in_bun_cache "yoga-layout@*" "yoga-layout" "$OPENTUI_ROOT/packages/core/node_modules/yoga-layout"
-else
-  echo "⚠ Warning: yoga-layout not found in OpenTUI node_modules"
-fi
+# Always link @opentui/qrcode
+echo "Linking @opentui/qrcode..."
+link_in_bun_cache "@opentui+qrcode@*" "@opentui/qrcode" "$OPENTUI_ROOT/packages/qrcode"
 
 # Link web-tree-sitter (required by core)
 echo "Linking web-tree-sitter..."

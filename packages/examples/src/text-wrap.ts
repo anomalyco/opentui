@@ -17,7 +17,7 @@ import { TextNodeRenderable } from "@opentui/core"
 import { ScrollBoxRenderable } from "@opentui/core"
 import { InputRenderable, InputRenderableEvents } from "@opentui/core"
 import { setupCommonDemoKeys } from "./lib/standalone-keys.js"
-import { readFile, stat } from "node:fs/promises"
+import { readFile, stat, writeFile } from "node:fs/promises"
 
 let mainContainer: BoxRenderable | null = null
 let contentBox: BoxRenderable | null = null
@@ -696,7 +696,7 @@ export function run(renderer: CliRenderer): void {
           const fileName = `babylon-${Date.now()}.js`
           const filePath = `${tempDir}/${fileName}`
 
-          await Bun.write(filePath, content)
+          await writeFile(filePath, content)
 
           // Load it back from disk
           const loadedContent = await readFile(filePath, "utf8")

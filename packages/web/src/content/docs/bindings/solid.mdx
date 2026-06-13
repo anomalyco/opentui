@@ -17,6 +17,20 @@ Build terminal user interfaces with Solid.js's fine-grained reactivity and OpenT
 bun install solid-js @opentui/solid
 ```
 
+## Runtime support
+
+`@opentui/solid` publishes one npm package with runtime-specific entrypoints behind the package `exports` map. The root package and JSX runtime subpaths work in both Bun and Node. Bun-specific helpers stay Bun-only and throw a clear runtime error if imported from Node.
+
+| Entrypoint                                        | Bun | Node | Notes                                           |
+| ------------------------------------------------- | --- | ---- | ----------------------------------------------- |
+| `@opentui/solid`                                  | yes | yes  | Main renderer and test helpers                  |
+| `@opentui/solid/jsx-runtime`                      | yes | yes  | Real runtime module for compiled JSX            |
+| `@opentui/solid/jsx-dev-runtime`                  | yes | yes  | Real dev runtime module for compiled JSX        |
+| `@opentui/solid/preload`                          | yes | no   | Bun preload hook                                |
+| `@opentui/solid/bun-plugin`                       | yes | no   | Bun bundler/plugin entry                        |
+| `@opentui/solid/runtime-plugin-support`           | yes | no   | Bun runtime-loader support                      |
+| `@opentui/solid/runtime-plugin-support/configure` | yes | no   | Bun runtime-loader support without side effects |
+
 ## Setup
 
 ### 1. Configure TypeScript
@@ -40,7 +54,35 @@ Add preload script to `bunfig.toml`:
 preload = ["@opentui/solid/preload"]
 ```
 
-### 3. Enable runtime-loaded plugin support (if needed)
+### 3. Configure Node compilation
+
+Node support currently targets compiled Solid TSX. Use Solid's universal transform semantics and point the generated runtime imports at the published `solid-js` JS files:
+
+```js
+import ts from "@babel/preset-typescript"
+import moduleResolver from "babel-plugin-module-resolver"
+import solid from "babel-preset-solid"
+
+export default {
+  plugins: [
+    [
+      moduleResolver,
+      {
+        resolvePath(specifier) {
+          if (specifier === "solid-js") return "solid-js/dist/solid.js"
+          if (specifier === "solid-js/store") return "solid-js/store/dist/store.js"
+          return specifier
+        },
+      },
+    ],
+  ],
+  presets: [[solid, { moduleName: "@opentui/solid", generate: "universal" }], [ts]],
+}
+```
+
+The current Node runtime path is still lower-level than Bun. OpenTUI's native renderer currently relies on Node's experimental FFI support, so select Node 26.3.0 before running it and pass `--experimental-ffi`, `--permission`, and the filesystem or FFI permissions your app needs. OpenTUI does not install Node automatically.
+
+### 4. Enable runtime-loaded plugin support (if needed)
 
 If your app loads external TS/TSX modules at runtime (for example a file-based plugin system), import this once in your entry file before dynamic imports:
 
@@ -48,7 +90,9 @@ If your app loads external TS/TSX modules at runtime (for example a file-based p
 import "@opentui/solid/runtime-plugin-support"
 ```
 
-### 4. Create your app
+This entrypoint is Bun-only.
+
+### 5. Create your app
 
 ```tsx
 import { render } from "@opentui/solid"
@@ -73,6 +117,8 @@ OpenTUI Solid provides JSX intrinsic elements that map to core renderables.
 - `<scrollbox>` - Scrollable container
 - `<ascii_font>` - ASCII art text
 - `<markdown>` - Render Markdown content
+
+QR code support is available from `@opentui/qrcode/solid` and must be registered explicitly with `registerQRCode()`.
 
 ### Input
 

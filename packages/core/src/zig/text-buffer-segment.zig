@@ -139,6 +139,7 @@ pub const Highlight = struct {
     style_id: u32,
     priority: u8,
     hl_ref: u16 = 0,
+    internal: bool = false,
 };
 
 /// Pre-computed style span for efficient rendering

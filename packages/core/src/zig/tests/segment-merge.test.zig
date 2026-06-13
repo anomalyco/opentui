@@ -9,7 +9,7 @@ test "EditBuffer - sequential character insertion merges segments" {
     const link_pool = link.initGlobalLinkPool(std.testing.allocator);
     defer link.deinitGlobalLinkPool();
 
-    var eb = try EditBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth);
+    var eb = try EditBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth, null);
     defer eb.deinit();
 
     try eb.insertText("h");
@@ -34,7 +34,7 @@ test "EditBuffer - merging preserves text correctness" {
     const link_pool = link.initGlobalLinkPool(std.testing.allocator);
     defer link.deinitGlobalLinkPool();
 
-    var eb = try EditBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth);
+    var eb = try EditBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth, null);
     defer eb.deinit();
 
     const text = "The quick brown fox jumps over the lazy dog";
@@ -54,7 +54,7 @@ test "EditBuffer - non-contiguous segments do not merge" {
     const link_pool = link.initGlobalLinkPool(std.testing.allocator);
     defer link.deinitGlobalLinkPool();
 
-    var eb = try EditBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth);
+    var eb = try EditBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth, null);
     defer eb.deinit();
 
     try eb.insertText("abc");
@@ -72,7 +72,7 @@ test "EditBuffer - merging works across newlines" {
     const link_pool = link.initGlobalLinkPool(std.testing.allocator);
     defer link.deinitGlobalLinkPool();
 
-    var eb = try EditBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth);
+    var eb = try EditBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth, null);
     defer eb.deinit();
 
     try eb.insertText("a");
@@ -97,7 +97,7 @@ test "EditBuffer - merging with unicode characters" {
     const link_pool = link.initGlobalLinkPool(std.testing.allocator);
     defer link.deinitGlobalLinkPool();
 
-    var eb = try EditBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth);
+    var eb = try EditBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth, null);
     defer eb.deinit();
 
     try eb.insertText("你");
@@ -116,7 +116,7 @@ test "EditBuffer - merging after delete and re-insert" {
     const link_pool = link.initGlobalLinkPool(std.testing.allocator);
     defer link.deinitGlobalLinkPool();
 
-    var eb = try EditBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth);
+    var eb = try EditBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth, null);
     defer eb.deinit();
 
     try eb.insertText("hello");
@@ -134,7 +134,7 @@ test "EditBuffer - empty buffer then type" {
     const link_pool = link.initGlobalLinkPool(std.testing.allocator);
     defer link.deinitGlobalLinkPool();
 
-    var eb = try EditBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth);
+    var eb = try EditBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth, null);
     defer eb.deinit();
 
     try eb.insertText("t");

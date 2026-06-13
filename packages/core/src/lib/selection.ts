@@ -1,4 +1,5 @@
-import { Renderable, type ViewportBounds } from "../index.js"
+import { Renderable } from "../Renderable.js"
+import type { ViewportBounds } from "../types.js"
 import { coordinateToCharacterIndex, fonts } from "./ascii.font.js"
 
 class SelectionAnchor {
@@ -110,7 +111,8 @@ export class Selection {
   }
 
   getSelectedText(): string {
-    const selectedTexts = this._selectedRenderables
+    const selectedTextsByLine = new Map<number, Array<{ x: number; text: string }>>()
+    const selectedRenderables = this._selectedRenderables
       // Sort by reading order: top-to-bottom, then left-to-right
       .sort((a, b) => {
         const aY = a.y
@@ -121,9 +123,28 @@ export class Selection {
         return a.x - b.x
       })
       .filter((renderable) => !renderable.isDestroyed)
-      .map((renderable) => renderable.getSelectedText())
-      .filter((text) => text)
-    return selectedTexts.join("\n")
+
+    for (const renderable of selectedRenderables) {
+      const text = renderable.getSelectedText()
+      if (!text) continue
+      const lines = text.split("\n")
+      for (let index = 0; index < lines.length; index += 1) {
+        const y = renderable.y + index
+        const line = selectedTextsByLine.get(y) ?? []
+        line.push({ x: renderable.x, text: lines[index] })
+        selectedTextsByLine.set(y, line)
+      }
+    }
+
+    return [...selectedTextsByLine.entries()]
+      .sort(([leftY], [rightY]) => leftY - rightY)
+      .map(([, line]) =>
+        line
+          .sort((left, right) => left.x - right.x)
+          .map((segment) => segment.text)
+          .join(""),
+      )
+      .join("\n")
   }
 }
 

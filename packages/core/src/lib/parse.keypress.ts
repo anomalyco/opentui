@@ -53,6 +53,27 @@ const keyName: Record<string, string> = {
   OE: "clear",
   OF: "end",
   OH: "home",
+  /* VT100 application keypad (SS3) — sent when terminal enables DECKPAM (ESC =).
+   * macOS Terminal.app and other xterm-based terminals emit these when running
+   * full-screen apps with the alternate screen. */
+  OM: "return",
+  Oj: "*",
+  Ok: "+",
+  Ol: ",",
+  Om: "-",
+  On: ".",
+  Oo: "/",
+  Op: "0",
+  Oq: "1",
+  Or: "2",
+  Os: "3",
+  Ot: "4",
+  Ou: "5",
+  Ov: "6",
+  Ow: "7",
+  Ox: "8",
+  Oy: "9",
+  OX: "=",
   /* xterm/rxvt ESC [ number ~ */
   "[1~": "home",
   "[2~": "insert",
@@ -162,6 +183,30 @@ export interface ParsedKey {
 
 export type ParseKeypressOptions = {
   useKittyKeyboard?: boolean
+}
+
+// Printable characters for VT100 SS3 application-keypad sequences.
+// When the terminal is in application keypad mode (DECKPAM / ESC =), numpad keys
+// send these SS3 codes instead of raw ASCII characters. The keys map to the same
+// printable output as their regular-keyboard equivalents.
+const ss3NumpadPrintable: Record<string, string> = {
+  Op: "0",
+  Oq: "1",
+  Or: "2",
+  Os: "3",
+  Ot: "4",
+  Ou: "5",
+  Ov: "6",
+  Ow: "7",
+  Ox: "8",
+  Oy: "9",
+  Oj: "*",
+  Ok: "+",
+  Ol: ",",
+  Om: "-",
+  On: ".",
+  Oo: "/",
+  OX: "=",
 }
 
 const modifyOtherKeysRe = /^\x1b\[27;(\d+);(\d+)~$/
@@ -407,6 +452,17 @@ export const parseKeypress = (s: Buffer | string = "", options: ParseKeypressOpt
       key.name = keyNameResult
       key.shift = isShiftKey(code) || key.shift
       key.ctrl = isCtrlKey(code) || key.ctrl
+
+      // SS3 application-keypad sequences have a raw sequence starting with ESC
+      // which the text-insertion branch would filter out (charCode 27 < 32).
+      // Override sequence with the printable character so text input works.
+      const ss3Char = ss3NumpadPrintable[code]
+      if (ss3Char !== undefined) {
+        key.sequence = ss3Char
+        if (key.name >= "0" && key.name <= "9") {
+          key.number = true
+        }
+      }
     } else {
       // If we matched the regex but didn't find a valid key name,
       // reset the key to default state (unknown sequence)

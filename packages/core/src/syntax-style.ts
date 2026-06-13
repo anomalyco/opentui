@@ -1,6 +1,5 @@
 import { RGBA, parseColor, type ColorInput } from "./lib/RGBA.js"
-import { resolveRenderLib, type RenderLib } from "./zig.js"
-import { type Pointer } from "./platform/ffi.js"
+import { resolveRenderLib, type RenderLib, type SyntaxStyleHandle } from "./zig.js"
 import { createTextAttributes } from "./utils.js"
 
 export interface StyleDefinition {
@@ -76,13 +75,13 @@ export function convertThemeToStyles(theme: ThemeTokenStyle[]): Record<string, S
 
 export class SyntaxStyle {
   private lib: RenderLib
-  private stylePtr: Pointer
+  private stylePtr: SyntaxStyleHandle
   private _destroyed: boolean = false
   private nameCache: Map<string, number> = new Map()
   private styleDefs: Map<string, StyleDefinition> = new Map()
   private mergedCache: Map<string, MergedStyle> = new Map()
 
-  constructor(lib: RenderLib, ptr: Pointer) {
+  constructor(lib: RenderLib, ptr: SyntaxStyleHandle) {
     this.lib = lib
     this.stylePtr = ptr
   }
@@ -169,7 +168,7 @@ export class SyntaxStyle {
     return null
   }
 
-  public get ptr(): Pointer {
+  public get ptr(): SyntaxStyleHandle {
     this.guard()
     return this.stylePtr
   }

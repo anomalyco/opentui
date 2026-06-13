@@ -5,6 +5,7 @@ import {
   BaseRenderable,
   RootRenderable,
   RenderableEvents,
+  isRenderable,
   type BaseRenderableOptions,
   type RenderableOptions,
 } from "../Renderable.js"
@@ -45,7 +46,7 @@ export class TestBaseRenderable extends BaseRenderable {
 }
 
 class TestRenderable extends Renderable {
-  constructor(ctx: RenderContext, options: RenderableOptions) {
+  constructor(ctx: RenderContext, options: RenderableOptions<TestRenderable>) {
     super(ctx, options)
   }
 }
@@ -135,7 +136,6 @@ describe("Renderable", () => {
   })
 
   test("isRenderable", () => {
-    const { isRenderable } = require("../Renderable")
     const renderable = new TestBaseRenderable({})
     expect(isRenderable(renderable)).toBe(true)
     expect(isRenderable({})).toBe(false)

@@ -2,15 +2,16 @@ const std = @import("std");
 const buffer_mod = @import("../buffer.zig");
 const text_buffer = @import("../text-buffer.zig");
 const text_buffer_view = @import("../text-buffer-view.zig");
-const renderer_mod = @import("../renderer.zig");
 const gp = @import("../grapheme.zig");
 const link = @import("../link.zig");
 const ansi = @import("../ansi.zig");
+const test_renderer_mod = @import("test-renderer.zig");
 
 const OptimizedBuffer = buffer_mod.OptimizedBuffer;
 const TextBuffer = text_buffer.UnifiedTextBuffer;
 const TextBufferView = text_buffer_view.UnifiedTextBufferView;
 const RGBA = buffer_mod.RGBA;
+const TestRenderer = test_renderer_mod.TestRenderer;
 
 fn initBufferForOomRegression(allocator: std.mem.Allocator) !void {
     var local_pool = gp.GraphemePool.initWithOptions(allocator, .{});
@@ -1959,7 +1960,7 @@ test "OptimizedBuffer - drawBox transparent border preserves destination backgro
     try std.testing.expect(!buf.link_tracker.hasAny());
 
     const border_chars = [_]u32{ 0x250c, 0x2510, 0x2514, 0x2518, 0x2500, 0x2502, 0, 0, 0, 0, 0 };
-    try buf.drawBox(0, 0, 4, 4, &border_chars, .{ .left = true }, green_fg, transparent_bg, false, null, 0, null, 0);
+    try buf.drawBox(0, 0, 4, 4, &border_chars, .{ .left = true }, green_fg, transparent_bg, green_fg, false, null, 0, null, 0);
 
     const cell = buf.get(0, 1).?;
     try std.testing.expectEqual(@as(u32, 0x2502), cell.char);
@@ -1974,6 +1975,37 @@ test "OptimizedBuffer - drawBox transparent border preserves destination backgro
     try std.testing.expectEqual(ansi.ColorIntent.indexed, ansi.intent(cell.bg));
     try std.testing.expectEqual(@as(u8, 6), ansi.slot(cell.bg));
     try std.testing.expectEqual(@as(u32, 0), cell.attributes);
+}
+
+test "OptimizedBuffer - drawBox transparent border foreground blends against box background" {
+    const pool = gp.initGlobalPool(std.testing.allocator);
+    defer gp.deinitGlobalPool();
+
+    var buf = try OptimizedBuffer.init(
+        std.testing.allocator,
+        4,
+        4,
+        .{ .pool = pool, .id = "test-buffer" },
+    );
+    defer buf.deinit();
+
+    const transparent = ansi.rgbaFromFloats(0.0, 0.0, 0.0, 0.0);
+    const panel = ansi.rgbColor(0x12, 0x34, 0x56, 255);
+    buf.clear(transparent, null);
+
+    const border_chars = [_]u32{ 0x250c, 0x2510, 0x2514, 0x2518, 0x2500, 0x2502, 0, 0, 0, 0, 0 };
+    try buf.drawBox(0, 0, 4, 4, &border_chars, .{ .left = true }, transparent, panel, transparent, true, null, 0, null, 0);
+
+    const cell = buf.get(0, 1).?;
+    try std.testing.expectEqual(@as(u32, 0x2502), cell.char);
+    try std.testing.expectEqual(ansi.red(panel), ansi.red(cell.fg));
+    try std.testing.expectEqual(ansi.green(panel), ansi.green(cell.fg));
+    try std.testing.expectEqual(ansi.blue(panel), ansi.blue(cell.fg));
+    try std.testing.expectEqual(ansi.alpha(panel), ansi.alpha(cell.fg));
+    try std.testing.expectEqual(ansi.red(panel), ansi.red(cell.bg));
+    try std.testing.expectEqual(ansi.green(panel), ansi.green(cell.bg));
+    try std.testing.expectEqual(ansi.blue(panel), ansi.blue(cell.bg));
+    try std.testing.expectEqual(ansi.alpha(panel), ansi.alpha(cell.bg));
 }
 
 test "OptimizedBuffer - link reuse after free" {
@@ -2751,14 +2783,14 @@ test "renderer - grapheme WrongGeneration repro with pool slot reuse" {
     var local_link_pool = link.LinkPool.init(std.testing.allocator);
     defer local_link_pool.deinit();
 
-    var cli_renderer = try renderer_mod.CliRenderer.create(
+    var test_renderer = try TestRenderer.create(
         std.testing.allocator,
         40,
         5,
         pool,
-        true,
     );
-    defer cli_renderer.destroy();
+    defer test_renderer.deinit();
+    const cli_renderer = test_renderer.renderer;
 
     const fg = ansi.rgbaFromFloats(1.0, 1.0, 1.0, 1.0);
     const bg = ansi.rgbaFromFloats(0.0, 0.0, 0.0, 1.0);
@@ -2770,7 +2802,7 @@ test "renderer - grapheme WrongGeneration repro with pool slot reuse" {
         try next.drawText("│ ▫ src/    ▪ file.ts                │", 0, 2, fg, bg, 0);
         try next.drawText("│ ↑↓ navigate  ⏎ select  esc close   │", 0, 3, fg, bg, 0);
         try next.drawText("╰────────────────────────────────────╯", 0, 4, fg, bg, 0);
-        cli_renderer.render(false);
+        _ = cli_renderer.render(false);
     }
 
     {
@@ -2780,7 +2812,7 @@ test "renderer - grapheme WrongGeneration repro with pool slot reuse" {
         try next.drawText("                                         ", 0, 2, fg, bg, 0);
         try next.drawText("  Select Files                           ", 0, 3, fg, bg, 0);
         try next.drawText("  Enter file path...                     ", 0, 4, fg, bg, 0);
-        cli_renderer.render(false);
+        _ = cli_renderer.render(false);
     }
 
     {
@@ -2790,7 +2822,7 @@ test "renderer - grapheme WrongGeneration repro with pool slot reuse" {
         try next.drawText("│ ▫ src/    ▪ file.ts                │", 0, 2, fg, bg, 0);
         try next.drawText("│ ↑↓ navigate  ⏎ select  esc close   │", 0, 3, fg, bg, 0);
         try next.drawText("╰────────────────────────────────────╯", 0, 4, fg, bg, 0);
-        cli_renderer.render(false);
+        _ = cli_renderer.render(false);
     }
 
     {
@@ -2800,7 +2832,7 @@ test "renderer - grapheme WrongGeneration repro with pool slot reuse" {
         try next.drawText("                                         ", 0, 2, fg, bg, 0);
         try next.drawText("  Select Files                           ", 0, 3, fg, bg, 0);
         try next.drawText("  Enter file path...                     ", 0, 4, fg, bg, 0);
-        cli_renderer.render(false);
+        _ = cli_renderer.render(false);
     }
 
     {
@@ -2810,7 +2842,7 @@ test "renderer - grapheme WrongGeneration repro with pool slot reuse" {
         try next.drawText("│ ▫ src/                             │", 0, 2, fg, bg, 0);
         try next.drawText("│ ↑↓ navigate  ⏎/tab select          │", 0, 3, fg, bg, 0);
         try next.drawText("╰────────────────────────────────────╯", 0, 4, fg, bg, 0);
-        cli_renderer.render(false);
+        _ = cli_renderer.render(false);
     }
 }
 
@@ -2825,14 +2857,14 @@ test "renderer - CJK graphemes shifting left must preserve continuation cells (#
     var local_link_pool = link.LinkPool.init(std.testing.allocator);
     defer local_link_pool.deinit();
 
-    var cli_renderer = try renderer_mod.CliRenderer.create(
+    var test_renderer = try TestRenderer.create(
         std.testing.allocator,
         20,
         1,
         pool,
-        true,
     );
-    defer cli_renderer.destroy();
+    defer test_renderer.deinit();
+    const cli_renderer = test_renderer.renderer;
 
     const fg = ansi.rgbaFromFloats(1.0, 1.0, 1.0, 1.0);
     const bg = ansi.rgbaFromFloats(0.0, 0.0, 0.0, 1.0);
@@ -2842,7 +2874,7 @@ test "renderer - CJK graphemes shifting left must preserve continuation cells (#
     {
         const next = cli_renderer.getNextBuffer();
         try next.drawText("abcd你好世          ", 0, 0, fg, bg, 0);
-        cli_renderer.render(false);
+        _ = cli_renderer.render(false);
     }
 
     // Frame 2: "abc你好世" — backspace deleted 'd', CJK chars shift left by 1
@@ -2850,7 +2882,7 @@ test "renderer - CJK graphemes shifting left must preserve continuation cells (#
     {
         const next = cli_renderer.getNextBuffer();
         try next.drawText("abc你好世           ", 0, 0, fg, bg, 0);
-        cli_renderer.render(false);
+        _ = cli_renderer.render(false);
     }
 
     // After frame 2, currentRenderBuffer should match the frame 2 layout exactly.

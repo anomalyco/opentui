@@ -12,6 +12,7 @@ import {
 import { ScrollBoxRenderable } from "@opentui/core"
 import { setupCommonDemoKeys } from "./lib/standalone-keys.js"
 import { env, registerEnvVar } from "@opentui/core"
+import { writeFile } from "node:fs/promises"
 
 registerEnvVar({
   name: "OTUI_KEYPRESS_DEBUG_SHOW_JSON",
@@ -471,7 +472,7 @@ async function saveToFile(renderer: CliRenderer): Promise<void> {
   }
 
   try {
-    await Bun.write(filename, JSON.stringify(data, null, 2))
+    await writeFile(filename, JSON.stringify(data, null, 2))
     lastSavedFile = filename
     lastSaveError = null
   } catch (error) {

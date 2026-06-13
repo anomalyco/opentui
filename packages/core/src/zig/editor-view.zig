@@ -525,6 +525,24 @@ pub const EditorView = struct {
         };
     }
 
+    fn clampVisualColToStayOnVisualRow(vlines: []const VirtualLine, visual_row: u32, visual_col: u32) u32 {
+        if (visual_row >= vlines.len) return visual_col;
+
+        const vline = &vlines[visual_row];
+        var target_visual_col = @min(visual_col, vline.width_cols);
+
+        // A wrap boundary is also the start of the next visual line. Step back so
+        // logicalToVisualCursor does not canonicalize this target onto that line.
+        if (target_visual_col == vline.width_cols and vline.width_cols > 0 and visual_row + 1 < vlines.len) {
+            const next_vline = &vlines[visual_row + 1];
+            if (next_vline.source_line == vline.source_line) {
+                target_visual_col = vline.width_cols - 1;
+            }
+        }
+
+        return target_visual_col;
+    }
+
     pub fn moveUpVisual(self: *EditorView) void {
         const cursor = self.edit_buffer.getPrimaryCursor();
         const vcursor = self.logicalToVisualCursor(cursor.row, cursor.col);
@@ -541,7 +559,11 @@ pub const EditorView = struct {
         }
         const desired_visual_col = self.desired_visual_col.?;
 
-        if (self.visualToLogicalCursor(target_visual_row, desired_visual_col)) |new_vcursor| {
+        // logicalToVisualCursor refreshed this snapshot; keep navigation on it.
+        const vlines = self.text_buffer_view.virtual_lines.items;
+        const target_visual_col = clampVisualColToStayOnVisualRow(vlines, target_visual_row, desired_visual_col);
+
+        if (self.visualToLogicalCursor(target_visual_row, target_visual_col)) |new_vcursor| {
             if (self.edit_buffer.cursors.items.len > 0) {
                 self.edit_buffer.cursors.items[0] = .{
                     .row = new_vcursor.logical_row,
@@ -561,7 +583,7 @@ pub const EditorView = struct {
         const cursor = self.edit_buffer.getPrimaryCursor();
         const vcursor = self.logicalToVisualCursor(cursor.row, cursor.col);
 
-        self.text_buffer_view.updateVirtualLines();
+        // logicalToVisualCursor refreshed this snapshot; keep navigation on it.
         const vlines = self.text_buffer_view.virtual_lines.items;
 
         if (vcursor.visual_row + 1 >= vlines.len) {
@@ -575,8 +597,9 @@ pub const EditorView = struct {
             self.desired_visual_col = vcursor.visual_col;
         }
         const desired_visual_col = self.desired_visual_col.?;
+        const target_visual_col = clampVisualColToStayOnVisualRow(vlines, target_visual_row, desired_visual_col);
 
-        if (self.visualToLogicalCursor(target_visual_row, desired_visual_col)) |new_vcursor| {
+        if (self.visualToLogicalCursor(target_visual_row, target_visual_col)) |new_vcursor| {
             if (self.edit_buffer.cursors.items.len > 0) {
                 self.edit_buffer.cursors.items[0] = .{
                     .row = new_vcursor.logical_row,
@@ -646,7 +669,7 @@ pub const EditorView = struct {
         const cursor = self.edit_buffer.getPrimaryCursor();
         const vcursor = self.logicalToVisualCursor(cursor.row, cursor.col);
 
-        self.text_buffer_view.updateVirtualLines();
+        // logicalToVisualCursor refreshed this snapshot; keep SOL on the same row.
         const vlines = self.text_buffer_view.virtual_lines.items;
 
         if (vcursor.visual_row >= vlines.len) {
@@ -683,7 +706,7 @@ pub const EditorView = struct {
         const cursor = self.edit_buffer.getPrimaryCursor();
         const vcursor = self.logicalToVisualCursor(cursor.row, cursor.col);
 
-        self.text_buffer_view.updateVirtualLines();
+        // logicalToVisualCursor refreshed this snapshot; keep EOL on the same row.
         const vlines = self.text_buffer_view.virtual_lines.items;
 
         if (vcursor.visual_row >= vlines.len) {
@@ -693,32 +716,18 @@ pub const EditorView = struct {
         }
 
         const vline = &vlines[vcursor.visual_row];
+        const target_visual_col = clampVisualColToStayOnVisualRow(vlines, vcursor.visual_row, vline.width_cols);
         const logical_row = @as(u32, @intCast(vline.source_line));
+        const logical_col = vline.source_col_offset + target_visual_col;
+        const offset = iter_mod.coordsToOffset(self.edit_buffer.tb.rope(), logical_row, logical_col) orelse 0;
 
-        // Determine the logical column at the end of this visual line
-        var logical_col: u32 = undefined;
-        if (vcursor.visual_row + 1 < vlines.len) {
-            const next_vline = &vlines[vcursor.visual_row + 1];
-            if (next_vline.source_line == vline.source_line) {
-                // Next visual line is a continuation of the same logical line
-                // The wrap boundary is at next_vline.source_col_offset
-                // To stay on the current visual line, we need to be one position BEFORE the boundary
-                // However, if width is 0, just use the start position
-                if (vline.width_cols > 0) {
-                    logical_col = vline.source_col_offset + vline.width_cols - 1;
-                } else {
-                    logical_col = vline.source_col_offset;
-                }
-            } else {
-                // Next visual line is a different logical line, so we're at the end
-                logical_col = iter_mod.lineWidthAt(self.edit_buffer.tb.rope(), logical_row);
-            }
-        } else {
-            // This is the last visual line, use end of logical line
-            logical_col = iter_mod.lineWidthAt(self.edit_buffer.tb.rope(), logical_row);
-        }
-
-        return self.logicalToVisualCursor(logical_row, logical_col);
+        return .{
+            .visual_row = vcursor.visual_row,
+            .visual_col = target_visual_col,
+            .logical_row = logical_row,
+            .logical_col = logical_col,
+            .offset = offset,
+        };
     }
 
     // ============================================================================

@@ -86,6 +86,7 @@ export const VisualCursorStruct = defineStruct([
 ])
 
 const UnicodeMethodEnum = defineEnum({ wcwidth: 0, unicode: 1 }, "u8")
+const TerminalMultiplexerEnum = defineEnum({ none: 0, tmux: 1, zellij: 2, screen: 3, unknown: 4 }, "u8")
 
 export const TerminalCapabilitiesStruct = defineStruct([
   ["kitty_keyboard", "bool_u8"],
@@ -103,8 +104,10 @@ export const TerminalCapabilitiesStruct = defineStruct([
   ["bracketed_paste", "bool_u8"],
   ["hyperlinks", "bool_u8"],
   ["osc52", "bool_u8"],
+  ["notifications", "bool_u8"],
   ["explicit_cursor_positioning", "bool_u8"],
-  ["in_tmux", "bool_u8"],
+  ["remote", "bool_u8"],
+  ["multiplexer", TerminalMultiplexerEnum],
   ["term_name", "char*"],
   ["term_name_len", "u64", { lengthOf: "term_name" }],
   ["term_version", "char*"],
@@ -192,6 +195,28 @@ export const AllocatorStatsStruct = defineStruct([
   ["requestedBytesValid", "bool_u8"],
 ])
 
+export type NativeRenderStats = {
+  nativeLastFrameTime: number
+  nativeAverageFrameTime: number
+  nativeFrameCount: number
+  cellsUpdated: number
+  averageCellsUpdated: number
+  nativeRenderTime?: number
+  nativeStdoutWriteTime?: number
+}
+
+export const NativeRenderStatsStruct = defineStruct([
+  ["lastFrameTime", "f64"],
+  ["averageFrameTime", "f64"],
+  ["renderTime", "f64"],
+  ["stdoutWriteTime", "f64"],
+  ["frameCount", "u64"],
+  ["cellsUpdated", "u32"],
+  ["averageCellsUpdated", "u32"],
+  ["renderTimeValid", "bool_u8"],
+  ["stdoutWriteTimeValid", "bool_u8"],
+])
+
 export type GrowthPolicy = "grow" | "block"
 
 export type NativeSpanFeedOptions = {
@@ -271,3 +296,81 @@ export const ReserveInfoStruct = defineStruct(
     }),
   },
 )
+
+export type AudioCreateOptions = {
+  sampleRate?: number
+  playbackChannels?: number
+}
+
+export type AudioStartOptions = {
+  periodSizeInFrames?: number
+  periodSizeInMilliseconds?: number
+  periods?: number
+  performanceProfile?: number
+  shareMode?: number
+  noPreSilencedOutputBuffer?: boolean
+  noClip?: boolean
+  noDisableDenormals?: boolean
+  noFixedSizedCallback?: boolean
+  wasapiNoAutoConvertSrc?: boolean
+  wasapiNoDefaultQualitySrc?: boolean
+  alsaNoMMap?: boolean
+  alsaNoAutoFormat?: boolean
+  alsaNoAutoChannels?: boolean
+  alsaNoAutoResample?: boolean
+}
+
+export type AudioVoiceOptions = {
+  volume?: number
+  pan?: number
+  loop?: boolean
+  groupId?: number
+}
+
+export type AudioStats = {
+  soundsLoaded: number
+  voicesActive: number
+  framesMixed: bigint
+  lockMisses: number
+  lastPeak: number
+  lastRms: number
+}
+
+export const AudioCreateOptionsStruct = defineStruct([
+  ["sampleRate", "u32", { default: 48_000 }],
+  ["playbackChannels", "u32", { default: 2 }],
+])
+
+export const AudioStartOptionsStruct = defineStruct([
+  ["periodSizeInFrames", "u32", { default: 0 }],
+  ["periodSizeInMilliseconds", "u32", { default: 0 }],
+  ["periods", "u32", { default: 0 }],
+  ["performanceProfile", "u8", { default: 0 }],
+  ["shareMode", "u8", { default: 0 }],
+  ["noPreSilencedOutputBuffer", "bool_u8", { default: false }],
+  ["noClip", "bool_u8", { default: false }],
+  ["noDisableDenormals", "bool_u8", { default: false }],
+  ["noFixedSizedCallback", "bool_u8", { default: false }],
+  ["wasapiNoAutoConvertSrc", "bool_u8", { default: false }],
+  ["wasapiNoDefaultQualitySrc", "bool_u8", { default: false }],
+  ["alsaNoMMap", "bool_u8", { default: false }],
+  ["alsaNoAutoFormat", "bool_u8", { default: false }],
+  ["alsaNoAutoChannels", "bool_u8", { default: false }],
+  ["alsaNoAutoResample", "bool_u8", { default: false }],
+])
+
+export const AudioVoiceOptionsStruct = defineStruct([
+  ["volume", "f32", { default: 1 }],
+  ["pan", "f32", { default: 0 }],
+  ["loop", "bool_u8", { default: false }],
+  ["groupId", "u32", { default: 0 }],
+])
+
+export const AudioStatsStruct = defineStruct([
+  ["soundsLoaded", "u32"],
+  ["voicesActive", "u32"],
+  ["framesMixed", "u64"],
+  ["lockMisses", "u32"],
+  ["lastPeak", "f32"],
+  ["lastRms", "f32"],
+])

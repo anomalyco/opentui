@@ -8,9 +8,12 @@
             .url = "https://github.com/jacobsandlund/uucode/archive/84ceda8561a17ba4a9b96ac5c583f779660bbd4e.tar.gz",
             .hash = "uucode-0.1.0-ZZjBPtA_TQCWp5PIKmfm5tu1WOkKWFmBGFEMxircPfkA",
         },
+        .yoga = .{
+            .url = "git+https://github.com/facebook/yoga#v3.2.1",
+            .hash = "N-V-__8AAOYl0gAU76B1VRPFD9AWvy2VkOef2jN0B3sISTeO",
+        },
     },
     .paths = .{
-        "build.zig",
-        "build.zig.zon",
+        ".",
     },
 }

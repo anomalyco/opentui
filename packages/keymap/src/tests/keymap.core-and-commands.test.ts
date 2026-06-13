@@ -1,7 +1,7 @@
 import { Buffer } from "node:buffer"
 import { afterEach, beforeEach, describe, expect, test } from "bun:test"
 import { BoxRenderable, KeyEvent, type Renderable } from "@opentui/core"
-import { createTestRenderer, type MockInput, type TestRenderer } from "@opentui/core/testing"
+import { createTestRenderer, setRendererCapabilities, type MockInput, type TestRenderer } from "@opentui/core/testing"
 import * as addons from "../addons/index.js"
 import {
   stringifyKeySequence,
@@ -81,7 +81,7 @@ describe("keymap: core and commands", () => {
   })
 
   test("OpenTUI host marks super and hyper supported when terminal capabilities report Kitty keyboard", () => {
-    ;(renderer as unknown as { _capabilities: { kitty_keyboard: boolean } })._capabilities = { kitty_keyboard: true }
+    setRendererCapabilities(renderer, { kitty_keyboard: true })
     const keymap = createBareKeymap(renderer)
 
     expect(keymap.getHostMetadata().modifiers.super).toBe("supported")

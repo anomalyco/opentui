@@ -2,32 +2,53 @@ name: Build Keymap
 
 on:
   push:
+    branches: [main]
   pull_request:
     branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+  NODE_VERSION: 26.3.0
 
 jobs:
   test:
     name: Test (${{ matrix.os }})
     strategy:
       matrix:
-        os: [ubuntu-latest, windows-latest]
+        os: [blacksmith-8vcpu-ubuntu-2404, blacksmith-8vcpu-windows-2025]
     runs-on: ${{ matrix.os }}
     defaults:
       run:
         shell: bash
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
         with:
-          bun-version: latest
+          bun-version: 1.3.14
 
       - name: Setup Zig
         uses: mlugg/setup-zig@v2
         with:
           version: 0.15.2
+          use-cache: false
+
+      - name: Restore Zig cache
+        if: runner.os != 'Windows'
+        uses: actions/cache@v5
+        with:
+          path: .zig-cache
+          key: zig-v1-${{ runner.os }}-0.15.2-${{ github.run_id }}-${{ github.job }}
+          restore-keys: zig-v1-${{ runner.os }}-0.15.2-
 
       - name: Install dependencies
         run: bun install
@@ -47,16 +68,71 @@ jobs:
           cd packages/keymap
           bun run test
 
+  packed-consumer:
+    name: Packed Consumer Smoke
+    runs-on: blacksmith-8vcpu-ubuntu-2404
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Setup Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Setup Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.15.2
+          use-cache: false
+
+      - name: Restore Zig cache
+        uses: actions/cache@v5
+        with:
+          path: .zig-cache
+          key: zig-v1-${{ runner.os }}-0.15.2-${{ github.run_id }}-${{ github.job }}
+          restore-keys: zig-v1-${{ runner.os }}-0.15.2-
+
+      - name: Install dependencies
+        run: bun install
+
+      - name: Build core
+        run: |
+          cd packages/core
+          bun run build
+
+      - name: Build keymap
+        run: |
+          cd packages/keymap
+          bun run build --ci
+
+      - name: Run packed consumer smoke test
+        run: |
+          cd packages/keymap
+          bun run test:dist --skip-build
+
   build-complete:
     name: Keymap - Build and Test
-    needs: [test]
-    runs-on: ubuntu-latest
+    needs: [test, packed-consumer]
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     if: always()
     steps:
       - name: Check test results
         run: |
           if [ "${{ needs.test.result }}" != "success" ]; then
             echo "Tests failed"
+            exit 1
+          fi
+          if [ "${{ needs.packed-consumer.result }}" != "success" ]; then
+            echo "Packed consumer smoke test failed"
             exit 1
           fi
           echo "All tests passed"

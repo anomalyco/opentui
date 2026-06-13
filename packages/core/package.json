@@ -9,7 +9,7 @@
   "types": "src/index.ts",
   "module": "src/index.ts",
   "main": "src/index.ts",
-  "version": "0.2.6",
+  "version": "0.4.1",
   "type": "module",
   "scripts": {
     "build": "bun run build:native && bun run build:lib",
@@ -19,11 +19,14 @@
     "build:native:dev": "bun scripts/build.ts --native --dev",
     "test:native": "cd src/zig && zig build test --summary all",
     "bench:native": "cd src/zig && zig build bench -Dbench-optimize=ReleaseFast --",
+    "bench:layout": "bun src/benchmark/layout-benchmark.ts",
     "bench:box-draw": "bun src/benchmark/box-draw-benchmark.ts",
     "bench:text-table": "bun src/benchmark/text-table-benchmark.ts",
     "bench:ts": "bun src/benchmark/native-span-feed-benchmark.ts --suite=quick --json=src/benchmark/latest-quick-bench-run.json && bun src/benchmark/native-span-feed-benchmark.ts --suite=default --json=src/benchmark/latest-default-bench-run.json && bun src/benchmark/native-span-feed-benchmark.ts --suite=large --json=src/benchmark/latest-large-bench-run.json && bun src/benchmark/native-span-feed-benchmark.ts --suite=all --json=src/benchmark/latest-all-bench-run.json && bun src/benchmark/native-span-feed-async-benchmark.ts --json=src/benchmark/latest-async-bench-run.json",
     "publish": "bun scripts/publish.ts",
+    "test:dist": "bun scripts/dist-test.ts",
     "test:js": "bun test",
+    "test:js:node": "bun scripts/test-node.ts",
     "test": "bun run test:native && bun run test:js"
   },
   "license": "MIT",
@@ -36,23 +39,24 @@
     "web-tree-sitter": "0.25.10"
   },
   "dependencies": {
-    "bun-ffi-structs": "0.2.2",
+    "bun-ffi-structs": "0.2.3",
     "diff": "9.0.0",
     "marked": "17.0.1",
     "string-width": "7.2.0",
-    "strip-ansi": "7.1.2",
-    "yoga-layout": "3.2.1"
+    "strip-ansi": "7.1.2"
   },
   "peerDependencies": {
     "web-tree-sitter": "0.25.10"
   },
   "optionalDependencies": {
-    "@opentui/core-darwin-x64": "0.2.6",
-    "@opentui/core-darwin-arm64": "0.2.6",
-    "@opentui/core-linux-x64": "0.2.6",
-    "@opentui/core-linux-arm64": "0.2.6",
-    "@opentui/core-win32-x64": "0.2.6",
-    "@opentui/core-win32-arm64": "0.2.6"
+    "@opentui/core-darwin-x64": "0.4.1",
+    "@opentui/core-darwin-arm64": "0.4.1",
+    "@opentui/core-linux-x64": "0.4.1",
+    "@opentui/core-linux-arm64": "0.4.1",
+    "@opentui/core-win32-x64": "0.4.1",
+    "@opentui/core-win32-arm64": "0.4.1",
+    "@opentui/core-linux-x64-musl": "0.4.1",
+    "@opentui/core-linux-arm64-musl": "0.4.1"
   },
   "exports": {
     ".": {
@@ -74,6 +78,14 @@
     "./runtime-plugin-support/configure": {
       "types": "./src/runtime-plugin-support-configure.ts",
       "import": "./src/runtime-plugin-support-configure.ts"
+    },
+    "./yoga": {
+      "types": "./src/yoga.ts",
+      "import": "./src/yoga.ts"
+    },
+    "./tree-sitter/update-assets": {
+      "types": "./src/lib/tree-sitter/update-assets.ts",
+      "import": "./src/lib/tree-sitter/update-assets.ts"
     },
     "./parser.worker": {
       "types": "./src/lib/tree-sitter/parser.worker.ts",

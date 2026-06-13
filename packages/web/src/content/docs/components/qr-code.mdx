@@ -1,0 +1,131 @@
+---
+title: QR Code
+description: Display a scannable QR code from text content
+order: 16
+---
+
+# QR Code
+
+Display text or URLs as scannable standard QR Codes in the terminal. `QRCodeRenderable` renders QR Code Model 2 modules with half-block cells so the symbol stays square in terminal character geometry.
+
+Install the QR code package separately:
+
+```bash
+bun install @opentui/qrcode
+```
+
+## Basic Usage
+
+### Renderable API
+
+```typescript
+import { createCliRenderer } from "@opentui/core"
+import { QRCodeRenderable } from "@opentui/qrcode"
+
+const renderer = await createCliRenderer()
+
+const qr = new QRCodeRenderable(renderer, {
+  id: "docs-link",
+  content: "https://opentui.com/docs/getting-started",
+  quietZone: 4,
+  scale: 2,
+})
+
+renderer.root.add(qr)
+```
+
+### React JSX
+
+```tsx
+import { createRoot } from "@opentui/react"
+import { registerQRCode } from "@opentui/qrcode/react"
+
+registerQRCode()
+
+createRoot(renderer).render(
+  <qr-code
+    content="https://opentui.com/docs/getting-started"
+    quietZone={4}
+    scale={2}
+    foregroundColor="#111827"
+    backgroundColor="#ffffff"
+  />,
+)
+```
+
+### Solid JSX
+
+```tsx
+import { render } from "@opentui/solid"
+import { registerQRCode } from "@opentui/qrcode/solid"
+
+registerQRCode()
+
+render(() => (
+  <qr_code
+    content="https://opentui.com/docs/getting-started"
+    quietZone={4}
+    scale={2}
+    foregroundColor="#111827"
+    backgroundColor="#ffffff"
+  />
+))
+```
+
+## Sizing
+
+`QRCodeRenderable` measures itself from the encoded QR version, the quiet zone, and the requested scale. The default `fit: "contain"` lets the QR code shrink to fit constrained parents while preserving a valid square module grid.
+
+```typescript
+const qr = new QRCodeRenderable(renderer, {
+  content: "opentui.com",
+  quietZone: 4,
+  scale: 2,
+  fit: "contain",
+})
+```
+
+Use `fit: "none"` when you want the configured scale to be the only rendered size.
+
+`quietZone` must be at least 4 modules for standard QR Code. OpenTUI validates the matrix and quiet-zone geometry, but scanner reliability still depends on terminal font, cell aspect ratio, display contrast, and camera conditions.
+
+## Fallback Content
+
+When a container is too small to render even a scale-1 QR code, show fallback text instead of an empty area:
+
+```typescript
+const qr = new QRCodeRenderable(renderer, {
+  content: "https://opentui.com/docs/getting-started",
+  fallbackContent: "Resize for QR",
+  fallbackColor: "#94a3b8",
+})
+```
+
+## Error Correction
+
+Set `errorCorrectionLevel` with the QR package error correction enum:
+
+```typescript
+import { ErrorCorrectionLevel, QRCodeRenderable } from "@opentui/qrcode"
+
+const qr = new QRCodeRenderable(renderer, {
+  content: "opentui.com",
+  errorCorrectionLevel: ErrorCorrectionLevel.H,
+})
+```
+
+Higher error correction improves resilience but can increase the QR version and rendered size for longer content.
+
+## Properties
+
+| Property               | Type                   | Default     | Description                                      |
+| ---------------------- | ---------------------- | ----------- | ------------------------------------------------ |
+| `content`              | `string`               | `""`        | Text content to encode                           |
+| `errorCorrectionLevel` | `ErrorCorrectionLevel` | `M`         | QR error correction level                        |
+| `quietZone`            | `number`               | `4`         | Blank module border around the QR code           |
+| `scale`                | `number`               | `1`         | Terminal columns per QR module before fitting    |
+| `fit`                  | `"contain" \| "none"`  | `"contain"` | Whether the QR code may shrink to fit its parent |
+| `foregroundColor`      | `ColorInput`           | `"#000000"` | Dark module color                                |
+| `backgroundColor`      | `ColorInput`           | `"#ffffff"` | Light module and quiet-zone color                |
+| `fallbackContent`      | `string`               | `""`        | Text rendered when the QR code cannot fit        |
+| `fallbackColor`        | `ColorInput`           | `"#ffffff"` | Fallback text color                              |

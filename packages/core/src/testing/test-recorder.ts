@@ -1,4 +1,5 @@
 import type { TestRenderer } from "./test-renderer.js"
+import { CliRenderEvents } from "../renderer.js"
 
 export interface RecordBuffersOptions {
   fg?: boolean
@@ -25,7 +26,7 @@ export interface TestRecorderOptions {
 }
 
 /**
- * TestRecorder records frames from a TestRenderer by hooking into the render pipeline.
+ * TestRecorder records frames from a TestRenderer by listening to rendered frame events.
  * It captures the character frame after each native render pass.
  */
 export class TestRecorder {
@@ -34,10 +35,13 @@ export class TestRecorder {
   private recording: boolean = false
   private frameNumber: number = 0
   private startTime: number = 0
-  private originalRenderNative?: () => void
   private decoder = new TextDecoder()
   private recordBuffers: RecordBuffersOptions
   private now: () => number
+  private readonly onFrame = () => {
+    if (!this.recording) return
+    this.captureFrame()
+  }
 
   constructor(renderer: TestRenderer, options?: TestRecorderOptions) {
     this.renderer = renderer
@@ -46,7 +50,7 @@ export class TestRecorder {
   }
 
   /**
-   * Start recording frames. This hooks into the renderer's renderNative method.
+   * Start recording frames.
    */
   public rec(): void {
     if (this.recording) {
@@ -57,22 +61,11 @@ export class TestRecorder {
     this.frames = []
     this.frameNumber = 0
     this.startTime = this.now()
-
-    // Store the original renderNative method
-    this.originalRenderNative = this.renderer["renderNative"].bind(this.renderer)
-
-    // Override renderNative to capture frames after each render
-    this.renderer["renderNative"] = () => {
-      // Call the original renderNative
-      this.originalRenderNative!()
-
-      // Capture the frame after rendering
-      this.captureFrame()
-    }
+    this.renderer.on(CliRenderEvents.FRAME, this.onFrame)
   }
 
   /**
-   * Stop recording frames and restore the original renderNative method.
+   * Stop recording frames.
    */
   public stop(): void {
     if (!this.recording) {
@@ -80,12 +73,7 @@ export class TestRecorder {
     }
 
     this.recording = false
-
-    // Restore the original renderNative method
-    if (this.originalRenderNative) {
-      this.renderer["renderNative"] = this.originalRenderNative
-      this.originalRenderNative = undefined
-    }
+    this.renderer.off(CliRenderEvents.FRAME, this.onFrame)
   }
 
   /**

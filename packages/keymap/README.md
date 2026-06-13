@@ -11,7 +11,7 @@ It models keybindings as priority-ordered, focus-scoped layers attached to targe
 - **Layered bindings** with priority ordering, newest-first ties, `fallthrough`, and `preventDefault` control.
 - **Branch-aware multi-key sequences** over flat compiled bindings, with a public pending-sequence API, synchronous `pendingSequence` events, active continuation queries, and automatic invalidation on focus changes.
 - **Programmable exact-vs-prefix disambiguation** (e.g. `g` vs `gg`) with `runExact`, `continueSequence`, `clear`, and deferred `AbortSignal` + `sleep` decisions. Ships a Neovim-style timeout resolver.
-- **Pluggable binding language**: stackable binding parsers, key expanders, layer-binding transformers, binding transformers, command resolvers, command transformers, and event-match resolvers.
+- **Pluggable binding language**: stackable binding parsers, key expanders, layer-binding transformers, binding transformers, command resolvers, command transformers, and ordered event-match resolvers.
 - **Extensible schema and activation**: register custom fields on layers, bindings, and commands. Field compilers can emit `attrs`; all field kinds can gate activation via `require(...)` and `activeWhen(matcher)`.
 - **Reactive matchers** with subscription-driven state notifications, plus React store and Solid signal helpers.
 - **Raw and key intercepts** before and after normal binding dispatch, including pre-binding `consume({ preventDefault, stopPropagation })`, post-dispatch handled/no-match outcomes, and raw input `stop()` handling.
@@ -33,7 +33,7 @@ It models keybindings as priority-ordered, focus-scoped layers attached to targe
 - `registerNeovimDisambiguation`, `registerEscapeClearsPendingSequence`, `registerBackspacePopsPendingSequence`.
 - `registerDeadBindingWarnings`, `registerUnresolvedCommandWarnings`.
 
-`@opentui/keymap/addons/opentui` adds OpenTUI-specific pieces: layout-independent matching via `event.baseCode`, and pre-wired textarea / edit-buffer commands.
+`@opentui/keymap/addons/opentui` adds OpenTUI-specific pieces: layout-independent matching via `event.baseCode`, and pre-wired textarea / edit-buffer commands. Direct event matches win before fallback matches, even across layers.
 
 ## Entry Points
 

@@ -894,8 +894,8 @@ describe("TextTableRenderable", () => {
       selectionBg,
       columnWidthMode: "content",
       content: [
-        ["A", "B"],
-        ["C", "D"],
+        [cell("A"), cell("B")],
+        [cell("C"), cell("D")],
       ],
     })
 
@@ -959,7 +959,7 @@ describe("TextTableRenderable", () => {
 
     buffer = renderer.currentRenderBuffer
     assertDeselectedCellsRestored(buffer)
-    expect(getCharAt(buffer, farX, farY)).toBe("D".codePointAt(0))
+    expect(getCharAt(buffer, farX, farY)).toBe("D".codePointAt(0)!)
   })
 
   test("does not start selection when drag begins on border", async () => {

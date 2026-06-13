@@ -1,5 +1,18 @@
 import { describe, expect, it, beforeEach, afterEach } from "bun:test"
 import { EditBuffer } from "./edit-buffer.js"
+import { resolveRenderLib } from "./zig.js"
+import { ManualClock } from "./testing/manual-clock.js"
+
+async function flushNativeEvents(): Promise<void> {
+  // EditBuffer forwards native events via queueMicrotask, so a manual 0ms tick
+  // gives the tests a deterministic async boundary without sleeping.
+  const clock = new ManualClock()
+  const wait = new Promise<void>((resolve) => {
+    clock.setTimeout(resolve, 0)
+  })
+  clock.advance(0)
+  await wait
+}
 
 describe("EditBuffer", () => {
   let buffer: EditBuffer
@@ -33,6 +46,14 @@ describe("EditBuffer", () => {
       const text = "Hello 世界 🌟"
       buffer.setText(text)
       expect(buffer.getText()).toBe(text)
+    })
+
+    it("should return null bytes for zero-length getText output buffer", () => {
+      buffer.setText("Hello World")
+
+      const textBytes = (buffer as any).lib.editBufferGetText(buffer.ptr, 0)
+
+      expect(textBytes).toBeNull()
     })
   })
 
@@ -338,6 +359,31 @@ describe("EditBuffer", () => {
       // After deleting Line 2, we should have Line 1 and Line 3
       const result = buffer.getText()
       expect(result === "Line 1\nLine 3" || result === "Line 1\nLine 3\n").toBe(true)
+    })
+  })
+
+  describe("history metadata", () => {
+    it("should return null bytes for zero-length undo and redo output buffers", () => {
+      buffer.setText("Hello")
+      buffer.insertText(" World")
+
+      const lib = (buffer as any).lib
+      const undoBytes = lib.editBufferUndo(buffer.ptr, 0)
+      const redoBytes = lib.editBufferRedo(buffer.ptr, 0)
+
+      expect(undoBytes).toBeNull()
+      expect(redoBytes).toBeNull()
+    })
+  })
+
+  describe("range getters", () => {
+    it("should return null bytes for zero-length range output buffers", () => {
+      buffer.setText("Hello\nWorld")
+
+      const lib = (buffer as any).lib
+
+      expect(lib.editBufferGetTextRange(buffer.ptr, 0, 5, 0)).toBeNull()
+      expect(lib.editBufferGetTextRangeByCoords(buffer.ptr, 0, 0, 1, 5, 0)).toBeNull()
     })
   })
 
@@ -757,7 +803,7 @@ describe("EditBuffer Events", () => {
       testBuffer.setText("Hello World")
       testBuffer.moveCursorRight()
 
-      await new Promise((resolve) => setTimeout(resolve, 10))
+      await flushNativeEvents()
 
       expect(eventCount).toBeGreaterThan(1) // setText + moveCursorRight
       testBuffer.destroy()
@@ -773,7 +819,7 @@ describe("EditBuffer Events", () => {
 
       testBuffer.setText("Hello World")
       testBuffer.setCursorToLineCol(0, 5)
-      await new Promise((resolve) => setTimeout(resolve, 10))
+      await flushNativeEvents()
 
       expect(eventCount).toBeGreaterThan(1) // setText + setCursor
       testBuffer.destroy()
@@ -789,7 +835,7 @@ describe("EditBuffer Events", () => {
 
       testBuffer.setText("Hello")
       testBuffer.insertText(" World")
-      await new Promise((resolve) => setTimeout(resolve, 10))
+      await flushNativeEvents()
 
       expect(eventCount).toBeGreaterThan(1) // setText + insertText
       testBuffer.destroy()
@@ -807,7 +853,7 @@ describe("EditBuffer Events", () => {
       const beforeDelete = eventCount
       testBuffer.setCursorToLineCol(0, 5)
       testBuffer.deleteChar()
-      await new Promise((resolve) => setTimeout(resolve, 10))
+      await flushNativeEvents()
 
       expect(eventCount).toBeGreaterThan(beforeDelete + 1) // setCursor + deleteChar
       testBuffer.destroy()
@@ -827,14 +873,14 @@ describe("EditBuffer Events", () => {
       if (testBuffer.canUndo()) {
         const beforeUndo = eventCount
         testBuffer.undo()
-        await new Promise((resolve) => setTimeout(resolve, 10))
+        await flushNativeEvents()
         expect(eventCount).toBeGreaterThan(beforeUndo)
       }
 
       if (testBuffer.canRedo()) {
         const beforeRedo = eventCount
         testBuffer.redo()
-        await new Promise((resolve) => setTimeout(resolve, 10))
+        await flushNativeEvents()
         expect(eventCount).toBeGreaterThan(beforeRedo)
       }
 
@@ -856,7 +902,7 @@ describe("EditBuffer Events", () => {
 
       testBuffer.setText("Hello")
       testBuffer.moveCursorRight()
-      await new Promise((resolve) => setTimeout(resolve, 10))
+      await flushNativeEvents()
 
       expect(count1).toBeGreaterThan(1)
       expect(count2).toBeGreaterThan(1)
@@ -876,13 +922,13 @@ describe("EditBuffer Events", () => {
 
       testBuffer.on("cursor-changed", listener)
       testBuffer.moveCursorRight()
-      await new Promise((resolve) => setTimeout(resolve, 10))
+      await flushNativeEvents()
 
       const firstCount = eventCount
 
       testBuffer.off("cursor-changed", listener)
       testBuffer.moveCursorRight()
-      await new Promise((resolve) => setTimeout(resolve, 10))
+      await flushNativeEvents()
 
       // Count should not have increased after removing listener
       expect(eventCount).toBe(firstCount)
@@ -905,19 +951,19 @@ describe("EditBuffer Events", () => {
       })
 
       testBuffer1.setText("Buffer 1")
-      await Bun.sleep(10)
+      await flushNativeEvents()
       const count1AfterSetText = count1
       testBuffer1.moveCursorRight()
-      await Bun.sleep(10)
+      await flushNativeEvents()
 
       expect(count1).toBeGreaterThan(count1AfterSetText)
       expect(count2).toBe(0)
 
       testBuffer2.setText("Buffer 2")
-      await Bun.sleep(10)
+      await flushNativeEvents()
       const count2AfterSetText = count2
       testBuffer2.moveCursorRight()
-      await Bun.sleep(10)
+      await flushNativeEvents()
 
       expect(count1).toBe(count1AfterSetText + 1)
       expect(count2).toBeGreaterThan(count2AfterSetText)
@@ -936,7 +982,7 @@ describe("EditBuffer Events", () => {
 
       testBuffer.setText("Hello")
       testBuffer.moveCursorRight()
-      await new Promise((resolve) => setTimeout(resolve, 10))
+      await flushNativeEvents()
 
       const countBeforeDestroy = eventCount
 
@@ -958,7 +1004,7 @@ describe("EditBuffer Events", () => {
       })
 
       testBuffer.setText("Hello World")
-      await Bun.sleep(10)
+      await flushNativeEvents()
 
       expect(eventCount).toBeGreaterThan(0)
       testBuffer.destroy()
@@ -973,11 +1019,11 @@ describe("EditBuffer Events", () => {
       })
 
       testBuffer.setText("Hello")
-      await Bun.sleep(10)
+      await flushNativeEvents()
       const countAfterSetText = eventCount
 
       testBuffer.insertText(" World")
-      await Bun.sleep(10)
+      await flushNativeEvents()
 
       expect(eventCount).toBeGreaterThan(countAfterSetText)
       testBuffer.destroy()
@@ -992,12 +1038,12 @@ describe("EditBuffer Events", () => {
       })
 
       testBuffer.setText("Hello World")
-      await Bun.sleep(10)
+      await flushNativeEvents()
       const countAfterSetText = eventCount
 
       testBuffer.setCursorToLineCol(0, 5)
       testBuffer.deleteChar()
-      await Bun.sleep(10)
+      await flushNativeEvents()
 
       expect(eventCount).toBeGreaterThan(countAfterSetText)
       testBuffer.destroy()
@@ -1012,12 +1058,12 @@ describe("EditBuffer Events", () => {
       })
 
       testBuffer.setText("Hello")
-      await Bun.sleep(10)
+      await flushNativeEvents()
       const countAfterSetText = eventCount
 
       testBuffer.setCursorToLineCol(0, 5)
       testBuffer.deleteCharBackward()
-      await Bun.sleep(10)
+      await flushNativeEvents()
 
       expect(eventCount).toBeGreaterThan(countAfterSetText)
       testBuffer.destroy()
@@ -1032,12 +1078,12 @@ describe("EditBuffer Events", () => {
       })
 
       testBuffer.setText("Line 1\nLine 2\nLine 3")
-      await Bun.sleep(10)
+      await flushNativeEvents()
       const countAfterSetText = eventCount
 
       testBuffer.gotoLine(1)
       testBuffer.deleteLine()
-      await Bun.sleep(10)
+      await flushNativeEvents()
 
       expect(eventCount).toBeGreaterThan(countAfterSetText)
       testBuffer.destroy()
@@ -1052,12 +1098,12 @@ describe("EditBuffer Events", () => {
       })
 
       testBuffer.setText("Hello")
-      await Bun.sleep(10)
+      await flushNativeEvents()
       const countAfterSetText = eventCount
 
       testBuffer.setCursorToLineCol(0, 5)
       testBuffer.newLine()
-      await Bun.sleep(10)
+      await flushNativeEvents()
 
       expect(eventCount).toBeGreaterThan(countAfterSetText)
       testBuffer.destroy()
@@ -1077,7 +1123,7 @@ describe("EditBuffer Events", () => {
       })
 
       testBuffer.setText("Hello")
-      await Bun.sleep(10)
+      await flushNativeEvents()
 
       expect(count1).toBeGreaterThan(0)
       expect(count2).toBeGreaterThan(0)
@@ -1089,7 +1135,7 @@ describe("EditBuffer Events", () => {
     it("should support removing content-changed listeners", async () => {
       const testBuffer = EditBuffer.create("wcwidth")
       testBuffer.setText("Hello")
-      await Bun.sleep(10)
+      await flushNativeEvents()
 
       let eventCount = 0
       const listener = () => {
@@ -1098,16 +1144,33 @@ describe("EditBuffer Events", () => {
 
       testBuffer.on("content-changed", listener)
       testBuffer.insertText(" World")
-      await Bun.sleep(10)
+      await flushNativeEvents()
 
       const firstCount = eventCount
 
       testBuffer.off("content-changed", listener)
       testBuffer.insertText("!")
-      await Bun.sleep(10)
+      await flushNativeEvents()
 
       // Count should not have increased after removing listener
       expect(eventCount).toBe(firstCount)
+
+      testBuffer.destroy()
+    })
+
+    it("should deliver native event payload bytes through the event callback bridge", async () => {
+      const lib = resolveRenderLib()
+      const testBuffer = EditBuffer.create("wcwidth")
+
+      const payload = await new Promise<ArrayBuffer>((resolve) => {
+        lib.onceNativeEvent("eb_content-changed", (data) => resolve(data))
+        testBuffer.setText("event payload")
+      })
+
+      const id = new DataView(payload).getUint16(0, true)
+
+      expect(payload.byteLength).toBe(2)
+      expect(id).toBe(testBuffer.id)
 
       testBuffer.destroy()
     })
@@ -1127,21 +1190,21 @@ describe("EditBuffer Events", () => {
       })
 
       testBuffer1.setText("Buffer 1")
-      await Bun.sleep(10)
+      await flushNativeEvents()
       const count1AfterSetText = count1
 
       testBuffer1.insertText(" updated")
-      await Bun.sleep(10)
+      await flushNativeEvents()
 
       expect(count1).toBeGreaterThan(count1AfterSetText)
       expect(count2).toBe(0)
 
       testBuffer2.setText("Buffer 2")
-      await Bun.sleep(10)
+      await flushNativeEvents()
       const count2AfterSetText = count2
 
       testBuffer2.insertText(" updated")
-      await Bun.sleep(10)
+      await flushNativeEvents()
 
       expect(count1).toBe(count1AfterSetText + 1)
       expect(count2).toBeGreaterThan(count2AfterSetText)
@@ -1159,7 +1222,7 @@ describe("EditBuffer Events", () => {
       })
 
       testBuffer.setText("Hello")
-      await Bun.sleep(10)
+      await flushNativeEvents()
 
       const countBeforeDestroy = eventCount
 
@@ -1419,7 +1482,7 @@ describe("EditBuffer History Management", () => {
       })
 
       buffer.setText("Hello")
-      await Bun.sleep(10)
+      await flushNativeEvents()
 
       expect(eventCount).toBeGreaterThan(0)
     })
@@ -1431,7 +1494,7 @@ describe("EditBuffer History Management", () => {
       })
 
       buffer.replaceText("Hello")
-      await Bun.sleep(10)
+      await flushNativeEvents()
 
       expect(eventCount).toBeGreaterThan(0)
     })
@@ -1443,7 +1506,7 @@ describe("EditBuffer History Management", () => {
       })
 
       buffer.setTextOwned("Hello")
-      await Bun.sleep(10)
+      await flushNativeEvents()
 
       expect(eventCount).toBeGreaterThan(0)
     })
@@ -1571,11 +1634,11 @@ describe("EditBuffer Clear Method", () => {
       })
 
       buffer.setText("Hello World")
-      await Bun.sleep(10)
+      await flushNativeEvents()
       const countAfterSetText = eventCount
 
       buffer.clear()
-      await Bun.sleep(10)
+      await flushNativeEvents()
 
       expect(eventCount).toBeGreaterThan(countAfterSetText)
     })
@@ -1588,11 +1651,11 @@ describe("EditBuffer Clear Method", () => {
 
       buffer.setText("Hello World")
       buffer.setCursorToLineCol(0, 5)
-      await Bun.sleep(10)
+      await flushNativeEvents()
       const countBeforeClear = eventCount
 
       buffer.clear()
-      await Bun.sleep(10)
+      await flushNativeEvents()
 
       // Should emit cursor-changed when resetting cursor to 0,0
       expect(eventCount).toBeGreaterThan(countBeforeClear)
@@ -1611,13 +1674,13 @@ describe("EditBuffer Clear Method", () => {
 
       buffer.setText("Hello World")
       buffer.setCursorToLineCol(0, 5)
-      await Bun.sleep(10)
+      await flushNativeEvents()
 
       const contentCountBefore = contentChangedCount
       const cursorCountBefore = cursorChangedCount
 
       buffer.clear()
-      await Bun.sleep(10)
+      await flushNativeEvents()
 
       expect(contentChangedCount).toBeGreaterThan(contentCountBefore)
       expect(cursorChangedCount).toBeGreaterThan(cursorCountBefore)

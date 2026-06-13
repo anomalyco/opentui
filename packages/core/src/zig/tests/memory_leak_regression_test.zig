@@ -19,6 +19,81 @@ test "GraphemePool - invalid class_id returns InvalidId" {
     }
 }
 
+test "GraphemePool - out-of-range slot returns InvalidId before dereference" {
+    var pool = GraphemePool.init(std.testing.allocator);
+    defer pool.deinit();
+
+    _ = try pool.alloc("allocated");
+
+    // Class 0 exists after the allocation, but the highest encodable slot has
+    // not been allocated. Public operations must reject it before slot access.
+    const invalid_id = gp.SLOT_MASK;
+    try std.testing.expectError(GraphemePoolError.InvalidId, pool.incref(invalid_id));
+    try std.testing.expectError(GraphemePoolError.InvalidId, pool.decref(invalid_id));
+    try std.testing.expectError(GraphemePoolError.InvalidId, pool.get(invalid_id));
+    try std.testing.expectError(GraphemePoolError.InvalidId, pool.getRefcount(invalid_id));
+}
+
+test "GraphemePool - unreferenced slot cannot be freed twice" {
+    var pool = GraphemePool.init(std.testing.allocator);
+    defer pool.deinit();
+
+    const id = try pool.alloc("pending");
+    try pool.freeUnreferenced(id);
+
+    try std.testing.expectError(GraphemePoolError.InvalidId, pool.freeUnreferenced(id));
+    try std.testing.expectError(GraphemePoolError.InvalidId, pool.get(id));
+}
+
+test "GraphemePool - decref release cannot be freed again as pending" {
+    var pool = GraphemePool.init(std.testing.allocator);
+    defer pool.deinit();
+
+    const id = try pool.alloc("live");
+    try pool.incref(id);
+    try pool.decref(id);
+
+    try std.testing.expectError(GraphemePoolError.InvalidId, pool.freeUnreferenced(id));
+}
+
+test "GraphemePool - failed first incref preserves pending ownership" {
+    var pool = GraphemePool.init(std.testing.allocator);
+    defer pool.deinit();
+
+    const id = try pool.alloc("owned");
+    const allocator = pool.allocator;
+    var failing_allocator = std.testing.FailingAllocator.init(
+        std.testing.allocator,
+        .{ .fail_index = 0 },
+    );
+    pool.allocator = failing_allocator.allocator();
+    defer pool.allocator = allocator;
+
+    try std.testing.expectError(GraphemePoolError.OutOfMemory, pool.incref(id));
+    try std.testing.expectEqual(@as(u32, 0), try pool.getRefcount(id));
+    try pool.freeUnreferenced(id);
+}
+
+test "GraphemePool - growth allocation failure leaves state reusable" {
+    var failing_allocator = std.testing.FailingAllocator.init(
+        std.testing.allocator,
+        .{ .fail_index = 1 },
+    );
+    var pool = GraphemePool.initWithOptions(failing_allocator.allocator(), .{
+        .slots_per_page = [_]u32{ 1, 1, 1, 1, 1 },
+    });
+    defer pool.deinit();
+
+    try std.testing.expectError(GraphemePoolError.OutOfMemory, pool.alloc("value"));
+    try std.testing.expect(failing_allocator.has_induced_failure);
+
+    failing_allocator.fail_index = std.math.maxInt(usize);
+    const id = try pool.alloc("value");
+    try pool.incref(id);
+    try std.testing.expectEqualSlices(u8, "value", try pool.get(id));
+    try pool.decref(id);
+}
+
 test "GraphemePool - defer cleanup on failure path" {
     var pool = GraphemePool.init(std.testing.allocator);
     defer pool.deinit();

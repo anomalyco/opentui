@@ -9,7 +9,7 @@ import {
 } from "@opentui/core/runtime-plugin"
 import * as solidJsRuntime from "solid-js"
 import * as solidJsStoreRuntime from "solid-js/store"
-import * as solidRuntime from "../index.js"
+import * as solidRuntime from "@opentui/solid"
 import { ensureSolidTransformPlugin } from "./solid-plugin.js"
 
 const runtimePluginSupportInstalledKey = Symbol.for("opentui.solid.runtime-plugin-support")

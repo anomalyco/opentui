@@ -1,7 +1,7 @@
 ---
 title: Lifecycle and cleanup
 description: Managing renderer lifecycle and terminal cleanup
-order: 9
+order: 10
 ---
 
 # Lifecycle and cleanup
@@ -36,17 +36,10 @@ For reliable cleanup, keep renderer teardown in the same control flow as your ap
 ```typescript
 import { createCliRenderer } from "@opentui/core"
 
-async function runApp() {
-  // ... your application code ...
-}
-
 const renderer = await createCliRenderer()
 
 try {
-  await runApp()
-} catch (error) {
-  console.error("OpenTUI app failed:", error)
-  process.exitCode = 1
+  // ... your application code ...
 } finally {
   renderer.destroy()
 }
@@ -120,7 +113,46 @@ The `destroy()` method cleans up these resources:
 - Destroys all renderables in the tree
 - Restores stdin raw mode
 - Resets terminal state (cursor, alternate screen, etc.)
+- Flushes pending split-footer captured output
 - Frees native resources
+
+## Custom stream sessions
+
+For socket, SSH, or pty sessions, give each connection its own renderer. Destroy it before closing the transport:
+
+```typescript
+import { createCliRenderer, type CliRenderer } from "@opentui/core"
+
+interface TerminalSession {
+  renderer: CliRenderer
+  closeTransport: () => void
+}
+
+async function startSession(
+  stdin: NodeJS.ReadStream,
+  stdout: NodeJS.WriteStream,
+  closeTransport: () => void,
+): Promise<TerminalSession> {
+  const renderer = await createCliRenderer({
+    stdin,
+    stdout,
+    width: stdout.columns || 80,
+    height: stdout.rows || 24,
+    exitOnCtrlC: false,
+    exitSignals: [],
+  })
+
+  return { renderer, closeTransport }
+}
+
+async function closeSession(session: TerminalSession): Promise<void> {
+  session.renderer.destroy()
+  await new Promise<void>((resolve) => queueMicrotask(resolve))
+  session.closeTransport()
+}
+```
+
+Use `exitOnCtrlC: false` and `exitSignals: []` when a long-lived server process owns many renderer sessions. A `stdin` or `stdout` stream cannot be shared by active renderers; `destroy()` releases it.
 
 ## Troubleshooting
 

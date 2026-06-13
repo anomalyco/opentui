@@ -36,6 +36,12 @@ function generateCode(lineCount: number): string {
   return lines.join("\n")
 }
 
+async function settleCodeRenderables(...codeRenderables: CodeRenderable[]): Promise<void> {
+  await renderOnce()
+  await Promise.all(codeRenderables.map((codeRenderable) => codeRenderable.highlightingDone))
+  await renderOnce()
+}
+
 describe("LineNumberRenderable in ScrollBox", () => {
   test("single Code renderable with line numbers in ScrollBox - correct dimensions", async () => {
     const syntaxStyle = SyntaxStyle.fromStyles({
@@ -85,7 +91,7 @@ describe("LineNumberRenderable in ScrollBox", () => {
     scrollBox.add(box)
     currentRenderer.root.add(scrollBox)
 
-    await renderOnce()
+    await settleCodeRenderables(codeRenderable)
 
     // Check initial dimensions
     const gutter = lineNumberRenderable["gutter"]
@@ -148,7 +154,7 @@ describe("LineNumberRenderable in ScrollBox", () => {
     scrollBox.add(box)
     currentRenderer.root.add(scrollBox)
 
-    await renderOnce()
+    await settleCodeRenderables(codeRenderable)
 
     const gutterBeforeScroll = lineNumberRenderable["gutter"]!
     const widthBeforeScroll = gutterBeforeScroll.width
@@ -161,7 +167,7 @@ describe("LineNumberRenderable in ScrollBox", () => {
 
     // Scroll down
     scrollBox.scrollBy(10)
-    await renderOnce()
+    await settleCodeRenderables(codeRenderable)
 
     const gutterAfterScroll = lineNumberRenderable["gutter"]!
     const widthAfterScroll = gutterAfterScroll.width
@@ -207,6 +213,7 @@ describe("LineNumberRenderable in ScrollBox", () => {
 
     const boxes: BoxRenderable[] = []
     const lineNumberRenderables: LineNumberRenderable[] = []
+    const codeRenderables: CodeRenderable[] = []
 
     // Create 3 code blocks with line numbers in boxes
     for (let i = 1; i <= 3; i++) {
@@ -243,9 +250,10 @@ describe("LineNumberRenderable in ScrollBox", () => {
 
       boxes.push(box)
       lineNumberRenderables.push(lineNumberRenderable)
+      codeRenderables.push(codeRenderable)
     }
 
-    await renderOnce()
+    await settleCodeRenderables(...codeRenderables)
 
     const frame1 = captureCharFrame()
     expect(frame1).toMatchSnapshot()
@@ -345,7 +353,7 @@ describe("LineNumberRenderable in ScrollBox", () => {
     scrollBox.add(outerBox)
     currentRenderer.root.add(scrollBox)
 
-    await renderOnce()
+    await settleCodeRenderables(codeRenderable)
 
     const frame1 = captureCharFrame()
     expect(frame1).toMatchSnapshot()
@@ -370,7 +378,7 @@ describe("LineNumberRenderable in ScrollBox", () => {
 
     // Scroll and verify dimensions remain stable
     scrollBox.scrollBy(20)
-    await renderOnce()
+    await settleCodeRenderables(codeRenderable)
 
     const frame2 = captureCharFrame()
     expect(frame2).toMatchSnapshot()
@@ -434,7 +442,7 @@ describe("LineNumberRenderable in ScrollBox", () => {
     scrollBox.add(box)
     currentRenderer.root.add(scrollBox)
 
-    await renderOnce()
+    await settleCodeRenderables(codeRenderable)
 
     const initialWidth = lineNumberRenderable.width
     const initialHeight = lineNumberRenderable.height
@@ -446,7 +454,7 @@ describe("LineNumberRenderable in ScrollBox", () => {
 
     // Scroll vertically
     scrollBox.scrollBy({ x: 0, y: 10 })
-    await renderOnce()
+    await settleCodeRenderables(codeRenderable)
 
     expect(lineNumberRenderable.width).toBe(initialWidth)
     expect(lineNumberRenderable.height).toBe(initialHeight)
@@ -520,6 +528,7 @@ describe("LineNumberRenderable in ScrollBox", () => {
       id: "scroll-growing",
       width: "100%",
       height: "100%",
+      scrollY: false,
     })
 
     scrollBox.add(box)
@@ -537,7 +546,7 @@ describe("LineNumberRenderable in ScrollBox", () => {
     // Now update to have more than 9 lines (2 digit line numbers)
     code = generateCode(5) // 20 lines
     codeRenderable.content = code
-    await renderOnce()
+    await settleCodeRenderables(codeRenderable)
 
     const widthWith2Digits = lineNumberRenderable["gutter"]!.width
     const frame2 = captureCharFrame()
@@ -552,7 +561,7 @@ describe("LineNumberRenderable in ScrollBox", () => {
     // Now update to have more than 99 lines (3 digit line numbers)
     code = generateCode(30) // 120 lines
     codeRenderable.content = code
-    await renderOnce()
+    await settleCodeRenderables(codeRenderable)
 
     const widthWith3Digits = lineNumberRenderable["gutter"]!.width
     const frame3 = captureCharFrame()
@@ -612,7 +621,7 @@ describe("LineNumberRenderable in ScrollBox", () => {
     scrollBox.add(box)
     currentRenderer.root.add(scrollBox)
 
-    await renderOnce()
+    await settleCodeRenderables(codeRenderable)
 
     const frame = captureCharFrame()
     expect(frame).toMatchSnapshot()
@@ -640,6 +649,7 @@ describe("LineNumberRenderable in ScrollBox", () => {
     currentRenderer.root.add(scrollBox)
 
     const boxes: BoxRenderable[] = []
+    const codeRenderables: CodeRenderable[] = []
 
     // Add many boxes - only visible ones should be rendered
     for (let i = 1; i <= 20; i++) {
@@ -674,9 +684,10 @@ describe("LineNumberRenderable in ScrollBox", () => {
       box.add(lineNumberRenderable)
       scrollBox.add(box)
       boxes.push(box)
+      codeRenderables.push(codeRenderable)
     }
 
-    await renderOnce()
+    await settleCodeRenderables(...codeRenderables)
 
     const frame1 = captureCharFrame()
     expect(frame1).toMatchSnapshot()

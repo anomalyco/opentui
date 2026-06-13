@@ -6,6 +6,10 @@ import { DownloadUtils } from "../download-utils.js"
 import { parseArgs } from "util"
 import type { FiletypeParserOptions } from "../types.js"
 import { readdir } from "fs/promises"
+import { fileURLToPath } from "node:url"
+
+const __filename = fileURLToPath(import.meta.url)
+const __dirname = path.dirname(__filename)
 
 interface ParsersConfig {
   parsers: FiletypeParserOptions[]
@@ -146,16 +150,32 @@ async function downloadAndCombineQueries(
 }
 
 async function generateDefaultParsersFile(parsers: GeneratedParser[], outputPath: string): Promise<void> {
-  const imports = parsers
+  const assetPaths = parsers
     .map((parser) => {
       const safeFiletype = parser.filetype.replace(/[^a-zA-Z0-9]/g, "_")
       const lines = [
-        `import ${safeFiletype}_highlights from "${parser.highlightsPath}" with { type: "file" }`,
-        `import ${safeFiletype}_language from "${parser.languagePath}" with { type: "file" }`,
+        `const ${safeFiletype}_highlights = await resolveBundledFilePath(`,
+        `  () => import("${parser.highlightsPath}" as string, { with: { type: "file" } }),`,
+        `  "${parser.highlightsPath}",`,
+        `  import.meta.url,`,
+        `)`,
+        `const ${safeFiletype}_language = await resolveBundledFilePath(`,
+        `  () => import("${parser.languagePath}" as string, { with: { type: "file" } }),`,
+        `  "${parser.languagePath}",`,
+        `  import.meta.url,`,
+        `)`,
       ]
+
       if (parser.injectionsPath) {
-        lines.push(`import ${safeFiletype}_injections from "${parser.injectionsPath}" with { type: "file" }`)
+        lines.push(
+          `const ${safeFiletype}_injections = await resolveBundledFilePath(`,
+          `  () => import("${parser.injectionsPath}" as string, { with: { type: "file" } }),`,
+          `  "${parser.injectionsPath}",`,
+          `  import.meta.url,`,
+          `)`,
+        )
       }
+
       return lines.join("\n")
     })
     .join("\n")
@@ -163,13 +183,10 @@ async function generateDefaultParsersFile(parsers: GeneratedParser[], outputPath
   const parserDefinitions = parsers
     .map((parser) => {
       const safeFiletype = parser.filetype.replace(/[^a-zA-Z0-9]/g, "_")
-      const queriesLines = [
-        `          highlights: [resolve(dirname(fileURLToPath(import.meta.url)), ${safeFiletype}_highlights)],`,
-      ]
+      const queriesLines = [`          highlights: [${safeFiletype}_highlights],`]
+
       if (parser.injectionsPath) {
-        queriesLines.push(
-          `          injections: [resolve(dirname(fileURLToPath(import.meta.url)), ${safeFiletype}_injections)],`,
-        )
+        queriesLines.push(`          injections: [${safeFiletype}_injections],`)
       }
 
       const injectionMappingLine = parser.injectionMapping
@@ -182,7 +199,7 @@ async function generateDefaultParsersFile(parsers: GeneratedParser[], outputPath
 ${aliasesLine ? aliasesLine + "\n" : ""}        queries: {
 ${queriesLines.join("\n")}
         },
-        wasm: resolve(dirname(fileURLToPath(import.meta.url)), ${safeFiletype}_language),${injectionMappingLine ? "\n" + injectionMappingLine : ""}
+        wasm: ${safeFiletype}_language,${injectionMappingLine ? "\n" + injectionMappingLine : ""}
       }`
     })
     .join(",\n")
@@ -191,22 +208,25 @@ ${queriesLines.join("\n")}
 // Run 'bun assets/update.ts' to regenerate this file
 // Last generated: ${new Date().toISOString()}
 
-import type { FiletypeParserOptions } from "./types"
-import { resolve, dirname } from "path"
-import { fileURLToPath } from "url"
-
-${imports}
+import type { FiletypeParserOptions } from "./types.js"
+import { resolveBundledFilePath } from "../../platform/runtime.js"
 
 // Cached parsers to avoid re-resolving paths on every call
-let _cachedParsers: FiletypeParserOptions[] | undefined
+let _cachedParsers: Promise<FiletypeParserOptions[]> | undefined
 
-export function getParsers(): FiletypeParserOptions[] {
+export function getParsers(): Promise<FiletypeParserOptions[]> {
   if (!_cachedParsers) {
-    _cachedParsers = [
-${parserDefinitions},
-    ]
+    _cachedParsers = loadParsers()
   }
   return _cachedParsers
+}
+
+async function loadParsers(): Promise<FiletypeParserOptions[]> {
+${assetPaths}
+
+  return [
+${parserDefinitions},
+  ]
 }
 `
 
@@ -284,7 +304,7 @@ async function main(options?: Partial<UpdateOptions>): Promise<void> {
 function parseCLIArgs(): Partial<UpdateOptions> | null {
   try {
     const { values } = parseArgs({
-      args: Bun.argv.slice(2),
+      args: process.argv.slice(2),
       options: {
         config: { type: "string" },
         assets: { type: "string" },
@@ -295,7 +315,9 @@ function parseCLIArgs(): Partial<UpdateOptions> | null {
     })
 
     if (values.help) {
-      console.log(`Usage: bun update.ts [options]
+      const command = path.basename(Bun.argv[1] ?? "update-assets.js")
+
+      console.log(`Usage: bun ${command} [options]
 
 Options:
   --config <path>  Path to parsers-config.json
@@ -305,10 +327,10 @@ Options:
 
 Examples:
   # Use default paths (for OpenTUI core development)
-  bun update.ts
+  bun ${command}
 
   # Use custom paths (for application integration)
-  bun update.ts --config ./my-parsers.json --assets ./src/parsers --output ./src/parsers.ts
+  bun ${command} --config ./my-parsers.json --assets ./src/parsers --output ./src/parsers.ts
 `)
       process.exit(0)
     }
@@ -326,9 +348,13 @@ Examples:
   }
 }
 
-if (import.meta.main) {
+export function runUpdateAssetsCli(): Promise<void> {
   const cliOptions = parseCLIArgs()
-  main(cliOptions || undefined)
+  return main(cliOptions || undefined)
+}
+
+if (import.meta.main) {
+  await runUpdateAssetsCli()
 }
 
 export { main as updateAssets }

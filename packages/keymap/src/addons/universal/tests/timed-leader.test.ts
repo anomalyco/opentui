@@ -186,7 +186,9 @@ describe("timed leader addon", () => {
     off()
     await Bun.sleep(20)
 
-    expect(takeWarnings().warnings).toEqual(['[Keymap] Unknown token "leader" in key sequence "<leader>a" was ignored'])
+    expect(takeWarnings().warnings).toEqual([
+      '[Keymap] Unknown token "leader" in key sequence "<leader>a"; binding was skipped until the token is registered',
+    ])
     expect(states).toEqual(["armed", "disarmed"])
   })
 

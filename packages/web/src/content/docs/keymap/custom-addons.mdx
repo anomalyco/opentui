@@ -80,6 +80,8 @@ Guidelines:
 | `intercept("key:after", ...)`            | Observe dispatch outcomes after binding dispatch        |
 | `intercept("raw", ...)`                  | Observe raw host input before key parsing               |
 
+Event-match resolver order is global fallback priority: earlier matches are tried across all active layers before later matches. Use binding expanders or transformers for layer-local aliases.
+
 ### Diagnostics and lifecycle
 
 | API                              | Use for                                                            |

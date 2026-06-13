@@ -1,0 +1,52 @@
+---
+title: Standalone executables
+description: Build OpenTUI apps with Bun's standalone executable compiler
+order: 4
+---
+
+# Standalone executables
+
+Bun can embed OpenTUI's native package binaries in `bun build --compile` executables when the native package import is statically analyzable.
+
+## Linux libc
+
+Linux uses the glibc native package by default. For musl builds, define `process.env.OPENTUI_LIBC` at build time so Bun can remove the unused branch and embed only the musl package.
+
+```ts
+await Bun.build({
+  entrypoints: ["./app.ts"],
+  compile: {
+    target: "bun-linux-x64-musl",
+    outfile: "./app-linux-x64-musl",
+  },
+  define: {
+    "process.env.OPENTUI_LIBC": JSON.stringify("musl"),
+  },
+})
+```
+
+Use `"glibc"` for glibc Linux builds:
+
+```ts
+define: {
+  "process.env.OPENTUI_LIBC": JSON.stringify("glibc"),
+}
+```
+
+If `process.env.OPENTUI_LIBC` is not defined at build time, Bun must keep both Linux native package branches for that architecture because runtime environment selection is still possible.
+
+## Native Packages
+
+Make sure the target native packages are present in `node_modules` before compiling. For multi-platform release builds, install optional native packages for all target OS and CPU combinations before running `Bun.build()`.
+
+```sh
+bun install --os="*" --cpu="*" @opentui/core@<version>
+```
+
+## Alpine
+
+Bun's Linux musl standalone runtime can require the standard C++ runtime libraries on Alpine. Install them in minimal Alpine images:
+
+```sh
+apk add --no-cache libstdc++ libgcc
+```

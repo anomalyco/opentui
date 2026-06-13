@@ -8,8 +8,9 @@ import { registerEnvVar, env } from "./env.js"
 
 registerEnvVar({ name: "OTUI_TS_STYLE_WARN", default: false, description: "Enable warnings for missing syntax styles" })
 
-interface ConcealOptions {
-  enabled: boolean
+interface TextChunkOptions {
+  enabled?: boolean
+  baseHighlight?: string
 }
 
 interface Boundary {
@@ -39,11 +40,12 @@ export function treeSitterToTextChunks(
   content: string,
   highlights: SimpleHighlight[],
   syntaxStyle: SyntaxStyle,
-  options?: ConcealOptions,
+  options?: TextChunkOptions,
 ): TextChunk[] {
   const chunks: TextChunk[] = []
   const defaultStyle = syntaxStyle.getStyle("default")
   const concealEnabled = options?.enabled ?? true
+  const baseStyle = options?.baseHighlight ? syntaxStyle.getStyle(options.baseHighlight) : undefined
 
   const injectionContainerRanges: Array<{ start: number; end: number }> = []
   const boundaries: Boundary[] = []
@@ -144,7 +146,7 @@ export function treeSitterToTextChunks(
 
         // Merge all active styles in order (like CSS cascade)
         // Later/more specific styles override earlier/less specific ones
-        const mergedStyle: StyleDefinition = {}
+        const mergedStyle: StyleDefinition = baseStyle ? { ...baseStyle } : {}
 
         for (const { group } of sortedGroups) {
           let styleForGroup = syntaxStyle.getStyle(group)
@@ -199,17 +201,18 @@ export function treeSitterToTextChunks(
       }
     } else if (currentOffset < boundary.offset) {
       const text = content.slice(currentOffset, boundary.offset)
+      const style = baseStyle ?? defaultStyle
       chunks.push({
         __isChunk: true,
         text,
-        fg: defaultStyle?.fg,
-        bg: defaultStyle?.bg,
-        attributes: defaultStyle
+        fg: style?.fg,
+        bg: style?.bg,
+        attributes: style
           ? createTextAttributes({
-              bold: defaultStyle.bold,
-              italic: defaultStyle.italic,
-              underline: defaultStyle.underline,
-              dim: defaultStyle.dim,
+              bold: style.bold,
+              italic: style.italic,
+              underline: style.underline,
+              dim: style.dim,
             })
           : 0,
       })
@@ -256,17 +259,18 @@ export function treeSitterToTextChunks(
 
   if (currentOffset < content.length) {
     const text = content.slice(currentOffset)
+    const style = baseStyle ?? defaultStyle
     chunks.push({
       __isChunk: true,
       text,
-      fg: defaultStyle?.fg,
-      bg: defaultStyle?.bg,
-      attributes: defaultStyle
+      fg: style?.fg,
+      bg: style?.bg,
+      attributes: style
         ? createTextAttributes({
-            bold: defaultStyle.bold,
-            italic: defaultStyle.italic,
-            underline: defaultStyle.underline,
-            dim: defaultStyle.dim,
+            bold: style.bold,
+            italic: style.italic,
+            underline: style.underline,
+            dim: style.dim,
           })
         : 0,
     })
@@ -276,7 +280,8 @@ export function treeSitterToTextChunks(
 }
 
 export interface TreeSitterToStyledTextOptions {
-  conceal?: ConcealOptions
+  conceal?: Pick<TextChunkOptions, "enabled">
+  baseHighlight?: string
 }
 
 export async function treeSitterToStyledText(
@@ -287,8 +292,11 @@ export async function treeSitterToStyledText(
   options?: TreeSitterToStyledTextOptions,
 ): Promise<StyledText> {
   const result = await client.highlightOnce(content, filetype)
-  if (result.highlights && result.highlights.length > 0) {
-    const chunks = treeSitterToTextChunks(content, result.highlights, syntaxStyle, options?.conceal)
+  if ((result.highlights && result.highlights.length > 0) || options?.baseHighlight) {
+    const chunks = treeSitterToTextChunks(content, result.highlights ?? [], syntaxStyle, {
+      enabled: options?.conceal?.enabled ?? true,
+      baseHighlight: options?.baseHighlight,
+    })
     return new StyledText(chunks)
   } else {
     const defaultStyle = syntaxStyle.mergeStyles("default")

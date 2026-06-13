@@ -48,6 +48,8 @@ OpenTUI provides these built-in renderables:
 | `MarkdownRenderable`    | Markdown renderer                             |
 | `SliderRenderable`      | Numeric slider control                        |
 
+QR code support is available from the separate `@opentui/qrcode` package.
+
 ## The Renderable Tree
 
 Renderables form a tree structure. Use `add()` and `remove()` to manage children:
@@ -316,6 +318,8 @@ const complex = new BoxRenderable(renderer, {
   },
 })
 ```
+
+`renderBefore` and `renderAfter` are draw-only hooks for custom rendering and decorations. They run after layout and viewport culling, so do not mutate layout props, children, visibility, or reactive state from them.
 
 ## Lifecycle Methods
 

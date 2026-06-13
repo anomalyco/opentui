@@ -1,6 +1,5 @@
 import { readdir, readFile } from "node:fs/promises"
-import { join, relative, sep } from "node:path"
-import { fileURLToPath } from "node:url"
+import { basename, dirname, join, relative, sep } from "node:path"
 
 export type DocSectionId =
   | "getting-started"
@@ -61,7 +60,11 @@ interface RawDocMetadata {
   skill?: unknown
 }
 
-const REPO_ROOT = fileURLToPath(new URL("../../../../", import.meta.url))
+const WORKING_DIRECTORY = process.cwd()
+const REPO_ROOT =
+  basename(WORKING_DIRECTORY) === "web" && basename(dirname(WORKING_DIRECTORY)) === "packages"
+    ? join(WORKING_DIRECTORY, "../..")
+    : WORKING_DIRECTORY
 const DOCS_ROOT = join(REPO_ROOT, "packages/web/src/content/docs")
 
 export const DOC_SECTION_CONFIG: Record<DocSectionId, { title: string; order: number }> = {

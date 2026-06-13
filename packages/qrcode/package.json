@@ -1,0 +1,59 @@
+{
+  "name": "@opentui/qrcode",
+  "version": "0.4.1",
+  "description": "QR code encoder and renderable for OpenTUI",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/anomalyco/opentui",
+    "directory": "packages/qrcode"
+  },
+  "module": "src/index.ts",
+  "main": "src/index.ts",
+  "types": "src/index.ts",
+  "type": "module",
+  "exports": {
+    ".": {
+      "import": "./src/index.ts",
+      "types": "./src/index.ts"
+    },
+    "./react": {
+      "import": "./src/react.ts",
+      "types": "./src/react.ts"
+    },
+    "./solid": {
+      "import": "./src/solid.ts",
+      "types": "./src/solid.ts"
+    }
+  },
+  "scripts": {
+    "build": "bun scripts/build.ts",
+    "publish": "bun scripts/publish.ts",
+    "test": "bun test"
+  },
+  "dependencies": {
+    "@opentui/core": "workspace:*"
+  },
+  "peerDependencies": {
+    "@opentui/react": "workspace:*",
+    "@opentui/solid": "workspace:*"
+  },
+  "peerDependenciesMeta": {
+    "@opentui/react": {
+      "optional": true
+    },
+    "@opentui/solid": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@opentui/react": "workspace:*",
+    "@opentui/solid": "workspace:*",
+    "@types/bun": "latest",
+    "@types/node": "^24.0.0",
+    "typescript": "^5"
+  },
+  "engines": {
+    "bun": ">=1.3.0"
+  }
+}

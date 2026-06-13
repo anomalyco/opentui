@@ -11,9 +11,13 @@ function isLeaderTriggerArray(trigger: LeaderTrigger): trigger is readonly Reado
   return Array.isArray(trigger)
 }
 
-export function resolveLeaderTrigger(trigger: LeaderTrigger): KeyLike {
+export function resolveLeaderTrigger(trigger: LeaderTrigger): KeyLike | undefined {
   if (isLeaderTriggerArray(trigger)) {
-    if (trigger.length !== 1) {
+    if (trigger.length === 0) {
+      return undefined
+    }
+
+    if (trigger.length > 1) {
       throw new Error("Invalid leader trigger: expected exactly one binding")
     }
 
@@ -34,8 +38,13 @@ export function registerLeader<TTarget extends object, TEvent extends KeymapEven
   keymap: Keymap<TTarget, TEvent>,
   options: LeaderOptions,
 ): () => void {
+  const key = resolveLeaderTrigger(options.trigger)
+  if (key === undefined) {
+    return () => {}
+  }
+
   return keymap.registerToken({
     name: options.name ?? "leader",
-    key: resolveLeaderTrigger(options.trigger),
+    key,
   })
 }

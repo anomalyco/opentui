@@ -175,6 +175,44 @@ const markdown = new MarkdownRenderable(renderer, {
 })
 ```
 
+### Custom fenced-code languages
+
+Use `createMarkdownCodeBlockRenderer` when you only want to replace specific fenced-code languages. The language key is matched against the normalized fence info string, so a `tsx` fence maps to `typescriptreact`, and custom DSL names like `taskflow` can be matched directly.
+
+````typescript
+import { BoxRenderable, MarkdownRenderable, TextRenderable, createMarkdownCodeBlockRenderer } from "@opentui/core"
+
+const renderTaskFlow = (renderer) => (token) => {
+  const steps = token.text
+    .split("\n")
+    .filter((line) => line.startsWith("step "))
+    .map((line) => line.slice("step ".length))
+
+  const card = new BoxRenderable(renderer, {
+    border: true,
+    borderStyle: "rounded",
+    borderColor: "#38BDF8",
+    paddingX: 1,
+    flexDirection: "column",
+    width: "100%",
+  })
+
+  for (const step of steps) {
+    card.add(new TextRenderable(renderer, { content: `- ${step}`, width: "100%" }))
+  }
+
+  return card
+}
+
+const markdown = new MarkdownRenderable(renderer, {
+  content: "```taskflow\nstep Parse markdown done\nstep Render widget active\n```",
+  syntaxStyle,
+  renderNode: createMarkdownCodeBlockRenderer({
+    taskflow: renderTaskFlow(renderer),
+  }),
+})
+````
+
 ## Construct API
 
 > Not available yet. Use `MarkdownRenderable` for now.

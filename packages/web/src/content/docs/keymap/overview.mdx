@@ -15,8 +15,12 @@ OpenTUI Keymap is a host-agnostic binding engine for terminals and the browser. 
 ## Installation
 
 ```bash
-bun install @opentui/keymap
+bun add @opentui/keymap
 ```
+
+The keymap package contains only JavaScript. You can import it in Node.js without installing Bun or enabling native FFI.
+You can also import the OpenTUI host helpers. However, creating a native renderer in Node.js requires Node.js 26.3.0 with
+experimental FFI. For details, see [Getting started](/docs/getting-started#runtime-support).
 
 Live demo: [HTML keymap demo](/demos/keymap-html/)
 
@@ -100,6 +104,8 @@ String keys are parser-driven. The engine does not hard-code one binding syntax 
 
 The shared default parser accepts single-stroke named keys, modifier chords, literal punctuation, `" "` for space, `"+"` as a literal plus key, `<token>` aliases, `{pattern}` runtime captures, and concatenated multi-stroke sequences such as `"dd"`, `"<leader>s"`, or `"{count}j"`.
 
+Unknown `<token>` aliases make that expanded binding inactive until the token is registered. They do not disappear from the sequence and expose the remaining keys as a different shortcut.
+
 Object-form keys are the escape hatch when you do not want string parsing. `{ name: "return", ctrl: true }` skips the string parser and normalizes directly to a single stroke.
 
 This parser-driven model is why the same engine can support built-in strings like `"ctrl+x"`, tokenized strings like `"<leader>s"`, pattern strings like `"{count}j"`, and addon-defined syntaxes such as bracket tokens or Emacs-style expansions.
@@ -117,6 +123,8 @@ keymap.registerLayer({
 ```
 
 Tokens are compile-time input syntax, not a separate dispatch mode. They resolve to exactly one stroke, participate in sequence matching like any other stroke, and can be queried with their preserved display form.
+
+Bindings that reference an unknown token fail closed. For example, `"<leader>s"` is skipped until a token named `"leader"` is registered; it never falls back to bare `"s"`. When a binding expander creates multiple alternatives, such as `"ctrl+s,<leader>s"` with `registerCommaBindings()`, only the unresolved alternative is skipped and the concrete alternative remains active. Registering or disposing tokens recompiles affected layers so tokenized bindings become active or dormant with the current token set.
 
 ### Sequence patterns
 

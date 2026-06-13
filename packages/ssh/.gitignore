@@ -1,0 +1,5 @@
+# Generated SSH host keys — never commit private keys
+host_key
+host_key.pub
+*.host_key
+authorized_keys

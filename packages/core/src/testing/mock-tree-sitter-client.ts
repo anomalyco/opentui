@@ -1,18 +1,26 @@
 import { TreeSitterClient } from "../lib/tree-sitter/index.js"
+import { SystemClock, type Clock, type TimerHandle } from "../lib/clock.js"
 import type { SimpleHighlight } from "../lib/tree-sitter/types.js"
 
 export class MockTreeSitterClient extends TreeSitterClient {
   private _highlightPromises: Array<{
     promise: Promise<{ highlights?: SimpleHighlight[]; warning?: string; error?: string }>
     resolve: (result: { highlights?: SimpleHighlight[]; warning?: string; error?: string }) => void
-    timeout?: ReturnType<typeof setTimeout>
+    timeout?: TimerHandle
   }> = []
   private _mockResult: { highlights?: SimpleHighlight[]; warning?: string; error?: string } = { highlights: [] }
   private _autoResolveTimeout?: number
+  private readonly _clock: Clock
 
-  constructor(options?: { autoResolveTimeout?: number }) {
-    super({ dataPath: "/tmp/mock" })
+  constructor(options?: { autoResolveTimeout?: number; clock?: Clock }) {
+    super({ dataPath: "/tmp/mock" }, { autoStartWorker: false })
     this._autoResolveTimeout = options?.autoResolveTimeout
+    this._clock = options?.clock ?? new SystemClock()
+  }
+
+  override async destroy(): Promise<void> {
+    this.resolveAllHighlightOnce()
+    await super.destroy()
   }
 
   async highlightOnce(
@@ -25,10 +33,10 @@ export class MockTreeSitterClient extends TreeSitterClient {
       error?: string
     }>()
 
-    let timeout: ReturnType<typeof setTimeout> | undefined
+    let timeout: TimerHandle | undefined
 
     if (this._autoResolveTimeout !== undefined) {
-      timeout = setTimeout(() => {
+      timeout = this._clock.setTimeout(() => {
         const index = this._highlightPromises.findIndex((p) => p.promise === promise)
         if (index !== -1) {
           resolve(this._mockResult)
@@ -50,7 +58,7 @@ export class MockTreeSitterClient extends TreeSitterClient {
     if (index >= 0 && index < this._highlightPromises.length) {
       const item = this._highlightPromises[index]
       if (item.timeout) {
-        clearTimeout(item.timeout)
+        this._clock.clearTimeout(item.timeout)
       }
       item.resolve(this._mockResult)
       this._highlightPromises.splice(index, 1)
@@ -60,7 +68,7 @@ export class MockTreeSitterClient extends TreeSitterClient {
   resolveAllHighlightOnce() {
     for (const { resolve, timeout } of this._highlightPromises) {
       if (timeout) {
-        clearTimeout(timeout)
+        this._clock.clearTimeout(timeout)
       }
       resolve(this._mockResult)
     }

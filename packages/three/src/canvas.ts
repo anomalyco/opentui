@@ -1,7 +1,6 @@
 import { GPUCanvasContextMock } from "bun-webgpu"
 import { RGBA, type OptimizedBuffer } from "@opentui/core"
 import { SuperSampleType } from "./WGPURenderer.js"
-import { toArrayBuffer } from "bun:ffi"
 import { Jimp } from "jimp"
 
 // @ts-ignore
@@ -422,7 +421,7 @@ export class CLICanvas {
         this.superSampleDrawTimeMs = performance.now() - ssStart
       } else {
         this.superSampleDrawTimeMs = 0
-        const pixelData = new Uint8Array(toArrayBuffer(bufPtr, 0, textureBuffer.size))
+        const pixelData = new Uint8Array(textureBuffer.getMappedRange())
         const isBGRA = contextFormat === "bgra8unorm"
         const backgroundColor = RGBA.fromValues(0, 0, 0, 1)
 

@@ -83,7 +83,7 @@ const textarea = new TextareaRenderable(renderer, {
 | `cursorColor`            | `string` or `RGBA`                    | `#FFFFFF`   | Cursor color                      |
 | `cursorStyle`            | `CursorStyleOptions`                  | -           | Cursor style and blinking         |
 | `keyBindings`            | `KeyBinding[]`                        | -           | Custom keybindings                |
-| `keyAliasMap`            | `KeyAliasMap`                         | -           | Key alias mapping                 |
+| `keyAliasMap`            | `Record<string, string>`              | -           | Key alias mapping                 |
 | `onSubmit`               | `(event: SubmitEvent) => void`        | -           | Submit handler                    |
 | `onContentChange`        | `(event: ContentChangeEvent) => void` | -           | Fired on content changes          |
 | `onCursorChange`         | `(event: CursorChangeEvent) => void`  | -           | Fired on cursor movement          |

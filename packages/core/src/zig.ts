@@ -1,4 +1,12 @@
-import { dlopen, ffiBool, toArrayBuffer, ptr, type FFICallbackInstance, type Pointer } from "./platform/ffi.js"
+import {
+  dlopen,
+  ffiBool,
+  toArrayBuffer,
+  ptr,
+  toPointer,
+  type FFICallbackInstance,
+  type Pointer,
+} from "./platform/ffi.js"
 import { writeFile } from "./platform/runtime.js"
 import { existsSync, writeFileSync } from "fs"
 import { EventEmitter } from "events"
@@ -8,11 +16,12 @@ import {
   type TargetChannel,
   type DebugOverlayCorner,
   type WidthMethod,
+  type TerminalCapabilities,
   type Highlight,
   type LineInfo,
   type MousePointerStyle,
 } from "./types.js"
-export type { LineInfo, AllocatorStats, BuildOptions }
+export type { LineInfo, AllocatorStats, BuildOptions, NativeRenderStats }
 
 import { RGBA } from "./lib/RGBA.js"
 import { OptimizedBuffer } from "./buffer.js"
@@ -33,20 +42,95 @@ import {
   NativeSpanFeedOptionsStruct,
   NativeSpanFeedStatsStruct,
   ReserveInfoStruct,
+  AudioCreateOptionsStruct,
+  AudioStartOptionsStruct,
+  AudioVoiceOptionsStruct,
+  AudioStatsStruct,
   BuildOptionsStruct,
   AllocatorStatsStruct,
+  NativeRenderStatsStruct,
 } from "./zig-structs.js"
 import type {
   NativeSpanFeedOptions,
   NativeSpanFeedStats,
   ReserveInfo,
+  AudioCreateOptions,
+  AudioStartOptions,
+  AudioVoiceOptions,
+  AudioStats,
   BuildOptions,
   AllocatorStats,
+  NativeRenderStats,
 } from "./zig-structs.js"
 import { isBunfsPath } from "./lib/bunfs.js"
 
-const module = await import(`@opentui/core-${process.platform}-${process.arch}/index.ts`)
-let targetLibPath = module.default
+registerEnvVar({
+  name: "OPENTUI_LIBC",
+  description: "Select Linux native libc package. Supported values: glibc, musl.",
+  type: "string",
+  default: "",
+})
+
+function validateLinuxLibcOverride(): void {
+  const libc = process.env.OPENTUI_LIBC
+  if (libc === undefined || libc === "" || libc === "glibc" || libc === "musl") return
+  throw new Error(`On Linux, OPENTUI_LIBC must be unset, empty, "glibc", or "musl", got "${libc}"`)
+}
+
+async function resolveNativePackage() {
+  if (process.platform === "darwin") {
+    // @ts-ignore Optional native package may be absent when building on another platform.
+    if (process.arch === "x64") return await import("@opentui/core-darwin-x64")
+    // @ts-ignore Optional native package may be absent when building on another platform.
+    if (process.arch === "arm64") return await import("@opentui/core-darwin-arm64")
+  }
+
+  if (process.platform === "linux") {
+    validateLinuxLibcOverride()
+
+    if (process.arch === "x64") {
+      if (process.env.OPENTUI_LIBC === "musl") {
+        // @ts-ignore Optional native package may be absent unless building a musl target.
+        return await import("@opentui/core-linux-x64-musl")
+      } else {
+        // @ts-ignore Optional native package may be absent when building on another platform.
+        return await import("@opentui/core-linux-x64")
+      }
+    }
+
+    if (process.arch === "arm64") {
+      if (process.env.OPENTUI_LIBC === "musl") {
+        // @ts-ignore Optional native package may be absent unless building a musl target.
+        return await import("@opentui/core-linux-arm64-musl")
+      } else {
+        // @ts-ignore Optional native package may be absent when building on another platform.
+        return await import("@opentui/core-linux-arm64")
+      }
+    }
+  }
+
+  if (process.platform === "win32") {
+    // @ts-ignore Optional native package may be absent when building on another platform.
+    if (process.arch === "x64") return await import("@opentui/core-win32-x64")
+    // @ts-ignore Optional native package may be absent when building on another platform.
+    if (process.arch === "arm64") return await import("@opentui/core-win32-arm64")
+  }
+
+  throw new Error(`opentui is not supported on the current platform: ${process.platform}-${process.arch}`)
+}
+const nativePackage = await resolveNativePackage()
+
+export type NativeHandle<T extends string> = Pointer & { readonly __nativeHandle: T }
+export type RendererHandle = NativeHandle<"renderer">
+export type OptimizedBufferHandle = NativeHandle<"optimized_buffer">
+export type TextBufferHandle = NativeHandle<"text_buffer">
+export type TextBufferViewHandle = NativeHandle<"text_buffer_view">
+export type EditBufferHandle = NativeHandle<"edit_buffer">
+export type EditorViewHandle = NativeHandle<"editor_view">
+export type SyntaxStyleHandle = NativeHandle<"syntax_style">
+export type EventSinkHandle = NativeHandle<"event_sink">
+export type AudioEngineHandle = NativeHandle<"audio_engine">
+let targetLibPath = nativePackage.default
 
 if (isBunfsPath(targetLibPath)) {
   targetLibPath = targetLibPath.replace("../", "")
@@ -138,6 +222,7 @@ const MOUSE_STYLE_TO_ID = {
   "zoom-out": 35,
 } as const
 
+const MAX_FFI_U32 = 0xffff_ffff
 // Global singleton state for FFI tracing to prevent duplicate exit handlers
 let globalTraceSymbols: Record<string, number[]> | null = null
 let globalFFILogPath: string | null = null
@@ -145,6 +230,30 @@ let exitHandlerRegistered = false
 
 function toNumber(value: number | bigint): number {
   return typeof value === "bigint" ? Number(value) : value
+}
+
+function toSafeByteCount(value: number | bigint, label: string): number {
+  if (typeof value !== "bigint") {
+    return value
+  }
+
+  if (value > BigInt(Number.MAX_SAFE_INTEGER)) {
+    throw new RangeError(`${label} exceeds JavaScript safe integer range`)
+  }
+
+  return Number(value)
+}
+
+function toSafeFFIU32Length(value: number, label: string): number {
+  if (!Number.isSafeInteger(value) || value < 0 || value > MAX_FFI_U32) {
+    throw new RangeError(`${label} exceeds native u32 length limit`)
+  }
+
+  return value
+}
+
+function ptrOrNull(value: ArrayBufferView): Pointer | null {
+  return value.byteLength === 0 ? null : ptr(value)
 }
 
 function rgbaPtr(value: RGBA): Pointer {
@@ -165,192 +274,200 @@ function getOpenTUILib(libPath?: string) {
       returns: "void",
     },
     // Event bus
-    setEventCallback: {
+    createEventSink: {
       args: ["ptr"],
+      returns: "u32",
+    },
+    destroyEventSink: {
+      args: ["u32"],
       returns: "void",
     },
     // Renderer management
     createRenderer: {
-      args: ["u32", "u32", "bool", "bool"],
-      returns: "ptr",
+      args: ["u32", "u32", "u8", "u8", "ptr"],
+      returns: "u32",
     },
     setTerminalEnvVar: {
-      args: ["ptr", "ptr", "usize", "ptr", "usize"],
+      args: ["u32", "ptr", "u32", "ptr", "u32"],
       returns: "bool",
     },
     destroyRenderer: {
-      args: ["ptr"],
+      args: ["u32"],
       returns: "void",
     },
     setUseThread: {
-      args: ["ptr", "bool"],
+      args: ["u32", "bool"],
       returns: "void",
     },
     setClearOnShutdown: {
-      args: ["ptr", "bool"],
+      args: ["u32", "bool"],
       returns: "void",
     },
     setBackgroundColor: {
-      args: ["ptr", "ptr"],
+      args: ["u32", "ptr"],
       returns: "void",
     },
     setRenderOffset: {
-      args: ["ptr", "u32"],
+      args: ["u32", "u32"],
       returns: "void",
     },
     resetSplitScrollback: {
-      args: ["ptr", "u32", "u32"],
+      args: ["u32", "u32", "u32"],
       returns: "u32",
     },
     syncSplitScrollback: {
-      args: ["ptr", "u32"],
+      args: ["u32", "u32"],
       returns: "u32",
     },
     getSplitOutputOffset: {
-      args: ["ptr", "u32"],
+      args: ["u32", "u32"],
       returns: "u32",
     },
     setPendingSplitFooterTransition: {
-      args: ["ptr", "u8", "u32", "u32", "u32", "u32", "u32"],
+      args: ["u32", "u8", "u32", "u32", "u32", "u32", "u32"],
       returns: "void",
     },
     clearPendingSplitFooterTransition: {
-      args: ["ptr"],
+      args: ["u32"],
       returns: "void",
     },
     updateStats: {
-      args: ["ptr", "f64", "u32", "f64"],
+      args: ["u32", "f64", "u32", "f64"],
       returns: "void",
     },
     updateMemoryStats: {
-      args: ["ptr", "u32", "u32", "u32"],
+      args: ["u32", "u32", "u32", "u32"],
+      returns: "void",
+    },
+    getRenderStats: {
+      args: ["u32", "ptr"],
       returns: "void",
     },
     render: {
-      args: ["ptr", "bool"],
-      returns: "void",
+      args: ["u32", "bool"],
+      returns: "u8",
     },
     repaintSplitFooter: {
-      args: ["ptr", "u32", "bool"],
-      returns: "u32",
+      args: ["u32", "u32", "bool"],
+      returns: "u64",
     },
     // Single FFI entrypoint for split commit append. beginFrame/finalizeFrame let
     // native code decide whether this call is a standalone commit or part of a
     // larger batched frame envelope.
     commitSplitFooterSnapshot: {
-      args: ["ptr", "ptr", "u32", "bool", "bool", "u32", "bool", "bool", "bool"],
-      returns: "u32",
+      args: ["u32", "u32", "u32", "bool", "bool", "u32", "bool", "bool", "bool"],
+      returns: "u64",
     },
     getNextBuffer: {
-      args: ["ptr"],
-      returns: "ptr",
+      args: ["u32"],
+      returns: "u32",
     },
     getCurrentBuffer: {
-      args: ["ptr"],
-      returns: "ptr",
+      args: ["u32"],
+      returns: "u32",
     },
     rendererSetPaletteState: {
-      args: ["ptr", "ptr", "usize", "ptr", "ptr", "u32"],
+      args: ["u32", "ptr", "u32", "ptr", "ptr", "u32"],
       returns: "void",
     },
 
     queryPixelResolution: {
-      args: ["ptr"],
+      args: ["u32"],
       returns: "void",
     },
     queryThemeColors: {
-      args: ["ptr"],
+      args: ["u32"],
       returns: "void",
     },
 
     createOptimizedBuffer: {
-      args: ["u32", "u32", "bool", "u8", "ptr", "usize"],
-      returns: "ptr",
+      args: ["u32", "u32", "bool", "u8", "ptr", "u32"],
+      returns: "u32",
     },
     destroyOptimizedBuffer: {
-      args: ["ptr"],
+      args: ["u32"],
       returns: "void",
     },
 
     drawFrameBuffer: {
-      args: ["ptr", "i32", "i32", "ptr", "u32", "u32", "u32", "u32"],
+      args: ["u32", "i32", "i32", "u32", "u32", "u32", "u32", "u32"],
       returns: "void",
     },
     getBufferWidth: {
-      args: ["ptr"],
+      args: ["u32"],
       returns: "u32",
     },
     getBufferHeight: {
-      args: ["ptr"],
+      args: ["u32"],
       returns: "u32",
     },
     bufferClear: {
-      args: ["ptr", "ptr"],
+      args: ["u32", "ptr"],
       returns: "void",
     },
     bufferGetCharPtr: {
-      args: ["ptr"],
+      args: ["u32"],
       returns: "ptr",
     },
     bufferGetFgPtr: {
-      args: ["ptr"],
+      args: ["u32"],
       returns: "ptr",
     },
     bufferGetBgPtr: {
-      args: ["ptr"],
+      args: ["u32"],
       returns: "ptr",
     },
     bufferGetAttributesPtr: {
-      args: ["ptr"],
+      args: ["u32"],
       returns: "ptr",
     },
     bufferGetRespectAlpha: {
-      args: ["ptr"],
+      args: ["u32"],
       returns: "bool",
     },
     bufferSetRespectAlpha: {
-      args: ["ptr", "bool"],
+      args: ["u32", "bool"],
       returns: "void",
     },
     bufferGetId: {
-      args: ["ptr", "ptr", "usize"],
-      returns: "usize",
+      args: ["u32", "ptr", "u32"],
+      returns: "u32",
     },
     bufferGetRealCharSize: {
-      args: ["ptr"],
+      args: ["u32"],
       returns: "u32",
     },
     bufferWriteResolvedChars: {
-      args: ["ptr", "ptr", "usize", "bool"],
+      args: ["u32", "ptr", "u32", "bool"],
       returns: "u32",
     },
 
     bufferDrawText: {
-      args: ["ptr", "ptr", "u32", "u32", "u32", "ptr", "ptr", "u32"],
+      args: ["u32", "ptr", "u32", "u32", "u32", "ptr", "ptr", "u32"],
       returns: "void",
     },
     bufferSetCellWithAlphaBlending: {
-      args: ["ptr", "u32", "u32", "u32", "ptr", "ptr", "u32"],
+      args: ["u32", "u32", "u32", "u32", "ptr", "ptr", "u32"],
       returns: "void",
     },
     bufferSetCell: {
-      args: ["ptr", "u32", "u32", "u32", "ptr", "ptr", "u32"],
+      args: ["u32", "u32", "u32", "u32", "ptr", "ptr", "u32"],
       returns: "void",
     },
     bufferFillRect: {
-      args: ["ptr", "u32", "u32", "u32", "u32", "ptr"],
+      args: ["u32", "u32", "u32", "u32", "u32", "ptr"],
       returns: "void",
     },
     bufferColorMatrix: {
-      args: ["ptr", "ptr", "ptr", "usize", "f32", "u8"],
+      args: ["u32", "ptr", "ptr", "u32", "f32", "u8"],
       returns: "void",
     },
     bufferColorMatrixUniform: {
-      args: ["ptr", "ptr", "f32", "u8"],
+      args: ["u32", "ptr", "f32", "u8"],
       returns: "void",
     },
     bufferResize: {
-      args: ["ptr", "u32", "u32"],
+      args: ["u32", "u32", "u32"],
       returns: "void",
     },
 
@@ -373,745 +490,749 @@ function getOpenTUILib(libPath?: string) {
     },
 
     resizeRenderer: {
-      args: ["ptr", "u32", "u32"],
+      args: ["u32", "u32", "u32"],
       returns: "void",
     },
 
     // Cursor functions (now renderer-scoped)
     setCursorPosition: {
-      args: ["ptr", "i32", "i32", "bool"],
+      args: ["u32", "i32", "i32", "bool"],
       returns: "void",
     },
     setCursorColor: {
-      args: ["ptr", "ptr"],
+      args: ["u32", "ptr"],
       returns: "void",
     },
     getCursorState: {
-      args: ["ptr", "ptr"],
+      args: ["u32", "ptr"],
       returns: "void",
     },
 
     // Cursor and mouse pointer style (combined)
     setCursorStyleOptions: {
-      args: ["ptr", "ptr"],
+      args: ["u32", "ptr"],
       returns: "void",
     },
 
     // Debug overlay
     setDebugOverlay: {
-      args: ["ptr", "bool", "u8"],
+      args: ["u32", "bool", "u8"],
       returns: "void",
     },
 
     // Terminal control
     clearTerminal: {
-      args: ["ptr"],
+      args: ["u32"],
       returns: "void",
     },
     setTerminalTitle: {
-      args: ["ptr", "ptr", "usize"],
+      args: ["u32", "ptr", "u32"],
       returns: "void",
     },
     copyToClipboardOSC52: {
-      args: ["ptr", "u8", "ptr", "usize"],
+      args: ["u32", "u8", "ptr", "u32"],
       returns: "bool",
     },
     clearClipboardOSC52: {
-      args: ["ptr", "u8"],
+      args: ["u32", "u8"],
+      returns: "bool",
+    },
+    triggerNotification: {
+      args: ["u32", "ptr", "u32", "ptr", "u32"],
       returns: "bool",
     },
 
     bufferDrawSuperSampleBuffer: {
-      args: ["ptr", "u32", "u32", "ptr", "usize", "u8", "u32"],
+      args: ["u32", "u32", "u32", "ptr", "u32", "u8", "u32"],
       returns: "void",
     },
     bufferDrawPackedBuffer: {
-      args: ["ptr", "ptr", "usize", "u32", "u32", "u32", "u32"],
+      args: ["u32", "ptr", "u32", "u32", "u32", "u32", "u32"],
       returns: "void",
     },
     bufferDrawGrayscaleBuffer: {
-      args: ["ptr", "i32", "i32", "ptr", "u32", "u32", "ptr", "ptr"],
+      args: ["u32", "i32", "i32", "ptr", "u32", "u32", "ptr", "ptr"],
       returns: "void",
     },
     bufferDrawGrayscaleBufferSupersampled: {
-      args: ["ptr", "i32", "i32", "ptr", "u32", "u32", "ptr", "ptr"],
+      args: ["u32", "i32", "i32", "ptr", "u32", "u32", "ptr", "ptr"],
       returns: "void",
     },
     bufferDrawGrid: {
-      args: ["ptr", "ptr", "ptr", "ptr", "ptr", "u32", "ptr", "u32", "ptr"],
+      args: ["u32", "ptr", "ptr", "ptr", "ptr", "u32", "ptr", "u32", "ptr"],
       returns: "void",
     },
     bufferDrawBox: {
-      args: ["ptr", "i32", "i32", "u32", "u32", "ptr", "u32", "ptr", "ptr", "ptr", "u32", "ptr", "u32"],
+      args: ["u32", "i32", "i32", "u32", "u32", "ptr", "u32", "ptr", "ptr", "ptr", "ptr", "u32", "ptr", "u32"],
       returns: "void",
     },
     bufferPushScissorRect: {
-      args: ["ptr", "i32", "i32", "u32", "u32"],
+      args: ["u32", "i32", "i32", "u32", "u32"],
       returns: "void",
     },
     bufferPopScissorRect: {
-      args: ["ptr"],
+      args: ["u32"],
       returns: "void",
     },
     bufferClearScissorRects: {
-      args: ["ptr"],
+      args: ["u32"],
       returns: "void",
     },
     bufferPushOpacity: {
-      args: ["ptr", "f32"],
+      args: ["u32", "f32"],
       returns: "void",
     },
     bufferPopOpacity: {
-      args: ["ptr"],
+      args: ["u32"],
       returns: "void",
     },
     bufferGetCurrentOpacity: {
-      args: ["ptr"],
+      args: ["u32"],
       returns: "f32",
     },
     bufferClearOpacity: {
-      args: ["ptr"],
+      args: ["u32"],
       returns: "void",
     },
 
     addToHitGrid: {
-      args: ["ptr", "i32", "i32", "u32", "u32", "u32"],
+      args: ["u32", "i32", "i32", "u32", "u32", "u32"],
       returns: "void",
     },
     clearCurrentHitGrid: {
-      args: ["ptr"],
+      args: ["u32"],
       returns: "void",
     },
     hitGridPushScissorRect: {
-      args: ["ptr", "i32", "i32", "u32", "u32"],
+      args: ["u32", "i32", "i32", "u32", "u32"],
       returns: "void",
     },
     hitGridPopScissorRect: {
-      args: ["ptr"],
+      args: ["u32"],
       returns: "void",
     },
     hitGridClearScissorRects: {
-      args: ["ptr"],
+      args: ["u32"],
       returns: "void",
     },
     addToCurrentHitGridClipped: {
-      args: ["ptr", "i32", "i32", "u32", "u32", "u32"],
+      args: ["u32", "i32", "i32", "u32", "u32", "u32"],
       returns: "void",
     },
     checkHit: {
-      args: ["ptr", "u32", "u32"],
+      args: ["u32", "u32", "u32"],
       returns: "u32",
     },
     getHitGridDirty: {
-      args: ["ptr"],
+      args: ["u32"],
       returns: "bool",
     },
     dumpHitGrid: {
-      args: ["ptr"],
+      args: ["u32"],
       returns: "void",
     },
     dumpBuffers: {
-      args: ["ptr", "i64"],
+      args: ["u32", "i64"],
       returns: "void",
     },
-    dumpStdoutBuffer: {
-      args: ["ptr", "i64"],
+    dumpOutputBuffer: {
+      args: ["u32", "i64"],
       returns: "void",
     },
     restoreTerminalModes: {
-      args: ["ptr"],
+      args: ["u32"],
       returns: "void",
     },
     enableMouse: {
-      args: ["ptr", "bool"],
+      args: ["u32", "bool"],
       returns: "void",
     },
     disableMouse: {
-      args: ["ptr"],
+      args: ["u32"],
       returns: "void",
     },
     enableKittyKeyboard: {
-      args: ["ptr", "u8"],
+      args: ["u32", "u8"],
       returns: "void",
     },
     disableKittyKeyboard: {
-      args: ["ptr"],
+      args: ["u32"],
       returns: "void",
     },
     setKittyKeyboardFlags: {
-      args: ["ptr", "u8"],
+      args: ["u32", "u8"],
       returns: "void",
     },
     getKittyKeyboardFlags: {
-      args: ["ptr"],
+      args: ["u32"],
       returns: "u8",
     },
     setupTerminal: {
-      args: ["ptr", "bool"],
+      args: ["u32", "bool"],
       returns: "void",
     },
     suspendRenderer: {
-      args: ["ptr"],
+      args: ["u32"],
       returns: "void",
     },
     resumeRenderer: {
-      args: ["ptr"],
+      args: ["u32"],
       returns: "void",
     },
     writeOut: {
-      args: ["ptr", "ptr", "u64"],
+      args: ["u32", "ptr", "u32"],
       returns: "void",
     },
 
     // TextBuffer functions
     createTextBuffer: {
       args: ["u8"],
-      returns: "ptr",
+      returns: "u32",
     },
     destroyTextBuffer: {
-      args: ["ptr"],
+      args: ["u32"],
       returns: "void",
     },
     textBufferGetLength: {
-      args: ["ptr"],
+      args: ["u32"],
       returns: "u32",
     },
     textBufferGetByteSize: {
-      args: ["ptr"],
+      args: ["u32"],
       returns: "u32",
     },
 
     textBufferReset: {
-      args: ["ptr"],
+      args: ["u32"],
       returns: "void",
     },
     textBufferClear: {
-      args: ["ptr"],
+      args: ["u32"],
       returns: "void",
     },
     textBufferSetDefaultFg: {
-      args: ["ptr", "ptr"],
+      args: ["u32", "ptr"],
       returns: "void",
     },
     textBufferSetDefaultBg: {
-      args: ["ptr", "ptr"],
+      args: ["u32", "ptr"],
       returns: "void",
     },
     textBufferSetDefaultAttributes: {
-      args: ["ptr", "ptr"],
+      args: ["u32", "ptr"],
       returns: "void",
     },
     textBufferResetDefaults: {
-      args: ["ptr"],
+      args: ["u32"],
       returns: "void",
     },
     textBufferGetTabWidth: {
-      args: ["ptr"],
+      args: ["u32"],
       returns: "u8",
     },
     textBufferSetTabWidth: {
-      args: ["ptr", "u8"],
+      args: ["u32", "u8"],
       returns: "void",
     },
     textBufferRegisterMemBuffer: {
-      args: ["ptr", "ptr", "usize", "bool"],
+      args: ["u32", "ptr", "u32", "bool"],
       returns: "u16",
     },
     textBufferReplaceMemBuffer: {
-      args: ["ptr", "u8", "ptr", "usize", "bool"],
+      args: ["u32", "u8", "ptr", "u32", "bool"],
       returns: "bool",
     },
     textBufferClearMemRegistry: {
-      args: ["ptr"],
+      args: ["u32"],
       returns: "void",
     },
     textBufferSetTextFromMem: {
-      args: ["ptr", "u8"],
+      args: ["u32", "u8"],
       returns: "void",
     },
     textBufferAppend: {
-      args: ["ptr", "ptr", "usize"],
+      args: ["u32", "ptr", "u32"],
       returns: "void",
     },
     textBufferAppendFromMemId: {
-      args: ["ptr", "u8"],
+      args: ["u32", "u8"],
       returns: "void",
     },
     textBufferLoadFile: {
-      args: ["ptr", "ptr", "usize"],
+      args: ["u32", "ptr", "u32"],
       returns: "bool",
     },
     textBufferSetStyledText: {
-      args: ["ptr", "ptr", "usize"],
+      args: ["u32", "ptr", "u32"],
       returns: "void",
     },
     textBufferGetLineCount: {
-      args: ["ptr"],
+      args: ["u32"],
       returns: "u32",
     },
     textBufferGetPlainText: {
-      args: ["ptr", "ptr", "usize"],
-      returns: "usize",
+      args: ["u32", "ptr", "u32"],
+      returns: "u32",
     },
     textBufferAddHighlightByCharRange: {
-      args: ["ptr", "ptr"],
+      args: ["u32", "ptr"],
       returns: "void",
     },
     textBufferAddHighlight: {
-      args: ["ptr", "u32", "ptr"],
+      args: ["u32", "u32", "ptr"],
       returns: "void",
     },
     textBufferRemoveHighlightsByRef: {
-      args: ["ptr", "u16"],
+      args: ["u32", "u16"],
       returns: "void",
     },
     textBufferClearLineHighlights: {
-      args: ["ptr", "u32"],
+      args: ["u32", "u32"],
       returns: "void",
     },
     textBufferClearAllHighlights: {
-      args: ["ptr"],
+      args: ["u32"],
       returns: "void",
     },
     textBufferSetSyntaxStyle: {
-      args: ["ptr", "ptr"],
-      returns: "void",
+      args: ["u32", "u32"],
+      returns: "bool",
     },
     textBufferGetLineHighlightsPtr: {
-      args: ["ptr", "u32", "ptr"],
+      args: ["u32", "u32", "ptr"],
       returns: "ptr",
     },
     textBufferFreeLineHighlights: {
-      args: ["ptr", "usize"],
+      args: ["ptr", "u32"],
       returns: "void",
     },
     textBufferGetHighlightCount: {
-      args: ["ptr"],
+      args: ["u32"],
       returns: "u32",
     },
     textBufferGetTextRange: {
-      args: ["ptr", "u32", "u32", "ptr", "usize"],
-      returns: "usize",
+      args: ["u32", "u32", "u32", "ptr", "u32"],
+      returns: "u32",
     },
     textBufferGetTextRangeByCoords: {
-      args: ["ptr", "u32", "u32", "u32", "u32", "ptr", "usize"],
-      returns: "usize",
+      args: ["u32", "u32", "u32", "u32", "u32", "ptr", "u32"],
+      returns: "u32",
     },
 
     // TextBufferView functions
     createTextBufferView: {
-      args: ["ptr"],
-      returns: "ptr",
+      args: ["u32"],
+      returns: "u32",
     },
     destroyTextBufferView: {
-      args: ["ptr"],
+      args: ["u32"],
       returns: "void",
     },
     textBufferViewSetSelection: {
-      args: ["ptr", "u32", "u32", "ptr", "ptr"],
+      args: ["u32", "u32", "u32", "ptr", "ptr"],
       returns: "void",
     },
     textBufferViewResetSelection: {
-      args: ["ptr"],
+      args: ["u32"],
       returns: "void",
     },
     textBufferViewGetSelectionInfo: {
-      args: ["ptr"],
+      args: ["u32"],
       returns: "u64",
     },
     textBufferViewSetLocalSelection: {
-      args: ["ptr", "i32", "i32", "i32", "i32", "ptr", "ptr"],
+      args: ["u32", "i32", "i32", "i32", "i32", "ptr", "ptr"],
       returns: "bool",
     },
     textBufferViewUpdateSelection: {
-      args: ["ptr", "u32", "ptr", "ptr"],
+      args: ["u32", "u32", "ptr", "ptr"],
       returns: "void",
     },
     textBufferViewUpdateLocalSelection: {
-      args: ["ptr", "i32", "i32", "i32", "i32", "ptr", "ptr"],
+      args: ["u32", "i32", "i32", "i32", "i32", "ptr", "ptr"],
       returns: "bool",
     },
     textBufferViewResetLocalSelection: {
-      args: ["ptr"],
+      args: ["u32"],
       returns: "void",
     },
     textBufferViewSetWrapWidth: {
-      args: ["ptr", "u32"],
+      args: ["u32", "u32"],
       returns: "void",
     },
     textBufferViewSetWrapMode: {
-      args: ["ptr", "u8"],
+      args: ["u32", "u8"],
       returns: "void",
     },
     textBufferViewSetFirstLineOffset: {
-      args: ["ptr", "u32"],
+      args: ["u32", "u32"],
       returns: "void",
     },
     textBufferViewSetViewportSize: {
-      args: ["ptr", "u32", "u32"],
+      args: ["u32", "u32", "u32"],
       returns: "void",
     },
     textBufferViewSetViewport: {
-      args: ["ptr", "u32", "u32", "u32", "u32"],
+      args: ["u32", "u32", "u32", "u32", "u32"],
       returns: "void",
     },
     textBufferViewGetVirtualLineCount: {
-      args: ["ptr"],
+      args: ["u32"],
       returns: "u32",
     },
     textBufferViewGetLineInfoDirect: {
-      args: ["ptr", "ptr"],
+      args: ["u32", "ptr"],
       returns: "void",
     },
     textBufferViewGetLogicalLineInfoDirect: {
-      args: ["ptr", "ptr"],
+      args: ["u32", "ptr"],
       returns: "void",
     },
     textBufferViewGetSelectedText: {
-      args: ["ptr", "ptr", "usize"],
-      returns: "usize",
+      args: ["u32", "ptr", "u32"],
+      returns: "u32",
     },
     textBufferViewGetPlainText: {
-      args: ["ptr", "ptr", "usize"],
-      returns: "usize",
+      args: ["u32", "ptr", "u32"],
+      returns: "u32",
     },
     textBufferViewSetTabIndicator: {
-      args: ["ptr", "u32"],
+      args: ["u32", "u32"],
       returns: "void",
     },
     textBufferViewSetTabIndicatorColor: {
-      args: ["ptr", "ptr"],
+      args: ["u32", "ptr"],
       returns: "void",
     },
     textBufferViewSetTruncate: {
-      args: ["ptr", "bool"],
+      args: ["u32", "bool"],
       returns: "void",
     },
     textBufferViewMeasureForDimensions: {
-      args: ["ptr", "u32", "u32", "ptr"],
+      args: ["u32", "u32", "u32", "ptr"],
       returns: "bool",
     },
     bufferDrawTextBufferView: {
-      args: ["ptr", "ptr", "i32", "i32"],
+      args: ["u32", "u32", "i32", "i32"],
       returns: "void",
     },
     bufferDrawEditorView: {
-      args: ["ptr", "ptr", "i32", "i32"],
+      args: ["u32", "u32", "i32", "i32"],
       returns: "void",
     },
 
     // EditorView functions
     createEditorView: {
-      args: ["ptr", "u32", "u32"],
-      returns: "ptr",
+      args: ["u32", "u32", "u32"],
+      returns: "u32",
     },
     destroyEditorView: {
-      args: ["ptr"],
+      args: ["u32"],
       returns: "void",
     },
     editorViewSetViewportSize: {
-      args: ["ptr", "u32", "u32"],
+      args: ["u32", "u32", "u32"],
       returns: "void",
     },
     editorViewSetViewport: {
-      args: ["ptr", "u32", "u32", "u32", "u32", "bool"],
+      args: ["u32", "u32", "u32", "u32", "u32", "bool"],
       returns: "void",
     },
     editorViewGetViewport: {
-      args: ["ptr", "ptr", "ptr", "ptr", "ptr"],
+      args: ["u32", "ptr", "ptr", "ptr", "ptr"],
       returns: "void",
     },
     editorViewSetScrollMargin: {
-      args: ["ptr", "f32"],
+      args: ["u32", "f32"],
       returns: "void",
     },
     editorViewSetWrapMode: {
-      args: ["ptr", "u8"],
+      args: ["u32", "u8"],
       returns: "void",
     },
     editorViewGetVirtualLineCount: {
-      args: ["ptr"],
+      args: ["u32"],
       returns: "u32",
     },
     editorViewGetTotalVirtualLineCount: {
-      args: ["ptr"],
+      args: ["u32"],
       returns: "u32",
     },
     editorViewGetTextBufferView: {
-      args: ["ptr"],
-      returns: "ptr",
+      args: ["u32"],
+      returns: "u32",
     },
     editorViewGetLineInfoDirect: {
-      args: ["ptr", "ptr"],
+      args: ["u32", "ptr"],
       returns: "void",
     },
     editorViewGetLogicalLineInfoDirect: {
-      args: ["ptr", "ptr"],
+      args: ["u32", "ptr"],
       returns: "void",
     },
 
     // EditBuffer functions
     createEditBuffer: {
-      args: ["u8"],
-      returns: "ptr",
+      args: ["u8", "u32"],
+      returns: "u32",
     },
     destroyEditBuffer: {
-      args: ["ptr"],
+      args: ["u32"],
       returns: "void",
     },
     editBufferSetText: {
-      args: ["ptr", "ptr", "usize"],
+      args: ["u32", "ptr", "u32"],
       returns: "void",
     },
     editBufferSetTextFromMem: {
-      args: ["ptr", "u8"],
+      args: ["u32", "u8"],
       returns: "void",
     },
     editBufferReplaceText: {
-      args: ["ptr", "ptr", "usize"],
+      args: ["u32", "ptr", "u32"],
       returns: "void",
     },
     editBufferReplaceTextFromMem: {
-      args: ["ptr", "u8"],
+      args: ["u32", "u8"],
       returns: "void",
     },
     editBufferGetText: {
-      args: ["ptr", "ptr", "usize"],
-      returns: "usize",
+      args: ["u32", "ptr", "u32"],
+      returns: "u32",
     },
     editBufferInsertChar: {
-      args: ["ptr", "ptr", "usize"],
+      args: ["u32", "ptr", "u32"],
       returns: "void",
     },
     editBufferInsertText: {
-      args: ["ptr", "ptr", "usize"],
+      args: ["u32", "ptr", "u32"],
       returns: "void",
     },
     editBufferDeleteChar: {
-      args: ["ptr"],
+      args: ["u32"],
       returns: "void",
     },
     editBufferDeleteCharBackward: {
-      args: ["ptr"],
+      args: ["u32"],
       returns: "void",
     },
     editBufferDeleteRange: {
-      args: ["ptr", "u32", "u32", "u32", "u32"],
+      args: ["u32", "u32", "u32", "u32", "u32"],
       returns: "void",
     },
     editBufferNewLine: {
-      args: ["ptr"],
+      args: ["u32"],
       returns: "void",
     },
     editBufferDeleteLine: {
-      args: ["ptr"],
+      args: ["u32"],
       returns: "void",
     },
     editBufferMoveCursorLeft: {
-      args: ["ptr"],
+      args: ["u32"],
       returns: "void",
     },
     editBufferMoveCursorRight: {
-      args: ["ptr"],
+      args: ["u32"],
       returns: "void",
     },
     editBufferMoveCursorUp: {
-      args: ["ptr"],
+      args: ["u32"],
       returns: "void",
     },
     editBufferMoveCursorDown: {
-      args: ["ptr"],
+      args: ["u32"],
       returns: "void",
     },
     editBufferGotoLine: {
-      args: ["ptr", "u32"],
+      args: ["u32", "u32"],
       returns: "void",
     },
     editBufferSetCursor: {
-      args: ["ptr", "u32", "u32"],
+      args: ["u32", "u32", "u32"],
       returns: "void",
     },
     editBufferSetCursorToLineCol: {
-      args: ["ptr", "u32", "u32"],
+      args: ["u32", "u32", "u32"],
       returns: "void",
     },
     editBufferSetCursorByOffset: {
-      args: ["ptr", "u32"],
+      args: ["u32", "u32"],
       returns: "void",
     },
     editBufferGetCursorPosition: {
-      args: ["ptr", "ptr"],
+      args: ["u32", "ptr"],
       returns: "void",
     },
     editBufferGetId: {
-      args: ["ptr"],
+      args: ["u32"],
       returns: "u16",
     },
     editBufferGetTextBuffer: {
-      args: ["ptr"],
-      returns: "ptr",
+      args: ["u32"],
+      returns: "u32",
     },
     editBufferDebugLogRope: {
-      args: ["ptr"],
+      args: ["u32"],
       returns: "void",
     },
     editBufferUndo: {
-      args: ["ptr", "ptr", "usize"],
-      returns: "usize",
+      args: ["u32", "ptr", "u32"],
+      returns: "u32",
     },
     editBufferRedo: {
-      args: ["ptr", "ptr", "usize"],
-      returns: "usize",
+      args: ["u32", "ptr", "u32"],
+      returns: "u32",
     },
     editBufferCanUndo: {
-      args: ["ptr"],
+      args: ["u32"],
       returns: "bool",
     },
     editBufferCanRedo: {
-      args: ["ptr"],
+      args: ["u32"],
       returns: "bool",
     },
     editBufferClearHistory: {
-      args: ["ptr"],
+      args: ["u32"],
       returns: "void",
     },
     editBufferClear: {
-      args: ["ptr"],
+      args: ["u32"],
       returns: "void",
     },
     editBufferGetNextWordBoundary: {
-      args: ["ptr", "ptr"],
+      args: ["u32", "ptr"],
       returns: "void",
     },
     editBufferGetPrevWordBoundary: {
-      args: ["ptr", "ptr"],
+      args: ["u32", "ptr"],
       returns: "void",
     },
     editBufferGetEOL: {
-      args: ["ptr", "ptr"],
+      args: ["u32", "ptr"],
       returns: "void",
     },
     editBufferOffsetToPosition: {
-      args: ["ptr", "u32", "ptr"],
+      args: ["u32", "u32", "ptr"],
       returns: "bool",
     },
     editBufferPositionToOffset: {
-      args: ["ptr", "u32", "u32"],
+      args: ["u32", "u32", "u32"],
       returns: "u32",
     },
     editBufferGetLineStartOffset: {
-      args: ["ptr", "u32"],
+      args: ["u32", "u32"],
       returns: "u32",
     },
     editBufferGetTextRange: {
-      args: ["ptr", "u32", "u32", "ptr", "usize"],
-      returns: "usize",
+      args: ["u32", "u32", "u32", "ptr", "u32"],
+      returns: "u32",
     },
     editBufferGetTextRangeByCoords: {
-      args: ["ptr", "u32", "u32", "u32", "u32", "ptr", "usize"],
-      returns: "usize",
+      args: ["u32", "u32", "u32", "u32", "u32", "ptr", "u32"],
+      returns: "u32",
     },
 
     // EditorView selection and editing methods
     editorViewSetSelection: {
-      args: ["ptr", "u32", "u32", "ptr", "ptr"],
+      args: ["u32", "u32", "u32", "ptr", "ptr"],
       returns: "void",
     },
     editorViewResetSelection: {
-      args: ["ptr"],
+      args: ["u32"],
       returns: "void",
     },
     editorViewGetSelection: {
-      args: ["ptr"],
+      args: ["u32"],
       returns: "u64",
     },
     editorViewSetLocalSelection: {
-      args: ["ptr", "i32", "i32", "i32", "i32", "ptr", "ptr", "bool", "bool"],
+      args: ["u32", "i32", "i32", "i32", "i32", "ptr", "ptr", "bool", "bool"],
       returns: "bool",
     },
     editorViewUpdateSelection: {
-      args: ["ptr", "u32", "ptr", "ptr"],
+      args: ["u32", "u32", "ptr", "ptr"],
       returns: "void",
     },
     editorViewUpdateLocalSelection: {
-      args: ["ptr", "i32", "i32", "i32", "i32", "ptr", "ptr", "bool", "bool"],
+      args: ["u32", "i32", "i32", "i32", "i32", "ptr", "ptr", "bool", "bool"],
       returns: "bool",
     },
     editorViewResetLocalSelection: {
-      args: ["ptr"],
+      args: ["u32"],
       returns: "void",
     },
     editorViewGetSelectedTextBytes: {
-      args: ["ptr", "ptr", "usize"],
-      returns: "usize",
+      args: ["u32", "ptr", "u32"],
+      returns: "u32",
     },
     editorViewGetCursor: {
-      args: ["ptr", "ptr", "ptr"],
+      args: ["u32", "ptr", "ptr"],
       returns: "void",
     },
     editorViewGetText: {
-      args: ["ptr", "ptr", "usize"],
-      returns: "usize",
+      args: ["u32", "ptr", "u32"],
+      returns: "u32",
     },
 
     // EditorView VisualCursor methods
     editorViewGetVisualCursor: {
-      args: ["ptr", "ptr"],
+      args: ["u32", "ptr"],
       returns: "void",
     },
 
     editorViewMoveUpVisual: {
-      args: ["ptr"],
+      args: ["u32"],
       returns: "void",
     },
     editorViewMoveDownVisual: {
-      args: ["ptr"],
+      args: ["u32"],
       returns: "void",
     },
     editorViewDeleteSelectedText: {
-      args: ["ptr"],
+      args: ["u32"],
       returns: "void",
     },
     editorViewSetCursorByOffset: {
-      args: ["ptr", "u32"],
+      args: ["u32", "u32"],
       returns: "void",
     },
     editorViewGetNextWordBoundary: {
-      args: ["ptr", "ptr"],
+      args: ["u32", "ptr"],
       returns: "void",
     },
     editorViewGetPrevWordBoundary: {
-      args: ["ptr", "ptr"],
+      args: ["u32", "ptr"],
       returns: "void",
     },
     editorViewGetEOL: {
-      args: ["ptr", "ptr"],
+      args: ["u32", "ptr"],
       returns: "void",
     },
     editorViewGetVisualSOL: {
-      args: ["ptr", "ptr"],
+      args: ["u32", "ptr"],
       returns: "void",
     },
     editorViewGetVisualEOL: {
-      args: ["ptr", "ptr"],
+      args: ["u32", "ptr"],
       returns: "void",
     },
     editorViewSetPlaceholderStyledText: {
-      args: ["ptr", "ptr", "usize"],
+      args: ["u32", "ptr", "u32"],
       returns: "void",
     },
     editorViewSetTabIndicator: {
-      args: ["ptr", "u32"],
+      args: ["u32", "u32"],
       returns: "void",
     },
     editorViewSetTabIndicatorColor: {
-      args: ["ptr", "ptr"],
+      args: ["u32", "ptr"],
       returns: "void",
     },
 
     getArenaAllocatedBytes: {
       args: [],
-      returns: "usize",
+      returns: "u64",
     },
     getBuildOptions: {
       args: ["ptr"],
@@ -1125,47 +1246,335 @@ function getOpenTUILib(libPath?: string) {
     // SyntaxStyle functions
     createSyntaxStyle: {
       args: [],
-      returns: "ptr",
+      returns: "u32",
     },
     destroySyntaxStyle: {
-      args: ["ptr"],
+      args: ["u32"],
       returns: "void",
     },
     syntaxStyleRegister: {
-      args: ["ptr", "ptr", "usize", "ptr", "ptr", "u32"],
+      args: ["u32", "ptr", "u32", "ptr", "ptr", "u32"],
       returns: "u32",
     },
     syntaxStyleResolveByName: {
-      args: ["ptr", "ptr", "usize"],
+      args: ["u32", "ptr", "u32"],
       returns: "u32",
     },
     syntaxStyleGetStyleCount: {
-      args: ["ptr"],
-      returns: "usize",
+      args: ["u32"],
+      returns: "u32",
     },
 
     // Terminal capability functions
     getTerminalCapabilities: {
-      args: ["ptr", "ptr"],
+      args: ["u32", "ptr"],
       returns: "void",
     },
     processCapabilityResponse: {
-      args: ["ptr", "ptr", "usize"],
+      args: ["u32", "ptr", "u32"],
       returns: "void",
     },
 
     // Unicode encoding API
     encodeUnicode: {
-      args: ["ptr", "usize", "ptr", "ptr", "u8"],
+      args: ["ptr", "u32", "ptr", "ptr", "u8"],
       returns: "bool",
     },
     freeUnicode: {
-      args: ["ptr", "usize"],
+      args: ["ptr", "u32"],
       returns: "void",
     },
     bufferDrawChar: {
-      args: ["ptr", "u32", "u32", "u32", "ptr", "ptr", "u32"],
+      args: ["u32", "u32", "u32", "u32", "ptr", "ptr", "u32"],
       returns: "void",
+    },
+
+    // Yoga layout
+    yogaConfigCreate: {
+      args: [],
+      returns: "ptr",
+    },
+    yogaConfigFree: {
+      args: ["ptr"],
+      returns: "void",
+    },
+    yogaConfigSetUseWebDefaults: {
+      args: ["ptr", "bool"],
+      returns: "void",
+    },
+    yogaConfigGetUseWebDefaults: {
+      args: ["ptr"],
+      returns: "bool",
+    },
+    yogaConfigSetPointScaleFactor: {
+      args: ["ptr", "f32"],
+      returns: "void",
+    },
+    yogaConfigGetPointScaleFactor: {
+      args: ["ptr"],
+      returns: "f32",
+    },
+    yogaConfigSetErrata: {
+      args: ["ptr", "u32"],
+      returns: "void",
+    },
+    yogaConfigGetErrata: {
+      args: ["ptr"],
+      returns: "u32",
+    },
+    yogaConfigSetExperimentalFeatureEnabled: {
+      args: ["ptr", "u32", "bool"],
+      returns: "void",
+    },
+    yogaConfigIsExperimentalFeatureEnabled: {
+      args: ["ptr", "u32"],
+      returns: "bool",
+    },
+    yogaNodeCreate: {
+      args: [],
+      returns: "ptr",
+    },
+    yogaNodeCreateForOpenTUI: {
+      args: [],
+      returns: "ptr",
+    },
+    yogaNodeCreateWithConfig: {
+      args: ["ptr"],
+      returns: "ptr",
+    },
+    yogaNodeFree: {
+      args: ["ptr"],
+      returns: "void",
+    },
+    yogaNodeFreeRecursive: {
+      args: ["ptr"],
+      returns: "void",
+    },
+    yogaNodeReset: {
+      args: ["ptr"],
+      returns: "void",
+    },
+    yogaNodeCopyStyle: {
+      args: ["ptr", "ptr"],
+      returns: "void",
+    },
+    yogaNodeInsertChild: {
+      args: ["ptr", "ptr", "u32"],
+      returns: "void",
+    },
+    yogaNodeRemoveChild: {
+      args: ["ptr", "ptr"],
+      returns: "void",
+    },
+    yogaNodeRemoveAllChildren: {
+      args: ["ptr"],
+      returns: "void",
+    },
+    yogaNodeGetChild: {
+      args: ["ptr", "u32"],
+      returns: "ptr",
+    },
+    yogaNodeGetChildCount: {
+      args: ["ptr"],
+      returns: "u32",
+    },
+    yogaNodeGetParent: {
+      args: ["ptr"],
+      returns: "ptr",
+    },
+    yogaNodeCalculateLayout: {
+      args: ["ptr", "f32", "f32", "u32"],
+      returns: "void",
+    },
+    yogaNodeIsDirty: {
+      args: ["ptr"],
+      returns: "bool",
+    },
+    yogaNodeMarkDirty: {
+      args: ["ptr"],
+      returns: "void",
+    },
+    yogaNodeGetHasNewLayout: {
+      args: ["ptr"],
+      returns: "bool",
+    },
+    yogaNodeSetHasNewLayout: {
+      args: ["ptr", "bool"],
+      returns: "void",
+    },
+    yogaNodeSetIsReferenceBaseline: {
+      args: ["ptr", "bool"],
+      returns: "void",
+    },
+    yogaNodeIsReferenceBaseline: {
+      args: ["ptr"],
+      returns: "bool",
+    },
+    yogaNodeSetAlwaysFormsContainingBlock: {
+      args: ["ptr", "bool"],
+      returns: "void",
+    },
+    yogaNodeGetAlwaysFormsContainingBlock: {
+      args: ["ptr"],
+      returns: "bool",
+    },
+    yogaNodeGetComputedLayout: {
+      args: ["ptr", "ptr"],
+      returns: "void",
+    },
+    yogaNodeLayoutGetEdge: {
+      args: ["ptr", "u32", "u32"],
+      returns: "f32",
+    },
+    yogaNodeStyleSetEnum: {
+      args: ["ptr", "u32", "u32"],
+      returns: "void",
+    },
+    yogaNodeStyleGetEnum: {
+      args: ["ptr", "u32"],
+      returns: "u32",
+    },
+    yogaNodeStyleSetFloat: {
+      args: ["ptr", "u32", "f32"],
+      returns: "void",
+    },
+    yogaNodeStyleGetFloat: {
+      args: ["ptr", "u32"],
+      returns: "f32",
+    },
+    yogaNodeStyleSetBorder: {
+      args: ["ptr", "u32", "f32"],
+      returns: "void",
+    },
+    yogaNodeStyleGetBorder: {
+      args: ["ptr", "u32"],
+      returns: "f32",
+    },
+    yogaNodeStyleSetValue: {
+      args: ["ptr", "u32", "u32", "u32", "f32"],
+      returns: "void",
+    },
+    yogaNodeStyleGetValue: {
+      args: ["ptr", "u32", "u32"],
+      returns: "u64",
+    },
+    yogaNodeSetMeasureFunc: {
+      args: ["ptr", "ptr"],
+      returns: "void",
+    },
+    yogaNodeUnsetMeasureFunc: {
+      args: ["ptr"],
+      returns: "void",
+    },
+    yogaNodeHasMeasureFunc: {
+      args: ["ptr"],
+      returns: "bool",
+    },
+    yogaNodeSetDirtiedFunc: {
+      args: ["ptr", "ptr"],
+      returns: "void",
+    },
+    yogaNodeUnsetDirtiedFunc: {
+      args: ["ptr"],
+      returns: "void",
+    },
+    yogaStoreMeasureResult: {
+      args: ["f32", "f32"],
+      returns: "void",
+    },
+
+    // Audio
+    createAudioEngine: {
+      args: ["ptr"],
+      returns: "u32",
+    },
+    destroyAudioEngine: {
+      args: ["u32"],
+      returns: "void",
+    },
+    audioRefreshPlaybackDevices: {
+      args: ["u32"],
+      returns: "i32",
+    },
+    audioGetPlaybackDeviceCount: {
+      args: ["u32"],
+      returns: "u32",
+    },
+    audioGetPlaybackDeviceName: {
+      args: ["u32", "u32", "ptr", "u32"],
+      returns: "u32",
+    },
+    audioIsPlaybackDeviceDefault: {
+      args: ["u32", "u32"],
+      returns: "bool",
+    },
+    audioSelectPlaybackDevice: {
+      args: ["u32", "u32"],
+      returns: "i32",
+    },
+    audioClearPlaybackDeviceSelection: {
+      args: ["u32"],
+      returns: "void",
+    },
+    audioStart: {
+      args: ["u32", "ptr"],
+      returns: "i32",
+    },
+    audioStartMixer: {
+      args: ["u32"],
+      returns: "i32",
+    },
+    audioStop: {
+      args: ["u32"],
+      returns: "i32",
+    },
+    audioLoad: {
+      args: ["u32", "ptr", "u32", "ptr"],
+      returns: "i32",
+    },
+    audioUnload: {
+      args: ["u32", "u32"],
+      returns: "i32",
+    },
+    audioPlay: {
+      args: ["u32", "u32", "ptr", "ptr"],
+      returns: "i32",
+    },
+    audioStopVoice: {
+      args: ["u32", "u32"],
+      returns: "i32",
+    },
+    audioSetVoiceGroup: {
+      args: ["u32", "u32", "u32"],
+      returns: "i32",
+    },
+    audioCreateGroup: {
+      args: ["u32", "ptr", "u32", "ptr"],
+      returns: "i32",
+    },
+    audioSetGroupVolume: {
+      args: ["u32", "u32", "f32"],
+      returns: "i32",
+    },
+    audioSetMasterVolume: {
+      args: ["u32", "f32"],
+      returns: "i32",
+    },
+    audioMixToBuffer: {
+      args: ["u32", "ptr", "u32", "u8"],
+      returns: "i32",
+    },
+    audioEnableTap: {
+      args: ["u32", "bool", "u32"],
+      returns: "i32",
+    },
+    audioReadTap: {
+      args: ["u32", "ptr", "u32", "u8", "ptr"],
+      returns: "i32",
+    },
+    audioGetStats: {
+      args: ["u32", "ptr"],
+      returns: "i32",
     },
 
     // NativeSpanFeed
@@ -1182,7 +1591,7 @@ function getOpenTUILib(libPath?: string) {
       returns: "void",
     },
     streamWrite: {
-      args: ["ptr", "ptr", "u64"],
+      args: ["ptr", "ptr", "u32"],
       returns: "i32",
     },
     streamCommit: {
@@ -1464,19 +1873,86 @@ export interface CursorState {
 
 export type NativeSpanFeedEventHandler = (eventId: number, arg0: Pointer, arg1: number | bigint) => void
 
-export interface RenderLib {
-  createRenderer: (width: number, height: number, options?: { testing?: boolean; remote?: boolean }) => Pointer | null
-  setTerminalEnvVar: (renderer: Pointer, key: string, value: string) => boolean
-  destroyRenderer: (renderer: Pointer) => void
-  setUseThread: (renderer: Pointer, useThread: boolean) => void
-  setClearOnShutdown: (renderer: Pointer, clear: boolean) => void
-  setBackgroundColor: (renderer: Pointer, color: RGBA) => void
-  setRenderOffset: (renderer: Pointer, offset: number) => void
-  resetSplitScrollback: (renderer: Pointer, seedRows: number, pinnedRenderOffset: number) => number
-  syncSplitScrollback: (renderer: Pointer, pinnedRenderOffset: number) => number
-  getSplitOutputOffset: (renderer: Pointer, surfaceOffset: number) => number
+export type NativeBufferedOutput = "stdout" | "memory"
+
+export interface NativeRendererCreateOptions {
+  remote?: boolean
+  feedPtr?: Pointer | null
+  bufferedOutput?: NativeBufferedOutput
+}
+
+export interface NativeRenderOperationResult {
+  renderOffset: number
+  status: number
+}
+
+export interface NativeYogaLayout {
+  left: number
+  top: number
+  right: number
+  bottom: number
+  width: number
+  height: number
+}
+
+export type NativeYogaMeasureCallback = (
+  node: Pointer | null,
+  width: number,
+  widthMode: number,
+  height: number,
+  heightMode: number,
+) => void
+
+export type NativeYogaDirtiedCallback = () => void
+
+export interface AudioEngineLib {
+  createAudioEngine: (options?: AudioCreateOptions | null) => AudioEngineHandle | null
+  destroyAudioEngine: (engine: AudioEngineHandle) => void
+  audioRefreshPlaybackDevices: (engine: AudioEngineHandle) => number
+  audioGetPlaybackDeviceCount: (engine: AudioEngineHandle) => number
+  audioGetPlaybackDeviceName: (engine: AudioEngineHandle, index: number) => string
+  audioIsPlaybackDeviceDefault: (engine: AudioEngineHandle, index: number) => boolean
+  audioSelectPlaybackDevice: (engine: AudioEngineHandle, index: number) => number
+  audioClearPlaybackDeviceSelection: (engine: AudioEngineHandle) => void
+  audioStart: (engine: AudioEngineHandle, options?: AudioStartOptions | null) => number
+  audioStartMixer: (engine: AudioEngineHandle) => number
+  audioStop: (engine: AudioEngineHandle) => number
+  audioLoad: (engine: AudioEngineHandle, data: Uint8Array) => { status: number; soundId: number | null }
+  audioUnload: (engine: AudioEngineHandle, soundId: number) => number
+  audioPlay: (
+    engine: AudioEngineHandle,
+    soundId: number,
+    options?: AudioVoiceOptions,
+  ) => { status: number; voiceId: number | null }
+  audioStopVoice: (engine: AudioEngineHandle, voiceId: number) => number
+  audioSetVoiceGroup: (engine: AudioEngineHandle, voiceId: number, groupId: number) => number
+  audioCreateGroup: (engine: AudioEngineHandle, name: string) => { status: number; groupId: number | null }
+  audioSetGroupVolume: (engine: AudioEngineHandle, groupId: number, volume: number) => number
+  audioSetMasterVolume: (engine: AudioEngineHandle, volume: number) => number
+  audioMixToBuffer: (engine: AudioEngineHandle, outBuffer: Float32Array, frameCount: number, channels: number) => number
+  audioEnableTap: (engine: AudioEngineHandle, enabled: boolean, capacityFrames: number) => number
+  audioReadTap: (
+    engine: AudioEngineHandle,
+    outBuffer: Float32Array,
+    frameCount: number,
+    channels: number,
+  ) => { status: number; framesRead: number }
+  audioGetStats: (engine: AudioEngineHandle) => AudioStats | null
+}
+
+export interface RenderLib extends AudioEngineLib {
+  createRenderer: (width: number, height: number, options?: NativeRendererCreateOptions) => RendererHandle | null
+  setTerminalEnvVar: (renderer: RendererHandle, key: string, value: string) => boolean
+  destroyRenderer: (renderer: RendererHandle) => void
+  setUseThread: (renderer: RendererHandle, useThread: boolean) => void
+  setClearOnShutdown: (renderer: RendererHandle, clear: boolean) => void
+  setBackgroundColor: (renderer: RendererHandle, color: RGBA) => void
+  setRenderOffset: (renderer: RendererHandle, offset: number) => void
+  resetSplitScrollback: (renderer: RendererHandle, seedRows: number, pinnedRenderOffset: number) => number
+  syncSplitScrollback: (renderer: RendererHandle, pinnedRenderOffset: number) => number
+  getSplitOutputOffset: (renderer: RendererHandle, surfaceOffset: number) => number
   setPendingSplitFooterTransition: (
-    renderer: Pointer,
+    renderer: RendererHandle,
     mode: number,
     sourceTopLine: number,
     sourceHeight: number,
@@ -1484,13 +1960,18 @@ export interface RenderLib {
     targetHeight: number,
     scrollLines: number,
   ) => void
-  clearPendingSplitFooterTransition: (renderer: Pointer) => void
-  updateStats: (renderer: Pointer, time: number, fps: number, frameCallbackTime: number) => void
-  updateMemoryStats: (renderer: Pointer, heapUsed: number, heapTotal: number, arrayBuffers: number) => void
-  render: (renderer: Pointer, force: boolean) => void
-  repaintSplitFooter: (renderer: Pointer, pinnedRenderOffset: number, force: boolean) => number
+  clearPendingSplitFooterTransition: (renderer: RendererHandle) => void
+  updateStats: (renderer: RendererHandle, time: number, fps: number, frameCallbackTime: number) => void
+  updateMemoryStats: (renderer: RendererHandle, heapUsed: number, heapTotal: number, arrayBuffers: number) => void
+  getRenderStats: (renderer: RendererHandle) => NativeRenderStats
+  render: (renderer: RendererHandle, force: boolean) => number
+  repaintSplitFooter: (
+    renderer: RendererHandle,
+    pinnedRenderOffset: number,
+    force: boolean,
+  ) => NativeRenderOperationResult
   commitSplitFooterSnapshot: (
-    renderer: Pointer,
+    renderer: RendererHandle,
     snapshot: OptimizedBuffer,
     rowColumns: number,
     startOnNewLine: boolean,
@@ -1501,11 +1982,11 @@ export interface RenderLib {
     // multiple stdout snapshots. Defaults preserve old one-call behavior.
     beginFrame?: boolean,
     finalizeFrame?: boolean,
-  ) => number
-  getNextBuffer: (renderer: Pointer) => OptimizedBuffer
-  getCurrentBuffer: (renderer: Pointer) => OptimizedBuffer
+  ) => NativeRenderOperationResult
+  getNextBuffer: (renderer: RendererHandle) => OptimizedBuffer
+  getCurrentBuffer: (renderer: RendererHandle) => OptimizedBuffer
   rendererSetPaletteState: (
-    renderer: Pointer,
+    renderer: RendererHandle,
     palette: readonly RGBA[],
     defaultForeground: RGBA,
     defaultBackground: RGBA,
@@ -1518,31 +1999,31 @@ export interface RenderLib {
     respectAlpha?: boolean,
     id?: string,
   ) => OptimizedBuffer
-  destroyOptimizedBuffer: (bufferPtr: Pointer) => void
+  destroyOptimizedBuffer: (bufferPtr: OptimizedBufferHandle) => void
   drawFrameBuffer: (
-    targetBufferPtr: Pointer,
+    targetBufferPtr: OptimizedBufferHandle,
     destX: number,
     destY: number,
-    bufferPtr: Pointer,
+    bufferPtr: OptimizedBufferHandle,
     sourceX?: number,
     sourceY?: number,
     sourceWidth?: number,
     sourceHeight?: number,
   ) => void
-  getBufferWidth: (buffer: Pointer) => number
-  getBufferHeight: (buffer: Pointer) => number
-  bufferClear: (buffer: Pointer, color: RGBA) => void
-  bufferGetCharPtr: (buffer: Pointer) => Pointer
-  bufferGetFgPtr: (buffer: Pointer) => Pointer
-  bufferGetBgPtr: (buffer: Pointer) => Pointer
-  bufferGetAttributesPtr: (buffer: Pointer) => Pointer
-  bufferGetRespectAlpha: (buffer: Pointer) => boolean
-  bufferSetRespectAlpha: (buffer: Pointer, respectAlpha: boolean) => void
-  bufferGetId: (buffer: Pointer) => string
-  bufferGetRealCharSize: (buffer: Pointer) => number
-  bufferWriteResolvedChars: (buffer: Pointer, outputBuffer: Uint8Array, addLineBreaks: boolean) => number
+  getBufferWidth: (buffer: OptimizedBufferHandle) => number
+  getBufferHeight: (buffer: OptimizedBufferHandle) => number
+  bufferClear: (buffer: OptimizedBufferHandle, color: RGBA) => void
+  bufferGetCharPtr: (buffer: OptimizedBufferHandle) => Pointer
+  bufferGetFgPtr: (buffer: OptimizedBufferHandle) => Pointer
+  bufferGetBgPtr: (buffer: OptimizedBufferHandle) => Pointer
+  bufferGetAttributesPtr: (buffer: OptimizedBufferHandle) => Pointer
+  bufferGetRespectAlpha: (buffer: OptimizedBufferHandle) => boolean
+  bufferSetRespectAlpha: (buffer: OptimizedBufferHandle, respectAlpha: boolean) => void
+  bufferGetId: (buffer: OptimizedBufferHandle) => string
+  bufferGetRealCharSize: (buffer: OptimizedBufferHandle) => number
+  bufferWriteResolvedChars: (buffer: OptimizedBufferHandle, outputBuffer: Uint8Array, addLineBreaks: boolean) => number
   bufferDrawText: (
-    buffer: Pointer,
+    buffer: OptimizedBufferHandle,
     text: string,
     x: number,
     y: number,
@@ -1551,7 +2032,7 @@ export interface RenderLib {
     attributes?: number,
   ) => void
   bufferSetCellWithAlphaBlending: (
-    buffer: Pointer,
+    buffer: OptimizedBufferHandle,
     x: number,
     y: number,
     char: string,
@@ -1560,7 +2041,7 @@ export interface RenderLib {
     attributes?: number,
   ) => void
   bufferSetCell: (
-    buffer: Pointer,
+    buffer: OptimizedBufferHandle,
     x: number,
     y: number,
     char: string,
@@ -1568,18 +2049,30 @@ export interface RenderLib {
     bgColor: RGBA,
     attributes?: number,
   ) => void
-  bufferFillRect: (buffer: Pointer, x: number, y: number, width: number, height: number, color: RGBA) => void
+  bufferFillRect: (
+    buffer: OptimizedBufferHandle,
+    x: number,
+    y: number,
+    width: number,
+    height: number,
+    color: RGBA,
+  ) => void
   bufferColorMatrix: (
-    buffer: Pointer,
+    buffer: OptimizedBufferHandle,
     matrixPtr: Pointer,
     cellMaskPtr: Pointer,
     cellMaskCount: number,
     strength: number,
     target: TargetChannel,
   ) => void
-  bufferColorMatrixUniform: (buffer: Pointer, matrixPtr: Pointer, strength: number, target: TargetChannel) => void
+  bufferColorMatrixUniform: (
+    buffer: OptimizedBufferHandle,
+    matrixPtr: Pointer,
+    strength: number,
+    target: TargetChannel,
+  ) => void
   bufferDrawSuperSampleBuffer: (
-    buffer: Pointer,
+    buffer: OptimizedBufferHandle,
     x: number,
     y: number,
     pixelDataPtr: Pointer,
@@ -1588,7 +2081,7 @@ export interface RenderLib {
     alignedBytesPerRow: number,
   ) => void
   bufferDrawPackedBuffer: (
-    buffer: Pointer,
+    buffer: OptimizedBufferHandle,
     dataPtr: Pointer,
     dataLen: number,
     posX: number,
@@ -1597,7 +2090,7 @@ export interface RenderLib {
     terminalHeightCells: number,
   ) => void
   bufferDrawGrayscaleBuffer: (
-    buffer: Pointer,
+    buffer: OptimizedBufferHandle,
     posX: number,
     posY: number,
     intensitiesPtr: Pointer,
@@ -1607,7 +2100,7 @@ export interface RenderLib {
     bg: RGBA | null,
   ) => void
   bufferDrawGrayscaleBufferSupersampled: (
-    buffer: Pointer,
+    buffer: OptimizedBufferHandle,
     posX: number,
     posY: number,
     intensitiesPtr: Pointer,
@@ -1617,7 +2110,7 @@ export interface RenderLib {
     bg: RGBA | null,
   ) => void
   bufferDrawGrid: (
-    buffer: Pointer,
+    buffer: OptimizedBufferHandle,
     borderChars: Uint32Array,
     borderFg: RGBA,
     borderBg: RGBA,
@@ -1628,7 +2121,7 @@ export interface RenderLib {
     options: { drawInner: boolean; drawOuter: boolean },
   ) => void
   bufferDrawBox: (
-    buffer: Pointer,
+    buffer: OptimizedBufferHandle,
     x: number,
     y: number,
     width: number,
@@ -1637,87 +2130,141 @@ export interface RenderLib {
     packedOptions: number,
     borderColor: RGBA,
     backgroundColor: RGBA,
+    titleColor: RGBA,
     title: string | null,
     bottomTitle: string | null,
   ) => void
-  bufferResize: (buffer: Pointer, width: number, height: number) => void
-  resizeRenderer: (renderer: Pointer, width: number, height: number) => void
-  setCursorPosition: (renderer: Pointer, x: number, y: number, visible: boolean) => void
-  setCursorColor: (renderer: Pointer, color: RGBA) => void
-  getCursorState: (renderer: Pointer) => CursorState
-  setCursorStyleOptions: (renderer: Pointer, options: CursorStyleOptions) => void
-  setDebugOverlay: (renderer: Pointer, enabled: boolean, corner: DebugOverlayCorner) => void
-  clearTerminal: (renderer: Pointer) => void
-  setTerminalTitle: (renderer: Pointer, title: string) => void
-  copyToClipboardOSC52: (renderer: Pointer, target: number, payload: Uint8Array) => boolean
-  clearClipboardOSC52: (renderer: Pointer, target: number) => boolean
-  addToHitGrid: (renderer: Pointer, x: number, y: number, width: number, height: number, id: number) => void
-  clearCurrentHitGrid: (renderer: Pointer) => void
-  hitGridPushScissorRect: (renderer: Pointer, x: number, y: number, width: number, height: number) => void
-  hitGridPopScissorRect: (renderer: Pointer) => void
-  hitGridClearScissorRects: (renderer: Pointer) => void
+  bufferResize: (buffer: OptimizedBufferHandle, width: number, height: number) => void
+  resizeRenderer: (renderer: RendererHandle, width: number, height: number) => void
+  setCursorPosition: (renderer: RendererHandle, x: number, y: number, visible: boolean) => void
+  setCursorColor: (renderer: RendererHandle, color: RGBA) => void
+  getCursorState: (renderer: RendererHandle) => CursorState
+  setCursorStyleOptions: (renderer: RendererHandle, options: CursorStyleOptions) => void
+  setDebugOverlay: (renderer: RendererHandle, enabled: boolean, corner: DebugOverlayCorner) => void
+  clearTerminal: (renderer: RendererHandle) => void
+  setTerminalTitle: (renderer: RendererHandle, title: string) => void
+  copyToClipboardOSC52: (renderer: RendererHandle, target: number, payload: Uint8Array) => boolean
+  clearClipboardOSC52: (renderer: RendererHandle, target: number) => boolean
+  triggerNotification: (renderer: RendererHandle, message: string, title?: string) => boolean
+  addToHitGrid: (renderer: RendererHandle, x: number, y: number, width: number, height: number, id: number) => void
+  clearCurrentHitGrid: (renderer: RendererHandle) => void
+  hitGridPushScissorRect: (renderer: RendererHandle, x: number, y: number, width: number, height: number) => void
+  hitGridPopScissorRect: (renderer: RendererHandle) => void
+  hitGridClearScissorRects: (renderer: RendererHandle) => void
   addToCurrentHitGridClipped: (
-    renderer: Pointer,
+    renderer: RendererHandle,
     x: number,
     y: number,
     width: number,
     height: number,
     id: number,
   ) => void
-  checkHit: (renderer: Pointer, x: number, y: number) => number
-  getHitGridDirty: (renderer: Pointer) => boolean
-  dumpHitGrid: (renderer: Pointer) => void
-  dumpBuffers: (renderer: Pointer, timestamp?: number) => void
-  dumpStdoutBuffer: (renderer: Pointer, timestamp?: number) => void
-  restoreTerminalModes: (renderer: Pointer) => void
-  enableMouse: (renderer: Pointer, enableMovement: boolean) => void
-  disableMouse: (renderer: Pointer) => void
-  enableKittyKeyboard: (renderer: Pointer, flags: number) => void
-  disableKittyKeyboard: (renderer: Pointer) => void
-  setKittyKeyboardFlags: (renderer: Pointer, flags: number) => void
-  getKittyKeyboardFlags: (renderer: Pointer) => number
-  setupTerminal: (renderer: Pointer, useAlternateScreen: boolean) => void
-  suspendRenderer: (renderer: Pointer) => void
-  resumeRenderer: (renderer: Pointer) => void
-  queryPixelResolution: (renderer: Pointer) => void
-  queryThemeColors: (renderer: Pointer) => void
-  writeOut: (renderer: Pointer, data: string | Uint8Array) => void
+  checkHit: (renderer: RendererHandle, x: number, y: number) => number
+  getHitGridDirty: (renderer: RendererHandle) => boolean
+  dumpHitGrid: (renderer: RendererHandle) => void
+  dumpBuffers: (renderer: RendererHandle, timestamp?: number) => void
+  dumpOutputBuffer: (renderer: RendererHandle, timestamp?: number) => void
+  restoreTerminalModes: (renderer: RendererHandle) => void
+  enableMouse: (renderer: RendererHandle, enableMovement: boolean) => void
+  disableMouse: (renderer: RendererHandle) => void
+  enableKittyKeyboard: (renderer: RendererHandle, flags: number) => void
+  disableKittyKeyboard: (renderer: RendererHandle) => void
+  setKittyKeyboardFlags: (renderer: RendererHandle, flags: number) => void
+  getKittyKeyboardFlags: (renderer: RendererHandle) => number
+  setupTerminal: (renderer: RendererHandle, useAlternateScreen: boolean) => void
+  suspendRenderer: (renderer: RendererHandle) => void
+  resumeRenderer: (renderer: RendererHandle) => void
+  queryPixelResolution: (renderer: RendererHandle) => void
+  queryThemeColors: (renderer: RendererHandle) => void
+  writeOut: (renderer: RendererHandle, data: string | Uint8Array) => void
+
+  // Yoga layout methods
+  yogaConfigCreate: () => Pointer
+  yogaConfigFree: (config: Pointer) => void
+  yogaConfigSetUseWebDefaults: (config: Pointer, enabled: boolean) => void
+  yogaConfigGetUseWebDefaults: (config: Pointer) => boolean
+  yogaConfigSetPointScaleFactor: (config: Pointer, pointScaleFactor: number) => void
+  yogaConfigGetPointScaleFactor: (config: Pointer) => number
+  yogaConfigSetErrata: (config: Pointer, errata: number) => void
+  yogaConfigGetErrata: (config: Pointer) => number
+  yogaConfigSetExperimentalFeatureEnabled: (config: Pointer, feature: number, enabled: boolean) => void
+  yogaConfigIsExperimentalFeatureEnabled: (config: Pointer, feature: number) => boolean
+  yogaNodeCreate: () => Pointer
+  yogaNodeCreateForOpenTUI: () => Pointer
+  yogaNodeCreateWithConfig: (config: Pointer) => Pointer
+  yogaNodeFree: (node: Pointer) => void
+  yogaNodeFreeRecursive: (node: Pointer) => void
+  yogaNodeReset: (node: Pointer) => void
+  yogaNodeCopyStyle: (dstNode: Pointer, srcNode: Pointer) => void
+  yogaNodeInsertChild: (node: Pointer, child: Pointer, index: number) => void
+  yogaNodeRemoveChild: (node: Pointer, child: Pointer) => void
+  yogaNodeRemoveAllChildren: (node: Pointer) => void
+  yogaNodeGetChild: (node: Pointer, index: number) => Pointer | null
+  yogaNodeGetChildCount: (node: Pointer) => number
+  yogaNodeGetParent: (node: Pointer) => Pointer | null
+  yogaNodeCalculateLayout: (node: Pointer, width: number, height: number, direction: number) => void
+  yogaNodeIsDirty: (node: Pointer) => boolean
+  yogaNodeMarkDirty: (node: Pointer) => void
+  yogaNodeGetHasNewLayout: (node: Pointer) => boolean
+  yogaNodeSetHasNewLayout: (node: Pointer, hasNewLayout: boolean) => void
+  yogaNodeSetIsReferenceBaseline: (node: Pointer, isReferenceBaseline: boolean) => void
+  yogaNodeIsReferenceBaseline: (node: Pointer) => boolean
+  yogaNodeSetAlwaysFormsContainingBlock: (node: Pointer, alwaysFormsContainingBlock: boolean) => void
+  yogaNodeGetAlwaysFormsContainingBlock: (node: Pointer) => boolean
+  yogaNodeGetComputedLayout: (node: Pointer) => NativeYogaLayout
+  yogaNodeLayoutGetEdge: (node: Pointer, kind: number, edge: number) => number
+  yogaNodeStyleSetEnum: (node: Pointer, kind: number, value: number) => void
+  yogaNodeStyleGetEnum: (node: Pointer, kind: number) => number
+  yogaNodeStyleSetFloat: (node: Pointer, kind: number, value: number) => void
+  yogaNodeStyleGetFloat: (node: Pointer, kind: number) => number
+  yogaNodeStyleSetBorder: (node: Pointer, edge: number, border: number) => void
+  yogaNodeStyleGetBorder: (node: Pointer, edge: number) => number
+  yogaNodeStyleSetValue: (node: Pointer, kind: number, edgeOrGutter: number, unit: number, value: number) => void
+  yogaNodeStyleGetValue: (node: Pointer, kind: number, edgeOrGutter: number) => number | bigint
+  yogaNodeSetMeasureFunc: (node: Pointer, callback: Pointer | null) => void
+  yogaNodeUnsetMeasureFunc: (node: Pointer) => void
+  yogaNodeHasMeasureFunc: (node: Pointer) => boolean
+  yogaNodeSetDirtiedFunc: (node: Pointer, callback: Pointer | null) => void
+  yogaNodeUnsetDirtiedFunc: (node: Pointer) => void
+  yogaStoreMeasureResult: (width: number, height: number) => void
+  createYogaMeasureCallback: (callback: NativeYogaMeasureCallback) => FFICallbackInstance
+  createYogaDirtiedCallback: (callback: NativeYogaDirtiedCallback) => FFICallbackInstance
 
   // TextBuffer methods
   createTextBuffer: (widthMethod: WidthMethod) => TextBuffer
-  destroyTextBuffer: (buffer: Pointer) => void
-  textBufferGetLength: (buffer: Pointer) => number
-  textBufferGetByteSize: (buffer: Pointer) => number
+  destroyTextBuffer: (buffer: TextBufferHandle) => void
+  textBufferGetLength: (buffer: TextBufferHandle) => number
+  textBufferGetByteSize: (buffer: TextBufferHandle) => number
 
-  textBufferReset: (buffer: Pointer) => void
-  textBufferClear: (buffer: Pointer) => void
-  textBufferRegisterMemBuffer: (buffer: Pointer, bytes: Uint8Array, owned?: boolean) => number
-  textBufferReplaceMemBuffer: (buffer: Pointer, memId: number, bytes: Uint8Array, owned?: boolean) => boolean
-  textBufferClearMemRegistry: (buffer: Pointer) => void
-  textBufferSetTextFromMem: (buffer: Pointer, memId: number) => void
-  textBufferAppend: (buffer: Pointer, bytes: Uint8Array) => void
-  textBufferAppendFromMemId: (buffer: Pointer, memId: number) => void
-  textBufferLoadFile: (buffer: Pointer, path: string) => boolean
+  textBufferReset: (buffer: TextBufferHandle) => void
+  textBufferClear: (buffer: TextBufferHandle) => void
+  textBufferRegisterMemBuffer: (buffer: TextBufferHandle, bytes: Uint8Array, owned?: boolean) => number
+  textBufferReplaceMemBuffer: (buffer: TextBufferHandle, memId: number, bytes: Uint8Array, owned?: boolean) => boolean
+  textBufferClearMemRegistry: (buffer: TextBufferHandle) => void
+  textBufferSetTextFromMem: (buffer: TextBufferHandle, memId: number) => void
+  textBufferAppend: (buffer: TextBufferHandle, bytes: Uint8Array) => void
+  textBufferAppendFromMemId: (buffer: TextBufferHandle, memId: number) => void
+  textBufferLoadFile: (buffer: TextBufferHandle, path: string) => boolean
   textBufferSetStyledText: (
-    buffer: Pointer,
+    buffer: TextBufferHandle,
     chunks: Array<{ text: string; fg?: RGBA | null; bg?: RGBA | null; attributes?: number; link?: { url: string } }>,
   ) => void
-  textBufferSetDefaultFg: (buffer: Pointer, fg: RGBA | null) => void
-  textBufferSetDefaultBg: (buffer: Pointer, bg: RGBA | null) => void
-  textBufferSetDefaultAttributes: (buffer: Pointer, attributes: number | null) => void
-  textBufferResetDefaults: (buffer: Pointer) => void
-  textBufferGetTabWidth: (buffer: Pointer) => number
-  textBufferSetTabWidth: (buffer: Pointer, width: number) => void
-  textBufferGetLineCount: (buffer: Pointer) => number
-  getPlainTextBytes: (buffer: Pointer, maxLength: number) => Uint8Array | null
+  textBufferSetDefaultFg: (buffer: TextBufferHandle, fg: RGBA | null) => void
+  textBufferSetDefaultBg: (buffer: TextBufferHandle, bg: RGBA | null) => void
+  textBufferSetDefaultAttributes: (buffer: TextBufferHandle, attributes: number | null) => void
+  textBufferResetDefaults: (buffer: TextBufferHandle) => void
+  textBufferGetTabWidth: (buffer: TextBufferHandle) => number
+  textBufferSetTabWidth: (buffer: TextBufferHandle, width: number) => void
+  textBufferGetLineCount: (buffer: TextBufferHandle) => number
+  getPlainTextBytes: (buffer: TextBufferHandle, maxLength: number) => Uint8Array | null
   textBufferGetTextRange: (
-    buffer: Pointer,
+    buffer: TextBufferHandle,
     startOffset: number,
     endOffset: number,
     maxLength: number,
   ) => Uint8Array | null
   textBufferGetTextRangeByCoords: (
-    buffer: Pointer,
+    buffer: TextBufferHandle,
     startRow: number,
     startCol: number,
     endRow: number,
@@ -1726,19 +2273,19 @@ export interface RenderLib {
   ) => Uint8Array | null
 
   // TextBufferView methods
-  createTextBufferView: (textBuffer: Pointer) => Pointer
-  destroyTextBufferView: (view: Pointer) => void
+  createTextBufferView: (textBuffer: TextBufferHandle) => TextBufferViewHandle
+  destroyTextBufferView: (view: TextBufferViewHandle) => void
   textBufferViewSetSelection: (
-    view: Pointer,
+    view: TextBufferViewHandle,
     start: number,
     end: number,
     bgColor: RGBA | null,
     fgColor: RGBA | null,
   ) => void
-  textBufferViewResetSelection: (view: Pointer) => void
-  textBufferViewGetSelection: (view: Pointer) => { start: number; end: number } | null
+  textBufferViewResetSelection: (view: TextBufferViewHandle) => void
+  textBufferViewGetSelection: (view: TextBufferViewHandle) => { start: number; end: number } | null
   textBufferViewSetLocalSelection: (
-    view: Pointer,
+    view: TextBufferViewHandle,
     anchorX: number,
     anchorY: number,
     focusX: number,
@@ -1746,9 +2293,14 @@ export interface RenderLib {
     bgColor: RGBA | null,
     fgColor: RGBA | null,
   ) => boolean
-  textBufferViewUpdateSelection: (view: Pointer, end: number, bgColor: RGBA | null, fgColor: RGBA | null) => void
+  textBufferViewUpdateSelection: (
+    view: TextBufferViewHandle,
+    end: number,
+    bgColor: RGBA | null,
+    fgColor: RGBA | null,
+  ) => void
   textBufferViewUpdateLocalSelection: (
-    view: Pointer,
+    view: TextBufferViewHandle,
     anchorX: number,
     anchorY: number,
     focusX: number,
@@ -1756,78 +2308,87 @@ export interface RenderLib {
     bgColor: RGBA | null,
     fgColor: RGBA | null,
   ) => boolean
-  textBufferViewResetLocalSelection: (view: Pointer) => void
-  textBufferViewSetWrapWidth: (view: Pointer, width: number) => void
-  textBufferViewSetWrapMode: (view: Pointer, mode: "none" | "char" | "word") => void
-  textBufferViewSetFirstLineOffset: (view: Pointer, offset: number) => void
-  textBufferViewSetViewportSize: (view: Pointer, width: number, height: number) => void
-  textBufferViewSetViewport: (view: Pointer, x: number, y: number, width: number, height: number) => void
-  textBufferViewGetLineInfo: (view: Pointer) => LineInfo
-  textBufferViewGetLogicalLineInfo: (view: Pointer) => LineInfo
-  textBufferViewGetSelectedTextBytes: (view: Pointer, maxLength: number) => Uint8Array | null
-  textBufferViewGetPlainTextBytes: (view: Pointer, maxLength: number) => Uint8Array | null
-  textBufferViewSetTabIndicator: (view: Pointer, indicator: number) => void
-  textBufferViewSetTabIndicatorColor: (view: Pointer, color: RGBA) => void
-  textBufferViewSetTruncate: (view: Pointer, truncate: boolean) => void
+  textBufferViewResetLocalSelection: (view: TextBufferViewHandle) => void
+  textBufferViewSetWrapWidth: (view: TextBufferViewHandle, width: number) => void
+  textBufferViewSetWrapMode: (view: TextBufferViewHandle, mode: "none" | "char" | "word") => void
+  textBufferViewSetFirstLineOffset: (view: TextBufferViewHandle, offset: number) => void
+  textBufferViewSetViewportSize: (view: TextBufferViewHandle, width: number, height: number) => void
+  textBufferViewSetViewport: (view: TextBufferViewHandle, x: number, y: number, width: number, height: number) => void
+  textBufferViewGetLineInfo: (view: TextBufferViewHandle) => LineInfo
+  textBufferViewGetLogicalLineInfo: (view: TextBufferViewHandle) => LineInfo
+  textBufferViewGetSelectedTextBytes: (view: TextBufferViewHandle, maxLength: number) => Uint8Array | null
+  textBufferViewGetPlainTextBytes: (view: TextBufferViewHandle, maxLength: number) => Uint8Array | null
+  textBufferViewSetTabIndicator: (view: TextBufferViewHandle, indicator: number) => void
+  textBufferViewSetTabIndicatorColor: (view: TextBufferViewHandle, color: RGBA) => void
+  textBufferViewSetTruncate: (view: TextBufferViewHandle, truncate: boolean) => void
   textBufferViewMeasureForDimensions: (
-    view: Pointer,
+    view: TextBufferViewHandle,
     width: number,
     height: number,
   ) => { lineCount: number; widthColsMax: number } | null
-  textBufferViewGetVirtualLineCount: (view: Pointer) => number
+  textBufferViewGetVirtualLineCount: (view: TextBufferViewHandle) => number
 
   readonly encoder: TextEncoder
   readonly decoder: TextDecoder
-  bufferDrawTextBufferView: (buffer: Pointer, view: Pointer, x: number, y: number) => void
-  bufferDrawEditorView: (buffer: Pointer, view: Pointer, x: number, y: number) => void
+  bufferDrawTextBufferView: (buffer: OptimizedBufferHandle, view: TextBufferViewHandle, x: number, y: number) => void
+  bufferDrawEditorView: (buffer: OptimizedBufferHandle, view: EditorViewHandle, x: number, y: number) => void
 
   // EditBuffer methods
-  createEditBuffer: (widthMethod: WidthMethod) => Pointer
-  destroyEditBuffer: (buffer: Pointer) => void
-  editBufferSetText: (buffer: Pointer, textBytes: Uint8Array) => void
-  editBufferSetTextFromMem: (buffer: Pointer, memId: number) => void
-  editBufferReplaceText: (buffer: Pointer, textBytes: Uint8Array) => void
-  editBufferReplaceTextFromMem: (buffer: Pointer, memId: number) => void
-  editBufferGetText: (buffer: Pointer, maxLength: number) => Uint8Array | null
-  editBufferInsertChar: (buffer: Pointer, char: string) => void
-  editBufferInsertText: (buffer: Pointer, text: string) => void
-  editBufferDeleteChar: (buffer: Pointer) => void
-  editBufferDeleteCharBackward: (buffer: Pointer) => void
-  editBufferDeleteRange: (buffer: Pointer, startLine: number, startCol: number, endLine: number, endCol: number) => void
-  editBufferNewLine: (buffer: Pointer) => void
-  editBufferDeleteLine: (buffer: Pointer) => void
-  editBufferMoveCursorLeft: (buffer: Pointer) => void
-  editBufferMoveCursorRight: (buffer: Pointer) => void
-  editBufferMoveCursorUp: (buffer: Pointer) => void
-  editBufferMoveCursorDown: (buffer: Pointer) => void
-  editBufferGotoLine: (buffer: Pointer, line: number) => void
-  editBufferSetCursor: (buffer: Pointer, line: number, col: number) => void
-  editBufferSetCursorToLineCol: (buffer: Pointer, line: number, col: number) => void
-  editBufferSetCursorByOffset: (buffer: Pointer, offset: number) => void
-  editBufferGetCursorPosition: (buffer: Pointer) => LogicalCursor
-  editBufferGetId: (buffer: Pointer) => number
-  editBufferGetTextBuffer: (buffer: Pointer) => Pointer
-  editBufferDebugLogRope: (buffer: Pointer) => void
-  editBufferUndo: (buffer: Pointer, maxLength: number) => Uint8Array | null
-  editBufferRedo: (buffer: Pointer, maxLength: number) => Uint8Array | null
-  editBufferCanUndo: (buffer: Pointer) => boolean
-  editBufferCanRedo: (buffer: Pointer) => boolean
-  editBufferClearHistory: (buffer: Pointer) => void
-  editBufferClear: (buffer: Pointer) => void
-  editBufferGetNextWordBoundary: (buffer: Pointer) => { row: number; col: number; offset: number }
-  editBufferGetPrevWordBoundary: (buffer: Pointer) => { row: number; col: number; offset: number }
-  editBufferGetEOL: (buffer: Pointer) => { row: number; col: number; offset: number }
-  editBufferOffsetToPosition: (buffer: Pointer, offset: number) => { row: number; col: number; offset: number } | null
-  editBufferPositionToOffset: (buffer: Pointer, row: number, col: number) => number
-  editBufferGetLineStartOffset: (buffer: Pointer, row: number) => number
+  createEditBuffer: (widthMethod: WidthMethod) => EditBufferHandle
+  destroyEditBuffer: (buffer: EditBufferHandle) => void
+  editBufferSetText: (buffer: EditBufferHandle, textBytes: Uint8Array) => void
+  editBufferSetTextFromMem: (buffer: EditBufferHandle, memId: number) => void
+  editBufferReplaceText: (buffer: EditBufferHandle, textBytes: Uint8Array) => void
+  editBufferReplaceTextFromMem: (buffer: EditBufferHandle, memId: number) => void
+  editBufferGetText: (buffer: EditBufferHandle, maxLength: number) => Uint8Array | null
+  editBufferInsertChar: (buffer: EditBufferHandle, char: string) => void
+  editBufferInsertText: (buffer: EditBufferHandle, text: string) => void
+  editBufferDeleteChar: (buffer: EditBufferHandle) => void
+  editBufferDeleteCharBackward: (buffer: EditBufferHandle) => void
+  editBufferDeleteRange: (
+    buffer: EditBufferHandle,
+    startLine: number,
+    startCol: number,
+    endLine: number,
+    endCol: number,
+  ) => void
+  editBufferNewLine: (buffer: EditBufferHandle) => void
+  editBufferDeleteLine: (buffer: EditBufferHandle) => void
+  editBufferMoveCursorLeft: (buffer: EditBufferHandle) => void
+  editBufferMoveCursorRight: (buffer: EditBufferHandle) => void
+  editBufferMoveCursorUp: (buffer: EditBufferHandle) => void
+  editBufferMoveCursorDown: (buffer: EditBufferHandle) => void
+  editBufferGotoLine: (buffer: EditBufferHandle, line: number) => void
+  editBufferSetCursor: (buffer: EditBufferHandle, line: number, col: number) => void
+  editBufferSetCursorToLineCol: (buffer: EditBufferHandle, line: number, col: number) => void
+  editBufferSetCursorByOffset: (buffer: EditBufferHandle, offset: number) => void
+  editBufferGetCursorPosition: (buffer: EditBufferHandle) => LogicalCursor
+  editBufferGetId: (buffer: EditBufferHandle) => number
+  editBufferGetTextBuffer: (buffer: EditBufferHandle) => TextBufferHandle
+  editBufferDebugLogRope: (buffer: EditBufferHandle) => void
+  editBufferUndo: (buffer: EditBufferHandle, maxLength: number) => Uint8Array | null
+  editBufferRedo: (buffer: EditBufferHandle, maxLength: number) => Uint8Array | null
+  editBufferCanUndo: (buffer: EditBufferHandle) => boolean
+  editBufferCanRedo: (buffer: EditBufferHandle) => boolean
+  editBufferClearHistory: (buffer: EditBufferHandle) => void
+  editBufferClear: (buffer: EditBufferHandle) => void
+  editBufferGetNextWordBoundary: (buffer: EditBufferHandle) => { row: number; col: number; offset: number }
+  editBufferGetPrevWordBoundary: (buffer: EditBufferHandle) => { row: number; col: number; offset: number }
+  editBufferGetEOL: (buffer: EditBufferHandle) => { row: number; col: number; offset: number }
+  editBufferOffsetToPosition: (
+    buffer: EditBufferHandle,
+    offset: number,
+  ) => { row: number; col: number; offset: number } | null
+  editBufferPositionToOffset: (buffer: EditBufferHandle, row: number, col: number) => number
+  editBufferGetLineStartOffset: (buffer: EditBufferHandle, row: number) => number
   editBufferGetTextRange: (
-    buffer: Pointer,
+    buffer: EditBufferHandle,
     startOffset: number,
     endOffset: number,
     maxLength: number,
   ) => Uint8Array | null
   editBufferGetTextRangeByCoords: (
-    buffer: Pointer,
+    buffer: EditBufferHandle,
     startRow: number,
     startCol: number,
     endRow: number,
@@ -1836,34 +2397,34 @@ export interface RenderLib {
   ) => Uint8Array | null
 
   // EditorView methods
-  createEditorView: (editBufferPtr: Pointer, viewportWidth: number, viewportHeight: number) => Pointer
-  destroyEditorView: (view: Pointer) => void
-  editorViewSetViewportSize: (view: Pointer, width: number, height: number) => void
+  createEditorView: (editBufferPtr: EditBufferHandle, viewportWidth: number, viewportHeight: number) => EditorViewHandle
+  destroyEditorView: (view: EditorViewHandle) => void
+  editorViewSetViewportSize: (view: EditorViewHandle, width: number, height: number) => void
   editorViewSetViewport: (
-    view: Pointer,
+    view: EditorViewHandle,
     x: number,
     y: number,
     width: number,
     height: number,
     moveCursor: boolean,
   ) => void
-  editorViewGetViewport: (view: Pointer) => { offsetY: number; offsetX: number; height: number; width: number }
-  editorViewSetScrollMargin: (view: Pointer, margin: number) => void
-  editorViewSetWrapMode: (view: Pointer, mode: "none" | "char" | "word") => void
-  editorViewGetVirtualLineCount: (view: Pointer) => number
-  editorViewGetTotalVirtualLineCount: (view: Pointer) => number
-  editorViewGetTextBufferView: (view: Pointer) => Pointer
+  editorViewGetViewport: (view: EditorViewHandle) => { offsetY: number; offsetX: number; height: number; width: number }
+  editorViewSetScrollMargin: (view: EditorViewHandle, margin: number) => void
+  editorViewSetWrapMode: (view: EditorViewHandle, mode: "none" | "char" | "word") => void
+  editorViewGetVirtualLineCount: (view: EditorViewHandle) => number
+  editorViewGetTotalVirtualLineCount: (view: EditorViewHandle) => number
+  editorViewGetTextBufferView: (view: EditorViewHandle) => TextBufferViewHandle
   editorViewSetSelection: (
-    view: Pointer,
+    view: EditorViewHandle,
     start: number,
     end: number,
     bgColor: RGBA | null,
     fgColor: RGBA | null,
   ) => void
-  editorViewResetSelection: (view: Pointer) => void
-  editorViewGetSelection: (view: Pointer) => { start: number; end: number } | null
+  editorViewResetSelection: (view: EditorViewHandle) => void
+  editorViewGetSelection: (view: EditorViewHandle) => { start: number; end: number } | null
   editorViewSetLocalSelection: (
-    view: Pointer,
+    view: EditorViewHandle,
     anchorX: number,
     anchorY: number,
     focusX: number,
@@ -1874,9 +2435,9 @@ export interface RenderLib {
     followCursor: boolean,
   ) => boolean
 
-  editorViewUpdateSelection: (view: Pointer, end: number, bgColor: RGBA | null, fgColor: RGBA | null) => void
+  editorViewUpdateSelection: (view: EditorViewHandle, end: number, bgColor: RGBA | null, fgColor: RGBA | null) => void
   editorViewUpdateLocalSelection: (
-    view: Pointer,
+    view: EditorViewHandle,
     anchorX: number,
     anchorY: number,
     focusX: number,
@@ -1887,64 +2448,78 @@ export interface RenderLib {
     followCursor: boolean,
   ) => boolean
 
-  editorViewResetLocalSelection: (view: Pointer) => void
-  editorViewGetSelectedTextBytes: (view: Pointer, maxLength: number) => Uint8Array | null
-  editorViewGetCursor: (view: Pointer) => { row: number; col: number }
-  editorViewGetText: (view: Pointer, maxLength: number) => Uint8Array | null
-  editorViewGetVisualCursor: (view: Pointer) => VisualCursor
-  editorViewMoveUpVisual: (view: Pointer) => void
-  editorViewMoveDownVisual: (view: Pointer) => void
-  editorViewDeleteSelectedText: (view: Pointer) => void
-  editorViewSetCursorByOffset: (view: Pointer, offset: number) => void
-  editorViewGetNextWordBoundary: (view: Pointer) => VisualCursor
-  editorViewGetPrevWordBoundary: (view: Pointer) => VisualCursor
-  editorViewGetEOL: (view: Pointer) => VisualCursor
-  editorViewGetVisualSOL: (view: Pointer) => VisualCursor
-  editorViewGetVisualEOL: (view: Pointer) => VisualCursor
-  editorViewGetLineInfo: (view: Pointer) => LineInfo
-  editorViewGetLogicalLineInfo: (view: Pointer) => LineInfo
+  editorViewResetLocalSelection: (view: EditorViewHandle) => void
+  editorViewGetSelectedTextBytes: (view: EditorViewHandle, maxLength: number) => Uint8Array | null
+  editorViewGetCursor: (view: EditorViewHandle) => { row: number; col: number }
+  editorViewGetText: (view: EditorViewHandle, maxLength: number) => Uint8Array | null
+  editorViewGetVisualCursor: (view: EditorViewHandle) => VisualCursor
+  editorViewMoveUpVisual: (view: EditorViewHandle) => void
+  editorViewMoveDownVisual: (view: EditorViewHandle) => void
+  editorViewDeleteSelectedText: (view: EditorViewHandle) => void
+  editorViewSetCursorByOffset: (view: EditorViewHandle, offset: number) => void
+  editorViewGetNextWordBoundary: (view: EditorViewHandle) => VisualCursor
+  editorViewGetPrevWordBoundary: (view: EditorViewHandle) => VisualCursor
+  editorViewGetEOL: (view: EditorViewHandle) => VisualCursor
+  editorViewGetVisualSOL: (view: EditorViewHandle) => VisualCursor
+  editorViewGetVisualEOL: (view: EditorViewHandle) => VisualCursor
+  editorViewGetLineInfo: (view: EditorViewHandle) => LineInfo
+  editorViewGetLogicalLineInfo: (view: EditorViewHandle) => LineInfo
   editorViewSetPlaceholderStyledText: (
-    view: Pointer,
+    view: EditorViewHandle,
     chunks: Array<{ text: string; fg?: RGBA | null; bg?: RGBA | null; attributes?: number }>,
   ) => void
-  editorViewSetTabIndicator: (view: Pointer, indicator: number) => void
-  editorViewSetTabIndicatorColor: (view: Pointer, color: RGBA) => void
+  editorViewSetTabIndicator: (view: EditorViewHandle, indicator: number) => void
+  editorViewSetTabIndicatorColor: (view: EditorViewHandle, color: RGBA) => void
 
-  bufferPushScissorRect: (buffer: Pointer, x: number, y: number, width: number, height: number) => void
-  bufferPopScissorRect: (buffer: Pointer) => void
-  bufferClearScissorRects: (buffer: Pointer) => void
-  bufferPushOpacity: (buffer: Pointer, opacity: number) => void
-  bufferPopOpacity: (buffer: Pointer) => void
-  bufferGetCurrentOpacity: (buffer: Pointer) => number
-  bufferClearOpacity: (buffer: Pointer) => void
-  textBufferAddHighlightByCharRange: (buffer: Pointer, highlight: Highlight) => void
-  textBufferAddHighlight: (buffer: Pointer, lineIdx: number, highlight: Highlight) => void
-  textBufferRemoveHighlightsByRef: (buffer: Pointer, hlRef: number) => void
-  textBufferClearLineHighlights: (buffer: Pointer, lineIdx: number) => void
-  textBufferClearAllHighlights: (buffer: Pointer) => void
-  textBufferSetSyntaxStyle: (buffer: Pointer, style: Pointer | null) => void
-  textBufferGetLineHighlights: (buffer: Pointer, lineIdx: number) => Array<Highlight>
-  textBufferGetHighlightCount: (buffer: Pointer) => number
+  bufferPushScissorRect: (buffer: OptimizedBufferHandle, x: number, y: number, width: number, height: number) => void
+  bufferPopScissorRect: (buffer: OptimizedBufferHandle) => void
+  bufferClearScissorRects: (buffer: OptimizedBufferHandle) => void
+  bufferPushOpacity: (buffer: OptimizedBufferHandle, opacity: number) => void
+  bufferPopOpacity: (buffer: OptimizedBufferHandle) => void
+  bufferGetCurrentOpacity: (buffer: OptimizedBufferHandle) => number
+  bufferClearOpacity: (buffer: OptimizedBufferHandle) => void
+  textBufferAddHighlightByCharRange: (buffer: TextBufferHandle, highlight: Highlight) => void
+  textBufferAddHighlight: (buffer: TextBufferHandle, lineIdx: number, highlight: Highlight) => void
+  textBufferRemoveHighlightsByRef: (buffer: TextBufferHandle, hlRef: number) => void
+  textBufferClearLineHighlights: (buffer: TextBufferHandle, lineIdx: number) => void
+  textBufferClearAllHighlights: (buffer: TextBufferHandle) => void
+  textBufferSetSyntaxStyle: (buffer: TextBufferHandle, style: SyntaxStyleHandle | null) => boolean
+  textBufferGetLineHighlights: (buffer: TextBufferHandle, lineIdx: number) => Array<Highlight>
+  textBufferGetHighlightCount: (buffer: TextBufferHandle) => number
 
   getArenaAllocatedBytes: () => number
   getBuildOptions: () => BuildOptions
   getAllocatorStats: () => AllocatorStats
 
-  createSyntaxStyle: () => Pointer
-  destroySyntaxStyle: (style: Pointer) => void
-  syntaxStyleRegister: (style: Pointer, name: string, fg: RGBA | null, bg: RGBA | null, attributes: number) => number
-  syntaxStyleResolveByName: (style: Pointer, name: string) => number | null
-  syntaxStyleGetStyleCount: (style: Pointer) => number
+  createSyntaxStyle: () => SyntaxStyleHandle
+  destroySyntaxStyle: (style: SyntaxStyleHandle) => void
+  syntaxStyleRegister: (
+    style: SyntaxStyleHandle,
+    name: string,
+    fg: RGBA | null,
+    bg: RGBA | null,
+    attributes: number,
+  ) => number
+  syntaxStyleResolveByName: (style: SyntaxStyleHandle, name: string) => number | null
+  syntaxStyleGetStyleCount: (style: SyntaxStyleHandle) => number
 
-  getTerminalCapabilities: (renderer: Pointer) => any
-  processCapabilityResponse: (renderer: Pointer, response: string) => void
+  getTerminalCapabilities: (renderer: RendererHandle) => TerminalCapabilities
+  processCapabilityResponse: (renderer: RendererHandle, response: string) => void
 
   encodeUnicode: (
     text: string,
     widthMethod: WidthMethod,
   ) => { ptr: Pointer; data: Array<{ width: number; char: number }> } | null
   freeUnicode: (encoded: { ptr: Pointer; data: Array<{ width: number; char: number }> }) => void
-  bufferDrawChar: (buffer: Pointer, char: number, x: number, y: number, fg: RGBA, bg: RGBA, attributes?: number) => void
+  bufferDrawChar: (
+    buffer: OptimizedBufferHandle,
+    char: number,
+    x: number,
+    y: number,
+    fg: RGBA,
+    bg: RGBA,
+    attributes?: number,
+  ) => void
 
   registerNativeSpanFeedStream: (stream: Pointer, handler: NativeSpanFeedEventHandler) => void
   unregisterNativeSpanFeedStream: (stream: Pointer) => void
@@ -1959,7 +2534,6 @@ export interface RenderLib {
   streamGetStats: (stream: Pointer) => NativeSpanFeedStats | null
   streamReserve: (stream: Pointer, minLen: number) => { status: number; info: ReserveInfo | null }
   streamCommitReserved: (stream: Pointer, length: number) => number
-
   onNativeEvent: (name: string, handler: (data: ArrayBuffer) => void) => void
   onceNativeEvent: (name: string, handler: (data: ArrayBuffer) => void) => void
   offNativeEvent: (name: string, handler: (data: ArrayBuffer) => void) => void
@@ -1972,6 +2546,7 @@ class FFIRenderLib implements RenderLib {
   public readonly decoder: TextDecoder = new TextDecoder()
   private logCallbackWrapper: FFICallbackInstance | null = null
   private eventCallbackWrapper: FFICallbackInstance | null = null
+  private eventSinkPtr: EventSinkHandle | null = null
   private _nativeEvents: EventEmitter = new EventEmitter()
   private _anyEventHandlers: Array<(name: string, data: ArrayBuffer) => void> = []
   private nativeSpanFeedCallbackWrapper: FFICallbackInstance | null = null
@@ -1979,8 +2554,13 @@ class FFIRenderLib implements RenderLib {
 
   constructor(libPath?: string) {
     this.opentui = getOpenTUILib(libPath)
-    this.setupLogging()
-    this.setupEventBus()
+    try {
+      this.setupLogging()
+      this.setupEventBus()
+    } catch (error) {
+      this.dispose()
+      throw error
+    }
   }
 
   private setupLogging() {
@@ -1989,10 +2569,8 @@ class FFIRenderLib implements RenderLib {
     }
 
     const logCallback = this.opentui.createCallback(
-      (level: number, msgPtr: Pointer, msgLenBigInt: bigint | number) => {
+      (level: number, msgPtr: Pointer, msgLen: number) => {
         try {
-          const msgLen = typeof msgLenBigInt === "bigint" ? Number(msgLenBigInt) : msgLenBigInt
-
           if (msgLen === 0 || !msgPtr) {
             return
           }
@@ -2022,7 +2600,7 @@ class FFIRenderLib implements RenderLib {
         }
       },
       {
-        args: ["u8", "ptr", "usize"],
+        args: ["u8", "ptr", "u32"],
         returns: "void",
       },
     )
@@ -2036,8 +2614,28 @@ class FFIRenderLib implements RenderLib {
     this.setLogCallback(logCallback.ptr)
   }
 
-  private setLogCallback(callbackPtr: Pointer) {
+  private setLogCallback(callbackPtr: Pointer | null) {
     this.opentui.symbols.setLogCallback(callbackPtr)
+  }
+
+  public dispose(): void {
+    try {
+      if (this.eventSinkPtr) {
+        this.opentui.symbols.destroyEventSink(this.eventSinkPtr)
+        this.eventSinkPtr = null
+      }
+
+      this.setLogCallback(null)
+    } finally {
+      try {
+        this.opentui.close()
+      } finally {
+        this.eventCallbackWrapper = null
+        this.logCallbackWrapper = null
+        this.nativeSpanFeedCallbackWrapper = null
+        this.nativeSpanFeedHandlers.clear()
+      }
+    }
   }
 
   private setupEventBus() {
@@ -2046,25 +2644,14 @@ class FFIRenderLib implements RenderLib {
     }
 
     const eventCallback = this.opentui.createCallback(
-      (namePtr: Pointer, nameLenBigInt: bigint | number, dataPtr: Pointer, dataLenBigInt: bigint | number) => {
+      (namePtr: Pointer, nameLen: number, dataPtr: Pointer, dataLen: number) => {
         try {
-          const nameLen = typeof nameLenBigInt === "bigint" ? Number(nameLenBigInt) : nameLenBigInt
-          const dataLen = typeof dataLenBigInt === "bigint" ? Number(dataLenBigInt) : dataLenBigInt
-
           if (nameLen === 0 || !namePtr) {
             return
           }
 
-          const nameBuffer = toArrayBuffer(namePtr, 0, nameLen)
-          const nameBytes = new Uint8Array(nameBuffer)
-          const eventName = this.decoder.decode(nameBytes)
-
-          let eventData: ArrayBuffer
-          if (dataLen > 0 && dataPtr) {
-            eventData = toArrayBuffer(dataPtr, 0, dataLen).slice()
-          } else {
-            eventData = new ArrayBuffer(0)
-          }
+          const eventName = this.decoder.decode(toArrayBuffer(namePtr, 0, nameLen))
+          const eventData = dataLen > 0 && dataPtr ? toArrayBuffer(dataPtr, 0, dataLen).slice(0) : new ArrayBuffer(0)
 
           queueMicrotask(() => {
             this._nativeEvents.emit(eventName, eventData)
@@ -2078,7 +2665,7 @@ class FFIRenderLib implements RenderLib {
         }
       },
       {
-        args: ["ptr", "usize", "ptr", "usize"],
+        args: ["ptr", "u32", "ptr", "u32"],
         returns: "void",
       },
     )
@@ -2089,7 +2676,12 @@ class FFIRenderLib implements RenderLib {
       throw new Error("Failed to create event callback")
     }
 
-    this.setEventCallback(eventCallback.ptr)
+    this.eventSinkPtr = this.opentui.symbols.createEventSink(eventCallback.ptr)
+    if (!this.eventSinkPtr) {
+      eventCallback.close()
+      this.eventCallbackWrapper = null
+      throw new Error("Failed to create native event sink")
+    }
   }
 
   private ensureNativeSpanFeedCallback(): FFICallbackInstance {
@@ -2119,20 +2711,33 @@ class FFIRenderLib implements RenderLib {
     return callback
   }
 
-  private setEventCallback(callbackPtr: Pointer) {
-    this.opentui.symbols.setEventCallback(callbackPtr)
-  }
-
-  public createRenderer(width: number, height: number, options: { testing?: boolean; remote?: boolean } = {}) {
-    const testing = options.testing ?? false
-    const remote = options.remote ?? false
-    return this.opentui.symbols.createRenderer(width, height, ffiBool(testing), ffiBool(remote))
+  public createRenderer(width: number, height: number, options: NativeRendererCreateOptions = {}) {
+    const bufferedOutputKind = options.bufferedOutput === "memory" ? 1 : 0
+    const remoteMode = options.remote === undefined ? 0 : options.remote ? 2 : 1
+    // `feedPtr` is an internal wiring detail: non-null selects the feed backend
+    // used for custom Writable output. When null, `bufferedOutput` selects the
+    // buffered stdout or memory backend.
+    const feedPtr = options.feedPtr ?? null
+    const renderer = this.opentui.symbols.createRenderer(
+      width,
+      height,
+      bufferedOutputKind,
+      remoteMode,
+      feedPtr,
+    ) as RendererHandle
+    return renderer ? renderer : null
   }
 
   public setTerminalEnvVar(renderer: Pointer, key: string, value: string): boolean {
     const keyBytes = this.encoder.encode(key)
     const valueBytes = this.encoder.encode(value)
-    return this.opentui.symbols.setTerminalEnvVar(renderer, keyBytes, keyBytes.length, valueBytes, valueBytes.length)
+    return this.opentui.symbols.setTerminalEnvVar(
+      renderer,
+      ptrOrNull(keyBytes),
+      keyBytes.byteLength,
+      ptrOrNull(valueBytes),
+      valueBytes.byteLength,
+    )
   }
 
   public destroyRenderer(renderer: Pointer): void {
@@ -2197,6 +2802,22 @@ class FFIRenderLib implements RenderLib {
 
   public updateMemoryStats(renderer: Pointer, heapUsed: number, heapTotal: number, arrayBuffers: number) {
     this.opentui.symbols.updateMemoryStats(renderer, heapUsed, heapTotal, arrayBuffers)
+  }
+
+  public getRenderStats(renderer: Pointer): NativeRenderStats {
+    const statsBuffer = new ArrayBuffer(NativeRenderStatsStruct.size)
+    this.opentui.symbols.getRenderStats(renderer, ptr(statsBuffer))
+    const stats = NativeRenderStatsStruct.unpack(statsBuffer)
+
+    return {
+      nativeLastFrameTime: stats.lastFrameTime,
+      nativeAverageFrameTime: stats.averageFrameTime,
+      nativeFrameCount: toNumber(stats.frameCount),
+      cellsUpdated: stats.cellsUpdated,
+      averageCellsUpdated: stats.averageCellsUpdated,
+      nativeRenderTime: stats.renderTimeValid ? stats.renderTime : undefined,
+      nativeStdoutWriteTime: stats.stdoutWriteTimeValid ? stats.stdoutWriteTime : undefined,
+    }
   }
 
   public getNextBuffer(renderer: Pointer): OptimizedBuffer {
@@ -2289,9 +2910,8 @@ class FFIRenderLib implements RenderLib {
   public bufferGetId(buffer: Pointer): string {
     const maxLen = 256
     const outBuffer = new Uint8Array(maxLen)
-    const actualLen = this.opentui.symbols.bufferGetId(buffer, outBuffer, maxLen)
-    const len = typeof actualLen === "bigint" ? Number(actualLen) : actualLen
-    return this.decoder.decode(outBuffer.slice(0, len))
+    const actualLen = this.opentui.symbols.bufferGetId(buffer, ptr(outBuffer), maxLen)
+    return this.decoder.decode(outBuffer.slice(0, actualLen))
   }
 
   public bufferGetRealCharSize(buffer: Pointer): number {
@@ -2299,13 +2919,12 @@ class FFIRenderLib implements RenderLib {
   }
 
   public bufferWriteResolvedChars(buffer: Pointer, outputBuffer: Uint8Array, addLineBreaks: boolean): number {
-    const bytesWritten = this.opentui.symbols.bufferWriteResolvedChars(
+    return this.opentui.symbols.bufferWriteResolvedChars(
       buffer,
-      outputBuffer,
-      outputBuffer.length,
+      ptrOrNull(outputBuffer),
+      outputBuffer.byteLength,
       ffiBool(addLineBreaks),
     )
-    return typeof bytesWritten === "bigint" ? Number(bytesWritten) : bytesWritten
   }
 
   public getBufferWidth(buffer: Pointer): number {
@@ -2330,11 +2949,19 @@ class FFIRenderLib implements RenderLib {
     attributes?: number,
   ) {
     const textBytes = this.encoder.encode(text)
-    const textLength = textBytes.byteLength
     const bg = optionalRgbaPtr(bgColor)
     const fg = rgbaPtr(color)
 
-    this.opentui.symbols.bufferDrawText(buffer, textBytes, textLength, x, y, fg, bg, attributes ?? 0)
+    this.opentui.symbols.bufferDrawText(
+      buffer,
+      ptrOrNull(textBytes),
+      textBytes.byteLength,
+      x,
+      y,
+      fg,
+      bg,
+      attributes ?? 0,
+    )
   }
 
   public bufferSetCellWithAlphaBlending(
@@ -2492,12 +3119,12 @@ class FFIRenderLib implements RenderLib {
 
     this.opentui.symbols.bufferDrawGrid(
       buffer,
-      borderChars,
+      ptr(borderChars),
       rgbaPtr(borderFg),
       rgbaPtr(borderBg),
-      columnOffsets,
+      ptr(columnOffsets),
       columnCount,
-      rowOffsets,
+      ptr(rowOffsets),
       rowCount,
       ptr(optionsBuffer),
     )
@@ -2513,16 +3140,17 @@ class FFIRenderLib implements RenderLib {
     packedOptions: number,
     borderColor: RGBA,
     backgroundColor: RGBA,
+    titleColor: RGBA,
     title: string | null,
     bottomTitle: string | null,
   ): void {
     const titleBytes = title ? this.encoder.encode(title) : null
-    const titleLen = title ? titleBytes!.length : 0
-    const titlePtr = title ? titleBytes : null
+    const titleLen = titleBytes?.byteLength ?? 0
+    const titlePtr = titleBytes ? ptr(titleBytes) : null
 
     const bottomTitleBytes = bottomTitle ? this.encoder.encode(bottomTitle) : null
-    const bottomTitleLen = bottomTitle ? bottomTitleBytes!.length : 0
-    const bottomTitlePtr = bottomTitle ? bottomTitleBytes : null
+    const bottomTitleLen = bottomTitleBytes?.byteLength ?? 0
+    const bottomTitlePtr = bottomTitleBytes ? ptr(bottomTitleBytes) : null
 
     this.opentui.symbols.bufferDrawBox(
       buffer,
@@ -2530,10 +3158,11 @@ class FFIRenderLib implements RenderLib {
       y,
       width,
       height,
-      borderChars,
+      ptr(borderChars),
       packedOptions,
       rgbaPtr(borderColor),
       rgbaPtr(backgroundColor),
+      rgbaPtr(titleColor),
       titlePtr,
       titleLen,
       bottomTitlePtr,
@@ -2548,12 +3177,12 @@ class FFIRenderLib implements RenderLib {
   // Link API
   public linkAlloc(url: string): number {
     const urlBytes = this.encoder.encode(url)
-    return this.opentui.symbols.linkAlloc(urlBytes, urlBytes.length)
+    return this.opentui.symbols.linkAlloc(ptrOrNull(urlBytes), urlBytes.byteLength)
   }
 
   public linkGetUrl(linkId: number, maxLen: number = 512): string {
     const outBuffer = new Uint8Array(maxLen)
-    const actualLen = this.opentui.symbols.linkGetUrl(linkId, outBuffer, maxLen)
+    const actualLen = this.opentui.symbols.linkGetUrl(linkId, ptrOrNull(outBuffer), maxLen)
     return this.decoder.decode(outBuffer.slice(0, actualLen))
   }
 
@@ -2601,12 +3230,26 @@ class FFIRenderLib implements RenderLib {
     this.opentui.symbols.setCursorStyleOptions(renderer, ptr(buffer))
   }
 
-  public render(renderer: Pointer, force: boolean) {
-    this.opentui.symbols.render(renderer, ffiBool(force))
+  public render(renderer: Pointer, force: boolean): number {
+    return this.opentui.symbols.render(renderer, ffiBool(force))
   }
 
-  public repaintSplitFooter(renderer: Pointer, pinnedRenderOffset: number, force: boolean): number {
-    return this.opentui.symbols.repaintSplitFooter(renderer, pinnedRenderOffset, ffiBool(force))
+  private unpackRenderOperationResult(value: number | bigint): NativeRenderOperationResult {
+    const packed = typeof value === "bigint" ? value : BigInt(value)
+    return {
+      renderOffset: Number(packed & 0xffffffffn),
+      status: Number((packed >> 32n) & 0xffn),
+    }
+  }
+
+  public repaintSplitFooter(
+    renderer: Pointer,
+    pinnedRenderOffset: number,
+    force: boolean,
+  ): NativeRenderOperationResult {
+    return this.unpackRenderOperationResult(
+      this.opentui.symbols.repaintSplitFooter(renderer, pinnedRenderOffset, ffiBool(force)),
+    )
   }
 
   public commitSplitFooterSnapshot(
@@ -2619,17 +3262,19 @@ class FFIRenderLib implements RenderLib {
     force: boolean,
     beginFrame: boolean = true,
     finalizeFrame: boolean = true,
-  ): number {
-    return this.opentui.symbols.commitSplitFooterSnapshot(
-      renderer,
-      snapshot.ptr,
-      rowColumns,
-      ffiBool(startOnNewLine),
-      ffiBool(trailingNewline),
-      pinnedRenderOffset,
-      ffiBool(force),
-      ffiBool(beginFrame),
-      ffiBool(finalizeFrame),
+  ): NativeRenderOperationResult {
+    return this.unpackRenderOperationResult(
+      this.opentui.symbols.commitSplitFooterSnapshot(
+        renderer,
+        snapshot.ptr,
+        rowColumns,
+        ffiBool(startOnNewLine),
+        ffiBool(trailingNewline),
+        pinnedRenderOffset,
+        ffiBool(force),
+        ffiBool(beginFrame),
+        ffiBool(finalizeFrame),
+      ),
     )
   }
 
@@ -2652,8 +3297,8 @@ class FFIRenderLib implements RenderLib {
       height,
       ffiBool(respectAlpha),
       widthMethodCode,
-      idBytes,
-      idBytes.length,
+      ptr(idBytes),
+      idBytes.byteLength,
     )
     if (!bufferPtr) {
       throw new Error(`Failed to create optimized buffer: ${width}x${height}`)
@@ -2693,15 +3338,29 @@ class FFIRenderLib implements RenderLib {
 
   public setTerminalTitle(renderer: Pointer, title: string) {
     const titleBytes = this.encoder.encode(title)
-    this.opentui.symbols.setTerminalTitle(renderer, titleBytes, titleBytes.length)
+    this.opentui.symbols.setTerminalTitle(renderer, ptrOrNull(titleBytes), titleBytes.byteLength)
   }
 
   public copyToClipboardOSC52(renderer: Pointer, target: number, payload: Uint8Array): boolean {
-    return this.opentui.symbols.copyToClipboardOSC52(renderer, target, payload, payload.length)
+    return Boolean(this.opentui.symbols.copyToClipboardOSC52(renderer, target, ptrOrNull(payload), payload.byteLength))
   }
 
   public clearClipboardOSC52(renderer: Pointer, target: number): boolean {
-    return this.opentui.symbols.clearClipboardOSC52(renderer, target)
+    return Boolean(this.opentui.symbols.clearClipboardOSC52(renderer, target))
+  }
+
+  public triggerNotification(renderer: Pointer, message: string, title?: string): boolean {
+    const messageBytes = this.encoder.encode(message)
+    const titleBytes = title === undefined ? null : this.encoder.encode(title)
+    return Boolean(
+      this.opentui.symbols.triggerNotification(
+        renderer,
+        messageBytes,
+        messageBytes.length,
+        titleBytes,
+        titleBytes?.length ?? 0,
+      ),
+    )
   }
 
   public addToHitGrid(renderer: Pointer, x: number, y: number, width: number, height: number, id: number) {
@@ -2752,9 +3411,9 @@ class FFIRenderLib implements RenderLib {
     this.opentui.symbols.dumpBuffers(renderer, ts)
   }
 
-  public dumpStdoutBuffer(renderer: Pointer, timestamp?: number): void {
+  public dumpOutputBuffer(renderer: Pointer, timestamp?: number): void {
     const ts = timestamp ?? Date.now()
-    this.opentui.symbols.dumpStdoutBuffer(renderer, ts)
+    this.opentui.symbols.dumpOutputBuffer(renderer, ts)
   }
 
   public restoreTerminalModes(renderer: Pointer): void {
@@ -2813,7 +3472,230 @@ class FFIRenderLib implements RenderLib {
   public writeOut(renderer: Pointer, data: string | Uint8Array): void {
     const bytes = typeof data === "string" ? new TextEncoder().encode(data) : data
     if (bytes.length === 0) return
-    this.opentui.symbols.writeOut(renderer, ptr(bytes), bytes.length)
+    this.opentui.symbols.writeOut(renderer, ptrOrNull(bytes), bytes.byteLength)
+  }
+
+  public yogaConfigCreate(): Pointer {
+    const config = this.opentui.symbols.yogaConfigCreate()
+    if (!config) throw new Error("Failed to create Yoga config")
+    return config
+  }
+
+  public yogaConfigFree(config: Pointer): void {
+    this.opentui.symbols.yogaConfigFree(config)
+  }
+
+  public yogaConfigSetUseWebDefaults(config: Pointer, enabled: boolean): void {
+    this.opentui.symbols.yogaConfigSetUseWebDefaults(config, ffiBool(enabled))
+  }
+
+  public yogaConfigGetUseWebDefaults(config: Pointer): boolean {
+    return this.opentui.symbols.yogaConfigGetUseWebDefaults(config)
+  }
+
+  public yogaConfigSetPointScaleFactor(config: Pointer, pointScaleFactor: number): void {
+    this.opentui.symbols.yogaConfigSetPointScaleFactor(config, pointScaleFactor)
+  }
+
+  public yogaConfigGetPointScaleFactor(config: Pointer): number {
+    return this.opentui.symbols.yogaConfigGetPointScaleFactor(config)
+  }
+
+  public yogaConfigSetErrata(config: Pointer, errata: number): void {
+    this.opentui.symbols.yogaConfigSetErrata(config, errata)
+  }
+
+  public yogaConfigGetErrata(config: Pointer): number {
+    return this.opentui.symbols.yogaConfigGetErrata(config)
+  }
+
+  public yogaConfigSetExperimentalFeatureEnabled(config: Pointer, feature: number, enabled: boolean): void {
+    this.opentui.symbols.yogaConfigSetExperimentalFeatureEnabled(config, feature, ffiBool(enabled))
+  }
+
+  public yogaConfigIsExperimentalFeatureEnabled(config: Pointer, feature: number): boolean {
+    return this.opentui.symbols.yogaConfigIsExperimentalFeatureEnabled(config, feature)
+  }
+
+  public yogaNodeCreate(): Pointer {
+    const node = this.opentui.symbols.yogaNodeCreate()
+    if (!node) throw new Error("Failed to create Yoga node")
+    return node
+  }
+
+  public yogaNodeCreateForOpenTUI(): Pointer {
+    const node = this.opentui.symbols.yogaNodeCreateForOpenTUI()
+    if (!node) throw new Error("Failed to create OpenTUI Yoga node")
+    return node
+  }
+
+  public yogaNodeCreateWithConfig(config: Pointer): Pointer {
+    const node = this.opentui.symbols.yogaNodeCreateWithConfig(config)
+    if (!node) throw new Error("Failed to create Yoga node")
+    return node
+  }
+
+  public yogaNodeFree(node: Pointer): void {
+    this.opentui.symbols.yogaNodeFree(node)
+  }
+
+  public yogaNodeFreeRecursive(node: Pointer): void {
+    this.opentui.symbols.yogaNodeFreeRecursive(node)
+  }
+
+  public yogaNodeReset(node: Pointer): void {
+    this.opentui.symbols.yogaNodeReset(node)
+  }
+
+  public yogaNodeCopyStyle(dstNode: Pointer, srcNode: Pointer): void {
+    this.opentui.symbols.yogaNodeCopyStyle(dstNode, srcNode)
+  }
+
+  public yogaNodeInsertChild(node: Pointer, child: Pointer, index: number): void {
+    this.opentui.symbols.yogaNodeInsertChild(node, child, index)
+  }
+
+  public yogaNodeRemoveChild(node: Pointer, child: Pointer): void {
+    this.opentui.symbols.yogaNodeRemoveChild(node, child)
+  }
+
+  public yogaNodeRemoveAllChildren(node: Pointer): void {
+    this.opentui.symbols.yogaNodeRemoveAllChildren(node)
+  }
+
+  public yogaNodeGetChild(node: Pointer, index: number): Pointer | null {
+    return this.opentui.symbols.yogaNodeGetChild(node, index) || null
+  }
+
+  public yogaNodeGetChildCount(node: Pointer): number {
+    return this.opentui.symbols.yogaNodeGetChildCount(node)
+  }
+
+  public yogaNodeGetParent(node: Pointer): Pointer | null {
+    return this.opentui.symbols.yogaNodeGetParent(node) || null
+  }
+
+  public yogaNodeCalculateLayout(node: Pointer, width: number, height: number, direction: number): void {
+    this.opentui.symbols.yogaNodeCalculateLayout(node, width, height, direction)
+  }
+
+  public yogaNodeIsDirty(node: Pointer): boolean {
+    return this.opentui.symbols.yogaNodeIsDirty(node)
+  }
+
+  public yogaNodeMarkDirty(node: Pointer): void {
+    this.opentui.symbols.yogaNodeMarkDirty(node)
+  }
+
+  public yogaNodeGetHasNewLayout(node: Pointer): boolean {
+    return this.opentui.symbols.yogaNodeGetHasNewLayout(node)
+  }
+
+  public yogaNodeSetHasNewLayout(node: Pointer, hasNewLayout: boolean): void {
+    this.opentui.symbols.yogaNodeSetHasNewLayout(node, ffiBool(hasNewLayout))
+  }
+
+  public yogaNodeSetIsReferenceBaseline(node: Pointer, isReferenceBaseline: boolean): void {
+    this.opentui.symbols.yogaNodeSetIsReferenceBaseline(node, ffiBool(isReferenceBaseline))
+  }
+
+  public yogaNodeIsReferenceBaseline(node: Pointer): boolean {
+    return this.opentui.symbols.yogaNodeIsReferenceBaseline(node)
+  }
+
+  public yogaNodeSetAlwaysFormsContainingBlock(node: Pointer, alwaysFormsContainingBlock: boolean): void {
+    this.opentui.symbols.yogaNodeSetAlwaysFormsContainingBlock(node, ffiBool(alwaysFormsContainingBlock))
+  }
+
+  public yogaNodeGetAlwaysFormsContainingBlock(node: Pointer): boolean {
+    return this.opentui.symbols.yogaNodeGetAlwaysFormsContainingBlock(node)
+  }
+
+  public yogaNodeGetComputedLayout(node: Pointer): NativeYogaLayout {
+    const layout = new Float32Array(6)
+    this.opentui.symbols.yogaNodeGetComputedLayout(node, ptr(layout))
+    return {
+      left: layout[0]!,
+      top: layout[1]!,
+      right: layout[2]!,
+      bottom: layout[3]!,
+      width: layout[4]!,
+      height: layout[5]!,
+    }
+  }
+
+  public yogaNodeLayoutGetEdge(node: Pointer, kind: number, edge: number): number {
+    return this.opentui.symbols.yogaNodeLayoutGetEdge(node, kind, edge)
+  }
+
+  public yogaNodeStyleSetEnum(node: Pointer, kind: number, value: number): void {
+    this.opentui.symbols.yogaNodeStyleSetEnum(node, kind, value)
+  }
+
+  public yogaNodeStyleGetEnum(node: Pointer, kind: number): number {
+    return this.opentui.symbols.yogaNodeStyleGetEnum(node, kind)
+  }
+
+  public yogaNodeStyleSetFloat(node: Pointer, kind: number, value: number): void {
+    this.opentui.symbols.yogaNodeStyleSetFloat(node, kind, value)
+  }
+
+  public yogaNodeStyleGetFloat(node: Pointer, kind: number): number {
+    return this.opentui.symbols.yogaNodeStyleGetFloat(node, kind)
+  }
+
+  public yogaNodeStyleSetBorder(node: Pointer, edge: number, border: number): void {
+    this.opentui.symbols.yogaNodeStyleSetBorder(node, edge, border)
+  }
+
+  public yogaNodeStyleGetBorder(node: Pointer, edge: number): number {
+    return this.opentui.symbols.yogaNodeStyleGetBorder(node, edge)
+  }
+
+  public yogaNodeStyleSetValue(node: Pointer, kind: number, edgeOrGutter: number, unit: number, value: number): void {
+    this.opentui.symbols.yogaNodeStyleSetValue(node, kind, edgeOrGutter, unit, value)
+  }
+
+  public yogaNodeStyleGetValue(node: Pointer, kind: number, edgeOrGutter: number): number | bigint {
+    return this.opentui.symbols.yogaNodeStyleGetValue(node, kind, edgeOrGutter)
+  }
+
+  public yogaNodeSetMeasureFunc(node: Pointer, callback: Pointer | null): void {
+    this.opentui.symbols.yogaNodeSetMeasureFunc(node, callback)
+  }
+
+  public yogaNodeUnsetMeasureFunc(node: Pointer): void {
+    this.opentui.symbols.yogaNodeUnsetMeasureFunc(node)
+  }
+
+  public yogaNodeHasMeasureFunc(node: Pointer): boolean {
+    return this.opentui.symbols.yogaNodeHasMeasureFunc(node)
+  }
+
+  public yogaNodeSetDirtiedFunc(node: Pointer, callback: Pointer | null): void {
+    this.opentui.symbols.yogaNodeSetDirtiedFunc(node, callback)
+  }
+
+  public yogaNodeUnsetDirtiedFunc(node: Pointer): void {
+    this.opentui.symbols.yogaNodeUnsetDirtiedFunc(node)
+  }
+
+  public yogaStoreMeasureResult(width: number, height: number): void {
+    this.opentui.symbols.yogaStoreMeasureResult(width, height)
+  }
+
+  public createYogaMeasureCallback(callback: NativeYogaMeasureCallback): FFICallbackInstance {
+    return this.opentui.createCallback(callback, {
+      args: ["ptr", "f32", "u32", "f32", "u32"],
+      returns: "void",
+    })
+  }
+
+  public createYogaDirtiedCallback(callback: NativeYogaDirtiedCallback): FFICallbackInstance {
+    return this.opentui.createCallback(callback, {
+      args: [],
+      returns: "void",
+    })
   }
 
   // TextBuffer methods
@@ -2858,8 +3740,8 @@ class FFIRenderLib implements RenderLib {
   }
 
   public textBufferSetDefaultAttributes(buffer: Pointer, attributes: number | null): void {
-    const attrValue = attributes === null ? null : new Uint8Array([attributes])
-    this.opentui.symbols.textBufferSetDefaultAttributes(buffer, attrValue)
+    const attrValue = attributes === null ? null : new Uint32Array([attributes])
+    this.opentui.symbols.textBufferSetDefaultAttributes(buffer, attrValue ? ptr(attrValue) : null)
   }
 
   public textBufferResetDefaults(buffer: Pointer): void {
@@ -2875,7 +3757,12 @@ class FFIRenderLib implements RenderLib {
   }
 
   public textBufferRegisterMemBuffer(buffer: Pointer, bytes: Uint8Array, owned: boolean = false): number {
-    const result = this.opentui.symbols.textBufferRegisterMemBuffer(buffer, bytes, bytes.length, ffiBool(owned))
+    const result = this.opentui.symbols.textBufferRegisterMemBuffer(
+      buffer,
+      ptrOrNull(bytes),
+      bytes.byteLength,
+      ffiBool(owned),
+    )
     if (result === 0xffff) {
       throw new Error("Failed to register memory buffer")
     }
@@ -2888,7 +3775,13 @@ class FFIRenderLib implements RenderLib {
     bytes: Uint8Array,
     owned: boolean = false,
   ): boolean {
-    return this.opentui.symbols.textBufferReplaceMemBuffer(buffer, memId, bytes, bytes.length, ffiBool(owned))
+    return this.opentui.symbols.textBufferReplaceMemBuffer(
+      buffer,
+      memId,
+      ptrOrNull(bytes),
+      bytes.byteLength,
+      ffiBool(owned),
+    )
   }
 
   public textBufferClearMemRegistry(buffer: Pointer): void {
@@ -2900,7 +3793,7 @@ class FFIRenderLib implements RenderLib {
   }
 
   public textBufferAppend(buffer: Pointer, bytes: Uint8Array): void {
-    this.opentui.symbols.textBufferAppend(buffer, bytes, bytes.length)
+    this.opentui.symbols.textBufferAppend(buffer, ptrOrNull(bytes), bytes.byteLength)
   }
 
   public textBufferAppendFromMemId(buffer: Pointer, memId: number): void {
@@ -2909,7 +3802,7 @@ class FFIRenderLib implements RenderLib {
 
   public textBufferLoadFile(buffer: Pointer, path: string): boolean {
     const pathBytes = this.encoder.encode(path)
-    return this.opentui.symbols.textBufferLoadFile(buffer, pathBytes, pathBytes.length)
+    return this.opentui.symbols.textBufferLoadFile(buffer, ptrOrNull(pathBytes), pathBytes.byteLength)
   }
 
   public textBufferSetStyledText(
@@ -2929,15 +3822,14 @@ class FFIRenderLib implements RenderLib {
     return this.opentui.symbols.textBufferGetLineCount(buffer)
   }
 
-  private textBufferGetPlainText(buffer: Pointer, outPtr: Pointer, maxLen: number): number {
-    const result = this.opentui.symbols.textBufferGetPlainText(buffer, outPtr, maxLen)
-    return typeof result === "bigint" ? Number(result) : result
+  private textBufferGetPlainText(buffer: Pointer, outPtr: Pointer | null, maxLen: number): number {
+    return this.opentui.symbols.textBufferGetPlainText(buffer, outPtr, maxLen)
   }
 
   public getPlainTextBytes(buffer: Pointer, maxLength: number): Uint8Array | null {
     const outBuffer = new Uint8Array(maxLength)
 
-    const actualLen = this.textBufferGetPlainText(buffer, ptr(outBuffer), maxLength)
+    const actualLen = this.textBufferGetPlainText(buffer, ptrOrNull(outBuffer), maxLength)
 
     if (actualLen === 0) {
       return null
@@ -2958,11 +3850,11 @@ class FFIRenderLib implements RenderLib {
       buffer,
       startOffset,
       endOffset,
-      ptr(outBuffer),
+      ptrOrNull(outBuffer),
       maxLength,
     )
 
-    const len = typeof actualLen === "bigint" ? Number(actualLen) : actualLen
+    const len = actualLen
 
     if (len === 0) {
       return null
@@ -2987,11 +3879,11 @@ class FFIRenderLib implements RenderLib {
       startCol,
       endRow,
       endCol,
-      ptr(outBuffer),
+      ptrOrNull(outBuffer),
       maxLength,
     )
 
-    const len = typeof actualLen === "bigint" ? Number(actualLen) : actualLen
+    const len = actualLen
 
     if (len === 0) {
       return null
@@ -3001,8 +3893,8 @@ class FFIRenderLib implements RenderLib {
   }
 
   // TextBufferView methods
-  public createTextBufferView(textBuffer: Pointer): Pointer {
-    const viewPtr = this.opentui.symbols.createTextBufferView(textBuffer)
+  public createTextBufferView(textBuffer: TextBufferHandle): TextBufferViewHandle {
+    const viewPtr = this.opentui.symbols.createTextBufferView(textBuffer) as TextBufferViewHandle
     if (!viewPtr) {
       throw new Error("Failed to create TextBufferView")
     }
@@ -3058,7 +3950,7 @@ class FFIRenderLib implements RenderLib {
   ): boolean {
     const bg = optionalRgbaPtr(bgColor)
     const fg = optionalRgbaPtr(fgColor)
-    return this.opentui.symbols.textBufferViewSetLocalSelection(view, anchorX, anchorY, focusX, focusY, bg, fg)
+    return Boolean(this.opentui.symbols.textBufferViewSetLocalSelection(view, anchorX, anchorY, focusX, focusY, bg, fg))
   }
 
   public textBufferViewUpdateSelection(view: Pointer, end: number, bgColor: RGBA | null, fgColor: RGBA | null): void {
@@ -3078,7 +3970,9 @@ class FFIRenderLib implements RenderLib {
   ): boolean {
     const bg = optionalRgbaPtr(bgColor)
     const fg = optionalRgbaPtr(fgColor)
-    return this.opentui.symbols.textBufferViewUpdateLocalSelection(view, anchorX, anchorY, focusX, focusY, bg, fg)
+    return Boolean(
+      this.opentui.symbols.textBufferViewUpdateLocalSelection(view, anchorX, anchorY, focusX, focusY, bg, fg),
+    )
   }
 
   public textBufferViewResetLocalSelection(view: Pointer): void {
@@ -3154,20 +4048,18 @@ class FFIRenderLib implements RenderLib {
     this.opentui.symbols.textBufferViewGetLogicalLineInfoDirect(view, outPtr)
   }
 
-  private textBufferViewGetSelectedText(view: Pointer, outPtr: Pointer, maxLen: number): number {
-    const result = this.opentui.symbols.textBufferViewGetSelectedText(view, outPtr, maxLen)
-    return typeof result === "bigint" ? Number(result) : result
+  private textBufferViewGetSelectedText(view: Pointer, outPtr: Pointer | null, maxLen: number): number {
+    return this.opentui.symbols.textBufferViewGetSelectedText(view, outPtr, maxLen)
   }
 
-  private textBufferViewGetPlainText(view: Pointer, outPtr: Pointer, maxLen: number): number {
-    const result = this.opentui.symbols.textBufferViewGetPlainText(view, outPtr, maxLen)
-    return typeof result === "bigint" ? Number(result) : result
+  private textBufferViewGetPlainText(view: Pointer, outPtr: Pointer | null, maxLen: number): number {
+    return this.opentui.symbols.textBufferViewGetPlainText(view, outPtr, maxLen)
   }
 
   public textBufferViewGetSelectedTextBytes(view: Pointer, maxLength: number): Uint8Array | null {
     const outBuffer = new Uint8Array(maxLength)
 
-    const actualLen = this.textBufferViewGetSelectedText(view, ptr(outBuffer), maxLength)
+    const actualLen = this.textBufferViewGetSelectedText(view, ptrOrNull(outBuffer), maxLength)
 
     if (actualLen === 0) {
       return null
@@ -3179,7 +4071,7 @@ class FFIRenderLib implements RenderLib {
   public textBufferViewGetPlainTextBytes(view: Pointer, maxLength: number): Uint8Array | null {
     const outBuffer = new Uint8Array(maxLength)
 
-    const actualLen = this.textBufferViewGetPlainText(view, ptr(outBuffer), maxLength)
+    const actualLen = this.textBufferViewGetPlainText(view, ptrOrNull(outBuffer), maxLength)
 
     if (actualLen === 0) {
       return null
@@ -3237,17 +4129,17 @@ class FFIRenderLib implements RenderLib {
     this.opentui.symbols.textBufferClearAllHighlights(buffer)
   }
 
-  public textBufferSetSyntaxStyle(buffer: Pointer, style: Pointer | null): void {
-    this.opentui.symbols.textBufferSetSyntaxStyle(buffer, style)
+  public textBufferSetSyntaxStyle(buffer: Pointer, style: Pointer | null): boolean {
+    return this.opentui.symbols.textBufferSetSyntaxStyle(buffer, style ?? 0)
   }
 
   public textBufferGetLineHighlights(buffer: Pointer, lineIdx: number): Array<Highlight> {
-    const outCountBuf = new BigUint64Array(1)
+    const outCountBuf = new Uint32Array(1)
 
     const nativePtr = this.opentui.symbols.textBufferGetLineHighlightsPtr(buffer, lineIdx, ptr(outCountBuf))
     if (!nativePtr) return []
 
-    const count = Number(outCountBuf[0])
+    const count = outCountBuf[0]
     const byteLen = count * HighlightStruct.size
     const raw = toArrayBuffer(nativePtr, 0, byteLen)
     const results = HighlightStruct.unpackList(raw, count)
@@ -3263,7 +4155,7 @@ class FFIRenderLib implements RenderLib {
 
   public getArenaAllocatedBytes(): number {
     const result = this.opentui.symbols.getArenaAllocatedBytes()
-    return typeof result === "bigint" ? Number(result) : result
+    return toSafeByteCount(result, "Arena allocated bytes")
   }
 
   public getBuildOptions(): BuildOptions {
@@ -3300,8 +4192,16 @@ class FFIRenderLib implements RenderLib {
   }
 
   // EditorView methods
-  public createEditorView(editBufferPtr: Pointer, viewportWidth: number, viewportHeight: number): Pointer {
-    const viewPtr = this.opentui.symbols.createEditorView(editBufferPtr, viewportWidth, viewportHeight)
+  public createEditorView(
+    editBufferPtr: EditBufferHandle,
+    viewportWidth: number,
+    viewportHeight: number,
+  ): EditorViewHandle {
+    const viewPtr = this.opentui.symbols.createEditorView(
+      editBufferPtr,
+      viewportWidth,
+      viewportHeight,
+    ) as EditorViewHandle
     if (!viewPtr) {
       throw new Error("Failed to create EditorView")
     }
@@ -3360,8 +4260,8 @@ class FFIRenderLib implements RenderLib {
     return this.opentui.symbols.editorViewGetTotalVirtualLineCount(view)
   }
 
-  public editorViewGetTextBufferView(view: Pointer): Pointer {
-    const result = this.opentui.symbols.editorViewGetTextBufferView(view)
+  public editorViewGetTextBufferView(view: EditorViewHandle): TextBufferViewHandle {
+    const result = this.opentui.symbols.editorViewGetTextBufferView(view) as TextBufferViewHandle
     if (!result) {
       throw new Error("Failed to get TextBufferView from EditorView")
     }
@@ -3405,9 +4305,9 @@ class FFIRenderLib implements RenderLib {
   }
 
   // EditBuffer implementations
-  public createEditBuffer(widthMethod: WidthMethod): Pointer {
+  public createEditBuffer(widthMethod: WidthMethod): EditBufferHandle {
     const widthMethodCode = widthMethod === "wcwidth" ? 0 : 1
-    const bufferPtr = this.opentui.symbols.createEditBuffer(widthMethodCode)
+    const bufferPtr = this.opentui.symbols.createEditBuffer(widthMethodCode, this.eventSinkPtr ?? 0) as EditBufferHandle
     if (!bufferPtr) {
       throw new Error("Failed to create EditBuffer")
     }
@@ -3419,7 +4319,7 @@ class FFIRenderLib implements RenderLib {
   }
 
   public editBufferSetText(buffer: Pointer, textBytes: Uint8Array): void {
-    this.opentui.symbols.editBufferSetText(buffer, textBytes, textBytes.length)
+    this.opentui.symbols.editBufferSetText(buffer, ptrOrNull(textBytes), textBytes.byteLength)
   }
 
   public editBufferSetTextFromMem(buffer: Pointer, memId: number): void {
@@ -3427,7 +4327,7 @@ class FFIRenderLib implements RenderLib {
   }
 
   public editBufferReplaceText(buffer: Pointer, textBytes: Uint8Array): void {
-    this.opentui.symbols.editBufferReplaceText(buffer, textBytes, textBytes.length)
+    this.opentui.symbols.editBufferReplaceText(buffer, ptrOrNull(textBytes), textBytes.byteLength)
   }
 
   public editBufferReplaceTextFromMem(buffer: Pointer, memId: number): void {
@@ -3436,20 +4336,20 @@ class FFIRenderLib implements RenderLib {
 
   public editBufferGetText(buffer: Pointer, maxLength: number): Uint8Array | null {
     const outBuffer = new Uint8Array(maxLength)
-    const actualLen = this.opentui.symbols.editBufferGetText(buffer, ptr(outBuffer), maxLength)
-    const len = typeof actualLen === "bigint" ? Number(actualLen) : actualLen
+    const actualLen = this.opentui.symbols.editBufferGetText(buffer, ptrOrNull(outBuffer), maxLength)
+    const len = actualLen
     if (len === 0) return null
     return outBuffer.slice(0, len)
   }
 
   public editBufferInsertChar(buffer: Pointer, char: string): void {
     const charBytes = this.encoder.encode(char)
-    this.opentui.symbols.editBufferInsertChar(buffer, charBytes, charBytes.length)
+    this.opentui.symbols.editBufferInsertChar(buffer, ptrOrNull(charBytes), charBytes.byteLength)
   }
 
   public editBufferInsertText(buffer: Pointer, text: string): void {
     const textBytes = this.encoder.encode(text)
-    this.opentui.symbols.editBufferInsertText(buffer, textBytes, textBytes.length)
+    this.opentui.symbols.editBufferInsertText(buffer, ptrOrNull(textBytes), textBytes.byteLength)
   }
 
   public editBufferDeleteChar(buffer: Pointer): void {
@@ -3520,8 +4420,8 @@ class FFIRenderLib implements RenderLib {
     return this.opentui.symbols.editBufferGetId(buffer)
   }
 
-  public editBufferGetTextBuffer(buffer: Pointer): Pointer {
-    const result = this.opentui.symbols.editBufferGetTextBuffer(buffer)
+  public editBufferGetTextBuffer(buffer: EditBufferHandle): TextBufferHandle {
+    const result = this.opentui.symbols.editBufferGetTextBuffer(buffer) as TextBufferHandle
     if (!result) {
       throw new Error("Failed to get TextBuffer from EditBuffer")
     }
@@ -3534,26 +4434,26 @@ class FFIRenderLib implements RenderLib {
 
   public editBufferUndo(buffer: Pointer, maxLength: number): Uint8Array | null {
     const outBuffer = new Uint8Array(maxLength)
-    const actualLen = this.opentui.symbols.editBufferUndo(buffer, ptr(outBuffer), maxLength)
-    const len = typeof actualLen === "bigint" ? Number(actualLen) : actualLen
+    const actualLen = this.opentui.symbols.editBufferUndo(buffer, ptrOrNull(outBuffer), maxLength)
+    const len = actualLen
     if (len === 0) return null
     return outBuffer.slice(0, len)
   }
 
   public editBufferRedo(buffer: Pointer, maxLength: number): Uint8Array | null {
     const outBuffer = new Uint8Array(maxLength)
-    const actualLen = this.opentui.symbols.editBufferRedo(buffer, ptr(outBuffer), maxLength)
-    const len = typeof actualLen === "bigint" ? Number(actualLen) : actualLen
+    const actualLen = this.opentui.symbols.editBufferRedo(buffer, ptrOrNull(outBuffer), maxLength)
+    const len = actualLen
     if (len === 0) return null
     return outBuffer.slice(0, len)
   }
 
   public editBufferCanUndo(buffer: Pointer): boolean {
-    return this.opentui.symbols.editBufferCanUndo(buffer)
+    return Boolean(this.opentui.symbols.editBufferCanUndo(buffer))
   }
 
   public editBufferCanRedo(buffer: Pointer): boolean {
-    return this.opentui.symbols.editBufferCanRedo(buffer)
+    return Boolean(this.opentui.symbols.editBufferCanRedo(buffer))
   }
 
   public editBufferClearHistory(buffer: Pointer): void {
@@ -3608,10 +4508,10 @@ class FFIRenderLib implements RenderLib {
       buffer,
       startOffset,
       endOffset,
-      ptr(outBuffer),
+      ptrOrNull(outBuffer),
       maxLength,
     )
-    const len = typeof actualLen === "bigint" ? Number(actualLen) : actualLen
+    const len = actualLen
     if (len === 0) return null
     return outBuffer.slice(0, len)
   }
@@ -3631,10 +4531,10 @@ class FFIRenderLib implements RenderLib {
       startCol,
       endRow,
       endCol,
-      ptr(outBuffer),
+      ptrOrNull(outBuffer),
       maxLength,
     )
-    const len = typeof actualLen === "bigint" ? Number(actualLen) : actualLen
+    const len = actualLen
     if (len === 0) return null
     return outBuffer.slice(0, len)
   }
@@ -3679,16 +4579,18 @@ class FFIRenderLib implements RenderLib {
   ): boolean {
     const bg = optionalRgbaPtr(bgColor)
     const fg = optionalRgbaPtr(fgColor)
-    return this.opentui.symbols.editorViewSetLocalSelection(
-      view,
-      anchorX,
-      anchorY,
-      focusX,
-      focusY,
-      bg,
-      fg,
-      ffiBool(updateCursor),
-      ffiBool(followCursor),
+    return Boolean(
+      this.opentui.symbols.editorViewSetLocalSelection(
+        view,
+        anchorX,
+        anchorY,
+        focusX,
+        focusY,
+        bg,
+        fg,
+        ffiBool(updateCursor),
+        ffiBool(followCursor),
+      ),
     )
   }
 
@@ -3711,16 +4613,18 @@ class FFIRenderLib implements RenderLib {
   ): boolean {
     const bg = optionalRgbaPtr(bgColor)
     const fg = optionalRgbaPtr(fgColor)
-    return this.opentui.symbols.editorViewUpdateLocalSelection(
-      view,
-      anchorX,
-      anchorY,
-      focusX,
-      focusY,
-      bg,
-      fg,
-      ffiBool(updateCursor),
-      ffiBool(followCursor),
+    return Boolean(
+      this.opentui.symbols.editorViewUpdateLocalSelection(
+        view,
+        anchorX,
+        anchorY,
+        focusX,
+        focusY,
+        bg,
+        fg,
+        ffiBool(updateCursor),
+        ffiBool(followCursor),
+      ),
     )
   }
 
@@ -3730,8 +4634,8 @@ class FFIRenderLib implements RenderLib {
 
   public editorViewGetSelectedTextBytes(view: Pointer, maxLength: number): Uint8Array | null {
     const outBuffer = new Uint8Array(maxLength)
-    const actualLen = this.opentui.symbols.editorViewGetSelectedTextBytes(view, ptr(outBuffer), maxLength)
-    const len = typeof actualLen === "bigint" ? Number(actualLen) : actualLen
+    const actualLen = this.opentui.symbols.editorViewGetSelectedTextBytes(view, ptrOrNull(outBuffer), maxLength)
+    const len = actualLen
     if (len === 0) return null
     return outBuffer.slice(0, len)
   }
@@ -3745,8 +4649,8 @@ class FFIRenderLib implements RenderLib {
 
   public editorViewGetText(view: Pointer, maxLength: number): Uint8Array | null {
     const outBuffer = new Uint8Array(maxLength)
-    const actualLen = this.opentui.symbols.editorViewGetText(view, ptr(outBuffer), maxLength)
-    const len = typeof actualLen === "bigint" ? Number(actualLen) : actualLen
+    const actualLen = this.opentui.symbols.editorViewGetText(view, ptrOrNull(outBuffer), maxLength)
+    const len = actualLen
     if (len === 0) return null
     return outBuffer.slice(0, len)
   }
@@ -3831,7 +4735,7 @@ class FFIRenderLib implements RenderLib {
     this.opentui.symbols.bufferClearOpacity(buffer)
   }
 
-  public getTerminalCapabilities(renderer: Pointer) {
+  public getTerminalCapabilities(renderer: Pointer): TerminalCapabilities {
     const capsBuffer = new ArrayBuffer(TerminalCapabilitiesStruct.size)
     this.opentui.symbols.getTerminalCapabilities(renderer, ptr(capsBuffer))
 
@@ -3853,8 +4757,10 @@ class FFIRenderLib implements RenderLib {
       bracketed_paste: caps.bracketed_paste,
       hyperlinks: caps.hyperlinks,
       osc52: caps.osc52,
+      notifications: caps.notifications,
       explicit_cursor_positioning: caps.explicit_cursor_positioning,
-      in_tmux: caps.in_tmux,
+      remote: caps.remote,
+      multiplexer: caps.multiplexer,
       terminal: {
         name: caps.term_name ?? "",
         version: caps.term_version ?? "",
@@ -3865,7 +4771,7 @@ class FFIRenderLib implements RenderLib {
 
   public processCapabilityResponse(renderer: Pointer, response: string): void {
     const responseBytes = this.encoder.encode(response)
-    this.opentui.symbols.processCapabilityResponse(renderer, responseBytes, responseBytes.length)
+    this.opentui.symbols.processCapabilityResponse(renderer, ptrOrNull(responseBytes), responseBytes.byteLength)
   }
 
   public encodeUnicode(
@@ -3875,12 +4781,12 @@ class FFIRenderLib implements RenderLib {
     const textBytes = this.encoder.encode(text)
     const widthMethodCode = widthMethod === "wcwidth" ? 0 : 1
 
-    const outPtrBuffer = new ArrayBuffer(8) // Pointer size
-    const outLenBuffer = new ArrayBuffer(8) // usize
+    const outPtrBuffer = new ArrayBuffer(8) // Pointer-sized out slot
+    const outLenBuffer = new ArrayBuffer(8) // Native length out slot
 
     const success = this.opentui.symbols.encodeUnicode(
-      textBytes,
-      textBytes.length,
+      ptrOrNull(textBytes),
+      textBytes.byteLength,
       ptr(outPtrBuffer),
       ptr(outLenBuffer),
       widthMethodCode,
@@ -3893,12 +4799,13 @@ class FFIRenderLib implements RenderLib {
     const outPtrView = new BigUint64Array(outPtrBuffer)
     const outLenView = new BigUint64Array(outLenBuffer)
 
-    const resultPtr = Number(outPtrView[0]) as Pointer
     const resultLen = Number(outLenView[0])
 
     if (resultLen === 0) {
-      return { ptr: resultPtr, data: [] }
+      return { ptr: 0 as Pointer, data: [] }
     }
+
+    const resultPtr = toPointer(outPtrView[0])
 
     // Convert pointer to ArrayBuffer and use EncodedCharStruct to unpack the list
     const byteLen = resultLen * EncodedCharStruct.size
@@ -3924,6 +4831,169 @@ class FFIRenderLib implements RenderLib {
     this.opentui.symbols.bufferDrawChar(buffer, char, x, y, rgbaPtr(fg), rgbaPtr(bg), attributes)
   }
 
+  public createAudioEngine(options?: AudioCreateOptions | null): AudioEngineHandle | null {
+    const optionsBuffer = options == null ? null : AudioCreateOptionsStruct.pack(options)
+    const engineHandle = this.opentui.symbols.createAudioEngine(
+      optionsBuffer ? ptr(optionsBuffer) : null,
+    ) as AudioEngineHandle
+    return engineHandle ? engineHandle : null
+  }
+
+  public destroyAudioEngine(engine: AudioEngineHandle): void {
+    this.opentui.symbols.destroyAudioEngine(engine)
+  }
+
+  public audioRefreshPlaybackDevices(engine: Pointer): number {
+    return this.opentui.symbols.audioRefreshPlaybackDevices(engine)
+  }
+
+  public audioGetPlaybackDeviceCount(engine: Pointer): number {
+    return this.opentui.symbols.audioGetPlaybackDeviceCount(engine)
+  }
+
+  public audioGetPlaybackDeviceName(engine: Pointer, index: number): string {
+    const outBuffer = new Uint8Array(512)
+    const bytesWritten = toNumber(
+      this.opentui.symbols.audioGetPlaybackDeviceName(engine, index, ptr(outBuffer), outBuffer.length),
+    )
+    const safeBytesWritten = Math.max(0, Math.min(outBuffer.length, bytesWritten))
+    return this.decoder.decode(outBuffer.subarray(0, safeBytesWritten))
+  }
+
+  public audioIsPlaybackDeviceDefault(engine: Pointer, index: number): boolean {
+    return this.opentui.symbols.audioIsPlaybackDeviceDefault(engine, index)
+  }
+
+  public audioSelectPlaybackDevice(engine: Pointer, index: number): number {
+    return this.opentui.symbols.audioSelectPlaybackDevice(engine, index)
+  }
+
+  public audioClearPlaybackDeviceSelection(engine: Pointer): void {
+    this.opentui.symbols.audioClearPlaybackDeviceSelection(engine)
+  }
+
+  public audioStart(engine: Pointer, options?: AudioStartOptions | null): number {
+    const optionsBuffer = options == null ? null : AudioStartOptionsStruct.pack(options)
+    return this.opentui.symbols.audioStart(engine, optionsBuffer ? ptr(optionsBuffer) : null)
+  }
+
+  public audioStartMixer(engine: Pointer): number {
+    return this.opentui.symbols.audioStartMixer(engine)
+  }
+
+  public audioStop(engine: Pointer): number {
+    return this.opentui.symbols.audioStop(engine)
+  }
+
+  public audioLoad(engine: Pointer, data: Uint8Array): { status: number; soundId: number | null } {
+    const outBuffer = new ArrayBuffer(4)
+    const dataLength = toSafeFFIU32Length(data.byteLength, "Audio data length")
+    const status = this.opentui.symbols.audioLoad(engine, ptr(data), dataLength, ptr(outBuffer))
+    if (status !== 0) {
+      return { status, soundId: null }
+    }
+    const view = new Uint32Array(outBuffer)
+    return { status, soundId: view[0] }
+  }
+
+  public audioUnload(engine: Pointer, soundId: number): number {
+    return this.opentui.symbols.audioUnload(engine, soundId)
+  }
+
+  public audioPlay(
+    engine: Pointer,
+    soundId: number,
+    options?: AudioVoiceOptions,
+  ): { status: number; voiceId: number | null } {
+    const outBuffer = new ArrayBuffer(4)
+    const optionsBuffer = options ? AudioVoiceOptionsStruct.pack(options) : null
+    const status = this.opentui.symbols.audioPlay(
+      engine,
+      soundId,
+      optionsBuffer ? ptr(optionsBuffer) : null,
+      ptr(outBuffer),
+    )
+    if (status !== 0) {
+      return { status, voiceId: null }
+    }
+    const view = new Uint32Array(outBuffer)
+    return { status, voiceId: view[0] }
+  }
+
+  public audioStopVoice(engine: Pointer, voiceId: number): number {
+    return this.opentui.symbols.audioStopVoice(engine, voiceId)
+  }
+
+  public audioSetVoiceGroup(engine: Pointer, voiceId: number, groupId: number): number {
+    return this.opentui.symbols.audioSetVoiceGroup(engine, voiceId, groupId)
+  }
+
+  public audioCreateGroup(engine: Pointer, name: string): { status: number; groupId: number | null } {
+    const outBuffer = new ArrayBuffer(4)
+    const nameBytes = this.encoder.encode(name)
+    const nameLength = toSafeFFIU32Length(nameBytes.byteLength, "Audio group name length")
+    const status = this.opentui.symbols.audioCreateGroup(engine, ptr(nameBytes), nameLength, ptr(outBuffer))
+    if (status !== 0) {
+      return { status, groupId: null }
+    }
+    const view = new Uint32Array(outBuffer)
+    return { status, groupId: view[0] }
+  }
+
+  public audioSetGroupVolume(engine: Pointer, groupId: number, volume: number): number {
+    return this.opentui.symbols.audioSetGroupVolume(engine, groupId, volume)
+  }
+
+  public audioSetMasterVolume(engine: Pointer, volume: number): number {
+    return this.opentui.symbols.audioSetMasterVolume(engine, volume)
+  }
+
+  public audioMixToBuffer(engine: Pointer, outBuffer: Float32Array, frameCount: number, channels: number): number {
+    return this.opentui.symbols.audioMixToBuffer(engine, ptr(outBuffer), frameCount, channels)
+  }
+
+  public audioEnableTap(engine: Pointer, enabled: boolean, capacityFrames: number): number {
+    return this.opentui.symbols.audioEnableTap(engine, ffiBool(enabled), capacityFrames)
+  }
+
+  public audioReadTap(
+    engine: Pointer,
+    outBuffer: Float32Array,
+    frameCount: number,
+    channels: number,
+  ): { status: number; framesRead: number } {
+    const outFramesReadBuffer = new ArrayBuffer(4)
+    const status = this.opentui.symbols.audioReadTap(
+      engine,
+      ptr(outBuffer),
+      frameCount,
+      channels,
+      ptr(outFramesReadBuffer),
+    )
+    if (status !== 0) {
+      return { status, framesRead: 0 }
+    }
+    const view = new Uint32Array(outFramesReadBuffer)
+    return { status, framesRead: view[0] ?? 0 }
+  }
+
+  public audioGetStats(engine: Pointer): AudioStats | null {
+    const statsBuffer = new ArrayBuffer(AudioStatsStruct.size)
+    const status = this.opentui.symbols.audioGetStats(engine, ptr(statsBuffer))
+    if (status !== 0) {
+      return null
+    }
+    const stats = AudioStatsStruct.unpack(statsBuffer)
+    return {
+      soundsLoaded: stats.soundsLoaded,
+      voicesActive: stats.voicesActive,
+      framesMixed: typeof stats.framesMixed === "bigint" ? stats.framesMixed : BigInt(stats.framesMixed),
+      lockMisses: stats.lockMisses,
+      lastPeak: stats.lastPeak,
+      lastRms: stats.lastRms,
+    }
+  }
+
   public registerNativeSpanFeedStream(stream: Pointer, handler: NativeSpanFeedEventHandler): void {
     const callback = this.ensureNativeSpanFeedCallback()
     this.nativeSpanFeedHandlers.set(stream, handler)
@@ -3941,7 +5011,7 @@ class FFIRenderLib implements RenderLib {
     if (!streamPtr) {
       throw new Error("Failed to create stream")
     }
-    return streamPtr as Pointer
+    return streamPtr
   }
 
   public attachNativeSpanFeed(stream: Pointer): number {
@@ -3955,7 +5025,7 @@ class FFIRenderLib implements RenderLib {
 
   public streamWrite(stream: Pointer, data: Uint8Array | string): number {
     const bytes = typeof data === "string" ? this.encoder.encode(data) : data
-    return this.opentui.symbols.streamWrite(stream, ptr(bytes), bytes.length)
+    return this.opentui.symbols.streamWrite(stream, ptrOrNull(bytes), bytes.byteLength)
   }
 
   public streamCommit(stream: Pointer): number {
@@ -4004,20 +5074,20 @@ class FFIRenderLib implements RenderLib {
     return this.opentui.symbols.streamCommitReserved(stream, length)
   }
 
-  public createSyntaxStyle(): Pointer {
-    const stylePtr = this.opentui.symbols.createSyntaxStyle()
-    if (!stylePtr) {
+  public createSyntaxStyle(): SyntaxStyleHandle {
+    const styleHandle = this.opentui.symbols.createSyntaxStyle() as SyntaxStyleHandle
+    if (!styleHandle) {
       throw new Error("Failed to create SyntaxStyle")
     }
-    return stylePtr
+    return styleHandle
   }
 
-  public destroySyntaxStyle(style: Pointer): void {
+  public destroySyntaxStyle(style: SyntaxStyleHandle): void {
     this.opentui.symbols.destroySyntaxStyle(style)
   }
 
   public syntaxStyleRegister(
-    style: Pointer,
+    style: SyntaxStyleHandle,
     name: string,
     fg: RGBA | null,
     bg: RGBA | null,
@@ -4026,22 +5096,28 @@ class FFIRenderLib implements RenderLib {
     const nameBytes = this.encoder.encode(name)
     const fgPtr = optionalRgbaPtr(fg)
     const bgPtr = optionalRgbaPtr(bg)
-    return this.opentui.symbols.syntaxStyleRegister(style, nameBytes, nameBytes.length, fgPtr, bgPtr, attributes)
+    return this.opentui.symbols.syntaxStyleRegister(
+      style,
+      ptrOrNull(nameBytes),
+      nameBytes.byteLength,
+      fgPtr,
+      bgPtr,
+      attributes,
+    )
   }
 
-  public syntaxStyleResolveByName(style: Pointer, name: string): number | null {
+  public syntaxStyleResolveByName(style: SyntaxStyleHandle, name: string): number | null {
     const nameBytes = this.encoder.encode(name)
-    const id = this.opentui.symbols.syntaxStyleResolveByName(style, nameBytes, nameBytes.length)
+    const id = this.opentui.symbols.syntaxStyleResolveByName(style, ptrOrNull(nameBytes), nameBytes.byteLength)
     return id === 0 ? null : id
   }
 
-  public syntaxStyleGetStyleCount(style: Pointer): number {
-    const result = this.opentui.symbols.syntaxStyleGetStyleCount(style)
-    return typeof result === "bigint" ? Number(result) : result
+  public syntaxStyleGetStyleCount(style: SyntaxStyleHandle): number {
+    return this.opentui.symbols.syntaxStyleGetStyleCount(style)
   }
 
   public editorViewSetPlaceholderStyledText(
-    view: Pointer,
+    view: EditorViewHandle,
     chunks: Array<{ text: string; fg?: RGBA | null; bg?: RGBA | null; attributes?: number }>,
   ): void {
     const nonEmptyChunks = chunks.filter((c) => c.text.length > 0)
@@ -4054,11 +5130,11 @@ class FFIRenderLib implements RenderLib {
     this.opentui.symbols.editorViewSetPlaceholderStyledText(view, ptr(chunksBuffer), nonEmptyChunks.length)
   }
 
-  public editorViewSetTabIndicator(view: Pointer, indicator: number): void {
+  public editorViewSetTabIndicator(view: EditorViewHandle, indicator: number): void {
     this.opentui.symbols.editorViewSetTabIndicator(view, indicator)
   }
 
-  public editorViewSetTabIndicatorColor(view: Pointer, color: RGBA): void {
+  public editorViewSetTabIndicatorColor(view: EditorViewHandle, color: RGBA): void {
     this.opentui.symbols.editorViewSetTabIndicatorColor(view, rgbaPtr(color))
   }
 
@@ -4081,9 +5157,16 @@ class FFIRenderLib implements RenderLib {
 
 let opentuiLibPath: string | undefined
 let opentuiLib: RenderLib | undefined
+let renderLibResolved = false
 
 export function setRenderLibPath(libPath: string) {
   if (opentuiLibPath !== libPath) {
+    if (renderLibResolved) {
+      throw new Error("setRenderLibPath() must be called before resolveRenderLib()")
+    }
+    if (opentuiLib instanceof FFIRenderLib) {
+      opentuiLib.dispose()
+    }
     opentuiLibPath = libPath
     opentuiLib = undefined
   }
@@ -4099,6 +5182,7 @@ export function resolveRenderLib(): RenderLib {
       )
     }
   }
+  renderLibResolved = true
   return opentuiLib
 }
 

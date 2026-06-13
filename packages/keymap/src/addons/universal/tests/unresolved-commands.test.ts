@@ -99,8 +99,8 @@ describe("unresolved command warnings addon", () => {
     keymap.registerToken({ name: "leader", key: { name: "space" } })
 
     expect(capture.takeWarnings().warnings).toEqual([
-      '[Keymap] Unknown token "leader" in key sequence "<leader>x" was ignored',
-      '[Keymap] Unresolved command "missing-command" for binding "x"',
+      '[Keymap] Unknown token "leader" in key sequence "<leader>x"; binding was skipped until the token is registered',
+      '[Keymap] Unresolved command "missing-command" for binding "<leader>x"',
     ])
   })
 })

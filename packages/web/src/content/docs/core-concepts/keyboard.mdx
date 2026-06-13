@@ -21,7 +21,8 @@ const keyHandler = renderer.keyInput
 
 keyHandler.on("keypress", (key: KeyEvent) => {
   console.log("Key name:", key.name)
-  console.log("Sequence:", key.sequence)
+  console.log("Input sequence:", key.sequence)
+  console.log("Raw input:", key.raw)
   console.log("Ctrl pressed:", key.ctrl)
   console.log("Shift pressed:", key.shift)
   console.log("Alt pressed:", key.meta)
@@ -31,22 +32,35 @@ keyHandler.on("keypress", (key: KeyEvent) => {
 
 ## KeyEvent properties
 
-Each `KeyEvent` contains:
+Each `KeyEvent` contains the parsed key identity, the generated input sequence, and the original terminal input:
 
-| Property   | Type      | Description                              |
-| ---------- | --------- | ---------------------------------------- |
-| `name`     | `string`  | The key name (e.g., "a", "escape", "f1") |
-| `sequence` | `string`  | The raw escape sequence                  |
-| `ctrl`     | `boolean` | Whether Ctrl was held                    |
-| `shift`    | `boolean` | Whether Shift was held                   |
-| `meta`     | `boolean` | Whether Alt/Meta was held                |
-| `option`   | `boolean` | Whether Option was held (macOS)          |
+| Property    | Type                               | Description                                                                                          |
+| ----------- | ---------------------------------- | ---------------------------------------------------------------------------------------------------- |
+| `name`      | `string`                           | Canonical key identity, such as `"a"`, `"space"`, `"return"`, `"escape"`, or `"f1"`                  |
+| `sequence`  | `string`                           | Decoded input sequence/text for the key. For printable keys this is the text, such as `"a"` or `" "` |
+| `raw`       | `string`                           | Exact terminal input sequence for this key event, decoded as a string                                |
+| `source`    | `"raw" \| "kitty"`                 | Parser path that produced the event                                                                  |
+| `ctrl`      | `boolean`                          | Whether Ctrl was held                                                                                |
+| `shift`     | `boolean`                          | Whether Shift was held                                                                               |
+| `meta`      | `boolean`                          | Whether Alt/Meta was held                                                                            |
+| `option`    | `boolean`                          | Whether Option was held (macOS Alt/Option path)                                                      |
+| `super`     | `boolean?`                         | Whether Super/Cmd/Windows was held, when reported                                                    |
+| `hyper`     | `boolean?`                         | Whether Hyper was held, when reported                                                                |
+| `eventType` | `"press" \| "repeat" \| "release"` | Key event type. Kitty repeat events are emitted as `"press"` with `repeated: true`                   |
+| `repeated`  | `boolean?`                         | `true` for Kitty repeat events                                                                       |
+| `number`    | `boolean`                          | `true` when the parsed key is a digit from legacy input                                              |
+| `code`      | `string?`                          | Terminal key code for recognized function-style escape sequences                                     |
+| `capsLock`  | `boolean?`                         | Kitty Caps Lock modifier state, when reported                                                        |
+| `numLock`   | `boolean?`                         | Kitty Num Lock modifier state, when reported                                                         |
+| `baseCode`  | `number?`                          | Kitty base-layout codepoint used by layout-stable shortcut matching                                  |
 
-## Key aliases
+`sequence` is not always the raw terminal bytes. For example, Kitty `Ctrl+Space` arrives as raw `"\x1b[32;5u"`, but emits `name: "space"`, `ctrl: true`, and `sequence: " "`. Use `raw` when you need the exact terminal sequence.
 
-OpenTUI normalizes several key names so your keybindings work the same across layouts and input paths. OpenTUI applies aliases after the parser reports a key, before emitting `keypress`.
+## Keybinding aliases
 
-The default aliases are:
+Some core renderables and the built-in console support aliases for configured keybindings. These aliases are applied when building a component's keybinding lookup map; they do not rewrite emitted `KeyEvent.name` values.
+
+The default keybinding aliases are:
 
 ```ts
 // enter -> return
@@ -54,13 +68,15 @@ The default aliases are:
 //
 // Numpad keys are aliased to their main-keyboard equivalents:
 // kp0..kp9   -> "0".."9"
-// kpenter    -> enter  (then via enter -> return)
+// kpenter    -> enter
 // kpleft/kpright/kpup/kpdown -> arrow keys
 // kphome/kpend/kppageup/kppagedown/kpinsert/kpdelete -> navigation
 // kpdecimal/kpdivide/kpmultiply/kpminus/kpplus/kpequal/kpseparator -> symbols
 ```
 
-Both `key.name === "enter"` and `key.name === "kpenter"` resolve to `"return"` when you match them with `matchesKeyBinding`. Editable components that accept a `keyAliasMap` option (`InputRenderable`, `TextareaRenderable`, `SelectRenderable`, etc.) merge these defaults with your own map:
+Aliases are one-step mappings from configured binding names to additional lookup names. For example, a component binding configured as `{ name: "enter", action: "submit" }` also matches an emitted `KeyEvent` whose `name` is `"return"`. This aliasing is component-specific; direct `renderer.keyInput` handlers receive the parser's canonical names and should compare against names such as `"return"`, `"escape"`, and `"space"`.
+
+Editable components that accept a `keyAliasMap` option (`InputRenderable`, `TextareaRenderable`, `SelectRenderable`, etc.) merge these defaults with your own map:
 
 ```typescript
 import { InputRenderable } from "@opentui/core"
@@ -225,6 +241,8 @@ await createCliRenderer({ useKittyKeyboard: null })
 `events: true` enables the `keyrelease` event on `renderer.keyInput` as well as `eventType` on `KeyEvent`.
 
 `useKittyKeyboard: {}` applies the defaults (`disambiguate` + `alternateKeys`). Passing `null` disables the protocol entirely.
+
+Kitty escape sequences still emit the same canonical key names as legacy input where possible. For example, Kitty `Ctrl+Space` emits `name: "space"` with `ctrl: true`; the literal typed text remains available as `sequence: " "`, and the original escape sequence remains available as `raw`.
 
 ## Focus and key routing
 

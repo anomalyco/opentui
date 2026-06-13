@@ -1,13 +1,5 @@
-import { transformAsync } from "@babel/core"
-// @ts-expect-error - Types not important.
-import ts from "@babel/preset-typescript"
-// @ts-expect-error - Types not important.
-import moduleResolver from "babel-plugin-module-resolver"
-// @ts-expect-error - Types not important.
-import solid from "babel-preset-solid"
 import { plugin as registerBunPlugin, type BunPlugin } from "bun"
-
-export type ResolveImportPath = (specifier: string) => string | null
+import { stripQueryAndHash, transformSolidSource, type ResolveImportPath } from "./solid-transform.js"
 
 const solidTransformStateKey = Symbol.for("opentui.solid.transform")
 
@@ -40,13 +32,6 @@ const getSolidTransformRuntime = (): SolidTransformRuntime => {
   return getSolidTransformState().runtime ?? {}
 }
 
-const sourcePath = (path: string): string => {
-  const searchIndex = path.indexOf("?")
-  const hashIndex = path.indexOf("#")
-  const end = [searchIndex, hashIndex].filter((index) => index >= 0).sort((a, b) => a - b)[0]
-  return end === undefined ? path : path.slice(0, end)
-}
-
 const hasSolidTransformRuntime = (input: CreateSolidTransformPluginOptions): boolean => {
   return input.moduleName !== undefined || input.resolvePath !== undefined
 }
@@ -77,11 +62,15 @@ export function resetSolidTransformPluginState(): void {
 }
 
 export function createSolidTransformPlugin(input: CreateSolidTransformPluginOptions = {}): BunPlugin {
+  const sourceFilter = input.resolvePath
+    ? /^(?!.*[/\\]node_modules[/\\]).*\.[cm]?[jt]sx?(?:[?#].*)?$/
+    : /^(?!.*[/\\]node_modules[/\\]).*\.[cm]?[jt]sx(?:[?#].*)?$/
+
   return {
     name: "bun-plugin-solid",
     setup: (build) => {
       build.onLoad({ filter: /[/\\]node_modules[/\\]solid-js[/\\]dist[/\\]server\.js(?:[?#].*)?$/ }, async (args) => {
-        const path = sourcePath(args.path).replace("server.js", "solid.js")
+        const path = stripQueryAndHash(args.path).replace("server.js", "solid.js")
         const file = Bun.file(path)
         const code = await file.text()
         return { contents: code, loader: "js" }
@@ -90,52 +79,29 @@ export function createSolidTransformPlugin(input: CreateSolidTransformPluginOpti
       build.onLoad(
         { filter: /[/\\]node_modules[/\\]solid-js[/\\]store[/\\]dist[/\\]server\.js(?:[?#].*)?$/ },
         async (args) => {
-          const path = sourcePath(args.path).replace("server.js", "store.js")
+          const path = stripQueryAndHash(args.path).replace("server.js", "store.js")
           const file = Bun.file(path)
           const code = await file.text()
           return { contents: code, loader: "js" }
         },
       )
 
-      build.onLoad({ filter: /\.(js|ts)x(?:[?#].*)?$/ }, async (args) => {
-        const path = sourcePath(args.path)
+      build.onLoad({ filter: sourceFilter }, async (args) => {
+        const path = stripQueryAndHash(args.path)
+
         const file = Bun.file(path)
         const code = await file.text()
         const runtime = getSolidTransformRuntime()
         const moduleName = input.moduleName ?? runtime.moduleName ?? "@opentui/solid"
         const resolvePath = input.resolvePath ?? runtime.resolvePath
-        const plugins = resolvePath
-          ? [
-              [
-                moduleResolver,
-                {
-                  resolvePath(specifier: string) {
-                    return resolvePath(specifier) ?? specifier
-                  },
-                },
-              ],
-            ]
-          : []
-
-        const transforms = await transformAsync(code, {
+        const contents = await transformSolidSource(code, {
           filename: path,
-          configFile: false,
-          babelrc: false,
-          plugins,
-          presets: [
-            [
-              solid,
-              {
-                moduleName,
-                generate: "universal",
-              },
-            ],
-            [ts],
-          ],
+          moduleName,
+          resolvePath,
         })
 
         return {
-          contents: transforms?.code ?? "",
+          contents,
           loader: "js",
         }
       })

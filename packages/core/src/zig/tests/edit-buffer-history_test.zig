@@ -11,7 +11,7 @@ test "EditBuffer - basic undo/redo with insertText" {
     const link_pool = link.initGlobalLinkPool(std.testing.allocator);
     defer link.deinitGlobalLinkPool();
 
-    var eb = try EditBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth);
+    var eb = try EditBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth, null);
     defer eb.deinit();
 
     try eb.insertText("Hello");
@@ -38,7 +38,7 @@ test "EditBuffer - undo and redo restore cursor for mid-line edits" {
     const link_pool = link.initGlobalLinkPool(std.testing.allocator);
     defer link.deinitGlobalLinkPool();
 
-    var eb = try EditBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth);
+    var eb = try EditBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth, null);
     defer eb.deinit();
 
     try eb.setText("hello world");
@@ -66,7 +66,7 @@ test "EditBuffer - canUndo/canRedo" {
     const link_pool = link.initGlobalLinkPool(std.testing.allocator);
     defer link.deinitGlobalLinkPool();
 
-    var eb = try EditBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth);
+    var eb = try EditBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth, null);
     defer eb.deinit();
 
     try std.testing.expect(!eb.canUndo());
@@ -94,7 +94,7 @@ test "EditBuffer - undo/redo with deleteRange" {
     const link_pool = link.initGlobalLinkPool(std.testing.allocator);
     defer link.deinitGlobalLinkPool();
 
-    var eb = try EditBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth);
+    var eb = try EditBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth, null);
     defer eb.deinit();
 
     try eb.insertText("Hello World");
@@ -119,7 +119,7 @@ test "EditBuffer - undo/redo with backspace" {
     const link_pool = link.initGlobalLinkPool(std.testing.allocator);
     defer link.deinitGlobalLinkPool();
 
-    var eb = try EditBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth);
+    var eb = try EditBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth, null);
     defer eb.deinit();
 
     try eb.insertText("Hello");
@@ -140,7 +140,7 @@ test "EditBuffer - undo/redo with deleteForward" {
     const link_pool = link.initGlobalLinkPool(std.testing.allocator);
     defer link.deinitGlobalLinkPool();
 
-    var eb = try EditBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth);
+    var eb = try EditBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth, null);
     defer eb.deinit();
 
     try eb.insertText("Hello");
@@ -162,7 +162,7 @@ test "EditBuffer - cursor position after undo" {
     const link_pool = link.initGlobalLinkPool(std.testing.allocator);
     defer link.deinitGlobalLinkPool();
 
-    var eb = try EditBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth);
+    var eb = try EditBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth, null);
     defer eb.deinit();
 
     try eb.insertText("Line 1\nLine 2");
@@ -188,7 +188,7 @@ test "EditBuffer - lineCount after undo/redo" {
     const link_pool = link.initGlobalLinkPool(std.testing.allocator);
     defer link.deinitGlobalLinkPool();
 
-    var eb = try EditBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth);
+    var eb = try EditBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth, null);
     defer eb.deinit();
 
     try eb.insertText("Line 1");
@@ -210,7 +210,7 @@ test "EditBuffer - clearHistory" {
     const link_pool = link.initGlobalLinkPool(std.testing.allocator);
     defer link.deinitGlobalLinkPool();
 
-    var eb = try EditBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth);
+    var eb = try EditBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth, null);
     defer eb.deinit();
 
     try eb.insertText("Hello");
@@ -230,7 +230,7 @@ test "EditBuffer - undo history branching" {
     const link_pool = link.initGlobalLinkPool(std.testing.allocator);
     defer link.deinitGlobalLinkPool();
 
-    var eb = try EditBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth);
+    var eb = try EditBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth, null);
     defer eb.deinit();
 
     try eb.insertText("State A");
@@ -267,7 +267,7 @@ test "EditBuffer - multiple undo/redo operations" {
     const link_pool = link.initGlobalLinkPool(std.testing.allocator);
     defer link.deinitGlobalLinkPool();
 
-    var eb = try EditBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth);
+    var eb = try EditBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth, null);
     defer eb.deinit();
 
     var out_buffer: [100]u8 = undefined;

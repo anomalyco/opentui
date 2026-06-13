@@ -1,0 +1,41 @@
+---
+title: Testing
+description: Test renderers, input, mouse, and frame output
+order: 12
+skill:
+  intents: [testing, test-renderer, snapshots, frames]
+---
+
+# Testing
+
+`@opentui/core/testing` provides a renderer that does not write to the real terminal by default. It constructs `CliRenderer` directly with `screenMode: "main-screen"`, `consoleMode: "disabled"`, `externalOutputMode: "passthrough"`, and native memory output.
+
+```typescript
+import { createTestRenderer } from "@opentui/core/testing"
+import { Text } from "@opentui/core"
+
+const { renderer, renderOnce, captureCharFrame } = await createTestRenderer({ width: 40, height: 10 })
+
+renderer.root.add(Text({ content: "Hello" }))
+await renderOnce()
+
+console.log(captureCharFrame())
+renderer.destroy()
+```
+
+| Helper                      | Description                              |
+| --------------------------- | ---------------------------------------- |
+| `renderer`                  | The `CliRenderer` instance               |
+| `renderOnce()`              | Run one render pass                      |
+| `flush()`                   | Wait until scheduled rendering settles   |
+| `waitFor(predicate)`        | Retry until a condition passes           |
+| `waitForFrame(predicate)`   | Retry against captured frame text        |
+| `waitForVisualIdle()`       | Wait for quiet native frames             |
+| `captureCharFrame()`        | Read the current character frame as text |
+| `captureSpans()`            | Read styled span lines and cursor state  |
+| `externalOutput.takeText()` | Read captured split-footer output events |
+| `getNativeStats()`          | Read native render stats                 |
+| `resize(width, height)`     | Simulate a terminal resize               |
+| `mockInput` / `mockMouse`   | Drive keyboard and mouse input           |
+
+Use `createCliRenderer()` with custom `stdin` / `stdout` streams when a test needs the real output transport instead of memory output.

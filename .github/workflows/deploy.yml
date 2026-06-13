@@ -12,23 +12,24 @@ permissions:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-8vcpu-ubuntu-2404
     steps:
       - name: Checkout your repository using git
         uses: actions/checkout@v6
       - name: Install, build, and upload your site
-        uses: withastro/action@v5
+        uses: withastro/action@v6
         with:
           path: ./packages/web
-          package-manager: bun@latest
+          package-manager: bun@1.3.14
+          node-version: 22
 
   deploy:
     needs: build
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - name: Deploy to GitHub Pages
         id: deployment
-        uses: actions/deploy-pages@v4
+        uses: actions/deploy-pages@v5

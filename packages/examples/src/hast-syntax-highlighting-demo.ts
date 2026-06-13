@@ -3,8 +3,9 @@ import { setupCommonDemoKeys } from "./lib/standalone-keys.js"
 import { parseColor } from "@opentui/core"
 import { hastToStyledText, type HASTElement } from "@opentui/core"
 import { SyntaxStyle } from "@opentui/core"
+import exampleHAST from "./assets/hast-example.json" with { type: "json" }
 
-const exampleHAST: HASTElement = (await import("./assets/hast-example.json", { with: { type: "json" } })) as HASTElement
+const typedExampleHAST = exampleHAST as HASTElement
 
 let renderer: CliRenderer | null = null
 let keyboardHandler: ((key: KeyEvent) => void) | null = null
@@ -67,7 +68,7 @@ export function run(rendererInstance: CliRenderer): void {
     default: { fg: parseColor("#FFFFFF") },
   })
   const transformStart = performance.now()
-  const styledText = hastToStyledText(exampleHAST, syntaxStyle)
+  const styledText = hastToStyledText(typedExampleHAST, syntaxStyle)
   const transformEnd = performance.now()
   const transformTime = (transformEnd - transformStart).toFixed(2)
 
@@ -93,7 +94,7 @@ export function run(rendererInstance: CliRenderer): void {
       syntaxStyle.clearCache()
 
       const retransformStart = performance.now()
-      const newStyledText = hastToStyledText(exampleHAST, syntaxStyle)
+      const newStyledText = hastToStyledText(typedExampleHAST, syntaxStyle)
       const retransformEnd = performance.now()
       const newTransformTime = (retransformEnd - retransformStart).toFixed(2)
 

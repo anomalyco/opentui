@@ -1,0 +1,58 @@
+---
+title: Notifications
+description: Trigger terminal-mediated desktop notifications
+order: 8
+skill:
+  intents: [notifications, terminal, osc, renderer]
+---
+
+# Notifications
+
+OpenTUI can ask the terminal emulator to show a desktop notification using OSC escape sequences. Use this for long-running tasks, background work, or prompts that need attention.
+
+```typescript
+const ok = renderer.triggerNotification("Build finished", "OpenTUI")
+```
+
+`triggerNotification(message, title?)` returns `true` when OpenTUI has detected a supported notification protocol, and `false` otherwise.
+
+## Capability
+
+Check detection state through renderer capabilities:
+
+```typescript
+if (renderer.capabilities?.notifications) {
+  renderer.triggerNotification("Tests passed", "CI")
+}
+```
+
+OpenTUI detects and emits terminal OSC notification protocols only. It does not call platform tools such as `notify-send`, AppleScript, or PowerShell toasts.
+
+## Terminal behavior
+
+Terminal and OS settings decide how the notification is presented. Some terminals only show banners when the terminal is unfocused, and macOS may store notifications in Notification Center without showing a banner depending on app notification settings.
+
+## Multiplexers
+
+tmux does not forward raw notification OSC sequences. When OpenTUI detects `renderer.capabilities?.multiplexer === "tmux"`, notification output is wrapped in tmux DCS passthrough. tmux must allow passthrough for the outer terminal to receive the notification:
+
+```text
+set -g allow-passthrough on
+```
+
+Use `allow-passthrough all` if notifications need to work from panes that are not visible.
+
+Zellij notification forwarding is OSC 99 based. OpenTUI ignores inherited host-terminal notification hints inside Zellij and enables notifications there only after an OSC 99 notification query succeeds, or when explicitly overridden. Zellij needs OSC 99 notification forwarding support for this to work.
+
+## Overrides
+
+Use environment overrides for diagnostics or deployments where terminal detection cannot query the final terminal path:
+
+```sh
+OPENTUI_NOTIFICATION_PROTOCOL=osc99
+OPENTUI_NOTIFICATIONS=0
+```
+
+`OPENTUI_NOTIFICATION_PROTOCOL` accepts `osc9`, `osc777`, `osc99`, or `none`. `OPENTUI_NOTIFICATIONS=0`, `false`, or `off` disables notifications.
+
+See `packages/examples/src/notification-demo.ts` for an interactive example.

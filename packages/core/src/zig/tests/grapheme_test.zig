@@ -129,6 +129,16 @@ test "GraphemePool - large allocation (128 bytes)" {
     try std.testing.expectEqualSlices(u8, &buffer, retrieved);
 }
 
+test "GraphemePool - owned grapheme exceeding storage bound returns error" {
+    var pool = GraphemePool.init(std.testing.allocator);
+    defer pool.deinit();
+
+    var buffer: [129]u8 = undefined;
+    @memset(&buffer, 'X');
+
+    try std.testing.expectError(gp.GraphemePoolError.GraphemeTooLong, pool.alloc(&buffer));
+}
+
 test "GraphemePool - incref increases refcount" {
     var pool = GraphemePool.init(std.testing.allocator);
     defer pool.deinit();
@@ -551,6 +561,13 @@ test "GraphemePool - packGraphemeStart" {
     try std.testing.expectEqual(width - 1, gp.charRightExtent(packed_char));
 
     try std.testing.expectEqual(@as(u32, 0), gp.charLeftExtent(packed_char));
+}
+
+test "GraphemePool - packGraphemeStart saturates wider wcwidth clusters" {
+    const packed_char = gp.packGraphemeStart(0x1234, 8);
+
+    try std.testing.expectEqual(gp.CHAR_EXT_MASK, gp.charRightExtent(packed_char));
+    try std.testing.expectEqual(gp.CHAR_EXT_MASK + 1, gp.encodedCharWidth(packed_char));
 }
 
 test "GraphemePool - packContinuation" {
@@ -1041,6 +1058,14 @@ test "GraphemePool - allocUnowned large text" {
     try std.testing.expectEqual(@intFromPtr(large_slice.ptr), @intFromPtr(retrieved.ptr));
 
     try pool.decref(id);
+}
+
+test "GraphemePool - allocUnowned exceeding encoded length returns error" {
+    var pool = GraphemePool.init(std.testing.allocator);
+    defer pool.deinit();
+
+    var buffer: [std.math.maxInt(u16) + 1]u8 = undefined;
+    try std.testing.expectError(gp.GraphemePoolError.GraphemeTooLong, pool.allocUnowned(&buffer));
 }
 
 test "GraphemePool - alloc does not reuse unowned IDs" {

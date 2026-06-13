@@ -65,9 +65,17 @@ test("parseKeypress - Kitty keyboard arrow key", () => {
 test("parseKeypress - Kitty keyboard shift+space", () => {
   const options: ParseKeypressOptions = { useKittyKeyboard: true }
   const result = parseKeypress("\x1b[32;2u", options)!
-  expect(result.name).toBe(" ")
+  expect(result.name).toBe("space")
   expect(result.sequence).toBe(" ")
   expect(result.shift).toBe(true)
+})
+
+test("parseKeypress - Kitty keyboard ctrl+space", () => {
+  const options: ParseKeypressOptions = { useKittyKeyboard: true }
+  const result = parseKeypress("\x1b[32;5u", options)!
+  expect(result.name).toBe("space")
+  expect(result.sequence).toBe(" ")
+  expect(result.ctrl).toBe(true)
 })
 
 test("parseKeypress - Kitty keyboard event types", () => {
@@ -238,11 +246,52 @@ test("parseKeypress - Kitty keyboard invalid codepoint", () => {
 test("parseKeypress - Kitty keyboard keypad keys", () => {
   const options: ParseKeypressOptions = { useKittyKeyboard: true }
 
-  const kp0 = parseKeypress("\x1b[57399u", options)
-  expect(kp0?.name).toBe("kp0")
+  const printableKeys = [
+    ["\x1b[57399u", "kp0", "0"],
+    ["\x1b[57400u", "kp1", "1"],
+    ["\x1b[57401u", "kp2", "2"],
+    ["\x1b[57402u", "kp3", "3"],
+    ["\x1b[57403u", "kp4", "4"],
+    ["\x1b[57404u", "kp5", "5"],
+    ["\x1b[57405u", "kp6", "6"],
+    ["\x1b[57406u", "kp7", "7"],
+    ["\x1b[57407u", "kp8", "8"],
+    ["\x1b[57408u", "kp9", "9"],
+    ["\x1b[57409u", "kpdecimal", "."],
+    ["\x1b[57410u", "kpdivide", "/"],
+    ["\x1b[57411u", "kpmultiply", "*"],
+    ["\x1b[57412u", "kpminus", "-"],
+    ["\x1b[57413u", "kpplus", "+"],
+    ["\x1b[57415u", "kpequal", "="],
+    ["\x1b[57416u", "kpseparator", ","],
+  ] as const
+
+  for (const [sequence, name, text] of printableKeys) {
+    const result = parseKeypress(sequence, options)
+    expect(result?.name).toBe(name)
+    expect(result?.sequence).toBe(text)
+  }
 
   const kpEnter = parseKeypress("\x1b[57414u", options)
   expect(kpEnter?.name).toBe("kpenter")
+  expect(kpEnter?.sequence).toBe("\x1b[57414u")
+})
+
+test("parseKeypress - Kitty keyboard keypad text preserves names and explicit text", () => {
+  const options: ParseKeypressOptions = { useKittyKeyboard: true }
+
+  const ctrlKp1 = parseKeypress("\x1b[57400;5u", options)!
+  expect(ctrlKp1.name).toBe("kp1")
+  expect(ctrlKp1.ctrl).toBe(true)
+  expect(ctrlKp1.sequence).toBe("1")
+
+  const explicitText = parseKeypress("\x1b[57400;1;120u", options)!
+  expect(explicitText.name).toBe("kp1")
+  expect(explicitText.sequence).toBe("x")
+
+  const keypadNavigation = parseKeypress("\x1b[57417u", options)!
+  expect(keypadNavigation.name).toBe("kpleft")
+  expect(keypadNavigation.sequence).toBe("\x1b[57417u")
 })
 
 test("parseKeypress - Kitty keyboard media keys", () => {

@@ -287,6 +287,30 @@ describe("EditorView", () => {
       expect(changed).toBe(true)
       expect(view.getSelectedText()).toBe("ABCDEFGHIJKLMNO")
     })
+
+    it("should return null bytes for zero-length selected-text output buffer", () => {
+      buffer.setText("Hello World")
+      view.setSelection(0, 5)
+
+      const selectedBytes = (view as any).lib.editorViewGetSelectedTextBytes(view.ptr, 0)
+
+      expect(selectedBytes).toBeNull()
+    })
+  })
+
+  describe("text getters", () => {
+    it("should return null bytes for zero-length text output buffer", () => {
+      buffer.setText("Hello World")
+
+      const textBytes = (view as any).lib.editorViewGetText(view.ptr, 0)
+
+      expect(textBytes).toBeNull()
+    })
+
+    it("should accept an empty placeholder styled-text list", () => {
+      expect(() => view.setPlaceholderStyledText([])).not.toThrow()
+      expect(view.getVirtualLineCount()).toBeGreaterThanOrEqual(0)
+    })
   })
 
   describe("word boundary navigation", () => {

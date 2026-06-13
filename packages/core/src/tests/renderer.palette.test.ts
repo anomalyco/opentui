@@ -8,6 +8,7 @@ import { ManualClock } from "../testing/manual-clock.js"
 import type { GetPaletteOptions, TerminalColors } from "../lib/terminal-palette.js"
 import { clearEnvCache } from "../lib/env.js"
 import { CliRenderEvents } from "../renderer.js"
+import { createTerminalCapabilities, setRendererCapabilities } from "../testing/terminal-capabilities.js"
 
 const OSC_SUPPORT_TIMEOUT_MS = 300
 
@@ -153,16 +154,12 @@ async function createSilentFollowUpPaletteRenderer(clock = new ManualClock()) {
     useThread: false,
   })
 
+  setRendererCapabilities(renderer, {
+    multiplexer: "none",
+    terminal: { name: "", version: "", from_xtversion: false },
+  })
+
   return { renderer, writes, clock }
-}
-
-function restoreEnvValue(key: string, value: string | undefined): void {
-  if (value === undefined) {
-    delete process.env[key]
-    return
-  }
-
-  process.env[key] = value
 }
 
 function startCapabilityDetectionWindow(renderer: any, clock: ManualClock): void {
@@ -175,22 +172,22 @@ function startCapabilityDetectionWindow(renderer: any, clock: ManualClock): void
 
 function setNativePaletteRequired(renderer: any): void {
   renderer._terminalIsSetup = true
-  renderer._capabilities = {
-    ...(renderer._capabilities ?? {}),
+  setRendererCapabilities(renderer, {
+    ...renderer._capabilities,
     rgb: false,
     ansi256: true,
     terminal: renderer._capabilities?.terminal ?? { from_xtversion: false, name: "", version: "" },
-  }
+  })
 }
 
 function setNativePaletteUnneeded(renderer: any): void {
   renderer._terminalIsSetup = true
-  renderer._capabilities = {
-    ...(renderer._capabilities ?? {}),
+  setRendererCapabilities(renderer, {
+    ...renderer._capabilities,
     rgb: true,
     ansi256: true,
     terminal: renderer._capabilities?.terminal ?? { from_xtversion: false, name: "", version: "" },
-  }
+  })
 }
 
 describe("Palette caching behavior", () => {
@@ -622,15 +619,17 @@ describe("Palette cache invalidation", () => {
     const originalSetupTerminal = lib.setupTerminal
     const originalGetTerminalCapabilities = lib.getTerminalCapabilities
     const originalQueryPixelResolution = lib.queryPixelResolution
+    // @ts-expect-error - spying on private method for startup palette gate
     const refresh = spyOn(renderer, "refreshPalette")
 
     lib.setupTerminal = () => {}
     lib.queryPixelResolution = () => {}
-    lib.getTerminalCapabilities = () => ({
-      rgb: true,
-      ansi256: true,
-      terminal: { name: "Apple_Terminal", version: "", from_xtversion: false },
-    })
+    lib.getTerminalCapabilities = () =>
+      createTerminalCapabilities({
+        rgb: true,
+        ansi256: true,
+        terminal: { name: "Apple_Terminal", version: "", from_xtversion: false },
+      })
 
     await renderer.setupTerminal()
 
@@ -649,15 +648,17 @@ describe("Palette cache invalidation", () => {
     const originalSetupTerminal = lib.setupTerminal
     const originalGetTerminalCapabilities = lib.getTerminalCapabilities
     const originalQueryPixelResolution = lib.queryPixelResolution
+    // @ts-expect-error - spying on private method for startup palette gate
     const refresh = spyOn(renderer, "refreshPalette").mockImplementation(() => {})
 
     lib.setupTerminal = () => {}
     lib.queryPixelResolution = () => {}
-    lib.getTerminalCapabilities = () => ({
-      rgb: false,
-      ansi256: true,
-      terminal: { name: "Apple_Terminal", version: "", from_xtversion: false },
-    })
+    lib.getTerminalCapabilities = () =>
+      createTerminalCapabilities({
+        rgb: false,
+        ansi256: true,
+        terminal: { name: "Apple_Terminal", version: "", from_xtversion: false },
+      })
 
     await renderer.setupTerminal()
 
@@ -711,7 +712,7 @@ describe("Capability repaint handling", () => {
     const originalGetTerminalCapabilities = lib.getTerminalCapabilities
 
     lib.processCapabilityResponse = () => {}
-    lib.getTerminalCapabilities = () => ({ rgb: true, ansi256: true, unicode: "unicode" })
+    lib.getTerminalCapabilities = () => createTerminalCapabilities({ rgb: true, ansi256: true, unicode: "unicode" })
 
     // @ts-expect-error - testing private renderer state
     expect(renderer.forceFullRepaintRequested).toBe(false)
@@ -875,19 +876,16 @@ describe("Palette detector cleanup", () => {
 
 describe("Palette detection while capabilities are unsettled", () => {
   test("getPalette runs immediately outside tmux", async () => {
-    const previousTmux = process.env.TMUX
-    delete process.env.TMUX
-
     const { renderer, writes, clock } = await createSilentFollowUpPaletteRenderer()
 
     try {
-      // @ts-expect-error - accessing private native binding for startup state setup
-      renderer._capabilities = renderer.lib.getTerminalCapabilities(renderer.rendererPtr)
-      // @ts-expect-error - simulate TMUX env without TERM_PROGRAM_VERSION=tmux
-      renderer._capabilities.terminal = { name: "", version: "", from_xtversion: false }
+      setRendererCapabilities(renderer, {
+        multiplexer: "none",
+        terminal: { name: "", version: "", from_xtversion: false },
+      })
       startCapabilityDetectionWindow(renderer, clock)
 
-      expect(renderer.capabilities?.in_tmux).toBe(false)
+      expect(renderer.capabilities?.multiplexer).toBe("none")
 
       void renderer.getPalette({ size: 16 })
       await flushAsync()
@@ -895,24 +893,20 @@ describe("Palette detection while capabilities are unsettled", () => {
       expect(writes).toContain("\x1b]4;0;?\x07")
     } finally {
       renderer.destroy()
-      restoreEnvValue("TMUX", previousTmux)
     }
   })
 
   test("getPalette defers local tmux palette detection while tmux version is unknown", async () => {
-    const previousTmux = process.env.TMUX
-    process.env.TMUX = "/tmp/tmux-1000/default,12345,0"
-
     const { renderer, writes, clock } = await createSilentFollowUpPaletteRenderer()
 
     try {
-      // @ts-expect-error - accessing private native binding for startup state setup
-      renderer._capabilities = renderer.lib.getTerminalCapabilities(renderer.rendererPtr)
-      // @ts-expect-error - simulate TMUX env without TERM_PROGRAM_VERSION=tmux
-      renderer._capabilities.terminal = { name: "", version: "", from_xtversion: false }
+      setRendererCapabilities(renderer, {
+        multiplexer: "tmux",
+        terminal: { name: "", version: "", from_xtversion: false },
+      })
       startCapabilityDetectionWindow(renderer, clock)
 
-      expect(renderer.capabilities?.in_tmux).toBe(true)
+      expect(renderer.capabilities?.multiplexer).toBe("tmux")
       expect(renderer.capabilities?.terminal?.from_xtversion).toBe(false)
 
       void renderer.getPalette({ size: 16 })
@@ -922,7 +916,6 @@ describe("Palette detection while capabilities are unsettled", () => {
       expect(renderer.paletteDetectionStatus).toBe("idle")
     } finally {
       renderer.destroy()
-      restoreEnvValue("TMUX", previousTmux)
     }
   })
 
@@ -930,13 +923,12 @@ describe("Palette detection while capabilities are unsettled", () => {
     const { renderer, writes, clock } = await createSilentFollowUpPaletteRenderer()
 
     try {
-      // @ts-expect-error - simulating initial capabilities from TERM_PROGRAM=tmux and TERM_PROGRAM_VERSION
-      renderer._capabilities = {
-        in_tmux: true,
+      setRendererCapabilities(renderer, {
+        multiplexer: "tmux",
         rgb: true,
         ansi256: true,
         terminal: { name: "tmux", version: "3.6a", from_xtversion: false },
-      }
+      })
       startCapabilityDetectionWindow(renderer, clock)
 
       void renderer.getPalette({ size: 16 })
@@ -949,16 +941,13 @@ describe("Palette detection while capabilities are unsettled", () => {
   })
 
   test("getPalette uses wrapped palette queries after legacy tmux version is detected", async () => {
-    const previousTmux = process.env.TMUX
-    process.env.TMUX = "/tmp/tmux-1000/default,12345,0"
-
     const { renderer, writes, clock } = await createSilentFollowUpPaletteRenderer()
 
     try {
-      // @ts-expect-error - accessing private native binding for startup state setup
-      renderer._capabilities = renderer.lib.getTerminalCapabilities(renderer.rendererPtr)
-      // @ts-expect-error - simulate TMUX env without TERM_PROGRAM_VERSION=tmux
-      renderer._capabilities.terminal = { name: "", version: "", from_xtversion: false }
+      setRendererCapabilities(renderer, {
+        multiplexer: "tmux",
+        terminal: { name: "", version: "", from_xtversion: false },
+      })
       startCapabilityDetectionWindow(renderer, clock)
 
       void renderer.getPalette({ size: 16 })
@@ -974,21 +963,17 @@ describe("Palette detection while capabilities are unsettled", () => {
       expect(writes.some((write) => write.includes("\x1b\x1b]4;0;?\x07"))).toBe(true)
     } finally {
       renderer.destroy()
-      restoreEnvValue("TMUX", previousTmux)
     }
   })
 
   test("getPalette uses plain palette queries after tmux 3.6 version is detected", async () => {
-    const previousTmux = process.env.TMUX
-    process.env.TMUX = "/tmp/tmux-1000/default,12345,0"
-
     const { renderer, writes, clock } = await createSilentFollowUpPaletteRenderer()
 
     try {
-      // @ts-expect-error - accessing private native binding for startup state setup
-      renderer._capabilities = renderer.lib.getTerminalCapabilities(renderer.rendererPtr)
-      // @ts-expect-error - simulate TMUX env without TERM_PROGRAM_VERSION=tmux
-      renderer._capabilities.terminal = { name: "", version: "", from_xtversion: false }
+      setRendererCapabilities(renderer, {
+        multiplexer: "tmux",
+        terminal: { name: "", version: "", from_xtversion: false },
+      })
       startCapabilityDetectionWindow(renderer, clock)
 
       void renderer.getPalette({ size: 16 })
@@ -1004,31 +989,27 @@ describe("Palette detection while capabilities are unsettled", () => {
       expect(writes.some((write) => write.startsWith("\x1bPtmux;"))).toBe(false)
     } finally {
       renderer.destroy()
-      restoreEnvValue("TMUX", previousTmux)
     }
   })
 
   test("getPalette does not wait for remote XTVERSION when local tmux env is unknown", async () => {
-    const previousTmux = process.env.TMUX
-    delete process.env.TMUX
-
     const { renderer, writes, clock } = await createSilentFollowUpPaletteRenderer()
 
     try {
-      // @ts-expect-error - simulating a remote renderer without forwarded local env vars
-      renderer._remote = true
-      // @ts-expect-error - accessing private native binding for startup state setup
-      renderer._capabilities = renderer.lib.getTerminalCapabilities(renderer.rendererPtr)
+      setRendererCapabilities(renderer, {
+        remote: true,
+        multiplexer: "none",
+        terminal: { name: "", version: "", from_xtversion: false },
+      })
       startCapabilityDetectionWindow(renderer, clock)
 
       void renderer.getPalette({ size: 16 })
       await flushAsync()
 
-      expect(renderer.capabilities?.in_tmux).toBe(false)
+      expect(renderer.capabilities?.multiplexer).toBe("none")
       expect(writes).toContain("\x1b]4;0;?\x07")
     } finally {
       renderer.destroy()
-      restoreEnvValue("TMUX", previousTmux)
     }
   })
 })

@@ -6,39 +6,45 @@ on:
       - "*snapshot*"
 
 permissions:
-  contents: write
-  pull-requests: write
+  contents: read
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+  NODE_VERSION: 26.3.0
 
 jobs:
   release:
-    runs-on: macos-latest
+    runs-on: blacksmith-12vcpu-macos-15
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
+
+      - name: Setup Node
+        uses: actions/setup-node@v6
         with:
-          fetch-depth: 0
+          node-version: ${{ env.NODE_VERSION }}
 
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
         with:
-          bun-version: latest
+          bun-version: 1.3.14
 
       - name: Setup Zig
         uses: mlugg/setup-zig@v2
         with:
           version: 0.15.2
+          use-cache: false
 
-      - name: Extract version from tag
-        id: extract_version
-        run: |
-          TAG=${GITHUB_REF#refs/tags/v}
-          echo "version=$TAG" >> $GITHUB_OUTPUT
-          echo "Extracted version: $TAG"
+      - name: Restore Zig cache
+        uses: actions/cache@v5
+        with:
+          path: .zig-cache
+          key: zig-v1-${{ runner.os }}-0.15.2-${{ github.run_id }}-${{ github.job }}
+          restore-keys: zig-v1-${{ runner.os }}-0.15.2-
 
       - name: Generate snapshot version
         id: version_scheme
         run: |
-          TAG_VERSION="${{ steps.extract_version.outputs.version }}"
           COMMIT_SHA=$(git rev-parse --short=8 HEAD)
 
           # Pre-release snapshot
@@ -57,10 +63,23 @@ jobs:
           cd packages/core
           bun run build:native --all
           bun run build:lib
+          cd ../qrcode && bun run build
           cd ../three && bun run build
           cd ../solid && bun run build
           cd ../react && bun run build
           cd ../keymap && bun run build
+          cd ../ssh && bun run build
+
+      - name: Run packed Node smoke tests
+        run: |
+          cd packages/core
+          bun run test:dist --skip-build
+          cd ../solid
+          bun run test:dist --skip-build
+          cd ../keymap
+          bun run test:dist --skip-build
+          cd ../ssh
+          bun run test:dist --skip-build
 
       - name: Publish packages
         run: bun run publish

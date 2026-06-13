@@ -1,7 +1,9 @@
 const std = @import("std");
+const assert = std.debug.assert;
 
 pub const GraphemePoolError = error{
     OutOfMemory,
+    GraphemeTooLong,
     InvalidId,
     WrongGeneration,
 };
@@ -30,6 +32,14 @@ pub const CLASS_MASK: u32 = (@as(u32, 1) << CLASS_BITS) - 1; // 0b111
 pub const GENERATION_MASK: u32 = (@as(u32, 1) << GENERATION_BITS) - 1; // 0b1111111
 pub const SLOT_MASK: u32 = (@as(u32, 1) << SLOT_BITS) - 1; // 0xFFFF
 
+comptime {
+    assert(CLASS_BITS + GENERATION_BITS + SLOT_BITS == 26);
+    assert(GRAPHEME_ID_MASK == (@as(u32, 1) << (CLASS_BITS + GENERATION_BITS + SLOT_BITS)) - 1);
+    assert((CHAR_FLAG_GRAPHEME & GRAPHEME_ID_MASK) == 0);
+    assert((CHAR_FLAG_CONTINUATION & GRAPHEME_ID_MASK) == 0);
+    assert(CHAR_FLAG_GRAPHEME != CHAR_FLAG_CONTINUATION);
+}
+
 /// Global slab-allocated pool for grapheme clusters (byte slices)
 /// This is total overkill probably, but fun
 /// ID layout (26-bit payload):
@@ -38,6 +48,13 @@ pub const GraphemePool = struct {
     const MAX_CLASSES: u5 = 5; // 0..4 => 8,16,32,64,128
     const CLASS_SIZES = [_]u32{ 8, 16, 32, 64, 128 };
     const DEFAULT_SLOTS_PER_PAGE = [_]u32{ 256, 128, 64, 16, 8 };
+
+    comptime {
+        assert(CLASS_SIZES.len == MAX_CLASSES);
+        assert(DEFAULT_SLOTS_PER_PAGE.len == MAX_CLASSES);
+        assert(MAX_CLASSES <= (@as(u32, 1) << CLASS_BITS));
+        assert(CLASS_SIZES[CLASS_SIZES.len - 1] <= std.math.maxInt(u16));
+    }
 
     pub const IdPayload = u32;
 
@@ -56,6 +73,7 @@ pub const GraphemePool = struct {
         refcount: u32,
         generation: u32,
         is_owned: u32, // 0 = unowned (external memory), 1 = owned (copied into pool)
+        is_allocated: u32, // 0 = free slot, 1 = pending or referenced slot.
     };
 
     pub fn init(allocator: std.mem.Allocator) GraphemePool {
@@ -67,6 +85,10 @@ pub const GraphemePool = struct {
         var classes: [MAX_CLASSES]ClassPool = undefined;
         var i: usize = 0;
         while (i < MAX_CLASSES) : (i += 1) {
+            if (slots_per_page[i] == 0) {
+                @panic("GraphemePool: slots_per_page must be non-zero");
+            }
+            assert(slots_per_page[i] > 0);
             classes[i] = ClassPool.init(allocator, CLASS_SIZES[i], slots_per_page[i]);
         }
         return .{ .allocator = allocator, .classes = classes, .interned_live_ids = .{} };
@@ -97,7 +119,8 @@ pub const GraphemePool = struct {
         }
     }
 
-    /// lookupOrInvalidate checks if the given bytes are already interned and live, returning the existing ID if so.
+    /// Return an existing interned live ID, removing stale entries encountered
+    /// while validating the map.
     fn lookupOrInvalidate(self: *GraphemePool, bytes: []const u8) ?IdPayload {
         const live_id = self.interned_live_ids.get(bytes) orelse return null;
 
@@ -140,7 +163,11 @@ pub const GraphemePool = struct {
         const owned_key = self.allocator.dupe(u8, bytes) catch return GraphemePoolError.OutOfMemory;
         errdefer self.allocator.free(owned_key);
 
-        if (self.interned_live_ids.fetchPut(self.allocator, owned_key, id) catch return GraphemePoolError.OutOfMemory) |replaced| {
+        if (self.interned_live_ids.fetchPut(
+            self.allocator,
+            owned_key,
+            id,
+        ) catch return GraphemePoolError.OutOfMemory) |replaced| {
             // A previous key allocation was replaced.
             self.allocator.free(@constCast(replaced.key));
         }
@@ -155,13 +182,19 @@ pub const GraphemePool = struct {
     }
 
     fn packId(class_id: u32, slot_index: u32, generation: u32) GraphemePoolError!IdPayload {
+        assert(class_id < MAX_CLASSES);
+        assert(generation <= GENERATION_MASK);
         if (slot_index > SLOT_MASK) return GraphemePoolError.OutOfMemory;
-        return (class_id << (GENERATION_BITS + SLOT_BITS)) |
+        const id = (class_id << (GENERATION_BITS + SLOT_BITS)) |
             ((generation & GENERATION_MASK) << SLOT_BITS) |
             (slot_index & SLOT_MASK);
+        assert((id & ~GRAPHEME_ID_MASK) == 0);
+        return id;
     }
 
     pub fn alloc(self: *GraphemePool, bytes: []const u8) GraphemePoolError!IdPayload {
+        if (bytes.len > CLASS_SIZES[CLASS_SIZES.len - 1]) return GraphemePoolError.GraphemeTooLong;
+        assert(bytes.len <= CLASS_SIZES[CLASS_SIZES.len - 1]);
         if (self.lookupOrInvalidate(bytes)) |live_id| {
             return live_id;
         }
@@ -169,18 +202,25 @@ pub const GraphemePool = struct {
         const class_id: u32 = classForSize(bytes.len);
         const slot_index = try self.classes[class_id].allocInternal(bytes, true);
         const generation = self.classes[class_id].getGeneration(slot_index);
-        return packId(class_id, slot_index, generation);
+        const id = try packId(class_id, slot_index, generation);
+        assert((try self.getRefcount(id)) == 0);
+        return id;
     }
 
     /// Allocate an ID for externally managed memory (no copy, just reference)
     /// The caller is responsible for keeping the memory valid while the ID is in use
     pub fn allocUnowned(self: *GraphemePool, bytes: []const u8) GraphemePoolError!IdPayload {
         // For unowned allocations, we need space for a pointer
+        if (bytes.len > std.math.maxInt(u16)) return GraphemePoolError.GraphemeTooLong;
+        assert(bytes.len <= std.math.maxInt(u16));
         const ptr_size = @sizeOf(usize);
         const class_id: u32 = classForSize(ptr_size);
+        assert(ptr_size <= CLASS_SIZES[class_id]);
         const slot_index = try self.classes[class_id].allocInternal(bytes, false);
         const generation = self.classes[class_id].getGeneration(slot_index);
-        return packId(class_id, slot_index, generation);
+        const id = try packId(class_id, slot_index, generation);
+        assert((try self.getRefcount(id)) == 0);
+        return id;
     }
 
     pub fn incref(self: *GraphemePool, id: IdPayload) GraphemePoolError!void {
@@ -189,16 +229,22 @@ pub const GraphemePool = struct {
         const slot_index: u32 = id & SLOT_MASK;
         const generation: u32 = (id >> SLOT_BITS) & GENERATION_MASK;
         const old_refcount = try self.classes[class_id].getRefcount(slot_index, generation);
-        try self.classes[class_id].incref(slot_index, generation);
 
         if (old_refcount == 0) {
             const is_owned = try self.classes[class_id].isOwned(slot_index, generation);
             if (is_owned) {
-                // This is a transition from 0 to 1 for owned bytes, so intern it.
+                // Intern before publishing the first live reference so OOM does
+                // not leave the caller holding an unreported reference.
                 const bytes = try self.classes[class_id].get(slot_index, generation);
                 try self.internLiveId(id, bytes);
             }
         }
+
+        try self.classes[class_id].incref(slot_index, generation);
+        assert(
+            (try self.classes[class_id].getRefcount(slot_index, generation)) ==
+                old_refcount + 1,
+        );
     }
 
     pub fn decref(self: *GraphemePool, id: IdPayload) GraphemePoolError!void {
@@ -218,6 +264,19 @@ pub const GraphemePool = struct {
         }
 
         try self.classes[class_id].decref(slot_index, generation);
+        if (old_refcount > 1) {
+            assert(
+                (try self.classes[class_id].getRefcount(slot_index, generation)) + 1 ==
+                    old_refcount,
+            );
+        } else {
+            assert(old_refcount == 1);
+            if (self.classes[class_id].getRefcount(slot_index, generation)) |_| {
+                unreachable;
+            } else |err| {
+                assert(err == GraphemePoolError.InvalidId);
+            }
+        }
     }
 
     /// Free a freshly allocated slot that was never incref'd (refcount=0).
@@ -259,14 +318,24 @@ pub const GraphemePool = struct {
         slot_capacity: u32,
         slots_per_page: u32,
         slot_size_bytes: usize,
-        slots: std.ArrayListUnmanaged(u8),
+        slots: std.array_list.Aligned(u8, std.mem.Alignment.of(SlotHeader)),
         free_list: std.ArrayListUnmanaged(u32),
         num_slots: u32,
 
-        pub fn init(allocator: std.mem.Allocator, slot_capacity: u32, slots_per_page: u32) ClassPool {
+        pub fn init(
+            allocator: std.mem.Allocator,
+            slot_capacity: u32,
+            slots_per_page: u32,
+        ) ClassPool {
+            assert(slot_capacity > 0);
+            assert(slots_per_page > 0);
             // Align slot size to SlotHeader alignment to prevent UB from misaligned access
             const raw_slot_size = @sizeOf(SlotHeader) + slot_capacity;
-            const slot_size_bytes = std.mem.alignForward(usize, raw_slot_size, @alignOf(SlotHeader));
+            const slot_size_bytes = std.mem.alignForward(
+                usize,
+                raw_slot_size,
+                @alignOf(SlotHeader),
+            );
             return .{
                 .allocator = allocator,
                 .slot_capacity = slot_capacity,
@@ -278,6 +347,19 @@ pub const GraphemePool = struct {
             };
         }
 
+        fn assertInvariants(self: *const ClassPool) void {
+            assert(self.slot_capacity > 0);
+            assert(self.slots_per_page > 0);
+            assert(self.slot_size_bytes >= @sizeOf(SlotHeader) + self.slot_capacity);
+            assert(self.slot_size_bytes % @alignOf(SlotHeader) == 0);
+            assert(self.slots.items.len == @as(usize, self.num_slots) * self.slot_size_bytes);
+            assert(self.free_list.items.len <= self.num_slots);
+            assert(self.free_list.capacity >= self.num_slots);
+            if (self.num_slots > 0) {
+                assert(@intFromPtr(self.slots.items.ptr) % @alignOf(SlotHeader) == 0);
+            }
+        }
+
         pub fn deinit(self: *ClassPool) void {
             self.slots.deinit(self.allocator);
             self.free_list.deinit(self.allocator);
@@ -285,46 +367,84 @@ pub const GraphemePool = struct {
         }
 
         fn grow(self: *ClassPool) GraphemePoolError!void {
+            self.assertInvariants();
+            if (self.slots_per_page > SLOT_MASK + 1) return GraphemePoolError.OutOfMemory;
+            if (self.num_slots > SLOT_MASK + 1 - self.slots_per_page) {
+                return GraphemePoolError.OutOfMemory;
+            }
             const add_bytes = self.slot_size_bytes * self.slots_per_page;
+            const free_slots_before = self.free_list.items.len;
 
-            try self.slots.ensureTotalCapacity(self.allocator, self.slots.items.len + add_bytes);
-            try self.slots.appendNTimes(self.allocator, 0, add_bytes);
+            // Reserve both arrays first so an OOM cannot commit only half a page.
+            try self.slots.ensureUnusedCapacity(self.allocator, add_bytes);
+            try self.free_list.ensureTotalCapacity(
+                self.allocator,
+                @as(usize, self.num_slots) + self.slots_per_page,
+            );
+            self.slots.appendNTimesAssumeCapacity(0, add_bytes);
 
             var i: u32 = 0;
             while (i < self.slots_per_page) : (i += 1) {
-                try self.free_list.append(self.allocator, self.num_slots + i);
+                self.free_list.appendAssumeCapacity(self.num_slots + i);
             }
             self.num_slots += self.slots_per_page;
+            assert(self.free_list.items.len == free_slots_before + @as(usize, self.slots_per_page));
+            self.assertInvariants();
         }
 
         fn slotPtr(self: *ClassPool, slot_index: u32) *u8 {
+            self.assertInvariants();
+            assert(slot_index < self.num_slots);
             const offset: usize = @as(usize, slot_index) * self.slot_size_bytes;
+            assert(offset + self.slot_size_bytes <= self.slots.items.len);
             return &self.slots.items[offset];
         }
 
-        pub fn allocInternal(self: *ClassPool, bytes: []const u8, is_owned: bool) GraphemePoolError!u32 {
-            // Validate size for owned allocations
+        fn slotHeaderPtr(p: *u8) *align(1) SlotHeader {
+            return @ptrCast(p);
+        }
+
+        pub fn allocInternal(
+            self: *ClassPool,
+            bytes: []const u8,
+            is_owned: bool,
+        ) GraphemePoolError!u32 {
+            self.assertInvariants();
             if (is_owned and bytes.len > self.slot_capacity) {
-                @panic("ClassPool.allocInternal: bytes.len > slot_capacity");
+                return GraphemePoolError.GraphemeTooLong;
             }
+            if (!is_owned and bytes.len > std.math.maxInt(u16)) {
+                return GraphemePoolError.GraphemeTooLong;
+            }
+            if (is_owned) assert(bytes.len <= self.slot_capacity);
+            if (!is_owned) assert(bytes.len <= std.math.maxInt(u16));
 
             if (self.free_list.items.len == 0) try self.grow();
 
+            const free_slots_before = self.free_list.items.len;
             const slot_index = self.free_list.pop().?;
+            assert(slot_index < self.num_slots);
+            assert(self.free_list.items.len + 1 == free_slots_before);
             const p = self.slotPtr(slot_index);
-            const header_ptr = @as(*SlotHeader, @ptrCast(@alignCast(p)));
+            const header_ptr = slotHeaderPtr(p);
+            assert(header_ptr.refcount == 0);
+            assert(header_ptr.is_allocated == 0);
 
             // Increment generation when reusing a slot, wrapping at 7 bits (128 values)
             const new_generation = (header_ptr.generation + 1) & GENERATION_MASK;
 
             // Calculate length based on ownership
-            const len: u16 = if (is_owned) @intCast(@min(bytes.len, self.slot_capacity)) else @intCast(bytes.len);
+            const len: u16 = if (is_owned)
+                @intCast(@min(bytes.len, self.slot_capacity))
+            else
+                @intCast(bytes.len);
 
             header_ptr.* = .{
                 .len = len,
                 .refcount = 0,
                 .generation = new_generation,
                 .is_owned = if (is_owned) 1 else 0,
+                .is_allocated = 1,
             };
 
             const data_ptr = @as([*]u8, @ptrCast(p)) + @sizeOf(SlotHeader);
@@ -333,66 +453,121 @@ pub const GraphemePool = struct {
                 // Owned: copy bytes into our storage
                 @memcpy(data_ptr[0..header_ptr.len], bytes[0..header_ptr.len]);
             } else {
-                // Unowned: store pointer to external memory
-                const ptr_storage = @as(*[*]const u8, @ptrCast(@alignCast(data_ptr)));
-                ptr_storage.* = bytes.ptr;
+                // Store the pointer as bytes because u8 slab storage does not
+                // guarantee native pointer alignment.
+                std.mem.writeInt(
+                    usize,
+                    data_ptr[0..@sizeOf(usize)],
+                    @intFromPtr(bytes.ptr),
+                    .little,
+                );
             }
 
+            assert(header_ptr.generation <= GENERATION_MASK);
+            assert(header_ptr.refcount == 0);
+            assert(header_ptr.is_owned == @as(u32, if (is_owned) 1 else 0));
+            assert(header_ptr.is_allocated == 1);
             return slot_index;
         }
 
         pub fn getGeneration(self: *ClassPool, slot_index: u32) u32 {
-            if (slot_index >= self.num_slots) return 0;
+            assert(slot_index < self.num_slots);
             const p = self.slotPtr(slot_index);
-            const header_ptr = @as(*SlotHeader, @ptrCast(@alignCast(p)));
+            const header_ptr = slotHeaderPtr(p);
+            assert(header_ptr.is_allocated == 1);
+            assert(header_ptr.generation <= GENERATION_MASK);
             return header_ptr.generation;
         }
 
-        pub fn incref(self: *ClassPool, slot_index: u32, expected_generation: u32) GraphemePoolError!void {
+        pub fn incref(
+            self: *ClassPool,
+            slot_index: u32,
+            expected_generation: u32,
+        ) GraphemePoolError!void {
+            self.assertInvariants();
+            if (slot_index >= self.num_slots) return GraphemePoolError.InvalidId;
             const p = self.slotPtr(slot_index);
-            const header_ptr = @as(*SlotHeader, @ptrCast(@alignCast(p)));
+            const header_ptr = slotHeaderPtr(p);
             if (header_ptr.generation != expected_generation) {
                 // Generation mismatch - this is a stale reference
                 return GraphemePoolError.WrongGeneration;
             }
+            if (header_ptr.is_allocated != 1) return GraphemePoolError.InvalidId;
+            assert(header_ptr.refcount < std.math.maxInt(u32));
             header_ptr.refcount +%= 1;
+            assert(header_ptr.refcount > 0);
         }
 
-        pub fn decref(self: *ClassPool, slot_index: u32, expected_generation: u32) GraphemePoolError!void {
+        pub fn decref(
+            self: *ClassPool,
+            slot_index: u32,
+            expected_generation: u32,
+        ) GraphemePoolError!void {
+            self.assertInvariants();
+            if (slot_index >= self.num_slots) return GraphemePoolError.InvalidId;
             const p = self.slotPtr(slot_index);
-            const header_ptr = @as(*SlotHeader, @ptrCast(@alignCast(p)));
+            const header_ptr = slotHeaderPtr(p);
 
+            if (header_ptr.generation != expected_generation) {
+                return GraphemePoolError.WrongGeneration;
+            }
+            if (header_ptr.is_allocated != 1) return GraphemePoolError.InvalidId;
             if (header_ptr.refcount == 0) return GraphemePoolError.InvalidId;
-            if (header_ptr.generation != expected_generation) return GraphemePoolError.WrongGeneration;
 
             header_ptr.refcount -%= 1;
 
             if (header_ptr.refcount == 0) {
-                try self.free_list.append(self.allocator, slot_index);
+                header_ptr.is_allocated = 0;
+                const free_slots_before = self.free_list.items.len;
+                assert(self.free_list.capacity > self.free_list.items.len);
+                self.free_list.appendAssumeCapacity(slot_index);
+                assert(self.free_list.items.len == free_slots_before + 1);
             }
+            self.assertInvariants();
         }
 
         /// Free a slot that has refcount=0 (freshly allocated, never incref'd).
         /// This is used for cleanup when allocation succeeded but the caller
         /// needs to abort before taking ownership via incref.
-        pub fn freeUnreferenced(self: *ClassPool, slot_index: u32, expected_generation: u32) GraphemePoolError!void {
+        pub fn freeUnreferenced(
+            self: *ClassPool,
+            slot_index: u32,
+            expected_generation: u32,
+        ) GraphemePoolError!void {
             if (slot_index >= self.num_slots) return GraphemePoolError.InvalidId;
             const p = self.slotPtr(slot_index);
-            const header_ptr = @as(*SlotHeader, @ptrCast(@alignCast(p)));
+            const header_ptr = slotHeaderPtr(p);
 
-            if (header_ptr.generation != expected_generation) return GraphemePoolError.WrongGeneration;
+            if (header_ptr.generation != expected_generation) {
+                return GraphemePoolError.WrongGeneration;
+            }
+            if (header_ptr.is_allocated != 1) return GraphemePoolError.InvalidId;
             if (header_ptr.refcount != 0) return GraphemePoolError.InvalidId; // Not unreferenced
 
-            try self.free_list.append(self.allocator, slot_index);
+            header_ptr.is_allocated = 0;
+            const free_slots_before = self.free_list.items.len;
+            assert(self.free_list.capacity > self.free_list.items.len);
+            self.free_list.appendAssumeCapacity(slot_index);
+            assert(self.free_list.items.len == free_slots_before + 1);
+            self.assertInvariants();
         }
 
-        pub fn get(self: *ClassPool, slot_index: u32, expected_generation: u32) GraphemePoolError![]const u8 {
+        pub fn get(
+            self: *ClassPool,
+            slot_index: u32,
+            expected_generation: u32,
+        ) GraphemePoolError![]const u8 {
             if (slot_index >= self.num_slots) return GraphemePoolError.InvalidId;
 
             const p = self.slotPtr(slot_index);
-            const header_ptr = @as(*SlotHeader, @ptrCast(@alignCast(p)));
+            const header_ptr = slotHeaderPtr(p);
             // Validate generation to prevent accessing stale data
-            if (header_ptr.generation != expected_generation) return GraphemePoolError.WrongGeneration;
+            if (header_ptr.generation != expected_generation) {
+                return GraphemePoolError.WrongGeneration;
+            }
+            if (header_ptr.is_allocated != 1) return GraphemePoolError.InvalidId;
+            assert(header_ptr.is_owned == 0 or header_ptr.is_owned == 1);
+            if (header_ptr.is_owned == 1) assert(header_ptr.len <= self.slot_capacity);
 
             const data_ptr = @as([*]u8, @ptrCast(p)) + @sizeOf(SlotHeader);
 
@@ -400,26 +575,46 @@ pub const GraphemePool = struct {
                 // Owned memory: return slice from our storage
                 return data_ptr[0..header_ptr.len];
             } else {
-                // Unowned memory: dereference stored pointer
-                const ptr_storage = @as(*[*]const u8, @ptrCast(@alignCast(data_ptr)));
-                const external_ptr = ptr_storage.*;
+                // Unowned memory: decode the possibly unaligned stored pointer.
+                const pointer_address = std.mem.readInt(
+                    usize,
+                    data_ptr[0..@sizeOf(usize)],
+                    .little,
+                );
+                const external_ptr: [*]const u8 = @ptrFromInt(pointer_address);
                 return external_ptr[0..header_ptr.len];
             }
         }
 
-        pub fn getRefcount(self: *ClassPool, slot_index: u32, expected_generation: u32) GraphemePoolError!u32 {
+        pub fn getRefcount(
+            self: *ClassPool,
+            slot_index: u32,
+            expected_generation: u32,
+        ) GraphemePoolError!u32 {
             if (slot_index >= self.num_slots) return GraphemePoolError.InvalidId;
             const p = self.slotPtr(slot_index);
-            const header_ptr = @as(*SlotHeader, @ptrCast(@alignCast(p)));
-            if (header_ptr.generation != expected_generation) return GraphemePoolError.WrongGeneration;
+            const header_ptr = slotHeaderPtr(p);
+            if (header_ptr.generation != expected_generation) {
+                return GraphemePoolError.WrongGeneration;
+            }
+            if (header_ptr.is_allocated != 1) return GraphemePoolError.InvalidId;
+            assert(header_ptr.generation <= GENERATION_MASK);
             return header_ptr.refcount;
         }
 
-        pub fn isOwned(self: *ClassPool, slot_index: u32, expected_generation: u32) GraphemePoolError!bool {
+        pub fn isOwned(
+            self: *ClassPool,
+            slot_index: u32,
+            expected_generation: u32,
+        ) GraphemePoolError!bool {
             if (slot_index >= self.num_slots) return GraphemePoolError.InvalidId;
             const p = self.slotPtr(slot_index);
-            const header_ptr = @as(*SlotHeader, @ptrCast(@alignCast(p)));
-            if (header_ptr.generation != expected_generation) return GraphemePoolError.WrongGeneration;
+            const header_ptr = slotHeaderPtr(p);
+            if (header_ptr.generation != expected_generation) {
+                return GraphemePoolError.WrongGeneration;
+            }
+            if (header_ptr.is_allocated != 1) return GraphemePoolError.InvalidId;
+            assert(header_ptr.is_owned == 0 or header_ptr.is_owned == 1);
             return header_ptr.is_owned == 1;
         }
     };
@@ -440,32 +635,51 @@ pub fn isClusterChar(c: u32) bool {
 }
 
 pub fn graphemeIdFromChar(c: u32) u32 {
+    assert(isClusterChar(c));
     return c & GRAPHEME_ID_MASK;
 }
 
 pub fn charRightExtent(c: u32) u32 {
+    assert(isClusterChar(c));
     return (c >> CHAR_EXT_RIGHT_SHIFT) & CHAR_EXT_MASK;
 }
 
 pub fn charLeftExtent(c: u32) u32 {
+    assert(isClusterChar(c));
     return (c >> CHAR_EXT_LEFT_SHIFT) & CHAR_EXT_MASK;
 }
 
 pub fn packGraphemeStart(gid: u32, total_width: u32) u32 {
-    const width_minus_one: u32 = if (total_width == 0) 0 else @intCast(@min(total_width - 1, 3));
+    assert(gid <= GRAPHEME_ID_MASK);
+    assert(total_width > 0);
+    // The packed extent is capped; wcwidth clusters such as ZWJ families can
+    // have a wider logical display width than the four-cell encoded span.
+    const width_minus_one: u32 = @min(total_width - 1, CHAR_EXT_MASK);
     const right: u32 = width_minus_one;
     const left: u32 = 0;
-    return CHAR_FLAG_GRAPHEME |
+    const char = CHAR_FLAG_GRAPHEME |
         ((right & CHAR_EXT_MASK) << CHAR_EXT_RIGHT_SHIFT) |
         ((left & CHAR_EXT_MASK) << CHAR_EXT_LEFT_SHIFT) |
         (gid & GRAPHEME_ID_MASK);
+    assert(isGraphemeChar(char));
+    assert(graphemeIdFromChar(char) == gid);
+    assert(charLeftExtent(char) == 0);
+    return char;
 }
 
 pub fn packContinuation(left: u32, right: u32, gid: u32) u32 {
-    return CHAR_FLAG_CONTINUATION |
-        ((@min(left, 3) & CHAR_EXT_MASK) << CHAR_EXT_LEFT_SHIFT) |
-        ((@min(right, 3) & CHAR_EXT_MASK) << CHAR_EXT_RIGHT_SHIFT) |
+    assert(gid <= GRAPHEME_ID_MASK);
+    assert(left <= CHAR_EXT_MASK);
+    assert(right <= CHAR_EXT_MASK);
+    const char = CHAR_FLAG_CONTINUATION |
+        ((left & CHAR_EXT_MASK) << CHAR_EXT_LEFT_SHIFT) |
+        ((right & CHAR_EXT_MASK) << CHAR_EXT_RIGHT_SHIFT) |
         (gid & GRAPHEME_ID_MASK);
+    assert(isContinuationChar(char));
+    assert(graphemeIdFromChar(char) == gid);
+    assert(charLeftExtent(char) == left);
+    assert(charRightExtent(char) == right);
+    return char;
 }
 
 pub fn encodedCharWidth(c: u32) u32 {
@@ -486,7 +700,10 @@ pub fn initGlobalPool(allocator: std.mem.Allocator) *GraphemePool {
     return initGlobalPoolWithOptions(allocator, .{});
 }
 
-pub fn initGlobalPoolWithOptions(allocator: std.mem.Allocator, options: GraphemePool.InitOptions) *GraphemePool {
+pub fn initGlobalPoolWithOptions(
+    allocator: std.mem.Allocator,
+    options: GraphemePool.InitOptions,
+) *GraphemePool {
     if (GLOBAL_POOL_STORAGE == null) {
         GLOBAL_POOL_STORAGE = GraphemePool.initWithOptions(allocator, options);
     }
@@ -516,7 +733,9 @@ pub const GraphemeTracker = struct {
         while (it.next()) |idp| {
             // Pool refs are tracked per ID (first/last cell transition), so clear
             // decrefs once per tracked ID, not once per per-buffer cell count.
-            self.pool.decref(idp.*) catch {};
+            self.pool.decref(idp.*) catch |err| {
+                std.debug.panic("GraphemeTracker.decRefAll decref failed: {}\n", .{err});
+            };
         }
     }
 
@@ -541,19 +760,28 @@ pub const GraphemeTracker = struct {
                 std.debug.panic("GraphemeTracker.add incref failed: {}\n", .{err});
             };
         } else {
+            assert(res.value_ptr.* > 0);
+            assert(res.value_ptr.* < std.math.maxInt(u32));
             res.value_ptr.* += 1;
         }
+        assert(res.value_ptr.* > 0);
     }
 
     pub fn remove(self: *GraphemeTracker, id: u32) void {
         const count_ptr = self.used_ids.getPtr(id) orelse return;
+        assert(count_ptr.* > 0);
         if (count_ptr.* > 1) {
             count_ptr.* -= 1;
+            assert(count_ptr.* > 0);
             return;
         }
 
-        if (self.used_ids.remove(id)) {
-            self.pool.decref(id) catch {};
+        const removed = self.used_ids.remove(id);
+        assert(removed);
+        if (removed) {
+            self.pool.decref(id) catch |err| {
+                std.debug.panic("GraphemeTracker.remove decref failed: {}\n", .{err});
+            };
         }
     }
 
@@ -573,6 +801,7 @@ pub const GraphemeTracker = struct {
     }
 
     pub fn getGraphemeCount(self: *const GraphemeTracker) u32 {
+        assert(self.used_ids.count() <= std.math.maxInt(u32));
         return @intCast(self.used_ids.count());
     }
 
@@ -580,6 +809,8 @@ pub const GraphemeTracker = struct {
         var total: u32 = 0;
         var it = self.used_ids.valueIterator();
         while (it.next()) |count_ptr| {
+            assert(count_ptr.* > 0);
+            assert(total <= std.math.maxInt(u32) - count_ptr.*);
             total += count_ptr.*;
         }
         return total;
@@ -592,10 +823,14 @@ pub const GraphemeTracker = struct {
             const id = entry.key_ptr.*;
             const count = entry.value_ptr.*;
             if (self.pool.get(id)) |bytes| {
-                total_bytes += @as(u32, @intCast(bytes.len)) * count;
-            } else |_| {
-                // If we can't get the bytes, this shouldn't happen but handle gracefully
-                continue;
+                assert(count > 0);
+                const bytes_count: u32 = @intCast(bytes.len);
+                assert(bytes_count == 0 or count <= std.math.maxInt(u32) / bytes_count);
+                const bytes_total = bytes_count * count;
+                assert(total_bytes <= std.math.maxInt(u32) - bytes_total);
+                total_bytes += bytes_total;
+            } else |err| {
+                std.debug.panic("GraphemeTracker.getTotalGraphemeBytes get failed: {}\n", .{err});
             }
         }
         return total_bytes;

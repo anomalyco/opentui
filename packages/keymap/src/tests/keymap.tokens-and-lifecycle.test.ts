@@ -183,12 +183,14 @@ describe("keymap: tokens and lifecycle", () => {
       bindings: [{ key: "<leader>a", cmd: "leader-action" }],
     })
 
-    expect(takeWarnings().warnings).toEqual(['[Keymap] Unknown token "leader" in key sequence "<leader>a" was ignored'])
+    expect(takeWarnings().warnings).toEqual([
+      '[Keymap] Unknown token "leader" in key sequence "<leader>a"; binding was skipped until the token is registered',
+    ])
 
-    expect(getActiveKeyNames(keymap)).toEqual(["a"])
+    expect(getActiveKeyNames(keymap)).toEqual([])
 
     mockInput.pressKey("a")
-    expect(calls).toEqual(["leader"])
+    expect(calls).toEqual([])
 
     const offToken = keymap.registerToken({
       name: "leader",
@@ -199,21 +201,21 @@ describe("keymap: tokens and lifecycle", () => {
     expect(getActiveKeyDisplay(keymap, "<leader>")?.command).toBeUndefined()
 
     mockInput.pressKey("a")
-    expect(calls).toEqual(["leader"])
+    expect(calls).toEqual([])
 
     mockInput.pressKey("x", { ctrl: true })
     expect(stringifyKeySequence(keymap.getPendingSequence(), { preferDisplay: true })).toBe("<leader>")
     expect(getActiveKeyNames(keymap)).toEqual(["a"])
 
     mockInput.pressKey("a")
-    expect(calls).toEqual(["leader", "leader"])
+    expect(calls).toEqual(["leader"])
 
     offToken()
 
-    expect(getActiveKeyNames(keymap)).toEqual(["a"])
+    expect(getActiveKeyNames(keymap)).toEqual([])
 
     mockInput.pressKey("a")
-    expect(calls).toEqual(["leader", "leader", "leader"])
+    expect(calls).toEqual(["leader"])
   })
 
   test("keeps token-only bindings inactive until the token is registered", () => {
@@ -236,7 +238,9 @@ describe("keymap: tokens and lifecycle", () => {
       bindings: [{ key: "<leader>", cmd: "leader-only" }],
     })
 
-    expect(takeWarnings().warnings).toEqual(['[Keymap] Unknown token "leader" in key sequence "<leader>" was ignored'])
+    expect(takeWarnings().warnings).toEqual([
+      '[Keymap] Unknown token "leader" in key sequence "<leader>"; binding was skipped until the token is registered',
+    ])
 
     expect(keymap.getActiveKeys()).toEqual([])
 
@@ -252,35 +256,40 @@ describe("keymap: tokens and lifecycle", () => {
     expect(calls).toEqual(["leader-only"])
   })
 
-  test("clears pending tokenized sequences when token registration recompiles their layer", () => {
+  test("clears pending tokenized sequences when token disposal recompiles their layer", () => {
     const keymap = getKeymap(renderer)
     const { takeWarnings } = captureDiagnostics(keymap)
 
     keymap.registerLayer({ commands: [{ name: "leader-action", run() {} }] })
+    const offToken = keymap.registerToken({
+      name: "leader",
+      key: { name: "x", ctrl: true },
+    })
     keymap.registerLayer({
       bindings: [{ key: "<leader>ab", cmd: "leader-action" }],
     })
 
-    expect(takeWarnings().warnings).toEqual([
-      '[Keymap] Unknown token "leader" in key sequence "<leader>ab" was ignored',
-    ])
-
+    mockInput.pressKey("x", { ctrl: true })
     mockInput.pressKey("a")
 
     expect(keymap.getPendingSequence()).toMatchObject([
+      {
+        stroke: { name: "x", ctrl: true, shift: false, meta: false, super: false },
+        display: "<leader>",
+      },
       {
         stroke: { name: "a", ctrl: false, shift: false, meta: false, super: false },
         display: "a",
       },
     ])
 
-    keymap.registerToken({
-      name: "leader",
-      key: { name: "x", ctrl: true },
-    })
+    offToken()
 
+    expect(takeWarnings().warnings).toEqual([
+      '[Keymap] Unknown token "leader" in key sequence "<leader>ab"; binding was skipped until the token is registered',
+    ])
     expect(keymap.getPendingSequence()).toEqual([])
-    expect(getActiveKeyNames(keymap)).toEqual(["x"])
+    expect(getActiveKeyNames(keymap)).toEqual([])
   })
 
   test("skips conflicting tokenized bindings when token registration creates a prefix conflict", () => {
@@ -301,9 +310,11 @@ describe("keymap: tokens and lifecycle", () => {
       ],
     })
 
-    expect(takeWarnings().warnings).toEqual(['[Keymap] Unknown token "leader" in key sequence "<leader>b" was ignored'])
+    expect(takeWarnings().warnings).toEqual([
+      '[Keymap] Unknown token "leader" in key sequence "<leader>b"; binding was skipped until the token is registered',
+    ])
 
-    expect(getActiveKeyNames(keymap)).toEqual(["a", "b"])
+    expect(getActiveKeyNames(keymap)).toEqual(["a"])
 
     expect(() => {
       keymap.registerToken({

@@ -2,29 +2,47 @@ name: Build Core
 
 on:
   push:
+    branches: [main]
   pull_request:
     branches: [main]
 
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+  NODE_VERSION: 26.3.0
   ZIG_VERSION: 0.15.2
 
 jobs:
   build:
     name: Build Native Libraries
-    runs-on: macos-latest
+    runs-on: blacksmith-12vcpu-macos-15
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
         with:
-          bun-version: latest
+          bun-version: 1.3.14
 
       - name: Setup Zig
         uses: mlugg/setup-zig@v2
         with:
           version: ${{ env.ZIG_VERSION }}
+          use-cache: false
+
+      - name: Restore Zig cache
+        uses: actions/cache@v5
+        with:
+          path: .zig-cache
+          key: zig-v1-${{ runner.os }}-${{ env.ZIG_VERSION }}-${{ github.run_id }}-${{ github.job }}
+          restore-keys: zig-v1-${{ runner.os }}-${{ env.ZIG_VERSION }}-
 
       - name: Install dependencies
         run: bun install
@@ -35,7 +53,7 @@ jobs:
           bun run build:native --all
 
       - name: Upload native artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: native-libraries
           path: packages/core/node_modules/@opentui/
@@ -47,11 +65,11 @@ jobs:
     strategy:
       matrix:
         include:
-          - os: macos-latest
+          - os: blacksmith-12vcpu-macos-15
             platform: darwin-arm64
-          - os: ubuntu-latest
+          - os: blacksmith-8vcpu-ubuntu-2404
             platform: linux-x64
-          - os: windows-latest
+          - os: blacksmith-8vcpu-windows-2025
             platform: win32-x64
     runs-on: ${{ matrix.os }}
     defaults:
@@ -59,23 +77,38 @@ jobs:
         shell: bash
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
         with:
-          bun-version: latest
+          bun-version: 1.3.14
+
+      - name: Setup Node
+        if: runner.os == 'Linux'
+        uses: actions/setup-node@v6
+        with:
+          node-version: ${{ env.NODE_VERSION }}
 
       - name: Setup Zig
         uses: mlugg/setup-zig@v2
         with:
           version: ${{ env.ZIG_VERSION }}
+          use-cache: false
+
+      - name: Restore Zig cache
+        if: runner.os != 'Windows'
+        uses: actions/cache@v5
+        with:
+          path: .zig-cache
+          key: zig-v1-${{ runner.os }}-${{ env.ZIG_VERSION }}-${{ github.run_id }}-${{ github.job }}
+          restore-keys: zig-v1-${{ runner.os }}-${{ env.ZIG_VERSION }}-
 
       - name: Install dependencies
         run: bun install
 
       - name: Download native artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: native-libraries
           path: packages/core/node_modules/@opentui/
@@ -99,13 +132,24 @@ jobs:
       - name: Run TypeScript tests
         run: |
           cd packages/core
+          export OTUI_TREE_SITTER_WORKER_PATH="$(bun -e 'import { resolve } from "node:path"; console.log(resolve("dist/parser.worker.js"))')"
           bun run test:js
+
+      - name: Run Node TypeScript tests
+        if: runner.os == 'Linux'
+        working-directory: packages/core
+        run: bun run test:js:node
+
+      - name: Test packed distribution
+        if: runner.os == 'Linux'
+        working-directory: packages/core
+        run: bun run test:dist --skip-build
 
   # Gate job for branch protection
   build-complete:
     name: Core - Build and Test
     needs: [test]
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     if: always()
     steps:
       - name: Check test results

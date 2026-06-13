@@ -1955,3 +1955,66 @@ test("parseKeypress - preserves printable Unicode characters including non-BMP",
     expect(key.shift).toBe(false)
   }
 })
+
+test("parseKeypress - SS3 application keypad digits (ESC O p..y)", () => {
+  const cases: Array<[string, string]> = [
+    ["\x1bOp", "0"],
+    ["\x1bOq", "1"],
+    ["\x1bOr", "2"],
+    ["\x1bOs", "3"],
+    ["\x1bOt", "4"],
+    ["\x1bOu", "5"],
+    ["\x1bOv", "6"],
+    ["\x1bOw", "7"],
+    ["\x1bOx", "8"],
+    ["\x1bOy", "9"],
+  ]
+
+  for (const [seq, digit] of cases) {
+    const key = parseKeypress(seq)
+    expect(key).not.toBeNull()
+    expect(key!.name).toBe(digit)
+    // sequence must be the printable digit, not the raw ESC sequence,
+    // so that text-insertion components can insert it without filtering it
+    expect(key!.sequence).toBe(digit)
+    expect(key!.number).toBe(true)
+    expect(key!.ctrl).toBe(false)
+    expect(key!.meta).toBe(false)
+    expect(key!.shift).toBe(false)
+    expect(key!.source).toBe("raw")
+  }
+})
+
+test("parseKeypress - SS3 application keypad operators (ESC O j/k/l/m/n/o/X)", () => {
+  const cases: Array<[string, string]> = [
+    ["\x1bOj", "*"],
+    ["\x1bOk", "+"],
+    ["\x1bOl", ","],
+    ["\x1bOm", "-"],
+    ["\x1bOn", "."],
+    ["\x1bOo", "/"],
+    ["\x1bOX", "="],
+  ]
+
+  for (const [seq, char] of cases) {
+    const key = parseKeypress(seq)
+    expect(key).not.toBeNull()
+    expect(key!.name).toBe(char)
+    expect(key!.sequence).toBe(char)
+    expect(key!.number).toBe(false)
+    expect(key!.ctrl).toBe(false)
+    expect(key!.meta).toBe(false)
+    expect(key!.shift).toBe(false)
+    expect(key!.source).toBe("raw")
+  }
+})
+
+test("parseKeypress - SS3 application keypad Enter (ESC O M)", () => {
+  const key = parseKeypress("\x1bOM")
+  expect(key).not.toBeNull()
+  expect(key!.name).toBe("return")
+  expect(key!.ctrl).toBe(false)
+  expect(key!.meta).toBe(false)
+  expect(key!.shift).toBe(false)
+  expect(key!.source).toBe("raw")
+})

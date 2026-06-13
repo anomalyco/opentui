@@ -28,7 +28,7 @@ import type {
   TextRenderable,
 } from "@opentui/core"
 import type { Ref } from "solid-js"
-import type { JSX } from "../../jsx-runtime"
+import type { JSX } from "../../jsx-runtime.js"
 
 // ============================================================================
 // Core Type System
@@ -79,7 +79,7 @@ export type GetNonStyledProperties<TConstructor> =
       : TConstructor extends RenderableConstructor<ASCIIFontRenderable>
         ? NonStyledProps | "text" | "selectable"
         : TConstructor extends RenderableConstructor<InputRenderable>
-          ? NonStyledProps | "placeholder" | "value"
+          ? NonStyledProps | "minLength" | "maxLength" | "placeholder" | "value"
           : TConstructor extends RenderableConstructor<CodeRenderable>
             ? NonStyledProps | "content" | "filetype" | "syntaxStyle" | "treeSitterClient"
             : TConstructor extends RenderableConstructor<MarkdownRenderable>

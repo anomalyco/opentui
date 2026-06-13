@@ -38,10 +38,15 @@ class CountingRenderable extends Renderable {
 }
 
 const activeRenderers: TestRenderer[] = []
+const activeTreeSitterClients: MockTreeSitterClient[] = []
 
-afterEach(() => {
+afterEach(async () => {
   for (const renderer of activeRenderers.splice(0)) {
     renderer.destroy()
+  }
+  for (const client of activeTreeSitterClients.splice(0)) {
+    client.resolveAllHighlightOnce()
+    await client.destroy()
   }
 })
 
@@ -66,6 +71,18 @@ function destroyClaimedCommits(commits: ClaimedCommit[]): void {
   for (const commit of commits) {
     commit.snapshot.destroy()
   }
+}
+
+function numericMarginBottom(renderable: Renderable): number {
+  return typeof renderable.marginBottom === "number" ? renderable.marginBottom : 0
+}
+
+function createMockTreeSitterClient(
+  options?: ConstructorParameters<typeof MockTreeSitterClient>[0],
+): MockTreeSitterClient {
+  const client = new MockTreeSitterClient(options)
+  activeTreeSitterClients.push(client)
+  return client
 }
 
 test("ScrollbackSurface.commitRows reuses the last rendered buffer", async () => {
@@ -107,7 +124,7 @@ test("ScrollbackSurface.commitRows reuses the last rendered buffer", async () =>
 test("ScrollbackSurface.settle waits for code highlighting before commit", async () => {
   const { renderer } = await createSplitFooterRenderer()
   const surface = renderer.createScrollbackSurface({ startOnNewLine: true })
-  const mockTreeSitterClient = new MockTreeSitterClient()
+  const mockTreeSitterClient = createMockTreeSitterClient()
   mockTreeSitterClient.setMockResult({ highlights: [] })
 
   const code = new CodeRenderable(surface.renderContext, {
@@ -146,7 +163,7 @@ test("ScrollbackSurface.settle waits for code highlighting before commit", async
 test("ScrollbackSurface works with MarkdownRenderable top-level blocks", async () => {
   const { renderer } = await createSplitFooterRenderer()
   const surface = renderer.createScrollbackSurface({ startOnNewLine: true })
-  const mockTreeSitterClient = new MockTreeSitterClient({ autoResolveTimeout: 0 })
+  const mockTreeSitterClient = createMockTreeSitterClient({ autoResolveTimeout: 0 })
   mockTreeSitterClient.setMockResult({ highlights: [] })
 
   const md = new MarkdownRenderable(surface.renderContext, {
@@ -170,7 +187,7 @@ test("ScrollbackSurface works with MarkdownRenderable top-level blocks", async (
   const nextBlock = md._blockStates[1]
   const stableEnd = nextBlock
     ? nextBlock.renderable.y
-    : stableBlock.renderable.y + stableBlock.renderable.height + (stableBlock.marginBottom ?? 0)
+    : stableBlock.renderable.y + stableBlock.renderable.height + numericMarginBottom(stableBlock.renderable)
 
   surface.commitRows(stableBlock.renderable.y, stableEnd, { trailingNewline: false })
 
@@ -190,7 +207,7 @@ test("ScrollbackSurface works with MarkdownRenderable top-level blocks", async (
 test("ScrollbackSurface commitRows respects top-level block margins from custom renderNode blocks", async () => {
   const { renderer } = await createSplitFooterRenderer()
   const surface = renderer.createScrollbackSurface({ startOnNewLine: true })
-  const mockTreeSitterClient = new MockTreeSitterClient({ autoResolveTimeout: 0 })
+  const mockTreeSitterClient = createMockTreeSitterClient({ autoResolveTimeout: 0 })
   mockTreeSitterClient.setMockResult({ highlights: [] })
 
   const md = new MarkdownRenderable(surface.renderContext, {
@@ -225,7 +242,7 @@ test("ScrollbackSurface commitRows respects top-level block margins from custom 
   const nextBlock = md._blockStates[1]
   const stableEnd = nextBlock
     ? nextBlock.renderable.y
-    : stableBlock.renderable.y + stableBlock.renderable.height + (stableBlock.marginBottom ?? 0)
+    : stableBlock.renderable.y + stableBlock.renderable.height + numericMarginBottom(stableBlock.renderable)
 
   expect(nextBlock!.renderable.y).toBe(stableEnd)
 
@@ -357,7 +374,7 @@ test("ScrollbackSurface preserves inline first-line offset when the first markdo
   await renderOnce()
 
   const surface = renderer.createScrollbackSurface({ startOnNewLine: false })
-  const mockTreeSitterClient = new MockTreeSitterClient({ autoResolveTimeout: 0 })
+  const mockTreeSitterClient = createMockTreeSitterClient({ autoResolveTimeout: 0 })
   mockTreeSitterClient.setMockResult({ highlights: [] })
 
   const md = new MarkdownRenderable(surface.renderContext, {

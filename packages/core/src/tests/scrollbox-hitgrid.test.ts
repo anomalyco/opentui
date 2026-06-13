@@ -127,7 +127,7 @@ test("hover updates after scroll when pointer moves", async () => {
   const pointerY = items[0].y + 1
 
   await mockMouse.moveTo(pointerX, pointerY)
-  expect(hoveredId).toBe("item-0")
+  expect(hoveredId!).toBe("item-0")
   expect(hoverEvents).toEqual(["over:item-0"])
 
   scrollBox.scrollTop = 2
@@ -135,7 +135,7 @@ test("hover updates after scroll when pointer moves", async () => {
 
   // Hover updates when pointer moves after scroll and render
   await mockMouse.moveTo(pointerX, pointerY)
-  expect(hoveredId).toBe("item-1")
+  expect(hoveredId!).toBe("item-1")
   expect(hoverEvents).toEqual(["over:item-0", "out:item-0", "over:item-1"])
 })
 
@@ -178,13 +178,13 @@ test("hover updates after scroll without pointer movement", async () => {
   const pointerY = items[0].y + 1
 
   await mockMouse.moveTo(pointerX, pointerY)
-  expect(hoveredId).toBe("item-0")
+  expect(hoveredId!).toBe("item-0")
   expect(hoverEvents).toEqual(["over:item-0"])
 
   scrollBox.scrollTop = 2
   await testRenderer.idle()
 
-  expect(hoveredId).toBe("item-1")
+  expect(hoveredId!).toBe("item-1")
   expect(hoverEvents).toEqual(["over:item-0", "out:item-0", "over:item-1"])
 })
 
@@ -239,14 +239,14 @@ test("hover recheck uses neutral button and modifiers", async () => {
   const pointerY = items[0].y + 1
 
   await mockMouse.moveTo(pointerX, pointerY, { modifiers: { shift: true } })
-  expect(hoveredId).toBe("item-0")
+  expect(hoveredId!).toBe("item-0")
 
   await mockMouse.pressDown(pointerX, pointerY, MouseButtons.RIGHT, { modifiers: { shift: true } })
 
   scrollBox.scrollTop = 2
   await testRenderer.idle()
 
-  expect(hoveredId).toBe("item-1")
+  expect(hoveredId!).toBe("item-1")
   expect(hoverEvents).toHaveLength(3)
   const outEvent = hoverEvents[1]
   const overEvent = hoverEvents[2]
@@ -357,19 +357,19 @@ test("hover updates on multiple scroll changes", async () => {
   const pointerY = items[0].y + 1
 
   await mockMouse.moveTo(pointerX, pointerY)
-  expect(hoveredId).toBe("item-0")
+  expect(hoveredId!).toBe("item-0")
   expect(hoverEvents).toEqual(["over:item-0"])
 
   // First scroll - hover recheck happens immediately after render
   scrollBox.scrollTop = 2
   await testRenderer.idle()
-  expect(hoveredId).toBe("item-1")
+  expect(hoveredId!).toBe("item-1")
 
   // Second scroll - another immediate hover recheck
   scrollBox.scrollTop = 4
   await testRenderer.idle()
 
-  expect(hoveredId).toBe("item-2")
+  expect(hoveredId!).toBe("item-2")
   // Each render triggers immediate hover recheck, so we see all transitions
   expect(hoverEvents).toEqual(["over:item-0", "out:item-0", "over:item-1", "out:item-1", "over:item-2"])
 })
@@ -413,18 +413,18 @@ test("mouse move during scroll triggers normal hover", async () => {
   const pointerY = items[0].y + 1
 
   await mockMouse.moveTo(pointerX, pointerY)
-  expect(hoveredId).toBe("item-0")
+  expect(hoveredId!).toBe("item-0")
   expect(hoverEvents).toEqual(["over:item-0"])
 
   // Scroll triggers render which triggers immediate hover recheck
   scrollBox.scrollTop = 2
   await testRenderer.idle()
-  expect(hoveredId).toBe("item-1")
+  expect(hoveredId!).toBe("item-1")
   expect(hoverEvents).toEqual(["over:item-0", "out:item-0", "over:item-1"])
 
   // Mouse move also works and doesn't duplicate events since we're already on item-1
   await mockMouse.moveTo(pointerX, pointerY)
-  expect(hoveredId).toBe("item-1")
+  expect(hoveredId!).toBe("item-1")
   expect(hoverEvents).toEqual(["over:item-0", "out:item-0", "over:item-1"])
 })
 
@@ -464,12 +464,12 @@ test("hover updates immediately after render", async () => {
   const pointerY = items[0].y + 1
 
   await mockMouse.moveTo(pointerX, pointerY)
-  expect(hoveredId).toBe("item-0")
+  expect(hoveredId!).toBe("item-0")
 
   // Hover updates immediately after render - no delay needed
   scrollBox.scrollTop = 2
   await testRenderer.idle()
-  expect(hoveredId).toBe("item-1")
+  expect(hoveredId!).toBe("item-1")
 })
 
 test("hit grid handles multiple scroll operations correctly", async () => {
@@ -751,14 +751,14 @@ test("hover updates after translate animation", async () => {
   const pointerY = moving.y + 1
 
   await mockMouse.moveTo(pointerX, pointerY)
-  expect(hoveredId).toBe("moving")
+  expect(hoveredId!).toBe("moving")
   expect(hoverEvents).toEqual(["over:moving"])
 
   moving.shouldMove = true
   moving.requestRender()
   await testRenderer.idle()
 
-  expect(hoveredId).toBe("under")
+  expect(hoveredId!).toBe("under")
   expect(hoverEvents).toEqual(["over:moving", "out:moving", "over:under"])
 })
 
@@ -814,13 +814,13 @@ test("hover updates after z-index change", async () => {
   const pointerY = front.y + 1
 
   await mockMouse.moveTo(pointerX, pointerY)
-  expect(hoveredId).toBe("front")
+  expect(hoveredId!).toBe("front")
   expect(hoverEvents).toEqual(["over:front"])
 
   back.zIndex = 2
   await testRenderer.idle()
 
-  expect(hoveredId).toBe("back")
+  expect(hoveredId!).toBe("back")
   expect(hoverEvents).toEqual(["over:front", "out:front", "over:back"])
 })
 

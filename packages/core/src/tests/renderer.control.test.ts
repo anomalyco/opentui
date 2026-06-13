@@ -1,5 +1,6 @@
 import { test, expect, beforeEach, afterEach, spyOn } from "bun:test"
 import { createTestRenderer, type TestRenderer, type MockInput, type MockMouse } from "../testing/test-renderer.js"
+import { ManualClock } from "../testing/manual-clock.js"
 import { RendererControlState } from "../renderer.js"
 import { Renderable } from "../Renderable.js"
 
@@ -166,7 +167,7 @@ test("requestRender() does not trigger when renderer is suspended", async () => 
   }
 
   renderer.requestRender()
-  await new Promise((resolve) => setTimeout(resolve, 0))
+  await Promise.resolve()
 
   expect(renderCalled).toBe(false)
 
@@ -175,9 +176,13 @@ test("requestRender() does not trigger when renderer is suspended", async () => 
 })
 
 test("requestRender() does trigger when renderer is paused", async () => {
+  renderer.destroy()
+  const clock = new ManualClock()
+  ;({ renderer, mockInput, mockMouse, renderOnce } = await createTestRenderer({ clock }))
+
   renderer.start()
-  await Bun.sleep(20)
   renderer.pause()
+  await renderer.idle()
 
   let renderCalled = false
   // @ts-expect-error - renderNative is private
@@ -189,7 +194,8 @@ test("requestRender() does trigger when renderer is paused", async () => {
   }
 
   renderer.requestRender()
-  await Bun.sleep(20)
+  clock.advance(20)
+  await renderer.idle()
 
   expect(renderCalled).toBe(true)
 

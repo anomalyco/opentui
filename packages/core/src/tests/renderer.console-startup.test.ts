@@ -1,8 +1,8 @@
 import { afterEach, beforeEach, expect, spyOn, test } from "bun:test"
 
-import { ANSI } from "../ansi.ts"
-import { capture } from "../console.ts"
-import { clearEnvCache } from "../lib/env.ts"
+import { ANSI } from "../ansi.js"
+import { capture } from "../console.js"
+import { clearEnvCache } from "../lib/env.js"
 import { createTestRenderer, type TestRenderer } from "../testing/test-renderer.js"
 import { ManualClock } from "../testing/manual-clock.js"
 import { TextRenderable, type ScrollbackRenderContext } from "../index.js"
@@ -45,6 +45,14 @@ function textScrollbackWrite(data: string) {
       height,
     }
   }
+}
+
+function requireSnapshotRoot(root: TextRenderable | null): TextRenderable {
+  if (root === null) {
+    throw new Error("expected scrollback snapshot root")
+  }
+
+  return root
 }
 
 function blockSplitStartupCursorSeed(target: TestRenderer): () => void {
@@ -348,7 +356,7 @@ test("CliRenderer writeToScrollback runs snapshot teardown after enqueueing", as
   })
 
   expect(teardownCalls).toBe(1)
-  expect(snapshotRoot?.isDestroyed).toBe(true)
+  expect(requireSnapshotRoot(snapshotRoot).isDestroyed).toBe(true)
   expect((renderer as any).externalOutputQueue.size).toBe(1)
 })
 
@@ -367,7 +375,7 @@ test("CliRenderer writeToScrollback runs snapshot teardown when snapshot validat
   let snapshotRoot: TextRenderable | null = null
 
   expect(() => {
-    renderer.writeToScrollback((ctx) => {
+    renderer!.writeToScrollback((ctx) => {
       const root = new TextRenderable(ctx.renderContext, {
         id: "scrollback-teardown-failure",
         position: "absolute",
@@ -391,7 +399,7 @@ test("CliRenderer writeToScrollback runs snapshot teardown when snapshot validat
   }).toThrow("writeToScrollback produced a non-finite width")
 
   expect(teardownCalls).toBe(1)
-  expect(snapshotRoot?.isDestroyed).toBe(true)
+  expect(requireSnapshotRoot(snapshotRoot).isDestroyed).toBe(true)
 })
 
 test("CliRenderer preserves append order when writeToScrollback and stdout capture are interleaved", async () => {
@@ -410,7 +418,7 @@ test("CliRenderer preserves append order when writeToScrollback and stdout captu
   lib.commitSplitFooterSnapshot = (...args: any[]) => {
     const snapshotBuffer = args[1]
     const content = new TextDecoder().decode(snapshotBuffer.getRealCharBytes(true)).trim()
-    const startOnNewLine = args[3] as boolean
+    const startOnNewLine = args[3]
     order.push(`${startOnNewLine ? "api" : "stdout"}:${content}`)
     return originalCommitSplitFooterSnapshot(...args)
   }
@@ -532,7 +540,7 @@ test("CliRenderer keeps stdout captured until a deferred passthrough switch drai
     ;(renderer as any).stdout.write("older\n")
     renderer.externalOutputMode = "passthrough"
 
-    expect(renderer.externalOutputMode).toBe("capture-stdout")
+    expect((renderer as any).externalOutputMode).toBe("capture-stdout")
 
     ;(renderer as any).stdout.write("newer\n")
 
@@ -570,7 +578,7 @@ test("CliRenderer drains deferred passthrough output before leaving split-footer
     ;(renderer as any).stdout.write("before-leave\n")
     renderer.externalOutputMode = "passthrough"
 
-    expect(renderer.externalOutputMode).toBe("capture-stdout")
+    expect((renderer as any).externalOutputMode).toBe("capture-stdout")
 
     renderer.screenMode = "main-screen"
 
@@ -612,7 +620,7 @@ test("CliRenderer leaving split-footer aborts an in-flight startup CPR reply", a
     ;(renderer as any).stdout.write("before-leave\n")
     renderer.externalOutputMode = "passthrough"
 
-    expect(renderer.externalOutputMode).toBe("capture-stdout")
+    expect((renderer as any).externalOutputMode).toBe("capture-stdout")
 
     renderer.screenMode = "main-screen"
 
@@ -756,6 +764,58 @@ test("CliRenderer flushes pending writeToScrollback output before resize applies
 
   lib.commitSplitFooterSnapshot = originalCommitSplitFooterSnapshot
   lib.resizeRenderer = originalResizeRenderer
+})
+
+test("CliRenderer resetSplitFooterForReplay clears published scrollback and starts fresh", async () => {
+  const result = await createTestRenderer({
+    width: 40,
+    height: 10,
+    screenMode: "split-footer",
+    footerHeight: 4,
+    externalOutputMode: "capture-stdout",
+    consoleMode: "disabled",
+  })
+
+  renderer = result.renderer
+  ;(renderer as any)._terminalIsSetup = true
+  renderer.writeToScrollback(textScrollbackWrite("before-replay\n"))
+
+  const lib = (renderer as any).lib
+  const resetSpy = spyOn(lib, "resetSplitScrollback")
+  const writeOutSpy = spyOn(renderer as any, "writeOut")
+
+  renderer.resetSplitFooterForReplay({ clearSavedLines: true })
+
+  expect(resetSpy).toHaveBeenCalledWith((renderer as any).rendererPtr, 0, 6)
+  expect(writeOutSpy).toHaveBeenCalledWith("\x1b[r\x1b[0m\x1b[H\x1b[2J\x1b[3J\x1b[H")
+  expect((renderer as any).splitTailColumn).toBe(0)
+  expect((renderer as any).pendingSplitFooterTransition).toBeNull()
+
+  resetSpy.mockRestore()
+  writeOutSpy.mockRestore()
+})
+
+test("CliRenderer resetSplitFooterForReplay rejects suspended terminal ownership", async () => {
+  const result = await createTestRenderer({
+    width: 40,
+    height: 10,
+    screenMode: "split-footer",
+    footerHeight: 4,
+    externalOutputMode: "capture-stdout",
+    consoleMode: "disabled",
+  })
+
+  renderer = result.renderer
+  ;(renderer as any)._terminalIsSetup = true
+  renderer.suspend()
+  const writeOutSpy = spyOn(renderer as any, "writeOut")
+
+  expect(() => renderer!.resetSplitFooterForReplay({ clearSavedLines: true })).toThrow(
+    "resetSplitFooterForReplay requires an active terminal",
+  )
+  expect(writeOutSpy).not.toHaveBeenCalled()
+
+  writeOutSpy.mockRestore()
 })
 
 test("CliRenderer reuses generic suspend/resume native helpers in split-footer mode", async () => {
@@ -986,7 +1046,7 @@ test("CliRenderer preserves captured split output when switching output mode whi
 
   expect(splitCommitSpy.mock.calls.length).toBe(commitCallsAfterSuspend)
   expect((renderer as any).externalOutputQueue.size).toBe(1)
-  expect(renderer.externalOutputMode).toBe("capture-stdout")
+  expect((renderer as any).externalOutputMode).toBe("capture-stdout")
 
   renderer.resume()
 
@@ -1024,7 +1084,7 @@ test("CliRenderer preserves captured split output until startup cursor seed unbl
 
     expect(splitCommitSpy).toHaveBeenCalledTimes(0)
     expect((renderer as any).externalOutputQueue.size).toBe(1)
-    expect(renderer.externalOutputMode).toBe("capture-stdout")
+    expect((renderer as any).externalOutputMode).toBe("capture-stdout")
 
     clock.advance(120)
 
@@ -2028,8 +2088,6 @@ test("CliRenderer flushes captured output when leaving split-footer for alternat
 
   renderer = result.renderer
   ;(renderer as any)._terminalIsSetup = true
-  ;(renderer as any).lib.suspendRenderer = () => {}
-  ;(renderer as any).lib.setupTerminal = () => {}
 
   ;(renderer as any).stdout.write("pending output\n")
   renderer.externalOutputMode = "passthrough"

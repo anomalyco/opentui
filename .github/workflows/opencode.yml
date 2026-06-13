@@ -4,24 +4,31 @@ on:
   issue_comment:
     types: [created]
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
 jobs:
   opencode:
     if: |
-      contains(github.event.comment.body, ' /oc') ||
-      startsWith(github.event.comment.body, '/oc') ||
-      contains(github.event.comment.body, ' /opencode') ||
-      startsWith(github.event.comment.body, '/opencode')
-    runs-on: ubuntu-latest
+      contains(fromJson('["OWNER","MEMBER"]'), github.event.comment.author_association) &&
+      (contains(github.event.comment.body, ' /oc') ||
+        startsWith(github.event.comment.body, '/oc') ||
+        contains(github.event.comment.body, ' /opencode') ||
+        startsWith(github.event.comment.body, '/opencode'))
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     permissions:
       contents: read
       id-token: write
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
 
       - name: Run opencode
-        uses: sst/opencode/github@latest
+        uses: sst/opencode/github@1daf535e6bd4ee34aa95ca0e72bbee78c47cd46c # dev
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
         with:
-          model: anthropic/claude-sonnet-4-20250514
+          model: anthropic/claude-fable-5
+          variant: max

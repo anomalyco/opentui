@@ -102,6 +102,8 @@ OpenTUI React provides several built-in components that map to OpenTUI core rend
 - **`<scrollbox>`** - A scrollable box
 - **`<ascii-font>`** - Display ASCII art text with different font styles
 
+QR code support is available from `@opentui/qrcode/react` and must be registered explicitly with `registerQRCode()`.
+
 **Input Components:**
 
 - **`<input>`** - Text input field
@@ -469,7 +471,7 @@ function App() {
       </box>
 
       {/* Box with title and styling */}
-      <box title="Settings" border borderStyle="double" padding={2} backgroundColor="blue">
+      <box title="Settings" titleColor="yellow" border borderStyle="double" padding={2} backgroundColor="blue">
         <text>Box content</text>
       </box>
 

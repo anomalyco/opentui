@@ -238,6 +238,21 @@ describe("runtime plugin", () => {
     expect(stdout).toContain("marker=resolved-from-node-modules-runtime-specifier")
   })
 
+  it("does not crash when prescan sees import-like strings for missing files", () => {
+    const fixturePath = join(import.meta.dir, "runtime-plugin-node-modules-import-like-string.fixture.ts")
+    const result = Bun.spawnSync([process.execPath, fixturePath], {
+      cwd: join(import.meta.dir, "..", ".."),
+      stdout: "pipe",
+      stderr: "pipe",
+      env: process.env,
+    })
+
+    const stdout = result.stdout.toString().trim()
+
+    expect(result.exitCode).toBe(0)
+    expect(stdout).toContain("marker=resolved-with-import-like-string:true")
+  })
+
   it("rewrites runtime specifiers in node_modules .mjs modules", () => {
     const fixturePath = join(import.meta.dir, "runtime-plugin-node-modules-mjs.fixture.ts")
     const result = Bun.spawnSync([process.execPath, fixturePath], {

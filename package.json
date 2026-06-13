@@ -6,23 +6,26 @@
     "packages/solid/examples"
   ],
   "scripts": {
-    "build": "cd packages/core && bun run build && cd ../three && bun run build && cd ../solid && bun run build && cd ../react && bun run build && cd ../keymap && bun run build",
+    "build": "cd packages/core && bun run build && cd ../qrcode && bun run build && cd ../three && bun run build && cd ../solid && bun run build && cd ../react && bun run build && cd ../keymap && bun run build && cd ../ssh && bun run build",
     "build:examples": "cd packages/examples && bun run build",
     "clean": "bun scripts/clean.ts",
+    "examples:node": "node packages/examples/scripts/run-node26.mjs",
     "fmt": "oxfmt --write .",
     "fmt:check": "oxfmt --check .",
     "lint": "oxlint .",
     "lint:ci": "oxlint . --deny-warnings",
     "lint:fix": "oxlint --fix .",
     "pre-publish": "bun scripts/pre-publish.ts",
-    "publish": "bun run pre-publish && bun run publish:core && bun run publish:three && bun run publish:react && bun run publish:solid && bun run publish:keymap",
+    "publish": "bun run pre-publish && bun run publish:core && bun run publish:qrcode && bun run publish:three && bun run publish:react && bun run publish:solid && bun run publish:keymap && bun run publish:ssh",
     "publish:core": "cd packages/core && bun run publish",
+    "publish:qrcode": "cd packages/qrcode && bun run publish",
     "publish:three": "cd packages/three && bun run publish",
     "publish:react": "cd packages/react && bun run publish",
     "publish:solid": "cd packages/solid && bun run publish",
     "publish:keymap": "cd packages/keymap && bun run publish",
+    "publish:ssh": "cd packages/ssh && bun run publish",
     "prepare-release": "bun scripts/prepare-release.ts",
-    "test": "bun run --filter '@opentui/core' --filter '@opentui/three' --filter '@opentui/solid' --filter '@opentui/react' --filter '@opentui/keymap' --if-present test"
+    "test": "bun run --filter '@opentui/core' --filter '@opentui/qrcode' --filter '@opentui/three' --filter '@opentui/solid' --filter '@opentui/react' --filter '@opentui/keymap' --filter '@opentui/ssh' --if-present test"
   },
   "devDependencies": {
     "oxfmt": "0.41.0",

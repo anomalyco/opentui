@@ -1,0 +1,85 @@
+name: Build QRCode
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+  # Workaround for bug in Zig 0.15.2 (fixed in next version)
+  # https://github.com/ziglang/zig/issues/25805
+  ZIG_GLOBAL_CACHE_DIR: ${{ github.workspace }}/.zig-global-cache
+
+jobs:
+  test:
+    name: Test (${{ matrix.os }})
+    strategy:
+      matrix:
+        os: [blacksmith-8vcpu-ubuntu-2404, blacksmith-8vcpu-windows-2025]
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.14
+
+      - name: Setup Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.15.2
+          use-cache: false
+
+      - name: Restore Zig cache
+        if: runner.os != 'Windows'
+        uses: actions/cache@v5
+        with:
+          path: .zig-cache
+          key: zig-v1-${{ runner.os }}-0.15.2-${{ github.run_id }}-${{ github.job }}
+          restore-keys: zig-v1-${{ runner.os }}-0.15.2-
+
+      - name: Install dependencies
+        run: bun install
+
+      - name: Build core
+        run: |
+          cd packages/core
+          bun run build
+
+      - name: Build
+        run: |
+          cd packages/qrcode
+          bun run build
+
+      - name: Run tests
+        run: |
+          cd packages/qrcode
+          bun run test
+
+  build-complete:
+    name: QRCode - Build and Test
+    needs: [test]
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    if: always()
+    steps:
+      - name: Check test results
+        run: |
+          if [ "${{ needs.test.result }}" != "success" ]; then
+            echo "Tests failed"
+            exit 1
+          fi
+          echo "All tests passed"

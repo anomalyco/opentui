@@ -36,3 +36,18 @@ test("getAllocatorStats returns allocator stats", () => {
 
   textBuffer.destroy()
 })
+
+test("getArenaAllocatedBytes returns a finite byte count", () => {
+  const before = lib.getArenaAllocatedBytes()
+  expect(Number.isFinite(before)).toBe(true)
+  expect(before).toBeGreaterThanOrEqual(0)
+
+  const textBuffer = lib.createTextBuffer("unicode")
+  textBuffer.append("x".repeat(256 * 1024))
+
+  const after = lib.getArenaAllocatedBytes()
+  expect(Number.isFinite(after)).toBe(true)
+  expect(after).toBeGreaterThanOrEqual(before)
+
+  textBuffer.destroy()
+})

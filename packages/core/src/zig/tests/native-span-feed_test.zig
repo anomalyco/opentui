@@ -514,7 +514,7 @@ test "Stream - growth_policy=block with auto_commit returns NoSpace when pool ex
     try testing.expectEqual(@as(u32, 2), stream.getStats().chunks);
 }
 
-test "Stream - span ring overflow returns NoSpace" {
+test "Stream - span ring grows when capacity is reached" {
     const chunk_size: u32 = 4096;
     const stream = try raw.Stream.create(testing.allocator, testOptions(chunk_size, 1, false));
     defer stream.destroy();
@@ -528,8 +528,8 @@ test "Stream - span ring overflow returns NoSpace" {
     try testing.expectEqual(@as(u32, 4096), stream.getStats().pending_spans);
 
     try stream.write("y");
-    const result = stream.commit();
-    try testing.expectError(raw.StreamError.NoSpace, result);
+    try stream.commit();
+    try testing.expectEqual(@as(u32, 4097), stream.getStats().pending_spans);
 }
 
 test "Stream - span ring recovers after draining" {
@@ -553,7 +553,7 @@ test "Stream - span ring recovers after draining" {
     _ = drainAllSpans(stream);
 }
 
-test "Stream - custom span_queue_capacity is respected" {
+test "Stream - custom span_queue_capacity can grow" {
     var opts = testOptions(4096, 1, false);
     opts.span_queue_capacity = 8;
     const stream = try raw.Stream.create(testing.allocator, opts);
@@ -567,8 +567,8 @@ test "Stream - custom span_queue_capacity is respected" {
     try testing.expectEqual(@as(u32, 8), stream.getStats().pending_spans);
 
     try stream.write("y");
-    const result = stream.commit();
-    try testing.expectError(raw.StreamError.NoSpace, result);
+    try stream.commit();
+    try testing.expectEqual(@as(u32, 9), stream.getStats().pending_spans);
 
     _ = drainAllSpans(stream);
     try testing.expectEqual(@as(u32, 0), stream.getStats().pending_spans);
@@ -609,8 +609,8 @@ test "Stream - span_queue_capacity zero defaults to 4096" {
     try testing.expectEqual(@as(u32, 4096), stream.getStats().pending_spans);
 
     try stream.write("y");
-    const result = stream.commit();
-    try testing.expectError(raw.StreamError.NoSpace, result);
+    try stream.commit();
+    try testing.expectEqual(@as(u32, 4097), stream.getStats().pending_spans);
 }
 
 test "Stream - data integrity across many chunks with auto_commit" {
@@ -826,12 +826,14 @@ test "Stream - setOptions enables auto_commit mid-stream" {
 }
 
 test "Stream - pending data survives failed commit (ring full)" {
-    const chunk_size: u32 = 4096;
-    const stream = try raw.Stream.create(testing.allocator, testOptions(chunk_size, 1, false));
+    var opts = testOptions(4096, 2, false);
+    opts.span_queue_capacity = 2;
+    opts.growth_policy = @intFromEnum(raw.GrowthPolicy.block);
+    const stream = try raw.Stream.create(testing.allocator, opts);
     defer stream.destroy();
 
     var i: u32 = 0;
-    while (i < 4096) : (i += 1) {
+    while (i < 2) : (i += 1) {
         try stream.write("x");
         try stream.commit();
     }
@@ -844,8 +846,8 @@ test "Stream - pending data survives failed commit (ring full)" {
     try stream.commit();
 
     const stats = stream.getStats();
-    try testing.expectEqual(@as(u64, 4096 + 9), stats.bytes_written);
-    try testing.expectEqual(@as(u64, 4097), stats.spans_committed);
+    try testing.expectEqual(@as(u64, 2 + 9), stats.bytes_written);
+    try testing.expectEqual(@as(u64, 3), stats.spans_committed);
 
     var buf: [16]raw.SpanInfo = undefined;
     const count = stream.drainSpans(&buf);

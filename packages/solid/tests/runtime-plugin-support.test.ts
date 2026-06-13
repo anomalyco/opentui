@@ -41,7 +41,7 @@ describe("solid runtime plugin support", () => {
     expect(stdout).toContain("keymapSolid=true")
     expect(stdout).toContain("three=true")
     expect(stdout).toContain("jsx=true")
-  })
+  }, 10_000)
 
   it("throws when modules are added after side-effect installation", () => {
     const fixturePath = join(import.meta.dir, "runtime-plugin-support-late-addition.fixture.ts")

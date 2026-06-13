@@ -1,7 +1,6 @@
 import type { StyledText } from "./lib/styled-text.js"
 import { RGBA } from "./lib/RGBA.js"
-import { resolveRenderLib, type LineInfo, type RenderLib } from "./zig.js"
-import { type Pointer } from "./platform/ffi.js"
+import { resolveRenderLib, type LineInfo, type RenderLib, type TextBufferHandle } from "./zig.js"
 import { type WidthMethod, type Highlight } from "./types.js"
 import type { SyntaxStyle } from "./syntax-style.js"
 
@@ -16,7 +15,7 @@ export interface TextChunk {
 
 export class TextBuffer {
   private lib: RenderLib
-  private bufferPtr: Pointer
+  private bufferPtr: TextBufferHandle
   private _length: number = 0
   private _byteSize: number = 0
   private _lineInfo?: LineInfo
@@ -26,7 +25,7 @@ export class TextBuffer {
   private _memId?: number
   private _appendedChunks: Uint8Array[] = []
 
-  constructor(lib: RenderLib, ptr: Pointer) {
+  constructor(lib: RenderLib, ptr: TextBufferHandle) {
     this.lib = lib
     this.bufferPtr = ptr
   }
@@ -49,8 +48,8 @@ export class TextBuffer {
 
     if (this._memId === undefined) {
       this._memId = this.lib.textBufferRegisterMemBuffer(this.bufferPtr, this._textBytes, false)
-    } else {
-      this.lib.textBufferReplaceMemBuffer(this.bufferPtr, this._memId, this._textBytes, false)
+    } else if (!this.lib.textBufferReplaceMemBuffer(this.bufferPtr, this._memId, this._textBytes, false)) {
+      this._memId = this.lib.textBufferRegisterMemBuffer(this.bufferPtr, this._textBytes, false)
     }
 
     this.lib.textBufferSetTextFromMem(this.bufferPtr, this._memId)
@@ -128,7 +127,7 @@ export class TextBuffer {
     return this._byteSize
   }
 
-  public get ptr(): Pointer {
+  public get ptr(): TextBufferHandle {
     this.guard()
     return this.bufferPtr
   }
@@ -201,8 +200,9 @@ export class TextBuffer {
 
   public setSyntaxStyle(style: SyntaxStyle | null): void {
     this.guard()
-    this._syntaxStyle = style ?? undefined
-    this.lib.textBufferSetSyntaxStyle(this.bufferPtr, style?.ptr ?? null)
+    if (this.lib.textBufferSetSyntaxStyle(this.bufferPtr, style?.ptr ?? null)) {
+      this._syntaxStyle = style ?? undefined
+    }
   }
 
   public getSyntaxStyle(): SyntaxStyle | null {
