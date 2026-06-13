@@ -874,7 +874,7 @@ export fn setCursorStyleOptions(renderer_handle: NativeHandle, options: *const C
         object_ptr.terminal.setCursorColor(ptrToRGBA(rgba));
     }
     if (options.cursor <= 35) {
-        rendererPtr.terminal.setMousePointerStyle(@enumFromInt(options.cursor));
+        object_ptr.terminal.setMousePointerStyle(@enumFromInt(options.cursor));
     }
 }
 
