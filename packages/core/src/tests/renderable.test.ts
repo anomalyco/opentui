@@ -798,6 +798,40 @@ describe("Renderable - Child Management", () => {
     expect(parent.getChildrenCount()).toBe(0)
   })
 
+  // Typed callers are rejected at compile time; the wide dynamic contract (BaseRenderable) used by reconcilers and
+  // plain JS callers validates at runtime: falsy input returns -1 silently, other non-renderables return -1 and warn.
+  test("add and insertBefore reject non-renderable input", () => {
+    const parent = new TestRenderable(testRenderer, { id: "parent" })
+    const anchor = new TestRenderable(testRenderer, { id: "anchor" })
+    const dynParent: BaseRenderable = parent
+    parent.add(anchor)
+    const warnSpy = spyOn(console, "warn").mockImplementation(() => {})
+    const rows: [unknown, number][] = [
+      [null, 0],
+      [undefined, 0],
+      [false, 0],
+      [0, 0],
+      ["", 0],
+      [{}, 1],
+      ["not a renderable", 1],
+      [42, 1],
+      [[anchor], 1],
+    ]
+    for (const [input, warnings] of rows) {
+      for (const call of [() => dynParent.add(input), () => dynParent.insertBefore(input, anchor)]) {
+        warnSpy.mockClear()
+        expect(call()).toBe(-1)
+        expect(warnSpy).toHaveBeenCalledTimes(warnings)
+      }
+    }
+    warnSpy.mockRestore()
+    expect(parent.getChildren()).toEqual([anchor])
+
+    const child = new TestRenderable(testRenderer, { id: "child" })
+    expect(() => dynParent.insertBefore(child, {})).toThrow("Anchor must be a Renderable")
+    expect(parent.insertBefore(child)).toBe(1)
+  })
+
   test("can change renderable id and updates parent mapping", () => {
     const parent = new TestRenderable(testRenderer, { id: "parent" })
     const child = new TestRenderable(testRenderer, { id: "child" })
