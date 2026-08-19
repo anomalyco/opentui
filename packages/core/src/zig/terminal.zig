@@ -95,15 +95,68 @@ pub const CursorStyle = enum {
 };
 
 pub const MousePointerStyle = enum(u8) {
-    default = 0,
-    pointer = 1,
-    text = 2,
-    crosshair = 3,
-    move = 4,
-    not_allowed = 5,
+    auto = 0, // Kitty OSC 22 does not support this name.
+    default = 1,
+    none = 2, // Kitty OSC 22 does not support this name.
+    context_menu = 3, // Kitty OSC 22 does not support this name.
+    help = 4,
+    pointer = 5,
+    progress = 6,
+    wait = 7,
+    cell = 8,
+    crosshair = 9,
+    text = 10,
+    vertical_text = 11,
+    alias = 12,
+    copy = 13,
+    move = 14,
+    no_drop = 15,
+    not_allowed = 16,
+    grab = 17,
+    grabbing = 18,
+    all_scroll = 19, // Kitty OSC 22 does not support this name.
+    col_resize = 20, // Kitty OSC 22 does not support this name.
+    row_resize = 21, // Kitty OSC 22 does not support this name.
+    n_resize = 22,
+    e_resize = 23,
+    s_resize = 24,
+    w_resize = 25,
+    ne_resize = 26,
+    nw_resize = 27,
+    se_resize = 28,
+    sw_resize = 29,
+    ew_resize = 30,
+    ns_resize = 31,
+    nesw_resize = 32,
+    nwse_resize = 33,
+    zoom_in = 34,
+    zoom_out = 35,
 
     pub fn toName(self: MousePointerStyle) []const u8 {
-        return if (self == .not_allowed) "not-allowed" else @tagName(self);
+        return switch (self) {
+            .context_menu => "context-menu",
+            .vertical_text => "vertical-text",
+            .no_drop => "no-drop",
+            .not_allowed => "not-allowed",
+            .all_scroll => "all-scroll",
+            .col_resize => "col-resize",
+            .row_resize => "row-resize",
+            .n_resize => "n-resize",
+            .e_resize => "e-resize",
+            .s_resize => "s-resize",
+            .w_resize => "w-resize",
+            .ne_resize => "ne-resize",
+            .nw_resize => "nw-resize",
+            .se_resize => "se-resize",
+            .sw_resize => "sw-resize",
+            .ew_resize => "ew-resize",
+            .ns_resize => "ns-resize",
+            .nesw_resize => "nesw-resize",
+            .nwse_resize => "nwse-resize",
+            .zoom_in => "zoom-in",
+            .zoom_out => "zoom-out",
+            else => @tagName(self),
+        };
     }
 };
 

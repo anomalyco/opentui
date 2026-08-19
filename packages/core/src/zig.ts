@@ -266,7 +266,45 @@ registerEnvVar({
 // Cursor & mouse pointer style mappings (avoid recreation on each call)
 const CURSOR_STYLE_TO_ID = { block: 0, line: 1, underline: 2, default: 3 } as const
 const CURSOR_ID_TO_STYLE = ["block", "line", "underline", "default"] as const
-const MOUSE_STYLE_TO_ID = { default: 0, pointer: 1, text: 2, crosshair: 3, move: 4, "not-allowed": 5 } as const
+const MOUSE_STYLE_TO_ID = {
+  auto: 0,
+  default: 1,
+  none: 2,
+  "context-menu": 3,
+  help: 4,
+  pointer: 5,
+  progress: 6,
+  wait: 7,
+  cell: 8,
+  crosshair: 9,
+  text: 10,
+  "vertical-text": 11,
+  alias: 12,
+  copy: 13,
+  move: 14,
+  "no-drop": 15,
+  "not-allowed": 16,
+  grab: 17,
+  grabbing: 18,
+  "all-scroll": 19,
+  "col-resize": 20,
+  "row-resize": 21,
+  "n-resize": 22,
+  "e-resize": 23,
+  "s-resize": 24,
+  "w-resize": 25,
+  "ne-resize": 26,
+  "nw-resize": 27,
+  "se-resize": 28,
+  "sw-resize": 29,
+  "ew-resize": 30,
+  "ns-resize": 31,
+  "nesw-resize": 32,
+  "nwse-resize": 33,
+  "zoom-in": 34,
+  "zoom-out": 35,
+} as const
+
 const MAX_FFI_U32 = 0xffff_ffff
 // Global singleton state for FFI tracing to prevent duplicate exit handlers
 let globalTraceSymbols: Record<string, number[]> | null = null
