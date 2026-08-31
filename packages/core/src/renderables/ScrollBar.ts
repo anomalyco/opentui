@@ -70,7 +70,7 @@ export class ScrollBarRenderable extends Renderable {
   }
 
   set scrollPosition(value: number) {
-    const newPosition = Math.round(Math.min(Math.max(0, value), this.scrollSize - this.viewportSize))
+    const newPosition = Math.round(Math.max(0, Math.min(value, this.scrollSize - this.viewportSize)))
     if (newPosition !== this._scrollPosition) {
       this._scrollPosition = newPosition
       this.updateSliderFromScrollState()
