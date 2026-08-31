@@ -365,17 +365,17 @@ exports[`DiffRenderable - multiple hunks in unified view: unified view multiple 
   2 -   return 1;                                                               
   2 +   return "one";                                                           
   3   }                                                                         
+      @@ -15,4 +15,5 @@                                                         
  15   function second() {                                                       
  16     var x = 10;                                                             
  17 +   var y = 20;                                                             
  18     return x;                                                               
  19   }                                                                         
+      @@ -30,3 +31,3 @@                                                         
  31   function third() {                                                        
  31 -   console.log("old");                                                     
  32 +   console.log("new");                                                     
  33   }                                                                         
-                                                                                
-                                                                                
                                                                                 
                                                                                 
                                                                                 
@@ -388,16 +388,16 @@ exports[`DiffRenderable - multiple hunks in split view: split view multiple hunk
 "  1   function first() {                  1   function first() {                
   2 -   return 1;                         2 +   return "one";                   
   3   }                                   3   }                                 
+      ⋯                                       ⋯                                 
  15   function second() {                15   function second() {               
  16     var x = 10;                      16     var x = 10;                     
                                          17 +   var y = 20;                     
  17     return x;                        18     return x;                       
  18   }                                  19   }                                 
+      ⋯                                       ⋯                                 
  30   function third() {                 31   function third() {                
  31 -   console.log("old");              32 +   console.log("new");             
  32   }                                  33   }                                 
-                                                                                
-                                                                                
                                                                                 
                                                                                 
                                                                                 
