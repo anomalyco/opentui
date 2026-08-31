@@ -1,0 +1,45 @@
+// Bun Snapshot v1, https://bun.sh/docs/test/snapshots
+
+exports[`streaming ordered list keeps growing text visible while markdown highlighting is pending: after highlighting settles 1`] = `
+[
+  "                                                                                                    ",
+  "   1. Trigger the permission prompt: uninstall and reinstall the app, then relaunch it.             ",
+  "   2. Create a schedule with a confirm-to-start segment: tap +, name it "Test", and save it.        ",
+  "   3. Test the foreground case: start the schedule and use the in-app Start button.                 ",
+  "   4. Test the background case: start the schedule again, then press the side button.               ",
+  "   5. Test the cancel: stay in the app and tap the in-app Start button before the notification      ",
+  "      appears.                                                                                      ",
+  "   6. Test app lifecycle edge case: wait for the segment, then send the app to the background.      ",
+  "                                                                                                    ",
+  "                                                                                                    ",
+  "                                                                                                    ",
+  "                                                                                                    ",
+  "                                                                                                    ",
+  "                                                                                                    ",
+  "                                                                                                    ",
+  "                                                                                                    ",
+  "",
+]
+`;
+
+exports[`streaming ordered list keeps growing text visible while markdown highlighting is pending: while updated highlighting is pending 1`] = `
+[
+  "                                                                                                    ",
+  "   1. Trigger the permission prompt: uninstall and reinstall the app, then relaunch it.             ",
+  "   2. Create a schedule with a confirm-to-start segment: tap +, name it "Test", and save it.        ",
+  "   3. Test the foreground case: start the schedule and use the in-app Start button.                 ",
+  "   4. Test the background case: start the schedule again, then press the side button.               ",
+  "   5. Test the cancel: stay in the app and tap the in-app Start button before the notification      ",
+  "      appears.                                                                                      ",
+  "   6. Test app lifecycle edge case: wait for the segment, then send the app to the background.      ",
+  "                                                                                                    ",
+  "                                                                                                    ",
+  "                                                                                                    ",
+  "                                                                                                    ",
+  "                                                                                                    ",
+  "                                                                                                    ",
+  "                                                                                                    ",
+  "                                                                                                    ",
+  "",
+]
+`;
