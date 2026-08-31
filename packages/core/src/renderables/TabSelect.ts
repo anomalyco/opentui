@@ -47,6 +47,7 @@ export interface TabSelectRenderableOptions extends Omit<RenderableOptions<TabSe
   showScrollArrows?: boolean
   showDescription?: boolean
   showUnderline?: boolean
+  underlineChar?: string
   wrapSelection?: boolean
   keyBindings?: TabSelectKeyBinding[]
   keyAliasMap?: KeyAliasMap
@@ -90,6 +91,7 @@ export class TabSelectRenderable extends Renderable {
   private _showScrollArrows: boolean
   private _showDescription: boolean
   private _showUnderline: boolean
+  private _underlineChar: string
   private _wrapSelection: boolean
   private _keyBindingsMap: Map<string, TabSelectAction>
   private _keyAliasMap: KeyAliasMap
@@ -108,6 +110,11 @@ export class TabSelectRenderable extends Renderable {
     this._tabWidth = options.tabWidth || 20
     this._showDescription = options.showDescription ?? true
     this._showUnderline = options.showUnderline ?? true
+    // U+2582 (Block Elements) is designed to fill the cell edge-to-edge and is
+    // sprite-rendered by most terminals. The previous U+25AC (Geometric Shapes) is
+    // missing from many monospace fonts, so a proportional fallback glyph (~1em ink
+    // vs ~0.6em cell) bleeds past the tab's background
+    this._underlineChar = options.underlineChar || "▂"
     this._showScrollArrows = options.showScrollArrows ?? true
     this._wrapSelection = options.wrapSelection ?? false
 
@@ -172,7 +179,7 @@ export class TabSelectRenderable extends Renderable {
       if (isSelected && this._showUnderline && contentHeight >= 2) {
         const underlineY = contentY + 1
         const underlineBg = isSelected ? this._selectedBackgroundColor : bgColor
-        this.frameBuffer.drawText("▬".repeat(actualTabWidth), tabX, underlineY, nameColor, underlineBg)
+        this.frameBuffer.drawText(this._underlineChar.repeat(actualTabWidth), tabX, underlineY, nameColor, underlineBg)
       }
     }
 
@@ -396,6 +403,17 @@ export class TabSelectRenderable extends Renderable {
       this._showUnderline = show
       const newHeight = this.calculateDynamicHeight()
       this.height = newHeight
+      this.requestRender()
+    }
+  }
+
+  public get underlineChar(): string {
+    return this._underlineChar
+  }
+
+  public set underlineChar(char: string) {
+    if (this._underlineChar !== char) {
+      this._underlineChar = char
       this.requestRender()
     }
   }
