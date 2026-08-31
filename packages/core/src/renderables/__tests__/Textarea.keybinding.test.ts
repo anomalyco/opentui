@@ -1109,6 +1109,134 @@ describe("Textarea - Keybinding Tests", () => {
     })
   })
 
+  describe("Kill Ring (Ctrl-Y yank after Ctrl-K/Ctrl-U)", () => {
+    it("should yank killed text back with ctrl+y after ctrl+k", async () => {
+      const { textarea: editor } = await createTextareaRenderable(currentRenderer, renderOnce, {
+        initialValue: "Hello World",
+        width: 40,
+        height: 10,
+      })
+
+      editor.focus()
+      for (let i = 0; i < 6; i++) {
+        editor.moveCursorRight()
+      }
+
+      currentMockInput.pressKey("k", { ctrl: true })
+      expect(editor.plainText).toBe("Hello ")
+
+      currentMockInput.pressKey("y", { ctrl: true })
+      expect(editor.plainText).toBe("Hello World")
+    })
+
+    it("should yank a word deleted with alt+d after moving elsewhere", async () => {
+      const { textarea: editor } = await createTextareaRenderable(currentRenderer, renderOnce, {
+        initialValue: "Hello World Test",
+        width: 40,
+        height: 10,
+      })
+
+      editor.focus()
+
+      currentMockInput.pressKey("d", { meta: true })
+      expect(editor.plainText).toBe("World Test")
+      expect(editor.logicalCursor.col).toBe(0)
+
+      currentMockInput.pressKey("e", { ctrl: true })
+      expect(editor.logicalCursor.col).toBe(10)
+
+      currentMockInput.pressKey("y", { ctrl: true })
+      expect(editor.plainText).toBe("World TestHello ")
+      expect(editor.logicalCursor.col).toBe(16)
+    })
+
+    it("should yank text killed from line start with ctrl+u", async () => {
+      const { textarea: editor } = await createTextareaRenderable(currentRenderer, renderOnce, {
+        initialValue: "Hello World",
+        width: 40,
+        height: 10,
+      })
+
+      editor.focus()
+      for (let i = 0; i < 6; i++) {
+        editor.moveCursorRight()
+      }
+
+      currentMockInput.pressKey("u", { ctrl: true })
+      expect(editor.plainText).toBe("World")
+
+      currentMockInput.pressKey("y", { ctrl: true })
+      expect(editor.plainText).toBe("Hello World")
+    })
+
+    it("should yank a word deleted with ctrl+w after moving elsewhere", async () => {
+      const { textarea: editor } = await createTextareaRenderable(currentRenderer, renderOnce, {
+        initialValue: "Hello World Test",
+        width: 40,
+        height: 10,
+      })
+
+      editor.focus()
+      editor.gotoLineEnd()
+
+      currentMockInput.pressKey("w", { ctrl: true })
+      expect(editor.plainText).toBe("Hello World ")
+      expect(editor.logicalCursor.col).toBe(12)
+
+      currentMockInput.pressKey("a", { ctrl: true })
+      expect(editor.logicalCursor.col).toBe(0)
+
+      currentMockInput.pressKey("y", { ctrl: true })
+      expect(editor.plainText).toBe("TestHello World ")
+      expect(editor.logicalCursor.col).toBe(4)
+    })
+
+    it("should do nothing with ctrl+y when kill ring is empty", async () => {
+      const { textarea: editor } = await createTextareaRenderable(currentRenderer, renderOnce, {
+        initialValue: "Hello World",
+        width: 40,
+        height: 10,
+      })
+
+      editor.focus()
+      editor.gotoLineEnd()
+
+      currentMockInput.pressKey("k", { ctrl: true })
+      expect(editor.plainText).toBe("Hello World")
+
+      currentMockInput.pressKey("y", { ctrl: true })
+      expect(editor.plainText).toBe("Hello World")
+    })
+
+    it("should overwrite kill ring with the most recent ctrl+k", async () => {
+      const { textarea: editor } = await createTextareaRenderable(currentRenderer, renderOnce, {
+        initialValue: "Hello World",
+        width: 40,
+        height: 10,
+      })
+
+      editor.focus()
+
+      currentMockInput.pressKey("a", { ctrl: true })
+      currentMockInput.pressKey("k", { ctrl: true })
+      expect(editor.plainText).toBe("")
+
+      editor.setText("Foo Bar")
+      editor.focus()
+      editor.gotoLineEnd()
+      for (let i = 0; i < 3; i++) {
+        editor.moveCursorLeft()
+      }
+
+      currentMockInput.pressKey("k", { ctrl: true })
+      expect(editor.plainText).toBe("Foo ")
+
+      currentMockInput.pressKey("y", { ctrl: true })
+      expect(editor.plainText).toBe("Foo Bar")
+    })
+
+  })
+
   describe("Wrapped Lines", () => {
     it("should delete to end of logical line with ctrl+k when wrapping enabled", async () => {
       const { textarea: editor } = await createTextareaRenderable(currentRenderer, renderOnce, {

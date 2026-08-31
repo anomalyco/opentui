@@ -51,6 +51,7 @@ export type TextareaAction =
   | "delete-word-backward"
   | "select-all"
   | "submit"
+  | "yank"
 
 export type KeyBinding = BaseKeyBinding<TextareaAction>
 export type TextareaKeyAliasMap = Record<string, string>
@@ -86,6 +87,7 @@ export const defaultTextareaKeyBindings: KeyBinding[] = [
   { name: "d", ctrl: true, shift: true, action: "delete-line" },
   { name: "k", ctrl: true, action: "delete-to-line-end" },
   { name: "u", ctrl: true, action: "delete-to-line-start" },
+  { name: "y", ctrl: true, action: "yank" },
   { name: "backspace", action: "backspace" },
   { name: "backspace", shift: true, action: "backspace" },
   { name: "d", ctrl: true, action: "delete" },
@@ -255,6 +257,7 @@ export class TextareaRenderable extends EditBufferRenderable {
       ["delete-word-backward", () => this.deleteWordBackward()],
       ["select-all", () => this.selectAll()],
       ["submit", () => this.submit()],
+      ["yank", () => this.yank()],
     ])
   }
 
