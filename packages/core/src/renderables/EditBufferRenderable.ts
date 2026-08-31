@@ -749,7 +749,14 @@ export abstract class EditBufferRenderable extends Renderable implements LineInf
   public moveCursorUp(options?: { select?: boolean }): boolean {
     const select = options?.select ?? false
     this.updateSelectionForMovement(select, true)
-    this.editorView.moveUpVisual()
+    if (this.editorView.getVisualCursor().visualRow === 0) {
+      const cursor = this.editorView.getCursor()
+      if (cursor.row !== 0 || cursor.col !== 0) {
+        this.editBuffer.setCursor(0, 0)
+      }
+    } else {
+      this.editorView.moveUpVisual()
+    }
     this.updateSelectionForMovement(select, false)
     this.requestRender()
     return true
@@ -758,7 +765,15 @@ export abstract class EditBufferRenderable extends Renderable implements LineInf
   public moveCursorDown(options?: { select?: boolean }): boolean {
     const select = options?.select ?? false
     this.updateSelectionForMovement(select, true)
-    this.editorView.moveDownVisual()
+    if (this.editorView.getVisualCursor().visualRow >= this.editorView.getTotalVirtualLineCount() - 1) {
+      const cursor = this.editorView.getCursor()
+      const eol = this.editBuffer.getEOL()
+      if (cursor.row !== eol.row || cursor.col !== eol.col) {
+        this.editBuffer.setCursor(eol.row, eol.col)
+      }
+    } else {
+      this.editorView.moveDownVisual()
+    }
     this.updateSelectionForMovement(select, false)
     this.requestRender()
     return true
