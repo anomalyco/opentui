@@ -44,7 +44,6 @@ export class RendererThemeMode {
   private static readonly QUERY_TIMEOUT_MS = 250
 
   private _themeMode: ThemeMode | null = null
-  private themeQueryPending = true
   private themeOscForeground: string | null = null
   private themeOscBackground: string | null = null
   private themeRefreshTimeoutId: TimerHandle | null = null
@@ -89,7 +88,6 @@ export class RendererThemeMode {
 
     this.clock.clearTimeout(this.themeRefreshTimeoutId)
     this.themeRefreshTimeoutId = null
-    this.themeQueryPending = false
   }
 
   public dispose(): void {
@@ -130,10 +128,19 @@ export class RendererThemeMode {
       return { handled: false, changedMode: null }
     }
 
-    if (!this.themeQueryPending) {
-      return { handled: true, changedMode: null }
-    }
-
+    // Apply the inferred mode once both foreground and background replies have
+    // arrived, even if the 250ms query timeout already fired. A terminal that
+    // answers OSC 10/11 slower than QUERY_TIMEOUT_MS — common under WezTerm,
+    // where a color-scheme change can take ~1s to settle in the OSC 11 reply —
+    // would otherwise have its late answer silently dropped, leaving the mode
+    // stuck on the old value. requestThemeOscColors resets fg/bg to null at
+    // the start of each query, so stale values from a prior query cannot leak
+    // in here.
+    //
+    // Note this means unsolicited OSC 10/11 replies can mutate the theme mode
+    // at any time (fg/bg persist after a completed query). After suspend(),
+    // inertness relies on the stdin data listener being detached — not on an
+    // internal pending flag.
     if (!this.themeOscForeground || !this.themeOscBackground) {
       return { handled: true, changedMode: null }
     }
@@ -156,23 +163,22 @@ export class RendererThemeMode {
 
   private completeThemeQuery(): void {
     this.clearThemeRefreshTimeout()
-    this.themeQueryPending = false
   }
 
   private requestThemeOscColors(): void {
     // Ignore repeated ?997 notifications while the current OSC refresh is
-    // still in flight.
+    // still in flight: under tmux on macOS the OSC 10/11 round-trip itself
+    // provokes another ?997, so starting a new query per notification would
+    // recreate the feedback loop from #975.
     if (this.themeRefreshTimeoutId !== null) {
       return
     }
 
-    this.themeQueryPending = true
     this.themeOscForeground = null
     this.themeOscBackground = null
 
     this.host.queryThemeColors()
 
-    this.clearThemeRefreshTimeout()
     this.themeRefreshTimeoutId = this.clock.setTimeout(() => {
       this.completeThemeQuery()
     }, RendererThemeMode.QUERY_TIMEOUT_MS)
