@@ -10,9 +10,20 @@ import {
   getBorderSides,
   parseBorderStyle,
 } from "../lib/index.js"
-import { type ColorInput, RGBA, parseColor } from "../lib/RGBA.js"
+import { type ColorInput, RGBA, hexToRgb, parseColor } from "../lib/RGBA.js"
 import { isValidPercentage } from "../lib/renderable.validations.js"
 import type { RenderContext } from "../types.js"
+
+const BOX_DEFAULTS = {
+  backgroundColor: RGBA.fromValues(0, 0, 0, 0), // transparent
+  border: false,
+  borderStyle: "single",
+  borderColor: hexToRgb("#FFFFFF"),
+  focusedBorderColor: hexToRgb("#00AAFF"),
+  shouldFill: true,
+  titleAlignment: "left",
+  bottomTitleAlignment: "left",
+} satisfies Partial<BoxOptions>
 
 export interface BoxOptions<TRenderable extends Renderable = BoxRenderable> extends RenderableOptions<TRenderable> {
   backgroundColor?: string | RGBA
@@ -44,31 +55,20 @@ function isGapType(value: any): value is number | undefined {
 }
 
 export class BoxRenderable extends Renderable {
-  protected _backgroundColor: RGBA
-  protected _border: boolean | BorderSides[]
-  protected _borderStyle: BorderStyle
-  protected _borderColor: RGBA
-  protected _focusedBorderColor: RGBA
+  protected _backgroundColor: RGBA | undefined
+  protected _border: boolean | BorderSides[] | undefined
+  protected _borderStyle: BorderStyle | undefined
+  protected _borderColor: RGBA | undefined
+  protected _focusedBorderColor: RGBA | undefined
   private _customBorderCharsObj: BorderCharacters | undefined
   protected _customBorderChars?: Uint32Array
   protected borderSides: BorderSidesConfig
   public shouldFill: boolean
-  protected _title?: string
-  protected _titleColor?: RGBA
-  protected _titleAlignment: "left" | "center" | "right"
-  protected _bottomTitle?: string
-  protected _bottomTitleAlignment: "left" | "center" | "right"
-
-  protected _defaultOptions = {
-    backgroundColor: "transparent",
-    borderStyle: "single",
-    border: false,
-    borderColor: "#FFFFFF",
-    shouldFill: true,
-    titleAlignment: "left",
-    bottomTitleAlignment: "left",
-    focusedBorderColor: "#00AAFF",
-  } satisfies Partial<BoxOptions>
+  protected _title: string | undefined
+  protected _titleColor: RGBA | undefined
+  protected _titleAlignment: "left" | "center" | "right" | undefined
+  protected _bottomTitle: string | undefined
+  protected _bottomTitleAlignment: "left" | "center" | "right" | undefined
 
   constructor(ctx: RenderContext, options: BoxOptions) {
     super(ctx, options)
@@ -77,26 +77,20 @@ export class BoxRenderable extends Renderable {
       this._focusable = true
     }
 
-    this._backgroundColor = parseColor(options.backgroundColor || this._defaultOptions.backgroundColor)
-    this._border = options.border ?? this._defaultOptions.border
-    if (
-      !options.border &&
-      (options.borderStyle || options.borderColor || options.focusedBorderColor || options.customBorderChars)
-    ) {
-      this._border = true
-    }
-    this._borderStyle = parseBorderStyle(options.borderStyle, this._defaultOptions.borderStyle)
-    this._borderColor = parseColor(options.borderColor || this._defaultOptions.borderColor)
-    this._focusedBorderColor = parseColor(options.focusedBorderColor || this._defaultOptions.focusedBorderColor)
+    this._border = options.border
+    this._borderStyle = options.borderStyle != null ? parseBorderStyle(options.borderStyle) : undefined
+    this._borderColor = options.borderColor != null ? parseColor(options.borderColor) : undefined
+    this._focusedBorderColor = options.focusedBorderColor ? parseColor(options.focusedBorderColor) : undefined
+    this._backgroundColor = options.backgroundColor != null ? parseColor(options.backgroundColor) : undefined
     this._customBorderCharsObj = options.customBorderChars
     this._customBorderChars = this._customBorderCharsObj ? borderCharsToArray(this._customBorderCharsObj) : undefined
-    this.borderSides = getBorderSides(this._border)
-    this.shouldFill = options.shouldFill ?? this._defaultOptions.shouldFill
+    this.borderSides = getBorderSides(this.border)
+    this.shouldFill = options.shouldFill ?? BOX_DEFAULTS.shouldFill
     this._title = options.title
+    this._titleAlignment = options.titleAlignment
     this._titleColor = options.titleColor ? parseColor(options.titleColor) : undefined
-    this._titleAlignment = options.titleAlignment || this._defaultOptions.titleAlignment
     this._bottomTitle = options.bottomTitle
-    this._bottomTitleAlignment = options.bottomTitleAlignment || this._defaultOptions.bottomTitleAlignment
+    this._bottomTitleAlignment = options.bottomTitleAlignment
 
     this.applyYogaBorders()
 
@@ -107,16 +101,11 @@ export class BoxRenderable extends Renderable {
     }
   }
 
-  private initializeBorder(): void {
-    // https://github.com/anomalyco/opentui/issues/186
-    // Solid-js reconciler does not pass props to constructor on init,
-    // so we need to initialize the border when supporting properties are set.
-    // borderStyle, borderColor, focusedBorderColor
-    if (this._border === false) {
-      this._border = true
-      this.borderSides = getBorderSides(this._border)
-      this.applyYogaBorders()
-    }
+  // Recomputes the derived border state after any border-related property
+  // changes, since `border` can flip on/off without being set itself.
+  private syncBorderSides(): void {
+    this.borderSides = getBorderSides(this.border)
+    this.applyYogaBorders()
   }
 
   public get customBorderChars(): BorderCharacters | undefined {
@@ -124,17 +113,19 @@ export class BoxRenderable extends Renderable {
   }
 
   public set customBorderChars(value: BorderCharacters | undefined) {
-    this._customBorderCharsObj = value
-    this._customBorderChars = value ? borderCharsToArray(value) : undefined
-    this.requestRender()
+    if (this._customBorderCharsObj !== value) {
+      this._customBorderCharsObj = value
+      this._customBorderChars = value ? borderCharsToArray(value) : undefined
+      this.syncBorderSides()
+    }
   }
 
   public get backgroundColor(): RGBA {
-    return this._backgroundColor
+    return this._backgroundColor ?? BOX_DEFAULTS.backgroundColor
   }
 
   public set backgroundColor(value: RGBA | string | undefined) {
-    const newColor = parseColor(value ?? this._defaultOptions.backgroundColor)
+    const newColor = value != null ? parseColor(value) : undefined
     if (this._backgroundColor !== newColor) {
       this._backgroundColor = newColor
       this.requestRender()
@@ -142,57 +133,68 @@ export class BoxRenderable extends Renderable {
   }
 
   public get border(): boolean | BorderSides[] {
-    return this._border
+    if (this._border != null) {
+      return this._border
+    }
+    // https://github.com/anomalyco/opentui/issues/186
+    // Reconcilers set properties one by one after construction, so any
+    // border-related property being set implies a border.
+    if (
+      this._borderStyle != null ||
+      this._borderColor != null ||
+      this._focusedBorderColor != null ||
+      this._customBorderChars != null
+    ) {
+      return true
+    }
+    return BOX_DEFAULTS.border
   }
 
-  public set border(value: boolean | BorderSides[]) {
+  public set border(value: boolean | BorderSides[] | undefined) {
     if (this._border !== value) {
       this._border = value
-      this.borderSides = getBorderSides(value)
-      this.applyYogaBorders()
-      this.requestRender()
+      this.syncBorderSides()
     }
   }
 
   public get borderStyle(): BorderStyle {
-    return this._borderStyle
+    return this._borderStyle ?? BOX_DEFAULTS.borderStyle
   }
 
-  public set borderStyle(value: BorderStyle) {
-    const _value = parseBorderStyle(value, this._defaultOptions.borderStyle)
-    if (this._borderStyle !== _value || !this._border) {
-      this._borderStyle = _value
-      this._customBorderChars = undefined
-      this.initializeBorder()
-      this.requestRender()
+  public set borderStyle(value: BorderStyle | undefined) {
+    const newValue = value != null ? parseBorderStyle(value) : undefined
+    if (this._borderStyle !== newValue) {
+      this._borderStyle = newValue
+      if (newValue != null) {
+        // a concrete style replaces previously set custom characters
+        this._customBorderCharsObj = undefined
+        this._customBorderChars = undefined
+      }
+      this.syncBorderSides()
     }
   }
 
   public get borderColor(): RGBA {
-    return this._borderColor
+    return this._borderColor ?? BOX_DEFAULTS.borderColor
   }
 
-  public set borderColor(value: RGBA | string) {
-    const newColor = parseColor(value ?? this._defaultOptions.borderColor)
+  public set borderColor(value: RGBA | string | undefined) {
+    const newColor = value != null ? parseColor(value) : undefined
     if (this._borderColor !== newColor) {
       this._borderColor = newColor
-      this.initializeBorder()
-      this.requestRender()
+      this.syncBorderSides()
     }
   }
 
   public get focusedBorderColor(): RGBA {
-    return this._focusedBorderColor
+    return this._focusedBorderColor ?? BOX_DEFAULTS.focusedBorderColor
   }
 
-  public set focusedBorderColor(value: RGBA | string) {
-    const newColor = parseColor(value ?? this._defaultOptions.focusedBorderColor)
+  public set focusedBorderColor(value: RGBA | string | undefined) {
+    const newColor = value != null ? parseColor(value) : undefined
     if (this._focusedBorderColor !== newColor) {
       this._focusedBorderColor = newColor
-      this.initializeBorder()
-      if (this._focused) {
-        this.requestRender()
-      }
+      this.syncBorderSides()
     }
   }
 
@@ -220,10 +222,10 @@ export class BoxRenderable extends Renderable {
   }
 
   public get titleAlignment(): "left" | "center" | "right" {
-    return this._titleAlignment
+    return this._titleAlignment ?? BOX_DEFAULTS.titleAlignment
   }
 
-  public set titleAlignment(value: "left" | "center" | "right") {
+  public set titleAlignment(value: "left" | "center" | "right" | undefined) {
     if (this._titleAlignment !== value) {
       this._titleAlignment = value
       this.requestRender()
@@ -242,10 +244,10 @@ export class BoxRenderable extends Renderable {
   }
 
   public get bottomTitleAlignment(): "left" | "center" | "right" {
-    return this._bottomTitleAlignment
+    return this._bottomTitleAlignment ?? BOX_DEFAULTS.bottomTitleAlignment
   }
 
-  public set bottomTitleAlignment(value: "left" | "center" | "right") {
+  public set bottomTitleAlignment(value: "left" | "center" | "right" | undefined) {
     if (this._bottomTitleAlignment !== value) {
       this._bottomTitleAlignment = value
       this.requestRender()
@@ -254,7 +256,7 @@ export class BoxRenderable extends Renderable {
 
   protected renderSelf(buffer: OptimizedBuffer): void {
     const hasBorder = this.borderSides.top || this.borderSides.right || this.borderSides.bottom || this.borderSides.left
-    const hasVisibleFill = this.shouldFill && this._backgroundColor.a > 0
+    const hasVisibleFill = this.shouldFill && this.backgroundColor.a > 0
     // Many boxes are used only for layout. Skip drawBox entirely when a box
     // would not draw pixels so wrapper nodes do not pay the FFI/native cost.
     if (!hasBorder && !hasVisibleFill) {
@@ -262,7 +264,7 @@ export class BoxRenderable extends Renderable {
     }
 
     const hasFocusWithin = this._focusable && (this._focused || this._hasFocusedDescendant)
-    const currentBorderColor = hasFocusWithin ? this._focusedBorderColor : this._borderColor
+    const currentBorderColor = hasFocusWithin ? this.focusedBorderColor : this.borderColor
     const screenX = this._screenX
     const screenY = this._screenY
 
@@ -271,17 +273,17 @@ export class BoxRenderable extends Renderable {
       y: screenY,
       width: this.width,
       height: this.height,
-      borderStyle: this._borderStyle,
+      borderStyle: this.borderStyle,
       customBorderChars: this._customBorderChars,
-      border: this._border,
+      border: this.border,
       borderColor: currentBorderColor,
-      backgroundColor: this._backgroundColor,
+      backgroundColor: this.backgroundColor,
       shouldFill: this.shouldFill,
       title: this._title,
       titleColor: this._titleColor ?? currentBorderColor,
-      titleAlignment: this._titleAlignment,
+      titleAlignment: this.titleAlignment,
       bottomTitle: this._bottomTitle,
-      bottomTitleAlignment: this._bottomTitleAlignment,
+      bottomTitleAlignment: this.bottomTitleAlignment,
     })
   }
 
