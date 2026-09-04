@@ -426,9 +426,7 @@ pub fn enableDetectedFeatures(self: *Terminal, tty: anytype, use_kitty_keyboard:
         try self.setBracketedPaste(tty, true);
     }
 
-    if (self.caps.focus_tracking) {
-        try self.setFocusTracking(tty, true);
-    }
+    try self.setFocusTracking(tty, true);
 
     // queryTerminalSend already enabled mode 2031 during normal startup.
     if (!self.state.color_scheme_updates) {
