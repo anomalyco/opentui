@@ -141,6 +141,13 @@ export class ScrollBoxRenderable extends BoxRenderable {
   private _stickyStart?: "bottom" | "top" | "left" | "right"
   private _hasManualScroll: boolean = false
   private _isApplyingStickyScroll: boolean = false
+  private _resizeScrollSnapshot?: {
+    distanceFromBottom: number
+    wasAtTop: boolean
+    anchorChildId?: string
+    anchorOffsetWithinChild?: number
+  }
+  private _resizeRestoreScheduled: boolean = false
   private scrollAccel: ScrollAcceleration
 
   get stickyScroll(): boolean {
@@ -746,10 +753,96 @@ export class ScrollBoxRenderable extends BoxRenderable {
     }
   }
 
+  private captureResizeSnapshot(): void {
+    if (this._resizeScrollSnapshot) return
+
+    const oldMaxTop = Math.max(0, this.verticalScrollBar.scrollSize - this.verticalScrollBar.viewportSize)
+    const oldTop = this.scrollTop
+    const viewportTop = this.viewport.y
+    const viewportBottom = viewportTop + this.viewport.height
+    const anchorChild = this.content
+      .getChildrenSortedByPrimaryAxis()
+      .find((child) => child.y + child.height > viewportTop && child.y < viewportBottom)
+
+    this._resizeScrollSnapshot = {
+      distanceFromBottom: Math.max(0, oldMaxTop - oldTop),
+      wasAtTop: oldTop <= 0,
+      anchorChildId: anchorChild?.id,
+      anchorOffsetWithinChild: anchorChild ? viewportTop - anchorChild.y : undefined,
+    }
+  }
+
+  private scheduleDeferredResizeRestore(): void {
+    if (this._resizeRestoreScheduled) return
+    this._resizeRestoreScheduled = true
+
+    process.nextTick(() => {
+      this._resizeRestoreScheduled = false
+      this.applyDeferredResizeRestore()
+    })
+  }
+
+  private applyDeferredResizeRestore(): void {
+    if (this.isDestroyed) {
+      this._resizeScrollSnapshot = undefined
+      return
+    }
+
+    const snapshot = this._resizeScrollSnapshot
+    this._resizeScrollSnapshot = undefined
+
+    if (!snapshot) {
+      return
+    }
+
+    const shouldPreserveVerticalPosition = !this._stickyScroll || this._hasManualScroll
+    if (!shouldPreserveVerticalPosition) {
+      return
+    }
+
+    const newMaxScrollTop = Math.max(0, this.scrollHeight - this.viewport.height)
+    const clampScrollTop = (value: number): number => Math.max(0, Math.min(newMaxScrollTop, value))
+    const fallbackScrollTop = clampScrollTop(newMaxScrollTop - snapshot.distanceFromBottom)
+
+    const wasApplyingStickyScroll = this._isApplyingStickyScroll
+    this._isApplyingStickyScroll = true
+
+    try {
+      if (snapshot.wasAtTop) {
+        this.scrollTop = 0
+        return
+      }
+
+      if (snapshot.distanceFromBottom <= 1) {
+        this.scrollTop = newMaxScrollTop
+        return
+      }
+
+      if (!snapshot.anchorChildId || snapshot.anchorOffsetWithinChild === undefined) {
+        this.scrollTop = fallbackScrollTop
+        return
+      }
+
+      const anchorChild = this.content.getChildren().find((child) => child.id === snapshot.anchorChildId)
+      if (!anchorChild) {
+        this.scrollTop = fallbackScrollTop
+        return
+      }
+
+      const childBaseY = anchorChild.y + this.scrollTop
+      const targetScrollTop = childBaseY + snapshot.anchorOffsetWithinChild - this.viewport.y
+      this.scrollTop = clampScrollTop(targetScrollTop)
+    } finally {
+      this._isApplyingStickyScroll = wasApplyingStickyScroll
+    }
+  }
+
   private recalculateBarProps(): void {
     // Wrap entire method to prevent scroll changes from being treated as manual
     const wasApplyingStickyScroll = this._isApplyingStickyScroll
     this._isApplyingStickyScroll = true
+
+    this.captureResizeSnapshot()
 
     try {
       this.verticalScrollBar.scrollSize = this.content.height
@@ -789,6 +882,8 @@ export class ScrollBoxRenderable extends BoxRenderable {
     } finally {
       this._isApplyingStickyScroll = wasApplyingStickyScroll
     }
+
+    this.scheduleDeferredResizeRestore()
 
     // NOTE: This is obviously a workaround for something,
     // which is that the bar props are recalculated when the viewport is resized,
