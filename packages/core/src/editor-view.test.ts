@@ -523,7 +523,8 @@ describe("EditorView", () => {
       view.moveDownVisual()
       cursor = view.getVisualCursor()
       expect(cursor.visualRow).toBe(1)
-      expect(cursor.visualCol).toBe(8)
+      // Col 8 sits inside 🌟 (cells 7-8); vertical movement snaps to the leading boundary.
+      expect(cursor.visualCol).toBe(7)
 
       buffer.moveCursorLeft()
       cursor = view.getVisualCursor()

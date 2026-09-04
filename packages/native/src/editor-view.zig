@@ -178,7 +178,16 @@ pub const EditorView = struct {
                 const target_logical_row = @as(u32, @intCast(target_vline.source_line));
 
                 const line_width = iter_mod.lineWidthAt(self.edit_buffer.tb.rope(), target_logical_row);
-                const target_col = @min(cursor.col, line_width);
+                // The cursor col is a display width measured on the source line;
+                // snap it to a grapheme boundary on the target line.
+                const target_col = iter_mod.snapColToGraphemeBoundary(
+                    self.edit_buffer.tb.rope(),
+                    self.edit_buffer.tb.memRegistry(),
+                    target_logical_row,
+                    @min(cursor.col, line_width),
+                    self.edit_buffer.tb.tabWidth(),
+                    self.edit_buffer.tb.widthMethod(),
+                );
 
                 if (self.edit_buffer.cursors.items.len > 0) {
                     const offset = iter_mod.coordsToOffset(self.edit_buffer.tb.rope(), target_logical_row, target_col) orelse return;
@@ -653,14 +662,29 @@ pub const EditorView = struct {
 
         const vline = &vlines[visual_row];
         const clamped_visual_col = @min(visual_col, vline.width_cols);
-        const logical_col = vline.source_col_start + clamped_visual_col;
         const logical_row = @as(u32, @intCast(vline.source_line));
+
+        // A visual column can fall strictly inside a wide grapheme when the
+        // target row's grapheme boundaries differ from the row the column was
+        // measured on. Snap to the cluster's leading boundary so the committed
+        // cursor never splits a grapheme. This also composes with
+        // clampVisualColToStayOnVisualRow, whose one-cell step back from a wrap
+        // boundary can land inside a trailing wide grapheme.
+        const logical_col = iter_mod.snapColToGraphemeBoundary(
+            self.edit_buffer.tb.rope(),
+            self.edit_buffer.tb.memRegistry(),
+            logical_row,
+            vline.source_col_start + clamped_visual_col,
+            self.edit_buffer.tb.tabWidth(),
+            self.edit_buffer.tb.widthMethod(),
+        );
+        const snapped_visual_col = logical_col -| vline.source_col_start;
 
         const offset = iter_mod.coordsToOffset(self.edit_buffer.tb.rope(), logical_row, logical_col) orelse 0;
 
         return .{
             .visual_row = visual_row,
-            .visual_col = clamped_visual_col,
+            .visual_col = snapped_visual_col,
             .logical_row = logical_row,
             .logical_col = logical_col,
             .offset = offset,
@@ -882,17 +906,16 @@ pub const EditorView = struct {
                 }
             }
         }
-        const logical_row = @as(u32, @intCast(vline.source_line));
-        const logical_col = vline.source_col_start + target_visual_col;
-        const offset = iter_mod.coordsToOffset(self.edit_buffer.tb.rope(), logical_row, logical_col) orelse 0;
 
-        return .{
-            .visual_row = vcursor.visual_row,
-            .visual_col = target_visual_col,
-            .logical_row = logical_row,
-            .logical_col = logical_col,
-            .offset = offset,
-        };
+        // Resolve through the snapped visual->logical mapping so an EOL target
+        // that falls inside a wide grapheme lands on its leading boundary.
+        if (self.visualToLogicalCursor(vcursor.visual_row, target_visual_col)) |result| {
+            return result;
+        }
+
+        // Unreachable in practice: visual_row was bounds-checked above
+        const logical_cursor = self.edit_buffer.getEOL();
+        return self.logicalToVisualCursor(logical_cursor.row, logical_cursor.col);
     }
 
     pub fn gotoVisualLineEnd(self: *EditorView) void {

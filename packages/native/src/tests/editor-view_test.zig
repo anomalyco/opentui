@@ -3762,3 +3762,338 @@ test "EditorView - convert word selection to cell keeps the range and moves focu
     try std.testing.expectEqual(@as(u32, 0), converted_cursor.row);
     try std.testing.expectEqual(@as(u32, 9), converted_cursor.col);
 }
+test "EditorView - moveDownVisual snaps to leading boundary of wide grapheme" {
+    const pool = gp.initGlobalPool(std.testing.allocator);
+    defer gp.deinitGlobalPool();
+    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
+    defer link.deinitGlobalLinkPool();
+
+    var eb = try EditBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth, null);
+    defer eb.deinit();
+
+    var ev = try EditorView.init(std.testing.allocator, eb, 80, 24);
+    defer ev.deinit();
+
+    // Line 0 grapheme boundaries: 0,2,3,5,7,... (的=0-2, [=2-3, 代=3-5, ...)
+    // Line 1 grapheme boundaries: 0,2,4,6,... (因=0-2, 此=2-4, 签=4-6, ...)
+    try eb.setText("的[代码签名政策](\n因此签名批准者角色");
+
+    // Cursor after 代 (visual col 5). Col 5 on line 1 is inside 签 (cells 4-6).
+    try eb.setCursor(0, 5);
+
+    ev.moveDownVisual();
+    const cursor = ev.getPrimaryCursor();
+    try std.testing.expectEqual(@as(u32, 1), cursor.row);
+    // Must snap back to the leading boundary of 签, not sit inside it
+    try std.testing.expectEqual(@as(u32, 4), cursor.col);
+
+    // Same mapping through the direct visual->logical conversion
+    const vcursor = ev.visualToLogicalCursor(1, 5) orelse return error.MissingVisualCursor;
+    try std.testing.expectEqual(@as(u32, 1), vcursor.logical_row);
+    try std.testing.expectEqual(@as(u32, 4), vcursor.logical_col);
+    try std.testing.expectEqual(@as(u32, 4), vcursor.visual_col);
+}
+
+test "EditorView - moveUpVisual snaps to leading boundary of wide grapheme" {
+    const pool = gp.initGlobalPool(std.testing.allocator);
+    defer gp.deinitGlobalPool();
+    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
+    defer link.deinitGlobalLinkPool();
+
+    var eb = try EditBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth, null);
+    defer eb.deinit();
+
+    var ev = try EditorView.init(std.testing.allocator, eb, 80, 24);
+    defer ev.deinit();
+
+    // Line 0 grapheme boundaries: 0,2,4,6,... (因=0-2, 此=2-4, 签=4-6, ...)
+    // Line 1 grapheme boundaries: 0,2,3,5,7,... (的=0-2, [=2-3, 代=3-5, ...)
+    try eb.setText("因此签名批准者角色\n的[代码签名政策](");
+
+    // Cursor after 代 (visual col 5). Col 5 on line 0 is inside 签 (cells 4-6).
+    try eb.setCursor(1, 5);
+
+    ev.moveUpVisual();
+    const cursor = ev.getPrimaryCursor();
+    try std.testing.expectEqual(@as(u32, 0), cursor.row);
+    try std.testing.expectEqual(@as(u32, 4), cursor.col);
+}
+
+test "EditorView - selection extension after moveDownVisual ends on grapheme boundary" {
+    const pool = gp.initGlobalPool(std.testing.allocator);
+    defer gp.deinitGlobalPool();
+    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
+    defer link.deinitGlobalLinkPool();
+
+    var eb = try EditBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth, null);
+    defer eb.deinit();
+
+    var ev = try EditorView.init(std.testing.allocator, eb, 80, 24);
+    defer ev.deinit();
+
+    try eb.setText("的[代码签名政策](\n因此签名批准者角色");
+
+    // Mirror the shift+down path in EditBufferRenderable: anchor a local selection
+    // at the cursor, move, then extend the selection to the new visual cursor.
+    try eb.setCursor(0, 5);
+    _ = ev.setLocalSelection(5, 0, 5, 0, null, null, true);
+
+    ev.moveDownVisual();
+    const vcursor = ev.getVisualCursor();
+    _ = ev.updateLocalSelection(5, 0, @as(i32, @intCast(vcursor.visual_col)), @as(i32, @intCast(vcursor.visual_row)), null, null, true);
+
+    const cursor = ev.getPrimaryCursor();
+    try std.testing.expectEqual(@as(u32, 1), cursor.row);
+    try std.testing.expectEqual(@as(u32, 4), cursor.col);
+
+    // The selection endpoint synced from the cursor must be the same legal
+    // boundary: under cell occupancy (#1393) sel.end is the *exclusive* end of
+    // the inclusive selection, i.e. the trailing boundary of the focus
+    // grapheme 签 (width 2) — it covers the grapheme exactly, never its middle.
+    const sel = ev.getSelection().?;
+    try std.testing.expectEqual(cursor.offset + 2, sel.end);
+}
+
+test "EditorView - selection extension after moveUpVisual ends on grapheme boundary" {
+    const pool = gp.initGlobalPool(std.testing.allocator);
+    defer gp.deinitGlobalPool();
+    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
+    defer link.deinitGlobalLinkPool();
+
+    var eb = try EditBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth, null);
+    defer eb.deinit();
+
+    var ev = try EditorView.init(std.testing.allocator, eb, 80, 24);
+    defer ev.deinit();
+
+    try eb.setText("因此签名批准者角色\n的[代码签名政策](");
+
+    // Mirror the shift+up path: anchor at the cursor, move up, extend selection.
+    try eb.setCursor(1, 5);
+    _ = ev.setLocalSelection(5, 1, 5, 1, null, null, true);
+
+    ev.moveUpVisual();
+    const vcursor = ev.getVisualCursor();
+    _ = ev.updateLocalSelection(5, 1, @as(i32, @intCast(vcursor.visual_col)), @as(i32, @intCast(vcursor.visual_row)), null, null, true);
+
+    const cursor = ev.getPrimaryCursor();
+    try std.testing.expectEqual(@as(u32, 0), cursor.row);
+    try std.testing.expectEqual(@as(u32, 4), cursor.col);
+
+    // Backward selection: the moved endpoint is the selection start
+    const sel = ev.getSelection().?;
+    try std.testing.expectEqual(cursor.offset, sel.start);
+}
+
+test "EditorView - vertical moves between wrapped visual rows never split wide graphemes" {
+    const pool = gp.initGlobalPool(std.testing.allocator);
+    defer gp.deinitGlobalPool();
+    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
+    defer link.deinitGlobalLinkPool();
+
+    var eb = try EditBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth, null);
+    defer eb.deinit();
+
+    var ev = try EditorView.init(std.testing.allocator, eb, 10, 10);
+    defer ev.deinit();
+
+    ev.setWrapMode(.char);
+
+    // Boundaries: 0,1,2,3,5,7,9,11,... (aaa=0-3, then width-2 graphemes)
+    // Wraps at width 10 into visual rows [0,9), [9,19), [19,29), [29,35),
+    // so desired col 3 lands inside a wide grapheme on rows 1, 2 and 3.
+    try eb.setText("aaa的代码签名政策因此签名批准者角色");
+
+    const line_info = ev.getCachedLineInfo();
+    try std.testing.expectEqualSlices(u32, &[_]u32{ 9, 10, 10, 6 }, line_info.line_width_cols);
+
+    try eb.setCursor(0, 3);
+
+    // Row 1: abs col 9+3=12 is inside 名 (11-13), snaps to 11
+    ev.moveDownVisual();
+    var cursor = ev.getPrimaryCursor();
+    try std.testing.expectEqual(@as(u32, 0), cursor.row);
+    try std.testing.expectEqual(@as(u32, 11), cursor.col);
+
+    // Row 2: abs col 19+3=22 is inside 批 (21-23), snaps to 21
+    ev.moveDownVisual();
+    cursor = ev.getPrimaryCursor();
+    try std.testing.expectEqual(@as(u32, 21), cursor.col);
+
+    // Row 3: abs col 29+3=32 is inside 角 (31-33), snaps to 31
+    ev.moveDownVisual();
+    cursor = ev.getPrimaryCursor();
+    try std.testing.expectEqual(@as(u32, 31), cursor.col);
+
+    // Moving back up keeps snapping onto legal boundaries
+    ev.moveUpVisual();
+    cursor = ev.getPrimaryCursor();
+    try std.testing.expectEqual(@as(u32, 21), cursor.col);
+
+    ev.moveUpVisual();
+    cursor = ev.getPrimaryCursor();
+    try std.testing.expectEqual(@as(u32, 11), cursor.col);
+
+    ev.moveUpVisual();
+    cursor = ev.getPrimaryCursor();
+    try std.testing.expectEqual(@as(u32, 3), cursor.col);
+}
+
+test "EditorView - moveDownVisual onto short and empty rows clamps without splitting graphemes" {
+    const pool = gp.initGlobalPool(std.testing.allocator);
+    defer gp.deinitGlobalPool();
+    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
+    defer link.deinitGlobalLinkPool();
+
+    var eb = try EditBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth, null);
+    defer eb.deinit();
+
+    var ev = try EditorView.init(std.testing.allocator, eb, 80, 24);
+    defer ev.deinit();
+
+    try eb.setText("的[代码签名政策](\nx\n\n因此签名批准者角色");
+
+    try eb.setCursor(0, 5);
+
+    // Short row (width 1): clamps to col 1
+    ev.moveDownVisual();
+    var cursor = ev.getPrimaryCursor();
+    try std.testing.expectEqual(@as(u32, 1), cursor.row);
+    try std.testing.expectEqual(@as(u32, 1), cursor.col);
+
+    // Empty row: clamps to col 0
+    ev.moveDownVisual();
+    cursor = ev.getPrimaryCursor();
+    try std.testing.expectEqual(@as(u32, 2), cursor.row);
+    try std.testing.expectEqual(@as(u32, 0), cursor.col);
+
+    // Desired col 5 persists across the short/empty rows and snaps on line 3
+    ev.moveDownVisual();
+    cursor = ev.getPrimaryCursor();
+    try std.testing.expectEqual(@as(u32, 3), cursor.row);
+    try std.testing.expectEqual(@as(u32, 4), cursor.col);
+
+    // Round trip back up restores the original legal column without drift
+    ev.moveUpVisual();
+    ev.moveUpVisual();
+    ev.moveUpVisual();
+    cursor = ev.getPrimaryCursor();
+    try std.testing.expectEqual(@as(u32, 0), cursor.row);
+    try std.testing.expectEqual(@as(u32, 5), cursor.col);
+}
+
+test "EditorView - moveDownVisual respects combining mark cluster boundaries" {
+    const pool = gp.initGlobalPool(std.testing.allocator);
+    defer gp.deinitGlobalPool();
+    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
+    defer link.deinitGlobalLinkPool();
+
+    var eb = try EditBuffer.init(std.testing.allocator, pool, link_pool, .unicode, null);
+    defer eb.deinit();
+
+    var ev = try EditorView.init(std.testing.allocator, eb, 80, 24);
+    defer ev.deinit();
+
+    // Line 1: "e" + combining acute is one cluster (width 1, cells 0-1),
+    // then 签=1-3, 名=3-5. Desired col 4 falls inside 名.
+    try eb.setText("的代码\ne\u{301}签名");
+
+    try eb.setCursor(0, 4);
+
+    ev.moveDownVisual();
+    const cursor = ev.getPrimaryCursor();
+    try std.testing.expectEqual(@as(u32, 1), cursor.row);
+    // Snaps to 3 (leading boundary of 名), proving the e+mark cluster counts as one cell
+    try std.testing.expectEqual(@as(u32, 3), cursor.col);
+}
+
+test "EditorView - moveDownVisual snaps to leading boundary of ZWJ emoji cluster" {
+    const pool = gp.initGlobalPool(std.testing.allocator);
+    defer gp.deinitGlobalPool();
+    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
+    defer link.deinitGlobalLinkPool();
+
+    var eb = try EditBuffer.init(std.testing.allocator, pool, link_pool, .unicode, null);
+    defer eb.deinit();
+
+    var ev = try EditorView.init(std.testing.allocator, eb, 80, 24);
+    defer ev.deinit();
+
+    // Line 1: a=0-1, family ZWJ cluster=1-3, b=3-4, c=4-5.
+    // Desired col 2 falls inside the ZWJ cluster.
+    try eb.setText("的代码\na\u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467}bc");
+
+    try eb.setCursor(0, 2);
+
+    ev.moveDownVisual();
+    const cursor = ev.getPrimaryCursor();
+    try std.testing.expectEqual(@as(u32, 1), cursor.row);
+    try std.testing.expectEqual(@as(u32, 1), cursor.col);
+}
+
+test "EditorView - vertical move round trip returns to original column without drift" {
+    const pool = gp.initGlobalPool(std.testing.allocator);
+    defer gp.deinitGlobalPool();
+    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
+    defer link.deinitGlobalLinkPool();
+
+    var eb = try EditBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth, null);
+    defer eb.deinit();
+
+    var ev = try EditorView.init(std.testing.allocator, eb, 80, 24);
+    defer ev.deinit();
+
+    // Line 0 and 2 share boundaries 0,2,3,5,...; line 1 has 0,2,4,6,...
+    try eb.setText("的[代码签名政策](\n因此签名批准者角色\n的[代码签名政策](");
+
+    try eb.setCursor(0, 5);
+
+    ev.moveDownVisual();
+    var cursor = ev.getPrimaryCursor();
+    try std.testing.expectEqual(@as(u32, 1), cursor.row);
+    try std.testing.expectEqual(@as(u32, 4), cursor.col);
+
+    // Desired col 5 survives the snapped row and lands legally on line 2
+    ev.moveDownVisual();
+    cursor = ev.getPrimaryCursor();
+    try std.testing.expectEqual(@as(u32, 2), cursor.row);
+    try std.testing.expectEqual(@as(u32, 5), cursor.col);
+
+    ev.moveUpVisual();
+    cursor = ev.getPrimaryCursor();
+    try std.testing.expectEqual(@as(u32, 1), cursor.row);
+    try std.testing.expectEqual(@as(u32, 4), cursor.col);
+
+    ev.moveUpVisual();
+    cursor = ev.getPrimaryCursor();
+    try std.testing.expectEqual(@as(u32, 0), cursor.row);
+    try std.testing.expectEqual(@as(u32, 5), cursor.col);
+}
+
+test "EditorView - insert after snapped vertical move keeps graphemes intact" {
+    const pool = gp.initGlobalPool(std.testing.allocator);
+    defer gp.deinitGlobalPool();
+    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
+    defer link.deinitGlobalLinkPool();
+
+    var eb = try EditBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth, null);
+    defer eb.deinit();
+
+    var ev = try EditorView.init(std.testing.allocator, eb, 80, 24);
+    defer ev.deinit();
+
+    try eb.setText("的[代码签名政策](\n因此签名批准者角色");
+
+    try eb.setCursor(0, 5);
+    ev.moveDownVisual();
+
+    const cursor = ev.getPrimaryCursor();
+    try std.testing.expectEqual(@as(u32, 4), cursor.col);
+
+    // Inserting at the snapped cursor must not split 签
+    try eb.insertText("X");
+
+    var out_buffer: [256]u8 = undefined;
+    const written = eb.getText(&out_buffer);
+    try std.testing.expectEqualStrings("的[代码签名政策](\n因此X签名批准者角色", out_buffer[0..written]);
+}

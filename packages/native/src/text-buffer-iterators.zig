@@ -323,6 +323,49 @@ pub fn getPrevGraphemeWidth(rope: *UnifiedRope, mem_registry: *const MemRegistry
     return 0;
 }
 
+/// Snaps a display-width column within a line to the leading (line-start-side)
+/// boundary of the grapheme cluster containing it. Columns already on a
+/// grapheme boundary (including column 0 and end-of-line) pass through unchanged.
+/// Takes mutable rope for lazy marker cache rebuilding
+pub fn snapColToGraphemeBoundary(rope: *UnifiedRope, mem_registry: *const MemRegistry, row: u32, col: u32, tab_width: u8, width_method: utf8.WidthMethod) u32 {
+    const line_width = lineWidthAt(rope, row);
+    if (col == 0 or col >= line_width) return col;
+
+    const linestart = rope.getMarker(.linestart, row) orelse return col;
+    var seg_idx = linestart.leaf_index + 1;
+    var cols_before: u32 = 0;
+
+    while (seg_idx < rope.count()) : (seg_idx += 1) {
+        const seg = rope.get(seg_idx) orelse break;
+        if (seg.isBreak() or seg.isLineStart()) break;
+        if (seg.asText()) |chunk| {
+            const next_cols = cols_before + chunk.width_cols;
+            if (col < next_cols) {
+                const local_col: u32 = col - cols_before;
+                const bytes = chunk.getBytes(mem_registry);
+                const is_ascii = (chunk.flags & TextChunk.Flags.ASCII_ONLY) != 0;
+                // include_start_before=false resolves to the start of the
+                // cluster that would extend past local_col
+                const pos = utf8.findPosByWidth(bytes, local_col, tab_width, is_ascii, false, width_method);
+                if (pos.columns_used <= local_col) {
+                    return cols_before + pos.columns_used;
+                }
+                // local_col sits inside the final cluster of the chunk:
+                // findPosByWidth runs to the end of the text and reports that
+                // cluster's trailing boundary. Step back by the cluster's
+                // width to reach its leading boundary.
+                const prev = utf8.getPrevGraphemeStart(bytes, bytes.len, tab_width, width_method);
+                if (prev) |res| {
+                    return cols_before + pos.columns_used - res.width;
+                }
+                return cols_before;
+            }
+            cols_before = next_cols;
+        }
+    }
+    return col;
+}
+
 /// Extract text between display-width offsets into a buffer
 /// Automatically snaps to grapheme boundaries:
 /// - start_offset excludes graphemes that start before it
