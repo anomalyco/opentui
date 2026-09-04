@@ -917,9 +917,7 @@ export class CliRenderer extends EventEmitter implements RenderContext {
 
   private _useConsole: boolean = true
   private sigwinchHandler: () => void = (() => {
-    const width = this.stdout.columns
-    const height = this.stdout.rows
-    if (width > 0 && height > 0) this.handleResize(width, height)
+    this.handleResize()
   }).bind(this)
   private _capabilities: TerminalCapabilities | null = null
   private _latestPointer: { x: number; y: number } = { x: 0, y: 0 }
@@ -3929,10 +3927,25 @@ export class CliRenderer extends EventEmitter implements RenderContext {
     }
   }
 
-  private handleResize(width: number, height: number): void {
+  private handleResize(): void {
     if (this._isDestroyed) return
+    const resize = () => {
+      const stdout = this.stdout as NodeJS.WriteStream & { _refreshSize?: () => void }
+      const stdin = this.stdin as NodeJS.ReadStream & {
+        columns?: number
+        rows?: number
+        isTTY?: boolean
+        _refreshSize?: () => void
+      }
+      const sizeSource = !stdout.isTTY && stdin.isTTY ? stdin : stdout
+      // PTY bridges can deliver SIGWINCH before the stream's cached dimensions reflect the new window size.
+      sizeSource._refreshSize?.()
+      const width = sizeSource.columns
+      const height = sizeSource.rows
+      if (width && width > 0 && height && height > 0) this.processResize(width, height)
+    }
     if (this._splitHeight > 0) {
-      this.processResize(width, height)
+      resize()
       return
     }
 
@@ -3943,7 +3956,7 @@ export class CliRenderer extends EventEmitter implements RenderContext {
 
     this.resizeTimeoutId = this.clock.setTimeout(() => {
       this.resizeTimeoutId = null
-      this.processResize(width, height)
+      resize()
     }, this.resizeDebounceDelay)
   }
 
