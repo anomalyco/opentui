@@ -19,45 +19,45 @@ pub const MeasureTarget = union(MeasureTargetKind) {
 };
 
 pub const NativeRenderable = struct {
-    // Borrowed during the migration to native-backed renderables. Today JS owns
-    // the Renderable tree and Yoga nodes; this native object only routes hot
-    // measurement without crossing back into JS. Long term, NativeRenderable
-    // should back every Renderable and own the Yoga node directly.
-    yoga_node: native_yoga.YGNodeRef = null,
+    yoga_node: native_yoga.YGNodeRef,
     measure_target: MeasureTarget = .none,
 
+    pub fn init() error{OutOfMemory}!NativeRenderable {
+        const yoga_node = native_yoga.yogaNodeCreateForOpenTUI() orelse return error.OutOfMemory;
+        return .{ .yoga_node = yoga_node };
+    }
+
     pub fn deinit(self: *NativeRenderable) void {
-        self.clearMeasureTarget();
-        self.yoga_node = null;
+        self.setMeasureTarget(.none);
+        native_yoga.yogaNodeFree(self.yoga_node);
         self.* = undefined;
     }
 
-    pub fn attachYogaNode(self: *NativeRenderable, node: native_yoga.YGNodeRef) void {
-        if (self.yoga_node != null and self.yoga_node != node) {
-            native_yoga.yogaNodeSetNativeMeasureFunc(self.yoga_node, null, null);
-        }
-        self.yoga_node = node;
-        self.applyMeasureTarget();
+    pub fn getYogaNode(self: *const NativeRenderable) native_yoga.YGNodeRef {
+        return self.yoga_node;
     }
 
     pub fn setMeasureTarget(self: *NativeRenderable, target: MeasureTarget) void {
         self.measure_target = target;
-        self.applyMeasureTarget();
-    }
-
-    pub fn clearMeasureTarget(self: *NativeRenderable) void {
-        if (self.yoga_node != null) {
-            native_yoga.yogaNodeSetNativeMeasureFunc(self.yoga_node, null, null);
-        }
-        self.measure_target = .none;
-    }
-
-    fn applyMeasureTarget(self: *NativeRenderable) void {
-        if (self.yoga_node == null) return;
-        switch (self.measure_target) {
+        switch (target) {
             .none => native_yoga.yogaNodeSetNativeMeasureFunc(self.yoga_node, null, null),
             else => native_yoga.yogaNodeSetNativeMeasureFunc(self.yoga_node, self, &NativeRenderable.measure),
         }
+    }
+
+    pub fn clearMeasureTargetIfMatches(self: *NativeRenderable, target: MeasureTarget) void {
+        const matches = switch (target) {
+            .none => false,
+            .text_buffer_view => |view| switch (self.measure_target) {
+                .text_buffer_view => |current| current == view,
+                else => false,
+            },
+            .editor_view => |view| switch (self.measure_target) {
+                .editor_view => |current| current == view,
+                else => false,
+            },
+        };
+        if (matches) self.setMeasureTarget(.none);
     }
 
     fn measure(target: ?*anyopaque, width: f32, width_mode: u32, height: f32, height_mode: u32) callconv(.c) native_yoga.ExternalYogaSize {
@@ -72,7 +72,7 @@ pub const NativeRenderable = struct {
         var measured_width: f32 = @floatFromInt(@max(@as(u32, 1), result.width_cols_max));
         var measured_height: f32 = @floatFromInt(@max(@as(u32, 1), result.line_count));
 
-        if (width_mode == @intFromEnum(native_yoga.YogaMeasureMode.at_most) and self.yoga_node != null and !isYogaNodeAbsolute(self.yoga_node)) {
+        if (width_mode == @intFromEnum(native_yoga.YogaMeasureMode.at_most) and !isYogaNodeAbsolute(self.yoga_node)) {
             measured_width = @min(effective_width, measured_width);
             measured_height = @min(effective_height, measured_height);
         }

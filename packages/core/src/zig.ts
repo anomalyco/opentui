@@ -416,9 +416,9 @@ function getOpenTUILib(libPath?: string) {
       args: ["u32"],
       returns: "void",
     },
-    nativeRenderableAttachYogaNode: {
-      args: ["u32", "ptr"],
-      returns: "bool",
+    nativeRenderableGetYogaNode: {
+      args: ["u32"],
+      returns: "ptr",
     },
     nativeRenderableSetMeasureTarget: {
       args: ["u32", "u32", "u32"],
@@ -3197,7 +3197,7 @@ export interface RenderLib extends AudioEngineLib {
   streamCommitReserved: (stream: Pointer, length: number) => number
   createNativeRenderable: () => NativeRenderableHandle
   destroyNativeRenderable: (handle: NativeRenderableHandle) => void
-  nativeRenderableAttachYogaNode: (handle: NativeRenderableHandle, node: Pointer) => boolean
+  nativeRenderableGetYogaNode: (handle: NativeRenderableHandle) => Pointer
   nativeRenderableSetMeasureTarget: (
     handle: NativeRenderableHandle,
     kind: NativeMeasureTargetKind,
@@ -3297,9 +3297,10 @@ class FFIRenderLib implements RenderLib {
     this.opentui.symbols.destroyNativeRenderable(handle)
   }
 
-  public nativeRenderableAttachYogaNode(handle: NativeRenderableHandle, node: Pointer): boolean {
-    // Node's FFI returns bools as 0/1 numbers; normalize so the interface stays truthful.
-    return Boolean(this.opentui.symbols.nativeRenderableAttachYogaNode(handle, node))
+  public nativeRenderableGetYogaNode(handle: NativeRenderableHandle): Pointer {
+    const node = this.opentui.symbols.nativeRenderableGetYogaNode(handle)
+    if (!node) throw new Error("Failed to get native renderable Yoga node")
+    return node
   }
 
   public nativeRenderableSetMeasureTarget(

@@ -13,7 +13,7 @@ import type {
 } from "../types.js"
 import type { OptimizedBuffer } from "../buffer.js"
 import type { SyntaxStyle } from "../syntax-style.js"
-import { NativeMeasureTargetKind, resolveRenderLib, type NativeRenderableHandle } from "../zig.js"
+import { NativeMeasureTargetKind } from "../zig.js"
 
 const BrandedEditBufferRenderable: unique symbol = Symbol.for("@opentui/core/EditBufferRenderable")
 
@@ -104,7 +104,6 @@ export abstract class EditBufferRenderable extends Renderable implements LineInf
 
   public readonly editBuffer: EditBuffer
   public readonly editorView: EditorView
-  private nativeRenderable: NativeRenderableHandle | null = null
 
   protected _defaultOptions = {
     textColor: RGBA.fromValues(1, 1, 1, 1),
@@ -127,7 +126,7 @@ export abstract class EditBufferRenderable extends Renderable implements LineInf
   } satisfies Partial<EditBufferOptions>
 
   constructor(ctx: RenderContext, options: EditBufferOptions) {
-    super(ctx, options)
+    super(ctx, options, true)
 
     this._textColor = parseColor(options.textColor ?? this._defaultOptions.textColor)
     this._backgroundColor = parseColor(options.backgroundColor ?? this._defaultOptions.backgroundColor)
@@ -170,7 +169,9 @@ export abstract class EditBufferRenderable extends Renderable implements LineInf
       this.editorView.setTabIndicatorColor(this._tabIndicatorColor)
     }
 
-    this.setupNativeRenderable()
+    if (!this.setNativeMeasureTarget(NativeMeasureTargetKind.EditorView, this.editorView.ptr)) {
+      throw new Error("Failed to attach editor native measure target")
+    }
     this.setupEventListeners(options)
   }
 
@@ -959,26 +960,6 @@ export abstract class EditBufferRenderable extends Renderable implements LineInf
     return true
   }
 
-  private setupNativeRenderable(): void {
-    const lib = resolveRenderLib()
-    // Transitional native backing: JS still owns the render tree and Yoga nodes,
-    // while native owns only hot measurement state. Attach the existing JS-created
-    // Yoga node for now. The intended direction is for every Renderable to become
-    // native-backed and for Yoga node ownership to move native-side with it.
-    const nativeRenderable = lib.createNativeRenderable()
-    if (!lib.nativeRenderableAttachYogaNode(nativeRenderable, this.yogaNode.ptr)) {
-      lib.destroyNativeRenderable(nativeRenderable)
-      throw new Error("Failed to attach native renderable Yoga node")
-    }
-    if (
-      !lib.nativeRenderableSetMeasureTarget(nativeRenderable, NativeMeasureTargetKind.EditorView, this.editorView.ptr)
-    ) {
-      lib.destroyNativeRenderable(nativeRenderable)
-      throw new Error("Failed to attach editor native measure target")
-    }
-    this.nativeRenderable = nativeRenderable
-  }
-
   render(buffer: OptimizedBuffer, deltaTime: number): void {
     if (!this.visible) return
     if (this.isDestroyed) return
@@ -1045,8 +1026,7 @@ export abstract class EditBufferRenderable extends Renderable implements LineInf
     // Destroy dependent resources in correct order BEFORE calling super
     // EditorView depends on EditBuffer, so destroy it first
     if (this.nativeRenderable) {
-      resolveRenderLib().destroyNativeRenderable(this.nativeRenderable)
-      this.nativeRenderable = null
+      this.setNativeMeasureTarget(NativeMeasureTargetKind.None, 0)
     }
     this.editorView.destroy()
     this.editBuffer.destroy()

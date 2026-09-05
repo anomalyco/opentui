@@ -456,9 +456,11 @@ export class Config {
 export class Node {
   readonly ptr: Pointer
   private freed = false
+  private readonly ownsNode: boolean
 
-  private constructor(ptr: Pointer) {
+  private constructor(ptr: Pointer, ownsNode: boolean) {
     this.ptr = ptr
+    this.ownsNode = ownsNode
     nodeRegistry.set(ptr, this)
   }
 
@@ -468,6 +470,10 @@ export class Node {
 
   static createForOpenTUI(): Node {
     return Node.fromPointer(lib().yogaNodeCreateForOpenTUI())
+  }
+
+  static fromBorrowedPointer(ptr: Pointer): Node {
+    return Node.fromPointer(ptr, false)
   }
 
   static createDefault(): Node {
@@ -482,10 +488,10 @@ export class Node {
     node.free()
   }
 
-  private static fromPointer(ptr: Pointer): Node {
+  private static fromPointer(ptr: Pointer, ownsNode: boolean = true): Node {
     const existing = nodeRegistry.get(ptr)
     if (existing) return existing
-    return new Node(ptr)
+    return new Node(ptr, ownsNode)
   }
 
   isFreed(): boolean {
@@ -494,6 +500,15 @@ export class Node {
 
   free(): void {
     if (this.freed) return
+
+    if (!this.ownsNode) {
+      if (lib().yogaNodeGetParent(this.ptr)) {
+        throw new Error("Cannot free a borrowed Yoga node while it is attached")
+      }
+      this.markFreed()
+      return
+    }
+
     this.unsetMeasureFunc()
     this.unsetDirtiedFunc()
     lib().yogaNodeFree(this.ptr)
@@ -502,7 +517,15 @@ export class Node {
 
   freeRecursive(): void {
     if (this.freed) return
+    if (!this.ownsNode) {
+      throw new Error("Cannot recursively free a borrowed Yoga node")
+    }
     const nodes = this.collectSubtree([])
+    for (const node of nodes) {
+      if (!node.ownsNode) {
+        throw new Error("Cannot recursively free a Yoga subtree containing borrowed nodes")
+      }
+    }
     for (const node of nodes) {
       node.unregisterCallbacks()
     }

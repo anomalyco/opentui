@@ -572,6 +572,25 @@ pub fn build(b: *std.Build) void {
     const run_test = b.addRunArtifact(test_artifact);
     test_step.dependOn(&run_test.step);
 
+    const lifetime_step = b.step("test-lifetime", "Run measure-target lifetime tests with GPA leak accounting");
+    const lifetime_options = b.addOptions();
+    lifetime_options.addOption(bool, "gpa_safe_stats", true);
+    const lifetime_mod = b.createModule(.{
+        .root_source_file = b.path("src/test.zig"),
+        .target = native_target,
+        .optimize = .Debug,
+    });
+    applyDependencies(b, lifetime_mod, .Debug, native_target, lifetime_options);
+    const lifetime_artifact = b.addTest(.{
+        .root_module = lifetime_mod,
+        .filters = &.{"measure lifetime"},
+        .use_llvm = debug_use_llvm,
+    });
+    addNativeAudioDependencies(b, lifetime_mod, native_target, macos_sdk_path);
+    addYogaDependencies(b, lifetime_mod);
+    const run_lifetime = b.addRunArtifact(lifetime_artifact);
+    lifetime_step.dependOn(&run_lifetime.step);
+
     // Bench step (native only)
     const bench_step = b.step("bench", "Run benchmarks");
     const bench_mod = b.createModule(.{
