@@ -296,9 +296,10 @@ pub fn exitAltScreen(self: *Terminal, tty: anytype) !void {
 
 pub fn queryTerminalSend(self: *Terminal, tty: anytype) !void {
     self.checkEnvironmentOverrides();
+    const is_tmux = self.isInTmux();
     self.unicode_wide_locked = self.caps.unicode == .unicode_wide;
-    self.graphics_query_pending = !self.skip_graphics_query;
-    self.sixel_query_pending = !self.skip_graphics_query;
+    self.graphics_query_pending = !self.skip_graphics_query and !is_tmux;
+    self.sixel_query_pending = !self.skip_graphics_query and !is_tmux;
     self.capability_queries_pending = false;
     self.startup_cursor_query_pending = true;
     self.startup_cursor_query_captured = false;
@@ -319,11 +320,11 @@ pub fn queryTerminalSend(self: *Terminal, tty: anytype) !void {
     // Capture the current cursor position before temporary home-position queries.
     try tty.writeAll(ansi.ANSI.cursorPositionRequest);
 
-    if (self.isInTmux()) {
+    if (is_tmux) {
         if (self.is_foot) {
-            try tty.writeAll(ansi.ANSI.capabilityQueriesFootIsBrokenTmux);
+            try tty.writeAll(ansi.ANSI.capabilityQueriesFootIsBroken);
         } else {
-            try tty.writeAll(ansi.ANSI.capabilityQueriesTmux);
+            try tty.writeAll(ansi.ANSI.capabilityQueries);
         }
     } else {
         if (self.is_foot) {
@@ -335,9 +336,10 @@ pub fn queryTerminalSend(self: *Terminal, tty: anytype) !void {
     }
 
     if (!self.skip_graphics_query) {
-        if (self.isInTmux()) {
-            try tty.writeAll(ansi.ANSI.kittyGraphicsQueryTmux);
-            try tty.writeAll(ansi.ANSI.primaryDeviceAttrsTmux);
+        if (is_tmux) {
+            // tmux can answer DA for its virtual terminal. A passthrough Kitty
+            // reply has no pane ownership and may reach a different active pane.
+            try tty.writeAll(ansi.ANSI.primaryDeviceAttrs);
         } else {
             try tty.writeAll(ansi.ANSI.kittyGraphicsQuery);
             try tty.writeAll(ansi.ANSI.primaryDeviceAttrs);
@@ -359,42 +361,16 @@ pub fn queryTerminalSend(self: *Terminal, tty: anytype) !void {
     try tty.writeAll(ansi.ANSI.restoreCursorState);
 }
 
-pub fn sendPendingQueries(self: *Terminal, tty: anytype) !bool {
-    var sent = false;
-    const is_tmux = self.isInTmux();
-
-    // Initial probes were already sent using environment-derived multiplexer
-    // state. Only XTVERSION can justify a differently wrapped retry.
+pub fn sendPendingQueries(self: *Terminal, _: anytype) !bool {
     if (!self.term_info.from_xtversion) return false;
 
-    // Re-send capability queries DCS wrapped if tmux detected via xtversion
-    // Only needed if we got xtversion response indicating tmux
-    if (self.capability_queries_pending) {
-        if (self.term_info.from_xtversion and is_tmux) {
-            try tty.writeAll(ansi.ANSI.capabilityQueriesTmux);
-            sent = true;
-        }
-        // Clear pending flag regardless - non-tmux terminals already received unwrapped queries
-        self.capability_queries_pending = false;
-    }
+    // Startup already queried either the direct terminal or tmux's virtual
+    // terminal. Never retry through passthrough: replies are not pane-scoped.
+    self.capability_queries_pending = false;
+    self.graphics_query_pending = false;
+    self.sixel_query_pending = false;
 
-    if (self.graphics_query_pending and !self.skip_graphics_query) {
-        if (is_tmux) {
-            try tty.writeAll(ansi.ANSI.kittyGraphicsQueryTmux);
-            sent = true;
-        }
-        self.graphics_query_pending = false;
-    }
-
-    if (self.sixel_query_pending and !self.skip_graphics_query) {
-        if (is_tmux) {
-            try tty.writeAll(ansi.ANSI.primaryDeviceAttrsTmux);
-            sent = true;
-        }
-        self.sixel_query_pending = false;
-    }
-
-    return sent;
+    return false;
 }
 
 pub fn enableDetectedFeatures(self: *Terminal, tty: anytype, use_kitty_keyboard: bool) !void {
@@ -1121,7 +1097,9 @@ fn parseKittyGraphicsResponse(self: *Terminal, response: []const u8) void {
 }
 
 fn parseSixelDeviceAttributes(self: *Terminal, response: []const u8) void {
-    if (!self.graphics_enabled) return;
+    // Inside tmux, an unwrapped DA response describes tmux's virtual terminal,
+    // not the outer terminal that receives passthrough Sixel output.
+    if (!self.graphics_enabled or self.isInTmux()) return;
     var offset: usize = 0;
     while (std.mem.findPos(u8, response, offset, "\x1b[?")) |start| {
         var end = start + 3;
@@ -1378,6 +1356,16 @@ pub fn processCapabilityResponse(self: *Terminal, response: []const u8) void {
 
     if (!self.caps.hyperlinks and isHyperlinkTerm(response)) {
         self.caps.hyperlinks = true;
+    }
+
+    if (self.isInTmux()) {
+        // Graphics replies inside tmux either have no pane ownership (Kitty
+        // passthrough) or describe tmux itself rather than the passthrough
+        // endpoint (DA/Sixel). Neither can select an outer image protocol.
+        self.kitty_graphics_queried = false;
+        self.caps.kitty_graphics = false;
+        self.sixel_queried = false;
+        self.caps.sixel = false;
     }
 }
 
@@ -1809,11 +1797,15 @@ pub fn getTerminalName(self: *Terminal) []const u8 {
     return self.term_info.name[0..self.term_info.name_len];
 }
 
-/// Forced Sixel bypasses detection. Refuse it when identity cannot be a
-/// Sixel host. After XTVERSION, a multiplexer is not the host; DA still
-/// wins if the host reported Sixel through it. Apple Terminal has no
-/// XTVERSION, so TERM_PROGRAM is the only identity.
+/// Forced Sixel bypasses detection. Refuse it when the direct endpoint cannot
+/// be a Sixel host. Under tmux the passthrough endpoint is unknown, so the
+/// explicit override is authoritative. Apple Terminal has no XTVERSION, so
+/// TERM_PROGRAM is the only identity.
 pub fn refusesForcedSixel(self: *Terminal) bool {
+    // tmux's outer terminal is intentionally not probed because replies are
+    // not pane-scoped. An explicit override is therefore the authority; tmux's
+    // own DA response must neither authorize nor reject passthrough output.
+    if (self.isInTmux()) return false;
     if (self.caps.sixel) return false;
     if (self.term_info.from_xtversion) {
         if (self.multiplexer != .none) return true;
