@@ -1016,6 +1016,12 @@ export class CliRenderer extends EventEmitter implements RenderContext {
   // identity checks inline (e.g. rendererTracker compares `stdin` directly)
   // or duck-typed capability checks (e.g. `stdin.setRawMode?.()`).
   private readonly _usesProcessStdout: boolean
+  // True only when `stdin` is `process.stdin` and nothing was already consuming
+  // it when the renderer was constructed. `createCliRenderer` puts `process.stdin`
+  // into raw mode, which opens its console-input TTY handle; if we are the ones
+  // who opened it, we must close it on destroy (see `releaseStdinHandle`).
+  // Captured before setup touches stdin.
+  private readonly _ownsStdinHandle: boolean
 
   // Feed wiring. Non-null when the given stdout is not process.stdout and native
   // output is not explicitly redirected to a buffered memory destination.
@@ -1065,6 +1071,7 @@ export class CliRenderer extends EventEmitter implements RenderContext {
     this.stdin = stdin
     this.stdout = stdout
     this._usesProcessStdout = stdout === process.stdout
+    this._ownsStdinHandle = stdin === process.stdin && stdin.listenerCount("data") === 0
     this.realStdoutWrite = stdout.write
 
     const lib = resolveRenderLib()
@@ -4474,6 +4481,7 @@ export class CliRenderer extends EventEmitter implements RenderContext {
     } catch (e) {
       console.error("Error pausing stdin during destroy:", e)
     }
+    this.releaseStdinHandle()
 
     if (this._feed !== null && this._splitHeight > 0 && !this._terminalIsSetup) {
       this.flushPendingSplitOutputBeforeTransition(false, { allowSuspended: true, allowUnsetup: true })
@@ -4483,6 +4491,40 @@ export class CliRenderer extends EventEmitter implements RenderContext {
 
     if (this._splitHeight > 0) {
       this.flushStdoutCache(this._splitHeight, true)
+    }
+  }
+
+  // Close the `process.stdin` handle the renderer opened, on Windows.
+  //
+  // `createCliRenderer` puts `process.stdin` into raw mode, which opens the
+  // console-input TTY handle. `cleanupBeforeDestroy` removes our data listener,
+  // clears raw mode and calls `pause()` — but none of that *closes* the handle,
+  // and `pause()` does not stop libuv from polling it. On legacy Windows conhost,
+  // if the handle is still open when the event loop turns after `destroy()`, that
+  // poll wedges the console host: `GetConsoleMode` starts returning
+  // ERROR_PIPE_NOT_CONNECTED (233) and the window dies ~0.7s later.
+  //
+  // Measured: `unref()` is NOT enough — it drops the handle from the loop's
+  // keep-alive set but leaves it open and still polled, so the console still
+  // wedges. Only closing the stream (`destroy()`) removes it from the poll set.
+  // A run that closes stdin here survives a full multi-second loop turn after
+  // `destroy()`; the same run with only `unref()` wedges.
+  //
+  // Scoped to Windows (the only place this wedges) and to a handle we own (see
+  // `_ownsStdinHandle`). Never touch a stream a host app is still listening to:
+  // our own `data` listener is already removed by the time this runs, so any
+  // remaining one is theirs. Not called from `suspend()`, which `resume()` follows.
+  private releaseStdinHandle(): void {
+    if (process.platform !== "win32") return
+    if (!this._ownsStdinHandle) return
+    if (this.stdin.listenerCount("data") > 0) return
+    const destroy = (this.stdin as Partial<NodeJS.ReadStream>).destroy
+    if (typeof destroy === "function") {
+      try {
+        destroy.call(this.stdin)
+      } catch (e) {
+        console.error("Error closing stdin handle during destroy:", e)
+      }
     }
   }
 
