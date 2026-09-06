@@ -11,16 +11,24 @@ import { ScrollBarRenderable, type ScrollBarOptions, type ScrollUnit } from "./S
 class ContentRenderable extends BoxRenderable {
   private viewport: BoxRenderable
   private _viewportCulling: boolean
+  private onLayout: () => void
 
   constructor(
     ctx: RenderContext,
     viewport: BoxRenderable,
     viewportCulling: boolean,
+    onLayout: () => void,
     options: RenderableOptions<BoxRenderable>,
   ) {
     super(ctx, options)
     this.viewport = viewport
     this._viewportCulling = viewportCulling
+    this.onLayout = onLayout
+  }
+
+  public override updateFromLayout(): void {
+    super.updateFromLayout()
+    this.onLayout()
   }
 
   get viewportCulling(): boolean {
@@ -71,6 +79,22 @@ export interface ScrollBoxOptions extends BoxOptions<ScrollBoxRenderable> {
   viewportCulling?: boolean
 }
 
+export interface ViewportPreservation {
+  cancel(): void
+}
+
+export interface PreserveViewportOptions {
+  id?: string
+}
+
+interface ViewportAnchor extends ViewportPreservation {
+  child: Renderable
+  id?: string
+  left: number
+  top: number
+  scrollRevision: number
+}
+
 const SCROLLBOX_PADDING_KEYS = [
   "padding",
   "paddingX",
@@ -117,6 +141,9 @@ export class ScrollBoxRenderable extends BoxRenderable {
 
   protected _focusable: boolean = true
   private selectionListener?: () => void
+  private viewportAnchor?: ViewportAnchor
+  private scrollRevision = 0
+  private restoringViewport = false
 
   private autoScrollMouseX: number = 0
   private autoScrollMouseY: number = 0
@@ -166,8 +193,9 @@ export class ScrollBoxRenderable extends BoxRenderable {
   }
 
   set scrollTop(value: number) {
+    const previous = this.verticalScrollBar.scrollPosition
     this.verticalScrollBar.scrollPosition = value
-    this.updateStickyState()
+    if (this.scrollTop === previous && !this.viewportAnchor) this.updateStickyState()
   }
 
   get scrollLeft(): number {
@@ -175,8 +203,9 @@ export class ScrollBoxRenderable extends BoxRenderable {
   }
 
   set scrollLeft(value: number) {
+    const previous = this.horizontalScrollBar.scrollPosition
     this.horizontalScrollBar.scrollPosition = value
-    this.updateStickyState()
+    if (this.scrollLeft === previous && !this.viewportAnchor) this.updateStickyState()
   }
 
   get scrollWidth(): number {
@@ -188,6 +217,8 @@ export class ScrollBoxRenderable extends BoxRenderable {
   }
 
   private updateStickyState(): void {
+    if (this.restoringViewport || (this.viewportAnchor && this._isApplyingStickyScroll)) return
+
     if (!this._stickyScroll) {
       this.syncManualScrollState()
       return
@@ -219,6 +250,25 @@ export class ScrollBoxRenderable extends BoxRenderable {
     }
 
     this.syncManualScrollState()
+  }
+
+  private handleScrollChange(axis: "vertical" | "horizontal"): void {
+    const isExternal = !this._isApplyingStickyScroll && !this.restoringViewport
+    const hadViewportAnchor = this.viewportAnchor !== undefined
+    if (isExternal) {
+      this.scrollRevision++
+      this.viewportAnchor = undefined
+    }
+
+    const stickyAxis =
+      this._stickyStart === "top" || this._stickyStart === "bottom"
+        ? "vertical"
+        : this._stickyStart === "left" || this._stickyStart === "right"
+          ? "horizontal"
+          : undefined
+    if (isExternal && hadViewportAnchor && stickyAxis && stickyAxis !== axis) return
+
+    this.updateStickyState()
   }
 
   private syncManualScrollState(): void {
@@ -337,7 +387,7 @@ export class ScrollBoxRenderable extends BoxRenderable {
     })
     this.wrapper.add(this.viewport)
 
-    this.content = new ContentRenderable(ctx, this.viewport, viewportCulling, {
+    this.content = new ContentRenderable(ctx, this.viewport, viewportCulling, () => this.restoreViewport(), {
       alignSelf: "flex-start",
       flexShrink: 0,
       ...(scrollX ? { minWidth: "100%" } : { minWidth: "100%", maxWidth: "100%" }),
@@ -361,7 +411,7 @@ export class ScrollBoxRenderable extends BoxRenderable {
       orientation: "vertical",
       onChange: (position) => {
         this.content.translateY = -position
-        this.updateStickyState()
+        this.handleScrollChange("vertical")
       },
     })
     super.add(this.verticalScrollBar)
@@ -377,7 +427,7 @@ export class ScrollBoxRenderable extends BoxRenderable {
       orientation: "horizontal",
       onChange: (position) => {
         this.content.translateX = -position
-        this.updateStickyState()
+        this.handleScrollChange("horizontal")
       },
     })
     this.wrapper.add(this.horizontalScrollBar)
@@ -408,8 +458,63 @@ export class ScrollBoxRenderable extends BoxRenderable {
       this.verticalScrollBar.scrollBy(delta.y, unit)
       this.horizontalScrollBar.scrollBy(delta.x, unit)
     }
-    // Note: scrollBy doesn't need to set _hasManualScroll here because the scrollbar
-    // change will trigger the scrollTop setter which handles it
+  }
+
+  public preserveViewport(anchor: Renderable, options: PreserveViewportOptions = {}): ViewportPreservation | undefined {
+    if (anchor.isDestroyed || anchor.parent !== this.content) return
+    const layout = anchor.getLayoutNode().getComputedLayout()
+    const preservation: ViewportAnchor = {
+      child: anchor,
+      id: options.id,
+      left: layout.left,
+      top: layout.top,
+      scrollRevision: this.scrollRevision,
+      cancel: () => {
+        if (this.viewportAnchor === preservation) this.viewportAnchor = undefined
+      },
+    }
+    this.viewportAnchor = preservation
+    return preservation
+  }
+
+  private resolveViewportAnchor(): ViewportAnchor | undefined {
+    const anchor = this.viewportAnchor
+    if (!anchor) return
+    if (anchor.id) {
+      const current = this.content.getRenderable(anchor.id)
+      if (current) anchor.child = current
+    }
+    if (
+      anchor.child.isDestroyed ||
+      anchor.child.parent !== this.content ||
+      this.scrollRevision !== anchor.scrollRevision
+    ) {
+      this.viewportAnchor = undefined
+      return
+    }
+    return anchor
+  }
+
+  private restoreViewport(): void {
+    const hadViewportAnchor = this.viewportAnchor !== undefined
+    const anchor = this.resolveViewportAnchor()
+    if (!anchor) {
+      if (hadViewportAnchor && !this._hasManualScroll) this.applyStickyScroll()
+      return
+    }
+
+    const layout = anchor.child.getLayoutNode().getComputedLayout()
+    const x = layout.left - anchor.left
+    const y = layout.top - anchor.top
+    if (x === 0 && y === 0) return
+    this.restoringViewport = true
+    try {
+      this.scrollBy({ x, y })
+    } finally {
+      this.restoringViewport = false
+    }
+    anchor.left = layout.left
+    anchor.top = layout.top
   }
 
   public scrollChildIntoView(childId: string): void {
@@ -468,8 +573,6 @@ export class ScrollBoxRenderable extends BoxRenderable {
       this.scrollTop = position.y
       this.scrollLeft = position.x
     }
-    // Note: scrollTo doesn't need to set _hasManualScroll here because
-    // the scrollTop/scrollLeft setters handle it
   }
 
   private isAtStickyPosition(): boolean {
@@ -579,8 +682,6 @@ export class ScrollBoxRenderable extends BoxRenderable {
           this.scrollAccumulatorX -= integerScroll
         }
       }
-
-      this.syncManualScrollState()
     }
 
     if (event.type === "drag" && event.isDragging) {
@@ -592,16 +693,18 @@ export class ScrollBoxRenderable extends BoxRenderable {
 
   public handleKeyPress(key: KeyEvent): boolean {
     // Let scrollbars handle their own acceleration
+    const previousScrollTop = this.scrollTop
     if (this.verticalScrollBar.handleKeyPress(key)) {
       this.scrollAccel.reset()
       this.resetScrollAccumulators()
-      this.syncManualScrollState()
+      if (this.scrollTop === previousScrollTop && !this.viewportAnchor) this.updateStickyState()
       return true
     }
+    const previousScrollLeft = this.scrollLeft
     if (this.horizontalScrollBar.handleKeyPress(key)) {
       this.scrollAccel.reset()
       this.resetScrollAccumulators()
-      this.syncManualScrollState()
+      if (this.scrollLeft === previousScrollLeft && !this.viewportAnchor) this.updateStickyState()
       return true
     }
     return false
@@ -746,6 +849,44 @@ export class ScrollBoxRenderable extends BoxRenderable {
     }
   }
 
+  private applyStickyScroll(): void {
+    if (!this._stickyScroll) return
+
+    const wasApplyingStickyScroll = this._isApplyingStickyScroll
+    this._isApplyingStickyScroll = true
+    try {
+      const newMaxScrollTop = Math.max(0, this.scrollHeight - this.viewport.height)
+      const newMaxScrollLeft = Math.max(0, this.scrollWidth - this.viewport.width)
+      const stickyStart = this._stickyStart
+
+      if (stickyStart && !this._hasManualScroll) {
+        this.applyStickyStart(stickyStart)
+      } else if (
+        stickyStart &&
+        this._hasManualScroll &&
+        this.isAtStickyReengagePoint(stickyStart, newMaxScrollTop, newMaxScrollLeft)
+      ) {
+        // User scrolled back to the sticky edge during streaming; re-engage sticky.
+        this._hasManualScroll = false
+        this.applyStickyStart(stickyStart)
+      } else if (!this._hasManualScroll) {
+        if (this._stickyScrollTop) {
+          this.scrollTop = 0
+        } else if (this._stickyScrollBottom && newMaxScrollTop > 0) {
+          this.scrollTop = newMaxScrollTop
+        }
+
+        if (this._stickyScrollLeft) {
+          this.scrollLeft = 0
+        } else if (this._stickyScrollRight && newMaxScrollLeft > 0) {
+          this.scrollLeft = newMaxScrollLeft
+        }
+      }
+    } finally {
+      this._isApplyingStickyScroll = wasApplyingStickyScroll
+    }
+  }
+
   private recalculateBarProps(): void {
     // Wrap entire method to prevent scroll changes from being treated as manual
     const wasApplyingStickyScroll = this._isApplyingStickyScroll
@@ -757,35 +898,7 @@ export class ScrollBoxRenderable extends BoxRenderable {
       this.horizontalScrollBar.scrollSize = this.content.width
       this.horizontalScrollBar.viewportSize = this.viewport.width
 
-      if (this._stickyScroll) {
-        const newMaxScrollTop = Math.max(0, this.scrollHeight - this.viewport.height)
-        const newMaxScrollLeft = Math.max(0, this.scrollWidth - this.viewport.width)
-        const stickyStart = this._stickyStart
-
-        if (stickyStart && !this._hasManualScroll) {
-          this.applyStickyStart(stickyStart)
-        } else if (
-          stickyStart &&
-          this._hasManualScroll &&
-          this.isAtStickyReengagePoint(stickyStart, newMaxScrollTop, newMaxScrollLeft)
-        ) {
-          // User scrolled back to the sticky edge during streaming; re-engage sticky.
-          this._hasManualScroll = false
-          this.applyStickyStart(stickyStart)
-        } else if (!this._hasManualScroll) {
-          if (this._stickyScrollTop) {
-            this.scrollTop = 0
-          } else if (this._stickyScrollBottom && newMaxScrollTop > 0) {
-            this.scrollTop = newMaxScrollTop
-          }
-
-          if (this._stickyScrollLeft) {
-            this.scrollLeft = 0
-          } else if (this._stickyScrollRight && newMaxScrollLeft > 0) {
-            this.scrollLeft = newMaxScrollLeft
-          }
-        }
-      }
+      if (!this.viewportAnchor) this.applyStickyScroll()
     } finally {
       this._isApplyingStickyScroll = wasApplyingStickyScroll
     }
