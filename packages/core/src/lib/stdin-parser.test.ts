@@ -745,6 +745,136 @@ describe("StdinParser", () => {
     })
   })
 
+  describe("JediTerm scroll workaround", () => {
+    const jediOpts: StdinParserOptions = { jediTermScrollWorkaround: true }
+
+    test("swallows cursor up after SGR scroll up", () => {
+      const input = "\x1b[<64;10;5M\x1b[A"
+      const p = createParser(jediOpts)
+      try {
+        p.push(Buffer.from(input))
+        const s = snap(p)
+        expect(s).toHaveLength(1)
+        expect(s[0]).toEqual(sgr("\x1b[<64;10;5M", "scroll", 9, 4, { scroll: { direction: "up", delta: 1 } }))
+      } finally {
+        p.destroy()
+      }
+    })
+
+    test("swallows cursor down after SGR scroll down", () => {
+      const input = "\x1b[<65;10;5M\x1b[B"
+      const p = createParser(jediOpts)
+      try {
+        p.push(Buffer.from(input))
+        const s = snap(p)
+        expect(s).toHaveLength(1)
+        expect(s[0]).toEqual(sgr("\x1b[<65;10;5M", "scroll", 9, 4, { button: 1, scroll: { direction: "down", delta: 1 } }))
+      } finally {
+        p.destroy()
+      }
+    })
+
+    test("swallows multiple consecutive cursor keys after a single SGR scroll", () => {
+      const input = "\x1b[<64;10;5M\x1b[A\x1b[A\x1b[A\x1b[A"
+      const p = createParser(jediOpts)
+      try {
+        p.push(Buffer.from(input))
+        const s = snap(p)
+        expect(s).toHaveLength(1)
+        expect(s[0]!.type).toBe("mouse")
+      } finally {
+        p.destroy()
+      }
+    })
+
+    test("swallows cursor keys between multiple SGR scroll events", () => {
+      const input = "\x1b[<64;10;5M\x1b[A\x1b[<64;10;5M\x1b[A\x1b[A"
+      const p = createParser(jediOpts)
+      try {
+        p.push(Buffer.from(input))
+        const s = snap(p)
+        expect(s).toHaveLength(2)
+        for (const event of s) {
+          expect(event.type).toBe("mouse")
+        }
+      } finally {
+        p.destroy()
+      }
+    })
+
+    test("does NOT convert cursor keys without workaround enabled", () => {
+      const input = "\x1b[<64;10;5M\x1b[A"
+      const p = createParser()
+      try {
+        p.push(Buffer.from(input))
+        const s = snap(p)
+        expect(s).toHaveLength(2)
+        expect(s[0]).toEqual(sgr("\x1b[<64;10;5M", "scroll", 9, 4, { scroll: { direction: "up", delta: 1 } }))
+        expect(s[1]).toEqual(k("up", { raw: "\x1b[A" }))
+      } finally {
+        p.destroy()
+      }
+    })
+
+    test("does NOT swallow cursor keys after the time window expires", () => {
+      const clock = new ManualClock()
+      const p = new StdinParser({ jediTermScrollWorkaround: true, armTimeouts: false, clock })
+      try {
+        p.push(Buffer.from("\x1b[<64;10;5M"))
+        const afterScroll = snap(p)
+        expect(afterScroll).toHaveLength(1)
+        expect(afterScroll[0]!.type).toBe("mouse")
+
+        clock.advance(30)
+        p.push(Buffer.from("\x1b[A"))
+        const s = snap(p)
+        expect(s).toHaveLength(1)
+        expect(s[0]).toEqual(k("up", { raw: "\x1b[A" }))
+      } finally {
+        p.destroy()
+      }
+    })
+
+    test("clears pending flag when non-cursor CSI key arrives", () => {
+      // SGR scroll → CSI key that is NOT A/B (e.g., Home = \x1b[H) → cursor key
+      const p = createParser(jediOpts)
+      try {
+        p.push(Buffer.from("\x1b[<64;10;5M"))
+        const afterScroll = snap(p)
+        expect(afterScroll).toHaveLength(1)
+
+        // Push Home key — should reset the JediTerm flag
+        p.push(Buffer.from("\x1b[H"))
+        const afterHome = snap(p)
+        expect(afterHome).toHaveLength(1)
+        expect(afterHome[0]!.type).toBe("key")
+
+        // Now ArrowUp should be a normal key, not a scroll
+        p.push(Buffer.from("\x1b[A"))
+        const afterArrow = snap(p)
+        expect(afterArrow).toHaveLength(1)
+        expect(afterArrow[0]).toEqual(k("up", { raw: "\x1b[A" }))
+      } finally {
+        p.destroy()
+      }
+    })
+
+    test("clears spurious shift modifier from JediTerm scroll events", () => {
+      // JediTerm uses 68 for scroll up, which has the shift bit (4) set
+      const p = createParser(jediOpts)
+      try {
+        p.push(Buffer.from("\x1b[<68;10;5M"))
+        const s = snap(p)
+        expect(s).toHaveLength(1)
+        const mouse = s[0] as MouseSnap
+        expect(mouse.event.type).toBe("scroll")
+        expect(mouse.event.modifiers.shift).toBe(false)
+      } finally {
+        p.destroy()
+      }
+    })
+  })
+
   describe("UTF-8 handling", () => {
     table([
       ["2-byte (é)", "\u00e9", [k("\u00e9")]],
