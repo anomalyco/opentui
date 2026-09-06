@@ -81,6 +81,50 @@ function readPackedColor(packed: ArrayBuffer, offset: number): number[] {
 }
 
 describe("borrowed pointer call sites", () => {
+  test("PCM uses shared byte-oriented stream symbols and borrowed offset views", () => {
+    const create = symbols.audioCreateStream
+    const write = symbols.audioWriteStream
+    const input = new Uint8Array(10).subarray(1, 8)
+    symbols.audioCreateStream = (_engine, packed: Uint8Array, output: Uint32Array) => {
+      expect(packed).toBeInstanceOf(Uint8Array)
+      const options = AudioStreamCreateOptionsStruct.unpack(packed.buffer as ArrayBuffer)
+      expect(options.capacityMs).toBe(500)
+      expect(options.format).toBe(3)
+      expect(options.sampleRate).toBe(44100)
+      expect(options.channels).toBe(2)
+      expect(output).toBeInstanceOf(Uint32Array)
+      output[0] = 257
+      return 0
+    }
+    symbols.audioWriteStream = (_engine, id, view, bytes) => {
+      expect(id).toBe(257)
+      expect(view).toBe(input)
+      expect(bytes).toBe(7)
+      return 3
+    }
+    try {
+      expect(
+        lib.audioCreateStream(1 as any, {
+          format: NativeAudioStreamFormat.Pcm,
+          maxProbeBytes: 0,
+          sampleRate: 44100,
+          channels: 2,
+          capacityMs: 500,
+          startupMs: 20,
+          resumeMs: 20,
+          volume: 1,
+          pan: 0,
+          groupId: 0,
+        }),
+      ).toEqual({ status: 0, streamId: 257 })
+      expect(lib.audioWriteStream(1 as any, 257, input)).toBe(3)
+      expect(Object.keys(symbols).some((name) => /audio.*Pcm/.test(name))).toBe(false)
+    } finally {
+      symbols.audioCreateStream = create
+      symbols.audioWriteStream = write
+    }
+  })
+
   test("passes reusable struct views through the native FFI boundary", () => {
     const buffer = lib.createEditBuffer("wcwidth")
     try {
@@ -389,13 +433,21 @@ describe("borrowed pointer call sites", () => {
   })
 
   test("audio stream structs preserve the native ABI", () => {
-    expect(AudioStreamCreateOptionsStruct.size).toBe(32)
+    expect(AudioStreamCreateOptionsStruct.size).toBe(40)
     expect(
       Object.fromEntries(
-        ["capacityMs", "startupMs", "resumeMs", "volume", "pan", "groupId", "maxProbeBytes", "format"].map((name) => [
-          name,
-          fieldOffset(AudioStreamCreateOptionsStruct, name),
-        ]),
+        [
+          "capacityMs",
+          "startupMs",
+          "resumeMs",
+          "volume",
+          "pan",
+          "groupId",
+          "maxProbeBytes",
+          "format",
+          "sampleRate",
+          "channels",
+        ].map((name) => [name, fieldOffset(AudioStreamCreateOptionsStruct, name)]),
       ),
     ).toEqual({
       capacityMs: 0,
@@ -406,6 +458,8 @@ describe("borrowed pointer call sites", () => {
       groupId: 20,
       maxProbeBytes: 24,
       format: 28,
+      sampleRate: 32,
+      channels: 36,
     })
 
     const packed = AudioStreamCreateOptionsStruct.pack({
@@ -427,6 +481,8 @@ describe("borrowed pointer call sites", () => {
     expect(view.getUint32(20, true)).toBe(7)
     expect(view.getUint32(24, true)).toBe(2 * 1024 * 1024)
     expect(view.getUint32(28, true)).toBe(NativeAudioStreamFormat.Mp3)
+    expect(view.getUint32(32, true)).toBe(0)
+    expect(view.getUint32(36, true)).toBe(0)
 
     expect(AudioStreamStatsStruct.size).toBe(56)
     expect(
@@ -733,9 +789,20 @@ describe("borrowed pointer call sites", () => {
       expect(
         lib.audioCreateStream(0 as any, {
           ...validOptions,
-          format: 3 as never,
+          format: 4 as never,
         }),
       ).toEqual({ status: -1, streamId: null })
+      for (const invalid of [{ sampleRate: 44100.5 }, { channels: NaN }]) {
+        expect(
+          lib.audioCreateStream(0 as any, {
+            ...validOptions,
+            format: NativeAudioStreamFormat.Pcm,
+            sampleRate: 44100,
+            channels: 2,
+            ...invalid,
+          }),
+        ).toEqual({ status: -1, streamId: null })
+      }
       expect(calls).toHaveLength(1)
     })
   })

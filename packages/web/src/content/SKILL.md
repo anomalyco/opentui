@@ -85,7 +85,7 @@ Use public package entry points instead of source-file deep imports.
 | `embedded-terminal`, `terminal-renderable`, `ghostty`, `vt`, `pty`                                                   | `docs/components/embedded-terminal.mdx`     |
 | `clipboard`, `copy`, `osc52`, `host-clipboard`                                                                       | `docs/core-concepts/clipboard.mdx`          |
 | `audio`, `native-audio`, `sound`, `playback`, `mixer`, `devices`, `tap`                                              | `docs/core-concepts/audio.mdx`              |
-| `audio-streaming`, `audio-stream`, `radio`, `mp3`, `flac`, `icy`, `backpressure`, `reconnect`                        | `docs/application-apis/audio-streaming.mdx` |
+| `audio-streaming`, `audio-stream`, `pcm`, `f32le`, `radio`, `mp3`, `flac`, `icy`, `backpressure`, `reconnect`        | `docs/application-apis/audio-streaming.mdx` |
 | `audio-capture`, `microphone`, `pcm`, `recording`, `wav`, `audio-recorder`                                           | `docs/application-apis/audio-capture.mdx`   |
 | `animation`, `timeline`, `easing`, `use-timeline`                                                                    | `docs/application-apis/animation.mdx`       |
 | `testing`, `test-renderer`, `snapshots`, `frames`                                                                    | `docs/core-concepts/testing.mdx`            |

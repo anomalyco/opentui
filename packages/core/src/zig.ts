@@ -1941,7 +1941,7 @@ function getOpenTUILib(libPath?: string) {
       returns: "i32",
     },
     audioCreateStream: {
-      args: ["u32", "ptr", "ptr"],
+      args: ["u32", "buffer", "buffer"],
       returns: "i32",
     },
     audioWriteStream: {
@@ -6344,15 +6344,17 @@ class FFIRenderLib implements RenderLib {
   ): { status: number; streamId: number | null } {
     if (
       !isFFIU32(options.groupId) ||
-      (options.format !== NativeAudioStreamFormat.Mp3 && options.format !== NativeAudioStreamFormat.Flac)
+      !isFFIU32(options.sampleRate ?? 0) ||
+      !isFFIU32(options.channels ?? 0) ||
+      !Object.values(NativeAudioStreamFormat).includes(options.format)
     ) {
       return { status: -1, streamId: null }
     }
-    const optionsBuffer = AudioStreamCreateOptionsStruct.pack(options)
-    const outBuffer = new ArrayBuffer(4)
+    const optionsBuffer = new Uint8Array(AudioStreamCreateOptionsStruct.pack(options))
+    const outBuffer = new Uint32Array(1)
     const status = this.opentui.symbols.audioCreateStream(engine, optionsBuffer, outBuffer)
     if (status !== 0) return { status, streamId: null }
-    return { status, streamId: new Uint32Array(outBuffer)[0] ?? null }
+    return { status, streamId: outBuffer[0] ?? null }
   }
 
   public audioWriteStream(engine: AudioEngineHandle, streamId: number, data: Uint8Array): number {
