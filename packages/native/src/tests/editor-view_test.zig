@@ -3762,3 +3762,91 @@ test "EditorView - convert word selection to cell keeps the range and moves focu
     try std.testing.expectEqual(@as(u32, 0), converted_cursor.row);
     try std.testing.expectEqual(@as(u32, 9), converted_cursor.col);
 }
+
+test "EditorView wrap indent - moveDownVisual lands on content start" {
+    const pool = gp.initGlobalPool(std.testing.allocator);
+    defer gp.deinitGlobalPool();
+    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
+    defer link.deinitGlobalLinkPool();
+
+    var eb = try EditBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth, null);
+    defer eb.deinit();
+
+    var ev = try EditorView.init(std.testing.allocator, eb, 20, 10);
+    defer ev.deinit();
+
+    ev.setWrapMode(.char);
+    ev.setWrapIndent(.same);
+
+    var text_buf: [84]u8 = undefined;
+    @memset(text_buf[0..4], ' ');
+    @memset(text_buf[4..], 'a');
+    try eb.setText(&text_buf);
+
+    // From visual col 0: ↓ must land on first content column of the continuation
+    // (never inside the pad).
+    try eb.setCursor(0, 0);
+    var before = ev.getVisualCursor();
+    try std.testing.expectEqual(@as(u32, 0), before.visual_row);
+    try std.testing.expectEqual(@as(u32, 0), before.visual_col);
+
+    ev.moveDownVisual();
+
+    var after = ev.getVisualCursor();
+    try std.testing.expectEqual(@as(u32, 1), after.visual_row);
+    try std.testing.expectEqual(@as(u32, 0), after.logical_row);
+    try std.testing.expectEqual(@as(u32, 20), after.logical_col);
+    try std.testing.expectEqual(@as(u32, 4), after.visual_col);
+
+    const sol = ev.getVisualSOL();
+    try std.testing.expectEqual(@as(u32, 4), sol.visual_col);
+    try std.testing.expectEqual(@as(u32, 20), sol.logical_col);
+
+    // From end of first visual row: sticky column stays on-screen and outside the pad.
+    try eb.setCursor(0, 19);
+    before = ev.getVisualCursor();
+    try std.testing.expectEqual(@as(u32, 0), before.visual_row);
+    ev.moveDownVisual();
+    after = ev.getVisualCursor();
+    try std.testing.expectEqual(@as(u32, 1), after.visual_row);
+    try std.testing.expect(after.visual_col >= 4);
+    try std.testing.expect(after.logical_col >= 20);
+}
+
+test "EditorView wrap indent - edit reflow matches fresh setText" {
+    const pool = gp.initGlobalPool(std.testing.allocator);
+    defer gp.deinitGlobalPool();
+    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
+    defer link.deinitGlobalLinkPool();
+
+    var eb = try EditBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth, null);
+    defer eb.deinit();
+
+    var ev = try EditorView.init(std.testing.allocator, eb, 20, 10);
+    defer ev.deinit();
+
+    ev.setWrapMode(.char);
+    ev.setWrapIndent(.same);
+
+    try eb.setText("    aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+    try eb.setCursor(0, 10);
+    try eb.insertText("XXXX");
+
+    const after_edit = ev.getVirtualLines();
+
+    var eb2 = try EditBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth, null);
+    defer eb2.deinit();
+    var ev2 = try EditorView.init(std.testing.allocator, eb2, 20, 10);
+    defer ev2.deinit();
+    ev2.setWrapMode(.char);
+    ev2.setWrapIndent(.same);
+    try eb2.setText("    aaaaaaXXXXaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+
+    const fresh = ev2.getVirtualLines();
+    try std.testing.expectEqual(fresh.len, after_edit.len);
+    for (fresh, after_edit) |a, b| {
+        try std.testing.expectEqual(a.pad_cols, b.pad_cols);
+        try std.testing.expectEqual(a.width_cols, b.width_cols);
+        try std.testing.expectEqual(a.source_col_start, b.source_col_start);
+    }
+}

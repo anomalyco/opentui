@@ -74,6 +74,11 @@ export class EditorView {
     this.lib.editorViewSetWrapMode(this.viewPtr, mode)
   }
 
+  public setWrapIndent(indent: "none" | "same"): void {
+    this.guard()
+    this.lib.editorViewSetWrapIndent(this.viewPtr, indent)
+  }
+
   public getVirtualLineCount(): number {
     this.guard()
     return this.lib.editorViewGetVirtualLineCount(this.viewPtr)

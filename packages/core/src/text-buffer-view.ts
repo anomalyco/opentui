@@ -131,6 +131,11 @@ export class TextBufferView {
     this.lib.textBufferViewSetWrapMode(this.viewPtr, mode)
   }
 
+  public setWrapIndent(indent: "none" | "same"): void {
+    this.guard()
+    this.lib.textBufferViewSetWrapIndent(this.viewPtr, indent)
+  }
+
   public setFirstLineOffset(offset: number): void {
     this.guard()
     this.lib.textBufferViewSetFirstLineOffset(this.viewPtr, offset)

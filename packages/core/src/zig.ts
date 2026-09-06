@@ -1173,6 +1173,10 @@ function getOpenTUILib(libPath?: string) {
       args: ["u32", "u8"],
       returns: "void",
     },
+    textBufferViewSetWrapIndent: {
+      args: ["u32", "u8"],
+      returns: "void",
+    },
     textBufferViewSetFirstLineOffset: {
       args: ["u32", "u32"],
       returns: "void",
@@ -1256,6 +1260,10 @@ function getOpenTUILib(libPath?: string) {
       returns: "void",
     },
     editorViewSetWrapMode: {
+      args: ["u32", "u8"],
+      returns: "void",
+    },
+    editorViewSetWrapIndent: {
       args: ["u32", "u8"],
       returns: "void",
     },
@@ -2893,6 +2901,7 @@ export interface RenderLib extends AudioEngineLib {
   textBufferViewGetSelectionOccupancy: (view: TextBufferViewHandle) => SelectionOccupancy
   textBufferViewSetWrapWidth: (view: TextBufferViewHandle, width: number) => void
   textBufferViewSetWrapMode: (view: TextBufferViewHandle, mode: "none" | "char" | "word") => void
+  textBufferViewSetWrapIndent: (view: TextBufferViewHandle, indent: "none" | "same") => void
   textBufferViewSetFirstLineOffset: (view: TextBufferViewHandle, offset: number) => void
   textBufferViewSetViewportSize: (view: TextBufferViewHandle, width: number, height: number) => void
   textBufferViewSetViewport: (view: TextBufferViewHandle, x: number, y: number, width: number, height: number) => void
@@ -2995,6 +3004,7 @@ export interface RenderLib extends AudioEngineLib {
   editorViewGetViewport: (view: EditorViewHandle) => { offsetY: number; offsetX: number; height: number; width: number }
   editorViewSetScrollMargin: (view: EditorViewHandle, margin: number) => void
   editorViewSetWrapMode: (view: EditorViewHandle, mode: "none" | "char" | "word") => void
+  editorViewSetWrapIndent: (view: EditorViewHandle, indent: "none" | "same") => void
   editorViewGetVirtualLineCount: (view: EditorViewHandle) => number
   editorViewGetTotalVirtualLineCount: (view: EditorViewHandle) => number
   editorViewGetTextBufferView: (view: EditorViewHandle) => TextBufferViewHandle
@@ -5260,6 +5270,11 @@ class FFIRenderLib implements RenderLib {
     this.opentui.symbols.textBufferViewSetWrapMode(view, modeValue)
   }
 
+  public textBufferViewSetWrapIndent(view: Pointer, indent: "none" | "same"): void {
+    const indentValue = indent === "same" ? 1 : 0
+    this.opentui.symbols.textBufferViewSetWrapIndent(view, indentValue)
+  }
+
   public textBufferViewSetFirstLineOffset(view: Pointer, offset: number): void {
     this.opentui.symbols.textBufferViewSetFirstLineOffset(view, offset)
   }
@@ -5534,6 +5549,11 @@ class FFIRenderLib implements RenderLib {
   public editorViewSetWrapMode(view: Pointer, mode: "none" | "char" | "word"): void {
     const modeValue = mode === "none" ? 0 : mode === "char" ? 1 : 2
     this.opentui.symbols.editorViewSetWrapMode(view, modeValue)
+  }
+
+  public editorViewSetWrapIndent(view: Pointer, indent: "none" | "same"): void {
+    const indentValue = indent === "same" ? 1 : 0
+    this.opentui.symbols.editorViewSetWrapIndent(view, indentValue)
   }
 
   public editorViewGetVirtualLineCount(view: Pointer): number {

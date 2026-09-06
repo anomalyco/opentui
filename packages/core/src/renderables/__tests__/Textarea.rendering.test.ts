@@ -228,6 +228,21 @@ describe("Textarea - Rendering Tests", () => {
       expect(editor.wrapMode).toBe("word")
     })
 
+    it("should handle wrapIndent property", async () => {
+      const { textarea: editor } = await createTextareaRenderable(currentRenderer, renderOnce, {
+        initialValue: "    " + "a".repeat(80),
+        width: 20,
+        height: 10,
+        wrapMode: "char",
+        wrapIndent: "none",
+      })
+
+      expect(editor.wrapIndent).toBe("none")
+      editor.wrapIndent = "same"
+      expect(editor.wrapIndent).toBe("same")
+      expect(editor.editorView.getVirtualLineCount()).toBeGreaterThan(1)
+    })
+
     it("should render with tab indicator correctly", async () => {
       const { textarea: editor } = await createTextareaRenderable(currentRenderer, renderOnce, {
         initialValue: "Line 1\tTabbed\nLine 2\t\tDouble tab",

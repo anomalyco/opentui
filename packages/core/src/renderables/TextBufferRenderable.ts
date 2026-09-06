@@ -8,6 +8,8 @@ import type { OptimizedBuffer } from "../buffer.js"
 import { NativeMeasureTargetKind, resolveRenderLib, type LineInfo, type NativeRenderableHandle } from "../zig.js"
 import { SyntaxStyle } from "../syntax-style.js"
 
+export type WrapIndent = "none" | "same"
+
 export interface TextBufferOptions extends RenderableOptions<TextBufferRenderable> {
   fg?: string | RGBA
   bg?: string | RGBA
@@ -16,6 +18,7 @@ export interface TextBufferOptions extends RenderableOptions<TextBufferRenderabl
   selectable?: boolean
   attributes?: number
   wrapMode?: "none" | "char" | "word"
+  wrapIndent?: WrapIndent
   tabIndicator?: string | number
   tabIndicatorColor?: string | RGBA
   truncate?: boolean
@@ -30,6 +33,7 @@ export abstract class TextBufferRenderable extends Renderable implements LineInf
   protected _selectionBg: RGBA | undefined
   protected _selectionFg: RGBA | undefined
   protected _wrapMode: "none" | "char" | "word" = "word"
+  protected _wrapIndent: WrapIndent = "none"
   protected lastLocalSelection: LocalSelectionBounds | null = null
   protected _tabIndicator?: string | number
   protected _tabIndicatorColor?: RGBA
@@ -51,6 +55,7 @@ export abstract class TextBufferRenderable extends Renderable implements LineInf
     selectable: true,
     attributes: 0,
     wrapMode: "word" as "none" | "char" | "word",
+    wrapIndent: "none" as WrapIndent,
     tabIndicator: undefined,
     tabIndicatorColor: undefined,
     truncate: false,
@@ -66,6 +71,7 @@ export abstract class TextBufferRenderable extends Renderable implements LineInf
     this._selectionFg = options.selectionFg ? parseColor(options.selectionFg) : this._defaultOptions.selectionFg
     this.selectable = options.selectable ?? this._defaultOptions.selectable
     this._wrapMode = options.wrapMode ?? this._defaultOptions.wrapMode
+    this._wrapIndent = options.wrapIndent ?? this._defaultOptions.wrapIndent
     this._tabIndicator = options.tabIndicator ?? this._defaultOptions.tabIndicator
     this._tabIndicatorColor = options.tabIndicatorColor
       ? parseColor(options.tabIndicatorColor)
@@ -80,6 +86,7 @@ export abstract class TextBufferRenderable extends Renderable implements LineInf
     this.textBuffer.setSyntaxStyle(this._textBufferSyntaxStyle)
 
     this.textBufferView.setWrapMode(this._wrapMode)
+    this.textBufferView.setWrapIndent(this._wrapIndent)
     this.textBufferView.setFirstLineOffset(this._firstLineOffset)
     this.setupNativeRenderable()
 
@@ -305,6 +312,19 @@ export abstract class TextBufferRenderable extends Renderable implements LineInf
         this.textBufferView.setWrapWidth(this.width)
       }
       // Changing wrap mode can change dimensions, so mark yoga node dirty to trigger re-measurement
+      this.yogaNode.markDirty()
+      this.requestRender()
+    }
+  }
+
+  get wrapIndent(): WrapIndent {
+    return this._wrapIndent
+  }
+
+  set wrapIndent(value: WrapIndent) {
+    if (this._wrapIndent !== value) {
+      this._wrapIndent = value
+      this.textBufferView.setWrapIndent(this._wrapIndent)
       this.yogaNode.markDirty()
       this.requestRender()
     }
