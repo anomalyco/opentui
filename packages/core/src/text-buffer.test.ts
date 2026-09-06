@@ -1,21 +1,56 @@
-import { describe, expect, it, beforeEach, afterEach } from "bun:test"
+import { ResourceContext } from "./buffer.js"
+import { describe, expect, it, beforeEach, afterEach, spyOn } from "bun:test"
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { TextBuffer } from "./text-buffer.js"
-import { resolveRenderLib } from "./zig.js"
+import { NativeStatus, resolveRenderLib } from "./zig.js"
 import { StyledText, stringToStyledText } from "./lib/styled-text.js"
 import { RGBA } from "./lib/RGBA.js"
 import { SyntaxStyle } from "./syntax-style.js"
 
+let resourceContext: ResourceContext
+beforeEach(() => {
+  resourceContext = new ResourceContext({ objectCapacity: 8, renderCellsMax: 1 })
+})
+afterEach(() => resourceContext.destroy())
+
 const MALFORMED_UTF8_ABOVE_UNICODE_RANGE = new Uint8Array([0x41, 0xf4, 0x90, 0x80, 0x80, 0x42])
-const MALFORMED_UTF8_TEXT = "A" + "\uFFFD".repeat(4) + "B"
+
+it.each(["setText", "append"] as const)("%s publishes only accepted mutations before deferred errors", (method) => {
+  const buffer = TextBuffer.create("unicode", resourceContext)
+  const lib = resourceContext.renderLib
+  const operation = method === "setText" ? "contextTextBufferSetText" : "contextTextBufferAppend"
+  const original = lib[operation].bind(lib)
+  const failure = new Error("rejected text mutation")
+  buffer.setText("old")
+  const rejected = spyOn(lib, operation).mockImplementation(() => {
+    throw failure
+  })
+  try {
+    expect(() => buffer[method]("new")).toThrow(failure)
+    expect(buffer.getPlainText()).toBe("old")
+    expect(buffer.length).toBe(3)
+    rejected.mockImplementation((...args) => {
+      original(...args)
+      lib.getYogaHost().invokeCallback(() => {
+        throw failure
+      })
+    })
+    expect(() => buffer[method]("new")).toThrow(failure)
+    expect(buffer.getPlainText()).toBe(method === "setText" ? "new" : "oldnew")
+    expect(buffer.length).toBe(method === "setText" ? 3 : 6)
+  } finally {
+    rejected.mockRestore()
+    buffer.destroy()
+  }
+})
 
 describe("TextBuffer", () => {
   let buffer: TextBuffer
 
   beforeEach(() => {
-    buffer = TextBuffer.create("wcwidth")
+    buffer = TextBuffer.create("wcwidth", resourceContext)
   })
 
   afterEach(() => {
@@ -26,7 +61,9 @@ describe("TextBuffer", () => {
     it("should set text content", () => {
       const text = "Hello World"
       buffer.setText(text)
+      if (typeof Bun !== "undefined") Bun.gc(true)
 
+      expect(buffer.getPlainText()).toBe(text)
       expect(buffer.length).toBe(11)
       expect(buffer.byteSize).toBeGreaterThan(0)
     })
@@ -123,14 +160,6 @@ describe("TextBuffer", () => {
       const plainText = buffer.getPlainText()
       expect(plainText).toBe("Red\nBlue")
     })
-
-    it("should return null bytes for zero-length plain-text output buffer", () => {
-      buffer.setText("Hello World")
-
-      const plainBytes = (buffer as any).lib.getPlainTextBytes(buffer.ptr, 0)
-
-      expect(plainBytes).toBeNull()
-    })
   })
 
   describe("tab width", () => {
@@ -144,27 +173,12 @@ describe("TextBuffer", () => {
   })
 
   describe("getTextRange", () => {
-    it("should return null bytes for zero-length range output buffers", () => {
+    it("returns ranges that remain unchanged after replacement", () => {
       buffer.setText("Hello World")
-
-      const lib = (buffer as any).lib
-
-      expect(lib.textBufferGetTextRange(buffer.ptr, 0, 5, 0)).toBeNull()
-      expect(lib.textBufferGetTextRangeByCoords(buffer.ptr, 0, 0, 0, 5, 0)).toBeNull()
-    })
-
-    it("returns independently owned exact-length coordinate ranges", () => {
-      buffer.setText("Hello World")
-      const lib = (buffer as any).lib
-
-      const first = lib.textBufferGetTextRangeByCoords(buffer.ptr, 0, 0, 0, 5, 64) as Uint8Array
-      const second = lib.textBufferGetTextRangeByCoords(buffer.ptr, 0, 0, 0, 5, 64) as Uint8Array
-
-      expect(new TextDecoder().decode(first)).toBe("Hello")
-      expect(first.byteLength).toBe(5)
-      expect(first.buffer.byteLength).toBe(5)
-      expect(second).not.toBe(first)
-      expect(second.buffer).not.toBe(first.buffer)
+      const first = buffer.getTextRange(0, 5)
+      buffer.setText("Other World")
+      expect(first).toBe("Hello")
+      expect(buffer.getTextRange(0, 5)).toBe("Other")
     })
   })
 
@@ -177,7 +191,7 @@ describe("TextBuffer", () => {
     })
 
     it("should round-trip line highlights through the native highlight buffer", () => {
-      const style = SyntaxStyle.create()
+      const style = SyntaxStyle.create(resourceContext)
 
       try {
         const styleId = style.registerStyle("highlight", {
@@ -254,12 +268,20 @@ describe("TextBuffer", () => {
   })
 
   describe("clear() vs reset()", () => {
+    it("reset rejection crosses the native status boundary", () => {
+      const handle = buffer._getSceneHandle(resourceContext)
+      buffer.destroy()
+      expect(() => resolveRenderLib().contextTextBufferClear(resourceContext.context, handle, true)).toThrow(
+        "StaleHandle",
+      )
+    })
+
     it("clear() should empty buffer but preserve text across setText calls", () => {
       // Set initial text
       buffer.setText("First text")
       expect(buffer.length).toBe(10)
 
-      // Set new text (which calls clear() internally)
+      // Set new text
       buffer.setText("Second text")
       expect(buffer.length).toBe(11)
       expect(buffer.getPlainText()).toBe("Second text")
@@ -283,22 +305,8 @@ describe("TextBuffer", () => {
       expect(buffer.length).toBe(8)
     })
 
-    it("setText should preserve highlights (use clear() not reset())", () => {
-      // This test verifies that setText now uses clear() internally
-      // and doesn't clear highlights
-      buffer.setText("Hello World")
-
-      // Note: We can't easily test highlight preservation from TypeScript
-      // without a SyntaxStyle, but we verify the buffer still works
-      expect(buffer.length).toBe(11)
-
-      buffer.setText("New Text")
-      expect(buffer.length).toBe(8)
-      expect(buffer.getPlainText()).toBe("New Text")
-    })
-
     it("setText should clear styled text chunk highlights", () => {
-      const syntaxStyle = SyntaxStyle.create()
+      const syntaxStyle = SyntaxStyle.create(resourceContext)
       buffer.setSyntaxStyle(syntaxStyle)
       buffer.setStyledText(
         new StyledText([
@@ -321,7 +329,7 @@ describe("TextBuffer", () => {
     })
 
     it("setText should preserve user highlights including max hlRef", () => {
-      const syntaxStyle = SyntaxStyle.create()
+      const syntaxStyle = SyntaxStyle.create(resourceContext)
       const styleId = syntaxStyle.registerStyle("user-highlight", { fg: RGBA.fromValues(0, 1, 0, 1) })
       buffer.setSyntaxStyle(syntaxStyle)
       buffer.setText("Hello World")
@@ -385,52 +393,51 @@ describe("TextBuffer", () => {
       expect(buffer.length).toBe(11)
       expect(buffer.getPlainText()).toBe("After reset")
     })
-
-    it("recovers if the native memory registry entry was cleared", () => {
-      buffer.setText("Hello World")
-
-      resolveRenderLib().textBufferClearMemRegistry(buffer.ptr)
-
-      buffer.setText("Recovered")
-
-      expect(buffer.length).toBe(9)
-      expect(buffer.byteSize).toBe(9)
-      expect(buffer.getPlainText()).toBe("Recovered")
-    })
   })
 
   describe("malformed UTF-8 bytes", () => {
-    it("loadFile should preserve malformed UTF-8 bytes without panicking", () => {
+    it.each(["contextTextBufferSetText", "contextTextBufferAppend"] as const)(
+      "%s rejects malformed UTF-8 bytes without changing text",
+      (operation) => {
+        const lib = resolveRenderLib()
+        const unicodeBuffer = TextBuffer.create("unicode", resourceContext)
+
+        try {
+          unicodeBuffer.setText("kept")
+          expect(() =>
+            lib[operation](
+              resourceContext.context,
+              unicodeBuffer._getSceneHandle(resourceContext),
+              MALFORMED_UTF8_ABOVE_UNICODE_RANGE,
+            ),
+          ).toThrow("InvalidArgument")
+          expect(unicodeBuffer.byteSize).toBe(4)
+          expect(unicodeBuffer.length).toBe(4)
+          expect(unicodeBuffer.getLineCount()).toBe(1)
+          expect(unicodeBuffer.getPlainText()).toBe("kept")
+        } finally {
+          unicodeBuffer.destroy()
+        }
+      },
+    )
+
+    it("loadFile rejects malformed UTF-8 bytes without changing text", () => {
       const dir = mkdtempSync(join(process.env.OTUI_TEXT_BUFFER_TEST_TMPDIR ?? tmpdir(), "opentui-text-buffer-"))
       const path = join(dir, "malformed.txt")
-      const unicodeBuffer = TextBuffer.create("unicode")
+      const unicodeBuffer = TextBuffer.create("unicode", resourceContext)
 
       try {
         writeFileSync(path, MALFORMED_UTF8_ABOVE_UNICODE_RANGE)
 
-        unicodeBuffer.loadFile(path)
-
-        expect(unicodeBuffer.byteSize).toBe(6)
-        expect(unicodeBuffer.length).toBe(2)
+        unicodeBuffer.setText("kept")
+        expect(() => unicodeBuffer.loadFile(path)).toThrow("InvalidArgument")
+        expect(unicodeBuffer.byteSize).toBe(4)
+        expect(unicodeBuffer.length).toBe(4)
         expect(unicodeBuffer.getLineCount()).toBe(1)
-        expect(unicodeBuffer.getPlainText()).toBe(MALFORMED_UTF8_TEXT)
+        expect(unicodeBuffer.getPlainText()).toBe("kept")
       } finally {
         unicodeBuffer.destroy()
         rmSync(dir, { recursive: true, force: true })
-      }
-    })
-
-    it("textBufferAppend should preserve malformed UTF-8 bytes without panicking", () => {
-      const lib = resolveRenderLib()
-      const unicodeBuffer = TextBuffer.create("unicode")
-
-      try {
-        lib.textBufferAppend(unicodeBuffer.ptr, MALFORMED_UTF8_ABOVE_UNICODE_RANGE)
-
-        expect(lib.textBufferGetByteSize(unicodeBuffer.ptr)).toBe(6)
-        expect(lib.textBufferGetLength(unicodeBuffer.ptr)).toBe(2)
-      } finally {
-        unicodeBuffer.destroy()
       }
     })
   })
@@ -480,6 +487,7 @@ describe("TextBuffer", () => {
     it("should append unicode content", () => {
       buffer.setText("Hello ")
       buffer.append("世界 🌟")
+      if (typeof Bun !== "undefined") Bun.gc(true)
       expect(buffer.getPlainText()).toBe("Hello 世界 🌟")
     })
 

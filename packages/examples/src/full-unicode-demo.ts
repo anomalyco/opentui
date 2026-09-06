@@ -189,7 +189,7 @@ export function run(renderer: CliRenderer): void {
   rootGroup.add(styledText)
 
   const styledText2 = new DraggableStyledText(renderer, "draggable-styled-text-2", 18, 16)
-  styledText2.content = t`${bold(fg("#55FF55", "Emoji Check:"))} ✅ 👩🏽‍💻  👨‍👩‍👧‍👦  🏳️‍🌈
+  styledText2.content = t`${bold(fg("#55FF55")("Emoji Check:"))} ✅ 👩🏽‍💻  👨‍👩‍👧‍👦  🏳️‍🌈
 ${underline("Drag me too:")} 🇺🇸  🇩🇪  🇯🇵  🇮🇳  a̐éö̲`
   rootGroup.add(styledText2)
 
@@ -246,7 +246,7 @@ export function destroy(renderer: CliRenderer): void {
   }
   renderer.clearPostProcessFns()
   const root = renderer.root.getRenderable("full-unicode-root")
-  if (root) renderer.root.remove(root)
+  root?.destroyRecursively()
   demoState = null
 }
 

@@ -717,8 +717,6 @@ pub fn encodedCharWidth(c: u32) u32 {
     }
 }
 
-var GLOBAL_POOL_STORAGE: ?GraphemePool = null;
-
 pub fn initGlobalPool(allocator: std.mem.Allocator) *GraphemePool {
     return initGlobalPoolWithOptions(allocator, .{});
 }
@@ -727,17 +725,11 @@ pub fn initGlobalPoolWithOptions(
     allocator: std.mem.Allocator,
     options: GraphemePool.InitOptions,
 ) *GraphemePool {
-    if (GLOBAL_POOL_STORAGE == null) {
-        GLOBAL_POOL_STORAGE = GraphemePool.initWithOptions(allocator, options);
-    }
-    return &GLOBAL_POOL_STORAGE.?;
+    return @import("compatibility-context.zig").compatDefault.initGraphemePool(allocator, options);
 }
 
 pub fn deinitGlobalPool() void {
-    if (GLOBAL_POOL_STORAGE) |*p| {
-        p.deinit();
-        GLOBAL_POOL_STORAGE = null;
-    }
+    @import("compatibility-context.zig").compatDefault.deinitGraphemePool();
 }
 
 pub const GraphemeTracker = struct {

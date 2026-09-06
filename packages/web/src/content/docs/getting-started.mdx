@@ -11,7 +11,7 @@ skill:
 OpenTUI is a native terminal UI core written in Zig with TypeScript bindings.
 
 It renders a component tree, lays it out with Flexbox, handles terminal input, and updates the cells that changed.
-OpenTUI's TypeScript packages call the native Zig library through an internal ABI. OpenTUI powers OpenCode in production.
+OpenTUI's TypeScript packages call the Zig library through its native interface. OpenTUI powers OpenCode in production.
 
 ## Start with the quickstart
 
@@ -41,6 +41,7 @@ If you use Core, read [Renderables](/docs/core-concepts/renderables) after the q
 - [Testing](/docs/core-concepts/testing) renders apps in memory for assertions and snapshots.
 - [Package entry points](/docs/reference/package-entrypoints) lists supported import paths.
 - [Lifecycle and cleanup](/docs/core-concepts/lifecycle) owns terminal restoration and resource release.
+- [Native rendering](/docs/native/overview) explains the scene model and native C, Zig, and Rust interfaces.
 
 ## Explore the examples
 

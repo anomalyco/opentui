@@ -1,21 +1,39 @@
-import { afterEach, beforeEach, expect, test } from "bun:test"
+import { afterEach, beforeEach, expect, spyOn, test } from "bun:test"
+import { once } from "node:events"
+import { setImmediate } from "node:timers/promises"
+import { CliRenderEvents } from "../renderer.js"
 import { SystemClock } from "../lib/clock.js"
 import { TextRenderable } from "../renderables/Text.js"
 import { createTestRenderer, type TestRenderer } from "../testing/test-renderer.js"
 import { ManualClock } from "../testing/manual-clock.js"
+import { NativeSessionRenderStatus } from "../zig.js"
 
 let clock: ManualClock
 let renderer: TestRenderer
 let renderOnce: () => Promise<void>
 let captureCharFrame: () => string
 
+async function serviceReadyFrames(): Promise<void> {
+  for (let turn = 0; turn < 64; turn++) {
+    await setImmediate()
+    const state = renderer as unknown as {
+      rendering: boolean
+      cancelReadyFrame: unknown
+      outputIdleRenderScheduled: boolean
+    }
+    if (!state.rendering && !state.cancelReadyFrame && !state.outputIdleRenderScheduled) return
+  }
+  throw new Error("Renderer did not finish ready work within 64 host turns")
+}
+
 beforeEach(async () => {
   clock = new ManualClock()
   ;({ renderer, renderOnce, captureCharFrame } = await createTestRenderer({ clock, maxFps: 60 }))
 })
 
-afterEach(() => {
+afterEach(async () => {
   renderer.destroy()
+  await renderer.closed
 })
 
 test("renderer init does not pre-schedule frames when size is unchanged", async () => {
@@ -24,8 +42,7 @@ test("renderer init does not pre-schedule frames when size is unchanged", async 
     frameCalls++
   })
 
-  // @ts-expect-error - inspect private renderer scheduling state in regression test
-  expect(renderer.updateScheduled).toBe(false)
+  expect(renderer.getSchedulerState().hasScheduledRender).toBe(false)
   // @ts-expect-error - inspect private manual clock timers in regression test
   expect(clock.timers.size).toBe(0)
 
@@ -41,17 +58,11 @@ test("requestRender() does not stall after a backward clock jump", async () => {
   renderer.lastTime = 10_000
   clock.setTime(8_000)
 
-  let renderCalled = false
-  // @ts-expect-error - intercept private render method in regression test
-  renderer.renderNative = () => {
-    renderCalled = true
-  }
-
   renderer.requestRender()
   clock.advance(20)
-  await Promise.resolve()
+  await renderer.idle()
 
-  expect(renderCalled).toBe(true)
+  expect(renderer.getStats().nativeFrameCount).toBe(1)
 })
 
 test("requestRender() uses SystemClock by default when no clock is injected", async () => {
@@ -75,29 +86,23 @@ test("requestRender() uses SystemClock by default when no clock is injected", as
   try {
     ;({ renderer: defaultRenderer } = await createTestRenderer({ maxFps: 60 }))
 
-    // @ts-expect-error - inspect private renderer clock in regression test
     expect(defaultRenderer.clock).toBeInstanceOf(SystemClock)
 
     // @ts-expect-error - inspect private renderer timing state in regression test
     defaultRenderer.lastTime = 10_000
     nowValue = 8_000
 
-    let renderCalled = false
-    // @ts-expect-error - intercept private render method in regression test
-    defaultRenderer.renderNative = () => {
-      renderCalled = true
-    }
-
     defaultRenderer.requestRender()
     defaultClock.advance(20)
-    await Promise.resolve()
+    await defaultRenderer.idle()
 
-    expect(renderCalled).toBe(true)
+    expect(defaultRenderer.getStats().nativeFrameCount).toBe(1)
   } finally {
     defaultRenderer?.destroy()
     globalThis.performance.now = originalNow
     globalThis.setTimeout = originalSetTimeout
     globalThis.clearTimeout = originalClearTimeout
+    await defaultRenderer?.closed
   }
 })
 
@@ -129,13 +134,6 @@ test("targetFps setter updates frame timing", () => {
 })
 
 test("maxFps setter updates requestRender throttle timing", async () => {
-  let renderCalled = false
-
-  // @ts-expect-error - intercept private render method in regression test
-  renderer.renderNative = () => {
-    renderCalled = true
-  }
-
   renderer.maxFps = 10
 
   expect(renderer.maxFps).toBe(10)
@@ -146,102 +144,92 @@ test("maxFps setter updates requestRender throttle timing", async () => {
 
   clock.advance(99)
   await Promise.resolve()
-  expect(renderCalled).toBe(false)
+  expect(renderer.getStats().nativeFrameCount).toBe(0)
 
   clock.advance(1)
-  await Promise.resolve()
-  expect(renderCalled).toBe(true)
+  await renderer.idle()
+  expect(renderer.getStats().nativeFrameCount).toBe(1)
 })
 
 test("intermediateRender() replaces the pending live frame timer", async () => {
+  const liveFrame = once(renderer, CliRenderEvents.FRAME)
   renderer.requestLive()
-  await Promise.resolve()
+  await liveFrame
 
   // @ts-expect-error - inspect private manual clock timers in regression test
   expect(clock.timers.size).toBe(1)
 
+  const intermediateFrame = once(renderer, CliRenderEvents.FRAME)
   renderer.intermediateRender()
+  await intermediateFrame
 
   // @ts-expect-error - inspect private manual clock timers in regression test
   expect(clock.timers.size).toBe(1)
 })
 
-test("threaded output backpressure retries a skipped native frame", async () => {
-  const internals = renderer as unknown as {
-    lib: { render: (...args: unknown[]) => number }
-    _useThread: boolean
-    _usesProcessStdout: boolean
-  }
-  const originalRender = internals.lib.render
-  const originalUseThread = internals._useThread
-  const originalUsesProcessStdout = internals._usesProcessStdout
+test("Session output backpressure retries a skipped native frame", async () => {
+  const driver = renderer.nativeScene.driver
+  const originalRender = driver.render.bind(driver)
   let calls = 0
-  internals.lib.render = () => (calls++ === 0 ? 1 : 0)
-  internals._useThread = true
-  internals._usesProcessStdout = true
+  const render = spyOn(driver, "render").mockImplementation((...args) =>
+    calls++ === 0 ? NativeSessionRenderStatus.Skipped : originalRender(...args),
+  )
   try {
     renderer.requestRender()
     clock.advance(20)
-    await Promise.resolve()
-    expect(calls).toBe(1)
+    await serviceReadyFrames()
+    expect(render).toHaveBeenCalledTimes(1)
+    expect(renderer.getStats().nativeFrameCount).toBe(0)
 
     clock.advance(20)
-    await Promise.resolve()
-    expect(calls).toBe(2)
+    await renderer.idle()
+    expect(render).toHaveBeenCalledTimes(2)
+    expect(renderer.getStats().nativeFrameCount).toBe(1)
   } finally {
-    internals.lib.render = originalRender
-    internals._useThread = originalUseThread
-    internals._usesProcessStdout = originalUsesProcessStdout
+    render.mockRestore()
   }
 })
 
 test("threaded output backpressure delivers the final automatic animation frame before going idle", async () => {
   const text = new TextRenderable(renderer, { content: "before" })
   renderer.root.add(text)
-  clock.advance(100)
-  await Promise.resolve()
+  await renderOnce()
   expect(captureCharFrame()).toContain("before")
   expect(renderer.getSchedulerState().hasScheduledRender).toBe(false)
 
-  const internals = renderer as unknown as { renderNative: () => string }
-  const originalRenderNative = internals.renderNative
+  const driver = renderer.nativeScene.driver
+  const originalRender = driver.render.bind(driver)
   let attempts = 0
-  // Reject only the final animation frame; accepted frames still use the native renderer.
-  internals.renderNative = () => {
-    if (attempts++ === 0) return "backpressured"
-    return originalRenderNative.call(renderer)
-  }
-
+  const render = spyOn(driver, "render").mockImplementation((...args) =>
+    attempts++ === 0 ? NativeSessionRenderStatus.Skipped : originalRender(...args),
+  )
   try {
-    requestAnimationFrame(() => {
+    renderer.requestAnimationFrame(() => {
       text.content = "after"
     })
-    await Promise.resolve()
-    expect(captureCharFrame()).toContain("before")
-
     clock.advance(20)
-    await Promise.resolve()
+    await serviceReadyFrames()
+    expect(captureCharFrame()).toContain("before")
+    clock.advance(20)
+    await renderer.idle()
     expect(captureCharFrame()).toContain("after")
-    expect(attempts).toBe(2)
     expect(renderer.getSchedulerState()).toEqual({
       isRunning: false,
       isRendering: false,
       hasScheduledRender: false,
     })
   } finally {
-    internals.renderNative = originalRenderNative
+    render.mockRestore()
   }
 })
 
 test.each(["pause", "stop"] as const)(
-  "threaded output backpressure does not restart a loop cancelled by %s()",
+  "Session output backpressure does not restart a loop cancelled by %s() during its callback",
   async (method) => {
-    const internals = renderer as unknown as {
-      renderNative: () => "backpressured"
-    }
-    const originalRenderNative = internals.renderNative
     let frameCalls = 0
-    internals.renderNative = () => "backpressured"
+    const render = spyOn(renderer.nativeScene.driver, "render").mockImplementation(
+      () => NativeSessionRenderStatus.Skipped,
+    )
     renderer.setFrameCallback(async () => {
       frameCalls++
       renderer[method]()
@@ -249,49 +237,99 @@ test.each(["pause", "stop"] as const)(
 
     try {
       renderer.start()
-      await Promise.resolve()
+      await serviceReadyFrames()
       expect(frameCalls).toBe(1)
 
       clock.advance(20)
-      await Promise.resolve()
+      await serviceReadyFrames()
       expect(frameCalls).toBe(1)
     } finally {
-      internals.renderNative = originalRenderNative
+      render.mockRestore()
+    }
+  },
+)
+
+test.each(["pause", "stop"] as const)(
+  "a fresh render requested after %s() inside a callback survives output pressure",
+  async (method) => {
+    const driver = renderer.nativeScene.driver
+    const original = driver.render.bind(driver)
+    let calls = 0
+    let callbacks = 0
+    const render = spyOn(driver, "render").mockImplementation((...args) =>
+      calls++ === 0 ? NativeSessionRenderStatus.Skipped : original(...args),
+    )
+    renderer.setFrameCallback(async () => {
+      if (++callbacks !== 1) return
+      renderer[method]()
+      renderer.requestRender()
+    })
+    try {
+      renderer.start()
+      await serviceReadyFrames()
+      clock.advance(20)
+      await renderer.idle()
+      expect(callbacks).toBe(2)
+      expect(renderer.getStats().nativeFrameCount).toBe(1)
+      expect(renderer.isRunning).toBe(false)
+    } finally {
+      render.mockRestore()
+    }
+  },
+)
+
+test.each(["pause", "stop"] as const)(
+  "repeating %s() inside a one-shot callback cancels its output retry",
+  async (method) => {
+    let callbacks = 0
+    const render = spyOn(renderer.nativeScene.driver, "render").mockImplementation(
+      () => NativeSessionRenderStatus.Skipped,
+    )
+    renderer[method]()
+    renderer.setFrameCallback(async () => {
+      callbacks++
+      renderer.requestRender()
+      renderer[method]()
+    })
+    try {
+      renderer.requestRender()
+      clock.advance(20)
+      await serviceReadyFrames()
+      expect(callbacks).toBe(1)
+      clock.advance(20)
+      await serviceReadyFrames()
+      expect(callbacks).toBe(1)
+      expect(renderer.getStats().nativeFrameCount).toBe(0)
+    } finally {
+      render.mockRestore()
     }
   },
 )
 
 test("fps counts rendered frames and excludes dropped frames", async () => {
-  const internals = renderer as unknown as {
-    renderNative: () => "rendered" | "retryable-skip" | "backpressured" | "blocked" | "failed"
-    lastTime: number
-    lastFpsTime: number
-    frameCount: number
-    currentFps: number
-    renderStats: { fps: number; frameCount: number }
-  }
-  const originalRenderNative = internals.renderNative
-  const statuses: Array<"rendered" | "retryable-skip" | "backpressured" | "blocked" | "failed"> = [
-    "rendered",
-    "retryable-skip",
-    "rendered",
-    "backpressured",
-    "blocked",
-    "failed",
-    "retryable-skip",
-    "rendered",
-    "rendered",
+  const driver = renderer.nativeScene.driver
+  const originalRender = driver.render.bind(driver)
+  const statuses = [
+    NativeSessionRenderStatus.Presented,
+    NativeSessionRenderStatus.Skipped,
+    NativeSessionRenderStatus.Presented,
+    NativeSessionRenderStatus.Skipped,
+    NativeSessionRenderStatus.Skipped,
+    NativeSessionRenderStatus.Failed,
+    NativeSessionRenderStatus.Skipped,
+    NativeSessionRenderStatus.Presented,
+    NativeSessionRenderStatus.Presented,
   ]
-  internals.renderNative = () => statuses.shift() ?? "retryable-skip"
-  internals.lastTime = 0
-  internals.lastFpsTime = 0
-  internals.frameCount = 0
-  internals.currentFps = 0
-  internals.renderStats.fps = 0
+  const render = spyOn(driver, "render").mockImplementation((...args) => {
+    const status = statuses.shift()!
+    return status === NativeSessionRenderStatus.Presented ? originalRender(...args) : status
+  })
+  const errors = spyOn(console, "error").mockImplementation(() => {})
   try {
     for (const time of [100, 200, 300, 1000]) {
       clock.setTime(time)
       await renderOnce()
+      await driver.idle()
       renderer.pause()
     }
     expect(renderer.getStats().fps).toBe(2)
@@ -299,6 +337,7 @@ test("fps counts rendered frames and excludes dropped frames", async () => {
     for (const time of [1100, 1500, 2000]) {
       clock.setTime(time)
       await renderOnce()
+      await driver.idle()
       renderer.pause()
     }
     expect(renderer.getStats().fps).toBe(0)
@@ -306,13 +345,36 @@ test("fps counts rendered frames and excludes dropped frames", async () => {
     for (const time of [2100, 3000]) {
       clock.setTime(time)
       await renderOnce()
+      await driver.idle()
       renderer.pause()
     }
     expect(renderer.getStats().fps).toBe(2)
-    expect(internals.renderStats.frameCount).toBe(9)
+    expect(renderer.getStats().frameCount).toBe(9)
+    expect(renderer.getStats().nativeFrameCount).toBe(4)
+    expect(errors).toHaveBeenCalledTimes(1)
   } finally {
-    internals.renderNative = originalRenderNative
+    render.mockRestore()
+    errors.mockRestore()
   }
+})
+
+test("fps excludes frames blocked on the startup cursor reply", async () => {
+  renderer.destroy()
+  await renderer.closed
+  ;({ renderer, renderOnce } = await createTestRenderer({
+    clock,
+    screenMode: "split-footer",
+    externalOutputMode: "capture-stdout",
+  }))
+  clock.setTime(1000)
+  await renderer.setupTerminal()
+  await renderOnce()
+  expect(renderer.getStats().fps).toBe(0)
+  expect(renderer.getStats().nativeFrameCount).toBe(0)
+
+  renderer.stdin.emit("data", Buffer.from("\x1b[1;1R"))
+  await renderOnce()
+  expect(renderer.getStats().nativeFrameCount).toBe(1)
 })
 
 test("starting the render loop resets stale fps immediately", () => {
@@ -331,21 +393,18 @@ test("starting the render loop resets stale fps immediately", () => {
 })
 
 test("start() does not double-schedule frames when a render was already queued", async () => {
-  let renderCalls = 0
-
-  // @ts-expect-error - intercept private render method in regression test
-  renderer.renderNative = () => {
-    renderCalls++
-  }
-
+  const started = once(renderer, CliRenderEvents.FRAME)
   renderer.requestRender()
   renderer.start()
+  await started
 
-  clock.advance(1000)
-  await Promise.resolve()
+  for (let elapsed = 0; elapsed < 1000; elapsed += 10) {
+    clock.advance(10)
+    await serviceReadyFrames()
+  }
 
   // @ts-expect-error - inspect private manual clock timers in regression test
   expect(clock.timers.size).toBe(1)
-  expect(renderCalls).toBeGreaterThanOrEqual(25)
-  expect(renderCalls).toBeLessThanOrEqual(40)
+  expect(renderer.getStats().nativeFrameCount).toBeGreaterThanOrEqual(25)
+  expect(renderer.getStats().nativeFrameCount).toBeLessThanOrEqual(40)
 })

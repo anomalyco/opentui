@@ -8,6 +8,7 @@
     "build:dev": "bun run prepare:zig && zig build -Doptimize=Debug",
     "test": "bun run prepare:zig && sh scripts/test.sh",
     "test:lifetime": "bun run prepare:zig && zig build test-lifetime --summary all",
+    "test:rust": "sh examples/rust/test.sh",
     "bench": "bun run prepare:zig && zig build bench -Dbench-optimize=ReleaseFast --",
     "bench:ffi": "bun run prepare:zig && zig build bench-ffi",
     "clean": "bun ../../scripts/clean.ts --native"

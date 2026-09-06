@@ -54,19 +54,23 @@ export function run(rendererInstance: CliRenderer): void {
   })
   parentContainer.add(codeBox)
 
-  const syntaxStyle = SyntaxStyle.fromStyles({
-    keyword: { fg: parseColor("#FF6B9D"), bold: true },
-    string: { fg: parseColor("#A8E6CF") },
-    comment: { fg: parseColor("#888888"), italic: true },
-    number: { fg: parseColor("#FFD93D") },
-    function: { fg: parseColor("#6BCF7F") },
-    type: { fg: parseColor("#4ECDC4") },
-    operator: { fg: parseColor("#FF8C94") },
-    variable: { fg: parseColor("#C7CEEA") },
-    bracket: { fg: parseColor("#FFFFFF") },
-    punctuation: { fg: parseColor("#DDDDDD") },
-    default: { fg: parseColor("#FFFFFF") },
-  })
+  const syntaxStyle = SyntaxStyle.fromStyles(
+    {
+      keyword: { fg: parseColor("#FF6B9D"), bold: true },
+      string: { fg: parseColor("#A8E6CF") },
+      comment: { fg: parseColor("#888888"), italic: true },
+      number: { fg: parseColor("#FFD93D") },
+      function: { fg: parseColor("#6BCF7F") },
+      type: { fg: parseColor("#4ECDC4") },
+      operator: { fg: parseColor("#FF8C94") },
+      variable: { fg: parseColor("#C7CEEA") },
+      bracket: { fg: parseColor("#FFFFFF") },
+      punctuation: { fg: parseColor("#DDDDDD") },
+      default: { fg: parseColor("#FFFFFF") },
+    },
+    renderer.nativeScene!,
+  )
+  parentContainer.once("destroyed", () => syntaxStyle.destroy())
   const transformStart = performance.now()
   const styledText = hastToStyledText(typedExampleHAST, syntaxStyle)
   const transformEnd = performance.now()
@@ -114,7 +118,7 @@ export function destroy(rendererInstance: CliRenderer): void {
     keyboardHandler = null
   }
 
-  parentContainer?.destroy()
+  parentContainer?.destroyRecursively()
   parentContainer = null
 
   renderer = null

@@ -6,6 +6,7 @@ const eb = @import("edit-buffer.zig");
 const iter_mod = @import("text-buffer-iterators.zig");
 const ss = @import("syntax-style.zig");
 const event_emitter = @import("event-emitter.zig");
+const NativeRenderable = @import("native-renderable.zig").NativeRenderable;
 
 const EditBuffer = eb.EditBuffer;
 
@@ -40,6 +41,7 @@ const CursorVisualAffinity = struct {
 /// It also holds a reference to an EditBuffer for cursor/editing operations
 pub const EditorView = struct {
     text_buffer_view: *UnifiedTextBufferView,
+    measure_dependents: ?*NativeRenderable = null,
     edit_buffer: *EditBuffer, // Reference to the EditBuffer (not owned)
     scroll_margin: f32, // Fraction of viewport height (0.0-0.5) to keep cursor away from edges
     desired_visual_col: ?u32, // Preserved visual column for visual up/down navigation
@@ -116,7 +118,9 @@ pub const EditorView = struct {
         const global_allocator = self.global_allocator;
         defer global_allocator.destroy(self);
 
+        while (self.measure_dependents) |dependent| dependent.setMeasureTarget(.none) catch unreachable;
         self.edit_buffer.events.off(.cursorChanged, self.cursor_changed_listener);
+        self.text_buffer_view.deinit();
 
         if (self.placeholder_syntax_style) |style| {
             style.deinit();
@@ -126,7 +130,6 @@ pub const EditorView = struct {
             placeholder.deinit();
         }
 
-        self.text_buffer_view.deinit();
         self.* = undefined;
     }
 
@@ -154,11 +157,13 @@ pub const EditorView = struct {
     /// Respects scroll margins to prevent immediate re-scrolling by ensureCursorVisible.
     pub fn makeCursorVisible(self: *EditorView) void {
         const vp = self.text_buffer_view.getViewport() orelse return;
+        if (vp.height == 0 or vp.width == 0) return;
         const cursor = self.edit_buffer.getPrimaryCursor();
         const vcursor = self.getPrimaryVisualCursorAbsolute();
 
         const viewport_height = vp.height;
-        const margin_lines = @max(1, @as(u32, @intFromFloat(@as(f32, @floatFromInt(viewport_height)) * self.scroll_margin)));
+        const raw_margin_lines = @max(1, @as(u32, @intFromFloat(@as(f32, @floatFromInt(viewport_height)) * self.scroll_margin)));
+        const margin_lines = @min(raw_margin_lines, viewport_height - 1);
 
         const cursor_above_viewport = vcursor.visual_row < vp.y;
         const cursor_below_viewport = vcursor.visual_row >= vp.y + vp.height;
@@ -265,6 +270,10 @@ pub const EditorView = struct {
     /// Always ensures cursor visibility since cursor movements don't mark buffer dirty
     /// Note: With eager viewport updates in onCursorChanged, this is mainly for rendering methods
     pub fn updateBeforeRender(self: *EditorView) void {
+        _ = self.updateCursorBeforeRender();
+    }
+
+    fn updateCursorBeforeRender(self: *EditorView) ?VisualCursor {
         self.updatePlaceholderVisibility();
 
         const has_selection = self.text_buffer_view.selection != null;
@@ -272,7 +281,9 @@ pub const EditorView = struct {
         if (!has_selection or self.selection_follow_cursor) {
             const vcursor = self.getPrimaryVisualCursorAbsolute();
             self.ensureCursorVisible(vcursor.visual_row);
+            return vcursor;
         }
+        return null;
     }
 
     /// Automatically ensures cursor is visible before rendering
@@ -289,9 +300,7 @@ pub const EditorView = struct {
 
     pub fn getLogicalLineInfo(self: *EditorView) tbv.LineInfo {
         self.updatePlaceholderVisibility();
-        self.text_buffer_view.virtual_lines_dirty = true;
-        const line_info = self.text_buffer_view.getLogicalLineInfo();
-        return line_info;
+        return self.text_buffer_view.getLogicalLineInfo();
     }
 
     pub fn getTextBufferView(self: *EditorView) *UnifiedTextBufferView {
@@ -577,8 +586,7 @@ pub const EditorView = struct {
 
     /// Returns viewport-relative visual coordinates for external API consumers
     pub fn getVisualCursor(self: *EditorView) VisualCursor {
-        self.updateBeforeRender();
-        const vcursor = self.getPrimaryVisualCursorAbsolute();
+        const vcursor = self.updateCursorBeforeRender() orelse self.getPrimaryVisualCursorAbsolute();
 
         // Convert absolute visual coordinates to viewport-relative for the API
         const vp = self.text_buffer_view.getViewport() orelse return vcursor;
@@ -795,6 +803,28 @@ pub const EditorView = struct {
         self.updateBeforeRender();
     }
 
+    pub fn replaceSelectedText(self: *EditorView, bytes: []const u8) !u32 {
+        const inserted: u32 = if (bytes.len > 0) 2 else 0;
+        if (self.getSelection()) |selection| {
+            // A placeholder selection has no corresponding editable range.
+            if (selection.end <= self.edit_buffer.tb.rope().totalWeight()) {
+                try self.edit_buffer.replaceRange(selection.start, selection.end, bytes, .{
+                    .ctx = self,
+                    .handle = finishSelectedDeletion,
+                });
+                return inserted | @as(u32, @intFromBool(selection.start != selection.end));
+            }
+        }
+        try self.edit_buffer.insertText(bytes);
+        return inserted;
+    }
+
+    fn finishSelectedDeletion(ctx: *anyopaque) void {
+        const self: *EditorView = @ptrCast(@alignCast(ctx));
+        self.resetLocalSelection();
+        self.updateBeforeRender();
+    }
+
     pub fn setCursorByOffset(self: *EditorView, offset: u32) !void {
         try self.edit_buffer.setCursorByOffset(offset);
         self.updateBeforeRender();
@@ -910,6 +940,10 @@ pub const EditorView = struct {
 
     pub fn setPlaceholderStyledText(self: *EditorView, chunks: []const tb.StyledChunk) !void {
         if (chunks.len == 0) {
+            if (self.placeholder_active) {
+                self.text_buffer_view.switchToOriginalBuffer();
+                self.placeholder_active = false;
+            }
             if (self.placeholder_syntax_style) |style| {
                 style.deinit();
                 self.placeholder_syntax_style = null;
@@ -918,29 +952,57 @@ pub const EditorView = struct {
                 placeholder.deinit();
                 self.placeholder_buffer = null;
             }
-            if (self.placeholder_active) {
-                self.text_buffer_view.switchToOriginalBuffer();
-                self.placeholder_active = false;
-            }
             return;
         }
 
-        if (self.placeholder_buffer == null) {
-            self.placeholder_buffer = try UnifiedTextBuffer.init(
-                self.global_allocator,
-                self.edit_buffer.tb.pool,
-                self.edit_buffer.tb.link_pool,
-                self.edit_buffer.tb.width_method,
-            );
-            const syntax_style = try ss.SyntaxStyle.init(self.global_allocator);
-            self.placeholder_syntax_style = syntax_style;
-            const placeholder = self.placeholder_buffer.?;
-            placeholder.setSyntaxStyle(syntax_style);
-        }
-
-        const placeholder = self.placeholder_buffer.?;
-
+        const placeholder = self.placeholder_buffer orelse try UnifiedTextBuffer.initWithOptions(
+            self.global_allocator,
+            self.edit_buffer.tb.pool,
+            self.edit_buffer.tb.link_pool,
+            self.edit_buffer.tb.width_method,
+            .{ .io = self.edit_buffer.tb.io, .logger = self.edit_buffer.tb.logger },
+        );
+        errdefer if (self.placeholder_buffer == null) placeholder.deinit();
+        const style = self.placeholder_syntax_style orelse try ss.SyntaxStyle.init(self.global_allocator);
+        errdefer if (self.placeholder_syntax_style == null) style.deinit();
+        if (self.placeholder_buffer == null) placeholder.setSyntaxStyle(style);
+        // Legacy replacement can change the rope before an allocation fails.
+        if (self.placeholder_active) self.text_buffer_view.virtual_lines_dirty = true;
         try placeholder.setStyledText(chunks);
+        self.placeholder_buffer = placeholder;
+        self.placeholder_syntax_style = style;
+
+        self.updatePlaceholderVisibility();
+    }
+
+    /// Consume registry-allocator bytes and a fresh style only on success; move prepared links.
+    /// The caller validates UTF-8 and bounds, as for UnifiedTextBuffer.replaceOwnedStyledText.
+    pub fn setPlaceholderOwnedStyledText(
+        self: *EditorView,
+        text: []const u8,
+        style: *ss.SyntaxStyle,
+        chunks: []const tb.OwnedStyledChunk,
+        prepared_links: ?*@import("link.zig").LinkTracker,
+    ) !void {
+        const placeholder = self.placeholder_buffer orelse try UnifiedTextBuffer.initWithOptions(
+            self.global_allocator,
+            self.edit_buffer.tb.pool,
+            self.edit_buffer.tb.link_pool,
+            self.edit_buffer.tb.width_method,
+            .{ .io = self.edit_buffer.tb.io, .logger = self.edit_buffer.tb.logger },
+        );
+        errdefer if (self.placeholder_buffer == null) placeholder.deinit();
+        placeholder.styled_text_mem_id = try placeholder.replaceOwnedStyledText(
+            text,
+            placeholder.styled_text_mem_id,
+            style,
+            chunks,
+            prepared_links,
+        );
+        const previous_style = self.placeholder_syntax_style;
+        self.placeholder_buffer = placeholder;
+        self.placeholder_syntax_style = style;
+        if (previous_style) |previous| previous.deinit();
 
         if (self.placeholder_active) {
             self.text_buffer_view.virtual_lines_dirty = true;

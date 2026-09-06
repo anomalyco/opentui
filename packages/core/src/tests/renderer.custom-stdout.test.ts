@@ -1,12 +1,17 @@
-import { test, expect, afterEach } from "bun:test"
+import { test, expect, afterEach, spyOn } from "bun:test"
 import { Writable } from "stream"
-import { createCliRenderer, CliRenderer, CliRenderEvents } from "../renderer.js"
+import { setImmediate } from "node:timers/promises"
+import {
+  createCliRenderer as createRenderer,
+  CliRenderer,
+  CliRenderEvents,
+  type CliRendererConfig,
+} from "../renderer.js"
 import { BoxRenderable } from "../renderables/Box.js"
 import { ImageRenderable } from "../renderables/Image.js"
-import { MarkdownRenderable } from "../renderables/Markdown.js"
-import { SyntaxStyle } from "../syntax-style.js"
 import { ManualClock } from "../testing/manual-clock.js"
 import { createTestStdin, TestWriteStream } from "../testing/test-streams.js"
+import { NativeSessionRenderStatus } from "../zig.js"
 
 const PNG_1X1 = Uint8Array.from(
   Buffer.from(
@@ -15,22 +20,18 @@ const PNG_1X1 = Uint8Array.from(
   ),
 )
 
-// Collecting Writable used as a mock stdout. Because it is !== process.stdout,
-// createCliRenderer allocates a NativeSpanFeed and pipes bytes through it.
+// Copy published bytes so assertions remain valid after native output is released.
 class CollectingWriteStream extends TestWriteStream {
   public readonly writes: Buffer[] = []
-  /** When > 0, delay the write callback by this many ms to simulate a slow consumer. */
-  public delayMs = 0
+  public holdWrites = false
+  public pendingWrite: (() => void) | undefined
 
   override _write(chunk: any, _encoding: BufferEncoding, callback: (error?: Error | null) => void): void {
-    // Defensive copy: `Buffer.from(Uint8Array)` can alias the source's
-    // underlying ArrayBuffer. For feed-backed renderers the source is a view
-    // into Zig-owned chunk memory that is freed when the feed closes. Copy
-    // into a standalone Buffer so reads in assertions are safe after teardown.
+    // The Session reuses its output storage after acknowledgement.
     const buf = Buffer.isBuffer(chunk) ? Buffer.from(chunk) : Buffer.from(chunk.slice())
     this.writes.push(buf)
-    if (this.delayMs > 0) {
-      setTimeout(callback, this.delayMs)
+    if (this.holdWrites) {
+      this.pendingWrite = callback
     } else {
       callback()
     }
@@ -43,6 +44,13 @@ class CollectingWriteStream extends TestWriteStream {
   clearWrites(): void {
     this.writes.length = 0
   }
+
+  releaseWrites(): void {
+    this.holdWrites = false
+    const callback = this.pendingWrite
+    this.pendingWrite = undefined
+    callback?.()
+  }
 }
 
 type CollectingStdout = CollectingWriteStream & NodeJS.WriteStream
@@ -51,7 +59,19 @@ function createCollectingStdout(columns = 80, rows = 24): CollectingStdout {
   return new CollectingWriteStream(columns, rows) as CollectingStdout
 }
 
-function flushWritable(stdout: NodeJS.WritableStream): Promise<void> {
+const outputRenderers = new WeakMap<NodeJS.WritableStream, CliRenderer>()
+const renderers = new Set<CliRenderer>()
+
+async function createCliRenderer(options: CliRendererConfig): Promise<CliRenderer> {
+  const renderer = await createRenderer(options)
+  renderers.add(renderer)
+  if (options.stdout) outputRenderers.set(options.stdout, renderer)
+  await renderer.nativeScene?.driver.idle()
+  return renderer
+}
+
+async function flushWritable(stdout: NodeJS.WritableStream): Promise<void> {
+  await outputRenderers.get(stdout)?.nativeScene?.driver.idle()
   return new Promise<void>((resolve, reject) => {
     stdout.write(Buffer.alloc(0), (error) => (error ? reject(error) : resolve()))
   })
@@ -74,80 +94,111 @@ function createPlainStdout(): NodeJS.WriteStream {
   }) as NodeJS.WriteStream
 }
 
-function createRetryRenderer(feedBacked = false): { renderer: CliRenderer; clock: ManualClock } {
+function createRetryRenderer(stdoutBacked = false): { renderer: CliRenderer; clock: ManualClock } {
   const clock = new ManualClock()
   const renderer = new CliRenderer(
     createTestStdin(),
-    feedBacked ? createCollectingStdout() : createPlainStdout(),
+    stdoutBacked ? createCollectingStdout() : createPlainStdout(),
     80,
     24,
     {
       consoleMode: "disabled",
-      bufferedOutput: feedBacked ? undefined : "memory",
+      bufferedOutput: stdoutBacked ? undefined : "memory",
       clock,
     },
   )
-  ;(renderer as any).updateScheduled = false
   clock.runAll()
   destroyFns.push(() => renderer.destroy())
+  renderers.add(renderer)
   return { renderer, clock }
 }
 
-function mockNativeRender(renderer: CliRenderer, render: (...args: any[]) => number): void {
-  const rendererAny = renderer as any
-  const originalRender = rendererAny.lib.render
-  rendererAny.lib.render = render
+function mockNativeRender(renderer: CliRenderer, render: () => NativeSessionRenderStatus): void {
+  const driver = renderer.nativeScene.driver
+  const originalRender = driver.render.bind(driver)
+  driver.render = (...args) => {
+    const status = render()
+    return status === NativeSessionRenderStatus.Presented ? originalRender(...args) : status
+  }
   destroyFns.unshift(() => {
-    rendererAny.lib.render = originalRender
+    driver.render = originalRender
   })
 }
 
-function deferFeedIdle(renderer: CliRenderer): { resolve: () => Promise<void>; calls: () => number } {
-  const feed = (renderer as any)._feed
-  const originalIdle = feed.idle.bind(feed)
-  let resolve = () => {}
+function deferOutputIdle(renderer: CliRenderer): {
+  resolve: () => Promise<void>
+  hold: () => void
+  calls: () => number
+} {
+  const driver = renderer.nativeScene.driver
+  const originalIdle = driver.idle.bind(driver)
+  let pending: ReturnType<typeof Promise.withResolvers<void>> | undefined
+  let released = false
   let calls = 0
-  feed.idle = () => {
+  driver.idle = () => {
     calls++
-    return new Promise<void>((done) => {
-      resolve = done
-    })
+    if (released) return originalIdle()
+    pending ??= Promise.withResolvers<void>()
+    return pending.promise
   }
   destroyFns.unshift(() => {
-    feed.idle = originalIdle
+    driver.idle = originalIdle
   })
   return {
     resolve: async () => {
-      resolve()
+      released = true
+      pending?.resolve()
+      pending = undefined
       await Promise.resolve()
       await Promise.resolve()
+    },
+    hold: () => {
+      released = false
     },
     calls: () => calls,
   }
 }
 
 function forceNativeSplitSkip(renderer: CliRenderer): () => void {
-  const rendererAny = renderer as any
-  const originalCommit = rendererAny.lib.commitSplitFooterSnapshot.bind(rendererAny.lib)
-
-  rendererAny.lib.commitSplitFooterSnapshot = () => ({ renderOffset: rendererAny.renderOffset, status: 1 })
-
-  return () => {
-    rendererAny.lib.commitSplitFooterSnapshot = originalCommit
-  }
+  const render = spyOn(renderer.nativeScene.driver, "renderSplit").mockImplementation(() => ({
+    renderOffset: 0,
+    status: NativeSessionRenderStatus.Skipped,
+  }))
+  return () => render.mockRestore()
 }
 
-let destroyFns: Array<() => void> = []
+async function finishRender(renderer: CliRenderer): Promise<void> {
+  for (let turn = 0; turn < 64; turn++) {
+    await setImmediate()
+    if (renderer.getSchedulerState().isRendering) await (renderer as any).loop(true)
+    if (!(renderer as any).cancelReadyFrame) return
+  }
+  throw new Error("Renderer did not finish ready work within 64 host turns")
+}
 
-afterEach(() => {
+async function waitForHeldOutput(stdout: CollectingStdout): Promise<void> {
+  for (let turn = 0; turn < 64 && !stdout.pendingWrite; turn++) {
+    await setImmediate()
+  }
+  expect(stdout.pendingWrite).toBeDefined()
+}
+
+let destroyFns: Array<() => void | Promise<void>> = []
+
+afterEach(async () => {
   for (const fn of destroyFns) {
     try {
-      fn()
+      await fn()
     } catch (e) {
       console.error("cleanup error:", e)
     }
   }
   destroyFns = []
+  for (const renderer of renderers) {
+    renderer.destroy()
+    await renderer.closed
+  }
+  renderers.clear()
 })
 
 // ---- Byte-routing behavior ----
@@ -162,96 +213,12 @@ test("non-process stdout: rendered bytes flow to the custom Writable", async () 
   })
   destroyFns.push(() => renderer.destroy())
 
-  // Let setup writes settle.
-  await new Promise<void>((resolve) => setTimeout(resolve, 30))
+  await flushWritable(stdout)
 
   const received = stdout.getWrittenBytes()
   expect(received.length).toBeGreaterThan(0)
   // ANSI escape sequences contain ESC (0x1b).
   expect(received.includes(0x1b)).toBe(true)
-})
-
-test("late Ghostty capability detection emits OSC 8 for compact Markdown links", async () => {
-  const stdin = createTestStdin()
-  const stdout = createCollectingStdout(100, 8)
-  const renderer = await createCliRenderer({ stdin, stdout, useMouse: true })
-  destroyFns.push(() => renderer.destroy())
-
-  const syntaxStyle = SyntaxStyle.fromStyles({ default: { fg: "#ffffff" } })
-  destroyFns.push(() => syntaxStyle.destroy())
-
-  renderer.root.add(
-    new MarkdownRenderable(renderer, {
-      content: "| Link |\n| --- |\n| [OpenTUI](https://github.com/anomalyco/opentui) |\n| https://example.com/path |",
-      syntaxStyle,
-      tableOptions: { style: "columns", widthMode: "content" },
-    }),
-  )
-  await renderer.idle()
-  await flushWritable(stdout)
-
-  const initialFrame = new TextDecoder().decode(renderer.currentRenderBuffer.getRealCharBytes(true))
-  expect(initialFrame).toContain("OpenTUI (https://github.com/anomalyco/opentui)")
-  expect(initialFrame.match(/https:\/\/example\.com\/path/g)).toHaveLength(1)
-  expect(stdout.getWrittenBytes().toString("binary")).not.toContain("\x1b]8;id=")
-
-  stdout.clearWrites()
-  stdin.emit("data", Buffer.from("\x1bP>|ghostty 1.1.3\x1b\\"))
-  await renderer.idle()
-  await flushWritable(stdout)
-
-  const finalFrame = new TextDecoder().decode(renderer.currentRenderBuffer.getRealCharBytes(true))
-  const output = stdout.getWrittenBytes().toString("binary")
-  expect(renderer.capabilities?.hyperlinks).toBe(true)
-  expect(finalFrame).toContain("OpenTUI")
-  expect(finalFrame).not.toContain("github.com/anomalyco/opentui")
-  expect(finalFrame.match(/https:\/\/example\.com\/path/g)).toHaveLength(1)
-  expect(output).toContain(";https://github.com/anomalyco/opentui\x1b\\")
-  expect(output).toContain(";https://example.com/path\x1b\\")
-  expect(output).toContain("\x1b]8;;\x1b\\")
-})
-
-test("unidentified truecolor terminals preserve the visible Markdown link fallback", async () => {
-  const previousTerm = process.env.TERM
-  const previousColorTerm = process.env.COLORTERM
-  process.env.TERM = "xterm-256color"
-  process.env.COLORTERM = "truecolor"
-
-  try {
-    const stdout = createCollectingStdout(80, 6)
-    const renderer = await createCliRenderer({
-      stdin: createTestStdin(),
-      stdout,
-      remote: false,
-      forwardEnvKeys: ["TERM", "COLORTERM"],
-    })
-    destroyFns.push(() => renderer.destroy())
-
-    const syntaxStyle = SyntaxStyle.fromStyles({ default: { fg: "#ffffff" } })
-    destroyFns.push(() => syntaxStyle.destroy())
-    renderer.root.add(
-      new MarkdownRenderable(renderer, {
-        content: "| Link |\n|---|\n| [OpenTUI](https://example.com/docs) |",
-        syntaxStyle,
-        tableOptions: { style: "columns", widthMode: "content" },
-      }),
-    )
-
-    await renderer.idle()
-    await flushWritable(stdout)
-
-    expect(renderer.capabilities?.rgb).toBe(true)
-    expect(renderer.capabilities?.hyperlinks).toBe(false)
-    expect(new TextDecoder().decode(renderer.currentRenderBuffer.getRealCharBytes(true))).toContain(
-      "OpenTUI (https://example.com/docs)",
-    )
-    expect(stdout.getWrittenBytes().toString("binary")).not.toContain("\x1b]8;id=")
-  } finally {
-    if (previousTerm === undefined) delete process.env.TERM
-    else process.env.TERM = previousTerm
-    if (previousColorTerm === undefined) delete process.env.COLORTERM
-    else process.env.COLORTERM = previousColorTerm
-  }
 })
 
 test("auto images use detected Kitty graphics and delete cleared placements", async () => {
@@ -452,60 +419,7 @@ test("split-footer Kitty scrollback does not rasterize images to terminal pixel 
   expect(output).toContain("after-image")
 })
 
-test.each([
-  { name: "Kitty", response: "\x1b_Gi=31337;OK\x1b\\", placement: "\x1b_Ga=p" },
-  { name: "Sixel", response: "\x1b[?1;4c", placement: "\x1bP0;1;0q" },
-])("split-footer preserves $name images after resize replay resets", async ({ response, placement }) => {
-  const stdin = createTestStdin()
-  const stdout = createCollectingStdout(80, 24)
-  const renderer = await createCliRenderer({
-    stdin,
-    stdout,
-    screenMode: "split-footer",
-    footerHeight: 3,
-    externalOutputMode: "capture-stdout",
-    consoleMode: "disabled",
-  })
-  destroyFns.push(() => renderer.destroy())
-  stdin.emit("data", Buffer.from(response + "\x1b[4;480;800t\x1b[21;1R"))
-  await renderer.idle()
-
-  for (const size of [undefined, { width: 90, height: 28 }, { width: 20, height: 8 }]) {
-    if (size) {
-      renderer.resize(size.width, size.height)
-      stdin.emit("data", Buffer.from(`\x1b[4;${size.height * 20};${size.width * 10}t`))
-      renderer.resetSplitFooterForReplay({ clearSavedLines: true })
-      await renderer.idle()
-    }
-    await flushWritable(stdout)
-    stdout.clearWrites()
-
-    const surface = renderer.createScrollbackSurface({ startOnNewLine: true })
-    try {
-      const image = new ImageRenderable(surface.renderContext, {
-        source: PNG_1X1,
-        width: 2,
-        height: 5,
-        fit: "fill",
-      })
-      surface.root.add(image)
-      await image.loadPromise
-      surface.render()
-      surface.commitRows(0, surface.height, { trailingNewline: true })
-    } finally {
-      surface.destroy()
-    }
-    await renderer.idle()
-    await flushWritable(stdout)
-
-    const output = stdout.getWrittenBytes().toString("utf8")
-    expect(output).toContain(placement)
-    expect(output).toContain("\x1b[4A\r")
-    expect(output).not.toContain("\u2588")
-  }
-})
-
-test("split-footer queues native image scrollback until the startup cursor reply", async () => {
+test("split-footer queues native image scrollback until the footer is pinned", async () => {
   const stdin = createTestStdin()
   const stdout = createCollectingStdout(8, 6)
   const renderer = await createCliRenderer({
@@ -776,14 +690,14 @@ for (const testCase of [
     await image.loadPromise
     renderer.requestRender()
     await renderer.idle()
-    await (renderer as any)._feed.idle()
+    await flushWritable(stdout)
     stdout.clearWrites()
 
     const appended = `pin${testCase.name[0]}`
     stdout.write(`${appended}\n`)
     renderer.requestRender()
     await renderer.idle()
-    await (renderer as any)._feed.idle()
+    await flushWritable(stdout)
 
     const output = stdout.getWrittenBytes().toString("binary")
     const appendIndex = output.indexOf(appended)
@@ -793,13 +707,13 @@ for (const testCase of [
   })
 }
 
-test("split-footer custom stdout: native feed bytes bypass stdout capture", async () => {
+test("split-footer custom stdout: native bytes bypass stdout capture", async () => {
   const stdin = createTestStdin()
   const stdout = createCollectingStdout(80, 24)
 
-  // Construct directly so the test isolates the feed/write bridge without
-  // setupTerminal() adding unrelated startup ANSI.
-  const renderer = new CliRenderer(stdin, stdout, 80, 24, {
+  const renderer = await createCliRenderer({
+    stdin,
+    stdout,
     screenMode: "split-footer",
     consoleMode: "disabled",
   })
@@ -813,7 +727,7 @@ test("split-footer custom stdout: native feed bytes bypass stdout capture", asyn
   // split-footer stdout-capture queue.
   expect((renderer as any).externalOutputQueue.size).toBe(0)
 
-  await new Promise<void>((resolve) => setImmediate(resolve))
+  await flushWritable(stdout)
 
   expect(stdout.getWrittenBytes().toString("binary")).toContain("\x1b]0;split-footer custom stdout\x07")
 })
@@ -822,7 +736,9 @@ test("custom stdout resetTerminalBgColor routes through configured stdout", asyn
   const stdin = createTestStdin()
   const stdout = createCollectingStdout(80, 24)
 
-  const renderer = new CliRenderer(stdin, stdout, 80, 24, {
+  const renderer = await createCliRenderer({
+    stdin,
+    stdout,
     consoleMode: "disabled",
   })
   destroyFns.push(() => renderer.destroy())
@@ -830,21 +746,9 @@ test("custom stdout resetTerminalBgColor routes through configured stdout", asyn
   stdout.clearWrites()
   renderer.resetTerminalBgColor()
 
-  await new Promise<void>((resolve) => setImmediate(resolve))
+  await flushWritable(stdout)
 
   expect(stdout.getWrittenBytes().toString("binary")).toContain("\x1b]111\x07")
-})
-
-test("process.stdout: no feed is allocated (stdout-direct path)", async () => {
-  const renderer = await createCliRenderer({
-    stdin: process.stdin,
-    stdout: process.stdout,
-    bufferedOutput: "memory",
-  })
-  // Direct private-field inspection: no feed should be allocated when output
-  // goes straight to process.stdout.
-  expect((renderer as any)._feed).toBeNull()
-  expect(() => renderer.destroy()).not.toThrow()
 })
 
 test("resize ignores an outstanding pixel resolution reply", async () => {
@@ -886,7 +790,7 @@ test("resize while suspended refreshes pixel resolution after resume", async () 
   await renderer.idle()
   expect(renderer.resolution).toEqual({ width: 80, height: 80 })
 
-  renderer.suspend()
+  await renderer.suspend()
   stdout.clearWrites()
   renderer.resize(16, 4)
   renderer.resize(24, 4)
@@ -894,7 +798,7 @@ test("resize while suspended refreshes pixel resolution after resume", async () 
   expect(stdout.getWrittenBytes().toString("binary")).not.toContain("\x1b[14t")
   stdout.clearWrites()
 
-  renderer.resume()
+  await renderer.resume()
   await flushWritable(stdout)
   expect(renderer.resolution).toBeNull()
   expect(countPixelResolutionQueries(stdout)).toBe(1)
@@ -913,9 +817,9 @@ test("resume rejects a delayed pre-suspend pixel resolution reply", async () => 
   expect(countPixelResolutionQueries(stdout)).toBe(1)
   stdout.clearWrites()
 
-  renderer.suspend()
+  await renderer.suspend()
   renderer.resize(16, 4)
-  renderer.resume()
+  await renderer.resume()
   await flushWritable(stdout)
   expect(stdout.getWrittenBytes().toString("binary")).not.toContain("\x1b[14t")
 
@@ -942,8 +846,8 @@ test("resume preserves an outstanding pixel resolution query without requerying"
   expect(countPixelResolutionQueries(stdout)).toBe(1)
   stdout.clearWrites()
 
-  renderer.suspend()
-  renderer.resume()
+  await renderer.suspend()
+  await renderer.resume()
   await flushWritable(stdout)
   expect(stdout.getWrittenBytes().toString("binary")).not.toContain("\x1b[14t")
 
@@ -963,10 +867,10 @@ test("resume preserves an incomplete pixel resolution response buffered while su
   expect(countPixelResolutionQueries(stdout)).toBe(1)
   stdout.clearWrites()
 
-  renderer.suspend()
+  await renderer.suspend()
   renderer.resize(16, 4)
   stdin.push(Buffer.from("\x1b[4;80"))
-  renderer.resume()
+  await renderer.resume()
   await flushWritable(stdout)
   expect(countPixelResolutionQueries(stdout)).toBe(0)
 
@@ -996,8 +900,8 @@ test("resume does not join a pre-suspend escape to post-resume input", async () 
   stdout.clearWrites()
 
   stdin.emit("data", Buffer.from("\x1b"))
-  renderer.suspend()
-  renderer.resume()
+  await renderer.suspend()
+  await renderer.resume()
   stdin.emit("data", Buffer.from("a"))
 
   expect(keypresses).toEqual([{ name: "a", raw: "a", meta: false }])
@@ -1029,8 +933,8 @@ test("resume does not join a partial pixel response to post-resume input", async
       stdout.clearWrites()
 
       stdin.emit("data", response.subarray(0, split))
-      renderer.suspend()
-      renderer.resume()
+      await renderer.suspend()
+      await renderer.resume()
       stdin.emit("data", Buffer.from("a"))
 
       expect({ split, keypresses }).toEqual({
@@ -1047,6 +951,7 @@ test("resume does not join a partial pixel response to post-resume input", async
       expect(renderer.resolution).toEqual({ width: 80, height: 80 })
     } finally {
       renderer.destroy()
+      await renderer.closed
     }
   }
 })
@@ -1064,8 +969,8 @@ test("resume preserves chunked escape input after a suspended pixel prefix", asy
     try {
       await flushWritable(stdout)
       stdin.emit("data", Buffer.from("\x1b"))
-      renderer.suspend()
-      renderer.resume()
+      await renderer.suspend()
+      await renderer.resume()
       for (const chunk of chunks) stdin.emit("data", Buffer.from(chunk))
 
       expect({ chunks, keypresses }).toEqual({
@@ -1078,6 +983,7 @@ test("resume preserves chunked escape input after a suspended pixel prefix", asy
       expect(renderer.resolution).toEqual({ width: 80, height: 80 })
     } finally {
       renderer.destroy()
+      await renderer.closed
     }
   }
 })
@@ -1096,10 +1002,10 @@ test("resume separates suspended escape input from a pixel resolution response",
       stdout.clearWrites()
 
       stdin.emit("data", Buffer.from("\x1b"))
-      renderer.suspend()
+      await renderer.suspend()
       if (timing === "before-resume") stdin.push(Buffer.from("\x1b[4;80;80t"))
       if (timing === "after-suspended-escape") stdin.push(Buffer.from("\x1b"))
-      renderer.resume()
+      await renderer.resume()
       if (timing === "after-resume") stdin.emit("data", Buffer.from("\x1b[4;80;80t"))
       if (timing === "after-suspended-escape") {
         await new Promise<void>((resolve) => setTimeout(resolve, 25))
@@ -1120,6 +1026,7 @@ test("resume separates suspended escape input from a pixel resolution response",
       })
     } finally {
       renderer.destroy()
+      await renderer.closed
     }
   }
 })
@@ -1140,11 +1047,11 @@ test("resume preserves every pixel resolution response split across suspension",
       stdout.clearWrites()
 
       stdin.emit("data", staleResponse.subarray(0, split))
-      renderer.suspend()
+      await renderer.suspend()
       renderer.resize(16, 4)
       await new Promise<void>((resolve) => setTimeout(resolve, 25))
       stdin.push(staleResponse.subarray(split))
-      renderer.resume()
+      await renderer.resume()
       await flushWritable(stdout)
 
       expect(keypresses).toEqual([])
@@ -1161,16 +1068,19 @@ test("resume preserves every pixel resolution response split across suspension",
       expect(stdout.getWrittenBytes().toString("binary")).not.toContain("\x1b[14t")
     } finally {
       renderer.destroy()
+      await renderer.closed
     }
   }
 })
 
-test("feed-backed renderer retries one skipped frame after feed idle", async () => {
+test("Session-backed renderer retries one skipped frame after Session idle", async () => {
   const { renderer, clock } = createRetryRenderer(true)
-  const idle = deferFeedIdle(renderer)
+  const idle = deferOutputIdle(renderer)
   let calls = 0
   let frames = 0
-  mockNativeRender(renderer, () => (calls++ === 0 ? 1 : 0))
+  mockNativeRender(renderer, () =>
+    calls++ === 0 ? NativeSessionRenderStatus.Skipped : NativeSessionRenderStatus.Presented,
+  )
   renderer.on(CliRenderEvents.FRAME, () => frames++)
 
   await (renderer as any).loop()
@@ -1181,36 +1091,42 @@ test("feed-backed renderer retries one skipped frame after feed idle", async () 
   await idle.resolve()
   expect(renderer.getSchedulerState().hasScheduledRender).toBe(true)
   clock.advance(17)
+  await finishRender(renderer)
 
   expect(calls).toBe(2)
   expect(frames).toBe(1)
   expect(renderer.getSchedulerState().hasScheduledRender).toBe(false)
 })
 
-test("feed-backed renderer retries immediately when feed pressure outlasts the frame interval", async () => {
+test("Session-backed renderer retries immediately when output pressure outlasts the frame interval", async () => {
   const { renderer, clock } = createRetryRenderer(true)
-  const idle = deferFeedIdle(renderer)
+  const idle = deferOutputIdle(renderer)
   let calls = 0
-  mockNativeRender(renderer, () => (calls++ === 0 ? 1 : 0))
+  mockNativeRender(renderer, () =>
+    calls++ === 0 ? NativeSessionRenderStatus.Skipped : NativeSessionRenderStatus.Presented,
+  )
 
   await (renderer as any).loop()
   clock.advance(100)
   await idle.resolve()
   clock.advance(0)
 
+  await finishRender(renderer)
   expect(calls).toBe(2)
 })
 
-test("feed-backed renderer coalesces requests while waiting for feed idle", async () => {
+test("Session-backed renderer coalesces requests while waiting for Session idle", async () => {
   const { renderer, clock } = createRetryRenderer(true)
-  const idle = deferFeedIdle(renderer)
+  const idle = deferOutputIdle(renderer)
   const observed: number[] = []
   let state = 1
   let calls = 0
   renderer.setFrameCallback(async () => {
     observed.push(state)
   })
-  mockNativeRender(renderer, () => (calls++ === 0 ? 1 : 0))
+  mockNativeRender(renderer, () =>
+    calls++ === 0 ? NativeSessionRenderStatus.Skipped : NativeSessionRenderStatus.Presented,
+  )
 
   await (renderer as any).loop()
   state = 2
@@ -1221,17 +1137,19 @@ test("feed-backed renderer coalesces requests while waiting for feed idle", asyn
 
   await idle.resolve()
   clock.advance(17)
-  await Promise.resolve()
+  await finishRender(renderer)
 
   expect(calls).toBe(2)
   expect(observed).toEqual([1, 2])
 })
 
-test("starting a feed-backed renderer waits for a skipped frame's feed idle", async () => {
+test("starting a Session-backed renderer waits for a skipped frame's Session idle", async () => {
   const { renderer, clock } = createRetryRenderer(true)
-  const idle = deferFeedIdle(renderer)
+  const idle = deferOutputIdle(renderer)
   let calls = 0
-  mockNativeRender(renderer, () => (calls++ === 0 ? 1 : 0))
+  mockNativeRender(renderer, () =>
+    calls++ === 0 ? NativeSessionRenderStatus.Skipped : NativeSessionRenderStatus.Presented,
+  )
 
   await (renderer as any).loop()
   renderer.start()
@@ -1243,25 +1161,31 @@ test("starting a feed-backed renderer waits for a skipped frame's feed idle", as
   await idle.resolve()
   clock.advance(0)
 
+  await finishRender(renderer)
   expect(calls).toBe(2)
   expect(renderer.isRunning).toBe(true)
   renderer.pause()
 })
 
-test("feed-backed renderer waits for each repeated skip", async () => {
+test("Session-backed renderer waits for each repeated skip", async () => {
   const { renderer, clock } = createRetryRenderer(true)
-  const firstIdle = deferFeedIdle(renderer)
+  const firstIdle = deferOutputIdle(renderer)
   let calls = 0
-  mockNativeRender(renderer, () => (calls++ < 2 ? 1 : 0))
+  mockNativeRender(renderer, () =>
+    calls++ < 2 ? NativeSessionRenderStatus.Skipped : NativeSessionRenderStatus.Presented,
+  )
 
   await (renderer as any).loop()
   await firstIdle.resolve()
+  firstIdle.hold()
   clock.advance(17)
+  await finishRender(renderer)
   expect(calls).toBe(2)
   expect(firstIdle.calls()).toBe(2)
 
   await firstIdle.resolve()
   clock.advance(17)
+  await finishRender(renderer)
   expect(calls).toBe(3)
 })
 
@@ -1275,7 +1199,9 @@ test("native failure does not retry and recovers on a later render request", asy
   })
   let calls = 0
   let frames = 0
-  mockNativeRender(renderer, () => (calls++ === 0 ? 2 : 0))
+  mockNativeRender(renderer, () =>
+    calls++ === 0 ? NativeSessionRenderStatus.Failed : NativeSessionRenderStatus.Presented,
+  )
   renderer.on(CliRenderEvents.FRAME, () => frames++)
 
   await (renderer as any).loop()
@@ -1286,6 +1212,7 @@ test("native failure does not retry and recovers on a later render request", asy
   expect(renderer.getSchedulerState().hasScheduledRender).toBe(false)
 
   renderer.intermediateRender()
+  await finishRender(renderer)
 
   expect(calls).toBe(2)
   expect(frames).toBe(1)
@@ -1299,21 +1226,25 @@ test("running renderer recovers from native failure on a later render request", 
     console.error = originalError
   })
   let calls = 0
-  mockNativeRender(renderer, () => (calls++ === 0 ? 2 : 0))
+  mockNativeRender(renderer, () =>
+    calls++ === 0 ? NativeSessionRenderStatus.Failed : NativeSessionRenderStatus.Presented,
+  )
 
   renderer.start()
+  await finishRender(renderer)
   expect(calls).toBe(1)
   expect(renderer.isRunning).toBe(true)
 
   renderer.requestRender()
   clock.advance(17)
 
+  await finishRender(renderer)
   expect(calls).toBe(2)
 })
 
-test("feed-backed native failure does not wait for feed idle or retry", async () => {
+test("Session-backed native failure does not wait for Session idle or retry", async () => {
   const { renderer, clock } = createRetryRenderer(true)
-  const idle = deferFeedIdle(renderer)
+  const idle = deferOutputIdle(renderer)
   const originalError = console.error
   console.error = () => {}
   destroyFns.unshift(() => {
@@ -1322,7 +1253,7 @@ test("feed-backed native failure does not wait for feed idle or retry", async ()
   let calls = 0
   mockNativeRender(renderer, () => {
     calls++
-    return 2
+    return NativeSessionRenderStatus.Failed
   })
 
   await (renderer as any).loop()
@@ -1333,43 +1264,23 @@ test("feed-backed native failure does not wait for feed idle or retry", async ()
   expect(renderer.getSchedulerState().hasScheduledRender).toBe(false)
 })
 
-test("unexpected skip without a feed does not retry", async () => {
-  const { renderer, clock } = createRetryRenderer()
-  const originalError = console.error
-  const errors: unknown[][] = []
-  console.error = (...args: unknown[]) => errors.push(args)
-  destroyFns.unshift(() => {
-    console.error = originalError
-  })
-  let calls = 0
-  mockNativeRender(renderer, () => {
-    calls++
-    return 1
-  })
-
-  await (renderer as any).loop()
-  clock.advance(1000)
-
-  expect(calls).toBe(1)
-  expect(errors).toHaveLength(1)
-  expect(renderer.getSchedulerState().hasScheduledRender).toBe(false)
-})
-
 for (const control of ["pause", "stop", "suspend", "destroy"] as const) {
-  test(`${control} cancels a feed-idle retry`, async () => {
+  test(`${control} cancels an output-idle retry`, async () => {
     const { renderer, clock } = createRetryRenderer(true)
-    const idle = deferFeedIdle(renderer)
+    if (control === "suspend") await renderer.setupTerminal()
+    const idle = deferOutputIdle(renderer)
     let calls = 0
     mockNativeRender(renderer, () => {
       calls++
-      return 1
+      return NativeSessionRenderStatus.Skipped
     })
 
     await (renderer as any).loop()
-    renderer[control]()
+    await renderer[control]()
     await idle.resolve()
     clock.advance(17)
 
+    await finishRender(renderer)
     expect(calls).toBe(1)
   })
 }
@@ -1378,57 +1289,116 @@ for (const [control, state] of [
   ["pause", "paused"],
   ["stop", "stopped"],
 ] as const) {
-  test(`one-shot render requested while ${state} retries after feed idle`, async () => {
+  test(`one-shot render requested while ${state} retries after Session idle`, async () => {
     const { renderer, clock } = createRetryRenderer(true)
-    const idle = deferFeedIdle(renderer)
+    const idle = deferOutputIdle(renderer)
     let calls = 0
-    mockNativeRender(renderer, () => (calls++ === 0 ? 1 : 0))
+    mockNativeRender(renderer, () =>
+      calls++ === 0 ? NativeSessionRenderStatus.Skipped : NativeSessionRenderStatus.Presented,
+    )
 
     renderer[control]()
     renderer.requestRender()
     clock.advance(17)
+    await finishRender(renderer)
     expect(calls).toBe(1)
 
     await idle.resolve()
     clock.advance(17)
 
+    await finishRender(renderer)
     expect(calls).toBe(2)
   })
 }
 
+test.each(["pause", "stop"] as const)(
+  "a fresh request after %s() replaces a cancelled output-idle retry",
+  async (control) => {
+    const { renderer, clock } = createRetryRenderer(true)
+    const idle = deferOutputIdle(renderer)
+    let calls = 0
+    mockNativeRender(renderer, () =>
+      calls++ === 0 ? NativeSessionRenderStatus.Skipped : NativeSessionRenderStatus.Presented,
+    )
+    renderer.start()
+    await finishRender(renderer)
+    expect(calls).toBe(1)
+    renderer[control]()
+    renderer.requestRender()
+    await idle.resolve()
+    clock.advance(17)
+    await finishRender(renderer)
+    expect(calls).toBe(2)
+    expect(renderer.isRunning).toBe(false)
+  },
+)
+
+test.each(["pause", "stop"] as const)(
+  "an older output-idle wait cannot cancel a newer %s() one-shot",
+  async (control) => {
+    const { renderer, clock } = createRetryRenderer(true)
+    const idle = deferOutputIdle(renderer)
+    const callback = Promise.withResolvers<void>()
+    let calls = 0
+    let callbacks = 0
+    mockNativeRender(renderer, () =>
+      calls++ < 2 ? NativeSessionRenderStatus.Skipped : NativeSessionRenderStatus.Presented,
+    )
+    renderer[control]()
+    renderer.setFrameCallback(async () => {
+      if (++callbacks === 2) await callback.promise
+    })
+    renderer.intermediateRender()
+    await finishRender(renderer)
+    expect(calls).toBe(1)
+    renderer.intermediateRender()
+    expect(callbacks).toBe(2)
+    await idle.resolve()
+    clock.advance(17)
+    idle.hold()
+    callback.resolve()
+    await finishRender(renderer)
+    expect(calls).toBe(2)
+    await idle.resolve()
+    clock.advance(17)
+    await finishRender(renderer)
+    expect(calls).toBe(3)
+    expect(renderer.getStats().nativeFrameCount).toBe(1)
+  },
+)
+
 test("cancelling a skipped frame with an immediate rerender request resolves idle", async () => {
   const { renderer } = createRetryRenderer(true)
-  const idle = deferFeedIdle(renderer)
+  const idle = deferOutputIdle(renderer)
   renderer.setFrameCallback(async () => {
     renderer.requestRender()
   })
-  mockNativeRender(renderer, () => 1)
+  mockNativeRender(renderer, () => NativeSessionRenderStatus.Skipped)
 
   await (renderer as any).loop()
   renderer.pause()
   const idlePromise = renderer.idle()
-  let idleResolved = false
-  void idlePromise.then(() => {
-    idleResolved = true
-  })
 
   await idle.resolve()
-  await Promise.resolve()
-
-  expect(idleResolved).toBe(true)
+  await idlePromise
+  expect(renderer.getSchedulerState().hasScheduledRender).toBe(false)
 })
 
-test("running renderer resumes after feed idle", async () => {
+test("running renderer resumes after Session idle", async () => {
   const { renderer, clock } = createRetryRenderer(true)
-  const idle = deferFeedIdle(renderer)
+  const idle = deferOutputIdle(renderer)
   let calls = 0
-  mockNativeRender(renderer, () => (calls++ === 0 ? 1 : 0))
+  mockNativeRender(renderer, () =>
+    calls++ === 0 ? NativeSessionRenderStatus.Skipped : NativeSessionRenderStatus.Presented,
+  )
 
   renderer.start()
+  await finishRender(renderer)
   expect(calls).toBe(1)
   await idle.resolve()
   clock.advance(17)
 
+  await finishRender(renderer)
   expect(calls).toBe(2)
   expect(renderer.isRunning).toBe(true)
   renderer.pause()
@@ -1484,9 +1454,10 @@ test("Ghostty width profile reaches renderer-owned buffers", async () => {
       forwardEnvKeys: ["TERM_PROGRAM", "TERM_PROGRAM_VERSION"],
     })
     destroyFns.push(() => renderer.destroy())
+    renderers.add(renderer)
 
-    expect(renderer.widthMethod).toBe("unicode-wide")
     await renderer.setupTerminal()
+    expect(renderer.widthMethod).toBe("unicode-wide")
     expect(renderer.currentRenderBuffer.widthMethod).toBe("unicode-wide")
     expect(renderer.nextRenderBuffer.widthMethod).toBe("unicode-wide")
     const encoded = renderer.nextRenderBuffer.encodeUnicode("OpenCode search configuration പരിശോധിക്കൽ")
@@ -1497,6 +1468,7 @@ test("Ghostty width profile reaches renderer-owned buffers", async () => {
       if (encoded) renderer.nextRenderBuffer.freeUnicode(encoded)
     }
 
+    await renderer.nativeScene!.driver.idle()
     renderer.resize(81, 24)
     expect(renderer.currentRenderBuffer.widthMethod).toBe("unicode-wide")
     expect(renderer.nextRenderBuffer.widthMethod).toBe("unicode-wide")
@@ -1519,114 +1491,108 @@ test("destroy emits shutdown ANSI sequence through the custom Writable", async (
     stdout,
   })
 
-  // Let setup output settle, then clear so we can isolate shutdown output.
-  await new Promise<void>((resolve) => setTimeout(resolve, 30))
+  await flushWritable(stdout)
   stdout.clearWrites()
 
   renderer.destroy()
 
-  // Let final writes settle.
-  await new Promise<void>((resolve) => setTimeout(resolve, 50))
+  await renderer.closed
 
   const shutdownBytes = stdout.getWrittenBytes().toString("binary")
 
-  // The shutdown sequence must include at least:
-  //   - showCursor (ANSI.showCursor = ESC[?25h) so the user isn't left with a hidden cursor
-  //   - either the reset-cursor-color sequence or the default-cursor-style sequence
-  // This is the regression test for the teardown-order bug where the data
-  // handler was detached before destroyRenderer emitted shutdown, causing
-  // those bytes to be discarded.
+  // Shutdown must reach the custom sink before the Session releases output.
   expect(shutdownBytes.length).toBeGreaterThan(0)
   expect(shutdownBytes).toContain("\x1b[?25h") // showCursor
 })
 
-test("destroy preserves shutdown output while slow writes pin initial feed chunks", async () => {
+test("destroy preserves accepted controls before terminal shutdown while a write is held", async () => {
   const stdin = createTestStdin()
   const stdout = createCollectingStdout(80, 24)
   const renderer = await createCliRenderer({ stdin, stdout })
-  destroyFns.push(() => renderer.destroy())
-
-  const feed = (renderer as any)._feed
-  expect(feed).not.toBeNull()
-  await feed.idle()
+  destroyFns.push(() => stdout.releaseWrites())
   stdout.clearWrites()
 
-  stdout.delayMs = 100
-  // Two delayed writes pin the default feed's initial chunks during shutdown.
-  renderer.setTerminalTitle("pin-feed-1")
-  renderer.setTerminalTitle("pin-feed-2")
+  stdout.holdWrites = true
+  renderer.setTerminalTitle("held-control-1")
+  renderer.setTerminalTitle("held-control-2")
+  await waitForHeldOutput(stdout)
   renderer.destroy()
 
-  await new Promise<void>((resolve, reject) => {
-    stdout.write(Buffer.alloc(0), (error) => (error ? reject(error) : resolve()))
-  })
+  expect(renderer.nativeScene.driver.disposed).toBe(false)
+  stdout.releaseWrites()
+  await renderer.closed
   const output = stdout.getWrittenBytes().toString("binary")
-  expect(output).toContain("\x1b]0;pin-feed-1\x07")
-  expect(output).toContain("\x1b]0;pin-feed-2\x07")
+  expect(output).toContain("\x1b]0;held-control-1\x07")
+  expect(output.indexOf("held-control-2")).toBeGreaterThan(output.indexOf("held-control-1"))
   expect(output).toContain("\x1b[?25h")
+  expect(output.lastIndexOf("\x1b[?25h")).toBeGreaterThan(output.indexOf("held-control-2"))
 })
 
 // ---- Backpressure ----
 
-test("slow Writable marks feed as backpressured until write callback settles", async () => {
+test("Session idle waits until the Writable callback settles", async () => {
   const stdin = createTestStdin()
   const stdout = createCollectingStdout(80, 24)
-  stdout.delayMs = 50
 
   const renderer = await createCliRenderer({
     stdin,
     stdout,
   })
   destroyFns.push(() => {
-    stdout.delayMs = 0
+    stdout.releaseWrites()
     renderer.destroy()
+    return renderer.closed
   })
 
-  const feed = (renderer as any)._feed
-  expect(feed).not.toBeNull()
-
+  const driver = renderer.nativeScene.driver
+  stdout.holdWrites = true
   renderer.setTerminalTitle("slow-write")
-  await new Promise<void>((resolve) => setImmediate(resolve))
-
-  expect(feed.isBackpressured()).toBe(true)
-
-  stdout.delayMs = 0
-  await feed.idle()
-
-  expect(feed.isBackpressured()).toBe(false)
+  let settled = false
+  const idle = driver.idle().then(() => {
+    settled = true
+  })
+  await waitForHeldOutput(stdout)
+  expect(settled).toBe(false)
+  stdout.releaseWrites()
+  await idle
+  expect(settled).toBe(true)
 })
 
-test("split-footer custom stdout waits for feed credit before flushing captured commits", async () => {
+test("split-footer custom stdout publishes captured commits after in-flight controls", async () => {
   const stdin = createTestStdin()
   const stdout = createCollectingStdout(80, 24)
-  stdout.delayMs = 100
 
   const renderer = new CliRenderer(stdin, stdout, 80, 24, {
     screenMode: "split-footer",
     consoleMode: "disabled",
   })
   destroyFns.push(() => {
-    stdout.delayMs = 0
+    stdout.releaseWrites()
     renderer.destroy()
+    return renderer.closed
   })
 
-  const feed = (renderer as any)._feed
-  expect(feed).not.toBeNull()
-
-  renderer.setTerminalTitle("pin-feed")
-  await new Promise<void>((resolve) => setImmediate(resolve))
-  expect(feed.isBackpressured()).toBe(true)
+  const driver = renderer.nativeScene.driver
+  await renderer.setupTerminal()
+  renderer.stdin.emit("data", Buffer.from("\x1b[1;1R"))
+  await renderer.idle()
+  stdout.clearWrites()
+  stdout.holdWrites = true
+  renderer.setTerminalTitle("held-control")
+  await waitForHeldOutput(stdout)
 
   stdout.write("captured\n")
-  await (renderer as any).loop()
-
+  const rendering = (renderer as any).loop()
   expect((renderer as any).externalOutputQueue.size).toBe(1)
 
-  stdout.delayMs = 0
+  stdout.releaseWrites()
+  await rendering
   await renderer.idle()
-  await feed.idle()
+  await driver.idle()
   expect((renderer as any).externalOutputQueue.size).toBe(0)
-  expect(stdout.getWrittenBytes().toString("binary")).toContain("captured")
+  const output = stdout.getWrittenBytes().toString("binary")
+  expect(output).toContain("held-control")
+  expect(output.indexOf("captured")).toBeGreaterThan(output.indexOf("held-control"))
 })
 
 test("split-footer custom stdout retains captured commits when native skips", async () => {
@@ -1638,6 +1604,7 @@ test("split-footer custom stdout retains captured commits when native skips", as
     consoleMode: "disabled",
   })
   destroyFns.push(() => renderer.destroy())
+  renderers.add(renderer)
 
   const restoreNative = forceNativeSplitSkip(renderer)
 
@@ -1653,7 +1620,7 @@ test("split-footer custom stdout retains captured commits when native skips", as
   }
 })
 
-test("split-footer coalesces render requests while waiting for feed idle", async () => {
+test("split-footer coalesces render requests while waiting for Session idle", async () => {
   const clock = new ManualClock()
   const stdout = createCollectingStdout(80, 24)
   const renderer = new CliRenderer(createTestStdin(), stdout, 80, 24, {
@@ -1661,31 +1628,32 @@ test("split-footer coalesces render requests while waiting for feed idle", async
     consoleMode: "disabled",
     clock,
   })
-  ;(renderer as any).updateScheduled = false
   clock.runAll()
   destroyFns.push(() => renderer.destroy())
+  renderers.add(renderer)
 
-  const idle = deferFeedIdle(renderer)
+  const idle = deferOutputIdle(renderer)
   const rendererAny = renderer as any
-  const originalCommit = rendererAny.lib.commitSplitFooterSnapshot
+  const driver = renderer.nativeScene.driver
+  const originalCommit = driver.renderSplit.bind(driver)
   let calls = 0
-  rendererAny.lib.commitSplitFooterSnapshot = () => {
+  driver.renderSplit = (...args) => {
     calls++
-    return { renderOffset: rendererAny.renderOffset, status: calls === 1 ? 1 : 0 }
+    return calls === 1 ? { renderOffset: 0, status: NativeSessionRenderStatus.Skipped } : originalCommit(...args)
   }
   destroyFns.unshift(() => {
-    rendererAny.lib.commitSplitFooterSnapshot = originalCommit
+    driver.renderSplit = originalCommit
   })
 
   stdout.write("first\n")
   clock.advance(17)
-  await Promise.resolve()
+  await finishRender(renderer)
   expect(calls).toBe(1)
 
   stdout.write("second\n")
   renderer.requestRender()
   clock.advance(100)
-  await Promise.resolve()
+  await finishRender(renderer)
 
   expect(calls).toBe(1)
   expect(idle.calls()).toBe(1)
@@ -1693,10 +1661,16 @@ test("split-footer coalesces render requests while waiting for feed idle", async
 
   await idle.resolve()
   clock.advance(0)
-  await Promise.resolve()
+  await finishRender(renderer)
 
-  expect(calls).toBe(3)
+  expect(calls).toBe(2)
   expect(rendererAny.externalOutputQueue.size).toBe(0)
+  expect(
+    stdout
+      .getWrittenBytes()
+      .toString()
+      .match(/first|second/g),
+  ).toEqual(["first", "second"])
 })
 
 test("split-footer custom stdout retains captured commits when native fails and retries", async () => {
@@ -1708,34 +1682,33 @@ test("split-footer custom stdout retains captured commits when native fails and 
     consoleMode: "disabled",
   })
   destroyFns.push(() => renderer.destroy())
+  renderers.add(renderer)
 
   const rendererAny = renderer as any
-  const originalCommit = rendererAny.lib.commitSplitFooterSnapshot.bind(rendererAny.lib)
-  let calls = 0
-  rendererAny.lib.commitSplitFooterSnapshot = () => {
-    calls++
-    return { renderOffset: rendererAny.renderOffset, status: 2 }
-  }
+  const commit = spyOn(renderer.nativeScene.driver, "renderSplit").mockImplementation(() => ({
+    renderOffset: 0,
+    status: NativeSessionRenderStatus.Failed,
+  }))
 
   stdout.write("captured-while-native-failed\n")
   expect(rendererAny.externalOutputQueue.size).toBeGreaterThan(0)
 
   try {
     await rendererAny.loop()
-    expect(calls).toBeGreaterThan(0)
+    expect(commit).toHaveBeenCalledTimes(1)
     expect(rendererAny.externalOutputQueue.size).toBeGreaterThan(0)
   } finally {
-    rendererAny.lib.commitSplitFooterSnapshot = originalCommit
+    commit.mockRestore()
   }
 
   await rendererAny.loop()
-  await (rendererAny._feed?.idle() ?? Promise.resolve())
+  await renderer.nativeScene.driver.idle()
 
   expect(rendererAny.externalOutputQueue.size).toBe(0)
   expect(stdout.getWrittenBytes().toString("binary")).toContain("captured-while-native-failed")
 })
 
-test("split-footer retains the whole batch when final native publication fails", async () => {
+test("split-footer retains the whole batch when native publication fails", async () => {
   const clock = new ManualClock()
   const stdout = createCollectingStdout(80, 24)
   const renderer = new CliRenderer(createTestStdin(), stdout, 80, 24, {
@@ -1743,38 +1716,36 @@ test("split-footer retains the whole batch when final native publication fails",
     consoleMode: "disabled",
     clock,
   })
-  ;(renderer as any).updateScheduled = false
   clock.runAll()
   destroyFns.push(() => renderer.destroy())
+  renderers.add(renderer)
 
   const rendererAny = renderer as any
-  const originalCommit = rendererAny.lib.commitSplitFooterSnapshot.bind(rendererAny.lib)
-  let calls = 0
-  rendererAny.lib.commitSplitFooterSnapshot = (...args: any[]) => {
-    calls++
-    const finalizeFrame = args[8]
-    return { renderOffset: rendererAny.renderOffset, status: finalizeFrame ? 2 : 0 }
-  }
+  const commit = spyOn(renderer.nativeScene.driver, "renderSplit").mockImplementation(() => ({
+    renderOffset: 0,
+    status: NativeSessionRenderStatus.Failed,
+  }))
 
   stdout.write("first\nsecond\n")
   expect(rendererAny.externalOutputQueue.size).toBe(2)
 
   try {
     await rendererAny.loop()
-    expect(calls).toBe(2)
+    expect(commit).toHaveBeenCalledTimes(1)
+    expect(commit.mock.calls[0][1]).toHaveLength(2)
     expect(rendererAny.externalOutputQueue.size).toBe(2)
+    expect(stdout.getWrittenBytes()).toHaveLength(0)
   } finally {
-    rendererAny.lib.commitSplitFooterSnapshot = originalCommit
+    commit.mockRestore()
   }
 
   await rendererAny.loop()
-  await (rendererAny._feed?.idle() ?? Promise.resolve())
+  await renderer.nativeScene.driver.idle()
   const output = stdout.getWrittenBytes().toString("binary")
-  expect(output).toContain("first")
-  expect(output).toContain("second")
+  expect(output.match(/first|second/g)).toEqual(["first", "second"])
 })
 
-test("split-footer native failure without a feed does not schedule automatic retries", async () => {
+test("split-footer native failure in memory output does not schedule automatic retries", async () => {
   const clock = new ManualClock()
   const stdout = createPlainStdout()
   const renderer = new CliRenderer(createTestStdin(), stdout, 80, 24, {
@@ -1783,94 +1754,92 @@ test("split-footer native failure without a feed does not schedule automatic ret
     bufferedOutput: "memory",
     clock,
   })
-  ;(renderer as any).updateScheduled = false
   clock.runAll()
   destroyFns.push(() => renderer.destroy())
+  renderers.add(renderer)
 
   const rendererAny = renderer as any
-  const originalCommit = rendererAny.lib.commitSplitFooterSnapshot
   const originalError = console.error
-  let calls = 0
-  rendererAny.lib.commitSplitFooterSnapshot = () => {
-    calls++
-    return { renderOffset: rendererAny.renderOffset, status: 2 }
-  }
+  const commit = spyOn(renderer.nativeScene.driver, "renderSplit").mockImplementation(() => ({
+    renderOffset: 0,
+    status: NativeSessionRenderStatus.Failed,
+  }))
   console.error = () => {}
   destroyFns.unshift(() => {
-    rendererAny.lib.commitSplitFooterSnapshot = originalCommit
+    commit.mockRestore()
     console.error = originalError
   })
 
   stdout.write("captured-while-native-failed\n")
-  rendererAny.updateScheduled = false
   await rendererAny.loop()
-  expect(calls).toBe(1)
+  expect(commit).toHaveBeenCalledTimes(1)
 
   clock.advance(1000)
 
-  expect(calls).toBe(1)
+  expect(commit).toHaveBeenCalledTimes(1)
   expect(renderer.getSchedulerState().hasScheduledRender).toBe(false)
 })
 
-test("capture-to-passthrough flushes queued split-footer commits while feed is backpressured", async () => {
+test("capture-to-passthrough flushes queued split-footer commits after held Session output", async () => {
   const stdin = createTestStdin()
   const stdout = createCollectingStdout(80, 24)
-  stdout.delayMs = 30
 
   const renderer = new CliRenderer(stdin, stdout, 80, 24, {
     screenMode: "split-footer",
     consoleMode: "disabled",
   })
   destroyFns.push(() => {
-    stdout.delayMs = 0
+    stdout.releaseWrites()
     renderer.destroy()
+    return renderer.closed
   })
 
-  const feed = (renderer as any)._feed
-  expect(feed).not.toBeNull()
-
-  renderer.setTerminalTitle("pin-feed-before-mode-switch")
-  await new Promise<void>((resolve) => setImmediate(resolve))
-  expect(feed.isBackpressured()).toBe(true)
+  await renderer.setupTerminal()
+  renderer.stdin.emit("data", Buffer.from("\x1b[1;1R"))
+  await renderer.idle()
+  stdout.holdWrites = true
+  renderer.setTerminalTitle("held-before-mode-switch")
+  await waitForHeldOutput(stdout)
 
   stdout.write("captured-before-mode-switch\n")
   expect((renderer as any).externalOutputQueue.size).toBeGreaterThan(0)
 
   renderer.externalOutputMode = "passthrough"
-  stdout.delayMs = 0
-
-  await new Promise<void>((resolve) => setTimeout(resolve, 80))
+  stdout.releaseWrites()
+  await renderer.idle()
+  await renderer.nativeScene.driver.idle()
 
   expect(stdout.getWrittenBytes().toString("binary")).toContain("captured-before-mode-switch")
   expect((renderer as any).externalOutputQueue.size).toBe(0)
+  expect(renderer.externalOutputMode).toBe("passthrough")
 })
 
-test("destroy resolves idle waiters when a feed-idle render was scheduled", async () => {
+test("destroy resolves idle waiters when an output-idle render was scheduled", async () => {
   const stdin = createTestStdin()
   const stdout = createCollectingStdout(80, 24)
-  stdout.delayMs = 30
 
   const renderer = new CliRenderer(stdin, stdout, 80, 24, {
     screenMode: "split-footer",
     consoleMode: "disabled",
   })
   destroyFns.push(() => {
-    stdout.delayMs = 0
+    stdout.releaseWrites()
     renderer.destroy()
+    return renderer.closed
   })
 
-  const feed = (renderer as any)._feed
-  expect(feed).not.toBeNull()
-
-  renderer.setTerminalTitle("pin-feed-before-idle")
-  await new Promise<void>((resolve) => setImmediate(resolve))
-  expect(feed.isBackpressured()).toBe(true)
+  await renderer.setupTerminal()
+  renderer.stdin.emit("data", Buffer.from("\x1b[1;1R"))
+  await renderer.idle()
+  stdout.holdWrites = true
+  renderer.setTerminalTitle("held-before-idle")
+  await waitForHeldOutput(stdout)
 
   const restoreNative = forceNativeSplitSkip(renderer)
   stdout.write("captured-before-idle-destroy\n")
   try {
     await (renderer as any).loop()
-    expect((renderer as any).feedIdleRenderScheduled).toBe(true)
+    expect((renderer as any).outputIdleRenderScheduled).toBe(true)
   } finally {
     restoreNative()
   }
@@ -1881,43 +1850,42 @@ test("destroy resolves idle waiters when a feed-idle render was scheduled", asyn
   })
 
   renderer.destroy()
-  stdout.delayMs = 0
-  await Promise.resolve()
-
-  expect(idleResolved).toBe(true)
+  stdout.releaseWrites()
   await idlePromise
+  expect(idleResolved).toBe(true)
 
-  await new Promise<void>((resolve) => setTimeout(resolve, 80))
+  await renderer.closed
   expect(stdout.getWrittenBytes().toString("binary")).toContain("captured-before-idle-destroy")
   expect((renderer as any).externalOutputQueue.size).toBe(0)
 })
 
-test("suspend resolves idle waiters when a feed-idle render was scheduled", async () => {
+test("suspend resolves idle waiters when an output-idle render was scheduled", async () => {
   const stdin = createTestStdin()
   const stdout = createCollectingStdout(80, 24)
-  stdout.delayMs = 30
 
   const renderer = new CliRenderer(stdin, stdout, 80, 24, {
     screenMode: "split-footer",
     consoleMode: "disabled",
   })
   destroyFns.push(() => {
-    stdout.delayMs = 0
+    stdout.releaseWrites()
     renderer.destroy()
+    return renderer.closed
   })
 
-  const feed = (renderer as any)._feed
-  expect(feed).not.toBeNull()
-
-  renderer.setTerminalTitle("pin-feed-before-suspend")
-  await new Promise<void>((resolve) => setImmediate(resolve))
-  expect(feed.isBackpressured()).toBe(true)
+  await renderer.setupTerminal()
+  renderer.stdin.emit("data", Buffer.from("\x1b[1;1R"))
+  await renderer.idle()
+  await renderer.nativeScene.driver.idle()
+  stdout.holdWrites = true
+  renderer.setTerminalTitle("held-before-suspend")
+  await waitForHeldOutput(stdout)
 
   const restoreNative = forceNativeSplitSkip(renderer)
   stdout.write("captured-before-suspend\n")
   try {
     await (renderer as any).loop()
-    expect((renderer as any).feedIdleRenderScheduled).toBe(true)
+    expect((renderer as any).outputIdleRenderScheduled).toBe(true)
   } finally {
     restoreNative()
   }
@@ -1927,13 +1895,13 @@ test("suspend resolves idle waiters when a feed-idle render was scheduled", asyn
     idleResolved = true
   })
 
-  renderer.suspend()
-  stdout.delayMs = 0
-  await feed.idle()
-  await Promise.resolve()
-
-  expect(idleResolved).toBe(true)
+  const suspension = renderer.suspend()
+  stdout.releaseWrites()
+  await suspension
   await idlePromise
+  expect(idleResolved).toBe(true)
+  const output = stdout.getWrittenBytes().toString("binary")
+  expect(output.lastIndexOf("\x1b[?25h")).toBeGreaterThan(output.indexOf("captured-before-suspend"))
 })
 
 // ---- Dimension fallback ----
@@ -2031,9 +1999,10 @@ test("stdin without setRawMode: start/suspend/resume/destroy all succeed", async
     bufferedOutput: "memory",
   })
 
-  expect(() => renderer.suspend()).not.toThrow()
-  expect(() => renderer.resume()).not.toThrow()
+  await renderer.suspend()
+  await renderer.resume()
   expect(() => renderer.destroy()).not.toThrow()
+  await renderer.closed
 })
 
 // ---- Public resize API ----
@@ -2081,9 +2050,9 @@ test("resize() after destroy is a no-op", async () => {
   expect(() => renderer.resize(100, 50)).not.toThrow()
 })
 
-// ---- Full feed teardown path ----
+// ---- Session teardown ----
 
-test("full feed teardown after successful setup does not throw", async () => {
+test("Session teardown after successful setup releases listeners without closing borrowed streams", async () => {
   const stdin = createTestStdin()
   const stdout = createCollectingStdout(80, 24)
 
@@ -2091,8 +2060,13 @@ test("full feed teardown after successful setup does not throw", async () => {
     stdin,
     stdout,
   })
-  // Exercises the full drain → destroyRenderer → drain → detach → close path.
   expect(() => renderer.destroy()).not.toThrow()
+  await renderer.closed
+  expect(renderer.nativeScene.driver.disposed).toBe(true)
+  expect(stdin.listenerCount("data")).toBe(0)
+  for (const event of ["error", "close", "finish", "drain"]) expect(stdout.listenerCount(event)).toBe(0)
+  expect(stdout.destroyed).toBe(false)
+  expect(stdout.writableEnded).toBe(false)
 })
 
 // ---- Destroy resilience ----
@@ -2127,7 +2101,7 @@ test("constructor cleans up listeners when input setup fails", async () => {
   }
 })
 
-test("destroy tolerates drainAll throwing", async () => {
+test("destroy releases resources when the Session output pump throws", async () => {
   const stdin = createTestStdin()
   const stdout = createCollectingStdout(80, 24)
 
@@ -2136,46 +2110,23 @@ test("destroy tolerates drainAll throwing", async () => {
     stdout,
   })
 
-  // Monkey-patch drainAll on the private feed handle to throw on the first
-  // two calls (one before destroyRenderer, one after), then pass through.
-  const feed = (renderer as any)._feed
-  expect(feed).not.toBeNull()
-  const originalDrainAll = feed.drainAll.bind(feed)
-  let calls = 0
-  feed.drainAll = () => {
-    calls++
-    if (calls <= 2) throw new Error("simulated drain failure")
-    return originalDrainAll()
+  const driver = renderer.nativeScene.driver
+  const failure = new Error("simulated output pump failure")
+  const pump = spyOn(driver.renderLib, "sessionPump").mockImplementation(() => {
+    throw failure
+  })
+  const errors = spyOn(console, "error").mockImplementation(() => {})
+  try {
+    expect(() => renderer.destroy()).not.toThrow()
+    await expect(renderer.closed).rejects.toThrow(failure)
+    expect(pump).toHaveBeenCalled()
+    expect(driver.disposed).toBe(true)
+    expect(renderer.root.isDestroyed).toBe(true)
+    expect(stdin.listenerCount("data")).toBe(0)
+    for (const event of ["error", "close", "finish", "drain"]) expect(stdout.listenerCount(event)).toBe(0)
+  } finally {
+    pump.mockRestore()
+    errors.mockRestore()
+    renderers.delete(renderer)
   }
-
-  // destroy must swallow the drainAll exceptions and still complete the
-  // rest of the teardown path.
-  expect(() => renderer.destroy()).not.toThrow()
-  expect(calls).toBeGreaterThanOrEqual(2)
-})
-
-// ---- onError handler wire-up ----
-
-test("feed.onError handler registration and detach work", async () => {
-  const stdin = createTestStdin()
-  const stdout = createCollectingStdout(80, 24)
-
-  const renderer = await createCliRenderer({
-    stdin,
-    stdout,
-  })
-  destroyFns.push(() => renderer.destroy())
-
-  // The renderer-internal handler is already registered. We register a
-  // secondary one and verify the detach function it returns.
-  //
-  // Note: this test only verifies the wire-up (subscribe + detach). There
-  // is currently no supported API to synthetically trigger an EventId.Error
-  // event on the feed, so end-to-end invocation is a coverage gap tracked
-  // for a future NativeSpanFeed test-harness hook.
-  const feed = (renderer as any)._feed
-  expect(feed).not.toBeNull()
-  const detach = feed.onError(() => {})
-  expect(typeof detach).toBe("function")
-  expect(() => detach()).not.toThrow()
 })

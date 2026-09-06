@@ -1,14 +1,17 @@
 import {
-  resolveRenderLib,
-  type EditBufferHandle,
+  NativeEditCommand,
+  NativeEditPositionQuery,
+  NativeEditorStyleMask,
+  NativeEditHighlightOperation,
   type LogicalCursor,
   type RenderLib,
-  type TextBufferHandle,
+  type ContextEditBufferHandle,
 } from "./zig.js"
 import { type WidthMethod, type Highlight } from "./types.js"
 import { RGBA } from "./lib/RGBA.js"
 import { EventEmitter } from "events"
 import type { SyntaxStyle } from "./syntax-style.js"
+import type { NativeResourceOwner } from "./buffer.js"
 
 export type { LogicalCursor }
 
@@ -17,64 +20,72 @@ export type { LogicalCursor }
  * incremental editing, and grapheme-aware operations.
  */
 export class EditBuffer extends EventEmitter {
-  private static registry = new Map<number, EditBuffer>()
-  private static nativeEventsSubscribed = false
-
   private lib: RenderLib
-  private bufferPtr: EditBufferHandle
-  private textBufferPtr: TextBufferHandle
+  private native: { scene: NativeResourceOwner; handle: ContextEditBufferHandle }
+  private unsubscribe?: () => void
   public readonly id: number
   private _destroyed: boolean = false
-  private _textBytes: Uint8Array[] = []
-  private _singleTextBytes: Uint8Array | null = null
-  private _singleTextMemId: number | null = null
   private _syntaxStyle?: SyntaxStyle
 
-  constructor(lib: RenderLib, ptr: EditBufferHandle) {
+  constructor(lib: RenderLib, handle: ContextEditBufferHandle, scene: NativeResourceOwner) {
     super()
+    if (!scene?.driver) throw new Error("EditBuffer requires an explicit resource owner")
+    scene.assertAlive()
+    if (
+      scene.driver.renderLib !== lib ||
+      !handle ||
+      typeof handle !== "object" ||
+      handle.context !== scene.driver.context
+    ) {
+      throw new Error("EditBuffer Context owner mismatch")
+    }
     this.lib = lib
-    this.bufferPtr = ptr
-    this.textBufferPtr = lib.editBufferGetTextBuffer(ptr)
-    this.id = lib.editBufferGetId(ptr)
-
-    EditBuffer.registry.set(this.id, this)
-    EditBuffer.subscribeToNativeEvents(lib)
-  }
-
-  static create(widthMethod: WidthMethod): EditBuffer {
-    const lib = resolveRenderLib()
-    const ptr = lib.createEditBuffer(widthMethod)
-    return new EditBuffer(lib, ptr)
-  }
-
-  private static subscribeToNativeEvents(lib: RenderLib): void {
-    if (EditBuffer.nativeEventsSubscribed) return
-    EditBuffer.nativeEventsSubscribed = true
-
-    lib.onAnyNativeEvent((name: string, data: ArrayBuffer) => {
-      const buffer = new Uint16Array(data)
-
-      if (name.startsWith("eb_") && buffer.length >= 1) {
-        const id = buffer[0]
-        const instance = EditBuffer.registry.get(id)
-
-        if (instance) {
-          // Strip the "eb_" prefix and forward the event
-          const eventName = name.slice(3)
-          const eventData = data.slice(2)
-          instance.emit(eventName, eventData)
-        }
-      }
+    this.native = { scene, handle }
+    this.id = handle.slot
+    this.unsubscribe = lib.onContextEditEvent(handle.context, handle, (name) => {
+      if (!this._destroyed && !scene.driver.disposed) this.emit(name)
     })
+  }
+
+  static create(widthMethod: WidthMethod, owner: NativeResourceOwner): EditBuffer {
+    if (!owner?.driver) throw new Error("EditBuffer requires an explicit resource owner")
+    owner.assertAlive()
+    const lib = owner.driver.renderLib
+    const handle = lib.createContextEditBuffer(owner.driver.context, { widthMethod })
+    try {
+      return new EditBuffer(lib, handle, owner)
+    } catch (error) {
+      lib.destroyContextEditBuffer(owner.driver.context, handle)
+      throw error
+    }
   }
 
   private guard(): void {
     if (this._destroyed) throw new Error("EditBuffer is destroyed")
+    this.native.scene.assertAlive()
   }
 
-  public get ptr(): EditBufferHandle {
+  /** @internal Editor views must use the buffer's library and Context. */
+  public _getOwner(): { lib: RenderLib; scene: NativeResourceOwner } {
     this.guard()
-    return this.bufferPtr
+    return { lib: this.lib, scene: this.native.scene }
+  }
+
+  /** @internal Requires the exact resource owner. */
+  public _getSceneHandle(scene: NativeResourceOwner): ContextEditBufferHandle {
+    this.guard()
+    if (this.native.scene !== scene) throw new Error("EditBuffer Context owner mismatch")
+    return this.native.handle
+  }
+
+  public runMutation<T>(operation: () => T): T {
+    this.guard()
+    return this.lib.getYogaHost().runMutation(operation)
+  }
+
+  private setNativeText(text: string, preserveHistory = false): void {
+    const textBytes = this.lib.encoder.encode(text)
+    this.lib.contextEditBufferSetText(this.native.handle.context, this.native.handle, textBytes, preserveHistory)
   }
 
   /**
@@ -82,26 +93,13 @@ export class EditBuffer extends EventEmitter {
    * Use this for initial text setting or when you want a clean slate.
    */
   public setText(text: string): void {
-    this.guard()
-    const textBytes = this.lib.encoder.encode(text)
-
-    if (this._singleTextMemId !== null) {
-      this.lib.textBufferReplaceMemBuffer(this.textBufferPtr, this._singleTextMemId, textBytes, false)
-    } else {
-      this._singleTextMemId = this.lib.textBufferRegisterMemBuffer(this.textBufferPtr, textBytes, false)
-    }
-    this._singleTextBytes = textBytes
-    this.lib.editBufferSetTextFromMem(this.bufferPtr, this._singleTextMemId)
+    this.runMutation(() => this.setNativeText(text))
   }
 
-  /**
-   * Set text using owned memory and completely reset the buffer state (clears history, resets add_buffer).
-   * The native code takes ownership of the memory.
-   */
+  /** Historical name for copied text replacement without undo history. */
   public setTextOwned(text: string): void {
     this.guard()
-    const textBytes = this.lib.encoder.encode(text)
-    this.lib.editBufferSetText(this.bufferPtr, textBytes)
+    this.setNativeText(text)
   }
 
   /**
@@ -109,272 +107,333 @@ export class EditBuffer extends EventEmitter {
    * Use this when you want the setText operation to be undoable.
    */
   public replaceText(text: string): void {
-    this.guard()
-    const textBytes = this.lib.encoder.encode(text)
-    this._textBytes.push(textBytes)
-    const memId = this.lib.textBufferRegisterMemBuffer(this.textBufferPtr, textBytes, false)
-    this.lib.editBufferReplaceTextFromMem(this.bufferPtr, memId)
+    this.runMutation(() => this.setNativeText(text, true))
   }
 
-  /**
-   * Replace text using owned memory while preserving undo history (creates an undo point).
-   * The native code takes ownership of the memory.
-   */
+  /** Historical name for copied text replacement that preserves undo history. */
   public replaceTextOwned(text: string): void {
     this.guard()
-    const textBytes = this.lib.encoder.encode(text)
-    this.lib.editBufferReplaceText(this.bufferPtr, textBytes)
+    this.setNativeText(text, true)
   }
 
   public getLineCount(): number {
     this.guard()
-    return this.lib.textBufferGetLineCount(this.textBufferPtr)
+    return this.lib.contextEditBufferGetInfo(this.native.handle.context, this.native.handle).lineCount
   }
 
   public setTabWidth(width: number): void {
     this.guard()
-    this.lib.editBufferSetTabWidth(this.bufferPtr, width)
+    this.runMutation(() => {
+      this.lib.contextEditBufferSetTabWidth(this.native.handle.context, this.native.handle, width)
+    })
   }
 
   public getTabWidth(): number {
     this.guard()
-    return this.lib.textBufferGetTabWidth(this.textBufferPtr)
+    return this.lib.contextEditBufferGetInfo(this.native.handle.context, this.native.handle).tabWidth
   }
 
   public getText(): string {
     this.guard()
-    // TODO: Use byte size of text buffer to get the actual size of the text
-    // actually native can stack alloc all the text and decode will alloc as js string then
-    const maxSize = 1024 * 1024 // 1MB max
-    const textBytes = this.lib.editBufferGetText(this.bufferPtr, maxSize)
-
-    if (!textBytes) return ""
-
-    return this.lib.decoder.decode(textBytes)
+    return this.lib.contextEditBufferGetText(this.native.handle.context, this.native.handle)
   }
 
   public insertChar(char: string): void {
     this.guard()
-    this.lib.editBufferInsertChar(this.bufferPtr, char)
+    return this.lib.contextEditBufferInsertText(
+      this.native.handle.context,
+      this.native.handle,
+      this.lib.encoder.encode(char),
+    )
   }
 
   public insertText(text: string): void {
     this.guard()
-    this.lib.editBufferInsertText(this.bufferPtr, text)
+    return this.lib.contextEditBufferInsertText(
+      this.native.handle.context,
+      this.native.handle,
+      this.lib.encoder.encode(text),
+    )
   }
 
   public deleteChar(): void {
     this.guard()
-    this.lib.editBufferDeleteChar(this.bufferPtr)
+    return this.lib.contextEditBufferCommand(
+      this.native.handle.context,
+      this.native.handle,
+      NativeEditCommand.DeleteForward,
+    )
   }
 
   public deleteCharBackward(): void {
     this.guard()
-    this.lib.editBufferDeleteCharBackward(this.bufferPtr)
+    return this.lib.contextEditBufferCommand(
+      this.native.handle.context,
+      this.native.handle,
+      NativeEditCommand.Backspace,
+    )
   }
 
   public deleteRange(startLine: number, startCol: number, endLine: number, endCol: number): void {
     this.guard()
-    this.lib.editBufferDeleteRange(this.bufferPtr, startLine, startCol, endLine, endCol)
+    return this.lib.contextEditBufferDeleteRange(
+      this.native.handle.context,
+      this.native.handle,
+      startLine,
+      startCol,
+      endLine,
+      endCol,
+    )
   }
 
   public newLine(): void {
     this.guard()
-    this.lib.editBufferNewLine(this.bufferPtr)
+    return this.lib.contextEditBufferCommand(this.native.handle.context, this.native.handle, NativeEditCommand.NewLine)
   }
 
   public deleteLine(): void {
     this.guard()
-    this.lib.editBufferDeleteLine(this.bufferPtr)
+    return this.lib.contextEditBufferCommand(
+      this.native.handle.context,
+      this.native.handle,
+      NativeEditCommand.DeleteLine,
+    )
   }
 
   public moveCursorLeft(): void {
     this.guard()
-    this.lib.editBufferMoveCursorLeft(this.bufferPtr)
+    return this.lib.contextEditBufferCommand(this.native.handle.context, this.native.handle, NativeEditCommand.MoveLeft)
   }
 
   public moveCursorRight(): void {
     this.guard()
-    this.lib.editBufferMoveCursorRight(this.bufferPtr)
+    return this.lib.contextEditBufferCommand(
+      this.native.handle.context,
+      this.native.handle,
+      NativeEditCommand.MoveRight,
+    )
   }
 
   public moveCursorUp(): void {
     this.guard()
-    this.lib.editBufferMoveCursorUp(this.bufferPtr)
+    return this.lib.contextEditBufferCommand(this.native.handle.context, this.native.handle, NativeEditCommand.MoveUp)
   }
 
   public moveCursorDown(): void {
     this.guard()
-    this.lib.editBufferMoveCursorDown(this.bufferPtr)
+    return this.lib.contextEditBufferCommand(this.native.handle.context, this.native.handle, NativeEditCommand.MoveDown)
   }
 
   public gotoLine(line: number): void {
     this.guard()
-    this.lib.editBufferGotoLine(this.bufferPtr, line)
+    return this.lib.contextEditBufferCommand(
+      this.native.handle.context,
+      this.native.handle,
+      NativeEditCommand.GotoLine,
+      line,
+    )
   }
 
   public setCursor(line: number, col: number): void {
     this.guard()
-    this.lib.editBufferSetCursor(this.bufferPtr, line, col)
+    return this.lib.contextEditBufferSetCursor(this.native.handle.context, this.native.handle, line, col)
   }
 
   public setCursorToLineCol(line: number, col: number): void {
     this.guard()
-    this.lib.editBufferSetCursorToLineCol(this.bufferPtr, line, col)
+    return this.lib.contextEditBufferSetCursor(this.native.handle.context, this.native.handle, line, col)
   }
 
   public setCursorByOffset(offset: number): void {
     this.guard()
-    this.lib.editBufferSetCursorByOffset(this.bufferPtr, offset)
+    return this.lib.contextEditBufferCommand(
+      this.native.handle.context,
+      this.native.handle,
+      NativeEditCommand.CursorOffset,
+      offset,
+    )
   }
 
   public getCursorPosition(): LogicalCursor {
     this.guard()
-    return this.lib.editBufferGetCursorPosition(this.bufferPtr)
+    return this.lib.contextEditBufferGetInfo(this.native.handle.context, this.native.handle).cursor
   }
 
   public getNextWordBoundary(): LogicalCursor {
     this.guard()
-    const boundary = this.lib.editBufferGetNextWordBoundary(this.bufferPtr)
-    return {
-      row: boundary.row,
-      col: boundary.col,
-      offset: boundary.offset,
-    }
+    return this.lib.contextEditBufferGetPosition(
+      this.native.handle.context,
+      this.native.handle,
+      NativeEditPositionQuery.NextWord,
+    )!
   }
 
   public getPrevWordBoundary(): LogicalCursor {
     this.guard()
-    const boundary = this.lib.editBufferGetPrevWordBoundary(this.bufferPtr)
-    return {
-      row: boundary.row,
-      col: boundary.col,
-      offset: boundary.offset,
-    }
+    return this.lib.contextEditBufferGetPosition(
+      this.native.handle.context,
+      this.native.handle,
+      NativeEditPositionQuery.PrevWord,
+    )!
   }
 
   public getEOL(): LogicalCursor {
     this.guard()
-    const boundary = this.lib.editBufferGetEOL(this.bufferPtr)
-    return {
-      row: boundary.row,
-      col: boundary.col,
-      offset: boundary.offset,
-    }
+    return this.lib.contextEditBufferGetPosition(
+      this.native.handle.context,
+      this.native.handle,
+      NativeEditPositionQuery.Eol,
+    )!
   }
 
   public offsetToPosition(offset: number): { row: number; col: number } | null {
     this.guard()
-    const result = this.lib.editBufferOffsetToPosition(this.bufferPtr, offset)
+    const result = this.lib.contextEditBufferGetPosition(
+      this.native.handle.context,
+      this.native.handle,
+      NativeEditPositionQuery.Offset,
+      offset,
+    )
     if (!result) return null
     return { row: result.row, col: result.col }
   }
 
   public positionToOffset(row: number, col: number): number {
     this.guard()
-    return this.lib.editBufferPositionToOffset(this.bufferPtr, row, col)
+    return (
+      this.lib.contextEditBufferGetPosition(
+        this.native.handle.context,
+        this.native.handle,
+        NativeEditPositionQuery.Coords,
+        row,
+        col,
+      )?.offset ?? 0
+    )
   }
 
   public getLineStartOffset(row: number): number {
     this.guard()
-    return this.lib.editBufferGetLineStartOffset(this.bufferPtr, row)
+    return (
+      this.lib.contextEditBufferGetPosition(
+        this.native.handle.context,
+        this.native.handle,
+        NativeEditPositionQuery.LineStart,
+        row,
+      )?.offset ?? 0
+    )
   }
 
   public getTextRange(startOffset: number, endOffset: number): string {
     this.guard()
     if (startOffset >= endOffset) return ""
-
-    // TODO: Use actual expected size of the text
-    // like other methods native can just return a pointer and size
-    // and we immediately decode the text into a js string then the native stack
-    // can go out of scope
-    const maxSize = 1024 * 1024 // 1MB max
-    const textBytes = this.lib.editBufferGetTextRange(this.bufferPtr, startOffset, endOffset, maxSize)
-
-    if (!textBytes) return ""
-
-    return this.lib.decoder.decode(textBytes)
+    return this.lib.contextEditBufferGetRange(
+      this.native.handle.context,
+      this.native.handle,
+      false,
+      0,
+      startOffset,
+      0,
+      endOffset,
+    )
   }
 
   public getTextRangeByCoords(startRow: number, startCol: number, endRow: number, endCol: number): string {
     this.guard()
-
-    const maxSize = 1024 * 1024 // 1MB max
-    const textBytes = this.lib.editBufferGetTextRangeByCoords(
-      this.bufferPtr,
+    return this.lib.contextEditBufferGetRange(
+      this.native.handle.context,
+      this.native.handle,
+      true,
       startRow,
       startCol,
       endRow,
       endCol,
-      maxSize,
     )
-
-    if (!textBytes) return ""
-
-    return this.lib.decoder.decode(textBytes)
   }
 
   public debugLogRope(): void {
     this.guard()
-    this.lib.editBufferDebugLogRope(this.bufferPtr)
+    this.lib.contextEditBufferCommand(this.native.handle.context, this.native.handle, NativeEditCommand.DebugRope)
+    this.lib.logContextDiagnostics(this.native.handle.context)
   }
 
   public undo(): string | null {
     this.guard()
-    const maxSize = 256
-    const metaBytes = this.lib.editBufferUndo(this.bufferPtr, maxSize)
-    if (!metaBytes) return null
-    return this.lib.decoder.decode(metaBytes)
+    return this.lib.contextEditBufferHistory(this.native.handle.context, this.native.handle, false)
   }
 
   public redo(): string | null {
     this.guard()
-    const maxSize = 256
-    const metaBytes = this.lib.editBufferRedo(this.bufferPtr, maxSize)
-    if (!metaBytes) return null
-    return this.lib.decoder.decode(metaBytes)
+    return this.lib.contextEditBufferHistory(this.native.handle.context, this.native.handle, true)
   }
 
   public canUndo(): boolean {
     this.guard()
-    return this.lib.editBufferCanUndo(this.bufferPtr)
+    return this.lib.contextEditBufferGetInfo(this.native.handle.context, this.native.handle).canUndo
   }
 
   public canRedo(): boolean {
     this.guard()
-    return this.lib.editBufferCanRedo(this.bufferPtr)
+    return this.lib.contextEditBufferGetInfo(this.native.handle.context, this.native.handle).canRedo
   }
 
   public clearHistory(): void {
     this.guard()
-    this.lib.editBufferClearHistory(this.bufferPtr)
+    return this.lib.contextEditBufferCommand(
+      this.native.handle.context,
+      this.native.handle,
+      NativeEditCommand.ClearHistory,
+    )
   }
 
   public setDefaultFg(fg: RGBA | null): void {
     this.guard()
-    this.lib.textBufferSetDefaultFg(this.textBufferPtr, fg)
+    return this.lib.contextEditBufferSetDefaults(
+      this.native.handle.context,
+      this.native.handle,
+      NativeEditorStyleMask.Foreground,
+      { fg },
+    )
   }
 
   public setDefaultBg(bg: RGBA | null): void {
     this.guard()
-    this.lib.textBufferSetDefaultBg(this.textBufferPtr, bg)
+    return this.lib.contextEditBufferSetDefaults(
+      this.native.handle.context,
+      this.native.handle,
+      NativeEditorStyleMask.Background,
+      { bg },
+    )
   }
 
   public setDefaultAttributes(attributes: number | null): void {
     this.guard()
-    this.lib.textBufferSetDefaultAttributes(this.textBufferPtr, attributes)
+    return this.lib.contextEditBufferSetDefaults(
+      this.native.handle.context,
+      this.native.handle,
+      NativeEditorStyleMask.Attributes,
+      { attributes },
+    )
   }
 
   public resetDefaults(): void {
     this.guard()
-    this.lib.textBufferResetDefaults(this.textBufferPtr)
+    return this.lib.contextEditBufferSetDefaults(
+      this.native.handle.context,
+      this.native.handle,
+      NativeEditorStyleMask.All,
+      {},
+    )
   }
 
   public setSyntaxStyle(style: SyntaxStyle | null): void {
-    this.guard()
-    if (this.lib.textBufferSetSyntaxStyle(this.textBufferPtr, style?.ptr ?? null)) {
+    this.runMutation(() => {
+      this.lib.contextEditBufferSetSyntaxStyle(
+        this.native.handle.context,
+        this.native.handle,
+        style?._getSceneHandle(this.native.scene) ?? null,
+      )
       this._syntaxStyle = style ?? undefined
-    }
+    })
   }
 
   public getSyntaxStyle(): SyntaxStyle | null {
@@ -384,44 +443,75 @@ export class EditBuffer extends EventEmitter {
 
   public addHighlight(lineIdx: number, highlight: Highlight): void {
     this.guard()
-    this.lib.textBufferAddHighlight(this.textBufferPtr, lineIdx, highlight)
+    return this.lib.contextEditBufferHighlight(
+      this.native.handle.context,
+      this.native.handle,
+      NativeEditHighlightOperation.AddLine,
+      lineIdx,
+      highlight,
+    )
   }
 
   public addHighlightByCharRange(highlight: Highlight): void {
     this.guard()
-    this.lib.textBufferAddHighlightByCharRange(this.textBufferPtr, highlight)
+    return this.lib.contextEditBufferHighlight(
+      this.native.handle.context,
+      this.native.handle,
+      NativeEditHighlightOperation.AddRange,
+      0,
+      highlight,
+    )
   }
 
   public removeHighlightsByRef(hlRef: number): void {
     this.guard()
-    this.lib.textBufferRemoveHighlightsByRef(this.textBufferPtr, hlRef)
+    return this.lib.contextEditBufferHighlight(
+      this.native.handle.context,
+      this.native.handle,
+      NativeEditHighlightOperation.RemoveRef,
+      hlRef,
+    )
   }
 
   public clearLineHighlights(lineIdx: number): void {
     this.guard()
-    this.lib.textBufferClearLineHighlights(this.textBufferPtr, lineIdx)
+    return this.lib.contextEditBufferHighlight(
+      this.native.handle.context,
+      this.native.handle,
+      NativeEditHighlightOperation.ClearLine,
+      lineIdx,
+    )
   }
 
   public clearAllHighlights(): void {
     this.guard()
-    this.lib.textBufferClearAllHighlights(this.textBufferPtr)
+    return this.lib.contextEditBufferHighlight(
+      this.native.handle.context,
+      this.native.handle,
+      NativeEditHighlightOperation.ClearAll,
+    )
   }
 
   public getLineHighlights(lineIdx: number): Array<Highlight> {
     this.guard()
-    return this.lib.textBufferGetLineHighlights(this.textBufferPtr, lineIdx)
+    return this.lib.contextEditBufferGetHighlights(this.native.handle.context, this.native.handle, lineIdx)
   }
 
   public clear(): void {
     this.guard()
-    this.lib.editBufferClear(this.bufferPtr)
+    return this.lib.contextEditBufferCommand(this.native.handle.context, this.native.handle, NativeEditCommand.Clear)
   }
 
   public destroy(): void {
     if (this._destroyed) return
-
-    this._destroyed = true
-    EditBuffer.registry.delete(this.id)
-    this.lib.destroyEditBuffer(this.bufferPtr)
+    this.lib.getYogaHost().runMutation(() => {
+      if (!this.native.scene.driver.contextDisposed)
+        this.lib.destroyContextEditBuffer(this.native.handle.context, this.native.handle)
+      this._destroyed = true
+      this.unsubscribe?.()
+      this.unsubscribe = undefined
+      this.removeAllListeners()
+      this._syntaxStyle = undefined
+    })
   }
 }

@@ -8,6 +8,7 @@ export const DEFAULT_BACKGROUND_RGB: RGBTriplet = [0, 0, 0]
 const INTENT_RGB = 0
 const INTENT_INDEXED = 1
 const INTENT_DEFAULT = 2
+const ZERO_RGBA_BUFFER = new Uint16Array(4)
 
 const ANSI16_RGB: readonly RGBTriplet[] = [
   [0x00, 0x00, 0x00],
@@ -46,13 +47,13 @@ function toByte(value: number): number {
   return Math.round(Math.max(0, Math.min(255, Number.isFinite(value) ? value : 0)))
 }
 
-function packRGBA8(r: number, g: number, b: number, a: number, meta: number): Uint16Array {
-  return new Uint16Array([
-    (toByte(r) & 0xff) | (((meta >>> 0) & 0xff) << 8),
-    (toByte(g) & 0xff) | (((meta >>> 8) & 0xff) << 8),
-    (toByte(b) & 0xff) | (((meta >>> 16) & 0xff) << 8),
-    (toByte(a) & 0xff) | (((meta >>> 24) & 0xff) << 8),
-  ])
+function packRGBA8(r: number, g: number, b: number, a: number, meta: number): RGBA {
+  const rgba = new RGBA(ZERO_RGBA_BUFFER)
+  rgba.buffer[0] = (toByte(r) & 0xff) | (((meta >>> 0) & 0xff) << 8)
+  rgba.buffer[1] = (toByte(g) & 0xff) | (((meta >>> 8) & 0xff) << 8)
+  rgba.buffer[2] = (toByte(b) & 0xff) | (((meta >>> 16) & 0xff) << 8)
+  rgba.buffer[3] = (toByte(a) & 0xff) | (((meta >>> 24) & 0xff) << 8)
+  return rgba
 }
 
 function rgbaForAnsi256Index(index: number): RGBA {
@@ -91,8 +92,18 @@ export class RGBA {
   buffer: Uint16Array
 
   constructor(buffer: Uint16Array) {
-    this.buffer = new Uint16Array(4)
-    this.buffer.set(buffer.subarray(0, 4))
+    // Every color snapshot runs this; indexed copies avoid allocating a subarray view per instance.
+    // Detached buffers report length 0 and short inputs still take the checked partial copy below.
+    const copy = new Uint16Array(4)
+    if (buffer.length === 4) {
+      copy[0] = buffer[0]
+      copy[1] = buffer[1]
+      copy[2] = buffer[2]
+      copy[3] = buffer[3]
+    } else {
+      copy.set(buffer.subarray(0, 4))
+    }
+    this.buffer = copy
   }
 
   static fromArray(array: Uint16Array): RGBA {
@@ -100,7 +111,7 @@ export class RGBA {
   }
 
   static fromValues(r: number, g: number, b: number, a: number = 1): RGBA {
-    return new RGBA(packRGBA8(toU8(r), toU8(g), toU8(b), toU8(a), packMeta(INTENT_RGB)))
+    return packRGBA8(toU8(r), toU8(g), toU8(b), toU8(a), packMeta(INTENT_RGB))
   }
 
   static clone(rgba: RGBA): RGBA {
@@ -108,7 +119,7 @@ export class RGBA {
   }
 
   static fromInts(r: number, g: number, b: number, a: number = 255): RGBA {
-    return new RGBA(packRGBA8(r, g, b, a, packMeta(INTENT_RGB)))
+    return packRGBA8(r, g, b, a, packMeta(INTENT_RGB))
   }
 
   static fromHex(hex: string): RGBA {
@@ -119,19 +130,19 @@ export class RGBA {
     const normalized = normalizeIndexedColorIndex(index)
     const rgba = snapshot ? parseColor(snapshot) : rgbaForAnsi256Index(normalized)
     const [r, g, b, a] = rgba.toInts()
-    return new RGBA(packRGBA8(r, g, b, a, packMeta(INTENT_INDEXED, normalized)))
+    return packRGBA8(r, g, b, a, packMeta(INTENT_INDEXED, normalized))
   }
 
   static defaultForeground(snapshot?: ColorInput): RGBA {
     const rgba = snapshot ? parseColor(snapshot) : RGBA.fromInts(...DEFAULT_FOREGROUND_RGB)
     const [r, g, b, a] = rgba.toInts()
-    return new RGBA(packRGBA8(r, g, b, a, packMeta(INTENT_DEFAULT)))
+    return packRGBA8(r, g, b, a, packMeta(INTENT_DEFAULT))
   }
 
   static defaultBackground(snapshot?: ColorInput): RGBA {
     const rgba = snapshot ? parseColor(snapshot) : RGBA.fromInts(...DEFAULT_BACKGROUND_RGB)
     const [r, g, b, a] = rgba.toInts()
-    return new RGBA(packRGBA8(r, g, b, a, packMeta(INTENT_DEFAULT)))
+    return packRGBA8(r, g, b, a, packMeta(INTENT_DEFAULT))
   }
 
   toInts(): [number, number, number, number] {

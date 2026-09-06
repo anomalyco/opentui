@@ -11,28 +11,6 @@ const TextBuffer = text_buffer.UnifiedTextBuffer;
 const TextBufferView = text_buffer_view.UnifiedTextBufferView;
 const RGBA = text_buffer.RGBA;
 
-test "TextBufferView first layout retains reusable word metadata" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const links = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
-    const tb = try TextBuffer.init(std.testing.allocator, pool, links, .unicode);
-    defer tb.deinit();
-    const view = try TextBufferView.init(std.testing.allocator, tb);
-    defer view.deinit();
-    try tb.setText("alpha \u{754c}abc e\u{301} words\n" ** 100);
-    view.setWrapMode(.word);
-    view.setWrapWidth(80);
-    _ = view.getVirtualLines();
-    try std.testing.expectEqual(@as(usize, 100), view.word_layout.layouts.items.len);
-    const ptr = view.word_layout.layouts.items.ptr;
-    const capacity = view.word_layout.arena.queryCapacity();
-    view.setWrapWidth(79);
-    _ = view.getVirtualLines();
-    try std.testing.expectEqual(ptr, view.word_layout.layouts.items.ptr);
-    try std.testing.expectEqual(capacity, view.word_layout.arena.queryCapacity());
-}
-
 test "TextBufferView fragmented ASCII measurement streams complete words without scratch allocation" {
     const pool = gp.initGlobalPool(std.testing.allocator);
     defer gp.deinitGlobalPool();
@@ -77,7 +55,6 @@ test "TextBufferView CJK cache survives a failed sibling layout" {
     try std.testing.expectEqual(@as(u32, 14), healthy.getVirtualLineCount());
     const chunk = tb.rope().get(4).?.asText().?;
     const cached = chunk.getCachedLayoutInfo(tb.tabWidth(), tb.widthMethod()).?;
-    try std.testing.expectEqual(cached.cjk_breaks.ptr, healthy.word_layout.layouts.items[1].cjk_breaks.ptr);
 
     var failing = std.testing.FailingAllocator.init(std.testing.allocator, .{});
     const sibling = try TextBufferView.init(failing.allocator(), tb);
@@ -100,48 +77,6 @@ test "TextBufferView CJK cache survives a failed sibling layout" {
     healthy.setWrapWidth(80);
     try std.testing.expectEqual(@as(u32, 14), healthy.getVirtualLineCount());
     try std.testing.expectEqual(cached.cjk_breaks.ptr, chunk.getCachedLayoutInfo(tb.tabWidth(), tb.widthMethod()).?.cjk_breaks.ptr);
-}
-
-test "TextBufferView optional metadata failure preserves every streamed piece" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const links = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
-    const tb = try TextBuffer.init(std.testing.allocator, pool, links, .unicode);
-    defer tb.deinit();
-    try tb.setText(("a\u{754c}e\u{301} \u{0600} xy\tend-" ** 5000) ++ "\n" ++ ("\u{754c}abc e\u{301}\n" ** 100));
-    const expected = try TextBufferView.init(std.testing.allocator, tb);
-    defer expected.deinit();
-    expected.setWrapMode(.word);
-    expected.setWrapWidth(79);
-    const want = expected.getVirtualLines();
-    for (0..14) |failure| {
-        var tracking = std.testing.FailingAllocator.init(std.testing.allocator, .{});
-        const actual = try TextBufferView.init(std.testing.allocator, tb);
-        defer actual.deinit();
-        actual.word_layout.arena.child_allocator = tracking.allocator();
-        actual.setWrapMode(.word);
-        tracking.fail_index = failure;
-        actual.setWrapWidth(79);
-        const got = actual.getVirtualLines();
-        try std.testing.expect(!actual.virtual_lines_dirty);
-        try std.testing.expectEqual(want.len, got.len);
-        for (want, got) |wl, gl| {
-            try std.testing.expectEqual(wl.width_cols, gl.width_cols);
-            try std.testing.expectEqual(wl.source_line, gl.source_line);
-            try std.testing.expectEqual(wl.source_col_start, gl.source_col_start);
-            try std.testing.expectEqual(wl.document_cell_offset, gl.document_cell_offset);
-            try std.testing.expectEqualDeep(wl.chunks.items, gl.chunks.items);
-        }
-        if (tracking.has_induced_failure) try std.testing.expectEqual(@as(usize, 0), actual.word_layout.layouts.items.len);
-        tracking.fail_index = std.math.maxInt(usize);
-        actual.setWrapWidth(80);
-        _ = actual.getVirtualLines();
-        actual.setWrapWidth(79);
-        try std.testing.expectEqual(want.len, actual.getVirtualLines().len);
-        const measured = try actual.measureForDimensions(79, 24);
-        try std.testing.expectEqual(want.len, measured.line_count);
-    }
 }
 
 test "TextBufferView width reuse does not leave metadata in old buffer roots" {
@@ -198,18 +133,13 @@ test "TextBufferView live word metadata follows views history and buffer switche
     second.setWrapWidth(32);
     _ = view.getVirtualLines();
     _ = second.getVirtualLines();
-    try std.testing.expect(view.word_layout.layouts.items.len > 0);
     view.setWrapWidth(17);
     second.setWrapWidth(33);
     _ = view.getVirtualLines();
     _ = second.getVirtualLines();
-    const ptr = view.word_layout.layouts.items.ptr;
-    const capacity = view.word_layout.arena.queryCapacity();
     for ([_]u32{ 43, 7, 16, 96, 32 }) |width| {
         view.setWrapWidth(width);
         _ = view.getVirtualLines();
-        try std.testing.expectEqual(ptr, view.word_layout.layouts.items.ptr);
-        try std.testing.expectEqual(capacity, view.word_layout.arena.queryCapacity());
     }
     try edit.replaceText("changed\ttext \u{0600} \u{301} \u{754c} words\n" ** 10);
     for (0..3) |step| {
@@ -218,13 +148,11 @@ test "TextBufferView live word metadata follows views history and buffer switche
         edit.tb.setTabWidth(@intCast(2 + step * 2));
         for ([_]*TextBufferView{ view, second }) |current| {
             _ = current.getVirtualLines();
-            try std.testing.expect(current.word_layout.layouts.items.len > 0);
             current.setWrapWidth(19);
             _ = current.getVirtualLines();
             current.setWrapWidth(23);
             const measured = try current.measureForDimensions(23, 24);
             try std.testing.expectEqual(measured.line_count, current.getVirtualLineCount());
-            try std.testing.expect(current.word_layout.layouts.items.len > 0);
             var bytes: [4096]u8 = undefined;
             const len = edit.tb.getPlainTextIntoBuffer(&bytes);
             const fresh_tb = try TextBuffer.init(std.testing.allocator, pool, link_pool, .unicode);
@@ -255,14 +183,11 @@ test "TextBufferView live word metadata follows views history and buffer switche
         }
     }
     view.switchToBuffer(other);
-    try std.testing.expectEqual(@as(usize, 0), view.word_layout.layouts.items.len);
     _ = view.getVirtualLines();
     view.switchToOriginalBuffer();
-    try std.testing.expectEqual(@as(usize, 0), view.word_layout.layouts.items.len);
     _ = view.getVirtualLines();
     view.setWrapMode(.char);
     _ = view.getVirtualLines();
-    try std.testing.expectEqual(@as(usize, 0), view.word_layout.arena.queryCapacity());
 }
 
 test "TextBufferView live word metadata discards partial allocation on failure" {
@@ -283,43 +208,12 @@ test "TextBufferView live word metadata discards partial allocation on failure" 
         view.setWrapWidth(17);
         _ = view.getVirtualLines();
         if (tracking.has_induced_failure) {
-            try std.testing.expectEqual(@as(usize, 0), view.word_layout.layouts.items.len);
             if (view.virtual_lines_dirty) try std.testing.expectEqual(@as(usize, 0), view.virtual_lines.items.len);
         }
         tracking.fail_index = std.math.maxInt(usize);
         const measured = try view.measureForDimensions(17, 24);
         try std.testing.expectEqual(measured.line_count, view.getVirtualLineCount());
     }
-}
-
-test "TextBufferView rewrap reuses virtual line allocation without retaining cleared layout" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
-    var tracking = std.testing.FailingAllocator.init(std.testing.allocator, .{});
-    const tb = try TextBuffer.init(tracking.allocator(), pool, link_pool, .unicode);
-    defer tb.deinit();
-    const view = try TextBufferView.init(tracking.allocator(), tb);
-    defer view.deinit();
-    try tb.setText("OpenTUI text metrics: \u{754c} e\u{301} abcdefghijklmnop " ** 100);
-    view.setWrapMode(.word);
-    view.setWrapWidth(80);
-    _ = view.getVirtualLines();
-    view.setWrapWidth(79);
-    _ = view.getVirtualLines();
-    view.setWrapWidth(80);
-    _ = view.getVirtualLines();
-    const allocated = tracking.allocated_bytes;
-    const capacity = view.virtual_lines_arena.queryCapacity();
-    for (0..20) |i| {
-        view.setWrapWidth(@intCast(79 + i % 2));
-        _ = view.getVirtualLines();
-    }
-    try std.testing.expectEqual(allocated, tracking.allocated_bytes);
-    tb.clear();
-    try std.testing.expectEqual(@as(u32, 1), view.getVirtualLineCount());
-    try std.testing.expect(view.virtual_lines_arena.queryCapacity() < capacity);
 }
 
 test "TextBufferView rewrap matches fresh layout after text and tab changes" {
@@ -376,7 +270,7 @@ test "TextBufferView rewrap matches fresh layout after text and tab changes" {
                 }
             }
         }
-        tb.clear();
+        try tb.clear();
         try std.testing.expectEqual(@as(u32, 1), view.getVirtualLineCount());
     }
 }
@@ -1538,6 +1432,30 @@ test "TextBufferView word wrapping - combining mark keeps base class across chun
     view.setWrapWidth(4);
     // "a\u{0301}日" fills the first line; the CJK run may break between characters.
     try std.testing.expectEqualSlices(u32, &.{ 3, 2 }, view.getCachedLineInfo().line_width_cols);
+}
+
+test "TextBufferView word wrapping - appended kana combining mark keeps trailing bytes" {
+    const pool = gp.initGlobalPool(std.testing.allocator);
+    defer gp.deinitGlobalPool();
+    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
+    defer link.deinitGlobalLinkPool();
+
+    var tb = try TextBuffer.init(std.testing.allocator, pool, link_pool, .unicode);
+    defer tb.deinit();
+    var view = try TextBufferView.init(std.testing.allocator, tb);
+    defer view.deinit();
+
+    try tb.setText("か");
+    try tb.append("\u{3099}く");
+    view.setWrapMode(.word);
+    view.setWrapWidth(8);
+
+    const expected = "か\u{3099}く";
+    var bytes: usize = 0;
+    for (view.getVirtualLines()) |vline| {
+        for (vline.chunks.items) |chunk| bytes += chunk.byte_len;
+    }
+    try std.testing.expectEqual(expected.len, bytes);
 }
 
 test "TextBufferView word wrapping - CJK run wraps between characters" {
@@ -3096,6 +3014,46 @@ test "TextBufferView highlights - work correctly with wrapped lines" {
     try std.testing.expect(vline1_info.spans.len > 0);
 }
 
+test "TextBufferView measureForDimensions - alternating widths reuse completed results after a failed miss" {
+    const pool = gp.initGlobalPool(std.testing.allocator);
+    defer gp.deinitGlobalPool();
+    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
+    defer link.deinitGlobalLinkPool();
+    var tb = try TextBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth);
+    defer tb.deinit();
+    var failing = std.testing.FailingAllocator.init(std.testing.allocator, .{});
+    var view = try TextBufferView.init(failing.allocator(), tb);
+    defer view.deinit();
+    // Separate chunks prevent a chunk summary from hiding a view-cache miss.
+    try tb.setText("word");
+    try tb.append(" tail");
+    view.setWrapMode(.word);
+
+    const first = try view.measureForDimensions(8, 24);
+    const second = try view.measureForDimensions(7, 24);
+    const third = try view.measureForDimensions(6, 24);
+    _ = view.measure_arena.reset(.free_all);
+    failing.fail_index = failing.alloc_index;
+    try std.testing.expectEqualDeep(first, try view.measureForDimensions(8, 1));
+    try std.testing.expectEqualDeep(second, try view.measureForDimensions(7, 0));
+    try std.testing.expectEqualDeep(third, try view.measureForDimensions(6, 24));
+    try std.testing.expect(!failing.has_induced_failure);
+    try std.testing.expectError(error.OutOfMemory, view.measureForDimensions(5, 24));
+    try std.testing.expect(failing.has_induced_failure);
+    view.setFirstLineOffset(1);
+    try std.testing.expectError(error.OutOfMemory, view.measureForDimensions(8, 24));
+    view.setFirstLineOffset(0);
+    try std.testing.expectEqualDeep(first, try view.measureForDimensions(8, 24));
+    try std.testing.expectEqualDeep(second, try view.measureForDimensions(7, 24));
+    try std.testing.expectEqualDeep(third, try view.measureForDimensions(6, 24));
+    // An intrinsic miss needs no scratch and evicts the least-recent width.
+    try std.testing.expectEqualDeep(first, try view.measureForDimensions(8, 24));
+    try std.testing.expectEqual(@as(u32, 9), (try view.measureForDimensions(0, 24)).width_cols_max);
+    try std.testing.expectEqualDeep(first, try view.measureForDimensions(8, 24));
+    try std.testing.expectEqualDeep(third, try view.measureForDimensions(6, 24));
+    try std.testing.expectError(error.OutOfMemory, view.measureForDimensions(7, 24));
+}
+
 test "TextBufferView measureForDimensions - does not modify cache" {
     const pool = gp.initGlobalPool(std.testing.allocator);
     defer gp.deinitGlobalPool();
@@ -3146,6 +3104,8 @@ test "TextBufferView measureForDimensions - cache invalidates after updateVirtua
     const result1 = try view.measureForDimensions(5, 10);
     try std.testing.expectEqual(@as(u32, 1), result1.line_count);
     try std.testing.expectEqual(@as(u32, 5), result1.width_cols_max);
+    try std.testing.expectEqual(@as(u32, 3), (try view.measureForDimensions(2, 10)).line_count);
+    try std.testing.expectEqual(@as(u32, 5), (try view.measureForDimensions(0, 10)).width_cols_max);
 
     try tb.setText("AAAAAAAAAA");
 
@@ -3156,6 +3116,8 @@ test "TextBufferView measureForDimensions - cache invalidates after updateVirtua
     const result2 = try view.measureForDimensions(5, 10);
     try std.testing.expectEqual(@as(u32, 2), result2.line_count);
     try std.testing.expectEqual(@as(u32, 5), result2.width_cols_max);
+    try std.testing.expectEqual(@as(u32, 5), (try view.measureForDimensions(2, 10)).line_count);
+    try std.testing.expectEqual(@as(u32, 10), (try view.measureForDimensions(0, 10)).width_cols_max);
 }
 
 test "TextBufferView measureForDimensions - width 0 uses intrinsic line widths" {
@@ -3225,6 +3187,8 @@ test "TextBufferView measureForDimensions - cache invalidates on switchToBuffer"
 
     const result1 = try view.measureForDimensions(10, 10);
     try std.testing.expectEqual(@as(u32, 6), result1.width_cols_max);
+    try std.testing.expectEqual(@as(u32, 2), (try view.measureForDimensions(3, 10)).line_count);
+    try std.testing.expectEqual(@as(u32, 6), (try view.measureForDimensions(0, 10)).width_cols_max);
 
     try other_tb.setText("BBBBBBBBBB");
     try std.testing.expectEqual(tb.getContentEpoch(), other_tb.getContentEpoch());
@@ -3234,6 +3198,78 @@ test "TextBufferView measureForDimensions - cache invalidates on switchToBuffer"
     const result2 = try view.measureForDimensions(10, 10);
     try std.testing.expectEqual(@as(u32, 10), result2.width_cols_max);
     try std.testing.expectEqual(@as(u32, 1), result2.line_count);
+    try std.testing.expectEqual(@as(u32, 4), (try view.measureForDimensions(3, 10)).line_count);
+    try std.testing.expectEqual(@as(u32, 10), (try view.measureForDimensions(0, 10)).width_cols_max);
+    view.switchToOriginalBuffer();
+    try std.testing.expectEqualDeep(result1, try view.measureForDimensions(10, 10));
+    try std.testing.expectEqual(@as(u32, 2), (try view.measureForDimensions(3, 10)).line_count);
+    try std.testing.expectEqual(@as(u32, 6), (try view.measureForDimensions(0, 10)).width_cols_max);
+}
+
+test "TextBufferView measureForDimensions - buffer switches retire all widths before address reuse" {
+    const pool = gp.initGlobalPool(std.testing.allocator);
+    defer gp.deinitGlobalPool();
+    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
+    defer link.deinitGlobalLinkPool();
+    var tb = try TextBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth);
+    defer tb.deinit();
+    var view = try TextBufferView.init(std.testing.allocator, tb);
+    defer view.deinit();
+    view.setWrapMode(.char);
+    var storage: [128 * 1024]u8 = undefined;
+    var fixed = std.heap.FixedBufferAllocator.init(&storage);
+    const retired = blk: {
+        const other = try TextBuffer.init(fixed.allocator(), pool, link_pool, .wcwidth);
+        defer other.deinit();
+        try other.setText("AAAAAA");
+        view.switchToBuffer(other);
+        defer view.switchToOriginalBuffer();
+        _ = try view.measureForDimensions(8, 24);
+        _ = try view.measureForDimensions(7, 24);
+        break :blk .{ .address = @intFromPtr(other), .epoch = other.getContentEpoch() };
+    };
+    fixed.reset();
+    const replacement = try TextBuffer.init(fixed.allocator(), pool, link_pool, .wcwidth);
+    defer replacement.deinit();
+    try replacement.setText("BBBBBBBBBB");
+    try std.testing.expectEqual(retired.address, @intFromPtr(replacement));
+    try std.testing.expectEqual(retired.epoch, replacement.getContentEpoch());
+    view.switchToBuffer(replacement);
+    defer view.switchToOriginalBuffer();
+    const measured = try view.measureForDimensions(8, 24);
+    try std.testing.expectEqual(@as(u32, 2), measured.line_count);
+    try std.testing.expectEqual(@as(u32, 8), measured.width_cols_max);
+}
+
+test "TextBufferView measureForDimensions - warmed widths follow wrapping offset and tab changes" {
+    const pool = gp.initGlobalPool(std.testing.allocator);
+    defer gp.deinitGlobalPool();
+    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
+    defer link.deinitGlobalLinkPool();
+    var tb = try TextBuffer.init(std.testing.allocator, pool, link_pool, .unicode);
+    defer tb.deinit();
+    var view = try TextBufferView.init(std.testing.allocator, tb);
+    defer view.deinit();
+    try tb.setText("one\ttwo \u{4e16}\u{754c} e\u{301}\ntail words");
+
+    for ([_]text_buffer_view.WrapMode{ .word, .char, .none, .word }) |mode| {
+        view.setWrapMode(mode);
+        for ([_]u32{ 0, 3, 8, 9, 0 }) |offset| {
+            view.setFirstLineOffset(offset);
+            for ([_]u8{ 4, 8, 4 }) |tab_width| {
+                tb.setTabWidth(tab_width);
+                for ([_]u32{ 8, 9, 0, 9, 8 }) |width| {
+                    view.setWrapWidth(if (width == 0) null else width);
+                    const lines = view.getVirtualLines();
+                    var width_max: u32 = 0;
+                    for (lines) |line| width_max = @max(width_max, line.width_cols);
+                    const measured = try view.measureForDimensions(width, 24);
+                    try std.testing.expectEqual(@as(u32, @intCast(lines.len)), measured.line_count);
+                    try std.testing.expectEqual(width_max, measured.width_cols_max);
+                }
+            }
+        }
+    }
 }
 
 test "TextBufferView measureForDimensions - char wrap" {
@@ -3717,6 +3753,62 @@ test "TextBufferView truncation - verify ellipsis chunk injection" {
     // Get the ellipsis text to verify it's "..."
     const ellipsis_text = ellipsis_chunk.chunk.getBytes(tb.memRegistry());
     try std.testing.expectEqualStrings("...", ellipsis_text);
+}
+
+test "TextBufferView ellipsis preserves full caller registry on rejected reset" {
+    const pool = gp.initGlobalPool(std.testing.allocator);
+    defer gp.deinitGlobalPool();
+    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
+    defer link.deinitGlobalLinkPool();
+
+    var failing = std.testing.FailingAllocator.init(std.testing.allocator, .{});
+    var tb = try TextBuffer.init(failing.allocator(), pool, link_pool, .wcwidth);
+    defer tb.deinit();
+    var view = try TextBufferView.init(std.testing.allocator, tb);
+    defer view.deinit();
+    try std.testing.expectEqual(@as(usize, 0), tb.memRegistry().getUsedSlots());
+    for (0..255) |slot| {
+        try std.testing.expectEqual(@as(u8, @intCast(slot)), try tb.registerMemBuffer("0123456789ABCDEFGHIJ", false));
+    }
+    try tb.setTextFromMemId(0);
+    view.setTruncate(true);
+    view.setViewport(.{ .x = 0, .y = 0, .width = 10, .height = 1 });
+    const epoch = tb.getContentEpoch();
+    const registrations = tb.memRegistry().buffers.items[0..255].*;
+
+    for (0..3) |_| {
+        var peer = try TextBufferView.init(std.testing.allocator, tb);
+        defer peer.deinit();
+        peer.setTruncate(true);
+        peer.setViewport(.{ .x = 0, .y = 0, .width = 10, .height = 1 });
+        for ([_]bool{ false, true }) |after_rejection| {
+            if (after_rejection) {
+                failing.fail_index = failing.alloc_index;
+                try std.testing.expectError(error.OutOfMemory, tb.reset());
+                try std.testing.expect(failing.has_induced_failure);
+                failing.fail_index = std.math.maxInt(usize);
+            }
+            try std.testing.expectEqual(epoch, tb.getContentEpoch());
+            try std.testing.expectEqualDeep(registrations, tb.memRegistry().buffers.items[0..255].*);
+            for ([_]*TextBufferView{ view, peer }) |current| {
+                const chunks = current.getVirtualLines()[0].chunks.items;
+                try std.testing.expectEqual(@as(usize, 3), chunks.len);
+                for (chunks, [_][]const u8{ "012", "...", "GHIJ" }) |chunk, expected| {
+                    const bytes = chunk.chunk.getBytes(tb.memRegistry());
+                    const window = bytes[chunk.byte_start_in_chunk .. chunk.byte_start_in_chunk + chunk.byte_len];
+                    try std.testing.expectEqualStrings(expected, window);
+                }
+            }
+            try std.testing.expectEqual(@as(usize, 255), tb.memRegistry().getUsedSlots());
+            try std.testing.expectEqual(@as(usize, 0), tb.memRegistry().getFreeSlots());
+        }
+    }
+    try std.testing.expectEqual(@as(usize, 255), tb.memRegistry().getUsedSlots());
+    try std.testing.expectEqualStrings("...", view.ellipsis_chunk.getBytes(tb.memRegistry()));
+    try tb.reset();
+    try std.testing.expectEqual(@as(usize, 0), tb.memRegistry().getUsedSlots());
+    try std.testing.expectEqual(@as(usize, 255), tb.memRegistry().getFreeSlots());
+    try std.testing.expectEqualStrings("...", view.ellipsis_chunk.getBytes(tb.memRegistry()));
 }
 
 test "TextBufferView truncation - works with wrapping" {
@@ -4681,7 +4773,7 @@ test "TextBufferView automatic updates - reset clears content and marks views di
     try tb.setText("Hello World");
     try std.testing.expectEqual(@as(u32, 1), view.getVirtualLineCount());
 
-    tb.reset();
+    try tb.reset();
     try std.testing.expectEqual(@as(u32, 1), view.getVirtualLineCount());
 
     try tb.setText("");

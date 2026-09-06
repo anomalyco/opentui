@@ -20,13 +20,14 @@ const TREE_SITTER_WASM_KEY = "web-tree-sitter/tree-sitter.wasm"
 export function getNodeAssets(target: NodeAssetTarget): readonly NodeAsset[] {
   const native = getNativeAssetDescriptor(target)
   const coreRoot = resolveCoreRuntimeRoot()
+  const parserRoot = resolve(dirname(fileURLToPath(import.meta.url)), "lib/tree-sitter")
   const nativeRoot = dirname(resolvePackageEntry(native.packageName))
   const assets: NodeAsset[] = [
     { key: native.key, source: join(nativeRoot, native.fileName) },
     { key: PARSER_WORKER_KEY, source: join(coreRoot, "parser.worker.js") },
     ...defaultParserAssetPaths.map((relativePath) => ({
       key: `${CORE_PREFIX}${relativePath}`,
-      source: join(coreRoot, relativePath),
+      source: firstExistingFile(join(coreRoot, relativePath), join(parserRoot, relativePath)),
     })),
     { key: TREE_SITTER_WASM_KEY, source: resolvePackageEntry(TREE_SITTER_WASM_KEY) },
   ]
@@ -55,6 +56,10 @@ function resolveCoreRuntimeRoot(): string {
   const moduleDirectory = dirname(fileURLToPath(import.meta.url))
   const candidates = [moduleDirectory, resolve(moduleDirectory, "../dist")]
   return candidates.find((candidate) => statIsFile(join(candidate, "parser.worker.js"))) ?? moduleDirectory
+}
+
+function firstExistingFile(...paths: string[]): string {
+  return paths.find(statIsFile) ?? paths[0]!
 }
 
 function resolvePackageEntry(specifier: string): string {

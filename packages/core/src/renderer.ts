@@ -1,8 +1,11 @@
 import { appendFileSync, writeFileSync } from "node:fs"
+import { Writable } from "node:stream"
 import { ANSI } from "./ansi.js"
+import { destroyTimelineEngine } from "./animation/Timeline.js"
 import { Renderable, RootRenderable } from "./Renderable.js"
 import { BoxRenderable } from "./renderables/Box.js"
 import { CodeRenderable } from "./renderables/Code.js"
+import { ImageRenderable } from "./renderables/Image.js"
 import { TextRenderable } from "./renderables/Text.js"
 import {
   DebugOverlayCorner,
@@ -16,20 +19,22 @@ import {
   type WidthMethod,
 } from "./types.js"
 import { RGBA, parseColor, type ColorInput } from "./lib/RGBA.js"
-import { sleep } from "./platform/runtime.js"
 import { OptimizedBuffer } from "./buffer.js"
 import {
-  resolveRenderLib,
+  NativeError,
+  NativeSessionRenderStatus,
+  NativeStatus,
   type NativeBufferedOutput,
   type NativeRenderStats,
   type RenderLib,
-  type RendererHandle,
+  type ContextBufferHandle,
 } from "./zig.js"
-import { NativeSpanFeed } from "./NativeSpanFeed.js"
+import { NativeSession } from "./NativeSession.js"
+import { NativeScene } from "./NativeScene.js"
 import { TerminalConsole, type ConsoleOptions, capture } from "./console.js"
 import { type MouseEventType, type RawMouseEvent, type ScrollInfo } from "./lib/parse.mouse.js"
 import { Selection } from "./lib/selection.js"
-import { Clipboard, type ClipboardTarget } from "./lib/clipboard.js"
+import { ClipboardTarget } from "./lib/clipboard.js"
 import { EventEmitter } from "events"
 import { singleton } from "./lib/singleton.js"
 import { getObjectsInViewport } from "./lib/objects-in-viewport.js"
@@ -60,14 +65,6 @@ import { getLinkId } from "./utils.js"
 registerEnvVar({
   name: "OTUI_DUMP_CAPTURES",
   description: "Dump captured stdout and console caches when the renderer exit handler runs.",
-  type: "boolean",
-  default: false,
-})
-
-registerEnvVar({
-  name: "OTUI_NO_NATIVE_RENDER",
-  description:
-    "Skip the Zig/native frame renderer. Useful for debugging the render loop; split-footer stdout flushing may still write ANSI.",
   type: "boolean",
   default: false,
 })
@@ -120,14 +117,19 @@ export interface KittyImageTransportStatus {
 }
 
 export interface CliRendererConfig {
+  /** Transfer this driver's ownership after attachment succeeds. Requires the same stdout. */
+  nativeSession?: NativeSession
+  /** Opt-in native paint members per event-loop turn. Yoga and encoding remain synchronous. */
+  nativeScenePaintBudget?: number
+  /** Opt-in native preparation/feedback items per turn. Yoga, cell drawing, and encoding remain synchronous. */
+  nativeSceneWorkBudget?: number
   // Read input from this stream. Defaults to process.stdin. Any `Readable`
   // works; capabilities like `setRawMode` are duck-typed and used when present.
   stdin?: NodeJS.ReadStream
 
-  // Destination for rendered output. Defaults to process.stdout. When this is
-  // not `process.stdout`, the renderer internally wires a `NativeSpanFeed`
-  // between Zig and the provided `Writable` so frames flow there instead of
-  // the host terminal. TTY capabilities like `columns`/`rows` are duck-typed.
+  // Destination for rendered output. Defaults to process.stdout. The native
+  // Session borrows this Writable and preserves output order and completion.
+  // TTY capabilities like `columns`/`rows` are duck-typed.
   stdout?: NodeJS.WriteStream
 
   // Fallback terminal width when `stdout.columns` is not available. Useful
@@ -173,9 +175,6 @@ export interface CliRendererConfig {
 
   // Emit memory snapshots on this interval in ms. Set 0 to disable.
   memorySnapshotInterval?: number
-
-  // Render from a separate thread when the platform supports it.
-  useThread?: boolean
 
   // Collect frame timing stats for the debug overlay.
   gatherStats?: boolean
@@ -397,6 +396,7 @@ type ExternalOutputCommit = {
   rowColumns: number
   startOnNewLine: boolean
   trailingNewline: boolean
+  nativeSnapshot?: ContextBufferHandle
 }
 
 type PendingSplitFooterTransition = {
@@ -409,14 +409,30 @@ type PendingSplitFooterTransition = {
 }
 
 class ExternalOutputQueue {
-  private commits: ExternalOutputCommit[] = []
+  private commits: Array<ExternalOutputCommit & { cells: number }> = []
+  private cells = 0
+
+  constructor(
+    private readonly maxCells: number,
+    private readonly maxCommits: number,
+  ) {}
+
+  owns(snapshot: OptimizedBuffer): boolean {
+    return this.commits.some((commit) => commit.snapshot === snapshot)
+  }
 
   get size(): number {
     return this.commits.length
   }
 
-  writeSnapshot(commit: ExternalOutputCommit): void {
-    this.commits.push(commit)
+  writeSnapshots(commits: readonly ExternalOutputCommit[]): void {
+    const entries = commits.map((commit) => ({ ...commit, cells: commit.snapshot.width * commit.snapshot.height }))
+    const cells = entries.reduce((total, commit) => total + commit.cells, 0)
+    if (commits.length > this.maxCommits - this.commits.length || cells > this.maxCells - this.cells) {
+      throw new Error("Scrollback snapshot queue capacity exceeded")
+    }
+    for (const entry of entries) this.commits.push(entry)
+    this.cells += cells
   }
 
   peek(limit: number = Number.POSITIVE_INFINITY): readonly ExternalOutputCommit[] {
@@ -424,29 +440,16 @@ class ExternalOutputQueue {
     return this.commits.slice(0, clampedLimit)
   }
 
-  claim(limit: number = Number.POSITIVE_INFINITY): ExternalOutputCommit[] {
-    if (this.commits.length === 0) {
-      return []
-    }
-
-    // Split-footer capture can enqueue many tiny commits in a burst (for example,
-    // simulated Ctrl+R hold). Taking everything at once creates very large native
-    // frames that increase visible churn. We keep claim() bounded so one render tick
-    // produces one modest frame and schedules another tick if work remains.
-    const clampedLimit = Number.isFinite(limit) ? Math.max(1, Math.trunc(limit)) : this.commits.length
-    if (clampedLimit >= this.commits.length) {
-      const output = this.commits
-      this.commits = []
-      return output
-    }
-
-    const output = this.commits.slice(0, clampedLimit)
-    this.commits = this.commits.slice(clampedLimit)
+  claim(): ExternalOutputCommit[] {
+    const output = this.commits
+    this.commits = []
+    this.cells = 0
     return output
   }
 
   drop(count: number): void {
     for (const commit of this.commits.splice(0, count)) {
+      this.cells -= commit.cells
       commit.snapshot.destroy()
     }
   }
@@ -472,17 +475,22 @@ class ScrollbackSnapshotRenderContext extends EventEmitter implements RenderCont
   public currentFocusedRenderable: Renderable | null = null
   public keyInput: KeyHandler
   public _internalKeyInput: InternalKeyHandler
-
-  private lifecyclePasses: Set<Renderable> = new Set()
+  public readonly nativeScene: NativeScene
+  public root!: RootRenderable
+  public nextRenderBuffer!: OptimizedBuffer
+  public isDestroyed = false
+  public controlState = RendererControlState.IDLE
+  private readonly detachedSession: NativeSession
 
   constructor(
     width: number,
     height: number,
     widthMethod: WidthMethod,
-    terminalWidth: number = width,
-    terminalHeight: number = height,
-    resolution: PixelResolution | null = null,
-    capabilities: TerminalCapabilities | null = null,
+    terminalWidth: number,
+    terminalHeight: number,
+    resolution: PixelResolution | null,
+    capabilities: TerminalCapabilities | null,
+    private readonly nativeOwner: NativeSession,
   ) {
     super()
     this.width = width
@@ -494,13 +502,79 @@ class ScrollbackSnapshotRenderContext extends EventEmitter implements RenderCont
     this.widthMethod = widthMethod
     this.keyInput = new KeyHandler()
     this._internalKeyInput = new InternalKeyHandler()
+    this.detachedSession = nativeOwner.createDetached({ width, height, remote: true, environment: {} }, () => {
+      this.nativeScene?.cancelFrame()
+      this.nativeScene?.destroy()
+    })
+    try {
+      nativeOwner.renderLib.sessionSyncDetached(nativeOwner.context, this.detachedSession.session, nativeOwner.session)
+      this.nativeScene = new NativeScene(this.detachedSession, this)
+      this.nextRenderBuffer = OptimizedBuffer.fromSession(
+        nativeOwner.renderLib,
+        nativeOwner.context,
+        this.detachedSession.session,
+        "next",
+        () => this.nativeScene.frame,
+      )
+    } catch (error) {
+      this.detachedSession.dispose()
+      throw error
+    }
   }
 
-  public addToHitGrid(_x: number, _y: number, _width: number, _height: number, _id: number): void {}
-  public pushHitGridScissorRect(_x: number, _y: number, _width: number, _height: number): void {}
-  public popHitGridScissorRect(): void {}
-  public clearHitGridScissorRects(): void {}
+  public renderSnapshot(root: RootRenderable, buffer: OptimizedBuffer): void {
+    this.root = root
+    this.detachedSession.renderLib.sessionSyncDetached(
+      this.detachedSession.context,
+      this.detachedSession.session,
+      this.nativeOwner.session,
+    )
+    this.detachedSession.resize(this.width, this.height)
+    try {
+      this.nativeScene.paint(0, () => ({
+        background: TRANSPARENT_RGBA,
+        useMouse: false,
+        excludedHitNum: 0,
+        preserveUnwritten: true,
+      }))
+      if (!this.nativeScene.frame) throw new Error("Detached scene did not complete painting")
+      this.detachedSession.renderLib.sceneFrameCopyBuffer(
+        this.detachedSession.context,
+        this.detachedSession.session,
+        this.nativeScene.frame,
+        buffer._getSceneHandle(this.nativeScene),
+      )
+    } finally {
+      this.nativeScene.cancelFrame()
+      if (this.isDestroyed) this.disposeSession()
+    }
+  }
+
+  public destroy(): void {
+    if (this.isDestroyed) return
+    this.isDestroyed = true
+    let failure: { error: unknown } | undefined
+    for (const emitter of [this, this.keyInput, this._internalKeyInput]) {
+      try {
+        emitter.removeAllListeners()
+      } catch (error) {
+        failure ??= { error }
+      }
+    }
+    this.disposeSession()
+    if (failure) throw failure.error
+  }
+
+  private disposeSession(): void {
+    const dispose = () => this.detachedSession.dispose()
+    if (!this.root?._deferUntilCleanupComplete(dispose)) dispose()
+  }
+
   public requestRender(): void {}
+  public requestAnimationFrame(_callback: FrameRequestCallback): number {
+    return -1
+  }
+  public cancelAnimationFrame(_handle: number): void {}
   public setCursorPosition(_x: number, _y: number, _visible: boolean): void {}
   public setCursorStyle(_options: CursorStyleOptions): void {}
   public setCursorColor(_color: RGBA): void {}
@@ -525,13 +599,13 @@ class ScrollbackSnapshotRenderContext extends EventEmitter implements RenderCont
     }
   }
   public registerLifecyclePass(renderable: Renderable): void {
-    this.lifecyclePasses.add(renderable)
+    this.getLifecyclePasses().add(renderable)
   }
   public unregisterLifecyclePass(renderable: Renderable): void {
-    this.lifecyclePasses.delete(renderable)
+    this.getLifecyclePasses().delete(renderable)
   }
   public getLifecyclePasses(): Set<Renderable> {
-    return this.lifecyclePasses
+    return this.nativeScene.lifecyclePasses
   }
   public clearSelection(): void {}
   public startSelection(_renderable: Renderable, _x: number, _y: number, _behavior?: SelectionBehavior): void {}
@@ -575,9 +649,6 @@ const DEFAULT_FORWARDED_ENV_KEYS = [
   "WSL_DISTRO_NAME",
   "WSL_INTEROP",
 ] as const
-
-const NATIVE_RENDER_STATUS_SKIPPED = 1
-const NATIVE_RENDER_STATUS_FAILED = 2
 
 // Kitty keyboard protocol flags
 // See: https://sw.kovidgoyal.net/kitty/keyboard-protocol/
@@ -743,6 +814,7 @@ export async function createCliRenderer(config: CliRendererConfig = {}): Promise
     } catch (destroyError) {
       console.error("Error destroying partially-set-up renderer:", destroyError)
     }
+    await renderer.closed.catch(() => {})
     throw error
   }
 }
@@ -780,7 +852,31 @@ const CLICK_REPEAT_INTERVAL_MS = 500
 export class CliRenderer extends EventEmitter implements RenderContext {
   private static animationFrameId = 0
   private lib: RenderLib
-  public rendererPtr: RendererHandle
+  public readonly nativeScene: NativeScene
+  private readonly nativeSession!: NativeSession
+  private readonly nativeDestroyWait?: ReturnType<typeof Promise.withResolvers<void>>
+  private readonly nativeClosed: Promise<void>
+  private nativeTerminalTransition: Promise<void> | null = null
+  private pendingNativeResize: { width: number; height: number } | null = null
+  private pendingNativeMode: { screenMode: ScreenMode; footerHeight: number } | null = null
+  private nativeSplitAcceptedCount = 0
+  private nativeSplitFlush: Promise<void> | null = null
+  private pendingNativeReplay: { options: SplitFooterReplayResetOptions; remaining: number } | null = null
+  private readonly detachedSurfaces = new Set<() => void>()
+  private nativeResizeWait: Promise<void> | null = null
+  private nativeKittyKeyboardFlags = 0
+  private kittyTransportMode: KittyImageTransport = "raw"
+  private kittyTransportTimer: TimerHandle | null = null
+  private _lastSceneTimeMs = 0
+
+  public get lastSceneTimeMs(): number {
+    return this._lastSceneTimeMs
+  }
+
+  /** Await after destroy() before closing stdout or calling process.exit(). */
+  public get closed(): Promise<void> {
+    return this.nativeClosed
+  }
   public stdin: NodeJS.ReadStream
   private stdout: NodeJS.WriteStream
   private exitOnCtrlC: boolean
@@ -811,7 +907,6 @@ export class CliRenderer extends EventEmitter implements RenderContext {
   public readonly root: RootRenderable
   public width: number
   public height: number
-  private _useThread: boolean = false
   private gatherStats: boolean = false
   private frameTimes: number[] = []
   private maxStatSamples: number = 300
@@ -819,10 +914,10 @@ export class CliRenderer extends EventEmitter implements RenderContext {
   private backgroundColor: RGBA = RGBA.fromInts(0, 0, 0, 0)
   private waitingForPixelResolution: boolean = false
   private pixelResolutionRequeryPending: boolean = false
-  private readonly clock: Clock
+  public readonly clock: Clock
 
   private rendering: boolean = false
-  private renderingNative: boolean = false
+  private renderingCompletion: PromiseWithResolvers<void> | null = null
   private renderTimeout: TimerHandle | null = null
   private lastTime: number = 0
   private frameCount: number = 0
@@ -833,8 +928,6 @@ export class CliRenderer extends EventEmitter implements RenderContext {
   private targetFrameTime: number = 1000 / this._targetFps
   private minTargetFrameTime: number = 1000 / this._maxFps
   private immediateRerenderRequested: boolean = false
-  private updateScheduled: boolean = false
-  private updateGeneration = 0
 
   private liveRequestCounter: number = 0
   private _controlState: RendererControlState = RendererControlState.IDLE
@@ -864,11 +957,11 @@ export class CliRenderer extends EventEmitter implements RenderContext {
   private hasLoggedStdinParserError = false
 
   private animationRequest: Map<number, FrameRequestCallback> = new Map()
+  private cancelFrameContinuation: (() => void) | null = null
+  private cancelReadyFrame: (() => void) | null = null
 
   private resizeTimeoutId: TimerHandle | null = null
   private capabilityTimeoutId: TimerHandle | null = null
-  private kittyTransportTimer: TimerHandle | null = null
-  private kittyTransportMode: KittyImageTransport
   private terminalKeepAliveTimer: ReturnType<typeof setInterval> | null = null
   private xtVersionWaiters = new Set<() => void>()
   private splitStartupSeedTimeoutId: TimerHandle | null = null
@@ -884,8 +977,6 @@ export class CliRenderer extends EventEmitter implements RenderContext {
   private clearOnShutdown: boolean = true
   private _suspendedMouseEnabled: boolean = false
   private _previousControlState: RendererControlState = RendererControlState.IDLE
-  private pendingSuspendedTerminalSetup: boolean = false
-  private suspendedNonAltSurfacePreserved: boolean = false
   private capturedRenderable?: Renderable
   private lastOverRenderableNum: number = 0
   private lastOverRenderable?: Renderable
@@ -893,14 +984,13 @@ export class CliRenderer extends EventEmitter implements RenderContext {
   private currentSelection: Selection | null = null
   private selectionContainers: Renderable[] = []
   private lastClick: { count: number; time: number; x: number; y: number; renderableId: number } | null = null
-  private clipboard: Clipboard
 
   private _splitHeight: number = 0
   private renderOffset: number = 0
   private splitTailColumn: number = 0
   private pendingSplitFooterTransition: PendingSplitFooterTransition | null = null
   // One-shot latch used to request a full split repaint after transitions
-  // (resize/mode/output-path changes). Cleared on first renderNative tick.
+  // (resize/mode/output-path changes). Cleared after completed presentation.
   private forceFullRepaintRequested: boolean = false
   // Upper bound for captured stdout commits consumed per native frame.
   // This is a visual smoothness control: smaller batches reduce frame envelope
@@ -911,7 +1001,7 @@ export class CliRenderer extends EventEmitter implements RenderContext {
   private _terminalHeight: number = 0
   private _terminalIsSetup: boolean = false
 
-  private externalOutputQueue = new ExternalOutputQueue()
+  private externalOutputQueue: ExternalOutputQueue
   private pendingExternalOutputMode: ExternalOutputMode | null = null
   private realStdoutWrite: (chunk: any, encoding?: any, callback?: any) => boolean
 
@@ -919,7 +1009,7 @@ export class CliRenderer extends EventEmitter implements RenderContext {
   private sigwinchHandler: () => void = (() => {
     const width = this.stdout.columns
     const height = this.stdout.rows
-    if (width > 0 && height > 0) this.handleResize(width, height)
+    if (width > 0 && height > 0) this.requestResize(width, height)
   }).bind(this)
   private _capabilities: TerminalCapabilities | null = null
   private _latestPointer: { x: number; y: number } = { x: 0, y: 0 }
@@ -932,12 +1022,14 @@ export class CliRenderer extends EventEmitter implements RenderContext {
   private _currentMousePointerStyle: MousePointerStyle | undefined = undefined
 
   private _currentFocusedRenderable: Renderable | null = null
-  private lifecyclePasses: Set<Renderable> = new Set()
+  private focusChange?: object
   private _openConsoleOnError: boolean = true
   private _paletteDetector: TerminalPaletteDetector | null = null
   private _paletteCache = new Map<number, TerminalColors>()
   private _paletteDetectionPromise: Promise<TerminalColors> | null = null
+  private _cancelPaletteDetection: ((reason: Error) => void) | null = null
   private _paletteDetectionSize = 0
+  private _paletteDetectionGeneration = 0
   private _paletteEpoch = 0
   private _nativePaletteSignature: string | null = null
   private _emittedPaletteSignature: string | null = null
@@ -960,13 +1052,13 @@ export class CliRenderer extends EventEmitter implements RenderContext {
   private handleError: (error: Error) => void = ((error: Error) => {
     console.error(error)
 
-    if (this._openConsoleOnError) {
+    if (this._openConsoleOnError && !this._isDestroyed && !this.nativeSession?.error && !this.nativeSession?.disposed) {
       this.console.show()
     }
   }).bind(this)
 
   private dumpOutputCache(optionalMessage: string = ""): void {
-    const cachedLogs = this.console.getCachedLogs()
+    const cachedLogs = this._console.getCachedLogs()
     const capturedConsoleOutput = capture.claimOutput()
     const capturedExternalOutputCommits = this.externalOutputQueue.claim()
 
@@ -1000,12 +1092,25 @@ export class CliRenderer extends EventEmitter implements RenderContext {
 
   private exitHandler: () => void = (() => {
     this.destroy()
-    if (env.OTUI_DUMP_CAPTURES) {
-      sleep(100).then(() => {
-        this.dumpOutputCache("=== CAPTURED OUTPUT ===\n")
+    void this.closed
+      .then(() => {
+        if (env.OTUI_DUMP_CAPTURES) this.dumpOutputCache("=== CAPTURED OUTPUT ===\n")
       })
-    }
+      .catch((error) => console.error("Native scene shutdown failed:", error))
   }).bind(this)
+
+  private nativeProcessExitHandler = (): void => {
+    if (!this.nativeSession || this.nativeSession.disposed) return
+    const restored = this.nativeSession.restoreOnExit()
+    try {
+      this.destroy()
+    } finally {
+      this.nativeSession.dispose()
+      if (!restored && this._terminalIsSetup) {
+        console.error("Native scene output cancelled at process exit; terminal restoration did not complete")
+      }
+    }
+  }
 
   private warningHandler: (warning: any) => void = ((warning: any) => {
     console.warn(JSON.stringify(warning.message, null, 2))
@@ -1017,13 +1122,9 @@ export class CliRenderer extends EventEmitter implements RenderContext {
   // or duck-typed capability checks (e.g. `stdin.setRawMode?.()`).
   private readonly _usesProcessStdout: boolean
 
-  // Feed wiring. Non-null when the given stdout is not process.stdout and native
-  // output is not explicitly redirected to a buffered memory destination.
-  private _feed: NativeSpanFeed | null = null
-  private _detachFeed: (() => void) | null = null
-  private _detachFeedError: (() => void) | null = null
-  private feedIdleRenderScheduled = false
-  private feedIdleWaitPending = false
+  private outputIdleRenderScheduled = false
+  private ordinaryFrameWaitingForOutput = false
+  private ordinaryFrameWaitControlState: RendererControlState | null = null
 
   public get controlState(): RendererControlState {
     return this._controlState
@@ -1032,26 +1133,22 @@ export class CliRenderer extends EventEmitter implements RenderContext {
   /**
    * Construct a renderer over the given streams.
    *
-   * If `stdout` is not `process.stdout`, a `NativeSpanFeed` is allocated
-   * internally and rendered bytes are piped through it to `stdout` unless
-   * `bufferedOutput: "memory"` is set. Prefer `createCliRenderer` for the async
-   * `setupTerminal` convenience.
+   * A NativeSession owns ordered output to `stdout`, or to an in-memory sink
+   * when `bufferedOutput: "memory"` is set. Prefer `createCliRenderer` for the
+   * async `setupTerminal` convenience.
    *
    * Construction side effects (observable before the constructor returns):
    *   - Acquires exclusive ownership of the given stdin/stdout streams
-   *   - Allocates a `NativeSpanFeed` (for non-process stdout unless bufferedOutput is "memory")
-   *   - Calls `lib.createRenderer` → native Zig allocation
+   *   - Attaches a NativeSession and allocates its scene
    *   - Registers in the process-wide `rendererTracker`
    *   - Adds `process.on(...)` listeners for SIGWINCH (process.stdout only),
    *     "warning", "uncaughtException", "unhandledRejection", plus the
    *     configured `exitSignals`
-   *   - Replaces `global.requestAnimationFrame` with the renderer's impl
    *   - When `setupTerminal()` is called, it will put `stdin` in raw mode and
    *     call `stdin.resume()`
    *
-   * Some late constructor side effects are not rolled back if construction
-   * throws partway; production callers should use `createCliRenderer`, which
-   * wraps `setupTerminal()` in a try/catch that calls `destroy()` on failure.
+   * Construction failures release the owner. `createCliRenderer` also destroys
+   * the renderer if asynchronous terminal setup fails.
    */
   constructor(
     stdin: NodeJS.ReadStream,
@@ -1067,15 +1164,24 @@ export class CliRenderer extends EventEmitter implements RenderContext {
     this._usesProcessStdout = stdout === process.stdout
     this.realStdoutWrite = stdout.write
 
-    const lib = resolveRenderLib()
-    const useMemoryBufferedOutput = config.bufferedOutput === "memory"
-    const useFeedOutput = !this._usesProcessStdout && !useMemoryBufferedOutput
-    const { screenMode, footerHeight, externalOutputMode } = resolveModes(config)
-    const initialGeometry = calculateRenderGeometry(screenMode, width, height, footerHeight)
-    const remoteMode = config.remote ?? (useFeedOutput ? true : undefined)
+    for (const name of ["nativeScenePaintBudget", "nativeSceneWorkBudget"] as const) {
+      const budget = config[name]
+      if (budget !== undefined && (!Number.isInteger(budget) || budget <= 0 || budget > 0xffff_ffff)) {
+        throw new Error(`${name} must be a positive u32`)
+      }
+    }
     this.kittyTransportMode = config.kittyImageTransport ?? "raw"
     const transportCode = KITTY_IMAGE_TRANSPORTS.indexOf(this.kittyTransportMode)
     if (transportCode < 0) throw new TypeError("Invalid kittyImageTransport")
+    const useMemoryBufferedOutput = config.bufferedOutput === "memory"
+    if (config.nativeSession) {
+      if (useMemoryBufferedOutput) throw new Error("nativeSession does not support memory buffered output")
+      if (!config.nativeSession.usesOutput(stdout)) throw new Error("nativeSession must use the renderer stdout")
+    }
+    const { screenMode, footerHeight, externalOutputMode } = resolveModes(config)
+    const initialGeometry = calculateRenderGeometry(screenMode, width, height, footerHeight)
+    const remoteMode = config.remote ?? (!this._usesProcessStdout && !useMemoryBufferedOutput ? true : undefined)
+    const forwardEnvKeys = config.forwardEnvKeys ?? (remoteMode === true ? [] : DEFAULT_FORWARDED_ENV_KEYS)
 
     if (rendererTracker.streamOwners.get(stdin)) {
       throw new Error("Cannot create CliRenderer: stdin is already used by another CliRenderer")
@@ -1084,246 +1190,226 @@ export class CliRenderer extends EventEmitter implements RenderContext {
       throw new Error("Cannot create CliRenderer: stdout is already used by another CliRenderer")
     }
 
-    // Feed allocation: only when the output target is a non-process Writable.
-    // Tests use custom Writable instances too; those should exercise the same
-    // output transport as production custom stdout.
-    let feed: NativeSpanFeed | null = null
-    if (useFeedOutput) {
-      try {
-        // Keep high-level feeds growable and uncapped so control/shutdown writes
-        // can publish while async Writable callbacks still pin earlier chunks.
-        feed = NativeSpanFeed.create()
-      } catch (error) {
-        throw new Error(
-          `Failed to allocate NativeSpanFeed for custom stdout: ${error instanceof Error ? error.message : String(error)}`,
-        )
-      }
-    }
-
-    // Native renderer creation. Custom writable feed output defaults to remote
-    // so Zig skips local-TTY capability-query timing assumptions; process
-    // stdout and memory output preserve native auto detection.
-    //
-    let rendererPtr: RendererHandle | null
+    let driver: NativeSession | undefined
     try {
-      rendererPtr = lib.createRenderer(initialGeometry.renderWidth, initialGeometry.renderHeight, {
-        remote: remoteMode,
-        feedPtr: feed?.streamPtr ?? null,
-        bufferedOutput: config.bufferedOutput,
-      })
+      const sink = useMemoryBufferedOutput
+        ? new Writable({
+            write(_bytes, _encoding, complete) {
+              complete()
+            },
+          })
+        : stdout
+      driver = config.nativeSession ?? new NativeSession(sink)
+      driver.attachRenderer(
+        {
+          width: initialGeometry.renderWidth,
+          height: initialGeometry.renderHeight,
+          remote: remoteMode,
+          environment: Object.fromEntries(
+            forwardEnvKeys.flatMap((key) => {
+              const value = process.env[key]
+              return value === undefined ? [] : [[key, value]]
+            }),
+          ),
+        },
+        () => {
+          try {
+            this.nativeScene?.cancelFrame()
+          } finally {
+            this.nativeScene?.destroy()
+          }
+        },
+      )
+      this.nativeSession = driver
+      this.externalOutputQueue = new ExternalOutputQueue(Number(driver.maxWriteBytes / 24n), driver.maxSnapshotCount)
+      this.nativeDestroyWait = Promise.withResolvers<void>()
+      this.nativeClosed = this.nativeSession.closed
+        .finally(() => this.nativeDestroyWait!.promise)
+        .finally(() => {
+          if (this.nativeSession.error && !this.nativeSession.disposed) this.nativeSession.dispose()
+          this.releaseStreamLease()
+        })
+      void this.nativeClosed.catch(() => {})
+      this.nativeScene = new NativeScene(
+        this.nativeSession,
+        this,
+        config.nativeScenePaintBudget,
+        config.nativeSceneWorkBudget,
+      )
+      this.nativeSession.setKittyImageTransport(transportCode)
     } catch (error) {
-      feed?.close()
+      // A supplied Session transfers only after attachRenderer succeeds.
+      if (!config.nativeSession || this.nativeSession) driver?.dispose()
+      this.nativeDestroyWait?.resolve()
       throw error
     }
-    if (!rendererPtr) {
-      feed?.close()
-      throw new Error("Failed to create renderer")
-    }
-    lib.setKittyImageTransport(rendererPtr, transportCode)
-
-    // Threading defaults (on everywhere except linux, where it currently
-    // crashes — likely a missing build dep).
-    if (config.useThread === undefined) config.useThread = true
-    if (process.platform === "linux") config.useThread = false
-    lib.setUseThread(rendererPtr, config.useThread)
-
-    const kittyConfig = config.useKittyKeyboard ?? {}
-    const kittyFlags = buildKittyKeyboardFlags(kittyConfig)
-    lib.setKittyKeyboardFlags(rendererPtr, kittyFlags)
-
-    // Wire feed → Writable piping. The returned Promise keeps the chunk
-    // pinned (refcount held) until Node's write callback fires; this turns
-    // Node's Writable flow control into async backpressure for the feed.
-    // Write errors are surfaced via feed.onError / console.error; we do not
-    // interfere with the Writable's own error handling (matches the
-    // pre-feed-integration posture where process.stdout EPIPE was the OS's
-    // problem, not the renderer's).
-    this._feed = feed
-    if (feed) {
-      this._detachFeed = feed.onData((bytes: Uint8Array) => {
-        return new Promise<void>((resolve) => {
-          // Renderer-owned frame bytes must bypass any later stdout.write
-          // interception (e.g. split-footer capture) and go straight to the
-          // caller's actual sink.
-          this.realStdoutWrite.call(this.stdout, bytes, () => resolve())
-        })
-      })
-      this._detachFeedError = feed.onError((code) => {
-        if (this.kittyTransportTimer !== null) this.kittyOutputErrorHandler()
-        console.error(`[CliRenderer] NativeSpanFeed error: code=${code}`)
-      })
-    }
-
-    this.lib = lib
-    this._terminalWidth = width
-    this._terminalHeight = height
-    this._useThread = config.useThread
-    this._externalOutputMode = externalOutputMode
-
-    this.width = initialGeometry.renderWidth
-    this.height = initialGeometry.renderHeight
-    this._splitHeight = initialGeometry.effectiveFooterHeight
-    this.renderOffset = screenMode === "split-footer" ? 0 : initialGeometry.renderOffset
-
-    this._footerHeight = footerHeight
-
-    this.rendererPtr = rendererPtr
-    this.clearOnShutdown = config.clearOnShutdown ?? true
-    this.lib.setClearOnShutdown(this.rendererPtr, this.clearOnShutdown)
-
-    const forwardEnvKeys = config.forwardEnvKeys ?? (remoteMode === true ? [] : [...DEFAULT_FORWARDED_ENV_KEYS])
-    for (const key of forwardEnvKeys) {
-      const value = process.env[key]
-      if (value === undefined) continue
-      this.lib.setTerminalEnvVar(this.rendererPtr, key, value)
-    }
-
-    this.exitOnCtrlC = config.exitOnCtrlC === undefined ? true : config.exitOnCtrlC
-    this.exitSignals = config.exitSignals || [
-      "SIGINT", // Ctrl+C
-      "SIGTERM", // Termination signal
-      "SIGQUIT", // Ctrl+\
-      "SIGABRT", // Abort signal
-      "SIGHUP", // Hangup (terminal closed)
-      "SIGPIPE", // Broken output pipe
-      "SIGBREAK", // Ctrl+Break on Windows
-      "SIGBUS", // Bus error
-    ]
-
-    this.clipboard = new Clipboard(this.lib, this.rendererPtr)
-    this.resizeDebounceDelay = config.debounceDelay || 100
-    this.targetFps = config.targetFps || 30
-    this.maxFps = config.maxFps || 60
-    this.clock = config.clock ?? new SystemClock()
-    this.themeModeState = new RendererThemeMode(
-      {
-        queryThemeColors: () => {
-          this.lib.queryThemeColors(this.rendererPtr)
-        },
-      },
-      this.clock,
-    )
-    this.themeModeHandler = (sequence: string) => {
-      const result = this.themeModeState.handleSequence(sequence)
-      if (result.changedMode) {
-        this.clearPaletteCache()
-        if (this.shouldSyncNativePaletteState() || this.listenerCount(CliRenderEvents.PALETTE) > 0) {
-          this.refreshPalette()
-        }
-        this.emit(CliRenderEvents.THEME_MODE, result.changedMode)
-      }
-      return result.handled
-    }
-    this.memorySnapshotInterval = config.memorySnapshotInterval ?? 0
-    this.gatherStats = config.gatherStats || false
-    this.maxStatSamples = config.maxStatSamples || 300
-    this.enableMouseMovement = config.enableMouseMovement ?? true
-    this._useMouse = config.useMouse ?? true
-    this.autoFocus = config.autoFocus ?? true
-    this.nextRenderBuffer = this.lib.getNextBuffer(this.rendererPtr)
-    this.currentRenderBuffer = this.lib.getCurrentBuffer(this.rendererPtr)
-    this.postProcessFns = config.postProcessFns || []
-    this.prependedInputHandlers = config.prependInputHandlers || []
-
-    this.root = new RootRenderable(this)
-
-    if (this.memorySnapshotInterval > 0) {
-      this.startMemorySnapshotTimer()
-    }
-
-    // Handle terminal resize via SIGWINCH, but only when attached to the
-    // process's real stdout — a custom Writable wouldn't drive SIGWINCH
-    // anyway, and external consumers can call `renderer.resize(w, h)` to
-    // announce dimension changes themselves.
-    if (this._usesProcessStdout) {
-      process.on("SIGWINCH", this.sigwinchHandler)
-    }
-
-    process.on("warning", this.warningHandler)
-
-    process.on("uncaughtException", this.handleError)
-    process.on("unhandledRejection", this.handleError)
-    const useKittyForParsing = kittyConfig !== null
-    this._keyHandler = new InternalKeyHandler()
-    this._keyHandler.on("keypress", (event) => {
-      // Use the shared matcher here too. Kitty can report a non-Latin
-      // character plus a base-layout `c`, and Ctrl+C should still exit.
-      if (this.exitOnCtrlC && matchesKeyBinding(event, { name: "c", ctrl: true })) {
-        process.nextTick(() => {
-          this.destroy()
-        })
-        return
-      }
-    })
-
-    this.addExitListeners()
-
-    const stdinParserMaxBufferBytes = config.stdinParserMaxBufferBytes ?? DEFAULT_STDIN_PARSER_MAX_BUFFER_BYTES
-    this.stdinParser = new StdinParser({
-      timeoutMs: 20,
-      maxPendingBytes: stdinParserMaxBufferBytes,
-      armTimeouts: true,
-      onTimeoutFlush: () => {
-        this.drainStdinParser()
-      },
-      useKittyKeyboard: useKittyForParsing,
-      protocolContext: {
-        kittyKeyboardEnabled: useKittyForParsing,
-        privateCapabilityRepliesActive: false,
-        pixelResolutionQueryActive: false,
-        explicitWidthCprActive: false,
-        startupCursorCprActive: false,
-      },
-      clock: this.clock,
-    })
-
-    this._console = new TerminalConsole(this, {
-      ...(config.consoleOptions ?? {}),
-      clock: this.clock,
-    })
-    this.consoleMode = config.consoleMode ?? "console-overlay"
-    this.applyScreenMode(screenMode, false, false)
-    rendererTracker.streamOwners.set(stdin, this)
-    rendererTracker.streamOwners.set(stdout, this)
-    this._streamLeaseAcquired = true
-    rendererTracker.renderers.add(this)
-    this.stdout.write = externalOutputMode === "capture-stdout" ? this.interceptStdoutWrite : this.realStdoutWrite
-    this._openConsoleOnError = config.openConsoleOnError ?? process.env.NODE_ENV !== "production"
-    this._onDestroy = config.onDestroy
-
-    global.requestAnimationFrame = (callback: FrameRequestCallback) => {
-      const id = CliRenderer.animationFrameId++
-      this.animationRequest.set(id, callback)
-      this.requestLive()
-      return id
-    }
-    global.cancelAnimationFrame = (handle: number) => {
-      if (this.animationRequest.delete(handle)) this.dropLive()
-    }
-
-    const window = global.window
-    if (!window) {
-      global.window = {} as Window & typeof globalThis
-    }
-    global.window.requestAnimationFrame = requestAnimationFrame
-
-    // Prevents output from being written to the terminal, useful for debugging
-    if (env.OTUI_NO_NATIVE_RENDER) {
-      this.renderNative = () => {
-        if (this._splitHeight > 0) {
-          this.flushStdoutCache(this._splitHeight)
-        }
-        return "rendered"
-      }
-    }
-
+    this.lib = this.nativeSession.renderLib
     try {
+      const kittyConfig = config.useKittyKeyboard ?? {}
+      this.nativeKittyKeyboardFlags = buildKittyKeyboardFlags(kittyConfig)
+
+      this._terminalWidth = width
+      this._terminalHeight = height
+      this._externalOutputMode = externalOutputMode
+
+      this.width = initialGeometry.renderWidth
+      this.height = initialGeometry.renderHeight
+      this._splitHeight = initialGeometry.effectiveFooterHeight
+      this.renderOffset = screenMode === "split-footer" ? 0 : initialGeometry.renderOffset
+
+      this._footerHeight = footerHeight
+
+      this.clearOnShutdown = config.clearOnShutdown ?? true
+
+      this.exitOnCtrlC = config.exitOnCtrlC === undefined ? true : config.exitOnCtrlC
+      this.exitSignals = config.exitSignals || [
+        "SIGINT", // Ctrl+C
+        "SIGTERM", // Termination signal
+        "SIGQUIT", // Ctrl+\
+        "SIGABRT", // Abort signal
+        "SIGHUP", // Hangup (terminal closed)
+        "SIGPIPE", // Broken output pipe
+        "SIGBREAK", // Ctrl+Break on Windows
+        "SIGBUS", // Bus error
+      ]
+
+      this.resizeDebounceDelay = config.debounceDelay || 100
+      this.targetFps = config.targetFps || 30
+      this.maxFps = config.maxFps || 60
+      this.clock = config.clock ?? new SystemClock()
+      this.themeModeState = new RendererThemeMode(
+        {
+          queryThemeColors: () => {
+            this.nativeSession.control({ kind: "query-theme-colors" })
+          },
+        },
+        this.clock,
+      )
+      this.themeModeHandler = (sequence: string) => {
+        const result = this.themeModeState.handleSequence(sequence)
+        if (result.changedMode) {
+          this.clearPaletteCache()
+          if (this.shouldSyncNativePaletteState() || this.listenerCount(CliRenderEvents.PALETTE) > 0) {
+            this.refreshPalette()
+          }
+          this.emit(CliRenderEvents.THEME_MODE, result.changedMode)
+        }
+        return result.handled
+      }
+      this.memorySnapshotInterval = config.memorySnapshotInterval ?? 0
+      this.gatherStats = config.gatherStats || false
+      this.maxStatSamples = config.maxStatSamples || 300
+      this.enableMouseMovement = config.enableMouseMovement ?? true
+      this._useMouse = config.useMouse ?? true
+      this.autoFocus = config.autoFocus ?? true
+      this.nextRenderBuffer = OptimizedBuffer.fromSession(
+        this.lib,
+        this.nativeSession.context,
+        this.nativeSession.session,
+        "next",
+        () => this.nativeScene.frame,
+      )
+      this.currentRenderBuffer = OptimizedBuffer.fromSession(
+        this.lib,
+        this.nativeSession.context,
+        this.nativeSession.session,
+        "current",
+        () => this.nativeScene.frame,
+      )
+      this._capabilities = this.nativeSession.getCapabilities()
+      if (config.backgroundColor !== undefined) this.backgroundColor = RGBA.clone(parseColor(config.backgroundColor))
+      this.postProcessFns = config.postProcessFns || []
+      this.prependedInputHandlers = config.prependInputHandlers || []
+
+      this.root = new RootRenderable(this)
+
+      if (this.memorySnapshotInterval > 0) {
+        this.startMemorySnapshotTimer()
+      }
+
+      // Handle terminal resize via SIGWINCH, but only when attached to the
+      // process's real stdout — a custom Writable wouldn't drive SIGWINCH
+      // anyway, and external consumers can call `renderer.resize(w, h)` to
+      // announce dimension changes themselves.
+      if (this._usesProcessStdout) {
+        process.on("SIGWINCH", this.sigwinchHandler)
+      }
+
+      process.on("warning", this.warningHandler)
+
+      process.on("uncaughtException", this.handleError)
+      process.on("unhandledRejection", this.handleError)
+      const useKittyForParsing = kittyConfig !== null
+      this._keyHandler = new InternalKeyHandler()
+      this._keyHandler.on("keypress", (event) => {
+        // Use the shared matcher here too. Kitty can report a non-Latin
+        // character plus a base-layout `c`, and Ctrl+C should still exit.
+        if (this.exitOnCtrlC && matchesKeyBinding(event, { name: "c", ctrl: true })) {
+          process.nextTick(this.exitHandler)
+          return
+        }
+      })
+
+      this.addExitListeners()
+
+      const stdinParserMaxBufferBytes = config.stdinParserMaxBufferBytes ?? DEFAULT_STDIN_PARSER_MAX_BUFFER_BYTES
+      this.stdinParser = new StdinParser({
+        timeoutMs: 20,
+        maxPendingBytes: stdinParserMaxBufferBytes,
+        armTimeouts: true,
+        onTimeoutFlush: () => {
+          this.drainStdinParser()
+        },
+        useKittyKeyboard: useKittyForParsing,
+        protocolContext: {
+          kittyKeyboardEnabled: useKittyForParsing,
+          privateCapabilityRepliesActive: false,
+          pixelResolutionQueryActive: false,
+          explicitWidthCprActive: false,
+          startupCursorCprActive: false,
+        },
+        clock: this.clock,
+      })
+
+      this._console = new TerminalConsole(this, {
+        ...(config.consoleOptions ?? {}),
+        clock: this.clock,
+      })
+      this.consoleMode = config.consoleMode ?? "console-overlay"
+      this.applyScreenMode(screenMode, false, false)
+      rendererTracker.streamOwners.set(stdin, this)
+      rendererTracker.streamOwners.set(stdout, this)
+      this._streamLeaseAcquired = true
+      rendererTracker.renderers.add(this)
+      this.stdout.write = externalOutputMode === "capture-stdout" ? this.interceptStdoutWrite : this.realStdoutWrite
+      this._openConsoleOnError = config.openConsoleOnError ?? process.env.NODE_ENV !== "production"
+      this._onDestroy = config.onDestroy
+
       this.setupInput()
+      process.on("exit", this.nativeProcessExitHandler)
+      void this.nativeSession.closed.then(
+        () => this.removeCleanupListener(process, "exit", this.nativeProcessExitHandler),
+        () => this.removeCleanupListener(process, "exit", this.nativeProcessExitHandler),
+      )
+      void this.nativeSession.closed.catch((error) => {
+        if (this._isDestroyed) return
+        try {
+          this.handleError(error instanceof Error ? error : new Error(String(error)))
+        } catch {
+          // The original Session failure remains available through closed.
+        } finally {
+          this.destroy()
+        }
+      })
     } catch (error) {
       try {
         this.destroy()
       } catch (destroyError) {
-        console.error("Error destroying renderer after input setup failure:", destroyError)
+        console.error("Error destroying partially constructed renderer:", destroyError)
+      } finally {
+        this.nativeSession.dispose()
+        this.nativeDestroyWait?.resolve()
+        this.releaseStreamLease()
       }
       throw error
     }
@@ -1353,12 +1439,22 @@ export class CliRenderer extends EventEmitter implements RenderContext {
   private removeExitListeners(): void {
     if (!this._exitListenersAdded || this.exitSignals.length === 0) return
 
-    const processEvents = process as EventEmitter
     this.exitSignals.forEach((signal) => {
-      processEvents.removeListener(signal, this.exitHandler)
+      this.removeCleanupListener(process, signal, this.exitHandler)
     })
 
     this._exitListenersAdded = false
+  }
+
+  private removeCleanupListener(target: EventEmitter, event: string, listener: (...args: any[]) => void): void {
+    try {
+      target.removeListener(event, listener)
+    } catch (error) {
+      if (!this._isDestroyed) throw error
+      // EventEmitter removes the listener before notifying removal observers.
+      // Their exceptions must not interrupt the remaining native teardown.
+      console.error("Error removing native scene lifecycle listener:", error)
+    }
   }
 
   public get isDestroyed(): boolean {
@@ -1366,15 +1462,15 @@ export class CliRenderer extends EventEmitter implements RenderContext {
   }
 
   public registerLifecyclePass(renderable: Renderable) {
-    this.lifecyclePasses.add(renderable)
+    this.getLifecyclePasses().add(renderable)
   }
 
   public unregisterLifecyclePass(renderable: Renderable) {
-    this.lifecyclePasses.delete(renderable)
+    this.getLifecyclePasses().delete(renderable)
   }
 
-  public getLifecyclePasses() {
-    return this.lifecyclePasses
+  public getLifecyclePasses(): Set<Renderable> {
+    return this.nativeScene.lifecyclePasses
   }
 
   public get currentFocusedRenderable(): Renderable | null {
@@ -1404,22 +1500,10 @@ export class CliRenderer extends EventEmitter implements RenderContext {
   }
 
   public focusRenderable(renderable: Renderable) {
-    if (this._currentFocusedRenderable === renderable) {
-      return
+    if (renderable.ctx !== this) {
+      throw new Error("Cannot focus renderables from another render context")
     }
-
-    const previousRenderable = this._currentFocusedRenderable
-    const previousEditor = this.currentFocusedEditor
-
-    this._currentFocusedRenderable = renderable
-    previousRenderable?.blur()
-
-    const currentEditor = this.currentFocusedEditor
-    if (previousEditor !== currentEditor) {
-      this.emit(CliRenderEvents.FOCUSED_EDITOR, currentEditor, previousEditor)
-    }
-
-    this.emit(CliRenderEvents.FOCUSED_RENDERABLE, renderable, previousRenderable)
+    this.changeFocus(renderable)
   }
 
   public blurRenderable(renderable: Renderable): void {
@@ -1427,14 +1511,32 @@ export class CliRenderer extends EventEmitter implements RenderContext {
       return
     }
 
+    this.changeFocus(null)
+  }
+
+  private changeFocus(renderable: Renderable | null): void {
+    if (this._currentFocusedRenderable === renderable) return
+    const change = (this.focusChange = {})
+    const previous = this._currentFocusedRenderable
     const previousEditor = this.currentFocusedEditor
-    this._currentFocusedRenderable = null
-
-    if (previousEditor !== null) {
-      this.emit(CliRenderEvents.FOCUSED_EDITOR, null, previousEditor)
+    this._currentFocusedRenderable = renderable
+    let failure: { error: unknown } | undefined
+    const run = (operation: () => void) => {
+      try {
+        operation()
+      } catch (error) {
+        failure ??= { error }
+      }
     }
-
-    this.emit(CliRenderEvents.FOCUSED_RENDERABLE, null, renderable)
+    if (renderable) run(() => previous?.blur())
+    // Editor observers must release the previous editor even when focus changed again.
+    const currentEditor = this.currentFocusedEditor
+    if (previousEditor !== currentEditor)
+      run(() => this.emit(CliRenderEvents.FOCUSED_EDITOR, currentEditor, previousEditor))
+    if (this.focusChange === change && this._currentFocusedRenderable === renderable && !renderable?.isDestroyed) {
+      run(() => this.emit(CliRenderEvents.FOCUSED_RENDERABLE, renderable, previous))
+    }
+    if (failure) throw failure.error
   }
 
   private setCapturedRenderable(renderable: Renderable | undefined): void {
@@ -1442,25 +1544,6 @@ export class CliRenderer extends EventEmitter implements RenderContext {
       return
     }
     this.capturedRenderable = renderable
-  }
-
-  public addToHitGrid(x: number, y: number, width: number, height: number, id: number) {
-    if (!this._useMouse) return
-    if (id !== this.capturedRenderable?.num) {
-      this.lib.addToHitGrid(this.rendererPtr, x, y, width, height, id)
-    }
-  }
-
-  public pushHitGridScissorRect(x: number, y: number, width: number, height: number): void {
-    this.lib.hitGridPushScissorRect(this.rendererPtr, x, y, width, height)
-  }
-
-  public popHitGridScissorRect(): void {
-    this.lib.hitGridPopScissorRect(this.rendererPtr)
-  }
-
-  public clearHitGridScissorRects(): void {
-    this.lib.hitGridClearScissorRects(this.rendererPtr)
   }
 
   public get widthMethod(): WidthMethod {
@@ -1471,76 +1554,50 @@ export class CliRenderer extends EventEmitter implements RenderContext {
     return this._frameId
   }
 
-  private writeOut(chunk: any, encoding?: any, callback?: any): boolean {
-    // Route through the native backend whenever:
-    //   (a) threading is on (pre-existing path — batches with the render thread), OR
-    //   (b) a feed is wired (custom stdout) — otherwise the else-branch would
-    //       write directly to the user's Writable, bypassing the feed and
-    //       causing TS-side ANSI to interleave with Zig-emitted frame bytes
-    //       on Linux where threading is forced off.
-    if (this.rendererPtr && (this._useThread || this._feed !== null)) {
-      const data = typeof chunk === "string" ? chunk : (chunk?.toString() ?? "")
-      this.lib.writeOut(this.rendererPtr, data)
-      if (typeof callback === "function") {
-        process.nextTick(callback)
-      }
-      return true
-    }
+  private scheduleRenderAfterOutputIdle(): void {
+    if (this.outputIdleRenderScheduled || this._isDestroyed) return
 
-    return this.realStdoutWrite.call(this.stdout, chunk, encoding, callback)
-  }
+    this.outputIdleRenderScheduled = true
+    this.nativeSession
+      .idle()
+      .then(() => {
+        this.outputIdleRenderScheduled = false
+        const ordinaryFrameWasWaiting = this.ordinaryFrameWaitingForOutput
+        const ordinaryFrameWaitControlState = this.ordinaryFrameWaitControlState
+        this.ordinaryFrameWaitingForOutput = false
+        // An explicit frame may already own newer demand while this older wait completes.
+        if (!this.rendering) this.ordinaryFrameWaitControlState = null
+        if (
+          this._isDestroyed ||
+          (ordinaryFrameWasWaiting &&
+            this._controlState !== ordinaryFrameWaitControlState &&
+            (this._controlState === RendererControlState.EXPLICIT_PAUSED ||
+              this._controlState === RendererControlState.EXPLICIT_STOPPED ||
+              this._controlState === RendererControlState.EXPLICIT_SUSPENDED))
+        ) {
+          this.resolveIdleIfNeeded()
+          return
+        }
 
-  private scheduleRenderAfterFeedIdle(): void {
-    const feed = this._feed
-    if (!feed || this._isDestroyed || this._controlState === RendererControlState.EXPLICIT_SUSPENDED) return
-
-    this.feedIdleRenderScheduled = true
-    if (this.feedIdleWaitPending) return
-    this.feedIdleWaitPending = true
-    feed.idle().then(() => {
-      this.feedIdleWaitPending = false
-      if (!this.feedIdleRenderScheduled) return
-      // New output may arrive after the feed resolves but before this continuation.
-      if (feed.isBackpressured()) {
-        this.scheduleRenderAfterFeedIdle()
-        return
-      }
-
-      this.feedIdleRenderScheduled = false
-      this.scheduleRenderTimer()
-      this.resolveIdleIfNeeded()
-    })
-  }
-
-  private cancelRenderAfterFeedIdle(): void {
-    if (!this.feedIdleRenderScheduled) return
-    // Cancel scheduler demand without releasing bytes still owned by the sink.
-    this.feedIdleRenderScheduled = false
-    this.immediateRerenderRequested = false
-  }
-
-  private handleNativeRenderRejection(status: number): "retryable-skip" | "backpressured" | "failed" {
-    if (status === NATIVE_RENDER_STATUS_SKIPPED && this._feed) {
-      this.scheduleRenderAfterFeedIdle()
-      return "retryable-skip"
-    }
-
-    if (status === NATIVE_RENDER_STATUS_SKIPPED) {
-      if (this._useThread && this._usesProcessStdout) return "backpressured"
-      console.error("[CliRenderer] Native frame render unexpectedly skipped without a feed")
-      return "failed"
-    }
-
-    return this.reportNativeRenderFailure()
-  }
-
-  private reportNativeRenderFailure(): "failed" {
-    console.error("[CliRenderer] Native frame render failed; waiting for the next render request to force repaint")
-    return "failed"
+        this.scheduleRenderTimer()
+        this.resolveIdleIfNeeded()
+      })
+      .catch((error) => {
+        this.outputIdleRenderScheduled = false
+        this.ordinaryFrameWaitingForOutput = false
+        this.ordinaryFrameWaitControlState = null
+        if (!this._isDestroyed) this.handleError(error instanceof Error ? error : new Error(String(error)))
+        this.resolveIdleIfNeeded()
+      })
   }
 
   private scheduleRenderTimer(): void {
-    if (this.renderTimeout || this._isDestroyed || this._controlState === RendererControlState.EXPLICIT_SUSPENDED)
+    if (
+      this.renderTimeout ||
+      this.cancelReadyFrame ||
+      this._isDestroyed ||
+      this._controlState === RendererControlState.EXPLICIT_SUSPENDED
+    )
       return
 
     const now = this.normalizeClockTime(this.clock.now(), this.lastTime)
@@ -1548,35 +1605,30 @@ export class CliRenderer extends EventEmitter implements RenderContext {
     const delay = Math.max(this.minTargetFrameTime - elapsed, 0)
     this.renderTimeout = this.clock.setTimeout(() => {
       this.renderTimeout = null
-      this.loop()
+      this.queueFrame()
     }, delay)
   }
 
-  private scheduleRenderAfterBackpressure(): void {
-    if (this._feed) {
-      this.scheduleRenderAfterFeedIdle()
-      return
-    }
-
-    this.scheduleRenderTimer()
-  }
-
   public requestRender() {
-    if (this._controlState === RendererControlState.EXPLICIT_SUSPENDED) {
+    if (this._isDestroyed || this._controlState === RendererControlState.EXPLICIT_SUSPENDED) {
       return
     }
 
-    // A skipped feed-backed frame already owns the next scheduling attempt through
-    // feed.idle(). Coalesce normal invalidations into that retry so split-footer
-    // output and UI updates cannot start competing render passes while the feed is busy.
-    if (this.feedIdleRenderScheduled) {
+    // A skipped frame owns its retry through Session.idle(). Coalesce invalidations
+    // so split-footer output and UI updates do not compete while output is busy.
+    if (this.outputIdleRenderScheduled) {
+      this.ordinaryFrameWaitControlState = this._controlState
       return
     }
 
     if (this._isRunning) {
-      if (!this.rendering && !this.renderTimeout) {
+      if (!this.rendering && !this.renderTimeout && !this.cancelReadyFrame && !this.ordinaryFrameWaitingForOutput) {
         this.scheduleRenderTimer()
       }
+      return
+    }
+
+    if (this.ordinaryFrameWaitingForOutput) {
       return
     }
 
@@ -1584,36 +1636,24 @@ export class CliRenderer extends EventEmitter implements RenderContext {
     // leads to a continuous loop of renders.
     if (this.rendering) {
       this.immediateRerenderRequested = true
+      this.ordinaryFrameWaitControlState = this._controlState
       return
     }
 
-    if (!this.updateScheduled && !this.renderTimeout) {
-      this.updateScheduled = true
-      const generation = ++this.updateGeneration
+    if (!this.cancelReadyFrame && !this.renderTimeout) {
       const now = this.normalizeClockTime(this.clock.now(), this.lastTime)
       const elapsed = this.getElapsedMs(now, this.lastTime)
       const delay = Math.max(this.minTargetFrameTime - elapsed, 0)
 
       if (delay === 0) {
-        process.nextTick(() => this.activateFrame(generation))
+        this.queueFrame()
         return
       }
 
-      this.clock.setTimeout(() => this.activateFrame(generation), delay)
-    }
-  }
-
-  private async activateFrame(generation: number) {
-    if (generation !== this.updateGeneration || !this.updateScheduled) {
-      this.resolveIdleIfNeeded()
-      return
-    }
-
-    try {
-      await this.loop()
-    } finally {
-      if (generation === this.updateGeneration) this.updateScheduled = false
-      this.resolveIdleIfNeeded()
+      this.renderTimeout = this.clock.setTimeout(() => {
+        this.renderTimeout = null
+        this.queueFrame()
+      }, delay)
     }
   }
 
@@ -1624,9 +1664,9 @@ export class CliRenderer extends EventEmitter implements RenderContext {
   public set consoleMode(mode: ConsoleMode) {
     this._useConsole = mode === "console-overlay"
     if (this._useConsole) {
-      this.console.activate()
+      this._console.activate()
     } else {
-      this.console.deactivate()
+      this._console.deactivate()
     }
   }
 
@@ -1640,9 +1680,12 @@ export class CliRenderer extends EventEmitter implements RenderContext {
     return (
       !this._isRunning &&
       !this.rendering &&
+      !this.nativeTerminalTransition &&
+      !this.nativeResizeWait &&
+      (!this.pendingNativeResize || this._controlState === RendererControlState.EXPLICIT_SUSPENDED) &&
       !this.renderTimeout &&
-      !this.updateScheduled &&
-      !this.feedIdleRenderScheduled &&
+      !this.cancelReadyFrame &&
+      !this.outputIdleRenderScheduled &&
       !this.immediateRerenderRequested
     )
   }
@@ -1656,18 +1699,28 @@ export class CliRenderer extends EventEmitter implements RenderContext {
   }
 
   public idle(): Promise<void> {
-    if (this._isDestroyed) return Promise.resolve()
-    if (this.isIdleNow()) return Promise.resolve()
-    return new Promise<void>((resolve) => {
-      this.idleResolvers.push(resolve)
-    })
+    if (this._isDestroyed) return this.closed
+    const idle = this.isIdleNow()
+      ? Promise.resolve()
+      : new Promise<void>((resolve) => {
+          this.idleResolvers.push(resolve)
+        })
+    return idle.then(() => this.nativeSession.idle())
   }
 
   public getSchedulerState(): RendererSchedulerState {
     return {
       isRunning: this._isRunning,
       isRendering: this.rendering,
-      hasScheduledRender: Boolean(this.renderTimeout || this.updateScheduled || this.immediateRerenderRequested),
+      hasScheduledRender: Boolean(
+        this.renderTimeout ||
+        this.cancelReadyFrame ||
+        this.outputIdleRenderScheduled ||
+        this.immediateRerenderRequested ||
+        this.nativeTerminalTransition ||
+        this.nativeResizeWait ||
+        (this.pendingNativeResize && this._controlState !== RendererControlState.EXPLICIT_SUSPENDED),
+      ),
     }
   }
 
@@ -1695,10 +1748,6 @@ export class CliRenderer extends EventEmitter implements RenderContext {
     return this._terminalHeight
   }
 
-  public get useThread(): boolean {
-    return this._useThread
-  }
-
   public get targetFps(): number {
     return this._targetFps
   }
@@ -1722,33 +1771,30 @@ export class CliRenderer extends EventEmitter implements RenderContext {
   }
 
   public set useMouse(useMouse: boolean) {
+    if (this.nativeTerminalTransition || this._controlState === RendererControlState.EXPLICIT_SUSPENDED) {
+      throw new Error("Cannot change native scene mouse modes during a terminal transition or suspension")
+    }
     if (this._useMouse === useMouse) return // No change needed
-
-    this._useMouse = useMouse
 
     if (useMouse) {
       this.enableMouse()
       this.requestRender()
     } else {
       this.disableMouse()
+      this.requestRender()
     }
   }
 
   public get screenMode(): ScreenMode {
-    return this._screenMode
+    return this.pendingNativeMode?.screenMode ?? this._screenMode
   }
 
   public set screenMode(mode: ScreenMode) {
+    if (this.pendingExternalOutputMode === "passthrough" && mode !== "split-footer") {
+      this.applyScreenMode(mode)
+      return
+    }
     if (this.externalOutputMode === "capture-stdout" && mode !== "split-footer") {
-      if (this.pendingExternalOutputMode === "passthrough") {
-        this.flushPendingSplitOutputBeforeLeavingSplitFooter()
-      }
-
-      if (this.externalOutputMode !== "capture-stdout") {
-        this.applyScreenMode(mode)
-        return
-      }
-
       throw new Error('externalOutputMode "capture-stdout" requires screenMode "split-footer"')
     }
 
@@ -1756,28 +1802,40 @@ export class CliRenderer extends EventEmitter implements RenderContext {
   }
 
   public get footerHeight(): number {
-    return this._footerHeight
+    return this.pendingNativeMode?.footerHeight ?? this._footerHeight
   }
 
   public set footerHeight(footerHeight: number) {
     const normalizedFooterHeight = normalizeFooterHeight(footerHeight)
-    if (normalizedFooterHeight === this._footerHeight) {
+    if (normalizedFooterHeight === this.footerHeight) {
       return
     }
 
-    this._footerHeight = normalizedFooterHeight
     if (this.screenMode === "split-footer") {
-      this.applyScreenMode("split-footer")
+      this.applyScreenMode("split-footer", true, true, normalizedFooterHeight)
+    } else {
+      this._footerHeight = normalizedFooterHeight
     }
   }
 
   public get externalOutputMode(): ExternalOutputMode {
-    return this._externalOutputMode
+    return this.pendingExternalOutputMode ?? this._externalOutputMode
   }
 
   public set externalOutputMode(mode: ExternalOutputMode) {
     if (mode === "capture-stdout" && this.screenMode !== "split-footer") {
       throw new Error('externalOutputMode "capture-stdout" requires screenMode "split-footer"')
+    }
+
+    if (this._isDestroyed) {
+      this.pendingExternalOutputMode = null
+      this.applyExternalOutputMode(mode)
+      return
+    }
+    if (this.rendering || this.pendingNativeMode || this.externalOutputQueue.size > 0) {
+      this.pendingExternalOutputMode = mode
+      this.requestRender()
+      return
     }
 
     const previousMode = this._externalOutputMode
@@ -1786,22 +1844,6 @@ export class CliRenderer extends EventEmitter implements RenderContext {
         this.pendingExternalOutputMode = null
       }
       return
-    }
-
-    const canFlushSplitOutputBeforeTransition = this.canFlushSplitOutputBeforeTransition()
-    const isSplitCaptureToPassthrough =
-      previousMode === "capture-stdout" &&
-      mode === "passthrough" &&
-      this._screenMode === "split-footer" &&
-      this._splitHeight > 0
-
-    if (isSplitCaptureToPassthrough && this.externalOutputQueue.size > 0 && !canFlushSplitOutputBeforeTransition) {
-      this.pendingExternalOutputMode = "passthrough"
-      return
-    }
-
-    if (isSplitCaptureToPassthrough && canFlushSplitOutputBeforeTransition) {
-      this.flushPendingSplitOutputBeforeTransition()
     }
 
     this.pendingExternalOutputMode = null
@@ -1855,8 +1897,12 @@ export class CliRenderer extends EventEmitter implements RenderContext {
   }
 
   private applyPendingExternalOutputModeIfReady(): void {
+    if (this.rendering) return
     const pendingMode = this.pendingExternalOutputMode
-    if (pendingMode === null || this.externalOutputQueue.size > 0) {
+    if (
+      pendingMode === null ||
+      (this.externalOutputQueue.size > 0 && !(pendingMode === "capture-stdout" && this._screenMode === "split-footer"))
+    ) {
       return
     }
 
@@ -1869,22 +1915,6 @@ export class CliRenderer extends EventEmitter implements RenderContext {
 
     this.applyExternalOutputMode(pendingMode)
     this.afterExternalOutputModeChanged(previousMode, pendingMode)
-  }
-
-  private flushPendingSplitOutputBeforeLeavingSplitFooter(): void {
-    if (this.pendingExternalOutputMode !== "passthrough") {
-      return
-    }
-
-    if (this.isSplitCursorSeedFrameBlocked() && this._controlState !== RendererControlState.EXPLICIT_SUSPENDED) {
-      this.abortSplitStartupCursorSeed()
-    }
-
-    this.flushPendingSplitOutputBeforeTransition()
-
-    if (this.pendingExternalOutputMode !== null) {
-      throw new Error("Cannot leave split-footer while captured output is pending")
-    }
   }
 
   public get liveRequestCount(): number {
@@ -1909,7 +1939,7 @@ export class CliRenderer extends EventEmitter implements RenderContext {
     if (this._isDestroyed || mode === this.kittyTransportMode) return
     this.kittyTransportMode = mode
     this.startKittyTransportPolling()
-    this.lib.setKittyImageTransport(this.rendererPtr, code)
+    this.nativeSession.setKittyImageTransport(code)
     this.requestRender()
   }
 
@@ -1918,41 +1948,40 @@ export class CliRenderer extends EventEmitter implements RenderContext {
     // Old file transfers still need ACKs, expiry, and error cleanup after selecting an inline mode.
     this.stdout.on("error", this.kittyOutputErrorHandler)
     this.kittyTransportTimer = this.clock.setInterval(() => {
-      if (!this._isDestroyed && this.lib.pollKittyImageTransport(this.rendererPtr)) this.requestRender()
+      if (!this._isDestroyed && this.nativeSession.pollKittyImageTransport()) this.requestRender()
     }, 1000)
   }
 
   public get kittyImageTransportStatus(): KittyImageTransportStatus {
-    const [mode, effective, fileState, fallback, pendingFiles, pendingBytes] = this.lib.getKittyImageTransport(
-      this.rendererPtr,
-    )
+    const status = this.nativeSession.getKittyImageTransport()
     return {
-      requested: KITTY_IMAGE_TRANSPORTS[mode]!,
-      effective: (["raw", "zlib", "png", "file"] as const)[effective]!,
+      requested: KITTY_IMAGE_TRANSPORTS[status.requested]!,
+      effective: (["raw", "zlib", "png", "file"] as const)[status.effective]!,
       fileState: (["disabled", "probing", "ready", "unsupported", "timeout", "io-error", "cancelled"] as const)[
-        fileState
+        status.fileState
       ]!,
       fallback: (["none", "not-ready", "unavailable", "budget", "busy", "preparation", "compression"] as const)[
-        fallback
+        status.fallback
       ]!,
-      pendingFiles,
-      pendingBytes,
+      pendingFiles: status.pendingFiles,
+      pendingBytes: status.pendingBytes,
     }
   }
 
   public cancelKittyImageTransport(): void {
     if (this._isDestroyed) return
-    this.lib.cancelKittyImageTransport(this.rendererPtr, false)
+    this.nativeSession.cancelKittyImageTransport(false)
     this.requestRender()
   }
 
   private kittyOutputErrorHandler = (): void => {
-    if (!this._isDestroyed) this.lib.cancelKittyImageTransport(this.rendererPtr, true)
+    if (this._isDestroyed || this.nativeSession.disposed || this.nativeSession.error) return
+    this.nativeSession.cancelKittyImageTransport(true)
   }
 
   public triggerNotification(message: string, title?: string): boolean {
     if (this._isDestroyed) return false
-    return this.lib.triggerNotification(this.rendererPtr, message, title)
+    return this.nativeSession.triggerNotification(message, title)
   }
 
   public get themeMode(): ThemeMode | null {
@@ -1972,16 +2001,17 @@ export class CliRenderer extends EventEmitter implements RenderContext {
   }
 
   public get useKittyKeyboard(): boolean {
-    return this.lib.getKittyKeyboardFlags(this.rendererPtr) > 0
+    return this.nativeKittyKeyboardFlags !== 0
   }
 
   public set useKittyKeyboard(use: boolean) {
     const flags = use ? KITTY_FLAG_DISAMBIGUATE | KITTY_FLAG_ALTERNATE_KEYS : 0
-    this.lib.setKittyKeyboardFlags(this.rendererPtr, flags)
+    this.enableKittyKeyboard(flags)
   }
 
   public createScrollbackSurface(options: ScrollbackSurfaceOptions = {}): ScrollbackSurface {
-    if (this._screenMode !== "split-footer" || this._externalOutputMode !== "capture-stdout") {
+    if (this._isDestroyed) throw new Error("Renderer is destroyed")
+    if (this.screenMode !== "split-footer" || this.externalOutputMode !== "capture-stdout") {
       throw new Error(
         'createScrollbackSurface requires screenMode "split-footer" and externalOutputMode "capture-stdout"',
       )
@@ -2001,6 +2031,7 @@ export class CliRenderer extends EventEmitter implements RenderContext {
       renderer._terminalHeight,
       renderer.resolution,
       renderer.capabilities,
+      renderer.nativeSession,
     )
     let firstLineOffsetOwner: Renderable | null = null
     const renderContext = Object.create(snapshotContext) as RenderContext
@@ -2021,20 +2052,37 @@ export class CliRenderer extends EventEmitter implements RenderContext {
       configurable: true,
     })
 
-    const internalRoot = new RootRenderable(renderContext)
-    const publicRoot = new BoxRenderable(renderContext, {
-      id: `scrollback-surface-root-${surfaceId}`,
-      position: "absolute",
-      left: 0,
-      top: 0,
-      width: renderer.width,
-      height: "auto",
-      border: false,
-      backgroundColor: "transparent",
-      shouldFill: false,
-      flexDirection: "column",
-    })
-    internalRoot.add(publicRoot)
+    let internalRoot: RootRenderable | undefined
+    let publicRoot: BoxRenderable
+    let backingBuffer: OptimizedBuffer
+    try {
+      internalRoot = new RootRenderable(renderContext)
+      snapshotContext.root = internalRoot
+      publicRoot = new BoxRenderable(renderContext, {
+        id: `scrollback-surface-root-${surfaceId}`,
+        position: "absolute",
+        left: 0,
+        top: 0,
+        width: renderer.width,
+        height: "auto",
+        border: false,
+        backgroundColor: "transparent",
+        shouldFill: false,
+        flexDirection: "column",
+      })
+      internalRoot.add(publicRoot)
+      backingBuffer = OptimizedBuffer.create(renderer.width, 1, renderer.widthMethod, {
+        id: `scrollback-surface-buffer-${surfaceId}`,
+        owner: renderer.nativeScene,
+      })
+    } catch (error) {
+      try {
+        internalRoot?.destroyRecursively()
+      } finally {
+        snapshotContext.destroy()
+      }
+      throw error
+    }
 
     let surfaceWidth = renderer.width
     let surfaceHeight = 1
@@ -2046,17 +2094,7 @@ export class CliRenderer extends EventEmitter implements RenderContext {
     let surfaceDestroyed = false
     let hasRendered = false
     let nextCommitStartOnNewLine = startOnNewLine
-    let backingBuffer = OptimizedBuffer.create(surfaceWidth, surfaceHeight, surfaceWidthMethod, {
-      id: `scrollback-surface-buffer-${surfaceId}`,
-    })
-
-    const destroyListener = (): void => {
-      destroySurface()
-    }
-    const capabilitiesListener = (capabilities: TerminalCapabilities): void => {
-      snapshotContext.capabilities = capabilities
-      renderContext.emit(CliRenderEvents.CAPABILITIES, capabilities)
-    }
+    const pendingWaits = new Set<() => void>()
 
     const assertNotDestroyed = (): void => {
       if (surfaceDestroyed) {
@@ -2101,57 +2139,48 @@ export class CliRenderer extends EventEmitter implements RenderContext {
       }
     }
 
-    const collectPendingCodeRenderables = (node: Renderable): CodeRenderable[] => {
-      const pending: CodeRenderable[] = []
-
-      if (node instanceof CodeRenderable && node.isHighlighting) {
-        pending.push(node)
+    const collectPendingResources = (node: Renderable): Promise<void>[] => {
+      const pending: Promise<void>[] = []
+      for (const resource of snapshotContext.nativeScene.getRenderables()) {
+        if (resource.isDestroyed) continue
+        const promise =
+          resource instanceof CodeRenderable && resource.isHighlighting
+            ? resource.highlightingDone
+            : resource instanceof ImageRenderable && resource.loading
+              ? resource.loadPromise
+              : null
+        if (!promise) continue
+        let ancestor: Renderable | null = resource
+        while (ancestor && ancestor !== node) ancestor = ancestor.parent
+        if (ancestor === node) pending.push(promise)
       }
-
-      for (const child of node.getChildren()) {
-        pending.push(...collectPendingCodeRenderables(child))
-      }
-
       return pending
     }
 
-    const waitForPendingHighlights = async (pending: CodeRenderable[], timeoutMs: number): Promise<void> => {
+    const waitForPendingHighlights = async (pending: Promise<void>[], timeoutMs: number): Promise<void> => {
       await new Promise<void>((resolve, reject) => {
         let settled = false
-        const timeoutHandle = renderer.clock.setTimeout(() => {
-          if (settled) {
-            return
-          }
-
+        const finish = (error?: unknown): void => {
+          if (settled) return
           settled = true
-          reject(new Error("ScrollbackSurface.settle timed out waiting for CodeRenderable highlighting"))
-        }, timeoutMs)
-
-        Promise.all(pending.map((renderable) => renderable.highlightingDone)).then(
-          () => {
-            if (settled) {
-              return
-            }
-
-            settled = true
-            renderer.clock.clearTimeout(timeoutHandle)
-            resolve()
-          },
-          (error) => {
-            if (settled) {
-              return
-            }
-
-            settled = true
-            renderer.clock.clearTimeout(timeoutHandle)
-            reject(error)
-          },
+          renderer.clock.clearTimeout(timeoutHandle)
+          pendingWaits.delete(cancel)
+          if (error) reject(error)
+          else resolve()
+        }
+        const cancel = () => finish(new Error("ScrollbackSurface is destroyed"))
+        const timeoutHandle = renderer.clock.setTimeout(
+          () => finish(new Error("ScrollbackSurface.settle timed out waiting for CodeRenderable highlighting")),
+          timeoutMs,
         )
+        pendingWaits.add(cancel)
+        Promise.all(pending).then(() => finish(), finish)
       })
     }
 
     const renderSurface = (): void => {
       assertNotDestroyed()
+      hasRendered = false
 
       const width = renderer.width
       const widthMethod = renderer.widthMethod
@@ -2166,20 +2195,22 @@ export class CliRenderer extends EventEmitter implements RenderContext {
 
       const renderPass = (height: number): void => {
         snapshotContext.height = height
-        internalRoot.resize(width, height)
+        internalRoot!.resize(width, height)
         backingBuffer.resize(width, height)
         backingBuffer.clear(TRANSPARENT_RGBA)
         snapshotContext.frameId += 1
-        internalRoot.render(backingBuffer, 0)
+        snapshotContext.renderSnapshot(internalRoot!, backingBuffer)
       }
 
       let targetHeight = Math.max(1, surfaceHeight)
 
       if (surfaceWidthMethod !== widthMethod) {
-        backingBuffer.destroy()
-        backingBuffer = OptimizedBuffer.create(width, targetHeight, widthMethod, {
+        const replacement = OptimizedBuffer.create(width, targetHeight, widthMethod, {
           id: `scrollback-surface-buffer-${surfaceId}`,
+          owner: renderer.nativeScene,
         })
+        backingBuffer.destroy()
+        backingBuffer = replacement
       } else {
         backingBuffer.resize(width, targetHeight)
       }
@@ -2217,6 +2248,8 @@ export class CliRenderer extends EventEmitter implements RenderContext {
 
     const settleSurface = async (timeoutMs: number = 2000): Promise<void> => {
       assertNotDestroyed()
+      if (!Number.isFinite(timeoutMs) || timeoutMs < 0)
+        throw new Error("ScrollbackSurface.settle requires a finite non-negative timeout")
 
       const startedAt = renderer.clock.now()
       renderSurface()
@@ -2224,7 +2257,7 @@ export class CliRenderer extends EventEmitter implements RenderContext {
       while (true) {
         assertNotDestroyed()
 
-        const pending = collectPendingCodeRenderables(publicRoot)
+        const pending = collectPendingResources(publicRoot)
         if (pending.length === 0) {
           return
         }
@@ -2257,6 +2290,7 @@ export class CliRenderer extends EventEmitter implements RenderContext {
       const rowCount = endRowExclusive - startRow
       const commitBuffer = OptimizedBuffer.create(surfaceWidth, rowCount, surfaceWidthMethod, {
         id: `scrollback-surface-commit-${surfaceId}`,
+        owner: renderer.nativeScene,
       })
 
       try {
@@ -2271,7 +2305,7 @@ export class CliRenderer extends EventEmitter implements RenderContext {
 
         nextCommitStartOnNewLine = false
       } catch (error) {
-        commitBuffer.destroy()
+        if (!renderer.externalOutputQueue.owns(commitBuffer)) commitBuffer.destroy()
         throw error
       }
     }
@@ -2282,35 +2316,26 @@ export class CliRenderer extends EventEmitter implements RenderContext {
       }
 
       surfaceDestroyed = true
-      renderer.off(CliRenderEvents.DESTROY, destroyListener)
-      renderer.off(CliRenderEvents.CAPABILITIES, capabilitiesListener)
+      renderer.detachedSurfaces.delete(destroySurface)
+      for (const cancel of pendingWaits) cancel()
 
-      let destroyError: unknown = null
-
-      try {
-        internalRoot.destroyRecursively()
-      } catch (error) {
-        destroyError = error
-      }
-
-      try {
-        backingBuffer.destroy()
-      } catch (error) {
-        if (destroyError === null) {
-          destroyError = error
+      let failure: { error: unknown } | undefined
+      for (const cleanup of [
+        () => internalRoot!.destroyRecursively(),
+        () => backingBuffer.destroy(),
+        () => renderContext.removeAllListeners(),
+        () => snapshotContext.destroy(),
+      ]) {
+        try {
+          cleanup()
+        } catch (error) {
+          failure ??= { error }
         }
       }
-
-      renderContext.removeAllListeners()
-      snapshotContext.removeAllListeners()
-
-      if (destroyError !== null) {
-        throw destroyError
-      }
+      if (failure) throw failure.error
     }
 
-    renderer.on(CliRenderEvents.DESTROY, destroyListener)
-    renderer.on(CliRenderEvents.CAPABILITIES, capabilitiesListener)
+    renderer.detachedSurfaces.add(destroySurface)
 
     return {
       get renderContext(): RenderContext {
@@ -2360,7 +2385,8 @@ export class CliRenderer extends EventEmitter implements RenderContext {
   // snapshot buffer ownership to the queue on success, triggers async render,
   // and invokes snapshot teardown when cleanup runs.
   public writeToScrollback(write: ScrollbackWriter): void {
-    if (this._screenMode !== "split-footer" || this._externalOutputMode !== "capture-stdout") {
+    if (this._isDestroyed) throw new Error("Renderer is destroyed")
+    if (this.screenMode !== "split-footer" || this.externalOutputMode !== "capture-stdout") {
       throw new Error('writeToScrollback requires screenMode "split-footer" and externalOutputMode "capture-stdout"')
     }
 
@@ -2372,23 +2398,23 @@ export class CliRenderer extends EventEmitter implements RenderContext {
       this._terminalHeight,
       this.resolution,
       this.capabilities,
+      this.nativeSession,
     )
-    const snapshot = write({
-      width: this.width,
-      widthMethod: this.widthMethod,
-      tailColumn: this.getPendingSplitTailColumn(),
-      renderContext: snapshotContext,
-    })
-
-    if (!snapshot || !snapshot.root) {
-      throw new Error("writeToScrollback must return a snapshot root renderable")
-    }
-
+    let snapshot: ScrollbackSnapshot | undefined
     let renderFailed = false
     let snapshotRoot: RootRenderable | null = null
     let snapshotBuffer: OptimizedBuffer | null = null
 
     try {
+      snapshotRoot = new RootRenderable(snapshotContext)
+      snapshotContext.root = snapshotRoot
+      snapshot = write({
+        width: this.width,
+        widthMethod: this.widthMethod,
+        tailColumn: this.getPendingSplitTailColumn(),
+        renderContext: snapshotContext,
+      })
+      if (!snapshot || !snapshot.root) throw new Error("writeToScrollback must return a snapshot root renderable")
       const rootRenderable = snapshot.root
       const snapshotWidth = this.getSnapshotWidth(snapshot.width, rootRenderable.width)
       const snapshotHeight = this.getSnapshotHeight(snapshot.height, rootRenderable.height)
@@ -2397,15 +2423,16 @@ export class CliRenderer extends EventEmitter implements RenderContext {
       snapshotContext.height = snapshotHeight
       snapshotContext.widthMethod = this.widthMethod
 
-      snapshotRoot = new RootRenderable(snapshotContext)
+      snapshotRoot.resize(snapshotWidth, snapshotHeight)
       snapshotBuffer = OptimizedBuffer.create(snapshotWidth, snapshotHeight, this.widthMethod, {
         id: "scrollback-snapshot-commit",
+        owner: this.nativeScene,
       })
 
       // Render through normal renderables so split scrollback output uses the same
       // text shaping/styling pipeline as the rest of the renderer.
       snapshotRoot.add(rootRenderable)
-      snapshotRoot.render(snapshotBuffer, 0)
+      snapshotContext.renderSnapshot(snapshotRoot, snapshotBuffer)
       this.enqueueRenderedScrollbackCommit({
         snapshot: snapshotBuffer,
         rowColumns: snapshot.rowColumns,
@@ -2414,27 +2441,29 @@ export class CliRenderer extends EventEmitter implements RenderContext {
       })
     } catch (error) {
       renderFailed = true
-      snapshotBuffer?.destroy()
+      if (snapshotBuffer && !this.externalOutputQueue.owns(snapshotBuffer)) snapshotBuffer.destroy()
       throw error
     } finally {
       let cleanupError: unknown | null = null
 
       try {
-        if (snapshotRoot) {
-          snapshotRoot.destroyRecursively()
-        } else {
-          snapshot.root.destroyRecursively()
-        }
+        snapshotRoot?.destroyRecursively()
       } catch (error) {
         cleanupError = error
       }
 
       try {
-        snapshot.teardown?.()
+        snapshot?.teardown?.()
       } catch (error) {
         if (cleanupError === null) {
           cleanupError = error
         }
+      }
+
+      try {
+        snapshotContext.destroy()
+      } catch (error) {
+        cleanupError ??= error
       }
 
       if (!renderFailed && cleanupError) {
@@ -2454,15 +2483,16 @@ export class CliRenderer extends EventEmitter implements RenderContext {
       throw new Error("resetSplitFooterForReplay requires an active terminal")
     }
 
-    this.flushPendingSplitOutputBeforeTransition(true)
-    this.externalOutputQueue.clear()
-    this.abortSplitStartupCursorSeed()
-    this.clearPendingSplitFooterTransition()
-    this.resetSplitScrollback()
-    this.currentRenderBuffer.clear(this.backgroundColor)
-    this.nextRenderBuffer.clear(this.backgroundColor)
-    this.forceFullRepaintRequested = true
-    this.writeOut(
+    if (this.rendering || this.externalOutputQueue.size > 0) {
+      this.pendingNativeReplay = { options, remaining: this.externalOutputQueue.size }
+      this.requestRender()
+      return
+    }
+    this.applySplitFooterReplayReset(options)
+  }
+
+  private applySplitFooterReplayReset(options: SplitFooterReplayResetOptions): void {
+    const bytes = this.lib.encoder.encode(
       ANSI.resetScrollRegion +
         ANSI.reset +
         ANSI.home +
@@ -2470,6 +2500,13 @@ export class CliRenderer extends EventEmitter implements RenderContext {
         (options.clearSavedLines ? ANSI.clearSavedLines : "") +
         ANSI.home,
     )
+    if (!this.nativeSession.write(bytes))
+      throw new NativeError("Native terminal output", NativeStatus.OutputBackpressure)
+    this.abortSplitStartupCursorSeed()
+    this.clearPendingSplitFooterTransition()
+    this.resetSplitScrollback()
+    this.pendingNativeReplay = null
+    this.forceFullRepaintRequested = true
     this.requestRender()
   }
 
@@ -2494,27 +2531,28 @@ export class CliRenderer extends EventEmitter implements RenderContext {
   }
 
   private getSnapshotRowWidths(snapshot: OptimizedBuffer, rowColumns: number): number[] {
-    const widths: number[] = []
-    const limit = Math.min(Math.max(Math.trunc(rowColumns), 0), snapshot.width)
-    const chars = snapshot.buffers.char
+    return snapshot.withBuffers(({ width, height, char }) => {
+      const widths: number[] = []
+      const limit = Math.min(Math.max(Math.trunc(rowColumns), 0), width)
 
-    for (let y = 0; y < snapshot.height; y += 1) {
-      let x = limit
+      for (let y = 0; y < height; y += 1) {
+        let x = limit
 
-      while (x > 0) {
-        const cp = chars[y * snapshot.width + x - 1]
-        if (cp === 0 || (cp & CHAR_FLAG_MASK) === CHAR_FLAG_CONTINUATION) {
-          x -= 1
-          continue
+        while (x > 0) {
+          const cp = char[y * width + x - 1]
+          if (cp === 0 || (cp & CHAR_FLAG_MASK) === CHAR_FLAG_CONTINUATION) {
+            x -= 1
+            continue
+          }
+
+          break
         }
 
-        break
+        widths.push(x)
       }
 
-      widths.push(x)
-    }
-
-    return widths
+      return widths
+    })
   }
 
   private advanceSplitTailColumn(tailColumn: number, columns: number, width: number): number {
@@ -2570,9 +2608,9 @@ export class CliRenderer extends EventEmitter implements RenderContext {
 
   private getPendingSplitTailColumn(): number {
     const width = Math.max(this.width, 1)
-    let tailColumn = this.splitTailColumn
+    let tailColumn = this.pendingNativeReplay ? 0 : this.splitTailColumn
 
-    for (const commit of this.externalOutputQueue.peek()) {
+    for (const commit of this.externalOutputQueue.peek().slice(this.pendingNativeReplay?.remaining ?? 0)) {
       tailColumn = this.getSplitTailColumnAfterCommit(commit, tailColumn, width)
     }
 
@@ -2585,7 +2623,7 @@ export class CliRenderer extends EventEmitter implements RenderContext {
     startOnNewLine?: boolean
     trailingNewline?: boolean
   }): void {
-    if (this._screenMode !== "split-footer" || this._externalOutputMode !== "capture-stdout") {
+    if (this.screenMode !== "split-footer" || this.externalOutputMode !== "capture-stdout") {
       throw new Error('scrollback commit requires screenMode "split-footer" and externalOutputMode "capture-stdout"')
     }
 
@@ -2594,20 +2632,22 @@ export class CliRenderer extends EventEmitter implements RenderContext {
       options.snapshot.width,
     )
 
-    this.enqueueSplitCommit({
-      snapshot: options.snapshot,
-      rowColumns,
-      startOnNewLine: options.startOnNewLine ?? true,
-      trailingNewline: options.trailingNewline ?? true,
-    })
-
-    this.requestRender()
+    this.enqueueSplitCommits([
+      {
+        snapshot: options.snapshot,
+        rowColumns,
+        startOnNewLine: options.startOnNewLine ?? true,
+        trailingNewline: options.trailingNewline ?? true,
+      },
+    ])
   }
 
-  private enqueueSplitCommit(commit: ExternalOutputCommit): void {
-    this.externalOutputQueue.writeSnapshot(commit)
+  private enqueueSplitCommits(commits: readonly ExternalOutputCommit[]): void {
+    for (const commit of commits) commit.nativeSnapshot = commit.snapshot._getSceneHandle(this.nativeScene)
+    this.externalOutputQueue.writeSnapshots(commits)
+    this.requestRender()
     if (this.listenerCount(CliRenderEvents.EXTERNAL_OUTPUT) > 0) {
-      this.emit(CliRenderEvents.EXTERNAL_OUTPUT, commit)
+      for (const commit of commits) this.emit(CliRenderEvents.EXTERNAL_OUTPUT, commit)
     }
   }
 
@@ -2622,28 +2662,32 @@ export class CliRenderer extends EventEmitter implements RenderContext {
       this._terminalHeight,
       this.resolution,
       this.capabilities,
+      this.nativeSession,
     )
     const maxWidth = Math.max(1, this.width)
     const lineCells = [...line]
     const rowColumns = Math.min(lineCells.length, maxWidth)
     const renderedLine = lineCells.slice(0, maxWidth).join("")
-    const snapshotRoot = new RootRenderable(snapshotContext)
-    const snapshotRenderable = new TextRenderable(snapshotContext, {
-      id: "captured-stdout-snapshot",
-      position: "absolute",
-      left: 0,
-      top: 0,
-      width: Math.max(1, rowColumns),
-      height: 1,
-      content: renderedLine,
-    })
-    const snapshotBuffer = OptimizedBuffer.create(Math.max(1, rowColumns), 1, this.widthMethod, {
-      id: "captured-stdout-snapshot",
-    })
-
+    snapshotContext.width = Math.max(1, rowColumns)
+    let snapshotRoot: RootRenderable | undefined
+    let snapshotBuffer: OptimizedBuffer | undefined
     try {
+      snapshotRoot = new RootRenderable(snapshotContext)
+      const snapshotRenderable = new TextRenderable(snapshotContext, {
+        id: "captured-stdout-snapshot",
+        position: "absolute",
+        left: 0,
+        top: 0,
+        width: Math.max(1, rowColumns),
+        height: 1,
+        content: renderedLine,
+      })
+      snapshotBuffer = OptimizedBuffer.create(Math.max(1, rowColumns), 1, this.widthMethod, {
+        id: "captured-stdout-snapshot",
+        owner: this.nativeScene,
+      })
       snapshotRoot.add(snapshotRenderable)
-      snapshotRoot.render(snapshotBuffer, 0)
+      snapshotContext.renderSnapshot(snapshotRoot, snapshotBuffer)
       return {
         snapshot: snapshotBuffer,
         rowColumns,
@@ -2651,10 +2695,14 @@ export class CliRenderer extends EventEmitter implements RenderContext {
         trailingNewline,
       }
     } catch (error) {
-      snapshotBuffer.destroy()
+      snapshotBuffer?.destroy()
       throw error
     } finally {
-      snapshotRoot.destroyRecursively()
+      try {
+        snapshotRoot?.destroyRecursively()
+      } finally {
+        snapshotContext.destroy()
+      }
     }
   }
 
@@ -2696,6 +2744,9 @@ export class CliRenderer extends EventEmitter implements RenderContext {
     if (text.length === 0) {
       return []
     }
+    if (BigInt(Buffer.byteLength(text)) > this.nativeSession.maxWriteBytes) {
+      throw new Error("Captured stdout exceeds the Session output capacity")
+    }
 
     // Chunk captured stdout into width-bounded row commits so each commit is a
     // small, deterministic append step. This keeps bursty output smooth while
@@ -2704,123 +2755,37 @@ export class CliRenderer extends EventEmitter implements RenderContext {
     // Split commits are row-oriented snapshots. We chunk by renderer width so each
     // commit maps to a single logical terminal row append operation.
     const chunkWidth = Math.max(1, this.width)
-    for (const row of this.splitStdoutRows(text)) {
-      const rowCells = [...row.line]
-      if (rowCells.length === 0) {
-        // Preserve empty-line writes: newline-only chunks still need a commit so
-        // split scrollback state advances correctly in native code.
-        commits.push(this.createStdoutSnapshotCommit("", row.trailingNewline))
-        continue
+    const append = (line: string, trailingNewline: boolean): void => {
+      if (commits.length >= this.nativeSession.maxSnapshotCount - this.externalOutputQueue.size) {
+        throw new Error("Scrollback snapshot queue capacity exceeded")
+      }
+      commits.push(this.createStdoutSnapshotCommit(line, trailingNewline))
+    }
+    try {
+      for (const row of this.splitStdoutRows(text)) {
+        const rowCells = [...row.line]
+        if (rowCells.length === 0) {
+          // Preserve empty-line writes: newline-only chunks still need a commit so
+          // split scrollback state advances correctly in native code.
+          append("", row.trailingNewline)
+          continue
+        }
+
+        let offset = 0
+        while (offset < rowCells.length) {
+          const chunk = rowCells.slice(offset, offset + chunkWidth).join("")
+          offset += chunkWidth
+          const isLastChunk = offset >= rowCells.length
+          // Only the final wrapped chunk carries newline intent.
+          append(chunk, isLastChunk ? row.trailingNewline : false)
+        }
       }
 
-      let offset = 0
-      while (offset < rowCells.length) {
-        const chunk = rowCells.slice(offset, offset + chunkWidth).join("")
-        offset += chunkWidth
-        const isLastChunk = offset >= rowCells.length
-        // Only the final wrapped chunk carries newline intent.
-        commits.push(this.createStdoutSnapshotCommit(chunk, isLastChunk ? row.trailingNewline : false))
-      }
+      return commits
+    } catch (error) {
+      for (const commit of commits) commit.snapshot.destroy()
+      throw error
     }
-
-    return commits
-  }
-
-  private flushPendingSplitCommits(
-    forceFooterRepaint: boolean = false,
-    drainAll: boolean = false,
-  ): "rendered" | "backpressured" | "failed" {
-    // Drain only a bounded prefix so one JS render pass maps to one native frame.
-    // Remaining commits are intentionally left queued and rendered on subsequent
-    // ticks to avoid giant multi-thousand-cell frames that can flicker.
-    const commits = this.externalOutputQueue.peek(drainAll ? Number.POSITIVE_INFINITY : this.maxSplitCommitsPerFrame)
-    let hasCommittedOutput = false
-    const lastCommitIndex = commits.length - 1
-    let acceptedCommits = 0
-    let nativeBackpressured = false
-    let nativeFailed = false
-    let nextRenderOffset = this.renderOffset
-
-    for (const [index, commit] of commits.entries()) {
-      // Force repaint only on the last commit in a frame. Repainting after every
-      // chunk negates batching and reintroduces duplicate clear/move traffic.
-      const forceCommit = forceFooterRepaint && index === lastCommitIndex
-      // beginFrame/finalizeFrame tell native code whether this commit opens or
-      // closes the shared frame envelope. Intermediate commits append payload only.
-      const beginFrame = index === 0
-      const finalizeFrame = index === lastCommitIndex
-
-      // Keep split append policy in native code so every producer (captured stdout
-      // and writeToScrollback) shares the same cursor/scrollback invariants.
-      const nativeResult = this.lib.commitSplitFooterSnapshot(
-        this.rendererPtr,
-        commit.snapshot,
-        commit.rowColumns,
-        commit.startOnNewLine,
-        commit.trailingNewline,
-        this.getSplitPinnedRenderOffset(),
-        forceCommit,
-        beginFrame,
-        finalizeFrame,
-        drainAll,
-      )
-      if (nativeResult.status === NATIVE_RENDER_STATUS_SKIPPED) {
-        nativeBackpressured = true
-        break
-      }
-
-      if (nativeResult.status === NATIVE_RENDER_STATUS_FAILED) {
-        nativeFailed = true
-        break
-      }
-
-      nextRenderOffset = nativeResult.renderOffset
-      hasCommittedOutput = true
-      acceptedCommits++
-    }
-
-    if (nativeFailed) {
-      return this.reportNativeRenderFailure()
-    }
-
-    if (nativeBackpressured) {
-      this.scheduleRenderAfterFeedIdle()
-      return "backpressured"
-    }
-
-    if (acceptedCommits > 0) {
-      this.renderOffset = nextRenderOffset
-      for (const commit of commits.slice(0, acceptedCommits)) this.recordSplitCommit(commit)
-      this.externalOutputQueue.drop(acceptedCommits)
-    }
-
-    if (!hasCommittedOutput) {
-      const nativeResult = this.lib.repaintSplitFooter(
-        this.rendererPtr,
-        this.getSplitPinnedRenderOffset(),
-        forceFooterRepaint,
-      )
-      if (nativeResult.status === NATIVE_RENDER_STATUS_SKIPPED) {
-        this.scheduleRenderAfterFeedIdle()
-        return "backpressured"
-      }
-      if (nativeResult.status === NATIVE_RENDER_STATUS_FAILED) {
-        return this.reportNativeRenderFailure()
-      }
-      this.renderOffset = nativeResult.renderOffset
-    }
-
-    this.pendingSplitFooterTransition = null
-
-    if (this.externalOutputQueue.size > 0) {
-      // Preserve FIFO ordering without doing unbounded work in one tick.
-      // This keeps sustained stdout bursts smooth instead of blocking on one frame.
-      this.requestRender()
-    } else {
-      this.applyPendingExternalOutputModeIfReady()
-    }
-
-    return "rendered"
   }
 
   private interceptStdoutWrite = (chunk: any, encoding?: any, callback?: any): boolean => {
@@ -2833,8 +2798,13 @@ export class CliRenderer extends EventEmitter implements RenderContext {
       // instead of writing directly to process stdout. Native flushing will append
       // and repaint in one controlled frame, which is what avoids footer flicker.
       const commits = this.createStdoutSnapshotCommits(text)
-      for (const commit of commits) {
-        this.enqueueSplitCommit(commit)
+      try {
+        this.enqueueSplitCommits(commits)
+      } catch (error) {
+        for (const commit of commits) {
+          if (!this.externalOutputQueue.owns(commit.snapshot)) commit.snapshot.destroy()
+        }
+        throw error
       }
 
       if (commits.length > 0) {
@@ -2855,7 +2825,7 @@ export class CliRenderer extends EventEmitter implements RenderContext {
   }
 
   private getSplitCursorSeedRows(): number {
-    const cursorState = this.lib.getCursorState(this.rendererPtr)
+    const cursorState = this.getCursorState()
     const cursorRow = Number.isFinite(cursorState.y) ? Math.max(Math.trunc(cursorState.y), 1) : 1
     return Math.min(cursorRow, Math.max(this._terminalHeight, 1))
   }
@@ -2867,14 +2837,6 @@ export class CliRenderer extends EventEmitter implements RenderContext {
       this._splitHeight > 0 &&
       this.pendingSplitStartupCursorSeed &&
       this.splitStartupSeedTimeoutId !== null
-    )
-  }
-
-  private canFlushSplitOutputBeforeTransition(allowSuspended: boolean = false, allowUnsetup: boolean = false): boolean {
-    return (
-      (this._terminalIsSetup || allowUnsetup) &&
-      (allowSuspended || this._controlState !== RendererControlState.EXPLICIT_SUSPENDED) &&
-      !this.isSplitCursorSeedFrameBlocked()
     )
   }
 
@@ -2892,42 +2854,27 @@ export class CliRenderer extends EventEmitter implements RenderContext {
     this.updateStdinParserProtocolContext({ startupCursorCprActive: false })
   }
 
-  private flushPendingSplitOutputBeforeTransition(
-    forceFooterRepaint: boolean = false,
-    options: { allowSuspended?: boolean; allowPassthrough?: boolean; allowUnsetup?: boolean } = {},
-  ): void {
-    const hasDeferredCapturedOutput = this.externalOutputQueue.size > 0 || this.pendingExternalOutputMode !== null
-    if (
-      this._screenMode !== "split-footer" ||
-      this._splitHeight <= 0 ||
-      (this._externalOutputMode !== "capture-stdout" && !(options.allowPassthrough && hasDeferredCapturedOutput))
-    ) {
-      return
-    }
-
-    if (!this.canFlushSplitOutputBeforeTransition(options.allowSuspended ?? false, options.allowUnsetup ?? false)) {
-      return
-    }
-
-    if (this.externalOutputQueue.size === 0 && !forceFooterRepaint) {
-      this.applyPendingExternalOutputModeIfReady()
-      return
-    }
-
-    this.flushPendingSplitCommits(this._externalOutputMode === "capture-stdout" ? forceFooterRepaint : false, true)
-  }
-
   private resetSplitScrollback(seedRows: number = 0): void {
+    this.renderOffset = this.lib.sessionSplitControl(this.nativeSession.context, this.nativeSession.session, {
+      kind: "reset",
+      seedRows,
+      pinnedRenderOffset: this.getSplitPinnedRenderOffset(),
+    })
     this.splitTailColumn = 0
-    this.renderOffset = this.lib.resetSplitScrollback(this.rendererPtr, seedRows, this.getSplitPinnedRenderOffset())
   }
 
   private syncSplitScrollback(): void {
-    this.renderOffset = this.lib.syncSplitScrollback(this.rendererPtr, this.getSplitPinnedRenderOffset())
+    this.renderOffset = this.lib.sessionSplitControl(this.nativeSession.context, this.nativeSession.session, {
+      kind: "sync",
+      pinnedRenderOffset: this.getSplitPinnedRenderOffset(),
+    })
   }
 
   private getSplitOutputOffset(surfaceOffset: number = this.renderOffset): number {
-    return this.lib.getSplitOutputOffset(this.rendererPtr, surfaceOffset)
+    return this.lib.sessionSplitControl(this.nativeSession.context, this.nativeSession.session, {
+      kind: "output-offset",
+      surfaceOffset,
+    })
   }
 
   private clearPendingSplitFooterTransition(): void {
@@ -2935,21 +2882,24 @@ export class CliRenderer extends EventEmitter implements RenderContext {
       return
     }
 
+    this.lib.sessionSplitControl(this.nativeSession.context, this.nativeSession.session, { kind: "clear-transition" })
     this.pendingSplitFooterTransition = null
-    this.lib.clearPendingSplitFooterTransition(this.rendererPtr)
   }
 
   private setPendingSplitFooterTransition(transition: PendingSplitFooterTransition): void {
+    this.lib.sessionSplitControl(this.nativeSession.context, this.nativeSession.session, {
+      kind: "transition",
+      ...transition,
+    })
     this.pendingSplitFooterTransition = transition
-    this.lib.setPendingSplitFooterTransition(
-      this.rendererPtr,
-      transition.mode === "viewport-scroll" ? 1 : 2,
-      transition.sourceTopLine,
-      transition.sourceHeight,
-      transition.targetTopLine,
-      transition.targetHeight,
-      transition.scrollLines ?? 0,
-    )
+  }
+
+  private setRenderOffset(offset: number): void {
+    this.lib.sessionSplitControl(this.nativeSession.context, this.nativeSession.session, {
+      kind: "render-offset",
+      renderOffset: offset,
+    })
+    this.renderOffset = offset
   }
 
   private syncSplitFooterState(): void {
@@ -2958,9 +2908,8 @@ export class CliRenderer extends EventEmitter implements RenderContext {
     if (!splitActive) {
       this.clearPendingSplitFooterTransition()
       this.splitTailColumn = 0
-      this.lib.resetSplitScrollback(this.rendererPtr, 0, 0)
-      this.renderOffset = 0
-      this.lib.setRenderOffset(this.rendererPtr, this.renderOffset)
+      this.resetSplitScrollback()
+      this.setRenderOffset(0)
       return
     }
 
@@ -2969,20 +2918,19 @@ export class CliRenderer extends EventEmitter implements RenderContext {
     } else {
       this.clearPendingSplitFooterTransition()
       this.splitTailColumn = 0
-      this.lib.resetSplitScrollback(this.rendererPtr, 0, 0)
-      this.renderOffset = this.getSplitPinnedRenderOffset()
-      this.lib.setRenderOffset(this.rendererPtr, this.renderOffset)
+      this.resetSplitScrollback()
+      this.setRenderOffset(this.getSplitPinnedRenderOffset())
     }
   }
 
-  private clearStaleSplitSurfaceRows(
+  private getStaleSplitSurfaceClear(
     previousTopLine: number,
     previousHeight: number,
     nextTopLine: number,
     nextHeight: number,
-  ): void {
+  ): string {
     if (!this._terminalIsSetup || previousHeight <= 0 || this._terminalHeight <= 0) {
-      return
+      return ""
     }
 
     const terminalBottom = this._terminalHeight
@@ -2990,7 +2938,7 @@ export class CliRenderer extends EventEmitter implements RenderContext {
     const previousEnd = Math.min(terminalBottom, previousTopLine + previousHeight - 1)
 
     if (previousEnd < previousStart) {
-      return
+      return ""
     }
 
     const nextStart = Math.max(1, nextTopLine)
@@ -3005,23 +2953,39 @@ export class CliRenderer extends EventEmitter implements RenderContext {
       clear += `${ANSI.moveCursor(line, 1)}\x1b[2K`
     }
 
-    if (clear.length > 0) {
-      this.writeOut(clear)
-    }
+    return clear
   }
 
-  private applyScreenMode(screenMode: ScreenMode, emitResize: boolean = true, requestRender: boolean = true): void {
+  private applyScreenMode(
+    screenMode: ScreenMode,
+    emitResize: boolean = true,
+    requestRender: boolean = true,
+    footerHeight: number = this._footerHeight,
+  ): void {
+    if (this._isDestroyed) return
+    if (this.nativeTerminalTransition && this._screenMode !== screenMode) {
+      throw new Error("Cannot change native scene screen mode during a terminal transition")
+    }
+    if (this._screenMode === "split-footer" && screenMode !== "split-footer") {
+      this.abortSplitStartupCursorSeed()
+    }
+    if (
+      this.rendering ||
+      (this._screenMode === "split-footer" && this.externalOutputQueue.size > 0) ||
+      this.nativeTerminalTransition
+    ) {
+      this.pendingNativeMode = { screenMode, footerHeight }
+      this.requestRender()
+      return
+    }
     const prevScreenMode = this._screenMode
     const prevSplitHeight = this._splitHeight
-    const nextGeometry = calculateRenderGeometry(
-      screenMode,
-      this._terminalWidth,
-      this._terminalHeight,
-      this._footerHeight,
-    )
+    const nextGeometry = calculateRenderGeometry(screenMode, this._terminalWidth, this._terminalHeight, footerHeight)
     const nextSplitHeight = nextGeometry.effectiveFooterHeight
 
     if (prevScreenMode === screenMode && prevSplitHeight === nextSplitHeight) {
+      this._footerHeight = footerHeight
+      this.pendingNativeMode = null
       return
     }
 
@@ -3030,10 +2994,6 @@ export class CliRenderer extends EventEmitter implements RenderContext {
     const nextUseAlternateScreen = screenMode === "alternate-screen"
     const terminalScreenModeChanged = this._terminalIsSetup && prevUseAlternateScreen !== nextUseAlternateScreen
     const leavingSplitFooter = prevSplitHeight > 0 && nextSplitHeight === 0
-
-    if (terminalWritable && prevSplitHeight > 0) {
-      this.flushPendingSplitOutputBeforeTransition()
-    }
 
     const previousSurfaceTopLine = this.renderOffset + 1
     const shouldDeferSplitFooterResizeTransition =
@@ -3103,37 +3063,53 @@ export class CliRenderer extends EventEmitter implements RenderContext {
       splitFooterSurfaceLeavesStaleRows &&
       nextSplitHeight > 0
 
-    if (terminalWritable && leavingSplitFooter) {
-      this.clearPendingSplitFooterTransition()
-      this.renderOffset = 0
-      this.lib.setRenderOffset(this.rendererPtr, 0)
-    }
-
+    let scrollOutput = ""
     if (terminalWritable && !terminalScreenModeChanged && !shouldDeferSplitFooterResizeTransition) {
       if (prevSplitHeight === 0 && nextSplitHeight > 0) {
-        const freedLines = this._terminalHeight - nextSplitHeight
-        const scrollDown = ANSI.scrollDown(freedLines)
-        this.writeOut(scrollDown)
+        scrollOutput = ANSI.scrollDown(this._terminalHeight - nextSplitHeight)
       } else if (splitViewportScrollLines > 0) {
-        const additionalLines = splitViewportScrollLines
-        const scrollUp = ANSI.scrollUp(additionalLines)
-        this.writeOut(scrollUp)
+        scrollOutput = ANSI.scrollUp(splitViewportScrollLines)
       }
     }
+    const clearOutput =
+      terminalWritable && leavingSplitFooter && !terminalScreenModeChanged
+        ? ANSI.moveCursorAndClear(splitTransitionSourceTopLine, 1)
+        : shouldClearSplitSurfaceRowsImmediately
+          ? this.getStaleSplitSurfaceClear(
+              splitTransitionSourceTopLine,
+              splitTransitionSourceHeight,
+              this._externalOutputMode === "capture-stdout" ? splitTransitionTargetTopLine : nextPinnedRenderOffset + 1,
+              nextSplitHeight,
+            )
+          : ""
 
+    this.nativeSession.setScreen(
+      nextUseAlternateScreen,
+      nextGeometry.renderWidth,
+      nextGeometry.renderHeight,
+      this.lib.encoder.encode(scrollOutput + clearOutput),
+    )
+
+    // Custom stdout writes can synchronously inspect the renderer and its buffers.
     this._screenMode = screenMode
+    this._footerHeight = footerHeight
     this._splitHeight = nextSplitHeight
     this.width = nextGeometry.renderWidth
     this.height = nextGeometry.renderHeight
+    this.pendingNativeMode = null
 
-    this.lib.resizeRenderer(this.rendererPtr, this.width, this.height)
+    if (terminalWritable && leavingSplitFooter) {
+      this.clearPendingSplitFooterTransition()
+      this.renderOffset = 0
+      this.setRenderOffset(0)
+    }
 
     if (this._screenMode === "split-footer" && this._externalOutputMode === "capture-stdout") {
       if (prevScreenMode !== "split-footer") {
         this.resetSplitScrollback(this.getSplitCursorSeedRows())
       } else {
         this.renderOffset = nextSplitSurfaceOffset
-        this.lib.setRenderOffset(this.rendererPtr, this.renderOffset)
+        this.setRenderOffset(this.renderOffset)
       }
 
       if (shouldDeferSplitFooterResizeTransition) {
@@ -3150,48 +3126,15 @@ export class CliRenderer extends EventEmitter implements RenderContext {
           })
         }
         this.forceFullRepaintRequested = true
-      } else if (shouldClearSplitSurfaceRowsImmediately) {
-        this.clearPendingSplitFooterTransition()
-        this.clearStaleSplitSurfaceRows(
-          splitTransitionSourceTopLine,
-          splitTransitionSourceHeight,
-          splitTransitionTargetTopLine,
-          nextSplitHeight,
-        )
       } else {
         this.clearPendingSplitFooterTransition()
       }
     } else {
       this.syncSplitFooterState()
-      if (shouldClearSplitSurfaceRowsImmediately) {
-        this.clearStaleSplitSurfaceRows(
-          splitTransitionSourceTopLine,
-          splitTransitionSourceHeight,
-          this.renderOffset + 1,
-          nextSplitHeight,
-        )
-      }
     }
-
-    this.nextRenderBuffer = this.lib.getNextBuffer(this.rendererPtr)
-    this.currentRenderBuffer = this.lib.getCurrentBuffer(this.rendererPtr)
 
     this._console.resize(this.width, this.height)
     this.root.resize(this.width, this.height)
-
-    if (terminalScreenModeChanged) {
-      if (terminalWritable) {
-        this.lib.suspendRenderer(this.rendererPtr)
-        this.lib.setupTerminal(this.rendererPtr, nextUseAlternateScreen)
-        this.pendingSuspendedTerminalSetup = false
-      } else {
-        this.pendingSuspendedTerminalSetup = true
-      }
-
-      if (terminalWritable && this._useMouse) {
-        this.enableMouse()
-      }
-    }
 
     if (emitResize) {
       this.emit(CliRenderEvents.RESIZE, this.width, this.height)
@@ -3202,88 +3145,102 @@ export class CliRenderer extends EventEmitter implements RenderContext {
     }
   }
 
-  // TODO: Move this to native
-  private flushStdoutCache(space: number, force: boolean = false): boolean {
-    if (this.externalOutputQueue.size === 0 && !force) return false
-
-    const outputCommits = this.externalOutputQueue.claim()
-    let output = ""
-    for (const commit of outputCommits) {
-      output += `[snapshot ${commit.snapshot.width}x${commit.snapshot.height}]\n`
-      commit.snapshot.destroy()
-    }
-
-    const rendererStartLine = this.renderOffset + 1
-    const flush = ANSI.moveCursorAndClear(rendererStartLine, 1)
-
-    const outputLine = this.renderOffset + 1
-    const move = ANSI.moveCursor(outputLine, 1)
-
-    let clear = ""
-    if (space > 0) {
-      const backgroundColor = this.backgroundColor.toInts()
-      const newlines = " ".repeat(this.width) + "\n".repeat(space)
-      // Check if background is transparent (alpha = 0)
-      if (backgroundColor[3] === 0) {
-        clear = newlines
-      } else {
-        clear =
-          ANSI.setRgbBackground(backgroundColor[0], backgroundColor[1], backgroundColor[2]) +
-          newlines +
-          ANSI.resetBackground
+  private applyPendingNativeMode(): void {
+    if (this._isDestroyed || this.rendering || this.nativeSplitFlush) return
+    try {
+      if (this.pendingNativeReplay?.remaining === 0) this.applySplitFooterReplayReset(this.pendingNativeReplay.options)
+      if (this.pendingExternalOutputMode === "capture-stdout" && this._screenMode === "split-footer") {
+        this.applyPendingExternalOutputModeIfReady()
       }
+      if (this._screenMode === "split-footer" && this.externalOutputQueue.size > 0) return
+      if (this.pendingExternalOutputMode === "passthrough") this.applyPendingExternalOutputModeIfReady()
+      const mode = this.pendingNativeMode
+      if (mode) this.applyScreenMode(mode.screenMode, true, true, mode.footerHeight)
+      if (!this.pendingNativeMode) this.applyPendingExternalOutputModeIfReady()
+    } catch (error) {
+      if (
+        error instanceof NativeError &&
+        (error.status === NativeStatus.OutputBusy || error.status === NativeStatus.OutputBackpressure)
+      ) {
+        this.scheduleRenderAfterOutputIdle()
+      } else throw error
     }
-
-    this.writeOut(flush + move + output + clear)
-
-    return true
   }
 
   private enableMouse(): void {
+    if (this._terminalIsSetup)
+      this.nativeSession.control({ kind: "mouse", mode: this.enableMouseMovement ? "motion" : "drag" })
     this._useMouse = true
-    this.lib.enableMouse(this.rendererPtr, this.enableMouseMovement)
   }
 
   private disableMouse(): void {
+    if (this._terminalIsSetup && !this._isDestroyed && this._controlState !== RendererControlState.EXPLICIT_SUSPENDED) {
+      this.nativeSession.control({ kind: "mouse", mode: "disabled" })
+    }
     this._useMouse = false
     this.setCapturedRenderable(undefined)
     this.stdinParser?.resetMouseState()
-    this.lib.disableMouse(this.rendererPtr)
   }
 
   public enableKittyKeyboard(flags: number = 0b00011): void {
-    this.lib.enableKittyKeyboard(this.rendererPtr, flags)
-    this.updateStdinParserProtocolContext({ kittyKeyboardEnabled: true })
+    if (this.nativeTerminalTransition || this._controlState === RendererControlState.EXPLICIT_SUSPENDED) {
+      throw new Error("Cannot change native scene Kitty modes during a terminal transition or suspension")
+    }
+    if (!Number.isInteger(flags) || flags < 0 || flags > 31)
+      throw new RangeError("Native scene Kitty flags must be in 0..31")
+    if (this._terminalIsSetup) this.nativeSession.control({ kind: "kitty-keyboard-flags", flags })
+    this.nativeKittyKeyboardFlags = flags
+    this.updateStdinParserProtocolContext({ kittyKeyboardEnabled: flags !== 0 })
   }
 
   public disableKittyKeyboard(): void {
-    this.lib.disableKittyKeyboard(this.rendererPtr)
+    if (this.nativeTerminalTransition || this._controlState === RendererControlState.EXPLICIT_SUSPENDED) {
+      throw new Error("Cannot change native scene Kitty modes during a terminal transition or suspension")
+    }
+    if (this._terminalIsSetup) this.nativeSession.control({ kind: "kitty-keyboard-flags", flags: 0 })
+    this.nativeKittyKeyboardFlags = 0
     this.updateStdinParserProtocolContext({ kittyKeyboardEnabled: false }, true)
-  }
-
-  public set useThread(useThread: boolean) {
-    this._useThread = useThread
-    this.lib.setUseThread(this.rendererPtr, useThread)
   }
 
   // TODO: All input management may move to native when zig finally has async io support again,
   // without rolling a full event loop
   public async setupTerminal(): Promise<void> {
     if (this._terminalIsSetup) return
-    this._terminalIsSetup = true
+    if (this.nativeTerminalTransition) return this.nativeTerminalTransition
 
     const startupCursorCprActive = this._screenMode === "split-footer" && this._externalOutputMode === "capture-stdout"
+    this.pendingSplitStartupCursorSeed = startupCursorCprActive
     this.updateStdinParserProtocolContext({
       privateCapabilityRepliesActive: true,
       explicitWidthCprActive: true,
       startupCursorCprActive,
     })
-    this.startKittyTransportPolling()
-    this.lib.setupTerminal(this.rendererPtr, this._screenMode === "alternate-screen")
-    this._capabilities = this.lib.getTerminalCapabilities(this.rendererPtr)
+    try {
+      await this.trackNativeTerminalTransition(
+        this.nativeSession.setupTerminal({
+          useAlternateScreen: this._screenMode === "alternate-screen",
+          mouse: this._useMouse,
+          mouseMovement: this.enableMouseMovement,
+          kittyKeyboardFlags: this.nativeKittyKeyboardFlags,
+          clearOnClose: this.clearOnShutdown,
+        }),
+        () => {
+          if (this._isDestroyed) return
+          this._terminalIsSetup = true
+          this._capabilities = this.nativeSession.getCapabilities()
+          this.startKittyTransportPolling()
+          this.nativeSession.startKittyFileProbe()
+        },
+      )
+    } catch (error) {
+      this.abortSplitStartupCursorSeed()
+      this.updateStdinParserProtocolContext({ privateCapabilityRepliesActive: false, explicitWidthCprActive: false })
+      throw error
+    }
+    if (this._isDestroyed) return
 
     if (this.debugOverlay.enabled) {
-      this.lib.setDebugOverlay(this.rendererPtr, true, this.debugOverlay.corner)
+      this.configureDebugOverlay({})
       if (!this.memorySnapshotInterval) {
         this.memorySnapshotInterval = 3000
         this.startMemorySnapshotTimer()
@@ -3311,13 +3268,7 @@ export class CliRenderer extends EventEmitter implements RenderContext {
       this.resolveXtVersionWaiters()
     }, 5000)
 
-    if (this._useMouse) {
-      this.enableMouse()
-    }
-
-    if (this._screenMode === "split-footer" && this._externalOutputMode === "capture-stdout") {
-      this.pendingSplitStartupCursorSeed = true
-
+    if (this.pendingSplitStartupCursorSeed) {
       if (this.splitStartupSeedTimeoutId !== null) {
         this.clock.clearTimeout(this.splitStartupSeedTimeoutId)
       }
@@ -3335,7 +3286,7 @@ export class CliRenderer extends EventEmitter implements RenderContext {
           this.requestRender()
         }
 
-        this.flushPendingSplitOutputBeforeTransition(false, { allowPassthrough: true })
+        if (this.externalOutputQueue.size > 0) this.requestRender()
       }, 120)
     }
 
@@ -3343,13 +3294,22 @@ export class CliRenderer extends EventEmitter implements RenderContext {
     if (this.shouldSyncNativePaletteState()) {
       this.refreshPalette()
     }
+  }
 
-    // Feed-backed startup writes are async relative to the JS Writable. Wait
-    // until they drain so callers can safely destroy immediately after
-    // createCliRenderer() resolves.
-    if (this._feed?.isBackpressured()) {
-      await this._feed.idle()
-    }
+  private trackNativeTerminalTransition(transition: Promise<void>, complete?: () => void): Promise<void> {
+    // Publish host state before releasing the option guard or the caller's wait.
+    const tracked = transition
+      .then(() => complete?.())
+      .finally(() => {
+        if (this.nativeTerminalTransition === tracked) this.nativeTerminalTransition = null
+        this.applyPendingNativeResize()
+        this.resolveIdleIfNeeded()
+      })
+    this.nativeTerminalTransition = tracked
+    void tracked.catch((error) => {
+      if (!this._isDestroyed) this.handleError(error instanceof Error ? error : new Error(String(error)))
+    })
+    return tracked
   }
 
   private stdinListener: (chunk: Buffer | string) => void = ((chunk: Buffer | string) => {
@@ -3396,14 +3356,25 @@ export class CliRenderer extends EventEmitter implements RenderContext {
   private processCapabilitySequence(sequence: string, hasCursorReport: boolean): boolean {
     const hasStandardCapabilitySignature = isCapabilityResponse(sequence)
     const shouldProcessAsCapability =
-      hasStandardCapabilitySignature || (hasCursorReport && this.capabilityTimeoutId !== null)
+      hasStandardCapabilitySignature ||
+      (hasCursorReport && (this.capabilityTimeoutId !== null || this.nativeTerminalTransition !== null))
 
     if (!shouldProcessAsCapability) {
       return false
     }
 
-    this.lib.processCapabilityResponse(this.rendererPtr, sequence)
-    this._capabilities = this.lib.getTerminalCapabilities(this.rendererPtr)
+    const transition = hasCursorReport && this.pendingSplitStartupCursorSeed ? this.pendingSplitFooterTransition : null
+    // Native controls require idle split state; a rejected reply must retain the transition.
+    if (transition) this.clearPendingSplitFooterTransition()
+    try {
+      this.nativeSession.control({ kind: "capability-response", bytes: Buffer.from(sequence) })
+    } catch (error) {
+      if (error instanceof NativeError && error.status === NativeStatus.InvalidPhase) return false
+      throw error
+    } finally {
+      if (transition) this.setPendingSplitFooterTransition(transition)
+    }
+    this._capabilities = this.nativeSession.getCapabilities()
     if (this._capabilities?.terminal?.from_xtversion) {
       this.resolveXtVersionWaiters()
     }
@@ -3427,9 +3398,6 @@ export class CliRenderer extends EventEmitter implements RenderContext {
       this.updateStdinParserProtocolContext({ startupCursorCprActive: false })
 
       this.requestRender()
-      if (this.pendingExternalOutputMode === "passthrough") {
-        this.flushPendingSplitOutputBeforeTransition()
-      }
     }
 
     const consumeStartupCursorReport =
@@ -3449,7 +3417,7 @@ export class CliRenderer extends EventEmitter implements RenderContext {
       // mouse tracking, bracketed paste, and focus tracking itself while the
       // window was unfocused.
       if (this.shouldRestoreModesOnNextFocus) {
-        this.lib.restoreTerminalModes(this.rendererPtr)
+        this.nativeSession.control({ kind: "restore-modes" })
         this.shouldRestoreModesOnNextFocus = false
       }
       if (this._terminalFocusState !== true) {
@@ -3497,10 +3465,21 @@ export class CliRenderer extends EventEmitter implements RenderContext {
   private handleStdinEvent(event: StdinEvent): void {
     // Native resume can publish probes before the JS control state is restored.
     if (event.type === "response" && event.sequence.startsWith("\x1b_G")) {
-      const result = this.lib.processKittyImageReply(this.rendererPtr, event.sequence)
-      if (result !== 0) {
-        if (result === 2) this.requestRender()
-        return
+      try {
+        const result = this.nativeSession.processKittyImageReply(Buffer.from(event.sequence))
+        if (result !== 0) {
+          if (result === 2) this.requestRender()
+          return
+        }
+      } catch (error) {
+        if (
+          !(error instanceof NativeError) ||
+          (error.status !== NativeStatus.SessionClosed &&
+            error.status !== NativeStatus.StaleHandle &&
+            error.status !== NativeStatus.RendererNotAttached)
+        ) {
+          throw error
+        }
       }
     }
     if (this._controlState === RendererControlState.EXPLICIT_SUSPENDED) {
@@ -3575,12 +3554,23 @@ export class CliRenderer extends EventEmitter implements RenderContext {
           this.queryPixelResolution()
           return true
         }
-        const resolution = parsePixelResolution(sequence)
-        if (resolution) {
-          this._resolution = resolution
-          this.requestRender()
+        try {
+          const resolution = parsePixelResolution(sequence)
+          if (resolution) {
+            this.lib.sessionSetImageResolution(
+              this.nativeSession.context,
+              this.nativeSession.session,
+              this._terminalWidth,
+              this._terminalHeight,
+              resolution.width,
+              resolution.height,
+            )
+            this._resolution = resolution
+            this.requestRender()
+          }
+        } finally {
+          this.updateStdinParserProtocolContext({ pixelResolutionQueryActive: false }, true)
         }
-        this.updateStdinParserProtocolContext({ pixelResolutionQueryActive: false }, true)
         return true
       }
       return false
@@ -3604,6 +3594,7 @@ export class CliRenderer extends EventEmitter implements RenderContext {
   ): MouseEvent {
     const event = new MouseEvent(target, attributes)
     this.sendMouseEvent(target, event)
+    if (this._isDestroyed || target.isDestroyed) return event
 
     if (this.autoFocus && event.type === "down" && event.button === MouseButton.LEFT && !event.defaultPrevented) {
       let current: Renderable | null = target
@@ -3620,6 +3611,7 @@ export class CliRenderer extends EventEmitter implements RenderContext {
   }
 
   private sendMouseEvent(target: Renderable, event: MouseEvent): void {
+    if (this._isDestroyed || target.isDestroyed) return
     try {
       target.processMouseEvent(event)
     } catch (error) {
@@ -3847,40 +3839,30 @@ export class CliRenderer extends EventEmitter implements RenderContext {
       const event = new MouseEvent(lastOver, { ...baseEvent, type: "out" })
       this.sendMouseEvent(lastOver, event)
     }
+    if (this._isDestroyed || this.capturedRenderable || this.lastOverRenderable !== lastOver) return
 
-    this.lastOverRenderable = hitRenderable
-    this.lastOverRenderableNum = hitId
+    this.lastOverRenderable = hitRenderable?.isDestroyed ? undefined : hitRenderable
+    this.lastOverRenderableNum = this.lastOverRenderable?.num ?? 0
 
     // Fire over on new element
-    if (hitRenderable) {
+    if (hitRenderable && !hitRenderable.isDestroyed) {
       const event = new MouseEvent(hitRenderable, {
         ...baseEvent,
         type: "over",
       })
       this.sendMouseEvent(hitRenderable, event)
+      if (this.lastOverRenderable === hitRenderable && (this._isDestroyed || hitRenderable.isDestroyed)) {
+        this.lastOverRenderable = undefined
+        this.lastOverRenderableNum = 0
+      }
     }
   }
   public setMousePointer(style: MousePointerStyle): void {
-    this._currentMousePointerStyle = style
-    this.lib.setCursorStyleOptions(this.rendererPtr, { cursor: style })
+    this.setCursorStyle({ cursor: style })
   }
 
   public hitTest(x: number, y: number): number {
-    return this.lib.checkHit(this.rendererPtr, x, y)
-  }
-
-  public getLinkIdAt(x: number, y: number): number {
-    if (this._isDestroyed || !Number.isInteger(x) || !Number.isInteger(y)) return 0
-
-    const buffer = this.currentRenderBuffer
-    if (x < 0 || y < 0 || x >= buffer.width || y >= buffer.height) return 0
-
-    return getLinkId(buffer.buffers.attributes[y * buffer.width + x])
-  }
-
-  public getLinkAt(x: number, y: number): string | null {
-    const linkId = this.getLinkIdAt(x, y)
-    return linkId === 0 ? null : this.currentRenderBuffer.lib.linkGetUrl(linkId) || null
+    return this.nativeScene.hitTest(x, y)
   }
 
   private takeMemorySnapshot(): void {
@@ -3893,8 +3875,9 @@ export class CliRenderer extends EventEmitter implements RenderContext {
       arrayBuffers: memoryUsage.arrayBuffers,
     }
 
-    this.lib.updateMemoryStats(
-      this.rendererPtr,
+    this.lib.sessionUpdateMemoryStats(
+      this.nativeSession.context,
+      this.nativeSession.session,
       this.lastMemorySnapshot.heapUsed,
       this.lastMemorySnapshot.heapTotal,
       this.lastMemorySnapshot.arrayBuffers,
@@ -3929,10 +3912,12 @@ export class CliRenderer extends EventEmitter implements RenderContext {
     }
   }
 
-  private handleResize(width: number, height: number): void {
+  /** Queue a debounced resize intent. RESIZE is emitted only after the latest size is accepted. */
+  public requestResize(width: number, height: number): void {
     if (this._isDestroyed) return
+    this.pendingNativeResize = { width, height }
     if (this._splitHeight > 0) {
-      this.processResize(width, height)
+      this.applyPendingNativeResize()
       return
     }
 
@@ -3943,28 +3928,112 @@ export class CliRenderer extends EventEmitter implements RenderContext {
 
     this.resizeTimeoutId = this.clock.setTimeout(() => {
       this.resizeTimeoutId = null
-      this.processResize(width, height)
+      this.applyPendingNativeResize()
     }, this.resizeDebounceDelay)
   }
 
-  private queryPixelResolution() {
+  private applyPendingNativeResize(): void {
+    const resize = this.pendingNativeResize
+    if (
+      !resize ||
+      this._isDestroyed ||
+      this.rendering ||
+      this.resizeTimeoutId !== null ||
+      this.nativeResizeWait ||
+      this.nativeTerminalTransition ||
+      this._controlState === RendererControlState.EXPLICIT_SUSPENDED
+    )
+      return
+    if (this.externalOutputQueue.size > 0 && !this.isSplitCursorSeedFrameBlocked()) {
+      this.requestRender()
+      return
+    }
+    try {
+      this.processResize(resize.width, resize.height)
+      if (this.pendingNativeResize === resize) this.pendingNativeResize = null
+    } catch (error) {
+      if (error instanceof NativeError && error.status === NativeStatus.InvalidPhase) return
+      if (error instanceof NativeError && error.status === NativeStatus.OutputBusy) {
+        // One wait per blocked resize. New terminal sizes replace the retained
+        // intent; frame finalization or resume handles an active renderer turn.
+        const wait = this.nativeSession.idle()
+        this.nativeResizeWait = wait
+        void wait.then(
+          () => {
+            this.nativeResizeWait = null
+            this.applyPendingNativeResize()
+            this.resolveIdleIfNeeded()
+          },
+          (error) => {
+            this.nativeResizeWait = null
+            this.pendingNativeResize = null
+            if (!this._isDestroyed) this.handleError(error instanceof Error ? error : new Error(String(error)))
+            this.resolveIdleIfNeeded()
+          },
+        )
+        return
+      }
+      if (this.pendingNativeResize === resize) this.pendingNativeResize = null
+      this.handleError(error instanceof Error ? error : new Error(String(error)))
+    }
+    this.resolveIdleIfNeeded()
+  }
+
+  private pixelResolutionRetry: Promise<void> | null = null
+
+  private queryPixelResolution(retry = true) {
     this.pixelResolutionRequeryPending = true
-    if (this._controlState === RendererControlState.EXPLICIT_SUSPENDED || this.waitingForPixelResolution) return
+    if (
+      this._isDestroyed ||
+      !this._terminalIsSetup ||
+      this._controlState === RendererControlState.EXPLICIT_SUSPENDED ||
+      this.waitingForPixelResolution ||
+      this.pixelResolutionRetry
+    )
+      return
     this.pixelResolutionRequeryPending = false
     this.waitingForPixelResolution = true
     this.updateStdinParserProtocolContext({ pixelResolutionQueryActive: true })
-    this.lib.queryPixelResolution(this.rendererPtr)
+    try {
+      this.nativeSession.control({ kind: "query-pixel-resolution" })
+    } catch (error) {
+      this.waitingForPixelResolution = false
+      this.pixelResolutionRequeryPending = true
+      this.updateStdinParserProtocolContext({ pixelResolutionQueryActive: false })
+      if (!(error instanceof NativeError)) throw error
+      if (error.status === NativeStatus.InvalidPhase) return
+      if (error.status !== NativeStatus.OutputBackpressure && error.status !== NativeStatus.OutputBusy) throw error
+      if (!retry) return
+      // One coalesced retry after output drains; further pressure retains intent for the next lifecycle query.
+      const wait = this.nativeSession.idle()
+      this.pixelResolutionRetry = wait
+      void wait.then(
+        () => {
+          this.pixelResolutionRetry = null
+          if (!this._isDestroyed && this.pixelResolutionRequeryPending) {
+            try {
+              this.queryPixelResolution(false)
+            } catch (error) {
+              this.handleError(error instanceof Error ? error : new Error(String(error)))
+            }
+          }
+        },
+        (error) => {
+          this.pixelResolutionRetry = null
+          if (!this._isDestroyed) this.handleError(error instanceof Error ? error : new Error(String(error)))
+        },
+      )
+    }
   }
 
   private processResize(width: number, height: number): void {
     if (width === this._terminalWidth && height === this._terminalHeight) return
 
-    if (
-      this._terminalIsSetup &&
-      this._controlState !== RendererControlState.EXPLICIT_SUSPENDED &&
-      !this.isSplitCursorSeedFrameBlocked()
-    ) {
-      this.flushPendingSplitOutputBeforeTransition()
+    const terminalWritable = this._terminalIsSetup && this._controlState !== RendererControlState.EXPLICIT_SUSPENDED
+    if (terminalWritable && !this.isSplitCursorSeedFrameBlocked() && this.externalOutputQueue.size > 0) {
+      this.pendingNativeResize = { width, height }
+      this.requestRender()
+      return
     }
 
     const pendingSplitFooterTransition = this.pendingSplitFooterTransition
@@ -3979,64 +4048,64 @@ export class CliRenderer extends EventEmitter implements RenderContext {
     const visiblePreviousSplitHeight =
       pendingSplitFooterTransition?.sourceHeight ?? previousGeometry.effectiveFooterHeight
 
-    this._terminalWidth = width
-    this._terminalHeight = height
-    this._resolution = null
-    this.queryPixelResolution()
-
-    this.setCapturedRenderable(undefined)
-    this.stdinParser?.resetMouseState()
-
-    const nextGeometry = calculateRenderGeometry(
-      this._screenMode,
-      this._terminalWidth,
-      this._terminalHeight,
-      this._footerHeight,
-    )
+    const nextGeometry = calculateRenderGeometry(this._screenMode, width, height, this._footerHeight)
     const splitFooterActive = this._screenMode === "split-footer"
-
-    if (splitFooterActive) {
-      // Width shrink historically needs a broader scrub band, but if resize interrupts
-      // a deferred footer transition we also need to clear from that visible source surface.
-      let clearStart: number | null = null
-
+    let clearStart: number | null = null
+    if (splitFooterActive && terminalWritable) {
+      // Width shrink needs a broader scrub band, including any deferred transition's visible source.
       if (width < prevWidth && visiblePreviousSplitHeight > 0) {
         clearStart = Math.max(previousTerminalHeight - visiblePreviousSplitHeight * 2, 1)
       }
-
       if (pendingSplitFooterTransition !== null) {
         clearStart =
           clearStart === null
             ? pendingSplitFooterTransition.sourceTopLine
             : Math.min(clearStart, pendingSplitFooterTransition.sourceTopLine)
       }
-
-      if (clearStart !== null) {
-        const flush = ANSI.moveCursorAndClear(clearStart, 1)
-        this.writeOut(flush)
-      }
-
-      this.currentRenderBuffer.clear(this.backgroundColor)
+    }
+    if (clearStart === null) this.nativeSession.resize(nextGeometry.renderWidth, nextGeometry.renderHeight)
+    else {
+      // Preserve the drain gate without publishing the target size before scrub admission.
+      this.nativeSession.resize(this.width, this.height)
+      this.nativeSession.setScreen(
+        this._screenMode === "alternate-screen",
+        nextGeometry.renderWidth,
+        nextGeometry.renderHeight,
+        this.lib.encoder.encode(ANSI.moveCursorAndClear(clearStart, 1)),
+      )
     }
 
-    this.clearPendingSplitFooterTransition()
+    if (nextGeometry.renderWidth !== this.width || nextGeometry.renderHeight !== this.height) {
+      this.nativeScene.restartPaint()
+    }
 
+    this._terminalWidth = width
+    this._terminalHeight = height
     this._splitHeight = nextGeometry.effectiveFooterHeight
     this.width = nextGeometry.renderWidth
     this.height = nextGeometry.renderHeight
 
-    this.lib.resizeRenderer(this.rendererPtr, this.width, this.height)
+    this._resolution = null
+    this.lib.sessionSetImageResolution(this.nativeSession.context, this.nativeSession.session, 0, 0, 0, 0)
+
+    this.setCapturedRenderable(undefined)
+    this.stdinParser?.resetMouseState()
+
+    if (splitFooterActive) {
+      this.forceFullRepaintRequested = true
+    }
+
+    this.clearPendingSplitFooterTransition()
 
     if (this._screenMode === "split-footer" && this._externalOutputMode === "capture-stdout") {
       this.syncSplitScrollback()
-    } else {
+    } else if (splitFooterActive) {
       this.syncSplitFooterState()
     }
 
-    this.nextRenderBuffer = this.lib.getNextBuffer(this.rendererPtr)
-    this.currentRenderBuffer = this.lib.getCurrentBuffer(this.rendererPtr)
     this._console.resize(this.width, this.height)
     this.root.resize(this.width, this.height)
+    this.queryPixelResolution()
     this.emit(CliRenderEvents.RESIZE, this.width, this.height)
     this.requestRender()
   }
@@ -4051,19 +4120,22 @@ export class CliRenderer extends EventEmitter implements RenderContext {
    */
   public resize(width: number, height: number): void {
     if (this._isDestroyed) return
+    const pending = this.pendingNativeResize
     this.processResize(width, height)
+    if (this.pendingNativeResize === pending) {
+      this.pendingNativeResize = null
+      this.resolveIdleIfNeeded()
+    }
   }
 
   public setBackgroundColor(color: ColorInput): void {
-    const parsedColor = parseColor(color)
-    this.lib.setBackgroundColor(this.rendererPtr, parsedColor as RGBA)
-    this.backgroundColor = parsedColor as RGBA
-    this.nextRenderBuffer.clear(parsedColor as RGBA)
+    this.backgroundColor = RGBA.clone(parseColor(color))
     this.requestRender()
   }
 
   public toggleDebugOverlay(): void {
     const willBeEnabled = !this.debugOverlay.enabled
+    this.configureDebugOverlay({ enabled: willBeEnabled })
 
     if (willBeEnabled && !this.memorySnapshotInterval) {
       this.memorySnapshotInterval = 3000
@@ -4075,21 +4147,20 @@ export class CliRenderer extends EventEmitter implements RenderContext {
       this.automaticMemorySnapshot = false
     }
 
-    this.debugOverlay.enabled = !this.debugOverlay.enabled
-    this.lib.setDebugOverlay(this.rendererPtr, this.debugOverlay.enabled, this.debugOverlay.corner)
     this.emit(CliRenderEvents.DEBUG_OVERLAY_TOGGLE, this.debugOverlay.enabled)
-    this.requestRender()
   }
 
   public configureDebugOverlay(options: { enabled?: boolean; corner?: DebugOverlayCorner }): void {
-    this.debugOverlay.enabled = options.enabled ?? this.debugOverlay.enabled
-    this.debugOverlay.corner = options.corner ?? this.debugOverlay.corner
-    this.lib.setDebugOverlay(this.rendererPtr, this.debugOverlay.enabled, this.debugOverlay.corner)
+    const enabled = options.enabled ?? this.debugOverlay.enabled
+    const corner = options.corner ?? this.debugOverlay.corner
+    this.lib.sessionSetDebugOverlay(this.nativeSession.context, this.nativeSession.session, enabled, corner)
+    this.debugOverlay.enabled = enabled
+    this.debugOverlay.corner = corner
     this.requestRender()
   }
 
   public setTerminalTitle(title: string): void {
-    this.lib.setTerminalTitle(this.rendererPtr, title)
+    this.nativeSession.control({ kind: "title", title })
   }
 
   /**
@@ -4098,68 +4169,68 @@ export class CliRenderer extends EventEmitter implements RenderContext {
    * consumers that need explicit control (e.g. before SIGTSTP).
    */
   public resetTerminalBgColor(): void {
-    this.writeOut("\x1b]111\x07")
+    this.nativeSession.control({ kind: "reset-background" })
   }
 
   public copyToClipboardOSC52(text: string, target?: ClipboardTarget): boolean {
-    return this.clipboard.copyToClipboardOSC52(text, target)
+    if (!this.isOsc52Supported()) return false
+    return this.nativeSession.writeClipboard(target ?? ClipboardTarget.Clipboard, this.lib.encoder.encode(text))
   }
 
   public clearClipboardOSC52(target?: ClipboardTarget): boolean {
-    return this.clipboard.clearClipboardOSC52(target)
+    return this.nativeSession.writeClipboard(target ?? ClipboardTarget.Clipboard, new Uint8Array(0))
   }
 
   public isOsc52Supported(): boolean {
-    return this._capabilities ? this._capabilities.osc52_support !== "unsupported" : this.clipboard.isOsc52Supported()
+    return this.nativeSession.getCapabilities().osc52_support !== "unsupported"
   }
 
   public dumpHitGrid(): void {
-    this.lib.dumpHitGrid(this.rendererPtr)
+    this.lib.sessionDumpHitGrid(this.nativeSession.context, this.nativeSession.session)
   }
 
-  public dumpBuffers(timestamp?: number): void {
-    this.lib.dumpBuffers(this.rendererPtr, timestamp)
+  public getLinkIdAt(x: number, y: number): number {
+    if (this._isDestroyed || !Number.isInteger(x) || !Number.isInteger(y) || x < 0 || y < 0) return 0
+    return this.currentRenderBuffer.withBuffers((cells) => {
+      if (x >= cells.width || y >= cells.height) return 0
+      return getLinkId(cells.attributes[y * cells.width + x])
+    })
   }
 
-  public dumpOutputBuffer(timestamp?: number): void {
-    this.lib.dumpOutputBuffer(this.rendererPtr, timestamp)
+  public getLinkAt(x: number, y: number): string | null {
+    const linkId = this.getLinkIdAt(x, y)
+    return linkId === 0 ? null : this.lib.contextGetLinkUrl(this.nativeSession.context, linkId) || null
   }
 
   public static setCursorPosition(renderer: CliRenderer, x: number, y: number, visible: boolean = true): void {
-    const lib = resolveRenderLib()
-    lib.setCursorPosition(renderer.rendererPtr, x, y, visible)
+    renderer.setCursorPosition(x, y, visible)
   }
 
   public static setCursorStyle(renderer: CliRenderer, options: CursorStyleOptions): void {
-    const lib = resolveRenderLib()
-    lib.setCursorStyleOptions(renderer.rendererPtr, options)
-    if (options.cursor !== undefined) {
-      renderer._currentMousePointerStyle = options.cursor
-    }
+    renderer.setCursorStyle(options)
   }
 
   public static setCursorColor(renderer: CliRenderer, color: RGBA): void {
-    const lib = resolveRenderLib()
-    lib.setCursorColor(renderer.rendererPtr, color)
+    renderer.setCursorColor(color)
   }
 
   public setCursorPosition(x: number, y: number, visible: boolean = true): void {
-    this.lib.setCursorPosition(this.rendererPtr, x, y, visible)
+    this.lib.sessionSetCursor(this.nativeSession.context, this.nativeSession.session, { position: { x, y, visible } })
   }
 
   public setCursorStyle(options: CursorStyleOptions): void {
-    this.lib.setCursorStyleOptions(this.rendererPtr, options)
+    this.lib.sessionSetCursor(this.nativeSession.context, this.nativeSession.session, options)
     if (options.cursor !== undefined) {
       this._currentMousePointerStyle = options.cursor
     }
   }
 
   public setCursorColor(color: RGBA): void {
-    this.lib.setCursorColor(this.rendererPtr, color)
+    this.lib.sessionSetCursor(this.nativeSession.context, this.nativeSession.session, { color })
   }
 
   public getCursorState() {
-    return this.lib.getCursorState(this.rendererPtr)
+    return this.lib.sceneGetCursorState(this.nativeSession.context, this.nativeSession.session)
   }
 
   public addPostProcessFn(processFn: (buffer: OptimizedBuffer, deltaTime: number) => void): void {
@@ -4178,6 +4249,10 @@ export class CliRenderer extends EventEmitter implements RenderContext {
     this.frameCallbacks.push(callback)
   }
 
+  public hasFrameCallback(callback: (deltaTime: number) => Promise<void>): boolean {
+    return this.frameCallbacks.includes(callback)
+  }
+
   public removeFrameCallback(callback: (deltaTime: number) => Promise<void>): void {
     this.frameCallbacks = this.frameCallbacks.filter((cb) => cb !== callback)
   }
@@ -4186,37 +4261,65 @@ export class CliRenderer extends EventEmitter implements RenderContext {
     this.frameCallbacks = []
   }
 
+  private get canRender(): boolean {
+    return !this._isDestroyed && !this.nativeSession.error && !this.nativeSession.disposed
+  }
+
+  public requestAnimationFrame(callback: FrameRequestCallback): number {
+    if (!this.canRender) return -1
+    const id = CliRenderer.animationFrameId++
+    this.animationRequest.set(id, callback)
+    this.requestLive()
+    return id
+  }
+
+  public cancelAnimationFrame(handle: number): void {
+    if (this.animationRequest.delete(handle)) this.dropLive()
+  }
+
+  private yieldFrame(): Promise<void> {
+    if (!this.canRender) return Promise.resolve()
+    return new Promise((resolve) => {
+      const finish = () => {
+        this.cancelFrameContinuation = null
+        resolve()
+      }
+      const cancel = this.nativeSession.scheduler.schedule(finish)
+      this.cancelFrameContinuation = () => {
+        cancel()
+        finish()
+      }
+    })
+  }
+
+  private queueFrame(): void {
+    if (this.cancelReadyFrame || this._isDestroyed) return
+    if (!this.canRender) {
+      this.destroy()
+      return
+    }
+    this.cancelReadyFrame = this.nativeSession.scheduler.schedule(() => {
+      this.cancelReadyFrame = null
+      void this.loop()
+    })
+  }
+
   public requestLive(): void {
+    if (!this.canRender) return
     this.liveRequestCounter++
 
     if (this._controlState === RendererControlState.IDLE && this.liveRequestCounter > 0) {
       this._controlState = RendererControlState.AUTO_STARTED
       this.internalStart()
-    } else if (
-      this._controlState === RendererControlState.EXPLICIT_SUSPENDED &&
-      this._previousControlState === RendererControlState.IDLE
-    ) {
-      this._previousControlState = RendererControlState.AUTO_STARTED
     }
   }
 
   public dropLive(): void {
-    if (this.liveRequestCounter === 0) return
-    this.liveRequestCounter--
-
-    if (
-      this.liveRequestCounter === 0 &&
-      this._controlState === RendererControlState.EXPLICIT_SUSPENDED &&
-      this._previousControlState === RendererControlState.AUTO_STARTED
-    ) {
-      this._previousControlState = RendererControlState.IDLE
-    }
+    this.liveRequestCounter = Math.max(0, this.liveRequestCounter - 1)
 
     if (this._controlState === RendererControlState.AUTO_STARTED && this.liveRequestCounter === 0) {
       this._controlState = RendererControlState.IDLE
-      // Return to demand-driven mode without cancelling coalesced tree/output updates.
-      this._isRunning = false
-      this.resolveIdleIfNeeded()
+      this.internalPause()
     }
   }
 
@@ -4232,12 +4335,12 @@ export class CliRenderer extends EventEmitter implements RenderContext {
   private internalStart(): void {
     if (!this._isRunning && !this._isDestroyed) {
       this._isRunning = true
-
-      // Invalidate any queued idle one-shot frame.
-      // start()/live/resume transition to the continuous loop, so queued
-      // activateFrame callbacks must not consume a later one-shot request.
-      this.updateScheduled = false
-      this.updateGeneration++
+      this.cancelReadyFrame?.()
+      this.cancelReadyFrame = null
+      if (this.renderTimeout) {
+        this.clock.clearTimeout(this.renderTimeout)
+        this.renderTimeout = null
+      }
 
       if (this.memorySnapshotInterval > 0) {
         this.startMemorySnapshotTimer()
@@ -4249,26 +4352,50 @@ export class CliRenderer extends EventEmitter implements RenderContext {
 
   public pause(): void {
     this._controlState = RendererControlState.EXPLICIT_PAUSED
+    this.immediateRerenderRequested = false
+    this.ordinaryFrameWaitControlState = null
     this.internalPause()
   }
 
-  public suspend(): void {
-    this._previousControlState = this._controlState
-
-    this._controlState = RendererControlState.EXPLICIT_SUSPENDED
-    this.updateScheduled = false
-    this.updateGeneration++
-    this.internalPause()
-
-    if (this._terminalIsSetup) {
-      this.clearSplitStartupCursorSeed()
-      this.flushPendingSplitOutputBeforeTransition(true, { allowSuspended: true })
-      this.suspendedNonAltSurfacePreserved = this._screenMode !== "alternate-screen" && this.renderOffset > 0
+  public suspend(): Promise<void> {
+    if (this.nativeSplitFlush) return this.nativeTerminalTransition!
+    if (!this._terminalIsSetup || this.nativeTerminalTransition) {
+      throw new Error("Native scene suspension requires completed terminal setup and no pending transition")
+    }
+    const flushNativeSplit = this.externalOutputQueue.size > 0 || this.pendingNativeReplay
+    if (flushNativeSplit) this.lib.getYogaHost().assertMutable()
+    let nativeTransition: Promise<void>
+    if (flushNativeSplit) {
+      const count = this.externalOutputQueue.size
+      // Publish the finite drain before listeners can reenter; native work starts after scopes unwind.
+      this.nativeSplitFlush = Promise.resolve().then(() => this.flushNativeSplitOutput(count))
+      nativeTransition = (async () => {
+        try {
+          await this.nativeSplitFlush
+          if (this._isDestroyed) throw new Error("Native scene suspension interrupted by renderer destruction")
+          return this.nativeSession.suspend()
+        } finally {
+          this.nativeSplitFlush = null
+        }
+      })()
     } else {
-      this.suspendedNonAltSurfacePreserved = false
+      nativeTransition = this.nativeSession.suspend()
+    }
+    nativeTransition = this.trackNativeTerminalTransition(nativeTransition)
+    if (this._controlState !== RendererControlState.EXPLICIT_SUSPENDED) {
+      // A failed native split drain leaves the host suspended until the caller retries.
+      this._previousControlState = this._controlState
+      this._suspendedMouseEnabled = this._useMouse
     }
 
-    this._suspendedMouseEnabled = this._useMouse
+    this._controlState = RendererControlState.EXPLICIT_SUSPENDED
+    this._cancelPaletteDetection?.(new Error("Cannot detect palette while renderer is suspended"))
+    this.resolveXtVersionWaiters()
+    this.nativeScene.interruptPaint()
+    this.immediateRerenderRequested = false
+    this.internalPause()
+
+    this.clearSplitStartupCursorSeed()
 
     this.disableMouse()
     this.removeExitListeners()
@@ -4283,18 +4410,48 @@ export class CliRenderer extends EventEmitter implements RenderContext {
     this.stdin.removeListener("data", this.stdinListener)
     this.stopTerminalKeepAlive()
 
-    this.themeModeState.cancelRefresh()
-
-    this.lib.suspendRenderer(this.rendererPtr)
+    this.themeModeState?.cancelRefresh()
 
     if (this.stdin.setRawMode) {
       this.stdin.setRawMode(false)
     }
 
     this.stdin.pause()
+    return nativeTransition
   }
 
-  public resume(): void {
+  public resume(): Promise<void> {
+    if (
+      !this._terminalIsSetup ||
+      this.nativeTerminalTransition ||
+      this._controlState !== RendererControlState.EXPLICIT_SUSPENDED
+    ) {
+      throw new Error("Native scene resume requires completed suspension")
+    }
+    if (this.pendingSplitFooterTransition) {
+      // Terminal setup requires clean native split state; retain the deferred work on the host.
+      this.lib.sessionSplitControl(this.nativeSession.context, this.nativeSession.session, {
+        kind: "clear-transition",
+      })
+    }
+    const resumed = this.trackNativeTerminalTransition(this.nativeSession.resume(), () => {
+      if (this._isDestroyed) return
+      if (this.pendingSplitFooterTransition) this.setPendingSplitFooterTransition(this.pendingSplitFooterTransition)
+      this.finishResume()
+    }).then(() => {
+      if (
+        !this._isDestroyed &&
+        (this.shouldSyncNativePaletteState() || this.listenerCount(CliRenderEvents.PALETTE) > 0)
+      ) {
+        this.clearPaletteCache()
+        this.refreshPalette()
+      }
+    })
+    void resumed.catch(() => {})
+    return resumed
+  }
+
+  private finishResume(): void {
     if (this.stdin.setRawMode) {
       this.stdin.setRawMode(true)
     }
@@ -4308,39 +4465,19 @@ export class CliRenderer extends EventEmitter implements RenderContext {
     this.startTerminalKeepAlive()
     this.addExitListeners()
 
-    const resumePreservedNonAltSurface =
-      this.pendingSuspendedTerminalSetup &&
-      this._screenMode !== "alternate-screen" &&
-      this.suspendedNonAltSurfacePreserved &&
-      this.renderOffset > 0
-
-    if (this.pendingSuspendedTerminalSetup) {
-      this.pendingSuspendedTerminalSetup = false
-      if (resumePreservedNonAltSurface) {
-        this.lib.resumeRenderer(this.rendererPtr)
-      } else {
-        this.lib.setupTerminal(this.rendererPtr, this._screenMode === "alternate-screen")
-      }
-    } else {
-      this.lib.resumeRenderer(this.rendererPtr)
-    }
-
-    this.suspendedNonAltSurfacePreserved = false
-
-    this.flushPendingSplitOutputBeforeTransition(false, { allowSuspended: true, allowPassthrough: true })
+    this._useMouse = this._suspendedMouseEnabled
 
     if (this._screenMode === "split-footer" && this._splitHeight > 0) {
       this.syncSplitFooterState()
     }
 
-    if (this._suspendedMouseEnabled) {
-      this.enableMouse()
-    }
-
     this.forceFullRepaintRequested = true
+    this.startKittyTransportPolling()
+    this.nativeSession.startKittyFileProbe()
     this._controlState = this._previousControlState
     if (this.pixelResolutionRequeryPending) this.queryPixelResolution()
     this.stdinParser?.resumePendingTimeout()
+    this.applyPendingNativeResize()
 
     if (
       this._previousControlState === RendererControlState.AUTO_STARTED ||
@@ -4354,7 +4491,8 @@ export class CliRenderer extends EventEmitter implements RenderContext {
 
   private internalPause(): void {
     this._isRunning = false
-    this.cancelRenderAfterFeedIdle()
+    this.cancelReadyFrame?.()
+    this.cancelReadyFrame = null
 
     if (this.renderTimeout) {
       this.clock.clearTimeout(this.renderTimeout)
@@ -4368,56 +4506,84 @@ export class CliRenderer extends EventEmitter implements RenderContext {
 
   public stop(): void {
     this._controlState = RendererControlState.EXPLICIT_STOPPED
+    this.immediateRerenderRequested = false
+    this.ordinaryFrameWaitControlState = null
     this.internalStop()
   }
 
   private internalStop(): void {
-    this.updateScheduled = false
-    this.updateGeneration++
-    this.immediateRerenderRequested = false
-
-    if (this.memorySnapshotTimer) {
-      this.clock.clearInterval(this.memorySnapshotTimer)
-      this.memorySnapshotTimer = null
+    this.cancelReadyFrame?.()
+    this.cancelReadyFrame = null
+    if (this.renderTimeout) {
+      this.clock.clearTimeout(this.renderTimeout)
+      this.renderTimeout = null
     }
+    if (this.isRunning && !this._isDestroyed) {
+      this._isRunning = false
 
-    this.internalPause()
+      if (this.memorySnapshotTimer) {
+        this.clock.clearInterval(this.memorySnapshotTimer)
+        this.memorySnapshotTimer = null
+      }
+    }
+    if (!this.rendering) this.resolveIdleIfNeeded()
   }
 
   public destroy(): void {
     if (this._isDestroyed) return
+    this.lib.getYogaHost().assertMutable()
     this._isDestroyed = true
     this._destroyPending = true
     this._palettePublishGeneration++
 
-    if (this.rendering) {
-      // Restore terminal/input state immediately, but defer full native teardown until the frame unwinds.
-      this.prepareDestroyDuringRender()
-      return
-    }
+    this._cancelPaletteDetection?.(new Error("Cannot detect palette after renderer destruction"))
 
+    const splitFlush = this.nativeSplitFlush
+    const terminalTransition = this.nativeTerminalTransition
+    // Scene hooks run between native calls with no borrowed pointers. Storage
+    // scopes still unwind before this microtask releases the Context.
+    queueMicrotask(async () => {
+      try {
+        if (splitFlush || this.externalOutputQueue.size > 0 || this.pendingNativeReplay) {
+          this.nativeSession.armCloseTimeout()
+          if (splitFlush) await splitFlush
+          else if (terminalTransition) await terminalTransition
+          if (this.externalOutputQueue.size > 0 || this.pendingNativeReplay) await this.flushNativeSplitOutput()
+        }
+        void this.nativeSession.close()
+      } catch (error) {
+        this.externalOutputQueue.clear()
+        this.nativeSession.dispose()
+        console.error("Native split output cancelled during close:", error)
+      }
+    })
     this.finalizeDestroy()
   }
 
   private cleanupBeforeDestroy(): void {
     if (this._destroyCleanupPrepared) return
     this._destroyCleanupPrepared = true
-    this.cancelRenderAfterFeedIdle()
     if (this.kittyTransportTimer !== null) {
       this.clock.clearInterval(this.kittyTransportTimer)
       this.kittyTransportTimer = null
       this.stdout.off("error", this.kittyOutputErrorHandler)
-      this.lib.cancelKittyImageTransport(this.rendererPtr, false)
+      if (!this.nativeSession.disposed && !this.nativeSession.error) this.nativeSession.cancelKittyImageTransport(false)
     }
+    this.pendingNativeResize = null
+    this.cancelReadyFrame?.()
+    this.cancelReadyFrame = null
+    this.cancelFrameContinuation?.()
+    this.animationRequest.clear()
+    this.frameCallbacks = []
+    this.liveRequestCounter = 0
+    this.immediateRerenderRequested = false
 
-    // Bun 1.4's types narrow process.removeListener to its memoryPressure overload.
-    const processEvents = process as EventEmitter
     if (this._usesProcessStdout) {
-      processEvents.removeListener("SIGWINCH", this.sigwinchHandler)
+      this.removeCleanupListener(process, "SIGWINCH", this.sigwinchHandler)
     }
-    processEvents.removeListener("uncaughtException", this.handleError)
-    processEvents.removeListener("unhandledRejection", this.handleError)
-    processEvents.removeListener("warning", this.warningHandler)
+    this.removeCleanupListener(process, "uncaughtException", this.handleError)
+    this.removeCleanupListener(process, "unhandledRejection", this.handleError)
+    this.removeCleanupListener(process, "warning", this.warningHandler)
     this.removeExitListeners()
 
     if (this.resizeTimeoutId !== null) {
@@ -4442,25 +4608,31 @@ export class CliRenderer extends EventEmitter implements RenderContext {
       this.renderTimeout = null
     }
 
-    this.themeModeState.cancelRefresh()
+    this.themeModeState?.cancelRefresh()
 
     this._isRunning = false
     this.waitingForPixelResolution = false
     this.pixelResolutionRequeryPending = false
-    this.updateStdinParserProtocolContext(
-      {
-        privateCapabilityRepliesActive: false,
-        pixelResolutionQueryActive: false,
-        explicitWidthCprActive: false,
-        startupCursorCprActive: false,
-      },
-      true,
-    )
+    try {
+      this.updateStdinParserProtocolContext(
+        {
+          privateCapabilityRepliesActive: false,
+          pixelResolutionQueryActive: false,
+          explicitWidthCprActive: false,
+          startupCursorCprActive: false,
+        },
+        true,
+      )
+    } catch (error) {
+      // Draining can run a user input handler. Reset its pending input, but do
+      // not let that failure strand the remaining teardown or its completion.
+      this.handleStdinParserFailure(error)
+    }
     if (this.stdin === process.stdin && this._usesProcessStdout) this.disableMouse()
     this._useMouse = false
     this.setCapturedRenderable(undefined)
 
-    this.stdin.removeListener("data", this.stdinListener)
+    this.removeCleanupListener(this.stdin, "data", this.stdinListener)
     this.stopTerminalKeepAlive()
     if (this.stdin.setRawMode) {
       try {
@@ -4475,24 +4647,15 @@ export class CliRenderer extends EventEmitter implements RenderContext {
       console.error("Error pausing stdin during destroy:", e)
     }
 
-    if (this._feed !== null && this._splitHeight > 0 && !this._terminalIsSetup) {
-      this.flushPendingSplitOutputBeforeTransition(false, { allowSuspended: true, allowUnsetup: true })
-    }
-
     this.externalOutputMode = "passthrough"
-
-    if (this._splitHeight > 0) {
-      this.flushStdoutCache(this._splitHeight, true)
-    }
-  }
-
-  private prepareDestroyDuringRender(): void {
-    this.cleanupBeforeDestroy()
-    this.lib.suspendRenderer(this.rendererPtr)
   }
 
   private finalizeDestroy(): void {
     if (this._destroyFinalized) return
+    if (this.root?._deferUntilCleanupComplete(() => this.finalizeDestroy())) {
+      this.cleanupBeforeDestroy()
+      return
+    }
 
     this._destroyFinalized = true
     this._destroyPending = false
@@ -4507,17 +4670,35 @@ export class CliRenderer extends EventEmitter implements RenderContext {
     this._paletteCache.clear()
     this._paletteDetectionPromise = null
     this._paletteDetectionSize = 0
+    this._paletteDetectionGeneration = 0
     this._nativePaletteSignature = null
     this._emittedPaletteSignature = null
     this._paletteEpoch = 0
     this.resolveXtVersionWaiters()
 
-    this.themeModeState.dispose()
+    this.themeModeState?.dispose()
 
-    this.emit(CliRenderEvents.DESTROY)
+    for (const destroy of this.detachedSurfaces) {
+      try {
+        destroy()
+      } catch (error) {
+        console.error("Error destroying detached surface:", error)
+      }
+    }
+    try {
+      this.emit(CliRenderEvents.DESTROY)
+    } catch (error) {
+      console.error("Error in native scene destroy listener:", error)
+    } finally {
+      try {
+        destroyTimelineEngine(this)
+      } catch (error) {
+        console.error("Error releasing timeline engine:", error)
+      }
+    }
 
     try {
-      this.root.destroyRecursively()
+      this.root?.destroyRecursively()
     } catch (e) {
       console.error("Error destroying root renderable:", e instanceof Error ? e.stack : String(e))
     }
@@ -4525,71 +4706,23 @@ export class CliRenderer extends EventEmitter implements RenderContext {
     this.stdinParser?.destroy()
     this.stdinParser = null
     this.oscSubscribers.clear()
-    this._console.destroy()
+    try {
+      this._console?.destroy()
+    } catch (error) {
+      console.error("Error destroying console:", error)
+    }
 
-    // Split-footer cleanup: flush pending output and reset offset before
-    // tearing down the native renderer.
-    if (
-      this._splitHeight > 0 &&
-      this._terminalIsSetup &&
-      this._controlState !== RendererControlState.EXPLICIT_SUSPENDED
-    ) {
-      this.flushPendingSplitOutputBeforeTransition(true)
-      this.renderOffset = 0
-      if (this.clearOnShutdown) {
-        this.lib.setRenderOffset(this.rendererPtr, 0)
-      }
+    try {
+      this.nativeScene.destroy()
+    } catch (error) {
+      console.error("Error destroying native scene:", error)
     }
 
     this._externalOutputMode = "passthrough"
     this.pendingExternalOutputMode = null
     this.stdout.write = this.realStdoutWrite
-    this.externalOutputQueue.clear()
-
-    // Teardown ordering for the feed backend is subtle and must satisfy two
-    // invariants simultaneously:
-    //
-    //   1. The shutdown ANSI sequence emitted by `lib.destroyRenderer` via
-    //      FeedBackend.writeOut MUST reach the user's Writable. Otherwise the
-    //      remote terminal is left in alt-screen / mouse-tracking / kitty-
-    //      keyboard state at session close.
-    //
-    //   2. The data handler (which does `stdout.write`) must be detached
-    //      before `feed.close()`, otherwise `close()` will wait for any
-    //      in-flight writes that reference chunks about to be freed.
-    //
-    // The correct order is:
-    //   a) drain any frames already committed but not yet delivered
-    //   b) call lib.destroyRenderer — this commits shutdown bytes into the feed
-    //   c) drain again — this flushes those shutdown bytes through the handler
-    //   d) detach the handler now that no more data will flow
-    //   e) close the feed (releases chunk memory once async handlers settle)
-    //
-    // Memory-lifetime invariant: `FeedBackend.deinit` releases its staging
-    // buffer but does not own feed chunks. Those remain valid until the TS side
-    // calls `feed.close()` at step (e), so step (c) can safely drain them.
-    //
-    // Caller note: `feed.close()` is queued as a microtask when async handlers
-    // from the final drain are still pending. If the caller tears down the
-    // underlying Writable synchronously right after `destroy()` returns (e.g.
-    // `channel.close()` on the very next line, or `process.exit()`), the
-    // shutdown bytes may not have flushed yet. For async teardown, allow one
-    // microtask tick (e.g. `await new Promise(queueMicrotask)`) before closing
-    // the transport.
-    if (this._feed) {
-      try {
-        this._feed.drainAll()
-      } catch (e) {
-        console.error("Error draining NativeSpanFeed during destroy:", e)
-      }
-    }
 
     const discardInput = this._terminalIsSetup && this._controlState !== RendererControlState.EXPLICIT_SUSPENDED
-    try {
-      this.lib.destroyRenderer(this.rendererPtr, discardInput && this.stdin === process.stdin)
-    } catch (e) {
-      console.error("Error in lib.destroyRenderer during destroy:", e)
-    }
     if (discardInput) {
       const bufferedInput = this.stdin.readableLength
       if (bufferedInput > 0) this.stdin.read(bufferedInput)
@@ -4601,26 +4734,6 @@ export class CliRenderer extends EventEmitter implements RenderContext {
       })
     }
 
-    if (this._feed) {
-      try {
-        this._feed.drainAll()
-      } catch (e) {
-        console.error("Error draining NativeSpanFeed shutdown frames:", e)
-      }
-      this._detachFeed?.()
-      this._detachFeed = null
-      this._detachFeedError?.()
-      this._detachFeedError = null
-      this._feed.close()
-      this._feed = null
-    }
-
-    if (this._streamLeaseAcquired) {
-      if (rendererTracker.streamOwners.get(this.stdin) === this) rendererTracker.streamOwners.delete(this.stdin)
-      if (rendererTracker.streamOwners.get(this.stdout) === this) rendererTracker.streamOwners.delete(this.stdout)
-      this._streamLeaseAcquired = false
-    }
-
     if (this._onDestroy) {
       try {
         this._onDestroy()
@@ -4630,7 +4743,15 @@ export class CliRenderer extends EventEmitter implements RenderContext {
     }
 
     // Resolve any pending idle() calls
+    this.nativeDestroyWait?.resolve()
     this.resolveIdleIfNeeded()
+  }
+
+  private releaseStreamLease(): void {
+    if (!this._streamLeaseAcquired) return
+    if (rendererTracker.streamOwners.get(this.stdin) === this) rendererTracker.streamOwners.delete(this.stdin)
+    if (rendererTracker.streamOwners.get(this.stdout) === this) rendererTracker.streamOwners.delete(this.stdout)
+    this._streamLeaseAcquired = false
   }
 
   private startRenderLoop(): void {
@@ -4642,33 +4763,39 @@ export class CliRenderer extends EventEmitter implements RenderContext {
     this.currentFps = 0
     this.renderStats.fps = 0
 
-    // Starting continuous mode must not bypass an existing feed-idle retry. Keep
+    // Starting continuous mode must not bypass an existing output-idle retry. Keep
     // _isRunning true, but let the idle callback schedule the first loop once the
-    // feed is ready; a successful frame will then resume the normal cadence.
-    if (this.feedIdleRenderScheduled) return
+    // Session is ready; a successful frame will then resume the normal cadence.
+    if (this.outputIdleRenderScheduled) return
 
-    this.loop()
+    this.queueFrame()
   }
 
-  private async loop(): Promise<void> {
-    if (this.rendering || this._isDestroyed) return
-    const startedWhileRunning = this._isRunning
+  private async loop(waitForActive = false): Promise<void> {
+    if (this.rendering) {
+      if (!waitForActive) return
+      this.renderingCompletion ??= Promise.withResolvers<void>()
+      return this.renderingCompletion.promise
+    }
+    if (this._isDestroyed) return
+    this.cancelReadyFrame?.()
+    this.cancelReadyFrame = null
     if (this.renderTimeout) {
       this.clock.clearTimeout(this.renderTimeout)
       this.renderTimeout = null
     }
     this.rendering = true
+    this.ordinaryFrameWaitControlState = this._controlState
     let renderFailed = false
     try {
-      // Admit one ordinary frame at a time, before animation/GPU callbacks or
-      // composition. Drained spans still own memory until Writable callbacks settle.
-      // Control and shutdown writes bypass this gate and preserve committed ANSI.
-      if (this._feed?.isBackpressured()) {
-        this.handleNativeRenderRejection(NATIVE_RENDER_STATUS_SKIPPED)
-        this.immediateRerenderRequested = false
+      if (!this.canRender) return
+      if (this.nativeTerminalTransition) await this.nativeTerminalTransition
+      if (
+        !this.canRender ||
+        this.currentControlState === RendererControlState.EXPLICIT_SUSPENDED ||
+        this.isSplitCursorSeedFrameBlocked()
+      )
         return
-      }
-
       // Bump before any work so all callers this iteration see the new id.
       this._frameId++
 
@@ -4681,38 +4808,75 @@ export class CliRenderer extends EventEmitter implements RenderContext {
       this.renderStats.frameCount++
       const overallStart = performance.now()
 
-      const frameRequests = Array.from(this.animationRequest.values())
-      this.animationRequest.clear()
+      const animationFrameEnd = CliRenderer.animationFrameId
       const animationRequestStart = performance.now()
-      for (const callback of frameRequests) {
-        callback(deltaTime)
-        this.dropLive()
+      for (const [id, callback] of this.animationRequest) {
+        if (id >= animationFrameEnd) break
+        if (!this.canRender || this.currentControlState === RendererControlState.EXPLICIT_SUSPENDED) break
+        this.animationRequest.delete(id)
+        try {
+          callback(deltaTime)
+        } finally {
+          this.dropLive()
+        }
+        await this.yieldFrame()
       }
       const animationRequestEnd = performance.now()
       const animationRequestTime = animationRequestEnd - animationRequestStart
 
       const start = performance.now()
-      for (const frameCallback of this.frameCallbacks) {
+      const frameCallbacks = this.frameCallbacks
+      const callbackCount = frameCallbacks.length
+      for (let index = 0; index < callbackCount; index++) {
+        if (!this.canRender || this.currentControlState === RendererControlState.EXPLICIT_SUSPENDED) break
+        const frameCallback = frameCallbacks[index]
+        if (this.frameCallbacks !== frameCallbacks && !this.frameCallbacks.includes(frameCallback)) continue
         try {
           await frameCallback(deltaTime)
         } catch (error) {
           console.error("Error in frame callback:", error)
         }
+        await this.yieldFrame()
       }
       const end = performance.now()
       this.renderStats.frameCallbackTime = end - start
 
-      this.root.render(this.nextRenderBuffer, deltaTime)
-
-      for (const postProcessFn of this.postProcessFns) {
-        postProcessFn(this.nextRenderBuffer, deltaTime)
+      if (!this.canRender || this.currentControlState === RendererControlState.EXPLICIT_SUSPENDED) return
+      const sceneStart = performance.now()
+      const requestedBeforeScene = this.immediateRerenderRequested
+      try {
+        const painting = this.nativeScene.paint(deltaTime, () => ({
+          background: this.backgroundColor,
+          useMouse: this._useMouse,
+          excludedHitNum: this.capturedRenderable?.num ?? 0,
+        }))
+        if (painting) await painting
+      } catch (error) {
+        // Failed feedback must not schedule its own retry. The error handler can request one explicitly.
+        this.immediateRerenderRequested = requestedBeforeScene
+        throw error
+      } finally {
+        this._lastSceneTimeMs = performance.now() - sceneStart
       }
 
-      this._console.renderToBuffer(this.nextRenderBuffer)
+      if (
+        this._isDestroyed ||
+        this.currentControlState === RendererControlState.EXPLICIT_SUSPENDED ||
+        !this.nativeScene.frame
+      )
+        return
+
+      for (const postProcessFn of this.postProcessFns) {
+        if (!this.canRender) break
+        this.nextRenderBuffer._withNativePaint(() => postProcessFn(this.nextRenderBuffer, deltaTime))
+      }
+
+      if (this.canRender) this._console.renderToBuffer(this.nextRenderBuffer)
 
       // If destroy() was requested during this frame, skip native work and scheduling.
-      if (!this._isDestroyed) {
-        const nativeStatus = this.renderNative() ?? "rendered"
+      if (this.canRender && !this.nativeSplitFlush) {
+        const nativeStatus = await this.presentNativeScene()
+        if (!this.canRender || this.currentControlState === RendererControlState.EXPLICIT_SUSPENDED) return
         if (nativeStatus === "rendered") this.frameCount++
         if (this.getElapsedMs(now, this.lastFpsTime) >= 1000) {
           this.currentFps = this.frameCount
@@ -4723,15 +4887,17 @@ export class CliRenderer extends EventEmitter implements RenderContext {
 
         if (nativeStatus === "rendered") {
           // Check if hit grid changed and recheck hover state if needed
-          if (this._useMouse && this.lib.getHitGridDirty(this.rendererPtr)) {
+          if (this._useMouse) {
             this.recheckHoverState()
           }
+          if (!this.canRender) return
 
           const overallFrameTime = performance.now() - overallStart
 
           // TODO: Add animationRequestTime to stats
-          this.lib.updateStats(
-            this.rendererPtr,
+          this.lib.sessionUpdateStats(
+            this.nativeSession.context,
+            this.nativeSession.session,
             overallFrameTime,
             this.renderStats.fps,
             this.renderStats.frameCallbackTime,
@@ -4742,6 +4908,7 @@ export class CliRenderer extends EventEmitter implements RenderContext {
               frameId: this.frameId,
             })
           }
+          if (!this.canRender) return
 
           if (this.gatherStats) {
             this.collectStatSample(overallFrameTime)
@@ -4753,41 +4920,14 @@ export class CliRenderer extends EventEmitter implements RenderContext {
             this.immediateRerenderRequested = false
             this.renderTimeout = this.clock.setTimeout(() => {
               this.renderTimeout = null
-              this.loop()
+              this.queueFrame()
             }, delay)
           } else {
             this.clock.clearTimeout(this.renderTimeout!)
             this.renderTimeout = null
           }
-        } else if (nativeStatus === "blocked") {
-          const overallFrameTime = performance.now() - overallStart
-
-          if (this._isRunning || this.immediateRerenderRequested) {
-            const targetFrameTime = this.immediateRerenderRequested ? this.minTargetFrameTime : this.targetFrameTime
-            const delay = Math.max(1, targetFrameTime - Math.floor(overallFrameTime))
-            this.immediateRerenderRequested = false
-            this.renderTimeout = this.clock.setTimeout(() => {
-              this.renderTimeout = null
-              this.loop()
-            }, delay)
-          } else {
-            this.clock.clearTimeout(this.renderTimeout!)
-            this.renderTimeout = null
-          }
-        } else if (nativeStatus === "backpressured") {
-          // Automatic live completion still owes its final frame; explicit pause/stop does not.
-          if (
-            !startedWhileRunning ||
-            this._isRunning ||
-            this.immediateRerenderRequested ||
-            this._controlState === RendererControlState.IDLE
-          ) {
-            this.scheduleRenderAfterBackpressure()
-          }
-        } else if (nativeStatus === "retryable-skip") {
-          this.immediateRerenderRequested = false
-          this.renderTimeout = null
-        } else if (nativeStatus === "failed") {
+        } else {
+          // Blocked frames resume on a cursor reply/timeout; skipped frames wait for output idle.
           this.immediateRerenderRequested = false
           this.renderTimeout = null
         }
@@ -4799,69 +4939,133 @@ export class CliRenderer extends EventEmitter implements RenderContext {
       const handled = this.emit(CliRenderEvents.RENDER_ERROR, event)
       if (!handled) this.handleError(renderError)
     } finally {
-      this.rendering = false
-      if (this._destroyPending) {
-        this.finalizeDestroy()
+      const completion = this.renderingCompletion
+      this.renderingCompletion = null
+      try {
+        this.nativeScene.cancelFrame()
+        this.rendering = false
+        if (!this.canRender && !this._isDestroyed) this.destroy()
+        if (this._destroyPending) {
+          this.finalizeDestroy()
+        }
+        if (renderFailed && (this._isRunning || this.immediateRerenderRequested) && !this._isDestroyed) {
+          this.immediateRerenderRequested = false
+          this.scheduleRenderTimer()
+        }
+        // Keep the old dimensions through FRAME publication, even if the output
+        // driver completed its presentation and drain in the same turn.
+        this.applyPendingNativeMode()
+        this.applyPendingNativeResize()
+        this.resolveIdleIfNeeded()
+      } finally {
+        completion?.resolve()
       }
-      if (renderFailed && (this._isRunning || this.immediateRerenderRequested) && !this._isDestroyed) {
-        this.immediateRerenderRequested = false
-        this.scheduleRenderTimer()
-      }
-      this.resolveIdleIfNeeded()
     }
   }
 
   public intermediateRender(): void {
     this.immediateRerenderRequested = true
+    this.ordinaryFrameWaitControlState = this._controlState
     this.loop()
   }
 
-  private renderNative(): "rendered" | "retryable-skip" | "failed" | "blocked" | "backpressured" {
-    if (this.renderingNative) {
-      console.error("Rendering called concurrently")
-      throw new Error("Rendering called concurrently")
+  private async presentNativeScene(): Promise<"rendered" | "retryable-skip" | "failed" | "blocked"> {
+    if (this.isSplitCursorSeedFrameBlocked()) return "blocked"
+    const commits =
+      this._splitHeight > 0 && this._externalOutputMode === "capture-stdout"
+        ? this.pendingNativeReplay?.remaining === 0
+          ? []
+          : this.externalOutputQueue.peek(
+              Math.min(this.maxSplitCommitsPerFrame, this.pendingNativeReplay?.remaining ?? Infinity),
+            )
+        : null
+    const split =
+      commits === null
+        ? null
+        : this.nativeScene.commitSplit(
+            commits.map((commit) => ({ ...commit, snapshot: commit.nativeSnapshot! })),
+            this.getSplitPinnedRenderOffset(),
+            this.forceFullRepaintRequested,
+          )
+    const status = split?.status ?? this.nativeScene.commit(this.forceFullRepaintRequested)
+    if (commits && (status === NativeSessionRenderStatus.Pending || status === NativeSessionRenderStatus.Presented)) {
+      this.nativeSplitAcceptedCount = commits.length
     }
-
-    this.renderingNative = true
-
-    try {
-      if (this.isSplitCursorSeedFrameBlocked()) {
-        return "blocked"
-      }
-
-      if (this._splitHeight > 0 && this._externalOutputMode === "capture-stdout") {
-        // forceFullRepaintRequested is a one-shot latch used when mode/geometry
-        // transitions need a complete footer refresh. Consume it once so steady-state
-        // capture path keeps using diff-based repainting.
-        const forceSplitRepaint = this.forceFullRepaintRequested
-        const status = this.flushPendingSplitCommits(
-          forceSplitRepaint,
-          this.pendingExternalOutputMode === "passthrough",
-        )
-        if (status === "backpressured") {
-          return "backpressured"
-        }
-        if (status === "failed") {
-          return "failed"
-        }
-        this.forceFullRepaintRequested = false
-        this.pendingSplitFooterTransition = null
-        return "rendered"
-      }
-
-      const force = this.forceFullRepaintRequested
-      const nativeStatus = this.lib.render(this.rendererPtr, force)
-      if (nativeStatus === NATIVE_RENDER_STATUS_SKIPPED || nativeStatus === NATIVE_RENDER_STATUS_FAILED) {
-        return this.handleNativeRenderRejection(nativeStatus)
-      }
-
-      this.forceFullRepaintRequested = false
-      this.pendingSplitFooterTransition = null
-      // this.dumpOutputBuffer(Date.now())
-      return "rendered"
-    } finally {
-      this.renderingNative = false
+    switch (status) {
+      case NativeSessionRenderStatus.Pending:
+        await this.nativeSession.whenPresented()
+        break
+      case NativeSessionRenderStatus.Presented:
+        break
+      case NativeSessionRenderStatus.Skipped:
+        this.ordinaryFrameWaitingForOutput = true
+        this.scheduleRenderAfterOutputIdle()
+        return "retryable-skip"
+      case NativeSessionRenderStatus.Failed:
+        console.error("[CliRenderer] Native frame render failed; waiting for the next render request to force repaint")
+        return "failed"
+      default:
+        throw new Error("Unknown native scene presentation status")
     }
+    if (this._isDestroyed || this.nativeSplitFlush) return "rendered"
+    if (split && commits) {
+      this.completeNativeSplitCommits(commits)
+      if (this.externalOutputQueue.size > 0) this.requestRender()
+      else this.applyPendingExternalOutputModeIfReady()
+    }
+    this.forceFullRepaintRequested = false
+    return "rendered"
+  }
+
+  private completeNativeSplitCommits(commits: readonly ExternalOutputCommit[]): void {
+    if (!this._isDestroyed) {
+      this.syncSplitScrollback()
+      for (const commit of commits) this.recordSplitCommit(commit)
+    }
+    this.externalOutputQueue.drop(commits.length)
+    if (this.pendingNativeReplay) this.pendingNativeReplay.remaining -= commits.length
+    this.nativeSplitAcceptedCount = 0
+    this.pendingSplitFooterTransition = null
+  }
+
+  private async flushNativeSplitOutput(remaining: number = this.externalOutputQueue.size): Promise<void> {
+    const driver = this.nativeSession
+    await driver.whenPresented()
+    this.nativeScene.cancelFrame()
+    if (this.nativeSplitAcceptedCount > 0) {
+      remaining -= this.nativeSplitAcceptedCount
+      this.completeNativeSplitCommits(this.externalOutputQueue.peek(this.nativeSplitAcceptedCount))
+    }
+    while (remaining > 0 || this.pendingNativeReplay?.remaining === 0) {
+      if (this.pendingNativeReplay?.remaining === 0) {
+        try {
+          this.applySplitFooterReplayReset(this.pendingNativeReplay.options)
+        } catch (error) {
+          if (!(error instanceof NativeError) || error.status !== NativeStatus.OutputBackpressure) throw error
+          await driver.idle()
+          continue
+        }
+      }
+      if (remaining === 0) break
+      const commits = this.externalOutputQueue.peek(
+        Math.min(remaining, this.maxSplitCommitsPerFrame, this.pendingNativeReplay?.remaining ?? Infinity),
+      )
+      const result = driver.renderSplit(
+        null,
+        commits.map((commit) => ({ ...commit, snapshot: commit.nativeSnapshot! })),
+        this.getSplitPinnedRenderOffset(),
+        false,
+      )
+      if (result.status === NativeSessionRenderStatus.Failed) throw new Error("Native split output frame failed")
+      if (result.status === NativeSessionRenderStatus.Skipped) {
+        await driver.idle()
+        continue
+      }
+      await driver.whenPresented()
+      remaining -= commits.length
+      this.completeNativeSplitCommits(commits)
+    }
+    if (!this._isDestroyed) this.applyPendingExternalOutputModeIfReady()
   }
 
   private collectStatSample(frameTime: number): void {
@@ -4872,7 +5076,7 @@ export class CliRenderer extends EventEmitter implements RenderContext {
   }
 
   public getNativeStats(): NativeRenderStats {
-    return this.lib.getRenderStats(this.rendererPtr)
+    return this.lib.sceneGetStats(this.nativeSession.context, this.nativeSession.session)
   }
 
   public getStats(): CliRendererStats {
@@ -5122,10 +5326,16 @@ export class CliRenderer extends EventEmitter implements RenderContext {
       const isLegacyTmux =
         this.capabilities?.terminal?.name?.toLowerCase()?.includes("tmux") &&
         this.capabilities?.terminal?.version?.localeCompare("3.6") < 0
-      this._paletteDetector = createTerminalPalette({
+      const detector = createTerminalPalette({
         stdin: this.stdin,
         stdout: this.stdout,
-        writeFn: (data) => (this._isDestroyed ? false : this.writeOut(data)),
+        writeFn: (data) => {
+          if (this._isDestroyed || this._paletteDetector !== detector) {
+            throw new Error("Palette detection was cancelled")
+          }
+          this.nativeSession.control({ kind: "palette-query", bytes: Buffer.from(data) })
+          return true
+        },
         isLegacyTmux,
         isTmux,
         oscSource: {
@@ -5133,6 +5343,7 @@ export class CliRenderer extends EventEmitter implements RenderContext {
         },
         clock: this.clock,
       })
+      this._paletteDetector = detector
     }
 
     return this._paletteDetector
@@ -5140,20 +5351,18 @@ export class CliRenderer extends EventEmitter implements RenderContext {
 
   private syncNativePaletteState(colors: TerminalColors | null): void {
     const signature = buildTerminalPaletteSignature(colors)
-    if (this._nativePaletteSignature !== signature) {
-      this._paletteEpoch = (this._paletteEpoch + 1) >>> 0
-    }
-
-    this._nativePaletteSignature = signature
-
+    const epoch = this._nativePaletteSignature !== signature ? (this._paletteEpoch + 1) >>> 0 : this._paletteEpoch
     const normalized = normalizeTerminalPalette(colors)
-    this.lib.rendererSetPaletteState(
-      this.rendererPtr,
+    this.lib.sessionSetPaletteState(
+      this.nativeSession.context,
+      this.nativeSession.session,
       normalized.palette,
       normalized.defaultForeground,
       normalized.defaultBackground,
-      this._paletteEpoch,
+      epoch,
     )
+    this._nativePaletteSignature = signature
+    this._paletteEpoch = epoch
   }
 
   private emitPaletteChange(colors: TerminalColors): void {
@@ -5218,9 +5427,16 @@ export class CliRenderer extends EventEmitter implements RenderContext {
     if (this._controlState === RendererControlState.EXPLICIT_SUSPENDED) {
       throw new Error("Cannot detect palette while renderer is suspended")
     }
+    if (this._isDestroyed || !this._terminalIsSetup || this.nativeTerminalTransition) {
+      throw new Error("Native palette detection requires an active terminal")
+    }
 
     const requestedSize = options?.size ?? 16
     const detectionTimeout = options?.timeout
+    if (!Number.isInteger(requestedSize) || requestedSize < 1 || requestedSize > 256) {
+      throw new RangeError("Native palette size must be an integer from 1 to 256")
+    }
+    const requestedGeneration = this._palettePublishGeneration
 
     const cachedPalette = this.getCachedPaletteBySize(requestedSize)
     if (cachedPalette) {
@@ -5233,6 +5449,14 @@ export class CliRenderer extends EventEmitter implements RenderContext {
     const hasTmuxVersion = terminal?.name?.toLowerCase() === "tmux" && Boolean(terminal.version)
     if (this._capabilities?.multiplexer === "tmux" && !hasTmuxVersion) {
       await this.waitForXtVersion()
+      if (
+        this._isDestroyed ||
+        !this._terminalIsSetup ||
+        this.nativeTerminalTransition ||
+        this.currentControlState === RendererControlState.EXPLICIT_SUSPENDED
+      ) {
+        throw new Error("Palette detection was cancelled")
+      }
 
       // Another caller may have populated the cache while this call waited.
       const afterCapabilityWait = this.getCachedPaletteBySize(requestedSize)
@@ -5241,8 +5465,11 @@ export class CliRenderer extends EventEmitter implements RenderContext {
       }
     }
 
-    if (this._paletteDetectionPromise) {
-      if (this._paletteDetectionSize >= requestedSize) {
+    while (this._paletteDetectionPromise) {
+      if (
+        this._paletteDetectionSize >= requestedSize &&
+        this._paletteDetectionGeneration === this._palettePublishGeneration
+      ) {
         return this._paletteDetectionPromise.then((palette) => {
           const cached = this.getCachedPaletteBySize(requestedSize)
           if (cached) {
@@ -5253,12 +5480,22 @@ export class CliRenderer extends EventEmitter implements RenderContext {
             ...palette,
             palette: palette.palette.slice(0, requestedSize),
           }
-          this._paletteCache.set(requestedSize, projected)
+          if (!this._isDestroyed && requestedGeneration === this._palettePublishGeneration) {
+            this._paletteCache.set(requestedSize, projected)
+          }
           return projected
         })
       }
 
       await this._paletteDetectionPromise
+      if (
+        this._isDestroyed ||
+        !this._terminalIsSetup ||
+        this.nativeTerminalTransition ||
+        this.currentControlState === RendererControlState.EXPLICIT_SUSPENDED
+      ) {
+        throw new Error("Palette detection was cancelled")
+      }
 
       const afterWait = this.getCachedPaletteBySize(requestedSize)
       if (afterWait) {
@@ -5269,18 +5506,36 @@ export class CliRenderer extends EventEmitter implements RenderContext {
     const detector = this.ensurePaletteDetector()
     const publishGeneration = this._palettePublishGeneration
     this._paletteDetectionSize = requestedSize
-    this._paletteDetectionPromise = detector
-      .detect({ ...options, timeout: detectionTimeout })
+    this._paletteDetectionGeneration = publishGeneration
+    let cancel: ((reason: Error) => void) | null = null
+    const cancelled = new Promise<never>((_resolve, reject) => {
+      cancel = (reason) => {
+        detector.cleanup()
+        if (this._paletteDetector === detector) this._paletteDetector = null
+        reject(reason)
+      }
+    })
+    this._cancelPaletteDetection = cancel
+    const detection = detector.detect({ ...options, timeout: detectionTimeout })
+    void detection.catch(() => detector.cleanup())
+    const completion = Promise.race([detection, cancelled])
       .then((result) => {
-        this._paletteCache.set(result.palette.length, result)
-        this._paletteDetectionPromise = null
-        this._paletteDetectionSize = 0
+        detector.cleanup()
+        if (this._paletteDetector === detector) this._paletteDetector = null
+        if (this._paletteDetectionPromise === pending) {
+          this._paletteDetectionPromise = null
+          this._paletteDetectionSize = 0
+          this._paletteDetectionGeneration = 0
+        }
 
-        if (!this._isDestroyed && this._palettePublishGeneration === publishGeneration) {
+        const publish = !this._isDestroyed && this._palettePublishGeneration === publishGeneration
+        if (publish && this.shouldSyncNativePaletteState() && result.palette.length >= NATIVE_PALETTE_QUERY_SIZE) {
+          this.syncNativePaletteState(result)
+        }
+        if (publish) this._paletteCache.set(result.palette.length, result)
+        if (publish) {
           this.emitPaletteChange(result)
-          if (this.shouldSyncNativePaletteState() && result.palette.length >= NATIVE_PALETTE_QUERY_SIZE) {
-            this.syncNativePaletteState(result)
-          } else if (this.shouldSyncNativePaletteState() && !this._paletteCache.has(NATIVE_PALETTE_QUERY_SIZE)) {
+          if (this.shouldSyncNativePaletteState() && !this._paletteCache.has(NATIVE_PALETTE_QUERY_SIZE)) {
             this.refreshPalette()
           }
         }
@@ -5288,10 +5543,19 @@ export class CliRenderer extends EventEmitter implements RenderContext {
         return result
       })
       .catch((error) => {
-        this._paletteDetectionPromise = null
-        this._paletteDetectionSize = 0
+        if (this._paletteDetectionPromise === pending) {
+          this._paletteDetectionPromise = null
+          this._paletteDetectionSize = 0
+          this._paletteDetectionGeneration = 0
+        }
+        detector.cleanup()
+        if (this._paletteDetector === detector) this._paletteDetector = null
         throw error
       })
+    const pending: Promise<TerminalColors> = completion.finally(() => {
+      if (this._cancelPaletteDetection === cancel) this._cancelPaletteDetection = null
+    })
+    this._paletteDetectionPromise = pending
 
     const detected = await this._paletteDetectionPromise
     const finalPalette = this.getCachedPaletteBySize(requestedSize) ?? detected

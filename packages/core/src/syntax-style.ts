@@ -1,6 +1,7 @@
 import { RGBA, parseColor, type ColorInput } from "./lib/RGBA.js"
-import { resolveRenderLib, type RenderLib, type SyntaxStyleHandle } from "./zig.js"
+import { type RenderLib, type ContextSyntaxStyleHandle } from "./zig.js"
 import { createTextAttributes } from "./utils.js"
+import type { NativeResourceOwner } from "./buffer.js"
 
 export interface StyleDefinition {
   fg?: RGBA
@@ -38,6 +39,14 @@ export interface ThemeTokenStyle {
   }
 }
 
+function cloneStyle<T extends { fg?: RGBA; bg?: RGBA }>(style: T): T {
+  return {
+    ...style,
+    fg: style.fg ? RGBA.clone(style.fg) : undefined,
+    bg: style.bg ? RGBA.clone(style.bg) : undefined,
+  }
+}
+
 export function convertThemeToStyles(theme: ThemeTokenStyle[]): Record<string, StyleDefinition> {
   const flatStyles: Record<string, StyleDefinition> = {}
 
@@ -66,7 +75,7 @@ export function convertThemeToStyles(theme: ThemeTokenStyle[]): Record<string, S
 
     // Apply the same style to all scopes
     for (const scope of tokenStyle.scope) {
-      flatStyles[scope] = styleDefinition
+      flatStyles[scope] = cloneStyle(styleDefinition)
     }
   }
 
@@ -75,66 +84,101 @@ export function convertThemeToStyles(theme: ThemeTokenStyle[]): Record<string, S
 
 export class SyntaxStyle {
   private lib: RenderLib
-  private stylePtr: SyntaxStyleHandle
+  private native: { scene: NativeResourceOwner; handle: ContextSyntaxStyleHandle }
   private _destroyed: boolean = false
   private nameCache: Map<string, number> = new Map()
   private styleDefs: Map<string, StyleDefinition> = new Map()
   private mergedCache: Map<string, MergedStyle> = new Map()
 
-  constructor(lib: RenderLib, ptr: SyntaxStyleHandle) {
+  constructor(lib: RenderLib, handle: ContextSyntaxStyleHandle, scene: NativeResourceOwner) {
+    if (!scene?.driver) throw new Error("SyntaxStyle requires an explicit resource owner")
+    scene.assertAlive()
+    if (
+      scene.driver.renderLib !== lib ||
+      !handle ||
+      typeof handle !== "object" ||
+      handle.context !== scene.driver.context
+    ) {
+      throw new Error("SyntaxStyle Context owner mismatch")
+    }
     this.lib = lib
-    this.stylePtr = ptr
+    this.native = { scene, handle }
   }
 
-  static create(): SyntaxStyle {
-    const lib = resolveRenderLib()
-    const ptr = lib.createSyntaxStyle()
-    return new SyntaxStyle(lib, ptr)
-  }
-
-  static fromTheme(theme: ThemeTokenStyle[]): SyntaxStyle {
-    const style = SyntaxStyle.create()
-    const flatStyles = convertThemeToStyles(theme)
-
-    for (const [name, styleDef] of Object.entries(flatStyles)) {
-      style.registerStyle(name, styleDef)
+  static create(owner: NativeResourceOwner): SyntaxStyle {
+    if (!owner?.driver) throw new Error("SyntaxStyle requires an explicit resource owner")
+    owner.assertAlive()
+    const lib = owner.driver.renderLib
+    const handle = lib.createContextSyntaxStyle(owner.driver.context)
+    try {
+      return new SyntaxStyle(lib, handle, owner)
+    } catch (error) {
+      lib.destroyContextSyntaxStyle(owner.driver.context, handle)
+      throw error
     }
-
-    return style
   }
 
-  static fromStyles(styles: Record<string, StyleDefinitionInput>): SyntaxStyle {
-    const style = SyntaxStyle.create()
+  static fromTheme(theme: ThemeTokenStyle[], owner: NativeResourceOwner): SyntaxStyle {
+    return SyntaxStyle.fromStyles(convertThemeToStyles(theme), owner)
+  }
 
-    for (const [name, styleDef] of Object.entries(styles)) {
-      style.registerStyle(name, styleDef)
+  static fromStyles(
+    styles: Record<string, StyleDefinitionInput> | Map<string, StyleDefinitionInput>,
+    owner: NativeResourceOwner,
+  ): SyntaxStyle {
+    const style = SyntaxStyle.create(owner)
+    try {
+      for (const [name, styleDef] of styles instanceof Map ? styles : Object.entries(styles)) {
+        style.registerStyle(name, styleDef)
+      }
+      return style
+    } catch (error) {
+      style.destroy()
+      throw error
     }
-
-    return style
   }
 
   private guard(): void {
     if (this._destroyed) throw new Error("NativeSyntaxStyle is destroyed")
+    this.native.scene.assertAlive()
+  }
+
+  /** @internal Attachment borrows the destination-owned style; it never allocates a copy. */
+  public _getSceneHandle(scene: NativeResourceOwner): ContextSyntaxStyleHandle {
+    this.guard()
+    scene.assertAlive()
+    if (scene.driver.renderLib !== this.lib) throw new Error("SyntaxStyle library owner mismatch")
+    if (this.native.scene !== scene)
+      throw new Error("SyntaxStyle owner mismatch: bind definitions in the destination owner")
+    return this.native.handle
   }
 
   public registerStyle(name: string, style: StyleDefinitionInput): number {
     this.guard()
 
-    const attributes = createTextAttributes({
-      bold: style.bold,
-      italic: style.italic,
-      underline: style.underline,
-      dim: style.dim,
+    const { bold, italic, underline, dim, fg: foreground, bg: background } = style
+    const definition: StyleDefinition = {
+      bold,
+      italic,
+      underline,
+      dim,
+      fg: foreground ? RGBA.clone(parseColor(foreground)) : undefined,
+      bg: background ? RGBA.clone(parseColor(background)) : undefined,
+    }
+    const attributes = createTextAttributes(definition)
+    const fg = definition.fg ?? null
+    const bg = definition.bg ?? null
+    return this.lib.getYogaHost().runMutation(() => {
+      const id = this.lib.contextSyntaxStyleRegister(this.native.handle.context, this.native.handle, name, {
+        fg,
+        bg,
+        attributes,
+      })
+      this.nameCache.set(name, id)
+      this.styleDefs.set(name, definition)
+      this.mergedCache.clear()
+      return id
     })
-
-    const fg = style.fg ? parseColor(style.fg) : null
-    const bg = style.bg ? parseColor(style.bg) : null
-    const id = this.lib.syntaxStyleRegister(this.stylePtr, name, fg, bg, attributes)
-
-    this.nameCache.set(name, id)
-    this.styleDefs.set(name, { ...style, fg: fg ?? undefined, bg: bg ?? undefined })
-
-    return id
   }
 
   public resolveStyleId(name: string): number | null {
@@ -144,7 +188,7 @@ export class SyntaxStyle {
     const cached = this.nameCache.get(name)
     if (cached !== undefined) return cached
 
-    const id = this.lib.syntaxStyleResolveByName(this.stylePtr, name)
+    const id = this.lib.contextSyntaxStyleResolveByName(this.native.handle.context, this.native.handle, name)
 
     if (id !== null) {
       this.nameCache.set(name, id)
@@ -168,17 +212,13 @@ export class SyntaxStyle {
     return null
   }
 
-  public get ptr(): SyntaxStyleHandle {
-    this.guard()
-    return this.stylePtr
-  }
-
   public getStyleCount(): number {
     this.guard()
-    return this.lib.syntaxStyleGetStyleCount(this.stylePtr)
+    return this.lib.contextSyntaxStyleGetStyleCount(this.native.handle.context, this.native.handle)
   }
 
   public clearNameCache(): void {
+    this.guard()
     this.nameCache.clear()
   }
 
@@ -190,14 +230,15 @@ export class SyntaxStyle {
     }
 
     const style = this.styleDefs.get(name)
-    if (style) return style
+    if (style) return cloneStyle(style)
 
     if (name.includes(".")) {
       const baseName = name.split(".")[0]
       if (Object.prototype.hasOwnProperty.call(this.styleDefs, baseName)) {
         return undefined
       }
-      return this.styleDefs.get(baseName)
+      const base = this.styleDefs.get(baseName)
+      return base ? cloneStyle(base) : undefined
     }
 
     return undefined
@@ -208,7 +249,7 @@ export class SyntaxStyle {
 
     const cacheKey = styleNames.join(":")
     const cached = this.mergedCache.get(cacheKey)
-    if (cached) return cached
+    if (cached) return cloneStyle(cached)
 
     const styleDefinition: StyleDefinition = {}
 
@@ -240,7 +281,7 @@ export class SyntaxStyle {
 
     this.mergedCache.set(cacheKey, merged)
 
-    return merged
+    return cloneStyle(merged)
   }
 
   public clearCache(): void {
@@ -255,7 +296,7 @@ export class SyntaxStyle {
 
   public getAllStyles(): Map<string, StyleDefinition> {
     this.guard()
-    return new Map(this.styleDefs)
+    return new Map(Array.from(this.styleDefs, ([name, style]) => [name, cloneStyle(style)]))
   }
 
   public getRegisteredNames(): string[] {
@@ -265,10 +306,13 @@ export class SyntaxStyle {
 
   public destroy(): void {
     if (this._destroyed) return
-    this._destroyed = true
-    this.nameCache.clear()
-    this.styleDefs.clear()
-    this.mergedCache.clear()
-    this.lib.destroySyntaxStyle(this.stylePtr)
+    this.lib.getYogaHost().runMutation(() => {
+      if (!this.native.scene.driver.contextDisposed)
+        this.lib.destroyContextSyntaxStyle(this.native.handle.context, this.native.handle)
+      this._destroyed = true
+      this.nameCache.clear()
+      this.styleDefs.clear()
+      this.mergedCache.clear()
+    })
   }
 }

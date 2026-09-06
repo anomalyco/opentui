@@ -13,6 +13,7 @@ const workspaceRoot = resolve(packageRoot, "..", "..")
 const corePackageRoot = resolve(packageRoot, "..", "core")
 const coreDistRoot = resolve(corePackageRoot, "dist")
 const outDir = resolve(packageRoot, ".node-test")
+const localDir = resolve(packageRoot, ".node-test-local")
 const nodeTestTimeoutMs = 30_000
 const nodeProcessTimeoutMs = 5 * 60_000
 const nodePath = requireNode26()
@@ -20,12 +21,26 @@ const emittedAllowlist = [
   ".node-test/tests/box.test.js",
   ".node-test/tests/control-flow-updates.test.js",
   ".node-test/tests/image.test.js",
+  ".node-test/tests/native-scene.test.js",
+  ".node-test/tests/native-editors.test.js",
+  ".node-test/tests/native-scene-code.test.js",
+  ".node-test/tests/native-scene-portals.test.js",
+  ".node-test/tests/native-scene-slots.test.js",
+  ".node-test/tests/render-self-signal.test.js",
+  ".node-test/tests/scrollback-writer.test.js",
 ]
 const testEntries = [
   { source: "tests/box.test.tsx", output: "tests/box.test.js" },
   { source: "tests/control-flow-updates.test.tsx", output: "tests/control-flow-updates.test.js" },
   { source: "tests/image.test.tsx", output: "tests/image.test.js" },
-  { source: "src/testing/bun-test-node.ts", output: "src/testing/bun-test-node.js" },
+  { source: "tests/native-scene.test.tsx", output: "tests/native-scene.test.js" },
+  { source: "tests/native-editors.test.tsx", output: "tests/native-editors.test.js" },
+  { source: "tests/native-scene-code.test.tsx", output: "tests/native-scene-code.test.js" },
+  { source: "tests/native-scene-portals.test.tsx", output: "tests/native-scene-portals.test.js" },
+  { source: "tests/native-scene-slots.test.ts", output: "tests/native-scene-slots.test.js" },
+  { source: "tests/render-self-signal.test.tsx", output: "tests/render-self-signal.test.js" },
+  { source: "tests/scrollback-writer.test.tsx", output: "tests/scrollback-writer.test.js" },
+  { source: "../core/src/testing/bun-test-node.ts", output: "src/testing/bun-test-node.js" },
 ]
 
 let exitCode = 0
@@ -41,6 +56,7 @@ try {
     await buildEntryPoint(entry.source, entry.output)
   }
 
+  mkdirSync(localDir, { recursive: true })
   exitCode = run(
     nodePath,
     [
@@ -48,8 +64,11 @@ try {
       "--disable-warning=ExperimentalWarning",
       "--permission",
       `--allow-fs-read=${workspaceRoot}`,
+      ...(process.env.OTUI_ASSET_ROOT ? [`--allow-fs-read=${resolve(process.env.OTUI_ASSET_ROOT)}`] : []),
       `--allow-fs-write=${outDir}`,
+      `--allow-fs-write=${localDir}`,
       "--allow-child-process",
+      "--allow-worker",
       "--allow-ffi",
       "--experimental-ffi",
       "--import",
@@ -59,10 +78,15 @@ try {
       "--test",
       ...emittedAllowlist,
     ],
-    { cwd: packageRoot, timeout: nodeProcessTimeoutMs },
+    {
+      cwd: packageRoot,
+      timeout: nodeProcessTimeoutMs,
+      env: { ...process.env, XDG_DATA_HOME: localDir },
+    },
   )
 } finally {
   rmSync(outDir, { recursive: true, force: true })
+  rmSync(localDir, { recursive: true, force: true })
 }
 
 process.exit(exitCode)
@@ -154,9 +178,14 @@ function writeCoreDistProxyPackage(): void {
   )
 }
 
-function run(command: string, args: string[], options: { cwd?: string; timeout?: number } = {}): number {
+function run(
+  command: string,
+  args: string[],
+  options: { cwd?: string; timeout?: number; env?: NodeJS.ProcessEnv } = {},
+): number {
   const result = spawnSync(command, args, {
     cwd: options.cwd ?? packageRoot,
+    env: options.env ?? process.env,
     stdio: "inherit",
     timeout: options.timeout,
   })

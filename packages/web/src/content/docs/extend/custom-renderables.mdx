@@ -33,9 +33,9 @@ export class RuleRenderable extends Renderable {
   constructor(ctx: RenderContext, options: RuleOptions) {
     super(ctx, options)
     this._columns = Math.max(1, Math.floor(options.columns))
-    this._color = options.color ?? RGBA.fromInts(255, 255, 255)
+    this._color = RGBA.clone(options.color ?? RGBA.fromInts(255, 255, 255))
 
-    this.getLayoutNode().setMeasureFunc((width, widthMode) => ({
+    this.setMeasureProvider((width, widthMode) => ({
       width:
         widthMode === MeasureMode.Exactly
           ? width
@@ -50,7 +50,7 @@ export class RuleRenderable extends Renderable {
     const columns = Math.max(1, Math.floor(value))
     if (columns === this._columns) return
     this._columns = columns
-    this.getLayoutNode().markDirty()
+    this.invalidateIntrinsicSize()
     this.requestRender()
   }
 
@@ -77,44 +77,78 @@ placement. Your code still owns resources that the instance allocates.
 
 ## Measure intrinsic size
 
-Call `getLayoutNode().setMeasureFunc()` when content determines an automatic width or height. The callback receives a
+Call `setMeasureProvider()` when content determines an automatic width or height. The callback receives a
 width, a width mode, a height, and a height mode. Return the measured `width` and `height` in terminal cells.
 
 The modes have these meanings:
 
-| Mode                    | Required result                     |
-| ----------------------- | ----------------------------------- |
-| `MeasureMode.Undefined` | Return the intrinsic size           |
-| `MeasureMode.AtMost`    | Do not exceed the finite constraint |
-| `MeasureMode.Exactly`   | Use the supplied size               |
+| Mode                    | Required result                  |
+| ----------------------- | -------------------------------- |
+| `MeasureMode.Undefined` | No finite constraint is supplied |
+| `MeasureMode.AtMost`    | An available size is supplied    |
+| `MeasureMode.Exactly`   | Yoga fixes this layout dimension |
 
-A Yoga node has one measure slot. A measured node cannot also act as a normal Yoga container. Setting a JavaScript
-measure function also replaces any native measure target on that node.
+Return intrinsic measurements; Yoga applies the layout constraints. A provider
+can return an intrinsic dimension larger than an `AtMost` constraint, or different
+from an `Exactly` constraint. Do not pre-clamp results just to satisfy the mode.
 
-When intrinsic content changes, call `getLayoutNode().markDirty()` and `requestRender()`. `markDirty()` asks Yoga to
-measure again. `requestRender()` marks the renderable dirty and schedules a renderer pass.
+A renderable has one measure provider. A measured node cannot also act as a layout container with children.
+Setting a provider replaces the previous provider, including built-in text or editor measurement. Call
+`setMeasureProvider(null)` to clear it. Clearing does not restore a replaced built-in provider. Destruction releases
+the registered callback.
 
-Do not call `markDirty()` on an unmeasured Yoga node. Read [Layout](/docs/core-concepts/layout) for sizing, rounding,
-and parent constraints.
+Measurement callbacks must return synchronously. You can read completed layout and content, but cannot mutate layout,
+replace a provider, invalidate measurement, change children, or destroy renderables during measurement.
 
-## Use the render traversal
+When intrinsic content changes, call `invalidateIntrinsicSize()` to invalidate cached measurement, then
+`requestRender()` to schedule a renderer pass. Invalidation does nothing when no provider is registered.
+`requestRender()` alone does not invalidate measurement. Setting, replacing, or clearing a provider schedules a pass.
 
-OpenTUI builds and executes a render-command list in three stages:
+Use `getLayout()` for a read-only snapshot of raw local layout: `left`, `top`, `right`, `bottom`, `width`, and `height`.
+It preserves zero dimensions and excludes screen translations. It does not calculate layout; after a property change,
+it reports the previous completed layout until the next layout pass. Before the first layout pass, dimensions can be
+`NaN`. Use `screenX`, `screenY`, `width`, and `height` for drawing in terminal cells.
 
-1. Yoga calculates layout from the root.
-2. `updateLayout()` calls `onUpdate()`, reads computed layout, runs resize hooks, and collects visible nodes.
-3. The root calls `render()` for each collected node in z-index order.
+Renderable `getLayoutNode()` and protected `yogaNode` access are no longer supported. Use layout properties, measurement
+providers, and `getLayout()` instead. The [standalone Yoga API](/docs/reference/yoga) remains available for separate
+layout trees. Read [Layout](/docs/core-concepts/layout) for sizing, rounding, and parent constraints.
 
-The standard `render()` method runs `renderBefore`, `renderSelf()`, and `renderAfter` in that order. It then marks the
-node clean, writes its rectangle to the hit grid, and composites its private buffer when needed.
+## Use paint hooks
 
-Override `renderSelf()` for normal custom drawing. Override `render()` only when you also preserve clean-state, hit-grid,
-buffering, and hook behavior.
+The native scene owns layout, traversal, visibility, clipping, hit registration, and built-in drawing. JavaScript
+measurement, lifecycle, and custom paint hooks run on the owner thread at their established frame positions.
 
-Draw hooks and `renderSelf()` run after layout and culling. Do not change layout, children, visibility, or reactive state
-from them. In demand mode, a render request made during the active pass schedules one follow-up pass. Repeated requests
-coalesce, but an unconditional request on every draw creates a continuous rerender loop. Schedule later state work
-outside the draw hook.
+For paint hooks, native code returns a request, JavaScript runs the hook, and native code resumes after the host acknowledges it.
+Measurement instead uses a synchronous native-to-JavaScript callback. [How Core uses native](/docs/native/core) explains both paths.
+
+For an ordinary custom renderable, painting runs `renderBefore`, `renderSelf()`, and then `renderAfter`. The after hook
+runs after that node's own drawing, not after its descendants. Override `renderSelf()` on a custom `Renderable` for
+custom drawing. For built-in boxes, use `renderBefore` or `renderAfter` around native drawing.
+
+Text and editor components skip the generic `renderBefore` and `renderAfter` hooks. To extend their drawing, override
+`renderSelf(buffer, deltaTime)` and call `super.renderSelf(buffer, deltaTime)` before drawing an overlay. The inherited
+drawing completes synchronously, so the override can inspect its cells with `withBuffers()`.
+
+Do not implement traversal, manual hit insertion, or frame orchestration through `render()` overrides.
+Use cursor options instead of `renderCursor()` overrides.
+
+Draw hooks run after layout and paint-list preparation. Prefer update or lifecycle hooks for state changes.
+During painting, the native scene skips destroyed nodes. Newly inserted children wait for the next prepared frame.
+An ordered paint hook can update an already scheduled later node.
+
+In demand mode, repeated render requests coalesce.
+But an unconditional request on every draw still creates a continuous rerender loop.
+
+### Update hooks
+
+Assign callbacks directly, such as `box.renderAfter = callback`. OpenTUI also supports subclass methods and class-field hooks.
+
+If you replace or delete a hook descriptor through reflection, call `box.refreshHooks()` afterward.
+Paint and style changes do not rediscover hook descriptors automatically.
+
+OpenTUI discovers class-field hooks at attachment and before frame or lifecycle work.
+An intermediate constructor can attach the node before derived fields initialize.
+If you need those hooks before the next discovery boundary, call `refreshHooks()` after construction.
 
 ## Handle coordinates, clipping, and buffering
 
@@ -127,6 +161,12 @@ whole child subtree into one offscreen surface.
 
 An ancestor with `overflow: "hidden"` or `overflow: "scroll"` clips descendant drawing and hit testing. Keep custom
 drawing inside the renderable's computed rectangle. See [Buffer API](/docs/reference/buffer-api) for cell operations.
+
+Text renderables expose `drawToBuffer(buffer, x, y)` to paint their current text viewport into an owned buffer.
+The coordinates belong to the destination buffer, so `(0, 0)` is suitable for a local scratch surface.
+This drawing does not change the text's layout, allocate a second text resource, or insert hit regions.
+Use `withBuffers()` for scoped cell effects.
+Use the buffer's checked clipping and opacity operations for local drawing limits.
 
 ## Schedule updates
 

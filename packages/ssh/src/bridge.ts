@@ -1,7 +1,7 @@
-import { Readable, Writable } from "node:stream"
-import { CliRenderEvents, createCliRenderer, type CliRenderer } from "@opentui/core"
+import { Readable } from "node:stream"
+import { CliRenderEvents, NativeSession, createCliRenderer, type CliRenderer } from "@opentui/core"
 import type { ServerChannel } from "ssh2"
-import { DenyError } from "./errors.js"
+import { DenyError, OutputPressureError } from "./errors.js"
 import { ignoreErrors, type SafeInvoke } from "./safe.js"
 import type { Identity, MiddlewareSession, RemoteAddress, Session, SessionHandler } from "./types.js"
 
@@ -18,7 +18,6 @@ export interface PtyInfo {
 
 export const DEFAULT_PTY: PtyInfo = { term: "xterm-256color", cols: 80, rows: 24, hasPty: false }
 export const MAX_PTY = { cols: 500, rows: 200 } as const
-const TRANSPORT_DRAIN_TIMEOUT_MS = 1_000
 
 const UNKNOWN_REMOTE_ADDRESS: RemoteAddress = { address: "unknown" }
 
@@ -40,7 +39,7 @@ function normalizePtyInfo(pty: PtyInfo): PtyInfo {
 /**
  * Adapter stream pair for the renderer:
  *  - stdin: a flowing Readable; raw client bytes from the channel are pushed in.
- *  - stdout: a Writable the renderer's NativeSpanFeed writes frames to.
+ *  - stdout: the channel borrowed by the renderer's NativeSession.
  */
 function createSessionStreams(channel: ServerChannel, cols: number, rows: number, onActivity?: () => void) {
   let inputPaused = false
@@ -60,41 +59,21 @@ function createSessionStreams(channel: ServerChannel, cols: number, rows: number
   }
   channel.on("data", onData)
 
-  let channelGone = false
-  let pendingDrain: (() => void) | null = null
-  // A deferred write will never drain after the peer vanishes.
-  const releasePending = () => {
-    const done = pendingDrain
-    pendingDrain = null
-    done?.()
-  }
-  channel.on("close", () => {
-    channelGone = true
-    releasePending()
-  })
-  channel.on("error", () => {
-    channelGone = true
-    releasePending()
-  })
-
-  const stdout = new Writable({
-    write(chunk: Buffer | string, _enc, cb) {
-      if (channelGone) return cb()
-      // Copy renderer frame memory before acknowledging the write.
-      const bytes = Buffer.from(chunk)
-      if (bytes.byteLength === 0) return cb()
-      // channel.write() returns false under backpressure; defer cb() to 'drain'
-      // so flow control is applied back onto the feed instead of dropping frames.
-      const ok = channel.write(bytes)
-      if (ok) return cb()
-      pendingDrain = cb
-      channel.once("drain", releasePending)
-    },
-  }) as unknown as NodeJS.WriteStream
+  const stdout = channel as unknown as NodeJS.WriteStream
   stdout.columns = cols
   stdout.rows = rows
 
-  return { stdin: stdin as unknown as NodeJS.ReadStream, stdout, detach: () => channel.removeListener("data", onData) }
+  return {
+    stdin: stdin as unknown as NodeJS.ReadStream,
+    stdout,
+    detach: () => {
+      channel.removeListener("data", onData)
+      stdin.destroy()
+      // ssh2 defers channel close until readable EOF, including after local end().
+      // Discard paused input once it no longer belongs to the renderer.
+      queueMicrotask(() => channel.resume())
+    },
+  }
 }
 
 export interface SessionBridge {
@@ -109,6 +88,8 @@ export interface SessionBridge {
   enterApp(handler: SessionHandler): Promise<void>
   resize(cols: number, rows: number): void
   destroy(): Promise<void>
+  /** Cancel a lost connection without relying on ssh2's delayed channel close event. */
+  disconnect(): Promise<void>
 }
 
 /** What `createSessionBridge` needs to wire one ssh2 shell channel into a session. */
@@ -141,12 +122,14 @@ export function createSessionBridge(channel: ServerChannel, options: SessionBrid
     remoteAddress = UNKNOWN_REMOTE_ADDRESS,
   } = options
   const initialPty = normalizePtyInfo(pty)
+  const nativeSession = new NativeSession(channel)
   // Assigned after `destroy` exists; the stream activity hook calls through it.
   let resetIdle = () => {}
   const { stdin, stdout, detach } = createSessionStreams(channel, initialPty.cols, initialPty.rows, () => resetIdle())
 
   // Created only if middleware reaches the handler.
   let renderer: CliRenderer | undefined
+  let creatingRenderer: Promise<CliRenderer> | undefined
 
   let cols = initialPty.cols
   let rows = initialPty.rows
@@ -157,9 +140,12 @@ export function createSessionBridge(channel: ServerChannel, options: SessionBrid
 
   let closed = false
   let channelClosed = false // set when the client hung up — don't poke a dead channel
-  let stdoutFinished = false
-  let pendingRawWrites = 0
-  let transportCloseTimer: ReturnType<typeof setTimeout> | undefined
+  let reportedNativeError: unknown
+  const reportTransportError = (error: unknown) => {
+    if (error === reportedNativeError) return
+    reportedNativeError = error
+    safe.report(error)
+  }
   let resolveTransportClosed!: () => void
   const transportClosed = new Promise<void>((resolve) => {
     resolveTransportClosed = resolve
@@ -204,21 +190,31 @@ export function createSessionBridge(channel: ServerChannel, options: SessionBrid
     },
     write(data) {
       if (closed) return
-      pendingRawWrites++
-      channel.write(data, () => {
-        pendingRawWrites--
-        finishTransportClose()
-      })
+      // Check code units first to bound the UTF-8 scan, then check bytes before allocation.
+      if (
+        data.length > nativeSession.maxAtomicWriteBytes ||
+        Buffer.byteLength(data) > nativeSession.maxAtomicWriteBytes
+      ) {
+        throw new RangeError("@opentui/ssh: raw write exceeds the native session output limit")
+      }
+      if (!nativeSession.write(typeof data === "string" ? Buffer.from(data) : data)) throw new OutputPressureError()
     },
     end() {
       void destroy()
     },
     deny(reason): never {
-      // Keep deny reasons on the main screen by writing before the renderer exists.
-      if (reason && !closed) {
-        session.write(/\r?\n$/.test(reason) ? reason : `${reason}\r\n`)
+      try {
+        if (reason && !closed) {
+          if (reason.length > nativeSession.maxAtomicWriteBytes) {
+            throw new RangeError("@opentui/ssh: deny reason exceeds the native session output limit")
+          }
+          session.write(/\r?\n$/.test(reason) ? reason : `${reason}\r\n`)
+        }
+      } catch (error) {
+        safe.report(error)
+      } finally {
+        void destroy()
       }
-      void destroy()
       throw new DenyError(reason)
     },
   }
@@ -226,32 +222,23 @@ export function createSessionBridge(channel: ServerChannel, options: SessionBrid
   const resize = (requestedCols: number, requestedRows: number) => {
     if (closed) return
     // Clamp each axis independently so one bad value does not discard the other.
-    const nextCols = clampPtyDimension(requestedCols, cols, MAX_PTY.cols)
-    const nextRows = clampPtyDimension(requestedRows, rows, MAX_PTY.rows)
-    cols = nextCols
-    rows = nextRows
+    const nextCols = clampPtyDimension(requestedCols, stdout.columns, MAX_PTY.cols)
+    const nextRows = clampPtyDimension(requestedRows, stdout.rows, MAX_PTY.rows)
     stdout.columns = nextCols
     stdout.rows = nextRows
-    renderer?.resize(nextCols, nextRows)
-    resizeListeners.forEach((listener) => safe(() => listener(nextCols, nextRows)))
+    if (renderer) renderer.requestResize(nextCols, nextRows)
+    else {
+      cols = nextCols
+      rows = nextRows
+    }
   }
 
   // All session-ending paths funnel through this idempotent teardown.
-  const settleTransportClosed = () => {
-    if (transportCloseTimer) clearTimeout(transportCloseTimer)
-    resolveTransportClosed()
-  }
-
-  const closeTransport = () => {
-    if (channelClosed) return settleTransportClosed()
-    ignoreErrors(() => channel.exit(0))
+  const closeTransport = (restored = true) => {
+    if (channelClosed) return resolveTransportClosed()
+    ignoreErrors(() => channel.exit(restored ? 0 : 1))
     ignoreErrors(() => channel.close())
-    settleTransportClosed()
-  }
-
-  const finishTransportClose = () => {
-    if (!closed || !stdoutFinished || pendingRawWrites > 0 || channelClosed) return
-    closeTransport()
+    resolveTransportClosed()
   }
 
   const destroy = (): Promise<void> => {
@@ -260,20 +247,28 @@ export function createSessionBridge(channel: ServerChannel, options: SessionBrid
     if (idleTimer) clearTimeout(idleTimer)
     if (maxTimer) clearTimeout(maxTimer)
     ignoreErrors(() => renderer?.destroy())
-    if (!channelClosed) {
-      transportCloseTimer = setTimeout(closeTransport, TRANSPORT_DRAIN_TIMEOUT_MS)
-      // Core can enqueue final terminal-restoration bytes during destroy. End the
-      // adapter on the next microtask and let its pending writes drain before close.
-      queueMicrotask(() => {
-        stdout.end(() => {
-          stdoutFinished = true
-          finishTransportClose()
-        })
-      })
-    }
+    // Closing interrupts setup if the factory is still awaiting terminal output.
+    // A late renderer still owns its wrapper cleanup and must finish before the channel.
+    const closing = renderer?.closed ?? (channelClosed ? nativeSession.closed : nativeSession.close())
+    void (async () => {
+      let restored = true
+      try {
+        await closing
+      } catch {
+        restored = false
+      }
+      if (creatingRenderer) {
+        try {
+          const created = await creatingRenderer
+          await created.closed
+        } catch (error) {
+          if (!nativeSession.isCloseInterruption(error)) restored = false
+        }
+      }
+      closeTransport(restored)
+    })()
     detach()
     closeListeners.forEach((listener) => safe(listener))
-    if (channelClosed) settleTransportClosed()
     return transportClosed
   }
 
@@ -293,16 +288,34 @@ export function createSessionBridge(channel: ServerChannel, options: SessionBrid
   }
 
   // Mark the channel gone before teardown so we do not write to a dead peer.
-  channel.on("close", () => {
+  const onChannelClose = () => {
     channelClosed = true
-    settleTransportClosed()
+    channel.removeListener("close", onChannelClose)
+    channel.removeListener("error", onChannelError)
     void destroy()
-  })
-  channel.on("error", (error: Error) => {
+  }
+  const onChannelError = (error: Error) => {
     channelClosed = true
-    settleTransportClosed()
-    safe.report(error)
+    reportTransportError(error)
     void destroy()
+  }
+  channel.on("close", onChannelClose)
+  channel.on("error", onChannelError)
+
+  void nativeSession.closed.catch((error) => {
+    void destroy()
+    if (creatingRenderer) {
+      // Creation reports real failures. An interrupted setup or late success must
+      // still report a failed close, unless the channel already reported it.
+      void creatingRenderer.then(
+        () => {
+          if (!channelClosed) reportTransportError(error)
+        },
+        (creationError) => {
+          if (!channelClosed && nativeSession.isCloseInterruption(creationError)) reportTransportError(error)
+        },
+      )
+    } else if (!channelClosed) reportTransportError(error)
   })
 
   // Use current dimensions so resizes during middleware are honored.
@@ -310,27 +323,39 @@ export function createSessionBridge(channel: ServerChannel, options: SessionBrid
     if (renderer) return renderer
     // The session may have closed while middleware was still running.
     if (closed) return null
-    const createdRenderer = await createRenderer({
+    creatingRenderer = createRenderer({
       stdin,
-      stdout, // custom stdout → frames routed through NativeSpanFeed
+      stdout,
       width: cols,
       height: rows,
       exitOnCtrlC: false, // the app/server owns quit; don't kill on ^C
       exitSignals: [], // no process-level signal handling for a remote peer
       consoleMode: "disabled", // never patch the host's global console per session
       targetFps: 30,
+      nativeSession,
+      externalOutputMode: "passthrough",
     })
+    const createdRenderer = await creatingRenderer
     // The client may vanish while createRenderer is awaiting; release the renderer
     // immediately instead of attaching it to dead streams.
     if (closed) {
       ignoreErrors(() => createdRenderer.destroy())
       return null
     }
-    if (createdRenderer.width !== cols || createdRenderer.height !== rows) {
-      createdRenderer.resize(cols, rows)
-    }
-    createdRenderer.on(CliRenderEvents.DESTROY, destroy)
+    const requestedCols = cols
+    const requestedRows = rows
+    cols = createdRenderer.width
+    rows = createdRenderer.height
+    createdRenderer.on(CliRenderEvents.RESIZE, (width: number, height: number) => {
+      if (closed) return
+      cols = width
+      rows = height
+      resizeListeners.forEach((listener) => safe(() => listener(width, height)))
+    })
     renderer = createdRenderer
+    createdRenderer.on(CliRenderEvents.DESTROY, destroy)
+    createdRenderer.requestResize(requestedCols, requestedRows)
+    creatingRenderer = undefined
     return renderer
   }
 
@@ -343,6 +368,10 @@ export function createSessionBridge(channel: ServerChannel, options: SessionBrid
       attachedRenderer = await attachRenderer()
     } catch (err) {
       destroy()
+      if (nativeSession.isCloseInterruption(err)) return ended
+      if (err === nativeSession.error && (channelClosed || err === reportedNativeError)) return ended
+      // runSession reports the factory rejection; a later channel error must not repeat it.
+      reportedNativeError = err
       throw err
     }
     if (!attachedRenderer) return ended
@@ -371,5 +400,11 @@ export function createSessionBridge(channel: ServerChannel, options: SessionBrid
     enterApp,
     resize,
     destroy,
+    disconnect() {
+      channelClosed = true
+      const closing = destroy()
+      nativeSession.dispose()
+      return closing
+    },
   }
 }

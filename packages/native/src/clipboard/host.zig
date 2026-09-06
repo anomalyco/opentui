@@ -1,6 +1,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const handles = @import("../handles.zig");
+const registry = &@import("../compatibility-context.zig").compatDefault.registry;
 const clipboard_clock = @import("clock.zig");
 const clipboard_linux = @import("linux.zig");
 const clipboard_wayland = @import("wayland.zig");
@@ -786,7 +787,7 @@ const Service = struct {
     fn deinit(service: *Service) void {
         for (service.operations.items) |operation| {
             std.debug.assert(operation.thread == null);
-            handles.invalidate(operation.handle, .clipboard_operation);
+            registry.invalidate(operation.handle, .clipboard_operation);
             operation.deinit();
         }
         service.operations.deinit(service.allocator);
@@ -1470,11 +1471,11 @@ fn erasePtr(pointer: anytype) *anyopaque {
 }
 
 fn acquireService(handle: Handle) ?*Service {
-    return handles.acquire(handle, .clipboard_service, Service);
+    return registry.acquire(handle, .clipboard_service, Service);
 }
 
 fn acquireOperation(handle: Handle) ?*Operation {
-    return handles.acquire(handle, .clipboard_operation, Operation);
+    return registry.acquire(handle, .clipboard_operation, Operation);
 }
 
 fn sliceFromPointer(pointer: ?[*]const u8, length: u32) ?[]const u8 {
@@ -1525,13 +1526,13 @@ pub fn createService(
             return 0;
         };
     }
-    const service_handle = handles.insert(.clipboard_service, erasePtr(service)) catch {
+    const service_handle = registry.insert(.clipboard_service, erasePtr(service)) catch {
         service.deinit();
         return 0;
     };
     if (comptime builtin.os.tag == .windows or builtin.os.tag == .macos) {
         service.platform_thread = std.Thread.spawn(.{}, Service.platformWorker, .{service}) catch {
-            handles.invalidate(service_handle, .clipboard_service);
+            registry.invalidate(service_handle, .clipboard_service);
             service.deinit();
             return 0;
         };
@@ -1591,7 +1592,7 @@ fn startImmediateOperation(
         .selection = selection,
         .mutation_sequence = if (kind == .write or kind == .clear) service.takeMutationSequence() else 0,
     };
-    const operation_handle = handles.insertOwnedChild(
+    const operation_handle = registry.insertOwnedChild(
         .clipboard_operation,
         erasePtr(operation),
         service_handle,
@@ -1602,7 +1603,7 @@ fn startImmediateOperation(
     };
     operation.handle = operation_handle;
     service.operations.append(service.allocator, operation) catch {
-        handles.invalidate(operation_handle, .clipboard_operation);
+        registry.invalidate(operation_handle, .clipboard_operation);
         if (owned_request.len > 0) service.allocator.free(owned_request);
         service.allocator.destroy(operation);
         return .out_of_memory;
@@ -1764,7 +1765,7 @@ pub fn destroyOperation(operation_handle: Handle) DestroyStatus {
     const operation = acquireOperation(operation_handle) orelse return .invalid_handle;
     if (!operation.isReadyToDestroy()) return .not_ready;
     operation.service.removeOperation(operation);
-    handles.invalidate(operation_handle, .clipboard_operation);
+    registry.invalidate(operation_handle, .clipboard_operation);
     operation.deinit();
     return .destroyed;
 }
@@ -1783,7 +1784,7 @@ pub fn pollServiceShutdown(service_handle: Handle) ShutdownStatus {
 pub fn destroyService(service_handle: Handle) DestroyStatus {
     const service = acquireService(service_handle) orelse return .invalid_handle;
     if (service.pollShutdown() != .ready) return .not_ready;
-    handles.invalidate(service_handle, .clipboard_service);
+    registry.invalidate(service_handle, .clipboard_service);
     service.deinit();
     return .destroyed;
 }
@@ -2071,8 +2072,8 @@ test "clipboard Wayland BMP transfer converts to PNG and releases source bytes" 
         .timeout_ms = 1000,
         .started_ns = clipboard_clock.nowNs(),
     };
-    const operation_handle = try handles.insert(.clipboard_operation, erasePtr(&operation));
-    defer handles.invalidate(operation_handle, .clipboard_operation);
+    const operation_handle = try registry.insert(.clipboard_operation, erasePtr(&operation));
+    defer registry.invalidate(operation_handle, .clipboard_operation);
     defer {
         if (operation.result.len > 0) std.testing.allocator.free(operation.result);
         operation.transfer_data.deinit(std.testing.allocator);

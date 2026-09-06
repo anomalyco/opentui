@@ -466,7 +466,7 @@ export function destroy(renderer: CliRenderer): void {
 
   if (scrollBox) {
     const mainContainer = renderer.root.getRenderable("main-container")
-    if (mainContainer) renderer.root.remove(mainContainer)
+    mainContainer?.destroyRecursively()
     scrollBox = null
   }
 

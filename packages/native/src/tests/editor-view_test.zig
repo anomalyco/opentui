@@ -13,6 +13,10 @@ const EditBuffer = edit_buffer.EditBuffer;
 const Cursor = edit_buffer.Cursor;
 const Viewport = text_buffer_view.Viewport;
 
+comptime {
+    _ = @import("editor-view-owner_test.zig");
+}
+
 test "EditorView - init and deinit" {
     const pool = gp.initGlobalPool(std.testing.allocator);
     defer gp.deinitGlobalPool();
@@ -340,6 +344,85 @@ test "EditorView - setText resets viewport to top" {
 
     vp = ev.getViewport().?;
     try std.testing.expectEqual(@as(u32, 0), vp.y);
+}
+
+test "EditorView - borrowed replacement preserves selection and viewport on rejection" {
+    var pool = gp.GraphemePool.init(std.testing.allocator);
+    defer pool.deinit();
+    var links = link.LinkPool.init(std.testing.allocator);
+    defer links.deinit();
+    inline for (.{ false, true }) |clean| {
+        const eb = try EditBuffer.init(std.testing.allocator, &pool, &links, .unicode, null);
+        defer eb.deinit();
+        const ev = try EditorView.init(std.testing.allocator, eb, 10, 2);
+        defer ev.deinit();
+        const initial = "zero\none\ntwo\nthree\nfour\nfive";
+        const mem_id = try eb.setTextBorrowed(initial, null);
+        try eb.setCursor(5, 4);
+        try eb.insertText("X");
+        try eb.insertText("Y");
+        _ = try eb.undo();
+        ev.setSelection(1, 3, null, null);
+        ev.desired_visual_col = 4;
+        const lines = ev.getVirtualLines();
+        const viewport = ev.getViewport();
+        const selection = ev.getSelection();
+        const cursor = ev.getPrimaryCursor();
+        try std.testing.expect(viewport.?.y > 0);
+        const view_id = try eb.tb.registerView();
+        eb.tb.clearViewDirty(view_id);
+        const before = eb.tb.rope().*;
+        const add = eb.add_buffer;
+        const epoch = eb.tb.getContentEpoch();
+        const allocator = eb.tb.global_allocator;
+        var failing = std.testing.FailingAllocator.init(allocator, .{ .fail_index = 0 });
+        eb.tb.global_allocator = failing.allocator();
+        const result = if (clean)
+            eb.setTextBorrowed("new", mem_id)
+        else
+            eb.replaceTextBorrowed("new");
+        eb.tb.global_allocator = allocator;
+        try std.testing.expectError(error.OutOfMemory, result);
+        try std.testing.expect(failing.has_induced_failure);
+        try std.testing.expectEqual(before.root, eb.tb.rope().root);
+        try std.testing.expectEqual(before.version, eb.tb.rope().version);
+        try std.testing.expectEqual(before.undo_history, eb.tb.rope().undo_history);
+        try std.testing.expectEqual(before.redo_history, eb.tb.rope().redo_history);
+        try std.testing.expectEqual(before.curr_history, eb.tb.rope().curr_history);
+        try std.testing.expectEqualDeep(add, eb.add_buffer);
+        try std.testing.expectEqual(epoch, eb.tb.getContentEpoch());
+        try std.testing.expect(!eb.tb.isViewDirty(view_id));
+        try std.testing.expectEqualStrings(initial, eb.tb.getMemBuffer(mem_id).?);
+        var actual: [64]u8 = undefined;
+        try std.testing.expectEqualStrings(initial ++ "X", actual[0..eb.getText(&actual)]);
+        try std.testing.expectEqualDeep(viewport, ev.getViewport());
+        try std.testing.expectEqualDeep(selection, ev.getSelection());
+        try std.testing.expectEqualDeep(cursor, ev.getPrimaryCursor());
+        try std.testing.expectEqual(@as(?u32, 4), ev.desired_visual_col);
+        try std.testing.expectEqual(lines.ptr, ev.getVirtualLines().ptr);
+        try std.testing.expectEqual(lines.len, ev.getVirtualLines().len);
+
+        _ = try eb.redo();
+        try std.testing.expectEqualStrings(initial ++ "XY", actual[0..eb.getText(&actual)]);
+        ev.resetSelection();
+        const accepted = if (clean) try eb.setTextBorrowed("new", mem_id) else try eb.replaceTextBorrowed("new");
+        try std.testing.expectEqual(@as(u32, 0), ev.getViewport().?.y);
+        try std.testing.expectEqualDeep(Cursor{ .row = 0, .col = 0 }, ev.getPrimaryCursor());
+        try std.testing.expectEqual(@as(?u32, null), ev.desired_visual_col);
+        try std.testing.expectEqual(@as(usize, 1), ev.getVirtualLines().len);
+        if (clean) {
+            try std.testing.expectEqual(mem_id, accepted);
+            try std.testing.expect(!eb.canUndo());
+            try std.testing.expect(!eb.canRedo());
+            try std.testing.expectEqual(@as(usize, 0), eb.add_buffer.len);
+        }
+        try eb.insertText("!");
+        try std.testing.expectEqualStrings("!new", actual[0..eb.getText(&actual)]);
+        _ = try eb.undo();
+        try std.testing.expectEqualStrings("new", actual[0..eb.getText(&actual)]);
+        _ = try eb.redo();
+        try std.testing.expectEqualStrings("!new", actual[0..eb.getText(&actual)]);
+    }
 }
 
 test "EditorView - viewport respects total line count as max offset" {
@@ -873,6 +956,114 @@ test "EditorView - getEditBuffer returns correct buffer" {
 
     const returned_eb = ev.getEditBuffer();
     try std.testing.expect(returned_eb == eb);
+}
+
+test "EditorView - small viewport cursor movement preserves scrolling margins" {
+    const pool = gp.initGlobalPool(std.testing.allocator);
+    defer gp.deinitGlobalPool();
+    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
+    defer link.deinitGlobalLinkPool();
+
+    const eb = try EditBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth, null);
+    defer eb.deinit();
+    const ev = try EditorView.init(std.testing.allocator, eb, 20, 1);
+    defer ev.deinit();
+    try eb.setText("Line 0\nLine 1\nLine 2\nLine 3\nLine 4\nLine 5\nLine 6\nLine 7\nLine 8\nLine 9\nLine 10\nLine 11\nLine 12\nLine 13\nLine 14");
+
+    for ([_]f32{ 0, 0.2, 0.5 }) |margin| {
+        ev.setScrollMargin(margin);
+        for ([_]u32{ 1, 2, 3, 10 }) |height| {
+            const margin_lines = if (height == 1) 0 else @max(1, @as(u32, @intFromFloat(@as(f32, @floatFromInt(height)) * margin)));
+            try eb.setCursor(14, 3);
+            ev.setViewport(.{ .x = 0, .y = 0, .width = 20, .height = height }, true);
+            try std.testing.expectEqual(height - margin_lines - 1, ev.getPrimaryCursor().row);
+            try std.testing.expectEqual(@as(u32, 3), ev.getPrimaryCursor().col);
+            try std.testing.expectEqual(@as(u32, 0), ev.getViewport().?.y);
+
+            try eb.setCursor(0, 3);
+            ev.setViewport(.{ .x = 0, .y = 3, .width = 20, .height = height }, true);
+            try std.testing.expectEqual(3 + margin_lines, ev.getPrimaryCursor().row);
+            try std.testing.expectEqual(@as(u32, 3), ev.getPrimaryCursor().col);
+            try std.testing.expectEqual(@as(u32, 3), ev.getViewport().?.y);
+
+            if (height == 1) {
+                ev.updateBeforeRender();
+                try std.testing.expectEqual(@as(u32, 3), ev.getViewport().?.y);
+                ev.moveDownVisual();
+                try std.testing.expectEqual(@as(u32, 4), ev.getPrimaryCursor().row);
+                try std.testing.expectEqual(@as(u32, 4), ev.getViewport().?.y);
+                ev.moveUpVisual();
+                try std.testing.expectEqual(@as(u32, 3), ev.getPrimaryCursor().row);
+                try std.testing.expectEqual(@as(u32, 3), ev.getViewport().?.y);
+            }
+        }
+    }
+}
+
+test "EditorView - small viewport keeps a visible wrapped cursor in place" {
+    const pool = gp.initGlobalPool(std.testing.allocator);
+    defer gp.deinitGlobalPool();
+    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
+    defer link.deinitGlobalLinkPool();
+
+    const eb = try EditBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth, null);
+    defer eb.deinit();
+    const ev = try EditorView.init(std.testing.allocator, eb, 5, 1);
+    defer ev.deinit();
+    ev.setScrollMargin(0.2);
+    try eb.setText("abcd efgh ijkl");
+
+    for ([_]text_buffer.WrapMode{ .char, .word }) |mode| {
+        ev.setWrapMode(mode);
+        try eb.setCursor(0, 1);
+        ev.moveDownVisual();
+        try std.testing.expectEqual(@as(u32, 1), ev.getViewport().?.y);
+        const cursor = ev.getPrimaryCursor();
+        ev.setViewport(ev.getViewport(), true);
+        try std.testing.expectEqualDeep(cursor, ev.getPrimaryCursor());
+        try std.testing.expectEqual(@as(u32, 0), ev.getVisualCursor().visual_row);
+        try std.testing.expectEqual(@as(u32, 1), ev.getViewport().?.y);
+        ev.moveUpVisual();
+        try std.testing.expectEqual(@as(u32, 1), ev.getPrimaryCursor().col);
+        try std.testing.expectEqual(@as(u32, 0), ev.getViewport().?.y);
+    }
+}
+
+test "EditorView - small viewport accepts empty buffers and zero dimensions" {
+    const pool = gp.initGlobalPool(std.testing.allocator);
+    defer gp.deinitGlobalPool();
+    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
+    defer link.deinitGlobalLinkPool();
+
+    const eb = try EditBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth, null);
+    defer eb.deinit();
+    const ev = try EditorView.init(std.testing.allocator, eb, 20, 1);
+    defer ev.deinit();
+    ev.setScrollMargin(0.2);
+
+    ev.setViewport(ev.getViewport(), true);
+    ev.moveDownVisual();
+    ev.moveUpVisual();
+    try std.testing.expectEqual(@as(u32, 0), ev.getPrimaryCursor().offset);
+    try std.testing.expectEqual(@as(u32, 0), ev.getViewport().?.y);
+
+    for ([_][]const u8{ "", "abc\ndef" }) |text| {
+        try eb.setText(text);
+        if (text.len > 0) try eb.setCursor(1, 2);
+        const cursor = ev.getPrimaryCursor();
+        for ([_]Viewport{
+            .{ .x = 0, .y = 0, .width = 20, .height = 0 },
+            .{ .x = 0, .y = 0, .width = 0, .height = 1 },
+        }) |vp| {
+            ev.setViewport(vp, true);
+            ev.updateBeforeRender();
+            try std.testing.expectEqualDeep(cursor, ev.getPrimaryCursor());
+            try std.testing.expectEqualDeep(vp, ev.getViewport().?);
+        }
+        ev.setViewport(null, true);
+        try std.testing.expectEqualDeep(cursor, ev.getPrimaryCursor());
+        try std.testing.expectEqual(@as(?Viewport, null), ev.getViewport());
+    }
 }
 
 test "EditorView - setViewportSize maintains cursor visibility" {
@@ -2726,6 +2917,214 @@ test "EditorView - logicalToVisualCursor clamps col beyond line width" {
     try std.testing.expectEqual(@as(u32, 0), vcursor.logical_row);
     try std.testing.expectEqual(@as(u32, 5), vcursor.logical_col);
     try std.testing.expectEqual(@as(u32, 5), vcursor.visual_col);
+}
+
+test "EditorView - placeholder initialization rejection leaves no published ownership" {
+    var pool = gp.GraphemePool.init(std.testing.allocator);
+    defer pool.deinit();
+    var links = link.LinkPool.init(std.testing.allocator);
+    defer links.deinit();
+    var fail_offset: usize = 0;
+    while (fail_offset < 64) : (fail_offset += 1) {
+        var failing = std.testing.FailingAllocator.init(std.testing.allocator, .{});
+        const eb = try EditBuffer.init(failing.allocator(), &pool, &links, .unicode, null);
+        defer eb.deinit();
+        const ev = try EditorView.init(failing.allocator(), eb, 10, 2);
+        defer ev.deinit();
+        const view = ev.getTextBufferView();
+        const lines = ev.getVirtualLines();
+        const chunks = [_]text_buffer.StyledChunk{.{
+            .text_ptr = "hint",
+            .text_len = 4,
+            .fg_ptr = null,
+            .bg_ptr = null,
+            .attributes = 1,
+        }};
+        failing.fail_index = failing.alloc_index + fail_offset;
+        const result = ev.setPlaceholderStyledText(&chunks);
+        failing.fail_index = std.math.maxInt(usize);
+        if (result) |_| {
+            return;
+        } else |err| {
+            try std.testing.expectEqual(error.OutOfMemory, err);
+            try std.testing.expect(ev.placeholder_buffer == null);
+            try std.testing.expect(ev.placeholder_syntax_style == null);
+            try std.testing.expect(!ev.placeholder_active);
+            try std.testing.expectEqual(view, ev.getTextBufferView());
+            try std.testing.expectEqual(eb.tb, ev.getTextBuffer());
+            try std.testing.expectEqual(lines.ptr, ev.getVirtualLines().ptr);
+        }
+    }
+    return error.TestUnexpectedResult;
+}
+
+fn setOwnedPlaceholderForTest(ev: *EditorView, bytes: []const u8, url: []const u8) !void {
+    const allocator = ev.global_allocator;
+    const style = try text_buffer.SyntaxStyle.init(allocator);
+    errdefer style.deinit();
+    var prepared_links = link.LinkTracker.init(allocator, ev.edit_buffer.tb.link_pool);
+    defer prepared_links.deinit();
+    const id = try prepared_links.trackUrl(url);
+    const style_id = try style.registerStyle("hint", ansi.rgbaFromFloats(0.5, 0.5, 0.5, 1), null, ansi.TextAttributes.setLinkId(1, id));
+    const copy = try allocator.dupe(u8, bytes);
+    errdefer allocator.free(copy);
+    try ev.setPlaceholderOwnedStyledText(copy, style, &.{.{
+        .byte_count = @intCast(bytes.len),
+        .style_id = style_id,
+    }}, &prepared_links);
+    std.debug.assert(prepared_links.getLinkCount() == 0);
+}
+
+test "EditorView - placeholder owned replacement preserves accepted state on allocation failure" {
+    var pool = gp.GraphemePool.init(std.testing.allocator);
+    defer pool.deinit();
+    for ([_]enum { absent, visible, hidden }{ .absent, .visible, .hidden }) |initial| {
+        var succeeded = false;
+        var fail_offset: usize = 0;
+        while (fail_offset < 128) : (fail_offset += 1) {
+            var failing = std.testing.FailingAllocator.init(std.testing.allocator, .{});
+            const allocator = failing.allocator();
+            var links = link.LinkPool.init(allocator);
+            defer links.deinit();
+            const eb = try EditBuffer.init(allocator, &pool, &links, .unicode, null);
+            defer eb.deinit();
+            const ev = try EditorView.init(allocator, eb, 10, 2);
+            defer ev.deinit();
+            if (initial != .absent) {
+                try setOwnedPlaceholderForTest(ev, "old\u{754c}", "https://example.com/old");
+            }
+            if (initial == .hidden) try eb.setText("document");
+            const view = ev.getTextBufferView();
+            ev.setSelection(0, 1, null, null);
+            const lines = ev.getVirtualLines();
+            const viewport = ev.getViewport();
+            const selection = ev.getSelection();
+            const measured = try view.measureForDimensions(10, 2);
+            const old_buffer = ev.placeholder_buffer;
+            const old_style = ev.placeholder_syntax_style;
+            const active_buffer = ev.getTextBuffer();
+            const epoch = active_buffer.getContentEpoch();
+            const old_link_count = links.getLiveSlotCount();
+            var dependent = try @import("../native-renderable.zig").NativeRenderable.init();
+            defer dependent.deinit();
+            try dependent.setMeasureTarget(.{ .editor_view = ev });
+
+            failing.fail_index = failing.alloc_index + fail_offset;
+            failing.resize_fail_index = failing.resize_index;
+            const result = setOwnedPlaceholderForTest(ev, "new\u{754c}\tline\nsecond", "https://example.com/new");
+            failing.fail_index = std.math.maxInt(usize);
+            failing.resize_fail_index = std.math.maxInt(usize);
+            if (result) |_| {
+                try std.testing.expect(!failing.has_induced_failure);
+                succeeded = true;
+            } else |err| {
+                try std.testing.expectEqual(error.OutOfMemory, err);
+                try std.testing.expect(failing.has_induced_failure);
+                try std.testing.expectEqual(old_buffer, ev.placeholder_buffer);
+                try std.testing.expectEqual(old_style, ev.placeholder_syntax_style);
+                try std.testing.expectEqual(initial == .visible, ev.placeholder_active);
+                try std.testing.expectEqual(active_buffer, ev.getTextBuffer());
+                try std.testing.expectEqual(epoch, active_buffer.getContentEpoch());
+                try std.testing.expectEqualDeep(viewport, ev.getViewport());
+                try std.testing.expectEqualDeep(selection, ev.getSelection());
+                try std.testing.expectEqual(lines.ptr, ev.getVirtualLines().ptr);
+                try std.testing.expectEqualDeep(measured, try view.measureForDimensions(10, 2));
+                try std.testing.expectEqual(old_link_count, links.getLiveSlotCount());
+                if (old_buffer) |buffer| {
+                    var actual: [64]u8 = undefined;
+                    try std.testing.expectEqualStrings("old\u{754c}", actual[0..buffer.getTextRange(0, std.math.maxInt(u32), &actual)]);
+                    const highlight = buffer.getLineHighlightsSlice(0)[0];
+                    const definition = old_style.?.resolveById(highlight.style_id).?;
+                    const id = ansi.TextAttributes.getLinkId(definition.attributes);
+                    try std.testing.expectEqual(@as(u32, 1), try links.getRefcount(id));
+                    try std.testing.expectEqual(@as(u32, 5), highlight.col_end);
+                }
+                try setOwnedPlaceholderForTest(ev, "new\u{754c}\tline\nsecond", "https://example.com/new");
+            }
+            try std.testing.expectEqual(view, ev.getTextBufferView());
+            try std.testing.expectEqual(ev, dependent.measure_target.editor_view);
+            try std.testing.expectEqual(&dependent, ev.measure_dependents.?);
+            try std.testing.expectEqual(@as(u64, 1), links.getLiveSlotCount());
+            try std.testing.expectEqual(@as(usize, 1), ev.placeholder_buffer.?.mem_registry.buffers.items.len);
+            try ev.setPlaceholderStyledText(&.{});
+            try std.testing.expectEqual(eb.tb, ev.getTextBuffer());
+            try std.testing.expectEqual(ev, dependent.measure_target.editor_view);
+            try std.testing.expectEqual(@as(u64, 0), links.getLiveSlotCount());
+            if (succeeded) break;
+        }
+        try std.testing.expect(succeeded);
+    }
+}
+
+test "EditorView - placeholder owned rejection retains caller inputs and legacy rendering" {
+    const allocator = std.testing.allocator;
+    var pool = gp.GraphemePool.init(allocator);
+    defer pool.deinit();
+    var links = link.LinkPool.init(allocator);
+    defer links.deinit();
+    const eb = try EditBuffer.init(allocator, &pool, &links, .unicode, null);
+    defer eb.deinit();
+    const ev = try EditorView.init(allocator, eb, 6, 2);
+    defer ev.deinit();
+    const background = ansi.indexedColor(254, 228, 228, 228);
+    eb.tb.setDefaultBg(background);
+    const old = [_]text_buffer.StyledChunk{.{
+        .text_ptr = "legacy",
+        .text_len = 6,
+        .fg_ptr = null,
+        .bg_ptr = null,
+        .attributes = 1,
+    }};
+    const style = try text_buffer.SyntaxStyle.init(allocator);
+    var transferred = false;
+    defer if (!transferred) style.deinit();
+    var prepared_links = link.LinkTracker.init(allocator, &links);
+    defer prepared_links.deinit();
+    const id = try prepared_links.trackUrl("https://example.com/hint");
+    const style_id = try style.registerStyle("hint", null, null, ansi.TextAttributes.setLinkId(1, id));
+    const copy = try allocator.dupe(u8, "H\u{754c}");
+    defer if (!transferred) allocator.free(copy);
+    for ([_]bool{ false, true }) |has_previous| {
+        if (has_previous) try ev.setPlaceholderStyledText(&old);
+        const old_buffer = ev.placeholder_buffer;
+        const old_style = ev.placeholder_syntax_style;
+        const active = ev.getTextBuffer();
+        try std.testing.expectError(error.InvalidIndex, ev.setPlaceholderOwnedStyledText(copy, style, &.{.{
+            .byte_count = @intCast(copy.len + 1),
+            .style_id = style_id,
+        }}, &prepared_links));
+        try std.testing.expectEqual(old_buffer, ev.placeholder_buffer);
+        try std.testing.expectEqual(old_style, ev.placeholder_syntax_style);
+        try std.testing.expectEqual(active, ev.getTextBuffer());
+        try std.testing.expectEqualStrings("H\u{754c}", copy);
+        try std.testing.expectEqual(@as(u32, 1), prepared_links.getLinkCount());
+        try std.testing.expectEqual(@as(u32, 1), try links.getRefcount(id));
+    }
+    try ev.setPlaceholderOwnedStyledText(copy, style, &.{.{
+        .byte_count = @intCast(copy.len),
+        .style_id = style_id,
+    }}, &prepared_links);
+    transferred = true;
+    try std.testing.expectEqual(@as(u32, 0), prepared_links.getLinkCount());
+    try std.testing.expectEqual(@as(u32, 3), ev.placeholder_buffer.?.getLength());
+    var output = try opt_buffer_mod.OptimizedBuffer.init(allocator, 6, 2, .{ .pool = &pool, .link_pool = &links, .width_method = .unicode });
+    defer output.deinit();
+    output.clear(ansi.rgbaFromFloats(0, 0, 0, 1), 32);
+    output.drawEditorView(ev, 0, 0);
+    var actual: [64]u8 = undefined;
+    const count = try output.writeResolvedChars(&actual, false);
+    try std.testing.expect(std.mem.startsWith(u8, actual[0..count], "H\u{754c}"));
+    for (0..3) |x| {
+        const cell = output.get(@intCast(x), 0).?;
+        try std.testing.expectEqual(id, ansi.TextAttributes.getLinkId(cell.attributes));
+        try std.testing.expectEqual(background, cell.bg);
+    }
+    try std.testing.expectEqual(background, output.get(5, 0).?.bg);
+    try std.testing.expectEqual(background, output.get(0, 1).?.bg);
+    try ev.setPlaceholderStyledText(&old);
+    try std.testing.expectEqualStrings("legacy", actual[0..ev.getTextBuffer().getTextRange(0, std.math.maxInt(u32), &actual)]);
+    try ev.setPlaceholderStyledText(&.{});
+    try std.testing.expectEqual(eb.tb, ev.getTextBuffer());
 }
 
 test "EditorView - placeholder shows when empty" {

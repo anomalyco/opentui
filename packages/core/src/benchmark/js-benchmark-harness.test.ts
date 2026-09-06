@@ -1,7 +1,12 @@
 import { describe, expect, test } from "bun:test"
+import { spawnSync } from "node:child_process"
+import { join } from "node:path"
 
 import { OptimizedBuffer } from "../buffer.js"
-import { defaultBenchmarkCases } from "./js-benchmark-cases.js"
+import { BoxRenderable } from "../renderables/Box.js"
+import { MarkdownRenderable } from "../renderables/Markdown.js"
+import { Node as YogaNode } from "../yoga.js"
+import { defaultBenchmarkCases, renderBenchmarkCases } from "./js-benchmark-cases.js"
 import {
   calculateInnerRsdPpm,
   canonicalJson,
@@ -71,7 +76,8 @@ describe("statistics and manifest", () => {
       "JS Text/text-buffer-word-wrap-measure",
       "JS Buffer/draw-box-titled-scissored",
     ])
-    expect(manifestHash(manifest)).toBe("sha256:eadd082d755c58b7e8a865bd5873802974881967a4edab1c79d0fb1cba482aa0")
+    expect(manifest.cases.find(({ name }) => name === "draw-box-titled-scissored")?.workload_version).toBe(2)
+    expect(manifestHash(manifest)).toBe("sha256:a046b0f302d33ad7eacdbe6e0b951f2a60c7b43863acd3f3bfd06c611902f01e")
     expect(manifestHash({ ...manifest, protocol_version: 2 })).not.toBe(manifestHash(manifest))
   })
 
@@ -129,6 +135,31 @@ describe("runner", () => {
     expect(thenCalls).toBe(0)
     expect(validations).toBe(5)
     expect(teardown).toBe(true)
+  })
+
+  test("awaits explicitly asynchronous operations inside each timed batch", async () => {
+    let now = 0
+    let active = false
+    let completed = 0
+    const benchmark = fakeCase({
+      async: true,
+      async run() {
+        expect(active).toBe(false)
+        active = true
+        await Promise.resolve()
+        now++
+        completed++
+        active = false
+      },
+      validateBatch(iterations) {
+        expect(completed).toBeGreaterThanOrEqual(iterations)
+      },
+    })
+
+    const output = await runBenchmarks([benchmark], { ...options, clock: () => now, maxBatchIterations: 1 })
+
+    expect(output.results[0]?.batch_iterations).toBe(1)
+    expect(completed).toBe(5)
   })
 
   test("calibrates to the target without exceeding the iteration bound", async () => {
@@ -272,6 +303,26 @@ describe("runner", () => {
     ).rejects.toThrow("maximum benchmark process duration exceeded")
   })
 
+  test("bounds a hanging asynchronous benchmark batch", async () => {
+    let elapsedBeforeHang = 0
+    const benchmark = fakeCase({
+      async: true,
+      run() {
+        elapsedBeforeHang = 4_000_000
+        return new Promise<void>(() => {})
+      },
+    })
+
+    await expect(
+      runBenchmarks([benchmark], {
+        ...options,
+        clock: () => Bun.nanoseconds() + elapsedBeforeHang,
+        maxCaseNs: 100_000_000,
+        maxProcessNs: 5_000_000,
+      }),
+    ).rejects.toThrow("maximum benchmark process duration exceeded")
+  })
+
   test("bounds hanging teardown by the remaining case duration", async () => {
     let elapsedBeforeHang = 0
     let teardownAttempted = false
@@ -313,6 +364,77 @@ test("canonical cases perform and validate work across consecutive batches", asy
   }
 })
 
+test("completed-frame benchmark cases perform and validate one operation", async () => {
+  expect(renderBenchmarkCases.map(({ name }) => name)).toEqual([
+    "dense-cell-fills",
+    "scene-rebuild-128",
+    "textarea-edits",
+    "textarea-cursor",
+    "textarea-selection",
+    "markdown-table-update",
+    "paint-before-after",
+  ])
+  for (const benchmark of renderBenchmarkCases) {
+    const runtime = await benchmark.setup()
+    try {
+      expect(runtime.async).toBe(true)
+      await runtime.run(0)
+      runtime.validateBatch(1)
+    } finally {
+      await runtime.teardown()
+    }
+  }
+}, 120_000)
+
+test("dense completed-frame validation rejects a skipped mutation", async () => {
+  const benchmark = renderBenchmarkCases.find(({ name }) => name === "dense-cell-fills")!
+  const runtime = await benchmark.setup()
+  const descriptor = Object.getOwnPropertyDescriptor(BoxRenderable.prototype, "backgroundColor")!
+  let calls = 0
+  Object.defineProperty(BoxRenderable.prototype, "backgroundColor", {
+    ...descriptor,
+    set(value) {
+      if (calls++ === 0) descriptor.set!.call(this, value)
+    },
+  })
+  try {
+    await runtime.run(0)
+    expect(() => runtime.validateBatch(1)).toThrow("box 2 phase mismatch")
+  } finally {
+    Object.defineProperty(BoxRenderable.prototype, "backgroundColor", descriptor)
+    await runtime.teardown()
+  }
+})
+
+test("Markdown completed-frame validation rejects a skipped accepted update", async () => {
+  const benchmark = renderBenchmarkCases.find(({ name }) => name === "markdown-table-update")!
+  const runtime = await benchmark.setup()
+  const descriptor = Object.getOwnPropertyDescriptor(MarkdownRenderable.prototype, "content")!
+  try {
+    await runtime.run(0)
+    runtime.validateBatch(1)
+    Object.defineProperty(MarkdownRenderable.prototype, "content", { ...descriptor, set() {} })
+    await expect(runtime.run(1)).rejects.toThrow("content mutation was not accepted")
+  } finally {
+    Object.defineProperty(MarkdownRenderable.prototype, "content", descriptor)
+    await runtime.teardown()
+  }
+})
+
+test("hook completed-frame validation rejects missing output", async () => {
+  const benchmark = renderBenchmarkCases.find(({ name }) => name === "paint-before-after")!
+  const runtime = await benchmark.setup()
+  const drawText = OptimizedBuffer.prototype.drawText
+  OptimizedBuffer.prototype.drawText = () => {}
+  try {
+    await runtime.run(0)
+    expect(() => runtime.validateBatch(1)).toThrow("rendered 0 current")
+  } finally {
+    OptimizedBuffer.prototype.drawText = drawText
+    await runtime.teardown()
+  }
+})
+
 test("canonical box drawing validation rejects a no-op", async () => {
   const benchmark = defaultBenchmarkCases.find(({ name }) => name === "draw-box-titled-scissored")!
   const runtime = await benchmark.setup()
@@ -323,6 +445,24 @@ test("canonical box drawing validation rejects a no-op", async () => {
     expect(() => runtime.validateBatch(1)).toThrow("draw-box-titled-scissored: observation")
   } finally {
     OptimizedBuffer.prototype.drawBox = drawBox
+    await runtime.teardown()
+  }
+})
+
+test("standalone layout benchmark validates mutations and rejects a skipped solve", async () => {
+  const benchmark = defaultBenchmarkCases.find(({ name }) => name === "leaf-width-calculate")!
+  expect(benchmark.workload_version).toBe(3)
+  expect(benchmark.parameters.ownership).toBe("standalone")
+  const runtime = await benchmark.setup()
+  const calculateLayout = YogaNode.prototype.calculateLayout
+  try {
+    for (let index = 0; index < 200; index++) runtime.run(index)
+    runtime.validateBatch(200)
+    YogaNode.prototype.calculateLayout = () => {}
+    runtime.run(200)
+    expect(() => runtime.validateBatch(1)).toThrow("layout remained dirty")
+  } finally {
+    YogaNode.prototype.calculateLayout = calculateLayout
     await runtime.teardown()
   }
 })
@@ -343,6 +483,17 @@ describe("CLI", () => {
     expect(await runBenchmarkCli(["--json"], { stdout, stderr, cases: [] })).toBe(2)
     expect(stdout.text).toBe("")
     expect(stderr.text).toContain("usage:")
+  })
+
+  test("Node wrapper rejects duplicate format options before building", () => {
+    const child = spawnSync(
+      process.execPath,
+      [join(import.meta.dir, "../../scripts/bench-js-node.ts"), "--format=json", "--format=json"],
+      { encoding: "utf8", timeout: 10_000 },
+    )
+    expect(child.status).toBe(2)
+    expect(child.stderr).toContain("usage: bench:js")
+    expect(child.stderr).not.toContain("Bundled")
   })
 
   test("emits no partial stdout when a later case fails", async () => {
@@ -402,5 +553,23 @@ describe("CLI", () => {
     expect(document).not.toHaveProperty("bun_version")
     expect(document.manifest.cases.map(({ name }: BenchmarkCase) => name)).toEqual(["first", "second"])
     expect(document.results.map(({ name }: BenchmarkCase) => name)).toEqual(["first", "second"])
+  })
+
+  test("runs one named case with concise terminal output", async () => {
+    let now = 0
+    const { stdout, stderr } = memoryWriters()
+    const exitCode = await runBenchmarkCli(["--case=second"], {
+      stdout,
+      stderr,
+      cases: [fakeCase({}, { name: "first" }), fakeCase({}, { name: "second" })],
+      options: { ...options, clock: () => ++now, maxBatchIterations: 1 },
+      jsRuntime: "bun",
+      runtimeVersion: "test-bun",
+      zigVersion: "test-zig",
+    })
+
+    expect(exitCode).toBe(0)
+    expect(stderr.text).toBe("")
+    expect(stdout.text).toMatch(/^Test\/second: \d+\.\d{4} ms\/op\n$/)
   })
 })

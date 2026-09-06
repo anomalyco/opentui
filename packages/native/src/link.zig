@@ -5,6 +5,7 @@ pub const LinkPoolError = error{
     InvalidId,
     WrongGeneration,
     UrlTooLong,
+    RefcountOverflow,
 };
 
 // ID layout within 24 bits: [ generation (8 bits) | slot_index (16 bits) ]
@@ -68,16 +69,19 @@ pub const LinkPool = struct {
         const slot_count_max = SLOT_MASK + 1;
         if (self.num_slots > slot_count_max - self.slots_per_page) return LinkPoolError.OutOfMemory;
 
+        const new_num_slots = self.num_slots + self.slots_per_page;
         const add_bytes = self.slot_size_bytes * self.slots_per_page;
 
         try self.slots.ensureTotalCapacity(self.allocator, self.slots.items.len + add_bytes);
-        try self.slots.appendNTimes(self.allocator, 0, add_bytes);
+        // Every published slot must be able to return without allocating.
+        try self.free_list.ensureTotalCapacity(self.allocator, new_num_slots);
+        self.slots.appendNTimesAssumeCapacity(0, add_bytes);
 
         var i: u32 = 0;
         while (i < self.slots_per_page) : (i += 1) {
-            try self.free_list.append(self.allocator, self.num_slots + i);
+            self.free_list.appendAssumeCapacity(self.num_slots + i);
         }
-        self.num_slots += self.slots_per_page;
+        self.num_slots = new_num_slots;
     }
 
     fn slotPtr(self: *LinkPool, slot_index: u32) *u8 {
@@ -178,6 +182,18 @@ pub const LinkPool = struct {
         return packId(slot_index, new_generation);
     }
 
+    /// Acquire one producer reference, including first-use interning rollback.
+    pub fn acquire(self: *LinkPool, url: []const u8) LinkPoolError!IdPayload {
+        const id = try self.alloc(url);
+        if (try self.getRefcount(id) == std.math.maxInt(u32)) return LinkPoolError.RefcountOverflow;
+        self.incref(id) catch |err| {
+            // Legacy incref publishes its reference before interning can fail.
+            self.decref(id) catch unreachable;
+            return err;
+        };
+        return id;
+    }
+
     pub fn incref(self: *LinkPool, id: IdPayload) LinkPoolError!void {
         const unpacked = unpackId(id);
         if (unpacked.slot_index >= self.num_slots) return LinkPoolError.InvalidId;
@@ -220,7 +236,7 @@ pub const LinkPool = struct {
                 header_ptr.generation = RETIRED_GENERATION;
                 self.retired_slot_count += 1;
             } else {
-                try self.free_list.append(self.allocator, unpacked.slot_index);
+                self.free_list.appendAssumeCapacity(unpacked.slot_index);
             }
         }
     }
@@ -294,16 +310,29 @@ pub const LinkTracker = struct {
         self.used_ids.clearRetainingCapacity();
     }
 
+    /// Track document membership once per URL, independent of its chunk count.
+    pub fn trackUrl(self: *LinkTracker, url: []const u8) LinkPoolError!IdPayload {
+        if (self.pool.lookupOrInvalidate(url)) |id| {
+            if (self.used_ids.contains(id)) return id;
+        }
+        const id = try self.pool.acquire(url);
+        errdefer self.pool.decref(id) catch unreachable;
+        try self.used_ids.put(id, 1);
+        return id;
+    }
+
     pub fn addCellRef(self: *LinkTracker, id: u32) void {
         const res = self.used_ids.getOrPut(id) catch |err| {
             std.debug.panic("LinkTracker.addCellRef getOrPut failed: {}\n", .{err});
         };
         if (!res.found_existing) {
             // First time seeing this ID - try to incref in pool
-            self.pool.incref(id) catch {
-                // Invalid ID (not allocated in pool) - silently ignore
-                // This can happen with garbage in attribute bits
-                return;
+            self.pool.incref(id) catch |err| {
+                // First-use interning OOM already acquired a reference; keep it for the cell.
+                if (err != error.OutOfMemory) {
+                    _ = self.used_ids.remove(id);
+                    return;
+                }
             };
             res.value_ptr.* = 1;
         } else {
@@ -332,18 +361,10 @@ pub const LinkTracker = struct {
     }
 };
 
-var GLOBAL_LINK_POOL: ?LinkPool = null;
-
 pub fn initGlobalLinkPool(allocator: std.mem.Allocator) *LinkPool {
-    if (GLOBAL_LINK_POOL == null) {
-        GLOBAL_LINK_POOL = LinkPool.init(allocator);
-    }
-    return &GLOBAL_LINK_POOL.?;
+    return @import("compatibility-context.zig").compatDefault.initLinkPool(allocator);
 }
 
 pub fn deinitGlobalLinkPool() void {
-    if (GLOBAL_LINK_POOL) |*p| {
-        p.deinit();
-        GLOBAL_LINK_POOL = null;
-    }
+    @import("compatibility-context.zig").compatDefault.deinitLinkPool();
 }

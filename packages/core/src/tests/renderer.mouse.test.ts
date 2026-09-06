@@ -67,7 +67,7 @@ describe("renderer getLinkAt", () => {
     expect(renderer.getLinkAt(renderer.width - 1, renderer.height - 1)).toBeNull()
 
     const lib = renderer.currentRenderBuffer.lib
-    const urlLookups = spyOn(lib, "linkGetUrl")
+    const urlLookups = spyOn(lib, "contextGetLinkUrl")
     const styledTextUpdates = spyOn(lib, "textBufferSetStyledText")
 
     try {
@@ -94,9 +94,10 @@ describe("renderer getLinkAt", () => {
         await renderOnce()
         const start = text.y * renderer.width + text.x
         expect(
-          Array.from(
-            renderer.currentRenderBuffer.buffers.attributes.subarray(start, start + text.width),
-            (attributes) => Boolean(attributes & TextAttributes.UNDERLINE),
+          renderer.currentRenderBuffer.withBuffers((cells) =>
+            Array.from(cells.attributes.subarray(start, start + text.width), (attributes) =>
+              Boolean(attributes & TextAttributes.UNDERLINE),
+            ),
           ),
         ).toEqual([false, false, first, first, first, first, false, second, second, second])
       }

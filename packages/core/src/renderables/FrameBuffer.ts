@@ -9,15 +9,46 @@ export interface FrameBufferOptions extends RenderableOptions<FrameBufferRendera
 }
 
 export class FrameBufferRenderable extends Renderable {
-  public frameBuffer: OptimizedBuffer
+  declare public frameBuffer: OptimizedBuffer
   protected respectAlpha: boolean
 
   constructor(ctx: RenderContext, options: FrameBufferOptions) {
     super(ctx, options)
-    this.respectAlpha = options.respectAlpha || false
-    this.frameBuffer = OptimizedBuffer.create(options.width, options.height, this._ctx.widthMethod, {
-      respectAlpha: this.respectAlpha,
-      id: options.id || `framebufferrenderable-${this.id}`,
+    try {
+      this.respectAlpha = options.respectAlpha || false
+      this.frameBuffer?.destroy()
+      this.frameBuffer = OptimizedBuffer.create(options.width, options.height, this._ctx.widthMethod, {
+        respectAlpha: this.respectAlpha,
+        id: options.id || `framebufferrenderable-${this.id}`,
+        owner: ctx.nativeScene,
+      })
+      this._refreshNativeSceneSurface()
+    } catch (error) {
+      this.abortConstruction(error)
+    }
+  }
+
+  /** @internal Native class fields can replace the accessor after this constructor returns. */
+  _refreshNativeSceneSurface(): void {
+    if (this.respectAlpha === undefined || Object.getOwnPropertyDescriptor(this, "frameBuffer")?.get) return
+    let surface: OptimizedBuffer | null = this.frameBuffer
+    this._ctx.nativeScene.setSurface(this, surface)
+    Object.defineProperty(this, "frameBuffer", {
+      enumerable: true,
+      configurable: true,
+      get: () => surface,
+      set: (value: OptimizedBuffer | null) => {
+        if (this.isDestroyed) {
+          if (value !== null) throw new Error(`FrameBufferRenderable ${this.id} is destroyed`)
+          surface = null
+          return
+        }
+        if (value === surface) return
+        this._ctx.nativeScene.setSurface(this, value)
+        // Replaced wrappers remain caller-owned; the scene releases only its retained reference.
+        surface = value
+        this.requestRender()
+      },
     })
   }
 
@@ -33,15 +64,6 @@ export class FrameBufferRenderable extends Renderable {
 
   protected renderSelf(buffer: OptimizedBuffer): void {
     if (!this.visible || this.isDestroyed) return
-    buffer.drawFrameBuffer(this.x, this.y, this.frameBuffer)
-  }
-
-  protected destroySelf(): void {
-    // TODO: framebuffer collides with buffered Renderable, which holds a framebuffer
-    // and destroys it if it exists already. Maybe instead of extending FrameBufferRenderable,
-    // subclasses can use the buffered option on the base renderable instead,
-    // then this would become something that takes in an external framebuffer to bring it into layout.
-    this.frameBuffer?.destroy()
-    super.destroySelf()
+    buffer.drawFrameBuffer(Math.trunc(this._screenX), Math.trunc(this._screenY), this.frameBuffer)
   }
 }

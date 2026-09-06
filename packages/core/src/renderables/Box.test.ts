@@ -1,7 +1,7 @@
 import { test, expect, describe, beforeEach, afterEach, spyOn } from "bun:test"
 import { BoxRenderable, type BoxOptions } from "./Box.js"
 import { createTestRenderer, type TestRenderer } from "../testing/test-renderer.js"
-import type { BorderStyle } from "../lib/border.js"
+import { BorderChars, type BorderCharacters, type BorderStyle } from "../lib/border.js"
 import { RGBA } from "../lib/RGBA.js"
 
 let testRenderer: TestRenderer
@@ -24,12 +24,12 @@ function getCellIndex(x: number, y: number): number {
 }
 
 function getCellChar(x: number, y: number): string {
-  return String.fromCodePoint(testRenderer.currentRenderBuffer.buffers.char[getCellIndex(x, y)])
+  return testRenderer.currentRenderBuffer.withBuffers(({ char }) => String.fromCodePoint(char[getCellIndex(x, y)]))
 }
 
 function getCellForeground(x: number, y: number): [number, number, number, number] {
   const index = getCellIndex(x, y) * 4
-  return RGBA.fromArray(testRenderer.currentRenderBuffer.buffers.fg.slice(index, index + 4)).toInts()
+  return testRenderer.currentRenderBuffer.withBuffers(({ fg }) => RGBA.fromArray(fg.slice(index, index + 4)).toInts())
 }
 
 describe("BoxRenderable - focusable option", () => {
@@ -174,6 +174,60 @@ describe("BoxRenderable - borderStyle validation", () => {
   })
 })
 
+describe("BoxRenderable - empty custom border characters", () => {
+  const emptyBorder: BorderCharacters = {
+    topLeft: "",
+    topRight: "",
+    bottomLeft: "",
+    bottomRight: "",
+    horizontal: "",
+    vertical: "",
+    topT: "",
+    bottomT: "",
+    leftT: "",
+    rightT: "",
+    cross: "",
+  }
+
+  test.each(["constructor", "setter"] as const)("renders blank borders through the %s", async (boundary) => {
+    const customBorderChars = { ...emptyBorder, vertical: "┃" }
+    const box = new BoxRenderable(testRenderer, {
+      width: 8,
+      height: 3,
+      border: true,
+      customBorderChars: boundary === "constructor" ? customBorderChars : undefined,
+    })
+    testRenderer.root.add(box)
+    if (boundary === "setter") box.customBorderChars = customBorderChars
+    await renderOnce()
+    expect(
+      captureFrame()
+        .split("\n")
+        .slice(0, 3)
+        .map((line) => line.slice(0, 8)),
+    ).toEqual(["        ", "┃      ┃", "        "])
+
+    box.customBorderChars = { ...emptyBorder, vertical: "▎" }
+    await renderOnce()
+    expect(captureFrame().split("\n")[1].slice(0, 8)).toBe("▎      ▎")
+
+    box.customBorderChars = emptyBorder
+    await renderOnce()
+    expect(captureFrame().split("\n")[1].slice(0, 8)).toBe("        ")
+  })
+
+  test.each(["\0", "\n", "\x1b", "\x7f"])("still rejects control character %j", (vertical) => {
+    const customBorderChars = { ...BorderChars.single, vertical }
+    expect(() => new BoxRenderable(testRenderer, { customBorderChars })).toThrow()
+    const box = new BoxRenderable(testRenderer, { border: true })
+    testRenderer.root.add(box)
+    expect(() => {
+      box.customBorderChars = customBorderChars
+    }).toThrow()
+    expect(box.customBorderChars).toBeUndefined()
+  })
+})
+
 describe("BoxRenderable - border titles (top and bottom)", () => {
   test("renders top and bottom titles on their respective borders", async () => {
     const box = new BoxRenderable(testRenderer, {
@@ -251,13 +305,15 @@ describe("BoxRenderable - transparent border blending", () => {
     await renderOnce()
 
     const buffer = testRenderer.currentRenderBuffer
-    expect(buffer.buffers.char[0]).toBe("┃".codePointAt(0)!)
-    expect({
-      fg: RGBA.fromArray(buffer.buffers.fg.slice(0, 4)).toInts(),
-      bg: RGBA.fromArray(buffer.buffers.bg.slice(0, 4)).toInts(),
-    }).toEqual({
-      fg: panel.toInts(),
-      bg: panel.toInts(),
+    buffer.withBuffers(({ char, fg, bg }) => {
+      expect(char[0]).toBe("┃".codePointAt(0)!)
+      expect({
+        fg: RGBA.fromArray(fg.slice(0, 4)).toInts(),
+        bg: RGBA.fromArray(bg.slice(0, 4)).toInts(),
+      }).toEqual({
+        fg: panel.toInts(),
+        bg: panel.toInts(),
+      })
     })
   })
 })

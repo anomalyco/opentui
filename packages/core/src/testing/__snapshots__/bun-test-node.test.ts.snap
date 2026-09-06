@@ -1,0 +1,39 @@
+// Bun Snapshot v1, https://bun.sh/docs/test/snapshots
+
+exports[`matches compact frame JSON snapshots 1`] = `"{"width":2,"height":1,"char":{"type":"Uint32Array","bytes":"YQAAAGIAAAA="},"text":"a\\nb"}"`;
+
+exports[`matches multiline snapshots without trimming content 1`] = `
+"
+  first line
+second line  "
+`;
+
+exports[`preserves \` \${template} and \\ in snapshot names and values 1`] = `
+"\`;
+\${notDefined}
+\\\` \\\\\` \\\${notDefined} \\\\\${notDefined}\\n\\t\\r"
+`;
+
+exports[`formats %s in snapshot names 1`] = `"false"`;
+
+exports[`formats %s in snapshot names 2`] = `"true"`;
+
+exports[`formats %s in snapshot names 3`] = `"undefined"`;
+
+exports[`formats %s in snapshot names 4`] = `"null"`;
+
+exports[`formats %s in snapshot names 5`] = `"42"`;
+
+exports[`formats tiny in snapshot names 1`] = `"tiny"`;
+
+exports[`formats each argument %s then tail 1`] = `"[false,"tail"]"`;
+
+exports[`formats each argument %s then tail 2`] = `"[null,"tail"]"`;
+
+exports[`formats each argument %s then tail 3`] = `"[42,"tail"]"`;
+
+exports[`formats each argument prefix then tail 1`] = `"["prefix","tail"]"`;
+
+exports[`formats JSON {"wrapMode":"char","height":0.5,"lines":2} in snapshot names 1`] = `"{"wrapMode":"char","height":0.5,"lines":2}"`;
+
+exports[`formats JSON {"wrapMode":"char","lines":2} in snapshot names 1`] = `"{"wrapMode":"char","lines":2}"`;

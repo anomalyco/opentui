@@ -1,17 +1,37 @@
-import { BoxRenderable, TextBuffer, TextBufferView } from "../index.js"
-import { OptimizedBuffer } from "../buffer.js"
+import { getYogaNode } from "../lib/renderable-layout.js"
+import {
+  BoxRenderable,
+  MarkdownRenderable,
+  SyntaxStyle,
+  TextareaRenderable,
+  TextBuffer,
+  TextBufferView,
+  TextRenderable,
+} from "../index.js"
+import { OptimizedBuffer, ResourceContext } from "../buffer.js"
 import { RGBA } from "../lib/RGBA.js"
 import { StdinParser } from "../lib/stdin-parser.js"
 import type { Renderable } from "../Renderable.js"
-import { MouseEvent } from "../renderer.js"
+import { CliRenderEvents, MouseEvent, type CliRendererErrorEvent } from "../renderer.js"
 import { allocateProportionalColumnWidths } from "../renderables/text-table-width.js"
-import { createTestRenderer } from "../testing.js"
+import { createTestRenderer, type TestRendererSetup } from "../testing.js"
+import { Direction, FlexDirection, Node as YogaNode } from "../yoga.js"
 import type { BenchmarkCase } from "./js-benchmark-harness.js"
 
 const WIDTH = 140
 const HEIGHT = 44
 const LEAF_COUNT = 96
 const YOGA_NODE_COUNT = 100
+const RENDER_COLORS = {
+  panel: RGBA.fromInts(28, 32, 38),
+  element: RGBA.fromInts(40, 46, 56),
+  accent: RGBA.fromInts(84, 171, 224),
+  warning: RGBA.fromInts(219, 186, 96),
+} as const
+const RENDER_UNICODE = [
+  "alpha 世界 é 👩‍💻 🇺🇳 wrap at the cell boundary ",
+  "bravo 日本 ä 👨‍🚀 🇯🇵 different wrapped text ",
+] as const
 
 interface ColumnWidthInput {
   widths: number[]
@@ -121,58 +141,57 @@ function textBufferWordWrapMeasureCase(): BenchmarkCase {
       measure_height: WORD_WRAP_MEASURE_HEIGHT,
     },
     setup() {
-      const textBuffer = TextBuffer.create("unicode")
+      const owner = new ResourceContext({ objectCapacity: 2, renderCellsMax: 1 })
       try {
+        const textBuffer = TextBuffer.create("unicode", owner)
+
         textBuffer.setText(WORD_WRAP_TEXT)
         const view = TextBufferView.create(textBuffer)
-        try {
-          view.setWrapMode("word")
-          if (textBuffer.byteSize !== WORD_WRAP_TEXT_BYTES || textBuffer.getLineCount() !== WORD_WRAP_LOGICAL_LINES) {
-            throw new Error(
-              `text-buffer-word-wrap-measure: fixture shape bytes=${textBuffer.byteSize} ` +
-                `lines=${textBuffer.getLineCount()}`,
-            )
-          }
-          let checksum = 0
-          let completed = 0
-          let validated = 0
 
-          return {
-            run(iteration) {
-              const even = (iteration & 1) === 0
-              const result = view.measureForDimensions(
-                even ? WORD_WRAP_WIDTH_A : WORD_WRAP_WIDTH_B,
-                WORD_WRAP_MEASURE_HEIGHT,
+        view.setWrapMode("word")
+        if (textBuffer.byteSize !== WORD_WRAP_TEXT_BYTES || textBuffer.getLineCount() !== WORD_WRAP_LOGICAL_LINES) {
+          throw new Error(
+            `text-buffer-word-wrap-measure: fixture shape bytes=${textBuffer.byteSize} ` +
+              `lines=${textBuffer.getLineCount()}`,
+          )
+        }
+        let checksum = 0
+        let completed = 0
+        let validated = 0
+
+        return {
+          run(iteration) {
+            const even = (iteration & 1) === 0
+            const result = view.measureForDimensions(
+              even ? WORD_WRAP_WIDTH_A : WORD_WRAP_WIDTH_B,
+              WORD_WRAP_MEASURE_HEIGHT,
+            )
+            const packed = result === null ? 0 : result.lineCount * 1_000 + result.widthColsMax
+            checksum = (checksum + Math.imul(packed, even ? 1 : 3)) >>> 0
+            completed++
+          },
+          validateBatch(iterations) {
+            const actual = completed - validated
+            if (actual !== iterations) {
+              throw new Error(`text-buffer-word-wrap-measure: completed ${actual} operations, expected ${iterations}`)
+            }
+            const expected = expectedWordWrapChecksum(completed)
+            if (checksum !== expected) {
+              throw new Error(
+                `text-buffer-word-wrap-measure: batch checksum ${checksum}, expected ${expected} ` +
+                  `after ${completed} operations`,
               )
-              const packed = result === null ? 0 : result.lineCount * 1_000 + result.widthColsMax
-              checksum = (checksum + Math.imul(packed, even ? 1 : 3)) >>> 0
-              completed++
-            },
-            validateBatch(iterations) {
-              const actual = completed - validated
-              if (actual !== iterations) {
-                throw new Error(`text-buffer-word-wrap-measure: completed ${actual} operations, expected ${iterations}`)
-              }
-              const expected = expectedWordWrapChecksum(completed)
-              if (checksum !== expected) {
-                throw new Error(
-                  `text-buffer-word-wrap-measure: batch checksum ${checksum}, expected ${expected} ` +
-                    `after ${completed} operations`,
-                )
-              }
-              validated = completed
-            },
-            teardown() {
-              view.destroy()
-              textBuffer.destroy()
-            },
-          }
-        } catch (error) {
-          view.destroy()
-          throw error
+            }
+            validated = completed
+          },
+          teardown() {
+            view.destroy()
+            textBuffer.destroy()
+            owner.destroy()
+          },
         }
       } catch (error) {
-        textBuffer.destroy()
+        owner.destroy()
         throw error
       }
     },
@@ -210,7 +229,8 @@ function directBoxDrawingCase(): BenchmarkCase {
   return {
     category: "JS Buffer",
     name: "draw-box-titled-scissored",
-    workload_version: 1,
+    // Version 2 includes a checked lease for each cell observation.
+    workload_version: 2,
     parameters: {
       buffer_width: BOX_BUFFER_WIDTH,
       buffer_height: BOX_BUFFER_HEIGHT,
@@ -230,11 +250,13 @@ function directBoxDrawingCase(): BenchmarkCase {
       visible_cells: 1_400,
     },
     setup() {
-      const buffer = OptimizedBuffer.create(BOX_BUFFER_WIDTH, BOX_BUFFER_HEIGHT, "unicode", {
-        id: "js-bench-draw-box-titled-scissored",
-      })
+      const owner = new ResourceContext({ objectCapacity: 4, renderCellsMax: BOX_BUFFER_WIDTH * BOX_BUFFER_HEIGHT })
       try {
-        const raw = buffer.buffers
+        const buffer = OptimizedBuffer.create(BOX_BUFFER_WIDTH, BOX_BUFFER_HEIGHT, "unicode", {
+          owner,
+          id: "js-bench-draw-box-titled-scissored",
+        })
+
         buffer.clear(BOX_CLEAR_BG)
         buffer.pushScissorRect(0, 0, 72, BOX_BUFFER_HEIGHT)
         let observedSignal = 0
@@ -246,7 +268,7 @@ function directBoxDrawingCase(): BenchmarkCase {
           run(iteration) {
             const variant = iteration & 1
             buffer.drawBox(BOX_VARIANTS[variant]!)
-            observedSignal = (observedSignal + raw.char[BOX_SIGNAL_INDEX]!) | 0
+            observedSignal = (observedSignal + buffer.withBuffers((cells) => cells.char[BOX_SIGNAL_INDEX]!)) | 0
             expectedSignal = (expectedSignal + BOX_SIGNAL_CHARS[variant]!) | 0
             completed++
           },
@@ -265,11 +287,12 @@ function directBoxDrawingCase(): BenchmarkCase {
               buffer.clearScissorRects()
             } finally {
               buffer.destroy()
+              owner.destroy()
             }
           },
         }
       } catch (error) {
-        buffer.destroy()
+        owner.destroy()
         throw error
       }
     },
@@ -286,22 +309,436 @@ export const defaultBenchmarkCases: readonly BenchmarkCase[] = [
   directBoxDrawingCase(),
 ]
 
+export const renderBenchmarkCases: readonly BenchmarkCase[] = [
+  denseCellFillsCase(),
+  sceneRebuildCase(),
+  textareaCase("edits"),
+  textareaCase("cursor"),
+  textareaCase("selection"),
+  markdownTableUpdateCase(),
+  paintBeforeAfterCase(),
+]
+
+export const allBenchmarkCases: readonly BenchmarkCase[] = [...defaultBenchmarkCases, ...renderBenchmarkCases]
+
+interface CompletedFrameFixture {
+  mutate(iteration: number): void
+  validate(completed: number): void
+  prepareTiming?(): void
+  teardown?(): void
+}
+
+function completedFrameCase(
+  name: string,
+  parameters: Record<string, string | number | boolean>,
+  createFixture: (target: TestRendererSetup) => CompletedFrameFixture,
+): BenchmarkCase {
+  return {
+    category: "JS Render",
+    name,
+    workload_version: 1,
+    parameters: {
+      width: WIDTH,
+      height: HEIGHT,
+      terminal_policy: "remote-unicode-memory",
+      operation: "mutation-and-completed-frame",
+      ...parameters,
+    },
+    async setup() {
+      const target = await createTestRenderer({
+        width: WIDTH,
+        height: HEIGHT,
+        targetFps: 60,
+        maxFps: 60,
+        screenMode: "main-screen",
+        externalOutputMode: "passthrough",
+        consoleMode: "disabled",
+        bufferedOutput: "memory",
+        remote: true,
+        forwardEnvKeys: [],
+        useMouse: true,
+      })
+      const errors: Error[] = []
+      const onError = ({ error }: CliRendererErrorEvent) => errors.push(error)
+      target.renderer.on(CliRenderEvents.RENDER_ERROR, onError)
+      let fixture: CompletedFrameFixture | undefined
+      try {
+        target.renderer.setCursorPosition(0, 0, false)
+        fixture = createFixture(target)
+        await target.renderOnce()
+        await target.renderOnce()
+        if (fixture.prepareTiming) {
+          fixture.prepareTiming()
+          await target.renderOnce()
+        }
+        if (errors.length > 0) throw errors[0]
+      } catch (error) {
+        try {
+          fixture?.teardown?.()
+        } catch {
+          // Preserve the setup or initial-frame failure.
+        }
+        target.renderer.destroy()
+        await target.renderer.closed
+        throw error
+      }
+      const activeFixture = fixture
+      let completed = 0
+      let validated = 0
+      let validatedFrames = target.renderer.getNativeStats().nativeFrameCount
+      return {
+        async: true,
+        async run(iteration) {
+          activeFixture.mutate(iteration)
+          await target.renderOnce()
+          completed++
+        },
+        validateBatch(iterations) {
+          const actual = completed - validated
+          if (actual !== iterations) throw new Error(`${name}: completed ${actual} operations, expected ${iterations}`)
+          const nativeFrames = target.renderer.getNativeStats().nativeFrameCount
+          const frameCount = nativeFrames - validatedFrames
+          if (frameCount !== iterations)
+            throw new Error(`${name}: completed ${frameCount} frames, expected ${iterations}`)
+          if (errors.length > 0) throw errors[0]
+          activeFixture.validate(completed)
+          validated = completed
+          validatedFrames = nativeFrames
+        },
+        async teardown() {
+          try {
+            activeFixture.teardown?.()
+          } finally {
+            target.renderer.off(CliRenderEvents.RENDER_ERROR, onError)
+            target.renderer.destroy()
+            await target.renderer.closed
+          }
+        },
+      }
+    },
+  }
+}
+
+function denseCellFillsCase(): BenchmarkCase {
+  return completedFrameCase("dense-cell-fills", { boxes: WIDTH * HEIGHT, mutation: "all-backgrounds" }, (target) => {
+    const boxes = Array.from({ length: WIDTH * HEIGHT }, (_, index) => {
+      const box = new BoxRenderable(target.renderer, {
+        position: "absolute",
+        left: index % WIDTH,
+        top: Math.floor(index / WIDTH),
+        width: 1,
+        height: 1,
+        backgroundColor: RENDER_COLORS.panel,
+      })
+      target.renderer.root.add(box)
+      return box
+    })
+    return {
+      mutate(iteration) {
+        for (let index = 0; index < boxes.length; index++) {
+          boxes[index]!.backgroundColor = (iteration + index) % 2 ? RENDER_COLORS.panel : RENDER_COLORS.element
+        }
+      },
+      validate(completed) {
+        const iteration = completed - 1
+        let mismatch = -1
+        target.renderer.currentRenderBuffer.withBuffers(({ bg }) => {
+          for (let index = 0; index < boxes.length; index++) {
+            const expected = ((iteration + index) % 2 ? RENDER_COLORS.panel : RENDER_COLORS.element).buffer
+            const offset = index * 4
+            if (
+              bg[offset] !== expected[0] ||
+              bg[offset + 1] !== expected[1] ||
+              bg[offset + 2] !== expected[2] ||
+              bg[offset + 3] !== expected[3]
+            ) {
+              mismatch = index
+              break
+            }
+          }
+        })
+        if (mismatch !== -1) {
+          throw new Error(`dense-cell-fills: box ${mismatch} phase mismatch`)
+        }
+        if (target.renderer.getNativeStats().cellsUpdated === 0)
+          throw new Error("dense-cell-fills: frame changed no cells")
+      },
+    }
+  })
+}
+
+function sceneRebuildCase(): BenchmarkCase {
+  return completedFrameCase("scene-rebuild-128", { pairs: 128, mutation: "destroy-and-rebuild" }, (target) => {
+    const construct = (phase: number) => {
+      const group = new BoxRenderable(target.renderer, { width: "100%", height: "100%" })
+      target.renderer.root.add(group)
+      for (let index = 0; index < 128; index++) {
+        const row = new BoxRenderable(target.renderer, {
+          position: "absolute",
+          left: (index % 2) * 70,
+          top: Math.floor(index / 2),
+          width: 70,
+          height: 1,
+          backgroundColor: phase ? RENDER_COLORS.panel : RENDER_COLORS.element,
+        })
+        group.add(row)
+        row.add(
+          new TextRenderable(target.renderer, {
+            width: "100%",
+            height: 1,
+            content: `cycle ${phase} ${index} ${RENDER_UNICODE[phase]}`,
+            fg: RENDER_COLORS.accent,
+            wrapMode: "none",
+          }),
+        )
+      }
+      return group
+    }
+    let group = construct(0)
+    return {
+      mutate(iteration) {
+        group.destroyRecursively()
+        group = construct((iteration + 1) % 2)
+      },
+      validate(completed) {
+        const count = Array.from(target.renderer.nativeScene.getRenderables()).length
+        if (count !== 258) throw new Error(`scene-rebuild-128: retained ${count} nodes, expected 258`)
+        const frame = target.captureCharFrame()
+        const phase = completed % 2
+        const rows = countOccurrences(frame, `cycle ${phase}`)
+        const staleRows = countOccurrences(frame, `cycle ${(phase + 1) % 2}`)
+        if (rows !== HEIGHT * 2 || staleRows !== 0) {
+          throw new Error(`scene-rebuild-128: rendered ${rows} current and ${staleRows} stale rows`)
+        }
+      },
+      teardown: () => group.destroyRecursively(),
+    }
+  })
+}
+
+function textareaCase(kind: "edits" | "cursor" | "selection"): BenchmarkCase {
+  return completedFrameCase(`textarea-${kind}`, { mutation: kind, logical_lines: 25 }, (target) => {
+    const initial =
+      "prefix " +
+      RENDER_UNICODE[0] +
+      "\n" +
+      Array.from({ length: 24 }, (_, index) => `line ${index} ${RENDER_UNICODE[index % 2]}`).join("\n")
+    const editor = new TextareaRenderable(target.renderer, {
+      width: "100%",
+      height: "100%",
+      initialValue: initial,
+      wrapMode: "word",
+      textColor: RENDER_COLORS.accent,
+      backgroundColor: RENDER_COLORS.panel,
+      selectionBg: RENDER_COLORS.warning,
+      showCursor: true,
+      cursorStyle: { style: "block", blinking: false },
+    })
+    target.renderer.root.add(editor)
+    editor.focus()
+    editor.gotoBufferHome()
+    return {
+      mutate(iteration) {
+        const phase = (iteration + 1) % 2
+        if (kind === "edits") {
+          if (phase) editor.insertText("界")
+          else editor.deleteCharBackward()
+        } else if (kind === "cursor") {
+          editor.setCursor(0, phase ? 15 : 7)
+        } else if (phase) {
+          editor.setSelection(0, 6)
+        } else {
+          editor.clearSelection()
+        }
+      },
+      validate(completed) {
+        const phase = completed % 2
+        if (editor.plainText !== (kind === "edits" && phase ? `界${initial}` : initial)) {
+          throw new Error(`textarea-${kind}: text phase mismatch`)
+        }
+        if (kind === "cursor" && editor.logicalCursor.col !== (phase ? 15 : 7)) {
+          throw new Error("textarea-cursor: cursor phase mismatch")
+        }
+        if (kind === "selection" && editor.getSelectedText() !== (phase ? "prefix" : "")) {
+          throw new Error("textarea-selection: selection phase mismatch")
+        }
+        const firstLine = target.captureCharFrame().split("\n")[0]!
+        if (!firstLine.startsWith(kind === "edits" && phase ? "界prefix" : "prefix")) {
+          throw new Error(`textarea-${kind}: rendered text phase mismatch`)
+        }
+        if (kind === "cursor") {
+          const cursor = target.renderer.getCursorState()
+          if (!cursor.visible || cursor.x !== (phase ? 16 : 8)) {
+            throw new Error(`textarea-cursor: rendered cursor ${cursor.x}, expected ${phase ? 16 : 8}`)
+          }
+        }
+        if (kind === "selection") {
+          const expected = (phase ? RENDER_COLORS.warning : RENDER_COLORS.panel).buffer
+          target.renderer.currentRenderBuffer.withBuffers(({ bg }) => {
+            for (let index = 0; index < 6; index++) {
+              const offset = index * 4
+              if (
+                bg[offset] !== expected[0] ||
+                bg[offset + 1] !== expected[1] ||
+                bg[offset + 2] !== expected[2] ||
+                bg[offset + 3] !== expected[3]
+              ) {
+                throw new Error(`textarea-selection: rendered cell ${index} phase mismatch`)
+              }
+            }
+          })
+        }
+      },
+    }
+  })
+}
+
+function markdownTableUpdateCase(): BenchmarkCase {
+  return completedFrameCase("markdown-table-update", { rows: 14, columns: 3 }, (target) => {
+    const style = SyntaxStyle.fromStyles(
+      {
+        default: { fg: RENDER_COLORS.accent },
+        "markup.strong": { bold: true },
+        "markup.raw": { fg: RENDER_COLORS.warning },
+      },
+      target.renderer.nativeScene,
+    )
+    try {
+      const content = [0, 1].map(
+        (phase) =>
+          "| Name | Status | Detail |\n| --- | --- | --- |\n" +
+          Array.from(
+            { length: 14 },
+            (_, index) =>
+              `| **item ${index}** | ${phase ? "ready" : "pending"} | \`${index}\` ${RENDER_UNICODE[phase]} |`,
+          ).join("\n"),
+      )
+      const markdown = new MarkdownRenderable(target.renderer, {
+        width: "100%",
+        content: content[0],
+        syntaxStyle: style,
+        tableOptions: { style: "grid", widthMode: "full", wrapMode: "word", cellPadding: 0 },
+      })
+      target.renderer.root.add(markdown)
+      return {
+        mutate(iteration) {
+          const next = content[(iteration + 1) % 2]!
+          markdown.content = next
+          if (markdown.content !== next) throw new Error("markdown-table-update: content mutation was not accepted")
+        },
+        validate(completed) {
+          const expected = completed % 2 ? "ready" : "pending"
+          const stale = completed % 2 ? "pending" : "ready"
+          const frame = target.captureCharFrame()
+          const rows = countOccurrences(frame, expected)
+          const staleRows = countOccurrences(frame, stale)
+          if (rows !== 14 || staleRows !== 0) {
+            throw new Error(`markdown-table-update: rendered ${rows} current and ${staleRows} stale rows`)
+          }
+        },
+        teardown() {
+          markdown.destroyRecursively()
+          style.destroy()
+        },
+      }
+    } catch (error) {
+      style.destroy()
+      throw error
+    }
+  })
+}
+
+function paintBeforeAfterCase(): BenchmarkCase {
+  return completedFrameCase("paint-before-after", { boxes: 32, hooks_per_box: 2 }, (target) => {
+    let phase = 0
+    let beforeCalls = 0
+    let afterCalls = 0
+    const boxes: BoxRenderable[] = []
+    function renderBefore(this: BoxRenderable, buffer: OptimizedBuffer) {
+      buffer.fillRect(this.x, this.y, this.width, this.height, RENDER_COLORS.element)
+    }
+    function renderAfter(this: BoxRenderable, buffer: OptimizedBuffer) {
+      buffer.drawText(RENDER_UNICODE[phase], this.x + 1, this.y + 1, RENDER_COLORS.accent)
+    }
+    for (let index = 0; index < 32; index++) {
+      const box = new BoxRenderable(target.renderer, {
+        position: "absolute",
+        left: (index % 4) * 35,
+        top: Math.floor(index / 4) * 5,
+        width: 34,
+        height: 4,
+        border: true,
+        backgroundColor: RENDER_COLORS.panel,
+        renderBefore(buffer) {
+          beforeCalls++
+          renderBefore.call(this, buffer)
+        },
+        renderAfter(buffer) {
+          afterCalls++
+          renderAfter.call(this, buffer)
+        },
+      })
+      target.renderer.root.add(box)
+      boxes.push(box)
+    }
+    return {
+      prepareTiming() {
+        if (beforeCalls !== 64 || afterCalls !== 64) {
+          throw new Error(`paint-before-after: setup observed ${beforeCalls}/${afterCalls} callbacks, expected 64 each`)
+        }
+        for (const box of boxes) {
+          box.renderBefore = renderBefore
+          box.renderAfter = renderAfter
+        }
+      },
+      mutate(iteration) {
+        phase = (iteration + 1) % 2
+      },
+      validate(completed) {
+        const expected = RENDER_UNICODE[completed % 2].split(" ")[0]!
+        const stale = RENDER_UNICODE[(completed + 1) % 2].split(" ")[0]!
+        const frame = target.captureCharFrame()
+        const outputs = countOccurrences(frame, expected)
+        const staleOutputs = countOccurrences(frame, stale)
+        if (outputs !== 32 || staleOutputs !== 0) {
+          throw new Error(`paint-before-after: rendered ${outputs} current and ${staleOutputs} stale outputs`)
+        }
+      },
+    }
+  })
+}
+
+function countOccurrences(value: string, search: string): number {
+  return value.split(search).length - 1
+}
+
 function layoutLeafWidthCase(): BenchmarkCase {
   return {
     category: "JS Layout",
     name: "leaf-width-calculate",
-    workload_version: 2,
-    parameters: { width: WIDTH, height: HEIGHT, nodes: LEAF_COUNT },
-    async setup() {
-      const { renderer } = await createTestRenderer({ width: WIDTH, height: HEIGHT })
-      const root = new BoxRenderable(renderer, { width: "100%", height: "100%", flexDirection: "column" })
-      renderer.root.add(root)
-      const leaves = Array.from({ length: LEAF_COUNT }, (_, index) => {
-        const leaf = new BoxRenderable(renderer, { width: index % 2 === 0 ? 6 : 11, height: 1, flexShrink: 0 })
-        root.add(leaf)
-        return leaf
-      })
-      renderer.root.calculateLayout()
+    workload_version: 3,
+    parameters: { width: WIDTH, height: HEIGHT, nodes: LEAF_COUNT, ownership: "standalone" },
+    setup() {
+      const root = YogaNode.create()
+      const leaves: YogaNode[] = []
+      try {
+        root.setWidth(WIDTH)
+        root.setHeight(HEIGHT)
+        root.setFlexDirection(FlexDirection.Column)
+        for (let index = 0; index < LEAF_COUNT; index++) {
+          const leaf = YogaNode.create()
+          leaves.push(leaf)
+          root.insertChild(leaf, index)
+          leaf.setWidth(index % 2 === 0 ? 6 : 11)
+          leaf.setHeight(1)
+          leaf.setFlexShrink(0)
+        }
+        root.calculateLayout(WIDTH, HEIGHT, Direction.LTR)
+      } catch (error) {
+        for (const leaf of leaves) leaf.free()
+        root.free()
+        throw error
+      }
       let completed = 0
       let validated = 0
 
@@ -309,8 +746,8 @@ function layoutLeafWidthCase(): BenchmarkCase {
         run(iteration) {
           const target = iteration % leaves.length
           const leaf = leaves[target]!
-          leaf.width = Math.floor(iteration / leaves.length) % 2 === 0 ? 13 : 7
-          renderer.root.calculateLayout()
+          leaf.setWidth(Math.floor(iteration / leaves.length) % 2 === 0 ? 13 : 7)
+          root.calculateLayout(WIDTH, HEIGHT, Direction.LTR)
           completed++
         },
         validateBatch(iterations) {
@@ -318,7 +755,7 @@ function layoutLeafWidthCase(): BenchmarkCase {
           if (actual !== iterations) {
             throw new Error(`leaf-width-calculate: completed ${actual} operations, expected ${iterations}`)
           }
-          if (renderer.root.getLayoutNode().isDirty()) throw new Error("leaf-width-calculate: layout remained dirty")
+          if (root.isDirty()) throw new Error("leaf-width-calculate: layout remained dirty")
           const checksum = layoutChecksum(leaves)
           const expected = expectedLeafLayoutChecksum(completed)
           if (checksum !== expected) {
@@ -326,7 +763,7 @@ function layoutLeafWidthCase(): BenchmarkCase {
           }
           validated = completed
         },
-        teardown: () => renderer.destroy(),
+        teardown: () => root.freeRecursive(),
       }
     },
   }
@@ -345,7 +782,7 @@ function yogaLayoutReadsCase(): BenchmarkCase {
       const nodes = Array.from({ length: YOGA_NODE_COUNT }, (_, index) => {
         const node = new BoxRenderable(renderer, { width: "100%", height: 1, flexShrink: 0 })
         root.add(node)
-        return node.getLayoutNode()
+        return getYogaNode(node)
       })
       await renderOnce()
       try {
@@ -443,7 +880,7 @@ function mouseCase(name: string, stdin: boolean): BenchmarkCase {
   }
 }
 
-function validateYogaFixture(nodes: readonly ReturnType<BoxRenderable["getLayoutNode"]>[]): void {
+function validateYogaFixture(nodes: readonly ReturnType<typeof getYogaNode>[]): void {
   for (let index = 0; index < nodes.length; index++) {
     const layout = nodes[index]!.getComputedLayout()
     if (
@@ -485,10 +922,10 @@ function validateSgrMove(parser: StdinParser, sequence: Buffer): void {
   }
 }
 
-function layoutChecksum(renderables: readonly BoxRenderable[]): number {
+function layoutChecksum(nodes: readonly YogaNode[]): number {
   let checksum = 0
-  for (let index = 0; index < renderables.length; index++) {
-    const layout = renderables[index]!.getLayoutNode().getComputedLayout()
+  for (let index = 0; index < nodes.length; index++) {
+    const layout = nodes[index]!.getComputedLayout()
     checksum = (checksum + layout.left * 3 + layout.top * 5 + layout.width * 7 + layout.height * 11 + index) | 0
   }
   return checksum

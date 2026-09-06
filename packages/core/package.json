@@ -22,6 +22,9 @@
     "build": "bun run build:native && bun run build:lib",
     "build:dev": "bun run build:native:dev && bun run build:lib",
     "build:lib": "bun scripts/build.ts --lib",
+    "generate:abi": "bun scripts/native-abi.ts",
+    "check:abi": "bun scripts/native-abi.ts --check",
+    "test:abi": "bun test scripts/native-abi.test.ts",
     "prepare:native": "cd ../native && bun run prepare:zig",
     "build:native": "bun run prepare:native && bun scripts/build.ts --native",
     "build:native:dev": "bun run prepare:native && bun scripts/build.ts --native --dev",
@@ -51,7 +54,7 @@
     "publish": "bun scripts/publish.ts",
     "test:dist": "bun scripts/dist-test.ts",
     "test:standalone": "bun scripts/standalone-test.ts",
-    "test:js": "bun test --path-ignore-patterns='src/zig/zig-pkg/**'",
+    "test:js": "bun run check:abi && bun test --path-ignore-patterns='src/zig/zig-pkg/**'",
     "test:js:node": "bun scripts/test-node.ts",
     "typecheck": "tsc --noEmit -p tsconfig.build.json",
     "test": "bun run test:js"

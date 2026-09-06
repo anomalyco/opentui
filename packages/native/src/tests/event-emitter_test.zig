@@ -1,5 +1,34 @@
 const std = @import("std");
 const event_emitter = @import("../event-emitter.zig");
+const event_bus = @import("../event-bus.zig");
+
+test "EventSink routes identical local ids to separate native owners" {
+    const Owner = struct {
+        count: u32 = 0,
+        last_id: u32 = 0,
+
+        fn receive(data: *anyopaque, name: []const u8, bytes: []const u8) void {
+            const self: *@This() = @ptrCast(@alignCast(data));
+            std.debug.assert(std.mem.eql(u8, name, "eb_cursor-changed"));
+            self.count += 1;
+            self.last_id = std.mem.readInt(u32, bytes[0..4], .little);
+        }
+    };
+    var first: Owner = .{};
+    var second: Owner = .{};
+    var first_sink: event_bus.EventSink = .{ .handler = .{ .userdata = &first, .callback = Owner.receive } };
+    var second_sink: event_bus.EventSink = .{ .handler = .{ .userdata = &second, .callback = Owner.receive } };
+    var bytes: [4]u8 = undefined;
+    std.mem.writeInt(u32, &bytes, try first_sink.allocateEditBufferId(), .little);
+    event_bus.emit(&first_sink, "eb_cursor-changed", &bytes);
+    std.mem.writeInt(u32, &bytes, try second_sink.allocateEditBufferId(), .little);
+    event_bus.emit(&second_sink, "eb_cursor-changed", &bytes);
+    event_bus.emit(&first_sink, "eb_cursor-changed", &bytes);
+    try std.testing.expectEqual(@as(u32, 2), first.count);
+    try std.testing.expectEqual(@as(u32, 1), second.count);
+    try std.testing.expectEqual(@as(u32, 1), first.last_id);
+    try std.testing.expectEqual(@as(u32, 1), second.last_id);
+}
 
 const EventType = enum {
     start,

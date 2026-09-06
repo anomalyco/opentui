@@ -1924,6 +1924,63 @@ test "restoreTerminalModes - respects mouse movement setting" {
     try testing.expect(std.mem.find(u8, output, ansi.ANSI.enableAnyEventTracking) == null);
 }
 
+test "resetState - checked helpers preserve legacy byte order" {
+    const initial: Terminal = .{ .state = .{
+        .alt_screen = true,
+        .kitty_keyboard = true,
+        .kitty_keyboard_flags = 5,
+        .modify_other_keys = true,
+        .mouse = true,
+        .mouse_was_enabled = true,
+        .pixel_mouse = true,
+        .bracketed_paste = true,
+        .focus_tracking = true,
+        .color_scheme_updates = true,
+        .mouse_pointer = .pointer,
+    } };
+    const prefix = ansi.ANSI.showCursor ++ ansi.ANSI.reset ++ ansi.ANSI.resetMousePointer ++
+        ansi.ANSI.csiUPop ++ ansi.ANSI.modifyOtherKeysReset ++
+        ansi.ANSI.disableAnyEventTracking ++ ansi.ANSI.disableButtonEventTracking ++
+        ansi.ANSI.disableMouseTracking ++ ansi.ANSI.disableSGRMouseMode ++
+        ansi.ANSI.bracketedPasteReset ++ ansi.ANSI.focusReset;
+    const suffix = ansi.ANSI.colorSchemeReset ++ "\x1b]0;\x07";
+    const expected = prefix ++ ansi.ANSI.switchToMainScreen ++ suffix;
+    var bytes: [expected.len]u8 = undefined;
+
+    for (0..prefix.len) |capacity| {
+        var term = initial;
+        var writer: std.Io.Writer = .fixed(bytes[0..capacity]);
+        try testing.expectError(error.WriteFailed, term.resetInputModes(&writer));
+    }
+    for (expected.len - suffix.len..expected.len) |capacity| {
+        var term = initial;
+        var writer: std.Io.Writer = .fixed(bytes[0..capacity]);
+        try testing.expectError(error.WriteFailed, term.resetState(&writer));
+    }
+
+    var term = initial;
+    var writer: std.Io.Writer = .fixed(&bytes);
+    try term.resetInputModes(&writer);
+    try testing.expectEqualStrings(prefix, writer.buffered());
+    try testing.expect(term.state.alt_screen);
+    try testing.expect(term.state.color_scheme_updates);
+    try testing.expectEqual(Terminal.MousePointerStyle.default, term.state.mouse_pointer);
+    try testing.expect(!term.state.kitty_keyboard and term.state.kitty_keyboard_flags == 0);
+    try testing.expect(!term.state.modify_other_keys and !term.state.mouse and !term.state.pixel_mouse);
+    try testing.expect(!term.state.bracketed_paste and !term.state.focus_tracking);
+
+    try term.exitAltScreen(&writer);
+    try term.resetOutputModes(&writer);
+    try testing.expectEqualStrings(expected, writer.buffered());
+    try testing.expect(!term.state.alt_screen and !term.state.color_scheme_updates);
+
+    var legacy = initial;
+    writer = .fixed(&bytes);
+    try legacy.resetState(&writer);
+    try testing.expectEqualStrings(expected, writer.buffered());
+    try testing.expectEqualDeep(term.state, legacy.state);
+}
+
 test "resetState - force-disables mouse when cleanup is pending and state drifted false" {
     var term = Terminal.init(.{});
     term.state.mouse = false;

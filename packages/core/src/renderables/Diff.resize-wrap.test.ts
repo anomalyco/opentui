@@ -24,7 +24,7 @@ afterEach(() => {
 
 test("DiffRenderable - long line tails survive split/unified/split resize", async () => {
   setup = await createTestRenderer({ width: 160, height: 30 })
-  style = SyntaxStyle.create()
+  style = SyntaxStyle.create(setup.renderer.nativeScene)
   const viewer = new BoxRenderable(setup.renderer, { width: "100%", height: "100%" })
   const body = new BoxRenderable(setup.renderer, { flexGrow: 1, minHeight: 0 })
   const row = new BoxRenderable(setup.renderer, { flexDirection: "row", flexGrow: 1, minHeight: 0 })
@@ -119,7 +119,7 @@ test("DiffRenderable - long line tails survive split/unified/split resize", asyn
 
 test("DiffRenderable - pane resize performs one alignment rebuild", async () => {
   setup = await createTestRenderer({ width: 116, height: 24 })
-  style = SyntaxStyle.create()
+  style = SyntaxStyle.create(setup.renderer.nativeScene)
   const diff = new DiffRenderable(setup.renderer, {
     diff: `--- a/example.txt\n+++ b/example.txt\n@@ -1 +1 @@\n-${"old ".repeat(500)}\n+${"new ".repeat(300)}\n`,
     view: "split",
@@ -150,17 +150,20 @@ test.each(["char", "word"] as const)(
   "DiffRenderable - %s wrapping aligns asymmetric pairs at the final pane widths",
   async (wrapMode) => {
     setup = await createTestRenderer({ width: 116, height: 24 })
-    style = SyntaxStyle.fromStyles({
-      keyword: { fg: "#ff0000" },
-      string: { fg: "#00ff00" },
-      comment: { fg: "#0000ff" },
-    })
+    style = SyntaxStyle.fromStyles(
+      {
+        keyword: { fg: "#ff0000" },
+        string: { fg: "#00ff00" },
+        comment: { fg: "#0000ff" },
+      },
+      setup.renderer.nativeScene,
+    )
     const client = new TreeSitterClient({ dataPath: join(tmpdir(), "tree-sitter-diff-resize-test-data") })
     const removed = [`const old = "${"old words ".repeat(300)}OLD_TAIL";`, 'const before = "short";']
     const added = ['const next = "short";', `const after = "${"new words ".repeat(400)}NEW_TAIL";`]
     const raw = [removed, added].map((lines) => [...lines, "// CONTEXT", "// TAIL_CONTEXT"])
     const reference = raw.map((lines) => {
-      const buffer = TextBuffer.create(setup.renderer.widthMethod)
+      const buffer = TextBuffer.create(setup.renderer.widthMethod, setup.renderer.nativeScene)
       buffer.setText(lines.join("\n"))
       const view = TextBufferView.create(buffer)
       view.setWrapMode(wrapMode)

@@ -1,19 +1,22 @@
+import { getYogaNode } from "../lib/renderable-layout.js"
 import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test"
-import { EditBuffer } from "../edit-buffer.js"
-import { EditorView } from "../editor-view.js"
+import assert from "node:assert/strict"
 import { Renderable, RenderableEvents } from "../Renderable.js"
+import { CliRenderEvents } from "../renderer.js"
 import { BoxRenderable } from "../renderables/Box.js"
+import { CodeRenderable } from "../renderables/Code.js"
 import { EditBufferRenderableEvents } from "../renderables/EditBufferRenderable.js"
-import { InputRenderable } from "../renderables/Input.js"
+import { InputRenderable, InputRenderableEvents } from "../renderables/Input.js"
 import { LineNumberRenderable } from "../renderables/LineNumberRenderable.js"
 import { TextareaRenderable } from "../renderables/Textarea.js"
 import { TextRenderable } from "../renderables/Text.js"
 import type { StyledText } from "../lib/styled-text.js"
 import { SyntaxStyle } from "../syntax-style.js"
+import { MockTreeSitterClient } from "../testing/mock-tree-sitter-client.js"
 import { createTestRenderer, type TestRenderer } from "../testing/test-renderer.js"
 import { TextBuffer } from "../text-buffer.js"
 import { TextBufferView } from "../text-buffer-view.js"
-import { resolveRenderLib, type NativeRenderableHandle } from "../zig.js"
+import { NativeStatus, resolveRenderLib } from "../zig.js"
 
 // Native-backed measurement wires renderables to native state (measure targets,
 // Yoga measure funcs, handles). These tests lock the lifecycle behavior:
@@ -27,8 +30,9 @@ beforeEach(async () => {
   ;({ renderer, renderOnce } = await createTestRenderer({ width: 80, height: 30 }))
 })
 
-afterEach(() => {
+afterEach(async () => {
   renderer.destroy()
+  await renderer.closed
 })
 
 function maybeCollectGarbage(): void {
@@ -44,486 +48,655 @@ function expectSize(
   expect(renderable.height).toBeCloseTo(expected.height, 5)
 }
 
-function trackNativeRenderable() {
-  const lib = resolveRenderLib()
-  const createNativeRenderable = lib.createNativeRenderable.bind(lib)
-  let handle: NativeRenderableHandle | undefined
-  const create = spyOn(lib, "createNativeRenderable").mockImplementation(() => {
-    handle = createNativeRenderable()
-    return handle
-  })
-
-  return {
-    expectDestroyed(): void {
-      expect(handle).toBeDefined()
-      expect(() => lib.nativeRenderableGetYogaNode(handle!)).toThrow("Failed to get native renderable Yoga node")
-    },
-    restore(): void {
-      create.mockRestore()
-      if (handle) lib.destroyNativeRenderable(handle)
-    },
-  }
-}
-
 describe("native-backed measurement lifecycle", () => {
-  test("does not acquire native ownership when base construction fails", () => {
-    const lib = resolveRenderLib()
-    const nativeCreate = spyOn(lib, "createNativeRenderable")
-    const options = {
-      get id(): string {
-        throw new Error("injected base construction failure")
-      },
-    }
-
-    try {
-      expect(() => new TextRenderable(renderer, options)).toThrow("injected base construction failure")
-      expect(nativeCreate).not.toHaveBeenCalled()
-    } finally {
-      nativeCreate.mockRestore()
-    }
-  })
-
-  test("releases native ownership when text construction fails", () => {
-    const native = trackNativeRenderable()
-    let textBuffer: TextBuffer | undefined
-    let textBufferView: TextBufferView | undefined
-    let abortedRenderable: Renderable | undefined
-    const createTextBuffer = TextBuffer.create.bind(TextBuffer)
-    const textBufferCreate = spyOn(TextBuffer, "create").mockImplementation((widthMethod) => {
-      textBuffer = createTextBuffer(widthMethod)
-      return textBuffer
-    })
-    const createTextBufferView = TextBufferView.create.bind(TextBufferView)
-    const textBufferViewCreate = spyOn(TextBufferView, "create").mockImplementation((buffer) => {
-      textBufferView = createTextBufferView(buffer)
-      return textBufferView
-    })
-    const syntaxStyleCreate = spyOn(SyntaxStyle, "create").mockImplementation(() => {
-      throw new Error("injected text construction failure")
-    })
-    const context = renderer as TestRenderer & { claimFirstLineOffset?: (renderable?: Renderable) => number }
-    const claimFirstLineOffset = context.claimFirstLineOffset
-    context.claimFirstLineOffset = (renderable) => {
-      abortedRenderable = renderable
-      return 1
-    }
-
-    try {
-      expect(() => new TextRenderable(renderer, { content: "unreachable" })).toThrow(
-        "injected text construction failure",
-      )
-      expect(abortedRenderable?.isDestroyed).toBe(true)
-      expect(() => textBuffer?.setText("unreachable")).toThrow("TextBuffer is destroyed")
-      expect(() => textBufferView?.setWrapMode("word")).toThrow("TextBufferView is destroyed")
-      native.expectDestroyed()
-    } finally {
-      context.claimFirstLineOffset = claimFirstLineOffset
-      syntaxStyleCreate.mockRestore()
-      textBufferViewCreate.mockRestore()
-      textBufferCreate.mockRestore()
-      textBufferView?.destroy()
-      textBuffer?.destroy()
-      native.restore()
-    }
-  })
-
-  test("releases text resources when derived option processing fails", () => {
-    const native = trackNativeRenderable()
-    let abortedRenderable: Renderable | undefined
-    const textBufferDestroy = spyOn(TextBuffer.prototype, "destroy")
-    const textBufferViewDestroy = spyOn(TextBufferView.prototype, "destroy")
-    const syntaxStyleDestroy = spyOn(SyntaxStyle.prototype, "destroy")
-    const context = renderer as TestRenderer & { claimFirstLineOffset?: (renderable?: Renderable) => number }
-    const claimFirstLineOffset = context.claimFirstLineOffset
-    context.claimFirstLineOffset = (renderable) => {
-      abortedRenderable = renderable
-      return 1
-    }
-    const options = {
-      get content(): string {
-        throw new Error("injected derived text construction failure")
-      },
-    }
-
-    try {
-      expect(() => new TextRenderable(renderer, options)).toThrow("injected derived text construction failure")
-      expect(abortedRenderable?.isDestroyed).toBe(true)
-      expect(textBufferDestroy).toHaveBeenCalledTimes(1)
-      expect(textBufferViewDestroy).toHaveBeenCalledTimes(1)
-      expect(syntaxStyleDestroy).toHaveBeenCalledTimes(1)
-      native.expectDestroyed()
-    } finally {
-      context.claimFirstLineOffset = claimFirstLineOffset
-      syntaxStyleDestroy.mockRestore()
-      textBufferViewDestroy.mockRestore()
-      textBufferDestroy.mockRestore()
-      native.restore()
-    }
-  })
-
-  test("releases native ownership when editor construction fails", () => {
-    const lib = resolveRenderLib()
-    const native = trackNativeRenderable()
-    let editBuffer: EditBuffer | undefined
-    let editorView: EditorView | undefined
-    const createEditBuffer = EditBuffer.create.bind(EditBuffer)
-    const editBufferCreate = spyOn(EditBuffer, "create").mockImplementation((widthMethod) => {
-      editBuffer = createEditBuffer(widthMethod)
-      return editBuffer
-    })
-    const createEditorView = EditorView.create.bind(EditorView)
-    const editorViewCreate = spyOn(EditorView, "create").mockImplementation((buffer, width, height) => {
-      editorView = createEditorView(buffer, width, height)
-      return editorView
-    })
-    const setMeasureTarget = spyOn(lib, "nativeRenderableSetMeasureTarget").mockImplementation(() => false)
-
-    try {
-      expect(() => new TextareaRenderable(renderer, { initialValue: "unreachable" })).toThrow(
-        "Failed to attach editor native measure target",
-      )
-      expect(() => editBuffer?.setText("unreachable")).toThrow("EditBuffer is destroyed")
-      expect(() => editorView?.setWrapMode("word")).toThrow("EditorView is destroyed")
-      native.expectDestroyed()
-    } finally {
-      setMeasureTarget.mockRestore()
-      editorViewCreate.mockRestore()
-      editBufferCreate.mockRestore()
-      editorView?.destroy()
-      editBuffer?.destroy()
-      native.restore()
-    }
-  })
-
-  test("releases editor resources when derived option processing fails", () => {
-    const native = trackNativeRenderable()
-    const editBufferDestroy = spyOn(EditBuffer.prototype, "destroy")
-    const editorViewDestroy = spyOn(EditorView.prototype, "destroy")
-    const placeholder = {
-      get chunks(): StyledText["chunks"] {
-        throw new Error("injected derived editor construction failure")
-      },
-    } as StyledText
-
-    try {
-      expect(() => new TextareaRenderable(renderer, { placeholder })).toThrow(
-        "injected derived editor construction failure",
-      )
-      expect(editBufferDestroy).toHaveBeenCalledTimes(1)
-      expect(editorViewDestroy).toHaveBeenCalledTimes(1)
-      native.expectDestroyed()
-    } finally {
-      editorViewDestroy.mockRestore()
-      editBufferDestroy.mockRestore()
-      native.restore()
-    }
-  })
-
-  test("releases editor resources when input subclass initialization fails", () => {
-    class ThrowingInputRenderable extends InputRenderable {
-      override get plainText(): string {
-        throw new Error("injected input construction failure")
-      }
-    }
-
-    const native = trackNativeRenderable()
-    const editBufferDestroy = spyOn(EditBuffer.prototype, "destroy")
-    const editorViewDestroy = spyOn(EditorView.prototype, "destroy")
-
-    try {
-      expect(() => new ThrowingInputRenderable(renderer, {})).toThrow("injected input construction failure")
-      expect(editBufferDestroy).toHaveBeenCalledTimes(1)
-      expect(editorViewDestroy).toHaveBeenCalledTimes(1)
-      native.expectDestroyed()
-    } finally {
-      editorViewDestroy.mockRestore()
-      editBufferDestroy.mockRestore()
-      native.restore()
-    }
-  })
-
-  test("releases line-number resources when target setup fails", () => {
-    const target = new TextRenderable(renderer, { content: "owned" })
-    const registrySize = Renderable.renderablesByNumber.size
-    Object.defineProperty(target, "virtualLineCount", {
-      configurable: true,
+  test.each(["id", "width"])("rejects an early %s getter before acquiring native ownership", (property) => {
+    const create = spyOn(resolveRenderLib(), "sceneCreateNode")
+    const options = Object.defineProperty({}, property, {
       get() {
-        throw new Error("injected line info failure")
+        throw new Error("early construction failure")
       },
     })
-
-    expect(() => new LineNumberRenderable(renderer, { target })).toThrow("injected line info failure")
-    expect(Renderable.renderablesByNumber.size).toBe(registrySize)
-    expect(target.listenerCount("line-info-change")).toBe(0)
-
-    target.destroy()
-  })
-
-  test("releases native ownership when a destroy listener throws", () => {
-    const native = trackNativeRenderable()
-    const parent = new BoxRenderable(renderer, { width: 40 })
-    const text = new TextRenderable(renderer, { content: "owned" })
-    const layoutNode = text.getLayoutNode()
-    const throwOnDestroy = () => {
-      throw new Error("injected destroy failure")
-    }
-    parent.add(text)
-    renderer.root.add(parent)
-    text.on(RenderableEvents.DESTROYED, throwOnDestroy)
-
     try {
-      expect(() => text.destroy()).toThrow("injected destroy failure")
-      expect(parent.getLayoutNode().getChildCount()).toBe(0)
-      expect(layoutNode.isFreed()).toBe(true)
-      native.expectDestroyed()
+      expect(() => new TextRenderable(renderer, options)).toThrow("early construction failure")
+      expect(create).not.toHaveBeenCalled()
     } finally {
-      text.off(RenderableEvents.DESTROYED, throwOnDestroy)
-      if (text.parent) text.parent.remove(text)
-      layoutNode.free()
-      native.restore()
+      create.mockRestore()
     }
   })
 
-  test("continues text teardown when a native resource destroy throws", () => {
-    const native = trackNativeRenderable()
-    const parent = new BoxRenderable(renderer, { width: 40 })
-    const text = new TextRenderable(renderer, { content: "owned" })
-    const layoutNode = text.getLayoutNode()
-    const internals = text as unknown as { textBuffer: TextBuffer; textBufferView: TextBufferView }
-    const textBufferViewDestroy = spyOn(internals.textBufferView, "destroy").mockImplementation(() => {
-      throw new Error("injected text view destroy failure")
-    })
-    parent.add(text)
-    renderer.root.add(parent)
-
-    try {
-      expect(() => text.destroy()).toThrow("injected text view destroy failure")
-      expect(text.isDestroyed).toBe(true)
-      expect(parent.getChildrenCount()).toBe(0)
-      expect(layoutNode.isFreed()).toBe(true)
-      expect(() => internals.textBuffer.setText("unreachable")).toThrow("TextBuffer is destroyed")
-      native.expectDestroyed()
-    } finally {
-      textBufferViewDestroy.mockRestore()
-      internals.textBufferView.destroy()
-      native.restore()
-    }
-  })
-
-  test("continues editor teardown when a subclass listener throws", () => {
-    const native = trackNativeRenderable()
-    const parent = new BoxRenderable(renderer, { width: 40 })
-    const textarea = new TextareaRenderable(renderer, { initialValue: "owned" })
-    const layoutNode = textarea.getLayoutNode()
-    const internals = textarea as unknown as { editBuffer: EditBuffer; editorView: EditorView }
-    textarea.traits = { status: "active" }
-    textarea.on(EditBufferRenderableEvents.TRAITS_CHANGED, () => {
-      throw new Error("injected traits listener failure")
-    })
-    parent.add(textarea)
-    renderer.root.add(parent)
-
-    try {
-      expect(() => textarea.destroy()).toThrow("injected traits listener failure")
-      expect(textarea.isDestroyed).toBe(true)
-      expect(parent.getChildrenCount()).toBe(0)
-      expect(layoutNode.isFreed()).toBe(true)
-      expect(() => internals.editBuffer.setText("unreachable")).toThrow("EditBuffer is destroyed")
-      expect(() => internals.editorView.setWrapMode("word")).toThrow("EditorView is destroyed")
-      native.expectDestroyed()
-    } finally {
-      native.restore()
-    }
-  })
-
-  test("destroying a line-number target detaches it and releases native ownership", () => {
-    const native = trackNativeRenderable()
-    const target = new TextRenderable(renderer, { content: "owned" })
-    const lineNumbers = new LineNumberRenderable(renderer, { target })
-    const children = lineNumbers.getChildren()
-    const gutter = children.find((child) => child !== target)!
-
-    try {
-      expect(lineNumbers.getLayoutNode().getChildCount()).toBe(2)
-      expect(target.listenerCount("line-info-change")).toBe(1)
-
-      target.destroy()
-
-      expect(target.parent).toBeNull()
-      expect(target.listenerCount("line-info-change")).toBe(0)
-      expect(lineNumbers.getChildrenCount()).toBe(0)
-      expect(lineNumbers.getLayoutNode().getChildCount()).toBe(0)
-      expect(gutter.isDestroyed).toBe(true)
-      native.expectDestroyed()
-    } finally {
-      lineNumbers.destroy()
-      for (const child of children) child.destroyRecursively()
-      native.restore()
-    }
-  })
-
-  test("reentrant line-number target cleanup destroys its internal gutter", () => {
-    const target = new TextRenderable(renderer, { content: "owned" })
-    const lineNumbers = new LineNumberRenderable(renderer, { target })
-    const gutter = lineNumbers.getChildren().find((child) => child !== target)!
-    target.on(RenderableEvents.DESTROYED, () => lineNumbers.clearTarget())
-
-    target.destroy()
-
-    expect(target.parent).toBeNull()
-    expect(gutter.parent).toBeNull()
-    expect(gutter.isDestroyed).toBe(true)
-    expect(gutter.getLayoutNode().isFreed()).toBe(true)
-    expect(lineNumbers.getChildrenCount()).toBe(0)
-  })
-
-  test("detaches a live native-backed child when live-count cleanup throws", () => {
-    const native = trackNativeRenderable()
-    const parent = new BoxRenderable(renderer, { width: 40 })
-    const text = new TextRenderable(renderer, { content: "owned", live: true })
-    const layoutNode = text.getLayoutNode()
-    renderer.root.add(parent)
-    parent.add(text)
-    const originalDropLive = renderer.dropLive.bind(renderer)
-    const dropLive = spyOn(renderer, "dropLive").mockImplementation(() => {
-      originalDropLive()
-      throw new Error("injected live-count cleanup failure")
-    })
-
-    try {
-      expect(() => text.destroy()).toThrow("injected live-count cleanup failure")
-      expect(text.isDestroyed).toBe(true)
-      expect(parent.getChildrenCount()).toBe(0)
-      expect(parent.getLayoutNode().getChildCount()).toBe(0)
-      expect(layoutNode.isFreed()).toBe(true)
-      native.expectDestroyed()
-    } finally {
-      dropLive.mockRestore()
-      if (text.parent) text.parent.remove(text)
-      layoutNode.free()
-      native.restore()
-    }
-  })
-
-  test("direct line-number teardown detaches its internal children", () => {
-    const target = new TextRenderable(renderer, { content: "owned" })
-    const lineNumbers = new LineNumberRenderable(renderer, { target })
-    const children = lineNumbers.getChildren()
-    const gutter = children.find((child) => child !== target)!
-
-    try {
-      expect(children).toHaveLength(2)
-      expect(target.listenerCount("line-info-change")).toBe(1)
-      lineNumbers.destroy()
-      expect(lineNumbers.getChildrenCount()).toBe(0)
-      expect(target.listenerCount("line-info-change")).toBe(0)
-      for (const child of children) {
-        expect(child.parent).toBeNull()
+  test.each([undefined, new Error("construction failed")])(
+    "constructor abort and rollback preserve the original error %s after cleanup fails",
+    (failure) => {
+      const host = resolveRenderLib().getYogaHost()
+      const registered = new Set(Renderable.renderablesByNumber.keys())
+      for (const [Constructor, property] of [
+        [BoxRenderable, "backgroundColor"],
+        [TextRenderable, "content"],
+      ] as const) {
+        const options = Object.defineProperty({}, property, {
+          get() {
+            host.invokeCallback(() => {
+              throw new Error("callback failed")
+            })
+            throw failure
+          },
+        })
+        assert.throws(
+          () => new Constructor(renderer, options),
+          (error) => error === failure,
+        )
+        expect(new Set(Renderable.renderablesByNumber.keys())).toEqual(registered)
+        host.throwCallbackError()
       }
-      expect(gutter.isDestroyed).toBe(true)
-      expect(gutter.getLayoutNode().isFreed()).toBe(true)
-      expect(target.isDestroyed).toBe(false)
-    } finally {
-      for (const child of children) {
-        child.destroyRecursively()
+    },
+  )
+
+  test.each([
+    "minWidth",
+    "backgroundColor",
+    "text",
+    "textarea",
+    "input",
+    "attachment",
+    "code",
+    "syntaxStyle",
+    "codeAttachment",
+  ])("constructor rollback at %s releases ownership despite a latched callback error", (step) => {
+    const lib = resolveRenderLib()
+    const host = lib.getYogaHost()
+    const registered = new Set(Renderable.renderablesByNumber.keys())
+    const owners = [...renderer.nativeScene.getRenderables()]
+    const style = SyntaxStyle.create(renderer.nativeScene)
+    const released = spyOn(lib, "sceneDestroyNode")
+    const failure = new Error("construction failed")
+    let failed: Renderable | undefined
+    const fail = (): never => {
+      failed = [...Renderable.renderablesByNumber.values()].find((node) => !registered.has(node.num))
+      host.invokeCallback(() => {
+        throw new Error("earlier callback failed")
+      })
+      throw failure
+    }
+    class PartialText extends TextRenderable {
+      override destroy(): void {
+        throw new Error("uninitialized subclass destroy")
       }
     }
-  })
-
-  test("does not remount children onto a destroyed line-number parent", () => {
-    const original = new TextRenderable(renderer, { content: "old" })
-    const replacement = new TextRenderable(renderer, { content: "new" })
-    const lineNumbers = new LineNumberRenderable(renderer, { target: original })
-    const gutter = lineNumbers.getChildren().find((child) => child !== original)!
-    gutter.on(RenderableEvents.DESTROYED, () => {
-      lineNumbers.add(replacement)
-    })
-
-    lineNumbers.destroy()
-
-    expect(lineNumbers.isDestroyed).toBe(true)
-    expect(lineNumbers.getChildrenCount()).toBe(0)
-    expect(lineNumbers.getLayoutNode().getChildCount()).toBe(0)
-    expect(replacement.parent).toBeNull()
-    expect(replacement.listenerCount("line-info-change")).toBe(0)
-    expect(gutter.isDestroyed).toBe(true)
-    original.destroy()
-    replacement.destroy()
-  })
-
-  test("releases native ownership when parent detach throws", () => {
-    const native = trackNativeRenderable()
-    class ThrowingParent extends BoxRenderable {
-      private failOnce = true
-      public override remove(child: Renderable): void {
-        if (this.failOnce) {
-          this.failOnce = false
-          throw new Error("injected detach failure")
+    class PartialTextarea extends TextareaRenderable {
+      override destroy(): void {
+        throw new Error("uninitialized subclass destroy")
+      }
+    }
+    class PartialInput extends InputRenderable {
+      override get plainText(): string {
+        return fail()
+      }
+    }
+    const attach = spyOn(lib, step === "codeAttachment" ? "sceneSetTextView" : "sceneSetEditorView")
+    const createStyle = spyOn(SyntaxStyle, "create")
+    try {
+      if (step === "attachment" || step === "codeAttachment") attach.mockImplementation(fail)
+      if (step === "syntaxStyle") createStyle.mockImplementation(fail)
+      expect(() => {
+        if (step === "text")
+          return new PartialText(renderer, {
+            get content() {
+              return fail()
+            },
+          })
+        if (step === "textarea")
+          return new PartialTextarea(renderer, {
+            placeholder: {
+              get chunks() {
+                return fail()
+              },
+            } as unknown as StyledText,
+          })
+        if (step === "input") return new PartialInput(renderer, {})
+        if (step === "attachment") return new TextareaRenderable(renderer, {})
+        if (step === "code" || step === "syntaxStyle" || step === "codeAttachment")
+          return new CodeRenderable(renderer, {
+            syntaxStyle: style,
+            get content() {
+              return step === "code" ? fail() : "owned"
+            },
+          })
+        return new BoxRenderable(renderer, Object.defineProperty({}, step, { get: fail }))
+      }).toThrow(failure)
+      expect(failed?.isDestroyed).toBe(true)
+      expect(new Set(Renderable.renderablesByNumber.keys())).toEqual(registered)
+      expect([...renderer.nativeScene.getRenderables()]).toEqual(owners)
+      expect(released).toHaveBeenCalledTimes(1)
+      const [context, handle] = released.mock.calls[0]
+      assert.throws(() => lib.sceneGetLayout(context, handle), { status: NativeStatus.StaleHandle })
+      if (failed instanceof TextareaRenderable) {
+        const { editBuffer, editorView } = failed
+        expect(() => editBuffer.getText()).toThrow("destroyed")
+        expect(() => editorView.getVirtualLineCount()).toThrow("destroyed")
+        expect(editBuffer.listenerCount("content-changed")).toBe(0)
+      }
+      if (failed instanceof CodeRenderable) {
+        const { textBuffer, textBufferView } = failed as unknown as {
+          textBuffer: TextBuffer
+          textBufferView: TextBufferView
         }
+        expect(() => textBuffer.getPlainText()).toThrow("destroyed")
+        expect(() => textBufferView.getVirtualLineCount()).toThrow("destroyed")
+        const ownedStyle = Reflect.get(failed, "_textBufferSyntaxStyle") as SyntaxStyle | undefined
+        if (ownedStyle) expect(() => ownedStyle.getStyleCount()).toThrow("destroyed")
+      }
+      expect(style.getStyleCount()).toBe(0)
+      host.throwCallbackError()
+    } finally {
+      attach.mockRestore()
+      createStyle.mockRestore()
+      released.mockRestore()
+      if (failed && !failed.isDestroyed) Renderable.prototype.destroy.call(failed)
+      style.destroy()
+    }
+  })
+
+  test.each(["callback", "latched"])("rejected %s destroy preserves inline text, traits and focus", async (entry) => {
+    const text = new TextRenderable(renderer, { alignSelf: "flex-start", wrapMode: "none" })
+    text.add("owned")
+    const input = new InputRenderable(renderer, { value: "owned" })
+    renderer.root.add(text)
+    renderer.root.add(input)
+    input.traits = { status: "active" }
+    input.focus()
+    const children = [...text.textNode.children]
+    const host = resolveRenderLib().getYogaHost()
+    const events: string[] = []
+    input.on(EditBufferRenderableEvents.TRAITS_CHANGED, () => events.push("traits"))
+    input.on(RenderableEvents.BLURRED, () => events.push("blurred"))
+    input.on(RenderableEvents.DESTROYED, () => events.push("destroyed"))
+    for (const node of [text, input]) {
+      if (entry === "callback") {
+        host.invokeCallback(() => node.destroy())
+        expect(() => host.throwCallbackError()).toThrow("Cannot mutate Yoga during a callback")
+      } else {
+        const failure = new Error("earlier callback failed")
+        host.invokeCallback(() => {
+          throw failure
+        })
+        expect(() => node.destroy()).toThrow(failure)
+      }
+      expect(node.isDestroyed).toBe(false)
+      expect(getYogaNode(node).isFreed()).toBe(false)
+    }
+    expect(text.textNode.children).toEqual(children)
+    expect(input.traits).toEqual({ status: "active" })
+    expect(input.focused).toBe(true)
+    expect(renderer.currentFocusedRenderable).toBe(input)
+    expect(events).toEqual([])
+    expect(input.plainText).toBe("owned")
+    text.add(" again")
+    input.value = "still usable"
+    await renderOnce()
+    expectSize(text, { width: 11, height: 1 })
+    text.destroy()
+    expect(text.textNode.children).toEqual([])
+    input.destroy()
+    expect(events).toEqual(["traits", "blurred", "destroyed"])
+  })
+
+  test("rejected code destroy preserves highlighting; accepted destroy cancels it", async () => {
+    const syntaxStyle = SyntaxStyle.create(renderer.nativeScene)
+    const client = new MockTreeSitterClient()
+    const highlighted: string[] = []
+    const code = new CodeRenderable(renderer, {
+      content: "const owned = true",
+      filetype: "typescript",
+      syntaxStyle,
+      treeSitterClient: client,
+      onHighlight: (highlights, context) => {
+        highlighted.push(context.content)
+        return highlights
+      },
+    })
+    renderer.root.add(code)
+    try {
+      await renderOnce()
+      const pending = code.highlightingDone
+      expect(code.isHighlighting).toBe(true)
+      const host = resolveRenderLib().getYogaHost()
+      host.invokeCallback(() => code.destroy())
+      expect(() => host.throwCallbackError()).toThrow("Cannot mutate Yoga during a callback")
+      expect(code.isDestroyed).toBe(false)
+      expect(code.highlightingDone).toBe(pending)
+      client.resolveAllHighlightOnce()
+      await pending
+      expect(highlighted).toEqual([code.content])
+      code.content = "const next = true"
+      await renderOnce()
+      const cancelled = code.highlightingDone
+      code.on(RenderableEvents.DESTROYED, () => expect(code.isHighlighting).toBe(false))
+      code.destroy()
+      client.resolveAllHighlightOnce()
+      await cancelled
+      expect(highlighted).toHaveLength(1)
+    } finally {
+      code.destroy()
+      await client.destroy()
+      syntaxStyle.destroy()
+    }
+  })
+
+  test.each(["destroy", "destroyRecursively"] as const)(
+    "input %s releases measurement after reentrant events",
+    (method) => {
+      const input = new InputRenderable(renderer, { value: "before" })
+      renderer.root.add(input)
+      input.traits = { status: "active" }
+      input.focus()
+      input.value = "after"
+      input.setMeasureProvider(() => ({ width: 7, height: 1 }))
+      const node = getYogaNode(input)
+      const scene = renderer.nativeScene
+      const handle = node._getSceneHandle(scene)
+      const events: string[] = []
+      for (const [event, name] of [
+        [EditBufferRenderableEvents.TRAITS_CHANGED, "traits"],
+        [InputRenderableEvents.CHANGE, "change"],
+      ])
+        input.on(event, () => {
+          events.push(name)
+          expect(input.isDestroyed).toBe(false)
+          expect(node.hasMeasureFunc()).toBe(true)
+          expect(input.parent).toBe(renderer.root)
+          input.destroy()
+          input.destroyRecursively()
+          expect(input.value).toBe("after")
+        })
+      input.on(RenderableEvents.BLURRED, () => events.push("blurred"))
+      input.on(RenderableEvents.DESTROYED, () => {
+        events.push("destroyed")
+        expect(input.isDestroyed).toBe(true)
+        expect(() => input.editBuffer.getText()).toThrow("destroyed")
+        expect(() => input.editorView.getVirtualLineCount()).toThrow("destroyed")
+      })
+      const release = spyOn(scene.driver.renderLib, "sceneDestroyNode")
+      try {
+        input[method]()
+        expect(events).toEqual(["traits", "change", "blurred", "destroyed"])
+        expect(release).toHaveBeenCalledTimes(1)
+        expect(node.isFreed()).toBe(true)
+        assert.throws(() => scene.driver.renderLib.sceneHasMeasure(scene.driver.context, handle), {
+          status: NativeStatus.StaleHandle,
+        })
+        expect(
+          Reflect.get(scene.driver.renderLib, "sceneMeasures").get(scene.driver.context)?.nodes.has(handle.slot),
+        ).not.toBe(true)
+      } finally {
+        release.mockRestore()
+      }
+    },
+  )
+
+  test.each(["returns", "throws"])(
+    "upward recursive cleanup waits for an input CHANGE listener that %s",
+    (behavior) => {
+      const ancestor = new BoxRenderable(renderer, { focusable: true })
+      const parent = new BoxRenderable(renderer, {})
+      const input = new InputRenderable(renderer, { value: "before" })
+      renderer.root.add(ancestor)
+      ancestor.add(parent)
+      parent.add(input)
+      input.focus()
+      input.value = "after"
+      const events: string[] = []
+      const failure = new Error("CHANGE failed")
+      input.on(InputRenderableEvents.CHANGE, () => {
+        events.push("change")
+        parent.destroyRecursively()
+        events.push("change-return")
+        if (behavior === "throws") throw failure
+      })
+      input.on(RenderableEvents.BLURRED, () => events.push("blurred"))
+      input.on(RenderableEvents.DESTROYED, () => events.push("input"))
+      parent.on(RenderableEvents.DESTROYED, () => {
+        events.push("parent")
+        expect([input.isDestroyed, getYogaNode(input).isFreed(), input.focused, ancestor.hasFocusedDescendant]).toEqual(
+          [true, true, false, false],
+        )
+      })
+      if (behavior === "throws") expect(() => input.destroy()).toThrow(failure)
+      else input.destroy()
+      expect(events).toEqual(
+        behavior === "throws"
+          ? ["change", "change-return", "input", "blurred", "parent"]
+          : ["change", "change-return", "blurred", "input", "parent"],
+      )
+      expect(getYogaNode(parent).isFreed()).toBe(true)
+      expect(ancestor.isDestroyed).toBe(false)
+    },
+  )
+
+  test("traits and removal failures do not interrupt editor cleanup or replace the first error", () => {
+    const textarea = new TextareaRenderable(renderer, { initialValue: "owned" })
+    renderer.root.add(textarea)
+    textarea.focus()
+    textarea.traits = { status: "active" }
+    const failure = new Error("traits failed")
+    const events: string[] = []
+    textarea.on(EditBufferRenderableEvents.TRAITS_CHANGED, () => {
+      textarea.destroyRecursively()
+      expect(textarea.plainText).toBe("owned")
+      throw failure
+    })
+    textarea.on(RenderableEvents.BLURRED, () => events.push("blurred"))
+    textarea.on(RenderableEvents.DESTROYED, () => events.push("destroyed"))
+    const remove = spyOn(textarea as unknown as { onRemove(): void }, "onRemove").mockImplementation(() => {
+      throw new Error("later removal failure")
+    })
+    try {
+      assert.throws(
+        () => textarea.destroy(),
+        (error) => error === failure,
+      )
+      expect(events).toEqual(["blurred", "destroyed"])
+      expect(remove).toHaveBeenCalledTimes(1)
+      expect(getYogaNode(textarea).isFreed()).toBe(true)
+      expect(() => textarea.editBuffer.getText()).toThrow("destroyed")
+      expect(() => textarea.editorView.getVirtualLineCount()).toThrow("destroyed")
+      resolveRenderLib().getYogaHost().throwCallbackError()
+    } finally {
+      remove.mockRestore()
+    }
+  })
+
+  test.each(["view", "detach", "destroySelf", "listeners", "live"])(
+    "text teardown continues after %s failure",
+    (step) => {
+      const style = SyntaxStyle.create(renderer.nativeScene)
+      const parent = new BoxRenderable(renderer, {})
+      const text = new CodeRenderable(renderer, { content: "owned", syntaxStyle: style, live: true })
+      renderer.root.add(parent)
+      parent.add(text)
+      const internals = text as unknown as {
+        textBuffer: TextBuffer
+        textBufferView: TextBufferView
+        destroySelf(): void
+      }
+      const failure = new Error("first cleanup failure")
+      const fail = () => {
+        throw step === "view" || step === "live" ? failure : new Error("later cleanup failure")
+      }
+      const dropLive = renderer.dropLive.bind(renderer)
+      const failing =
+        step === "view"
+          ? spyOn(internals.textBufferView, "destroy").mockImplementation(fail)
+          : step === "detach"
+            ? spyOn(parent, "remove").mockImplementation(fail)
+            : step === "destroySelf"
+              ? spyOn(internals, "destroySelf").mockImplementation(fail)
+              : step === "listeners"
+                ? spyOn(text, "removeAllListeners").mockImplementation(fail)
+                : spyOn(renderer, "dropLive").mockImplementation(() => {
+                    dropLive()
+                    fail()
+                  })
+      let notified = false
+      text.on(RenderableEvents.DESTROYED, () => {
+        notified = true
+        expect(text.isDestroyed).toBe(true)
+        if (step === "live") return
+        throw step === "view" ? new Error("later listener failure") : failure
+      })
+      try {
+        assert.throws(
+          () => text.destroy(),
+          (error) => error === failure,
+        )
+        expect(notified).toBe(true)
+        expect(text.parent).toBeNull()
+        expect(parent.getChildrenCount()).toBe(0)
+        expect(parent.liveCount).toBe(0)
+        expect(getYogaNode(text).isFreed()).toBe(true)
+        expect(() => internals.textBuffer.getPlainText()).toThrow("destroyed")
+        text.destroy()
+      } finally {
+        failing.mockRestore()
+        internals.textBufferView.destroy()
+        text.removeAllListeners()
+        style.destroy()
+      }
+    },
+  )
+
+  test("cleanup clears ancestor focus even when the renderer blur listener throws", () => {
+    const ancestor = new BoxRenderable(renderer, { focusable: true })
+    const input = new InputRenderable(renderer, { value: "owned" })
+    renderer.root.add(ancestor)
+    ancestor.add(input)
+    input.focus()
+    const failure = new Error("renderer blur failed")
+    const onFocus = (editor: unknown) => {
+      if (editor === null) throw failure
+    }
+    renderer.on(CliRenderEvents.FOCUSED_EDITOR, onFocus)
+    try {
+      expect(() => input.destroy()).toThrow(failure)
+      expect(getYogaNode(input).isFreed()).toBe(true)
+      expect(renderer.currentFocusedRenderable).toBeNull()
+      expect(input.focused).toBe(false)
+      expect(ancestor.hasFocusedDescendant).toBe(false)
+    } finally {
+      renderer.off(CliRenderEvents.FOCUSED_EDITOR, onFocus)
+    }
+  })
+
+  test("shallow destruction preserves focus moved to a surviving branch", () => {
+    const ancestor = new BoxRenderable(renderer, { focusable: true })
+    const parent = new BoxRenderable(renderer, {})
+    const survivor = new BoxRenderable(renderer, {})
+    const input = new InputRenderable(renderer, { value: "kept" })
+    renderer.root.add(ancestor)
+    ancestor.add(parent)
+    ancestor.add(survivor)
+    parent.add(input)
+    input.focus()
+    parent.on(RenderableEvents.DESTROYED, () => survivor.add(input))
+    parent.destroy()
+    expect(input.parent).toBe(survivor)
+    expect(input.isDestroyed).toBe(false)
+    expect(renderer.currentFocusedRenderable).toBe(input)
+    expect(survivor.hasFocusedDescendant).toBe(true)
+    expect(ancestor.hasFocusedDescendant).toBe(true)
+    input.blur()
+    expect(ancestor.hasFocusedDescendant).toBe(false)
+  })
+
+  test.each(["target", "gutter"])("line-number %s cannot be reparented around its removal policy", async (kind) => {
+    const target = new TextRenderable(renderer, { content: "owned" })
+    const lines = new LineNumberRenderable(renderer, { target })
+    const other = new BoxRenderable(renderer, { position: "absolute", left: 40, top: 10, width: 10, height: 2 })
+    const anchor = new BoxRenderable(renderer, {})
+    renderer.root.add(lines)
+    renderer.root.add(other)
+    other.add(anchor)
+    const children = lines.getChildren()
+    const child = kind === "target" ? target : children.find((node) => node !== target)!
+    await renderOnce()
+    const before = renderer.nativeScene.getLayout(getYogaNode(child))
+    for (const move of [() => other.add(child), () => other.insertBefore(child, anchor)]) {
+      expect(move).toThrow(`LineNumberRenderable: Cannot remove ${kind} directly.`)
+      expect(lines.getChildren()).toEqual(children)
+      expect(other.getChildren()).toEqual([anchor])
+      expect(child.parent).toBe(lines)
+      expect(target.listenerCount("line-info-change")).toBe(1)
+      await renderOnce()
+      expect(renderer.nativeScene.getLayout(getYogaNode(child))).toEqual(before)
+    }
+  })
+
+  test("line-number setup failure after gutter construction releases listeners and ownership", () => {
+    const target = new TextRenderable(renderer, { content: "owned" })
+    renderer.root.add(target)
+    const registered = new Set(Renderable.renderablesByNumber.keys())
+    Object.defineProperty(target, "virtualLineCount", {
+      get() {
+        throw new Error("line info failed")
+      },
+    })
+    expect(() => new LineNumberRenderable(renderer, { target })).toThrow("line info failed")
+    expect(new Set(Renderable.renderablesByNumber.keys())).toEqual(registered)
+    expect(target.listenerCount("line-info-change")).toBe(0)
+    expect(target.plainText).toBe("owned")
+    target.destroy()
+  })
+
+  test("custom removal runs only after callback admission and is not rolled back by native rejection", () => {
+    let removed = 0
+    class Parent extends BoxRenderable {
+      override remove(child: Renderable): void {
         super.remove(child)
+        removed++
       }
     }
-
-    const parent = new ThrowingParent(renderer, { width: 40 })
-    const text = new TextRenderable(renderer, { content: "owned", live: true })
-    const layoutNode = text.getLayoutNode()
-    parent.add(text)
-
+    const previous = new Parent(renderer, {})
+    const target = new BoxRenderable(renderer, {})
+    const child = new BoxRenderable(renderer, {})
+    renderer.root.add(previous)
+    renderer.root.add(target)
+    previous.add(child)
+    previous.add(child)
+    expect(removed).toBe(0)
+    const lib = resolveRenderLib()
+    lib.getYogaHost().invokeCallback(() => target.add(child))
+    expect(() => lib.getYogaHost().throwCallbackError()).toThrow("Cannot mutate Yoga during a callback")
+    expect(removed).toBe(0)
+    const move = lib.sceneMoveNode.bind(lib)
+    const reject = spyOn(lib, "sceneMoveNode").mockImplementation((context, node, parent, index) => {
+      if (parent) throw new Error("placement failed")
+      move(context, node, parent, index)
+    })
     try {
-      expect(() => text.destroy()).toThrow("injected detach failure")
-      expect(text.isDestroyed).toBe(true)
-      expect(text.parent).toBeNull()
-      expect(parent.getChildrenCount()).toBe(0)
-      expect(parent.getLayoutNode().getChildCount()).toBe(0)
-      expect(parent.liveCount).toBe(0)
-      expect(layoutNode.isFreed()).toBe(true)
-      native.expectDestroyed()
+      expect(() => target.add(child)).toThrow("placement failed")
+      expect(removed).toBe(1)
+      expect(child.parent).toBeNull()
+      expect(previous.getChildren()).toEqual([])
+      reject.mockRestore()
+      target.add(child)
+      expect(removed).toBe(1)
     } finally {
-      native.restore()
-      parent.destroy()
+      reject.mockRestore()
+      child.destroy()
     }
   })
 
-  test("destroying an exposed line-number gutter detaches it before freeing Yoga", () => {
-    const target = new TextRenderable(renderer, { content: "owned" })
-    const lineNumbers = new LineNumberRenderable(renderer, { target })
-    const gutter = lineNumbers.getChildren().find((child) => child !== target)!
-
-    try {
-      gutter.destroy()
-
-      expect(gutter.parent).toBeNull()
-      expect(target.parent).toBeNull()
-      expect(target.listenerCount("line-info-change")).toBe(0)
-      expect(lineNumbers.getChildrenCount()).toBe(0)
-      expect(lineNumbers.getLayoutNode().getChildCount()).toBe(0)
-      expect(() => lineNumbers.destroy()).not.toThrow()
-    } finally {
-      gutter.destroyRecursively()
-      target.destroyRecursively()
-      lineNumbers.destroyRecursively()
+  test.each(["add", "insertBefore"] as const)("%s revalidates placement after custom parent removal", (method) => {
+    for (const change of ["parent", "destination", "child", "removed anchor", "destroyed anchor", "reordered anchor"]) {
+      const other = new BoxRenderable(renderer, { paddingTop: 2 })
+      const anchor = new BoxRenderable(renderer, { height: 1 })
+      let removals = 0
+      class Parent extends BoxRenderable {
+        override remove(child: Renderable): void {
+          super.remove(child)
+          removals++
+          if (change === "parent") this.destroy()
+          if (change === "destination") other.destroyRecursively()
+          if (change === "child") child.destroy()
+          if (change === "removed anchor") other.remove(anchor)
+          if (change === "destroyed anchor") anchor.destroy()
+          if (change === "reordered anchor") other.add(anchor)
+        }
+      }
+      const previous = new Parent(renderer, { height: 1 })
+      const child = new BoxRenderable(renderer, { height: 1 })
+      const sibling = new BoxRenderable(renderer, { height: 1 })
+      renderer.root.add(other)
+      other.add(previous)
+      other.add(anchor)
+      other.add(sibling)
+      previous.add(child)
+      try {
+        const index = method === "add" ? other.add(child) : other.insertBefore(child, anchor)
+        const rejected =
+          change === "destination" ||
+          change === "child" ||
+          (method === "insertBefore" && change.endsWith("anchor") && change !== "reordered anchor")
+        expect(removals).toBe(1)
+        expect(child.parent).toBe(rejected ? null : other)
+        if (rejected) expect(index).toBe(-1)
+        else {
+          const siblings = other.getChildren()
+          expect(siblings[index]).toBe(child)
+          expect(index).toBe(method === "add" ? siblings.length - 1 : siblings.indexOf(anchor) - 1)
+          renderer.nativeScene.measureSnapshot(other)
+          expect(getYogaNode(child).getComputedTop()).toBe(index + 2)
+        }
+        if (change === "parent") expect(previous.isDestroyed).toBe(true)
+        else expect(previous.getChildrenCount()).toBe(0)
+      } finally {
+        child.destroy()
+        anchor.destroy()
+        other.destroyRecursively()
+      }
     }
   })
 
-  test("recursive teardown continues after a child destroy listener throws", () => {
-    const parent = new BoxRenderable(renderer, { width: 40 })
+  test.each(["target", "reentrant target", "owner", "gutter"])(
+    "line-number %s teardown releases the gutter without remounting",
+    (entry) => {
+      const target = new TextRenderable(renderer, { content: "owned" })
+      const replacement = new TextRenderable(renderer, { content: "new" })
+      const lines = new LineNumberRenderable(renderer, { target })
+      const gutter = lines.getChildren().find((node) => node !== target)!
+      if (entry === "reentrant target") target.on(RenderableEvents.DESTROYED, () => lines.clearTarget())
+      if (entry === "owner") gutter.on(RenderableEvents.DESTROYED, () => lines.add(replacement))
+      try {
+        if (entry === "owner") lines.destroy()
+        else if (entry === "gutter") gutter.destroy()
+        else target.destroy()
+        expect(target.parent).toBeNull()
+        expect(target.listenerCount("line-info-change")).toBe(0)
+        expect(lines.getChildrenCount()).toBe(0)
+        expect(target.isDestroyed).toBe(entry === "target" || entry === "reentrant target")
+        expect(getYogaNode(gutter).isFreed()).toBe(true)
+        expect(replacement.parent).toBeNull()
+        expect(replacement.listenerCount("line-info-change")).toBe(0)
+      } finally {
+        lines.destroy()
+        target.destroy()
+        replacement.destroy()
+      }
+    },
+  )
+
+  test.each([false, true])("recursive teardown defers parent reentry and preserves the child error=%s", (throws) => {
+    const parent = new BoxRenderable(renderer, {})
     const first = new TextRenderable(renderer, { content: "first" })
     const second = new TextRenderable(renderer, { content: "second" })
-    const firstLayoutNode = first.getLayoutNode()
-    const secondLayoutNode = second.getLayoutNode()
-    first.on(RenderableEvents.DESTROYED, () => {
-      throw new Error("injected child destroy failure")
-    })
+    renderer.root.add(parent)
     parent.add(first)
     parent.add(second)
-    renderer.root.add(parent)
-
-    expect(() => parent.destroyRecursively()).toThrow("injected child destroy failure")
-    expect(first.isDestroyed).toBe(true)
-    expect(second.isDestroyed).toBe(true)
-    expect(parent.isDestroyed).toBe(true)
-    expect(firstLayoutNode.isFreed()).toBe(true)
-    expect(secondLayoutNode.isFreed()).toBe(true)
+    const events: string[] = []
+    const failure = new Error("child failed")
+    first.on(RenderableEvents.DESTROYED, () => {
+      events.push("first")
+      parent.destroy()
+      parent.destroyRecursively()
+      if (throws) throw failure
+    })
+    second.on(RenderableEvents.DESTROYED, () => events.push("second"))
+    parent.on(RenderableEvents.DESTROYED, () => {
+      events.push("parent")
+      expect([getYogaNode(first).isFreed(), getYogaNode(second).isFreed(), getYogaNode(parent).isFreed()]).toEqual([
+        true,
+        true,
+        false,
+      ])
+      if (throws) throw new Error("later parent failure")
+    })
+    if (throws)
+      assert.throws(
+        () => parent.destroyRecursively(),
+        (error) => error === failure,
+      )
+    else parent.destroyRecursively()
+    expect(events).toEqual(["first", "second", "parent"])
+    expect(getYogaNode(parent).isFreed()).toBe(true)
   })
 
   test("destroying a text renderable keeps sibling measurement working", async () => {

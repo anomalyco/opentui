@@ -2260,7 +2260,7 @@ test "Rope - clear removes all items" {
 
     try std.testing.expectEqual(@as(u32, 3), rope.count());
 
-    rope.clear();
+    try rope.clear();
 
     try std.testing.expectEqual(@as(u32, 0), rope.count());
 }
@@ -2274,9 +2274,145 @@ test "Rope - clear on empty rope" {
 
     try std.testing.expectEqual(@as(u32, 0), rope.count());
 
-    rope.clear();
+    try rope.clear();
 
     try std.testing.expectEqual(@as(u32, 0), rope.count());
+}
+
+test "Rope - clear allocation failure preserves root and history" {
+    const segment = @import("../text-buffer-segment.zig");
+    for ([_]bool{ false, true }) |set_empty| {
+        var fail_offset: usize = 0;
+        while (true) : (fail_offset += 1) {
+            var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+            defer arena.deinit();
+            var failing = std.testing.FailingAllocator.init(arena.allocator(), .{});
+            var rope = try segment.UnifiedRope.init(failing.allocator());
+            try rope.store_undo("empty");
+            try rope.append(.{ .brk = {} });
+            try rope.store_undo("one break");
+            try rope.append(.{ .brk = {} });
+            _ = try rope.undo("two breaks");
+            const before = rope;
+            failing.fail_index = failing.alloc_index + fail_offset;
+
+            const result = if (set_empty) rope.setSegments(&.{}) else rope.clear();
+            if (result) {
+                try std.testing.expect(!failing.has_induced_failure);
+                try std.testing.expectEqual(@as(usize, 1), fail_offset);
+                try std.testing.expectEqual(@as(u32, 1), rope.count());
+                try std.testing.expect(rope.get(0).?.* == .linestart);
+                try std.testing.expect(rope.root != before.root);
+                break;
+            } else |err| {
+                try std.testing.expect(failing.has_induced_failure);
+                try std.testing.expectEqual(error.OutOfMemory, err);
+                try std.testing.expectEqual(before.root, rope.root);
+                try std.testing.expectEqual(before.version, rope.version);
+                try std.testing.expectEqual(before.undo_history, rope.undo_history);
+                try std.testing.expectEqual(before.redo_history, rope.redo_history);
+                try std.testing.expectEqual(before.curr_history, rope.curr_history);
+                try std.testing.expectEqual(before.undo_depth, rope.undo_depth);
+                try std.testing.expectEqual(@as(u32, 3), rope.count());
+                try std.testing.expect(rope.get(0).?.* == .linestart);
+                try std.testing.expect(rope.get(2).?.* == .linestart);
+                failing.fail_index = std.math.maxInt(usize);
+                try std.testing.expectEqualStrings("two breaks", try rope.redo());
+                try std.testing.expectEqualStrings("one break", try rope.undo("unused"));
+            }
+        }
+    }
+}
+
+test "Rope - clear preserves boundary history without reviving redo" {
+    const segment = @import("../text-buffer-segment.zig");
+    for ([_]bool{ false, true }) |set_empty| {
+        for ([_]bool{ false, true }) |edit_after_undo| {
+            var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+            defer arena.deinit();
+            var rope = try segment.UnifiedRope.init(arena.allocator());
+
+            try rope.store_undo("initial empty");
+            try rope.append(.{ .brk = {} });
+            try rope.store_undo("one break");
+            try rope.clear();
+            try rope.store_undo("cleared");
+            try rope.append(.{ .brk = {} });
+            _ = try rope.undo("after cleared");
+            if (edit_after_undo) try rope.append(.{ .brk = {} });
+
+            if (set_empty) {
+                try rope.setSegments(&.{});
+            } else {
+                try rope.clear();
+            }
+            try std.testing.expectError(error.Stop, rope.redo());
+            try std.testing.expectEqual(@as(u32, 1), rope.count());
+            try std.testing.expect(rope.get(0).?.* == .linestart);
+
+            try std.testing.expectEqualStrings("one break", try rope.undo("unrecorded clear"));
+            try std.testing.expectEqual(@as(u32, 3), rope.count());
+            try std.testing.expect(rope.get(1).?.* == .brk);
+            try std.testing.expect(rope.get(2).?.* == .linestart);
+            try std.testing.expectEqualStrings("cleared", try rope.redo());
+            try std.testing.expectEqual(@as(u32, 1), rope.count());
+            try std.testing.expectEqualStrings("after cleared", try rope.redo());
+            try std.testing.expectEqual(@as(u32, 3), rope.count());
+        }
+    }
+}
+
+test "Rope - clear retains canonical non-boundary redo" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var rope = try rope_mod.Rope(SimpleItem).init(arena.allocator());
+
+    try rope.store_undo("empty");
+    try rope.append(.{ .value = 1 });
+    _ = try rope.undo("one");
+    try rope.append(.{ .value = 2 });
+    try std.testing.expectError(error.Stop, rope.redo());
+    try rope.clear();
+
+    try std.testing.expectEqualStrings("one", try rope.redo());
+    try std.testing.expectEqual(@as(u32, 1), rope.count());
+    try std.testing.expectEqual(@as(u32, 1), rope.get(0).?.value);
+}
+
+test "Rope - clear preserves persistent snapshot identities" {
+    const segment = @import("../text-buffer-segment.zig");
+    inline for (.{ .item, .initialized, .nonempty, .imported }) |origin| {
+        var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena.deinit();
+        var rope = if (origin == .item)
+            try segment.UnifiedRope.from_item(arena.allocator(), .{ .linestart = {} })
+        else
+            try segment.UnifiedRope.init(arena.allocator());
+        if (origin == .nonempty) try rope.append(.{ .brk = {} });
+        if (origin == .imported) {
+            const other = try segment.UnifiedRope.init(arena.allocator());
+            _ = try rope.split(0);
+            try rope.concat(&other);
+        }
+
+        try rope.store_undo("saved");
+        try rope.clear();
+        try rope.store_undo("cleared");
+        try rope.append(.{ .brk = {} });
+        _ = try rope.undo("after cleared");
+        _ = try rope.undo("unused");
+        const saved = rope;
+
+        try rope.clear();
+        try std.testing.expect(rope.root != saved.root);
+        _ = try rope.split(0);
+        try rope.concat(&saved);
+        try std.testing.expect(rope.root == saved.root);
+        try std.testing.expectEqualStrings("cleared", try rope.redo());
+        try std.testing.expectEqual(@as(u32, 1), rope.count());
+        try std.testing.expectEqualStrings("after cleared", try rope.redo());
+        try std.testing.expectEqual(@as(u32, 3), rope.count());
+    }
 }
 
 test "Rope - clear then insert works" {
@@ -2286,7 +2422,7 @@ test "Rope - clear then insert works" {
     const RopeType = rope_mod.Rope(SimpleItem);
     var rope = try RopeType.from_item(arena.allocator(), .{ .value = 1 });
 
-    rope.clear();
+    try rope.clear();
     try std.testing.expectEqual(@as(u32, 0), rope.count());
 
     try rope.append(.{ .value = 42 });
@@ -2309,7 +2445,7 @@ test "Rope - clear with markers resets marker cache" {
     var rope = try RopeType.from_slice(arena.allocator(), &tokens);
     try std.testing.expectEqual(@as(u32, 2), rope.markerCount(.newline));
 
-    rope.clear();
+    try rope.clear();
 
     try std.testing.expectEqual(@as(u32, 0), rope.count());
     try std.testing.expectEqual(@as(u32, 0), rope.markerCount(.newline));

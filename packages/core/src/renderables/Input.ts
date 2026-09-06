@@ -1,3 +1,4 @@
+import { runRenderableMutation } from "../lib/renderable-layout.js"
 import type { PasteEvent } from "../lib/KeyHandler.js"
 import { decodePasteBytes, stripAnsiSequences } from "../lib/paste.js"
 import type { RenderContext } from "../types.js"
@@ -96,12 +97,7 @@ export class InputRenderable extends TextareaRenderable {
         this.cursorOffset = initialValue.length
       }
     } catch (error) {
-      try {
-        super.destroy()
-      } catch {
-        // Preserve the construction failure.
-      }
-      throw error
+      this.rollbackConstruction(error)
     }
   }
 
@@ -134,8 +130,10 @@ export class InputRenderable extends TextareaRenderable {
     if (remaining <= 0) return
 
     const toInsert = sanitized.substring(0, remaining)
-    super.insertText(toInsert)
-    this.emit(InputRenderableEvents.INPUT, this.plainText)
+    runRenderableMutation(this, () => {
+      super.insertText(toInsert)
+      this.emit(InputRenderableEvents.INPUT, this.plainText)
+    })
   }
 
   public get value(): string {
@@ -146,9 +144,11 @@ export class InputRenderable extends TextareaRenderable {
     const newValue = value.substring(0, this._maxLength).replace(/[\n\r]/g, "")
     const currentValue = this.plainText
     if (currentValue !== newValue) {
-      this.setText(newValue)
-      this.cursorOffset = newValue.length
-      this.emit(InputRenderableEvents.INPUT, newValue)
+      runRenderableMutation(this, () => {
+        this.setText(newValue)
+        this.cursorOffset = newValue.length
+        this.emit(InputRenderableEvents.INPUT, newValue)
+      })
     }
   }
 
@@ -245,10 +245,14 @@ export class InputRenderable extends TextareaRenderable {
   }
 
   public set maxLength(maxLength: number) {
-    this._maxLength = maxLength
     const currentValue = this.plainText
     if (currentValue.length > maxLength) {
-      this.setText(currentValue.substring(0, maxLength))
+      runRenderableMutation(this, () => {
+        this.setText(currentValue.substring(0, maxLength))
+        this._maxLength = maxLength
+      })
+    } else {
+      this._maxLength = maxLength
     }
   }
 

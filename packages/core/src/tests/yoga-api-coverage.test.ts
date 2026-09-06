@@ -1,4 +1,6 @@
 import { describe, expect, test } from "bun:test"
+import { getYogaNode } from "../lib/renderable-layout.js"
+import { createTestRenderer } from "../testing/test-renderer.js"
 import Yoga, {
   Align,
   BoxSizing,
@@ -89,18 +91,49 @@ describe("native Yoga API coverage", () => {
   })
 
   test("covers recursive free marking all known subtree wrappers freed", () => {
-    const root = Yoga.Node.create()
-    const child = Yoga.Node.create()
-    const grandchild = Yoga.Node.create()
+    const config = Yoga.Config.create()
+    const root = Yoga.Node.create(config)
+    const child = Yoga.Node.create(config)
+    const grandchild = Yoga.Node.create(config)
 
     root.insertChild(child, 0)
     child.insertChild(grandchild, 0)
+    expect(() => root._invalidateFromOwner()).toThrow("Only native scene Yoga nodes")
+    grandchild.setMeasureFunc(() => ({ width: 1, height: 1 }))
+    grandchild.setDirtiedFunc(() => {})
+    root.calculateLayout()
+    expect(grandchild.getComputedHeight()).toBe(1)
 
     root.freeRecursive()
 
     expect(root.isFreed()).toBe(true)
     expect(child.isFreed()).toBe(true)
     expect(grandchild.isFreed()).toBe(true)
+    expect(config.nodes.size).toBe(0)
+    expect(config.measures.size).toBe(0)
+    expect(config.dirtied.size).toBe(0)
+    config.free()
+  })
+
+  test("scene facades reject topology queries without flushing staged styles", async () => {
+    const { renderer } = await createTestRenderer({ width: 20, height: 10 })
+    const scene = renderer.nativeScene
+    const node = getYogaNode(renderer.root)
+    try {
+      node.setWidth(12)
+      for (const query of [() => node.getChild(0), () => node.getChildCount(), () => node.getParent()]) {
+        expect(query).toThrow("Native scene Yoga nodes do not support topology queries")
+      }
+      expect(scene.hasStagedMutations).toBe(true)
+      expect(node.getWidth().value).toBe(12)
+      expect(scene.hasStagedMutations).toBe(false)
+      renderer.destroy()
+      expect(node.isFreed()).toBe(true)
+      expect(() => node.getWidth()).toThrow("destroyed")
+    } finally {
+      renderer.destroy()
+      await renderer.closed
+    }
   })
 
   test("covers enum, float, value, and edge style round trips", () => {
@@ -368,9 +401,9 @@ describe("native Yoga API coverage", () => {
     expect(root.hasMeasureFunc()).toBe(false)
 
     root.setMeasureFunc((width, widthMode, height, heightMode) => {
-      expect(width).toBeNaN()
+      expect(Number.isNaN(width)).toBe(true)
       expect(widthMode).toBe(MeasureMode.Undefined)
-      expect(height).toBeNaN()
+      expect(Number.isNaN(height)).toBe(true)
       expect(heightMode).toBe(MeasureMode.Undefined)
       return { width: 10, height: 10 }
     })

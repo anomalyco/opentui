@@ -1,9 +1,11 @@
-import { describe, expect, it, afterEach } from "bun:test"
+import { describe, expect, it, afterEach, spyOn } from "bun:test"
+import { EditBuffer } from "../edit-buffer.js"
 import { TextareaRenderable } from "../renderables/Textarea.js"
 import { createTestRenderer, type TestRenderer, type MockInput } from "../testing/test-renderer.js"
 import { type ExtmarksController } from "./extmarks.js"
 import { SyntaxStyle } from "../syntax-style.js"
 import { RGBA } from "./RGBA.js"
+import { NativeEditCommand, resolveRenderLib } from "../zig.js"
 
 let currentRenderer: TestRenderer
 let renderOnce: () => Promise<void>
@@ -595,10 +597,23 @@ describe("ExtmarksController", () => {
   })
 
   describe("Highlighting Integration", () => {
+    it("keeps styled extmarks usable after their native reference wraps", async () => {
+      await setup("text")
+      for (let i = 0; i < 65535; i++) {
+        extmarks.delete(extmarks.create({ start: 0, end: 1 }))
+      }
+      const id = extmarks.create({ start: 0, end: 1, styleId: 1 })
+      expect(id).toBe(65536)
+      expect(textarea.getLineHighlights(0)).toMatchObject([{ hlRef: 0 }])
+      extmarks.delete(id)
+      expect(extmarks.create({ start: 0, end: 1, styleId: 1 })).toBe(65537)
+      expect(textarea.getLineHighlights(0)).toMatchObject([{ hlRef: 1 }])
+    })
+
     it("should apply highlight for extmark with styleId", async () => {
       await setup("Hello World")
 
-      const style = SyntaxStyle.create()
+      const style = SyntaxStyle.create(currentRenderer.nativeScene)
       const styleId = style.registerStyle("link", {
         fg: RGBA.fromValues(0, 0, 1, 1),
       })
@@ -621,7 +636,7 @@ describe("ExtmarksController", () => {
     it("should correctly position highlights in middle of single line", async () => {
       await setup("AAAA")
 
-      const style = SyntaxStyle.create()
+      const style = SyntaxStyle.create(currentRenderer.nativeScene)
       const styleId = style.registerStyle("test", {
         fg: RGBA.fromValues(1, 0, 0, 1),
       })
@@ -644,7 +659,7 @@ describe("ExtmarksController", () => {
     it("should correctly position highlights across newlines", async () => {
       await setup("AAAA\nBBBB\nCCCC")
 
-      const style = SyntaxStyle.create()
+      const style = SyntaxStyle.create(currentRenderer.nativeScene)
       const styleId = style.registerStyle("test", {
         fg: RGBA.fromValues(1, 0, 0, 1),
       })
@@ -679,7 +694,7 @@ describe("ExtmarksController", () => {
     it("should correctly position multiline highlights", async () => {
       await setup("AAA\nBBB\nCCC")
 
-      const style = SyntaxStyle.create()
+      const style = SyntaxStyle.create(currentRenderer.nativeScene)
       const styleId = style.registerStyle("test", {
         fg: RGBA.fromValues(0, 1, 0, 1),
       })
@@ -721,7 +736,7 @@ describe("ExtmarksController", () => {
     it("should update highlights when extmark position changes", async () => {
       await setup("Hello World")
 
-      const style = SyntaxStyle.create()
+      const style = SyntaxStyle.create(currentRenderer.nativeScene)
       const styleId = style.registerStyle("link", {
         fg: RGBA.fromValues(0, 0, 1, 1),
       })
@@ -746,7 +761,7 @@ describe("ExtmarksController", () => {
     it("should remove highlight when extmark is deleted", async () => {
       await setup("Hello World")
 
-      const style = SyntaxStyle.create()
+      const style = SyntaxStyle.create(currentRenderer.nativeScene)
       const styleId = style.registerStyle("link", {
         fg: RGBA.fromValues(0, 0, 1, 1),
       })
@@ -858,7 +873,7 @@ describe("ExtmarksController", () => {
     it("should highlight only virtual marker without extending to end of line", async () => {
       await setup("text [VIRTUAL] more text")
 
-      const style = SyntaxStyle.create()
+      const style = SyntaxStyle.create(currentRenderer.nativeScene)
       const styleId = style.registerStyle("virtual", {
         fg: RGBA.fromValues(0.3, 0.7, 1.0, 1.0),
         bg: RGBA.fromValues(0.1, 0.2, 0.3, 1.0),
@@ -886,7 +901,7 @@ describe("ExtmarksController", () => {
     it("should highlight virtual marker in middle with text after", async () => {
       await setup("abc [MARKER] def")
 
-      const style = SyntaxStyle.create()
+      const style = SyntaxStyle.create(currentRenderer.nativeScene)
       const styleId = style.registerStyle("virtual", {
         fg: RGBA.fromValues(0.3, 0.7, 1.0, 1.0),
       })
@@ -916,7 +931,7 @@ describe("ExtmarksController", () => {
 
       await setup(text)
 
-      const style = SyntaxStyle.create()
+      const style = SyntaxStyle.create(currentRenderer.nativeScene)
       const styleId = style.registerStyle("virtual", {
         fg: RGBA.fromValues(0.3, 0.7, 1.0, 1.0),
         bg: RGBA.fromValues(0.1, 0.2, 0.3, 1.0),
@@ -961,7 +976,7 @@ Try moving your cursor through the [VIRTUAL] markers below:
 
       await setup(initialContent)
 
-      const style = SyntaxStyle.create()
+      const style = SyntaxStyle.create(currentRenderer.nativeScene)
       const virtualStyleId = style.registerStyle("virtual", {
         fg: RGBA.fromValues(0.3, 0.7, 1.0, 1.0),
         bg: RGBA.fromValues(0.1, 0.2, 0.3, 1.0),
@@ -1008,7 +1023,7 @@ Try moving your cursor through the [VIRTUAL] markers below:
     it("should maintain correct positions after deleting first extmark", async () => {
       await setup("abc [VIRTUAL] def [VIRTUAL] ghi")
 
-      const style = SyntaxStyle.create()
+      const style = SyntaxStyle.create(currentRenderer.nativeScene)
       const styleId = style.registerStyle("virtual", {
         fg: RGBA.fromValues(0.3, 0.7, 1.0, 1.0),
       })
@@ -1064,7 +1079,7 @@ Press ESC to return to main menu.`
 
       await setup(initialContent)
 
-      const style = SyntaxStyle.create()
+      const style = SyntaxStyle.create(currentRenderer.nativeScene)
       const virtualStyleId = style.registerStyle("virtual", {
         fg: RGBA.fromValues(0.3, 0.7, 1.0, 1.0),
         bg: RGBA.fromValues(0.1, 0.2, 0.3, 1.0),
@@ -1230,7 +1245,307 @@ Press ESC to return to main menu.`
     })
   })
 
+  describe("Context ABI rejected mutations", () => {
+    it.each([
+      ["insertText", "contextEditBufferInsertText", () => textarea.insertText("X")],
+      ["insertChar", "contextEditBufferInsertText", () => textarea.insertChar("X")],
+      ["newLine", "contextEditBufferCommand", () => textarea.newLine()],
+      ["deleteChar", "contextEditBufferCommand", () => textarea.deleteChar()],
+      ["deleteCharBackward", "contextEditBufferCommand", () => textarea.deleteCharBackward()],
+      ["deleteRange", "contextEditBufferDeleteRange", () => textarea.deleteRange(0, 0, 0, 2)],
+      ["deleteLine", "contextEditBufferCommand", () => textarea.deleteLine()],
+      ["clear", "contextEditBufferCommand", () => textarea.editBuffer.clear()],
+      ["deleteSelection", "contextEditorViewCommand", () => textarea.deleteSelection()],
+      ["replaceSelectionText", "contextEditorViewReplaceSelection", () => textarea.insertText("X")],
+      ["replaceSelectionChar", "contextEditorViewReplaceSelection", () => textarea.insertChar("X")],
+    ] as const)("%s preserves extmarks and redo on native rejection", async (method, nativeMethod, edit) => {
+      await setup("Hello World")
+      const metadata = { label: "world" }
+      const id = extmarks.create({ start: 6, end: 11, typeId: 7, styleId: 1, metadata })
+      textarea.cursorOffset = 0
+      textarea.insertText("X")
+      textarea.undo()
+      textarea.cursorOffset = 3
+      if (method.includes("Selection")) textarea.setSelection(1, 3)
+      await Promise.resolve()
+      const mark = { ...extmarks.get(id)! }
+      const highlights = textarea.getLineHighlights(0)
+      const selection = textarea.getSelection()
+      const trace: string[] = []
+      textarea.editBuffer.on("content-changed", () => trace.push("content"))
+      const failure = new Error("rejected native edit")
+      const lib = currentRenderer.nativeScene.driver.renderLib
+      const original = lib[nativeMethod]
+      let rejections = 0
+      const native = spyOn(lib, nativeMethod).mockImplementation((...args: unknown[]) => {
+        if (method === "deleteChar" && args[2] !== NativeEditCommand.DeleteForward) {
+          return Reflect.apply(original, lib, args)
+        }
+        rejections++
+        throw failure
+      })
+      try {
+        expect(edit).toThrow(failure)
+        expect(rejections).toBe(1)
+        expect(textarea.plainText).toBe("Hello World")
+        expect(textarea.getSelection()).toEqual(selection)
+        expect(extmarks.get(id)).toEqual(mark)
+        expect(extmarks.getAllForTypeId(7)).toEqual([mark])
+        expect(extmarks.getMetadataFor(id)).toBe(metadata)
+        expect(textarea.getLineHighlights(0)).toEqual(highlights)
+        await Promise.resolve()
+        expect(trace).toEqual([])
+      } finally {
+        native.mockRestore()
+      }
+      textarea.redo()
+      expect(textarea.plainText).toBe("XHello World")
+      expect(extmarks.get(id)?.start).toBe(7)
+      textarea.undo()
+      expect(textarea.plainText).toBe("Hello World")
+      expect(extmarks.get(id)).toEqual(mark)
+    })
+
+    it.each(["deleteChar", "deleteCharBackward"] as const)(
+      "%s preserves virtual extmark metadata on native rejection",
+      async (method) => {
+        await setup("abc[LINK]def")
+        textarea.cursorOffset = method === "deleteChar" ? 3 : 9
+        const metadata = { label: "link" }
+        const id = extmarks.create({ start: 3, end: 9, virtual: true, typeId: 7, styleId: 1, metadata })
+        const mark = { ...extmarks.get(id)! }
+        const highlights = textarea.getLineHighlights(0)
+        const failure = new Error("rejected virtual deletion")
+        const native = spyOn(
+          currentRenderer.nativeScene.driver.renderLib,
+          "contextEditBufferDeleteRange",
+        ).mockImplementation(() => {
+          throw failure
+        })
+        try {
+          expect(() => textarea[method]()).toThrow(failure)
+          expect(native).toHaveBeenCalledTimes(1)
+          expect(textarea.plainText).toBe("abc[LINK]def")
+          expect(extmarks.get(id)).toEqual(mark)
+          expect(extmarks.getAllForTypeId(7)).toEqual([mark])
+          expect(extmarks.getMetadataFor(id)).toBe(metadata)
+          expect(textarea.getLineHighlights(0)).toEqual(highlights)
+        } finally {
+          native.mockRestore()
+        }
+      },
+    )
+
+    it.each(["insertText", "insertChar"] as const)(
+      "%s preserves selection and extmarks when replacement rejects",
+      async (method) => {
+        await setup("Hello World")
+        const id = extmarks.create({ start: 6, end: 11, styleId: 1 })
+        textarea.setSelection(0, 5)
+        const failure = new Error("rejected replacement insertion")
+        const native = spyOn(
+          currentRenderer.nativeScene.driver.renderLib,
+          "contextEditorViewReplaceSelection",
+        ).mockImplementation(() => {
+          throw failure
+        })
+        try {
+          expect(() => textarea[method]("X")).toThrow(failure)
+          expect(textarea.plainText).toBe("Hello World")
+          expect(textarea.hasSelection()).toBe(true)
+          expect(extmarks.get(id)?.start).toBe(6)
+        } finally {
+          native.mockRestore()
+        }
+        textarea[method]("X")
+        expect(textarea.plainText).toBe("X World")
+        textarea.undo()
+        expect(textarea.plainText).toBe(" World")
+        expect(extmarks.get(id)?.start).toBe(1)
+        textarea.undo()
+        expect(textarea.plainText).toBe("Hello World")
+        expect(extmarks.get(id)?.start).toBe(6)
+      },
+    )
+
+    it.each(["insertText", "insertChar"] as const)(
+      "%s publishes accepted metadata before a callback error escapes",
+      async (method) => {
+        await setup("Hello World")
+        const id = extmarks.create({ start: 6, end: 11, styleId: 1 })
+        textarea.cursorOffset = 0
+        await Promise.resolve()
+        const trace: string[] = []
+        textarea.editBuffer.on("cursor-changed", () => trace.push("cursor"))
+        textarea.editBuffer.on("content-changed", () => trace.push("content"))
+        const lib = currentRenderer.nativeScene.driver.renderLib
+        const host = lib.getYogaHost()
+        const nativeMethod = "contextEditBufferInsertText"
+        const original = lib[nativeMethod].bind(lib)
+        const failure = new Error("accepted insertion callback")
+        const native = spyOn(lib, nativeMethod).mockImplementation((context, buffer, text) => {
+          host.runMutation(() => {
+            original(context, buffer, text)
+            host.invokeCallback(() => {
+              throw failure
+            })
+          })
+        })
+        try {
+          expect(() => textarea[method]("X")).toThrow(failure)
+          expect(textarea.plainText).toBe("XHello World")
+          expect(extmarks.get(id)?.start).toBe(7)
+          expect(textarea.getLineHighlights(0)[0]?.start).toBe(7)
+          expect(trace).toEqual([])
+          await Promise.resolve()
+          expect(trace).toEqual(["cursor", "content"])
+          textarea.undo()
+          expect(textarea.plainText).toBe("Hello World")
+          expect(extmarks.get(id)?.start).toBe(6)
+          expect(() => host.throwCallbackError()).not.toThrow()
+        } finally {
+          native.mockRestore()
+        }
+      },
+    )
+  })
+
   describe("setText() Operations", () => {
+    it.each(["setText", "replaceText"] as const)(
+      "%s preserves extmarks and redo on checked replacement rejection",
+      async (method) => {
+        await setup("")
+        textarea.insertText("Hello World")
+        const metadata = { label: "world" }
+        const id = extmarks.create({ start: 6, end: 11, typeId: 7, styleId: 1, metadata })
+        textarea.cursorOffset = 0
+        textarea.insertText("X")
+        textarea.undo()
+        const mark = { ...extmarks.get(id)! }
+        const highlights = textarea.getLineHighlights(0)
+        const failure = new Error("rejected checked replacement")
+        const replace = spyOn(
+          currentRenderer.nativeScene.driver.renderLib,
+          "contextEditBufferSetText",
+        ).mockImplementation(() => {
+          throw failure
+        })
+        try {
+          await Promise.resolve()
+          const trace: string[] = []
+          textarea.editBuffer.on("cursor-changed", () => trace.push("cursor"))
+          textarea.editBuffer.on("content-changed", () => trace.push("content"))
+          expect(() => textarea[method]("replacement")).toThrow(failure)
+          expect(textarea.plainText).toBe("Hello World")
+          expect(extmarks.get(id)).toEqual(mark)
+          expect(extmarks.getAllForTypeId(7)).toEqual([mark])
+          expect(extmarks.getMetadataFor(id)).toBe(metadata)
+          expect(textarea.getLineHighlights(0)).toEqual(highlights)
+          expect(trace).toEqual([])
+          await Promise.resolve()
+          expect(trace).toEqual([])
+          textarea.redo()
+          expect(textarea.plainText).toBe("XHello World")
+          expect(extmarks.get(id)?.start).toBe(7)
+          textarea.undo()
+          expect(textarea.plainText).toBe("Hello World")
+          expect(extmarks.get(id)).toEqual(mark)
+        } finally {
+          replace.mockRestore()
+        }
+      },
+    )
+
+    it.each(["setText", "replaceText"] as const)(
+      "%s can retry rejection and preserve replacement undo semantics",
+      async (method) => {
+        let reject = false
+        const failure = new Error("rejected extmark replacement")
+        const original = EditBuffer.prototype[method]
+        const replace = spyOn(EditBuffer.prototype, method).mockImplementation(function (this: EditBuffer, text) {
+          if (reject) throw failure
+          original.call(this, text)
+        })
+        try {
+          await setup("Hello World")
+          const id = extmarks.create({ start: 6, end: 11 })
+          const mark = { ...extmarks.get(id)! }
+          reject = true
+          expect(() => textarea[method]("replacement")).toThrow(failure)
+          expect(textarea.plainText).toBe("Hello World")
+          reject = false
+          textarea[method]("replacement")
+          expect(textarea.plainText).toBe("replacement")
+          expect(extmarks.getAll()).toEqual([])
+          if (method === "replaceText") {
+            textarea.undo()
+            expect(textarea.plainText).toBe("Hello World")
+            expect(extmarks.get(id)).toEqual(mark)
+            textarea.redo()
+            expect(textarea.plainText).toBe("replacement")
+            expect(extmarks.getAll()).toEqual([])
+          } else {
+            expect(textarea.editBuffer.canUndo()).toBe(false)
+          }
+        } finally {
+          replace.mockRestore()
+        }
+      },
+    )
+
+    it.each(["setText", "replaceText"] as const)(
+      "%s completes extmark replacement before an accepted callback error escapes",
+      async (method) => {
+        const host = resolveRenderLib().getYogaHost()
+        const failure = new Error("extmark replacement callback")
+        const original = EditBuffer.prototype[method]
+        let failCallback = false
+        let replacements = 0
+        const replace = spyOn(EditBuffer.prototype, method).mockImplementation(function (this: EditBuffer, text) {
+          if (!failCallback) return original.call(this, text)
+          host.runMutation(() => {
+            replacements++
+            original.call(this, text)
+            host.invokeCallback(() => {
+              throw failure
+            })
+          })
+        })
+        try {
+          await setup("Hello World")
+          const id = extmarks.create({ start: 6, end: 11, styleId: 1, metadata: { label: "world" } })
+          const mark = { ...extmarks.get(id)! }
+          await Promise.resolve()
+          const trace: string[] = []
+          textarea.editBuffer.on("cursor-changed", () => trace.push("cursor"))
+          textarea.editBuffer.on("content-changed", () => trace.push("content"))
+          failCallback = true
+          expect(() => textarea.editBuffer[method]("replacement")).toThrow(failure)
+          expect(replacements).toBe(1)
+          expect(textarea.plainText).toBe("replacement")
+          expect(extmarks.getAll()).toEqual([])
+          expect(extmarks.getMetadataFor(id)).toBeUndefined()
+          expect(textarea.getLineHighlights(0)).toEqual([])
+          expect(trace).toEqual([])
+          await Promise.resolve()
+          expect(trace).toEqual(["cursor", "content"])
+          if (method === "replaceText") {
+            textarea.undo()
+            expect(textarea.plainText).toBe("Hello World")
+            expect(extmarks.get(id)).toEqual(mark)
+            textarea.redo()
+            expect(textarea.plainText).toBe("replacement")
+            expect(extmarks.getAll()).toEqual([])
+          } else {
+            expect(textarea.editBuffer.canUndo()).toBe(false)
+          }
+          expect(() => host.throwCallbackError()).not.toThrow()
+        } finally {
+          replace.mockRestore()
+        }
+      },
+    )
+
     it("should clear all extmarks when setText is called", async () => {
       await setup("Hello World")
 
@@ -1878,7 +2193,7 @@ Press ESC to return to main menu.`
 
   describe("Edge Cases", () => {
     it("should handle extmark at start of text", async () => {
-      await setup("Hello World")
+      await setup("Hello\nWorld")
 
       const id = extmarks.create({
         start: 0,
@@ -1891,6 +2206,14 @@ Press ESC to return to main menu.`
 
       currentMockInput.pressArrow("right")
       expect(textarea.cursorOffset).toBe(5)
+      currentMockInput.pressArrow("left")
+      expect(textarea.cursorOffset).toBe(0)
+      textarea.editBuffer.setCursorByOffset(5)
+      textarea.editBuffer.setCursorByOffset(0)
+      expect(textarea.cursorOffset).toBe(0)
+      textarea.cursorOffset = 6
+      currentMockInput.pressArrow("up")
+      expect(textarea.cursorOffset).toBe(0)
 
       const extmark = extmarks.get(id)
       expect(extmark).not.toBeNull()

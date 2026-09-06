@@ -1,9 +1,10 @@
+import { assertRenderableMutable } from "../lib/renderable-layout.js"
 import type { OptimizedBuffer } from "../buffer.js"
 import { parseColor, RGBA, type ColorInput } from "../lib/index.js"
 import type { KeyEvent } from "../lib/KeyHandler.js"
-import { stringWidth } from "../platform/runtime.js"
-import { Renderable, type RenderableOptions } from "../Renderable.js"
+import { Renderable, RenderableEvents, type RenderableOptions } from "../Renderable.js"
 import type { RenderContext, Timeout } from "../types.js"
+import type { NativeSceneArrowOptions } from "../zig.js"
 import { type BoxOptions } from "./Box.js"
 import { SliderRenderable, type SliderOptions } from "./Slider.js"
 
@@ -32,6 +33,7 @@ export class ScrollBarRenderable extends Renderable {
   private _manualVisibility = false
 
   private _onChange: ((position: number) => void) | undefined
+  private arrowRepeat?: { arrow: ArrowRenderable; timer: Timeout }
 
   scrollStep: number | undefined | null = null
 
@@ -40,11 +42,13 @@ export class ScrollBarRenderable extends Renderable {
   }
 
   set visible(value: boolean) {
+    assertRenderableMutable(this)
     this._manualVisibility = true
     super.visible = value
   }
 
   public resetVisibilityControl(): void {
+    assertRenderableMutable(this)
     this._manualVisibility = false
     this.recalculateVisibility()
   }
@@ -62,15 +66,27 @@ export class ScrollBarRenderable extends Renderable {
   }
 
   set scrollSize(value: number) {
+    if (this.isDestroyed) return
+    assertRenderableMutable(this)
+    if (!Number.isFinite(value) || !Number.isFinite(value - this._viewportSize)) {
+      throw new RangeError("Scene scroll sizes and ranges must be finite numbers")
+    }
     if (value === this.scrollSize) return
     this._scrollSize = value
     this.recalculateVisibility()
+    if (this.isDestroyed || this.slider.isDestroyed) return
     this.updateSliderFromScrollState()
+    if (this.isDestroyed || this.slider.isDestroyed) return
     this.scrollPosition = this.scrollPosition
   }
 
   set scrollPosition(value: number) {
+    if (this.isDestroyed) return
+    assertRenderableMutable(this)
     const newPosition = Math.round(Math.min(Math.max(0, value), this.scrollSize - this.viewportSize))
+    if (!Number.isFinite(newPosition)) {
+      throw new RangeError("Scene scroll positions must be finite numbers")
+    }
     if (newPosition !== this._scrollPosition) {
       this._scrollPosition = newPosition
       this.updateSliderFromScrollState()
@@ -81,11 +97,18 @@ export class ScrollBarRenderable extends Renderable {
   }
 
   set viewportSize(value: number) {
+    if (this.isDestroyed) return
+    assertRenderableMutable(this)
+    if (!Number.isFinite(value) || !Number.isFinite(this._scrollSize - value)) {
+      throw new RangeError("Scene viewport sizes and ranges must be finite numbers")
+    }
     if (value === this.viewportSize) return
+    this.slider.viewPortSize = Math.max(1, value)
     this._viewportSize = value
-    this.slider.viewPortSize = Math.max(1, this._viewportSize)
     this.recalculateVisibility()
+    if (this.isDestroyed || this.slider.isDestroyed) return
     this.updateSliderFromScrollState()
+    if (this.isDestroyed || this.slider.isDestroyed) return
     this.scrollPosition = this.scrollPosition
   }
 
@@ -94,9 +117,11 @@ export class ScrollBarRenderable extends Renderable {
   }
 
   set showArrows(value: boolean) {
-    if (value === this._showArrows) return
+    if (this.isDestroyed || value === this._showArrows) return
+    assertRenderableMutable(this)
     this._showArrows = value
     this.startArrow.visible = value
+    if (this.isDestroyed || this.endArrow.isDestroyed) return
     this.endArrow.visible = value
   }
 
@@ -111,135 +136,159 @@ export class ScrollBarRenderable extends Renderable {
       ...(options as BoxOptions),
     })
 
-    this._onChange = options.onChange
+    const children: Renderable[] = []
+    try {
+      this._onChange = options.onChange
 
-    this.orientation = orientation
-    this._showArrows = showArrows
+      this.orientation = orientation
+      this._showArrows = showArrows
 
-    const scrollRange = Math.max(0, this._scrollSize - this._viewportSize)
+      const scrollRange = Math.max(0, this._scrollSize - this._viewportSize)
 
-    const defaultStepSize = Math.max(1, this._viewportSize)
-    const stepSize = trackOptions?.viewPortSize ?? defaultStepSize
+      const defaultStepSize = Math.max(1, this._viewportSize)
+      const stepSize = trackOptions?.viewPortSize ?? defaultStepSize
 
-    this.slider = new SliderRenderable(ctx, {
-      orientation,
-      min: 0,
-      max: scrollRange,
-      value: this._scrollPosition,
-      viewPortSize: stepSize,
-      onChange: (value) => {
-        this._scrollPosition = Math.round(value)
-        this._onChange?.(this._scrollPosition)
-        this.emit("change", { position: this._scrollPosition })
-      },
-      ...(orientation === "vertical"
+      this.slider = new SliderRenderable(ctx, {
+        orientation,
+        min: 0,
+        max: scrollRange,
+        value: this._scrollPosition,
+        viewPortSize: stepSize,
+        onChange: (value) => {
+          if (this.isDestroyed) return
+          this._scrollPosition = Math.round(value)
+          this._onChange?.(this._scrollPosition)
+          if (!this.isDestroyed) this.emit("change", { position: this._scrollPosition })
+        },
+        ...(orientation === "vertical"
+          ? {
+              width: Math.max(1, Math.min(2, this.width)),
+              height: "100%",
+              marginLeft: "auto",
+            }
+          : {
+              width: "100%",
+              height: 1,
+              marginTop: "auto",
+            }),
+        flexGrow: 1,
+        flexShrink: 1,
+        ...trackOptions,
+      })
+      children.push(this.slider)
+
+      this.updateSliderFromScrollState()
+
+      const arrowOpts = arrowOptions
         ? {
-            width: Math.max(1, Math.min(2, this.width)),
-            height: "100%",
-            marginLeft: "auto",
+            foregroundColor: arrowOptions.backgroundColor,
+            backgroundColor: arrowOptions.backgroundColor,
+            attributes: arrowOptions.attributes,
+            ...arrowOptions,
           }
-        : {
-            width: "100%",
-            height: 1,
-            marginTop: "auto",
-          }),
-      flexGrow: 1,
-      flexShrink: 1,
-      ...trackOptions,
-    })
+        : {}
 
-    this.updateSliderFromScrollState()
+      this.startArrow = new ArrowRenderable(ctx, {
+        alignSelf: "center",
+        visible: this.showArrows,
+        direction: this.orientation === "vertical" ? "up" : "left",
+        height: this.orientation === "vertical" ? 1 : 1,
+        ...arrowOpts,
+      })
+      children.push(this.startArrow)
 
-    const arrowOpts = arrowOptions
-      ? {
-          foregroundColor: arrowOptions.backgroundColor,
-          backgroundColor: arrowOptions.backgroundColor,
-          attributes: arrowOptions.attributes,
-          ...arrowOptions,
+      this.endArrow = new ArrowRenderable(ctx, {
+        alignSelf: "center",
+        visible: this.showArrows,
+        direction: this.orientation === "vertical" ? "down" : "right",
+        height: this.orientation === "vertical" ? 1 : 1,
+        ...arrowOpts,
+      })
+      children.push(this.endArrow)
+
+      this.add(this.startArrow)
+      this.add(this.slider)
+      this.add(this.endArrow)
+
+      for (const [arrow, direction] of [
+        [this.startArrow, -1],
+        [this.endArrow, 1],
+      ] as const) {
+        arrow.onMouseDown = (event) => {
+          event.stopPropagation()
+          event.preventDefault()
+          this.stopArrowRepeat()
+          if (this.isDestroyed || arrow.isDestroyed) return
+          const repeat = { arrow, timer: undefined as Timeout }
+          this.arrowRepeat = repeat
+          this.scrollBy(direction * 0.5, "viewport")
+          if (this.arrowRepeat !== repeat || this.isDestroyed || arrow.isDestroyed) return
+
+          repeat.timer = setTimeout(() => {
+            repeat.timer = undefined
+            if (this.arrowRepeat !== repeat || this.isDestroyed || arrow.isDestroyed) return
+            this.scrollBy(direction * 0.5, "viewport")
+            if (this.arrowRepeat !== repeat || this.isDestroyed || arrow.isDestroyed) return
+
+            repeat.timer = setInterval(() => {
+              if (this.arrowRepeat !== repeat) return
+              if (this.isDestroyed || arrow.isDestroyed) {
+                this.stopArrowRepeat()
+                return
+              }
+              this.scrollBy(direction * 0.2, "viewport")
+            }, 200)
+          }, 500)
         }
-      : {}
 
-    this.startArrow = new ArrowRenderable(ctx, {
-      alignSelf: "center",
-      visible: this.showArrows,
-      direction: this.orientation === "vertical" ? "up" : "left",
-      height: this.orientation === "vertical" ? 1 : 1,
-      ...arrowOpts,
-    })
-
-    this.endArrow = new ArrowRenderable(ctx, {
-      alignSelf: "center",
-      visible: this.showArrows,
-      direction: this.orientation === "vertical" ? "down" : "right",
-      height: this.orientation === "vertical" ? 1 : 1,
-      ...arrowOpts,
-    })
-
-    this.add(this.startArrow)
-    this.add(this.slider)
-    this.add(this.endArrow)
-
-    let startArrowMouseTimeout = undefined as Timeout
-    let endArrowMouseTimeout = undefined as Timeout
-
-    this.startArrow.onMouseDown = (event) => {
-      event.stopPropagation()
-      event.preventDefault()
-
-      this.scrollBy(-0.5, "viewport")
-
-      startArrowMouseTimeout = setTimeout(() => {
-        this.scrollBy(-0.5, "viewport")
-
-        startArrowMouseTimeout = setInterval(() => {
-          this.scrollBy(-0.2, "viewport")
-        }, 200)
-      }, 500)
+        arrow.onMouseUp = (event) => {
+          event.stopPropagation()
+          this.stopArrowRepeat()
+        }
+        arrow.on(RenderableEvents.DESTROYED, () => {
+          if (this.arrowRepeat?.arrow === arrow) this.stopArrowRepeat()
+        })
+      }
+      this.setNativeScenePaint()
+    } catch (error) {
+      this.abortConstruction(error, (run) => {
+        run(() => this.stopArrowRepeat())
+        for (let index = children.length - 1; index >= 0; index--) {
+          run(() => children[index].destroyRecursively())
+        }
+      })
     }
+  }
 
-    this.startArrow.onMouseUp = (event) => {
-      event.stopPropagation()
-      clearInterval(startArrowMouseTimeout!)
-    }
+  private stopArrowRepeat(): void {
+    const repeat = this.arrowRepeat
+    this.arrowRepeat = undefined
+    if (repeat) clearTimeout(repeat.timer)
+  }
 
-    this.endArrow.onMouseDown = (event) => {
-      event.stopPropagation()
-      event.preventDefault()
-
-      this.scrollBy(0.5, "viewport")
-
-      endArrowMouseTimeout = setTimeout(() => {
-        this.scrollBy(0.5, "viewport")
-
-        endArrowMouseTimeout = setInterval(() => {
-          this.scrollBy(0.2, "viewport")
-        }, 200)
-      }, 500)
-    }
-
-    this.endArrow.onMouseUp = (event) => {
-      event.stopPropagation()
-      clearInterval(endArrowMouseTimeout!)
-    }
+  protected destroyOwnedResources(): void {
+    this.stopArrowRepeat()
+    super.destroyOwnedResources()
   }
 
   public set arrowOptions(options: ScrollBarOptions["arrowOptions"]) {
-    Object.assign(this.startArrow, options)
-    Object.assign(this.endArrow, options)
-    this.requestRender()
+    this.assignOptions(this.startArrow, options)
+    this.assignOptions(this.endArrow, options)
+    if (!this.isDestroyed) this.requestRender()
   }
 
   public set trackOptions(options: ScrollBarOptions["trackOptions"]) {
-    Object.assign(this.slider, options)
-    this.requestRender()
+    this.assignOptions(this.slider, options)
+    if (!this.isDestroyed) this.requestRender()
   }
 
   private updateSliderFromScrollState(): void {
     const scrollRange = Math.max(0, this._scrollSize - this._viewportSize)
 
     this.slider.min = 0
+    if (this.isDestroyed || this.slider.isDestroyed) return
     this.slider.max = scrollRange
-
+    if (this.isDestroyed || this.slider.isDestroyed) return
     this.slider.value = Math.min(this._scrollPosition, scrollRange)
   }
 
@@ -331,21 +380,37 @@ export class ArrowRenderable extends Renderable {
 
   constructor(ctx: RenderContext, options: ArrowOptions) {
     super(ctx, options)
-    this._direction = options.direction
-    this._foregroundColor = options.foregroundColor ? parseColor(options.foregroundColor) : RGBA.fromValues(1, 1, 1, 1)
-    this._backgroundColor = options.backgroundColor ? parseColor(options.backgroundColor) : RGBA.fromValues(0, 0, 0, 0)
-    this._attributes = options.attributes ?? 0
+    try {
+      this._direction = options.direction
+      this._foregroundColor = options.foregroundColor
+        ? RGBA.clone(parseColor(options.foregroundColor))
+        : RGBA.fromValues(1, 1, 1, 1)
+      this._backgroundColor = options.backgroundColor
+        ? RGBA.clone(parseColor(options.backgroundColor))
+        : RGBA.fromValues(0, 0, 0, 0)
+      this._attributes = options.attributes ?? 0
 
-    this._arrowChars = {
-      up: "▲",
-      down: "▼",
-      left: "◀",
-      right: "▶",
-      ...options.arrowChars,
-    }
+      this._arrowChars = {
+        up: "▲",
+        down: "▼",
+        left: "◀",
+        right: "▶",
+        ...options.arrowChars,
+      }
 
-    if (!options.width) {
-      this.width = stringWidth(this.getArrowChar())
+      if (!options.width) {
+        const { context, renderLib } = ctx.nativeScene.driver
+        const unicode = renderLib.createContextUnicode(context, this.getArrowChar(), ctx.widthMethod)
+        try {
+          this.width = renderLib.getContextUnicode(context, unicode).reduce((width, glyph) => width + glyph.width, 0)
+        } finally {
+          renderLib.destroyContextUnicode(context, unicode)
+        }
+      }
+      this.setNativeSceneArrow()
+      this.setNativeScenePaint()
+    } catch (error) {
+      this.abortConstruction(error)
     }
   }
 
@@ -355,29 +420,34 @@ export class ArrowRenderable extends Renderable {
 
   set direction(value: "up" | "down" | "left" | "right") {
     if (this._direction !== value) {
+      this.setNativeSceneArrow({ direction: value, text: this._arrowChars[value] })
       this._direction = value
       this.requestRender()
     }
   }
 
   get foregroundColor(): RGBA {
-    return this._foregroundColor
+    return RGBA.clone(this._foregroundColor)
   }
 
   set foregroundColor(value: ColorInput) {
     if (this._foregroundColor !== value) {
-      this._foregroundColor = parseColor(value)
+      const color = RGBA.clone(parseColor(value))
+      this.setNativeSceneArrow({ foregroundColor: color })
+      this._foregroundColor = color
       this.requestRender()
     }
   }
 
   get backgroundColor(): RGBA {
-    return this._backgroundColor
+    return RGBA.clone(this._backgroundColor)
   }
 
   set backgroundColor(value: ColorInput) {
     if (this._backgroundColor !== value) {
-      this._backgroundColor = parseColor(value)
+      const color = RGBA.clone(parseColor(value))
+      this.setNativeSceneArrow({ backgroundColor: color })
+      this._backgroundColor = color
       this.requestRender()
     }
   }
@@ -388,17 +458,31 @@ export class ArrowRenderable extends Renderable {
 
   set attributes(value: number) {
     if (this._attributes !== value) {
+      this.setNativeSceneArrow({ attributes: value })
       this._attributes = value
       this.requestRender()
     }
   }
 
   set arrowChars(value: ArrowOptions["arrowChars"]) {
-    this._arrowChars = {
+    const chars = {
       ...this._arrowChars,
       ...value,
     }
+    this.setNativeSceneArrow({ text: chars[this._direction] })
+    this._arrowChars = chars
     this.requestRender()
+  }
+
+  private setNativeSceneArrow(options: Partial<NativeSceneArrowOptions> = {}): void {
+    this._ctx.nativeScene.setArrow(this, {
+      direction: this._direction,
+      attributes: this._attributes,
+      foregroundColor: this._foregroundColor,
+      backgroundColor: this._backgroundColor,
+      text: this.getArrowChar(),
+      ...options,
+    })
   }
 
   protected renderSelf(buffer: OptimizedBuffer): void {

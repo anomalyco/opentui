@@ -97,7 +97,7 @@ describe("QRCode", () => {
   })
 })
 
-describe("QRCodeRenderable", () => {
+describe("QRCodeRenderable (native)", () => {
   beforeEach(async () => {
     ;({
       renderer: testRenderer,
@@ -196,7 +196,7 @@ describe("QRCodeRenderable", () => {
     testRenderer.root.add(container)
     await renderOnce()
 
-    expect(qr.getLayoutNode().getComputedLayout().height).toBe(0)
+    expect(qr.getLayout().height).toBe(0)
     expect(captureCharFrame()).not.toContain("█")
     expect(captureCharFrame()).not.toContain("▀")
     expect(captureCharFrame()).not.toContain("▄")
@@ -247,8 +247,8 @@ describe("QRCodeRenderable", () => {
     testRenderer.root.add(container)
     await renderOnce()
 
-    expect(qr.getLayoutNode().getComputedLayout().width).toBe(58)
-    expect(qr.getLayoutNode().getComputedLayout().height).toBe(29)
+    expect(qr.getLayout().width).toBe(58)
+    expect(qr.getLayout().height).toBe(29)
 
     resize(20, 8)
     await renderOnce()
@@ -258,8 +258,8 @@ describe("QRCodeRenderable", () => {
     resize(80, 40)
     await renderOnce()
 
-    expect(qr.getLayoutNode().getComputedLayout().width).toBe(58)
-    expect(qr.getLayoutNode().getComputedLayout().height).toBe(29)
+    expect(qr.getLayout().width).toBe(58)
+    expect(qr.getLayout().height).toBe(29)
     expect(captureCharFrame()).toContain("█")
   })
 

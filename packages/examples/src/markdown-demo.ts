@@ -421,6 +421,7 @@ let markdownScrollBox: ScrollBoxRenderable | null = null
 let markdownDisplay: MarkdownRenderable | null = null
 let statusText: TextRenderable | null = null
 let syntaxStyle: SyntaxStyle | null = null
+const syntaxStyles = new Map<(typeof themes)[ThemeKey], SyntaxStyle>()
 let helpModal: BoxRenderable | null = null
 let currentThemeIndex = 0
 let concealEnabled = true
@@ -559,6 +560,7 @@ function startStreaming() {
     } else {
       // Normal mode - streaming complete
       streamingMode = false
+      markdownDisplay.streaming = false
       if (statusText) {
         const theme = getCurrentTheme()
         const speed = getCurrentSpeed()
@@ -575,14 +577,13 @@ export async function run(rendererInstance: CliRenderer): Promise<void> {
   showingHelp = false
 
   rendererDestroyHandler = () => {
-    stopStreaming()
-    markdownDisplay = null
-    markdownScrollBox = null
-    statusText = null
-    parentContainer = null
-    helpModal = null
+    try {
+      destroy(rendererInstance)
+    } catch (error) {
+      console.error("Failed to clean up markdown demo:", error)
+    }
   }
-  rendererInstance.on(CliRenderEvents.DESTROY, rendererDestroyHandler)
+  rendererInstance.once(CliRenderEvents.DESTROY, rendererDestroyHandler)
 
   renderer.start()
   registerTreeSitterParsersForDemo()
@@ -681,7 +682,8 @@ Other:
   parentContainer.add(markdownScrollBox)
 
   // Create syntax style from current theme
-  syntaxStyle = SyntaxStyle.fromStyles(theme.styles)
+  syntaxStyle = SyntaxStyle.fromStyles(theme.styles, renderer.nativeScene!)
+  syntaxStyles.set(theme, syntaxStyle)
 
   // Create markdown display using MarkdownRenderable
   markdownDisplay = new MarkdownRenderable(renderer, {
@@ -709,7 +711,9 @@ Other:
 
   const applyTheme = (theme: (typeof themes)[ThemeKey]) => {
     rendererInstance.setBackgroundColor(theme.bg)
-    syntaxStyle = SyntaxStyle.fromStyles(theme.styles)
+    // Keep the four themes alive until teardown, including during pending highlights.
+    syntaxStyle = syntaxStyles.get(theme) ?? SyntaxStyle.fromStyles(theme.styles, renderer.nativeScene!)
+    syntaxStyles.set(theme, syntaxStyle)
 
     titleBox.backgroundColor = theme.bg
     instructionsText.fg = getThemeMutedTextColor(theme)
@@ -822,25 +826,38 @@ Other:
 }
 
 export function destroy(rendererInstance: CliRenderer): void {
-  stopStreaming()
+  const errors: unknown[] = []
+  const cleanup = (step: () => void) => {
+    try {
+      step()
+    } catch (error) {
+      errors.push(error)
+    }
+  }
+  cleanup(stopStreaming)
 
   if (rendererDestroyHandler) {
-    rendererInstance.off(CliRenderEvents.DESTROY, rendererDestroyHandler)
+    const handler = rendererDestroyHandler
     rendererDestroyHandler = null
+    cleanup(() => rendererInstance.off(CliRenderEvents.DESTROY, handler))
   }
 
   if (keyboardHandler) {
-    rendererInstance.keyInput.off("keypress", keyboardHandler)
+    const handler = keyboardHandler
     keyboardHandler = null
+    cleanup(() => rendererInstance.keyInput.off("keypress", handler))
   }
 
   if (selectionHandler) {
-    rendererInstance.off(CliRenderEvents.SELECTION, selectionHandler)
+    const handler = selectionHandler
     selectionHandler = null
+    cleanup(() => rendererInstance.off(CliRenderEvents.SELECTION, handler))
   }
 
-  parentContainer?.destroy()
-  helpModal?.destroy()
+  const container = parentContainer
+  const modal = helpModal
+  const styles = [...syntaxStyles.values()]
+  syntaxStyles.clear()
   parentContainer = null
   markdownScrollBox = null
   markdownDisplay = null
@@ -848,8 +865,17 @@ export function destroy(rendererInstance: CliRenderer): void {
   syntaxStyle = null
   helpModal = null
   showingHelp = false
+  currentThemeIndex = 0
+  concealEnabled = true
+  endlessMode = false
+  currentSpeedIndex = 0
 
   renderer = null
+
+  cleanup(() => container?.destroyRecursively())
+  cleanup(() => modal?.destroyRecursively())
+  for (const style of styles) cleanup(() => style.destroy())
+  if (errors.length > 0) throw errors[0]
 }
 
 if (import.meta.main) {

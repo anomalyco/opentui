@@ -1,5 +1,6 @@
 import {
   CliRenderer,
+  CliRenderEvents,
   createCliRenderer,
   DiffRenderable,
   BoxRenderable,
@@ -448,6 +449,7 @@ const malformedDiff = `--- a/calculator.ts
 
 let renderer: CliRenderer | null = null
 let keyboardHandler: ((key: ParsedKey) => void) | null = null
+let destroyHandler: (() => void) | null = null
 let parentContainer: BoxRenderable | null = null
 let diffRenderable: DiffRenderable | null = null
 let instructionsText: TextRenderable | null = null
@@ -485,7 +487,7 @@ const applyTheme = (themeIndex: number) => {
   if (syntaxStyle) {
     syntaxStyle.destroy()
   }
-  syntaxStyle = SyntaxStyle.fromStyles(theme.syntaxStyle)
+  syntaxStyle = SyntaxStyle.fromStyles(theme.syntaxStyle, renderer!.nativeScene!)
 
   if (diffRenderable) {
     diffRenderable.syntaxStyle = syntaxStyle
@@ -505,6 +507,8 @@ const applyTheme = (themeIndex: number) => {
 
 export async function run(rendererInstance: CliRenderer): Promise<void> {
   renderer = rendererInstance
+  destroyHandler = () => destroy(rendererInstance)
+  rendererInstance.once(CliRenderEvents.DESTROY, destroyHandler)
   showingHelp = false
   renderer.start()
 
@@ -578,7 +582,7 @@ Other:
   helpModal.add(helpContent)
   renderer.root.add(helpModal)
 
-  syntaxStyle = SyntaxStyle.fromStyles(theme.syntaxStyle)
+  syntaxStyle = SyntaxStyle.fromStyles(theme.syntaxStyle, renderer.nativeScene!)
 
   // Create diff display
   const currentContent = contentExamples[currentContentIndex]
@@ -673,13 +677,19 @@ Other:
 }
 
 export function destroy(rendererInstance: CliRenderer): void {
+  if (renderer !== rendererInstance) return
+  if (destroyHandler) {
+    rendererInstance.off(CliRenderEvents.DESTROY, destroyHandler)
+    destroyHandler = null
+  }
   if (keyboardHandler) {
     rendererInstance.keyInput.off("keypress", keyboardHandler)
     keyboardHandler = null
   }
 
-  parentContainer?.destroy()
-  helpModal?.destroy()
+  parentContainer?.destroyRecursively()
+  helpModal?.destroyRecursively()
+  syntaxStyle?.destroy()
   parentContainer = null
   diffRenderable = null
   instructionsText = null
@@ -696,6 +706,7 @@ if (import.meta.main) {
     exitOnCtrlC: true,
     targetFps: 60,
   })
-  run(renderer)
+  await run(renderer)
   setupCommonDemoKeys(renderer)
+  await renderer.closed
 }

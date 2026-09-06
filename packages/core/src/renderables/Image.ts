@@ -1,13 +1,10 @@
 import { Renderable, type RenderableOptions } from "../Renderable.js"
 import { NativeImage, type ImageSource } from "../image.js"
 import type { OptimizedBuffer } from "../buffer.js"
-import { RGBA } from "../lib/RGBA.js"
 import type { ImageRenderProtocol, RenderContext, TerminalCapabilities } from "../types.js"
 
 export type ImageFit = "fit" | "cover" | "fill"
 export type ImageRenderableSource = ImageSource | NativeImage
-
-const TRANSPARENT = RGBA.fromValues(0, 0, 0, 0)
 
 export interface ImageRenderableOptions extends RenderableOptions<ImageRenderable> {
   source?: ImageRenderableSource
@@ -52,11 +49,16 @@ export class ImageRenderable extends Renderable {
 
   constructor(ctx: RenderContext, options: ImageRenderableOptions) {
     super(ctx, options)
-    this._fit = options.fit ?? "fit"
-    this._protocol = options.protocol ?? "auto"
-    this.onLoad = options.onLoad
-    this.onError = options.onError
-    if (options.source !== undefined) this.source = options.source
+    try {
+      this._fit = options.fit ?? "fit"
+      this._protocol = options.protocol ?? "auto"
+      this.onLoad = options.onLoad
+      this.onError = options.onError
+      this.setNativeSceneImage()
+      if (options.source !== undefined) this.source = options.source
+    } catch (error) {
+      this.abortConstruction(error, () => this.destroySelf())
+    }
   }
 
   public get source(): ImageRenderableSource | undefined {
@@ -66,8 +68,12 @@ export class ImageRenderable extends Renderable {
   public set source(source: ImageRenderableSource | undefined) {
     source ??= undefined
     if (source === this._source) return
+    if (source === undefined) this.setNativeSceneImage(null)
     this._source = source
-    this._loadController?.abort()
+    const previous = this._loadController
+    previous?.abort()
+    // Cancellation can synchronously replace the source or destroy this node.
+    if (this.isDestroyed || this._loadController !== previous) return
     this._loadController = null
     this._pendingImage?.dispose()
     this._pendingImage = null
@@ -110,6 +116,7 @@ export class ImageRenderable extends Renderable {
   public set fit(value: ImageFit | null | undefined) {
     const next = value ?? "fit"
     if (this._fit === next) return
+    this.setNativeSceneImage(this._image, next)
     this._fit = next
     this.requestRender()
   }
@@ -121,6 +128,7 @@ export class ImageRenderable extends Renderable {
   public set protocol(value: ImageRenderProtocol | null | undefined) {
     const next = value ?? "auto"
     if (this._protocol === next) return
+    this.setNativeSceneImage(this._image, this._fit, next)
     this._protocol = next
     this.requestRender()
   }
@@ -166,9 +174,23 @@ export class ImageRenderable extends Renderable {
     return this._loadError
   }
 
-  public override render(buffer: OptimizedBuffer, deltaTime: number): void {
-    if (this.buffered) this.frameBuffer?.clear(TRANSPARENT)
-    super.render(buffer, deltaTime)
+  protected override createFrameBuffer(): void {
+    const previous = this.frameBuffer
+    super.createFrameBuffer()
+    // Base construction can allocate before Image options are initialized.
+    if (this._fit === undefined || this.frameBuffer === previous) return
+    try {
+      this.setNativeSceneImage()
+    } catch (error) {
+      const candidate = this.frameBuffer
+      this.frameBuffer = previous
+      try {
+        candidate?.destroy()
+      } catch {
+        // Preserve the binding failure.
+      }
+      throw error
+    }
   }
 
   protected renderSelf(buffer: OptimizedBuffer): void {
@@ -219,10 +241,21 @@ export class ImageRenderable extends Renderable {
   }
 
   private async load(imagePromise: Promise<NativeImage>, controller: AbortController): Promise<void> {
-    let image: NativeImage
+    let image: NativeImage | undefined
     try {
       image = await imagePromise
+      if (this.isDestroyed || this._loadController !== controller) {
+        image.dispose()
+        return
+      }
+      if (this._pendingImage === image) this._pendingImage = null
+      this.setNativeSceneImage(image)
     } catch (error) {
+      try {
+        image?.dispose()
+      } catch {
+        // Preserve the load or binding failure.
+      }
       if (controller.signal.aborted || this.isDestroyed || this._loadController !== controller) return
       this._loadController = null
       this._loadError = error
@@ -230,27 +263,36 @@ export class ImageRenderable extends Renderable {
       return
     }
 
-    if (this.isDestroyed || this._loadController !== controller) {
-      image.dispose()
-      return
-    }
-
-    if (this._pendingImage === image) this._pendingImage = null
     const previous = this._image
     this._image = image
     this._loadController = null
-    previous?.dispose()
-    this.requestRender()
-    this.onLoad?.(image)
+    this.runCleanup((run) => {
+      run(() => previous?.dispose())
+      run(() => this.requestRender())
+      run(() => this.onLoad?.(image))
+    })
+  }
+
+  private setNativeSceneImage(
+    image: NativeImage | null = this._image,
+    fit: ImageFit = this._fit,
+    protocol: ImageRenderProtocol = this._protocol,
+  ): void {
+    this._ctx.nativeScene.setImage(this, image, fit, protocol, this.buffered ? this.frameBuffer : null)
   }
 
   protected destroySelf(): void {
-    this._loadController?.abort()
+    const controller = this._loadController
+    const pending = this._pendingImage
+    const image = this._image
     this._loadController = null
-    this._pendingImage?.dispose()
     this._pendingImage = null
-    this._image?.dispose()
     this._image = null
-    super.destroySelf()
+    this.runCleanup((run) => {
+      run(() => controller?.abort())
+      run(() => pending?.dispose())
+      run(() => image?.dispose())
+      run(() => super.destroySelf())
+    })
   }
 }

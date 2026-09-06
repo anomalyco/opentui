@@ -1,0 +1,96 @@
+--- a/yoga/algorithm/Cache.cpp
++++ b/yoga/algorithm/Cache.cpp
+@@ -64,25 +64,17 @@
+   const float pointScaleFactor = config->getPointScaleFactor();
+
+   bool useRoundedComparison = config != nullptr && pointScaleFactor != 0;
+-  const float effectiveWidth = useRoundedComparison
+-      ? roundValueToPixelGrid(availableWidth, pointScaleFactor, false, false)
+-      : availableWidth;
+-  const float effectiveHeight = useRoundedComparison
+-      ? roundValueToPixelGrid(availableHeight, pointScaleFactor, false, false)
+-      : availableHeight;
+-  const float effectiveLastWidth = useRoundedComparison
+-      ? roundValueToPixelGrid(
+-            lastAvailableWidth, pointScaleFactor, false, false)
+-      : lastAvailableWidth;
+-  const float effectiveLastHeight = useRoundedComparison
+-      ? roundValueToPixelGrid(
+-            lastAvailableHeight, pointScaleFactor, false, false)
+-      : lastAvailableHeight;
+-
+-  const bool hasSameWidthSpec = lastWidthMode == widthMode &&
+-      yoga::inexactEquals(effectiveLastWidth, effectiveWidth);
+-  const bool hasSameHeightSpec = lastHeightMode == heightMode &&
+-      yoga::inexactEquals(effectiveLastHeight, effectiveHeight);
++  bool hasSameWidthSpec = false;
++  if (lastWidthMode == widthMode) {
++    const float effectiveWidth = useRoundedComparison
++        ? roundValueToPixelGrid(availableWidth, pointScaleFactor, false, false)
++        : availableWidth;
++    const float effectiveLastWidth = useRoundedComparison
++        ? roundValueToPixelGrid(
++              lastAvailableWidth, pointScaleFactor, false, false)
++        : lastAvailableWidth;
++    hasSameWidthSpec = yoga::inexactEquals(effectiveLastWidth, effectiveWidth);
++  }
+
+   const bool widthIsCompatible =
+       hasSameWidthSpec ||
+@@ -100,6 +92,22 @@
+           lastAvailableWidth,
+           lastComputedWidth);
+
++  if (!widthIsCompatible) {
++    return false;
++  }
++
++  bool hasSameHeightSpec = false;
++  if (lastHeightMode == heightMode) {
++    const float effectiveHeight = useRoundedComparison
++        ? roundValueToPixelGrid(availableHeight, pointScaleFactor, false, false)
++        : availableHeight;
++    const float effectiveLastHeight = useRoundedComparison
++        ? roundValueToPixelGrid(
++              lastAvailableHeight, pointScaleFactor, false, false)
++        : lastAvailableHeight;
++    hasSameHeightSpec = yoga::inexactEquals(effectiveLastHeight, effectiveHeight);
++  }
++
+   const bool heightIsCompatible = hasSameHeightSpec ||
+       sizeIsExactAndMatchesOldMeasuredSize(
+                                       heightMode,
+@@ -115,7 +123,7 @@
+                                      lastAvailableHeight,
+                                      lastComputedHeight);
+
+-  return widthIsCompatible && heightIsCompatible;
++  return heightIsCompatible;
+ }
+
+ } // namespace facebook::yoga
+--- a/yoga/algorithm/PixelGrid.cpp
++++ b/yoga/algorithm/PixelGrid.cpp
+@@ -17,6 +17,9 @@
+     const double pointScaleFactor,
+     const bool forceCeil,
+     const bool forceFloor) {
++#ifdef OT_YOGA_TEST_ALLOCATOR
++  ++testPixelGridRoundCount;
++#endif
+   double scaledValue = value * pointScaleFactor;
+   // We want to calculate `fractial` such that `floor(scaledValue) = scaledValue
+   // - fractial`.
+--- a/yoga/algorithm/PixelGrid.h
++++ b/yoga/algorithm/PixelGrid.h
+@@ -12,6 +12,10 @@
+
+ namespace facebook::yoga {
+
++#ifdef OT_YOGA_TEST_ALLOCATOR
++inline thread_local uint32_t testPixelGridRoundCount = 0;
++#endif
++
+ // Round a point value to the nearest physical pixel based on DPI
+ // (pointScaleFactor)
+ float roundValueToPixelGrid(

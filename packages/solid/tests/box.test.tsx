@@ -62,14 +62,15 @@ describe("Box Component", () => {
 
     await testSetup.renderOnce()
 
-    const buffer = testSetup.renderer.currentRenderBuffer
-    expect(buffer.buffers.char[0]).toBe("┃".codePointAt(0))
-    expect({
-      fg: RGBA.fromArray(buffer.buffers.fg.slice(0, 4)).toInts(),
-      bg: RGBA.fromArray(buffer.buffers.bg.slice(0, 4)).toInts(),
-    }).toEqual({
-      fg: panel.toInts(),
-      bg: panel.toInts(),
+    testSetup.renderer.currentRenderBuffer.withBuffers((cells) => {
+      expect(cells.char[0]).toBe("┃".codePointAt(0))
+      expect({
+        fg: RGBA.fromArray(cells.fg.slice(0, 4)).toInts(),
+        bg: RGBA.fromArray(cells.bg.slice(0, 4)).toInts(),
+      }).toEqual({
+        fg: panel.toInts(),
+        bg: panel.toInts(),
+      })
     })
   })
 })

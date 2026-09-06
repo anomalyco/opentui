@@ -1,5 +1,6 @@
 const std = @import("std");
 const edit_buffer = @import("../edit-buffer.zig");
+const event_bus = @import("../event-bus.zig");
 const text_buffer_view = @import("../text-buffer-view.zig");
 const gp = @import("../grapheme.zig");
 const link = @import("../link.zig");
@@ -52,6 +53,116 @@ test "EditBuffer - init and deinit" {
     try std.testing.expect(cursor != null);
     try std.testing.expectEqual(@as(u32, 0), cursor.?.row);
     try std.testing.expectEqual(@as(u32, 0), cursor.?.col);
+}
+
+test "EditBuffer - add buffer registration failure releases initialization storage" {
+    const Check = struct {
+        fn init(allocator: std.mem.Allocator) !void {
+            var pool = gp.GraphemePool.init(allocator);
+            defer pool.deinit();
+            var links = link.LinkPool.init(allocator);
+            defer links.deinit();
+            const eb = try EditBuffer.init(allocator, &pool, &links, .wcwidth, null);
+            defer eb.deinit();
+        }
+    };
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, Check.init, .{});
+}
+
+test "EditBuffer - event IDs cross the u16 boundary without reuse" {
+    const Capture = struct {
+        var bytes: [4]u8 = undefined;
+        var length: u32 = 0;
+        var count: u32 = 0;
+
+        fn callback(name: [*]const u8, name_len: u32, data: [*]const u8, data_len: u32) callconv(.c) void {
+            if (!std.mem.eql(u8, name[0..name_len], "eb_cursor-changed")) return;
+            length = data_len;
+            if (data_len == bytes.len) @memcpy(&bytes, data[0..4]);
+            count += 1;
+        }
+    };
+    var pool = gp.GraphemePool.init(std.testing.allocator);
+    defer pool.deinit();
+    var link_pool = link.LinkPool.init(std.testing.allocator);
+    defer link_pool.deinit();
+    const sink = try event_bus.createEventSink(std.testing.allocator, Capture.callback);
+    defer event_bus.destroyEventSink(std.testing.allocator, sink);
+    sink.last_edit_buffer_id = 65534;
+
+    const cases = [_]struct { id: u32, bytes: [4]u8 }{
+        .{ .id = 65535, .bytes = .{ 255, 255, 0, 0 } },
+        .{ .id = 65536, .bytes = .{ 0, 0, 1, 0 } },
+    };
+    for (cases) |case| {
+        var failing = std.testing.FailingAllocator.init(std.testing.allocator, .{});
+        const eb = try EditBuffer.init(failing.allocator(), &pool, &link_pool, .wcwidth, sink);
+        defer eb.deinit();
+        try std.testing.expectEqual(case.id, eb.getId());
+        try std.testing.expectEqual(@as(?u32, 0), iter_mod.coordsToOffset(eb.getTextBuffer().rope(), 0, 0));
+        failing.fail_index = failing.alloc_index;
+        failing.resize_fail_index = failing.resize_index;
+        try eb.setCursor(0, 0);
+        try std.testing.expectEqual(@as(u32, 4), Capture.length);
+        try std.testing.expectEqualSlices(u8, &case.bytes, &Capture.bytes);
+        try std.testing.expect(!failing.has_induced_failure);
+    }
+    try std.testing.expectEqual(@as(u32, cases.len), Capture.count);
+}
+
+test "EditBuffer - buffers without an event sink use only typed events" {
+    const Listener = struct {
+        fn onCursorChanged(ctx: *anyopaque) void {
+            const count: *u32 = @ptrCast(@alignCast(ctx));
+            count.* += 1;
+        }
+    };
+    var pool = gp.GraphemePool.init(std.testing.allocator);
+    defer pool.deinit();
+    var link_pool = link.LinkPool.init(std.testing.allocator);
+    defer link_pool.deinit();
+    for (0..2) |_| {
+        const eb = try EditBuffer.init(std.testing.allocator, &pool, &link_pool, .wcwidth, null);
+        defer eb.deinit();
+        try std.testing.expectEqual(@as(u32, 0), eb.getId());
+        var count: u32 = 0;
+        try eb.events.on(.cursorChanged, .{ .ctx = &count, .handle = Listener.onCursorChanged });
+        try eb.setCursor(0, 0);
+        try std.testing.expectEqual(@as(u32, 1), count);
+    }
+}
+
+test "EditBuffer - replacement notifications observe accepted state" {
+    const Capture = struct {
+        eb: *EditBuffer,
+        count: usize = 0,
+        accepted: bool = true,
+
+        fn changed(data: *anyopaque) void {
+            const self: *@This() = @ptrCast(@alignCast(data));
+            var text: [32]u8 = undefined;
+            self.accepted = self.accepted and
+                std.mem.eql(u8, "replacement", text[0..self.eb.getText(&text)]) and
+                self.eb.getPrimaryCursor().row == 0 and self.eb.getPrimaryCursor().col == 0 and
+                !self.eb.canRedo();
+            self.count += 1;
+        }
+    };
+    var pool = gp.GraphemePool.init(std.testing.allocator);
+    defer pool.deinit();
+    var links = link.LinkPool.init(std.testing.allocator);
+    defer links.deinit();
+    const eb = try EditBuffer.init(std.testing.allocator, &pool, &links, .unicode, null);
+    defer eb.deinit();
+    try eb.setText("old\ntext");
+    try eb.insertText("X");
+    _ = try eb.undo();
+    var capture: Capture = .{ .eb = eb };
+    try eb.events.on(.cursorChanged, .{ .ctx = &capture, .handle = Capture.changed });
+    try eb.setText("replacement");
+    try eb.replaceText("replacement");
+    try std.testing.expect(capture.accepted);
+    try std.testing.expectEqual(@as(usize, 2), capture.count);
 }
 
 test "EditBuffer - next word boundary basic" {

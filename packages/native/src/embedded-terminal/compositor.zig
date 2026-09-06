@@ -3,7 +3,13 @@ const ansi = @import("../ansi.zig");
 const buffer = @import("../buffer.zig");
 const ghostty = @import("ghostty.zig");
 
-pub const Error = std.mem.Allocator.Error || buffer.BufferError;
+pub const Error = std.mem.Allocator.Error || buffer.BufferError || error{
+    InvalidUnicode,
+    InvalidOptions,
+    TextLimit,
+    UnsupportedResource,
+    TrackerLimit,
+};
 
 pub fn compose(
     allocator: std.mem.Allocator,
@@ -11,7 +17,9 @@ pub fn compose(
     target: *buffer.OptimizedBuffer,
     origin_x: i32,
     origin_y: i32,
+    comptime checked: bool,
 ) Error!void {
+    errdefer state.dirty = .full;
     const dirty = state.dirty;
     if (dirty == .false) return;
 
@@ -22,9 +30,9 @@ pub fn compose(
     for (0..state.rows) |y| {
         if (dirty == .partial and !row_dirty[y]) continue;
 
-        const dest_y = origin_y + @as(i32, @intCast(y));
+        const dest_y = @as(i64, origin_y) + @as(i64, @intCast(y));
         if (dest_y >= 0 and dest_y < target.getHeight()) {
-            clearRow(target, origin_x, @intCast(dest_y), state.cols, state.colors.foreground, state.colors.background);
+            try clearRow(target, origin_x, @intCast(dest_y), state.cols, state.colors.foreground, state.colors.background, checked);
             try composeRow(
                 allocator,
                 row_cells[y].slice(),
@@ -33,6 +41,7 @@ pub fn compose(
                 origin_x,
                 @intCast(dest_y),
                 &state.colors,
+                checked,
             );
         }
 
@@ -42,14 +51,17 @@ pub fn compose(
     state.dirty = .false;
 }
 
-fn clearRow(target: *buffer.OptimizedBuffer, origin_x: i32, y: u32, cols: u16, foreground: anytype, background: anytype) void {
+fn clearRow(target: *buffer.OptimizedBuffer, origin_x: i32, y: u32, cols: u16, foreground: anytype, background: anytype, comptime checked: bool) Error!void {
     const fg = color(foreground);
     const bg = color(background);
-    var x: u32 = 0;
-    while (x < target.getWidth()) : (x += 1) {
-        const source_x = @as(i32, @intCast(x)) - origin_x;
-        if (source_x < 0 or source_x >= cols) continue;
-        target.set(x, y, .{
+    const start = @max(0, @as(i64, origin_x));
+    const end = @min(target.getWidth(), @as(i64, origin_x) + cols);
+    if (start >= end) return;
+    var x: u32 = @intCast(start);
+    while (x < end) : (x += 1) {
+        if (checked) {
+            try target.drawGraphemeChecked(" ", 1, x, y, fg, bg, 0);
+        } else target.set(x, y, .{
             .char = buffer.DEFAULT_SPACE_CHAR,
             .fg = fg,
             .bg = bg,
@@ -66,6 +78,7 @@ fn composeRow(
     origin_x: i32,
     dest_y: u32,
     colors: *const ghostty.RenderState.Colors,
+    comptime checked: bool,
 ) Error!void {
     const raw_items = cells.items(.raw);
     const graphemes = cells.items(.grapheme);
@@ -83,7 +96,7 @@ fn composeRow(
     } else 0;
 
     cell_loop: for (raw_items, 0..) |raw, x| {
-        const dest_x = origin_x + @as(i32, @intCast(x));
+        const dest_x = @as(i64, origin_x) + @as(i64, @intCast(x));
         if (dest_x < 0 or dest_x >= target.getWidth()) continue;
         if (raw.wide == .spacer_tail or raw.wide == .spacer_head) continue;
 
@@ -99,15 +112,15 @@ fn composeRow(
         var stack: [128]u8 = undefined;
         var writer: std.Io.Writer = .fixed(&stack);
         encodeCodepoint(&writer, raw.codepoint()) catch {
-            try drawAllocated(allocator, target, raw, grapheme, @intCast(dest_x), dest_y, fg, bg, style);
+            try drawAllocated(allocator, target, raw, grapheme, @intCast(dest_x), dest_y, fg, bg, style, checked);
             continue :cell_loop;
         };
         for (grapheme) |codepoint| encodeCodepoint(&writer, codepoint) catch {
-            try drawAllocated(allocator, target, raw, grapheme, @intCast(dest_x), dest_y, fg, bg, style);
+            try drawAllocated(allocator, target, raw, grapheme, @intCast(dest_x), dest_y, fg, bg, style, checked);
             continue :cell_loop;
         };
 
-        try draw(target, writer.buffered(), raw.gridWidth(), @intCast(dest_x), dest_y, fg, bg, style);
+        try draw(target, writer.buffered(), raw.gridWidth(), @intCast(dest_x), dest_y, fg, bg, style, checked);
     }
 }
 
@@ -121,12 +134,13 @@ fn drawAllocated(
     foreground: anytype,
     background: anytype,
     style: anytype,
+    comptime checked: bool,
 ) Error!void {
     var output: std.Io.Writer.Allocating = .init(allocator);
     defer output.deinit();
     encodeCodepoint(&output.writer, raw.codepoint()) catch return error.OutOfMemory;
     for (grapheme) |codepoint| encodeCodepoint(&output.writer, codepoint) catch return error.OutOfMemory;
-    try draw(target, output.written(), raw.gridWidth(), x, y, foreground, background, style);
+    try draw(target, output.written(), raw.gridWidth(), x, y, foreground, background, style, checked);
 }
 
 fn encodeCodepoint(writer: *std.Io.Writer, codepoint: u21) std.Io.Writer.Error!void {
@@ -136,8 +150,13 @@ fn encodeCodepoint(writer: *std.Io.Writer, codepoint: u21) std.Io.Writer.Error!v
     try writer.writeAll(bytes[0..len]);
 }
 
-fn draw(target: *buffer.OptimizedBuffer, text: []const u8, cell_width: u8, x: u32, y: u32, foreground: anytype, background: anytype, style: anytype) buffer.BufferError!void {
+fn draw(target: *buffer.OptimizedBuffer, text: []const u8, cell_width: u8, x: u32, y: u32, foreground: anytype, background: anytype, style: anytype, comptime checked: bool) Error!void {
     const cell_attributes = attributes(style);
+    if (checked) {
+        const blank = text.len == 0 or style.flags.invisible;
+        try target.drawGraphemeChecked(if (blank) " " else text, if (blank) 1 else cell_width, x, y, color(foreground), color(background), cell_attributes);
+        return;
+    }
     if (text.len == 0 or style.flags.invisible) {
         target.set(x, y, .{
             .char = buffer.DEFAULT_SPACE_CHAR,

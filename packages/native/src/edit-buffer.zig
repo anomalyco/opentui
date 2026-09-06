@@ -15,8 +15,6 @@ const TextChunk = seg_mod.TextChunk;
 const Segment = seg_mod.Segment;
 const UnifiedRope = seg_mod.UnifiedRope;
 
-var global_edit_buffer_id: u16 = 0;
-
 pub const EditBufferError = error{
     OutOfMemory,
     InvalidCursor,
@@ -103,6 +101,7 @@ const AddBuffer = struct {
 
     fn init(allocator: Allocator, text_buffer: *UnifiedTextBuffer, initial_cap: usize) !AddBuffer {
         const mem = try allocator.alloc(u8, initial_cap);
+        errdefer allocator.free(mem);
         const mem_id = try text_buffer.registerMemBuffer(mem, true);
 
         return .{
@@ -120,6 +119,7 @@ const AddBuffer = struct {
         // TODO: Create a new buffer, register the new buffer and use the new mem_id for subsequent inserts
         const new_cap = @max(self.cap * 2, self.len + need);
         const new_mem = try self.allocator.alloc(u8, new_cap);
+        errdefer self.allocator.free(new_mem);
         const new_mem_id = try text_buffer.registerMemBuffer(new_mem, true);
         self.mem_id = new_mem_id;
         self.ptr = new_mem.ptr;
@@ -141,7 +141,7 @@ const AddBuffer = struct {
 };
 
 pub const EditBuffer = struct {
-    id: u16,
+    id: u32,
     tb: *UnifiedTextBuffer,
     add_buffer: AddBuffer,
     cursors: std.ArrayListUnmanaged(Cursor),
@@ -157,25 +157,32 @@ pub const EditBuffer = struct {
         width_method: utf8.WidthMethod,
         event_sink: ?*event_bus.EventSink,
     ) !*EditBuffer {
+        return initWithOptions(allocator, pool, link_pool, width_method, event_sink, .{});
+    }
+
+    pub fn initWithOptions(
+        allocator: Allocator,
+        pool: *gp.GraphemePool,
+        link_pool: *link.LinkPool,
+        width_method: utf8.WidthMethod,
+        event_sink: ?*event_bus.EventSink,
+        options: UnifiedTextBuffer.InitOptions,
+    ) !*EditBuffer {
         const self = try allocator.create(EditBuffer);
         errdefer allocator.destroy(self);
 
-        const text_buffer = try UnifiedTextBuffer.init(allocator, pool, link_pool, width_method);
+        const text_buffer = try UnifiedTextBuffer.initWithOptions(allocator, pool, link_pool, width_method, options);
         errdefer text_buffer.deinit();
 
         const add_buffer = try AddBuffer.init(allocator, text_buffer, 65536);
-        errdefer {}
 
         var cursors: std.ArrayListUnmanaged(Cursor) = .empty;
         errdefer cursors.deinit(allocator);
 
         try cursors.append(allocator, .{ .row = 0, .col = 0 });
 
-        const buffer_id = global_edit_buffer_id;
-        global_edit_buffer_id += 1;
-
         self.* = .{
-            .id = buffer_id,
+            .id = if (event_sink) |sink| try sink.allocateEditBufferId() else 0,
             .tb = text_buffer,
             .add_buffer = add_buffer,
             .cursors = cursors,
@@ -199,18 +206,16 @@ pub const EditBuffer = struct {
         self.* = undefined;
     }
 
-    pub fn getId(self: *const EditBuffer) u16 {
+    pub fn getId(self: *const EditBuffer) u32 {
         return self.id;
     }
 
-    fn emitNativeEvent(self: *const EditBuffer, event_name: []const u8) void {
-        var id_bytes: [2]u8 = undefined;
-        std.mem.writeInt(u16, &id_bytes, self.id, .little);
+    fn emitNativeEvent(self: *const EditBuffer, comptime event_name: []const u8) void {
+        const sink = self.event_sink orelse return;
+        var id_bytes: [4]u8 = undefined;
+        std.mem.writeInt(u32, &id_bytes, self.id, .little);
 
-        const full_name = std.fmt.allocPrint(self.allocator, "eb_{s}", .{event_name}) catch return;
-        defer self.allocator.free(full_name);
-
-        event_bus.emit(self.event_sink, full_name, &id_bytes);
+        event_bus.emit(sink, "eb_" ++ event_name, &id_bytes);
     }
 
     pub fn getTextBuffer(self: *EditBuffer) *UnifiedTextBuffer {
@@ -376,13 +381,18 @@ pub const EditBuffer = struct {
         if (bytes.len == 0) return;
         if (self.cursors.items.len == 0) return;
 
-        try self.autoStoreUndo();
-
         const cursor = self.cursors.items[0];
-
-        try self.ensureAddCapacity(bytes.len);
-
         const insert_offset = iter_mod.coordsToOffset(self.tb.rope(), cursor.row, cursor.col) orelse return EditBufferError.InvalidCursor;
+
+        const previous_add_buffer = self.add_buffer;
+        const previous_buffer_count = self.tb.mem_registry.buffers.items.len;
+        errdefer {
+            if (self.add_buffer.mem_id != previous_add_buffer.mem_id) {
+                self.tb.mem_registry.cancelLastRegistration(self.add_buffer.mem_id, previous_buffer_count);
+            }
+            self.add_buffer = previous_add_buffer;
+        }
+        try self.ensureAddCapacity(bytes.len);
 
         const chunk_ref = self.add_buffer.append(bytes);
         const base_mem_id = chunk_ref.mem_id;
@@ -405,9 +415,12 @@ pub const EditBuffer = struct {
             }
         }
 
-        if (result.segments.items.len > 0) {
-            try self.tb.rope().insertSliceByWeight(insert_offset, result.segments.items, &self.segment_splitter);
-        }
+        // Prepare root/end-marker repairs without touching shared history or marker caches.
+        var candidate = self.tb.rope().*;
+        try candidate.insertSliceByWeight(insert_offset, result.segments.items, &self.segment_splitter);
+        try self.autoStoreUndo();
+        self.tb.rope().root = candidate.root;
+        self.tb.rope().version = candidate.version;
         if (num_breaks > 0) {
             const new_row = cursor.row + @as(u32, @intCast(num_breaks));
             const new_col = width_after_last_break;
@@ -446,14 +459,16 @@ pub const EditBuffer = struct {
 
         if (start.row == end.row and start.col == end.col) return;
 
-        try self.autoStoreUndo();
-
         const start_offset = iter_mod.coordsToOffset(self.tb.rope(), start.row, start.col) orelse return EditBufferError.InvalidCursor;
         const end_offset = iter_mod.coordsToOffset(self.tb.rope(), end.row, end.col) orelse return EditBufferError.InvalidCursor;
 
         if (start_offset >= end_offset) return;
 
-        try self.tb.rope().deleteRangeByWeight(start_offset, end_offset, &self.segment_splitter);
+        var candidate = self.tb.rope().*;
+        try candidate.deleteRangeByWeight(start_offset, end_offset, &self.segment_splitter);
+        try self.autoStoreUndo();
+        self.tb.rope().root = candidate.root;
+        self.tb.rope().version = candidate.version;
 
         self.tb.markViewsDirty();
 
@@ -470,6 +485,139 @@ pub const EditBuffer = struct {
         self.events.emit(.cursorChanged);
         self.emitNativeEvent("cursor-changed");
         self.emitNativeEvent("content-changed");
+    }
+
+    /// Replace an exclusive display-cell range, preserving delete-then-insert history and events.
+    /// All fallible work precedes deletion; after_delete runs between the accepted edits.
+    pub fn replaceRange(
+        self: *EditBuffer,
+        start_offset: u32,
+        end_offset: u32,
+        bytes: []const u8,
+        after_delete: event_emitter.EventEmitter(EditBufferEvent).Listener,
+    ) !void {
+        if (start_offset > end_offset or end_offset > self.tb.rope().totalWeight()) {
+            return EditBufferError.InvalidCursor;
+        }
+        if (self.cursors.items.len == 0) return EditBufferError.InvalidCursor;
+        const has_deletion = start_offset != end_offset;
+
+        const previous_add_buffer = self.add_buffer;
+        const previous_buffer_count = self.tb.mem_registry.buffers.items.len;
+        errdefer {
+            if (self.add_buffer.mem_id != previous_add_buffer.mem_id) {
+                self.tb.mem_registry.cancelLastRegistration(self.add_buffer.mem_id, previous_buffer_count);
+            }
+            self.add_buffer = previous_add_buffer;
+        }
+        try self.ensureAddCapacity(bytes.len);
+        const chunk_ref = self.add_buffer.append(bytes);
+        var segments = try self.tb.textToSegments(self.allocator, bytes, chunk_ref.mem_id, chunk_ref.start, false);
+        defer segments.segments.deinit(segments.allocator);
+
+        var deleted = self.tb.rope().*;
+        try deleted.deleteRangeByWeight(start_offset, end_offset, &self.segment_splitter);
+        var deleted_cursor = if (has_deletion)
+            cursorAfterDeletion(self.tb.rope(), &deleted, start_offset)
+        else
+            self.getPrimaryCursor();
+        if (!has_deletion and bytes.len > 0) {
+            deleted_cursor.offset = iter_mod.coordsToOffset(self.tb.rope(), deleted_cursor.row, deleted_cursor.col) orelse
+                return EditBufferError.InvalidCursor;
+        }
+        var inserted = deleted;
+        try inserted.insertSliceByWeight(deleted_cursor.offset, segments.segments.items, &self.segment_splitter);
+        var inserted_cursor = deleted_cursor;
+        for (segments.segments.items) |segment| {
+            if (segment.isBreak()) {
+                inserted_cursor.row += 1;
+                inserted_cursor.col = 0;
+                inserted_cursor.offset += 1;
+            } else if (segment.asText()) |chunk| {
+                inserted_cursor.col += chunk.width_cols;
+                inserted_cursor.offset += chunk.width_cols;
+            }
+        }
+        if (inserted_cursor.row != deleted_cursor.row) {
+            inserted_cursor.offset = newlineOffset(&inserted, inserted_cursor.row - 1) + 1 + inserted_cursor.col;
+        }
+        inserted_cursor.desired_col = inserted_cursor.col;
+
+        // Each store_undo allocates a node, a cursor-metadata buffer, and
+        // at most one redo branch. Reserve both stores before either can trim
+        // shared history. The backing bytes have the rope arena's lifetime.
+        const history_step_size = @sizeOf(UnifiedRope.UndoNode) + @alignOf(UnifiedRope.UndoNode) - 1 +
+            64 + @sizeOf(UnifiedRope.UndoBranch) + @alignOf(UnifiedRope.UndoBranch) - 1;
+        const step_count = @as(usize, @intFromBool(has_deletion)) + @intFromBool(bytes.len > 0);
+        const history_storage = try self.tb.rope().allocator.alloc(u8, history_step_size * step_count);
+        var history_allocator = std.heap.FixedBufferAllocator.init(history_storage);
+        if (has_deletion) self.publishReplacementStep(&deleted, deleted_cursor, history_allocator.allocator());
+        after_delete.handle(after_delete.ctx);
+        if (bytes.len > 0) self.publishReplacementStep(&inserted, inserted_cursor, history_allocator.allocator());
+    }
+
+    fn publishReplacementStep(self: *EditBuffer, candidate: *const UnifiedRope, cursor: Cursor, history_allocator: Allocator) void {
+        const rope = self.tb.rope();
+        const allocator = rope.allocator;
+        rope.allocator = history_allocator;
+        self.autoStoreUndo() catch unreachable; // Reserved above, including alignment and redo branching.
+        rope.allocator = allocator;
+        rope.root = candidate.root;
+        rope.version = candidate.version;
+        self.cursors.items[0] = cursor;
+        self.tb.markViewsDirty();
+        self.events.emit(.cursorChanged);
+        self.emitNativeEvent("cursor-changed");
+        self.emitNativeEvent("content-changed");
+    }
+
+    fn cursorAfterDeletion(rope: *const UnifiedRope, deleted: *const UnifiedRope, offset: u32) Cursor {
+        std.debug.assert(offset <= rope.totalWeight());
+        // Use aggregate metrics rather than allocating or mutating the live marker cache.
+        var node = rope.root;
+        var remaining = offset;
+        var row: u32 = 0;
+        while (node.* == .branch) {
+            const branch = node.branch;
+            if (remaining < branch.left_metrics.weight()) {
+                node = branch.left;
+            } else {
+                remaining -= branch.left_metrics.weight();
+                row += branch.left_metrics.custom.newline_count;
+                node = branch.right;
+            }
+        }
+        if (remaining >= node.metrics().weight()) row += node.metrics().custom.newline_count;
+        const line_start = if (row > 0) newlineOffset(rope, row - 1) + 1 else 0;
+        var clamped_offset = offset;
+        if (remaining != 0 and !node.metrics().custom.ascii_only) {
+            const line_end = if (row < deleted.root.metrics().custom.newline_count)
+                newlineOffset(deleted, row)
+            else
+                deleted.totalWeight();
+            clamped_offset = @min(offset, line_end);
+        }
+        std.debug.assert(line_start <= clamped_offset);
+        const col = clamped_offset - line_start;
+        return .{ .row = row, .col = col, .desired_col = col, .offset = clamped_offset };
+    }
+
+    fn newlineOffset(rope: *const UnifiedRope, row: u32) u32 {
+        std.debug.assert(row < rope.root.metrics().custom.newline_count);
+        var node = rope.root;
+        var newline = row;
+        var offset: u32 = 0;
+        while (node.* == .branch) {
+            const branch = node.branch;
+            if (newline < branch.left_metrics.custom.newline_count) {
+                node = branch.left;
+            } else {
+                newline -= branch.left_metrics.custom.newline_count;
+                offset += branch.left_metrics.weight();
+                node = branch.right;
+            }
+        }
+        return offset;
     }
 
     pub fn backspace(self: *EditBuffer) !void {
@@ -503,8 +651,6 @@ pub const EditBuffer = struct {
     pub fn deleteForward(self: *EditBuffer) !void {
         if (self.cursors.items.len == 0) return;
         const cursor = self.cursors.items[0];
-
-        try self.autoStoreUndo();
 
         const line_width = iter_mod.lineWidthAt(self.tb.rope(), cursor.row);
         const line_count = self.tb.lineCount();
@@ -615,35 +761,102 @@ pub const EditBuffer = struct {
     /// Set text and completely reset the buffer state (clears history, resets add_buffer)
     pub fn setText(self: *EditBuffer, text: []const u8) !void {
         const owned_text = try self.allocator.dupe(u8, text);
-        const mem_id = try self.tb.registerMemBuffer(owned_text, true);
+        const previous_buffer_count = self.tb.mem_registry.buffers.items.len;
+        const mem_id = self.tb.registerMemBuffer(owned_text, true) catch |err| {
+            self.allocator.free(owned_text);
+            return err;
+        };
+        errdefer self.tb.mem_registry.cancelLastRegistration(mem_id, previous_buffer_count);
         try self.setTextFromMemId(mem_id);
+    }
+
+    pub fn setTextBorrowed(self: *EditBuffer, text: []const u8, preferred_id: ?u8) !u8 {
+        return self.resetText(text, preferred_id, false);
+    }
+
+    pub fn setTextOwned(self: *EditBuffer, text: []const u8, preferred_id: ?u8) !u8 {
+        const owned_text = try self.allocator.dupe(u8, text);
+        errdefer self.allocator.free(owned_text);
+        return self.resetText(owned_text, preferred_id, true);
+    }
+
+    fn resetText(self: *EditBuffer, text: []const u8, preferred_id: ?u8, owned: bool) !u8 {
+        if (preferred_id) |id| {
+            // The live add buffer must remain owned and writable after replacement.
+            if (id == self.add_buffer.mem_id or id == 255) return error.InvalidMemId;
+        }
+        try self.cursors.ensureTotalCapacity(self.allocator, 1);
+        const mem_id = try self.tb.replaceText(text, preferred_id, owned);
+        self.add_buffer.len = 0;
+        self.finishTextReplacement();
+        return mem_id;
     }
 
     /// Set text from memory ID and completely reset the buffer state (clears history, resets add_buffer)
     pub fn setTextFromMemId(self: *EditBuffer, mem_id: u8) !void {
+        // This call or its caller may have cleared the text before an allocation failed.
+        errdefer if (self.tb.rope().totalWeight() == 0 and self.cursors.items.len > 0) {
+            const cursor = &self.cursors.items[0];
+            if (cursor.row != 0 or cursor.col != 0 or cursor.offset != 0) {
+                cursor.* = .{ .row = 0, .col = 0 };
+            }
+        };
+        try self.cursors.ensureTotalCapacity(self.allocator, 1);
+        try self.tb.setTextFromMemId(mem_id);
         self.tb.rope().clear_history();
         self.add_buffer.len = 0;
-
-        try self.tb.setTextFromMemId(mem_id);
-        try self.setCursor(0, 0);
-
-        self.emitNativeEvent("content-changed");
+        self.finishTextReplacement();
     }
 
     /// Replace text while preserving undo history (creates an undo point)
     pub fn replaceText(self: *EditBuffer, text: []const u8) !void {
         const owned_text = try self.allocator.dupe(u8, text);
-        const mem_id = try self.tb.registerMemBuffer(owned_text, true);
+        const previous_buffer_count = self.tb.mem_registry.buffers.items.len;
+        const mem_id = self.tb.registerMemBuffer(owned_text, true) catch |err| {
+            self.allocator.free(owned_text);
+            return err;
+        };
+        errdefer self.tb.mem_registry.cancelLastRegistration(mem_id, previous_buffer_count);
         try self.replaceTextFromMemId(mem_id);
+    }
+
+    pub fn replaceTextBorrowed(self: *EditBuffer, text: []const u8) !u8 {
+        var meta_buffer: [64]u8 = undefined;
+        const meta = try self.encodeCurrentCursorMeta(&meta_buffer);
+        try self.cursors.ensureTotalCapacity(self.allocator, 1);
+        const previous_buffer_count = self.tb.mem_registry.buffers.items.len;
+        const mem_id = try self.tb.registerMemBuffer(text, false);
+        errdefer self.tb.mem_registry.cancelLastRegistration(mem_id, previous_buffer_count);
+        try self.tb.setTextFromMemIdWithUndo(mem_id, meta);
+        self.finishTextReplacement();
+        return mem_id;
     }
 
     /// Replace text from memory ID while preserving undo history (creates an undo point)
     pub fn replaceTextFromMemId(self: *EditBuffer, mem_id: u8) !void {
-        try self.autoStoreUndo();
+        errdefer if (self.tb.rope().totalWeight() == 0 and self.cursors.items.len > 0) {
+            const cursor = &self.cursors.items[0];
+            if (cursor.row != 0 or cursor.col != 0 or cursor.offset != 0) {
+                cursor.* = .{ .row = 0, .col = 0 };
+            }
+        };
+        var meta_buffer: [64]u8 = undefined;
+        const meta = try self.encodeCurrentCursorMeta(&meta_buffer);
+        try self.cursors.ensureTotalCapacity(self.allocator, 1);
+        try self.tb.setTextFromMemIdWithUndo(mem_id, meta);
+        self.finishTextReplacement();
+    }
 
-        try self.tb.setTextFromMemId(mem_id);
-        try self.setCursor(0, 0);
-
+    fn finishTextReplacement(self: *EditBuffer) void {
+        // Capacity is reserved before text acceptance; the origin needs no marker lookup.
+        const origin: Cursor = .{ .row = 0, .col = 0 };
+        if (self.cursors.items.len == 0) {
+            self.cursors.appendAssumeCapacity(origin);
+        } else {
+            self.cursors.items[0] = origin;
+        }
+        self.events.emit(.cursorChanged);
+        self.emitNativeEvent("cursor-changed");
         self.emitNativeEvent("content-changed");
     }
 
@@ -796,7 +1009,7 @@ pub const EditBuffer = struct {
     }
 
     pub fn clear(self: *EditBuffer) !void {
-        self.tb.clear();
+        try self.tb.clear();
         try self.setCursor(0, 0);
         self.emitNativeEvent("content-changed");
     }

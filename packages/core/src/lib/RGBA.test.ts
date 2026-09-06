@@ -17,6 +17,41 @@ describe("RGBA", () => {
     expect(color.buffer[0]).toBe(1)
   })
 
+  test("allocates one independent buffer per packed factory result", () => {
+    const snapshot = RGBA.fromInts(17, 34, 51, 68)
+    const originalUint16Array = globalThis.Uint16Array
+    let allocations = 0
+    let colors: RGBA[]
+    try {
+      globalThis.Uint16Array = new Proxy(originalUint16Array, {
+        construct(target, args, newTarget) {
+          allocations++
+          return Reflect.construct(target, args, newTarget)
+        },
+      })
+      colors = [
+        RGBA.fromValues(-0.5, 0.5, Infinity, 1.5),
+        RGBA.fromInts(-1, 127.5, NaN, 256),
+        RGBA.fromIndex(12, snapshot),
+        RGBA.defaultForeground(snapshot),
+        RGBA.defaultBackground(snapshot),
+      ]
+    } finally {
+      globalThis.Uint16Array = originalUint16Array
+    }
+
+    expect(allocations).toBe(colors.length)
+    expect(new Set(colors.map((color) => color.buffer.buffer)).size).toBe(colors.length)
+    snapshot.buffer.fill(0xffff)
+    expect(colors.map((color) => [...color.toInts(), color.intent, color.slot])).toEqual([
+      [0, 128, 0, 255, "rgb", 0],
+      [0, 128, 0, 255, "rgb", 0],
+      [17, 34, 51, 68, "indexed", 12],
+      [17, 34, 51, 68, "default", 0],
+      [17, 34, 51, 68, "default", 0],
+    ])
+  })
+
   test("preserves metadata when mutating channels", () => {
     const color = RGBA.fromIndex(6)
     color.r = 1

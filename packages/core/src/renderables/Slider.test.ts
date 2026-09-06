@@ -18,12 +18,32 @@ async function createSliderRenderable(
 }
 
 beforeEach(async () => {
-  ;({ renderer: currentRenderer, mockMouse: currentMockMouse, renderOnce } = await createTestRenderer({}))
+  ;({
+    renderer: currentRenderer,
+    mockMouse: currentMockMouse,
+    renderOnce,
+  } = await createTestRenderer({ width: 100, height: 100 }))
 })
 
 afterEach(() => {
   currentRenderer.destroy()
 })
+
+async function paintedThumbSize(slider: SliderRenderable): Promise<number> {
+  await renderOnce()
+  return currentRenderer.currentRenderBuffer.withBuffers(({ char, width }) => {
+    let halfCells = 0
+    const horizontal = slider.orientation === "horizontal"
+    for (let cell = 0; cell < (horizontal ? slider.width : slider.height); cell++) {
+      const x = slider.x + (horizontal ? cell : 0)
+      const y = slider.y + (horizontal ? 0 : cell)
+      const glyph = char[y * width + x]
+      if (glyph === 0x2588) halfCells += 2
+      else if (glyph === 0x2580 || glyph === 0x2584 || glyph === 0x258c || glyph === 0x2590) halfCells++
+    }
+    return halfCells
+  })
+}
 
 test("SliderRenderable > Value-based API", async () => {
   const { slider } = await createSliderRenderable(currentRenderer, {
@@ -142,17 +162,14 @@ test("SliderRenderable > Vertical thumb size calculation", async () => {
     viewPortSize: 10,
   })
 
-  // @ts-expect-error - Testing private method
-  const thumbSize = slider.getVirtualThumbSize()
+  const thumbSize = await paintedThumbSize(slider)
   expect(thumbSize).toBe(9)
 
   slider.viewPortSize = 1
-  // @ts-expect-error - Testing private method
-  expect(slider.getVirtualThumbSize()).toBe(1)
+  expect(await paintedThumbSize(slider)).toBe(1)
 
   slider.viewPortSize = 150
-  // @ts-expect-error - Testing private method
-  expect(slider.getVirtualThumbSize()).toBe(50)
+  expect(await paintedThumbSize(slider)).toBe(50)
 })
 
 test("SliderRenderable > Horizontal thumb size calculation", async () => {
@@ -166,17 +183,14 @@ test("SliderRenderable > Horizontal thumb size calculation", async () => {
     viewPortSize: 20,
   })
 
-  // @ts-expect-error - Testing private method
-  const thumbSize = slider.getVirtualThumbSize()
+  const thumbSize = await paintedThumbSize(slider)
   expect(thumbSize).toBe(14)
 
   slider.viewPortSize = 40
-  // @ts-expect-error - Testing private method
-  expect(slider.getVirtualThumbSize()).toBe(26)
+  expect(await paintedThumbSize(slider)).toBe(26)
 
   slider.viewPortSize = 0.1
-  // @ts-expect-error - Testing private method
-  expect(slider.getVirtualThumbSize()).toBe(1)
+  expect(await paintedThumbSize(slider)).toBe(1)
 })
 
 test("SliderRenderable > Edge cases in thumb size calculation", async () => {
@@ -190,21 +204,18 @@ test("SliderRenderable > Edge cases in thumb size calculation", async () => {
     viewPortSize: 10,
   })
 
-  // @ts-expect-error - Testing private method
-  expect(slider.getVirtualThumbSize()).toBe(60)
+  expect(await paintedThumbSize(slider)).toBe(60)
 
   slider.min = 0
   slider.max = 100000
   slider.viewPortSize = 1
 
-  // @ts-expect-error - Testing private method
-  expect(slider.getVirtualThumbSize()).toBe(1)
+  expect(await paintedThumbSize(slider)).toBe(1)
 
   slider.max = 30
   slider.viewPortSize = 30
 
-  // @ts-expect-error - Testing private method
-  expect(slider.getVirtualThumbSize()).toBe(30)
+  expect(await paintedThumbSize(slider)).toBe(30)
 })
 
 test("SliderRenderable > Thumb size minimum clamping", async () => {
@@ -218,8 +229,7 @@ test("SliderRenderable > Thumb size minimum clamping", async () => {
     viewPortSize: 1,
   })
 
-  // @ts-expect-error - Testing private method
-  const thumbSize = slider.getVirtualThumbSize()
+  const thumbSize = await paintedThumbSize(slider)
   expect(thumbSize).toBe(1)
 
   const { slider: extremeSlider } = await createSliderRenderable(currentRenderer, {
@@ -232,12 +242,10 @@ test("SliderRenderable > Thumb size minimum clamping", async () => {
     viewPortSize: 0.01,
   })
 
-  // @ts-expect-error - Testing private method
-  expect(extremeSlider.getVirtualThumbSize()).toBe(1)
+  expect(await paintedThumbSize(extremeSlider)).toBe(1)
 
   expect(thumbSize).toBeGreaterThanOrEqual(1)
-  // @ts-expect-error - Testing private method
-  expect(extremeSlider.getVirtualThumbSize()).toBeGreaterThanOrEqual(1)
+  expect(await paintedThumbSize(extremeSlider)).toBeGreaterThanOrEqual(1)
 })
 
 test("SliderRenderable > Thumb size can be less than 2", async () => {
@@ -251,8 +259,7 @@ test("SliderRenderable > Thumb size can be less than 2", async () => {
     viewPortSize: 2,
   })
 
-  // @ts-expect-error - Testing private method
-  const thumbSize = slider.getVirtualThumbSize()
+  const thumbSize = await paintedThumbSize(slider)
   expect(thumbSize).toBe(1)
 
   const { slider: largerRatioSlider } = await createSliderRenderable(currentRenderer, {
@@ -265,8 +272,7 @@ test("SliderRenderable > Thumb size can be less than 2", async () => {
     viewPortSize: 1,
   })
 
-  // @ts-expect-error - Testing private method
-  expect(largerRatioSlider.getVirtualThumbSize()).toBe(1)
+  expect(await paintedThumbSize(largerRatioSlider)).toBe(1)
 
   const { slider: exactSlider } = await createSliderRenderable(currentRenderer, {
     orientation: "horizontal",
@@ -278,8 +284,7 @@ test("SliderRenderable > Thumb size can be less than 2", async () => {
     viewPortSize: 1,
   })
 
-  // @ts-expect-error - Testing private method
-  expect(exactSlider.getVirtualThumbSize()).toBe(1)
+  expect(await paintedThumbSize(exactSlider)).toBe(1)
 })
 
 test("SliderRenderable > Mouse interaction - horizontal click on thumb", async () => {
@@ -344,78 +349,45 @@ test.skip("SliderRenderable > Mouse interaction - vertical click on track", asyn
   expect(slider.value).toBeCloseTo(75, 5)
 })
 
-test("SliderRenderable > Mouse interaction - horizontal drag", async () => {
-  const { slider } = await createSliderRenderable(currentRenderer, {
-    orientation: "horizontal",
-    min: 0,
-    max: 100,
-    value: 0,
-    width: 20,
-    height: 1,
-  })
+test.each(["horizontal", "vertical"] as const)(
+  "SliderRenderable > Mouse interaction - %s captured drag updates before release",
+  async (orientation) => {
+    const changes: number[] = []
+    const vertical = orientation === "vertical"
+    const { slider } = await createSliderRenderable(currentRenderer, {
+      orientation,
+      left: 2,
+      top: 2,
+      width: vertical ? 2 : 8,
+      height: vertical ? 8 : 2,
+      min: 10,
+      max: 90,
+      value: 10,
+      viewPortSize: 20,
+      onChange: (value) => changes.push(value),
+    })
+    const point = (offset: number): [number, number] => [
+      slider.x + (vertical ? 0 : offset),
+      slider.y + (vertical ? offset : 0),
+    ]
 
-  currentMockMouse.drag(5, 0, 15, 0)
-
-  expect(slider.value).toBeCloseTo(25, 5)
-})
-
-test("SliderRenderable > Mouse interaction - vertical drag", async () => {
-  const { slider } = await createSliderRenderable(currentRenderer, {
-    orientation: "vertical",
-    min: 0,
-    max: 100,
-    value: 0,
-    width: 2,
-    height: 20,
-  })
-
-  currentMockMouse.drag(0, 5, 0, 15)
-
-  expect(slider.value).toBeCloseTo(25, 5)
-})
-
-test("SliderRenderable > Mouse interaction - drag with onChange callback", async () => {
-  let changedValue: number | undefined
-
-  const { slider } = await createSliderRenderable(currentRenderer, {
-    orientation: "horizontal",
-    min: 0,
-    max: 100,
-    value: 0,
-    width: 20,
-    height: 1,
-    onChange: (value) => {
-      changedValue = value
-    },
-  })
-
-  // Drag from position 5 to position 15
-  currentMockMouse.drag(5, 0, 15, 0)
-
-  // onChange should be called with the new value
-  expect(changedValue).toBeDefined()
-  expect(changedValue).toBeCloseTo(25, 10)
-  expect(slider.value).toBeCloseTo(25, 10)
-})
-
-test("SliderRenderable > Mouse interaction - drag beyond bounds", async () => {
-  const { slider } = await createSliderRenderable(currentRenderer, {
-    orientation: "horizontal",
-    min: 10,
-    max: 90,
-    value: 50,
-    width: 20,
-    height: 1,
-  })
-
-  currentMockMouse.drag(10, 0, 25, 0)
-
-  expect(slider.value).toBeCloseTo(50, 5)
-
-  currentMockMouse.drag(10, 0, -5, 0)
-
-  expect(slider.value).toBeCloseTo(50, 5)
-})
+    await currentMockMouse.pressDown(...point(6))
+    expect(slider.value).toBe(70)
+    await currentMockMouse.moveTo(...point(7))
+    const dragged = slider.value
+    expect(dragged).toBeGreaterThan(70)
+    expect(dragged).toBeLessThan(90)
+    await currentMockMouse.moveTo(...point(10))
+    expect(slider.value).toBe(90)
+    await currentMockMouse.moveTo(...point(-2))
+    expect(slider.value).toBe(10)
+    expect(changes).toEqual([70, dragged, 90, 10])
+    await currentMockMouse.release(...point(-2))
+    await currentMockMouse.moveTo(...point(6))
+    expect(slider.value).toBe(10)
+    expect(changes).toEqual([70, dragged, 90, 10])
+  },
+)
 
 test("SliderRenderable > Mouse interaction - click outside slider bounds", async () => {
   const { slider } = await createSliderRenderable(currentRenderer, {
@@ -432,25 +404,4 @@ test("SliderRenderable > Mouse interaction - click outside slider bounds", async
   currentMockMouse.click(30, 5)
 
   expect(slider.value).toBe(50)
-})
-
-test("SliderRenderable > Mouse interaction - precision dragging with small viewport", async () => {
-  const { slider } = await createSliderRenderable(currentRenderer, {
-    orientation: "horizontal",
-    min: 0,
-    max: 1000,
-    value: 0,
-    width: 50,
-    height: 1,
-    viewPortSize: 10,
-  })
-
-  // @ts-expect-error - Testing private method
-  const thumbSize = slider.getVirtualThumbSize()
-  expect(thumbSize).toBeLessThan(10) // Thumb should be smaller than full width
-
-  currentMockMouse.drag(5, 0, 7, 0)
-
-  expect(slider.value).toBeGreaterThan(0)
-  expect(slider.value).toBeCloseTo(100, 10) // Approximately 5/50 * 1000 = 100
 })

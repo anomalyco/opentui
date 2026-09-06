@@ -1,3 +1,5 @@
+import { getYogaNode } from "../../lib/renderable-layout.js"
+import type { Renderable } from "../../Renderable.js"
 import { test, expect, beforeAll, beforeEach, afterEach, afterAll } from "bun:test"
 import { Edge } from "../../yoga.js"
 import { Lexer } from "marked"
@@ -35,9 +37,7 @@ let markdownTreeSitterClient: TreeSitterClient
 let mockTreeSitterClients: MockTreeSitterClient[] = []
 const HIGHLIGHT_TIMEOUT_MS = 5000
 
-const syntaxStyle = SyntaxStyle.fromStyles({
-  default: { fg: RGBA.fromValues(1, 1, 1, 1) },
-})
+let syntaxStyle: SyntaxStyle
 const ISSUE_TABLE_MARKDOWN = `| Rank | Issue | Size | Why It Is Ready | Likely Surface |
 | --- | --- | --- | --- | --- |
 | 1 | A moderately long linked issue title | XS | A longer prose explanation of why the issue is ready. | packages/tui/src/context/sdk.tsx |
@@ -55,6 +55,7 @@ beforeEach(async () => {
   mockTreeSitterClients = []
   const testRenderer = await createTestRenderer({ width: 60, height: 40 })
   renderer = testRenderer.renderer
+  syntaxStyle = SyntaxStyle.fromStyles({ default: { fg: RGBA.fromValues(1, 1, 1, 1) } }, renderer.nativeScene!)
   mockMouse = testRenderer.mockMouse
   renderOnce = testRenderer.renderOnce
   captureFrame = testRenderer.captureCharFrame
@@ -65,7 +66,9 @@ beforeEach(async () => {
 afterEach(async () => {
   if (renderer) {
     renderer.destroy()
+    await renderer.closed
   }
+  syntaxStyle?.destroy()
 
   for (const client of mockTreeSitterClients) {
     client.resolveAllHighlightOnce()
@@ -89,6 +92,23 @@ function createMockTreeSitterClient(): MockTreeSitterClient {
   mockTreeSitterClients.push(client)
   return client
 }
+
+test.each([
+  ["content", "```\nnew\n```"],
+  ["streaming", true],
+  ["renderNode", () => null],
+  ["internalBlockMode", "top-level"],
+] as const)("%s rejection preserves state and permits retry", (property, value) => {
+  const markdown = createMarkdownRenderable({ content: "```\nold\n```", syntaxStyle })
+  renderer.root.add(markdown)
+  const before = markdown[property]
+  const host = renderer.nativeScene.driver.renderLib.getYogaHost()
+  host.invokeCallback(() => Object.assign(markdown, { [property]: value }))
+  expect(() => host.throwCallbackError()).toThrow("Cannot mutate Yoga during a callback")
+  expect(markdown[property]).toBe(before)
+  Object.assign(markdown, { [property]: value })
+  expect(markdown[property]).toBe(value)
+})
 
 async function flushAsync(): Promise<void> {
   await Promise.resolve()
@@ -182,8 +202,8 @@ function findRenderedText(text: string): { x: number; y: number } {
   return { x: stringWidth(lines[y]!.slice(0, lines[y]!.indexOf(text))), y }
 }
 
-function getMarginBottom(renderable: { getLayoutNode(): { getMargin(edge: Edge): unknown } }): number {
-  const margin = renderable.getLayoutNode().getMargin(Edge.Bottom) as unknown
+function getMarginBottom(renderable: Renderable): number {
+  const margin = getYogaNode(renderable).getMargin(Edge.Bottom) as unknown
   if (typeof margin === "number") return margin
   if (typeof margin === "object" && margin && "value" in margin && typeof margin.value === "number") {
     return margin.value
@@ -192,8 +212,10 @@ function getMarginBottom(renderable: { getLayoutNode(): { getMargin(edge: Edge):
 }
 
 function getTableColumnWidths(headerY: number): number[] {
-  const borderXs = Array.from({ length: renderer.width }, (_, x) => x).filter(
-    (x) => renderer.currentRenderBuffer.buffers.char[headerY * renderer.width + x] === "│".codePointAt(0),
+  const borderXs = renderer.currentRenderBuffer.withBuffers(({ char }) =>
+    Array.from({ length: renderer.width }, (_, x) => x).filter(
+      (x) => char[headerY * renderer.width + x] === "│".codePointAt(0),
+    ),
   )
   return borderXs.slice(1).map((x, index) => x - borderXs[index]! - 1)
 }
@@ -1851,11 +1873,14 @@ test("blockquote uses markup.quote style for text and conceal style for bar", as
   const md = createMarkdownRenderable({
     id: "markdown-blockquote-style",
     content: "> Quote text",
-    syntaxStyle: SyntaxStyle.fromStyles({
-      default: { fg: RGBA.fromValues(1, 1, 1, 1) },
-      conceal: { fg: concealColor },
-      "markup.quote": { fg: quoteColor, italic: true },
-    }),
+    syntaxStyle: SyntaxStyle.fromStyles(
+      {
+        default: { fg: RGBA.fromValues(1, 1, 1, 1) },
+        conceal: { fg: concealColor },
+        "markup.quote": { fg: quoteColor, italic: true },
+      },
+      renderer.nativeScene,
+    ),
   })
 
   renderer.root.add(md)
@@ -1874,16 +1899,22 @@ test("blockquote updates quote text and bar colors when syntaxStyle changes", as
   const quoteColor2 = RGBA.fromValues(0.75, 0.5, 0.25, 1)
   const concealColor1 = RGBA.fromValues(0.1, 0.2, 0.3, 1)
   const concealColor2 = RGBA.fromValues(0.3, 0.2, 0.1, 1)
-  const theme1 = SyntaxStyle.fromStyles({
-    default: { fg: RGBA.fromValues(1, 1, 1, 1) },
-    conceal: { fg: concealColor1 },
-    "markup.quote": { fg: quoteColor1, italic: true },
-  })
-  const theme2 = SyntaxStyle.fromStyles({
-    default: { fg: RGBA.fromValues(1, 1, 1, 1) },
-    conceal: { fg: concealColor2 },
-    "markup.quote": { fg: quoteColor2, italic: true },
-  })
+  const theme1 = SyntaxStyle.fromStyles(
+    {
+      default: { fg: RGBA.fromValues(1, 1, 1, 1) },
+      conceal: { fg: concealColor1 },
+      "markup.quote": { fg: quoteColor1, italic: true },
+    },
+    renderer.nativeScene,
+  )
+  const theme2 = SyntaxStyle.fromStyles(
+    {
+      default: { fg: RGBA.fromValues(1, 1, 1, 1) },
+      conceal: { fg: concealColor2 },
+      "markup.quote": { fg: quoteColor2, italic: true },
+    },
+    renderer.nativeScene,
+  )
   const md = createMarkdownRenderable({
     id: "markdown-blockquote-style-update",
     content: "> Quote text",
@@ -1916,11 +1947,14 @@ test("fenced diff blocks color added and removed lines", async () => {
     id: "markdown-diff-fence",
     content: "```diff\n- old\n+ new\n unchanged\n```",
     treeSitterClient: mockTreeSitterClient,
-    syntaxStyle: SyntaxStyle.fromStyles({
-      default: { fg: RGBA.fromValues(1, 1, 1, 1) },
-      "diff.minus": { fg: RGBA.fromValues(1, 0, 0, 1) },
-      "diff.plus": { fg: RGBA.fromValues(0, 1, 0, 1) },
-    }),
+    syntaxStyle: SyntaxStyle.fromStyles(
+      {
+        default: { fg: RGBA.fromValues(1, 1, 1, 1) },
+        "diff.minus": { fg: RGBA.fromValues(1, 0, 0, 1) },
+        "diff.plus": { fg: RGBA.fromValues(0, 1, 0, 1) },
+      },
+      renderer.nativeScene,
+    ),
   })
 
   renderer.root.add(md)
@@ -3057,6 +3091,44 @@ test("renderNode setter rerenders same-type top-level blocks", async () => {
   `)
 })
 
+test("paint-time style refresh destroys prepared children and defers their replacements until the next frame", async () => {
+  let content = "old"
+  const md = createMarkdownRenderable({
+    content: "# Heading",
+    syntaxStyle,
+    internalBlockMode: "top-level",
+    renderNode: () => new TextRenderable(renderer, { content, width: 3, height: 1 }),
+  })
+  renderer.root.add(md)
+  await renderOnce()
+  expect(captureFrame().trimEnd()).toBe("old")
+  const original = md.getChildren()[0]
+  const calls: string[] = []
+  const add = md.add.bind(md)
+  md.add = (child, index) => {
+    calls.push("add")
+    return add(child, index)
+  }
+  md.renderBefore = () => calls.push("before")
+  md.renderAfter = () => calls.push("after")
+
+  content = "new"
+  md.conceal = false
+  expect(md.getChildren()[0]).toBe(original)
+
+  await renderOnce()
+
+  expect(calls).toEqual(["before", "add", "after"])
+  expect(original.isDestroyed).toBe(true)
+  expect(md.getChildren()[0]).not.toBe(original)
+  expect(md.getChildren()[0].parent).toBe(md)
+  expect(captureFrame().trimEnd()).toBe("")
+
+  await renderOnce()
+
+  expect(captureFrame().trimEnd()).toBe("new")
+})
+
 test("internalBlockMode setter updates existing markdown renderable", async () => {
   const md = createMarkdownRenderable({
     id: "internal-block-mode-setter",
@@ -3791,12 +3863,15 @@ The fenced block above appears near the top so streaming mode exercises a larger
   const md = createMarkdownRenderable({
     id: "markdown-streaming-demo-fence-no-flicker",
     content: "",
-    syntaxStyle: SyntaxStyle.fromStyles({
-      default: { fg: defaultFg },
-      keyword: { fg: keywordFg },
-      "markup.heading.1": { fg: RGBA.fromValues(0, 1, 0, 1) },
-      "markup.strong": { fg: RGBA.fromValues(0, 1, 1, 1), bold: true },
-    }),
+    syntaxStyle: SyntaxStyle.fromStyles(
+      {
+        default: { fg: defaultFg },
+        keyword: { fg: keywordFg },
+        "markup.heading.1": { fg: RGBA.fromValues(0, 1, 0, 1) },
+        "markup.strong": { fg: RGBA.fromValues(0, 1, 1, 1), bold: true },
+      },
+      renderer.nativeScene,
+    ),
     fg: defaultFg,
     bg: RGBA.fromValues(0, 0, 0, 1),
     conceal: true,
@@ -4552,15 +4627,21 @@ test("conceal change updates rendered content", async () => {
 })
 
 test("theme switching (syntaxStyle change)", async () => {
-  const theme1 = SyntaxStyle.fromStyles({
-    default: { fg: RGBA.fromValues(1, 0, 0, 1) }, // Red
-    "markup.heading.1": { fg: RGBA.fromValues(0, 1, 0, 1), bold: true }, // Green
-  })
+  const theme1 = SyntaxStyle.fromStyles(
+    {
+      default: { fg: RGBA.fromValues(1, 0, 0, 1) }, // Red
+      "markup.heading.1": { fg: RGBA.fromValues(0, 1, 0, 1), bold: true }, // Green
+    },
+    renderer.nativeScene,
+  )
 
-  const theme2 = SyntaxStyle.fromStyles({
-    default: { fg: RGBA.fromValues(0, 0, 1, 1) }, // Blue
-    "markup.heading.1": { fg: RGBA.fromValues(1, 1, 0, 1), bold: true }, // Yellow
-  })
+  const theme2 = SyntaxStyle.fromStyles(
+    {
+      default: { fg: RGBA.fromValues(0, 0, 1, 1) }, // Blue
+      "markup.heading.1": { fg: RGBA.fromValues(1, 1, 0, 1), bold: true }, // Yellow
+    },
+    renderer.nativeScene,
+  )
 
   // Use the EXACT content from markdown-demo.ts to reproduce the issue
   const content = `# OpenTUI Markdown Demo

@@ -47,7 +47,7 @@ describe("ExtmarksController - Multi-width Graphemes", () => {
       // Chinese chars are multi-width, @ onwards should highlight correctly
       await setup("前后端分离 @git-committer")
 
-      const style = SyntaxStyle.create()
+      const style = SyntaxStyle.create(currentRenderer.nativeScene)
       const styleId = style.registerStyle("mention", {
         fg: RGBA.fromValues(0, 0, 1, 1),
         bg: RGBA.fromValues(0.9, 0.9, 1, 1),
@@ -90,7 +90,7 @@ describe("ExtmarksController - Multi-width Graphemes", () => {
     it("should correctly highlight text BEFORE multi-width characters", async () => {
       await setup("hello 前后端分离")
 
-      const style = SyntaxStyle.create()
+      const style = SyntaxStyle.create(currentRenderer.nativeScene)
       const styleId = style.registerStyle("test", {
         fg: RGBA.fromValues(1, 0, 0, 1),
       })
@@ -114,7 +114,7 @@ describe("ExtmarksController - Multi-width Graphemes", () => {
     it("should correctly highlight BETWEEN multi-width characters", async () => {
       await setup("前后 test 端分离")
 
-      const style = SyntaxStyle.create()
+      const style = SyntaxStyle.create(currentRenderer.nativeScene)
       const styleId = style.registerStyle("test", {
         fg: RGBA.fromValues(1, 0, 0, 1),
       })
@@ -146,7 +146,7 @@ describe("ExtmarksController - Multi-width Graphemes", () => {
     it("should correctly highlight the multi-width characters themselves", async () => {
       await setup("hello 前后端分离 world")
 
-      const style = SyntaxStyle.create()
+      const style = SyntaxStyle.create(currentRenderer.nativeScene)
       const styleId = style.registerStyle("test", {
         fg: RGBA.fromValues(1, 0, 0, 1),
       })
@@ -180,7 +180,7 @@ describe("ExtmarksController - Multi-width Graphemes", () => {
     it("should handle emoji and multi-width characters together", async () => {
       await setup("前后 🌟 test")
 
-      const style = SyntaxStyle.create()
+      const style = SyntaxStyle.create(currentRenderer.nativeScene)
       const styleId = style.registerStyle("test", {
         fg: RGBA.fromValues(1, 0, 0, 1),
       })
@@ -209,7 +209,7 @@ describe("ExtmarksController - Multi-width Graphemes", () => {
     it("should handle multiple highlights with multi-width characters", async () => {
       await setup("前后端 @user1 分离 @user2 end")
 
-      const style = SyntaxStyle.create()
+      const style = SyntaxStyle.create(currentRenderer.nativeScene)
       const styleId = style.registerStyle("mention", {
         fg: RGBA.fromValues(0, 0, 1, 1),
       })
@@ -276,7 +276,7 @@ describe("ExtmarksController - Multi-width Graphemes", () => {
       // This is the CRITICAL test - offsetToCharOffset doesn't account for display width
       await setup("前后端分离 @git-committer")
 
-      const style = SyntaxStyle.create()
+      const style = SyntaxStyle.create(currentRenderer.nativeScene)
       const styleId = style.registerStyle("mention", {
         fg: RGBA.fromValues(0, 0, 1, 1),
         bg: RGBA.fromValues(0.9, 0.9, 1, 1),

@@ -1,0 +1,222 @@
+---
+title: Rust
+description: Create a native box and label with the example Rust binding, then render two frames
+---
+
+# Rust
+
+The example Rust binding can build the [box and label](/docs/native/overview) without JavaScript.
+Rust owns values that represent the Context, Session, and nodes. The native library stores the scene and does layout, drawing, and encoding.
+
+The binding is a local Cargo crate, not a published crates.io package or a complete Rust UI framework.
+Its build script supports native Linux x86_64 glibc builds only. It rejects cross-compilation.
+
+## Add the binding to a program
+
+First build the native library from the same checkout as the binding.
+Use Zig `0.16.0` and Bun for the repository's build scripts. From the repository root:
+
+```sh
+bun install
+cd packages/native
+bun run build
+```
+
+Cargo links the resulting artifacts. It does not build the native library itself.
+
+Create a Cargo project with this `Cargo.toml`. Replace `/path/to/opentui` with your checkout's absolute path:
+
+```toml
+[package]
+name = "native-hello"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+opentui = { path = "/path/to/opentui/packages/native/examples/rust" }
+```
+
+## Create the scene and change its label
+
+Put this code in `src/main.rs`, followed by the `write_frame` function in the next section:
+
+```rust
+use opentui::{ffi, Context, Node, Session};
+use std::{fs::File, io::Write};
+
+type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
+
+fn main() -> Result<()> {
+    let context = Context::new(ffi::ot_context_options {
+        object_capacity: 8,
+        render_cells_max: 36,
+        ..Default::default()
+    })?;
+    let session = Session::new(&context, ffi::ot_session_options {
+        chunk_size: 4096,
+        span_capacity: 2,
+        max_bytes: 8192,
+        ..Default::default()
+    })?;
+    session.attach_renderer(12, 3, ffi::OT_SESSION_REMOTE_REMOTE, &[])?;
+
+    let root = Node::new(&session, ffi::OT_SCENE_ROOT, 1)?;
+    let box_node = Node::new(&session, ffi::OT_SCENE_BOX, 2)?;
+    let label = Node::new(&session, ffi::OT_SCENE_TEXT, 3)?;
+    box_node.set_paint(&ffi::ot_scene_paint_options {
+        opacity: 1.0,
+        border_sides: 15,
+        border_color: [255, 255, 255, 255],
+        ..Default::default()
+    })?;
+    label.set_text(b"Hello")?;
+    box_node.mount(&root)?;
+    label.mount(&box_node)?;
+
+    write_frame(&session, "hello.ansi")?;
+    label.set_text(b"Ready")?;
+    write_frame(&session, "ready.ansi")?;
+    session.close()?;
+    Ok(())
+}
+```
+
+The Context supplies native memory ownership. The Session supplies output ownership.
+`attach_renderer` gives the Session a 12-by-3 cell area without setting terminal modes.
+The empty environment list and remote mode keep this example independent of the terminal that starts it.
+
+`Node::new` creates native nodes. `mount` puts each node at child index zero in its parent.
+The public numbers `1`, `2`, and `3` identify the root, box, and label in native hook and hit results.
+
+The box uses all four border sides and the default single-line border style.
+Default column layout and stretching place the label inside it. The border reserves one layout cell on each side.
+
+`set_text` copies the byte slice. It changes the label's content, but it does not render a frame.
+The two `write_frame` calls reuse the same three native nodes.
+
+The `ffi` record defaults set ABI size/version fields and zero other fields.
+They do not choose resource limits or set opacity to one. Supply those values explicitly, as above.
+
+## Write the frame's output
+
+Painting and output delivery are separate operations.
+`Session::paint` lays out and paints the native scene. `Session::render` encodes the cells and queues output bytes.
+This helper then delivers each copied output ticket to a file:
+
+```rust
+fn write_frame(session: &Session<'_>, path: &str) -> Result<()> {
+    let mut file = File::create(path)?;
+    session.paint([0, 0, 0, 255], false, 0)?;
+    let outcome = session.render(false)?;
+    if !matches!(outcome, ffi::OT_RENDER_PENDING | ffi::OT_RENDER_PRESENTED) {
+        return Err(std::io::Error::other(format!("frame not accepted: {outcome}")).into());
+    }
+
+    let mut bytes = [0u8; 512];
+    loop {
+        let ticket = session.read_output(&mut bytes)?;
+        if ticket.byte_count == 0 {
+            break;
+        }
+        if let Err(error) = file.write_all(&bytes[..ticket.byte_count as usize]) {
+            session.complete_output(&ticket, false)?;
+            return Err(error.into());
+        }
+        session.complete_output(&ticket, true)?;
+    }
+    Ok(())
+}
+```
+
+`read_output` does not report delivery. `complete_output` does, after the write succeeds.
+The helper drains this finite frame output before returning. It does not create an event loop.
+For a network transport, keep the ticket until all its bytes reach the transport, including after a partial write.
+
+`Session::paint` uses the synchronous `ot_scene_paint` operation for scenes without registered host hooks.
+The native C interface also supports a step-and-resume frame protocol, but this Rust binding does not wrap it.
+The binding is a subset of native OpenTUI, not an alternative renderer.
+
+## Run the program
+
+From your Cargo project directory:
+
+```sh
+export OPENTUI_LIB_DIR=/path/to/opentui/packages/native/lib/x86_64-linux
+LD_LIBRARY_PATH="$OPENTUI_LIB_DIR${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" cargo run --offline
+```
+
+The program creates or replaces `hello.ansi` and `ready.ansi` in the current directory.
+It does not write escape sequences to your terminal or request terminal setup.
+Applied in order to a 12-by-3 terminal, the files produce the `Hello` and `Ready` screens in [Native rendering](/docs/native/overview).
+The second file updates the first frame. It is not a complete independent screen.
+Run the [frame preview](/docs/native/frames#view-both-frames) from your Cargo project directory to see both frames.
+
+`OPENTUI_LIB_DIR` selects the directory containing the matching header and library.
+Without it, the build script uses `../../lib/x86_64-linux` relative to the binding's Cargo manifest.
+Shared executables also need a runtime library search path, such as `LD_LIBRARY_PATH` above.
+
+The optional `static` feature selects the static library.
+Static linkage also requires the platform libraries listed in the binding's `build.rs`.
+
+## Ownership and errors
+
+Keep each Rust owner until you no longer need its native object.
+The compiler enforces the dependency order:
+
+```text
+┌─ Context ──────────────────────────┐
+│ Session borrows this Context       │
+│ ┌─ Session ──────────────────────┐ │
+│ │ Nodes borrow this Session      │ │
+│ │ root, box_node, label          │ │
+│ └────────────────────────────────┘ │
+└────────────────────────────────────┘
+```
+
+Nodes borrow their Session, not their parent node. Dropping the box detaches a surviving label rather than destroying it.
+All three owner types are non-cloneable, `!Send`, and `!Sync`. They stay on the thread that owns the C Context.
+
+Binding methods return `opentui::Result<T>`. An `opentui::Error` contains the operation name and native status.
+This program uses a broader result type because file operations can also fail.
+
+`Drop` releases native resources on success, errors, and unwinding.
+If Session destruction reports busy, its drop handler cancels pending work and retries destruction.
+An unexpected cleanup error aborts the process rather than silently leaving an owner alive.
+
+Cancellation does not deliver terminal restoration. For a terminal application, close explicitly and finish restoration before dropping owners.
+Raw calls under `opentui::ffi` remain unsafe and require the C header's pointer and lifetime rules.
+
+## Connect a terminal
+
+The file writer is a small host. An interactive host must also supply input handling, scheduling, and terminal setup.
+
+Before its first frame, reserve control storage in the Session and call `setup_terminal`.
+Call `pump(now_ns, work_budget)` with a monotonic nanosecond clock and a positive work budget.
+Handle the returned output requests and deadlines. On shutdown, call `close` and continue until pumping returns `OT_PUMP_CLOSED`.
+
+Set `control_capacity` to at least `ffi::OT_SESSION_CONTROL_PACKET_BYTES` while leaving room for ordinary output.
+[Frames and output](/docs/native/frames#pump-terminal-work-and-close) explains this lifecycle and transport failure handling.
+The crate does not supply a terminal transport, input parser, event loop, or framework reconciler.
+
+The bundled applications show those host responsibilities. From the repository root:
+
+```sh
+cd packages/native/examples/rust
+sh run.sh tasks
+sh run.sh workbench
+```
+
+The task list handles keyboard navigation and completion toggles.
+The workbench adds a build queue, job inspector, activity view, and command prompt.
+Their terminal and input code belongs to the examples, not the binding library.
+Use `sh run.sh workbench static` to run the workbench with static linkage.
+
+To check the binding itself, run from the native workspace:
+
+```sh
+bun run test:rust
+```
+
+The checks cover shared/static linkage, C/Rust record layouts, output, cleanup, an external consumer, and compiler-enforced lifetimes and thread restrictions.
+The layout probe is test-only. A normal application does not run it automatically.
+Memory-output tests do not establish terminal-emulator or network behavior for a transport you add.

@@ -1,7 +1,15 @@
 import { open, stat } from "node:fs/promises"
 
 import { toArrayBuffer } from "./platform/ffi.js"
-import { resolveRenderLib, type ImageHandle, type RenderLib } from "./zig.js"
+import {
+  NativeError,
+  NativeStatus,
+  resolveRenderLib,
+  type ContextImageHandle,
+  type NativeContextHandle,
+  type ImageHandle,
+  type RenderLib,
+} from "./zig.js"
 import type { NativeImageInfo } from "./zig-structs.js"
 
 export type ImageFormat = "png" | "raw-rgba" | "jpeg" | "webp" | "gif"
@@ -384,6 +392,7 @@ export class NativeImage {
   private readonly lib: RenderLib
   private handle: ImageHandle | null
   private imageInfo: ImageInfo
+  private contextImages = new Map<WeakRef<NativeContextHandle>, Omit<ContextImageHandle, "context">>()
 
   private constructor(lib: RenderLib, handle: ImageHandle, info: ImageInfo) {
     this.lib = lib
@@ -494,6 +503,43 @@ export class NativeImage {
 
   public get ptr(): ImageHandle {
     return this.guard()
+  }
+
+  /** @internal Imports immutable pixels and encoded PNG data; never attaches a compatibility image. */
+  public _getContextHandle(lib: RenderLib, context: NativeContextHandle): ContextImageHandle {
+    const source = this.guard()
+    if (lib !== this.lib) throw new Error("NativeImage library owner mismatch")
+    for (const [owner, identity] of this.contextImages) {
+      const current = owner.deref()
+      if (!current) this.contextImages.delete(owner)
+      else if (current === context) return { ...identity, context }
+    }
+    const handle = lib.importContextImage(context, source)
+    try {
+      const { context: _, ...identity } = handle
+      this.contextImages.set(new WeakRef(context), identity)
+      return handle
+    } catch (error) {
+      lib.destroyContextImage(context, handle)
+      throw error
+    }
+  }
+
+  private releaseContextImages(): void {
+    let failure: { error: unknown } | undefined
+    for (const [owner, identity] of this.contextImages) {
+      const context = owner.deref()
+      try {
+        if (context) this.lib.destroyContextImage(context, { ...identity, context })
+        this.contextImages.delete(owner)
+      } catch (error) {
+        // The Context can close while the standalone image remains alive.
+        if (error instanceof NativeError && error.status === NativeStatus.WrongContext) {
+          this.contextImages.delete(owner)
+        } else failure ??= { error }
+      }
+    }
+    if (failure) throw failure.error
   }
 
   private wrap(result: { status: number; handle: ImageHandle | null }): NativeImage {
@@ -630,6 +676,7 @@ export class NativeImage {
     const height = this.imageInfo.height
     const stride = width * 4
     const data = new Uint8Array(toArrayBuffer(pointer, 0, stride * height))
+    this.releaseContextImages()
     const raw = new OwnedRawImageImpl(data, width, height, stride, this.lib, handle)
     this.handle = null
     return raw
@@ -644,9 +691,14 @@ export class NativeImage {
   }
 
   public dispose(): void {
-    if (!this.handle) return
-    this.lib.imageDestroy(this.handle)
-    this.handle = null
+    try {
+      this.releaseContextImages()
+    } finally {
+      if (this.handle) {
+        this.lib.imageDestroy(this.handle)
+        this.handle = null
+      }
+    }
   }
 }
 

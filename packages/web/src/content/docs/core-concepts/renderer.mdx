@@ -55,11 +55,12 @@ The renderer also supplies structured scrollback writers and surfaces. Use the c
 
 Set `stdin` and `stdout` for an SSH channel, pseudo-terminal, or another transport. Initial dimensions use `stdout.columns` and `stdout.rows`, then `width` and `height`, then `80` by `24`.
 
-Call `renderer.resize(width, height)` when a custom terminal changes size. OpenTUI listens for `SIGWINCH` only when it uses `process.stdout`.
+Call `renderer.requestResize(width, height)` when a custom terminal changes size. It coalesces requests while output is pending. Use `renderer.resize(width, height)` for an immediate resize attempt; pending split-footer scrollback can still defer it. The `resize` event reports accepted size changes. OpenTUI listens for `SIGWINCH` only when it uses `process.stdout`.
 
-A feed-backed custom `stdout` defaults to `remote: true`. These remote custom streams do not forward local terminal environment values by default.
+Custom `stdout` uses Session-owned ordered output and defaults to `remote: true`. These remote custom streams do not forward local terminal environment values by default.
 
-Set `forwardEnvKeys` only for values that the remote terminal should inherit. Read [Terminal capabilities](/docs/reference/terminal-capabilities), [Environment variables](/docs/reference/env-vars), and [`NativeSpanFeed`](/docs/reference/native-span-feed) for the transport rules.
+Set `forwardEnvKeys` only for values that the remote terminal should inherit. Read [Terminal capabilities](/docs/reference/terminal-capabilities) and [Environment variables](/docs/reference/env-vars) for forwarding rules.
+Read [How Core uses native](/docs/native/core#complete-output-and-release-resources) for Session output ownership and completion.
 
 ## Choose a render schedule
 
@@ -90,6 +91,16 @@ A registered `Timeline` owns its live request when the timeline engine is attach
 `suspend()` releases active terminal input modes and stops rendering. `resume()` restores the control state that existed before suspension.
 
 Use `await renderer.idle()` to wait until demand-driven work settles. `getSchedulerState()` reports running, rendering, and scheduled-work state for diagnostics.
+
+### Cooperative frames
+
+Set `nativeScenePaintBudget` to a positive integer to yield between completed paint members. Set `nativeSceneWorkBudget` to count preparation visits, view-preparation entries, and feedback records between yields. Both are optional and use unsigned 32-bit limits.
+
+These quotas do not bound elapsed time or cells. Yoga, sibling sorting, final publication, individual drawing operations, and output encoding can still run synchronously. The scheduler also cannot preempt an application callback.
+
+An accepted changed-size resize supersedes a draft parked at a scheduling yield. The replacement frame keeps accepted mutations and callback side effects; cancellation is not rollback. Output already admitted retains its ordering and completion accounting. Synchronous paint-hook resize retains its compatibility behavior, including the possibility of clearing an already-painted prefix.
+
+Use the renderer-owned [animation APIs](/docs/application-apis/animation#animation-callbacks) rather than process-global animation callbacks when you host multiple sessions.
 
 ## Read capability state
 
@@ -147,4 +158,5 @@ The renderer exposes several terminal and application services. Their canonical 
 
 ## Next
 
-Read [Renderables](/docs/core-concepts/renderables) to add UI nodes. Read [Rendering pipeline](/docs/core-concepts/rendering-pipeline) for maintained renderer internals.
+Read [Renderables](/docs/core-concepts/renderables) to add UI nodes.
+Read [Rendering pipeline](/docs/core-concepts/rendering-pipeline) for the complete frame order, or [How Core uses native](/docs/native/core) for the scene integration.

@@ -1,11 +1,11 @@
 import { test, expect, beforeEach, afterEach } from "bun:test"
-import { createCliRenderer } from "../renderer.js"
+import { createCliRenderer, type CliRenderer } from "../renderer.js"
 import { createTestStdin, createTestStdout } from "../testing/test-streams.js"
 
 let originalStdinPaused: boolean
 let pauseCalled = false
 let originalPause: typeof process.stdin.pause
-let destroyFns: Array<() => void> = []
+let renderers: CliRenderer[] = []
 
 beforeEach(() => {
   pauseCalled = false
@@ -17,9 +17,10 @@ beforeEach(() => {
   }
 })
 
-afterEach(() => {
-  for (const destroy of destroyFns.splice(0)) {
-    destroy()
+afterEach(async () => {
+  for (const renderer of renderers.splice(0)) {
+    renderer.destroy()
+    await renderer.closed
   }
 
   process.stdin.pause = originalPause
@@ -34,7 +35,7 @@ test("second renderer sharing process.stdin is rejected", async () => {
     stdout: createTestStdout(),
     bufferedOutput: "memory",
   })
-  destroyFns.push(() => first.destroy())
+  renderers.push(first)
 
   await expect(
     createCliRenderer({
@@ -52,7 +53,7 @@ test("second renderer sharing stdout is rejected", async () => {
     stdout,
     bufferedOutput: "memory",
   })
-  destroyFns.push(() => first.destroy())
+  renderers.push(first)
 
   await expect(
     createCliRenderer({
@@ -73,13 +74,14 @@ test("destroy releases streams for reuse", async () => {
   })
 
   first.destroy()
+  await first.closed
 
   const second = await createCliRenderer({
     stdin,
     stdout,
     bufferedOutput: "memory",
   })
-  destroyFns.push(() => second.destroy())
+  renderers.push(second)
 
   expect(second.stdin).toBe(stdin)
 })
@@ -111,7 +113,7 @@ test("failed input setup releases streams for reuse", async () => {
     stdout,
     bufferedOutput: "memory",
   })
-  destroyFns.push(() => renderer.destroy())
+  renderers.push(renderer)
 
   expect(renderer.stdin).toBe(stdin)
 })
@@ -122,14 +124,14 @@ test("renderers using separate stream objects can coexist", async () => {
     stdout: createTestStdout(),
     bufferedOutput: "memory",
   })
-  destroyFns.push(() => first.destroy())
+  renderers.push(first)
 
   const second = await createCliRenderer({
     stdin: createTestStdin(),
     stdout: createTestStdout(),
     bufferedOutput: "memory",
   })
-  destroyFns.push(() => second.destroy())
+  renderers.push(second)
 
   expect(second.isDestroyed).toBe(false)
 })
@@ -140,6 +142,7 @@ test("renderer using process.stdin pauses it on destroy", async () => {
     stdout: createTestStdout(),
     bufferedOutput: "memory",
   })
+  renderers.push(renderer)
 
   pauseCalled = false
   renderer.destroy()
@@ -153,6 +156,7 @@ test("renderer with custom stdin does not pause process.stdin on destroy", async
     stdout: createTestStdout(),
     bufferedOutput: "memory",
   })
+  renderers.push(renderer)
 
   pauseCalled = false
   renderer.destroy()
@@ -170,6 +174,7 @@ test("destroy discards terminal input queued during teardown", async () => {
     stdout: createTestStdout(),
     bufferedOutput: "memory",
   })
+  renderers.push(renderer)
 
   renderer.destroy()
 
@@ -183,7 +188,8 @@ test("destroy preserves input queued after suspension", async () => {
     stdout: createTestStdout(),
     bufferedOutput: "memory",
   })
-  renderer.suspend()
+  renderers.push(renderer)
+  await renderer.suspend()
   stdin.push("input after suspend")
 
   renderer.destroy()
@@ -197,13 +203,13 @@ test("destroying process stdin owner pauses it while a custom renderer remains",
     stdout: createTestStdout(),
     bufferedOutput: "memory",
   })
-  destroyFns.push(() => processRenderer.destroy())
+  renderers.push(processRenderer)
   const customRenderer = await createCliRenderer({
     stdin: createTestStdin(),
     stdout: createTestStdout(),
     bufferedOutput: "memory",
   })
-  destroyFns.push(() => customRenderer.destroy())
+  renderers.push(customRenderer)
 
   pauseCalled = false
   processRenderer.destroy()
@@ -217,13 +223,13 @@ test("destroying final custom renderer does not pause process stdin again", asyn
     stdout: createTestStdout(),
     bufferedOutput: "memory",
   })
-  destroyFns.push(() => processRenderer.destroy())
+  renderers.push(processRenderer)
   const customRenderer = await createCliRenderer({
     stdin: createTestStdin(),
     stdout: createTestStdout(),
     bufferedOutput: "memory",
   })
-  destroyFns.push(() => customRenderer.destroy())
+  renderers.push(customRenderer)
 
   processRenderer.destroy()
   pauseCalled = false

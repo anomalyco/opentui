@@ -1,0 +1,139 @@
+---
+title: Native rendering
+description: Follow a box and a label from a native node tree to terminal cells and output
+skill:
+  entry: true
+  intents: [native, native-rendering, native-scene, native-api]
+---
+
+# Native rendering
+
+OpenTUI's native library turns a tree of UI nodes into terminal output.
+You can call it from C, Zig, or Rust without JavaScript.
+
+This walkthrough follows one small interface: a bordered box containing the label `Hello`.
+Its drawing area is 12 columns wide and three rows high:
+
+```text frame=hello
+┌──────────┐
+│Hello     │
+└──────────┘
+```
+
+Your program describes the box and label. The native library calculates their positions, draws their cells, and produces terminal output.
+The program then delivers that output to its destination.
+
+After the first frame, you will change the label to `Ready` and render again without rebuilding the tree.
+
+## Describe the interface as a tree
+
+The box and label need three native _nodes_. Each node stores one part of the interface:
+
+```text
+┌─ Scene ─────────────────────────┐
+│ root                            │
+│ └─ box: single-line border      │
+│    └─ label: "Hello"            │
+└─────────────────────────────────┘
+```
+
+The root is the top of the tree. The box contains the label.
+Adding the label to the box establishes that relationship. It does not specify where to draw the first character.
+
+Nodes store layout properties, such as width and padding, and drawing properties, such as background color and borders.
+A text node also stores its content. Node creation, property changes, and parent-child relationships are native API operations.
+
+The native library keeps this tree, or _scene_, between frames.
+This is the _retained scene_ model: change the nodes you already have, then render them again.
+You do not submit a fresh list of drawing commands for each frame.
+
+## Calculate positions and sizes
+
+_Layout_ turns the tree's relationships and size rules into positions and dimensions.
+The scene uses Yoga, a flexbox layout engine, with one Yoga node for each scene node.
+Dimensions count terminal cells, not pixels.
+
+The root fills the drawing area, and the box stretches across it.
+The border takes one cell on each side, leaving ten cells for the label.
+That places `Hello` at column 1, row 1, just inside the border.
+Coordinates start at zero.
+
+You did not calculate the text position yourself. The border and parent-child relationship determine it.
+The same layout rules also handle padding, alignment, flexible sizes, and nested containers.
+
+When you change a layout property, the next layout pass calculates the result.
+Layout queries read stored geometry. They do not start a new pass.
+
+## Draw a grid of cells
+
+After layout, the scene _paints_ into an in-memory grid called the framebuffer.
+The box draws its border, then the label draws `Hello` inside it.
+Each cell stores character information, foreground and background colors, and attributes such as bold or underline.
+
+The `H` in `Hello` occupies one cell. Other text can occupy several cells or combine several code points into one displayed character.
+Text drawing APIs handle that conversion. A UTF-8 byte count is not a terminal-cell width.
+
+Painting changes the framebuffer, not the terminal. No terminal connection is necessary at this stage.
+
+## Send the result to an output destination
+
+A terminal accepts bytes, not a node tree or a framebuffer.
+The native renderer encodes the cells as text, cursor movement, colors, and other control sequences.
+It compares cells with its existing encoding state, so an update need not send the entire screen again.
+
+The bytes wait in an output queue until your program copies them out and writes them to a destination.
+Your delivery code is the _transport_. You can write to a file, a local terminal, or a connection.
+
+```text
+┌─ Native library ────────────────┐
+│ Scene nodes                     │
+│   ↓ layout and painting         │
+│ Grid of terminal cells          │
+│   ↓ terminal encoding           │
+│ Queued output bytes             │
+└────────────────┬────────────────┘
+                 ↓ copy
+┌─ Your program ──────────────────┐
+│ Write bytes to the destination  │
+│ Report completed delivery       │
+└─────────────────────────────────┘
+```
+
+A slow connection can still be sending a frame after painting finishes.
+The program reports delivery as bytes reach the transport. Once delivery covers the frame's output, the native library marks that frame as presented.
+This does not prove that a remote terminal visibly displayed it.
+
+## Change the label, not the tree
+
+After the first frame completes, set the label's text to `Ready` and repeat painting, encoding, and delivery:
+
+```text frame=ready
+┌──────────┐
+│Ready     │
+└──────────┘
+```
+
+The root, box, and label are the same nodes. Their relationships and border settings did not change.
+Only the label's content changed. The retained scene produces the new frame.
+
+Layout, painting, and encoding still have a cost.
+Retaining the scene means your program describes changes instead of directing every node's drawing on every frame.
+
+## Build the program around the scene
+
+Your program is the _host_. It owns application state and decides when to render.
+The native library does not start an application event loop or a rendering worker.
+
+An interactive host reads input, changes nodes, and requests frames.
+The programs in the language guides create this box and label, render `Hello`, then change it to `Ready`.
+They write both frames to files, using the same operations as a terminal application.
+
+Continue with [Resources and ownership](/docs/native/resources) for object lifetimes, then [Frames and output](/docs/native/frames) for drawing and delivery.
+
+The C application binary interface (ABI) is experimental. Use the native library, headers, and bindings from the same revision.
+The Rust binding is an example subset, not a complete UI framework.
+
+Core provides a TypeScript application API over this library through `Renderable` and `CliRenderer`, not the native frame protocol.
+[How Core uses native](/docs/native/core) explains that integration separately.
+
+After the model, choose the [C](/docs/native/c), [Zig](/docs/native/zig), or [Rust](/docs/native/rust) guide to build and run the box-and-label program.

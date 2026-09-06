@@ -1,6 +1,14 @@
 #!/usr/bin/env bun
 
-import { BoxRenderable, CliRenderer, createCliRenderer, RGBA, TextRenderable, type KeyEvent } from "@opentui/core"
+import {
+  BoxRenderable,
+  CliRenderer,
+  createCliRenderer,
+  FrameBufferRenderable,
+  RGBA,
+  TextRenderable,
+  type KeyEvent,
+} from "@opentui/core"
 import { setupCommonDemoKeys } from "./lib/standalone-keys.js"
 import { Scene as ThreeScene, Mesh as ThreeMesh, PerspectiveCamera, PlaneGeometry, Vector2 } from "three"
 import { MeshBasicNodeMaterial } from "three/webgpu"
@@ -46,6 +54,14 @@ export async function run(renderer: CliRenderer): Promise<void> {
     zIndex: 10,
   })
   renderer.root.add(parentContainer)
+
+  const framebuffer = new FrameBufferRenderable(renderer, {
+    id: "fractal-framebuffer",
+    width: WIDTH,
+    height: HEIGHT,
+    zIndex: 0,
+  })
+  renderer.root.add(framebuffer)
 
   engine = new ThreeCliRenderer(renderer, {
     width: WIDTH,
@@ -159,6 +175,9 @@ export async function run(renderer: CliRenderer): Promise<void> {
   parentContainer.add(statusText)
 
   handleResize = (width: number, height: number) => {
+    framebuffer.frameBuffer.resize(width, height)
+    framebuffer.width = width
+    framebuffer.height = height
     if (cameraNode && engine) {
       cameraNode.aspect = engine.aspectRatio
       cameraNode.updateProjectionMatrix()
@@ -223,7 +242,7 @@ export async function run(renderer: CliRenderer): Promise<void> {
     statusText.content = `Speed: ${timeSpeed.toFixed(1)}x`
 
     if (engine && sceneRoot) {
-      await engine.drawScene(sceneRoot, renderer.nextRenderBuffer, deltaTime)
+      await engine.drawScene(sceneRoot, framebuffer.frameBuffer, deltaTime)
     }
   })
 }
@@ -240,10 +259,11 @@ export function destroy(renderer: CliRenderer): void {
   }
 
   renderer.clearFrameCallbacks()
+  renderer.root.getRenderable("fractal-framebuffer")?.destroyRecursively()
 
   if (parentContainer) {
     const fractalContainer = renderer.root.getRenderable("fractal-container")
-    if (fractalContainer) renderer.root.remove(fractalContainer)
+    fractalContainer?.destroyRecursively()
     parentContainer = null
   }
 

@@ -1,7 +1,47 @@
-import { describe, expect, it, beforeEach, afterEach } from "bun:test"
+import { ResourceContext } from "./buffer.js"
+import { describe, expect, it, beforeEach, afterEach, spyOn } from "bun:test"
 import { EditBuffer } from "./edit-buffer.js"
 import { resolveRenderLib } from "./zig.js"
 import { ManualClock } from "./testing/manual-clock.js"
+
+let resourceContext: ResourceContext
+beforeEach(() => {
+  resourceContext = new ResourceContext({ objectCapacity: 8, renderCellsMax: 1 })
+})
+afterEach(() => resourceContext.destroy())
+
+it.each(["setText", "replaceText", "setTextOwned", "replaceTextOwned"] as const)(
+  "%s rejection preserves text, cursor, history, and notifications",
+  async (method) => {
+    const buffer = EditBuffer.create("unicode", resourceContext)
+    buffer.setText("original")
+    buffer.replaceText("previous")
+    buffer.replaceText("current")
+    buffer.undo()
+    buffer.setCursorToLineCol(0, 3)
+    await Promise.resolve()
+    const cursor = buffer.getCursorPosition()
+    const events: string[] = []
+    buffer.on("content-changed", () => events.push("content"))
+    buffer.on("cursor-changed", () => events.push("cursor"))
+    const failure = new Error("rejected replacement")
+    const rejected = spyOn(resourceContext.renderLib, "contextEditBufferSetText").mockImplementation(() => {
+      throw failure
+    })
+    try {
+      expect(() => buffer[method]("rejected")).toThrow(failure)
+      expect(buffer.getText()).toBe("previous")
+      expect(buffer.getCursorPosition()).toEqual(cursor)
+      expect(buffer.canUndo()).toBe(true)
+      expect(buffer.canRedo()).toBe(true)
+      await Promise.resolve()
+      expect(events).toEqual([])
+    } finally {
+      rejected.mockRestore()
+      buffer.destroy()
+    }
+  },
+)
 
 async function flushNativeEvents(): Promise<void> {
   // EditBuffer forwards native events via queueMicrotask, so a manual 0ms tick
@@ -18,11 +58,22 @@ describe("EditBuffer", () => {
   let buffer: EditBuffer
 
   beforeEach(() => {
-    buffer = EditBuffer.create("wcwidth")
+    buffer = EditBuffer.create("wcwidth", resourceContext)
   })
 
   afterEach(() => {
     buffer.destroy()
+  })
+
+  it("debugLogRope delivers diagnostics before returning", () => {
+    buffer.setText("text")
+    const debug = spyOn(console, "debug").mockImplementation(() => {})
+    try {
+      buffer.debugLogRope()
+      expect(debug.mock.calls.some(([message]) => /^Rope structure:/.test(message))).toBe(true)
+    } finally {
+      debug.mockRestore()
+    }
   })
 
   describe("setText and getText", () => {
@@ -46,14 +97,6 @@ describe("EditBuffer", () => {
       const text = "Hello 世界 🌟"
       buffer.setText(text)
       expect(buffer.getText()).toBe(text)
-    })
-
-    it("should return null bytes for zero-length getText output buffer", () => {
-      buffer.setText("Hello World")
-
-      const textBytes = (buffer as any).lib.editBufferGetText(buffer.ptr, 0)
-
-      expect(textBytes).toBeNull()
     })
   })
 
@@ -117,20 +160,17 @@ describe("EditBuffer", () => {
       expect(buffer.getText()).toBe("a\tby")
     })
 
-    it("routes borrowed text buffer tab changes through its editor", () => {
+    it("remaps the cursor when tab width changes after an insert", () => {
       buffer.setText("a\tb")
       buffer.setCursor(0, 4)
       buffer.insertText("x")
 
-      const lib = (buffer as any).lib
-      const textBuffer = lib.editBufferGetTextBuffer(buffer.ptr)
-      lib.textBufferSetTabWidth(textBuffer, 8)
-
+      buffer.setTabWidth(8)
       expect(buffer.getCursorPosition()).toEqual({ row: 0, col: 11, offset: 11 })
       expect(buffer.undo()).toBe("cursor:0:4:4")
       expect(buffer.getCursorPosition()).toEqual({ row: 0, col: 10, offset: 10 })
       expect(buffer.redo()).toBe("cursor:0:11:11")
-      lib.textBufferSetTabWidth(textBuffer, 3)
+      buffer.setTabWidth(4)
       expect(buffer.getCursorPosition()).toEqual({ row: 0, col: 7, offset: 7 })
       buffer.insertText("y")
       expect(buffer.getText()).toBe("a\tbxy")
@@ -408,42 +448,13 @@ describe("EditBuffer", () => {
     })
   })
 
-  describe("history metadata", () => {
-    it("should return null bytes for zero-length undo and redo output buffers", () => {
-      buffer.setText("Hello")
-      buffer.insertText(" World")
-
-      const lib = (buffer as any).lib
-      const undoBytes = lib.editBufferUndo(buffer.ptr, 0)
-      const redoBytes = lib.editBufferRedo(buffer.ptr, 0)
-
-      expect(undoBytes).toBeNull()
-      expect(redoBytes).toBeNull()
-    })
-  })
-
   describe("range getters", () => {
-    it("should return null bytes for zero-length range output buffers", () => {
-      buffer.setText("Hello\nWorld")
-
-      const lib = (buffer as any).lib
-
-      expect(lib.editBufferGetTextRange(buffer.ptr, 0, 5, 0)).toBeNull()
-      expect(lib.editBufferGetTextRangeByCoords(buffer.ptr, 0, 0, 1, 5, 0)).toBeNull()
-    })
-
-    it("returns independently owned exact-length coordinate ranges", () => {
+    it("returns coordinate ranges that remain unchanged after replacement", () => {
       buffer.setText("Hello World")
-      const lib = (buffer as any).lib
-
-      const first = lib.editBufferGetTextRangeByCoords(buffer.ptr, 0, 0, 0, 5, 64) as Uint8Array
-      const second = lib.editBufferGetTextRangeByCoords(buffer.ptr, 0, 0, 0, 5, 64) as Uint8Array
-
-      expect(new TextDecoder().decode(first)).toBe("Hello")
-      expect(first.byteLength).toBe(5)
-      expect(first.buffer.byteLength).toBe(5)
-      expect(second).not.toBe(first)
-      expect(second.buffer).not.toBe(first.buffer)
+      const first = buffer.getTextRangeByCoords(0, 0, 0, 5)
+      buffer.setText("Other World")
+      expect(first).toBe("Hello")
+      expect(buffer.getTextRangeByCoords(0, 0, 0, 5)).toBe("Other")
     })
   })
 
@@ -842,7 +853,7 @@ describe("EditBuffer Placeholder", () => {
   let buffer: EditBuffer
 
   beforeEach(() => {
-    buffer = EditBuffer.create("wcwidth")
+    buffer = EditBuffer.create("wcwidth", resourceContext)
   })
 
   afterEach(() => {
@@ -853,7 +864,7 @@ describe("EditBuffer Placeholder", () => {
 describe("EditBuffer Events", () => {
   describe("events", () => {
     it("should emit cursor-changed event when cursor moves", async () => {
-      const testBuffer = EditBuffer.create("wcwidth")
+      const testBuffer = EditBuffer.create("wcwidth", resourceContext)
 
       let eventCount = 0
       testBuffer.on("cursor-changed", () => {
@@ -870,7 +881,7 @@ describe("EditBuffer Events", () => {
     })
 
     it("should emit cursor-changed event on setCursor", async () => {
-      const testBuffer = EditBuffer.create("wcwidth")
+      const testBuffer = EditBuffer.create("wcwidth", resourceContext)
 
       let eventCount = 0
       testBuffer.on("cursor-changed", () => {
@@ -886,7 +897,7 @@ describe("EditBuffer Events", () => {
     })
 
     it("should emit cursor-changed event on text insertion", async () => {
-      const testBuffer = EditBuffer.create("wcwidth")
+      const testBuffer = EditBuffer.create("wcwidth", resourceContext)
 
       let eventCount = 0
       testBuffer.on("cursor-changed", () => {
@@ -902,7 +913,7 @@ describe("EditBuffer Events", () => {
     })
 
     it("should emit cursor-changed event on deletion", async () => {
-      const testBuffer = EditBuffer.create("wcwidth")
+      const testBuffer = EditBuffer.create("wcwidth", resourceContext)
 
       let eventCount = 0
       testBuffer.on("cursor-changed", () => {
@@ -920,7 +931,7 @@ describe("EditBuffer Events", () => {
     })
 
     it("should emit cursor-changed event on undo/redo", async () => {
-      const testBuffer = EditBuffer.create("wcwidth")
+      const testBuffer = EditBuffer.create("wcwidth", resourceContext)
 
       let eventCount = 0
       testBuffer.on("cursor-changed", () => {
@@ -948,7 +959,7 @@ describe("EditBuffer Events", () => {
     })
 
     it("should handle multiple event listeners", async () => {
-      const testBuffer = EditBuffer.create("wcwidth")
+      const testBuffer = EditBuffer.create("wcwidth", resourceContext)
 
       let count1 = 0
       let count2 = 0
@@ -972,7 +983,7 @@ describe("EditBuffer Events", () => {
     })
 
     it("should support removing event listeners", async () => {
-      const testBuffer = EditBuffer.create("wcwidth")
+      const testBuffer = EditBuffer.create("wcwidth", resourceContext)
       testBuffer.setText("Hello")
 
       let eventCount = 0
@@ -997,8 +1008,8 @@ describe("EditBuffer Events", () => {
     })
 
     it("should isolate events between different buffer instances", async () => {
-      const testBuffer1 = EditBuffer.create("wcwidth")
-      const testBuffer2 = EditBuffer.create("wcwidth")
+      const testBuffer1 = EditBuffer.create("wcwidth", resourceContext)
+      const testBuffer2 = EditBuffer.create("wcwidth", resourceContext)
 
       let count1 = 0
       let count2 = 0
@@ -1032,9 +1043,8 @@ describe("EditBuffer Events", () => {
       testBuffer2.destroy()
     })
 
-    it("should not emit events after destroy", async () => {
-      const testBuffer = EditBuffer.create("wcwidth")
-
+    it("drops queued events after destroy without routing them to a new buffer", async () => {
+      const testBuffer = EditBuffer.create("wcwidth", resourceContext)
       let eventCount = 0
       testBuffer.on("cursor-changed", () => {
         eventCount++
@@ -1045,18 +1055,33 @@ describe("EditBuffer Events", () => {
       await flushNativeEvents()
 
       const countBeforeDestroy = eventCount
-
+      const previousHandle = testBuffer._getSceneHandle(resourceContext)
+      testBuffer.moveCursorLeft()
       testBuffer.destroy()
 
-      // Trying to move cursor on destroyed buffer should throw
-      // So we can't test event emission, but we can verify the instance is removed from registry
-      expect(countBeforeDestroy).toBeGreaterThan(1) // setText + moveCursorRight
+      const next = EditBuffer.create("wcwidth", resourceContext)
+      let nextEventCount = 0
+      next.on("cursor-changed", () => {
+        nextEventCount++
+      })
+      try {
+        expect(next._getSceneHandle(resourceContext).generation).not.toBe(previousHandle.generation)
+        await flushNativeEvents()
+        expect(countBeforeDestroy).toBeGreaterThan(1)
+        expect(eventCount).toBe(countBeforeDestroy)
+        expect(nextEventCount).toBe(0)
+        next.setText("New buffer")
+        await flushNativeEvents()
+        expect(nextEventCount).toBeGreaterThan(0)
+      } finally {
+        next.destroy()
+      }
     })
   })
 
   describe("content-changed events", () => {
     it("should emit content-changed event on setText", async () => {
-      const testBuffer = EditBuffer.create("wcwidth")
+      const testBuffer = EditBuffer.create("wcwidth", resourceContext)
 
       let eventCount = 0
       testBuffer.on("content-changed", () => {
@@ -1071,7 +1096,7 @@ describe("EditBuffer Events", () => {
     })
 
     it("should emit content-changed event on insertText", async () => {
-      const testBuffer = EditBuffer.create("wcwidth")
+      const testBuffer = EditBuffer.create("wcwidth", resourceContext)
 
       let eventCount = 0
       testBuffer.on("content-changed", () => {
@@ -1090,7 +1115,7 @@ describe("EditBuffer Events", () => {
     })
 
     it("should emit content-changed event on deleteChar", async () => {
-      const testBuffer = EditBuffer.create("wcwidth")
+      const testBuffer = EditBuffer.create("wcwidth", resourceContext)
 
       let eventCount = 0
       testBuffer.on("content-changed", () => {
@@ -1110,7 +1135,7 @@ describe("EditBuffer Events", () => {
     })
 
     it("should emit content-changed event on deleteCharBackward", async () => {
-      const testBuffer = EditBuffer.create("wcwidth")
+      const testBuffer = EditBuffer.create("wcwidth", resourceContext)
 
       let eventCount = 0
       testBuffer.on("content-changed", () => {
@@ -1130,7 +1155,7 @@ describe("EditBuffer Events", () => {
     })
 
     it("should emit content-changed event on deleteLine", async () => {
-      const testBuffer = EditBuffer.create("wcwidth")
+      const testBuffer = EditBuffer.create("wcwidth", resourceContext)
 
       let eventCount = 0
       testBuffer.on("content-changed", () => {
@@ -1150,7 +1175,7 @@ describe("EditBuffer Events", () => {
     })
 
     it("should emit content-changed event on newLine", async () => {
-      const testBuffer = EditBuffer.create("wcwidth")
+      const testBuffer = EditBuffer.create("wcwidth", resourceContext)
 
       let eventCount = 0
       testBuffer.on("content-changed", () => {
@@ -1170,7 +1195,7 @@ describe("EditBuffer Events", () => {
     })
 
     it("should handle multiple content-changed listeners", async () => {
-      const testBuffer = EditBuffer.create("wcwidth")
+      const testBuffer = EditBuffer.create("wcwidth", resourceContext)
 
       let count1 = 0
       let count2 = 0
@@ -1193,7 +1218,7 @@ describe("EditBuffer Events", () => {
     })
 
     it("should support removing content-changed listeners", async () => {
-      const testBuffer = EditBuffer.create("wcwidth")
+      const testBuffer = EditBuffer.create("wcwidth", resourceContext)
       testBuffer.setText("Hello")
       await flushNativeEvents()
 
@@ -1218,26 +1243,9 @@ describe("EditBuffer Events", () => {
       testBuffer.destroy()
     })
 
-    it("should deliver native event payload bytes through the event callback bridge", async () => {
-      const lib = resolveRenderLib()
-      const testBuffer = EditBuffer.create("wcwidth")
-
-      const payload = await new Promise<ArrayBuffer>((resolve) => {
-        lib.onceNativeEvent("eb_content-changed", (data) => resolve(data))
-        testBuffer.setText("event payload")
-      })
-
-      const id = new DataView(payload).getUint16(0, true)
-
-      expect(payload.byteLength).toBe(2)
-      expect(id).toBe(testBuffer.id)
-
-      testBuffer.destroy()
-    })
-
     it("should isolate content-changed events between different buffer instances", async () => {
-      const testBuffer1 = EditBuffer.create("wcwidth")
-      const testBuffer2 = EditBuffer.create("wcwidth")
+      const testBuffer1 = EditBuffer.create("wcwidth", resourceContext)
+      const testBuffer2 = EditBuffer.create("wcwidth", resourceContext)
 
       let count1 = 0
       let count2 = 0
@@ -1274,7 +1282,7 @@ describe("EditBuffer Events", () => {
     })
 
     it("should not emit content-changed after destroy", async () => {
-      const testBuffer = EditBuffer.create("wcwidth")
+      const testBuffer = EditBuffer.create("wcwidth", resourceContext)
 
       let eventCount = 0
       testBuffer.on("content-changed", () => {
@@ -1298,7 +1306,7 @@ describe("EditBuffer History Management", () => {
   let buffer: EditBuffer
 
   beforeEach(() => {
-    buffer = EditBuffer.create("wcwidth")
+    buffer = EditBuffer.create("wcwidth", resourceContext)
   })
 
   afterEach(() => {
@@ -1365,6 +1373,89 @@ describe("EditBuffer History Management", () => {
       buffer.undo()
       expect(buffer.getText()).toBe("")
     })
+  })
+
+  it("clean replacement reuses native registrations and retains subsequent editing", async () => {
+    buffer.setText("initial")
+    for (let i = 0; i < 253; i++) buffer.replaceText(`entry-${i}`)
+    await flushNativeEvents()
+    const events: string[] = []
+    buffer.on("content-changed", () => events.push("content"))
+    buffer.on("cursor-changed", () => events.push("cursor"))
+
+    for (const text of ["new\r\n\u4e16\u754c", "", "final"]) {
+      expect(buffer.setText(text)).toBeUndefined()
+      expect(buffer.getText()).toBe(text.replaceAll("\r\n", "\n"))
+      expect(buffer.getCursorPosition()).toEqual({ row: 0, col: 0, offset: 0 })
+      expect(buffer.canUndo()).toBe(false)
+      expect(buffer.canRedo()).toBe(false)
+      await flushNativeEvents()
+      expect(events.splice(0)).toEqual(["cursor", "content"])
+    }
+
+    buffer.insertText("typed")
+    expect(buffer.getText()).toBe("typedfinal")
+    buffer.undo()
+    expect(buffer.getText()).toBe("final")
+    buffer.redo()
+    expect(buffer.getText()).toBe("typedfinal")
+  })
+
+  it.each([
+    ["setText", "new\r\n\u4e16\u754c"],
+    ["replaceText", "new\r\n\u4e16\u754c"],
+    ["setText", ""],
+    ["replaceText", ""],
+  ] as const)("%s retains real native acceptance after a deferred callback error (text: %s)", async (method, text) => {
+    buffer.setText("original")
+    buffer.replaceText("previous")
+    buffer.setCursorToLineCol(0, 3)
+    await flushNativeEvents()
+    const events: string[] = []
+    buffer.on("content-changed", () => events.push("content"))
+    buffer.on("cursor-changed", () => events.push("cursor"))
+    const lib = resolveRenderLib()
+    const symbol = "ot_edit_buffer_set_text"
+    const symbols = Reflect.get(lib, "opentui").symbols as Record<string, (...args: unknown[]) => number>
+    const original = symbols[symbol]!
+    const failure = new Error("accepted replacement callback")
+    let calls = 0
+    symbols[symbol] = (...args) => {
+      calls++
+      const status = original(...args)
+      if (status === 0) {
+        lib.getYogaHost().invokeCallback(() => {
+          expect(() => buffer[method]("reentrant")).toThrow("Cannot mutate Yoga during a callback")
+          throw failure
+        })
+      }
+      return status
+    }
+    try {
+      expect(() => buffer[method](text)).toThrow(failure)
+    } finally {
+      symbols[symbol] = original
+    }
+    expect(calls).toBe(1)
+    const normalized = text.replaceAll("\r\n", "\n")
+    expect(buffer.getText()).toBe(normalized)
+    expect(buffer.getCursorPosition()).toEqual({ row: 0, col: 0, offset: 0 })
+    expect(buffer.canUndo()).toBe(method === "replaceText")
+    await flushNativeEvents()
+    expect(events).toEqual(["cursor", "content"])
+
+    if (method === "replaceText") {
+      buffer.undo()
+      expect(buffer.getText()).toBe("previous")
+      buffer.redo()
+      expect(buffer.getText()).toBe(normalized)
+    }
+    buffer.insertText("!")
+    expect(buffer.getText()).toBe(`!${normalized}`)
+    buffer.undo()
+    expect(buffer.getText()).toBe(normalized)
+    buffer.redo()
+    expect(buffer.getText()).toBe(`!${normalized}`)
   })
 
   describe("replaceTextOwned with history", () => {
@@ -1577,7 +1668,7 @@ describe("EditBuffer Clear Method", () => {
   let buffer: EditBuffer
 
   beforeEach(() => {
-    buffer = EditBuffer.create("wcwidth")
+    buffer = EditBuffer.create("wcwidth", resourceContext)
   })
 
   afterEach(() => {
@@ -1864,7 +1955,7 @@ describe("EditBuffer Memory Registry Limits", () => {
   let buffer: EditBuffer
 
   beforeEach(() => {
-    buffer = EditBuffer.create("wcwidth")
+    buffer = EditBuffer.create("wcwidth", resourceContext)
   })
 
   afterEach(() => {

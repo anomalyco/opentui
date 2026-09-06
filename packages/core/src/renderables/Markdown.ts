@@ -1,3 +1,4 @@
+import { assertRenderableMutable } from "../lib/renderable-layout.js"
 import { Renderable, type RenderableOptions } from "../Renderable.js"
 import { type RenderContext, type TerminalCapabilities } from "../types.js"
 import { SyntaxStyle, type StyleDefinition } from "../syntax-style.js"
@@ -259,6 +260,14 @@ interface MarkdownRenderBlock {
   marginTop: number
 }
 
+function cloneTableOptions(options: MarkdownTableOptions | undefined): MarkdownTableOptions | undefined {
+  if (!options) return undefined
+  return {
+    ...options,
+    borderColor: options.borderColor ? RGBA.clone(parseColor(options.borderColor)) : undefined,
+  }
+}
+
 interface ListItemRenderInput {
   item: Tokens.ListItem
   marker: string
@@ -364,36 +373,45 @@ export class MarkdownRenderable extends Renderable {
       flexShrink: options.flexShrink ?? 0,
     })
 
-    this._syntaxStyle = options.syntaxStyle
-    this._fg = options.fg ? parseColor(options.fg) : undefined
-    this._bg = options.bg ? parseColor(options.bg) : undefined
-    this._conceal = options.conceal ?? this._contentDefaultOptions.conceal
-    this._concealCode = options.concealCode ?? this._contentDefaultOptions.concealCode
-    this._content = options.content ?? this._contentDefaultOptions.content
-    this._treeSitterClient = options.treeSitterClient
-    this._tableOptions = options.tableOptions
-    this._renderNode = options.renderNode
-    this._streaming = options.streaming ?? this._contentDefaultOptions.streaming
-    this._internalBlockMode = options.internalBlockMode ?? this._contentDefaultOptions.internalBlockMode
+    try {
+      this._syntaxStyle = options.syntaxStyle
+      this._fg = options.fg ? RGBA.clone(parseColor(options.fg)) : undefined
+      this._bg = options.bg ? RGBA.clone(parseColor(options.bg)) : undefined
+      this._conceal = options.conceal ?? this._contentDefaultOptions.conceal
+      this._concealCode = options.concealCode ?? this._contentDefaultOptions.concealCode
+      this._content = options.content ?? this._contentDefaultOptions.content
+      this._treeSitterClient = options.treeSitterClient
+      this._tableOptions = cloneTableOptions(options.tableOptions)
+      this._renderNode = options.renderNode
+      this._streaming = options.streaming ?? this._contentDefaultOptions.streaming
+      this._internalBlockMode = options.internalBlockMode ?? this._contentDefaultOptions.internalBlockMode
 
-    this.updateBlocks()
+      this.updateBlocks()
 
-    let subscription = MarkdownRenderable._capabilitySubscriptions.get(ctx)
-    if (!subscription) {
-      const renderables = new Set<MarkdownRenderable>()
-      let hyperlinksSupported = ctx.capabilities?.hyperlinks === true
-      subscription = {
-        renderables,
-        listener: (capabilities) => {
-          if (hyperlinksSupported === (capabilities.hyperlinks === true)) return
-          hyperlinksSupported = capabilities.hyperlinks === true
-          for (const renderable of renderables) renderable.handleCapabilities()
-        },
+      let subscription = MarkdownRenderable._capabilitySubscriptions.get(ctx)
+      if (!subscription) {
+        const renderables = new Set<MarkdownRenderable>()
+        let hyperlinksSupported = ctx.capabilities?.hyperlinks === true
+        subscription = {
+          renderables,
+          listener: (capabilities) => {
+            if (hyperlinksSupported === (capabilities.hyperlinks === true)) return
+            hyperlinksSupported = capabilities.hyperlinks === true
+            for (const renderable of renderables) renderable.handleCapabilities()
+          },
+        }
+        ctx.on("capabilities", subscription.listener)
+        MarkdownRenderable._capabilitySubscriptions.set(ctx, subscription)
       }
-      ctx.on("capabilities", subscription.listener)
-      MarkdownRenderable._capabilitySubscriptions.set(ctx, subscription)
+      subscription.renderables.add(this)
+    } catch (error) {
+      try {
+        this.destroyRecursively()
+      } catch {
+        // Preserve the construction failure.
+      }
+      throw error
     }
-    subscription.renderables.add(this)
   }
 
   get content(): string {
@@ -403,6 +421,7 @@ export class MarkdownRenderable extends Renderable {
   set content(value: string) {
     if (this.isDestroyed) return
     if (this._content !== value) {
+      assertRenderableMutable(this)
       this._content = value
       this.updateBlocks()
       this.requestRender()
@@ -422,11 +441,11 @@ export class MarkdownRenderable extends Renderable {
   }
 
   get fg(): RGBA | undefined {
-    return this._fg
+    return this._fg ? RGBA.clone(this._fg) : undefined
   }
 
   set fg(value: ColorInput | undefined) {
-    const next = value ? parseColor(value) : undefined
+    const next = value ? RGBA.clone(parseColor(value)) : undefined
     if (!colorsEqual(this._fg, next)) {
       this._fg = next
       this._styleDirty = true
@@ -434,11 +453,11 @@ export class MarkdownRenderable extends Renderable {
   }
 
   get bg(): RGBA | undefined {
-    return this._bg
+    return this._bg ? RGBA.clone(this._bg) : undefined
   }
 
   set bg(value: ColorInput | undefined) {
-    const next = value ? parseColor(value) : undefined
+    const next = value ? RGBA.clone(parseColor(value)) : undefined
     if (!colorsEqual(this._bg, next)) {
       this._bg = next
       this._styleDirty = true
@@ -476,17 +495,18 @@ export class MarkdownRenderable extends Renderable {
   set streaming(value: boolean) {
     if (this.isDestroyed) return
     if (this._streaming !== value) {
+      assertRenderableMutable(this)
       this._streaming = value
       this.updateBlocks(true)
     }
   }
 
   get tableOptions(): MarkdownTableOptions | undefined {
-    return this._tableOptions
+    return cloneTableOptions(this._tableOptions)
   }
 
   set tableOptions(value: MarkdownTableOptions | undefined) {
-    this._tableOptions = value
+    this._tableOptions = cloneTableOptions(value)
     this.applyTableOptionsToBlocks()
   }
 
@@ -496,6 +516,7 @@ export class MarkdownRenderable extends Renderable {
 
   set renderNode(value: MarkdownOptions["renderNode"] | undefined) {
     if (this._renderNode === value) return
+    assertRenderableMutable(this)
     this._renderNode = value
     this.clearBlockStates()
     this._parseState = null
@@ -509,6 +530,7 @@ export class MarkdownRenderable extends Renderable {
 
   set internalBlockMode(value: "coalesced" | "top-level") {
     if (this._internalBlockMode === value) return
+    assertRenderableMutable(this)
     this._internalBlockMode = value
     this.updateBlocks(true)
     this.requestRender()
@@ -840,17 +862,25 @@ export class MarkdownRenderable extends Renderable {
       marginBottom,
     })
 
-    renderable.add(
-      this.createMarkdownCodeRenderable(
-        this.getBlockquoteContent(token),
-        `${id}-content`,
-        0,
-        this._linkifyMarkdownChunks,
-        "markup.quote",
-      ),
-    )
-
-    return renderable
+    try {
+      renderable.add(
+        this.createMarkdownCodeRenderable(
+          this.getBlockquoteContent(token),
+          `${id}-content`,
+          0,
+          this._linkifyMarkdownChunks,
+          "markup.quote",
+        ),
+      )
+      return renderable
+    } catch (error) {
+      try {
+        renderable.destroyRecursively()
+      } catch {
+        // Preserve the construction failure.
+      }
+      throw error
+    }
   }
 
   private createListRenderable(token: Tokens.List, id: string, marginBottom: number = 0): BoxRenderable {
@@ -863,11 +893,19 @@ export class MarkdownRenderable extends Renderable {
     })
     this._ownedStructuredRenderables.add(list)
 
-    for (const item of this.getListItemInputs(token, id)) {
-      list.add(this.createListItemRenderable(item))
+    try {
+      for (const item of this.getListItemInputs(token, id)) {
+        list.add(this.createListItemRenderable(item))
+      }
+      return list
+    } catch (error) {
+      try {
+        list.destroyRecursively()
+      } catch {
+        // Preserve the construction failure.
+      }
+      throw error
     }
-
-    return list
   }
 
   private getListItemInputs(token: Tokens.List, id: string): ListItemRenderInput[] {
@@ -925,40 +963,49 @@ export class MarkdownRenderable extends Renderable {
       flexShrink: 0,
       marginBottom: /\n[ \t]*\n$/.test(input.item.raw) ? 1 : 0,
     })
-    row.add(
-      new TextRenderable(this.ctx, {
-        id: `${input.id}-marker`,
-        content: new StyledText([this.createChunk(input.marker.padStart(input.markerWidth) + " ", "markup.list")]),
-        width: input.markerWidth + 1,
-        flexShrink: 0,
-      }),
-    )
+    try {
+      row.add(
+        new TextRenderable(this.ctx, {
+          id: `${input.id}-marker`,
+          content: new StyledText([this.createChunk(input.marker.padStart(input.markerWidth) + " ", "markup.list")]),
+          width: input.markerWidth + 1,
+          flexShrink: 0,
+        }),
+      )
 
-    const content = new BoxRenderable(this.ctx, {
-      id: `${input.id}-content`,
-      flexDirection: "column",
-      flexGrow: 1,
-      flexShrink: 1,
-    })
-    row.add(content)
+      const content = new BoxRenderable(this.ctx, {
+        id: `${input.id}-content`,
+        flexDirection: "column",
+        flexGrow: 1,
+        flexShrink: 1,
+      })
+      row.add(content)
 
-    let pendingMarginTop = 0
-    for (let index = 0; index < input.item.tokens.length; index += 1) {
-      const child = input.item.tokens[index] as MarkedToken | undefined
-      if (!child) continue
-      if (child.type === "checkbox") continue
-      if (child.type === "space") {
-        pendingMarginTop = Math.max(pendingMarginTop, 1)
-        continue
+      let pendingMarginTop = 0
+      for (let index = 0; index < input.item.tokens.length; index += 1) {
+        const child = input.item.tokens[index] as MarkedToken | undefined
+        if (!child) continue
+        if (child.type === "checkbox") continue
+        if (child.type === "space") {
+          pendingMarginTop = Math.max(pendingMarginTop, 1)
+          continue
+        }
+        const renderable = this.createListChildRenderable(child, `${input.id}-child-${index}`)
+        if (!renderable) continue
+        renderable.marginTop = child.type === "list" ? 0 : pendingMarginTop
+        pendingMarginTop = 0
+        content.add(renderable)
       }
-      const renderable = this.createListChildRenderable(child, `${input.id}-child-${index}`)
-      if (!renderable) continue
-      renderable.marginTop = child.type === "list" ? 0 : pendingMarginTop
-      pendingMarginTop = 0
-      content.add(renderable)
-    }
 
-    return row
+      return row
+    } catch (error) {
+      try {
+        row.destroyRecursively()
+      } catch {
+        // Preserve the construction failure.
+      }
+      throw error
+    }
   }
 
   private applyListItemRenderable(
@@ -1802,16 +1849,26 @@ export class MarkdownRenderable extends Renderable {
     if (!this._renderNode) return {}
 
     let defaultResult: CustomRenderDefaultResult | undefined
-    const custom = this._renderNode(token, {
-      syntaxStyle: this._syntaxStyle,
-      conceal: this._conceal,
-      concealCode: this._concealCode,
-      treeSitterClient: this._treeSitterClient,
-      defaultRender: () => {
-        defaultResult = createDefault()
-        return defaultResult.renderable ?? null
-      },
-    })
+    let custom: Renderable | null | undefined
+    try {
+      custom = this._renderNode(token, {
+        syntaxStyle: this._syntaxStyle,
+        conceal: this._conceal,
+        concealCode: this._concealCode,
+        treeSitterClient: this._treeSitterClient,
+        defaultRender: () => {
+          defaultResult = createDefault()
+          return defaultResult.renderable ?? null
+        },
+      })
+    } catch (error) {
+      try {
+        this.destroyUnusedDefaultRenderable(defaultResult?.renderable)
+      } catch {
+        // Preserve the custom renderer failure.
+      }
+      throw error
+    }
 
     this.destroyUnusedDefaultRenderable(defaultResult?.renderable, custom ?? undefined)
 

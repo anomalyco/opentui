@@ -1,4 +1,8 @@
 import { afterEach, expect, spyOn, test } from "bun:test"
+import assert from "node:assert/strict"
+import { spawnSync } from "node:child_process"
+import { setImmediate } from "node:timers/promises"
+import { fileURLToPath } from "node:url"
 import { CliRenderEvents } from "../renderer.js"
 import { TextRenderable } from "../renderables/Text.js"
 import { ManualClock } from "./manual-clock.js"
@@ -18,7 +22,7 @@ afterEach(() => {
 })
 
 test("flush waits for scheduled render work without forcing an extra frame", async () => {
-  setup = await createTestRenderer({ width: 10, height: 4, useThread: false, maxFps: Number.POSITIVE_INFINITY })
+  setup = await createTestRenderer({ width: 10, height: 4, maxFps: Number.POSITIVE_INFINITY })
 
   const text = new TextRenderable(setup.renderer, {
     content: "abc",
@@ -39,7 +43,7 @@ test("flush waits for scheduled render work without forcing an extra frame", asy
 })
 
 test("waitForFrame observes text from a scheduled render", async () => {
-  setup = await createTestRenderer({ width: 10, height: 4, useThread: false, maxFps: Number.POSITIVE_INFINITY })
+  setup = await createTestRenderer({ width: 10, height: 4, maxFps: Number.POSITIVE_INFINITY })
 
   const text = new TextRenderable(setup.renderer, {
     content: "hello",
@@ -54,8 +58,34 @@ test("waitForFrame observes text from a scheduled render", async () => {
   expect(setup.getNativeStats().nativeFrameCount).toBe(1)
 })
 
+test("waitForFrame rechecks an intervening redraw before reading frame storage", async () => {
+  setup = await createTestRenderer({ width: 10, height: 4, clock: new ManualClock() })
+  const text = new TextRenderable(setup.renderer, { content: "hello" })
+  setup.renderer.root.add(text)
+  const hold = Promise.withResolvers<void>()
+  setup.renderer.setFrameCallback(() => hold.promise)
+  setup.renderer.once(CliRenderEvents.FRAME, () => {
+    text.content = "world"
+  })
+  const active = setup.renderOnce()
+  const redraw = setup.renderOnce()
+  const observed = setup.waitForFrame((frame) => frame.includes("world"), { maxPasses: 2 })
+  try {
+    await setImmediate()
+    setup.renderer.clearFrameCallbacks()
+    hold.resolve()
+    const [, , frame] = await Promise.all([active, redraw, observed])
+    expect(frame).toContain("world")
+    expect(setup.getNativeStats().nativeFrameCount).toBe(2)
+  } finally {
+    setup.renderer.clearFrameCallbacks()
+    hold.resolve()
+    await Promise.allSettled([active, redraw, observed])
+  }
+})
+
 test("waitFor observes predicate changes after scheduled work", async () => {
-  setup = await createTestRenderer({ width: 10, height: 4, useThread: false, maxFps: Number.POSITIVE_INFINITY })
+  setup = await createTestRenderer({ width: 10, height: 4, maxFps: Number.POSITIVE_INFINITY })
 
   const text = new TextRenderable(setup.renderer, {
     content: "ready",
@@ -70,7 +100,7 @@ test("waitFor observes predicate changes after scheduled work", async () => {
 })
 
 test("renderer does not build frame event stats when no frame listener is registered", async () => {
-  setup = await createTestRenderer({ width: 10, height: 4, useThread: false })
+  setup = await createTestRenderer({ width: 10, height: 4 })
 
   const getStats = spyOn(setup.renderer, "getStats")
 
@@ -88,7 +118,7 @@ test("renderer does not build frame event stats when no frame listener is regist
 })
 
 test("renderer emits frame event without building stats when a frame listener is registered", async () => {
-  setup = await createTestRenderer({ width: 10, height: 4, useThread: false })
+  setup = await createTestRenderer({ width: 10, height: 4 })
 
   const getStats = spyOn(setup.renderer, "getStats")
   let frameEventCount = 0
@@ -114,7 +144,7 @@ test("renderer emits frame event without building stats when a frame listener is
 })
 
 test("waitForFrame fails instead of rendering when no work is pending", async () => {
-  setup = await createTestRenderer({ width: 10, height: 4, useThread: false, maxFps: Number.POSITIVE_INFINITY })
+  setup = await createTestRenderer({ width: 10, height: 4, maxFps: Number.POSITIVE_INFINITY })
 
   await expect(setup.waitForFrame((frame) => frame.includes("missing"), { maxPasses: 2 })).rejects.toThrow(
     "hasScheduledRender: false",
@@ -128,7 +158,6 @@ test("waitForVisualIdle observes a naturally emitted zero-cell live frame", asyn
   setup = await createTestRenderer({
     width: 10,
     height: 4,
-    useThread: false,
     clock,
     maxFps: Number.POSITIVE_INFINITY,
     targetFps: Number.POSITIVE_INFINITY,
@@ -140,9 +169,10 @@ test("waitForVisualIdle observes a naturally emitted zero-cell live frame", asyn
     height: 1,
   })
   setup.renderer.root.add(text)
+  const firstFrame = new Promise<void>((resolve) => setup!.renderer.once(CliRenderEvents.FRAME, () => resolve()))
   setup.renderer.start()
 
-  await drainImmediateWork()
+  await firstFrame
   expect(setup.getNativeStats().nativeFrameCount).toBe(1)
 
   const idle = setup.waitForVisualIdle({ maxFrames: 2 })
@@ -157,6 +187,18 @@ test("waitForVisualIdle observes a naturally emitted zero-cell live frame", asyn
   setup.renderer.stop()
 })
 
+test("passive visual idle wait resolves on output-failure destruction without an unhandled rejection", () => {
+  const extension = import.meta.url.endsWith(".ts") ? "ts" : "js"
+  const runtimeArgs = process.versions.bun ? [] : process.execArgv.filter((arg) => !arg.startsWith("--test"))
+  const child = spawnSync(
+    process.execPath,
+    [...runtimeArgs, fileURLToPath(new URL(`test-renderer.wait.fixture.${extension}`, import.meta.url))],
+    { encoding: "utf8", timeout: 4_000 },
+  )
+  assert.equal(child.status, 0, child.stderr || child.error?.message)
+  expect(child.stdout.trim()).toBe("Passive wait output failure passed")
+})
+
 test("externalOutput records writeToScrollback commits without consuming native queue", async () => {
   setup = await createTestRenderer({
     width: 10,
@@ -165,7 +207,6 @@ test("externalOutput records writeToScrollback commits without consuming native 
     footerHeight: 3,
     externalOutputMode: "capture-stdout",
     consoleMode: "disabled",
-    useThread: false,
     maxFps: Number.POSITIVE_INFINITY,
   })
 
@@ -212,7 +253,6 @@ test("externalOutput records scrollback surface commits", async () => {
     footerHeight: 3,
     externalOutputMode: "capture-stdout",
     consoleMode: "disabled",
-    useThread: false,
   })
 
   const surface = setup.renderer.createScrollbackSurface()
@@ -248,7 +288,6 @@ test("externalOutput records captured stdout in FIFO order", async () => {
     footerHeight: 3,
     externalOutputMode: "capture-stdout",
     consoleMode: "disabled",
-    useThread: false,
   })
 
   setup.renderer.writeToScrollback((ctx) => {

@@ -55,6 +55,22 @@ describe("TerminalConsole", () => {
     }
   })
 
+  test("formats Error CRLF and raw controls without changing tabs, newlines, or inspected escapes", () => {
+    terminalConsole = new TerminalConsole(mockRenderer as any)
+    const error = new Error("diagnostic\r\n\x1b[31mred failure\x1b[0m")
+    error.stack = "trace\tframe\r\ncontrols: \x00\r\x1f\x7f\x80\x85\x9f"
+    try {
+      expect(terminalConsole["formatArguments"]([error])).toBe(
+        "Error: diagnostic\n\\x1b[31mred failure\\x1b[0m\ntrace\tframe\ncontrols: \\x00\\x0d\\x1f\\x7f\\x80\\x85\\x9f\n",
+      )
+      expect(terminalConsole["formatArguments"](["\x1b[31m\r\n\t", { value: "\x00" }])).toBe(
+        "'\\x1B[31m\\r\\n\\t' { value: '\\x00' }",
+      )
+    } finally {
+      terminalConsole.destroy()
+    }
+  })
+
   describe("resize", () => {
     test("should use provided width and height parameters", () => {
       terminalConsole = new TerminalConsole(mockRenderer as any, {

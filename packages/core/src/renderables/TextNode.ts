@@ -39,13 +39,14 @@ export class TextNodeRenderable extends BaseRenderable {
   private _attributes: number
   private _link?: { url: string }
   private _children: (string | TextNodeRenderable)[] = []
+  private dirtyRevision = 0
   public parent: TextNodeRenderable | null = null
 
   constructor(options: TextNodeOptions) {
     super(options)
 
-    this._fg = options.fg ? parseColor(options.fg) : undefined
-    this._bg = options.bg ? parseColor(options.bg) : undefined
+    this._fg = options.fg ? RGBA.clone(parseColor(options.fg)) : undefined
+    this._bg = options.bg ? RGBA.clone(parseColor(options.bg)) : undefined
     this._attributes = options.attributes ?? 0
     this._link = options.link
   }
@@ -77,6 +78,11 @@ export class TextNodeRenderable extends BaseRenderable {
   public requestRender(): void {
     this.markDirty()
     this.parent?.requestRender()
+  }
+
+  protected override markDirty(): void {
+    super.markDirty()
+    this.dirtyRevision++
   }
 
   public add(obj: TextNodeRenderable | StyledText | string, index?: number): number {
@@ -230,8 +236,8 @@ export class TextNodeRenderable extends BaseRenderable {
     link?: { url: string }
   } {
     return {
-      fg: this._fg ?? parentStyle.fg,
-      bg: this._bg ?? parentStyle.bg,
+      fg: this.fg ?? parentStyle.fg,
+      bg: this.bg ?? parentStyle.bg,
       attributes: this._attributes | parentStyle.attributes,
       link: this._link ?? parentStyle.link,
     }
@@ -244,6 +250,31 @@ export class TextNodeRenderable extends BaseRenderable {
       attributes: 0,
     },
   ): TextChunk[] {
+    return this.gatherChunks(parentStyle)
+  }
+
+  /** @internal Defer cleaning until replacement accepts, without consuming reentrant mutations. */
+  public prepareWithInheritedStyle(parentStyle: Parameters<TextNodeRenderable["mergeStyles"]>[0]): {
+    chunks: TextChunk[]
+    acknowledge: () => void
+  } {
+    const revisions = new Map<TextNodeRenderable, number>()
+    const chunks = this.gatherChunks(parentStyle, revisions)
+    return {
+      chunks,
+      acknowledge: () => {
+        for (const [node, revision] of revisions) {
+          if (node.dirtyRevision === revision) node.markClean()
+        }
+      },
+    }
+  }
+
+  private gatherChunks(
+    parentStyle: Parameters<TextNodeRenderable["mergeStyles"]>[0],
+    revisions?: Map<TextNodeRenderable, number>,
+  ): TextChunk[] {
+    revisions?.set(this, this.dirtyRevision)
     const currentStyle = this.mergeStyles(parentStyle)
 
     const chunks: TextChunk[] = []
@@ -259,12 +290,14 @@ export class TextNodeRenderable extends BaseRenderable {
           link: currentStyle.link,
         })
       } else {
-        const childChunks = child.gatherWithInheritedStyle(currentStyle)
+        const childChunks = revisions
+          ? child.gatherChunks(currentStyle, revisions)
+          : child.gatherWithInheritedStyle(currentStyle)
         chunks.push(...childChunks)
       }
     }
 
-    this.markClean()
+    if (!revisions) this.markClean()
 
     return chunks
   }
@@ -310,7 +343,7 @@ export class TextNodeRenderable extends BaseRenderable {
   }
 
   public get fg(): RGBA | undefined {
-    return this._fg
+    return this._fg ? RGBA.clone(this._fg) : undefined
   }
 
   public set fg(fg: RGBA | string | undefined) {
@@ -319,7 +352,7 @@ export class TextNodeRenderable extends BaseRenderable {
       this.requestRender()
       return
     }
-    this._fg = parseColor(fg)
+    this._fg = RGBA.clone(parseColor(fg))
     this.requestRender()
   }
 
@@ -329,12 +362,12 @@ export class TextNodeRenderable extends BaseRenderable {
       this.requestRender()
       return
     }
-    this._bg = parseColor(bg)
+    this._bg = RGBA.clone(parseColor(bg))
     this.requestRender()
   }
 
   public get bg(): RGBA | undefined {
-    return this._bg
+    return this._bg ? RGBA.clone(this._bg) : undefined
   }
 
   public set attributes(attributes: number) {
@@ -374,6 +407,6 @@ export class RootTextNodeRenderable extends TextNodeRenderable {
 
   public requestRender(): void {
     this.markDirty()
-    this.ctx.requestRender()
+    this.textParent.requestRender()
   }
 }

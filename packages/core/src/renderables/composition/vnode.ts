@@ -1,5 +1,6 @@
 import { isRenderable, Renderable, type RenderableOptions } from "../../Renderable.js"
 import type { RenderContext } from "../../types.js"
+import { getYogaNode, setYogaNode } from "../../lib/renderable-layout.js"
 import util from "node:util"
 
 export type VChild = VNode | Renderable | VChild[] | null | undefined | false
@@ -151,6 +152,9 @@ export function wrapWithDelegates<T extends InstanceType<RenderableConstructor>>
 ): T {
   if (!delegateMap || Object.keys(delegateMap).length === 0) return instance
 
+  // Discover derived fields before attachment can register the proxy as a lifecycle owner.
+  instance.refreshHooks()
+
   const getDescendant = (id: string): Renderable | undefined => {
     return (instance as Renderable).findDescendantById(id)
   }
@@ -179,6 +183,7 @@ export function wrapWithDelegates<T extends InstanceType<RenderableConstructor>>
       return Reflect.set(target, prop, value, receiver)
     },
   })
+  setYogaNode(proxy, getYogaNode(instance))
   return proxy
 }
 

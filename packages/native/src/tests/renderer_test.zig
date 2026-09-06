@@ -96,12 +96,8 @@ test "renderer emits Kitty image once and leaves unchanged frame empty" {
     var test_renderer = try TestRenderer.create(std.testing.allocator, 4, 2, pool);
     defer test_renderer.deinit();
     const value = try image.createFromRgba(std.testing.allocator, &[_]u8{ 255, 0, 0, 255 }, 1, 1, 4);
-    const image_handle = try handles.insert(.image, @ptrCast(value));
-    defer {
-        const token = handles.beginDestroy(image_handle, .image, image.Image).?;
-        token.ptr.deinit();
-        handles.finishDestroy(token.handle);
-    }
+    defer value.deinit();
+    const image_handle: u32 = 1;
     test_renderer.renderer.terminal.caps.kitty_graphics = true;
     test_renderer.renderer.terminal.multiplexer = .none;
 
@@ -135,12 +131,8 @@ test "renderer emits Sixel only with known pixel dimensions" {
     var test_renderer = try TestRenderer.create(std.testing.allocator, 4, 2, pool);
     defer test_renderer.deinit();
     const value = try image.createFromRgba(std.testing.allocator, &[_]u8{ 255, 0, 0, 255 }, 1, 1, 4);
-    const image_handle = try handles.insert(.image, @ptrCast(value));
-    defer {
-        const token = handles.beginDestroy(image_handle, .image, image.Image).?;
-        token.ptr.deinit();
-        handles.finishDestroy(token.handle);
-    }
+    defer value.deinit();
+    const image_handle: u32 = 1;
     test_renderer.renderer.terminal.caps.sixel = true;
     test_renderer.renderer.terminal.multiplexer = .none;
 
@@ -174,12 +166,8 @@ test "renderer separates translucent Sixel cache entries by cell geometry" {
     defer fresh_renderer.deinit();
     const pixels = [_]u8{ 255, 255, 255, 255 } ** 16;
     const value = try image.createFromRgba(std.testing.allocator, &pixels, 4, 4, 16);
-    const image_handle = try handles.insert(.image, @ptrCast(value));
-    defer {
-        const token = handles.beginDestroy(image_handle, .image, image.Image).?;
-        token.ptr.deinit();
-        handles.finishDestroy(token.handle);
-    }
+    defer value.deinit();
+    const image_handle: u32 = 1;
     cached_renderer.renderer.terminal.caps.sixel = true;
     fresh_renderer.renderer.terminal.caps.sixel = true;
 
@@ -209,12 +197,8 @@ test "renderer does not copy identity Sixel geometry" {
 
     var source_allocator = std.testing.FailingAllocator.init(std.testing.allocator, .{});
     const value = try image.createFromRgba(source_allocator.allocator(), &[_]u8{ 255, 0, 0, 255 }, 1, 1, 4);
-    const image_handle = try handles.insert(.image, @ptrCast(value));
-    defer {
-        const token = handles.beginDestroy(image_handle, .image, image.Image).?;
-        token.ptr.deinit();
-        handles.finishDestroy(token.handle);
-    }
+    defer value.deinit();
+    const image_handle: u32 = 1;
     // A full-image extract consumes two allocations. Fail if rendering tries
     // to allocate a second image copy for the identity resize.
     source_allocator.fail_index = source_allocator.alloc_index + 2;
@@ -236,16 +220,14 @@ test "renderer repaints unchanged upper Sixel after an overlapping lower image c
     defer test_renderer.deinit();
 
     const red = try image.createFromRgba(std.testing.allocator, &[_]u8{ 255, 0, 0, 255 }, 1, 1, 4);
+    defer red.deinit();
     const blue = try image.createFromRgba(std.testing.allocator, &[_]u8{ 0, 0, 255, 255 }, 1, 1, 4);
+    defer blue.deinit();
     const green = try image.createFromRgba(std.testing.allocator, &[_]u8{ 0, 255, 0, 255 }, 1, 1, 4);
-    const red_handle = try handles.insert(.image, @ptrCast(red));
-    const blue_handle = try handles.insert(.image, @ptrCast(blue));
-    const green_handle = try handles.insert(.image, @ptrCast(green));
-    defer for ([_]u32{ green_handle, blue_handle, red_handle }) |handle| {
-        const token = handles.beginDestroy(handle, .image, image.Image).?;
-        token.ptr.deinit();
-        handles.finishDestroy(token.handle);
-    };
+    defer green.deinit();
+    const red_handle: u32 = 1;
+    const blue_handle: u32 = 2;
+    const green_handle: u32 = 3;
     test_renderer.renderer.terminal.caps.sixel = true;
     test_renderer.renderer.terminal.multiplexer = .none;
 
@@ -272,14 +254,11 @@ test "renderer repaints overlapping Sixel images when their order changes" {
     defer test_renderer.deinit();
 
     const red = try image.createFromRgba(std.testing.allocator, &[_]u8{ 255, 0, 0, 255 }, 1, 1, 4);
+    defer red.deinit();
     const blue = try image.createFromRgba(std.testing.allocator, &[_]u8{ 0, 0, 255, 255 }, 1, 1, 4);
-    const red_handle = try handles.insert(.image, @ptrCast(red));
-    const blue_handle = try handles.insert(.image, @ptrCast(blue));
-    defer for ([_]u32{ blue_handle, red_handle }) |handle| {
-        const token = handles.beginDestroy(handle, .image, image.Image).?;
-        token.ptr.deinit();
-        handles.finishDestroy(token.handle);
-    };
+    defer blue.deinit();
+    const red_handle: u32 = 1;
+    const blue_handle: u32 = 2;
     test_renderer.renderer.terminal.caps.sixel = true;
     test_renderer.renderer.terminal.multiplexer = .none;
 
@@ -307,18 +286,17 @@ test "renderer propagates Sixel repaint through an overlap chain" {
     test_renderer.renderer.terminal.caps.sixel = true;
 
     const red = try image.createFromRgba(std.testing.allocator, &[_]u8{ 255, 0, 0, 255 }, 1, 1, 4);
+    defer red.deinit();
     const green = try image.createFromRgba(std.testing.allocator, &[_]u8{ 0, 255, 0, 255 }, 1, 1, 4);
+    defer green.deinit();
     const blue = try image.createFromRgba(std.testing.allocator, &[_]u8{ 0, 0, 255, 255 }, 1, 1, 4);
+    defer blue.deinit();
     const white = try image.createFromRgba(std.testing.allocator, &[_]u8{ 255, 255, 255, 255 }, 1, 1, 4);
-    const red_handle = try handles.insert(.image, @ptrCast(red));
-    const green_handle = try handles.insert(.image, @ptrCast(green));
-    const blue_handle = try handles.insert(.image, @ptrCast(blue));
-    const white_handle = try handles.insert(.image, @ptrCast(white));
-    defer for ([_]u32{ white_handle, blue_handle, green_handle, red_handle }) |handle| {
-        const token = handles.beginDestroy(handle, .image, image.Image).?;
-        token.ptr.deinit();
-        handles.finishDestroy(token.handle);
-    };
+    defer white.deinit();
+    const red_handle: u32 = 1;
+    const green_handle: u32 = 2;
+    const blue_handle: u32 = 3;
+    const white_handle: u32 = 4;
 
     var next = test_renderer.renderer.getNextBuffer();
     try std.testing.expect(try next.drawImage(red, red_handle, 0, 0, 2, 1, 2, 1, 0, 0, 1, 1, .sixel));
@@ -345,14 +323,11 @@ test "renderer repaints lower Sixel after removing an overlapping upper image" {
     defer test_renderer.deinit();
 
     const red = try image.createFromRgba(std.testing.allocator, &[_]u8{ 255, 0, 0, 255 }, 1, 1, 4);
+    defer red.deinit();
     const blue = try image.createFromRgba(std.testing.allocator, &[_]u8{ 0, 0, 255, 255 }, 1, 1, 4);
-    const red_handle = try handles.insert(.image, @ptrCast(red));
-    const blue_handle = try handles.insert(.image, @ptrCast(blue));
-    defer for ([_]u32{ blue_handle, red_handle }) |handle| {
-        const token = handles.beginDestroy(handle, .image, image.Image).?;
-        token.ptr.deinit();
-        handles.finishDestroy(token.handle);
-    };
+    defer blue.deinit();
+    const red_handle: u32 = 1;
+    const blue_handle: u32 = 2;
     test_renderer.renderer.terminal.caps.sixel = true;
     test_renderer.renderer.terminal.multiplexer = .none;
 
@@ -378,16 +353,14 @@ test "renderer repaints lower Sixel when an overlapping upper image becomes tran
     defer test_renderer.deinit();
 
     const red = try image.createFromRgba(std.testing.allocator, &[_]u8{ 255, 0, 0, 255 }, 1, 1, 4);
+    defer red.deinit();
     const blue = try image.createFromRgba(std.testing.allocator, &[_]u8{ 0, 0, 255, 255 }, 1, 1, 4);
+    defer blue.deinit();
     const transparent = try image.createFromRgba(std.testing.allocator, &[_]u8{ 0, 0, 0, 0 }, 1, 1, 4);
-    const red_handle = try handles.insert(.image, @ptrCast(red));
-    const blue_handle = try handles.insert(.image, @ptrCast(blue));
-    const transparent_handle = try handles.insert(.image, @ptrCast(transparent));
-    defer for ([_]u32{ transparent_handle, blue_handle, red_handle }) |handle| {
-        const token = handles.beginDestroy(handle, .image, image.Image).?;
-        token.ptr.deinit();
-        handles.finishDestroy(token.handle);
-    };
+    defer transparent.deinit();
+    const red_handle: u32 = 1;
+    const blue_handle: u32 = 2;
+    const transparent_handle: u32 = 3;
     test_renderer.renderer.terminal.caps.sixel = true;
     test_renderer.renderer.terminal.multiplexer = .none;
 
@@ -413,12 +386,8 @@ test "renderer honors per-placement protocol overrides" {
     var test_renderer = try TestRenderer.create(std.testing.allocator, 4, 2, pool);
     defer test_renderer.deinit();
     const value = try image.createFromRgba(std.testing.allocator, &[_]u8{ 255, 0, 0, 255 }, 1, 1, 4);
-    const image_handle = try handles.insert(.image, @ptrCast(value));
-    defer {
-        const token = handles.beginDestroy(image_handle, .image, image.Image).?;
-        token.ptr.deinit();
-        handles.finishDestroy(token.handle);
-    }
+    defer value.deinit();
+    const image_handle: u32 = 1;
 
     try std.testing.expect(try test_renderer.renderer.getNextBuffer().drawImage(value, image_handle, 0, 0, 1, 1, 0, 0, 0, 0, 1, 1, .kitty));
     try std.testing.expectEqual(renderer.RenderStatus.rendered, test_renderer.renderer.render(true));
@@ -439,12 +408,8 @@ test "renderer does not send forced Sixel to Apple Terminal" {
     });
     defer test_renderer.deinit();
     const value = try image.createFromRgba(std.testing.allocator, &[_]u8{ 255, 0, 0, 255 }, 1, 1, 4);
-    const image_handle = try handles.insert(.image, @ptrCast(value));
-    defer {
-        const token = handles.beginDestroy(image_handle, .image, image.Image).?;
-        token.ptr.deinit();
-        handles.finishDestroy(token.handle);
-    }
+    defer value.deinit();
+    const image_handle: u32 = 1;
 
     try std.testing.expect(try test_renderer.renderer.getNextBuffer().drawImage(value, image_handle, 0, 0, 1, 1, 2, 2, 0, 0, 1, 1, .sixel));
     try std.testing.expectEqual(renderer.RenderStatus.rendered, test_renderer.renderer.render(true));
@@ -462,12 +427,8 @@ test "renderer does not send forced Sixel through tmux XTVERSION" {
     });
     defer test_renderer.deinit();
     const value = try image.createFromRgba(std.testing.allocator, &[_]u8{ 255, 0, 0, 255 }, 1, 1, 4);
-    const image_handle = try handles.insert(.image, @ptrCast(value));
-    defer {
-        const token = handles.beginDestroy(image_handle, .image, image.Image).?;
-        token.ptr.deinit();
-        handles.finishDestroy(token.handle);
-    }
+    defer value.deinit();
+    const image_handle: u32 = 1;
     test_renderer.renderer.terminal.processCapabilityResponse("\x1bP>|tmux 3.5a\x1b\\");
 
     try std.testing.expect(try test_renderer.renderer.getNextBuffer().drawImage(value, image_handle, 0, 0, 1, 1, 2, 2, 0, 0, 1, 1, .sixel));
@@ -485,12 +446,8 @@ test "renderer does not send forced Sixel to Kitty" {
     var test_renderer = try TestRenderer.create(std.testing.allocator, 4, 2, pool);
     defer test_renderer.deinit();
     const value = try image.createFromRgba(std.testing.allocator, &[_]u8{ 255, 0, 0, 255 }, 1, 1, 4);
-    const image_handle = try handles.insert(.image, @ptrCast(value));
-    defer {
-        const token = handles.beginDestroy(image_handle, .image, image.Image).?;
-        token.ptr.deinit();
-        handles.finishDestroy(token.handle);
-    }
+    defer value.deinit();
+    const image_handle: u32 = 1;
     test_renderer.renderer.terminal.processCapabilityResponse("\x1bP>|kitty(0.48.2)\x1b\\");
 
     try std.testing.expect(try test_renderer.renderer.getNextBuffer().drawImage(value, image_handle, 0, 0, 1, 1, 2, 2, 0, 0, 1, 1, .sixel));
@@ -507,12 +464,8 @@ test "renderer honors global image protocol override for auto placements" {
     var test_renderer = try TestRenderer.create(std.testing.allocator, 4, 2, pool);
     defer test_renderer.deinit();
     const value = try image.createFromRgba(std.testing.allocator, &[_]u8{ 255, 0, 0, 255 }, 1, 1, 4);
-    const image_handle = try handles.insert(.image, @ptrCast(value));
-    defer {
-        const token = handles.beginDestroy(image_handle, .image, image.Image).?;
-        token.ptr.deinit();
-        handles.finishDestroy(token.handle);
-    }
+    defer value.deinit();
+    const image_handle: u32 = 1;
     test_renderer.renderer.terminal.image_protocol = .kitty;
     try std.testing.expect(try test_renderer.renderer.getNextBuffer().drawImage(value, image_handle, 0, 0, 1, 1, 0, 0, 0, 0, 1, 1, .auto));
     try std.testing.expectEqual(renderer.RenderStatus.rendered, test_renderer.renderer.render(true));
@@ -526,12 +479,8 @@ test "renderer keeps unresolved Sixel fallback frames as no-ops" {
     var test_renderer = try TestRenderer.create(std.testing.allocator, 2, 1, pool);
     defer test_renderer.deinit();
     const value = try image.createFromRgba(std.testing.allocator, &[_]u8{ 255, 0, 0, 255 }, 1, 1, 4);
-    const image_handle = try handles.insert(.image, @ptrCast(value));
-    defer {
-        const token = handles.beginDestroy(image_handle, .image, image.Image).?;
-        token.ptr.deinit();
-        handles.finishDestroy(token.handle);
-    }
+    defer value.deinit();
+    const image_handle: u32 = 1;
     test_renderer.renderer.terminal.caps.sixel = true;
     try std.testing.expect(try test_renderer.renderer.getNextBuffer().drawImage(value, image_handle, 0, 0, 1, 1, 0, 0, 0, 0, 1, 1, .auto));
     try std.testing.expectEqual(renderer.RenderStatus.rendered, test_renderer.renderer.render(true));
@@ -550,12 +499,8 @@ test "renderer repaints a final blocks placement over Sixel" {
     var test_renderer = try TestRenderer.create(std.testing.allocator, 2, 1, pool);
     defer test_renderer.deinit();
     const value = try image.createFromRgba(std.testing.allocator, &[_]u8{ 255, 0, 0, 255 }, 1, 1, 4);
-    const image_handle = try handles.insert(.image, @ptrCast(value));
-    defer {
-        const token = handles.beginDestroy(image_handle, .image, image.Image).?;
-        token.ptr.deinit();
-        handles.finishDestroy(token.handle);
-    }
+    defer value.deinit();
+    const image_handle: u32 = 1;
     try std.testing.expect(try test_renderer.renderer.getNextBuffer().drawImage(value, image_handle, 0, 0, 1, 1, 2, 2, 0, 0, 1, 1, .sixel));
     try std.testing.expect(try test_renderer.renderer.getNextBuffer().drawImage(value, image_handle, 0, 0, 1, 1, 0, 0, 0, 0, 1, 1, .blocks));
     _ = test_renderer.renderer.render(true);
@@ -572,12 +517,8 @@ test "renderer does not retransmit Sixel when overlay text changes" {
     var test_renderer = try TestRenderer.create(std.testing.allocator, 2, 1, pool);
     defer test_renderer.deinit();
     const value = try image.createFromRgba(std.testing.allocator, &[_]u8{ 255, 0, 0, 255 }, 1, 1, 4);
-    const image_handle = try handles.insert(.image, @ptrCast(value));
-    defer {
-        const token = handles.beginDestroy(image_handle, .image, image.Image).?;
-        token.ptr.deinit();
-        handles.finishDestroy(token.handle);
-    }
+    defer value.deinit();
+    const image_handle: u32 = 1;
     const fg = RGBA{ 1.0, 1.0, 1.0, 1.0 };
     const bg = RGBA{ 0.0, 0.0, 0.0, 1.0 };
 
@@ -612,12 +553,8 @@ test "renderer replays a wide grapheme that starts before a Sixel placement" {
     var test_renderer = try TestRenderer.create(std.testing.allocator, 2, 1, pool);
     defer test_renderer.deinit();
     const value = try image.createFromRgba(std.testing.allocator, &[_]u8{ 255, 0, 0, 255 }, 1, 1, 4);
-    const image_handle = try handles.insert(.image, @ptrCast(value));
-    defer {
-        const token = handles.beginDestroy(image_handle, .image, image.Image).?;
-        token.ptr.deinit();
-        handles.finishDestroy(token.handle);
-    }
+    defer value.deinit();
+    const image_handle: u32 = 1;
 
     const next = test_renderer.renderer.getNextBuffer();
     try std.testing.expect(try next.drawImage(value, image_handle, 1, 0, 1, 1, 2, 2, 0, 0, 1, 1, .sixel));
@@ -641,12 +578,8 @@ test "renderer preserves terminal semantics when replaying cells over Sixel" {
     test_renderer.renderer.terminal.caps.hyperlinks = true;
     test_renderer.renderer.terminal.caps.explicit_width = true;
     const value = try image.createFromRgba(std.testing.allocator, &[_]u8{ 255, 0, 0, 255 }, 1, 1, 4);
-    const image_handle = try handles.insert(.image, @ptrCast(value));
-    defer {
-        const token = handles.beginDestroy(image_handle, .image, image.Image).?;
-        token.ptr.deinit();
-        handles.finishDestroy(token.handle);
-    }
+    defer value.deinit();
+    const image_handle: u32 = 1;
     const link_id = try link_pool.alloc("https://example.com/replayed");
     const linked_bold = ansi.TextAttributes.setLinkId(ansi.TextAttributes.BOLD, link_id);
 
@@ -771,12 +704,8 @@ fn expectPlaneCoversImage(protocol: image.RenderProtocol) !void {
     var test_renderer = try TestRenderer.create(std.testing.allocator, 2, 1, pool);
     defer test_renderer.deinit();
     const value = try image.createFromRgba(std.testing.allocator, &[_]u8{ 255, 0, 0, 255 }, 1, 1, 4);
-    const image_handle = try handles.insert(.image, @ptrCast(value));
-    defer {
-        const token = handles.beginDestroy(image_handle, .image, image.Image).?;
-        token.ptr.deinit();
-        handles.finishDestroy(token.handle);
-    }
+    defer value.deinit();
+    const image_handle: u32 = 1;
 
     var next = test_renderer.renderer.getNextBuffer();
     try std.testing.expect(try next.drawImage(value, image_handle, 0, 0, 2, 1, 2, 2, 0, 0, 1, 1, protocol));
@@ -825,12 +754,8 @@ test "renderer splits changed background runs around clean Kitty image cells" {
     var test_renderer = try TestRenderer.create(std.testing.allocator, 5, 1, pool);
     defer test_renderer.deinit();
     const value = try image.createFromRgba(std.testing.allocator, &[_]u8{ 255, 0, 0, 255 }, 1, 1, 4);
-    const image_handle = try handles.insert(.image, @ptrCast(value));
-    defer {
-        const token = handles.beginDestroy(image_handle, .image, image.Image).?;
-        token.ptr.deinit();
-        handles.finishDestroy(token.handle);
-    }
+    defer value.deinit();
+    const image_handle: u32 = 1;
     test_renderer.renderer.terminal.caps.kitty_graphics = true;
 
     var next = test_renderer.renderer.getNextBuffer();
@@ -866,19 +791,13 @@ test "renderer clears old Sixel pixels when replacing an image" {
     const opaque_image = try image.createFromRgba(std.testing.allocator, &[_]u8{
         255, 0, 0, 255, 255, 0, 0, 255,
     }, 2, 1, 8);
+    defer opaque_image.deinit();
     const replacement = try image.createFromRgba(std.testing.allocator, &[_]u8{
         0, 0, 0, 0, 0, 0, 255, 255,
     }, 2, 1, 8);
-    const opaque_handle = try handles.insert(.image, @ptrCast(opaque_image));
-    const replacement_handle = try handles.insert(.image, @ptrCast(replacement));
-    defer {
-        const replacement_token = handles.beginDestroy(replacement_handle, .image, image.Image).?;
-        replacement_token.ptr.deinit();
-        handles.finishDestroy(replacement_token.handle);
-        const opaque_token = handles.beginDestroy(opaque_handle, .image, image.Image).?;
-        opaque_token.ptr.deinit();
-        handles.finishDestroy(opaque_token.handle);
-    }
+    defer replacement.deinit();
+    const opaque_handle: u32 = 1;
+    const replacement_handle: u32 = 2;
 
     var next = test_renderer.renderer.getNextBuffer();
     try std.testing.expect(try next.drawImage(opaque_image, opaque_handle, 0, 0, 2, 1, 2, 2, 0, 0, 2, 1, .sixel));
@@ -978,12 +897,8 @@ test "renderer dims sixel placements by opacity instead of hiding them" {
         255, 0, 0, 255, 255, 0, 0, 255,
         255, 0, 0, 255, 255, 0, 0, 255,
     }, 2, 2, 8);
-    const red_handle = try handles.insert(.image, @ptrCast(red));
-    defer {
-        const token = handles.beginDestroy(red_handle, .image, image.Image).?;
-        token.ptr.deinit();
-        handles.finishDestroy(token.handle);
-    }
+    defer red.deinit();
+    const red_handle: u32 = 1;
     test_renderer.renderer.terminal.caps.sixel = true;
 
     // Opacity 0.4 over the default (transparent) background must stay visible,
@@ -1035,12 +950,8 @@ test "renderer materializes lazy ICC PNGs before applying Sixel opacity" {
     defer std.testing.allocator.free(png);
     try std.base64.standard.Decoder.decode(png, encoded);
     const value = try image.decode(std.testing.allocator, png, .{});
-    const image_handle = try handles.insert(.image, @ptrCast(value));
-    defer {
-        const token = handles.beginDestroy(image_handle, .image, image.Image).?;
-        token.ptr.deinit();
-        handles.finishDestroy(token.handle);
-    }
+    defer value.deinit();
+    const image_handle: u32 = 1;
     try std.testing.expectEqual(@as(usize, 0), value.pixels.len);
     test_renderer.renderer.terminal.caps.sixel = true;
 
@@ -1063,12 +974,8 @@ test "renderer keeps image alpha holes transparent while dimming by opacity" {
     const value = try image.createFromRgba(std.testing.allocator, &[_]u8{
         255, 0, 0, 255, 0, 0, 0, 0,
     }, 2, 1, 8);
-    const value_handle = try handles.insert(.image, @ptrCast(value));
-    defer {
-        const token = handles.beginDestroy(value_handle, .image, image.Image).?;
-        token.ptr.deinit();
-        handles.finishDestroy(token.handle);
-    }
+    defer value.deinit();
+    const value_handle: u32 = 1;
     test_renderer.renderer.terminal.caps.sixel = true;
 
     var next = test_renderer.renderer.getNextBuffer();
@@ -1505,6 +1412,92 @@ test "renderer - resize updates dimensions" {
 
     try std.testing.expectEqual(@as(u32, 120), cli_renderer.width);
     try std.testing.expectEqual(@as(u32, 40), cli_renderer.height);
+}
+
+test "renderer - resize allocation failures preserve both buffers and hit grids" {
+    var pool = gp.GraphemePool.init(std.testing.allocator);
+    defer pool.deinit();
+    var links = link.LinkPool.init(std.testing.allocator);
+    defer links.deinit();
+    for ([_][2]u32{ .{ 4, 1 }, .{ 3, 2 } }) |dimensions| {
+        const allocation_count: usize = if (dimensions[0] * dimensions[1] > 4) 12 else 10;
+        for (0..allocation_count) |fail_index| {
+            var failing = std.testing.FailingAllocator.init(std.testing.allocator, .{});
+            const target = try CliRenderer.createWithOptions(failing.allocator(), 2, 2, &pool, .{
+                .io = io,
+                .output = .memory,
+                .link_pool = &links,
+            });
+            defer target.destroy();
+            const grapheme_id = try pool.alloc("\xf0\x9f\x98\x80");
+            const link_id = try links.alloc("https://resize.invalid");
+            const cell: buffer.Cell = .{
+                .char = gp.packGraphemeStart(grapheme_id, 2),
+                .fg = ansi.rgbColor(1, 2, 3, 255),
+                .bg = ansi.rgbColor(4, 5, 6, 255),
+                .attributes = ansi.TextAttributes.setLinkId(0, link_id),
+            };
+            target.currentRenderBuffer.set(0, 0, cell);
+            target.nextRenderBuffer.set(0, 0, cell);
+            target.currentHitGrid[3] = 42;
+            target.nextHitGrid[3] = 43;
+            target.terminal.setCursorPosition(2, 2, true);
+            var current = try target.currentRenderBuffer.acquireLease();
+            defer current.release();
+            var next = try target.nextRenderBuffer.acquireLease();
+            defer next.release();
+            const current_snapshot = try current.snapshot();
+            const next_snapshot = try next.snapshot();
+            const current_hits = target.currentHitGrid;
+            const next_hits = target.nextHitGrid;
+            const live_bytes = failing.allocated_bytes - failing.freed_bytes;
+            failing.fail_index = failing.alloc_index + fail_index;
+
+            try std.testing.expectError(error.OutOfMemory, target.resize(dimensions[0], dimensions[1]));
+            try std.testing.expectEqual(live_bytes, failing.allocated_bytes - failing.freed_bytes);
+            try std.testing.expectEqual(@as(u32, 2), target.width);
+            try std.testing.expectEqual(@as(u32, 2), target.height);
+            try std.testing.expectEqual(@as(u32, 2), target.hitGridWidth);
+            try std.testing.expectEqual(@as(u32, 2), target.hitGridHeight);
+            try std.testing.expectEqualDeep(current_snapshot, try current.snapshot());
+            try std.testing.expectEqualDeep(next_snapshot, try next.snapshot());
+            try std.testing.expectEqual(current.storage.?, target.currentRenderBuffer.storage);
+            try std.testing.expectEqual(next.storage.?, target.nextRenderBuffer.storage);
+            try std.testing.expectEqualDeep(cell, target.currentRenderBuffer.get(0, 0).?);
+            try std.testing.expectEqualDeep(cell, target.nextRenderBuffer.get(0, 0).?);
+            try std.testing.expectEqual(current_hits.ptr, target.currentHitGrid.ptr);
+            try std.testing.expectEqual(next_hits.ptr, target.nextHitGrid.ptr);
+            try std.testing.expectEqual(@as(u32, 42), target.checkHit(1, 1));
+            try std.testing.expectEqual(@as(u32, 43), target.nextHitGrid[3]);
+            try std.testing.expect(!target.hitGridResizeInvalidated);
+            try std.testing.expectEqual(@as(u32, 2), target.terminal.getCursorPosition().y);
+            try std.testing.expectEqual(@as(u32, 2), try pool.getRefcount(grapheme_id));
+            try std.testing.expectEqual(@as(u32, 2), try links.getRefcount(link_id));
+
+            failing.fail_index = std.math.maxInt(usize);
+            try target.resize(dimensions[0], dimensions[1]);
+            try std.testing.expectEqual(dimensions[0], target.width);
+            try std.testing.expectEqual(dimensions[1], target.height);
+            for ([_]*OptimizedBuffer{ target.currentRenderBuffer, target.nextRenderBuffer }) |frame| {
+                try std.testing.expectEqual(dimensions[0], frame.width);
+                try std.testing.expectEqual(dimensions[1], frame.height);
+                try std.testing.expectEqual(@as(u64, 2), frame.storage.generation);
+            }
+            try std.testing.expectEqual(dimensions[0], target.hitGridWidth);
+            try std.testing.expectEqual(dimensions[1], target.hitGridHeight);
+            for (target.currentHitGrid) |hit| try std.testing.expectEqual(@as(u32, 0), hit);
+            for (target.nextHitGrid) |hit| try std.testing.expectEqual(@as(u32, 0), hit);
+            try std.testing.expect(target.hitGridResizeInvalidated);
+            try std.testing.expect(!current.isCurrent());
+            try std.testing.expect(!next.isCurrent());
+            try std.testing.expectEqual(cell.char, current_snapshot.buffer.char[0]);
+            try std.testing.expectEqual(cell.char, next_snapshot.buffer.char[0]);
+            try std.testing.expectEqualStrings("\xf0\x9f\x98\x80", try pool.get(grapheme_id));
+            try std.testing.expectEqualStrings("https://resize.invalid", try links.get(link_id));
+            failing.fail_index = failing.alloc_index;
+            try target.resize(dimensions[0], dimensions[1]);
+        }
+    }
 }
 
 test "renderer - resize clears stale hit grid coordinates" {
@@ -2562,12 +2555,8 @@ test "renderer - pinned split scrollback repaints live native images after appen
     var test_renderer = try TestRenderer.create(std.testing.allocator, 4, 3, pool);
     defer test_renderer.deinit();
     const value = try image.createFromRgba(std.testing.allocator, &[_]u8{ 255, 0, 0, 255 }, 1, 1, 4);
-    const image_handle = try handles.insert(.image, @ptrCast(value));
-    defer {
-        const token = handles.beginDestroy(image_handle, .image, image.Image).?;
-        token.ptr.deinit();
-        handles.finishDestroy(token.handle);
-    }
+    defer value.deinit();
+    const image_handle: u32 = 1;
     test_renderer.renderer.terminal.caps.kitty_graphics = true;
     _ = test_renderer.renderer.resetSplitScrollback(2, 2);
 
@@ -2598,12 +2587,8 @@ test "renderer - split scrollback materializes image fallback cells" {
     var test_renderer = try TestRenderer.create(std.testing.allocator, 4, 3, pool);
     defer test_renderer.deinit();
     const value = try image.createFromRgba(std.testing.allocator, &[_]u8{ 255, 0, 0, 255 }, 1, 1, 4);
-    const image_handle = try handles.insert(.image, @ptrCast(value));
-    defer {
-        const token = handles.beginDestroy(image_handle, .image, image.Image).?;
-        token.ptr.deinit();
-        handles.finishDestroy(token.handle);
-    }
+    defer value.deinit();
+    const image_handle: u32 = 1;
     const snapshot = try OptimizedBuffer.init(std.testing.allocator, 2, 1, .{ .pool = pool, .link_pool = &local_link_pool });
     defer snapshot.deinit();
     try std.testing.expect(try snapshot.drawImage(value, image_handle, 0, 0, 1, 1, 0, 0, 0, 0, 1, 1, .auto));
@@ -2625,12 +2610,8 @@ test "renderer - split scrollback uses native Kitty when Kitty is selected" {
     var test_renderer = try TestRenderer.create(std.testing.allocator, 4, 3, pool);
     defer test_renderer.deinit();
     const value = try image.createFromRgba(std.testing.allocator, &[_]u8{ 255, 0, 0, 255 }, 1, 1, 4);
-    const image_handle = try handles.insert(.image, @ptrCast(value));
-    defer {
-        const token = handles.beginDestroy(image_handle, .image, image.Image).?;
-        token.ptr.deinit();
-        handles.finishDestroy(token.handle);
-    }
+    defer value.deinit();
+    const image_handle: u32 = 1;
     test_renderer.renderer.terminal.processCapabilityResponse("\x1b_Gi=31337;OK\x1b\\");
     var snapshot = try OptimizedBuffer.init(std.testing.allocator, 1, 1, .{ .pool = pool, .link_pool = &local_link_pool });
     defer snapshot.deinit();
@@ -2655,12 +2636,15 @@ test "renderer - split scrollback images remain addressable before and across pi
     defer gp.deinitGlobalPool();
     var local_link_pool = link.LinkPool.init(std.testing.allocator);
     defer local_link_pool.deinit();
+    const registry = try std.testing.allocator.create(handles.Registry);
+    defer std.testing.allocator.destroy(registry);
+    registry.init();
     const value = try image.createFromRgba(std.testing.allocator, &[_]u8{ 255, 0, 0, 255 }, 1, 1, 4);
-    const image_handle = try handles.insert(.image, @ptrCast(value));
+    const image_handle = try registry.insert(.image, @ptrCast(value));
     defer {
-        const token = handles.beginDestroy(image_handle, .image, image.Image).?;
+        const token = registry.beginDestroy(image_handle, .image, image.Image).?;
         token.ptr.deinit();
-        handles.finishDestroy(token.handle);
+        registry.finishDestroy(token.handle);
     }
 
     for ([_]bool{ false, true }) |sixel| {
@@ -2712,12 +2696,8 @@ test "renderer - failed Kitty scrollback preparation does not publish the batch"
     const value = try image.createFromRgba(std.testing.allocator, &[_]u8{
         255, 0, 0, 255, 0, 0, 255, 255,
     }, 2, 1, 8);
-    const image_handle = try handles.insert(.image, @ptrCast(value));
-    defer {
-        const token = handles.beginDestroy(image_handle, .image, image.Image).?;
-        token.ptr.deinit();
-        handles.finishDestroy(token.handle);
-    }
+    defer value.deinit();
+    const image_handle: u32 = 1;
     test_renderer.renderer.terminal.processCapabilityResponse("\x1bP>|kitty(0.40.1)\x1b\\\x1b_Gi=31337;OK\x1b\\");
     var snapshot = try OptimizedBuffer.init(std.testing.allocator, 1, 1, .{ .pool = pool, .link_pool = &local_link_pool });
     defer snapshot.deinit();
@@ -2753,12 +2733,8 @@ test "renderer - split scrollback emits native Sixel images when placement geome
     var test_renderer = try TestRenderer.create(std.testing.allocator, 4, 3, pool);
     defer test_renderer.deinit();
     const value = try image.createFromRgba(std.testing.allocator, &[_]u8{ 255, 0, 0, 255 }, 1, 1, 4);
-    const image_handle = try handles.insert(.image, @ptrCast(value));
-    defer {
-        const token = handles.beginDestroy(image_handle, .image, image.Image).?;
-        token.ptr.deinit();
-        handles.finishDestroy(token.handle);
-    }
+    defer value.deinit();
+    const image_handle: u32 = 1;
     test_renderer.renderer.terminal.caps.sixel = true;
     var snapshot = try OptimizedBuffer.init(std.testing.allocator, 1, 1, .{ .pool = pool, .link_pool = &local_link_pool });
     defer snapshot.deinit();
@@ -3504,6 +3480,171 @@ test "renderer - buffered debug dump includes non-threaded last render" {
 
 const native_span_feed = @import("../native-span-feed.zig");
 
+test "FeedBackend - suspend from a published frame callback delivers mode exits" {
+    const Callback = struct {
+        var target: ?*CliRenderer = null;
+        fn notify(_: usize, event: u32, _: usize, _: u64) callconv(.c) void {
+            if (event != @intFromEnum(native_span_feed.EventId.DataAvailable)) return;
+            const cli = target orelse return;
+            target = null;
+            cli.suspendRenderer();
+        }
+    };
+    const pool = gp.initGlobalPool(std.testing.allocator);
+    defer gp.deinitGlobalPool();
+    _ = link.initGlobalLinkPool(std.testing.allocator);
+    defer link.deinitGlobalLinkPool();
+    const feed = try native_span_feed.Stream.create(std.testing.allocator, null);
+    defer feed.destroy();
+    const cli = try CliRenderer.createWithOptions(std.testing.allocator, 4, 2, pool, .{
+        .remote_mode = .remote,
+        .output = .{ .feed = feed },
+    });
+    defer cli.destroy();
+    cli.terminalSetup = true;
+    cli.useAlternateScreen = true;
+    cli.terminal.state.alt_screen = true;
+    cli.terminal.state.kitty_keyboard = true;
+    cli.terminal.state.kitty_keyboard_flags = 5;
+    Callback.target = cli;
+    defer Callback.target = null;
+    feed.setCallback(&Callback.notify);
+    try feed.attach();
+    try std.testing.expectEqual(renderer.RenderStatus.rendered, cli.render(true));
+    var spans: [8]native_span_feed.SpanInfo = undefined;
+    const count = feed.drainSpans(&spans);
+    defer for (spans[0..count]) |span| feed.markSpanConsumed(span);
+    try std.testing.expect(count >= 2);
+    try std.testing.expect(std.mem.find(u8, spans[0].slice(), ansi.ANSI.syncReset) != null);
+    try std.testing.expect(std.mem.find(u8, spans[1].slice(), ansi.ANSI.switchToMainScreen) != null);
+    try std.testing.expect(std.mem.find(u8, spans[1].slice(), ansi.ANSI.csiUPop) != null);
+    try std.testing.expect(!cli.terminal.state.alt_screen);
+    try std.testing.expect(!cli.terminal.state.kitty_keyboard);
+}
+
+test "FeedBackend - suspend from a published split batch callback preserves state" {
+    const Callback = struct {
+        var target: ?*CliRenderer = null;
+        fn notify(_: usize, event: u32, _: usize, _: u64) callconv(.c) void {
+            if (event != @intFromEnum(native_span_feed.EventId.DataAvailable)) return;
+            const cli = target orelse return;
+            target = null;
+            cli.suspendRenderer();
+        }
+    };
+    const pool = gp.initGlobalPool(std.testing.allocator);
+    defer gp.deinitGlobalPool();
+    _ = link.initGlobalLinkPool(std.testing.allocator);
+    defer link.deinitGlobalLinkPool();
+    const feed = try native_span_feed.Stream.create(std.testing.allocator, null);
+    defer feed.destroy();
+    const cli = try CliRenderer.createWithOptions(std.testing.allocator, 4, 2, pool, .{
+        .remote_mode = .remote,
+        .output = .{ .feed = feed },
+    });
+    defer cli.destroy();
+    cli.terminalSetup = true;
+    cli.useAlternateScreen = true;
+    cli.terminal.state.alt_screen = true;
+    cli.terminal.state.kitty_keyboard = true;
+    cli.terminal.state.kitty_keyboard_flags = 5;
+    _ = cli.resetSplitScrollback(1, 4);
+    cli.currentHitGrid[0] = 42;
+    cli.nextHitGrid[0] = 43;
+    const snapshot = try OptimizedBuffer.init(std.testing.allocator, 4, 1, .{ .pool = pool });
+    defer snapshot.deinit();
+    try snapshot.drawText("kept", 0, 0, .{ 255, 255, 255, 255 }, null, 0);
+    Callback.target = cli;
+    defer Callback.target = null;
+    feed.setCallback(&Callback.notify);
+    try feed.attach();
+
+    const first = cli.commitSplitFooterSnapshotBatched(snapshot, 4, false, true, 4, false, true, false);
+    try std.testing.expectEqual(renderer.RenderStatus.rendered, first.status);
+    try std.testing.expect(cli.splitBatchActive);
+    try std.testing.expect(Callback.target == cli);
+    const final = cli.commitSplitFooterSnapshotBatched(snapshot, 4, false, true, 4, false, false, true);
+    try std.testing.expectEqual(renderer.RenderStatus.rendered, final.status);
+    try std.testing.expect(Callback.target == null);
+    var spans: [8]native_span_feed.SpanInfo = undefined;
+    const count = feed.drainSpans(&spans);
+    defer for (spans[0..count]) |span| feed.markSpanConsumed(span);
+    try std.testing.expect(count >= 2);
+    try std.testing.expectEqual(@as(usize, 2), std.mem.count(u8, spans[0].slice(), "kept"));
+    try std.testing.expect(std.mem.find(u8, spans[0].slice(), ansi.ANSI.syncReset) != null);
+    try std.testing.expect(std.mem.find(u8, spans[1].slice(), ansi.ANSI.switchToMainScreen) != null);
+    try std.testing.expect(std.mem.find(u8, spans[1].slice(), ansi.ANSI.csiUPop) != null);
+    try std.testing.expectEqual(@as(u32, 3), cli.splitScrollback.published_rows);
+    try std.testing.expectEqual(@as(u32, 3), final.renderOffset);
+    try std.testing.expectEqual(@as(u32, 43), cli.currentHitGrid[0]);
+    try std.testing.expect(!cli.splitBatchActive);
+    try std.testing.expect(!cli.terminal.state.alt_screen);
+    try std.testing.expect(!cli.terminal.state.kitty_keyboard);
+}
+
+test "FeedBackend - shutdown cancels an unfinished split batch and retries rejected controls" {
+    const pool = gp.initGlobalPool(std.testing.allocator);
+    defer gp.deinitGlobalPool();
+    _ = link.initGlobalLinkPool(std.testing.allocator);
+    defer link.deinitGlobalLinkPool();
+    var options = native_span_feed.defaultOptions();
+    options.chunk_size = 4096;
+    options.initial_chunks = 1;
+    options.max_bytes = 4096;
+    const feed = try native_span_feed.Stream.create(std.testing.allocator, options);
+    defer feed.destroy();
+    const cli = try CliRenderer.createWithOptions(std.testing.allocator, 4, 2, pool, .{
+        .remote_mode = .remote,
+        .output = .{ .feed = feed },
+    });
+    defer cli.destroy();
+    cli.terminalSetup = true;
+    cli.useAlternateScreen = true;
+    cli.terminal.state.alt_screen = true;
+    cli.terminal.state.kitty_keyboard = true;
+    cli.terminal.state.kitty_keyboard_flags = 5;
+    _ = cli.resetSplitScrollback(1, 2);
+    const previous = cli.splitScrollback;
+    const snapshot = try OptimizedBuffer.init(std.testing.allocator, 4, 1, .{ .pool = pool });
+    defer snapshot.deinit();
+    try snapshot.drawText("lost", 0, 0, .{ 255, 255, 255, 255 }, null, 0);
+    const first = cli.commitSplitFooterSnapshotBatched(snapshot, 4, false, true, 2, false, true, false);
+    try std.testing.expectEqual(renderer.RenderStatus.rendered, first.status);
+    try std.testing.expect(cli.splitBatchActive);
+    cli.suspendRenderer();
+    try std.testing.expect(!cli.splitBatchActive);
+    try std.testing.expectEqual(previous, cli.splitScrollback);
+    var spans: [8]native_span_feed.SpanInfo = undefined;
+    var count = feed.drainSpans(&spans);
+    var found_alt = false;
+    var found_keyboard = false;
+    for (spans[0..count]) |span| {
+        defer feed.markSpanConsumed(span);
+        found_alt = found_alt or std.mem.find(u8, span.slice(), ansi.ANSI.switchToMainScreen) != null;
+        found_keyboard = found_keyboard or std.mem.find(u8, span.slice(), ansi.ANSI.csiUPop) != null;
+        try std.testing.expect(std.mem.find(u8, span.slice(), "lost") == null);
+    }
+    try std.testing.expect(found_alt and found_keyboard);
+
+    cli.terminal.state.alt_screen = true;
+    cli.terminal.state.kitty_keyboard = true;
+    cli.terminal.state.kitty_keyboard_flags = 5;
+    try feed.writeAtomic(&([_]u8{'x'} ** 4096));
+    cli.suspendRenderer();
+    try std.testing.expect(cli.terminal.state.alt_screen);
+    try std.testing.expect(cli.terminal.state.kitty_keyboard);
+    count = feed.drainSpans(&spans);
+    for (spans[0..count]) |span| feed.markSpanConsumed(span);
+    cli.suspendRenderer();
+    try std.testing.expect(!cli.terminal.state.alt_screen);
+    try std.testing.expect(!cli.terminal.state.kitty_keyboard);
+    count = feed.drainSpans(&spans);
+    defer for (spans[0..count]) |span| feed.markSpanConsumed(span);
+    try std.testing.expect(count > 0);
+    try std.testing.expect(std.mem.find(u8, spans[0].slice(), ansi.ANSI.switchToMainScreen) != null);
+    try std.testing.expect(std.mem.find(u8, spans[0].slice(), ansi.ANSI.csiUPop) != null);
+}
+
 test "FeedBackend - renderer writes through feed" {
     const pool = gp.initGlobalPool(std.testing.allocator);
     defer gp.deinitGlobalPool();
@@ -3528,6 +3669,7 @@ test "FeedBackend - renderer writes through feed" {
 
     var span_out: [32]native_span_feed.SpanInfo = undefined;
     const count = feed.drainSpans(&span_out);
+    defer for (span_out[0..count]) |span| feed.markSpanConsumed(span);
     try std.testing.expect(count > 0);
 
     var total_bytes: usize = 0;
@@ -3729,7 +3871,7 @@ test "FeedBackend - failed frame publishes no partial bytes" {
     backend.beginFrame();
     var failed_writer = backend.writer();
     try failed_writer.writeAll("pending");
-    try failed_writer.writeAll("this-write-is-too-large-for-the-current-chunk");
+    try std.testing.expectError(error.BufferFull, failed_writer.writeAll("this-write-is-too-large-for-the-current-chunk"));
     try std.testing.expectEqual(.failed, backend.endFrame());
 
     var span_out: [4]native_span_feed.SpanInfo = undefined;
@@ -3868,7 +4010,7 @@ test "FeedBackend - failed ordinary render retries split transition" {
     try std.testing.expect(std.mem.find(u8, output[0..output_len], "\x1b[1T") != null);
 }
 
-test "FeedBackend - failed frame keeps the published hit grid" {
+test "FeedBackend - failed frame keeps the published hit grid and clears failed paint" {
     const pool = gp.initGlobalPool(std.testing.allocator);
     defer gp.deinitGlobalPool();
     _ = link.initGlobalLinkPool(std.testing.allocator);
@@ -3895,12 +4037,15 @@ test "FeedBackend - failed frame keeps the published hit grid" {
     var count = feed.drainSpans(&spans);
     for (spans[0..count]) |span| feed.markSpanConsumed(span);
     try std.testing.expectEqual(@as(u32, 11), cli_renderer.checkHit(0, 0));
+    const cleared_char = cli_renderer.getNextBuffer().buffer.char[0];
 
     cli_renderer.addToHitGrid(0, 0, 1, 1, 22);
+    try cli_renderer.getNextBuffer().drawText("X", 0, 0, ansi.rgbColor(255, 255, 255, 255), null, 0);
     const blocker = [_]u8{'x'} ** 193;
     try feed.writeAtomic(&blocker);
     try std.testing.expectEqual(renderer.RenderStatus.failed, cli_renderer.render(true));
     try std.testing.expectEqual(@as(u32, 11), cli_renderer.checkHit(0, 0));
+    try std.testing.expectEqual(cleared_char, cli_renderer.getNextBuffer().buffer.char[0]);
 
     count = feed.drainSpans(&spans);
     for (spans[0..count]) |span| feed.markSpanConsumed(span);
@@ -3964,6 +4109,9 @@ test "FeedBackend - failed frame retries unsent terminal controls" {
 }
 
 test "FeedBackend - failed Sixel frame does not publish an unterminated DCS" {
+    const registry = try std.testing.allocator.create(handles.Registry);
+    defer std.testing.allocator.destroy(registry);
+    registry.init();
     const pool = gp.initGlobalPool(std.testing.allocator);
     defer gp.deinitGlobalPool();
     _ = link.initGlobalLinkPool(std.testing.allocator);
@@ -3993,11 +4141,11 @@ test "FeedBackend - failed Sixel frame does not publish an unterminated DCS" {
         pixels[index * 4 + 3] = 255;
     }
     const value = try image.createFromRgba(std.testing.allocator, pixels, 32, 16, 32 * 4);
-    const image_handle = try handles.insert(.image, @ptrCast(value));
+    const image_handle = try registry.insert(.image, @ptrCast(value));
     defer {
-        const token = handles.beginDestroy(image_handle, .image, image.Image).?;
+        const token = registry.beginDestroy(image_handle, .image, image.Image).?;
         token.ptr.deinit();
-        handles.finishDestroy(token.handle);
+        registry.finishDestroy(token.handle);
     }
 
     try std.testing.expect(try cli_renderer.getNextBuffer().drawImage(
@@ -4287,12 +4435,8 @@ test "renderer scales kitty transmission alpha by placement opacity" {
     var test_renderer = try TestRenderer.create(std.testing.allocator, 4, 2, pool);
     defer test_renderer.deinit();
     const value = try image.createFromRgba(std.testing.allocator, &[_]u8{ 200, 100, 50, 255 }, 1, 1, 4);
-    const value_handle = try handles.insert(.image, @ptrCast(value));
-    defer {
-        const token = handles.beginDestroy(value_handle, .image, image.Image).?;
-        token.ptr.deinit();
-        handles.finishDestroy(token.handle);
-    }
+    defer value.deinit();
+    const value_handle: u32 = 1;
     test_renderer.renderer.terminal.caps.kitty_graphics = true;
 
     var next = test_renderer.renderer.getNextBuffer();
@@ -4340,21 +4484,18 @@ test "renderer bounds sixel cache entries and evicts least recently used payload
 
     const image_count = 260;
     var images: [image_count]*image.Image = undefined;
-    var image_handles: [image_count]u32 = undefined;
+    var initialized: usize = 0;
+    defer for (images[0..initialized]) |value| value.deinit();
     for (0..image_count) |index| {
         const shade: u8 = @intCast(index % 256);
         images[index] = try image.createFromRgba(std.testing.allocator, &[_]u8{ shade, 255 - shade, @intCast((index / 4) % 256), 255 }, 1, 1, 4);
-        image_handles[index] = try handles.insert(.image, @ptrCast(images[index]));
+        initialized += 1;
     }
-    defer for (image_handles) |handle| {
-        const token = handles.beginDestroy(handle, .image, image.Image).?;
-        token.ptr.deinit();
-        handles.finishDestroy(token.handle);
-    };
 
     var next = test_renderer.renderer.getNextBuffer();
     for (0..image_count) |index| {
-        try std.testing.expect(try next.drawImage(images[index], image_handles[index], 0, 0, 1, 1, 2, 2, 0, 0, 1, 1, .auto));
+        const image_handle: u32 = @intCast(index + 1);
+        try std.testing.expect(try next.drawImage(images[index], image_handle, 0, 0, 1, 1, 2, 2, 0, 0, 1, 1, .auto));
     }
     try std.testing.expectEqual(renderer.RenderStatus.rendered, test_renderer.renderer.render(true));
     try std.testing.expectEqual(@as(u64, image_count), test_renderer.renderer.sixelCacheMisses);
@@ -4363,13 +4504,13 @@ test "renderer bounds sixel cache entries and evicts least recently used payload
 
     // The first payloads were the least recently used and must have been evicted.
     next = test_renderer.renderer.getNextBuffer();
-    try std.testing.expect(try next.drawImage(images[0], image_handles[0], 0, 0, 1, 1, 2, 2, 0, 0, 1, 1, .auto));
+    try std.testing.expect(try next.drawImage(images[0], 1, 0, 0, 1, 1, 2, 2, 0, 0, 1, 1, .auto));
     try std.testing.expectEqual(renderer.RenderStatus.rendered, test_renderer.renderer.render(true));
     try std.testing.expectEqual(@as(u64, image_count + 1), test_renderer.renderer.sixelCacheMisses);
 
     // A recently used payload is still cached.
     next = test_renderer.renderer.getNextBuffer();
-    try std.testing.expect(try next.drawImage(images[image_count - 1], image_handles[image_count - 1], 0, 0, 1, 1, 2, 2, 0, 0, 1, 1, .auto));
+    try std.testing.expect(try next.drawImage(images[image_count - 1], image_count, 0, 0, 1, 1, 2, 2, 0, 0, 1, 1, .auto));
     try std.testing.expectEqual(renderer.RenderStatus.rendered, test_renderer.renderer.render(true));
     try std.testing.expectEqual(@as(u64, 1), test_renderer.renderer.sixelCacheHits);
 }
@@ -4381,12 +4522,8 @@ test "renderer treats fully transparent sixel placements as empty without failin
     var test_renderer = try TestRenderer.create(std.testing.allocator, 4, 2, pool);
     defer test_renderer.deinit();
     const value = try image.createFromRgba(std.testing.allocator, &[_]u8{ 255, 0, 0, 0 }, 1, 1, 4);
-    const value_handle = try handles.insert(.image, @ptrCast(value));
-    defer {
-        const token = handles.beginDestroy(value_handle, .image, image.Image).?;
-        token.ptr.deinit();
-        handles.finishDestroy(token.handle);
-    }
+    defer value.deinit();
+    const value_handle: u32 = 1;
     test_renderer.renderer.terminal.caps.sixel = true;
 
     var next = test_renderer.renderer.getNextBuffer();
@@ -4412,12 +4549,8 @@ test "renderer retransmits sixel placements on a forced full repaint" {
     var test_renderer = try TestRenderer.create(std.testing.allocator, 4, 2, pool);
     defer test_renderer.deinit();
     const value = try image.createFromRgba(std.testing.allocator, &[_]u8{ 255, 0, 0, 255 }, 1, 1, 4);
-    const value_handle = try handles.insert(.image, @ptrCast(value));
-    defer {
-        const token = handles.beginDestroy(value_handle, .image, image.Image).?;
-        token.ptr.deinit();
-        handles.finishDestroy(token.handle);
-    }
+    defer value.deinit();
+    const value_handle: u32 = 1;
     test_renderer.renderer.terminal.caps.sixel = true;
 
     var next = test_renderer.renderer.getNextBuffer();
@@ -4441,14 +4574,11 @@ test "renderer leaves clean text alone when graphics content changes" {
     var test_renderer = try TestRenderer.create(std.testing.allocator, 8, 4, pool);
     defer test_renderer.deinit();
     const first = try image.createFromRgba(std.testing.allocator, &[_]u8{ 255, 0, 0, 255 }, 1, 1, 4);
+    defer first.deinit();
     const second = try image.createFromRgba(std.testing.allocator, &[_]u8{ 0, 255, 0, 255 }, 1, 1, 4);
-    const first_handle = try handles.insert(.image, @ptrCast(first));
-    const second_handle = try handles.insert(.image, @ptrCast(second));
-    defer for ([_]u32{ second_handle, first_handle }) |handle| {
-        const token = handles.beginDestroy(handle, .image, image.Image).?;
-        token.ptr.deinit();
-        handles.finishDestroy(token.handle);
-    };
+    defer second.deinit();
+    const first_handle: u32 = 1;
+    const second_handle: u32 = 2;
     test_renderer.renderer.terminal.caps.kitty_graphics = true;
 
     var next = test_renderer.renderer.getNextBuffer();
@@ -4477,14 +4607,11 @@ test "renderer clears dirty sixel cells as one batched space run" {
     var test_renderer = try TestRenderer.create(std.testing.allocator, 8, 2, pool);
     defer test_renderer.deinit();
     const first = try image.createFromRgba(std.testing.allocator, &[_]u8{ 255, 0, 0, 255 }, 1, 1, 4);
+    defer first.deinit();
     const second = try image.createFromRgba(std.testing.allocator, &[_]u8{ 0, 255, 0, 255 }, 1, 1, 4);
-    const first_handle = try handles.insert(.image, @ptrCast(first));
-    const second_handle = try handles.insert(.image, @ptrCast(second));
-    defer for ([_]u32{ second_handle, first_handle }) |handle| {
-        const token = handles.beginDestroy(handle, .image, image.Image).?;
-        token.ptr.deinit();
-        handles.finishDestroy(token.handle);
-    };
+    defer second.deinit();
+    const first_handle: u32 = 1;
+    const second_handle: u32 = 2;
     test_renderer.renderer.terminal.caps.sixel = true;
 
     var next = test_renderer.renderer.getNextBuffer();
@@ -4518,12 +4645,8 @@ test "renderer downscales large kitty stills to their placement pixel size" {
         pixels[index * 4 + 3] = 255;
     }
     const value = try image.createFromRgba(std.testing.allocator, pixels, 64, 64, 64 * 4);
-    const value_handle = try handles.insert(.image, @ptrCast(value));
-    defer {
-        const token = handles.beginDestroy(value_handle, .image, image.Image).?;
-        token.ptr.deinit();
-        handles.finishDestroy(token.handle);
-    }
+    defer value.deinit();
+    const value_handle: u32 = 1;
     test_renderer.renderer.terminal.caps.kitty_graphics = true;
 
     var next = test_renderer.renderer.getNextBuffer();
@@ -4559,12 +4682,8 @@ test "renderer transmits small kitty images at native size" {
     var test_renderer = try TestRenderer.create(std.testing.allocator, 8, 4, pool);
     defer test_renderer.deinit();
     const value = try image.createFromRgba(std.testing.allocator, &([_]u8{ 9, 8, 7, 255 } ** 64), 8, 8, 32);
-    const value_handle = try handles.insert(.image, @ptrCast(value));
-    defer {
-        const token = handles.beginDestroy(value_handle, .image, image.Image).?;
-        token.ptr.deinit();
-        handles.finishDestroy(token.handle);
-    }
+    defer value.deinit();
+    const value_handle: u32 = 1;
     test_renderer.renderer.terminal.caps.kitty_graphics = true;
 
     // Displayed at 16x16 pixels (upscale): the source pixels are transmitted
@@ -4592,12 +4711,8 @@ test "renderer reuses the kitty transmit across source rectangle changes" {
         pixels[index * 4 + 3] = 255;
     }
     const value = try image.createFromRgba(std.testing.allocator, pixels, 64, 64, 64 * 4);
-    const value_handle = try handles.insert(.image, @ptrCast(value));
-    defer {
-        const token = handles.beginDestroy(value_handle, .image, image.Image).?;
-        token.ptr.deinit();
-        handles.finishDestroy(token.handle);
-    }
+    defer value.deinit();
+    const value_handle: u32 = 1;
     test_renderer.renderer.terminal.caps.kitty_graphics = true;
 
     // A clipped placement transmits the full image once; the placement escape
@@ -4636,12 +4751,8 @@ test "renderer does not publish a frame when image dirty preparation fails" {
     test_renderer.renderer.terminal.caps.sixel = true;
 
     const value = try image.createFromRgba(std.testing.allocator, &[_]u8{ 255, 0, 0, 255 }, 1, 1, 4);
-    const value_handle = try handles.insert(.image, @ptrCast(value));
-    defer {
-        const token = handles.beginDestroy(value_handle, .image, image.Image).?;
-        token.ptr.deinit();
-        handles.finishDestroy(token.handle);
-    }
+    defer value.deinit();
+    const value_handle: u32 = 1;
     try test_renderer.renderer.pendingImages.ensureTotalCapacity(std.testing.allocator, 1);
     const next = test_renderer.renderer.getNextBuffer();
     try std.testing.expect(try next.drawImage(value, value_handle, 0, 0, 1, 1, 2, 2, 0, 0, 1, 1, .sixel));
@@ -4672,12 +4783,8 @@ test "renderer does not publish a frame when Sixel preparation fails" {
     test_renderer.renderer.terminal.caps.sixel = true;
 
     const value = try image.createFromRgba(std.testing.allocator, &[_]u8{ 255, 0, 0, 255 }, 1, 1, 4);
-    const value_handle = try handles.insert(.image, @ptrCast(value));
-    defer {
-        const token = handles.beginDestroy(value_handle, .image, image.Image).?;
-        token.ptr.deinit();
-        handles.finishDestroy(token.handle);
-    }
+    defer value.deinit();
+    const value_handle: u32 = 1;
     try test_renderer.renderer.imageDirty.ensureTotalCapacity(std.testing.allocator, 1);
     try test_renderer.renderer.pendingImages.ensureTotalCapacity(std.testing.allocator, 1);
     const next = test_renderer.renderer.getNextBuffer();
@@ -4709,12 +4816,8 @@ test "renderer does not publish Kitty output when image state staging fails" {
     test_renderer.renderer.terminal.caps.kitty_graphics = true;
 
     const value = try image.createFromRgba(std.testing.allocator, &[_]u8{ 255, 0, 0, 255 }, 1, 1, 4);
-    const value_handle = try handles.insert(.image, @ptrCast(value));
-    defer {
-        const token = handles.beginDestroy(value_handle, .image, image.Image).?;
-        token.ptr.deinit();
-        handles.finishDestroy(token.handle);
-    }
+    defer value.deinit();
+    const value_handle: u32 = 1;
     try test_renderer.renderer.imageDirty.ensureTotalCapacity(std.testing.allocator, 1);
     const next = test_renderer.renderer.getNextBuffer();
     try std.testing.expect(try next.drawImage(value, value_handle, 0, 0, 1, 1, 1, 1, 0, 0, 1, 1, .kitty));
@@ -4745,14 +4848,11 @@ test "renderer clears an upper sixel hole when its lower image moves away" {
     test_renderer.renderer.terminal.caps.sixel = true;
 
     const lower = try image.createFromRgba(std.testing.allocator, &[_]u8{ 0, 0, 255, 255 }, 1, 1, 4);
+    defer lower.deinit();
     const upper = try image.createFromRgba(std.testing.allocator, &[_]u8{ 0, 0, 0, 0 }, 1, 1, 4);
-    const lower_handle = try handles.insert(.image, @ptrCast(lower));
-    const upper_handle = try handles.insert(.image, @ptrCast(upper));
-    defer for ([_]u32{ upper_handle, lower_handle }) |handle| {
-        const token = handles.beginDestroy(handle, .image, image.Image).?;
-        token.ptr.deinit();
-        handles.finishDestroy(token.handle);
-    };
+    defer upper.deinit();
+    const lower_handle: u32 = 1;
+    const upper_handle: u32 = 2;
 
     var next = test_renderer.renderer.getNextBuffer();
     try std.testing.expect(try next.drawImage(lower, lower_handle, 0, 0, 1, 1, 2, 2, 0, 0, 1, 1, .sixel));
@@ -4764,4 +4864,36 @@ test "renderer clears an upper sixel hole when its lower image moves away" {
     try std.testing.expect(try next.drawImage(upper, upper_handle, 0, 0, 1, 1, 2, 2, 0, 0, 1, 1, .sixel));
     try std.testing.expectEqual(renderer.RenderStatus.rendered, test_renderer.renderer.render(false));
     try std.testing.expect(std.mem.find(u8, test_renderer.memory.lastWrite(), "\x1b[1;1H") != null);
+}
+
+test "renderer resize reports allocation and dimension failures without committing geometry" {
+    var pool = gp.GraphemePool.init(std.testing.allocator);
+    defer pool.deinit();
+    var links = link.LinkPool.init(std.testing.allocator);
+    defer links.deinit();
+    var failing = std.testing.FailingAllocator.init(std.testing.allocator, .{});
+    const target = try CliRenderer.createWithOptions(failing.allocator(), 2, 2, &pool, .{
+        .io = std.testing.io,
+        .output = .memory,
+        .link_pool = &links,
+    });
+    defer target.destroy();
+    try std.testing.expectError(error.InvalidDimensions, target.resize(0, 1));
+    try std.testing.expectError(error.InvalidDimensions, target.resize(65536, 65536));
+    failing.fail_index = failing.alloc_index;
+    try std.testing.expectError(error.OutOfMemory, target.resize(4, 1));
+    try std.testing.expectEqual(@as(u32, 2), target.width);
+    try std.testing.expectEqual(@as(u32, 2), target.height);
+    failing.fail_index = std.math.maxInt(usize);
+    try target.resize(4, 1);
+    try std.testing.expectEqual(@as(u32, 4), target.width);
+    try std.testing.expectEqual(@as(u32, 1), target.height);
+    target.nextRenderBuffer.storage.generation = std.math.maxInt(u64);
+    const current = target.currentRenderBuffer.storage;
+    const live_bytes = failing.allocated_bytes - failing.freed_bytes;
+    try std.testing.expectError(error.GenerationExhausted, target.resize(5, 1));
+    try std.testing.expectEqual(live_bytes, failing.allocated_bytes - failing.freed_bytes);
+    try std.testing.expectEqual(current, target.currentRenderBuffer.storage);
+    try std.testing.expectEqual(@as(u32, 4), target.width);
+    try std.testing.expectEqual(@as(u32, 1), target.height);
 }

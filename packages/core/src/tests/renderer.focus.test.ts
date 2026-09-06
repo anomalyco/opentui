@@ -1,6 +1,6 @@
 import { test, expect, beforeEach, afterEach, describe } from "bun:test"
 import { CliRenderEvents } from "../renderer.js"
-import { createTestRenderer, MouseButtons, type MockMouse, type TestRenderer } from "../testing.js"
+import { createTestRenderer, MouseButtons, type MockInput, type MockMouse, type TestRenderer } from "../testing.js"
 import { ScrollBoxRenderable } from "../renderables/ScrollBox.js"
 import { BoxRenderable } from "../renderables/Box.js"
 import { InputRenderable } from "../renderables/Input.js"
@@ -9,9 +9,14 @@ import { TextRenderable } from "../renderables/Text.js"
 
 let testRenderer: TestRenderer
 let mockMouse: MockMouse
+let mockInput: MockInput
 
 beforeEach(async () => {
-  ;({ renderer: testRenderer, mockMouse } = await createTestRenderer({
+  ;({
+    renderer: testRenderer,
+    mockMouse,
+    mockInput,
+  } = await createTestRenderer({
     width: 50,
     height: 30,
   }))
@@ -19,6 +24,139 @@ beforeEach(async () => {
 
 afterEach(() => {
   testRenderer.destroy()
+})
+
+test.each(["previous-blur", "renderer-focus", "renderer-blur"] as const)(
+  "focus transitions complete after %s listener failures",
+  async (phase) => {
+    const first = new BoxRenderable(testRenderer, { focusable: true })
+    const second = new BoxRenderable(testRenderer, { focusable: true })
+    const keys: string[] = []
+    first.handleKeyPress = () => {
+      keys.push("first")
+      return true
+    }
+    second.handleKeyPress = () => {
+      keys.push("second")
+      return true
+    }
+    testRenderer.root.add(first)
+    testRenderer.root.add(second)
+    const failure = new Error(`fixture ${phase}`)
+    if (phase !== "renderer-focus") first.focus()
+    if (phase === "previous-blur")
+      first.on("blurred", () => {
+        throw failure
+      })
+    else
+      testRenderer.on(CliRenderEvents.FOCUSED_RENDERABLE, (current) => {
+        if (current === (phase === "renderer-blur" ? null : first)) throw failure
+      })
+    expect(() =>
+      phase === "previous-blur" ? second.focus() : phase === "renderer-focus" ? first.focus() : first.blur(),
+    ).toThrow(failure)
+    expect(testRenderer.currentFocusedRenderable).toBe(
+      phase === "renderer-blur" ? null : phase === "previous-blur" ? second : first,
+    )
+    await mockInput.pressKey("x")
+    expect(keys).toEqual(phase === "renderer-blur" ? [] : [phase === "previous-blur" ? "second" : "first"])
+    expect(first.focused).toBe(phase === "renderer-focus")
+    expect(second.focused).toBe(phase === "previous-blur")
+  },
+)
+
+test("focus reentry during previous blur leaves only the final recipient subscribed", async () => {
+  const nodes = ["first", "second", "third"].map((id) => new BoxRenderable(testRenderer, { id, focusable: true }))
+  const keys: string[] = []
+  for (const node of nodes) {
+    testRenderer.root.add(node)
+    node.handleKeyPress = () => {
+      keys.push(node.id)
+      return true
+    }
+  }
+  const [first, second, third] = nodes
+  first.focus()
+  const events: string[] = []
+  testRenderer.on(CliRenderEvents.FOCUSED_RENDERABLE, (current) => {
+    if (current) events.push(current.id)
+  })
+  first.on("blurred", () => third.focus())
+  second.focus()
+  await mockInput.pressKey("x")
+  expect(keys).toEqual(["third"])
+  expect(events).toEqual(["third"])
+  expect(nodes.map((node) => node.focused)).toEqual([false, false, true])
+  expect(testRenderer.currentFocusedRenderable).toBe(third)
+})
+
+test("detaching a focused child clears former ancestor focus projections", () => {
+  const parent = new BoxRenderable(testRenderer, { focusable: true })
+  const child = new BoxRenderable(testRenderer, { focusable: true })
+  testRenderer.root.add(parent)
+  parent.add(child)
+  child.focus()
+  expect(parent.hasFocusedDescendant).toBe(true)
+  parent.remove(child)
+  expect(parent.hasFocusedDescendant).toBe(false)
+  expect(testRenderer.root.hasFocusedDescendant).toBe(false)
+  expect(child.focused).toBe(true)
+  parent.add(child)
+  expect(parent.hasFocusedDescendant).toBe(true)
+})
+
+test("same-node focus reentry does not install a second input subscription", async () => {
+  const box = new BoxRenderable(testRenderer, { focusable: true })
+  let keys = 0
+  box.handleKeyPress = () => {
+    keys++
+    return true
+  }
+  testRenderer.root.add(box)
+  testRenderer.once(CliRenderEvents.FOCUSED_RENDERABLE, () => {
+    box.blur()
+    box.focus()
+  })
+  box.focus()
+  await mockInput.pressKey("x")
+  expect(box.focused).toBe(true)
+  expect(testRenderer.currentFocusedRenderable).toBe(box)
+  expect(keys).toBe(1)
+})
+
+test("disabling focusability releases focus and input subscriptions", async () => {
+  const box = new BoxRenderable(testRenderer, { focusable: true })
+  let keys = 0
+  box.handleKeyPress = () => {
+    keys++
+    return true
+  }
+  testRenderer.root.add(box)
+  box.focus()
+  box.focusable = false
+  expect(box.focused).toBe(false)
+  expect(testRenderer.currentFocusedRenderable).toBeNull()
+  await mockInput.pressKey("x")
+  expect(keys).toBe(0)
+})
+
+test("a renderer blur observer can refocus the node without losing its new handlers", async () => {
+  const box = new BoxRenderable(testRenderer, { focusable: true })
+  let keys = 0
+  box.handleKeyPress = () => {
+    keys++
+    return true
+  }
+  testRenderer.root.add(box)
+  box.focus()
+  testRenderer.once(CliRenderEvents.FOCUSED_RENDERABLE, (current) => {
+    if (!current) box.focus()
+  })
+  box.blur()
+  expect(box.focused).toBe(true)
+  expect(testRenderer.currentFocusedRenderable).toBe(box)
+  await mockInput.pressKey("x")
+  expect(keys).toBe(1)
 })
 
 test("click on focusable element focuses it", async () => {

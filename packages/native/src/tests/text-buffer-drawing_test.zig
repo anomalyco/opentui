@@ -297,6 +297,77 @@ test "drawTextBuffer - fragmented CJK chunks render exact rows across wrap" {
     try std.testing.expect(std.unicode.utf8ValidateSlice(row1));
 }
 
+test "drawTextBuffer - reset preserves live view ellipsis across widths and wrapping" {
+    const pool = gp.initGlobalPool(std.testing.allocator);
+    defer gp.deinitGlobalPool();
+    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
+    defer link.deinitGlobalLinkPool();
+
+    var tb = try TextBuffer.init(std.testing.allocator, pool, link_pool, .unicode);
+    defer tb.deinit();
+    var view = try TextBufferView.init(std.testing.allocator, tb);
+    defer view.deinit();
+    view.setTruncate(true);
+    view.setViewport(.{ .x = 0, .y = 0, .width = 10, .height = 1 });
+
+    var opt_buffer = try OptimizedBuffer.init(
+        std.testing.allocator,
+        10,
+        1,
+        .{ .pool = pool, .width_method = .unicode },
+    );
+    defer opt_buffer.deinit();
+    var out: [10]u8 = undefined;
+    for (0..3) |_| {
+        {
+            var peer = try TextBufferView.init(std.testing.allocator, tb);
+            defer peer.deinit();
+            peer.setTruncate(true);
+            peer.setViewport(.{ .x = 0, .y = 0, .width = 10, .height = 1 });
+
+            try tb.reset();
+            try std.testing.expectEqual(@as(usize, 0), tb.memRegistry().getUsedSlots());
+            try std.testing.expectEqual(@as(u8, 0), try tb.replaceText("", null, false));
+            try tb.append("0123456789ABCDEFGHIJ");
+            for ([_]*TextBufferView{ view, peer }) |current| {
+                opt_buffer.clear(ansi.rgbaFromFloats(0.0, 0.0, 0.0, 1.0), 32);
+                opt_buffer.drawTextBuffer(current, 0, 0);
+                const written = try opt_buffer.writeResolvedChars(&out, false);
+                try std.testing.expectEqualStrings("012...GHIJ", out[0..written]);
+                const ellipsis = current.getVirtualLines()[0].chunks.items[1].chunk;
+                try std.testing.expectEqualStrings("...", ellipsis.getBytes(tb.memRegistry()));
+                try std.testing.expect(ellipsis.cold == null);
+            }
+        }
+        opt_buffer.clear(ansi.rgbaFromFloats(0.0, 0.0, 0.0, 1.0), 32);
+        opt_buffer.drawTextBuffer(view, 0, 0);
+        const written = try opt_buffer.writeResolvedChars(&out, false);
+        try std.testing.expectEqualStrings("012...GHIJ", out[0..written]);
+        try std.testing.expectEqual(@as(usize, 2), tb.memRegistry().getUsedSlots());
+    }
+    try tb.reset();
+    _ = try tb.replaceText("", null, false);
+    try tb.append("0123456789ABCDEFGHIJ");
+    const cases = [_]struct { width: u32, mode: WrapMode = .none, expected: []const u8 }{
+        .{ .width = 1, .expected = " " },
+        .{ .width = 2, .expected = "  " },
+        .{ .width = 3, .expected = "   " },
+        .{ .width = 4, .expected = "...J" },
+        .{ .width = 5, .expected = "0...J" },
+        .{ .width = 4, .mode = .char, .expected = "0123" },
+        .{ .width = 4, .mode = .word, .expected = "0123" },
+    };
+    for (cases) |case| {
+        view.setViewport(.{ .x = 0, .y = 0, .width = case.width, .height = 1 });
+        view.setWrapMode(case.mode);
+        try opt_buffer.resize(case.width, 1);
+        opt_buffer.clear(ansi.rgbaFromFloats(0.0, 0.0, 0.0, 1.0), 32);
+        opt_buffer.drawTextBuffer(view, 0, 0);
+        const written = try opt_buffer.writeResolvedChars(&out, false);
+        try std.testing.expectEqualStrings(case.expected, out[0..written]);
+    }
+}
+
 test "drawTextBuffer - truncation snaps suffix past wide grapheme" {
     const pool = gp.initGlobalPool(std.testing.allocator);
     defer gp.deinitGlobalPool();
@@ -307,7 +378,9 @@ test "drawTextBuffer - truncation snaps suffix past wide grapheme" {
     defer tb.deinit();
     var view = try TextBufferView.init(std.testing.allocator, tb);
     defer view.deinit();
-    try tb.setText("ABCDE가FG");
+    try tb.reset();
+    _ = try tb.replaceText("", null, false);
+    try tb.append("ABCDE가FG");
     view.setWrapMode(.none);
     view.setTruncate(true);
     view.setViewport(.{ .x = 0, .y = 0, .width = 8, .height = 1 });
@@ -338,7 +411,9 @@ test "drawTextBuffer - wcwidth truncation never renders a modifier-only suffix" 
     defer tb.deinit();
     var view = try TextBufferView.init(std.testing.allocator, tb);
     defer view.deinit();
-    try tb.setText("ABCDE👋🏻Z");
+    try tb.reset();
+    _ = try tb.replaceText("", null, false);
+    try tb.append("ABCDE👋🏻Z");
     view.setWrapMode(.none);
     view.setTruncate(true);
     view.setViewport(.{ .x = 0, .y = 0, .width = 8, .height = 1 });
@@ -2132,6 +2207,43 @@ test "drawTextBuffer - tab indicator renders with correct color" {
     // With static tabs: A at col 0, tab takes 4 cols (1-4), B at col 5
     const cell_5 = opt_buffer.get(5, 0) orelse unreachable;
     try std.testing.expectEqual(@as(u32, 'B'), cell_5.char);
+}
+
+test "drawTextBuffer - wide tab indicator occupies whole cells without moving selected text" {
+    const pool = gp.initGlobalPool(std.testing.allocator);
+    defer gp.deinitGlobalPool();
+    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
+    defer link.deinitGlobalLinkPool();
+    const tb = try TextBuffer.init(std.testing.allocator, pool, link_pool, .unicode);
+    defer tb.deinit();
+    const view = try TextBufferView.init(std.testing.allocator, tb);
+    defer view.deinit();
+    tb.setTabWidth(2);
+    try tb.setText("A\tB");
+    view.setWrapMode(.none);
+    view.setTabIndicator(0x754c);
+    const target = try OptimizedBuffer.init(std.testing.allocator, 8, 1, .{ .pool = pool, .width_method = .unicode });
+    defer target.deinit();
+    const selected = ansi.rgbColor(40, 80, 120, 255);
+    view.setSelection(1, 4, selected, null);
+    for ([_]struct { width: u32, text: []const u8 }{
+        .{ .width = 8, .text = "A\u{754c}B    " },
+        .{ .width = 3, .text = "A\u{754c}     " },
+        .{ .width = 2, .text = "A       " },
+    }) |case| {
+        target.clear(ansi.rgbColor(0, 0, 0, 255), 32);
+        view.setViewport(.{ .x = 0, .y = 0, .width = case.width, .height = 1 });
+        try target.drawTextBufferChecked(view, 0, 0);
+        var output: [32]u8 = undefined;
+        const written = try target.writeResolvedChars(&output, false);
+        try std.testing.expectEqualStrings(case.text, output[0..written]);
+        try std.testing.expectEqual(@as(u32, 8), @import("../utf8.zig").calculateTextWidth(output[0..written], 2, false, .unicode));
+        try std.testing.expectEqual(selected, target.get(1, 0).?.bg);
+        if (case.width == 8) {
+            try std.testing.expectEqual(@as(u32, 'B'), target.get(3, 0).?.char);
+            try std.testing.expectEqual(selected, target.get(3, 0).?.bg);
+        }
+    }
 }
 
 test "drawTextBuffer - tab without indicator renders as spaces" {

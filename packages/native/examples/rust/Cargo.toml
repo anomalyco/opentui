@@ -1,0 +1,26 @@
+[package]
+name = "opentui"
+version = "0.1.0"
+edition = "2021"
+publish = false
+links = "opentui"
+description = "Example Rust binding to OpenTUI's checked C ABI"
+license = "MIT"
+autotests = false
+autoexamples = false
+
+[features]
+static = []
+terminal-example = []
+
+[[example]]
+name = "tasks"
+path = "examples/tasks.rs"
+required-features = ["terminal-example"]
+test = true
+
+[[example]]
+name = "workbench"
+path = "examples/workbench.rs"
+required-features = ["terminal-example"]
+test = true

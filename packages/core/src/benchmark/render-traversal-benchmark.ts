@@ -1,20 +1,35 @@
 #!/usr/bin/env bun
+import { getYogaNode } from "../lib/renderable-layout.js"
 
 // This benchmark targets render/layout bookkeeping in wrapper-heavy trees,
-// scrollbox culling, and scrollbar-heavy paths that exercise Renderable
-// traversal without depending on one specific widget.
+// scrollbox culling, scrollbar-heavy paths, and dense framebuffer output.
 
 import { performance } from "node:perf_hooks"
+import assert from "node:assert/strict"
+import { createHash } from "node:crypto"
 import { existsSync } from "node:fs"
 import { mkdir, writeFile } from "node:fs/promises"
 import path from "node:path"
 import { Command } from "commander"
-import { BoxRenderable, RGBA, ScrollBarRenderable, ScrollBoxRenderable, TextRenderable } from "../index.js"
-import { createTestRenderer, type TestRenderer } from "../testing.js"
+import {
+  BoxRenderable,
+  FrameBufferRenderable,
+  Renderable,
+  RGBA,
+  ScrollBarRenderable,
+  ScrollBoxRenderable,
+  TextRenderable,
+} from "../index.js"
+import { CliRenderEvents, type CliRendererErrorEvent } from "../renderer.js"
+import { createTestRenderer, ManualClock, type TestRenderer } from "../testing.js"
+import { sceneGoldens } from "./render-traversal-goldens.js"
 
 type ScenarioRuntime = {
   renderablesPerIteration: number
   layoutOnlyBoxesPerIteration: number
+  nodes?: Renderable[]
+  log?: { scrollBox: ScrollBoxRenderable; append: () => void; nodeLimit: number }
+  grayscale?: { panelWidth: number; panelHeight: number }
   runIteration: (iteration: number) => Promise<void>
   teardown?: () => void | Promise<void>
 }
@@ -22,6 +37,7 @@ type ScenarioRuntime = {
 type ScenarioDefinition = {
   name: string
   description: string
+  scene?: "steady" | "changed" | "log-unchanged" | "log-append" | "log-scroll" | "grayscale"
   setup: (ctx: BenchmarkContext) => Promise<ScenarioRuntime> | ScenarioRuntime
 }
 
@@ -32,7 +48,7 @@ type BenchmarkContext = {
   height: number
 }
 
-type ScenarioResult = {
+export type ScenarioResult = {
   name: string
   description: string
   iterations: number
@@ -49,9 +65,52 @@ type ScenarioResult = {
   rsdPercent: number
   rmePercent: number
   approxUsPerRenderable: number
+  scene?: TimingStats
+  nativeRender?: TimingStats
+  sceneNodes?: SceneNodeCounts
 }
 
-type TimingStats = {
+// Counts include the renderer root and internal ScrollBox/scrollbar nodes.
+export type SceneNodeCounts = { initial: number; timedMin: number; timedMax: number; limit: number }
+
+export type ParityEvidence = {
+  terminal: { remote: true; widthMethod: "unicode"; rgb: false; ansi256: false }
+  workload:
+    | {
+        boxes: number
+        filledBoxes: number
+        width: number
+        height: number
+        useMouse: boolean
+        mutation: "none" | "backgroundColor"
+      }
+    | {
+        initialTextEntries: number
+        maxTextEntries: number
+        width: number
+        height: number
+        useMouse: boolean
+        mutation: "none" | "append" | "scroll"
+        wrapMode: "word"
+        selectable: false
+        showArrows: false
+      }
+    | {
+        frameBuffers: 1
+        panelWidth: number
+        panelHeight: number
+        sampleScales: [1, 2]
+        width: number
+        height: number
+        useMouse: boolean
+        mutation: "grayscale"
+      }
+  golden: boolean
+  digestKind: "sha256-cell-planes-geometry-hits" | "sha256-resolved-cell-bytes-planes-geometry-hits"
+  frames: { step?: string; digest: string; cellsUpdated: number }[]
+}
+
+export type TimingStats = {
   avgMs: number
   medianMs: number
   p95Ms: number
@@ -93,6 +152,22 @@ const COLORS = {
   warning: RGBA.fromInts(219, 186, 96),
 } as const
 
+const BOX_COUNT = 10_000
+const FILLED_BOX_COUNT = 100
+const LOG_COUNT = 10_000
+// Allow at most one more initial log's worth of entries, including warmup appends.
+const LOG_APPEND_LIMIT = LOG_COUNT
+const LOG_MESSAGES = [
+  "INFO request completed: loaded project files and refreshed the conversation. " +
+    "The next response is ready for review, with diagnostics collected from the local terminal session.",
+  "WARN reconnecting worker after a timeout; queued messages remain available. " +
+    "Waiting for the next local retry before marking this conversation as ready for new input.",
+  "CHAT user: please summarize the changes and explain which checks still need to run. " +
+    "Keep the earlier messages visible while the assistant appends another update to the conversation.",
+  "CHAT assistant: the parser found the requested symbols and is checking their callers. " +
+    "This message wraps across terminal rows instead of using a fixed one-line placeholder.",
+] as const
+
 let benchmarkChecksum = 0
 
 const program = new Command()
@@ -106,6 +181,7 @@ program
   .option("--height <count>", "test renderer height", "44")
   .option("--scenario <name>", "run only one scenario")
   .option("--list-scenarios", "list scenario names and exit")
+  .option("--verify-only", "verify retained scene workloads without timing")
   .option("--json [path]", "write benchmark results to JSON")
   .option("--no-output", "suppress stdout output")
   .parse(process.argv)
@@ -146,7 +222,7 @@ if (jsonPath) {
   }
 }
 
-const scenarios = createScenarios()
+const scenarios = createScenarios().filter((scenario) => !options.verifyOnly || scenario.scene)
 
 if (options.listScenarios) {
   for (const scenario of scenarios) {
@@ -157,8 +233,15 @@ if (options.listScenarios) {
 
 const selectedScenarios = scenarioFilter ? scenarios.filter((scenario) => scenario.name === scenarioFilter) : scenarios
 if (selectedScenarios.length === 0) {
-  console.error(`Unknown scenario: ${scenarioFilter}`)
+  console.error(`Unknown or incompatible scenario: ${scenarioFilter}`)
   process.exit(1)
+}
+if (
+  !options.verifyOnly &&
+  selectedScenarios.some((scenario) => scenario.scene === "log-append") &&
+  iterations + warmupIterations > LOG_APPEND_LIMIT
+) {
+  throw new Error(`log append is bounded to ${LOG_APPEND_LIMIT} iterations including warmup per run`)
 }
 
 if (outputEnabled) {
@@ -168,32 +251,33 @@ if (outputEnabled) {
   console.log(`- iterations: ${iterations} (+${warmupIterations} warmup)`)
 }
 
-const { renderer, renderOnce } = await createTestRenderer({
-  width,
-  height,
-  targetFps: 60,
-  maxFps: 60,
-  screenMode: "main-screen",
-  externalOutputMode: "passthrough",
-  consoleMode: "disabled",
-  useMouse: false,
-})
-
-const ctx: BenchmarkContext = { renderer, renderOnce, width, height }
+const parity: Record<string, ParityEvidence> = {}
+for (const scenario of selectedScenarios) {
+  if (scenario.scene) {
+    writeLine(outputEnabled, `Verifying ${scenario.name}...`)
+    parity[scenario.name] = await verifyScene(scenario)
+  }
+}
 const results: ScenarioResult[] = []
 
-try {
+if (!options.verifyOnly) {
   for (const scenario of selectedScenarios) {
     writeLine(outputEnabled, `Running ${scenario.name}...`)
-    const result = await runScenario(scenario, ctx, iterations, warmupIterations)
-    results.push(result)
-    writeLine(
-      outputEnabled,
-      `  avg=${result.avgMs.toFixed(4)}ms p95=${result.p95Ms.toFixed(4)}ms rsd=${result.rsdPercent.toFixed(2)}% rme=${result.rmePercent.toFixed(2)}%`,
-    )
+    const ctx = await createBenchmarkContext(Boolean(scenario.scene))
+    try {
+      const result = await runScenario(scenario, ctx, iterations, warmupIterations)
+      results.push(result)
+      writeLine(
+        outputEnabled,
+        `  avg=${result.avgMs.toFixed(4)}ms p95=${result.p95Ms.toFixed(4)}ms rsd=${result.rsdPercent.toFixed(2)}% rme=${result.rmePercent.toFixed(2)}%` +
+          (result.scene ? ` scene=${result.scene.avgMs.toFixed(4)}ms` : "") +
+          (result.nativeRender ? ` nativeRender=${result.nativeRender.avgMs.toFixed(4)}ms` : ""),
+      )
+    } finally {
+      ctx.renderer.destroy()
+      await ctx.renderer.closed
+    }
   }
-} finally {
-  renderer.destroy()
 }
 
 if (outputEnabled) {
@@ -201,8 +285,11 @@ if (outputEnabled) {
     results.map((result) => ({
       scenario: result.name,
       renderables: result.renderablesPerIteration,
+      sceneNodes: result.sceneNodes ? `${result.sceneNodes.timedMin}-${result.sceneNodes.timedMax}` : undefined,
       layoutOnlyBoxes: result.layoutOnlyBoxesPerIteration,
       avgMs: result.avgMs,
+      sceneAvgMs: result.scene?.avgMs,
+      nativeRenderAvgMs: result.nativeRender?.avgMs,
       p95Ms: result.p95Ms,
       "rsd%": result.rsdPercent,
       "rme%": result.rmePercent,
@@ -223,6 +310,8 @@ if (jsonPath) {
           iterations,
           warmupIterations,
           scenarioFilter,
+          sink: "memory",
+          parity,
           timestamp: new Date().toISOString(),
           runtime: {
             name: typeof process.versions.bun === "string" ? "bun" : "node",
@@ -243,6 +332,12 @@ if (jsonPath) {
 
 function createScenarios(): ScenarioDefinition[] {
   return [
+    createBoxSceneScenario("steady"),
+    createBoxSceneScenario("changed"),
+    createLogSceneScenario("unchanged"),
+    createLogSceneScenario("append"),
+    createLogSceneScenario("scroll"),
+    createGrayscaleSceneScenario(),
     createYogaLayoutReadScenario(100),
     createYogaLayoutReadScenario(1000),
     createYogaLayoutReadScenario(10000),
@@ -291,36 +386,10 @@ function createScenarios(): ScenarioDefinition[] {
       },
     },
     {
-      name: "render_list_hot_path",
-      description: "Repeated render-list traversal over an unchanged OpenCode-like tree",
-      setup: async (ctx) => {
-        const state = await buildOpencodeLayoutTree(ctx, {
-          messageCount: Math.max(48, ctx.height + 12),
-          includeVisibleBoxes: false,
-          includeText: false,
-        })
-        const batchSize = 1000
-
-        return {
-          renderablesPerIteration: state.stats.renderables * batchSize,
-          layoutOnlyBoxesPerIteration: state.stats.layoutOnlyBoxes * batchSize,
-          runIteration: async () => {
-            for (let index = 0; index < batchSize; index++) {
-              ctx.renderer.root.render(ctx.renderer.nextRenderBuffer, 0)
-            }
-          },
-          teardown: () => {
-            state.root.destroyRecursively()
-          },
-        }
-      },
-    },
-    {
       name: "scrollbox_viewport_culling",
       description: "Viewport-culling content tree with many hidden children",
       setup: async (ctx) => {
         clearRoot(ctx.renderer)
-        resetBuffers(ctx.renderer)
 
         let renderables = 0
         let layoutOnlyBoxes = 0
@@ -398,7 +467,6 @@ function createScenarios(): ScenarioDefinition[] {
       description: "Visible scrollbars and slider tracks with arrows",
       setup: async (ctx) => {
         clearRoot(ctx.renderer)
-        resetBuffers(ctx.renderer)
 
         let renderables = 0
         let layoutOnlyBoxes = 0
@@ -508,13 +576,516 @@ function createScenarios(): ScenarioDefinition[] {
   ]
 }
 
+async function createBenchmarkContext(scene: boolean, clock?: ManualClock): Promise<BenchmarkContext> {
+  const { renderer, renderOnce } = await createTestRenderer({
+    width,
+    height,
+    targetFps: 60,
+    maxFps: 60,
+    screenMode: "main-screen",
+    externalOutputMode: "passthrough",
+    consoleMode: "disabled",
+    bufferedOutput: "memory",
+    ...(scene ? { remote: true, forwardEnvKeys: [] } : {}),
+    useMouse: scene,
+    clock,
+  })
+  try {
+    if (scene) {
+      const capabilities = renderer.capabilities
+      assert.ok(capabilities)
+      assert.equal(renderer.widthMethod, "unicode", "scene benchmark width policy must be host-independent")
+      assert.equal(capabilities.remote, true)
+      assert.equal(capabilities.rgb, false)
+      assert.equal(capabilities.ansi256, false)
+      assert.equal(capabilities.unicode, "unicode")
+      assert.equal(renderer.currentRenderBuffer.widthMethod, "unicode")
+      assert.equal(renderer.nextRenderBuffer.widthMethod, "unicode")
+      assert.equal(capabilities.terminal.name, "")
+      assert.equal(capabilities.terminal.version, "")
+      assert.equal(capabilities.explicit_width, false)
+      assert.equal(capabilities.explicit_cursor_positioning, false)
+      assert.equal(capabilities.hyperlinks, false)
+    }
+    return { renderer, renderOnce, width, height }
+  } catch (error) {
+    renderer.destroy()
+    await renderer.closed
+    throw error
+  }
+}
+
+function createBoxSceneScenario(mode: "steady" | "changed"): ScenarioDefinition {
+  return {
+    name: `boxes_${mode}_${BOX_COUNT}`,
+    description: `${BOX_COUNT} ordinary boxes, ${FILLED_BOX_COUNT} visible fills, ${mode} completed frames`,
+    scene: mode,
+    setup: (ctx) => {
+      const boxes = Array.from({ length: BOX_COUNT }, (_, index) => {
+        const box = new BoxRenderable(ctx.renderer, {
+          id: `bench-box-${index}`,
+          position: "absolute",
+          left: index % ctx.width,
+          top: Math.floor(index / ctx.width),
+          width: 1,
+          height: 1,
+          border: false,
+          backgroundColor:
+            index < FILLED_BOX_COUNT ? (index % 2 === 0 ? COLORS.panel : COLORS.element) : COLORS.transparent,
+        })
+        ctx.renderer.root.add(box)
+        return box
+      })
+      return {
+        nodes: [ctx.renderer.root, ...boxes],
+        renderablesPerIteration: boxes.length,
+        layoutOnlyBoxesPerIteration: boxes.length - FILLED_BOX_COUNT,
+        runIteration: async (iteration) => {
+          if (mode === "changed") boxes[0].backgroundColor = iteration % 2 === 0 ? COLORS.accent : COLORS.panel
+          await ctx.renderOnce()
+        },
+      }
+    },
+  }
+}
+
+function createGrayscaleSceneScenario(): ScenarioDefinition {
+  return {
+    name: "grayscale_changed",
+    description: "Dense changing standard and 2x supersampled grayscale FrameBufferRenderable, completed frames",
+    scene: "grayscale",
+    setup: (ctx) => {
+      const node = new FrameBufferRenderable(ctx.renderer, {
+        id: "bench-grayscale",
+        width: ctx.width,
+        height: ctx.height,
+      })
+      ctx.renderer.root.add(node)
+      const panelWidth = Math.floor(ctx.width / 2)
+      const panelHeight = ctx.height
+      const background = RGBA.fromInts(0, 0, 0)
+      // Precompute two phases so pattern generation does not hide renderer/feed costs.
+      const fixtures = [0, 1].map((phase) =>
+        [1, 2].map((scale) => {
+          const samples = new Float32Array(panelWidth * panelHeight * scale * scale)
+          for (let y = 0; y < panelHeight * scale; y++) {
+            for (let x = 0; x < panelWidth * scale; x++) {
+              const intensity = (Math.floor(x / scale) * 17 + Math.floor(y / scale) * 29 + phase * 97) % 192
+              samples[y * panelWidth * scale + x] = (32 + intensity + (x % scale) * 4 + (y % scale) * 8) / 256
+            }
+          }
+          return samples
+        }),
+      )
+      const paint = (phase: number) => {
+        node.frameBuffer.clear(background)
+        node.frameBuffer.drawGrayscaleBuffer(0, 0, fixtures[phase][0], panelWidth, panelHeight)
+        node.frameBuffer.drawGrayscaleBufferSupersampled(
+          panelWidth,
+          0,
+          fixtures[phase][1],
+          panelWidth * 2,
+          panelHeight * 2,
+        )
+      }
+      paint(0)
+      return {
+        nodes: [ctx.renderer.root, node],
+        grayscale: { panelWidth, panelHeight },
+        renderablesPerIteration: 1,
+        layoutOnlyBoxesPerIteration: 0,
+        runIteration: async (iteration) => {
+          paint((iteration + 1) % 2)
+          await ctx.renderOnce()
+        },
+        teardown: () => node.destroyRecursively(),
+      }
+    },
+  }
+}
+
+function createLogSceneScenario(mode: "unchanged" | "append" | "scroll"): ScenarioDefinition {
+  return {
+    name: `log_${mode}_${LOG_COUNT}`,
+    description:
+      `ScrollBox with ${LOG_COUNT} initial wrapped, colored Unicode TextRenderables, ${mode} completed frames` +
+      (mode === "append" ? `, at most ${LOG_APPEND_LIMIT} new entries per run including warmup` : ""),
+    scene: `log-${mode}`,
+    setup: async (ctx) => {
+      const scrollBox = new ScrollBoxRenderable(ctx.renderer, {
+        id: "bench-log",
+        width: "100%",
+        height: "100%",
+        stickyScroll: true,
+        stickyStart: "bottom",
+        viewportCulling: true,
+        scrollbarOptions: { showArrows: false },
+      })
+      ctx.renderer.root.add(scrollBox)
+
+      const nodes: Renderable[] = [ctx.renderer.root]
+      for (const node of nodes) {
+        // ScrollBox.getChildren() delegates to content, hiding the internal tree.
+        nodes.push(
+          ...(node instanceof ScrollBoxRenderable ? [node.wrapper, node.verticalScrollBar] : node.getChildren()),
+        )
+      }
+      const internalNodeCount = nodes.length
+      const append = () => {
+        const index = nodes.length - internalNodeCount
+        assert.ok(index < LOG_COUNT + LOG_APPEND_LIMIT, "log entry limit exceeded")
+        const entry = new TextRenderable(ctx.renderer, {
+          id: `bench-log-entry-${index}`,
+          content:
+            `log ${String(index).padStart(5, "0")} \u4e16\u754c e\u0301 \ud83d\udc69\u200d\ud83d\udcbb ` +
+            LOG_MESSAGES[index % LOG_MESSAGES.length],
+          width: "100%",
+          flexShrink: 0,
+          wrapMode: "word",
+          selectable: false,
+          fg: index % 3 === 0 ? COLORS.warning : COLORS.accent,
+          bg: index % 2 === 0 ? COLORS.panel : COLORS.element,
+        })
+        try {
+          scrollBox.add(entry)
+        } catch (error) {
+          entry.destroy()
+          throw error
+        }
+        nodes.push(entry)
+      }
+      for (let index = 0; index < LOG_COUNT; index++) append()
+
+      // Scrollbar visibility can request one follow-up layout before the workload starts.
+      await ctx.renderOnce()
+      await ctx.renderOnce()
+      assert.ok(scrollBox.scrollHeight > scrollBox.viewport.height, "log must overflow the viewport")
+      assert.equal(scrollBox.scrollTop, scrollBox.scrollHeight - scrollBox.viewport.height, "log setup lost bottom")
+      if (mode === "scroll") {
+        scrollBox.scrollTo(Math.floor(scrollBox.scrollHeight / 2))
+        await ctx.renderOnce()
+      }
+
+      return {
+        nodes,
+        log: { scrollBox, append, nodeLimit: internalNodeCount + LOG_COUNT + LOG_APPEND_LIMIT },
+        get renderablesPerIteration() {
+          return nodes.length - 1
+        },
+        layoutOnlyBoxesPerIteration: nodes.filter((node) => node instanceof BoxRenderable).length,
+        runIteration: async (iteration) => {
+          if (mode === "append") append()
+          if (mode === "scroll") scrollBox.scrollBy(iteration % 2 === 0 ? 1 : -1)
+          await ctx.renderOnce()
+        },
+        teardown: () => scrollBox.destroyRecursively(),
+      }
+    },
+  }
+}
+
+async function verifyScene(scenario: ScenarioDefinition): Promise<ParityEvidence> {
+  const frames: ParityEvidence["frames"] = []
+  const registered = new Set(Renderable.renderablesByNumber.keys())
+  const golden = sceneGoldens[`${scenario.name}/${width}x${height}`]
+  const ctx = await createBenchmarkContext(true, new ManualClock())
+  try {
+    const renderOnce = ctx.renderOnce
+    ctx.renderOnce = async () => {
+      const before = ctx.renderer.getNativeStats().nativeFrameCount
+      let completed = 0
+      const errors: Error[] = []
+      const onFrame = () => completed++
+      const onError = ({ error }: CliRendererErrorEvent) => errors.push(error)
+      ctx.renderer.on(CliRenderEvents.FRAME, onFrame)
+      ctx.renderer.on(CliRenderEvents.RENDER_ERROR, onError)
+      try {
+        await renderOnce()
+        assert.deepEqual(errors, [], `${scenario.name}: render errors`)
+        assert.equal(completed, 1, `${scenario.name}: frame event did not complete exactly once`)
+        assert.equal(ctx.renderer.getNativeStats().nativeFrameCount, before + 1)
+      } finally {
+        ctx.renderer.off(CliRenderEvents.FRAME, onFrame)
+        ctx.renderer.off(CliRenderEvents.RENDER_ERROR, onError)
+      }
+    }
+    const runtime = await scenario.setup(ctx)
+    const isLog = Boolean(runtime.log)
+    const grayscale = runtime.grayscale
+    if (!isLog) assert.equal(runtime.nodes?.length, grayscale ? 2 : BOX_COUNT + 1)
+    if (runtime.log) {
+      assert.equal(
+        runtime.layoutOnlyBoxesPerIteration,
+        4,
+        "log layout-only box count must include every internal box, but not the renderer root",
+      )
+    }
+    const iterationSteps = ["iteration-0", "iteration-1", "iteration-2", "iteration-3"]
+    const steps = isLog
+      ? [
+          "prepared",
+          ...iterationSteps,
+          "unchanged",
+          ...(scenario.scene === "log-scroll" ? ["bottom"] : []),
+          "append-bottom",
+          "read-older",
+          "append-older",
+          "scroll",
+          "scroll-restore",
+          "resize",
+          "cleanup",
+        ]
+      : ["initial", "unchanged", "mutation", "restore"]
+
+    for (const [frame, step] of steps.entries()) {
+      const before = ctx.renderer.getNativeStats().nativeFrameCount
+      if (runtime.log) {
+        const { scrollBox, append } = runtime.log
+        const scrollTop = scrollBox.scrollTop
+        const entryCount = scrollBox.getChildren().length
+        const iteration = iterationSteps.indexOf(step)
+        if (step === "append-bottom" || step === "append-older") append()
+        if (step === "read-older") scrollBox.scrollTo(Math.floor(scrollBox.scrollHeight / 2))
+        if (step === "bottom") scrollBox.scrollTo(scrollBox.scrollHeight)
+        if (step === "scroll") scrollBox.scrollBy(-1)
+        if (step === "scroll-restore") scrollBox.scrollBy(1)
+        if (step === "resize") ctx.renderer.resize(width - 13, height - 3)
+        if (step === "cleanup") {
+          clearRoot(ctx.renderer)
+          for (const node of runtime.nodes!.splice(1)) {
+            assert.ok(node.isDestroyed, "log cleanup left a live node")
+          }
+          assert.equal(ctx.renderer.root.getChildrenCount(), 0)
+        }
+        if (iteration >= 0) await runtime.runIteration(iteration)
+        else if (step !== "prepared") await ctx.renderOnce()
+        if (
+          (step === "prepared" && scenario.scene !== "log-scroll") ||
+          step === "bottom" ||
+          step === "append-bottom" ||
+          (iteration >= 0 && scenario.scene === "log-append")
+        ) {
+          assert.ok(scrollBox.scrollHeight > scrollBox.viewport.height, "log must overflow the viewport")
+          assert.equal(scrollBox.scrollTop, scrollBox.scrollHeight - scrollBox.viewport.height, "log lost bottom")
+          const last = runtime.nodes!.at(-1)!
+          assert.equal(last.y + last.height, scrollBox.viewport.y + scrollBox.viewport.height)
+        }
+        if (step === "prepared") assert.equal(scrollBox.getChildren().length, LOG_COUNT)
+        if (iteration >= 0) {
+          assert.equal(entryCount, LOG_COUNT + (scenario.scene === "log-append" ? iteration : 0))
+          assert.equal(scrollBox.getChildren().length, entryCount + (scenario.scene === "log-append" ? 1 : 0))
+          if (scenario.scene === "log-scroll") {
+            assert.equal(
+              scrollBox.scrollTop,
+              scrollTop + (iteration % 2 === 0 ? 1 : -1),
+              `${scenario.name}/${step}: each workload iteration must scroll exactly one row`,
+            )
+          } else if (scenario.scene === "log-append") {
+            assert.ok(scrollBox.scrollTop > scrollTop, "workload append must move the viewport")
+          } else assert.equal(scrollBox.scrollTop, scrollTop)
+        }
+        if (step === "append-bottom" || step === "append-older") {
+          assert.equal(scrollBox.getChildren().length, entryCount + 1)
+        }
+        if (step === "append-bottom") assert.ok(scrollBox.scrollTop > scrollTop, "append must move the viewport")
+        if ((step === "prepared" && scenario.scene === "log-scroll") || step === "read-older") {
+          assert.equal(scrollBox.scrollTop, Math.floor(scrollBox.scrollHeight / 2))
+          assert.ok(scrollBox.scrollTop > 0 && scrollBox.scrollTop < scrollBox.scrollHeight - scrollBox.viewport.height)
+        }
+        if (step === "append-older") {
+          assert.equal(scrollBox.scrollTop, scrollTop, "append moved the reader away from older entries")
+        }
+        if (step === "scroll") assert.equal(scrollBox.scrollTop, scrollTop - 1)
+        if (step === "scroll-restore") assert.equal(scrollBox.scrollTop, scrollTop + 1)
+        if (step !== "cleanup") assert.equal(scrollBox.content.translateY + scrollBox.scrollTop, 0)
+        if (step === "resize") {
+          assert.equal(ctx.renderer.width, width - 13)
+          assert.equal(ctx.renderer.height, height - 3)
+        }
+      } else if (frame < 2) await ctx.renderOnce()
+      else await runtime.runIteration(frame - 2)
+      const stats = ctx.renderer.getNativeStats()
+      assert.equal(
+        stats.nativeFrameCount,
+        before + (step === "prepared" ? 0 : 1),
+        `${scenario.name}/${step}: preflight frame did not complete`,
+      )
+      const digest = createHash("sha256")
+        .update(JSON.stringify(snapshotScene(ctx, runtime)))
+        .digest("hex")
+      if (golden) {
+        assert.deepEqual([digest, stats.cellsUpdated], golden[frame], `${scenario.name}/${step}: golden mismatch`)
+      }
+      frames.push({
+        ...(isLog ? { step } : {}),
+        digest,
+        cellsUpdated: stats.cellsUpdated,
+      })
+    }
+    if (golden) assert.equal(frames.length, golden.length, "preflight omitted golden frames")
+    const unchangedFrame = steps.indexOf("unchanged")
+    assert.equal(frames[unchangedFrame - 1].digest, frames[unchangedFrame].digest)
+    assert.equal(frames[unchangedFrame].cellsUpdated, 0)
+    if (isLog) {
+      const origin = frames[0]
+      for (const [iteration, step] of iterationSteps.entries()) {
+        const frame = frames[steps.indexOf(step)]
+        if (scenario.scene === "log-unchanged") {
+          assert.equal(frame.digest, origin.digest)
+          assert.equal(frame.cellsUpdated, 0)
+        } else {
+          assert.ok(frame.cellsUpdated > 0, `${step} must change output`)
+          if (scenario.scene === "log-scroll") {
+            if (iteration % 2 === 0) assert.notEqual(frame.digest, origin.digest)
+            else assert.equal(frame.digest, origin.digest, `${step} did not restore the original midpoint output`)
+          }
+        }
+      }
+      for (const step of ["append-bottom", "read-older", "scroll", "scroll-restore"]) {
+        assert.ok(frames[steps.indexOf(step)].cellsUpdated > 0, `${step} must change output`)
+      }
+      assert.equal(frames[steps.indexOf("scroll-restore")].digest, frames[steps.indexOf("append-older")].digest)
+    } else if (scenario.scene === "changed" || grayscale) {
+      assert.equal(frames[0].digest, frames[3].digest)
+      assert.notEqual(frames[0].digest, frames[2].digest, "the paint mutation must change output")
+      const changedCells = grayscale ? grayscale.panelWidth * grayscale.panelHeight * 2 : 1
+      assert.equal(frames[2].cellsUpdated, changedCells)
+      assert.equal(frames[3].cellsUpdated, changedCells)
+    } else {
+      assert.equal(frames[0].digest, frames[3].digest)
+      assert.equal(frames[0].digest, frames[2].digest)
+      assert.equal(frames[2].cellsUpdated, 0)
+      assert.equal(frames[3].cellsUpdated, 0)
+    }
+    return {
+      terminal: { remote: true, widthMethod: "unicode", rgb: false, ansi256: false },
+      workload: isLog
+        ? {
+            initialTextEntries: LOG_COUNT,
+            maxTextEntries: LOG_COUNT + LOG_APPEND_LIMIT,
+            width,
+            height,
+            useMouse: true,
+            mutation: scenario.scene === "log-append" ? "append" : scenario.scene === "log-scroll" ? "scroll" : "none",
+            wrapMode: "word",
+            selectable: false,
+            showArrows: false,
+          }
+        : grayscale
+          ? {
+              frameBuffers: 1,
+              ...grayscale,
+              sampleScales: [1, 2],
+              width,
+              height,
+              useMouse: true,
+              mutation: "grayscale",
+            }
+          : {
+              boxes: BOX_COUNT,
+              filledBoxes: FILLED_BOX_COUNT,
+              width,
+              height,
+              useMouse: true,
+              mutation: scenario.scene === "changed" ? "backgroundColor" : "none",
+            },
+      golden: Boolean(golden),
+      digestKind: isLog ? "sha256-resolved-cell-bytes-planes-geometry-hits" : "sha256-cell-planes-geometry-hits",
+      frames,
+    }
+  } finally {
+    ctx.renderer.destroy()
+    await ctx.renderer.closed
+    assert.deepEqual(new Set(Renderable.renderablesByNumber.keys()), registered, "scene preflight leaked renderables")
+  }
+}
+
+function snapshotScene(ctx: BenchmarkContext, runtime: ScenarioRuntime) {
+  const nodes = runtime.nodes!
+  const buffer = ctx.renderer.currentRenderBuffer
+  let text: string | undefined
+  const cells = runtime.log
+    ? buffer["withResolvedChars"]({ addLineBreaks: false, cellLengths: true }, (bytes, cells, lengths) => {
+        assert.ok(lengths)
+        assert.equal(lengths.length, cells.width * cells.height)
+        assert.equal(
+          lengths.reduce((total, length) => total + length, 0),
+          bytes.length,
+        )
+        text = new TextDecoder("utf-8", { ignoreBOM: true }).decode(bytes)
+        return {
+          width: cells.width,
+          height: cells.height,
+          bytes,
+          lengths,
+          continuations: Array.from(cells.char, (char) => char >>> 30 === 3),
+          fg: cells.fg.slice(),
+          bg: cells.bg.slice(),
+          attributes: cells.attributes.slice(),
+        }
+      })
+    : buffer.withBuffers((cells) => ({
+        width: cells.width,
+        height: cells.height,
+        char: cells.char.slice(),
+        fg: cells.fg.slice(),
+        bg: cells.bg.slice(),
+        attributes: cells.attributes.slice(),
+      }))
+  assert.equal(cells.width, ctx.renderer.width)
+  assert.equal(cells.height, ctx.renderer.height)
+  if (!runtime.log && !runtime.grayscale) {
+    assert.ok(
+      RGBA.fromArray(cells.bg.subarray(0, 4)).equals((nodes[1] as BoxRenderable).backgroundColor),
+      "fill is missing",
+    )
+  }
+  const numbers = new Map(nodes.map((node, index) => [node.num, index]))
+  const hits = Array.from({ length: cells.width * cells.height }, (_, index) => {
+    const hit = ctx.renderer.hitTest(index % cells.width, Math.floor(index / cells.width))
+    assert.ok(hit === 0 || numbers.has(hit), "hit grid references an unknown node")
+    return numbers.get(hit) ?? -1
+  })
+  if (!runtime.log) assert.equal(hits[0], 1, "the first visible node must be hittable")
+  if (runtime.grayscale) {
+    const { panelWidth, panelHeight } = runtime.grayscale
+    for (const left of [0, panelWidth]) {
+      const shades = new Set<number>()
+      for (let y = 0; y < panelHeight; y++) {
+        for (let x = left; x < left + panelWidth; x++) shades.add(cells.fg[(y * cells.width + x) * 4])
+      }
+      assert.ok(shades.size >= 16, "each grayscale panel must contain many foreground colors")
+    }
+  }
+  if (runtime.log) {
+    if (nodes.length > 1) {
+      assert.match(text!, /log \d{5}/, "visible log text is missing")
+      assert.ok(text!.includes("\u4e16\u754c"), "visible Unicode text is missing")
+      assert.ok(
+        hits.some((hit) => nodes[hit] instanceof TextRenderable),
+        "visible log text is not hittable",
+      )
+    } else {
+      assert.equal(text!.trim(), "", "cleanup left visible text")
+      assert.ok(
+        hits.every((hit) => hit === -1 || hit === 0),
+        "cleanup left stale hits",
+      )
+    }
+  }
+  return {
+    ...cells,
+    geometry: nodes.map((node) => [node.x, node.y, node.width, node.height]),
+    hits,
+  }
+}
+
 function createYogaLayoutReadScenario(nodeCount: number): ScenarioDefinition {
   return {
     name: `yoga_layout_reads_${nodeCount}`,
     description: `Read ${nodeCount} computed Yoga layouts through the production FFI path`,
     setup: async (ctx) => {
       clearRoot(ctx.renderer)
-      resetBuffers(ctx.renderer)
 
       const root = new BoxRenderable(ctx.renderer, {
         id: `bench-yoga-layout-root-${nodeCount}`,
@@ -531,7 +1102,7 @@ function createYogaLayoutReadScenario(nodeCount: number): ScenarioDefinition {
           flexShrink: 0,
         })
         root.add(node)
-        return node.getLayoutNode()
+        return getYogaNode(node)
       })
 
       await ctx.renderOnce()
@@ -553,22 +1124,13 @@ function createYogaLayoutReadScenario(nodeCount: number): ScenarioDefinition {
   }
 }
 
-// Frame-time scaling with total child count under viewport culling, at a
-// constant visible count (~viewport height). This is the per-frame
-// O(total children) layout-refresh path in Renderable.updateLayout for
-// _hasVisibleChildFilter parents: before culling can read screen positions,
-// every child gets one updateFromLayout (FFI getComputedLayout) per frame,
-// so steady-state frame time grows with hidden children. Watch
-// approxUsPerRenderable across the scaling scenarios: roughly constant means
-// the per-frame cost is linear in total children; if the refresh path ever
-// becomes O(visible), it should drop as childCount grows.
+// Measure frame-time scaling with total children while the visible count stays constant.
 function createCullingScalingScenario(childCount: number): ScenarioDefinition {
   return {
     name: `scrollbox_culling_scaling_${childCount}`,
     description: `Scrolling viewport-culled scrollbox with ${childCount} rows, constant visible count`,
     setup: async (ctx) => {
       clearRoot(ctx.renderer)
-      resetBuffers(ctx.renderer)
 
       let renderables = 0
       let layoutOnlyBoxes = 0
@@ -631,7 +1193,6 @@ function createCullingScalingScenario(childCount: number): ScenarioDefinition {
 
 async function buildOpencodeLayoutTree(ctx: BenchmarkContext, options: LayoutTreeOptions): Promise<LayoutTreeState> {
   clearRoot(ctx.renderer)
-  resetBuffers(ctx.renderer)
 
   let renderables = 0
   let layoutOnlyBoxes = 0
@@ -872,21 +1433,56 @@ async function runScenario(
   const runtime = await scenario.setup(ctx)
 
   try {
+    const sceneNodes: SceneNodeCounts | undefined = runtime.log
+      ? { initial: runtime.nodes!.length, timedMin: Infinity, timedMax: 0, limit: runtime.log.nodeLimit }
+      : undefined
+    if (scenario.scene && !runtime.log) await ctx.renderOnce()
     for (let i = 0; i < warmupIterations; i += 1) {
       await runtime.runIteration(i)
     }
 
     const samples = new Array<number>(iterations)
+    const sceneSamples = scenario.scene ? new Array<number>(iterations) : undefined
+    const nativeRenderSamples = scenario.scene ? new Array<number>(iterations) : undefined
+    let renderableCountTotal = 0
+    let nativeFrameCount = sceneSamples ? ctx.renderer.getNativeStats().nativeFrameCount : 0
+    if (sceneSamples) {
+      assert.ok(Number.isFinite(ctx.renderer.lastSceneTimeMs), "renderer.lastSceneTimeMs is required for scene timing")
+    }
     const elapsedStart = performance.now()
 
     for (let i = 0; i < iterations; i += 1) {
       const start = performance.now()
-      await runtime.runIteration(i)
+      await runtime.runIteration(warmupIterations + i)
       samples[i] = performance.now() - start
+      renderableCountTotal += runtime.renderablesPerIteration
+      if (sceneNodes) {
+        const count = runtime.nodes!.length
+        assert.ok(count <= sceneNodes.limit, "scene node limit exceeded")
+        sceneNodes.timedMin = Math.min(sceneNodes.timedMin, count)
+        sceneNodes.timedMax = Math.max(sceneNodes.timedMax, count)
+      }
+      if (sceneSamples) {
+        const sceneTime = ctx.renderer.lastSceneTimeMs
+        const stats = ctx.renderer.getNativeStats()
+        assert.equal(stats.nativeFrameCount, nativeFrameCount + 1, `${scenario.name}: timed frame did not complete`)
+        assert.ok(Number.isFinite(sceneTime) && sceneTime >= 0, "invalid renderer.lastSceneTimeMs")
+        assert.ok(
+          stats.nativeRenderTime !== undefined &&
+            Number.isFinite(stats.nativeRenderTime) &&
+            stats.nativeRenderTime >= 0,
+          "invalid nativeRenderTime",
+        )
+        sceneSamples[i] = sceneTime
+        // Native diff/encode timing is reported in microseconds, unlike scene timing.
+        nativeRenderSamples![i] = stats.nativeRenderTime / 1000
+        nativeFrameCount = stats.nativeFrameCount
+      }
     }
 
     const elapsedMs = performance.now() - elapsedStart
     const stats = calculateStats(samples)
+    const renderablesPerIteration = renderableCountTotal / iterations
 
     return {
       name: scenario.name,
@@ -894,7 +1490,7 @@ async function runScenario(
       iterations,
       warmupIterations,
       elapsedMs: round(elapsedMs, 4),
-      renderablesPerIteration: runtime.renderablesPerIteration,
+      renderablesPerIteration,
       layoutOnlyBoxesPerIteration: runtime.layoutOnlyBoxesPerIteration,
       avgMs: round(stats.avgMs, 4),
       medianMs: round(stats.medianMs, 4),
@@ -904,28 +1500,19 @@ async function runScenario(
       stdDevMs: round(stats.stdDevMs, 4),
       rsdPercent: round(stats.rsdPercent, 2),
       rmePercent: round(stats.rmePercent, 2),
-      approxUsPerRenderable:
-        runtime.renderablesPerIteration > 0 ? round((stats.avgMs * 1000) / runtime.renderablesPerIteration, 3) : 0,
+      approxUsPerRenderable: renderablesPerIteration > 0 ? round((stats.avgMs * 1000) / renderablesPerIteration, 3) : 0,
+      ...(sceneSamples ? { scene: calculateStats(sceneSamples) } : {}),
+      ...(nativeRenderSamples ? { nativeRender: calculateStats(nativeRenderSamples) } : {}),
+      ...(sceneNodes ? { sceneNodes } : {}),
     }
   } finally {
     await runtime.teardown?.()
-    clearRoot(ctx.renderer)
-    resetBuffers(ctx.renderer)
   }
 }
 
 function clearRoot(renderer: TestRenderer): void {
   for (const child of renderer.root.getChildren()) {
     child.destroyRecursively()
-  }
-}
-
-function resetBuffers(renderer: TestRenderer): void {
-  const buffers = [renderer.currentRenderBuffer, renderer.nextRenderBuffer]
-  for (const buffer of buffers) {
-    buffer.clearScissorRects()
-    buffer.clearOpacity()
-    buffer.clear(COLORS.transparent)
   }
 }
 

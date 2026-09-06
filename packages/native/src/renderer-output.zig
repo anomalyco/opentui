@@ -17,9 +17,10 @@
 
 const std = @import("std");
 const builtin = @import("builtin");
-const io = if (builtin.is_test) std.testing.io else @import("root").io;
+const compatibility_io = if (builtin.is_test) std.testing.io else if (@hasDecl(@import("root"), "io")) @import("root").io else std.Io.failing;
 const Allocator = std.mem.Allocator;
 const NativeSpanFeed = @import("native-span-feed.zig");
+const logger = @import("logger.zig");
 
 pub const OUTPUT_BUFFER_SIZE = 1024 * 1024 * 2; // 2 MiB, double-buffered per BufferedBackend for thread handoff
 const UTF16_BUFFER_SIZE = 4096;
@@ -102,7 +103,7 @@ test "stdout write failures remain observable for resource cleanup" {
     if (builtin.os.tag != .linux) return error.SkipZigTest;
     const full = try std.Io.Dir.openFileAbsolute(std.testing.io, "/dev/full", .{ .mode = .write_only });
     defer full.close(std.testing.io);
-    var stdout_output = StdoutOutput.initForFile(full);
+    var stdout_output = StdoutOutput.initForFile(std.testing.io, full);
     stdout_output.bufferedOutput().write("cannot write");
     try std.testing.expect(stdout_output.failed.load(.acquire));
 }
@@ -165,6 +166,7 @@ fn isWindowsConsole(file: std.Io.File) bool {
 }
 
 pub const StdoutOutput = struct {
+    io: std.Io,
     stdout: std.Io.File,
     stdoutBuffer: [4096]u8 = undefined,
     utf16Buffer: [UTF16_BUFFER_SIZE]u16 = undefined,
@@ -172,11 +174,16 @@ pub const StdoutOutput = struct {
     failed: std.atomic.Value(bool) = .init(false),
 
     pub fn init() StdoutOutput {
-        return initForFile(std.Io.File.stdout());
+        return initWithIo(compatibility_io);
     }
 
-    fn initForFile(stdout: std.Io.File) StdoutOutput {
+    pub fn initWithIo(io: std.Io) StdoutOutput {
+        return initForFile(io, std.Io.File.stdout());
+    }
+
+    fn initForFile(io: std.Io, stdout: std.Io.File) StdoutOutput {
         return .{
+            .io = io,
             .stdout = stdout,
             .windowsConsole = isWindowsConsole(stdout),
         };
@@ -205,7 +212,7 @@ pub const StdoutOutput = struct {
     }
 
     fn writeBytes(self: *StdoutOutput, data: []const u8) void {
-        var stdoutWriter = self.stdout.writerStreaming(io, &self.stdoutBuffer);
+        var stdoutWriter = self.stdout.writerStreaming(self.io, &self.stdoutBuffer);
         const w = &stdoutWriter.interface;
         w.writeAll(data) catch {
             self.failed.store(true, .release);
@@ -269,7 +276,7 @@ test "StdoutOutput preserves bytes for redirected output" {
     defer file.close(std.testing.io);
     try std.testing.expect(!isWindowsConsole(file));
 
-    var stdout_output = StdoutOutput.initForFile(file);
+    var stdout_output = StdoutOutput.initForFile(std.testing.io, file);
     const expected = "\x1b[31mAé東😀\x1b[0m";
     const split = expected.len / 2;
     stdout_output.bufferedOutput().write(expected[0..split]);
@@ -339,13 +346,26 @@ fn BackendWriter(
         }
 
         pub fn print(self: Writer, comptime format: []const u8, args: anytype) error{BufferFull}!void {
+            // Batch formatting fragments before backend admission, without retaining bytes between calls.
+            var buffer: [256]u8 = undefined;
             var copy = self;
-            return copy.interface.print(format, args) catch return error.BufferFull;
+            copy.interface.buffer = &buffer;
+            copy.interface.print(format, args) catch return error.BufferFull;
+            copy.interface.flush() catch return error.BufferFull;
+        }
+
+        pub fn flush(self: *Writer) error{BufferFull}!void {
+            self.interface.flush() catch return error.BufferFull;
         }
 
         fn drain(w: *std.Io.Writer, data: []const []const u8, splat: usize) std.Io.Writer.Error!usize {
             const self: *Writer = @alignCast(@fieldParentPtr("interface", w));
             var written: usize = 0;
+
+            if (w.end > 0) {
+                append(self.backend, w.buffered()) catch return error.WriteFailed;
+                w.end = 0;
+            }
 
             for (data[0 .. data.len - 1]) |slice| {
                 append(self.backend, slice) catch return error.WriteFailed;
@@ -353,6 +373,7 @@ fn BackendWriter(
             }
 
             const pattern = data[data.len - 1];
+            if (pattern.len == 0) return written;
             for (0..splat) |_| {
                 append(self.backend, pattern) catch return error.WriteFailed;
                 written += pattern.len;
@@ -360,6 +381,46 @@ fn BackendWriter(
             return written;
         }
     };
+}
+
+test "BackendWriter batches ANSI formatting and preserves write order" {
+    const Sink = struct {
+        bytes: [2048]u8 = undefined,
+        len: usize = 0,
+        writes: usize = 0,
+
+        fn append(self: *@This(), data: []const u8) error{BufferFull}!void {
+            if (data.len == 0) return;
+            if (data.len > self.bytes.len - self.len) return error.BufferFull;
+            @memcpy(self.bytes[self.len..][0..data.len], data);
+            self.len += data.len;
+            self.writes += 1;
+        }
+    };
+    var sink: Sink = .{};
+    const writer = BackendWriter(Sink, Sink.append).init(&sink);
+    try writer.print("\x1b[{d};{d}H\x1b[38;2;{d};{d};{d}m", .{ 12, 34, 255, 128, 64 });
+    const ansi = "\x1b[12;34H\x1b[38;2;255;128;64m";
+    try std.testing.expectEqualStrings(ansi, sink.bytes[0..sink.len]);
+    try std.testing.expectEqual(@as(usize, 1), sink.writes);
+
+    try writer.writeAll("text");
+    try writer.writeByte('!');
+    try std.testing.expectEqual(@as(usize, 1), try writer.write("?"));
+    try writer.print("<{s}:{d:0>300}:{s}>", .{ "x" ** 300, 1, "y" ** 300 });
+    const expected = ansi ++ "text!?<" ++ "x" ** 300 ++ ":" ++ "0" ** 299 ++ "1:" ++ "y" ** 300 ++ ">";
+    try std.testing.expectEqualStrings(expected, sink.bytes[0..sink.len]);
+    try std.testing.expectError(error.BufferFull, writer.print("{s}", .{"z" ** 2048}));
+
+    sink = .{};
+    var buffered = writer;
+    var scratch: [256]u8 = undefined;
+    buffered.interface.buffer = &scratch;
+    for (0..8) |_| try buffered.interface.writeAll(ansi);
+    try std.testing.expectEqual(@as(usize, 0), sink.writes);
+    try buffered.flush();
+    try std.testing.expectEqual(@as(usize, 1), sink.writes);
+    try std.testing.expectEqualStrings(ansi ** 8, sink.bytes[0..sink.len]);
 }
 
 /// Tagged union dispatching to BufferedBackend or FeedBackend.
@@ -435,9 +496,7 @@ pub const OutputBackend = union(enum) {
         }
     }
 
-    /// Write a backend-specific debug dump into `out`. Called from the
-    /// `dumpOutputBuffer` helper on `CliRenderer`; keeps backend-specific
-    /// formatting internal so the renderer never switches on the tag.
+    /// Write a backend-specific debug dump into `out`.
     pub fn dumpTo(self: *OutputBackend, out: anytype) void {
         switch (self.*) {
             inline else => |*b| b.dumpTo(out),
@@ -467,6 +526,8 @@ pub const BufferedBackend = struct {
 
     allocator: Allocator,
     output: BufferedOutput,
+    io: std.Io,
+    logger: *const logger.Logger = logger.compatibilityLogger(),
     ownedStdoutOutput: ?*StdoutOutput = null,
     ownedMemoryOutput: ?*MemoryOutput = null,
 
@@ -498,6 +559,10 @@ pub const BufferedBackend = struct {
     lastWriteTimeUs: ?f64 = null,
 
     pub fn create(allocator: Allocator, output: BufferedOutput) !BufferedBackend {
+        return createWithIo(allocator, compatibility_io, output);
+    }
+
+    pub fn createWithIo(allocator: Allocator, io: std.Io, output: BufferedOutput) !BufferedBackend {
         const a_buf = try allocator.alloc(u8, OUTPUT_BUFFER_SIZE);
         errdefer allocator.free(a_buf);
         const b_buf = try allocator.alloc(u8, OUTPUT_BUFFER_SIZE);
@@ -506,27 +571,36 @@ pub const BufferedBackend = struct {
         return BufferedBackend{
             .allocator = allocator,
             .output = output,
+            .io = io,
             .outputA = a_buf,
             .outputB = b_buf,
         };
     }
 
     pub fn createStdout(allocator: Allocator) !BufferedBackend {
+        return createStdoutWithIo(allocator, compatibility_io);
+    }
+
+    pub fn createStdoutWithIo(allocator: Allocator, io: std.Io) !BufferedBackend {
         const stdoutOutput = try allocator.create(StdoutOutput);
         errdefer allocator.destroy(stdoutOutput);
-        stdoutOutput.* = StdoutOutput.init();
+        stdoutOutput.* = StdoutOutput.initWithIo(io);
 
-        var backend = try BufferedBackend.create(allocator, stdoutOutput.bufferedOutput());
+        var backend = try BufferedBackend.createWithIo(allocator, io, stdoutOutput.bufferedOutput());
         backend.ownedStdoutOutput = stdoutOutput;
         return backend;
     }
 
     pub fn createMemory(allocator: Allocator) !BufferedBackend {
+        return createMemoryWithIo(allocator, compatibility_io);
+    }
+
+    pub fn createMemoryWithIo(allocator: Allocator, io: std.Io) !BufferedBackend {
         const memoryOutput = try allocator.create(MemoryOutput);
         errdefer allocator.destroy(memoryOutput);
         memoryOutput.* = MemoryOutput.init(allocator);
 
-        var backend = try BufferedBackend.create(allocator, memoryOutput.bufferedOutput());
+        var backend = try BufferedBackend.createWithIo(allocator, io, memoryOutput.bufferedOutput());
         backend.ownedMemoryOutput = memoryOutput;
         return backend;
     }
@@ -536,9 +610,9 @@ pub const BufferedBackend = struct {
     /// allocator would be undefined behavior.
     pub fn deinit(self: *BufferedBackend) void {
         if (self.renderThread) |thread| {
-            self.renderMutex.lockUncancelable(io);
+            self.renderMutex.lockUncancelable(self.io);
             while (self.renderInProgress) {
-                self.renderCondition.waitUncancelable(io, &self.renderMutex);
+                self.renderCondition.waitUncancelable(self.io, &self.renderMutex);
             }
             self.shouldTerminate = true;
             // Do NOT set renderRequested — the thread should wake, see
@@ -546,8 +620,8 @@ pub const BufferedBackend = struct {
             // the stale last-frame buffer. Previously setting renderRequested
             // here caused a stale frame to be emitted AFTER the shutdown
             // ANSI sequence had already restored the terminal.
-            self.renderCondition.signal(io);
-            self.renderMutex.unlock(io);
+            self.renderCondition.signal(self.io);
+            self.renderMutex.unlock(self.io);
             thread.join();
             self.renderThread = null;
         }
@@ -572,7 +646,7 @@ pub const BufferedBackend = struct {
     pub fn prepareFrame(self: *BufferedBackend) WriteStatus {
         if (!self.useThread) return .ok;
         if (!self.renderMutex.tryLock()) return .skipped;
-        defer self.renderMutex.unlock(io);
+        defer self.renderMutex.unlock(self.io);
         if (self.renderInProgress) return .skipped;
         return .ok;
     }
@@ -592,22 +666,22 @@ pub const BufferedBackend = struct {
         if (use_thread) {
             if (self.renderThread == null) {
                 self.renderThread = std.Thread.spawn(.{}, renderThreadFn, .{self}) catch |err| {
-                    std.log.warn("Failed to spawn render thread: {}, falling back to non-threaded mode", .{err});
                     self.useThread = false;
+                    self.logger.warn("Failed to spawn render thread: {}, falling back to non-threaded mode", .{err});
                     return;
                 };
             }
         } else {
             if (self.renderThread) |thread| {
-                self.renderMutex.lockUncancelable(io);
+                self.renderMutex.lockUncancelable(self.io);
                 while (self.renderInProgress) {
-                    self.renderCondition.waitUncancelable(io, &self.renderMutex);
+                    self.renderCondition.waitUncancelable(self.io, &self.renderMutex);
                 }
                 self.shouldTerminate = true;
                 // Wake the thread with a terminate-only signal; do not set
                 // renderRequested (that would replay the stale buffer).
-                self.renderCondition.signal(io);
-                self.renderMutex.unlock(io);
+                self.renderCondition.signal(self.io);
+                self.renderMutex.unlock(self.io);
 
                 thread.join();
                 self.renderThread = null;
@@ -706,13 +780,13 @@ pub const BufferedBackend = struct {
             self.hasCommittedFrame = true;
             return .ok;
         }
-        const writeStart = std.Io.Clock.awake.now(io);
+        const writeStart = std.Io.Clock.awake.now(self.io);
         const committed_buffer = self.activeBuffer;
 
         if (self.useThread) {
-            self.renderMutex.lockUncancelable(io);
+            self.renderMutex.lockUncancelable(self.io);
             while (self.renderInProgress) {
-                self.renderCondition.waitUncancelable(io, &self.renderMutex);
+                self.renderCondition.waitUncancelable(self.io, &self.renderMutex);
             }
 
             // Hand off the just-written buffer to the render thread and flip
@@ -729,15 +803,22 @@ pub const BufferedBackend = struct {
 
             self.renderRequested = true;
             self.renderInProgress = true;
-            self.renderCondition.signal(io);
-            self.renderMutex.unlock(io);
+            self.renderCondition.signal(self.io);
+            self.renderMutex.unlock(self.io);
         } else {
             const to_write = if (self.activeBuffer == .A)
                 self.outputA[0..self.outputLenA]
             else
                 self.outputB[0..self.outputLenB];
-            self.output.write(to_write);
-            self.lastWriteTimeUs = @as(f64, @floatFromInt(writeStart.untilNow(io, .awake).toMicroseconds()));
+            if (self.ownedMemoryOutput) |memoryOutput| {
+                memoryOutput.bytes.appendSlice(memoryOutput.allocator, to_write) catch {
+                    self.smallFrameStreak = 0;
+                    return .failed;
+                };
+            } else {
+                self.output.write(to_write);
+            }
+            self.lastWriteTimeUs = @as(f64, @floatFromInt(writeStart.untilNow(self.io, .awake).toMicroseconds()));
         }
 
         self.lastCommittedBuffer = committed_buffer;
@@ -747,16 +828,16 @@ pub const BufferedBackend = struct {
 
     fn renderThreadFn(self: *BufferedBackend) void {
         while (true) {
-            self.renderMutex.lockUncancelable(io);
+            self.renderMutex.lockUncancelable(self.io);
             while (!self.renderRequested and !self.shouldTerminate) {
-                self.renderCondition.waitUncancelable(io, &self.renderMutex);
+                self.renderCondition.waitUncancelable(self.io, &self.renderMutex);
             }
 
             // Terminate wins: when shouldTerminate is set, exit without
             // writing even if a render was also requested. This keeps
             // shutdown-ANSI the last thing on the wire.
             if (self.shouldTerminate) {
-                self.renderMutex.unlock(io);
+                self.renderMutex.unlock(self.io);
                 break;
             }
 
@@ -765,14 +846,14 @@ pub const BufferedBackend = struct {
             const outputData = self.currentOutputBuffer;
             const outputLen = self.currentOutputLen;
 
-            const writeStart = std.Io.Clock.awake.now(io);
+            const writeStart = std.Io.Clock.awake.now(self.io);
 
             self.output.write(outputData[0..outputLen]);
 
-            self.lastWriteTimeUs = @as(f64, @floatFromInt(writeStart.untilNow(io, .awake).toMicroseconds()));
+            self.lastWriteTimeUs = @as(f64, @floatFromInt(writeStart.untilNow(self.io, .awake).toMicroseconds()));
             self.renderInProgress = false;
-            self.renderCondition.signal(io);
-            self.renderMutex.unlock(io);
+            self.renderCondition.signal(self.io);
+            self.renderMutex.unlock(self.io);
         }
     }
 
@@ -780,11 +861,11 @@ pub const BufferedBackend = struct {
         if (data.len == 0) return;
 
         if (self.useThread) {
-            self.renderMutex.lockUncancelable(io);
+            self.renderMutex.lockUncancelable(self.io);
             while (self.renderInProgress) {
-                self.renderCondition.waitUncancelable(io, &self.renderMutex);
+                self.renderCondition.waitUncancelable(self.io, &self.renderMutex);
             }
-            self.renderMutex.unlock(io);
+            self.renderMutex.unlock(self.io);
         }
 
         self.output.write(data);
@@ -792,11 +873,11 @@ pub const BufferedBackend = struct {
 
     pub fn writeOutMultiple(self: *BufferedBackend, data_slices: []const []const u8) void {
         if (self.useThread) {
-            self.renderMutex.lockUncancelable(io);
+            self.renderMutex.lockUncancelable(self.io);
             while (self.renderInProgress) {
-                self.renderCondition.waitUncancelable(io, &self.renderMutex);
+                self.renderCondition.waitUncancelable(self.io, &self.renderMutex);
             }
-            self.renderMutex.unlock(io);
+            self.renderMutex.unlock(self.io);
         }
 
         var totalLen: usize = 0;
@@ -846,8 +927,11 @@ pub const BufferedBackend = struct {
 ///
 /// Zig tests that want to exercise the feed path should drain the feed directly.
 pub const FeedBackend = struct {
+    io: std.Io,
     feed: *NativeSpanFeed.Stream,
     frameBytes: std.ArrayListUnmanaged(u8) = .empty,
+    frameActive: bool = false,
+    frameWriteCount: if (builtin.is_test) usize else void = if (builtin.is_test) 0 else {},
 
     /// Set when staging a frame fails. No bytes from a failed frame are
     /// published; the renderer forces a later full repaint.
@@ -856,29 +940,28 @@ pub const FeedBackend = struct {
     lastWriteTimeUs: ?f64 = null,
 
     pub fn create(feed: *NativeSpanFeed.Stream) FeedBackend {
-        return FeedBackend{ .feed = feed };
+        return createWithIo(compatibility_io, feed);
+    }
+
+    pub fn createWithIo(io: std.Io, feed: *NativeSpanFeed.Stream) FeedBackend {
+        return .{ .io = io, .feed = feed };
     }
 
     pub fn deinit(self: *FeedBackend) void {
         // Feed memory is owned by the TypeScript side.
+        self.feed.setStagedBytes(0) catch unreachable;
         self.frameBytes.deinit(self.feed.allocator);
     }
 
     pub fn shouldSkipFrame(self: *FeedBackend) bool {
+        const stats = self.feed.getStats();
         const cap = self.feed.options.span_queue_capacity;
-        if (cap == 0) return false;
-
-        // Draining transfers spans to consumers; only releasing their chunk
-        // references returns credit. Count queued and in-flight spans once each.
-        var outstanding: u64 = 0;
-        for (self.feed.stateBuffer()) |refcount| {
-            outstanding += refcount;
-            if (outstanding >= cap) return true;
-        }
-        return false;
+        return self.frameActive or (cap > 0 and stats.outstanding_spans >= cap) or
+            !self.feed.hasAtomicCapacity();
     }
 
     pub fn prepareFrame(self: *FeedBackend) WriteStatus {
+        if (self.frameActive) return .skipped;
         self.frameWriteFailed = false;
 
         if (self.feed.hasPendingBytes()) {
@@ -907,6 +990,25 @@ pub const FeedBackend = struct {
     pub const Writer = BackendWriter(FeedBackend, frameWrite);
 
     fn frameWrite(self: *FeedBackend, data: []const u8) error{BufferFull}!void {
+        if (builtin.is_test) self.frameWriteCount += 1;
+        if (self.frameWriteFailed) return error.BufferFull;
+        const required = std.math.add(usize, self.frameBytes.items.len, data.len) catch {
+            self.frameWriteFailed = true;
+            return error.BufferFull;
+        };
+        self.feed.setStagedBytes(required) catch {
+            self.frameWriteFailed = true;
+            return error.BufferFull;
+        };
+        const max_bytes = self.feed.byteLimit();
+        if (max_bytes != 0 and required > self.frameBytes.capacity) {
+            const doubled = std.math.mul(usize, self.frameBytes.capacity, 2) catch required;
+            const capacity: usize = @intCast(@min(max_bytes, @max(required, @max(256, doubled))));
+            self.frameBytes.ensureTotalCapacityPrecise(self.feed.allocator, capacity) catch {
+                self.frameWriteFailed = true;
+                return error.BufferFull;
+            };
+        }
         self.frameBytes.appendSlice(self.feed.allocator, data) catch {
             self.frameWriteFailed = true;
             return error.BufferFull;
@@ -918,49 +1020,85 @@ pub const FeedBackend = struct {
     }
 
     pub fn beginFrame(self: *FeedBackend) void {
+        if (builtin.is_test) self.frameWriteCount = 0;
         self.frameWriteFailed = false;
+        self.frameActive = true;
+        self.feed.setStagedBytes(0) catch unreachable;
         self.frameBytes.clearRetainingCapacity();
     }
 
     pub fn failFrame(self: *FeedBackend) void {
         self.frameWriteFailed = true;
+        self.feed.setStagedBytes(0) catch unreachable;
+        self.frameBytes.clearRetainingCapacity();
+    }
+
+    pub fn cancelFrame(self: *FeedBackend) void {
+        self.failFrame();
+        self.frameActive = false;
     }
 
     pub fn endFrame(self: *FeedBackend) WriteStatus {
-        const writeStart = std.Io.Clock.awake.now(io);
+        const writeStart = std.Io.Clock.awake.now(self.io);
         var status: WriteStatus = .ok;
+        var notify = false;
+        self.feed.setStagedBytes(0) catch unreachable;
 
         if (self.frameWriteFailed) {
             status = .failed;
         } else {
-            self.feed.writeAtomic(self.frameBytes.items) catch {
+            notify = self.feed.writeAtomicUnnotified(self.frameBytes.items) catch blk: {
                 status = .failed;
+                break :blk false;
             };
         }
 
-        self.lastWriteTimeUs = @as(f64, @floatFromInt(writeStart.untilNow(io, .awake).toMicroseconds()));
+        self.frameActive = false;
+        self.frameBytes.clearRetainingCapacity();
+        self.lastWriteTimeUs = @as(f64, @floatFromInt(writeStart.untilNow(self.io, .awake).toMicroseconds()));
+        self.feed.finish(notify, 0);
         return status;
     }
 
     pub fn writeOut(self: *FeedBackend, data: []const u8) void {
+        self.writeOutChecked(data) catch {};
+    }
+
+    pub fn writeOutChecked(self: *FeedBackend, data: []const u8) NativeSpanFeed.StreamError!void {
         if (data.len == 0) return;
-        // High-level renderers use a growable, uncapped feed. Manually bounded
-        // low-level feeds intentionally get atomic best-effort control writes.
-        self.feed.writeAtomic(data) catch {};
+        if (self.feed.producing) return error.Busy;
+        if (self.frameActive) {
+            if (self.feed.bounded()) return error.Busy;
+            // Interrupt an unpublished frame rather than dropping an unbounded
+            // control write. endFrame reports failure so its state is retried.
+            self.failFrame();
+        }
+        try self.feed.writeAtomic(data);
     }
 
     pub fn writeOutMultiple(self: *FeedBackend, data_slices: []const []const u8) void {
+        if (self.feed.producing) return;
+        if (self.frameActive) {
+            if (self.feed.bounded()) return;
+            self.failFrame();
+        }
         var totalLen: usize = 0;
         for (data_slices) |slice| totalLen = std.math.add(usize, totalLen, slice.len) catch return;
         if (totalLen == 0) return;
 
-        const data = self.feed.allocator.alloc(u8, totalLen) catch return;
+        // Charge temporary control staging before allocating or copying it.
+        self.feed.setStagedBytes(totalLen) catch return;
+        const data = self.feed.allocator.alloc(u8, totalLen) catch {
+            self.feed.setStagedBytes(0) catch unreachable;
+            return;
+        };
         defer self.feed.allocator.free(data);
         var offset: usize = 0;
         for (data_slices) |slice| {
             @memcpy(data[offset .. offset + slice.len], slice);
             offset += slice.len;
         }
+        self.feed.setStagedBytes(0) catch unreachable;
         self.feed.writeAtomic(data) catch {};
     }
 

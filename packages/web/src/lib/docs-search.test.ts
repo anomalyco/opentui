@@ -249,6 +249,15 @@ describe("documentation search ranking against the published index", () => {
     expect(lookup(entries, "InputRenderable")[0]?.entry.url).toBe("/docs/components/input")
   })
 
+  test("distinguishes Core wrappers from native ownership and frame APIs", () => {
+    expect(lookup(entries, "ResourceContext")[0]?.entry.url).toBe("/docs/native/core")
+    expect(lookup(entries, "NativeScene")[0]?.entry.url).toBe("/docs/native/core")
+    expect(lookup(entries, "ot_handle")[0]?.entry.url).toBe("/docs/native/resources")
+    expect(lookup(entries, "ot_scene_frame_step_with_geometry")[0]?.entry.url).toBe("/docs/native/frames")
+    expect(lookup(entries, "ot_context_create")[0]?.entry.url).toBe("/docs/native/c")
+    expect(lookup(entries, "Context.init")[0]?.entry.url).toBe("/docs/native/zig")
+  })
+
   test("multi-word queries prefer the heading that names the phrase", () => {
     expect(lookup(entries, "react bindings")[0]?.entry.url).toBe("/docs/bindings/react")
     expect(lookup(entries, "react keymap")[0]?.entry.url).toBe("/docs/keymap/react")

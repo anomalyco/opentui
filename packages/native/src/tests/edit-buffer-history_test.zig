@@ -4,6 +4,240 @@ const gp = @import("../grapheme.zig");
 const link = @import("../link.zig");
 
 const EditBuffer = edit_buffer.EditBuffer;
+const EditState = @import("edit-buffer-atomicity_test.zig").EditState;
+
+comptime {
+    _ = @import("edit-buffer-atomicity_test.zig");
+}
+
+test "EditBuffer - borrowed replacements retain sources and cursor undo metadata" {
+    var pool = gp.GraphemePool.init(std.testing.allocator);
+    defer pool.deinit();
+    var links = link.LinkPool.init(std.testing.allocator);
+    defer links.deinit();
+    const eb = try EditBuffer.init(std.testing.allocator, &pool, &links, .unicode, null);
+    defer eb.deinit();
+    const original = "old\nabcdef";
+    const clean_id = try eb.setTextBorrowed(original, null);
+    try eb.setCursor(1, 6);
+    try eb.insertText("!");
+    eb.moveUp();
+    const cursor = eb.getPrimaryCursor();
+    try std.testing.expectEqual(@as(u32, 3), cursor.col);
+    try std.testing.expectEqual(@as(u32, 7), cursor.desired_col);
+    const add_len = eb.add_buffer.len;
+    const replacement = "\u{754c}\r\nx";
+    const first_id = try eb.replaceTextBorrowed(replacement);
+    const second_id = try eb.replaceTextBorrowed(replacement);
+    try std.testing.expect(clean_id != first_id and first_id != second_id);
+    try std.testing.expectEqual(original.ptr, eb.tb.getMemBuffer(clean_id).?.ptr);
+    try std.testing.expectEqual(replacement.ptr, eb.tb.getMemBuffer(first_id).?.ptr);
+    try std.testing.expectEqual(replacement.ptr, eb.tb.getMemBuffer(second_id).?.ptr);
+    try std.testing.expectEqual(add_len, eb.add_buffer.len);
+    var actual: [32]u8 = undefined;
+    _ = try eb.undo();
+    try std.testing.expectEqualStrings("\u{754c}\nx", actual[0..eb.getText(&actual)]);
+    _ = try eb.undo();
+    try std.testing.expectEqualStrings("old\nabcdef!", actual[0..eb.getText(&actual)]);
+    try std.testing.expectEqualDeep(cursor, eb.getPrimaryCursor());
+    _ = try eb.redo();
+    _ = try eb.redo();
+    try std.testing.expectEqualStrings("\u{754c}\nx", actual[0..eb.getText(&actual)]);
+    try std.testing.expectEqualDeep(edit_buffer.Cursor{ .row = 0, .col = 0 }, eb.getPrimaryCursor());
+    try std.testing.expectEqual(clean_id, try eb.setTextBorrowed("new", clean_id));
+    try std.testing.expectEqualStrings(replacement, eb.tb.getMemBuffer(first_id).?);
+    try std.testing.expectEqualStrings(replacement, eb.tb.getMemBuffer(second_id).?);
+    try std.testing.expectEqual(@as(usize, 0), eb.add_buffer.len);
+    try std.testing.expect(!eb.canUndo());
+    try std.testing.expect(!eb.canRedo());
+    try eb.insertText("X");
+    _ = try eb.undo();
+    try std.testing.expectEqualStrings("new", actual[0..eb.getText(&actual)]);
+    _ = try eb.redo();
+    try std.testing.expectEqualStrings("Xnew", actual[0..eb.getText(&actual)]);
+}
+
+test "EditBuffer - replacement failures preserve valid history at each phase" {
+    var pool = gp.GraphemePool.init(std.testing.allocator);
+    defer pool.deinit();
+    var links = link.LinkPool.init(std.testing.allocator);
+    defer links.deinit();
+    inline for (.{ .memory, .owned, .borrowed }) |source| {
+        inline for (.{ false, true }) |history| {
+            for ([_]bool{ false, true }) |fail_rope| {
+                var succeeded = false;
+                for (0..64) |offset| {
+                    var failing = std.testing.FailingAllocator.init(std.testing.allocator, .{});
+                    const eb = try EditBuffer.init(failing.allocator(), &pool, &links, .unicode, null);
+                    defer eb.deinit();
+                    try eb.insertText("old");
+                    try eb.insertText("X");
+                    _ = try eb.undo();
+                    const mem_id = try eb.tb.registerMemBuffer("replacement", false);
+                    const before = EditState.capture(eb);
+                    const allocator = eb.tb.rope().allocator;
+                    var rope_failing = std.testing.FailingAllocator.init(allocator, .{});
+                    eb.tb.rope().allocator = rope_failing.allocator();
+                    const fault = if (fail_rope) &rope_failing else &failing;
+                    fault.fail_index = fault.alloc_index + offset;
+                    fault.resize_fail_index = fault.resize_index;
+                    const result = switch (source) {
+                        .memory => if (history) eb.replaceTextFromMemId(mem_id) else eb.setTextFromMemId(mem_id),
+                        .owned => if (history) eb.replaceText("replacement") else eb.setText("replacement"),
+                        .borrowed => if (history) eb.replaceTextBorrowed("replacement") else eb.setTextBorrowed("replacement", mem_id),
+                        else => unreachable,
+                    };
+                    eb.tb.rope().allocator = allocator;
+                    fault.fail_index = std.math.maxInt(usize);
+                    fault.resize_fail_index = std.math.maxInt(usize);
+                    var actual: [32]u8 = undefined;
+                    if (result) |_| {
+                        try std.testing.expectEqualStrings("replacement", actual[0..eb.getText(&actual)]);
+                        if (history) {
+                            _ = try eb.undo();
+                            try std.testing.expectEqualStrings("old", actual[0..eb.getText(&actual)]);
+                            try std.testing.expectEqualDeep(before.cursor, eb.getPrimaryCursor());
+                        } else {
+                            try std.testing.expect(!eb.canUndo() and !eb.canRedo());
+                            try std.testing.expectEqual(@as(usize, 0), eb.add_buffer.len);
+                        }
+                        succeeded = true;
+                        break;
+                    } else |err| {
+                        try std.testing.expectEqual(error.OutOfMemory, err);
+                        try std.testing.expectEqualDeep(before, EditState.capture(eb));
+                        try std.testing.expectEqualStrings("replacement", eb.tb.getMemBuffer(mem_id).?);
+                        _ = try eb.redo();
+                        try std.testing.expectEqualStrings("oldX", actual[0..eb.getText(&actual)]);
+                    }
+                }
+                try std.testing.expect(succeeded);
+            }
+        }
+    }
+}
+
+test "EditBuffer - reused storage retirement keeps failed replacement history safe" {
+    var pool = gp.GraphemePool.init(std.testing.allocator);
+    defer pool.deinit();
+    var links = link.LinkPool.init(std.testing.allocator);
+    defer links.deinit();
+    const eb = try EditBuffer.init(std.testing.allocator, &pool, &links, .wcwidth, null);
+    defer eb.deinit();
+    const mem_id = try eb.tb.registerMemBuffer("old", false);
+    try eb.setTextFromMemId(mem_id);
+    try eb.setCursor(0, 3);
+    try eb.insertText("!");
+
+    const allocator = eb.tb.rope().allocator;
+    var clear_failure = std.testing.FailingAllocator.init(allocator, .{ .fail_index = 0 });
+    eb.tb.rope().allocator = clear_failure.allocator();
+    const clear_result = eb.tb.clear();
+    eb.tb.rope().allocator = allocator;
+    try std.testing.expectError(error.OutOfMemory, clear_result);
+    var actual: [32]u8 = undefined;
+    _ = try eb.undo();
+    try std.testing.expectEqualStrings("old", actual[0..eb.getText(&actual)]);
+    _ = try eb.redo();
+    try std.testing.expectEqualStrings("old!", actual[0..eb.getText(&actual)]);
+
+    // Raw callers must retire these ranges before reusing mem_id.
+    try eb.tb.clear();
+    eb.clearHistory();
+    try eb.tb.replaceMemBuffer(mem_id, "n", false);
+    const global_allocator = eb.tb.global_allocator;
+    var parse_failure = std.testing.FailingAllocator.init(global_allocator, .{ .fail_index = 0 });
+    eb.tb.global_allocator = parse_failure.allocator();
+    const result = eb.setTextFromMemId(mem_id);
+    eb.tb.global_allocator = global_allocator;
+    try std.testing.expectError(error.OutOfMemory, result);
+    try std.testing.expectError(error.Stop, eb.undo());
+    try std.testing.expectEqual(@as(usize, 0), eb.getText(&actual));
+    try eb.insertText("X");
+    try std.testing.expectEqualStrings("X", actual[0..eb.getText(&actual)]);
+    _ = try eb.undo();
+    try std.testing.expectEqual(@as(usize, 0), eb.getText(&actual));
+    _ = try eb.redo();
+    try std.testing.expectEqualStrings("X", actual[0..eb.getText(&actual)]);
+}
+
+test "EditBuffer - owned replacement registration rejection frees the copy" {
+    var pool = gp.GraphemePool.init(std.testing.allocator);
+    defer pool.deinit();
+    var links = link.LinkPool.init(std.testing.allocator);
+    defer links.deinit();
+    inline for (.{ .set, .replace }) |operation| {
+        inline for (.{ .full, .allocation }) |admission| {
+            const eb = try EditBuffer.init(std.testing.allocator, &pool, &links, .wcwidth, null);
+            defer eb.deinit();
+            try eb.insertText("old");
+            const registry = &eb.tb.mem_registry;
+            const limit = if (admission == .full) 255 else registry.buffers.capacity;
+            while (registry.buffers.items.len < limit) {
+                _ = try registry.register("spare", false);
+            }
+            const before = eb.tb.rope().*;
+            const cursor = eb.getPrimaryCursor();
+            const add_len = eb.add_buffer.len;
+            const epoch = eb.tb.getContentEpoch();
+            const allocator = registry.allocator;
+            var failing = std.testing.FailingAllocator.init(allocator, .{
+                .fail_index = 0,
+                .resize_fail_index = 0,
+            });
+            registry.allocator = failing.allocator();
+            const result = if (operation == .set) eb.setText("replacement") else eb.replaceText("replacement");
+            registry.allocator = allocator;
+            try std.testing.expectError(error.OutOfMemory, result);
+            try std.testing.expectEqual(admission == .allocation, failing.has_induced_failure);
+            try std.testing.expectEqual(limit, registry.buffers.items.len);
+            try std.testing.expectEqual(@as(usize, 0), registry.free_slots.items.len);
+            try std.testing.expectEqual(before.root, eb.tb.rope().root);
+            try std.testing.expectEqual(before.version, eb.tb.rope().version);
+            try std.testing.expectEqual(before.undo_history, eb.tb.rope().undo_history);
+            try std.testing.expectEqual(before.undo_depth, eb.tb.rope().undo_depth);
+            try std.testing.expectEqualDeep(cursor, eb.getPrimaryCursor());
+            try std.testing.expectEqual(add_len, eb.add_buffer.len);
+            try std.testing.expectEqual(epoch, eb.tb.getContentEpoch());
+            var actual: [32]u8 = undefined;
+            try std.testing.expectEqualStrings("old", actual[0..eb.getText(&actual)]);
+            if (admission == .full) try registry.unregister(254);
+            if (operation == .set) {
+                try eb.setText("replacement");
+                try std.testing.expect(!eb.canUndo());
+                try std.testing.expectEqual(@as(usize, 0), eb.add_buffer.len);
+            } else {
+                try eb.replaceText("replacement");
+                try std.testing.expectEqual(add_len, eb.add_buffer.len);
+                _ = try eb.undo();
+                try std.testing.expectEqualStrings("old", actual[0..eb.getText(&actual)]);
+                _ = try eb.redo();
+            }
+            try std.testing.expectEqualStrings("replacement", actual[0..eb.getText(&actual)]);
+        }
+    }
+}
+
+test "EditBuffer - failed precleared replacement keeps cursor editable" {
+    var pool = gp.GraphemePool.init(std.testing.allocator);
+    defer pool.deinit();
+    var links = link.LinkPool.init(std.testing.allocator);
+    defer links.deinit();
+    const eb = try EditBuffer.init(std.testing.allocator, &pool, &links, .wcwidth, null);
+    defer eb.deinit();
+    try eb.insertText("old");
+    const replacement = try eb.tb.registerMemBuffer("replacement", false);
+    try eb.tb.clear();
+    const allocator = eb.tb.rope().allocator;
+    var failing = std.testing.FailingAllocator.init(allocator, .{ .fail_index = 0 });
+    eb.tb.rope().allocator = failing.allocator();
+    const result = eb.setTextFromMemId(replacement);
+    eb.tb.rope().allocator = allocator;
+    try std.testing.expectError(error.OutOfMemory, result);
+    try eb.insertText("X");
+    var actual: [32]u8 = undefined;
+    try std.testing.expectEqualStrings("X", actual[0..eb.getText(&actual)]);
+}
 
 test "EditBuffer - basic undo/redo with insertText" {
     const pool = gp.initGlobalPool(std.testing.allocator);

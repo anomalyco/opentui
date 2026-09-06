@@ -1,18 +1,18 @@
 import { expect, test } from "bun:test"
-import { Renderable } from "../Renderable.js"
+import { BoxRenderable } from "../renderables/Box.js"
 import { CliRenderEvents, type CliRendererHandlerErrorEvent } from "../renderer.js"
 import { createTestRenderer } from "../testing.js"
 
 test("emits mouse handler errors without resetting input", async () => {
   const { renderer, mockMouse, renderOnce } = await createTestRenderer({ width: 20, height: 10 })
-  const target = new Renderable(renderer, {
+  const target = new BoxRenderable(renderer, {
     position: "absolute",
     left: 1,
     top: 1,
     width: 4,
     height: 2,
   })
-  const child = new Renderable(renderer, { width: 2, height: 1 })
+  const child = new BoxRenderable(renderer, { width: 2, height: 1 })
   const error = new Error("handler failed")
   const errors: CliRendererHandlerErrorEvent[] = []
   const sequences: string[] = []

@@ -1,6 +1,5 @@
 import { createServer, type Server } from "node:http"
-import { readFile, rm } from "node:fs/promises"
-import { resolve } from "node:path"
+import { readFile } from "node:fs/promises"
 
 import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test"
 import { ImageLoadError, NativeImage, NativeImagePool } from "../image.js"
@@ -174,12 +173,7 @@ describe("ImageRenderable image loading", () => {
     }
   })
 
-  test("dumps image cells with their fallback glyphs", async () => {
-    const timestamp = Date.now()
-    const dumpDirectory = resolve("buffer_dump")
-    const currentDump = resolve(dumpDirectory, `current_buffer_${timestamp}.txt`)
-    const nextDump = resolve(dumpDirectory, `next_buffer_${timestamp}.txt`)
-    const outputDump = resolve(dumpDirectory, `output_buffer_${timestamp}.txt`)
+  test("captures image cells with their fallback glyphs", async () => {
     const renderable = new ImageRenderable(renderer, {
       source: await readFile(new URL("rgba.png", FIXTURES)),
       protocol: "blocks",
@@ -192,15 +186,9 @@ describe("ImageRenderable image loading", () => {
     await setup.renderOnce()
 
     try {
-      const fallback = setup.captureCharFrame().match(/[^\s]/)?.[0]
-      expect(fallback).toBeDefined()
-
-      renderer.dumpBuffers(timestamp)
-
-      expect(await readFile(currentDump, "utf8")).toContain(fallback!)
-      expect(await readFile(outputDump, "utf8")).toContain(fallback!)
+      expect(setup.captureCharFrame().trim()).toBe("█")
+      expect(setup.captureSpans().lines[0].spans[0].text).toBe("█")
     } finally {
-      await Promise.all([currentDump, nextDump, outputDump].map((path) => rm(path, { force: true })))
       renderable.destroy()
     }
   })

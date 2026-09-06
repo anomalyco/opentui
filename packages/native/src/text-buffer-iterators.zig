@@ -22,6 +22,44 @@ pub const Coords = struct {
     col: u32,
 };
 
+/// Note: Takes mutable rope for lazy marker cache rebuilding
+pub fn walkLines(
+    rope: *UnifiedRope,
+    ctx: *anyopaque,
+    callback: *const fn (ctx: *anyopaque, line_info: LineInfo) void,
+    include_newlines_in_offset: bool,
+) void {
+    const linestart_count = rope.markerCount(.linestart);
+    if (linestart_count == 0) return;
+
+    var i: u32 = 0;
+    while (i < linestart_count) : (i += 1) {
+        const marker = rope.getMarker(.linestart, i) orelse continue;
+        const line_start_weight = marker.global_weight;
+        const width_cols = lineWidthAt(rope, i);
+        const seg_end = if (i + 1 < linestart_count) blk: {
+            const next_marker = rope.getMarker(.linestart, i + 1) orelse break :blk marker.leaf_index + 1;
+            break :blk next_marker.leaf_index;
+        } else blk: {
+            break :blk rope.count();
+        };
+
+        // Line i has i newlines before it (one after each previous line)
+        const col_offset = if (include_newlines_in_offset)
+            line_start_weight
+        else
+            line_start_weight - i;
+
+        callback(ctx, .{
+            .line_idx = i,
+            .col_offset = col_offset,
+            .width_cols = width_cols,
+            .seg_start = marker.leaf_index,
+            .seg_end = seg_end,
+        });
+    }
+}
+
 /// This is the most efficient way to iterate lines and their content
 pub fn walkLinesAndSegments(
     rope: *const UnifiedRope,

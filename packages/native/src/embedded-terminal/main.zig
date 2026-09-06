@@ -2,12 +2,13 @@ const std = @import("std");
 const buffer = @import("../buffer.zig");
 const compositor = @import("compositor.zig");
 const ghostty = @import("ghostty.zig");
+const log = @import("../logger.zig");
 
 pub const Error = error{
     InvalidValue,
     ProcessingFailed,
     ResponseOverflow,
-} || std.mem.Allocator.Error || buffer.BufferError;
+} || compositor.Error;
 
 pub const Cursor = struct {
     x: u16 = 0,
@@ -24,14 +25,32 @@ pub const Options = struct {
     cols: u16,
     rows: u16,
     max_scrollback: usize = 10_000,
+    logger: ?*const log.Logger = null,
 };
 
 pub const response_limit = 1024 * 1024;
 
+const StreamHandler = struct {
+    base: ghostty.TerminalStream.Handler,
+
+    pub fn vt(self: *StreamHandler, comptime action: ghostty.StreamAction.Tag, value: ghostty.StreamAction.Value(action)) void {
+        // The embedding controller owns the viewport; DECCOLM must not resize it.
+        if (action == .set_mode or action == .reset_mode or action == .restore_mode) {
+            if (value.mode == .@"132_column") return;
+        }
+        self.base.vt(action, value);
+    }
+
+    pub fn deinit(self: *StreamHandler) void {
+        self.base.deinit();
+    }
+};
+
 pub const EmbeddedTerminal = struct {
     allocator: std.mem.Allocator,
+    logger: ?*const log.Logger,
     terminal: ghostty.Terminal,
-    stream: ghostty.TerminalStream,
+    stream: ghostty.Stream(StreamHandler),
     render_state: ghostty.RenderState = .empty,
     cols: u16,
     rows: u16,
@@ -48,6 +67,7 @@ pub const EmbeddedTerminal = struct {
 
         self.* = .{
             .allocator = allocator,
+            .logger = options.logger,
             .terminal = try .init(io, allocator, .{
                 .cols = options.cols,
                 .rows = options.rows,
@@ -61,7 +81,7 @@ pub const EmbeddedTerminal = struct {
 
         var handler = self.terminal.vtHandler();
         handler.effects.write_pty = &writePty;
-        self.stream = .init(.{ .allocator = allocator, .handler = handler });
+        self.stream = .init(.{ .allocator = allocator, .handler = .{ .base = handler } });
         return self;
     }
 
@@ -75,14 +95,17 @@ pub const EmbeddedTerminal = struct {
     }
 
     pub fn write(self: *EmbeddedTerminal, bytes: []const u8) Error!void {
-        self.stream.handler.semantic_failure = false;
+        self.stream.handler.base.semantic_failure = false;
         self.stream.nextSlice(bytes);
-        if (self.stream.handler.semantic_failure) return error.ProcessingFailed;
+        if (self.stream.handler.base.semantic_failure) {
+            if (self.logger) |logger| logger.logMessage(.err, "Embedded terminal could not process input", .{});
+            return error.ProcessingFailed;
+        }
     }
 
     pub fn resize(self: *EmbeddedTerminal, cols: u16, rows: u16) Error!void {
         if (cols == 0 or rows == 0) return error.InvalidValue;
-        self.stream.handler.resize(.{ .cols = cols, .rows = rows }) catch |err| switch (err) {
+        self.stream.handler.base.resize(.{ .cols = cols, .rows = rows }) catch |err| switch (err) {
             error.InvalidValue => return error.InvalidValue,
             error.OutOfMemory => return error.OutOfMemory,
         };
@@ -121,17 +144,41 @@ pub const EmbeddedTerminal = struct {
     }
 
     pub fn compose(self: *EmbeddedTerminal, target: *buffer.OptimizedBuffer, x: i32, y: i32) Error!void {
+        try self.composeInternal(target, x, y, false, std.math.maxInt(u32));
+    }
+
+    /// Draw into retained draft storage, using the caller's cell budget for both viewports.
+    /// Dimension rejection preserves the target; later errors can leave partial rows.
+    /// Clear or discard failed drafts. Every error forces a full redraw on the next compose.
+    /// Invalidate explicitly when changing targets/origins or clearing a successful draft.
+    pub fn composeChecked(self: *EmbeddedTerminal, target: *buffer.OptimizedBuffer, x: i32, y: i32, cells_max: u32) Error!void {
+        try self.composeInternal(target, x, y, true, cells_max);
+    }
+
+    fn composeInternal(self: *EmbeddedTerminal, target: *buffer.OptimizedBuffer, x: i32, y: i32, comptime checked: bool, cells_max: u32) Error!void {
+        errdefer self.force_redraw = true;
+        if (checked) {
+            try target.checkImageResources();
+            const pages = &self.terminal.screens.active.pages;
+            const source_cells = @as(u32, pages.cols) * pages.rows;
+            const target_cells = std.math.mul(u32, target.width, target.height) catch return error.InvalidDimensions;
+            if (source_cells == 0 or source_cells > cells_max or
+                target.width == 0 or target.height == 0 or target_cells > cells_max or
+                target.width > std.math.maxInt(i32) or target.height > std.math.maxInt(i32))
+            {
+                return error.InvalidDimensions;
+            }
+        }
         self.render_state.update(self.allocator, &self.terminal) catch |err| {
             self.render_state.deinit(self.allocator);
             self.render_state = .empty;
-            self.force_redraw = true;
             return err;
         };
         if (self.force_redraw) {
             self.render_state.dirty = .full;
-            self.force_redraw = false;
         }
-        try compositor.compose(self.allocator, &self.render_state, target, x, y);
+        try compositor.compose(self.allocator, &self.render_state, target, x, y, checked);
+        self.force_redraw = false;
     }
 
     pub fn cursor(self: *EmbeddedTerminal) Cursor {
@@ -163,6 +210,7 @@ pub const EmbeddedTerminal = struct {
     }
 
     pub fn encodeMouse(self: *EmbeddedTerminal, mouse: ghostty.Mouse) Error![]u8 {
+        if (!std.math.isFinite(mouse.x) or !std.math.isFinite(mouse.y)) return error.InvalidOptions;
         const MouseSize = @FieldType(ghostty.MouseEncodeOptions, "size");
         const size: MouseSize = .{
             .screen = .{ .width = self.cols, .height = self.rows },
@@ -175,9 +223,22 @@ pub const EmbeddedTerminal = struct {
         options.any_button_pressed = mouse.any_button_pressed;
         options.last_cell = &self.mouse_last_cell;
 
+        var event = mouse.event();
+        // Keep an outside sentinel for reporting policy, but bound Ghostty's pre-clamp u16 conversion.
+        event.pos.x = std.math.clamp(event.pos.x, -1, @as(f32, @floatFromInt(self.cols)) + 0.5);
+        event.pos.y = std.math.clamp(event.pos.y, -1, @as(f32, @floatFromInt(self.rows)) + 0.5);
+        if (options.format == .utf8) {
+            const column: u32 = @intFromFloat(std.math.clamp(event.pos.x, 0, @as(f32, @floatFromInt(self.cols - 1))));
+            const row: u32 = @intFromFloat(std.math.clamp(event.pos.y, 0, @as(f32, @floatFromInt(self.rows - 1))));
+            // The UTF-8 encoder assumes scalar coordinates and adds the row offset in u16.
+            for ([_]u32{ column + 33, row + 33 }) |codepoint| {
+                if (codepoint >= 0xd800 and codepoint <= 0xdfff) return error.InvalidOptions;
+            }
+            if (row > std.math.maxInt(u16) - 33) return error.InvalidOptions;
+        }
         var output: std.Io.Writer.Allocating = .init(self.allocator);
         errdefer output.deinit();
-        ghostty.encodeMouse(&output.writer, mouse.event(), options) catch return error.OutOfMemory;
+        ghostty.encodeMouse(&output.writer, event, options) catch return error.OutOfMemory;
         return output.toOwnedSlice();
     }
 

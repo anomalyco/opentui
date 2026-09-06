@@ -1,10 +1,11 @@
-import { describe, expect, it, afterAll, beforeAll } from "bun:test"
+import { describe, expect, it, afterAll, beforeAll, spyOn } from "bun:test"
 import { InputRenderable, type InputRenderableOptions, InputRenderableEvents } from "./Input.js"
 import { decodePasteBytes } from "../lib/paste.js"
 import { createTestRenderer } from "../testing/test-renderer.js"
 import type { KeyEvent } from "../lib/KeyHandler.js"
+import { resolveRenderLib } from "../zig.js"
 
-const { renderer, mockInput } = await createTestRenderer({})
+const { renderer, mockInput, renderOnce } = await createTestRenderer({})
 
 function createInputRenderable(options: InputRenderableOptions): { input: InputRenderable; root: any } {
   if (!renderer) {
@@ -22,6 +23,180 @@ describe("InputRenderable", () => {
   afterAll(() => {
     if (renderer) {
       renderer.destroy()
+    }
+  })
+
+  it("value completes selection, cursor and synchronous INPUT before an accepted callback error", async () => {
+    const { input } = createInputRenderable({ width: 20, value: "before" })
+    input.setSelection(1, 3)
+    await Promise.resolve()
+    await renderOnce()
+    const trace: string[] = []
+    input.on(InputRenderableEvents.INPUT, (value: string) => trace.push(`input:${value}`))
+    input.editBuffer.on("cursor-changed", () => trace.push("cursor"))
+    input.editBuffer.on("content-changed", () => trace.push("content"))
+    const failure = new Error("accepted input callback")
+    const host = resolveRenderLib().getYogaHost()
+    const original = input.editBuffer.setText.bind(input.editBuffer)
+    const replace = spyOn(input.editBuffer, "setText").mockImplementation((text) => {
+      original(text)
+      host.invokeCallback(() => {
+        throw failure
+      })
+    })
+    try {
+      expect(() => {
+        input.value = "after"
+      }).toThrow(failure)
+      expect(input.value).toBe("after")
+      expect(input.hasSelection()).toBe(false)
+      expect(input.cursorOffset).toBe(5)
+      expect(trace).toEqual(["input:after"])
+      expect(replace).toHaveBeenCalledTimes(1)
+      queueMicrotask(() => trace.push("application"))
+      await Promise.resolve()
+      expect(trace).toEqual(["input:after", "cursor", "content", "cursor", "application"])
+    } finally {
+      replace.mockRestore()
+      input.destroy()
+    }
+  })
+
+  it.each(["value", "maxLength"] as const)(
+    "%s preserves its state on rejected replacement, then allows retry",
+    (property) => {
+      const { input } = createInputRenderable({ width: 20, value: "before", maxLength: 20 })
+      const failure = new Error("rejected input replacement")
+      let reject = true
+      const original = input.editBuffer.setText.bind(input.editBuffer)
+      const replace = spyOn(input.editBuffer, "setText").mockImplementation((text) => {
+        if (reject) throw failure
+        original(text)
+      })
+      const values: string[] = []
+      input.on(InputRenderableEvents.INPUT, (value: string) => values.push(value))
+      const update = () => {
+        if (property === "value") input.value = "after"
+        else input.maxLength = 3
+      }
+      try {
+        expect(update).toThrow(failure)
+        expect(input.maxLength).toBe(20)
+        expect(input.value).toBe("before")
+        reject = false
+        update()
+        expect(input.maxLength).toBe(property === "value" ? 20 : 3)
+        expect(input.value).toBe(property === "value" ? "after" : "bef")
+        expect(input.cursorOffset).toBe(property === "value" ? 5 : 0)
+        expect(values).toEqual(property === "value" ? ["after"] : [])
+        expect(replace).toHaveBeenCalledTimes(2)
+      } finally {
+        replace.mockRestore()
+        input.destroy()
+      }
+    },
+  )
+
+  it.each(["value", "maxLength"] as const)("%s preserves caller state on real capacity rejection", async (property) => {
+    const { input } = createInputRenderable({ width: 20, maxLength: 20 })
+    try {
+      input.insertText("before")
+      // Fill the remaining text registrations through Context-backed edits.
+      for (let slot = 1; slot < 255; slot++) input.editBuffer.replaceText(slot % 2 === 1 ? "filler" : "before")
+      input.cursorOffset = 2
+      input.setSelection(1, 4)
+      const cursor = input.cursorOffset
+      const selection = input.getSelection()
+      await Promise.resolve()
+      const trace: string[] = []
+      input.on(InputRenderableEvents.INPUT, () => trace.push("input"))
+      input.editBuffer.on("cursor-changed", () => trace.push("cursor"))
+      input.editBuffer.on("content-changed", () => trace.push("content"))
+      expect(() => {
+        if (property === "value") input.value = "after"
+        else input.maxLength = 3
+      }).toThrow("OutOfMemory")
+      expect(input.value).toBe("before")
+      expect(input.maxLength).toBe(20)
+      expect(input.cursorOffset).toBe(cursor)
+      expect(input.getSelection()).toEqual(selection)
+      expect(input.editBuffer.canUndo()).toBe(true)
+      expect(trace).toEqual([])
+      await Promise.resolve()
+      expect(trace).toEqual([])
+    } finally {
+      input.destroy()
+    }
+  })
+
+  it("maxLength commits accepted truncation before callback errors without INPUT or moving to the end", async () => {
+    const { input } = createInputRenderable({ width: 20, value: "before", maxLength: 20 })
+    await Promise.resolve()
+    await renderOnce()
+    const failure = new Error("accepted truncation callback")
+    const host = resolveRenderLib().getYogaHost()
+    const trace: string[] = []
+    input.on(InputRenderableEvents.INPUT, () => trace.push("input"))
+    input.editBuffer.on("cursor-changed", () => trace.push("cursor"))
+    input.editBuffer.on("content-changed", () => trace.push("content"))
+    const original = input.editBuffer.setText.bind(input.editBuffer)
+    const replace = spyOn(input.editBuffer, "setText").mockImplementation((text) => {
+      original(text)
+      host.invokeCallback(() => {
+        throw failure
+      })
+    })
+    try {
+      expect(() => {
+        input.maxLength = 3
+      }).toThrow(failure)
+      expect(input.maxLength).toBe(3)
+      expect(input.value).toBe("bef")
+      expect(input.cursorOffset).toBe(0)
+      expect(trace).toEqual([])
+      queueMicrotask(() => trace.push("application"))
+      await Promise.resolve()
+      expect(trace).toEqual(["cursor", "content", "application"])
+    } finally {
+      replace.mockRestore()
+      input.destroy()
+    }
+  })
+
+  it("value normalizes before its no-op check without clearing selection or emitting INPUT", () => {
+    const { input } = createInputRenderable({ width: 20, value: "abc", maxLength: 5 })
+    const host = resolveRenderLib().getYogaHost()
+    input.cursorOffset = 1
+    input.setSelection(1, 2)
+    const selection = input.getSelection()
+    const cursor = input.cursorOffset
+    const replace = spyOn(input, "setText")
+    const values: string[] = []
+    input.on(InputRenderableEvents.INPUT, (value: string) => values.push(value))
+    try {
+      host.invokeCallback(() => {
+        input.value = "a\r\nbcignored"
+      })
+      expect(() => host.throwCallbackError()).not.toThrow()
+      expect(input.value).toBe("abc")
+      expect(input.getSelection()).toEqual(selection)
+      expect(input.cursorOffset).toBe(cursor)
+      expect(replace).toHaveBeenCalledTimes(0)
+      expect(values).toEqual([])
+    } finally {
+      replace.mockRestore()
+      input.destroy()
+    }
+  })
+
+  it("constructor strips newlines before truncation but value truncates before stripping", () => {
+    const { input } = createInputRenderable({ width: 20, value: "a\r\nbc", maxLength: 3 })
+    try {
+      expect(input.value).toBe("abc")
+      input.value = "a\r\nbc"
+      expect(input.value).toBe("a")
+    } finally {
+      input.destroy()
     }
   })
 

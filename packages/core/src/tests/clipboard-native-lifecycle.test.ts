@@ -21,7 +21,9 @@ test("native clipboard production-symbol ABI lifecycle", async () => {
   if (!service) throw new Error("failed to create clipboard service")
   const operations = new Set<ClipboardOperationHandle>()
   try {
-    expect(() => (lib as typeof lib & { dispose(): void }).dispose()).toThrow("clipboard services are active")
+    expect(() => (lib as typeof lib & { dispose(): void }).dispose()).toThrow(
+      /clipboard services are active|dispose failed: ContextBusy/,
+    )
     expect(lib.clipboardServiceDrain(service)).not.toBe(2)
     const starts = [
       lib.clipboardReadOperationStart(service, READ_REQUEST, 0, 1024, 4096, 8192, 0),

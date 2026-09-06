@@ -1,17 +1,23 @@
 import { describe, expect, it, beforeEach, afterEach } from "bun:test"
+import { OptimizedBuffer, ResourceContext } from "./buffer.js"
 import { TextBuffer } from "./text-buffer.js"
 import { TextBufferView } from "./text-buffer-view.js"
 import { StyledText, stringToStyledText } from "./lib/styled-text.js"
 import { RGBA } from "./lib/RGBA.js"
-import { OptimizedBuffer } from "./buffer.js"
+
+let resourceContext: ResourceContext
+beforeEach(() => {
+  resourceContext = new ResourceContext({ objectCapacity: 32, renderCellsMax: 4096 })
+})
+afterEach(() => resourceContext.destroy())
 
 it("cached word and CJK breaks retain streaming source order", () => {
   const part = "AB \u65e5\u672c\u3002\u8a9e\u6587 "
   const layouts = []
   for (const fragmented of [false, true]) {
-    const buffer = TextBuffer.create("wcwidth")
+    const buffer = TextBuffer.create("wcwidth", resourceContext)
     const view = TextBufferView.create(buffer)
-    const screen = OptimizedBuffer.create(10, 256, "wcwidth")
+    const screen = OptimizedBuffer.create(10, 256, "wcwidth", { owner: resourceContext })
     try {
       if (fragmented) {
         for (let i = 0; i < 64; i++) buffer.append(part)
@@ -80,9 +86,9 @@ for (const method of ["unicode", "unicode-wide", "wcwidth"] as const) {
     ["kana punctuation", ["AB \u30ab", "\u30fb\u30ca"], 6, ["AB", "\u30ab\u30fb\u30ca"]],
   ] as const) {
     it(`word wrapping preserves ${name} across appends (${method})`, () => {
-      const buffer = TextBuffer.create(method)
+      const buffer = TextBuffer.create(method, resourceContext)
       const view = TextBufferView.create(buffer)
-      const screen = OptimizedBuffer.create(width + 1, 8, method)
+      const screen = OptimizedBuffer.create(width + 1, 8, method, { owner: resourceContext })
       try {
         for (const part of parts) buffer.append(part)
         view.setWrapMode("word")
@@ -120,9 +126,9 @@ for (const method of ["unicode", "unicode-wide"] as const) {
     ["\u306f", "\u309a", "\u3072"],
   ]) {
     it(`word wrapping retains an appended kana mark (${method}, ${mark.codePointAt(0)})`, () => {
-      const buffer = TextBuffer.create(method)
+      const buffer = TextBuffer.create(method, resourceContext)
       const view = TextBufferView.create(buffer)
-      const screen = OptimizedBuffer.create(8, 2, method)
+      const screen = OptimizedBuffer.create(8, 2, method, { owner: resourceContext })
       try {
         buffer.setText(base)
         buffer.append(mark + suffix)
@@ -145,7 +151,7 @@ describe("TextBufferView", () => {
   let view: TextBufferView
 
   beforeEach(() => {
-    buffer = TextBuffer.create("wcwidth")
+    buffer = TextBuffer.create("wcwidth", resourceContext)
     view = TextBufferView.create(buffer)
   })
 
@@ -222,6 +228,22 @@ describe("TextBufferView", () => {
       view.destroy()
       expect(() => view.getLineSources(0, 1)).toThrow("TextBufferView is destroyed")
     })
+  })
+
+  it("reset preserves live view ellipsis", () => {
+    const output = OptimizedBuffer.create(10, 1, "wcwidth", { owner: resourceContext })
+    try {
+      view.setTruncate(true)
+      view.setViewport(0, 0, 10, 1)
+      buffer.reset()
+      buffer.setText("")
+      buffer.append("0123456789ABCDEFGHIJ")
+      output.clear()
+      output.drawTextBuffer(view, 0, 0)
+      expect(new TextDecoder().decode(output.getRealCharBytes())).toBe("012...GHIJ")
+    } finally {
+      output.destroy()
+    }
   })
 
   describe("lineInfo getter with wrapping", () => {
@@ -434,23 +456,6 @@ describe("TextBufferView", () => {
 
       view.resetSelection()
       expect(view.getSelectedText()).toBe("")
-    })
-
-    it("should return null bytes for zero-length selected-text output buffer", () => {
-      buffer.setText("Hello World")
-      view.setSelection(0, 5)
-
-      const selectedBytes = (view as any).lib.textBufferViewGetSelectedTextBytes(view.ptr, 0)
-
-      expect(selectedBytes).toBeNull()
-    })
-
-    it("should return null bytes for zero-length plain-text output buffer", () => {
-      buffer.setText("Hello World")
-
-      const plainBytes = (view as any).lib.textBufferViewGetPlainTextBytes(view.ptr, 0)
-
-      expect(plainBytes).toBeNull()
     })
   })
 
@@ -795,8 +800,11 @@ describe("TextBufferView", () => {
       view.setWrapMode("char")
       const first = view.measureForDimensions(10, 10)!
       const second = view.measureForDimensions(5, 10)!
+      const repeated = view.measureForDimensions(10, 1)!
 
       expect(first).not.toBe(second)
+      expect(repeated).not.toBe(first)
+      expect(repeated).toEqual(first)
       expect(first).toEqual({ lineCount: 1, widthColsMax: 10 })
       expect(second).toEqual({ lineCount: 2, widthColsMax: 5 })
     })

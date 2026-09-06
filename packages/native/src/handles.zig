@@ -41,12 +41,15 @@ const ObjectSlot = struct {
     kind: u8 = 0,
     state: SlotState = .vacant,
     ptr: usize = 0,
-    owned: bool = true,
     owner: Handle = 0,
+    first_child: u16 = 0,
+    previous_sibling: u16 = 0,
+    next_sibling: u16 = 0,
 };
 
 pub const Error = error{
     OutOfHandles,
+    InvalidOwner,
 };
 
 pub fn DestroyToken(comptime T: type) type {
@@ -55,13 +58,6 @@ pub fn DestroyToken(comptime T: type) type {
         ptr: *T,
     };
 }
-
-// Native core entry is serialized by contract. Renderer and audio implementation
-// threads synchronize their own private state and do not enter this registry.
-var slots: [MAX_SLOTS + 1]ObjectSlot = [_]ObjectSlot{.{}} ** (MAX_SLOTS + 1);
-var slot_count: u32 = 1;
-var free_indices: [MAX_SLOTS]u16 = undefined;
-var free_index_count: usize = 0;
 
 fn encode(index: u32, generation: u32, kind: ObjectKind) Handle {
     return (@as(u32, @intFromEnum(kind)) << (INDEX_BITS + GENERATION_BITS)) |
@@ -86,192 +82,154 @@ fn nextGeneration(generation: u32) ?u32 {
     return if (next > GENERATION_MASK) null else next;
 }
 
-fn validateSlot(handle: Handle, expected_kind: ObjectKind) ?u16 {
-    if (handle == 0) return null;
-    if (slotKind(handle) != @intFromEnum(expected_kind)) return null;
+/// The shipped 32-bit handle table. Entry is serialized by its owner; renderer
+/// and audio threads do not enter it. Handles are local to one registry, without
+/// a context identity. Resource destructors remain the caller's responsibility.
+pub const Registry = struct {
+    slots: [MAX_SLOTS + 1]ObjectSlot = [_]ObjectSlot{.{}} ** (MAX_SLOTS + 1),
+    slot_count: u32 = 1,
+    free_indices: [MAX_SLOTS]u16 = undefined,
+    free_index_count: usize = 0,
 
-    const index_u32 = slotIndex(handle);
-    if (index_u32 == 0 or index_u32 >= slot_count) return null;
+    /// Initialize in place: the fixed-capacity table is too large for test stacks.
+    pub fn init(self: *Registry) void {
+        @memset(&self.slots, .{});
+        self.slot_count = 1;
+        self.free_index_count = 0;
+    }
 
-    const index: u16 = @intCast(index_u32);
-    const slot = &slots[index];
-    if (slot.generation != slotGeneration(handle)) return null;
-    if (slot.kind != @intFromEnum(expected_kind)) return null;
-    if (slot.state != .alive) return null;
-    if (slot.ptr == 0) return null;
-    return index;
-}
+    pub fn insert(self: *Registry, kind: ObjectKind, ptr_value: *anyopaque) Error!Handle {
+        return self.insertOwnedChild(kind, ptr_value, 0);
+    }
 
-fn vacateSlot(index: u16) void {
-    const slot = &slots[index];
-    slot.ptr = 0;
-    slot.owner = 0;
-    slot.owned = true;
-    slot.kind = 0;
-    slot.state = .vacant;
+    pub fn acquire(self: *const Registry, handle: Handle, expected_kind: ObjectKind, comptime T: type) ?*T {
+        const index = self.validateSlot(handle, expected_kind) orelse return null;
+        const opaque_ptr: *anyopaque = @ptrFromInt(self.slots[index].ptr);
+        return @ptrCast(@alignCast(opaque_ptr));
+    }
 
-    const next = nextGeneration(slot.generation) orelse return;
-    slot.generation = next;
-    std.debug.assert(free_index_count < free_indices.len);
-    free_indices[free_index_count] = index;
-    free_index_count += 1;
-}
+    pub fn beginDestroy(self: *Registry, handle: Handle, expected_kind: ObjectKind, comptime T: type) ?DestroyToken(T) {
+        const index = self.validateSlot(handle, expected_kind) orelse return null;
+        const slot = &self.slots[index];
+        slot.state = .destroying;
 
-pub fn insert(kind: ObjectKind, ptr_value: *anyopaque) Error!Handle {
-    return insertWithOwner(kind, ptr_value, true, 0);
-}
+        const opaque_ptr: *anyopaque = @ptrFromInt(slot.ptr);
+        const typed_ptr: *T = @ptrCast(@alignCast(opaque_ptr));
+        return .{ .handle = handle, .ptr = typed_ptr };
+    }
 
-pub fn insertBorrowed(kind: ObjectKind, ptr_value: *anyopaque, owner: Handle) Error!Handle {
-    return insertWithOwner(kind, ptr_value, false, owner);
-}
+    pub fn finishDestroy(self: *Registry, handle: Handle) void {
+        const index = self.validateIdentity(handle) orelse return;
+        if (self.slots[index].state != .destroying) return;
+        self.invalidateChildren(handle);
+        self.vacateSlot(index);
+    }
 
-pub fn insertOwnedChild(kind: ObjectKind, ptr_value: *anyopaque, owner: Handle) Error!Handle {
-    return insertWithOwner(kind, ptr_value, true, owner);
-}
+    pub fn isValid(self: *const Registry, handle: Handle, expected_kind: ObjectKind) bool {
+        return self.validateSlot(handle, expected_kind) != null;
+    }
 
-pub fn getOrInsertBorrowed(kind: ObjectKind, ptr_value: *anyopaque, owner: Handle) Error!Handle {
-    const raw_ptr = @intFromPtr(ptr_value);
-    var index: usize = 1;
-    while (index < slot_count) : (index += 1) {
-        const slot = &slots[index];
-        if (slot.state == .alive and slot.kind == @intFromEnum(kind) and slot.ptr == raw_ptr and slot.owner == owner) {
-            return encode(@intCast(index), slot.generation, kind);
+    pub fn isEmpty(self: *const Registry) bool {
+        // Slot zero anchors roots, including roots whose destructors are running.
+        return self.slots[0].first_child == 0;
+    }
+
+    pub fn invalidate(self: *Registry, handle: Handle, expected_kind: ObjectKind) void {
+        const index = self.validateSlot(handle, expected_kind) orelse return;
+        self.invalidateChildren(handle);
+        self.vacateSlot(index);
+    }
+
+    /// Invalidate identities, not resources. Walk child links in postorder without
+    /// recursion or allocation. Each descendant is descended into and vacated once.
+    pub fn invalidateChildren(self: *Registry, owner: Handle) void {
+        const owner_index = if (owner == 0) 0 else self.validateIdentity(owner) orelse return;
+        var index: u16 = owner_index;
+        while (true) {
+            if (self.slots[index].first_child != 0) {
+                index = self.slots[index].first_child;
+                continue;
+            }
+            if (index == owner_index) return;
+            const parent: u16 = @intCast(slotIndex(self.slots[index].owner));
+            self.vacateSlot(index);
+            index = parent;
         }
     }
 
-    return insertWithOwner(kind, ptr_value, false, owner);
-}
-
-fn insertWithOwner(kind: ObjectKind, ptr_value: *anyopaque, owned: bool, owner: Handle) Error!Handle {
-    const index: u16 = if (free_index_count > 0) blk: {
-        free_index_count -= 1;
-        break :blk free_indices[free_index_count];
-    } else blk: {
-        if (slot_count > MAX_SLOTS) return Error.OutOfHandles;
-        const new_index: u16 = @intCast(slot_count);
-        slot_count += 1;
-        break :blk new_index;
-    };
-
-    const slot = &slots[index];
-    slot.owned = owned;
-    slot.owner = owner;
-    slot.kind = @intFromEnum(kind);
-    slot.ptr = @intFromPtr(ptr_value);
-    slot.state = .alive;
-
-    return encode(index, slot.generation, kind);
-}
-
-pub fn acquire(handle: Handle, expected_kind: ObjectKind, comptime T: type) ?*T {
-    const index = validateSlot(handle, expected_kind) orelse return null;
-    const opaque_ptr: *anyopaque = @ptrFromInt(slots[index].ptr);
-    return @ptrCast(@alignCast(opaque_ptr));
-}
-
-pub fn resolve(handle: Handle, expected_kind: ObjectKind, comptime T: type) ?*T {
-    return acquire(handle, expected_kind, T);
-}
-
-pub fn beginDestroy(handle: Handle, expected_kind: ObjectKind, comptime T: type) ?DestroyToken(T) {
-    const index = validateSlot(handle, expected_kind) orelse return null;
-    const slot = &slots[index];
-    if (!slot.owned) return null;
-    slot.state = .destroying;
-
-    const opaque_ptr: *anyopaque = @ptrFromInt(slot.ptr);
-    const typed_ptr: *T = @ptrCast(@alignCast(opaque_ptr));
-    return .{ .handle = handle, .ptr = typed_ptr };
-}
-
-pub fn pause(handle: Handle, expected_kind: ObjectKind, comptime T: type) ?DestroyToken(T) {
-    const index = validateSlot(handle, expected_kind) orelse return null;
-    const slot = &slots[index];
-    slot.state = .destroying;
-
-    const opaque_ptr: *anyopaque = @ptrFromInt(slot.ptr);
-    const typed_ptr: *T = @ptrCast(@alignCast(opaque_ptr));
-    return .{ .handle = handle, .ptr = typed_ptr };
-}
-
-pub fn unpause(handle: Handle) void {
-    if (handle == 0) return;
-    const index_u32 = slotIndex(handle);
-    if (index_u32 == 0 or index_u32 >= slot_count) return;
-    const slot = &slots[@intCast(index_u32)];
-    if (slot.generation != slotGeneration(handle) or slot.state != .destroying or slot.ptr == 0) return;
-    slot.state = .alive;
-}
-
-pub fn finishDestroy(handle: Handle) void {
-    if (handle == 0) return;
-    const index_u32 = slotIndex(handle);
-    if (index_u32 == 0 or index_u32 >= slot_count) return;
-    const index: u16 = @intCast(index_u32);
-    const slot = &slots[index];
-    if (slot.generation != slotGeneration(handle) or slot.state != .destroying) return;
-    vacateSlot(index);
-}
-
-pub fn isValid(handle: Handle, expected_kind: ObjectKind) bool {
-    return validateSlot(handle, expected_kind) != null;
-}
-
-pub fn isOwned(handle: Handle, expected_kind: ObjectKind) bool {
-    const index = validateSlot(handle, expected_kind) orelse return false;
-    return slots[index].owned;
-}
-
-pub fn getOwner(handle: Handle, expected_kind: ObjectKind) ?Handle {
-    const index = validateSlot(handle, expected_kind) orelse return null;
-    const owner = slots[index].owner;
-    return if (owner == 0) null else owner;
-}
-
-pub fn invalidate(handle: Handle, expected_kind: ObjectKind) void {
-    const index = validateSlot(handle, expected_kind) orelse return;
-    slots[index].state = .destroying;
-    vacateSlot(index);
-}
-
-pub fn invalidateChildren(owner: Handle) void {
-    while (findChild(owner, null)) |child_handle| {
-        const index: u16 = @intCast(slotIndex(child_handle));
-        slots[index].state = .destroying;
-        invalidateChildren(child_handle);
-        vacateSlot(index);
+    fn validateIdentity(self: *const Registry, handle: Handle) ?u16 {
+        const index_u32 = slotIndex(handle);
+        if (index_u32 == 0 or index_u32 >= self.slot_count) return null;
+        const index: u16 = @intCast(index_u32);
+        const slot = &self.slots[index];
+        if (slot.generation != slotGeneration(handle) or slot.kind != slotKind(handle)) return null;
+        if (slot.state == .vacant or slot.ptr == 0) return null;
+        return index;
     }
-}
 
-pub fn findChild(owner: Handle, kind: ?ObjectKind) ?Handle {
-    var index: usize = 1;
-    while (index < slot_count) : (index += 1) {
-        const slot = &slots[index];
-        if (slot.state != .alive or slot.owner != owner) continue;
-        const slot_kind: ObjectKind = @enumFromInt(slot.kind);
-        if (kind) |expected| {
-            if (slot_kind != expected) continue;
+    fn validateSlot(self: *const Registry, handle: Handle, expected_kind: ObjectKind) ?u16 {
+        if (slotKind(handle) != @intFromEnum(expected_kind)) return null;
+        const index = self.validateIdentity(handle) orelse return null;
+        if (self.slots[index].state != .alive) return null;
+        return index;
+    }
+
+    fn validateOwner(self: *const Registry, owner: Handle) Error!u16 {
+        if (owner == 0) return 0;
+        const index = self.validateIdentity(owner) orelse return error.InvalidOwner;
+        if (self.slots[index].state != .alive) return error.InvalidOwner;
+        return index;
+    }
+
+    pub fn insertOwnedChild(self: *Registry, kind: ObjectKind, ptr_value: *anyopaque, owner: Handle) Error!Handle {
+        const owner_index = try self.validateOwner(owner);
+        const index: u16 = if (self.free_index_count > 0) blk: {
+            self.free_index_count -= 1;
+            break :blk self.free_indices[self.free_index_count];
+        } else blk: {
+            if (self.slot_count > MAX_SLOTS) return Error.OutOfHandles;
+            const new_index: u16 = @intCast(self.slot_count);
+            self.slot_count += 1;
+            break :blk new_index;
+        };
+
+        const slot = &self.slots[index];
+        std.debug.assert(slot.state == .vacant and slot.first_child == 0);
+        slot.owner = owner;
+        slot.kind = @intFromEnum(kind);
+        slot.ptr = @intFromPtr(ptr_value);
+        slot.state = .alive;
+        slot.previous_sibling = 0;
+        slot.next_sibling = self.slots[owner_index].first_child;
+        if (slot.next_sibling != 0) self.slots[slot.next_sibling].previous_sibling = index;
+        self.slots[owner_index].first_child = index;
+        return encode(index, slot.generation, kind);
+    }
+
+    fn vacateSlot(self: *Registry, index: u16) void {
+        const slot = &self.slots[index];
+        std.debug.assert(slot.state != .vacant and slot.first_child == 0);
+        if (slot.previous_sibling != 0) {
+            self.slots[slot.previous_sibling].next_sibling = slot.next_sibling;
+        } else {
+            const owner_index = if (slot.owner == 0) 0 else self.validateIdentity(slot.owner).?;
+            std.debug.assert(self.slots[owner_index].first_child == index);
+            self.slots[owner_index].first_child = slot.next_sibling;
         }
-        return encode(@intCast(index), slot.generation, slot_kind);
-    }
-    return null;
-}
-
-pub fn nextByKind(kind: ObjectKind, cursor: *usize) ?Handle {
-    while (cursor.* < slot_count) {
-        const index = cursor.*;
-        cursor.* += 1;
-        const slot = &slots[index];
-        if (slot.state == .alive and slot.kind == @intFromEnum(kind)) {
-            return encode(@intCast(index), slot.generation, kind);
+        if (slot.next_sibling != 0) {
+            self.slots[slot.next_sibling].previous_sibling = slot.previous_sibling;
         }
-    }
-    return null;
-}
+        slot.ptr = 0;
+        slot.owner = 0;
+        slot.kind = 0;
+        slot.state = .vacant;
+        slot.previous_sibling = 0;
+        slot.next_sibling = 0;
 
-pub fn liveCount(kind: ObjectKind) usize {
-    var count: usize = 0;
-    var cursor: usize = 1;
-    while (nextByKind(kind, &cursor)) |_| count += 1;
-    return count;
-}
+        const next = nextGeneration(slot.generation) orelse return;
+        slot.generation = next;
+        std.debug.assert(self.free_index_count < self.free_indices.len);
+        self.free_indices[self.free_index_count] = index;
+        self.free_index_count += 1;
+    }
+};

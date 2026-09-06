@@ -15,7 +15,8 @@ export interface BenchmarkIdentity {
 }
 
 export interface BenchmarkRuntime {
-  run(iteration: number): void
+  run(iteration: number): unknown
+  async?: true
   validateBatch(iterations: number): void
   teardown(): void | Promise<void>
 }
@@ -152,7 +153,6 @@ export async function runBenchmarks(
     checkProcessDuration()
     const caseStartedAt = clock()
     let runtime: BenchmarkRuntime | undefined
-    let iteration = 0
     const checkDurations = () => {
       if (remainingDuration(clock(), caseStartedAt, manifest.measurement.max_case_ns, benchmark.name) < 0) {
         throw new Error(`${benchmark.name}: maximum case duration exceeded`)
@@ -162,26 +162,18 @@ export async function runBenchmarks(
     try {
       runtime = await awaitLifecycle(benchmark.setup(), clock, caseStartedAt, processStartedAt, benchmark.name, options)
       checkDurations()
-      const runBatch = (iterations: number): number => {
-        assertSafePositiveInteger(iterations, "batch iterations")
-        const start = clock()
-        for (let index = 0; index < iterations; index++) runtime!.run(iteration++)
-        const elapsed = clock() - start
-        assertSafePositiveInteger(elapsed, `${benchmark.name} elapsed nanoseconds`)
-        runtime!.validateBatch(iterations)
-        checkDurations()
-        return elapsed
-      }
-
-      // One untimed operation proves the workload and validator before calibration.
-      runBatch(1)
-      const batchIterations = calibrate(runBatch, options)
-      for (let index = 0; index < options.measurement.warmup_batches; index++) runBatch(batchIterations)
-
-      const elapsedNs: number[] = []
-      for (let index = 0; index < options.measurement.measured_batches; index++) {
-        elapsedNs.push(runBatch(batchIterations))
-      }
+      const measure = runtime.async
+        ? await measureAsyncRuntime(
+            runtime,
+            benchmark.name,
+            options,
+            clock,
+            checkDurations,
+            caseStartedAt,
+            processStartedAt,
+          )
+        : measureSyncRuntime(runtime, benchmark.name, options, clock, checkDurations)
+      const { batchIterations, elapsedNs } = measure
       const nsPerOperation = elapsedNs.map((elapsed) => elapsed / batchIterations)
       const innerRsdPpm = calculateInnerRsdPpm(nsPerOperation)
       if (innerRsdPpm > options.measurement.max_rsd_ppm) {
@@ -207,6 +199,70 @@ export async function runBenchmarks(
   checkProcessDuration()
   validateManifestResults(manifest, results)
   return { manifest, results }
+}
+
+function measureSyncRuntime(
+  runtime: BenchmarkRuntime,
+  name: string,
+  options: HarnessOptions,
+  clock: () => number,
+  checkDurations: () => void,
+): { batchIterations: number; elapsedNs: number[] } {
+  let iteration = 0
+  const runBatch = (iterations: number): number => {
+    assertSafePositiveInteger(iterations, "batch iterations")
+    const start = clock()
+    for (let index = 0; index < iterations; index++) runtime.run(iteration++)
+    const elapsed = clock() - start
+    assertSafePositiveInteger(elapsed, `${name} elapsed nanoseconds`)
+    runtime.validateBatch(iterations)
+    checkDurations()
+    return elapsed
+  }
+  runBatch(1)
+  const batchIterations = calibrate(runBatch, options)
+  for (let index = 0; index < options.measurement.warmup_batches; index++) runBatch(batchIterations)
+  const elapsedNs = Array.from({ length: options.measurement.measured_batches }, () => runBatch(batchIterations))
+  return { batchIterations, elapsedNs }
+}
+
+async function measureAsyncRuntime(
+  runtime: BenchmarkRuntime,
+  name: string,
+  options: HarnessOptions,
+  clock: () => number,
+  checkDurations: () => void,
+  caseStartedAt: number,
+  processStartedAt: number,
+): Promise<{ batchIterations: number; elapsedNs: number[] }> {
+  let iteration = 0
+  const runBatch = async (iterations: number): Promise<number> => {
+    assertSafePositiveInteger(iterations, "batch iterations")
+    const start = clock()
+    await awaitLifecycle(
+      (async () => {
+        for (let index = 0; index < iterations; index++) await runtime.run(iteration++)
+      })(),
+      clock,
+      caseStartedAt,
+      processStartedAt,
+      name,
+      options,
+    )
+    const elapsed = clock() - start
+    assertSafePositiveInteger(elapsed, `${name} elapsed nanoseconds`)
+    runtime.validateBatch(iterations)
+    checkDurations()
+    return elapsed
+  }
+  await runBatch(1)
+  const batchIterations = await calibrateAsync(runBatch, options)
+  for (let index = 0; index < options.measurement.warmup_batches; index++) await runBatch(batchIterations)
+  const elapsedNs: number[] = []
+  for (let index = 0; index < options.measurement.measured_batches; index++) {
+    elapsedNs.push(await runBatch(batchIterations))
+  }
+  return { batchIterations, elapsedNs }
 }
 
 async function awaitLifecycle<T>(
@@ -276,6 +332,23 @@ function calibrate(runBatch: (iterations: number) => number, options: HarnessOpt
     } else {
       iterations *= scale
     }
+    assertSafePositiveInteger(iterations, "calibrated batch iterations")
+  }
+}
+
+async function calibrateAsync(
+  runBatch: (iterations: number) => Promise<number>,
+  options: HarnessOptions,
+): Promise<number> {
+  const targetNs = options.measurement.target_batch_ms * 1_000_000
+  const minimum = options.minBatchIterations
+  const maximum = options.maxBatchIterations
+  let iterations = minimum
+  for (;;) {
+    const elapsed = await runBatch(iterations)
+    if (elapsed >= targetNs || iterations === maximum) return iterations
+    const scale = Math.max(2, Math.min(10, Math.ceil(targetNs / elapsed)))
+    iterations = iterations > Math.floor(maximum / scale) ? maximum : iterations * scale
     assertSafePositiveInteger(iterations, "calibrated batch iterations")
   }
 }

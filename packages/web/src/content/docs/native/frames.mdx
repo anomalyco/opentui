@@ -1,0 +1,319 @@
+---
+title: Frames and output
+description: Understand painting, host drawing, and output delivery as separate stages of a native frame
+---
+
+# Frames and output
+
+A _frame_ is one rendered view of the interface.
+To produce it, the native library paints terminal cells and encodes them as output bytes.
+Your program, the _host_, delivers those bytes to the output destination.
+
+Drawing and delivery do not necessarily finish together. The cells can be ready while a slow connection is still sending earlier output.
+The frame API keeps these stages separate. It also lets the host draw at specific positions or give other work a turn before painting continues.
+
+## Paint, submit, and deliver
+
+Start with a frame that needs only native drawing:
+
+1. `ot_scene_paint` calculates layout and paints cells in memory.
+2. `ot_session_render` encodes those cells and queues output.
+3. The host reads output, writes it to its transport, and reports delivery with `ot_session_complete_output`.
+
+A finished cell grid is not yet a presented frame. The host must report delivery of the frame's output.
+
+`ot_scene_paint` completes that painting in one call.
+To draw part of a frame yourself, use the step-and-resume path below. It uses the same scene and drawing engine.
+
+## Draw after the label
+
+Suppose the interface contains a box with a text label, and the host needs to draw a mark at the right of that row:
+
+```text
+┌──────────┐
+│Hello    !│
+└──────────┘
+```
+
+An after-paint _hook_ reserves a position for host work after the label's own drawing.
+Registering that hook tells native code when to return control. It does not install a function pointer for native code to call during painting.
+
+`ot_scene_frame_step_with_geometry` starts or continues the frame.
+When it reaches the hook, it returns a _request_ identifying the node and the work to do.
+The host draws `!`, then calls the same operation with that exact request to acknowledge it and continue.
+When painting finishes, the returned request has kind `DONE`.
+The finished cells form a _draft_: they still need to be committed and delivered.
+
+```text
+┌─ Native frame step ─────────────────┐
+│ Lay out and paint the box and label │
+│ Return RENDER_AFTER for the label   │
+└────────────────┬────────────────────┘
+                 ↓
+┌─ Host ──────────────────────────────┐
+│ Draw ! at cell (10, 1)              │
+│ Call the frame step with its reply  │
+└────────────────┬────────────────────┘
+                 ↓
+┌─ Native frame step ─────────────────┐
+│ Finish painting and return DONE     │
+└────────────────┬────────────────────┘
+                 ↓
+┌─ Host ──────────────────────────────┐
+│ Commit, deliver output, acknowledge │
+└─────────────────────────────────────┘
+```
+
+The first step uses a `NULL` previous request. Later steps pass back the returned record without reconstructing it.
+Native code keeps its position between calls, so continuing does not draw the label again.
+No worker or asynchronous paint callback is involved: the native call returns before the host draws the mark.
+
+The [C guide](/docs/native/c#add-host-drawing) implements this sequence in a complete program.
+
+## Read and acknowledge requests
+
+On `OT_OK`, the returned request kind tells the host what to do:
+
+| Request kind                          | Host action                                             |
+| ------------------------------------- | ------------------------------------------------------- |
+| `OT_SCENE_FRAME_DONE` (`0`)           | Use the finished cells, then commit or cancel the draft |
+| `OT_SCENE_FRAME_UPDATE` (`1`)         | Run the node's update work                              |
+| `OT_SCENE_FRAME_RESIZE` (`2`)         | Process the node's resize or related view notification  |
+| `OT_SCENE_FRAME_LAYOUT_CHANGED` (`3`) | Process the root's layout notification                  |
+| `OT_SCENE_FRAME_RENDER_BEFORE` (`4`)  | Draw before the node's own drawing                      |
+| `OT_SCENE_FRAME_RENDER_SELF` (`7`)    | Draw instead of the node's native body                  |
+| `OT_SCENE_FRAME_RENDER_AFTER` (`5`)   | Draw after the node's own drawing                       |
+| `OT_SCENE_FRAME_YIELD` (`6`)          | Schedule a later turn before continuing                 |
+
+Before, self, and after drawing belong to one node's paint sequence, before its children.
+An after hook on the box would run before the label, not after the whole subtree.
+Sibling `zIndex` determines local paint order. It is not a global sort of all nodes.
+
+The entire `ot_scene_frame_request` is a _frame ticket_.
+It identifies the Session, root, node, frame, request, and generations, along with the kind, public number, dimensions, and reserved fields.
+Preserve the whole record. A frame ID alone cannot acknowledge a request.
+Native code allows one outstanding ordered request and rejects altered or stale replies.
+
+Hook flag bits are not request-kind values. For example, `OT_SCENE_HOOK_RENDER_AFTER` is `16`, but its returned request kind is `5`.
+Hook generations start above zero and must increase when the registration changes.
+
+`ot_scene_frame_geometry` is a separate observation, not part of the ticket.
+Its flags identify valid paint and public-layout snapshots. Accepted mutations can invalidate them before the next step.
+Do not copy geometry fields into an acknowledgement.
+
+## Commit the draft, then complete output
+
+`DONE` means painting finished. The host must now commit or cancel the draft.
+Commit with `ot_scene_frame_commit`, not `ot_session_render`.
+This lets native code check that the submitted cells belong to that exact finished frame.
+
+Check both the call's `ot_status` and the separate render outcome:
+
+| Render outcome        | Meaning                                                        |
+| --------------------- | -------------------------------------------------------------- |
+| `OT_RENDER_PRESENTED` | The frame's output endpoint is already complete                |
+| `OT_RENDER_PENDING`   | The frame still needs output completion                        |
+| `OT_RENDER_SKIPPED`   | No frame output was accepted. Submit a new frame explicitly    |
+| `OT_RENDER_FAILED`    | Rendering failed. Handle the failure before another submission |
+
+An `OT_OK` commit consumes the draft even for skipped or failed render outcomes.
+Do not submit its ticket again. Pumping output does not repaint or retry it.
+
+The output ticket from `ot_session_read_output` has a different job from the frame ticket:
+
+```text
+┌─ Session output queue ──────────────┐
+│ Bytes waiting for delivery          │
+└────────────────┬────────────────────┘
+                 ↓ read_output
+┌─ Host-owned byte buffer ────────────┐
+│ Write all ticket.byte_count bytes   │
+└────────────────┬────────────────────┘
+                 ↓ complete_output
+┌─ Session ───────────────────────────┐
+│ Record delivery                     │
+│ Publish frames whose output ended   │
+└─────────────────────────────────────┘
+```
+
+At most one output ticket can remain outstanding per Session.
+For a partial write, keep the ticket and the remaining bytes until delivery finishes.
+Complete with `success = 0` if delivery fails. Failure stops transport and presentation without replay.
+
+Earlier queued output delays a frame's presentation endpoint. Output queued after that frame does not extend its endpoint.
+At the endpoint, native code publishes pending hit data and frame statistics.
+Completion means your transport accepted delivery, not that a remote terminal visibly displayed the result.
+
+## Access the framebuffer
+
+Checked drawing operations need no raw cell pointer.
+The Session handle and current paint ticket identify the destination within a frame.
+Drawing to an independent offscreen buffer instead uses that buffer's handle and a `NULL` frame argument.
+
+For an effect that reads existing cells, acquire a storage lease with `ot_scene_frame_acquire_buffer_lease`.
+It accepts before/self/after-paint requests or `DONE`, not update, resize, layout, or yield requests.
+Release every frame-qualified lease before resume, commit, or another frame, including leases that became stale.
+
+These values answer different questions:
+
+| Value         | Purpose                                               |
+| ------------- | ----------------------------------------------------- |
+| Frame ticket  | Which frame and paint position may this call use?     |
+| Storage lease | Which cell allocation stays alive during this access? |
+| Output ticket | Which copied bytes did the transport deliver?         |
+
+Neither a paint request nor `DONE` acquires a lease automatically.
+An ordinary storage lease cannot bypass an active draft's frame checks.
+[Resources and ownership](/docs/native/resources#borrow-cells-for-one-synchronous-operation) explains array lifetime and text-reference restrictions.
+
+The next buffer is drawing storage, which encoding clears after use.
+The current buffer is encoding comparison state, not a guaranteed copy of the last presented frame.
+
+## Change the scene during a frame
+
+Updates and resize notifications run during preparation, before painting.
+Native code calculates Yoga layout and prepares node geometry, clipping, and paint order.
+If a preparation hook changes the scene, native code repeats the necessary preparation.
+An update hook runs at most once per node per attempt.
+
+The host sets positive `max_layout_rounds` and `max_host_requests` limits and keeps them fixed throughout the attempt.
+Exhausted preparation rounds fail before painting. The request limit also applies during painting.
+Failure does not present partial cells or undo accepted application changes.
+
+Once painting starts, the prepared drawing order stays fixed, but not every node property does:
+
+| Change in a paint hook                       | Effect on this frame                                                                          |
+| -------------------------------------------- | --------------------------------------------------------------------------------------------- |
+| Change a later node's background             | Its later drawing can use the new color                                                       |
+| Insert a node                                | It waits for the next prepared frame                                                          |
+| Destroy an upcoming node                     | Native code skips it                                                                          |
+| Destroy a node whose drawing already started | Its retained drawing and after phase can finish, without restoring its handle or hit identity |
+| Reparent a scheduled node                    | Its scheduled paint position stays fixed                                                      |
+| Change clipping or inherited opacity         | Prepared clipping and opacity stay fixed                                                      |
+| Change a node's own translation              | Its paint coordinates can change, but its descendants' prepared coordinates do not refresh    |
+
+Prefer changing application state before painting. These rules preserve ordered drawing effects, not an atomic application transaction.
+A continued paint sequence does not make every resource of a destroyed node usable.
+For example, Core still destroys a buffered custom node's private buffer even if a remaining hook runs.
+
+To abandon an attempt or draft while keeping the Session, call `ot_scene_frame_cancel` with its frame ID.
+Cancellation revokes that frame's access and submission. It does not undo mutations, callback effects, or promise to clear scratch cells.
+Outstanding leases still need release.
+
+## Yield between pieces of work
+
+A host may need time for input or timers before a large frame finishes.
+The two quota arguments to `ot_scene_frame_step_with_geometry` let native code return `OT_SCENE_FRAME_YIELD`:
+
+- `max_paint_members` counts completed or skipped paint members.
+- `max_work_items` counts preparation visits, candidate-view preparation, and feedback records.
+
+Both are positive unsigned 32-bit values.
+Passing `UINT32_MAX` for both from the start selects synchronous preparation and painting without scheduling yields.
+
+On `YIELD`, schedule another host turn and then acknowledge the exact request.
+A yield replenishes the quota. A hook acknowledgement does not.
+Paint yields occur between complete node paint sequences, never between that node's before/self/after/hit steps.
+Yield requests do not consume `max_host_requests` and grant no drawing or commit permission.
+
+Quotas count work items, not milliseconds or cells.
+Yoga, allocation, sorting, final paint-list preparation, individual draws, and output encoding still contain synchronous work.
+A quota cannot interrupt a slow host hook.
+
+An accepted size-changing resize at a scheduling yield cancels the old attempt.
+Start another attempt with the accepted mutations intact.
+A resize inside a synchronous paint hook instead replaces storage while keeping prepared membership. It can clear cells already painted.
+
+## Measure custom content
+
+Built-in text supplies its own size to Yoga. A custom leaf node can register a measurement function with `ot_scene_set_measure`.
+This function receives size constraints and returns width and height in terminal cells.
+
+Measurement differs from paint hooks: Yoga calls the function before the native layout call returns.
+It needs the result immediately, so measurement is synchronous on the Context's thread.
+Permitted read-only style, layout, text, and provider queries can reenter. Conflicting mutations or destruction cannot.
+
+Keep the callback alive until replacement, removal, node destruction, or Context destruction.
+Setting it to `NULL` clears the provider. It does not restore a replaced built-in provider.
+
+## Pump terminal work and close
+
+An interactive terminal needs setup and restoration in addition to scene painting and frame output.
+That work uses `ot_session_pump`, not the frame-step operation.
+
+Before the first accepted frame:
+
+1. Create a Session with reserved control capacity and attach its renderer.
+2. Request `ot_session_setup_terminal`.
+3. Pump and deliver setup output until the terminal state is active.
+
+The pump never sleeps or reads a clock. Supply monotonic nanoseconds and a positive work budget on each call.
+Act on its result:
+
+| Pump result              | Host action                            |
+| ------------------------ | -------------------------------------- |
+| `OT_PUMP_IDLE`           | Wait for application or terminal work  |
+| `OT_PUMP_AGAIN`          | Schedule another pump turn             |
+| `OT_PUMP_OUTPUT_PENDING` | Deliver output and complete its ticket |
+| `OT_PUMP_WAIT_UNTIL`     | Schedule a pump at `deadline_ns`       |
+| `OT_PUMP_CLOSED`         | Finish graceful Session cleanup        |
+
+Setup does not wait for terminal capability replies. Your host must still read input and forward complete replies through the native control API.
+The native Session does not own your transport or restore host-side input settings.
+
+On graceful shutdown, call `ot_session_close` and continue pumping and delivering restoration output until closed.
+On transport loss, call `ot_session_cancel`. It discards pending output without claiming terminal restoration.
+The [Rust terminal examples](/docs/native/rust#connect-a-terminal) supply complete host loops.
+
+### Reserve output storage
+
+`ot_session_options` bounds the output queue:
+
+| Field              | Meaning                                                       |
+| ------------------ | ------------------------------------------------------------- |
+| `chunk_size`       | Positive bytes per chunk                                      |
+| `max_bytes`        | Positive total chunk storage, divisible by `chunk_size`       |
+| `span_capacity`    | Positive count of queued spans and spans awaiting completion  |
+| `control_capacity` | Bytes reserved inside `max_bytes`, rounded up to whole chunks |
+
+For terminal setup, reserve at least `OT_SESSION_CONTROL_PACKET_BYTES` (4,096) bytes of control storage.
+Leave at least one ordinary chunk and one ordinary span slot.
+For example, four 4,096-byte chunks, four span slots, and 4,096 reserved bytes leave room for both control and ordinary output.
+
+The Session allocates its chunks at creation. Copied but unacknowledged output still uses that capacity.
+Ordinary writes cannot use the control reservation. A zero reservation disables it, as in the file examples.
+
+`ot_session_get_write_limit` reports the largest ordinary write that fits an empty queue, not current free space.
+A smaller write can still fail while other output is pending. These limits do not bound all renderer memory or encoding time.
+
+## View both frames
+
+The [C](/docs/native/c), [Zig](/docs/native/zig), and [Rust](/docs/native/rust) guides write two frames to `hello.ansi` and `ready.ansi`.
+Once you have those files, this preview displays them in sequence without replacing your normal shell screen.
+
+Run it in Bash from the directory containing the files.
+Use a VT-compatible terminal with at least 40 columns and six rows.
+The preview opens the alternate screen and returns to the previous screen when you finish or press Ctrl+C.
+
+```bash example=preview
+(
+  if [ ! -t 0 ] || [ ! -t 1 ]; then
+    printf '%s\n' 'Run this preview in a terminal.' >&2
+    exit 1
+  fi
+  trap 'printf "\033[0m\033[?25h\033[?1049l"' EXIT
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
+  printf '\033[?1049h\033[2J'
+  cat hello.ansi || exit 1
+  printf '\033[5;1HEnter: show Ready'
+  IFS= read -r answer || exit 1
+  cat ready.ansi || exit 1
+  printf '\033[5;1H\033[KEnter: return to shell'
+  IFS= read -r answer
+)
+```
+
+Press Enter to change `Hello` to `Ready`, then Enter again to return to the shell.
+The preview writes the files' bytes unchanged. Its only additions are screen selection, prompts, and exit cleanup.
+It is a transport for inspecting saved frames, not the native Session's terminal setup procedure.

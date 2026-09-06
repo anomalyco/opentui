@@ -9,6 +9,7 @@ import {
   TextRenderable,
   BoxRenderable,
   type MouseEvent,
+  type KeyEvent,
   t,
   fg,
   bold,
@@ -17,7 +18,8 @@ import { TextNodeRenderable } from "@opentui/core"
 import { ScrollBoxRenderable } from "@opentui/core"
 import { InputRenderable, InputRenderableEvents } from "@opentui/core"
 import { setupCommonDemoKeys } from "./lib/standalone-keys.js"
-import { readFile, stat, writeFile } from "node:fs/promises"
+import { Buffer } from "node:buffer"
+import { readFile, writeFile } from "node:fs/promises"
 
 let mainContainer: BoxRenderable | null = null
 let contentBox: BoxRenderable | null = null
@@ -586,30 +588,17 @@ export function run(renderer: CliRenderer): void {
         instructionsText2.content = t`${bold(fg("#7aa2f7")("Status:"))} ${fg("#f7768e")("Loading file...")}`
       }
 
-      // Get file size for display
-      const fileStats = await stat(filePath)
-      const fileSizeBytes = fileStats.size
+      const file = await readFile(filePath)
+      const content = file.toString("utf8")
+      const fileSizeBytes = file.byteLength
       const fileSizeMB = (fileSizeBytes / (1024 * 1024)).toFixed(2)
 
-      // Replace the current content and load file directly into buffer
       if (textRenderable) {
         textRenderable.clear()
+        const header = `// Loaded from: ${filePath}\n// Size: ${fileSizeMB} MB\n\n`
+        textRenderable.content = t`${fg("#9ece6a")(header)}${content}`
 
-        // Add header text node
-        const headerNode = TextNodeRenderable.fromString(`// Loaded from: ${filePath}\n// Size: ${fileSizeMB} MB\n\n`, {
-          fg: "#9ece6a",
-        })
-        textRenderable.add(headerNode)
-
-        // Trigger lifecycle to commit header
-        textRenderable.onLifecyclePass()
-
-        // Load file directly into the text buffer
-        const textBuffer = (textRenderable as any).textBuffer
-        textBuffer.loadFile(filePath)
-
-        // Get the text buffer size after loading (in bytes)
-        const textBufferBytes = textBuffer.byteSize
+        const textBufferBytes = Buffer.byteLength(header, "utf8") + Buffer.byteLength(content, "utf8")
         const textBufferMB = (textBufferBytes / (1024 * 1024)).toFixed(2)
 
         // Update status
@@ -620,13 +609,10 @@ export function run(renderer: CliRenderer): void {
     } catch (error) {
       // Show error in text renderable
       const errorMessage = error instanceof Error ? error.message : "Unknown error"
-      const errorTextNode = TextNodeRenderable.fromString(`ERROR: ${errorMessage}\n\nPress L to try again.`, {
-        fg: "#f7768e",
-      })
 
       if (textRenderable) {
         textRenderable.clear()
-        textRenderable.add(errorTextNode)
+        textRenderable.content = t`${fg("#f7768e")(`ERROR: ${errorMessage}\n\nPress L to try again.`)}`
       }
 
       if (instructionsText2) {
@@ -640,7 +626,7 @@ export function run(renderer: CliRenderer): void {
   mainContainer.add(instructionsBox)
 
   // Handle keyboard input
-  renderer.keyInput.on("keypress", async (event) => {
+  const keyHandler = async (event: KeyEvent) => {
     const key = event.sequence
 
     // If input is visible, don't process other keys (let input handle them)
@@ -688,7 +674,7 @@ export function run(renderer: CliRenderer): void {
           const content = await response.text()
 
           // Get file size in bytes from the downloaded content
-          const fileSizeBytes = new Blob([content]).size
+          const fileSizeBytes = Buffer.byteLength(content, "utf8")
           const fileSizeMB = (fileSizeBytes / (1024 * 1024)).toFixed(2)
 
           // Store in OS tmp directory
@@ -698,26 +684,11 @@ export function run(renderer: CliRenderer): void {
 
           await writeFile(filePath, content)
 
-          // Load it back from disk
-          const loadedContent = await readFile(filePath, "utf8")
-
-          // Create a new TextNodeRenderable with the downloaded content
-          const babylonTextNode = TextNodeRenderable.fromString(
-            `// Downloaded Babylon.js (${loadedContent.length.toLocaleString()} chars, ${fileSizeMB} MB)\n// Stored at: ${filePath}\n\n${loadedContent}`,
-            {
-              fg: "#c0caf5",
-            },
-          )
-
-          // Replace the current content
+          const displayContent = `// Downloaded Babylon.js (${fileSizeBytes.toLocaleString()} bytes, ${fileSizeMB} MB)\n// Stored at: ${filePath}\n\n${content}`
           textRenderable.clear()
-          textRenderable.add(babylonTextNode)
+          textRenderable.content = displayContent
 
-          // Trigger the lifecycle pass to commit text to buffer
-          textRenderable.onLifecyclePass()
-
-          // Get the text buffer size after loading (in bytes)
-          const textBufferBytes = (textRenderable as any).textBuffer.byteSize
+          const textBufferBytes = Buffer.byteLength(displayContent, "utf8")
           const textBufferMB = (textBufferBytes / (1024 * 1024)).toFixed(2)
 
           // Update status
@@ -728,7 +699,9 @@ export function run(renderer: CliRenderer): void {
         }
       }
     }
-  })
+  }
+  renderer.keyInput.on("keypress", keyHandler)
+  mainContainer.once("destroyed", () => renderer.keyInput.off("keypress", keyHandler))
 }
 
 export function destroy(renderer: CliRenderer): void {

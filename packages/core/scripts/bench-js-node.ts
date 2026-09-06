@@ -6,8 +6,17 @@ import { fileURLToPath } from "node:url"
 import { requireNode26 } from "../../../scripts/node26.mjs"
 
 const benchmarkArguments = process.argv.slice(2)
-if (benchmarkArguments.length !== 1 || benchmarkArguments[0] !== "--format=json") {
-  process.stderr.write("usage: bench:js --format=json\n")
+const validArguments = benchmarkArguments.every(
+  (argument) => argument === "--format=json" || argument.startsWith("--case="),
+)
+const hasCase = benchmarkArguments.some((argument) => argument.startsWith("--case="))
+if (
+  !validArguments ||
+  (!benchmarkArguments.includes("--format=json") && !hasCase) ||
+  benchmarkArguments.filter((argument) => argument === "--format=json").length > 1 ||
+  benchmarkArguments.filter((argument) => argument.startsWith("--case=")).length > 1
+) {
+  process.stderr.write("usage: bench:js [--format=json] [--case=<name>]\n")
   process.exit(2)
 }
 

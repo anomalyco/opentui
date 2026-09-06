@@ -1,5 +1,5 @@
+import { assertRenderableMutable } from "../lib/renderable-layout.js"
 import { type KeyEvent } from "../lib/index.js"
-import { getObjectsInViewport } from "../lib/objects-in-viewport.js"
 import { LinearScrollAccel, MacOSScrollAccel, type ScrollAcceleration } from "../lib/scroll-acceleration.js"
 import type { BaseRenderable, Renderable, RenderableOptions } from "../Renderable.js"
 import type { MouseEvent } from "../renderer.js"
@@ -8,7 +8,7 @@ import { BoxRenderable, type BoxOptions } from "./Box.js"
 import type { VNode } from "./composition/vnode.js"
 import { ScrollBarRenderable, type ScrollBarOptions, type ScrollUnit } from "./ScrollBar.js"
 
-class ContentRenderable extends BoxRenderable {
+export class ContentRenderable extends BoxRenderable {
   private viewport: BoxRenderable
   private _viewportCulling: boolean
 
@@ -19,8 +19,13 @@ class ContentRenderable extends BoxRenderable {
     options: RenderableOptions<BoxRenderable>,
   ) {
     super(ctx, options)
-    this.viewport = viewport
-    this._viewportCulling = viewportCulling
+    try {
+      this.viewport = viewport
+      ctx.nativeScene.setViewport(this, viewportCulling ? viewport : null)
+      this._viewportCulling = viewportCulling
+    } catch (error) {
+      this.abortConstruction(error)
+    }
   }
 
   get viewportCulling(): boolean {
@@ -28,30 +33,8 @@ class ContentRenderable extends BoxRenderable {
   }
 
   set viewportCulling(value: boolean) {
+    this._ctx.nativeScene.setViewport(this, value ? this.viewport : null)
     this._viewportCulling = value
-  }
-
-  protected _hasVisibleChildFilter(): boolean {
-    return this._viewportCulling
-  }
-
-  protected _getVisibleChildren(): number[] {
-    if (this._viewportCulling) {
-      // The viewport is in terminal coordinates, so culling has to compare it
-      // against each child's absolute screen position rather than local x/y.
-      return getObjectsInViewport(
-        {
-          x: this.viewport.screenX,
-          y: this.viewport.screenY,
-          width: this.viewport.width,
-          height: this.viewport.height,
-        },
-        this.getChildrenSortedByPrimaryAxis(),
-        this.primaryAxis,
-        0,
-      ).map((child) => child.num)
-    }
-    return super._getVisibleChildren()
   }
 }
 
@@ -148,6 +131,7 @@ export class ScrollBoxRenderable extends BoxRenderable {
   }
 
   set stickyScroll(value: boolean) {
+    assertRenderableMutable(this)
     this._stickyScroll = value
     this.updateStickyState()
   }
@@ -157,6 +141,7 @@ export class ScrollBoxRenderable extends BoxRenderable {
   }
 
   set stickyStart(value: "bottom" | "top" | "left" | "right" | undefined) {
+    assertRenderableMutable(this)
     this._stickyStart = value
     this.updateStickyState()
   }
@@ -188,6 +173,7 @@ export class ScrollBoxRenderable extends BoxRenderable {
   }
 
   private updateStickyState(): void {
+    if (this.isDestroyed) return
     if (!this._stickyScroll) {
       this.syncManualScrollState()
       return
@@ -222,6 +208,7 @@ export class ScrollBoxRenderable extends BoxRenderable {
   }
 
   private syncManualScrollState(): void {
+    if (this.isDestroyed) return
     if (!this._stickyScroll) {
       this._hasManualScroll = false
       return
@@ -310,91 +297,110 @@ export class ScrollBoxRenderable extends BoxRenderable {
       ...(sanitizedRootOptions as BoxOptions),
     })
 
-    this.internalId = ScrollBoxRenderable.idCounter++
-    this._stickyScroll = stickyScroll
-    this._stickyStart = stickyStart
-    this.scrollAccel = scrollAcceleration ?? new LinearScrollAccel()
+    const children: Renderable[] = []
+    try {
+      this.internalId = ScrollBoxRenderable.idCounter++
+      this._stickyScroll = stickyScroll
+      this._stickyStart = stickyStart
+      this.scrollAccel = scrollAcceleration ?? new LinearScrollAccel()
 
-    this.wrapper = new BoxRenderable(ctx, {
-      flexDirection: "column",
-      flexGrow: 1,
-      ...wrapperOptions,
-      id: `scroll-box-wrapper-${this.internalId}`,
-    })
-    super.add(this.wrapper)
+      this.wrapper = new BoxRenderable(ctx, {
+        flexDirection: "column",
+        flexGrow: 1,
+        ...wrapperOptions,
+        id: `scroll-box-wrapper-${this.internalId}`,
+      })
+      children.push(this.wrapper)
+      super.add(this.wrapper)
 
-    this.viewport = new BoxRenderable(ctx, {
-      flexDirection: "column",
-      flexGrow: 1,
-      // NOTE: Overflow scroll makes the content size behave weird
-      // when the scrollbox is in a container with max-width/height
-      overflow: "hidden",
-      onSizeChange: () => {
-        this.recalculateBarProps()
-      },
-      ...viewportOptions,
-      id: `scroll-box-viewport-${this.internalId}`,
-    })
-    this.wrapper.add(this.viewport)
+      this.viewport = new BoxRenderable(ctx, {
+        flexDirection: "column",
+        flexGrow: 1,
+        // NOTE: Overflow scroll makes the content size behave weird
+        // when the scrollbox is in a container with max-width/height
+        overflow: "hidden",
+        onSizeChange: () => {
+          this.recalculateBarProps()
+        },
+        ...viewportOptions,
+        id: `scroll-box-viewport-${this.internalId}`,
+      })
+      children.push(this.viewport)
+      this.wrapper.add(this.viewport)
 
-    this.content = new ContentRenderable(ctx, this.viewport, viewportCulling, {
-      alignSelf: "flex-start",
-      flexShrink: 0,
-      ...(scrollX ? { minWidth: "100%" } : { minWidth: "100%", maxWidth: "100%" }),
-      ...(scrollY ? { minHeight: "100%" } : { minHeight: "100%", maxHeight: "100%" }),
-      onSizeChange: () => {
-        this.recalculateBarProps()
-      },
-      ...mergedContentOptions,
-      id: `scroll-box-content-${this.internalId}`,
-    })
-    this.viewport.add(this.content)
+      this.content = new ContentRenderable(ctx, this.viewport, viewportCulling, {
+        alignSelf: "flex-start",
+        flexShrink: 0,
+        ...(scrollX ? { minWidth: "100%" } : { minWidth: "100%", maxWidth: "100%" }),
+        ...(scrollY ? { minHeight: "100%" } : { minHeight: "100%", maxHeight: "100%" }),
+        onSizeChange: () => {
+          this.recalculateBarProps()
+        },
+        ...mergedContentOptions,
+        id: `scroll-box-content-${this.internalId}`,
+      })
+      children.push(this.content)
+      this.viewport.add(this.content)
 
-    this.verticalScrollBar = new ScrollBarRenderable(ctx, {
-      ...scrollbarOptions,
-      ...verticalScrollbarOptions,
-      arrowOptions: {
-        ...scrollbarOptions?.arrowOptions,
-        ...verticalScrollbarOptions?.arrowOptions,
-      },
-      id: `scroll-box-vertical-scrollbar-${this.internalId}`,
-      orientation: "vertical",
-      onChange: (position) => {
-        this.content.translateY = -position
-        this.updateStickyState()
-      },
-    })
-    super.add(this.verticalScrollBar)
+      this.verticalScrollBar = new ScrollBarRenderable(ctx, {
+        ...scrollbarOptions,
+        ...verticalScrollbarOptions,
+        arrowOptions: {
+          ...scrollbarOptions?.arrowOptions,
+          ...verticalScrollbarOptions?.arrowOptions,
+        },
+        id: `scroll-box-vertical-scrollbar-${this.internalId}`,
+        orientation: "vertical",
+        onChange: (position) => {
+          if (this.isDestroyed) return
+          this.content.translateY = -position
+          this.updateStickyState()
+        },
+      })
+      children.push(this.verticalScrollBar)
+      super.add(this.verticalScrollBar)
 
-    this.horizontalScrollBar = new ScrollBarRenderable(ctx, {
-      ...scrollbarOptions,
-      ...horizontalScrollbarOptions,
-      arrowOptions: {
-        ...scrollbarOptions?.arrowOptions,
-        ...horizontalScrollbarOptions?.arrowOptions,
-      },
-      id: `scroll-box-horizontal-scrollbar-${this.internalId}`,
-      orientation: "horizontal",
-      onChange: (position) => {
-        this.content.translateX = -position
-        this.updateStickyState()
-      },
-    })
-    this.wrapper.add(this.horizontalScrollBar)
+      this.horizontalScrollBar = new ScrollBarRenderable(ctx, {
+        ...scrollbarOptions,
+        ...horizontalScrollbarOptions,
+        arrowOptions: {
+          ...scrollbarOptions?.arrowOptions,
+          ...horizontalScrollbarOptions?.arrowOptions,
+        },
+        id: `scroll-box-horizontal-scrollbar-${this.internalId}`,
+        orientation: "horizontal",
+        onChange: (position) => {
+          if (this.isDestroyed) return
+          this.content.translateX = -position
+          this.updateStickyState()
+        },
+      })
+      children.push(this.horizontalScrollBar)
+      this.wrapper.add(this.horizontalScrollBar)
 
-    this.recalculateBarProps()
+      this.recalculateBarProps()
 
-    if (stickyStart && stickyScroll) {
-      this.applyStickyStart(stickyStart)
-    }
-
-    this.selectionListener = () => {
-      const selection = this._ctx.getSelection()
-      if (!selection || !selection.isDragging) {
-        this.stopAutoScroll()
+      if (stickyStart && stickyScroll) {
+        this.applyStickyStart(stickyStart)
       }
+
+      this.selectionListener = () => {
+        if (this.isDestroyed) return
+        const selection = this._ctx.getSelection()
+        if (!selection || !selection.isDragging) {
+          this.stopAutoScroll()
+        }
+      }
+      this._ctx.on("selection", this.selectionListener)
+      this.setNativeScenePaint()
+    } catch (error) {
+      this.abortConstruction(error, (run) => {
+        run(() => this.destroySelf())
+        for (let index = children.length - 1; index >= 0; index--) {
+          run(() => children[index].destroyRecursively())
+        }
+      })
     }
-    this._ctx.on("selection", this.selectionListener)
   }
 
   protected onUpdate(deltaTime: number): void {
@@ -406,6 +412,7 @@ export class ScrollBoxRenderable extends BoxRenderable {
       this.verticalScrollBar.scrollBy(delta, unit)
     } else {
       this.verticalScrollBar.scrollBy(delta.y, unit)
+      if (this.isDestroyed) return
       this.horizontalScrollBar.scrollBy(delta.x, unit)
     }
     // Note: scrollBy doesn't need to set _hasManualScroll here because the scrollbar
@@ -466,6 +473,7 @@ export class ScrollBoxRenderable extends BoxRenderable {
       this.scrollTop = position
     } else {
       this.scrollTop = position.y
+      if (this.isDestroyed) return
       this.scrollLeft = position.x
     }
     // Note: scrollTo doesn't need to set _hasManualScroll here because
@@ -625,6 +633,7 @@ export class ScrollBoxRenderable extends BoxRenderable {
   }
 
   public updateAutoScroll(mouseX: number, mouseY: number): void {
+    assertRenderableMutable(this)
     this.autoScrollMouseX = mouseX
     this.autoScrollMouseY = mouseY
 
@@ -642,6 +651,7 @@ export class ScrollBoxRenderable extends BoxRenderable {
   }
 
   public stopAutoScroll(): void {
+    assertRenderableMutable(this)
     const wasAutoScrolling = this.isAutoScrolling
     this.isAutoScrolling = false
     this.autoScrollAccumulatorX = 0
@@ -674,6 +684,7 @@ export class ScrollBoxRenderable extends BoxRenderable {
       const integerScrollX = Math.trunc(this.autoScrollAccumulatorX)
       if (integerScrollX !== 0) {
         this.scrollLeft += integerScrollX
+        if (this.isDestroyed) return
         this.autoScrollAccumulatorX -= integerScrollX
         scrolled = true
       }
@@ -684,6 +695,7 @@ export class ScrollBoxRenderable extends BoxRenderable {
       const integerScrollY = Math.trunc(this.autoScrollAccumulatorY)
       if (integerScrollY !== 0) {
         this.scrollTop += integerScrollY
+        if (this.isDestroyed) return
         this.autoScrollAccumulatorY -= integerScrollY
         scrolled = true
       }
@@ -747,15 +759,20 @@ export class ScrollBoxRenderable extends BoxRenderable {
   }
 
   private recalculateBarProps(): void {
+    if (this.isDestroyed) return
     // Wrap entire method to prevent scroll changes from being treated as manual
     const wasApplyingStickyScroll = this._isApplyingStickyScroll
     this._isApplyingStickyScroll = true
 
     try {
       this.verticalScrollBar.scrollSize = this.content.height
+      if (this.isDestroyed) return
       this.verticalScrollBar.viewportSize = this.viewport.height
+      if (this.isDestroyed) return
       this.horizontalScrollBar.scrollSize = this.content.width
+      if (this.isDestroyed) return
       this.horizontalScrollBar.viewportSize = this.viewport.width
+      if (this.isDestroyed) return
 
       if (this._stickyScroll) {
         const newMaxScrollTop = Math.max(0, this.scrollHeight - this.viewport.height)
@@ -778,6 +795,7 @@ export class ScrollBoxRenderable extends BoxRenderable {
           } else if (this._stickyScrollBottom && newMaxScrollTop > 0) {
             this.scrollTop = newMaxScrollTop
           }
+          if (this.isDestroyed) return
 
           if (this._stickyScrollLeft) {
             this.scrollLeft = 0
@@ -789,19 +807,6 @@ export class ScrollBoxRenderable extends BoxRenderable {
     } finally {
       this._isApplyingStickyScroll = wasApplyingStickyScroll
     }
-
-    // NOTE: This is obviously a workaround for something,
-    // which is that the bar props are recalculated when the viewport is resized,
-    // which intially happens onUpdate but is the viewport does not have the correct dimensions yet,
-    // then when it does, no update is triggered and when we do we are in the middle of a render,
-    // which just ignores the request. ¯\_(ツ)_/¯
-    // TODO: Fix this properly. How? Move yoga to native, get all changes for elements in one go
-    // and update all renderables in one go before rendering.
-    // OR: Move this logic to the viewport. IMHO the wrapper and viewport are overkill and not necessary.
-    //     The Scrollbox can be the viewport, we are using translations on the content anyway.
-    process.nextTick(() => {
-      this.requestRender()
-    })
   }
 
   // Setters for reactive properties
@@ -841,39 +846,39 @@ export class ScrollBoxRenderable extends BoxRenderable {
   }
 
   public set rootOptions(options: ScrollBoxOptions["rootOptions"]) {
-    Object.assign(this, options)
-    this.requestRender()
+    this.assignOptions(this, options)
+    if (!this.isDestroyed) this.requestRender()
   }
 
   public set wrapperOptions(options: ScrollBoxOptions["wrapperOptions"]) {
-    Object.assign(this.wrapper, options)
-    this.requestRender()
+    this.assignOptions(this.wrapper, options)
+    if (!this.isDestroyed) this.requestRender()
   }
 
   public set viewportOptions(options: ScrollBoxOptions["viewportOptions"]) {
-    Object.assign(this.viewport, options)
-    this.requestRender()
+    this.assignOptions(this.viewport, options)
+    if (!this.isDestroyed) this.requestRender()
   }
 
   public set contentOptions(options: ScrollBoxOptions["contentOptions"]) {
-    Object.assign(this.content, options)
-    this.requestRender()
+    this.assignOptions(this.content, options)
+    if (!this.isDestroyed) this.requestRender()
   }
 
   public set scrollbarOptions(options: ScrollBoxOptions["scrollbarOptions"]) {
-    Object.assign(this.verticalScrollBar, options)
-    Object.assign(this.horizontalScrollBar, options)
-    this.requestRender()
+    this.assignOptions(this.verticalScrollBar, options)
+    this.assignOptions(this.horizontalScrollBar, options)
+    if (!this.isDestroyed) this.requestRender()
   }
 
   public set verticalScrollbarOptions(options: ScrollBoxOptions["verticalScrollbarOptions"]) {
-    Object.assign(this.verticalScrollBar, options)
-    this.requestRender()
+    this.assignOptions(this.verticalScrollBar, options)
+    if (!this.isDestroyed) this.requestRender()
   }
 
   public set horizontalScrollbarOptions(options: ScrollBoxOptions["horizontalScrollbarOptions"]) {
-    Object.assign(this.horizontalScrollBar, options)
-    this.requestRender()
+    this.assignOptions(this.horizontalScrollBar, options)
+    if (!this.isDestroyed) this.requestRender()
   }
 
   public get scrollAcceleration(): ScrollAcceleration {
@@ -881,6 +886,7 @@ export class ScrollBoxRenderable extends BoxRenderable {
   }
 
   public set scrollAcceleration(value: ScrollAcceleration) {
+    assertRenderableMutable(this)
     this.scrollAccel = value
   }
 
@@ -894,10 +900,11 @@ export class ScrollBoxRenderable extends BoxRenderable {
   }
 
   protected destroySelf(): void {
-    if (this.selectionListener) {
-      this._ctx.off("selection", this.selectionListener)
-      this.selectionListener = undefined
-    }
-    super.destroySelf()
+    const selectionListener = this.selectionListener
+    this.selectionListener = undefined
+    this.runCleanup((run) => {
+      if (selectionListener) run(() => this._ctx.off("selection", selectionListener))
+      run(() => super.destroySelf())
+    })
   }
 }

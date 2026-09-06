@@ -556,7 +556,7 @@ describe("Textarea - Scroll Tests", () => {
 
   describe("Viewport Offset After Resize", () => {
     it("should keep content at bottom when resizing from narrow wrapped to wide unwrapped", async () => {
-      const { textarea: editor, root } = await createTextareaRenderable(currentRenderer, renderOnce, {
+      const { textarea: editor } = await createTextareaRenderable(currentRenderer, renderOnce, {
         initialValue: Array.from(
           { length: 15 },
           (_, i) => `This is line ${i.toString().padStart(2, "0")} with enough text to wrap when narrow`,
@@ -582,7 +582,6 @@ describe("Textarea - Scroll Tests", () => {
 
       // Resize to much wider - this will unwrap most lines
       editor.width = 80
-      root.yogaNode.calculateLayout(80, 24)
       await renderOnce()
 
       const viewportAfterResize = editor.editorView.getViewport()
@@ -600,7 +599,7 @@ describe("Textarea - Scroll Tests", () => {
     })
 
     it("should clamp horizontal viewport offset when resizing wider with no wrap", async () => {
-      const { textarea: editor, root } = await createTextareaRenderable(currentRenderer, renderOnce, {
+      const { textarea: editor } = await createTextareaRenderable(currentRenderer, renderOnce, {
         initialValue: "A".repeat(200),
         width: 20,
         height: 10,
@@ -623,7 +622,6 @@ describe("Textarea - Scroll Tests", () => {
 
       // Resize to much wider - viewport offsetX might now exceed valid range
       editor.width = 250
-      root.yogaNode.calculateLayout(80, 24)
       await renderOnce()
 
       const viewportWide = editor.editorView.getViewport()
@@ -636,7 +634,7 @@ describe("Textarea - Scroll Tests", () => {
     })
 
     it("should allow scrolling and selecting last line immediately after resize from wide to narrow", async () => {
-      const { textarea: editor, root } = await createTextareaRenderable(currentRenderer, renderOnce, {
+      const { textarea: editor } = await createTextareaRenderable(currentRenderer, renderOnce, {
         initialValue: Array.from(
           { length: 20 },
           (_, i) =>
@@ -652,7 +650,6 @@ describe("Textarea - Scroll Tests", () => {
 
       // Resize to very narrow - this will cause heavy wrapping
       editor.width = 10
-      root.yogaNode.calculateLayout(80, 24)
       await renderOnce()
 
       const viewportAfterResize = editor.editorView.getViewport()

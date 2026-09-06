@@ -14,6 +14,39 @@ const TextBufferView = text_buffer_view.UnifiedTextBufferView;
 const RGBA = buffer_mod.RGBA;
 const TestRenderer = test_renderer_mod.TestRenderer;
 
+test "OptimizedBuffer clear and opaque fills preserve every plane at vector boundaries" {
+    var pool = gp.GraphemePool.init(std.testing.allocator);
+    defer pool.deinit();
+    var links = link.LinkPool.init(std.testing.allocator);
+    defer links.deinit();
+    for ([_]u32{ 1, 3, 4, 7, 8, 15, 16, 17, 33 }) |width| {
+        const target = try OptimizedBuffer.init(std.testing.allocator, width, 3, .{ .pool = &pool, .link_pool = &links });
+        defer target.deinit();
+        const background = ansi.indexedColor(6, 17, 23, 41);
+        target.clear(background, '#');
+        @memset(target.buffer.attributes, 1);
+        @memset(target.buffer.fg, background);
+        try target.pushScissorRect(1, 1, width - 1, 1);
+        const fill = ansi.rgbColor(19, 37, 53, 255);
+        target.fillRect(0, 0, width, 3, fill);
+        for (0..3) |y| {
+            for (0..width) |x| {
+                const cell = target.get(@intCast(x), @intCast(y)).?;
+                const filled = y == 1 and x > 0;
+                try std.testing.expectEqual(@as(u32, if (filled) ' ' else '#'), cell.char);
+                try std.testing.expectEqual(@as(u32, if (filled) 0 else 1), cell.attributes);
+                try std.testing.expectEqualDeep(if (filled) ansi.rgbColor(255, 255, 255, 255) else background, cell.fg);
+                try std.testing.expectEqualDeep(if (filled) fill else background, cell.bg);
+            }
+        }
+        target.clear(fill, 0);
+        for (target.buffer.char) |value| try std.testing.expectEqual(@as(u32, 0), value);
+        for (target.buffer.attributes) |value| try std.testing.expectEqual(@as(u32, 0), value);
+        for (target.buffer.fg) |value| try std.testing.expectEqualDeep(ansi.rgbColor(255, 255, 255, 255), value);
+        for (target.buffer.bg) |value| try std.testing.expectEqualDeep(fill, value);
+    }
+}
+
 test "OptimizedBuffer draws image reservation markers" {
     var pool = gp.GraphemePool.init(std.testing.allocator);
     defer pool.deinit();
@@ -226,8 +259,10 @@ test "OptimizedBuffer copies ordinary cells when image bookkeeping allocation fa
         target.clear(ansi.rgbColor(0, 0, 0, 255), null);
         var failing = std.testing.FailingAllocator.init(std.testing.allocator, .{ .fail_index = fail_index });
         target.allocator = failing.allocator();
+        target.storage.allocator = failing.allocator();
         target.drawFrameBuffer(0, 0, source_buffer, null, null, null, null);
         target.allocator = std.testing.allocator;
+        target.storage.allocator = std.testing.allocator;
 
         try std.testing.expect(failing.has_induced_failure);
         try std.testing.expectEqual(@as(u32, 'X'), target.get(1, 0).?.char);
@@ -704,6 +739,308 @@ test "OptimizedBuffer - drawText with ASCII" {
 
     const cell_e = buf.get(1, 0).?;
     try std.testing.expectEqual(@as(u32, 'e'), cell_e.char);
+}
+
+test "OptimizedBuffer drawTextBufferChecked returns errors at every drawing allocation" {
+    for ([_]bool{ false, true }) |fail_metadata| {
+        var failures: usize = 0;
+        var succeeded = false;
+        for (0..96) |fail_after| {
+            var failing = std.testing.FailingAllocator.init(std.testing.allocator, .{});
+            const allocator = failing.allocator();
+            var pool = gp.GraphemePool.initWithOptions(allocator, .{ .slots_per_page = .{ 1, 1, 1, 1, 1 } });
+            defer pool.deinit();
+            var links = link.LinkPool.init(allocator);
+            defer links.deinit();
+            const target = try OptimizedBuffer.init(allocator, 16, 2, .{ .pool = &pool, .link_pool = &links });
+            defer target.deinit();
+            const text = try TextBuffer.init(allocator, &pool, &links, .unicode);
+            defer text.deinit();
+            const view = try TextBufferView.init(allocator, text);
+            defer view.deinit();
+            try text.setText("\u{3a9}\u{4e16}e\u{301}\tZ\u{3b1}\u{3b2}\u{3b3}\u{3b4}\u{3b5}\nlast");
+            view.setViewport(.{ .x = 0, .y = 0, .width = 16, .height = 2 });
+            _ = view.getVirtualLines();
+            const kept = try pool.alloc("\u{3a9}");
+            try pool.incref(kept);
+            defer pool.decref(kept) catch unreachable;
+            const kept_link = try links.alloc("https://kept.example");
+            try links.incref(kept_link);
+            defer links.decref(kept_link) catch unreachable;
+            text.setDefaultAttributes(ansi.TextAttributes.setLinkId(1, kept_link));
+            const old_allocator = text.allocator;
+            var metadata = std.testing.FailingAllocator.init(old_allocator, .{});
+            text.allocator = metadata.allocator();
+            defer text.allocator = old_allocator;
+            const injected = if (fail_metadata) &metadata else &failing;
+            injected.fail_index = injected.alloc_index + fail_after;
+            injected.resize_fail_index = injected.resize_index;
+            const result = target.drawTextBufferChecked(view, 0, 0);
+            injected.fail_index = std.math.maxInt(usize);
+            injected.resize_fail_index = std.math.maxInt(usize);
+            if (result) |_| {
+                try std.testing.expect(!injected.has_induced_failure);
+                succeeded = true;
+            } else |err| {
+                try std.testing.expectEqual(error.OutOfMemory, err);
+                try std.testing.expect(injected.has_induced_failure);
+                failures += 1;
+            }
+            // Checked view drawing can leave partial cells; its scene owner clears on error.
+            target.clear(ansi.rgbColor(0, 0, 0, 255), null);
+            try std.testing.expectEqual(@as(u32, 1), try pool.getRefcount(kept));
+            try std.testing.expectEqual(@as(u32, 1), try links.getRefcount(kept_link));
+            try std.testing.expectEqual(@as(u32, 1), pool.interned_live_ids.count());
+            var allocated: usize = 0;
+            for (pool.classes) |class| allocated += class.num_slots - class.free_list.items.len;
+            try std.testing.expectEqual(@as(usize, 1), allocated);
+            try target.drawTextBufferChecked(view, 0, 0);
+            try std.testing.expectEqualStrings("\u{3a9}", try pool.get(gp.graphemeIdFromChar(target.get(0, 0).?.char)));
+            try std.testing.expectEqual(@as(u32, 'l'), target.get(0, 1).?.char);
+            if (succeeded) break;
+        }
+        try std.testing.expect(succeeded);
+        try std.testing.expect(failures > 0);
+    }
+}
+
+test "OptimizedBuffer checked text rejects oversized glyphs while legacy continues" {
+    var pool = gp.GraphemePool.init(std.testing.allocator);
+    defer pool.deinit();
+    var links = link.LinkPool.init(std.testing.allocator);
+    defer links.deinit();
+    const target = try OptimizedBuffer.init(std.testing.allocator, 8, 2, .{ .pool = &pool, .link_pool = &links });
+    defer target.deinit();
+    target.clear(ansi.rgbColor(0, 0, 0, 255), null);
+    const text = try TextBuffer.init(std.testing.allocator, &pool, &links, .unicode);
+    defer text.deinit();
+    const view = try TextBufferView.init(std.testing.allocator, text);
+    defer view.deinit();
+    view.setViewport(.{ .x = 0, .y = 0, .width = 8, .height = 2 });
+    try text.setText("e" ++ "\u{301}" ** 64 ++ "\nTAIL");
+    try std.testing.expectError(error.TextLimit, target.drawTextBufferChecked(view, 0, 0));
+    try std.testing.expectEqual(@as(u32, ' '), target.get(0, 0).?.char);
+    try std.testing.expectEqual(@as(u32, 0), pool.interned_live_ids.count());
+    target.drawTextBuffer(view, 0, 0);
+    try std.testing.expectEqualSlices(u32, &.{ 'T', 'A', 'I', 'L' }, target.buffer.char[8..12]);
+    try text.setText("\u{e9}" ++ "\u{301}" ** 63);
+    try target.drawTextBufferChecked(view, 0, 0);
+    const id = gp.graphemeIdFromChar(target.get(0, 0).?.char);
+    try std.testing.expectEqual(@as(usize, 128), (try pool.get(id)).len);
+    try std.testing.expectEqual(@as(u32, 1), try pool.getRefcount(id));
+}
+
+test "OptimizedBuffer drawTextBuffer transparent glyphs reclaim pending slots and preserve live references" {
+    for ([_]bool{ false, true }) |checked| {
+        var pool = gp.GraphemePool.initWithOptions(std.testing.allocator, .{ .slots_per_page = .{ 1, 1, 1, 1, 1 } });
+        defer pool.deinit();
+        var links = link.LinkPool.init(std.testing.allocator);
+        defer links.deinit();
+        const target = try OptimizedBuffer.init(std.testing.allocator, 4, 1, .{ .pool = &pool, .link_pool = &links });
+        defer target.deinit();
+        target.clear(ansi.rgbColor(0, 0, 0, 255), null);
+        const text = try TextBuffer.init(std.testing.allocator, &pool, &links, .unicode);
+        defer text.deinit();
+        const view = try TextBufferView.init(std.testing.allocator, text);
+        defer view.deinit();
+        try text.setText("\u{754c}\u{4e16}");
+        text.setDefaultFg(ansi.rgbColor(200, 100, 50, 0));
+        text.setDefaultBg(ansi.rgbColor(10, 20, 30, 0));
+        view.setViewport(.{ .x = 0, .y = 0, .width = 4, .height = 1 });
+        const kept = try pool.alloc("\u{4e16}");
+        try pool.incref(kept);
+        defer pool.decref(kept) catch unreachable;
+        for (0..400) |_| {
+            if (checked) try target.drawTextBufferChecked(view, 0, 0) else target.drawTextBuffer(view, 0, 0);
+            try std.testing.expectEqual(@as(u32, 1), try pool.getRefcount(kept));
+            var allocated: usize = 0;
+            for (pool.classes) |class| allocated += class.num_slots - class.free_list.items.len;
+            try std.testing.expectEqual(@as(usize, 1), allocated);
+        }
+        try std.testing.expectEqualSlices(u32, &.{ ' ', ' ', ' ', ' ' }, target.buffer.char);
+        try std.testing.expectEqual(@as(u32, 0), target.grapheme_tracker.getGraphemeCount());
+    }
+}
+
+test "OptimizedBuffer drawTextChecked validates all input before drawing and enforces text limits" {
+    var pool = gp.GraphemePool.init(std.testing.allocator);
+    defer pool.deinit();
+    var links = link.LinkPool.init(std.testing.allocator);
+    defer links.deinit();
+    const target = try OptimizedBuffer.init(std.testing.allocator, 4, 1, .{ .pool = &pool, .link_pool = &links });
+    defer target.deinit();
+    const fg = ansi.rgbColor(255, 128, 64, 255);
+    const bg = ansi.rgbColor(1, 2, 3, 255);
+    target.clear(bg, null);
+    const link_id = try links.alloc("https://kept.example");
+    try target.drawText("\u{3a9}old", 0, 0, fg, bg, ansi.TextAttributes.setLinkId(1, link_id));
+    const old_id = gp.graphemeIdFromChar(target.buffer.char[0]);
+    const chars = target.buffer.char[0..4].*;
+    const foreground = target.buffer.fg[0..4].*;
+    const background = target.buffer.bg[0..4].*;
+    const attributes = target.buffer.attributes[0..4].*;
+    for ([_][]const u8{ "ok\xff", "\x80", "\xc0\xaf", "\xed\xa0\x80", "\xf4\x90\x80\x80", "\xf0\x9f" }) |text| {
+        try std.testing.expectError(error.InvalidUnicode, target.drawTextChecked(text, 0, 0, fg, bg, 0));
+        try std.testing.expectError(error.InvalidUnicode, target.drawTextChecked(text, std.math.maxInt(u32), 0, fg, bg, 0));
+    }
+    for (0..0xa0) |codepoint| {
+        if (codepoint == '\t' or (codepoint >= 0x20 and codepoint < 0x7f)) continue;
+        var encoded: [4]u8 = undefined;
+        const len = try std.unicode.utf8Encode(@intCast(codepoint), &encoded);
+        try std.testing.expectError(error.InvalidUnicode, target.drawTextChecked(encoded[0..len], 0, 0, fg, bg, 0));
+    }
+    for ([_]u32{ 0x100, 0x8000_0000, std.math.maxInt(u32) }) |style| {
+        try std.testing.expectError(error.InvalidOptions, target.drawTextChecked("bad", 0, 0, fg, bg, style));
+    }
+    for ([_]RGBA{ .{ 256, 0, 0, 255 }, .{ 0, 0, 0, 256 }, ansi.withMeta(fg, 0x300), ansi.withMeta(bg, 0x201) }) |color| {
+        try std.testing.expectError(error.InvalidOptions, target.drawTextChecked("bad", 0, 0, color, bg, 0));
+        try std.testing.expectError(error.InvalidOptions, target.drawTextChecked("bad", 0, 0, fg, color, 0));
+    }
+    for ([_]buffer_mod.ClipRect{
+        .{ .x = 0, .y = 0, .width = std.math.maxInt(u32), .height = 1 },
+        .{ .x = 0, .y = 0, .width = 1, .height = std.math.maxInt(u32) },
+        .{ .x = std.math.maxInt(i32), .y = 0, .width = 1, .height = 1 },
+        .{ .x = 0, .y = std.math.maxInt(i32), .width = 1, .height = 1 },
+    }) |clip| {
+        try target.pushScissorRect(clip.x, clip.y, clip.width, clip.height);
+        try std.testing.expectError(error.InvalidOptions, target.drawTextChecked("bad", 0, 0, fg, bg, 0));
+        target.clearScissorRects();
+    }
+    const over_limit = "x" ** (buffer_mod.text_bytes_max + 1);
+    try std.testing.expectError(error.TextLimit, target.drawTextChecked(over_limit, 0, 0, fg, bg, 0));
+    try std.testing.expectError(error.InvalidUnicode, target.drawTextChecked("x" ** (buffer_mod.text_bytes_max - 1) ++ "\xff", 0, 0, fg, bg, 0));
+    const long_cluster = "a" ++ "\u{301}" ** 64;
+    try std.testing.expectError(error.TextLimit, target.drawTextChecked("\u{e9}" ++ long_cluster, 0, 0, fg, bg, 0));
+    try std.testing.expectEqualSlices(u32, &chars, target.buffer.char);
+    try std.testing.expectEqualSlices(RGBA, &foreground, target.buffer.fg);
+    try std.testing.expectEqualSlices(RGBA, &background, target.buffer.bg);
+    try std.testing.expectEqualSlices(u32, &attributes, target.buffer.attributes);
+    try std.testing.expectEqual(1, pool.interned_live_ids.count());
+    try std.testing.expectEqual(1, try pool.getRefcount(old_id));
+    try std.testing.expectEqual(1, try links.getRefcount(link_id));
+
+    try target.drawTextChecked("x" ** buffer_mod.text_bytes_max, 0, 0, fg, bg, 0xff);
+    try std.testing.expectEqualSlices(u32, &.{ 'x', 'x', 'x', 'x' }, target.buffer.char);
+    try std.testing.expectEqualSlices(u32, &.{ 0xff, 0xff, 0xff, 0xff }, target.buffer.attributes);
+    try target.drawTextChecked("\u{e9}" ++ "\u{301}" ** 63, 0, 0, fg, bg, 0);
+    try std.testing.expectEqual(128, (try pool.get(gp.graphemeIdFromChar(target.buffer.char[0]))).len);
+}
+
+test "OptimizedBuffer drawTextChecked copies input before its supplied pool grows" {
+    var moving = std.testing.FailingAllocator.init(std.testing.allocator, .{ .resize_fail_index = 0 });
+    var pool = gp.GraphemePool.initWithOptions(moving.allocator(), .{ .slots_per_page = .{ 1, 1, 1, 1, 1 } });
+    defer pool.deinit();
+    var links = link.LinkPool.init(std.testing.allocator);
+    defer links.deinit();
+    const text = "e" ++ "\u{301}" ** 4 ++ "X";
+    // The source and its first drawn cluster share the 16-byte class.
+    try pool.classes[1].slots.ensureTotalCapacityPrecise(moving.allocator(), pool.classes[1].slot_size_bytes);
+    const source = try pool.alloc(text);
+    try pool.incref(source);
+    defer pool.decref(source) catch unreachable;
+    const target = try OptimizedBuffer.init(std.testing.allocator, 2, 1, .{ .pool = &pool, .link_pool = &links });
+    defer target.deinit();
+    const borrowed = try pool.get(source);
+    const old_address = @intFromPtr(borrowed.ptr);
+    try target.drawTextChecked(borrowed, 0, 0, ansi.rgbColor(255, 255, 255, 255), ansi.rgbColor(0, 0, 0, 255), 0);
+    try std.testing.expect(old_address != @intFromPtr((try pool.get(source)).ptr));
+    try std.testing.expectEqualStrings(text, try pool.get(source));
+    try std.testing.expectEqualStrings(text[0 .. text.len - 1], try pool.get(gp.graphemeIdFromChar(target.buffer.char[0])));
+    try std.testing.expectEqual(@as(u32, 'X'), target.buffer.char[1]);
+}
+
+test "OptimizedBuffer drawTextChecked rejects image targets without materializing or releasing them" {
+    var pool = gp.GraphemePool.init(std.testing.allocator);
+    defer pool.deinit();
+    var links = link.LinkPool.init(std.testing.allocator);
+    defer links.deinit();
+    const target = try OptimizedBuffer.init(std.testing.allocator, 2, 1, .{ .pool = &pool, .link_pool = &links });
+    defer target.deinit();
+    const source = try image.createFromRgba(std.testing.allocator, &.{ 255, 0, 0, 255 }, 1, 1, 4);
+    defer source.deinit();
+    try std.testing.expect(try target.drawImage(source, 1, 0, 0, 1, 1, 0, 0, 0, 0, 1, 1, .auto));
+    const before = target.get(0, 0).?;
+    const placement = target.image_placements.items[0];
+    const fg = ansi.rgbColor(255, 255, 255, 255);
+    for ([_][]const u8{ "\u{e9}", "" }) |text| {
+        try std.testing.expectError(error.UnsupportedResource, target.drawTextChecked(text, 0, 0, fg, null, 0));
+        try std.testing.expectEqualDeep(before, target.get(0, 0).?);
+        try std.testing.expectEqualDeep(placement, target.image_placements.items[0]);
+        try std.testing.expectEqual(1, target.image_placements.items.len);
+        try std.testing.expectEqual(2, source.ref_count);
+        try std.testing.expectEqual(0, pool.interned_live_ids.count());
+    }
+}
+
+test "OptimizedBuffer drawTextChecked matches legacy clipping tab wide cell and alpha drawing" {
+    var pool = gp.GraphemePool.init(std.testing.allocator);
+    defer pool.deinit();
+    var links = link.LinkPool.init(std.testing.allocator);
+    defer links.deinit();
+    const cases = [_]struct { text: []const u8, x: u32 = 0, clip: ?buffer_mod.ClipRect = null }{
+        .{ .text = "plain text" },
+        .{ .text = "\u{e9}\u{4e2d}e\u{301}" },
+        .{ .text = "1\u{fe0f}\u{20e3}X", .x = 1 },
+        .{ .text = "\u{1f469}\u{200d}\u{1f4bb}X" },
+        .{ .text = "A\tB" },
+        .{ .text = "\t\u{4e2d}X", .clip = .{ .x = 1, .y = 0, .width = 5, .height = 1 } },
+        .{ .text = "\u{4e2d}A\u{4e2d}B", .clip = .{ .x = 1, .y = 0, .width = 5, .height = 1 } },
+        .{ .text = "A\u{4e2d}X", .x = 10 },
+        .{ .text = "", .x = 0 },
+        .{ .text = "outside", .x = std.math.maxInt(u32) },
+    };
+    const backgrounds = [_]?RGBA{ null, ansi.rgbColor(30, 60, 90, 255), ansi.rgbColor(30, 60, 90, 128), ansi.rgbColor(0, 0, 0, 0) };
+    for ([_]@import("../utf8.zig").WidthMethod{ .unicode, .wcwidth, .no_zwj, .unicode_wide }) |width_method| {
+        const legacy = try OptimizedBuffer.init(std.testing.allocator, 12, 1, .{ .pool = &pool, .link_pool = &links, .width_method = width_method });
+        defer legacy.deinit();
+        const checked = try OptimizedBuffer.init(std.testing.allocator, 12, 1, .{ .pool = &pool, .link_pool = &links, .width_method = width_method });
+        defer checked.deinit();
+        for (cases) |case| {
+            for (backgrounds) |bg| {
+                for ([_]u8{ 255, 120 }) |alpha| {
+                    for ([_]f32{ 1.0, 0.35, 0.0 }) |opacity| {
+                        for ([_]*OptimizedBuffer{ legacy, checked }) |target| {
+                            target.clearScissorRects();
+                            target.clearOpacity();
+                            target.clear(ansi.rgbColor(10, 20, 30, 120), null);
+                            try target.drawText("\u{3a9}old\u{4e2d}", 0, 0, ansi.rgbColor(200, 210, 220, 255), null, 1);
+                            if (case.clip) |clip| try target.pushScissorRect(clip.x, clip.y, clip.width, clip.height);
+                            try target.pushOpacity(opacity);
+                        }
+                        const fg = ansi.rgbColor(100, 150, 200, alpha);
+                        try legacy.drawText(case.text, case.x, 0, fg, bg, 0xff);
+                        try checked.drawTextChecked(case.text, case.x, 0, fg, bg, 0xff);
+                        try std.testing.expectEqualSlices(u32, legacy.buffer.char, checked.buffer.char);
+                        try std.testing.expectEqualSlices(RGBA, legacy.buffer.fg, checked.buffer.fg);
+                        try std.testing.expectEqualSlices(RGBA, legacy.buffer.bg, checked.buffer.bg);
+                        try std.testing.expectEqualSlices(u32, legacy.buffer.attributes, checked.buffer.attributes);
+                    }
+                }
+            }
+        }
+    }
+}
+
+test "OptimizedBuffer drawTextChecked skips complete zero width UTF-8 codepoints" {
+    var pool = gp.GraphemePool.init(std.testing.allocator);
+    defer pool.deinit();
+    var links = link.LinkPool.init(std.testing.allocator);
+    defer links.deinit();
+    const target = try OptimizedBuffer.init(std.testing.allocator, 8, 1, .{ .pool = &pool, .link_pool = &links });
+    defer target.deinit();
+    const fg = ansi.rgbColor(255, 255, 255, 255);
+    const bg = ansi.rgbColor(0, 0, 0, 255);
+    target.clear(bg, null);
+    try target.drawTextChecked("\u{200b}\u{200d}" ++ "\u{301}" ** 1024, 0, 0, fg, bg, 0);
+    try std.testing.expectEqualSlices(u32, &([_]u32{' '} ** 8), target.buffer.char);
+    try std.testing.expectEqual(0, pool.interned_live_ids.count());
+    try target.drawTextChecked("\u{200b}A\u{200b}\t\u{200d}\u{4e2d}\u{200b}Z", 0, 0, fg, bg, 0);
+    try std.testing.expectEqual(@as(u32, 'A'), target.buffer.char[0]);
+    try std.testing.expectEqual(@as(u32, ' '), target.buffer.char[1]);
+    try std.testing.expectEqual(@as(u32, ' '), target.buffer.char[2]);
+    try std.testing.expectEqualStrings("\u{4e2d}", try pool.get(gp.graphemeIdFromChar(target.buffer.char[3])));
+    try std.testing.expect(gp.isContinuationChar(target.buffer.char[4]));
+    try std.testing.expectEqual(@as(u32, 'Z'), target.buffer.char[5]);
 }
 
 test "OptimizedBuffer - drawGrapheme preserves authoritative width" {
@@ -1421,7 +1758,7 @@ test "OptimizedBuffer - many unique graphemes with small pool" {
 
         if (render_count % 50 == 0) {
             buf.clear(bg, null);
-            tb.reset();
+            try tb.reset();
         }
 
         buf.drawTextBuffer(view, 0, 0);
@@ -2592,6 +2929,40 @@ test "OptimizedBuffer - drawBox transparent border preserves destination backgro
     try std.testing.expectEqual(@as(u32, 0), cell.attributes);
 }
 
+test "OptimizedBuffer - drawBox transparent border respects partial scissor clipping" {
+    const pool = gp.initGlobalPool(std.testing.allocator);
+    defer gp.deinitGlobalPool();
+    var buf = try OptimizedBuffer.init(std.testing.allocator, 4, 4, .{ .pool = pool, .id = "clipped-border" });
+    defer buf.deinit();
+    const background = ansi.rgbColor(100, 0, 0, 255);
+    const foreground = ansi.rgbColor(0, 200, 0, 255);
+    const transparent = ansi.rgbColor(0, 0, 0, 0);
+    const border_chars = [_]u32{ 0x250c, 0x2510, 0x2514, 0x2518, 0x2500, 0x2502, 0, 0, 0, 0, 0 };
+    for ([_]buffer_mod.ClipRect{
+        .{ .x = 1, .y = 0, .width = 2, .height = 4 },
+        .{ .x = 0, .y = 1, .width = 4, .height = 2 },
+        .{ .x = 1, .y = 1, .width = 2, .height = 2 },
+    }) |clip| {
+        buf.clear(background, null);
+        const before = buf.get(0, 0).?;
+        try buf.pushScissorRect(clip.x, clip.y, clip.width, clip.height);
+        try buf.drawBox(0, 0, 4, 4, &border_chars, .{ .left = true, .top = true, .right = true, .bottom = true }, foreground, transparent, foreground, false, null, 0, null, 0);
+        for (0..4) |y| {
+            for (0..4) |x| {
+                const inside = x >= @as(u32, @intCast(clip.x)) and x < @as(u32, @intCast(clip.x)) + clip.width and
+                    y >= @as(u32, @intCast(clip.y)) and y < @as(u32, @intCast(clip.y)) + clip.height;
+                const cell = buf.get(@intCast(x), @intCast(y)).?;
+                if (inside and (x == 0 or x == 3 or y == 0 or y == 3)) {
+                    try std.testing.expect(cell.char != before.char);
+                    try std.testing.expectEqual(foreground, cell.fg);
+                    try std.testing.expectEqual(background, cell.bg);
+                } else try std.testing.expectEqualDeep(before, cell);
+            }
+        }
+        buf.popScissorRect();
+    }
+}
+
 test "OptimizedBuffer - drawBox transparent border foreground blends against box background" {
     const pool = gp.initGlobalPool(std.testing.allocator);
     defer gp.deinitGlobalPool();
@@ -3624,4 +3995,158 @@ test "OptimizedBuffer frame buffer merge multiplies nested placement opacity" {
     try std.testing.expectEqual(@as(usize, 1), target.image_placements.items.len);
     // 0.5 * 0.5 = 0.25 -> 64 of 255.
     try std.testing.expect(@abs(@as(i16, target.image_placements.items[0].opacity) - 64) <= 1);
+}
+
+test "OptimizedBuffer drawTextChecked warm draws avoid heap allocation" {
+    const foreground = ansi.rgbColor(84, 171, 224, 255);
+    const background = ansi.rgbColor(28, 32, 38, 255);
+    // Frozen wide-driver inputs, at its last panel/hook positions in a 140x44 frame.
+    const cases = [_]struct { text: []const u8, x: u32, y: u32, bg: ?RGBA }{
+        .{ .text = "busy 23", .x = 117, .y = 30, .bg = background },
+        .{
+            .text = "alpha \u{4e16}\u{754c} e\u{301} \u{1f469}\u{200d}\u{1f4bb} \u{1f1fa}\u{1f1f3} wrap at the cell boundary ",
+            .x = 106,
+            .y = 36,
+            .bg = null,
+        },
+        .{
+            .text = "bravo \u{65e5}\u{672c} a\u{308} \u{1f468}\u{200d}\u{1f680} \u{1f1ef}\u{1f1f5} different wrapped text ",
+            .x = 106,
+            .y = 36,
+            .bg = null,
+        },
+    };
+    for (cases) |case| {
+        var expected_pool = gp.GraphemePool.init(std.testing.allocator);
+        defer expected_pool.deinit();
+        var expected_links = link.LinkPool.init(std.testing.allocator);
+        defer expected_links.deinit();
+        const expected = try OptimizedBuffer.init(std.testing.allocator, 140, 44, .{ .pool = &expected_pool, .link_pool = &expected_links });
+        defer expected.deinit();
+        expected.clear(background, null);
+        try expected.pushScissorRect(0, 0, 140, 44);
+        try expected.pushOpacity(1.0);
+        try expected.drawText(case.text, case.x, case.y, foreground, case.bg, 0);
+
+        var requests = std.testing.FailingAllocator.init(std.testing.allocator, .{});
+        const allocator = requests.allocator();
+        var pool = gp.GraphemePool.init(allocator);
+        defer pool.deinit();
+        var links = link.LinkPool.init(allocator);
+        defer links.deinit();
+        const target = try OptimizedBuffer.init(allocator, 140, 44, .{ .pool = &pool, .link_pool = &links });
+        defer target.deinit();
+        target.clear(background, null);
+        try target.pushScissorRect(0, 0, 140, 44);
+        try target.pushOpacity(1.0);
+        for (0..8) |_| try target.drawTextChecked(case.text, case.x, case.y, foreground, case.bg, 0);
+        const allocations = requests.allocations;
+        const resizes = requests.resize_index;
+        for (0..64) |_| try target.drawTextChecked(case.text, case.x, case.y, foreground, case.bg, 0);
+        try std.testing.expectEqual(allocations, requests.allocations);
+        try std.testing.expectEqual(resizes, requests.resize_index);
+        try std.testing.expectEqualSlices(RGBA, expected.buffer.fg, target.buffer.fg);
+        try std.testing.expectEqualSlices(RGBA, expected.buffer.bg, target.buffer.bg);
+        try std.testing.expectEqualSlices(u32, expected.buffer.attributes, target.buffer.attributes);
+        for (expected.buffer.char, target.buffer.char) |expected_char, actual_char| {
+            if (gp.isClusterChar(expected_char)) {
+                try std.testing.expectEqual(expected_char & ~gp.GRAPHEME_ID_MASK, actual_char & ~gp.GRAPHEME_ID_MASK);
+                const id = gp.graphemeIdFromChar(actual_char);
+                try std.testing.expectEqualStrings(try expected_pool.get(gp.graphemeIdFromChar(expected_char)), try pool.get(id));
+                try std.testing.expectEqual(@as(u32, 1), try pool.getRefcount(id));
+            } else {
+                try std.testing.expectEqual(expected_char, actual_char);
+            }
+        }
+        try std.testing.expectEqual(expected.grapheme_tracker.getGraphemeCount(), target.grapheme_tracker.getGraphemeCount());
+        try std.testing.expectEqual(expected_pool.interned_live_ids.count(), pool.interned_live_ids.count());
+        try std.testing.expectEqual(@as(u32, 0), target.link_tracker.getLinkCount());
+        target.clear(background, null);
+        try std.testing.expectEqual(@as(u32, 0), pool.interned_live_ids.count());
+        try std.testing.expectEqual(@as(u32, 0), target.grapheme_tracker.getGraphemeCount());
+    }
+}
+
+test "OptimizedBuffer drawTextChecked preserves cells and references at every allocation failure" {
+    // Exercise pool/tracker growth and each independent heap fallback.
+    for ([_]struct { text: []const u8, visible_columns: u32, width: u32 = 512 }{
+        .{ .text = "\u{e9}\u{4e2d}e\u{301}\tZ\u{3b1}\u{3b2}\u{3b3}\u{3b4}\u{3f5}", .visible_columns = 12, .width = 12 },
+        .{ .text = "x" ** 4097, .visible_columns = 4 },
+        .{ .text = "\u{e9}" ** 512, .visible_columns = 4 },
+        .{ .text = "x" ** 512, .visible_columns = 512 },
+    }) |case| {
+        const text = case.text;
+        var failures: usize = 0;
+        var succeeded = false;
+        for (0..64) |fail_after| {
+            var failing = std.testing.FailingAllocator.init(std.testing.allocator, .{});
+            const allocator = failing.allocator();
+            var pool = gp.GraphemePool.initWithOptions(allocator, if (case.width == 12)
+                .{ .slots_per_page = .{ 1, 1, 1, 1, 1 } }
+            else
+                .{});
+            defer pool.deinit();
+            var links = link.LinkPool.init(allocator);
+            defer links.deinit();
+            const target = try OptimizedBuffer.init(allocator, case.width, 1, .{ .pool = &pool, .link_pool = &links });
+            defer target.deinit();
+            const fg = ansi.rgbColor(220, 180, 140, 255);
+            const bg = ansi.rgbColor(20, 40, 60, 255);
+            target.clear(bg, null);
+            if (case.width == 512) try target.pushScissorRect(0, 0, case.visible_columns, 1);
+            const link_id = try links.alloc("https://kept.example");
+            try target.drawText("\u{3a9}old", 0, 0, fg, bg, ansi.TextAttributes.setLinkId(1, link_id));
+            const old_id = gp.graphemeIdFromChar(target.buffer.char[0]);
+            const chars = try std.testing.allocator.dupe(u32, target.buffer.char);
+            defer std.testing.allocator.free(chars);
+            const foreground = try std.testing.allocator.dupe(RGBA, target.buffer.fg);
+            defer std.testing.allocator.free(foreground);
+            const background = try std.testing.allocator.dupe(RGBA, target.buffer.bg);
+            defer std.testing.allocator.free(background);
+            const attributes = try std.testing.allocator.dupe(u32, target.buffer.attributes);
+            defer std.testing.allocator.free(attributes);
+            const tracker_capacity = target.grapheme_tracker.used_ids.capacity();
+
+            failing.fail_index = failing.alloc_index + fail_after;
+            failing.resize_fail_index = failing.resize_index;
+            const result = target.drawTextChecked(text, 0, 0, fg, bg, 8);
+            failing.fail_index = std.math.maxInt(usize);
+            failing.resize_fail_index = std.math.maxInt(usize);
+            if (result) |_| {
+                succeeded = true;
+            } else |err| {
+                try std.testing.expectEqual(error.OutOfMemory, err);
+                failures += 1;
+                try std.testing.expectEqualSlices(u32, chars, target.buffer.char);
+                try std.testing.expectEqualSlices(RGBA, foreground, target.buffer.fg);
+                try std.testing.expectEqualSlices(RGBA, background, target.buffer.bg);
+                try std.testing.expectEqualSlices(u32, attributes, target.buffer.attributes);
+                try std.testing.expectEqual(1, target.grapheme_tracker.getGraphemeCount());
+                try std.testing.expectEqual(1, target.link_tracker.getLinkCount());
+                try std.testing.expectEqual(1, try pool.getRefcount(old_id));
+                try std.testing.expectEqual(1, try links.getRefcount(link_id));
+                try std.testing.expectEqual(1, pool.interned_live_ids.count());
+                var live_slots: usize = 0;
+                for (pool.classes) |class| live_slots += @as(usize, class.num_slots) - class.free_list.items.len;
+                try std.testing.expectEqual(1, live_slots);
+                try target.drawTextChecked(text, 0, 0, fg, bg, 8);
+            }
+            if (text[0] == 'x') {
+                try std.testing.expectEqual(@as(u32, 'x'), target.buffer.char[0]);
+            } else {
+                try std.testing.expectEqualStrings("\u{e9}", try pool.get(gp.graphemeIdFromChar(target.buffer.char[0])));
+            }
+            if (case.width == 12) {
+                try std.testing.expect(target.grapheme_tracker.used_ids.capacity() > tracker_capacity);
+                try std.testing.expectEqual(@as(u32, 'Z'), target.buffer.char[6]);
+            }
+            target.clear(bg, null);
+            try std.testing.expectEqual(0, pool.interned_live_ids.count());
+            try std.testing.expectEqual(0, links.getLiveSlotCount());
+            for (pool.classes) |class| try std.testing.expectEqual(class.num_slots, class.free_list.items.len);
+            if (succeeded) break;
+        }
+        try std.testing.expect(succeeded);
+        try std.testing.expect(failures >= if (case.width == 12) @as(usize, 5) else 1);
+    }
 }

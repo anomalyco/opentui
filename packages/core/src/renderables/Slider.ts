@@ -2,6 +2,7 @@ import { type RenderableOptions, Renderable } from "../Renderable.js"
 import { type RenderContext } from "../types.js"
 import { type ColorInput, RGBA, parseColor } from "../lib/RGBA.js"
 import { OptimizedBuffer } from "../buffer.js"
+import type { NativeSceneSliderOptions } from "../zig.js"
 
 const defaultThumbBackgroundColor = RGBA.fromHex("#9a9ea3")
 const defaultTrackBackgroundColor = RGBA.fromHex("#252527")
@@ -18,7 +19,7 @@ export interface SliderOptions extends RenderableOptions<SliderRenderable> {
 }
 
 export class SliderRenderable extends Renderable {
-  public readonly orientation: "vertical" | "horizontal"
+  private _orientation: "vertical" | "horizontal"
   private _value: number
   private _min: number
   private _max: number
@@ -29,16 +30,36 @@ export class SliderRenderable extends Renderable {
 
   constructor(ctx: RenderContext, options: SliderOptions) {
     super(ctx, { flexShrink: 0, ...options })
-    this.orientation = options.orientation
-    this._min = options.min ?? 0
-    this._max = options.max ?? 100
-    this._value = options.value ?? this._min
-    this._viewPortSize = options.viewPortSize ?? Math.max(1, (this._max - this._min) * 0.1)
-    this._onChange = options.onChange
-    this._backgroundColor = options.backgroundColor ? parseColor(options.backgroundColor) : defaultTrackBackgroundColor
-    this._foregroundColor = options.foregroundColor ? parseColor(options.foregroundColor) : defaultThumbBackgroundColor
+    try {
+      this._orientation = options.orientation
+      this._min = options.min ?? 0
+      this._max = options.max ?? 100
+      this._value = options.value ?? this._min
+      this._viewPortSize = options.viewPortSize ?? Math.max(1, (this._max - this._min) * 0.1)
+      this._onChange = options.onChange
+      this._backgroundColor = options.backgroundColor
+        ? RGBA.clone(parseColor(options.backgroundColor))
+        : RGBA.clone(defaultTrackBackgroundColor)
+      this._foregroundColor = options.foregroundColor
+        ? RGBA.clone(parseColor(options.foregroundColor))
+        : RGBA.clone(defaultThumbBackgroundColor)
+      this.setNativeSceneSlider()
+      this.setNativeScenePaint()
+      this.setupMouseHandling()
+    } catch (error) {
+      this.abortConstruction(error)
+    }
+  }
 
-    this.setupMouseHandling()
+  get orientation(): "vertical" | "horizontal" {
+    return this._orientation
+  }
+
+  set orientation(value: "vertical" | "horizontal") {
+    if (value === this._orientation) return
+    this.setNativeSceneSlider({ orientation: value })
+    this._orientation = value
+    this.requestRender()
   }
 
   get value(): number {
@@ -46,13 +67,22 @@ export class SliderRenderable extends Renderable {
   }
 
   set value(newValue: number) {
+    if (!Number.isFinite(newValue)) {
+      throw new RangeError("Scene slider values must be finite numbers")
+    }
     const clamped = Math.max(this._min, Math.min(this._max, newValue))
     if (clamped !== this._value) {
-      this._value = clamped
-      this._onChange?.(clamped)
-      this.emit("change", { value: clamped })
-      this.requestRender()
+      this.setNativeSceneSlider({ value: clamped })
+      this.publishValue(clamped)
     }
+  }
+
+  private publishValue(value: number): void {
+    if (value === this._value) return
+    this._value = value
+    this.requestRender()
+    this._onChange?.(value)
+    this.emit("change", { value })
   }
 
   get min(): number {
@@ -61,9 +91,11 @@ export class SliderRenderable extends Renderable {
 
   set min(newMin: number) {
     if (newMin !== this._min) {
+      const value = this._value < newMin ? newMin : this._value
+      this.setNativeSceneSlider({ min: newMin, value })
       this._min = newMin
       if (this._value < newMin) {
-        this.value = newMin
+        this.publishValue(value)
       }
       this.requestRender()
     }
@@ -75,17 +107,23 @@ export class SliderRenderable extends Renderable {
 
   set max(newMax: number) {
     if (newMax !== this._max) {
+      const value = this._value > newMax ? Math.max(this._min, newMax) : this._value
+      this.setNativeSceneSlider({ max: newMax, value })
       this._max = newMax
       if (this._value > newMax) {
-        this.value = newMax
+        this.publishValue(value)
       }
       this.requestRender()
     }
   }
 
   set viewPortSize(size: number) {
+    if (!Number.isFinite(size)) {
+      throw new RangeError("Scene slider values must be finite numbers")
+    }
     const clampedSize = Math.max(0.01, Math.min(size, this._max - this._min))
     if (clampedSize !== this._viewPortSize) {
+      this.setNativeSceneSlider({ viewPortSize: clampedSize })
       this._viewPortSize = clampedSize
       this.requestRender()
     }
@@ -96,21 +134,38 @@ export class SliderRenderable extends Renderable {
   }
 
   get backgroundColor(): RGBA {
-    return this._backgroundColor
+    return RGBA.clone(this._backgroundColor)
   }
 
   set backgroundColor(value: ColorInput) {
-    this._backgroundColor = parseColor(value)
+    const color = RGBA.clone(parseColor(value))
+    this.setNativeSceneSlider({ backgroundColor: color })
+    this._backgroundColor = color
     this.requestRender()
   }
 
   get foregroundColor(): RGBA {
-    return this._foregroundColor
+    return RGBA.clone(this._foregroundColor)
   }
 
   set foregroundColor(value: ColorInput) {
-    this._foregroundColor = parseColor(value)
+    const color = RGBA.clone(parseColor(value))
+    this.setNativeSceneSlider({ foregroundColor: color })
+    this._foregroundColor = color
     this.requestRender()
+  }
+
+  private setNativeSceneSlider(options: Partial<NativeSceneSliderOptions> = {}): void {
+    this._ctx.nativeScene.setSlider(this, {
+      orientation: this.orientation,
+      min: this._min,
+      max: this._max,
+      value: this._value,
+      viewPortSize: this._viewPortSize,
+      foregroundColor: this._foregroundColor,
+      backgroundColor: this._backgroundColor,
+      ...options,
+    })
   }
 
   private calculateDragOffsetVirtual(event: any): number {
@@ -120,8 +175,9 @@ export class SliderRenderable extends Renderable {
       0,
       Math.min((this.orientation === "vertical" ? this.height : this.width) * 2, mousePos * 2),
     )
-    const virtualThumbStart = this.getVirtualThumbStart()
-    const virtualThumbSize = this.getVirtualThumbSize()
+    const thumb = this._ctx.nativeScene.getSliderThumb(this)
+    const virtualThumbStart = thumb.start
+    const virtualThumbSize = thumb.size
 
     return Math.max(0, Math.min(virtualThumbSize, virtualMousePos - virtualThumbStart))
   }
@@ -144,6 +200,7 @@ export class SliderRenderable extends Renderable {
         dragOffsetVirtual = this.calculateDragOffsetVirtual(event)
       } else {
         this.updateValueFromMouseDirect(event)
+        if (this.isDestroyed) return
         isDragging = true
 
         dragOffsetVirtual = this.calculateDragOffsetVirtual(event)
@@ -188,7 +245,7 @@ export class SliderRenderable extends Renderable {
     const clampedMousePos = Math.max(0, Math.min(trackSize, relativeMousePos))
     const virtualMousePos = clampedMousePos * 2
 
-    const virtualThumbSize = this.getVirtualThumbSize()
+    const virtualThumbSize = this._ctx.nativeScene.getSliderThumb(this).size
     const maxThumbStart = Math.max(0, virtualTrackSize - virtualThumbSize)
 
     let desiredThumbStart = virtualMousePos - offsetVirtual
@@ -202,8 +259,9 @@ export class SliderRenderable extends Renderable {
   }
 
   private getThumbRect(): { x: number; y: number; width: number; height: number } {
-    const virtualThumbSize = this.getVirtualThumbSize()
-    const virtualThumbStart = this.getVirtualThumbStart()
+    const thumb = this._ctx.nativeScene.getSliderThumb(this)
+    const virtualThumbSize = thumb.size
+    const virtualThumbStart = thumb.start
 
     const realThumbStart = Math.floor(virtualThumbStart / 2)
     const realThumbSize = Math.ceil((virtualThumbStart + virtualThumbSize) / 2) - realThumbStart
@@ -226,117 +284,67 @@ export class SliderRenderable extends Renderable {
   }
 
   protected renderSelf(buffer: OptimizedBuffer): void {
-    if (this.orientation === "horizontal") {
-      this.renderHorizontal(buffer)
-    } else {
-      this.renderVertical(buffer)
+    const x = this.x
+    const y = this.y
+    const width = this.width
+    const height = this.height
+    const bufferWidth = buffer.width
+    const bufferHeight = buffer.height
+    const left = Math.max(0, Math.trunc(x))
+    const top = Math.max(0, Math.trunc(y))
+    const right = Math.min(bufferWidth, Math.trunc(x) + Math.trunc(width))
+    const bottom = Math.min(bufferHeight, Math.trunc(y) + Math.trunc(height))
+    // Clip the truncated rectangle before passing its unsigned origin to FFI.
+    if (right > left && bottom > top) {
+      buffer.fillRect(left, top, right - left, bottom - top, this._backgroundColor)
     }
-  }
 
-  private renderHorizontal(buffer: OptimizedBuffer): void {
-    const virtualThumbSize = this.getVirtualThumbSize()
-    const virtualThumbStart = this.getVirtualThumbStart()
+    const horizontal = this.orientation === "horizontal"
+    const origin = horizontal ? x : y
+    const crossOrigin = horizontal ? y : x
+    const length = horizontal ? width : height
+    const crossLength = horizontal ? height : width
+    const limit = horizontal ? bufferWidth : bufferHeight
+    const crossLimit = horizontal ? bufferHeight : bufferWidth
+    const thumb = this._ctx.nativeScene.getSliderThumb(this)
+    const virtualThumbSize = thumb.size
+    const virtualThumbStart = thumb.start
     const virtualThumbEnd = virtualThumbStart + virtualThumbSize
 
-    buffer.fillRect(this.x, this.y, this.width, this.height, this._backgroundColor)
+    // Truncation maps (-1, 1) onto cell zero. Keep a neighbor at each bound for
+    // floating-point rounding, then check the actual transformed coordinates.
+    const start = Math.max(0, Math.floor(virtualThumbStart / 2), Math.floor(-1 - origin))
+    const end = Math.min(Math.floor(length), Math.ceil(virtualThumbEnd / 2), Math.ceil(limit - origin) + 1)
+    const crossStart = Math.max(0, Math.floor(-1 - crossOrigin))
+    const crossEnd = Math.min(Math.ceil(crossLength), Math.ceil(crossLimit - crossOrigin) + 1)
 
-    const realStartCell = Math.floor(virtualThumbStart / 2)
-    const realEndCell = Math.ceil(virtualThumbEnd / 2) - 1
-    const startX = Math.max(0, realStartCell)
-    const endX = Math.min(this.width - 1, realEndCell)
+    for (let along = start; along < end; along++) {
+      const cell = Math.trunc(origin + along)
+      if (cell < 0 || cell >= limit) continue
 
-    for (let realX = startX; realX <= endX; realX++) {
-      const virtualCellStart = realX * 2
-      const virtualCellEnd = virtualCellStart + 2
-
+      const virtualCellStart = along * 2
       const thumbStartInCell = Math.max(virtualThumbStart, virtualCellStart)
-      const thumbEndInCell = Math.min(virtualThumbEnd, virtualCellEnd)
-      const coverage = thumbEndInCell - thumbStartInCell
-
+      const coverage = Math.min(virtualThumbEnd, virtualCellStart + 2) - thumbStartInCell
       let char = " "
-
       if (coverage >= 2) {
         char = "█"
-      } else {
-        const isLeftHalf = thumbStartInCell === virtualCellStart
-        if (isLeftHalf) {
-          char = "▌"
-        } else {
-          char = "▐"
-        }
-      }
-
-      for (let y = 0; y < this.height; y++) {
-        buffer.setCellWithAlphaBlending(this.x + realX, this.y + y, char, this._foregroundColor, this._backgroundColor)
-      }
-    }
-  }
-
-  private renderVertical(buffer: OptimizedBuffer): void {
-    const virtualThumbSize = this.getVirtualThumbSize()
-    const virtualThumbStart = this.getVirtualThumbStart()
-    const virtualThumbEnd = virtualThumbStart + virtualThumbSize
-
-    buffer.fillRect(this.x, this.y, this.width, this.height, this._backgroundColor)
-
-    const realStartCell = Math.floor(virtualThumbStart / 2)
-    const realEndCell = Math.ceil(virtualThumbEnd / 2) - 1
-    const startY = Math.max(0, realStartCell)
-    const endY = Math.min(this.height - 1, realEndCell)
-
-    for (let realY = startY; realY <= endY; realY++) {
-      const virtualCellStart = realY * 2
-      const virtualCellEnd = virtualCellStart + 2
-
-      const thumbStartInCell = Math.max(virtualThumbStart, virtualCellStart)
-      const thumbEndInCell = Math.min(virtualThumbEnd, virtualCellEnd)
-      const coverage = thumbEndInCell - thumbStartInCell
-
-      let char = " "
-
-      if (coverage >= 2) {
-        char = "█"
+      } else if (horizontal) {
+        char = thumbStartInCell === virtualCellStart ? "▌" : "▐"
       } else if (coverage > 0) {
-        const virtualPositionInCell = thumbStartInCell - virtualCellStart
-        if (virtualPositionInCell === 0) {
-          char = "▀"
-        } else {
-          char = "▄"
-        }
+        char = thumbStartInCell === virtualCellStart ? "▀" : "▄"
       }
 
-      for (let x = 0; x < this.width; x++) {
-        buffer.setCellWithAlphaBlending(this.x + x, this.y + realY, char, this._foregroundColor, this._backgroundColor)
+      for (let across = crossStart; across < crossEnd; across++) {
+        const crossCell = Math.trunc(crossOrigin + across)
+        if (crossCell < 0 || crossCell >= crossLimit) continue
+        buffer.setCellWithAlphaBlending(
+          horizontal ? cell : crossCell,
+          horizontal ? crossCell : cell,
+          char,
+          this._foregroundColor,
+          this._backgroundColor,
+        )
       }
     }
-  }
-
-  private getVirtualThumbSize(): number {
-    const virtualTrackSize = this.orientation === "vertical" ? this.height * 2 : this.width * 2
-    const range = this._max - this._min
-
-    if (range === 0) return virtualTrackSize
-
-    const viewportSize = Math.max(1, this._viewPortSize)
-    const contentSize = range + viewportSize
-
-    if (contentSize <= viewportSize) return virtualTrackSize
-
-    const thumbRatio = viewportSize / contentSize
-    const calculatedSize = Math.floor(virtualTrackSize * thumbRatio)
-
-    return Math.max(1, Math.min(calculatedSize, virtualTrackSize))
-  }
-
-  private getVirtualThumbStart(): number {
-    const virtualTrackSize = this.orientation === "vertical" ? this.height * 2 : this.width * 2
-    const range = this._max - this._min
-
-    if (range === 0) return 0
-
-    const valueRatio = (this._value - this._min) / range
-    const virtualThumbSize = this.getVirtualThumbSize()
-
-    return Math.round(valueRatio * (virtualTrackSize - virtualThumbSize))
   }
 }

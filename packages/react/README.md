@@ -684,16 +684,23 @@ function App() {
 
 #### Code Component
 
-```tsx
-import { RGBA, SyntaxStyle } from "@opentui/core"
+Create a theme once for its renderer, not during a component render. Release it after its consumers are destroyed.
 
-const syntaxStyle = SyntaxStyle.fromStyles({
-  keyword: { fg: RGBA.fromHex("#ff6b6b"), bold: true }, // red, bold
-  string: { fg: RGBA.fromHex("#51cf66") }, // green
-  comment: { fg: RGBA.fromHex("#868e96"), italic: true }, // gray, italic
-  number: { fg: RGBA.fromHex("#ffd43b") }, // yellow
-  default: { fg: RGBA.fromHex("#ffffff") }, // white
-})
+```tsx
+import { createCliRenderer, RGBA, SyntaxStyle } from "@opentui/core"
+import { createRoot } from "@opentui/react"
+
+const renderer = await createCliRenderer()
+const syntaxStyle = SyntaxStyle.fromStyles(
+  {
+    keyword: { fg: RGBA.fromHex("#ff6b6b"), bold: true }, // red, bold
+    string: { fg: RGBA.fromHex("#51cf66") }, // green
+    comment: { fg: RGBA.fromHex("#868e96"), italic: true }, // gray, italic
+    number: { fg: RGBA.fromHex("#ffd43b") }, // yellow
+    default: { fg: RGBA.fromHex("#ffffff") }, // white
+  },
+  renderer.nativeScene!,
+)
 
 const codeExample = `function hello() {
   // This is a comment
@@ -711,6 +718,14 @@ function App() {
     </box>
   )
 }
+
+try {
+  createRoot(renderer).render(<App />)
+  await renderer.closed
+} finally {
+  renderer.destroy()
+  syntaxStyle.destroy()
+}
 ```
 
 #### Line Number Component
@@ -719,18 +734,23 @@ Display code with line numbers, and optionally add diff highlights or diagnostic
 
 ```tsx
 import type { LineNumberRenderable } from "@opentui/core"
-import { RGBA, SyntaxStyle } from "@opentui/core"
+import { createCliRenderer, RGBA, SyntaxStyle } from "@opentui/core"
+import { createRoot } from "@opentui/react"
 import { useEffect, useRef } from "react"
 
-function App() {
-  const lineNumberRef = useRef<LineNumberRenderable>(null)
-
-  const syntaxStyle = SyntaxStyle.fromStyles({
+const renderer = await createCliRenderer()
+const syntaxStyle = SyntaxStyle.fromStyles(
+  {
     keyword: { fg: RGBA.fromHex("#C792EA") },
     string: { fg: RGBA.fromHex("#C3E88D") },
     number: { fg: RGBA.fromHex("#F78C6C") },
     default: { fg: RGBA.fromHex("#A6ACCD") },
-  })
+  },
+  renderer.nativeScene!,
+)
+
+function App() {
+  const lineNumberRef = useRef<LineNumberRenderable>(null)
 
   const codeContent = `function fibonacci(n: number): number {
   if (n <= 1) return n
@@ -764,6 +784,14 @@ console.log(fibonacci(10))`
       </line-number>
     </box>
   )
+}
+
+try {
+  createRoot(renderer).render(<App />)
+  await renderer.closed
+} finally {
+  renderer.destroy()
+  syntaxStyle.destroy()
 }
 ```
 

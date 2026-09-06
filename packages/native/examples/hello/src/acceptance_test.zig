@@ -114,3 +114,111 @@ test "NativeRenderable owns an OpenTUI Yoga node without JavaScript" {
     const config = opentui.yoga.yogaNodeGetConfig(node);
     try std.testing.expectEqual(@as(f32, 1), opentui.yoga.yogaConfigGetPointScaleFactor(config));
 }
+
+test "Session owns scene nodes and borrows shared measured text through the public Zig module" {
+    var environment = std.process.Environ.Map.init(std.testing.allocator);
+    defer environment.deinit();
+    const owner = try opentui.Context.init(std.testing.allocator, std.testing.io, .{
+        .object_capacity = 5,
+        .render_cells_max = 8,
+    });
+    defer owner.deinit() catch unreachable;
+    const id = try owner.createSession(.{ .chunk_size = 4096 });
+    try owner.attachSessionRenderer(id, 8, 1, .{ .env_map = &environment });
+    const root = try owner.sceneCreateNode(id, 0, 1);
+    try owner.sceneSetStyle(root, 0, 4, 0, 0, 1, 0);
+    const node_id = try owner.sceneCreateNode(id, 7, 2);
+    const text_id = try owner.createTextBuffer(.unicode);
+    const view_id = try owner.createTextBufferView(text_id);
+    try owner.textBufferSetText(text_id, "initial");
+    try owner.textBufferSetText(text_id, "context");
+    try owner.sceneSetTextView(node_id, view_id);
+    try owner.sceneMoveNode(node_id, root, 0);
+    try owner.scenePaint(id, .{ 0, 0, 0, 255 }, false, 0);
+    const layout = try owner.sceneGetLayout(node_id, true);
+    try std.testing.expectEqual(@as(f32, 7), layout.width);
+    try std.testing.expectEqual(@as(f32, 1), layout.height);
+
+    try std.testing.expectEqual(.pending, try owner.renderSession(id, true));
+    try std.testing.expectError(error.ContextBusy, owner.deinit());
+    var bytes: [4096]u8 = undefined;
+    const ticket = (try owner.readOutput(id, &bytes)).?;
+    try std.testing.expect(std.mem.find(u8, bytes[0..ticket.len], "context") != null);
+    try owner.completeOutput(id, ticket, .written);
+
+    try owner.destroy(text_id);
+    try std.testing.expectError(error.StaleHandle, owner.getTextBuffer(text_id));
+    try std.testing.expectError(error.StaleHandle, owner.getTextBufferView(view_id));
+    try std.testing.expect((try owner.getRenderable(node_id)).measure_target == .none);
+    try owner.destroy(id);
+    try std.testing.expectError(error.StaleHandle, owner.getRenderable(node_id));
+}
+
+test "Session terminal lifecycle renders and restores through the public Zig pump" {
+    var environment = std.process.Environ.Map.init(std.testing.allocator);
+    defer environment.deinit();
+    const owner = try opentui.Context.init(std.testing.allocator, std.testing.io, .{
+        .object_capacity = 3,
+        .render_cells_max = 8,
+    });
+    defer owner.deinit() catch unreachable;
+    const id = try owner.createSession(.{
+        .chunk_size = 4096,
+        .chunk_count = 2,
+        .span_capacity = 2,
+        .control_capacity = 4096,
+    });
+    defer owner.cancelSession(id) catch unreachable;
+    var prefix = "prefix".*;
+    try owner.writeSession(id, &prefix);
+    @memset(&prefix, '!');
+    try owner.attachSessionRenderer(id, 8, 1, .{ .env_map = &environment });
+    try owner.setupSessionTerminal(id, .{ .mouse = false });
+    const renderer = try owner.getSessionRenderer(id);
+    var output: MemorySink = .{};
+    var bytes: [13]u8 = undefined;
+    var now_ns: u64 = 0;
+    var restored = false;
+    for (0..64) |_| {
+        const result = try owner.pumpSession(id, now_ns, 1);
+        switch (result.status) {
+            .output_pending => while (try owner.readOutput(id, &bytes)) |ticket| {
+                try std.testing.expectEqualDeep(id, ticket.session);
+                MemorySink.write(&output, bytes[0..ticket.len]);
+                try owner.completeOutput(id, ticket, .written);
+            },
+            .again => {},
+            .wait_until => now_ns = result.deadline_ns.?,
+            .idle => {
+                try std.testing.expectEqual(.active, (try owner.getSessionTerminalState(id)).phase);
+                const source = try owner.createBuffer(8, 1, .{});
+                try owner.clearBuffer(source, opentui.rgbColor(0, 0, 0, 255));
+                try owner.drawBufferText(source, "pumped\u{754c}", 0, 0, opentui.rgbColor(255, 180, 40, 255), null, 0);
+                try owner.drawSessionBuffer(id, source, 0, 0);
+                {
+                    const lease = try owner.acquireSessionBufferLease(id, .next);
+                    defer owner.releaseBufferLease(lease) catch unreachable;
+                    const cells = try owner.bufferLeaseSnapshot(lease);
+                    try std.testing.expectEqual(@as(u32, 'p'), cells.buffer.char[0]);
+                }
+                try owner.destroy(source);
+                renderer.addToHitGrid(0, 0, 6, 1, 71);
+                try std.testing.expectEqual(.pending, try owner.renderSession(id, true));
+                try owner.beginSessionClose(id);
+                try std.testing.expectError(error.ContextBusy, owner.destroy(id));
+            },
+            .closed => {
+                restored = true;
+                break;
+            },
+        }
+    }
+    try std.testing.expect(restored);
+    try std.testing.expectEqual(.restored, (try owner.getSessionTerminalState(id)).phase);
+    try std.testing.expectEqual(@as(u64, 1), renderer.getRenderStats().frameCount);
+    try std.testing.expectEqual(@as(u32, 71), renderer.checkHit(0, 0));
+    try std.testing.expectEqual(2 * opentui.session.cursor_settle_ns, now_ns);
+    try std.testing.expect(std.mem.startsWith(u8, output.slice(), "prefix"));
+    try std.testing.expect(std.mem.find(u8, output.slice(), "pumped\u{754c}") != null);
+    try std.testing.expect(std.mem.find(u8, output.slice(), opentui.ansi.ANSI.switchToMainScreen) != null);
+}

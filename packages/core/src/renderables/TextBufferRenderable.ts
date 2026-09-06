@@ -1,3 +1,4 @@
+import { runRenderableMutation } from "../lib/renderable-layout.js"
 import { Renderable, type RenderableOptions } from "../Renderable.js"
 import { convertGlobalToLocalSelection, Selection, type LocalSelectionBounds } from "../lib/selection.js"
 import { TextBuffer, type TextChunk } from "../text-buffer.js"
@@ -5,7 +6,7 @@ import { TextBufferView } from "../text-buffer-view.js"
 import { RGBA, parseColor } from "../lib/RGBA.js"
 import { type RenderContext, type LineInfoProvider } from "../types.js"
 import type { OptimizedBuffer } from "../buffer.js"
-import { NativeMeasureTargetKind, type LineInfo } from "../zig.js"
+import type { LineInfo, NativeSceneTextOptions } from "../zig.js"
 import { SyntaxStyle } from "../syntax-style.js"
 
 export interface TextBufferOptions extends RenderableOptions<TextBufferRenderable> {
@@ -22,8 +23,6 @@ export interface TextBufferOptions extends RenderableOptions<TextBufferRenderabl
 }
 
 export abstract class TextBufferRenderable extends Renderable implements LineInfoProvider {
-  public selectable: boolean = true
-
   protected _defaultFg: RGBA
   protected _defaultBg: RGBA
   protected _defaultAttributes: number
@@ -38,9 +37,11 @@ export abstract class TextBufferRenderable extends Renderable implements LineInf
   protected _truncate: boolean = false
   protected _firstLineOffset: number = 0
 
-  protected textBuffer: TextBuffer
-  protected textBufferView: TextBufferView
-  protected _textBufferSyntaxStyle: SyntaxStyle
+  // Ordinary scene Text owns an aggregate; resource-backed widgets own these wrappers.
+  protected textBuffer!: TextBuffer
+  protected textBufferView!: TextBufferView
+  protected _textBufferSyntaxStyle!: SyntaxStyle
+  private readonly nativeTextScene: RenderContext["nativeScene"] | undefined
 
   protected _defaultOptions = {
     fg: RGBA.fromValues(1, 1, 1, 1),
@@ -55,46 +56,50 @@ export abstract class TextBufferRenderable extends Renderable implements LineInf
     truncate: false,
   } satisfies Partial<TextBufferOptions>
 
-  constructor(ctx: RenderContext, options: TextBufferOptions) {
-    super(ctx, options, true)
+  constructor(ctx: RenderContext, options: TextBufferOptions, sharedText = false) {
+    super(ctx, options)
+    this.nativeTextScene = sharedText ? undefined : ctx.nativeScene
 
     let textBuffer: TextBuffer | undefined
     let textBufferView: TextBufferView | undefined
     let syntaxStyle: SyntaxStyle | undefined
 
     try {
-      this._defaultFg = parseColor(options.fg ?? this._defaultOptions.fg)
-      this._defaultBg = parseColor(options.bg ?? this._defaultOptions.bg)
+      this._defaultFg = RGBA.clone(parseColor(options.fg ?? this._defaultOptions.fg))
+      this._defaultBg = RGBA.clone(parseColor(options.bg ?? this._defaultOptions.bg))
       this._defaultAttributes = options.attributes ?? this._defaultOptions.attributes
-      this._selectionBg = options.selectionBg ? parseColor(options.selectionBg) : this._defaultOptions.selectionBg
-      this._selectionFg = options.selectionFg ? parseColor(options.selectionFg) : this._defaultOptions.selectionFg
+      this._selectionBg = options.selectionBg ? RGBA.clone(parseColor(options.selectionBg)) : undefined
+      this._selectionFg = options.selectionFg ? RGBA.clone(parseColor(options.selectionFg)) : undefined
       this.selectable = options.selectable ?? this._defaultOptions.selectable
       this._wrapMode = options.wrapMode ?? this._defaultOptions.wrapMode
       this._tabIndicator = options.tabIndicator ?? this._defaultOptions.tabIndicator
       this._tabIndicatorColor = options.tabIndicatorColor
-        ? parseColor(options.tabIndicatorColor)
+        ? RGBA.clone(parseColor(options.tabIndicatorColor))
         : this._defaultOptions.tabIndicatorColor
       this._truncate = options.truncate ?? this._defaultOptions.truncate
 
-      textBuffer = TextBuffer.create(this._ctx.widthMethod)
+      if (this.nativeTextScene) {
+        this._firstLineOffset = ctx.claimFirstLineOffset?.(this) ?? 0
+        this.setNativeScenePaint()
+        this.setNativeSceneTextOptions()
+        return
+      }
+
+      textBuffer = TextBuffer.create(this._ctx.widthMethod, ctx.nativeScene)
       this.textBuffer = textBuffer
       textBufferView = TextBufferView.create(textBuffer)
       this.textBufferView = textBufferView
       this._firstLineOffset = ctx.claimFirstLineOffset?.(this) ?? 0
 
-      syntaxStyle = SyntaxStyle.create()
+      syntaxStyle = SyntaxStyle.create(ctx.nativeScene)
       this._textBufferSyntaxStyle = syntaxStyle
       textBuffer.setSyntaxStyle(syntaxStyle)
 
       this.textBufferView.setWrapMode(this._wrapMode)
       this.textBufferView.setFirstLineOffset(this._firstLineOffset)
-      if (!this.setNativeMeasureTarget(NativeMeasureTargetKind.TextBufferView, this.textBufferView.ptr)) {
-        throw new Error("Failed to attach text buffer native measure target")
-      }
+      ctx.nativeScene.setTextView(this, textBufferView._getSceneHandle(ctx.nativeScene))
 
-      this.textBuffer.setDefaultFg(this._defaultFg)
-      this.textBuffer.setDefaultBg(this._defaultBg)
-      this.textBuffer.setDefaultAttributes(this._defaultAttributes)
+      this.textBuffer._setDefaults(this._defaultFg, this._defaultBg, this._defaultAttributes)
 
       if (this._tabIndicator !== undefined) {
         this.textBufferView.setTabIndicator(this._tabIndicator)
@@ -103,31 +108,29 @@ export abstract class TextBufferRenderable extends Renderable implements LineInf
         this.textBufferView.setTabIndicatorColor(this._tabIndicatorColor)
       }
 
-      if (this._wrapMode !== "none" && this.width > 0) {
-        this.textBufferView.setWrapWidth(this.width)
-      }
-
-      if (this.width > 0 && this.height > 0) {
-        this.textBufferView.setViewport(this._scrollX, this._scrollY, this.width, this.height)
+      const width = this.width
+      const height = this.height
+      if (width > 0 && height > 0) {
+        this.textBufferView.setViewport(
+          Math.trunc(this._scrollX),
+          Math.trunc(this._scrollY),
+          Math.trunc(width),
+          Math.trunc(height),
+        )
+      } else if (this._wrapMode !== "none" && width > 0) {
+        this.textBufferView.setWrapWidth(Math.trunc(width))
       }
 
       this.textBufferView.setTruncate(this._truncate)
 
       this.updateTextInfo()
     } catch (error) {
-      try {
-        this.runCleanup((run) => {
-          run(() => this.setNativeMeasureTarget(NativeMeasureTargetKind.None, 0))
-          run(() => textBuffer?.setSyntaxStyle(null))
-          run(() => syntaxStyle?.destroy())
-          run(() => textBufferView?.destroy())
-          run(() => textBuffer?.destroy())
-          run(() => this.abortConstruction())
-        })
-      } catch {
-        // Preserve the first construction failure.
-      }
-      throw error
+      this.abortConstruction(error, (run) => {
+        run(() => textBuffer?.setSyntaxStyle(null))
+        run(() => syntaxStyle?.destroy())
+        run(() => textBufferView?.destroy())
+        run(() => textBuffer?.destroy())
+      })
     }
   }
 
@@ -158,12 +161,17 @@ export abstract class TextBufferRenderable extends Renderable implements LineInf
   }
 
   public get lineInfo(): LineInfo {
+    if (this.nativeTextScene) return this.nativeTextScene.getTextLineInfo(this)
     return this.textBufferView.logicalLineInfo
   }
 
   public getLineSources(startLine: number, lineCount: number): number[] {
+    // A lineInfo override remaps sources; native-scene Text has no view to query.
     if (this.needsLineInfoFallback(TextBufferRenderable.prototype)) {
       return this.lineInfo.lineSources.slice(startLine, startLine + lineCount)
+    }
+    if (this.nativeTextScene) {
+      return this.nativeTextScene.getTextLineInfo(this).lineSources.slice(startLine, startLine + lineCount)
     }
     return this.textBufferView.getLineSources(startLine, lineCount)
   }
@@ -180,10 +188,12 @@ export abstract class TextBufferRenderable extends Renderable implements LineInf
   }
 
   public get lineCount(): number {
+    if (this.nativeTextScene) return this.nativeTextScene.getTextMetrics(this).lineCount
     return this.textBuffer.getLineCount()
   }
 
   public get virtualLineCount(): number {
+    if (this.nativeTextScene) return this.nativeTextScene.getTextMetrics(this).virtualLineCount
     return this.textBufferView.getVirtualLineCount()
   }
 
@@ -195,9 +205,12 @@ export abstract class TextBufferRenderable extends Renderable implements LineInf
     const maxScrollY = Math.max(0, this.scrollHeight - this.height)
     const clamped = Math.max(0, Math.min(value, maxScrollY))
     if (this._scrollY !== clamped) {
-      this._scrollY = clamped
-      this.updateViewportOffset()
-      this.requestRender()
+      runRenderableMutation(this, () => {
+        this.setNativeSceneTextOptions({ scrollY: clamped })
+        if (!this.nativeTextScene) this.updateViewportOffset(this._scrollX, clamped)
+        this._scrollY = clamped
+        this.requestRender()
+      })
     }
   }
 
@@ -209,17 +222,22 @@ export abstract class TextBufferRenderable extends Renderable implements LineInf
     const maxScrollX = Math.max(0, this.scrollWidth - this.width)
     const clamped = Math.max(0, Math.min(value, maxScrollX))
     if (this._scrollX !== clamped) {
-      this._scrollX = clamped
-      this.updateViewportOffset()
-      this.requestRender()
+      runRenderableMutation(this, () => {
+        this.setNativeSceneTextOptions({ scrollX: clamped })
+        if (!this.nativeTextScene) this.updateViewportOffset(clamped, this._scrollY)
+        this._scrollX = clamped
+        this.requestRender()
+      })
     }
   }
 
   public get scrollWidth(): number {
+    if (this.nativeTextScene) return this.nativeTextScene.getTextMetrics(this).widthColsMax
     return this.lineInfo.lineWidthColsMax
   }
 
   public get scrollHeight(): number {
+    if (this.nativeTextScene) return this.nativeTextScene.getTextMetrics(this).virtualLineCount
     return this.virtualLineCount
   }
 
@@ -231,89 +249,102 @@ export abstract class TextBufferRenderable extends Renderable implements LineInf
     return Math.max(0, this.scrollWidth - this.width)
   }
 
-  protected updateViewportOffset(): void {
-    // Update the viewport with the new scroll position
-    if (this.width > 0 && this.height > 0) {
-      this.textBufferView.setViewport(this._scrollX, this._scrollY, this.width, this.height)
+  protected updateViewportOffset(scrollX = this._scrollX, scrollY = this._scrollY): void {
+    const width = this.width
+    const height = this.height
+    if (width > 0 && height > 0) {
+      this.textBufferView.setViewport(Math.trunc(scrollX), Math.trunc(scrollY), Math.trunc(width), Math.trunc(height))
     }
   }
 
   get plainText(): string {
+    if (this.nativeTextScene) return this.nativeTextScene.getText(this)
     return this.textBuffer.getPlainText()
   }
 
   get textLength(): number {
+    if (this.nativeTextScene) return this.nativeTextScene.getTextMetrics(this).textLength
     return this.textBuffer.length
   }
 
   get fg(): RGBA {
-    return this._defaultFg
+    return RGBA.clone(this._defaultFg)
   }
 
   set fg(value: RGBA | string | undefined) {
-    const newColor = parseColor(value ?? this._defaultOptions.fg)
-    if (this._defaultFg !== newColor) {
+    const newColor = RGBA.clone(parseColor(value ?? this._defaultOptions.fg))
+    runRenderableMutation(this, () => {
+      this.setNativeSceneTextOptions({ fg: newColor })
+      if (!this.nativeTextScene) this.textBuffer.setDefaultFg(newColor)
       this._defaultFg = newColor
-      this.textBuffer.setDefaultFg(this._defaultFg)
       this.onFgChanged(newColor)
       this.requestRender()
-    }
+    })
   }
 
   get selectionBg(): RGBA | undefined {
-    return this._selectionBg
+    return this._selectionBg ? RGBA.clone(this._selectionBg) : undefined
   }
 
   set selectionBg(value: RGBA | string | undefined) {
-    const newColor = value ? parseColor(value) : this._defaultOptions.selectionBg
+    const newColor = value ? RGBA.clone(parseColor(value)) : undefined
     if (this._selectionBg !== newColor) {
-      this._selectionBg = newColor
-      if (this.lastLocalSelection) {
-        this.updateLocalSelection(this.lastLocalSelection)
-      }
-      this.requestRender()
+      runRenderableMutation(this, () => {
+        if (this.nativeTextScene || this.lastLocalSelection) {
+          this.updateLocalSelection(this.lastLocalSelection, true, { bg: newColor, fg: this._selectionFg })
+        }
+        this._selectionBg = newColor
+        this.requestRender()
+      })
     }
   }
 
   get selectionFg(): RGBA | undefined {
-    return this._selectionFg
+    return this._selectionFg ? RGBA.clone(this._selectionFg) : undefined
   }
 
   set selectionFg(value: RGBA | string | undefined) {
-    const newColor = value ? parseColor(value) : this._defaultOptions.selectionFg
+    const newColor = value ? RGBA.clone(parseColor(value)) : undefined
     if (this._selectionFg !== newColor) {
-      this._selectionFg = newColor
-      if (this.lastLocalSelection) {
-        this.updateLocalSelection(this.lastLocalSelection)
-      }
-      this.requestRender()
+      runRenderableMutation(this, () => {
+        if (this.nativeTextScene || this.lastLocalSelection) {
+          this.updateLocalSelection(this.lastLocalSelection, true, { bg: this._selectionBg, fg: newColor })
+        }
+        this._selectionFg = newColor
+        this.requestRender()
+      })
     }
   }
 
   get bg(): RGBA {
-    return this._defaultBg
+    return RGBA.clone(this._defaultBg)
   }
 
   set bg(value: RGBA | string | undefined) {
-    const newColor = parseColor(value ?? this._defaultOptions.bg)
-    if (this._defaultBg !== newColor) {
+    const newColor = RGBA.clone(parseColor(value ?? this._defaultOptions.bg))
+    runRenderableMutation(this, () => {
+      this.setNativeSceneTextOptions({ bg: newColor })
+      if (!this.nativeTextScene) this.textBuffer.setDefaultBg(newColor)
       this._defaultBg = newColor
-      this.textBuffer.setDefaultBg(this._defaultBg)
       this.onBgChanged(newColor)
       this.requestRender()
-    }
+    })
   }
 
   get attributes(): number {
     return this._defaultAttributes
   }
 
-  set attributes(value: number) {
-    if (this._defaultAttributes !== value) {
-      this._defaultAttributes = value
-      this.textBuffer.setDefaultAttributes(this._defaultAttributes)
-      this.onAttributesChanged(value)
-      this.requestRender()
+  set attributes(value: number | undefined) {
+    const attributes = value ?? this._defaultOptions.attributes
+    if (this._defaultAttributes !== attributes) {
+      runRenderableMutation(this, () => {
+        this.setNativeSceneTextOptions({ attributes })
+        if (!this.nativeTextScene) this.textBuffer.setDefaultAttributes(attributes)
+        this._defaultAttributes = attributes
+        this.onAttributesChanged(attributes)
+        this.requestRender()
+      })
     }
   }
 
@@ -323,14 +354,16 @@ export abstract class TextBufferRenderable extends Renderable implements LineInf
 
   set wrapMode(value: "none" | "char" | "word") {
     if (this._wrapMode !== value) {
-      this._wrapMode = value
-      this.textBufferView.setWrapMode(this._wrapMode)
-      if (value !== "none" && this.width > 0) {
-        this.textBufferView.setWrapWidth(this.width)
-      }
-      // Changing wrap mode can change dimensions, so mark yoga node dirty to trigger re-measurement
-      this.yogaNode.markDirty()
-      this.requestRender()
+      runRenderableMutation(this, () => {
+        this.setNativeSceneTextOptions({ wrapMode: value })
+        if (!this.nativeTextScene) this.textBufferView.setWrapMode(value)
+        this._wrapMode = value
+        if (!this.nativeTextScene && value !== "none") {
+          const width = this.width
+          if (width > 0) this.textBufferView.setWrapWidth(Math.trunc(width))
+        }
+        this.requestRender()
+      })
     }
   }
 
@@ -340,26 +373,28 @@ export abstract class TextBufferRenderable extends Renderable implements LineInf
 
   set tabIndicator(value: string | number | undefined) {
     if (this._tabIndicator !== value) {
-      this._tabIndicator = value
-      if (value !== undefined) {
-        this.textBufferView.setTabIndicator(value)
-      }
-      this.requestRender()
+      runRenderableMutation(this, () => {
+        this.setNativeSceneTextOptions({ tabIndicator: value })
+        if (!this.nativeTextScene) this.textBufferView.setTabIndicator(value ?? 0)
+        this._tabIndicator = value
+        this.requestRender()
+      })
     }
   }
 
   get tabIndicatorColor(): RGBA | undefined {
-    return this._tabIndicatorColor
+    return this._tabIndicatorColor ? RGBA.clone(this._tabIndicatorColor) : undefined
   }
 
   set tabIndicatorColor(value: RGBA | string | undefined) {
-    const newColor = value ? parseColor(value) : undefined
+    const newColor = value ? RGBA.clone(parseColor(value)) : undefined
     if (this._tabIndicatorColor !== newColor) {
-      this._tabIndicatorColor = newColor
-      if (newColor !== undefined) {
-        this.textBufferView.setTabIndicatorColor(newColor)
-      }
-      this.requestRender()
+      runRenderableMutation(this, () => {
+        this.setNativeSceneTextOptions({ tabIndicatorColor: newColor })
+        if (!this.nativeTextScene && newColor !== undefined) this.textBufferView.setTabIndicatorColor(newColor)
+        this._tabIndicatorColor = newColor
+        this.requestRender()
+      })
     }
   }
 
@@ -369,15 +404,17 @@ export abstract class TextBufferRenderable extends Renderable implements LineInf
 
   set truncate(value: boolean) {
     if (this._truncate !== value) {
-      this._truncate = value
-      this.textBufferView.setTruncate(value)
-      this.requestRender()
+      runRenderableMutation(this, () => {
+        this.setNativeSceneTextOptions({ truncate: value })
+        if (!this.nativeTextScene) this.textBufferView.setTruncate(value)
+        this._truncate = value
+        this.requestRender()
+      })
     }
   }
 
   protected onResize(width: number, height: number): void {
-    this.textBufferView.setViewport(this._scrollX, this._scrollY, width, height)
-    this.yogaNode.markDirty()
+    if (!this.nativeTextScene) this.textBufferView.setViewport(this._scrollX, this._scrollY, width, height)
     this.requestRender()
     this.emit("line-info-change")
   }
@@ -389,19 +426,34 @@ export abstract class TextBufferRenderable extends Renderable implements LineInf
     return false
   }
 
-  private updateLocalSelection(localSelection: LocalSelectionBounds | null): boolean {
+  private updateLocalSelection(
+    localSelection: LocalSelectionBounds | null,
+    isStart = true,
+    colors?: { bg?: RGBA; fg?: RGBA },
+  ): boolean {
+    const bg = colors ? colors.bg : this._selectionBg
+    const fg = colors ? colors.fg : this._selectionFg
+    if (this.nativeTextScene) {
+      return this.nativeTextScene.setTextSelection(
+        this,
+        !localSelection?.isActive ? "reset" : isStart ? "set" : "update",
+        localSelection,
+        bg,
+        fg,
+      )
+    }
     if (!localSelection?.isActive) {
       this.textBufferView.resetLocalSelection()
       return true
     }
 
-    return this.textBufferView.setLocalSelection(
+    return this.textBufferView[isStart ? "setLocalSelection" : "updateLocalSelection"](
       localSelection.anchorX,
       localSelection.anchorY,
       localSelection.focusX,
       localSelection.focusY,
-      this._selectionBg,
-      this._selectionFg,
+      bg,
+      fg,
       localSelection.behavior,
     )
   }
@@ -411,7 +463,6 @@ export abstract class TextBufferRenderable extends Renderable implements LineInf
       this.updateLocalSelection(this.lastLocalSelection)
     }
 
-    this.yogaNode.markDirty()
     this.requestRender()
     this.emit("line-info-change")
   }
@@ -426,34 +477,9 @@ export abstract class TextBufferRenderable extends Renderable implements LineInf
   }
 
   onSelectionChanged(selection: Selection | null): boolean {
-    const localSelection = convertGlobalToLocalSelection(selection, this.x, this.y)
+    const localSelection = convertGlobalToLocalSelection(selection, Math.trunc(this.x), Math.trunc(this.y))
+    const changed = this.updateLocalSelection(localSelection, selection?.isStart ?? false)
     this.lastLocalSelection = localSelection
-
-    let changed: boolean
-    if (!localSelection?.isActive) {
-      this.textBufferView.resetLocalSelection()
-      changed = true
-    } else if (selection?.isStart) {
-      changed = this.textBufferView.setLocalSelection(
-        localSelection.anchorX,
-        localSelection.anchorY,
-        localSelection.focusX,
-        localSelection.focusY,
-        this._selectionBg,
-        this._selectionFg,
-        localSelection.behavior,
-      )
-    } else {
-      changed = this.textBufferView.updateLocalSelection(
-        localSelection.anchorX,
-        localSelection.anchorY,
-        localSelection.focusX,
-        localSelection.focusY,
-        this._selectionBg,
-        this._selectionFg,
-        localSelection.behavior,
-      )
-    }
 
     if (changed) {
       this.requestRender()
@@ -463,51 +489,57 @@ export abstract class TextBufferRenderable extends Renderable implements LineInf
   }
 
   getSelectedText(): string {
+    if (this.nativeTextScene) return this.nativeTextScene.getSelectedText(this)
     return this.textBufferView.getSelectedText()
   }
 
   hasSelection(): boolean {
+    if (this.nativeTextScene) return this.nativeTextScene.getTextSelection(this) !== null
     return this.textBufferView.hasSelection()
   }
 
   getSelection(): { start: number; end: number } | null {
+    if (this.nativeTextScene) return this.nativeTextScene.getTextSelection(this)
     return this.textBufferView.getSelection()
   }
 
-  render(buffer: OptimizedBuffer, deltaTime: number): void {
-    if (!this.visible) return
-    // Text views do enough per-frame work that avoiding recursive x/y lookups is
-    // measurable; use the layout cache for hit-grid and draw entry points.
-    const screenX = this._screenX
-    const screenY = this._screenY
-
-    this.markClean()
-    this._ctx.addToHitGrid(screenX, screenY, this.width, this.height, this.num)
-
-    this.renderSelf(buffer)
-
-    if (this.buffered && this.frameBuffer) {
-      buffer.drawFrameBuffer(screenX, screenY, this.frameBuffer)
-    }
-  }
-
   protected renderSelf(buffer: OptimizedBuffer): void {
-    if (this.textBuffer.ptr) {
-      buffer.drawTextBuffer(this.textBufferView, this._screenX, this._screenY)
-    }
+    this.drawToBuffer(buffer, this._screenX, this._screenY)
   }
 
-  destroy(): void {
-    if (this.isDestroyed) return
+  /** Draw the current text viewport in destination-buffer coordinates without changing layout or hits. */
+  public drawToBuffer(buffer: OptimizedBuffer, x: number, y: number): void {
+    if (this.isDestroyed) throw new Error("Cannot draw destroyed text")
+    if (this.nativeTextScene) {
+      this.nativeTextScene.drawText(this, buffer, Math.trunc(x), Math.trunc(y))
+      return
+    }
+    buffer.drawTextBuffer(this.textBufferView, Math.trunc(x), Math.trunc(y))
+  }
+
+  protected override destroyOwnedResources(): void {
+    if (this.nativeTextScene) return
     this.runCleanup((run) => {
-      if (this.nativeRenderable) {
-        run(() => this.setNativeMeasureTarget(NativeMeasureTargetKind.None, 0))
-      }
       run(() => this.textBuffer.setSyntaxStyle(null))
       run(() => this._textBufferSyntaxStyle.destroy())
       run(() => this.textBufferView.destroy())
       run(() => this.textBuffer.destroy())
-      run(() => super.destroy())
+    })
+  }
+
+  private setNativeSceneTextOptions(options: Partial<NativeSceneTextOptions> = {}): void {
+    this.nativeTextScene?.setTextOptions(this, {
+      fg: this._defaultFg,
+      bg: this._defaultBg,
+      attributes: this._defaultAttributes,
+      wrapMode: this._wrapMode,
+      truncate: this._truncate,
+      scrollX: this._scrollX,
+      scrollY: this._scrollY,
+      firstLineOffset: this._firstLineOffset,
+      tabIndicator: this._tabIndicator,
+      tabIndicatorColor: this._tabIndicatorColor,
+      ...options,
     })
   }
 

@@ -1,5 +1,6 @@
 import {
   CliRenderer,
+  CliRenderEvents,
   createCliRenderer,
   TextareaRenderable,
   BoxRenderable,
@@ -37,13 +38,18 @@ let helpText: TextRenderable | null = null
 let extmarksController: ExtmarksController | null = null
 let syntaxStyle: SyntaxStyle | null = null
 let virtualStyleId: number = 0
+let keyHandler: ((key: KeyEvent) => void) | null = null
+let frameCallback: (() => Promise<void>) | null = null
+let rendererDestroyHandler: (() => void) | null = null
 
 export async function run(rendererInstance: CliRenderer): Promise<void> {
   renderer = rendererInstance
+  rendererDestroyHandler = () => destroy(rendererInstance)
+  rendererInstance.on(CliRenderEvents.DESTROY, rendererDestroyHandler)
   renderer.start()
   renderer.setBackgroundColor("#0D1117")
 
-  syntaxStyle = SyntaxStyle.create()
+  syntaxStyle = SyntaxStyle.create(renderer.nativeScene!)
   virtualStyleId = syntaxStyle.registerStyle("virtual", {
     fg: RGBA.fromValues(0.3, 0.7, 1.0, 1.0),
     bg: RGBA.fromValues(0.1, 0.2, 0.3, 1.0),
@@ -107,7 +113,7 @@ export async function run(rendererInstance: CliRenderer): Promise<void> {
 
   editor.focus()
 
-  rendererInstance.setFrameCallback(async () => {
+  frameCallback = async () => {
     if (statusText && editor && !editor.isDestroyed && extmarksController) {
       try {
         const cursor = editor.logicalCursor
@@ -125,9 +131,10 @@ export async function run(rendererInstance: CliRenderer): Promise<void> {
         // Ignore errors during shutdown
       }
     }
-  })
+  }
+  rendererInstance.setFrameCallback(frameCallback)
 
-  rendererInstance.keyInput.on("keypress", (key: KeyEvent) => {
+  keyHandler = (key: KeyEvent) => {
     if (key.ctrl && key.name === "l") {
       key.preventDefault()
       if (editor && !editor.isDestroyed && extmarksController) {
@@ -148,7 +155,8 @@ export async function run(rendererInstance: CliRenderer): Promise<void> {
         }
       }
     }
-  })
+  }
+  rendererInstance.keyInput.on("keypress", keyHandler)
 }
 
 function findAndMarkVirtualRanges(): void {
@@ -173,12 +181,18 @@ function findAndMarkVirtualRanges(): void {
 }
 
 export function destroy(rendererInstance: CliRenderer): void {
-  rendererInstance.clearFrameCallbacks()
+  if (renderer !== rendererInstance) return
+  if (rendererDestroyHandler) rendererInstance.off(CliRenderEvents.DESTROY, rendererDestroyHandler)
+  if (frameCallback) rendererInstance.removeFrameCallback(frameCallback)
+  if (keyHandler) rendererInstance.keyInput.off("keypress", keyHandler)
+  rendererDestroyHandler = null
+  frameCallback = null
+  keyHandler = null
   extmarksController?.destroy()
   extmarksController = null
   syntaxStyle?.destroy()
   syntaxStyle = null
-  parentContainer?.destroy()
+  parentContainer?.destroyRecursively()
   parentContainer = null
   editor = null
   statusText = null

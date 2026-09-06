@@ -1,0 +1,202 @@
+---
+title: Resources and ownership
+description: Understand native resource lifetimes, their owners, and scoped access to cell storage
+---
+
+# Resources and ownership
+
+A _resource_ is a native object that holds data used by rendering, such as a text buffer, a cell buffer, or an image.
+These objects can stay alive across many frames. Creating one is not the same as drawing it, and finishing a frame does not release it.
+
+Each resource needs a lifetime: keep it alive while your program uses it, then release it when that work ends.
+Releasing it too early makes further access invalid. Keeping unused resources alive holds memory that the program no longer needs.
+
+_Ownership_ defines who keeps a resource alive and who releases it.
+It also determines which resources can work together and what happens when you destroy a larger part of the interface.
+
+## Group resources in a Context
+
+A **Context** is the native resource owner. Create it before creating buffers, images, or scene nodes.
+It keeps related resources together and gives each one an identity that native calls can check.
+When you successfully destroy the Context, it releases its remaining resources.
+
+A Context does not require a terminal connection. For an offscreen drawing tool, a Context and a cell buffer can be enough.
+Keep the Context alive until all work that uses its resources finishes.
+
+## Add a Session for output
+
+A **Session** owns an ordered output queue and terminal state within a Context.
+Use separate Sessions for independent output streams. They can share a Context's resources without sharing frame or output state.
+
+Creating a Session does not create a renderer or set terminal modes.
+Attach a renderer when the Session needs a drawing area, cell buffers, and encoding state.
+Terminal setup is a separate operation.
+
+A **scene** is the node tree used for layout and painting in that Session.
+Creating the first root node creates the scene.
+
+The ownership structure is:
+
+```text
+┌─ Context ────────────────────────────┐
+│ Resources and their identities       │
+│                                      │
+│ ┌─ Session ────────────────────────┐ │
+│ │ Output queue and terminal state  │ │
+│ │ Attached renderer and buffers    │ │
+│ │ Scene nodes and layout           │ │
+│ └──────────────────────────────────┘ │
+│                                      │
+│ Other Sessions and owned resources   │
+└──────────────────────────────────────┘
+```
+
+## Keep ownership separate from the scene tree
+
+Consider a box with a text label as its child. That parent-child relationship controls layout and drawing, not the child's lifetime.
+Detaching the label removes it from the box, but leaves the label's native object alive.
+Destroying the box also detaches a surviving label rather than destroying it.
+
+The native operations make those distinctions explicit:
+
+| Operation                                 | Effect                                                                |
+| ----------------------------------------- | --------------------------------------------------------------------- |
+| `ot_scene_move_node` with a `NULL` parent | Detach the label. Its native object still exists                      |
+| `ot_scene_destroy_node` on the box        | Destroy the box and detach its surviving children                     |
+| `ot_scene_destroy_node` on the label      | Destroy the label and its internally owned text resources             |
+| `ot_session_destroy`                      | Destroy the Session and all its scene nodes, including detached nodes |
+| `ot_context_destroy`                      | Release the Context's remaining resources if no work keeps it busy    |
+
+Reparent a node within its scene when you want a different layout relationship.
+To move content into another scene, create new nodes there. Keep application state outside the native nodes if it must survive that move.
+
+## A handle names an object
+
+Most C creation calls return an `ot_handle`:
+
+```c
+typedef struct ot_handle {
+    uint64_t context_id;
+    uint32_t slot;
+    uint32_t generation;
+} ot_handle;
+```
+
+The Context uses the slot to find an object and the generation to distinguish it from an object that later reuses that slot.
+After you destroy the label, a copied label handle is stale. Creating another label does not make that old handle valid again.
+
+Copying a handle does not keep its object alive. Checked calls report a wrong Context, wrong resource kind, or stale handle.
+Handles also belong to one loaded native library instance. Do not transfer them between Contexts or library loads.
+
+The `ot_context *` pointer is not a checked resource handle.
+Successful `ot_context_destroy` invalidates every copy of that pointer. Never call native code with it afterward.
+The scene has no separate C resource handle. Scene-wide calls use its Session's handle.
+
+## Create shared resources in one Context
+
+A text node (`OT_SCENE_TEXT`) owns its own text buffer and view.
+That is enough when content belongs to one node.
+
+For content that outlives a node, create a text buffer explicitly, then create a view of that buffer.
+The buffer holds text. The view holds viewport and drawing state.
+Bind the view to an `OT_SCENE_TEXT_VIEW` node with `ot_scene_set_text_view`.
+
+These are native creation entry points. Each C call takes the destination Context, and each Zig method belongs to that Context:
+
+| Resource     | C                            | Zig Context method     |
+| ------------ | ---------------------------- | ---------------------- |
+| Cell buffer  | `ot_buffer_create`           | `createBuffer`         |
+| Text buffer  | `ot_text_buffer_create`      | `createTextBuffer`     |
+| Text view    | `ot_text_buffer_view_create` | `createTextBufferView` |
+| Edit buffer  | `ot_edit_buffer_create`      | `createEditBuffer`     |
+| Editor view  | `ot_editor_view_create`      | `createEditorView`     |
+| Syntax style | `ot_syntax_style_create`     | `createSyntaxStyle`    |
+
+Destroying a text or edit buffer also destroys its dependent views.
+Destroying a view leaves the backing buffer alive.
+Destroying a bound node releases its binding, not an independently owned buffer or view.
+A text or editor view can have only one scene paint binding because it has one viewport.
+
+Related resources must belong to the same Context.
+For example, cell data can contain references to the Context's grapheme and hyperlink pools.
+Copying raw identifiers into another Context would not copy the referenced content.
+For a shared theme, reuse the theme definitions but create a style resource in each destination Context.
+
+## Compose an owned buffer
+
+An offscreen buffer stores a grid of cells independently of the scene.
+You can draw into it, keep the result, and later compose those cells into a frame.
+
+To display an owned buffer in a scene, bind it to an `OT_SCENE_CUSTOM` node with `ot_scene_set_surface`.
+That binding retains the buffer for composition. The C interface has no separate general-purpose `Surface` handle.
+For a direct copy into a Session outside an active scene draft, use `ot_session_draw_buffer`.
+
+The [Zig guide](/docs/native/zig#draw-into-an-owned-buffer) includes a complete offscreen-buffer test.
+
+## Borrow cells for one synchronous operation
+
+To read native cell arrays without copying them, acquire a _storage lease_.
+The lease keeps the allocation alive until you release it.
+Keep the access in one synchronous scope and release the lease on every exit path.
+In C, use `ot_buffer_acquire_lease` and `ot_buffer_lease_release` for the same operation.
+
+A lease is not a frozen copy of the cells. Drawing can change them.
+Resize or destruction can make the allocation stale even while a lease keeps it allocated.
+Validate with `ot_buffer_lease_validate` before further access after an operation that can replace storage.
+
+The C lease snapshot exposes these fields:
+
+| Field              | Meaning                                |
+| ------------------ | -------------------------------------- |
+| `width`, `height`  | Dimensions in terminal cells           |
+| `generation`       | Identity of this storage allocation    |
+| `char_ptr`         | One `uint32_t` entry per cell          |
+| `fg_ptr`, `bg_ptr` | Four `uint16_t` color entries per cell |
+| `attributes_ptr`   | One `uint32_t` entry per cell          |
+
+Addresses use `uint64_t` fields. Convert them through `uintptr_t` before making C pointers.
+Keep the Context and native library loaded until you release every lease.
+Saved pointers are invalid after release. Copy data into your own storage if it must survive the borrow.
+
+Cell storage can contain pooled graphemes, continuation cells, hyperlinks, and image references, not just character codes and colors.
+Use drawing methods to change text. Raw writes cannot maintain those references.
+To copy resolved UTF-8, use `ot_buffer_lease_get_real_char_size` and `ot_buffer_lease_write_resolved_chars` under the same lease.
+
+Color entries use the low byte for a channel. Higher bits can preserve indexed-color or terminal-default intent.
+Do not discard that metadata when applying a raw color effect.
+
+During a scene draft, framebuffer access also requires the current frame ticket.
+The ticket identifies the permitted paint position. The lease keeps storage alive. Neither reports output delivery.
+[Frames and output](/docs/native/frames#access-the-framebuffer) shows how those roles fit together.
+
+## Finish work before destroying owners
+
+An owner cannot disappear while a native operation, a checked lease, or pending output still needs it.
+`OT_CONTEXT_BUSY` leaves the Context alive. Release leases and finish the Session's work, then retry destruction.
+
+For a terminal-managed Session, request `ot_session_close` and deliver restoration output before destruction.
+For a lost transport, use `ot_session_cancel` to discard pending output.
+Cancellation does not restore a terminal that no longer receives bytes, and it does not release your outstanding leases.
+
+In direct Zig code, pointers from Context getters are borrowed.
+Destroy the resource through the Context, not through the raw object's destructor.
+Keep the allocator, `std.Io`, callback data, and borrowed environment state alive until the Context no longer needs them.
+
+## Set limits and keep calls on the owning thread
+
+The Context's two basic limits are explicit and positive:
+
+- `object_capacity` counts native resource slots, including checked leases.
+- `render_cells_max` limits each drawing buffer or renderer size, not the sum of cells across the Context.
+
+C Contexts also limit checked leases to 4,096 and distinct leased storage to 64 MiB.
+That storage includes retired allocations and tracker capacity, but not shared Context pools.
+These limits are not a total memory or frame-time budget. Sessions have their own output limits.
+
+Call a C Context only from its creating operating-system thread, including for error queries and destruction.
+Separate Contexts can run on separate threads.
+Direct Zig Contexts permit ownership transfer only while idle and require serialized access.
+[Rust's owner types](/docs/native/rust#ownership-and-errors) enforce the C thread restriction at compile time.
+
+Core uses the same ownership model through its own TypeScript wrappers.
+[How Core uses native](/docs/native/core#resources-through-core) covers `ResourceContext`, resource factories, and scoped array access for Core extensions.

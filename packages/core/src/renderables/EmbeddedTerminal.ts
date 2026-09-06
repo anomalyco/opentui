@@ -4,7 +4,7 @@ import { RGBA } from "../lib/RGBA.js"
 import type { RenderContext } from "../types.js"
 import type { MouseEvent } from "../renderer.js"
 import type { OptimizedBuffer } from "../buffer.js"
-import { resolveRenderLib, type EmbeddedTerminalHandle, type EmbeddedTerminalMouse, type RenderLib } from "../zig.js"
+import type { ContextEmbeddedTerminalHandle, EmbeddedTerminalKey, EmbeddedTerminalMouse, RenderLib } from "../zig.js"
 import { convertGlobalToLocalSelection, type Selection } from "../lib/selection.js"
 
 export type EmbeddedTerminalDataSource = "input" | "response"
@@ -41,13 +41,13 @@ const MOD_NUM_LOCK = 1 << 5
 export class EmbeddedTerminalRenderable extends Renderable {
   public selectable: boolean = true
   private readonly lib: RenderLib
-  private handle: EmbeddedTerminalHandle | null = null
+  private handle: ContextEmbeddedTerminalHandle | null = null
   private _onData?: (data: Uint8Array, source: EmbeddedTerminalDataSource) => void
   private _onTerminalResize?: (cols: number, rows: number) => void
   private _onScreenChange?: () => void
   private keyreleaseHandler: ((key: KeyEvent) => void) | null = null
-  private hadRenderHooks = false
   private selection = false
+  private composedHookGeneration = 0n
 
   constructor(ctx: RenderContext, options: EmbeddedTerminalOptions) {
     const cols = options.cols ?? (typeof options.width === "number" ? options.width : 80)
@@ -59,18 +59,18 @@ export class EmbeddedTerminalRenderable extends Renderable {
       buffered: true,
     })
     this._focusable = true
-    this._onData = options.onData
-    this._onTerminalResize = options.onTerminalResize
-    this._onScreenChange = options.onScreenChange
-    this.selectable = options.selectable ?? true
-    this.lib = resolveRenderLib()
+    this.lib = ctx.nativeScene.driver.renderLib
 
     try {
-      this.handle = this.lib.createEmbeddedTerminal({ cols, rows, maxScrollback: options.maxScrollback })
+      this._onData = options.onData
+      this._onTerminalResize = options.onTerminalResize
+      this._onScreenChange = options.onScreenChange
+      this.selectable = options.selectable ?? true
+      const config = { cols, rows, maxScrollback: options.maxScrollback }
+      this.handle = this.lib.createContextEmbeddedTerminal(ctx.nativeScene.driver.context, config)
       this.setupMouse(options)
     } catch (error) {
-      this.destroy()
-      throw error
+      this.rollbackConstruction(error)
     }
   }
 
@@ -100,7 +100,7 @@ export class EmbeddedTerminalRenderable extends Renderable {
 
   public screen(): EmbeddedTerminalScreen {
     const cursor = this.handle
-      ? this.lib.embeddedTerminalCursor(this.handle)
+      ? this.lib.contextEmbeddedTerminalCursor(this.handle.context, this.handle)
       : { x: 0, y: 0, visible: false, hasValue: false }
     const lines = this.frameBuffer
       ? new TextDecoder()
@@ -125,7 +125,7 @@ export class EmbeddedTerminalRenderable extends Renderable {
 
   public write(data: string | Uint8Array): void {
     if (!this.handle) return
-    this.lib.embeddedTerminalWrite(this.handle, data)
+    this.lib.contextEmbeddedTerminalWrite(this.handle.context, this.handle, data)
     try {
       this.flushResponses()
     } finally {
@@ -135,7 +135,7 @@ export class EmbeddedTerminalRenderable extends Renderable {
 
   public invalidate(): void {
     if (!this.handle) return
-    this.lib.embeddedTerminalInvalidate(this.handle)
+    this.lib.contextEmbeddedTerminalInvalidate(this.handle.context, this.handle)
     this.requestRender()
   }
 
@@ -143,18 +143,19 @@ export class EmbeddedTerminalRenderable extends Renderable {
     if (!this.handle) return new Uint8Array()
     const text = textualKey(key)
     const physical = physicalKey(key)
-    return this.lib.embeddedTerminalEncodeKey(this.handle, {
+    const options: EmbeddedTerminalKey = {
       action: key.eventType === "release" ? "release" : key.repeated ? "repeat" : "press",
       key: physical,
       mods: modifiers(key),
       text,
       unshiftedCodepoint: unshiftedCodepoint(key, physical),
-    })
+    }
+    return this.lib.contextEmbeddedTerminalEncodeKey(this.handle.context, this.handle, options)
   }
 
   public encodePaste(bytes: Uint8Array): Uint8Array {
     if (!this.handle) return new Uint8Array()
-    return this.lib.embeddedTerminalEncodePaste(this.handle, bytes)
+    return this.lib.contextEmbeddedTerminalEncodePaste(this.handle.context, this.handle, bytes)
   }
 
   public shouldStartSelection(x: number, y: number): boolean {
@@ -166,10 +167,10 @@ export class EmbeddedTerminalRenderable extends Renderable {
 
   public onSelectionChanged(selection: Selection | null): boolean {
     if (!this.handle) return false
-    const local = convertGlobalToLocalSelection(selection, this.x, this.y)
+    const local = convertGlobalToLocalSelection(selection, Math.trunc(this.x), Math.trunc(this.y))
     if (!local?.isActive) {
       if (!this.selection) return false
-      this.lib.embeddedTerminalClearSelection(this.handle)
+      this.lib.contextEmbeddedTerminalClearSelection(this.handle.context, this.handle)
       this.selection = false
       this.requestRender()
       return false
@@ -189,11 +190,9 @@ export class EmbeddedTerminalRenderable extends Renderable {
       if (y >= this.height) return { x: this.width - 1, y: this.height - 1 }
       return { x: Math.max(0, Math.min(this.width - 1, x)), y }
     }
-    this.lib.embeddedTerminalSetSelection(
-      this.handle,
-      point(local.anchorX, local.anchorY),
-      point(local.focusX, local.focusY),
-    )
+    const start = point(local.anchorX, local.anchorY)
+    const end = point(local.focusX, local.focusY)
+    this.lib.contextEmbeddedTerminalSetSelection(this.handle.context, this.handle, start, end)
     this.selection = true
     this.requestRender()
     return true
@@ -205,7 +204,7 @@ export class EmbeddedTerminalRenderable extends Renderable {
 
   public getSelectedText(): string {
     if (!this.handle || !this.selection) return ""
-    return new TextDecoder().decode(this.lib.embeddedTerminalGetSelectedText(this.handle))
+    return new TextDecoder().decode(this.lib.contextEmbeddedTerminalGetSelectedText(this.handle.context, this.handle))
   }
 
   public focus(): void {
@@ -215,7 +214,7 @@ export class EmbeddedTerminalRenderable extends Renderable {
     this.keyreleaseHandler = (key) => this.handleKeyPress(key)
     this.ctx._internalKeyInput.onInternal("keyrelease", this.keyreleaseHandler)
     try {
-      this.send(this.handle ? this.lib.embeddedTerminalEncodeFocus(this.handle, true) : new Uint8Array(), "input")
+      this.sendFocus(true)
     } catch (error) {
       this.removeKeyreleaseHandler()
       super.blur()
@@ -226,7 +225,7 @@ export class EmbeddedTerminalRenderable extends Renderable {
   public blur(): void {
     if (!this.focused) return
     try {
-      this.send(this.handle ? this.lib.embeddedTerminalEncodeFocus(this.handle, false) : new Uint8Array(), "input")
+      this.sendFocus(false)
     } catch {
       // User callbacks must not prevent focus or native resource cleanup.
     } finally {
@@ -246,30 +245,41 @@ export class EmbeddedTerminalRenderable extends Renderable {
     this.send(this.encodePaste(event.bytes), "input")
   }
 
-  public override render(buffer: OptimizedBuffer, deltaTime: number): void {
-    const hasRenderHooks = Boolean(this.renderBefore || this.renderAfter)
-    if (this.handle && (hasRenderHooks || this.hadRenderHooks)) this.lib.embeddedTerminalInvalidate(this.handle)
-    this.hadRenderHooks = hasRenderHooks
-    super.render(buffer, deltaTime)
-  }
-
   protected onResize(width: number, height: number): void {
     super.onResize(width, height)
     if (!this.handle || !Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) return
     const cols = Math.min(Math.floor(width), 0xffff)
     const rows = Math.min(Math.floor(height), 0xffff)
-    this.lib.embeddedTerminalResize(this.handle, cols, rows)
-    this.lib.embeddedTerminalInvalidate(this.handle)
+    this.lib.contextEmbeddedTerminalResize(this.handle.context, this.handle, cols, rows)
+    this.lib.contextEmbeddedTerminalInvalidate(this.handle.context, this.handle)
     this.flushResponses()
     this._onTerminalResize?.(cols, rows)
   }
 
+  protected override _invokeNativePaint(buffer: OptimizedBuffer, deltaTime: number): void {
+    const generation = this._nativeSceneHookGeneration
+    super._invokeNativePaint(buffer, deltaTime)
+    // A replaced body can keep painting after super.renderSelf() returns.
+    // Hiding can skip composition; retain pending invalidation until shown.
+    if (this.visible) this.composedHookGeneration = generation
+  }
+
   protected renderSelf(buffer: OptimizedBuffer): void {
     if (!this.handle || !this.frameBuffer || !this.visible || this.isDestroyed) return
-    this.lib.embeddedTerminalCompose(this.handle, buffer.ptr, 0, 0)
+    // A hook can dirty retained cells, even if it removes itself before this paint.
+    if (
+      this.renderBefore ||
+      this.renderAfter ||
+      this.composedHookGeneration !== this._nativeSceneHookGeneration ||
+      this.renderSelf !== EmbeddedTerminalRenderable.prototype.renderSelf
+    ) {
+      this.lib.contextEmbeddedTerminalInvalidate(this.handle.context, this.handle)
+    }
+    const target = buffer._getSceneDrawTarget(this._ctx.nativeScene)
+    this.lib.contextEmbeddedTerminalCompose(target.context, this.handle, target.target, target.frame, 0, 0)
     this._onScreenChange?.()
     if (!this.focused) return
-    const cursor = this.lib.embeddedTerminalCursor(this.handle)
+    const cursor = this.lib.contextEmbeddedTerminalCursor(this.handle.context, this.handle)
     const visible = cursor.visible && cursor.hasValue
     const cursorX = cursor.wideTail && cursor.x > 0 ? cursor.x - 1 : cursor.x
     this._ctx.setCursorPosition(this._screenX + cursorX + 1, this._screenY + cursor.y + 1, visible)
@@ -282,12 +292,18 @@ export class EmbeddedTerminalRenderable extends Renderable {
   }
 
   protected destroySelf(): void {
-    if (this.handle) {
-      this.lib.destroyEmbeddedTerminal(this.handle)
-      this.handle = null
+    const handle = this.handle
+    this.handle = null
+    this.selection = false
+    this.removeKeyreleaseHandler()
+    try {
+      if (handle && !this._ctx.nativeScene.driver.contextDisposed) {
+        this.lib.destroyContextEmbeddedTerminal(handle.context, handle)
+      }
+    } finally {
+      this._ctx.setCursorPosition(0, 0, false)
+      super.destroySelf()
     }
-    this._ctx.setCursorPosition(0, 0, false)
-    super.destroySelf()
   }
 
   protected onRemove(): void {
@@ -321,18 +337,21 @@ export class EmbeddedTerminalRenderable extends Renderable {
   private forwardMouse(event: MouseEvent, action: EmbeddedTerminalMouse["action"]): void {
     if (!this.handle) return
     if (event.type === "down" && event.button === 0) this.focus()
-    const output = this.lib.embeddedTerminalEncodeMouse(this.handle, {
+    if (!this.handle) return
+    const mouse = {
       action,
       button: event.type === "move" && !event.isDragging ? undefined : mouseButton(event),
       mods: modifiers(event.modifiers),
       x: event.x - this._screenX,
       y: event.y - this._screenY,
       anyButtonPressed: event.isDragging === true || event.type === "down",
-    })
+    }
+    const output = this.lib.contextEmbeddedTerminalEncodeMouse(this.handle.context, this.handle, mouse)
     if (event.type === "scroll" && output.byteLength === 0) {
       const direction = event.scroll?.direction
       if (direction !== "up" && direction !== "down") return
-      this.lib.embeddedTerminalScroll(this.handle, direction === "up" ? -3 : 3)
+      const delta = direction === "up" ? -3 : 3
+      this.lib.contextEmbeddedTerminalScroll(this.handle.context, this.handle, delta)
       this.requestRender()
       event.preventDefault()
       event.stopPropagation()
@@ -346,7 +365,12 @@ export class EmbeddedTerminalRenderable extends Renderable {
 
   private flushResponses(): void {
     if (!this.handle) return
-    this.send(this.lib.embeddedTerminalDrainResponses(this.handle), "response")
+    this.send(this.lib.contextEmbeddedTerminalDrainResponses(this.handle.context, this.handle), "response")
+  }
+
+  private sendFocus(focused: boolean): void {
+    if (!this.handle) return
+    this.send(this.lib.contextEmbeddedTerminalEncodeFocus(this.handle.context, this.handle, focused), "input")
   }
 
   private removeKeyreleaseHandler(): void {

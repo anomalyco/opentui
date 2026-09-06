@@ -1,0 +1,348 @@
+---
+title: C
+description: Build the native library and use the checked C interface to create a scene and deliver frames
+---
+
+# C
+
+The C interface exposes native resources, scene nodes, and ordered output through `opentui.h`.
+This guide builds a box with a text label, renders `Hello`, changes the label to `Ready`, and renders again.
+The program writes output to files, so you can run it without changing your terminal's state.
+
+It links the native library and needs no JavaScript runtime.
+
+## Build the library
+
+Use Zig `0.16.0` and Bun for the repository's build scripts. From the repository root:
+
+```sh
+bun install
+cd packages/native
+bun run build
+```
+
+The build puts the header and libraries in `lib/<target>/` inside the native workspace.
+On Linux x86_64 with glibc, that directory is `lib/x86_64-linux/`.
+The C commands below use that target.
+
+The C application binary interface (ABI) is experimental and currently uses `OT_CONTEXT_ABI_VERSION == 1`.
+Use the header, library, and bindings from the same revision. An unchanged version number does not guarantee compatibility between development revisions.
+The native workspace is private, not an npm package to install.
+
+## Create the scene
+
+The five C blocks in this section form one complete program.
+Append them in order to `native-hello.c` in the native workspace directory.
+
+### Create the owner and output session
+
+The scene needs memory for its nodes and a queue for its output.
+A **Context** owns native resources. A **Session** owns one output queue and, after attachment, its renderer.
+Attaching a renderer gives the Session a 12-by-3 cell area. It does not set terminal modes or write output.
+
+`RECORD` supplies the size and ABI version required by native option records.
+`CHECK` reports a native error and jumps to cleanup. These are helpers in this example, not library APIs.
+
+```c example=setup
+#include "opentui.h"
+#include <inttypes.h>
+#include <stdio.h>
+
+#define RECORD(type) .struct_size = sizeof(type), .abi_version = OT_CONTEXT_ABI_VERSION
+#define CHECK(call) do { if (!check(#call, (call))) goto cleanup; } while (0)
+
+static int check(const char *operation, ot_status status) {
+    if (status == OT_OK) return 1;
+    fprintf(stderr, "%s returned %" PRId32 "\n", operation, status);
+    return 0;
+}
+
+static int write_frame(ot_context *context, const ot_handle *session, const char *path);
+
+int main(void) {
+    int result = 1;
+    ot_context *context = NULL;
+    ot_handle session = {0}, root = {0}, box = {0}, label = {0};
+    const ot_context_options owner = {
+        RECORD(ot_context_options), .object_capacity = 8, .render_cells_max = 36,
+    };
+    const ot_session_options output = {
+        RECORD(ot_session_options), .chunk_size = 4096, .span_capacity = 2, .max_bytes = 8192,
+    };
+    const ot_session_renderer_options renderer = {
+        RECORD(ot_session_renderer_options), .width = 12, .height = 3, .remote = 1,
+    };
+
+    CHECK(ot_context_create(&owner, &context));
+    CHECK(ot_session_create(context, &output, &session));
+    CHECK(ot_session_attach_renderer(context, &session, &renderer));
+```
+
+The Context allows eight resource slots and at most 36 cells per drawing buffer or renderer size.
+The Session reserves two 4,096-byte output chunks. These are explicit limits for this small example, not a total memory budget.
+`remote = 1` keeps the renderer from inheriting local terminal environment settings.
+
+### Add the box and label
+
+Create the root first. This creates the Session's scene.
+Other nodes start detached. `ot_scene_move_node` attaches them to a parent at the supplied child index.
+
+```c example=nodes
+    CHECK(ot_scene_create_node(context, &session, OT_SCENE_ROOT, 1, &root));
+    CHECK(ot_scene_create_node(context, &session, OT_SCENE_BOX, 2, &box));
+    CHECK(ot_scene_create_node(context, &session, OT_SCENE_TEXT, 3, &label));
+
+    const ot_scene_paint_options paint = {
+        RECORD(ot_scene_paint_options),
+        .opacity = 1, .border_sides = 15, .border_style = 0,
+        .border_color = {255, 255, 255, 255},
+    };
+    CHECK(ot_scene_set_paint(context, &box, &paint));
+    CHECK(ot_scene_set_text(context, &label, (const uint8_t *)"Hello", 5));
+    CHECK(ot_scene_move_node(context, &box, &root, 0));
+    CHECK(ot_scene_move_node(context, &label, &box, 0));
+```
+
+The node kind selects its native drawing behavior. `OT_SCENE_BOX` draws a box, and `OT_SCENE_TEXT` draws and measures text.
+The numbers `1`, `2`, and `3` are application-chosen public node numbers, used in hooks and hit results.
+The returned `ot_handle` values identify the native objects used by later API calls.
+
+`border_sides = 15` selects all four sides: left `1`, bottom `2`, right `4`, and top `8`.
+Border style `0` is single-line. The border also reserves one layout cell on each side.
+Default column layout and stretching place the label inside the full-width box.
+
+The paint record is a complete set of paint properties, not a patch. In particular, set `opacity = 1` for an opaque node.
+Text setters copy UTF-8 bytes. The final `5` is the byte length of `Hello`, without a terminating NUL.
+
+### Render, change, and render again
+
+`write_frame` below paints the scene and delivers its output to a file.
+It finishes delivery before returning, so the next call can render another frame.
+
+```c example=update
+    if (!write_frame(context, &session, "hello.ansi")) goto cleanup;
+    CHECK(ot_scene_set_text(context, &label, (const uint8_t *)"Ready", 5));
+    if (!write_frame(context, &session, "ready.ansi")) goto cleanup;
+    CHECK(ot_session_close(context, &session));
+    result = 0;
+
+cleanup:
+    if (result != 0 && session.context_id != 0) {
+        check("ot_session_cancel", ot_session_cancel(context, &session));
+    }
+    if (context != NULL && !check("ot_context_destroy", ot_context_destroy(context))) result = 1;
+    return result;
+}
+```
+
+Nothing recreates the root, box, or label for the second frame.
+`ot_scene_set_text` replaces the label's stored content. It does not draw or send output by itself.
+
+Context destruction releases the remaining nodes and Session.
+If an operation fails, cancellation discards pending output before destruction.
+This program never sets terminal modes, so it has no terminal restoration to deliver.
+
+### Paint and encode the frame
+
+`ot_scene_paint` calculates layout and paints the scene into the Session's next framebuffer.
+`ot_session_render` then encodes those cells and submits output to the Session queue.
+The `0` force argument permits normal diff output rather than forcing a full repaint.
+
+```c example=submit
+static ot_status submit_frame(ot_context *context, const ot_handle *session, uint32_t *outcome) {
+    const uint16_t background[4] = {0, 0, 0, 255};
+    ot_status status = ot_scene_paint(context, session, background, 0, 0);
+    if (status != OT_OK) return status;
+    return ot_session_render(context, session, 0, outcome);
+}
+```
+
+This synchronous path is enough for a scene made entirely of native nodes without host hooks.
+The [host-drawing extension](#add-host-drawing) below uses frame steps when the program needs to draw between native calls.
+
+### Deliver the queued bytes
+
+Reading output copies bytes into your buffer and returns an output _ticket_ identifying that copy.
+Report success only after its bytes reach the destination.
+Here, `fwrite` and `fflush` deliver them to a file. A terminal or network writer would take their place.
+
+```c example=output
+static int write_frame(ot_context *context, const ot_handle *session, const char *path) {
+    FILE *file = fopen(path, "wb");
+    if (file == NULL) { perror(path); return 0; }
+    int result = 0;
+    uint32_t outcome = 0;
+    CHECK(submit_frame(context, session, &outcome));
+    if (outcome != OT_RENDER_PENDING && outcome != OT_RENDER_PRESENTED) {
+        fprintf(stderr, "frame not accepted: %" PRIu32 "\n", outcome);
+        goto cleanup;
+    }
+
+    for (;;) {
+        uint8_t bytes[512];
+        ot_output_ticket ticket = {0};
+        CHECK(ot_session_read_output(context, session, bytes, sizeof(bytes), &ticket));
+        if (ticket.byte_count == 0) break;
+        int delivered = fwrite(bytes, 1, ticket.byte_count, file) == ticket.byte_count
+            && fflush(file) == 0;
+        CHECK(ot_session_complete_output(context, session, &ticket, delivered));
+        if (!delivered) { perror(path); goto cleanup; }
+    }
+    result = 1;
+
+cleanup:
+    if (fclose(file) != 0) { perror(path); result = 0; }
+    return result;
+}
+```
+
+`OT_RENDER_PENDING` means that output still needs completion. `OT_RENDER_PRESENTED` means the frame's output endpoint is already complete.
+The example treats skipped or failed render outcomes as errors rather than silently losing an update.
+The loop drains a finite queue from these frames. It does not wait for input or run an application event loop.
+
+### Compile and run
+
+From the native workspace directory on Linux x86_64 glibc:
+
+```sh
+cc -std=c11 -Wall -Wextra -Werror -Ilib/x86_64-linux native-hello.c \
+  -Llib/x86_64-linux -Wl,-rpath,"$PWD/lib/x86_64-linux" -lopentui -o native-hello
+./native-hello
+```
+
+The program creates or replaces `hello.ansi` and `ready.ansi` in the current directory.
+They contain terminal instructions, not plain-text screenshots.
+Applied in order to a 12-by-3 terminal, they produce the two screens in [Native rendering](/docs/native/overview).
+The second file is an update to the first frame, not a standalone screen.
+Use [View both frames](/docs/native/frames#view-both-frames) to display them in a temporary terminal screen.
+
+## Add host drawing
+
+The program can draw at a specific position in the frame without taking over scene traversal.
+Add an after-paint hook to the label, then use frame steps to draw a mark after native code paints its text:
+
+```text frame=hello
+┌──────────┐
+│Hello    !│
+└──────────┘
+```
+
+In `main`, add this block after mounting the label and before the first `write_frame` call:
+
+```c example=register
+    const ot_scene_hooks hooks = {
+        RECORD(ot_scene_hooks), .flags = OT_SCENE_HOOK_RENDER_AFTER, .generation = 1,
+    };
+    CHECK(ot_scene_set_hooks(context, &label, &hooks));
+```
+
+This registers a request, not a function pointer. Hook generations start above zero and must increase when the registration changes.
+
+Replace `submit_frame` with this function. Keep `write_frame` and the cleanup unchanged:
+
+```c example=hook-submit
+static ot_status submit_frame(ot_context *context, const ot_handle *session, uint32_t *outcome) {
+    const ot_scene_frame_options options = {
+        RECORD(ot_scene_frame_options), .background = {0, 0, 0, 255},
+        .max_layout_rounds = 8, .max_host_requests = 64,
+    };
+    ot_scene_frame_request request = {RECORD(ot_scene_frame_request)};
+    ot_scene_frame_geometry geometry = {RECORD(ot_scene_frame_geometry)};
+    const ot_scene_frame_request *previous = NULL;
+
+    for (;;) {
+        ot_status status = ot_scene_frame_step_with_geometry(context, session, previous,
+            &options, UINT32_MAX, UINT32_MAX, &request, &geometry);
+        if (status != OT_OK) return status;
+        if (request.kind == OT_SCENE_FRAME_DONE) {
+            return ot_scene_frame_commit(context, session, &request, 0, outcome);
+        }
+        if (request.kind != OT_SCENE_FRAME_RENDER_AFTER || request.num != 3) {
+            return OT_UNSUPPORTED_RESOURCE;
+        }
+
+        const ot_buffer_draw_options mark = {
+            RECORD(ot_buffer_draw_options), .operation = OT_BUFFER_DRAW_TEXT,
+            .x = 10, .y = 1, .foreground = {255, 255, 255, 255},
+        };
+        status = ot_buffer_draw(context, session, &request, &mark, NULL,
+            (const uint8_t *)"!", 1, NULL, 0);
+        if (status != OT_OK) return status;
+        previous = &request;
+    }
+}
+```
+
+The first call starts a frame because `previous` is `NULL`.
+Each later call acknowledges the exact returned request and resumes where native code stopped.
+The request and result can use the same storage, as above.
+
+This program registers only one hook, on label number `3`, and uses no scheduling yields.
+The `8` preparation rounds and `64` host requests are explicit application limits, not C defaults.
+Both `UINT32_MAX` quotas select synchronous preparation and painting from the start.
+
+The drawing coordinates are fixed for this 12-by-3 area. A dynamic layout can use the step's separate geometry observations.
+Any error returns to `main`'s Session cancellation path.
+The [frame contract](/docs/native/frames#read-and-acknowledge-requests) covers request records, phases, and permitted operations.
+
+Recompile and run with the same commands as before. The second output file now updates the screen to:
+
+```text frame=ready
+┌──────────┐
+│Ready    !│
+└──────────┘
+```
+
+## Initialize records and check results
+
+The C interface checks records, handles, resource kinds, and call phases.
+An `OT_OK` return means that call succeeded, not that every later operation is complete.
+Rendering and pumping also return outcomes that tell the host what work remains.
+
+For each versioned record, set its exact `struct_size` and `abi_version`, and zero unused fields and reserved storage.
+Plain values such as `ot_handle` and `ot_output_ticket` do not have those fields.
+Use the declarations in `opentui.h`, not packed approximations.
+
+| Status                                                                     | What to do                                                            |
+| -------------------------------------------------------------------------- | --------------------------------------------------------------------- |
+| `OT_INVALID_ARGUMENT`, `OT_UNSUPPORTED_VERSION`                            | Correct the input or use matching artifacts                           |
+| `OT_WRONG_CONTEXT`, `OT_WRONG_SESSION`, `OT_WRONG_KIND`, `OT_STALE_HANDLE` | Check the object's owner, kind, and lifetime                          |
+| `OT_WRONG_THREAD`                                                          | Call from the Context's creating thread                               |
+| `OT_CONTEXT_BUSY`, `OT_FRAME_BUSY`                                         | Finish conflicting work or release the relevant borrow                |
+| `OT_OUTPUT_BACKPRESSURE`                                                   | Deliver pending output before retrying an admissible write            |
+| `OT_STALE_FRAME`, `OT_STALE_OUTPUT`, `OT_STALE_LEASE`                      | Stop using the old ticket or lease. A stale lease still needs release |
+
+This is not the full status list. Failure behavior belongs to each operation's contract.
+For example, a failed `ot_session_write` accepts no bytes, but `ot_scene_flush` can accept a prefix of its changes without rollback.
+Do not assume that every failure leaves output fields or drawing cells unchanged.
+
+Text setters take UTF-8 byte counts. In `ot_scene_text_info`, `byte_count` counts bytes, but `text_length` counts display columns.
+Layout and hit coordinates count terminal cells.
+Copy queries do not generally add a terminating NUL. Read each query's contract before allocating its output storage.
+
+## Build for another target
+
+The library build defaults to the host CPU and operating system.
+On Linux, it selects glibc even when the host uses musl. Select a musl library target explicitly for a musl consumer.
+The native workspace's `build.zig` defines the names accepted by `-Dlibrary-target`.
+`-Dall` selects every supported target and requires their build dependencies.
+
+| Platform | Shared library                                | Static library       |
+| -------- | --------------------------------------------- | -------------------- |
+| Linux    | `libopentui.so`                               | `libopentui.a`       |
+| macOS    | `libopentui.dylib`                            | `libopentui.a`       |
+| Windows  | `opentui.dll`, with `opentui.lib` for imports | `opentui-static.lib` |
+
+Static consumers also need the platform and C++ runtime libraries.
+
+To check C layouts and host shared/static execution, run from the native workspace:
+
+```sh
+zig build test-abi --summary all
+```
+
+Cross-target layout checks do not establish runtime or terminal behavior on those targets.
+
+You now have a program that changes a native scene and completes its output.
+[Resources and ownership](/docs/native/resources) explains how to add independently owned text or drawing buffers.
+[Frames and output](/docs/native/frames) defines frame requests, output completion, and terminal lifecycle work.
