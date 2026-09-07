@@ -1450,7 +1450,7 @@ pub const CliRenderer = struct {
             placement.placement_id,
             placement.width,
             placement.height,
-            -1_500_000_000 + @as(i32, @intCast(placement.placement_id)),
+            terminal_image.kittyPlacementZ(placement.placement_id),
             self.terminal.isInTmux(),
         );
     }
@@ -2174,7 +2174,7 @@ pub const CliRenderer = struct {
                 if (normalized) 0 else placement.source_y,
                 if (downscaled) placement.pixel_width else placement.source_width,
                 if (downscaled) placement.pixel_height else placement.source_height,
-                -1_500_000_000 + @as(i32, @intCast(placement.placement_id)),
+                terminal_image.kittyPlacementZ(placement.placement_id),
                 tmux,
             );
         }
