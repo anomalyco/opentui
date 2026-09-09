@@ -76,7 +76,7 @@ async function getCapabilitiesFromChild(
 }
 
 describe("remote detection", () => {
-  test("auto remote mode detects SSH and skips default terminal env forwarding", async () => {
+  test("auto remote mode detects SSH and ignores forwarded terminal identity", async () => {
     const caps = await getCapabilitiesFromChild(
       {},
       {
@@ -91,7 +91,8 @@ describe("remote detection", () => {
     )
 
     expect(caps.remote).toBe(true)
-    expect(caps.ansi256).toBe(false)
+    // Color depth from TERM still describes the remote endpoint.
+    expect(caps.ansi256).toBe(true)
     expect(caps.notifications).toBe(false)
     expect(caps.terminal.name).toBe("")
   })
@@ -217,7 +218,8 @@ describe("remote detection", () => {
     )
 
     expect(caps.remote).toBe(true)
-    expect(caps.ansi256).toBe(false)
+    // Forwarded TERM still contributes color depth in auto remote sessions.
+    expect(caps.ansi256).toBe(true)
     expect(caps.notifications).toBe(false)
     expect(caps.terminal.name).toBe("")
   })
