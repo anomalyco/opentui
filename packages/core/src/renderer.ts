@@ -1127,7 +1127,7 @@ export class CliRenderer extends EventEmitter implements RenderContext {
     if (process.platform === "linux") config.useThread = false
     lib.setUseThread(rendererPtr, config.useThread)
 
-    const kittyConfig = config.useKittyKeyboard ?? {}
+    const kittyConfig = config.useKittyKeyboard === undefined ? {} : config.useKittyKeyboard
     const kittyFlags = buildKittyKeyboardFlags(kittyConfig)
     lib.setKittyKeyboardFlags(rendererPtr, kittyFlags)
 
