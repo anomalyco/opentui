@@ -28,6 +28,7 @@ import type {
   NativeAudioStreamStats,
 } from "../index.js"
 import { NativeAudioStreamState } from "../zig-structs.js"
+import { resolveRenderLib } from "../zig.js"
 
 const SAMPLE_RATE = 48_000
 const MP3_URL = new URL("./fixtures/audio/tone-750hz-48k-mono-1s.mp3", import.meta.url)
@@ -335,6 +336,39 @@ test("Audio exposes typed stream setup failures through the public API", async (
   }
 
   expect(expectAudioStreamError(rejection).context).toEqual({ action: "response", status: 404, attempt: 0 })
+})
+
+test("Audio.dispose retains the engine when an owned stream cannot close", async () => {
+  const mp3 = new Uint8Array(await readFile(MP3_URL))
+  const source = new ReadableStream<Uint8Array>({
+    start(controller) {
+      controller.enqueue(mp3)
+    },
+  })
+  const audio = Audio.create({ autoStart: false })
+  audios.push(audio)
+  audio.on("error", () => {})
+  expect(audio.startMixer()).toBe(true)
+  const stream = await audio.playStream(source)
+  const lib = resolveRenderLib()
+  const originalClose = lib.audioCloseStream
+  let closeCalls = 0
+  const restoreClose = replaceMethod(lib, "audioCloseStream", (...args: Parameters<typeof originalClose>) => {
+    closeCalls += 1
+    if (closeCalls === 1) throw new Error("injected stream close failure")
+    return originalClose.apply(lib, args)
+  })
+  try {
+    expect(() => audio.dispose()).toThrow("injected stream close failure")
+    expect(audio.getStats()).not.toBeNull()
+    audio.dispose()
+    await stream.closed
+    expect(audio.getStats()).toBeNull()
+    expect(closeCalls).toBe(2)
+  } finally {
+    restoreClose()
+    audio.dispose()
+  }
 })
 
 test("Audio streams an MP3 before the HTTP response ends and exposes it through the tap", async () => {
@@ -2538,7 +2572,7 @@ test("Audio enforces the documented HTTP content-type policy", async () => {
     mp3: new Uint8Array(await readFile(MP3_URL)),
     flac: new Uint8Array(await readFile(FLAC_URL)),
   }
-  const scenarios: Array<{ format: AudioStreamFormat; contentTypes: Array<string | undefined> }> = [
+  const scenarios: Array<{ format: keyof typeof fixtures; contentTypes: Array<string | undefined> }> = [
     {
       format: "mp3",
       contentTypes: [

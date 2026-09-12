@@ -1,8 +1,8 @@
-import { TextNodeRenderable, TextRenderable, type Renderable } from "@opentui/core"
+import { ImageRenderable, TextNodeRenderable, TextRenderable, type Renderable } from "@opentui/core"
 import pkgJson from "../../package.json" with { type: "json" }
 import { createContext } from "react"
 import type { HostConfig, ReactContext } from "react-reconciler"
-import { DefaultEventPriority, NoEventPriority } from "react-reconciler/constants"
+import { DefaultEventPriority, NoEventPriority } from "react-reconciler/constants.js"
 import { getComponentCatalogue } from "../components/index.js"
 import { textNodeKeys, type TextNodeKey } from "../components/text.js"
 import type { Container, HostContext, Instance, Props, PublicInstance, TextInstance, Type } from "../types/host.js"
@@ -10,6 +10,11 @@ import { getNextId } from "../utils/id.js"
 import { setInitialProperties, updateProperties } from "../utils/index.js"
 
 let currentUpdatePriority = NoEventPriority
+
+function initialInstanceProps(type: Type, props: Props): Props {
+  if (type !== "image" || props.source === undefined) return props
+  return { ...props, source: undefined }
+}
 
 // Required by the reconciler at runtime but missing from @types/react-reconciler.
 // Remove this intersection when DefinitelyTyped catches up.
@@ -59,7 +64,7 @@ export const hostConfig: HostConfig<
 
     return new components[type](rootContainerInstance.ctx, {
       id,
-      ...props,
+      ...initialInstanceProps(type, props),
     })
   },
 
@@ -151,12 +156,13 @@ export const hostConfig: HostConfig<
     rootContainerInstance: Container,
     hostContext: HostContext,
   ) {
-    setInitialProperties(instance, type, props)
-    return false
+    setInitialProperties(instance, type, initialInstanceProps(type, props))
+    return type === "image" && props.source !== undefined
   },
 
   // Commit mount
   commitMount(instance: Instance, type: Type, props: Props, internalInstanceHandle: any) {
+    if (instance instanceof ImageRenderable) instance.source = props.source
     // We could focus the instance here, but we're handling focus in setInitialProperties
   },
 

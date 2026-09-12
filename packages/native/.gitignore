@@ -1,0 +1,10 @@
+.zig-cache
+zig-out
+lib
+symbols
+zig-pkg
+zig-deps
+.zig-deps.*
+examples/*/.zig-cache
+examples/*/zig-out
+examples/*/zig-pkg

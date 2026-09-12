@@ -1,14 +1,25 @@
 ---
 title: TabSelect
-description: Horizontal tab-based selection component
-order: 6
+description: Choose one option from a horizontal tab list
 ---
 
 # TabSelect
 
-Horizontal tab-based selection component with descriptions and scroll support. The component must be focused to receive keyboard input.
+`TabSelect` shows peer choices in a horizontal tab strip and scrolls the strip as the selection moves. Use [Select](/docs/components/select) for a vertical option list.
 
-## Basic Usage
+Focus the component to receive keyboard input.
+
+## Availability
+
+| Field           | Availability               |
+| --------------- | -------------------------- |
+| Package         | `@opentui/core`            |
+| Core renderable | `TabSelectRenderable`      |
+| React           | `<tab-select>` (automatic) |
+| Solid           | `<tab_select>` (automatic) |
+| Status          | Built in                   |
+
+## Basic usage
 
 ### Renderable API
 
@@ -19,13 +30,13 @@ const renderer = await createCliRenderer()
 
 const tabs = new TabSelectRenderable(renderer, {
   id: "tabs",
-  width: 60,
+  width: 36,
   options: [
-    { name: "Home", description: "Dashboard and overview" },
-    { name: "Files", description: "File management" },
-    { name: "Settings", description: "Application settings" },
+    { name: "Home", description: "View project overview" },
+    { name: "Files", description: "Browse project files" },
+    { name: "Settings", description: "Configure the project" },
   ],
-  tabWidth: 20,
+  tabWidth: 12,
 })
 
 tabs.on(TabSelectRenderableEvents.ITEM_SELECTED, (index, option) => {
@@ -36,28 +47,15 @@ tabs.focus()
 renderer.root.add(tabs)
 ```
 
-### Construct API
+After pressing Right, Files is selected:
 
-```typescript
-import { TabSelect, createCliRenderer } from "@opentui/core"
-
-const renderer = await createCliRenderer()
-
-const tabs = TabSelect({
-  width: 60,
-  tabWidth: 15,
-  options: [
-    { name: "Tab 1", description: "First tab" },
-    { name: "Tab 2", description: "Second tab" },
-    { name: "Tab 3", description: "Third tab" },
-  ],
-})
-
-tabs.focus()
-renderer.root.add(tabs)
+```text terminal=tab-select-tabs surface
+ Home        Files       Settings
+            ▬▬▬▬▬▬▬▬▬▬▬▬
+ Browse project files
 ```
 
-## Keyboard Navigation
+## Keyboard navigation
 
 When focused, the tab select responds to these keys:
 
@@ -69,7 +67,7 @@ When focused, the tab select responds to these keys:
 
 ## Events
 
-### Item Selected
+### Item selected
 
 Emitted when the user presses Enter on a tab:
 
@@ -82,9 +80,9 @@ tabs.on(TabSelectRenderableEvents.ITEM_SELECTED, (index: number, option: TabSele
 })
 ```
 
-### Selection Changed
+### Selection update
 
-Emitted when the highlighted tab changes:
+Emitted after successful movement or a valid `setSelectedIndex()` call:
 
 ```typescript
 import { TabSelectRenderableEvents, type TabSelectOption } from "@opentui/core"
@@ -94,49 +92,65 @@ tabs.on(TabSelectRenderableEvents.SELECTION_CHANGED, (index: number, option: Tab
 })
 ```
 
+Every valid `setSelectedIndex()` call emits the event, even when it assigns the current index. A blocked directional
+movement does not emit it.
+
 ## Properties
 
-| Property                   | Type                     | Default       | Description                    |
-| -------------------------- | ------------------------ | ------------- | ------------------------------ |
-| `width`                    | `number`                 | -             | Total component width          |
-| `options`                  | `TabSelectOption[]`      | `[]`          | Available tabs                 |
-| `tabWidth`                 | `number`                 | `20`          | Width of each tab              |
-| `backgroundColor`          | `string \| RGBA`         | `transparent` | Background color               |
-| `textColor`                | `string \| RGBA`         | `#FFFFFF`     | Normal tab text                |
-| `focusedBackgroundColor`   | `string \| RGBA`         | `#1a1a1a`     | Background color when focused  |
-| `focusedTextColor`         | `string \| RGBA`         | `#FFFFFF`     | Text color when focused        |
-| `selectedBackgroundColor`  | `string \| RGBA`         | `#334455`     | Selected tab background        |
-| `selectedTextColor`        | `string \| RGBA`         | `#FFFF00`     | Selected tab text              |
-| `selectedDescriptionColor` | `string \| RGBA`         | `#CCCCCC`     | Description text color         |
-| `showScrollArrows`         | `boolean`                | `true`        | Show scroll indicators         |
-| `showDescription`          | `boolean`                | `true`        | Show tab descriptions          |
-| `showUnderline`            | `boolean`                | `true`        | Show underline on selected tab |
-| `wrapSelection`            | `boolean`                | `false`       | Wrap around when navigating    |
-| `keyBindings`              | `TabSelectKeyBinding[]`  | -             | Custom key bindings            |
-| `keyAliasMap`              | `Record<string, string>` | -             | Key alias mappings             |
+| Property                   | Type                     | Default            | Description                    |
+| -------------------------- | ------------------------ | ------------------ | ------------------------------ |
+| `width`                    | `number`                 | -                  | Total component width          |
+| `options`                  | `TabSelectOption[]`      | `[]`               | Available tabs                 |
+| `tabWidth`                 | `number`                 | `20`               | Width of each tab              |
+| `backgroundColor`          | `string \| RGBA`         | `transparent`      | Background color               |
+| `textColor`                | `string \| RGBA`         | `#FFFFFF`          | Normal tab text                |
+| `focusedBackgroundColor`   | `string \| RGBA`         | initial base color | Background color when focused  |
+| `focusedTextColor`         | `string \| RGBA`         | initial base color | Text color when focused        |
+| `selectedBackgroundColor`  | `string \| RGBA`         | `#334455`          | Selected tab background        |
+| `selectedTextColor`        | `string \| RGBA`         | `#FFFF00`          | Selected tab text              |
+| `selectedDescriptionColor` | `string \| RGBA`         | `#CCCCCC`          | Description text color         |
+| `showScrollArrows`         | `boolean`                | `true`             | Show scroll indicators         |
+| `showDescription`          | `boolean`                | `true`             | Show tab descriptions          |
+| `showUnderline`            | `boolean`                | `true`             | Show underline on selected tab |
+| `wrapSelection`            | `boolean`                | `false`            | Wrap around when navigating    |
+| `keyBindings`              | `TabSelectKeyBinding[]`  | -                  | Custom key bindings            |
+| `keyAliasMap`              | `Record<string, string>` | -                  | Key alias mappings             |
 
-## Example: Tabbed Interface
+If you omit a focused color, the constructor copies the corresponding base color. If you omit both values, the focused
+background uses `#1a1a1a`, and the focused text uses `#FFFFFF`.
+
+## Example: tabbed interface
 
 ```typescript
-import { Box, Text, TabSelect, createCliRenderer } from "@opentui/core"
+import {
+  BoxRenderable,
+  TabSelectRenderable,
+  TabSelectRenderableEvents,
+  TextRenderable,
+  createCliRenderer,
+} from "@opentui/core"
 
 const renderer = await createCliRenderer()
 
-// Create content panels
-const panels = {
-  home: Box({ padding: 1 }, Text({ content: "Home content here" })),
-  files: Box({ padding: 1 }, Text({ content: "File browser here" })),
-  settings: Box({ padding: 1 }, Text({ content: "Settings form here" })),
+function createPanel(content: string) {
+  const panel = new BoxRenderable(renderer, { padding: 1 })
+  panel.add(new TextRenderable(renderer, { content }))
+  return panel
 }
 
-// Create the tabbed container
-const container = Box({
+const panels = {
+  home: createPanel("Home content here"),
+  files: createPanel("File browser here"),
+  settings: createPanel("Settings form here"),
+}
+
+const container = new BoxRenderable(renderer, {
   width: 60,
   height: 20,
   borderStyle: "rounded",
 })
 
-const tabs = TabSelect({
+const tabs = new TabSelectRenderable(renderer, {
   width: 60,
   tabWidth: 20,
   options: [
@@ -146,21 +160,15 @@ const tabs = TabSelect({
   ],
 })
 
-// Content area
 let currentPanel = panels.home
-const contentArea = Box({
+const contentArea = new BoxRenderable(renderer, {
   flexGrow: 1,
   padding: 1,
 })
 contentArea.add(currentPanel)
 
-// Handle tab changes
-tabs.on("itemSelected", (index, option) => {
-  // Remove current panel
-  if (currentPanel) {
-    contentArea.remove(currentPanel)
-  }
-  // Add new panel based on selection
+tabs.on(TabSelectRenderableEvents.ITEM_SELECTED, (_index, option) => {
+  contentArea.remove(currentPanel)
   switch (option.name) {
     case "Home":
       currentPanel = panels.home
@@ -178,11 +186,11 @@ tabs.on("itemSelected", (index, option) => {
 container.add(tabs)
 container.add(contentArea)
 
-tabs.focus()
 renderer.root.add(container)
+tabs.focus()
 ```
 
-## Programmatic Control
+## Programmatic control
 
 ```typescript
 // Get current tab index
@@ -198,6 +206,10 @@ tabs.setOptions([
 ])
 ```
 
-## Scroll Behavior
+## Scroll behavior
 
 When there are more tabs than fit in the width, the component automatically handles horizontal scrolling as you navigate with the keyboard.
+
+## Related concepts
+
+Read [Interaction, focus, and selection](/docs/core-concepts/interaction) for focus and event behavior. Use [ScrollBox](/docs/components/scrollbox) for content scrolling that is independent of the tab strip.

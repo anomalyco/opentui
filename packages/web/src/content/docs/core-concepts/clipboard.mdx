@@ -1,0 +1,288 @@
+---
+title: Clipboard
+description: Read and write the host clipboard and the terminal clipboard
+skill:
+  entry: true
+  intents: [clipboard, copy, osc52, host-clipboard]
+---
+
+# Clipboard
+
+OpenTUI includes a cross-platform clipboard service. It combines two mechanisms
+behind one API:
+
+- **Host clipboard:** reads and modifies the clipboard of the machine that runs the OpenTUI process. Native backends
+  use Wayland, X11, Win32, or macOS pasteboard APIs.
+- **Terminal clipboard:** writes or clears the terminal user's clipboard with
+  [OSC 52](https://invisible-island.net/xterm/ctlseqs/ctlseqs.html) escape sequences.
+
+Clipboard reads are separate from terminal paste input. A read returns data to the caller. It does not create a
+`PasteEvent` and does not insert text into a focused editor. See
+[Keyboard input](/docs/core-concepts/keyboard#paste-events) for paste handling.
+
+## Quick start
+
+```typescript
+import { createClipboard, createHostClipboard, createRendererClipboardAdapter } from "@opentui/core"
+
+const clipboard = createClipboard({
+  host: createHostClipboard(),
+  terminal: createRendererClipboardAdapter(renderer),
+})
+
+const writeResult = await clipboard.writeText("Hello from OpenTUI", {
+  destination: "best-available",
+})
+console.log(writeResult.host, writeResult.terminal)
+
+const readResult = await clipboard.read({ preferredTypes: ["text/plain"] })
+if (readResult.status === "read") {
+  const { bytes } = readResult.representation
+  console.log(new TextDecoder().decode(bytes))
+}
+
+await clipboard.dispose()
+```
+
+`createHostClipboard()` creates the native host clipboard service. `createRendererClipboardAdapter(renderer)`
+connects the terminal path to a `CliRenderer` and its OSC 52 support. `createClipboard()` combines both into one
+service.
+
+## Public service API
+
+```typescript
+createHostClipboard(options?: HostClipboardOptions): HostClipboardService
+createRendererClipboardAdapter(renderer): TerminalClipboardAdapter
+createClipboard({ host, terminal }: ClipboardOptions): ClipboardService
+```
+
+| Service                    | Methods                                                                      |
+| -------------------------- | ---------------------------------------------------------------------------- |
+| `ClipboardService`         | `read(options)`, `writeText(text, options)`, `clear(options)`, `dispose()`   |
+| `HostClipboardService`     | `read(options)`, `writeText(text, options?)`, `clear(options?)`, `dispose()` |
+| `TerminalClipboardAdapter` | `remote`, `writeText(text, selection)`, `clear(selection)`                   |
+
+The composed service owns the host service passed to `createClipboard()`. The renderer adapter has no disposer. The
+[API and symbol index](/docs/reference/api-index) lists the associated option and result types.
+
+## Write destinations
+
+`writeText()` and `clear()` require a `destination` policy that selects the terminal, the host, or both:
+
+| Destination      | Local session                                                     | Remote session                             |
+| ---------------- | ----------------------------------------------------------------- | ------------------------------------------ |
+| `terminal-only`  | Terminal only                                                     | Terminal only                              |
+| `host-only`      | Host only                                                         | Skipped unless `allowRemoteHost` is `true` |
+| `best-available` | Host first, then the terminal if the host is unsupported or fails | Terminal only                              |
+| `all-available`  | Both concurrently                                                 | Terminal, plus host with `allowRemoteHost` |
+
+Skipped destinations report `{ status: "not-attempted" }` in the result.
+
+### Remote sessions
+
+In a remote session, such as SSH, the host clipboard belongs to the server host. It is not the clipboard on the SSH
+client. The terminal destination sends OSC 52 through the terminal transport to the remote client.
+
+The composed service skips server-host writes in remote sessions unless you pass `allowRemoteHost: true`. The renderer
+adapter reads remote state from `renderer.capabilities`. When capabilities are unknown, the adapter treats the session
+as remote. `best-available` always selects the terminal in a remote session, even when `allowRemoteHost` is `true`.
+See [SSH](/docs/reference/ssh) and [Terminal capabilities](/docs/reference/terminal-capabilities).
+
+### Terminal results
+
+Terminal operations are synchronous local dispatches:
+
+| Status          | Meaning                                                          |
+| --------------- | ---------------------------------------------------------------- |
+| `attempted`     | OpenTUI generated and queued the OSC 52 sequence                 |
+| `local-failure` | OpenTUI could not generate or queue the sequence                 |
+| `not-attempted` | Destination policy or known lack of support skipped the terminal |
+
+The status does not confirm that the terminal accepted the sequence. The `capability` field reports OSC 52 support as
+`supported`, `unsupported`, or `unknown`.
+
+## Reading
+
+`read()` always uses the process host. OSC 52 has no portable read mechanism, so OpenTUI cannot read a remote
+terminal user's clipboard over SSH.
+
+List the MIME types that you accept, in order of preference:
+
+```typescript
+const result = await clipboard.read({
+  preferredTypes: ["image/png", "text/plain"],
+})
+```
+
+On success, `result.representation` contains a canonical lowercase `mimeType` and caller-owned `bytes` as a
+`Uint8Array`. `preferredTypes` must contain from 1 through 64 MIME essence strings. Each string can contain at most 255
+ASCII bytes and cannot contain parameters. The possible statuses are:
+
+| Status           | Meaning                                                              |
+| ---------------- | -------------------------------------------------------------------- |
+| `read`           | `representation` holds the matched MIME type and its bytes           |
+| `empty`          | The selection has no content in an accepted type                     |
+| `unsupported`    | The platform or selection does not support the operation             |
+| `cancelled`      | The abort signal fired before the operation finished                 |
+| `timed-out`      | The operation passed its deadline                                    |
+| `limit-exceeded` | The content exceeds the configured size or image limits              |
+| `failed`         | A platform error occurred. The `error` field contains the diagnostic |
+
+### Supported content types
+
+All platforms read and write `text/plain`. Image support varies by platform:
+
+| Platform            | Image reads                                                                                   |
+| ------------------- | --------------------------------------------------------------------------------------------- |
+| Linux (Wayland/X11) | `image/png`, `image/jpeg`, `image/webp`, and `image/gif` as offered. WSLg converts BMP to PNG |
+| Windows             | `image/png` from registered PNG data, or `CF_DIB`/`CF_DIBV5` converted to PNG                 |
+| macOS               | `image/png` from native PNG data, or TIFF converted to PNG                                    |
+
+Linux selects Wayland when `WAYLAND_DISPLAY` or `WAYLAND_SOCKET` is nonempty and
+`libwayland-client.so.0` supplies the required symbols. It selects X11 when `DISPLAY` is nonempty and `libxcb.so.1`
+supplies the required symbols. Wayland has priority. It can fall back to X11 when Wayland reports unsupported and both
+are available. OpenTUI talks to these protocols directly. It does not invoke `wl-copy`, `wl-paste`, `xclip`, or `xsel`.
+
+Windows uses the Win32 clipboard API and does not invoke PowerShell. macOS uses native pasteboard and image APIs and
+does not invoke `pbcopy` or `pbpaste`.
+
+On Windows Subsystem for Linux (WSL), the standard clipboard supports reads and text writes through the available
+display backend. Primary-selection operations and host clear operations return `unsupported`. WSLg can offer BMP image
+data, which OpenTUI converts to PNG for an `image/png` request.
+
+## Writing text
+
+`writeText()` validates its input before it tries any destination. The returned promise rejects with a `TypeError`
+for empty strings, NUL characters, or unpaired surrogates. It rejects with a `RangeError` when the UTF-8 encoding
+of the text exceeds `maxWriteBytes`. Host write results use the statuses `written`, `unsupported`, `cancelled`,
+`timed-out`, and `failed`.
+
+For local `best-available`, terminal fallback occurs only after host status `unsupported` or `failed`. Cancellation and
+timeout do not start that fallback. A pre-aborted composed write or clear validates its input, skips both destinations,
+and returns `not-attempted` results.
+
+## Clearing
+
+`clear()` does a real platform clear. A write of empty text is not a clear request. A `cleared` status means that
+the platform completed its clear operation. It does not guarantee permanent erasure, because clipboard managers
+can keep earlier content.
+
+## Selections
+
+Read, write, and clear options accept a `selection`:
+
+| Selection             | Description                                          |
+| --------------------- | ---------------------------------------------------- |
+| `clipboard` (default) | The standard clipboard                               |
+| `primary`             | The X11 and Wayland primary (middle-click) selection |
+
+The host primary selection exists only on Linux. Host operations on Windows and macOS return `unsupported` for it. The
+renderer adapter maps `primary` to the OSC 52 primary target.
+
+## Limits and options
+
+`createHostClipboard()` bounds all native work. All options are optional:
+
+| Option                    | Default               | Description                                                                 |
+| ------------------------- | --------------------- | --------------------------------------------------------------------------- |
+| `timeoutMs`               | `1000`                | Cooperative deadline. It cannot interrupt a synchronous OS call in progress |
+| `maxReadBytes`            | `8388608` (8 MiB)     | Largest payload a read returns                                              |
+| `maxWriteBytes`           | `8388608` (8 MiB)     | Largest UTF-8 text a write accepts                                          |
+| `maxImagePixels`          | `67108864`            | Largest image the converters process                                        |
+| `maxConversionBytes`      | `536870912` (512 MiB) | Memory ceiling for image conversion                                         |
+| `maxConcurrentOperations` | `16`                  | Active operations per service                                               |
+| `maxProviderTransfers`    | `16`                  | Concurrent outgoing paste transfers served on Linux                         |
+| `waylandSeat`             | auto                  | Explicit Wayland seat name                                                  |
+
+When a service reaches `maxConcurrentOperations`, additional operations resolve to `{ status: "failed" }` and do
+not throw. The service exposes the resolved `maxWriteBytes` value, so you can check the text size before you
+write.
+
+## Cancellation
+
+Every operation accepts an `AbortSignal`. Cancellation is cooperative. A synchronous platform call that is already
+in progress finishes before the service observes the abort.
+
+```typescript
+import { createHostClipboard } from "@opentui/core"
+
+const host = createHostClipboard()
+const controller = new AbortController()
+
+const pending = host.read({
+  preferredTypes: ["text/plain"],
+  signal: controller.signal,
+})
+
+controller.abort()
+console.log((await pending).status) // "cancelled" unless the read already finished
+```
+
+A pre-aborted direct host operation returns `cancelled`. A `timeoutMs` value of `0` makes direct host operations return
+`timed-out` before native work starts.
+
+## Host-only usage
+
+Use `createHostClipboard()` alone when you do not need the terminal path or a renderer:
+
+```typescript
+import { createHostClipboard } from "@opentui/core"
+
+const host = createHostClipboard({ maxReadBytes: 2 * 1024 * 1024 })
+
+const result = await host.writeText("copied without a renderer")
+console.log(result.status)
+
+await host.dispose()
+```
+
+When a process starts with only a `WAYLAND_SOCKET` file descriptor, create one host service per process. The
+process can consume the inherited socket only once.
+
+## Renderer OSC 52 methods
+
+`CliRenderer` exposes the low-level terminal path directly:
+
+```typescript
+if (renderer.isOsc52Supported()) {
+  renderer.copyToClipboardOSC52("copied text")
+  renderer.clearClipboardOSC52()
+}
+```
+
+Both methods accept an optional `ClipboardTarget` (`Clipboard`, `Primary`, `Select`, or `Secondary`) and return
+`true` only when OpenTUI generates and queues the sequence. They return `false` when policy blocks the operation or a
+local generation or output step fails. `isOsc52Supported()` returns `false` only when the terminal reported OSC 52 as
+unsupported. An `unknown` capability therefore returns `true` from this check.
+
+## Disposal
+
+Dispose the service when your application exits:
+
+1. The service rejects new operations.
+2. Active operations abort.
+3. The service waits for native cleanup: worker threads, provider transfers, and platform resources.
+
+Keep the service alive while your application runs. On Linux, the OpenTUI process can own the clipboard after
+`writeText()` resolves. Other applications request the data from your process when they paste. `dispose()` is
+asynchronous. Await it before exit, so that the service releases the native resources. `renderer.destroy()` does
+not dispose a clipboard service that you created.
+
+`dispose()` returns the same promise on repeated calls. If native cleanup rejects, later calls return that same rejected
+promise rather than starting a new cleanup attempt. Put renderer destruction in a `finally` block so a clipboard cleanup
+failure cannot skip terminal restoration. See [Lifecycle and cleanup](/docs/core-concepts/lifecycle).
+
+## Demo
+
+See the
+[clipboard paste demo](https://github.com/anomalyco/opentui/blob/main/packages/examples/src/clipboard-paste-demo.ts)
+for an interactive tool. It tests host writes, terminal writes, reads, selections, clears, Unicode and large payloads,
+and service disposal.
+
+## Next
+
+- [Keyboard input](/docs/core-concepts/keyboard#paste-events) explains terminal paste events.
+- [Lifecycle and cleanup](/docs/core-concepts/lifecycle) defines service and renderer shutdown order.
+- [SSH](/docs/reference/ssh) defines ownership for remote sessions.
+- [Terminal capabilities](/docs/reference/terminal-capabilities) explains OSC 52 detection state.
+- [Runtime and platform support](/docs/getting-started/runtime-support) lists supported operating systems and runtimes.

@@ -1,0 +1,380 @@
+---
+title: Audio capture and recording
+description: Capture Float32 PCM, poll input devices, and record PCM16 WAV files
+skill:
+  entry: true
+  intents: [audio-capture, microphone, pcm, recording, wav, audio-recorder]
+---
+
+# Audio capture and recording
+
+OpenTUI captures microphone or input-device audio through the native miniaudio engine. Applications can consume Float32 PCM or record PCM16 WAV files.
+
+Capture is independent from playback. It does not start output or the mixer, and playback lifecycle methods do not change capture state.
+
+## Capture a PCM stream
+
+Create capture through `audio.openCapture(options?)`. The `AudioCaptureStream` constructor is private.
+
+```typescript
+import { Audio, type AudioCaptureStream } from "@opentui/core"
+
+const audio = Audio.create({ autoStart: false })
+let capture: AudioCaptureStream | null = null
+
+audio.on("error", (error, context) => {
+  console.error(`${context.action}: ${error.message}`)
+})
+
+function reportPcm(pcm: Float32Array, channels: number): void {
+  console.log(`received ${pcm.length / channels} frames`)
+}
+
+try {
+  const activeCapture = await audio.openCapture({
+    channels: 1,
+    chunkFrames: 2048,
+  })
+  capture = activeCapture
+
+  activeCapture.on("error", (error, context) => {
+    console.error(`${context.action}: ${error.message}`)
+  })
+
+  const consumption = (async () => {
+    for await (const pcm of activeCapture.readable) {
+      reportPcm(pcm, activeCapture.channels)
+    }
+  })()
+
+  await new Promise((resolve) => setTimeout(resolve, 1000))
+  activeCapture.stop()
+  await consumption
+  await activeCapture.closed
+} finally {
+  if (capture != null && capture.state !== "stopped" && capture.state !== "errored" && capture.state !== "disposed") {
+    capture.dispose()
+  }
+  await capture?.closed
+  audio.dispose()
+}
+```
+
+`Audio` and `AudioCaptureStream` inherit Node's `EventEmitter`. Attach the `Audio` error listener before `openCapture()`.
+
+Attach the stream error listener immediately after setup resolves and before reading. Setup failures reject because no stream exists for a listener yet.
+
+An unhandled later `error` event throws. A parent method that returns `false` or `null` can emit and throw before it returns.
+
+## Capture options
+
+`openCapture()` accepts these options:
+
+| Option           | Default                 | Effect                                               |
+| ---------------- | ----------------------- | ---------------------------------------------------- |
+| `channels`       | `1`                     | Samples in each interleaved frame                    |
+| `capacityFrames` | `audio.sampleRate`      | Native ring capacity, equal to one second by default |
+| `chunkFrames`    | `2048`                  | Frames in each normal stream chunk                   |
+| `startOptions`   | Capture native defaults | Low-level input-device options                       |
+| `signal`         | None                    | Disposes capture when aborted                        |
+
+Frame counts and channel counts must be finite positive unsigned 32-bit integers. `chunkFrames` cannot exceed `capacityFrames`.
+
+The product of `chunkFrames` and `channels` must also fit an unsigned 32-bit integer. Native channel and ring-allocation limits can reject larger valid integers.
+
+Capture always uses `audio.sampleRate`. Create another `Audio` engine to use a different sample rate.
+
+`recordToFile()` accepts the same options. WAV recording limits `channels` to `1` or `2`.
+
+### Capture start-option detail
+
+Capture has a special default for `noFixedSizedCallback`. The wrapper sets the native value to `true` when that field
+is undefined. This applies when `startOptions` is omitted and when it is `{}`. Pass
+`startOptions: { noFixedSizedCallback: false }` to select `false` explicitly.
+
+See [Low-level start options](/docs/core-concepts/audio#low-level-start-options) for the complete field list.
+
+## PCM stream behavior
+
+`readable` is a `ReadableStream<Float32Array>` with `highWaterMark: 0`. OpenTUI reads native PCM only when a consumer requests data.
+
+While capture runs, the stream waits for a complete `chunkFrames` block. Each normal array contains `chunkFrames * channels` valid samples.
+
+PCM uses interleaved 32-bit floating-point samples. Values are nominally in `[-1, 1]`, and one frame contains one sample for each channel.
+
+The stream does not build a JavaScript PCM queue. It keeps one in-progress chunk and uses the native ring as its bounded buffer.
+
+The native input callback never waits for JavaScript. When the ring is full, it keeps older frames and drops the newest complete frames.
+
+`getStats().framesDropped` counts that loss. A nonzero value means the captured timeline has gaps.
+
+`framesRead` counts frames removed from the native ring. It includes frames discarded during an unlocked graceful stop.
+
+Thus, `framesRead` does not always equal frames delivered to application code.
+
+## Stop, cancel, and dispose
+
+`stop()` stops the input device and starts a graceful drain. Its state changes to `stopping` until unread PCM is handled.
+
+When a consumer holds the readable lock, the stream emits every remaining full chunk. It then emits one exact-length short final chunk when needed.
+
+The consumer must continue reading during this drain. A locked reader that stops pulling can keep graceful shutdown pending.
+
+Release the reader lock when the consumer will not continue. The stream then switches to its no-reader drain.
+
+Without a readable lock, OpenTUI discards unread PCM in bounded batches. It yields to the event loop after each 32 chunks.
+
+The discard updates native `framesRead`, releases capture ownership, and lets `closed` resolve without consumer demand.
+
+Canceling `readable`, calling `dispose()`, aborting `signal`, or disposing the owning `Audio` skips the graceful drain. The terminal state becomes `disposed`.
+
+`closed` resolves after cleanup and the one terminal event. It never rejects.
+
+## Select an input device
+
+List and select an input before capture starts.
+
+```typescript
+const devices = audio.listCaptureDevices() ?? []
+const selected = devices.find((device) => device.isDefault) ?? devices[0]
+
+if (selected != null && !audio.selectCaptureDevice(selected.index)) {
+  throw new Error(`Could not select ${selected.name}`)
+}
+```
+
+Each `AudioCaptureDevice` has `index`, `name`, and `isDefault` fields. An empty array means enumeration found no inputs.
+
+`null` means enumeration failed. Device indices belong to the latest enumeration and can change after hot-plug events.
+
+`clearCaptureDeviceSelection()` removes the explicit selection. A later start then asks the backend for its default input.
+
+`selectCaptureDevice()` fails while a capture device is open. Stop capture before selecting another input.
+
+An owned stream or recorder also blocks `clearCaptureDeviceSelection()`. During direct capture, clearing changes only the selection for a later start.
+
+## Exclusive capture ownership
+
+One `Audio` engine permits one capture owner. An active `AudioCaptureStream` or `AudioRecorder` owns the native capture ring exclusively.
+
+A second `openCapture()` rejects with `AudioCaptureStreamError`. A second `recordToFile()` rejects with `AudioRecorderError` after it cleans its temporary file.
+
+These direct methods fail while a stream or recorder owns capture:
+
+| Direct method                   | Owned-capture result                    |
+| ------------------------------- | --------------------------------------- |
+| `startCapture()`                | Returns `false` and emits `Audio.error` |
+| `readCaptureFrames()`           | Returns `null` and emits `Audio.error`  |
+| `stopCapture()`                 | Returns `false` and emits `Audio.error` |
+| `selectCaptureDevice()`         | Returns `false` and emits `Audio.error` |
+| `clearCaptureDeviceSelection()` | Returns `void` and emits `Audio.error`  |
+
+`listCaptureDevices()`, `isCapturing()`, and `getCaptureStats()` remain available. Their information can describe the active owner.
+
+A failed native stop can retain exclusive ownership after the child enters `errored`. A later `dispose()` call retries cleanup.
+
+The parent also retries child cleanup during `audio.dispose()`. Do not create another owner until cleanup releases the first one.
+
+## Poll capture directly
+
+Use the direct API when application code controls the polling cadence.
+
+```typescript
+audio.on("error", (error, context) => {
+  console.error(`${context.action}: ${error.message}`)
+})
+
+if (!audio.startCapture({ channels: 2, capacityFrames: 48_000 })) {
+  throw new Error("Could not start capture")
+}
+
+const result = audio.readCaptureFrames(1024)
+if (result != null) {
+  const channels = audio.getCaptureStats()?.channels ?? 2
+  const validSamples = result.frames.subarray(0, result.framesRead * channels)
+  console.log(validSamples.length)
+}
+
+audio.stopCapture()
+```
+
+### Direct method reference
+
+| Method                          | Result and behavior                             |
+| ------------------------------- | ----------------------------------------------- |
+| `listCaptureDevices()`          | Returns `AudioCaptureDevice[] \| null`          |
+| `selectCaptureDevice(index)`    | Selects one current index and returns `boolean` |
+| `clearCaptureDeviceSelection()` | Clears explicit selection and returns `void`    |
+| `startCapture(options?)`        | Starts input and returns `boolean`              |
+| `isCapturing()`                 | Reports whether the input device still runs     |
+| `readCaptureFrames(frameCount)` | Returns `{ frames, framesRead } \| null`        |
+| `getCaptureStats()`             | Returns `AudioCaptureStats \| null`             |
+| `stopCapture()`                 | Stops the input device and returns `boolean`    |
+
+`readCaptureFrames()` consumes up to `frameCount` frames. `frameCount` cannot exceed the configured ring capacity.
+
+Each call allocates `frameCount * channels` samples. Only the first `framesRead * channels` samples contain captured data.
+
+`stopCapture()` preserves unread PCM for later direct reads. A later successful `startCapture()` replaces the ring and resets all counters.
+
+While capture runs, `startCapture()` is idempotent when no explicit setting differs. Matching `channels` and `capacityFrames` also succeed without a restart.
+
+Any supplied `startOptions` requests reconfiguration and fails while capture runs. Stop capture before changing options.
+
+Successful transitions emit parent `captureStarted` and `captureStopped` events. An observed external device stop can also emit `captureStopped`.
+
+## Record a WAV file
+
+Create recording through `audio.recordToFile(filePath, options?)`. The `AudioRecorder` constructor is private.
+
+```typescript
+import { Audio, type AudioRecorder } from "@opentui/core"
+
+const audio = Audio.create({ autoStart: false })
+const recording = "recording.wav"
+let recorder: AudioRecorder | null = null
+
+audio.on("error", (error, context) => {
+  console.error(`${context.action}: ${error.message}`)
+})
+
+try {
+  const activeRecorder = await audio.recordToFile(recording, {
+    channels: 1,
+  })
+  recorder = activeRecorder
+
+  activeRecorder.on("error", (error, context) => {
+    console.error(`${context.action}: ${error.message}`)
+  })
+
+  await new Promise((resolve) => setTimeout(resolve, 1000))
+  activeRecorder.stop()
+  await activeRecorder.closed
+
+  if (activeRecorder.state === "errored") {
+    throw new Error("Recording failed")
+  }
+} finally {
+  if (
+    recorder != null &&
+    recorder.state !== "stopped" &&
+    recorder.state !== "errored" &&
+    recorder.state !== "disposed"
+  ) {
+    recorder.dispose()
+  }
+  await recorder?.closed
+  audio.dispose()
+}
+```
+
+`AudioRecorder` also inherits `EventEmitter`. Attach its error listener immediately after setup and before waiting or calling a method.
+
+Setup errors reject `recordToFile()`. Later write, capture, finalization, publication, and cleanup errors emit `error`.
+
+## WAV format and filesystem behavior
+
+The recorder writes little-endian PCM16 WAV. Its `format` property is the literal `"wav"`.
+
+Float samples clamp to `[-1, 1]` before conversion. The recorder writes chunks sequentially and keeps one capture read pending during each file write.
+
+The destination path must be a nonempty string without NUL bytes. Its parent directory must already exist.
+
+OpenTUI creates the temporary file in the destination directory with exclusive creation. It tries at most 64 candidate names and never opens an existing candidate.
+
+Recording first writes a placeholder header to that temporary file. It does not modify an existing destination during capture.
+
+`stop()` stops input, drains all buffered frames, and writes the final WAV header. It then syncs and closes the temporary file.
+
+After those steps, OpenTUI calls a same-directory filesystem `rename()` from the temporary path to the destination. The host filesystem defines replacement and rename guarantees.
+
+OpenTUI adds no guarantee beyond that rename behavior. Code that needs a specific durability or replacement contract must account for the target filesystem.
+
+The rename call is the publication point of no return. After rename starts, recorder disposal, signal abort, and parent disposal let it finish.
+
+Before rename starts, disposal tries to remove the temporary file. Header, sync, close, or capture failures do not publish that file.
+
+A cleanup failure reports action `destroy` and can retain the file handle or temporary path. A later `dispose()` retries those retained resources.
+
+Dropped capture frames are terminal for a recorder. OpenTUI reports an error and does not publish an incomplete recording.
+
+Classic RIFF limits the audio data chunk to exactly `4,294,967,259` bytes. The recorder does not support RF64 or compressed WAV data.
+
+## Stream and recorder members
+
+### `AudioCaptureStream`
+
+| Member                   | Behavior                                                  |
+| ------------------------ | --------------------------------------------------------- |
+| `readable`               | Demand-driven stream of interleaved `Float32Array` chunks |
+| `sampleRate`, `channels` | Captured PCM format                                       |
+| `chunkFrames`            | Normal requested chunk size                               |
+| `state`                  | Current capture-stream state                              |
+| `getStats()`             | Refreshes and returns capture statistics                  |
+| `stop()`                 | Stops input and starts a graceful drain                   |
+| `dispose()`              | Stops without a graceful drain                            |
+| `closed`                 | Resolves after cleanup and terminal event delivery        |
+
+Capture-stream state is `initializing`, `capturing`, `stopping`, `stopped`, `errored`, or `disposed`.
+
+Capture-stream statistics contain `state`, `sampleRate`, `channels`, `capacityFrames`, `bufferedFrames`, and `bufferedDurationMs`. They also contain `framesReceived`, `framesRead`, and `framesDropped`.
+
+### `AudioRecorder`
+
+| Member                   | Behavior                                            |
+| ------------------------ | --------------------------------------------------- |
+| `filePath`, `format`     | Destination path and literal `"wav"`                |
+| `sampleRate`, `channels` | Recorded PCM format                                 |
+| `state`                  | Current recorder state                              |
+| `getStats()`             | Returns capture, file, and duration statistics      |
+| `stop()`                 | Drains, finalizes, syncs, closes, and renames       |
+| `dispose()`              | Aborts before rename and removes the temporary file |
+| `closed`                 | Resolves after cleanup and terminal event delivery  |
+
+Recorder state is `initializing`, `recording`, `stopping`, `stopped`, `errored`, or `disposed`.
+
+Recorder statistics add `framesWritten`, `dataBytesWritten`, and `durationMs` to capture statistics. `durationMs` derives from written frames.
+
+## Events and error actions
+
+Both child classes emit asynchronous, mutually exclusive terminal events:
+
+| Class                | Events                         |
+| -------------------- | ------------------------------ |
+| `AudioCaptureStream` | `stopped`, `error`, `disposed` |
+| `AudioRecorder`      | `stopped`, `error`, `disposed` |
+
+Each `error` event receives the typed error and `{ action, status? }`. `closed` resolves after the event listener runs, even if that listener throws.
+
+The exact `AudioCaptureStreamAction` values are `start`, `read`, `stop`, `stats`, and `destroy`.
+
+The exact `AudioRecorderAction` values are `open`, `start`, `read`, `write`, `stop`, `finalize`, `publish`, `stats`, and `destroy`.
+
+Invalid options throw `TypeError` or `RangeError` before native work. A pre-start abort rejects with `AbortError`.
+
+Capture-stream setup failures reject with `AudioCaptureStreamError`. Recorder setup and cleanup failures reject with `AudioRecorderError`.
+
+Later failures error the readable when applicable and emit the child `error` event. Unhandled error events throw through `EventEmitter`.
+
+## Permissions and signal limits
+
+The application that starts OpenTUI must have microphone permission. On macOS, grant access to the terminal application and restart it fully.
+
+A packaged macOS application needs its own permission. Windows privacy controls can block microphone access for desktop applications.
+
+Linux capture uses PulseAudio or ALSA. PipeWire works through its PulseAudio compatibility layer, subject to device permissions.
+
+Headless sessions, containers, sandboxes, and continuous integration systems often have no input device. Enumeration can return `null` or an empty array.
+
+A denied or unavailable input can reject setup, return `false`, or deliver clocked digital silence. Advancing frame counters does not prove that a signal exists.
+
+OpenTUI capture does not provide compressed recording, system-output loopback, echo cancellation, or JavaScript callbacks on the native audio thread.
+
+Run compression and signal processing outside the native callback path. Use platform-specific input facilities for system loopback.
+
+## Next
+
+- [Audio](/docs/core-concepts/audio)
+- [Streaming audio](/docs/application-apis/audio-streaming)
+- [Lifecycle and cleanup](/docs/core-concepts/lifecycle)

@@ -1,12 +1,21 @@
 ---
 title: Textarea
-description: Multi-line text input with selection and keybindings
-order: 4
+description: Edit multiple lines with cursor movement, selection, and key bindings
 ---
 
 # Textarea
 
-Multi-line text input with cursor, selection, and rich keybindings.
+`Textarea` edits multiple lines with cursor movement, selection, and configurable key bindings. Use [Input](/docs/components/input) for a single line.
+
+## Availability
+
+| Field           | Availability             |
+| --------------- | ------------------------ |
+| Package         | `@opentui/core`          |
+| Core renderable | `TextareaRenderable`     |
+| React           | `<textarea>` (automatic) |
+| Solid           | `<textarea>` (automatic) |
+| Status          | Built in                 |
 
 ## Basic usage
 
@@ -30,6 +39,20 @@ const textarea = new TextareaRenderable(renderer, {
 
 renderer.root.add(textarea)
 textarea.focus()
+```
+
+At 30 columns, longer text wraps at word boundaries:
+
+```typescript
+textarea.width = 30
+textarea.setText("Long lines wrap at word boundaries.\nKeep paragraphs readable.")
+```
+
+```text terminal=textarea-wrap surface
+Notes
+Long lines wrap at word
+boundaries.
+Keep paragraphs readable.
 ```
 
 ## Submit handling
@@ -60,48 +83,50 @@ const textarea = new TextareaRenderable(renderer, {
 })
 ```
 
-## Construct API
-
-> Not available yet. Use `TextareaRenderable` for now.
-
 ## Properties
 
-| Property                 | Type                                  | Default     | Description                       |
-| ------------------------ | ------------------------------------- | ----------- | --------------------------------- |
-| `width`                  | `number` or `string`                  | -           | Width in characters or percentage |
-| `height`                 | `number` or `string`                  | -           | Height in rows or percentage      |
-| `initialValue`           | `string`                              | `""`        | Initial text content              |
-| `placeholder`            | `string`, `StyledText`, or `null`     | `null`      | Placeholder content               |
-| `placeholderColor`       | `string` or `RGBA`                    | `#666666`   | Placeholder color                 |
-| `backgroundColor`        | `string` or `RGBA`                    | transparent | Background when unfocused         |
-| `textColor`              | `string` or `RGBA`                    | `#FFFFFF`   | Text color when unfocused         |
-| `focusedBackgroundColor` | `string` or `RGBA`                    | transparent | Background when focused           |
-| `focusedTextColor`       | `string` or `RGBA`                    | `#FFFFFF`   | Text color when focused           |
-| `wrapMode`               | `"none"`, `"char"`, or `"word"`       | `"word"`    | Line wrapping mode                |
-| `selectionBg`            | `string` or `RGBA`                    | -           | Selection background              |
-| `selectionFg`            | `string` or `RGBA`                    | -           | Selection foreground              |
-| `cursorColor`            | `string` or `RGBA`                    | `#FFFFFF`   | Cursor color                      |
-| `cursorStyle`            | `CursorStyleOptions`                  | -           | Cursor style and blinking         |
-| `keyBindings`            | `KeyBinding[]`                        | -           | Custom keybindings                |
-| `keyAliasMap`            | `Record<string, string>`              | -           | Key alias mapping                 |
-| `onSubmit`               | `(event: SubmitEvent) => void`        | -           | Submit handler                    |
-| `onContentChange`        | `(event: ContentChangeEvent) => void` | -           | Fired on content changes          |
-| `onCursorChange`         | `(event: CursorChangeEvent) => void`  | -           | Fired on cursor movement          |
+| Property                 | Type                                  | Default            | Description                             |
+| ------------------------ | ------------------------------------- | ------------------ | --------------------------------------- |
+| `width`                  | `number` or `string`                  | -                  | Width in terminal columns or percentage |
+| `height`                 | `number` or `string`                  | -                  | Height in rows or percentage            |
+| `initialValue`           | `string`                              | `""`               | Initial text content                    |
+| `placeholder`            | `string`, `StyledText`, or `null`     | `null`             | Placeholder content                     |
+| `placeholderColor`       | `string` or `RGBA`                    | `#666666`          | Placeholder color                       |
+| `backgroundColor`        | `string` or `RGBA`                    | transparent        | Background when unfocused               |
+| `textColor`              | `string` or `RGBA`                    | `#FFFFFF`          | Text color when unfocused               |
+| `focusedBackgroundColor` | `string` or `RGBA`                    | initial base color | Background when focused                 |
+| `focusedTextColor`       | `string` or `RGBA`                    | initial base color | Text color when focused                 |
+| `wrapMode`               | `"none"`, `"char"`, or `"word"`       | `"word"`           | Line wrapping mode                      |
+| `selectionBg`            | `string` or `RGBA`                    | -                  | Selection background                    |
+| `selectionFg`            | `string` or `RGBA`                    | -                  | Selection foreground                    |
+| `cursorColor`            | `string` or `RGBA`                    | `#FFFFFF`          | Cursor color                            |
+| `cursorStyle`            | `CursorStyleOptions`                  | -                  | Cursor style and blinking               |
+| `selectionOccupancy`     | `"cell"` or `"boundary"`              | `"cell"`           | Which cells a selection occupies        |
+| `keyBindings`            | `KeyBinding[]`                        | -                  | Custom key bindings                     |
+| `keyAliasMap`            | `Record<string, string>`              | -                  | Key alias mapping                       |
+| `onSubmit`               | `(event: SubmitEvent) => void`        | -                  | Submit handler                          |
+| `onContentChange`        | `(event: ContentChangeEvent) => void` | -                  | Fired on content changes                |
+| `onCursorChange`         | `(event: CursorChangeEvent) => void`  | -                  | Fired on cursor movement                |
+
+If you omit a focused color, the constructor copies the corresponding base color. If you omit both values, the focused
+background is transparent, and the focused text uses `#FFFFFF`.
 
 ## Useful properties
 
-| Property                | Type                       | Description                                                     |
-| ----------------------- | -------------------------- | --------------------------------------------------------------- |
-| `plainText`             | `string`                   | Current text content                                            |
-| `cursorOffset`          | `number`                   | Cursor offset in the buffer                                     |
-| `cursorCharacterOffset` | `number \| undefined`      | Offset of the character under the cursor (skips trailing blank) |
-| `logicalCursor`         | `{ row, col }`             | Logical line/column of the cursor                               |
-| `visualCursor`          | `{ row, col, visualLine }` | Visual (post-wrap) cursor position                              |
-| `traits`                | `EditorTraits`             | Editor traits published to hosting UI (see [Traits](#traits))   |
+| Property                | Type                  | Description                                                   |
+| ----------------------- | --------------------- | ------------------------------------------------------------- |
+| `plainText`             | `string`              | Current text content                                          |
+| `cursorOffset`          | `number`              | Cursor offset in the buffer                                   |
+| `cursorCharacterOffset` | `number \| undefined` | Best-effort UTF-16 index of the character under the cursor    |
+| `logicalCursor`         | `{ row, col }`        | Logical line/column of the cursor                             |
+| `visualCursor`          | `VisualCursor`        | Visual and logical cursor coordinates, plus the buffer offset |
+| `traits`                | `EditorTraits`        | Editor traits published to hosting UI (see [Traits](#traits)) |
+
+`cursorCharacterOffset` uses a display-cell offset as a JavaScript string index. Its result is not reliable after wide graphemes, line breaks, or joined emoji. Use `logicalCursor`, `visualCursor`, and the editing-buffer APIs for Unicode-aware work.
 
 ## Cursor and selection control
 
-`TextareaRenderable` (and its base `EditBufferRenderable`) exposes a programmatic API. You can move the cursor, edit text, and drive selections from your own keybindings or commands. All selection-aware movement methods accept `{ select: true }` to extend the current selection instead of moving the cursor.
+`TextareaRenderable` and its base `EditBufferRenderable` expose a programmatic API. You can move the cursor, edit text, and drive selections from your own key bindings or commands. All selection-aware movement methods accept `{ select: true }` to extend the current selection instead of moving the cursor.
 
 ### Cursor movement
 
@@ -128,12 +153,25 @@ textarea.gotoBufferEnd({ select: true })
 
 ### Selection
 
+Textarea uses the repeated-click behavior from [Text selection](/docs/core-concepts/interaction#text-selection). After a
+double-click or triple-click, the cursor stays on the clicked grapheme. A later Shift+Arrow keeps the selected text and
+continues the selection by cells, not by words or lines.
+
 ```typescript
-textarea.setSelection(start, end) // half-open offsets
-textarea.setSelectionInclusive(start, end) // inclusive end
+textarea.setSelection(start, end) // half-open [start, end) in both occupancy modes
+textarea.setSelectionInclusive(start, end) // also selects the grapheme at end in cell mode
 textarea.selectAll()
 textarea.clearSelection()
 textarea.deleteSelection()
+```
+
+Selecting `keyboard focus` in a draft:
+
+```text terminal=textarea-selection surface
+Draft
+Plan the release
+Review keyboard focus
+Ship the update
 ```
 
 ### Editing
@@ -153,11 +191,16 @@ textarea.undo()
 textarea.redo()
 ```
 
-These methods update the cursor, clear any active global selection, and call `requestRender()` for you.
+These methods update the editor and request a render as needed. Selection behavior depends on the method. Movement with
+`{ select: true }` extends the selection. Call `clearSelection()` when a command must clear the global selection.
+
+The default occupancy is `cell`: the selection covers both endpoint cells, so the first shift+right selects two
+cells. If you use a bar cursor (`cursorStyle: { style: "line" }`), also set `selectionOccupancy: "boundary"`. The
+cursor style is visual only and never changes which text you select, copy, or delete.
 
 ## Traits
 
-The `traits` property lets an editor advertise intent to a host UI — which built-in keys it wants to capture, whether it wants the chrome to visually suspend, and a short status label for a footer or status bar. Assigning a new `EditorTraits` object emits the `traits-changed` event when the value differs from the previous one.
+The `traits` property tells a host UI which built-in keys the editor wants to capture. It also supplies a visual-suspension hint and an optional status label. Assigning a different `EditorTraits` object emits the `traits-changed` event.
 
 ```typescript
 import { EditBufferRenderableEvents, type EditorTraits } from "@opentui/core"
@@ -180,3 +223,7 @@ textarea.on(EditBufferRenderableEvents.TRAITS_CHANGED, (traits) => {
 | `status`  | `string`          | Optional short label surfacing editor mode in a status bar                      |
 
 Traits reset to an empty object when you destroy the renderable. Use `isEditBufferRenderable(renderable)` if you need to distinguish editor renderables from plain text renderables in a generic tree.
+
+## Related concepts
+
+Read [Interaction, focus, and selection](/docs/core-concepts/interaction) for focus and selection ownership. Read [Text and terminal cells](/docs/core-concepts/text-and-cells) for the difference between buffer offsets, graphemes, and display cells.

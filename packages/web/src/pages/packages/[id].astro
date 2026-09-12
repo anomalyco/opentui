@@ -1,0 +1,261 @@
+---
+import { getCollection, render, type CollectionEntry } from "astro:content"
+import ProseCode from "../../components/ProseCode.astro"
+import ProseH2 from "../../components/ProseH2.astro"
+import ProseH3 from "../../components/ProseH3.astro"
+import ProseTable from "../../components/ProseTable.astro"
+import SitePage from "../../layouts/SitePage.astro"
+import { loadFirstPartyPackageFacts, type PackageFacts, type PlatformFact } from "../../lib/package-facts"
+import { loadRemotePackageFacts, type RemotePackageFact } from "../../lib/remote-package-facts"
+
+type PagePackageFacts = RemotePackageFact & Partial<Omit<PackageFacts, "id">>
+
+export async function getStaticPaths() {
+  const entries = await getCollection("packages")
+  const facts = new Map<string, PagePackageFacts>((await loadRemotePackageFacts()).map((fact) => [fact.id, fact]))
+  for (const fact of await loadFirstPartyPackageFacts()) {
+    facts.set(fact.id, { ...facts.get(fact.id), ...fact })
+  }
+
+  return entries.map((entry) => ({
+    params: { id: entry.id },
+    props: { entry, fact: facts.get(entry.id) },
+  }))
+}
+
+interface Props {
+  entry: CollectionEntry<"packages">
+  fact?: PagePackageFacts
+}
+
+const { entry, fact } = Astro.props
+const { Content } = await render(entry)
+const installCommands = entry.data.distributions.flatMap(({ install }) => (install ? [install] : []))
+const repositoryUrl = entry.data.source.url.replace(/\.git$/, "")
+// npm registry and issue-tracker links stay off this row: the install
+// commands already show each package identifier, and the source link
+// reaches the tracker. The row carries only destinations with no other
+// path on the page.
+const linkItems = [
+  { label: "Source", href: repositoryUrl },
+  ...(entry.data.links?.homepage ? [{ label: "Homepage", href: entry.data.links.homepage }] : []),
+  ...(entry.data.links?.docs ? [{ label: "Docs", href: entry.data.links.docs }] : []),
+  ...(entry.data.links?.changelog ? [{ label: "Changelog", href: entry.data.links.changelog }] : []),
+]
+const surfaces = entry.data.surfaces ?? []
+const maintainers = entry.data.official ? [] : (entry.data.maintainers ?? [])
+const platformRows = fact?.platforms ? groupPlatforms(fact.platforms) : []
+const platformPackageCount = fact?.platformPackages?.length ?? 0
+const hasFacts = Boolean(fact?.license || fact?.version || fact?.stars !== undefined)
+const hasAside =
+  hasFacts || installCommands.length > 0 || surfaces.length > 0 || platformRows.length > 0 || maintainers.length > 0
+
+function groupPlatforms(platforms: PlatformFact[]) {
+  const labels = { linux: "Linux", macos: "macOS", windows: "Windows" } as const
+  return (["linux", "macos", "windows"] as const).flatMap((os) => {
+    const matching = platforms.filter((platform) => platform.os === os)
+    if (matching.length === 0) return []
+    return [
+      {
+        os: labels[os],
+        architectures: [...new Set(matching.map(({ architecture }) => architecture))].join(", "),
+        abi: os === "linux" ? [...new Set(matching.map(({ abi }) => (abi === "gnu" ? "glibc" : abi)))].join(" and ") : "",
+      },
+    ]
+  })
+}
+---
+
+<SitePage
+  wide
+  reading
+  title={`${entry.data.name} | OpenTUI Packages`}
+  description={entry.data.summary}
+  footerAnimation="equalizer"
+>
+  <article class="package prose">
+    <p class="facts">
+      <span>{entry.id}</span>
+      <span>[{entry.data.official ? "official" : "community"}]</span>
+      {entry.data.status !== "active" && <span>{entry.data.status}</span>}
+    </p>
+    <h1>{entry.data.name}</h1>
+    <p class="links">{linkItems.map(({ label, href }) => <a href={href}>{label}</a>)}</p>
+
+    <div class="body">
+      <Content components={{ pre: ProseCode, table: ProseTable, h2: ProseH2, h3: ProseH3 }} />
+    </div>
+
+    {
+      hasAside && (
+        <aside class="side">
+          {hasFacts && (
+            <p class="meta">
+              {fact?.license && <span>{fact.license}</span>}
+              {fact?.version && <span>{fact.version}</span>}
+              {fact?.stars !== undefined && <span>{fact.stars.toLocaleString("en-US")} GitHub stars</span>}
+            </p>
+          )}
+          {installCommands.map((install) => (
+            <ProseCode data-code={install}>
+              <code>{install}</code>
+            </ProseCode>
+          ))}
+          {surfaces.length > 0 && (
+            <section>
+              <h2>APIs</h2>
+              <ProseTable>
+                <tbody>
+                  {surfaces.map((surface) => (
+                    <tr>
+                      <th scope="row">{surface.name}</th>
+                      <td>{surface.import && <code>{surface.import}</code>}</td>
+                      <td>{surface.docs && <a href={surface.docs}>Docs</a>}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </ProseTable>
+            </section>
+          )}
+          {platformRows.length > 0 && (
+            <section>
+              <h2>Platforms</h2>
+              {platformPackageCount > 0 && <p>Prebuilt binaries ship as {platformPackageCount} platform packages.</p>}
+              <ProseTable>
+                <tbody>
+                  {platformRows.map((row) => (
+                    <tr>
+                      <th scope="row">{row.os}</th>
+                      <td>{row.architectures}</td>
+                      <td>{row.abi}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </ProseTable>
+            </section>
+          )}
+          {maintainers.length > 0 && (
+            <p>
+              Maintained by{" "}
+              {maintainers.map((maintainer, index) => (
+                <>
+                  {index > 0 && ", "}
+                  <a href={`https://github.com/${maintainer.replace(/^@/, "")}`}>{maintainer}</a>
+                </>
+              ))}
+            </p>
+          )}
+        </aside>
+      )
+    }
+  </article>
+</SitePage>
+
+<style>
+  /* One column in reading order: facts, name, links, body, then the
+   * install command and reference tables. Wide viewports keep the same
+   * DOM and regroup it: the article on the frame's left edge at the
+   * reading measure, everything else in a right column that starts
+   * level with the body, on one shared datum below the page header. */
+
+  .facts,
+  .links,
+  .side .meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0 2ch;
+  }
+
+  /* Facts read like the list page's meta line: muted, with ownership as
+   * a bracketed label. The sidebar's license/version/star count is the
+   * same kind of fact, kept out of the header line so it reads with the
+   * install command and reference tables instead of crowding the title. */
+  .facts,
+  .side .meta {
+    color: var(--muted-color);
+  }
+
+  .facts {
+    margin-block: 0 0.75rem;
+  }
+
+  .package > h1 {
+    margin-block: 0 0.75rem;
+  }
+
+  .links {
+    margin-block: 0 1.5rem;
+  }
+
+  .body {
+    margin-block-start: 0;
+  }
+
+  /* Code in the package body reads as text, not as a panel: no border,
+   * no padding, a two-cell indent, and a thin scrollbar. The install
+   * command in the aside keeps the shared bordered block, which marks
+   * the copyable control. */
+  .body :global(pre) {
+    border: 0;
+    padding: 0;
+    padding-inline-start: 2ch;
+    scrollbar-width: thin;
+  }
+
+  .body :global(.copy-code) {
+    inset-block-start: 0;
+    inset-inline-end: 0;
+  }
+
+  .side {
+    margin-block-start: 3rem;
+  }
+
+  @media (min-width: 64rem) {
+    .package {
+      display: grid;
+      grid-template-columns: minmax(0, var(--content-width)) minmax(0, 1fr);
+      grid-template-areas:
+        "facts ."
+        "title ."
+        "links ."
+        "body side";
+      column-gap: 3rem;
+      align-items: start;
+    }
+
+    .facts {
+      grid-area: facts;
+    }
+
+    h1 {
+      grid-area: title;
+    }
+
+    .links {
+      grid-area: links;
+    }
+
+    .body {
+      grid-area: body;
+    }
+
+    .side {
+      grid-area: side;
+      margin-block-start: 0;
+    }
+
+    /* Aside sections read as sidebar matter: body-size bold labels on
+     * the body line grid instead of article section headings, which set
+     * their own size and 1.5rem line boxes. */
+    .side h2 {
+      margin-block: 0 0.75rem;
+      font-size: var(--text-body);
+      line-height: 1.5;
+    }
+
+    .side section + section {
+      margin-block-start: 1.5rem;
+    }
+  }
+</style>

@@ -46,17 +46,17 @@ exports[`TextTableRenderable balanced fitter keeps constrained columns visually 
 │der  │Services   │Solutions│Model    │        │         │  
 ├─────┼───────────┼─────────┼─────────┼────────┼─────────┤  
 │Amazo│EC2        │S3 tiers,│Pay as   │Global  │Enterpris│  
-│n Web│instances  │ EBS,    │you go,  │regions │e migrati│  
-│ Serv│with       │EFS, and │reserved │and     │on, analy│  
-│ices │extensive  │archive  │terms,   │many    │tics, ML,│  
-│     │options    │classes  │and      │edge    │ and back│  
-│     │for        │for long │discounte│location│end servi│  
-│     │general,   │retention│d spot ca│s       │ces      │  
-│     │memory,    │         │pacity   │        │         │  
-│     │and        │         │         │        │         │  
-│     │accelerated│         │         │        │         │  
-│     │ workloads │         │         │        │         │  
+│n Web│instances  │EBS, EFS,│you go,  │regions │e        │  
+│Servi│with       │and      │reserved │and many│migration│  
+│ces  │extensive  │archive  │terms,   │edge    │,        │  
+│     │options for│classes  │and      │location│analytics│  
+│     │general,   │for long │discounte│s       │, ML, and│  
+│     │memory, and│retention│d spot   │        │backend  │  
+│     │accelerated│         │capacity │        │services │  
+│     │workloads  │         │         │        │         │  
 └─────┴───────────┴─────────┴─────────┴────────┴─────────┘  
+                                                            
+                                                            
 "
 `;
 
@@ -66,17 +66,17 @@ exports[`TextTableRenderable balanced fitter keeps constrained columns visually 
 │        │Services│Solutions│Model    │        │         │  
 ├────────┼────────┼─────────┼─────────┼────────┼─────────┤  
 │Amazon  │EC2     │S3 tiers,│Pay as   │Global  │Enterpris│  
-│Web     │instance│ EBS,    │you go,  │regions │e migrati│  
-│Services│s with e│EFS, and │reserved │and     │on, analy│  
-│        │xtensive│archive  │terms,   │many    │tics, ML,│  
-│        │ options│classes  │and      │edge    │ and back│  
-│        │ for gen│for long │discounte│location│end servi│  
-│        │eral, me│retention│d spot ca│s       │ces      │  
-│        │mory, an│         │pacity   │        │         │  
-│        │d accele│         │         │        │         │  
-│        │rated wo│         │         │        │         │  
-│        │rkloads │         │         │        │         │  
-└────────┴────────┴─────────┴─────────┴────────┴─────────┘  
+│Web     │instance│EBS, EFS,│you go,  │regions │e        │  
+│Services│s with  │and      │reserved │and many│migration│  
+│        │extensiv│archive  │terms,   │edge    │,        │  
+│        │e       │classes  │and      │location│analytics│  
+│        │options │for long │discounte│s       │, ML, and│  
+│        │for     │retention│d spot   │        │backend  │  
+│        │general,│         │capacity │        │services │  
+│        │memory, │         │         │        │         │  
+│        │and     │         │         │        │         │  
+│        │accelera│         │         │        │         │  
+│        │ted     │         │         │        │         │  
 "
 `;
 
@@ -126,8 +126,8 @@ exports[`TextTableRenderable wraps CJK and emoji without grapheme duplication: u
 ├─────┼──────────────────────┤                              
 │mixed│東京界 🌍 emoji       │                              
 │     │wrapping continues    │                              
-│     │across lines for      │                              
-│     │width checks          │                              
+│     │across lines for width│                              
+│     │checks                │                              
 ├─────┼──────────────────────┤                              
 │emoji│Faces 😀😃😄 should   │                              
 │     │remain stable         │                              
@@ -144,22 +144,22 @@ exports[`TextTableRenderable keeps full wrapped table layouts after a wide-to-na
 "┌────────────────────────┬─────────────────┬─────────────────────────┐
 │Task                    │Owner            │ETA                      │
 ├────────────────────────┼─────────────────┼─────────────────────────┤
-│Wrap regression in      │core platform    │done after validating    │
-│operational status      │and runtime      │none, word, and char     │
-│dashboard with dynamic  │reliability squad│wrap modes across narrow,│
-│row heights and         │                 │ medium, wide, and ultra-│
+│Wrap regression in      │core platform and│done after validating    │
+│operational status      │runtime          │none, word, and char wrap│
+│dashboard with dynamic  │reliability squad│modes across narrow,     │
+│row heights and         │                 │medium, wide, and ultra- │
 │constrained layout      │                 │wide terminal widths     │
 │validation              │                 │                         │
 ├────────────────────────┼─────────────────┼─────────────────────────┤
 │Unicode layout          │render pipeline  │in review with follow-up │
 │stabilization for mixed │maintainers with │checks for border style  │
-│Latin, punctuation,     │fallback shaping │transitions, cell        │
-│symbols, and long       │support          │padding variants, and    │
-│identifiers in adjacent │                 │selection range          │
-│columns                 │                 │consistency              │
+│Latin, punctuation,     │fallback shaping │transitions, cell padding│
+│symbols, and long       │support          │variants, and selection  │
+│identifiers in adjacent │                 │range consistency        │
+│columns                 │                 │                         │
 ├────────────────────────┼─────────────────┼─────────────────────────┤
-│Snapshot pass for table │qa automation    │today pending final      │
-│rendering in content    │and visual diff  │baseline updates for     │
+│Snapshot pass for table │qa automation and│today pending final      │
+│rendering in content    │visual diff      │baseline updates for     │
 │mode and full mode with │triage group     │oversized fixtures that  │
 │heavy and double border │                 │intentionally stress     │
 │combinations            │                 │wrapping behavior on     │
@@ -167,14 +167,14 @@ exports[`TextTableRenderable keeps full wrapped table layouts after a wide-to-na
 ├────────────────────────┼─────────────────┼─────────────────────────┤
 │Document edge cases     │developer        │planned for this sprint  │
 │where long tokens       │experience and   │once final reproducible  │
-│without spaces force    │docs tooling     │examples are captured    │
-│char wrapping and       │                 │and linked to regression │
-│reveal per-cell         │                 │tracking tickets         │
-│clipping regressions    │                 │                         │
+│without spaces force    │docs tooling     │examples are captured and│
+│char wrapping and reveal│                 │linked to regression     │
+│per-cell clipping       │                 │tracking tickets         │
+│regressions             │                 │                         │
 ├────────────────────────┼─────────────────┼─────────────────────────┤
 │Performance sweep of    │runtime          │scheduled after review,  │
-│wrapping algorithm      │performance task │with benchmark runs on   │
-│under large datasets to │force            │laptop and desktop       │
+│wrapping algorithm under│performance task │with benchmark runs on   │
+│large datasets to       │force            │laptop and desktop       │
 │confirm stable frame    │                 │terminals at 200-plus    │
 │times during rapid key  │                 │column widths            │
 │toggling                │                 │                         │
@@ -186,24 +186,24 @@ exports[`TextTableRenderable keeps full wrapped table layouts after a wide-to-na
 "┌─────────────┬──────────────────────────────────────────────────────┐
 │Column       │Wrapped Text                                          │
 ├─────────────┼──────────────────────────────────────────────────────┤
-│mixed-       │CJK and emoji wrapping stress case: こんにちは世界    │
-│languages    │and 안녕하세요 세계 and 你好，世界 followed by long   │
+│mixed-       │CJK and emoji wrapping stress case: こんにちは世界 and│
+│languages    │안녕하세요 세계 and 你好，世界 followed by long       │
 │             │English prose that keeps flowing to test whether each │
 │             │cell wraps naturally even when the terminal is        │
-│             │extremely wide and the row still needs multiple       │
-│             │visual lines for readability 🌍🚀                     │
+│             │extremely wide and the row still needs multiple visual│
+│             │lines for readability 🌍🚀                            │
 ├─────────────┼──────────────────────────────────────────────────────┤
 │emoji-and-   │Faces 😀😃😄😁😆 plus symbols 🧪📦🛰️🔧📊 mixed with   │
 │symbols      │version tags like release-candidate-build-2026-02-    │
-│             │very-long-token-without-breaks to ensure char         │
-│             │wrapping remains stable and no glyph alignment issues │
-│             │appear at column boundaries                           │
+│             │very-long-token-without-breaks to ensure char wrapping│
+│             │remains stable and no glyph alignment issues appear at│
+│             │column boundaries                                     │
 ├─────────────┼──────────────────────────────────────────────────────┤
 │long-cjk-    │長文の日本語テキストと中文段落和한국어문장을連続して配│
-│phrase       │置し、その後に additional English context describing r│
-│             │enderer behavior, border intersection handling, and se│
-│             │lection extraction so that this single cell remains a │
-│             │reliable wrapping torture test.                       │
+│phrase       │置し、その後に additional English context describing  │
+│             │renderer behavior, border intersection handling, and  │
+│             │selection extraction so that this single cell remains │
+│             │a reliable wrapping torture test.                     │
 ├─────────────┼──────────────────────────────────────────────────────┤
 │mixed-       │Wrap behavior with punctuation-heavy content: [alpha]{│
 │punctuation  │beta}(gamma)<delta>|epsilon| then repeated fragments, │

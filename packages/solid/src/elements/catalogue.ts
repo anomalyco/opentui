@@ -3,6 +3,7 @@ import {
   BoxRenderable,
   CodeRenderable,
   DiffRenderable,
+  ImageRenderable,
   InputRenderable,
   LineNumberRenderable,
   MarkdownRenderable,
@@ -101,6 +102,7 @@ export const baseComponents = {
   diff: DiffRenderable,
   line_number: LineNumberRenderable,
   markdown: MarkdownRenderable,
+  image: ImageRenderable,
 
   span: SpanRenderable,
   strong: BoldSpanRenderable,

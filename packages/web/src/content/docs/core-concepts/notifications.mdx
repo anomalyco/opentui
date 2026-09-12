@@ -1,22 +1,28 @@
 ---
 title: Notifications
 description: Trigger terminal-mediated desktop notifications
-order: 8
 skill:
   intents: [notifications, terminal, osc, renderer]
 ---
 
 # Notifications
 
-OpenTUI can ask the terminal emulator to show a desktop notification using OSC escape sequences. Use this for long-running tasks, background work, or prompts that need attention.
+OpenTUI asks the terminal emulator to show a desktop notification with an operating system command (OSC) sequence. It does not call host notification tools.
 
 ```typescript
 const ok = renderer.triggerNotification("Build finished", "OpenTUI")
 ```
 
-`triggerNotification(message, title?)` returns `true` when OpenTUI has detected a supported notification protocol, and `false` otherwise.
+`renderer.triggerNotification(message, title?)` returns `true` when OpenTUI selects a protocol and queues its output. It does not confirm that the terminal or desktop displayed a notification.
 
-## Capability
+The method returns `false` in these cases:
+
+- The renderer is destroyed.
+- OpenTUI has not selected a notification protocol.
+- Notification detection or an override disabled the capability.
+- Local encoding, allocation, or output generation fails.
+
+## Detection timing
 
 Check detection state through renderer capabilities:
 
@@ -24,17 +30,54 @@ Check detection state through renderer capabilities:
 if (renderer.capabilities?.notifications) {
   renderer.triggerNotification("Tests passed", "CI")
 }
+
+renderer.on("capabilities", (capabilities) => {
+  console.log("notification capability", capabilities.notifications)
+})
 ```
 
-OpenTUI detects and emits terminal OSC notification protocols only. It does not call platform tools such as `notify-send`, AppleScript, or PowerShell toasts.
+`createCliRenderer()` starts terminal queries, but it does not wait for all replies before it resolves. The renderer updates `capabilities` and emits the `capabilities` event as replies arrive. The startup capability handler stops after 5 seconds.
+
+A `false` value can mean that no protocol is supported. It can also mean that asynchronous detection has not selected one yet. Remote and multiplexer sessions often start in this state. Read [Terminal capabilities](/docs/reference/terminal-capabilities) for the complete detection lifecycle.
+
+OpenTUI uses these sources, from strongest to weakest:
+
+1. `OPENTUI_NOTIFICATION_PROTOCOL` overrides.
+2. OSC 99 and iTerm2 capability-query replies.
+3. XTVERSION terminal identity.
+4. Terminal environment heuristics.
+
+An OSC 99 reply must include the OpenTUI query identifier, `p=?`, and title support. An iTerm2 capability reply selects OSC 9 only when its feature codes contain `No`.
+
+Known terminal identities select these protocols:
+
+| Protocol | Detected terminal families                                                                                              |
+| -------- | ----------------------------------------------------------------------------------------------------------------------- |
+| OSC 99   | Kitty and foot                                                                                                          |
+| OSC 777  | Ghostty, WezTerm, Warp, hterm, Blink, Contour, VTE, GNOME Terminal, Tilix, Terminator, Xfce, rxvt, and Windows Terminal |
+| OSC 9    | iTerm, Apple Terminal, Terminal.app, and ConEmu                                                                         |
+
+Environment hints can select the same protocols. `TERM_FEATURES` with `No` selects OSC 9. `WT_SESSION` selects OSC 777. Detection is terminal-mediated and does not call `notify-send`, AppleScript, PowerShell, or another platform notification command.
+
+## Protocol output
+
+| Protocol | Output behavior                                                                     |
+| -------- | ----------------------------------------------------------------------------------- |
+| OSC 99   | Sends base64 title and body payloads with one generated notification ID             |
+| OSC 777  | Sends `notify`, title, and body fields. Control bytes and semicolons become spaces  |
+| OSC 9    | Combines a nonempty title and body as `title: message`. Control bytes become spaces |
+
+When no title is supplied, each protocol sends the message in its supported body form.
 
 ## Terminal behavior
 
-Terminal and OS settings decide how the notification is presented. Some terminals only show banners when the terminal is unfocused, and macOS may store notifications in Notification Center without showing a banner depending on app notification settings.
+Terminal and operating system settings decide how a notification appears. A terminal can ignore a valid sequence. Some terminals show a banner only while unfocused. Desktop settings can also store a notification without showing a banner.
 
 ## Multiplexers
 
-tmux does not forward raw notification OSC sequences. When OpenTUI detects `renderer.capabilities?.multiplexer === "tmux"`, notification output is wrapped in tmux DCS passthrough. tmux must allow passthrough for the outer terminal to receive the notification:
+tmux does not forward raw notification OSC sequences. When OpenTUI detects
+`renderer.capabilities?.multiplexer === "tmux"`, it wraps the selected protocol in tmux device control string (DCS)
+passthrough. tmux must allow passthrough:
 
 ```text
 set -g allow-passthrough on
@@ -42,17 +85,43 @@ set -g allow-passthrough on
 
 Use `allow-passthrough all` if notifications need to work from panes that are not visible.
 
-Zellij notification forwarding is OSC 99 based. OpenTUI ignores inherited host-terminal notification hints inside Zellij and enables notifications there only after an OSC 99 notification query succeeds, or when explicitly overridden. Zellij needs OSC 99 notification forwarding support for this to work.
+Zellij notification forwarding uses OSC 99. OpenTUI ignores inherited outer-terminal heuristics inside Zellij. It enables notifications only after a matching OSC 99 query reply or an explicit protocol override. Selected OSC 99 output remains raw instead of using tmux wrapping.
+
+For a local GNU Screen session with `STY` set, OpenTUI wraps a selected protocol in Screen DCS passthrough. Screen does not itself select a notification protocol, so detection or an override must still enable one.
+
+In an [SSH session](/docs/reference/ssh), the renderer sends the sequence to the client terminal. The server desktop is not the notification destination.
 
 ## Overrides
 
-Use environment overrides for diagnostics or deployments where terminal detection cannot query the final terminal path:
+Use an override when detection cannot identify the final terminal path:
 
 ```sh
 OPENTUI_NOTIFICATION_PROTOCOL=osc99
 OPENTUI_NOTIFICATIONS=0
 ```
 
-`OPENTUI_NOTIFICATION_PROTOCOL` accepts `osc9`, `osc777`, `osc99`, or `none`. `OPENTUI_NOTIFICATIONS=0`, `false`, or `off` disables notifications.
+`OPENTUI_NOTIFICATION_PROTOCOL` accepts these protocol values:
 
-See `packages/examples/src/notification-demo.ts` for an interactive example.
+| Value                       | Result                         |
+| --------------------------- | ------------------------------ |
+| `osc9`, `osc777`, `osc99`   | Force that protocol            |
+| `none`, `0`, `false`, `off` | Disable notification protocols |
+| `1`, `true`, `on`           | Keep automatic selection       |
+
+The string comparisons for protocol names and words are case-insensitive. `OPENTUI_NOTIFICATIONS=0`, `false`, or `off` also disables notifications. Other values do not force support. An explicit disable remains authoritative when later query replies arrive.
+
+See [Environment variables](/docs/reference/env-vars) for configuration timing. Protocol overrides assert support and can still produce no desktop notification when a terminal or multiplexer does not accept that protocol.
+
+## Example
+
+See the
+[notification demo](https://github.com/anomalyco/opentui/blob/main/packages/examples/src/notification-demo.ts)
+for detection state, protocol output, and interactive notification requests.
+
+## Next
+
+- [Renderer](/docs/core-concepts/renderer) documents the renderer and its capability event.
+- [Terminal capabilities](/docs/reference/terminal-capabilities) explains query and remote-session state.
+- [Environment variables](/docs/reference/env-vars) lists notification overrides.
+- [SSH](/docs/reference/ssh) defines remote renderer ownership and transport.
+- [Troubleshooting](/docs/test-and-debug/troubleshooting) routes notification and multiplexer failures.

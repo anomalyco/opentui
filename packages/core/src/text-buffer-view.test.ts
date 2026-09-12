@@ -3,6 +3,142 @@ import { TextBuffer } from "./text-buffer.js"
 import { TextBufferView } from "./text-buffer-view.js"
 import { StyledText, stringToStyledText } from "./lib/styled-text.js"
 import { RGBA } from "./lib/RGBA.js"
+import { OptimizedBuffer } from "./buffer.js"
+
+it("cached word and CJK breaks retain streaming source order", () => {
+  const part = "AB \u65e5\u672c\u3002\u8a9e\u6587 "
+  const layouts = []
+  for (const fragmented of [false, true]) {
+    const buffer = TextBuffer.create("wcwidth")
+    const view = TextBufferView.create(buffer)
+    const screen = OptimizedBuffer.create(10, 256, "wcwidth")
+    try {
+      if (fragmented) {
+        for (let i = 0; i < 64; i++) buffer.append(part)
+      } else {
+        buffer.setText(part.repeat(64))
+      }
+      view.setWrapMode("word")
+      for (const width of [6, 8, 6]) {
+        view.setWrapWidth(width)
+        screen.clear()
+        screen.drawTextBuffer(view, 0, 0)
+        const lines = view.lineInfo
+        layouts.push({
+          rows: new TextDecoder().decode(screen.getRealCharBytes(true)),
+          starts: lines.lineStartCols,
+          widths: lines.lineWidthCols,
+        })
+      }
+    } finally {
+      screen.destroy()
+      view.destroy()
+      buffer.destroy()
+    }
+  }
+  expect(layouts.slice(0, 3)).toEqual(layouts.slice(3))
+})
+
+for (const method of ["unicode", "unicode-wide", "wcwidth"] as const) {
+  for (const [name, parts, width, expectedRows] of [
+    [
+      "mixed CJK and split flags using the existing word policy",
+      ["\u65e5\u672c\u{1f1fa}", "\u{1f1f8}\u{1f1fa}\u{1f1f8}\u8a9e\u6587"],
+      4,
+      ["\u65e5\u672c", "\u{1f1fa}\u{1f1f8}\u{1f1fa}\u{1f1f8}", "\u8a9e\u6587"],
+    ],
+    [
+      "non-CJK chunk-local flag boundaries",
+      ["\u{1f1e6}", "\u{1f1e7}\u{1f1e8}", "\u{1f1e9}\u{1f1ea}\u{1f1eb}"],
+      3,
+      ["\u{1f1e6}\u{1f1e7}\u{1f1e8}", "\u{1f1e9}\u{1f1ea}\u{1f1eb}"],
+    ],
+    [
+      "mixed CJK and a split modifier using the existing word policy",
+      ["\u65e5\u672c\u{1f44b}", "\u{1f3fb}\u8a9e\u6587"],
+      4,
+      ["\u65e5\u672c", "\u{1f44b}\u{1f3fb}", "\u8a9e\u6587"],
+    ],
+    [
+      "mixed CJK and a split ZWJ using the existing word policy",
+      ["\u65e5\u672c\u{1f469}\u200d", "\u{1f4bb}\u8a9e\u6587"],
+      4,
+      ["\u65e5\u672c", "\u{1f469}\u200d\u{1f4bb}", "\u8a9e\u6587"],
+    ],
+    [
+      "existing modifier and ZWJ limitations",
+      ["\u65e5\u672c\u{1f469}", "\u{1f3fb}\u200d\u{1f4bb}\u8a9e\u6587"],
+      6,
+      ["\u65e5\u672c\u{1f469}", "\u{1f3fb}\u200d\u{1f4bb}\u8a9e", "\u6587"],
+    ],
+    [
+      "CJK opportunities on logical lines following an unsafe line",
+      ["\u65e5\u672c\u{1f44b}", "\u{1f3fb}\u8a9e\u6587\n\nA \u65e5\u672c\u8a9e"],
+      4,
+      ["\u65e5\u672c", "\u{1f44b}\u{1f3fb}", "\u8a9e\u6587", "A \u65e5", "\u672c\u8a9e"],
+    ],
+    ["kana punctuation", ["AB \u30ab", "\u30fb\u30ca"], 6, ["AB", "\u30ab\u30fb\u30ca"]],
+  ] as const) {
+    it(`word wrapping preserves ${name} across appends (${method})`, () => {
+      const buffer = TextBuffer.create(method)
+      const view = TextBufferView.create(buffer)
+      const screen = OptimizedBuffer.create(width + 1, 8, method)
+      try {
+        for (const part of parts) buffer.append(part)
+        view.setWrapMode("word")
+        for (const wrapWidth of [width, width + 1, width]) {
+          view.setWrapWidth(wrapWidth)
+          const measure = view.measureForDimensions(wrapWidth, 8)
+          const lines = view.lineInfo
+          expect(Math.max(...lines.lineWidthCols)).toBeLessThanOrEqual(wrapWidth)
+          expect(measure).toEqual({
+            lineCount: lines.lineWidthCols.length,
+            widthColsMax: Math.max(...lines.lineWidthCols),
+          })
+        }
+        screen.clear()
+        screen.drawTextBuffer(view, 0, 0)
+        const rows = new TextDecoder()
+          .decode(screen.getRealCharBytes(true))
+          .split("\n")
+          .map((row) => row.trimEnd())
+          .filter(Boolean)
+        expect(rows).toEqual([...expectedRows])
+        expect(buffer.getPlainText()).toBe(parts.join(""))
+      } finally {
+        screen.destroy()
+        view.destroy()
+        buffer.destroy()
+      }
+    })
+  }
+}
+
+for (const method of ["unicode", "unicode-wide"] as const) {
+  for (const [base, mark, suffix] of [
+    ["\u304b", "\u3099", "\u304f"],
+    ["\u306f", "\u309a", "\u3072"],
+  ]) {
+    it(`word wrapping retains an appended kana mark (${method}, ${mark.codePointAt(0)})`, () => {
+      const buffer = TextBuffer.create(method)
+      const view = TextBufferView.create(buffer)
+      const screen = OptimizedBuffer.create(8, 2, method)
+      try {
+        buffer.setText(base)
+        buffer.append(mark + suffix)
+        view.setWrapMode("word")
+        view.setWrapWidth(8)
+        screen.clear()
+        screen.drawTextBuffer(view, 0, 0)
+        expect(new TextDecoder().decode(screen.getRealCharBytes(true)).trim()).toBe(base + mark + suffix)
+      } finally {
+        screen.destroy()
+        view.destroy()
+        buffer.destroy()
+      }
+    })
+  }
+}
 
 describe("TextBufferView", () => {
   let buffer: TextBuffer
@@ -16,6 +152,76 @@ describe("TextBufferView", () => {
   afterEach(() => {
     view.destroy()
     buffer.destroy()
+  })
+
+  describe("bounded source rows", () => {
+    it("copies only requested logical visual rows without changing the viewport or selection", () => {
+      buffer.setText(Array.from({ length: 10000 }, (_, i) => `row-${i}`).join("\n"))
+      view.setViewport(0, 3, 20, 4)
+      view.setSelection(18, 23)
+      const selected = view.getSelectedText()
+      const selection = view.getSelection()
+      const visible = view.lineInfo
+      const sources = view.getLineSources(9995, 3)
+      expect(sources).toEqual([9995, 9996, 9997])
+      expect(view.getLineSources(9999, 10)).toEqual([9999])
+      expect(view.getLineSources(10000, 1)).toEqual([])
+      expect(view.getLineSources(0, 0)).toEqual([])
+      expect(view.lineInfo).toEqual(visible)
+      expect(view.getSelection()).toEqual(selection)
+      expect(view.getSelectedText()).toBe(selected)
+      buffer.setText("replacement")
+      expect(sources).toEqual([9995, 9996, 9997])
+      expect(view.getLineSources(0, 10)).toEqual([0])
+    })
+
+    it("reads current native mappings after content and layout changes at the same visual-row count", () => {
+      buffer.setText("abcdefgh\nx")
+      view.setWrapMode("char")
+      view.setWrapWidth(4)
+      expect(view.getLineSources(0, 3)).toEqual([0, 0, 1])
+      buffer.setText("x\nabcdefgh")
+      expect(view.getVirtualLineCount()).toBe(3)
+      expect(view.getLineSources(0, 3)).toEqual([0, 1, 1])
+      buffer.setStyledText(stringToStyledText("abc\ndefg"))
+      view.setFirstLineOffset(2)
+      expect(view.getVirtualLineCount()).toBe(3)
+      expect(view.getLineSources(0, 3)).toEqual([0, 0, 1])
+      view.setFirstLineOffset(0)
+      view.setWrapWidth(3)
+      expect(view.getVirtualLineCount()).toBe(3)
+      expect(view.getLineSources(0, 3)).toEqual([0, 1, 1])
+      buffer.setText("\tx\ny")
+      buffer.setTabWidth(4)
+      view.setWrapWidth(4)
+      expect(view.getVirtualLineCount()).toBe(3)
+      expect(view.getLineSources(0, 3)).toEqual([0, 0, 1])
+      buffer.setTabWidth(2)
+      buffer.setText("x\n\tyz")
+      view.setWrapWidth(3)
+      expect(view.getVirtualLineCount()).toBe(3)
+      expect(view.getLineSources(0, 3)).toEqual([0, 1, 1])
+      view.setWrapMode("word")
+      expect(view.getLineSources(1, 2)).toEqual(view.logicalLineInfo.lineSources.slice(1, 3))
+      view.setViewportSize(4, 2)
+      view.setTruncate(true)
+      expect(view.getLineSources(0, 5)).toEqual(view.logicalLineInfo.lineSources)
+      buffer.clear()
+      expect(view.getLineSources(0, 5)).toEqual(view.logicalLineInfo.lineSources)
+      buffer.append("a\nb")
+      expect(view.getLineSources(0, 5)).toEqual([0, 1])
+      buffer.reset()
+      expect(view.getLineSources(0, 5)).toEqual(view.logicalLineInfo.lineSources)
+    })
+
+    it("rejects invalid row ranges and use after destruction", () => {
+      for (const value of [-1, 0.5, NaN, Infinity, 2 ** 32]) {
+        expect(() => view.getLineSources(value, 1)).toThrow(RangeError)
+        expect(() => view.getLineSources(0, value)).toThrow(RangeError)
+      }
+      view.destroy()
+      expect(() => view.getLineSources(0, 1)).toThrow("TextBufferView is destroyed")
+    })
   })
 
   describe("lineInfo getter with wrapping", () => {
@@ -308,9 +514,10 @@ describe("TextBufferView", () => {
       const styledText = stringToStyledText("Hello World")
       buffer.setStyledText(styledText)
 
+      // Inclusive selection: the cell under the focus (5, the space) is selected too.
       const changed1 = view.setLocalSelection(0, 0, 5, 0)
       expect(changed1).toBe(true)
-      expect(view.getSelectedText()).toBe("Hello")
+      expect(view.getSelectedText()).toBe("Hello ")
 
       const changed2 = view.updateLocalSelection(0, 0, 11, 0)
       expect(changed2).toBe(true)
@@ -338,7 +545,7 @@ describe("TextBufferView", () => {
       const changed = view.updateLocalSelection(0, 0, 5, 0)
       expect(changed).toBe(true)
       expect(view.hasSelection()).toBe(true)
-      expect(view.getSelectedText()).toBe("Hello")
+      expect(view.getSelectedText()).toBe("Hello ")
     })
 
     it("should preserve anchor when updating local selection", () => {
@@ -346,16 +553,16 @@ describe("TextBufferView", () => {
       buffer.setStyledText(styledText)
 
       view.setLocalSelection(0, 0, 5, 0)
-      expect(view.getSelectedText()).toBe("Hello")
+      expect(view.getSelectedText()).toBe("Hello ")
 
       view.updateLocalSelection(0, 0, 6, 0)
-      expect(view.getSelectedText()).toBe("Hello ")
+      expect(view.getSelectedText()).toBe("Hello W")
 
       view.updateLocalSelection(0, 0, 11, 0)
       expect(view.getSelectedText()).toBe("Hello World")
 
       view.updateLocalSelection(0, 0, 3, 0)
-      expect(view.getSelectedText()).toBe("Hel")
+      expect(view.getSelectedText()).toBe("Hell")
     })
 
     it("should handle backward selection with updateLocalSelection", () => {
@@ -367,6 +574,24 @@ describe("TextBufferView", () => {
       const changed = view.updateLocalSelection(11, 0, 6, 0)
       expect(changed).toBe(true)
       expect(view.getSelectedText()).toBe("World")
+    })
+
+    it("should select a word with word behavior on the same cell", () => {
+      const styledText = stringToStyledText("alpha beta gamma")
+      buffer.setStyledText(styledText)
+
+      const changed = view.setLocalSelection(6, 0, 6, 0, undefined, undefined, "word")
+      expect(changed).toBe(true)
+      expect(view.getSelectedText()).toBe("beta")
+    })
+
+    it("should keep a cell press zero-width", () => {
+      const styledText = stringToStyledText("alpha beta")
+      buffer.setStyledText(styledText)
+
+      view.setLocalSelection(6, 0, 6, 0)
+      expect(view.getSelectedText()).toBe("")
+      expect(view.hasSelection()).toBe(false)
     })
   })
 
@@ -565,6 +790,17 @@ describe("TextBufferView", () => {
   })
 
   describe("measureForDimensions", () => {
+    it("preserves public result identity", () => {
+      buffer.setStyledText(stringToStyledText("abcdefghij"))
+      view.setWrapMode("char")
+      const first = view.measureForDimensions(10, 10)!
+      const second = view.measureForDimensions(5, 10)!
+
+      expect(first).not.toBe(second)
+      expect(first).toEqual({ lineCount: 1, widthColsMax: 10 })
+      expect(second).toEqual({ lineCount: 2, widthColsMax: 5 })
+    })
+
     it("should measure without modifying cache", () => {
       const styledText = stringToStyledText("ABCDEFGHIJKLMNOPQRST")
       buffer.setStyledText(styledText)

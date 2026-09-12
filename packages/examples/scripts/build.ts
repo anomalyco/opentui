@@ -135,7 +135,7 @@ if (usePrebuiltArtifacts) {
   console.log("✅ Prebuilt native opentui packages verified")
 } else if (buildHostOnly) {
   console.log("Refreshing the host native opentui package...")
-  await Bun.$`bun ${join(coreRoot, "scripts", "build.ts")} --native`
+  await Bun.$`bun run build:native`.cwd(coreRoot)
   verifyNativePackages(buildTargets)
   console.log("✅ Host native package refreshed")
 } else if (canBuildLocalNativePackagesForAllTargets) {

@@ -1,255 +1,263 @@
 ---
-title: Layout System
-description: Flexible positioning and sizing with Yoga/Flexbox
-order: 5
+title: Layout
+description: Size and position renderables in terminal cells with OpenTUI's Yoga options
 skill:
   entry: true
   intents: [layout, flexbox, yoga, positioning]
 ---
 
-# Layout System
+# Layout
 
-OpenTUI uses the Yoga layout engine to provide CSS Flexbox-like capabilities for responsive terminal layouts. You can create complex, dynamic interfaces that adapt to terminal size changes.
+OpenTUI uses Yoga to compute a renderable tree on a grid of terminal cells. It supports a defined set of Flexbox-like properties, not all browser CSS.
 
-## Flexbox Basics
+A horizontal size is a count of terminal columns. A vertical size is a count of terminal rows. These values are never character counts.
 
-The layout system supports standard flexbox properties:
+## Spacing and growth
 
 ```typescript
-import { BoxRenderable, createCliRenderer } from "@opentui/core"
+import { BoxRenderable, RGBA, TextRenderable, createCliRenderer } from "@opentui/core"
 
 const renderer = await createCliRenderer()
+const foreground = RGBA.defaultForeground()
+const fill = RGBA.fromIndex(238)
 
-const container = new BoxRenderable(renderer, {
-  id: "container",
+const row = new BoxRenderable(renderer, {
+  width: 34,
+  height: 5,
+  border: true,
+  borderColor: foreground,
+  padding: 1,
+  flexDirection: "row",
+  gap: 2,
+})
+
+const fixed = new BoxRenderable(renderer, { width: 8, height: 1, backgroundColor: fill })
+fixed.add(new TextRenderable(renderer, { content: "fixed 8", fg: foreground }))
+
+const growing = new BoxRenderable(renderer, {
+  flexGrow: 1,
+  flexBasis: 0,
+  height: 1,
+  backgroundColor: fill,
+})
+growing.add(new TextRenderable(renderer, { content: "grow 20", fg: foreground }))
+
+row.add(fixed)
+row.add(growing)
+renderer.root.add(row)
+```
+
+The shaded children occupy 8 and 20 columns. The border and padding consume four columns; the gap consumes two more.
+
+```text terminal=layout-flex-columns
+┌────────────────────────────────┐
+│                                │
+│ fixed 8   grow 20              │
+│                                │
+└────────────────────────────────┘
+```
+
+The same layout properties work across the built-in renderable classes.
+
+## Supported options
+
+`RenderableOptions` supplies the shared renderable layout values. `BoxOptions` adds the three gap values.
+
+| Group         | Options                                                                                         | Accepted values                                             | Default                                             |
+| ------------- | ----------------------------------------------------------------------------------------------- | ----------------------------------------------------------- | --------------------------------------------------- |
+| Position      | `position`                                                                                      | `"relative"` or `"absolute"`                                | `"relative"`                                        |
+| Edges         | `top`, `right`, `bottom`, `left`                                                                | number, `"auto"`, or percentage                             | unset                                               |
+| Dimensions    | `width`, `height`                                                                               | number, `"auto"`, or percentage                             | `"auto"`                                            |
+| Limits        | `minWidth`, `minHeight`, `maxWidth`, `maxHeight`                                                | number or percentage                                        | unset                                               |
+| Margin        | `margin`, `marginX`, `marginY`, `marginTop`, `marginRight`, `marginBottom`, `marginLeft`        | number, `"auto"`, or percentage                             | `0`                                                 |
+| Padding       | `padding`, `paddingX`, `paddingY`, `paddingTop`, `paddingRight`, `paddingBottom`, `paddingLeft` | number or percentage                                        | `0`                                                 |
+| Flex size     | `flexGrow`                                                                                      | number                                                      | `0`                                                 |
+| Flex size     | `flexShrink`                                                                                    | number                                                      | `0` for an initial numeric dimension, otherwise `1` |
+| Flex size     | `flexBasis`                                                                                     | number or `"auto"`                                          | `"auto"`                                            |
+| Flow          | `flexDirection`                                                                                 | `"column"`, `"column-reverse"`, `"row"`, or `"row-reverse"` | `"column"`                                          |
+| Flow          | `flexWrap`                                                                                      | `"no-wrap"`, `"wrap"`, or `"wrap-reverse"`                  | `"no-wrap"`                                         |
+| Alignment     | `alignItems`                                                                                    | Yoga align value                                            | `"stretch"`                                         |
+| Alignment     | `alignSelf`                                                                                     | Yoga align value                                            | `"auto"`                                            |
+| Alignment     | `justifyContent`                                                                                | start, end, center, or space distribution                   | `"flex-start"`                                      |
+| Gaps on `Box` | `gap`, `rowGap`, `columnGap`                                                                    | number or percentage                                        | `0`                                                 |
+| Clipping      | `overflow`                                                                                      | `"visible"`, `"hidden"`, or `"scroll"`                      | `"visible"`                                         |
+
+Yoga align values are `"auto"`, `"flex-start"`, `"center"`, `"flex-end"`, `"stretch"`, `"baseline"`, `"space-between"`, `"space-around"`, and `"space-evenly"`.
+
+`justifyContent` accepts the same start, center, end, and three space-distribution values. It does not accept `"auto"`, `"stretch"`, or `"baseline"`.
+
+`PositionTypeString` also includes `"static"`, but renderable option validation does not implement it. Use `"relative"` or `"absolute"`.
+
+The public TypeScript interface includes `"auto"` for min and max dimensions. The current runtime ignores that value for those four options.
+
+## Alignment
+
+In a row, `justifyContent` distributes horizontal space and `alignItems` positions children vertically. A child can override the vertical alignment with `alignSelf`.
+
+```typescript
+const row = new BoxRenderable(renderer, {
+  width: 32,
+  height: 7,
+  border: true,
+  borderColor: foreground,
+  paddingX: 1,
   flexDirection: "row",
   justifyContent: "space-between",
   alignItems: "center",
-  width: "100%",
-  height: 10,
 })
 
-const leftPanel = new BoxRenderable(renderer, {
-  id: "left",
+for (const [label, height] of [
+  ["A", 1],
+  ["B", 3],
+  ["C", 1],
+] as const) {
+  const child = new BoxRenderable(renderer, {
+    width: 6,
+    height,
+    alignSelf: label === "C" ? "flex-end" : "auto",
+    backgroundColor: fill,
+  })
+  child.add(new TextRenderable(renderer, { content: label, fg: foreground }))
+  row.add(child)
+}
+renderer.root.add(row)
+```
+
+A and B share a vertical center despite their different heights. C sits at the bottom.
+
+```text terminal=layout-alignment
+┌──────────────────────────────┐
+│                              │
+│            B                 │
+│ A                            │
+│                              │
+│                       C      │
+└──────────────────────────────┘
+```
+
+## Automatic and intrinsic size
+
+An `"auto"` dimension lets Yoga derive size from children or a renderable's measure function. Text and editor renderables supply native measure targets.
+
+Yoga calls a measure target with exact, at-most, or unconstrained dimensions. Text measurement uses display-cell width and the active wrap mode.
+
+`wrapMode: "word"` and `"char"` can increase measured height under a width constraint. `wrapMode: "none"` keeps the intrinsic line width.
+
+A percentage dimension resolves against the parent's corresponding size. If that parent lacks a definite size, the result can differ from a browser layout assumption.
+
+Min and max dimensions constrain the result. Padding and borders consume space inside the computed box.
+
+## Relative and absolute flow
+
+Relative children take part in flex layout. Their edge values offset the Yoga position.
+
+Absolute children do not consume space in normal flex flow. Their edges position them against the containing layout box.
+
+Absolute text also uses its intrinsic measure without the relative child's at-most clamp. Set a width when you need predictable wrapping.
+
+Use absolute positioning for overlays and fixed geometry. Use flex flow for ordinary page structure.
+
+## Cell rounding
+
+Yoga uses a point scale factor of `1`. It rounds computed edges to whole terminal cells while preserving the layout total.
+
+Percentage and flex calculations can produce fractions before this step. Adjacent children can therefore receive different rounded widths.
+
+These three children use the same grow factor and zero basis:
+
+```typescript
+const child = new BoxRenderable(renderer, {
   flexGrow: 1,
-  height: 10,
-  backgroundColor: "#444",
-})
-
-const rightPanel = new BoxRenderable(renderer, {
-  id: "right",
-  width: 20,
-  height: 10,
-  backgroundColor: "#666",
-})
-
-container.add(leftPanel)
-container.add(rightPanel)
-renderer.root.add(container)
-```
-
-## Flex Direction
-
-Control the direction of child elements:
-
-```typescript
-// Vertical layout (default)
-{
-  flexDirection: "column"
-}
-
-// Horizontal layout
-{
-  flexDirection: "row"
-}
-
-// Reversed directions
-{
-  flexDirection: "row-reverse"
-}
-{
-  flexDirection: "column-reverse"
-}
-```
-
-## Justify Content
-
-Align children along the main axis:
-
-```typescript
-{
-  justifyContent: "flex-start"
-} // Pack at start
-{
-  justifyContent: "flex-end"
-} // Pack at end
-{
-  justifyContent: "center"
-} // Center children
-{
-  justifyContent: "space-between"
-} // Even spacing, no edge gaps
-{
-  justifyContent: "space-around"
-} // Even spacing with edge gaps
-{
-  justifyContent: "space-evenly"
-} // Truly even spacing
-```
-
-## Align Items
-
-Align children along the cross axis:
-
-```typescript
-{
-  alignItems: "flex-start"
-} // Align to start
-{
-  alignItems: "flex-end"
-} // Align to end
-{
-  alignItems: "center"
-} // Center on cross axis
-{
-  alignItems: "stretch"
-} // Stretch to fill (default)
-{
-  alignItems: "baseline"
-} // Align baselines
-```
-
-## Sizing
-
-### Fixed Sizes
-
-```typescript
-{
-  width: 30,   // Fixed width in characters
-  height: 10,  // Fixed height in rows
-}
-```
-
-### Percentage Sizes
-
-```typescript
-{
-  width: "100%",  // Full width of parent
-  height: "50%",  // Half height of parent
-}
-```
-
-### Flex Growing and Shrinking
-
-```typescript
-{
-  flexGrow: 1,    // Take up available space
-  flexShrink: 0,  // Don't shrink below content size
-  flexBasis: 100, // Initial size before flex adjustments
-}
-```
-
-## Positioning
-
-### Relative (Default)
-
-Elements flow normally in the layout:
-
-```typescript
-{
-  position: "relative",
-}
-```
-
-### Absolute
-
-Position elements relative to their parent:
-
-```typescript
-{
-  position: "absolute",
-  left: 10,
-  top: 5,
-  right: 10,
-  bottom: 5,
-}
-```
-
-## Padding and Margin
-
-```typescript
-{
-  // Uniform padding
-  padding: 2,
-
-  // Axis-specific
-  paddingX: 4,
-  paddingY: 2,
-
-  // Individual sides
-  paddingTop: 1,
-  paddingRight: 2,
-  paddingBottom: 1,
-  paddingLeft: 2,
-
-  // Margin works the same way
-  margin: 1,
-  marginX: 3,
-  marginY: 1,
-  marginTop: 1,
-  marginRight: 2,
-  marginBottom: 1,
-  marginLeft: 2,
-}
-```
-
-## Using Constructs
-
-The same layout properties work with the declarative API:
-
-```typescript
-import { Box, Text } from "@opentui/core"
-
-renderer.root.add(
-  Box(
-    {
-      flexDirection: "row",
-      width: "100%",
-      height: 10,
-    },
-    Box(
-      {
-        flexGrow: 1,
-        backgroundColor: "#333",
-        padding: 1,
-      },
-      Text({ content: "Left Panel" }),
-    ),
-    Box(
-      {
-        width: 20,
-        backgroundColor: "#555",
-        padding: 1,
-      },
-      Text({ content: "Right Panel" }),
-    ),
-  ),
-)
-```
-
-## Responsive Layouts
-
-Listen for terminal resize events to create responsive layouts:
-
-```typescript
-const renderer = await createCliRenderer()
-
-renderer.on("resize", (width, height) => {
-  // Update layout based on new dimensions
-  if (width < 80) {
-    container.flexDirection = "column"
-  } else {
-    container.flexDirection = "row"
-  }
+  flexBasis: 0,
+  minWidth: 0,
 })
 ```
+
+A 32-column bordered row leaves 30 inner columns. Adding one column gives the middle child an extra cell, without gaps or overlaps:
+
+```text terminal=layout-cell-rounding
+32 columns: 30 inside
+┌──────────────────────────────┐
+│    10        10        10    │
+└──────────────────────────────┘
+33 columns: 31 inside
+┌───────────────────────────────┐
+│    10        11         10    │
+└───────────────────────────────┘
+```
+
+Renderable getters expose computed integer geometry after a layout pass. OpenTUI clamps exposed `width` and `height` to at least one cell.
+
+## Resize behavior
+
+A terminal resize keeps the same renderable instances. The renderer resizes its root and runs Yoga again with the new column and row counts.
+
+With `flexWrap: "wrap"`, whole children move to the next row when they no longer fit. The container's automatic height grows to include them:
+
+```typescript
+const row = new BoxRenderable(renderer, {
+  width: "100%",
+  border: true,
+  borderColor: foreground,
+  paddingX: 1,
+  flexDirection: "row",
+  flexWrap: "wrap",
+  alignItems: "flex-start",
+  columnGap: 2,
+  rowGap: 1,
+})
+
+for (const content of ["A", "B", "C"]) {
+  const child = new BoxRenderable(renderer, {
+    width: 8,
+    height: 1,
+    flexShrink: 0,
+    backgroundColor: fill,
+  })
+  child.add(new TextRenderable(renderer, { content, fg: foreground }))
+  row.add(child)
+}
+renderer.root.add(row)
+```
+
+The same children before and after narrowing the terminal:
+
+```text terminal=layout-wrap-wide
+32 columns
+┌──────────────────────────────┐
+│ A         B         C        │
+└──────────────────────────────┘
+```
+
+```text terminal=layout-wrap-narrow
+22 columns
+┌────────────────────┐
+│ A         B        │
+│                    │
+│ C                  │
+└────────────────────┘
+```
+
+Computed `x`, `y`, `width`, and `height` can all change. Buffered renderables resize their frame buffers before `onResize(width, height)` runs.
+
+`FrameBufferRenderable` resizes its public `frameBuffer` in its `onResize()` override, then calls the base hook.
+
+The base `onResize()` calls `onSizeChange` and emits the renderable's `"resize"` event. The layout resize path then requests another render.
+
+Renderer `resize` listeners receive the render-region width and height.
+
+Custom streams must call `renderer.resize(columns, rows)`. Local `process.stdout` sessions use `SIGWINCH` automatically.
+
+## Common failures
+
+- A numeric initial `width` or `height` sets the default `flexShrink` to `0`. Set `flexShrink` when the node must contract.
+- An absolute child does not increase its parent's automatic size.
+- A percentage needs a useful parent size.
+- `overflow: "scroll"` clips like a Yoga overflow mode, but it does not add scroll state. Use [ScrollBox](/docs/components/scrollbox).
+- Gap options belong to [Box](/docs/components/box), not every renderable class.
+- `visible = false` removes a renderable from layout.
+- Text can contain fewer graphemes than cells or more UTF-16 units than cells. See [Text and terminal cells](/docs/core-concepts/text-and-cells).
+
+## Next
+
+Read [Renderables](/docs/core-concepts/renderables) for tree mutation. Use the advanced [Yoga API](/docs/reference/yoga) only when the shared options do not cover your case.

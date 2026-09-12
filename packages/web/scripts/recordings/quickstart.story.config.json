@@ -1,0 +1,19 @@
+{
+  "title": "OpenTUI quickstart",
+  "recording": "quickstart.cast",
+  "theme": "themes/opentui-blue.json",
+  "sampleMs": 90,
+  "output": {
+    "story": "../../public/recordings/quickstart.json"
+  },
+  "chapters": [
+    {
+      "atMs": 7000,
+      "durationMs": 5200,
+      "holdMs": 800,
+      "label": "Counter interaction",
+      "captionTitle": "Run the app",
+      "caption": "The arrow keys update the count. q exits and restores the shell."
+    }
+  ]
+}

@@ -1,7 +1,6 @@
 ---
 title: Input
-description: Text input field with cursor and focus states
-order: 3
+description: Accept one line of text with cursor, focus, and submit events
 skill:
   entry: true
   intents: [input, form, editing, focus]
@@ -9,11 +8,23 @@ skill:
 
 # Input
 
-Text input field with cursor, placeholder text, and focus states. Focus the input to receive keyboard input.
+`Input` edits one line of text and supplies a cursor, placeholder, and focus styles. Use [Textarea](/docs/components/textarea) for multi-line editing.
+
+Focus the input to receive keyboard input.
+
+## Availability
+
+| Field           | Availability          |
+| --------------- | --------------------- |
+| Package         | `@opentui/core`       |
+| Core renderable | `InputRenderable`     |
+| React           | `<input>` (automatic) |
+| Solid           | `<input>` (automatic) |
+| Status          | Built in              |
 
 ## Basic usage
 
-### Renderable api
+### Renderable API
 
 ```typescript
 import { InputRenderable, InputRenderableEvents, createCliRenderer } from "@opentui/core"
@@ -34,20 +45,11 @@ input.focus()
 renderer.root.add(input)
 ```
 
-### Construct api
+An empty input displays its placeholder:
 
-```typescript
-import { Input, createCliRenderer } from "@opentui/core"
-
-const renderer = await createCliRenderer()
-
-const input = Input({
-  placeholder: "Enter your name...",
-  width: 25,
-})
-
-input.focus()
-renderer.root.add(input)
+```text terminal=input-placeholder surface
+Name
+Enter your name
 ```
 
 ## Focus states
@@ -66,11 +68,18 @@ const input = new InputRenderable(renderer, {
 })
 ```
 
+After focusing the input and typing a name:
+
+```text terminal=input-focused surface
+Name
+Ada Lovelace
+```
+
 ## Events
 
 ### Input event
 
-Fires on every keystroke as the value changes:
+Emitted after text insertion and deletion operations, and when assigning a different `value`. The listener receives the current value:
 
 ```typescript
 import { InputRenderableEvents } from "@opentui/core"
@@ -82,7 +91,7 @@ input.on(InputRenderableEvents.INPUT, (value: string) => {
 
 ### Change event
 
-Fires when the input loses focus (blur) or when you press Enter, but only if the value changed since focus:
+Fires on blur or after a successful `submit()` when the value differs from the last commit baseline:
 
 ```typescript
 input.on(InputRenderableEvents.CHANGE, (value: string) => {
@@ -90,9 +99,13 @@ input.on(InputRenderableEvents.CHANGE, (value: string) => {
 })
 ```
 
+Each `focus()` call sets the baseline. Each emitted `CHANGE` event updates it. Thus, blur does not emit another event if
+the value did not change after a successful commit.
+
 ### Enter event
 
-Fires when the user presses Enter/Return:
+Emitted when an Enter/Return submit succeeds. The input emits no event when the current UTF-16 code-unit length is less
+than `minLength`:
 
 ```typescript
 input.on(InputRenderableEvents.ENTER, (value: string) => {
@@ -114,71 +127,56 @@ input.value = "New value"
 
 ## Properties
 
-| Property                 | Type                                   | Default      | Description                  |
-| ------------------------ | -------------------------------------- | ------------ | ---------------------------- |
-| `width`                  | `number`                               | -            | Input field width            |
-| `value`                  | `string`                               | `""`         | Initial text value           |
-| `placeholder`            | `string`                               | `""`         | Placeholder text when empty  |
-| `maxLength`              | `number`                               | `1000`       | Maximum number of characters |
-| `backgroundColor`        | `string \| RGBA`                       | -            | Background when unfocused    |
-| `focusedBackgroundColor` | `string \| RGBA`                       | -            | Background when focused      |
-| `textColor`              | `string \| RGBA`                       | -            | Text color                   |
-| `cursorColor`            | `string \| RGBA`                       | -            | Cursor color                 |
-| `position`               | `"static" \| "relative" \| "absolute"` | `"relative"` | Positioning mode             |
+| Property                 | Type                                   | Default                                 | Description                                         |
+| ------------------------ | -------------------------------------- | --------------------------------------- | --------------------------------------------------- |
+| `width`                  | number, `"auto"`, or percentage string | `"auto"`                                | Input field width                                   |
+| `value`                  | `string`                               | `""`                                    | Initial text value                                  |
+| `placeholder`            | `string`                               | `""`                                    | Placeholder text when empty                         |
+| `minLength`              | `number`                               | `0`                                     | Minimum UTF-16 code-unit length required for submit |
+| `maxLength`              | `number`                               | `1000`                                  | Maximum UTF-16 code-unit length                     |
+| `backgroundColor`        | `string \| RGBA`                       | `"transparent"`                         | Background when unfocused                           |
+| `focusedBackgroundColor` | `string \| RGBA`                       | `backgroundColor`, else `"transparent"` | Background when focused                             |
+| `textColor`              | `string \| RGBA`                       | `"#FFFFFF"`                             | Text color                                          |
+| `cursorColor`            | `string \| RGBA`                       | `"#FFFFFF"`                             | Cursor color                                        |
+| `position`               | `"relative" \| "absolute"`             | `"relative"`                            | Effective positioning mode                          |
 
-## Example: Login form
+## Example: login form
+
+`Input` has no password-masking mode. This demonstration displays the password value as normal terminal text. Do not
+use this pattern for real secrets.
 
 ```typescript
-import { Box, Text, Input, delegate, createCliRenderer } from "@opentui/core"
+import { BoxRenderable, InputRenderable, TextRenderable, createCliRenderer } from "@opentui/core"
 
 const renderer = await createCliRenderer()
-
-function LabeledInput(props: { id: string; label: string; placeholder: string }) {
-  return delegate(
-    { focus: `${props.id}-input` },
-    Box(
-      { flexDirection: "row", marginBottom: 1 },
-      Text({ content: props.label.padEnd(12), fg: "#888888" }),
-      Input({
-        id: `${props.id}-input`,
-        placeholder: props.placeholder,
-        width: 20,
-        backgroundColor: "#222",
-        focusedBackgroundColor: "#333",
-        textColor: "#FFF",
-        cursorColor: "#0F0",
-      }),
-    ),
-  )
-}
-
-const usernameInput = LabeledInput({
-  id: "username",
-  label: "Username:",
+const form = new BoxRenderable(renderer, {
+  width: 40,
+  borderStyle: "rounded",
+  title: "Login",
+  padding: 1,
+  gap: 1,
+})
+const usernameInput = new InputRenderable(renderer, {
+  id: "username-input",
   placeholder: "Enter username",
+  width: 20,
+  backgroundColor: "#222",
+  focusedBackgroundColor: "#333",
 })
-
-const passwordInput = LabeledInput({
-  id: "password",
-  label: "Password:",
+const passwordInput = new InputRenderable(renderer, {
+  id: "password-input",
   placeholder: "Enter password",
+  width: 20,
+  backgroundColor: "#222",
+  focusedBackgroundColor: "#333",
 })
 
-const form = Box(
-  {
-    width: 40,
-    borderStyle: "rounded",
-    title: "Login",
-    padding: 1,
-  },
-  usernameInput,
-  passwordInput,
-)
-
-// Focus the username input
-usernameInput.focus()
-
+form.add(new TextRenderable(renderer, { content: "Username:", fg: "#888888" }))
+form.add(usernameInput)
+form.add(new TextRenderable(renderer, { content: "Password:", fg: "#888888" }))
+form.add(passwordInput)
 renderer.root.add(form)
+usernameInput.focus()
 ```
 
 ## Tab navigation
@@ -196,3 +194,7 @@ renderer.keyInput.on("keypress", (key) => {
   }
 })
 ```
+
+## Related concepts
+
+Read [Interaction, focus, and selection](/docs/core-concepts/interaction) for focus and event behavior. Read [Text and terminal cells](/docs/core-concepts/text-and-cells) before enforcing limits that depend on code points, graphemes, or display cells.

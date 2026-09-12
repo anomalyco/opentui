@@ -13,8 +13,8 @@ concurrency:
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
-  BUN_VERSION: 1.3.14
-  ZIG_VERSION: 0.15.2
+  BUN_VERSION: 1.4.1
+  ZIG_VERSION: 0.16.0
 
 jobs:
   bench-native-smoke:
@@ -40,40 +40,64 @@ jobs:
       - name: Restore Zig cache
         uses: actions/cache@v5
         with:
-          path: .zig-cache
+          path: packages/native/.zig-cache
           key: zig-v1-${{ runner.os }}-${{ env.ZIG_VERSION }}-${{ github.run_id }}-${{ github.job }}
           restore-keys: zig-v1-${{ runner.os }}-${{ env.ZIG_VERSION }}-
 
       - name: Install dependencies
         run: bun install
 
-      - name: Run native benchmark smoke test
+      - name: Run native benchmark smoke tests
         working-directory: packages/core
         run: |
           set -euo pipefail
-          output="$(bun run bench:native --mem --filter "UTF-8 Operations" --bench "isAsciiOnly: ASCII text (1KB)" --json)"
-          printf '%s\n' "$output"
-          OUTPUT="$output" bun -e '
-            const output = process.env.OUTPUT ?? ""
-            const lines = output.split(/\r?\n/)
-            let jsonLine = ""
-            for (let i = lines.length - 1; i >= 0; i--) {
-              const line = lines[i].trim()
-              if (line.startsWith("{")) {
-                jsonLine = line
-                break
-              }
-            }
-            if (!jsonLine) throw new Error("Native benchmark smoke test produced no JSON output")
+          utf8_output="$(bun run bench:native --mem --filter "UTF-8 Operations" --bench "isAsciiOnly: ASCII text (1KB)" --json)"
+          image_output="$(bun run bench:native --mem --filter "Terminal Image" --bench "Kitty cover placement" --json)"
+          printf '%s\n' "$utf8_output"
+          printf '%s\n' "$image_output"
+          UTF8_OUTPUT="$utf8_output" IMAGE_OUTPUT="$image_output" bun -e '
+            const cases = [
+              {
+                output: process.env.UTF8_OUTPUT ?? "",
+                benchmark: "UTF-8 Operations",
+                result: "isAsciiOnly: ASCII text (1KB)",
+                requiresConfidence: false,
+              },
+              {
+                output: process.env.IMAGE_OUTPUT ?? "",
+                benchmark: "Terminal Image",
+                result: "Kitty cover placement",
+                requiresConfidence: true,
+              },
+            ]
 
-            const data = JSON.parse(jsonLine)
-            if (data.benchmark !== "UTF-8 Operations") {
-              throw new Error(`Unexpected benchmark category: ${data.benchmark}`)
-            }
-            if (!Array.isArray(data.results) || data.results.length !== 1) {
-              throw new Error(`Expected exactly one benchmark result, got ${data.results?.length ?? 0}`)
-            }
-            if (data.results[0].name !== "isAsciiOnly: ASCII text (1KB)") {
-              throw new Error(`Unexpected benchmark result: ${data.results[0].name}`)
+            for (const expected of cases) {
+              const lines = expected.output.split(/\r?\n/)
+              let jsonLine = ""
+              for (let i = lines.length - 1; i >= 0; i--) {
+                const line = lines[i].trim()
+                if (line.startsWith("{")) {
+                  jsonLine = line
+                  break
+                }
+              }
+              if (!jsonLine) {
+                throw new Error(`${expected.benchmark} benchmark smoke test produced no JSON output`)
+              }
+
+              const data = JSON.parse(jsonLine)
+              if (data.benchmark !== expected.benchmark) {
+                throw new Error(`Unexpected benchmark category: ${data.benchmark}`)
+              }
+              if (!Array.isArray(data.results) || data.results.length !== 1) {
+                throw new Error(`Expected exactly one ${expected.benchmark} benchmark result, got ${data.results?.length ?? 0}`)
+              }
+              const result = data.results[0]
+              if (result.name !== expected.result) {
+                throw new Error(`Unexpected ${expected.benchmark} benchmark result: ${result.name}`)
+              }
+              if (expected.requiresConfidence && (!Number.isFinite(result.stddev_ns) || !Number.isFinite(result.rme_95))) {
+                throw new Error(`Benchmark result is missing confidence fields: ${JSON.stringify(result)}`)
+              }
             }
           '

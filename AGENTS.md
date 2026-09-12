@@ -15,8 +15,8 @@
 - Use Bun for dependency management and development commands: `bun install`, `bun run <script>`, `bun test`, and `bun <file>`.
 - Run package scripts from the package directory unless the script is defined at the repository root.
 - Shared runtime code must preserve the supported Bun and Node paths. Keep runtime-specific behavior behind existing
-  platform/runtime/build seams; do not introduce Bun-only APIs into shared modules. Node checks use the version enforced
-  by `scripts/node26.mjs`.
+  platform/runtime/build seams; do not introduce Bun-only APIs into shared modules. Node checks use the minimum
+  version enforced by `scripts/node26.mjs`.
 
 ## Verification
 
@@ -40,10 +40,19 @@ terminal or platform is unavailable locally.
 - Portable symbol signatures must stay within the `node:ffi`/`bun:ffi` intersection. Use explicit widths such as
   `u32`/`u64`, not backend-only ABI names such as `usize`, `napi_env`, or `napi_value`; represent `i64`/`u64` as `bigint`,
   native booleans as `0`/`1`, and shared pointers as `number | bigint`.
-- Pass transient `ArrayBuffer` values or views directly to synchronous pointer parameters so the backend borrows the
-  owner. Do not pre-resolve them with `ptr()`.
-- Use `ptr(view)` only for addresses stored in structs or retained by native code, and keep the backing buffer alive for
-  the complete native lifetime.
+- Default to `buffer` for transient, non-null `TypedArray` parameters and pass the view directly. Do not call `ptr()`.
+- For a raw `ArrayBuffer`, create one `Uint8Array` view over it, keep that view, and declare `buffer`. A `buffer` call
+  costs less than a `ptr` call. `buffer` rejects an argument that is not a view with a `TypeError`. `ptr` sends a bad
+  argument to native code as an address.
+- Use `ptr` only when a parameter can be null, accepts a numeric native address, or is a callback. Pass transient owner
+  objects directly to `ptr` parameters. Do not pre-resolve them.
+- Bun 1.3 does not accept `DataView` directly for `buffer` or `ptr` parameters. Pass an equivalent typed array such as
+  `new Uint8Array(view.buffer, view.byteOffset, view.byteLength)`.
+- On Bun 1.4+, use `buffer` when you pass a `DataView` directly to FFI.
+- Use `ptr(view)` only when native code stores the address beyond the call. Before resolving it, access `view.buffer` to
+  move any inline typed-array storage into a stable `ArrayBuffer`, then keep the view alive for the complete native
+  lifetime. The order is required: `const owner = view.buffer; const address = ptr(view)`. Calling `ptr(view)` first and
+  accessing `view.buffer` later can move the storage and invalidate `address`.
 - Model C-string inputs as pointer parameters and pass owned, NUL-terminated byte buffers directly; string returns are
   not portable. Create callbacks through the loaded library/platform facade, not `new JSCallback(...)`, and assume only
   same-thread callbacks.

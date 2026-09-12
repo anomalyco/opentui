@@ -1,7 +1,6 @@
 ---
-title: React
+title: React bindings
 description: Build terminal UIs with React and OpenTUI
-order: 2
 skill:
   entry: true
   intents: [react, jsx, hooks, keyboard, paste, focus, blur, selection, animation, testing]
@@ -9,17 +8,22 @@ skill:
 
 # React bindings
 
-Build terminal user interfaces using React with familiar patterns and components.
+Use React components and hooks to build an OpenTUI application.
+
+## Requirements
+
+`@opentui/react` requires React `>=19.2.0`. See [Runtime and platform support](/docs/getting-started/runtime-support)
+for the current runtime, operating system, architecture, and native renderer matrix.
 
 ## Installation
 
-Quick start with [bun](https://bun.sh) and [create-tui](https://github.com/msmps/create-tui):
+Create a project with [Bun](https://bun.sh) and [create-tui](https://github.com/msmps/create-tui):
 
 ```bash
 bun create tui --template react
 ```
 
-Manual installation:
+Or add the packages to an existing project:
 
 ```bash
 bun install @opentui/react @opentui/core react
@@ -58,71 +62,56 @@ Configure your `tsconfig.json`:
 }
 ```
 
-## Runtime-loaded plugin support (if needed)
+## Runtime-loaded modules
 
-If your app loads external TS/TSX modules at runtime (for example a file-based plugin system), import this once in your app entry before dynamic imports:
+React hosts that load TSX modules at runtime use this framework-specific import:
 
 ```ts
 import "@opentui/react/runtime-plugin-support"
 ```
 
-Use this for both normal Bun runs and standalone compiled executables.
+See [Load plugins and modules at runtime](/docs/extend/runtime-plugins) for Bun setup, import order, module maps, and
+trust boundaries.
 
 ## Components
 
-OpenTUI React provides JSX intrinsic elements that map to core renderables:
-
-### Layout & display
-
-- `<text>` - Text display with styling
-- `<box>` - Container with borders and layout
-- `<scrollbox>` - Scrollable container
-- `<ascii-font>` - ASCII art text
-
-QR code support is available from `@opentui/qrcode/react` and must be registered explicitly with `registerQRCode()`.
-
-### Input
-
-- `<input>` - Single-line text input
-- `<textarea>` - Multi-line text input
-- `<select>` - Selection list
-- `<tab-select>` - Tab-based selection
-
-### Code & diff
-
-- `<code>` - Syntax-highlighted code
-- `<line-number>` - Line numbers with diff/diagnostic support
-- `<diff>` - Unified or split diff viewer
-- `<markdown>` - Markdown rendering
-
-### Text modifiers
-
-Use inside `<text>` components:
-
-- `<span>` - Inline styled text
-- `<strong>`, `<b>` - Bold text
-- `<em>`, `<i>` - Italic text
-- `<u>` - Underlined text
-- `<br>` - Line break
-- `<a>` - Link text
+React JSX intrinsic elements map to Core renderables and use kebab-case names such as `<ascii-font>` and
+`<tab-select>`. See the [Components overview](/docs/components) for availability and
+registration requirements. React reconciles these elements into the renderer tree.
 
 ## API reference
 
 ### `createRoot(renderer)`
 
-Creates a React root for rendering into the terminal.
+`createRoot(renderer)` adopts an existing `CliRenderer`. It returns a React root with `render(node)` and `unmount()`.
 
 ```tsx
 import { createCliRenderer } from "@opentui/core"
 import { createRoot } from "@opentui/react"
 
+function App() {
+  return <text>Hello, React!</text>
+}
+
 const renderer = await createCliRenderer()
-createRoot(renderer).render(<App />)
+const root = createRoot(renderer)
+root.render(<App />)
 ```
 
-For plugin slots, see [Plugin Slots overview](/docs/plugins/slots) and [React slots](/docs/plugins/react).
+For plugin slots, see [Plugin slots](/docs/plugins/slots) and [React plugin slots](/docs/plugins/react).
+
+## Lifecycle and cleanup
+
+The React root does not own the renderer. `root.unmount()` removes the React tree and runs React effect cleanup while
+the renderer stays active. `renderer.destroy()` releases the terminal and renderer resources. It also unmounts the
+React root.
+
+The code that creates the renderer owns `renderer.destroy()`. Call it on every application shutdown path. See
+[Lifecycle and cleanup](/docs/core-concepts/lifecycle) for signal and failure handling.
 
 ## Hooks
+
+The event hooks subscribe after mount and remove their listeners during React effect cleanup.
 
 ### `useRenderer()`
 
@@ -265,7 +254,7 @@ function App() {
 
 ### `useSelectionHandler(handler)`
 
-Handle text selection events (e.g., mouse drag selection).
+Handle text selection events such as mouse drag selection.
 
 ```tsx
 import { useSelectionHandler } from "@opentui/react"
@@ -282,45 +271,20 @@ function App() {
 
 ### `useTimeline(options?)`
 
-Create and manage animations.
+`useTimeline()` creates one `Timeline` for the mounted hook. It registers the timeline after mount and starts it unless
+`autoplay` is `false`. React pauses and unregisters the same instance during effect cleanup.
 
 ```tsx
 import { useTimeline } from "@opentui/react"
-import { useEffect, useState } from "react"
 
 function App() {
-  const [width, setWidth] = useState(0)
-
-  const timeline = useTimeline({
-    duration: 2000,
-    loop: false,
-  })
-
-  useEffect(() => {
-    timeline.add(
-      { width },
-      {
-        width: 50,
-        duration: 2000,
-        ease: "linear",
-        onUpdate: (animation) => {
-          setWidth(animation.targets[0].width)
-        },
-      },
-    )
-  }, [])
-
-  return <box style={{ width, backgroundColor: "#6a5acd" }} />
+  const timeline = useTimeline({ autoplay: false })
+  return <text>{timeline.isPlaying ? "Playing" : "Paused"}</text>
 }
 ```
 
-**Options:**
-
-- `duration` - Animation duration in ms (default: 1000)
-- `loop` - Whether to loop (default: false)
-- `autoplay` - Auto-start (default: true)
-- `onComplete` - Completion callback
-- `onPause` - Pause callback
+The hook reads its options when it creates the instance. Read [Animation and Timeline](/docs/application-apis/animation)
+for scheduling, callbacks, engine ownership, and cleanup.
 
 ## Styling
 
@@ -338,7 +302,45 @@ Style components with props or the `style` prop:
 </box>
 ```
 
-## Example: Login form
+## Testing
+
+`@opentui/react/test-utils` exports `testRender(node, options)`. It is a React-aware wrapper around
+[`createTestRenderer()`](/docs/core-concepts/testing). It mounts the initial node with React `act()` and returns the Core
+`TestRendererSetup`. Renderer destruction unmounts the React root with `act()`.
+
+```tsx
+import { expect, test } from "bun:test"
+import { testRender } from "@opentui/react/test-utils"
+
+function App() {
+  return <text>Ready</text>
+}
+
+test("renders the application", async () => {
+  const setup = await testRender(<App />, { width: 20, height: 4 })
+
+  try {
+    await setup.renderOnce()
+    expect(setup.captureCharFrame()).toContain("Ready")
+  } finally {
+    setup.renderer.destroy()
+  }
+})
+```
+
+The options argument is required and uses `TestRendererOptions`. The helper enables React's act-environment flag for
+the mounted test root. Renderer destruction unmounts the root, calls `options.onDestroy` when supplied, and then sets
+the flag to `false`. The helper does not preserve a previous global value. If `onDestroy` throws, it prevents the final
+flag reset.
+
+`testRender()` does not return the React root or a separate rerender function. Use the returned Core setup for frame
+capture, waits, resize, keyboard and mouse input, native stats, and external output. Always destroy the renderer in test
+teardown. Destruction unmounts the React tree and resets the global act-environment flag.
+
+## Example: login form
+
+OpenTUI `<input>` has no password-masking mode. This demonstration displays the password value as normal terminal text.
+Do not use this pattern for real secrets.
 
 ```tsx
 import { createCliRenderer } from "@opentui/core"
@@ -445,7 +447,7 @@ createRoot(renderer).render(<App />)
 
 ## React DevTools
 
-OpenTUI React supports React DevTools for debugging:
+Use React DevTools to inspect the React tree:
 
 1. Install:
 
@@ -459,8 +461,21 @@ bun add --dev react-devtools-core@7
 npx react-devtools@7
 ```
 
-3. Run with DEV flag:
+3. Run with the `DEV` flag:
 
 ```bash
 DEV=true bun run your-app.ts
 ```
+
+## Next
+
+- [Components overview](/docs/components) lists React component availability and registration requirements.
+- [Interaction, focus, and selection](/docs/core-concepts/interaction) owns shared pointer and focus behavior.
+- [Animation and Timeline](/docs/application-apis/animation) documents scheduling and engine ownership.
+- [React keymap integration](/docs/keymap/react) connects application commands to React state.
+- [Package entry points](/docs/reference/package-entrypoints) lists the public React imports.
+- [Runtime and platform support](/docs/getting-started/runtime-support) gives the tested runtime matrix.
+- [Deploy an OpenTUI application](/docs/ship/deploy) helps you choose a distribution format.
+- [Standalone executables](/docs/reference/standalone-executables) gives the Bun and Node.js executable procedures.
+- [Troubleshooting](/docs/test-and-debug/troubleshooting) routes runtime, native loading, and terminal failures.
+- [Solid bindings](/docs/bindings/solid) describes the Solid state and ownership model.

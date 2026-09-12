@@ -1,12 +1,13 @@
 {
   "name": "@opentui",
   "private": true,
+  "packageManager": "bun@1.4.1",
   "workspaces": [
     "packages/*",
     "packages/solid/examples"
   ],
   "scripts": {
-    "build": "cd packages/core && bun run build && cd ../qrcode && bun run build && cd ../three && bun run build && cd ../solid && bun run build && cd ../react && bun run build && cd ../keymap && bun run build && cd ../ssh && bun run build",
+    "build": "cd packages/native && bun run build && cd ../core && bun scripts/build.ts --native --skip-zig && bun run build:lib && cd ../qrcode && bun run build && cd ../three && bun run build && cd ../solid && bun run build && cd ../react && bun run build && cd ../keymap && bun run build && cd ../ssh && bun run build",
     "build:examples": "cd packages/examples && bun run build",
     "clean": "bun scripts/clean.ts",
     "examples:node": "node packages/examples/scripts/run-node26.mjs",
@@ -25,7 +26,7 @@
     "publish:keymap": "cd packages/keymap && bun run publish",
     "publish:ssh": "cd packages/ssh && bun run publish",
     "prepare-release": "bun scripts/prepare-release.ts",
-    "test": "bun run --filter '@opentui/core' --filter '@opentui/qrcode' --filter '@opentui/three' --filter '@opentui/solid' --filter '@opentui/react' --filter '@opentui/keymap' --filter '@opentui/ssh' --if-present test"
+    "test": "bun run --filter '@opentui/native' --filter '@opentui/core' --filter '@opentui/qrcode' --filter '@opentui/three' --filter '@opentui/solid' --filter '@opentui/react' --filter '@opentui/keymap' --filter '@opentui/ssh' --if-present test"
   },
   "devDependencies": {
     "oxfmt": "0.41.0",

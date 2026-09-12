@@ -97,6 +97,8 @@ class TerminalConsoleCache extends EventEmitter {
   }
 
   public activate(): void {
+    if (!env.OTUI_USE_CONSOLE) return
+
     if (!this._originalConsole) {
       this._originalConsole = global.console
     }

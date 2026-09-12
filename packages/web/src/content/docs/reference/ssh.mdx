@@ -1,0 +1,359 @@
+---
+title: SSH
+description: Serve imperative, React, or Solid OpenTUI applications over SSH
+skill:
+  entry: true
+  intents: [ssh, remote-tui, ssh-server, authentication, middleware]
+---
+
+# SSH
+
+`@opentui/ssh` turns each accepted SSH shell into a `CliRenderer` whose input and output use the SSH channel and whose dimensions track the client's PTY. Users connect with a standard SSH client and use the application without a local
+installation. The package depends on `@opentui/core`, not React or Solid, so the same server can hand its renderer to any of the three APIs.
+
+SSH is an access transport. It is not an application packaging format. See
+[Deploy an OpenTUI application](/docs/ship/deploy) to choose a delivery model and
+[Standalone executables](/docs/reference/standalone-executables) to build an executable.
+
+## Install and runtime
+
+```bash
+bun add @opentui/ssh @opentui/core
+```
+
+`@opentui/core` is a peer dependency. The SSH package declares Bun >=1.3.0 and Node.js >=26.4.0. Use Bun >=1.4.0 on
+native Windows arm64. The SSH Node CI lane
+runs on Linux x64. Its packed Node consumer test uses a Core stub, so that test does not start the native renderer. See
+[Runtime and platform support](/docs/getting-started/runtime-support) before you run the native renderer with Node.js.
+
+## Basic server
+
+This first example uses `auth: "open"` for loopback development only. Open authentication accepts SSH `none` without
+credentials. Do not expose this policy on a public or untrusted network.
+
+```typescript
+import { BoxRenderable, TextRenderable } from "@opentui/core"
+import { createServer } from "@opentui/ssh"
+
+const server = createServer({
+  hostKey: { path: "./host_key" },
+  auth: "open",
+}).serve((session) => {
+  const box = new BoxRenderable(session.renderer, {
+    width: "100%",
+    height: "100%",
+    border: true,
+    borderStyle: "rounded",
+  })
+
+  box.add(new TextRenderable(session.renderer, { content: `Hello, ${session.identity.username}!` }))
+  session.renderer.root.add(box)
+
+  session.renderer.keyInput.on("keypress", (key) => {
+    if (key.name === "q" || (key.ctrl && key.name === "c")) session.end()
+  })
+})
+
+await server.listen(2222)
+```
+
+Connect from another terminal:
+
+```bash
+ssh -p 2222 localhost
+```
+
+The server owns the renderers that it creates. It destroys them when their sessions disconnect. Call `server.close()`
+to stop accepting connections and close all live sessions.
+
+## Builder lifecycle
+
+The public construction sequence is:
+
+```typescript
+const builder = createServer(config)
+const configured = builder.use(middleware)
+const server = configured.serve(handler)
+
+const info = await server.listen()
+await server.close()
+```
+
+`createServer(config)` returns an immutable `ServerBuilder`. Each `.use()` call returns a new builder with one more
+middleware and a wider context type. The builder has no `listen()` method. `.serve(handler)` seals the chain and
+returns the startable `Server`. Omitting the session handler is a type error.
+
+`listen(port = 2222, host = "127.0.0.1")` resolves to:
+
+```typescript
+interface ListenInfo {
+  host: string
+  port: number
+  fingerprints: string[]
+}
+```
+
+Pass port `0` to request an ephemeral port. When authentication is open, a non-loopback listener logs a warning but
+still listens. The loopback names are `localhost`, `127.0.0.1`, and `::1`.
+
+## Server defaults
+
+| Configuration                  | Default               | Behavior                                                           |
+| ------------------------------ | --------------------- | ------------------------------------------------------------------ |
+| `auth`                         | `"open"`              | Accept SSH `none` authentication                                   |
+| `hostKey`                      | ephemeral ed25519 key | Regenerated each server construction                               |
+| `idleTimeout`                  | disabled              | No inactivity timeout                                              |
+| `maxTimeout`                   | disabled              | No absolute session timeout                                        |
+| `limits.session.perConnection` | `1`                   | Maximum live renderer-backed shells per SSH connection             |
+| `limits.session.global`        | `100`                 | Maximum live renderer-backed shells across the server              |
+| `startupBanner`                | `true`                | Print listener, host-key, and authentication details after binding |
+| `onError`                      | `console.error`       | Report contained runtime errors                                    |
+| listen port                    | `2222`                | Default SSH port for this server                                   |
+| listen host                    | `"127.0.0.1"`         | Loopback-only default                                              |
+
+Session limits must be positive safe integers. The server rejects excess shell requests without closing the SSH
+connection or reporting a runtime error. Capacity remains occupied until that shell's transport teardown completes.
+
+`idleTimeout` and `maxTimeout` accept integer milliseconds or strings with `ms`, `s`, `m`, or `h`. Examples include
+`"500ms"`, `"30s"`, and `"1h"`. Values must resolve to a positive safe integer from 1 millisecond through 24 hours.
+Client input rearms the idle timer. The maximum timer is an absolute lifetime.
+
+## Host keys
+
+Choose one host-key source:
+
+```typescript
+createServer({ hostKey: { path: "./host_key" } })
+createServer({ hostKey: { pem: privateKeyPem } })
+createServer({ hostKey: { pem: [ed25519Pem, rsaPem] } })
+createServer() // ephemeral ed25519 key
+```
+
+- `path`: Load the existing key, or generate and persist an ed25519 key on first use. On POSIX systems, generated
+  directories use mode `0700`, and the key uses `0600`. Windows uses the directory access control list.
+- `pem`: accept one PEM/Buffer or an array. Every configured key produces a SHA256 fingerprint in `ListenInfo.fingerprints`, preserving input order.
+- omitted: generate an ephemeral key that is not persisted.
+
+Invalid or empty key configuration throws `ConfigError` while the server is being constructed.
+
+## Authentication
+
+`auth` is either `"open"` or an object containing one or more credential methods:
+
+| Configuration                          | Behavior                                                           |
+| -------------------------------------- | ------------------------------------------------------------------ |
+| omit `auth` or use `"open"`            | Accept unauthenticated sessions                                    |
+| `publicKey: "any"`                     | Verify proof of key ownership, then accept any verified key        |
+| `publicKey: { authorizedKeys }`        | Accept keys from a file path or array of public-key lines          |
+| `publicKey: { allow }`                 | Run an async or synchronous policy after signature verification    |
+| `publicKey: { authorizedKeys, allow }` | Accept when the key is allowlisted **or** the policy returns true  |
+| `password`                             | Run `(ctx: { username, password }) => boolean \| Promise<boolean>` |
+| `keyboardInteractive`                  | Run `(ctx: { username, prompt }) => boolean \| Promise<boolean>`   |
+
+An empty object configures no usable methods and throws `ConfigError`. Use `"open"` deliberately for no authentication.
+Authorized-key files allow blank lines and comments, but they do not interpret OpenSSH options.
+
+Public-key authentication verifies the client's signature before setting its fingerprint or invoking `allow`. The username is still supplied by the client and is not bound to that key. Authorize public-key users by the verified `fingerprint`, or explicitly enforce a username-to-key relationship in `allow`.
+
+```typescript
+const server = createServer({
+  auth: {
+    publicKey: {
+      authorizedKeys: "./authorized_keys",
+      allow: ({ username, fingerprint }) => username === "deploy" && trusted.has(fingerprint),
+    },
+    password: ({ username, password }) => username === "guest" && password === process.env.GUEST_PASSWORD,
+  },
+}).serve((session) => {
+  if (session.identity.method === "publickey") {
+    console.log(session.identity.fingerprint)
+  }
+})
+```
+
+If an authentication predicate throws, authentication fails closed and the error is reported through `onError`.
+
+## Typed identity
+
+`createServer()` infers `session.identity` from the configured authentication methods. `IdentityFor<A>` maps `"open"` to the `none` variant and an `AuthMethods` object to the union of the methods it enables:
+
+```typescript
+type Identity =
+  | {
+      method: "none"
+      username: string
+    }
+  | {
+      method: "password"
+      username: string
+    }
+  | {
+      method: "keyboard-interactive"
+      username: string
+    }
+  | {
+      method: "publickey"
+      username: string
+      fingerprint: string
+      publicKey: {
+        algorithm: string
+        blob: Buffer
+      }
+    }
+```
+
+A public-key-only configuration makes `fingerprint` directly available. Mixed methods produce a discriminated union:
+
+```typescript
+createServer({ auth: { publicKey: "any", password: checkPassword } }).serve((session) => {
+  if (session.identity.method === "publickey") {
+    console.log(session.identity.fingerprint)
+  }
+})
+```
+
+## Session API
+
+The handler passed to `.serve()` receives:
+
+| Member               | Description                                                                     |
+| -------------------- | ------------------------------------------------------------------------------- |
+| `renderer`           | Live `CliRenderer` connected to this SSH channel. Available only to handlers.   |
+| `identity`           | Authentication identity narrowed from the server config                         |
+| `context`            | Per-session object accumulated by middleware. It is `{}` without middleware.    |
+| `term`               | Client terminal name, with `"xterm-256color"` as the no-PTY fallback            |
+| `cols`, `rows`       | Current PTY dimensions. The no-PTY fallback is `80x24`.                         |
+| `hasPty`             | Whether the client requested a PTY                                              |
+| `remoteAddress`      | Client `{ address, port? }`                                                     |
+| `onResize(callback)` | Subscribe after renderer resize handling. Returns an unsubscribe function.      |
+| `onClose(callback)`  | Subscribe to disconnect cleanup. Returns an unsubscribe function.               |
+| `write(data)`        | Send raw `Buffer` or string bytes without frame diffing. No effect after close. |
+| `end()`              | Close this session                                                              |
+
+PTY dimensions are bounded by the implementation to 500 columns and 200 rows. Use `write()` only for terminal control that the renderer does not model, such as a bell or an OSC sequence.
+
+Middleware receives `MiddlewareSession`, which has the common fields, `context`, and `deny()`, but no renderer. The renderer is created only after the middleware chain reaches the handler, so a denied session does not create one or enter the alternate screen.
+
+## Middleware
+
+Middleware executes in registration order, with the first registered function as the outermost layer. It supports three source-backed patterns:
+
+```typescript
+import { createServer, type Middleware } from "@opentui/ssh"
+
+const timing: Middleware = async (session, next) => {
+  const startedAt = Date.now()
+  try {
+    return await next()
+  } finally {
+    console.log(`${session.identity.username}: ${Date.now() - startedAt}ms`)
+  }
+}
+
+const server = createServer({ auth: { publicKey: "any" } })
+  .use(timing)
+  .use((session, next) => {
+    if (blocked.has(session.identity.fingerprint)) session.deny("This key is not authorized.")
+    return next()
+  })
+  .use((session, next) => next({ tier: admins.has(session.identity.fingerprint) ? "admin" : "user" }))
+  .serve((session) => {
+    console.log(session.context.tier)
+  })
+```
+
+- Setup/teardown: `await next()` resolves when the session ends, so `finally` performs teardown.
+- Gate: `session.deny(reason)` writes the reason on the main screen, closes the session, and unwinds through `DenyError` without reporting a failure.
+- Enrich: `next({ ... })` adds typed fields to downstream `session.context`. Return the resulting `Handoff`.
+
+Reusable middleware can use `Middleware`. Use `MiddlewareFunction` when it requires a known upstream context type.
+
+### Logging middleware
+
+```typescript
+import { createServer, logging } from "@opentui/ssh"
+
+const events = []
+
+createServer({ auth: { publicKey: "any" } })
+  .use(logging({ log: (event) => events.push(event) }))
+  .serve((session) => {
+    console.log(session.identity.username)
+  })
+```
+
+`logging()` emits a `connect` event on entry. During teardown, it emits a `disconnect` event with `durationMs`. Events
+also contain `identity`, `remoteAddress`, `term`, `cols`, and `rows`. Without a custom sink, it writes one formatted
+line to `console.log`. The logger isolates and ignores sink failures. `onError` remains responsible for application and
+transport errors.
+
+## React and Solid handoff
+
+`@opentui/ssh` does not depend on either framework. Install the framework binding in the application and pass the existing session renderer to it.
+
+### React
+
+```tsx
+import { createRoot } from "@opentui/react"
+import { createServer } from "@opentui/ssh"
+
+const App = ({ name }: { name: string }) => <text>Hello, {name}!</text>
+
+createServer().serve((session) => {
+  const root = createRoot(session.renderer)
+  root.render(<App name={session.identity.username} />)
+  session.onClose(() => root.unmount())
+})
+```
+
+Create one React root per session and unmount the app-owned React tree in `onClose`. The SSH package independently owns and destroys the `CliRenderer`.
+
+### Solid
+
+```tsx
+import { render } from "@opentui/solid"
+import { createServer } from "@opentui/ssh"
+
+const App = (props: { name: string }) => <text>Hello, {props.name}!</text>
+
+createServer().serve(async (session) => {
+  await render(() => <App name={session.identity.username} />, session.renderer)
+})
+```
+
+Solid's `render(node, renderer)` adopts the existing renderer. The Solid root is disposed when that renderer is destroyed, so this handoff does not add a separate `onClose` disposer.
+
+## Cleanup, errors, and shutdown
+
+- Session disconnect destroys the renderer before `onClose` callbacks run. Use those callbacks for app-owned roots, timers, counters, and listeners, not renderer destruction.
+- `server.close()` stops accepting connections, destroys live renderers, performs bounded session-transport teardown,
+  and closes the SSH listener. A stalled transport is force-closed after the internal one-second drain limit.
+- The server invokes `onClose` callbacks but does not await promises returned by them. It also does not track
+  asynchronous middleware work after `await next()` resolves. Await application-owned asynchronous cleanup separately
+  before process exit.
+- `onError` reports contained handler, middleware, auth predicate, resize/close callback, connection, transport, and post-listen server errors. It defaults to `console.error`.
+- A bind failure rejects `listen()` instead of going to `onError`.
+- `logging()` observes connection lifecycle only. It is not an error sink.
+- `SshError` carries a stable `code`. `ConfigError` uses `"CONFIG"` for invalid startup configuration.
+- `DenyError` is intentional middleware control flow and is swallowed by session handling after delivering the reason.
+
+## Public exports
+
+Runtime exports from `@opentui/ssh`:
+
+- `createServer`
+- `logging`
+- `SshError`
+- `ConfigError`
+- `DenyError`
+
+Type exports:
+
+- `AuthConfig`, `AuthMethods`
+- `Identity`, `IdentityFor`, `PublicKey`, `PublicKeyPolicy`, `RemoteAddress`
+- `Session`, `SessionHandler`, `MiddlewareSession`
+- `Middleware`, `MiddlewareFunction`, `Next`, `Handoff`
+- `ServerConfig`, `ServerBuilder`, `Server`, `ListenInfo`
+- `LogEvent`, `LoggingOptions`
+
+Internal helpers such as `isDeny`, `SessionCommon`, `CredentialMethods`, and `KeyboardPrompt` are not exported from the package root.

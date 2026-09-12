@@ -1,0 +1,200 @@
+---
+import { getCollection, type CollectionEntry } from "astro:content"
+import SitePage from "../../layouts/SitePage.astro"
+
+const statusRank = ({ data }: CollectionEntry<"packages">) => (data.status === "active" ? 0 : 1)
+const packages = (await getCollection("packages")).sort(
+  (a, b) => statusRank(a) - statusRank(b) || a.data.name.localeCompare(b.data.name),
+)
+---
+
+<SitePage reading title="Packages | OpenTUI" description="First-party and community packages for OpenTUI.">
+  <h1 class="sr-only">Packages</h1>
+
+  <search hidden>
+    <label for="package-filter">
+      <span aria-hidden="true">&gt;</span>
+      <span class="sr-only">Filter packages</span>
+    </label>
+    <!-- type="text", not "search": the browser draws a clear button in a
+         search field, and this prompt line has no controls. -->
+    <input type="text" id="package-filter" placeholder="Filter packages" autocomplete="off" spellcheck="false" />
+  </search>
+
+  <dl>
+    {
+      packages.map(({ id, data }) => (
+        <div class="entry">
+          <dt>
+            <a href={`/packages/${id}`}>{data.name}</a>
+            {data.status !== "active" && ` (${data.status})`}
+          </dt>
+          <dd>
+            <p>{data.summary}</p>
+            <p class="meta">
+              <span>{id}</span>
+              {(data.categories ?? []).map((category) => <span>[{category}]</span>)}
+            </p>
+          </dd>
+        </div>
+      ))
+    }
+  </dl>
+
+  <p id="package-filter-empty" hidden>No packages match.</p>
+
+  <p class="contribute">
+    To add a package, open a pull request in <a href="https://github.com/anomalyco/opentui-index"
+      >anomalyco/opentui-index</a
+    >.
+  </p>
+</SitePage>
+
+<script>
+  // The text of each entry already holds the name, summary, id, and
+  // categories. Thus the filter matches the rendered text and does not
+  // need a duplicated data attribute.
+  const input = document.getElementById("package-filter") as HTMLInputElement
+  const empty = document.getElementById("package-filter-empty") as HTMLElement
+  const entries = [...document.querySelectorAll<HTMLElement>("dl > .entry")].map((element) => ({
+    element,
+    text: element.textContent?.toLowerCase() ?? "",
+  }))
+
+  const applyFilter = () => {
+    const query = input.value.trim().toLowerCase()
+    let matches = 0
+    for (const { element, text } of entries) {
+      const hit = text.includes(query)
+      element.hidden = !hit
+      if (hit) matches += 1
+    }
+    empty.hidden = matches > 0
+  }
+
+  input.addEventListener("input", applyFilter)
+
+  // Escape clears the filter; a second Escape releases focus.
+  input.addEventListener("keydown", (event) => {
+    if (event.key !== "Escape") return
+    if (input.value) {
+      input.value = ""
+      applyFilter()
+    } else {
+      input.blur()
+    }
+  })
+
+  // A plain "/" moves focus to the filter, as in a pager. The key stays
+  // with a text field that already has focus.
+  document.addEventListener("keydown", (event) => {
+    if (event.key !== "/" || event.ctrlKey || event.altKey || event.metaKey) return
+    const target = event.target
+    if (target instanceof HTMLElement && (target.isContentEditable || target.matches("input, textarea, select"))) return
+    event.preventDefault()
+    input.focus()
+  })
+
+  // The filter does not work without this script. Thus the row stays
+  // invisible until the script runs.
+  input.closest("search")?.removeAttribute("hidden")
+</script>
+
+<style>
+  /* A terminal prompt line: a ">" cue and bare text, no box. */
+  search {
+    display: flex;
+    gap: 1ch;
+    margin-block-end: 1.5rem;
+  }
+
+  /* Reserve the row before the script reveals it, so the list does not
+   * shift on the first paint. Without the script the row stays invisible. */
+  search[hidden] {
+    display: flex;
+    visibility: hidden;
+  }
+
+  /* The prompt is muted at rest and takes the ink color on focus. With
+   * the caret this marks focus, so the field needs no outline box. */
+  label {
+    color: var(--muted-color);
+  }
+
+  search:focus-within label {
+    color: inherit;
+  }
+
+  input {
+    flex: 1;
+    padding: 0;
+    font: inherit;
+    color: inherit;
+    background: none;
+    border: none;
+    outline: none;
+    caret-color: currentColor;
+  }
+
+  input::placeholder {
+    color: var(--muted-color);
+    opacity: 1;
+  }
+
+  /* One dense name-and-synopsis listing, like the old godoc package
+   * table: two text columns aligned by a grid, separated by whitespace
+   * alone. No rules, no bold; the link color already marks the names.
+   * The name column grows to its content but wraps past the cap so a
+   * long name cannot crush the synopsis column. */
+  dl {
+    display: grid;
+    grid-template-columns: fit-content(12rem) 1fr;
+    gap: 1rem 2rem;
+    margin-block: 0;
+  }
+
+  /* Each group wraps one dt/dd pair, so the filter can hide the pair as
+   * one unit. display: contents keeps dt and dd as direct grid items. */
+  .entry {
+    display: contents;
+  }
+
+  .entry[hidden] dt,
+  .entry[hidden] dd {
+    display: none;
+  }
+
+  dd,
+  dd p {
+    margin: 0;
+  }
+
+  /* The gray meta line names the stable id and the categories. Two
+   * character cells separate the items, like two spaces in terminal
+   * output. Categories read as labels through bracket notation, the
+   * plain-text tag idiom; boxes and fills are badges, which the design
+   * constraints exclude. */
+  .meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0 2ch;
+    color: var(--muted-color);
+  }
+
+  .contribute {
+    margin-block-start: 2rem;
+  }
+
+  /* Below the two-column measure, each entry stacks: name, synopsis,
+   * meta, one blank line between entries. */
+  @media (max-width: 36rem) {
+    dl {
+      grid-template-columns: 1fr;
+      gap: 0.25rem;
+    }
+
+    .entry:not([hidden]) ~ .entry:not([hidden]) dt {
+      margin-block-start: 1.25rem;
+    }
+  }
+</style>

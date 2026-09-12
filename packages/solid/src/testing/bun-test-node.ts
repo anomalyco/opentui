@@ -27,6 +27,12 @@ function createMatchers(received: unknown, inverted = false) {
         `Expected ${formatValue(received)} ${inverted ? "not " : ""}to be ${formatValue(expected)}`,
       )
     },
+    toBeInstanceOf(expected: new (...args: any[]) => unknown) {
+      assertMatch(
+        received instanceof expected,
+        `Expected ${formatValue(received)} to be an instance of ${expected.name}`,
+      )
+    },
     toBeDefined() {
       assertMatch(received !== undefined, `Expected value ${inverted ? "not " : ""}to be defined`)
     },
@@ -35,6 +41,9 @@ function createMatchers(received: unknown, inverted = false) {
     },
     toBeTruthy() {
       assertMatch(Boolean(received), `Expected ${formatValue(received)} ${inverted ? "not " : ""}to be truthy`)
+    },
+    toBeNull() {
+      assertMatch(received === null, `Expected ${formatValue(received)} ${inverted ? "not " : ""}to be null`)
     },
     toContain(expected: unknown) {
       const pass =
@@ -54,6 +63,19 @@ function createMatchers(received: unknown, inverted = false) {
         isDeepStrictEqual(received, expected),
         `Expected ${formatValue(received)} ${inverted ? "not " : ""}to equal ${formatValue(expected)}`,
       )
+    },
+    toThrow(expected?: string | RegExp) {
+      let thrown: unknown
+      try {
+        ;(received as () => unknown)()
+      } catch (error) {
+        thrown = error
+      }
+      const message = thrown instanceof Error ? thrown.message : String(thrown)
+      const matches =
+        thrown !== undefined &&
+        (expected === undefined || (typeof expected === "string" ? message.includes(expected) : expected.test(message)))
+      assertMatch(matches, `Expected function ${inverted ? "not " : ""}to throw ${formatValue(expected)}`)
     },
   }
 }

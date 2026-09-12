@@ -1,90 +1,32 @@
 ---
-import Base from "../layouts/Base.astro"
+import SiteFooter from "../components/SiteFooter.astro"
+import SiteNav from "../components/SiteNav.astro"
+import Minimal from "../layouts/Minimal.astro"
 ---
 
-<Base title="404 - Page Not Found | OpenTUI">
-  <main class="landing">
-    <div class="landing-container">
-      <!-- Header -->
-      <header class="landing-header">
-        <a href="/" class="landing-logo">
-          <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-            <rect x="2" y="3" width="20" height="18" fill="currentColor" />
-            <rect x="6" y="8" width="3" height="8" fill="hsl(0, 20%, 99%)" />
-          </svg>
-          OpenTUI
-        </a>
-        <nav class="landing-nav">
-          <a href="/docs/getting-started">Docs</a>
-          <a href="https://github.com/anomalyco/opentui" target="_blank" rel="noopener noreferrer">GitHub</a>
-        </nav>
-      </header>
+<Minimal title="Page not found | OpenTUI" description="This page does not exist." robots="noindex" wide>
+  <SiteNav slot="nav" />
 
-      <!-- Content -->
-      <div class="landing-content">
-        <section class="error-section">
-          <div class="error-code">404</div>
-          <h1>Page not found</h1>
-          <p>The page you're looking for doesn't exist or has been moved.</p>
-          <a href="/" class="btn-dark">
-            <span>Back to home</span>
-            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-              <path d="M6.5 12L17 12M13 16.5L17.5 12L13 7.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="square"/>
-            </svg>
-          </a>
-        </section>
-      </div>
-
-      <!-- Footer -->
-      <footer class="landing-footer">
-        <div class="landing-footer-cell"><a href="https://github.com/anomalyco/opentui" target="_blank" rel="noopener noreferrer">GitHub</a></div>
-        <div class="landing-footer-cell"><a href="/docs/getting-started">Docs</a></div>
-      </footer>
-    </div>
+  <main>
+    <h1>404</h1>
+    <p>This page does not exist.</p>
+    <p><a href="/">Go to the home page</a>.</p>
   </main>
-</Base>
+
+  <SiteFooter />
+</Minimal>
 
 <style>
-  .error-section {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    justify-content: center;
-    text-align: center;
-    padding: var(--space-4xl) var(--section-padding-x);
-    min-height: 50vh;
+  main {
+    max-width: var(--content-width);
+    margin-block: 3rem;
   }
 
-  .error-code {
-    font-family: var(--font-mono);
-    font-size: 120px;
-    font-weight: 700;
-    line-height: 1;
-    color: var(--color-text-strong);
-    margin-bottom: var(--space-md);
+  h1 {
+    margin-block: 0 3rem;
   }
 
-  .error-section h1 {
-    font-family: var(--font-mono);
-    font-size: 24px;
-    font-weight: 500;
-    color: var(--color-text-strong);
-    margin-bottom: var(--space-sm);
-  }
-
-  .error-section p {
-    font-size: 16px;
-    color: var(--color-text);
-    margin-bottom: var(--space-xl);
-  }
-
-  @media (max-width: 600px) {
-    .error-code {
-      font-size: 80px;
-    }
-
-    .error-section h1 {
-      font-size: 20px;
-    }
+  p {
+    margin-block: 0 1.5rem;
   }
 </style>

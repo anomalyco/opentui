@@ -27,6 +27,7 @@ export function createTerminalCapabilities(overrides: TerminalCapabilitiesOverri
     explicit_cursor_positioning: false,
     remote: false,
     multiplexer: "none",
+    image_protocol: "auto",
     ...overrides,
     terminal: {
       name: "",

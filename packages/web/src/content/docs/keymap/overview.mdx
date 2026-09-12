@@ -1,8 +1,6 @@
 ---
-title: Overview
-description: Shared binding, command and sequence engine for OpenTUI hosts
-order: 1
-navTitle: Overview
+title: Keymap
+description: Register, dispatch, and query shared key bindings in an OpenTUI app
 skill:
   entry: true
   intents: [keymap, keybindings, shortcuts, commands, leader, ex-commands]
@@ -10,321 +8,123 @@ skill:
 
 # Keymap
 
-OpenTUI Keymap is a host-agnostic binding engine for terminals and the browser. It gives you layered shortcuts, discoverable commands, sequence handling and framework-ready state so one key system can drive the whole app.
+`@opentui/keymap` is an independent, host-agnostic package for layered key bindings, commands, and key sequences.
 
-## Installation
+The package lets an app register an action once and resolve it from the current focus. An editor can save from every
+view, close only the focused dialog, and show its current shortcuts.
+
+## Install
 
 ```bash
 bun add @opentui/keymap
 ```
 
-The keymap package contains only JavaScript. You can import it in Node.js without installing Bun or enabling native FFI.
-You can also import the OpenTUI host helpers. However, creating a native renderer in Node.js requires Node.js 26.4.0 with
-experimental FFI. For details, see [Getting started](/docs/getting-started#runtime-support).
+The engine is JavaScript. The OpenTUI adapter connects it to terminal input from `CliRenderer`.
+The HTML adapter connects the same engine to browser keyboard events.
 
-Live demo: [HTML keymap demo](/demos/keymap-html/)
+## Create an OpenTUI keymap
 
-A binding can target a named command, an inline handler, or a specific key event:
+Create the renderer first. Then create a default OpenTUI keymap and register an application layer.
 
 ```ts
-;[
-  { key: "x", cmd: "save-file" },
-  { key: "ctrl+x", event: "release", cmd: "cut" },
-  { key: "dd", cmd: "delete-line" },
-  { key: "<leader>s", cmd: ":write session.log" },
-  { key: "?", cmd: "toggle-help" },
-  {
-    key: "ctrl+k",
-    cmd({ keymap }) {
-      keymap.setData("palette.open", true)
+import { createCliRenderer } from "@opentui/core"
+import { createDefaultOpenTuiKeymap } from "@opentui/keymap/opentui"
+
+const renderer = await createCliRenderer()
+const keymap = createDefaultOpenTuiKeymap(renderer)
+
+keymap.registerLayer({
+  commands: [
+    {
+      name: "file.save",
+      run() {
+        console.log("save")
+      },
     },
-  },
-  { key: "escape", event: "release", cmd: "close-help" },
-  { key: { name: "return", ctrl: true }, cmd: "submit" },
-]
-```
-
-![Keymap Engine Concept Overview](/keymap-engine-overview.svg)
-
-## Register
-
-Shape the keymap by registering layers, tokens and addons. Each layer declares bindings that map keys or key sequences to commands, optionally scoped to a host target with a priority. Addons extend the engine with parsers, field compilers, command resolvers and more.
-
-- Use `registerLayer()` to add bindings and commands.
-- Use `registerToken()` to define named key aliases like `leader`, referenced by the default parser as `<leader>`.
-- Use `registerSequencePattern()` to define runtime sequence captures like `count`, referenced by the default parser as `{count}`.
-- Use addons to install parsers, field compilers, disambiguation and other behaviour.
-- Every registration call returns a disposer for cleanup.
-- See [Hosts](/docs/keymap/hosts) for how targets, hierarchy and focus enter the engine.
-
-## Dispatch
-
-When a key event arrives from the host, the engine walks the active layers to find matching bindings, resolves ambiguity between exact matches and sequence prefixes, and runs the winning command. Intercepts can observe or consume input before binding resolution.
-
-- Bindings are matched against active layers based on focus, priority and conditions.
-- Multi-stroke sequences build up a pending sequence until resolved.
-- Commands run in your application space. A synchronous `false` lets lower-precedence handlers continue; async commands are handled immediately and report async errors through diagnostics.
-- Use `intercept("key", ...)` or `intercept("raw", ...)` to hook into the input pipeline.
-- See [Hosts](/docs/keymap/hosts) for how built-in hosts deliver press, release, focus and optional raw input events.
-
-## Query
-
-Ask the keymap what is currently available. Query results reflect the live state -- they change when focus, pending sequence, runtime data or conditions change.
-
-- `getActiveKeys()` returns the keys that can fire from the current focus and pending state.
-- `getCommands()`, `getCommandEntries()` and `getCommandBindings()` return command metadata and binding projections.
-- `getPendingSequence()` returns the current multi-stroke prefix.
-- `runCommand()` and `dispatchCommand()` execute commands programmatically.
-- Subscribe to `on("state")` for batched change notifications.
-- See [Hosts](/docs/keymap/hosts) for how host focus and target lifecycle affect what is active.
-
-## Bindings
-
-Bindings are data, not hard-coded event listeners. Each layer contributes binding records that the engine compiles into sequence trees and then projects through focus, priority, runtime conditions and pending-sequence state.
-
-### Binding shape
-
-A binding always has a `key`, and it can also specify `cmd`, `event`, `preventDefault`, `fallthrough` and any custom fields installed by addons or app code.
-
-- `key` can be a string like `"ctrl+x"`, `"dd"` or `"<leader>s"`, or an object stroke like `{ name: "return", ctrl: true }`.
-- `cmd` can be a named command string or an inline handler.
-- `event` defaults to `"press"`; use `"release"` for release bindings.
-- `preventDefault` defaults to `true` and calls `event.preventDefault()` plus `event.stopPropagation()` so the matched key does not reach the host target.
-- `fallthrough` defaults to `false`; setting `true` lets later matching bindings in the same dispatch chain still run after this command. It is independent of `preventDefault`, which controls whether the event escapes the keymap.
-
-Release bindings are supported, but only for a single stroke. Multi-stroke release bindings such as `"dd"` with `event: "release"` are rejected. Release bindings dispatch on key release, but they do not appear in `getActiveKeys()` because active-key discovery is based on press/pending-sequence state.
-
-### Parser-driven strings
-
-String keys are parser-driven. The engine does not hard-code one binding syntax into the core; it runs registered binding expanders, parsers and transformers to turn binding input into compiled sequences.
-
-- Expanders can rewrite one key string into multiple key strings.
-- Parsers turn a string into one or more normalized strokes.
-- Transformers can rewrite or add parsed bindings before the layer is compiled.
-
-The shared default parser accepts single-stroke named keys, modifier chords, literal punctuation, `" "` for space, `"+"` as a literal plus key, `<token>` aliases, `{pattern}` runtime captures, and concatenated multi-stroke sequences such as `"dd"`, `"<leader>s"`, or `"{count}j"`.
-
-Unknown `<token>` aliases make that expanded binding inactive until the token is registered. They do not disappear from the sequence and expose the remaining keys as a different shortcut.
-
-Object-form keys are the escape hatch when you do not want string parsing. `{ name: "return", ctrl: true }` skips the string parser and normalizes directly to a single stroke.
-
-This parser-driven model is why the same engine can support built-in strings like `"ctrl+x"`, tokenized strings like `"<leader>s"`, pattern strings like `"{count}j"`, and addon-defined syntaxes such as bracket tokens or Emacs-style expansions.
-
-### Tokens
-
-Tokens are named single-stroke aliases used inside binding strings. Registration names are semantic and delimiter-free; the default parser maps `<leader>` syntax to the registered token named `"leader"`.
-
-```ts
-keymap.registerToken({ name: "leader", key: { name: "space" } })
-
-keymap.registerLayer({
-  bindings: [{ key: "<leader>s", cmd: "save-file" }],
-})
-```
-
-Tokens are compile-time input syntax, not a separate dispatch mode. They resolve to exactly one stroke, participate in sequence matching like any other stroke, and can be queried with their preserved display form.
-
-Bindings that reference an unknown token fail closed. For example, `"<leader>s"` is skipped until a token named `"leader"` is registered; it never falls back to bare `"s"`. When a binding expander creates multiple alternatives, such as `"ctrl+s,<leader>s"` with `registerCommaBindings()`, only the unresolved alternative is skipped and the concrete alternative remains active. Registering or disposing tokens recompiles affected layers so tokenized bindings become active or dormant with the current token set.
-
-### Sequence patterns
-
-Sequence patterns are runtime captures used inside binding strings. Registration names are also semantic and delimiter-free; the default parser maps `{count}` syntax to the registered pattern named `"count"`.
-
-```ts
-import type { Command, KeymapEvent } from "@opentui/keymap"
-
-interface CountPayload {
-  count?: number
-}
-
-keymap.registerSequencePattern({
-  name: "count",
-  match(event) {
-    return /^\d$/.test(event.name) ? { value: event.name, display: event.name } : undefined
-  },
-  finalize(values) {
-    return Number(values.join(""))
-  },
-})
-
-const moveDownCommand: Command<object, KeymapEvent, CountPayload | undefined> = {
-  name: "move-down",
-  run({ payload }) {
-    moveDown(payload?.count ?? 1)
-  },
-}
-
-keymap.registerLayer({
-  commands: [moveDownCommand],
+    {
+      name: "app.quit",
+      run() {
+        renderer.destroy()
+      },
+    },
+  ],
   bindings: [
-    { key: "j", cmd: "move-down" },
-    { key: "{count}j", cmd: "move-down" },
+    { key: "ctrl+s", cmd: "file.save" },
+    { key: "q", cmd: "app.quit" },
   ],
 })
 ```
 
-By default, the command payload key is the pattern name, so `name: "count"` produces `payload.count`. Use `payloadKey` only when the command payload field should differ from the pattern name.
+`createDefaultOpenTuiKeymap()` installs the default parser, event matcher, `enabled` fields, and metadata fields.
+Each registration returns a disposer. Destroying the renderer also ends the host lifecycle and releases keymap resources.
+See [Lifecycle and cleanup](/docs/core-concepts/lifecycle) for application shutdown.
 
-### Custom binding fields
-
-Bindings can carry custom fields, but those fields only mean something after you register a binding-field compiler with `registerBindingFields()`. A binding field compiler can:
-
-- declare runtime requirements with `require(...)`
-- add runtime matchers with `activeWhen(...)`
-- expose metadata with `attr(...)`
-
-```ts
-keymap.registerBindingFields({
-  mode(value, ctx) {
-    ctx.require("vim.mode", value)
-    ctx.attr("mode", value)
-  },
-})
-
-keymap.registerToken({ name: "leader", key: { name: "space" } })
-
-keymap.registerLayer({
-  commands: [{ name: "write-file", run() {} }],
-  bindings: [{ key: "<leader>w", mode: "normal", cmd: "write-file" }],
-})
+```text terminal=keymap-active-keys
+ctrl+s  file.save
+q       app.quit
 ```
 
-In that example, the binding is only active while `getData("vim.mode")` is `"normal"`, and the compiled binding metadata can expose `{ mode: "normal" }` through query APIs when metadata is requested.
+## Register, dispatch, and query
 
-Unknown custom binding fields are not fatal. If no binding-field compiler is registered for a field, the keymap ignores that field and emits a warning.
+Keymap uses one short model:
 
-Layer fields follow the same compiler model. Register them with `registerLayerFields()` when you want layer-scoped activation, binding-pipeline inputs, or visualization metadata for graph snapshots:
+| Step     | What happens                                                                                                   | Main APIs                                                          |
+| -------- | -------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------ |
+| Register | The app adds commands, key bindings, layers, tokens, patterns, and addons.                                     | `registerLayer()`, `registerToken()`, addon registration functions |
+| Dispatch | The host sends an event. The engine applies focus, conditions, layer order, sequences, and command resolution. | Host listeners, `dispatchCommand()`, intercepts                    |
+| Query    | The app reads the commands and next keys that are active now.                                                  | `getActiveKeys()`, `getCommands()`, `getPendingSequence()`         |
 
-```ts
-keymap.registerLayerFields({
-  name(value, ctx) {
-    ctx.attr("name", String(value).trim())
-  },
-})
+A layer can be global or attached to a host target. Higher `priority` values run first.
+Newer layers run first when priorities match. A focused target controls which local layers are active.
 
-keymap.registerLayer({
-  name: "Global",
-  bindings: [{ key: "?", cmd: "toggle-help" }],
-})
-```
+A key sequence stays pending until another key completes it, rejects it, or clears it.
+Queries use that pending state, so a shortcut view can show only the next reachable keys.
 
-All host helpers use the same registration, dispatch and query model. They only differ in how they provide targets, focus and input events.
+The [Core keymap API](/docs/keymap/core) defines key syntax, field compilation, runtime data, command queries,
+dispatch results, ordering, errors, and sequence limits.
 
-## Fields and metadata
+## Choose the input level
 
-Custom fields are raw config inputs. Compiled metadata is what field compilers expose to query UIs.
+Use [direct keyboard events](/docs/core-concepts/keyboard) when one owner needs the original `KeyEvent`.
+Examples include a global Ctrl+C handler or terminal-protocol diagnostics.
 
-| Name              | Meaning                                     | Example use                                     |
-| ----------------- | ------------------------------------------- | ----------------------------------------------- |
-| Custom fields     | What the layer, binding or command declared | `mode`, `enabled`, `desc`, `title`, `namespace` |
-| Compiled metadata | What field compilers expose to query UIs    | `desc`, `group`, `title`, `category`, `label`   |
+Use a component's local key binding options for behavior that belongs only to that component.
+Examples include cursor movement in an input or selection movement in a list.
 
-Fields can affect behavior. Metadata does not. A field compiler can make a record conditional with `require(...)` or `activeWhen(...)`, and it can separately publish metadata with `attr(...)`.
+Move to Keymap when the same application command has more than one owner or context. Keymap is useful when you need:
 
-```ts
-keymap.registerBindingFields({
-  mode(value, ctx) {
-    ctx.require("vim.mode", value)
-    ctx.attr("mode", value)
-  },
-})
-```
+- focus-scoped or priority-ordered layers
+- user-configurable key bindings
+- multi-key sequences or leader keys
+- named commands for palettes and help
+- one command model across Core, React, and Solid code
 
-That field does two things: it gates the binding on `keymap.getData("vim.mode")`, and it exposes `{ mode: value }` to active-key metadata when requested. Layer fields can also publish attrs, but those appear on `GraphLayer.attrs` for graph/debug projections rather than on active keys.
+Keymap does not replace component text input. The OpenTUI textarea addon can route editing commands through Keymap when
+an application needs to manage those key bindings centrally.
 
-Metadata can use a different name from the field when an addon wants to validate, normalize or present a stable public metadata shape:
+## Hosts and framework state
 
-```ts
-keymap.registerCommandFields({
-  title(value, ctx) {
-    ctx.attr("label", String(value).trim())
-  },
-})
-```
+The [Hosts](/docs/keymap/hosts) page defines `KeymapHost` and the built-in OpenTUI and HTML adapters.
+Hosts supply focus, hierarchy, key events, metadata, and lifecycle signals.
 
-Use top-level custom fields for config DSL. Use `ctx.attr(...)` in field compilers for display/query metadata.
+React and Solid do not create a keymap. Their providers consume a pre-created OpenTUI keymap and expose reactive state:
 
-## Commands
+- [React keymap integration](/docs/keymap/react) supplies React context and hooks.
+- [Solid keymap integration](/docs/keymap/solid) supplies Solid context, selectors, and hooks.
 
-Named commands are the stable app actions in the system. A layer can register a command with a `name`, a `run()` handler and optional top-level fields like `title`, `desc` or `namespace`, and bindings can point at that command by name. Inline binding handlers work too, but named commands are what power command palettes, search and programmatic execution.
+## Add features
 
-Command queries return the command objects you registered. Query search/filter can also use compiled command metadata produced by command-field addons. `runCommand()` executes the registered command chain directly, while `dispatchCommand()` goes through the active dispatch model and can return `inactive` or `disabled` when that command exists but is not currently dispatchable.
+The bare engine has no fixed key language. Addons install parsers, field compilers, sequence behavior, diagnostics, and
+OpenTUI integrations through public registration APIs.
 
-## Runtime data
-
-Runtime data is the keymap's mutable key-value store. `setData()` and `getData()` let commands, intercepts and matchers share live state such as an editor mode, leader state or search context.
-
-That data also drives activation. Layer, binding and command fields can depend on runtime values through `require(...)` and `activeWhen(...)`, so changing a value immediately recomputes what is reachable. If the current pending sequence no longer matches after a data change, the engine clears it.
-
-`require(name, value)` is a keyed equality check against `keymap` runtime data. Use it for state the keymap owns, such as `vim.mode === "normal"`.
-
-`activeWhen(matcher)` is an arbitrary runtime predicate or `ReactiveMatcher`. Use it for derived or external state, such as whether an editor has a selection.
-
-### Application modes
-
-Runtime data is useful for application-specific modes that only exist to control keymap activation. Put that state on the keymap, expose it through a custom field, and let layers declare when they are active.
-
-```ts
-keymap.registerLayerFields({
-  appMode(value, ctx) {
-    ctx.require("app.mode", value)
-  },
-})
-
-keymap.setData("app.mode", "base")
-
-keymap.registerLayer({
-  appMode: "base",
-  bindings: [{ key: "ctrl+p", cmd: "palette.open" }],
-})
-
-keymap.registerLayer({
-  appMode: "palette",
-  bindings: [{ key: "escape", cmd: "palette.close" }],
-})
-```
-
-Changing `app.mode` recomputes active layers immediately. This keeps keymap-only state out of framework context or component props, while still letting normal layer ordering handle conflicts inside the active mode. If several independent overlays can be open at once, model that explicitly with a stack, depth counter or distinct mode values before writing the runtime data back.
-
-## Pending sequences and active keys
-
-A pending sequence is the prefix the user has already typed, such as `g` while waiting to see whether the next key completes `gg` or `gd`. `getPendingSequence()` exposes that prefix, and `clearPendingSequence()` / `popPendingSequence()` let addons or app code manage it explicitly.
-
-`getActiveKeys()` is the companion query. It does not list every registered binding; it projects the next reachable strokes from the current focus and pending state. That makes it the right API for key hints, which-key style UIs and other live discovery surfaces.
-
-## Entry points
-
-| Package                          | Description                                                                |
-| -------------------------------- | -------------------------------------------------------------------------- |
-| `@opentui/keymap`                | Main engine entry: `Keymap`, key stringifiers and shared types             |
-| `@opentui/keymap/addons`         | Universal addons for parser stages, metadata, diagnostics and sequences    |
-| `@opentui/keymap/addons/opentui` | Universal addons plus OpenTUI-specific base-layout and edit-buffer helpers |
-| `@opentui/keymap/extras`         | Pure config and formatting helpers                                         |
-| `@opentui/keymap/extras/graph`   | Graph snapshot helpers for debug and graph UIs                             |
-| `@opentui/keymap/testing`        | Host-agnostic fake host and diagnostics for addon tests                    |
-| `@opentui/keymap/opentui`        | OpenTUI host adapter for terminal apps built on `@opentui/core`            |
-| `@opentui/keymap/html`           | DOM host adapter for browser UIs rooted in an `HTMLElement`                |
-| `@opentui/keymap/react`          | React provider and hooks for an OpenTUI keymap                             |
-| `@opentui/keymap/solid`          | Solid provider and hooks for an OpenTUI keymap                             |
-
-Adapter entry points intentionally export adapter-specific helpers. Import the shared `Keymap`, stringifiers and core types from `@opentui/keymap`.
-
-## Bare vs default helpers
-
-| Helper                            | What it creates                                                                   |
-| --------------------------------- | --------------------------------------------------------------------------------- |
-| `new Keymap(host)`                | Bare keymap engine for a provided host                                            |
-| `createOpenTuiKeymap(renderer)`   | `Keymap` plus the OpenTUI host adapter                                            |
-| `createHtmlKeymap(root)`          | `Keymap` plus the HTML host adapter                                               |
-| `createDefaultOpenTuiKeymap(...)` | OpenTUI keymap plus default keys, enabled fields and metadata fields              |
-| `createDefaultHtmlKeymap(...)`    | HTML keymap plus default keys, enabled fields, metadata fields and event matching |
-
-The default helpers intentionally stay small. Leader tokens, ex commands, timed disambiguation, warning analyzers and OpenTUI textarea helpers are separate addons.
+- [Built-in keymap addons](/docs/keymap/addons) lists every shipped universal and OpenTUI addon.
+- [Custom keymap addons](/docs/keymap/custom-addons) explains addon callbacks, ordering, cleanup, and tests.
 
 ## Next
 
-- [Hosts](/docs/keymap/hosts) explains the built-in host adapters and the `KeymapHost` contract.
-- [Core](/docs/keymap/core) documents the shared runtime, queries, intercepts and extension points.
-- [Built-in Addons](/docs/keymap/addons) covers the shipped addon packages.
-- [Custom Addons](/docs/keymap/custom-addons) covers the public addon-authoring APIs and extension-point constraints.
-- [Hosts](/docs/keymap/hosts), [React](/docs/keymap/react) and [Solid](/docs/keymap/solid) cover the built-in host and framework-specific surfaces.
+- [Hosts](/docs/keymap/hosts)
+- [Core keymap API](/docs/keymap/core)
+- [React keymap integration](/docs/keymap/react)
+- [Solid keymap integration](/docs/keymap/solid)
+- [Built-in keymap addons](/docs/keymap/addons)
+- [Custom keymap addons](/docs/keymap/custom-addons)

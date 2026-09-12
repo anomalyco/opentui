@@ -1,0 +1,89 @@
+---
+import visuals from "../data/doc-visuals.json"
+
+// Wraps markdown code fences (mapped via `<Content components={{ pre: ProseCode }} />`).
+// The wrapper anchors the copy button outside the scrollable pre, and the
+// button reads the raw source from data-code (see astro.config.mjs).
+// A text fence that starts with a box-drawing corner is a figure: same
+// typeface as the article, no code frame, no copy control.
+const props = Astro.props
+const source = String(props["data-code"] ?? "")
+const visualId = props["data-terminal-visual"]
+const visual = typeof visualId === "string" ? visuals[visualId as keyof typeof visuals] : undefined
+const isDiagram = /^[┌╭┏╔]/.test(source.trimStart())
+
+if (visualId && !visual) throw new Error(`Unknown terminal visual "${visualId}"`)
+
+if (visual) {
+  const text = visual.lines.map((line) => line.map((span) => span.text).join("").trimEnd()).join("\n")
+  if (source.trimEnd() !== text.trimEnd()) throw new Error(`Terminal visual "${visualId}" does not match its text fence`)
+}
+
+function color(value: { intent: string; value: string; slot?: number }, background = false) {
+  if (value.intent === "default") {
+    return background ? "var(--terminal-background, var(--page-background))" : "var(--page-color)"
+  }
+  if (value.intent === "indexed") return `var(--terminal-color-${value.slot}, ${value.value})`
+  return value.value
+}
+---
+
+{
+  visual ? (
+    <figure class="box-figure" aria-label={visual.label}>
+      <pre
+        class:list={["terminal-frame", { "terminal-frame--surface": props["data-terminal-surface"] }]}
+        data-terminal-visual={visualId}
+        aria-hidden="true"
+      >{visual.lines.map((line, row) => (
+        <span class="terminal-frame__row">{line.map((span) => (
+          <span
+            class="terminal-frame__span"
+            style={{
+              width: `${span.width}ch`,
+              color: color(visual.colors[span.foreground]),
+              backgroundColor: color(visual.colors[span.background], true),
+              fontWeight: (span.attributes ?? 0) & 1 ? "700" : undefined,
+              fontStyle: (span.attributes ?? 0) & 4 ? "italic" : undefined,
+              textDecoration: (span.attributes ?? 0) & 8 ? "underline" : undefined,
+            }}
+          >{span.text}</span>
+        ))}{visual.cursor?.row === row && (
+          <span
+            class:list={["terminal-frame__cursor", `terminal-frame__cursor--${visual.cursor.style}`]}
+            style={{ insetInlineStart: `${visual.cursor.column}ch` }}
+          />
+        )}</span>
+      ))}</pre>
+    </figure>
+  ) : isDiagram ? (
+    <figure
+      class="box-figure"
+      aria-label="Diagram"
+    >
+      <pre {...props} aria-hidden="true"><slot /></pre>
+    </figure>
+  ) : (
+    <div class="code-block">
+      <pre {...props}><slot /></pre>
+      <button class="copy-code" type="button">copy</button>
+    </div>
+  )
+}
+
+<script>
+  document.addEventListener("click", (event) => {
+    if (!(event.target instanceof Element)) return
+    const button = event.target.closest("button.copy-code")
+    if (!(button instanceof HTMLButtonElement)) return
+    const pre = button.closest(".code-block")?.querySelector("pre")
+    const code = pre?.dataset.code
+    if (code === undefined) return
+    navigator.clipboard.writeText(code).then(() => {
+      button.textContent = "copied"
+      window.setTimeout(() => {
+        button.textContent = "copy"
+      }, 1500)
+    })
+  })
+</script>

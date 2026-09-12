@@ -1,19 +1,28 @@
 ---
 title: Box
-description: Container component with borders and layout capabilities
-order: 2
+description: Group and lay out child content with borders and backgrounds
 ---
 
 # Box
 
-A container component with borders, background colors, and layout capabilities. Use it to create panels, frames, and organized sections.
+`Box` lays out child renderables and can draw a background, border, and title. Use [ScrollBox](/docs/components/scrollbox) when the children must scroll.
+
+## Availability
+
+| Field           | Availability        |
+| --------------- | ------------------- |
+| Package         | `@opentui/core`     |
+| Core renderable | `BoxRenderable`     |
+| React           | `<box>` (automatic) |
+| Solid           | `<box>` (automatic) |
+| Status          | Built in            |
 
 ## Basic usage
 
 ### Renderable API
 
 ```typescript
-import { BoxRenderable, createCliRenderer } from "@opentui/core"
+import { BoxRenderable, TextRenderable, createCliRenderer } from "@opentui/core"
 
 const renderer = await createCliRenderer()
 
@@ -27,26 +36,6 @@ const panel = new BoxRenderable(renderer, {
 })
 
 renderer.root.add(panel)
-```
-
-### Construct API
-
-```typescript
-import { Box, Text, createCliRenderer } from "@opentui/core"
-
-const renderer = await createCliRenderer()
-
-renderer.root.add(
-  Box(
-    {
-      width: 30,
-      height: 10,
-      backgroundColor: "#333366",
-      borderStyle: "rounded",
-    },
-    Text({ content: "Inside the box!" }),
-  ),
-)
 ```
 
 ## Border styles
@@ -75,6 +64,16 @@ renderer.root.add(
 {
   borderStyle: "heavy"
 } // Heavy lines: ┏━┓┃┗━┛
+```
+
+```text terminal=box-borders
+┌─────single─────┐  ╔═════double═════╗
+│ single line    │  ║ double lines   ║
+└────────────────┘  ╚════════════════╝
+
+╭────rounded─────╮  ┏━━━━━heavy━━━━━━┓
+│ round corners  │  ┃ heavy strokes  ┃
+╰────────────────╯  ┗━━━━━━━━━━━━━━━━┛
 ```
 
 ## Titles
@@ -119,25 +118,32 @@ const panel = new BoxRenderable(renderer, {
 } // └────────── Title ┘
 ```
 
+```text terminal=box-title-alignment
+┌───────────settings───────────┐
+│ Top and bottom titles        │
+└────────────────────────close─┘
+```
+
 ## Layout container
 
 Box works as a flex container for child elements:
 
 ```typescript
-const container = Box(
-  {
-    flexDirection: "column",
-    justifyContent: "space-between",
-    alignItems: "stretch",
-    width: 50,
-    height: 20,
-    padding: 1,
-    gap: 1,
-  },
-  Text({ content: "Header" }),
-  Box({ flexGrow: 1, backgroundColor: "#222" }, Text({ content: "Content area" })),
-  Text({ content: "Footer" }),
-)
+const container = new BoxRenderable(renderer, {
+  flexDirection: "column",
+  justifyContent: "space-between",
+  alignItems: "stretch",
+  width: 50,
+  height: 20,
+  padding: 1,
+  gap: 1,
+})
+const content = new BoxRenderable(renderer, { flexGrow: 1, backgroundColor: "#222" })
+
+content.add(new TextRenderable(renderer, { content: "Content area" }))
+container.add(new TextRenderable(renderer, { content: "Header" }))
+container.add(content)
+container.add(new TextRenderable(renderer, { content: "Footer" }))
 ```
 
 ## Mouse events
@@ -165,55 +171,59 @@ const button = new BoxRenderable(renderer, {
 
 ## Properties
 
-| Property               | Type               | Default        | Description                       |
-| ---------------------- | ------------------ | -------------- | --------------------------------- |
-| `width`                | `number \| string` | -              | Width in characters or percentage |
-| `height`               | `number \| string` | -              | Height in rows or percentage      |
-| `backgroundColor`      | `string \| RGBA`   | -              | Background fill color             |
-| `border`               | `boolean`          | `false`        | Show border                       |
-| `borderStyle`          | `string`           | `"single"`     | Border style                      |
-| `borderColor`          | `string \| RGBA`   | -              | Border color                      |
-| `title`                | `string`           | -              | Title text in border              |
-| `titleColor`           | `string \| RGBA`   | -              | Color of the title text           |
-| `titleAlignment`       | `string`           | `"left"`       | Title position                    |
-| `bottomTitle`          | `string`           | -              | Bottom title text in border       |
-| `bottomTitleAlignment` | `string`           | `"left"`       | Bottom title position             |
-| `padding`              | `number`           | `0`            | Internal padding                  |
-| `gap`                  | `number \| string` | -              | Gap between children              |
-| `flexDirection`        | `string`           | `"column"`     | Child layout direction            |
-| `justifyContent`       | `string`           | `"flex-start"` | Main axis alignment               |
-| `alignItems`           | `string`           | `"stretch"`    | Cross axis alignment              |
+| Property               | Type               | Default        | Description                             |
+| ---------------------- | ------------------ | -------------- | --------------------------------------- |
+| `width`                | `number \| string` | -              | Width in terminal columns or percentage |
+| `height`               | `number \| string` | -              | Height in rows or percentage            |
+| `backgroundColor`      | `string \| RGBA`   | `transparent`  | Background fill color                   |
+| `border`               | `boolean`          | `false`        | Show border                             |
+| `borderStyle`          | `string`           | `"single"`     | Border style                            |
+| `borderColor`          | `string \| RGBA`   | `#FFFFFF`      | Border color                            |
+| `title`                | `string`           | -              | Title text in border                    |
+| `titleColor`           | `string \| RGBA`   | `borderColor`  | Color of the title text                 |
+| `titleAlignment`       | `string`           | `"left"`       | Title position                          |
+| `bottomTitle`          | `string`           | -              | Bottom title text in border             |
+| `bottomTitleAlignment` | `string`           | `"left"`       | Bottom title position                   |
+| `padding`              | `number`           | `0`            | Internal padding                        |
+| `gap`                  | `number \| string` | -              | Gap between children                    |
+| `flexDirection`        | `string`           | `"column"`     | Child layout direction                  |
+| `justifyContent`       | `string`           | `"flex-start"` | Main axis alignment                     |
+| `alignItems`           | `string`           | `"stretch"`    | Cross axis alignment                    |
 
-## Example: Card component
+## Example: card component
 
 ```typescript
-import { Box, Text, t, bold, fg } from "@opentui/core"
+import { BoxRenderable, TextRenderable, t, bold, fg } from "@opentui/core"
 
 function Card(props: { title: string; description: string }) {
-  return Box(
-    {
-      width: 40,
-      borderStyle: "rounded",
-      borderColor: "#666",
-      padding: 1,
-      margin: 1,
-    },
-    Text({
+  const card = new BoxRenderable(renderer, {
+    width: 40,
+    borderStyle: "rounded",
+    borderColor: "#666",
+    padding: 1,
+    margin: 1,
+  })
+  card.add(
+    new TextRenderable(renderer, {
       content: t`${bold(fg("#00FFFF")(props.title))}`,
     }),
-    Text({
+  )
+  card.add(
+    new TextRenderable(renderer, {
       content: props.description,
       fg: "#AAAAAA",
     }),
   )
+  return card
 }
 
-renderer.root.add(
-  Box(
-    { flexDirection: "row", flexWrap: "wrap" },
-    Card({ title: "Feature 1", description: "Description of feature 1" }),
-    Card({ title: "Feature 2", description: "Description of feature 2" }),
-    Card({ title: "Feature 3", description: "Description of feature 3" }),
-  ),
-)
+const cards = new BoxRenderable(renderer, { flexDirection: "row", flexWrap: "wrap" })
+cards.add(Card({ title: "Feature 1", description: "Description of feature 1" }))
+cards.add(Card({ title: "Feature 2", description: "Description of feature 2" }))
+cards.add(Card({ title: "Feature 3", description: "Description of feature 3" }))
+renderer.root.add(cards)
 ```
+
+## Related concepts
+
+Read [Layout](/docs/core-concepts/layout) for sizing and flex behavior. See [Colors](/docs/core-concepts/colors) for color formats and [Interaction, focus, and selection](/docs/core-concepts/interaction) for mouse event propagation. Use [Text](/docs/components/text) for labels and other text content.

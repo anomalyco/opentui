@@ -1,0 +1,51 @@
+---
+id: opentui-react
+name: OpenTUI React
+summary: React renderer for building terminal user interfaces with OpenTUI Core.
+kind: renderer
+official: true
+source:
+  url: https://github.com/anomalyco/opentui
+  directory: packages/react
+surfaces:
+  - name: React
+    language: typescript
+    import: "@opentui/react"
+    docs: /docs/bindings/react
+  - name: Test utilities
+    language: typescript
+    import: "@opentui/react/test-utils"
+distributions:
+  - type: npm
+    identifier: "@opentui/react"
+    install: bun add @opentui/react react
+links:
+  docs: /docs/bindings/react
+categories:
+  - frameworks
+  - rendering
+---
+
+`@opentui/react` is a React renderer for OpenTUI. It requires React `>=19.2.0`.
+
+```tsx
+import { createCliRenderer } from "@opentui/core"
+import { createRoot } from "@opentui/react"
+
+function App() {
+  return <text>Hello, world!</text>
+}
+
+const renderer = await createCliRenderer({ exitOnCtrlC: true })
+const root = createRoot(renderer)
+
+root.render(<App />)
+```
+
+`createRoot()` adopts the renderer. The code that creates the renderer owns `renderer.destroy()`.
+
+React hooks expose the renderer and terminal events through the React lifecycle.
+
+Read the [React bindings](/docs/bindings/react), [components overview](/docs/components),
+[runtime and platform support](/docs/getting-started/runtime-support), [testing](/docs/core-concepts/testing), and
+[package entry points](/docs/reference/package-entrypoints).

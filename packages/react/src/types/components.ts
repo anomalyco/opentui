@@ -8,6 +8,8 @@ import type {
   CodeRenderable,
   DiffRenderable,
   DiffRenderableOptions,
+  ImageRenderable,
+  ImageRenderableOptions,
   InputRenderable,
   InputRenderableOptions,
   LineNumberOptions,
@@ -99,7 +101,9 @@ export type GetNonStyledProperties<TConstructor> =
                   | "drawUnstyledText"
               : TConstructor extends RenderableConstructor<MarkdownRenderable>
                 ? NonStyledProps | "content" | "syntaxStyle" | "treeSitterClient" | "conceal" | "renderNode"
-                : NonStyledProps
+                : TConstructor extends RenderableConstructor<ImageRenderable>
+                  ? NonStyledProps | "source"
+                  : NonStyledProps
 
 // ============================================================================
 // Component Props System
@@ -154,6 +158,8 @@ export type TextareaProps = ComponentProps<TextareaOptions, TextareaRenderable> 
 }
 
 export type CodeProps = ComponentProps<CodeOptions, CodeRenderable>
+
+export type ImageProps = ComponentProps<ImageRenderableOptions, ImageRenderable>
 
 export type MarkdownProps = ComponentProps<MarkdownOptions, MarkdownRenderable>
 

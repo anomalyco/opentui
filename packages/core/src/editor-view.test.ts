@@ -221,9 +221,10 @@ describe("EditorView", () => {
     it("should update local selection focus position", () => {
       buffer.setText("Hello World")
 
+      // Inclusive selection: the cell under the focus (5, the space) is selected too.
       const changed1 = view.setLocalSelection(0, 0, 5, 0)
       expect(changed1).toBe(true)
-      expect(view.getSelectedText()).toBe("Hello")
+      expect(view.getSelectedText()).toBe("Hello ")
 
       const changed2 = view.updateLocalSelection(0, 0, 11, 0)
       expect(changed2).toBe(true)
@@ -249,20 +250,20 @@ describe("EditorView", () => {
       const changed = view.updateLocalSelection(0, 0, 5, 0)
       expect(changed).toBe(true)
       expect(view.hasSelection()).toBe(true)
-      expect(view.getSelectedText()).toBe("Hello")
+      expect(view.getSelectedText()).toBe("Hello ")
     })
 
     it("should preserve anchor when updating local selection", () => {
       buffer.setText("Hello World")
 
       view.setLocalSelection(0, 0, 5, 0)
-      expect(view.getSelectedText()).toBe("Hello")
+      expect(view.getSelectedText()).toBe("Hello ")
 
       view.updateLocalSelection(0, 0, 11, 0)
       expect(view.getSelectedText()).toBe("Hello World")
 
       view.updateLocalSelection(0, 0, 3, 0)
-      expect(view.getSelectedText()).toBe("Hel")
+      expect(view.getSelectedText()).toBe("Hell")
     })
 
     it("should handle backward selection with updateLocalSelection", () => {
@@ -285,7 +286,15 @@ describe("EditorView", () => {
 
       const changed = view.updateLocalSelection(0, 0, 5, 1)
       expect(changed).toBe(true)
-      expect(view.getSelectedText()).toBe("ABCDEFGHIJKLMNO")
+      expect(view.getSelectedText()).toBe("ABCDEFGHIJKLMNOP")
+    })
+
+    it("should select a word with word behavior on the same cell", () => {
+      buffer.setText("alpha beta gamma")
+
+      const changed = view.setLocalSelection(6, 0, 6, 0, undefined, undefined, false, false, "word")
+      expect(changed).toBe(true)
+      expect(view.getSelectedText()).toBe("beta")
     })
 
     it("should return null bytes for zero-length selected-text output buffer", () => {
@@ -472,6 +481,17 @@ describe("EditorView", () => {
       buffer.moveCursorLeft()
       cursor = view.getVisualCursor()
       expect(cursor.offset).toBe(6)
+    })
+
+    it("preserves public cursor identity", () => {
+      buffer.setText("abc")
+      const first = view.getVisualCursor()
+      buffer.moveCursorRight()
+      const second = view.getVisualCursor()
+
+      expect(first).not.toBe(second)
+      expect(first.offset).toBe(0)
+      expect(second.offset).toBe(1)
     })
 
     it("should handle vertical navigation through emoji cells correctly", () => {

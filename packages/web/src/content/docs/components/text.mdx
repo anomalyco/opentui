@@ -1,7 +1,6 @@
 ---
 title: Text
 description: Display styled text content
-order: 1
 skill:
   entry: true
   intents: [text, styling, content, selection]
@@ -9,9 +8,19 @@ skill:
 
 # Text
 
-Display styled text content with support for colors, attributes, and text selection.
+`Text` displays styled text with colors, attributes, and selection. Use it for labels and prose. Use [Code](/docs/components/code) or [Markdown](/docs/components/markdown) for parsed rich content.
 
-## Basic Usage
+## Availability
+
+| Field           | Availability         |
+| --------------- | -------------------- |
+| Package         | `@opentui/core`      |
+| Core renderable | `TextRenderable`     |
+| React           | `<text>` (automatic) |
+| Solid           | `<text>` (automatic) |
+| Status          | Built in             |
+
+## Basic usage
 
 ### Renderable API
 
@@ -29,21 +38,6 @@ const text = new TextRenderable(renderer, {
 renderer.root.add(text)
 ```
 
-### Construct API
-
-```typescript
-import { Text, createCliRenderer } from "@opentui/core"
-
-const renderer = await createCliRenderer()
-
-renderer.root.add(
-  Text({
-    content: "Hello, OpenTUI!",
-    fg: "#00FF00",
-  }),
-)
-```
-
 ## Text attributes
 
 Combine multiple text attributes using bitwise OR:
@@ -57,6 +51,14 @@ const styledText = new TextRenderable(renderer, {
   fg: "#FFFF00",
   attributes: TextAttributes.BOLD | TextAttributes.UNDERLINE,
 })
+```
+
+Bold, italic, and underline can also be applied independently:
+
+```text terminal=text-attributes
+bold       Important message
+italic     Additional context
+underline  Documentation
 ```
 
 ### Available attributes
@@ -104,6 +106,10 @@ t`${bg("#0000FF")("blue background")}`
 t`${bold(fg("#FFFF00")("bold yellow"))}`
 ```
 
+React and Solid can compose inline `<span>`, `<b>`, `<strong>`, `<i>`, `<em>`, `<u>`, `<br>`, and `<a href>` elements
+inside `<text>`. They are text-only children and cannot mount under a Box or another layout element directly. See
+[inline text elements](/docs/components#inline-text-elements) for availability.
+
 ## Positioning
 
 ```typescript
@@ -139,8 +145,8 @@ const nonSelectable = new TextRenderable(renderer, {
 | Property                         | Type                              | Default      | Description                  |
 | -------------------------------- | --------------------------------- | ------------ | ---------------------------- |
 | `content`                        | `string \| StyledText`            | `""`         | The text content to display  |
-| `fg`                             | `string \| RGBA`                  | -            | Foreground (text) color      |
-| `bg`                             | `string \| RGBA`                  | -            | Background color             |
+| `fg`                             | `string \| RGBA`                  | `#FFFFFF`    | Foreground (text) color      |
+| `bg`                             | `string \| RGBA`                  | transparent  | Background color             |
 | `attributes`                     | `TextAttributes`                  | `0`          | Text styling attributes      |
 | `selectable`                     | `boolean`                         | `true`       | Whether text can be selected |
 | `position`                       | `"relative" \| "absolute"`        | `"relative"` | Positioning mode             |
@@ -149,27 +155,33 @@ const nonSelectable = new TextRenderable(renderer, {
 ## Example: status bar
 
 ```typescript
-import { Text, Box, t, bold, fg } from "@opentui/core"
+import { TextRenderable, BoxRenderable, t, bold, fg } from "@opentui/core"
 
-const statusBar = Box(
-  {
-    position: "absolute",
-    bottom: 0,
-    width: "100%",
-    height: 1,
-    backgroundColor: "#333333",
-    flexDirection: "row",
-    justifyContent: "space-between",
-    paddingLeft: 1,
-    paddingRight: 1,
-  },
-  Text({
+const statusBar = new BoxRenderable(renderer, {
+  position: "absolute",
+  bottom: 0,
+  width: "100%",
+  height: 1,
+  backgroundColor: "#333333",
+  flexDirection: "row",
+  justifyContent: "space-between",
+  paddingLeft: 1,
+  paddingRight: 1,
+})
+statusBar.add(
+  new TextRenderable(renderer, {
     content: t`${bold("myfile.ts")} - ${fg("#888888")("TypeScript")}`,
   }),
-  Text({
+)
+statusBar.add(
+  new TextRenderable(renderer, {
     content: t`Ln ${fg("#00FF00")("42")}, Col ${fg("#00FF00")("15")}`,
   }),
 )
 
 renderer.root.add(statusBar)
 ```
+
+## Related concepts
+
+Read [Text and terminal cells](/docs/core-concepts/text-and-cells) for graphemes, wrapping, and display-cell widths. See [Colors](/docs/core-concepts/colors), [Layout](/docs/core-concepts/layout), and [Interaction, focus, and selection](/docs/core-concepts/interaction) for shared behavior. Use [Box](/docs/components/box) to lay out text with other components.

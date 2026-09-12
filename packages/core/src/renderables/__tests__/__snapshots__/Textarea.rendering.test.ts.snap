@@ -115,11 +115,11 @@ abled
 exports[`Textarea - Rendering Tests Textarea Content Snapshots should render text with word wrapping and punctuation 1`] = `
 "Hello,World.                                                                    
 Test-                                                                           
-Example/                                                                        
-Path with                                                                       
-various                                                                         
+Example/Path                                                                    
+with various                                                                    
 punctuation                                                                     
 marks!                                                                          
+                                                                                
                                                                                 
                                                                                 
                                                                                 
@@ -351,9 +351,9 @@ exports[`Textarea - Rendering Tests Absolute Positioned Box with Textarea should
                                                                       
                                                                       
                                                                       
-             This is an extremely long piece of text                  
-             that needs to wrap multiple times within                 
-             the constrained width of the absolutely                  
+             This is an extremely long piece of text that             
+             needs to wrap multiple times within the                  
+             constrained width of the absolutely                      
              positioned container box with significant                
              padding on all sides.                                    
                                                                       

@@ -1,0 +1,38 @@
+---
+id: opentui-examples
+name: OpenTUI Examples
+summary: Example applications and a standalone examples executable for OpenTUI.
+kind: examples
+official: true
+source:
+  url: https://github.com/anomalyco/opentui
+  directory: packages/examples
+distributions:
+  - type: source
+    identifier: anomalyco/opentui
+  - type: github-release
+    identifier: anomalyco/opentui
+categories:
+  - documentation
+---
+
+`@opentui/examples` is the repository's private example browser and examples executable.
+
+Browse the [example source](https://github.com/anomalyco/opentui/tree/main/packages/examples/src). Most demos have one
+main source file. Some demos also use shared modules, assets, or other support files.
+
+Run the example browser from a repository clone:
+
+```bash
+bun install
+cd packages/examples
+bun run dev
+```
+
+The package is not published to npm. Get the examples executable from
+[GitHub Releases](https://github.com/anomalyco/opentui/releases/latest). Releases supply macOS x64 and arm64, Linux x64,
+and Windows x64 executables. On Linux arm64 or Windows arm64, build the executable from source.
+
+Read [Getting started](/docs#explore-the-examples) for the installer. Read
+[runtime and platform support](/docs/getting-started/runtime-support) for runtime requirements. Read [Deploy an OpenTUI
+application](/docs/ship/deploy) for release formats.

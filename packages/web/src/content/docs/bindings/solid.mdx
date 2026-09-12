@@ -1,35 +1,26 @@
 ---
-title: Solid.js
-description: Build terminal UIs with Solid.js and OpenTUI
-order: 1
+title: Solid bindings
+description: Build terminal UIs with Solid and OpenTUI
 skill:
   entry: true
   intents: [solid, jsx, signals, hooks, keyboard, animation, testing]
 ---
 
-# Solid.js bindings
+# Solid bindings
 
-Build terminal user interfaces with Solid.js's fine-grained reactivity and OpenTUI.
+Use Solid components and reactive primitives to build an OpenTUI application.
+
+## Requirements
+
+`@opentui/solid` requires `solid-js` 1.9.12 exactly. See
+[Runtime and platform support](/docs/getting-started/runtime-support) for the current runtime, operating system,
+architecture, and native renderer matrix.
 
 ## Installation
 
 ```bash
 bun install solid-js @opentui/solid
 ```
-
-## Runtime support
-
-`@opentui/solid` publishes one npm package with runtime-specific entrypoints behind the package `exports` map. The root package and JSX runtime subpaths work in both Bun and Node. Bun-specific helpers stay Bun-only and throw a clear runtime error if imported from Node.
-
-| Entrypoint                                        | Bun | Node | Notes                                           |
-| ------------------------------------------------- | --- | ---- | ----------------------------------------------- |
-| `@opentui/solid`                                  | yes | yes  | Main renderer and test helpers                  |
-| `@opentui/solid/jsx-runtime`                      | yes | yes  | Real runtime module for compiled JSX            |
-| `@opentui/solid/jsx-dev-runtime`                  | yes | yes  | Real dev runtime module for compiled JSX        |
-| `@opentui/solid/preload`                          | yes | no   | Bun preload hook                                |
-| `@opentui/solid/bun-plugin`                       | yes | no   | Bun bundler/plugin entry                        |
-| `@opentui/solid/runtime-plugin-support`           | yes | no   | Bun runtime-loader support                      |
-| `@opentui/solid/runtime-plugin-support/configure` | yes | no   | Bun runtime-loader support without side effects |
 
 ## Setup
 
@@ -56,7 +47,8 @@ preload = ["@opentui/solid/preload"]
 
 ### 3. Configure Node compilation
 
-Node support currently targets compiled Solid TSX. Use Solid's universal transform semantics and point the generated runtime imports at the published `solid-js` JS files:
+The Node path requires compiled Solid TSX. Use Solid's universal transform semantics. Point the generated runtime
+imports at the published `solid-js` JavaScript files:
 
 ```js
 import ts from "@babel/preset-typescript"
@@ -80,101 +72,73 @@ export default {
 }
 ```
 
-The current Node runtime path is still lower-level than Bun. OpenTUI's native renderer currently relies on Node's experimental FFI support, so select Node 26.4.0 before running it and pass `--experimental-ffi`, `--permission`, and the filesystem or FFI permissions your app needs. OpenTUI does not install Node automatically.
+Use Node.js 26.4.0 or later with `--experimental-ffi`. If you enable the Node permission model, also pass `--permission`,
+`--allow-ffi`, and the filesystem permissions that the application needs. The Solid Node source lane in CI compiles
+TSX and runs on Linux x64.
 
-### 4. Enable runtime-loaded plugin support (if needed)
-
-If your app loads external TS/TSX modules at runtime (for example a file-based plugin system), import this once in your entry file before dynamic imports:
-
-```ts
-import "@opentui/solid/runtime-plugin-support"
-```
-
-This entrypoint is Bun-only.
-
-### 5. Create your app
+### 4. Create the app
 
 ```tsx
 import { render } from "@opentui/solid"
 
 const App = () => <text>Hello, World!</text>
 
-render(App)
+await render(App)
 ```
 
-Run with `bun index.tsx`.
+Run the app with `bun index.tsx`.
+
+## Runtime-loaded modules
+
+Solid hosts that load TSX modules at runtime use this framework-specific import:
+
+```ts
+import "@opentui/solid/runtime-plugin-support"
+```
+
+See [Load plugins and modules at runtime](/docs/extend/runtime-plugins) for Bun setup, import order, module maps, and
+trust boundaries.
 
 ## Components
 
-OpenTUI Solid provides JSX intrinsic elements that map to core renderables.
-
-**Note:** Solid uses snake_case for multi-word component names (e.g., `ascii_font`, `tab_select`).
-
-### Layout & display
-
-- `<text>` - Styled text container
-- `<box>` - Layout container with borders
-- `<scrollbox>` - Scrollable container
-- `<ascii_font>` - ASCII art text
-- `<markdown>` - Render Markdown content
-
-QR code support is available from `@opentui/qrcode/solid` and must be registered explicitly with `registerQRCode()`.
-
-### Input
-
-- `<input>` - Single-line text input
-- `<textarea>` - Multi-line text input
-- `<select>` - List selection
-- `<tab_select>` - Tab-based selection
-
-### Code & diff
-
-- `<code>` - Syntax-highlighted code
-- `<line_number>` - Line numbers with diff/diagnostic support
-- `<diff>` - Unified or split diff viewer
-
-### Text modifiers
-
-Use inside `<text>` components:
-
-- `<span>` - Inline styled text
-- `<strong>`, `<b>` - Bold text
-- `<em>`, `<i>` - Italic text
-- `<u>` - Underlined text
-- `<br>` - Line break
-- `<a>` - Link text with href
+Solid JSX intrinsic elements map to Core renderables. Multi-word intrinsic names use snake_case, such as
+`<ascii_font>` and `<tab_select>`. See the [Components overview](/docs/components) for availability and
+registration requirements.
 
 ## API reference
 
 ### `render(node, rendererOrConfig?)`
 
-Render a Solid component tree into a CLI renderer.
+Render a Solid component tree into a CLI renderer. Pass an existing `CliRenderer` or a `CliRendererConfig`.
 
 ```tsx
 import { render } from "@opentui/solid"
 
+const App = () => <text>Hello, Solid!</text>
+
 // Simple usage
-render(() => <App />)
+await render(() => <App />)
 
 // With renderer config
-render(() => <App />, {
+await render(() => <App />, {
   targetFps: 30,
   exitOnCtrlC: false,
 })
 ```
 
-**Parameters:**
+Parameters:
 
-- `node` - Function returning a JSX element
-- `rendererOrConfig` - Optional `CliRenderer` instance or `CliRendererConfig`
+- `node`: Function that returns a JSX element.
+- `rendererOrConfig`: Optional `CliRenderer` instance or `CliRendererConfig`.
 
 ### `testRender(node, options?)`
 
-Create a test renderer for snapshots and interaction tests.
+Create a test renderer for frame and interaction tests.
 
 ```tsx
 import { testRender } from "@opentui/solid"
 
+const App = () => <text>Ready</text>
 const testSetup = await testRender(() => <App />, { width: 40, height: 10 })
 ```
 
@@ -183,20 +147,32 @@ const testSetup = await testRender(() => <App />, { width: 40, height: 10 })
 Register custom renderables as JSX intrinsic elements.
 
 ```tsx
+import { BoxRenderable } from "@opentui/core"
 import { extend } from "@opentui/solid"
 
-extend({ custom_box: CustomBoxRenderable })
+extend({ custom_box: BoxRenderable })
 ```
 
 ### `getComponentCatalogue()`
 
 Returns the current component catalogue that powers JSX tag lookup.
 
-For plugin slots, see [Plugin Slots overview](/docs/plugins/slots) and [Solid slots](/docs/plugins/solid).
+For plugin slots, see [Plugin slots](/docs/plugins/slots) and [Solid plugin slots](/docs/plugins/solid).
+
+## Lifecycle and cleanup
+
+`render()` returns a promise that resolves after the initial mount. It does not return a disposer. When you pass a
+renderer, Solid adopts it but does not take application ownership. The code that created that renderer must destroy it.
+
+Renderer destruction disposes the Solid root. Disposal runs `onCleanup` callbacks and removes subscriptions created by
+the Solid hooks. If `render()` creates the renderer from a config object, a component can get it with `useRenderer()`
+and call `renderer.destroy()` during application shutdown.
+
+See [Lifecycle and cleanup](/docs/core-concepts/lifecycle) for renderer shutdown and failure handling.
 
 ## Scrollback writers
 
-In [`split-footer`](/docs/core-concepts/renderer#split-footer) mode with `externalOutputMode: "capture-stdout"`, the Solid binding provides helpers that append JSX-rendered output above the footer. They wrap [`renderer.writeToScrollback`](/docs/core-concepts/renderer#writing-to-scrollback) so you can write scrollback content with signals and components.
+In [`split-footer`](/docs/core-concepts/renderer#choose-a-screen-mode) mode with `externalOutputMode: "capture-stdout"`, the Solid binding includes helpers that append JSX-rendered output above the footer. They wrap [`renderer.writeToScrollback`](/docs/core-concepts/renderer#choose-a-screen-mode) so you can write scrollback content with signals and components.
 
 ### `writeSolidToScrollback(renderer, node, options?)`
 
@@ -228,11 +204,15 @@ renderer.writeToScrollback(writer)
 | `height`          | `number`  | measured auto  | Override the snapshot height in rows (otherwise measured from layout)    |
 | `rowColumns`      | `number`  | snapshot width | Explicit last-row column count for tail tracking                         |
 | `startOnNewLine`  | `boolean` | `true`         | Insert a newline before this commit if the previous commit ended mid-row |
-| `trailingNewline` | `boolean` | -              | Append a newline after the final row                                     |
+| `trailingNewline` | `boolean` | `true`         | Append a newline after the final row                                     |
 
-The writer returns a `ScrollbackSnapshot` whose teardown disposes the inner Solid subtree after the snapshot renders. Use the core [`ScrollbackSurface`](/docs/core-concepts/renderer#writing-to-scrollback) APIs directly if you need streaming commits that re-render the same tree over time.
+The writer returns a `ScrollbackSnapshot`. Its teardown disposes the inner Solid subtree after the snapshot renders.
+Use the Core [`ScrollbackSurface`](/docs/core-concepts/renderer#choose-a-screen-mode) APIs for streaming commits that
+render the same tree more than once.
 
 ## Hooks
+
+The event hooks subscribe after mount and remove their listeners during Solid owner cleanup.
 
 ### `useRenderer()`
 
@@ -405,43 +385,26 @@ const App = () => {
 
 ### `useTimeline(options?)`
 
-Create and manage animations.
+`useTimeline()` creates and returns one `Timeline` during component setup. It registers the timeline on mount and starts
+it unless `autoplay` is `false`. Solid pauses and unregisters it during owner cleanup.
 
 ```tsx
 import { useTimeline } from "@opentui/solid"
-import { createSignal, onMount } from "solid-js"
 
 const App = () => {
-  const [width, setWidth] = createSignal(0)
-
-  const timeline = useTimeline({
-    duration: 2000,
-    loop: false,
-  })
-
-  onMount(() => {
-    timeline.add(
-      { width: width() },
-      {
-        width: 50,
-        duration: 2000,
-        ease: "linear",
-        onUpdate: (animation) => {
-          setWidth(animation.targets[0].width)
-        },
-      },
-    )
-  })
-
-  return <box style={{ width: width(), backgroundColor: "#6a5acd" }} />
+  const timeline = useTimeline({ autoplay: false })
+  return <text>{timeline.isPlaying ? "Playing" : "Paused"}</text>
 }
 ```
+
+The hook reads its options during component setup. Read
+[Animation and Timeline](/docs/application-apis/animation) for scheduling, callbacks, engine ownership, and cleanup.
 
 ## Special components
 
 ### `Portal`
 
-Render children into a different mount point (useful for modals and overlays).
+Render children into a different mount point. Use this for content such as modals and overlays.
 
 ```tsx
 import { Portal, useRenderer } from "@opentui/solid"
@@ -475,35 +438,31 @@ const App = () => {
 }
 ```
 
-## Building for production
+## Testing
 
-Use [Bun.build](https://bun.sh/docs/bundler) with the Solid plugin:
+`testRender(node, options?)` mounts a Solid root on a Core test renderer. It returns the Core `TestRendererSetup`.
+Destroying the test renderer disposes the Solid root and runs `onCleanup` callbacks.
 
-```ts
-import solidPlugin from "@opentui/solid/bun-plugin"
+```tsx
+import { expect, test } from "bun:test"
+import { testRender } from "@opentui/solid"
 
-await Bun.build({
-  entrypoints: ["./index.tsx"],
-  target: "bun",
-  outdir: "./build",
-  plugins: [solidPlugin],
+const App = () => <text>Ready</text>
+
+test("renders the application", async () => {
+  const setup = await testRender(() => <App />, { width: 20, height: 4 })
+
+  try {
+    await setup.renderOnce()
+    expect(setup.captureCharFrame()).toContain("Ready")
+  } finally {
+    setup.renderer.destroy()
+  }
 })
 ```
 
-To compile to a standalone executable:
-
-```ts
-await Bun.build({
-  entrypoints: ["./index.tsx"],
-  plugins: [solidPlugin],
-  compile: {
-    target: "bun-darwin-arm64",
-    outfile: "./app-macos",
-  },
-})
-```
-
-If that executable loads external plugins/modules at runtime, keep `import "@opentui/solid/runtime-plugin-support"` in your app entry.
+Use the returned setup for frame capture, waits, resize, keyboard and mouse input, native stats, and external output.
+Always destroy the renderer during test cleanup.
 
 ## Example: counter
 
@@ -529,18 +488,31 @@ const App = () => {
   )
 }
 
-render(App)
+await render(App)
 ```
 
-## Differences from React bindings
+## React and Solid differences
 
-| Aspect             | Solid                                                  | React                                  |
-| ------------------ | ------------------------------------------------------ | -------------------------------------- |
-| Render function    | `render(() => <App />)`                                | `createRoot(renderer).render(<App />)` |
-| Component naming   | snake_case (`ascii_font`)                              | kebab-case (`ascii-font`)              |
-| State              | `createSignal`                                         | `useState`                             |
-| Effects            | `onMount`, `onCleanup`                                 | `useEffect`                            |
-| Resize hook        | `onResize(callback)`                                   | `useOnResize(callback)`                |
-| Dimensions         | Returns signal: `dimensions().width`                   | Returns object: `dimensions.width`     |
-| Extra hooks        | `onFocus`, `onBlur`, `usePaste`, `useSelectionHandler` | -                                      |
-| Special components | `Portal`, `Dynamic`                                    | -                                      |
+| Aspect                            | React                                                    | Solid                                                  |
+| --------------------------------- | -------------------------------------------------------- | ------------------------------------------------------ |
+| Render function                   | `createRoot(renderer).render(<App />)`                   | `render(() => <App />)`                                |
+| Component naming                  | kebab-case (`ascii-font`)                                | snake_case (`ascii_font`)                              |
+| State                             | `useState`                                               | `createSignal`                                         |
+| Effects                           | `useEffect`                                              | `onMount`, `onCleanup`                                 |
+| Resize hook                       | `useOnResize(callback)`                                  | `onResize(callback)`                                   |
+| Dimensions                        | Returns object: `dimensions.width`                       | Returns signal: `dimensions().width`                   |
+| Focus, blur, paste, and selection | `useFocus`, `useBlur`, `usePaste`, `useSelectionHandler` | `onFocus`, `onBlur`, `usePaste`, `useSelectionHandler` |
+| Special components                | None                                                     | `Portal`, `Dynamic`                                    |
+
+## Next
+
+- [React bindings](/docs/bindings/react) describes the React state and ownership model.
+- [Components overview](/docs/components) lists Solid component availability and registration requirements.
+- [Interaction, focus, and selection](/docs/core-concepts/interaction) owns shared pointer and focus behavior.
+- [Animation and Timeline](/docs/application-apis/animation) documents scheduling and engine ownership.
+- [Solid keymap integration](/docs/keymap/solid) connects application commands to Solid state.
+- [Package entry points](/docs/reference/package-entrypoints) lists the public Solid imports.
+- [Runtime and platform support](/docs/getting-started/runtime-support) gives the tested runtime matrix.
+- [Deploy an OpenTUI application](/docs/ship/deploy) helps you choose a distribution format.
+- [Standalone executables](/docs/reference/standalone-executables) gives the Bun and Node.js executable procedures.
+- [Troubleshooting](/docs/test-and-debug/troubleshooting) routes runtime, native loading, and terminal failures.

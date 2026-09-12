@@ -1,7 +1,6 @@
 import { GPUCanvasContextMock } from "bun-webgpu"
 import { RGBA, type OptimizedBuffer } from "@opentui/core"
 import { SuperSampleType } from "./WGPURenderer.js"
-import { Jimp } from "jimp"
 
 // @ts-ignore
 import shaderTemplate from "./shaders/supersampling.wgsl" with { type: "text" }
@@ -98,6 +97,7 @@ export class CLICanvas {
   }
 
   public async saveToFile(filePath: string): Promise<void> {
+    const { Jimp } = await import("jimp")
     const bytesPerPixel = 4 // RGBA
     const unalignedBytesPerRow = this.width * bytesPerPixel
     const alignedBytesPerRow = Math.ceil(unalignedBytesPerRow / 256) * 256
@@ -411,10 +411,8 @@ export class CLICanvas {
         return
       }
 
-      const mappedRangePtr = textureBuffer.getMappedRangePtr(0, textureBuffer.size)
-      const bufPtr = mappedRangePtr
-
       if (this.superSample === SuperSampleType.CPU) {
+        const bufPtr = textureBuffer.getMappedRangePtr(0, textureBuffer.size)
         const format = contextFormat === "bgra8unorm" ? "bgra8unorm" : "rgba8unorm"
         const ssStart = performance.now()
         buffer.drawSuperSampleBuffer(0, 0, bufPtr, textureBuffer.size, format, alignedBytesPerRow)

@@ -1,105 +1,65 @@
 ---
 title: Getting started
-description: Install OpenTUI and create your first terminal UI
-order: 1
-navTitle: Introduction
+description: Start with one OpenTUI quickstart, then choose a framework
 skill:
   entry: true
-  intents: [getting-started, installation, quickstart, intro]
+  intents: [getting-started, intro, examples, agent-skill]
 ---
 
 # Getting started
 
-OpenTUI is a native terminal UI core written in Zig with TypeScript bindings. The native core exposes a C ABI and can be used from any language. OpenTUI powers OpenCode in production today and will also power terminal.shop. It is an extensible core with a focus on correctness, stability, and high performance. It provides a component-based architecture with flexible layout capabilities, allowing you to create complex terminal applications.
+OpenTUI is a native terminal UI core written in Zig with TypeScript bindings.
 
-## Installation
+It renders a component tree, lays it out with Flexbox, handles terminal input, and updates the cells that changed.
+OpenTUI's TypeScript packages call the native Zig library through an internal ABI. OpenTUI powers OpenCode in production.
 
-OpenTUI's renderer examples use [Bun](https://bun.sh). You can import portable entry points such as `@opentui/keymap` and
-`@opentui/core` in Node.js without installing Bun or enabling FFI. These imports do not create a native renderer. To
-create a native renderer in Node.js, you need Node.js 26.4.0 with experimental FFI enabled.
+## Start with the quickstart
 
-```bash
-mkdir my-tui && cd my-tui
-bun init -y
-bun add @opentui/core
-```
+[Build your first app in the quickstart](/docs/getting-started/quickstart). You will create a project from an empty
+directory, compose a small interface, handle keyboard input, and run it in your terminal.
 
-## Runtime support
+The quickstart uses `@opentui/core` directly to teach the renderer, component tree, input, and layout model once. You
+do not need to choose a framework before you complete it.
 
-Importing packages does not require native FFI. For example, Node.js can load
-`await import("@opentui/keymap")` and `await import("@opentui/core")` without `--experimental-ffi`.
+Check [Runtime and platform support](/docs/getting-started/runtime-support) before you use Node.js, cross-compile, or
+deploy to another target.
 
-Creating a native renderer requires FFI. This includes calling `createCliRenderer()` or any other API that loads and calls
-OpenTUI's native Zig renderer. In Node.js, use Node.js 26.4.0 with `--experimental-ffi`. If you use Node.js permissions,
-you must also add `--allow-ffi` and the filesystem permissions your app needs. OpenTUI does not install Node.js, so select
-the required version before you run Node.js-specific examples or scripts.
+## Choose a framework
 
-## Hello world
+- [`@opentui/core`](/docs/core-concepts/renderables) uses imperative renderables and events directly.
+- [`@opentui/react`](/docs/bindings/react) uses React components, hooks, and state.
+- [`@opentui/solid`](/docs/bindings/solid) uses Solid components, signals, and effects.
 
-Create `index.ts`:
+If you use Core, read [Renderables](/docs/core-concepts/renderables) after the quickstart.
 
-```typescript
-import { createCliRenderer, Text } from "@opentui/core"
+## Find a topic
 
-const renderer = await createCliRenderer({
-  exitOnCtrlC: true,
-})
+- [Components](/docs/components) compares component availability across Core, React, and Solid.
+- [Renderer](/docs/core-concepts/renderer) covers terminal setup, the root, scheduling, and central events.
+- [Layout](/docs/core-concepts/layout) covers Yoga-based sizing and positioning.
+- [Interaction, focus, and selection](/docs/core-concepts/interaction) explains shared pointer and focus behavior.
+- [Testing](/docs/core-concepts/testing) renders apps in memory for assertions and snapshots.
+- [Package entry points](/docs/reference/package-entrypoints) lists supported import paths.
+- [Lifecycle and cleanup](/docs/core-concepts/lifecycle) owns terminal restoration and resource release.
 
-renderer.root.add(
-  Text({
-    content: "Hello, OpenTUI!",
-    fg: "#00FF00",
-  }),
-)
-```
+## Explore the examples
 
-Run it:
+Run the OpenTUI example browser without cloning the repository. Release executables support macOS x64 and arm64,
+Linux x64, and Windows x64. On those targets, including x64 WSL and Git Bash:
 
 ```bash
-bun index.ts
+curl -fsSL https://raw.githubusercontent.com/anomalyco/opentui/main/packages/examples/install.sh | sh
 ```
 
-You should see green text. Press `Ctrl+C` to exit.
+On Windows, download the latest release from [GitHub Releases](https://github.com/anomalyco/opentui/releases/latest).
 
-## Composing components
+## Give an agent the docs
 
-Components nest naturally. Here's a bordered panel with content:
+OpenTUI includes a skill that teaches AI coding assistants its APIs and patterns. Install it with
+[`npx skills`](https://skills.sh):
 
-```typescript
-import { createCliRenderer, Box, Text } from "@opentui/core"
-
-const renderer = await createCliRenderer({
-  exitOnCtrlC: true,
-})
-
-renderer.root.add(
-  Box(
-    { borderStyle: "rounded", padding: 1, flexDirection: "column", gap: 1 },
-    Text({ content: "Welcome", fg: "#FFFF00" }),
-    Text({ content: "Press Ctrl+C to exit" }),
-  ),
-)
+```bash
+npx skills add anomalyco/opentui --skill opentui
 ```
 
-`Box` and `Text` are factory functions. The first argument is props; additional arguments are children.
-
-## What's next
-
-### Core concepts
-
-- [Renderer](/docs/core-concepts/renderer) - The rendering engine
-- [Layout](/docs/core-concepts/layout) - Flexbox positioning
-- [Constructs](/docs/core-concepts/constructs) - The declarative component API
-
-### Components
-
-- [Text](/docs/components/text), [Box](/docs/components/box) - Display and layout
-- [Input](/docs/components/input), [Select](/docs/components/select) - User interaction
-
-### Framework bindings
-
-The OpenTUI monorepo includes `@opentui/react` and `@opentui/solid`. Other language and framework bindings live in
-separate repositories.
-
-- [React](/docs/bindings/react)
-- [Solid.js](/docs/bindings/solid)
+Add `-g` to install the skill globally for every project. OpenCode uses the same install command.

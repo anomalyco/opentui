@@ -1,20 +1,17 @@
 ---
-title: Color matrix
-description: Per-cell and uniform RGBA matrix transforms on FrameBuffer
-order: 3
+title: FrameBuffer color matrices
+description: Apply exact 4x4 RGBA transforms to selected or uniform FrameBuffer cells and channels
 ---
 
-# Color matrix
+# FrameBuffer color matrices
 
-`FrameBuffer` supports native 4x4 RGBA matrix transforms through two methods: `colorMatrix(...)` and
-`colorMatrixUniform(...)`.
+This supported advanced API transforms stored foreground and background colors in an `OptimizedBuffer`. Use it when a
+[FrameBuffer](/docs/components/frame-buffer) needs a cell-level color transform.
 
-Use `colorMatrix(...)` when you want to transform specific cells with per-cell strengths. Use
-`colorMatrixUniform(...)` when you want to apply one transform to the entire buffer.
+Buffer positions are terminal cells, not image pixels. Read [Colors](/docs/core-concepts/colors) for normal color input
+and terminal palette behavior.
 
-Both methods work on normalized RGBA values (`0.0` to `1.0`) and can target foreground, background, or both channels.
-
-## API
+## Methods
 
 ```typescript
 import { TargetChannel } from "@opentui/core"
@@ -22,139 +19,147 @@ import { TargetChannel } from "@opentui/core"
 frameBuffer.colorMatrix(
   matrix: Float32Array,
   cellMask: Float32Array,
-  strength = 1.0,
+  strength = 1,
   target = TargetChannel.Both,
 )
 
 frameBuffer.colorMatrixUniform(
   matrix: Float32Array,
-  strength = 1.0,
+  strength = 1,
   target = TargetChannel.Both,
 )
 ```
 
+Both methods mutate the buffer and return `void`. The matrix must contain exactly 16 floats. A different length throws
+`RangeError` before the native call.
+
+`colorMatrix()` transforms only mask entries. `colorMatrixUniform()` transforms every buffer cell.
+
 ## Matrix format
 
-Matrix must be exactly 16 floats in row-major order.
-
-Each row defines one output channel:
+The matrix is row-major. Each row computes one output channel:
 
 ```text
-Row 0: [r->r, g->r, b->r, a->r]  // output red
-Row 1: [r->g, g->g, b->g, a->g]  // output green
-Row 2: [r->b, g->b, b->b, a->b]  // output blue
-Row 3: [r->a, g->a, b->a, a->a]  // output alpha
+[m00, m01, m02, m03]  red output
+[m10, m11, m12, m13]  green output
+[m20, m21, m22, m23]  blue output
+[m30, m31, m32, m33]  alpha output
 ```
 
-Each cell is transformed in two stages:
+For normalized input `C = [r, g, b, a]`, OpenTUI calculates:
 
 ```text
-newColor = M * color
-output = original + (newColor - original) * strength
+transformed = M * C
+result = C + (transformed - C) * effectiveStrength
 ```
 
-This means `strength = 0.0` keeps original color, and `strength = 1.0` applies full matrix result.
+`strength = 0` keeps the original value. `strength = 1` uses the complete matrix result. Strength is not clamped, so a
+negative value or a value above one extrapolates.
+
+Intermediate calculations can be below `0` or above `1`. The stored buffer is RGBA8. Each final channel is clamped to
+`0..1`, rounded to `0..255`, and written to storage. The native source comments that say no clamping describe the float
+calculation, not the RGBA8 write.
+
+Matrix coefficients are not checked for finite values. A non-finite calculated channel is stored as zero.
 
 ## Target channels
 
-Use the `TargetChannel` enum to choose which color buffers are affected:
+| Enum                 | Value | Cells changed             |
+| -------------------- | ----- | ------------------------- |
+| `TargetChannel.FG`   | `1`   | Foreground only           |
+| `TargetChannel.BG`   | `2`   | Background only           |
+| `TargetChannel.Both` | `3`   | Foreground and background |
 
-- `TargetChannel.FG` (`1`): foreground only
-- `TargetChannel.BG` (`2`): background only
-- `TargetChannel.Both` (`3`): foreground + background
+Use the enum values. Other runtime numbers are outside the supported TypeScript contract.
 
-## `colorMatrix` cell mask format
+## Cell mask
 
-`cellMask` uses packed triplets:
+`colorMatrix()` reads packed triplets:
 
 ```text
 [x, y, perCellStrength, x, y, perCellStrength, ...]
 ```
 
-- `x` and `y` are cell coordinates
-- `perCellStrength` is multiplied by method `strength`
-- incomplete trailing values (not a multiple of 3) are ignored
-- out-of-bounds or non-finite coordinates are skipped
-- non-finite effective strengths are skipped
+The effective strength is `methodStrength * perCellStrength`.
 
-This method is useful for effects that only affect part of the buffer, such as scanlines, vignettes, or localized color
-grading.
+Mask behavior is exact:
 
-## `colorMatrixUniform` behavior
+- The TypeScript wrapper uses `Math.floor(cellMask.length / 3)`. It ignores one or two trailing floats.
+- Negative, non-finite, or values above the native `u32` coordinate range are skipped.
+- Positive fractional coordinates truncate toward zero.
+- Coordinates outside the buffer are skipped.
+- A non-finite or zero effective strength is skipped.
+- Duplicate coordinates apply the matrix more than once in mask order.
 
-`colorMatrixUniform` applies the same matrix to every pixel in the selected channel(s).
+The mask ignores the active scissor stack. Limit coordinates in the mask when the transform must stay in a clipped
+region.
 
-- optimized path processes 4 pixels at a time with SIMD
-- scalar fallback handles any remaining pixels
-- `strength === 0` or non-finite `strength` returns early
+## Uniform behavior
 
-Use this method for full-frame color grading and global post-processing.
+`colorMatrixUniform()` uses a four-cell SIMD path and a scalar remainder. `strength === 0` returns in TypeScript.
+Non-finite strength returns in native code.
 
-## No clamping
+Uniform transforms ignore the active scissor and opacity stacks. They process `width * height` stored cells, including
+blank and continuation cells.
 
-Result values are not clamped to `[0, 1]`. Matrix coefficients and strengths can push channels above `1.0` or below
-`0.0`.
+## Cell color semantics
 
-## Example: invert whole buffer
+Each cell color stores RGBA8 values plus terminal color-intent metadata. The matrix reads the resolved RGBA channels.
+It then writes a new explicit RGB color. A transformed indexed or default color loses its palette or default intent.
+
+The methods do not change characters, continuation tags, image placements, text attributes, or hyperlink IDs. They
+can change foreground and background alpha if the fourth matrix row does so.
+
+The transform has no retained allocation or cleanup method. The supplied arrays are borrowed only for the synchronous
+call.
+
+## Exported matrices
+
+`@opentui/core` exports these `Float32Array` values. Each keeps alpha unchanged.
+
+| Export                     | Transform                                  |
+| -------------------------- | ------------------------------------------ |
+| `SEPIA_MATRIX`             | Sepia                                      |
+| `PROTANOPIA_SIM_MATRIX`    | Protanopia simulation                      |
+| `DEUTERANOPIA_SIM_MATRIX`  | Deuteranopia simulation                    |
+| `TRITANOPIA_SIM_MATRIX`    | Tritanopia simulation                      |
+| `ACHROMATOPSIA_MATRIX`     | Luminance grayscale simulation             |
+| `PROTANOPIA_COMP_MATRIX`   | Protanopia-oriented channel compensation   |
+| `DEUTERANOPIA_COMP_MATRIX` | Deuteranopia-oriented channel compensation |
+| `TRITANOPIA_COMP_MATRIX`   | Tritanopia-oriented channel compensation   |
+| `TECHNICOLOR_MATRIX`       | Increased and cross-reduced RGB channels   |
+| `SOLARIZATION_MATRIX`      | Partial channel inversion                  |
+| `SYNTHWAVE_MATRIX`         | Magenta-biased channel mapping             |
+| `GREENSCALE_MATRIX`        | Luminance in the green channel only        |
+| `GRAYSCALE_MATRIX`         | Luminance copied to RGB                    |
+| `INVERT_MATRIX`            | `1 - channel` through the alpha column     |
+
+These constants encode calculations. Their names do not promise accessibility outcomes for every display or viewer.
+
+## Apply a uniform matrix
 
 ```typescript
 import { INVERT_MATRIX, TargetChannel } from "@opentui/core"
 
-frameBuffer.colorMatrixUniform(INVERT_MATRIX, 1.0, TargetChannel.Both)
+frameBuffer.colorMatrixUniform(INVERT_MATRIX, 1, TargetChannel.Both)
 ```
 
-## Example: apply sepia to selected cells
+## Apply a cell mask
 
 ```typescript
 import { SEPIA_MATRIX, TargetChannel } from "@opentui/core"
 
-// Affect only three cells at custom strengths
-const cellMask = new Float32Array([
-  5,
-  2,
-  1.0, // full sepia at (5,2)
-  6,
-  2,
-  0.5, // half sepia at (6,2)
-  7,
-  2,
-  0.25, // subtle sepia at (7,2)
-])
+const cells = new Float32Array([5, 2, 1, 6, 2, 0.5, 7, 2, 0.25])
 
-frameBuffer.colorMatrix(SEPIA_MATRIX, cellMask, 1.0, TargetChannel.FG)
+frameBuffer.colorMatrix(SEPIA_MATRIX, cells, 0.8, TargetChannel.FG)
 ```
 
-## Example: custom saturation matrix
+The effective strengths in this example are `0.8`, `0.4`, and `0.2`.
 
-```typescript
-import { TargetChannel } from "@opentui/core"
+## Next
 
-function createSaturationMatrix(saturation: number): Float32Array {
-  const rw = 0.299
-  const gw = 0.587
-  const bw = 0.114
-  const inv = 1 - saturation
-
-  return new Float32Array([
-    rw * inv + saturation,
-    gw * inv,
-    bw * inv,
-    0,
-    rw * inv,
-    gw * inv + saturation,
-    bw * inv,
-    0,
-    rw * inv,
-    gw * inv,
-    bw * inv + saturation,
-    0,
-    0,
-    0,
-    0,
-    1,
-  ])
-}
-
-const saturation = createSaturationMatrix(1.25)
-frameBuffer.colorMatrixUniform(saturation, 0.8, TargetChannel.Both)
-```
+- [FrameBuffer](/docs/components/frame-buffer) owns the normal component surface.
+- [Buffer API](/docs/reference/buffer-api) defines buffer ownership, masks, and raw-cell limits.
+- [Colors](/docs/core-concepts/colors) defines color values and intent.
+- [Post-processing effects](/docs/extend/post-processing) lists experimental helpers built on matrices and raw arrays.
+- [Custom renderables](/docs/extend/custom-renderables) shows where local drawing belongs.

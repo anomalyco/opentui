@@ -1,0 +1,133 @@
+---
+title: Post-processing effects
+description: Apply and own OpenTUI buffer filters while accounting for mutation, timing, and tagged-cell limits
+---
+
+# Post-processing effects
+
+This advanced reference is for authors who mutate a completed render buffer before terminal output.
+
+The post-processing helpers are experimental. Their exported signatures are public, but their time units, saturation
+behavior, and raw-cell handling are not consistent enough for a stable arbitrary-buffer contract.
+
+## Register a callback
+
+`CliRenderer` calls post-process functions after renderable drawing and before the console overlay. It passes the next
+render buffer and elapsed milliseconds.
+
+```typescript
+import { CRTRollingBarEffect, createCliRenderer, type OptimizedBuffer } from "@opentui/core"
+
+const renderer = await createCliRenderer()
+const effect = new CRTRollingBarEffect()
+const processFrame = (buffer: OptimizedBuffer, deltaTime: number) => {
+  effect.apply(buffer, deltaTime)
+}
+
+renderer.addPostProcessFn(processFrame)
+renderer.requestLive()
+
+function stopEffect() {
+  renderer.removePostProcessFn(processFrame)
+  renderer.dropLive()
+}
+```
+
+Keep the callback reference so `removePostProcessFn()` can remove it. `clearPostProcessFns()` removes every callback.
+Neither registration method starts continuous rendering.
+
+Pair each `requestLive()` with `dropLive()`. An application that already owns continuous rendering can omit that pair.
+Remove callbacks before you release any state that they capture.
+
+## Filter inventory
+
+All filters mutate the supplied `OptimizedBuffer` and return `void`.
+
+| Export and signature                                                                  | Default and exact behavior                                                                                                  |
+| ------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------- |
+| `applyScanlines(buffer, strength = 0.8, step = 2)`                                    | Multiplies background RGB on every `step` row by `strength`. It returns without work when `strength === 1` or `step < 1`.   |
+| `applyInvert(buffer, strength = 1)`                                                   | Applies the invert matrix to foreground and background. `strength` is the matrix blend factor.                              |
+| `applyNoise(buffer, strength = 0.1)`                                                  | Applies random positive or negative gain to both color channels for every cell. It creates a new mask on each call.         |
+| `applyChromaticAberration(buffer, strength = 1)`                                      | Samples red and blue foreground channels from horizontal offsets. It does not change backgrounds.                           |
+| `applyAsciiArt(buffer, ramp = built-in ASCII ramp, fgColor = white, bgColor = black)` | Chooses raw character values from background luminance, then sets uniform foreground and background colors.                 |
+| `applyBrightness(buffer, brightness = 0, cellMask?)`                                  | Adds `brightness * alpha` to RGB in both channels. An omitted or empty mask applies it uniformly.                           |
+| `applyGain(buffer, gain = 1, cellMask?)`                                              | Multiplies RGB in both channels by `max(0, gain)`. An omitted or empty mask applies it uniformly.                           |
+| `applySaturation(buffer, cellMask?, strength = 1)`                                    | Returns without work when `strength` is exactly `0` or `1`. Other values build a saturation matrix from `max(0, strength)`. |
+
+`applySaturation()` does not behave like a conventional saturation control at `0`. It returns without applying the
+grayscale matrix. Its `strength` parameter is used as the matrix's saturation value, not as the matrix blend factor.
+Do not infer semantics from its name or default.
+
+`applyAsciiArt()` uses UTF-16 indexing and `charCodeAt(0)` on ramp entries. Use a nonempty ramp of one-cell Basic
+Multilingual Plane characters. The helper does not validate this requirement.
+
+## Effect inventory
+
+Effect objects retain JavaScript state between calls. They have no `destroy()` method.
+
+| Class                 | Constructor defaults                                                | `apply` behavior                                                                                                                                                                                                                                        |
+| --------------------- | ------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `BloomEffect`         | `(threshold = 0.8, strength = 0.2, radius = 2)`                     | Finds bright foreground or background cells and adds bloom to both channels. Setters clamp threshold to `0..1`, strength to `>= 0`, and radius to a nonnegative integer.                                                                                |
+| `DistortionEffect`    | `options?: Partial<DistortionEffect>`                               | Randomly shifts, flips, or recolors rows. Public defaults are `glitchChancePerSecond = 0.5`, `maxGlitchLines = 3`, `minGlitchDuration = 0.05`, `maxGlitchDuration = 0.2`, `maxShiftAmount = 10`, `shiftFlipRatio = 0.6`, and `colorGlitchChance = 0.2`. |
+| `VignetteEffect`      | `(strength = 0.5)`                                                  | Caches a per-cell mask and darkens foreground and background toward zero. The setter clamps only the lower bound.                                                                                                                                       |
+| `CloudsEffect`        | `(scale = 0.02, speed = 0.5, density = 0.6, darkness = 0.7)`        | Builds a Perlin-noise mask and darkens backgrounds. Setters clamp scale to `>= 0.001`, speed to `>= 0`, and density and darkness to `0..1`.                                                                                                             |
+| `FlamesEffect`        | `(scale = 0.03, speed = 0.02, intensity = 0.8)`                     | Writes a noise-based fire gradient into background RGB. Setters use the same scale and speed lower bounds and clamp intensity to `0..1`.                                                                                                                |
+| `CRTRollingBarEffect` | `(speed = 0.5, height = 0.15, intensity = 0.3, fadeDistance = 0.3)` | Brightens foreground and background around a moving horizontal band. Height is clamped to `0.01..0.5`. Intensity and fade distance are clamped to `0..1`.                                                                                               |
+| `RainbowTextEffect`   | `(speed = 0.01, saturation = 1, value = 1, repeats = 3)`            | Recolors foreground cells whose RGB channels are all at least `0.9`. Saturation and value are clamped to `0..1`. Repeats is clamped to `>= 0.1`.                                                                                                        |
+
+Constructor assignments are not always clamped in the same way as later setters. For example, `VignetteEffect` stores
+its constructor strength directly. `CloudsEffect`, `FlamesEffect`, and `RainbowTextEffect` also store constructor values
+directly.
+
+## Time-unit inconsistencies
+
+The renderer supplies `deltaTime` in milliseconds. The animated effects do not use that value consistently:
+
+- `CRTRollingBarEffect` divides `deltaTime` by `1000` before it updates position.
+- `DistortionEffect` uses raw milliseconds with fields named per-second and durations that look like seconds.
+- `CloudsEffect`, `FlamesEffect`, and `RainbowTextEffect` multiply raw milliseconds directly by `speed`.
+
+Do not pass seconds to all effects to compensate. That would make the CRT effect wrong. Treat current animation speeds
+as experimental and test each effect with renderer-provided milliseconds.
+
+## Tagged-cell safety
+
+An `OptimizedBuffer` stores more than visible characters and RGBA bytes. Character entries can contain tagged
+grapheme, continuation, and image values. Attributes can contain link IDs. Color channels also carry palette or default
+color intent in metadata bits.
+
+Several effects write `buffer.buffers` directly:
+
+- `applyAsciiArt()` replaces raw character entries without updating grapheme, continuation, image, or link trackers.
+- `DistortionEffect` reorders raw character and attribute entries. Its temporary attribute array is `Uint8Array`, so it
+  truncates attribute bits above the low byte.
+- `applyChromaticAberration()`, `BloomEffect`, `FlamesEffect`, `CRTRollingBarEffect`, and `RainbowTextEffect` replace raw
+  color channels and discard color-intent metadata on changed channels.
+
+These helpers are unsafe for arbitrary text buffers that contain wide graphemes, links, images, indexed colors, or
+default-color intent. A corrupted tracker can outlive the visible frame mutation.
+
+Matrix-based helpers do not rewrite character entries. They still convert transformed colors to stored explicit RGBA8
+values. Read [`FrameBuffer` color matrices](/docs/reference/color-matrix) for that conversion.
+
+Use effects on a controlled frame buffer that contains one-cell scalar text and explicit RGB colors. Do not apply raw
+character effects to the renderer's general next buffer unless the content meets that restriction.
+
+## Mutation and failure behavior
+
+Every helper changes the supplied buffer in place. Reusing the same independent buffer without redrawing it compounds
+the effect. The renderer clears its next buffer after native rendering, so renderables normally redraw before the next
+post-process pass.
+
+Callbacks run in registration order. An exception aborts the rest of the frame, including later post-process callbacks
+and the console overlay. The renderer emits `render:error` through its normal render-failure path.
+
+Effect caches and random state belong to the effect instance. Release the instance after removing its callback. For
+property animation, let [Animation and Timeline](/docs/application-apis/animation) own values such as vignette strength.
+
+## Next
+
+- [Buffer API](/docs/reference/buffer-api) defines buffer ownership and cell drawing.
+- [`FrameBuffer` color matrices](/docs/reference/color-matrix) defines masks and matrix storage.
+- [Custom renderables](/docs/extend/custom-renderables) shows local buffer drawing.
+- [FrameBuffer](/docs/components/frame-buffer) is the normal component surface for a controlled buffer.

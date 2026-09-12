@@ -1,14 +1,17 @@
 import { readdir, readFile } from "node:fs/promises"
 import { basename, dirname, join, relative, sep } from "node:path"
+import {
+  DOC_LEARNING_SEQUENCES,
+  DOC_MANIFEST,
+  DOC_SECTIONS,
+  type ComponentMetadata,
+  type DocAvailability,
+  type DocLearningSequence,
+  type DocPageType,
+  type DocSectionId,
+} from "./docs-manifest"
 
-export type DocSectionId =
-  | "getting-started"
-  | "core-concepts"
-  | "plugins"
-  | "components"
-  | "bindings"
-  | "keymap"
-  | "reference"
+export type { DocPageType, DocSectionId } from "./docs-manifest"
 
 export interface SkillMetadata {
   include: boolean
@@ -17,15 +20,28 @@ export interface SkillMetadata {
 }
 
 export interface DocPage {
-  id: string
+  sourceId: string
   slug: string
-  url: `/docs/${string}`
+  url: "/docs" | `/docs/${string}`
   sourcePath: string
+  canonicalSection: string
+  conceptualGroup?: string
   section: DocSectionId
+  group?: string
   title: string
   navTitle: string
   description?: string
-  order?: number
+  navOrder: number
+  pageType: DocPageType
+  status: string
+  component?: ComponentMetadata
+  primaryNav: boolean
+  packages: string[]
+  availability: DocAvailability
+  runtimes: string[]
+  searchSymbols: string[]
+  related: string[]
+  draft: boolean
   skill: SkillMetadata
 }
 
@@ -37,10 +53,13 @@ export interface DocSection {
 }
 
 export interface DocsIndex {
+  allPages: DocPage[]
   pages: DocPage[]
+  pagesBySourceId: Record<string, DocPage>
   pagesBySlug: Record<string, DocPage>
   pagesByUrl: Record<string, DocPage>
   sections: DocSection[]
+  learningSequences: DocLearningSequence[]
   skillPages: DocPage[]
   skillEntryPages: DocPage[]
   intentIndex: Record<string, DocPage[]>
@@ -55,8 +74,7 @@ interface RawSkillMetadata {
 interface RawDocMetadata {
   title?: unknown
   description?: unknown
-  order?: unknown
-  navTitle?: unknown
+  draft?: unknown
   skill?: unknown
 }
 
@@ -67,19 +85,15 @@ const REPO_ROOT =
     : WORKING_DIRECTORY
 const DOCS_ROOT = join(REPO_ROOT, "packages/web/src/content/docs")
 
-export const DOC_SECTION_CONFIG: Record<DocSectionId, { title: string; order: number }> = {
-  "getting-started": { title: "Getting Started", order: 1 },
-  "core-concepts": { title: "Core Concepts", order: 2 },
-  plugins: { title: "Plugin API", order: 3 },
-  components: { title: "Components", order: 4 },
-  bindings: { title: "Bindings", order: 5 },
-  keymap: { title: "Keymap", order: 6 },
-  reference: { title: "Reference", order: 7 },
-}
+export const DOC_SECTION_CONFIG = Object.fromEntries(
+  DOC_SECTIONS.map((section) => [section.id, { title: section.title, order: section.order }]),
+) as Record<DocSectionId, { title: string; order: number }>
 
 let docsIndexPromise: Promise<DocsIndex> | undefined
 
 export async function buildDocsIndex(): Promise<DocsIndex> {
+  if (import.meta.env.DEV) return loadDocsIndex()
+
   docsIndexPromise ??= loadDocsIndex()
   return docsIndexPromise
 }
@@ -96,33 +110,40 @@ export function getDocsForIntent(index: DocsIndex, intent: string): DocPage[] {
   return index.intentIndex[normalizeIntent(intent)] ?? []
 }
 
-export function getPrevNextDocs(index: DocsIndex, slug: string): { prev?: DocPage; next?: DocPage } {
-  const pageIndex = index.pages.findIndex((page) => page.slug === slug)
-  if (pageIndex === -1) {
-    return {}
-  }
+export function getPrevNextDocSequences(
+  index: DocsIndex,
+  slug: string,
+): Array<{ prev?: DocPage; next?: DocPage; sequence: DocLearningSequence }> {
+  return index.learningSequences.flatMap((sequence) => {
+    const pageIndex = sequence.pages.indexOf(slug)
+    if (pageIndex === -1) return []
 
-  return {
-    prev: pageIndex > 0 ? index.pages[pageIndex - 1] : undefined,
-    next: pageIndex < index.pages.length - 1 ? index.pages[pageIndex + 1] : undefined,
-  }
+    return [
+      {
+        prev: pageIndex > 0 ? index.pagesBySlug[sequence.pages[pageIndex - 1]] : undefined,
+        next: pageIndex < sequence.pages.length - 1 ? index.pagesBySlug[sequence.pages[pageIndex + 1]] : undefined,
+        sequence,
+      },
+    ]
+  })
 }
 
 async function loadDocsIndex(): Promise<DocsIndex> {
   const sourceFiles = await listDocFiles(DOCS_ROOT)
-  const pages = await Promise.all(sourceFiles.map((filePath) => buildDocPage(filePath)))
+  const allPages = await Promise.all(sourceFiles.map((filePath) => buildDocPage(filePath)))
+  const pages = allPages.filter((page) => !page.draft)
 
+  allPages.sort(comparePages)
   pages.sort(comparePages)
 
-  const sections = Object.entries(DOC_SECTION_CONFIG)
-    .map(([id, config]) => ({
-      id: id as DocSectionId,
-      title: config.title,
-      order: config.order,
-      pages: pages.filter((page) => page.section === id),
-    }))
-    .filter((section) => section.pages.length > 0)
+  const sections = DOC_SECTIONS.map((section) => ({
+    id: section.id,
+    title: section.title,
+    order: section.order,
+    pages: pages.filter((page) => page.section === section.id && page.primaryNav),
+  })).filter((section) => section.pages.length > 0)
 
+  const pagesBySourceId = Object.fromEntries(pages.map((page) => [page.sourceId, page]))
   const pagesBySlug = Object.fromEntries(pages.map((page) => [page.slug, page]))
   const pagesByUrl = Object.fromEntries(pages.map((page) => [page.url, page]))
   const skillPages = pages.filter((page) => page.skill.include)
@@ -130,10 +151,13 @@ async function loadDocsIndex(): Promise<DocsIndex> {
   const intentIndex = buildIntentIndex(skillPages)
 
   return {
+    allPages,
     pages,
+    pagesBySourceId,
     pagesBySlug,
     pagesByUrl,
     sections,
+    learningSequences: DOC_LEARNING_SEQUENCES,
     skillPages,
     skillEntryPages,
     intentIndex,
@@ -148,22 +172,46 @@ async function buildDocPage(filePath: string): Promise<DocPage> {
   if (typeof raw.title !== "string") {
     throw new Error(`Missing or invalid title in ${toSourcePath(filePath)}`)
   }
+  if (raw.description !== undefined && typeof raw.description !== "string") {
+    throw new Error(`Invalid description in ${toSourcePath(filePath)}`)
+  }
+  if (raw.draft !== undefined && typeof raw.draft !== "boolean") {
+    throw new Error(`Invalid draft in ${toSourcePath(filePath)}`)
+  }
 
   const sourcePath = toSourcePath(filePath)
-  const slug = toSlug(filePath)
-  const section = toSection(slug, sourcePath)
+  const sourceId = toSourceId(filePath)
+  const manifest = DOC_MANIFEST[sourceId as keyof typeof DOC_MANIFEST]
+  if (!manifest) {
+    throw new Error(`Missing documentation manifest entry for ${sourcePath}`)
+  }
+
+  const slug = manifest.slug ?? sourceId
   const skill = normalizeSkill(raw.skill, sourcePath)
 
   return {
-    id: slug,
+    sourceId,
     slug,
-    url: `/docs/${slug}`,
+    url: manifest.url ?? `/docs/${slug}`,
     sourcePath,
-    section,
+    canonicalSection: manifest.canonicalSection,
+    conceptualGroup: manifest.conceptualGroup,
+    section: manifest.section,
+    group: manifest.group,
     title: raw.title,
-    navTitle: typeof raw.navTitle === "string" ? raw.navTitle : raw.title,
+    navTitle: manifest.navTitle,
     description: typeof raw.description === "string" ? raw.description : undefined,
-    order: typeof raw.order === "number" ? raw.order : undefined,
+    navOrder: manifest.navOrder,
+    pageType: manifest.pageType,
+    status: manifest.status,
+    component: manifest.component ? { ...manifest.component } : undefined,
+    primaryNav: manifest.primaryNav,
+    packages: [...manifest.packages],
+    availability: { ...manifest.availability },
+    runtimes: [...manifest.runtimes],
+    searchSymbols: [...manifest.searchSymbols],
+    related: [...manifest.related],
+    draft: raw.draft === true,
     skill,
   }
 }
@@ -259,7 +307,7 @@ function parseSimpleYamlValue(rawValue: string): unknown {
   }
 
   if (value.startsWith("[") && value.endsWith("]")) {
-    return splitInlineArray(value.slice(1, -1)).map((item) => String(parseSimpleYamlValue(item)))
+    return splitInlineArray(value.slice(1, -1)).map((item) => parseSimpleYamlValue(item))
   }
 
   return value
@@ -305,10 +353,20 @@ function normalizeSkill(rawSkill: unknown, sourcePath: string): SkillMetadata {
   }
 
   const skill = rawSkill as RawSkillMetadata
+  if (skill.include !== undefined && typeof skill.include !== "boolean") {
+    throw new Error(`Invalid skill.include in ${sourcePath}`)
+  }
+  if (skill.entry !== undefined && typeof skill.entry !== "boolean") {
+    throw new Error(`Invalid skill.entry in ${sourcePath}`)
+  }
+  if (skill.intents !== undefined && !Array.isArray(skill.intents)) {
+    throw new Error(`Invalid skill.intents in ${sourcePath}`)
+  }
+  if (Array.isArray(skill.intents) && skill.intents.some((value) => typeof value !== "string" || !value.trim())) {
+    throw new Error(`skill.intents must contain non-empty strings in ${sourcePath}`)
+  }
   const rawIntents = skill.intents
-  const intents = Array.isArray(rawIntents)
-    ? rawIntents.map((value) => String(value).trim().toLowerCase()).filter((value) => value.length > 0)
-    : []
+  const intents = Array.isArray(rawIntents) ? rawIntents.map((value) => value.trim().toLowerCase()) : []
 
   return {
     include: typeof skill.include === "boolean" ? skill.include : true,
@@ -317,18 +375,9 @@ function normalizeSkill(rawSkill: unknown, sourcePath: string): SkillMetadata {
   }
 }
 
-function toSlug(filePath: string): string {
+function toSourceId(filePath: string): string {
   const relativePath = relative(DOCS_ROOT, filePath).split(sep).join("/")
   return relativePath.replace(/\.mdx$/, "")
-}
-
-function toSection(slug: string, sourcePath: string): DocSectionId {
-  const section = slug.split("/")[0]
-  if (section in DOC_SECTION_CONFIG) {
-    return section as DocSectionId
-  }
-
-  throw new Error(`Unknown doc section for ${sourcePath}: ${section}`)
 }
 
 function toSourcePath(filePath: string): string {
@@ -354,24 +403,16 @@ function comparePages(left: DocPage, right: DocPage): number {
     return sectionDelta
   }
 
-  if (left.order === undefined && right.order !== undefined) {
-    return 1
-  }
-
-  if (left.order !== undefined && right.order === undefined) {
-    return -1
-  }
-
-  if (left.order !== undefined && right.order !== undefined && left.order !== right.order) {
-    return left.order - right.order
+  if (left.navOrder !== right.navOrder) {
+    return left.navOrder - right.navOrder
   }
 
   return left.title.localeCompare(right.title)
 }
 
-function normalizeDocUrl(url: string): `/docs/${string}` {
+function normalizeDocUrl(url: string): "/docs" | `/docs/${string}` {
   const normalized = url.endsWith("/") && url !== "/docs/" ? url.slice(0, -1) : url
-  return normalized as `/docs/${string}`
+  return (normalized === "/docs/" ? "/docs" : normalized) as "/docs" | `/docs/${string}`
 }
 
 function normalizeIntent(intent: string): string {

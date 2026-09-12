@@ -1,0 +1,369 @@
+---
+title: Animation and Timeline
+description: Animate numeric state with Timeline and connect updates to the renderer and framework hooks
+skill:
+  entry: true
+  intents: [animation, timeline, easing, use-timeline]
+---
+
+# Animation and Timeline
+
+OpenTUI animates mutable numeric properties with `Timeline`. The global timeline engine connects timeline updates to renderer frames.
+
+Use a timeline for numeric renderable properties or application state. The API mutates each target directly.
+
+## Animate a renderable
+
+Attach the global engine before you create or play a registered timeline.
+
+```typescript
+import { BoxRenderable, createCliRenderer, createTimeline, engine } from "@opentui/core"
+
+const renderer = await createCliRenderer()
+engine.attach(renderer)
+const root = renderer.root
+
+const box = new BoxRenderable(renderer, {
+  id: "moving-box",
+  position: "absolute",
+  left: 0,
+  top: 1,
+  width: 8,
+  height: 3,
+  backgroundColor: "blue",
+})
+root.add(box)
+
+let finish!: () => void
+const finished = new Promise<void>((resolve) => {
+  finish = resolve
+})
+
+const timeline = createTimeline({
+  duration: 600,
+  autoplay: false,
+  onComplete: finish,
+})
+
+timeline.add(box, {
+  left: 30,
+  duration: 600,
+  ease: "outQuad",
+})
+
+timeline.play()
+
+try {
+  await finished
+} finally {
+  timeline.pause()
+  engine.unregister(timeline)
+  engine.detach()
+  renderer.destroy()
+}
+```
+
+The engine calls `renderer.requestLive()` and `renderer.dropLive()` as registered timelines start and stop. Do not call `requestLive()` for a registered timeline.
+
+See [Renderer live rendering](/docs/core-concepts/renderer#live-rendering) for the shared live counter.
+
+## Imports
+
+Core exports the class, factory, global engine, and public types from the package root:
+
+```typescript
+import {
+  Timeline,
+  createTimeline,
+  engine,
+  type AnimationOptions,
+  type EasingFunctions,
+  type JSAnimation,
+  type TimelineOptions,
+} from "@opentui/core"
+```
+
+Framework hooks use their framework package roots:
+
+```tsx
+import { useTimeline } from "@opentui/react"
+```
+
+```tsx
+import { useTimeline } from "@opentui/solid"
+```
+
+## Choose a constructor
+
+Construction and registration are separate behaviors.
+
+| API                                    | Initial state                               | Registration            |
+| -------------------------------------- | ------------------------------------------- | ----------------------- |
+| `new Timeline(options?)`               | Always paused, including `autoplay: true`   | Not registered          |
+| `createTimeline(options?)`             | Plays unless `autoplay` is `false`          | Registers with `engine` |
+| React or Solid `useTimeline(options?)` | Plays on mount unless `autoplay` is `false` | Registers on mount      |
+
+`new Timeline()` stores the `autoplay` option but does not act on it. Call `play()` and `engine.register()` yourself when you use the class directly.
+
+`createTimeline()` calls `play()` before it registers the timeline. Registration then updates renderer liveness.
+
+The framework hooks create the timeline during framework setup. Their mount handlers play and register it.
+
+## Timeline options
+
+| `TimelineOptions` field | Default | Behavior                                                     |
+| ----------------------- | ------- | ------------------------------------------------------------ |
+| `duration`              | `1000`  | Timeline cutoff in milliseconds                              |
+| `loop`                  | `false` | Restarts the timeline at its cutoff only when exactly `true` |
+| `autoplay`              | `true`  | Used by the factory and framework mount handlers             |
+| `onComplete`            | None    | Runs when a non-looping timeline reaches its cutoff          |
+| `onPause`               | None    | Runs on every `pause()` call                                 |
+
+`duration: 0` falls back to `1000` because the constructor uses a truthy fallback. Use a positive finite duration.
+
+The timeline duration does not derive from its items. A shorter timeline cuts off a longer animation.
+
+A longer timeline stays active after all its items finish. Its `onComplete` runs only at the timeline cutoff.
+
+## Add numeric animation
+
+`add(target, properties, startTime?)` accepts one target or an array of targets. It returns the same timeline.
+
+Additional numeric keys in `properties` are animation end values. Non-numeric end values are ignored.
+
+When the item first becomes active, OpenTUI reads each matching top-level target property. It captures only existing numeric values.
+
+The target properties must remain writable numbers. A missing or non-numeric initial property can produce `NaN`, and a read-only property can throw.
+
+Initial values stay captured across timeline loops and `restart()`. The timeline does not recapture them on each run.
+
+Nested property paths, arrays of component values, and object traversal are not supported. Animate a top-level numeric property instead.
+
+### `AnimationOptions`
+
+| Field              | Type                               | Behavior                                                            |
+| ------------------ | ---------------------------------- | ------------------------------------------------------------------- |
+| `duration`         | `number`                           | Item duration in milliseconds. Required by the TypeScript interface |
+| `ease`             | `EasingFunctions`                  | Named easing function. Default is `linear`                          |
+| `onUpdate`         | `(animation: JSAnimation) => void` | Runs for each active update                                         |
+| `onComplete`       | `() => void`                       | Runs after the final item cycle                                     |
+| `onStart`          | `() => void`                       | Runs when the item first becomes active                             |
+| `onLoop`           | `() => void`                       | Runs when an intermediate item cycle changes                        |
+| `loop`             | `boolean \| number`                | Infinite cycles for `true`, or a numeric cycle count                |
+| `loopDelay`        | `number`                           | Delay after each item cycle. Default is `0`                         |
+| `alternate`        | `boolean`                          | Reverses every odd item cycle. Default is `false`                   |
+| `once`             | `boolean`                          | Removes the item after completion. Default is `false`               |
+| Other numeric keys | `number`                           | End values for target properties                                    |
+
+Untyped code that omits item `duration` currently falls back to `1000`. TypeScript callers must supply it.
+
+Use a positive integer for numeric `loop`. `false`, `undefined`, and `1` all run one cycle.
+
+### Update callback data
+
+`onUpdate` receives a `JSAnimation` object:
+
+| Field         | Meaning                                                       |
+| ------------- | ------------------------------------------------------------- |
+| `targets`     | The normalized target array after property mutation           |
+| `deltaTime`   | The update delta supplied for this evaluation                 |
+| `progress`    | Eased forward progress before `alternate` reverses assignment |
+| `currentTime` | Current time of this timeline                                 |
+
+Back and elastic easing can make `progress` less than `0` or greater than `1`. The easing input itself is clamped to `0..1`.
+
+Callbacks run synchronously inside `update()`. A thrown callback error propagates to the caller or renderer frame callback.
+
+## Easing names
+
+`EasingFunctions` accepts exactly these names:
+
+- `linear`
+- `inQuad`
+- `outQuad`
+- `inOutQuad`
+- `inExpo`
+- `outExpo`
+- `inOutSine`
+- `outBounce`
+- `outElastic`
+- `inBounce`
+- `inCirc`
+- `outCirc`
+- `inOutCirc`
+- `inBack`
+- `outBack`
+- `inOutBack`
+
+The API does not accept a custom easing function through `ease`.
+
+## Schedule items
+
+Use numeric start times in milliseconds.
+
+```typescript
+timeline.add(firstTarget, { x: 20, duration: 300 }, 0)
+timeline.call(() => startSecondPhase(), 300)
+timeline.add(secondTarget, { opacity: 1, duration: 200 }, 300)
+```
+
+`add()` and `call()` accept `number | string` at runtime. Every string currently resolves to time `0`.
+
+Strings do not name labels or relative positions. Use finite non-negative numbers for predictable scheduling.
+
+`call(callback, startTime?)` runs the callback once when timeline time reaches its start. A loop or restart resets that execution flag.
+
+`once(target, properties)` adds an animation at the current timeline time. OpenTUI removes that item after its completion.
+
+Normal completed items and callbacks remain in `items`. Only a completed `once` animation removes itself.
+
+## Timeline methods
+
+| Method                                   | Behavior                                                               |
+| ---------------------------------------- | ---------------------------------------------------------------------- |
+| `add(target, properties, startTime = 0)` | Adds a numeric animation and returns `this`                            |
+| `once(target, properties)`               | Adds a removable animation at `currentTime` and returns `this`         |
+| `call(callback, startTime = 0)`          | Adds a scheduled callback and returns `this`                           |
+| `sync(timeline, startTime = 0)`          | Gives this timeline scheduled control of one child                     |
+| `play()`                                 | Starts or resumes. A completed timeline restarts                       |
+| `pause()`                                | Pauses this timeline and all synced children                           |
+| `restart()`                              | Sets time to zero, resets item flags, and starts playback              |
+| `resetItems()`                           | Resets item and child flags without changing parent time or play state |
+| `update(deltaTime)`                      | Evaluates synced children, items, loops, and completion                |
+| `addStateChangeListener(listener)`       | Adds a play-state listener used by the engine                          |
+| `removeStateChangeListener(listener)`    | Removes matching play-state listeners                                  |
+
+`pause()` invokes `onPause` even when the timeline is already paused. It also calls `pause()` on every synced child.
+
+`restart()` does not restore target properties immediately. The next active update calculates values from the captured initial values.
+
+`play()` on a completed non-looping timeline calls `restart()`. `play()` on a paused incomplete timeline keeps `currentTime`.
+
+`update()` expects elapsed milliseconds. The global engine supplies renderer frame deltas, but tests and headless code can call it directly.
+
+Use finite non-negative values for `deltaTime`, item `duration`, `loopDelay`, and start times. The current implementation does not validate these timing values.
+
+A large delta evaluates each item once for that update. It can skip intermediate `onUpdate` and `onLoop` calls across multiple cycles.
+
+For a looping timeline, OpenTUI keeps only the final duration overshoot. Large deltas do not replay every skipped parent loop.
+
+## Timeline state
+
+`Timeline` exposes these mutable public fields:
+
+| Field          | Meaning                                                   |
+| -------------- | --------------------------------------------------------- |
+| `items`        | Animation and callback items                              |
+| `subTimelines` | Synced-child items                                        |
+| `currentTime`  | Current parent time in milliseconds                       |
+| `isPlaying`    | Whether parent items advance                              |
+| `isComplete`   | Whether a non-looping parent reached its cutoff           |
+| `duration`     | Parent cutoff                                             |
+| `loop`         | Parent loop flag                                          |
+| `synced`       | Whether another timeline claimed this timeline as a child |
+
+Prefer the methods for state transitions. Direct item-array mutation relies on internal item shapes that OpenTUI does not export.
+
+## Sync child timelines
+
+`parent.sync(child, startTime)` starts the child when the parent reaches that time. The child receives any overshoot from the crossing update.
+
+Later parent updates pass their full delta to the child. Parent loops reset and restart child scheduling.
+
+A parent pause pauses children that already started. A later parent play resumes those started children.
+
+One timeline can be synced only once. A second claim throws exactly `Error("Timeline already synced")`.
+
+Sync has no inverse operation. The child's `synced` flag remains `true`, even after engine unregistration.
+
+The engine skips a registered timeline when `synced` is `true`. Its parent becomes the only normal update owner.
+
+Current limitation: `update()` evaluates synced children before it checks whether the parent is playing. A paused parent can start a future child when another manual or engine update crosses its start time.
+
+Do not depend on a pending child staying idle after its parent pauses. Unregister the parent during the pause, or add the child after resume.
+
+## Global engine
+
+`engine` is one process-global scheduler. It can attach to one `CliRenderer` at a time.
+
+| Method                 | Behavior                                                     |
+| ---------------------- | ------------------------------------------------------------ |
+| `attach(renderer)`     | Detaches any prior renderer and installs a frame callback    |
+| `detach()`             | Removes the frame callback and drops engine-owned live state |
+| `register(timeline)`   | Adds one timeline and watches its state                      |
+| `unregister(timeline)` | Removes one timeline and its state listener                  |
+| `clear()`              | Unregisters all timelines from the global engine             |
+| `update(deltaTime)`    | Updates every registered timeline that is not synced         |
+
+Attach the renderer before `createTimeline()` or `play()`. `attach()` installs the callback but does not recheck timelines that already started.
+
+The engine requests live rendering when any registered, unsynced timeline is playing and incomplete. It drops live rendering after the last such timeline stops.
+
+`createTimeline()` never unregisters its result. A completed timeline remains in the engine set until application cleanup unregisters it.
+
+`engine.clear()` affects every application owner. Do not use it for component cleanup or for one independently owned timeline.
+
+`engine.defaults.frameRate` currently exists, but the engine does not read it. Renderer frame scheduling controls update cadence.
+
+## Cleanup
+
+The canonical Core cleanup sequence is:
+
+1. Call `timeline.pause()`.
+2. Call `engine.unregister(timeline)`.
+3. Call `engine.detach()` only when this owner attached the renderer.
+4. Destroy the renderer through the application's normal lifecycle.
+
+Unregister synced children that were registered separately. A child made with `new Timeline()` does not need global unregistration unless you registered it.
+
+Do not call `renderer.requestLive()` or `renderer.dropLive()` for a registered timeline. The engine balances its own live request.
+
+See [Lifecycle and cleanup](/docs/core-concepts/lifecycle) for renderer ownership and shutdown order.
+
+## Framework mapping
+
+| API                     | Setup                                              | Cleanup                                                  |
+| ----------------------- | -------------------------------------------------- | -------------------------------------------------------- |
+| Core `new Timeline()`   | Application registers and plays it                 | Application pauses and unregisters it                    |
+| Core `createTimeline()` | Factory registers and normally plays it            | Application pauses and unregisters it                    |
+| React `useTimeline()`   | Hook mount effect registers and normally plays it  | Effect cleanup pauses and unregisters the mount instance |
+| Solid `useTimeline()`   | Hook mount handler registers and normally plays it | Cleanup pauses and unregisters it                        |
+
+The React `createRoot(renderer).render(...)` path attaches the engine. Solid `render(...)` and `testRender(...)` also attach it.
+
+Both hooks treat their option input as setup-time data. Later option changes do not update the mounted timeline.
+
+### React behavior
+
+The React hook creates its `Timeline` once through lazy `useState`. Rerenders return the same registered timeline.
+
+The first render also captures `autoplay` and all constructor options. Later option values do not reconfigure that timeline.
+
+The React package has a regression test that checks timeline identity across a state-driven rerender.
+
+### Solid behavior
+
+The Solid hook creates one timeline during component setup. Its options are not reactive after setup.
+
+The Solid package does not currently have a direct `useTimeline` hook test. Treat setup-time option handling as the current behavior in both frameworks.
+
+## Limits and unsupported features
+
+Timeline arrays have no built-in item limit. Bound registered timelines, items, and synced children with application policy.
+
+Each engine update is proportional to registered timelines and their items and children. Nested synced timelines add their own item work.
+
+Completed normal items remain in the scan. Use `once()` for temporary animations that should remove themselves.
+
+Timeline supports top-level numeric interpolation only. It does not interpolate colors, strings, units, nested paths, or keyframe arrays.
+
+The API has no spring or physics solver. It also has no seek, item removal, unsync, per-item pause, or public reverse method.
+
+Use `alternate` for per-cycle reversal. Use application state and a new timeline when unsupported scheduling changes are required.
+
+## Next
+
+- [Renderer](/docs/core-concepts/renderer)
+- [React bindings](/docs/bindings/react)
+- [Solid bindings](/docs/bindings/solid)
+- [Lifecycle and cleanup](/docs/core-concepts/lifecycle)

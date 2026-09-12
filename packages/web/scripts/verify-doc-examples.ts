@@ -7,34 +7,27 @@
  *
  * This script:
  * 1. Extracts TypeScript/JavaScript code blocks from MDX files
- * 2. Type-checks them against @opentui/core
- * 3. Reports any type errors found
+ * 2. Type-checks complete examples against current workspace packages with the matching TypeScript/React/Solid profile
+ * 3. Reports diagnostics mapped to the examples
  */
 
-import { cp, readFile, writeFile, mkdir, rm } from "node:fs/promises"
+import { readFile, writeFile, mkdir, rm, symlink } from "node:fs/promises"
 import { join } from "node:path"
-import { existsSync } from "node:fs"
 
 import { buildDocsIndex } from "../src/lib/docs-index"
 
 const REPO_ROOT = join(import.meta.dir, "../../..")
 const DOCS_DIR = join(import.meta.dir, "../src/content/docs")
-const CORE_PACKAGE = join(import.meta.dir, "../../core")
 const TEST_DIR = "/tmp/opentui-doc-verify"
-const VENDORED_CORE_PACKAGE = join(TEST_DIR, "vendor-core")
-
-interface PackageJson {
-  name?: string
-  version?: string
-  type?: string
-  main?: string
-  module?: string
-  types?: string
-  exports?: unknown
-  dependencies?: Record<string, string>
-  optionalDependencies?: Record<string, string>
-  peerDependencies?: Record<string, string>
-}
+const WORKSPACE_PACKAGE_DIRS = ["core", "keymap", "qrcode", "react", "solid", "ssh", "three"] as const
+const TYPESCRIPT_CLI = join(import.meta.dir, "../node_modules/typescript/bin/tsc")
+const KNOWN_WORKSPACE_DIAGNOSTICS = [
+  /packages\/react\/src\/reconciler\/(?:host-config|reconciler)\.ts.*error TS2307: Cannot find module 'react-reconciler\/constants'/,
+  /packages\/solid\/(?:index\.ts|src\/scrollback\.ts).*error TS2345: Argument of type 'ContextProviderComponent/,
+  /packages\/three\/src\/physics\/RapierPhysicsAdapter\.ts.*error TS2614: Module .* has no exported member '(?:RigidBody|World)'/,
+]
+let checkedBlocks = 0
+let skippedBlocks = 0
 
 interface CodeBlock {
   code: string
@@ -122,11 +115,6 @@ function wrapCodeForTypeCheck(code: string, blockIndex: number): string {
     return ""
   }
 
-  // Skip JSX - would need separate handling with tsx
-  if (hasJSX(code)) {
-    return ""
-  }
-
   const { importStatements, bodyLines } = splitImportsAndBody(code)
   const importedModules = importStatements.map(getImportModule).filter((value): value is string => Boolean(value))
 
@@ -135,7 +123,14 @@ function wrapCodeForTypeCheck(code: string, blockIndex: number): string {
     return ""
   }
 
-  if (importedModules.some((module) => !module.startsWith("@opentui/core"))) {
+  if (importedModules.some((module) => module.startsWith("."))) {
+    return ""
+  }
+
+  if (
+    hasJSX(code) &&
+    !importedModules.some((module) => module.startsWith("@opentui/react") || module.startsWith("@opentui/solid"))
+  ) {
     return ""
   }
 
@@ -319,88 +314,47 @@ function collectDeclaredBindings(body: string): string[] {
     bindings.add(match[1])
   }
 
+  const parameterListPattern = /\(([^()]*)\)\s*(?:=>|\{)/g
+  while ((match = parameterListPattern.exec(body)) !== null) {
+    for (const parameter of match[1].split(",")) {
+      const name = parameter.trim().match(/^(?:\.\.\.)?([A-Za-z_$][\w$]*)/)
+      if (name) bindings.add(name[1])
+    }
+  }
+
+  const singleArrowParameterPattern = /\b([A-Za-z_$][\w$]*)\s*=>/g
+  while ((match = singleArrowParameterPattern.exec(body)) !== null) {
+    bindings.add(match[1])
+  }
+
   return [...bindings]
 }
 
 // Setup the test environment
 async function setupTestEnv(): Promise<boolean> {
-  if (existsSync(TEST_DIR)) {
-    await rm(TEST_DIR, { recursive: true })
-  }
+  await rm(TEST_DIR, { recursive: true, force: true })
   await mkdir(TEST_DIR, { recursive: true })
 
-  if (!existsSync(CORE_PACKAGE)) {
-    console.error(`ERROR: ${CORE_PACKAGE} not found.`)
-    return false
-  }
-
-  const corePackageJsonPath = join(CORE_PACKAGE, "package.json")
-  const corePackageJson = JSON.parse(await readFile(corePackageJsonPath, "utf8")) as PackageJson
-
-  await mkdir(VENDORED_CORE_PACKAGE, { recursive: true })
-  await cp(join(CORE_PACKAGE, "src"), join(VENDORED_CORE_PACKAGE, "src"), { recursive: true })
-  await writeFile(
-    join(VENDORED_CORE_PACKAGE, "package.json"),
-    JSON.stringify(
-      {
-        name: corePackageJson.name ?? "@opentui/core",
-        version: corePackageJson.version ?? "0.0.0",
-        type: corePackageJson.type ?? "module",
-        main: corePackageJson.main ?? "src/index.ts",
-        module: corePackageJson.module ?? "src/index.ts",
-        types: corePackageJson.types ?? "src/index.ts",
-        exports: corePackageJson.exports,
-        dependencies: corePackageJson.dependencies,
-        optionalDependencies: corePackageJson.optionalDependencies,
-        peerDependencies: corePackageJson.peerDependencies,
-      },
-      null,
-      2,
-    ),
-  )
-
-  // Create package.json for the verifier sandbox.
   await writeFile(
     join(TEST_DIR, "package.json"),
     JSON.stringify({
       name: "doc-verify",
       type: "module",
-      dependencies: {
-        "@opentui/core": `file:${VENDORED_CORE_PACKAGE}`,
-      },
     }),
   )
 
-  // Create tsconfig.json
-  await writeFile(
-    join(TEST_DIR, "tsconfig.json"),
-    JSON.stringify({
-      compilerOptions: {
-        target: "ESNext",
-        module: "ESNext",
-        moduleResolution: "bundler",
-        strict: true,
-        skipLibCheck: true,
-        esModuleInterop: true,
-        noEmit: true,
-        jsx: "preserve",
-        types: ["bun-types"],
-      },
-      include: ["*.ts", "*.tsx"],
-    }),
-  )
-
-  // Install dependencies
-  const install = Bun.spawnSync(["bun", "install", "--production"], {
-    cwd: TEST_DIR,
-    stdout: "pipe",
-    stderr: "pipe",
-  })
-
-  if (install.exitCode !== 0) {
-    console.error("Failed to install dependencies:", install.stderr.toString())
-    return false
+  const packageScope = join(TEST_DIR, "node_modules/@opentui")
+  await mkdir(packageScope, { recursive: true })
+  for (const packageDir of WORKSPACE_PACKAGE_DIRS) {
+    await symlink(join(REPO_ROOT, `packages/${packageDir}`), join(packageScope, packageDir), "dir")
   }
+  await symlink(join(REPO_ROOT, "packages/react/node_modules/react"), join(TEST_DIR, "node_modules/react"), "dir")
+  await symlink(join(REPO_ROOT, "packages/solid/node_modules/solid-js"), join(TEST_DIR, "node_modules/solid-js"), "dir")
+  const typeScope = join(TEST_DIR, "node_modules/@types")
+  await mkdir(typeScope, { recursive: true })
+  await symlink(join(REPO_ROOT, "packages/core/node_modules/@types/bun"), join(typeScope, "bun"), "dir")
+  await symlink(join(REPO_ROOT, "packages/core/node_modules/@types/node"), join(typeScope, "node"), "dir")
+  await symlink(join(REPO_ROOT, "packages/react/node_modules/@types/react"), join(typeScope, "react"), "dir")
 
   return true
 }
@@ -411,14 +365,46 @@ async function typeCheckBlock(block: CodeBlock, blockIndex: number): Promise<Iss
 
   const wrappedCode = wrapCodeForTypeCheck(block.code, blockIndex)
   if (!wrappedCode) {
+    skippedBlocks++
     return issues // Skip fragments that can't be checked
   }
+  checkedBlocks++
 
-  const testFile = join(TEST_DIR, `example-${blockIndex}.ts`)
+  const jsx = hasJSX(block.code)
+  const extension = jsx ? "tsx" : block.language === "javascript" || block.language === "js" ? "js" : "ts"
+  const testFileName = `example-${blockIndex}.${extension}`
+  const testFile = join(TEST_DIR, testFileName)
   await writeFile(testFile, wrappedCode)
 
-  // Run tsc on this specific file
-  const result = Bun.spawnSync(["bunx", "tsc", "--noEmit", "--skipLibCheck", testFile], {
+  const jsxImportSource = block.code.includes("@opentui/react")
+    ? "@opentui/react"
+    : block.code.includes("@opentui/solid")
+      ? "@opentui/solid"
+      : undefined
+  await writeFile(
+    join(TEST_DIR, "tsconfig.json"),
+    JSON.stringify({
+      compilerOptions: {
+        target: "ESNext",
+        module: "NodeNext",
+        moduleResolution: "NodeNext",
+        moduleDetection: "force",
+        strict: true,
+        skipLibCheck: true,
+        esModuleInterop: true,
+        noEmit: true,
+        allowJs: extension === "js",
+        checkJs: extension === "js",
+        noImplicitAny: extension !== "js",
+        jsx: jsxImportSource === "@opentui/react" ? "react-jsx" : "preserve",
+        ...(jsxImportSource ? { jsxImportSource } : {}),
+        types: ["bun", "node"],
+      },
+      files: [testFile],
+    }),
+  )
+
+  const result = Bun.spawnSync(["bun", TYPESCRIPT_CLI, "-p", join(TEST_DIR, "tsconfig.json")], {
     cwd: TEST_DIR,
     stdout: "pipe",
     stderr: "pipe",
@@ -427,22 +413,28 @@ async function typeCheckBlock(block: CodeBlock, blockIndex: number): Promise<Iss
   if (result.exitCode !== 0) {
     const output = result.stdout.toString() + result.stderr.toString()
 
-    // Parse errors, filter out noise
     const lines = output.split("\n")
     for (const line of lines) {
-      // Match TypeScript errors like: example-0.ts(5,3): error TS2304: Cannot find name 'foo'.
-      const match = line.match(/example-\d+\.ts\(\d+,\d+\): error TS\d+: (.+)/)
+      const match = line.match(/example-\d+\.(?:ts|tsx|js)\(\d+,\d+\): error TS\d+: (.+)/)
       if (match) {
         const msg = match[1]
-        // Skip some noise errors
-        if (msg.includes("Cannot find module './assets/")) continue
-        if (msg.includes("@ts-expect-error")) continue
-
         issues.push({
           type: "error",
           message: msg,
         })
       }
+    }
+
+    const diagnosticHeaders = lines.filter((line) => /\(\d+,\d+\): error TS\d+:/.test(line))
+    const onlyKnownWorkspaceDiagnostics =
+      diagnosticHeaders.length > 0 &&
+      diagnosticHeaders.every((line) => KNOWN_WORKSPACE_DIAGNOSTICS.some((pattern) => pattern.test(line)))
+
+    if (issues.length === 0 && !onlyKnownWorkspaceDiagnostics) {
+      issues.push({
+        type: "error",
+        message: `TypeScript failed without a mapped example diagnostic: ${output.trim()}`,
+      })
     }
   }
 
@@ -483,14 +475,17 @@ async function main() {
 
   if (pages.length === 0) {
     console.error("No matching docs found.")
-    process.exit(1)
+    process.exitCode = 1
+    return
   }
 
   // Setup test environment
   console.log("Setting up test environment...")
   const setupOk = await setupTestEnv()
   if (!setupOk) {
-    process.exit(1)
+    await rm(TEST_DIR, { recursive: true, force: true })
+    process.exitCode = 1
+    return
   }
   console.log("Test environment ready.\n")
 
@@ -545,13 +540,15 @@ async function main() {
   console.log(`\n${"=".repeat(60)}`)
   console.log(`Summary:`)
   console.log(`  Files checked: ${pages.length}`)
+  console.log(`  Code blocks checked: ${checkedBlocks}`)
+  console.log(`  Code blocks skipped as fragments: ${skippedBlocks}`)
   console.log(`  Files with issues: ${filesWithIssues}`)
   console.log(`  Total errors: ${totalErrors}`)
 
   // Cleanup
-  await rm(TEST_DIR, { recursive: true })
+  await rm(TEST_DIR, { recursive: true, force: true })
 
-  process.exit(totalErrors > 0 ? 1 : 0)
+  process.exitCode = totalErrors > 0 ? 1 : 0
 }
 
 function collectMatchedSourcePaths(pattern: string): Set<string> {
@@ -572,7 +569,8 @@ function normalizePath(path: string): string {
   return path.replace(/\\/g, "/")
 }
 
-main().catch((err) => {
+main().catch(async (err) => {
+  await rm(TEST_DIR, { recursive: true, force: true })
   console.error("Error:", err)
-  process.exit(1)
+  process.exitCode = 1
 })

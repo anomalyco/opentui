@@ -1,0 +1,187 @@
+---
+title: What's Next for OpenTUI
+description: "Three milestones: move the render tree into the native Zig core, add Node compatibility, and optimize text rendering."
+date: 2026-07-20
+author: kmdr
+tags: [roadmap, internals, zig, node, performance]
+---
+
+import ScrollbackRecording from "../../components/ScrollbackRecording.astro"
+
+Over the last few months OpenTUI gained a lot of stability improvements, new
+unnecessary but fun features like live audio streaming, and useful features like
+rendering to the scrollback buffer mixed with a live TUI, called footer mode.
+Overall the feature set enables building large and complex applications. React
+and Solid make it super simple and convenient. There is still so much to do
+though.
+
+Three big milestones we have set out to achieve are:
+
+- Moving most of the behavioural logic currently living in TypeScript down to the native Zig core
+- Node compatibility
+- Optimizing the hell out of primitives like text rendering
+
+## Moving the render tree into the native core
+
+The render tree mechanisms are currently only usable from TypeScript. Think of
+the DOM, but controllable like a scene graph. Elements in the render tree are
+called renderables. They can expose a render method to draw themselves. All
+renderables are derived from a `BaseRenderable`. Renderables and the render tree
+will become native primitives — building blocks usable from any language
+bindings. This reduces the TypeScript bindings to a very thin layer, with all
+the behavioural logic living in the native binary.
+
+<ScrollbackRecording
+  label="Color space explorer rendered in OpenTUI"
+  stories={[
+    {
+      src: "/recordings/color-space-explorer.json",
+      title: "Color space explorer",
+      tone: "recorded",
+    },
+  ]}
+/>
+
+Moving this down is not just a matter of porting TypeScript classes to Zig.
+TypeScript currently owns the tree, dirty-state propagation, layout reads,
+culling, and render ordering. If it still has to walk every node and call into
+native code for each step, we keep most of the complexity and add FFI overhead.
+Whole passes and their state need to move together.
+
+We took a big step towards this recently by building yoga-layout into the native
+binary. It exposes part of the official yoga-layout TypeScript package via FFI —
+only the API surface that is actually used by OpenTUI, covered by the test suite
+of the original yoga-layout package. This already gave a median speedup of
+~2.5x, and up to 30x for narrow scenarios. The yoga-layout integration is useful
+beyond the speedup: built-in text and editor measurement can now happen entirely
+in native code during layout instead of calling back into JavaScript.
+
+I ran an experiment last month taking this even further, having GPT 5.6 port
+yoga-layout from C++ to Zig, which gave extremely good results. It would be a
+burden to maintain right now though, so that's off the table for now. I might
+come back to it.
+
+## Node compatibility
+
+[@simonklee](https://x.com/simonklee) is working relentlessly on Node
+compatibility and already has a full Node version of OpenCode running. Node got
+FFI support in v26.4.0, thanks to help from the Node community, namely
+[@matteocollina](https://x.com/matteocollina) and
+[@p_insogna](https://x.com/p_insogna). Behaviour and interfaces seem similar
+between Node and Bun, but there are some major differences. To get the best
+performance out of the Node FFI implementation, its usage has to follow some
+rules.
+
+Node has three ways to call native functions: the generic C++/libffi path, the
+SharedBuffer path, and the V8 Fast API.
+
+- **The generic path** converts every argument in Node's C++ layer and then
+  calls the function through libffi. It is flexible, but also the slowest option
+  for frequently called functions.
+- **The SharedBuffer path** is a middle ground. JavaScript writes scalar values
+  and BigInt pointers into a small per-function buffer, reducing some conversion
+  work. The actual native call still goes through libffi though. Typed arrays
+  used as pointers cannot be packed into this buffer and fall back to the
+  generic path.
+- **The V8 Fast API** is the path we really want. Node generates a small
+  machine-code trampoline for the exact function signature, allowing optimized
+  JavaScript to call the native function without going through the generic
+  converter or libffi. This only applies to JavaScript-to-native calls.
+  Callbacks from native code into JavaScript still use libffi closures.
+
+Getting onto this path is quite strict. A signature can have at most eight
+arguments and everything must fit into CPU registers. x86-64 Unix systems have
+room for six GP (general-purpose) and eight FP (floating-point) arguments.
+AArch64 has room for seven GP and eight FP arguments. Anything that spills onto
+the stack falls back to a slower path.
+
+These are Node fast-path restrictions, not general FFI restrictions. Bun also
+does not support passing structs by value through its current FFI API. OpenTUI
+uses `bun-ffi-structs` to pack ABI-aligned struct data into an `ArrayBuffer` and
+passes a pointer instead. Despite the name, the package also works with Node.
+
+Pointers need some care too. Typed arrays and ArrayBuffers normally have to be
+resolved into BigInt addresses first. Eligible functions with exactly one
+pointer argument get another Fast API entrypoint that can extract the address
+directly from the buffer.
+
+An eligible signature is still not enough. V8 has to optimize a direct call with
+a fixed number of consistently typed arguments. Wrappers that collect arguments
+and forward them using spread or `Reflect.apply` can hide that call shape and
+keep the function on a slower path.
+
+The practical rules are: keep hot signatures within register limits, use direct
+fixed-arity calls with stable argument types, reuse owned buffers safely, and
+batch small operations. Then measure the real call site, because eligibility
+only makes a function fast-capable.
+
+We have to design the ABI around these constraints where it makes sense and
+gives the expected performance improvement.
+
+## Overhauling text rendering
+
+The third big area is text rendering. Today a `Text` renderable accepts a
+string, `StyledText`, or a tree of `TextNode`s. Before rendering, the `TextNode`
+tree is walked and flattened into styled chunks. Those chunks are packed in
+TypeScript, sent through FFI, copied into a native `TextBuffer`, and stored in a
+rope. Styles are represented separately as highlights. A `TextBufferView` then
+wraps the rope into visual lines, which are drawn into the visible buffer.
+
+<ScrollbackRecording
+  label="OpenTUI wordmark rendered in a terminal"
+  stories={[
+    {
+      src: "/recordings/anomaly.json",
+      title: "OpenTUI",
+      tone: "inherit",
+      fadeLeft: 0.08,
+      fadeRight: 0.08,
+    },
+  ]}
+/>
+
+This works, but updates are much more expensive than they should be.
+`setStyledText` effectively throws away and rebuilds the rope, copies and
+reparses all text and recreates the style highlights. The whole thing is hard to
+reason about and can retain memory for much longer than expected. Text storage
+needs clearer ownership, with fewer lifetimes split across JavaScript and native
+code.
+
+The public API reflects the same split. The `t` template literal is convenient,
+but creates another intermediate chunk representation that is mutable, not
+cached, and not merged. `Text` also maintains both `StyledText` content and a
+special `TextNode` tree, which do not compose properly. `TextNode` is only a
+style scope, not a normal layout primitive, so `Text` renderables cannot
+naturally compose inside each other. I think this should become one `Text`
+primitive backed directly by rope segments. The template literal API might
+disappear or become a very thin helper around those native segments.
+
+Editing has another temporary layer in TypeScript. Extmarks currently
+monkey-patch editing operations, scan and adjust all marks after changes,
+maintain their own undo state, and recreate native highlights. They should
+become native marks anchored directly in the rope. A proper mark tree, similar
+to Neovim's marktree, could update marks together with edits, undo, and redo,
+and provide the foundation for highlights and concealment.
+
+Text wrapping has also become too complex. Supporting CJK, emoji, combining
+characters, ZWJ sequences, tabs, and different terminal width rules currently
+mixes byte offsets, grapheme indexes, and display-cell columns across several
+custom algorithms. Dirty views rewrap the complete document. Measurement and
+drawing can repeat some of the same work.
+
+The wrapping implementation needs an overhaul, but the exact shape is still
+open. The goal is to make Unicode handling easier to maintain, avoid repeated
+full-document work, and clearly separate byte offsets, graphemes, and terminal
+display cells.
+
+## Not a big rewrite
+
+None of this will happen as one big rewrite. We will replace pieces when we
+understand the problem well enough and when the result is clearly simpler,
+faster, or more useful.
+
+To achieve all of this we might break public interfaces. Thanks to OpenCode and
+a lot of good models, migration to a new version with breaking changes mostly is
+not an issue anymore.
+
+What do you want to see next for OpenTUI?

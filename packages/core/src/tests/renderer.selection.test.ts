@@ -1,13 +1,17 @@
 import { test, expect, beforeEach, afterEach } from "bun:test"
-import { createTestRenderer, type TestRenderer } from "../testing/test-renderer.js"
+import { createTestRenderer, type MockMouse, type TestRenderer } from "../testing/test-renderer.js"
+import { ManualClock } from "../testing/manual-clock.js"
 import { BoxRenderable } from "../renderables/Box.js"
 import { TextRenderable } from "../renderables/Text.js"
 
 let renderer: TestRenderer
-let renderOnce: () => void
+let renderOnce: () => Promise<void>
+let mockMouse: MockMouse
+let clock: ManualClock
 
 beforeEach(async () => {
-  ;({ renderer, renderOnce } = await createTestRenderer({}))
+  clock = new ManualClock()
+  ;({ renderer, renderOnce, mockMouse } = await createTestRenderer({ clock }))
 })
 
 afterEach(() => {
@@ -135,4 +139,57 @@ test("selected text merges multiline same-row renderables by visual row", () => 
   renderer.updateSelection(right, right.x + right.width, right.y + 1, { finishDragging: true })
 
   expect(renderer.getSelection()?.getSelectedText()).toBe("A1\nB2")
+})
+
+async function addSelectableText(): Promise<TextRenderable> {
+  const text = new TextRenderable(renderer, {
+    content: "alpha beta gamma",
+    width: 20,
+    height: 1,
+    selectable: true,
+  })
+  renderer.root.add(text)
+  await renderOnce()
+  return text
+}
+
+test("double-click on beta selects the word", async () => {
+  const text = await addSelectableText()
+  await mockMouse.doubleClick(text.x + 6, text.y)
+  await renderOnce()
+  expect(text.getSelectedText()).toBe("beta")
+})
+
+test("triple-click selects the line", async () => {
+  const text = await addSelectableText()
+  await mockMouse.click(text.x + 6, text.y)
+  await mockMouse.click(text.x + 6, text.y)
+  await mockMouse.click(text.x + 6, text.y)
+  await renderOnce()
+  expect(text.getSelectedText()).toBe("alpha beta gamma")
+})
+
+test("two clicks 600ms apart stay a cell press", async () => {
+  const text = await addSelectableText()
+  await mockMouse.click(text.x + 6, text.y)
+  clock.advance(600)
+  await mockMouse.click(text.x + 6, text.y)
+  await renderOnce()
+  expect(text.getSelectedText()).toBe("")
+})
+
+test("two clicks one cell apart start a new sequence", async () => {
+  const text = await addSelectableText()
+  await mockMouse.click(text.x + 6, text.y)
+  await mockMouse.click(text.x + 8, text.y)
+  await renderOnce()
+  expect(text.getSelectedText()).toBe("")
+})
+
+test("double-click then drag onto the next word selects both", async () => {
+  const text = await addSelectableText()
+  await mockMouse.click(text.x + 6, text.y)
+  await mockMouse.drag(text.x + 6, text.y, text.x + 12, text.y)
+  await renderOnce()
+  expect(text.getSelectedText()).toBe("beta gamma")
 })

@@ -1,8 +1,6 @@
 ---
-title: Plugin Slots
-description: Shared slot registry API used by core, React, and Solid
-order: 1
-navTitle: Overview
+title: Plugin slots
+description: Shared slot registry API used by Core, React, and Solid
 skill:
   entry: true
   intents: [plugins, plugin, slots, registry, extensions]
@@ -10,32 +8,30 @@ skill:
 
 # Plugin slots
 
-Most TUI apps start as one codebase. As features and teams grow, you may want extension points without asking users to fork the app.
+Plugin slots let a host define typed layout regions and let registered plugins contribute UI to those regions. The host
+controls layout, slot modes, context, and prop types.
 
-Plugin slots give you that. The host application defines named places in the layout (for example, a status bar, sidebar, or panel), and plugins contribute UI for those places at runtime.
+This page owns the shared registry, slot, contribution, mode, and error model. Use the integration for your node type:
 
-The host stays in control of layout, rendering mode, and type contracts. Plugins only receive the context and slot props the host intentionally exposes.
+- [Core plugin slots](/docs/plugins/core) use `BaseRenderable` nodes.
+- [React plugin slots](/docs/plugins/react) use `ReactNode` values.
+- [Solid plugin slots](/docs/plugins/solid) use `JSX.Element` values.
 
-This page describes the **shared registry API** that the core, React, and Solid bindings are built on. If you are building an app, start with the page for the binding you use:
-
-- [Core slots](/docs/plugins/core) — framework-free, `BaseRenderable` nodes
-- [React slots](/docs/plugins/react) — `ReactNode`
-- [Solid slots](/docs/plugins/solid) — `JSX.Element`
-
-If you load plugin modules from disk at runtime, see the runtime support notes on the [React slots page](/docs/plugins/react#runtime-loaded-external-plugins) and [Solid slots page](/docs/plugins/solid#runtime-loaded-external-plugins). For custom hosts, use `@opentui/core/runtime-plugin-support` or `createRuntimePlugin` from `@opentui/core/runtime-plugin`.
-
-Read on if you need to understand the underlying model, want to build a custom binding for another framework, or need direct access to the registry API.
+Slots do not discover packages, read manifests, sandbox code, grant permissions, or manage a complete application
+plugin lifecycle. Runtime module loading is a separate concern. See
+[Load plugins and modules at runtime](/docs/extend/runtime-plugins).
 
 ## Concepts
 
-- **Host**: defines slot names and slot prop types.
-- **Plugin**: contributes one or more slot renderer callbacks. May include lifecycle hooks.
-- **Registry**: registers plugins and resolves contributions for a slot.
-- **Slot mode**: controls how plugin output and fallback UI combine (`append`, `replace`, or `single_winner`).
+- **Host**: Defines slot names, slot prop types, and shared context.
+- **Registry**: Stores plugins for one renderer and resolves their contributions.
+- **Slot**: A named region that receives typed props from the host.
+- **Contribution**: A synchronous callback that returns the node type for one slot.
+- **Slot mode**: Combines contribution output with host fallback UI.
 
 ## Define slots and host context
 
-Slot names map to the props each slot receives. The host context is a shared object passed to every plugin renderer.
+Slot names map to the props that each slot receives. The registry passes one shared host context to each contribution.
 
 ```typescript
 import type { PluginContext } from "@opentui/core"
@@ -51,7 +47,8 @@ interface AppContext extends PluginContext {
 }
 ```
 
-The context can be any object. `PluginContext` is a type alias for `object` — extending it is not required but gives your plugins a named type to reference.
+The context can be any object. `PluginContext` is an alias for `object`. Extending it is optional, but a named context
+type gives every contribution the same contract.
 
 ## Create a registry
 
@@ -68,35 +65,44 @@ const context = { appName: "my-app", version: "1.0.0" }
 const registry = createSlotRegistry<string, AppSlots, typeof context>(renderer, "my-app:plugins", context)
 ```
 
-The first type parameter (`TNode`) is the node type your framework returns — `BaseRenderable` for core, `ReactNode` for React, `JSX.Element` for Solid. The framework-specific helpers fill this in for you.
+The first type parameter, `TNode`, is the host node type. Use `BaseRenderable` for Core, `ReactNode` for React, or
+`JSX.Element` for Solid. The framework integrations supply this type.
 
-`createSlotRegistry` is renderer-scoped. For a given `(renderer, key)` pair, you always get the same registry instance. The `key` parameter namespaces registries within a renderer so multiple independent registries can coexist.
+`createSlotRegistry` is renderer-scoped. A `(renderer, key)` pair always returns the same registry. The key lets one
+renderer contain independent registries.
 
-Calling `createSlotRegistry` again with the same `(renderer, key)` pair returns the existing registry and applies the new `options` via `configure()`. The `context` argument **must** be the same object reference — passing a different context object throws an error. This means you should create the context object once and reuse it:
+Another call with the same pair returns the existing registry and applies the new options through `configure()`. The
+`context` argument must use the same object reference. A different reference throws, even when its fields are equal.
 
 ```typescript
-// correct — same object reference
+// Correct: reuse the same object reference.
 const context = { appName: "my-app" }
 const reg1 = createSlotRegistry(renderer, "my-key", context)
 const reg2 = createSlotRegistry(renderer, "my-key", context) // returns reg1
 
-// throws — different object even if structurally identical
+// Throws: this is a different object reference.
 const reg3 = createSlotRegistry(renderer, "my-key", { appName: "my-app" })
 ```
 
-When the renderer is destroyed, all registries scoped to it are automatically cleared and disposed.
+Create a renderer-scoped registry while the renderer is live. The factory does not reject a destroyed renderer, and a
+destroy listener added after destruction does not replay. After asynchronous module loading, check
+`renderer.isDestroyed` before you create a registry or register a contribution.
 
-The framework-specific helpers (`createCoreSlotRegistry`, `createReactSlotRegistry`, `createSolidSlotRegistry`) call `createSlotRegistry` internally with a fixed key. Use `createSlotRegistry` directly only if you need multiple independent registries per renderer.
+Renderer destruction clears registries that were created before destruction. Clearing a registry calls each registered
+plugin's `dispose()` hook.
+
+`createCoreSlotRegistry`, `createReactSlotRegistry`, and `createSolidSlotRegistry` each use a fixed key. Call
+`createSlotRegistry` directly when one renderer needs more than one registry for the same node type.
 
 ### Registry options
 
 All `create*SlotRegistry` functions accept an optional `SlotRegistryOptions` object:
 
-| Option              | Type                                | Default | Description                                                 |
-| ------------------- | ----------------------------------- | ------- | ----------------------------------------------------------- |
-| `onPluginError`     | `(event: PluginErrorEvent) => void` | —       | Callback invoked on every plugin error                      |
-| `debugPluginErrors` | `boolean`                           | `false` | When `true`, errors are also logged via `console.debug`     |
-| `maxPluginErrors`   | `number`                            | `100`   | Maximum number of buffered errors before oldest are dropped |
+| Option              | Type                                | Default | Description                                                  |
+| ------------------- | ----------------------------------- | ------- | ------------------------------------------------------------ |
+| `onPluginError`     | `(event: PluginErrorEvent) => void` | none    | Receives every reported plugin error                         |
+| `debugPluginErrors` | `boolean`                           | `false` | Also writes reported errors through `console.debug`          |
+| `maxPluginErrors`   | `number`                            | `100`   | Maximum buffered errors before the registry drops the oldest |
 
 ## Register plugins
 
@@ -105,10 +111,10 @@ const unregister = registry.register({
   id: "clock-plugin",
   order: 0,
   setup(ctx, renderer) {
-    // called once on registration — initialize resources here
+    // Initialize resources during registration.
   },
   dispose() {
-    // called when the plugin is unregistered — clean up resources here
+    // Release plugin resources during unregistration or registry clearing.
   },
   slots: {
     statusbar(ctx, props) {
@@ -117,23 +123,26 @@ const unregister = registry.register({
   },
 })
 
-// later: remove this plugin
+// Later, remove this plugin.
 unregister()
 ```
 
-`register()` returns an unregister function. Calling it removes the plugin and invokes its `dispose` hook.
+`register()` returns an unregister function. Calling it removes the plugin and calls its `dispose` hook. A duplicate
+`id` throws. If `setup` throws, the registry reports the error, returns a no-op unregister function, and does not add
+the plugin.
 
 ### Plugin interface
 
-| Field     | Type                                    | Required | Description                                                                      |
-| --------- | --------------------------------------- | -------- | -------------------------------------------------------------------------------- |
-| `id`      | `string`                                | yes      | Unique identifier. Duplicate ids throw.                                          |
-| `order`   | `number`                                | no       | Sort priority (ascending). Defaults to `0`.                                      |
-| `setup`   | `(ctx, renderer) => void`               | no       | Called once at registration time. If it throws, the plugin is not registered.    |
-| `dispose` | `() => void`                            | no       | Called when the plugin is unregistered or the registry is cleared.               |
-| `slots`   | `{ [slotName]: (ctx, props) => TNode }` | yes      | Slot renderer callbacks. Each receives the host context and slot-specific props. |
+| Field     | Type                                    | Required | Description                                                                  |
+| --------- | --------------------------------------- | -------- | ---------------------------------------------------------------------------- |
+| `id`      | `string`                                | yes      | Unique identifier. Duplicate IDs throw.                                      |
+| `order`   | `number`                                | no       | Ascending sort priority. The default is `0`.                                 |
+| `setup`   | `(ctx, renderer) => void`               | no       | Runs once during registration. A failure prevents registration.              |
+| `dispose` | `() => void`                            | no       | Runs during unregistration or registry clearing.                             |
+| `slots`   | `{ [slotName]: (ctx, props) => TNode }` | yes      | Contributions that receive the host context and props for their named slots. |
 
-The core binding extends this with [managed slot objects](/docs/plugins/core#managed-slot-contributions) that add lifecycle hooks.
+The Core integration also supports [managed slot contributions](/docs/plugins/core#managed-slot-contributions) with
+node ownership hooks.
 
 ### Ordering
 
@@ -145,13 +154,19 @@ Plugins are resolved in this order:
 
 ## Slot modes
 
-Every slot mount or `<Slot>` component accepts a `mode`. The mode controls how plugin output and fallback UI combine.
+Every slot mount or `<Slot>` component accepts a mode.
 
-| Mode            | Behavior                                                                   |
-| --------------- | -------------------------------------------------------------------------- |
-| `append`        | Fallback first, then all plugin output (default)                           |
-| `replace`       | Plugin output only; fallback shown only when no plugins produce output     |
-| `single_winner` | Only the first plugin by resolved order; fallback if it produces no output |
+| Mode            | Behavior                                                                     |
+| --------------- | ---------------------------------------------------------------------------- |
+| `append`        | Show the fallback first, then all contribution output. This is the default.  |
+| `replace`       | Show contribution output. Show the fallback when no contribution has output. |
+| `single_winner` | Show only the first contribution. Show the fallback when it has no output.   |
+
+```text terminal=plugin-slot-modes
+append         host clock sync
+replace        clock sync
+single_winner  clock
+```
 
 ## Resolve contributions
 
@@ -163,28 +178,29 @@ const slotRenderers = registry.resolve("statusbar")
 // Array<(ctx, props) => TNode>
 ```
 
-`renderer` here means the plugin's **slot renderer callback**, not the `CliRenderer` instance.
+In this result, `renderer` means the slot contribution callback. It does not mean the `CliRenderer` instance.
 
 Use `resolveEntries` when you need plugin ids alongside the callbacks. Use `resolve` when you only need the callbacks.
 
 ## Registry methods
 
-| Method                      | Description                                                                                                                 |
-| --------------------------- | --------------------------------------------------------------------------------------------------------------------------- |
-| `register(plugin)`          | Add a plugin. Returns an unregister function.                                                                               |
-| `unregister(id)`            | Remove a plugin by id. Returns `true` if found.                                                                             |
-| `updateOrder(id, order)`    | Change a plugin's sort order. Returns `true` if found.                                                                      |
-| `clear()`                   | Remove and dispose all plugins.                                                                                             |
-| `resolve(slot)`             | Return ordered slot renderer callbacks.                                                                                     |
-| `resolveEntries(slot)`      | Return ordered `{ id, renderer }` entries.                                                                                  |
-| `subscribe(listener)`       | Listen for registration changes. Returns an unsubscribe function. Used internally by React and Solid to trigger re-renders. |
-| `configure(options)`        | Update `SlotRegistryOptions` after creation.                                                                                |
-| `onPluginError(listener)`   | Listen for plugin errors. Returns an unsubscribe function.                                                                  |
-| `getPluginErrors()`         | Return buffered `PluginErrorEvent` array.                                                                                   |
-| `clearPluginErrors()`       | Clear the error buffer.                                                                                                     |
-| `reportPluginError(report)` | Manually report a plugin error. Used by framework integrations.                                                             |
-| `renderer`                  | Getter — the `CliRenderer` this registry is scoped to.                                                                      |
-| `context`                   | Getter — the host context object.                                                                                           |
+| Method                      | Description                                                              |
+| --------------------------- | ------------------------------------------------------------------------ |
+| `register(plugin)`          | Add a plugin and return its unregister function.                         |
+| `unregister(id)`            | Remove a plugin by ID. Return `true` when it existed.                    |
+| `updateOrder(id, order)`    | Change sort order. Return `true` when the plugin existed.                |
+| `clear()`                   | Remove and dispose all plugins.                                          |
+| `resolve(slot)`             | Return ordered contribution callbacks.                                   |
+| `resolveEntries(slot)`      | Return ordered `{ id, renderer }` entries.                               |
+| `subscribe(listener)`       | Listen for registry changes and return an unsubscribe function.          |
+| `batch(run)`                | Delay registry-change notifications until the outermost batch completes. |
+| `configure(options)`        | Update `SlotRegistryOptions`.                                            |
+| `onPluginError(listener)`   | Listen for plugin errors and return an unsubscribe function.             |
+| `getPluginErrors()`         | Return the buffered `PluginErrorEvent` values.                           |
+| `clearPluginErrors()`       | Clear the error buffer.                                                  |
+| `reportPluginError(report)` | Normalize, store, and publish an error from an integration.              |
+| `renderer`                  | Get the `CliRenderer` that owns this registry.                           |
+| `context`                   | Get the read-only host context object.                                   |
 
 ## Error handling
 
@@ -203,19 +219,19 @@ const history = registry.getPluginErrors()
 registry.clearPluginErrors()
 ```
 
-### PluginErrorReport
+### `PluginErrorReport`
 
 The `reportPluginError` method accepts a `PluginErrorReport`:
 
 | Field      | Type                  | Required | Description                                                  |
 | ---------- | --------------------- | -------- | ------------------------------------------------------------ |
-| `pluginId` | `string`              | yes      | The plugin that caused the error                             |
-| `slot`     | `string \| undefined` | no       | The slot name, if the error is slot-specific                 |
+| `pluginId` | `string`              | yes      | Plugin that caused the error                                 |
+| `slot`     | `string \| undefined` | no       | Slot name when the error belongs to one slot                 |
 | `phase`    | `PluginErrorPhase`    | yes      | `"setup"`, `"render"`, `"dispose"`, or `"error_placeholder"` |
-| `source`   | `PluginErrorSource`   | no       | Defaults to `"registry"` if omitted                          |
-| `error`    | `unknown`             | yes      | The raw error — normalized to `Error` internally             |
+| `source`   | `PluginErrorSource`   | no       | Error source. The default is `"registry"`.                   |
+| `error`    | `unknown`             | yes      | Raw error. The registry normalizes it to `Error`.            |
 
-### PluginErrorEvent
+### `PluginErrorEvent`
 
 | Field       | Type                  | Description                                                  |
 | ----------- | --------------------- | ------------------------------------------------------------ |
@@ -226,10 +242,8 @@ The `reportPluginError` method accepts a `PluginErrorReport`:
 | `error`     | `Error`               | The normalized error object                                  |
 | `timestamp` | `number`              | `Date.now()` at the time of the error                        |
 
-## Next: concrete host APIs
+## Next
 
-Use the shared model above with one of these host integrations:
-
-- [Core slots](/docs/plugins/core) — framework-free, returns `BaseRenderable` nodes
-- [React slots](/docs/plugins/react) — returns `ReactNode`
-- [Solid slots](/docs/plugins/solid) — returns `JSX.Element`
+- [Core plugin slots](/docs/plugins/core) define Core node ownership and managed contributions.
+- [React plugin slots](/docs/plugins/react) define React reconciliation and failure boundaries.
+- [Solid plugin slots](/docs/plugins/solid) define Solid ownership and disposal.

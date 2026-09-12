@@ -1,12 +1,21 @@
 ---
 title: FrameBuffer
-description: Low-level rendering surface for custom graphics
-order: 13
+description: Draw cells, text, images, and effects into a custom rendering surface
 ---
 
 # FrameBuffer
 
-A low-level rendering surface for custom graphics and complex visual effects. FrameBuffer provides a 2D array of cells with methods optimized for performance and memory.
+`FrameBuffer` exposes a low-level, two-dimensional cell buffer for custom graphics. Use [Image](/docs/components/image) to display encoded images without direct cell drawing.
+
+## Availability
+
+| Field           | Availability            |
+| --------------- | ----------------------- |
+| Package         | `@opentui/core`         |
+| Core renderable | `FrameBufferRenderable` |
+| React           | Unavailable             |
+| Solid           | Unavailable             |
+| Status          | Advanced                |
 
 ## Basic usage
 
@@ -30,21 +39,6 @@ canvas.frameBuffer.drawText("Hello!", 8, 6, RGBA.fromHex("#FFFFFF"))
 renderer.root.add(canvas)
 ```
 
-### Construct API
-
-```typescript
-import { FrameBuffer, createCliRenderer } from "@opentui/core"
-
-const renderer = await createCliRenderer()
-
-renderer.root.add(
-  FrameBuffer({
-    width: 50,
-    height: 20,
-  }),
-)
-```
-
 ## Drawing methods
 
 ### setCell
@@ -55,7 +49,7 @@ Set a single cell's content and colors:
 canvas.frameBuffer.setCell(
   x, // X position
   y, // Y position
-  char, // Character to display
+  char, // One-cell scalar to display
   fg, // Foreground color (RGBA)
   bg, // Background color (RGBA)
   attributes, // Text attributes (optional, default: 0)
@@ -63,6 +57,17 @@ canvas.frameBuffer.setCell(
 
 // Example
 canvas.frameBuffer.setCell(10, 5, "@", RGBA.fromHex("#FFFF00"), RGBA.fromHex("#000000"))
+```
+
+`setCell()` uses only the first code point and does not reserve continuation cells. Use it for one-cell scalars. Use `drawText()` for wide or joined graphemes.
+
+Draw text and block characters directly to build a compact chart:
+
+```text terminal=frame-buffer-draw
+network throughput
+rx  ▂▄▆█▇▅▃▂  42 MB/s
+tx  ▃▅▇█▆▄▂▁  18 MB/s
+    8 seconds     now
 ```
 
 ### setCellWithAlphaBlending
@@ -126,6 +131,29 @@ canvas.frameBuffer.drawFrameBuffer(
 )
 ```
 
+### drawImage
+
+Place a native image into destination cells:
+
+```typescript
+const placed = canvas.frameBuffer.drawImage(
+  image,
+  x,
+  y,
+  width,
+  height,
+  pixelWidth,
+  pixelHeight,
+  sourceX,
+  sourceY,
+  sourceWidth,
+  sourceHeight,
+  protocol,
+)
+```
+
+`x`, `y`, `width`, and `height` use terminal cells. `pixelWidth` and `pixelHeight` use terminal pixels and default to `0`. Source coordinates default to the full image, and `protocol` defaults to `"auto"`. Sixel requires nonzero pixel dimensions or falls back to blocks. `false` means the buffer recorded no visible valid placement. A successful placement retains the native image until the buffer is cleared, resized, or destroyed. Ownership does not transfer. The caller must still dispose its `NativeImage`.
+
 ### colorMatrix / colorMatrixUniform
 
 Apply native 4x4 RGBA matrix transforms for post-processing effects. Use `colorMatrixUniform` for full-buffer
@@ -146,15 +174,15 @@ See [Color matrix reference](/docs/reference/color-matrix) for matrix layout, ma
 
 ## Properties
 
-| Property                         | Type      | Default      | Description                           |
-| -------------------------------- | --------- | ------------ | ------------------------------------- |
-| `width`                          | `number`  | -            | Buffer width in characters (required) |
-| `height`                         | `number`  | -            | Buffer height in rows (required)      |
-| `respectAlpha`                   | `boolean` | `false`      | Enable alpha blending when drawing    |
-| `position`                       | `string`  | `"relative"` | Positioning mode                      |
-| `left`, `top`, `right`, `bottom` | `number`  | -            | Position offsets                      |
+| Property                         | Type                                     | Default      | Description                               |
+| -------------------------------- | ---------------------------------------- | ------------ | ----------------------------------------- |
+| `width`                          | `number`                                 | -            | Buffer width in terminal cells (required) |
+| `height`                         | `number`                                 | -            | Buffer height in rows (required)          |
+| `respectAlpha`                   | `boolean`                                | `false`      | Enable alpha blending when drawing        |
+| `position`                       | `string`                                 | `"relative"` | Positioning mode                          |
+| `left`, `top`, `right`, `bottom` | `number`, `"auto"`, or percentage string | -            | Position offsets                          |
 
-## Example: Simple game canvas
+## Example: game canvas
 
 ```typescript
 import { FrameBufferRenderable, RGBA, createCliRenderer } from "@opentui/core"
@@ -215,13 +243,14 @@ renderer.keyInput.on("keypress", (key) => {
       break
   }
   render()
+  gameCanvas.requestRender()
 })
 
 render()
 renderer.root.add(gameCanvas)
 ```
 
-## Example: Progress bar
+## Example: progress bar
 
 ```typescript
 const EMPTY_BG = RGBA.fromHex("#222222")
@@ -244,24 +273,14 @@ function drawProgressBar(fb, x, y, width, progress, color) {
 drawProgressBar(canvas.frameBuffer, 5, 10, 30, 0.75, RGBA.fromHex("#00FF00"))
 ```
 
-## Performance tips
+A 20-cell bar with 14 filled cells renders as:
 
-1. **Batch updates**: Make multiple changes to the frame buffer before the next render cycle
-2. **Minimize fillRect calls**: Use individual setCell calls for complex shapes
-3. **Reuse RGBA objects**: Create color constants instead of calling `fromHex` repeatedly
-
-```typescript
-// Good: Create once, reuse
-const RED = RGBA.fromHex("#FF0000")
-const GREEN = RGBA.fromHex("#00FF00")
-const BG = RGBA.fromHex("#000000")
-
-for (let i = 0; i < 100; i++) {
-  fb.setCell(i, 5, "*", RED, BG)
-}
-
-// Avoid: Creating new RGBA objects in loops
-for (let i = 0; i < 100; i++) {
-  fb.setCell(i, 5, "*", RGBA.fromHex("#FF0000"), RGBA.fromHex("#000000")) // Creates 200 objects
-}
+```text terminal=frame-buffer-progress
+Downloading package
+██████████████░░░░░░  70%
+14 of 20 files
 ```
+
+## Related APIs
+
+Read the [Buffer API](/docs/reference/buffer-api) for `OptimizedBuffer` ownership and drawing operations. Use [`NativeImage`](/docs/reference/native-image) to decode and transform image data. The [color matrix reference](/docs/reference/color-matrix) covers post-processing matrix and mask formats.

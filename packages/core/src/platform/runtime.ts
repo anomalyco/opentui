@@ -69,7 +69,14 @@ export async function resolveBundledFilePath(
     return (await loadBundledFilePath(loadBundledFile, metaUrl, options.loadBundledFileFallback ?? false)) ?? path
   }
 
-  return normalizeLoadedFilePath((await loadBundledFile()).default, metaUrl)
+  // A bundled `type: "file"` import can resolve to a module whose `default` is not a path string
+  // (e.g. when the same file is also emitted as a build entrypoint), so fall back to the source path.
+  const loaded = (await loadBundledFile()).default
+  if (typeof loaded !== "string") {
+    return resolveFallbackFilePath(fallbackPath, metaUrl)
+  }
+
+  return normalizeLoadedFilePath(loaded, metaUrl)
 }
 
 function resolveFallbackFilePath(fallbackPath: FilePathFallback, metaUrl: string): string {

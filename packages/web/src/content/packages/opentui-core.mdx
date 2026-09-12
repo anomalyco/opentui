@@ -1,0 +1,52 @@
+---
+id: opentui-core
+name: OpenTUI Core
+summary: Native terminal UI library with TypeScript bindings.
+kind: native-library
+official: true
+source:
+  url: https://github.com/anomalyco/opentui
+  directory: packages/core
+surfaces:
+  - name: TypeScript
+    language: typescript
+    import: "@opentui/core"
+    docs: /docs
+  - name: Testing
+    language: typescript
+    import: "@opentui/core/testing"
+    docs: /docs/core-concepts/testing
+  - name: Zig
+    language: zig
+distributions:
+  - type: npm
+    identifier: "@opentui/core"
+    install: bun add @opentui/core
+links:
+  docs: /docs
+  issues: https://github.com/anomalyco/opentui/issues
+  changelog: https://github.com/anomalyco/opentui/releases
+categories:
+  - rendering
+---
+
+OpenTUI is a TypeScript library for building terminal user interfaces on a native Zig core.
+
+`@opentui/core` supplies the renderer and TypeScript API. The TypeScript packages call native Zig through an internal
+foreign function interface (FFI) boundary.
+
+```typescript
+import { TextRenderable, createCliRenderer } from "@opentui/core"
+
+const renderer = await createCliRenderer({ exitOnCtrlC: true })
+
+renderer.root.add(new TextRenderable(renderer, { content: "Hello, OpenTUI!" }))
+```
+
+`exitOnCtrlC: true` calls `renderer.destroy()` when the user presses Ctrl+C. The code that creates the renderer must
+call `renderer.destroy()` on every other shutdown path.
+
+Read the [components overview](/docs/components), [runtime and platform support](/docs/getting-started/runtime-support),
+[API and symbol index](/docs/reference/api-index), [package entry points](/docs/reference/package-entrypoints), and
+[standalone executables](/docs/reference/standalone-executables). See [lifecycle and cleanup](/docs/core-concepts/lifecycle)
+for other shutdown paths.

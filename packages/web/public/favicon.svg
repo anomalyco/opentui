@@ -1,4 +1,12 @@
 <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-  <rect x="2" y="3" width="20" height="18" fill="#1a1a1a"/>
-  <rect x="6" y="8" width="3" height="8" fill="white"/>
+  <style>
+    .frame { fill: #1a1a1a }
+    .cursor { fill: #ffffff }
+    @media (prefers-color-scheme: dark) {
+      .frame { fill: #ededed }
+      .cursor { fill: #1a1a1a }
+    }
+  </style>
+  <rect class="frame" x="2" y="3" width="20" height="18"/>
+  <rect class="cursor" x="6" y="8" width="3" height="8"/>
 </svg>

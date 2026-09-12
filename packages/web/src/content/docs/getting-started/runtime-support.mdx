@@ -1,0 +1,163 @@
+---
+title: Runtime and platform support
+description: Check runtime, target, native artifact, permission, and package requirements before you run OpenTUI
+skill:
+  entry: true
+  intents: [runtime-support, bun, nodejs, native-artifacts, ffi, permissions, libc, runtime-assets]
+---
+
+# Runtime and platform support
+
+Check the runtime, native artifact, permission, asset, and package requirements before you run or deploy OpenTUI.
+
+## Runtime versions
+
+| Runtime | Project requirement | Native Core requirements                               |
+| ------- | ------------------- | ------------------------------------------------------ |
+| Bun     | 1.3.0 or later      | Bun loads the matching optional native package.        |
+| Node.js | 26.4.0 or later     | Use ECMAScript modules (ESM) and `--experimental-ffi`. |
+
+The Node.js acceptance scripts accept Node.js 26.4 or later.
+
+Use Bun 1.4.0 or later on native Windows arm64 because Bun 1.3 does not support FFI on that target.
+
+Use ESM for Node.js applications. The Core root has an asynchronous ESM graph. A CommonJS `require("@opentui/core")`
+call fails with `ERR_REQUIRE_ASYNC_MODULE`.
+
+{/* docs-lint-disable non-bun-setup-command */}
+
+```bash
+node --experimental-ffi app.mjs
+```
+
+Importing Core does not call native functions. APIs such as `createCliRenderer()` load the native library and need
+experimental FFI.
+
+Three.js support and runtime-loaded module support use Bun APIs. Use Bun for `@opentui/three`,
+`@opentui/core/runtime-plugin`, and the Core, React, or Solid runtime-plugin support entry points.
+
+## Node.js permissions
+
+Node.js does not require `--permission`. If you enable it, grant only the permissions for the features that your
+application uses.
+
+| Feature                   | Required permission                                                                                            |
+| ------------------------- | -------------------------------------------------------------------------------------------------------------- |
+| Native Core APIs          | `--allow-ffi` and read access to the selected native library or asset root                                     |
+| Tree-sitter               | `--allow-worker`, reads for the worker and parser assets, and reads and writes for the data or cache directory |
+| Remote Tree-sitter assets | Network access to each parser or query host                                                                    |
+| SSH listener              | Network access for the address and port that the server binds                                                  |
+| Persisted SSH host key    | Read access to an existing key and write access to its directory on first use                                  |
+| SSH authorized-keys file  | Read access to the configured file                                                                             |
+
+The repository's Node.js test suite grants more permissions for tests, fixtures, and child processes. Those flags are
+not the minimum permissions for an application.
+
+## Native artifacts
+
+Core publishes these optional native packages:
+
+| Target                 | Package                          |
+| ---------------------- | -------------------------------- |
+| macOS x64              | `@opentui/core-darwin-x64`       |
+| macOS arm64            | `@opentui/core-darwin-arm64`     |
+| Linux x64 with glibc   | `@opentui/core-linux-x64`        |
+| Linux arm64 with glibc | `@opentui/core-linux-arm64`      |
+| Linux x64 with musl    | `@opentui/core-linux-x64-musl`   |
+| Linux arm64 with musl  | `@opentui/core-linux-arm64-musl` |
+| Windows x64            | `@opentui/core-win32-x64`        |
+| Windows arm64          | `@opentui/core-win32-arm64`      |
+
+The release build cross-compiles all eight artifacts. Current Bun Core tests run on macOS arm64, Linux x64, and
+Windows x64. Current Node.js native, packed-distribution, and single executable application (SEA) acceptance runs on
+Linux x64 only.
+
+An available artifact does not prove runtime parity on every published target. Test your release on its target
+operating system, architecture, and Linux libc.
+
+For matching release symbols and debugger setup, see [Native crash debugging](/docs/test-and-debug/native-crashes).
+
+### Select the Linux libc
+
+Core reads `OPENTUI_LIBC` while it evaluates the Core module graph. Set it before the first Core import.
+
+```typescript
+process.env.OPENTUI_LIBC = "musl"
+const { createCliRenderer } = await import("@opentui/core")
+```
+
+On Linux, an unset value, an empty value, or `glibc` selects the package without a suffix. The value `musl` selects
+the `-musl` package. Any other nonempty Linux value throws.
+
+Static ESM dependencies run before the entry module body. Setting `process.env.OPENTUI_LIBC` in that body is too late
+when the entry also has a static Core import. Set the variable in the process environment or use a bootstrap module
+with a dynamic Core import.
+
+Alpine can also need the standard C++ runtime libraries:
+
+```bash
+apk add --no-cache libstdc++ libgcc
+```
+
+Native packages are optional dependencies. An install that omits optional dependencies can still load JavaScript
+modules. The first native operation can then report the deferred package or library error.
+
+## Runtime assets
+
+`OTUI_ASSET_ROOT` relocates the native library, parser worker, default Tree-sitter assets, and Tree-sitter runtime
+WASM. Leave it unset for normal package-relative loading.
+
+A configured root must meet all of these rules:
+
+- The path is absolute.
+- Every requested asset exists under the root with its exact asset key.
+- The root contains a complete asset set for every feature that the application uses.
+- The process sets the root before the first Core import.
+
+An empty value counts as unset. A nonempty root disables package-relative fallback. A missing file reports
+`Missing OpenTUI asset` instead of using the installed package.
+
+Bun executable builds can embed Core's native library, parser worker, default grammars, and Tree-sitter WASM. Normal
+Node.js applications resolve files from installed packages. Node.js SEA applications must extract embedded bytes to
+files and set the absolute asset root before Core executes.
+
+Read [Environment variables](/docs/reference/env-vars#otui_asset_root) for the exact override. Read
+[Standalone executables](/docs/reference/standalone-executables) for executable asset handling.
+
+## Package requirements
+
+| Package           | Runtime dependency                                          | Current Node.js acceptance evidence                |
+| ----------------- | ----------------------------------------------------------- | -------------------------------------------------- |
+| `@opentui/core`   | `web-tree-sitter` 0.25.10                                   | Source, native, packed, and SEA lanes on Linux x64 |
+| `@opentui/react`  | React 19.2.0 or later                                       | No dedicated Node.js CI lane                       |
+| `@opentui/solid`  | Solid 1.9.12 exactly                                        | Source and packed lanes on Linux x64               |
+| `@opentui/keymap` | Core, with optional React or Solid peers for their adapters | Packed Node.js lane on Linux x64                   |
+| `@opentui/qrcode` | Core, with optional React or Solid peers for their adapters | No dedicated Node.js CI lane                       |
+| `@opentui/three`  | Three 0.177.0, `bun-webgpu` 0.1.7, Rapier, and Planck       | Bun-only                                           |
+| `@opentui/ssh`    | `ssh2` `^1.16.0`, plus its Core peer                        | Packed Node.js lane on Linux x64 with a Core stub  |
+
+The Three package marks `bun-webgpu`, Rapier, and Planck as optional dependencies, but its root statically imports all
+three. Do not omit optional dependencies from a Three installation.
+
+The SSH packed Node.js test uses a Core stub. It checks package loading and SSH transport behavior. It does not create
+a native Core renderer. React has no Node.js CI lane, so the repository does not establish the same Node.js confidence
+for React that it establishes for Core and Solid.
+
+## Advanced Node.js FFI note
+
+This note applies to contributors who add portable native calls. It does not change normal application setup.
+
+- Keep signatures in the `bun:ffi` and `node:ffi` intersection. Use explicit widths such as `u32` and `u64`.
+- Represent `i64` and `u64` values as `bigint`. Represent native booleans as `0` or `1`.
+- Accept shared pointers as `number | bigint`.
+- Pass transient `ArrayBuffer` values or views directly to synchronous pointer parameters. Do not call `ptr()` first.
+- Use `ptr(view)` only for an address that native code retains. Keep the backing buffer alive for the full native lifetime.
+- Pass C strings as owned, NUL-terminated byte buffers. Do not depend on portable string returns.
+- Create callbacks through the loaded library facade. Node.js FFI callbacks run on the same thread only.
+- Close callbacks and native libraries on every exit path.
+
+## Next
+
+- [Quickstart](/docs/getting-started/quickstart) creates a first renderer.
+- [Load plugins and modules at runtime](/docs/extend/runtime-plugins) covers Bun runtime module maps.
+- [Deploy an OpenTUI application](/docs/ship/deploy) compares source, bundle, executable, SEA, and SSH deployments.

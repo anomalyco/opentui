@@ -58,6 +58,17 @@ describe("EditBuffer", () => {
   })
 
   describe("cursor position", () => {
+    it("preserves public cursor identity", () => {
+      buffer.setText("abc")
+      const first = buffer.getCursorPosition()
+      buffer.moveCursorRight()
+      const second = buffer.getCursorPosition()
+
+      expect(first).not.toBe(second)
+      expect(first).toEqual({ row: 0, col: 0, offset: 0 })
+      expect(second).toEqual({ row: 0, col: 1, offset: 1 })
+    })
+
     it("should start cursor at beginning after setText", () => {
       buffer.setText("Hello World")
       const cursor = buffer.getCursorPosition()
@@ -88,6 +99,41 @@ describe("EditBuffer", () => {
       buffer.moveCursorDown()
       cursor = buffer.getCursorPosition()
       expect(cursor.row).toBe(2)
+    })
+
+    it("preserves cursor text boundaries across tab width changes and history", () => {
+      buffer.setText("a\tb")
+      buffer.setCursor(0, 4)
+      buffer.insertText("x")
+
+      buffer.setTabWidth(8)
+      expect(buffer.getTabWidth()).toBe(8)
+      expect(buffer.getCursorPosition()).toEqual({ row: 0, col: 11, offset: 11 })
+
+      expect(buffer.undo()).toBe("cursor:0:4:4")
+      expect(buffer.getCursorPosition()).toEqual({ row: 0, col: 10, offset: 10 })
+
+      buffer.insertText("y")
+      expect(buffer.getText()).toBe("a\tby")
+    })
+
+    it("routes borrowed text buffer tab changes through its editor", () => {
+      buffer.setText("a\tb")
+      buffer.setCursor(0, 4)
+      buffer.insertText("x")
+
+      const lib = (buffer as any).lib
+      const textBuffer = lib.editBufferGetTextBuffer(buffer.ptr)
+      lib.textBufferSetTabWidth(textBuffer, 8)
+
+      expect(buffer.getCursorPosition()).toEqual({ row: 0, col: 11, offset: 11 })
+      expect(buffer.undo()).toBe("cursor:0:4:4")
+      expect(buffer.getCursorPosition()).toEqual({ row: 0, col: 10, offset: 10 })
+      expect(buffer.redo()).toBe("cursor:0:11:11")
+      lib.textBufferSetTabWidth(textBuffer, 3)
+      expect(buffer.getCursorPosition()).toEqual({ row: 0, col: 7, offset: 7 })
+      buffer.insertText("y")
+      expect(buffer.getText()).toBe("a\tbxy")
     })
   })
 
@@ -384,6 +430,20 @@ describe("EditBuffer", () => {
 
       expect(lib.editBufferGetTextRange(buffer.ptr, 0, 5, 0)).toBeNull()
       expect(lib.editBufferGetTextRangeByCoords(buffer.ptr, 0, 0, 1, 5, 0)).toBeNull()
+    })
+
+    it("returns independently owned exact-length coordinate ranges", () => {
+      buffer.setText("Hello World")
+      const lib = (buffer as any).lib
+
+      const first = lib.editBufferGetTextRangeByCoords(buffer.ptr, 0, 0, 0, 5, 64) as Uint8Array
+      const second = lib.editBufferGetTextRangeByCoords(buffer.ptr, 0, 0, 0, 5, 64) as Uint8Array
+
+      expect(new TextDecoder().decode(first)).toBe("Hello")
+      expect(first.byteLength).toBe(5)
+      expect(first.buffer.byteLength).toBe(5)
+      expect(second).not.toBe(first)
+      expect(second.buffer).not.toBe(first.buffer)
     })
   })
 

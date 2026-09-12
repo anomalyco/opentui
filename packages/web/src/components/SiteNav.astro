@@ -1,0 +1,248 @@
+---
+import OpenTUILogo from "./OpenTUILogo.astro"
+
+const links = [
+  { href: "/docs", section: "/docs", label: "Docs" },
+  { href: "/packages", section: "/packages", label: "Packages" },
+  { href: "/scrollback", section: "/scrollback", label: "Scrollback" },
+]
+
+const normalize = (path: string) => path.replace(/\/+$/, "") || "/"
+const current = normalize(Astro.url.pathname)
+const currentValue = (href: string, section: string) => {
+  if (current === normalize(href)) return "page"
+  if (current === section || current.startsWith(`${section}/`)) return "true"
+  return undefined
+}
+
+// Pages with their own navigation (documentation) pass it through the "menu"
+// slot. On small screens the header links collapse into that single "Menu"
+// disclosure instead of stacking a second menu next to them.
+//
+// A page may also pass a second chrome row (the docs "On this page" bar)
+// through the "subnav" slot. It renders inside the header so both rows share
+// one sticky translucent surface: content passing under the chrome ghosts
+// through one continuous band instead of two separately edged bars.
+const hasMenu = Astro.slots.has("menu")
+---
+
+<header>
+  <div class="bar">
+    <a class="brand" href="/" aria-label="OpenTUI home">
+      <OpenTUILogo class="wordmark" />
+    </a>
+    <nav aria-label="Site" class:list={{ collapsible: hasMenu, "site-menu": !hasMenu }}>
+      {
+        links.map(({ href, section, label }) => (
+          <a href={href} aria-current={currentValue(href, section)}>
+            {label}
+          </a>
+        ))
+      }
+      <details class="menu" data-standalone={!hasMenu || undefined}>
+        <summary>Menu</summary>
+        <div class="pane">
+          <div class="pane-content">
+            <ul class="site-links">
+              {
+                links.map(({ href, section, label }) => (
+                  <li>
+                    <a href={href} aria-current={currentValue(href, section)}>
+                      {label}
+                    </a>
+                  </li>
+                ))
+              }
+            </ul>
+            {hasMenu && <slot name="menu" />}
+          </div>
+        </div>
+      </details>
+    </nav>
+  </div>
+  <slot name="subnav" />
+</header>
+
+<style>
+  /* Site chrome: the background band spans the full viewport; the nav
+   * content aligns to the frame width on every page, independent of the
+   * content column, so it does not shift between routes.
+   *
+   * The links cluster on the left instead of pushing to the frame's
+   * right edge: the frame's left edge is the only alignment line every
+   * page shares (docs sidebar, scrollback posts, the wordmark), so a
+   * left cluster reads as anchored everywhere, while the right edge
+   * borders nothing on narrow-content pages. */
+  header {
+    position: sticky;
+    top: 0;
+    z-index: 1;
+    margin-block-start: -1rem;
+    margin-inline: calc(-1 * var(--page-gutter));
+    padding-block: 1rem;
+    padding-inline: var(--page-gutter);
+    background: var(--page-background);
+  }
+
+  .bar {
+    position: relative;
+    width: min(100%, var(--frame-width));
+    margin-inline: auto;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 0.5rem 1.5rem;
+    /* Pin the bar to the wordmark height so the header equals
+     * --site-nav-height exactly. Baseline alignment would otherwise add
+     * the links' line-box descent below the wordmark and push the real
+     * header height past the token that sticky offsets rely on; the
+     * descenders paint into the header padding instead. */
+    height: 1.875rem;
+  }
+
+  /* Content scrolling under the chrome stays faintly visible. */
+  @supports (backdrop-filter: blur(1px)) {
+    header {
+      background: color-mix(in srgb, var(--page-background) var(--chrome-veil), transparent);
+      -webkit-backdrop-filter: blur(16px);
+      backdrop-filter: blur(16px);
+    }
+  }
+
+  .brand {
+    display: block;
+    color: inherit;
+  }
+
+  .wordmark {
+    display: block;
+    width: 7.8125rem;
+    height: 1.875rem;
+  }
+
+  /* Uniform rhythm: the same gap separates the wordmark and every link.
+   *
+   * Baseline alignment sees the wordmark's box bottom, but the bottom
+   * pixel row of the logo is the "p" descender: the glyphs' baseline sits
+   * one row (1/6 of the wordmark height) above the box bottom. Shift the
+   * links up by that row so their baseline matches the logo baseline. */
+  nav {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 1.5rem;
+  }
+
+  nav > a,
+  .menu > summary {
+    position: relative;
+    inset-block-start: calc(1.875rem / -6);
+  }
+
+  .menu > summary,
+  .site-links a {
+    font-weight: 700;
+  }
+
+  /* The current item keeps the link color; a rule under the text marks it.
+   * A border, not text-decoration, so it stays distinct from hover
+   * underlines and from the blue theme's always-underlined links. */
+  nav a[aria-current] {
+    border-bottom: 1px solid currentColor;
+  }
+
+  .menu {
+    display: none;
+  }
+
+  .menu summary {
+    cursor: pointer;
+    list-style: none;
+  }
+
+  .menu summary::-webkit-details-marker {
+    display: none;
+  }
+
+  .menu > summary {
+    color: var(--link-color);
+  }
+
+  /* The panel anchors below the bar with absolute positioning against the
+   * sticky header. The open panel fills the viewport: the toggle script
+   * docks the sticky header first and locks the page scroll. */
+  .menu .pane {
+    position: absolute;
+    top: 100%;
+    inset-inline: 0;
+    height: calc(100vh - var(--site-nav-height));
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    background: var(--page-background);
+    padding: 1.5rem var(--page-gutter) 2rem;
+  }
+
+  .pane-content {
+    width: min(100%, var(--frame-width));
+    margin-inline: auto;
+  }
+
+  .site-links {
+    list-style: none;
+    margin: 0 0 1.5rem;
+    padding: 0;
+    line-height: 1.6;
+  }
+
+  @media (max-width: 60rem) {
+    nav.collapsible > a {
+      display: none;
+    }
+
+    nav.collapsible .menu {
+      display: block;
+    }
+  }
+
+  @media (max-width: 36rem) {
+    nav.site-menu > a {
+      display: none;
+    }
+
+    nav.site-menu .menu {
+      display: block;
+    }
+  }
+
+  :global(body.site-menu-open) {
+    overflow: hidden;
+  }
+</style>
+
+<script>
+  const menu = document.querySelector<HTMLDetailsElement>("details.menu[data-standalone]")
+
+  if (menu) {
+    menu.addEventListener("toggle", () => {
+      if (menu.open) {
+        // Dock the sticky header so the full-height pane meets it exactly,
+        // before the scroll lock below freezes the page.
+        const offset = menu.closest("header")?.getBoundingClientRect().top ?? 0
+        if (offset > 0) window.scrollBy(0, offset)
+      }
+      document.body.classList.toggle("site-menu-open", menu.open)
+    })
+    menu.addEventListener("click", (event) => {
+      if (event.target instanceof Element && event.target.closest("a")) menu.open = false
+    })
+    document.addEventListener("click", (event) => {
+      if (menu.open && event.target instanceof Node && !menu.contains(event.target)) menu.open = false
+    })
+    document.addEventListener("keydown", (event) => {
+      if (event.key === "Escape" && menu.open) {
+        menu.open = false
+        menu.querySelector("summary")?.focus()
+      }
+    })
+  }
+</script>

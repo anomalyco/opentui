@@ -1,27 +1,39 @@
 ---
-title: Solid (OpenTUI)
-description: Solid provider and hooks for a pre-created OpenTUI keymap
-order: 5
-navTitle: Solid (OpenTUI)
+title: Solid keymap integration
+description: Register OpenTUI key bindings and read Keymap state from Solid
 ---
 
-# Solid keymap bindings (OpenTUI)
+# Solid keymap integration
 
-This page covers `@opentui/keymap/solid`.
+`@opentui/keymap/solid` puts a pre-created OpenTUI keymap in Solid context and connects keymap state to Solid signals.
 
-These bindings are for OpenTUI Solid apps. They consume a pre-created `Keymap<Renderable, KeyEvent>` from `@opentui/keymap/opentui`; they do not wrap the DOM/HTML adapter used in browser Solid apps.
+These bindings require `Keymap<Renderable, KeyEvent>` from `@opentui/keymap/opentui`.
+They do not create or wrap the HTML adapter for browser Solid apps.
 
-If you have not read the shared model yet, start with [Keymap overview](/docs/keymap/overview). For keymap construction, see [Keymap hosts](/docs/keymap/hosts).
+Read [Solid bindings](/docs/bindings/solid) for OpenTUI Solid setup.
+Read [Keymap hosts](/docs/keymap/hosts) for keymap construction.
 
-## What Solid adds
+## Exports
 
-- `KeymapProvider` - Solid context provider for an existing OpenTUI keymap
-- `useKeymap()` - returns the current OpenTUI keymap from context
-- `useBindings(createLayer)` - registers a keymap layer for the current reactive scope
-- `useKeymapSelector(selector)` - reactively derives any value from the current keymap
-- `reactiveMatcherFromSignal(accessor, predicate?)` - adapts a Solid accessor to `ReactiveMatcher`
+The entry point exports these runtime values:
 
-## Basic usage
+| Export                                            | Purpose                                          |
+| ------------------------------------------------- | ------------------------------------------------ |
+| `KeymapProvider`                                  | Put an existing OpenTUI keymap in Solid context. |
+| `useKeymap()`                                     | Read that keymap.                                |
+| `useKeymapSelector(selector)`                     | Derive an accessor from keymap state.            |
+| `useBindings(createLayer)`                        | Register a layer for the current reactive scope. |
+| `reactiveMatcherFromSignal(accessor, predicate?)` | Adapt a Solid accessor to `ReactiveMatcher`.     |
+
+It also exports these types:
+
+| Type                             | Purpose                                                               |
+| -------------------------------- | --------------------------------------------------------------------- |
+| `KeymapProviderProps`            | Provider props with `keymap` and required `children`.                 |
+| `UseBindingsTarget<TRenderable>` | Target accessor that can return a renderable, `null`, or `undefined`. |
+| `UseBindingsLayer<TRenderable>`  | Layer shape with a Solid target accessor.                             |
+
+## Basic setup
 
 ```tsx
 import { createCliRenderer } from "@opentui/core"
@@ -36,13 +48,13 @@ function App() {
   useBindings(() => ({
     commands: [
       {
-        name: "quit",
+        name: "app.quit",
         run() {
           renderer.destroy()
         },
       },
     ],
-    bindings: [{ key: "q", cmd: "quit" }],
+    bindings: [{ key: "q", cmd: "app.quit" }],
   }))
 
   return <text>Press q to quit</text>
@@ -58,43 +70,59 @@ await render(
 )
 ```
 
-## Provider
+The default OpenTUI factory installs the parser and standard field addons.
+The provider does not add features and does not own renderer cleanup.
 
-| Prop       | Type                           | Required | Description                 |
-| ---------- | ------------------------------ | -------- | --------------------------- |
-| `keymap`   | `Keymap<Renderable, KeyEvent>` | yes      | The OpenTUI keymap instance |
-| `children` | `JSX.Element`                  | yes      | Descendant Solid tree       |
+## Provider behavior
 
-## Hooks
+| Prop       | Type                           | Required |
+| ---------- | ------------------------------ | -------- |
+| `keymap`   | `Keymap<Renderable, KeyEvent>` | yes      |
+| `children` | `JSX.Element`                  | yes      |
 
-| Hook                             | Description                                                                                                       |
-| -------------------------------- | ----------------------------------------------------------------------------------------------------------------- |
-| `useKeymap()`                    | Returns the current keymap or throws if the provider is missing                                                   |
-| `useBindings(createLayer)`       | Runs the layer factory in a reactive effect, registers the layer, and disposes it with the current reactive scope |
-| `useKeymapSelector(selector)`    | Returns an `Accessor<T>` that re-runs the selector on batched keymap state changes                                |
-| `reactiveMatcherFromSignal(...)` | Builds a `ReactiveMatcher` from any Solid accessor                                                                |
+`useKeymap()` returns the exact provider value. It throws this error outside a provider:
 
-## `useBindings`
+```text
+Keymap not found. Wrap the tree in <KeymapProvider>.
+```
 
-`useBindings()` registers a layer-like object. The returned layer can include `priority`, `enabled`, `bindings`, `commands` and any custom addon fields.
+Keep the provider's keymap instance stable for its owner lifetime.
+`renderer.destroy()` disposes the Solid root and runs hook cleanup.
+See [Lifecycle and cleanup](/docs/core-concepts/lifecycle).
 
-Solid runs `createLayer()` inside a reactive `createEffect`. Any tracked signals or memos you read inside the factory become dependencies, so the hook will unregister and re-register the layer when those values change. If the factory does not read reactive values, the layer stays stable.
+## `useBindings()`
 
-Solid-specific layer shapes:
+`useBindings(createLayer)` runs the layer factory in `createEffect()`.
+Signals and memos read by the factory become dependencies.
 
-| Shape                      | Description                                     |
-| -------------------------- | ----------------------------------------------- |
-| Global layer               | Omit `target`                                   |
-| Local `focus-within` layer | Set `target` accessor and omit `targetMode`     |
-| Local exact-focus layer    | Set `target` accessor and `targetMode: "focus"` |
+When a dependency changes, Solid disposes the old layer and registers the new result.
+If the factory reads no reactive value, the layer remains registered until its owner is disposed.
 
-- When `target` is present and `targetMode` is omitted, `focus-within` is used.
-- If the target accessor returns `null` or `undefined`, registration waits until it resolves.
-- Passing a local `targetMode` without `target` throws.
+The layer can include Core fields such as `priority`, `bindings`, and `commands`.
+It can also include fields from installed addons, such as `enabled`.
+
+Solid replaces the Core `target` value with a target accessor:
+
+| Shape             | Required fields                          | Behavior                                 |
+| ----------------- | ---------------------------------------- | ---------------------------------------- |
+| Global            | No `target` or `targetMode`              | Register a global layer.                 |
+| Local descendants | `target` accessor                        | Default to `targetMode: "focus-within"`. |
+| Local exact focus | `target` accessor, `targetMode: "focus"` | Match only the exact focused renderable. |
+
+If the target accessor returns `null` or `undefined`, the hook waits. A later accessor value causes the effect to
+register the layer.
+
+Passing `targetMode` without a target accessor throws:
+
+```text
+useBindings local bindings need a target accessor
+```
+
+The effect cleanup disposes the current layer. Layer disposal also unsubscribes reactive matchers.
 
 ## `useKeymapSelector()`
 
-`useKeymapSelector()` is the general derived-read API for Solid. It returns an `Accessor<T>`, so you read the current value by calling it:
+`useKeymapSelector(selector)` returns `Accessor<T>`. Call the accessor to read the current value.
 
 ```tsx
 const activeKeys = useKeymapSelector((keymap) => keymap.getActiveKeys({ includeMetadata: true }))
@@ -104,19 +132,44 @@ activeKeys()
 pendingSequence()
 ```
 
-Use it for command palettes, key hint UIs, leader prompts, status bars, or any other derived keymap view.
+The hook subscribes to the batched `state` event on mount. It runs the selector again after each state update and
+removes the subscription during owner cleanup.
 
-When the underlying host is destroyed mid-update, `useKeymapSelector()` returns the previous accessor value instead of throwing, so subscribers can render once more before their owner cleans up. The first read still throws if the host is already gone.
+If the host is destroyed during an update, the selector keeps its previous value for the exact host-destroyed error.
+It throws if no previous value exists or if the previous value is `undefined`.
 
-## `reactiveMatcherFromSignal()`
+Use selectors for key hints, command lists, leader prompts, status text, and other derived views.
+The [Core keymap API](/docs/keymap/core) defines query results and state timing.
 
-Use this when an addon field expects a `ReactiveMatcher`, for example the shipped `enabled` field:
+## Signal matchers
+
+`reactiveMatcherFromSignal()` converts a Solid accessor to `ReactiveMatcher`.
+Without a predicate, it converts the accessor value to `boolean`.
 
 ```tsx
 useBindings(() => ({
   enabled: reactiveMatcherFromSignal(mode, (value) => value === "normal"),
-  bindings: [{ key: "x", cmd: "delete-line" }],
+  bindings: [{ key: "x", cmd: "editor.delete-line" }],
 }))
 ```
 
-Example: `packages/solid/examples/components/keymap-demo.tsx`
+The matcher creates a disposable Solid root for each subscription.
+Disposing the keymap layer disposes that root and stops signal updates.
+
+## Test the integration
+
+Use `createTestRenderer()` for framework rendering and input. Create the OpenTUI keymap from its renderer, then render
+the provider and drive `mockInput`.
+
+Use `@opentui/keymap/testing` for host-independent addon tests.
+See [Testing](/docs/core-concepts/testing) for renderer cleanup and input helpers.
+
+Complete example: [Solid keymap](https://github.com/anomalyco/opentui/blob/main/packages/solid/examples/components/keymap-demo.tsx)
+
+## Related pages
+
+- [Solid bindings](/docs/bindings/solid)
+- [Keymap hosts](/docs/keymap/hosts)
+- [Core keymap API](/docs/keymap/core)
+- [Testing](/docs/core-concepts/testing)
+- [Lifecycle and cleanup](/docs/core-concepts/lifecycle)

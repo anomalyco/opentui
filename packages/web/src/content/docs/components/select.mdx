@@ -1,12 +1,23 @@
 ---
 title: Select
-description: List selection component for choosing from options
-order: 5
+description: Choose one option from a vertical list
 ---
 
 # Select
 
-A vertical list for choosing from multiple options. Focus the select to enable keyboard input.
+`Select` shows discrete choices in a vertical list. Use [TabSelect](/docs/components/tab-select) for a horizontal set of peer views or [Slider](/docs/components/slider) for a continuous value.
+
+Focus the select to enable keyboard input.
+
+## Availability
+
+| Field           | Availability           |
+| --------------- | ---------------------- |
+| Package         | `@opentui/core`        |
+| Core renderable | `SelectRenderable`     |
+| React           | `<select>` (automatic) |
+| Solid           | `<select>` (automatic) |
+| Status          | Built in               |
 
 ## Basic usage
 
@@ -19,13 +30,12 @@ const renderer = await createCliRenderer()
 
 const menu = new SelectRenderable(renderer, {
   id: "menu",
-  width: 30,
-  height: 8,
+  width: 32,
+  height: 6,
   options: [
-    { name: "New File", description: "Create a new file" },
-    { name: "Open File", description: "Open an existing file" },
-    { name: "Save", description: "Save current file" },
-    { name: "Exit", description: "Exit the application" },
+    { name: "New file", description: "Create a document" },
+    { name: "Open file", description: "Browse existing files" },
+    { name: "Save", description: "Write current changes" },
   ],
 })
 
@@ -37,25 +47,15 @@ menu.focus()
 renderer.root.add(menu)
 ```
 
-### Construct API
+After pressing Down, the next option is selected:
 
-```typescript
-import { Select, createCliRenderer } from "@opentui/core"
-
-const renderer = await createCliRenderer()
-
-const menu = Select({
-  width: 30,
-  height: 8,
-  options: [
-    { name: "Option 1", description: "First option" },
-    { name: "Option 2", description: "Second option" },
-    { name: "Option 3", description: "Third option" },
-  ],
-})
-
-menu.focus()
-renderer.root.add(menu)
+```text terminal=select-options surface
+   New file
+   Create a document
+ ▶ Open file
+   Browse existing files
+   Save
+   Write current changes
 ```
 
 ## Keyboard navigation
@@ -76,23 +76,27 @@ When focused, the select responds to these keys:
 Fires when the user presses Enter on an option:
 
 ```typescript
-import { SelectRenderableEvents } from "@opentui/core"
+import { SelectRenderableEvents, type SelectOption } from "@opentui/core"
 
 menu.on(SelectRenderableEvents.ITEM_SELECTED, (index: number, option: SelectOption) => {
   console.log(`Selected index ${index}: ${option.name}`)
 })
 ```
 
-### Selection changed
+### Selection update
 
-Fires when the highlighted item changes:
+Fires after each movement attempt and each valid `setSelectedIndex()` call:
 
 ```typescript
-menu.on(SelectRenderableEvents.SELECTION_CHANGED, (index: number, option: SelectOption) => {
-  console.log(`Highlighted: ${option.name}`)
+menu.on(SelectRenderableEvents.SELECTION_CHANGED, (index: number, option: SelectOption | null) => {
+  console.log(`Highlighted: ${option?.name ?? "none"}`)
   // Update a preview pane, for example
 })
 ```
+
+`SELECTION_CHANGED` can pass `null` as the option when the list is empty. `ITEM_SELECTED` does not fire without an option.
+The event can fire when the index does not change. This occurs at a movement boundary or when you assign the current
+index.
 
 ## Option structure
 
@@ -122,35 +126,35 @@ const styledMenu = new SelectRenderable(renderer, {
 
 ## Properties
 
-| Property                   | Type             | Default       | Description                          |
-| -------------------------- | ---------------- | ------------- | ------------------------------------ |
-| `width`                    | `number`         | -             | Component width                      |
-| `height`                   | `number`         | -             | Component height                     |
-| `options`                  | `SelectOption[]` | `[]`          | Available options                    |
-| `selectedIndex`            | `number`         | `0`           | Initially selected index             |
-| `backgroundColor`          | `string \| RGBA` | `transparent` | Background color                     |
-| `textColor`                | `string \| RGBA` | `#FFFFFF`     | Normal text color                    |
-| `focusedBackgroundColor`   | `string \| RGBA` | `#1a1a1a`     | Background when focused              |
-| `focusedTextColor`         | `string \| RGBA` | `#FFFFFF`     | Text color when focused              |
-| `selectedBackgroundColor`  | `string \| RGBA` | `#334455`     | Selected item background             |
-| `selectedTextColor`        | `string \| RGBA` | `#FFFF00`     | Selected item text color             |
-| `descriptionColor`         | `string \| RGBA` | `#888888`     | Description text color               |
-| `selectedDescriptionColor` | `string \| RGBA` | `#CCCCCC`     | Selected item description color      |
-| `showDescription`          | `boolean`        | `true`        | Show option descriptions             |
-| `showScrollIndicator`      | `boolean`        | `false`       | Show scroll position indicator       |
-| `showSelectionIndicator`   | `boolean`        | `true`        | Show the selection marker and gutter |
-| `wrapSelection`            | `boolean`        | `false`       | Wrap selection at list boundaries    |
-| `itemSpacing`              | `number`         | `0`           | Spacing between items                |
-| `fastScrollStep`           | `number`         | `5`           | Items to skip with Shift+Up/Down     |
+| Property                   | Type                                   | Default       | Description                          |
+| -------------------------- | -------------------------------------- | ------------- | ------------------------------------ |
+| `width`                    | number, `"auto"`, or percentage string | -             | Component width                      |
+| `height`                   | number, `"auto"`, or percentage string | -             | Component height                     |
+| `options`                  | `SelectOption[]`                       | `[]`          | Available options                    |
+| `selectedIndex`            | `number`                               | `0`           | Initially selected index             |
+| `backgroundColor`          | `string \| RGBA`                       | `transparent` | Background color                     |
+| `textColor`                | `string \| RGBA`                       | `#FFFFFF`     | Normal text color                    |
+| `focusedBackgroundColor`   | `string \| RGBA`                       | `#1a1a1a`     | Background when focused              |
+| `focusedTextColor`         | `string \| RGBA`                       | `#FFFFFF`     | Text color when focused              |
+| `selectedBackgroundColor`  | `string \| RGBA`                       | `#334455`     | Selected item background             |
+| `selectedTextColor`        | `string \| RGBA`                       | `#FFFF00`     | Selected item text color             |
+| `descriptionColor`         | `string \| RGBA`                       | `#888888`     | Description text color               |
+| `selectedDescriptionColor` | `string \| RGBA`                       | `#CCCCCC`     | Selected item description color      |
+| `showDescription`          | `boolean`                              | `true`        | Show option descriptions             |
+| `showScrollIndicator`      | `boolean`                              | `false`       | Show scroll position indicator       |
+| `showSelectionIndicator`   | `boolean`                              | `true`        | Show the selection marker and gutter |
+| `wrapSelection`            | `boolean`                              | `false`       | Wrap selection at list boundaries    |
+| `itemSpacing`              | `number`                               | `0`           | Spacing between items                |
+| `fastScrollStep`           | `number`                               | `5`           | Items to skip with Shift+Up/Down     |
 
 ## Example: file menu
 
 ```typescript
-import { Box, Select, createCliRenderer } from "@opentui/core"
+import { BoxRenderable, SelectRenderable, createCliRenderer } from "@opentui/core"
 
 const renderer = await createCliRenderer()
 
-const fileMenu = Select({
+const fileMenu = new SelectRenderable(renderer, {
   width: 25,
   height: 12,
   options: [
@@ -163,13 +167,11 @@ const fileMenu = Select({
   ],
 })
 
-const menuPanel = Box(
-  {
-    borderStyle: "single",
-    borderColor: "#666",
-  },
-  fileMenu,
-)
+const menuPanel = new BoxRenderable(renderer, {
+  borderStyle: "single",
+  borderColor: "#666",
+})
+menuPanel.add(fileMenu)
 
 fileMenu.focus()
 renderer.root.add(menuPanel)
@@ -205,3 +207,7 @@ menu.showScrollIndicator = true
 menu.showSelectionIndicator = false
 menu.wrapSelection = true
 ```
+
+## Related concepts
+
+Read [Interaction, focus, and selection](/docs/core-concepts/interaction) for focus, keyboard, mouse, and event behavior. Use [ScrollBox](/docs/components/scrollbox) when you need to scroll arbitrary child content instead of options managed by Select.

@@ -1,6 +1,14 @@
 import { RGBA } from "./lib/index.js"
 import { resolveRenderLib, type OptimizedBufferHandle, type RenderLib } from "./zig.js"
-import { type Pointer, type PointerInput, toArrayBuffer, toPointer, ptr } from "./platform/ffi.js"
+import { type Pointer, type PointerInput, toArrayBuffer, toPointer } from "./platform/ffi.js"
+import type { NativeImage } from "./image.js"
+import type { ImageRenderProtocol } from "./types.js"
+
+function requireInteger(value: number, name: string, min: number, max: number): void {
+  if (!Number.isSafeInteger(value) || value < min || value > max) {
+    throw new RangeError(`${name} must be an integer from ${min} to ${max}`)
+  }
+}
 import { type BorderStyle, type BorderSides, BorderCharArrays, parseBorderStyle } from "./lib/index.js"
 import { TargetChannel, type WidthMethod, type CapturedSpan, type CapturedLine } from "./types.js"
 import type { TextBufferView } from "./text-buffer-view.js"
@@ -306,7 +314,7 @@ export class OptimizedBuffer {
     this.guard()
     if (matrix.length !== 16) throw new RangeError(`colorMatrix matrix must have length 16, got ${matrix.length}`)
     const cellMaskCount = Math.floor(cellMask.length / 3)
-    this.lib.bufferColorMatrix(this.bufferPtr, ptr(matrix), ptr(cellMask), cellMaskCount, strength, target)
+    this.lib.bufferColorMatrix(this.bufferPtr, matrix, cellMask, cellMaskCount, strength, target)
   }
 
   public colorMatrixUniform(
@@ -318,7 +326,7 @@ export class OptimizedBuffer {
     if (matrix.length !== 16)
       throw new RangeError(`colorMatrixUniform matrix must have length 16, got ${matrix.length}`)
     if (strength === 0.0) return
-    this.lib.bufferColorMatrixUniform(this.bufferPtr, ptr(matrix), strength, target)
+    this.lib.bufferColorMatrixUniform(this.bufferPtr, matrix, strength, target)
   }
 
   public drawFrameBuffer(
@@ -355,7 +363,7 @@ export class OptimizedBuffer {
   public drawSuperSampleBuffer(
     x: number,
     y: number,
-    pixelDataPtr: PointerInput,
+    pixelData: PointerInput | Uint8Array,
     pixelDataLength: number,
     format: "bgra8unorm" | "rgba8unorm",
     alignedBytesPerRow: number,
@@ -365,15 +373,60 @@ export class OptimizedBuffer {
       this.bufferPtr,
       x,
       y,
-      toPointer(pixelDataPtr),
+      typeof pixelData === "number" || typeof pixelData === "bigint" ? toPointer(pixelData) : pixelData,
       pixelDataLength,
       format,
       alignedBytesPerRow,
     )
   }
 
+  public drawImage(
+    image: NativeImage,
+    x: number,
+    y: number,
+    width: number,
+    height: number,
+    pixelWidth: number = 0,
+    pixelHeight: number = 0,
+    sourceX: number = 0,
+    sourceY: number = 0,
+    sourceWidth: number = image.width,
+    sourceHeight: number = image.height,
+    protocol: ImageRenderProtocol = "auto",
+  ): boolean {
+    this.guard()
+    requireInteger(x, "x", -0x80000000, 0x7fffffff)
+    requireInteger(y, "y", -0x80000000, 0x7fffffff)
+    requireInteger(width, "width", 1, 0x7fffffff)
+    requireInteger(height, "height", 1, 0x7fffffff)
+    requireInteger(pixelWidth, "pixelWidth", 0, 0x7fffffff)
+    requireInteger(pixelHeight, "pixelHeight", 0, 0x7fffffff)
+    requireInteger(sourceX, "sourceX", 0, 0xffffffff)
+    requireInteger(sourceY, "sourceY", 0, 0xffffffff)
+    requireInteger(sourceWidth, "sourceWidth", 1, 0xffffffff)
+    requireInteger(sourceHeight, "sourceHeight", 1, 0xffffffff)
+    if (x + width > 0x7fffffff || y + height > 0x7fffffff) {
+      throw new RangeError("image destination coordinates and dimensions exceed i32 bounds")
+    }
+    return this.lib.bufferDrawImage(
+      this.bufferPtr,
+      image.ptr,
+      x,
+      y,
+      width,
+      height,
+      pixelWidth,
+      pixelHeight,
+      sourceX,
+      sourceY,
+      sourceWidth,
+      sourceHeight,
+      protocol,
+    )
+  }
+
   public drawPackedBuffer(
-    dataPtr: PointerInput,
+    data: PointerInput | Uint8Array,
     dataLen: number,
     posX: number,
     posY: number,
@@ -383,7 +436,7 @@ export class OptimizedBuffer {
     this.guard()
     this.lib.bufferDrawPackedBuffer(
       this.bufferPtr,
-      toPointer(dataPtr),
+      typeof data === "number" || typeof data === "bigint" ? toPointer(data) : data,
       dataLen,
       posX,
       posY,
@@ -402,7 +455,7 @@ export class OptimizedBuffer {
     bg: RGBA | null = null,
   ): void {
     this.guard()
-    this.lib.bufferDrawGrayscaleBuffer(this.bufferPtr, posX, posY, ptr(intensities), srcWidth, srcHeight, fg, bg)
+    this.lib.bufferDrawGrayscaleBuffer(this.bufferPtr, posX, posY, intensities, srcWidth, srcHeight, fg, bg)
   }
 
   public drawGrayscaleBufferSupersampled(
@@ -415,16 +468,7 @@ export class OptimizedBuffer {
     bg: RGBA | null = null,
   ): void {
     this.guard()
-    this.lib.bufferDrawGrayscaleBufferSupersampled(
-      this.bufferPtr,
-      posX,
-      posY,
-      ptr(intensities),
-      srcWidth,
-      srcHeight,
-      fg,
-      bg,
-    )
+    this.lib.bufferDrawGrayscaleBufferSupersampled(this.bufferPtr, posX, posY, intensities, srcWidth, srcHeight, fg, bg)
   }
 
   public resize(width: number, height: number): void {

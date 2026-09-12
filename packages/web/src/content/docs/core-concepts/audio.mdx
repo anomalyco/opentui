@@ -1,305 +1,310 @@
 ---
-title: Native audio
-description: Load, stream, play, mix, and inspect audio with the native miniaudio backend
-order: 11
+title: Audio
+description: Create an audio engine, play loaded sounds, select output devices, mix PCM, and release native resources
 skill:
   entry: true
-  intents: [audio, native-audio, sound, playback, streaming, radio, mp3, flac, pcm, fft]
+  intents: [audio, native-audio, sound, playback, mixer, devices, tap]
 ---
 
-# Native audio
+# Audio
 
-OpenTUI exposes a native miniaudio-backed `Audio` engine from `@opentui/core`. It can decode audio bytes or files, play sounds through named groups, choose playback devices, mix into PCM buffers, and expose recent mixed frames for visualization.
+OpenTUI plays, mixes, and captures audio through a native miniaudio engine. The `Audio` class in `@opentui/core` owns the engine and its resources.
 
-## Basic usage
+This page covers the engine and loaded-sound playback. See [Streaming audio](/docs/application-apis/audio-streaming) for PCM or encoded byte sources and radio URLs. See [Audio capture and recording](/docs/application-apis/audio-capture) for input devices, Float32 PCM, and WAV files.
+
+## Play a loaded sound
+
+Create one engine and keep it alive while its sounds can play.
 
 ```typescript
-import { Audio } from "@opentui/core"
+import { Audio, type AudioSound } from "@opentui/core"
 
 const audio = Audio.create({ autoStart: false })
+const click = "click.wav"
 
 audio.on("error", (error, context) => {
   console.error(`${context.action}: ${error.message}`)
 })
 
-const sound = await audio.loadSoundFile("click.wav")
-if (sound != null && audio.start()) {
-  audio.play(sound, { volume: 0.8, pan: 0, loop: false })
-}
-
-audio.dispose()
-```
-
-Use `setupAudio(options?)` when you prefer a function wrapper around `Audio.create(options?)`.
-
-`Audio.create()` and `setupAudio()` initialize synchronously and throw `AudioInitializationError` if native library resolution, engine creation, or `autoStart` fails. Construction never emits events; successful `autoStart` also does not emit `started` before listeners can be attached.
-
-## Engine options
-
-| Option             | Default  | Description                                    |
-| ------------------ | -------- | ---------------------------------------------- |
-| `autoStart`        | `false`  | Start playback during synchronous construction |
-| `sampleRate`       | `48000`  | Engine sample rate                             |
-| `playbackChannels` | `2`      | Requested playback channel count               |
-| `startOptions`     | defaults | Options passed to `start()` when auto-starting |
-
-Create a new `Audio` instance to change `sampleRate` or `playbackChannels`.
-
-## Sounds and voices
-
-| Method                          | Description                                                   |
-| ------------------------------- | ------------------------------------------------------------- |
-| `loadSound(data)`               | Decode `Uint8Array` or `ArrayBuffer`; returns `AudioSound`    |
-| `loadSoundFile(path)`           | Read and decode a file; returns `Promise<AudioSound \| null>` |
-| `unloadSound(sound)`            | Free a loaded sound and stop voices using it                  |
-| `play(sound, options?)`         | Start a voice; returns `AudioVoice \| null`                   |
-| `stopVoice(voice)`              | Stop one active voice                                         |
-| `group(name)`                   | Create or reuse a named group; group `0` is the default group |
-| `setVoiceGroup(voice, group)`   | Move a voice to another group                                 |
-| `setGroupVolume(group, volume)` | Set group volume                                              |
-| `setMasterVolume(volume)`       | Set master volume                                             |
-
-`play()` accepts `{ volume, pan, loop, groupId }`. Native playback clamps `volume` to `0..4` and `pan` to `-1..1`. The engine supports 32 active voices and streams in total.
-
-## Encoded streams
-
-Streaming supports `format: "mp3"` (the default) and `format: "flac"`. The selected format is exposed as `AudioStream.format`; unsupported formats reject before opening a source. Choose the entry point by source ownership:
-
-| Method                               | Use                                                                  |
-| ------------------------------------ | -------------------------------------------------------------------- |
-| `playStreamUrl(url, options?)`       | Fetch, ICY negotiation, HTTP retry, reconnect, and response demuxing |
-| `playStream(bytes, options?)`        | One-shot encoded `ReadableStream` or `AsyncIterable`                 |
-| `playStreamSource(connector, opts?)` | Reconnectable custom transport with per-connection demuxing          |
-
-All three resolve after the native decoder is ready, normally while buffering. Streaming begins before the source ends.
-
-### URL streams
-
-```typescript
-import { Audio, AudioStreamError, type AudioStream } from "@opentui/core"
-
-const audio = Audio.create({ autoStart: false })
-let stream: AudioStream | null = null
-const safeMetadata = (value: string | undefined) => value?.replace(/[\u0000-\u001f\u007f-\u009f]/g, " ")
-
-audio.on("error", (error) => {
-  console.error(error.message)
-})
+let sound: AudioSound | null = null
 
 try {
-  if (!audio.start()) throw new Error("No playback device available")
+  sound = await audio.loadSoundFile(click)
+  if (sound == null) throw new Error(`Could not load ${click}`)
+  if (!audio.start()) throw new Error("No playback device is available")
 
-  stream = await audio.playStreamUrl("https://anomaly.fm/radio", {
-    format: "mp3",
-    reconnect: { maxRetries: 5, retryOnEnd: true },
-  })
+  const voice = audio.play(sound, { volume: 0.8 })
+  if (voice == null) throw new Error("Could not start the sound")
 
-  const initialMetadata = stream.getMetadata()
-  console.log(safeMetadata(initialMetadata?.fields.StreamTitle))
-
-  stream.on("metadata", (metadata) => {
-    console.log(safeMetadata(metadata?.headers["icy-name"]), safeMetadata(metadata?.fields.StreamTitle))
-  })
-
-  stream.on("error", (error) => {
-    console.error(error.message)
-  })
-
-  // Run the application until playback should stop.
-} catch (error) {
-  if (error instanceof AudioStreamError) {
-    console.error(`${error.context.action}: ${error.message}`)
-  } else {
-    throw error
-  }
+  await new Promise((resolve) => setTimeout(resolve, 1000))
 } finally {
-  stream?.dispose()
-  await stream?.closed
+  if (sound != null) audio.unloadSound(sound)
+  audio.stop()
   audio.dispose()
 }
 ```
 
-The default `contentTypePolicy: "validate"` accepts `audio/mpeg`, `audio/mp3`, and `application/mp3` for MP3; `audio/flac` and `audio/x-flac` for FLAC; and `application/octet-stream` or a missing type for either format. Set it to `"ignore"` to let the decoder validate mislabeled responses, or pass a callback receiving `{ format, contentType, status, url }`. Every response, including reconnect replacements, is evaluated before its bytes reach the decoder. `request` accepts `RequestInit` except `body` and `signal`; use the stream-level `signal` option for cancellation.
+`Audio` inherits Node's `EventEmitter`. Attach the `error` listener before the first operation that can emit an error.
 
-URL streams request ICY metadata with `Icy-MetaData: 1` unless `request.headers` already contains that header. Set it to `0` explicitly to disable negotiation. Any `icy-*` response headers are exposed as an ICY metadata snapshot; a positive `icy-metaint` additionally enables in-band framing. URLs, content types, station headers, and server names are not used to infer framing. Invalid or ambiguous intervals reject the response before a native voice is allocated.
+Without a listener, an emitted `error` throws. A method that normally returns `false` or `null` can throw before it returns that value.
 
-ICY framing is removed in TypeScript before bytes reach the native decoder. `getMetadata()` returns the latest immutable `{ format, headers, fields }` snapshot or `null`. ICY response header names are lowercase in `headers`; in-band field names such as `StreamTitle` and `StreamUrl` retain their original case. Unknown fields are preserved. The `metadata` event emits the latest changed snapshot, and emits `null` when a replacement response no longer advertises ICY metadata. Rapid changes can coalesce into one asynchronous event; `getMetadata()` always returns the current snapshot. Zero-length and repeated equivalent metadata blocks do not emit events.
+Construction is different because no `Audio` object exists for a listener yet. Construction failures throw `AudioInitializationError` directly.
 
-ICY does not define a text encoding. OpenTUI follows Icecast's documented non-Ogg default of ISO-8859-1, represented by the Encoding Standard's `windows-1252` decoder. Set `metadataEncoding`, for example `metadataEncoding: "utf-8"`, when the station uses another encoding. Metadata is untrusted text and should be sanitized before writing it directly to a terminal or interpreting metadata URLs.
+## Create the engine
 
-Metadata events follow response ingestion, not audible playback. Native buffering means a title can arrive before its audio is heard. Metadata received during setup is retained and emitted asynchronously after `playStreamUrl()` resolves.
+The public construction APIs are `Audio.create(options?)` and its wrapper, `setupAudio(options?)`. The `Audio` constructor is private.
 
-URL reconnect is opt-in. It retries network failures, interrupted or missing response bodies, HTTP 408/425/429, and HTTP 5xx responses. Reconnects restart the decoder in the same native stream session, preserving controls, counters, the voice slot, and any decoded PCM still available after an interruption. `retryOnEnd` restarts the same session after a clean response ends and its buffered PCM drains. Initial retries happen while `playStreamUrl()` is pending and do not emit `reconnecting` because the stream has not been returned yet; `reconnect.retry` still observes and can stop them. `maxRetries` limits consecutive retries for one outage and resets after a replacement decoder becomes ready; omitting it means unlimited retries. An `AbortSignal` or `dispose()` stops them.
+| `AudioSetupOptions` field | Default         | Effect                                                      |
+| ------------------------- | --------------- | ----------------------------------------------------------- |
+| `autoStart`               | `false`         | Opens and starts the playback device during construction    |
+| `sampleRate`              | `48000`         | Sets the engine and capture sample rate                     |
+| `playbackChannels`        | `2`             | Requests the playback device channel count                  |
+| `startOptions`            | Native defaults | Supplies defaults for `autoStart` and later `start()` calls |
 
-Each replacement response creates a new demuxer and can advertise a different ICY interval. Existing metadata remains available while reconnecting, then the replacement clears prior fields. A response without ICY headers clears metadata.
+Create another engine to change `sampleRate` or `playbackChannels`. Both values become fixed during construction.
 
-Reconnect options default to `initialDelayMs: 1000`, `maxDelayMs: 15000`, `backoffFactor: 2`, `retryOnEnd: false`, and unlimited `maxRetries`. Valid `Retry-After` values override exponential backoff up to `maxDelayMs`. `reconnect.retry` can override default URL response classification; `{}` keeps the transport delay, while `{ delayMs }` replaces it.
+`Audio.create()` and `setupAudio()` initialize synchronously. They throw `AudioInitializationError` with one of these `action` values:
 
-### Byte streams
+| Action              | Failed step                                                  |
+| ------------------- | ------------------------------------------------------------ |
+| `resolveRenderLib`  | Resolve and load the native OpenTUI library                  |
+| `createAudioEngine` | Create the native audio engine                               |
+| `start`             | Apply `startOptions` and complete automatic playback startup |
 
-`playStream()` accepts encoded MP3 or FLAC bytes and is one-shot. Input chunks must be `Uint8Array`; request and reconnect options belong to the other entry points. Backpressure and encoded/decoded buffering remain bounded.
+A failed automatic start destroys the partial native engine. Successful automatic startup emits no `started` event because listeners cannot exist during construction.
 
-Pass a demuxer factory when framing or metadata is interleaved with the encoded audio. The built-in ICY demuxer accepts semantic options directly and does not require HTTP headers:
+## Runtime and platform support
 
-```typescript
-import { Audio, createIcyStreamDemuxer } from "@opentui/core"
+Audio uses the same native runtime as the renderer. Read [Runtime and platform support](/docs/getting-started/runtime-support) for setup and distribution details.
 
-const stream = await audio.playStream(socketBytes, {
-  format: "mp3",
-  demuxer: () =>
-    createIcyStreamDemuxer({
-      metadataInterval: negotiatedInterval,
-      metadataEncoding: "utf-8",
-    }),
-})
+The local requirements are Bun 1.3.0 or later, or Node.js 26.4.0 or later with experimental FFI. Native packages support macOS, Linux, and Windows on x64 and arm64. Use Bun 1.4.0 or later on native Windows arm64.
 
-stream.on("metadata", (metadata) => {
-  const title = metadata?.fields.StreamTitle?.replace(/[\u0000-\u001f\u007f-\u009f]/g, " ")
-  console.log(title)
-})
-```
+Linux selects glibc by default. Set the documented libc selector when the target needs musl. Audio has no browser target.
 
-`createIcyStreamDemuxer()` defaults to the same ISO-8859-1/`windows-1252` decoding as URL streams. Optional `headers` are copied, lowercased, and exposed in metadata; non-HTTP transports can omit them.
+## Load sounds
 
-### Custom connectors
+`loadSound()` accepts a `Uint8Array` or `ArrayBuffer`. `loadSoundFile()` reads a file and then passes its bytes to the same decoder.
 
-A connector creates one transport connection at a time. It receives `{ signal, attempt }` and returns `{ body, info, close? }`. The initial connection uses attempt `0`; every reconnect gets a new connection and demuxer. Consecutive attempt numbering resets after a replacement decoder becomes ready, while `getStats().reconnectAttempts` remains cumulative.
+Both methods decode the complete WAV, FLAC, or MP3 input into native interleaved Float32 samples. The loaded-sound decoder does not include Vorbis support.
 
-```typescript
-import { Audio, createIcyStreamDemuxer, type AudioStreamConnector } from "@opentui/core"
+Use [Streaming audio](/docs/application-apis/audio-streaming) for long MP3 or FLAC media. Streaming does not retain the complete decoded sound.
 
-interface RadioInfo {
-  metadataInterval: number
-}
+For generated audio or an external decoder, use `await audio.playStream(source, { format: "pcm", sampleFormat: "f32le", sampleRate: 44100, channels: 1 })`. The source supplies little-endian Float32 bytes through a `ReadableStream<Uint8Array>` or `AsyncIterable<Uint8Array>`. It returns the same `AudioStream` as encoded playback; source EOF flushes and drains audio before `stream.closed` resolves.
 
-const connector: AudioStreamConnector<RadioInfo> = {
-  async connect({ signal }) {
-    const connection = await openRadioConnection({ signal })
-    return {
-      body: connection.readable,
-      info: { metadataInterval: connection.metadataInterval },
-      close: () => connection.close(),
-    }
-  },
-}
+Each encoded input must fit the native unsigned 32-bit byte length. The maximum input length is `4,294,967,295` bytes.
 
-const stream = await audio.playStreamSource(connector, {
-  format: "mp3",
-  reconnect: {
-    maxRetries: 5,
-    retry() {
-      return {}
-    },
-  },
-  demuxer: (info) => createIcyStreamDemuxer({ metadataInterval: info.metadataInterval }),
-})
-```
+Loaded sounds have no separate decoded-memory limit. A compressed input can expand to a much larger native allocation.
 
-`reconnect.retry(error, context)` is optional for URL and custom connectors. Custom connector and body-read failures are retryable by default. Return `false` to stop, `{}` to keep the transport hint or normal backoff, or `{ delayMs }` for a bounded finite non-negative integer delay. `context` contains the next `attempt`, `maxRetries`, and `phase`. `close()` is invoked once after EOF, failure, or cancellation; cleanup gets a bounded grace period so an uncooperative transport cannot prevent shutdown.
+Embedded asset bytes can go directly to `loadSound()`. See [Standalone executables](/docs/reference/standalone-executables) for Bun and Node.js asset procedures.
 
-Custom demuxers expose `initialMetadata`, `push(chunk)`, and `flush()`, with optional `abort(reason)`. `push()` and `flush()` return ordered `{ type: "audio", data }` or `{ type: "metadata", metadata }` outputs. Flush output is consumed before decoder EOF; interruption calls `abort()` instead. A `push()` exception is a terminal demuxer error. A `flush()` exception reports truncated input and follows the reconnect read policy. `AudioStream<M>` exposes the same metadata type through `getMetadata()` and `metadata` events. Custom demuxers should return immutable snapshots and suppress equivalent updates when desired.
+## Method reference
 
-### Options and lifecycle
+### Output lifecycle
 
-| Shared option       | Default | Description                                               |
-| ------------------- | ------- | --------------------------------------------------------- |
-| `format`            | `"mp3"` | Encoded stream format: MP3 or FLAC                        |
-| `volume`            | `1`     | Stream volume; native playback clamps to `0..4`           |
-| `pan`               | `0`     | Stereo pan; native playback clamps to `-1..1`             |
-| `groupId`           | `0`     | Mixer group                                               |
-| `buffer.capacityMs` | `2000`  | Decoded PCM buffer capacity                               |
-| `buffer.startupMs`  | `1000`  | Initial playback threshold                                |
-| `buffer.resumeMs`   | `1000`  | Resume threshold after starvation                         |
-| `maxProbeBytes`     | `1 MiB` | Maximum encoded bytes inspected during decoder setup      |
-| `signal`            | none    | Cancels setup, retries, source reads, and active playback |
+| Method             | Result and behavior                                                 |
+| ------------------ | ------------------------------------------------------------------- |
+| `start(options?)`  | Starts the mixer and a playback device. Returns `boolean`           |
+| `startMixer()`     | Starts headless mixing without a playback device. Returns `boolean` |
+| `stop()`           | Stops the mixer and closes the playback device. Returns `boolean`   |
+| `isStarted()`      | Reports the cached playback-device state                            |
+| `isMixerStarted()` | Reports whether playback or headless mixing started the mixer       |
+| `dispose()`        | Disposes child operations and the native engine                     |
 
-Buffer values must be positive integers; startup and resume thresholds cannot exceed capacity.
+### Sounds
 
-| `AudioStream` member                    | Description                                                                                                                             |
-| --------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------- |
-| `state`                                 | Latest cached lifecycle state                                                                                                           |
-| `getStats()`                            | Refreshes state and returns sample rate, channels, buffer capacity/use, encoded bytes, decoded/played frames, underruns, and reconnects |
-| `getMetadata()`                         | Latest metadata snapshot or `null`                                                                                                      |
-| `setVolume()`, `setPan()`, `setGroup()` | Controls that remain effective across reconnects                                                                                        |
-| `dispose()`                             | Cancels transport, demuxer, retries, and native playback                                                                                |
-| `closed`                                | Resolves after bounded cleanup and delivery of the terminal `ended`, `error`, or `disposed` event                                       |
+| Method                    | Result and behavior                                               |
+| ------------------------- | ----------------------------------------------------------------- |
+| `loadSound(data)`         | Decodes bytes and returns `AudioSound \| null`                    |
+| `loadSoundFile(filePath)` | Reads and decodes a file. Returns `Promise<AudioSound \| null>`   |
+| `unloadSound(sound)`      | Stops its active voices, frees its samples, and returns `boolean` |
 
-Events are `metadata`, `reconnecting`, `ended`, `error`, and `disposed`. Transport, response, demuxer, native creation, and decoder setup failures reject with `AudioStreamError`; validation performed in JavaScript uses `TypeError`/`RangeError`, cancellation uses `AbortError`, and starting a stream after its owning `Audio` was disposed rejects with `Error`. Later terminal failures emit `error` with context. Disposing the owning `Audio` also disposes pending and active streams.
+### Voices and groups
 
-`bytesReceived` counts only encoded audio bytes emitted by the demuxer; framing and metadata are excluded. Final stats and metadata remain readable after natural completion. Native readiness, backpressure, and EOF draining use short-lived polling; there is no persistent idle statistics loop.
+| Method                          | Result and behavior                                              |
+| ------------------------------- | ---------------------------------------------------------------- |
+| `play(sound, options?)`         | Starts one voice and returns `AudioVoice \| null`                |
+| `stopVoice(voice)`              | Stops one active loaded-sound voice and returns `boolean`        |
+| `group(name)`                   | Creates or reuses a named group and returns `AudioGroup \| null` |
+| `setVoiceGroup(voice, group)`   | Moves an active loaded-sound voice and returns `boolean`         |
+| `setGroupVolume(group, volume)` | Sets one group volume and returns `boolean`                      |
+| `setMasterVolume(volume)`       | Sets the master volume and returns `boolean`                     |
 
-In browser-like Fetch environments, cross-origin ICY negotiation requires an appropriate `Access-Control-Allow-Origin`, permission for the `Icy-MetaData` request header, and exposure of `icy-metaint` through CORS. Other `icy-*` response headers must also be exposed for them to appear in `getMetadata().headers`. Legacy servers that respond with the non-HTTP `ICY 200 OK` status line can be rejected by `fetch()` before OpenTUI receives a response.
+### Playback devices
 
-Streams use the same mixer and master tap as loaded sounds. Once `enableTap()` is active, `readTapFrames()` includes streamed audio automatically. The tap is the combined master mix, not an isolated copy of one stream.
+| Method                           | Result and behavior                                              |
+| -------------------------------- | ---------------------------------------------------------------- |
+| `listPlaybackDevices()`          | Refreshes devices and returns `AudioPlaybackDevice[] \| null`    |
+| `selectPlaybackDevice(index)`    | Refreshes devices, selects one index, and returns `boolean`      |
+| `clearPlaybackDeviceSelection()` | Clears the explicit selection. The backend then uses its default |
 
-## Starting audio
+### Mixing, tap, and statistics
 
-`start()` starts native playback and returns `false` when no output device is available. Use `isStarted()` to check native playback state.
+| Method                                    | Result and behavior                                      |
+| ----------------------------------------- | -------------------------------------------------------- |
+| `mixFrames(frameCount, channels = 2)`     | Mixes PCM and returns `Float32Array \| null`             |
+| `enableTap(capacityFrames = 8192)`        | Creates or replaces the master tap and returns `boolean` |
+| `disableTap()`                            | Frees the master tap and returns `boolean`               |
+| `readTapFrames(frameCount, channels = 2)` | Returns `{ frames, framesRead } \| null`                 |
+| `getStats()`                              | Returns engine statistics or `null`                      |
 
-For headless mixing, tests, benchmarks, or manual `mixFrames()` output, use `startMixer()`. It starts the mixer without opening a playback device. Use `isMixerStarted()` to check either mode.
+The return type of `getStats()` is available through method inference. Do not import the non-root `AudioStats` type.
 
-## Bun standalone executables
+## Start playback or headless mixing
 
-Bun embeds files in `bun build --compile` executables when they are imported with `with { type: "file" }`. Read the embedded file as bytes and pass it to `loadSound()` so audio decodes from memory instead of a file path.
+`start()` opens the selected playback device and starts the mixer. It returns `false` when native startup fails.
 
-```typescript
-import { file } from "bun"
-import { Audio } from "@opentui/core"
-import clickPath from "./click.wav" with { type: "file" }
+The device stays open until `stop()` or `dispose()`. Idle voices do not close it.
 
-const audio = Audio.create({ autoStart: false })
-const clickBytes = await file(clickPath).bytes()
-const click = audio.loadSound(clickBytes)
+`startMixer()` starts only the mixer. Use it for tests, benchmarks, or application-owned PCM output.
 
-if (click != null && audio.start()) {
-  audio.play(click)
-}
-```
+Headless mode makes progress only when the application calls `mixFrames()`. Call it at the output cadence that consumes the requested number of frames.
 
-Compile the app normally with `bun build --compile ./app.ts --outfile app`.
+Loaded voices and streams also need this consumption to advance. A finite stream cannot finish while its PCM remains unconsumed.
 
-## Node.js standalone executables
+`stop()` preserves loaded sounds, groups, and their handles. Call `start()` or `startMixer()` before later playback needs to advance.
 
-Coming soon.
+## Select a playback device
 
-## Devices
-
-Select devices before starting the engine:
+Select the device before either output mode starts.
 
 ```typescript
-const audio = Audio.create({ autoStart: false })
 const devices = audio.listPlaybackDevices() ?? []
-const device = devices.find((item) => item.isDefault) ?? devices[0]
+const selected = devices.find((device) => device.isDefault) ?? devices[0]
 
-if (device) {
-  audio.selectPlaybackDevice(device.index)
-}
-
-if (!audio.start()) {
-  console.error("No playback device available")
+if (selected != null && !audio.selectPlaybackDevice(selected.index)) {
+  throw new Error(`Could not select ${selected.name}`)
 }
 ```
 
-`listPlaybackDevices()` returns `{ index, name, isDefault }[] | null`. Use `clearPlaybackDeviceSelection()` to return to the default device selection.
+Each device has `index`, `name`, and `isDefault` fields. An index belongs to the latest enumeration and can change after a device change.
 
-## Mixing and analysis
+Selection fails while normal playback or the headless mixer runs. Call `stop()` before selecting another device.
 
-| Method                                  | Description                                                                                |
-| --------------------------------------- | ------------------------------------------------------------------------------------------ |
-| `mixFrames(frameCount, channels=2)`     | Mix into a `Float32Array`; mono downmixes, channels above stereo keep extras zero          |
-| `getStats()`                            | Returns `soundsLoaded`, `voicesActive`, `framesMixed`, `lockMisses`, `lastPeak`, `lastRms` |
-| `enableTap(capacityFrames=8192)`        | Enable a fixed-size native ring buffer of recent mixed frames                              |
-| `readTapFrames(frameCount, channels=2)` | Copy the latest tapped frames; returns `{ frames, framesRead }`                            |
-| `disableTap()`                          | Free the tap buffer                                                                        |
+`clearPlaybackDeviceSelection()` restores backend default selection. Clearing a selection does not switch an already open device.
 
-The tap is disabled by default. When enabled, it stores the latest frames and overwrites old data; reads do not drain it. OpenTUI does not compute FFT natively. For spectrum visualization, read tap frames and run FFT in TypeScript.
+## Control voices and groups
 
-## Start options
+`play()` accepts these options:
 
-`start(options?)` accepts low-level device options: `periodSizeInFrames`, `periodSizeInMilliseconds`, `periods`, `performanceProfile`, `shareMode`, `noPreSilencedOutputBuffer`, `noClip`, `noDisableDenormals`, `noFixedSizedCallback`, `wasapiNoAutoConvertSrc`, `wasapiNoDefaultQualitySrc`, `alsaNoMMap`, `alsaNoAutoFormat`, `alsaNoAutoChannels`, and `alsaNoAutoResample`.
+| `AudioPlayOptions` field | Default | Native behavior                            |
+| ------------------------ | ------- | ------------------------------------------ |
+| `volume`                 | `1`     | Clamped to `0..4`                          |
+| `pan`                    | `0`     | Clamped to `-1..1`                         |
+| `loop`                   | `false` | Restarts the loaded sound at its end       |
+| `groupId`                | `0`     | Routes the voice through the default group |
 
-`performanceProfile` uses `0` for low latency and `1` for conservative. `shareMode` uses `0` for shared and `1` for exclusive.
+Group and master volumes also clamp to `0..4`. `group(name)` returns the existing group when the same name appears again.
 
-## Lifecycle and errors
+The engine supports 32 active loaded voices, encoded streams, and PCM streams in total. A stream reserves one of the same slots.
 
-Use `start()`, `startMixer()`, `stop()`, `isStarted()`, `isMixerStarted()`, and `dispose()` for lifecycle. After construction, `Audio` emits `started`, `mixerStarted`, `stopped`, `disposed`, and `error`. Most non-stream operations report failure by returning `false` or `null` and emitting `Audio.error` with `{ action, status }`; stream setup rejection and `AudioStream` errors are described above.
+`AudioSound`, `AudioVoice`, and `AudioGroup` are numeric handles local to one engine. Do not pass them to another `Audio` instance.
+
+`AudioGroup` value `0` names the default group. Groups have no individual disposer. Engine disposal removes them.
+
+Unloading a sound stops all loaded voices that use it. The sound handle becomes invalid, and a later load does not reuse it.
+
+OpenTUI does not emit a loaded-voice completion event or return a completion promise. `play()` only reports whether the voice started.
+
+## Mix PCM and inspect the master tap
+
+`mixFrames()` returns interleaved Float32 PCM. Mono output averages the stereo master.
+
+Output with more than two channels keeps the stereo signal in the first two channels. Extra channels contain zero.
+
+The tap keeps the latest stereo master frames in a fixed native ring. New frames overwrite the oldest frames when the ring is full.
+
+Tap reads do not consume data. Repeated reads can return the same latest frames.
+
+Only `framesRead * channels` values in the returned `frames` array contain tapped data. Remaining allocated values contain zero.
+
+The master tap combines loaded sounds, encoded streams, and PCM streams. It cannot isolate one voice, group, or stream.
+
+OpenTUI does not calculate a fast Fourier transform (FFT). Run an FFT on tap samples in application code.
+
+`getStats()` returns these fields:
+
+| Field          | Meaning                                                                 |
+| -------------- | ----------------------------------------------------------------------- |
+| `soundsLoaded` | Loaded sounds that are not unloaded                                     |
+| `voicesActive` | Active loaded voices plus encoded and PCM streams                       |
+| `framesMixed`  | Frames mixed through device or manual output                            |
+| `lockMisses`   | Device callbacks that returned silence because the engine lock was busy |
+| `lastPeak`     | Peak absolute sample in the last mixed buffer                           |
+| `lastRms`      | Root mean square value for the last mixed buffer                        |
+
+## Low-level start options
+
+`start(options?)` and `AudioSetupOptions.startOptions` accept every `AudioStartOptions` field:
+
+- `periodSizeInFrames`
+- `periodSizeInMilliseconds`
+- `periods`
+- `performanceProfile`
+- `shareMode`
+- `noPreSilencedOutputBuffer`
+- `noClip`
+- `noDisableDenormals`
+- `noFixedSizedCallback`
+- `wasapiNoAutoConvertSrc`
+- `wasapiNoDefaultQualitySrc`
+- `alsaNoMMap`
+- `alsaNoAutoFormat`
+- `alsaNoAutoChannels`
+- `alsaNoAutoResample`
+
+Native defaults use zero for numeric fields and `false` for flags. `performanceProfile` value `1` selects conservative mode.
+
+Every other packed `performanceProfile` value selects low latency in the current native mapping.
+
+`shareMode` value `1` selects exclusive mode. Every other packed value selects shared mode in the current native mapping.
+
+An explicit `start(options)` replaces the construction-time `startOptions` for that call. It does not merge the two objects.
+
+## Events and errors
+
+`Audio` emits these events:
+
+| Event            | Meaning                                                            |
+| ---------------- | ------------------------------------------------------------------ |
+| `started`        | An explicit `start()` started playback                             |
+| `mixerStarted`   | An explicit `startMixer()` changed the mixer to started            |
+| `captureStarted` | Capture input started                                              |
+| `captureStopped` | Capture input stopped, or OpenTUI observed it as stopped           |
+| `stopped`        | `stop()` stopped the mixer                                         |
+| `disposed`       | Native engine destruction completed                                |
+| `error`          | An operation failed. The payload is `(error, { action, status? })` |
+
+An idempotent `start()` or `startMixer()` call returns `true` without another event. Automatic start emits neither
+event. `start()` starts playback and the mixer, but it emits only `started`.
+
+The exact `AudioAction` values are:
+
+| Area              | Actions                                                                            |
+| ----------------- | ---------------------------------------------------------------------------------- |
+| Engine            | `createAudioEngine`, `start`, `startMixer`, `stop`, `getStats`                     |
+| Sounds            | `loadSound`, `loadSoundFile`, `unloadSound`                                        |
+| Voices and groups | `group`, `play`, `stopVoice`, `setVoiceGroup`, `setGroupVolume`, `setMasterVolume` |
+| Mixing and tap    | `mixFrames`, `enableTap`, `readTapFrames`                                          |
+| Playback devices  | `listPlaybackDevices`, `selectPlaybackDevice`, `clearPlaybackDeviceSelection`      |
+| Capture devices   | `listCaptureDevices`, `selectCaptureDevice`, `clearCaptureDeviceSelection`         |
+| Capture           | `startCapture`, `readCaptureFrames`, `getCaptureStats`, `stopCapture`              |
+
+`disableTap()` currently reports failures with the `enableTap` action. `AudioAction` has no `disableTap` value.
+
+## Ownership and cleanup
+
+An `Audio` engine owns loaded sounds, groups, voices, streams, capture streams, recorders, devices, and tap memory.
+
+Dispose child streams or recorders when their work ends. The parent also tries to dispose every active child during `audio.dispose()`.
+
+`audio.dispose()` can throw when a child cannot close or native destruction fails. It preserves the engine when cleanup needs a later retry.
+
+Catch the failure, keep the `Audio` object, and call `dispose()` again after the failed resource can close. Do not discard the owner before that retry.
+
+Connect final disposal to the application's [Lifecycle and cleanup](/docs/core-concepts/lifecycle) path.
+
+## Next
+
+- [Streaming audio](/docs/application-apis/audio-streaming)
+- [Audio capture and recording](/docs/application-apis/audio-capture)
+- [Standalone executables](/docs/reference/standalone-executables)

@@ -13,6 +13,7 @@ import {
   resolveRenderLib,
   setRenderLibPath,
   type OptimizedBufferHandle,
+  type EmbeddedTerminalHandle,
   type RendererHandle,
   type TextBufferHandle,
 } from "./zig.js"
@@ -62,6 +63,20 @@ describe("native handles", () => {
 
     const renderer = lib.createRenderer(4, 3, { bufferedOutput: "memory" }) as RendererHandle
     expect(lib.getBufferWidth(renderer as unknown as OptimizedBufferHandle)).toBe(0)
+    lib.destroyRenderer(renderer)
+  })
+
+  test("embedded terminal stale and wrong-kind handles are rejected", () => {
+    const lib = resolveRenderLib()
+    const terminal = lib.createEmbeddedTerminal({ cols: 10, rows: 2 })
+    lib.destroyEmbeddedTerminal(terminal)
+    lib.destroyEmbeddedTerminal(terminal)
+    expect(() => lib.embeddedTerminalWrite(terminal, "stale")).toThrow("invalid value or handle")
+
+    const renderer = lib.createRenderer(4, 3, { bufferedOutput: "memory" }) as RendererHandle
+    expect(() => lib.embeddedTerminalWrite(renderer as unknown as EmbeddedTerminalHandle, "wrong kind")).toThrow(
+      "invalid value or handle",
+    )
     lib.destroyRenderer(renderer)
   })
 

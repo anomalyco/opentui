@@ -1,0 +1,102 @@
+name: Upload Linux core dumps
+description: Collect Linux core dumps after a failed job and upload them as an artifact.
+
+inputs:
+  name:
+    description: Artifact name
+    required: false
+    default: crash-dumps-${{ github.job }}-${{ runner.os }}-${{ github.run_attempt }}
+
+runs:
+  using: composite
+  steps:
+    - name: Collect Linux core dumps
+      if: runner.os == 'Linux'
+      shell: bash
+      run: |
+        set -eu
+        dump_dir="${GITHUB_WORKSPACE}/.crash-dumps"
+        mkdir -p "$dump_dir"
+        bun_path="$(command -v bun || true)"
+
+        {
+          echo "bun=$(${bun_path:-true} --revision 2>/dev/null || true)"
+          echo "bun_path=${bun_path}"
+          echo "core_pattern=$(cat /proc/sys/kernel/core_pattern)"
+          echo "ulimit_c=$(ulimit -c)"
+          echo "uname=$(uname -a)"
+        } | tee "${dump_dir}/crash-env.txt"
+
+        if [ -n "$bun_path" ]; then
+          cp -L "$bun_path" "${dump_dir}/bun" || true
+        fi
+
+        native_lib="$(find "${GITHUB_WORKSPACE}/packages/core/node_modules/@opentui" \
+          -name 'libopentui.so' -print -quit 2>/dev/null || true)"
+        if [ -n "$native_lib" ]; then
+          cp -L "$native_lib" "${dump_dir}/libopentui.so" || true
+        fi
+
+        copy_if_present() {
+          local source="$1"
+          if [ -e "$source" ]; then
+            echo "copying ${source}"
+            sudo -n cp -a "$source" "$dump_dir/" 2>/dev/null || cp -a "$source" "$dump_dir/" || true
+          fi
+        }
+
+        shopt -s nullglob
+        for source in \
+          "${dump_dir}"/core.* \
+          "${GITHUB_WORKSPACE}"/core \
+          "${GITHUB_WORKSPACE}"/core.* \
+          /var/lib/systemd/coredump/* \
+          /var/crash/* \
+          /tmp/core.* \
+          /cores/core.*
+        do
+          copy_if_present "$source"
+        done
+
+        if command -v coredumpctl >/dev/null; then
+          coredumpctl list --no-pager > "${dump_dir}/coredumpctl-list.txt" 2>&1 || true
+          # Extract the newest bun dump if systemd kept one.
+          if sudo -n coredumpctl dump bun --output="${dump_dir}/bun.systemd.core" >/dev/null 2>>"${dump_dir}/coredumpctl-dump.txt"; then
+            echo "extracted systemd bun core"
+          else
+            echo "no systemd bun core" >> "${dump_dir}/coredumpctl-dump.txt"
+          fi
+        fi
+
+        # A backtrace in the job log is enough to start; the artifact is for gdb.
+        if command -v gdb >/dev/null && [ -n "$bun_path" ]; then
+          newest_core=""
+          for candidate in "${dump_dir}"/core.* "${dump_dir}"/*.core "${dump_dir}"/bun.systemd.core; do
+            [ -f "$candidate" ] || continue
+            newest_core="$candidate"
+          done
+          if [ -n "$newest_core" ]; then
+            echo "gdb backtrace from ${newest_core}"
+            gdb -batch -nx \
+              -ex "set pagination off" \
+              -ex "thread apply all bt" \
+              "$bun_path" "$newest_core" \
+              > "${dump_dir}/gdb-bt.txt" 2>&1 || true
+            sed -n '1,200p' "${dump_dir}/gdb-bt.txt" || true
+          fi
+        fi
+
+        sudo -n chmod -R a+rX "$dump_dir" 2>/dev/null || chmod -R a+rX "$dump_dir" || true
+        echo "collected files:"
+        ls -lah "$dump_dir" || true
+
+    - name: Upload Linux core dumps
+      if: runner.os == 'Linux'
+      uses: actions/upload-artifact@v7
+      with:
+        name: ${{ inputs.name }}
+        path: ${{ github.workspace }}/.crash-dumps
+        if-no-files-found: ignore
+        retention-days: 7
+        compression-level: 9
+        include-hidden-files: true

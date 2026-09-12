@@ -125,86 +125,6 @@ exports[`Textarea Layout Tests Prompt-like Layout should render textarea in shel
 "
 `;
 
-exports[`Textarea Layout Tests Reactive Textarea Updates should update textarea content reactively 1`] = `
-"┌────────────────────────────────────────────────┐
-│                                                │
-│ > Initial text                                 │
-│                                                │
-└────────────────────────────────────────────────┘
-                                                  
-                                                  
-                                                  
-                                                  
-                                                  
-                                                  
-                                                  
-"
-`;
-
-exports[`Textarea Layout Tests Reactive Textarea Updates should update textarea content reactively 2`] = `
-"┌────────────────────────────────────────────────┐
-│                                                │
-│   Updated text that is much longer and should  │
-│ > wrap to multiple lines if word wrapping is   │
-│   enabled                                      │
-│                                                │
-└────────────────────────────────────────────────┘
-                                                  
-                                                  
-                                                  
-                                                  
-                                                  
-"
-`;
-
-exports[`Textarea Layout Tests Reactive Textarea Updates should handle textarea growth with word wrapping 1`] = `
-"┌──────────────────────────────────────┐
-│>                                     │
-│   Short                              │
-│                                      │
-│Status line below textarea            │
-└──────────────────────────────────────┘
-                                        
-                                        
-                                        
-                                        
-                                        
-                                        
-                                        
-                                        
-                                        
-                                        
-                                        
-                                        
-                                        
-                                        
-"
-`;
-
-exports[`Textarea Layout Tests Reactive Textarea Updates should handle textarea growth with word wrapping 2`] = `
-"┌──────────────────────────────────────┐
-│>                                     │
-│   This is a very long text that will │
-│   definitely wrap to multiple lines  │
-│   and cause the textarea to grow in  │
-│   height. It should push down the    │
-│   status line below it.              │
-│                                      │
-│Status line below textarea            │
-└──────────────────────────────────────┘
-                                        
-                                        
-                                        
-                                        
-                                        
-                                        
-                                        
-                                        
-                                        
-                                        
-"
-`;
-
 exports[`Textarea Layout Tests Complex Layouts with Multiple Textareas should render multiple textareas in a column layout 1`] = `
 "┌─Chat─────────────────────────────────────────────────────┐
 │┌────────────────────────────────────────────────────────┐│
@@ -212,8 +132,8 @@ exports[`Textarea Layout Tests Complex Layouts with Multiple Textareas should re
 │└────────────────────────────────────────────────────────┘│
 │                                                          │
 │┌────────────────────────────────────────────────────────┐│
-││AI    I don't have access to real-time weather data,    ││
-││      but I can help you find that information through  ││
+││AI    I don't have access to real-time weather data, but││
+││      I can help you find that information through      ││
 ││      various weather services.                         ││
 │└────────────────────────────────────────────────────────┘│
 └──────────────────────────────────────────────────────────┘
@@ -287,7 +207,7 @@ exports[`Textarea Layout Tests Text Component Comparison should render text with
 │                                                │
 │   This is a very long prompt that will wrap    │
 │ > across multiple lines in the text component. │
-│    It should maintain proper layout with the   │
+│   It should maintain proper layout with the    │
 │   indicator on the left.                       │
 │                                                │
 │openai gpt-4                                    │
@@ -544,8 +464,8 @@ exports[`Textarea Layout Tests Measure Cache Edge Cases should correctly measure
 exports[`Textarea Layout Tests Measure Cache Edge Cases should correctly measure text after content change 2`] = `
 "┌──────────────────────────────────────┐          
 │This is a much longer text that will  │          
-│definitely wrap to multiple lines     │          
-│when rendered                         │          
+│definitely wrap to multiple lines when│          
+│rendered                              │          
 └──────────────────────────────────────┘          
                                                   
                                                   

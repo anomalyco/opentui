@@ -1,6 +1,6 @@
 {
   "name": "@opentui/web",
-  "version": "0.4.5",
+  "version": "0.5.11",
   "private": true,
   "type": "module",
   "scripts": {
@@ -8,21 +8,32 @@
     "build": "astro build",
     "preview": "astro preview",
     "astro": "astro",
+    "optimize:video": "bash scripts/optimize-landing-video.sh",
+    "recordings:record": "bash scripts/recordings/bin/record",
+    "recordings:build": "bun scripts/recordings/bin/build",
+    "docs:visuals": "bun scripts/generate-doc-visuals.ts",
     "scaffold": "bun scripts/test-doc-examples.ts",
     "validate:docs:metadata": "bun scripts/validate-doc-metadata.ts",
     "validate:docs:links": "bun scripts/validate-doc-links.ts",
     "validate:docs:skill": "bun scripts/validate-skill-docs.ts",
     "validate:docs:examples": "bun scripts/verify-doc-examples.ts",
-    "validate:docs": "bun run validate:docs:metadata && bun run validate:docs:links && bun run validate:docs:skill && bun run validate:docs:examples"
+    "validate:docs": "bun run validate:docs:metadata && bun run validate:docs:links && bun run validate:docs:skill && bun run test:docs",
+    "test:docs": "bun test src/lib/docs-index.test.ts src/lib/docs-search.test.ts scripts/doc-validator.test.ts scripts/doc-visuals.test.ts scripts/terminal-illustration.test.ts",
+    "validate:packages": "bun scripts/validate-packages.ts src/content/packages",
+    "test:packages": "bun test src/lib/package-facts.test.ts src/lib/package-schema.test.ts src/lib/remote-package-facts.test.ts"
   },
   "dependencies": {
-    "@astrojs/mdx": "^6.0.3",
+    "@astrojs/mdx": "^7.0.5",
+    "@astrojs/sitemap": "^3.7.3",
     "@opentui/core": "workspace:*",
     "@opentui/keymap": "workspace:*",
-    "astro": "^6.4.6"
+    "astro": "^7.1.6"
   },
   "devDependencies": {
-    "@types/bun": "latest",
+    "@opentui/qrcode": "workspace:*",
+    "@types/bun": "1.4.1",
+    "@xterm/addon-unicode11": "^0.8.0",
+    "@xterm/headless": "^5.5.0",
     "typescript": "^5"
   }
 }

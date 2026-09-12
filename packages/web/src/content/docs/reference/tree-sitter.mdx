@@ -1,52 +1,172 @@
 ---
-title: Tree-sitter
-description: Add parsers and syntax highlighting with Tree-sitter
-order: 2
+title: Syntax highlighting with Tree-sitter
+description: Configure Tree-sitter parsers and syntax highlighting
 ---
 
-# Tree-sitter
+# Syntax highlighting with Tree-sitter
 
-OpenTUI integrates Tree-sitter for fast, accurate syntax highlighting. You can register parsers globally or per client.
+OpenTUI uses Tree-sitter to highlight source text in [Code](/docs/components/code),
+[Markdown](/docs/components/markdown), and [Diff](/docs/components/diff).
 
-## Add parsers globally
+## Prerequisites
 
-Use `addDefaultParsers()` before creating clients:
+Meet these requirements before you create a Tree-sitter client:
+
+- Install `@opentui/core` and its `web-tree-sitter` peer dependency at exactly `0.25.10`.
+- Use a supported Bun or Node.js runtime with worker support.
+- Let the worker read the parser worker, Tree-sitter WASM, language WASM, and query files.
+- Give the worker read and write access to the client data path.
+- Give the worker network access when a parser or query uses an HTTP or HTTPS URL.
+
+Core bundles descriptors for these grammars:
+
+- JavaScript and JSX as `javascript` and its `javascriptreact` alias
+- TypeScript and TSX as `typescript` and its `typescriptreact` alias
+- Markdown as `markdown`
+- Markdown inline as `markdown_inline`
+- Zig as `zig`
+
+Other grammars need an explicit parser WASM file and compatible query files. A file type mapping does not install a
+grammar.
+
+## Highlight code
+
+Pass an initialized client to a code renderable. This example uses the bundled TypeScript descriptor.
 
 ```typescript
-import { addDefaultParsers, getTreeSitterClient } from "@opentui/core"
+import {
+  CodeRenderable,
+  RGBA,
+  SyntaxStyle,
+  createCliRenderer,
+  destroyTreeSitterClient,
+  getTreeSitterClient,
+} from "@opentui/core"
+
+const renderer = await createCliRenderer()
+const client = getTreeSitterClient()
+
+try {
+  await client.initialize()
+
+  const syntaxStyle = SyntaxStyle.fromStyles({
+    keyword: { bold: true },
+    string: { fg: RGBA.fromHex("#777777") },
+    default: { fg: RGBA.fromHex("#E6EDF3") },
+  })
+
+  renderer.root.add(
+    new CodeRenderable(renderer, {
+      id: "example",
+      content: 'const message = "Hello"',
+      filetype: "typescript",
+      syntaxStyle,
+      treeSitterClient: client,
+    }),
+  )
+
+  await renderer.idle()
+} finally {
+  await destroyTreeSitterClient()
+  renderer.destroy()
+}
+```
+
+`CodeRenderable` uses the global client when you omit `treeSitterClient`. Markdown code blocks and diff panes can use
+the same client.
+
+## Choose client ownership
+
+Use the global client for shared application highlighting. Create a client when a subsystem needs separate parser
+configuration, cache storage, or lifetime.
+
+### Initialize a client
+
+`initialize()` loads the Tree-sitter runtime WASM and registers bundled descriptors plus global overrides. Concurrent
+calls use the same initialization promise.
+
+`highlightOnce()` initializes the client on its first call. `createBuffer()` also initializes by default. Pass
+`autoInitialize: false` to make an uninitialized `createBuffer()` call return `false` instead.
+
+Call `initialize()` before `preloadParser()`. To replace a bundled descriptor only for one client, call
+`addFiletypeParser()` after initialization. A new, non-bundled descriptor can be added before or after initialization.
+
+### Global client
+
+`getTreeSitterClient()` lazily creates one process-wide client. It uses the application `globalDataPath` and tracks
+later application data-path changes.
+
+`addDefaultParsers()` adds module-wide parser overrides. Call it before any client initializes. A descriptor with the
+same `filetype` replaces the previous override during later client initialization.
+
+```typescript
+import { addDefaultParsers, destroyTreeSitterClient, getTreeSitterClient } from "@opentui/core"
 
 addDefaultParsers([
   {
     filetype: "python",
     wasm: "https://github.com/tree-sitter/tree-sitter-python/releases/download/v0.23.6/tree-sitter-python.wasm",
     queries: {
-      highlights: ["https://raw.githubusercontent.com/tree-sitter/tree-sitter-python/master/queries/highlights.scm"],
+      highlights: ["https://raw.githubusercontent.com/tree-sitter/tree-sitter-python/v0.23.6/queries/highlights.scm"],
     },
   },
 ])
 
 const client = getTreeSitterClient()
-await client.initialize()
+
+try {
+  await client.initialize()
+  const result = await client.highlightOnce("def answer():\n    return 42\n", "python")
+  if (result.error) throw new Error(result.error)
+  if (result.warning) console.warn(result.warning)
+  console.log(result.highlights ?? [])
+} finally {
+  await destroyTreeSitterClient()
+}
 ```
 
-## Add parsers per client
+`destroyTreeSitterClient()` removes the singleton and awaits worker termination. The last renderer also requests
+singleton cleanup. Await `destroyTreeSitterClient()` directly when shutdown must wait for the worker.
+
+### Per-client configuration
+
+`new TreeSitterClient()` starts its worker during construction. The caller owns the client and must await its
+asynchronous `destroy()` method.
 
 ```typescript
 import { TreeSitterClient } from "@opentui/core"
 
-const client = new TreeSitterClient({ dataPath: "./cache" })
-await client.initialize()
-
-client.addFiletypeParser({
-  filetype: "rust",
-  wasm: "https://github.com/tree-sitter/tree-sitter-rust/releases/download/v0.23.2/tree-sitter-rust.wasm",
-  queries: {
-    highlights: ["https://raw.githubusercontent.com/tree-sitter/tree-sitter-rust/master/queries/highlights.scm"],
-  },
+const client = new TreeSitterClient({
+  dataPath: "./cache",
+  initTimeout: 10_000,
 })
+
+try {
+  await client.initialize()
+  client.addFiletypeParser({
+    filetype: "rust",
+    wasm: "https://github.com/tree-sitter/tree-sitter-rust/releases/download/v0.23.2/tree-sitter-rust.wasm",
+    queries: {
+      highlights: ["https://raw.githubusercontent.com/tree-sitter/tree-sitter-rust/v0.23.2/queries/highlights.scm"],
+    },
+  })
+
+  if (!(await client.preloadParser("rust"))) {
+    throw new Error("Could not load the Rust parser")
+  }
+} finally {
+  await client.destroy()
+}
 ```
 
-## Parser configuration
+Remote parser and query files must support the same grammar version. Pin both files to release tags or commits. Do not
+mix a released parser with a query from a mutable branch.
+
+Read [Lifecycle and cleanup](/docs/core-concepts/lifecycle) for application shutdown ownership.
+
+## Configure a parser
+
+`addDefaultParsers()` and `addFiletypeParser()` accept the same descriptor.
 
 ```typescript
 interface FiletypeParserOptions {
@@ -64,45 +184,25 @@ interface FiletypeParserOptions {
 }
 ```
 
-`aliases` maps additional filetype ids to the same parser assets.
+| Field                            | Meaning                                                                               |
+| -------------------------------- | ------------------------------------------------------------------------------------- |
+| `filetype`                       | Canonical identifier that renderables and client calls use                            |
+| `aliases`                        | Additional identifiers that resolve to the canonical parser                           |
+| `wasm`                           | HTTP URL, HTTPS URL, absolute path, or path relative to the current working directory |
+| `queries.highlights`             | One or more highlight-query URLs or paths, concatenated in order                      |
+| `queries.injections`             | Optional injection-query URLs or paths, concatenated in order                         |
+| `injectionMapping.nodeTypes`     | Injection node type to target file type                                               |
+| `injectionMapping.infoStringMap` | Code-fence language label to target file type                                         |
 
-## Language injections
+The client removes duplicate aliases and ignores an alias that equals `filetype`. Registering the same canonical file
+type again replaces its descriptor and invalidates that parser's reusable caches.
 
-Use `queries.injections` to highlight embedded languages.
+### Use local assets
 
-- `injectionMapping.nodeTypes` maps injected node types to filetype ids.
-- `injectionMapping.infoStringMap` maps code fence language labels to filetype ids.
-
-```typescript
-client.addFiletypeParser({
-  filetype: "markdown",
-  wasm: "https://github.com/tree-sitter-grammars/tree-sitter-markdown/releases/download/v0.5.1/tree-sitter-markdown.wasm",
-  queries: {
-    highlights: ["./assets/markdown/highlights.scm"],
-    injections: [
-      "https://raw.githubusercontent.com/nvim-treesitter/nvim-treesitter/refs/heads/master/queries/markdown/injections.scm",
-    ],
-  },
-  injectionMapping: {
-    nodeTypes: {
-      inline: "markdown_inline",
-      pipe_table_cell: "markdown_inline",
-    },
-    infoStringMap: {
-      js: "javascript",
-      jsx: "javascriptreact",
-      ts: "typescript",
-      tsx: "typescriptreact",
-    },
-  },
-})
-```
-
-If `infoStringMap` has no match, the fence language label is used as the filetype id.
-
-## Use local files
+Bun file imports can supply paths for assets that a build includes.
 
 ```typescript
+import { addDefaultParsers } from "@opentui/core"
 import pythonWasm from "./parsers/tree-sitter-python.wasm" with { type: "file" }
 import pythonHighlights from "./queries/python/highlights.scm" with { type: "file" }
 
@@ -117,21 +217,134 @@ addDefaultParsers([
 ])
 ```
 
-## Automated asset management
+For plain path strings, relative paths resolve from `process.cwd()`. Use a `URL` only for `workerPath`. Parser and query
+descriptor fields use strings.
 
-Use the `updateAssets` utility to download parsers and generate imports.
+## Configure language injections
 
-### CLI usage
+An injection query identifies embedded source. The mapping selects the parser for that source.
+
+This example uses local, version-pinned Markdown assets. It relies on the bundled `markdown_inline`, JavaScript, and
+TypeScript descriptors for injection targets.
+
+```typescript
+import { TreeSitterClient } from "@opentui/core"
+
+const client = new TreeSitterClient({ dataPath: "./cache" })
+
+try {
+  await client.initialize()
+  client.addFiletypeParser({
+    filetype: "markdown",
+    wasm: "./assets/markdown/tree-sitter-markdown.wasm",
+    queries: {
+      highlights: ["./assets/markdown/highlights.scm"],
+      injections: ["./assets/markdown/injections.scm"],
+    },
+    injectionMapping: {
+      nodeTypes: {
+        inline: "markdown_inline",
+        pipe_table_cell: "markdown_inline",
+      },
+      infoStringMap: {
+        js: "javascript",
+        jsx: "javascriptreact",
+        ts: "typescript",
+        tsx: "typescriptreact",
+      },
+    },
+  })
+
+  if (!(await client.preloadParser("markdown"))) {
+    throw new Error("Could not load the Markdown parser")
+  }
+} finally {
+  await client.destroy()
+}
+```
+
+If `infoStringMap` has no matching label, OpenTUI uses the fence label as the target file type. Each target must have a
+registered parser or alias. Missing injection parsers produce worker warnings and leave that source without injected
+highlights.
+
+## Resolve file types
+
+The exported lookup functions normalize file names, extensions, and Markdown fence info strings.
+
+```typescript
+import {
+  basenameToFiletype,
+  extToFiletype,
+  extensionToFiletype,
+  infoStringToFiletype,
+  pathToFiletype,
+} from "@opentui/core"
+
+const rust = pathToFiletype("src/main.rs")
+const typescript = extToFiletype(".TS")
+const tsx = infoStringToFiletype("TSX title=Button.tsx")
+
+extensionToFiletype.set("templ", "html")
+basenameToFiletype.set("mytoolrc", "yaml")
+
+console.log({ rust, typescript, tsx })
+```
+
+| API                                | Resolution behavior                                                                    |
+| ---------------------------------- | -------------------------------------------------------------------------------------- |
+| `extToFiletype(extension)`         | Removes one leading dot, converts to lowercase, and reads `extensionToFiletype`        |
+| `pathToFiletype(path)`             | Checks the lowercase basename map, then checks the last extension                      |
+| `infoStringToFiletype(infoString)` | Reads the first token, then checks basename, path, extension, and the normalized token |
+| `extensionToFiletype`              | Mutable extension-to-file-type `Map<string, string>`                                   |
+| `basenameToFiletype`               | Mutable lowercase-basename-to-file-type `Map<string, string>`                          |
+
+`infoStringToFiletype()` returns an unknown normalized token when no map matches. A successful lookup still does not
+mean that a parser is registered.
+
+## Manage assets at build time
+
+`@opentui/core/tree-sitter/update-assets` exports `updateAssets`, `runUpdateAssetsCli`, and `UpdateOptions`. This Bun
+entry point downloads or copies parsers, combines each query list, and generates a TypeScript asset loader.
+
+Use immutable URLs in the parser configuration:
+
+```json
+{
+  "parsers": [
+    {
+      "filetype": "python",
+      "wasm": "https://github.com/tree-sitter/tree-sitter-python/releases/download/v0.23.6/tree-sitter-python.wasm",
+      "queries": {
+        "highlights": [
+          "https://raw.githubusercontent.com/tree-sitter/tree-sitter-python/v0.23.6/queries/highlights.scm"
+        ]
+      }
+    }
+  ]
+}
+```
+
+The package does not publish a command in its `bin` map. Create a Bun script that imports the public entry point:
+
+```typescript
+import { runUpdateAssetsCli } from "@opentui/core/tree-sitter/update-assets"
+
+await runUpdateAssetsCli()
+```
+
+Pass the CLI options through a package script:
 
 ```json
 {
   "scripts": {
-    "prebuild": "bun node_modules/@opentui/core/lib/tree-sitter/update-assets.js --config ./parsers-config.json --assets ./src/parsers --output ./src/parsers.ts"
+    "update:tree-sitter": "bun ./scripts/update-tree-sitter-assets.ts --config ./parsers-config.json --assets ./src/parsers --output ./src/parsers.ts"
   }
 }
 ```
 
-### Programmatic usage
+The CLI accepts `--config`, `--assets`, `--output`, and `--help`. Run it at build time, not during application startup.
+
+You can also call the build helper directly:
 
 ```typescript
 import { updateAssets } from "@opentui/core/tree-sitter/update-assets"
@@ -143,54 +356,170 @@ await updateAssets({
 })
 ```
 
-## Using with CodeRenderable
+`updateAssets()` currently shares the CLI failure policy. An operational error prints a message and calls
+`process.exit(1)` instead of rejecting to the caller. Run it in a dedicated build process. Do not call it from a
+long-lived application or depend on an outer `catch` or `finally` block for cleanup.
+
+The generated module exports `getParsers()` and `defaultParserAssetPaths`. Register its descriptors before a client
+initializes:
 
 ```typescript
-import { CodeRenderable, RGBA, SyntaxStyle, getTreeSitterClient } from "@opentui/core"
+import { addDefaultParsers } from "@opentui/core"
+import { getParsers } from "./parsers.js"
 
-const client = getTreeSitterClient()
-await client.initialize()
-
-const syntaxStyle = SyntaxStyle.fromStyles({
-  default: { fg: RGBA.fromHex("#E6EDF3") },
-})
-
-const code = new CodeRenderable(renderer, {
-  id: "code",
-  content: "const x = 1",
-  filetype: "typescript",
-  syntaxStyle,
-  treeSitterClient: client,
-})
+addDefaultParsers(await getParsers())
 ```
 
-## Caching
+See [Package entry points](/docs/reference/package-entrypoints) for the published build-time boundary.
 
-Parser and query files are cached in the client `dataPath`. Set a custom cache directory:
+## Configure the worker
+
+`TreeSitterClientOptions` has three fields:
+
+| Field         | Type            | Default                        |
+| ------------- | --------------- | ------------------------------ |
+| `dataPath`    | `string`        | Required for a custom client   |
+| `workerPath`  | `string \| URL` | Resolved OpenTUI parser worker |
+| `initTimeout` | `number`        | `10000` milliseconds           |
+
+The client selects its worker path in this order:
+
+1. The `workerPath` client option
+2. The `OTUI_TREE_SITTER_WORKER_PATH` environment value
+3. The build-time `OTUI_TREE_SITTER_WORKER_PATH` global
+4. The default OpenTUI runtime asset
+
+On Node.js, a plain relative `workerPath` string resolves from the current working directory. Pass `new URL(path,
+import.meta.url)` for a module-relative worker.
+
+Node.js does not require permission mode. If you enable it, grant worker access, parser-asset reads, and data-path
+reads and writes. Grant network access for remote parser or query URLs. See
+[Runtime and platform support](/docs/getting-started/runtime-support) for the exact Node.js permission and runtime
+requirements.
+
+`OTUI_ASSET_ROOT` can relocate the default worker, bundled grammars, and Tree-sitter WASM. Bun executables can embed
+these assets. Node.js single executable applications must extract them to the filesystem. See
+[Standalone executables](/docs/reference/standalone-executables) for both workflows.
+
+## Manage cache data
+
+The worker stores remote assets below `<dataPath>/tree-sitter`. Language files go in `languages`, and query files go in
+`queries`.
+
+The global client uses the path from [Application data paths](/docs/reference/data-paths). A custom client uses its
+required `dataPath` option.
+
+| API                     | Behavior                                                                               |
+| ----------------------- | -------------------------------------------------------------------------------------- |
+| `setDataPath(dataPath)` | Creates the new Tree-sitter cache directories and uses them for later asset loads      |
+| `clearCache()`          | Removes the Tree-sitter cache directory, recreates it, and clears loaded parser caches |
+
+`clearCache()` rejects when the client is not initialized. Local parser and query paths remain application-owned.
+
+## Handle errors and warnings
+
+`initialize()` rejects for worker startup, Tree-sitter WASM, filesystem, or timeout failures. Parser and query load
+failures usually appear when the client preloads, highlights, or creates a buffer.
+
+`highlightOnce()` converts an initialization failure to this result:
 
 ```typescript
-const client = new TreeSitterClient({
-  dataPath: "./my-cache",
-})
+{
+  error: "Could not highlight because of initialization error"
+}
 ```
 
-## File type resolution
+Otherwise, it resolves with optional `highlights`, `warning`, and `error` fields. Direct worker requests can reject if
+the worker fails or the client is destroyed.
+
+Attach listeners when the application needs diagnostics:
 
 ```typescript
-import { pathToFiletype, extToFiletype, infoStringToFiletype } from "@opentui/core"
-
-const ft1 = pathToFiletype("src/main.rs")
-const ft2 = extToFiletype("ts")
-const ft3 = infoStringToFiletype("TSX title=Button.tsx")
+client.on("error", (message, bufferId) => console.error({ message, bufferId }))
+client.on("warning", (message, bufferId) => console.warn({ message, bufferId }))
+client.on("worker:log", (type, message) => console.log({ type, message }))
 ```
 
-`infoStringToFiletype()` is used for fenced markdown code blocks.
+| Event                 | Arguments                                    |
+| --------------------- | -------------------------------------------- |
+| `highlights:response` | `bufferId`, `version`, `HighlightResponse[]` |
+| `buffer:initialized`  | `bufferId`, `hasParser`                      |
+| `buffer:disposed`     | `bufferId`                                   |
+| `worker:log`          | `TreeSitterWorkerLogType`, `message`         |
+| `error`               | `message`, optional `bufferId`               |
+| `warning`             | `message`, optional `bufferId`               |
 
-You can extend or override mappings at runtime:
+## Client API
+
+The renderables manage incremental buffers for normal display. These public methods support direct and advanced use.
+
+| API                                                              | Behavior                                                                            |
+| ---------------------------------------------------------------- | ----------------------------------------------------------------------------------- |
+| `initialize(): Promise<void>`                                    | Initializes the worker and registers bundled descriptors plus global overrides      |
+| `addFiletypeParser(options): void`                               | Adds or replaces one descriptor in this client                                      |
+| `preloadParser(filetype): Promise<boolean>`                      | Loads a parser and its queries without creating a buffer                            |
+| `highlightOnce(content, filetype)`                               | Returns `SimpleHighlight[]`, a warning, or an error without retaining a buffer      |
+| `createBuffer(id, content, filetype, version?, autoInitialize?)` | Creates a retained parser buffer and returns whether it has a parser                |
+| `updateBuffer(id, edits, newContent, version): Promise<void>`    | Queues incremental edits for an existing parsed buffer                              |
+| `resetBuffer(id, version, content): Promise<void>`               | Debounces a full parse reset for an existing parsed buffer                          |
+| `removeBuffer(id): Promise<void>`                                | Removes local state and asks the worker to dispose the parser buffer                |
+| `getBuffer(id): BufferState \| undefined`                        | Returns one local buffer state                                                      |
+| `getAllBuffers(): BufferState[]`                                 | Returns all local buffer states                                                     |
+| `getPerformance(): Promise<PerformanceStats>`                    | Returns recent worker parse and query timings                                       |
+| `isInitialized(): boolean`                                       | Reports whether initialization completed                                            |
+| `setDataPath(dataPath): Promise<void>`                           | Changes the worker data path                                                        |
+| `clearCache(): Promise<void>`                                    | Clears cached parser and query files                                                |
+| `onDestroy(callback): () => void`                                | Adds a synchronous destroy callback and returns its removal function                |
+| `destroy(): Promise<void>`                                       | Rejects pending work, clears local state, runs callbacks, and terminates the worker |
+
+`createBuffer()` defaults `version` to `1` and `autoInitialize` to `true`. Buffer IDs must be unique within a client.
+`updateBuffer()` and `resetBuffer()` do nothing when the client or target parser buffer is unavailable.
+
+The direct result types are:
 
 ```typescript
-import { extensionToFiletype, basenameToFiletype } from "@opentui/core"
+type SimpleHighlight = [startIndex: number, endIndex: number, group: string, meta?: HighlightMeta]
 
-extensionToFiletype.set("templ", "html")
-basenameToFiletype.set("mytoolrc", "yaml")
+interface HighlightMeta {
+  isInjection?: boolean
+  injectionLang?: string
+  containsInjection?: boolean
+  conceal?: string | null
+  concealLines?: string | null
+}
+
+interface PerformanceStats {
+  averageParseTime: number
+  parseTimes: number[]
+  averageQueryTime: number
+  queryTimes: number[]
+}
 ```
+
+Incremental clients also export `Edit`, `BufferState`, `ParsedBuffer`, `HighlightRange`, and `HighlightResponse`. The
+worker request and response unions are public advanced types. See the [API and symbol index](/docs/reference/api-index)
+for the complete symbol inventory and support classes.
+
+## Convert highlights to styled text
+
+The root entry point exports two conversion helpers:
+
+| API                                                                        | Result                                        |
+| -------------------------------------------------------------------------- | --------------------------------------------- |
+| `treeSitterToStyledText(content, filetype, syntaxStyle, client, options?)` | Runs one highlight and returns `StyledText`   |
+| `treeSitterToTextChunks(content, highlights, syntaxStyle, options?)`       | Converts existing highlights to `TextChunk[]` |
+
+`TreeSitterToStyledTextOptions` supports `conceal?: { enabled?: boolean }` and `baseHighlight?: string`. The chunk helper
+accepts `enabled` and `baseHighlight` directly in its options object.
+
+## Related documentation
+
+- [Code](/docs/components/code) defines syntax styles and source display.
+- [Markdown](/docs/components/markdown) uses file type resolution for fenced code.
+- [Diff](/docs/components/diff) highlights patch content.
+- [Package entry points](/docs/reference/package-entrypoints) lists the Core root, worker, and asset-update entry points.
+- [Runtime and platform support](/docs/getting-started/runtime-support) defines runtime, worker, and permission support.
+- [Lifecycle and cleanup](/docs/core-concepts/lifecycle) defines application shutdown ownership.
+- [Application data paths](/docs/reference/data-paths) defines the singleton data directory.
+- [Standalone executables](/docs/reference/standalone-executables) covers embedded and extracted Tree-sitter assets.
+- [API and symbol index](/docs/reference/api-index) lists all exported Tree-sitter and syntax-style symbols.

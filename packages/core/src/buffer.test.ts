@@ -1,6 +1,7 @@
 import { describe, expect, it, beforeEach, afterEach } from "bun:test"
 import { OptimizedBuffer } from "./buffer.js"
 import { RGBA } from "./lib/RGBA.js"
+import { NativeImage } from "./image.js"
 
 describe("OptimizedBuffer", () => {
   let buffer: OptimizedBuffer
@@ -11,6 +12,81 @@ describe("OptimizedBuffer", () => {
 
   afterEach(() => {
     buffer.destroy()
+  })
+
+  it("preserves u32 attributes across per-cell FFI calls", () => {
+    const fg = RGBA.fromInts(255, 255, 255)
+    const bg = RGBA.fromInts(0, 0, 0)
+    const attributes = [0x8000_00ff, 0x4000_01fe, 0x2000_02fd]
+
+    buffer.setCell(0, 0, "S", fg, bg, attributes[0])
+    buffer.setCellWithAlphaBlending(1, 0, "A", fg, bg, attributes[1])
+    buffer.drawChar("D".codePointAt(0)!, 2, 0, fg, bg, attributes[2])
+
+    expect([...buffer.buffers.attributes.slice(0, attributes.length)]).toEqual(attributes)
+  })
+
+  it("draws images as reserved cells with resolved fallback glyphs", () => {
+    const image = NativeImage.fromRgba(
+      Uint8Array.of(255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255, 255, 255, 255, 255),
+      2,
+      2,
+    )
+    try {
+      expect(buffer.drawImage(image, 0, 0, 1, 1)).toBe(true)
+      const marker = buffer.buffers.char[0]
+      expect(marker >>> 30).toBe(1)
+      expect(new TextDecoder().decode(buffer.getRealCharBytes())).not.toContain("�")
+      buffer.setCell(0, 0, "X", RGBA.fromInts(255, 255, 255), RGBA.fromInts(0, 0, 0))
+      expect(buffer.buffers.char[0]).toBe("X".codePointAt(0)!)
+    } finally {
+      image.dispose()
+    }
+  })
+
+  it("retains drawn images until the buffer releases them", () => {
+    const image = NativeImage.fromRgba(Uint8Array.of(1, 2, 3, 255), 1, 1)
+    let raw: ReturnType<NativeImage["takeRaw"]> | undefined
+    try {
+      expect(buffer.drawImage(image, 0, 0, 1, 1)).toBe(true)
+      expect(() => image.takeRaw()).toThrow("native buffers retain the image")
+
+      buffer.destroy()
+      raw = image.takeRaw()
+      expect([...raw.data]).toEqual([1, 2, 3, 255])
+    } finally {
+      raw?.dispose()
+      image.dispose()
+    }
+  })
+
+  it("releases drawn images when cleared", () => {
+    const image = NativeImage.fromRgba(Uint8Array.of(1, 2, 3, 255), 1, 1)
+    let raw: ReturnType<NativeImage["takeRaw"]> | undefined
+    try {
+      expect(buffer.drawImage(image, 0, 0, 1, 1)).toBe(true)
+      expect(() => image.takeRaw()).toThrow("native buffers retain the image")
+
+      buffer.clear()
+      raw = image.takeRaw()
+      expect([...raw.data]).toEqual([1, 2, 3, 255])
+    } finally {
+      raw?.dispose()
+      image.dispose()
+    }
+  })
+
+  it("rejects invalid image draw geometry before FFI", () => {
+    const image = NativeImage.fromRgba(Uint8Array.of(1, 2, 3, 255), 1, 1)
+    try {
+      expect(() => buffer.drawImage(image, 0, 0, Number.POSITIVE_INFINITY, 1)).toThrow(RangeError)
+      expect(() => buffer.drawImage(image, 0, 0, -1, 1)).toThrow(RangeError)
+      expect(() => buffer.drawImage(image, 0.5, 0, 1, 1)).toThrow(RangeError)
+      expect(() => buffer.drawImage(image, 0, 0, 0x80000000, 1)).toThrow(RangeError)
+      expect(() => buffer.drawImage(image, 0x7fffffff, 0, 1, 1)).toThrow(RangeError)
+    } finally {
+      image.dispose()
+    }
   })
 
   describe("encodeUnicode", () => {

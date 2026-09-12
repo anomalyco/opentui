@@ -85,6 +85,39 @@ function ensureBuildArtifacts(): void {
   if (!existsSync(nativePackageDir)) {
     throw new Error(`Missing native package directory at ${nativePackageDir}. Run bun run build first.`)
   }
+  if (!existsSync(join(nativePackageDir, "LICENSE-GHOSTTY"))) {
+    throw new Error("Native package is missing the Ghostty and Unicode license notices")
+  }
+  const leakedGhosttyFiles = readdirSync(nativePackageDir).filter(
+    (name) => name.includes("ghostty-vt") || name.endsWith(".a") || name.endsWith(".lib"),
+  )
+  if (leakedGhosttyFiles.length > 0) {
+    throw new Error(`Native package contains unbundled Ghostty artifacts: ${leakedGhosttyFiles.join(", ")}`)
+  }
+  const leakedSymbols = readdirSync(nativePackageDir).filter((name) => /\.(debug|pdb|dSYM)$/.test(name))
+  if (leakedSymbols.length)
+    throw new Error(`Native package contains separate debug symbols: ${leakedSymbols.join(", ")}`)
+
+  if (process.platform === "linux") {
+    const nativeLibrary = join(nativePackageDir, "libopentui.so")
+    const elf = runCommand(
+      "readelf",
+      ["--wide", "--section-headers", "--dyn-syms", nativeLibrary],
+      rootDir,
+      "Failed to inspect packaged native ELF",
+      { stdio: "pipe" },
+    ).stdout.toString("utf8")
+
+    if (/\s\.(?:z)?debug(?:_|\s)|\s\.symtab\s/.test(elf)) {
+      throw new Error("Packaged production native library is not stripped")
+    }
+    if (!/\bgetBuildOptions\b/.test(elf)) {
+      throw new Error("Packaged production native library lost its dynamic FFI exports")
+    }
+    if (!elf.includes(".note.gnu.build-id") || !elf.includes(".gnu_debuglink")) {
+      throw new Error("Packaged native ELF cannot be matched to its separate release symbols")
+    }
+  }
 }
 
 function assertPortableDeclarations(): void {
@@ -205,6 +238,9 @@ function writeConsumerPackage(consumerDir: string, coreTarball: string, nativeTa
           [packageJson.name]: coreDependency,
           [nativePackageName]: nativeDependency,
         },
+        overrides: {
+          [nativePackageName]: nativeDependency,
+        },
       },
       null,
       2,
@@ -231,7 +267,16 @@ const nativePackage = await import(nativePackageName)
 
 assert.equal(typeof core.createCliRenderer, "function")
 assert.equal(typeof core.Audio, "function")
+assert.equal(typeof core.AudioCaptureStream, "function")
+assert.equal(typeof core.AudioCaptureStreamError, "function")
+assert.equal(typeof core.AudioRecorder, "function")
+assert.equal(typeof core.AudioRecorderError, "function")
 assert.equal(typeof core.AudioStreamError, "function")
+assert.equal(typeof core.NativeImage, "function")
+assert.equal(typeof core.NativeImagePool, "function")
+assert.equal(typeof core.ImageRenderable, "function")
+assert.equal(typeof core.Audio.prototype.openCapture, "function")
+assert.equal(typeof core.Audio.prototype.recordToFile, "function")
 assert.equal(typeof core.createIcyStreamDemuxer, "function")
 assert.equal(core.NativeAudioStreamCloseReason.TransportError, 1)
 assert.equal(core.NativeAudioStreamFormat.Mp3, 1)
@@ -256,6 +301,46 @@ assert.deepEqual(
 const buffer = core.OptimizedBuffer.create(2, 1, "unicode")
 assert.equal(buffer.width, 2)
 buffer.destroy()
+
+const image = core.NativeImage.fromRgba(Uint8Array.of(1, 2, 3, 255), 1, 1)
+const raw = image.takeRaw()
+try {
+  assert.deepEqual([...raw.data], [1, 2, 3, 255])
+  assert.throws(() => image.info(), /disposed/)
+} finally {
+  raw.dispose()
+}
+
+const imported = core.NativeImage.fromPixels(Uint8Array.of(99, 3, 2, 1, 0).subarray(1), 1, 1, {
+  format: "bgra8", alpha: "opaque", stride: 256,
+})
+try {
+  assert.deepEqual([...imported.raw().data], [1, 2, 3, 255])
+  assert.equal(imported.info().hasAlpha, false)
+} finally {
+  imported.dispose()
+}
+
+const pool = new core.NativeImagePool({ width: 1, height: 1, capacity: 1 })
+try {
+  for (const red of [255, 128]) {
+    const frame = pool.publishRgba(Uint8Array.of(red, 0, 0, 255))
+    try {
+      assert.deepEqual([...frame.raw().data], [red, 0, 0, 255])
+    } finally {
+      frame.dispose()
+    }
+  }
+  const frame = pool.publishPixels(Uint8Array.of(3, 2, 1, 0), { format: "bgra8", alpha: "opaque", stride: 256 })
+  try {
+    assert.deepEqual([...frame.raw().data], [1, 2, 3, 255])
+    assert.equal(frame.info().hasAlpha, false)
+  } finally {
+    frame.dispose()
+  }
+} finally {
+  pool.dispose()
+}
 
 const dataPath = mkdtempSync(join(tmpdir(), "opentui-node-dist-tree-sitter-"))
 const client = new core.TreeSitterClient({ dataPath })
@@ -330,7 +415,16 @@ describe("${packageJson.name} dist smoke test", () => {
 
     expect(typeof core.createCliRenderer).toBe("function")
     expect(typeof core.Audio).toBe("function")
+    expect(typeof core.AudioCaptureStream).toBe("function")
+    expect(typeof core.AudioCaptureStreamError).toBe("function")
+    expect(typeof core.AudioRecorder).toBe("function")
+    expect(typeof core.AudioRecorderError).toBe("function")
     expect(typeof core.AudioStreamError).toBe("function")
+    expect(typeof core.NativeImage).toBe("function")
+    expect(typeof core.NativeImagePool).toBe("function")
+    expect(typeof core.ImageRenderable).toBe("function")
+    expect(typeof core.Audio.prototype.openCapture).toBe("function")
+    expect(typeof core.Audio.prototype.recordToFile).toBe("function")
     expect(core.NativeAudioStreamCloseReason.TransportError).toBe(1)
     expect(core.NativeAudioStreamFormat.Flac).toBe(2)
     expect(typeof testing.createTestRenderer).toBe("function")
@@ -339,6 +433,23 @@ describe("${packageJson.name} dist smoke test", () => {
     expect(typeof parserWorker).toBe("object")
     expect(typeof runtimePlugin.createRuntimePlugin).toBe("function")
     expect(typeof nativePackage.default).toBe("string")
+    const image = core.NativeImage.fromRgba(Uint8Array.of(1, 2, 3, 255), 1, 1)
+    const raw = image.takeRaw()
+    try {
+      expect([...raw.data]).toEqual([1, 2, 3, 255])
+      expect(() => image.info()).toThrow(/disposed/)
+    } finally {
+      raw.dispose()
+    }
+    const imported = core.NativeImage.fromPixels(Uint8Array.of(99, 3, 2, 1, 0).subarray(1), 1, 1, {
+      format: "bgra8", alpha: "opaque", stride: 256,
+    })
+    try {
+      expect([...imported.raw().data]).toEqual([1, 2, 3, 255])
+      expect(imported.info().hasAlpha).toBe(false)
+    } finally {
+      imported.dispose()
+    }
   })
 })
 `,
@@ -370,7 +481,12 @@ function assertNodeStaticImportFailure(
 }
 
 function installAndTest(nodeDir: string, bunDir: string): void {
-  runCommand("npm", ["install", "--ignore-scripts", "--no-package-lock"], nodeDir, "Node dist test install failed")
+  runCommand(
+    "npm",
+    ["install", "--engine-strict", "--ignore-scripts", "--no-package-lock"],
+    nodeDir,
+    "Node dist test install failed",
+  )
   runCommand(nodePath, ["-e", `import(${JSON.stringify(packageJson.name)})`], nodeDir, "Node import smoke check failed")
   runCommand(nodePath, ["--experimental-ffi", "--no-warnings", "index.mjs"], nodeDir, "Node dist smoke tests failed", {
     timeout: 60_000,

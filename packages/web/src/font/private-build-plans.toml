@@ -1,0 +1,256 @@
+# OpenTUI Mono. Iosevka build plan.
+#
+# Iosevka v34.4.0. Static instances. Not an OpenType variable font.
+# Ligatures are off. One web-subset family.
+#
+#   cp this file to Iosevka/private-build-plans.toml
+#   npm install
+#   npm run build -- --jCmd=4 webfont-unhinted::OpenTUIMono
+#   copy dist/OpenTUIMono/WOFF2-Unhinted/OpenTUIMono-{Regular,Bold,Italic,BoldItalic}.woff2
+#     to packages/web/public/fonts/candidate/
+
+[buildPlans.OpenTUIMono]
+family = "OpenTUI Mono"
+spacing = "normal"
+serifs = "sans"
+noCvSs = true
+noLigation = true
+exportGlyphNames = false
+webfontFormats = ["WOFF2"]
+
+[buildPlans.OpenTUIMono.variants.design]
+one = "no-base"
+two = "straight-neck-serifless"
+three = "flat-top-serifless"
+four = "semi-open-serifless"
+five = "oblique-flat-serifless"
+six = "open-contour"
+seven = "straight-serifless"
+eight = "two-circles"
+nine = "open-contour"
+zero = "dotted"
+capital-a = "straight-serifless"
+capital-b = "standard-serifless"
+capital-c = "bilateral-inward-serifed"
+capital-d = "standard-serifless"
+capital-e = "serifless"
+capital-f = "serifless"
+capital-g = "toothless-corner-inward-serifed-hooked"
+capital-h = "serifless"
+capital-i = "serifed"
+capital-j = "serifless"
+capital-k = "symmetric-touching-serifless"
+capital-l = "serifless"
+capital-m = "hanging-serifless"
+capital-n = "standard-serifless"
+capital-p = "closed-serifless"
+capital-q = "crossing"
+capital-r = "standing-serifless"
+capital-s = "serifless"
+capital-t = "serifless"
+capital-u = "toothless-rounded-serifless"
+capital-v = "straight-serifless"
+capital-w = "straight-flat-top-serifless"
+capital-x = "straight-serifless"
+capital-y = "straight-serifless"
+capital-z = "straight-serifless"
+a = "double-storey-serifless"
+b = "toothed-serifless"
+c = "bilateral-inward-serifed"
+d = "toothed-serifless"
+e = "flat-crossbar"
+f = "flat-hook-serifless-crossbar-at-x-height"
+g = "single-storey-serifless"
+h = "straight-serifless"
+i = "serifed"
+j = "flat-hook-serifed"
+k = "symmetric-touching-serifless"
+l = "serifed"
+m = "serifless"
+n = "straight-serifless"
+p = "eared-serifless"
+q = "straight-serifless"
+r = "hookless-serifless"
+s = "serifless"
+t = "flat-hook-short-neck2"
+u = "toothed-serifless"
+v = "straight-serifless"
+w = "straight-flat-top-serifless"
+x = "straight-serifless"
+y = "straight-serifless"
+z = "straight-serifless"
+lower-theta = "oval"
+tittle = "square"
+diacritic-dot = "square"
+punctuation-dot = "square"
+braille-dot = "square"
+tilde = "low"
+asterisk = "penta-mid"
+underscore = "high"
+caret = "medium"
+ascii-grave = "straight"
+ascii-single-quote = "straight"
+paren = "flat-arc"
+brace = "curly-flat-boundary"
+guillemet = "straight"
+number-sign = "slanted"
+ampersand = "closed"
+at = "fourfold"
+dollar = "through"
+cent = "through-cap"
+percent = "rings-continuous-slash"
+bar = "natural-slope"
+question = "corner"
+pilcrow = "high"
+micro-sign = "toothed-serifless"
+decorative-angle-brackets = "middle"
+lig-ltgteq = "slanted"
+lig-neq = "slightly-slanted"
+lig-equal-chain = "without-notch"
+lig-hyphen-chain = "without-notch"
+lig-plus-chain = "without-notch"
+lig-double-arrow-bar = "without-notch"
+lig-single-arrow-bar = "without-notch"
+
+[buildPlans.OpenTUIMono.weights.Thin]
+shape = 100
+menu = 100
+css = 100
+
+[buildPlans.OpenTUIMono.weights.ExtraLight]
+shape = 200
+menu = 200
+css = 200
+
+[buildPlans.OpenTUIMono.weights.Light]
+shape = 300
+menu = 300
+css = 300
+
+[buildPlans.OpenTUIMono.weights.SemiLight]
+shape = 350
+menu = 350
+css = 350
+
+[buildPlans.OpenTUIMono.weights.Regular]
+shape = 400
+menu = 400
+css = 400
+
+[buildPlans.OpenTUIMono.weights.Medium]
+shape = 500
+menu = 500
+css = 500
+
+[buildPlans.OpenTUIMono.weights.SemiBold]
+shape = 600
+menu = 600
+css = 600
+
+[buildPlans.OpenTUIMono.weights.Bold]
+shape = 700
+menu = 700
+css = 700
+
+[buildPlans.OpenTUIMono.weights.ExtraBold]
+shape = 800
+menu = 800
+css = 800
+
+[buildPlans.OpenTUIMono.weights.Black]
+shape = 900
+menu = 900
+css = 900
+
+[buildPlans.OpenTUIMono.widths.SemiCondensed]
+shape = 540
+menu = 4
+css = "semi-condensed"
+
+[buildPlans.OpenTUIMono.widths.Normal]
+shape = 600
+menu = 5
+css = "normal"
+
+[buildPlans.OpenTUIMono.slopes.Upright]
+angle = 0
+shape = "upright"
+menu = "upright"
+css = "normal"
+
+[buildPlans.OpenTUIMono.slopes.Italic]
+angle = 11.8
+shape = "italic"
+menu = "italic"
+css = "italic"
+
+[buildPlans.OpenTUIMono.subset.include]
+ranges = [
+  [
+    32,
+    126,
+  ],
+  [
+    160,
+    255,
+  ],
+  [
+    256,
+    383,
+  ],
+  [
+    768,
+    879,
+  ],
+  [
+    8192,
+    8303,
+  ],
+  [
+    8352,
+    8383,
+  ],
+  [
+    8592,
+    8703,
+  ],
+  [
+    8704,
+    8959,
+  ],
+  [
+    9472,
+    9599,
+  ],
+  [
+    9600,
+    9631,
+  ],
+  [
+    9632,
+    9727,
+  ],
+]
+
+[buildPlans.OpenTUIMono.metricOverride]
+xHeight = 520
+cap = 690
+ascender = 740
+sb = 85
+
+accentWidth = 182
+accentClearance = 76
+accentHeight = 162
+accentStackOffset = 208
+
+leading = 1250
+parenSize = 860
+dotSize = 'blend(weight, [100, 110], [400, 125], [900, 150])'
+periodSize = 140
+
+essRatio = 1.03
+essRatioUpper = 1.03
+essRatioLower = 1.03
+essRatioQuestion = 1.03
+archDepth = 152
+smallArchDepth = 157

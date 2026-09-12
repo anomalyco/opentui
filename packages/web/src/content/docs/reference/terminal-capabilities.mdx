@@ -1,0 +1,240 @@
+---
+title: Terminal capabilities
+description: Read changing terminal capability snapshots and configure detection for local, remote, and multiplexed sessions
+---
+
+# Terminal capabilities
+
+This reference is for applications that must select terminal-dependent image, link, clipboard, notification, input, or
+pixel behavior.
+
+`renderer.capabilities` is a supported snapshot. The regular-expression helpers that classify response sequences and
+the native response parser are internal detection machinery. Do not build application policy on their patterns.
+
+## Read a changing snapshot
+
+`createCliRenderer()` returns after it sends startup queries. It does not wait for the terminal to answer every query.
+Thus, a false field can mean either not yet detected or unsupported.
+
+```typescript
+import { CliRenderEvents, createCliRenderer, type TerminalCapabilities } from "@opentui/core"
+
+const renderer = await createCliRenderer()
+
+function applyCapabilities(capabilities: TerminalCapabilities | null) {
+  if (!capabilities) return
+  console.log(capabilities.terminal.name, capabilities.image_protocol)
+}
+
+applyCapabilities(renderer.capabilities)
+renderer.on(CliRenderEvents.CAPABILITIES, applyCapabilities)
+```
+
+Read the current snapshot first, then handle events. A response can arrive before your listener is attached.
+
+The startup capability handler remains active for five seconds. Each recognized later response updates
+`renderer.capabilities` and emits `"capabilities"`. Expect multiple events during that window. Do not wait for one
+specific count or treat the first event as final.
+
+After the startup window, OpenTUI removes the general capability handler and stops treating private replies as startup
+responses. Pixel-resolution and theme queries have separate lifecycles.
+
+## Public types
+
+```typescript
+type TerminalCapabilityState = "unknown" | "supported" | "unsupported"
+type TerminalMultiplexer = "none" | "tmux" | "zellij" | "screen" | "unknown"
+type ImageRenderProtocol = "auto" | "kitty" | "sixel" | "blocks"
+
+interface TerminalInfo {
+  name: string
+  version: string
+  from_xtversion: boolean
+}
+```
+
+`name` and `version` can come from environment heuristics before an XTVERSION response. `from_xtversion` is true only
+when OpenTUI parsed that response. Native storage bounds terminal names to 64 bytes and versions to 32 bytes.
+
+## `TerminalCapabilities` inventory
+
+### Input, output, and width
+
+| Field                         | Type          | Meaning                                                               |
+| ----------------------------- | ------------- | --------------------------------------------------------------------- |
+| `kitty_keyboard`              | `boolean`     | Kitty keyboard protocol support was detected or inferred              |
+| `rgb`                         | `boolean`     | 24-bit RGB output is available                                        |
+| `ansi256`                     | `boolean`     | ANSI 256-color output is available                                    |
+| `unicode`                     | `WidthMethod` | Active `"unicode"` or `"wcwidth"` method in the public snapshot       |
+| `explicit_width`              | `boolean`     | OSC 66 explicit-width text was detected or forced                     |
+| `scaled_text`                 | `boolean`     | Scaled-text support was detected                                      |
+| `focus_tracking`              | `boolean`     | Terminal focus reports are supported                                  |
+| `sync`                        | `boolean`     | Synchronized-output mode is supported                                 |
+| `bracketed_paste`             | `boolean`     | Bracketed paste is enabled or assumed available                       |
+| `explicit_cursor_positioning` | `boolean`     | OpenTUI should use explicit cursor positioning for this terminal path |
+
+`bracketed_paste` defaults to true in native environment setup, even when a query reports no support. It is not a pure
+probe result.
+
+### Images and pixels
+
+| Field            | Type                           | Meaning                                         |
+| ---------------- | ------------------------------ | ----------------------------------------------- |
+| `kitty_graphics` | `boolean`                      | Kitty graphics support was detected or inferred |
+| `sixel`          | `boolean`                      | Sixel support was detected or inferred          |
+| `image_protocol` | Optional `ImageRenderProtocol` | Active image-protocol override or `"auto"`      |
+| `sgr_pixels`     | `boolean`                      | SGR pixel-coordinate mouse mode was reported    |
+
+`sgr_pixels` does not make higher-level mouse events pixel-based. The current higher-level mouse path uses terminal
+cells.
+
+`renderer.resolution` is separate from `TerminalCapabilities`. It is `null` until a valid terminal window-size
+response arrives. A `PixelResolution` has numeric `width` and `height` in terminal pixels.
+OpenTUI requeries it after resize.
+
+Read [Image](/docs/components/image) for protocol selection. Do not choose a protocol from one early false value.
+
+### Links, clipboard, and notifications
+
+| Field           | Type                      | Meaning                                                                       |
+| --------------- | ------------------------- | ----------------------------------------------------------------------------- |
+| `hyperlinks`    | `boolean`                 | OSC 8 hyperlink output is enabled                                             |
+| `osc52`         | `boolean`                 | OSC 52 clipboard support was detected or inferred                             |
+| `osc52_support` | `TerminalCapabilityState` | Query result when OpenTUI can distinguish unknown, supported, and unsupported |
+| `notifications` | `boolean`                 | A notification protocol was selected                                          |
+
+The renderer emits OSC 8 sequences only when `hyperlinks` is true. Text still renders when it is false.
+
+Hyperlink URLs use a native slot with a maximum of 512 UTF-8 bytes. A longer URL fails link allocation and the text
+loses its hyperlink metadata.
+
+`osc52` and `osc52_support` answer different questions. Environment and terminal-family heuristics can set `osc52`
+while `osc52_support` remains `"unknown"`. Read [Clipboard](/docs/core-concepts/clipboard) for operation results and
+remote policy.
+
+`notifications` does not expose the selected OSC variant. Use `renderer.triggerNotification()` and its boolean result.
+Read [Notifications](/docs/core-concepts/notifications) for protocol and multiplexer behavior.
+
+### Session and terminal identity
+
+| Field                  | Type                  | Meaning                                                             |
+| ---------------------- | --------------------- | ------------------------------------------------------------------- |
+| `remote`               | `boolean`             | The renderer uses remote-session policy                             |
+| `multiplexer`          | `TerminalMultiplexer` | Detected tmux, Zellij, GNU Screen, no multiplexer, or unknown state |
+| `terminal`             | `TerminalInfo`        | Terminal name, version, and XTVERSION source flag                   |
+| `color_scheme_updates` | `boolean`             | Mode 2031 color-scheme update reports are supported                 |
+
+The snapshot object is replaced after a response. Do not retain one object and expect its fields to mutate.
+
+## Remote streams and environment forwarding
+
+`CliRendererConfig.remote` has three practical states:
+
+- `true` forces remote policy.
+- `false` forces local policy, even when SSH variables exist.
+- Omitted uses native auto-detection for process output and memory output.
+
+A custom `stdout` that uses the native span feed defaults to `remote: true`. OpenTUI cannot assume that the process
+host terminal is the stream's real peer.
+
+Auto-detection recognizes `SSH_CONNECTION`, `SSH_CLIENT`, `SSH_TTY`, and `MOSH_CONNECTION`. In an auto-detected remote
+session, OpenTUI does not apply the process host's forwarded terminal heuristics by default. This prevents a host
+`TERM_PROGRAM` value from describing the wrong terminal endpoint.
+
+`forwardEnvKeys` selects process environment names that OpenTUI sends to native detection. Explicit remote mode
+defaults to an empty list. Other modes default to the documented terminal, SSH, tmux, Zellij, width, graphics,
+notification, WSL, and Windows Terminal keys.
+
+For a remote terminal, forward only values that describe the remote endpoint:
+
+```typescript
+const renderer = await createCliRenderer({
+  stdin: remoteInput,
+  stdout: remoteOutput,
+  remote: true,
+  forwardEnvKeys: ["TERM", "COLORTERM", "OPENTUI_GRAPHICS"],
+  width: 80,
+  height: 24,
+})
+```
+
+Custom streams do not receive `SIGWINCH`. Call `renderer.resize(width, height)` when the remote transport reports a
+window change. Read [SSH](/docs/reference/ssh) for the full session setup.
+
+## Multiplexers
+
+OpenTUI detects tmux from XTVERSION, `TMUX`, `TERM_PROGRAM=tmux`, or a `TERM` prefix. It detects Zellij from XTVERSION
+or Zellij environment keys. It detects GNU Screen from `STY` or a `TERM` prefix.
+
+Detection changes query wrapping and feature policy:
+
+- tmux can cause a second, DCS-wrapped query pass after XTVERSION identifies it.
+- GNU Screen disables graphics queries and selects conservative width behavior.
+- Zellij accepts notification support only from an OSC 99 query or an explicit override.
+- Multiplexer detection can set `explicit_cursor_positioning` and `unicode` conservatively.
+
+The `terminal` fields can describe the multiplexer rather than the outer emulator. Use `multiplexer` for routing
+policy.
+
+## Overrides
+
+Terminal detection reads these protocol controls:
+
+| Variable                        | Native behavior                                                                                                         |
+| ------------------------------- | ----------------------------------------------------------------------------------------------------------------------- |
+| `OPENTUI_GRAPHICS`              | Exact lowercase `false` or `0` disables Kitty and Sixel queries. Exact lowercase `true` or `1` keeps detection enabled. |
+| `OPENTUI_IMAGE_PROTOCOL`        | Selects `auto`, `kitty`, `sixel`, or `blocks` without case sensitivity                                                  |
+| `OPENTUI_FORCE_EXPLICIT_WIDTH`  | `true` or `1` forces support. `false` or `0` disables support and the query.                                            |
+| `OPENTUI_FORCE_WCWIDTH`         | Presence selects wcwidth                                                                                                |
+| `OPENTUI_FORCE_UNICODE`         | Presence selects Unicode width mode                                                                                     |
+| `OPENTUI_FORCE_NOZWJ`           | Presence selects a native no-ZWJ width mode                                                                             |
+| `OPENTUI_NOTIFICATION_PROTOCOL` | Selects `osc9`, `osc777`, `osc99`, or a disabled value                                                                  |
+| `OPENTUI_NOTIFICATIONS`         | `0`, `false`, or `off` disables notifications                                                                           |
+
+Read [Environment variables](/docs/reference/env-vars) for the complete value and timing rules.
+
+The native no-ZWJ mode is not represented in the public `WidthMethod` union or the terminal-capability decoder enum.
+The `OPENTUI_FORCE_NOZWJ` snapshot path is therefore unclear. Do not depend on `capabilities.unicode` under that
+override until the public type and decoder agree with native state.
+
+## Response trust
+
+Capability replies arrive on the renderer's input stream. A byte source that can inject terminal response sequences
+can influence the snapshot and enable later protocol output.
+
+Treat custom and remote streams as a trust boundary. Forward replies only from the terminal endpoint. Do not combine
+untrusted application data with the control-response channel. OpenTUI validates recognized shapes and bounds parsed
+numbers, but that validation does not authenticate the sender.
+
+## Test fixtures
+
+Use `@opentui/core/testing` instead of sending private escape replies in most tests:
+
+```typescript
+import { createTerminalCapabilities, setRendererCapabilities } from "@opentui/core/testing"
+
+const capabilities = createTerminalCapabilities({
+  rgb: true,
+  hyperlinks: true,
+  osc52_support: "supported",
+  terminal: { name: "fixture", version: "1.0" },
+})
+
+setRendererCapabilities(renderer, capabilities)
+```
+
+`createTerminalCapabilities()` defaults booleans to false, `unicode` to `"unicode"`, `osc52_support` to `"unknown"`,
+`multiplexer` to `"none"`, `image_protocol` to `"auto"`, and terminal strings to empty. Overrides merge the nested
+terminal object.
+
+`setRendererCapabilities()` changes a test renderer's stored snapshot. It does not emulate native protocol setup or
+terminal output. Read [Testing](/docs/core-concepts/testing) for observable rendering tests.
+
+## Next
+
+- [Renderer](/docs/core-concepts/renderer) owns renderer creation and custom streams.
+- [Image](/docs/components/image) selects an image protocol for normal display.
+- [Clipboard](/docs/core-concepts/clipboard) defines OSC 52 fallback and operation results.
+- [Notifications](/docs/core-concepts/notifications) defines notification policy.
+- [SSH](/docs/reference/ssh) configures remote sessions.
+- [Troubleshooting](/docs/test-and-debug/troubleshooting) routes terminal-detection failures.

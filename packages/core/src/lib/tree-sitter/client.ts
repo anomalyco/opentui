@@ -529,6 +529,13 @@ export class TreeSitterClient extends EventEmitter<TreeSitterClientEvents> {
       }
 
       case "ERROR": {
+        if (message.messageId) {
+          const callback = this.messageCallbacks.get(message.messageId)
+          if (callback) {
+            this.messageCallbacks.delete(message.messageId)
+            callback.reject(new Error(message.error))
+          }
+        }
         this.emitError(message.error, message.bufferId)
         return
       }

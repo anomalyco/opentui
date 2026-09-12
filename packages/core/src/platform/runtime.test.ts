@@ -84,6 +84,19 @@ describe("platform/runtime", () => {
     expect(fallbackCalled).toBe(!isBun)
   })
 
+  test("falls back to the source path when a bundled asset module's default is not a path string", async () => {
+    const fallbackUrl = new URL("./fallback-tree-sitter.wasm", import.meta.url)
+
+    const resolved = await resolveBundledFilePath(
+      "web-tree-sitter/tree-sitter.wasm",
+      async () => ({ default: undefined as unknown as string }),
+      fallbackUrl,
+      import.meta.url,
+    )
+
+    expect(resolved).toBe(fileURLToPath(fallbackUrl))
+  })
+
   test("resolves Bun-emitted asset modules when a non-Bun bundle has no source fallback", async () => {
     const bundledUrl = new URL("./bundled-tree-sitter.wasm", import.meta.url).href
     const bundledModuleSpecifier = `data:text/javascript,${encodeURIComponent(

@@ -98,6 +98,14 @@ function setupNpmAuth(): void {
   }
 }
 
+function isTrustedPublishing(): boolean {
+  return (
+    process.env.GITHUB_ACTIONS === "true" &&
+    Boolean(process.env.ACTIONS_ID_TOKEN_REQUEST_URL) &&
+    Boolean(process.env.ACTIONS_ID_TOKEN_REQUEST_TOKEN)
+  )
+}
+
 function verifyNpmAuth(): void {
   console.log("INFO: Verifying NPM authentication...")
   const npmAuth: SpawnSyncReturns<Buffer> = spawnSync("npm", ["whoami"], {})
@@ -278,10 +286,15 @@ function main(): void {
   console.log("OpenTUI Pre-Publish Validation")
   console.log("=".repeat(50))
 
-  // Setup NPM authentication once
-  console.log("\nINFO: Setting up NPM authentication...")
-  setupNpmAuth()
-  verifyNpmAuth()
+  // OIDC credentials are exchanged by `npm publish` itself, so `npm whoami`
+  // cannot verify Trusted Publishing authentication ahead of time.
+  if (isTrustedPublishing()) {
+    console.log("\nINFO: Using npm Trusted Publishing (OIDC)")
+  } else {
+    console.log("\nINFO: Setting up NPM authentication...")
+    setupNpmAuth()
+    verifyNpmAuth()
+  }
 
   // Validate all packages
   console.log("\nINFO: Validating all packages...")

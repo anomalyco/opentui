@@ -1,11 +1,12 @@
 import { engine, Timeline, type TimelineOptions } from "@opentui/core"
-import { useEffect } from "react"
+import { useEffect, useState } from "react"
 
 export const useTimeline = (options: TimelineOptions = {}) => {
-  const timeline = new Timeline(options)
+  const [timeline] = useState(() => new Timeline(options))
+  const [autoplay] = useState(options.autoplay !== false)
 
   useEffect(() => {
-    if (options.autoplay !== false) {
+    if (autoplay) {
       timeline.play()
     }
 
@@ -15,7 +16,7 @@ export const useTimeline = (options: TimelineOptions = {}) => {
       timeline.pause()
       engine.unregister(timeline)
     }
-  }, [])
+  }, [autoplay, timeline])
 
   return timeline
 }

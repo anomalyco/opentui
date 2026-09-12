@@ -1,0 +1,139 @@
+---
+interface StoryConfig {
+  // Path to a built story.json recording.
+  src: string
+  // "inherit" (default) recolors every cell by luminance into this element's
+  // own computed `color` (or an explicit ink override below) — the ambient,
+  // abstract look. "recorded" paints the recording's own captured foreground
+  // colors verbatim, for content meant to read as a real, legible terminal.
+  tone?: "inherit" | "recorded"
+  // "transparent" (default) paints no cell backgrounds, so the host
+  // background shows through everywhere — required for bleeding onto a page.
+  // "recorded" paints the recording's own captured cell backgrounds, i.e. it
+  // looks like an actual terminal screen sitting on the page.
+  background?: "transparent" | "recorded"
+  // Add terminal-colored space around a recorded background. Disable this
+  // when the recording already owns its outer spacing.
+  padding?: boolean
+  // Convenience for inkShadow = inkHighlight = the same color. Ignored when
+  // tone is "recorded". Left undefined by default so mono stories fall back
+  // to this element's own computed `color`.
+  ink?: string
+  inkShadow?: string
+  inkHighlight?: string
+  fit?: "contain" | "cover"
+  scale?: number
+  gamma?: number
+  minAlpha?: number
+  maxAlpha?: number
+  // Extra dwell time (ms) on this story's last frame before cutting to the
+  // next one.
+  holdMs?: number
+  // Each is a fraction (0-1) of that edge's own extent (rows for top/bottom,
+  // columns for left/right) over which per-cell opacity ramps to 0 at the
+  // true edge. 0 (default) disables the fade on that edge. This is computed
+  // per cell, not a CSS `mask-image`/scrim overlay: both of those force the
+  // browser to composite the whole illustration through an offscreen layer,
+  // which visibly softens/blurs the monospace glyphs even where the mask
+  // itself is fully opaque — per-cell opacity does not have that cost.
+  fadeTop?: number
+  fadeRight?: number
+  fadeBottom?: number
+  fadeLeft?: number
+  // Shown in the controls panel's caption when present.
+  title?: string
+  caption?: string
+}
+
+interface Props {
+  // One or more recordings to cycle through in order, looping back to the
+  // first after the last. Each can override any of the shared defaults below.
+  stories: StoryConfig[]
+  label: string
+  // "hidden" (default): no visible controls, a purely ambient illustration.
+  // "hover": a subtle panel (segment dots, play/pause, caption) revealed on
+  // hover/focus, overlaid on the recording. "visible": the same overlay,
+  // always shown. "below": caption and navigation rendered in the page flow
+  // under the recording instead of overlaid on it — for article media where
+  // chapter captions are part of the content.
+  controls?: "hidden" | "hover" | "visible" | "below"
+  fit?: "contain" | "cover"
+  // Multiplier applied to the fit-computed font size, for minor art-direction
+  // nudges (bigger/smaller dots) without reintroducing cropping.
+  scale?: number
+  padding?: boolean
+  gamma?: number
+  minAlpha?: number
+  maxAlpha?: number
+  holdMs?: number
+  fadeTop?: number
+  fadeRight?: number
+  fadeBottom?: number
+  fadeLeft?: number
+  // Size the host from the active recording's rendered cell grid. Useful for
+  // inline article media; omit when the surrounding layout owns the box.
+  recordingAspectRatio?: boolean
+  class?: string
+}
+
+const {
+  stories,
+  label,
+  controls = "hidden",
+  fit = "contain",
+  scale = 1,
+  padding = true,
+  gamma = 2.2,
+  minAlpha = 0.02,
+  maxAlpha = 1,
+  holdMs = 600,
+  fadeTop = 0,
+  fadeRight = 0,
+  fadeBottom = 0,
+  fadeLeft = 0,
+  recordingAspectRatio = false,
+  class: className,
+} = Astro.props
+
+const config = JSON.stringify({
+  stories,
+  defaults: { fit, scale, padding, gamma, minAlpha, maxAlpha, holdMs, fadeTop, fadeRight, fadeBottom, fadeLeft },
+})
+---
+
+<figure
+  class={`terminal-illustration ${className ?? ""}`}
+  data-terminal-illustration={config}
+  data-illustration-controls={controls}
+  data-segment-count={stories.length}
+  aria-label={label}
+>
+  <div
+    class="terminal-illustration__viewport"
+    data-illustration-viewport
+    data-recording-aspect-ratio={recordingAspectRatio || undefined}
+  >
+    <pre class="terminal-illustration__screen" data-illustration-screen aria-hidden="true"></pre>
+  </div>
+  <div class="terminal-illustration__controls" data-illustration-controls-panel>
+    <div class="terminal-illustration__buttons">
+      <div class="terminal-illustration__segments" data-illustration-segments role="group" aria-label="Chapters"></div>
+      <button
+        class="terminal-illustration__toggle"
+        type="button"
+        data-illustration-toggle
+        aria-label={`Play ${label}`}
+        aria-pressed="false"
+      >
+        Play
+      </button>
+    </div>
+    <span class="terminal-illustration__caption" data-illustration-caption></span>
+  </div>
+</figure>
+
+<script src="../scripts/terminal-illustration.js"></script>
+
+<style is:global>
+  @import "../styles/terminal-illustration.css";
+</style>

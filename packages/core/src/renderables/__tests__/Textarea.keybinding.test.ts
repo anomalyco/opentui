@@ -676,10 +676,11 @@ describe("Textarea - Keybinding Tests", () => {
 
       currentMockInput.pressKey("L", { shift: true })
       expect(editor.hasSelection()).toBe(true)
-      expect(editor.getSelectedText()).toBe("H")
+      // Inclusive selection: anchor cell plus the cell under the moved cursor.
+      expect(editor.getSelectedText()).toBe("He")
 
       currentMockInput.pressKey("L", { shift: true })
-      expect(editor.getSelectedText()).toBe("He")
+      expect(editor.getSelectedText()).toBe("Hel")
     })
 
     it("should support custom keybindings with alt modifier", async () => {
@@ -2558,7 +2559,9 @@ describe("Textarea - Keybinding Tests", () => {
 
       currentMockInput.pressArrow("right", { meta: true, shift: true })
       expect(editor.logicalCursor.col).toBe(6)
-      expect(editor.getSelectedText()).toBe("日本語")
+      // Inclusive selection (Vim v+w): the first cell of the next word is
+      // selected because the cursor lands on it.
+      expect(editor.getSelectedText()).toBe("日本語a")
 
       currentMockInput.pressArrow("right", { meta: true, shift: true })
       expect(editor.logicalCursor.col).toBe(9)
@@ -2566,7 +2569,7 @@ describe("Textarea - Keybinding Tests", () => {
 
       currentMockInput.pressArrow("left", { meta: true, shift: true })
       expect(editor.logicalCursor.col).toBe(6)
-      expect(editor.getSelectedText()).toBe("日本語")
+      expect(editor.getSelectedText()).toBe("日本語a")
 
       currentMockInput.pressArrow("left", { meta: true, shift: true })
       expect(editor.logicalCursor.col).toBe(0)
@@ -2585,7 +2588,9 @@ describe("Textarea - Keybinding Tests", () => {
 
       currentMockInput.pressArrow("right", { meta: true, shift: true })
       expect(editor.logicalCursor.col).toBe(2)
-      expect(editor.getSelectedText()).toBe("丽")
+      // Inclusive selection (Vim v+w): the first cell of the next word is
+      // selected because the cursor lands on it.
+      expect(editor.getSelectedText()).toBe("丽a")
 
       currentMockInput.pressArrow("right", { meta: true, shift: true })
       expect(editor.logicalCursor.col).toBe(5)
@@ -2593,7 +2598,7 @@ describe("Textarea - Keybinding Tests", () => {
 
       currentMockInput.pressArrow("left", { meta: true, shift: true })
       expect(editor.logicalCursor.col).toBe(2)
-      expect(editor.getSelectedText()).toBe("丽")
+      expect(editor.getSelectedText()).toBe("丽a")
 
       currentMockInput.pressArrow("left", { meta: true, shift: true })
       expect(editor.logicalCursor.col).toBe(0)
@@ -3154,9 +3159,10 @@ describe("Textarea - Keybinding Tests", () => {
       // At end of line 1
       editor.editBuffer.setCursor(0, 6)
 
-      // First ctrl+shift+a from EOL selects through the line break at EOL
+      // ctrl+shift+a from EOL selects the line up to the anchor: there is no
+      // cell under an EOL cursor, so the newline is not included.
       kittyMockInput.pressKey("a", { ctrl: true, shift: true })
-      expect(editor.getSelectedText()).toBe("Line 1\n")
+      expect(editor.getSelectedText()).toBe("Line 1")
 
       // Reset
       editor.editBuffer.setCursor(0, 0)
@@ -3351,7 +3357,7 @@ describe("Textarea - Keybinding Tests", () => {
 
       expect(editor.hasSelection()).toBe(true)
       const selectedText = editor.getSelectedText()
-      expect(selectedText).toBe("KLMNOPQRS")
+      expect(selectedText).toBe("KLMNOPQRST")
     })
 
     it("should work without wrapping (same as logical)", async () => {

@@ -16,6 +16,10 @@ function setRgb(buffer: Uint16Array, base: number, r: number, g: number, b: numb
   buffer[base + 3] = a
 }
 
+function isGraphemeCell(char: number): boolean {
+  return char >>> 30 >= 2
+}
+
 interface ActiveGlitch {
   y: number
   type: "shift" | "flip" | "color"
@@ -265,6 +269,7 @@ export class VignetteEffect {
   private _strength: number
   // Stores packed cell masks [x, y, attenuation] per pixel
   private precomputedAttenuationCellMask: Float32Array | null = null
+  private precomputedAttenuation: Float32Array | null = null
   private cachedWidth: number = -1
   private cachedHeight: number = -1
   // Zero matrix for attenuation (maps everything toward black based on strength)
@@ -280,6 +285,7 @@ export class VignetteEffect {
     this.cachedWidth = -1
     this.cachedHeight = -1
     this.precomputedAttenuationCellMask = null
+    this.precomputedAttenuation = null
   }
 
   public get strength(): number {
@@ -288,6 +294,7 @@ export class VignetteEffect {
 
   private _computeFactors(width: number, height: number): void {
     this.precomputedAttenuationCellMask = new Float32Array(width * height * 3)
+    this.precomputedAttenuation = new Float32Array(width * height)
     const centerX = width / 2
     const centerY = height / 2
     const maxDistSq = centerX * centerX + centerY * centerY
@@ -308,10 +315,35 @@ export class VignetteEffect {
         this.precomputedAttenuationCellMask[i++] = x
         this.precomputedAttenuationCellMask[i++] = y
         this.precomputedAttenuationCellMask[i++] = attenuation
+        this.precomputedAttenuation[y * width + x] = attenuation
       }
     }
     this.cachedWidth = width
     this.cachedHeight = height
+  }
+
+  private _preserveGraphemeRuns(buffer: OptimizedBuffer): void {
+    const baseAttenuation = this.precomputedAttenuation!
+    const cellMask = this.precomputedAttenuationCellMask!
+    const chars = buffer.buffers.char
+    const width = buffer.width
+
+    for (let y = 0; y < buffer.height; y++) {
+      let x = 0
+      while (x < width) {
+        const cell = y * width + x
+        if (!isGraphemeCell(chars[cell])) {
+          cellMask[cell * 3 + 2] = baseAttenuation[cell]
+          x++
+          continue
+        }
+
+        const start = x
+        while (x < width && isGraphemeCell(chars[y * width + x])) x++
+        const attenuation = baseAttenuation[y * width + start + Math.floor((x - start) / 2)]
+        for (let runX = start; runX < x; runX++) cellMask[(y * width + runX) * 3 + 2] = attenuation
+      }
+    }
   }
 
   /**
@@ -328,6 +360,10 @@ export class VignetteEffect {
     if (width !== this.cachedWidth || height !== this.cachedHeight || !this.precomputedAttenuationCellMask) {
       this._computeFactors(width, height)
     }
+
+    // Style boundaries can change complex-script shaping in terminals. Keep
+    // contiguous graphemes at one attenuation while other cells retain the gradient.
+    this._preserveGraphemeRuns(buffer)
 
     // Use colorMatrix with zero matrix to apply attenuation
     // colorMatrix blends: result = original + (transformed - original) × strength

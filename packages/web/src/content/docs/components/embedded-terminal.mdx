@@ -1,0 +1,235 @@
+---
+title: Embedded terminal
+description: Parse VT output and draw a child terminal in the render tree
+skill:
+  entry: true
+  intents: [embedded-terminal, terminal-renderable, ghostty, vt, pty]
+---
+
+# Embedded terminal
+
+`EmbeddedTerminalRenderable` parses VT output and draws a terminal screen in the render tree. The parser is Ghostty's VT library, linked into the native artifact. You do not need an extra install.
+
+The renderable is not a process and not a PTY. You write child output into it. You send encoded input back to the child.
+
+## Availability
+
+| Field           | Availability                 |
+| --------------- | ---------------------------- |
+| Package         | `@opentui/core`              |
+| Core renderable | `EmbeddedTerminalRenderable` |
+| React           | Unavailable                  |
+| Solid           | Unavailable                  |
+| Status          | Built-in Core renderable     |
+
+The native artifact includes Ghostty VT on `x86_64` and `aarch64` for macOS, Linux glibc, Linux musl, and Windows GNU. Other targets throw `Embedded terminal creation failed: embedded terminal support is unavailable`.
+
+## I/O model
+
+The renderable owns a VT parser, a screen, scrollback, and input encoders. It does not own the child.
+
+```text
+                ╔══ child ═════════════════════════════╗
+                ║                                      ║
+                ║  stdout                              ║
+                ║                                      ║
+┌─ "input" ────▶║  stdin                               ║
+├─ "response" ─▶║                                      ║
+│               ╚══════════════════╤═══════════════════╝
+│                                  │                    
+│                                  │ write()            
+│                                  ▼                    
+│               ╔══ EmbeddedTerminalRenderable ════════╗
+│               ║                                      ║
+│               ║  ┏━━ VT parser ━━━━━━━━━━━━━━━━━━━┓  ║
+│               ║  ┗━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━┛  ║
+│               ║                   ▼                  ║
+│               ║  ┏━━ screen ━━━━━━━━━━━━━━━━━━━━━━┓  ║
+│               ║  ┃  cells, cursor, scrollback     ┃  ║
+│               ║  ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛  ║
+│               ║                                      ║
+├───────────────╢  encode                              ║
+└───────────────╢  drain                               ║
+                ║                                      ║
+                ╚══════════════════════════════════════╝
+```
+
+Write both `onData` sources to the child's stdin. Use `source` only when you log or filter. A query such as DSR produces `"response"`. A key or mouse event produces `"input"`.
+
+## Draw VT output
+
+```typescript
+import { EmbeddedTerminalRenderable, createCliRenderer } from "@opentui/core"
+
+const renderer = await createCliRenderer()
+const terminal = new EmbeddedTerminalRenderable(renderer, {
+  id: "session",
+  width: 80,
+  height: 24,
+})
+
+terminal.write("hello \x1b[1;32mworld\x1b[0m\r\n")
+renderer.root.add(terminal)
+terminal.focus()
+```
+
+`write()` accepts a string or `Uint8Array`. The parser keeps incomplete escape sequences across calls. After `write()` or a resize, the renderable drains generated replies. Nonempty reply bytes go to `onData` with source `"response"`.
+
+Parsed child output can produce this screen:
+
+```text terminal=embedded-terminal-vt
+$ bun test
+✓ parser accepts UTF-8
+✓ renderer draws wide cells
+2 passed, 0 failed
+```
+
+`screen()` reads the private cell buffer from the last paint. Call it after a render pass. It trims the end of each line and drops trailing empty rows. `columns` and `rows` are the renderable's current layout size. Cursor state also comes from the last compose, not from `write()` alone.
+
+## Attach a process
+
+Give every child output chunk to `write()`. Give every `onData` payload to the child. Resize the child from `onTerminalResize`.
+
+```typescript
+import { EmbeddedTerminalRenderable } from "@opentui/core"
+
+function attachChild(
+  terminal: EmbeddedTerminalRenderable,
+  child: {
+    write(data: Uint8Array): void
+    resize(cols: number, rows: number): void
+  },
+): void {
+  terminal.onData = (data) => {
+    child.write(data)
+  }
+  terminal.onTerminalResize = (cols, rows) => {
+    child.resize(cols, rows)
+  }
+}
+```
+
+If `width` or `height` is a percentage or flex size, the native grid starts at `cols` and `rows`. Those values default to `80` and `24` when the layout size is not a number. Create the child at that starting grid.
+
+A computed size change resizes the emulator only while the renderable is visible. That path also drains replies and calls `onTerminalResize`. A numeric `width` or `height` that already matches the first layout does not fire the callback.
+
+Set `TERM` and `COLORTERM` on the child when you want a typical xterm-compatible session. The examples app includes an embedded shell demo that uses `Bun.spawn` with `terminal`.
+
+Destroy the renderable and close the child together. `destroy()` releases the native emulator. A second call is safe.
+
+## Size and scrollback
+
+| Option          | Default                          | Meaning                                                                                           |
+| --------------- | -------------------------------- | ------------------------------------------------------------------------------------------------- |
+| `cols`          | numeric `width`, otherwise `80`  | Initial emulator columns. Must be an integer from 1 through 65535.                                |
+| `rows`          | numeric `height`, otherwise `24` | Initial emulator rows. Must be an integer from 1 through 65535.                                   |
+| `width`         | `cols`                           | Layout width. A later size change resizes the emulator.                                           |
+| `height`        | `rows`                           | Layout height. A later size change resizes the emulator.                                          |
+| `maxScrollback` | `10000`                          | Scrollback budget in bytes, not lines. `0` stores no history. The value must fit in a native u32. |
+
+`maxScrollback` is constructor-only. A visible size change floors the computed width and height and caps the native grid at 65535. It then invalidates the next paint, drains replies, and calls `onTerminalResize`. The cap does not apply to layout size or `screen()` dimensions. The renderable ignores non-finite and non-positive sizes. Hidden size changes update layout only.
+
+## Focus and keyboard
+
+The renderable is focusable. A left-button press inside it calls `focus()`. While the renderable has focus, the renderer routes keys and paste events to it.
+
+`handleKeyPress()` encodes the key with the child's current keyboard mode. It sends nonempty bytes as `"input"` and returns `true` when it produces bytes. The renderable forwards Kitty releases only while it has focus. `meta` encodes as Super, not Alt.
+
+`handlePaste()` encodes the paste with the current paste mode. Bracketed paste wraps the payload when the child enabled it. Encoding replaces certain control bytes with spaces. Without bracketed paste, newlines become carriage returns.
+
+If the child enabled focus events, `focus()` and `blur()` send the matching sequences as `"input"`. If `onData` throws during `focus()`, the renderable leaves focus. `blur()` still finishes cleanup if `onData` throws.
+
+Renderer `keyInput` listeners run before the focused renderable. Use that path for a host shortcut such as Escape. Call `stopPropagation()` or `preventDefault()` when the host must keep the key.
+
+## Mouse and local scroll
+
+When the child enables a cell-based mouse protocol, the renderable encodes pointer events, sends nonempty bytes as `"input"`, and stops those events. Duplicate motion and mode 1016 pixel mouse encode to empty bytes and do not stop the event. The renderable has cell coordinates only.
+
+When the child does not encode a wheel event, the renderable scrolls its own viewport by 3 rows and stops the event. Your `onMouseDown` and related handlers still run after this forwarding.
+
+## Selection
+
+`selectable` defaults to `true`. The renderable joins the renderer selection and clamps drag endpoints to the visible grid. Selected cells invert on paint. `getSelectedText()` returns the emulator selection, and the renderer selection uses that same text.
+
+The renderer starts host selection before it dispatches the mouse event. Encoded mouse bytes still go to the child. `preventDefault()` does not cancel that selection. The same gesture can update host selection and send mouse input.
+
+## Cursor and paint
+
+The renderable is always buffered and composes dirty rows into its private buffer. Wide graphemes use their grid width. Bold, dim, italic, underline, blink, hidden, and strikethrough map to cell attributes. Inverse style and selection swap foreground and background.
+
+The paint path does not compose child Kitty graphics or Sixel images. It draws the character grid only.
+
+While the renderable has focus, the host cursor follows the emulator cursor. It takes the bar, block, or underline style. Hollow block becomes block. It takes blink and RGB cursor color when present. A wide-glyph tail shifts the host cursor one cell left.
+
+`blur()` and `destroy()` hide the host cursor.
+
+`render()` runs `renderBefore`, then compose, then `renderAfter`. If either hook exists, or existed on the previous frame, compose redraws the full grid. That redraw replaces `renderBefore` output. Use `renderAfter` to draw over the terminal cells.
+
+`onScreenChange` runs after every successful compose while the renderable is visible. It is not a dirty-content signal. Do not use it to start work that must run only when the screen content changes.
+
+`invalidate()` forces a full redraw on the next compose.
+
+## Limits and failures
+
+The reply queue keeps at most 1 MiB and drops an overflowing reply. `write()` still delivers replies that were already queued and does not throw.
+
+Construction validates `cols`, `rows`, and `maxScrollback` before native allocation. A failed constructor destroys the renderable and rethrows. `destroy()` and a failed constructor hide the host cursor. If the renderable has focus, `destroy()` can send a focus-lost sequence to `onData` before it frees the handle. After that, methods return without writing. Encoders return empty bytes.
+
+If framebuffer allocation fails, the renderable does not compose into the parent. `write()` still updates native state.
+
+## Test
+
+```typescript
+import { EmbeddedTerminalRenderable } from "@opentui/core"
+import { createTestRenderer } from "@opentui/core/testing"
+
+const setup = await createTestRenderer({ width: 40, height: 8 })
+
+try {
+  const terminal = new EmbeddedTerminalRenderable(setup.renderer, { width: 20, height: 4 })
+  setup.renderer.root.add(terminal)
+  terminal.write("hello \x1b[1;32mworld\x1b[0m\r\n")
+  await setup.renderOnce()
+
+  console.log(setup.captureCharFrame())
+  console.log(terminal.screen().text)
+} finally {
+  setup.renderer.destroy()
+}
+```
+
+Use `encodeKey()` and `encodePaste()` to assert mode-aware sequences without a child process. See [Testing](/docs/core-concepts/testing) for `createTestRenderer()`, `mockInput`, and `mockMouse`.
+
+## Options and state
+
+| Member                | Type                                                             | Description                                                               |
+| --------------------- | ---------------------------------------------------------------- | ------------------------------------------------------------------------- |
+| `cols`                | `number`                                                         | Constructor option. Initial emulator columns. Not an instance field.      |
+| `rows`                | `number`                                                         | Constructor option. Initial emulator rows. Not an instance field.         |
+| `maxScrollback`       | `number`                                                         | Constructor option. Scrollback budget in bytes. Default `10000`.          |
+| `selectable`          | `boolean`                                                        | Whether the renderable joins renderer selection. Default `true`.          |
+| `onData`              | `(data: Uint8Array, source: EmbeddedTerminalDataSource) => void` | Called with encoded input or drained replies.                             |
+| `onTerminalResize`    | `(cols: number, rows: number) => void`                           | Called after a visible layout size change resizes the emulator.           |
+| `onScreenChange`      | `() => void`                                                     | Called after a successful compose while the renderable is visible.        |
+| `write(data)`         | `(data: string \| Uint8Array) => void`                           | Parse VT bytes and request a render.                                      |
+| `encodeKey(key)`      | `(key: KeyEvent) => Uint8Array`                                  | Encode a key with the current keyboard mode.                              |
+| `encodePaste(bytes)`  | `(bytes: Uint8Array) => Uint8Array`                              | Encode a paste with the current paste mode.                               |
+| `handleKeyPress(key)` | `(key: KeyEvent) => boolean`                                     | Encode a key and send nonempty bytes as `"input"`.                        |
+| `handlePaste(event)`  | `(event: PasteEvent) => void`                                    | Encode a paste and send nonempty bytes as `"input"`.                      |
+| `focus()` / `blur()`  | `() => void`                                                     | Move focus and send focus sequences when the child enabled them.          |
+| `screen()`            | `() => EmbeddedTerminalScreen`                                   | Painted text and native cursor. `columns` and `rows` are the layout size. |
+| `hasSelection()`      | `() => boolean`                                                  | Whether this renderable currently has an active selection.                |
+| `getSelectedText()`   | `() => string`                                                   | Selected emulator text, or `""`.                                          |
+| `invalidate()`        | `() => void`                                                     | Force a full redraw on the next compose.                                  |
+
+You can assign `onData`, `onTerminalResize`, and `onScreenChange` after construction.
+
+## React and Solid
+
+React and Solid do not register an element for this renderable. Use the Core API, or register your own catalogue entry with `extend()`.
+
+Solid constructs registered classes with `{ id }` only. `maxScrollback`, `cols`, and `rows` then take their defaults. Use an adapter if those values must differ. See [Custom renderables](/docs/extend/custom-renderables#register-framework-elements).
+
+## Related
+
+Read [Interaction, focus, and selection](/docs/core-concepts/interaction) for focus and selection ownership. Read [Keyboard input](/docs/core-concepts/keyboard) for listener order and paste events. Read [Testing](/docs/core-concepts/testing) for frame capture.

@@ -1,0 +1,48 @@
+---
+id: opentui-solid
+name: OpenTUI Solid
+summary: Solid renderer for building terminal user interfaces with OpenTUI Core.
+kind: renderer
+official: true
+source:
+  url: https://github.com/anomalyco/opentui
+  directory: packages/solid
+surfaces:
+  - name: Solid
+    language: typescript
+    import: "@opentui/solid"
+    docs: /docs/bindings/solid
+  - name: Components
+    language: typescript
+    import: "@opentui/solid/components"
+distributions:
+  - type: npm
+    identifier: "@opentui/solid"
+    install: bun add @opentui/solid solid-js@1.9.12
+links:
+  docs: /docs/bindings/solid
+categories:
+  - frameworks
+  - rendering
+---
+
+`@opentui/solid` is a Solid renderer for OpenTUI. It requires `solid-js` 1.9.12 exactly.
+
+Solid components run once. Signals update renderable properties without a virtual DOM.
+
+```tsx
+import { createCliRenderer } from "@opentui/core"
+import { render } from "@opentui/solid"
+
+const renderer = await createCliRenderer({ exitOnCtrlC: true })
+
+await render(() => <text>Hello, Solid!</text>, renderer)
+```
+
+`render()` adopts this renderer. The code that creates the renderer owns `renderer.destroy()`.
+
+Bun can transform Solid TSX through the package preload. Node.js requires compiled Solid TSX.
+
+Read the [Solid bindings](/docs/bindings/solid), [components overview](/docs/components),
+[runtime and platform support](/docs/getting-started/runtime-support), and
+[package entry points](/docs/reference/package-entrypoints).

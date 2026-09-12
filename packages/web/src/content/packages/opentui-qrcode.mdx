@@ -1,0 +1,39 @@
+---
+id: opentui-qrcode
+name: OpenTUI QR Code
+summary: QR code encoder and renderable with React and Solid surfaces.
+kind: component
+official: true
+source:
+  url: https://github.com/anomalyco/opentui
+  directory: packages/qrcode
+surfaces:
+  - name: TypeScript
+    language: typescript
+    import: "@opentui/qrcode"
+    docs: /docs/reference/qr-encoder
+  - name: React
+    language: typescript
+    import: "@opentui/qrcode/react"
+  - name: Solid
+    language: typescript
+    import: "@opentui/qrcode/solid"
+distributions:
+  - type: npm
+    identifier: "@opentui/qrcode"
+    install: bun add @opentui/qrcode
+links:
+  docs: /docs/components/qr-code
+categories:
+  - components
+---
+
+`@opentui/qrcode` includes a QR Code Model 2 encoder and a renderable for OpenTUI.
+
+The renderable uses half-block cells to keep the symbol square in terminal cell geometry. React apps call
+`registerQRCode()` once and then use `<qr-code>`. Solid apps call `registerQRCode()` once and then use `<qr_code>`.
+
+The encoder APIs produce matrices or serialized output. They do not require a mounted renderable.
+
+Read the [QR code component](/docs/components/qr-code), [QR encoder](/docs/reference/qr-encoder), and
+[package entry points](/docs/reference/package-entrypoints).

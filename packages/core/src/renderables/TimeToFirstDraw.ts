@@ -3,6 +3,34 @@ import { parseColor, RGBA, type ColorInput } from "../lib/RGBA.js"
 import { Renderable, type RenderableOptions } from "../Renderable.js"
 import type { RenderContext } from "../types.js"
 
+const graphemeSegmenter = new Intl.Segmenter(undefined, { granularity: "grapheme" })
+
+function measureCellWidth(buffer: OptimizedBuffer, text: string): number {
+  const encoded = buffer.encodeUnicode(text)
+  if (!encoded) return 0
+
+  try {
+    return encoded.data.reduce((width, glyph) => width + glyph.width, 0)
+  } finally {
+    buffer.freeUnicode(encoded)
+  }
+}
+
+function truncateToCellWidth(buffer: OptimizedBuffer, text: string, maxWidth: number): { text: string; width: number } {
+  let visibleText = ""
+  let visibleWidth = 0
+
+  for (const { segment } of graphemeSegmenter.segment(text)) {
+    const segmentWidth = measureCellWidth(buffer, segment)
+    if (visibleWidth + segmentWidth > maxWidth) break
+
+    visibleText += segment
+    visibleWidth += segmentWidth
+  }
+
+  return { text: visibleText, width: visibleWidth }
+}
+
 export interface TimeToFirstDrawOptions extends RenderableOptions<TimeToFirstDrawRenderable> {
   fg?: ColorInput
   label?: string
@@ -73,10 +101,10 @@ export class TimeToFirstDrawRenderable extends Renderable {
 
     const content = `${this.label}: ${this._runtimeMs.toFixed(this.precision)}ms`
     const maxWidth = Math.max(this.width, 1)
-    const visibleContent = content.length > maxWidth ? content.slice(0, maxWidth) : content
-    const centeredX = this.x + Math.max(0, Math.floor((maxWidth - visibleContent.length) / 2))
+    const visibleContent = truncateToCellWidth(buffer, content, maxWidth)
+    const centeredX = this.x + Math.max(0, Math.floor((maxWidth - visibleContent.width) / 2))
 
-    buffer.drawText(visibleContent, centeredX, this.y, this.textColor)
+    buffer.drawText(visibleContent.text, centeredX, this.y, this.textColor)
   }
 
   private normalizePrecision(value: number): number {

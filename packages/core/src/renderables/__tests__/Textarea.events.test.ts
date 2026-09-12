@@ -406,7 +406,7 @@ describe("Textarea - Event Handlers Tests", () => {
         await new Promise((resolve) => setTimeout(resolve, 10))
 
         expect(contentChangeCount).toBeGreaterThan(beforeDelete)
-        expect(editor.plainText).toBe(" World")
+        expect(editor.plainText).toBe("World")
       })
 
       it("should update event handler when set dynamically", async () => {

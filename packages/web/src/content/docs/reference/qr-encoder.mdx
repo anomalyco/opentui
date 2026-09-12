@@ -1,0 +1,290 @@
+---
+title: QR encoder
+description: Encode QR code Model 2 matrices and render terminal text or SVG
+skill:
+  entry: true
+  intents: [qr, qrcode, qr-encoder, svg-qr, gs1, eci, structured-append]
+---
+
+# QR encoder
+
+The [QR code component](/docs/components/qr-code) displays a QR code in an OpenTUI render tree. The
+`@opentui/qrcode` package root owns the separate QR code Model 2 encoder.
+
+Use the encoder when you need a module matrix, terminal string, SVG, raw-byte input, explicit segments, GS1/FNC1,
+extended channel interpretation (ECI), or structured append. See
+[Package entry points](/docs/reference/package-entrypoints) for the framework registration paths.
+
+```bash
+bun add @opentui/qrcode
+```
+
+## Encode text
+
+```typescript
+import { ErrorCorrectionLevel, QRCode } from "@opentui/qrcode"
+
+const qr = QRCode.encodeText("https://opentui.com", ErrorCorrectionLevel.M)
+
+console.log(`version=${qr.version} size=${qr.size} mask=${qr.mask}`)
+console.log(qr.toTerminalString({ ansi: true }))
+```
+
+`encodeText()` selects the first version in the configured range that fits. It can optimize mixed text into numeric,
+alphanumeric, byte, and Kanji segments. It selects the lowest-penalty mask unless you set a mask.
+
+`ErrorCorrectionLevel` exports `L`, `M`, `Q`, and `H`. The requested error-correction level defaults to M. Because
+`boostEcl` defaults to `true`, `qr.errorCorrectionLevel` can increase when the selected version has room.
+
+## Encoding options
+
+```typescript
+interface EncodeOptions {
+  minVersion?: number
+  maxVersion?: number
+  mask?: number
+  boostEcl?: boolean
+  optimize?: boolean
+  kanji?: boolean
+  byteEncoding?: ByteEncoding
+  eciForUtf8?: boolean
+  eciAssignment?: number | null
+  fnc1First?: boolean
+  fnc1Second?: { applicationIndicator: string | number }
+  structuredAppend?: {
+    position: number
+    total: number
+    parity: number
+  }
+}
+```
+
+| Option             | Default                        | Description                                                                          |
+| ------------------ | ------------------------------ | ------------------------------------------------------------------------------------ |
+| `minVersion`       | `1`                            | Minimum QR code Model 2 version, inclusive                                           |
+| `maxVersion`       | `40`                           | Maximum version, inclusive                                                           |
+| `mask`             | automatic                      | Force mask `0` through `7`. Otherwise, select by penalty score                       |
+| `boostEcl`         | `true`                         | Increase error correction without increasing the selected version when the data fits |
+| `optimize`         | `true`                         | Use mixed-mode dynamic programming for text                                          |
+| `kanji`            | `false`                        | Permit Kanji mode for supported Shift JIS characters                                 |
+| `byteEncoding`     | `"utf-8"`                      | Encode text that falls back to byte segments                                         |
+| `eciForUtf8`       | `true` for UTF-8 byte segments | Prefix UTF-8 byte data with ECI assignment 26                                        |
+| `eciAssignment`    | inferred                       | Override the ECI before byte segments. `null` suppresses it                          |
+| `fnc1First`        | `false`                        | Insert FNC1 in first position                                                        |
+| `fnc1Second`       | none                           | Insert FNC1 in second position with an application indicator                         |
+| `structuredAppend` | none                           | Insert a structured-append header                                                    |
+
+`ByteEncoding` is `"utf-8" | "iso-8859-1" | "shift-jis"`. The exported `EciAssignment` constants are
+`ISO_8859_1: 3`, `SHIFT_JIS: 20`, and `UTF_8: 26`.
+
+`encodeText()`, `makeSegments()`, and `makeOptimizedSegments()` add a known ECI when they create UTF-8 or Shift JIS byte
+segments. They add no automatic ECI for ISO-8859-1. Numeric, alphanumeric, and Kanji segments do not need a
+byte-encoding ECI.
+
+`encodeTextBytes(text, encoding)` returns the encoded `Uint8Array`. It throws when ISO-8859-1 or Shift JIS cannot
+represent a character.
+
+## Other encoders
+
+All encoder methods default to error-correction level M and `EncodeOptions = {}` unless the table states otherwise.
+
+| Method                                                 | Input and behavior                                         |
+| ------------------------------------------------------ | ---------------------------------------------------------- |
+| `QRCode.encodeText(text, ecl?, options?)`              | Optimized text encoding                                    |
+| `QRCode.encodeBytes(bytes, ecl?, options?)`            | One raw byte segment. It does not add an ECI automatically |
+| `QRCode.encodeEciText(text, ecl?, options?)`           | Byte text with six-digit escaped ECI switches              |
+| `QRCode.encodeGs1Text(data, ecl?, options?)`           | GS1 payload with FNC1 first position and no text ECI       |
+| `QRCode.encodeSegments(segments, ecl?, options?)`      | Explicit segment sequence                                  |
+| `QRCode.encodeStructuredAppend(parts, ecl?, options?)` | Encode 2-16 segment arrays with shared parity              |
+
+`encodeBytes()` accepts a `Uint8Array` or number array. Each number must be an integer from 0 through 255.
+
+### Raw bytes and explicit ECI
+
+Add the ECI segment explicitly when raw bytes need an ECI designator:
+
+```typescript
+import { EciAssignment, ErrorCorrectionLevel, QRCode, QrSegment } from "@opentui/qrcode"
+
+const qr = QRCode.encodeSegments(
+  [QrSegment.makeEci(EciAssignment.ISO_8859_1), QrSegment.makeBytes([0x48, 0xe9])],
+  ErrorCorrectionLevel.M,
+)
+```
+
+`QRCode.encodeEciText()` and `QrSegment.makeEciSegmentsFromEscapedText()` treat one backslash plus exactly six decimal
+digits as an ECI switch. Two backslashes encode one literal backslash. The segment helper uses ISO-8859-1 until a known
+ECI changes the encoding.
+
+```typescript
+const qr = QRCode.encodeEciText("\\000026Hello, 世界")
+```
+
+The encoder can signal an ECI assignment from 0 through 999999. It converts text only for its known byte encodings.
+Supply converted bytes for an application-defined ECI transformation.
+
+### GS1/FNC1
+
+`encodeGs1Text()` accepts a payload string or `Gs1Element[]`. For elements, the helper concatenates each application
+identifier and its data without parentheses. It doubles data percent signs and inserts a percent sign when
+`separatorAfter` is true before another element.
+
+```typescript
+const qr = QRCode.encodeGs1Text([
+  { ai: "10", data: "LOT42", separatorAfter: true },
+  { ai: "17", data: "260731" },
+])
+```
+
+An element application identifier can contain ASCII letters and digits. For FNC1 second position,
+`applicationIndicator` accepts an integer from 0 through 99, exactly two decimal digits, or one Latin letter.
+`fnc1First` and `fnc1Second` cannot be active together.
+
+### Structured append
+
+```typescript
+const parts = ["PART ONE", "PART TWO"].map((text) => QrSegment.makeSegments(text))
+const symbols = QRCode.encodeStructuredAppend(parts)
+```
+
+`encodeStructuredAppend()` requires 2-16 parts. It computes XOR parity from the source segment bytes. It adds the
+1-based position and total to each symbol.
+
+For manual headers, use `QrSegment.makeStructuredAppendHeader(position, total, parity)`. Use
+`QRCode.computeStructuredAppendParity(segments)` to calculate parity.
+
+## Segment API
+
+`QrSegment` has a private constructor. Create segments with its static methods.
+
+| Method                                                | Purpose                                         |
+| ----------------------------------------------------- | ----------------------------------------------- |
+| `makeNumeric(digits)`                                 | Numeric segment with digits only                |
+| `makeAlphanumeric(text)`                              | `0-9`, `A-Z`, space, and `$%*+-./:`             |
+| `makeBytes(bytes)`                                    | Raw byte segment                                |
+| `makeBytesFromText(text, encoding?)`                  | Encoded text byte segment. UTF-8 is the default |
+| `makeKanji(text)`                                     | QR Kanji segment from supported characters      |
+| `makeKanjiFromShiftJis(bytes)`                        | QR Kanji segment from valid Shift JIS pairs     |
+| `makeEci(assignment)`                                 | ECI designator from 0 through 999999            |
+| `makeFnc1FirstPosition()`                             | FNC1 first-position segment                     |
+| `makeFnc1SecondPosition(indicator)`                   | FNC1 second-position segment                    |
+| `makeStructuredAppendHeader(position, total, parity)` | Structured-append header                        |
+| `makeSegments(text, options?)`                        | One best whole-input mode or byte fallback      |
+| `makeOptimizedSegments(text, version, options?)`      | Mixed-mode optimization for one version         |
+| `makeEciSegmentsFromEscapedText(text, options?)`      | Byte segments separated by escaped ECI switches |
+
+The public mode predicates are `isNumeric()`, `isAlphanumeric()`, and `isKanji()`. `segment.getTotalBits(version)`
+returns the encoded segment size for that version. It returns `Infinity` when the character count does not fit.
+
+`makeSegments()` and `makeOptimizedSegments()` accept `eciForUtf8`, `kanji`, `byteEncoding`, and `eciAssignment`.
+`makeEciSegmentsFromEscapedText()` accepts `defaultEncoding` and `defaultEci`. Its default encoding is ISO-8859-1.
+The current implementation accepts `defaultEci` but does not read it before an explicit ECI switch. It does not emit
+an initial ECI or select a known encoding. Set `defaultEncoding` for the initial conversion, and include an escaped ECI
+switch when the symbol must declare that assignment.
+
+## Matrix and metadata
+
+An encoded `QRCode` instance exposes these members:
+
+| Member                 | Description                                           |
+| ---------------------- | ----------------------------------------------------- |
+| `version`              | Model 2 version from 1 through 40                     |
+| `size`                 | Matrix side length, `version * 4 + 17`                |
+| `errorCorrectionLevel` | Actual error-correction level after optional boosting |
+| `mask`                 | Selected mask from 0 through 7                        |
+| `containsEci`          | Whether the final segments contain ECI                |
+| `fnc1`                 | `"none"`, `"first"`, or `"second"`                    |
+| `symbologyIdentifier`  | AIM QR symbology identifier from ECI and FNC1 state   |
+| `getModule(x, y)`      | Read one module. It throws outside the matrix         |
+| `toMatrix()`           | Deep-copy the matrix as `boolean[][]`. `true` is dark |
+
+The symbology identifier has this mapping:
+
+| `fnc1`     | `containsEci` | Identifier |
+| ---------- | ------------- | ---------- |
+| `"none"`   | `false`       | `]Q1`      |
+| `"none"`   | `true`        | `]Q2`      |
+| `"first"`  | `false`       | `]Q3`      |
+| `"first"`  | `true`        | `]Q4`      |
+| `"second"` | `false`       | `]Q5`      |
+| `"second"` | `true`        | `]Q6`      |
+
+`QRCode.validateVersionPublic(version)` validates the range from 1 through 40. `QRCode.maskCondition(mask, x, y)`
+exposes the mask formulas for matrix inspection.
+
+## Terminal output
+
+```typescript
+console.log(
+  qr.toTerminalString({
+    border: 4,
+    ansi: true,
+    invert: false,
+  }),
+)
+```
+
+| Option   | Default | Description                                                |
+| -------- | ------- | ---------------------------------------------------------- |
+| `border` | `4`     | Quiet zone in modules. It must be an integer of at least 4 |
+| `ansi`   | `false` | Paint explicit black and white ANSI backgrounds            |
+| `invert` | `false` | Swap light and dark output                                 |
+
+Each QR module occupies two terminal columns and one output row. The returned rows use `"\n"` separators and have no
+trailing newline. A number passed directly to `toTerminalString(number)` sets the border and disables ANSI and
+inversion.
+
+The terminal helper cannot inspect terminal cell geometry. The apparent module shape depends on the terminal's cell
+width and height.
+
+## SVG output
+
+```typescript
+const svg = qr.toSvgString({
+  border: 4,
+  moduleSize: 8,
+  lightColor: "#ffffff",
+  darkColor: "#111827",
+})
+```
+
+`toSvgString()` defaults to border 4, module size 1, light `#FFFFFF`, and dark `#000000`. The border must be an integer
+of at least 4. Color strings are XML-escaped before insertion.
+
+Use a finite positive `moduleSize` for useful output. The current validation rejects only values less than or equal to
+zero. It does not reject `NaN` or `Infinity`, which produce non-finite SVG dimensions and coordinates. This validation
+gap is a known limitation.
+
+For a text-to-SVG shortcut:
+
+```typescript
+import { createQrSvg, ErrorCorrectionLevel } from "@opentui/qrcode"
+
+const svg = createQrSvg("https://opentui.com", {
+  ecl: ErrorCorrectionLevel.H,
+  border: 4,
+  moduleSize: 8,
+})
+```
+
+`createQrSvg()` defaults to error-correction level M, border 4, and module size 8. It forwards the other encoding
+options to `encodeText()`.
+
+## Root exports and limits
+
+The `@opentui/qrcode` root exports these encoder values: `QRCode`, `QrSegment`, `ErrorCorrectionLevel`,
+`EciAssignment`, `encodeTextBytes`, and `createQrSvg`.
+
+It exports these encoder types: `ByteEncoding`, `EncodeOptions`, `StructuredAppendInfo`, `Fnc1SecondPositionInfo`,
+`Gs1Element`, and `TerminalRenderOptions`.
+
+The same root exports `QRCodeRenderable`, `QRCodeOptions`, and `QRCodeFitMode` for OpenTUI display. The React and Solid
+registration entry points re-export the package root and add `registerQRCode()`. Read the
+[QR code component](/docs/components/qr-code) for display and registration. Read
+[Package entry points](/docs/reference/package-entrypoints) for the full entry point list.
+
+The encoder generates QR code Model 2 versions 1 through 40. It does not generate legacy Model 1 or rMQR symbols. It
+does not decode QR codes. Encoding throws when data cannot fit the requested version range and error-correction level.
+
+The SVG and terminal helpers require a quiet zone of at least four modules. They do not inspect output scale,
+contrast, terminal cell geometry, fonts, displays, or cameras.

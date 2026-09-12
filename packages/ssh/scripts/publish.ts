@@ -15,17 +15,7 @@ const rootDir = resolve(__dirname, "..")
 const packageJson: PackageJson = JSON.parse(readFileSync(join(rootDir, "package.json"), "utf8"))
 
 console.log(`Publishing ${packageJson.name}@${packageJson.version}...`)
-console.log("Building dist before publish...")
-
-const buildResult: SpawnSyncReturns<Buffer> = spawnSync("bun", ["run", "build"], {
-  cwd: rootDir,
-  stdio: "inherit",
-})
-
-if (buildResult.status !== 0) {
-  console.error(`Failed to build '${packageJson.name}@${packageJson.version}'.`)
-  process.exit(1)
-}
+console.log("Make sure you've run the pre-publish validation script first!")
 
 const publishArgs = ["publish", "--access=public"]
 const isSnapshot = packageJson.version.includes("-snapshot") || /^0\.0\.0-\d{8}-[a-f0-9]{8}$/.test(packageJson.version)

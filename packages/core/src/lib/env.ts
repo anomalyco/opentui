@@ -35,6 +35,7 @@ export interface EnvVarConfig {
   name: string
   description: string
   default?: string | boolean | number
+  required?: boolean
   type?: "string" | "boolean" | "number"
 }
 
@@ -46,7 +47,8 @@ export function registerEnvVar(config: EnvVarConfig): void {
     if (
       existing.description !== config.description ||
       existing.type !== config.type ||
-      existing.default !== config.default
+      existing.default !== config.default ||
+      existing.required !== config.required
     ) {
       throw new Error(
         `Environment variable "${config.name}" is already registered with different configuration. ` +
@@ -63,11 +65,15 @@ function normalizeBoolean(value: string): boolean {
   return ["true", "1", "on", "yes"].includes(lowerValue)
 }
 
-function parseEnvValue(config: EnvVarConfig): string | boolean | number {
+function parseEnvValue(config: EnvVarConfig): string | boolean | number | undefined {
   const envValue = process.env[config.name]
 
   if (envValue === undefined && config.default !== undefined) {
     return config.default
+  }
+
+  if (envValue === undefined && config.required === false) {
+    return undefined
   }
 
   if (envValue === undefined) {
@@ -90,7 +96,7 @@ function parseEnvValue(config: EnvVarConfig): string | boolean | number {
 }
 
 class EnvStore {
-  private parsedValues: Map<string, string | boolean | number> = new Map()
+  private parsedValues: Map<string, string | boolean | number | undefined> = new Map()
 
   get(key: string): any {
     if (this.parsedValues.has(key)) {
@@ -143,6 +149,8 @@ export function generateEnvMarkdown(): string {
     if (config.default !== undefined) {
       const defaultValue = typeof config.default === "string" ? `"${config.default}"` : String(config.default)
       markdown += `**Default:** \`${defaultValue}\`\n`
+    } else if (config.required === false) {
+      markdown += "**Default:** *unset*\n"
     } else {
       markdown += "**Default:** *Required*\n"
     }
@@ -170,6 +178,8 @@ export function generateEnvColored(): string {
     if (config.default !== undefined) {
       const defaultValue = typeof config.default === "string" ? `"${config.default}"` : String(config.default)
       output += `\x1b[32mDefault:\x1b[0m \x1b[35m${defaultValue}\x1b[0m\n`
+    } else if (config.required === false) {
+      output += "\x1b[32mDefault:\x1b[0m \x1b[35munset\x1b[0m\n"
     } else {
       output += `\x1b[32mDefault:\x1b[0m \x1b[31mRequired\x1b[0m\n`
     }

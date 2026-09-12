@@ -1,12 +1,21 @@
 ---
-title: Line numbers
-description: Line number gutter for code and text renderables
-order: 12
+title: Line number gutter
+description: Add a line number gutter to code and editor renderables
 ---
 
-# Line numbers
+# Line number gutter
 
-Add a line number gutter to renderables that provide line info, such as `CodeRenderable` and text editor components.
+`LineNumberRenderable` adds a gutter to a renderable that supplies line information. Use it with [Code](/docs/components/code) or an editor. [Diff](/docs/components/diff) manages its own line-number gutters.
+
+## Availability
+
+| Field           | Availability                                                                 |
+| --------------- | ---------------------------------------------------------------------------- |
+| Package         | `@opentui/core`                                                              |
+| Core renderable | `LineNumberRenderable`                                                       |
+| React           | `<line-number>` (automatic)                                                  |
+| Solid           | `<line_number>` is runtime built in. Its exact props declaration is missing. |
+| Status          | Built in with a Solid typing limitation                                      |
 
 ## Basic usage
 
@@ -30,7 +39,7 @@ const syntaxStyle = SyntaxStyle.fromStyles({
 
 const code = new CodeRenderable(renderer, {
   id: "code",
-  content: "const x = 1\nconst y = 2\n",
+  content: "const port = 3000\nserve(port)\nawait ready()",
   filetype: "typescript",
   syntaxStyle,
   width: "100%",
@@ -51,8 +60,15 @@ const scrollbox = new ScrollBoxRenderable(renderer, {
   height: 18,
 })
 
+lineNumbers.setLineSign(1, { before: ">" })
 scrollbox.add(lineNumbers)
 renderer.root.add(scrollbox)
+```
+
+```text terminal=line-number-editor surface
+  1 const port = 3000
+> 2 serve(port)
+  3 await ready()
 ```
 
 ## Line signs and colors
@@ -60,7 +76,7 @@ renderer.root.add(scrollbox)
 Set a single background for a line, or split gutter and content colors separately with a `LineColorConfig` object:
 
 ```typescript
-// Shorthand: applies to both gutter and content
+// Shorthand: applies the color to the gutter and a 20%-darker color to the content
 lineNumbers.setLineColor(3, "#2b6cb0")
 
 // Split config: different gutter vs content background
@@ -76,6 +92,8 @@ lineNumbers.clearLineColor(3)
 lineNumbers.clearLineSign(3)
 ```
 
+The shorthand color becomes the gutter background. The content background uses the same color darkened by 20%. A `LineColorConfig` with only `gutter` uses the same darkening rule.
+
 ## Theming the gutter
 
 Gutter text and background colors accept assignments after construction:
@@ -87,9 +105,14 @@ lineNumbers.bg = "#161b22"
 
 Assign `undefined` to reset to the defaults (`#888888` foreground, transparent background).
 
-## Construct API
+### Initial visibility
 
-> Not available yet. Use `LineNumberRenderable` for now.
+The constructor currently ignores the `showLineNumbers` option. Set the property after construction when the initial gutter must be hidden:
+
+```typescript
+const lineNumbers = new LineNumberRenderable(renderer, { target: code })
+lineNumbers.showLineNumbers = false
+```
 
 ## Properties
 
@@ -117,3 +140,7 @@ Assign `undefined` to reset to the defaults (`#888888` foreground, transparent b
 | `clearLineSign()`      | Clear a line sign                     |
 | `setLineNumbers()`     | Override multiple line numbers        |
 | `setHideLineNumbers()` | Hide line numbers for specific lines  |
+
+## Related components
+
+Use [Code](/docs/components/code) as a syntax-highlighted target. Use [Diff](/docs/components/diff) when you need patch parsing and paired gutters. [Markdown](/docs/components/markdown) owns fenced code blocks. [TextTable](/docs/components/text-table) displays rows and columns without line semantics.

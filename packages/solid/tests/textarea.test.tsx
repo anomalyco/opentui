@@ -1,7 +1,7 @@
 import { describe, expect, it, beforeEach, afterEach } from "bun:test"
 import { testRender } from "../index.js"
 import { createSignal } from "solid-js"
-import { TextAttributes } from "@opentui/core"
+import { TextAttributes, type TextareaRenderable } from "@opentui/core"
 
 let testSetup: Awaited<ReturnType<typeof testRender>>
 
@@ -19,6 +19,27 @@ describe("Textarea Layout Tests", () => {
   })
 
   describe("Basic Textarea Rendering", () => {
+    it("resets selection occupancy removed from style", async () => {
+      const [boundary, setBoundary] = createSignal(true)
+      let textarea!: TextareaRenderable
+      testSetup = await testRender(
+        () => (
+          <textarea
+            ref={(value: TextareaRenderable) => (textarea = value)}
+            style={boundary() ? { selectionOccupancy: "boundary" } : {}}
+          />
+        ),
+        { width: 20, height: 5 },
+      )
+
+      await testSetup.renderOnce()
+      expect(textarea.selectionOccupancy).toBe("boundary")
+
+      setBoundary(false)
+      await testSetup.renderOnce()
+      expect(textarea.selectionOccupancy).toBe("cell")
+    })
+
     it("should render simple textarea correctly", async () => {
       testSetup = await testRender(
         () => (

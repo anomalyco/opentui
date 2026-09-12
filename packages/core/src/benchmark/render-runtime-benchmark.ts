@@ -5,6 +5,7 @@ import { readFileSync, rmSync, writeFileSync } from "node:fs"
 import { availableParallelism, tmpdir } from "node:os"
 import { dirname, join, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
+import { isSupportedNode26Version } from "../../../../scripts/node26.mjs"
 
 type RuntimeName = "bun" | "node"
 
@@ -65,7 +66,9 @@ if (suite !== "quick" && suite !== "default" && suite !== "long") {
 }
 
 const nodeVersion = readNodeVersion()
-if (nodeVersion !== "v26.4.0") throw new Error(`Node v26.4.0 is required, got ${nodeVersion}`)
+if (!isSupportedNode26Version(nodeVersion)) {
+  throw new Error(`Node v26.4.0 or later is required, got ${nodeVersion}`)
+}
 
 const listedScenarios = listScenarios()
 const scenarios = listedScenarios

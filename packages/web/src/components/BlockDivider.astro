@@ -1,0 +1,295 @@
+---
+interface Props {
+  animation:
+    | "pong"
+    | "hopper"
+    | "roller"
+    | "inchworm"
+    | "slosh"
+    | "pulse"
+    | "piston"
+    | "heartbeat"
+    | "equalizer"
+    | "tread"
+}
+
+const fallbacks = {
+  pong: "▐     ▄      ▌",
+  hopper: "▄▁▁▁▁▁▁▁▁▁▁▁",
+  roller: "▖▁▁▁▁▁▁▁▁▁▁▁",
+  inchworm: "▂▂▂▂▁▁▁▁▁▁▁▁",
+  slosh: "▄▄▄▄▄▄▄▄▄▄▄▄",
+  pulse: "▁▁▁▁▁▁▃▅▃▁▁▁▁▁",
+  piston: "█▁▁▁▁▁▁▁▁▁",
+  heartbeat: "▁▁▁▁▁▁▁▁▁▁▁",
+  equalizer: "▅█▄▁▆▇▂▂█▆",
+  tread: "▀▀▄▄▀▀▄▄▀▀▄▄▀▀",
+}
+
+const { animation } = Astro.props
+---
+
+<pre class="block-divider" data-block-divider={animation} aria-hidden="true">{fallbacks[animation]}</pre>
+
+<script>
+  const TICK = 110
+  const LOAD_RUN_MS = 3600
+
+  const LOW = " ▁▂▃▄▅▆▇█"
+  const LEFT = " ▏▎▍▌▋▊▉█"
+  const clamp = (value: number, min: number, max: number) => Math.max(min, Math.min(max, value))
+  const bar = (heights: number[]) => heights.map((h) => LOW[clamp(Math.round(h), 0, 8)]!).join("")
+  const range = (length: number) => Array.from({ length }, (_, index) => index)
+  // 0 1 2 .. n .. 2 1, so a wrapping loop never jumps.
+  const bounce = (steps: number[]) => [...steps, ...steps.slice(1, -1).reverse()]
+  const easeInOut = (t: number) => (t < 0.5 ? 2 * t * t : 1 - (-2 * t + 2) ** 2 / 2)
+
+  // A ball travels between two paddles. The paddle flashes and the ball
+  // sticks for one frame on impact.
+  function pong(): string[] {
+    const inner = 12
+    const frames: string[] = []
+    for (const x of bounce(range(inner))) {
+      const court = range(inner)
+        .map((cell) => (cell === x ? "▄" : " "))
+        .join("")
+      const hit = x === 0 ? "left" : x === inner - 1 ? "right" : null
+      const frame = (hit === "left" ? "█" : "▐") + court + (hit === "right" ? "█" : "▌")
+      frames.push(frame)
+      if (hit) frames.push(frame)
+    }
+    return frames
+  }
+
+  // A pip crouches, lifts off, flies one cell, and lands. Grounded frames
+  // hold twice as long as airborne frames, so the hop has weight.
+  function hopper(): string[] {
+    const width = 12
+    const floor = (x: number, glyph: string) =>
+      range(width)
+        .map((cell) => (cell === x ? glyph : "▁"))
+        .join("")
+    const path = bounce(range(width))
+    const frames: string[] = []
+    for (let i = 0; i < path.length; i++) {
+      const x = path[i]!
+      const next = path[(i + 1) % path.length]!
+      frames.push(floor(x, "▄"), floor(x, "▄"), floor(x, "▀"), floor(next, "▀"))
+    }
+    return frames
+  }
+
+  // A quadrant pip rolls along the floor, two quarter turns per cell, and
+  // rolls back the other way at each end.
+  function roller(): string[] {
+    const width = 12
+    const glyphs = ["▖", "▘", "▝", "▗"]
+    const path = bounce(range(width))
+    const frames: string[] = []
+    let rotation = 0
+    for (let i = 0; i < path.length; i++) {
+      const x = path[i]!
+      const direction = path[(i + 1) % path.length]! > x ? 1 : -1
+      for (let turn = 0; turn < 2; turn++) {
+        frames.push(
+          range(width)
+            .map((cell) => (cell === x ? glyphs[((rotation % 4) + 4) % 4]! : "▁"))
+            .join(""),
+        )
+        rotation += direction
+      }
+    }
+    return frames
+  }
+
+  // A four-cell worm rests, arches its back, and settles one cell over.
+  function inchworm(): string[] {
+    const width = 12
+    const length = 4
+    const body = (position: number, shape: number[]) =>
+      bar(range(width).map((cell) => (cell >= position && cell < position + length ? shape[cell - position]! : 1)))
+    const frames: string[] = []
+    for (const p of bounce(range(width - length + 1))) {
+      frames.push(
+        body(p, [2, 2, 2, 2]),
+        body(p, [2, 2, 2, 2]),
+        body(p, [2, 4, 4, 2]),
+        body(p, [2, 5, 5, 2]),
+        body(p, [2, 4, 4, 2]),
+      )
+    }
+    return frames
+  }
+
+  // Water rocks side to side in a tray. The sine keeps the mass constant
+  // and slows the surface at each extreme.
+  function slosh(): string[] {
+    const width = 12
+    const steps = 24
+    return range(steps).map((step) => {
+      const tilt = Math.sin((2 * Math.PI * step) / steps)
+      return bar(range(width).map((cell) => 3.5 + tilt * (cell - (width - 1) / 2) * 0.55))
+    })
+  }
+
+  // A bump travels along a string and reflects off both ends.
+  function pulse(): string[] {
+    const width = 14
+    return bounce(range(width)).map((x) =>
+      bar(
+        range(width).map((cell) => {
+          const distance = Math.abs(cell - x)
+          return distance === 0 ? 5 : distance === 1 ? 3 : 1
+        }),
+      ),
+    )
+  }
+
+  // A rod extends smoothly along a track, holds at full reach, and snaps
+  // back to rest in three frames.
+  function piston(): string[] {
+    const track = 10
+    const max = (track - 1) * 8
+    const reach = (eighths: number) => {
+      const body = "█".repeat(1 + Math.floor(eighths / 8)) + (eighths % 8 ? LEFT[eighths % 8]! : "")
+      return body.padEnd(track, "▁")
+    }
+    const frames: string[] = []
+    const extendSteps = 16
+    for (let s = 0; s <= extendSteps; s++) frames.push(reach(Math.round(max * easeInOut(s / extendSteps))))
+    for (let s = 0; s < 3; s++) frames.push(reach(max))
+    for (const t of [0.6, 0.25, 0]) frames.push(reach(Math.round(max * t)))
+    for (let s = 0; s < 4; s++) frames.push(reach(0))
+    return frames
+  }
+
+  // A flat line with a lub-dub beat in the middle, then rest.
+  function heartbeat(): string[] {
+    const width = 11
+    const center = 5
+    const beat = (shoulder: number, peak: number) =>
+      bar(range(width).map((cell) => (cell === center ? peak : Math.abs(cell - center) === 1 ? shoulder : 1)))
+    const flat = bar(range(width).map(() => 1))
+    return [flat, flat, flat, flat, flat, flat, beat(2, 5), beat(1, 2), flat, beat(3, 8), beat(2, 4), beat(1, 2), flat, flat]
+  }
+
+  // Bars bob at different rates that share one loop length.
+  function equalizer(): string[] {
+    const bars = 10
+    const steps = 24
+    return range(steps).map((step) =>
+      bar(range(bars).map((i) => 1 + 3.5 * (1 + Math.sin((2 * Math.PI * ((i % 3) + 1) * step) / steps + i * 1.7)))),
+    )
+  }
+
+  // A closed belt of tread texture turns at constant speed.
+  function tread(): string[] {
+    const width = 14
+    return range(4).map((offset) =>
+      range(width)
+        .map((cell) => "▀▀▄▄"[(cell + offset) % 4]!)
+        .join(""),
+    )
+  }
+
+  const animations: Record<string, { frames: string[]; rest: number }> = {
+    pong: { frames: pong(), rest: 6 },
+    hopper: { frames: hopper(), rest: 0 },
+    roller: { frames: roller(), rest: 0 },
+    inchworm: { frames: inchworm(), rest: 0 },
+    slosh: { frames: slosh(), rest: 0 },
+    pulse: { frames: pulse(), rest: 7 },
+    piston: { frames: piston(), rest: 0 },
+    heartbeat: { frames: heartbeat(), rest: 0 },
+    equalizer: { frames: equalizer(), rest: 0 },
+    tread: { frames: tread(), rest: 0 },
+  }
+
+  interface Runner {
+    element: HTMLElement
+    frames: string[]
+    rest: number
+    tick: number
+    minFrames: number
+    active: boolean
+  }
+
+  const runners: Runner[] = [...document.querySelectorAll<HTMLElement>("[data-block-divider]")].map((element) => {
+    const { frames, rest } = animations[element.dataset.blockDivider!]!
+    return { element, frames, rest, tick: rest, minFrames: 0, active: false }
+  })
+
+  const reducedMotion = matchMedia("(prefers-reduced-motion: reduce)")
+  let timer = 0
+
+  // Each step renders one frame per active runner. A run lasts at least
+  // minFrames, then ends the first time it passes its rest frame, so the
+  // motion always settles without a jump.
+  function step() {
+    let running = false
+    for (const runner of runners) {
+      if (!runner.active) continue
+      const index = runner.tick % runner.frames.length
+      if (runner.minFrames <= 0 && index === runner.rest) {
+        runner.active = false
+        runner.element.textContent = runner.frames[runner.rest]!
+        continue
+      }
+      runner.element.textContent = runner.frames[index]!
+      runner.tick++
+      runner.minFrames--
+      running = true
+    }
+    if (!running) {
+      clearInterval(timer)
+      timer = 0
+    }
+  }
+
+  function schedule() {
+    if (!timer) timer = window.setInterval(step, TICK)
+  }
+
+  function start(runner: Runner, runMs: number) {
+    if (reducedMotion.matches || runner.active) return
+    runner.tick = runner.rest
+    runner.minFrames = Math.max(runner.frames.length, Math.round(runMs / TICK))
+    runner.active = true
+    schedule()
+  }
+
+  for (const runner of runners) {
+    runner.element.textContent = runner.frames[runner.rest]!
+    runner.element.addEventListener("pointerenter", () => start(runner, 0))
+    runner.element.addEventListener("click", () => start(runner, 0))
+    start(runner, LOAD_RUN_MS)
+  }
+
+  reducedMotion.addEventListener("change", (event) => {
+    if (!event.matches) return
+    for (const runner of runners) {
+      runner.active = false
+      runner.element.textContent = runner.frames[runner.rest]!
+    }
+  })
+
+  document.addEventListener("visibilitychange", () => {
+    if (document.hidden) {
+      clearInterval(timer)
+      timer = 0
+    } else if (runners.some((runner) => runner.active)) {
+      schedule()
+    }
+  })
+</script>
+
+<style>
+  .block-divider {
+    margin: 0;
+    overflow: hidden;
+    color: var(--page-color);
+    font: inherit;
+    line-height: 1.5;
+    white-space: pre;
+  }
+</style>

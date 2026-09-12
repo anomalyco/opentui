@@ -1,12 +1,21 @@
 ---
 title: Slider
-description: A draggable slider for continuous values
-order: 9
+description: Choose a continuous value with a mouse-dragged slider
 ---
 
 # Slider
 
-A draggable slider for continuous values. Supports vertical and horizontal orientations.
+`Slider` selects a continuous value by dragging a horizontal or vertical thumb. Use [Select](/docs/components/select) for discrete choices.
+
+## Availability
+
+| Field           | Availability             |
+| --------------- | ------------------------ |
+| Package         | `@opentui/core`          |
+| Core renderable | `SliderRenderable`       |
+| React           | Unavailable              |
+| Solid           | Unavailable              |
+| Status          | Built-in Core renderable |
 
 ## Basic usage
 
@@ -33,6 +42,12 @@ const slider = new SliderRenderable(renderer, {
 renderer.root.add(slider)
 ```
 
+```text terminal=slider-horizontal
+value: 25
+       ██▌
+0                          100
+```
+
 ## Vertical slider
 
 ```typescript
@@ -46,19 +61,32 @@ const slider = new SliderRenderable(renderer, {
 })
 ```
 
-## Construct API
+```text terminal=slider-vertical
+min 0
 
-> Not available yet. Use `SliderRenderable` for now.
+           ▄▄
+           ██
+value 0.5  ██
+           ██
+           ██
+           ▀▀
+
+max 1
+```
 
 ## Properties
 
-| Property          | Type                           | Default      | Description                    |
-| ----------------- | ------------------------------ | ------------ | ------------------------------ |
-| `orientation`     | `"vertical"` or `"horizontal"` | -            | Slider direction               |
-| `value`           | `number`                       | `min`        | Current value                  |
-| `min`             | `number`                       | `0`          | Minimum value                  |
-| `max`             | `number`                       | `100`        | Maximum value                  |
-| `viewPortSize`    | `number`                       | range \* 0.1 | Thumb size relative to content |
-| `backgroundColor` | `string` or `RGBA`             | -            | Track color                    |
-| `foregroundColor` | `string` or `RGBA`             | -            | Thumb color                    |
-| `onChange`        | `(value: number) => void`      | -            | Fired when value changes       |
+| Property          | Type                         | Default                          | Description                                    |
+| ----------------- | ---------------------------- | -------------------------------- | ---------------------------------------------- |
+| `orientation`     | `"vertical" \| "horizontal"` | required                         | Slider direction                               |
+| `value`           | `number`                     | `min`                            | Current value                                  |
+| `min`             | `number`                     | `0`                              | Minimum value                                  |
+| `max`             | `number`                     | `100`                            | Maximum value                                  |
+| `viewPortSize`    | `number`                     | `Math.max(1, (max - min) * 0.1)` | Viewport size used to calculate the thumb size |
+| `backgroundColor` | `ColorInput`                 | `"#252527"`                      | Track color                                    |
+| `foregroundColor` | `ColorInput`                 | `"#9a9ea3"`                      | Thumb color                                    |
+| `onChange`        | `(value: number) => void`    | -                                | Called when the stored value changes           |
+
+## Related components
+
+[ScrollBar](/docs/components/scrollbar) uses the same track-and-thumb model for a scroll position. Read [Interaction, focus, and selection](/docs/core-concepts/interaction) for pointer input and event behavior.

@@ -31,11 +31,12 @@ describe("TextRenderable Selection", () => {
         selectable: true,
       })
 
+      // Inclusive selection: the cell under the pointer (5) is selected too.
       await currentMouse.drag(text.x, text.y, text.x + 5, text.y)
       await renderOnce()
 
       const selectedText = text.getSelectedText()
-      expect(selectedText).toBe("Hello")
+      expect(selectedText).toBe("Hello ")
     })
 
     it("should handle graphemes correctly", async () => {
@@ -63,6 +64,7 @@ describe("TextRenderable Selection", () => {
     } = await createTestRenderer({
       width: 20,
       height: 5,
+      forwardEnvKeys: [],
     }))
   })
 
@@ -125,10 +127,11 @@ describe("TextRenderable Selection", () => {
       // With newline-aware offsets: Line 0 (0-5) + newline (6) + Line 1 starts at 7
       // Position "n" in "Line 2" is at 7 + 2 = 9
       expect(selection!.start).toBe(9)
-      // Line 2 starts at 14, position after "Line" is 14 + 4 = 18
-      expect(selection!.end).toBe(18)
+      // Line 2 starts at 14; the cell under the pointer (14 + 4, the ' ' of
+      // "Line 3") is included, so the end is 19.
+      expect(selection!.end).toBe(19)
 
-      expect(text.getSelectedText()).toBe("ne 2\nLine")
+      expect(text.getSelectedText()).toBe("ne 2\nLine ")
     })
 
     it("should handle selection across empty lines", async () => {
@@ -372,13 +375,13 @@ describe("TextRenderable Selection", () => {
 
       await currentMouse.drag(text.x + 0, text.y, text.x + 5, text.y)
       await renderOnce()
-      expect(text.getSelectedText()).toBe("Hello")
-      expect(text.getSelection()).toEqual({ start: 0, end: 5 })
+      expect(text.getSelectedText()).toBe("Hello ")
+      expect(text.getSelection()).toEqual({ start: 0, end: 6 })
 
       await currentMouse.drag(text.x + 6, text.y, text.x + 11, text.y)
       await renderOnce()
-      expect(text.getSelectedText()).toBe("World")
-      expect(text.getSelection()).toEqual({ start: 6, end: 11 })
+      expect(text.getSelectedText()).toBe("World ")
+      expect(text.getSelection()).toEqual({ start: 6, end: 12 })
 
       await currentMouse.drag(text.x + 12, text.y, text.x + 16, text.y)
       await renderOnce()
@@ -1240,7 +1243,7 @@ describe("TextRenderable Selection", () => {
       await currentMouse.drag(text.x + 4, text.y, text.x + 9, text.y)
       await renderOnce()
 
-      expect(text.getSelectedText()).toBe("Green")
+      expect(text.getSelectedText()).toBe("Green ")
     })
 
     it("should handle StyledText with TextNodeRenderable children", async () => {
@@ -1275,6 +1278,25 @@ describe("TextRenderable Selection", () => {
   })
 
   describe("Text Selection with Truncation", () => {
+    it("copies the full source through an ellipsis-only line", async () => {
+      const { text } = await createTextRenderable(currentRenderer, {
+        content: "ABCDE好",
+        width: 4,
+        height: 1,
+        selectable: true,
+        truncate: true,
+        wrapMode: "none",
+      })
+
+      expect(captureFrame().split("\n")[0]?.slice(0, 4)).toBe("... ")
+
+      await currentMouse.drag(text.x, text.y, text.x + 3, text.y)
+      expect(text.getSelectedText()).toBe("ABCDE好")
+
+      await currentMouse.drag(text.x + 3, text.y, text.x, text.y)
+      expect(text.getSelectedText()).toBe("ABCDE好")
+    })
+
     it("should not extend selection across ellipsis in single line", async () => {
       const buffer = currentRenderer.currentRenderBuffer
       const { text } = await createTextRenderable(currentRenderer, {
@@ -1657,9 +1679,9 @@ describe("TextRenderable Selection", () => {
       const finalFrame = captureFrame()
       expect(finalFrame).toMatchSnapshot()
 
-      expect(firstText.height).toEqual(5)
-      expect(secondText.y).toEqual(5)
-      expect(thirdText.y).toEqual(6)
+      expect(firstText.height).toEqual(4)
+      expect(secondText.y).toEqual(4)
+      expect(thirdText.y).toEqual(5)
     })
   })
 
@@ -2322,6 +2344,33 @@ describe("TextRenderable Selection", () => {
       const expectedLines = ["gyorskiszolgáló éttermek közül. Azóta", "alapjaiban értelmeztük újra a", "vendéglátást"]
 
       expect(lines).toEqual(expectedLines)
+    })
+
+    it("should preserve mixed-content graphemes at word-wrap boundaries", async () => {
+      for (const prefix of [
+        "\u0D4E", // U+0D4E MALAYALAM LETTER DOT REPH
+        "\u0600", // U+0600 ARABIC NUMBER SIGN
+      ]) {
+        for (const { width, expected } of [
+          { width: 5, expected: ["hello", prefix, "world"] },
+          { width: 7, expected: [`hello ${prefix}`, "world"] },
+        ]) {
+          const { text } = await createTextRenderable(currentRenderer, {
+            content: `hello ${prefix} world`,
+            wrapMode: "word",
+            width,
+          })
+
+          const lines = captureFrame()
+            .split("\n")
+            .map((line) => line.trimEnd())
+            .filter((line) => line.length > 0)
+          expect(lines).toEqual(expected)
+
+          currentRenderer.root.remove(text)
+          await renderOnce()
+        }
+      }
     })
 
     it("should dynamically change wrap mode", async () => {

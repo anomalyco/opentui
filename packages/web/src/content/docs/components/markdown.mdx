@@ -1,12 +1,21 @@
 ---
 title: Markdown
 description: Render markdown with syntax-aware styling
-order: 11
 ---
 
 # Markdown
 
-Render markdown content with syntax-aware styling and optional Tree-sitter highlighting for code blocks.
+`Markdown` renders document structure and can use Tree-sitter highlighting in fenced code blocks. Use [Code](/docs/components/code) when the full content is source code.
+
+## Availability
+
+| Field           | Availability             |
+| --------------- | ------------------------ |
+| Package         | `@opentui/core`          |
+| Core renderable | `MarkdownRenderable`     |
+| React           | `<markdown>` (automatic) |
+| Solid           | `<markdown>` (automatic) |
+| Status          | Built in                 |
 
 ## Basic usage
 
@@ -84,9 +93,9 @@ markdown.streaming = false
 
 ### Stable block prefix
 
-`parseMarkdownIncremental` reports how many parsed tokens at the head of the stream are stable — that is, unlikely to change if you append more content. The renderable surfaces this as a count of **top-level render blocks** you can safely commit elsewhere while the unstable tail keeps updating.
+`parseMarkdownIncremental` reports how many parsed tokens at the head of the stream are unlikely to change after an append. The renderable exposes this value as a count of **top-level render blocks**. You can commit those blocks while the unstable tail changes.
 
-To use it, render with `internalBlockMode: "top-level"`. The renderable keeps each top-level markdown block (heading, paragraph, list, table, fenced code) as its own child renderable, and exposes `markdown._stableBlockCount` — the number of blocks at the head of the tree that are stable right now. This matches the shape [`ScrollbackSurface`](/docs/core-concepts/renderer#writing-to-scrollback) expects when you commit streamed output row-by-row.
+To use it, render with `internalBlockMode: "top-level"`. The renderable keeps each top-level markdown block as a separate child renderable. These blocks include headings, paragraphs, lists, tables, and fenced code. `markdown._stableBlockCount` gives the current stable prefix length. This matches the shape that [`ScrollbackSurface`](/docs/core-concepts/renderer#writing-to-scrollback) expects for row-by-row commits.
 
 ```typescript
 import { MarkdownRenderable, RGBA, SyntaxStyle } from "@opentui/core"
@@ -103,13 +112,13 @@ const md = new MarkdownRenderable(renderer, {
 })
 
 md.content = "# Title\n\nPara 1"
-// md._stableBlockCount might be 1 here — "# Title" is settled, "Para 1" could still grow
+// md._stableBlockCount might be 1 here. "# Title" is settled, but "Para 1" could still grow.
 
 md.content = "# Title\n\nPara 1\n\nPara 2"
 // md._stableBlockCount rises as earlier blocks are sealed by a blank line
 ```
 
-`internalBlockMode` is an experimental, opt-in flag that powers the built-in scrollback streaming demo. For non-streaming rendering, leave it at the default (`"coalesced"`), which folds sibling blocks together and matches the historical layout.
+`internalBlockMode` is an internal, experimental flag that powers the built-in scrollback streaming demo. This status does not apply to Markdown or its other public options. For normal rendering, keep the default value of `"coalesced"`. This value folds sibling blocks together and preserves the existing layout.
 
 ## Markdown tables
 
@@ -125,6 +134,8 @@ const markdown = new MarkdownRenderable(renderer, {
     columnFitter: "balanced",
     wrapMode: "word",
     cellPadding: 1,
+    cellPaddingX: 2,
+    cellPaddingY: 0,
     borders: true,
     outerBorder: true,
     borderStyle: "rounded",
@@ -143,6 +154,8 @@ const markdown = new MarkdownRenderable(renderer, {
 | `columnFitter` | `"proportional" \| "balanced"` | `"proportional"`        | How columns shrink when space is constrained      |
 | `wrapMode`     | `"none" \| "char" \| "word"`   | `"word"`                | Wrapping mode inside each table cell              |
 | `cellPadding`  | `number`                       | `0`                     | Padding on all sides of each cell                 |
+| `cellPaddingX` | `number`                       | `cellPadding`           | Horizontal padding on each side                   |
+| `cellPaddingY` | `number`                       | `cellPadding`           | Vertical padding on each side                     |
 | `borders`      | `boolean`                      | depends on style        | Enable inner and outer borders                    |
 | `outerBorder`  | `boolean`                      | `borders`               | Override outer border visibility                  |
 | `borderStyle`  | `BorderStyle`                  | `"single"`              | Table border character set                        |
@@ -155,6 +168,28 @@ const markdown = new MarkdownRenderable(renderer, {
 
 - **`"grid"`**: boxed table with visible borders. Defaults to `borders: true`, `widthMode: "full"`. This is the normal markdown-in-a-box rendering.
 - **`"columns"`**: borderless columns with a 2-column gap, defaults to `widthMode: "content"`. Useful for append-only output where a full-width grid feels heavy.
+
+A separate Name/Status sample compares both presets:
+
+Grid:
+
+```text terminal=markdown-table-grid
+┌────────┬────────┐
+│ Name   │ Status │
+├────────┼────────┤
+│ api    │ ready  │
+├────────┼────────┤
+│ worker │ paused │
+└────────┴────────┘
+```
+
+Columns:
+
+```text terminal=markdown-table-columns
+Name    Status
+api     ready
+worker  paused
+```
 
 If you do not pass `style`, it defaults to `"columns"` when `internalBlockMode` is `"top-level"`, and `"grid"` otherwise. You can still override individual fields (for example, `borders: true`) to pull toward a different look.
 
@@ -180,29 +215,41 @@ const markdown = new MarkdownRenderable(renderer, {
 Use `createMarkdownCodeBlockRenderer` when you only want to replace specific fenced-code languages. The language key is matched against the normalized fence info string, so a `tsx` fence maps to `typescriptreact`, and custom DSL names like `taskflow` can be matched directly.
 
 ````typescript
-import { BoxRenderable, MarkdownRenderable, TextRenderable, createMarkdownCodeBlockRenderer } from "@opentui/core"
+import {
+  BoxRenderable,
+  MarkdownRenderable,
+  SyntaxStyle,
+  TextRenderable,
+  createMarkdownCodeBlockRenderer,
+  type CliRenderer,
+  type MarkdownCodeBlockRenderer,
+} from "@opentui/core"
 
-const renderTaskFlow = (renderer) => (token) => {
-  const steps = token.text
-    .split("\n")
-    .filter((line) => line.startsWith("step "))
-    .map((line) => line.slice("step ".length))
+const syntaxStyle = SyntaxStyle.fromStyles({ default: {} })
 
-  const card = new BoxRenderable(renderer, {
-    border: true,
-    borderStyle: "rounded",
-    borderColor: "#38BDF8",
-    paddingX: 1,
-    flexDirection: "column",
-    width: "100%",
-  })
+const renderTaskFlow =
+  (renderer: CliRenderer): MarkdownCodeBlockRenderer =>
+  (token) => {
+    const steps = token.text
+      .split("\n")
+      .filter((line) => line.startsWith("step "))
+      .map((line) => line.slice("step ".length))
 
-  for (const step of steps) {
-    card.add(new TextRenderable(renderer, { content: `- ${step}`, width: "100%" }))
+    const card = new BoxRenderable(renderer, {
+      border: true,
+      borderStyle: "rounded",
+      borderColor: "#38BDF8",
+      paddingX: 1,
+      flexDirection: "column",
+      width: "100%",
+    })
+
+    for (const step of steps) {
+      card.add(new TextRenderable(renderer, { content: `- ${step}`, width: "100%" }))
+    }
+
+    return card
   }
-
-  return card
-}
 
 const markdown = new MarkdownRenderable(renderer, {
   content: "```taskflow\nstep Parse markdown done\nstep Render widget active\n```",
@@ -212,10 +259,6 @@ const markdown = new MarkdownRenderable(renderer, {
   }),
 })
 ````
-
-## Construct API
-
-> Not available yet. Use `MarkdownRenderable` for now.
 
 ## Properties
 
@@ -227,8 +270,14 @@ const markdown = new MarkdownRenderable(renderer, {
 | `bg`                | `ColorInput`                                                                    | -             | Base background color (flows into inner code blocks)          |
 | `conceal`           | `boolean`                                                                       | `true`        | Hide markdown markers in markdown text                        |
 | `concealCode`       | `boolean`                                                                       | `false`       | Hide markers inside fenced code blocks                        |
-| `streaming`         | `boolean`                                                                       | `false`       | Incremental mode; set `false` to finalize                     |
+| `streaming`         | `boolean`                                                                       | `false`       | Incremental mode. Set `false` to finalize                     |
 | `tableOptions`      | `MarkdownTableOptions`                                                          | -             | Options for markdown table rendering                          |
 | `internalBlockMode` | `"coalesced" \| "top-level"`                                                    | `"coalesced"` | Experimental: expose top-level blocks as separate renderables |
 | `treeSitterClient`  | `TreeSitterClient`                                                              | -             | Custom Tree-sitter client for code blocks                     |
 | `renderNode`        | `(token: Token, context: RenderNodeContext) => Renderable \| null \| undefined` | -             | Custom render hook per markdown block                         |
+
+OpenTUI bundles a limited parser set. See the [Tree-sitter reference](/docs/reference/tree-sitter) before you highlight other fenced-code languages.
+
+## Related components
+
+Use [Code](/docs/components/code) for source-only content. Add a [Line number gutter](/docs/components/line-number) to a compatible code or editor renderable. Use [Diff](/docs/components/diff) for patches. Use [TextTable](/docs/components/text-table) for table data that does not start as Markdown.

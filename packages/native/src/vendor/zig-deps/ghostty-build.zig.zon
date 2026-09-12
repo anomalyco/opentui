@@ -1,0 +1,14 @@
+.{
+    .name = .ghostty,
+    .version = "1.3.2-dev",
+    .paths = .{""},
+    .fingerprint = 0x64407a2a0b4147e5,
+    .minimum_zig_version = "0.16.0",
+    .dependencies = .{
+        .uucode = .{
+            .path = "../uucode-ghostty",
+        },
+        .apple_sdk = .{ .path = "./pkg/apple-sdk" },
+        .android_ndk = .{ .path = "./pkg/android-ndk" },
+    },
+}

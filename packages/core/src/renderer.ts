@@ -11,6 +11,7 @@ import {
   type RenderContext,
   type TerminalCapabilities,
   type ThemeMode,
+  type SelectionBehavior,
   type ViewportBounds,
   type WidthMethod,
 } from "./types.js"
@@ -54,6 +55,7 @@ import { type Clock, type TimerHandle, SystemClock } from "./lib/clock.js"
 import { StdinParser, type StdinEvent, type StdinParserProtocolContext } from "./lib/stdin-parser.js"
 import { matchesKeyBinding } from "./lib/keybinding.internal.js"
 import { RendererThemeMode } from "./renderer-theme-mode.js"
+import { getLinkId } from "./utils.js"
 
 registerEnvVar({
   name: "OTUI_DUMP_CAPTURES",
@@ -105,6 +107,18 @@ registerEnvVar({
   default: false,
 })
 
+export type KittyImageTransport = "raw" | "zlib" | "file"
+const KITTY_IMAGE_TRANSPORTS: KittyImageTransport[] = ["raw", "zlib", "file"]
+
+export interface KittyImageTransportStatus {
+  requested: KittyImageTransport
+  effective: "raw" | "zlib" | "png" | "file"
+  fileState: "disabled" | "probing" | "ready" | "unsupported" | "timeout" | "io-error" | "cancelled"
+  fallback: "none" | "not-ready" | "unavailable" | "budget" | "busy" | "preparation" | "compression"
+  pendingFiles: number
+  pendingBytes: number
+}
+
 export interface CliRendererConfig {
   // Read input from this stream. Defaults to process.stdin. Any `Readable`
   // works; capabilities like `setRawMode` are duck-typed and used when present.
@@ -128,6 +142,9 @@ export interface CliRendererConfig {
   // native startup auto-detects SSH/mosh sessions; custom stdout feed output
   // defaults to remote because it is not connected to the host TTY directly.
   remote?: boolean
+
+  // Raw is the default. File requires a local terminal with medium and upload ACK support.
+  kittyImageTransport?: KittyImageTransport
 
   // Use an in-memory native buffered output destination instead of process stdout.
   // Intended for test helpers that need native rendering without terminal I/O.
@@ -264,6 +281,11 @@ export interface CliRendererStats extends NativeRenderStats {
 
 export interface CliRendererFrameEvent {
   frameId: number
+}
+
+export interface CliRendererErrorEvent {
+  error: Error
+  renderable: Renderable | undefined
 }
 
 export interface RendererSchedulerState {
@@ -440,9 +462,12 @@ const CHAR_FLAG_MASK = 0xc0000000 >>> 0
 class ScrollbackSnapshotRenderContext extends EventEmitter implements RenderContext {
   public width: number
   public height: number
+  public terminalWidth: number
+  public terminalHeight: number
+  public resolution: PixelResolution | null
   public frameId = 0
   public widthMethod: WidthMethod
-  public capabilities: TerminalCapabilities | null = null
+  public capabilities: TerminalCapabilities | null
   public hasSelection: boolean = false
   public currentFocusedRenderable: Renderable | null = null
   public keyInput: KeyHandler
@@ -450,10 +475,22 @@ class ScrollbackSnapshotRenderContext extends EventEmitter implements RenderCont
 
   private lifecyclePasses: Set<Renderable> = new Set()
 
-  constructor(width: number, height: number, widthMethod: WidthMethod) {
+  constructor(
+    width: number,
+    height: number,
+    widthMethod: WidthMethod,
+    terminalWidth: number = width,
+    terminalHeight: number = height,
+    resolution: PixelResolution | null = null,
+    capabilities: TerminalCapabilities | null = null,
+  ) {
     super()
     this.width = width
     this.height = height
+    this.terminalWidth = terminalWidth
+    this.terminalHeight = terminalHeight
+    this.resolution = resolution
+    this.capabilities = capabilities
     this.widthMethod = widthMethod
     this.keyInput = new KeyHandler()
     this._internalKeyInput = new InternalKeyHandler()
@@ -497,7 +534,7 @@ class ScrollbackSnapshotRenderContext extends EventEmitter implements RenderCont
     return this.lifecyclePasses
   }
   public clearSelection(): void {}
-  public startSelection(_renderable: Renderable, _x: number, _y: number): void {}
+  public startSelection(_renderable: Renderable, _x: number, _y: number, _behavior?: SelectionBehavior): void {}
   public updateSelection(
     _currentRenderable: Renderable | undefined,
     _x: number,
@@ -507,12 +544,18 @@ class ScrollbackSnapshotRenderContext extends EventEmitter implements RenderCont
 }
 
 const DEFAULT_FORWARDED_ENV_KEYS = [
+  "TMPDIR",
+  "SSH_CONNECTION",
+  "SSH_CLIENT",
+  "SSH_TTY",
+  "MOSH_CONNECTION",
   "TMUX",
   "ZELLIJ",
   "ZELLIJ_SESSION_NAME",
   "ZELLIJ_PANE_ID",
   "TERM",
   "OPENTUI_GRAPHICS",
+  "OPENTUI_IMAGE_PROTOCOL",
   "TERM_PROGRAM",
   "TERM_PROGRAM_VERSION",
   "TERM_FEATURES",
@@ -620,6 +663,7 @@ export class MouseEvent {
   }
   public readonly scroll?: ScrollInfo
   public readonly target: Renderable | null
+  public readonly currentTarget: Renderable | null = null
   public readonly isDragging?: boolean
   private _propagationStopped: boolean = false
   private _defaultPrevented: boolean = false
@@ -651,6 +695,11 @@ export class MouseEvent {
   public preventDefault(): void {
     this._defaultPrevented = true
   }
+}
+
+export interface CliRendererHandlerErrorEvent {
+  error: unknown
+  event: MouseEvent
 }
 
 export enum MouseButton {
@@ -701,6 +750,8 @@ export async function createCliRenderer(config: CliRendererConfig = {}): Promise
 export enum CliRenderEvents {
   RESIZE = "resize",
   FRAME = "frame",
+  RENDER_ERROR = "render:error",
+  HANDLER_ERROR = "handler:error",
   EXTERNAL_OUTPUT = "external_output",
   FOCUS = "focus",
   BLUR = "blur",
@@ -723,6 +774,8 @@ export enum RendererControlState {
   EXPLICIT_SUSPENDED = "explicit_suspended",
   EXPLICIT_STOPPED = "explicit_stopped",
 }
+
+const CLICK_REPEAT_INTERVAL_MS = 500
 
 export class CliRenderer extends EventEmitter implements RenderContext {
   private static animationFrameId = 0
@@ -765,6 +818,7 @@ export class CliRenderer extends EventEmitter implements RenderContext {
   private postProcessFns: ((buffer: OptimizedBuffer, deltaTime: number) => void)[] = []
   private backgroundColor: RGBA = RGBA.fromInts(0, 0, 0, 0)
   private waitingForPixelResolution: boolean = false
+  private pixelResolutionRequeryPending: boolean = false
   private readonly clock: Clock
 
   private rendering: boolean = false
@@ -780,6 +834,7 @@ export class CliRenderer extends EventEmitter implements RenderContext {
   private minTargetFrameTime: number = 1000 / this._maxFps
   private immediateRerenderRequested: boolean = false
   private updateScheduled: boolean = false
+  private updateGeneration = 0
 
   private liveRequestCounter: number = 0
   private _controlState: RendererControlState = RendererControlState.IDLE
@@ -812,6 +867,9 @@ export class CliRenderer extends EventEmitter implements RenderContext {
 
   private resizeTimeoutId: TimerHandle | null = null
   private capabilityTimeoutId: TimerHandle | null = null
+  private kittyTransportTimer: TimerHandle | null = null
+  private kittyTransportMode: KittyImageTransport
+  private terminalKeepAliveTimer: ReturnType<typeof setInterval> | null = null
   private xtVersionWaiters = new Set<() => void>()
   private splitStartupSeedTimeoutId: TimerHandle | null = null
   private pendingSplitStartupCursorSeed: boolean = false
@@ -834,6 +892,7 @@ export class CliRenderer extends EventEmitter implements RenderContext {
 
   private currentSelection: Selection | null = null
   private selectionContainers: Renderable[] = []
+  private lastClick: { count: number; time: number; x: number; y: number; renderableId: number } | null = null
   private clipboard: Clipboard
 
   private _splitHeight: number = 0
@@ -858,9 +917,9 @@ export class CliRenderer extends EventEmitter implements RenderContext {
 
   private _useConsole: boolean = true
   private sigwinchHandler: () => void = (() => {
-    const width = this.stdout.columns || 80
-    const height = this.stdout.rows || 24
-    this.handleResize(width, height)
+    const width = this.stdout.columns
+    const height = this.stdout.rows
+    if (width > 0 && height > 0) this.handleResize(width, height)
   }).bind(this)
   private _capabilities: TerminalCapabilities | null = null
   private _latestPointer: { x: number; y: number } = { x: 0, y: 0 }
@@ -964,8 +1023,7 @@ export class CliRenderer extends EventEmitter implements RenderContext {
   private _detachFeed: (() => void) | null = null
   private _detachFeedError: (() => void) | null = null
   private feedIdleRenderScheduled = false
-  private ordinaryFrameWaitingForFeed = false
-  private ordinaryFrameWaitControlState: RendererControlState | null = null
+  private feedIdleWaitPending = false
 
   public get controlState(): RendererControlState {
     return this._controlState
@@ -985,8 +1043,8 @@ export class CliRenderer extends EventEmitter implements RenderContext {
    *   - Calls `lib.createRenderer` → native Zig allocation
    *   - Registers in the process-wide `rendererTracker`
    *   - Adds `process.on(...)` listeners for SIGWINCH (process.stdout only),
-   *     "warning", "uncaughtException", "unhandledRejection", "beforeExit",
-   *     plus the configured `exitSignals`
+   *     "warning", "uncaughtException", "unhandledRejection", plus the
+   *     configured `exitSignals`
    *   - Replaces `global.requestAnimationFrame` with the renderer's impl
    *   - When `setupTerminal()` is called, it will put `stdin` in raw mode and
    *     call `stdin.resume()`
@@ -1015,6 +1073,9 @@ export class CliRenderer extends EventEmitter implements RenderContext {
     const { screenMode, footerHeight, externalOutputMode } = resolveModes(config)
     const initialGeometry = calculateRenderGeometry(screenMode, width, height, footerHeight)
     const remoteMode = config.remote ?? (useFeedOutput ? true : undefined)
+    this.kittyTransportMode = config.kittyImageTransport ?? "raw"
+    const transportCode = KITTY_IMAGE_TRANSPORTS.indexOf(this.kittyTransportMode)
+    if (transportCode < 0) throw new TypeError("Invalid kittyImageTransport")
 
     if (rendererTracker.streamOwners.get(stdin)) {
       throw new Error("Cannot create CliRenderer: stdin is already used by another CliRenderer")
@@ -1029,6 +1090,8 @@ export class CliRenderer extends EventEmitter implements RenderContext {
     let feed: NativeSpanFeed | null = null
     if (useFeedOutput) {
       try {
+        // Keep high-level feeds growable and uncapped so control/shutdown writes
+        // can publish while async Writable callbacks still pin earlier chunks.
         feed = NativeSpanFeed.create()
       } catch (error) {
         throw new Error(
@@ -1056,6 +1119,7 @@ export class CliRenderer extends EventEmitter implements RenderContext {
       feed?.close()
       throw new Error("Failed to create renderer")
     }
+    lib.setKittyImageTransport(rendererPtr, transportCode)
 
     // Threading defaults (on everywhere except linux, where it currently
     // crashes — likely a missing build dep).
@@ -1085,6 +1149,7 @@ export class CliRenderer extends EventEmitter implements RenderContext {
         })
       })
       this._detachFeedError = feed.onError((code) => {
+        if (this.kittyTransportTimer !== null) this.kittyOutputErrorHandler()
         console.error(`[CliRenderer] NativeSpanFeed error: code=${code}`)
       })
     }
@@ -1106,7 +1171,7 @@ export class CliRenderer extends EventEmitter implements RenderContext {
     this.clearOnShutdown = config.clearOnShutdown ?? true
     this.lib.setClearOnShutdown(this.rendererPtr, this.clearOnShutdown)
 
-    const forwardEnvKeys = config.forwardEnvKeys ?? (config.remote === false ? [...DEFAULT_FORWARDED_ENV_KEYS] : [])
+    const forwardEnvKeys = config.forwardEnvKeys ?? (remoteMode === true ? [] : [...DEFAULT_FORWARDED_ENV_KEYS])
     for (const key of forwardEnvKeys) {
       const value = process.env[key]
       if (value === undefined) continue
@@ -1120,8 +1185,8 @@ export class CliRenderer extends EventEmitter implements RenderContext {
       "SIGQUIT", // Ctrl+\
       "SIGABRT", // Abort signal
       "SIGHUP", // Hangup (terminal closed)
+      "SIGPIPE", // Broken output pipe
       "SIGBREAK", // Ctrl+Break on Windows
-      "SIGPIPE", // Broken pipe
       "SIGBUS", // Bus error
     ]
 
@@ -1178,8 +1243,6 @@ export class CliRenderer extends EventEmitter implements RenderContext {
 
     process.on("uncaughtException", this.handleError)
     process.on("unhandledRejection", this.handleError)
-    process.on("beforeExit", this.exitHandler)
-
     const useKittyForParsing = kittyConfig !== null
     this._keyHandler = new InternalKeyHandler()
     this._keyHandler.on("keypress", (event) => {
@@ -1235,7 +1298,7 @@ export class CliRenderer extends EventEmitter implements RenderContext {
       return id
     }
     global.cancelAnimationFrame = (handle: number) => {
-      this.animationRequest.delete(handle)
+      if (this.animationRequest.delete(handle)) this.dropLive()
     }
 
     const window = global.window
@@ -1276,11 +1339,23 @@ export class CliRenderer extends EventEmitter implements RenderContext {
     this._exitListenersAdded = true
   }
 
+  private startTerminalKeepAlive(): void {
+    if (this.stdin !== process.stdin || this.terminalKeepAliveTimer !== null) return
+    this.terminalKeepAliveTimer = setInterval(() => {}, 60_000)
+  }
+
+  private stopTerminalKeepAlive(): void {
+    if (this.terminalKeepAliveTimer === null) return
+    clearInterval(this.terminalKeepAliveTimer)
+    this.terminalKeepAliveTimer = null
+  }
+
   private removeExitListeners(): void {
     if (!this._exitListenersAdded || this.exitSignals.length === 0) return
 
+    const processEvents = process as EventEmitter
     this.exitSignals.forEach((signal) => {
-      process.removeListener(signal, this.exitHandler)
+      processEvents.removeListener(signal, this.exitHandler)
     })
 
     this._exitListenersAdded = false
@@ -1389,8 +1464,7 @@ export class CliRenderer extends EventEmitter implements RenderContext {
   }
 
   public get widthMethod(): WidthMethod {
-    const caps = this.capabilities
-    return caps?.unicode === "wcwidth" ? "wcwidth" : "unicode"
+    return this.capabilities?.unicode ?? this.nextRenderBuffer.widthMethod
   }
 
   public get frameId(): number {
@@ -1418,36 +1492,35 @@ export class CliRenderer extends EventEmitter implements RenderContext {
 
   private scheduleRenderAfterFeedIdle(): void {
     const feed = this._feed
-    if (!feed || this.feedIdleRenderScheduled || this._isDestroyed) return
+    if (!feed || this._isDestroyed || this._controlState === RendererControlState.EXPLICIT_SUSPENDED) return
 
     this.feedIdleRenderScheduled = true
+    if (this.feedIdleWaitPending) return
+    this.feedIdleWaitPending = true
     feed.idle().then(() => {
-      this.feedIdleRenderScheduled = false
-      const ordinaryFrameWasWaiting = this.ordinaryFrameWaitingForFeed
-      const ordinaryFrameWaitControlState = this.ordinaryFrameWaitControlState
-      this.ordinaryFrameWaitingForFeed = false
-      this.ordinaryFrameWaitControlState = null
-      if (
-        this._isDestroyed ||
-        (ordinaryFrameWasWaiting &&
-          this._controlState !== ordinaryFrameWaitControlState &&
-          (this._controlState === RendererControlState.EXPLICIT_PAUSED ||
-            this._controlState === RendererControlState.EXPLICIT_STOPPED ||
-            this._controlState === RendererControlState.EXPLICIT_SUSPENDED))
-      ) {
-        this.resolveIdleIfNeeded()
+      this.feedIdleWaitPending = false
+      if (!this.feedIdleRenderScheduled) return
+      // New output may arrive after the feed resolves but before this continuation.
+      if (feed.isBackpressured()) {
+        this.scheduleRenderAfterFeedIdle()
         return
       }
 
+      this.feedIdleRenderScheduled = false
       this.scheduleRenderTimer()
       this.resolveIdleIfNeeded()
     })
   }
 
+  private cancelRenderAfterFeedIdle(): void {
+    if (!this.feedIdleRenderScheduled) return
+    // Cancel scheduler demand without releasing bytes still owned by the sink.
+    this.feedIdleRenderScheduled = false
+    this.immediateRerenderRequested = false
+  }
+
   private handleNativeRenderRejection(status: number): "retryable-skip" | "backpressured" | "failed" {
     if (status === NATIVE_RENDER_STATUS_SKIPPED && this._feed) {
-      this.ordinaryFrameWaitingForFeed = true
-      this.ordinaryFrameWaitControlState = this._controlState
       this.scheduleRenderAfterFeedIdle()
       return "retryable-skip"
     }
@@ -1501,13 +1574,9 @@ export class CliRenderer extends EventEmitter implements RenderContext {
     }
 
     if (this._isRunning) {
-      if (!this.rendering && !this.renderTimeout && !this.ordinaryFrameWaitingForFeed) {
+      if (!this.rendering && !this.renderTimeout) {
         this.scheduleRenderTimer()
       }
-      return
-    }
-
-    if (this.ordinaryFrameWaitingForFeed) {
       return
     }
 
@@ -1520,21 +1589,22 @@ export class CliRenderer extends EventEmitter implements RenderContext {
 
     if (!this.updateScheduled && !this.renderTimeout) {
       this.updateScheduled = true
+      const generation = ++this.updateGeneration
       const now = this.normalizeClockTime(this.clock.now(), this.lastTime)
       const elapsed = this.getElapsedMs(now, this.lastTime)
       const delay = Math.max(this.minTargetFrameTime - elapsed, 0)
 
       if (delay === 0) {
-        process.nextTick(() => this.activateFrame())
+        process.nextTick(() => this.activateFrame(generation))
         return
       }
 
-      this.clock.setTimeout(() => this.activateFrame(), delay)
+      this.clock.setTimeout(() => this.activateFrame(generation), delay)
     }
   }
 
-  private async activateFrame() {
-    if (!this.updateScheduled) {
+  private async activateFrame(generation: number) {
+    if (generation !== this.updateGeneration || !this.updateScheduled) {
       this.resolveIdleIfNeeded()
       return
     }
@@ -1542,7 +1612,7 @@ export class CliRenderer extends EventEmitter implements RenderContext {
     try {
       await this.loop()
     } finally {
-      this.updateScheduled = false
+      if (generation === this.updateGeneration) this.updateScheduled = false
       this.resolveIdleIfNeeded()
     }
   }
@@ -1829,6 +1899,57 @@ export class CliRenderer extends EventEmitter implements RenderContext {
     return this._capabilities
   }
 
+  public get kittyImageTransport(): KittyImageTransport {
+    return this.kittyTransportMode
+  }
+
+  public set kittyImageTransport(mode: KittyImageTransport) {
+    const code = KITTY_IMAGE_TRANSPORTS.indexOf(mode)
+    if (code < 0) throw new TypeError("Invalid kittyImageTransport")
+    if (this._isDestroyed || mode === this.kittyTransportMode) return
+    this.kittyTransportMode = mode
+    this.startKittyTransportPolling()
+    this.lib.setKittyImageTransport(this.rendererPtr, code)
+    this.requestRender()
+  }
+
+  private startKittyTransportPolling(): void {
+    if (!this._terminalIsSetup || this.kittyTransportMode !== "file" || this.kittyTransportTimer !== null) return
+    // Old file transfers still need ACKs, expiry, and error cleanup after selecting an inline mode.
+    this.stdout.on("error", this.kittyOutputErrorHandler)
+    this.kittyTransportTimer = this.clock.setInterval(() => {
+      if (!this._isDestroyed && this.lib.pollKittyImageTransport(this.rendererPtr)) this.requestRender()
+    }, 1000)
+  }
+
+  public get kittyImageTransportStatus(): KittyImageTransportStatus {
+    const [mode, effective, fileState, fallback, pendingFiles, pendingBytes] = this.lib.getKittyImageTransport(
+      this.rendererPtr,
+    )
+    return {
+      requested: KITTY_IMAGE_TRANSPORTS[mode]!,
+      effective: (["raw", "zlib", "png", "file"] as const)[effective]!,
+      fileState: (["disabled", "probing", "ready", "unsupported", "timeout", "io-error", "cancelled"] as const)[
+        fileState
+      ]!,
+      fallback: (["none", "not-ready", "unavailable", "budget", "busy", "preparation", "compression"] as const)[
+        fallback
+      ]!,
+      pendingFiles,
+      pendingBytes,
+    }
+  }
+
+  public cancelKittyImageTransport(): void {
+    if (this._isDestroyed) return
+    this.lib.cancelKittyImageTransport(this.rendererPtr, false)
+    this.requestRender()
+  }
+
+  private kittyOutputErrorHandler = (): void => {
+    if (!this._isDestroyed) this.lib.cancelKittyImageTransport(this.rendererPtr, true)
+  }
+
   public triggerNotification(message: string, title?: string): boolean {
     if (this._isDestroyed) return false
     return this.lib.triggerNotification(this.rendererPtr, message, title)
@@ -1872,7 +1993,15 @@ export class CliRenderer extends EventEmitter implements RenderContext {
     const tailColumn = renderer.getPendingSplitTailColumn()
     const firstLineOffset = !startOnNewLine && tailColumn > 0 && tailColumn < renderer.width ? tailColumn : 0
 
-    const snapshotContext = new ScrollbackSnapshotRenderContext(renderer.width, 1, renderer.widthMethod)
+    const snapshotContext = new ScrollbackSnapshotRenderContext(
+      renderer.width,
+      1,
+      renderer.widthMethod,
+      renderer._terminalWidth,
+      renderer._terminalHeight,
+      renderer.resolution,
+      renderer.capabilities,
+    )
     let firstLineOffsetOwner: Renderable | null = null
     const renderContext = Object.create(snapshotContext) as RenderContext
     Object.defineProperty(renderContext, "claimFirstLineOffset", {
@@ -1910,6 +2039,10 @@ export class CliRenderer extends EventEmitter implements RenderContext {
     let surfaceWidth = renderer.width
     let surfaceHeight = 1
     let surfaceWidthMethod = renderer.widthMethod
+    let surfaceTerminalWidth = renderer._terminalWidth
+    let surfaceTerminalHeight = renderer._terminalHeight
+    let surfaceResolutionWidth = renderer.resolution?.width ?? null
+    let surfaceResolutionHeight = renderer.resolution?.height ?? null
     let surfaceDestroyed = false
     let hasRendered = false
     let nextCommitStartOnNewLine = startOnNewLine
@@ -1919,6 +2052,10 @@ export class CliRenderer extends EventEmitter implements RenderContext {
 
     const destroyListener = (): void => {
       destroySurface()
+    }
+    const capabilitiesListener = (capabilities: TerminalCapabilities): void => {
+      snapshotContext.capabilities = capabilities
+      renderContext.emit(CliRenderEvents.CAPABILITIES, capabilities)
     }
 
     const assertNotDestroyed = (): void => {
@@ -1934,7 +2071,14 @@ export class CliRenderer extends EventEmitter implements RenderContext {
     }
 
     const assertGeometryStillCurrent = (): void => {
-      if (renderer.width !== surfaceWidth || renderer.widthMethod !== surfaceWidthMethod) {
+      if (
+        renderer.width !== surfaceWidth ||
+        renderer.widthMethod !== surfaceWidthMethod ||
+        renderer._terminalWidth !== surfaceTerminalWidth ||
+        renderer._terminalHeight !== surfaceTerminalHeight ||
+        (renderer.resolution?.width ?? null) !== surfaceResolutionWidth ||
+        (renderer.resolution?.height ?? null) !== surfaceResolutionHeight
+      ) {
         throw new Error("ScrollbackSurface.commitRows requires render() after renderer geometry changes")
       }
     }
@@ -2014,6 +2158,10 @@ export class CliRenderer extends EventEmitter implements RenderContext {
 
       snapshotContext.width = width
       snapshotContext.widthMethod = widthMethod
+      snapshotContext.terminalWidth = renderer._terminalWidth
+      snapshotContext.terminalHeight = renderer._terminalHeight
+      snapshotContext.resolution = renderer.resolution
+      snapshotContext.capabilities = renderer.capabilities
       publicRoot.width = width
 
       const renderPass = (height: number): void => {
@@ -2044,6 +2192,10 @@ export class CliRenderer extends EventEmitter implements RenderContext {
           surfaceWidth = width
           surfaceHeight = measuredHeight
           surfaceWidthMethod = widthMethod
+          surfaceTerminalWidth = renderer._terminalWidth
+          surfaceTerminalHeight = renderer._terminalHeight
+          surfaceResolutionWidth = renderer.resolution?.width ?? null
+          surfaceResolutionHeight = renderer.resolution?.height ?? null
           hasRendered = true
           return
         }
@@ -2056,6 +2208,10 @@ export class CliRenderer extends EventEmitter implements RenderContext {
       surfaceWidth = width
       surfaceHeight = targetHeight
       surfaceWidthMethod = widthMethod
+      surfaceTerminalWidth = renderer._terminalWidth
+      surfaceTerminalHeight = renderer._terminalHeight
+      surfaceResolutionWidth = renderer.resolution?.width ?? null
+      surfaceResolutionHeight = renderer.resolution?.height ?? null
       hasRendered = true
     }
 
@@ -2127,6 +2283,7 @@ export class CliRenderer extends EventEmitter implements RenderContext {
 
       surfaceDestroyed = true
       renderer.off(CliRenderEvents.DESTROY, destroyListener)
+      renderer.off(CliRenderEvents.CAPABILITIES, capabilitiesListener)
 
       let destroyError: unknown = null
 
@@ -2153,6 +2310,7 @@ export class CliRenderer extends EventEmitter implements RenderContext {
     }
 
     renderer.on(CliRenderEvents.DESTROY, destroyListener)
+    renderer.on(CliRenderEvents.CAPABILITIES, capabilitiesListener)
 
     return {
       get renderContext(): RenderContext {
@@ -2206,7 +2364,15 @@ export class CliRenderer extends EventEmitter implements RenderContext {
       throw new Error('writeToScrollback requires screenMode "split-footer" and externalOutputMode "capture-stdout"')
     }
 
-    const snapshotContext = new ScrollbackSnapshotRenderContext(this.width, this.height, this.widthMethod)
+    const snapshotContext = new ScrollbackSnapshotRenderContext(
+      this.width,
+      this.height,
+      this.widthMethod,
+      this._terminalWidth,
+      this._terminalHeight,
+      this.resolution,
+      this.capabilities,
+    )
     const snapshot = write({
       width: this.width,
       widthMethod: this.widthMethod,
@@ -2448,7 +2614,15 @@ export class CliRenderer extends EventEmitter implements RenderContext {
   private createStdoutSnapshotCommit(line: string, trailingNewline: boolean): ExternalOutputCommit {
     // Convert captured stdout into the same commit shape used by writeToScrollback.
     // One commit format keeps split append behavior consistent across both sources.
-    const snapshotContext = new ScrollbackSnapshotRenderContext(this.width, 1, this.widthMethod)
+    const snapshotContext = new ScrollbackSnapshotRenderContext(
+      this.width,
+      1,
+      this.widthMethod,
+      this._terminalWidth,
+      this._terminalHeight,
+      this.resolution,
+      this.capabilities,
+    )
     const maxWidth = Math.max(1, this.width)
     const lineCells = [...line]
     const rowColumns = Math.min(lineCells.length, maxWidth)
@@ -2565,6 +2739,7 @@ export class CliRenderer extends EventEmitter implements RenderContext {
     let acceptedCommits = 0
     let nativeBackpressured = false
     let nativeFailed = false
+    let nextRenderOffset = this.renderOffset
 
     for (const [index, commit] of commits.entries()) {
       // Force repaint only on the last commit in a frame. Repainting after every
@@ -2587,6 +2762,7 @@ export class CliRenderer extends EventEmitter implements RenderContext {
         forceCommit,
         beginFrame,
         finalizeFrame,
+        drainAll,
       )
       if (nativeResult.status === NATIVE_RENDER_STATUS_SKIPPED) {
         nativeBackpressured = true
@@ -2598,14 +2774,9 @@ export class CliRenderer extends EventEmitter implements RenderContext {
         break
       }
 
-      this.renderOffset = nativeResult.renderOffset
-      this.recordSplitCommit(commit)
+      nextRenderOffset = nativeResult.renderOffset
       hasCommittedOutput = true
       acceptedCommits++
-    }
-
-    if (acceptedCommits > 0) {
-      this.externalOutputQueue.drop(acceptedCommits)
     }
 
     if (nativeFailed) {
@@ -2615,6 +2786,12 @@ export class CliRenderer extends EventEmitter implements RenderContext {
     if (nativeBackpressured) {
       this.scheduleRenderAfterFeedIdle()
       return "backpressured"
+    }
+
+    if (acceptedCommits > 0) {
+      this.renderOffset = nextRenderOffset
+      for (const commit of commits.slice(0, acceptedCommits)) this.recordSplitCommit(commit)
+      this.externalOutputQueue.drop(acceptedCommits)
     }
 
     if (!hasCommittedOutput) {
@@ -3101,6 +3278,7 @@ export class CliRenderer extends EventEmitter implements RenderContext {
       explicitWidthCprActive: true,
       startupCursorCprActive,
     })
+    this.startKittyTransportPolling()
     this.lib.setupTerminal(this.rendererPtr, this._screenMode === "alternate-screen")
     this._capabilities = this.lib.getTerminalCapabilities(this.rendererPtr)
 
@@ -3317,6 +3495,20 @@ export class CliRenderer extends EventEmitter implements RenderContext {
   }
 
   private handleStdinEvent(event: StdinEvent): void {
+    // Native resume can publish probes before the JS control state is restored.
+    if (event.type === "response" && event.sequence.startsWith("\x1b_G")) {
+      const result = this.lib.processKittyImageReply(this.rendererPtr, event.sequence)
+      if (result !== 0) {
+        if (result === 2) this.requestRender()
+        return
+      }
+    }
+    if (this._controlState === RendererControlState.EXPLICIT_SUSPENDED) {
+      if (event.type === "response" && isPixelResolutionResponse(event.sequence)) {
+        this.dispatchSequenceHandlers(event.sequence)
+      }
+      return
+    }
     switch (event.type) {
       case "key":
         if (this.dispatchSequenceHandlers(event.raw)) {
@@ -3377,11 +3569,17 @@ export class CliRenderer extends EventEmitter implements RenderContext {
 
     this.addInputHandler((sequence: string) => {
       if (isPixelResolutionResponse(sequence) && this.waitingForPixelResolution) {
+        this.waitingForPixelResolution = false
+        if (this.pixelResolutionRequeryPending) {
+          this.updateStdinParserProtocolContext({ pixelResolutionQueryActive: false })
+          this.queryPixelResolution()
+          return true
+        }
         const resolution = parsePixelResolution(sequence)
         if (resolution) {
           this._resolution = resolution
+          this.requestRender()
         }
-        this.waitingForPixelResolution = false
         this.updateStdinParserProtocolContext({ pixelResolutionQueryActive: false }, true)
         return true
       }
@@ -3397,6 +3595,7 @@ export class CliRenderer extends EventEmitter implements RenderContext {
 
     this.stdin.on("data", this.stdinListener)
     this.stdin.resume()
+    this.startTerminalKeepAlive()
   }
 
   private dispatchMouseEvent(
@@ -3404,7 +3603,7 @@ export class CliRenderer extends EventEmitter implements RenderContext {
     attributes: RawMouseEvent & { source?: Renderable; isDragging?: boolean },
   ): MouseEvent {
     const event = new MouseEvent(target, attributes)
-    target.processMouseEvent(event)
+    this.sendMouseEvent(target, event)
 
     if (this.autoFocus && event.type === "down" && event.button === MouseButton.LEFT && !event.defaultPrevented) {
       let current: Renderable | null = target
@@ -3418,6 +3617,15 @@ export class CliRenderer extends EventEmitter implements RenderContext {
     }
 
     return event
+  }
+
+  private sendMouseEvent(target: Renderable, event: MouseEvent): void {
+    try {
+      target.processMouseEvent(event)
+    } catch (error) {
+      const handled = this.emit(CliRenderEvents.HANDLER_ERROR, { error, event } satisfies CliRendererHandlerErrorEvent)
+      if (!handled) console.error("Error in mouse handler:", error)
+    }
   }
 
   private processSingleMouseEvent(mouseEvent: RawMouseEvent): boolean {
@@ -3460,7 +3668,7 @@ export class CliRenderer extends EventEmitter implements RenderContext {
 
       if (scrollTarget) {
         const event = new MouseEvent(scrollTarget, mouseEvent)
-        scrollTarget.processMouseEvent(event)
+        this.sendMouseEvent(scrollTarget, event)
       }
       return true
     }
@@ -3484,7 +3692,12 @@ export class CliRenderer extends EventEmitter implements RenderContext {
       )
 
       if (canStartSelection && maybeRenderable) {
-        this.startSelection(maybeRenderable, mouseEvent.x, mouseEvent.y)
+        this.startSelection(
+          maybeRenderable,
+          mouseEvent.x,
+          mouseEvent.y,
+          this.nextClickBehavior(maybeRenderable, mouseEvent.x, mouseEvent.y),
+        )
         this.dispatchMouseEvent(maybeRenderable, mouseEvent)
         return true
       }
@@ -3498,19 +3711,19 @@ export class CliRenderer extends EventEmitter implements RenderContext {
           ...mouseEvent,
           isDragging: true,
         })
-        maybeRenderable.processMouseEvent(event)
+        this.sendMouseEvent(maybeRenderable, event)
       }
 
       return true
     }
 
-    if (mouseEvent.type === "up" && this.currentSelection?.isDragging) {
+    if (mouseEvent.type === "up" && mouseEvent.button === MouseButton.LEFT && this.currentSelection?.isDragging) {
       if (maybeRenderable) {
         const event = new MouseEvent(maybeRenderable, {
           ...mouseEvent,
           isDragging: true,
         })
-        maybeRenderable.processMouseEvent(event)
+        this.sendMouseEvent(maybeRenderable, event)
       }
 
       this.finishSelection()
@@ -3535,7 +3748,7 @@ export class CliRenderer extends EventEmitter implements RenderContext {
           ...mouseEvent,
           type: "out",
         })
-        this.lastOverRenderable.processMouseEvent(event)
+        this.sendMouseEvent(this.lastOverRenderable, event)
       }
       this.lastOverRenderable = maybeRenderable
       if (maybeRenderable) {
@@ -3544,13 +3757,13 @@ export class CliRenderer extends EventEmitter implements RenderContext {
           type: "over",
           source: this.capturedRenderable,
         })
-        maybeRenderable.processMouseEvent(event)
+        this.sendMouseEvent(maybeRenderable, event)
       }
     }
 
     if (this.capturedRenderable && mouseEvent.type !== "up") {
       const event = new MouseEvent(this.capturedRenderable, mouseEvent)
-      this.capturedRenderable.processMouseEvent(event)
+      this.sendMouseEvent(this.capturedRenderable, event)
       return true
     }
 
@@ -3559,15 +3772,15 @@ export class CliRenderer extends EventEmitter implements RenderContext {
         ...mouseEvent,
         type: "drag-end",
       })
-      this.capturedRenderable.processMouseEvent(event)
-      this.capturedRenderable.processMouseEvent(new MouseEvent(this.capturedRenderable, mouseEvent))
+      this.sendMouseEvent(this.capturedRenderable, event)
+      this.sendMouseEvent(this.capturedRenderable, new MouseEvent(this.capturedRenderable, mouseEvent))
       if (maybeRenderable) {
         const event = new MouseEvent(maybeRenderable, {
           ...mouseEvent,
           type: "drop",
           source: this.capturedRenderable,
         })
-        maybeRenderable.processMouseEvent(event)
+        this.sendMouseEvent(maybeRenderable, event)
       }
       this.lastOverRenderable = this.capturedRenderable
       this.lastOverRenderableNum = this.capturedRenderable.num
@@ -3590,7 +3803,12 @@ export class CliRenderer extends EventEmitter implements RenderContext {
       this.lastOverRenderable = undefined
     }
 
-    if (!event?.defaultPrevented && mouseEvent.type === "down" && this.currentSelection) {
+    if (
+      !event?.defaultPrevented &&
+      mouseEvent.type === "down" &&
+      mouseEvent.button === MouseButton.LEFT &&
+      this.currentSelection
+    ) {
       this.clearSelection()
     }
 
@@ -3627,7 +3845,7 @@ export class CliRenderer extends EventEmitter implements RenderContext {
     // Fire out on old element
     if (lastOver && !lastOver.isDestroyed) {
       const event = new MouseEvent(lastOver, { ...baseEvent, type: "out" })
-      lastOver.processMouseEvent(event)
+      this.sendMouseEvent(lastOver, event)
     }
 
     this.lastOverRenderable = hitRenderable
@@ -3639,7 +3857,7 @@ export class CliRenderer extends EventEmitter implements RenderContext {
         ...baseEvent,
         type: "over",
       })
-      hitRenderable.processMouseEvent(event)
+      this.sendMouseEvent(hitRenderable, event)
     }
   }
   public setMousePointer(style: MousePointerStyle): void {
@@ -3649,6 +3867,20 @@ export class CliRenderer extends EventEmitter implements RenderContext {
 
   public hitTest(x: number, y: number): number {
     return this.lib.checkHit(this.rendererPtr, x, y)
+  }
+
+  public getLinkIdAt(x: number, y: number): number {
+    if (this._isDestroyed || !Number.isInteger(x) || !Number.isInteger(y)) return 0
+
+    const buffer = this.currentRenderBuffer
+    if (x < 0 || y < 0 || x >= buffer.width || y >= buffer.height) return 0
+
+    return getLinkId(buffer.buffers.attributes[y * buffer.width + x])
+  }
+
+  public getLinkAt(x: number, y: number): string | null {
+    const linkId = this.getLinkIdAt(x, y)
+    return linkId === 0 ? null : this.currentRenderBuffer.lib.linkGetUrl(linkId) || null
   }
 
   private takeMemorySnapshot(): void {
@@ -3716,6 +3948,9 @@ export class CliRenderer extends EventEmitter implements RenderContext {
   }
 
   private queryPixelResolution() {
+    this.pixelResolutionRequeryPending = true
+    if (this._controlState === RendererControlState.EXPLICIT_SUSPENDED || this.waitingForPixelResolution) return
+    this.pixelResolutionRequeryPending = false
     this.waitingForPixelResolution = true
     this.updateStdinParserProtocolContext({ pixelResolutionQueryActive: true })
     this.lib.queryPixelResolution(this.rendererPtr)
@@ -3746,6 +3981,7 @@ export class CliRenderer extends EventEmitter implements RenderContext {
 
     this._terminalWidth = width
     this._terminalHeight = height
+    this._resolution = null
     this.queryPixelResolution()
 
     this.setCapturedRenderable(undefined)
@@ -3760,12 +3996,17 @@ export class CliRenderer extends EventEmitter implements RenderContext {
     const splitFooterActive = this._screenMode === "split-footer"
 
     if (splitFooterActive) {
-      // Width shrink historically needs a broader scrub band, but if resize interrupts
-      // a deferred footer transition we also need to clear from that visible source surface.
+      // Width shrink historically needs a broader bottom-anchored scrub band so wrapped
+      // footer cells above a pinned surface are erased. Never start that clear below the
+      // visible footer origin, or a settling footer leaves stale rows. Interrupted
+      // transitions may still have an earlier source that must also be included.
       let clearStart: number | null = null
 
       if (width < prevWidth && visiblePreviousSplitHeight > 0) {
-        clearStart = Math.max(previousTerminalHeight - visiblePreviousSplitHeight * 2, 1)
+        clearStart = Math.min(
+          this.renderOffset + 1,
+          Math.max(previousTerminalHeight - visiblePreviousSplitHeight * 2, 1),
+        )
       }
 
       if (pendingSplitFooterTransition !== null) {
@@ -3956,15 +4197,31 @@ export class CliRenderer extends EventEmitter implements RenderContext {
     if (this._controlState === RendererControlState.IDLE && this.liveRequestCounter > 0) {
       this._controlState = RendererControlState.AUTO_STARTED
       this.internalStart()
+    } else if (
+      this._controlState === RendererControlState.EXPLICIT_SUSPENDED &&
+      this._previousControlState === RendererControlState.IDLE
+    ) {
+      this._previousControlState = RendererControlState.AUTO_STARTED
     }
   }
 
   public dropLive(): void {
-    this.liveRequestCounter = Math.max(0, this.liveRequestCounter - 1)
+    if (this.liveRequestCounter === 0) return
+    this.liveRequestCounter--
+
+    if (
+      this.liveRequestCounter === 0 &&
+      this._controlState === RendererControlState.EXPLICIT_SUSPENDED &&
+      this._previousControlState === RendererControlState.AUTO_STARTED
+    ) {
+      this._previousControlState = RendererControlState.IDLE
+    }
 
     if (this._controlState === RendererControlState.AUTO_STARTED && this.liveRequestCounter === 0) {
       this._controlState = RendererControlState.IDLE
-      this.internalPause()
+      // Return to demand-driven mode without cancelling coalesced tree/output updates.
+      this._isRunning = false
+      this.resolveIdleIfNeeded()
     }
   }
 
@@ -3983,8 +4240,9 @@ export class CliRenderer extends EventEmitter implements RenderContext {
 
       // Invalidate any queued idle one-shot frame.
       // start()/live/resume transition to the continuous loop, so queued
-      // activateFrame callbacks must no-op via !updateScheduled.
+      // activateFrame callbacks must not consume a later one-shot request.
       this.updateScheduled = false
+      this.updateGeneration++
 
       if (this.memorySnapshotInterval > 0) {
         this.startMemorySnapshotTimer()
@@ -4004,6 +4262,7 @@ export class CliRenderer extends EventEmitter implements RenderContext {
 
     this._controlState = RendererControlState.EXPLICIT_SUSPENDED
     this.updateScheduled = false
+    this.updateGeneration++
     this.internalPause()
 
     if (this._terminalIsSetup) {
@@ -4018,15 +4277,16 @@ export class CliRenderer extends EventEmitter implements RenderContext {
 
     this.disableMouse()
     this.removeExitListeners()
-    this.waitingForPixelResolution = false
     this.updateStdinParserProtocolContext({
       privateCapabilityRepliesActive: false,
-      pixelResolutionQueryActive: false,
+      pixelResolutionQueryActive: this.waitingForPixelResolution,
       explicitWidthCprActive: false,
       startupCursorCprActive: false,
     })
-    this.stdinParser?.reset()
+    if (this.stdinParser?.hasPendingPixelResolutionResponse()) this.stdinParser.pausePendingTimeout()
+    else this.stdinParser?.reset()
     this.stdin.removeListener("data", this.stdinListener)
+    this.stopTerminalKeepAlive()
 
     this.themeModeState.cancelRefresh()
 
@@ -4044,13 +4304,13 @@ export class CliRenderer extends EventEmitter implements RenderContext {
       this.stdin.setRawMode(true)
     }
 
-    // Drain any input buffered during suspension before registering the
-    // listener. Adding a "data" listener can auto-resume a Readable, so the
-    // drain must come first while the stream is still paused and read()
-    // pulls from the internal buffer rather than being a flowing-mode no-op.
-    while (this.stdin.read() !== null) {}
+    let drained: Buffer | string | null
+    while ((drained = this.stdin.read()) !== null) this.stdinListener(drained)
+    if (this.stdinParser?.hasPendingPixelResolutionResponse()) this.stdinParser.pausePendingTimeout()
+    else this.stdinParser?.reset()
     this.stdin.on("data", this.stdinListener)
     this.stdin.resume()
+    this.startTerminalKeepAlive()
     this.addExitListeners()
 
     const resumePreservedNonAltSurface =
@@ -4084,6 +4344,8 @@ export class CliRenderer extends EventEmitter implements RenderContext {
 
     this.forceFullRepaintRequested = true
     this._controlState = this._previousControlState
+    if (this.pixelResolutionRequeryPending) this.queryPixelResolution()
+    this.stdinParser?.resumePendingTimeout()
 
     if (
       this._previousControlState === RendererControlState.AUTO_STARTED ||
@@ -4097,6 +4359,7 @@ export class CliRenderer extends EventEmitter implements RenderContext {
 
   private internalPause(): void {
     this._isRunning = false
+    this.cancelRenderAfterFeedIdle()
 
     if (this.renderTimeout) {
       this.clock.clearTimeout(this.renderTimeout)
@@ -4114,25 +4377,16 @@ export class CliRenderer extends EventEmitter implements RenderContext {
   }
 
   private internalStop(): void {
-    if (this.isRunning && !this._isDestroyed) {
-      this._isRunning = false
+    this.updateScheduled = false
+    this.updateGeneration++
+    this.immediateRerenderRequested = false
 
-      if (this.memorySnapshotTimer) {
-        this.clock.clearInterval(this.memorySnapshotTimer)
-        this.memorySnapshotTimer = null
-      }
-
-      if (this.renderTimeout) {
-        this.clock.clearTimeout(this.renderTimeout)
-        this.renderTimeout = null
-      }
-
-      // If we're currently rendering, the frame will resolve idle when it completes
-      // Otherwise, resolve immediately
-      if (!this.rendering) {
-        this.resolveIdleIfNeeded()
-      }
+    if (this.memorySnapshotTimer) {
+      this.clock.clearInterval(this.memorySnapshotTimer)
+      this.memorySnapshotTimer = null
     }
+
+    this.internalPause()
   }
 
   public destroy(): void {
@@ -4153,14 +4407,22 @@ export class CliRenderer extends EventEmitter implements RenderContext {
   private cleanupBeforeDestroy(): void {
     if (this._destroyCleanupPrepared) return
     this._destroyCleanupPrepared = true
-
-    if (this._usesProcessStdout) {
-      process.removeListener("SIGWINCH", this.sigwinchHandler)
+    this.cancelRenderAfterFeedIdle()
+    if (this.kittyTransportTimer !== null) {
+      this.clock.clearInterval(this.kittyTransportTimer)
+      this.kittyTransportTimer = null
+      this.stdout.off("error", this.kittyOutputErrorHandler)
+      this.lib.cancelKittyImageTransport(this.rendererPtr, false)
     }
-    process.removeListener("uncaughtException", this.handleError)
-    process.removeListener("unhandledRejection", this.handleError)
-    process.removeListener("warning", this.warningHandler)
-    process.removeListener("beforeExit", this.exitHandler)
+
+    // Bun 1.4's types narrow process.removeListener to its memoryPressure overload.
+    const processEvents = process as EventEmitter
+    if (this._usesProcessStdout) {
+      processEvents.removeListener("SIGWINCH", this.sigwinchHandler)
+    }
+    processEvents.removeListener("uncaughtException", this.handleError)
+    processEvents.removeListener("unhandledRejection", this.handleError)
+    processEvents.removeListener("warning", this.warningHandler)
     this.removeExitListeners()
 
     if (this.resizeTimeoutId !== null) {
@@ -4189,6 +4451,7 @@ export class CliRenderer extends EventEmitter implements RenderContext {
 
     this._isRunning = false
     this.waitingForPixelResolution = false
+    this.pixelResolutionRequeryPending = false
     this.updateStdinParserProtocolContext(
       {
         privateCapabilityRepliesActive: false,
@@ -4198,10 +4461,12 @@ export class CliRenderer extends EventEmitter implements RenderContext {
       },
       true,
     )
+    if (this.stdin === process.stdin && this._usesProcessStdout) this.disableMouse()
     this._useMouse = false
     this.setCapturedRenderable(undefined)
 
     this.stdin.removeListener("data", this.stdinListener)
+    this.stopTerminalKeepAlive()
     if (this.stdin.setRawMode) {
       try {
         this.stdin.setRawMode(false)
@@ -4305,11 +4570,9 @@ export class CliRenderer extends EventEmitter implements RenderContext {
     //   d) detach the handler now that no more data will flow
     //   e) close the feed (releases chunk memory once async handlers settle)
     //
-    // Memory-lifetime invariant: `lib.destroyRenderer` calls into Zig's
-    // `FeedBackend.deinit`, which is a DOCUMENTED NO-OP — feed memory is
-    // owned by the TS side and only released by `feed.close()` at step (e).
-    // Consequently, step (c)'s drain operates on still-valid chunk memory;
-    // there is no use-after-free window between (b) and (e).
+    // Memory-lifetime invariant: `FeedBackend.deinit` releases its staging
+    // buffer but does not own feed chunks. Those remain valid until the TS side
+    // calls `feed.close()` at step (e), so step (c) can safely drain them.
     //
     // Caller note: `feed.close()` is queued as a microtask when async handlers
     // from the final drain are still pending. If the caller tears down the
@@ -4326,10 +4589,15 @@ export class CliRenderer extends EventEmitter implements RenderContext {
       }
     }
 
+    const discardInput = this._terminalIsSetup && this._controlState !== RendererControlState.EXPLICIT_SUSPENDED
     try {
-      this.lib.destroyRenderer(this.rendererPtr)
+      this.lib.destroyRenderer(this.rendererPtr, discardInput && this.stdin === process.stdin)
     } catch (e) {
       console.error("Error in lib.destroyRenderer during destroy:", e)
+    }
+    if (discardInput) {
+      const bufferedInput = this.stdin.readableLength
+      if (bufferedInput > 0) this.stdin.read(bufferedInput)
     }
     rendererTracker.renderers.delete(this)
     if (rendererTracker.renderers.size === 0) {
@@ -4389,14 +4657,23 @@ export class CliRenderer extends EventEmitter implements RenderContext {
 
   private async loop(): Promise<void> {
     if (this.rendering || this._isDestroyed) return
-    this.renderTimeout = null
-
-    this.rendering = true
+    const startedWhileRunning = this._isRunning
     if (this.renderTimeout) {
       this.clock.clearTimeout(this.renderTimeout)
       this.renderTimeout = null
     }
+    this.rendering = true
+    let renderFailed = false
     try {
+      // Admit one ordinary frame at a time, before animation/GPU callbacks or
+      // composition. Drained spans still own memory until Writable callbacks settle.
+      // Control and shutdown writes bypass this gate and preserve committed ANSI.
+      if (this._feed?.isBackpressured()) {
+        this.handleNativeRenderRejection(NATIVE_RENDER_STATUS_SKIPPED)
+        this.immediateRerenderRequested = false
+        return
+      }
+
       // Bump before any work so all callers this iteration see the new id.
       this._frameId++
 
@@ -4503,7 +4780,15 @@ export class CliRenderer extends EventEmitter implements RenderContext {
             this.renderTimeout = null
           }
         } else if (nativeStatus === "backpressured") {
-          this.scheduleRenderAfterBackpressure()
+          // Automatic live completion still owes its final frame; explicit pause/stop does not.
+          if (
+            !startedWhileRunning ||
+            this._isRunning ||
+            this.immediateRerenderRequested ||
+            this._controlState === RendererControlState.IDLE
+          ) {
+            this.scheduleRenderAfterBackpressure()
+          }
         } else if (nativeStatus === "retryable-skip") {
           this.immediateRerenderRequested = false
           this.renderTimeout = null
@@ -4512,10 +4797,20 @@ export class CliRenderer extends EventEmitter implements RenderContext {
           this.renderTimeout = null
         }
       }
+    } catch (error) {
+      renderFailed = true
+      const renderError = error instanceof Error ? error : new Error(String(error))
+      const event: CliRendererErrorEvent = { error: renderError, renderable: this.root.takeCurrentRenderable() }
+      const handled = this.emit(CliRenderEvents.RENDER_ERROR, event)
+      if (!handled) this.handleError(renderError)
     } finally {
       this.rendering = false
       if (this._destroyPending) {
         this.finalizeDestroy()
+      }
+      if (renderFailed && (this._isRunning || this.immediateRerenderRequested) && !this._isDestroyed) {
+        this.immediateRerenderRequested = false
+        this.scheduleRenderTimer()
       }
       this.resolveIdleIfNeeded()
     }
@@ -4630,6 +4925,11 @@ export class CliRenderer extends EventEmitter implements RenderContext {
   }
 
   public clearSelection(): void {
+    this.clearSelectionState()
+    this.lastClick = null
+  }
+
+  private clearSelectionState(): void {
     if (this.currentSelection) {
       for (const renderable of this.currentSelection.touchedRenderables) {
         if (renderable.selectable && !renderable.isDestroyed) {
@@ -4645,15 +4945,28 @@ export class CliRenderer extends EventEmitter implements RenderContext {
    * Start a new selection at the given coordinates.
    * Used by both mouse and keyboard selection.
    */
-  public startSelection(renderable: Renderable, x: number, y: number): void {
+  public startSelection(renderable: Renderable, x: number, y: number, behavior: SelectionBehavior = "cell"): void {
     if (!renderable.selectable) return
 
-    this.clearSelection()
+    this.clearSelectionState()
     this.selectionContainers.push(renderable.parent || this.root)
-    this.currentSelection = new Selection(renderable, { x, y }, { x, y })
+    this.currentSelection = new Selection(renderable, { x, y }, { x, y }, behavior)
     this.currentSelection.isStart = true
 
     this.notifySelectablesOfSelectionChange()
+  }
+
+  private nextClickBehavior(renderable: Renderable, x: number, y: number): SelectionBehavior {
+    const now = this.clock.now()
+    const last = this.lastClick
+    const continued =
+      last !== null &&
+      renderable.num === last.renderableId &&
+      now - last.time <= CLICK_REPEAT_INTERVAL_MS &&
+      Math.max(Math.abs(x - last.x), Math.abs(y - last.y)) <= 1
+    const count = continued ? Math.min(last.count + 1, 3) : 1
+    this.lastClick = { count, time: now, x, y, renderableId: renderable.num }
+    return count === 1 ? "cell" : count === 2 ? "word" : "line"
   }
 
   public updateSelection(

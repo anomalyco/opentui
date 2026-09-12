@@ -133,6 +133,16 @@ describe("TextBuffer", () => {
     })
   })
 
+  describe("tab width", () => {
+    it("clamps 255 to the largest representable even width", () => {
+      buffer.setText("a\tb")
+      buffer.setTabWidth(255)
+
+      expect(buffer.getTabWidth()).toBe(254)
+      expect(buffer.length).toBe(256)
+    })
+  })
+
   describe("getTextRange", () => {
     it("should return null bytes for zero-length range output buffers", () => {
       buffer.setText("Hello World")
@@ -141,6 +151,20 @@ describe("TextBuffer", () => {
 
       expect(lib.textBufferGetTextRange(buffer.ptr, 0, 5, 0)).toBeNull()
       expect(lib.textBufferGetTextRangeByCoords(buffer.ptr, 0, 0, 0, 5, 0)).toBeNull()
+    })
+
+    it("returns independently owned exact-length coordinate ranges", () => {
+      buffer.setText("Hello World")
+      const lib = (buffer as any).lib
+
+      const first = lib.textBufferGetTextRangeByCoords(buffer.ptr, 0, 0, 0, 5, 64) as Uint8Array
+      const second = lib.textBufferGetTextRangeByCoords(buffer.ptr, 0, 0, 0, 5, 64) as Uint8Array
+
+      expect(new TextDecoder().decode(first)).toBe("Hello")
+      expect(first.byteLength).toBe(5)
+      expect(first.buffer.byteLength).toBe(5)
+      expect(second).not.toBe(first)
+      expect(second.buffer).not.toBe(first.buffer)
     })
   })
 

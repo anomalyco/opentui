@@ -33,7 +33,54 @@ export type ThemeMode = "dark" | "light"
 
 export type CursorStyle = "block" | "line" | "underline" | "default"
 
-export type MousePointerStyle = "default" | "pointer" | "text" | "crosshair" | "move" | "not-allowed"
+/** How a selection occupies cells between stored anchor and focus offsets.
+ * Independent of `cursorStyle` (CSI `q` is paint). Default `cell` includes
+ * the grapheme under the max endpoint. `boundary` is the half-open insert
+ * range `[min, max)`. */
+export type SelectionOccupancy = "cell" | "boundary"
+
+/** How local cell coordinates expand into a highlight range.
+ * `cell` is the current inclusive press/drag. `word` and `line` expand
+ * each endpoint through native selectWord / selectLine. */
+export type SelectionBehavior = "cell" | "word" | "line"
+
+export type MousePointerStyle =
+  | "auto"
+  | "default"
+  | "none"
+  | "context-menu"
+  | "help"
+  | "pointer"
+  | "progress"
+  | "wait"
+  | "cell"
+  | "crosshair"
+  | "text"
+  | "vertical-text"
+  | "alias"
+  | "copy"
+  | "move"
+  | "no-drop"
+  | "not-allowed"
+  | "grab"
+  | "grabbing"
+  | "all-scroll"
+  | "col-resize"
+  | "row-resize"
+  | "n-resize"
+  | "e-resize"
+  | "s-resize"
+  | "w-resize"
+  | "ne-resize"
+  | "nw-resize"
+  | "se-resize"
+  | "sw-resize"
+  | "ew-resize"
+  | "ns-resize"
+  | "nesw-resize"
+  | "nwse-resize"
+  | "zoom-in"
+  | "zoom-out"
 
 export interface CursorStyleOptions {
   style?: CursorStyle
@@ -55,9 +102,10 @@ export enum TargetChannel {
   Both = 3,
 }
 
-export type WidthMethod = "wcwidth" | "unicode"
+export type WidthMethod = "wcwidth" | "unicode" | "unicode-wide"
 export type TerminalMultiplexer = "none" | "tmux" | "zellij" | "screen" | "unknown"
 export type TerminalCapabilityState = "unknown" | "supported" | "unsupported"
+export type ImageRenderProtocol = "auto" | "kitty" | "sixel" | "blocks"
 
 export interface TerminalInfo {
   name: string
@@ -86,6 +134,7 @@ export interface TerminalCapabilities {
   explicit_cursor_positioning: boolean
   remote: boolean
   multiplexer: TerminalMultiplexer
+  image_protocol?: ImageRenderProtocol
   terminal: TerminalInfo
 }
 
@@ -108,6 +157,9 @@ export interface RenderContext extends EventEmitter {
   clearHitGridScissorRects: () => void
   width: number
   height: number
+  terminalWidth?: number
+  terminalHeight?: number
+  resolution?: { width: number; height: number } | null
   /** Monotonic, bumped once per `loop()` iteration. Lets renderables dedupe per-frame work. */
   frameId: number
   requestRender: () => void
@@ -133,7 +185,7 @@ export interface RenderContext extends EventEmitter {
   keyInput: KeyHandler
   _internalKeyInput: InternalKeyHandler
   clearSelection: () => void
-  startSelection: (renderable: Renderable, x: number, y: number) => void
+  startSelection: (renderable: Renderable, x: number, y: number, behavior?: SelectionBehavior) => void
   updateSelection: (
     currentRenderable: Renderable | undefined,
     x: number,
@@ -174,6 +226,8 @@ export interface LineInfo {
 
 export interface LineInfoProvider {
   get lineInfo(): LineInfo
+  // Optional bounded read in visual-row coordinates, preserving lineInfo source remapping.
+  getLineSources?(startLine: number, lineCount: number): number[]
   get lineCount(): number
   get virtualLineCount(): number
   get scrollY(): number

@@ -2,10 +2,12 @@ import { test, expect, beforeEach, afterEach } from "bun:test"
 import { createTestRenderer, MouseButtons, type MockMouse, type TestRenderer } from "../testing.js"
 import { ScrollBoxRenderable } from "../renderables/ScrollBox.js"
 import { BoxRenderable } from "../renderables/Box.js"
+import { TextRenderable } from "../renderables/Text.js"
 import { Renderable } from "../Renderable.js"
 
 let testRenderer: TestRenderer
 let mockMouse: MockMouse
+let captureCharFrame: () => string
 
 class MovingBoxRenderable extends BoxRenderable {
   public shouldMove = false
@@ -19,7 +21,11 @@ class MovingBoxRenderable extends BoxRenderable {
 }
 
 beforeEach(async () => {
-  ;({ renderer: testRenderer, mockMouse } = await createTestRenderer({
+  ;({
+    renderer: testRenderer,
+    mockMouse,
+    captureCharFrame,
+  } = await createTestRenderer({
     width: 50,
     height: 30,
   }))
@@ -670,6 +676,269 @@ test("hit grid stays clipped after render", async () => {
 
   const outsideHitId = testRenderer.hitTest(container.x + container.width + 1, container.y + 1)
   expect(outsideHitId).toBe(0)
+})
+
+test("bordered overflow clip includes the final content row in the hit grid", async () => {
+  const container = new BoxRenderable(testRenderer, {
+    id: "bordered-row-container",
+    position: "absolute",
+    left: 5,
+    top: 4,
+    width: 8,
+    height: 6,
+    border: true,
+    overflow: "hidden",
+  })
+  testRenderer.root.add(container)
+
+  const child = new BoxRenderable(testRenderer, {
+    id: "bordered-row-child",
+    width: 6,
+    height: 4,
+  })
+  container.add(child)
+
+  await testRenderer.idle()
+
+  expect(child.x).toBe(container.x + 1)
+  expect(child.y).toBe(container.y + 1)
+  expect(child.height).toBe(container.height - 2)
+  expect(testRenderer.hitTest(child.x, child.y)).toBe(child.num)
+  expect(testRenderer.hitTest(child.x, child.y + child.height - 1)).toBe(child.num)
+})
+
+test("bordered overflow clip includes the final content column in the hit grid", async () => {
+  const container = new BoxRenderable(testRenderer, {
+    id: "bordered-column-container",
+    position: "absolute",
+    left: 5,
+    top: 4,
+    width: 8,
+    height: 6,
+    border: true,
+    overflow: "hidden",
+  })
+  testRenderer.root.add(container)
+
+  const child = new BoxRenderable(testRenderer, {
+    id: "bordered-column-child",
+    width: 6,
+    height: 4,
+  })
+  container.add(child)
+
+  await testRenderer.idle()
+
+  expect(child.x).toBe(container.x + 1)
+  expect(child.y).toBe(container.y + 1)
+  expect(child.width).toBe(container.width - 2)
+  expect(testRenderer.hitTest(child.x, child.y)).toBe(child.num)
+  expect(testRenderer.hitTest(child.x + child.width - 1, child.y)).toBe(child.num)
+})
+
+test("bordered overflow clip excludes child hits from every border cell", async () => {
+  const container = new BoxRenderable(testRenderer, {
+    id: "border-exclusion-container",
+    position: "absolute",
+    left: 5,
+    top: 4,
+    width: 8,
+    height: 6,
+    border: true,
+    overflow: "hidden",
+  })
+  testRenderer.root.add(container)
+
+  const child = new BoxRenderable(testRenderer, {
+    id: "border-exclusion-child",
+    width: 8,
+    height: 6,
+  })
+  child.translateX = -1
+  child.translateY = -1
+  container.add(child)
+
+  await testRenderer.idle()
+
+  const left = container.x
+  const right = container.x + container.width - 1
+  const top = container.y
+  const bottom = container.y + container.height - 1
+  const borderHits: number[] = []
+
+  for (let x = left; x <= right; x++) {
+    borderHits.push(testRenderer.hitTest(x, top), testRenderer.hitTest(x, bottom))
+  }
+  for (let y = top + 1; y < bottom; y++) {
+    borderHits.push(testRenderer.hitTest(left, y), testRenderer.hitTest(right, y))
+  }
+
+  expect(testRenderer.hitTest(left + 1, top + 1)).toBe(child.num)
+  expect(borderHits).toEqual(Array(borderHits.length).fill(container.num))
+})
+
+test("buffered bordered overflow clip does not make hidden content clickable", async () => {
+  let clicks = 0
+  const container = new BoxRenderable(testRenderer, {
+    id: "buffered-bordered-container",
+    position: "absolute",
+    left: 1,
+    top: 1,
+    width: 8,
+    height: 6,
+    border: true,
+    overflow: "hidden",
+    buffered: true,
+  })
+  testRenderer.root.add(container)
+
+  const child = new TextRenderable(testRenderer, {
+    id: "buffered-bordered-child",
+    content: "LAST",
+    width: 6,
+    height: 1,
+    marginTop: 3,
+    onMouseDown: () => clicks++,
+  })
+  container.add(child)
+
+  await testRenderer.idle()
+
+  const visible = captureCharFrame().split("\n")[child.y].includes("LAST")
+  expect(testRenderer.hitTest(child.x, child.y) === child.num).toBe(visible)
+
+  await mockMouse.click(child.x, child.y, MouseButtons.LEFT, { delayMs: 0 })
+  expect(clicks).toBe(visible ? 1 : 0)
+})
+
+for (const side of ["top", "right", "bottom", "left"] as const) {
+  test(`overflow clip respects a ${side}-only border in the hit grid`, async () => {
+    const leftInset = side === "left" ? 1 : 0
+    const rightInset = side === "right" ? 1 : 0
+    const topInset = side === "top" ? 1 : 0
+    const bottomInset = side === "bottom" ? 1 : 0
+    const container = new BoxRenderable(testRenderer, {
+      id: `${side}-border-container`,
+      position: "absolute",
+      left: 5,
+      top: 4,
+      width: 8,
+      height: 6,
+      border: [side],
+      overflow: "hidden",
+    })
+    testRenderer.root.add(container)
+
+    const child = new BoxRenderable(testRenderer, {
+      id: `${side}-border-child`,
+      width: 8,
+      height: 6,
+    })
+    child.translateX = -leftInset
+    child.translateY = -topInset
+    container.add(child)
+
+    await testRenderer.idle()
+
+    const contentLeft = container.x + leftInset
+    const contentRight = container.x + container.width - rightInset - 1
+    const contentTop = container.y + topInset
+    const contentBottom = container.y + container.height - bottomInset - 1
+    expect([
+      testRenderer.hitTest(contentLeft, contentTop),
+      testRenderer.hitTest(contentRight, contentTop),
+      testRenderer.hitTest(contentLeft, contentBottom),
+      testRenderer.hitTest(contentRight, contentBottom),
+    ]).toEqual([child.num, child.num, child.num, child.num])
+
+    const borderHit =
+      side === "top"
+        ? testRenderer.hitTest(container.x + 1, container.y)
+        : side === "right"
+          ? testRenderer.hitTest(container.x + container.width - 1, container.y + 1)
+          : side === "bottom"
+            ? testRenderer.hitTest(container.x + 1, container.y + container.height - 1)
+            : testRenderer.hitTest(container.x, container.y + 1)
+    expect(borderHit).toBe(container.num)
+  })
+}
+
+test("nested bordered overflow clips track translated screen coordinates", async () => {
+  const outer = new BoxRenderable(testRenderer, {
+    id: "nested-outer",
+    position: "absolute",
+    left: 3,
+    top: 2,
+    width: 12,
+    height: 10,
+    border: true,
+    overflow: "hidden",
+  })
+  testRenderer.root.add(outer)
+
+  const inner = new BoxRenderable(testRenderer, {
+    id: "nested-inner",
+    width: 8,
+    height: 6,
+    border: true,
+    overflow: "hidden",
+  })
+  inner.translateX = 6
+  outer.add(inner)
+
+  const child = new BoxRenderable(testRenderer, {
+    id: "nested-child",
+    width: 6,
+    height: 4,
+  })
+  inner.add(child)
+
+  await testRenderer.idle()
+
+  const outerLastContentX = outer.x + outer.width - 2
+  const hitY = inner.y + 1
+  const hitsBeforeMove = [
+    testRenderer.hitTest(outerLastContentX, hitY),
+    testRenderer.hitTest(outerLastContentX + 1, hitY),
+  ]
+
+  inner.translateX = 1
+  await testRenderer.idle()
+
+  const hitsAfterMove = [
+    testRenderer.hitTest(inner.x + 1, inner.y + 1),
+    testRenderer.hitTest(inner.x + inner.width - 2, inner.y + 1),
+    testRenderer.hitTest(outerLastContentX, hitY),
+  ]
+
+  expect(hitsBeforeMove).toEqual([child.num, outer.num])
+  expect(hitsAfterMove).toEqual([child.num, child.num, outer.num])
+})
+
+test('bordered overflow="scroll" clip includes the final content cell in the hit grid', async () => {
+  const container = new BoxRenderable(testRenderer, {
+    id: "scroll-overflow-container",
+    position: "absolute",
+    left: 5,
+    top: 4,
+    width: 8,
+    height: 6,
+    border: true,
+    overflow: "scroll",
+  })
+  testRenderer.root.add(container)
+
+  const child = new BoxRenderable(testRenderer, {
+    id: "scroll-overflow-child",
+    width: 6,
+    height: 4,
+  })
+  container.add(child)
+
+  await testRenderer.idle()
+
+  expect(testRenderer.hitTest(child.x, child.y)).toBe(child.num)
+  expect(testRenderer.hitTest(child.x + child.width - 1, child.y + child.height - 1)).toBe(child.num)
 })
 
 test("buffered overflow scissor uses screen coordinates for hit grid", async () => {

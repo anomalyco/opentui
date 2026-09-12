@@ -151,7 +151,7 @@ export class ASCIIFontRenderable extends FrameBufferRenderable {
       this.renderFontToBuffer()
       this.requestRender()
     }
-    return changed
+    return this.selectionHelper.hasSelection()
   }
 
   getSelectedText(): string {

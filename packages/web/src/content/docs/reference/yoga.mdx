@@ -1,0 +1,219 @@
+---
+title: Yoga API
+description: Use the advanced Yoga facade with explicit layout, callback, and native resource ownership
+---
+
+# Yoga API
+
+Most applications should use OpenTUI layout options. Read [Layout](/docs/core-concepts/layout) for the normal Flexbox API.
+
+`@opentui/core/yoga` is an advanced facade over the native Yoga library. Use it when you need to own a Yoga tree and calculate its layout directly. The entry point works in Bun and supported Node.js releases.
+
+## Imports
+
+The `@opentui/core` root exports the module as the `Yoga` namespace. The direct entry point exports the same named values and types.
+
+```typescript
+import { Yoga } from "@opentui/core"
+
+const node = Yoga.Node.create()
+node.free()
+```
+
+The direct entry point also has a default export named `Yoga`:
+
+```typescript
+import Yoga, { Config, Direction, Node, type Layout } from "@opentui/core/yoga"
+```
+
+The default object contains `Config`, `Node`, every enum, and every uppercase constant on this page. Type-only exports such as `Layout` are not properties of the runtime object.
+
+## Minimal layout
+
+```typescript
+import { Direction, Node } from "@opentui/core/yoga"
+
+const node = Node.create()
+
+try {
+  node.setWidth(80)
+  node.setHeight(24)
+  node.calculateLayout(undefined, undefined, Direction.LTR)
+  console.log(node.getComputedLayout())
+} finally {
+  node.free()
+}
+```
+
+`calculateLayout()` accepts a number, `"auto"`, or `undefined` for each available size. Both `"auto"` and `undefined` pass an undefined constraint to Yoga. The direction defaults to `Direction.LTR`.
+
+## Ownership
+
+`Config.create()` and each `Node` factory allocate native objects. The JavaScript garbage collector does not release these objects.
+
+- Call `config.free()` or `Config.destroy(config)` for each owned config.
+- Call `node.free()` or `Node.destroy(node)` for one node.
+- Call `node.freeRecursive()` to release a node and its current descendants.
+- Release a node tree before you release the config that created it.
+- `removeChild()` and `removeAllChildren()` detach nodes. They do not free them.
+- `free()`, `freeRecursive()`, and both static `destroy()` methods ignore repeated release calls.
+- `Node.isFreed()` reports whether the wrapper released its native node.
+
+`Node.reset()` removes its measure and dirtied callbacks before it resets the native node. Node release also removes callback registrations. Methods guard a released wrapper, but application code should not keep using one.
+
+`Config.ptr` and `Node.ptr` expose binding pointers. They are implementation-looking public properties. Do not use them as a standalone native API.
+
+## `Config`
+
+| Method                                            | Purpose                              |
+| ------------------------------------------------- | ------------------------------------ |
+| `Config.create()`                                 | Allocate a config.                   |
+| `Config.destroy(config)`                          | Call `config.free()`.                |
+| `free()`                                          | Release the native config once.      |
+| `setUseWebDefaults(value)`                        | Set Yoga's web-default mode.         |
+| `useWebDefaults()`                                | Read web-default mode.               |
+| `setPointScaleFactor(value)`                      | Set the layout rounding scale.       |
+| `getPointScaleFactor()`                           | Read the layout rounding scale.      |
+| `setErrata(value)`                                | Set the active `Errata` flags.       |
+| `getErrata()`                                     | Read the active `Errata` flags.      |
+| `setExperimentalFeatureEnabled(feature, enabled)` | Change an experimental feature flag. |
+| `isExperimentalFeatureEnabled(feature)`           | Read an experimental feature flag.   |
+
+## `Node`
+
+### Factories and tree ownership
+
+| Methods                                                                  | Purpose                                                                                  |
+| ------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------- |
+| `Node.create(config?)`, `Node.createDefault()`                           | Allocate a node with an optional config.                                                 |
+| `Node.createWithConfig(config)`                                          | Allocate a node with the given config.                                                   |
+| `Node.createForOpenTUI()`                                                | Allocate a node with OpenTUI's native defaults. This factory is implementation-specific. |
+| `Node.destroy(node)`, `free()`, `freeRecursive()`, `isFreed()`           | Release one node or a complete subtree, and read release state.                          |
+| `reset()`, `copyStyle(node)`                                             | Reset a node or copy style from another node.                                            |
+| `insertChild(child, index)`, `removeChild(child)`, `removeAllChildren()` | Change child ownership in the Yoga tree.                                                 |
+| `getChild(index)`, `getChildCount()`, `getParent()`                      | Inspect the Yoga tree.                                                                   |
+
+### Layout state
+
+| Methods                                                                              | Purpose                                                   |
+| ------------------------------------------------------------------------------------ | --------------------------------------------------------- |
+| `calculateLayout(width?, height?, direction?)`                                       | Calculate the tree from the available size and direction. |
+| `hasNewLayout()`, `markLayoutSeen()`                                                 | Read and clear the new-layout flag.                       |
+| `markDirty()`, `isDirty()`                                                           | Change or read dirty state.                               |
+| `getComputedLayout()`                                                                | Return a new `Layout` snapshot.                           |
+| `getComputedLeft()`, `getComputedTop()`, `getComputedRight()`, `getComputedBottom()` | Read computed edges.                                      |
+| `getComputedWidth()`, `getComputedHeight()`                                          | Read computed dimensions.                                 |
+| `getComputedMargin(edge)`, `getComputedPadding(edge)`, `getComputedBorder(edge)`     | Read computed edge values.                                |
+
+### Enum styles
+
+Each setter has the getter shown in the same row.
+
+| Methods                                      | Enum            |
+| -------------------------------------------- | --------------- |
+| `setDirection()`, `getDirection()`           | `Direction`     |
+| `setFlexDirection()`, `getFlexDirection()`   | `FlexDirection` |
+| `setJustifyContent()`, `getJustifyContent()` | `Justify`       |
+| `setAlignContent()`, `getAlignContent()`     | `Align`         |
+| `setAlignItems()`, `getAlignItems()`         | `Align`         |
+| `setAlignSelf()`, `getAlignSelf()`           | `Align`         |
+| `setPositionType()`, `getPositionType()`     | `PositionType`  |
+| `setFlexWrap()`, `getFlexWrap()`             | `Wrap`          |
+| `setOverflow()`, `getOverflow()`             | `Overflow`      |
+| `setDisplay()`, `getDisplay()`               | `Display`       |
+| `setBoxSizing()`, `getBoxSizing()`           | `BoxSizing`     |
+
+### Numeric and value styles
+
+A numeric value uses Yoga points. A percentage string such as `"50%"` uses `Unit.Percent`. `undefined` clears an optional style value.
+
+The Accepted values column describes setter arguments. Getters do not return `undefined`. Numeric getters return
+numbers. After you clear a numeric style, `getFlexGrow()` and `getFlexShrink()` return Yoga's default of `0`. The other
+numeric getters return `NaN`. Value getters return a `Value` with `Unit.Undefined` and `value: NaN` for an unset value.
+
+| Methods                                                                           | Accepted values                                               |
+| --------------------------------------------------------------------------------- | ------------------------------------------------------------- |
+| `setFlex()`, `getFlex()`                                                          | A number or `undefined`                                       |
+| `setFlexGrow()`, `getFlexGrow()`                                                  | A number or `undefined`                                       |
+| `setFlexShrink()`, `getFlexShrink()`                                              | A number or `undefined`                                       |
+| `setAspectRatio()`, `getAspectRatio()`                                            | A number or `undefined`                                       |
+| `setFlexBasis()`, `setFlexBasisPercent()`, `setFlexBasisAuto()`, `getFlexBasis()` | Points, percent, auto, a `Value`, or `undefined`              |
+| `setWidth()`, `setWidthPercent()`, `setWidthAuto()`, `getWidth()`                 | Points, percent, auto, a `Value`, or `undefined`              |
+| `setHeight()`, `setHeightPercent()`, `setHeightAuto()`, `getHeight()`             | Points, percent, auto, a `Value`, or `undefined`              |
+| `setMinWidth()`, `setMinWidthPercent()`, `getMinWidth()`                          | Points, percent, a `Value`, or `undefined`                    |
+| `setMinHeight()`, `setMinHeightPercent()`, `getMinHeight()`                       | Points, percent, a `Value`, or `undefined`                    |
+| `setMaxWidth()`, `setMaxWidthPercent()`, `getMaxWidth()`                          | Points, percent, a `Value`, or `undefined`                    |
+| `setMaxHeight()`, `setMaxHeightPercent()`, `getMaxHeight()`                       | Points, percent, a `Value`, or `undefined`                    |
+| `setMargin()`, `setMarginPercent()`, `setMarginAuto()`, `getMargin()`             | An edge plus points, percent, auto, a `Value`, or `undefined` |
+| `setPadding()`, `setPaddingPercent()`, `getPadding()`                             | An edge plus points, percent, a `Value`, or `undefined`       |
+| `setPosition()`, `setPositionPercent()`, `setPositionAuto()`, `getPosition()`     | An edge plus points, percent, auto, a `Value`, or `undefined` |
+| `setGap()`, `setGapPercent()`, `getGap()`                                         | A gutter plus points, percent, a `Value`, or `undefined`      |
+| `setBorder()`, `getBorder()`                                                      | An edge plus a number or `undefined`                          |
+
+### Baselines and containing blocks
+
+| Methods                                                              | Purpose                                  |
+| -------------------------------------------------------------------- | ---------------------------------------- |
+| `setIsReferenceBaseline()`, `isReferenceBaseline()`                  | Change or read reference-baseline state. |
+| `setAlwaysFormsContainingBlock()`, `getAlwaysFormsContainingBlock()` | Change or read containing-block state.   |
+
+## Measure and dirtied callbacks
+
+`MeasureFunction` has this shape:
+
+```typescript
+type MeasureFunction = (width: number, widthMode: MeasureMode, height: number, heightMode: MeasureMode) => Size
+```
+
+Use `setMeasureFunc(callback)` to register it. Use `unsetMeasureFunc()` or pass `null` to remove it. `hasMeasureFunc()` reports whether the node has a measure function.
+
+An undefined size constraint reaches the callback as `NaN` with `MeasureMode.Undefined`. The callback returns `{ width, height }`.
+
+A Yoga node has one measure slot. A JavaScript measure function replaces native-backed measurement on that node. Native-backed measurement can also replace the JavaScript function.
+
+`setDirtiedFunc(callback)` registers a `DirtiedFunction`. Yoga calls it with the matching `Node` when clean state changes to dirty state. Use `unsetDirtiedFunc()` or pass `null` to remove it.
+
+The facade shares one native trampoline for all measure callbacks and one for all dirtied callbacks. It routes each call through the node pointer. Release and reset operations remove the per-node registrations.
+
+## Types
+
+| Type              | Shape or purpose                                          |
+| ----------------- | --------------------------------------------------------- |
+| `Layout`          | `{ left, right, top, bottom, width, height }`             |
+| `Size`            | `{ width, height }`                                       |
+| `Value`           | `{ unit: Unit, value: number }`                           |
+| `MeasureFunction` | Receives width and height constraints and returns `Size`. |
+| `DirtiedFunction` | Receives the `Node` that became dirty.                    |
+
+## Enums and constants
+
+Each uppercase name is an alias for the matching enum member.
+
+| Purpose               | Enum members                                                                                                                                                              | Constant aliases                                                                                                                                                                     |
+| --------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Alignment             | `Align.Auto`, `Align.FlexStart`, `Align.Center`, `Align.FlexEnd`, `Align.Stretch`, `Align.Baseline`, `Align.SpaceBetween`, `Align.SpaceAround`, `Align.SpaceEvenly`       | `ALIGN_AUTO`, `ALIGN_FLEX_START`, `ALIGN_CENTER`, `ALIGN_FLEX_END`, `ALIGN_STRETCH`, `ALIGN_BASELINE`, `ALIGN_SPACE_BETWEEN`, `ALIGN_SPACE_AROUND`, `ALIGN_SPACE_EVENLY`             |
+| Box sizing            | `BoxSizing.BorderBox`, `BoxSizing.ContentBox`                                                                                                                             | `BOX_SIZING_BORDER_BOX`, `BOX_SIZING_CONTENT_BOX`                                                                                                                                    |
+| Dimension lookup      | `Dimension.Width`, `Dimension.Height`                                                                                                                                     | `DIMENSION_WIDTH`, `DIMENSION_HEIGHT`                                                                                                                                                |
+| Writing direction     | `Direction.Inherit`, `Direction.LTR`, `Direction.RTL`                                                                                                                     | `DIRECTION_INHERIT`, `DIRECTION_LTR`, `DIRECTION_RTL`                                                                                                                                |
+| Display               | `Display.Flex`, `Display.None`, `Display.Contents`                                                                                                                        | `DISPLAY_FLEX`, `DISPLAY_NONE`, `DISPLAY_CONTENTS`                                                                                                                                   |
+| Edges                 | `Edge.Left`, `Edge.Top`, `Edge.Right`, `Edge.Bottom`, `Edge.Start`, `Edge.End`, `Edge.Horizontal`, `Edge.Vertical`, `Edge.All`                                            | `EDGE_LEFT`, `EDGE_TOP`, `EDGE_RIGHT`, `EDGE_BOTTOM`, `EDGE_START`, `EDGE_END`, `EDGE_HORIZONTAL`, `EDGE_VERTICAL`, `EDGE_ALL`                                                       |
+| Compatibility errata  | `Errata.None`, `Errata.StretchFlexBasis`, `Errata.AbsolutePositionWithoutInsetsExcludesPadding`, `Errata.AbsolutePercentAgainstInnerSize`, `Errata.All`, `Errata.Classic` | `ERRATA_NONE`, `ERRATA_STRETCH_FLEX_BASIS`, `ERRATA_ABSOLUTE_POSITION_WITHOUT_INSETS_EXCLUDES_PADDING`, `ERRATA_ABSOLUTE_PERCENT_AGAINST_INNER_SIZE`, `ERRATA_ALL`, `ERRATA_CLASSIC` |
+| Experimental behavior | `ExperimentalFeature.WebFlexBasis`                                                                                                                                        | `EXPERIMENTAL_FEATURE_WEB_FLEX_BASIS`                                                                                                                                                |
+| Flex direction        | `FlexDirection.Column`, `FlexDirection.ColumnReverse`, `FlexDirection.Row`, `FlexDirection.RowReverse`                                                                    | `FLEX_DIRECTION_COLUMN`, `FLEX_DIRECTION_COLUMN_REVERSE`, `FLEX_DIRECTION_ROW`, `FLEX_DIRECTION_ROW_REVERSE`                                                                         |
+| Gaps                  | `Gutter.Column`, `Gutter.Row`, `Gutter.All`                                                                                                                               | `GUTTER_COLUMN`, `GUTTER_ROW`, `GUTTER_ALL`                                                                                                                                          |
+| Justification         | `Justify.FlexStart`, `Justify.Center`, `Justify.FlexEnd`, `Justify.SpaceBetween`, `Justify.SpaceAround`, `Justify.SpaceEvenly`                                            | `JUSTIFY_FLEX_START`, `JUSTIFY_CENTER`, `JUSTIFY_FLEX_END`, `JUSTIFY_SPACE_BETWEEN`, `JUSTIFY_SPACE_AROUND`, `JUSTIFY_SPACE_EVENLY`                                                  |
+| Logging               | `LogLevel.Error`, `LogLevel.Warn`, `LogLevel.Info`, `LogLevel.Debug`, `LogLevel.Verbose`, `LogLevel.Fatal`                                                                | `LOG_LEVEL_ERROR`, `LOG_LEVEL_WARN`, `LOG_LEVEL_INFO`, `LOG_LEVEL_DEBUG`, `LOG_LEVEL_VERBOSE`, `LOG_LEVEL_FATAL`                                                                     |
+| Measurement           | `MeasureMode.Undefined`, `MeasureMode.Exactly`, `MeasureMode.AtMost`                                                                                                      | `MEASURE_MODE_UNDEFINED`, `MEASURE_MODE_EXACTLY`, `MEASURE_MODE_AT_MOST`                                                                                                             |
+| Node classification   | `NodeType.Default`, `NodeType.Text`                                                                                                                                       | `NODE_TYPE_DEFAULT`, `NODE_TYPE_TEXT`                                                                                                                                                |
+| Overflow              | `Overflow.Visible`, `Overflow.Hidden`, `Overflow.Scroll`                                                                                                                  | `OVERFLOW_VISIBLE`, `OVERFLOW_HIDDEN`, `OVERFLOW_SCROLL`                                                                                                                             |
+| Position              | `PositionType.Static`, `PositionType.Relative`, `PositionType.Absolute`                                                                                                   | `POSITION_TYPE_STATIC`, `POSITION_TYPE_RELATIVE`, `POSITION_TYPE_ABSOLUTE`                                                                                                           |
+| Value units           | `Unit.Undefined`, `Unit.Point`, `Unit.Percent`, `Unit.Auto`                                                                                                               | `UNIT_UNDEFINED`, `UNIT_POINT`, `UNIT_PERCENT`, `UNIT_AUTO`                                                                                                                          |
+| Wrapping              | `Wrap.NoWrap`, `Wrap.Wrap`, `Wrap.WrapReverse`                                                                                                                            | `WRAP_NO_WRAP`, `WRAP_WRAP`, `WRAP_WRAP_REVERSE`                                                                                                                                     |
+
+`ExperimentalFeature.WebFlexBasis` and `EXPERIMENTAL_FEATURE_WEB_FLEX_BASIS` are experimental. The rest of this entry point is advanced, not experimental.
+
+## Related reference
+
+- [API and symbol index](/docs/reference/api-index)
+- [Package entry points](/docs/reference/package-entrypoints)
+- [Layout](/docs/core-concepts/layout)

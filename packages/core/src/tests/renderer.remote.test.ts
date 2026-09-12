@@ -3,7 +3,7 @@ import { describe, expect, test } from "bun:test"
 type RendererFactory = "test" | "direct-process-memory" | "cli-custom-memory" | "cli-custom-feed"
 
 async function getCapabilitiesFromChild(
-  options: { remote?: boolean },
+  options: { remote?: boolean; forwardEnvKeys?: string[] },
   env: Record<string, string>,
   factory: RendererFactory = "test",
 ): Promise<any> {
@@ -158,6 +158,23 @@ describe("remote detection", () => {
     expect(caps.ansi256).toBe(false)
     expect(caps.notifications).toBe(false)
     expect(caps.terminal.name).toBe("")
+  })
+
+  test("explicit remote mode applies explicitly forwarded terminal overrides", async () => {
+    const caps = await getCapabilitiesFromChild(
+      { remote: true, forwardEnvKeys: ["TERM", "OPENTUI_FORCE_WCWIDTH"] },
+      {
+        PATH: process.env.PATH ?? "",
+        HOME: process.env.HOME ?? "",
+        TMPDIR: process.env.TMPDIR ?? "/tmp",
+        TERM: "xterm-256color",
+        OPENTUI_FORCE_WCWIDTH: "1",
+      },
+    )
+
+    expect(caps.remote).toBe(true)
+    expect(caps.ansi256).toBe(true)
+    expect(caps.unicode).toBe("wcwidth")
   })
 
   test("process stdout with memory output preserves auto remote detection", async () => {

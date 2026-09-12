@@ -1,15 +1,17 @@
 import { afterEach, beforeEach, expect, test } from "bun:test"
 import { SystemClock } from "../lib/clock.js"
+import { TextRenderable } from "../renderables/Text.js"
 import { createTestRenderer, type TestRenderer } from "../testing/test-renderer.js"
 import { ManualClock } from "../testing/manual-clock.js"
 
 let clock: ManualClock
 let renderer: TestRenderer
 let renderOnce: () => Promise<void>
+let captureCharFrame: () => string
 
 beforeEach(async () => {
   clock = new ManualClock()
-  ;({ renderer, renderOnce } = await createTestRenderer({ clock, maxFps: 60 }))
+  ;({ renderer, renderOnce, captureCharFrame } = await createTestRenderer({ clock, maxFps: 60 }))
 })
 
 afterEach(() => {
@@ -151,6 +153,19 @@ test("maxFps setter updates requestRender throttle timing", async () => {
   expect(renderCalled).toBe(true)
 })
 
+test("intermediateRender() replaces the pending live frame timer", async () => {
+  renderer.requestLive()
+  await Promise.resolve()
+
+  // @ts-expect-error - inspect private manual clock timers in regression test
+  expect(clock.timers.size).toBe(1)
+
+  renderer.intermediateRender()
+
+  // @ts-expect-error - inspect private manual clock timers in regression test
+  expect(clock.timers.size).toBe(1)
+})
+
 test("threaded output backpressure retries a skipped native frame", async () => {
   const internals = renderer as unknown as {
     lib: { render: (...args: unknown[]) => number }
@@ -179,6 +194,72 @@ test("threaded output backpressure retries a skipped native frame", async () => 
     internals._usesProcessStdout = originalUsesProcessStdout
   }
 })
+
+test("threaded output backpressure delivers the final automatic animation frame before going idle", async () => {
+  const text = new TextRenderable(renderer, { content: "before" })
+  renderer.root.add(text)
+  clock.advance(100)
+  await Promise.resolve()
+  expect(captureCharFrame()).toContain("before")
+  expect(renderer.getSchedulerState().hasScheduledRender).toBe(false)
+
+  const internals = renderer as unknown as { renderNative: () => string }
+  const originalRenderNative = internals.renderNative
+  let attempts = 0
+  // Reject only the final animation frame; accepted frames still use the native renderer.
+  internals.renderNative = () => {
+    if (attempts++ === 0) return "backpressured"
+    return originalRenderNative.call(renderer)
+  }
+
+  try {
+    requestAnimationFrame(() => {
+      text.content = "after"
+    })
+    await Promise.resolve()
+    expect(captureCharFrame()).toContain("before")
+
+    clock.advance(20)
+    await Promise.resolve()
+    expect(captureCharFrame()).toContain("after")
+    expect(attempts).toBe(2)
+    expect(renderer.getSchedulerState()).toEqual({
+      isRunning: false,
+      isRendering: false,
+      hasScheduledRender: false,
+    })
+  } finally {
+    internals.renderNative = originalRenderNative
+  }
+})
+
+test.each(["pause", "stop"] as const)(
+  "threaded output backpressure does not restart a loop cancelled by %s()",
+  async (method) => {
+    const internals = renderer as unknown as {
+      renderNative: () => "backpressured"
+    }
+    const originalRenderNative = internals.renderNative
+    let frameCalls = 0
+    internals.renderNative = () => "backpressured"
+    renderer.setFrameCallback(async () => {
+      frameCalls++
+      renderer[method]()
+    })
+
+    try {
+      renderer.start()
+      await Promise.resolve()
+      expect(frameCalls).toBe(1)
+
+      clock.advance(20)
+      await Promise.resolve()
+      expect(frameCalls).toBe(1)
+    } finally {
+      internals.renderNative = originalRenderNative
+    }
+  },
+)
 
 test("fps counts rendered frames and excludes dropped frames", async () => {
   const internals = renderer as unknown as {

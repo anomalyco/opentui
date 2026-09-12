@@ -945,7 +945,7 @@ describe("TextTableRenderable", () => {
     await mockMouse.drag(anchor.x + 3, anchor.y, anchor.x + 5, anchor.y)
     await renderOnce()
 
-    expect(table.getSelectedText()).toBe("ha")
+    expect(table.getSelectedText()).toBe("hab")
   })
 
   test("selects the full anchor cell once focus leaves that cell", async () => {

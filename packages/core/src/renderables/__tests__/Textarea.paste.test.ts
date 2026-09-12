@@ -102,14 +102,16 @@ describe("Textarea - Paste Tests", () => {
         currentMockInput.pressArrow("right", { shift: true })
       }
 
+      // Inclusive selection: 5 shift+right presses select "Hello" plus the
+      // space under the cursor.
       expect(editor.hasSelection()).toBe(true)
-      expect(editor.getSelectedText()).toBe("Hello")
+      expect(editor.getSelectedText()).toBe("Hello ")
 
       // Paste to replace selection
       await currentMockInput.pasteBracketedText("Goodbye")
 
       expect(editor.hasSelection()).toBe(false)
-      expect(editor.plainText).toBe("Goodbye World")
+      expect(editor.plainText).toBe("GoodbyeWorld")
     })
 
     it("should replace multi-line selection when pasting", async () => {
@@ -122,7 +124,8 @@ describe("Textarea - Paste Tests", () => {
 
       editor.focus()
 
-      // Select from start through "Line 1\nLi"
+      // Select from start through "Line 1\nLine" (inclusive of the cell
+      // under the cursor)
       for (let i = 0; i < 10; i++) {
         currentMockInput.pressArrow("right", { shift: true })
       }
@@ -133,7 +136,7 @@ describe("Textarea - Paste Tests", () => {
       await currentMockInput.pasteBracketedText("New")
 
       expect(editor.hasSelection()).toBe(false)
-      expect(editor.plainText).toBe("Newe 2\nLine 3")
+      expect(editor.plainText).toBe("New 2\nLine 3")
     })
 
     it("should replace selected text with multi-line paste", async () => {
@@ -151,13 +154,13 @@ describe("Textarea - Paste Tests", () => {
         currentMockInput.pressArrow("right", { shift: true })
       }
 
-      expect(editor.getSelectedText()).toBe("Hello")
+      expect(editor.getSelectedText()).toBe("Hello ")
 
       // Paste multi-line text to replace selection
       await currentMockInput.pasteBracketedText("Line 1\nLine 2")
 
       expect(editor.hasSelection()).toBe(false)
-      expect(editor.plainText).toBe("Line 1\nLine 2 World")
+      expect(editor.plainText).toBe("Line 1\nLine 2World")
     })
 
     it("should paste empty string without error", async () => {

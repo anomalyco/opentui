@@ -1,14 +1,13 @@
 ---
 title: Console overlay
-description: Built-in debugging console for TUI applications
-order: 7
+description: Capture global console logs and inspect them inside the renderer
 ---
 
 # Console overlay
 
-OpenTUI includes a built-in console overlay that captures all `console.log`, `console.info`, `console.warn`, `console.error`, and `console.debug` calls. You can position the console at any edge of the terminal. It supports scrolling and focus management.
+The console overlay captures global console logs and draws them above the render tree. It is a process-wide log capture with one `TerminalConsole` surface per renderer.
 
-## Basic usage
+## Enable capture
 
 ```typescript
 import { createCliRenderer, ConsolePosition } from "@opentui/core"
@@ -20,104 +19,186 @@ const renderer = await createCliRenderer({
   },
 })
 
-// These appear in the overlay instead of stdout
-console.log("This appears in the overlay")
-console.error("Errors are color-coded red")
-console.warn("Warnings appear in yellow")
+console.log("request started")
+console.error("request failed")
+
+renderer.console.show()
 ```
 
-## Console vs stdout
+`consoleMode` has two values:
 
-`consoleMode` controls only the overlay surface. To disable global `console.*` capture, set `OTUI_USE_CONSOLE=false`.
+| Mode                | Behavior                                                            |
+| ------------------- | ------------------------------------------------------------------- |
+| `"console-overlay"` | Activate process-wide capture. This is the renderer default         |
+| `"disabled"`        | Deactivate capture and restore the original global `console` object |
 
-`externalOutputMode` controls writes through the renderer's configured `stdout.write`. `stderr` is separate.
-
-## Configuration options
+You can change the mode while the renderer is active:
 
 ```typescript
-const renderer = await createCliRenderer({
-  consoleOptions: {
-    position: ConsolePosition.BOTTOM, // Position on screen
-    sizePercent: 30, // Size as percentage of terminal
-    colorInfo: "#00FFFF", // Color for console.info
-    colorWarn: "#FFFF00", // Color for console.warn
-    colorError: "#FF0000", // Color for console.error
-    startInDebugMode: false, // Show file/line info in logs
-  },
+renderer.consoleMode = "disabled"
+renderer.consoleMode = "console-overlay"
+```
+
+Setting the mode to `"disabled"` does not call `renderer.console.hide()`. Hide a visible surface separately when needed. Renderer destruction destroys the surface and restores the original console.
+
+Set `OTUI_USE_CONSOLE=false` before the process starts to disable capture completely. With this value, activation returns before OpenTUI replaces the global console object or its methods. This applies even when `consoleMode` is `"console-overlay"`.
+
+Capture state is process-wide. A renderer that activates or deactivates capture changes the global console for every renderer in that process. Use one active console owner. Remote session renderers, including `@opentui/ssh` sessions, normally use `consoleMode: "disabled"`.
+
+## Captured calls
+
+OpenTUI replaces the global console with a `node:console.Console` whose output streams write to an internal capture. It overrides these five methods for the overlay log:
+
+- `console.log()`
+- `console.info()`
+- `console.warn()`
+- `console.error()`
+- `console.debug()`
+
+Each overlay entry contains a wall-clock `Date`, a log level, and the original argument array. Display formatting uses `util.inspect()` with depth `2`. Info, warning, error, debug, and default log entries use separate configured colors.
+
+Other methods supplied by `node:console.Console` can write to the internal captured stdout or stderr streams. They do not become overlay entries through the five-method log path. `OTUI_DUMP_CAPTURES` can include this captured output when the renderer signal handler runs.
+
+When no overlay is visible, the shared cache retains at most `1000` entries and drops the oldest entry first. Showing an overlay transfers the cache into that surface. The surface then applies `maxStoredLogs` and `maxDisplayLines`, which default to `2000` entries and `3000` display lines.
+
+## Caller information
+
+Set `startInDebugMode: true`, or call `renderer.console.setDebugMode(true)`, to collect a caller for new log entries. Debug display adds `fileName:lineNumber` to each prefix.
+
+Caller collection skips five stack lines, then inspects one line. Its pattern accepts absolute Unix paths and Windows drive paths. It displays `unknown` when that line does not match. Logs captured before debug mode was enabled do not gain caller information later.
+
+```typescript
+renderer.console.setDebugMode(true)
+console.debug("includes caller information")
+renderer.console.toggleDebugMode()
+```
+
+## Show, focus, and hide
+
+`renderer.console.toggle()` follows three states:
+
+1. A hidden console becomes visible and focused.
+2. A visible, blurred console becomes focused.
+3. A visible, focused console becomes hidden.
+
+Use the direct methods when application state already determines the action:
+
+```typescript
+renderer.console.show()
+renderer.console.focus()
+renderer.console.blur()
+renderer.console.hide()
+renderer.console.clear()
+```
+
+`Escape` blurs the console but does not hide it. The public `visible` property reports visibility. The public `bounds` property reports its current `x`, `y`, `width`, and `height`.
+
+OpenTUI does not reserve a global toggle key. Add one through the renderer keyboard API:
+
+```typescript
+renderer.keyInput.on("keypress", (key) => {
+  if (key.name === "`") renderer.console.toggle()
 })
 ```
 
-## Console positions
+See [Keyboard input](/docs/core-concepts/keyboard) for parsed key events.
+
+## Focused keys
+
+The default focused key bindings are:
+
+| Key              | Action                                                   |
+| ---------------- | -------------------------------------------------------- |
+| Up and Down      | Move through visible log history                         |
+| Shift+Up         | Move to the first display line                           |
+| Shift+Down       | Move to the last display line                            |
+| Ctrl+P           | Move to the previous edge                                |
+| Ctrl+O           | Move to the next edge                                    |
+| `+` or Shift+`=` | Add 5 percentage points, up to 100                       |
+| `-`              | Remove 5 percentage points, down to 10                   |
+| Ctrl+S           | Save `_console_<timestamp>.log` in the current directory |
+| Ctrl+Shift+C     | Pass the mouse-selected text to `onCopySelection`        |
+| Escape           | Blur the console                                         |
+
+The edge cycle is top, right, bottom, then left. Mouse wheel events scroll inside the console. A left-button drag selects displayed text and can scroll at the top or bottom edge.
+
+Copy has no default clipboard destination. It runs only when selected text is nonempty and `onCopySelection` exists. Supply a callback that applies your application's [clipboard policy](/docs/core-concepts/clipboard).
+
+Custom `keyBindings` merge with the defaults. `keyAliasMap` extends the normal key aliases. Assign new values through `renderer.console.keyBindings` or `renderer.console.keyAliasMap` when bindings must change after creation.
+
+## Position and options
+
+`ConsolePosition` has four values:
 
 ```typescript
 import { ConsolePosition } from "@opentui/core"
 
-ConsolePosition.TOP // Dock at top
-ConsolePosition.BOTTOM // Dock at bottom
-ConsolePosition.LEFT // Dock at left
-ConsolePosition.RIGHT // Dock at right
+ConsolePosition.TOP
+ConsolePosition.RIGHT
+ConsolePosition.BOTTOM
+ConsolePosition.LEFT
 ```
 
-## Toggling the console
-
-Toggle the console overlay in code:
+Top and bottom positions apply `sizePercent` to terminal height. Left and right positions apply it to terminal width. The default is bottom at `30` percent. `+` adds 5 and caps the result at `100`. `-` subtracts 5 and floors the result at `10`. The initial option is used as supplied.
 
 ```typescript
-// Toggle visibility and focus
-renderer.console.toggle()
-
-// When open but not focused, toggle() focuses the console
-// When focused, toggle() closes the console
-```
-
-## Console shortcuts
-
-When the console is focused:
-
-| Key        | Action                     |
-| ---------- | -------------------------- |
-| Arrow keys | Scroll through log history |
-| `+`        | Increase console size      |
-| `-`        | Decrease console size      |
-
-## Keybinding for toggle
-
-Add a keyboard shortcut to toggle the console:
-
-```typescript
-renderer.keyInput.on("keypress", (key) => {
-  // Toggle with backtick key
-  if (key.name === "`") {
-    renderer.console.toggle()
-  }
-
-  // Or with a modifier
-  if (key.ctrl && key.name === "l") {
-    renderer.console.toggle()
-  }
+const renderer = await createCliRenderer({
+  consoleOptions: {
+    position: ConsolePosition.BOTTOM,
+    sizePercent: 30,
+    startInDebugMode: false,
+    title: "Console",
+  },
 })
 ```
 
-## Why use the console?
+`ConsoleOptions` has these defaults:
 
-Terminal UI applications capture stdout for rendering. Regular `console.log` calls would interfere with your interface. The console overlay solves this problem:
+| Option              | Default                                  |
+| ------------------- | ---------------------------------------- |
+| `position`          | `ConsolePosition.BOTTOM`                 |
+| `sizePercent`       | `30`                                     |
+| `zIndex`            | `Infinity`                               |
+| `colorInfo`         | `"#00FFFF"`                              |
+| `colorWarn`         | `"#FFFF00"`                              |
+| `colorError`        | `"#FF0000"`                              |
+| `colorDebug`        | `"#808080"`                              |
+| `colorDefault`      | `"#FFFFFF"`                              |
+| `backgroundColor`   | `RGBA.fromValues(0.1, 0.1, 0.1, 0.7)`    |
+| `startInDebugMode`  | `false`                                  |
+| `title`             | `"Console"`                              |
+| `titleBarColor`     | `RGBA.fromValues(0.05, 0.05, 0.05, 0.7)` |
+| `titleBarTextColor` | `"#FFFFFF"`                              |
+| `cursorColor`       | `"#00A0FF"`                              |
+| `selectionColor`    | `RGBA.fromValues(0.3, 0.5, 0.8, 0.5)`    |
+| `copyButtonColor`   | `"#00A0FF"`                              |
+| `maxStoredLogs`     | `2000`                                   |
+| `maxDisplayLines`   | `3000`                                   |
+| `onCopySelection`   | unset                                    |
+| `keyBindings`       | unset                                    |
+| `keyAliasMap`       | unset                                    |
+| `clock`             | `SystemClock`                            |
 
-- Captures all console output without disrupting the UI
-- Displays logs in a dedicated overlay area
-- Color-codes different log levels for easy identification
-- Lets you scroll through history for debugging
+`zIndex` is accepted and stored, but the current console drawing path does not read it. `clock` controls selection auto-scroll timers and is mainly useful for tests.
+
+## Console and renderer output
+
+Console capture is separate from writes through the renderer's configured output stream. `consoleMode` controls global console activation. `externalOutputMode` controls configured `stdout.write` behavior. Read [Renderer](/docs/core-concepts/renderer) for output modes instead of combining those settings by assumption.
 
 ## Environment variables
 
-Control console behavior with environment variables:
+Common console diagnostics are:
 
 ```bash
-# Disable console capture entirely
 OTUI_USE_CONSOLE=false bun app.ts
-
-# Start with console visible
 SHOW_CONSOLE=true bun app.ts
-
-# Dump captured output on exit
 OTUI_DUMP_CAPTURES=true bun app.ts
 ```
+
+`SHOW_CONSOLE=true` shows and focuses the surface during renderer construction. `OTUI_DUMP_CAPTURES=true` dumps captured console, stdout, and cache data from the renderer's signal handler. See [Environment variables](/docs/reference/env-vars) for timing and output details.
+
+## Next
+
+- [Lifecycle and cleanup](/docs/core-concepts/lifecycle) explains when the renderer restores the global console.
+- [Renderer](/docs/core-concepts/renderer) owns output and scheduling configuration.
+- [Rendering diagnostics](/docs/test-and-debug/rendering-diagnostics) combines console logs with frame and scheduler state.

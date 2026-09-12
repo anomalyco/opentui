@@ -917,10 +917,10 @@ describe("Textarea - Editing Tests", () => {
         currentMockInput.pressArrow("right", { shift: true })
       }
       expect(editor.hasSelection()).toBe(true)
-      expect(editor.getSelectedText()).toBe("Hello")
+      expect(editor.getSelectedText()).toBe("Hello ")
 
       currentMockInput.pressKey("BACKSPACE", { shift: true })
-      expect(editor.plainText).toBe(" World")
+      expect(editor.plainText).toBe("World")
       expect(editor.hasSelection()).toBe(false)
     })
 
@@ -1100,10 +1100,10 @@ describe("Textarea - Editing Tests", () => {
         kittyMockInput.pressArrow("right", { shift: true })
       }
       expect(textarea.hasSelection()).toBe(true)
-      expect(textarea.getSelectedText()).toBe("Hello")
+      expect(textarea.getSelectedText()).toBe("Hello ")
 
       kittyMockInput.pressKey("BACKSPACE", { shift: true })
-      expect(textarea.plainText).toBe(" World")
+      expect(textarea.plainText).toBe("World")
       expect(textarea.hasSelection()).toBe(false)
     })
 
@@ -1680,7 +1680,7 @@ describe("Textarea - Editing Tests", () => {
       expect(editor.hasSelection()).toBe(true)
 
       currentMockInput.pressKey("d", { meta: true })
-      expect(editor.plainText).toBe("lo world foo")
+      expect(editor.plainText).toBe("o world foo")
     })
   })
 

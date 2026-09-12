@@ -1,0 +1,259 @@
+---
+title: Load plugins and modules at runtime
+description: Configure Bun to load trusted external modules against the host application's OpenTUI runtime instances
+skill:
+  entry: true
+  intents: [runtime-plugins, dynamic-import, external-modules, bun-plugin, module-maps, plugin-loading]
+---
+
+# Load plugins and modules at runtime
+
+Runtime module support lets a Bun application load trusted external modules with `import()`. It keeps those modules on
+the host's Core, React, Solid, and related singleton instances. It is Bun-only. It does not discover plugins or define
+plugin slots.
+
+## Choose one installer
+
+Choose the installer for the API that owns the host application. React and Solid installers already include Core.
+Do not install a framework installer and the Core installer in the same process.
+
+| Host  | Side-effect installer                   | Configurable installer                            |
+| ----- | --------------------------------------- | ------------------------------------------------- |
+| Core  | `@opentui/core/runtime-plugin-support`  | `@opentui/core/runtime-plugin-support/configure`  |
+| React | `@opentui/react/runtime-plugin-support` | `@opentui/react/runtime-plugin-support/configure` |
+| Solid | `@opentui/solid/runtime-plugin-support` | `@opentui/solid/runtime-plugin-support/configure` |
+
+Use the side-effect installer only when the default map is complete:
+
+```typescript
+import "@opentui/react/runtime-plugin-support"
+
+const loaded = await import(pluginUrl)
+```
+
+Use the configurable installer when a plugin imports any additional package. Do not combine the side-effect and
+configurable paths. Static ESM dependencies evaluate before the entry module body, so a side-effect import installs
+its default map before a body statement can add configuration.
+
+## Configure before loading
+
+Use this order:
+
+1. Import each side-effect-free runtime module map.
+2. Call one configurable installer with the complete map.
+3. Dynamically import the external module.
+4. Validate the exports that the application requires.
+5. Register the validated plugin with its slot registry.
+
+This Core host exposes Keymap and Three.js to a plugin. Run it with Bun and install both packages in the host.
+`@opentui/three` also needs `bun-webgpu` 0.1.7 at runtime. The application expects the module to export
+`createPlugin()`.
+
+```typescript
+import { pathToFileURL } from "node:url"
+import { runtimeModules as keymapRuntimeModules } from "@opentui/keymap/runtime-modules"
+import { runtimeModules as threeRuntimeModules } from "@opentui/three/runtime-modules"
+import { createCliRenderer, createCoreSlotRegistry, registerCorePlugin, type CorePlugin } from "@opentui/core"
+import { ensureRuntimePluginSupport } from "@opentui/core/runtime-plugin-support/configure"
+
+const context = { appName: "host" }
+type AppPlugin = CorePlugin<"statusbar", typeof context, { label: string }>
+
+function isPluginModule(value: unknown): value is { createPlugin: () => unknown } {
+  return (
+    typeof value === "object" && value !== null && "createPlugin" in value && typeof value.createPlugin === "function"
+  )
+}
+
+function isAppPlugin(value: unknown): value is AppPlugin {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    "id" in value &&
+    typeof value.id === "string" &&
+    "slots" in value &&
+    typeof value.slots === "object" &&
+    value.slots !== null &&
+    !Array.isArray(value.slots)
+  )
+}
+
+ensureRuntimePluginSupport({
+  additional: {
+    ...keymapRuntimeModules,
+    ...threeRuntimeModules,
+  },
+  rewrite: {
+    nodeModulesRuntimeSpecifiers: true,
+    nodeModulesBareSpecifiers: false,
+  },
+})
+
+const pluginPath = process.argv[2]
+if (!pluginPath) throw new Error("Pass a plugin path")
+
+const loaded: unknown = await import(pathToFileURL(pluginPath).href)
+if (!isPluginModule(loaded)) throw new Error("Plugin must export createPlugin()")
+
+const plugin = loaded.createPlugin()
+if (!isAppPlugin(plugin)) throw new Error("createPlugin() returned an invalid plugin")
+
+const renderer = await createCliRenderer()
+const registry = createCoreSlotRegistry<"statusbar", typeof context, { label: string }>(renderer, context)
+const unregister = registerCorePlugin(registry, plugin)
+
+try {
+  await renderer.idle()
+} finally {
+  unregister()
+  renderer.destroy()
+}
+```
+
+The validation checks the application's module contract. It is not a security boundary. The import already ran the
+module's top-level code.
+
+## Configure a custom Bun plugin
+
+Use `createRuntimePlugin()` when you own an installer or need to compose Bun plugins directly:
+
+```typescript
+import { plugin } from "bun"
+import { createRuntimePlugin } from "@opentui/core/runtime-plugin"
+
+plugin(
+  createRuntimePlugin({
+    additional: {
+      "host-api": { version: 1 },
+    },
+  }),
+)
+```
+
+Call `plugin()` before the first external import that needs the map.
+
+## Option and entry types
+
+Core names the shared option type `CreateRuntimePluginOptions`. React and Solid export
+`ReactRuntimePluginSupportOptions` and `SolidRuntimePluginSupportOptions`. No package exports the documentation alias
+below. It shows the exact shared shape of all three installer option types:
+
+```typescript
+type RuntimeModuleExports = Record<string, unknown>
+type RuntimeModuleLoader = () => RuntimeModuleExports | Promise<RuntimeModuleExports>
+type RuntimeModuleEntry = RuntimeModuleExports | RuntimeModuleLoader
+
+interface RuntimePluginSupportOptions {
+  additional?: Record<string, RuntimeModuleEntry>
+  core?: RuntimeModuleEntry
+  rewrite?: {
+    nodeModulesRuntimeSpecifiers?: boolean
+    nodeModulesBareSpecifiers?: boolean
+  }
+}
+```
+
+An entry is an export object or a zero-argument synchronous or asynchronous loader. Use a loader to defer an optional
+framework import. The `core` field replaces the host object mapped to `@opentui/core`.
+
+Both rewrite options apply to files under `node_modules`. `nodeModulesRuntimeSpecifiers` defaults to `true`.
+`nodeModulesBareSpecifiers` defaults to `false`.
+
+## Default module maps
+
+Every installer maps `@opentui/core` and `@opentui/core/testing`. The testing entry uses an asynchronous loader.
+
+| Installer or map                  | Additional exact specifiers                                                                                                                                                                                                                  |
+| --------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| React installer                   | `@opentui/react`, `@opentui/react/jsx-runtime`, `@opentui/react/jsx-dev-runtime`, `react`, `react/jsx-runtime`, `react/jsx-dev-runtime`                                                                                                      |
+| Solid installer                   | `@opentui/solid`, `@opentui/solid/components`, `@opentui/solid/jsx-runtime`, `@opentui/solid/jsx-dev-runtime`, `solid-js`, `solid-js/store`                                                                                                  |
+| `@opentui/three/runtime-modules`  | `@opentui/three`                                                                                                                                                                                                                             |
+| `@opentui/keymap/runtime-modules` | `@opentui/keymap`, `@opentui/keymap/extras`, `@opentui/keymap/extras/graph`, `@opentui/keymap/addons`, `@opentui/keymap/addons/opentui`, `@opentui/keymap/html`, `@opentui/keymap/opentui`, `@opentui/keymap/react`, `@opentui/keymap/solid` |
+
+The Keymap React and Solid entries use lazy loaders. The Keymap map omits `@opentui/keymap/testing` and
+`@opentui/keymap/runtime-modules`.
+
+The Three.js map does not map `three`, `three/webgpu`, or `three/tsl`. A plugin that imports those specifiers needs its
+own deployable dependency or an explicit host map.
+
+## Repeated installation
+
+The first compatible `ensureRuntimePluginSupport()` call installs the Bun plugin and returns `true`. A compatible
+repeat returns `false`.
+
+After installation, these changes throw:
+
+- A new `additional` specifier
+- A different supplied `core` entry
+- Different supplied rewrite options
+
+The installer records additional keys, not replacement values. A later call with an existing key and a different
+entry returns `false`. It does not replace the installed entry. Build the complete map before the first call.
+
+Core, React, and Solid use separate installation guards. Their guards do not prevent you from stacking different host
+installers. Choose one installer to avoid competing maps for the same singleton specifiers.
+
+## Rewriting behavior
+
+The plugin gives each mapped specifier an encoded virtual ID such as
+`opentui:runtime-module:%40opentui%2Fcore`. Bun resolves that ID to the host export object.
+
+For source outside `node_modules`, the rewrite loader accepts these extensions:
+
+- `.js`, `.mjs`, and `.cjs`
+- `.ts`, `.mts`, and `.cts`
+- `.jsx` and `.tsx`
+
+Under `node_modules`, runtime-specifier rewriting applies only to ESM. The eligible files are `.mjs`, `.mts`, `.ts`,
+`.tsx`, and `.jsx`. A `.js` file is eligible only when its nearest `package.json` has `"type": "module"`.
+Files ending in `.cjs` or `.cts` are not eligible there.
+
+CommonJS helper packages under `node_modules` can remain dependencies of a rewritten ESM module. A CommonJS helper
+that imports a mapped runtime module is not supported because the plugin does not rewrite that helper.
+
+The scanner uses regular expressions, not a JavaScript parser. It recognizes static imports, re-exports with `from`,
+literal `import()`, and literal `require()` calls that use single or double quotes. It does not recognize computed
+specifiers or template-literal specifiers. Import-like text in comments or strings can also match the scanner.
+
+Bare-specifier rewriting outside `node_modules` resolves dependencies from recently rewritten plugin parents. The
+plugin retains at most 64 recent parents. Set `nodeModulesBareSpecifiers: true` only when a rewritten ESM package also
+needs this parent-based resolution for its bare imports.
+
+## Solid transform order
+
+The Solid installer registers its Solid transform before it registers runtime-module rewriting. The transform compiles
+JSX with Solid universal semantics and rewrites mapped imports to virtual IDs.
+
+The Solid transform excludes every path under `node_modules`. Publish plugin packages there as precompiled ESM. A
+package that ships uncompiled Solid JSX or TSX under `node_modules` does not receive the Solid JSX transform.
+
+## Executables and sidecars
+
+Runtime module support lets a Bun executable load external files. It cannot embed files or dependencies that the build
+did not know about.
+
+Deploy each plugin file as a sidecar. Also deploy dependencies that are not mapped to host modules. Read
+[Deploy an OpenTUI application](/docs/ship/deploy) and
+[Standalone executables](/docs/reference/standalone-executables) before compiling the host.
+
+## Trust boundary
+
+Load only trusted, in-process code. A dynamic import runs top-level code before the host can validate exports.
+
+Runtime module support supplies none of these controls:
+
+- Sandboxing or process isolation
+- Plugin discovery
+- Signed modules or integrity checks
+- Manifests or compatibility negotiation
+- Per-plugin filesystem, network, terminal, or FFI permissions
+- A capability boundary around host runtime objects
+
+The host must choose module paths, define its export contract, handle failures, and unregister slot contributions.
+Use a separate process when code does not meet the host application's trust policy.
+
+## Next
+
+- [Plugin slots](/docs/plugins/slots) defines registration, ordering, errors, and disposal.
+- [Runtime and platform support](/docs/getting-started/runtime-support) lists Bun and Node.js boundaries.
+- [Three.js WebGPU](/docs/reference/three) documents the Bun-only Three.js integration.

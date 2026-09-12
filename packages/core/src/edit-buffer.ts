@@ -131,6 +131,16 @@ export class EditBuffer extends EventEmitter {
     return this.lib.textBufferGetLineCount(this.textBufferPtr)
   }
 
+  public setTabWidth(width: number): void {
+    this.guard()
+    this.lib.editBufferSetTabWidth(this.bufferPtr, width)
+  }
+
+  public getTabWidth(): number {
+    this.guard()
+    return this.lib.textBufferGetTabWidth(this.textBufferPtr)
+  }
+
   public getText(): string {
     this.guard()
     // TODO: Use byte size of text buffer to get the actual size of the text

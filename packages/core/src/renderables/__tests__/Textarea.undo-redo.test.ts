@@ -38,11 +38,12 @@ describe("Textarea - Undo/Redo Tests", () => {
       for (let i = 0; i < 5; i++) {
         currentMockInput.pressArrow("right", { shift: true })
       }
+      // Inclusive selection: each range extends through the cell under the cursor.
       expect(editor.hasSelection()).toBe(true)
-      expect(editor.getSelectedText()).toBe("Hello")
+      expect(editor.getSelectedText()).toBe("Hello ")
 
       currentMockInput.pressBackspace()
-      expect(editor.plainText).toBe(" World Test")
+      expect(editor.plainText).toBe("World Test")
       expect(editor.hasSelection()).toBe(false)
 
       editor.editBuffer.setCursor(0, 0)
@@ -50,10 +51,10 @@ describe("Textarea - Undo/Redo Tests", () => {
         currentMockInput.pressArrow("right", { shift: true })
       }
       expect(editor.hasSelection()).toBe(true)
-      expect(editor.getSelectedText()).toBe(" World")
+      expect(editor.getSelectedText()).toBe("World T")
 
       currentMockInput.pressKey("DELETE")
-      expect(editor.plainText).toBe(" Test")
+      expect(editor.plainText).toBe("est")
       expect(editor.hasSelection()).toBe(false)
 
       editor.editBuffer.setCursor(0, 0)
@@ -61,17 +62,17 @@ describe("Textarea - Undo/Redo Tests", () => {
         currentMockInput.pressArrow("right", { shift: true })
       }
       expect(editor.hasSelection()).toBe(true)
-      expect(editor.getSelectedText()).toBe(" Test")
+      expect(editor.getSelectedText()).toBe("est")
 
       currentMockInput.pressBackspace()
       expect(editor.plainText).toBe("")
       expect(editor.hasSelection()).toBe(false)
 
       currentMockInput.pressKey("-", { ctrl: true })
-      expect(editor.plainText).toBe(" Test")
+      expect(editor.plainText).toBe("est")
 
       currentMockInput.pressKey("-", { ctrl: true })
-      expect(editor.plainText).toBe(" World Test")
+      expect(editor.plainText).toBe("World Test")
 
       currentMockInput.pressKey("-", { ctrl: true })
       expect(editor.plainText).toBe(initialText)

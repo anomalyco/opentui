@@ -1,0 +1,85 @@
+---
+import type { ComponentProps } from "astro/types"
+import BlockDivider from "./BlockDivider.astro"
+import ThemeToggle from "./ThemeToggle.astro"
+
+interface Props {
+  links?: boolean
+  animation?: ComponentProps<typeof BlockDivider>["animation"]
+}
+
+const { links = false, animation } = Astro.props
+---
+
+{
+  animation && (
+    <div class="divider">
+      <BlockDivider {animation} />
+    </div>
+  )
+}
+
+{
+  links && (
+    <nav aria-label="Primary">
+      <a href="/docs">Documentation</a>
+      <a href="/scrollback">Scrollback</a>
+      <a href="/packages">Packages</a>
+    </nav>
+  )
+}
+
+<footer>
+  <p>
+    <ThemeToggle />
+    <a
+      class="github"
+      href="https://github.com/anomalyco/opentui"
+      aria-label="OpenTUI on GitHub"
+      title="GitHub"
+    >
+      <svg viewBox="-2.5 -2.5 21 21" aria-hidden="true">
+        <path
+          d="M8 0a8 8 0 0 0-2.53 15.59c.4.07.55-.17.55-.38v-1.49c-2.23.49-2.7-1.08-2.7-1.08-.37-.93-.9-1.18-.9-1.18-.73-.5.06-.49.06-.49.8.06 1.23.83 1.23.83.72 1.22 1.88.87 2.34.66.07-.52.28-.87.5-1.07-1.78-.2-3.65-.89-3.65-3.96 0-.88.31-1.6.83-2.16-.09-.2-.36-1.02.07-2.13 0 0 .68-.22 2.2.82A7.7 7.7 0 0 1 8 3.69a7.7 7.7 0 0 1 2 .27c1.53-1.04 2.2-.82 2.2-.82.44 1.11.17 1.93.09 2.13.51.56.82 1.28.82 2.16 0 3.08-1.88 3.75-3.66 3.95.29.25.54.74.54 1.5v2.23c0 .21.14.46.55.38A8 8 0 0 0 8 0Z"
+        ></path>
+      </svg>
+    </a>
+    MIT license. &copy; 2026 <a href="https://anoma.ly/">Anomaly</a>.
+  </p>
+</footer>
+
+<style>
+  .divider,
+  nav,
+  footer {
+    max-width: var(--content-width);
+    margin-block-start: 1.5rem;
+  }
+
+  nav a {
+    display: block;
+    width: fit-content;
+  }
+
+  footer p {
+    margin: 0;
+  }
+
+  /* Astro trims the whitespace between inline elements here, so 1ch
+   * margins recreate the word spaces the source can no longer express. */
+  .github {
+    display: inline-flex;
+    width: 1rem;
+    height: 1rem;
+    margin-inline: 1ch;
+    vertical-align: text-bottom;
+    color: inherit;
+  }
+
+  .github svg {
+    display: block;
+    width: 100%;
+    height: 100%;
+    fill: currentColor;
+  }
+</style>

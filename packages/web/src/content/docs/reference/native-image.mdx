@@ -1,0 +1,331 @@
+---
+title: NativeImage
+description: Decode, inspect, transform, share, and dispose native PNG, JPEG, WebP, GIF, and RGBA pixel data
+skill:
+  entry: true
+  intents: [native-image, image-decode, png, jpeg, webp, gif, rgba, pixels, resize]
+---
+
+# NativeImage
+
+The [Image component](/docs/components/image) owns display and terminal-protocol selection. `NativeImage` owns image
+decode, transformed pixels, and native image handles.
+
+This advanced API is for code that must inspect or transform pixels before display. Use the Image component to load and
+display an encoded source without direct pixel ownership.
+
+Every materialized image uses top-left, straight-alpha, sRGB RGBA8 pixels. The API is supported in the Bun and Node.js
+runtimes listed in [Runtime and platform support](/docs/getting-started/runtime-support).
+
+## Load and dispose an image
+
+```typescript
+import { NativeImage } from "@opentui/core"
+
+const image = await NativeImage.load("./image.webp")
+
+try {
+  const raw = image.raw("rgba8")
+  console.log(raw.width, raw.height, raw.stride, raw.data)
+} finally {
+  image.dispose()
+}
+```
+
+`raw()` returns an owned JavaScript copy. Disposing `image` does not invalidate that copy.
+
+## Accepted sources
+
+| API                                                       | Accepted input                                                                                                    |
+| --------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------- |
+| `NativeImage.load(source, options?)`                      | Path string, `file:`, HTTP(S), `blob:`, or `data:` URL, `URL`, `Blob`, `Response`, `Uint8Array`, or `ArrayBuffer` |
+| `NativeImage.decode(data)`                                | Encoded `Uint8Array` or `ArrayBuffer`                                                                             |
+| `NativeImage.fromRgba(pixels, width, height, stride?)`    | Straight-alpha sRGB RGBA8 `Uint8Array`                                                                            |
+| `NativeImage.fromPixels(pixels, width, height, options?)` | sRGB RGBA8 or BGRA8 `Uint8Array`, with straight or opaque alpha                                                   |
+| `imageInfo(data)`                                         | Encoded `Uint8Array` or `ArrayBuffer`                                                                             |
+
+Format detection reads encoded bytes. It does not trust a filename, URL suffix, response header, or file extension.
+
+`decode()`, `fromRgba()`, and `fromPixels()` copy your data into native memory. `imageInfo()` returns metadata
+without retaining an image handle. It can decode pixels when validation needs pixel inspection.
+
+For `fromRgba()` and `fromPixels()`, `stride` is the byte distance between row starts. It defaults to `width * 4` and
+must fit a complete row. The input view must contain at least `(height - 1) * stride + width * 4` bytes. Padding after
+the final row is optional.
+
+### Pixel import options
+
+```typescript
+interface PixelImportOptions {
+  stride?: number
+  format?: "rgba8" | "bgra8"
+  alpha?: "straight" | "opaque"
+  colorSpace?: "srgb"
+}
+```
+
+`fromPixels()` defaults to `format: "rgba8"`, `alpha: "straight"`, and `colorSpace: "srgb"`. It copies rows from a
+top-left origin into packed native RGBA8 storage. The same pass converts BGRA to RGBA and detects transparency.
+
+`alpha: "opaque"` ignores source alpha and writes 255 to every destination alpha channel. It does not unpremultiply
+RGB values. The API does not support premultiplied alpha or color spaces other than sRGB.
+
+Pass a subarray directly to import part of a mapped buffer. The native call does not retain or change the view.
+Keep the source stable during the call. After the call returns, you can reuse, detach, or unmap the buffer.
+
+```typescript
+const image = NativeImage.fromPixels(mappedPixels, width, height, {
+  format: "bgra8",
+  stride: bytesPerRow,
+  alpha: "opaque",
+})
+```
+
+The image reports `format: "raw-rgba"` and `colorStatus: "explicit-srgb"`, even for BGRA input.
+
+### Load options
+
+```typescript
+interface ImageLoadOptions {
+  signal?: AbortSignal
+  fetch?: (input: URL, init?: RequestInit) => Promise<Response>
+}
+```
+
+`signal` cancels file, response-body, or fetch acquisition. An abort throws `signal.reason`. `fetch` replaces
+`globalThis.fetch` for fetched URLs.
+
+Paths, blobs, and response bodies are fully buffered before native decode. `load()` rejects a non-success HTTP status
+before it reads the body.
+
+## Format behavior
+
+| Format     | Decode behavior                                                                                        |
+| ---------- | ------------------------------------------------------------------------------------------------------ |
+| PNG        | Supports alpha, sRGB chunks, supported cICP, RGB or grayscale ICC v2/v4 profiles, and EXIF orientation |
+| JPEG       | Produces opaque RGBA8 and applies EXIF orientation                                                     |
+| WebP       | Supports lossy, lossless, and alpha images. Animated WebP is rejected.                                 |
+| GIF        | Decodes the first displayed frame on the logical canvas                                                |
+| Raw pixels | Imports caller-supplied sRGB RGBA8 or BGRA8 into straight-alpha RGBA8 pixels                           |
+
+`NativeImage` does not expose animation frames or timing. GIF becomes one image. Animated WebP reports an unsupported
+feature.
+
+## Metadata
+
+`image.info()` and `imageInfo()` return `ImageInfo`:
+
+| Field                         | Meaning                                                              |
+| ----------------------------- | -------------------------------------------------------------------- |
+| `width`, `height`             | Decoded and orientation-corrected dimensions                         |
+| `sourceWidth`, `sourceHeight` | Original input dimensions retained through derived images            |
+| `format`                      | `"png"`, `"jpeg"`, `"webp"`, `"gif"`, or `"raw-rgba"`                |
+| `colorStatus`                 | `"explicit-srgb"` or `"assumed-srgb"`                                |
+| `orientation`                 | Encoded orientation from `imageInfo()`. A decoded image reports `1`. |
+| `hasAlpha`                    | Whether decoded pixels contain transparency                          |
+
+`explicit-srgb` means the source supplied supported color metadata or the image came from explicit RGBA pixels.
+`assumed-srgb` means OpenTUI treated untagged source values as sRGB.
+
+For PNG, supported sRGB cICP takes precedence. Otherwise, `iCCP` takes precedence over `sRGB`, `gAMA`, and `cHRM`.
+Unsupported cICP falls through to lower-priority metadata. OpenTUI converts supported RGB or grayscale ICC monitor
+profiles to sRGB with Little CMS.
+
+## Pixel access
+
+| API                             | Result and ownership                                                       |
+| ------------------------------- | -------------------------------------------------------------------------- |
+| `raw(format = "rgba8")`         | Allocates and returns a copied `RawImage` in `"rgba8"` or `"bgra8"` order  |
+| `copyTo(destination, options?)` | Copies into an existing `Uint8Array` with optional `stride` and `format`   |
+| `takeRaw()`                     | Transfers exclusive ownership of native RGBA8 pixels to an `OwnedRawImage` |
+| `width`, `height`               | Read decoded dimensions while the handle is valid                          |
+| `ptr`                           | Read the opaque native `ImageHandle` while the handle is valid             |
+
+Both raw result types include `data`, `width`, `height`, `stride`, `format`, `colorSpace: "srgb"`, and
+`alpha: "straight"`.
+
+`copyTo()` defaults to RGBA8 with stride `width * 4`. A custom stride must fit a row. The destination must fit all rows.
+
+### Transfer native pixels
+
+```typescript
+const image = await NativeImage.load(new Blob([encodedImage]))
+
+try {
+  const raw = image.takeRaw()
+  try {
+    consumeRgba(raw.data, raw.width, raw.height, raw.stride)
+  } finally {
+    raw.dispose()
+  }
+} finally {
+  image.dispose()
+}
+```
+
+`takeRaw()` consumes the `NativeImage`. Later image access throws, while `image.dispose()` remains a safe no-op.
+
+`OwnedRawImage.data` aliases native memory. Keep the owner alive while any consumer uses the view.
+`OwnedRawImage.dispose()` is idempotent and required. It frees the native allocation and invalidates `data`.
+
+`takeRaw()` requires one exclusive native reference. It throws while another retained handle or a native buffer keeps
+the image alive. Dispose extra handles and clear or destroy those buffers first.
+
+## Share or copy a handle
+
+| Method      | Behavior                                                                                   |
+| ----------- | ------------------------------------------------------------------------------------------ |
+| `retain()`  | Returns an independently disposable handle to the same native image without copying pixels |
+| `clone()`   | Returns a new native image with copied image storage                                       |
+| `dispose()` | Releases one handle. The call is idempotent.                                               |
+
+Dispose every retained, cloned, decoded, and transformed handle separately. Disposing one retained handle does not
+invalidate another retained handle.
+
+## Reuse pixel storage
+
+`NativeImagePool` reuses a fixed number of native pixel buffers, called slots, for frames of the same size.
+Each successful publication copies the pixels into a free slot and returns an immutable `NativeImage`.
+
+```typescript
+import { ImageRenderable, NativeImagePool } from "@opentui/core"
+
+const pool = new NativeImagePool({ width: 640, height: 480, capacity: 3 })
+const view = new ImageRenderable(renderer, { width: 80, height: 24 })
+renderer.root.add(view)
+
+function onPixels(pixels: Uint8Array): boolean {
+  const frame = pool.publishRgba(pixels)
+  if (!frame) return false
+  try {
+    view.source = frame
+  } finally {
+    frame.dispose()
+  }
+  return true
+}
+
+// Stop the producer before teardown.
+view.destroy()
+pool.dispose()
+```
+
+The `ImageRenderable.source` setter retains the frame synchronously. It requests a render when the load settles, so
+you do not need to call `requestRender()`.
+
+Each publication creates a new JavaScript wrapper and native handle. This prevents source equality checks and
+terminal-protocol caches from hiding a new frame.
+
+- `new NativeImagePool({ width, height, capacity? })` fixes the dimensions and slot count. Capacity defaults to `3`
+  and must be an integer from `1` through `8`. Native image dimension and memory limits apply on the first publication.
+- `publishRgba(pixels, stride = width * 4)` copies top-left, straight-alpha, sRGB RGBA8 bytes without retaining caller
+  memory. It accepts row padding. The input must include every row's pixels, but padding after the final row is optional.
+- `publishPixels(pixels, options?)` accepts the same `PixelImportOptions` as `NativeImage.fromPixels()`. It converts
+  RGBA8 or BGRA8 with straight or opaque alpha directly into a reusable slot, without a JavaScript staging buffer.
+- The pool allocates slots only as needed, up to `capacity * width * height * 4` bytes of pixel storage.
+  Reuse does not allocate another pixel buffer. Encoding and rendering can allocate separately.
+- The pool can reuse a slot only after all published handles and native buffer placements release it.
+  Retained images, renderable sources, and buffer snapshots keep their original pixels. Dispose frames when you no
+  longer need them.
+- Both publication methods return `null` if every slot is still in use. They do not allocate pixel storage, queue,
+  block, or replace a frame. Drop the incoming frame or retry after consumers release a slot. Invalid input throws
+  instead of returning `null`.
+- Both methods finish synchronously, with no acquisition token or pending operation to cancel. To cancel input, stop
+  calling them.
+- `dispose()` releases the pool's references and rejects future publications. Repeated calls are safe.
+  Published frames remain valid and still need disposal.
+- Pools cannot resize. Create a new pool for new dimensions. Then dispose the old pool.
+- `takeRaw()` cannot transfer a frame while the pool owns its slot. Use `raw()` or `copyTo()`, or dispose the pool first.
+
+## Transform images
+
+Operations do not mutate the source. Each successful operation returns a new `NativeImage`.
+
+| Method                                  | Behavior                                                                      |
+| --------------------------------------- | ----------------------------------------------------------------------------- |
+| `resize({ width?, height?, kernel? })`  | Resizes to positive dimensions. One omitted dimension preserves aspect ratio. |
+| `extract({ left, top, width, height })` | Crops an in-bounds pixel rectangle                                            |
+| `extend(options = {})`                  | Adds top, right, bottom, and left padding                                     |
+| `rotate(90 \| 180 \| 270)`              | Rotates clockwise                                                             |
+| `flip()`                                | Flips vertically                                                              |
+| `flop()`                                | Flips horizontally                                                            |
+| `composite(overlay, options = {})`      | Composites an overlay in linear light                                         |
+
+Resize kernels are `"area"`, `"default"`, `"triangle"`, `"cubic-bspline"`, `"catmull-rom"`, `"mitchell"`, and
+`"nearest"`. The default is `"area"`.
+
+`extend()` defaults all sides to zero and the background to transparent `[0, 0, 0, 0]`. Each background channel is an
+integer from 0 through 255.
+
+Composite options default to `left: 0`, `top: 0`, `blend: "source-over"`, and `opacity: 1`. Blend modes are
+`"source-over"`, `"source"`, and `"destination-over"`. Opacity must be finite and in `0..1`. Negative offsets clip
+the overlay to the base image.
+
+```typescript
+const source = await NativeImage.load("photo.jpg")
+
+try {
+  const thumbnail = source.resize({ width: 320 })
+  try {
+    useImage(thumbnail)
+  } finally {
+    thumbnail.dispose()
+  }
+} finally {
+  source.dispose()
+}
+```
+
+## Encoded PNG retention
+
+`ensureEncodedPng()` makes encoded PNG data available for low-level native consumers. Raw and transformed images can
+need an encode at this point. The method returns `void` and leaves the image usable.
+
+Opaque, orientation-free PNG input can retain its original encoded bytes without decoding pixels immediately. A
+direct unchanged Kitty placement can use those bytes. Any pixel read, pixel operation, Sixel or block rendering, or
+Kitty crop, resize, or opacity operation materializes pixels.
+
+This lazy path means corrupt PNG pixel data can pass initial metadata validation and fail when the first pixel path
+runs.
+
+## Errors and limits
+
+`ImageLoadError` covers source acquisition. It exposes `code`, `source`, and optional HTTP `status`.
+
+| Code                     | Source failure                                   |
+| ------------------------ | ------------------------------------------------ |
+| `file-read`              | Path or file URL read                            |
+| `network`                | Fetch or response-body read                      |
+| `http-status`            | Non-success HTTP status                          |
+| `unsupported-url-scheme` | URL outside file, HTTP(S), blob, or data support |
+
+`ImageError` covers native decode and operations. It exposes numeric `status` and one of these codes:
+
+- `invalid-handle`, `unsupported-format`, `unsupported-color-space`, or `malformed-data`
+- `dimension-limit`, `memory-limit`, `invalid-argument`, or `out-of-memory`
+- `output-too-small`, `internal-error`, or `unsupported-feature`
+- `busy` for retained native pool slots. Pool publication methods return `null` instead of throwing this status.
+
+JavaScript option and geometry validation uses `TypeError` and `RangeError`. All image methods except `dispose()` throw
+after disposal or transfer.
+
+| Limit                    | Value           |
+| ------------------------ | --------------- |
+| Encoded input            | 64 MiB          |
+| Width or height          | 16,384 pixels   |
+| Total pixels             | 25 million      |
+| RGBA storage per image   | 100 MiB         |
+| Decompressed ICC profile | 8,000,000 bytes |
+
+OpenTUI keeps the eight most recently used validated ICC profiles and sRGB transforms. The cache key includes complete
+decompressed profile bytes and RGB or grayscale mode. The native library clears the cache when its final client
+releases it.
+
+## Next
+
+- [Image](/docs/components/image) owns normal display and protocol choice.
+- [FrameBuffer](/docs/components/frame-buffer) displays an existing or transformed image.
+- [Buffer API](/docs/reference/buffer-api) defines `drawImage()` placement ownership.
+- [Lifecycle and cleanup](/docs/core-concepts/lifecycle) defines native-handle cleanup.
+- [Runtime and platform support](/docs/getting-started/runtime-support) lists native targets.
+- [API and symbol index](/docs/reference/api-index) lists every image export.

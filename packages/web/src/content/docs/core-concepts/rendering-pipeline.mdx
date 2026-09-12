@@ -1,0 +1,96 @@
+---
+title: Rendering pipeline
+description: Trace retained tree changes through layout, cell composition, native diffing, and terminal output
+---
+
+# Rendering pipeline
+
+This maintained internals page traces one frame from a retained-tree change to terminal protocol bytes.
+
+Application code does not receive a public diff object. It mutates renderables, and OpenTUI owns layout, composition, diffing, and output.
+
+## 1. Retained state becomes dirty
+
+A renderable instance stays in the tree across frames. Setters update that instance and call `requestRender()` when visual state changes.
+
+Tree operations also invalidate layout or traversal state. OpenTUI can reuse an unchanged render command list when no live node needs updates.
+
+Demand-driven scheduling coalesces repeated requests into a later frame. Continuous scheduling runs the same pipeline at the configured frame rate.
+
+See [Renderer](/docs/core-concepts/renderer) for control states and scheduling.
+
+## 2. Yoga computes layout
+
+The root checks whether its Yoga tree is dirty. When needed, Yoga computes layout against the renderer's current columns and rows.
+
+OpenTUI then copies each computed position and size to the retained renderable. Those bounds drive drawing, clipping, wrapping, and hit testing.
+
+Yoga rounds layout to terminal cells with a point scale factor of `1`. Text and editor nodes use native measure targets for intrinsic size.
+
+See [Layout](/docs/core-concepts/layout) for supported properties, measurement, rounding, and absolute flow.
+
+## 3. Render traversal composes cells
+
+`CliRenderer` exposes `nextRenderBuffer` as the working cell buffer and `currentRenderBuffer` as native diff state from accepted cells.
+
+Before drawing, the root runs registered lifecycle passes. It then updates layout fields and builds a render command list.
+
+The command list preserves tree traversal, sibling `zIndex`, clipping stacks, and inherited opacity. Renderables draw into the next buffer in that order.
+
+A buffered renderable first draws into its own `OptimizedBuffer`. OpenTUI then composites that frame buffer into the renderer's next buffer.
+
+The cell surface stores character or grapheme references, foreground, background, attributes, and image reservations. Read [Text and terminal cells](/docs/core-concepts/text-and-cells) for cell ownership.
+
+Use the [Buffer API](/docs/reference/buffer-api) for direct drawing and buffer lifetime.
+
+## 4. Native code diffs and writes output
+
+The native renderer compares current and next rows. It skips equal rows and compares remaining cells by character, colors, and full attributes.
+
+For changed cells, native code emits cursor movement, color state, attributes, hyperlinks, and encoded text. It also handles cursor and mouse-pointer state.
+
+Native code updates the current buffer as it accepts changed cells. It clears the next buffer after the pass for the next composition.
+
+An unchanged frame can emit no terminal bytes. A forced repaint, palette change, resize, or image transition can require broader output.
+
+The renderer does not expose the generated terminal update as a public object. Native code creates and writes that update through the configured output backend.
+
+## Image protocol resolution
+
+An image placement always has a block-cell fallback. Automatic protocol choice checks a configured override, Kitty support, Sixel support, then blocks.
+
+Automatic Sixel also needs terminal pixel geometry. OpenTUI uses blocks until valid geometry arrives.
+
+Capability replies arrive after renderer creation. An early frame can use blocks, then a later capability response can request a repaint with another protocol.
+
+Automatic mode uses blocks under tmux because native graphics need pane-aware handling. Explicit protocol requests have different failure behavior.
+
+See [Image](/docs/components/image) for fitting, protocol requests, tmux constraints, and Sixel limits. See [Terminal capabilities](/docs/reference/terminal-capabilities) for detection timing.
+
+## Resize behavior
+
+A resize does not rebuild the retained tree. Existing renderable instances remain attached with their current application state.
+
+The renderer resizes its native buffers and replaces its public current and next buffer wrappers. It then resizes the root and runs Yoga again.
+
+Computed positions and sizes can change. Buffered renderables resize their frame buffers, then run resize hooks and listeners.
+
+Image pixel geometry becomes unknown during resize. OpenTUI queries it again, so automatic Sixel can temporarily use blocks.
+
+## Inspect frames
+
+`currentRenderBuffer` and `nextRenderBuffer` are inspectable `OptimizedBuffer` values. Treat the next buffer as transient working state.
+
+`getRealCharBytes()` resolves cell characters to text. `getSpanLines()` groups current cells by colors and base attributes for diagnostics.
+
+`getSpanLines()` is lossy. It walks resolved JavaScript text by code point instead of performing full grapheme clustering.
+
+It also masks attributes to the low eight bits. Hyperlink IDs occupy higher bits, so structured span capture drops link identity.
+
+Use character frames for visual text assertions and span capture for basic style diagnostics. Do not use span capture as a lossless buffer serialization.
+
+See [Testing](/docs/core-concepts/testing) and [Rendering diagnostics](/docs/test-and-debug/rendering-diagnostics) for supported inspection tools.
+
+## Next
+
+Read [Renderer](/docs/core-concepts/renderer) for public scheduling and events. Read [`NativeSpanFeed`](/docs/reference/native-span-feed) for custom output ownership.

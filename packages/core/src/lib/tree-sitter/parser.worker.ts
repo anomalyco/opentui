@@ -923,10 +923,11 @@ function logMessage(type: TreeSitterWorkerLogType, ...args: unknown[]): void {
   } satisfies TreeSitterWorkerResponse)
 }
 
-function postWorkerError(bufferId: number | undefined, error: unknown): void {
+function postWorkerError(bufferId: number | undefined, messageId: string | undefined, error: unknown): void {
   postWorkerMessage({
     type: "ERROR",
     bufferId,
+    messageId,
     error: error instanceof Error ? error.stack || error.message : String(error),
   } satisfies TreeSitterWorkerResponse)
 }
@@ -1089,10 +1090,11 @@ if (isWorkerRuntime) {
           } satisfies TreeSitterWorkerResponse)
       }
     } catch (error) {
+      const messageId = "messageId" in message ? message.messageId : undefined
       if ("bufferId" in message) {
-        postWorkerError(message.bufferId, error)
+        postWorkerError(message.bufferId, messageId, error)
       } else {
-        postWorkerError(undefined, error)
+        postWorkerError(undefined, messageId, error)
       }
     }
   })

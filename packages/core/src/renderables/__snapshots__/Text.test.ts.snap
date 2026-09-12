@@ -132,13 +132,13 @@ Bottom text
 `;
 
 exports[`TextRenderable Selection Text Node Dimension Updates should handle multiple text node updates with complex layout changes 2`] = `
-"First of            
-a                   
+"First of a          
 sentence            
 partthat            
 will wrap           
 Middle text         
 Bottom text         
+                    
                     
                     
                     
@@ -286,9 +286,9 @@ exports[`TextRenderable Selection Absolute Positioned Box with Text should handl
                                                                       
                                                                       
                                                                       
-             This is an extremely long piece of text                  
-             that needs to wrap multiple times within                 
-             the constrained width of the absolutely                  
+             This is an extremely long piece of text that             
+             needs to wrap multiple times within the                  
+             constrained width of the absolutely                      
              positioned container box with significant                
              padding on all sides.                                    
                                                                       
@@ -322,10 +322,10 @@ exports[`TextRenderable Selection Absolute Positioned Box with Text should rende
 `;
 
 exports[`TextRenderable Selection Word Wrapping should wrap at word boundaries when using word mode 1`] = `
-"The quick           
-brown fox           
-jumps over the      
-lazy dog            
+"The quick brown     
+fox jumps over      
+the lazy dog        
+                    
                     
 "
 `;

@@ -1,8 +1,19 @@
 import { test, expect, afterEach } from "bun:test"
 import { Writable } from "stream"
 import { createCliRenderer, CliRenderer, CliRenderEvents } from "../renderer.js"
+import { BoxRenderable } from "../renderables/Box.js"
+import { ImageRenderable } from "../renderables/Image.js"
+import { MarkdownRenderable } from "../renderables/Markdown.js"
+import { SyntaxStyle } from "../syntax-style.js"
 import { ManualClock } from "../testing/manual-clock.js"
 import { createTestStdin, TestWriteStream } from "../testing/test-streams.js"
+
+const PNG_1X1 = Uint8Array.from(
+  Buffer.from(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4AWP4z8DwHwAFAAH/e+m+7wAAAABJRU5ErkJggg==",
+    "base64",
+  ),
+)
 
 // Collecting Writable used as a mock stdout. Because it is !== process.stdout,
 // createCliRenderer allocates a NativeSpanFeed and pipes bytes through it.
@@ -38,6 +49,21 @@ type CollectingStdout = CollectingWriteStream & NodeJS.WriteStream
 
 function createCollectingStdout(columns = 80, rows = 24): CollectingStdout {
   return new CollectingWriteStream(columns, rows) as CollectingStdout
+}
+
+function flushWritable(stdout: NodeJS.WritableStream): Promise<void> {
+  return new Promise<void>((resolve, reject) => {
+    stdout.write(Buffer.alloc(0), (error) => (error ? reject(error) : resolve()))
+  })
+}
+
+function countPixelResolutionQueries(stdout: CollectingStdout): number {
+  return (
+    stdout
+      .getWrittenBytes()
+      .toString("binary")
+      .match(/\x1b\[14t/g)?.length ?? 0
+  )
 }
 
 function createPlainStdout(): NodeJS.WriteStream {
@@ -145,6 +171,628 @@ test("non-process stdout: rendered bytes flow to the custom Writable", async () 
   expect(received.includes(0x1b)).toBe(true)
 })
 
+test("late Ghostty capability detection emits OSC 8 for compact Markdown links", async () => {
+  const stdin = createTestStdin()
+  const stdout = createCollectingStdout(100, 8)
+  const renderer = await createCliRenderer({ stdin, stdout, useMouse: true })
+  destroyFns.push(() => renderer.destroy())
+
+  const syntaxStyle = SyntaxStyle.fromStyles({ default: { fg: "#ffffff" } })
+  destroyFns.push(() => syntaxStyle.destroy())
+
+  renderer.root.add(
+    new MarkdownRenderable(renderer, {
+      content: "| Link |\n| --- |\n| [OpenTUI](https://github.com/anomalyco/opentui) |\n| https://example.com/path |",
+      syntaxStyle,
+      tableOptions: { style: "columns", widthMode: "content" },
+    }),
+  )
+  await renderer.idle()
+  await flushWritable(stdout)
+
+  const initialFrame = new TextDecoder().decode(renderer.currentRenderBuffer.getRealCharBytes(true))
+  expect(initialFrame).toContain("OpenTUI (https://github.com/anomalyco/opentui)")
+  expect(initialFrame.match(/https:\/\/example\.com\/path/g)).toHaveLength(1)
+  expect(stdout.getWrittenBytes().toString("binary")).not.toContain("\x1b]8;id=")
+
+  stdout.clearWrites()
+  stdin.emit("data", Buffer.from("\x1bP>|ghostty 1.1.3\x1b\\"))
+  await renderer.idle()
+  await flushWritable(stdout)
+
+  const finalFrame = new TextDecoder().decode(renderer.currentRenderBuffer.getRealCharBytes(true))
+  const output = stdout.getWrittenBytes().toString("binary")
+  expect(renderer.capabilities?.hyperlinks).toBe(true)
+  expect(finalFrame).toContain("OpenTUI")
+  expect(finalFrame).not.toContain("github.com/anomalyco/opentui")
+  expect(finalFrame.match(/https:\/\/example\.com\/path/g)).toHaveLength(1)
+  expect(output).toContain(";https://github.com/anomalyco/opentui\x1b\\")
+  expect(output).toContain(";https://example.com/path\x1b\\")
+  expect(output).toContain("\x1b]8;;\x1b\\")
+})
+
+test("unidentified truecolor terminals preserve the visible Markdown link fallback", async () => {
+  const previousTerm = process.env.TERM
+  const previousColorTerm = process.env.COLORTERM
+  process.env.TERM = "xterm-256color"
+  process.env.COLORTERM = "truecolor"
+
+  try {
+    const stdout = createCollectingStdout(80, 6)
+    const renderer = await createCliRenderer({
+      stdin: createTestStdin(),
+      stdout,
+      remote: false,
+      forwardEnvKeys: ["TERM", "COLORTERM"],
+    })
+    destroyFns.push(() => renderer.destroy())
+
+    const syntaxStyle = SyntaxStyle.fromStyles({ default: { fg: "#ffffff" } })
+    destroyFns.push(() => syntaxStyle.destroy())
+    renderer.root.add(
+      new MarkdownRenderable(renderer, {
+        content: "| Link |\n|---|\n| [OpenTUI](https://example.com/docs) |",
+        syntaxStyle,
+        tableOptions: { style: "columns", widthMode: "content" },
+      }),
+    )
+
+    await renderer.idle()
+    await flushWritable(stdout)
+
+    expect(renderer.capabilities?.rgb).toBe(true)
+    expect(renderer.capabilities?.hyperlinks).toBe(false)
+    expect(new TextDecoder().decode(renderer.currentRenderBuffer.getRealCharBytes(true))).toContain(
+      "OpenTUI (https://example.com/docs)",
+    )
+    expect(stdout.getWrittenBytes().toString("binary")).not.toContain("\x1b]8;id=")
+  } finally {
+    if (previousTerm === undefined) delete process.env.TERM
+    else process.env.TERM = previousTerm
+    if (previousColorTerm === undefined) delete process.env.COLORTERM
+    else process.env.COLORTERM = previousColorTerm
+  }
+})
+
+test("auto images use detected Kitty graphics and delete cleared placements", async () => {
+  const stdin = createTestStdin()
+  const stdout = createCollectingStdout(8, 4)
+  const renderer = await createCliRenderer({ stdin, stdout })
+  destroyFns.push(() => renderer.destroy())
+  await flushWritable(stdout)
+  stdout.clearWrites()
+
+  stdin.emit("data", Buffer.from("\x1b_Gi=31337;OK\x1b\\"))
+  const image = new ImageRenderable(renderer, {
+    source: PNG_1X1,
+    protocol: "auto",
+    position: "absolute",
+    width: 2,
+    height: 1,
+  })
+  renderer.root.add(image)
+  await image.loadPromise
+  renderer.requestRender()
+  await renderer.idle()
+  await flushWritable(stdout)
+
+  expect(renderer.capabilities?.kitty_graphics).toBe(true)
+  expect(stdout.getWrittenBytes().toString("binary")).toContain("\x1b_G")
+
+  stdout.clearWrites()
+  image.source = undefined
+  await renderer.idle()
+  await flushWritable(stdout)
+  expect(stdout.getWrittenBytes().toString("binary")).toContain("a=d")
+})
+
+test("auto images use detected Sixel when pixel resolution is available", async () => {
+  const stdin = createTestStdin()
+  const stdout = createCollectingStdout(8, 4)
+  const renderer = await createCliRenderer({ stdin, stdout })
+  destroyFns.push(() => renderer.destroy())
+  await flushWritable(stdout)
+  stdout.clearWrites()
+
+  stdin.emit("data", Buffer.from("\x1b[?1;4c\x1b[4;80;80t"))
+  const image = new ImageRenderable(renderer, {
+    source: PNG_1X1,
+    protocol: "auto",
+    position: "absolute",
+    width: 2,
+    height: 1,
+  })
+  renderer.root.add(image)
+  await image.loadPromise
+  renderer.requestRender()
+  await renderer.idle()
+  await flushWritable(stdout)
+
+  expect(renderer.capabilities?.sixel).toBe(true)
+  expect(renderer.resolution).toEqual({ width: 80, height: 80 })
+  expect(stdout.getWrittenBytes().toString("binary")).toContain("\x1bP0;1;0q")
+})
+
+test("oversized pixel resolution replies leave images on block fallback", async () => {
+  const stdin = createTestStdin()
+  const stdout = createCollectingStdout(8, 4)
+  const renderer = await createCliRenderer({ stdin, stdout })
+  destroyFns.push(() => renderer.destroy())
+  const image = new ImageRenderable(renderer, {
+    source: PNG_1X1,
+    protocol: "sixel",
+    position: "absolute",
+    width: 8,
+    height: 4,
+    fit: "fill",
+  })
+  renderer.root.add(image)
+  await image.loadPromise
+
+  stdin.emit("data", Buffer.from("\x1b[4;4294967295;4294967295t"))
+  await renderer.idle()
+  await flushWritable(stdout)
+
+  expect(renderer.resolution).toBeNull()
+  expect(image.effectiveProtocol).toBe("blocks")
+  expect(stdout.getWrittenBytes().toString("utf8")).toContain("█")
+})
+
+test("Sixel placements beyond native image limits use block fallback", async () => {
+  const stdin = createTestStdin()
+  const stdout = createCollectingStdout(8, 4)
+  const renderer = await createCliRenderer({ stdin, stdout })
+  destroyFns.push(() => renderer.destroy())
+  const image = new ImageRenderable(renderer, {
+    source: PNG_1X1,
+    protocol: "sixel",
+    position: "absolute",
+    width: 8,
+    height: 4,
+    fit: "fill",
+  })
+  renderer.root.add(image)
+  await image.loadPromise
+
+  stdin.emit("data", Buffer.from("\x1b[4;20000;20000t"))
+  await renderer.idle()
+  await flushWritable(stdout)
+
+  expect(renderer.resolution).toEqual({ width: 20000, height: 20000 })
+  expect(stdout.getWrittenBytes().toString("binary")).not.toContain("\x1bP0;1;0q")
+  expect(stdout.getWrittenBytes().toString("utf8")).toContain("█")
+})
+
+test("resized images wait for the new pixel resolution before using Sixel", async () => {
+  const stdin = createTestStdin()
+  const stdout = createCollectingStdout(8, 4)
+  const renderer = await createCliRenderer({ stdin, stdout })
+  destroyFns.push(() => renderer.destroy())
+
+  stdin.emit("data", Buffer.from("\x1b[4;80;80t"))
+  const image = new ImageRenderable(renderer, {
+    source: PNG_1X1,
+    protocol: "sixel",
+    position: "absolute",
+    width: 2,
+    height: 1,
+    fit: "fill",
+  })
+  renderer.root.add(image)
+  await image.loadPromise
+  renderer.requestRender()
+  await renderer.idle()
+  await flushWritable(stdout)
+  expect(image.effectiveProtocol).toBe("sixel")
+  expect(stdout.getWrittenBytes().toString("binary")).toContain('0;1;0q"1;1;20;20')
+
+  stdout.clearWrites()
+  renderer.resize(16, 4)
+  await renderer.idle()
+  await flushWritable(stdout)
+
+  const pendingOutput = stdout.getWrittenBytes().toString("binary")
+  expect(pendingOutput).toContain("\x1b[14t")
+  expect(pendingOutput).not.toContain('0;1;0q"1;1;10;20')
+  expect(renderer.resolution).toBeNull()
+  expect(image.effectiveProtocol).toBe("blocks")
+  expect(pendingOutput).not.toContain("\x1bP0;1;0q")
+  expect(stdout.getWrittenBytes().toString("utf8")).toContain("█")
+
+  stdout.clearWrites()
+  stdin.emit("data", Buffer.from("\x1b[4;80;160t"))
+  await renderer.idle()
+  await flushWritable(stdout)
+
+  expect(renderer.resolution).toEqual({ width: 160, height: 80 })
+  expect(image.effectiveProtocol).toBe("sixel")
+  expect(stdout.getWrittenBytes().toString("binary")).toContain('0;1;0q"1;1;20;20')
+})
+
+test("split-footer Kitty scrollback does not rasterize images to terminal pixel dimensions", async () => {
+  const stdin = createTestStdin()
+  const stdout = createCollectingStdout(80, 60)
+  const renderer = await createCliRenderer({
+    stdin,
+    stdout,
+    screenMode: "split-footer",
+    footerHeight: 12,
+    externalOutputMode: "capture-stdout",
+    consoleMode: "disabled",
+  })
+  destroyFns.push(() => renderer.destroy())
+
+  stdin.emit("data", Buffer.from("\x1b[4;4320;7680t\x1b_Gi=31337;OK\x1b\\\x1b[48;1R"))
+  await renderer.idle()
+  await flushWritable(stdout)
+  stdout.clearWrites()
+
+  const surface = renderer.createScrollbackSurface({ startOnNewLine: true })
+  const image = new ImageRenderable(surface.renderContext, {
+    source: PNG_1X1,
+    protocol: "auto",
+    width: 80,
+    height: 48,
+    fit: "fill",
+  })
+  surface.root.add(image)
+  await image.loadPromise
+  surface.render()
+  surface.commitRows(0, surface.height)
+  surface.destroy()
+
+  stdout.write("after-image\n")
+  await renderer.idle()
+  await flushWritable(stdout)
+
+  const output = stdout.getWrittenBytes().toString("binary")
+  expect(output).toContain("\x1b_Ga=t")
+  expect(output).toContain("a=t,f=100")
+  expect(output).toContain("c=80,r=48")
+  expect(output).toContain("after-image")
+})
+
+test.each([
+  { name: "Kitty", response: "\x1b_Gi=31337;OK\x1b\\", placement: "\x1b_Ga=p" },
+  { name: "Sixel", response: "\x1b[?1;4c", placement: "\x1bP0;1;0q" },
+])("split-footer preserves $name images after resize replay resets", async ({ response, placement }) => {
+  const stdin = createTestStdin()
+  const stdout = createCollectingStdout(80, 24)
+  const renderer = await createCliRenderer({
+    stdin,
+    stdout,
+    screenMode: "split-footer",
+    footerHeight: 3,
+    externalOutputMode: "capture-stdout",
+    consoleMode: "disabled",
+  })
+  destroyFns.push(() => renderer.destroy())
+  stdin.emit("data", Buffer.from(response + "\x1b[4;480;800t\x1b[21;1R"))
+  await renderer.idle()
+
+  for (const size of [undefined, { width: 90, height: 28 }, { width: 20, height: 8 }]) {
+    if (size) {
+      renderer.resize(size.width, size.height)
+      stdin.emit("data", Buffer.from(`\x1b[4;${size.height * 20};${size.width * 10}t`))
+      renderer.resetSplitFooterForReplay({ clearSavedLines: true })
+      await renderer.idle()
+    }
+    await flushWritable(stdout)
+    stdout.clearWrites()
+
+    const surface = renderer.createScrollbackSurface({ startOnNewLine: true })
+    try {
+      const image = new ImageRenderable(surface.renderContext, {
+        source: PNG_1X1,
+        width: 2,
+        height: 5,
+        fit: "fill",
+      })
+      surface.root.add(image)
+      await image.loadPromise
+      surface.render()
+      surface.commitRows(0, surface.height, { trailingNewline: true })
+    } finally {
+      surface.destroy()
+    }
+    await renderer.idle()
+    await flushWritable(stdout)
+
+    const output = stdout.getWrittenBytes().toString("utf8")
+    expect(output).toContain(placement)
+    expect(output).toContain("\x1b[4A\r")
+    expect(output).not.toContain("\u2588")
+  }
+})
+
+test("split-footer queues native image scrollback until the startup cursor reply", async () => {
+  const stdin = createTestStdin()
+  const stdout = createCollectingStdout(8, 6)
+  const renderer = await createCliRenderer({
+    stdin,
+    stdout,
+    screenMode: "split-footer",
+    footerHeight: 3,
+    externalOutputMode: "capture-stdout",
+    consoleMode: "disabled",
+  })
+  destroyFns.push(() => renderer.destroy())
+  await flushWritable(stdout)
+  stdout.clearWrites()
+
+  const surface = renderer.createScrollbackSurface({ startOnNewLine: true })
+  const image = new ImageRenderable(surface.renderContext, {
+    source: PNG_1X1,
+    protocol: "kitty",
+    width: 1,
+    height: 1,
+  })
+  surface.root.add(image)
+  await image.loadPromise
+  surface.render()
+  surface.commitRows(0, surface.height)
+  surface.destroy()
+  await renderer.idle()
+  await flushWritable(stdout)
+
+  expect(stdout.getWrittenBytes()).toHaveLength(0)
+
+  stdin.emit("data", Buffer.from("\x1b[3;1R"))
+  await renderer.idle()
+  await flushWritable(stdout)
+
+  expect(stdout.getWrittenBytes().toString("binary")).toContain("\x1b_Ga=t")
+  expect(stdout.getWrittenBytes().toString("utf8")).not.toContain("█")
+})
+
+test("split-footer scrollback uses blocks for mixed protocols and overlapping images", async () => {
+  const stdin = createTestStdin()
+  const stdout = createCollectingStdout(8, 6)
+  const renderer = await createCliRenderer({
+    stdin,
+    stdout,
+    screenMode: "split-footer",
+    footerHeight: 3,
+    externalOutputMode: "capture-stdout",
+    consoleMode: "disabled",
+  })
+  destroyFns.push(() => renderer.destroy())
+
+  stdin.emit("data", Buffer.from("\x1b[?1;4c\x1b[4;6;8t\x1b_Gi=31337;OK\x1b\\\x1b[3;1R"))
+  await renderer.idle()
+  await flushWritable(stdout)
+  stdout.clearWrites()
+
+  const commitImages = async (images: Array<{ protocol: "kitty" | "sixel"; left?: number }>) => {
+    const surface = renderer.createScrollbackSurface({ startOnNewLine: true })
+    const renderables = images.map(
+      ({ protocol, left }) =>
+        new ImageRenderable(surface.renderContext, {
+          source: PNG_1X1,
+          protocol,
+          position: "absolute",
+          left,
+          width: 1,
+          height: 1,
+        }),
+    )
+    for (const image of renderables) surface.root.add(image)
+    await Promise.all(renderables.map((image) => image.loadPromise))
+    surface.render()
+    surface.commitRows(0, surface.height)
+    surface.destroy()
+    await renderer.idle()
+    await flushWritable(stdout)
+  }
+
+  await commitImages([
+    { protocol: "kitty", left: 0 },
+    { protocol: "sixel", left: 1 },
+  ])
+
+  let output = stdout.getWrittenBytes().toString("binary")
+  expect(output).not.toContain("\x1b_G")
+  expect(output).not.toContain("\x1bP0;1;0q")
+  expect(stdout.getWrittenBytes().toString("utf8")).toContain("█")
+
+  stdout.clearWrites()
+  await commitImages([{ protocol: "kitty" }, { protocol: "kitty" }])
+
+  output = stdout.getWrittenBytes().toString("binary")
+  expect(output).not.toContain("\x1b_G")
+  expect(output).not.toContain("\x1bP0;1;0q")
+  expect(stdout.getWrittenBytes().toString("utf8")).toContain("█")
+})
+
+test("ScrollbackSurface rejects stale image geometry after a height-only resize", async () => {
+  const stdin = createTestStdin()
+  const stdout = createCollectingStdout(8, 12)
+  const renderer = await createCliRenderer({
+    stdin,
+    stdout,
+    screenMode: "split-footer",
+    footerHeight: 3,
+    externalOutputMode: "capture-stdout",
+    consoleMode: "disabled",
+  })
+  destroyFns.push(() => renderer.destroy())
+
+  stdin.emit("data", Buffer.from("\x1b[?1;4c\x1b[4;80;80t\x1b[9;1R"))
+  await renderer.idle()
+
+  const surface = renderer.createScrollbackSurface({ startOnNewLine: true })
+  const image = new ImageRenderable(surface.renderContext, {
+    source: PNG_1X1,
+    protocol: "auto",
+    width: 1,
+    height: 1,
+    fit: "fill",
+  })
+  surface.root.add(image)
+  await image.loadPromise
+  surface.render()
+
+  renderer.resize(8, 6)
+  stdin.emit("data", Buffer.from("\x1b[4;80;80t"))
+  expect(() => surface.commitRows(0, surface.height)).toThrow(
+    "ScrollbackSurface.commitRows requires render() after renderer geometry changes",
+  )
+
+  surface.render()
+  surface.commitRows(0, surface.height)
+  surface.destroy()
+  await renderer.idle()
+  await flushWritable(stdout)
+
+  expect(stdout.getWrittenBytes().toString("binary")).toContain('0;1;0q"1;1;10;13')
+})
+
+test("ScrollbackSurface rejects stale image geometry after pixel resolution arrives", async () => {
+  const stdin = createTestStdin()
+  const stdout = createCollectingStdout(8, 6)
+  const renderer = await createCliRenderer({
+    stdin,
+    stdout,
+    screenMode: "split-footer",
+    footerHeight: 3,
+    externalOutputMode: "capture-stdout",
+    consoleMode: "disabled",
+  })
+  destroyFns.push(() => renderer.destroy())
+
+  stdin.emit("data", Buffer.from("\x1b[?1;4c\x1b[3;1R"))
+  await renderer.idle()
+
+  const surface = renderer.createScrollbackSurface({ startOnNewLine: true })
+  const image = new ImageRenderable(surface.renderContext, {
+    source: PNG_1X1,
+    protocol: "auto",
+    width: 1,
+    height: 1,
+    fit: "fill",
+  })
+  surface.root.add(image)
+  await image.loadPromise
+  surface.render()
+
+  stdin.emit("data", Buffer.from("\x1b[4;80;80t"))
+  expect(() => surface.commitRows(0, surface.height)).toThrow(
+    "ScrollbackSurface.commitRows requires render() after renderer geometry changes",
+  )
+
+  surface.render()
+  surface.commitRows(0, surface.height)
+  surface.destroy()
+  await renderer.idle()
+  await flushWritable(stdout)
+
+  expect(stdout.getWrittenBytes().toString("binary")).toContain('0;1;0q"1;1;10;13')
+})
+
+test("tall scrollback surfaces composite translucent Sixel images over snapshot backgrounds", async () => {
+  const stdin = createTestStdin()
+  const stdout = createCollectingStdout(8, 6)
+  const renderer = await createCliRenderer({
+    stdin,
+    stdout,
+    screenMode: "split-footer",
+    footerHeight: 3,
+    externalOutputMode: "capture-stdout",
+    consoleMode: "disabled",
+  })
+  destroyFns.push(() => renderer.destroy())
+
+  stdin.emit("data", Buffer.from("\x1b[?1;4c\x1b[4;6;8t\x1b[3;1R"))
+  await renderer.idle()
+  await flushWritable(stdout)
+  stdout.clearWrites()
+
+  const surface = renderer.createScrollbackSurface({ startOnNewLine: true })
+  const background = new BoxRenderable(surface.renderContext, {
+    width: 1,
+    height: 5,
+    backgroundColor: "#0000ff",
+  })
+  const image = new ImageRenderable(surface.renderContext, {
+    source: PNG_1X1,
+    protocol: "auto",
+    position: "absolute",
+    left: 0,
+    top: 4,
+    width: 1,
+    height: 1,
+    fit: "fill",
+    opacity: 0.5,
+  })
+  background.add(image)
+  surface.root.add(background)
+  await image.loadPromise
+  surface.render()
+  surface.commitRows(0, surface.height)
+  surface.destroy()
+  await renderer.idle()
+  await flushWritable(stdout)
+
+  expect(stdout.getWrittenBytes().toString("binary")).toContain("#0;2;50;0;50")
+})
+
+for (const testCase of [
+  {
+    name: "Kitty",
+    capabilities: "\x1b[4;6;8t\x1b_Gi=31337;OK\x1b\\\x1b[3;1R",
+    placement: "\x1b_Ga=p",
+  },
+  {
+    name: "Sixel",
+    capabilities: "\x1b[?1;4c\x1b[4;6;8t\x1b[3;1R",
+    placement: "\x1bP0;1;0q",
+  },
+]) {
+  test(`pinned split-footer appends repaint unchanged live ${testCase.name} images`, async () => {
+    const stdin = createTestStdin()
+    const stdout = createCollectingStdout(8, 6)
+    const renderer = await createCliRenderer({
+      stdin,
+      stdout,
+      screenMode: "split-footer",
+      footerHeight: 3,
+      externalOutputMode: "capture-stdout",
+      consoleMode: "disabled",
+    })
+    destroyFns.push(() => renderer.destroy())
+
+    stdin.emit("data", Buffer.from(testCase.capabilities))
+    const image = new ImageRenderable(renderer, {
+      source: PNG_1X1,
+      protocol: "auto",
+      position: "absolute",
+      left: 0,
+      top: 0,
+      width: 1,
+      height: 1,
+      fit: "fill",
+    })
+    renderer.root.add(image)
+    await image.loadPromise
+    renderer.requestRender()
+    await renderer.idle()
+    await (renderer as any)._feed.idle()
+    stdout.clearWrites()
+
+    const appended = `pin${testCase.name[0]}`
+    stdout.write(`${appended}\n`)
+    renderer.requestRender()
+    await renderer.idle()
+    await (renderer as any)._feed.idle()
+
+    const output = stdout.getWrittenBytes().toString("binary")
+    const appendIndex = output.indexOf(appended)
+    const placementIndex = output.indexOf(testCase.placement)
+    expect(output).toContain(appended)
+    expect(placementIndex).toBeGreaterThan(appendIndex)
+  })
+}
+
 test("split-footer custom stdout: native feed bytes bypass stdout capture", async () => {
   const stdin = createTestStdin()
   const stdout = createCollectingStdout(80, 24)
@@ -197,6 +845,324 @@ test("process.stdout: no feed is allocated (stdout-direct path)", async () => {
   // goes straight to process.stdout.
   expect((renderer as any)._feed).toBeNull()
   expect(() => renderer.destroy()).not.toThrow()
+})
+
+test("resize ignores an outstanding pixel resolution reply", async () => {
+  const stdin = createTestStdin()
+  const stdout = createCollectingStdout(8, 4)
+  const renderer = await createCliRenderer({ stdin, stdout })
+  destroyFns.push(() => renderer.destroy())
+  await flushWritable(stdout)
+  expect(countPixelResolutionQueries(stdout)).toBe(1)
+  stdout.clearWrites()
+
+  renderer.resize(16, 4)
+  renderer.resize(24, 4)
+  await flushWritable(stdout)
+  expect(stdout.getWrittenBytes().toString("binary")).not.toContain("\x1b[14t")
+
+  stdin.emit("data", Buffer.from("\x1b[4;80;80t"))
+  expect(renderer.resolution).toBeNull()
+  await flushWritable(stdout)
+  expect(countPixelResolutionQueries(stdout)).toBe(1)
+
+  stdout.clearWrites()
+  stdin.emit("data", Buffer.from("\x1b[4;80;240t"))
+  await renderer.idle()
+
+  expect(renderer.resolution).toEqual({ width: 240, height: 80 })
+  expect(stdout.getWrittenBytes().toString("binary")).not.toContain("\x1b[14t")
+})
+
+test("resize while suspended refreshes pixel resolution after resume", async () => {
+  const stdin = createTestStdin()
+  const stdout = createCollectingStdout(8, 4)
+  const renderer = await createCliRenderer({ stdin, stdout })
+  destroyFns.push(() => renderer.destroy())
+  await flushWritable(stdout)
+  expect(countPixelResolutionQueries(stdout)).toBe(1)
+  stdout.clearWrites()
+  stdin.emit("data", Buffer.from("\x1b[4;80;80t"))
+  await renderer.idle()
+  expect(renderer.resolution).toEqual({ width: 80, height: 80 })
+
+  renderer.suspend()
+  stdout.clearWrites()
+  renderer.resize(16, 4)
+  renderer.resize(24, 4)
+  await flushWritable(stdout)
+  expect(stdout.getWrittenBytes().toString("binary")).not.toContain("\x1b[14t")
+  stdout.clearWrites()
+
+  renderer.resume()
+  await flushWritable(stdout)
+  expect(renderer.resolution).toBeNull()
+  expect(countPixelResolutionQueries(stdout)).toBe(1)
+
+  stdin.emit("data", Buffer.from("\x1b[4;80;240t"))
+  await renderer.idle()
+  expect(renderer.resolution).toEqual({ width: 240, height: 80 })
+})
+
+test("resume rejects a delayed pre-suspend pixel resolution reply", async () => {
+  const stdin = createTestStdin()
+  const stdout = createCollectingStdout(8, 4)
+  const renderer = await createCliRenderer({ stdin, stdout })
+  destroyFns.push(() => renderer.destroy())
+  await flushWritable(stdout)
+  expect(countPixelResolutionQueries(stdout)).toBe(1)
+  stdout.clearWrites()
+
+  renderer.suspend()
+  renderer.resize(16, 4)
+  renderer.resume()
+  await flushWritable(stdout)
+  expect(stdout.getWrittenBytes().toString("binary")).not.toContain("\x1b[14t")
+
+  stdout.clearWrites()
+  stdin.emit("data", Buffer.from("\x1b[4;80;80t"))
+  expect(renderer.resolution).toBeNull()
+  await flushWritable(stdout)
+  expect(countPixelResolutionQueries(stdout)).toBe(1)
+
+  stdout.clearWrites()
+  stdin.emit("data", Buffer.from("\x1b[4;80;160t"))
+  await renderer.idle()
+
+  expect(renderer.resolution).toEqual({ width: 160, height: 80 })
+  expect(stdout.getWrittenBytes().toString("binary")).not.toContain("\x1b[14t")
+})
+
+test("resume preserves an outstanding pixel resolution query without requerying", async () => {
+  const stdin = createTestStdin()
+  const stdout = createCollectingStdout(8, 4)
+  const renderer = await createCliRenderer({ stdin, stdout })
+  destroyFns.push(() => renderer.destroy())
+  await flushWritable(stdout)
+  expect(countPixelResolutionQueries(stdout)).toBe(1)
+  stdout.clearWrites()
+
+  renderer.suspend()
+  renderer.resume()
+  await flushWritable(stdout)
+  expect(stdout.getWrittenBytes().toString("binary")).not.toContain("\x1b[14t")
+
+  stdin.emit("data", Buffer.from("\x1b[4;80;80t"))
+  await renderer.idle()
+  expect(renderer.resolution).toEqual({ width: 80, height: 80 })
+})
+
+test("resume preserves an incomplete pixel resolution response buffered while suspended", async () => {
+  const stdin = createTestStdin()
+  const stdout = createCollectingStdout(8, 4)
+  const renderer = await createCliRenderer({ stdin, stdout })
+  const keypresses: string[] = []
+  renderer.keyInput.on("keypress", (event) => keypresses.push(event.raw))
+  destroyFns.push(() => renderer.destroy())
+  await flushWritable(stdout)
+  expect(countPixelResolutionQueries(stdout)).toBe(1)
+  stdout.clearWrites()
+
+  renderer.suspend()
+  renderer.resize(16, 4)
+  stdin.push(Buffer.from("\x1b[4;80"))
+  renderer.resume()
+  await flushWritable(stdout)
+  expect(countPixelResolutionQueries(stdout)).toBe(0)
+
+  stdin.emit("data", Buffer.from(";80t"))
+  expect(renderer.resolution).toBeNull()
+  await flushWritable(stdout)
+  expect(keypresses).toEqual([])
+  expect(countPixelResolutionQueries(stdout)).toBe(1)
+
+  stdin.emit("data", Buffer.from("\x1b[4;80;160t"))
+  await renderer.idle()
+  expect(renderer.resolution).toEqual({ width: 160, height: 80 })
+})
+
+test("resume does not join a pre-suspend escape to post-resume input", async () => {
+  const stdin = createTestStdin()
+  const stdout = createCollectingStdout(8, 4)
+  const renderer = await createCliRenderer({ stdin, stdout })
+  const keypresses: Array<{ name: string; raw: string; meta: boolean }> = []
+  renderer.keyInput.on("keypress", (event) => {
+    keypresses.push({ name: event.name, raw: event.raw, meta: event.meta })
+  })
+  destroyFns.push(() => renderer.destroy())
+
+  await flushWritable(stdout)
+  expect(countPixelResolutionQueries(stdout)).toBe(1)
+  stdout.clearWrites()
+
+  stdin.emit("data", Buffer.from("\x1b"))
+  renderer.suspend()
+  renderer.resume()
+  stdin.emit("data", Buffer.from("a"))
+
+  expect(keypresses).toEqual([{ name: "a", raw: "a", meta: false }])
+  expect(renderer.resolution).toBeNull()
+  await flushWritable(stdout)
+  expect(countPixelResolutionQueries(stdout)).toBe(0)
+
+  stdin.emit("data", Buffer.from("\x1b[4;80;80t"))
+  await renderer.idle()
+  expect(keypresses).toEqual([{ name: "a", raw: "a", meta: false }])
+  expect(renderer.resolution).toEqual({ width: 80, height: 80 })
+})
+
+test("resume does not join a partial pixel response to post-resume input", async () => {
+  const response = Buffer.from("\x1b[4;80;80t")
+
+  for (let split = 2; split < response.length; split++) {
+    const stdin = createTestStdin()
+    const stdout = createCollectingStdout(8, 4)
+    const renderer = await createCliRenderer({ stdin, stdout })
+    const keypresses: Array<{ name: string; raw: string; meta: boolean }> = []
+    renderer.keyInput.on("keypress", (event) => {
+      keypresses.push({ name: event.name, raw: event.raw, meta: event.meta })
+    })
+
+    try {
+      await flushWritable(stdout)
+      expect(countPixelResolutionQueries(stdout)).toBe(1)
+      stdout.clearWrites()
+
+      stdin.emit("data", response.subarray(0, split))
+      renderer.suspend()
+      renderer.resume()
+      stdin.emit("data", Buffer.from("a"))
+
+      expect({ split, keypresses }).toEqual({
+        split,
+        keypresses: [{ name: "a", raw: "a", meta: false }],
+      })
+      expect(renderer.resolution).toBeNull()
+      await flushWritable(stdout)
+      expect(countPixelResolutionQueries(stdout)).toBe(0)
+
+      stdin.emit("data", response)
+      await renderer.idle()
+      expect(keypresses).toEqual([{ name: "a", raw: "a", meta: false }])
+      expect(renderer.resolution).toEqual({ width: 80, height: 80 })
+    } finally {
+      renderer.destroy()
+    }
+  }
+})
+
+test("resume preserves chunked escape input after a suspended pixel prefix", async () => {
+  for (const chunks of [["\x1b[A"], ["\x1b[", "A"]]) {
+    const stdin = createTestStdin()
+    const stdout = createCollectingStdout(8, 4)
+    const renderer = await createCliRenderer({ stdin, stdout })
+    const keypresses: Array<{ name: string; raw: string }> = []
+    renderer.keyInput.on("keypress", (event) => {
+      keypresses.push({ name: event.name, raw: event.raw })
+    })
+
+    try {
+      await flushWritable(stdout)
+      stdin.emit("data", Buffer.from("\x1b"))
+      renderer.suspend()
+      renderer.resume()
+      for (const chunk of chunks) stdin.emit("data", Buffer.from(chunk))
+
+      expect({ chunks, keypresses }).toEqual({
+        chunks,
+        keypresses: [{ name: "up", raw: "\x1b[A" }],
+      })
+
+      stdin.emit("data", Buffer.from("\x1b[4;80;80t"))
+      await renderer.idle()
+      expect(renderer.resolution).toEqual({ width: 80, height: 80 })
+    } finally {
+      renderer.destroy()
+    }
+  }
+})
+
+test("resume separates suspended escape input from a pixel resolution response", async () => {
+  for (const timing of ["before-resume", "after-resume", "after-suspended-escape"] as const) {
+    const stdin = createTestStdin()
+    const stdout = createCollectingStdout(8, 4)
+    const renderer = await createCliRenderer({ stdin, stdout })
+    const keypresses: string[] = []
+    renderer.keyInput.on("keypress", (event) => keypresses.push(event.raw))
+
+    try {
+      await flushWritable(stdout)
+      expect(countPixelResolutionQueries(stdout)).toBe(1)
+      stdout.clearWrites()
+
+      stdin.emit("data", Buffer.from("\x1b"))
+      renderer.suspend()
+      if (timing === "before-resume") stdin.push(Buffer.from("\x1b[4;80;80t"))
+      if (timing === "after-suspended-escape") stdin.push(Buffer.from("\x1b"))
+      renderer.resume()
+      if (timing === "after-resume") stdin.emit("data", Buffer.from("\x1b[4;80;80t"))
+      if (timing === "after-suspended-escape") {
+        await new Promise<void>((resolve) => setTimeout(resolve, 25))
+        stdin.emit("data", Buffer.from("\x1b[4;80;80t"))
+      }
+      await renderer.idle()
+
+      expect({
+        timing,
+        keypresses,
+        resolution: renderer.resolution,
+        queryCount: countPixelResolutionQueries(stdout),
+      }).toEqual({
+        timing,
+        keypresses: [],
+        resolution: { width: 80, height: 80 },
+        queryCount: 0,
+      })
+    } finally {
+      renderer.destroy()
+    }
+  }
+})
+
+test("resume preserves every pixel resolution response split across suspension", async () => {
+  const staleResponse = Buffer.from("\x1b[4;80;80t")
+
+  for (let split = 1; split < staleResponse.length; split++) {
+    const stdin = createTestStdin()
+    const stdout = createCollectingStdout(8, 4)
+    const renderer = await createCliRenderer({ stdin, stdout })
+    const keypresses: string[] = []
+    renderer.keyInput.on("keypress", (event) => keypresses.push(event.raw))
+
+    try {
+      await flushWritable(stdout)
+      expect(countPixelResolutionQueries(stdout)).toBe(1)
+      stdout.clearWrites()
+
+      stdin.emit("data", staleResponse.subarray(0, split))
+      renderer.suspend()
+      renderer.resize(16, 4)
+      await new Promise<void>((resolve) => setTimeout(resolve, 25))
+      stdin.push(staleResponse.subarray(split))
+      renderer.resume()
+      await flushWritable(stdout)
+
+      expect(keypresses).toEqual([])
+      expect(renderer.resolution).toBeNull()
+      expect({
+        split,
+        queryCount: countPixelResolutionQueries(stdout),
+      }).toEqual({ split, queryCount: 1 })
+
+      stdout.clearWrites()
+      stdin.emit("data", Buffer.from("\x1b[4;80;160t"))
+      await renderer.idle()
+      expect(renderer.resolution).toEqual({ width: 160, height: 80 })
+      expect(stdout.getWrittenBytes().toString("binary")).not.toContain("\x1b[14t")
+    } finally {
+      renderer.destroy()
+    }
+  }
 })
 
 test("feed-backed renderer retries one skipped frame after feed idle", async () => {
@@ -506,6 +1472,42 @@ test("custom stdout defaults to remote env behavior", async () => {
   }
 })
 
+test("Ghostty width profile reaches renderer-owned buffers", async () => {
+  const previousTermProgram = process.env.TERM_PROGRAM
+  const previousTermProgramVersion = process.env.TERM_PROGRAM_VERSION
+  process.env.TERM_PROGRAM = "ghostty"
+  process.env.TERM_PROGRAM_VERSION = "1.3.1"
+
+  try {
+    const renderer = new CliRenderer(createTestStdin(), createCollectingStdout(80, 24), 80, 24, {
+      remote: false,
+      forwardEnvKeys: ["TERM_PROGRAM", "TERM_PROGRAM_VERSION"],
+    })
+    destroyFns.push(() => renderer.destroy())
+
+    expect(renderer.widthMethod).toBe("unicode-wide")
+    await renderer.setupTerminal()
+    expect(renderer.currentRenderBuffer.widthMethod).toBe("unicode-wide")
+    expect(renderer.nextRenderBuffer.widthMethod).toBe("unicode-wide")
+    const encoded = renderer.nextRenderBuffer.encodeUnicode("OpenCode search configuration പരിശോധിക്കൽ")
+    expect(encoded).not.toBeNull()
+    try {
+      expect(encoded!.data.reduce((width, cell) => width + cell.width, 0)).toBe(40)
+    } finally {
+      if (encoded) renderer.nextRenderBuffer.freeUnicode(encoded)
+    }
+
+    renderer.resize(81, 24)
+    expect(renderer.currentRenderBuffer.widthMethod).toBe("unicode-wide")
+    expect(renderer.nextRenderBuffer.widthMethod).toBe("unicode-wide")
+  } finally {
+    if (previousTermProgram === undefined) delete process.env.TERM_PROGRAM
+    else process.env.TERM_PROGRAM = previousTermProgram
+    if (previousTermProgramVersion === undefined) delete process.env.TERM_PROGRAM_VERSION
+    else process.env.TERM_PROGRAM_VERSION = previousTermProgramVersion
+  }
+})
+
 // ---- Shutdown bytes reach the remote Writable (F1 regression test) ----
 
 test("destroy emits shutdown ANSI sequence through the custom Writable", async () => {
@@ -538,6 +1540,32 @@ test("destroy emits shutdown ANSI sequence through the custom Writable", async (
   expect(shutdownBytes).toContain("\x1b[?25h") // showCursor
 })
 
+test("destroy preserves shutdown output while slow writes pin initial feed chunks", async () => {
+  const stdin = createTestStdin()
+  const stdout = createCollectingStdout(80, 24)
+  const renderer = await createCliRenderer({ stdin, stdout })
+  destroyFns.push(() => renderer.destroy())
+
+  const feed = (renderer as any)._feed
+  expect(feed).not.toBeNull()
+  await feed.idle()
+  stdout.clearWrites()
+
+  stdout.delayMs = 100
+  // Two delayed writes pin the default feed's initial chunks during shutdown.
+  renderer.setTerminalTitle("pin-feed-1")
+  renderer.setTerminalTitle("pin-feed-2")
+  renderer.destroy()
+
+  await new Promise<void>((resolve, reject) => {
+    stdout.write(Buffer.alloc(0), (error) => (error ? reject(error) : resolve()))
+  })
+  const output = stdout.getWrittenBytes().toString("binary")
+  expect(output).toContain("\x1b]0;pin-feed-1\x07")
+  expect(output).toContain("\x1b]0;pin-feed-2\x07")
+  expect(output).toContain("\x1b[?25h")
+})
+
 // ---- Backpressure ----
 
 test("slow Writable marks feed as backpressured until write callback settles", async () => {
@@ -568,7 +1596,7 @@ test("slow Writable marks feed as backpressured until write callback settles", a
   expect(feed.isBackpressured()).toBe(false)
 })
 
-test("split-footer custom stdout can flush captured commits while feed writes are in flight", async () => {
+test("split-footer custom stdout waits for feed credit before flushing captured commits", async () => {
   const stdin = createTestStdin()
   const stdout = createCollectingStdout(80, 24)
   stdout.delayMs = 100
@@ -592,10 +1620,12 @@ test("split-footer custom stdout can flush captured commits while feed writes ar
   stdout.write("captured\n")
   await (renderer as any).loop()
 
-  expect((renderer as any).externalOutputQueue.size).toBe(0)
+  expect((renderer as any).externalOutputQueue.size).toBe(1)
 
   stdout.delayMs = 0
+  await renderer.idle()
   await feed.idle()
+  expect((renderer as any).externalOutputQueue.size).toBe(0)
   expect(stdout.getWrittenBytes().toString("binary")).toContain("captured")
 })
 
@@ -703,6 +1733,45 @@ test("split-footer custom stdout retains captured commits when native fails and 
 
   expect(rendererAny.externalOutputQueue.size).toBe(0)
   expect(stdout.getWrittenBytes().toString("binary")).toContain("captured-while-native-failed")
+})
+
+test("split-footer retains the whole batch when final native publication fails", async () => {
+  const clock = new ManualClock()
+  const stdout = createCollectingStdout(80, 24)
+  const renderer = new CliRenderer(createTestStdin(), stdout, 80, 24, {
+    screenMode: "split-footer",
+    consoleMode: "disabled",
+    clock,
+  })
+  ;(renderer as any).updateScheduled = false
+  clock.runAll()
+  destroyFns.push(() => renderer.destroy())
+
+  const rendererAny = renderer as any
+  const originalCommit = rendererAny.lib.commitSplitFooterSnapshot.bind(rendererAny.lib)
+  let calls = 0
+  rendererAny.lib.commitSplitFooterSnapshot = (...args: any[]) => {
+    calls++
+    const finalizeFrame = args[8]
+    return { renderOffset: rendererAny.renderOffset, status: finalizeFrame ? 2 : 0 }
+  }
+
+  stdout.write("first\nsecond\n")
+  expect(rendererAny.externalOutputQueue.size).toBe(2)
+
+  try {
+    await rendererAny.loop()
+    expect(calls).toBe(2)
+    expect(rendererAny.externalOutputQueue.size).toBe(2)
+  } finally {
+    rendererAny.lib.commitSplitFooterSnapshot = originalCommit
+  }
+
+  await rendererAny.loop()
+  await (rendererAny._feed?.idle() ?? Promise.resolve())
+  const output = stdout.getWrittenBytes().toString("binary")
+  expect(output).toContain("first")
+  expect(output).toContain("second")
 })
 
 test("split-footer native failure without a feed does not schedule automatic retries", async () => {

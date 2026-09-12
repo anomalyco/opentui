@@ -1,0 +1,234 @@
+---
+import WordmarkStudy from "../../components/WordmarkStudy.astro"
+import { studyGroups, wordmarkStudies } from "../../data/wordmark-studies"
+import Minimal from "../../layouts/Minimal.astro"
+
+const title = "Wordmark studies | OpenTUI"
+const description = "Compare color and overprint treatments of the original OpenTUI wordmark."
+const groups = ["Reference", ...studyGroups]
+const groupId = (group: string) => group.toLowerCase().replaceAll(" ", "-")
+---
+
+<Minimal {title} {description} wide robots="noindex">
+  <main class="wordmark-lab">
+    <header>
+      <a href="/">&larr; Website</a>
+      <h1>Wordmark studies</h1>
+      <p>24 color and overprint variations, at 250px and 125px wide.</p>
+      <p>The glyphs, spacing, and proportions are identical. No alternate fonts or redrawn letters.</p>
+      <p>Shortlist any you like, then send me their numbers. Your selection stays in this page’s URL.</p>
+      <nav aria-label="Study groups">
+        {studyGroups.map((group) => <a href={`#${groupId(group)}`}>{group}</a>)}
+      </nav>
+    </header>
+
+    <div class="controls">
+      <label><input id="shortlist-only" type="checkbox" /> Show shortlist only</label>
+      <output aria-live="polite" data-shortlist-count>0 shortlisted</output>
+    </div>
+
+    <p class="empty" hidden>No studies shortlisted. Uncheck “Show shortlist only” to see all the options.</p>
+
+    {
+      groups.map((group) => (
+        <section class="study-group" id={groupId(group)} aria-labelledby={`${groupId(group)}-heading`}>
+          <h2 id={`${groupId(group)}-heading`}>{group === "Reference" ? "Starting point" : group}</h2>
+          {wordmarkStudies.filter((study) => study.group === group).map((study) => (
+            <article class="candidate" id={`mark-${study.id}`} aria-labelledby={`name-${study.id}`}>
+              <div class="candidate-heading">
+                <h3 id={`name-${study.id}`}><a href={`#mark-${study.id}`}>{study.id}</a> {study.name}</h3>
+                <label>
+                  <input type="checkbox" data-pick={study.id} aria-label={`Shortlist ${study.id}: ${study.name}`} />
+                  Shortlist
+                </label>
+              </div>
+              <div class="specimens">
+                <WordmarkStudy {study} width={250} />
+                <div class="header-specimen">
+                  <WordmarkStudy {study} width={125} />
+                  <span aria-hidden="true">Docs</span><span aria-hidden="true">Packages</span>
+                </div>
+              </div>
+              <p class="note">{study.note}</p>
+              {study.id === "09" && (
+                <p class="theme-preview">
+                  <a href="/?theme=cobalt">Try cobalt across the site</a>
+                  <a href="/docs/getting-started/quickstart?theme=cobalt#create-the-app">Preview code</a>
+                </p>
+              )}
+            </article>
+          ))}
+        </section>
+      ))
+    }
+  </main>
+</Minimal>
+
+<script>
+  const picks = [...document.querySelectorAll<HTMLInputElement>("[data-pick]")]
+  const only = document.querySelector<HTMLInputElement>("#shortlist-only")!
+  const count = document.querySelector<HTMLOutputElement>("[data-shortlist-count]")!
+  const empty = document.querySelector<HTMLElement>(".empty")!
+  const groups = [...document.querySelectorAll<HTMLElement>(".study-group")]
+
+  function update(save = false) {
+    const selected = picks.filter((input) => input.checked).map((input) => input.dataset.pick!)
+    count.value = `${selected.length} shortlisted`
+    for (const input of picks) input.closest<HTMLElement>(".candidate")!.hidden = only.checked && !input.checked
+    for (const group of groups) {
+      group.hidden = !group.querySelector(".candidate:not([hidden])")
+      document.querySelector(`nav a[href="#${group.id}"]`)?.toggleAttribute("hidden", group.hidden)
+    }
+    empty.hidden = !only.checked || selected.length > 0
+    if (!save) return
+    const url = new URL(location.href)
+    if (selected.length) url.searchParams.set("pick", selected.join(","))
+    else url.searchParams.delete("pick")
+    if (only.checked) url.searchParams.set("only", "1")
+    else url.searchParams.delete("only")
+    history.replaceState(null, "", url)
+  }
+
+  function restore() {
+    const params = new URLSearchParams(location.search)
+    const selected = new Set(params.get("pick")?.slice(0, 100).split(",") ?? [])
+    for (const input of picks) input.checked = selected.has(input.dataset.pick!)
+    only.checked = params.get("only") === "1"
+    update()
+  }
+
+  for (const input of picks) input.addEventListener("change", () => {
+    if (only.checked && !input.checked) only.focus()
+    update(true)
+  })
+  only.addEventListener("change", () => update(true))
+  window.addEventListener("popstate", restore)
+  restore()
+</script>
+
+<style>
+  :global(:root:has(body .wordmark-lab)) {
+    color-scheme: light;
+    --page-background: #fffdf8;
+    --page-color: #1c1614;
+    --link-color: #1d709c;
+    --muted-color: #716c64;
+  }
+
+  h1 {
+    margin-block: 1.5rem;
+  }
+
+  header p {
+    max-width: var(--content-width);
+    margin-block: 0 1rem;
+  }
+
+  nav {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem 1.5rem;
+    margin-block: 1.5rem;
+  }
+
+  .controls {
+    position: sticky;
+    top: 0;
+    z-index: 1;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem 2rem;
+    padding-block: 0.75rem;
+    background: var(--page-background);
+  }
+
+  @supports (backdrop-filter: blur(1px)) {
+    .controls {
+      background: color-mix(in srgb, var(--page-background) var(--chrome-veil), transparent);
+      backdrop-filter: blur(16px);
+    }
+  }
+
+  label {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.5ch;
+    cursor: pointer;
+  }
+
+  input {
+    accent-color: var(--link-color);
+  }
+
+  output {
+    color: var(--muted-color);
+  }
+
+  .study-group {
+    margin-block-start: 3rem;
+    scroll-margin-top: 5rem;
+  }
+
+  h2 {
+    font-size: 1.25rem;
+    margin-block: 0 2rem;
+  }
+
+  h3 {
+    font-size: 1rem;
+    margin: 0;
+  }
+
+  .candidate {
+    margin-block: 0 3.5rem;
+    scroll-margin-top: 5rem;
+  }
+
+  .candidate-heading {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 0.5rem 1.5rem;
+    margin-block-end: 1.25rem;
+  }
+
+  .candidate-heading label {
+    font-size: var(--text-small);
+  }
+
+  .specimens {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    align-items: center;
+    gap: 1.5rem;
+  }
+
+  .header-specimen {
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+    color: var(--link-color);
+    font-weight: 700;
+  }
+
+  .note {
+    max-width: var(--content-width);
+    color: var(--muted-color);
+    font-size: var(--text-small);
+    margin-block: 1rem 0;
+  }
+
+  .theme-preview {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem 1.5rem;
+    margin-block: 0.75rem 0;
+  }
+
+  @media (min-width: 48rem) {
+    .specimens {
+      grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+      column-gap: 3rem;
+    }
+  }
+</style>

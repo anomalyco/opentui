@@ -1,16 +1,25 @@
 ---
 title: ScrollBox
-description: A scrollable container component with customizable scrollbars
-order: 7
+description: Scroll and cull child content in a bounded viewport
 ---
 
 # ScrollBox
 
-A scrollable container that supports horizontal and vertical scrolling, sticky scroll behavior, viewport culling, and customizable scrollbars.
+`ScrollBox` scrolls arbitrary child renderables and manages its own [ScrollBar](/docs/components/scrollbar) instances. Use a standalone ScrollBar only when another model owns the scroll position.
+
+## Availability
+
+| Field           | Availability              |
+| --------------- | ------------------------- |
+| Package         | `@opentui/core`           |
+| Core renderable | `ScrollBoxRenderable`     |
+| React           | `<scrollbox>` (automatic) |
+| Solid           | `<scrollbox>` (automatic) |
+| Status          | Built in                  |
 
 ## Basic usage
 
-### Renderable api
+### Renderable API
 
 ```typescript
 import { ScrollBoxRenderable, TextRenderable, BoxRenderable, createCliRenderer } from "@opentui/core"
@@ -38,32 +47,22 @@ for (let i = 0; i < 100; i++) {
 renderer.root.add(scrollbox)
 ```
 
-### Construct API
+A bordered list of source files initially shows its first five rows:
 
-```typescript
-import { ScrollBox, Box, Text, createCliRenderer } from "@opentui/core"
-
-const renderer = await createCliRenderer()
-
-renderer.root.add(
-  ScrollBox(
-    {
-      width: 40,
-      height: 20,
-    },
-    ...Array.from({ length: 100 }, (_, i) =>
-      Box(
-        { width: "100%", padding: 1, backgroundColor: i % 2 === 0 ? "#292e42" : "#2f3449" },
-        Text({ content: `Item ${i}` }),
-      ),
-    ),
-  ),
-)
+```text terminal=scrollbox-top
+offset: 0 / 7
+┌──────────────────────────────┐
+│01  src/index.ts             ▀│
+│02  src/app.ts                │
+│03  src/layout.ts             │
+│04  src/theme.ts              │
+│05  src/events.ts             │
+└──────────────────────────────┘
 ```
 
 ## Sticky scroll
 
-Enable sticky scroll to keep content pinned to an edge as new content arrives. Useful for log viewers or chat interfaces.
+Enable sticky scroll to keep content pinned to an edge as new content arrives. Set both `stickyScroll` and `stickyStart` because `stickyStart` has no default.
 
 ```typescript
 const scrollbox = new ScrollBoxRenderable(renderer, {
@@ -77,10 +76,10 @@ const scrollbox = new ScrollBoxRenderable(renderer, {
 
 ### Sticky positions
 
-- `"bottom"` - Stay scrolled to bottom (default for chat/logs)
-- `"top"` - Stay scrolled to top
-- `"left"` - Stay scrolled to left
-- `"right"` - Stay scrolled to right
+- `"bottom"`: Stay scrolled to the bottom
+- `"top"`: Stay scrolled to the top
+- `"left"`: Stay scrolled to the left
+- `"right"`: Stay scrolled to the right
 
 When you scroll away from the sticky position, sticky behavior pauses until you scroll back to the sticky edge.
 
@@ -102,7 +101,7 @@ By default, `scrollY` is `true` and `scrollX` is `false`.
 
 ## Viewport culling
 
-Enable viewport culling for better performance with large content. When enabled, ScrollBox renders only visible children:
+Enable viewport culling to skip offscreen children in large content. When enabled, ScrollBox renders only visible children:
 
 ```typescript
 const scrollbox = new ScrollBoxRenderable(renderer, {
@@ -113,7 +112,7 @@ const scrollbox = new ScrollBoxRenderable(renderer, {
 })
 ```
 
-Viewport culling skips render calls for offscreen children, so their `renderBefore` and `renderAfter` hooks do not run. Do not make layout or state depend on render hooks; disable `viewportCulling` if every child must run a render hook.
+Viewport culling skips render calls for offscreen children, so their `renderBefore` and `renderAfter` hooks do not run. Do not make layout or state depend on render hooks. Disable `viewportCulling` if every child must run a render hook.
 
 ## Customizing scrollbars
 
@@ -194,23 +193,39 @@ scrollbox.scrollTo(0)
 scrollbox.scrollTo({ x: 0, y: 100 })
 ```
 
+The same list after `scrollTo(5)`:
+
+```text terminal=scrollbox-scrolled
+offset: 5 / 7
+┌──────────────────────────────┐
+│06  src/input.ts              │
+│07  src/scroll.ts             │
+│08  src/render.ts             │
+│09  src/state.ts             ▀│
+│10  src/config.ts             │
+└──────────────────────────────┘
+```
+
 ### scrollChildIntoView
 
-Scroll the minimum distance needed to show a nested child in the viewport. The method uses DOM-style "nearest" behavior: if the child already fits, the call is a no-op; otherwise it scrolls to reveal the nearest edge.
+Scroll the minimum distance needed to show a nested child in the viewport. The method uses DOM-style "nearest"
+behavior. If the child already fits, the call is a no-op. An oversized child also stays in place when it extends beyond
+both edges of an axis. Otherwise, the method scrolls to reveal the nearest edge.
 
 ```typescript
 scrollbox.scrollChildIntoView("table-row-42")
 ```
 
-Use it when you focus an element offscreen (search results, a newly inserted form field, etc.) and want to bring it into view without moving the scroll position more than needed.
+Use it when you focus an offscreen element, such as a search result or a new form field. The method moves the scroll
+position only as much as necessary.
 
 ## Keyboard navigation
 
 When focused, ScrollBox responds to keyboard input:
 
-- **Arrow keys** - Scroll by line
-- **Page Up/Down** - Scroll by page
-- **Home/End** - Scroll to start/end
+- **Arrow keys:** Move by one fifth of the active viewport.
+- **Page Up/Down:** Move by one half of the vertical viewport.
+- **Home/End:** Move to the start or end.
 
 ## Properties
 
@@ -250,3 +265,7 @@ scrollbox.content // ContentRenderable - holds children
 scrollbox.horizontalScrollBar // ScrollBarRenderable
 scrollbox.verticalScrollBar // ScrollBarRenderable
 ```
+
+## Related concepts
+
+Read [Layout](/docs/core-concepts/layout) for viewport sizing. Read [Interaction, focus, and selection](/docs/core-concepts/interaction) for focus, wheel input, drag selection, and event propagation.

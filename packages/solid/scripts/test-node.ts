@@ -16,10 +16,15 @@ const outDir = resolve(packageRoot, ".node-test")
 const nodeTestTimeoutMs = 30_000
 const nodeProcessTimeoutMs = 5 * 60_000
 const nodePath = requireNode26()
-const emittedAllowlist = [".node-test/tests/box.test.js", ".node-test/tests/control-flow-updates.test.js"]
+const emittedAllowlist = [
+  ".node-test/tests/box.test.js",
+  ".node-test/tests/control-flow-updates.test.js",
+  ".node-test/tests/image.test.js",
+]
 const testEntries = [
   { source: "tests/box.test.tsx", output: "tests/box.test.js" },
   { source: "tests/control-flow-updates.test.tsx", output: "tests/control-flow-updates.test.js" },
+  { source: "tests/image.test.tsx", output: "tests/image.test.js" },
   { source: "src/testing/bun-test-node.ts", output: "src/testing/bun-test-node.js" },
 ]
 

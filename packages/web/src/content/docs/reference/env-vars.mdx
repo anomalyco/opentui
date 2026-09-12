@@ -1,7 +1,6 @@
 ---
 title: Environment variables
-description: Runtime configuration flags for OpenTUI
-order: 1
+description: Configure OpenTUI runtime, diagnostics, assets, and terminal overrides
 skill:
   entry: true
   intents: [env, environment, configuration, flags]
@@ -9,47 +8,130 @@ skill:
 
 # Environment variables
 
-OpenTUI reads environment variables at runtime. Bun loads `.env` automatically, so you can set these in your shell or in a `.env` file.
+OpenTUI reads these values from `process.env`. Bun loads `.env` automatically. With Node.js, use the shell or Node's
+environment-file support.
 
-## Variables
+OpenTUI parses most registered values on first use and caches the result. Set each value before the read time in the
+tables below. Registered boolean values treat `true`, `1`, `on`, and `yes` as true without case sensitivity. Other
+explicit values are false.
 
-| Variable                        | Type      | Default | Description                                                     |
-| ------------------------------- | --------- | ------- | --------------------------------------------------------------- |
-| `OTUI_TS_STYLE_WARN`            | `string`  | `false` | Enable warnings for missing syntax styles                       |
-| `OTUI_TREE_SITTER_WORKER_PATH`  | `string`  | `""`    | Path to the Tree-sitter worker                                  |
-| `XDG_CONFIG_HOME`               | `string`  | `""`    | Base directory for user-specific configuration files            |
-| `XDG_DATA_HOME`                 | `string`  | `""`    | Base directory for user-specific data files                     |
-| `OTUI_PALETTE_IDLE_TIMEOUT_MS`  | `number`  | `300`   | Milliseconds of silence after palette queries before fallback   |
-| `OTUI_DEBUG_FFI`                | `boolean` | `false` | Enable debug logging for the FFI bindings                       |
-| `OTUI_SHOW_STATS`               | `boolean` | `false` | Show the debug overlay at startup                               |
-| `OTUI_TRACE_FFI`                | `boolean` | `false` | Enable tracing for the FFI bindings                             |
-| `OPENTUI_FORCE_WCWIDTH`         | `boolean` | `false` | Use wcwidth for character width calculations                    |
-| `OPENTUI_FORCE_UNICODE`         | `boolean` | `false` | Force Mode 2026 Unicode support in terminal capabilities        |
-| `OPENTUI_GRAPHICS`              | `boolean` | `true`  | Enable Kitty graphics protocol detection                        |
-| `OPENTUI_FORCE_NOZWJ`           | `boolean` | `false` | Use no_zwj width method (Unicode without ZWJ joining)           |
-| `OPENTUI_LIBC`                  | `string`  | unset   | Select Linux native libc package (`glibc`, `musl`)              |
-| `OPENTUI_FORCE_EXPLICIT_WIDTH`  | `string`  | -       | Force explicit width detection (`true`/`1` or `false`/`0`)      |
-| `OPENTUI_NOTIFICATION_PROTOCOL` | `string`  | `auto`  | Force notification protocol (`osc9`, `osc777`, `osc99`, `none`) |
-| `OPENTUI_NOTIFICATIONS`         | `boolean` | `true`  | Disable terminal notification detection when false              |
-| `OTUI_USE_CONSOLE`              | `boolean` | `true`  | Enable global `console.*` capture for the built-in overlay      |
-| `SHOW_CONSOLE`                  | `boolean` | `false` | Open the built-in console overlay at startup                    |
-| `OTUI_DUMP_CAPTURES`            | `boolean` | `false` | Dump captured stdout and console caches from the exit handler   |
-| `OTUI_NO_NATIVE_RENDER`         | `boolean` | `false` | Skip the Zig/native frame renderer                              |
-| `OTUI_USE_ALTERNATE_SCREEN`     | `boolean` | unset   | Force alternate-screen or main-screen mode when set             |
-| `OTUI_OVERRIDE_STDOUT`          | `boolean` | unset   | Force stdout capture/passthrough routing when set               |
-| `OTUI_DEBUG`                    | `boolean` | `false` | Capture all raw stdin input for debugging                       |
-| `OTUI_STDIN_LOG`                | `string`  | `""`    | Write the raw stdin byte stream to a file                       |
+The tables list explicit OpenTUI settings. Terminal and clipboard detection also read host variables such as `TERM`,
+`TMUX`, `ZELLIJ`, SSH variables, `DISPLAY`, and `WAYLAND_DISPLAY`. Those values describe the host environment. They are
+not OpenTUI configuration keys. Read [Terminal capabilities](/docs/reference/terminal-capabilities) for detection.
 
-## Notes
+## Stable configuration
 
-- `OPENTUI_FORCE_EXPLICIT_WIDTH=false` skips OSC 66 queries on older terminals.
-- Linux uses the glibc native package by default. Set `OPENTUI_LIBC=musl` before importing OpenTUI, or define `process.env.OPENTUI_LIBC` as `"musl"` at standalone build time, to use the musl native package. See [Standalone Executables](/docs/reference/standalone-executables).
-- `OPENTUI_NOTIFICATION_PROTOCOL=none` disables notifications. Protocol overrides should only be used when terminal detection cannot identify a supported notification protocol.
-- `OPENTUI_NOTIFICATIONS=0`, `false`, or `off` disables notifications without changing other terminal capability detection.
-- `OTUI_PALETTE_IDLE_TIMEOUT_MS` bounds palette detection when a terminal reports OSC support but does not answer follow-up color queries.
-- Disable global `console.*` capture with `OTUI_USE_CONSOLE=false`. `consoleMode` only changes the overlay surface.
-- `OTUI_USE_ALTERNATE_SCREEN=false` forces `"main-screen"`; `true` forces `"alternate-screen"`. When set, it overrides `screenMode`.
-- `OTUI_OVERRIDE_STDOUT=true` captures only in `"split-footer"`; `false` forces passthrough. When set, it overrides `externalOutputMode`.
-- `OTUI_NO_NATIVE_RENDER` still runs the render loop. In `"split-footer"` mode, the current output flush path can still emit ANSI cursor movement and clear sequences.
-- `OTUI_DUMP_CAPTURES` runs from the renderer exit handler. A direct `renderer.destroy()` call does not trigger it by itself.
-- `OTUI_STDIN_LOG=/tmp/opentui-stdin.bin` records stdin exactly as OpenTUI receives it, before parsing. The file is truncated when the renderer starts. It is binary and may contain passwords or other sensitive input, so store and share it carefully. Recording uses synchronous file writes and is intended only for short debugging sessions.
+| Variable                        | Type      | Default          | Read time                   | Purpose                                              |
+| ------------------------------- | --------- | ---------------- | --------------------------- | ---------------------------------------------------- |
+| `XDG_CONFIG_HOME`               | `string`  | `""`             | First configuration lookup  | Base directory for user-specific configuration files |
+| `XDG_DATA_HOME`                 | `string`  | `""`             | First data lookup           | Base directory for user-specific data files          |
+| `OTUI_PALETTE_IDLE_TIMEOUT_MS`  | `number`  | `300`            | First palette query         | Silence in milliseconds before palette fallback      |
+| `OPENTUI_FORCE_WCWIDTH`         | presence  | unset            | Renderer creation           | Use wcwidth for character width calculations         |
+| `OPENTUI_FORCE_UNICODE`         | presence  | unset            | Renderer creation           | Force Mode 2026 Unicode support                      |
+| `OPENTUI_FORCE_NOZWJ`           | presence  | unset            | Renderer creation           | Use the no_zwj width method                          |
+| `OPENTUI_GRAPHICS`              | `string`  | unset, automatic | Renderer creation           | Control Kitty and Sixel detection                    |
+| `OPENTUI_IMAGE_PROTOCOL`        | `string`  | `"auto"`         | Renderer creation           | Select `auto`, `kitty`, `sixel`, or `blocks`         |
+| `OPENTUI_FORCE_EXPLICIT_WIDTH`  | `string`  | unset            | Renderer creation           | Force or disable explicit-width detection            |
+| `OPENTUI_NOTIFICATION_PROTOCOL` | `string`  | unset, automatic | Renderer creation           | Override the terminal notification protocol          |
+| `OPENTUI_NOTIFICATIONS`         | `string`  | unset, enabled   | Renderer creation           | Disable terminal notification detection              |
+| `OTUI_USE_CONSOLE`              | `boolean` | `true`           | Renderer console activation | Enable global `console.*` capture                    |
+| `OTUI_USE_ALTERNATE_SCREEN`     | `boolean` | unset            | Renderer creation           | Override `screenMode`                                |
+| `OTUI_OVERRIDE_STDOUT`          | `boolean` | unset            | Renderer creation           | Override `externalOutputMode`                        |
+| `CELL_ASPECT_RATIO`             | `number`  | computed         | `ThreeCliRenderer` creation | Override the Three.js cell aspect ratio              |
+
+`OPENTUI_FORCE_WCWIDTH`, `OPENTUI_FORCE_UNICODE`, and `OPENTUI_FORCE_NOZWJ` are native presence flags. Any value,
+including `0` or `false`, enables the override. Leave the variable unset to disable it.
+
+`OPENTUI_GRAPHICS` recognizes only lowercase `false` or `0` to disable graphics detection. Lowercase `true` or `1`
+keeps automatic detection. Other values do not change automatic behavior. `OPENTUI_IMAGE_PROTOCOL` is
+case-insensitive. Invalid values keep `auto`. Forcing an unsupported protocol can produce incorrect output.
+
+`OPENTUI_FORCE_EXPLICIT_WIDTH=true` or `1` forces explicit-width support. `false` or `0` disables it and skips OSC 66
+queries on older terminals.
+
+`OPENTUI_NOTIFICATION_PROTOCOL` accepts `osc9`, `osc777`, `osc99`, and `none` without case sensitivity. `0`, `false`,
+and `off` also disable notifications. `1`, `true`, and `on` keep automatic detection. Use an override only when terminal
+detection selects the wrong protocol. `OPENTUI_NOTIFICATIONS=0`, `false`, or `off` disables notifications without
+changing other capability detection.
+
+`OTUI_PALETTE_IDLE_TIMEOUT_MS` bounds palette detection when a terminal reports OSC support but does not answer color
+queries. `OTUI_USE_CONSOLE=false` disables global `console.*` capture. The `consoleMode` renderer option changes only
+the overlay surface.
+
+When set, `OTUI_USE_ALTERNATE_SCREEN` overrides `screenMode`. A true value forces `"alternate-screen"`. Any other
+explicit value forces `"main-screen"`. When set, `OTUI_OVERRIDE_STDOUT` overrides `externalOutputMode`. A true value
+captures stdout only in `"split-footer"`. Any other explicit value forces passthrough.
+
+## Diagnostics
+
+| Variable                | Type      | Default | Read time             | Purpose                                                   |
+| ----------------------- | --------- | ------- | --------------------- | --------------------------------------------------------- |
+| `OTUI_TS_STYLE_WARN`    | `string`  | `false` | First style lookup    | Warn about missing Tree-sitter syntax styles              |
+| `OTUI_DEBUG_FFI`        | `boolean` | `false` | First FFI use         | Enable FFI debug logging                                  |
+| `OTUI_TRACE_FFI`        | `boolean` | `false` | First FFI use         | Enable FFI tracing                                        |
+| `OTUI_SHOW_STATS`       | `boolean` | `false` | Renderer creation     | Show the renderer stats overlay at startup                |
+| `SHOW_CONSOLE`          | `boolean` | `false` | Renderer creation     | Open the built-in console overlay at startup              |
+| `OTUI_DUMP_CAPTURES`    | `boolean` | `false` | Renderer exit handler | Dump captured stdout and console caches from that handler |
+| `OTUI_NO_NATIVE_RENDER` | `boolean` | `false` | Renderer creation     | Skip the Zig native frame renderer                        |
+
+`OTUI_TS_STYLE_WARN` behaves like a presence string. Any explicit nonempty value, including `false`, enables warnings.
+
+`OTUI_NO_NATIVE_RENDER` does not stop the render loop. In `"split-footer"` mode, output flushing can still write ANSI
+cursor movement and clear sequences. `OTUI_DUMP_CAPTURES` runs from the renderer exit handler. Calling
+`renderer.destroy()` directly does not trigger that dump by itself.
+
+## Build-time and startup values
+
+| Variable                       | Type     | Default      | Required timing                            | Purpose                           |
+| ------------------------------ | -------- | ------------ | ------------------------------------------ | --------------------------------- |
+| `OPENTUI_LIBC`                 | `string` | unset, glibc | Before the first Core import               | Select `glibc` or `musl` on Linux |
+| `OTUI_ASSET_ROOT`              | `string` | `""`         | Before bundled Core code executes          | Relocate OpenTUI runtime assets   |
+| `OTUI_TREE_SITTER_WORKER_PATH` | `string` | `""`         | Before the first Tree-sitter worker starts | Override the parser worker entry  |
+
+### `OPENTUI_LIBC`
+
+On Linux, an unset value, an empty value, or `glibc` selects the glibc package. The value `musl` selects the musl
+package. Any other nonempty value throws. Set the value before the first Core import. A standalone Bun build can define
+`process.env.OPENTUI_LIBC` at build time so tree shaking keeps only the target branch. See
+[Runtime and platform support](/docs/getting-started/runtime-support) and
+[Standalone executables](/docs/reference/standalone-executables#linux-libc).
+
+### `OTUI_ASSET_ROOT`
+
+`OTUI_ASSET_ROOT` relocates the native library, parser worker, default parser assets, and Tree-sitter WASM. The value
+must be an absolute directory. Put every file beneath it with the exact key from `getNodeAssets()`.
+
+Set the variable before importing or executing bundled Core code. An empty value is unset. When a nonempty root is
+set, every requested asset must exist beneath it. A missing asset throws, and OpenTUI does not use a package-relative
+fallback. See [Standalone executables](/docs/reference/standalone-executables#nodejs-sea).
+
+### `OTUI_TREE_SITTER_WORKER_PATH`
+
+Set the worker path before the first `TreeSitterClient` starts its worker. Setting it after Core import is valid if no
+Tree-sitter worker started. An explicit client `workerPath` option takes precedence over this variable.
+
+## Security-sensitive diagnostics
+
+| Variable                 | Type      | Default | Read time             | Purpose                                                       |
+| ------------------------ | --------- | ------- | --------------------- | ------------------------------------------------------------- |
+| `OTUI_DEBUG`             | `boolean` | `false` | Renderer creation     | Retain raw input sequences for debugging                      |
+| `OTUI_STDIN_LOG`         | `string`  | `""`    | Renderer creation     | Write the raw stdin byte stream to a file                     |
+| `OTUI_GHOSTTY_LOG_LEVEL` | `string`  | `""`    | Native initialization | Forward scoped Ghostty logs through the normal OpenTUI logger |
+
+`OTUI_STDIN_LOG=/tmp/opentui-stdin.bin` records stdin before parsing. The renderer truncates the file when it starts
+and writes to it synchronously. The binary data can contain passwords and other sensitive input. Use this option only
+for short debugging sessions, and protect the recorded file. Treat `OTUI_DEBUG` input captures and
+`OTUI_DUMP_CAPTURES` output as sensitive data too.
+
+`OTUI_GHOSTTY_LOG_LEVEL` accepts `error`, `warn`, `info`, or `debug` (`err` and `warning` are aliases). The selected level
+includes all more severe messages. Unset or invalid values disable Ghostty logs. Standard-library logs outside the
+recognized Ghostty scopes are always discarded.
+
+## Remote sessions
+
+A renderer with `remote: true` forwards no local environment keys to native terminal detection by default. Add only
+the required names to `forwardEnvKeys`. This rule prevents local terminal overrides from changing an unrelated remote
+terminal.
+
+See [Troubleshooting](/docs/test-and-debug/troubleshooting) for errors related to native loading, runtime assets,
+terminal overrides, and Tree-sitter workers.

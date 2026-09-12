@@ -1,0 +1,17 @@
+{
+  "title": "Anomaly — Original Colors, Playing",
+  "recording": "anomaly.cast",
+  "sampleMs": 100,
+  "output": {
+    "story": "../../public/recordings/anomaly.json"
+  },
+  "chapters": [
+    {
+      "atMs": 500,
+      "durationMs": 3300,
+      "label": "Original colors, playing",
+      "captionTitle": "Original colors, playing",
+      "caption": "All 31 wordmark treatments, rapid-cut, non-neon."
+    }
+  ]
+}

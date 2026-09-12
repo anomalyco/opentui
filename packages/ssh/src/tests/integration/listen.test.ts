@@ -58,7 +58,7 @@ test("listen() rejects when the port is already in use", async () => {
     onError: (error) => reported.push(error),
   }).serve(() => {})
   try {
-    await expect(second.listen(port)).rejects.toThrow(/Failed to listen/)
+    await expect(second.listen(port)).rejects.toMatchObject({ code: "EADDRINUSE" })
     expect(reported).toEqual([])
   } finally {
     await second.close()

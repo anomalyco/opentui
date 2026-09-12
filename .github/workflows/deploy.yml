@@ -3,6 +3,8 @@ name: Deploy to GitHub Pages
 on:
   push:
     branches: [main]
+  schedule:
+    - cron: "17 3 * * *"
   workflow_dispatch:
 
 permissions:
@@ -16,12 +18,19 @@ jobs:
     steps:
       - name: Checkout your repository using git
         uses: actions/checkout@v6
+      - name: Checkout package index
+        uses: actions/checkout@v6
+        with:
+          repository: anomalyco/opentui-index
+          path: opentui-index
       - name: Install, build, and upload your site
         uses: withastro/action@v6
+        env:
+          OPENTUI_INDEX_DIR: ${{ github.workspace }}/opentui-index/packages
         with:
           path: ./packages/web
-          package-manager: bun@1.3.14
-          node-version: 22
+          package-manager: bun@1.4.1
+          node-version: 26
 
   deploy:
     needs: build

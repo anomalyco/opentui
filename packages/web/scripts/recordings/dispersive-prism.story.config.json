@@ -1,0 +1,17 @@
+{
+  "title": "Dispersive Prism — Minimum Deviation",
+  "recording": "dispersive-prism.cast",
+  "sampleMs": 180,
+  "output": {
+    "story": "../../public/recordings/dispersive-prism.json"
+  },
+  "chapters": [
+    {
+      "atMs": 12000,
+      "durationMs": 26000,
+      "label": "Minimum deviation",
+      "captionTitle": "Minimum deviation",
+      "caption": "Minimum-deviation dispersion through a virtual prism."
+    }
+  ]
+}

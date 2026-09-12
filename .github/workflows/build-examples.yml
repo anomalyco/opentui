@@ -23,7 +23,7 @@ jobs:
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
         with:
-          bun-version: 1.3.14
+          bun-version: 1.4.1
 
       - name: Install dependencies FIRST (before copying built packages)
         run: |
@@ -125,12 +125,26 @@ jobs:
           echo ""
           ls -lah packages/examples/dist/*/
 
+      - name: Stage example license notices
+        run: |
+          set -e
+          mkdir -p artifacts/example-notices
+          cp LICENSE artifacts/example-notices/LICENSE
+          cp packages/core/THIRD_PARTY_LICENSES/GHOSTTY artifacts/example-notices/LICENSE-GHOSTTY
+          cp packages/native/src/vendor/wuffs/LICENSE artifacts/example-notices/LICENSE-WUFFS
+          cp packages/native/src/vendor/stb/LICENSE artifacts/example-notices/LICENSE-STB
+          cp packages/native/src/vendor/libwebp/COPYING artifacts/example-notices/LICENSE-LIBWEBP
+          cp packages/native/src/vendor/libwebp/PATENTS artifacts/example-notices/PATENTS-LIBWEBP
+          cp packages/native/src/vendor/libwebp/AUTHORS artifacts/example-notices/AUTHORS-LIBWEBP
+          cp packages/native/src/vendor/lcms2/LICENSE artifacts/example-notices/LICENSE-LCMS2
+
       # Create separate zips for each platform's examples
       - name: Package examples - darwin-x64
         run: |
           set -e
           mkdir -p artifacts/examples-darwin-x64
           cp packages/examples/dist/darwin-x64/opentui-examples artifacts/examples-darwin-x64/
+          cp artifacts/example-notices/* artifacts/examples-darwin-x64/
           cd artifacts
           zip -r examples-darwin-x64.zip examples-darwin-x64/
           test -f examples-darwin-x64.zip || (echo "❌ Failed to create darwin-x64 zip" && exit 1)
@@ -142,6 +156,7 @@ jobs:
           set -e
           mkdir -p artifacts/examples-darwin-arm64
           cp packages/examples/dist/darwin-arm64/opentui-examples artifacts/examples-darwin-arm64/
+          cp artifacts/example-notices/* artifacts/examples-darwin-arm64/
           cd artifacts
           zip -r examples-darwin-arm64.zip examples-darwin-arm64/
           test -f examples-darwin-arm64.zip || (echo "❌ Failed to create darwin-arm64 zip" && exit 1)
@@ -153,6 +168,7 @@ jobs:
           set -e
           mkdir -p artifacts/examples-linux-x64
           cp packages/examples/dist/linux-x64/opentui-examples artifacts/examples-linux-x64/
+          cp artifacts/example-notices/* artifacts/examples-linux-x64/
           cd artifacts
           zip -r examples-linux-x64.zip examples-linux-x64/
           test -f examples-linux-x64.zip || (echo "❌ Failed to create linux-x64 zip" && exit 1)
@@ -164,6 +180,7 @@ jobs:
           set -e
           mkdir -p artifacts/examples-windows-x64
           cp packages/examples/dist/windows-x64/opentui-examples.exe artifacts/examples-windows-x64/
+          cp artifacts/example-notices/* artifacts/examples-windows-x64/
           cd artifacts
           zip -r examples-windows-x64.zip examples-windows-x64/
           test -f examples-windows-x64.zip || (echo "❌ Failed to create windows-x64 zip" && exit 1)
@@ -178,6 +195,16 @@ jobs:
           test -f artifacts/examples-darwin-arm64.zip || (echo "❌ examples-darwin-arm64.zip missing!" && exit 1)
           test -f artifacts/examples-linux-x64.zip || (echo "❌ examples-linux-x64.zip missing!" && exit 1)
           test -f artifacts/examples-windows-x64.zip || (echo "❌ examples-windows-x64.zip missing!" && exit 1)
+          for directory in artifacts/examples-{darwin-x64,darwin-arm64,linux-x64,windows-x64}; do
+            test -f "$directory/LICENSE" || (echo "❌ OpenTUI license missing from $directory" && exit 1)
+            test -f "$directory/LICENSE-GHOSTTY" || (echo "❌ Ghostty notices missing from $directory" && exit 1)
+            test -f "$directory/LICENSE-LIBWEBP" || (echo "❌ libwebp notice missing from $directory" && exit 1)
+            test -f "$directory/PATENTS-LIBWEBP" || (echo "❌ libwebp patents missing from $directory" && exit 1)
+            test -f "$directory/AUTHORS-LIBWEBP" || (echo "❌ libwebp authors missing from $directory" && exit 1)
+            test -f "$directory/LICENSE-STB" || (echo "❌ stb notice missing from $directory" && exit 1)
+            test -f "$directory/LICENSE-WUFFS" || (echo "❌ Wuffs notice missing from $directory" && exit 1)
+            test -f "$directory/LICENSE-LCMS2" || (echo "❌ Little CMS notice missing from $directory" && exit 1)
+          done
 
           echo ""
           echo "✅ All artifacts verified. Ready to upload:"

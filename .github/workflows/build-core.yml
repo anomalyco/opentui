@@ -15,8 +15,8 @@ concurrency:
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
-  NODE_VERSION: 26.4.0
-  ZIG_VERSION: 0.15.2
+  NODE_VERSION: 26.7.0
+  ZIG_VERSION: 0.16.0
 
 jobs:
   build:
@@ -29,7 +29,7 @@ jobs:
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
         with:
-          bun-version: 1.3.14
+          bun-version: 1.4.1
 
       - name: Setup Zig
         uses: mlugg/setup-zig@v2
@@ -40,29 +40,49 @@ jobs:
       - name: Restore Zig cache
         uses: actions/cache@v5
         with:
-          path: .zig-cache
+          path: packages/native/.zig-cache
           key: zig-v1-${{ runner.os }}-${{ env.ZIG_VERSION }}-${{ github.run_id }}-${{ github.job }}
           restore-keys: zig-v1-${{ runner.os }}-${{ env.ZIG_VERSION }}-
 
       - name: Install dependencies
         run: bun install
 
+      - name: Setup cross-platform symbol tools
+        uses: ./.github/actions/setup-native-symbol-tools
+
       - name: Build native libraries (cross-compile all platforms)
         run: |
           cd packages/core
           bun run build:native --all
 
+      - name: Build custom target without Ghostty VT
+        working-directory: packages/native
+        run: zig build -Dlibrary-target=x86_64-freebsd -Doptimize=ReleaseFast
+
+      - name: Verify release symbol archives
+        run: bun packages/core/scripts/package-native-symbols.ts
+
+      - name: Upload symbol verification artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: native-symbols
+          path: artifacts/native-symbols/*.zip
+          if-no-files-found: error
+          retention-days: 1
+
       - name: Upload native artifacts
         uses: actions/upload-artifact@v7
         with:
           name: native-libraries
-          path: packages/core/node_modules/@opentui/
+          path: packages/core/node_modules/@opentui/core-*/**
+          if-no-files-found: error
           retention-days: 1
 
   test:
     name: Test (${{ matrix.os }})
     needs: build
     strategy:
+      fail-fast: false
       matrix:
         include:
           - os: blacksmith-12vcpu-macos-15
@@ -82,10 +102,9 @@ jobs:
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
         with:
-          bun-version: 1.3.14
+          bun-version: 1.4.1
 
       - name: Setup Node
-        if: runner.os == 'Linux'
         uses: actions/setup-node@v6
         with:
           node-version: ${{ env.NODE_VERSION }}
@@ -100,7 +119,7 @@ jobs:
         if: runner.os != 'Windows'
         uses: actions/cache@v5
         with:
-          path: .zig-cache
+          path: packages/native/.zig-cache
           key: zig-v1-${{ runner.os }}-${{ env.ZIG_VERSION }}-${{ github.run_id }}-${{ github.job }}
           restore-keys: zig-v1-${{ runner.os }}-${{ env.ZIG_VERSION }}-
 
@@ -119,10 +138,15 @@ jobs:
           ls -la packages/core/node_modules/@opentui/
           ls -la packages/core/node_modules/@opentui/core-${{ matrix.platform }}/
 
+      - name: Enable Linux core dumps
+        if: runner.os == 'Linux'
+        uses: ./.github/actions/enable-linux-coredumps
+
       - name: Run native tests
+        working-directory: packages/core
         run: |
-          cd packages/core/src/zig
-          zig build test --summary all
+          if [ "$(uname -s)" = Linux ]; then ulimit -c unlimited; fi
+          bun run test:native
 
       - name: Build TypeScript library
         run: |
@@ -131,35 +155,84 @@ jobs:
 
       - name: Run TypeScript tests
         run: |
+          if [ "$(uname -s)" = Linux ]; then ulimit -c unlimited; fi
           cd packages/core
           export OTUI_TREE_SITTER_WORKER_PATH="$(bun -e 'import { resolve } from "node:path"; console.log(resolve("dist/parser.worker.js"))')"
           bun run test:js
 
       - name: Run Node TypeScript tests
-        if: runner.os == 'Linux'
         working-directory: packages/core
-        run: bun run test:js:node
+        run: |
+          if [ "$(uname -s)" = Linux ]; then ulimit -c unlimited; fi
+          bun run test:js:node
 
       - name: Test packed distribution
         if: runner.os == 'Linux'
         working-directory: packages/core
-        run: bun run test:dist --skip-build
+        run: |
+          if [ "$(uname -s)" = Linux ]; then ulimit -c unlimited; fi
+          bun run test:dist --skip-build
+
+      - name: Test separate ELF symbols
+        if: runner.os == 'Linux'
+        run: bun test packages/core/scripts/native-symbols.test.ts
 
       - name: Test Node SEA executable
         if: runner.os == 'Linux'
         working-directory: packages/core
-        run: bun run test:standalone --skip-build
+        run: |
+          if [ "$(uname -s)" = Linux ]; then ulimit -c unlimited; fi
+          bun run test:standalone --skip-build
+
+      - name: Upload Linux core dumps
+        if: failure() && runner.os == 'Linux'
+        uses: ./.github/actions/upload-linux-coredumps
+        with:
+          name: crash-dumps-core-${{ matrix.os }}-${{ github.run_attempt }}
+
+  bun-1-compat:
+    name: Bun 1.3 compatibility
+    needs: build
+    runs-on: blacksmith-8vcpu-ubuntu-2404
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Setup development Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.1
+
+      - name: Install dependencies
+        run: bun install
+
+      - name: Download native artifacts
+        uses: actions/download-artifact@v8
+        with:
+          name: native-libraries
+          path: packages/core/node_modules/@opentui/
+
+      - name: Setup runtime Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.14
+
+      - name: Test portable FFI arguments
+        working-directory: packages/core
+        run: |
+          test "$(bun --version)" = "1.3.14"
+          bun test src/tests/ffi-borrowed-pointer-callsites.test.ts
 
   # Gate job for branch protection
   build-complete:
     name: Core - Build and Test
-    needs: [test]
+    needs: [test, bun-1-compat]
     runs-on: blacksmith-4vcpu-ubuntu-2404
     if: always()
     steps:
       - name: Check test results
         run: |
-          if [ "${{ needs.test.result }}" != "success" ]; then
+          if [ "${{ needs.test.result }}" != "success" ] || [ "${{ needs['bun-1-compat'].result }}" != "success" ]; then
             echo "Tests failed"
             exit 1
           fi

@@ -82,6 +82,6 @@ describe("Multi-Renderable Selection Tests", () => {
     expect(selectedTextareaText).toContain("Line 10")
 
     // Verify selection in Text renderable
-    expect(selectedTextText).toBe("Text ")
+    expect(selectedTextText).toBe("Text B")
   })
 })

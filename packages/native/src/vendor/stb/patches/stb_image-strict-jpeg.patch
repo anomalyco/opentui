@@ -1,0 +1,55 @@
+diff --git a/stb_image.h b/stb_image.h
+--- a/stb_image.h
++++ b/stb_image.h
+@@ -1980,6 +1980,10 @@ typedef struct
+    int            code_bits;   // number of valid bits
+    unsigned char  marker;      // marker seen while filling entropy buffer
+    int            nomore;      // flag if we saw a marker so must stop
++#ifdef STBI_STRICT_JPEG
++   int            truncated;       // flag if decoding consumed synthetic bits
++   int            synthetic_bits;  // zero bits added after a marker or EOF
++#endif
+ 
+    int            progressive;
+    int            spec_start;
+@@ -2075,7 +2079,17 @@ static void stbi__build_fast_ac(stbi__int16 *fast_ac, stbi__huffman *h)
+ static void stbi__grow_buffer_unsafe(stbi__jpeg *j)
+ {
+    do {
+-      unsigned int b = j->nomore ? 0 : stbi__get8(j->s);
++      unsigned int b;
++#ifdef STBI_STRICT_JPEG
++      if (j->nomore || stbi__at_eof(j->s)) {
++         j->synthetic_bits += 8;
++         b = 0;
++      } else {
++         b = stbi__get8(j->s);
++      }
++#else
++      b = j->nomore ? 0 : stbi__get8(j->s);
++#endif
+       if (b == 0xff) {
+          int c = stbi__get8(j->s);
+          while (c == 0xff) c = stbi__get8(j->s); // consume fill bytes
+@@ -2935,6 +2949,10 @@ static stbi_uc stbi__get_marker(stbi__jpeg *j)
+ // the dc prediction
+ static void stbi__jpeg_reset(stbi__jpeg *j)
+ {
++#ifdef STBI_STRICT_JPEG
++   if (j->synthetic_bits > j->code_bits) j->truncated = 1;
++   j->synthetic_bits = 0;
++#endif
+    j->code_bits = 0;
+    j->code_buffer = 0;
+    j->nomore = 0;
+@@ -3441,6 +3459,10 @@ static int stbi__decode_jpeg_image(stbi__jpeg *j)
+          m = stbi__get_marker(j);
+       }
+    }
++#ifdef STBI_STRICT_JPEG
++   if (j->synthetic_bits > j->code_bits) j->truncated = 1;
++   if (j->truncated) return stbi__err("truncated entropy data", "Corrupt JPEG");
++#endif
+    if (j->progressive)
+       stbi__jpeg_finish(j);
+    return 1;

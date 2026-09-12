@@ -1,6 +1,6 @@
 {
   "name": "@opentui/solid",
-  "version": "0.4.5",
+  "version": "0.5.11",
   "description": "SolidJS renderer for OpenTUI",
   "repository": {
     "type": "git",
@@ -15,6 +15,7 @@
   "scripts": {
     "build": "bun scripts/build.ts",
     "build:examples": "bun examples/build.ts",
+    "bench:reconciler": "bun scripts/reconciler-benchmark.ts",
     "publish": "bun scripts/publish.ts",
     "test:dist": "bun scripts/test-packed-consumer.ts",
     "test:js:node": "bun scripts/test-node.ts",
@@ -55,7 +56,7 @@
   "devDependencies": {
     "@opentui/keymap": "workspace:*",
     "@types/babel__core": "7.20.5",
-    "@types/bun": "latest",
+    "@types/bun": "1.4.1",
     "@types/node": "^24.0.0",
     "solid-js": "1.9.12",
     "typescript": "^5"

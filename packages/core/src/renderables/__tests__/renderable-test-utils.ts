@@ -2,7 +2,6 @@ import { TextareaRenderable } from "../Textarea.js"
 import { type TestRenderer } from "../../testing/test-renderer.js"
 import { type TextareaOptions } from "../Textarea.js"
 import type { DiffRenderable } from "../Diff.js"
-import type { CodeRenderable } from "../Code.js"
 import type { MockTreeSitterClient } from "../../testing/mock-tree-sitter-client.js"
 import type { ManualClock } from "../../testing/manual-clock.js"
 
@@ -18,14 +17,7 @@ export async function createTextareaRenderable(
   return { textarea: textareaRenderable, root: renderer.root }
 }
 
-// Settle Diff highlighting deterministically. Each iteration:
-// 1. Render twice — the first render may trigger Diff.requestRebuild via microtask
-//    (runs during renderOnce's internal awaits), which calls requestRender while
-//    rendering=true, setting immediateRerenderRequested. The resulting re-render
-//    is scheduled via clock.setTimeout (ManualClock), so needs a second renderOnce.
-// 2. Resolve all pending highlights (proper signal via mock)
-// 3. Await Code.highlightingDone on both sides (proper signal from Code)
-// Loop exits when mock has no more pending requests (state-based, not count-based).
+// Render twice to flush Diff rebuilds, then drain each serialized highlight batch.
 export async function settleDiffHighlighting(
   diff: DiffRenderable,
   client: MockTreeSitterClient,
@@ -37,10 +29,7 @@ export async function settleDiffHighlighting(
     await render()
     if (!client.isHighlighting()) break
     client.resolveAllHighlightOnce()
-    const left: CodeRenderable | null = (diff as any).leftCodeRenderable
-    const right: CodeRenderable | null = (diff as any).rightCodeRenderable
-    if (left) await left.highlightingDone
-    if (right) await right.highlightingDone
+    await new Promise<void>((resolve) => setImmediate(resolve))
   }
 }
 

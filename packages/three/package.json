@@ -1,6 +1,6 @@
 {
   "name": "@opentui/three",
-  "version": "0.4.5",
+  "version": "0.5.11",
   "description": "Three.js WebGPU renderer for OpenTUI",
   "license": "MIT",
   "repository": {
@@ -37,7 +37,7 @@
     "planck": "^1.4.2"
   },
   "devDependencies": {
-    "@types/bun": "latest",
+    "@types/bun": "1.4.1",
     "@types/node": "^24.0.0",
     "@types/three": "0.177.0",
     "commander": "^13.1.0",

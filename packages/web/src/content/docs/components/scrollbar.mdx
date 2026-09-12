@@ -1,12 +1,21 @@
 ---
 title: ScrollBar
-description: Standalone scrollbar with arrows and keyboard control
-order: 8
+description: Control a scroll position with a standalone bar
 ---
 
 # ScrollBar
 
-A standalone scrollbar component with optional arrows, keyboard navigation, and a draggable thumb.
+`ScrollBar` controls a scroll position with optional arrows, keyboard input, and a draggable thumb. Use [ScrollBox](/docs/components/scrollbox) when the component must also own and clip scrollable children.
+
+## Availability
+
+| Field           | Availability             |
+| --------------- | ------------------------ |
+| Package         | `@opentui/core`          |
+| Core renderable | `ScrollBarRenderable`    |
+| React           | Unavailable              |
+| Solid           | Unavailable              |
+| Status          | Built-in Core renderable |
 
 ## Basic usage
 
@@ -40,6 +49,19 @@ renderer.root.add(scrollbar)
 scrollbar.focus()
 ```
 
+```text terminal=scrollbar-arrows
+position: 0 / 180  ▲
+                   ▀
+
+
+
+
+
+
+
+viewport: 20 / 200 ▼
+```
+
 ## Keyboard controls
 
 When focused, the scrollbar responds to:
@@ -48,10 +70,6 @@ When focused, the scrollbar responds to:
 - `Left`/`Right` or `h`/`l` for horizontal bars
 - `PageUp`/`PageDown` for larger jumps
 - `Home`/`End` to jump to start/end
-
-## Construct API
-
-> Not available yet. Use `ScrollBarRenderable` for now.
 
 ## Properties
 
@@ -66,3 +84,7 @@ When focused, the scrollbar responds to:
 | `scrollPosition` | `number`                       | `0`     | Current scroll position                |
 | `scrollStep`     | `number`                       | -       | Step size when `scrollBy(..., "step")` |
 | `onChange`       | `(position: number) => void`   | -       | Fired when scroll position changes     |
+
+## Related concepts
+
+Read [Layout](/docs/core-concepts/layout) for viewport dimensions. Read [Interaction, focus, and selection](/docs/core-concepts/interaction) for keyboard and pointer behavior. [Slider](/docs/components/slider) exposes the underlying continuous-value control without scroll semantics.

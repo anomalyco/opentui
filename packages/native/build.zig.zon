@@ -1,0 +1,23 @@
+.{
+    .name = .opentui,
+    .version = "0.1.11",
+    .fingerprint = 0x5445027d063f5083,
+    .minimum_zig_version = "0.16.0",
+    .dependencies = .{
+        .uucode = .{
+            .path = "zig-deps/uucode-opentui",
+        },
+        .ghostty = .{
+            .path = "zig-deps/ghostty",
+            .lazy = true,
+        },
+        .yoga = .{
+            .path = "zig-deps/yoga",
+        },
+    },
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+    },
+}

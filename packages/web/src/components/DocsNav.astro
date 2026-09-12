@@ -1,0 +1,75 @@
+---
+import { buildDocsIndex } from "../lib/docs-index"
+import DocsSearch from "./DocsSearch.astro"
+
+const docsIndex = await buildDocsIndex()
+
+const normalize = (path: string) => path.replace(/\/+$/, "") || "/"
+const current = normalize(Astro.url.pathname)
+---
+
+<div class="docs-index">
+  <DocsSearch />
+  <nav aria-label="Documentation" data-docs-nav>
+    <ul>
+      {
+        docsIndex.sections.map((section) => (
+          <li>
+            <span class="section">{section.title}</span>
+            <ul>
+              {section.pages.map((page, index) => (
+                <>
+                  {page.group && page.group !== section.pages[index - 1]?.group && <li class="group">{page.group}</li>}
+                  <li>
+                    <a href={page.url} aria-current={current === page.url ? "page" : undefined}>
+                      {page.navTitle}
+                    </a>
+                  </li>
+                </>
+              ))}
+            </ul>
+          </li>
+        ))
+      }
+    </ul>
+  </nav>
+</div>
+
+<style>
+  .docs-index {
+    line-height: 1.6;
+  }
+
+  ul {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+  }
+
+  nav[hidden] {
+    display: none;
+  }
+
+  nav > ul > li + li {
+    margin-block-start: 1.5rem;
+  }
+
+  .section {
+    font-weight: 700;
+  }
+
+  .group {
+    font-weight: 700;
+    font-size: var(--text-caption);
+    margin-block-start: 0.75rem;
+  }
+
+  a {
+    display: inline-block;
+    padding-block: 0.0625rem;
+  }
+
+  a[aria-current="page"] {
+    color: inherit;
+  }
+</style>

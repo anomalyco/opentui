@@ -1,0 +1,225 @@
+---
+title: Custom renderables
+description: Build a measured, drawn, interactive, and correctly owned renderable for Core, React, or Solid
+---
+
+# Custom renderables
+
+This advanced guide is for authors who need a visual tree node that the built-in components do not supply.
+
+Subclass `Renderable` for a visual node with Yoga layout and terminal-cell drawing. Subclass `BaseRenderable` only for
+a non-layout tree node that supplies the complete child, lookup, render-request, and destruction contract.
+
+The custom-renderable API is supported. It exposes low-level layout, drawing, and ownership rules that application
+components usually hide.
+
+## Build a renderable
+
+This renderable measures an intrinsic width and draws one row of cells:
+
+```typescript
+import { RGBA, Renderable, type OptimizedBuffer, type RenderableOptions, type RenderContext } from "@opentui/core"
+import { MeasureMode } from "@opentui/core/yoga"
+
+interface RuleOptions extends RenderableOptions<RuleRenderable> {
+  columns: number
+  color?: RGBA
+}
+
+export class RuleRenderable extends Renderable {
+  private _columns: number
+  private _color: RGBA
+
+  constructor(ctx: RenderContext, options: RuleOptions) {
+    super(ctx, options)
+    this._columns = Math.max(1, Math.floor(options.columns))
+    this._color = options.color ?? RGBA.fromInts(255, 255, 255)
+
+    this.getLayoutNode().setMeasureFunc((width, widthMode) => ({
+      width:
+        widthMode === MeasureMode.Exactly
+          ? width
+          : widthMode === MeasureMode.AtMost
+            ? Math.min(width, this._columns)
+            : this._columns,
+      height: 1,
+    }))
+  }
+
+  set columns(value: number) {
+    const columns = Math.max(1, Math.floor(value))
+    if (columns === this._columns) return
+    this._columns = columns
+    this.getLayoutNode().markDirty()
+    this.requestRender()
+  }
+
+  protected renderSelf(buffer: OptimizedBuffer): void {
+    const x = this.buffered ? 0 : this.screenX
+    const y = this.buffered ? 0 : this.screenY
+    buffer.drawText("-".repeat(this.width), x, y, this._color)
+  }
+}
+```
+
+Add the instance to a parent as described in [Renderables](/docs/core-concepts/renderables). The parent owns tree
+placement. Your code still owns resources that the instance allocates.
+
+## Choose the base class
+
+| Base class       | Use it for                                                          | Contract                                                                                               |
+| ---------------- | ------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------ |
+| `Renderable`     | Visual nodes, layout containers, controls, and drawing surfaces     | Supplies Yoga layout, traversal, buffering, hit registration, events, and destruction                  |
+| `BaseRenderable` | Text-node-like or framework-only tree nodes without terminal layout | Requires implementations of `add`, `remove`, `insertBefore`, child access, lookup, and `requestRender` |
+
+`BaseRenderable` does not allocate a Yoga node or draw into an `OptimizedBuffer`. Most extensions must use
+`Renderable`.
+
+## Measure intrinsic size
+
+Call `getLayoutNode().setMeasureFunc()` when content determines an automatic width or height. The callback receives a
+width, a width mode, a height, and a height mode. Return the measured `width` and `height` in terminal cells.
+
+The modes have these meanings:
+
+| Mode                    | Required result                     |
+| ----------------------- | ----------------------------------- |
+| `MeasureMode.Undefined` | Return the intrinsic size           |
+| `MeasureMode.AtMost`    | Do not exceed the finite constraint |
+| `MeasureMode.Exactly`   | Use the supplied size               |
+
+A Yoga node has one measure slot. A measured node cannot also act as a normal Yoga container. Setting a JavaScript
+measure function also replaces any native measure target on that node.
+
+When intrinsic content changes, call `getLayoutNode().markDirty()` and `requestRender()`. `markDirty()` asks Yoga to
+measure again. `requestRender()` marks the renderable dirty and schedules a renderer pass.
+
+Do not call `markDirty()` on an unmeasured Yoga node. Read [Layout](/docs/core-concepts/layout) for sizing, rounding,
+and parent constraints.
+
+## Use the render traversal
+
+OpenTUI builds and executes a render-command list in three stages:
+
+1. Yoga calculates layout from the root.
+2. `updateLayout()` calls `onUpdate()`, reads computed layout, runs resize hooks, and collects visible nodes.
+3. The root calls `render()` for each collected node in z-index order.
+
+The standard `render()` method runs `renderBefore`, `renderSelf()`, and `renderAfter` in that order. It then marks the
+node clean, writes its rectangle to the hit grid, and composites its private buffer when needed.
+
+Override `renderSelf()` for normal custom drawing. Override `render()` only when you also preserve clean-state, hit-grid,
+buffering, and hook behavior.
+
+Draw hooks and `renderSelf()` run after layout and culling. Do not change layout, children, visibility, or reactive state
+from them. In demand mode, a render request made during the active pass schedules one follow-up pass. Repeated requests
+coalesce, but an unconditional request on every draw creates a continuous rerender loop. Schedule later state work
+outside the draw hook.
+
+## Handle coordinates, clipping, and buffering
+
+An unbuffered renderable draws into the renderer's next buffer. Use `screenX` and `screenY` for absolute cell
+coordinates.
+
+With `buffered: true`, OpenTUI creates a private `OptimizedBuffer` for the renderable's own drawing. Use coordinates
+relative to `(0, 0)` in that buffer. OpenTUI resizes and composites it after `renderSelf()`. Buffering does not turn the
+whole child subtree into one offscreen surface.
+
+An ancestor with `overflow: "hidden"` or `overflow: "scroll"` clips descendant drawing and hit testing. Keep custom
+drawing inside the renderable's computed rectangle. See [Buffer API](/docs/reference/buffer-api) for cell operations.
+
+## Schedule updates
+
+Use `requestRender()` for a one-shot repaint. Property setters that affect drawing must call it.
+
+Set `live: true` only when the node needs a continuous frame loop. A visible live descendant increments the root's live
+count. Hiding, detaching, destroying, or setting `live` to `false` removes that request. `onUpdate(deltaTime)` receives
+elapsed milliseconds before drawing.
+
+Use [Animation and Timeline](/docs/application-apis/animation) when a timeline owns the changing values.
+
+## Handle resize
+
+OpenTUI calls `onResize(width, height)` when computed dimensions change. It can run during a render pass. Resize native
+or local buffers there, but do not depend on a same-pass render request.
+
+Call `super.onResize(width, height)` from an override. The base method calls `onSizeChange` and emits `"resize"`.
+
+## Reuse interaction behavior
+
+`Renderable` supplies focus, keyboard subscription, mouse bubbling, selection hooks, and hit-grid registration. Do not
+create a second interaction system in a subclass.
+
+Set protected `_focusable` when the node can own focus. Override `handleKeyPress`, `handlePaste`, `onMouseEvent`, or the
+selection hooks only for local behavior. Read [Interaction, focus, and selection](/docs/core-concepts/interaction) for
+event order, focus ownership, hit testing, and selection coordinates.
+
+## Clean up ownership
+
+Put final resource cleanup in `destroySelf()`. Release timers, subscriptions, native handles, and owned buffers there.
+The base `destroy()` method is idempotent and performs these actions before `destroySelf()`:
+
+1. Marks the node destroyed and emits `RenderableEvents.DESTROYED`.
+2. Detaches it from its parent.
+3. Destroys its private buffer.
+4. Detaches, but does not destroy, its children.
+5. Removes focus and listeners.
+6. Removes the node from the global renderable map.
+
+It calls `destroySelf()` and then frees the Yoga node. Call `super.destroySelf()` from an override.
+
+`onRemove()` is not final cleanup. It runs whenever a parent detaches the node. Reparenting calls `remove()` on the old
+parent, so `onRemove()` also runs during reparenting. Use it only for reversible detach behavior.
+
+`destroy()` detaches children. `destroyRecursively()` destroys descendants first. Read [Lifecycle and cleanup](/docs/core-concepts/lifecycle)
+before a custom class owns native resources.
+
+## Handle failures
+
+Validate custom options before allocating dependent resources where possible. If setup fails after an allocation,
+release every completed allocation before you rethrow.
+
+An exception from `onUpdate()`, a draw hook, or `renderSelf()` aborts that frame. `CliRenderer` emits `render:error` with
+the error and current renderable. A listener can correct state and request another frame. Without a listener, the
+renderer reports the error through its normal error path.
+
+## Register framework elements
+
+React and Solid expose an `extend()` catalogue. Both catalogues accept a constructor with this shape:
+
+```typescript
+new (ctx: RenderContext, options: unknown) => BaseRenderable
+```
+
+Their construction behavior is different:
+
+| Binding | Constructor options                                  | Later assignment                                       |
+| ------- | ---------------------------------------------------- | ------------------------------------------------------ |
+| React   | Calls the constructor with `{ id, ...initialProps }` | Applies initial properties again, then applies updates |
+| Solid   | Calls the constructor with `{ id }` only             | Assigns JSX properties after construction              |
+
+React can directly register a class whose required constructor options come from initial props. Solid cannot do that
+for required or readonly constructor state.
+
+Do not blindly register `FrameBufferRenderable`, `SliderRenderable`, or `ScrollBarRenderable` in Solid. A frame buffer
+needs dimensions during construction. A slider and scroll bar need a readonly orientation during construction. Use an
+adapter that supplies valid constructor defaults or register separate fixed-orientation classes.
+
+Do not register `EmbeddedTerminalRenderable` in Solid without an adapter. It reads `cols`, `rows`, and `maxScrollback`
+only in the constructor.
+
+Expose setters only for state that the class can safely change after construction.
+
+After you define an adapter, register it and augment the binding's `OpenTUIComponents` interface. The binding guides
+show the exact TypeScript declarations:
+
+- [React bindings](/docs/bindings/react#component-extension)
+- [Solid bindings](/docs/bindings/solid#extendcomponents)
+
+## Next
+
+- [Renderables](/docs/core-concepts/renderables) owns tree mutation and built-in behavior.
+- [Layout](/docs/core-concepts/layout) owns Yoga sizing and positioning.
+- [Interaction, focus, and selection](/docs/core-concepts/interaction) owns shared input behavior.
+- [Lifecycle and cleanup](/docs/core-concepts/lifecycle) owns final shutdown rules.
+- [Buffer API](/docs/reference/buffer-api) defines the drawing surface.

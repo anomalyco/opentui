@@ -1,6 +1,13 @@
 import { RGBA } from "./lib/RGBA.js"
-import { resolveRenderLib, type LineInfo, type RenderLib, type TextBufferViewHandle } from "./zig.js"
+import {
+  resolveRenderLib,
+  type LineInfo,
+  type MeasureResult,
+  type RenderLib,
+  type TextBufferViewHandle,
+} from "./zig.js"
 import type { TextBuffer } from "./text-buffer.js"
+import type { SelectionBehavior, SelectionOccupancy } from "./types.js"
 
 export class TextBufferView {
   private lib: RenderLib
@@ -62,6 +69,7 @@ export class TextBufferView {
     focusY: number,
     bgColor?: RGBA,
     fgColor?: RGBA,
+    behavior: SelectionBehavior = "cell",
   ): boolean {
     this.guard()
     return this.lib.textBufferViewSetLocalSelection(
@@ -72,6 +80,7 @@ export class TextBufferView {
       focusY,
       bgColor || null,
       fgColor || null,
+      behavior,
     )
   }
 
@@ -82,6 +91,7 @@ export class TextBufferView {
     focusY: number,
     bgColor?: RGBA,
     fgColor?: RGBA,
+    behavior: SelectionBehavior = "cell",
   ): boolean {
     this.guard()
     return this.lib.textBufferViewUpdateLocalSelection(
@@ -92,12 +102,23 @@ export class TextBufferView {
       focusY,
       bgColor || null,
       fgColor || null,
+      behavior,
     )
   }
 
   public resetLocalSelection(): void {
     this.guard()
     this.lib.textBufferViewResetLocalSelection(this.viewPtr)
+  }
+
+  public setSelectionOccupancy(occupancy: SelectionOccupancy): void {
+    this.guard()
+    this.lib.textBufferViewSetSelectionOccupancy(this.viewPtr, occupancy)
+  }
+
+  public getSelectionOccupancy(): SelectionOccupancy {
+    this.guard()
+    return this.lib.textBufferViewGetSelectionOccupancy(this.viewPtr)
   }
 
   public setWrapWidth(width: number | null): void {
@@ -133,6 +154,11 @@ export class TextBufferView {
   public get logicalLineInfo(): LineInfo {
     this.guard()
     return this.lib.textBufferViewGetLogicalLineInfo(this.viewPtr)
+  }
+
+  public getLineSources(startLine: number, lineCount: number): number[] {
+    this.guard()
+    return this.lib.textBufferViewGetLineSources(this.viewPtr, startLine, lineCount)
   }
 
   public getSelectedText(): string {
@@ -175,7 +201,7 @@ export class TextBufferView {
     this.lib.textBufferViewSetTruncate(this.viewPtr, truncate)
   }
 
-  public measureForDimensions(width: number, height: number): { lineCount: number; widthColsMax: number } | null {
+  public measureForDimensions(width: number, height: number): MeasureResult | null {
     this.guard()
     return this.lib.textBufferViewMeasureForDimensions(this.viewPtr, width, height)
   }

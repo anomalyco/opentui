@@ -1,0 +1,244 @@
+---
+title: Buffer API
+description: Create, draw, compose, capture, resize, and destroy terminal-cell buffers without corrupting tagged text state
+---
+
+# Buffer API
+
+This advanced reference is for renderable and component authors who use `OptimizedBuffer` directly.
+
+An `OptimizedBuffer` is a two-dimensional grid of terminal cells. It is not a pixel buffer or a JavaScript character
+array. Each cell stores a character value, foreground and background RGBA data, and attributes.
+
+Use [FrameBuffer](/docs/components/frame-buffer) when a component should own and display the buffer. Create an
+`OptimizedBuffer` directly when your code owns an independent drawing surface.
+
+## Create and destroy a buffer
+
+```typescript
+import { OptimizedBuffer, RGBA } from "@opentui/core"
+
+const buffer = OptimizedBuffer.create(40, 10, "unicode", {
+  id: "preview",
+  respectAlpha: true,
+})
+
+try {
+  buffer.clear(RGBA.fromInts(0, 0, 0, 0))
+  buffer.drawText("status", 1, 1, RGBA.fromInts(255, 255, 255))
+} finally {
+  buffer.destroy()
+}
+```
+
+`create(width, height, widthMethod, options?)` requires positive cell dimensions. `widthMethod` is `"unicode"` or
+`"wcwidth"`. Options are `respectAlpha?: boolean` and `id?: string`. Both default to false or an internal ID.
+
+The creator owns an independent buffer and must call `destroy()`. Destruction is idempotent. Every cached raw typed
+array becomes invalid when the buffer is resized or destroyed. Most methods throw after destruction.
+
+The public lifecycle method is named `destroy()`, not `dispose()`.
+
+## Renderer buffers
+
+`CliRenderer` exposes `nextRenderBuffer` and `currentRenderBuffer`. The renderer owns both.
+
+- Renderables and post-process callbacks draw into `nextRenderBuffer`.
+- Native rendering compares the next buffer with `currentRenderBuffer`.
+- The native renderer copies changed cells into the current buffer after output.
+- The native renderer clears the next buffer after the frame.
+
+Do not destroy either renderer buffer. Do not mutate `currentRenderBuffer`. A current-buffer mutation can hide a real
+change from the terminal diff.
+
+The renderer can replace both wrappers during resize. Do not retain their raw views across a resize.
+
+## Cell model
+
+The public `buffers` getter returns native-memory aliases:
+
+```typescript
+{
+  char: Uint32Array
+  fg: Uint16Array
+  bg: Uint16Array
+  attributes: Uint32Array
+}
+```
+
+`char` has one entry per cell. `attributes` also has one entry per cell. `fg` and `bg` have four `Uint16` entries per
+cell. The low byte stores each RGBA8 channel. Higher bits store color intent metadata.
+
+Character entries can be tagged values for grapheme starts, continuation cells, and image placements. Attribute bits
+above the base text flags can store hyperlink IDs. Treat all four raw arrays as internal state.
+
+## Draw one cell or grapheme
+
+```typescript
+buffer.setCell(x, y, char, fg, bg, attributes)
+buffer.setCellWithAlphaBlending(x, y, char, fg, bg, attributes)
+```
+
+Both string methods use only `char.codePointAt(0)`. They do not encode a joined grapheme. They also do not reserve
+continuation cells for a wide scalar. Restrict `char` to one scalar that occupies one terminal cell.
+
+Use `drawText()` for normal Unicode strings. It segments graphemes and writes continuation cells.
+
+For repeated encoded drawing, use `encodeUnicode()` and `drawChar()`:
+
+```typescript
+const encoded = buffer.encodeUnicode("A\u{1F44B}B")
+if (encoded) {
+  try {
+    let x = 0
+    for (const glyph of encoded.data) {
+      buffer.drawChar(glyph.char, x, 0, fg, bg)
+      x += glyph.width
+    }
+  } finally {
+    buffer.freeUnicode(encoded)
+  }
+}
+```
+
+`encodeUnicode()` allocates native grapheme data. Always pass its complete result to `freeUnicode()`. `drawChar()` can
+draw the tagged values returned in `data` and maintain their continuation cells.
+
+## Drawing inventory
+
+### Basic drawing
+
+| Method                     | Signature and behavior                                                                                                 |
+| -------------------------- | ---------------------------------------------------------------------------------------------------------------------- |
+| `clear`                    | `clear(bg = opaque black)` clears cells, links, graphemes, attributes, image placements, and stack-independent content |
+| `setCell`                  | `setCell(x, y, char, fg, bg, attributes = 0)` replaces one cell without alpha blending                                 |
+| `setCellWithAlphaBlending` | Same arguments, with foreground and background alpha composition                                                       |
+| `drawChar`                 | `drawChar(encodedChar, x, y, fg, bg, attributes = 0)` accepts a scalar or tagged value from `encodeUnicode()`          |
+| `drawText`                 | `drawText(text, x, y, fg, bg?, attributes = 0, selection?)` segments and clips Unicode text                            |
+| `fillRect`                 | `fillRect(x, y, width, height, bg)` paints the rectangle through tracker-aware cell paths                              |
+
+The optional `drawText()` selection object has `{ start, end, bgColor?, fgColor? }`. Its implementation slices the
+JavaScript string with UTF-16 indexes and adds the same values to the cell x-coordinate. It is reliable only for
+one-cell Basic Multilingual Plane text. Use `TextBufferView` or `EditorView` selection for general Unicode text.
+
+An opaque `fillRect()` replaces covered cells with spaces, default foreground, the supplied background, and no text
+attributes. It clears text and links in that rectangle. Translucent fills can blend with ordinary one-cell content.
+
+### Boxes and grids
+
+`drawBox(options)` accepts these fields:
+
+- Required `x`, `y`, `width`, `height`, `border`, `borderColor`, and `backgroundColor`
+- Optional `borderStyle`, `customBorderChars`, and `shouldFill`, which defaults to `false`
+- Optional `title`, `titleColor`, and `titleAlignment`, which defaults to `"left"`
+- Optional `bottomTitle` and `bottomTitleAlignment`, which defaults to `"left"`
+
+The default border style is `"single"`. `titleColor` defaults to `borderColor`.
+
+`drawGrid(options)` takes border characters and colors, cell-column and row offset arrays, and `drawInner` and
+`drawOuter` flags. Offset arrays describe boundaries, so an array with `n + 1` entries describes `n` columns or rows.
+
+### Compose buffers and views
+
+| Method                                                                                   | Purpose                                      |
+| ---------------------------------------------------------------------------------------- | -------------------------------------------- |
+| `drawFrameBuffer(destX, destY, source, sourceX?, sourceY?, sourceWidth?, sourceHeight?)` | Clips and composites a source cell rectangle |
+| `drawTextBuffer(view, x, y)`                                                             | Draws a `TextBufferView`                     |
+| `drawEditorView(view, x, y)`                                                             | Draws an `EditorView`                        |
+
+`drawFrameBuffer()` defaults to the complete source buffer. It preserves grapheme, continuation, link, image, and
+color-intent state through tracker-aware paths. A fast path copies plain opaque cells directly.
+
+### Images and numeric buffers
+
+| Method                                                                                                                                                                        | Purpose                                                                      |
+| ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------- |
+| `drawImage(image, x, y, width, height, pixelWidth = 0, pixelHeight = 0, sourceX = 0, sourceY = 0, sourceWidth = image.width, sourceHeight = image.height, protocol = "auto")` | Records a native image placement and returns whether it is visible and valid |
+| `drawSuperSampleBuffer(x, y, data, length, format, alignedBytesPerRow)`                                                                                                       | Converts `"bgra8unorm"` or `"rgba8unorm"` pixel rows to terminal cells       |
+| `drawGrayscaleBuffer(x, y, intensities, sourceWidth, sourceHeight, fg = null, bg = null)`                                                                                     | Draws one intensity value per source cell                                    |
+| `drawGrayscaleBufferSupersampled(...)`                                                                                                                                        | Draws grayscale source samples with supersampling                            |
+| `drawPackedBuffer(data, length, x, y, terminalWidthCells, terminalHeightCells)`                                                                                               | Reads the native packed-buffer format                                        |
+
+Image destination positions and dimensions use cells. `pixelWidth` and `pixelHeight` use terminal pixels. Source
+coordinates use image pixels.
+
+A successful `drawImage()` retains the `NativeImage` until image placements are cleared, materialized as fallbacks, or
+the buffer is resized or destroyed. Drawing cells over the image marker does not release that retained placement. The
+caller still owns and disposes its own image handle. Read [`NativeImage`](/docs/reference/native-image) for decode and
+pixel ownership.
+
+`drawPackedBuffer()` exposes no public TypeScript description of the packed byte format. Treat it as an integration
+surface for a producer that already implements the native format. Do not pass arbitrary bytes.
+
+## Clipping and opacity
+
+The scissor stack uses cell rectangles:
+
+| Method                                 | Behavior                                                 |
+| -------------------------------------- | -------------------------------------------------------- |
+| `pushScissorRect(x, y, width, height)` | Intersects the new rectangle with the active rectangle   |
+| `popScissorRect()`                     | Removes one rectangle and does nothing on an empty stack |
+| `clearScissorRects()`                  | Removes every rectangle                                  |
+
+Normal drawing operations clip against the active rectangle. Raw buffer writes and color-matrix methods do not apply
+the scissor stack for you.
+
+The opacity stack stores a cumulative value:
+
+- `pushOpacity(value)` clamps `value` to `0..1` and multiplies it by the current opacity.
+- `popOpacity()` removes one level.
+- `getCurrentOpacity()` returns `1` for an empty stack.
+- `clearOpacity()` removes all levels.
+
+Normal alpha-aware drawing reads the current opacity. Raw writes and matrix methods do not.
+
+`setRespectAlpha(boolean)` changes frame-buffer composition policy. It does not convert existing cells.
+
+## Color transforms
+
+`colorMatrix()` applies a 4x4 matrix to masked cells. `colorMatrixUniform()` applies it to all cells. Both can target
+foreground, background, or both.
+
+Read [`FrameBuffer` color matrices](/docs/reference/color-matrix) for the exact matrix, mask, clamp, and color-intent
+rules. Read [Post-processing effects](/docs/extend/post-processing) before a helper mutates raw arrays.
+
+## Capture operations
+
+`getRealCharBytes(addLineBreaks = false)` resolves tagged graphemes and image fallback glyphs to UTF-8. The optional
+line-break mode is a capture helper, not a lossless serialization.
+
+`getSpanLines()` returns one `CapturedLine` per row. Adjacent cells with equal foreground, background, and base
+attributes share a `CapturedSpan`. Each span has `text`, `fg`, `bg`, `attributes`, and a cell `width`.
+
+Captured spans have limits:
+
+- They omit hyperlink URLs and IDs because attributes are reduced to the low eight base bits.
+- They expose image fallback glyphs, not image pixels or protocol metadata.
+- Their text reconstruction consumes one JavaScript code point per non-continuation cell. A multi-code-point grapheme
+  can shift later text between cells.
+- Span width counts terminal cells and can be larger than JavaScript string length.
+- A row that ends in a continuation cell can miss its requested line break in the current resolved-byte writer.
+- Resolved output can be empty when the internal size estimate has no room for requested line breaks.
+
+Use capture spans for tests that compare ordinary text and style. Do not use them as a lossless buffer serialization.
+
+## Resize and raw views
+
+When the dimensions change, `resize(width, height)` reallocates the arrays and clears all cells. It keeps the native
+buffer object. A call with the current dimensions does nothing. Dimensions must stay positive. Get new `buffers` views
+after a dimension-changing resize.
+
+Never mutate `buffers.char` or `buffers.attributes` for arbitrary text. Direct writes bypass grapheme, continuation,
+link, and image-placement bookkeeping. Direct color writes can discard palette and default-color intent in the high
+bits.
+
+The raw views remain public for specialized controlled effects. Restrict those effects to known one-cell text and
+explicit RGB colors. Prefer drawing methods for all general content.
+
+## Next
+
+- [FrameBuffer](/docs/components/frame-buffer) owns a buffer in the render tree.
+- [Text and terminal cells](/docs/core-concepts/text-and-cells) defines graphemes, links, and display width.
+- [Rendering pipeline](/docs/core-concepts/rendering-pipeline) explains current and next buffers.
+- [`FrameBuffer` color matrices](/docs/reference/color-matrix) defines native color transforms.
+- [Post-processing effects](/docs/extend/post-processing) lists the experimental helpers.

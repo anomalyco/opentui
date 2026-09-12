@@ -1,0 +1,181 @@
+---
+title: Image
+description: Load and render images with Kitty, Sixel, or Unicode blocks
+skill:
+  entry: true
+  intents: [image, image-renderable, image-display, kitty, sixel]
+---
+
+# Image
+
+`ImageRenderable` displays PNG, JPEG, WebP, or GIF data from an encoded source. It also accepts an existing `NativeImage`. The renderable uses Kitty graphics, Sixel, or a Unicode block fallback.
+
+Use [`NativeImage`](/docs/reference/native-image) when you need to decode, inspect, or transform image pixels before display.
+
+## Availability
+
+| Field           | Availability          |
+| --------------- | --------------------- |
+| Package         | `@opentui/core`       |
+| Core renderable | `ImageRenderable`     |
+| React           | `<image>` (automatic) |
+| Solid           | `<image>` (automatic) |
+| Status          | Built in              |
+
+## Renderable API
+
+```typescript
+import { ImageRenderable, createCliRenderer } from "@opentui/core"
+
+const renderer = await createCliRenderer()
+const image = new ImageRenderable(renderer, {
+  id: "cover",
+  source: "./cover.webp",
+  width: 40,
+  height: 15,
+  fit: "cover",
+  protocol: "auto",
+  onError: console.error,
+})
+
+renderer.root.add(image)
+await image.loadPromise
+```
+
+`source` accepts every `ImageSource` form: a path, `file:`/HTTP(S)/`blob:`/`data:` URL, `URL`, `Blob`, `Response`, `Uint8Array`, or `ArrayBuffer`. It also accepts `NativeImage`. Format detection uses encoded bytes when the source needs decoding. `ImageRenderable` retains an existing `NativeImage`. You still own and must dispose the source reference.
+
+## React
+
+```tsx
+import { createCliRenderer } from "@opentui/core"
+import { createRoot } from "@opentui/react"
+
+const renderer = await createCliRenderer()
+createRoot(renderer).render(
+  <image source="./cover.webp" fit="cover" protocol="auto" style={{ width: 40, height: 15 }} />,
+)
+```
+
+## Solid
+
+```tsx
+import { createCliRenderer } from "@opentui/core"
+import { render } from "@opentui/solid"
+
+const renderer = await createCliRenderer()
+await render(
+  () => <image source="./cover.webp" fit="cover" protocol="auto" style={{ width: 40, height: 15 }} />,
+  renderer,
+)
+```
+
+You can update `source`, callbacks, fit, and protocol after construction. Replacing `source` keeps the current image visible until the replacement succeeds. It cancels obsolete loading and disposes stale native images. Setting `source` to `undefined` clears it. Clearing `fit` or `protocol` restores `"fit"` or `"auto"`.
+
+## Sizing
+
+| `fit`   | Behavior                                                     |
+| ------- | ------------------------------------------------------------ |
+| `fit`   | Contain and center the full image. Preserve aspect (default) |
+| `cover` | Fill the renderable, preserve aspect ratio, and center-crop  |
+| `fill`  | Fill the renderable and allow stretching                     |
+
+Sizing uses terminal pixel resolution when available and a 2:1 cell-height fallback otherwise. During startup and resize, Sixel images temporarily use blocks until current pixel geometry arrives.
+
+## Rendering protocol
+
+| `protocol` | Behavior                                                            |
+| ---------- | ------------------------------------------------------------------- |
+| `auto`     | Global override, then Kitty, then Sixel, then Unicode blocks        |
+| `kitty`    | Force Kitty graphics                                                |
+| `sixel`    | Force Sixel. Falls back to blocks without terminal pixel resolution |
+| `blocks`   | Portable Unicode quadrant-block rendering                           |
+
+The `blocks` protocol renders generated RGBA pixels as terminal cells:
+
+```text terminal=image-blocks
+████████████████████████
+██████████████████▘██▜██
+█████▛▀▝▀█████████▖██▟██
+██▛▀██████▝▀█▛▀▘██▀▀████
+▀███████████▗▄▙▄██████▀▀
+████████▗▄▟███████▄▄████
+▄▄▄▄▄▄▄▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▄▄
+████████████████████████
+```
+
+With global and per-image protocols set to `auto`, tmux uses blocks. Explicit Kitty, or Sixel with pixel resolution, uses tmux passthrough.
+
+Overlapping images must use the same effective protocol. OpenTUI does not support layering or alpha composition across different effective protocols. Leave overlapping images on `auto` or give them the same explicit `protocol`. Non-overlapping images can use different protocols.
+
+Kitty preserves image alpha, Sixel treats alpha below 128 as transparent, and blocks blend sampled alpha. Placement opacity scales Kitty and block alpha. Sixel dims toward cell backgrounds. Direct, unbuffered fills, text, and box borders cover images at whole-cell granularity without blending.
+
+Use `OPENTUI_IMAGE_PROTOCOL=auto|kitty|sixel|blocks` to set the global default. `OPENTUI_GRAPHICS=false` disables Kitty and Sixel detection. See [Environment variables](/docs/reference/env-vars).
+
+Split-footer scrollback snapshots use the same protocol resolution as live images. They use Kitty placement, Sixel with detected pixel geometry, or Unicode quadrant blocks. Snapshots with mixed effective protocols, overlapping images, or covered Sixel cells use blocks. Native scrollback images can render before the footer is pinned. Each image must fit within the output width and the height available above the pinned footer, and its snapshot must start at the beginning of a line. Await `loadPromise` before rendering an image into a `ScrollbackSurface`. See [Writing to scrollback](/docs/core-concepts/renderer#writing-to-scrollback).
+
+`resolveImageRenderProtocol(requested, capabilities, hasResolution)` exposes the same protocol-resolution policy for code that needs it without constructing a renderable.
+
+## Kitty transport
+
+Set `kittyImageTransport` when you create the renderer, or assign `renderer.kittyImageTransport` to change it at runtime. It controls image transmission, not protocol selection or placement. Kitty commands still use the renderer's output backend.
+
+```typescript
+const renderer = await createCliRenderer({ kittyImageTransport: "zlib" })
+renderer.kittyImageTransport = "file"
+// After a transmission, inspect the actual choice rather than assuming the request succeeded.
+const status = renderer.kittyImageTransportStatus
+```
+
+- `"raw"` is the default. It sends existing encoded PNG data unchanged. Otherwise, opaque pixels use RGB24, and other pixels use RGBA32.
+- `"zlib"` tries native level-1 compression. It uses raw if compression expands the stream, exceeds the 64 MiB preparation limit, or cannot allocate buffers. Encoded PNG data stays unchanged.
+- `"file"` writes a temporary file and sends its path for the local terminal to read. It still copies pixels, without shared memory or GPU sharing.
+
+Changing transport retransmits visible Kitty images without replacing their sources. File
+negotiation remains asynchronous. Selecting an inline mode keeps outstanding files alive
+until their acknowledgments or deadlines, so queued output can still use them. Switching
+back to file reuses the session's probe result; it does not reset a failed or cancelled session.
+
+Scrollback snapshots never use file transport because the renderer does not retain their sources for retries. They use self-contained raw or PNG output, or zlib when requested.
+
+### File transport
+
+File transport requires a compatible local POSIX terminal. Windows, remote sessions, disabled graphics, and multiplexers use raw/PNG instead. Custom stdout defaults to remote. Set `remote: false` only if it connects to a local terminal.
+
+File transport requires both a successful `t=f` query with a real file and an upload acknowledgment with an explicit image ID. Older WezTerm versions that answer queries but omit upload acknowledgments stay on raw/PNG. These checks are asynchronous, so initial frames can use raw/PNG while `fileState` is `"probing"`.
+
+Each file has a unique name, permissions `0600`, and contents that do not change. The renderer uses the `TMPDIR` value forwarded at creation, or `/tmp` when absent. If you override `forwardEnvKeys`, include `TMPDIR`.
+
+Each renderer allows at most eight pending files and 64 MiB of pending data. If an image ID is busy or either limit is reached, the renderer uses raw/PNG without replacing pending files.
+
+A matching Kitty reply lets the renderer remove the file. Frame events, stdout drain, and cursor reports do not confirm that the terminal read or displayed an image.
+
+The renderer checks each file's five-second deadline during rendering and once per second while idle. A timeout does not confirm that the terminal read the file.
+
+Timeouts, terminal or output errors, `cancelKittyImageTransport()`, suspend, and destroy disable file uploads and attempt to remove pending files. Active images retry with raw/PNG after a failed upload. Late replies cannot re-enable file transport. Cleanup failures or termination that bypasses cleanup, such as `SIGKILL`, can leave files behind.
+
+### Transport status
+
+`kittyImageTransportStatus` reports `requested`, `effective`, `fileState`, `fallback`, `pendingFiles`, and `pendingBytes`. The `effective` value describes the last transmission: `raw`, `zlib`, `png`, or `file`. The `compression` fallback means compression did not save space or was unavailable. File transport preserves PNG payloads, but still reports `effective: "file"`.
+
+## Options and state
+
+| Member               | Type                                                        | Description                                                     |
+| -------------------- | ----------------------------------------------------------- | --------------------------------------------------------------- |
+| `source`             | `ImageRenderableSource`                                     | Encoded image source or `NativeImage`. Optional                 |
+| `fit`                | `"fit" \| "cover" \| "fill"`                                | Destination sizing                                              |
+| `protocol`           | `"auto" \| "kitty" \| "sixel" \| "blocks"`                  | Requested rendering protocol                                    |
+| `onLoad`             | `(image: NativeImage) => void`                              | Called after the current source loads                           |
+| `onError`            | `(error: unknown) => void`                                  | Called when the current source fails                            |
+| `image`              | `NativeImage \| null`                                       | Currently displayed renderable-owned image                      |
+| `loading`            | `boolean`                                                   | Whether the current source is loading                           |
+| `loadError`          | `unknown`                                                   | Current load error, otherwise `null`                            |
+| `loadPromise`        | `Promise<void> \| null`                                     | Settles after the current load attempt                          |
+| `effectiveProtocol`  | `kitty \| sixel \| blocks`                                  | Current resolved protocol. Can change with capabilities or size |
+| `cellAspectRatio`    | `number`                                                    | Physical or fallback cell aspect ratio                          |
+| `getFittedSize(...)` | `(width, height, cellAspect?, sourceWidth?, sourceHeight?)` | Resolve destination cells. Omitted overrides use current values |
+
+The renderable owns `image` and the `NativeImage` passed to `onLoad`. Do not dispose or transfer them. Current-source failures set `loadError`, call `onError`, and resolve `loadPromise`. Superseded, cleared, or destroyed loads resolve without callbacks. Exceptions from either callback reject after state settles. Successful replacement, clearing, and destruction release owned images. A failed replacement keeps the current image.
+
+## Related components
+
+Use [FrameBuffer](/docs/components/frame-buffer) when you need direct cell drawing or `OptimizedBuffer.drawImage()`. Use [QR code](/docs/components/qr-code) for text encoded as a scannable symbol.

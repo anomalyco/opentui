@@ -1,6 +1,6 @@
 {
   "name": "@opentui/ssh",
-  "version": "0.4.5",
+  "version": "0.5.11",
   "description": "Serve OpenTUI apps over SSH",
   "license": "MIT",
   "repository": {
@@ -35,7 +35,7 @@
     "@opentui/core": "workspace:*",
     "@opentui/react": "workspace:*",
     "@opentui/solid": "workspace:*",
-    "@types/bun": "^1.3.14",
+    "@types/bun": "1.4.1",
     "@types/node": "^24.0.0",
     "@types/react": "^19.2.0",
     "@types/ssh2": "^1.15.0",
@@ -45,6 +45,6 @@
   },
   "engines": {
     "bun": ">=1.3.0",
-    "node": "26.4.0"
+    "node": ">=26.4.0"
   }
 }

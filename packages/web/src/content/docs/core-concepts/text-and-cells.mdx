@@ -1,0 +1,189 @@
+---
+title: Text and terminal cells
+description: Style text and reason about graphemes, display cells, selection offsets, and terminal links
+---
+
+# Text and terminal cells
+
+OpenTUI stores text as Unicode data, measures grapheme clusters, and draws the result on a terminal cell grid.
+
+String length and terminal width are different values. Keep that distinction when you wrap, truncate, select, or position text.
+
+## Style text
+
+`StyledText` contains an ordered array of `TextChunk` values. A chunk contains text plus optional foreground, background, attributes, and link metadata.
+
+Use `t` as a template tag. Style helpers return chunks that you can insert into the template.
+
+```typescript
+import { RGBA, TextRenderable, bold, italic, t, underline, createCliRenderer } from "@opentui/core"
+
+const renderer = await createCliRenderer()
+
+const content = t`${bold("Status")}: ready\n${italic("Note")}: saved locally\n${bold(underline("Next"))}: review changes`
+
+renderer.root.add(new TextRenderable(renderer, { content, fg: RGBA.defaultForeground() }))
+```
+
+`Status` is bold, `Note` is italic, and `Next` combines bold and underline. The rest of each line keeps its default attributes:
+
+```text terminal=text-styled-chunks surface
+Status: ready
+Note: saved locally
+Next: review changes
+```
+
+The color helpers include normal, bright, and background named colors. The text helpers include `bold`, `italic`, `underline`, `strikethrough`, `dim`, `blink`, and `reverse`.
+
+Helpers preserve a chunk's existing style and link while adding new attributes. Later foreground or background helpers replace that color.
+
+Use `TextAttributes` when a component accepts an `attributes` bit mask. Combine values with bitwise OR.
+
+```typescript
+import { TextAttributes, createTextAttributes } from "@opentui/core"
+
+const attributes = TextAttributes.BOLD | TextAttributes.UNDERLINE
+const inverse = createTextAttributes({ inverse: true })
+```
+
+The public inverse bit is `TextAttributes.INVERSE`. `createTextAttributes()` accepts `inverse` and the `reverse` alias. The `reverse()` style helper sets the same bit.
+
+`TextRenderable` accepts strings and `TextNodeRenderable` children through its `add()` API.
+
+See [Text](/docs/components/text) for component options. See [Code](/docs/components/code) and [Markdown](/docs/components/markdown) for parsed content.
+
+## Keep text units separate
+
+| Unit                  | Meaning                                                                                            |
+| --------------------- | -------------------------------------------------------------------------------------------------- |
+| UTF-8 byte            | Encoded storage and native transport unit. One code point can use several bytes.                   |
+| Unicode code point    | One Unicode scalar value. A visible symbol can contain several code points.                        |
+| UTF-16 code unit      | JavaScript string indexing unit. A code point outside the basic multilingual plane uses two units. |
+| Grapheme cluster      | A user-perceived text unit. It can combine a base, marks, selectors, or joiners.                   |
+| Terminal display cell | One terminal column in one row. A grapheme can occupy zero, one, two, or more cells.               |
+
+OpenTUI receives JavaScript strings, encodes them as UTF-8, and segments text for measurement and drawing. The renderer's width method comes from terminal capabilities.
+
+`renderer.widthMethod` is either `"unicode"` or `"wcwidth"`. Use the same method for standalone buffers that share renderer output.
+
+Neither method turns cell width into a character count. Read [Terminal capabilities](/docs/reference/terminal-capabilities) for width detection and remote-session rules.
+
+## Understand wide cells
+
+A simple one-cell scalar can live directly in a cell. A multi-code-point grapheme lives in a native grapheme pool.
+
+The first occupied cell stores the grapheme reference and its extent. Remaining occupied cells store continuation markers.
+
+Continuation cells prevent later drawing and diffing from treating the tail of a wide grapheme as independent text. They contain no separate printable character.
+
+Both `"ABC".length` and `"A界B".length` are `3`. On this zero-based cell ruler, `界` occupies columns 1 and 2. It pushes `B` to column 3 and the following `|` to column 4:
+
+```text terminal=text-cell-ruler
+column  01234
+ASCII   ABC|  3 cells
+wide    A界B|  4 cells
+```
+
+The stronger background shade marks the two cells occupied by `界`.
+
+The measured width is a column count, not a JavaScript string length. A string with length `2` can still occupy one or two terminal cells.
+
+## Wrap text
+
+Wrapping and truncation operate on display width. They do not split a grapheme to make it fit at a line boundary.
+
+Text renderables support `wrapMode: "word"`, `"char"`, or `"none"`. The default is `"word"`.
+
+```typescript
+const text = new TextRenderable(renderer, {
+  content: "A界B",
+  width: 2,
+  wrapMode: "char",
+  fg: RGBA.defaultForeground(),
+})
+
+renderer.root.add(text)
+```
+
+The same text at widths of two, three, and four columns:
+
+```text terminal=text-wide-wrap
+2 columns   3 columns   4 columns
+01          012         0123
+A           A界         A界B
+界          B
+B
+```
+
+At two columns, `界` cannot fit beside `A`, so it moves intact to the next row. The shaded area marks each view's cell bounds.
+
+## Use buffer text operations
+
+`OptimizedBuffer.setCell()` calls `codePointAt(0)` and writes one cell. It cannot represent a multi-code-point grapheme or create wide continuation cells.
+
+Use `drawText()` for normal text, including combining marks, emoji sequences, tabs, and wide code points.
+
+```typescript
+import { OptimizedBuffer, RGBA } from "@opentui/core"
+
+const buffer = OptimizedBuffer.create(20, 2, "unicode")
+
+try {
+  buffer.drawText("A\u0301 and \u754c", 0, 0, RGBA.fromHex("#ffffff"))
+} finally {
+  buffer.destroy()
+}
+```
+
+Read the [Buffer API](/docs/reference/buffer-api) for clipping, alpha, drawing, and ownership rules.
+
+## Interpret selection offsets
+
+Text-buffer selection uses a half-open range `{ start, end }`. Both values are global display-width offsets from the start of that buffer.
+
+Each logical line break adds one offset unit. Soft wrapping does not add a unit because it does not add text.
+
+These three-column views look the same, but they select `B` at different offsets. `"A界B"` uses `[3, 4)`; `"A界\nB"` uses `[4, 5)` because the newline adds one unit:
+
+```text terminal=text-line-offsets
+soft wrap          newline
+012                012
+A界                A界
+B                  B
+range [3, 4)       range [4, 5)
+```
+
+The highlighted cell marks the selection. Both views return `"B"` from `getSelectedText()`.
+
+Selection extraction snaps boundaries to complete grapheme clusters. A boundary inside a wide grapheme moves to include or exclude the complete cluster.
+
+These offsets are not UTF-16 indexes. Do not pass them directly to `String.prototype.slice()` for text that can contain wide or combined graphemes.
+
+The current `cursorCharacterOffset` getter has the same mismatch. It indexes `plainText` with a display-width cursor offset, so it is unreliable for wide or complex text.
+
+See [Interaction, focus, and selection](/docs/core-concepts/interaction) for global screen bounds, selection creation, and selected-text assembly.
+
+## Add terminal links
+
+`link(url)(text)` adds link metadata to a `TextChunk`. OpenTUI emits an OSC 8 hyperlink only when `capabilities.hyperlinks` is true.
+
+```typescript
+import { TextRenderable, createCliRenderer, link, t } from "@opentui/core"
+
+const renderer = await createCliRenderer()
+const content = t`Read ${link("https://opentui.dev/docs")("the documentation")}`
+const text = new TextRenderable(renderer, { content })
+renderer.root.add(text)
+```
+
+A URL can use at most 512 UTF-8 bytes. Longer URLs silently lose native link metadata and render as ordinary text.
+
+Terminal support controls whether the link becomes clickable. Link metadata does not add focus, keyboard activation, or URL opening to the renderable.
+
+React and Solid anchor text nodes with an `href` prop create the same terminal link metadata. They are not browser navigation elements.
+
+Read [Terminal capabilities](/docs/reference/terminal-capabilities) for hyperlink detection.
+
+## Next
+
+Read [Colors](/docs/core-concepts/colors) for `ColorInput`, `RGBA`, and terminal palette intent. Read [Layout](/docs/core-concepts/layout) before you size text containers.

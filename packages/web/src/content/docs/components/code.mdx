@@ -1,12 +1,21 @@
 ---
 title: Code
-description: Syntax-highlighted code display component with Tree-sitter support
-order: 10
+description: Display syntax-highlighted code with Tree-sitter
 ---
 
 # Code
 
-Displays syntax-highlighted code using Tree-sitter. Supports many languages with accurate, fast highlighting.
+`Code` displays source text with Tree-sitter syntax highlighting. Use [Markdown](/docs/components/markdown) for documents or [Diff](/docs/components/diff) for changed lines.
+
+## Availability
+
+| Field           | Availability         |
+| --------------- | -------------------- |
+| Package         | `@opentui/core`      |
+| Core renderable | `CodeRenderable`     |
+| React           | `<code>` (automatic) |
+| Solid           | `<code>` (automatic) |
+| Status          | Built in             |
 
 ## Basic usage
 
@@ -18,12 +27,10 @@ import { CodeRenderable, createCliRenderer, SyntaxStyle, RGBA } from "@opentui/c
 const renderer = await createCliRenderer()
 
 const syntaxStyle = SyntaxStyle.fromStyles({
-  keyword: { fg: RGBA.fromHex("#FF7B72"), bold: true },
-  string: { fg: RGBA.fromHex("#A5D6FF") },
-  comment: { fg: RGBA.fromHex("#8B949E"), italic: true },
-  number: { fg: RGBA.fromHex("#79C0FF") },
-  function: { fg: RGBA.fromHex("#D2A8FF") },
-  default: { fg: RGBA.fromHex("#E6EDF3") },
+  default: { fg: RGBA.defaultForeground() },
+  keyword: { fg: RGBA.defaultForeground(), bold: true },
+  string: { fg: RGBA.fromIndex(247) },
+  comment: { fg: RGBA.fromIndex(244), italic: true },
 })
 
 const code = new CodeRenderable(renderer, {
@@ -42,29 +49,12 @@ const code = new CodeRenderable(renderer, {
 renderer.root.add(code)
 ```
 
-### Construct API
-
-```typescript
-import { Code, Box, createCliRenderer, SyntaxStyle, RGBA } from "@opentui/core"
-
-const renderer = await createCliRenderer()
-
-const syntaxStyle = SyntaxStyle.fromStyles({
-  keyword: { fg: RGBA.fromHex("#FF7B72"), bold: true },
-  string: { fg: RGBA.fromHex("#A5D6FF") },
-  default: { fg: RGBA.fromHex("#E6EDF3") },
-})
-
-renderer.root.add(
-  Box(
-    { border: true, width: 50, height: 10 },
-    Code({
-      content: 'const x = "hello"',
-      filetype: "javascript",
-      syntaxStyle,
-    }),
-  ),
-)
+```text terminal=code-highlighted
+function hello() {
+  // This is a comment
+  const message = "Hello, world!"
+  return message
+}
 ```
 
 ## Creating syntax styles
@@ -124,12 +114,14 @@ Each style definition can include:
 
 ## Supported languages
 
-Code uses Tree-sitter for parsing. Tree-sitter supports these languages:
+OpenTUI bundles Tree-sitter parsers for these languages:
 
-- TypeScript / JavaScript
-- Markdown
+- JavaScript and JSX
+- TypeScript and TSX
+- Markdown and Markdown inline
 - Zig
-- And any language with a Tree-sitter grammar
+
+Other grammars require configuration. See the [Tree-sitter reference](/docs/reference/tree-sitter).
 
 ## Streaming mode
 
@@ -149,11 +141,11 @@ code.content += "const x = 1\n"
 code.content += "const y = 2\n"
 ```
 
-Streaming mode optimizes highlighting for incremental updates.
+Streaming mode changes intermediate rendering behavior during repeated updates. In particular, when `drawUnstyledText` is `false`, later updates keep the previous rendered buffer visible while a new one-shot highlight completes. Each highlight still processes the complete current `content`.
 
 ## Text selection
 
-Enable text selection for copy operations:
+Text selection is enabled by default. Set `selectable: false` to disable it. Use `selectionBg` and `selectionFg` to customize selection colors:
 
 ```typescript
 const code = new CodeRenderable(renderer, {
@@ -223,15 +215,15 @@ renderer.root.add(scrollbox)
 
 ## Properties
 
-| Property           | Type               | Default  | Description                              |
-| ------------------ | ------------------ | -------- | ---------------------------------------- |
-| `content`          | `string`           | `""`     | Source code to display                   |
-| `filetype`         | `string`           | -        | Language for syntax highlighting         |
-| `syntaxStyle`      | `SyntaxStyle`      | required | Syntax highlighting theme                |
-| `streaming`        | `boolean`          | `false`  | Optimize for incremental content updates |
-| `conceal`          | `boolean`          | `true`   | Hide concealed syntax elements           |
-| `drawUnstyledText` | `boolean`          | `true`   | Show text before highlighting completes  |
-| `treeSitterClient` | `TreeSitterClient` | -        | Custom Tree-sitter client instance       |
+| Property           | Type               | Default  | Description                                                                           |
+| ------------------ | ------------------ | -------- | ------------------------------------------------------------------------------------- |
+| `content`          | `string`           | `""`     | Source code to display                                                                |
+| `filetype`         | `string`           | -        | Language for syntax highlighting                                                      |
+| `syntaxStyle`      | `SyntaxStyle`      | required | Syntax highlighting theme                                                             |
+| `streaming`        | `boolean`          | `false`  | Preserve suitable intermediate rendering during repeated updates                      |
+| `conceal`          | `boolean`          | `true`   | Hide concealed syntax elements                                                        |
+| `drawUnstyledText` | `boolean`          | `true`   | Show unstyled text while highlighting. Streaming limits this to the initial highlight |
+| `treeSitterClient` | `TreeSitterClient` | -        | Custom Tree-sitter client instance                                                    |
 
 ### Inherited from TextBufferRenderable
 
@@ -239,7 +231,7 @@ renderer.root.add(scrollbox)
 | -------------- | ------------------ | -------- | ------------------------------------------- |
 | `fg`           | `string \| RGBA`   | -        | Default foreground color                    |
 | `bg`           | `string \| RGBA`   | -        | Background color                            |
-| `selectable`   | `boolean`          | `false`  | Enable text selection                       |
+| `selectable`   | `boolean`          | `true`   | Whether text selection is enabled           |
 | `selectionBg`  | `string \| RGBA`   | -        | Selection background color                  |
 | `selectionFg`  | `string \| RGBA`   | -        | Selection foreground color                  |
 | `wrapMode`     | `string`           | `"word"` | Text wrapping: `"none"`, `"char"`, `"word"` |
@@ -247,15 +239,15 @@ renderer.root.add(scrollbox)
 
 ## Additional properties
 
-| Property         | Type      | Description                                  |
-| ---------------- | --------- | -------------------------------------------- |
-| `lineCount`      | `number`  | Number of lines in content                   |
-| `scrollY`        | `number`  | Current vertical scroll position (get/set)   |
-| `scrollX`        | `number`  | Current horizontal scroll position (get/set) |
-| `scrollWidth`    | `number`  | Total scrollable width (read-only)           |
-| `scrollHeight`   | `number`  | Total scrollable height (read-only)          |
-| `isHighlighting` | `boolean` | Whether highlighting is in progress          |
-| `plainText`      | `string`  | Raw text content                             |
+| Property         | Type      | Description                                                                                                    |
+| ---------------- | --------- | -------------------------------------------------------------------------------------------------------------- |
+| `lineCount`      | `number`  | Number of lines in the current text buffer                                                                     |
+| `scrollY`        | `number`  | Current vertical scroll position (get/set)                                                                     |
+| `scrollX`        | `number`  | Current horizontal scroll position (get/set)                                                                   |
+| `scrollWidth`    | `number`  | Total scrollable width (read-only)                                                                             |
+| `scrollHeight`   | `number`  | Total scrollable height (read-only)                                                                            |
+| `isHighlighting` | `boolean` | Whether highlighting is in progress                                                                            |
+| `plainText`      | `string`  | Plain text in the current text buffer. It can differ from `content` after concealment or `onChunks` transforms |
 
 ## Markdown styles
 
@@ -278,3 +270,9 @@ const markdownStyle = SyntaxStyle.fromStyles({
   default: { fg: RGBA.fromHex("#E6EDF3") },
 })
 ```
+
+## Related components
+
+Use [Markdown](/docs/components/markdown) for document structure and fenced code. Add a [Line number gutter](/docs/components/line-number) to a code renderable. Use [Diff](/docs/components/diff) for unified or split patches. Use [TextTable](/docs/components/text-table) for tabular content without syntax parsing.
+
+Read [Text and terminal cells](/docs/core-concepts/text-and-cells) for wrapping, graphemes, and display-cell widths.

@@ -1,0 +1,321 @@
+/*
+ * Shared article-content primitives for documentation and scrollback pages.
+ * Depends on the Minimal layout tokens: --page-background, --page-color,
+ * --content-width.
+ *
+ * Prose keeps the narrow reading measure even inside a wider column.
+ * Code blocks and tables may grow past the measure to the full column,
+ * then scroll. Structural hairlines use GrayText; content-level rules
+ * use the text color.
+ *
+ * Vertical rhythm sits on a 1.5rem grid, like blank lines in a terminal:
+ * one step (1.5rem) between blocks, two steps (3rem) above a heading or
+ * thematic break, half a step (0.75rem) between list items. Below a
+ * section heading, half a step binds it to the text it introduces; the
+ * document title stands apart with two steps below.
+ */
+
+.prose {
+  overflow-wrap: break-word;
+}
+
+.prose > * {
+  max-width: var(--content-width);
+}
+
+.prose > :first-child {
+  margin-block-start: 0;
+}
+
+.prose h1 {
+  margin-block: 0 3rem;
+}
+
+/* Heading sizes step 1.25rem / 1.125rem / 1rem so an h3 stays distinct
+ * from bold body labels. Line boxes stay on the 1.5rem grid. */
+.prose h2 {
+  font-size: 1.25rem;
+  margin-block: 3rem 0.75rem;
+  line-height: 1.5rem;
+}
+
+.prose h3 {
+  font-size: 1.125rem;
+  line-height: 1.5rem;
+  margin-block: 3rem 0.75rem;
+}
+
+.prose h4 {
+  font-size: 1rem;
+  margin-block: 3rem 0.75rem;
+}
+
+/* A heading directly under a larger heading belongs to it: one blank
+ * line, as in the markdown source, instead of a section break. */
+.prose :is(h2, h3) + :is(h3, h4) {
+  margin-block-start: 1.5rem;
+}
+
+/* Anchored headings land below the sticky site header, plus the docs
+ * "On this page" bar where a layout provides one (--subnav-height). */
+.prose :is(h1, h2, h3, h4)[id] {
+  scroll-margin-block-start: calc(var(--site-nav-height) + var(--subnav-height, 0rem) + 1rem);
+}
+
+/* Section anchor links: revealed on hover or focus, always visible on touch. */
+.prose .anchor {
+  margin-inline-start: 0.75ch;
+  opacity: 0;
+}
+
+.prose :is(h2, h3):hover .anchor,
+.prose .anchor:focus-visible {
+  opacity: 1;
+}
+
+@media (hover: none) {
+  .prose .anchor {
+    opacity: 1;
+  }
+}
+
+.prose p,
+.prose ul,
+.prose ol {
+  margin-block: 0 1.5rem;
+}
+
+.prose ul,
+.prose ol {
+  padding-inline-start: 1.5rem;
+}
+
+.prose li + li {
+  margin-block-start: 0.75rem;
+}
+
+.prose code {
+  font-family: inherit;
+}
+
+/* Inline code carries API names. A faint fill of the text color marks
+ * token boundaries without adding hue; code inside pre keeps the page
+ * surface. */
+.prose :not(pre) > code {
+  background: color-mix(in srgb, currentColor 8%, transparent);
+  padding: 0.0625rem 0.4ch;
+}
+
+.prose img {
+  max-width: 100%;
+  height: auto;
+}
+
+.prose hr {
+  margin-block: 3rem 1.5rem;
+  border: 0;
+  border-block-start: 1px solid;
+}
+
+.prose blockquote {
+  margin: 0 0 1.5rem;
+  padding-inline-start: 1rem;
+  border-inline-start: 2px solid;
+}
+
+/* Code blocks */
+
+/* Without an explicit font, pre falls back to the browser's default
+ * fixed font and size, not the page typeface. Code sits one step below
+ * body text, matching tables: denser than prose, and ~95 characters fit
+ * the documentation column before scrolling. */
+.prose pre {
+  width: fit-content;
+  min-width: min(100%, var(--content-width));
+  max-width: 100%;
+  margin-block: 0 1.5rem;
+  padding: 0.75rem 1rem;
+  border: 1px solid GrayText;
+  overflow-x: auto;
+  font-family: inherit;
+  font-size: var(--text-small);
+}
+
+.prose .code-block {
+  position: relative;
+  width: fit-content;
+  min-width: min(100%, var(--content-width));
+  max-width: 100%;
+  margin-block: 0 1.5rem;
+}
+
+/* Box-drawing figures use the article typeface at body size. They are
+ * not code: no frame, no copy control. Overflow stays in the figure. */
+.prose .box-figure {
+  width: fit-content;
+  min-width: min(100%, var(--content-width));
+  max-width: 100%;
+  margin-block: 0 1.5rem;
+  margin-inline: 0;
+  overflow-x: auto;
+}
+
+.prose .box-figure pre {
+  width: max-content;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  overflow: visible;
+  font-size: inherit;
+  line-height: 1.2;
+  font-variant-ligatures: none;
+}
+
+.prose .terminal-frame {
+  /* Keep ambiguous-width symbols in the same single cells as the terminal. */
+  font-feature-settings: "NWID";
+  --terminal-color-235: color-mix(in srgb, var(--page-color) 7%, var(--page-background));
+  --terminal-color-238: color-mix(in srgb, var(--page-color) 16%, var(--page-background));
+  --terminal-color-243: var(--terminal-color-238);
+  --terminal-color-244: color-mix(in srgb, var(--page-color) 65%, var(--page-background));
+  --terminal-color-247: color-mix(in srgb, var(--page-color) 82%, var(--page-background));
+}
+
+:root[data-theme="blue"] .prose .terminal-frame {
+  --terminal-color-244: color-mix(in srgb, var(--page-color) 80%, var(--page-background));
+  --terminal-color-247: color-mix(in srgb, var(--page-color) 90%, var(--page-background));
+}
+
+.prose .box-figure pre.terminal-frame--surface {
+  --terminal-background: var(--terminal-color-235);
+  padding: 1.25em 2ch;
+  background: var(--terminal-background);
+}
+
+.prose .terminal-frame__row {
+  position: relative;
+  display: block;
+  height: 1.25em;
+  line-height: 1.25em;
+}
+
+.prose .terminal-frame__span {
+  display: inline-block;
+  height: 100%;
+  line-height: inherit;
+  vertical-align: top;
+}
+
+.prose .terminal-frame__cursor {
+  position: absolute;
+  inset-block: 0;
+  width: 1ch;
+  background: var(--page-color);
+}
+
+.prose .terminal-frame__cursor--line {
+  width: 1px;
+}
+
+.prose .terminal-frame__cursor--underline {
+  inset-block-start: auto;
+  height: 2px;
+}
+
+.prose .code-block pre {
+  width: 100%;
+  min-width: 0;
+  margin-block: 0;
+}
+
+.prose .copy-code {
+  position: absolute;
+  inset-block-start: 0.375rem;
+  inset-inline-end: 0.375rem;
+  padding: 0.125rem 0.375rem;
+  border: 0;
+  background: var(--page-background);
+  color: inherit;
+  font: inherit;
+  font-size: var(--text-caption);
+  cursor: pointer;
+  opacity: 0;
+}
+
+.prose .code-block:hover .copy-code,
+.prose .copy-code:focus-visible {
+  opacity: 1;
+}
+
+@media (hover: none) {
+  .prose .copy-code {
+    opacity: 1;
+  }
+}
+
+/* Shiki dual themes: swap token colors with the page theme and keep the
+ * page background so code sits on the same surface as the text. */
+
+.prose pre.astro-code {
+  background-color: var(--page-background) !important;
+}
+
+:root[data-theme="dark"] .prose .astro-code,
+:root[data-theme="dark"] .prose .astro-code span {
+  color: var(--shiki-dark) !important;
+}
+
+:root[data-theme="blue"] .prose .astro-code,
+:root[data-theme="blue"] .prose .astro-code span {
+  color: var(--shiki-blue) !important;
+}
+
+:root[data-theme="cobalt"] .prose .astro-code,
+:root[data-theme="cobalt"] .prose .astro-code span {
+  color: var(--shiki-cobalt) !important;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme]) .prose .astro-code,
+  :root:not([data-theme]) .prose .astro-code span {
+    color: var(--shiki-dark) !important;
+  }
+}
+
+/* Tables */
+
+.prose .table-scroll {
+  width: fit-content;
+  min-width: min(100%, var(--content-width));
+  max-width: 100%;
+  margin-block: 0 1.5rem;
+  overflow-x: auto;
+}
+
+.prose table {
+  border-collapse: collapse;
+  font-size: var(--text-small);
+  line-height: 1.5;
+  /* Keep word-level column sizing; the wrapper scrolls instead. */
+  overflow-wrap: normal;
+}
+
+.prose th,
+.prose td {
+  padding: 0.375rem 1.25rem 0.375rem 0;
+  text-align: left;
+  vertical-align: top;
+  border-block-end: 1px solid GrayText;
+}
+
+.prose th:last-child,
+.prose td:last-child {
+  padding-inline-end: 0;
+}
+
+/* Column headers carry content weight; row headers keep the GrayText
+ * hairline of their row. */
+.prose thead th {
+  border-block-end-color: currentColor;
+}

@@ -1,0 +1,101 @@
+---
+title: Components
+description: Choose a component and compare Core, React, and Solid availability
+skill:
+  entry: true
+  intents: [components, component, component-support, support-matrix, react-components, solid-components]
+---
+
+# Components
+
+The tables compare each component's availability across Core, React, and Solid.
+
+An automatic framework element needs no component-specific registration. Separately registered elements require the package setup shown on their component page. Unavailable means that the shipped API does not expose that surface.
+
+## Display and layout
+
+- [Text](/docs/components/text) displays labels, prose, and styled text. Choose Code for parsed source or Markdown for documents.
+- [Box](/docs/components/box) lays out children and can draw a background, border, and title. Choose ScrollBox when the children must scroll.
+
+| Component | Package         | Core renderable  | React                | Solid                | Status   |
+| --------- | --------------- | ---------------- | -------------------- | -------------------- | -------- |
+| Text      | `@opentui/core` | `TextRenderable` | `<text>` (automatic) | `<text>` (automatic) | Built in |
+| Box       | `@opentui/core` | `BoxRenderable`  | `<box>` (automatic)  | `<box>` (automatic)  | Built in |
+
+### Inline text elements
+
+React and Solid also register `<span>`, `<b>`, `<strong>`, `<i>`, `<em>`, `<u>`, `<br>`, and `<a>`. These elements are
+built-in text children, not standalone layout components. Use them only inside `<text>`. The `<a>` element accepts
+`href` and creates terminal hyperlink metadata.
+
+| Surface        | Package                            | Core renderable      | React                                             | Solid                                             | Status                        |
+| -------------- | ---------------------------------- | -------------------- | ------------------------------------------------- | ------------------------------------------------- | ----------------------------- |
+| Inline styling | `@opentui/react`, `@opentui/solid` | `TextNodeRenderable` | `<span>`, `<b>`, `<strong>`, `<i>`, `<em>`, `<u>` | `<span>`, `<b>`, `<strong>`, `<i>`, `<em>`, `<u>` | Built-in framework text nodes |
+| Line break     | `@opentui/react`, `@opentui/solid` | `TextNodeRenderable` | `<br>`                                            | `<br>`                                            | Built-in framework text node  |
+| Hyperlink      | `@opentui/react`, `@opentui/solid` | `TextNodeRenderable` | `<a href>`                                        | `<a href>`                                        | Built-in framework text node  |
+
+## Input and selection
+
+- [Input](/docs/components/input) edits one line of text. Choose Textarea for multi-line editing.
+- [Textarea](/docs/components/textarea) edits multiple lines with cursor and selection support. Choose Input for one line.
+- [Select](/docs/components/select) shows discrete choices in a vertical list. Choose TabSelect for a horizontal strip or Slider for a continuous value.
+- [TabSelect](/docs/components/tab-select) shows peer choices in a horizontal tab strip. Choose Select for a vertical list.
+- [Slider](/docs/components/slider) selects a continuous value with a draggable thumb. Choose Select for discrete choices.
+
+| Component | Package         | Core renderable       | React                      | Solid                      | Status                   |
+| --------- | --------------- | --------------------- | -------------------------- | -------------------------- | ------------------------ |
+| Input     | `@opentui/core` | `InputRenderable`     | `<input>` (automatic)      | `<input>` (automatic)      | Built in                 |
+| Textarea  | `@opentui/core` | `TextareaRenderable`  | `<textarea>` (automatic)   | `<textarea>` (automatic)   | Built in                 |
+| Select    | `@opentui/core` | `SelectRenderable`    | `<select>` (automatic)     | `<select>` (automatic)     | Built in                 |
+| TabSelect | `@opentui/core` | `TabSelectRenderable` | `<tab-select>` (automatic) | `<tab_select>` (automatic) | Built in                 |
+| Slider    | `@opentui/core` | `SliderRenderable`    | Unavailable                | Unavailable                | Built-in Core renderable |
+
+## Scrolling
+
+- [ScrollBox](/docs/components/scrollbox) owns scrollable children, clipping, and scrollbars. Use it for normal scrolling containers.
+- [ScrollBar](/docs/components/scrollbar) controls an external scroll position. Use it when another model owns the scroll state.
+
+| Component | Package         | Core renderable       | React                     | Solid                     | Status                   |
+| --------- | --------------- | --------------------- | ------------------------- | ------------------------- | ------------------------ |
+| ScrollBox | `@opentui/core` | `ScrollBoxRenderable` | `<scrollbox>` (automatic) | `<scrollbox>` (automatic) | Built in                 |
+| ScrollBar | `@opentui/core` | `ScrollBarRenderable` | Unavailable               | Unavailable               | Built-in Core renderable |
+
+## Rich content
+
+- [Code](/docs/components/code) displays syntax-highlighted source. Choose Markdown for documents or Diff for patches.
+- [Markdown](/docs/components/markdown) renders document structure and fenced code. Choose Code when all content is source code.
+- [Line number gutter](/docs/components/line-number) adds numbers and signs to line-aware content. Diff manages its own gutters.
+- [Diff](/docs/components/diff) displays the first file patch in unified or split form. Create one instance for each file patch.
+- [TextTable](/docs/components/text-table) lays out styled cell data. Choose Markdown when the table starts as Markdown source.
+
+| Component          | Package         | Core renderable        | React                       | Solid                                                                                    | Status                                  |
+| ------------------ | --------------- | ---------------------- | --------------------------- | ---------------------------------------------------------------------------------------- | --------------------------------------- |
+| Code               | `@opentui/core` | `CodeRenderable`       | `<code>` (automatic)        | `<code>` (automatic)                                                                     | Built in                                |
+| Markdown           | `@opentui/core` | `MarkdownRenderable`   | `<markdown>` (automatic)    | `<markdown>` (automatic)                                                                 | Built in                                |
+| Line number gutter | `@opentui/core` | `LineNumberRenderable` | `<line-number>` (automatic) | `<line_number>` is runtime built in. The Solid binding lacks an exact props declaration. | Built in with a Solid typing limitation |
+| Diff               | `@opentui/core` | `DiffRenderable`       | `<diff>` (automatic)        | `<diff>` is runtime built in. The Solid binding lacks an exact props declaration.        | Built in with a Solid typing limitation |
+| TextTable          | `@opentui/core` | `TextTableRenderable`  | Unavailable                 | Unavailable                                                                              | Built-in Core renderable                |
+
+OpenTUI bundles parsers for JavaScript and JSX, TypeScript and TSX, Markdown and Markdown inline, and Zig. Other grammars require [Tree-sitter configuration](/docs/reference/tree-sitter).
+
+## Graphics and media
+
+- [ASCIIFont](/docs/components/ascii-font) draws short text with bundled ASCII art fonts. Choose Text for labels and prose.
+- [FrameBuffer](/docs/components/frame-buffer) exposes direct cell drawing. Choose Image when you only need to display an image source.
+- [Image](/docs/components/image) displays encoded images or a `NativeImage`. Use the [`NativeImage` API](/docs/reference/native-image) to decode or transform pixels.
+- [QR code](/docs/components/qr-code) displays text as a scannable symbol. Use the [QR encoder](/docs/reference/qr-encoder) for matrices and serialized output.
+- [Embedded terminal](/docs/components/embedded-terminal) parses VT output and draws a child terminal. It does not start a process.
+
+| Component         | Package           | Core renderable              | React                                                  | Solid                                                  | Status                   |
+| ----------------- | ----------------- | ---------------------------- | ------------------------------------------------------ | ------------------------------------------------------ | ------------------------ |
+| ASCIIFont         | `@opentui/core`   | `ASCIIFontRenderable`        | `<ascii-font>` (automatic)                             | `<ascii_font>` (automatic)                             | Built in                 |
+| FrameBuffer       | `@opentui/core`   | `FrameBufferRenderable`      | Unavailable                                            | Unavailable                                            | Advanced                 |
+| Image             | `@opentui/core`   | `ImageRenderable`            | `<image>` (automatic)                                  | `<image>` (automatic)                                  | Built in                 |
+| QR code           | `@opentui/qrcode` | `QRCodeRenderable`           | Register `@opentui/qrcode/react`, then use `<qr-code>` | Register `@opentui/qrcode/solid`, then use `<qr_code>` | Separately registered    |
+| Embedded terminal | `@opentui/core`   | `EmbeddedTerminalRenderable` | Unavailable                                            | Unavailable                                            | Built-in Core renderable |
+
+Use the [Buffer API](/docs/reference/buffer-api) for low-level `OptimizedBuffer` ownership and drawing operations.
+
+## Diagnostics
+
+[`TimeToFirstDraw`](/docs/components/time-to-first-draw) is a diagnostic, not a general display component. See [Rendering diagnostics](/docs/test-and-debug/rendering-diagnostics) for its timestamp behavior.

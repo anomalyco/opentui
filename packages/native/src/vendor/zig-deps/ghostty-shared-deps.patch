@@ -1,0 +1,12 @@
+diff --git a/src/build/SharedDeps.zig b/src/build/SharedDeps.zig
+--- a/src/build/SharedDeps.zig
++++ b/src/build/SharedDeps.zig
+@@ -80,6 +80,7 @@ pub fn init(b: *std.Build, cfg: *const Config) !SharedDeps {
+         .config = cfg,
+         .help_strings = try .init(b, cfg),
+         .unicode_tables = try .init(b, uucode_tables),
+-        .framedata = try .init(b),
++        // OpenTUI only consumes the ghostty-vt module, which does not use GUI frame data.
++        .framedata = undefined,
+         .uucode_tables = uucode_tables,
+         .uucode_mod = uucode_mod,

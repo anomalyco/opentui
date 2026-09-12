@@ -1,0 +1,288 @@
+---
+title: Three.js WebGPU
+description: Render Three.js WebGPU scenes into OpenTUI buffers
+skill:
+  entry: true
+  intents: [three, threejs, webgpu, 3d, sprites, physics]
+---
+
+# Three.js WebGPU
+
+`@opentui/three` connects Three.js's WebGPU renderer to OpenTUI buffers. Use `ThreeRenderable` to place a scene inside the normal renderable tree, or use `ThreeCliRenderer` directly when the scene should draw into a buffer you manage.
+
+## Requirements
+
+`@opentui/three` requires Bun >=1.3.0. It does not support Node.js.
+
+The package pins Three.js 0.177.0. Its manifest lists `bun-webgpu` 0.1.7, `@dimforge/rapier2d-simd-compat`, and `planck`
+as optional dependencies. The package root imports all three through its renderer and physics exports. All three
+dependencies must resolve even when an application does not use physics. A normal install includes them. The root
+module does not load when the installation omits optional dependencies.
+
+```bash
+bun add @opentui/three
+```
+
+The packaged `bun-webgpu` 0.1.7 binaries support macOS x64 and arm64, Linux x64, and Windows x64. Core also publishes
+Linux arm64 and Windows arm64 native artifacts, but those Core artifacts do not add packaged WebGPU support. A custom
+compatible WebGPU library path is an advanced application-owned configuration.
+
+See [Runtime and platform support](/docs/getting-started/runtime-support) for the separate Core artifact and test
+matrix.
+
+The package exports only:
+
+- `@opentui/three`
+- `@opentui/three/runtime-modules`
+
+It does not expose React or Solid component subpaths. `ThreeRenderable` is the OpenTUI integration surface.
+
+## `ThreeRenderable`
+
+This example follows the package's rotating-cube examples while using the `THREE` namespace re-export:
+
+```typescript
+import { RGBA, createCliRenderer } from "@opentui/core"
+import { THREE, ThreeRenderable } from "@opentui/three"
+
+const renderer = await createCliRenderer({ targetFps: 60 })
+renderer.start()
+
+const scene = new THREE.Scene()
+scene.add(new THREE.AmbientLight(new THREE.Color(0.35, 0.35, 0.35), 1))
+
+const light = new THREE.DirectionalLight(new THREE.Color(1, 0.95, 0.9), 1.2)
+light.position.set(2.5, 2, 3)
+scene.add(light)
+
+const cube = new THREE.Mesh(
+  new THREE.BoxGeometry(1, 1, 1),
+  new THREE.MeshPhongMaterial({ color: new THREE.Color(0.25, 0.8, 1) }),
+)
+scene.add(cube)
+
+const camera = new THREE.PerspectiveCamera(45, 1, 0.1, 100)
+camera.position.set(0, 0, 3)
+
+const view = new ThreeRenderable(renderer, {
+  width: "100%",
+  height: "100%",
+  scene,
+  camera,
+  renderer: {
+    focalLength: 8,
+    alpha: true,
+    backgroundColor: RGBA.fromValues(0, 0, 0, 0),
+  },
+})
+
+renderer.root.add(view)
+renderer.setFrameCallback(async (deltaMs) => {
+  cube.rotation.x += 0.6 * (deltaMs / 1000)
+  cube.rotation.y += 0.4 * (deltaMs / 1000)
+})
+```
+
+### Options and defaults
+
+```typescript
+interface ThreeRenderableOptions extends RenderableOptions<ThreeRenderable> {
+  scene?: THREE.Scene | null
+  camera?: THREE.PerspectiveCamera | THREE.OrthographicCamera
+  renderer?: Omit<ThreeCliRendererOptions, "width" | "height" | "autoResize">
+  autoAspect?: boolean
+}
+```
+
+| Option               | Default               | Description                                              |
+| -------------------- | --------------------- | -------------------------------------------------------- |
+| `scene`              | `null`                | Scene drawn by the renderable                            |
+| `camera`             | engine default camera | Perspective or orthographic active camera                |
+| `renderer`           | engine defaults       | Three renderer settings excluding size and auto-resize   |
+| `autoAspect`         | `true`                | Update a perspective camera's aspect on layout resize    |
+| inherited `live`     | `true`                | Keep the CLI render loop live unless explicitly disabled |
+| inherited `buffered` | forced `true`         | Draw through the renderable's frame buffer               |
+
+The nested renderer background defaults to opaque black. `ThreeRenderable` forces its engine's `autoResize` off because layout resize events call `setSize()` directly.
+
+### Lifecycle and API
+
+`ThreeRenderable` requires a real `CliRenderer` context. It registers a CLI frame callback at construction. It does not
+initialize WebGPU until it has a scene, a frame buffer, and a draw to perform. Initialization failure is logged once,
+and later frames do not retry it. Concurrent draws for the same renderable are skipped.
+
+On resize, positive dimensions update the engine. With `autoAspect: true`, perspective cameras receive the
+renderable's display-aware aspect ratio and `updateProjectionMatrix()`. Orthographic camera bounds do not change
+automatically.
+
+Public members:
+
+| Member                                          | Description                                   |
+| ----------------------------------------------- | --------------------------------------------- |
+| `aspectRatio`                                   | Current display-aware renderable aspect ratio |
+| `renderer`                                      | Underlying `ThreeCliRenderer`                 |
+| `getScene()` / `setScene(scene)`                | Read or replace the scene                     |
+| `getActiveCamera()` / `setActiveCamera(camera)` | Read or replace the active camera             |
+| `setAutoAspect(enabled)`                        | Enable or disable perspective aspect updates  |
+
+Base renderable cleanup runs first. `destroySelf()` then removes the frame callback and calls
+`ThreeCliRenderer.destroy()`.
+
+Early destruction has two current limits. `ThreeCliRenderer.destroy()` does not remove its listener from the host
+renderer's `destroy` event, so repeatedly creating and destroying views on one live host retains engine listeners until
+the host is destroyed. Also, a pending asynchronous `init()` does not recheck destroyed state after device creation.
+Destroying a view during its first initialization can therefore allocate renderer resources after cleanup. Avoid rapid
+view churn, and do not destroy a direct engine until its `init()` promise settles.
+
+## `ThreeCliRenderer`
+
+Use `ThreeCliRenderer` directly when you need to choose the destination `OptimizedBuffer` on every frame:
+
+```typescript
+import { RGBA } from "@opentui/core"
+import { THREE, ThreeCliRenderer } from "@opentui/three"
+
+const engine = new ThreeCliRenderer(renderer, {
+  width: renderer.terminalWidth,
+  height: renderer.terminalHeight,
+  focalLength: 8,
+  backgroundColor: RGBA.fromValues(0, 0, 0, 1),
+})
+
+await engine.init()
+engine.setActiveCamera(camera)
+
+renderer.setFrameCallback(async (deltaMs) => {
+  await engine.drawScene(scene, renderer.nextRenderBuffer, deltaMs / 1000)
+})
+```
+
+Unlike `ThreeRenderable`, direct use requires `await engine.init()` before canvas-dependent methods. These methods
+include screenshots, supersampling configuration, and scene rendering. The engine registers for `CliRenderer`
+destruction and destroys itself with the host renderer. Call `destroy()` when you end its lifetime earlier, subject to
+the listener and in-flight initialization limits above.
+
+### Options and defaults
+
+```typescript
+interface ThreeCliRendererOptions {
+  width: number
+  height: number
+  focalLength?: number
+  backgroundColor?: RGBA
+  superSample?: SuperSampleType
+  alpha?: boolean
+  autoResize?: boolean
+  libPath?: string
+}
+```
+
+| Option            | Default               | Description                                                                                                       |
+| ----------------- | --------------------- | ----------------------------------------------------------------------------------------------------------------- |
+| `width`, `height` | required              | Output dimensions in terminal cells                                                                               |
+| `focalLength`     | omitted               | The default camera uses a 1-degree FOV when omitted. Otherwise, output height and focal length determine the FOV. |
+| `backgroundColor` | opaque black          | Three renderer clear color                                                                                        |
+| `superSample`     | `SuperSampleType.GPU` | `"none"`, `"gpu"`, or `"cpu"`                                                                                     |
+| `alpha`           | `false`               | Enable alpha in the Three WebGPU renderer                                                                         |
+| `autoResize`      | `true`                | Follow host `CliRenderer` resize events                                                                           |
+| `libPath`         | -                     | Passed to `bun-webgpu` global setup                                                                               |
+
+When CPU or GPU supersampling is active, internal render dimensions are twice the output width and height. The default
+algorithm is `SuperSampleAlgorithm.STANDARD`. The alternative is `PRE_SQUEEZED`.
+
+The engine's default camera is a perspective camera at `(0, 0, 3)`. It looks at the origin and uses near `0.1` and far
+`1000`. `CELL_ASPECT_RATIO`, when present, overrides the computed aspect ratio. Otherwise, the engine uses the CLI
+renderer pixel resolution when available. Its final fallback is terminal width divided by twice the terminal height.
+
+After initialization, the Three renderer uses `NoToneMapping` and `LinearSRGBColorSpace`.
+
+### Methods
+
+| Method                                                         | Description                                                             |
+| -------------------------------------------------------------- | ----------------------------------------------------------------------- |
+| `init()`                                                       | Create the WebGPU device, CLI canvas, and Three WebGPU renderer         |
+| `drawScene(scene, buffer, deltaTime)`                          | Render the active camera into an `OptimizedBuffer`                      |
+| `setActiveCamera(camera)` / `getActiveCamera()`                | Manage the active camera                                                |
+| `setBackgroundColor(color)`                                    | Change the Three clear color                                            |
+| `setSize(width, height, forceUpdate = false)`                  | Resize output, canvas, viewport, and camera projection                  |
+| `toggleSuperSampling()`                                        | Cycle none -> CPU -> GPU -> none                                        |
+| `getSuperSampleAlgorithm()` / `setSuperSampleAlgorithm(value)` | Read or change the supersampling algorithm                              |
+| `saveToFile(path)`                                             | Save the current canvas texture through Jimp                            |
+| `toggleDebugStats()`                                           | Toggle renderer timing text                                             |
+| `renderStats(buffer)`                                          | Draw current timing values into a buffer                                |
+| `destroy()`                                                    | Remove resize/debug listeners and dispose the canvas and Three renderer |
+
+Concurrent `drawScene()` calls are not supported. The implementation warns and skips the overlapping draw. The host
+renderer debug-overlay toggle also controls Three timing stats.
+
+## Texture and sprite helpers
+
+The root package exports these additional surfaces:
+
+### Textures and basic sprites
+
+- `TextureUtils.loadTextureFromFile(path)` and its alias `fromFile(path)` load a Jimp-decoded `DataTexture`. They
+  vertically flip the source image and return `null` after logging a load failure.
+- `TextureUtils.createCheckerboard()`, `createGradient()`, and `createNoise()` create procedural textures. Their default size is 256 and they use nearest filtering with clamp-to-edge wrapping.
+- `SpriteUtils.fromFile()` creates a Three `Sprite`. Its default material parameters are `alphaTest: 0.1` and
+  `depthWrite: true`.
+- `SpriteUtils.sheetFromFile()` and `SheetSprite.setIndex()` address a horizontal sprite sheet.
+
+### Resources and instancing
+
+- Types: `ResourceConfig`, `SheetProperties`, `InstanceManagerOptions`, `MeshPoolOptions`.
+- Classes: `MeshPool`, `InstanceManager`, `SpriteResource`, `SpriteResourceManager`.
+- `SpriteResourceManager.createResource({ imagePath, sheetNumFrames })` loads/caches a texture and creates a sheet resource.
+- `InstanceManager` allocates slots in one Three `InstancedMesh`. Its `renderOrder` defaults to `0`, and
+  `frustumCulled` defaults to `false`.
+
+### Sprite animation
+
+- Types: `AnimationStateConfig`, `ResolvedAnimationState`, `AnimationDefinition`, `SpriteDefinition`.
+- Classes: `SpriteAnimator`, `TiledSprite`.
+- `SpriteAnimator.createSprite()` creates an instanced tiled sprite and `update(deltaTime)` advances all managed sprites.
+- Animation defaults are frame duration 100 ms, frame offset 0, loop enabled, initial frame 0, and no horizontal or vertical flip.
+- Sprite defaults are generated IDs, scale `1`, maximum 1024 instances, render order `0`, and depth writing enabled.
+- `TiledSprite` exposes transform, animation, playback, visibility, frame, and destruction controls.
+
+### Particles and explosions
+
+- `SpriteParticleGenerator` and `ParticleEffectParameters` create instanced sprite particles with explicit capacity,
+  lifetime, origins, velocity, angular velocity, and spawn radius. The implementation resolves optional defaults.
+  Required effect fields have no package-wide defaults.
+- `ExplodingSpriteEffect`, `ExplosionManager`, `ExplosionEffectParameters`, creation/recreation data, and `ExplosionHandle` implement GPU sprite explosions. `DEFAULT_EXPLOSION_PARAMETERS` is exported.
+- `PhysicsExplodingSpriteEffect`, `PhysicsExplosionManager`, their parameter/data/handle types, and `DEFAULT_PHYSICS_EXPLOSION_PARAMETERS` implement the physics-backed variant.
+
+The regular explosion default is a 5x5 grid lasting 2000 ms with strength 5, gravity 9.8, and fade-out enabled. The physics default is a 5x5 grid lasting 3000 ms with explosion force 25, torque strength 15, and fade-out enabled. Import the exported default objects for the complete current parameter sets instead of duplicating them.
+
+### Physics adapters
+
+- `RapierRigidBody` and `RapierPhysicsWorld` adapt `@dimforge/rapier2d-simd-compat` bodies/worlds.
+- `PlanckRigidBody` and `PlanckPhysicsWorld` adapt `planck` bodies/worlds.
+- Both dependencies are optional in the package manifest but effective root-import requirements. See
+  [Requirements](#requirements).
+
+The shared `PhysicsWorld`, `PhysicsRigidBody`, and descriptor interfaces live in an internal module and are not re-exported from `@opentui/three`. Do not rely on importing those interface names from the package root.
+
+### Low-level canvas and Three namespace
+
+`CLICanvas` is the `bun-webgpu` canvas and readback implementation that `ThreeCliRenderer` uses. The package also
+exports `SuperSampleAlgorithm` and `THREE`. The `THREE` namespace contains the installed `three` package.
+
+## Runtime-loaded modules
+
+The `@opentui/three/runtime-modules` map contains only `@opentui/three`. It does not map `three`, `three/webgpu`, or
+`three/tsl`. See [Load plugins and modules at runtime](/docs/extend/runtime-plugins) to add this map to a Bun host.
+
+## Public export groups
+
+The root export groups are:
+
+- Rendering: `ThreeRenderable`, `ThreeRenderableOptions`, `ThreeCliRenderer`, `ThreeCliRendererOptions`, `SuperSampleType`.
+- Canvas: `CLICanvas`, `SuperSampleAlgorithm`.
+- Textures/sprites: `TextureUtils`, `SpriteUtils`, `SheetSprite`.
+- Resource pools: `MeshPool`, `InstanceManager`, `SpriteResource`, `SpriteResourceManager`, and their option/config types.
+- Animation: `SpriteAnimator`, `TiledSprite`, and animation/sprite definition types.
+- Effects: sprite particle, regular explosion, and physics explosion classes, handles, data, parameters, and default parameter objects.
+- Physics adapters: Rapier and Planck world/body wrappers.
+- Three.js: `THREE` namespace re-export.

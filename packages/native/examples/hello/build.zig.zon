@@ -1,0 +1,16 @@
+.{
+    .name = .opentui_hello,
+    .version = "0.0.0",
+    .fingerprint = 0xb62b2906a6ba79de,
+    .minimum_zig_version = "0.16.0",
+    .dependencies = .{
+        .opentui = .{
+            .path = "../..",
+        },
+    },
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+    },
+}

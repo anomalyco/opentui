@@ -192,8 +192,8 @@ describe("TextareaRenderable - Visual Line Navigation", () => {
       textarea.gotoVisualLineEnd({ select: true })
 
       const selectedText = textarea.getSelectedText()
-      expect(selectedText).toBe("KLMNOPQRS")
-      expect(selectedText.length).toBe(9)
+      expect(selectedText).toBe("KLMNOPQRST")
+      expect(selectedText.length).toBe(10)
     })
   })
 

@@ -1,0 +1,31 @@
+---
+id: opentui-keymap
+name: OpenTUI Keymap
+summary: Key binding and command routing library for terminal and browser applications.
+kind: library
+official: true
+source:
+  url: https://github.com/anomalyco/opentui
+  directory: packages/keymap
+surfaces:
+  - name: TypeScript
+    language: typescript
+    import: "@opentui/keymap"
+    docs: /docs/keymap/overview
+distributions:
+  - type: npm
+    identifier: "@opentui/keymap"
+    install: bun add @opentui/keymap
+links:
+  docs: /docs/keymap/overview
+categories:
+  - input
+---
+
+`@opentui/keymap` is an independent, host-agnostic package for layered key bindings and commands.
+
+Applications register commands and bindings, dispatch host events, and query the active commands or next keys.
+
+Read the [Keymap overview](/docs/keymap/overview), [hosts](/docs/keymap/hosts),
+[Core keymap API](/docs/keymap/core), [built-in addons](/docs/keymap/addons), and
+[package entry points](/docs/reference/package-entrypoints).

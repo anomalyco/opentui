@@ -8,6 +8,7 @@ import { getDataPaths } from "../data-paths.js"
 import { clearEnvCache } from "../env.js"
 import { destroySingleton } from "../singleton.js"
 import { destroyTreeSitterClient, getTreeSitterClient } from "./index.js"
+import { getParsers } from "./default-parsers.js"
 
 describe("TreeSitterClient", () => {
   let client: TreeSitterClient
@@ -398,6 +399,44 @@ describe("TreeSitterClient", () => {
     expect(result.warning).toContain("No parser available for filetype unsupported-lang")
   }, 5000)
 
+  test("should reject one-shot highlighting after a correlated worker error", async () => {
+    await client.initialize()
+
+    const internals = client as unknown as {
+      messageCallbacks: Map<string, unknown>
+      worker?: {
+        onmessage: ((event: { data: { type: "ERROR"; messageId: string; error: string } }) => void) | null
+        postMessage: (message: { type?: string; messageId?: string }) => void
+      }
+    }
+    const worker = internals.worker
+    expect(worker).toBeDefined()
+    if (!worker) {
+      throw new Error("Expected initialized client to have a worker")
+    }
+
+    let messageId: string | undefined
+    const originalPostMessage = worker.postMessage.bind(worker)
+    worker.postMessage = (message) => {
+      if (message.type === "ONESHOT_HIGHLIGHT") {
+        messageId = message.messageId
+        return
+      }
+      originalPostMessage(message)
+    }
+
+    const highlighting = client.highlightOnce("const value = 1", "javascript")
+    expect(messageId).toBeDefined()
+    expect(internals.messageCallbacks.size).toBe(1)
+
+    worker.onmessage?.({
+      data: { type: "ERROR", messageId: messageId!, error: "synthetic one-shot failure" },
+    })
+
+    await expect(highlighting).rejects.toThrow("synthetic one-shot failure")
+    expect(internals.messageCallbacks.size).toBe(0)
+  })
+
   test("should perform multiple one-shot highlights independently", async () => {
     await client.initialize()
 
@@ -503,6 +542,10 @@ describe("TreeSitterClient", () => {
   test("should support local file paths for parser configuration", async () => {
     const testQueryPath = join(dataPath, `test-highlights-${Date.now()}.scm`)
     const simpleQuery = "(identifier) @variable"
+    const javascriptParser = (await getParsers()).find((parser) => parser.filetype === "javascript")
+    if (!javascriptParser) {
+      throw new Error("Expected the default JavaScript parser")
+    }
     await writeFile(testQueryPath, simpleQuery, "utf8")
 
     try {
@@ -512,7 +555,7 @@ describe("TreeSitterClient", () => {
         queries: {
           highlights: [testQueryPath],
         },
-        wasm: "https://github.com/tree-sitter/tree-sitter-javascript/releases/download/v0.23.1/tree-sitter-javascript.wasm",
+        wasm: javascriptParser.wasm,
       })
 
       await client.initialize()

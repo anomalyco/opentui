@@ -1,0 +1,207 @@
+---
+title: Rendering diagnostics
+description: Inspect renderer scheduling, frame output, cell updates, and timing
+---
+
+# Rendering diagnostics
+
+Rendering diagnostics show when OpenTUI schedules work, completes frames, changes terminal cells, and records timing values.
+
+## Choose the diagnostic
+
+| Question                                    | Diagnostic                                         |
+| ------------------------------------------- | -------------------------------------------------- |
+| Did the application draw the expected text? | `captureCharFrame()` or `captureSpans()`           |
+| Does scheduled render work remain?          | `renderer.getSchedulerState()`                     |
+| Did a render pass complete?                 | The renderer `frame` event                         |
+| How many native frames completed?           | `renderer.getNativeStats().nativeFrameCount`       |
+| Did the latest native frame change cells?   | `renderer.getNativeStats().cellsUpdated`           |
+| What timing samples did JavaScript collect? | `renderer.getStats()` with `gatherStats: true`     |
+| When did one marker first draw?             | `TimeToFirstDrawRenderable.runtimeMs`              |
+| What did application code log?              | The [console overlay](/docs/core-concepts/console) |
+
+Do not compare these values as if they used one unit or represented one event.
+
+## Timestamps and elapsed time
+
+`TimeToFirstDrawRenderable` stores one `performance.now()` reading during its first `renderSelf()` call. The reading uses the runtime performance time origin. It is a timestamp, not an elapsed startup duration.
+
+```typescript
+import { TimeToFirstDrawRenderable, createCliRenderer } from "@opentui/core"
+
+const startupStartedAt = performance.now()
+const renderer = await createCliRenderer()
+
+try {
+  const firstDraw = new TimeToFirstDrawRenderable(renderer, {
+    label: "First draw timestamp",
+    precision: 1,
+  })
+
+  renderer.root.add(firstDraw)
+  await renderer.idle()
+
+  if (firstDraw.runtimeMs !== null) {
+    const elapsedStartupMs = firstDraw.runtimeMs - startupStartedAt
+    console.log({ elapsedStartupMs })
+  }
+} finally {
+  renderer.destroy()
+}
+```
+
+This example subtracts an explicit application start timestamp from the marker timestamp. The result measures elapsed time to this marker's first draw.
+
+`runtimeMs` is `null` before the first draw. Later draws keep the first reading. `reset()` sets it to `null` and requests a render. The next draw records a new timestamp.
+
+The component-specific constructor options are `fg`, `label`, and `precision`. Their defaults are `"#AAAAAA"`,
+`"Time to first draw"`, and `2`. The constructor also accepts standard renderable options. After construction, use
+`textLabel` and `decimals` to change the label and precision. The renderable constructor and `decimals` setter normalize
+precision. React and Solid assign the initial prop directly, so pass an integer from 0 through 100 to those wrappers.
+
+The Core normalization does not cap precision at its upper end. A value above JavaScript's `toFixed()` limit of `100`
+throws during drawing.
+
+The rendered line uses `${label}: ${runtimeMs.toFixed(precision)}ms`. OpenTUI truncates it at complete grapheme and display-cell boundaries. It does not split a joined emoji or a wide grapheme.
+
+React and Solid export `TimeToFirstDraw` wrappers with the same component options. Read the [`TimeToFirstDraw` reference](/docs/components/time-to-first-draw) for layout defaults, exact setters, precision limits, and framework examples.
+
+## Frame identifiers and events
+
+`renderer.frameId` is a monotonic JavaScript loop identifier. OpenTUI increments it at the start of each renderer loop attempt.
+
+The renderer emits `frame` after a pass reaches the rendered state:
+
+```typescript
+renderer.on("frame", ({ frameId }) => {
+  console.log("completed frame", frameId)
+})
+```
+
+A failed, skipped, or backpressured attempt can increment `renderer.frameId` without emitting `frame`. Treat the event payload as an identifier, not an elapsed time or a count of changed cells.
+
+## Scheduler state
+
+Use scheduler state when a test or application appears not to settle:
+
+```typescript
+const state = renderer.getSchedulerState()
+console.log(state)
+await renderer.idle()
+```
+
+| Field                | Meaning                                                         |
+| -------------------- | --------------------------------------------------------------- |
+| `isRunning`          | A continuous or live render loop is active                      |
+| `isRendering`        | A renderer loop pass is active                                  |
+| `hasScheduledRender` | A timer, one-shot update, or immediate rerender remains pending |
+
+`renderer.idle()` waits for these conditions and any renderer feed-idle retry to finish. It also resolves after renderer destruction. It does not require a zero-cell-update frame.
+
+## Native render statistics
+
+`renderer.getNativeStats()` returns the current native snapshot:
+
+```typescript
+const native = renderer.getNativeStats()
+console.log(native.nativeFrameCount, native.cellsUpdated)
+```
+
+| Field                    | Meaning                                                     |
+| ------------------------ | ----------------------------------------------------------- |
+| `nativeFrameCount`       | Native frames that completed                                |
+| `cellsUpdated`           | Changed diff cells in the latest native frame               |
+| `averageCellsUpdated`    | Average changed cells across retained native samples        |
+| `nativeLastFrameTime`    | Time between the latest native frames, in microseconds      |
+| `nativeAverageFrameTime` | Average native frame interval, in microseconds              |
+| `nativeRenderTime`       | Latest native render work, in microseconds, when available  |
+| `nativeStdoutWriteTime`  | Latest native output write, in microseconds, when available |
+
+An unchanged native frame can increment `nativeFrameCount` while `cellsUpdated` is `0`. A forced repaint can count the full render surface. Cell updates are terminal cells, not bytes, code points, graphemes, or renderable nodes.
+
+## Combined renderer statistics
+
+`renderer.getStats()` combines native statistics with JavaScript values:
+
+| Field               | Meaning                                                                    |
+| ------------------- | -------------------------------------------------------------------------- |
+| `frameCount`        | JavaScript renderer loop attempts                                          |
+| `fps`               | Native frames counted when the latest sampling interval reached one second |
+| `frameCallbackTime` | Latest JavaScript frame-callback duration in milliseconds                  |
+| `frameTimes`        | Collected JavaScript pass durations in milliseconds                        |
+| `averageFrameTime`  | Average of `frameTimes`                                                    |
+| `minFrameTime`      | Minimum of `frameTimes`                                                    |
+| `maxFrameTime`      | Maximum of `frameTimes`                                                    |
+
+Set `gatherStats: true` at renderer creation, or call `renderer.setGatherStats(true)`, to collect `frameTimes`. The default sample limit is `300`. Set `maxStatSamples` to change that limit.
+
+`renderer.resetStats()` clears the JavaScript frame samples and JavaScript `frameCount`. It does not reset native counters. Disabling collection with `setGatherStats(false)` clears the JavaScript samples.
+
+## Test renderer output
+
+`createTestRenderer()` exposes the rendered state without a terminal:
+
+```typescript
+import { TextRenderable } from "@opentui/core"
+import { createTestRenderer } from "@opentui/core/testing"
+
+const setup = await createTestRenderer({ width: 20, height: 4 })
+
+try {
+  setup.renderer.root.add(new TextRenderable(setup.renderer, { content: "Ready" }))
+  await setup.waitForFrame((frame) => frame.includes("Ready"))
+  console.log(setup.captureCharFrame())
+  console.log(setup.captureSpans())
+  console.log(setup.getNativeStats())
+  await setup.waitForVisualIdle()
+} finally {
+  setup.renderer.destroy()
+}
+```
+
+`captureCharFrame()` returns decoded character cells. `captureSpans()` preserves dimensions, cursor coordinates, colors, base attributes, and span widths. Span capture is lossy for full grapheme clustering and hyperlink IDs. Read [Rendering pipeline](/docs/core-concepts/rendering-pipeline#inspect-frames) for those limits.
+
+`waitForVisualIdle()` returns when the scheduler has no work. While work continues, it waits for a configured number of consecutive frames with `cellsUpdated === 0`. The defaults are one quiet frame and a maximum of 20 observed frames. Read [Testing](/docs/core-concepts/testing#waiting-for-observable-output) for bounds and timeout diagnostics.
+
+## On-screen diagnostics
+
+The console overlay shows captured application logs. It does not report renderer counters unless your application logs them.
+
+The renderer also has a native statistics overlay:
+
+```typescript
+import { DebugOverlayCorner } from "@opentui/core"
+
+renderer.configureDebugOverlay({
+  enabled: true,
+  corner: DebugOverlayCorner.bottomRight,
+})
+```
+
+Use `renderer.toggleDebugOverlay()` to change visibility. `OTUI_SHOW_STATS=true` enables it when the renderer starts.
+
+## Buffer and input diagnostics
+
+`renderer.dumpBuffers(timestamp?)` writes current, next, and output dumps under `buffer_dump/`. `renderer.dumpOutputBuffer(timestamp?)` writes only the latest output dump. Both use `Date.now()` when you omit the timestamp.
+
+Use these environment diagnostics for a bounded investigation:
+
+| Variable                | Use                                                              |
+| ----------------------- | ---------------------------------------------------------------- |
+| `OTUI_SHOW_STATS`       | Show the native statistics overlay at renderer creation          |
+| `OTUI_DEBUG`            | Retain handler sequences for `renderer.getDebugInputs()`         |
+| `OTUI_STDIN_LOG`        | Write raw input bytes to one file                                |
+| `OTUI_DUMP_CAPTURES`    | Dump console and output capture from the renderer signal handler |
+| `OTUI_NO_NATIVE_RENDER` | Skip native frame rendering while the JavaScript loop still runs |
+| `OTUI_DEBUG_FFI`        | Enable foreign function interface debug logging                  |
+
+`OTUI_NO_NATIVE_RENDER` does not prevent all terminal output. Split-footer output handling can still write ANSI sequences. Input and output captures can contain application data. Remove these settings after the investigation.
+
+Read [Environment variables](/docs/reference/env-vars) for exact parsing and activation timing. Read the [rendering pipeline](/docs/core-concepts/rendering-pipeline) for layout, cells, diffing, and image protocol behavior.
+
+## Next
+
+- [`TimeToFirstDraw`](/docs/components/time-to-first-draw) is the exact component reference.
+- [Testing](/docs/core-concepts/testing) covers frame capture and visual-idle waits.
+- [Console overlay](/docs/core-concepts/console) covers captured application logs.
+- [API and symbol index](/docs/reference/api-index) lists the renderer and testing symbols.

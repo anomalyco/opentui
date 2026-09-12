@@ -1,63 +1,72 @@
-# OpenTUI Core
+<!-- Keep the project introduction aligned with the repository README and opentui.com. -->
 
-OpenTUI is a native terminal UI core written in Zig with TypeScript bindings. The native core exposes a C ABI and can be used from any language. OpenTUI powers OpenCode in production today and will also power terminal.shop. It is an extensible core with a focus on correctness, stability, and high performance. It provides a component-based architecture with flexible layout capabilities, allowing you to create complex terminal applications.
+<p align="center">
+  <a href="https://opentui.com">
+    <img alt="OpenTUI logo" src="https://opentui.com/opentui-logo-auto.svg" width="270" />
+  </a>
+</p>
 
-## Documentation
+<div align="center">
+    <a href="https://www.npmjs.com/package/@opentui/core"><img alt="npm version" src="https://img.shields.io/npm/v/@opentui/core?style=flat-square" /></a>
+    <a href="https://github.com/anomalyco/opentui/actions/workflows/build-core.yml"><img alt="Core build status" src="https://img.shields.io/github/actions/workflow/status/anomalyco/opentui/build-core.yml?style=flat-square&branch=main" /></a>
+</div>
 
-- [Getting Started](docs/getting-started.md) - API and usage guide
-- [Development Guide](docs/development.md) - Building, testing, and contributing
-- [Tree-Sitter](docs/tree-sitter.md) - Syntax highlighting integration
-- [Renderables vs Constructs](docs/renderables-vs-constructs.md) - Understanding the component model
-- [Environment Variables](docs/env-vars.md) - Configuration options
+OpenTUI is a library to build terminal user interfaces.
 
-## Install
+- It is written in Zig.
+- You write TypeScript directly or through React and Solid.
+- You arrange boxes and text with flexbox.
+- You add selects, inputs, and scroll boxes with keyboard and mouse controls.
+- You can play sounds, show images, and render 3D graphics.
 
-```bash
-bun install @opentui/core
-```
+OpenCode uses OpenTUI in production for millions of users.
 
-## Build
+[Website](https://opentui.com) | [Documentation](https://opentui.com/docs) | [Packages](https://opentui.com/packages)
 
-```bash
-bun run build
-```
+## OpenTUI Core
 
-This creates platform-specific libraries that are automatically loaded by the TypeScript layer.
-
-## Examples
-
-```bash
-bun install
-cd ../examples
-bun run dev
-```
-
-## Benchmarks
-
-Run native performance benchmarks:
-
-```bash
-bun run bench:native
-```
-
-See [src/zig/bench.zig](src/zig/bench.zig) for available options like `--filter` and `--mem`.
-
-NativeSpanFeed TypeScript benchmarks:
-
-- [src/benchmark/native-span-feed-benchmark.md](src/benchmark/native-span-feed-benchmark.md)
-
-## CLI Renderer
-
-### Renderables
-
-Renderables are hierarchical objects that can be positioned, nested, styled and rendered to the terminal:
+`@opentui/core` supplies the renderer and TypeScript API. You use imperative renderables and events directly. The
+TypeScript packages call native Zig through an internal foreign function interface (FFI) boundary.
 
 ```typescript
-import { createCliRenderer, TextRenderable } from "@opentui/core"
+import { TextRenderable, createCliRenderer } from "@opentui/core"
 
-const renderer = await createCliRenderer()
+const renderer = await createCliRenderer({ exitOnCtrlC: true })
 
-const obj = new TextRenderable(renderer, { id: "my-obj", content: "Hello, world!" })
-
-renderer.root.add(obj)
+renderer.root.add(new TextRenderable(renderer, { content: "Hello, OpenTUI!" }))
 ```
+
+`exitOnCtrlC: true` calls `renderer.destroy()` when the user presses Ctrl+C. The code that creates the renderer must
+call `renderer.destroy()` on every other shutdown path.
+
+Install the package:
+
+```bash
+bun add @opentui/core
+```
+
+Then build your first app with the [quickstart](https://opentui.com/docs/getting-started/quickstart).
+
+## Runtime and platform support
+
+`@opentui/core` runs on Bun 1.3.0 or later, or on Node.js 26.4.0 or later with ECMAScript modules (ESM) and
+`--experimental-ffi`.
+
+Use Bun 1.4.0 or later on native Windows arm64.
+
+The native ABI and the generated platform packages, such as `@opentui/core-linux-x64`, are internal distribution
+surfaces, not application APIs.
+
+## AI agent skill
+
+Install the OpenTUI documentation as a skill for your AI coding assistant with [`npx skills`](https://skills.sh):
+
+```bash
+npx skills add anomalyco/opentui --skill opentui
+```
+
+Add `-g` to install the skill globally.
+
+## License
+
+OpenTUI is licensed under the [MIT License](https://github.com/anomalyco/opentui/blob/main/LICENSE).

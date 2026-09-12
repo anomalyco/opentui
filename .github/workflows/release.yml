@@ -4,17 +4,19 @@ on:
   push:
     tags:
       - "v*"
+      - "*snapshot*"
 
 permissions:
   contents: write
 
 env:
-  NODE_VERSION: 26.4.0
+  NODE_VERSION: 26.7.0
 
 jobs:
   # Extract version and check if it's a dry run
   prepare:
     name: Prepare Release
+    if: ${{ !contains(github.ref_name, 'snapshot') }}
     runs-on: blacksmith-4vcpu-ubuntu-2404
     outputs:
       version: ${{ steps.extract.outputs.version }}
@@ -56,6 +58,7 @@ jobs:
   # Version validation check
   validate-version:
     name: Validate Version
+    if: ${{ !contains(github.ref_name, 'snapshot') }}
     needs: prepare
     runs-on: blacksmith-4vcpu-ubuntu-2404
 
@@ -104,6 +107,7 @@ jobs:
   # Build native libraries and packages
   build-native:
     name: Build Native
+    if: ${{ !contains(github.ref_name, 'snapshot') }}
     needs: [prepare, validate-version]
     uses: ./.github/workflows/build-native.yml
     with:
@@ -112,6 +116,7 @@ jobs:
   # Build example executables
   build-examples:
     name: Build Examples
+    if: ${{ !contains(github.ref_name, 'snapshot') }}
     needs: [prepare, sign-windows-artifacts]
     uses: ./.github/workflows/build-examples.yml
     with:
@@ -120,16 +125,19 @@ jobs:
   # Publish to npm
   npm-publish:
     name: NPM Publish
+    if: ${{ !contains(github.ref_name, 'snapshot') }}
     needs: [prepare, sign-windows-artifacts]
     uses: ./.github/workflows/npm-latest-release.yml
-    secrets:
-      NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+    permissions:
+      contents: read
+      id-token: write
     with:
       version: ${{ needs.prepare.outputs.fullTag }}
       isDryRun: ${{ needs.prepare.outputs.isDryRun == 'true' }}
 
   sign-windows-artifacts:
     name: Sign Windows DLL Artifacts
+    if: ${{ !contains(github.ref_name, 'snapshot') }}
     needs: [prepare, build-native]
     runs-on: blacksmith-8vcpu-windows-2025
     permissions:
@@ -287,9 +295,50 @@ jobs:
           retention-days: 30
           overwrite: true
 
+  snapshot-prepare:
+    name: Prepare NPM Snapshot
+    if: ${{ contains(github.ref_name, 'snapshot') }}
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+
+    steps:
+      - name: Generate snapshot version
+        id: version
+        run: |
+          COMMIT_SHA="${GITHUB_SHA::8}"
+          VERSION="0.0.0-$(date -u +%Y%m%d)-${COMMIT_SHA}"
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "Using snapshot version: $VERSION"
+
+  snapshot-build:
+    name: Build NPM Snapshot
+    if: ${{ contains(github.ref_name, 'snapshot') }}
+    needs: snapshot-prepare
+    uses: ./.github/workflows/build-native.yml
+    with:
+      version: ${{ needs.snapshot-prepare.outputs.version }}
+      prepareVersion: ${{ needs.snapshot-prepare.outputs.version }}
+
+  # npm supports one Trusted Publisher workflow per package, so snapshots
+  # and stable releases share this top-level caller and publish workflow.
+  snapshot-publish:
+    name: Publish NPM Snapshot
+    if: ${{ contains(github.ref_name, 'snapshot') }}
+    needs: [snapshot-prepare, snapshot-build]
+    uses: ./.github/workflows/npm-latest-release.yml
+    permissions:
+      contents: read
+      id-token: write
+    with:
+      version: ${{ needs.snapshot-prepare.outputs.version }}
+      prepareVersion: ${{ needs.snapshot-prepare.outputs.version }}
+      isDryRun: false
+
   # Create GitHub release with assets
   github-release:
     name: Create GitHub Release
+    if: ${{ !contains(github.ref_name, 'snapshot') }}
     needs: [prepare, build-examples, npm-publish]
     runs-on: blacksmith-4vcpu-ubuntu-2404
 
@@ -373,9 +422,16 @@ jobs:
           cd "$WORK_DIR"
 
           # Verify all expected release assets exist
+          # These are the matching symbols from the build job, never a Debug
+          # rebuild. Keep them as release assets beyond CI artifact expiration.
+          for target in darwin-x64 darwin-arm64 linux-x64 linux-arm64 linux-x64-musl linux-arm64-musl win32-x64 win32-arm64; do
+            source="artifacts/native-symbols-$FULL_TAG/native-symbols-$target.zip"
+            test -s "$source"
+            cp "$source" "release-assets/opentui-symbols-v${FULL_TAG}-${target}.zip"
+          done
           echo ""
           echo "Verifying all release assets..."
-          EXPECTED_ASSETS=12  # 8 native targets + 4 examples (no linux-arm64, no windows-arm64)
+          EXPECTED_ASSETS=20  # 8 native targets + 8 symbol archives + 4 examples
           ACTUAL_ASSETS=$(ls -1 release-assets/*.zip 2>/dev/null | wc -l | tr -d ' ')
 
           if [ "$ACTUAL_ASSETS" -ne "$EXPECTED_ASSETS" ]; then
@@ -386,6 +442,7 @@ jobs:
 
           echo "✅ All $ACTUAL_ASSETS release assets prepared:"
           echo "   - 8 native binaries (all targets)"
+          echo "   - 8 matching native symbol archives (all targets)"
           echo "   - 4 example executables (darwin-x64, darwin-arm64, linux-x64, windows-x64)"
           ls -lah release-assets/
 

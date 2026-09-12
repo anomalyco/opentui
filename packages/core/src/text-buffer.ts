@@ -1,6 +1,6 @@
 import type { StyledText } from "./lib/styled-text.js"
 import { RGBA } from "./lib/RGBA.js"
-import { resolveRenderLib, type LineInfo, type RenderLib, type TextBufferHandle } from "./zig.js"
+import { resolveRenderLib, type RenderLib, type TextBufferHandle } from "./zig.js"
 import { type WidthMethod, type Highlight } from "./types.js"
 import type { SyntaxStyle } from "./syntax-style.js"
 
@@ -18,7 +18,6 @@ export class TextBuffer {
   private bufferPtr: TextBufferHandle
   private _length: number = 0
   private _byteSize: number = 0
-  private _lineInfo?: LineInfo
   private _destroyed: boolean = false
   private _syntaxStyle?: SyntaxStyle
   private _textBytes?: Uint8Array
@@ -55,7 +54,6 @@ export class TextBuffer {
     this.lib.textBufferSetTextFromMem(this.bufferPtr, this._memId)
     this._length = this.lib.textBufferGetLength(this.bufferPtr)
     this._byteSize = this.lib.textBufferGetByteSize(this.bufferPtr)
-    this._lineInfo = undefined
     this._appendedChunks = [] // Clear any previously appended chunks
   }
 
@@ -67,7 +65,6 @@ export class TextBuffer {
     this.lib.textBufferAppend(this.bufferPtr, textBytes)
     this._length = this.lib.textBufferGetLength(this.bufferPtr)
     this._byteSize = this.lib.textBufferGetByteSize(this.bufferPtr)
-    this._lineInfo = undefined
   }
 
   public loadFile(path: string): void {
@@ -78,7 +75,6 @@ export class TextBuffer {
     }
     this._length = this.lib.textBufferGetLength(this.bufferPtr)
     this._byteSize = this.lib.textBufferGetByteSize(this.bufferPtr)
-    this._lineInfo = undefined
     this._textBytes = undefined
   }
 
@@ -89,7 +85,6 @@ export class TextBuffer {
 
     this._length = this.lib.textBufferGetLength(this.bufferPtr)
     this._byteSize = this.lib.textBufferGetByteSize(this.bufferPtr)
-    this._lineInfo = undefined
   }
 
   public setDefaultFg(fg: RGBA | null): void {
@@ -213,6 +208,8 @@ export class TextBuffer {
   public setTabWidth(width: number): void {
     this.guard()
     this.lib.textBufferSetTabWidth(this.bufferPtr, width)
+    // Native length is display-cell width, so tab metrics can change it without changing bytes.
+    this._length = this.lib.textBufferGetLength(this.bufferPtr)
   }
 
   public getTabWidth(): number {
@@ -225,7 +222,6 @@ export class TextBuffer {
     this.lib.textBufferClear(this.bufferPtr)
     this._length = 0
     this._byteSize = 0
-    this._lineInfo = undefined
     this._textBytes = undefined
     this._appendedChunks = []
     // Note: _memId is NOT cleared - it can be reused for next setText
@@ -236,7 +232,6 @@ export class TextBuffer {
     this.lib.textBufferReset(this.bufferPtr)
     this._length = 0
     this._byteSize = 0
-    this._lineInfo = undefined
     this._textBytes = undefined
     this._memId = undefined // Reset clears the registry, so clear our ID
     this._appendedChunks = []

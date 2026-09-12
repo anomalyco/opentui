@@ -1,41 +1,363 @@
 ---
 title: Testing
 description: Test renderers, input, mouse, and frame output
-order: 12
 skill:
+  entry: true
   intents: [testing, test-renderer, snapshots, frames]
 ---
 
 # Testing
 
-`@opentui/core/testing` provides a renderer that does not write to the real terminal by default. It constructs `CliRenderer` directly with `screenMode: "main-screen"`, `consoleMode: "disabled"`, `externalOutputMode: "passthrough"`, and native memory output.
+## Testing strategy
+
+Test the smallest observable boundary that can fail:
+
+1. Test parsers, state transitions, and other pure logic without a renderer.
+2. Use `createTestRenderer()` for renderable interaction, frame text, styled spans, and native cell updates.
+3. Test destruction, setup failure, partial initialization, and repeated cleanup for every resource owner.
+4. Use the React or Solid test utility when framework effects and reconciliation are part of the behavior.
+5. Use `@opentui/keymap/testing` for Keymap layers, addons, focus, dispatch, and diagnostics without a terminal renderer.
+
+`@opentui/core/testing` provides a real `CliRenderer` with native in-memory output. It also provides input, mouse, clock, capability, Tree-sitter, spy, and frame-recording helpers. The default setup does not write frames to the host terminal.
+
+## Test renderer
 
 ```typescript
 import { createTestRenderer } from "@opentui/core/testing"
-import { Text } from "@opentui/core"
+import { TextRenderable } from "@opentui/core"
 
-const { renderer, renderOnce, captureCharFrame } = await createTestRenderer({ width: 40, height: 10 })
+const setup = await createTestRenderer({ width: 40, height: 10 })
 
-renderer.root.add(Text({ content: "Hello" }))
-await renderOnce()
+try {
+  setup.renderer.root.add(new TextRenderable(setup.renderer, { content: "Hello" }))
+  await setup.renderOnce()
 
-console.log(captureCharFrame())
-renderer.destroy()
+  console.log(setup.captureCharFrame())
+} finally {
+  setup.renderer.destroy()
+}
 ```
 
-| Helper                      | Description                              |
-| --------------------------- | ---------------------------------------- |
-| `renderer`                  | The `CliRenderer` instance               |
-| `renderOnce()`              | Run one render pass                      |
-| `flush()`                   | Wait until scheduled rendering settles   |
-| `waitFor(predicate)`        | Retry until a condition passes           |
-| `waitForFrame(predicate)`   | Retry against captured frame text        |
-| `waitForVisualIdle()`       | Wait for quiet native frames             |
-| `captureCharFrame()`        | Read the current character frame as text |
-| `captureSpans()`            | Read styled span lines and cursor state  |
-| `externalOutput.takeText()` | Read captured split-footer output events |
-| `getNativeStats()`          | Read native render stats                 |
-| `resize(width, height)`     | Simulate a terminal resize               |
-| `mockInput` / `mockMouse`   | Drive keyboard and mouse input           |
+`createTestRenderer(options)` requires an options object. `TestRendererOptions` extends `CliRendererConfig` and adds `width`, `height`, `kittyKeyboard`, and `otherModifiersMode`.
 
-Use `createCliRenderer()` with custom `stdin` / `stdout` streams when a test needs the real output transport instead of memory output.
+### Setup semantics and defaults
+
+The helper constructs `CliRenderer` directly. It does not call `createCliRenderer()` or `setupTerminal()`. The default mock stdin has no `setRawMode()`. Thus, default tests do not change host raw mode. A supplied stream with `setRawMode()` still receives normal input setup. The helper also creates the native renderer and applies normal thread defaults.
+
+| Setting              | Test default                                                                       |
+| -------------------- | ---------------------------------------------------------------------------------- |
+| `screenMode`         | `"main-screen"`                                                                    |
+| `footerHeight`       | `12`                                                                               |
+| `consoleMode`        | `"disabled"`                                                                       |
+| `externalOutputMode` | `"passthrough"`                                                                    |
+| `bufferedOutput`     | `"memory"`                                                                         |
+| width                | `options.width`, custom `stdout.columns`, host `process.stdout.columns`, then `80` |
+| height               | `options.height`, custom `stdout.rows`, host `process.stdout.rows`, then `24`      |
+
+The legacy `kittyKeyboard: true` option maps to `useKittyKeyboard: { events: true }` and configures the mock key encoder. `otherModifiersMode` enables modifyOtherKeys-style sequences only when Kitty mode is off. Kitty mode takes precedence.
+
+Tests own cleanup. Always call `setup.renderer.destroy()` in `finally` or test teardown. Use `createCliRenderer()` with custom streams when a test must exercise the real output transport. The test renderer defaults to native memory output even when you supply stream objects.
+
+### Returned setup
+
+| Member                              | Behavior                                                                                   |
+| ----------------------------------- | ------------------------------------------------------------------------------------------ |
+| `renderer`                          | The `CliRenderer` instance (`TestRenderer` is a type alias)                                |
+| `mockInput`                         | Keyboard driver created by `createMockKeys()`                                              |
+| `mockMouse`                         | SGR mouse driver created by `createMockMouse()`                                            |
+| `renderOnce()`                      | Wait for feed backpressure if present, then run one renderer loop pass                     |
+| `flush(options?)`                   | Call `waitForVisualIdle()` with `maxPasses` as the frame limit. The default is `20`        |
+| `waitFor(predicate, options?)`      | Check a sync or async predicate while scheduled rendering can progress                     |
+| `waitForFrame(predicate, options?)` | Check captured text while scheduled rendering can progress, then return the matching frame |
+| `waitForVisualIdle(options?)`       | Wait for no scheduled work or consecutive zero-cell-update frames                          |
+| `captureCharFrame()`                | Decode the current character buffer as text                                                |
+| `captureSpans()`                    | Return `{ cols, rows, cursor: [x, y], lines }` with styled spans                           |
+| `externalOutput`                    | Recorder for split-footer external-output commits                                          |
+| `getNativeStats()`                  | Return the current native render stats                                                     |
+| `resize(width, height)`             | Invoke the renderer's test resize path                                                     |
+
+`renderOnce()` always starts one loop pass, even when the scheduler has no pending work. The wait helpers do not force a frame.
+
+### Waiting for observable output
+
+Use `renderOnce()` for an explicitly controlled pass. Use `waitForFrame()` when application work schedules rendering asynchronously:
+
+```typescript
+const setup = await createTestRenderer({ width: 30, height: 5 })
+
+try {
+  setup.renderer.root.add(new TextRenderable(setup.renderer, { content: "Ready" }))
+
+  const frame = await setup.waitForFrame((value) => value.includes("Ready"))
+  console.log(frame)
+} finally {
+  setup.renderer.destroy()
+}
+```
+
+Wait limit options accept numbers. Missing, nonnumeric, non-finite, and non-positive values use their defaults. Other values are floored. A value greater than `0` and less than `1` therefore becomes `0`.
+
+| Helper                | Options                      | Default bound |
+| --------------------- | ---------------------------- | ------------- |
+| `flush()`             | `{ maxPasses }`              | `20` frames   |
+| `waitFor()`           | `{ maxPasses }`              | `20` waits    |
+| `waitForFrame()`      | `{ maxPasses }`              | `20` waits    |
+| `waitForVisualIdle()` | `{ quietFrames, maxFrames }` | `1`, `20`     |
+
+`waitFor()` and `waitForFrame()` check the current state before the first wait. They can evaluate their predicate `maxPasses + 1` times. They stop early when the scheduler has no work.
+
+`waitForVisualIdle()` drains promise and `process.nextTick` work before each check. It returns when the scheduler has no running, rendering, or scheduled work. Otherwise, it requires `quietFrames` consecutive rendered frames whose latest native `cellsUpdated` value is zero. A changed frame resets the quiet-frame count.
+
+These are frame and scheduler bounds, not wall-clock timeouts. A wait can remain pending when a manual clock does not advance a scheduled render timer. Advance the clock in the test when the renderer uses `ManualClock`.
+
+On exhaustion, wait errors report `frameId`, `nativeFrameCount`, `cellsUpdated`, `isRunning`, `isRendering`, and `hasScheduledRender`. `waitForFrame()` also reports the last captured frame. See [Rendering diagnostics](/docs/test-and-debug/rendering-diagnostics) for the meaning of these values.
+
+### Styled frames
+
+`captureCharFrame()` decodes the current character buffer. Use it for text assertions and snapshots. `captureSpans()` preserves dimensions, cursor coordinates, and each line's styled spans:
+
+```typescript
+const setup = await createTestRenderer({ width: 20, height: 4 })
+
+try {
+  setup.renderer.root.add(new TextRenderable(setup.renderer, { content: "Status", fg: "#22c55e" }))
+  await setup.renderOnce()
+
+  const captured = setup.captureSpans()
+  console.log(captured.cols, captured.rows, captured.cursor, captured.lines)
+} finally {
+  setup.renderer.destroy()
+}
+```
+
+### External output
+
+The setup listens for `external_output` events. It records `text`, `rows`, snapshot `width` and `height`, `rowColumns`, `startOnNewLine`, and `trailingNewline`. Recording does not consume the renderer's native output queue.
+
+| Method                      | Behavior                                              |
+| --------------------------- | ----------------------------------------------------- |
+| `externalOutput.take()`     | Return all commits and clear the recorder             |
+| `externalOutput.takeText()` | Consume all commits and join their rows with newlines |
+| `externalOutput.clear()`    | Discard all commits                                   |
+
+## Keyboard input
+
+`createTestRenderer()` exposes its keyboard driver as `mockInput`. Use `createMockKeys(renderer, options?)` with an existing renderer.
+
+```typescript
+import { InputRenderable } from "@opentui/core"
+import { KeyCodes, createTestRenderer } from "@opentui/core/testing"
+
+const setup = await createTestRenderer({ width: 30, height: 4 })
+
+try {
+  const input = new InputRenderable(setup.renderer, { width: 20 })
+  setup.renderer.root.add(input)
+  input.focus()
+
+  await setup.mockInput.typeText("hello")
+  setup.mockInput.pressKey(KeyCodes.ARROW_LEFT)
+  setup.mockInput.pressBackspace()
+  await setup.renderOnce()
+} finally {
+  setup.renderer.destroy()
+}
+```
+
+Keyboard methods:
+
+| Method                              | Behavior                                        |
+| ----------------------------------- | ----------------------------------------------- |
+| `pressKey(key, modifiers?)`         | Emit one key synchronously                      |
+| `pressKeys(keys, delayMs = 0)`      | Emit several raw key inputs, optionally delayed |
+| `typeText(text, delayMs = 0)`       | Emit each item from `text.split("")`            |
+| `pressEnter(modifiers?)`            | Emit return                                     |
+| `pressEscape(modifiers?)`           | Emit escape                                     |
+| `pressTab(modifiers?)`              | Emit tab. Shift+Tab uses the back-tab sequence  |
+| `pressBackspace(modifiers?)`        | Emit backspace                                  |
+| `pressArrow(direction, modifiers?)` | Emit `"up"`, `"down"`, `"left"`, or `"right"`   |
+| `pressCtrlC()`                      | Emit Ctrl+C                                     |
+| `pasteBracketedText(text)`          | Emit bracketed-paste start, content, and end    |
+
+Modifiers are `shift`, `ctrl`, `meta`, `super`, and `hyper`. `KeyCodes` contains return, linefeed, tab, backspace, delete, home, end, escape, four arrows, and F1 through F12. `KeyInput` accepts a raw string or a `KeyCodes` key name.
+
+`typeText()` splits JavaScript UTF-16 code units. Use a whole UTF-8 input chunk or bracketed paste when a test must preserve a multi-code-unit grapheme. `pasteBytes(text)` returns UTF-8 bytes without emitting them.
+
+## Mouse input
+
+`mockMouse` emits SGR mouse sequences through renderer stdin. Test coordinates are zero-based. Use `createMockMouse(renderer)` with an existing renderer.
+
+```typescript
+const setup = await createTestRenderer({ width: 40, height: 10 })
+
+try {
+  await setup.mockMouse.click(4, 2)
+  await setup.mockMouse.drag(4, 2, 20, 6)
+  await setup.mockMouse.scroll(20, 6, "down")
+
+  console.log(setup.mockMouse.getCurrentPosition())
+  console.log(setup.mockMouse.getPressedButtons())
+} finally {
+  setup.renderer.destroy()
+}
+```
+
+Public operations are `moveTo`, `click`, `doubleClick`, `pressDown`, `release`, `drag`, `scroll`, `getCurrentPosition`, `getPressedButtons`, and low-level `emitMouseEvent`. Click, double-click, and drag use `delayMs: 10` by default. Drag emits five interpolated movement events. Other operations default to no delay.
+
+`MouseButtons` exports `LEFT` (0), `MIDDLE` (1), `RIGHT` (2), and wheel codes `WHEEL_UP` through `WHEEL_RIGHT` (64-67). Mouse modifiers are `shift`, `alt`, and `ctrl`.
+
+## Terminal capabilities
+
+Build a complete `TerminalCapabilities` fixture with partial overrides:
+
+```typescript
+import { createTerminalCapabilities, createTestRenderer, setRendererCapabilities } from "@opentui/core/testing"
+
+const capabilities = createTerminalCapabilities({
+  rgb: true,
+  kitty_keyboard: true,
+  terminal: { name: "test-terminal", version: "1" },
+})
+
+const setup = await createTestRenderer({ width: 20, height: 4 })
+
+try {
+  setRendererCapabilities(setup.renderer, capabilities)
+} finally {
+  setup.renderer.destroy()
+}
+```
+
+The baseline disables feature booleans. It uses `unicode: "unicode"`, `osc52_support: "unknown"`, `multiplexer: "none"`, `image_protocol: "auto"`, and `remote: false`. Terminal name and version are empty, and `from_xtversion` is `false`.
+
+`setRendererCapabilities(renderer, overrides?)` builds a complete fixture, replaces the renderer's test capability state, and returns the fixture. Read [Terminal capabilities](/docs/reference/terminal-capabilities) for production detection timing.
+
+## ManualClock
+
+`ManualClock` implements OpenTUI's clock interface without wall-clock waits. It starts at zero. It supports `now`, `setTime`, timeout and interval scheduling, clearing, `advance`, and `runAll`.
+
+```typescript
+const { ManualClock } = await import("@opentui/core/testing")
+
+const clock = new ManualClock()
+let fired = false
+
+clock.setTimeout(() => {
+  fired = true
+}, 100)
+
+clock.advance(99)
+console.log(fired) // false
+clock.advance(1)
+console.log(fired) // true
+```
+
+Times and delays are floored. Negative delays advance by zero. Timers at one timestamp fire in registration order. `setTime()` runs due timers when time moves forward. It directly changes the time when time moves backward. Use `runAll()` only for finite work because an active interval keeps scheduling work.
+
+## MockTreeSitterClient
+
+`MockTreeSitterClient` subclasses `TreeSitterClient` without starting a worker. `highlightOnce()` remains pending until the test resolves it. An optional clock-backed timeout can resolve it automatically.
+
+```typescript
+const { MockTreeSitterClient } = await import("@opentui/core/testing")
+
+const client = new MockTreeSitterClient()
+client.setMockResult({ highlights: [[0, 5, "keyword"]] })
+
+const pending = client.highlightOnce("const", "typescript")
+client.resolveHighlightOnce()
+
+try {
+  console.log(await pending)
+} finally {
+  await client.destroy()
+}
+```
+
+Public controls are `setMockResult`, `resolveHighlightOnce(index = 0)`, `resolveAllHighlightOnce`, and `isHighlighting`. Each resolution uses the current mock result. `destroy()` resolves all pending highlights before normal client cleanup. Constructor options are `autoResolveTimeout` and `clock`.
+
+## Small callback spies
+
+`createSpy()` returns a callable that records argument arrays:
+
+```typescript
+const { createSpy } = await import("@opentui/core/testing")
+
+const spy = createSpy()
+spy("saved", 3)
+
+console.log(spy.calls)
+console.log(spy.callCount())
+console.log(spy.calledWith("saved", 3))
+spy.reset()
+```
+
+`calledWith()` compares recorded and expected argument arrays with `JSON.stringify`. This helper is not a test-framework mock replacement.
+
+## TestRecorder
+
+`TestRecorder` listens to renderer `frame` events. It captures the character buffer after each completed render pass.
+
+```typescript
+import { TextRenderable } from "@opentui/core"
+import { TestRecorder, createTestRenderer } from "@opentui/core/testing"
+
+const setup = await createTestRenderer({ width: 20, height: 4 })
+const recorder = new TestRecorder(setup.renderer, {
+  recordBuffers: { fg: true, attributes: true },
+})
+
+try {
+  recorder.rec()
+  setup.renderer.root.add(new TextRenderable(setup.renderer, { content: "Recorded" }))
+  await setup.renderOnce()
+  recorder.stop()
+
+  console.log(recorder.recordedFrames)
+} finally {
+  recorder.stop()
+  setup.renderer.destroy()
+}
+```
+
+`rec()` starts a new recording, clears previous frames, resets numbering to zero, and records a start timestamp. A second `rec()` while active does nothing. `stop()` detaches the listener. `clear()` empties frames and resets numbering. `recordedFrames` returns an array copy, and `isRecording` reports current state.
+
+Each `RecordedFrame` contains `frame`, an elapsed `timestamp` from `rec()`, a zero-based `frameNumber`, and optional copied buffers. Constructor options accept `recordBuffers: { fg?, bg?, attributes? }` and an injectable `now()` function. Call `stop()` during teardown before destroying the renderer.
+
+## Framework tests
+
+React exports `testRender(node, options)` from `@opentui/react/test-utils`. The options object is required. It mounts with React `act()` and returns the Core `TestRendererSetup`. Renderer destruction unmounts the React root. See [React testing](/docs/bindings/react#testing).
+
+Solid exports `testRender(node, options?)` from `@opentui/solid`. It mounts a Solid root and returns the Core setup. Renderer destruction disposes the root and runs Solid cleanup. See [Solid testing](/docs/bindings/solid#testing).
+
+## Keymap tests
+
+`@opentui/keymap/testing` does not require a renderer:
+
+```typescript
+import { createTestKeymap } from "@opentui/keymap/testing"
+
+const harness = createTestKeymap({ defaultKeys: true })
+const calls: string[] = []
+
+try {
+  harness.keymap.registerLayer({
+    commands: [{ name: "save", run: () => calls.push("save") }],
+    bindings: [{ key: "x", cmd: "save" }],
+  })
+
+  harness.host.press("x")
+  console.log(calls)
+  console.log(harness.diagnostics.takeErrors())
+} finally {
+  harness.cleanup()
+}
+```
+
+The harness supplies a fake host, root target, focus and parent traversal, press and release events, raw input, target destruction, and diagnostic capture. Read [Custom keymap addon testing](/docs/keymap/custom-addons#testing-addons) for the full test entry point.
+
+## Next
+
+- [API and symbol index](/docs/reference/api-index) lists every `@opentui/core/testing` export and type.
+- [Interaction, focus, and selection](/docs/core-concepts/interaction) defines the behavior that keyboard and mouse tests observe.
+- [Rendering diagnostics](/docs/test-and-debug/rendering-diagnostics) explains frame, scheduler, native, and cell-update counters.

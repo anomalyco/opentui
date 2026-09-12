@@ -1,556 +1,385 @@
 #!/usr/bin/env bun
 
 import {
-  bg,
-  bold,
   BoxRenderable,
-  CliRenderEvents,
   type CliRenderer,
+  type ClipboardSelection,
+  type ClipboardService,
+  type ClipboardWriteDestination,
   createCliRenderer,
+  createClipboard,
+  createHostClipboard,
+  createRendererClipboardAdapter,
   decodePasteBytes,
-  fg,
   type KeyEvent,
   type PasteEvent,
-  ScrollBoxRenderable,
-  type Selection,
-  stripAnsiSequences,
-  t,
   TextareaRenderable,
   TextRenderable,
 } from "@opentui/core"
-import { setupCommonDemoKeys } from "./lib/standalone-keys.js"
 
-const P = {
-  bg: "#08111f",
-  panel: "#0f1b2d",
-  border: "#34507c",
-  borderHot: "#22d3ee",
-  text: "#d7e3f7",
-  muted: "#7d8da8",
-  cyan: "#22d3ee",
-  lime: "#bef264",
-  rose: "#fb7185",
-  amber: "#fbbf24",
-  violet: "#a78bfa",
+const COLORS = {
+  background: "#071018",
+  panel: "#101c28",
+  text: "#e5edf5",
+  muted: "#8ba0b5",
+  accent: "#66d9ef",
+  selection: "#28577a",
 } as const
 
-type Tone = "muted" | "info" | "ok" | "warn" | "bad"
+const READ_MAX_BYTES = 2 * 1024 * 1024
+const UNICODE_PAYLOAD = "OpenTUI clipboard round-trip\nUnicode: \u4e16\u754c cafe \ud83d\ude80\nLine endings: LF\nEnd"
+const LARGE_PAYLOAD = `OpenTUI large clipboard payload\n${"0123456789abcdef".repeat(1024)}`
+const INHERITED_WAYLAND_ONLY =
+  process.platform === "linux" &&
+  Boolean(process.env.WAYLAND_SOCKET) &&
+  !process.env.WAYLAND_DISPLAY &&
+  !process.env.DISPLAY
 
-const TONE_COLOR: Record<Tone, string> = {
-  muted: P.muted,
-  info: P.cyan,
-  ok: P.lime,
-  warn: P.amber,
-  bad: P.rose,
-}
+type LifecycleIntent = "create" | "dispose" | "recreate"
 
-const TONE_ICON: Record<Tone, string> = {
-  muted: "·",
-  info: "→",
-  ok: "✓",
-  warn: "…",
-  bad: "✗",
-}
-
-const MAX_LOG_ROWS = 80
-const SELECTION_BG = "#264f78"
-const SELECTION_FG = "#ffffff"
-
-interface Status {
-  tone: Tone
-  text: string
-}
-
-interface Fixture {
-  name: string
-  short: string
-  purpose: string
-  payload: string
-}
-
-const FIXTURES: readonly Fixture[] = [
-  {
-    name: "Unicode + LF",
-    short: "Unicode + LF",
-    purpose: "UTF-8 decoding and multiline insertion",
-    payload: "OpenTUI clipboard round-trip\nUnicode: 世界 café 🚀\nLine endings: LF\nEnd",
-  },
-  {
-    name: "CRLF + lone CR",
-    short: "CRLF + CR",
-    purpose: "Raw transport preserves CR; the editor normalizes to LF",
-    payload: "OpenTUI newline fixture\r\nCRLF line\rLone CR line\nLF line",
-  },
-  {
-    name: "ANSI text",
-    short: "ANSI",
-    purpose: "Raw event preserves ANSI; the textarea strips it on insertion",
-    payload: "OpenTUI ANSI fixture: \x1b[31mred\x1b[0m plain",
-  },
-  {
-    name: "Large (16 KiB)",
-    short: "Large 16 KiB",
-    purpose: "Exercises OSC 52 beyond the former fixed-buffer limit",
-    payload: `OpenTUI large OSC 52 payload\n${"0123456789abcdef".repeat(1024)}`,
-  },
-]
-
-const encoder = new TextEncoder()
-
-let container: BoxRenderable | null = null
-let tabsText: TextRenderable | null = null
-let fixtureText: TextRenderable | null = null
+let root: BoxRenderable | null = null
 let editor: TextareaRenderable | null = null
-let checksText: TextRenderable | null = null
-let logList: ScrollBoxRenderable | null = null
-let logRows: TextRenderable[] = []
-let logRowId = 0
-let keypressHandler: ((event: KeyEvent) => void) | null = null
+let statusText: TextRenderable | null = null
+let clipboard: ClipboardService | null = null
+let selection: ClipboardSelection = "clipboard"
+let payload = UNICODE_PAYLOAD
+let operationStatus = "Ready"
+let pasteStatus = "No PasteEvent received"
+let operationVersion = 0
+let lifecycleVersion = 0
+let pasteGeneration = 0
+let lifecycleQueue: Promise<void> = Promise.resolve()
+let keyHandler: ((key: KeyEvent) => void) | null = null
 let pasteHandler: ((event: PasteEvent) => void) | null = null
-let capabilityHandler: (() => void) | null = null
-let selectionHandler: ((selection: Selection) => void) | null = null
-let selectedFixture = 0
-let fixturePayloadEmitted = false
-let lastLoggedCapability = ""
-let copyStatus: Status = { tone: "muted", text: "not attempted" }
-let pasteStatus: Status = { tone: "muted", text: "waiting for a PasteEvent" }
-let editorStatus: Status = { tone: "muted", text: "waiting for default insertion" }
-let roundTripStatus: Status = { tone: "muted", text: "not evaluated" }
+let destroyPromise: Promise<void> | null = null
+let inheritedWaylandServiceCreated = false
 
-function fixture(): Fixture {
-  return FIXTURES[selectedFixture]!
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error)
 }
 
-function normalizeNewlines(value: string): string {
-  return value.replace(/\r\n/g, "\n").replace(/\r/g, "\n")
+function byteCount(text: string): number {
+  return new TextEncoder().encode(text).length
 }
 
-function escapedPreview(value: string, maxLength = 64): string {
-  const escaped = JSON.stringify(value)
-  return escaped.length <= maxLength ? escaped : `${escaped.slice(0, maxLength - 3)}...`
+function normalizeNewlines(text: string): string {
+  return text.replace(/\r\n/g, "\n").replace(/\r/g, "\n")
 }
 
-function byteLength(value: string): number {
-  return encoder.encode(value).length
+async function sha256(bytes: Uint8Array): Promise<string> {
+  const digest = await crypto.subtle.digest("SHA-256", Uint8Array.from(bytes).buffer)
+  return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("")
 }
 
-function hexPrefix(bytes: Uint8Array, count = 12): string {
-  const slice = bytes.slice(0, count)
-  const hex = Array.from(slice, (byte) => byte.toString(16).padStart(2, "0")).join("")
-  return bytes.length > count ? `${hex}…` : hex
+function terminalResult(status: string, capability: string): string {
+  return status === "attempted" ? `attempted, unconfirmed (${capability})` : `${status} (${capability})`
 }
 
-function timestamp(): string {
-  const now = new Date()
-  const hh = `${now.getHours()}`.padStart(2, "0")
-  const mm = `${now.getMinutes()}`.padStart(2, "0")
-  const ss = `${now.getSeconds()}`.padStart(2, "0")
-  const ms = `${now.getMilliseconds()}`.padStart(3, "0")
-  return `${hh}:${mm}:${ss}.${ms}`
+function updateStatus(): void {
+  if (!statusText) return
+  const payloadName = payload === UNICODE_PAYLOAD ? "exact Unicode" : "exact 16,416-byte large fixture"
+  statusText.content = [
+    `Service: ${clipboard ? "active" : "disposed"} | Selection: ${selection}`,
+    `Payload: ${payloadName}, ${byteCount(payload)} bytes`,
+    `Operation: ${operationStatus}`,
+    `PasteEvent: ${pasteStatus}`,
+  ].join("\n")
 }
 
-function capabilityStatus(renderer: CliRenderer): Status {
-  const capabilities = renderer.capabilities
-  if (!capabilities) return { tone: "muted", text: "detecting" }
-  const hint = capabilities.osc52 ? "yes" : "no"
-  switch (capabilities.osc52_support) {
-    case "supported":
-      return { tone: "ok", text: `supported — emits (legacy hint: ${hint})` }
-    case "unsupported":
-      return { tone: "bad", text: `unsupported — emission blocked (legacy hint: ${hint})` }
-    default:
-      return { tone: "warn", text: `unknown — emits optimistically (legacy hint: ${hint})` }
+function beginOperation(status: string): number {
+  operationVersion += 1
+  operationStatus = status
+  updateStatus()
+  return operationVersion
+}
+
+function finishOperation(version: number, status: string): void {
+  if (version === operationVersion) operationStatus = status
+  updateStatus()
+}
+
+function requestLifecycle(renderer: CliRenderer, intent: LifecycleIntent): Promise<void> {
+  if (INHERITED_WAYLAND_ONLY && intent === "recreate" && clipboard) {
+    beginOperation("Recreate skipped: this inherited Wayland socket supports one active host service")
+    return lifecycleQueue
   }
-}
+  if (INHERITED_WAYLAND_ONLY && intent !== "dispose" && inheritedWaylandServiceCreated && !clipboard) {
+    beginOperation("Host service unavailable: the inherited Wayland socket was already consumed")
+    return lifecycleQueue
+  }
 
-function metadataLabel(event: PasteEvent): string {
-  if (!event.metadata) return "meta absent"
-  return `meta kind=${event.metadata.kind ?? "unset"} mime=${event.metadata.mimeType ?? "unset"}`
-}
+  const lifecycle = ++lifecycleVersion
+  const operation = beginOperation(
+    intent === "create"
+      ? "Creating clipboard service"
+      : intent === "dispose"
+        ? "Disposing clipboard service"
+        : "Recreating clipboard service",
+  )
+  const service = intent === "create" ? null : clipboard
+  if (intent !== "create") {
+    clipboard = null
+    updateStatus()
+  }
 
-function statusChunk(status: Status) {
-  return fg(TONE_COLOR[status.tone])(`${TONE_ICON[status.tone]} ${status.text}`)
-}
+  lifecycleQueue = lifecycleQueue.then(async () => {
+    if (service) {
+      try {
+        await service.dispose()
+      } catch (error) {
+        if (lifecycle === lifecycleVersion) finishOperation(operation, `Dispose failed: ${errorMessage(error)}`)
+        return
+      }
+    }
+    if (lifecycle !== lifecycleVersion) return
+    if (intent === "dispose") {
+      finishOperation(operation, service ? "Service disposal awaited" : "Service is already disposed")
+      return
+    }
+    if (intent === "create" && clipboard) {
+      finishOperation(operation, "Service is already active")
+      return
+    }
 
-function label(text: string) {
-  return fg(P.muted)(text.padEnd(12))
-}
-
-function addLog(renderer: CliRenderer, tone: Tone, message: string, detail?: string): void {
-  if (!logList) return
-
-  const row = new TextRenderable(renderer, {
-    id: `clipboard-paste-log-${logRowId++}`,
-    content: t`${fg(P.muted)(timestamp())} ${fg(TONE_COLOR[tone])(`${TONE_ICON[tone]} ${message}`)}`,
-    flexGrow: 0,
-    flexShrink: 0,
-    selectionBg: SELECTION_BG,
-    selectionFg: SELECTION_FG,
+    try {
+      clipboard = createClipboard({
+        host: createHostClipboard({ maxReadBytes: READ_MAX_BYTES }),
+        terminal: createRendererClipboardAdapter(renderer),
+      })
+      if (INHERITED_WAYLAND_ONLY) inheritedWaylandServiceCreated = true
+      finishOperation(operation, "Created host and terminal clipboard service")
+    } catch (error) {
+      finishOperation(operation, `Create failed: ${errorMessage(error)}`)
+    }
   })
-  logList.add(row)
-  logRows.push(row)
+  return lifecycleQueue
+}
 
-  if (detail) {
-    const detailRow = new TextRenderable(renderer, {
-      id: `clipboard-paste-log-${logRowId++}`,
-      content: t`${fg(P.muted)(`             ${detail}`)}`,
-      flexGrow: 0,
-      flexShrink: 0,
-      selectionBg: SELECTION_BG,
-      selectionFg: SELECTION_FG,
-    })
-    logList.add(detailRow)
-    logRows.push(detailRow)
+async function write(destination: ClipboardWriteDestination): Promise<void> {
+  const service = clipboard
+  const chosenPayload = payload
+  const chosenSelection = selection
+  const operation = beginOperation(`Writing ${byteCount(chosenPayload)} bytes to ${chosenSelection} via ${destination}`)
+  if (!service) {
+    finishOperation(operation, "Write skipped: service disposed (F11 recreates)")
+    return
   }
 
-  while (logRows.length > MAX_LOG_ROWS) {
-    const oldRow = logRows.shift()
-    oldRow?.destroyRecursively()
+  try {
+    const result = await service.writeText(chosenPayload, { destination, selection: chosenSelection })
+    if (service !== clipboard) return
+    finishOperation(
+      operation,
+      `Write ${chosenSelection}: host ${result.host.status}; terminal ${terminalResult(result.terminal.status, result.terminal.capability)}`,
+    )
+  } catch (error) {
+    if (service === clipboard) finishOperation(operation, `Write failed: ${errorMessage(error)}`)
   }
 }
 
-function updateTabs(): void {
-  if (!tabsText) return
-  const chunks = FIXTURES.map((entry, index) => {
-    const text = ` ${index + 1} ${entry.short} `
-    return index === selectedFixture ? bg(P.cyan)(fg(P.bg)(bold(text))) : fg(P.muted)(text)
-  })
-  tabsText.content = t`${chunks[0]!} ${chunks[1]!} ${chunks[2]!} ${chunks[3]!}`
+async function readHost(chosenSelection: ClipboardSelection): Promise<void> {
+  const service = clipboard
+  const expectedPayload = payload
+  const operation = beginOperation(`Reading host ${chosenSelection}; prefers image/png then text/plain`)
+  if (!service) {
+    finishOperation(operation, "Read skipped: service disposed (F11 recreates)")
+    return
+  }
+
+  try {
+    const result = await service.read({ preferredTypes: ["image/png", "text/plain"], selection: chosenSelection })
+    if (service !== clipboard || operation !== operationVersion) return
+    if (result.status !== "read") {
+      const detail = result.status === "failed" ? `: ${result.error.message}` : ""
+      finishOperation(operation, `Host read ${chosenSelection}: ${result.status}${detail}`)
+      return
+    }
+
+    const { mimeType, bytes } = result.representation
+    const digest = await sha256(bytes)
+    if (service !== clipboard) return
+    const exact = mimeType === "text/plain" && new TextDecoder().decode(bytes) === expectedPayload
+    finishOperation(
+      operation,
+      `Host read ${chosenSelection}: ${mimeType}, ${bytes.length} bytes, exact fixture ${exact ? "yes" : "no"}; SHA-256 ${digest}. No PasteEvent synthesized.`,
+    )
+  } catch (error) {
+    if (service === clipboard) finishOperation(operation, `Read failed: ${errorMessage(error)}`)
+  }
 }
 
-function updateFixturePanel(): void {
-  if (!fixtureText) return
-  const current = fixture()
-  fixtureText.content = t`${bold(fg(P.text)(current.name))} ${fg(P.muted)(`— ${byteLength(current.payload)} UTF-8 bytes`)}
-${label("Purpose")} ${fg(P.text)(current.purpose)}
-${label("Expected")} ${fg(P.violet)(escapedPreview(current.payload))}`
+async function clear(chosenSelection: ClipboardSelection, destination: ClipboardWriteDestination): Promise<void> {
+  const service = clipboard
+  const operation = beginOperation(`Clearing ${chosenSelection} via ${destination}`)
+  if (!service) {
+    finishOperation(operation, "Clear skipped: service disposed (F11 recreates)")
+    return
+  }
+
+  try {
+    const result = await service.clear({ destination, selection: chosenSelection })
+    if (service !== clipboard) return
+    finishOperation(
+      operation,
+      `Clear ${chosenSelection}: host ${result.host.status}; terminal ${terminalResult(result.terminal.status, result.terminal.capability)}`,
+    )
+  } catch (error) {
+    if (service === clipboard) finishOperation(operation, `Clear failed: ${errorMessage(error)}`)
+  }
 }
 
-function updateChecks(renderer: CliRenderer): void {
-  if (!checksText) return
-  const capability = capabilityStatus(renderer)
-  checksText.content = t`${label("Capability")} ${statusChunk(capability)}
-${label("Copy OSC 52")} ${statusChunk(copyStatus)}
-${label("Paste event")} ${statusChunk(pasteStatus)}
-${label("Editor text")} ${statusChunk(editorStatus)}
-${label("Round trip")} ${statusChunk(roundTripStatus)}`
-}
-
-function resetTest(renderer: CliRenderer, reason: string): void {
+function selectPayload(nextPayload: string, name: string): void {
+  pasteGeneration += 1
+  payload = nextPayload
   editor?.setText("")
-  fixturePayloadEmitted = false
-  copyStatus = { tone: "muted", text: "not attempted" }
-  pasteStatus = { tone: "muted", text: "waiting for a PasteEvent" }
-  editorStatus = { tone: "muted", text: "waiting for default insertion" }
-  roundTripStatus = { tone: "muted", text: "not evaluated" }
-  updateTabs()
-  updateFixturePanel()
-  updateChecks(renderer)
-  editor?.focus()
-  addLog(renderer, "muted", `${reason} — editor cleared, checks idle`)
+  pasteStatus = "No PasteEvent received for selected fixture"
+  beginOperation(`Selected ${name}; paste target reset`)
 }
 
-function panel(renderer: CliRenderer, id: string, title: string, height?: number): BoxRenderable {
-  return new BoxRenderable(renderer, {
-    id,
-    title: ` ${title} `,
-    titleAlignment: "left",
-    border: true,
-    borderStyle: "rounded",
-    borderColor: P.border,
-    backgroundColor: P.panel,
-    paddingLeft: 1,
-    paddingRight: 1,
-    ...(height === undefined ? {} : { height }),
-  })
+function handleKey(renderer: CliRenderer, key: KeyEvent): void {
+  if (key.name === "f7") {
+    key.preventDefault()
+    void readHost(key.shift ? "primary" : "clipboard")
+    return
+  }
+
+  switch (key.name) {
+    case "f1":
+      selectPayload(UNICODE_PAYLOAD, "exact Unicode payload")
+      break
+    case "f2":
+      void write("host-only")
+      break
+    case "f3":
+      selection = selection === "clipboard" ? "primary" : "clipboard"
+      beginOperation(`Selected ${selection}`)
+      break
+    case "f4":
+      selectPayload(LARGE_PAYLOAD, "exact 16,416-byte large fixture")
+      break
+    case "f5":
+      void write("terminal-only")
+      break
+    case "f6":
+      void write("all-available")
+      break
+    case "f8":
+      void clear("clipboard", "all-available")
+      break
+    case "f9":
+      void clear(selection, "terminal-only")
+      break
+    case "f10":
+      void requestLifecycle(renderer, "dispose")
+      break
+    case "f11":
+      void requestLifecycle(renderer, "recreate")
+      break
+    default:
+      return
+  }
+  key.preventDefault()
+  editor?.focus()
 }
 
 export function run(renderer: CliRenderer): void {
-  renderer.setBackgroundColor(P.bg)
+  destroyPromise = null
+  pasteGeneration += 1
+  selection = "clipboard"
+  payload = UNICODE_PAYLOAD
+  operationStatus = "Ready"
+  pasteStatus = "No PasteEvent received"
+  renderer.setBackgroundColor(COLORS.background)
 
-  container = new BoxRenderable(renderer, {
-    id: "clipboard-paste-container",
+  root = new BoxRenderable(renderer, {
     width: "100%",
     height: "100%",
     padding: 1,
     flexDirection: "column",
-    backgroundColor: P.bg,
+    gap: 1,
   })
 
-  const header = new TextRenderable(renderer, {
-    id: "clipboard-paste-header",
-    height: 2,
-    marginBottom: 1,
-    content: t`${bold(fg(P.cyan)("CLIPBOARD + PASTE TEST BED"))} ${fg(P.muted)("— OSC 52 → PasteEvent → textarea")}
-${bold(fg(P.amber)("1-4"))} ${fg(P.muted)("fixture")}  ${bold(fg(P.amber)("Ctrl+Y"))} ${fg(P.muted)("copy")}  ${bold(fg(P.amber)("Ctrl+K"))} ${fg(P.muted)("clear")}  ${bold(fg(P.amber)("Ctrl+R"))} ${fg(P.muted)("reset")}  ${bold(fg(P.amber)("drag-select"))} ${fg(P.muted)("copies via OSC 52")}`,
-  })
-
-  tabsText = new TextRenderable(renderer, {
-    id: "clipboard-paste-tabs",
-    height: 1,
-    content: "",
-  })
-
-  const fixturePanel = panel(renderer, "clipboard-paste-fixture-panel", "Fixture", 5)
-  fixturePanel.marginBottom = 1
-  fixtureText = new TextRenderable(renderer, {
-    id: "clipboard-paste-fixture",
-    content: "",
-    selectionBg: SELECTION_BG,
-    selectionFg: SELECTION_FG,
-  })
-  fixturePanel.add(fixtureText)
-
-  const editorPanel = new BoxRenderable(renderer, {
-    id: "clipboard-paste-editor-box",
-    title: " Paste target ",
-    titleAlignment: "left",
-    border: true,
-    borderStyle: "rounded",
-    borderColor: P.borderHot,
-    backgroundColor: P.panel,
-    paddingLeft: 1,
-    paddingRight: 1,
-    height: 6,
-    marginBottom: 1,
+  const instructions = new TextRenderable(renderer, {
+    height: 5,
+    fg: COLORS.muted,
+    content: [
+      "CLIPBOARD AND PASTE MANUAL ACCEPTANCE",
+      "F1 Unicode | F2 host write | F3 clipboard/primary | F4 16,416-byte fixture | F5 terminal write | F6 all write",
+      "F7 read clipboard | Shift+F7 read primary | F8 clear clipboard/all | F9 terminal clear (selected selection)",
+      INHERITED_WAYLAND_ONLY
+        ? "F10 dispose (irreversible) | F11 unavailable | Menu: Escape returns | Standalone: Ctrl+C/Ctrl+Q quits"
+        : "F10 dispose | F11 recreate | Menu: Escape returns | Standalone: Ctrl+C/Ctrl+Q quits",
+      "Terminal attempts are unconfirmed. Paste normally into the focused textarea below.",
+    ].join("\n"),
   })
 
   editor = new TextareaRenderable(renderer, {
-    id: "clipboard-paste-editor",
     width: "100%",
-    height: "100%",
-    placeholder: "Paste here... (Ctrl+R resets before an exact editor check)",
-    textColor: P.text,
-    backgroundColor: P.panel,
-    focusedBackgroundColor: P.panel,
-    cursorColor: P.amber,
+    flexGrow: 1,
+    placeholder: "FOCUSED PASTE TARGET: ordinary terminal paste bytes/text appear here...",
+    textColor: COLORS.text,
+    backgroundColor: COLORS.panel,
+    cursorColor: COLORS.accent,
+    selectionBg: COLORS.selection,
     wrapMode: "word",
   })
-  editorPanel.add(editor)
 
-  const checksPanel = panel(renderer, "clipboard-paste-checks-panel", "Checks", 7)
-  checksPanel.marginBottom = 1
-  checksText = new TextRenderable(renderer, {
-    id: "clipboard-paste-checks",
-    content: "",
-    selectionBg: SELECTION_BG,
-    selectionFg: SELECTION_FG,
-  })
-  checksPanel.add(checksText)
-
-  const logPanel = new BoxRenderable(renderer, {
-    id: "clipboard-paste-log-panel",
-    title: " Events ",
-    titleAlignment: "left",
-    border: true,
-    borderStyle: "rounded",
-    borderColor: P.border,
-    backgroundColor: P.panel,
-    paddingLeft: 1,
-    paddingRight: 1,
-    flexGrow: 1,
-    flexShrink: 1,
-    minHeight: 5,
-    flexDirection: "column",
+  statusText = new TextRenderable(renderer, {
+    height: 7,
+    fg: COLORS.text,
   })
 
-  logList = new ScrollBoxRenderable(renderer, {
-    id: "clipboard-paste-log-list",
-    stickyScroll: true,
-    stickyStart: "bottom",
-    rootOptions: { backgroundColor: P.panel, border: false },
-    wrapperOptions: { backgroundColor: P.panel },
-    viewportOptions: { backgroundColor: P.panel },
-    contentOptions: { backgroundColor: P.panel },
-    scrollbarOptions: {
-      trackOptions: {
-        foregroundColor: P.cyan,
-        backgroundColor: P.border,
-      },
-    },
-    height: "100%",
-    width: "auto",
-    flexGrow: 1,
-    flexShrink: 1,
-  })
-  logPanel.add(logList)
+  root.add(instructions)
+  root.add(editor)
+  root.add(statusText)
+  renderer.root.add(root)
 
-  container.add(header)
-  container.add(tabsText)
-  container.add(fixturePanel)
-  container.add(editorPanel)
-  container.add(checksPanel)
-  container.add(logPanel)
-  renderer.root.add(container)
-
+  keyHandler = (key) => handleKey(renderer, key)
   pasteHandler = (event) => {
-    const current = fixture()
-    const pasted = decodePasteBytes(event.bytes)
-    const exact = pasted === current.payload
-    const normalized = normalizeNewlines(pasted) === normalizeNewlines(current.payload)
-    pasteStatus = exact
-      ? { tone: "ok", text: `raw and normalized match — ${event.bytes.length} bytes` }
-      : normalized
-        ? { tone: "warn", text: `normalized match only — raw differs (${event.bytes.length} bytes)` }
-        : { tone: "bad", text: `no fixture match — ${event.bytes.length} bytes` }
-    roundTripStatus =
-      fixturePayloadEmitted && exact
-        ? { tone: "ok", text: "observed after emission (terminal acceptance unacknowledged)" }
-        : { tone: "warn", text: "not established — needs emission plus an exact raw match" }
-    editorStatus = { tone: "warn", text: "pending default focused-renderable handling" }
-    updateChecks(renderer)
-    addLog(
-      renderer,
-      pasteStatus.tone,
-      `paste ← ${event.bytes.length} B · ${metadataLabel(event)} · raw ${exact ? "✓" : "✗"} norm ${normalized ? "✓" : "✗"}`,
-      `${escapedPreview(pasted, 44)} · hex ${hexPrefix(event.bytes, 8)}`,
-    )
-
+    const generation = ++pasteGeneration
+    const expected = payload
+    const rawMatch = decodePasteBytes(event.bytes) === expected
+    pasteStatus = `${event.bytes.length} bytes | raw fixture match: ${rawMatch ? "yes" : "no"} | editor match: pending`
+    updateStatus()
     queueMicrotask(() => {
-      if (!editor || editor.isDestroyed) return
-      const expected = normalizeNewlines(stripAnsiSequences(current.payload))
-      const pass = editor.plainText === expected
-      editorStatus = pass
-        ? { tone: "ok", text: `matches expected editor text — ${byteLength(editor.plainText)} bytes retained` }
-        : {
-            tone: "bad",
-            text: `expected ${byteLength(expected)} bytes, retained ${byteLength(editor.plainText)} — ${escapedPreview(editor.plainText, 36)}`,
-          }
-      updateChecks(renderer)
-      addLog(
-        renderer,
-        pass ? "ok" : "bad",
-        pass
-          ? `editor retained ${byteLength(editor.plainText)} B (ANSI stripped, newlines normalized)`
-          : `editor mismatch — expected ${byteLength(expected)} B, retained ${byteLength(editor.plainText)} B`,
-      )
+      if (generation !== pasteGeneration) return
+      const editorMatch = editor?.plainText === normalizeNewlines(expected)
+      pasteStatus = `${event.bytes.length} bytes | raw fixture match: ${rawMatch ? "yes" : "no"} | editor normalized match: ${editorMatch ? "yes" : "no"}`
+      updateStatus()
     })
   }
 
-  keypressHandler = (event) => {
-    if (!event.ctrl && /^[1-4]$/.test(event.name)) {
-      event.preventDefault()
-      selectedFixture = Number(event.name) - 1
-      const current = fixture()
-      resetTest(renderer, `fixture → ${selectedFixture + 1} ${current.name} (${byteLength(current.payload)} B)`)
-      return
-    }
-
-    if (event.ctrl && event.name === "y") {
-      event.preventDefault()
-      const current = fixture()
-      const emitted = renderer.copyToClipboardOSC52(current.payload)
-      fixturePayloadEmitted = emitted
-      copyStatus = emitted
-        ? { tone: "info", text: `emitted ${byteLength(current.payload)} UTF-8 bytes` }
-        : { tone: "bad", text: "local emission failed" }
-      roundTripStatus = emitted
-        ? { tone: "warn", text: "waiting for an exact paste after emission" }
-        : { tone: "muted", text: "not evaluated" }
-      updateChecks(renderer)
-      addLog(
-        renderer,
-        emitted ? "info" : "bad",
-        emitted
-          ? `osc52 copy → emitted ${byteLength(current.payload)} B (default clipboard target)`
-          : "osc52 copy → local emission failed",
-      )
-      return
-    }
-
-    if (event.ctrl && event.name === "k") {
-      event.preventDefault()
-      fixturePayloadEmitted = false
-      const emitted = renderer.clearClipboardOSC52()
-      copyStatus = emitted
-        ? { tone: "info", text: "emitted clear request" }
-        : { tone: "bad", text: "clear emission failed" }
-      roundTripStatus = { tone: "muted", text: "not applicable to clear requests" }
-      updateChecks(renderer)
-      addLog(renderer, emitted ? "info" : "bad", emitted ? "osc52 clear → emitted" : "osc52 clear → emission failed")
-      return
-    }
-
-    if (event.ctrl && event.name === "r") {
-      event.preventDefault()
-      resetTest(renderer, "reset")
-    }
-  }
-
-  capabilityHandler = () => {
-    updateChecks(renderer)
-    const capabilities = renderer.capabilities
-    if (!capabilities) return
-    const snapshot = `${capabilities.osc52_support}/${capabilities.osc52 ? "hint-yes" : "hint-no"}`
-    if (snapshot !== lastLoggedCapability) {
-      lastLoggedCapability = snapshot
-      addLog(
-        renderer,
-        "info",
-        `capabilities → osc52_support=${capabilities.osc52_support} legacy-hint=${capabilities.osc52 ? "yes" : "no"}`,
-      )
-    }
-  }
-
-  selectionHandler = (selection) => {
-    if (selection.isDragging) return
-    const text = selection.getSelectedText()
-    if (!text || text.trim().length === 0) return
-
-    renderer.clearSelection()
-    const emitted = renderer.copyToClipboardOSC52(text)
-    if (emitted) {
-      fixturePayloadEmitted = false
-      copyStatus = { tone: "info", text: `emitted selection (${byteLength(text)} UTF-8 bytes)` }
-      if (roundTripStatus.text.startsWith("waiting")) {
-        roundTripStatus = { tone: "muted", text: "superseded by selection copy" }
-      }
-    } else {
-      copyStatus = { tone: "bad", text: "selection copy emission failed" }
-    }
-    updateChecks(renderer)
-    addLog(
-      renderer,
-      emitted ? "info" : "bad",
-      emitted ? `selection copy → emitted ${byteLength(text)} B` : "selection copy → local emission failed",
-      escapedPreview(text, 56),
-    )
-  }
-
-  renderer.on(CliRenderEvents.CAPABILITIES, capabilityHandler)
-  renderer.on(CliRenderEvents.SELECTION, selectionHandler)
+  renderer.keyInput.on("keypress", keyHandler)
   renderer.keyInput.on("paste", pasteHandler)
-  renderer.keyInput.on("keypress", keypressHandler)
-  resetTest(renderer, "ready")
+  void requestLifecycle(renderer, "create")
+  editor.focus()
 }
 
-export function destroy(renderer: CliRenderer): void {
-  if (pasteHandler) renderer.keyInput.off("paste", pasteHandler)
-  if (keypressHandler) renderer.keyInput.off("keypress", keypressHandler)
-  if (capabilityHandler) renderer.off(CliRenderEvents.CAPABILITIES, capabilityHandler)
-  if (selectionHandler) renderer.off(CliRenderEvents.SELECTION, selectionHandler)
-  renderer.clearSelection()
-  container?.destroyRecursively()
-  container = null
-  tabsText = null
-  fixtureText = null
-  editor = null
-  checksText = null
-  logList = null
-  logRows = []
-  logRowId = 0
-  lastLoggedCapability = ""
-  pasteHandler = null
-  keypressHandler = null
-  capabilityHandler = null
-  selectionHandler = null
+export function destroy(renderer: CliRenderer): Promise<void> {
+  destroyPromise ??= (async () => {
+    pasteGeneration += 1
+    if (keyHandler) renderer.keyInput.off("keypress", keyHandler)
+    if (pasteHandler) renderer.keyInput.off("paste", pasteHandler)
+    keyHandler = null
+    pasteHandler = null
+    renderer.clearSelection()
+    await requestLifecycle(renderer, "dispose")
+    root?.destroyRecursively()
+    root = null
+    editor = null
+    statusText = null
+  })()
+  return destroyPromise
 }
 
 if (import.meta.main) {
-  const renderer = await createCliRenderer({
-    exitOnCtrlC: true,
-    targetFps: 30,
-  })
+  const renderer = await createCliRenderer({ exitOnCtrlC: false, targetFps: 30 })
   run(renderer)
-  setupCommonDemoKeys(renderer)
+  renderer.keyInput.on("keypress", (key: KeyEvent) => {
+    if ((key.name === "c" && key.ctrl) || (key.name === "q" && key.ctrl)) {
+      key.preventDefault()
+      key.stopPropagation()
+      void destroy(renderer).finally(() => renderer.destroy())
+    }
+  })
 }

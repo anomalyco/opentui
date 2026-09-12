@@ -97,7 +97,7 @@ export type TreeSitterWorkerResponse =
   | { type: "UPDATE_DATA_PATH_RESPONSE"; messageId: string; error?: string }
   | { type: "CLEAR_CACHE_RESPONSE"; messageId: string; error?: string }
   | { type: "WARNING"; bufferId?: number; warning: string }
-  | { type: "ERROR"; bufferId?: number; error: string }
+  | { type: "ERROR"; bufferId?: number; messageId?: string; error: string }
   | { type: "WORKER_LOG"; logType: TreeSitterWorkerLogType; data: unknown[] }
 
 export interface TreeSitterClientEvents {

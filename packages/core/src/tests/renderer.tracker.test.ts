@@ -160,6 +160,37 @@ test("renderer with custom stdin does not pause process.stdin on destroy", async
   expect(pauseCalled).toBe(false)
 })
 
+test("destroy discards terminal input queued during teardown", async () => {
+  const stdin = createTestStdin()
+  stdin.once("pause", () => {
+    stdin.push("\x1b[<35;125;28M")
+  })
+  const renderer = await createCliRenderer({
+    stdin,
+    stdout: createTestStdout(),
+    bufferedOutput: "memory",
+  })
+
+  renderer.destroy()
+
+  expect(stdin.read()).toBeNull()
+})
+
+test("destroy preserves input queued after suspension", async () => {
+  const stdin = createTestStdin()
+  const renderer = await createCliRenderer({
+    stdin,
+    stdout: createTestStdout(),
+    bufferedOutput: "memory",
+  })
+  renderer.suspend()
+  stdin.push("input after suspend")
+
+  renderer.destroy()
+
+  expect(stdin.read()).toEqual(Buffer.from("input after suspend"))
+})
+
 test("destroying process stdin owner pauses it while a custom renderer remains", async () => {
   const processRenderer = await createCliRenderer({
     stdin: process.stdin,

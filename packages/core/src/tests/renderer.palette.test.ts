@@ -725,8 +725,8 @@ describe("Capability repaint handling", () => {
     // @ts-expect-error - testing private renderer state
     expect(renderer.updateScheduled).toBe(true)
 
-    // @ts-expect-error - testing private renderer method
-    await renderer.activateFrame()
+    clock.advance(17)
+    await renderer.idle()
 
     const lastCall = renderSpy.mock.calls[renderSpy.mock.calls.length - 1]
     expect(lastCall?.[1]).toBe(true)

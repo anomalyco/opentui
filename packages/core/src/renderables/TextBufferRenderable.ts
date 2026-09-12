@@ -137,6 +137,24 @@ export abstract class TextBufferRenderable extends Renderable implements LineInf
     return this.textBufferView.logicalLineInfo
   }
 
+  public getLineSources(startLine: number, lineCount: number): number[] {
+    if (this.needsLineInfoFallback(TextBufferRenderable.prototype)) {
+      return this.lineInfo.lineSources.slice(startLine, startLine + lineCount)
+    }
+    return this.textBufferView.getLineSources(startLine, lineCount)
+  }
+
+  protected needsLineInfoFallback(owner: object): boolean {
+    // A bounded override opts in; a nearer legacy lineInfo override keeps the virtual getter.
+    let prototype: object | null = this
+    while (prototype && prototype !== owner) {
+      if (Object.hasOwn(prototype, "getLineSources")) return false
+      if (Object.hasOwn(prototype, "lineInfo")) return true
+      prototype = Object.getPrototypeOf(prototype)
+    }
+    return false
+  }
+
   public get lineCount(): number {
     return this.textBuffer.getLineCount()
   }
@@ -178,7 +196,7 @@ export abstract class TextBufferRenderable extends Renderable implements LineInf
   }
 
   public get scrollHeight(): number {
-    return this.lineInfo.lineStartCols.length
+    return this.virtualLineCount
   }
 
   public get maxScrollY(): number {
@@ -360,6 +378,7 @@ export abstract class TextBufferRenderable extends Renderable implements LineInf
       localSelection.focusY,
       this._selectionBg,
       this._selectionFg,
+      localSelection.behavior,
     )
   }
 
@@ -422,6 +441,7 @@ export abstract class TextBufferRenderable extends Renderable implements LineInf
         localSelection.focusY,
         this._selectionBg,
         this._selectionFg,
+        localSelection.behavior,
       )
     } else {
       changed = this.textBufferView.updateLocalSelection(
@@ -431,6 +451,7 @@ export abstract class TextBufferRenderable extends Renderable implements LineInf
         localSelection.focusY,
         this._selectionBg,
         this._selectionFg,
+        localSelection.behavior,
       )
     }
 

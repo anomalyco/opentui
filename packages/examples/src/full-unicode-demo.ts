@@ -199,15 +199,29 @@ ${underline("Drag me too:")} 🇺🇸  🇩🇪  🇯🇵  🇮🇳  a̐éö̲
     left: 2,
     top: 1,
     zIndex: 3,
-    content: "V: Toggle vignette",
+    content: `Width: ${renderer.widthMethod} | V: Toggle vignette | The bars below should align`,
     fg: "#AAFFAA",
   })
   rootGroup.add(hintText)
 
+  const alignmentText = new TextRenderable(renderer, {
+    id: "full-unicode-alignment",
+    position: "absolute",
+    left: 2,
+    top: 2,
+    zIndex: 3,
+    selectable: false,
+    content:
+      "1234567890123456789012345678901234567890| 40-cell ruler\nOpenCode search configuration പരിശോധിക്കൽ| Malayalam",
+    fg: "#FFFFFF",
+    bg: "#001122",
+  })
+  rootGroup.add(alignmentText)
+
   const keyHandler = (key: KeyEvent): void => {
     if (key.name?.toLowerCase() !== "v") return
     vignetteEnabled = !vignetteEnabled
-    hintText.content = `V: Toggle vignette (${vignetteEnabled ? "ON" : "OFF"})`
+    hintText.content = `Width: ${renderer.widthMethod} | V: Toggle vignette (${vignetteEnabled ? "ON" : "OFF"}) | The bars below should align`
 
     renderer.clearPostProcessFns()
     if (vignetteEnabled) {

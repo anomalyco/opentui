@@ -1,0 +1,22 @@
+name: Setup native symbol tools
+description: Make cross-target LLVM tools available to native package builds
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      run: |
+        set -euo pipefail
+        case "$RUNNER_OS" in
+          macOS)
+            brew list llvm >/dev/null 2>&1 || brew install llvm
+            echo "LLVM_BIN=$(brew --prefix llvm)/bin" >> "$GITHUB_ENV"
+            ;;
+          Windows)
+            if [ ! -x '/c/Program Files/LLVM/bin/llvm-pdbutil.exe' ]; then
+              choco install llvm -y --no-progress
+            fi
+            test -x '/c/Program Files/LLVM/bin/llvm-readobj.exe'
+            test -x '/c/Program Files/LLVM/bin/llvm-pdbutil.exe'
+            echo "LLVM_BIN=C:/Program Files/LLVM/bin" >> "$GITHUB_ENV"
+            ;;
+        esac

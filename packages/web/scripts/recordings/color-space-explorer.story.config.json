@@ -1,0 +1,17 @@
+{
+  "title": "Color Space Explorer — 2x Flow",
+  "recording": "color-space-explorer.cast",
+  "sampleMs": 180,
+  "output": {
+    "story": "../../public/recordings/color-space-explorer.json"
+  },
+  "chapters": [
+    {
+      "atMs": 1000,
+      "durationMs": 26000,
+      "label": "2x flow",
+      "captionTitle": "2x flow",
+      "caption": "The auto-cinematic reveal, particle flow doubled."
+    }
+  ]
+}

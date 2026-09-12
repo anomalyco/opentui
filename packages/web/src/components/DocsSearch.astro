@@ -1,0 +1,419 @@
+---
+// Documentation search: a prompt line above the page list. Without the
+// script the row stays reserved but invisible, as on the packages filter.
+// The page renders this twice (sidebar and menu), so each copy needs its
+// own control ids. On the sidebar, results overlay the article from
+// the nav's left edge; the overlay is only as large as the hits.
+const searchId = `docs-search-${crypto.randomUUID()}`
+const resultsId = `${searchId}-results`
+---
+
+<search class="docs-search" hidden>
+  <label for={searchId}>
+    <span aria-hidden="true">&gt;</span>
+    <span class="sr-only">Search the docs</span>
+  </label>
+  <!-- type="text", not "search": the browser draws a clear button in a
+       search field, and this prompt line has no controls. -->
+  <input
+    type="text"
+    id={searchId}
+    placeholder="Search"
+    autocomplete="off"
+    spellcheck="false"
+    role="combobox"
+    aria-expanded="false"
+    aria-autocomplete="list"
+    aria-controls={resultsId}
+  />
+  <div class="results" id={resultsId} role="listbox" aria-label="Search results" hidden></div>
+</search>
+
+<script>
+  import { highlightParts, lookup, preview, type SearchEntry, type SearchMatch } from "../lib/docs-search"
+
+  const INDEX_URL = "/docs/search-index.json"
+  const MAX_RESULTS = 8
+
+  let entries: SearchEntry[] | null = null
+  let loading: Promise<void> | null = null
+
+  for (const root of document.querySelectorAll<HTMLElement>("search.docs-search")) {
+    ready(root)
+  }
+
+  function ready(root: HTMLElement) {
+    const input = root.querySelector("input")
+    const results = root.querySelector<HTMLElement>(".results")
+    const nav = root.closest(".docs-index")?.querySelector<HTMLElement>("[data-docs-nav]")
+    const sidebar = root.closest(".docs-pages")
+    if (!(input instanceof HTMLInputElement) || !results) return
+
+    let query = ""
+    let matches: SearchMatch[] = []
+    let active = -1
+
+    root.hidden = false
+
+    input.addEventListener("focus", () => {
+      void load()
+      if (input.value.trim()) void run(input.value)
+    })
+    input.addEventListener("input", () => {
+      void run(input.value)
+    })
+    input.addEventListener("keydown", (event) => {
+      navigate(event)
+    })
+
+    results.addEventListener("mousedown", (event) => {
+      // Hold the focus so the blur does not close the results before the
+      // click lands. The link still navigates, so middle and modifier
+      // clicks keep working.
+      if (event.target instanceof Element && event.target.closest("a")) event.preventDefault()
+    })
+
+    document.addEventListener("click", (event) => {
+      if (!root.contains(document.activeElement)) return
+      if (event.target instanceof Node && root.contains(event.target)) return
+      close()
+      input.blur()
+    })
+
+    root.addEventListener("focusout", (event) => {
+      if (!root.contains(event.relatedTarget as Node | null)) close()
+    })
+
+    async function run(value: string) {
+      query = value.trim()
+      if (!query) {
+        close()
+        return
+      }
+
+      if (!entries) {
+        await load()
+        resume()
+        return
+      }
+
+      matches = lookup(entries, query).slice(0, MAX_RESULTS)
+      active = -1
+      render()
+    }
+
+    function resume() {
+      if (query !== input.value.trim()) return
+      if (entries) void run(input.value)
+      else unavailable()
+    }
+
+    function render() {
+      results.replaceChildren()
+
+      if (matches.length === 0) {
+        const empty = document.createElement("p")
+        empty.className = "empty"
+        empty.textContent = `No results for “${query}”`
+        results.append(empty)
+      } else {
+        for (const [index, match] of matches.entries()) {
+          results.append(result(match, index))
+        }
+      }
+
+      open()
+      if (matches.length > 0) select(0)
+    }
+
+    function unavailable() {
+      matches = []
+      active = -1
+      results.replaceChildren()
+      const empty = document.createElement("p")
+      empty.className = "empty"
+      empty.textContent = "Search is unavailable right now"
+      results.append(empty)
+      open()
+    }
+
+    function result(match: SearchMatch, index: number) {
+      const entry = match.entry
+      const option = document.createElement("a")
+      option.href = entry.url
+      option.id = `${results.id}-${index}`
+      option.role = "option"
+      option.tabIndex = -1
+      option.setAttribute("aria-selected", "false")
+
+      const heading = document.createElement("span")
+      heading.className = "heading"
+      const title = document.createElement("span")
+      title.className = "title"
+      appendHighlighted(title, entry.title, match)
+      heading.append(title)
+
+      if (entry.title !== entry.chapter) {
+        const chapter = document.createElement("span")
+        chapter.className = "chapter"
+        chapter.textContent = entry.chapter
+        heading.append(chapter)
+      }
+
+      const snippet = document.createElement("span")
+      snippet.className = "preview"
+      appendHighlighted(snippet, preview(entry.text, match.pattern), match)
+
+      option.append(heading, snippet)
+      option.addEventListener("mouseenter", () => select(index))
+      option.addEventListener("click", () => close())
+      return option
+    }
+
+    function appendHighlighted(target: HTMLElement, text: string, match: SearchMatch) {
+      for (const part of highlightParts(text, match.pattern)) {
+        if (!part.text) continue
+        if (part.mark) {
+          const mark = document.createElement("mark")
+          mark.textContent = part.text
+          target.append(mark)
+        } else {
+          target.append(part.text)
+        }
+      }
+    }
+
+    function navigate(event: KeyboardEvent) {
+      if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+        event.preventDefault()
+        if (results.hidden) void run(input.value)
+        else select(active + (event.key === "ArrowDown" ? 1 : -1))
+      } else if (event.key === "Enter" && !results.hidden) {
+        const chosen = active >= 0 ? matches[active] : matches[0]
+        if (chosen) {
+          event.preventDefault()
+          close()
+          window.location.assign(chosen.entry.url)
+        }
+      } else if (event.key === "Escape") {
+        event.preventDefault()
+        if (results.hidden) {
+          input.value = ""
+          input.blur()
+        } else {
+          close()
+        }
+      }
+    }
+
+    function select(index: number) {
+      const options = results.querySelectorAll("a")
+      if (options.length === 0) return
+
+      if (index < 0) index = options.length - 1
+      if (index >= options.length) index = 0
+
+      for (const option of options) {
+        option.removeAttribute("aria-current")
+        option.setAttribute("aria-selected", "false")
+      }
+
+      active = index
+      options[active].setAttribute("aria-current", "true")
+      options[active].setAttribute("aria-selected", "true")
+      options[active].scrollIntoView({ block: "nearest" })
+      input.setAttribute("aria-activedescendant", options[active].id)
+    }
+
+    function open() {
+      results.hidden = false
+      // The sidebar overlays the article; the menu still swaps the page
+      // list for results because that panel is the only surface.
+      if (nav && !sidebar) nav.hidden = true
+      input.setAttribute("aria-expanded", "true")
+      input.removeAttribute("aria-activedescendant")
+    }
+
+    function close() {
+      results.hidden = true
+      if (nav && !sidebar) nav.hidden = false
+      matches = []
+      active = -1
+      input.setAttribute("aria-expanded", "false")
+      input.removeAttribute("aria-activedescendant")
+    }
+  }
+
+  document.addEventListener("keydown", (event) => {
+    if (!shortcut(event)) return
+
+    const inputs = [...document.querySelectorAll<HTMLInputElement>("search.docs-search input")]
+    const visible = inputs.find((candidate) => candidate.offsetParent)
+    if (visible) {
+      event.preventDefault()
+      visible.focus()
+      visible.select()
+      return
+    }
+
+    // Below the docs breakpoint the sidebar is gone, so `/` opens Menu
+    // and focuses the copy inside it.
+    const menuInput = inputs.find((candidate) => candidate.closest("details.menu"))
+    const menu = menuInput?.closest("details.menu")
+    if (!(menu instanceof HTMLDetailsElement) || !menuInput) return
+
+    event.preventDefault()
+    menu.open = true
+    menuInput.focus()
+    menuInput.select()
+  })
+
+  function shortcut(event: KeyboardEvent) {
+    if (event.metaKey || event.ctrlKey || event.altKey) return false
+    if (event.target instanceof Element && event.target.closest("input, textarea, select, [contenteditable]")) {
+      return false
+    }
+    return event.key === "/"
+  }
+
+  function load() {
+    loading ||= fetch(INDEX_URL)
+      .then((response) => (response.ok ? response.json() : Promise.reject(response.status)))
+      .then((index: SearchEntry[]) => {
+        entries = index
+      })
+      .catch(() => {
+        loading = null
+      })
+
+    return loading
+  }
+</script>
+
+<style>
+  /* A terminal prompt line: a ">" cue and bare text, no box. */
+  search {
+    position: relative;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    column-gap: 1ch;
+    row-gap: 0.75rem;
+    margin-block-end: 1.5rem;
+  }
+
+  /* Reserve the row before the script reveals it, so the list does not
+   * shift on the first paint. Without the script the row stays invisible. */
+  search[hidden] {
+    display: flex;
+    visibility: hidden;
+  }
+
+  label {
+    color: var(--muted-color);
+  }
+
+  search:focus-within label {
+    color: inherit;
+  }
+
+  input {
+    flex: 1;
+    min-width: 0;
+    padding: 0;
+    font: inherit;
+    color: inherit;
+    background: none;
+    border: none;
+    outline: none;
+    caret-color: currentColor;
+  }
+
+  input::placeholder {
+    color: var(--muted-color);
+    opacity: 1;
+  }
+
+  .results {
+    flex: 1 0 100%;
+    display: flex;
+    flex-direction: column;
+    gap: 0.75rem;
+    overflow-wrap: anywhere;
+  }
+
+  .results[hidden] {
+    display: none;
+  }
+
+  /* Sidebar: the prompt stays in the column. Results grow it across the
+   * article without moving the page. */
+  :global(.docs-pages) search {
+    width: 100%;
+    line-height: 1.5;
+    transition: width var(--motion-step) linear;
+  }
+
+  :global(.docs-pages) search:has(.results:not([hidden])) {
+    width: var(--content-width);
+    margin-inline-end: calc(var(--docs-nav-width) - var(--content-width));
+    padding: 1.5rem;
+    background: var(--page-background);
+    border: 1px solid;
+  }
+
+  /* Result rows are built in the script, so they do not receive this
+   * component's scoped attribute. Style them as descendants.
+   *
+   * Page color throughout: bold titles, plain snippets. Underline marks
+   * the current row. */
+  .results :global(a),
+  .results :global(a:visited),
+  .results :global(a:hover),
+  :global(:root[data-theme="blue"]) .results :global(a) {
+    color: inherit;
+    text-decoration: none;
+    display: grid;
+    gap: 0.125rem;
+    padding-block: 0.375rem;
+  }
+
+  .results :global(a[aria-current] .title) {
+    text-decoration: underline;
+  }
+
+  .results :global(.title) {
+    font-weight: 700;
+  }
+
+  .results :global(.heading) {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 0 1.5ch;
+  }
+
+  .results :global(.empty) {
+    margin: 0;
+  }
+
+  .results :global(.preview) {
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+    line-clamp: 2;
+    overflow: hidden;
+  }
+
+  .results :global(mark) {
+    background: none;
+    color: inherit;
+    font-weight: 700;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    :global(.docs-pages) search {
+      transition: none;
+    }
+  }
+</style>

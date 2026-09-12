@@ -1,0 +1,127 @@
+---
+title: Quickstart
+description: Build and run an interactive OpenTUI app with Bun
+skill:
+  entry: true
+  intents: [installation, quickstart]
+---
+
+{/* docs-lint-disable mdx-esm-import */}
+import ScrollbackRecording from "../../../components/ScrollbackRecording.astro"
+
+# Quickstart
+
+Build a small counter controlled by the arrow keys. The finished app uses layout, text, keyboard input, live updates,
+and explicit cleanup.
+
+## Prerequisite
+
+This guide uses [Bun](https://bun.sh) to run TypeScript source. See [Runtime and platform support](/docs/getting-started/runtime-support)
+for other runtime and platform requirements.
+
+Create an empty project and add OpenTUI:
+
+```bash
+mkdir my-tui && cd my-tui
+bun init -y
+bun add @opentui/core
+```
+
+## Create the app
+
+Create `index.ts`:
+
+```typescript
+import { BoxRenderable, TextRenderable, createCliRenderer } from "@opentui/core"
+
+const renderer = await createCliRenderer({
+  exitOnCtrlC: true,
+  backgroundColor: "#1131E9",
+})
+
+let count = 0
+const counter = new TextRenderable(renderer, {
+  id: "counter",
+  content: "Count  0",
+  fg: "#FFFFFF",
+})
+
+const panel = new BoxRenderable(renderer, {
+  width: 42,
+  height: 9,
+  backgroundColor: "#1131E9",
+  alignItems: "center",
+  justifyContent: "center",
+})
+const content = new BoxRenderable(renderer, {
+  width: 38,
+  height: 7,
+  backgroundColor: "#2947F0",
+  padding: 1,
+  flexDirection: "column",
+  gap: 1,
+  alignItems: "center",
+})
+
+content.add(new TextRenderable(renderer, { content: "Hello, OpenTUI!", fg: "#DCE3FF" }))
+content.add(counter)
+content.add(new TextRenderable(renderer, { content: "left/right change | q quit", fg: "#AEBBFF" }))
+panel.add(content)
+renderer.root.add(panel)
+
+renderer.keyInput.on("keypress", (key) => {
+  if (key.name === "q") {
+    renderer.destroy()
+    return
+  }
+
+  if (key.name === "left") count--
+  else if (key.name === "right") count++
+  else return
+
+  counter.content = `Count  ${count}`
+})
+```
+
+`createCliRenderer()` takes control of the terminal and returns a `CliRenderer`. Its `root` property is the root of the
+component tree. `BoxRenderable` and `TextRenderable` are imperative tree nodes. The event handler updates the counter's
+`content` property directly.
+
+The renderer emits parsed keyboard events through `keyInput`. The handler changes `counter.content`, which schedules a
+new frame.
+
+## Run it
+
+```bash
+bun index.ts
+```
+
+Press the Left and Right arrow keys. The count updates in place.
+
+The application creates and owns the renderer. It must call `renderer.destroy()` on every shutdown path to release
+resources and restore the terminal. This example calls it when you press `q`. `exitOnCtrlC: true` handles the `Ctrl+C`
+path.
+
+{/* docs-lint-disable mdx-component-node */}
+
+<ScrollbackRecording
+  label="The quickstart app changing a count with arrow keys, then returning to the shell"
+  controls="hidden"
+  stories={[
+    {
+      src: "/recordings/quickstart.json",
+      tone: "recorded",
+      background: "recorded",
+      padding: false,
+    },
+  ]}
+/>
+
+## Continue
+
+- Return to the [OpenTUI introduction](/docs) for the documentation map.
+- [React bindings](/docs/bindings/react) apply the shared model through React.
+- [Solid bindings](/docs/bindings/solid) apply the shared model through Solid.
+- [Components](/docs/components) compares component availability across Core, React, and Solid.
+- [Renderables](/docs/core-concepts/renderables) covers imperative tree creation and mutation.
+- [Lifecycle and cleanup](/docs/core-concepts/lifecycle) covers shutdown paths and resource ownership.

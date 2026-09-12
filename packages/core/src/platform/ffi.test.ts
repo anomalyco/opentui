@@ -20,12 +20,28 @@ import {
   createBunBackend,
   createNodeBackend,
   ffiBool,
+  trimNodeFFIOutputBytes,
   toPointer,
   type FFICallbackInstance,
   type Pointer,
 } from "./ffi.js"
 
 const IS_BUN = typeof process.versions?.bun === "string"
+
+test("trims fresh Node FFI output buffers without copying", () => {
+  const partial = new Uint8Array([1, 2, 3, 4])
+  const partialBuffer = partial.buffer
+  const trimmed = trimNodeFFIOutputBytes(partial, 2)
+
+  expect([...trimmed]).toEqual([1, 2])
+  expect(trimmed.byteLength).toBe(2)
+  expect(trimmed.buffer.byteLength).toBe(2)
+  expect(partialBuffer.byteLength).toBe(0)
+
+  const full = new Uint8Array([5, 6])
+  expect(trimNodeFFIOutputBytes(full, full.byteLength)).toBe(full)
+  expect(full.buffer.byteLength).toBe(2)
+})
 
 function createMockBackend() {
   const events: string[] = []
@@ -355,7 +371,7 @@ describe("platform/ffi", () => {
     expect(symbolDefinitions).toEqual([
       {
         pointers: {
-          arguments: ["pointer", "pointer", "pointer", "pointer", "buffer", "string"],
+          arguments: ["pointer", "pointer", "pointer", "pointer", "pointer", "string"],
           return: "void",
         },
       },
@@ -410,23 +426,73 @@ describe("platform/ffi", () => {
     expect(functionCalls[0]?.args[4]).toBe(0n)
   })
 
-  test("keeps short Node pointer wrappers fixed-arity", () => {
+  test("keeps supported Node pointer wrappers fixed-arity", () => {
     const { backend, functionCalls } = createMockNodeBackend()
     const library = backend.dlopen("mock", {
       one: { args: [FFIType.ptr], returns: FFIType.void },
       two: { args: [FFIType.ptr, FFIType.u32], returns: FFIType.void },
       three: { args: [FFIType.ptr, FFIType.u32, FFIType.ptr], returns: FFIType.void },
       four: { args: [FFIType.ptr, FFIType.u32, FFIType.u32, FFIType.ptr], returns: FFIType.void },
+      five: { args: [FFIType.ptr, FFIType.u32, FFIType.u32, FFIType.u32, FFIType.ptr], returns: FFIType.void },
+      six: {
+        args: [FFIType.ptr, FFIType.u32, FFIType.u32, FFIType.u32, FFIType.u32, FFIType.ptr],
+        returns: FFIType.void,
+      },
+      seven: {
+        args: [FFIType.ptr, FFIType.u32, FFIType.u32, FFIType.u32, FFIType.u32, FFIType.ptr, FFIType.ptr],
+        returns: FFIType.void,
+      },
+      sevenOnePointer: {
+        args: [FFIType.u32, FFIType.u32, FFIType.u32, FFIType.u32, FFIType.u32, FFIType.ptr, FFIType.u32],
+        returns: FFIType.void,
+      },
+      eight: {
+        args: [FFIType.ptr, FFIType.u32, FFIType.u32, FFIType.u32, FFIType.u32, FFIType.u32, FFIType.ptr, FFIType.ptr],
+        returns: FFIType.void,
+      },
     })
 
     expect(library.symbols.one.length).toBe(1)
     expect(library.symbols.two.length).toBe(2)
     expect(library.symbols.three.length).toBe(3)
     expect(library.symbols.four.length).toBe(0)
+    expect(library.symbols.five.length).toBe(0)
+    expect(library.symbols.six.length).toBe(0)
+    expect(library.symbols.seven.length).toBe(7)
+    expect(library.symbols.sevenOnePointer.length).toBe(0)
+    expect(library.symbols.eight.length).toBe(8)
 
     library.symbols.two(10n as Pointer)
     library.symbols.two(10n as Pointer, 20, 30)
     expect(functionCalls.map((call) => call.args)).toEqual([[10n], [10n, 20, 30]])
+  })
+
+  test("normalizes pointers in long fixed-arity Node wrappers", () => {
+    const { backend, functionCalls } = createMockNodeBackend()
+    const buffer = new ArrayBuffer(16)
+    const view = new Uint8Array(buffer, 4, 8)
+    const library = backend.dlopen("mock", {
+      seven: {
+        args: [FFIType.ptr, FFIType.u32, FFIType.u32, FFIType.u32, FFIType.u32, FFIType.ptr, FFIType.ptr],
+        returns: FFIType.void,
+      },
+      eight: {
+        args: [FFIType.u32, FFIType.ptr, FFIType.u32, FFIType.u32, FFIType.u32, FFIType.ptr, FFIType.ptr, FFIType.u32],
+        returns: FFIType.void,
+      },
+    })
+
+    library.symbols.seven(buffer, 1, 2, 3, 4, null, 77 as Pointer)
+    library.symbols.eight(1, view, 2, 3, 4, null, 88 as Pointer, 5)
+    library.symbols.seven(10n as Pointer)
+    library.symbols.eight(1, 20n as Pointer, 2, 3, 4, 30n as Pointer, 40n as Pointer, 5, 6)
+
+    expect(functionCalls.map((call) => call.args)).toEqual([
+      [buffer, 1, 2, 3, 4, 0n, 77n],
+      [1, view, 2, 3, 4, 0n, 88n, 5],
+      [10n],
+      [1, 20n, 2, 3, 4, 30n, 40n, 5, 6],
+    ])
   })
 
   test("accepts cross-realm ArrayBuffers and views at Node pointer boundaries", () => {

@@ -1,53 +1,96 @@
 ---
 title: Lifecycle and cleanup
-description: Managing renderer lifecycle and terminal cleanup
-order: 10
+description: Release renderers, framework roots, services, plugins, and session resources
 ---
 
 # Lifecycle and cleanup
 
-OpenTUI gives you control over terminal cleanup. Call `renderer.destroy()` when you shut down. It restores the terminal to its original state, and it frees resources.
+The code that creates a resource owns its release until it transfers that ownership. OpenTUI does not supply one universal asynchronous disposer.
 
-## Why you must handle cleanup
+## Keep cleanup with creation
 
-OpenTUI does not automatically clean up on `process.exit` or unhandled errors. This design gives you more control over shutdown behavior:
-
-- You may want to handle errors and keep running
-- You may use effect systems, like Effect.ts, with their own shutdown handling
-- You may need custom cleanup order or additional shutdown logic
-
-## Use `renderer.destroy()`
-
-Call `destroy()` when your app exits:
+Call `renderer.destroy()` on normal shutdown and on application failure:
 
 ```typescript
-import { createCliRenderer } from "@opentui/core"
-
-const renderer = await createCliRenderer()
-
-// ... your application code ...
-
-// Clean shutdown
-renderer.destroy()
-```
-
-For reliable cleanup, keep renderer teardown in the same control flow as your app startup:
-
-```typescript
-import { createCliRenderer } from "@opentui/core"
+import { TextRenderable, createCliRenderer } from "@opentui/core"
 
 const renderer = await createCliRenderer()
 
 try {
-  // ... your application code ...
+  renderer.root.add(new TextRenderable(renderer, { content: "Ready" }))
+  await renderer.idle()
 } finally {
   renderer.destroy()
 }
 ```
 
+`createCliRenderer()` destroys a constructed renderer if asynchronous terminal setup fails. Prefer this factory to direct `new CliRenderer(...)` construction. After the factory resolves, your code owns the renderer.
+
+If construction itself throws, the caller receives no renderer handle. Internal stages clean known native-feed, native-renderer, and input-setup failures. No public rollback handle exists for an arbitrary constructor failure, so validate configuration before creation.
+
+Track partial initialization explicitly when one resource adopts another:
+
+```typescript
+import {
+  TextRenderable,
+  createCliRenderer,
+  createClipboard,
+  createHostClipboard,
+  createRendererClipboardAdapter,
+  type ClipboardService,
+  type HostClipboardService,
+} from "@opentui/core"
+
+const renderer = await createCliRenderer()
+let host: HostClipboardService | undefined
+let clipboard: ClipboardService | undefined
+
+try {
+  host = createHostClipboard()
+  clipboard = createClipboard({
+    host,
+    terminal: createRendererClipboardAdapter(renderer),
+  })
+  host = undefined // createClipboard() now owns the host service
+
+  renderer.root.add(new TextRenderable(renderer, { content: "Ready" }))
+  await renderer.idle()
+} finally {
+  try {
+    if (clipboard) await clipboard.dispose()
+    else if (host) await host.dispose()
+  } finally {
+    renderer.destroy()
+  }
+}
+```
+
+If host creation fails, no host object exists to release. If later setup fails, the `finally` block releases the last acquired owner. The nested `finally` also destroys the renderer when clipboard disposal rejects.
+
+## Destroy the renderer
+
+`renderer.destroy()` is synchronous and idempotent. It marks the renderer as destroyed before cleanup starts. If a render pass is active, OpenTUI restores input and terminal state immediately, then finishes native teardown when the pass unwinds.
+
+Renderer destruction performs these actions:
+
+- Removes renderer signal, process, resize, input, and warning listeners.
+- Stops renderer timers, frame scheduling, capability detection, and memory snapshots.
+- Disables raw input, removes the data listener, pauses the input stream, and clears parser state.
+- Flushes queued split-footer output and restores the configured `stdout.write` method.
+- Emits the renderer `destroy` event.
+- Destroys the renderable tree, console overlay, native renderer, buffers, and renderer-owned output feed.
+- Releases exclusive ownership of the configured input and output stream objects.
+- Calls `onDestroy` after renderer cleanup. Errors from this callback are logged.
+
+The native shutdown sequence resets text attributes and the mouse pointer. It disables mouse, focus, paste, keyboard, and color-scheme modes that OpenTUI enabled. It exits the alternate screen, resets the terminal title and cursor style, and shows the cursor. OpenTUI also sets stdin raw mode to `false`.
+
+`clearOnShutdown: false` keeps the renderer-owned main-screen region visible. It does not skip terminal mode restoration.
+
+Cleanup is best effort. Most renderer cleanup errors are logged so later cleanup can continue. `destroy()` does not dispose application services, close a caller-owned transport, or await asynchronous resource release.
+
 ## Signal handling
 
-OpenTUI listens for common exit signals and calls `destroy()` when it receives them. By default, it handles these signals:
+By default, each renderer installs handlers that call `renderer.destroy()` for these signals:
 
 | Signal     | Description              |
 | ---------- | ------------------------ |
@@ -60,104 +103,129 @@ OpenTUI listens for common exit signals and calls `destroy()` when it receives t
 | `SIGPIPE`  | Broken pipe              |
 | `SIGBUS`   | Bus error                |
 
-You can customize which signals trigger cleanup:
+Set `exitSignals` to replace this list. Use an empty list when the application or a server owns process shutdown:
 
 ```typescript
-// Only handle SIGINT and SIGTERM
 const renderer = await createCliRenderer({
   exitSignals: ["SIGINT", "SIGTERM"],
 })
 
-// Disable all signal-based cleanup (handle it yourself)
-const renderer = await createCliRenderer({
+const managedRenderer = await createCliRenderer({
+  exitOnCtrlC: false,
   exitSignals: [],
 })
 ```
 
-## Ctrl+C behavior
+The built-in signal handlers call `renderer.destroy()`. With `OTUI_DUMP_CAPTURES=true`, they also schedule a capture dump. They cannot await an application-owned clipboard service, SSH server, or other asynchronous cleanup. Disable them and install application handlers when shutdown must await those resources.
 
-By default, Ctrl+C calls `destroy()`. If you want to handle Ctrl+C yourself, disable the internal handler and remove `SIGINT` from `exitSignals`:
+Ctrl+C also has a separate parsed-key path. Set `exitOnCtrlC: false` and remove `SIGINT` from `exitSignals` when your application handles both paths itself.
 
-```typescript
-const renderer = await createCliRenderer({
-  exitOnCtrlC: false,
-  exitSignals: ["SIGTERM", "SIGQUIT", "SIGABRT", "SIGHUP", "SIGBREAK", "SIGPIPE", "SIGBUS"],
-})
+`SIGKILL` cannot be caught or handled. OpenTUI cannot restore terminal state or run service cleanup after it. A direct `process.exit()` can also bypass application cleanup.
 
-renderer.keyInput.on("keypress", (key) => {
-  if (key.ctrl && key.name === "c") {
-    // Custom Ctrl+C handling
-    console.log("Ctrl+C pressed, but not exiting")
+The renderer's `uncaughtException` and `unhandledRejection` listeners report errors and can open the console overlay. They do not destroy the renderer. Keep failure handling in a `try` and `finally`, or install an application-level handler that starts the same shutdown path.
+
+## Framework roots
+
+### React
+
+`createRoot(renderer)` adopts a renderer but does not own it. `root.unmount()` removes the React tree and runs effect cleanup while the renderer remains usable. It does not call `renderer.destroy()`.
+
+`renderer.destroy()` emits the event that unmounts every React root created for that renderer. You can call `root.unmount()` first when React effects must stop before other application resources:
+
+```tsx
+const renderer = await createCliRenderer()
+const root = createRoot(renderer)
+
+try {
+  root.render(<App />)
+  await waitUntilShutdown()
+} finally {
+  try {
+    root.unmount()
+  } finally {
+    renderer.destroy()
   }
-})
-```
-
-## Destroy callback
-
-Run custom logic when the renderer is destroyed:
-
-```typescript
-const renderer = await createCliRenderer({
-  onDestroy: () => {
-    console.log("Renderer destroyed, performing additional cleanup...")
-  },
-})
-```
-
-## What `destroy()` cleans up
-
-The `destroy()` method cleans up these resources:
-
-- Removes the signal and process listeners that OpenTUI adds
-- Clears timers and render loops
-- Destroys all renderables in the tree
-- Restores stdin raw mode
-- Resets terminal state (cursor, alternate screen, etc.)
-- Flushes pending split-footer captured output
-- Frees native resources
-
-## Custom stream sessions
-
-For socket, SSH, or pty sessions, give each connection its own renderer. Destroy it before closing the transport:
-
-```typescript
-import { createCliRenderer, type CliRenderer } from "@opentui/core"
-
-interface TerminalSession {
-  renderer: CliRenderer
-  closeTransport: () => void
-}
-
-async function startSession(
-  stdin: NodeJS.ReadStream,
-  stdout: NodeJS.WriteStream,
-  closeTransport: () => void,
-): Promise<TerminalSession> {
-  const renderer = await createCliRenderer({
-    stdin,
-    stdout,
-    width: stdout.columns || 80,
-    height: stdout.rows || 24,
-    exitOnCtrlC: false,
-    exitSignals: [],
-  })
-
-  return { renderer, closeTransport }
-}
-
-async function closeSession(session: TerminalSession): Promise<void> {
-  session.renderer.destroy()
-  await new Promise<void>((resolve) => queueMicrotask(resolve))
-  session.closeTransport()
 }
 ```
 
-Use `exitOnCtrlC: false` and `exitSignals: []` when a long-lived server process owns many renderer sessions. A `stdin` or `stdout` stream cannot be shared by active renderers; `destroy()` releases it.
+Both operations are safe when renderer destruction already unmounted the root. See [React bindings](/docs/bindings/react#lifecycle-and-cleanup).
 
-## Troubleshooting
+### Solid
 
-If your terminal stays in a broken state after a crash:
+The high-level Solid `render(node, rendererOrConfig?)` function resolves after mounting. It returns no root handle and no disposer. Renderer destruction disposes the Solid root and runs `onCleanup` callbacks.
 
-1. Run `reset` in your terminal to restore it
-2. Add `uncaughtException` and `unhandledRejection` handlers to your app
-3. Make sure you call `renderer.destroy()` in all exit paths
+Create the renderer yourself when startup and failure cleanup need one visible owner:
+
+```tsx
+const renderer = await createCliRenderer()
+
+try {
+  await render(() => <App />, renderer)
+  await waitUntilShutdown()
+} finally {
+  renderer.destroy()
+}
+```
+
+If Solid creates the renderer from a config object, application code can get it through `useRenderer()` and destroy it during shutdown. See [Solid bindings](/docs/bindings/solid#lifecycle-and-cleanup).
+
+## Services and registrations
+
+### Clipboard
+
+`createHostClipboard()` owns its native backend. `createClipboard({ host, terminal })` adopts the host service and calls `host.dispose()` from its own `dispose()` method. The renderer adapter has no disposer.
+
+Clipboard disposal is asynchronous. It rejects new operations, aborts active operations, waits for them to settle, and then releases native workers and providers. Await it before renderer and process shutdown. A renderer does not dispose a clipboard service that your application created. See [Clipboard](/docs/core-concepts/clipboard#disposal).
+
+### Audio
+
+`Audio` owns streams, capture streams, and recorders created through that instance. `audio.dispose()` attempts to dispose those children, stop capture and playback, and destroy the native engine. See [Audio](/docs/core-concepts/audio).
+
+`Audio.dispose()` is synchronous and can throw the first cleanup error after it attempts the remaining cleanup. If a child or native engine cannot be destroyed, the engine stays attached so a later `audio.dispose()` call can retry. Put later cleanup in a `finally` block around this call.
+
+### Tree-sitter
+
+Await `client.destroy()` for every `new TreeSitterClient(...)` that your code creates. Destruction rejects pending requests, clears buffers and debounced work, and waits for worker termination. A failed worker termination keeps the worker so another `destroy()` call can retry.
+
+`getTreeSitterClient()` returns the process singleton. Release that singleton with `await destroyTreeSitterClient()`. Destruction of the last tracked renderer starts singleton cleanup, but it does not await that promise. Call `destroyTreeSitterClient()` before `renderer.destroy()` when shutdown must wait for the worker. See [Tree-sitter](/docs/reference/tree-sitter).
+
+### Keymap and plugin slots
+
+Keymap layer, token, parser, resolver, intercept, listener, and addon registrations return disposer functions. Keep each disposer for a registration that can outlive its component or feature. Custom addons should return one disposer that releases their registrations in reverse dependency order.
+
+The OpenTUI Keymap host observes renderer destruction and cleans its layers, listeners, and shared addon resources. Other hosts must publish their own destroy lifecycle. See [Keymap](/docs/keymap/overview) and [Custom keymap addons](/docs/keymap/custom-addons).
+
+`registry.register(plugin)` returns an unregister function. Unregistration removes the plugin and calls its optional `dispose()` hook. A renderer-scoped registry created while its renderer is live clears all plugins during renderer destruction. Do not create one after destruction. Dispose errors become plugin error events and do not keep the plugin registered. See [Plugin slots](/docs/plugins/slots#register-plugins).
+
+Runtime module support has process lifetime. Installing the Bun runtime plugin returns no unload function. Unregister a loaded module's slot contribution and dispose its application resources, but do not expect the module or Bun plugin installation to unload. See [Load plugins and modules at runtime](/docs/extend/runtime-plugins).
+
+## Output streams and feeds
+
+For a socket, pseudo-terminal, or custom stream session, give each active connection its own renderer. The renderer owns exclusive leases on the input and output stream objects. It does not own the underlying transport.
+
+For custom output, renderer destruction drains the renderer-owned `NativeSpanFeed`, emits terminal restoration bytes, restores `stdout.write`, and closes the feed. Keep the transport open until its own completion API reports that pending write callbacks finished. The renderer exposes no promise for caller-owned transport completion. See [Renderer custom streams](/docs/core-concepts/renderer#custom-streams) and [`NativeSpanFeed`](/docs/reference/native-span-feed#close-and-destruction).
+
+After `NativeSpanFeed.create()` or `NativeSpanFeed.attach()` succeeds, the wrapper owns the native feed. Call the unsubscribe functions from `onData()` and `onError()`, then call `feed.close()`. `close()` is idempotent and defers final destruction while callbacks or asynchronous handlers still hold borrowed chunks.
+
+If native close cannot finish, `feed.close()` leaves the feed alive and returns without throwing. This can happen while a native reservation is active. Complete or cancel that reservation, then call `close()` again.
+
+## SSH sessions
+
+`@opentui/ssh` owns each renderer that it creates. A disconnect or `session.end()` destroys the session renderer before `session.onClose` callbacks run. Use `onClose` for application timers, listeners, and other session resources. Do not add another renderer owner.
+
+Await `server.close()` during process shutdown. It stops acceptance, destroys live session renderers, performs bounded
+transport teardown, and closes the listener. It does not await application promises returned from `onClose` or
+middleware cleanup. Await those owners separately. See
+[SSH cleanup and shutdown](/docs/reference/ssh#cleanup-errors-and-shutdown).
+
+## Custom renderables
+
+Use `onRemove()` for detachment from a parent. A renderable can be removed and later attached again, so removal is not final destruction.
+
+Override `destroySelf()` for final resource release. `destroy()` calls it once after detachment, child removal, listener cleanup, and frame-buffer cleanup. `destroyRecursively()` destroys descendants first. Call `super.destroySelf()` when a base class owns resources. See [Custom renderables](/docs/extend/custom-renderables) and [Renderables](/docs/core-concepts/renderables).
+
+## Next
+
+- [Renderer](/docs/core-concepts/renderer) covers creation, scheduling, and custom streams.
+- [Console overlay](/docs/core-concepts/console) covers global console capture and restoration.
+- [NativeSpanFeed](/docs/reference/native-span-feed) covers borrowed output memory and feed closure.

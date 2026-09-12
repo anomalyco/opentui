@@ -1,0 +1,111 @@
+---
+title: Package entry points
+description: Find each published OpenTUI package root and subpath, its runtime, and its workflow guide
+skill:
+  entry: true
+  intents: [package-exports, entrypoints, subpath-exports, imports]
+---
+
+# Package entry points
+
+Generated publish manifests define the entry points below. Some workspace manifests differ from the files published to npm. Import only these roots and subpaths. Source-file deep imports are not public entry points.
+
+Read [Runtime and platform support](/docs/getting-started/runtime-support) for runtime versions and native targets. Use the [API and symbol index](/docs/reference/api-index) to find an exported name.
+
+## `@opentui/core`
+
+| Entry point                                      | Runtime                  | Purpose                                                                                               | Workflow                                                         |
+| ------------------------------------------------ | ------------------------ | ----------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------- |
+| `@opentui/core`                                  | Bun and Node.js          | Renderer, renderables, input, buffers, audio, plugins, Tree-sitter, and shared types                  | [Renderer](/docs/core-concepts/renderer)                         |
+| `@opentui/core/testing`                          | Bun and Node.js          | Test renderer, input and mouse drivers, fixtures, clocks, spies, Tree-sitter mock, and frame recorder | [Testing](/docs/core-concepts/testing)                           |
+| `@opentui/core/runtime-plugin`                   | Bun only                 | Runtime-module plugin factory, module identifiers, rewrite options, and runtime entry types           | [Runtime module loading](/docs/extend/runtime-plugins)           |
+| `@opentui/core/runtime-plugin-support`           | Bun only                 | Install core runtime-module support as an import side effect, and export its setup API                | [Runtime module loading](/docs/extend/runtime-plugins)           |
+| `@opentui/core/runtime-plugin-support/configure` | Bun only                 | Export configurable `ensureRuntimePluginSupport()` without import-time installation                   | [Runtime module loading](/docs/extend/runtime-plugins)           |
+| `@opentui/core/yoga`                             | Bun and Node.js          | Native Yoga facade, enums, constants, layout values, and callbacks                                    | [Yoga API](/docs/reference/yoga)                                 |
+| `@opentui/core/tree-sitter/update-assets`        | Build time, with Bun CLI | Tree-sitter asset updater and command-line runner                                                     | [Tree-sitter](/docs/reference/tree-sitter)                       |
+| `@opentui/core/parser.worker`                    | Bun and Node.js worker   | Parser worker module with no named application exports                                                | [Tree-sitter](/docs/reference/tree-sitter)                       |
+| `@opentui/core/node-assets`                      | Node.js build time       | Node single-executable asset manifest                                                                 | [Standalone executables](/docs/reference/standalone-executables) |
+
+The three runtime-plugin entry points publish Node.js stubs. A stub throws during import and tells you to use Bun. The Tree-sitter updater also uses Bun-specific tooling.
+
+`@opentui/core/node-assets` is a build-time API. Do not call it from the finished executable.
+
+The core build also generates platform packages such as `@opentui/core-linux-x64`. Each generated package exports one default native-library path. These packages are internal distribution surfaces, not application APIs.
+
+## `@opentui/react`
+
+| Entry point                                       | Runtime           | Purpose                                                                                           | Workflow                                               |
+| ------------------------------------------------- | ----------------- | ------------------------------------------------------------------------------------------------- | ------------------------------------------------------ |
+| `@opentui/react`                                  | Bun and Node.js   | React root, intrinsic catalogue, components, hooks, slots, `TimeToFirstDraw`, and component types | [React bindings](/docs/bindings/react)                 |
+| `@opentui/react/renderer`                         | Bun and Node.js   | Renderer declarations for `createRoot`, `createPortal`, `flushSync`, and `Root`                   | [React bindings](/docs/bindings/react)                 |
+| `@opentui/react/test-utils`                       | Bun and Node.js   | React-aware `testRender()` over `@opentui/core/testing`                                           | [Testing](/docs/core-concepts/testing)                 |
+| `@opentui/react/runtime-plugin-support`           | Bun only          | Install React runtime-module support as an import side effect                                     | [Runtime module loading](/docs/extend/runtime-plugins) |
+| `@opentui/react/runtime-plugin-support/configure` | Bun only          | Configure React runtime-module support without import-time installation                           | [Runtime module loading](/docs/extend/runtime-plugins) |
+| `@opentui/react/jsx-runtime`                      | Compiler selected | Automatic JSX runtime and OpenTUI JSX types                                                       | [React bindings](/docs/bindings/react)                 |
+| `@opentui/react/jsx-dev-runtime`                  | Compiler selected | Development JSX runtime and OpenTUI JSX types                                                     | [React bindings](/docs/bindings/react)                 |
+
+The generated publish map adds `/renderer`. The workspace manifest does not list it. Its declaration target contains the four renderer exports, but its runtime target is the full root `index.js` bundle. Do not depend on other root values through `/renderer`.
+
+Both runtime-plugin support paths publish Node.js stubs that throw during import. TypeScript selects the JSX paths from `jsxImportSource`. Application code does not import them directly.
+
+## `@opentui/solid`
+
+| Entry point                                       | Runtime           | Purpose                                                                                          | Workflow                                               |
+| ------------------------------------------------- | ----------------- | ------------------------------------------------------------------------------------------------ | ------------------------------------------------------ |
+| `@opentui/solid`                                  | Bun and Node.js   | Solid renderer, test renderer, hooks, elements, scrollback, slots, reconciler exports, and types | [Solid bindings](/docs/bindings/solid)                 |
+| `@opentui/solid/preload`                          | Bun only          | Preload that installs the Solid source transform and has no named exports                        | [Solid bindings](/docs/bindings/solid)                 |
+| `@opentui/solid/bun-plugin`                       | Bun only          | Solid transform plugin, installation helpers, reset helper, and default plugin export            | [Solid bindings](/docs/bindings/solid)                 |
+| `@opentui/solid/runtime-plugin-support`           | Bun only          | Install the Solid transform and runtime-module support as an import side effect                  | [Runtime module loading](/docs/extend/runtime-plugins) |
+| `@opentui/solid/runtime-plugin-support/configure` | Bun only          | Configure Solid runtime support without import-time installation                                 | [Runtime module loading](/docs/extend/runtime-plugins) |
+| `@opentui/solid/components`                       | Bun and Node.js   | Component catalogue extension functions and types                                                | [Solid bindings](/docs/bindings/solid)                 |
+| `@opentui/solid/jsx-runtime`                      | Compiler selected | Automatic JSX runtime and OpenTUI JSX namespace                                                  | [Solid bindings](/docs/bindings/solid)                 |
+| `@opentui/solid/jsx-dev-runtime`                  | Compiler selected | Development JSX runtime and OpenTUI JSX namespace                                                | [Solid bindings](/docs/bindings/solid)                 |
+
+`preload`, `bun-plugin`, and both runtime-plugin support paths publish Node.js stubs that throw during import. The Solid compiler selects the JSX paths.
+
+## `@opentui/keymap`
+
+| Entry point                       | Runtime                  | Purpose                                                                                    | Workflow                                               |
+| --------------------------------- | ------------------------ | ------------------------------------------------------------------------------------------ | ------------------------------------------------------ |
+| `@opentui/keymap`                 | JavaScript runtimes      | Host-agnostic `Keymap`, extension context, key stringifiers, and shared types              | [Keymap](/docs/keymap/overview)                        |
+| `@opentui/keymap/extras`          | JavaScript runtimes      | Binding lookup, command-binding, and formatting helpers                                    | [Core keymap API](/docs/keymap/core)                   |
+| `@opentui/keymap/extras/graph`    | JavaScript runtimes      | Graph snapshots and graph projection types                                                 | [Core keymap API](/docs/keymap/core)                   |
+| `@opentui/keymap/addons`          | JavaScript runtimes      | Universal parser, field, metadata, leader, sequence, command, and diagnostics addons       | [Built-in keymap addons](/docs/keymap/addons)          |
+| `@opentui/keymap/addons/opentui`  | Bun and Node.js          | Universal addons plus OpenTUI base-layout and edit-buffer helpers                          | [Built-in keymap addons](/docs/keymap/addons)          |
+| `@opentui/keymap/testing`         | JavaScript test runtimes | Fake host, targets, events, diagnostics, and `createTestKeymap()`                          | [Core keymap API](/docs/keymap/core)                   |
+| `@opentui/keymap/html`            | Browser DOM              | DOM host, event adapter, and bare or default HTML keymap factories                         | [Keymap hosts](/docs/keymap/hosts)                     |
+| `@opentui/keymap/opentui`         | Bun and Node.js          | `CliRenderer` and `Renderable` host adapter, plus bare or default OpenTUI keymap factories | [Keymap hosts](/docs/keymap/hosts)                     |
+| `@opentui/keymap/react`           | OpenTUI React            | Provider, hooks, and store-backed reactive matcher                                         | [React keymap integration](/docs/keymap/react)         |
+| `@opentui/keymap/solid`           | OpenTUI Solid            | Provider, hooks, selector, and signal-backed reactive matcher                              | [Solid keymap integration](/docs/keymap/solid)         |
+| `@opentui/keymap/runtime-modules` | Bun runtime loading      | Runtime-module map for the root, extras, addons, adapters, and lazy framework bindings     | [Runtime module loading](/docs/extend/runtime-plugins) |
+
+Adapter entry points do not re-export the shared engine. Import `Keymap`, stringifiers, and shared types from the root.
+
+The runtime-module map omits `/testing` and `/runtime-modules`. It loads the React and Solid bindings lazily.
+
+## `@opentui/qrcode`
+
+| Entry point             | Runtime         | Purpose                                                                                 | Workflow                                      |
+| ----------------------- | --------------- | --------------------------------------------------------------------------------------- | --------------------------------------------- |
+| `@opentui/qrcode`       | Bun and Node.js | QR encoder, segments, error correction, SVG and terminal output, and `QRCodeRenderable` | [QR encoder](/docs/reference/qr-encoder)      |
+| `@opentui/qrcode/react` | OpenTUI React   | Full root re-export plus `registerQRCode()` for the `qr-code` intrinsic                 | [QR code component](/docs/components/qr-code) |
+| `@opentui/qrcode/solid` | OpenTUI Solid   | Full root re-export plus `registerQRCode()` for the `qr_code` intrinsic                 | [QR code component](/docs/components/qr-code) |
+
+The framework paths include the encoder and renderable exports. They are not registration-only modules.
+
+## `@opentui/ssh`
+
+| Entry point    | Runtime                              | Purpose                                                                                     | Workflow                   |
+| -------------- | ------------------------------------ | ------------------------------------------------------------------------------------------- | -------------------------- |
+| `@opentui/ssh` | Bun 1.3.0 or Node.js 26.4.0 or later | SSH server builder, authentication, middleware, sessions, logging, errors, and public types | [SSH](/docs/reference/ssh) |
+
+The package has no framework subpaths. Pass the session renderer to the React or Solid root API.
+
+## `@opentui/three`
+
+| Entry point                      | Runtime  | Purpose                                                                                               | Workflow                                               |
+| -------------------------------- | -------- | ----------------------------------------------------------------------------------------------------- | ------------------------------------------------------ |
+| `@opentui/three`                 | Bun only | Three.js WebGPU renderer, renderable, sprites, effects, resource pools, physics adapters, and `THREE` | [Three.js WebGPU](/docs/reference/three)               |
+| `@opentui/three/runtime-modules` | Bun only | Runtime-module map that contains the `@opentui/three` root                                            | [Runtime module loading](/docs/extend/runtime-plugins) |
+
+Both entry points require Bun. The package declares Bun 1.3.0 or newer.

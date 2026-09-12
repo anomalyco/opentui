@@ -1,0 +1,252 @@
+---
+import SocialMeta from "../components/SocialMeta.astro"
+import themeScript from "../scripts/theme.js?raw"
+import "../styles/cobalt.css"
+
+interface Props {
+  title: string
+  description: string
+  wide?: boolean
+  robots?: string
+}
+
+const { title, description, wide = false, robots } = Astro.props
+---
+
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="description" content={description} />
+    {robots && <meta name="robots" content={robots} />}
+    <meta name="google-site-verification" content="W0svAZmnPHtyNgZWhzY7v8j2IJBnMD6TX7XB7QV0itE" />
+    <title>{title}</title>
+    <SocialMeta {title} {description} />
+    <!-- Paint the first frame with the right canvas color, before CSS loads. -->
+    <meta name="color-scheme" content="light dark" />
+    <meta name="theme-color" media="(prefers-color-scheme: light)" content="#ffffff" />
+    <meta name="theme-color" media="(prefers-color-scheme: dark)" content="#000000" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <link rel="preload" href="/fonts/OpenTUIMono-Regular.woff2" as="font" type="font/woff2" crossorigin />
+    <script is:inline set:html={themeScript} />
+  </head>
+  <body>
+    <slot name="nav" />
+    <div class:list={["page", { wide }]}>
+      <slot />
+    </div>
+  </body>
+</html>
+
+<style is:global>
+  @font-face {
+    font-family: "OpenTUI Mono";
+    src: url("/fonts/OpenTUIMono-Regular.woff2") format("woff2");
+    font-weight: 400;
+    font-style: normal;
+    font-display: swap;
+  }
+
+  @font-face {
+    font-family: "OpenTUI Mono";
+    src: url("/fonts/OpenTUIMono-Bold.woff2") format("woff2");
+    font-weight: 700;
+    font-style: normal;
+    font-display: swap;
+  }
+
+  @font-face {
+    font-family: "OpenTUI Mono";
+    src: url("/fonts/OpenTUIMono-Italic.woff2") format("woff2");
+    font-weight: 400;
+    font-style: italic;
+    font-display: swap;
+  }
+
+  @font-face {
+    font-family: "OpenTUI Mono";
+    src: url("/fonts/OpenTUIMono-BoldItalic.woff2") format("woff2");
+    font-weight: 700;
+    font-style: italic;
+    font-display: swap;
+  }
+
+  :root {
+    color-scheme: light;
+    --page-background: #fff;
+    --page-color: #000;
+    --link-color: LinkText;
+    /* Muted text: dates, meta lines, captions. Themes with a tinted ink
+     * override it so secondary text stays in the same hue. */
+    --muted-color: GrayText;
+    --content-width: 36rem;
+    /* Widest bounded composition: site chrome and wide pages align to it. */
+    --frame-width: 64rem;
+    /* Type scale, anchored to the 16px root so layout rem values hold:
+     * 14px body prose and chrome, 13px dense text (code, tables), 12px
+     * captions and labels. Headings keep their own rem sizes. Reading
+     * surfaces step the scale up (see .reading below). */
+    --text-body: 0.875rem;
+    --text-small: 0.8125rem;
+    --text-caption: 0.75rem;
+    --page-gutter: 1.5rem;
+    /* Sticky header: 1.875rem wordmark + 2rem block padding. Sticky sidebars
+     * and anchored headings offset by this height. */
+    --site-nav-height: 3.875rem;
+    /* Sticky chrome veil: the share of page background layered over the
+     * backdrop blur. */
+    --chrome-veil: 72%;
+    --motion-step: 75ms;
+  }
+
+  * {
+    box-sizing: border-box;
+  }
+
+  html {
+    background: var(--page-background);
+    /* Keep the centered layout stable between pages with and without a
+     * scrollbar. */
+    scrollbar-gutter: stable;
+  }
+
+  body {
+    margin: 0;
+    padding: 4rem var(--page-gutter);
+    background: var(--page-background);
+    color: var(--page-color);
+    font-family: "OpenTUI Mono", monospace;
+    font-size: var(--text-body);
+    line-height: 1.5;
+  }
+
+  /* Reading surfaces (the landing page, scrollback, packages) step their
+   * content up to the 16px default: display and long-form text in an open
+   * viewport, with 24px lines on the 1.5rem grid. The dense documentation
+   * and the chrome around the column keep the 14px body. */
+  .reading {
+    --text-body: 1rem;
+    --text-small: 0.875rem;
+    font-size: var(--text-body);
+  }
+
+  .page {
+    width: min(100%, var(--content-width));
+    margin-inline: auto;
+  }
+
+  /* Wide pages (documentation): 13rem nav + 3rem gap + 48rem content. */
+  .page.wide {
+    width: min(100%, var(--frame-width));
+  }
+
+  /* The document title matches the wordmark's 1.875rem height, anchoring
+   * the page without out-weighing the brand. Its 2.25rem line box stays
+   * on the half-line grid, with display leading tighter than body text. */
+  h1 {
+    font-size: 1.875rem;
+    line-height: 2.25rem;
+  }
+
+  h2 {
+    font-size: 1.125rem;
+  }
+
+  h3 {
+    font-size: 1rem;
+  }
+
+  /* Visually hidden, available to assistive tech: page titles on list
+   * pages that the navigation already names. */
+  .sr-only {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    margin: -1px;
+    padding: 0;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+
+  a,
+  a:visited {
+    color: var(--link-color);
+    text-decoration: none;
+  }
+
+  a:hover {
+    text-decoration: underline;
+  }
+
+  /* Site navigation links (header and footer) are bold and never underline
+   * at rest, in any theme: the current item carries a border marker. */
+  :is(nav[aria-label="Site"], nav[aria-label="Primary"]) > a,
+  :is(nav[aria-label="Site"], nav[aria-label="Primary"]) > a:hover,
+  :root[data-theme="blue"] :is(nav[aria-label="Site"], nav[aria-label="Primary"]) > a {
+    font-weight: 700;
+    text-decoration: none;
+  }
+
+  /* Hover: footer links underline; header links preview the current-item
+   * border marker. */
+  nav[aria-label="Primary"] > a:hover {
+    text-decoration: underline;
+  }
+
+  nav[aria-label="Site"] > a:hover {
+    border-bottom: 1px solid currentColor;
+  }
+
+  /* Dark ink is off-white: pure white on pure black halates around glyphs
+   * and tires the eye in long reading. Links lighten for the same reason. */
+  :root[data-theme="dark"] {
+    color-scheme: dark;
+    --page-background: #000;
+    --page-color: #ededed;
+    /* The blue theme's ink family at the original link's vibrancy:
+     * hsl(218, 100%, 65%), 6.6:1 on black. */
+    --link-color: #4d8eff;
+  }
+
+  :root[data-theme="light"] {
+    color-scheme: light;
+    --page-background: #fff;
+    --page-color: #000;
+  }
+
+  /* Blue tint: white paper, blue ink (~8:1 on white). Links share the ink
+   * and are marked by a permanent underline, keeping the page one hue.
+   * Muted text is a lighter cut of the same ink. */
+  :root[data-theme="blue"] {
+    color-scheme: light;
+    --page-background: #fff;
+    --page-color: #1131e9;
+    --link-color: #1131e9;
+    --muted-color: #6e8bff;
+  }
+
+  :root[data-theme="blue"] a {
+    text-decoration: underline;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme]) {
+      color-scheme: dark;
+      --page-background: #000;
+      --page-color: #ededed;
+      --link-color: #4d8eff;
+    }
+  }
+
+  @media (max-width: 40rem) {
+    :root {
+      --page-gutter: 1rem;
+    }
+
+    body {
+      padding-block: 1.25rem 2rem;
+    }
+  }
+</style>
