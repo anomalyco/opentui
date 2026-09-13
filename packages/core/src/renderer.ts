@@ -3678,6 +3678,22 @@ export class CliRenderer extends EventEmitter implements RenderContext {
     this.lastOverRenderableNum = maybeRenderableId
     const maybeRenderable = Renderable.renderablesByNumber.get(maybeRenderableId)
 
+    // A fresh left press while a selection is still "dragging" means the previous
+    // mouse-up was lost (dropped across a terminal, remote session, or multiplexer
+    // boundary). Left as-is, the isDragging gate below blocks every future press
+    // and selection stops working for the rest of the session. A physical press can
+    // only follow a release in a correct stream, so a press during an active drag is
+    // always an anomaly: reset and let the gate start a fresh selection.
+    if (
+      mouseEvent.type === "down" &&
+      mouseEvent.button === MouseButton.LEFT &&
+      !mouseEvent.modifiers.ctrl &&
+      this.currentSelection?.isDragging
+    ) {
+      this.clearSelectionState()
+      this.setCapturedRenderable(undefined)
+    }
+
     if (
       mouseEvent.type === "down" &&
       mouseEvent.button === MouseButton.LEFT &&
