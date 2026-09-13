@@ -1042,7 +1042,13 @@ export class MarkdownRenderable extends Renderable {
     id: string,
   ): boolean {
     if ((token.type === "text" || token.type === "paragraph") && renderable instanceof CodeRenderable) {
-      this.applyMarkdownCodeRenderable(renderable, this.normalizeScrollbackMarkdownBlockRaw(token.raw), 0)
+      this.applyMarkdownCodeRenderable(
+        renderable,
+        this.normalizeScrollbackMarkdownBlockRaw(token.raw),
+        0,
+        undefined,
+        this.createInitialStyledText(token),
+      )
       return true
     }
 
