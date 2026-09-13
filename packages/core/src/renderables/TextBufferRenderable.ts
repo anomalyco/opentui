@@ -5,7 +5,7 @@ import { TextBufferView } from "../text-buffer-view.js"
 import { RGBA, parseColor } from "../lib/RGBA.js"
 import { type RenderContext, type LineInfoProvider } from "../types.js"
 import type { OptimizedBuffer } from "../buffer.js"
-import { NativeMeasureTargetKind, resolveRenderLib, type LineInfo, type NativeRenderableHandle } from "../zig.js"
+import { NativeMeasureTargetKind, type LineInfo } from "../zig.js"
 import { SyntaxStyle } from "../syntax-style.js"
 
 export interface TextBufferOptions extends RenderableOptions<TextBufferRenderable> {
@@ -41,7 +41,6 @@ export abstract class TextBufferRenderable extends Renderable implements LineInf
   protected textBuffer: TextBuffer
   protected textBufferView: TextBufferView
   protected _textBufferSyntaxStyle: SyntaxStyle
-  private nativeRenderable: NativeRenderableHandle | null = null
 
   protected _defaultOptions = {
     fg: RGBA.fromValues(1, 1, 1, 1),
@@ -57,7 +56,7 @@ export abstract class TextBufferRenderable extends Renderable implements LineInf
   } satisfies Partial<TextBufferOptions>
 
   constructor(ctx: RenderContext, options: TextBufferOptions) {
-    super(ctx, options)
+    super(ctx, options, true)
 
     this._defaultFg = parseColor(options.fg ?? this._defaultOptions.fg)
     this._defaultBg = parseColor(options.bg ?? this._defaultOptions.bg)
@@ -81,7 +80,9 @@ export abstract class TextBufferRenderable extends Renderable implements LineInf
 
     this.textBufferView.setWrapMode(this._wrapMode)
     this.textBufferView.setFirstLineOffset(this._firstLineOffset)
-    this.setupNativeRenderable()
+    if (!this.setNativeMeasureTarget(NativeMeasureTargetKind.TextBufferView, this.textBufferView.ptr)) {
+      throw new Error("Failed to attach text buffer native measure target")
+    }
 
     this.textBuffer.setDefaultFg(this._defaultFg)
     this.textBuffer.setDefaultBg(this._defaultBg)
@@ -392,30 +393,6 @@ export abstract class TextBufferRenderable extends Renderable implements LineInf
     this.emit("line-info-change")
   }
 
-  private setupNativeRenderable(): void {
-    const lib = resolveRenderLib()
-    // Transitional native backing: JS still owns the render tree and Yoga nodes,
-    // while native owns only hot measurement state. Attach the existing JS-created
-    // Yoga node for now. The intended direction is for every Renderable to become
-    // native-backed and for Yoga node ownership to move native-side with it.
-    const nativeRenderable = lib.createNativeRenderable()
-    if (!lib.nativeRenderableAttachYogaNode(nativeRenderable, this.yogaNode.ptr)) {
-      lib.destroyNativeRenderable(nativeRenderable)
-      throw new Error("Failed to attach native renderable Yoga node")
-    }
-    if (
-      !lib.nativeRenderableSetMeasureTarget(
-        nativeRenderable,
-        NativeMeasureTargetKind.TextBufferView,
-        this.textBufferView.ptr,
-      )
-    ) {
-      lib.destroyNativeRenderable(nativeRenderable)
-      throw new Error("Failed to attach text buffer native measure target")
-    }
-    this.nativeRenderable = nativeRenderable
-  }
-
   shouldStartSelection(x: number, y: number): boolean {
     if (!this.selectable) return false
 
@@ -501,8 +478,7 @@ export abstract class TextBufferRenderable extends Renderable implements LineInf
     if (this.isDestroyed) return
 
     if (this.nativeRenderable) {
-      resolveRenderLib().destroyNativeRenderable(this.nativeRenderable)
-      this.nativeRenderable = null
+      this.setNativeMeasureTarget(NativeMeasureTargetKind.None, 0)
     }
     this.textBuffer.setSyntaxStyle(null)
     this._textBufferSyntaxStyle.destroy()

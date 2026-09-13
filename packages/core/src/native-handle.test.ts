@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test"
+import { describe, expect, spyOn, test } from "bun:test"
 import { OptimizedBuffer } from "./buffer.js"
 import { RGBA } from "./lib/RGBA.js"
 import { TextBuffer } from "./text-buffer.js"
@@ -6,7 +6,6 @@ import { TextBufferView } from "./text-buffer-view.js"
 import { EditBuffer } from "./edit-buffer.js"
 import { EditorView } from "./editor-view.js"
 import { SyntaxStyle } from "./syntax-style.js"
-import type { Pointer } from "./platform/ffi.js"
 import Yoga from "./yoga.js"
 import {
   NativeMeasureTargetKind,
@@ -137,16 +136,40 @@ describe("native handles", () => {
 })
 
 describe("native renderable measure target contract", () => {
-  test("rejects null nodes, unknown kinds, and stale target handles", () => {
+  test("recursive Yoga free rejects native-owned descendants", () => {
+    const lib = resolveRenderLib()
+    const renderable = lib.createNativeRenderable()
+    const node = Yoga.Node.fromBorrowedPointer(lib.nativeRenderableGetYogaNode(renderable))
+    const root = Yoga.Node.createForOpenTUI()
+    root.insertChild(node, 0)
+    const recursiveFree = spyOn(lib, "yogaNodeFreeRecursive").mockImplementation(() => {})
+
+    try {
+      expect(() => node.free()).toThrow("Cannot free a borrowed Yoga node while it is attached")
+      expect(() => root.freeRecursive()).toThrow("Cannot recursively free a Yoga subtree containing borrowed nodes")
+      expect(recursiveFree).not.toHaveBeenCalled()
+    } finally {
+      recursiveFree.mockRestore()
+      if (root.isFreed()) {
+        lib.yogaNodeRemoveChild(root.ptr, node.ptr)
+        lib.yogaNodeFree(root.ptr)
+      } else {
+        root.removeChild(node)
+        root.free()
+      }
+      node.free()
+      lib.destroyNativeRenderable(renderable)
+    }
+  })
+
+  test("rejects unknown kinds and stale target handles", () => {
     const lib = resolveRenderLib()
     const textBuffer = TextBuffer.create("unicode")
     const textView = TextBufferView.create(textBuffer)
-    const node = Yoga.Node.createForOpenTUI()
     const renderable = lib.createNativeRenderable()
+    const node = Yoga.Node.fromBorrowedPointer(lib.nativeRenderableGetYogaNode(renderable))
 
     try {
-      expect(lib.nativeRenderableAttachYogaNode(renderable, 0 as unknown as Pointer)).toBe(false)
-      expect(lib.nativeRenderableAttachYogaNode(renderable, node.ptr)).toBe(true)
       expect(lib.yogaNodeHasMeasureFunc(node.ptr)).toBe(false)
 
       expect(
@@ -160,9 +183,8 @@ describe("native renderable measure target contract", () => {
       ).toBe(false)
       expect(lib.yogaNodeHasMeasureFunc(node.ptr)).toBe(true)
 
-      // Clear the target before destroying the view: a native renderable must
-      // never keep measuring a destroyed view (renderables enforce this by
-      // destroying the native renderable before their views).
+      // Clear the target before destroying the view because the native measure
+      // callback stores a raw pointer to it. Renderable teardown uses this order.
       expect(lib.nativeRenderableSetMeasureTarget(renderable, NativeMeasureTargetKind.None, 0)).toBe(true)
       expect(lib.yogaNodeHasMeasureFunc(node.ptr)).toBe(false)
 
@@ -173,8 +195,8 @@ describe("native renderable measure target contract", () => {
       ).toBe(false)
       expect(lib.yogaNodeHasMeasureFunc(node.ptr)).toBe(false)
     } finally {
-      lib.destroyNativeRenderable(renderable)
       node.free()
+      lib.destroyNativeRenderable(renderable)
       textView.destroy()
       textBuffer.destroy()
     }
@@ -184,11 +206,10 @@ describe("native renderable measure target contract", () => {
     const lib = resolveRenderLib()
     const editBuffer = EditBuffer.create("unicode")
     const editorView = EditorView.create(editBuffer, 10, 4)
-    const node = Yoga.Node.createForOpenTUI()
     const renderable = lib.createNativeRenderable()
+    const node = Yoga.Node.fromBorrowedPointer(lib.nativeRenderableGetYogaNode(renderable))
 
     try {
-      expect(lib.nativeRenderableAttachYogaNode(renderable, node.ptr)).toBe(true)
       expect(lib.nativeRenderableSetMeasureTarget(renderable, NativeMeasureTargetKind.EditorView, editorView.ptr)).toBe(
         true,
       )
@@ -197,38 +218,99 @@ describe("native renderable measure target contract", () => {
       expect(lib.nativeRenderableSetMeasureTarget(renderable, NativeMeasureTargetKind.None, 0)).toBe(true)
       expect(lib.yogaNodeHasMeasureFunc(node.ptr)).toBe(false)
     } finally {
-      lib.destroyNativeRenderable(renderable)
       node.free()
+      lib.destroyNativeRenderable(renderable)
       editorView.destroy()
       editBuffer.destroy()
     }
   })
 
-  test("destroying a native renderable clears the node measure func and invalidates the handle", () => {
+  test("destroying measure target owners clears retained native callbacks", () => {
     const lib = resolveRenderLib()
     const textBuffer = TextBuffer.create("unicode")
     const textView = TextBufferView.create(textBuffer)
-    const node = Yoga.Node.createForOpenTUI()
-    const renderable = lib.createNativeRenderable()
+    const editBuffer = EditBuffer.create("unicode")
+    const editorView = EditorView.create(editBuffer, 10, 4)
+    const textRenderable = lib.createNativeRenderable()
+    const editorRenderable = lib.createNativeRenderable()
+    const textNode = Yoga.Node.fromBorrowedPointer(lib.nativeRenderableGetYogaNode(textRenderable))
+    const editorNode = Yoga.Node.fromBorrowedPointer(lib.nativeRenderableGetYogaNode(editorRenderable))
 
     try {
-      expect(lib.nativeRenderableAttachYogaNode(renderable, node.ptr)).toBe(true)
+      expect(
+        lib.nativeRenderableSetMeasureTarget(textRenderable, NativeMeasureTargetKind.TextBufferView, textView.ptr),
+      ).toBe(true)
+      expect(
+        lib.nativeRenderableSetMeasureTarget(editorRenderable, NativeMeasureTargetKind.EditorView, editorView.ptr),
+      ).toBe(true)
+
+      textBuffer.destroy()
+      editBuffer.destroy()
+
+      expect(lib.yogaNodeHasMeasureFunc(textNode.ptr)).toBe(false)
+      expect(lib.yogaNodeHasMeasureFunc(editorNode.ptr)).toBe(false)
+    } finally {
+      textNode.free()
+      editorNode.free()
+      lib.destroyNativeRenderable(textRenderable)
+      lib.destroyNativeRenderable(editorRenderable)
+      textView.destroy()
+      textBuffer.destroy()
+      editorView.destroy()
+      editBuffer.destroy()
+    }
+  })
+
+  test("destroying an editor view clears matching text-buffer-view measure targets", () => {
+    const lib = resolveRenderLib()
+    const editBuffer = EditBuffer.create("unicode")
+    const editorView = EditorView.create(editBuffer, 10, 4)
+    const renderable = lib.createNativeRenderable()
+    const node = Yoga.Node.fromBorrowedPointer(lib.nativeRenderableGetYogaNode(renderable))
+    const borrowedViewHandle = lib.editorViewGetTextBufferView(editorView.ptr)
+
+    try {
+      expect(
+        lib.nativeRenderableSetMeasureTarget(renderable, NativeMeasureTargetKind.TextBufferView, borrowedViewHandle),
+      ).toBe(true)
+      expect(lib.yogaNodeHasMeasureFunc(node.ptr)).toBe(true)
+
+      editorView.destroy()
+
+      expect(lib.yogaNodeHasMeasureFunc(node.ptr)).toBe(false)
+    } finally {
+      node.free()
+      lib.destroyNativeRenderable(renderable)
+      editorView.destroy()
+      editBuffer.destroy()
+    }
+  })
+
+  test("destroying a native renderable owns the node and invalidates the handle", () => {
+    const lib = resolveRenderLib()
+    const textBuffer = TextBuffer.create("unicode")
+    const textView = TextBufferView.create(textBuffer)
+    const renderable = lib.createNativeRenderable()
+    const node = Yoga.Node.fromBorrowedPointer(lib.nativeRenderableGetYogaNode(renderable))
+
+    try {
       expect(
         lib.nativeRenderableSetMeasureTarget(renderable, NativeMeasureTargetKind.TextBufferView, textView.ptr),
       ).toBe(true)
       expect(lib.yogaNodeHasMeasureFunc(node.ptr)).toBe(true)
 
+      node.free()
       lib.destroyNativeRenderable(renderable)
-      expect(lib.yogaNodeHasMeasureFunc(node.ptr)).toBe(false)
+      expect(() => lib.nativeRenderableGetYogaNode(renderable)).toThrow("Failed to get native renderable Yoga node")
 
       // Stale native renderable handles are rejected safely, including double destroy.
       lib.destroyNativeRenderable(renderable)
-      expect(lib.nativeRenderableAttachYogaNode(renderable, node.ptr)).toBe(false)
       expect(
         lib.nativeRenderableSetMeasureTarget(renderable, NativeMeasureTargetKind.TextBufferView, textView.ptr),
       ).toBe(false)
     } finally {
       node.free()
+      lib.destroyNativeRenderable(renderable)
       textView.destroy()
       textBuffer.destroy()
     }

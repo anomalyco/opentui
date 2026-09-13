@@ -23,6 +23,12 @@ import { maybeMakeRenderable, type VNode } from "./renderables/composition/vnode
 import type { MouseEvent } from "./renderer.js"
 import type { RenderContext } from "./types.js"
 import {
+  NativeMeasureTargetKind,
+  resolveRenderLib,
+  type NativeMeasureTargetHandle,
+  type NativeRenderableHandle,
+} from "./zig.js"
+import {
   validateOptions,
   isPositionType,
   isDimensionType,
@@ -260,6 +266,7 @@ export abstract class Renderable extends BaseRenderable {
   private _keyListeners: Partial<Record<"down", (key: KeyEvent) => void>> = {}
 
   protected yogaNode: YogaNode
+  protected readonly nativeRenderable: NativeRenderableHandle | null
   protected _positionType: PositionTypeString = "relative"
   protected _overflow: OverflowString = "visible"
   protected _position: Position = {}
@@ -283,10 +290,13 @@ export abstract class Renderable extends BaseRenderable {
   public renderBefore?: (this: Renderable, buffer: OptimizedBuffer, deltaTime: number) => void
   public renderAfter?: (this: Renderable, buffer: OptimizedBuffer, deltaTime: number) => void
 
-  constructor(ctx: RenderContext, options: RenderableOptions<any>) {
+  constructor(ctx: RenderContext, options: RenderableOptions<any>, nativeBacked: boolean = false) {
     super(options)
 
     this._ctx = ctx
+    const renderLib = nativeBacked ? resolveRenderLib() : null
+    const nativeRenderable = renderLib?.createNativeRenderable() ?? null
+    this.nativeRenderable = nativeRenderable
     Renderable.renderablesByNumber.set(this.num, this)
 
     validateOptions(this.id, options)
@@ -311,7 +321,9 @@ export abstract class Renderable extends BaseRenderable {
     this._liveCount = this._live && this._visible ? 1 : 0
     this._opacity = options.opacity !== undefined ? Math.max(0, Math.min(1, options.opacity)) : 1.0
 
-    this.yogaNode = Yoga.Node.createForOpenTUI()
+    this.yogaNode = nativeRenderable
+      ? Yoga.Node.fromBorrowedPointer(renderLib!.nativeRenderableGetYogaNode(nativeRenderable))
+      : Yoga.Node.createForOpenTUI()
     this.yogaNode.setDisplay(this._visible ? Display.Flex : Display.None)
     this.setupYogaProperties(options)
 
@@ -320,6 +332,13 @@ export abstract class Renderable extends BaseRenderable {
     if (this.buffered) {
       this.createFrameBuffer()
     }
+  }
+
+  protected setNativeMeasureTarget(kind: NativeMeasureTargetKind, target: NativeMeasureTargetHandle | 0): boolean {
+    return (
+      this.nativeRenderable !== null &&
+      resolveRenderLib().nativeRenderableSetMeasureTarget(this.nativeRenderable, kind, target)
+    )
   }
 
   public get focusable(): boolean {
@@ -1577,6 +1596,7 @@ export abstract class Renderable extends BaseRenderable {
     } catch (e) {
       // Might be already freed and will throw an error if we try to free it again
     }
+    if (this.nativeRenderable) resolveRenderLib().destroyNativeRenderable(this.nativeRenderable)
   }
 
   public destroyRecursively(): void {

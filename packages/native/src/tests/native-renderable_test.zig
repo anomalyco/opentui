@@ -3,6 +3,15 @@ const std = @import("std");
 const native_renderable = @import("../native-renderable.zig");
 const yoga = @import("../yoga.zig");
 
+test "NativeRenderable owns an OpenTUI Yoga node" {
+    var renderable = try native_renderable.NativeRenderable.init();
+    defer renderable.deinit();
+
+    const node = renderable.getYogaNode();
+    try std.testing.expect(node != null);
+    try std.testing.expectEqual(@as(f32, 1), yoga.yogaConfigGetPointScaleFactor(yoga.yogaNodeGetConfig(node)));
+}
+
 test "NativeRenderable measure width normalization matches previous TypeScript rules" {
     try std.testing.expectEqual(@as(f32, 0), native_renderable.normalizeYogaMeasureWidthInput(42, @intFromEnum(yoga.YogaMeasureMode.undefined)));
     try std.testing.expectEqual(@as(f32, 0), native_renderable.normalizeYogaMeasureWidthInput(std.math.nan(f32), @intFromEnum(yoga.YogaMeasureMode.exactly)));

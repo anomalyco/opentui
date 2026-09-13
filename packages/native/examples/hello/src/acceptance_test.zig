@@ -104,3 +104,13 @@ test "styled text renders through the public Zig module without JavaScript" {
     try std.testing.expect(std.mem.find(u8, output, "\x1b[4m") != null);
     try std.testing.expect(std.mem.find(u8, output, ";https://opentui.com/native\x1b\\") != null);
 }
+
+test "NativeRenderable owns an OpenTUI Yoga node without JavaScript" {
+    var renderable = try opentui.NativeRenderable.init();
+    defer renderable.deinit();
+
+    const node = renderable.getYogaNode();
+    try std.testing.expect(node != null);
+    const config = opentui.yoga.yogaNodeGetConfig(node);
+    try std.testing.expectEqual(@as(f32, 1), opentui.yoga.yogaConfigGetPointScaleFactor(config));
+}

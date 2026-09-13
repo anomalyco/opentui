@@ -538,8 +538,12 @@ fn clearEditBufferEventSinkRefs(sink: *event_bus.EventSink) void {
 
 export fn createNativeRenderable() NativeHandle {
     const renderable = globalAllocator.create(native_renderable.NativeRenderable) catch return INVALID_HANDLE;
-    renderable.* = .{};
+    renderable.* = native_renderable.NativeRenderable.init() catch {
+        globalAllocator.destroy(renderable);
+        return INVALID_HANDLE;
+    };
     return handles.insert(.native_renderable, erasePtr(renderable)) catch {
+        renderable.deinit();
         globalAllocator.destroy(renderable);
         return INVALID_HANDLE;
     };
@@ -552,14 +556,9 @@ export fn destroyNativeRenderable(native_renderable_handle: NativeHandle) void {
     handles.finishDestroy(token.handle);
 }
 
-export fn nativeRenderableAttachYogaNode(native_renderable_handle: NativeHandle, node: native_yoga.YGNodeRef) bool {
-    // Temporary bridge: JS-created Renderables still own Yoga nodes, so native
-    // renderables borrow and attach them after construction. This should go away
-    // when the renderable tree and Yoga ownership move native-side.
-    const renderable = acquireNativeRenderable(native_renderable_handle) orelse return false;
-    if (node == null) return false;
-    renderable.attachYogaNode(node);
-    return true;
+export fn nativeRenderableGetYogaNode(native_renderable_handle: NativeHandle) native_yoga.YGNodeRef {
+    const renderable = acquireNativeRenderable(native_renderable_handle) orelse return null;
+    return renderable.getYogaNode();
 }
 
 export fn nativeRenderableSetMeasureTarget(
@@ -587,6 +586,14 @@ export fn nativeRenderableSetMeasureTarget(
 
     renderable.setMeasureTarget(target);
     return true;
+}
+
+fn clearNativeRenderableMeasureTargetRefs(target: native_renderable.MeasureTarget) void {
+    var cursor: usize = 1;
+    while (handles.nextByKind(.native_renderable, &cursor)) |renderable_handle| {
+        const renderable = acquireNativeRenderable(renderable_handle) orelse continue;
+        renderable.clearMeasureTargetIfMatches(target);
+    }
 }
 
 export fn destroyEventSink(sink_handle: NativeHandle) void {
@@ -2189,6 +2196,7 @@ export fn writeOut(renderer_handle: NativeHandle, dataPtr: ?[*]const u8, dataLen
 
 fn destroyTextBufferViewHandle(view_handle: NativeHandle) void {
     const token = handles.beginDestroy(view_handle, .text_buffer_view, text_buffer_view.UnifiedTextBufferView) orelse return;
+    clearNativeRenderableMeasureTargetRefs(.{ .text_buffer_view = token.ptr });
     token.ptr.deinit();
     handles.finishDestroy(token.handle);
 }
@@ -2543,6 +2551,8 @@ export fn textBufferViewMeasureForDimensions(view_handle: NativeHandle, width: u
 
 fn destroyEditorViewHandle(view_handle: NativeHandle) void {
     const token = handles.beginDestroy(view_handle, .editor_view, editor_view.EditorView) orelse return;
+    clearNativeRenderableMeasureTargetRefs(.{ .editor_view = token.ptr });
+    clearNativeRenderableMeasureTargetRefs(.{ .text_buffer_view = token.ptr.getTextBufferView() });
     handles.invalidateChildren(token.handle);
     token.ptr.deinit();
     handles.finishDestroy(token.handle);
@@ -3734,6 +3744,137 @@ test "imageRetain creates independently disposable handles without copying pixel
     imageDestroy(handle);
     try std.testing.expect(acquireImage(handle) == null);
     try std.testing.expectEqual(image, acquireImage(retained_handle));
+}
+
+const MeasureLifetimeDestroy = enum {
+    editor_view,
+    edit_buffer,
+};
+
+fn measureLifetimeTarget(kind: native_renderable.MeasureTargetKind, owner: NativeHandle) NativeHandle {
+    return switch (kind) {
+        .none => INVALID_HANDLE,
+        .text_buffer_view => editorViewGetTextBufferView(owner),
+        .editor_view => owner,
+    };
+}
+
+fn expectClearedMeasureTarget(renderable_handle: NativeHandle) !void {
+    try std.testing.expectEqual(
+        native_renderable.MeasureTargetKind.none,
+        std.meta.activeTag(acquireNativeRenderable(renderable_handle).?.measure_target),
+    );
+}
+
+fn expectEditorMeasureLifetime(kind: native_renderable.MeasureTargetKind, destroy: MeasureLifetimeDestroy) !void {
+    const edit_handle = createEditBuffer(1, INVALID_HANDLE);
+    try std.testing.expect(edit_handle != INVALID_HANDLE);
+    defer if (destroy != .edit_buffer) destroyEditBuffer(edit_handle);
+
+    const view_handle = createEditorView(edit_handle, 10, 4);
+    try std.testing.expect(view_handle != INVALID_HANDLE);
+
+    const target_handle = measureLifetimeTarget(kind, view_handle);
+    try std.testing.expect(target_handle != INVALID_HANDLE);
+
+    const renderable_handle = createNativeRenderable();
+    try std.testing.expect(renderable_handle != INVALID_HANDLE);
+
+    const node = nativeRenderableGetYogaNode(renderable_handle);
+    try std.testing.expect(node != null);
+    try std.testing.expect(nativeRenderableSetMeasureTarget(renderable_handle, @intFromEnum(kind), target_handle));
+    try std.testing.expectEqual(kind, std.meta.activeTag(acquireNativeRenderable(renderable_handle).?.measure_target));
+
+    const parent = native_yoga.yogaNodeCreate();
+    defer native_yoga.yogaNodeFree(parent);
+    native_yoga.yogaNodeInsertChild(parent, node, 0);
+
+    const text = "owned";
+    editBufferSetText(edit_handle, text.ptr, text.len);
+    native_yoga.yogaNodeCalculateLayout(parent, 40, 10, @intFromEnum(native_yoga.YogaDirection.ltr));
+
+    var before: native_yoga.ExternalYogaLayout = undefined;
+    native_yoga.yogaNodeGetComputedLayout(node, &before);
+    try std.testing.expect(before.width > 0);
+    try std.testing.expect(before.height > 0);
+
+    switch (destroy) {
+        .editor_view => destroyEditorView(view_handle),
+        .edit_buffer => destroyEditBuffer(edit_handle),
+    }
+    try expectClearedMeasureTarget(renderable_handle);
+
+    native_yoga.yogaNodeCalculateLayout(parent, 40, 10, @intFromEnum(native_yoga.YogaDirection.ltr));
+    destroyNativeRenderable(renderable_handle);
+}
+
+fn expectOwnedTextBufferViewMeasureLifetime() !void {
+    const buffer_handle = createTextBuffer(1);
+    try std.testing.expect(buffer_handle != INVALID_HANDLE);
+
+    const view_handle = createTextBufferView(buffer_handle);
+    try std.testing.expect(view_handle != INVALID_HANDLE);
+
+    const renderable_handle = createNativeRenderable();
+    try std.testing.expect(renderable_handle != INVALID_HANDLE);
+
+    const node = nativeRenderableGetYogaNode(renderable_handle);
+    try std.testing.expect(node != null);
+    try std.testing.expect(nativeRenderableSetMeasureTarget(
+        renderable_handle,
+        @intFromEnum(native_renderable.MeasureTargetKind.text_buffer_view),
+        view_handle,
+    ));
+
+    const parent = native_yoga.yogaNodeCreate();
+    defer native_yoga.yogaNodeFree(parent);
+    native_yoga.yogaNodeInsertChild(parent, node, 0);
+    native_yoga.yogaNodeCalculateLayout(parent, 40, 10, @intFromEnum(native_yoga.YogaDirection.ltr));
+
+    destroyTextBuffer(buffer_handle);
+    try expectClearedMeasureTarget(renderable_handle);
+
+    native_yoga.yogaNodeCalculateLayout(parent, 40, 10, @intFromEnum(native_yoga.YogaDirection.ltr));
+    destroyNativeRenderable(renderable_handle);
+}
+
+fn expectMeasureLifetimeAllocatorDelta() !void {
+    if (!build_options.gpa_safe_stats) return error.SkipZigTest;
+
+    const before = getTotalRequestedBytesInfo();
+    try std.testing.expect(before.valid);
+
+    var cycle: u32 = 0;
+    while (cycle < 64) : (cycle += 1) {
+        try expectEditorMeasureLifetime(.text_buffer_view, .editor_view);
+        try expectEditorMeasureLifetime(.editor_view, .editor_view);
+        try expectEditorMeasureLifetime(.editor_view, .edit_buffer);
+        try expectOwnedTextBufferViewMeasureLifetime();
+    }
+
+    const after = getTotalRequestedBytesInfo();
+    try std.testing.expect(after.valid);
+    try std.testing.expectEqual(before.bytes, after.bytes);
+}
+
+test "measure lifetime: editor view destroy clears borrowed text-buffer-view targets" {
+    try expectEditorMeasureLifetime(.text_buffer_view, .editor_view);
+}
+
+test "measure lifetime: editor view destroy clears editor-view targets" {
+    try expectEditorMeasureLifetime(.editor_view, .editor_view);
+}
+
+test "measure lifetime: edit buffer destroy clears editor-view targets" {
+    try expectEditorMeasureLifetime(.editor_view, .edit_buffer);
+}
+
+test "measure lifetime: text buffer destroy clears owned text-buffer-view targets" {
+    try expectOwnedTextBufferViewMeasureLifetime();
+}
+
+test "measure lifetime: allocator returns to baseline after teardown cycles" {
+    try expectMeasureLifetimeAllocatorDelta();
 }
 
 export fn imageResize(image_handle: NativeHandle, width: u32, height: u32, filter: u32, out_handle: ?*NativeHandle) u32 {
