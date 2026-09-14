@@ -1126,6 +1126,29 @@ export abstract class Renderable extends BaseRenderable {
     }
   }
 
+  /**
+   * The bottom edge of this node's entire laid-out subtree, measured from its
+   * own top edge.
+   *
+   * Normally identical to `height`: a correctly laid-out container is at least
+   * as tall as everything inside it, so the `Math.max` below never picks a
+   * child. It stops being identical when Yoga reports a height that its own
+   * children overflow -- observed on tall scroll transcripts, where a column of
+   * 500 children laid out contiguously down to row 5694 reported a height of
+   * 5420, leaving the last ~35 children below anything `scrollHeight` could
+   * reach. Callers that need the real extent of scrollable content should use
+   * this instead of `height`.
+   */
+  public getSubtreeExtentY(): number {
+    let extent = this._heightValue
+    for (const child of this.getChildren()) {
+      if (child.isDestroyed || !child.visible) continue
+      const childExtent = child._y + child._translateY + child.getSubtreeExtentY()
+      if (childExtent > extent) extent = childExtent
+    }
+    return extent
+  }
+
   protected onLayoutResize(width: number, height: number): void {
     if (this._visible) {
       // TODO: Should probably .markDirty()
