@@ -487,6 +487,42 @@ describe("Textarea - Destroyed Renderable Event Tests", () => {
       expect(errorThrown).toBe(true)
     })
 
+    it("does not throw when reading visualCursor after destroy", async () => {
+      const { textarea: editor } = await createTextareaRenderable(currentRenderer, renderOnce, {
+        initialValue: "Test",
+        width: 40,
+        height: 10,
+      })
+
+      editor.focus()
+      await renderOnce()
+      editor.destroy()
+
+      expect(editor.isDestroyed).toBe(true)
+      expect(() => editor.visualCursor).not.toThrow()
+      expect(() => editor.cursorOffset).not.toThrow()
+      expect(() => editor.editorView.getVisualCursor()).toThrow("EditorView is destroyed")
+    })
+
+    it("releases native resources before destroyed listeners read visualCursor", async () => {
+      const { textarea: editor } = await createTextareaRenderable(currentRenderer, renderOnce, {
+        initialValue: "Test",
+        width: 40,
+        height: 10,
+      })
+
+      editor.focus()
+      await renderOnce()
+      editor.on("destroyed", () => {
+        expect(() => editor.editorView.getVisualCursor()).toThrow("EditorView is destroyed")
+        expect(() => editor.editBuffer.getText()).toThrow("EditBuffer is destroyed")
+        void editor.visualCursor
+        void editor.cursorOffset
+      })
+
+      expect(() => editor.destroy()).not.toThrow()
+    })
+
     it("should not allow keypress after proper destroy", async () => {
       let keypressFired = false
 

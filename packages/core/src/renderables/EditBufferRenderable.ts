@@ -17,6 +17,14 @@ import { NativeMeasureTargetKind, resolveRenderLib, type NativeRenderableHandle 
 
 const BrandedEditBufferRenderable: unique symbol = Symbol.for("@opentui/core/EditBufferRenderable")
 
+const emptyVisualCursor: VisualCursor = Object.freeze({
+  visualRow: 0,
+  visualCol: 0,
+  logicalRow: 0,
+  logicalCol: 0,
+  offset: 0,
+})
+
 export type EditorCapture = "escape" | "navigate" | "submit" | "tab"
 
 export interface EditorTraits {
@@ -223,11 +231,12 @@ export abstract class EditBufferRenderable extends Renderable implements LineInf
   }
 
   get visualCursor(): VisualCursor {
+    if (this.editorView.isDestroyed) return emptyVisualCursor
     return this.editorView.getVisualCursor()
   }
 
   get cursorOffset(): number {
-    return this.editorView.getVisualCursor().offset
+    return this.visualCursor.offset
   }
 
   set cursorOffset(offset: number) {
@@ -1001,7 +1010,7 @@ export abstract class EditBufferRenderable extends Renderable implements LineInf
   protected renderCursor(buffer: OptimizedBuffer): void {
     if (!this._showCursor || !this._focused) return
 
-    const visualCursor = this.editorView.getVisualCursor()
+    const visualCursor = this.visualCursor
     const screenX = this._screenX
     const screenY = this._screenY
 
