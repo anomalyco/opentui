@@ -1903,6 +1903,30 @@ test("blockquote updates quote text and bar colors when syntaxStyle changes", as
   expect(findSpanContaining(captureSpans(), "Quote text")?.fg?.toInts()).toEqual(quoteColor2.toInts())
 })
 
+test("table cells use the markdown fg and follow fg changes", async () => {
+  const fg1 = RGBA.fromValues(0.25, 0.5, 0.75, 1)
+  const fg2 = RGBA.fromValues(0.75, 0.5, 0.25, 1)
+  const md = createMarkdownRenderable({
+    id: "markdown-table-fg",
+    content: "| Head |\n| --- |\n| Cell |",
+    syntaxStyle: SyntaxStyle.fromStyles({}),
+    fg: fg1,
+  })
+
+  renderer.root.add(md)
+  await renderMarkdownRenderable(md)
+  expect(md._blockStates[0]?.renderable).toBeInstanceOf(TextTableRenderable)
+  expect(findSpanContaining(captureSpans(), "Head")?.fg?.toInts()).toEqual(fg1.toInts())
+  expect(findSpanContaining(captureSpans(), "Cell")?.fg?.toInts()).toEqual(fg1.toInts())
+
+  md.fg = fg2
+  renderer.requestRender()
+  await renderMarkdownRenderable(md)
+
+  expect(findSpanContaining(captureSpans(), "Head")?.fg?.toInts()).toEqual(fg2.toInts())
+  expect(findSpanContaining(captureSpans(), "Cell")?.fg?.toInts()).toEqual(fg2.toInts())
+})
+
 test("fenced diff blocks color added and removed lines", async () => {
   const mockTreeSitterClient = createMockTreeSitterClient()
   mockTreeSitterClient.setMockResult({
