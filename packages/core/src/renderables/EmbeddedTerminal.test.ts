@@ -50,6 +50,21 @@ describe("EmbeddedTerminalRenderable", () => {
     expect(setup.captureCharFrame()).toBe(first)
   })
 
+  test("toggles the pane background between the configured color and the terminal default", async () => {
+    const terminal = new EmbeddedTerminalRenderable(setup.renderer, { width: 20, height: 4 })
+    setup.renderer.root.add(terminal)
+    await setup.renderOnce()
+    expect(setup.captureSpans().lines[0]?.spans[0]?.bg.intent).toBe("rgb")
+
+    terminal.transparentBackground = true
+    await setup.renderOnce()
+    expect(setup.captureSpans().lines[0]?.spans[0]?.bg.intent).toBe("default")
+
+    terminal.transparentBackground = false
+    await setup.renderOnce()
+    expect(setup.captureSpans().lines[0]?.spans[0]?.bg.intent).toBe("rgb")
+  })
+
   test("preserves mouse callbacks and their renderable context", async () => {
     let mouseDowns = 0
     let callbackThis: EmbeddedTerminalRenderable | undefined

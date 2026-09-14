@@ -312,6 +312,12 @@ export fn embeddedTerminalInvalidate(handle: NativeHandle) i32 {
     return 0;
 }
 
+export fn embeddedTerminalSetTransparentBackground(handle: NativeHandle, transparent: u8) i32 {
+    const terminal_value = acquireEmbeddedTerminal(handle) orelse return EmbeddedTerminalStatus.invalid;
+    terminal_value.setTransparentBackground(transparent != 0);
+    return 0;
+}
+
 export fn embeddedTerminalScroll(handle: NativeHandle, delta: i32) i32 {
     const terminal_value = acquireEmbeddedTerminal(handle) orelse return EmbeddedTerminalStatus.invalid;
     terminal_value.scroll(delta);
