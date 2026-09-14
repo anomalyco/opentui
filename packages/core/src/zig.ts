@@ -482,6 +482,10 @@ function getOpenTUILib(libPath?: string) {
       args: ["u32"],
       returns: "i32",
     },
+    embeddedTerminalSetTransparentBackground: {
+      args: ["u32", "u8"],
+      returns: "i32",
+    },
     embeddedTerminalScroll: {
       args: ["u32", "i32"],
       returns: "i32",
@@ -3246,6 +3250,7 @@ export interface RenderLib extends AudioEngineLib {
   embeddedTerminalWrite: (handle: EmbeddedTerminalHandle, data: string | Uint8Array) => void
   embeddedTerminalResize: (handle: EmbeddedTerminalHandle, cols: number, rows: number) => void
   embeddedTerminalInvalidate: (handle: EmbeddedTerminalHandle) => void
+  embeddedTerminalSetTransparentBackground: (handle: EmbeddedTerminalHandle, transparent: boolean) => void
   embeddedTerminalScroll: (handle: EmbeddedTerminalHandle, delta: number) => void
   embeddedTerminalSetSelection: (
     handle: EmbeddedTerminalHandle,
@@ -3388,6 +3393,13 @@ class FFIRenderLib implements RenderLib {
 
   public embeddedTerminalInvalidate(handle: EmbeddedTerminalHandle): void {
     embeddedTerminalResult(this.opentui.symbols.embeddedTerminalInvalidate(handle), "invalidation")
+  }
+
+  public embeddedTerminalSetTransparentBackground(handle: EmbeddedTerminalHandle, transparent: boolean): void {
+    embeddedTerminalResult(
+      this.opentui.symbols.embeddedTerminalSetTransparentBackground(handle, transparent ? 1 : 0),
+      "transparent background update",
+    )
   }
 
   public embeddedTerminalScroll(handle: EmbeddedTerminalHandle, delta: number): void {

@@ -354,6 +354,43 @@ test "embedded terminal resets mouse motion deduplication after resize" {
     try std.testing.expect(after_resize.len > 0);
 }
 
+test "embedded terminal composes a transparent default background as the terminal default" {
+    const pool = gp.initGlobalPool(std.testing.allocator);
+    defer gp.deinitGlobalPool();
+    var target = try buffer.OptimizedBuffer.init(std.testing.allocator, 4, 1, .{ .pool = pool });
+    defer target.deinit();
+
+    const terminal = try EmbeddedTerminal.init(std.testing.io, std.testing.allocator, .{ .cols = 4, .rows = 1 });
+    defer terminal.deinit();
+    try terminal.write("ab");
+
+    try terminal.compose(target, 0, 0);
+    try std.testing.expectEqual(ansi.ColorIntent.rgb, ansi.intent(target.get(0, 0).?.bg));
+
+    terminal.setTransparentBackground(true);
+    try terminal.compose(target, 0, 0);
+    // Text without an explicit background and the row tail cleared by clearRow both keep the intent.
+    try std.testing.expectEqual(ansi.ColorIntent.default, ansi.intent(target.get(0, 0).?.bg));
+    try std.testing.expectEqual(ansi.ColorIntent.default, ansi.intent(target.get(3, 0).?.bg));
+}
+
+test "embedded terminal keeps explicit backgrounds opaque when transparent" {
+    const pool = gp.initGlobalPool(std.testing.allocator);
+    defer gp.deinitGlobalPool();
+    var target = try buffer.OptimizedBuffer.init(std.testing.allocator, 4, 1, .{ .pool = pool });
+    defer target.deinit();
+
+    const terminal = try EmbeddedTerminal.init(std.testing.io, std.testing.allocator, .{ .cols = 4, .rows = 1 });
+    defer terminal.deinit();
+    terminal.setTransparentBackground(true);
+    try terminal.write("\x1b[41mX");
+
+    try terminal.compose(target, 0, 0);
+
+    try std.testing.expectEqual(@as(u32, 'X'), target.get(0, 0).?.char);
+    try std.testing.expect(ansi.intent(target.get(0, 0).?.bg) != ansi.ColorIntent.default);
+}
+
 comptime {
     _ = ghostty;
 }
