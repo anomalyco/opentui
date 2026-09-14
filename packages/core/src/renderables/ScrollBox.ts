@@ -117,6 +117,8 @@ export class ScrollBoxRenderable extends BoxRenderable {
 
   protected _focusable: boolean = true
   private selectionListener?: () => void
+  private verticalScrollbarOnChange: ScrollBarOptions["onChange"]
+  private horizontalScrollbarOnChange: ScrollBarOptions["onChange"]
 
   private autoScrollMouseX: number = 0
   private autoScrollMouseY: number = 0
@@ -350,9 +352,13 @@ export class ScrollBoxRenderable extends BoxRenderable {
     })
     this.viewport.add(this.content)
 
-    this.verticalScrollBar = new ScrollBarRenderable(ctx, {
+    const verticalOptions = {
       ...scrollbarOptions,
       ...verticalScrollbarOptions,
+    }
+    this.verticalScrollbarOnChange = verticalOptions.onChange
+    this.verticalScrollBar = new ScrollBarRenderable(ctx, {
+      ...verticalOptions,
       arrowOptions: {
         ...scrollbarOptions?.arrowOptions,
         ...verticalScrollbarOptions?.arrowOptions,
@@ -362,13 +368,18 @@ export class ScrollBoxRenderable extends BoxRenderable {
       onChange: (position) => {
         this.content.translateY = -position
         this.updateStickyState()
+        this.verticalScrollbarOnChange?.(position)
       },
     })
     super.add(this.verticalScrollBar)
 
-    this.horizontalScrollBar = new ScrollBarRenderable(ctx, {
+    const horizontalOptions = {
       ...scrollbarOptions,
       ...horizontalScrollbarOptions,
+    }
+    this.horizontalScrollbarOnChange = horizontalOptions.onChange
+    this.horizontalScrollBar = new ScrollBarRenderable(ctx, {
+      ...horizontalOptions,
       arrowOptions: {
         ...scrollbarOptions?.arrowOptions,
         ...horizontalScrollbarOptions?.arrowOptions,
@@ -378,6 +389,7 @@ export class ScrollBoxRenderable extends BoxRenderable {
       onChange: (position) => {
         this.content.translateX = -position
         this.updateStickyState()
+        this.horizontalScrollbarOnChange?.(position)
       },
     })
     this.wrapper.add(this.horizontalScrollBar)
@@ -861,18 +873,25 @@ export class ScrollBoxRenderable extends BoxRenderable {
   }
 
   public set scrollbarOptions(options: ScrollBoxOptions["scrollbarOptions"]) {
-    Object.assign(this.verticalScrollBar, options)
-    Object.assign(this.horizontalScrollBar, options)
-    this.requestRender()
+    this.verticalScrollbarOptions = options
+    this.horizontalScrollbarOptions = options
   }
 
   public set verticalScrollbarOptions(options: ScrollBoxOptions["verticalScrollbarOptions"]) {
-    Object.assign(this.verticalScrollBar, options)
+    const { onChange, ...rest } = options ?? {}
+    if (!options || "onChange" in options) {
+      this.verticalScrollbarOnChange = onChange
+    }
+    Object.assign(this.verticalScrollBar, rest)
     this.requestRender()
   }
 
   public set horizontalScrollbarOptions(options: ScrollBoxOptions["horizontalScrollbarOptions"]) {
-    Object.assign(this.horizontalScrollBar, options)
+    const { onChange, ...rest } = options ?? {}
+    if (!options || "onChange" in options) {
+      this.horizontalScrollbarOnChange = onChange
+    }
+    Object.assign(this.horizontalScrollBar, rest)
     this.requestRender()
   }
 
@@ -894,6 +913,8 @@ export class ScrollBoxRenderable extends BoxRenderable {
   }
 
   protected destroySelf(): void {
+    this.verticalScrollbarOnChange = undefined
+    this.horizontalScrollbarOnChange = undefined
     if (this.selectionListener) {
       this._ctx.off("selection", this.selectionListener)
       this.selectionListener = undefined
