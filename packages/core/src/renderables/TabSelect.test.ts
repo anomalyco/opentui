@@ -36,6 +36,7 @@ function createKeyEvent(input: {
 let currentRenderer: TestRenderer
 let currentMockInput: MockInput
 let renderOnce: () => Promise<void>
+let captureCharFrame: () => string
 let currentClock: ManualClock
 
 const sampleOptions: TabSelectOption[] = [
@@ -63,6 +64,7 @@ beforeEach(async () => {
     renderer: currentRenderer,
     mockInput: currentMockInput,
     renderOnce,
+    captureCharFrame,
   } = await createTestRenderer({
     clock: currentClock,
   }))
@@ -233,6 +235,35 @@ describe("TabSelectRenderable", () => {
       // N should wrap to start
       currentMockInput.pressKey("n")
       expect(tabSelect.getSelectedIndex()).toBe(0)
+    })
+  })
+
+  describe("Underline", () => {
+    test("should render the default underline character under the selected tab", async () => {
+      const { tabSelect } = await createTabSelectRenderable(currentRenderer, {
+        width: 100,
+        options: sampleOptions,
+      })
+
+      const underlineRow = captureCharFrame().split("\n")[1]
+      expect(underlineRow.startsWith("▂".repeat(tabSelect.tabWidth))).toBe(true)
+    })
+
+    test("should render a custom underline character", async () => {
+      const { tabSelect } = await createTabSelectRenderable(currentRenderer, {
+        width: 100,
+        options: sampleOptions,
+        underlineChar: "▃",
+      })
+
+      let underlineRow = captureCharFrame().split("\n")[1]
+      expect(underlineRow.startsWith("▃".repeat(tabSelect.tabWidth))).toBe(true)
+
+      tabSelect.underlineChar = "─"
+      await renderOnce()
+
+      underlineRow = captureCharFrame().split("\n")[1]
+      expect(underlineRow.startsWith("─".repeat(tabSelect.tabWidth))).toBe(true)
     })
   })
 })
