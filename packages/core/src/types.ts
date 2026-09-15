@@ -4,6 +4,7 @@ import type { Selection } from "./lib/selection.js"
 import type { Renderable } from "./Renderable.js"
 import type { InternalKeyHandler, KeyHandler } from "./lib/KeyHandler.js"
 import type { EditBufferRenderable } from "./renderables/EditBufferRenderable.js"
+import type { NativeScene } from "./NativeScene.js"
 
 export const TextAttributes = {
   NONE: 0,
@@ -115,10 +116,7 @@ export interface RendererEvents {
 }
 
 export interface RenderContext extends EventEmitter {
-  addToHitGrid: (x: number, y: number, width: number, height: number, id: number) => void
-  pushHitGridScissorRect: (x: number, y: number, width: number, height: number) => void
-  popHitGridScissorRect: () => void
-  clearHitGridScissorRects: () => void
+  readonly nativeScene: NativeScene
   width: number
   height: number
   terminalWidth?: number
@@ -127,6 +125,8 @@ export interface RenderContext extends EventEmitter {
   /** Monotonic, bumped once per `loop()` iteration. Lets renderables dedupe per-frame work. */
   frameId: number
   requestRender: () => void
+  requestAnimationFrame: (callback: FrameRequestCallback) => number
+  cancelAnimationFrame: (handle: number) => void
   setCursorPosition: (x: number, y: number, visible: boolean) => void
   setCursorStyle: (options: CursorStyleOptions) => void
   setCursorColor: (color: RGBA) => void

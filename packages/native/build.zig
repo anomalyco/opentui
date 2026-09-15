@@ -374,16 +374,21 @@ fn addNativeAudioDependencies(
     }
 }
 
-fn addYogaDependencies(b: *std.Build, module: *std.Build.Module) void {
+fn addYogaDependencies(b: *std.Build, module: *std.Build.Module, test_allocator: bool) void {
     const yoga_dep = b.dependency("yoga", .{});
+    const flags = if (test_allocator)
+        appendCFlags(b, &YOGA_CXX_FLAGS, &.{"-DOT_YOGA_TEST_ALLOCATOR"})
+    else
+        &YOGA_CXX_FLAGS;
 
     module.link_libcpp = true;
     module.addIncludePath(yoga_dep.path(""));
     module.addCSourceFiles(.{
         .root = yoga_dep.path(""),
         .files = &YOGA_CXX_SOURCES,
-        .flags = &YOGA_CXX_FLAGS,
+        .flags = flags,
     });
+    module.addCSourceFile(.{ .file = b.path("src/yoga-bridge.cpp"), .flags = flags });
 }
 
 fn ghosttyVtAvailable(target: std.Build.ResolvedTarget) bool {
@@ -415,12 +420,27 @@ fn addTranslatedCImports(
 
     const yoga_dep = b.dependency("yoga", .{});
     const yoga_translate = b.addTranslateC(.{
-        .root_source_file = yoga_dep.path("yoga/Yoga.h"),
+        .root_source_file = b.path("src/yoga-bridge.h"),
         .target = target,
         .optimize = optimize,
     });
     yoga_translate.addIncludePath(yoga_dep.path(""));
     module.addImport("yoga", yoga_translate.createModule());
+    addContextABIHeader(b, module, optimize, target);
+}
+
+fn addContextABIHeader(
+    b: *std.Build,
+    module: *std.Build.Module,
+    optimize: std.builtin.OptimizeMode,
+    target: std.Build.ResolvedTarget,
+) void {
+    const header = b.addTranslateC(.{
+        .root_source_file = b.path("include/opentui.h"),
+        .target = target,
+        .optimize = optimize,
+    });
+    module.addImport("context_abi_c", header.createModule());
 }
 
 /// Apply dependencies to a module
@@ -509,8 +529,9 @@ pub fn build(b: *std.Build) void {
 
     const optimize = b.standardOptimizeOption(.{});
     const bench_optimize = b.option(std.builtin.OptimizeMode, "bench-optimize", "Optimize mode for benchmarks") orelse .ReleaseFast;
+    const test_optimize = b.option(std.builtin.OptimizeMode, "test-optimize", "Optimize mode for native tests") orelse .Debug;
     const debug_use_llvm = b.option(bool, "debug-llvm", "Use LLVM backend for debug/test artifacts");
-    const target_option = b.option([]const u8, "library-target", "Build shared library for a specific target (e.g., 'x86_64-linux-gnu.2.17').");
+    const target_option = b.option([]const u8, "library-target", "Build static/shared libraries for a specific target (e.g., 'x86_64-linux-gnu.2.17').");
     const build_all = b.option(bool, "all", "Build for all supported targets") orelse false;
     const gpa_safe_stats = b.option(bool, "gpa-safe-stats", "Enable GPA safety checks for trustworthy allocator stats") orelse false;
     const macos_sdk_path = resolveMacOSSDKPath(b);
@@ -525,7 +546,7 @@ pub fn build(b: *std.Build) void {
     });
     applyDependencies(b, opentui_module, optimize, module_target, build_options);
     addNativeAudioDependencies(b, opentui_module, module_target, macos_sdk_path);
-    addYogaDependencies(b, opentui_module);
+    addYogaDependencies(b, opentui_module, false);
 
     if (target_option) |target_str| {
         // Build single target
@@ -553,9 +574,9 @@ pub fn build(b: *std.Build) void {
     const test_mod = b.createModule(.{
         .root_source_file = b.path("src/test.zig"),
         .target = native_target,
-        .optimize = .Debug,
+        .optimize = test_optimize,
     });
-    applyDependencies(b, test_mod, .Debug, native_target, build_options);
+    applyDependencies(b, test_mod, test_optimize, native_target, build_options);
     const test_artifact = b.addTest(.{
         .root_module = test_mod,
         .filters = if (b.option([]const u8, "test-filter", "Skip tests that do not match filter")) |f| &.{f} else &.{},
@@ -567,12 +588,67 @@ pub fn build(b: *std.Build) void {
         std.process.exit(1);
     }
     addNativeAudioDependencies(b, test_mod, native_target, macos_sdk_path);
-    addYogaDependencies(b, test_mod);
+    addYogaDependencies(b, test_mod, true);
 
     const run_test = b.addRunArtifact(test_artifact);
     test_step.dependOn(&run_test.step);
 
-    const lifetime_step = b.step("test-lifetime", "Run measure-target lifetime tests with GPA leak accounting");
+    const abi_step = b.step("test-abi", "Run C context acceptance against static/shared libraries and check ABI layouts");
+    const abi_layout_step = b.step("test-abi-layout", "Check C/Zig context ABI layouts on every supported target");
+    abi_step.dependOn(abi_layout_step);
+    for (SUPPORTED_TARGETS) |supported_target| {
+        const target = b.resolveTargetQuery(std.Target.Query.parse(.{
+            .arch_os_abi = supported_target.zig_target,
+        }) catch unreachable);
+        const layout_module = b.createModule(.{
+            .root_source_file = b.path("src/context-abi.zig"),
+            .target = target,
+            .optimize = .Debug,
+        });
+        addContextABIHeader(b, layout_module, .Debug, target);
+        layout_module.addIncludePath(b.path("include"));
+        layout_module.addCSourceFile(.{
+            .file = b.path("src/tests/context-abi.c"),
+            .flags = &.{ "-std=c11", "-Werror", "-ffreestanding", "-DOT_ABI_LAYOUT_ONLY" },
+        });
+        const layout = b.addObject(.{
+            .name = b.fmt("context-abi-layout-{s}", .{supported_target.output_name}),
+            .root_module = layout_module,
+        });
+        abi_layout_step.dependOn(&layout.step);
+    }
+
+    // Shared-library acceptance needs the host's dynamic loader. Pin glibc to
+    // avoid the startup-object issue described in nativeExecutableTarget.
+    const abi_target = if (builtin.os.tag == .linux and !builtin.abi.isMusl())
+        b.resolveTargetQuery(.{
+            .cpu_arch = builtin.cpu.arch,
+            .os_tag = .linux,
+            .abi = .gnu,
+            .glibc_version = .{ .major = 2, .minor = 17, .patch = 0 },
+        })
+    else
+        native_target;
+    for (createLibraries(b, abi_target, .Debug, build_options, macos_sdk_path)) |lib| {
+        const fixture_module = b.createModule(.{
+            .target = abi_target,
+            .optimize = .Debug,
+            .link_libc = true,
+        });
+        fixture_module.linkLibrary(lib);
+        fixture_module.addCSourceFile(.{
+            .file = b.path("src/tests/context-abi.c"),
+            .flags = &.{ "-std=c11", "-Wall", "-Wextra", "-Werror" },
+        });
+        const fixture = b.addExecutable(.{
+            .name = b.fmt("context-abi-{s}", .{@tagName(lib.linkage.?)}),
+            .root_module = fixture_module,
+        });
+        const run_fixture = b.addRunArtifact(fixture);
+        abi_step.dependOn(&run_fixture.step);
+    }
+
+    const lifetime_step = b.step("test-lifetime", "Run measurement lifetime tests with GPA leak accounting");
     const lifetime_options = b.addOptions();
     lifetime_options.addOption(bool, "gpa_safe_stats", true);
     const lifetime_mod = b.createModule(.{
@@ -583,11 +659,11 @@ pub fn build(b: *std.Build) void {
     applyDependencies(b, lifetime_mod, .Debug, native_target, lifetime_options);
     const lifetime_artifact = b.addTest(.{
         .root_module = lifetime_mod,
-        .filters = &.{"measure lifetime"},
+        .filters = &.{ "measure", "NativeRenderable", "Context Yoga target" },
         .use_llvm = debug_use_llvm,
     });
     addNativeAudioDependencies(b, lifetime_mod, native_target, macos_sdk_path);
-    addYogaDependencies(b, lifetime_mod);
+    addYogaDependencies(b, lifetime_mod, true);
     const run_lifetime = b.addRunArtifact(lifetime_artifact);
     lifetime_step.dependOn(&run_lifetime.step);
 
@@ -605,6 +681,7 @@ pub fn build(b: *std.Build) void {
     });
     bench_mod.link_libc = true;
     addImageShim(b, bench_mod, native_target, macos_sdk_path);
+    addYogaDependencies(b, bench_mod, false);
     if (native_target.result.os.tag == .macos) addMacOSSDKSearchPaths(b, bench_mod, macos_sdk_path.?);
     const run_bench = b.addRunArtifact(bench_exe);
     if (b.args) |args| {
@@ -630,7 +707,7 @@ pub fn build(b: *std.Build) void {
         std.process.exit(1);
     }
     addNativeAudioDependencies(b, bench_ffi_mod, bench_ffi_target, macos_sdk_path);
-    addYogaDependencies(b, bench_ffi_mod);
+    addYogaDependencies(b, bench_ffi_mod, false);
     const install_bench_ffi = b.addInstallArtifact(bench_ffi_lib, .{});
     bench_ffi_step.dependOn(&install_bench_ffi.step);
     bench_step.dependOn(bench_ffi_step);
@@ -747,6 +824,34 @@ fn buildTarget(
         return error.MissingMacOSSDK;
     }
 
+    const install_path = try std.fmt.allocPrint(b.allocator, "../lib/{s}", .{output_name});
+    const build_step_name = try std.fmt.allocPrint(b.allocator, "build-{s}", .{output_name});
+    const build_step = b.step(build_step_name, try std.fmt.allocPrint(b.allocator, "Build for {s}", .{description}));
+    for (createLibraries(b, target, optimize, build_options, macos_sdk_path)) |lib| {
+        const install_dir = b.addInstallArtifact(lib, .{
+            .dest_dir = .{ .override = .{ .custom = install_path } },
+            .h_dir = .{ .override = .{ .custom = install_path } },
+            .implib_dir = if (lib.producesImplib())
+                .{ .override = .{ .custom = install_path } }
+            else
+                .disabled,
+            .pdb_dir = if (optimize == .Debug) .default else if (target.result.os.tag == .windows)
+                .{ .override = .{ .custom = install_path } }
+            else
+                .disabled,
+        });
+        build_step.dependOn(&install_dir.step);
+        b.getInstallStep().dependOn(&install_dir.step);
+    }
+}
+
+fn createLibraries(
+    b: *std.Build,
+    target: std.Build.ResolvedTarget,
+    optimize: std.builtin.OptimizeMode,
+    build_options: *std.Build.Step.Options,
+    macos_sdk_path: ?[]const u8,
+) [2]*std.Build.Step.Compile {
     const module = b.createModule(.{
         .root_source_file = b.path(ROOT_SOURCE_FILE),
         .target = target,
@@ -754,35 +859,24 @@ fn buildTarget(
         // Release symbols must describe this exact optimized code. The package
         // build detaches them before stripping only the distribution copy.
         .strip = false,
+        .pic = true,
     });
-
     applyDependencies(b, module, optimize, target, build_options);
-
-    const lib = b.addLibrary(.{
+    addNativeAudioDependencies(b, module, target, macos_sdk_path);
+    addYogaDependencies(b, module, false);
+    const shared = b.addLibrary(.{
         .name = LIB_NAME,
         .root_module = module,
         .linkage = .dynamic,
     });
-
-    if (target.result.os.tag == .linux and optimize != .Debug) lib.build_id = .sha1;
-
-    addNativeAudioDependencies(b, module, target, macos_sdk_path);
-    addYogaDependencies(b, module);
-
-    const install_dir = b.addInstallArtifact(lib, .{
-        .dest_dir = .{
-            .override = .{
-                .custom = try std.fmt.allocPrint(b.allocator, "../lib/{s}", .{output_name}),
-            },
-        },
-        .pdb_dir = if (optimize == .Debug) .default else if (target.result.os.tag == .windows) .{ .override = .{
-            .custom = try std.fmt.allocPrint(b.allocator, "../lib/{s}", .{output_name}),
-        } } else .disabled,
+    if (target.result.os.tag == .linux and optimize != .Debug) shared.build_id = .sha1;
+    const static = b.addLibrary(.{
+        // COFF uses .lib for both archives and DLL import libraries.
+        .name = if (target.result.os.tag == .windows) "opentui-static" else LIB_NAME,
+        .root_module = module,
+        .linkage = .static,
     });
-
-    const build_step_name = try std.fmt.allocPrint(b.allocator, "build-{s}", .{output_name});
-    const build_step = b.step(build_step_name, try std.fmt.allocPrint(b.allocator, "Build for {s}", .{description}));
-    build_step.dependOn(&install_dir.step);
-
-    b.getInstallStep().dependOn(&install_dir.step);
+    shared.installHeader(b.path("include/opentui.h"), "opentui.h");
+    static.installHeader(b.path("include/opentui.h"), "opentui.h");
+    return .{ shared, static };
 }

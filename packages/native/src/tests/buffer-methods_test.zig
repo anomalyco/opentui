@@ -1,8 +1,9 @@
 const std = @import("std");
+const TestPools = @import("test-pools.zig").TestPools;
+const link = @import("../link.zig");
 const buffer_mod = @import("../buffer.zig");
 const buffer_effects = @import("../buffer-methods.zig");
 const ansi = @import("../ansi.zig");
-const gp = @import("../grapheme.zig");
 
 const OptimizedBuffer = buffer_mod.OptimizedBuffer;
 const RGBA = buffer_mod.RGBA;
@@ -62,14 +63,14 @@ const INVERT_MATRIX = [16]f32{
 };
 
 test "colorMatrix - identity matrix leaves colors unchanged" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
     var buf = try OptimizedBuffer.init(
         std.testing.allocator,
         4,
         4,
-        .{ .pool = pool, .id = "test-buffer" },
+        .{ .link_pool = &pools.links, .pool = &pools.graphemes, .id = "test-buffer" },
     );
     defer buf.deinit();
 
@@ -91,14 +92,14 @@ test "colorMatrix - identity matrix leaves colors unchanged" {
 }
 
 test "colorMatrix - applies transformation to specified cells only" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
     var buf = try OptimizedBuffer.init(
         std.testing.allocator,
         3,
         3,
-        .{ .pool = pool, .id = "test-buffer" },
+        .{ .link_pool = &pools.links, .pool = &pools.graphemes, .id = "test-buffer" },
     );
     defer buf.deinit();
 
@@ -126,14 +127,14 @@ test "colorMatrix - applies transformation to specified cells only" {
 }
 
 test "colorMatrix - globalStrength scales individual cell strengths" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
     var buf = try OptimizedBuffer.init(
         std.testing.allocator,
         2,
         1,
-        .{ .pool = pool, .id = "test-buffer" },
+        .{ .link_pool = &pools.links, .pool = &pools.graphemes, .id = "test-buffer" },
     );
     defer buf.deinit();
 
@@ -159,14 +160,14 @@ test "colorMatrix - globalStrength scales individual cell strengths" {
 }
 
 test "colorMatrix - respects target parameter" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
     var buf = try OptimizedBuffer.init(
         std.testing.allocator,
         2,
         1,
-        .{ .pool = pool, .id = "test-buffer" },
+        .{ .link_pool = &pools.links, .pool = &pools.graphemes, .id = "test-buffer" },
     );
     defer buf.deinit();
 
@@ -204,14 +205,14 @@ test "colorMatrix - respects target parameter" {
 }
 
 test "colorMatrix - skips out-of-bounds coordinates" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
     var buf = try OptimizedBuffer.init(
         std.testing.allocator,
         3,
         3,
-        .{ .pool = pool, .id = "test-buffer" },
+        .{ .link_pool = &pools.links, .pool = &pools.graphemes, .id = "test-buffer" },
     );
     defer buf.deinit();
 
@@ -233,14 +234,14 @@ test "colorMatrix - skips out-of-bounds coordinates" {
 }
 
 test "colorMatrix - skips NaN and Inf coordinates" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
     var buf = try OptimizedBuffer.init(
         std.testing.allocator,
         3,
         3,
-        .{ .pool = pool, .id = "test-buffer" },
+        .{ .link_pool = &pools.links, .pool = &pools.graphemes, .id = "test-buffer" },
     );
     defer buf.deinit();
 
@@ -263,14 +264,14 @@ test "colorMatrix - skips NaN and Inf coordinates" {
 }
 
 test "colorMatrix - skips zero strength cells" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
     var buf = try OptimizedBuffer.init(
         std.testing.allocator,
         2,
         1,
-        .{ .pool = pool, .id = "test-buffer" },
+        .{ .link_pool = &pools.links, .pool = &pools.graphemes, .id = "test-buffer" },
     );
     defer buf.deinit();
 
@@ -289,14 +290,14 @@ test "colorMatrix - skips zero strength cells" {
 }
 
 test "colorMatrix - handles multiple cells in mask" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
     var buf = try OptimizedBuffer.init(
         std.testing.allocator,
         4,
         4,
-        .{ .pool = pool, .id = "test-buffer" },
+        .{ .link_pool = &pools.links, .pool = &pools.graphemes, .id = "test-buffer" },
     );
     defer buf.deinit();
 
@@ -347,14 +348,14 @@ test "colorMatrix - handles multiple cells in mask" {
 }
 
 test "colorMatrix - truncates incomplete mask triplets" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
     var buf = try OptimizedBuffer.init(
         std.testing.allocator,
         3,
         1,
-        .{ .pool = pool, .id = "test-buffer" },
+        .{ .link_pool = &pools.links, .pool = &pools.graphemes, .id = "test-buffer" },
     );
     defer buf.deinit();
 
@@ -380,14 +381,14 @@ test "colorMatrix - truncates incomplete mask triplets" {
 }
 
 test "colorMatrix - empty mask returns early" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
     var buf = try OptimizedBuffer.init(
         std.testing.allocator,
         2,
         1,
-        .{ .pool = pool, .id = "test-buffer" },
+        .{ .link_pool = &pools.links, .pool = &pools.graphemes, .id = "test-buffer" },
     );
     defer buf.deinit();
 
@@ -406,14 +407,14 @@ test "colorMatrix - empty mask returns early" {
 }
 
 test "colorMatrix - empty matrix returns early" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
     var buf = try OptimizedBuffer.init(
         std.testing.allocator,
         2,
         1,
-        .{ .pool = pool, .id = "test-buffer" },
+        .{ .link_pool = &pools.links, .pool = &pools.graphemes, .id = "test-buffer" },
     );
     defer buf.deinit();
 
@@ -441,14 +442,14 @@ const ALPHA_MODIFY_MATRIX = [16]f32{
 };
 
 test "colorMatrix - alpha channel transformation" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
     var buf = try OptimizedBuffer.init(
         std.testing.allocator,
         2,
         1,
-        .{ .pool = pool, .id = "test-buffer" },
+        .{ .link_pool = &pools.links, .pool = &pools.graphemes, .id = "test-buffer" },
     );
     defer buf.deinit();
 
@@ -467,14 +468,14 @@ test "colorMatrix - alpha channel transformation" {
 }
 
 test "colorMatrix - mask with only 1 element" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
     var buf = try OptimizedBuffer.init(
         std.testing.allocator,
         2,
         1,
-        .{ .pool = pool, .id = "test-buffer" },
+        .{ .link_pool = &pools.links, .pool = &pools.graphemes, .id = "test-buffer" },
     );
     defer buf.deinit();
 
@@ -493,14 +494,14 @@ test "colorMatrix - mask with only 1 element" {
 }
 
 test "colorMatrix - mask with only 2 elements" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
     var buf = try OptimizedBuffer.init(
         std.testing.allocator,
         2,
         1,
-        .{ .pool = pool, .id = "test-buffer" },
+        .{ .link_pool = &pools.links, .pool = &pools.graphemes, .id = "test-buffer" },
     );
     defer buf.deinit();
 
@@ -521,14 +522,14 @@ test "colorMatrix - mask with only 2 elements" {
 }
 
 test "colorMatrix - infinity strength is skipped" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
     var buf = try OptimizedBuffer.init(
         std.testing.allocator,
         2,
         1,
-        .{ .pool = pool, .id = "test-buffer" },
+        .{ .link_pool = &pools.links, .pool = &pools.graphemes, .id = "test-buffer" },
     );
     defer buf.deinit();
 
@@ -548,14 +549,14 @@ test "colorMatrix - infinity strength is skipped" {
 }
 
 test "colorMatrix - non-finite global strength is skipped" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
     var buf = try OptimizedBuffer.init(
         std.testing.allocator,
         2,
         1,
-        .{ .pool = pool, .id = "test-buffer" },
+        .{ .link_pool = &pools.links, .pool = &pools.graphemes, .id = "test-buffer" },
     );
     defer buf.deinit();
 
@@ -574,15 +575,15 @@ test "colorMatrix - non-finite global strength is skipped" {
 }
 
 test "colorMatrix - large buffer with SIMD and scalar mix" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
     // 100 pixels = 25 SIMD batches of 4
     var buf = try OptimizedBuffer.init(
         std.testing.allocator,
         100,
         1,
-        .{ .pool = pool, .id = "test-buffer" },
+        .{ .link_pool = &pools.links, .pool = &pools.graphemes, .id = "test-buffer" },
     );
     defer buf.deinit();
 
@@ -608,14 +609,14 @@ test "colorMatrix - large buffer with SIMD and scalar mix" {
 }
 
 test "colorMatrix - negative coordinates are skipped" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
     var buf = try OptimizedBuffer.init(
         std.testing.allocator,
         3,
         3,
-        .{ .pool = pool, .id = "test-buffer" },
+        .{ .link_pool = &pools.links, .pool = &pools.graphemes, .id = "test-buffer" },
     );
     defer buf.deinit();
 
@@ -637,14 +638,14 @@ test "colorMatrix - negative coordinates are skipped" {
 }
 
 test "colorMatrix - finite coordinates larger than u32 max are skipped" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
     var buf = try OptimizedBuffer.init(
         std.testing.allocator,
         3,
         3,
-        .{ .pool = pool, .id = "test-buffer" },
+        .{ .link_pool = &pools.links, .pool = &pools.graphemes, .id = "test-buffer" },
     );
     defer buf.deinit();
 
@@ -669,14 +670,14 @@ test "colorMatrix - finite coordinates larger than u32 max are skipped" {
 // ==================== colorMatrixUniform Tests ====================
 
 test "colorMatrixUniform - identity matrix leaves colors unchanged" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
     var buf = try OptimizedBuffer.init(
         std.testing.allocator,
         4,
         1,
-        .{ .pool = pool, .id = "test-buffer" },
+        .{ .link_pool = &pools.links, .pool = &pools.graphemes, .id = "test-buffer" },
     );
     defer buf.deinit();
 
@@ -705,14 +706,14 @@ test "colorMatrixUniform - identity matrix leaves colors unchanged" {
 }
 
 test "colorMatrixUniform - zero strength has no effect" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
     var buf = try OptimizedBuffer.init(
         std.testing.allocator,
         2,
         2,
-        .{ .pool = pool, .id = "test-buffer" },
+        .{ .link_pool = &pools.links, .pool = &pools.graphemes, .id = "test-buffer" },
     );
     defer buf.deinit();
 
@@ -732,14 +733,14 @@ test "colorMatrixUniform - zero strength has no effect" {
 }
 
 test "colorMatrixUniform - non-finite strength has no effect" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
     var buf = try OptimizedBuffer.init(
         std.testing.allocator,
         2,
         1,
-        .{ .pool = pool, .id = "test-buffer" },
+        .{ .link_pool = &pools.links, .pool = &pools.graphemes, .id = "test-buffer" },
     );
     defer buf.deinit();
 
@@ -758,14 +759,14 @@ test "colorMatrixUniform - non-finite strength has no effect" {
 }
 
 test "colorMatrixUniform - grayscale transformation" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
     var buf = try OptimizedBuffer.init(
         std.testing.allocator,
         3,
         1,
-        .{ .pool = pool, .id = "test-buffer" },
+        .{ .link_pool = &pools.links, .pool = &pools.graphemes, .id = "test-buffer" },
     );
     defer buf.deinit();
 
@@ -796,14 +797,14 @@ test "colorMatrixUniform - grayscale transformation" {
 }
 
 test "colorMatrixUniform - partial strength blends with original" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
     var buf = try OptimizedBuffer.init(
         std.testing.allocator,
         2,
         1,
-        .{ .pool = pool, .id = "test-buffer" },
+        .{ .link_pool = &pools.links, .pool = &pools.graphemes, .id = "test-buffer" },
     );
     defer buf.deinit();
 
@@ -829,14 +830,14 @@ test "colorMatrixUniform - partial strength blends with original" {
 }
 
 test "colorMatrixUniform - target affects correct buffers" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
     var buf = try OptimizedBuffer.init(
         std.testing.allocator,
         2,
         1,
-        .{ .pool = pool, .id = "test-buffer" },
+        .{ .link_pool = &pools.links, .pool = &pools.graphemes, .id = "test-buffer" },
     );
     defer buf.deinit();
 
@@ -886,15 +887,15 @@ test "colorMatrixUniform - target affects correct buffers" {
 }
 
 test "colorMatrixUniform - handles buffer sizes not divisible by 4" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
     // Test with 5 pixels (1 SIMD batch of 4 + 1 scalar remainder)
     var buf = try OptimizedBuffer.init(
         std.testing.allocator,
         5,
         1,
-        .{ .pool = pool, .id = "test-buffer" },
+        .{ .link_pool = &pools.links, .pool = &pools.graphemes, .id = "test-buffer" },
     );
     defer buf.deinit();
 
@@ -922,14 +923,14 @@ test "colorMatrixUniform - handles buffer sizes not divisible by 4" {
 }
 
 test "colorMatrixUniform - empty matrix returns early" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
     var buf = try OptimizedBuffer.init(
         std.testing.allocator,
         2,
         1,
-        .{ .pool = pool, .id = "test-buffer" },
+        .{ .link_pool = &pools.links, .pool = &pools.graphemes, .id = "test-buffer" },
     );
     defer buf.deinit();
 
@@ -948,14 +949,14 @@ test "colorMatrixUniform - empty matrix returns early" {
 }
 
 test "colorMatrixUniform - alpha channel transformation" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
     var buf = try OptimizedBuffer.init(
         std.testing.allocator,
         2,
         1,
-        .{ .pool = pool, .id = "test-buffer" },
+        .{ .link_pool = &pools.links, .pool = &pools.graphemes, .id = "test-buffer" },
     );
     defer buf.deinit();
 
@@ -978,15 +979,15 @@ test "colorMatrixUniform - alpha channel transformation" {
 }
 
 test "colorMatrixUniform - very small buffer (less than 4 pixels)" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
     // Test with 2 pixels (all scalar, no SIMD)
     var buf = try OptimizedBuffer.init(
         std.testing.allocator,
         2,
         1,
-        .{ .pool = pool, .id = "test-buffer" },
+        .{ .link_pool = &pools.links, .pool = &pools.graphemes, .id = "test-buffer" },
     );
     defer buf.deinit();
 
@@ -1015,15 +1016,15 @@ test "colorMatrixUniform - very small buffer (less than 4 pixels)" {
 }
 
 test "colorMatrixUniform - single pixel buffer" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
     // Test with 1 pixel (edge case)
     var buf = try OptimizedBuffer.init(
         std.testing.allocator,
         1,
         1,
-        .{ .pool = pool, .id = "test-buffer" },
+        .{ .link_pool = &pools.links, .pool = &pools.graphemes, .id = "test-buffer" },
     );
     defer buf.deinit();
 
@@ -1044,14 +1045,14 @@ test "colorMatrixUniform - single pixel buffer" {
 }
 
 test "colorMatrixUniform - values can exceed 1.0 (no clamping)" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
     var buf = try OptimizedBuffer.init(
         std.testing.allocator,
         2,
         1,
-        .{ .pool = pool, .id = "test-buffer" },
+        .{ .link_pool = &pools.links, .pool = &pools.graphemes, .id = "test-buffer" },
     );
     defer buf.deinit();
 
@@ -1077,15 +1078,15 @@ test "colorMatrixUniform - values can exceed 1.0 (no clamping)" {
 }
 
 test "colorMatrixUniform - 3 pixel buffer (simd_end = 0, all scalar)" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
     // 3 pixels - simd_end will be 0, so all processed via scalar
     var buf = try OptimizedBuffer.init(
         std.testing.allocator,
         3,
         1,
-        .{ .pool = pool, .id = "test-buffer" },
+        .{ .link_pool = &pools.links, .pool = &pools.graphemes, .id = "test-buffer" },
     );
     defer buf.deinit();
 

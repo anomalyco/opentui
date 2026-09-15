@@ -1,7 +1,17 @@
 import { open, stat } from "node:fs/promises"
 
 import { toArrayBuffer } from "./platform/ffi.js"
-import { resolveRenderLib, type ImageHandle, type RenderLib } from "./zig.js"
+import { ResourceContext } from "./buffer.js"
+import {
+  NativeError,
+  NativeStatus,
+  resolveRenderLib,
+  type ContextImageHandle,
+  type ContextImagePixelsHandle,
+  type NativeContextHandle,
+  type ImageHandle,
+  type RenderLib,
+} from "./zig.js"
 import type { NativeImageInfo } from "./zig-structs.js"
 
 export type ImageFormat = "png" | "raw-rgba" | "jpeg" | "webp" | "gif"
@@ -32,7 +42,11 @@ export class ImageLoadError extends Error {
   }
 }
 
-export interface ImageLoadOptions {
+export interface ImageCreateOptions {
+  owner?: ResourceContext
+}
+
+export interface ImageLoadOptions extends ImageCreateOptions {
   signal?: AbortSignal
   fetch?: (input: URL, init?: RequestInit) => Promise<Response>
 }
@@ -86,7 +100,7 @@ export interface RawImage {
   alpha: "straight"
 }
 
-export interface PixelImportOptions {
+export interface PixelImportOptions extends ImageCreateOptions {
   stride?: number
   format?: PixelFormat
   alpha?: "straight" | "opaque"
@@ -98,7 +112,7 @@ export interface OwnedRawImage extends RawImage {
 }
 
 class OwnedRawImageImpl implements OwnedRawImage {
-  private handle: ImageHandle | null
+  private handle: ContextImagePixelsHandle | null
 
   public readonly format = "rgba8"
   public readonly colorSpace = "srgb"
@@ -110,15 +124,58 @@ class OwnedRawImageImpl implements OwnedRawImage {
     public readonly height: number,
     public readonly stride: number,
     private readonly lib: RenderLib,
-    handle: ImageHandle,
+    handle: ContextImagePixelsHandle,
+    private readonly owner: ImageOwner,
   ) {
     this.handle = handle
   }
 
   public dispose(): void {
     if (!this.handle) return
-    this.lib.imageDestroy(this.handle)
+    this.lib.imageReleasePixels(this.handle)
     this.handle = null
+    this.owner.release()
+  }
+}
+
+// Automatic constructors share one Context with derived images and raw leases.
+// Explicit owners keep their application-controlled lifetime.
+class ImageOwner {
+  private static automaticOwner?: ImageOwner
+  private references = 0
+
+  private constructor(
+    readonly resources: ResourceContext,
+    private readonly automatic: boolean,
+  ) {}
+
+  static acquire(options: ImageCreateOptions): ImageOwner {
+    resolveRenderLib().getYogaHost().assertMutable()
+    const owner = options.owner
+    let result: ImageOwner
+    if (owner !== undefined) {
+      owner.assertAlive()
+      result = new ImageOwner(owner, false)
+    } else {
+      result = this.automaticOwner ??= new ImageOwner(
+        new ResourceContext({ objectCapacity: 4096, renderCellsMax: 1 }),
+        true,
+      )
+    }
+    result.retain()
+    return result
+  }
+
+  retain(): void {
+    this.references++
+  }
+
+  release(): void {
+    this.references--
+    if (this.references === 0 && this.automatic) {
+      this.resources.destroy()
+      ImageOwner.automaticOwner = undefined
+    }
   }
 }
 
@@ -167,7 +224,6 @@ const STATUS_CODES: readonly ImageErrorCode[] = [
   "unsupported-feature",
   "busy",
 ]
-const INVALID_ARGUMENT_STATUS = 7
 const BUSY_STATUS = 12
 
 export class ImageError extends Error {
@@ -372,44 +428,66 @@ async function loadResponseBytes(response: Response, source: string, signal?: Ab
   }
 }
 
-export function imageInfo(data: Uint8Array | ArrayBuffer): ImageInfo {
+export function imageInfo(data: Uint8Array | ArrayBuffer, options: ImageCreateOptions = {}): ImageInfo {
   const bytes = encodedBytes(data)
   if (bytes.byteLength === 0) throw new TypeError("image data must not be empty")
-  const result = resolveRenderLib().imageInfo(bytes)
-  checkStatus(result.status)
-  return unpackInfo(result.info)
+  const owner = ImageOwner.acquire(options)
+  try {
+    const result = owner.resources.renderLib.imageInfo(owner.resources.context, bytes)
+    checkStatus(result.status)
+    return unpackInfo(result.info)
+  } finally {
+    owner.release()
+  }
 }
 
 export class NativeImage {
   private readonly lib: RenderLib
   private handle: ImageHandle | null
   private imageInfo: ImageInfo
+  private contextImages = new Map<WeakRef<NativeContextHandle>, Omit<ContextImageHandle, "context">>()
 
-  private constructor(lib: RenderLib, handle: ImageHandle, info: ImageInfo) {
-    this.lib = lib
+  private constructor(
+    private readonly owner: ImageOwner,
+    handle: ImageHandle,
+    info: ImageInfo,
+  ) {
+    this.lib = owner.resources.renderLib
     this.handle = handle
     this.imageInfo = info
+    owner.retain()
   }
 
-  public static decode(data: Uint8Array | ArrayBuffer): NativeImage {
+  private static create(
+    options: ImageCreateOptions,
+    operation: (owner: ImageOwner) => { status: number; handle: ImageHandle | null },
+  ): NativeImage {
+    const owner = ImageOwner.acquire(options)
+    try {
+      const result = operation(owner)
+      checkStatus(result.status)
+      if (!result.handle) throw imageError(10)
+      return NativeImage.fromHandle(owner, result.handle)
+    } finally {
+      owner.release()
+    }
+  }
+
+  public static decode(data: Uint8Array | ArrayBuffer, options: ImageCreateOptions = {}): NativeImage {
     const bytes = encodedBytes(data)
     if (bytes.byteLength === 0) throw new TypeError("image data must not be empty")
-    const lib = resolveRenderLib()
-    const result = lib.imageDecode(bytes)
-    checkStatus(result.status)
-    if (!result.handle) throw imageError(10)
-    return NativeImage.fromHandle(lib, result.handle)
+    return NativeImage.create(options, ({ resources }) => resources.renderLib.imageDecode(resources.context, bytes))
   }
 
   public static async load(source: ImageSource, options: ImageLoadOptions = {}): Promise<NativeImage> {
     if (source instanceof Response) {
-      return NativeImage.decode(await loadResponseBytes(source, source.url || "Response", options.signal))
+      return NativeImage.decode(await loadResponseBytes(source, source.url || "Response", options.signal), options)
     }
     options.signal?.throwIfAborted()
-    if (source instanceof Uint8Array || source instanceof ArrayBuffer) return NativeImage.decode(source)
+    if (source instanceof Uint8Array || source instanceof ArrayBuffer) return NativeImage.decode(source, options)
     if (source instanceof Blob) {
       if (source.size > MAX_ENCODED_BYTES) throw imageError(6)
-      return NativeImage.decode(await loadResponseBytes(new Response(source), "Blob", options.signal))
+      return NativeImage.decode(await loadResponseBytes(new Response(source), "Blob", options.signal), options)
     }
 
     const url =
@@ -432,7 +510,7 @@ export class NativeImage {
         })
       }
       options.signal?.throwIfAborted()
-      return NativeImage.decode(data)
+      return NativeImage.decode(data, options)
     }
 
     if (url.protocol !== "http:" && url.protocol !== "https:" && url.protocol !== "blob:" && url.protocol !== "data:") {
@@ -446,19 +524,23 @@ export class NativeImage {
       if (options.signal?.aborted) throw options.signal.reason
       throw new ImageLoadError("network", url.href, `Failed to fetch image: ${url.href}`, { cause: error })
     }
-    return NativeImage.decode(await loadResponseBytes(response, url.href, options.signal))
+    return NativeImage.decode(await loadResponseBytes(response, url.href, options.signal), options)
   }
 
-  public static fromRgba(pixels: Uint8Array, width: number, height: number, stride = width * 4): NativeImage {
+  public static fromRgba(
+    pixels: Uint8Array,
+    width: number,
+    height: number,
+    stride = width * 4,
+    options: ImageCreateOptions = {},
+  ): NativeImage {
     if (!(pixels instanceof Uint8Array)) throw new TypeError("pixels must be a Uint8Array")
     requireU32(width, "width")
     requireU32(height, "height")
     requireU32(stride, "stride")
-    const lib = resolveRenderLib()
-    const result = lib.imageCreateFromRgba(pixels, width, height, stride)
-    checkStatus(result.status)
-    if (!result.handle) throw imageError(10)
-    return NativeImage.fromHandle(lib, result.handle)
+    return NativeImage.create(options, ({ resources }) =>
+      resources.renderLib.imageCreateFromRgba(resources.context, pixels, width, height, stride),
+    )
   }
 
   public static fromPixels(
@@ -471,24 +553,26 @@ export class NativeImage {
     requireU32(width, "width")
     requireU32(height, "height")
     const { stride, format, alpha } = pixelImportOptions(width, options)
-    const lib = resolveRenderLib()
-    const result = lib.imageCreateFromPixels(pixels, width, height, stride, format, alpha)
-    checkStatus(result.status)
-    if (!result.handle) throw imageError(10)
-    return NativeImage.fromHandle(lib, result.handle)
+    return NativeImage.create(options, ({ resources }) =>
+      resources.renderLib.imageCreateFromPixels(resources.context, pixels, width, height, stride, format, alpha),
+    )
   }
 
-  private static fromHandle(lib: RenderLib, handle: ImageHandle): NativeImage {
-    const result = lib.imageGetInfo(handle)
-    if (result.status !== 0) {
+  private static fromHandle(owner: ImageOwner, handle: ImageHandle): NativeImage {
+    const lib = owner.resources.renderLib
+    try {
+      const result = lib.imageGetInfo(handle)
+      checkStatus(result.status)
+      return new NativeImage(owner, handle, unpackInfo(result.info))
+    } catch (error) {
       lib.imageDestroy(handle)
-      throw imageError(result.status)
+      throw error
     }
-    return new NativeImage(lib, handle, unpackInfo(result.info))
   }
 
   private guard(): ImageHandle {
     if (!this.handle) throw new Error("NativeImage is disposed")
+    this.owner.resources.assertAlive()
     return this.handle
   }
 
@@ -496,10 +580,48 @@ export class NativeImage {
     return this.guard()
   }
 
+  /** @internal Shares same-Context resources; copies immutable storage across Contexts. */
+  public _getContextHandle(lib: RenderLib, context: NativeContextHandle): ContextImageHandle {
+    const source = this.guard()
+    if (lib !== this.lib) throw new Error("NativeImage library owner mismatch")
+    if (source.context === context) return source
+    for (const [owner, identity] of this.contextImages) {
+      const current = owner.deref()
+      if (!current) this.contextImages.delete(owner)
+      else if (current === context) return { ...identity, context }
+    }
+    const handle = lib.importContextImage(context, source)
+    try {
+      const { context: _, ...identity } = handle
+      this.contextImages.set(new WeakRef(context), identity)
+      return handle
+    } catch (error) {
+      lib.destroyContextImage(context, handle)
+      throw error
+    }
+  }
+
+  private releaseContextImages(): void {
+    let failure: { error: unknown } | undefined
+    for (const [owner, identity] of this.contextImages) {
+      const context = owner.deref()
+      try {
+        if (context) this.lib.destroyContextImage(context, { ...identity, context })
+        this.contextImages.delete(owner)
+      } catch (error) {
+        // The Context can close while the standalone image remains alive.
+        if (error instanceof NativeError && error.status === NativeStatus.WrongContext) {
+          this.contextImages.delete(owner)
+        } else failure ??= { error }
+      }
+    }
+    if (failure) throw failure.error
+  }
+
   private wrap(result: { status: number; handle: ImageHandle | null }): NativeImage {
     checkStatus(result.status)
     if (!result.handle) throw imageError(10)
-    return NativeImage.fromHandle(this.lib, result.handle)
+    return NativeImage.fromHandle(this.owner, result.handle)
   }
 
   public info(): ImageInfo {
@@ -590,7 +712,7 @@ export class NativeImage {
     return this.wrap(
       this.lib.imageComposite(
         this.guard(),
-        overlay.guard(),
+        overlay._getContextHandle(this.lib, this.guard().context),
         requireI32(options.left ?? 0, "left"),
         requireI32(options.top ?? 0, "top"),
         requireMappedOption(BLEND_IDS, options.blend ?? "source-over", "blend mode"),
@@ -619,20 +741,24 @@ export class NativeImage {
 
   public takeRaw(): OwnedRawImage {
     const handle = this.guard()
-    const materializeStatus = this.lib.imageMaterialize(handle)
-    if (materializeStatus === INVALID_ARGUMENT_STATUS) {
+    this.releaseContextImages()
+    const result = this.lib.imageTakePixels(handle)
+    if (result.status === BUSY_STATUS) {
       throw new Error("Cannot transfer image pixels while native buffers retain the image")
     }
-    checkStatus(materializeStatus)
-    const pointer = this.lib.imageGetPixelsPtr(handle)
-    if (!pointer) throw new Error("Cannot transfer image pixels while native buffers retain the image")
+    checkStatus(result.status)
     const width = this.imageInfo.width
     const height = this.imageInfo.height
     const stride = width * 4
-    const data = new Uint8Array(toArrayBuffer(pointer, 0, stride * height))
-    const raw = new OwnedRawImageImpl(data, width, height, stride, this.lib, handle)
     this.handle = null
-    return raw
+    try {
+      const data = new Uint8Array(toArrayBuffer(result.pointer!, 0, result.byteCount))
+      return new OwnedRawImageImpl(data, width, height, stride, this.lib, result.lease!, this.owner)
+    } catch (error) {
+      this.lib.imageReleasePixels(result.lease!)
+      this.owner.release()
+      throw error
+    }
   }
 
   public copyTo(destination: Uint8Array, options: { stride?: number; format?: PixelFormat } = {}): void {
@@ -644,13 +770,19 @@ export class NativeImage {
   }
 
   public dispose(): void {
-    if (!this.handle) return
-    this.lib.imageDestroy(this.handle)
-    this.handle = null
+    try {
+      this.releaseContextImages()
+    } finally {
+      if (this.handle) {
+        if (!this.owner.resources.disposed) this.lib.imageDestroy(this.handle)
+        this.handle = null
+        this.owner.release()
+      }
+    }
   }
 }
 
-export interface NativeImagePoolOptions {
+export interface NativeImagePoolOptions extends ImageCreateOptions {
   width: number
   height: number
   capacity?: number
@@ -658,6 +790,7 @@ export interface NativeImagePoolOptions {
 
 export class NativeImagePool {
   private readonly lib: RenderLib
+  private readonly owner?: ResourceContext
   private readonly images: NativeImage[] = []
   private disposed = false
   public readonly width: number
@@ -665,6 +798,7 @@ export class NativeImagePool {
   public readonly capacity: number
 
   constructor(options: NativeImagePoolOptions) {
+    this.owner = options.owner
     this.width = requireU32(options.width, "width")
     this.height = requireU32(options.height, "height")
     this.capacity = requireU32(options.capacity ?? 3, "capacity")
@@ -691,15 +825,15 @@ export class NativeImagePool {
     }
     if (this.images.length === this.capacity) return null
 
-    const image = NativeImage.fromPixels(pixels, this.width, this.height, options)
+    const image = NativeImage.fromPixels(pixels, this.width, this.height, { ...options, owner: this.owner })
     this.images.push(image)
     return image.retain()
   }
 
   public dispose(): void {
     if (this.disposed) return
-    this.disposed = true
     for (const image of this.images) image.dispose()
     this.images.length = 0
+    this.disposed = true
   }
 }

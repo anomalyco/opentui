@@ -33,13 +33,20 @@ export class ConfigError extends SshError {
   }
 }
 
+/** The native output budget is temporarily full; this write accepted no bytes. */
+export class OutputPressureError extends SshError {
+  constructor() {
+    super("OUTPUT_PRESSURE", "native session output is full; no bytes were accepted")
+  }
+}
+
 /**
  * The control-flow signal a middleware's `session.deny()` throws to unwind the
  * chain — not a failure. `runSession` swallows it; anything that is not a
  * `DenyError` routes to `onError`.
  */
 export class DenyError extends Error {
-  /** The reason passed to `deny()`, if any — already delivered to the client. */
+  /** The reason passed to `deny()`, if any; output failure can prevent delivery. */
   readonly reason: string | undefined
   constructor(reason?: string) {
     super(reason ?? "session denied")

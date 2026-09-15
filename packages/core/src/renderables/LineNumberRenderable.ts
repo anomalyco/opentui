@@ -1,3 +1,4 @@
+import { assertRenderableMutable } from "../lib/renderable-layout.js"
 import { Renderable, type BaseRenderable, type RenderableOptions } from "../Renderable.js"
 import { OptimizedBuffer } from "../buffer.js"
 import type { RenderContext, LineInfoProvider } from "../types.js"
@@ -33,6 +34,14 @@ export interface LineNumberOptions extends RenderableOptions<LineNumberRenderabl
 
 const DEFAULT_GUTTER_FG = "#888888"
 const DEFAULT_GUTTER_BG = "transparent"
+
+function cloneLineSign(sign: LineSign): LineSign {
+  return {
+    ...sign,
+    beforeColor: typeof sign.beforeColor === "object" ? RGBA.clone(sign.beforeColor) : sign.beforeColor,
+    afterColor: typeof sign.afterColor === "object" ? RGBA.clone(sign.afterColor) : sign.afterColor,
+  }
+}
 
 class GutterRenderable extends Renderable {
   private target: Renderable & LineInfoProvider
@@ -75,7 +84,7 @@ class GutterRenderable extends Renderable {
       height: "auto",
       flexGrow: 0,
       flexShrink: 0,
-      buffered: true,
+      // Window-sized raster cache is not a Yoga-sized buffered surface.
     })
     try {
       this.target = target
@@ -98,17 +107,12 @@ class GutterRenderable extends Renderable {
         const currentLineCount = this.target.virtualLineCount
         if (currentLineCount !== this._lastKnownLineCount) {
           this._lastKnownLineCount = currentLineCount
-          this.yogaNode.markDirty()
+          this.invalidateIntrinsicSize()
           this.requestRender()
         }
       }
     } catch (error) {
-      try {
-        this.abortConstruction()
-      } catch {
-        // Preserve the construction failure.
-      }
-      throw error
+      this.abortConstruction(error)
     }
   }
 
@@ -133,31 +137,32 @@ class GutterRenderable extends Renderable {
       }
     }
 
-    this.yogaNode.setMeasureFunc(measureFunc)
+    this.setMeasureProvider(measureFunc)
   }
 
   public remeasure(): void {
     // Mark the yoga node as dirty to trigger re-measurement
-    this.yogaNode.markDirty()
+    this.invalidateIntrinsicSize()
+    this.requestRender()
   }
 
   public setLineNumberOffset(offset: number): void {
     if (this._lineNumberOffset !== offset) {
       this._lineNumberOffset = offset
-      this.yogaNode.markDirty()
+      this.invalidateIntrinsicSize()
       this.requestRender()
     }
   }
 
   public setHideLineNumbers(hideLineNumbers: Set<number>): void {
     this._hideLineNumbers = hideLineNumbers
-    this.yogaNode.markDirty()
+    this.invalidateIntrinsicSize()
     this.requestRender()
   }
 
   public setLineNumbers(lineNumbers: Map<number, number>): void {
     this._lineNumbers = lineNumbers
-    this.yogaNode.markDirty()
+    this.invalidateIntrinsicSize()
     this.requestRender()
   }
 
@@ -178,7 +183,7 @@ class GutterRenderable extends Renderable {
   }
 
   private calculateWidth(): number {
-    const totalLines = this.target.virtualLineCount
+    const totalLines = Math.max(this.target.lineCount, this.target.virtualLineCount)
 
     // Find max line number, considering both calculated and custom line numbers
     let maxLineNumber = totalLines + this._lineNumberOffset
@@ -200,7 +205,7 @@ class GutterRenderable extends Renderable {
   }
 
   public get fg(): RGBA {
-    return this._fg
+    return RGBA.clone(this._fg)
   }
 
   public setFg(fg: RGBA): void {
@@ -211,7 +216,7 @@ class GutterRenderable extends Renderable {
   }
 
   public get bg(): RGBA {
-    return this._bg
+    return RGBA.clone(this._bg)
   }
 
   public setBg(bg: RGBA): void {
@@ -223,8 +228,8 @@ class GutterRenderable extends Renderable {
 
   public getLineColors(): { gutter: Map<number, RGBA>; content: Map<number, RGBA> } {
     return {
-      gutter: this._lineColorsGutter,
-      content: this._lineColorsContent,
+      gutter: new Map(Array.from(this._lineColorsGutter, ([line, color]) => [line, RGBA.clone(color)])),
+      content: new Map(Array.from(this._lineColorsContent, ([line, color]) => [line, RGBA.clone(color)])),
     }
   }
 
@@ -237,7 +242,7 @@ class GutterRenderable extends Renderable {
 
     // Mark dirty if sign widths changed - this will trigger remeasure
     if (this._maxBeforeWidth !== oldMaxBefore || this._maxAfterWidth !== oldMaxAfter) {
-      this.yogaNode.markDirty()
+      this.invalidateIntrinsicSize()
     }
 
     // Always request render since signs themselves may have changed
@@ -252,9 +257,9 @@ class GutterRenderable extends Renderable {
   protected override createFrameBuffer(): void {}
   protected override handleFrameBufferResize(): void {}
 
-  public override render(buffer: OptimizedBuffer, deltaTime: number): void {
+  protected override renderSelf(buffer: OptimizedBuffer): void {
     // Match native integer-cell drawing before deriving the source window.
-    const x = this._screenX
+    const x = Math.trunc(this._screenX)
     const y = Math.trunc(this._screenY)
     const start = Math.max(0, -y)
     const end = Math.min(this.height, buffer.height - y)
@@ -264,6 +269,7 @@ class GutterRenderable extends Renderable {
       this.frameBuffer = OptimizedBuffer.create(this.width, end - start, this._ctx.widthMethod, {
         respectAlpha: true,
         id: `framebuffer-${this.id}`,
+        owner: this._ctx.nativeScene,
       })
     } else if (this.frameBuffer.width !== this.width || this.frameBuffer.height !== end - start) {
       this.frameBuffer.resize(this.width, end - start)
@@ -274,8 +280,7 @@ class GutterRenderable extends Renderable {
     // and source mappings can change without changing the number of visual rows.
     this.refreshFrameBuffer(this.frameBuffer, Math.trunc(this.target.scrollY) + start)
     this.markClean()
-    this._ctx.addToHitGrid(x, this._screenY, this.width, this.height, this.num)
-    buffer.drawFrameBuffer(x, y + start, this.frameBuffer)
+    if (buffer !== this.frameBuffer) buffer.drawFrameBuffer(x, y + start, this.frameBuffer)
   }
 
   private refreshFrameBuffer(buffer: OptimizedBuffer, startLine: number): void {
@@ -396,17 +401,17 @@ export class LineNumberRenderable extends Renderable {
       // LineColorConfig format
       const config = color as LineColorConfig
       if (config.gutter) {
-        this._lineColorsGutter.set(line, parseColor(config.gutter))
+        this._lineColorsGutter.set(line, RGBA.clone(parseColor(config.gutter)))
       }
       if (config.content) {
-        this._lineColorsContent.set(line, parseColor(config.content))
+        this._lineColorsContent.set(line, RGBA.clone(parseColor(config.content)))
       } else if (config.gutter) {
         // If only gutter is specified, use a darker version for content
         this._lineColorsContent.set(line, darkenColor(parseColor(config.gutter)))
       }
     } else {
       // Simple format - same color for both, but content is darker
-      const parsedColor = parseColor(color as string | RGBA)
+      const parsedColor = RGBA.clone(parseColor(color as string | RGBA))
       this._lineColorsGutter.set(line, parsedColor)
       this._lineColorsContent.set(line, darkenColor(parsedColor))
     }
@@ -422,8 +427,8 @@ export class LineNumberRenderable extends Renderable {
     })
 
     try {
-      this._fg = parseColor(options.fg ?? DEFAULT_GUTTER_FG)
-      this._bg = parseColor(options.bg ?? DEFAULT_GUTTER_BG)
+      this._fg = RGBA.clone(parseColor(options.fg ?? DEFAULT_GUTTER_FG))
+      this._bg = RGBA.clone(parseColor(options.bg ?? DEFAULT_GUTTER_BG))
       this._minWidth = options.minWidth ?? 3
       this._paddingRight = options.paddingRight ?? 1
       this._lineNumberOffset = options.lineNumberOffset ?? 0
@@ -441,7 +446,7 @@ export class LineNumberRenderable extends Renderable {
       this._lineSigns = new Map<number, LineSign>()
       if (options.lineSigns) {
         for (const [line, sign] of options.lineSigns) {
-          this._lineSigns.set(line, sign)
+          this._lineSigns.set(line, cloneLineSign(sign))
         }
       }
 
@@ -451,14 +456,11 @@ export class LineNumberRenderable extends Renderable {
       }
     } catch (error) {
       try {
-        this.runCleanup((run) => {
-          run(() => this.clearTarget())
-          run(() => this.abortConstruction())
-        })
+        this.clearTarget()
       } catch {
         // Preserve the construction failure.
       }
-      throw error
+      this.abortConstruction(error)
     }
   }
 
@@ -541,29 +543,35 @@ export class LineNumberRenderable extends Renderable {
   }
 
   public override destroy(): void {
-    const gutter = this.gutter
+    if (this.isDestroyed) return
+    assertRenderableMutable(this)
     this._isDestroying = true
-    this.runCleanup((run) => {
-      run(() => super.destroy())
-      if (gutter) run(() => gutter.destroy())
-    })
+    super.destroy()
   }
 
   // Internal children must be removable before recursive teardown starts.
   public override destroyRecursively(): void {
+    if (this.isDestroyed) return
+    assertRenderableMutable(this)
     this._isDestroying = true
     super.destroyRecursively()
   }
 
   protected override destroySelf(): void {
-    this.target?.off("line-info-change", this.handleLineInfoChange)
-    this.gutter = null
-    this.target = null
+    const gutter = this.gutter
+    this.runCleanup((run) => {
+      run(() => this.target?.off("line-info-change", this.handleLineInfoChange))
+      this.gutter = null
+      this.target = null
+      if (gutter && !gutter.isDestroyed) run(() => gutter.destroy())
+    })
   }
 
   public clearTarget(): void {
     const target = this.target
     const gutter = this.gutter
+    if (!target && !gutter) return
+    assertRenderableMutable(this)
 
     this.runCleanup((run) => {
       if (target) {
@@ -617,27 +625,23 @@ export class LineNumberRenderable extends Renderable {
   }
 
   public get fg(): RGBA {
-    return this._fg
+    return RGBA.clone(this._fg)
   }
 
   public set fg(value: string | RGBA | undefined) {
-    const parsed = parseColor(value ?? DEFAULT_GUTTER_FG)
-    if (this._fg !== parsed) {
-      this._fg = parsed
-      this.gutter?.setFg(parsed)
-    }
+    const parsed = RGBA.clone(parseColor(value ?? DEFAULT_GUTTER_FG))
+    this._fg = parsed
+    this.gutter?.setFg(parsed)
   }
 
   public get bg(): RGBA {
-    return this._bg
+    return RGBA.clone(this._bg)
   }
 
   public set bg(value: string | RGBA | undefined) {
-    const parsed = parseColor(value ?? DEFAULT_GUTTER_BG)
-    if (this._bg !== parsed) {
-      this._bg = parsed
-      this.gutter?.setBg(parsed)
-    }
+    const parsed = RGBA.clone(parseColor(value ?? DEFAULT_GUTTER_BG))
+    this._bg = parsed
+    this.gutter?.setBg(parsed)
   }
 
   public setLineColor(line: number, color: string | RGBA | LineColorConfig): void {
@@ -678,13 +682,13 @@ export class LineNumberRenderable extends Renderable {
 
   public getLineColors(): { gutter: Map<number, RGBA>; content: Map<number, RGBA> } {
     return {
-      gutter: this._lineColorsGutter,
-      content: this._lineColorsContent,
+      gutter: new Map(Array.from(this._lineColorsGutter, ([line, color]) => [line, RGBA.clone(color)])),
+      content: new Map(Array.from(this._lineColorsContent, ([line, color]) => [line, RGBA.clone(color)])),
     }
   }
 
   public setLineSign(line: number, sign: LineSign): void {
-    this._lineSigns.set(line, sign)
+    this._lineSigns.set(line, cloneLineSign(sign))
     if (this.gutter) {
       this.gutter.setLineSigns(this._lineSigns)
     }
@@ -705,8 +709,10 @@ export class LineNumberRenderable extends Renderable {
   }
 
   public setLineSigns(lineSigns: Map<number, LineSign>): void {
+    const signs = Array.from(lineSigns, ([line, sign]) => [line, cloneLineSign(sign)] as const)
+    // The gutter shares this map; publish only after every sign has been captured.
     this._lineSigns.clear()
-    for (const [line, sign] of lineSigns) {
+    for (const [line, sign] of signs) {
       this._lineSigns.set(line, sign)
     }
     if (this.gutter) {
@@ -715,7 +721,7 @@ export class LineNumberRenderable extends Renderable {
   }
 
   public getLineSigns(): Map<number, LineSign> {
-    return this._lineSigns
+    return new Map(Array.from(this._lineSigns, ([line, sign]) => [line, cloneLineSign(sign)]))
   }
 
   public set lineNumberOffset(value: number) {

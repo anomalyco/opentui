@@ -41,7 +41,6 @@
 
 const std = @import("std");
 const bench_utils = @import("bench-utils.zig");
-const gp = @import("grapheme.zig");
 
 var io_threaded: std.Io.Threaded = .init_single_threaded;
 pub const io = io_threaded.io();
@@ -100,11 +99,6 @@ pub fn main(init: std.process.Init) !void {
     var gpa: std.heap.DebugAllocator(.{}) = .init;
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
-
-    // Initialize global pool and unicode data ONCE with base GPA allocator
-    // This ensures they persist across all benchmarks (even with arena allocators)
-    _ = gp.initGlobalPool(allocator);
-    defer gp.deinitGlobalPool();
 
     const benchmarks = [_]BenchModule{
         .{ .name = text_buffer_view_bench.benchName, .run = text_buffer_view_bench.run },

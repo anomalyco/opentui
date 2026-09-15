@@ -38,6 +38,9 @@ pub const EmbeddedTerminal = struct {
     pub fn compose(_: *EmbeddedTerminal, _: *buffer.OptimizedBuffer, _: i32, _: i32) Error!void {
         return error.Unsupported;
     }
+    pub fn composeChecked(_: *EmbeddedTerminal, _: *buffer.OptimizedBuffer, _: i32, _: i32, _: u32) Error!void {
+        return error.Unsupported;
+    }
     pub fn cursor(_: *EmbeddedTerminal) Cursor {
         return .{};
     }

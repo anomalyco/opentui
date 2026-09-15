@@ -181,6 +181,12 @@ const transpileEntryPoint = (entryPoint: string, outputPath: string): void => {
 }
 
 if (buildNative) {
+  runCommand(
+    "bun",
+    ["scripts/native-abi.ts", "--check", "--all-targets"],
+    rootDir,
+    "Error: Native ABI metadata is stale",
+  )
   console.log(`Building native ${isDev ? "dev" : "prod"} binaries${buildAll ? " for all platforms" : ""}...`)
 
   const zigArgs = ["build", `-Doptimize=${isDev ? "Debug" : "ReleaseFast"}`]
@@ -312,6 +318,8 @@ export default module.default
 }
 
 if (buildLib) {
+  if (!buildNative)
+    runCommand("bun", ["scripts/native-abi.ts", "--check"], rootDir, "Error: Native ABI metadata is stale")
   console.log("Building library...")
 
   const distDir = join(rootDir, "dist")

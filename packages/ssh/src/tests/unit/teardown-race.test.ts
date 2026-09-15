@@ -1,10 +1,12 @@
-import { EventEmitter } from "node:events"
+import type { EventEmitter } from "node:events"
+import { Duplex } from "node:stream"
 import { expect, test } from "bun:test"
 import type { ServerChannel } from "ssh2"
 import { createSessionBridge, DEFAULT_PTY, MAX_PTY, type RendererFactory } from "../../bridge.js"
 import { runSession } from "../../run-session.js"
 import { createSafeInvoke } from "../../safe.js"
 import type { SessionHandler } from "../../types.js"
+import { waitFor } from "../support.js"
 
 /**
  * The teardown race: the renderer is lazy, so a client can disconnect in the
@@ -16,10 +18,7 @@ import type { SessionHandler } from "../../types.js"
  */
 
 /**
- * Minimal ssh2 `ServerChannel` stub: the bridge wires its own adapter streams to
- * the renderer, so the renderer only needs an EventEmitter with
- * `write()`/`exit()`/`close()`. Counts peer-disconnect calls so idempotency can
- * be proven.
+ * Writable channel stub with controllable write acknowledgements and disconnect counts.
  */
 function fakeChannel(): EventEmitter & {
   exitCalls: number
@@ -28,23 +27,22 @@ function fakeChannel(): EventEmitter & {
   resumeCalls: number
   writes: Buffer[]
 } {
-  const ch = new EventEmitter() as EventEmitter & {
-    exitCalls: number
-    closeCalls: number
-    pauseCalls: number
-    resumeCalls: number
-    writes: Buffer[]
-  }
-  ch.exitCalls = 0
-  ch.closeCalls = 0
-  ch.pauseCalls = 0
-  ch.resumeCalls = 0
-  ch.writes = []
+  const ch = Object.assign(
+    new Duplex({
+      read() {},
+    }),
+    {
+      exitCalls: 0,
+      closeCalls: 0,
+      pauseCalls: 0,
+      resumeCalls: 0,
+      writes: [] as Buffer[],
+    },
+  )
   return Object.assign(ch, {
-    write: (data: Buffer | string, callback?: () => void) => {
+    _write: (data: Buffer, _encoding: BufferEncoding, callback: () => void) => {
       ch.writes.push(Buffer.from(data))
-      callback?.()
-      return true
+      callback()
     },
     pause: () => {
       ch.pauseCalls++
@@ -80,7 +78,18 @@ function testBridge(
     idleTimeoutMs: undefined,
     maxTimeoutMs: undefined,
     safe: options.safe ?? createSafeInvoke(() => {}),
-    createRenderer: options.createRenderer,
+    createRenderer:
+      options.createRenderer &&
+      (async (config) => {
+        const renderer = await options.createRenderer!(config)
+        const destroy = renderer.destroy.bind(renderer)
+        Object.defineProperty(renderer, "closed", { value: config!.nativeSession!.closed })
+        renderer.destroy = () => {
+          destroy()
+          void config!.nativeSession!.close()
+        }
+        return renderer
+      }),
   })
   return { channel, bridge }
 }
@@ -99,7 +108,7 @@ test("destroy is idempotent — a second call tells the peer only once", async (
   expect(channel.closeCalls).toBe(1)
 })
 
-test("destroy is per-session — closing one bridge leaves another untouched", () => {
+test("destroy is per-session — closing one bridge leaves another untouched", async () => {
   const safe = createSafeInvoke(() => {}) // one server-wide sink, shared by both
   const chA = fakeChannel()
   const chB = fakeChannel()
@@ -122,6 +131,7 @@ test("destroy is per-session — closing one bridge leaves another untouched", (
   expect(bClosed).toBe(false)
   expect(chB.exitCalls).toBe(0)
   expect(chB.closeCalls).toBe(0)
+  await Promise.all([a.destroy(), b.destroy()])
 })
 
 test("stdin applies backpressure before renderer creation and resumes when read", async () => {
@@ -136,6 +146,7 @@ test("stdin applies backpressure before renderer creation and resumes when read"
   })
 
   // Input can arrive while middleware is still deciding whether to enter the app.
+  const initialResumes = channel.resumeCalls
   const chunk = Buffer.alloc(64 * 1024)
   channel.emit("data", chunk)
   expect(channel.pauseCalls).toBe(1)
@@ -148,26 +159,26 @@ test("stdin applies backpressure before renderer creation and resumes when read"
   expect(stdin.readableLength).toBeGreaterThanOrEqual(stdin.readableHighWaterMark)
 
   expect(stdin.read()).toEqual(chunk)
-  expect(channel.resumeCalls).toBe(1)
+  expect(channel.resumeCalls).toBe(initialResumes + 1)
 
   channel.emit("data", chunk)
   expect(channel.pauseCalls).toBe(2)
   expect(stdin.read()).toEqual(chunk)
-  expect(channel.resumeCalls).toBe(2)
+  expect(channel.resumeCalls).toBe(initialResumes + 2)
 
   bridge.destroy()
   await entered
 })
 
-test("renderer shutdown output flushes before the SSH channel closes", async () => {
+test("renderer shutdown output waits for acknowledgement before the SSH channel closes", async () => {
   const channel = fakeChannel()
   const order: string[] = []
-  let stdout: NodeJS.WriteStream | undefined
+  let complete: (() => void) | undefined
   Object.assign(channel, {
-    write(data: Buffer | string) {
+    _write(data: Buffer, _encoding: BufferEncoding, callback: () => void) {
       channel.writes.push(Buffer.from(data))
       order.push(`write:${data.toString()}`)
-      return false
+      complete = callback
     },
     close() {
       channel.closeCalls++
@@ -177,10 +188,9 @@ test("renderer shutdown output flushes before the SSH channel closes", async () 
   const { bridge } = testBridge({
     channel,
     createRenderer: (async (options: Parameters<RendererFactory>[0]) => {
-      stdout = options!.stdout
       return rendererStub({
         destroy() {
-          queueMicrotask(() => stdout!.write("SHUTDOWN", () => order.push("flushed")))
+          options!.nativeSession!.write(Buffer.from("SHUTDOWN"))
         },
       })
     }) as unknown as RendererFactory,
@@ -188,57 +198,34 @@ test("renderer shutdown output flushes before the SSH channel closes", async () 
 
   const entered = bridge.enterApp(() => {})
   await flush()
-  bridge.destroy()
-  await Promise.resolve()
+  const closing = bridge.destroy()
+  await waitFor(() => complete !== undefined)
 
   expect(order).toEqual(["write:SHUTDOWN"])
   expect(channel.closeCalls).toBe(0)
 
   channel.emit("drain")
   await flush()
-  await entered
-  expect(order).toEqual(["write:SHUTDOWN", "flushed", "close"])
-})
-
-test("raw session writes drain before the SSH channel closes", async () => {
-  const channel = fakeChannel()
-  let rawCallback: (() => void) | undefined
-  Object.assign(channel, {
-    write(data: Buffer | string, callback?: () => void) {
-      channel.writes.push(Buffer.from(data))
-      rawCallback = callback
-      return false
-    },
-  })
-  const { bridge } = testBridge({ channel })
-
-  bridge.session.write("RAW")
-  bridge.destroy()
-  await flush()
   expect(channel.closeCalls).toBe(0)
-  expect(Buffer.concat(channel.writes).toString()).toBe("RAW")
-
-  rawCallback?.()
-  await flush()
-  expect(channel.closeCalls).toBe(1)
+  complete?.()
+  await closing
+  await entered
+  expect(order).toEqual(["write:SHUTDOWN", "close"])
 })
 
 test("session teardown force-closes a client that never drains", async () => {
   const channel = fakeChannel()
   Object.assign(channel, {
-    write(data: Buffer | string) {
+    _write(data: Buffer) {
       channel.writes.push(Buffer.from(data))
-      return false
     },
   })
-  let stdout: NodeJS.WriteStream | undefined
   const { bridge } = testBridge({
     channel,
     createRenderer: (async (options: Parameters<RendererFactory>[0]) => {
-      stdout = options!.stdout
       return rendererStub({
         destroy() {
-          stdout!.write("SHUTDOWN")
+          options!.nativeSession!.write(Buffer.from("SHUTDOWN"))
         },
       })
     }) as unknown as RendererFactory,
@@ -254,26 +241,6 @@ test("session teardown force-closes a client that never drains", async () => {
   expect(closed).toBe(true)
   expect(channel.closeCalls).toBe(1)
   await entered
-})
-
-test("session teardown force-closes when a raw write callback never runs", async () => {
-  const channel = fakeChannel()
-  Object.assign(channel, {
-    write(data: Buffer | string) {
-      channel.writes.push(Buffer.from(data))
-      return false
-    },
-  })
-  const { bridge } = testBridge({ channel })
-
-  bridge.session.write("RAW")
-  const closed = await Promise.race([
-    bridge.destroy().then(() => true),
-    new Promise<false>((resolve) => setTimeout(() => resolve(false), 1_500)),
-  ])
-
-  expect(closed).toBe(true)
-  expect(channel.closeCalls).toBe(1)
 })
 
 test("a channel error tears down without waiting for close", async () => {
@@ -344,11 +311,11 @@ function rendererStub(
     width: number
     height: number
     on: () => void
-    resize: (cols: number, rows: number) => void
+    requestResize: (cols: number, rows: number) => void
     destroy: () => void
   }> = {},
 ) {
-  return { width: DEFAULT_PTY.cols, height: DEFAULT_PTY.rows, on() {}, resize() {}, destroy() {}, ...overrides }
+  return { width: DEFAULT_PTY.cols, height: DEFAULT_PTY.rows, on() {}, requestResize() {}, destroy() {}, ...overrides }
 }
 
 function readyBridge(errors: unknown[] = []) {
@@ -532,7 +499,7 @@ test("pty dimensions are clamped before renderer creation and resize", async () 
   const renderer = rendererStub({
     width: MAX_PTY.cols,
     height: MAX_PTY.rows,
-    resize(c: number, r: number) {
+    requestResize(c: number, r: number) {
       resized = [c, r]
     },
   })

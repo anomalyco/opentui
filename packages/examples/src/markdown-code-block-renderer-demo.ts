@@ -45,16 +45,19 @@ const renderNode = createMarkdownCodeBlockRenderer({ taskflow: renderTaskFlow })
 let root: BoxRenderable | null = null
 let syntaxStyle: SyntaxStyle | null = null
 
-function createSyntaxStyle(): SyntaxStyle {
-  return SyntaxStyle.fromStyles({
-    default: { fg: RGBA.fromHex("#DDE7FF") },
-    "markup.heading": { fg: RGBA.fromHex("#93C5FD"), bold: true },
-    "markup.heading.1": { fg: RGBA.fromHex("#67E8F9"), bold: true },
-    "markup.raw": { fg: RGBA.fromHex("#A7F3D0") },
-    "markup.strong": { fg: RGBA.fromHex("#FDE68A"), bold: true },
-    "markup.link": { fg: RGBA.fromHex("#C4B5FD"), underline: true },
-    "markup.list": { fg: RGBA.fromHex("#F9A8D4") },
-  })
+function createSyntaxStyle(renderer: CliRenderer): SyntaxStyle {
+  return SyntaxStyle.fromStyles(
+    {
+      default: { fg: RGBA.fromHex("#DDE7FF") },
+      "markup.heading": { fg: RGBA.fromHex("#93C5FD"), bold: true },
+      "markup.heading.1": { fg: RGBA.fromHex("#67E8F9"), bold: true },
+      "markup.raw": { fg: RGBA.fromHex("#A7F3D0") },
+      "markup.strong": { fg: RGBA.fromHex("#FDE68A"), bold: true },
+      "markup.link": { fg: RGBA.fromHex("#C4B5FD"), underline: true },
+      "markup.list": { fg: RGBA.fromHex("#F9A8D4") },
+    },
+    renderer.nativeScene!,
+  )
 }
 
 function parseTaskFlow(source: string): TaskFlowDocument {
@@ -145,7 +148,7 @@ function createTaskFlowRenderer(renderer: CliRenderer): MarkdownCodeBlockRendere
 export function run(renderer: CliRenderer): void {
   renderer.start()
   renderer.setBackgroundColor("#020617")
-  syntaxStyle = createSyntaxStyle()
+  syntaxStyle = createSyntaxStyle(renderer)
 
   root = new BoxRenderable(renderer, {
     id: "markdown-code-block-renderer-root",

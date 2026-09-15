@@ -811,7 +811,7 @@ function findNearestExampleOptionIndex(
   return -1
 }
 
-class ExampleSelector {
+export class ExampleSelector {
   private renderer: CliRenderer
   private currentExample: Example | null = null
   private inMenu = true
@@ -1092,6 +1092,7 @@ class ExampleSelector {
     this.filterText = ""
     this.filterInput.setText("")
     this.filterInput.cursorOffset = 0
+    this.filterExamples()
   }
 
   private syncFilterInputText(): void {
@@ -1456,7 +1457,7 @@ class ExampleSelector {
       await this.destroyCurrentExample()
       this.filterInput?.blur()
       this.selectElement?.blur()
-      this.menuContainer?.destroy()
+      this.menuContainer?.destroyRecursively()
     } catch (error) {
       console.error("Failed to clean up the examples menu:", error)
     } finally {
@@ -1504,12 +1505,14 @@ class ExampleSelector {
   }
 }
 
-const renderer = await createCliRenderer({
-  exitOnCtrlC: false,
-  targetFps: 60,
-  useKittyKeyboard: { events: true, allKeysAsEscapes: true },
-  // useAlternateScreen: false,
-})
+if (import.meta.main) {
+  const renderer = await createCliRenderer({
+    exitOnCtrlC: false,
+    targetFps: 60,
+    useKittyKeyboard: { events: true, allKeysAsEscapes: true },
+    // useAlternateScreen: false,
+  })
 
-renderer.setBackgroundColor("transparent")
-new ExampleSelector(renderer)
+  renderer.setBackgroundColor("transparent")
+  new ExampleSelector(renderer)
+}

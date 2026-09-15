@@ -69,24 +69,37 @@ If host creation fails, no host object exists to release. If later setup fails, 
 
 ## Destroy the renderer
 
-`renderer.destroy()` is synchronous and idempotent. It marks the renderer as destroyed before cleanup starts. If a render pass is active, OpenTUI restores input and terminal state immediately, then finishes native teardown when the pass unwinds.
+`renderer.destroy()` is synchronous and idempotent. It marks the renderer as destroyed and stops input and scheduling.
+Output flushing, terminal restoration, and native reclamation can finish asynchronously.
+Before you reuse streams or deliberately exit after graceful shutdown, await `closed`:
+
+```typescript
+renderer.destroy()
+await renderer.closed
+```
+
+An active frame or buffer lease can delay reclamation. A failed output endpoint rejects `closed`. Destruction alone
+does not prove that restoration bytes reached the terminal.
 
 Renderer destruction performs these actions:
 
 - Removes renderer signal, process, resize, input, and warning listeners.
 - Stops renderer timers, frame scheduling, capability detection, and memory snapshots.
 - Disables raw input, removes the data listener, pauses the input stream, and clears parser state.
-- Flushes queued split-footer output and restores the configured `stdout.write` method.
+- Starts ordered split-footer flushing and terminal restoration, and restores the configured `stdout.write` method.
 - Emits the renderer `destroy` event.
-- Destroys the renderable tree, console overlay, native renderer, buffers, and renderer-owned output feed.
-- Releases exclusive ownership of the configured input and output stream objects.
-- Calls `onDestroy` after renderer cleanup. Errors from this callback are logged.
+- Releases the renderable tree, console overlay, native resources, and stream ownership as cleanup completes.
+- Calls `onDestroy` after host cleanup. Use `closed` to wait for output and native teardown. OpenTUI logs callback errors.
 
 The native shutdown sequence resets text attributes and the mouse pointer. It disables mouse, focus, paste, keyboard, and color-scheme modes that OpenTUI enabled. It exits the alternate screen, resets the terminal title and cursor style, and shows the cursor. OpenTUI also sets stdin raw mode to `false`.
 
 `clearOnShutdown: false` keeps the renderer-owned main-screen region visible. It does not skip terminal mode restoration.
 
 Cleanup is best effort. Most renderer cleanup errors are logged so later cleanup can continue. `destroy()` does not dispose application services, close a caller-owned transport, or await asynchronous resource release.
+
+During actual process exit, native rendering attempts synchronous restoration on real `process.stdout` before
+termination-capable cleanup callbacks. It cannot replay an uncompleted write or finish an arbitrary asynchronous
+transport after the event loop stops. This last-chance path does not replace awaiting `closed` during normal shutdown.
 
 ## Signal handling
 

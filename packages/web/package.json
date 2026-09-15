@@ -17,6 +17,7 @@
     "validate:docs:links": "bun scripts/validate-doc-links.ts",
     "validate:docs:skill": "bun scripts/validate-skill-docs.ts",
     "validate:docs:examples": "bun scripts/verify-doc-examples.ts",
+    "validate:docs:native": "bun scripts/verify-native-doc-examples.ts",
     "validate:docs": "bun run validate:docs:metadata && bun run validate:docs:links && bun run validate:docs:skill && bun run test:docs",
     "test:docs": "bun test src/lib/docs-index.test.ts src/lib/docs-search.test.ts scripts/doc-validator.test.ts scripts/doc-visuals.test.ts scripts/terminal-illustration.test.ts",
     "validate:packages": "bun scripts/validate-packages.ts src/content/packages",

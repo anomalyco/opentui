@@ -26,11 +26,14 @@ import { DiffRenderable, SyntaxStyle, RGBA, createCliRenderer } from "@opentui/c
 
 const renderer = await createCliRenderer()
 
-const syntaxStyle = SyntaxStyle.fromStyles({
-  default: { fg: RGBA.fromHex("#E6EDF3") },
-  string: { fg: RGBA.fromHex("#A5D6FF") },
-  keyword: { fg: RGBA.fromHex("#FF7B72"), bold: true },
-})
+const syntaxStyle = SyntaxStyle.fromStyles(
+  {
+    default: { fg: RGBA.fromHex("#E6EDF3") },
+    string: { fg: RGBA.fromHex("#A5D6FF") },
+    keyword: { fg: RGBA.fromHex("#FF7B72"), bold: true },
+  },
+  renderer.nativeScene!,
+)
 
 const patch = `diff --git a/app.ts b/app.ts
 index 1111111..2222222 100644
@@ -96,6 +99,10 @@ diff.syncScroll = false
 ```
 
 Scroll sync is a no-op in the unified view.
+
+If you omit `syntaxStyle`, Diff owns a fallback theme and releases it when you
+destroy the component, including its inactive panes. A theme you supply remains
+caller-owned; destroy it only after its consumers no longer need it.
 
 ## Properties
 

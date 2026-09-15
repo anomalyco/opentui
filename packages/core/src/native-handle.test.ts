@@ -1,318 +1,246 @@
 import { describe, expect, spyOn, test } from "bun:test"
-import { OptimizedBuffer } from "./buffer.js"
+import { OptimizedBuffer, ResourceContext } from "./buffer.js"
 import { RGBA } from "./lib/RGBA.js"
 import { TextBuffer } from "./text-buffer.js"
 import { TextBufferView } from "./text-buffer-view.js"
 import { EditBuffer } from "./edit-buffer.js"
 import { EditorView } from "./editor-view.js"
 import { SyntaxStyle } from "./syntax-style.js"
-import Yoga from "./yoga.js"
-import {
-  NativeMeasureTargetKind,
-  resolveRenderLib,
-  setRenderLibPath,
-  type OptimizedBufferHandle,
-  type EmbeddedTerminalHandle,
-  type RendererHandle,
-  type TextBufferHandle,
-} from "./zig.js"
+import { FFIRenderLib, resolveRenderLib, setRenderLibPath, type NativeSceneFrameRequest } from "./zig.js"
 
 describe("native handles", () => {
+  test("Context embedded terminal rejects stale and wrong-kind handles", () => {
+    const lib = resolveRenderLib()
+    const context = lib.createContext({ objectCapacity: 2, renderCellsMax: 20 })
+    try {
+      const terminal = lib.createContextEmbeddedTerminal(context, { cols: 10, rows: 2 })
+      lib.destroyContextEmbeddedTerminal(context, terminal)
+      expect(() => lib.destroyContextEmbeddedTerminal(context, terminal)).toThrow("StaleHandle")
+      expect(() => lib.contextEmbeddedTerminalWrite(context, terminal, "stale")).toThrow("StaleHandle")
+      const text = lib.createContextTextBuffer(context)
+      lib.contextTextBufferSetText(context, text, lib.encoder.encode("preserved"))
+      expect(() => lib.contextEmbeddedTerminalWrite(context, text as never, "wrong kind")).toThrow("WrongKind")
+      expect(() => lib.destroyContextEmbeddedTerminal(context, text as never)).toThrow("WrongKind")
+      expect(lib.contextTextBufferGetText(context, text)).toBe("preserved")
+    } finally {
+      lib.destroyContext(context)
+    }
+  })
+
+  test("checked resource handles reject stale and wrong-kind access", () => {
+    const owner = new ResourceContext({ objectCapacity: 12, renderCellsMax: 32 })
+    const { renderLib: lib, context } = owner
+    try {
+      const text = TextBuffer.create("unicode", owner)
+      const edit = EditBuffer.create("unicode", owner)
+      const view = TextBufferView.create(text)
+      const editor = EditorView.create(edit, 8, 2)
+      const style = SyntaxStyle.create(owner)
+      const buffer = OptimizedBuffer.create(4, 3, "unicode", { owner })
+      const textHandle = text._getSceneHandle(owner)
+      const editHandle = edit._getSceneHandle(owner)
+      const viewHandle = view._getSceneHandle(owner)
+      const editorHandle = editor._getSceneHandle(owner)
+      const styleHandle = style._getSceneHandle(owner)
+      const bufferHandle = buffer._getSceneHandle(owner)
+      const bytes = lib.encoder.encode("replacement")
+      expect(() => lib.contextTextBufferSetText(context, editHandle as never, bytes)).toThrow("WrongKind")
+      expect(() => lib.contextEditBufferSetText(context, textHandle as never, bytes)).toThrow("WrongKind")
+      expect(() => lib.contextAcquireBufferLease(context, textHandle as never)).toThrow("WrongKind")
+      text.destroy()
+      edit.destroy()
+      style.destroy()
+      buffer.destroy()
+      for (const access of [
+        () => lib.contextTextBufferSetText(context, textHandle, bytes),
+        () => lib.contextEditBufferSetText(context, editHandle, bytes),
+        () => lib.contextTextBufferViewGetInfo(context, viewHandle),
+        () => lib.contextEditorViewGetInfo(context, editorHandle),
+        () => lib.contextSyntaxStyleGetStyleCount(context, styleHandle),
+        () => lib.contextAcquireBufferLease(context, bufferHandle),
+      ])
+        expect(access).toThrow("StaleHandle")
+      expect(() => view.getPlainText()).toThrow("destroyed")
+      expect(() => editor.getVirtualLineCount()).toThrow("destroyed")
+      view.destroy()
+      editor.destroy()
+    } finally {
+      owner.destroy()
+    }
+  })
+
+  test("buffer leases retain their issuing library and release after callback failures", () => {
+    const owner = new ResourceContext({ objectCapacity: 4, renderCellsMax: 4 })
+    const lib = owner.renderLib
+    const other = new FFIRenderLib()
+    const buffer = OptimizedBuffer.create(2, 2, "unicode", { owner })
+    try {
+      const lease = lib.contextAcquireBufferLease(owner.context, buffer._getSceneHandle(owner))
+      expect(() => other.contextReleaseBufferLease(owner.context, lease.handle)).toThrow()
+      expect(() => owner.destroy()).toThrow("ContextBusy")
+      lib.contextReleaseBufferLease(owner.context, lease.handle)
+      expect(() => lib.contextReleaseBufferLease(owner.context, lease.handle)).toThrow("StaleHandle")
+      const failure = new Error("leased callback failed")
+      expect(() =>
+        buffer.withBuffers(() => {
+          throw failure
+        }),
+      ).toThrow(failure)
+      const acquire = lib.contextAcquireBufferLease.bind(lib)
+      const mapping = spyOn(lib, "contextAcquireBufferLease").mockImplementation((...args) => ({
+        ...acquire(...args),
+        get char(): never {
+          throw failure
+        },
+      }))
+      try {
+        expect(() => buffer.withBuffers((cells) => cells.char[0])).toThrow(failure)
+      } finally {
+        mapping.mockRestore()
+      }
+      buffer.destroy()
+      expect(() => owner.destroy()).not.toThrow()
+    } finally {
+      buffer.destroy()
+      owner.destroy()
+      other.dispose()
+    }
+  })
+
+  test("Session buffer wrappers follow resized storage and reject destroyed owners", () => {
+    const lib = resolveRenderLib()
+    const context = lib.createContext({ objectCapacity: 4, renderCellsMax: 32 })
+    try {
+      const session = lib.createSession(context, { chunkSize: 1024, spanCapacity: 2, maxBytes: 2048n })
+      lib.sessionAttachRenderer(context, session, { width: 4, height: 3, remote: true })
+      const current = OptimizedBuffer.fromSession(lib, context, session, "current")
+      const next = OptimizedBuffer.fromSession(lib, context, session, "next")
+      const generation = current.withBuffers((cells) => cells.generation)
+      lib.sessionResizeRenderer(context, session, 7, 2)
+      for (const buffer of [current, next]) {
+        expect([buffer.width, buffer.height]).toEqual([7, 2])
+        buffer.withBuffers((cells) => {
+          expect([cells.width, cells.height, cells.char.length]).toEqual([7, 2, 14])
+          expect(cells.generation > generation).toBe(true)
+        })
+      }
+      expect(current.getSpanLines()).toHaveLength(2)
+      let retained = 0
+      expect(() =>
+        next.withBuffers((cells) => {
+          const chars = cells.char
+          chars[0] = 65
+          lib.destroySession(context, session)
+          const second = lib.createSession(context, { chunkSize: 1024, spanCapacity: 2, maxBytes: 2048n })
+          expect(second.slot).toBe(session.slot)
+          expect(second.generation).not.toBe(session.generation)
+          lib.sessionAttachRenderer(context, second, { width: 4, height: 3, remote: true })
+          const before = lib.sceneGetCursorState(context, second)
+          expect(() => lib.sessionSetCursor(context, session, { position: { x: 2, y: 2, visible: true } })).toThrow(
+            "StaleHandle",
+          )
+          expect(lib.sceneGetCursorState(context, second)).toEqual(before)
+          retained = chars[0]
+        }),
+      ).toThrow("StaleLease")
+      expect(retained).toBe(65)
+      expect(() => current.withBuffers(() => {})).toThrow("StaleHandle")
+      expect(() => lib.sessionSetCursor(context, session, { position: { x: 1, y: 1, visible: true } })).toThrow(
+        "StaleHandle",
+      )
+      expect(() => lib.destroySession(context, session)).toThrow("StaleHandle")
+    } finally {
+      lib.destroyContext(context)
+    }
+  })
+
   test("render library path cannot change after native use", () => {
     resolveRenderLib()
     expect(() => setRenderLibPath("/tmp/opentui-unused-native-library.so")).toThrow(
       "setRenderLibPath() must be called before resolveRenderLib()",
     )
   })
-
-  test("renderer calls after destroy are rejected safely", () => {
-    const lib = resolveRenderLib()
-    const renderer = lib.createRenderer(4, 3, { bufferedOutput: "memory" })
-    expect(renderer).toBeTruthy()
-    const rendererHandle = renderer as RendererHandle
-    const current = lib.getCurrentBuffer(rendererHandle)
-    const currentHandle = current.ptr
-
-    lib.destroyRenderer(rendererHandle)
-    lib.setCursorPosition(rendererHandle, 1, 1, true)
-    lib.destroyRenderer(rendererHandle)
-
-    expect(lib.getBufferWidth(currentHandle)).toBe(0)
-
-    const second = lib.createRenderer(4, 3, { bufferedOutput: "memory" }) as RendererHandle
-    expect(second).toBeTruthy()
-    const before = lib.getCursorState(second)
-    lib.setCursorPosition(rendererHandle, 2, 2, true)
-    expect(lib.getCursorState(second).x).toBe(before.x)
-    expect(lib.getCursorState(second).y).toBe(before.y)
-    lib.destroyRenderer(second)
-  })
-
-  test("buffer stale and wrong-kind handles are rejected", () => {
-    const lib = resolveRenderLib()
-    const buffer = OptimizedBuffer.create(4, 3, "unicode")
-    expect(buffer.buffers.char.length).toBe(12)
-    const bufferHandle = buffer.ptr
-    buffer.destroy()
-    expect(() => buffer.buffers).toThrow()
-    expect(() => buffer.fillRect(0, 0, 1, 1, RGBA.fromValues(1, 0, 0, 1))).toThrow("is destroyed")
-
-    expect(lib.getBufferWidth(bufferHandle)).toBe(0)
-    lib.destroyOptimizedBuffer(bufferHandle)
-
-    const renderer = lib.createRenderer(4, 3, { bufferedOutput: "memory" }) as RendererHandle
-    expect(lib.getBufferWidth(renderer as unknown as OptimizedBufferHandle)).toBe(0)
-    lib.destroyRenderer(renderer)
-  })
-
-  test("embedded terminal stale and wrong-kind handles are rejected", () => {
-    const lib = resolveRenderLib()
-    const terminal = lib.createEmbeddedTerminal({ cols: 10, rows: 2 })
-    lib.destroyEmbeddedTerminal(terminal)
-    lib.destroyEmbeddedTerminal(terminal)
-    expect(() => lib.embeddedTerminalWrite(terminal, "stale")).toThrow("invalid value or handle")
-
-    const renderer = lib.createRenderer(4, 3, { bufferedOutput: "memory" }) as RendererHandle
-    expect(() => lib.embeddedTerminalWrite(renderer as unknown as EmbeddedTerminalHandle, "wrong kind")).toThrow(
-      "invalid value or handle",
-    )
-    lib.destroyRenderer(renderer)
-  })
-
-  test("text, view, edit, editor, and syntax stale handles are rejected", () => {
-    const lib = resolveRenderLib()
-
-    const textBuffer = TextBuffer.create("unicode")
-    const textHandle = textBuffer.ptr
-    const textView = TextBufferView.create(textBuffer)
-    const textViewHandle = textView.ptr
-    textView.destroy()
-    expect(lib.textBufferViewGetVirtualLineCount(textViewHandle)).toBe(0)
-    textBuffer.destroy()
-    expect(lib.textBufferGetLength(textHandle)).toBe(0)
-
-    const editBuffer = EditBuffer.create("unicode")
-    const editHandle = editBuffer.ptr
-    const borrowedTextHandle = lib.editBufferGetTextBuffer(editHandle)
-    const editorView = EditorView.create(editBuffer, 10, 4)
-    const editorHandle = editorView.ptr
-    const borrowedViewHandle = lib.editorViewGetTextBufferView(editorHandle)
-    editorView.destroy()
-    expect(lib.textBufferViewGetVirtualLineCount(borrowedViewHandle)).toBe(0)
-    editBuffer.destroy()
-    expect(lib.editBufferGetId(editHandle)).toBe(0)
-    expect(lib.textBufferGetLength(borrowedTextHandle)).toBe(0)
-
-    const style = SyntaxStyle.create()
-    const styleHandle = style.ptr
-    style.destroy()
-    expect(lib.syntaxStyleGetStyleCount(styleHandle)).toBe(0)
-
-    expect(lib.textBufferGetLength(editHandle as unknown as TextBufferHandle)).toBe(0)
-  })
-
-  test("owned text buffer destroys child views", () => {
-    const lib = resolveRenderLib()
-    const textBuffer = TextBuffer.create("unicode")
-    const textView = TextBufferView.create(textBuffer)
-    const textViewHandle = textView.ptr
-
-    textBuffer.destroy()
-
-    expect(lib.textBufferViewGetVirtualLineCount(textViewHandle)).toBe(0)
-  })
-
-  test("borrowed edit buffer text handle cannot own text buffer views", () => {
-    const lib = resolveRenderLib()
-    const editBuffer = EditBuffer.create("unicode")
-    const editHandle = editBuffer.ptr
-    const borrowedTextHandle = lib.editBufferGetTextBuffer(editHandle)
-
-    expect(() => lib.createTextBufferView(borrowedTextHandle)).toThrow("Failed to create TextBufferView")
-
-    editBuffer.destroy()
-    expect(lib.textBufferGetLength(borrowedTextHandle)).toBe(0)
-  })
 })
 
-describe("native renderable measure target contract", () => {
-  test("recursive Yoga free rejects native-owned descendants", () => {
+describe("scene measure target ownership", () => {
+  test.each(["buffers", "views"] as const)("scene measurement detaches when its %s are destroyed", (destroyed) => {
     const lib = resolveRenderLib()
-    const renderable = lib.createNativeRenderable()
-    const node = Yoga.Node.fromBorrowedPointer(lib.nativeRenderableGetYogaNode(renderable))
-    const root = Yoga.Node.createForOpenTUI()
-    root.insertChild(node, 0)
-    const recursiveFree = spyOn(lib, "yogaNodeFreeRecursive").mockImplementation(() => {})
-
+    const context = lib.createContext({ objectCapacity: 16, renderCellsMax: 32 })
     try {
-      expect(() => node.free()).toThrow("Cannot free a borrowed Yoga node while it is attached")
-      expect(() => root.freeRecursive()).toThrow("Cannot recursively free a Yoga subtree containing borrowed nodes")
-      expect(recursiveFree).not.toHaveBeenCalled()
-    } finally {
-      recursiveFree.mockRestore()
-      if (root.isFreed()) {
-        lib.yogaNodeRemoveChild(root.ptr, node.ptr)
-        lib.yogaNodeFree(root.ptr)
-      } else {
-        root.removeChild(node)
-        root.free()
+      const session = lib.createSession(context, { chunkSize: 1024, spanCapacity: 2, maxBytes: 2048n })
+      lib.sessionAttachRenderer(context, session, { width: 8, height: 4, remote: true })
+      const root = lib.sceneCreateNode(context, session, "root", 1)
+      const textNode = lib.sceneCreateNode(context, session, "text_view", 2)
+      const editorNode = lib.sceneCreateNode(context, session, "editor", 3)
+      lib.sceneMoveNode(context, textNode, root, 0)
+      lib.sceneMoveNode(context, editorNode, root, 1)
+      const text = lib.createContextTextBuffer(context)
+      const textView = lib.createContextTextBufferView(context, text)
+      const edit = lib.createContextEditBuffer(context)
+      const editorView = lib.createContextEditorView(context, edit, 8, 4)
+      lib.contextTextBufferSetText(context, text, Buffer.from("abc\ndef"))
+      lib.contextEditBufferSetText(context, edit, Buffer.from("ghi\njkl"))
+      const options = {
+        background: RGBA.fromInts(0, 0, 0),
+        useMouse: false,
+        excludedHitNum: 0,
+        maxLayoutRounds: 8,
+        maxHostRequests: 64,
       }
-      node.free()
-      lib.destroyNativeRenderable(renderable)
-    }
-  })
+      const readFrame = (frame: NativeSceneFrameRequest) => {
+        expect(frame.kind).toBe(0)
+        const lease = lib.sceneFrameAcquireBufferLease(context, session, frame, "next")
+        try {
+          const bytes = new Uint8Array(128)
+          const length = lib.contextBufferLeaseWriteResolvedChars(context, lease.handle, bytes, true)
+          return lib.decoder.decode(bytes.subarray(0, length))
+        } finally {
+          lib.contextReleaseBufferLease(context, lease.handle)
+        }
+      }
 
-  test("rejects unknown kinds and stale target handles", () => {
-    const lib = resolveRenderLib()
-    const textBuffer = TextBuffer.create("unicode")
-    const textView = TextBufferView.create(textBuffer)
-    const renderable = lib.createNativeRenderable()
-    const node = Yoga.Node.fromBorrowedPointer(lib.nativeRenderableGetYogaNode(renderable))
+      lib.sceneSetTextView(context, textNode, textView)
+      lib.sceneSetEditorView(context, editorNode, editorView)
+      let frame = lib.sceneFrameStep(context, session, null, options)
+      expect(lib.sceneGetLayout(context, textNode).height).toBe(2)
+      expect(lib.sceneGetLayout(context, editorNode).height).toBe(2)
+      const paintedText = "abc     \ndef     \nghi     \njkl     \n"
+      expect(readFrame(frame)).toBe(paintedText)
+      lib.sceneFrameCancel(context, session, frame.frameId)
+      expect(() => lib.sceneSetTextView(context, textNode, edit as never)).toThrow("WrongKind")
+      expect(() => lib.sceneSetEditorView(context, editorNode, text as never)).toThrow("WrongKind")
+      frame = lib.sceneFrameStep(context, session, null, options)
+      expect(readFrame(frame)).toBe(paintedText)
+      lib.sceneSetTextView(context, textNode, null)
+      lib.sceneSetEditorView(context, editorNode, null)
+      expect(lib.sceneHasMeasure(context, textNode)).toBe(false)
+      expect(lib.sceneHasMeasure(context, editorNode)).toBe(false)
+      lib.sceneSetTextView(context, textNode, textView)
+      lib.sceneSetEditorView(context, editorNode, editorView)
 
-    try {
-      expect(lib.yogaNodeHasMeasureFunc(node.ptr)).toBe(false)
-
-      expect(
-        lib.nativeRenderableSetMeasureTarget(renderable, NativeMeasureTargetKind.TextBufferView, textView.ptr),
-      ).toBe(true)
-      expect(lib.yogaNodeHasMeasureFunc(node.ptr)).toBe(true)
-
-      // Unknown kinds are rejected and leave the current target in place.
-      expect(
-        lib.nativeRenderableSetMeasureTarget(renderable, 999 as unknown as NativeMeasureTargetKind, textView.ptr),
-      ).toBe(false)
-      expect(lib.yogaNodeHasMeasureFunc(node.ptr)).toBe(true)
-
-      // Clear the target before destroying the view because the native measure
-      // callback stores a raw pointer to it. Renderable teardown uses this order.
-      expect(lib.nativeRenderableSetMeasureTarget(renderable, NativeMeasureTargetKind.None, 0)).toBe(true)
-      expect(lib.yogaNodeHasMeasureFunc(node.ptr)).toBe(false)
-
-      const staleViewHandle = textView.ptr
-      textView.destroy()
-      expect(
-        lib.nativeRenderableSetMeasureTarget(renderable, NativeMeasureTargetKind.TextBufferView, staleViewHandle),
-      ).toBe(false)
-      expect(lib.yogaNodeHasMeasureFunc(node.ptr)).toBe(false)
+      if (destroyed === "buffers") {
+        lib.destroyContextTextBuffer(context, text)
+        lib.destroyContextEditBuffer(context, edit)
+      } else {
+        lib.destroyContextTextBufferView(context, textView)
+        lib.destroyContextEditorView(context, editorView)
+      }
+      expect(() => lib.sceneSetTextView(context, textNode, textView)).toThrow("StaleHandle")
+      expect(() => lib.sceneSetEditorView(context, editorNode, editorView)).toThrow("StaleHandle")
+      expect(readFrame(frame)).toBe(paintedText)
+      lib.sceneFrameCancel(context, session, frame.frameId)
+      frame = lib.sceneFrameStep(context, session, null, options)
+      expect(readFrame(frame)).toBe("        \n".repeat(4))
+      lib.sceneFrameCancel(context, session, frame.frameId)
+      for (const node of [textNode, editorNode]) {
+        expect(lib.sceneHasMeasure(context, node)).toBe(false)
+        expect(lib.sceneGetLayout(context, node).height).toBe(1)
+        lib.sceneDestroyNode(context, node)
+        expect(() => lib.sceneGetLayout(context, node)).toThrow("StaleHandle")
+        expect(() => lib.sceneDestroyNode(context, node)).toThrow("StaleHandle")
+      }
     } finally {
-      node.free()
-      lib.destroyNativeRenderable(renderable)
-      textView.destroy()
-      textBuffer.destroy()
-    }
-  })
-
-  test("kind None clears the measure target", () => {
-    const lib = resolveRenderLib()
-    const editBuffer = EditBuffer.create("unicode")
-    const editorView = EditorView.create(editBuffer, 10, 4)
-    const renderable = lib.createNativeRenderable()
-    const node = Yoga.Node.fromBorrowedPointer(lib.nativeRenderableGetYogaNode(renderable))
-
-    try {
-      expect(lib.nativeRenderableSetMeasureTarget(renderable, NativeMeasureTargetKind.EditorView, editorView.ptr)).toBe(
-        true,
-      )
-      expect(lib.yogaNodeHasMeasureFunc(node.ptr)).toBe(true)
-
-      expect(lib.nativeRenderableSetMeasureTarget(renderable, NativeMeasureTargetKind.None, 0)).toBe(true)
-      expect(lib.yogaNodeHasMeasureFunc(node.ptr)).toBe(false)
-    } finally {
-      node.free()
-      lib.destroyNativeRenderable(renderable)
-      editorView.destroy()
-      editBuffer.destroy()
-    }
-  })
-
-  test("destroying measure target owners clears retained native callbacks", () => {
-    const lib = resolveRenderLib()
-    const textBuffer = TextBuffer.create("unicode")
-    const textView = TextBufferView.create(textBuffer)
-    const editBuffer = EditBuffer.create("unicode")
-    const editorView = EditorView.create(editBuffer, 10, 4)
-    const textRenderable = lib.createNativeRenderable()
-    const editorRenderable = lib.createNativeRenderable()
-    const textNode = Yoga.Node.fromBorrowedPointer(lib.nativeRenderableGetYogaNode(textRenderable))
-    const editorNode = Yoga.Node.fromBorrowedPointer(lib.nativeRenderableGetYogaNode(editorRenderable))
-
-    try {
-      expect(
-        lib.nativeRenderableSetMeasureTarget(textRenderable, NativeMeasureTargetKind.TextBufferView, textView.ptr),
-      ).toBe(true)
-      expect(
-        lib.nativeRenderableSetMeasureTarget(editorRenderable, NativeMeasureTargetKind.EditorView, editorView.ptr),
-      ).toBe(true)
-
-      textBuffer.destroy()
-      editBuffer.destroy()
-
-      expect(lib.yogaNodeHasMeasureFunc(textNode.ptr)).toBe(false)
-      expect(lib.yogaNodeHasMeasureFunc(editorNode.ptr)).toBe(false)
-    } finally {
-      textNode.free()
-      editorNode.free()
-      lib.destroyNativeRenderable(textRenderable)
-      lib.destroyNativeRenderable(editorRenderable)
-      textView.destroy()
-      textBuffer.destroy()
-      editorView.destroy()
-      editBuffer.destroy()
-    }
-  })
-
-  test("destroying an editor view clears matching text-buffer-view measure targets", () => {
-    const lib = resolveRenderLib()
-    const editBuffer = EditBuffer.create("unicode")
-    const editorView = EditorView.create(editBuffer, 10, 4)
-    const renderable = lib.createNativeRenderable()
-    const node = Yoga.Node.fromBorrowedPointer(lib.nativeRenderableGetYogaNode(renderable))
-    const borrowedViewHandle = lib.editorViewGetTextBufferView(editorView.ptr)
-
-    try {
-      expect(
-        lib.nativeRenderableSetMeasureTarget(renderable, NativeMeasureTargetKind.TextBufferView, borrowedViewHandle),
-      ).toBe(true)
-      expect(lib.yogaNodeHasMeasureFunc(node.ptr)).toBe(true)
-
-      editorView.destroy()
-
-      expect(lib.yogaNodeHasMeasureFunc(node.ptr)).toBe(false)
-    } finally {
-      node.free()
-      lib.destroyNativeRenderable(renderable)
-      editorView.destroy()
-      editBuffer.destroy()
-    }
-  })
-
-  test("destroying a native renderable owns the node and invalidates the handle", () => {
-    const lib = resolveRenderLib()
-    const textBuffer = TextBuffer.create("unicode")
-    const textView = TextBufferView.create(textBuffer)
-    const renderable = lib.createNativeRenderable()
-    const node = Yoga.Node.fromBorrowedPointer(lib.nativeRenderableGetYogaNode(renderable))
-
-    try {
-      expect(
-        lib.nativeRenderableSetMeasureTarget(renderable, NativeMeasureTargetKind.TextBufferView, textView.ptr),
-      ).toBe(true)
-      expect(lib.yogaNodeHasMeasureFunc(node.ptr)).toBe(true)
-
-      node.free()
-      lib.destroyNativeRenderable(renderable)
-      expect(() => lib.nativeRenderableGetYogaNode(renderable)).toThrow("Failed to get native renderable Yoga node")
-
-      // Stale native renderable handles are rejected safely, including double destroy.
-      lib.destroyNativeRenderable(renderable)
-      expect(
-        lib.nativeRenderableSetMeasureTarget(renderable, NativeMeasureTargetKind.TextBufferView, textView.ptr),
-      ).toBe(false)
-    } finally {
-      node.free()
-      lib.destroyNativeRenderable(renderable)
-      textView.destroy()
-      textBuffer.destroy()
+      lib.destroyContext(context)
     }
   })
 })

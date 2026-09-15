@@ -1,6 +1,6 @@
 const std = @import("std");
 const builtin = @import("builtin");
-const handles = @import("../handles.zig");
+const handles = @import("../context-handles.zig");
 const clipboard_clock = @import("clock.zig");
 const clipboard_linux = @import("linux.zig");
 const clipboard_wayland = @import("wayland.zig");
@@ -23,6 +23,7 @@ test {
 
 const Allocator = std.mem.Allocator;
 pub const Handle = handles.Handle;
+const invalid_handle: Handle = .{ .context_id = 0, .slot = 0, .generation = 0 };
 
 pub const OperationStatus = enum(u8) {
     pending = 0,
@@ -141,9 +142,9 @@ fn tryJoinThread(thread: std.Thread) bool {
     };
 }
 
-const Operation = struct {
+pub const Operation = struct {
     allocator: Allocator,
-    handle: Handle = 0,
+    handle: Handle = invalid_handle,
     service: *Service,
     mutex: sync.Mutex = .{},
     thread: ?std.Thread = null,
@@ -354,7 +355,7 @@ const Operation = struct {
         return operation.service.driveOperation(operation);
     }
 
-    fn isReadyToDestroy(operation: *Operation) bool {
+    pub fn isReadyToDestroy(operation: *Operation) bool {
         operation.mutex.lock();
         const terminal = operation.status != .pending;
         operation.mutex.unlock();
@@ -389,6 +390,11 @@ const Operation = struct {
         operation.cleanupTransfer();
         operation.cleanupX11();
         operation.allocator.destroy(operation);
+    }
+
+    pub fn destroyStorage(operation: *Operation) void {
+        operation.service.removeOperation(operation);
+        operation.deinit();
     }
 
     fn beginPlatformMutation(operation: *Operation) ?OperationStatus {
@@ -457,8 +463,9 @@ fn wslOperationUnsupported(libraries: clipboard_linux.Libraries, operation: *con
     return libraries.is_wsl and (operation.selection == .primary or operation.kind == .clear);
 }
 
-const Service = struct {
+pub const Service = struct {
     allocator: Allocator,
+    objects: *handles.Table,
     max_operations: u32 = OPERATIONS_MAX_DEFAULT,
     max_provider_transfers: u32 = PROVIDER_TRANSFERS_MAX_DEFAULT,
     libraries: clipboard_linux.Libraries,
@@ -739,7 +746,7 @@ const Service = struct {
         operation.status = status;
     }
 
-    fn beginShutdown(service: *Service) void {
+    pub fn beginShutdown(service: *Service) void {
         if (service.shutting_down) return;
         service.shutting_down = true;
         for (service.operations.items) |operation| {
@@ -758,7 +765,7 @@ const Service = struct {
         }
     }
 
-    fn pollShutdown(service: *Service) ShutdownStatus {
+    pub fn pollShutdown(service: *Service) ShutdownStatus {
         if (!service.shutting_down) return .pending;
         for (service.operations.items) |operation| {
             if (!operation.isReadyToDestroy()) return .pending;
@@ -783,11 +790,12 @@ const Service = struct {
         return .ready;
     }
 
-    fn deinit(service: *Service) void {
+    pub fn deinit(service: *Service) void {
         for (service.operations.items) |operation| {
             std.debug.assert(operation.thread == null);
-            handles.invalidate(operation.handle, .clipboard_operation);
+            const token = service.objects.beginDestroy(operation.handle) catch unreachable;
             operation.deinit();
+            service.objects.finishDestroy(token);
         }
         service.operations.deinit(service.allocator);
         service.platform_queue.deinit(service.allocator);
@@ -1465,16 +1473,12 @@ fn waylandTransferFormat(preferred: []const u8, offered: []const u8) WaylandTran
     return .direct;
 }
 
-fn erasePtr(pointer: anytype) *anyopaque {
-    return @ptrCast(pointer);
+fn acquireService(objects: *handles.Table, handle: Handle) ?*Service {
+    return objects.get(handle, .clipboard_service, Service) catch null;
 }
 
-fn acquireService(handle: Handle) ?*Service {
-    return handles.acquire(handle, .clipboard_service, Service);
-}
-
-fn acquireOperation(handle: Handle) ?*Operation {
-    return handles.acquire(handle, .clipboard_operation, Operation);
+fn acquireOperation(objects: *handles.Table, handle: Handle) ?*Operation {
+    return objects.get(handle, .clipboard_operation, Operation) catch null;
 }
 
 fn sliceFromPointer(pointer: ?[*]const u8, length: u32) ?[]const u8 {
@@ -1485,56 +1489,48 @@ fn sliceFromPointer(pointer: ?[*]const u8, length: u32) ?[]const u8 {
 
 pub fn createService(
     allocator: Allocator,
+    objects: *handles.Table,
     max_operations: u32,
     max_provider_transfers: u32,
     wayland_seat_pointer: ?[*]const u8,
     wayland_seat_length: u32,
-) Handle {
-    if (max_operations == 0 or max_provider_transfers == 0) return 0;
-    const configured_seat = sliceFromPointer(wayland_seat_pointer, wayland_seat_length) orelse return 0;
-    clipboard_clock.init() catch return 0;
+) !Handle {
+    if (max_operations == 0 or max_provider_transfers == 0) return error.InvalidOptions;
+    const configured_seat = sliceFromPointer(wayland_seat_pointer, wayland_seat_length) orelse return error.InvalidOptions;
+    try objects.checkCapacity();
+    try clipboard_clock.init();
     var requested_wayland_seat: []u8 = &.{};
     var environment_wayland_seat: []u8 = &.{};
+    errdefer allocator.free(requested_wayland_seat);
+    errdefer allocator.free(environment_wayland_seat);
     const libraries: clipboard_linux.Libraries = switch (builtin.os.tag) {
         .linux => blk: {
             if (configured_seat.len > 0) {
-                requested_wayland_seat = allocator.dupe(u8, configured_seat) catch return 0;
+                requested_wayland_seat = try allocator.dupe(u8, configured_seat);
             } else if (posix_io.getEnv("XDG_SEAT")) |seat| {
-                if (seat.len > 0) environment_wayland_seat = allocator.dupe(u8, seat) catch return 0;
+                if (seat.len > 0) environment_wayland_seat = try allocator.dupe(u8, seat);
             }
             break :blk clipboard_linux.initialize(clipboard_linux.Environment.detectProcess());
         },
         else => .{},
     };
-    const service = allocator.create(Service) catch {
-        if (requested_wayland_seat.len > 0) allocator.free(requested_wayland_seat);
-        if (environment_wayland_seat.len > 0) allocator.free(environment_wayland_seat);
-        return 0;
-    };
+    const service = try allocator.create(Service);
+    errdefer allocator.destroy(service);
     service.* = .{
         .allocator = allocator,
+        .objects = objects,
         .max_operations = max_operations,
         .max_provider_transfers = max_provider_transfers,
         .libraries = libraries,
         .requested_wayland_seat = requested_wayland_seat,
         .environment_wayland_seat = environment_wayland_seat,
     };
+    errdefer service.platform_queue.deinit(allocator);
+    const service_handle = try objects.insert(.clipboard_service, service);
+    errdefer objects.finishDestroy(objects.beginDestroy(service_handle) catch unreachable);
     if (comptime builtin.os.tag == .windows or builtin.os.tag == .macos) {
-        service.platform_queue.ensureTotalCapacity(allocator, max_operations) catch {
-            service.deinit();
-            return 0;
-        };
-    }
-    const service_handle = handles.insert(.clipboard_service, erasePtr(service)) catch {
-        service.deinit();
-        return 0;
-    };
-    if (comptime builtin.os.tag == .windows or builtin.os.tag == .macos) {
-        service.platform_thread = std.Thread.spawn(.{}, Service.platformWorker, .{service}) catch {
-            handles.invalidate(service_handle, .clipboard_service);
-            service.deinit();
-            return 0;
-        };
+        try service.platform_queue.ensureTotalCapacity(allocator, max_operations);
+        service.platform_thread = try std.Thread.spawn(.{}, Service.platformWorker, .{service});
     }
     return service_handle;
 }
@@ -1562,7 +1558,6 @@ fn validateReadRequest(request: []const u8) bool {
 
 fn startImmediateOperation(
     service: *Service,
-    service_handle: Handle,
     kind: OperationKind,
     request: []const u8,
     timeout_ms: u32,
@@ -1572,6 +1567,7 @@ fn startImmediateOperation(
     selection: Selection,
     out_handle: *Handle,
 ) StartStatus {
+    service.objects.checkCapacity() catch return .limit_exceeded;
     const owned_request = service.allocator.dupe(u8, request) catch return .out_of_memory;
     const operation = service.allocator.create(Operation) catch {
         if (owned_request.len > 0) service.allocator.free(owned_request);
@@ -1591,22 +1587,13 @@ fn startImmediateOperation(
         .selection = selection,
         .mutation_sequence = if (kind == .write or kind == .clear) service.takeMutationSequence() else 0,
     };
-    const operation_handle = handles.insertOwnedChild(
-        .clipboard_operation,
-        erasePtr(operation),
-        service_handle,
-    ) catch {
-        if (owned_request.len > 0) service.allocator.free(owned_request);
-        service.allocator.destroy(operation);
-        return .out_of_memory;
-    };
-    operation.handle = operation_handle;
     service.operations.append(service.allocator, operation) catch {
-        handles.invalidate(operation_handle, .clipboard_operation);
         if (owned_request.len > 0) service.allocator.free(owned_request);
         service.allocator.destroy(operation);
         return .out_of_memory;
     };
+    const operation_handle = service.objects.insert(.clipboard_operation, operation) catch unreachable;
+    operation.handle = operation_handle;
     if (comptime builtin.os.tag == .windows or builtin.os.tag == .macos) {
         if (operation.status == .pending) service.enqueuePlatformOperation(operation);
     }
@@ -1615,6 +1602,7 @@ fn startImmediateOperation(
 }
 
 pub fn startReadOperation(
+    objects: *handles.Table,
     service_handle: Handle,
     request_pointer: ?[*]const u8,
     request_length: u32,
@@ -1626,8 +1614,8 @@ pub fn startReadOperation(
     out_operation_handle: ?*Handle,
 ) StartStatus {
     const out_handle = out_operation_handle orelse return .invalid_argument;
-    out_handle.* = 0;
-    const service = acquireService(service_handle) orelse return .invalid_service;
+    out_handle.* = invalid_handle;
+    const service = acquireService(objects, service_handle) orelse return .invalid_service;
     if (service.shutting_down) return .shutting_down;
     if (service.operations.items.len >= service.max_operations) return .limit_exceeded;
     const selection = parseSelection(selection_value) orelse return .invalid_argument;
@@ -1635,7 +1623,6 @@ pub fn startReadOperation(
     if (!validateReadRequest(request)) return .invalid_argument;
     return startImmediateOperation(
         service,
-        service_handle,
         .read,
         request,
         timeout_ms,
@@ -1648,6 +1635,7 @@ pub fn startReadOperation(
 }
 
 pub fn startWriteOperation(
+    objects: *handles.Table,
     service_handle: Handle,
     text_pointer: ?[*]const u8,
     text_length: u32,
@@ -1656,8 +1644,8 @@ pub fn startWriteOperation(
     out_operation_handle: ?*Handle,
 ) StartStatus {
     const out_handle = out_operation_handle orelse return .invalid_argument;
-    out_handle.* = 0;
-    const service = acquireService(service_handle) orelse return .invalid_service;
+    out_handle.* = invalid_handle;
+    const service = acquireService(objects, service_handle) orelse return .invalid_service;
     if (service.shutting_down) return .shutting_down;
     if (service.operations.items.len >= service.max_operations) return .limit_exceeded;
     const selection = parseSelection(selection_value) orelse return .invalid_argument;
@@ -1665,31 +1653,32 @@ pub fn startWriteOperation(
     if (text.len == 0 or std.mem.indexOfScalar(u8, text, 0) != null or !std.unicode.utf8ValidateSlice(text)) {
         return .invalid_argument;
     }
-    return startImmediateOperation(service, service_handle, .write, text, timeout_ms, 0, 0, 0, selection, out_handle);
+    return startImmediateOperation(service, .write, text, timeout_ms, 0, 0, 0, selection, out_handle);
 }
 
 pub fn startClearOperation(
+    objects: *handles.Table,
     service_handle: Handle,
     selection_value: u8,
     timeout_ms: u32,
     out_operation_handle: ?*Handle,
 ) StartStatus {
     const out_handle = out_operation_handle orelse return .invalid_argument;
-    out_handle.* = 0;
-    const service = acquireService(service_handle) orelse return .invalid_service;
+    out_handle.* = invalid_handle;
+    const service = acquireService(objects, service_handle) orelse return .invalid_service;
     if (service.shutting_down) return .shutting_down;
     if (service.operations.items.len >= service.max_operations) return .limit_exceeded;
     const selection = parseSelection(selection_value) orelse return .invalid_argument;
-    return startImmediateOperation(service, service_handle, .clear, "", timeout_ms, 0, 0, 0, selection, out_handle);
+    return startImmediateOperation(service, .clear, "", timeout_ms, 0, 0, 0, selection, out_handle);
 }
 
-pub fn pollOperation(operation_handle: Handle) OperationStatus {
-    const operation = acquireOperation(operation_handle) orelse return .invalid_handle;
+pub fn pollOperation(objects: *handles.Table, operation_handle: Handle) OperationStatus {
+    const operation = acquireOperation(objects, operation_handle) orelse return .invalid_handle;
     return operation.poll();
 }
 
-pub fn cancelOperation(operation_handle: Handle) CancelStatus {
-    const operation = acquireOperation(operation_handle) orelse return .invalid_handle;
+pub fn cancelOperation(objects: *handles.Table, operation_handle: Handle) CancelStatus {
+    const operation = acquireOperation(objects, operation_handle) orelse return .invalid_handle;
     return operation.requestCancel();
 }
 
@@ -1703,8 +1692,8 @@ fn resultSlice(operation: *Operation, kind: ResultKind) ?[]const u8 {
     };
 }
 
-fn resultLength(operation_handle: Handle, out_length: ?*u32, kind: ResultKind) CopyStatus {
-    const operation = acquireOperation(operation_handle) orelse return .invalid_handle;
+fn resultLength(objects: *handles.Table, operation_handle: Handle, out_length: ?*u32, kind: ResultKind) CopyStatus {
+    const operation = acquireOperation(objects, operation_handle) orelse return .invalid_handle;
     const output = out_length orelse return .invalid_argument;
     const result = resultSlice(operation, kind) orelse return .invalid_state;
     output.* = @intCast(result.len);
@@ -1712,12 +1701,13 @@ fn resultLength(operation_handle: Handle, out_length: ?*u32, kind: ResultKind) C
 }
 
 fn resultCopy(
+    objects: *handles.Table,
     operation_handle: Handle,
     output_pointer: ?[*]u8,
     output_capacity: u32,
     kind: ResultKind,
 ) CopyStatus {
-    const operation = acquireOperation(operation_handle) orelse return .invalid_handle;
+    const operation = acquireOperation(objects, operation_handle) orelse return .invalid_handle;
     const result = resultSlice(operation, kind) orelse return .invalid_state;
     if (output_capacity < result.len) return .buffer_too_small;
     if (result.len == 0) return .ok;
@@ -1726,24 +1716,24 @@ fn resultCopy(
     return .ok;
 }
 
-pub fn resultMimeLength(operation_handle: Handle, out_length: ?*u32) CopyStatus {
-    return resultLength(operation_handle, out_length, .mime);
+pub fn resultMimeLength(objects: *handles.Table, operation_handle: Handle, out_length: ?*u32) CopyStatus {
+    return resultLength(objects, operation_handle, out_length, .mime);
 }
 
-pub fn resultMimeCopy(operation_handle: Handle, output_pointer: ?[*]u8, output_capacity: u32) CopyStatus {
-    return resultCopy(operation_handle, output_pointer, output_capacity, .mime);
+pub fn resultMimeCopy(objects: *handles.Table, operation_handle: Handle, output_pointer: ?[*]u8, output_capacity: u32) CopyStatus {
+    return resultCopy(objects, operation_handle, output_pointer, output_capacity, .mime);
 }
 
-pub fn resultDataLength(operation_handle: Handle, out_length: ?*u32) CopyStatus {
-    return resultLength(operation_handle, out_length, .data);
+pub fn resultDataLength(objects: *handles.Table, operation_handle: Handle, out_length: ?*u32) CopyStatus {
+    return resultLength(objects, operation_handle, out_length, .data);
 }
 
-pub fn resultDataCopy(operation_handle: Handle, output_pointer: ?[*]u8, output_capacity: u32) CopyStatus {
-    return resultCopy(operation_handle, output_pointer, output_capacity, .data);
+pub fn resultDataCopy(objects: *handles.Table, operation_handle: Handle, output_pointer: ?[*]u8, output_capacity: u32) CopyStatus {
+    return resultCopy(objects, operation_handle, output_pointer, output_capacity, .data);
 }
 
-pub fn resultErrorCode(operation_handle: Handle, out_error_code: ?*u32) CopyStatus {
-    const operation = acquireOperation(operation_handle) orelse return .invalid_handle;
+pub fn resultErrorCode(objects: *handles.Table, operation_handle: Handle, out_error_code: ?*u32) CopyStatus {
+    const operation = acquireOperation(objects, operation_handle) orelse return .invalid_handle;
     const output = out_error_code orelse return .invalid_argument;
     operation.mutex.lock();
     defer operation.mutex.unlock();
@@ -1752,44 +1742,45 @@ pub fn resultErrorCode(operation_handle: Handle, out_error_code: ?*u32) CopyStat
     return .ok;
 }
 
-pub fn resultDiagnosticLength(operation_handle: Handle, out_length: ?*u32) CopyStatus {
-    return resultLength(operation_handle, out_length, .diagnostic);
+pub fn resultDiagnosticLength(objects: *handles.Table, operation_handle: Handle, out_length: ?*u32) CopyStatus {
+    return resultLength(objects, operation_handle, out_length, .diagnostic);
 }
 
-pub fn resultDiagnosticCopy(operation_handle: Handle, output_pointer: ?[*]u8, output_capacity: u32) CopyStatus {
-    return resultCopy(operation_handle, output_pointer, output_capacity, .diagnostic);
+pub fn resultDiagnosticCopy(objects: *handles.Table, operation_handle: Handle, output_pointer: ?[*]u8, output_capacity: u32) CopyStatus {
+    return resultCopy(objects, operation_handle, output_pointer, output_capacity, .diagnostic);
 }
 
-pub fn destroyOperation(operation_handle: Handle) DestroyStatus {
-    const operation = acquireOperation(operation_handle) orelse return .invalid_handle;
+pub fn destroyOperation(objects: *handles.Table, operation_handle: Handle) DestroyStatus {
+    const operation = acquireOperation(objects, operation_handle) orelse return .invalid_handle;
     if (!operation.isReadyToDestroy()) return .not_ready;
-    operation.service.removeOperation(operation);
-    handles.invalidate(operation_handle, .clipboard_operation);
-    operation.deinit();
+    const token = objects.beginDestroy(operation_handle) catch unreachable;
+    operation.destroyStorage();
+    objects.finishDestroy(token);
     return .destroyed;
 }
 
-pub fn beginServiceShutdown(service_handle: Handle) ShutdownStatus {
-    const service = acquireService(service_handle) orelse return .invalid_handle;
+pub fn beginServiceShutdown(objects: *handles.Table, service_handle: Handle) ShutdownStatus {
+    const service = acquireService(objects, service_handle) orelse return .invalid_handle;
     service.beginShutdown();
     return .pending;
 }
 
-pub fn pollServiceShutdown(service_handle: Handle) ShutdownStatus {
-    const service = acquireService(service_handle) orelse return .invalid_handle;
+pub fn pollServiceShutdown(objects: *handles.Table, service_handle: Handle) ShutdownStatus {
+    const service = acquireService(objects, service_handle) orelse return .invalid_handle;
     return service.pollShutdown();
 }
 
-pub fn destroyService(service_handle: Handle) DestroyStatus {
-    const service = acquireService(service_handle) orelse return .invalid_handle;
+pub fn destroyService(objects: *handles.Table, service_handle: Handle) DestroyStatus {
+    const service = acquireService(objects, service_handle) orelse return .invalid_handle;
     if (service.pollShutdown() != .ready) return .not_ready;
-    handles.invalidate(service_handle, .clipboard_service);
+    const token = objects.beginDestroy(service_handle) catch unreachable;
     service.deinit();
+    objects.finishDestroy(token);
     return .destroyed;
 }
 
-pub fn drainService(service_handle: Handle) u8 {
-    const service = acquireService(service_handle) orelse return 2;
+pub fn drainService(objects: *handles.Table, service_handle: Handle) u8 {
+    const service = acquireService(objects, service_handle) orelse return 2;
     if (service.shutting_down) return 0;
     if (comptime builtin.os.tag != .linux) return 0;
     var active = false;
@@ -1817,16 +1808,16 @@ pub fn drainService(service_handle: Handle) u8 {
     return if (active) 1 else 0;
 }
 
-fn destroyTestService(service: Handle) void {
-    _ = beginServiceShutdown(service);
-    var status = pollServiceShutdown(service);
+fn destroyTestService(objects: *handles.Table, service: Handle) void {
+    _ = beginServiceShutdown(objects, service);
+    var status = pollServiceShutdown(objects, service);
     var attempts: u32 = 0;
     while (status == .pending and attempts < 2_000) : (attempts += 1) {
         clipboard_clock.sleep(std.time.ns_per_ms);
-        status = pollServiceShutdown(service);
+        status = pollServiceShutdown(objects, service);
     }
     if (status != .ready) @panic("clipboard service shutdown exceeded 2 seconds");
-    _ = destroyService(service);
+    _ = destroyService(objects, service);
 }
 
 test "clipboard status values are stable" {
@@ -1838,100 +1829,102 @@ test "clipboard status values are stable" {
 }
 
 test "clipboard service preserves a configured native operation limit" {
+    var objects = try handles.Table.init(std.testing.allocator, 4);
+    defer objects.deinit();
     const operation_limit = 2;
-    const service = createService(std.testing.allocator, operation_limit, PROVIDER_TRANSFERS_MAX_DEFAULT, null, 0);
-    try std.testing.expect(service != 0);
-    defer destroyTestService(service);
+    const service = try createService(std.testing.allocator, &objects, operation_limit, PROVIDER_TRANSFERS_MAX_DEFAULT, null, 0);
+    defer destroyTestService(&objects, service);
 
-    var operations: [operation_limit]Handle = @splat(0);
+    var operations: [operation_limit]Handle = undefined;
     for (&operations) |*operation| {
-        try std.testing.expectEqual(StartStatus.ok, startClearOperation(service, 0, 0, operation));
+        try std.testing.expectEqual(StartStatus.ok, startClearOperation(&objects, service, 0, 0, operation));
     }
-    var excess_operation: Handle = 99;
-    try std.testing.expectEqual(StartStatus.limit_exceeded, startClearOperation(service, 0, 0, &excess_operation));
-    try std.testing.expectEqual(@as(Handle, 0), excess_operation);
+    var excess_operation = service;
+    try std.testing.expectEqual(StartStatus.limit_exceeded, startClearOperation(&objects, service, 0, 0, &excess_operation));
+    try std.testing.expectEqual(invalid_handle, excess_operation);
     for (operations) |operation| {
-        try std.testing.expectEqual(DestroyStatus.destroyed, destroyOperation(operation));
+        try std.testing.expectEqual(DestroyStatus.destroyed, destroyOperation(&objects, operation));
     }
 }
 
 test "clipboard cancellation and service shutdown are asynchronous and isolated" {
     if (comptime builtin.os.tag == .windows or builtin.os.tag == .macos) return error.SkipZigTest;
-    const first_service = createService(std.testing.allocator, 1, PROVIDER_TRANSFERS_MAX_DEFAULT, null, 0);
-    const second_service = createService(std.testing.allocator, 1, PROVIDER_TRANSFERS_MAX_DEFAULT, null, 0);
-    try std.testing.expect(first_service != 0);
-    try std.testing.expect(second_service != 0);
-    acquireService(first_service).?.libraries = .{};
-    acquireService(second_service).?.libraries = .{};
-    defer destroyTestService(second_service);
+    var objects = try handles.Table.init(std.testing.allocator, 4);
+    defer objects.deinit();
+    const first_service = try createService(std.testing.allocator, &objects, 1, PROVIDER_TRANSFERS_MAX_DEFAULT, null, 0);
+    const second_service = try createService(std.testing.allocator, &objects, 1, PROVIDER_TRANSFERS_MAX_DEFAULT, null, 0);
+    acquireService(&objects, first_service).?.libraries = .{};
+    acquireService(&objects, second_service).?.libraries = .{};
+    defer destroyTestService(&objects, second_service);
 
-    var first_operation: Handle = 0;
-    var second_operation: Handle = 0;
+    var first_operation: Handle = undefined;
+    var second_operation: Handle = undefined;
     const read_request = [_]u8{ 1, 0, 0, 0, 10, 0, 0, 0 } ++ "text/plain".*;
     try std.testing.expectEqual(
         StartStatus.ok,
-        startReadOperation(first_service, &read_request, read_request.len, 0, 1024, 1024, 4096, 100, &first_operation),
+        startReadOperation(&objects, first_service, &read_request, read_request.len, 0, 1024, 1024, 4096, 100, &first_operation),
     );
     try std.testing.expectEqual(
         StartStatus.ok,
-        startReadOperation(second_service, &read_request, read_request.len, 0, 1024, 1024, 4096, 100, &second_operation),
+        startReadOperation(&objects, second_service, &read_request, read_request.len, 0, 1024, 1024, 4096, 100, &second_operation),
     );
-    try std.testing.expectEqual(CancelStatus.requested, cancelOperation(first_operation));
-    try std.testing.expectEqual(CancelStatus.already_terminal, cancelOperation(first_operation));
-    _ = beginServiceShutdown(first_service);
-    var first_shutdown = pollServiceShutdown(first_service);
+    try std.testing.expectEqual(CancelStatus.requested, cancelOperation(&objects, first_operation));
+    try std.testing.expectEqual(CancelStatus.already_terminal, cancelOperation(&objects, first_operation));
+    _ = beginServiceShutdown(&objects, first_service);
+    var first_shutdown = pollServiceShutdown(&objects, first_service);
     var first_shutdown_attempts: u32 = 0;
     while (first_shutdown == .pending and first_shutdown_attempts < 2_000) : (first_shutdown_attempts += 1) {
         clipboard_clock.sleep(std.time.ns_per_ms);
-        first_shutdown = pollServiceShutdown(first_service);
+        first_shutdown = pollServiceShutdown(&objects, first_service);
     }
     try std.testing.expectEqual(ShutdownStatus.ready, first_shutdown);
-    try std.testing.expectEqual(DestroyStatus.destroyed, destroyService(first_service));
-    try std.testing.expectEqual(OperationStatus.invalid_handle, pollOperation(first_operation));
+    try std.testing.expectEqual(DestroyStatus.destroyed, destroyService(&objects, first_service));
+    try std.testing.expectEqual(OperationStatus.invalid_handle, pollOperation(&objects, first_operation));
 
-    try std.testing.expectEqual(OperationStatus.unsupported, pollOperation(second_operation));
-    try std.testing.expectEqual(DestroyStatus.destroyed, destroyOperation(second_operation));
+    try std.testing.expectEqual(OperationStatus.unsupported, pollOperation(&objects, second_operation));
+    try std.testing.expectEqual(DestroyStatus.destroyed, destroyOperation(&objects, second_operation));
 }
 
 test "clipboard production operations validate requests and remain unsupported until platform protocols exist" {
     if (comptime builtin.os.tag == .windows or builtin.os.tag == .macos) return error.SkipZigTest;
-    const service = createService(std.testing.allocator, 3, PROVIDER_TRANSFERS_MAX_DEFAULT, null, 0);
-    try std.testing.expect(service != 0);
-    acquireService(service).?.libraries = .{};
-    defer destroyTestService(service);
+    var objects = try handles.Table.init(std.testing.allocator, 4);
+    defer objects.deinit();
+    const service = try createService(std.testing.allocator, &objects, 3, PROVIDER_TRANSFERS_MAX_DEFAULT, null, 0);
+    acquireService(&objects, service).?.libraries = .{};
+    defer destroyTestService(&objects, service);
 
-    var operation: Handle = 0;
+    var operation: Handle = undefined;
     const malformed_read = [_]u8{ 1, 0, 0, 0, 4, 0, 0, 0, 't' };
     try std.testing.expectEqual(
         StartStatus.invalid_argument,
-        startReadOperation(service, &malformed_read, malformed_read.len, 0, 1024, 1024, 4096, 100, &operation),
+        startReadOperation(&objects, service, &malformed_read, malformed_read.len, 0, 1024, 1024, 4096, 100, &operation),
     );
-    try std.testing.expectEqual(@as(Handle, 0), operation);
+    try std.testing.expectEqual(invalid_handle, operation);
 
     const read_request = [_]u8{ 1, 0, 0, 0, 10, 0, 0, 0 } ++ "text/plain".*;
     try std.testing.expectEqual(
         StartStatus.ok,
-        startReadOperation(service, &read_request, read_request.len, 0, 1024, 1024, 4096, 100, &operation),
+        startReadOperation(&objects, service, &read_request, read_request.len, 0, 1024, 1024, 4096, 100, &operation),
     );
-    try std.testing.expectEqual(OperationStatus.unsupported, pollOperation(operation));
-    try std.testing.expectEqual(DestroyStatus.destroyed, destroyOperation(operation));
-    try std.testing.expectEqual(OperationStatus.invalid_handle, pollOperation(operation));
-    try std.testing.expectEqual(DestroyStatus.invalid_handle, destroyOperation(operation));
+    try std.testing.expectEqual(OperationStatus.unsupported, pollOperation(&objects, operation));
+    try std.testing.expectEqual(DestroyStatus.destroyed, destroyOperation(&objects, operation));
+    try std.testing.expectEqual(OperationStatus.invalid_handle, pollOperation(&objects, operation));
+    try std.testing.expectEqual(DestroyStatus.invalid_handle, destroyOperation(&objects, operation));
 
     try std.testing.expectEqual(
         StartStatus.invalid_argument,
-        startWriteOperation(service, "bad\x00text", 8, 0, 100, &operation),
+        startWriteOperation(&objects, service, "bad\x00text", 8, 0, 100, &operation),
     );
     try std.testing.expectEqual(
         StartStatus.invalid_argument,
-        startWriteOperation(service, "bad\xfftext", 8, 0, 100, &operation),
+        startWriteOperation(&objects, service, "bad\xfftext", 8, 0, 100, &operation),
     );
     try std.testing.expectEqual(
         StartStatus.ok,
-        startClearOperation(service, 1, 0, &operation),
+        startClearOperation(&objects, service, 1, 0, &operation),
     );
-    try std.testing.expectEqual(OperationStatus.timed_out, pollOperation(operation));
-    try std.testing.expectEqual(DestroyStatus.destroyed, destroyOperation(operation));
+    try std.testing.expectEqual(OperationStatus.timed_out, pollOperation(&objects, operation));
+    try std.testing.expectEqual(DestroyStatus.destroyed, destroyOperation(&objects, operation));
 }
 
 test "clipboard read request validation enforces exact native MIME bounds" {
@@ -1967,16 +1960,17 @@ test "clipboard read request validation enforces exact native MIME bounds" {
     std.mem.writeInt(u32, oversized_essence[4..8], 256, .little);
     try std.testing.expect(!validateReadRequest(&oversized_essence));
 
-    const service = createService(std.testing.allocator, 1, 1, null, 0);
-    try std.testing.expect(service != 0);
-    defer destroyTestService(service);
-    var operation: Handle = 99;
+    var objects = try handles.Table.init(std.testing.allocator, 2);
+    defer objects.deinit();
+    const service = try createService(std.testing.allocator, &objects, 1, 1, null, 0);
+    defer destroyTestService(&objects, service);
+    var operation = service;
     try std.testing.expectEqual(
         StartStatus.invalid_argument,
-        startReadOperation(service, &oversized_essence, oversized_essence.len, 0, 1, 1, 1, 1, &operation),
+        startReadOperation(&objects, service, &oversized_essence, oversized_essence.len, 0, 1, 1, 1, 1, &operation),
     );
-    try std.testing.expectEqual(@as(Handle, 0), operation);
-    try std.testing.expectEqual(@as(usize, 0), acquireService(service).?.operations.items.len);
+    try std.testing.expectEqual(invalid_handle, operation);
+    try std.testing.expectEqual(@as(usize, 0), acquireService(&objects, service).?.operations.items.len);
 }
 
 test "clipboard Wayland transfer format uses canonical offered essence" {
@@ -2055,8 +2049,11 @@ test "clipboard WSL policy rejects primary and clear without blocking standard r
 test "clipboard Wayland BMP transfer converts to PNG and releases source bytes" {
     if (comptime builtin.os.tag != .linux) return error.SkipZigTest;
     try clipboard_clock.init();
+    var objects = try handles.Table.init(std.testing.allocator, 1);
+    defer objects.deinit();
     var service: Service = .{
         .allocator = std.testing.allocator,
+        .objects = &objects,
         .libraries = .{},
         .requested_wayland_seat = &.{},
         .environment_wayland_seat = &.{},
@@ -2071,8 +2068,8 @@ test "clipboard Wayland BMP transfer converts to PNG and releases source bytes" 
         .timeout_ms = 1000,
         .started_ns = clipboard_clock.nowNs(),
     };
-    const operation_handle = try handles.insert(.clipboard_operation, erasePtr(&operation));
-    defer handles.invalidate(operation_handle, .clipboard_operation);
+    const operation_handle = try objects.insert(.clipboard_operation, &operation);
+    defer objects.finishDestroy(objects.beginDestroy(operation_handle) catch unreachable);
     defer {
         if (operation.result.len > 0) std.testing.allocator.free(operation.result);
         operation.transfer_data.deinit(std.testing.allocator);
@@ -2103,13 +2100,13 @@ test "clipboard Wayland BMP transfer converts to PNG and releases source bytes" 
     try std.testing.expectEqual(OperationStatus.read, status);
     try std.testing.expect(operation.isReadyToDestroy());
     var length: u32 = 0;
-    try std.testing.expectEqual(CopyStatus.ok, resultDataLength(operation_handle, &length));
+    try std.testing.expectEqual(CopyStatus.ok, resultDataLength(&objects, operation_handle, &length));
     try std.testing.expectEqual(@as(u32, @intCast(operation.result.len)), length);
     var too_small = [_]u8{0xaa} ** 7;
-    try std.testing.expectEqual(CopyStatus.buffer_too_small, resultDataCopy(operation_handle, &too_small, too_small.len));
+    try std.testing.expectEqual(CopyStatus.buffer_too_small, resultDataCopy(&objects, operation_handle, &too_small, too_small.len));
     try std.testing.expectEqualSlices(u8, &([_]u8{0xaa} ** 7), &too_small);
     var output: [1024]u8 = undefined;
-    try std.testing.expectEqual(CopyStatus.ok, resultDataCopy(operation_handle, &output, @intCast(operation.result.len)));
+    try std.testing.expectEqual(CopyStatus.ok, resultDataCopy(&objects, operation_handle, &output, @intCast(operation.result.len)));
     try std.testing.expectEqualStrings("\x89PNG\r\n\x1a\n", output[0..8]);
     try std.testing.expectEqualStrings("\x89PNG\r\n\x1a\n", operation.result[0..8]);
     try std.testing.expectEqual(@as(usize, 0), operation.transfer_data.items.len);
@@ -2132,6 +2129,7 @@ test "clipboard failed operations always publish a portable diagnostic" {
 test "clipboard queued platform terminal requests complete before worker execution" {
     var service: Service = .{
         .allocator = std.testing.allocator,
+        .objects = undefined,
         .libraries = .{},
         .requested_wayland_seat = &.{},
         .environment_wayland_seat = &.{},
@@ -2160,6 +2158,7 @@ test "clipboard queued platform terminal requests complete before worker executi
 test "clipboard platform result resolution enforces deadline before late read success" {
     var service: Service = .{
         .allocator = std.testing.allocator,
+        .objects = undefined,
         .libraries = .{},
         .requested_wayland_seat = &.{},
         .environment_wayland_seat = &.{},
@@ -2191,6 +2190,7 @@ test "clipboard platform result preserves out of memory after data allocation fa
     const allocator = failing.allocator();
     var service: Service = .{
         .allocator = allocator,
+        .objects = undefined,
         .libraries = .{},
         .requested_wayland_seat = &.{},
         .environment_wayland_seat = &.{},
@@ -2269,6 +2269,7 @@ test "clipboard X11 cancellation and timeout settle pending ownership confirmati
     x11.connection = @ptrCast(&fake_connection);
     var service: Service = .{
         .allocator = std.testing.allocator,
+        .objects = undefined,
         .libraries = .{},
         .requested_wayland_seat = &.{},
         .environment_wayland_seat = &.{},
@@ -2338,6 +2339,7 @@ test "clipboard expired X11 mutation cannot commit while draining timestamp even
     x11.atom_values[10] = 110;
     var service: Service = .{
         .allocator = std.testing.allocator,
+        .objects = undefined,
         .libraries = .{},
         .requested_wayland_seat = &.{},
         .environment_wayland_seat = &.{},
@@ -2373,6 +2375,7 @@ test "clipboard Wayland BMP worker cancellation beats late conversion publicatio
     try clipboard_clock.init();
     var service: Service = .{
         .allocator = std.testing.allocator,
+        .objects = undefined,
         .libraries = .{},
         .requested_wayland_seat = &.{},
         .environment_wayland_seat = &.{},
@@ -2417,6 +2420,7 @@ test "clipboard failed core selection progress releases operation focus" {
     wayland.core_focus_users = 1;
     var service: Service = .{
         .allocator = std.testing.allocator,
+        .objects = undefined,
         .libraries = .{ .wayland = true, .x11 = true, .is_wsl = true },
         .wayland = &wayland,
         .requested_wayland_seat = &.{},
@@ -2443,6 +2447,7 @@ test "clipboard failed core selection progress releases operation focus" {
 test "clipboard Wayland fallback transitions to X11 only when available" {
     var service: Service = .{
         .allocator = std.testing.allocator,
+        .objects = undefined,
         .libraries = .{ .wayland = true, .x11 = true },
         .requested_wayland_seat = &.{},
         .environment_wayland_seat = &.{},
@@ -2469,6 +2474,7 @@ test "clipboard X11 candidate failure advances to the next compatible target" {
     x11.connection = @ptrCast(&fake_connection);
     var service: Service = .{
         .allocator = std.testing.allocator,
+        .objects = undefined,
         .libraries = .{},
         .requested_wayland_seat = &.{},
         .environment_wayland_seat = &.{},
@@ -2499,6 +2505,7 @@ test "clipboard final X11 refusal cleans read state before publication" {
     x11.connection = @ptrCast(&fake_connection);
     var service: Service = .{
         .allocator = std.testing.allocator,
+        .objects = undefined,
         .libraries = .{},
         .x11 = &x11,
         .requested_wayland_seat = &.{},
@@ -2532,6 +2539,7 @@ test "clipboard shutdown cancels unconfirmed X11 mutations before releasing prov
     x11.primary_provider = provider;
     var service: Service = .{
         .allocator = std.testing.allocator,
+        .objects = undefined,
         .libraries = .{},
         .requested_wayland_seat = &.{},
         .environment_wayland_seat = &.{},

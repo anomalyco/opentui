@@ -26,12 +26,15 @@ import { CodeRenderable, createCliRenderer, SyntaxStyle, RGBA } from "@opentui/c
 
 const renderer = await createCliRenderer()
 
-const syntaxStyle = SyntaxStyle.fromStyles({
-  default: { fg: RGBA.defaultForeground() },
-  keyword: { fg: RGBA.defaultForeground(), bold: true },
-  string: { fg: RGBA.fromIndex(247) },
-  comment: { fg: RGBA.fromIndex(244), italic: true },
-})
+const syntaxStyle = SyntaxStyle.fromStyles(
+  {
+    default: { fg: RGBA.defaultForeground() },
+    keyword: { fg: RGBA.defaultForeground(), bold: true },
+    string: { fg: RGBA.fromIndex(247) },
+    comment: { fg: RGBA.fromIndex(244), italic: true },
+  },
+  renderer.nativeScene!,
+)
 
 const code = new CodeRenderable(renderer, {
   id: "code",
@@ -59,45 +62,74 @@ function hello() {
 
 ## Creating syntax styles
 
-Use `SyntaxStyle.fromStyles()` to define colors and attributes for syntax tokens:
+Use `SyntaxStyle.fromStyles(definitions, renderer.nativeScene)` to bind colors and attributes for syntax tokens.
+Native style allocation requires an explicit owner. Standalone callers can use a
+[`ResourceContext`](/docs/reference/buffer-api#create-and-destroy-a-buffer).
+
+Registration snapshots the definitions, including their colors. `getStyle()`,
+`getAllStyles()`, and `mergeStyles()` return detached values. To change a registered
+style, call `registerStyle()` again. Changes to a previous input or getter result
+do not update the registered style.
 
 ```typescript
 import { SyntaxStyle, RGBA, parseColor } from "@opentui/core"
 
-const syntaxStyle = SyntaxStyle.fromStyles({
-  // Basic tokens
-  keyword: { fg: RGBA.fromHex("#FF7B72"), bold: true },
-  "keyword.import": { fg: RGBA.fromHex("#FF7B72"), bold: true },
-  "keyword.operator": { fg: RGBA.fromHex("#FF7B72") },
+const syntaxStyle = SyntaxStyle.fromStyles(
+  {
+    // Basic tokens
+    keyword: { fg: RGBA.fromHex("#FF7B72"), bold: true },
+    "keyword.import": { fg: RGBA.fromHex("#FF7B72"), bold: true },
+    "keyword.operator": { fg: RGBA.fromHex("#FF7B72") },
 
-  string: { fg: RGBA.fromHex("#A5D6FF") },
-  comment: { fg: RGBA.fromHex("#8B949E"), italic: true },
-  number: { fg: RGBA.fromHex("#79C0FF") },
-  boolean: { fg: RGBA.fromHex("#79C0FF") },
-  constant: { fg: RGBA.fromHex("#79C0FF") },
+    string: { fg: RGBA.fromHex("#A5D6FF") },
+    comment: { fg: RGBA.fromHex("#8B949E"), italic: true },
+    number: { fg: RGBA.fromHex("#79C0FF") },
+    boolean: { fg: RGBA.fromHex("#79C0FF") },
+    constant: { fg: RGBA.fromHex("#79C0FF") },
 
-  // Functions and types
-  function: { fg: RGBA.fromHex("#D2A8FF") },
-  "function.call": { fg: RGBA.fromHex("#D2A8FF") },
-  "function.method.call": { fg: RGBA.fromHex("#D2A8FF") },
-  type: { fg: RGBA.fromHex("#FFA657") },
-  constructor: { fg: RGBA.fromHex("#FFA657") },
+    // Functions and types
+    function: { fg: RGBA.fromHex("#D2A8FF") },
+    "function.call": { fg: RGBA.fromHex("#D2A8FF") },
+    "function.method.call": { fg: RGBA.fromHex("#D2A8FF") },
+    type: { fg: RGBA.fromHex("#FFA657") },
+    constructor: { fg: RGBA.fromHex("#FFA657") },
 
-  // Variables and properties
-  variable: { fg: RGBA.fromHex("#E6EDF3") },
-  "variable.member": { fg: RGBA.fromHex("#79C0FF") },
-  property: { fg: RGBA.fromHex("#79C0FF") },
+    // Variables and properties
+    variable: { fg: RGBA.fromHex("#E6EDF3") },
+    "variable.member": { fg: RGBA.fromHex("#79C0FF") },
+    property: { fg: RGBA.fromHex("#79C0FF") },
 
-  // Operators and punctuation
-  operator: { fg: RGBA.fromHex("#FF7B72") },
-  punctuation: { fg: RGBA.fromHex("#F0F6FC") },
-  "punctuation.bracket": { fg: RGBA.fromHex("#F0F6FC") },
-  "punctuation.delimiter": { fg: RGBA.fromHex("#C9D1D9") },
+    // Operators and punctuation
+    operator: { fg: RGBA.fromHex("#FF7B72") },
+    punctuation: { fg: RGBA.fromHex("#F0F6FC") },
+    "punctuation.bracket": { fg: RGBA.fromHex("#F0F6FC") },
+    "punctuation.delimiter": { fg: RGBA.fromHex("#C9D1D9") },
 
-  // Default fallback
-  default: { fg: RGBA.fromHex("#E6EDF3") },
-})
+    // Default fallback
+    default: { fg: RGBA.fromHex("#E6EDF3") },
+  },
+  renderer.nativeScene!,
+)
 ```
+
+Share definitions between renderers, not resource lifetimes. Bind a copy to its
+destination scene, and destroy it when that destination no longer needs it:
+
+```typescript
+const definitions = syntaxStyle.getAllStyles()
+const boundStyle = SyntaxStyle.fromStyles(definitions, destination.nativeScene)
+// Use boundStyle in the destination's Code or Markdown nodes.
+// After those consumers have been destroyed:
+boundStyle.destroy()
+```
+
+`CodeRenderable` borrows the theme you supply. It does not destroy the theme.
+Text and edit buffers require styles bound to their own owner.
+A foreign attachment throws instead of creating a mirror.
+
+Definition snapshots contain declared rules, not native-generated chunk styles.
+Passing the definition Map directly preserves registration order, including numeric
+scope names. Converting it to an object can reorder names and change style IDs.
 
 ### Style properties
 
@@ -181,9 +213,12 @@ Use `LineNumberRenderable` to add line numbers:
 import { CodeRenderable, LineNumberRenderable, RGBA, ScrollBoxRenderable, SyntaxStyle } from "@opentui/core"
 
 const sourceCode = "const answer = 42\nconsole.log(answer)\n"
-const syntaxStyle = SyntaxStyle.fromStyles({
-  default: { fg: RGBA.fromHex("#E6EDF3") },
-})
+const syntaxStyle = SyntaxStyle.fromStyles(
+  {
+    default: { fg: RGBA.fromHex("#E6EDF3") },
+  },
+  renderer.nativeScene!,
+)
 
 const code = new CodeRenderable(renderer, {
   id: "code",
@@ -254,21 +289,24 @@ renderer.root.add(scrollbox)
 For markdown highlighting, use markup-prefixed style names:
 
 ```typescript
-const markdownStyle = SyntaxStyle.fromStyles({
-  "markup.heading": { fg: RGBA.fromHex("#58A6FF"), bold: true },
-  "markup.heading.1": { fg: RGBA.fromHex("#00FF88"), bold: true, underline: true },
-  "markup.heading.2": { fg: RGBA.fromHex("#00D7FF"), bold: true },
-  "markup.bold": { fg: RGBA.fromHex("#F0F6FC"), bold: true },
-  "markup.strong": { fg: RGBA.fromHex("#F0F6FC"), bold: true },
-  "markup.italic": { fg: RGBA.fromHex("#F0F6FC"), italic: true },
-  "markup.list": { fg: RGBA.fromHex("#FF7B72") },
-  "markup.quote": { fg: RGBA.fromHex("#8B949E"), italic: true },
-  "markup.raw": { fg: RGBA.fromHex("#A5D6FF") },
-  "markup.raw.block": { fg: RGBA.fromHex("#A5D6FF") },
-  "markup.link": { fg: RGBA.fromHex("#58A6FF"), underline: true },
-  "markup.link.url": { fg: RGBA.fromHex("#58A6FF"), underline: true },
-  default: { fg: RGBA.fromHex("#E6EDF3") },
-})
+const markdownStyle = SyntaxStyle.fromStyles(
+  {
+    "markup.heading": { fg: RGBA.fromHex("#58A6FF"), bold: true },
+    "markup.heading.1": { fg: RGBA.fromHex("#00FF88"), bold: true, underline: true },
+    "markup.heading.2": { fg: RGBA.fromHex("#00D7FF"), bold: true },
+    "markup.bold": { fg: RGBA.fromHex("#F0F6FC"), bold: true },
+    "markup.strong": { fg: RGBA.fromHex("#F0F6FC"), bold: true },
+    "markup.italic": { fg: RGBA.fromHex("#F0F6FC"), italic: true },
+    "markup.list": { fg: RGBA.fromHex("#FF7B72") },
+    "markup.quote": { fg: RGBA.fromHex("#8B949E"), italic: true },
+    "markup.raw": { fg: RGBA.fromHex("#A5D6FF") },
+    "markup.raw.block": { fg: RGBA.fromHex("#A5D6FF") },
+    "markup.link": { fg: RGBA.fromHex("#58A6FF"), underline: true },
+    "markup.link.url": { fg: RGBA.fromHex("#58A6FF"), underline: true },
+    default: { fg: RGBA.fromHex("#E6EDF3") },
+  },
+  renderer.nativeScene!,
+)
 ```
 
 ## Related components

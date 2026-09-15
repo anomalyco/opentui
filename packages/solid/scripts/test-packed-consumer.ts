@@ -149,6 +149,7 @@ function writeConsumerPackage(
           [corePackageJson.name]: coreDependency,
           [nativePackageName]: nativeDependency,
           "solid-js": solidJsVersion,
+          "@types/node": "^24.0.0",
           typescript: "^5",
         },
       },
@@ -164,6 +165,7 @@ function writeTypecheckFixture(consumerDir: string): void {
     JSON.stringify(
       {
         compilerOptions: {
+          target: "ESNext",
           jsx: "preserve",
           jsxImportSource: packageJson.name,
           module: "NodeNext",
@@ -205,9 +207,13 @@ export function render() {
 
 function writeNodeTest(nodeDir: string): void {
   writeFileSync(
+    join(nodeDir, "native-scene.fixture.tsx"),
+    readFileSync(join(__dirname, "native-scene.fixture.tsx"), "utf8"),
+  )
+  writeFileSync(
     join(nodeDir, "index.mjs"),
     `import assert from "node:assert/strict"
-import { rmSync, writeFileSync } from "node:fs"
+import { readFileSync, rmSync, writeFileSync } from "node:fs"
 import { mkdirSync } from "node:fs"
 import { join } from "node:path"
 import { pathToFileURL } from "node:url"
@@ -261,7 +267,7 @@ const fixtureSource = [
   '}',
 ].join("\\n")
 
-const transformed = await transformAsync(fixtureSource, {
+const transformOptions = {
   filename: join(process.cwd(), "fixture.tsx"),
   configFile: false,
   babelrc: false,
@@ -281,7 +287,9 @@ const transformed = await transformAsync(fixtureSource, {
     [solid, { moduleName: ${JSON.stringify(packageJson.name)}, generate: "universal" }],
     [ts],
   ],
-})
+}
+
+const transformed = await transformAsync(fixtureSource, transformOptions)
 
 if (!transformed?.code) {
   throw new Error("Failed to transform Solid fixture")
@@ -302,6 +310,16 @@ try {
   assert.match(result.second, /Node/)
   assert.match(result.second, /World/)
   assert.match(result.second, /ModeTwo/)
+
+  const nativeFixturePath = join(process.cwd(), "native-scene.fixture.tsx")
+  const nativeTransformed = await transformAsync(readFileSync(nativeFixturePath, "utf8"), {
+    ...transformOptions,
+    filename: nativeFixturePath,
+  })
+  if (!nativeTransformed?.code) throw new Error("Failed to transform native Solid fixture")
+  const nativeRuntimePath = join(runtimeDir, "native-scene.mjs")
+  writeFileSync(nativeRuntimePath, nativeTransformed.code)
+  await import(pathToFileURL(nativeRuntimePath).href).then((fixture) => fixture.run())
 } finally {
   rmSync(runtimeDir, { recursive: true, force: true })
 }
@@ -355,6 +373,7 @@ setup.renderer.destroy()
 
 ensureRuntimePluginSupport()
 await import("./fixture.bun.tsx").then((fixture) => fixture.run())
+await import("./native-scene.fixture.tsx").then((fixture) => fixture.run())
 
 console.log("Bun solid dist smoke test passed")
 `,
@@ -388,7 +407,13 @@ function assertNodeStaticImportFailure(
 function installAndTest(nodeDir: string): void {
   runCommand("npm", ["install", "--ignore-scripts", "--no-package-lock"], nodeDir, "Node dist test install failed")
   runCommand("npm", ["exec", "--", "tsc", "--noEmit"], nodeDir, "Node dist consumer typecheck failed")
-  runCommand("bun", ["index.bun.mjs"], nodeDir, "Bun solid dist smoke tests failed")
+  // Install the client-runtime rewrite before static imports cache Solid's server runtime.
+  runCommand(
+    "bun",
+    ["--preload", `${packageJson.name}/preload`, "index.bun.mjs"],
+    nodeDir,
+    "Bun solid dist smoke tests failed",
+  )
 
   const nodeRealDir = realpathSync(nodeDir)
   const nodePermissionDirs = [...new Set([nodeDir, nodeRealDir])]

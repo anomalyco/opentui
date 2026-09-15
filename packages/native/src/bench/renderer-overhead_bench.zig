@@ -1,4 +1,5 @@
 const std = @import("std");
+const TestPools = @import("../tests/test-pools.zig").TestPools;
 const bench_utils = @import("../bench-utils.zig");
 const gp = @import("../grapheme.zig");
 const link = @import("../link.zig");
@@ -30,8 +31,8 @@ fn drawFrame(target: anytype, frame: usize, scenario: Scenario) void {
     }
 }
 
-fn runScenario(io: std.Io, allocator: std.mem.Allocator, pool: *gp.GraphemePool, scenario: Scenario) !bench_utils.BenchStats {
-    var test_renderer = try test_renderer_mod.TestRenderer.create(allocator, WIDTH, HEIGHT, pool);
+fn runScenario(io: std.Io, allocator: std.mem.Allocator, pool: *gp.GraphemePool, link_pool: *link.LinkPool, scenario: Scenario) !bench_utils.BenchStats {
+    var test_renderer = try test_renderer_mod.TestRenderer.create(allocator, WIDTH, HEIGHT, pool, link_pool);
     defer test_renderer.deinit();
     drawFrame(test_renderer.renderer.getNextBuffer(), 0, .full_change);
     _ = test_renderer.renderer.render(true);
@@ -55,9 +56,8 @@ fn runScenario(io: std.Io, allocator: std.mem.Allocator, pool: *gp.GraphemePool,
 
 pub fn run(io: std.Io, allocator: std.mem.Allocator, show_mem: bool, bench_filter: ?[]const u8) ![]bench_utils.BenchResult {
     _ = show_mem;
-    const pool = gp.initGlobalPool(allocator);
-    defer gp.deinitGlobalPool();
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(allocator);
+    defer pools.deinit();
 
     const scenarios = [_]struct { name: []const u8, kind: Scenario }{
         .{ .name = "10k cells no changes no images", .kind = .no_changes },
@@ -67,7 +67,7 @@ pub fn run(io: std.Io, allocator: std.mem.Allocator, show_mem: bool, bench_filte
     var results: std.ArrayListUnmanaged(bench_utils.BenchResult) = .empty;
     for (scenarios) |scenario| {
         if (!bench_utils.matchesBenchFilter(scenario.name, bench_filter)) continue;
-        const stats = try runScenario(io, allocator, pool, scenario.kind);
+        const stats = try runScenario(io, allocator, &pools.graphemes, &pools.links, scenario.kind);
         try results.append(allocator, .{
             .name = scenario.name,
             .min_ns = stats.min_ns,

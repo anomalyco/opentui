@@ -229,7 +229,36 @@ pub fn setHostEnvVar(self: *Terminal, allocator: std.mem.Allocator, key: []const
     self.checkEnvironmentOverrides();
 }
 
+pub fn adoptHostEnvironment(self: *Terminal, environment: std.process.Environ.Map) void {
+    std.debug.assert(self.host_env_map == null and self.opts.env_map == null);
+    self.host_env_map = environment;
+    self.opts.env_map = &self.host_env_map.?;
+    self.checkEnvironmentOverrides();
+}
+
 pub fn resetState(self: *Terminal, tty: anytype) !void {
+    try self.resetInputModes(tty);
+
+    if (self.state.alt_screen) {
+        try self.exitAltScreen(tty);
+    } else {
+        switch (builtin.os.tag) {
+            .windows => {
+                try tty.writeByte('\r');
+                var i: u16 = 0;
+                while (i < self.state.cursor.row) : (i += 1) {
+                    try tty.writeAll(ansi.ANSI.reverseIndex);
+                }
+                try tty.writeAll(ansi.ANSI.eraseBelowCursor);
+            },
+            else => {},
+        }
+    }
+
+    try self.resetOutputModes(tty);
+}
+
+pub fn resetInputModes(self: *Terminal, tty: anytype) !void {
     try tty.writeAll(ansi.ANSI.showCursor);
     try tty.writeAll(ansi.ANSI.reset);
     try tty.writeAll(ansi.ANSI.resetMousePointer);
@@ -254,28 +283,14 @@ pub fn resetState(self: *Terminal, tty: anytype) !void {
     if (self.state.focus_tracking) {
         try self.setFocusTracking(tty, false);
     }
+}
 
-    if (self.state.alt_screen) {
-        try self.exitAltScreen(tty);
-    } else {
-        switch (builtin.os.tag) {
-            .windows => {
-                try tty.writeByte('\r');
-                var i: u16 = 0;
-                while (i < self.state.cursor.row) : (i += 1) {
-                    try tty.writeAll(ansi.ANSI.reverseIndex);
-                }
-                try tty.writeAll(ansi.ANSI.eraseBelowCursor);
-            },
-            else => {},
-        }
-    }
-
+pub fn resetOutputModes(self: *Terminal, tty: anytype) !void {
     if (self.state.color_scheme_updates) {
         try self.setColorSchemeUpdates(tty, false);
     }
 
-    self.setTerminalTitle(tty, "");
+    try ansi.ANSI.setTerminalTitleOutput(tty, "");
 
     // OSC 111 is intentionally disabled for now. In Ghostty, sending the
     // reset alone is enough to poison later OSC 11 background reporting for
@@ -654,7 +669,7 @@ fn parseOsc99NotificationQuery(self: *Terminal, response: []const u8) void {
     }
 }
 
-fn checkEnvironmentOverrides(self: *Terminal) void {
+pub fn checkEnvironmentOverrides(self: *Terminal) void {
     if (self.isXtversionTmux()) {
         self.multiplexer = .tmux;
     } else if (self.isXtversionZellij()) {

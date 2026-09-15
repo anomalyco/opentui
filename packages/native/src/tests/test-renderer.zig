@@ -60,15 +60,15 @@ pub const TestRenderer = struct {
     const CreateConfig = struct {
         thread_safe: bool = false,
         env_vars: []const TestEnvVar = &.{},
-        link_pool: ?*link.LinkPool = null,
+        link_pool: *link.LinkPool,
     };
 
-    pub fn create(allocator: std.mem.Allocator, width: u32, height: u32, pool: *gp.GraphemePool) !TestRenderer {
-        return createWithConfig(allocator, width, height, pool, .{});
+    pub fn create(allocator: std.mem.Allocator, width: u32, height: u32, pool: *gp.GraphemePool, link_pool: *link.LinkPool) !TestRenderer {
+        return createWithConfig(allocator, width, height, pool, .{ .link_pool = link_pool });
     }
 
-    pub fn createThreadSafe(allocator: std.mem.Allocator, width: u32, height: u32, pool: *gp.GraphemePool) !TestRenderer {
-        return createWithConfig(allocator, width, height, pool, .{ .thread_safe = true });
+    pub fn createThreadSafe(allocator: std.mem.Allocator, width: u32, height: u32, pool: *gp.GraphemePool, link_pool: *link.LinkPool) !TestRenderer {
+        return createWithConfig(allocator, width, height, pool, .{ .thread_safe = true, .link_pool = link_pool });
     }
 
     pub fn createWithEnv(
@@ -76,13 +76,10 @@ pub const TestRenderer = struct {
         width: u32,
         height: u32,
         pool: *gp.GraphemePool,
+        link_pool: *link.LinkPool,
         env_vars: []const TestEnvVar,
     ) !TestRenderer {
-        return createWithConfig(allocator, width, height, pool, .{ .env_vars = env_vars });
-    }
-
-    pub fn createWithLinkPool(allocator: std.mem.Allocator, width: u32, height: u32, pool: *gp.GraphemePool, link_pool: *link.LinkPool) !TestRenderer {
-        return createWithConfig(allocator, width, height, pool, .{ .link_pool = link_pool });
+        return createWithConfig(allocator, width, height, pool, .{ .env_vars = env_vars, .link_pool = link_pool });
     }
 
     fn createWithConfig(

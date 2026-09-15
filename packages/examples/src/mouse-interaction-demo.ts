@@ -12,7 +12,7 @@ import {
   OptimizedBuffer,
   BoxRenderable,
   createTimeline,
-  engine,
+  getTimelineEngine,
   Box,
   type ProxiedVNode,
   type BoxOptions,
@@ -35,6 +35,7 @@ let draggableBoxes: ProxiedVNode<typeof BoxRenderable>[] = []
 let nextZIndex = 101
 
 function DraggableBox(
+  renderer: CliRenderer,
   props: BoxOptions & {
     x: number
     y: number
@@ -45,6 +46,7 @@ function DraggableBox(
   },
   children?: VChild,
 ) {
+  const owner = getTimelineEngine(renderer)
   const bgColor = RGBA.fromValues(props.color.r, props.color.g, props.color.b, 0.8)
   const borderColor = RGBA.fromValues(props.color.r * 1.2, props.color.g * 1.2, props.color.b * 1.2, 1.0)
 
@@ -165,7 +167,20 @@ function DraggableBox(
 
           case "drop":
             gotText = event.source?.id || ""
-            const timeline = createTimeline()
+            const timeline = createTimeline(
+              {
+                onComplete: () => {
+                  owner.unregister(timeline)
+                  this.off("destroyed", cleanup)
+                },
+              },
+              renderer,
+            )
+            const cleanup = () => {
+              timeline.pause()
+              owner.unregister(timeline)
+            }
+            this.once("destroyed", cleanup)
 
             timeline.add(bounceScale, {
               value: 1.5,
@@ -319,8 +334,6 @@ export function run(renderer: CliRenderer): void {
   const backgroundColor = RGBA.fromInts(15, 15, 35, 255)
   renderer.setBackgroundColor(backgroundColor)
 
-  engine.attach(renderer)
-
   const mainGroup = new BoxRenderable(renderer, {
     id: "mouse-demo-main-group",
     zIndex: 10,
@@ -359,7 +372,7 @@ Scroll on boxes: shows direction • Escape: menu`,
   mainGroup.add(demoContainer)
 
   draggableBoxes = [
-    DraggableBox({
+    DraggableBox(renderer, {
       id: "drag-box-1",
       x: 10,
       y: 8,
@@ -368,7 +381,7 @@ Scroll on boxes: shows direction • Escape: menu`,
       color: RGBA.fromInts(200, 100, 150),
       label: "Box 1",
     }),
-    DraggableBox({
+    DraggableBox(renderer, {
       id: "drag-box-2",
       x: 30,
       y: 12,
@@ -377,7 +390,7 @@ Scroll on boxes: shows direction • Escape: menu`,
       color: RGBA.fromInts(100, 200, 150),
       label: "Box 2",
     }),
-    DraggableBox({
+    DraggableBox(renderer, {
       id: "drag-box-3",
       x: 50,
       y: 15,
@@ -387,6 +400,7 @@ Scroll on boxes: shows direction • Escape: menu`,
       label: "Box 3",
     }),
     DraggableBox(
+      renderer,
       {
         id: "drag-box-4",
         x: 15,

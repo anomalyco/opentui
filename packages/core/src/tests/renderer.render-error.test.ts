@@ -33,7 +33,7 @@ test("emits render errors and continues rendering", async () => {
       errors.push(event)
       if (event.renderable) {
         target.shouldThrow = false
-        requestAnimationFrame(() => {
+        renderer.requestAnimationFrame(() => {
           throw animationError
         })
       }
