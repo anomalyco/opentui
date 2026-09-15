@@ -536,6 +536,54 @@ describe("renderer handleMouseData", () => {
     }
   })
 
+  test("recovers selection after a dropped mouse-up (stuck isDragging latch)", async () => {
+    try {
+      const target = new TestRenderable(renderer, {
+        id: "selectable-dropped-up",
+        position: "absolute",
+        left: 2,
+        top: 2,
+        width: 12,
+        height: 6,
+      })
+      target.selectable = true
+      // Mimic selectable text (e.g. opencode's markdown/code blocks), which
+      // consumes the mousedown so the renderer does not auto-clear the selection.
+      target.onMouseDown = (event) => event.preventDefault()
+      renderer.root.add(target)
+      await renderOnce()
+
+      const anchorX = target.x + 1
+      const anchorY = target.y + 1
+      const dragX = target.x + 6
+      const dragY = target.y + 2
+      const nextX = target.x + 3
+      const nextY = target.y + 3
+      const endX = target.x + 8
+      const endY = target.y + 4
+
+      // First drag: down + move, then the mouse-up is dropped (no release).
+      await mockMouse.pressDown(anchorX, anchorY)
+      await mockMouse.moveTo(dragX, dragY)
+      expect(renderer.getSelection()?.isDragging).toBe(true)
+
+      // A later fresh drag must start a clean selection at its own press, not be
+      // swallowed by the stuck latch or extend from the stale anchor.
+      await mockMouse.pressDown(nextX, nextY)
+      await mockMouse.moveTo(endX, endY)
+      await mockMouse.release(endX, endY)
+
+      const selection = renderer.getSelection()
+      expect(selection).not.toBeNull()
+      expect(selection?.isDragging).toBe(false)
+      // Re-anchored at the fresh press, not the stale dropped-up anchor.
+      expect(selection?.anchor).toEqual({ x: nextX, y: nextY })
+      expect(selection?.focus).toEqual({ x: endX, y: endY })
+    } finally {
+      renderer.destroy()
+    }
+  })
+
   test("selection drag updates focus even when pointer leaves renderables", async () => {
     try {
       const target = new TestRenderable(renderer, {
