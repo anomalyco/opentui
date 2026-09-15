@@ -131,6 +131,11 @@ export class TextBufferView {
     this.lib.textBufferViewSetWrapMode(this.viewPtr, mode)
   }
 
+  public setTextAlign(alignment: "left" | "center" | "right"): void {
+    this.guard()
+    this.lib.textBufferViewSetTextAlign(this.viewPtr, alignment)
+  }
+
   public setFirstLineOffset(offset: number): void {
     this.guard()
     this.lib.textBufferViewSetFirstLineOffset(this.viewPtr, offset)

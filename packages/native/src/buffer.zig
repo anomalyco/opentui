@@ -1669,6 +1669,7 @@ pub const OptimizedBuffer = struct {
 
         const horizontal_offset: u32 = if (viewport) |vp| vp.x else 0;
         const viewport_width: u32 = if (viewport) |vp| vp.width else std.math.maxInt(u32);
+        const text_align = view.getTextAlign();
 
         var currentX = x;
         var currentY = y + @as(i32, @intCast(firstVisibleLine));
@@ -1683,7 +1684,13 @@ pub const OptimizedBuffer = struct {
         for (virtual_lines[firstVisibleLine..lastPossibleLine], 0..) |vline, slice_idx| {
             if (currentY >= bufferBottomY) break;
 
-            currentX = x;
+            // Draw-time horizontal alignment: shift each rendered line right so
+            // it is centered / right-aligned within the viewport width.
+            const align_pad: i32 = if (viewport != null)
+                @intCast(tbv.alignmentPadCols(text_align, viewport_width, vline.width_cols))
+            else
+                0;
+            currentX = x + align_pad;
             var rendered_col_in_vline: u32 = 0;
             document_cell_offset = vline.document_cell_offset;
 
