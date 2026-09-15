@@ -2423,6 +2423,17 @@ export fn textBufferViewSetWrapMode(view_handle: NativeHandle, mode: u8) void {
     object_ptr.setWrapMode(wrapMode);
 }
 
+export fn textBufferViewSetTextAlign(view_handle: NativeHandle, alignment: u8) void {
+    const object_ptr = acquireTextBufferView(view_handle) orelse return;
+    const textAlign: text_buffer_view.TextAlign = switch (alignment) {
+        0 => .left,
+        1 => .center,
+        2 => .right,
+        else => .left,
+    };
+    object_ptr.setTextAlign(textAlign);
+}
+
 export fn textBufferViewSetFirstLineOffset(view_handle: NativeHandle, offset: u32) void {
     const object_ptr = acquireTextBufferView(view_handle) orelse return;
     object_ptr.setFirstLineOffset(offset);

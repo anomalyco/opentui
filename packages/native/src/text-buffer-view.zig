@@ -211,6 +211,25 @@ const WordLayoutStorage = struct {
     }
 };
 
+// Horizontal alignment of each rendered (virtual) line within the viewport width.
+pub const TextAlign = enum(u8) {
+    left = 0,
+    center = 1,
+    right = 2,
+};
+
+/// Left padding (in display columns) needed to align a single rendered line of
+/// `line_width_cols` within `viewport_width`.
+/// Shared by the draw loop & hit-testing to preserve click & selection accuracy.
+pub fn alignmentPadCols(alignment: TextAlign, viewport_width: u32, line_width_cols: u32) u32 {
+    if (line_width_cols >= viewport_width) return 0;
+    return switch (alignment) {
+        .left => 0,
+        .center => (viewport_width - line_width_cols) / 2,
+        .right => viewport_width - line_width_cols,
+    };
+}
+
 pub const UnifiedTextBufferView = struct {
     const Self = UnifiedTextBufferView;
 
@@ -226,6 +245,7 @@ pub const UnifiedTextBufferView = struct {
     viewport: ?Viewport,
     wrap_width: ?u32,
     wrap_mode: WrapMode,
+    text_align: TextAlign,
     first_line_offset: u32,
     virtual_lines: std.ArrayListUnmanaged(VirtualLine),
     virtual_lines_dirty: bool,
@@ -284,6 +304,7 @@ pub const UnifiedTextBufferView = struct {
             .viewport = null,
             .wrap_width = null,
             .wrap_mode = .none,
+            .text_align = .left,
             .first_line_offset = 0,
             .virtual_lines = .empty,
             .virtual_lines_dirty = true,
@@ -380,6 +401,14 @@ pub const UnifiedTextBufferView = struct {
             self.virtual_lines_dirty = true;
             self.truncation_applied = false;
         }
+    }
+
+    pub fn setTextAlign(self: *Self, alignment: TextAlign) void {
+        self.text_align = alignment;
+    }
+
+    pub fn getTextAlign(self: *const Self) TextAlign {
+        return self.text_align;
     }
 
     pub fn setFirstLineOffset(self: *Self, offset: u32) void {
@@ -1118,7 +1147,15 @@ pub const UnifiedTextBufferView = struct {
         const lineStart = vline.document_cell_offset;
         const max_local_x = self.maxLocalXOnVisualLine(self.virtual_lines.items, vline_idx);
 
-        var localX = @max(0, @min(abs_x, @as(i32, @intCast(max_local_x))));
+        // Undo the draw-time alignment offset so clicks map to the character
+        // actually painted at this column, there is no alignment padding when there is no viewport.
+        const align_pad: i32 = if (self.viewport) |vp|
+            @intCast(alignmentPadCols(self.text_align, vp.width, vline.width_cols))
+        else
+            0;
+        const aligned_abs_x = abs_x - align_pad;
+
+        var localX = @max(0, @min(aligned_abs_x, @as(i32, @intCast(max_local_x))));
 
         if (vline.is_truncated) {
             const ellipsis_width: u32 = 3;

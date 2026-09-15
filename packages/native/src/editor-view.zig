@@ -306,6 +306,10 @@ pub const EditorView = struct {
         return self.text_buffer_view.getVirtualLineSpans(vline_idx);
     }
 
+    pub fn getTextAlign(self: *const EditorView) tbv.TextAlign {
+        return self.text_buffer_view.getTextAlign();
+    }
+
     pub fn getTextBuffer(self: *const EditorView) *UnifiedTextBuffer {
         return self.text_buffer_view.text_buffer;
     }
