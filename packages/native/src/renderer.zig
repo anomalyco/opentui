@@ -40,6 +40,14 @@ pub const RenderResult = struct {
 const CLEAR_CHAR = '\u{0a00}';
 const MAX_STAT_SAMPLES = 30;
 const STAT_SAMPLE_CAPACITY = 30;
+// Kitty reserves z-indices below INT32_MIN / 2 for placements behind
+// non-default cell backgrounds. Inline images should stay below text only.
+const KITTY_IMAGE_Z_BASE: i32 = -1_000_000_000;
+
+fn kittyImageZ(placement_id: u32) i32 {
+    std.debug.assert(placement_id <= gp.IMAGE_ID_MASK);
+    return KITTY_IMAGE_Z_BASE + @as(i32, @intCast(placement_id));
+}
 
 pub const RendererError = error{
     OutOfMemory,
@@ -1450,7 +1458,7 @@ pub const CliRenderer = struct {
             placement.placement_id,
             placement.width,
             placement.height,
-            -1_500_000_000 + @as(i32, @intCast(placement.placement_id)),
+            kittyImageZ(placement.placement_id),
             self.terminal.isInTmux(),
         );
     }
@@ -2174,7 +2182,7 @@ pub const CliRenderer = struct {
                 if (normalized) 0 else placement.source_y,
                 if (downscaled) placement.pixel_width else placement.source_width,
                 if (downscaled) placement.pixel_height else placement.source_height,
-                -1_500_000_000 + @as(i32, @intCast(placement.placement_id)),
+                kittyImageZ(placement.placement_id),
                 tmux,
             );
         }

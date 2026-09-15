@@ -108,7 +108,9 @@ test "renderer emits Kitty image once and leaves unchanged frame empty" {
     try std.testing.expect(try test_renderer.renderer.getNextBuffer().drawImage(value, image_handle, 0, 0, 1, 1, 0, 0, 0, 0, 1, 1, .auto));
     try std.testing.expectEqual(renderer.RenderStatus.rendered, test_renderer.renderer.render(true));
     try std.testing.expect(std.mem.find(u8, test_renderer.memory.lastWrite(), "\x1b_Ga=t,f=24,s=1,v=1,i=") != null);
-    try std.testing.expect(std.mem.find(u8, test_renderer.memory.lastWrite(), "c=1,r=1,x=0,y=0,w=1,h=1,C=1,z=-1499999999") != null);
+    // Inline images belong below text but above non-default cell backgrounds.
+    // Kitty reserves values below INT32_MIN / 2 for images below those backgrounds.
+    try std.testing.expect(std.mem.find(u8, test_renderer.memory.lastWrite(), "c=1,r=1,x=0,y=0,w=1,h=1,C=1,z=-999999999") != null);
 
     try std.testing.expect(try test_renderer.renderer.getNextBuffer().drawImage(value, image_handle, 0, 0, 1, 1, 0, 0, 0, 0, 1, 1, .auto));
     try std.testing.expectEqual(renderer.RenderStatus.rendered, test_renderer.renderer.render(false));
@@ -2644,6 +2646,7 @@ test "renderer - split scrollback uses native Kitty when Kitty is selected" {
     const output = test_renderer.memory.lastWrite();
     try std.testing.expect(std.mem.find(u8, output, "\x1b_Ga=t") != null);
     try std.testing.expect(std.mem.find(u8, output, "\x1b_Ga=p") != null);
+    try std.testing.expect(std.mem.find(u8, output, "C=1,z=-999999999") != null);
     try std.testing.expect(std.mem.find(u8, output, ",U=1,") == null);
     try std.testing.expect(std.mem.find(u8, output, "\u{10EEEE}") == null);
     try std.testing.expect(std.mem.find(u8, output, "█") == null);
