@@ -340,6 +340,220 @@
       ]
     ]
   },
+  "text-align-lines": {
+    "label": "The same two lines in a 10-column viewport. Left starts at column 0. Center and right pad each rendered line. As a result, hi sits farther inward than world",
+    "cols": 34,
+    "rows": 4,
+    "colors": [
+      {
+        "intent": "default",
+        "value": "#ffffff"
+      },
+      {
+        "intent": "default",
+        "value": "#000000"
+      },
+      {
+        "intent": "rgb",
+        "value": "#ffffff"
+      },
+      {
+        "intent": "indexed",
+        "value": "#808080",
+        "slot": 244
+      },
+      {
+        "intent": "indexed",
+        "value": "#262626",
+        "slot": 235
+      }
+    ],
+    "cursor": null,
+    "lines": [
+      [
+        {
+          "text": "left",
+          "width": 4,
+          "foreground": 0,
+          "background": 1
+        },
+        {
+          "text": "        ",
+          "width": 8,
+          "foreground": 2,
+          "background": 1
+        },
+        {
+          "text": "center",
+          "width": 6,
+          "foreground": 0,
+          "background": 1
+        },
+        {
+          "text": "      ",
+          "width": 6,
+          "foreground": 2,
+          "background": 1
+        },
+        {
+          "text": "right",
+          "width": 5,
+          "foreground": 0,
+          "background": 1
+        },
+        {
+          "text": "     ",
+          "width": 5,
+          "foreground": 2,
+          "background": 1
+        }
+      ],
+      [
+        {
+          "text": "0123456789",
+          "width": 10,
+          "foreground": 3,
+          "background": 1
+        },
+        {
+          "text": "  ",
+          "width": 2,
+          "foreground": 2,
+          "background": 1
+        },
+        {
+          "text": "0123456789",
+          "width": 10,
+          "foreground": 3,
+          "background": 1
+        },
+        {
+          "text": "  ",
+          "width": 2,
+          "foreground": 2,
+          "background": 1
+        },
+        {
+          "text": "0123456789",
+          "width": 10,
+          "foreground": 3,
+          "background": 1
+        }
+      ],
+      [
+        {
+          "text": "hi",
+          "width": 2,
+          "foreground": 0,
+          "background": 4
+        },
+        {
+          "text": "        ",
+          "width": 8,
+          "foreground": 2,
+          "background": 4
+        },
+        {
+          "text": "  ",
+          "width": 2,
+          "foreground": 2,
+          "background": 1
+        },
+        {
+          "text": "    ",
+          "width": 4,
+          "foreground": 2,
+          "background": 4
+        },
+        {
+          "text": "hi",
+          "width": 2,
+          "foreground": 0,
+          "background": 4
+        },
+        {
+          "text": "    ",
+          "width": 4,
+          "foreground": 2,
+          "background": 4
+        },
+        {
+          "text": "  ",
+          "width": 2,
+          "foreground": 2,
+          "background": 1
+        },
+        {
+          "text": "        ",
+          "width": 8,
+          "foreground": 2,
+          "background": 4
+        },
+        {
+          "text": "hi",
+          "width": 2,
+          "foreground": 0,
+          "background": 4
+        }
+      ],
+      [
+        {
+          "text": "world",
+          "width": 5,
+          "foreground": 0,
+          "background": 4
+        },
+        {
+          "text": "     ",
+          "width": 5,
+          "foreground": 2,
+          "background": 4
+        },
+        {
+          "text": "  ",
+          "width": 2,
+          "foreground": 2,
+          "background": 1
+        },
+        {
+          "text": "  ",
+          "width": 2,
+          "foreground": 2,
+          "background": 4
+        },
+        {
+          "text": "world",
+          "width": 5,
+          "foreground": 0,
+          "background": 4
+        },
+        {
+          "text": "   ",
+          "width": 3,
+          "foreground": 2,
+          "background": 4
+        },
+        {
+          "text": "  ",
+          "width": 2,
+          "foreground": 2,
+          "background": 1
+        },
+        {
+          "text": "     ",
+          "width": 5,
+          "foreground": 2,
+          "background": 4
+        },
+        {
+          "text": "world",
+          "width": 5,
+          "foreground": 0,
+          "background": 4
+        }
+      ]
+    ]
+  },
   "box-title-alignment": {
     "label": "Box with a centered top title and right-aligned bottom title",
     "cols": 32,

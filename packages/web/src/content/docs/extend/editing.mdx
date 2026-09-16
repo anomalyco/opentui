@@ -16,7 +16,7 @@ or viewport state.
 | Layer                  | Purpose                                                                                     | Ownership                                            |
 | ---------------------- | ------------------------------------------------------------------------------------------- | ---------------------------------------------------- |
 | `TextBuffer`           | Stores read-only or replaceable styled text and highlights                                  | The creator calls `destroy()`                        |
-| `TextBufferView`       | Adds wrapping, viewport, truncation, and selection to a `TextBuffer`                        | The creator destroys the view before its buffer      |
+| `TextBufferView`       | Adds wrapping, alignment, viewport, truncation, and selection to a `TextBuffer`             | The creator destroys the view before its buffer      |
 | `EditBuffer`           | Adds a cursor, incremental edits, word movement, and undo history                           | The creator calls `destroy()`                        |
 | `EditorView`           | Adds wrapping, viewport, visual movement, selection, and extmarks to an `EditBuffer`        | The creator destroys the view before its edit buffer |
 | `TextBufferRenderable` | Abstract renderable that owns a `TextBuffer`, view, syntax style, and native measure handle | Its `destroy()` releases all owned layers            |
@@ -97,26 +97,28 @@ it.
 
 A view tracks source-buffer changes automatically. It stores view state, not another copy of the text.
 
-A new low-level view has no wrap width, `"none"` wrap mode, no viewport, no selection, and truncation disabled. It
-reserves one memory-registry slot for its `"..."` ellipsis text.
+A new low-level view has no wrap width, `"none"` wrap mode, `"left"` text alignment, no viewport, no selection, and
+truncation disabled. It reserves one memory-registry slot for its `"..."` ellipsis text.
 
-| API                                                     | Behavior                                                           |
-| ------------------------------------------------------- | ------------------------------------------------------------------ |
-| `setWrapMode("none" \| "char" \| "word")`               | Selects wrapping policy                                            |
-| `setWrapWidth(width \| null)`                           | Sets the wrap width, where `null` passes native width `0`          |
-| `setFirstLineOffset(offset)`                            | Reduces available width on the first visual line                   |
-| `setViewportSize(width, height)`                        | Changes viewport dimensions while preserving its offset            |
-| `setViewport(x, y, width, height)`                      | Sets horizontal and vertical cell offsets and dimensions           |
-| `setTruncate(boolean)`                                  | Enables or disables the view's ellipsis form                       |
-| `setTabIndicator(value)`, `setTabIndicatorColor(color)` | Sets the tab glyph and color                                       |
-| `lineInfo`                                              | Returns cached visual-line data for the active viewport            |
-| `logicalLineInfo`                                       | Returns visual-line data without viewport restriction              |
-| `getVirtualLineCount()`                                 | Returns wrapped visual-line count                                  |
-| `measureForDimensions(width, height)`                   | Measures without changing the active viewport cache                |
-| `getPlainText()`                                        | Reads the view text with a buffer sized from the source `byteSize` |
+| API                                                     | Behavior                                                            |
+| ------------------------------------------------------- | ------------------------------------------------------------------- |
+| `setWrapMode("none" \| "char" \| "word")`               | Selects wrapping policy                                             |
+| `setWrapWidth(width \| null)`                           | Sets the wrap width, where `null` passes native width `0`           |
+| `setTextAlign("left" \| "center" \| "right")`           | Pads each rendered line within the viewport width. Default `"left"` |
+| `setFirstLineOffset(offset)`                            | Reduces available width on the first visual line                    |
+| `setViewportSize(width, height)`                        | Changes viewport dimensions while preserving its offset             |
+| `setViewport(x, y, width, height)`                      | Sets horizontal and vertical cell offsets and dimensions            |
+| `setTruncate(boolean)`                                  | Enables or disables the view's ellipsis form                        |
+| `setTabIndicator(value)`, `setTabIndicatorColor(color)` | Sets the tab glyph and color                                        |
+| `lineInfo`                                              | Returns cached visual-line data for the active viewport             |
+| `logicalLineInfo`                                       | Returns visual-line data without viewport restriction               |
+| `getVirtualLineCount()`                                 | Returns wrapped visual-line count                                   |
+| `measureForDimensions(width, height)`                   | Measures without changing the active viewport cache                 |
+| `getPlainText()`                                        | Reads the view text with a buffer sized from the source `byteSize`  |
 
 `setSelection()` and `updateSelection()` use global display offsets. `setLocalSelection()` and
-`updateLocalSelection()` convert viewport-relative cell coordinates. Reset the matching form when the selection ends.
+`updateLocalSelection()` convert viewport-relative cell coordinates. They subtract the draw-time alignment pad so a
+click maps to the painted character. Reset the matching form when the selection ends.
 
 ## `EditBuffer`
 
