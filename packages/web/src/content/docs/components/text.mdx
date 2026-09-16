@@ -110,30 +110,6 @@ React and Solid can compose inline `<span>`, `<b>`, `<strong>`, `<i>`, `<em>`, `
 inside `<text>`. They are text-only children and cannot mount under a Box or another layout element directly. See
 [inline text elements](/docs/components#inline-text-elements) for availability.
 
-## Alignment
-
-`textAlign` sets the alignment of the text (left, center or right). Each line is
-aligned independently. This differs from `alignSelf`, which positions the whole text block as a flex item without
-changing how individual lines sit inside it.
-
-```typescript
-const aligned = new TextRenderable(renderer, {
-  id: "aligned",
-  content: "First line\nA longer second line that wraps",
-  width: 40,
-  textAlign: "center", // "left" | "center" | "right"
-})
-```
-
-`textAlign` is mutable at runtime:
-
-```typescript
-aligned.textAlign = "right"
-```
-
-Alignment is applied within the resolved width of the element, so give the text a `width` (or let layout constrain it)
-for `"center"` and `"right"` to be visible. Combine it with `wrapMode` to control different line breaking behaviors.
-
 ## Positioning
 
 ```typescript
