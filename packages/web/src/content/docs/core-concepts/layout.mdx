@@ -135,6 +135,8 @@ A and B share a vertical center despite their different heights. C sits at the b
 └──────────────────────────────┘
 ```
 
+Yoga alignment positions child boxes. It does not align characters inside a text renderable. Use [`textAlign`](/docs/components/text#align-lines) for left, center, or right alignment of each rendered line inside the text width.
+
 ## Automatic and intrinsic size
 
 An `"auto"` dimension lets Yoga derive size from children or a renderable's measure function. Text and editor renderables supply native measure targets.
@@ -142,6 +144,8 @@ An `"auto"` dimension lets Yoga derive size from children or a renderable's meas
 Yoga calls a measure target with exact, at-most, or unconstrained dimensions. Text measurement uses display-cell width and the active wrap mode.
 
 `wrapMode: "word"` and `"char"` can increase measured height under a width constraint. `wrapMode: "none"` keeps the intrinsic line width.
+
+`textAlign` does not change measured size. It is a draw offset inside the computed width.
 
 A percentage dimension resolves against the parent's corresponding size. If that parent lacks a definite size, the result can differ from a browser layout assumption.
 
