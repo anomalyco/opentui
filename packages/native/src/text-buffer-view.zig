@@ -247,6 +247,8 @@ pub const UnifiedTextBufferView = struct {
     wrap_mode: WrapMode,
     text_align: TextAlign,
     first_line_offset: u32,
+    // Hit-testing uses the last draw origin; before the first draw, assume row zero.
+    draw_y: i32,
     virtual_lines: std.ArrayListUnmanaged(VirtualLine),
     virtual_lines_dirty: bool,
     cached_line_starts: std.ArrayListUnmanaged(u32),
@@ -306,6 +308,7 @@ pub const UnifiedTextBufferView = struct {
             .wrap_mode = .none,
             .text_align = .left,
             .first_line_offset = 0,
+            .draw_y = 0,
             .virtual_lines = .empty,
             .virtual_lines_dirty = true,
             .cached_line_starts = .empty,
@@ -409,6 +412,17 @@ pub const UnifiedTextBufferView = struct {
 
     pub fn getTextAlign(self: *const Self) TextAlign {
         return self.text_align;
+    }
+
+    pub fn setDrawY(self: *Self, y: i32) void {
+        self.draw_y = y;
+    }
+
+    pub fn getLineAlignmentPad(self: *const Self, vline_idx: usize, line_width_cols: u32) u32 {
+        const vp = self.viewport orelse return 0;
+        // Only the first virtual line painted on snapshot row zero continues the tail.
+        if (vline_idx == 0 and vp.y == 0 and self.draw_y == 0 and self.first_line_offset > 0) return 0;
+        return alignmentPadCols(self.text_align, vp.width, line_width_cols);
     }
 
     pub fn setFirstLineOffset(self: *Self, offset: u32) void {
@@ -1147,12 +1161,8 @@ pub const UnifiedTextBufferView = struct {
         const lineStart = vline.document_cell_offset;
         const max_local_x = self.maxLocalXOnVisualLine(self.virtual_lines.items, vline_idx);
 
-        // Undo the draw-time alignment offset so clicks map to the character
-        // actually painted at this column, there is no alignment padding when there is no viewport.
-        const align_pad: i32 = if (self.viewport) |vp|
-            @intCast(alignmentPadCols(self.text_align, vp.width, vline.width_cols))
-        else
-            0;
+        // Undo the draw-time alignment offset so clicks map to the painted character.
+        const align_pad: i32 = @intCast(self.getLineAlignmentPad(vline_idx, vline.width_cols));
         const aligned_abs_x = abs_x - align_pad;
 
         var localX = @max(0, @min(aligned_abs_x, @as(i32, @intCast(max_local_x))));

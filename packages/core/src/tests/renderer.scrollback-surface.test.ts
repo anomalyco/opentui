@@ -408,8 +408,8 @@ test("ScrollbackSurface commitRows respects top-level block margins from custom 
   }
 })
 
-test("ScrollbackSurface captures inline first-line offset at creation", async () => {
-  const { renderer, renderOnce } = await createSplitFooterRenderer({
+test.each(["left", "center", "right"] as const)("ScrollbackSurface inline textAlign=%s", async (textAlign) => {
+  const { renderer, renderOnce, externalOutput } = await createSplitFooterRenderer({
     width: 10,
     height: 6,
     footerHeight: 3,
@@ -437,18 +437,36 @@ test("ScrollbackSurface captures inline first-line offset at creation", async ()
 
   await renderOnce()
 
+  externalOutput.clear()
   const surface = renderer.createScrollbackSurface({ startOnNewLine: false })
   const text = new TextRenderable(surface.renderContext, {
     id: "surface-inline-text",
     content: "abcdef",
     width: "100%",
     wrapMode: "char",
+    textAlign,
   })
 
   surface.root.add(text)
   surface.render()
 
   expect(text.height).toBe(2)
+  surface.commitRows(0, surface.height)
+  expect(externalOutput.take()).toMatchObject([
+    {
+      rows: ["abcde", textAlign === "center" ? "    f" : textAlign === "right" ? "         f" : "f"],
+      startOnNewLine: false,
+    },
+  ])
+  text.content = "hi"
+  for (const marginTop of [1, 0]) {
+    text.marginTop = marginTop
+    surface.render()
+    surface.commitRows(0, surface.height)
+    const aligned = textAlign === "center" ? "    hi" : textAlign === "right" ? "        hi" : "hi"
+    expect(externalOutput.take()[0]?.rows).toEqual(marginTop ? ["", aligned] : ["hi"])
+  }
+  surface.destroy()
 })
 
 test("ScrollbackSurface.commitRows defaults to closing committed row chunks", async () => {

@@ -3707,7 +3707,7 @@ test "alignmentPadCols - left/center/right offsets and wide-line clamp" {
     try std.testing.expectEqual(@as(u32, 0), text_buffer_view.alignmentPadCols(.right, 10, 12));
 }
 
-fn expectAlignedRows(alignment: text_buffer_view.TextAlign, expected_pads: []const usize) !void {
+fn expectAlignedRows(alignment: text_buffer_view.TextAlign, first_line_offset: u32, expected_pads: []const usize) !void {
     const pool = gp.initGlobalPool(std.testing.allocator);
     defer gp.deinitGlobalPool();
     const link_pool = link.initGlobalLinkPool(std.testing.allocator);
@@ -3720,6 +3720,7 @@ fn expectAlignedRows(alignment: text_buffer_view.TextAlign, expected_pads: []con
     try tb.setText("hi\nworld");
     view.setViewport(.{ .x = 0, .y = 0, .width = 10, .height = 2 });
     view.setTextAlign(alignment);
+    view.setFirstLineOffset(first_line_offset);
 
     var opt_buffer = try OptimizedBuffer.init(
         std.testing.allocator,
@@ -3747,10 +3748,36 @@ fn expectAlignedRows(alignment: text_buffer_view.TextAlign, expected_pads: []con
     _ = view.setLocalSelection(selection_x, 0, selection_x + 1, 0, null, null);
     var selected: [2]u8 = undefined;
     try std.testing.expectEqualStrings("hi", selected[0..view.getSelectedTextIntoBuffer(&selected)]);
+
+    for ([_]u32{ 1, 0 }) |draw_y| {
+        opt_buffer.clear(ansi.rgbaFromFloats(0.0, 0.0, 0.0, 1.0), 32);
+        opt_buffer.drawTextBuffer(view, 0, @intCast(draw_y));
+        const x: i32 = if (draw_y == 0) @intCast(expected_pads[0]) else switch (alignment) {
+            .left => 0,
+            .center => 4,
+            .right => 8,
+        };
+        try std.testing.expectEqual(@as(u32, 'h'), opt_buffer.get(@intCast(x), draw_y).?.char);
+        _ = view.setLocalSelection(x, 0, x + 1, 0, null, null);
+        try std.testing.expectEqualStrings("hi", selected[0..view.getSelectedTextIntoBuffer(&selected)]);
+    }
+
+    for ([_]bool{ false, true }) |scroll_viewport| {
+        view.setViewport(.{ .x = 0, .y = if (scroll_viewport) 1 else 0, .width = 10, .height = 2 });
+        opt_buffer.clear(ansi.rgbaFromFloats(0.0, 0.0, 0.0, 1.0), 32);
+        opt_buffer.drawTextBuffer(view, 0, if (scroll_viewport) 0 else -1);
+        try std.testing.expectEqual(@as(u32, 'w'), opt_buffer.get(@intCast(expected_pads[1]), 0).?.char);
+    }
 }
 
 test "drawTextBuffer - textAlign centers and right-aligns each rendered line" {
-    try expectAlignedRows(.left, &.{ 0, 0 });
-    try expectAlignedRows(.center, &.{ 4, 2 });
-    try expectAlignedRows(.right, &.{ 8, 5 });
+    try expectAlignedRows(.left, 0, &.{ 0, 0 });
+    try expectAlignedRows(.center, 0, &.{ 4, 2 });
+    try expectAlignedRows(.right, 0, &.{ 8, 5 });
+}
+
+test "drawTextBuffer - textAlign keeps mid-line continuations flush with the tail" {
+    try expectAlignedRows(.left, 4, &.{ 0, 0 });
+    try expectAlignedRows(.center, 4, &.{ 0, 2 });
+    try expectAlignedRows(.right, 4, &.{ 0, 5 });
 }
