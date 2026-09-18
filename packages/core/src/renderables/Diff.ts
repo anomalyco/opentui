@@ -19,6 +19,12 @@ interface LogicalLine {
   hunkStart?: boolean
 }
 
+function formatHunkHeader(hunk: StructuredPatch["hunks"][number]): string {
+  const oldStart = hunk.oldLines === 0 ? hunk.oldStart - 1 : hunk.oldStart
+  const newStart = hunk.newLines === 0 ? hunk.newStart - 1 : hunk.newStart
+  return `@@ -${oldStart},${hunk.oldLines} +${newStart},${hunk.newLines} @@`
+}
+
 export interface DiffRenderableOptions extends RenderableOptions<DiffRenderable> {
   diff?: string
   syncScroll?: boolean
@@ -57,6 +63,7 @@ export class DiffRenderable extends Renderable {
   private _syncScroll: boolean = false
   private _view: "unified" | "split"
   private _parsedDiff: StructuredPatch | null = null
+  private _hunkHeaders: string[] = []
   private _parseError: Error | null = null
   // Source-line anchors for hunk starts; native extmarks should eventually own these anchors.
   private _hunkStartLines: number[] = []
@@ -153,6 +160,7 @@ export class DiffRenderable extends Renderable {
   private parseDiff(): void {
     if (!this._diff) {
       this._parsedDiff = null
+      this._hunkHeaders = []
       this._parseError = null
       return
     }
@@ -162,14 +170,21 @@ export class DiffRenderable extends Renderable {
 
       if (patches.length === 0) {
         this._parsedDiff = null
+        this._hunkHeaders = []
         this._parseError = null
         return
       }
 
       this._parsedDiff = patches[0]
+      this._hunkHeaders = this._diff
+        .split("\n")
+        .filter((line) => /^@@ -\d+(?:,\d+)? \+\d+(?:,\d+)? @@/.test(line))
+        .slice(0, this._parsedDiff.hunks.length)
+        .map((line) => (line.endsWith("\r") ? line.slice(0, -1) : line))
       this._parseError = null
     } catch (error) {
       this._parsedDiff = null
+      this._hunkHeaders = []
       this._parseError = error instanceof Error ? error : new Error(String(error))
     }
   }
@@ -505,12 +520,23 @@ export class DiffRenderable extends Renderable {
     const lineColors = new Map<number, string | RGBA | LineColorConfig>()
     const lineSigns = new Map<number, LineSign>()
     const lineNumbers = new Map<number, number>()
+    const hideLineNumbers = new Set<number>()
 
     let lineIndex = 0
 
-    for (const hunk of this._parsedDiff.hunks) {
+    for (const [hunkIndex, hunk] of this._parsedDiff.hunks.entries()) {
       // Unified view flattens hunks directly into the left CodeRenderable line stream.
       this._hunkStartLines.push(lineIndex)
+
+      if (hunkIndex > 0) {
+        contentLines.push(this._hunkHeaders[hunkIndex] ?? formatHunkHeader(hunk))
+        lineColors.set(lineIndex, {
+          gutter: this._lineNumberBg,
+          content: this._contextContentBg ?? this._contextBg,
+        })
+        hideLineNumbers.add(lineIndex)
+        lineIndex++
+      }
 
       let oldLineNum = hunk.oldStart
       let newLineNum = hunk.newStart
@@ -579,7 +605,7 @@ export class DiffRenderable extends Renderable {
     const codeRenderable = this.createOrUpdateCodeRenderable("left", content, this._wrapMode)
     this.attachLineInfoListeners()
 
-    this.createOrUpdateSide("left", codeRenderable, lineColors, lineSigns, lineNumbers, new Set<number>(), "100%")
+    this.createOrUpdateSide("left", codeRenderable, lineColors, lineSigns, lineNumbers, hideLineNumbers, "100%")
 
     if (this.rightSide && this.rightSideAdded) {
       super.remove(this.rightSide)
@@ -609,9 +635,14 @@ export class DiffRenderable extends Renderable {
     const rightLogicalLines: LogicalLine[] = []
     const hunkFirstLeftLine: number[] = []
 
-    for (const hunk of this._parsedDiff.hunks) {
+    for (const [hunkIndex, hunk] of this._parsedDiff.hunks.entries()) {
       // Split view may insert padding later, so carry hunk starts through LogicalLine metadata.
       hunkFirstLeftLine.push(leftLogicalLines.length)
+
+      if (hunkIndex > 0) {
+        leftLogicalLines.push({ content: "⋯", hideLineNumber: true, type: "context" })
+        rightLogicalLines.push({ content: "⋯", hideLineNumber: true, type: "context" })
+      }
 
       let oldLineNum = hunk.oldStart
       let newLineNum = hunk.newStart
