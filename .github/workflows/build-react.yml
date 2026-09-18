@@ -66,7 +66,7 @@ jobs:
 
       - name: Enable Linux core dumps
         if: runner.os == 'Linux'
-        uses: ./.github/actions/enable-linux-coredumps
+        uses: $/.github/actions/enable-linux-coredumps
 
       - name: Run tests
         run: |
@@ -76,7 +76,7 @@ jobs:
 
       - name: Upload Linux core dumps
         if: failure() && runner.os == 'Linux'
-        uses: ./.github/actions/upload-linux-coredumps
+        uses: $/.github/actions/upload-linux-coredumps
         with:
           name: crash-dumps-react-${{ matrix.os }}-${{ github.run_attempt }}
 

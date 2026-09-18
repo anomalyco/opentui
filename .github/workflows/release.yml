@@ -109,7 +109,7 @@ jobs:
     name: Build Native
     if: ${{ !contains(github.ref_name, 'snapshot') }}
     needs: [prepare, validate-version]
-    uses: ./.github/workflows/build-native.yml
+    uses: $/.github/workflows/build-native.yml
     with:
       version: ${{ needs.prepare.outputs.fullTag }}
 
@@ -118,7 +118,7 @@ jobs:
     name: Build Examples
     if: ${{ !contains(github.ref_name, 'snapshot') }}
     needs: [prepare, sign-windows-artifacts]
-    uses: ./.github/workflows/build-examples.yml
+    uses: $/.github/workflows/build-examples.yml
     with:
       version: ${{ needs.prepare.outputs.fullTag }}
 
@@ -127,7 +127,7 @@ jobs:
     name: NPM Publish
     if: ${{ !contains(github.ref_name, 'snapshot') }}
     needs: [prepare, sign-windows-artifacts]
-    uses: ./.github/workflows/npm-latest-release.yml
+    uses: $/.github/workflows/npm-latest-release.yml
     permissions:
       contents: read
       id-token: write
@@ -315,7 +315,7 @@ jobs:
     name: Build NPM Snapshot
     if: ${{ contains(github.ref_name, 'snapshot') }}
     needs: snapshot-prepare
-    uses: ./.github/workflows/build-native.yml
+    uses: $/.github/workflows/build-native.yml
     with:
       version: ${{ needs.snapshot-prepare.outputs.version }}
       prepareVersion: ${{ needs.snapshot-prepare.outputs.version }}
@@ -326,7 +326,7 @@ jobs:
     name: Publish NPM Snapshot
     if: ${{ contains(github.ref_name, 'snapshot') }}
     needs: [snapshot-prepare, snapshot-build]
-    uses: ./.github/workflows/npm-latest-release.yml
+    uses: $/.github/workflows/npm-latest-release.yml
     permissions:
       contents: read
       id-token: write
