@@ -506,7 +506,7 @@ test "remote detection - auto mode detects mosh environment" {
     try testing.expect(term.caps.remote);
 }
 
-test "remote detection - auto mode ignores local capabilities after forwarded SSH marker" {
+test "remote detection - auto mode ignores forwarded terminal identity after SSH marker" {
     var term = Terminal.init(.{ .remote_mode = .auto });
     defer term.deinit();
 
@@ -517,9 +517,36 @@ test "remote detection - auto mode ignores local capabilities after forwarded SS
 
     try testing.expect(term.caps.remote);
     try testing.expectEqual(utf8.WidthMethod.unicode, term.caps.unicode);
-    try testing.expect(!term.caps.ansi256);
+    // Color depth describes the remote endpoint; identity does not.
+    try testing.expect(term.caps.ansi256);
+    try testing.expect(!term.caps.rgb);
     try testing.expect(!term.caps.notifications);
     try testing.expectEqualStrings("", term.getTerminalName());
+}
+
+test "remote detection - auto mode keeps forwarded TERM color depth after SSH marker" {
+    var term = Terminal.init(.{ .remote_mode = .auto });
+    defer term.deinit();
+
+    try term.setHostEnvVar(testing.allocator, "SSH_CONNECTION", "192.0.2.1 54231 192.0.2.2 22");
+    try term.setHostEnvVar(testing.allocator, "TERM", "screen-256color");
+
+    try testing.expect(term.caps.remote);
+    try testing.expect(term.caps.ansi256);
+    try testing.expect(!term.caps.rgb);
+}
+
+test "remote detection - auto mode keeps forwarded COLORTERM truecolor after SSH marker" {
+    var term = Terminal.init(.{ .remote_mode = .auto });
+    defer term.deinit();
+
+    try term.setHostEnvVar(testing.allocator, "SSH_CONNECTION", "192.0.2.1 54231 192.0.2.2 22");
+    try term.setHostEnvVar(testing.allocator, "TERM", "screen-256color");
+    try term.setHostEnvVar(testing.allocator, "COLORTERM", "truecolor");
+
+    try testing.expect(term.caps.remote);
+    try testing.expect(term.caps.ansi256);
+    try testing.expect(term.caps.rgb);
 }
 
 test "remote detection - explicit local mode ignores SSH environment" {
