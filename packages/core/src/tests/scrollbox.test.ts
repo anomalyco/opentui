@@ -1505,6 +1505,53 @@ console.log(processor.reduce((acc, val) => acc + val, 0))`
     expect((scrollBox as any)._hasManualScroll).toBe(true)
   })
 
+  // Regression test for issue #1514: a range that shrinks to a *nonzero* maximum
+  // clamps the position to a new bottom that is within the one-line re-engagement
+  // threshold, so the clamp is mistaken for the reader returning to the edge.
+  test("does not re-engage sticky when a shrinking range clamps the reader to the bottom (issue #1514)", async () => {
+    const scrollBox = new ScrollBoxRenderable(testRenderer, {
+      width: 40,
+      height: 10,
+      stickyScroll: true,
+      stickyStart: "bottom",
+    })
+
+    testRenderer.root.add(scrollBox)
+
+    for (let i = 0; i < 30; i++) {
+      scrollBox.add(new TextRenderable(testRenderer, { id: `line-${i}`, content: `Line ${i}` }))
+    }
+    await renderOnce()
+
+    // Reader scrolls up out of the tail.
+    scrollBox.scrollTo(15)
+    await renderOnce()
+    expect(scrollBox.scrollTop).toBe(15)
+    expect((scrollBox as any)._hasManualScroll).toBe(true)
+
+    // The viewport grows, so the scroll range shrinks from 20 to 10 and the
+    // reader is clamped to 10 — which is the new bottom.
+    scrollBox.height = 20
+    scrollBox.content.width = 40
+    await renderOnce()
+
+    const narrowedMax = Math.max(0, scrollBox.scrollHeight - scrollBox.viewport.height)
+    expect(narrowedMax).toBeGreaterThan(0)
+    expect(narrowedMax).toBeLessThan(15)
+    expect(scrollBox.scrollTop).toBe(narrowedMax)
+
+    // The clamp must not be read as the reader asking to follow the tail again.
+    expect((scrollBox as any)._hasManualScroll).toBe(true)
+
+    for (let i = 30; i < 40; i++) {
+      scrollBox.add(new TextRenderable(testRenderer, { id: `line-${i}`, content: `Line ${i}` }))
+    }
+    await renderOnce()
+
+    expect((scrollBox as any)._hasManualScroll).toBe(true)
+    expect(scrollBox.scrollTop).toBe(narrowedMax)
+  })
+
   test("recalculateBarProps does not re-engage top sticky when manually scrolled to bottom during content growth", async () => {
     const scrollBox = new ScrollBoxRenderable(testRenderer, {
       width: 40,
