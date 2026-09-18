@@ -23,46 +23,45 @@ function setRgb(buffer: Uint16Array, base: number, r: number, g: number, b: numb
 export function applyScanlines(buffer: OptimizedBuffer, strength: number = 0.8, step: number = 2): void {
   if (strength === 1.0 || step < 1) return
 
-  const width = buffer.width
-  const height = buffer.height
+  buffer.withBuffers(({ width, height }) => {
+    // Calculate number of affected rows
+    const affectedRows = Math.ceil(height / step)
+    const cellCount = width * affectedRows
+    const cellMask = new Float32Array(cellCount * 3)
 
-  // Calculate number of affected rows
-  const affectedRows = Math.ceil(height / step)
-  const cellCount = width * affectedRows
-  const cellMask = new Float32Array(cellCount * 3)
-
-  let maskIdx = 0
-  for (let y = 0; y < height; y += step) {
-    for (let x = 0; x < width; x++) {
-      cellMask[maskIdx++] = x
-      cellMask[maskIdx++] = y
-      cellMask[maskIdx++] = 1.0 // full strength
+    let maskIdx = 0
+    for (let y = 0; y < height; y += step) {
+      for (let x = 0; x < width; x++) {
+        cellMask[maskIdx++] = x
+        cellMask[maskIdx++] = y
+        cellMask[maskIdx++] = 1.0 // full strength
+      }
     }
-  }
 
-  // Gain matrix to scale down background colors
-  const s = strength
-  const matrix = new Float32Array([
-    s,
-    0,
-    0,
-    0, // Row 0: Red output
-    0,
-    s,
-    0,
-    0, // Row 1: Green output
-    0,
-    0,
-    s,
-    0, // Row 2: Blue output
-    0,
-    0,
-    0,
-    1, // Row 3: Alpha output (identity)
-  ])
+    // Gain matrix to scale down background colors
+    const s = strength
+    const matrix = new Float32Array([
+      s,
+      0,
+      0,
+      0, // Row 0: Red output
+      0,
+      s,
+      0,
+      0, // Row 1: Green output
+      0,
+      0,
+      s,
+      0, // Row 2: Blue output
+      0,
+      0,
+      0,
+      1, // Row 3: Alpha output (identity)
+    ])
 
-  // Apply only to background buffer (target = 2)
-  buffer.colorMatrix(matrix, cellMask, 1.0, 2)
+    // Apply only to background buffer (target = 2)
+    buffer.colorMatrix(matrix, cellMask, 1.0, 2)
+  })
 }
 
 /**
@@ -101,82 +100,81 @@ export function applyInvert(buffer: OptimizedBuffer, strength: number = 1.0): vo
  * Uses per-pixel random strength values to dim/brighten each cell.
  */
 export function applyNoise(buffer: OptimizedBuffer, strength: number = 0.1): void {
-  const width = buffer.width
-  const height = buffer.height
-  const size = width * height
-
   // Skip if no effect
   if (strength === 0) return
 
-  // Generate random cellMask with per-pixel strength values
-  // Each pixel gets [x, y, random_strength] where random_strength ranges from -1 to 1
-  const cellMask = new Float32Array(size * 3)
-  let cellMaskIndex = 0
+  buffer.withBuffers(({ width, height }) => {
+    const size = width * height
 
-  for (let y = 0; y < height; y++) {
-    for (let x = 0; x < width; x++) {
-      cellMask[cellMaskIndex++] = x
-      cellMask[cellMaskIndex++] = y
-      // Random strength from -1 to 1
-      cellMask[cellMaskIndex++] = (Math.random() - 0.5) * 2
+    // Generate random cellMask with per-pixel strength values
+    // Each pixel gets [x, y, random_strength] where random_strength ranges from -1 to 1
+    const cellMask = new Float32Array(size * 3)
+    let cellMaskIndex = 0
+
+    for (let y = 0; y < height; y++) {
+      for (let x = 0; x < width; x++) {
+        cellMask[cellMaskIndex++] = x
+        cellMask[cellMaskIndex++] = y
+        // Random strength from -1 to 1
+        cellMask[cellMaskIndex++] = (Math.random() - 0.5) * 2
+      }
     }
-  }
 
-  // Brightness matrix: scales all channels by (1 + strength)
-  // With cellMask strength S, result = original * (1 + (B - 1) * S)
-  // where B = 1 + strength
-  // So: S=1 → original * (1 + strength), S=-1 → original * (1 - strength)
-  const b = 1.0 + strength
-  const matrix = new Float32Array([
-    b,
-    0,
-    0,
-    0, // Row 0 (Red output)
-    0,
-    b,
-    0,
-    0, // Row 1 (Green output)
-    0,
-    0,
-    b,
-    0, // Row 2 (Blue output)
-    0,
-    0,
-    0,
-    1, // Row 3 (Alpha output - identity)
-  ])
+    // Brightness matrix: scales all channels by (1 + strength)
+    // With cellMask strength S, result = original * (1 + (B - 1) * S)
+    // where B = 1 + strength
+    // So: S=1 → original * (1 + strength), S=-1 → original * (1 - strength)
+    const b = 1.0 + strength
+    const matrix = new Float32Array([
+      b,
+      0,
+      0,
+      0, // Row 0 (Red output)
+      0,
+      b,
+      0,
+      0, // Row 1 (Green output)
+      0,
+      0,
+      b,
+      0, // Row 2 (Blue output)
+      0,
+      0,
+      0,
+      1, // Row 3 (Alpha output - identity)
+    ])
 
-  buffer.colorMatrix(matrix, cellMask, 1.0, 3)
+    buffer.colorMatrix(matrix, cellMask, 1.0, 3)
+  })
 }
 
 /**
  * Applies a simplified chromatic aberration effect.
  */
 export function applyChromaticAberration(buffer: OptimizedBuffer, strength: number = 1): void {
-  const width = buffer.width
-  const height = buffer.height
-  const srcFg = Uint16Array.from(buffer.buffers.fg) // Copy original fg data
-  const destFg = buffer.buffers.fg
-  const centerX = width / 2
-  const centerY = height / 2
+  buffer.withBuffers(({ width, height, fg: destFg }) => {
+    const srcFg = Uint16Array.from(destFg) // Copy original fg data
+    const centerX = width / 2
+    const centerY = height / 2
 
-  for (let y = 0; y < height; y++) {
-    for (let x = 0; x < width; x++) {
-      const dx = x - centerX
-      const dy = y - centerY
-      const offset = Math.round((Math.sqrt(dx * dx + dy * dy) / Math.max(centerX, centerY)) * strength)
+    for (let y = 0; y < height; y++) {
+      for (let x = 0; x < width; x++) {
+        const dx = x - centerX
+        const dy = y - centerY
+        const offset = Math.round((Math.sqrt(dx * dx + dy * dy) / Math.max(centerX, centerY)) * strength)
 
-      const rX = Math.max(0, Math.min(width - 1, x - offset))
-      const bX = Math.max(0, Math.min(width - 1, x + offset))
+        const rX = Math.max(0, Math.min(width - 1, x - offset))
+        const bX = Math.max(0, Math.min(width - 1, x + offset))
 
-      const rIndex = (y * width + rX) * 4
-      const gIndex = (y * width + x) * 4 // Green from original position
-      const bIndex = (y * width + bX) * 4
-      const destIndex = (y * width + x) * 4
+        const rIndex = (y * width + rX) * 4
+        const gIndex = (y * width + x) * 4 // Green from original position
+        const bIndex = (y * width + bX) * 4
+        const destIndex = (y * width + x) * 4
 
-      setRgb(destFg, destIndex, channel(srcFg, rIndex), channel(srcFg, gIndex + 1), channel(srcFg, bIndex + 2))
+        setRgb(destFg, destIndex, channel(srcFg, rIndex), channel(srcFg, gIndex + 1), channel(srcFg, bIndex + 2))
+      }
     }
-  }
+  })
 }
 
 /**
@@ -189,70 +187,68 @@ export function applyAsciiArt(
   fgColor: { r: number; g: number; b: number } = { r: 1.0, g: 1.0, b: 1.0 },
   bgColor: { r: number; g: number; b: number } = { r: 0.0, g: 0.0, b: 0.0 },
 ): void {
-  const width = buffer.width
-  const height = buffer.height
-  const chars = buffer.buffers.char
-  const bg = buffer.buffers.bg
-  const rampLength = ramp.length
+  buffer.withBuffers(({ width, height, char: chars, bg }) => {
+    const rampLength = ramp.length
 
-  // Set ASCII characters based on background luminance
-  for (let y = 0; y < height; y++) {
-    for (let x = 0; x < width; x++) {
-      const index = y * width + x
-      const colorIndex = index * 4
-      const bgR = channel(bg, colorIndex)
-      const bgG = channel(bg, colorIndex + 1)
-      const bgB = channel(bg, colorIndex + 2)
-      const lum = 0.299 * bgR + 0.587 * bgG + 0.114 * bgB // Luminance
-      const rampIndex = Math.min(rampLength - 1, Math.floor(lum * rampLength))
-      chars[index] = ramp[rampIndex].charCodeAt(0)
+    // Set ASCII characters based on background luminance
+    for (let y = 0; y < height; y++) {
+      for (let x = 0; x < width; x++) {
+        const index = y * width + x
+        const colorIndex = index * 4
+        const bgR = channel(bg, colorIndex)
+        const bgG = channel(bg, colorIndex + 1)
+        const bgB = channel(bg, colorIndex + 2)
+        const lum = 0.299 * bgR + 0.587 * bgG + 0.114 * bgB // Luminance
+        const rampIndex = Math.min(rampLength - 1, Math.floor(lum * rampLength))
+        chars[index] = ramp[rampIndex].charCodeAt(0)
+      }
     }
-  }
 
-  // Create color matrix that sets all pixels to the target color
-  // Matrix: output = target_color * input (where input is 1.0 from alpha)
-  const fgMatrix = new Float32Array([
-    0,
-    0,
-    0,
-    fgColor.r, // Red output
-    0,
-    0,
-    0,
-    fgColor.g, // Green output
-    0,
-    0,
-    0,
-    fgColor.b, // Blue output
-    0,
-    0,
-    0,
-    1, // Alpha output (identity)
-  ])
+    // Create color matrix that sets all pixels to the target color
+    // Matrix: output = target_color * input (where input is 1.0 from alpha)
+    const fgMatrix = new Float32Array([
+      0,
+      0,
+      0,
+      fgColor.r, // Red output
+      0,
+      0,
+      0,
+      fgColor.g, // Green output
+      0,
+      0,
+      0,
+      fgColor.b, // Blue output
+      0,
+      0,
+      0,
+      1, // Alpha output (identity)
+    ])
 
-  const bgMatrix = new Float32Array([
-    0,
-    0,
-    0,
-    bgColor.r, // Red output
-    0,
-    0,
-    0,
-    bgColor.g, // Green output
-    0,
-    0,
-    0,
-    bgColor.b, // Blue output
-    0,
-    0,
-    0,
-    1, // Alpha output (identity)
-  ])
+    const bgMatrix = new Float32Array([
+      0,
+      0,
+      0,
+      bgColor.r, // Red output
+      0,
+      0,
+      0,
+      bgColor.g, // Green output
+      0,
+      0,
+      0,
+      bgColor.b, // Blue output
+      0,
+      0,
+      0,
+      1, // Alpha output (identity)
+    ])
 
-  // Apply uniform color transformation to foreground (target = 1)
-  buffer.colorMatrixUniform(fgMatrix, 1.0, 1)
-  // Apply uniform color transformation to background (target = 2)
-  buffer.colorMatrixUniform(bgMatrix, 1.0, 2)
+    // Apply uniform color transformation to foreground (target = 1)
+    buffer.colorMatrixUniform(fgMatrix, 1.0, 1)
+    // Apply uniform color transformation to background (target = 2)
+    buffer.colorMatrixUniform(bgMatrix, 1.0, 2)
+  })
 }
 
 /**
@@ -434,79 +430,68 @@ export class BloomEffect {
 
     if (strength <= 0 || radius <= 0) return // No bloom if strength or radius is non-positive
 
-    const width = buffer.width
-    const height = buffer.height
-    // Operate directly on the buffer's data for bloom, but need a source copy temporarily
-    const srcFg = Uint16Array.from(buffer.buffers.fg)
-    const srcBg = Uint16Array.from(buffer.buffers.bg)
-    const destFg = buffer.buffers.fg
-    const destBg = buffer.buffers.bg
+    buffer.withBuffers(({ width, height, fg: destFg, bg: destBg }) => {
+      const brightPixels: { x: number; y: number; intensity: number }[] = []
 
-    const brightPixels: { x: number; y: number; intensity: number }[] = []
-
-    // 1. Find bright pixels based on original data
-    for (let y = 0; y < height; y++) {
-      for (let x = 0; x < width; x++) {
-        const index = (y * width + x) * 4
-        // Consider max component brightness, or luminance? Using luminance.
-        const fgLum =
-          0.299 * channel(srcFg, index) + 0.587 * channel(srcFg, index + 1) + 0.114 * channel(srcFg, index + 2)
-        const bgLum =
-          0.299 * channel(srcBg, index) + 0.587 * channel(srcBg, index + 1) + 0.114 * channel(srcBg, index + 2)
-        const lum = Math.max(fgLum, bgLum)
-        if (lum > threshold) {
-          const intensity = (lum - threshold) / (1 - threshold + 1e-6) // Add epsilon to avoid div by zero
-          brightPixels.push({ x, y, intensity: Math.max(0, intensity) })
+      // 1. Find bright pixels based on original data
+      for (let y = 0; y < height; y++) {
+        for (let x = 0; x < width; x++) {
+          const index = (y * width + x) * 4
+          // Consider max component brightness, or luminance? Using luminance.
+          const fgLum =
+            0.299 * channel(destFg, index) + 0.587 * channel(destFg, index + 1) + 0.114 * channel(destFg, index + 2)
+          const bgLum =
+            0.299 * channel(destBg, index) + 0.587 * channel(destBg, index + 1) + 0.114 * channel(destBg, index + 2)
+          const lum = Math.max(fgLum, bgLum)
+          if (lum > threshold) {
+            const intensity = (lum - threshold) / (1 - threshold + 1e-6) // Add epsilon to avoid div by zero
+            brightPixels.push({ x, y, intensity: Math.max(0, intensity) })
+          }
         }
       }
-    }
 
-    // If no bright pixels found, exit early
-    if (brightPixels.length === 0) return
+      // If no bright pixels found, exit early
+      if (brightPixels.length === 0) return
 
-    // Initialize destination buffers by copying original state before applying bloom
-    // This prevents bloom from compounding on itself within one frame pass
-    destFg.set(srcFg)
-    destBg.set(srcBg)
+      // 2. Apply bloom spread from bright pixels onto the destination buffers
+      for (const bright of brightPixels) {
+        for (let ky = -radius; ky <= radius; ky++) {
+          for (let kx = -radius; kx <= radius; kx++) {
+            if (kx === 0 && ky === 0) continue // Don't bloom self
 
-    // 2. Apply bloom spread from bright pixels onto the destination buffers
-    for (const bright of brightPixels) {
-      for (let ky = -radius; ky <= radius; ky++) {
-        for (let kx = -radius; kx <= radius; kx++) {
-          if (kx === 0 && ky === 0) continue // Don't bloom self
+            const sampleX = bright.x + kx
+            const sampleY = bright.y + ky
 
-          const sampleX = bright.x + kx
-          const sampleY = bright.y + ky
+            if (sampleX >= 0 && sampleX < width && sampleY >= 0 && sampleY < height) {
+              const distSq = kx * kx + ky * ky // Use squared distance for falloff calculation
+              const radiusSq = radius * radius
+              if (distSq <= radiusSq) {
+                // Simple linear falloff based on squared distance
+                const falloff = 1 - distSq / radiusSq
+                const bloomAmount = bright.intensity * strength * falloff
+                const destIndex = (sampleY * width + sampleX) * 4
 
-          if (sampleX >= 0 && sampleX < width && sampleY >= 0 && sampleY < height) {
-            const distSq = kx * kx + ky * ky // Use squared distance for falloff calculation
-            const radiusSq = radius * radius
-            if (distSq <= radiusSq) {
-              // Simple linear falloff based on squared distance
-              const falloff = 1 - distSq / radiusSq
-              const bloomAmount = bright.intensity * strength * falloff
-              const destIndex = (sampleY * width + sampleX) * 4
+                // Add bloom to both fg and bg, clamping at 1.0
+                setRgb(
+                  destFg,
+                  destIndex,
+                  Math.min(1.0, channel(destFg, destIndex) + bloomAmount),
+                  Math.min(1.0, channel(destFg, destIndex + 1) + bloomAmount),
+                  Math.min(1.0, channel(destFg, destIndex + 2) + bloomAmount),
+                )
 
-              // Add bloom to both fg and bg, clamping at 1.0
-              setRgb(
-                destFg,
-                destIndex,
-                Math.min(1.0, channel(destFg, destIndex) + bloomAmount),
-                Math.min(1.0, channel(destFg, destIndex + 1) + bloomAmount),
-                Math.min(1.0, channel(destFg, destIndex + 2) + bloomAmount),
-              )
-
-              setRgb(
-                destBg,
-                destIndex,
-                Math.min(1.0, channel(destBg, destIndex) + bloomAmount),
-                Math.min(1.0, channel(destBg, destIndex + 1) + bloomAmount),
-                Math.min(1.0, channel(destBg, destIndex + 2) + bloomAmount),
-              )
+                setRgb(
+                  destBg,
+                  destIndex,
+                  Math.min(1.0, channel(destBg, destIndex) + bloomAmount),
+                  Math.min(1.0, channel(destBg, destIndex + 1) + bloomAmount),
+                  Math.min(1.0, channel(destBg, destIndex + 2) + bloomAmount),
+                )
+              }
             }
           }
         }
       }
-    }
+    })
   }
 }

@@ -1,3 +1,11 @@
+import { ResourceContext } from "@opentui/core"
+
+let resourceContext: ResourceContext
+beforeEach(() => {
+  resourceContext = new ResourceContext({ objectCapacity: 65536, renderCellsMax: 1000000 })
+})
+afterEach(() => resourceContext.destroy())
+
 import { describe, expect, it, beforeEach, afterEach } from "bun:test"
 import { testRender } from "../index.js"
 import { For, Show, createSignal } from "solid-js"
@@ -24,7 +32,7 @@ describe("LineNumber in ScrollBox - Height and Overlap Issues", () => {
   })
 
   it("REPRODUCES BUG: single line_number with code in scrollbox has excessive height", async () => {
-    const syntaxStyle = SyntaxStyle.fromTheme([])
+    const syntaxStyle = SyntaxStyle.fromTheme([], resourceContext)
     const codeContent = `function hello() {
   console.log("Hello, World!");
   return 42;
@@ -79,7 +87,7 @@ describe("LineNumber in ScrollBox - Height and Overlap Issues", () => {
   })
 
   it("WORKAROUND: flexShrink=0 fixes the height issue", async () => {
-    const syntaxStyle = SyntaxStyle.fromTheme([])
+    const syntaxStyle = SyntaxStyle.fromTheme([], resourceContext)
     const codeContent = `function hello() {
   console.log("Hello, World!");
   return 42;
@@ -128,7 +136,7 @@ describe("LineNumber in ScrollBox - Height and Overlap Issues", () => {
   })
 
   it("multiple line_number blocks should not overlap - realistic chat scenario", async () => {
-    const syntaxStyle = SyntaxStyle.fromTheme([])
+    const syntaxStyle = SyntaxStyle.fromTheme([], resourceContext)
 
     const messages = [
       {
@@ -225,7 +233,7 @@ test("hello returns greeting", () => {
   })
 
   it("line_number height should match code content height, not double", async () => {
-    const syntaxStyle = SyntaxStyle.fromTheme([])
+    const syntaxStyle = SyntaxStyle.fromTheme([], resourceContext)
     const shortCode = "const x = 1;\nconst y = 2;"
 
     testSetup = await testRender(
@@ -287,7 +295,7 @@ test("hello returns greeting", () => {
   })
 
   it("scrollbox with box container around line_number - no excessive height", async () => {
-    const syntaxStyle = SyntaxStyle.fromTheme([])
+    const syntaxStyle = SyntaxStyle.fromTheme([], resourceContext)
     const code = `function test() {
   return true;
 }`
@@ -353,7 +361,7 @@ test("hello returns greeting", () => {
   })
 
   it("multiple messages with mixed content - verify no overlapping", async () => {
-    const syntaxStyle = SyntaxStyle.fromTheme([])
+    const syntaxStyle = SyntaxStyle.fromTheme([], resourceContext)
 
     interface Message {
       type: "text" | "tool"
@@ -469,7 +477,7 @@ console.log(greet("World"));`,
   })
 
   it("scroll behavior - content should remain visible after scroll", async () => {
-    const syntaxStyle = SyntaxStyle.fromTheme([])
+    const syntaxStyle = SyntaxStyle.fromTheme([], resourceContext)
     let scrollRef: ScrollBoxRenderable | undefined
 
     const [messages, setMessages] = createSignal([
@@ -570,7 +578,7 @@ console.log(greet("World"));`,
   })
 
   it("VISUAL CHECK: box with line_number should have clean spacing", async () => {
-    const syntaxStyle = SyntaxStyle.fromTheme([])
+    const syntaxStyle = SyntaxStyle.fromTheme([], resourceContext)
 
     testSetup = await testRender(
       () => (

@@ -182,22 +182,28 @@ Use `renderer.toggleDebugOverlay()` to change visibility. `OTUI_SHOW_STATS=true`
 
 ## Buffer and input diagnostics
 
-`renderer.dumpBuffers(timestamp?)` writes current, next, and output dumps under `buffer_dump/`. `renderer.dumpOutputBuffer(timestamp?)` writes only the latest output dump. Both use `Date.now()` when you omit the timestamp.
+Use test frame captures for decoded text and spans, or `renderer.currentRenderBuffer.withBuffers()` for scoped cell inspection. To inspect emitted ANSI bytes, supply a custom `stdout` stream.
 
 Use these environment diagnostics for a bounded investigation:
 
-| Variable                | Use                                                              |
-| ----------------------- | ---------------------------------------------------------------- |
-| `OTUI_SHOW_STATS`       | Show the native statistics overlay at renderer creation          |
-| `OTUI_DEBUG`            | Retain handler sequences for `renderer.getDebugInputs()`         |
-| `OTUI_STDIN_LOG`        | Write raw input bytes to one file                                |
-| `OTUI_DUMP_CAPTURES`    | Dump console and output capture from the renderer signal handler |
-| `OTUI_NO_NATIVE_RENDER` | Skip native frame rendering while the JavaScript loop still runs |
-| `OTUI_DEBUG_FFI`        | Enable foreign function interface debug logging                  |
+| Variable             | Use                                                              |
+| -------------------- | ---------------------------------------------------------------- |
+| `OTUI_SHOW_STATS`    | Show the native statistics overlay at renderer creation          |
+| `OTUI_DEBUG`         | Retain handler sequences for `renderer.getDebugInputs()`         |
+| `OTUI_STDIN_LOG`     | Write raw input bytes to one file                                |
+| `OTUI_DUMP_CAPTURES` | Dump console and output capture from the renderer signal handler |
+| `OTUI_DEBUG_FFI`     | Enable foreign function interface debug logging                  |
 
-`OTUI_NO_NATIVE_RENDER` does not prevent all terminal output. Split-footer output handling can still write ANSI sequences. Input and output captures can contain application data. Remove these settings after the investigation.
+Input and output captures can contain application data. Remove these settings after the investigation.
 
 Read [Environment variables](/docs/reference/env-vars) for exact parsing and activation timing. Read the [rendering pipeline](/docs/core-concepts/rendering-pipeline) for layout, cells, diffing, and image protocol behavior.
+
+## Removed diagnostics
+
+- Replace `renderer.dumpBuffers()` and `renderer.dumpOutputBuffer()` with frame capture, scoped cell inspection, or a custom output stream.
+- Remove `useThread` from renderer configuration and property access. The renderer selects its output threading policy.
+- Remove `OTUI_NO_NATIVE_RENDER` from your environment. It no longer suppresses presentation. Use `createTestRenderer()` to render without a terminal.
+- `OptimizedBuffer.getNativeId()` is no longer available. Keep the buffer object for drawing and lifetime management. Use `buffer.id` only as a diagnostic label, not as a native handle.
 
 ## Next
 

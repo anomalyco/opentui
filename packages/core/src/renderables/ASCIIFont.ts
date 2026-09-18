@@ -5,7 +5,7 @@ import {
   type ASCIIFontName,
   type fonts,
 } from "../lib/ascii.font.js"
-import { parseColor, type ColorInput } from "../lib/RGBA.js"
+import { RGBA, parseColor, type ColorInput } from "../lib/RGBA.js"
 import {
   ASCIIFontSelectionHelper,
   convertGlobalToLocalSelection,
@@ -41,10 +41,10 @@ export class ASCIIFontRenderable extends FrameBufferRenderable {
 
   protected _text: string
   protected _font: keyof typeof fonts
-  protected _color: ColorInput | ColorInput[]
-  protected _backgroundColor: ColorInput
-  protected _selectionBg: ColorInput | undefined
-  protected _selectionFg: ColorInput | undefined
+  protected _color: RGBA | RGBA[]
+  protected _backgroundColor: RGBA
+  protected _selectionBg: RGBA | undefined
+  protected _selectionFg: RGBA | undefined
   protected lastLocalSelection: LocalSelectionBounds | null = null
 
   private selectionHelper: ASCIIFontSelectionHelper
@@ -63,20 +63,27 @@ export class ASCIIFontRenderable extends FrameBufferRenderable {
       respectAlpha: true,
     } as FrameBufferOptions)
 
-    this._text = text
-    this._font = font
-    this._color = options.color || defaultOptions.color
-    this._backgroundColor = options.backgroundColor || defaultOptions.backgroundColor
-    this._selectionBg = options.selectionBg ? parseColor(options.selectionBg) : undefined
-    this._selectionFg = options.selectionFg ? parseColor(options.selectionFg) : undefined
-    this.selectable = options.selectable ?? true
+    try {
+      this._text = text
+      this._font = font
+      const color = options.color || defaultOptions.color
+      this._color = Array.isArray(color)
+        ? color.map((value) => RGBA.clone(parseColor(value)))
+        : RGBA.clone(parseColor(color))
+      this._backgroundColor = RGBA.clone(parseColor(options.backgroundColor || defaultOptions.backgroundColor))
+      this._selectionBg = options.selectionBg ? RGBA.clone(parseColor(options.selectionBg)) : undefined
+      this._selectionFg = options.selectionFg ? RGBA.clone(parseColor(options.selectionFg)) : undefined
+      this.selectable = options.selectable ?? true
 
-    this.selectionHelper = new ASCIIFontSelectionHelper(
-      () => this._text,
-      () => this._font,
-    )
+      this.selectionHelper = new ASCIIFontSelectionHelper(
+        () => this._text,
+        () => this._font,
+      )
 
-    this.renderFontToBuffer()
+      this.renderFontToBuffer()
+    } catch (error) {
+      this.abortConstruction(error)
+    }
   }
 
   get text(): string {
@@ -112,21 +119,23 @@ export class ASCIIFontRenderable extends FrameBufferRenderable {
   }
 
   get color(): ColorInput | ColorInput[] {
-    return this._color
+    return Array.isArray(this._color) ? this._color.map((color) => RGBA.clone(color)) : RGBA.clone(this._color)
   }
 
   set color(value: ColorInput | ColorInput[]) {
-    this._color = value
+    this._color = Array.isArray(value)
+      ? value.map((color) => RGBA.clone(parseColor(color)))
+      : RGBA.clone(parseColor(value))
     this.renderFontToBuffer()
     this.requestRender()
   }
 
   get backgroundColor(): ColorInput {
-    return this._backgroundColor
+    return RGBA.clone(this._backgroundColor)
   }
 
   set backgroundColor(value: ColorInput) {
-    this._backgroundColor = value
+    this._backgroundColor = RGBA.clone(parseColor(value))
     this.renderFontToBuffer()
     this.requestRender()
   }
@@ -144,7 +153,7 @@ export class ASCIIFontRenderable extends FrameBufferRenderable {
   }
 
   onSelectionChanged(selection: Selection | null): boolean {
-    const localSelection = convertGlobalToLocalSelection(selection, this.x, this.y)
+    const localSelection = convertGlobalToLocalSelection(selection, Math.trunc(this.x), Math.trunc(this.y))
     this.lastLocalSelection = localSelection
     const changed = this.selectionHelper.onLocalSelectionChanged(localSelection, this.width, this.height)
     if (changed) {
@@ -177,7 +186,7 @@ export class ASCIIFontRenderable extends FrameBufferRenderable {
       text: this._text,
       x: 0,
       y: 0,
-      color: this.color,
+      color: this._color,
       backgroundColor: this._backgroundColor,
       font: this._font,
     })

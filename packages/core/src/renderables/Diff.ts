@@ -53,6 +53,10 @@ export interface DiffRenderableOptions extends RenderableOptions<DiffRenderable>
 }
 
 export class DiffRenderable extends Renderable {
+  static override readonly nativeIntegration = this.defineNativeIntegration({
+    ...Renderable.nativeIntegration,
+    construction: "prototype",
+  })
   private _diff: string
   private _syncScroll: boolean = false
   private _view: "unified" | "split"
@@ -66,6 +70,7 @@ export class DiffRenderable extends Renderable {
   private _fg?: RGBA
   private _filetype?: string
   private _syntaxStyle?: SyntaxStyle
+  private fallbackSyntaxStyle?: SyntaxStyle
   private _wrapMode?: "word" | "char" | "none"
   private _conceal: boolean
   private _selectionBg?: RGBA
@@ -113,40 +118,49 @@ export class DiffRenderable extends Renderable {
       flexDirection: options.view === "split" ? "row" : "column",
     })
 
-    this._diff = options.diff ?? ""
-    this._syncScroll = options.syncScroll ?? false
-    this._view = options.view ?? "unified"
+    try {
+      this._diff = options.diff ?? ""
+      this._syncScroll = options.syncScroll ?? false
+      this._view = options.view ?? "unified"
 
-    // CodeRenderable options
-    this._fg = options.fg ? parseColor(options.fg) : undefined
-    this._filetype = options.filetype
-    this._syntaxStyle = options.syntaxStyle
-    this._wrapMode = options.wrapMode
-    this._conceal = options.conceal ?? false
-    this._selectionBg = options.selectionBg ? parseColor(options.selectionBg) : undefined
-    this._selectionFg = options.selectionFg ? parseColor(options.selectionFg) : undefined
-    this._treeSitterClient = options.treeSitterClient
+      // CodeRenderable options
+      this._fg = options.fg ? RGBA.clone(parseColor(options.fg)) : undefined
+      this._filetype = options.filetype
+      this._syntaxStyle = options.syntaxStyle
+      this._wrapMode = options.wrapMode
+      this._conceal = options.conceal ?? false
+      this._selectionBg = options.selectionBg ? RGBA.clone(parseColor(options.selectionBg)) : undefined
+      this._selectionFg = options.selectionFg ? RGBA.clone(parseColor(options.selectionFg)) : undefined
+      this._treeSitterClient = options.treeSitterClient
 
-    // LineNumberRenderable options
-    this._showLineNumbers = options.showLineNumbers ?? true
-    this._lineNumberFg = parseColor(options.lineNumberFg ?? "#888888")
-    this._lineNumberBg = parseColor(options.lineNumberBg ?? "transparent")
+      // LineNumberRenderable options
+      this._showLineNumbers = options.showLineNumbers ?? true
+      this._lineNumberFg = RGBA.clone(parseColor(options.lineNumberFg ?? "#888888"))
+      this._lineNumberBg = RGBA.clone(parseColor(options.lineNumberBg ?? "transparent"))
 
-    // Diff styling
-    this._addedBg = parseColor(options.addedBg ?? "#1a4d1a")
-    this._removedBg = parseColor(options.removedBg ?? "#4d1a1a")
-    this._contextBg = parseColor(options.contextBg ?? "transparent")
-    this._addedContentBg = options.addedContentBg ? parseColor(options.addedContentBg) : null
-    this._removedContentBg = options.removedContentBg ? parseColor(options.removedContentBg) : null
-    this._contextContentBg = options.contextContentBg ? parseColor(options.contextContentBg) : null
-    this._addedSignColor = parseColor(options.addedSignColor ?? "#22c55e")
-    this._removedSignColor = parseColor(options.removedSignColor ?? "#ef4444")
-    this._addedLineNumberBg = parseColor(options.addedLineNumberBg ?? "transparent")
-    this._removedLineNumberBg = parseColor(options.removedLineNumberBg ?? "transparent")
+      // Diff styling
+      this._addedBg = RGBA.clone(parseColor(options.addedBg ?? "#1a4d1a"))
+      this._removedBg = RGBA.clone(parseColor(options.removedBg ?? "#4d1a1a"))
+      this._contextBg = RGBA.clone(parseColor(options.contextBg ?? "transparent"))
+      this._addedContentBg = options.addedContentBg ? RGBA.clone(parseColor(options.addedContentBg)) : null
+      this._removedContentBg = options.removedContentBg ? RGBA.clone(parseColor(options.removedContentBg)) : null
+      this._contextContentBg = options.contextContentBg ? RGBA.clone(parseColor(options.contextContentBg)) : null
+      this._addedSignColor = RGBA.clone(parseColor(options.addedSignColor ?? "#22c55e"))
+      this._removedSignColor = RGBA.clone(parseColor(options.removedSignColor ?? "#ef4444"))
+      this._addedLineNumberBg = RGBA.clone(parseColor(options.addedLineNumberBg ?? "transparent"))
+      this._removedLineNumberBg = RGBA.clone(parseColor(options.removedLineNumberBg ?? "transparent"))
 
-    if (this._diff) {
-      this.parseDiff()
-      this.buildView()
+      if (this._diff) {
+        this.parseDiff()
+        this.buildView()
+      }
+    } catch (error) {
+      try {
+        super.destroyRecursively()
+      } catch {
+        // Preserve the construction failure.
+      }
+      throw error
     }
   }
 
@@ -290,21 +304,47 @@ export class DiffRenderable extends Renderable {
   private detachLineInfoListeners(): void {
     if (!this._lineInfoChangeHandler) return
 
-    if (this.leftCodeRenderable) {
-      this.leftCodeRenderable.off("line-info-change", this._lineInfoChangeHandler)
-    }
-    if (this.rightCodeRenderable) {
-      this.rightCodeRenderable.off("line-info-change", this._lineInfoChangeHandler)
-    }
+    const handler = this._lineInfoChangeHandler
     this._lineInfoChangeHandler = null
+    this.runCleanup((run) => {
+      run(() => this.leftCodeRenderable?.off("line-info-change", handler))
+      run(() => this.rightCodeRenderable?.off("line-info-change", handler))
+    })
   }
 
   public override destroyRecursively(): void {
-    this.detachLineInfoListeners()
+    if (this.isDestroyed) return
+    this.assertMutable()
+    this.runCleanup((run) => {
+      run(() => this.detachLineInfoListeners())
+      this.pendingRebuild = false
+      this.leftSideAdded = false
+      this.rightSideAdded = false
+      run(() => super.destroyRecursively())
+    })
+  }
+
+  protected override destroySelf(): void {
     this.pendingRebuild = false
-    this.leftSideAdded = false
-    this.rightSideAdded = false
-    super.destroyRecursively()
+    this.runCleanup((run) => {
+      run(() => this.detachLineInfoListeners())
+      // Inactive views are detached from the tree but still owned by this Diff.
+      for (const child of [
+        this.leftSide,
+        this.rightSide,
+        this.leftCodeRenderable,
+        this.rightCodeRenderable,
+        this.errorTextRenderable,
+        this.errorCodeRenderable,
+      ]) {
+        if (child && !child.isDestroyed) run(() => child.destroyRecursively())
+      }
+      run(() => this.fallbackSyntaxStyle?.destroy())
+    })
+  }
+
+  private get codeSyntaxStyle(): SyntaxStyle {
+    return this._syntaxStyle ?? (this.fallbackSyntaxStyle ??= SyntaxStyle.create(this.ctx.nativeScene))
   }
 
   private buildErrorView(): void {
@@ -342,7 +382,7 @@ export class DiffRenderable extends Renderable {
         id: this.id ? `${this.id}-error-code` : undefined,
         content: this._diff,
         filetype: "diff",
-        syntaxStyle: this._syntaxStyle ?? SyntaxStyle.create(),
+        syntaxStyle: this.codeSyntaxStyle,
         wrapMode: this._wrapMode,
         conceal: this._conceal,
         width: "100%",
@@ -379,7 +419,7 @@ export class DiffRenderable extends Renderable {
         filetype: this._filetype,
         wrapMode,
         conceal: this._conceal,
-        syntaxStyle: this._syntaxStyle ?? SyntaxStyle.create(),
+        syntaxStyle: this.codeSyntaxStyle,
         width: "100%",
         height: "100%",
         ...(this._fg !== undefined && { fg: this._fg }),
@@ -977,7 +1017,12 @@ export class DiffRenderable extends Renderable {
 
   public set syntaxStyle(value: SyntaxStyle | undefined) {
     if (this._syntaxStyle !== value) {
+      const style = value ?? (this.fallbackSyntaxStyle ??= SyntaxStyle.create(this.ctx.nativeScene))
       this._syntaxStyle = value
+      // Inactive panes can still finish highlighting after their theme is replaced.
+      for (const code of [this.leftCodeRenderable, this.rightCodeRenderable, this.errorCodeRenderable]) {
+        if (code && !code.isDestroyed) code.syntaxStyle = style
+      }
       this.rebuildView()
     }
   }
@@ -1016,119 +1061,92 @@ export class DiffRenderable extends Renderable {
   }
 
   public get addedBg(): RGBA {
-    return this._addedBg
+    return RGBA.clone(this._addedBg)
   }
 
   public set addedBg(value: string | RGBA) {
-    const parsed = parseColor(value)
-    if (this._addedBg !== parsed) {
-      this._addedBg = parsed
-      this.rebuildView()
-    }
+    this._addedBg = RGBA.clone(parseColor(value))
+    this.rebuildView()
   }
 
   public get removedBg(): RGBA {
-    return this._removedBg
+    return RGBA.clone(this._removedBg)
   }
 
   public set removedBg(value: string | RGBA) {
-    const parsed = parseColor(value)
-    if (this._removedBg !== parsed) {
-      this._removedBg = parsed
-      this.rebuildView()
-    }
+    this._removedBg = RGBA.clone(parseColor(value))
+    this.rebuildView()
   }
 
   public get contextBg(): RGBA {
-    return this._contextBg
+    return RGBA.clone(this._contextBg)
   }
 
   public set contextBg(value: string | RGBA) {
-    const parsed = parseColor(value)
-    if (this._contextBg !== parsed) {
-      this._contextBg = parsed
-      this.rebuildView()
-    }
+    this._contextBg = RGBA.clone(parseColor(value))
+    this.rebuildView()
   }
 
   public get addedSignColor(): RGBA {
-    return this._addedSignColor
+    return RGBA.clone(this._addedSignColor)
   }
 
   public set addedSignColor(value: string | RGBA) {
-    const parsed = parseColor(value)
-    if (this._addedSignColor !== parsed) {
-      this._addedSignColor = parsed
-      this.rebuildView()
-    }
+    this._addedSignColor = RGBA.clone(parseColor(value))
+    this.rebuildView()
   }
 
   public get removedSignColor(): RGBA {
-    return this._removedSignColor
+    return RGBA.clone(this._removedSignColor)
   }
 
   public set removedSignColor(value: string | RGBA) {
-    const parsed = parseColor(value)
-    if (this._removedSignColor !== parsed) {
-      this._removedSignColor = parsed
-      this.rebuildView()
-    }
+    this._removedSignColor = RGBA.clone(parseColor(value))
+    this.rebuildView()
   }
 
   public get addedLineNumberBg(): RGBA {
-    return this._addedLineNumberBg
+    return RGBA.clone(this._addedLineNumberBg)
   }
 
   public set addedLineNumberBg(value: string | RGBA) {
-    const parsed = parseColor(value)
-    if (this._addedLineNumberBg !== parsed) {
-      this._addedLineNumberBg = parsed
-      this.rebuildView()
-    }
+    this._addedLineNumberBg = RGBA.clone(parseColor(value))
+    this.rebuildView()
   }
 
   public get removedLineNumberBg(): RGBA {
-    return this._removedLineNumberBg
+    return RGBA.clone(this._removedLineNumberBg)
   }
 
   public set removedLineNumberBg(value: string | RGBA) {
-    const parsed = parseColor(value)
-    if (this._removedLineNumberBg !== parsed) {
-      this._removedLineNumberBg = parsed
-      this.rebuildView()
-    }
+    this._removedLineNumberBg = RGBA.clone(parseColor(value))
+    this.rebuildView()
   }
 
   public get lineNumberFg(): RGBA {
-    return this._lineNumberFg
+    return RGBA.clone(this._lineNumberFg)
   }
 
   public set lineNumberFg(value: string | RGBA) {
-    const parsed = parseColor(value)
-    if (this._lineNumberFg !== parsed) {
-      this._lineNumberFg = parsed
-      this.rebuildView()
-    }
+    this._lineNumberFg = RGBA.clone(parseColor(value))
+    this.rebuildView()
   }
 
   public get lineNumberBg(): RGBA {
-    return this._lineNumberBg
+    return RGBA.clone(this._lineNumberBg)
   }
 
   public set lineNumberBg(value: string | RGBA) {
-    const parsed = parseColor(value)
-    if (this._lineNumberBg !== parsed) {
-      this._lineNumberBg = parsed
-      this.rebuildView()
-    }
+    this._lineNumberBg = RGBA.clone(parseColor(value))
+    this.rebuildView()
   }
 
   public get addedContentBg(): RGBA | null {
-    return this._addedContentBg
+    return this._addedContentBg ? RGBA.clone(this._addedContentBg) : null
   }
 
   public set addedContentBg(value: string | RGBA | null) {
-    const parsed = value ? parseColor(value) : null
+    const parsed = value ? RGBA.clone(parseColor(value)) : null
     if (this._addedContentBg !== parsed) {
       this._addedContentBg = parsed
       this.rebuildView()
@@ -1136,11 +1154,11 @@ export class DiffRenderable extends Renderable {
   }
 
   public get removedContentBg(): RGBA | null {
-    return this._removedContentBg
+    return this._removedContentBg ? RGBA.clone(this._removedContentBg) : null
   }
 
   public set removedContentBg(value: string | RGBA | null) {
-    const parsed = value ? parseColor(value) : null
+    const parsed = value ? RGBA.clone(parseColor(value)) : null
     if (this._removedContentBg !== parsed) {
       this._removedContentBg = parsed
       this.rebuildView()
@@ -1148,11 +1166,11 @@ export class DiffRenderable extends Renderable {
   }
 
   public get contextContentBg(): RGBA | null {
-    return this._contextContentBg
+    return this._contextContentBg ? RGBA.clone(this._contextContentBg) : null
   }
 
   public set contextContentBg(value: string | RGBA | null) {
-    const parsed = value ? parseColor(value) : null
+    const parsed = value ? RGBA.clone(parseColor(value)) : null
     if (this._contextContentBg !== parsed) {
       this._contextContentBg = parsed
       this.rebuildView()
@@ -1160,11 +1178,11 @@ export class DiffRenderable extends Renderable {
   }
 
   public get selectionBg(): RGBA | undefined {
-    return this._selectionBg
+    return this._selectionBg ? RGBA.clone(this._selectionBg) : undefined
   }
 
   public set selectionBg(value: string | RGBA | undefined) {
-    const parsed = value ? parseColor(value) : undefined
+    const parsed = value ? RGBA.clone(parseColor(value)) : undefined
     if (this._selectionBg !== parsed) {
       this._selectionBg = parsed
       if (this.leftCodeRenderable) {
@@ -1177,11 +1195,11 @@ export class DiffRenderable extends Renderable {
   }
 
   public get selectionFg(): RGBA | undefined {
-    return this._selectionFg
+    return this._selectionFg ? RGBA.clone(this._selectionFg) : undefined
   }
 
   public set selectionFg(value: string | RGBA | undefined) {
-    const parsed = value ? parseColor(value) : undefined
+    const parsed = value ? RGBA.clone(parseColor(value)) : undefined
     if (this._selectionFg !== parsed) {
       this._selectionFg = parsed
       if (this.leftCodeRenderable) {
@@ -1205,11 +1223,11 @@ export class DiffRenderable extends Renderable {
   }
 
   public get fg(): RGBA | undefined {
-    return this._fg
+    return this._fg ? RGBA.clone(this._fg) : undefined
   }
 
   public set fg(value: string | RGBA | undefined) {
-    const parsed = value ? parseColor(value) : undefined
+    const parsed = value ? RGBA.clone(parseColor(value)) : undefined
     if (this._fg !== parsed) {
       this._fg = parsed
       if (this.leftCodeRenderable) {

@@ -1,8 +1,44 @@
 import { test, expect } from "bun:test"
 import { NativeSpanFeed } from "../NativeSpanFeed.js"
 import { resolveRenderLib } from "../zig.js"
+import { SpanInfoStruct } from "../zig-structs.js"
 
 const lib = resolveRenderLib()
+
+for (const thrown of [undefined, null, false, 0]) {
+  test(`falsy handler error ${String(thrown)} is preserved through release and deferred delivery`, () => {
+    const stream = NativeSpanFeed.create({ chunkSize: 8, initialChunks: 1 })
+    try {
+      stream.onData(() => {
+        throw thrown
+      })
+      stream.onData(() => {
+        throw new Error("later error")
+      })
+      lib.unregisterNativeSpanFeedStream(stream.streamPtr)
+      expect(lib.streamWrite(stream.streamPtr, "x")).toBe(0)
+      expect(lib.streamCommit(stream.streamPtr)).toBe(0)
+      const expectOriginalError = () => {
+        let caught = false
+        let actual: unknown
+        try {
+          stream.drainAll()
+        } catch (error) {
+          caught = true
+          actual = error
+        }
+        expect(caught).toBe(true)
+        expect(actual).toBe(thrown)
+      }
+      expectOriginalError()
+      expect(lib.streamGetStats(stream.streamPtr)?.outstandingSpans).toBe(0)
+      ;(stream as any).queuePendingHandlerError(thrown)
+      expectOriginalError()
+    } finally {
+      stream.close()
+    }
+  })
+}
 
 function writeData(stream: NativeSpanFeed, text: string): void {
   const data = new TextEncoder().encode(text)
@@ -112,31 +148,25 @@ test("streamWrite rejects null pointers for non-zero writes without trapping", (
   stream.close()
 })
 
-test("decrementRefcount with out-of-bounds chunkIndex does not crash or corrupt", () => {
-  const stream = NativeSpanFeed.create({ chunkSize: 64, initialChunks: 1 })
-
-  const received: string[] = []
-  let closedOnSpan = -1
-
-  stream.onData((data) => {
-    const text = new TextDecoder().decode(data)
-    received.push(text)
-    if (closedOnSpan < 0) {
-      closedOnSpan = 0
-      // Force an empty state buffer to exercise the guard.
-      ;(stream as any).stateBuffer = new Uint8Array(0)
-    }
-  })
-  for (let i = 0; i < 5; i++) {
-    const msg = new TextEncoder().encode(`s${i}`)
-    lib.streamWrite(stream.streamPtr, msg)
-    lib.streamCommit(stream.streamPtr)
-  }
-
-  stream.drainAll()
-  expect(received).toEqual(["s0", "s1", "s2", "s3", "s4"])
-
-  stream.close()
+test("native release rejects stale identities after slot reuse", () => {
+  const ptr = lib.createNativeSpanFeed({ chunkSize: 8, initialChunks: 1, maxBytes: 8n })
+  const buffer = new Uint8Array(SpanInfoStruct.size)
+  expect(lib.streamWrite(ptr, "original")).toBe(0)
+  expect(lib.streamDrainSpans(ptr, buffer, 1)).toBe(1)
+  const first = SpanInfoStruct.unpack(buffer.buffer)
+  expect(lib.streamReleaseSpan(ptr, first.slotIndex, first.releaseId + 0x100000000n)).toBe(-3)
+  expect(lib.streamReleaseSpan(ptr, 0xffffffff, first.releaseId)).toBe(-3)
+  expect(lib.streamReleaseSpan(ptr, first.slotIndex, first.releaseId)).toBe(0)
+  expect(lib.streamReleaseSpan(ptr, first.slotIndex, first.releaseId)).toBe(-3)
+  expect(lib.streamWrite(ptr, "retained")).toBe(0)
+  expect(lib.streamDrainSpans(ptr, buffer, 1)).toBe(1)
+  const second = SpanInfoStruct.unpack(buffer.buffer)
+  expect(lib.streamReleaseSpan(ptr, first.slotIndex, first.releaseId)).toBe(-3)
+  expect(lib.streamWrite(ptr, "blocked!")).toBe(-2)
+  expect(lib.streamGetStats(ptr)?.outstandingBytes).toBe(8n)
+  expect(lib.destroyNativeSpanFeed(ptr)).toBe(-5)
+  expect(lib.streamReleaseSpan(ptr, second.slotIndex, second.releaseId)).toBe(0)
+  expect(lib.destroyNativeSpanFeed(ptr)).toBe(0)
 })
 
 test("toArrayBuffer aliases Zig-owned chunk memory", () => {

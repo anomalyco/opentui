@@ -16,26 +16,37 @@ Use [FrameBuffer](/docs/components/frame-buffer) when a component should own and
 ## Create and destroy a buffer
 
 ```typescript
-import { OptimizedBuffer, RGBA } from "@opentui/core"
+import { OptimizedBuffer, ResourceContext, RGBA } from "@opentui/core"
 
-const buffer = OptimizedBuffer.create(40, 10, "unicode", {
-  id: "preview",
-  respectAlpha: true,
-})
-
+const owner = new ResourceContext({ objectCapacity: 4, renderCellsMax: 400 })
 try {
+  const buffer = OptimizedBuffer.create(40, 10, "unicode", {
+    owner,
+    id: "preview",
+    respectAlpha: true,
+  })
   buffer.clear(RGBA.fromInts(0, 0, 0, 0))
   buffer.drawText("status", 1, 1, RGBA.fromInts(255, 255, 255))
-} finally {
   buffer.destroy()
+} finally {
+  owner.destroy()
 }
 ```
 
-`create(width, height, widthMethod, options?)` requires positive cell dimensions. `widthMethod` is `"unicode"` or
-`"wcwidth"`. Options are `respectAlpha?: boolean` and `id?: string`. Both default to false or an internal ID.
+`create(width, height, widthMethod, options)` requires positive cell dimensions and an explicit `owner`.
+For renderer-owned resources, pass `renderer.nativeScene`. For standalone work, create a `ResourceContext`.
 
-The creator owns an independent buffer and must call `destroy()`. Destruction is idempotent. Every cached raw typed
-array becomes invalid when the buffer is resized or destroyed. Most methods throw after destruction.
+`ResourceContext` uses checked native resources without creating a renderer or terminal Session. Its limits bound
+native object slots and drawing-buffer cells. Cell leases also consume object slots. Destroying the Context releases
+its remaining resources; active cell leases must be released first.
+
+Read [How Core uses native](/docs/native/core#resources-through-core) for Core resource factories and their native owners.
+
+`widthMethod` is `"unicode"` or `"wcwidth"`. The optional `respectAlpha` field defaults to false.
+The optional `id` field defaults to an internal ID.
+
+Call `destroy()` to release an independent buffer before its Context ends. Destruction is idempotent. A raw cell view
+is valid only inside its `withBuffers()` callback. Most methods throw after buffer or Context destruction.
 
 The public lifecycle method is named `destroy()`, not `dispose()`.
 
@@ -45,17 +56,19 @@ The public lifecycle method is named `destroy()`, not `dispose()`.
 
 - Renderables and post-process callbacks draw into `nextRenderBuffer`.
 - Native rendering compares the next buffer with `currentRenderBuffer`.
-- The native renderer copies changed cells into the current buffer after output.
-- The native renderer clears the next buffer after the frame.
+- The native encoder can change the current buffer before output admission or presentation. It is not a last-presented snapshot.
+- The native encoder clears the next buffer after encoding.
 
 Do not destroy either renderer buffer. Do not mutate `currentRenderBuffer`. A current-buffer mutation can hide a real
 change from the terminal diff.
 
-The renderer can replace both wrappers during resize. Do not retain their raw views across a resize.
+The wrappers keep their identity during renderer resize, but their native storage changes.
+Use a new cell scope after resize. Do not reuse raw views from an earlier scope.
 
 ## Cell model
 
-The public `buffers` getter returns native-memory aliases:
+Use `withBuffers()` to borrow cell arrays for a synchronous callback. Checked Context buffers do not expose the
+unleased compatibility `buffers` getter. The callback receives these planes, plus the dimensions and storage generation:
 
 ```typescript
 {
@@ -101,8 +114,9 @@ if (encoded) {
 }
 ```
 
-`encodeUnicode()` allocates native grapheme data. Always pass its complete result to `freeUnicode()`. `drawChar()` can
-draw the tagged values returned in `data` and maintain their continuation cells.
+`encodeUnicode()` allocates native grapheme data. Always pass its complete result to `freeUnicode()`. The `char` values
+in `data` are opaque tokens owned by that Context, not pointers or raw cell values. Pass them to `drawChar()` on a buffer
+with the same owner. Do not inspect their bits or retain them after `freeUnicode()`.
 
 ## Drawing inventory
 
@@ -113,7 +127,7 @@ draw the tagged values returned in `data` and maintain their continuation cells.
 | `clear`                    | `clear(bg = opaque black)` clears cells, links, graphemes, attributes, image placements, and stack-independent content |
 | `setCell`                  | `setCell(x, y, char, fg, bg, attributes = 0)` replaces one cell without alpha blending                                 |
 | `setCellWithAlphaBlending` | Same arguments, with foreground and background alpha composition                                                       |
-| `drawChar`                 | `drawChar(encodedChar, x, y, fg, bg, attributes = 0)` accepts a scalar or tagged value from `encodeUnicode()`          |
+| `drawChar`                 | `drawChar(encodedChar, x, y, fg, bg, attributes = 0)` accepts a scalar or same-Context token from `encodeUnicode()`    |
 | `drawText`                 | `drawText(text, x, y, fg, bg?, attributes = 0, selection?)` segments and clips Unicode text                            |
 | `fillRect`                 | `fillRect(x, y, width, height, bg)` paints the rectangle through tracker-aware cell paths                              |
 
@@ -162,10 +176,10 @@ color-intent state through tracker-aware paths. A fast path copies plain opaque 
 Image destination positions and dimensions use cells. `pixelWidth` and `pixelHeight` use terminal pixels. Source
 coordinates use image pixels.
 
-A successful `drawImage()` retains the `NativeImage` until image placements are cleared, materialized as fallbacks, or
-the buffer is resized or destroyed. Drawing cells over the image marker does not release that retained placement. The
-caller still owns and disposes its own image handle. Read [`NativeImage`](/docs/reference/native-image) for decode and
-pixel ownership.
+A successful `drawImage()` retains a Context-owned image copy until image placements are cleared, materialized as
+fallbacks, or the buffer is resized or destroyed. Drawing cells over the image marker does not release that retained
+placement. The caller still owns and can dispose its source image handle. Read
+[`NativeImage`](/docs/reference/native-image) for decode and pixel ownership.
 
 `drawPackedBuffer()` exposes no public TypeScript description of the packed byte format. Treat it as an integration
 surface for a producer that already implements the native format. Do not pass arbitrary bytes.
@@ -192,6 +206,22 @@ The opacity stack stores a cumulative value:
 
 Normal alpha-aware drawing reads the current opacity. Raw writes and matrix methods do not.
 
+Context-owned buffers and native frame targets check stack operations. Each stack
+allows at most 256 custom entries. Scissor coordinates and dimensions must be
+integers with nonnegative dimensions and signed 32-bit endpoints. Opacity must
+be finite; finite values still clamp to `0..1`. Rejected operations leave the
+accepted stack unchanged.
+
+A native paint hook inherits the scene's clipping and opacity. Its pop and clear
+calls affect only its own entries, not inherited state. The renderer resets custom
+entries between hooks, including after a throwing hook. A saved frame buffer cannot
+be used outside its active frame scope.
+
+Retained offscreen buffers keep their stacks until you pop, clear, or destroy them.
+Use `try`/`finally` to balance scopes when your drawing code can throw. Use
+`setCellWithAlphaBlending()` for opacity-aware cell drawing; `drawText()` with an
+opaque background retains its direct-write behavior.
+
 `setRespectAlpha(boolean)` changes frame-buffer composition policy. It does not convert existing cells.
 
 ## Color transforms
@@ -214,21 +244,18 @@ Captured spans have limits:
 
 - They omit hyperlink URLs and IDs because attributes are reduced to the low eight base bits.
 - They expose image fallback glyphs, not image pixels or protocol metadata.
-- Their text reconstruction consumes one JavaScript code point per non-continuation cell. A multi-code-point grapheme
-  can shift later text between cells.
+- Their text reconstruction uses native per-cell byte lengths, including multi-code-point graphemes and zero-length continuation cells.
 - Span width counts terminal cells and can be larger than JavaScript string length.
-- A row that ends in a continuation cell can miss its requested line break in the current resolved-byte writer.
-- Resolved output can be empty when the internal size estimate has no room for requested line breaks.
 
 Use capture spans for tests that compare ordinary text and style. Do not use them as a lossless buffer serialization.
 
 ## Resize and raw views
 
 When the dimensions change, `resize(width, height)` reallocates the arrays and clears all cells. It keeps the native
-buffer object. A call with the current dimensions does nothing. Dimensions must stay positive. Get new `buffers` views
-after a dimension-changing resize.
+buffer object. A call with the current dimensions does nothing. Dimensions must stay positive.
+After a dimension-changing resize, get a new cell scope.
 
-Never mutate `buffers.char` or `buffers.attributes` for arbitrary text. Direct writes bypass grapheme, continuation,
+Never mutate the scoped `char` or `attributes` arrays for arbitrary text. Direct writes bypass grapheme, continuation,
 link, and image-placement bookkeeping. Direct color writes can discard palette and default-color intent in the high
 bits.
 

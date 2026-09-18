@@ -1,4 +1,5 @@
 const std = @import("std");
+const TestPools = @import("../tests/test-pools.zig").TestPools;
 const bench_utils = @import("../bench-utils.zig");
 const text_buffer = @import("../text-buffer.zig");
 const text_buffer_view = @import("../text-buffer-view.zig");
@@ -68,13 +69,13 @@ fn benchSetText(
     io: std.Io,
     allocator: std.mem.Allocator,
     pool: *gp.GraphemePool,
+    link_pool: *link.LinkPool,
     iterations: usize,
     show_mem: bool,
     bench_filter: ?[]const u8,
 ) ![]BenchResult {
     var results: std.ArrayList(BenchResult) = .empty;
     errdefer results.deinit(allocator);
-    const link_pool = link.initGlobalLinkPool(allocator);
 
     // Small text
     {
@@ -172,6 +173,7 @@ fn benchWrap(
     io: std.Io,
     allocator: std.mem.Allocator,
     pool: *gp.GraphemePool,
+    link_pool: *link.LinkPool,
     text: []const u8,
     wrap_width: u32,
     wrap_mode: WrapMode,
@@ -182,7 +184,6 @@ fn benchWrap(
     var stats: BenchStats = .{};
     var final_tb_mem: usize = 0;
     var final_view_mem: usize = 0;
-    const link_pool = link.initGlobalLinkPool(allocator);
 
     for (0..iterations) |i| {
         var tb = try UnifiedTextBuffer.init(allocator, pool, link_pool, .unicode);
@@ -243,6 +244,7 @@ fn benchMeasureForDimensionsLayout(
     io: std.Io,
     allocator: std.mem.Allocator,
     pool: *gp.GraphemePool,
+    link_pool: *link.LinkPool,
     text: []const u8,
     streaming: bool,
     measure_width: u32,
@@ -255,7 +257,6 @@ fn benchMeasureForDimensionsLayout(
     var stats: BenchStats = .{};
     var final_tb_mem: usize = 0;
     var final_view_mem: usize = 0;
-    const link_pool = link.initGlobalLinkPool(allocator);
 
     const token = "token ";
     const newline = "\n";
@@ -325,8 +326,8 @@ pub fn run(
     show_mem: bool,
     bench_filter: ?[]const u8,
 ) ![]BenchResult {
-    // Global pool and unicode data are initialized once in bench.zig
-    const pool = gp.initGlobalPool(allocator);
+    var pools = TestPools.init(allocator);
+    defer pools.deinit();
 
     var all_results: std.ArrayList(BenchResult) = .empty;
     errdefer all_results.deinit(allocator);
@@ -334,7 +335,7 @@ pub fn run(
     const iterations: usize = 10;
 
     // Run setText benchmarks
-    const setText_results = try benchSetText(io, allocator, pool, iterations, show_mem, bench_filter);
+    const setText_results = try benchSetText(io, allocator, &pools.graphemes, &pools.links, iterations, show_mem, bench_filter);
     try all_results.appendSlice(allocator, setText_results);
 
     var text_multiline: ?[]u8 = null;
@@ -374,7 +375,8 @@ pub fn run(
         var bench_result = try benchMeasureForDimensionsLayout(
             io,
             allocator,
-            pool,
+            &pools.graphemes,
+            &pools.links,
             text_multiline.?,
             scenario.streaming,
             scenario.width,
@@ -433,7 +435,8 @@ pub fn run(
         var bench_result = try benchWrap(
             io,
             allocator,
-            pool,
+            &pools.graphemes,
+            &pools.links,
             text,
             scenario.width,
             scenario.mode,

@@ -19,5 +19,7 @@
         "build.zig",
         "build.zig.zon",
         "src",
+        "include",
+        "README.md",
     },
 }

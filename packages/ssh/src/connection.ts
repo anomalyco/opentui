@@ -6,8 +6,6 @@ import { ignoreErrors, type SafeInvoke } from "./safe.js"
 import type { Identity, RemoteAddress, SessionHandler } from "./types.js"
 import type { ResolvedSessionLimits } from "./runtime.js"
 
-const SHUTDOWN_DRAIN_TIMEOUT_MS = 1_000
-
 /** What the connection handler needs from the resolved runtime and sealed chain. */
 export interface ConnectionDependencies {
   authenticator: Authenticator
@@ -42,7 +40,7 @@ export function createConnectionHandler(dependencies: ConnectionDependencies): {
 } {
   const { authenticator, middlewares, handler, safe, idleTimeoutMs, maxTimeoutMs, sessionLimits } = dependencies
   const clients = new Set<Connection>()
-  const bridges = new Map<SessionBridge, () => void>()
+  const bridges = new Map<SessionBridge, { client: Connection; release: () => void }>()
   let activeSessions = 0
   let acceptingSessions = false
 
@@ -90,6 +88,7 @@ export function createConnectionHandler(dependencies: ConnectionDependencies): {
 
         sshSession.on("shell", (accept, reject) => {
           if (
+            !connected ||
             !acceptingSessions ||
             connectionSessions >= sessionLimits.perConnection ||
             activeSessions >= sessionLimits.global
@@ -122,9 +121,15 @@ export function createConnectionHandler(dependencies: ConnectionDependencies): {
               remoteAddress,
             })
             activeBridge = shellBridge
-            bridges.set(shellBridge, release)
+            bridges.set(shellBridge, { client, release })
+            // Session close precedes channel end/finish, which can be blocked in both directions.
+            const onSessionClose = () => {
+              void shellBridge.disconnect()
+            }
+            sshSession.once("close", onSessionClose)
             shellBridge.session.onClose(() => {
               void shellBridge.destroy().finally(() => {
+                sshSession.removeListener("close", onSessionClose)
                 bridges.delete(shellBridge)
                 release()
               })
@@ -143,22 +148,19 @@ export function createConnectionHandler(dependencies: ConnectionDependencies): {
     client.on("close", () => {
       connected = false
       clients.delete(client)
+      for (const [bridge, owner] of bridges) {
+        if (owner.client === client) void bridge.disconnect()
+      }
     })
     client.on("error", (err: Error) => safe.report(err))
+    // Register cleanup first; @types/ssh2 omits this server-side transport method.
+    void safe(() => (client as Connection & { setNoDelay(enabled: boolean): Connection }).setNoDelay(true))
   }
 
   const closeAll = async () => {
     acceptingSessions = false
-    const draining = Promise.all([...bridges.keys()].map((bridge) => bridge.destroy()))
-    let timeout: ReturnType<typeof setTimeout> | undefined
-    await Promise.race([
-      draining,
-      new Promise<void>((resolve) => {
-        timeout = setTimeout(resolve, SHUTDOWN_DRAIN_TIMEOUT_MS)
-      }),
-    ])
-    if (timeout) clearTimeout(timeout)
-    for (const release of bridges.values()) release()
+    await Promise.all([...bridges.keys()].map((bridge) => bridge.destroy()))
+    for (const { release } of bridges.values()) release()
     bridges.clear()
     for (const client of clients) {
       ignoreErrors(() => client.end())
