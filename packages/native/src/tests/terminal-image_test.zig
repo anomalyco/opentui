@@ -2,6 +2,15 @@ const std = @import("std");
 const terminal_image = @import("../terminal-image.zig");
 const image = @import("../image.zig");
 
+test "kitty placement z stays above cell backgrounds" {
+    const z = terminal_image.kittyPlacementZ(1);
+    const below_bg = @as(i32, std.math.minInt(i32) / 2);
+    try std.testing.expectEqual(below_bg + 1, z);
+    try std.testing.expect(z < 0);
+    try std.testing.expect(z >= below_bg);
+    try std.testing.expect(terminal_image.kittyPlacementZ(2) > z);
+}
+
 const DecodedSixel = struct {
     indices: []u8,
     width: usize,
