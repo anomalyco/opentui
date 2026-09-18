@@ -120,6 +120,7 @@ export const defaultTextareaKeyBindings: KeyBinding[] = [
   { name: "right", super: true, action: "visual-line-end" },
   { name: "up", super: true, action: "buffer-home" },
   { name: "down", super: true, action: "buffer-end" },
+  { name: "backspace", super: true, action: "delete-to-line-start" },
   { name: "left", super: true, shift: true, action: "select-visual-line-home" },
   { name: "right", super: true, shift: true, action: "select-visual-line-end" },
   { name: "up", super: true, shift: true, action: "select-buffer-home" },
