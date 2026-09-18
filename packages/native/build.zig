@@ -25,6 +25,8 @@ const SUPPORTED_TARGETS = [_]SupportedTarget{
     .{ .zig_target = "aarch64-linux-musl", .output_name = "aarch64-linux-musl", .description = "Linux aarch64 (musl)" },
     .{ .zig_target = "x86_64-macos.13.0", .output_name = "x86_64-macos", .description = "macOS x86_64 (Intel)" },
     .{ .zig_target = "aarch64-macos.13.0", .output_name = "aarch64-macos", .description = "macOS aarch64 (Apple Silicon)" },
+    .{ .zig_target = "x86_64-freebsd", .output_name = "x86_64-freebsd", .description = "FreeBSD x86_64" },
+    .{ .zig_target = "aarch64-freebsd", .output_name = "aarch64-freebsd", .description = "FreeBSD aarch64" },
     .{ .zig_target = "x86_64-windows-gnu", .output_name = "x86_64-windows", .description = "Windows x86_64" },
     .{ .zig_target = "aarch64-windows-gnu", .output_name = "aarch64-windows", .description = "Windows aarch64" },
 };
@@ -367,6 +369,10 @@ fn addNativeAudioDependencies(
         .macos => addMacOSSystemLibraries(b, module, macos_sdk_path.?),
         .linux => {
             module.linkSystemLibrary("dl", .{});
+            module.linkSystemLibrary("pthread", .{});
+            module.linkSystemLibrary("m", .{});
+        },
+        .freebsd => {
             module.linkSystemLibrary("pthread", .{});
             module.linkSystemLibrary("m", .{});
         },
