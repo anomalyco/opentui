@@ -1,4 +1,5 @@
 import { BoxRenderable, TextBuffer, TextBufferView } from "../index.js"
+import { ANSI } from "../ansi.js"
 import { OptimizedBuffer } from "../buffer.js"
 import { RGBA } from "../lib/RGBA.js"
 import { StdinParser } from "../lib/stdin-parser.js"
@@ -12,6 +13,14 @@ const WIDTH = 140
 const HEIGHT = 44
 const LEAF_COUNT = 96
 const YOGA_NODE_COUNT = 100
+const PASTE_PAYLOAD_BYTES = 256 * 1024
+const PASTE_UNIT = "dictated text exercises local paste parsing with a near marker \x1b[201x miss "
+const PASTE_PAYLOAD = Buffer.alloc(PASTE_PAYLOAD_BYTES, PASTE_UNIT)
+const PASTE_FRAME = Buffer.concat([
+  Buffer.from(ANSI.bracketedPasteStart),
+  PASTE_PAYLOAD,
+  Buffer.from(ANSI.bracketedPasteEnd),
+])
 
 interface ColumnWidthInput {
   widths: number[]
@@ -281,10 +290,58 @@ export const defaultBenchmarkCases: readonly BenchmarkCase[] = [
   yogaLayoutReadsCase(),
   mouseCase("direct-bubble-depth-8", false),
   mouseCase("stdin-sgr-bubble-depth-8", true),
+  bracketedPasteCase(),
   proportionalColumnWidthsCase(),
   textBufferWordWrapMeasureCase(),
   directBoxDrawingCase(),
 ]
+
+function bracketedPasteCase(): BenchmarkCase {
+  return {
+    category: "JS Input",
+    name: "bracketed-paste-256k",
+    workload_version: 1,
+    parameters: {
+      payload_bytes: PASTE_PAYLOAD_BYTES,
+      input_chunks: 1,
+      embedded_near_end_marker: true,
+    },
+    setup() {
+      let completed = 0
+      let validated = 0
+
+      return {
+        run() {
+          const parser = new StdinParser({ armTimeouts: false })
+          try {
+            parser.push(PASTE_FRAME)
+            const parsed = parser.read()
+            if (
+              parsed?.type !== "paste" ||
+              parsed.bytes.byteLength !== PASTE_PAYLOAD_BYTES ||
+              parsed.bytes[0] !== PASTE_PAYLOAD[0] ||
+              parsed.bytes.at(-1) !== PASTE_PAYLOAD.at(-1) ||
+              parser.read() !== null
+            ) {
+              throw new Error("bracketed-paste-256k: fixed paste bytes decoded incorrectly")
+            }
+            completed++
+          } finally {
+            parser.destroy()
+          }
+        },
+        validateBatch(iterations) {
+          const actual = completed - validated
+          if (actual !== iterations) {
+            throw new Error(`bracketed-paste-256k: completed ${actual} operations, expected ${iterations}`)
+          }
+          validated = completed
+        },
+        teardown() {},
+      }
+    },
+  }
+}
 
 function layoutLeafWidthCase(): BenchmarkCase {
   return {

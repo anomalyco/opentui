@@ -516,26 +516,8 @@ function withEscPrefix(bytes: Uint8Array): Uint8Array {
 }
 
 function indexOfBytes(haystack: Uint8Array, needle: Uint8Array): number {
-  if (needle.length === 0) {
-    return 0
-  }
-
-  const limit = haystack.length - needle.length
-  for (let offset = 0; offset <= limit; offset += 1) {
-    let matched = true
-    for (let index = 0; index < needle.length; index += 1) {
-      if (haystack[offset + index] !== needle[index]) {
-        matched = false
-        break
-      }
-    }
-
-    if (matched) {
-      return offset
-    }
-  }
-
-  return -1
+  if (haystack.length < needle.length) return -1
+  return Buffer.from(haystack.buffer, haystack.byteOffset, haystack.byteLength).indexOf(needle)
 }
 
 // Decodes raw protocol bytes as latin1. Used for mouse and response events
@@ -1986,7 +1968,9 @@ export class StdinParser {
     // Copy here because subarray() inputs may alias the caller's chunk or the
     // parser's pending buffer across pushes. The emitted paste event must keep
     // the original bytes even if those backing buffers are later reused.
-    this.paste!.parts.push(Uint8Array.from(bytes))
+    const ownedBytes = new Uint8Array(bytes.length)
+    ownedBytes.set(bytes)
+    this.paste!.parts.push(ownedBytes)
     this.paste!.totalLength += bytes.length
   }
 
