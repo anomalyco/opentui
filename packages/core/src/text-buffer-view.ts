@@ -131,6 +131,11 @@ export class TextBufferView {
     this.lib.textBufferViewSetWrapMode(this.viewPtr, mode)
   }
 
+  public setWrapIndent(indent: "none" | "same"): void {
+    this.guard()
+    this.lib.textBufferViewSetWrapIndent(this.viewPtr, indent)
+  }
+
   public setTextAlign(alignment: "left" | "center" | "right"): void {
     this.guard()
     this.lib.textBufferViewSetTextAlign(this.viewPtr, alignment)
