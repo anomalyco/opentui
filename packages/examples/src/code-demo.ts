@@ -1,5 +1,6 @@
 import {
   CliRenderer,
+  CliRenderEvents,
   createCliRenderer,
   CodeRenderable,
   BoxRenderable,
@@ -510,66 +511,70 @@ const themes: CodeDemoTheme[] = [
   },
 ]
 
-function createSyntaxStyle(theme: CodeDemoTheme): SyntaxStyle {
+function createSyntaxStyle(theme: CodeDemoTheme, renderer: CliRenderer): SyntaxStyle {
   const palette = {
     ...BASE_SYNTAX_PALETTE,
     ...theme.syntaxOverrides,
   }
 
-  return SyntaxStyle.fromStyles({
-    keyword: { fg: parseColor(palette.keyword), bold: true },
-    "keyword.import": { fg: parseColor(palette.keyword), bold: true },
-    "keyword.coroutine": { fg: parseColor(palette.keywordCoroutine) },
-    "keyword.operator": { fg: parseColor(palette.operatorKeyword) },
-    string: { fg: parseColor(palette.string) },
-    comment: { fg: parseColor(palette.comment), italic: true },
-    number: { fg: parseColor(palette.number) },
-    boolean: { fg: parseColor(palette.number) },
-    constant: { fg: parseColor(palette.number) },
-    function: { fg: parseColor(palette.function) },
-    "function.call": { fg: parseColor(palette.function) },
-    "function.method.call": { fg: parseColor(palette.function) },
-    constructor: { fg: parseColor(palette.constructor) },
-    type: { fg: parseColor(palette.type) },
-    operator: { fg: parseColor(palette.operator) },
-    variable: { fg: parseColor(palette.variable) },
-    "variable.member": { fg: parseColor(palette.property) },
-    property: { fg: parseColor(palette.property) },
-    bracket: { fg: parseColor(palette.bracket) },
-    "punctuation.bracket": { fg: parseColor(palette.bracket) },
-    "punctuation.delimiter": { fg: parseColor(palette.delimiter) },
-    punctuation: { fg: parseColor(palette.bracket) },
+  return SyntaxStyle.fromStyles(
+    {
+      keyword: { fg: parseColor(palette.keyword), bold: true },
+      "keyword.import": { fg: parseColor(palette.keyword), bold: true },
+      "keyword.coroutine": { fg: parseColor(palette.keywordCoroutine) },
+      "keyword.operator": { fg: parseColor(palette.operatorKeyword) },
+      string: { fg: parseColor(palette.string) },
+      comment: { fg: parseColor(palette.comment), italic: true },
+      number: { fg: parseColor(palette.number) },
+      boolean: { fg: parseColor(palette.number) },
+      constant: { fg: parseColor(palette.number) },
+      function: { fg: parseColor(palette.function) },
+      "function.call": { fg: parseColor(palette.function) },
+      "function.method.call": { fg: parseColor(palette.function) },
+      constructor: { fg: parseColor(palette.constructor) },
+      type: { fg: parseColor(palette.type) },
+      operator: { fg: parseColor(palette.operator) },
+      variable: { fg: parseColor(palette.variable) },
+      "variable.member": { fg: parseColor(palette.property) },
+      property: { fg: parseColor(palette.property) },
+      bracket: { fg: parseColor(palette.bracket) },
+      "punctuation.bracket": { fg: parseColor(palette.bracket) },
+      "punctuation.delimiter": { fg: parseColor(palette.delimiter) },
+      punctuation: { fg: parseColor(palette.bracket) },
 
-    "markup.heading": { fg: parseColor(palette.heading2), bold: true },
-    "markup.heading.1": { fg: parseColor(palette.heading1), bold: true, underline: true },
-    "markup.heading.2": { fg: parseColor(palette.heading2), bold: true },
-    "markup.heading.3": { fg: parseColor(palette.heading3) },
-    "markup.heading.4": { fg: parseColor(palette.heading4), bold: true },
-    "markup.heading.5": { fg: parseColor(palette.heading5), bold: true },
-    "markup.heading.6": { fg: parseColor(palette.heading6), bold: true },
-    "markup.bold": { fg: parseColor(palette.default), bold: true },
-    "markup.strong": { fg: parseColor(palette.default), bold: true },
-    "markup.italic": { fg: parseColor(palette.default), italic: true },
-    "markup.list": { fg: parseColor(palette.list) },
-    "markup.quote": { fg: parseColor(palette.quote), italic: true },
-    "markup.raw": { fg: parseColor(palette.raw), bg: parseColor(palette.rawBg) },
-    "markup.raw.block": { fg: parseColor(palette.raw), bg: parseColor(palette.rawBg) },
-    "markup.raw.inline": { fg: parseColor(palette.raw), bg: parseColor(palette.rawBg) },
-    "markup.link": { fg: parseColor(palette.link), underline: true },
-    "markup.link.label": { fg: parseColor(palette.link), underline: true },
-    "markup.link.url": { fg: parseColor(palette.link), underline: true },
-    label: { fg: parseColor(palette.label) },
-    spell: { fg: parseColor(palette.default) },
-    nospell: { fg: parseColor(palette.default) },
-    conceal: { fg: parseColor(palette.conceal) },
-    "punctuation.special": { fg: parseColor(palette.quote) },
+      "markup.heading": { fg: parseColor(palette.heading2), bold: true },
+      "markup.heading.1": { fg: parseColor(palette.heading1), bold: true, underline: true },
+      "markup.heading.2": { fg: parseColor(palette.heading2), bold: true },
+      "markup.heading.3": { fg: parseColor(palette.heading3) },
+      "markup.heading.4": { fg: parseColor(palette.heading4), bold: true },
+      "markup.heading.5": { fg: parseColor(palette.heading5), bold: true },
+      "markup.heading.6": { fg: parseColor(palette.heading6), bold: true },
+      "markup.bold": { fg: parseColor(palette.default), bold: true },
+      "markup.strong": { fg: parseColor(palette.default), bold: true },
+      "markup.italic": { fg: parseColor(palette.default), italic: true },
+      "markup.list": { fg: parseColor(palette.list) },
+      "markup.quote": { fg: parseColor(palette.quote), italic: true },
+      "markup.raw": { fg: parseColor(palette.raw), bg: parseColor(palette.rawBg) },
+      "markup.raw.block": { fg: parseColor(palette.raw), bg: parseColor(palette.rawBg) },
+      "markup.raw.inline": { fg: parseColor(palette.raw), bg: parseColor(palette.rawBg) },
+      "markup.link": { fg: parseColor(palette.link), underline: true },
+      "markup.link.label": { fg: parseColor(palette.link), underline: true },
+      "markup.link.url": { fg: parseColor(palette.link), underline: true },
+      label: { fg: parseColor(palette.label) },
+      spell: { fg: parseColor(palette.default) },
+      nospell: { fg: parseColor(palette.default) },
+      conceal: { fg: parseColor(palette.conceal) },
+      "punctuation.special": { fg: parseColor(palette.quote) },
 
-    default: { fg: parseColor(palette.default) },
-  })
+      default: { fg: parseColor(palette.default) },
+    },
+    renderer.nativeScene!,
+  )
 }
 
 let renderer: CliRenderer | null = null
 let keyboardHandler: ((key: ParsedKey) => void) | null = null
+let destroyHandler: (() => void) | null = null
 let parentContainer: BoxRenderable | null = null
 let codeScrollBox: ScrollBoxRenderable | null = null
 let codeDisplay: CodeRenderable | null = null
@@ -577,16 +582,17 @@ let codeWithLineNumbers: LineNumberRenderable | null = null
 let timingText: TextRenderable | null = null
 let syntaxStyle: SyntaxStyle | null = null
 let helpModal: BoxRenderable | null = null
-let currentExampleIndex = 0
-let currentThemeIndex = 0
-let concealEnabled = true
-let highlightsEnabled = false
-let diagnosticsEnabled = false
-let showingHelp = false
 
 export async function run(rendererInstance: CliRenderer): Promise<void> {
+  let currentExampleIndex = 0
+  let currentThemeIndex = 0
+  let concealEnabled = true
+  let highlightsEnabled = false
+  let diagnosticsEnabled = false
+  let showingHelp = false
   renderer = rendererInstance
-  showingHelp = false
+  destroyHandler = () => destroy(rendererInstance)
+  rendererInstance.once(CliRenderEvents.DESTROY, destroyHandler)
   renderer.start()
   const getCurrentTheme = () => themes[currentThemeIndex]
   renderer.setBackgroundColor(getCurrentTheme().backgroundColor)
@@ -678,7 +684,7 @@ Other:
   })
   parentContainer.add(codeScrollBox)
 
-  syntaxStyle = createSyntaxStyle(getCurrentTheme())
+  syntaxStyle = createSyntaxStyle(getCurrentTheme(), renderer)
 
   // Create code display using CodeRenderable wrapped in LineNumberRenderable
   codeDisplay = new CodeRenderable(renderer, {
@@ -769,7 +775,7 @@ Other:
     }
 
     const previousSyntaxStyle = syntaxStyle
-    const nextSyntaxStyle = createSyntaxStyle(theme)
+    const nextSyntaxStyle = createSyntaxStyle(theme, rendererInstance)
     syntaxStyle = nextSyntaxStyle
     if (codeDisplay) {
       codeDisplay.syntaxStyle = nextSyntaxStyle
@@ -895,13 +901,19 @@ Other:
 }
 
 export function destroy(rendererInstance: CliRenderer): void {
+  if (renderer !== rendererInstance) return
+  if (destroyHandler) {
+    rendererInstance.off(CliRenderEvents.DESTROY, destroyHandler)
+    destroyHandler = null
+  }
   if (keyboardHandler) {
     rendererInstance.keyInput.off("keypress", keyboardHandler)
     keyboardHandler = null
   }
 
-  parentContainer?.destroy()
-  helpModal?.destroy()
+  parentContainer?.destroyRecursively()
+  helpModal?.destroyRecursively()
+  syntaxStyle?.destroy()
   parentContainer = null
   codeScrollBox = null
   codeDisplay = null
@@ -909,7 +921,6 @@ export function destroy(rendererInstance: CliRenderer): void {
   timingText = null
   syntaxStyle = null
   helpModal = null
-  showingHelp = false
 
   renderer = null
 }

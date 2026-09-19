@@ -1,5 +1,13 @@
-import { describe, expect, test } from "bun:test"
+import { ResourceContext } from "./buffer.js"
+import { resolveRenderLib } from "./zig.js"
+import { describe, expect, test, beforeEach, afterEach } from "bun:test"
 import { EditBuffer } from "./edit-buffer.js"
+
+let resourceContext: ResourceContext
+beforeEach(() => {
+  resourceContext = new ResourceContext({ objectCapacity: 4, renderCellsMax: 1 })
+})
+afterEach(() => resourceContext.destroy())
 
 function waitForWorker(worker: Worker) {
   let timeout: ReturnType<typeof setTimeout> | undefined
@@ -20,7 +28,7 @@ function waitForWorker(worker: Worker) {
 
 describe("native event worker callback repro", () => {
   test("keeps native event callback valid after a worker installs and releases its callback", async () => {
-    const first = EditBuffer.create("unicode")
+    const first = EditBuffer.create("unicode", resourceContext)
     first.on("content-changed", () => {})
     first.setText("main-before-worker")
     await Bun.sleep(0)
@@ -28,11 +36,14 @@ describe("native event worker callback repro", () => {
     const worker = new Worker(new URL("./native-event-worker-repro.worker.ts", import.meta.url), {
       type: "module",
     })
-    await waitForWorker(worker)
-    await worker.terminate()
+    try {
+      await waitForWorker(worker)
+    } finally {
+      await worker.terminate()
+    }
 
     let delivered = 0
-    const second = EditBuffer.create("unicode")
+    const second = EditBuffer.create("unicode", resourceContext)
     second.on("content-changed", () => {
       delivered++
     })

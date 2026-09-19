@@ -48,6 +48,10 @@ await clipboard.dispose()
 connects the terminal path to a `CliRenderer` and its OSC 52 support. `createClipboard()` combines both into one
 service.
 
+The old `Clipboard(RenderLib, RendererHandle)` adapter is removed. For terminal-only copying, use
+`renderer.copyToClipboardOSC52()` and `renderer.clearClipboardOSC52()`. For destination policies or host access,
+use `createClipboard()` with the services above.
+
 ## Public service API
 
 ```typescript

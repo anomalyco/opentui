@@ -1,8 +1,10 @@
-import { test, expect, beforeEach, afterEach, spyOn } from "bun:test"
+import { test, expect, beforeEach, afterEach } from "bun:test"
 import { createTestRenderer, type TestRenderer, type MockInput, type MockMouse } from "../testing/test-renderer.js"
 import { ManualClock } from "../testing/manual-clock.js"
 import { RendererControlState } from "../renderer.js"
 import { Renderable } from "../Renderable.js"
+import { TextRenderable } from "../renderables/Text.js"
+import { createTestStdout } from "../testing/test-streams.js"
 
 class TestRenderable extends Renderable {
   constructor(renderer: TestRenderer, options: any) {
@@ -17,29 +19,45 @@ let renderOnce: () => Promise<void>
 
 beforeEach(async () => {
   ;({ renderer, mockInput, mockMouse, renderOnce } = await createTestRenderer({}))
+  await renderer.setupTerminal()
 })
 
-afterEach(() => {
+afterEach(async () => {
   renderer.destroy()
+  await renderer.closed
 })
 
 async function expectStartedResumeForcesNextRender(screenMode: "main-screen" | "alternate-screen"): Promise<void> {
   renderer.destroy()
-  ;({ renderer, mockInput, mockMouse, renderOnce } = await createTestRenderer({ screenMode }))
-  ;(renderer as any)._terminalIsSetup = true
+  await renderer.closed
+  let output = ""
+  const stdout = createTestStdout()
+  stdout._write = (chunk, _encoding, callback) => {
+    output += chunk.toString()
+    callback()
+  }
+  ;({ renderer, mockInput, mockMouse, renderOnce } = await createTestRenderer({
+    screenMode,
+    stdout,
+    bufferedOutput: "stdout",
+  }))
+  await renderer.setupTerminal()
+  renderer.root.add(new TextRenderable(renderer, { content: "resume repaint" }))
+  await renderOnce()
 
   renderer.start()
-  renderer.suspend()
+  await renderer.suspend()
+  output = ""
 
-  const renderSpy = spyOn((renderer as any).lib, "render")
-  renderer.resume()
+  await renderer.resume()
+  await renderOnce()
   renderer.pause()
+  await renderer.idle()
 
-  const lastCall = renderSpy.mock.calls[renderSpy.mock.calls.length - 1]
-  expect(lastCall?.[1]).toBe(true)
-  expect((renderer as any).forceFullRepaintRequested).toBe(false)
-
-  renderSpy.mockRestore()
+  expect(output).toContain("resume repaint")
+  output = ""
+  await renderOnce()
+  expect(output).not.toContain("resume repaint")
 }
 
 test("initial renderer state is IDLE", () => {
@@ -62,76 +80,76 @@ test("pause() transitions to EXPLICIT_PAUSED and stops rendering", () => {
   expect(renderer.isRunning).toBe(false)
 })
 
-test("suspend() transitions to EXPLICIT_SUSPENDED and stops rendering", () => {
+test("suspend() transitions to EXPLICIT_SUSPENDED and stops rendering", async () => {
   renderer.start()
   expect(renderer.isRunning).toBe(true)
 
-  renderer.suspend()
+  await renderer.suspend()
   expect(renderer.controlState).toBe(RendererControlState.EXPLICIT_SUSPENDED)
   expect(renderer.isRunning).toBe(false)
 })
 
-test("suspend() disables mouse and keyboard input", () => {
+test("suspend() disables mouse and keyboard input", async () => {
   renderer.start()
   expect(renderer.useMouse).toBe(true)
 
-  renderer.suspend()
+  await renderer.suspend()
   expect(renderer.useMouse).toBe(false)
   expect(renderer.controlState).toBe(RendererControlState.EXPLICIT_SUSPENDED)
 })
 
-test("resume() restores previous EXPLICIT_STARTED state and restarts rendering", () => {
+test("resume() restores previous EXPLICIT_STARTED state and restarts rendering", async () => {
   renderer.start()
   expect(renderer.controlState).toBe(RendererControlState.EXPLICIT_STARTED)
   expect(renderer.isRunning).toBe(true)
 
-  renderer.suspend()
+  await renderer.suspend()
   expect(renderer.controlState).toBe(RendererControlState.EXPLICIT_SUSPENDED)
   expect(renderer.isRunning).toBe(false)
 
-  renderer.resume()
+  await renderer.resume()
   expect(renderer.controlState).toBe(RendererControlState.EXPLICIT_STARTED)
   expect(renderer.isRunning).toBe(true)
 })
 
-test("resume() restores previous IDLE state without starting rendering", () => {
+test("resume() restores previous IDLE state without starting rendering", async () => {
   expect(renderer.controlState).toBe(RendererControlState.IDLE)
   expect(renderer.isRunning).toBe(false)
 
-  renderer.suspend()
+  await renderer.suspend()
   expect(renderer.controlState).toBe(RendererControlState.EXPLICIT_SUSPENDED)
   expect(renderer.isRunning).toBe(false)
 
-  renderer.resume()
+  await renderer.resume()
   expect(renderer.controlState).toBe(RendererControlState.IDLE)
   expect(renderer.isRunning).toBe(false)
 })
 
-test("resume() restores previous EXPLICIT_PAUSED state without starting rendering", () => {
+test("resume() restores previous EXPLICIT_PAUSED state without starting rendering", async () => {
   renderer.start()
   renderer.pause()
   expect(renderer.controlState).toBe(RendererControlState.EXPLICIT_PAUSED)
   expect(renderer.isRunning).toBe(false)
 
-  renderer.suspend()
+  await renderer.suspend()
   expect(renderer.controlState).toBe(RendererControlState.EXPLICIT_SUSPENDED)
   expect(renderer.isRunning).toBe(false)
 
-  renderer.resume()
+  await renderer.resume()
   expect(renderer.controlState).toBe(RendererControlState.EXPLICIT_PAUSED)
   expect(renderer.isRunning).toBe(false)
 })
 
-test("resume() restores previous AUTO_STARTED state and restarts rendering", () => {
+test("resume() restores previous AUTO_STARTED state and restarts rendering", async () => {
   renderer.requestLive()
   expect(renderer.controlState).toBe(RendererControlState.AUTO_STARTED)
   expect(renderer.isRunning).toBe(true)
 
-  renderer.suspend()
+  await renderer.suspend()
   expect(renderer.controlState).toBe(RendererControlState.EXPLICIT_SUSPENDED)
   expect(renderer.isRunning).toBe(false)
 
-  renderer.resume()
+  await renderer.resume()
   expect(renderer.controlState).toBe(RendererControlState.AUTO_STARTED)
   expect(renderer.isRunning).toBe(true)
 })
@@ -155,28 +173,17 @@ test("stop() transitions to EXPLICIT_STOPPED and stops rendering", () => {
 
 test("requestRender() does not trigger when renderer is suspended", async () => {
   renderer.start()
-  renderer.suspend()
-
-  let renderCalled = false
-  // @ts-expect-error - renderNative is private
-  const originalRender = renderer.renderNative.bind(renderer)
-  // @ts-expect-error - renderNative is private
-  renderer.renderNative = () => {
-    renderCalled = true
-    return originalRender()
-  }
+  await renderer.suspend()
+  const frames = renderer.getStats().nativeFrameCount
 
   renderer.requestRender()
-  await Promise.resolve()
-
-  expect(renderCalled).toBe(false)
-
-  // @ts-expect-error - renderNative is private
-  renderer.renderNative = originalRender
+  await renderer.idle()
+  expect(renderer.getStats().nativeFrameCount).toBe(frames)
 })
 
 test("requestRender() does trigger when renderer is paused", async () => {
   renderer.destroy()
+  await renderer.closed
   const clock = new ManualClock()
   ;({ renderer, mockInput, mockMouse, renderOnce } = await createTestRenderer({ clock }))
 
@@ -184,23 +191,13 @@ test("requestRender() does trigger when renderer is paused", async () => {
   renderer.pause()
   await renderer.idle()
 
-  let renderCalled = false
-  // @ts-expect-error - renderNative is private
-  const originalRender = renderer.renderNative.bind(renderer)
-  // @ts-expect-error - renderNative is private
-  renderer.renderNative = () => {
-    renderCalled = true
-    return originalRender()
-  }
+  const frames = renderer.getStats().nativeFrameCount
 
   renderer.requestRender()
   clock.advance(20)
   await renderer.idle()
 
-  expect(renderCalled).toBe(true)
-
-  // @ts-expect-error - renderNative is private
-  renderer.renderNative = originalRender
+  expect(renderer.getStats().nativeFrameCount).toBe(frames + 1)
 })
 
 test("auto() transitions running renderer to AUTO_STARTED state", () => {
@@ -244,21 +241,21 @@ test("dropLive() does not stop explicitly started renderer", () => {
   expect(renderer.isRunning).toBe(true)
 })
 
-test("suspend() preserves live request state for resume", () => {
+test("suspend() preserves live request state for resume", async () => {
   renderer.requestLive()
   expect(renderer.controlState).toBe(RendererControlState.AUTO_STARTED)
   expect(renderer.isRunning).toBe(true)
 
-  renderer.suspend()
+  await renderer.suspend()
   expect(renderer.controlState).toBe(RendererControlState.EXPLICIT_SUSPENDED)
   expect(renderer.isRunning).toBe(false)
 
-  renderer.resume()
+  await renderer.resume()
   expect(renderer.controlState).toBe(RendererControlState.AUTO_STARTED)
   expect(renderer.isRunning).toBe(true)
 })
 
-test("control state transitions maintain consistency", () => {
+test("control state transitions maintain consistency", async () => {
   renderer.start()
   expect(renderer.controlState).toBe(RendererControlState.EXPLICIT_STARTED)
   expect(renderer.isRunning).toBe(true)
@@ -271,11 +268,11 @@ test("control state transitions maintain consistency", () => {
   expect(renderer.controlState).toBe(RendererControlState.EXPLICIT_STARTED)
   expect(renderer.isRunning).toBe(true)
 
-  renderer.suspend()
+  await renderer.suspend()
   expect(renderer.controlState).toBe(RendererControlState.EXPLICIT_SUSPENDED)
   expect(renderer.isRunning).toBe(false)
 
-  renderer.resume()
+  await renderer.resume()
   expect(renderer.controlState).toBe(RendererControlState.EXPLICIT_STARTED)
   expect(renderer.isRunning).toBe(true)
 
@@ -288,29 +285,29 @@ test("control state transitions maintain consistency", () => {
   expect(renderer.isRunning).toBe(false)
 })
 
-test("multiple suspend/resume cycles work correctly", () => {
+test("multiple suspend/resume cycles work correctly", async () => {
   renderer.start()
   expect(renderer.controlState).toBe(RendererControlState.EXPLICIT_STARTED)
 
-  renderer.suspend()
+  await renderer.suspend()
   expect(renderer.controlState).toBe(RendererControlState.EXPLICIT_SUSPENDED)
-  renderer.resume()
+  await renderer.resume()
   expect(renderer.controlState).toBe(RendererControlState.EXPLICIT_STARTED)
 
-  renderer.suspend()
+  await renderer.suspend()
   expect(renderer.controlState).toBe(RendererControlState.EXPLICIT_SUSPENDED)
-  renderer.resume()
+  await renderer.resume()
   expect(renderer.controlState).toBe(RendererControlState.EXPLICIT_STARTED)
 
   renderer.pause()
   expect(renderer.controlState).toBe(RendererControlState.EXPLICIT_PAUSED)
-  renderer.suspend()
+  await renderer.suspend()
   expect(renderer.controlState).toBe(RendererControlState.EXPLICIT_SUSPENDED)
-  renderer.resume()
+  await renderer.resume()
   expect(renderer.controlState).toBe(RendererControlState.EXPLICIT_PAUSED)
 })
 
-test("keyboard input is suspended when renderer is suspended", () => {
+test("keyboard input is suspended when renderer is suspended", async () => {
   renderer.start()
 
   let keyEventReceived = false
@@ -323,11 +320,11 @@ test("keyboard input is suspended when renderer is suspended", () => {
   expect(keyEventReceived).toBe(true)
 
   keyEventReceived = false
-  renderer.suspend()
+  await renderer.suspend()
 
   mockInput.pressKey("b")
   expect(keyEventReceived).toBe(false)
-  renderer.resume()
+  await renderer.resume()
   mockInput.pressKey("c")
   expect(keyEventReceived).toBe(true)
   renderer.keyInput.off("keypress", onKeypress)
@@ -354,19 +351,20 @@ test("mouse input is suspended when renderer is suspended", async () => {
   expect(mouseEventReceived).toBe(true)
 
   mouseEventReceived = false
-  renderer.suspend()
+  await renderer.suspend()
 
   await mockMouse.click(0, 0)
   expect(mouseEventReceived).toBe(false)
 
-  renderer.resume()
+  await renderer.resume()
   await mockMouse.click(0, 0)
   expect(mouseEventReceived).toBe(true)
 
   renderer.root.remove(testRenderable)
+  testRenderable.destroy()
 })
 
-test("paste input is suspended when renderer is suspended", () => {
+test("paste input is suspended when renderer is suspended", async () => {
   renderer.start()
 
   let pasteEventReceived = false
@@ -379,12 +377,12 @@ test("paste input is suspended when renderer is suspended", () => {
   expect(pasteEventReceived).toBe(true)
 
   pasteEventReceived = false
-  renderer.suspend()
+  await renderer.suspend()
 
   mockInput.pasteBracketedText("pasted text 2")
   expect(pasteEventReceived).toBe(false)
 
-  renderer.resume()
+  await renderer.resume()
 
   mockInput.pasteBracketedText("pasted text 3")
   expect(pasteEventReceived).toBe(true)
@@ -392,15 +390,15 @@ test("paste input is suspended when renderer is suspended", () => {
   renderer.keyInput.off("paste", onPaste)
 })
 
-test("keystrokes received immediately after resume() without yielding", () => {
+test("keystrokes received immediately after resume() completes without another yield", async () => {
   renderer.start()
 
   const received: string[] = []
   const onKeypress = (e: { name: string }) => received.push(e.name)
   renderer.keyInput.on("keypress", onKeypress)
 
-  renderer.suspend()
-  renderer.resume()
+  await renderer.suspend()
+  await renderer.resume()
   mockInput.pressKey("a")
   mockInput.pressKey("b")
 
@@ -408,7 +406,7 @@ test("keystrokes received immediately after resume() without yielding", () => {
   renderer.keyInput.off("keypress", onKeypress)
 })
 
-test("keystrokes survive multiple rapid suspend/resume cycles", () => {
+test("keystrokes survive multiple rapid suspend/resume cycles", async () => {
   renderer.start()
 
   const received: string[] = []
@@ -416,8 +414,8 @@ test("keystrokes survive multiple rapid suspend/resume cycles", () => {
   renderer.keyInput.on("keypress", onKeypress)
 
   for (let i = 0; i < 5; i++) {
-    renderer.suspend()
-    renderer.resume()
+    await renderer.suspend()
+    await renderer.resume()
   }
   mockInput.pressKey("a")
 
@@ -425,19 +423,19 @@ test("keystrokes survive multiple rapid suspend/resume cycles", () => {
   renderer.keyInput.off("keypress", onKeypress)
 })
 
-test("input buffered during suspension is drained on resume", () => {
+test("input buffered during suspension is drained on resume", async () => {
   renderer.start()
 
   const received: string[] = []
   const onKeypress = (e: { name: string }) => received.push(e.name)
   renderer.keyInput.on("keypress", onKeypress)
 
-  renderer.suspend()
+  await renderer.suspend()
   // Simulate stale input accumulating in stdin's internal buffer during
   // suspension (e.g. from a child process or kernel line buffer).
   // push() writes to the Readable's internal buffer without emitting.
   renderer.stdin.push(Buffer.from("x"))
-  renderer.resume()
+  await renderer.resume()
   mockInput.pressKey("a")
 
   // "x" should have been drained — only "a" received
@@ -445,13 +443,13 @@ test("input buffered during suspension is drained on resume", () => {
   renderer.keyInput.off("keypress", onKeypress)
 })
 
-test("suspend/resume does not leak stdin listeners", () => {
+test("suspend/resume does not leak stdin listeners", async () => {
   renderer.start()
   const baseline = renderer.stdin.listenerCount("data")
 
   for (let i = 0; i < 10; i++) {
-    renderer.suspend()
-    renderer.resume()
+    await renderer.suspend()
+    await renderer.resume()
   }
 
   expect(renderer.stdin.listenerCount("data")).toBe(baseline)

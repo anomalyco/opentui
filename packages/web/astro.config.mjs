@@ -140,6 +140,7 @@ export default defineConfig({
     "/docs/getting-started": "/docs",
     "/docs/core-concepts/constructs": "/docs/core-concepts/renderables",
     "/docs/core-concepts/renderables-vs-constructs": "/docs/core-concepts/renderables",
+    "/docs/native/c-zig": "/docs/native/c",
   },
   markdown: {
     shikiConfig: {

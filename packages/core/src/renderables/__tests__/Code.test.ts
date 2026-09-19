@@ -15,12 +15,15 @@ describe("CodeRenderable", () => {
     await mkdir(scratch, { recursive: true })
     const dataPath = await mkdtemp(join(scratch, "json-tokens-"))
     const client = new TreeSitterClient({ dataPath })
-    const syntaxStyle = SyntaxStyle.fromStyles({
-      default: { fg: RGBA.fromHex("#ffffff") },
-      property: { fg: RGBA.fromHex("#ff0000"), bold: true },
-      number: { fg: RGBA.fromHex("#00ff00") },
-    })
     const setup = await createTestRenderer({ width: 80, height: 10 })
+    const syntaxStyle = SyntaxStyle.fromStyles(
+      {
+        default: { fg: RGBA.fromHex("#ffffff") },
+        property: { fg: RGBA.fromHex("#ff0000"), bold: true },
+        number: { fg: RGBA.fromHex("#00ff00") },
+      },
+      setup.renderer.nativeScene,
+    )
     try {
       // Match the production JSON grammar/query rather than falling back to plaintext.
       client.addFiletypeParser({
@@ -108,7 +111,7 @@ describe("CodeRenderable", () => {
     })
 
     const client = new MockTreeSitterClient()
-    const syntaxStyle = SyntaxStyle.create()
+    const syntaxStyle = SyntaxStyle.create(renderer.nativeScene)
 
     const code = new CodeRenderable(renderer, {
       content: "",

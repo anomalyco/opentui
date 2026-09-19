@@ -132,14 +132,15 @@ See [Text](/docs/components/text) for the component option.
 Use `drawText()` for normal text, including combining marks, emoji sequences, tabs, and wide code points.
 
 ```typescript
-import { OptimizedBuffer, RGBA } from "@opentui/core"
+import { OptimizedBuffer, ResourceContext, RGBA } from "@opentui/core"
 
-const buffer = OptimizedBuffer.create(20, 2, "unicode")
-
+const owner = new ResourceContext({ objectCapacity: 4, renderCellsMax: 40 })
 try {
+  const buffer = OptimizedBuffer.create(20, 2, "unicode", { owner })
   buffer.drawText("A\u0301 and \u754c", 0, 0, RGBA.fromHex("#ffffff"))
-} finally {
   buffer.destroy()
+} finally {
+  owner.destroy()
 }
 ```
 

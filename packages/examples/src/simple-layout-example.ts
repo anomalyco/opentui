@@ -552,11 +552,11 @@ export function destroy(rendererInstance: CliRenderer): void {
     renderer.off("resize", handleResize)
   }
 
-  if (header) rendererInstance.root.remove(header)
-  if (contentArea) rendererInstance.root.remove(contentArea)
-  if (footer) rendererInstance.root.remove(footer)
-  if (moveableElement) rendererInstance.root.remove(moveableElement)
-  if (absolutePositionedBox) rendererInstance.root.remove(absolutePositionedBox)
+  header?.destroyRecursively()
+  contentArea?.destroyRecursively()
+  footer?.destroyRecursively()
+  moveableElement?.destroyRecursively()
+  absolutePositionedBox?.destroyRecursively()
 
   header = null
   headerText = null

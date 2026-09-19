@@ -91,12 +91,15 @@ export const structuredVisuals: DocVisualFixture[] = [
       const client = new MockTreeSitterClient()
       registerCleanup(() => client.destroy())
 
-      const syntaxStyle = SyntaxStyle.fromStyles({
-        default: { fg: foreground },
-        keyword: { fg: foreground, bold: true },
-        string: { fg: RGBA.fromIndex(247) },
-        comment: { fg: muted, italic: true },
-      })
+      const syntaxStyle = SyntaxStyle.fromStyles(
+        {
+          default: { fg: foreground },
+          keyword: { fg: foreground, bold: true },
+          string: { fg: RGBA.fromIndex(247) },
+          comment: { fg: muted, italic: true },
+        },
+        renderer.nativeScene,
+      )
       registerCleanup(() => syntaxStyle.destroy())
 
       client.setMockResult({
@@ -135,10 +138,13 @@ export const structuredVisuals: DocVisualFixture[] = [
       const client = new MockTreeSitterClient()
       registerCleanup(() => client.destroy())
 
-      const syntaxStyle = SyntaxStyle.fromStyles({
-        default: { fg: foreground },
-        "markup.heading": { fg: foreground, bold: true },
-      })
+      const syntaxStyle = SyntaxStyle.fromStyles(
+        {
+          default: { fg: foreground },
+          "markup.heading": { fg: foreground, bold: true },
+        },
+        renderer.nativeScene,
+      )
       registerCleanup(() => syntaxStyle.destroy())
 
       renderer.root.add(
@@ -168,10 +174,13 @@ export const structuredVisuals: DocVisualFixture[] = [
       const client = new MockTreeSitterClient()
       registerCleanup(() => client.destroy())
 
-      const syntaxStyle = SyntaxStyle.fromStyles({
-        default: { fg: foreground },
-        "markup.heading": { fg: foreground, bold: true },
-      })
+      const syntaxStyle = SyntaxStyle.fromStyles(
+        {
+          default: { fg: foreground },
+          "markup.heading": { fg: foreground, bold: true },
+        },
+        renderer.nativeScene,
+      )
       registerCleanup(() => syntaxStyle.destroy())
 
       renderer.root.add(
@@ -196,7 +205,7 @@ export const structuredVisuals: DocVisualFixture[] = [
       const client = new MockTreeSitterClient()
       registerCleanup(() => client.destroy())
 
-      const syntaxStyle = SyntaxStyle.fromStyles({ default: { fg: foreground } })
+      const syntaxStyle = SyntaxStyle.fromStyles({ default: { fg: foreground } }, renderer.nativeScene)
       registerCleanup(() => syntaxStyle.destroy())
 
       renderer.root.add(
@@ -230,7 +239,7 @@ export const structuredVisuals: DocVisualFixture[] = [
       const client = new MockTreeSitterClient()
       registerCleanup(() => client.destroy())
 
-      const syntaxStyle = SyntaxStyle.fromStyles({ default: { fg: foreground } })
+      const syntaxStyle = SyntaxStyle.fromStyles({ default: { fg: foreground } }, renderer.nativeScene)
       registerCleanup(() => syntaxStyle.destroy())
 
       renderer.root.add(

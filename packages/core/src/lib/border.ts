@@ -144,20 +144,20 @@ export function getBorderSides(border: boolean | BorderSides[]): BorderSidesConf
       : { top: false, right: false, bottom: false, left: false }
 }
 
-// Convert BorderCharacters to Uint32Array for passing to Zig
+// Empty border strings draw blank cells, not the NUL scalar rejected by native drawing.
 export function borderCharsToArray(chars: BorderCharacters): Uint32Array {
   const array = new Uint32Array(11)
-  array[0] = chars.topLeft.codePointAt(0)!
-  array[1] = chars.topRight.codePointAt(0)!
-  array[2] = chars.bottomLeft.codePointAt(0)!
-  array[3] = chars.bottomRight.codePointAt(0)!
-  array[4] = chars.horizontal.codePointAt(0)!
-  array[5] = chars.vertical.codePointAt(0)!
-  array[6] = chars.topT.codePointAt(0)!
-  array[7] = chars.bottomT.codePointAt(0)!
-  array[8] = chars.leftT.codePointAt(0)!
-  array[9] = chars.rightT.codePointAt(0)!
-  array[10] = chars.cross.codePointAt(0)!
+  array[0] = chars.topLeft.codePointAt(0) ?? 0x20
+  array[1] = chars.topRight.codePointAt(0) ?? 0x20
+  array[2] = chars.bottomLeft.codePointAt(0) ?? 0x20
+  array[3] = chars.bottomRight.codePointAt(0) ?? 0x20
+  array[4] = chars.horizontal.codePointAt(0) ?? 0x20
+  array[5] = chars.vertical.codePointAt(0) ?? 0x20
+  array[6] = chars.topT.codePointAt(0) ?? 0x20
+  array[7] = chars.bottomT.codePointAt(0) ?? 0x20
+  array[8] = chars.leftT.codePointAt(0) ?? 0x20
+  array[9] = chars.rightT.codePointAt(0) ?? 0x20
+  array[10] = chars.cross.codePointAt(0) ?? 0x20
   return array
 }
 

@@ -17,10 +17,12 @@ import {
   TabSelectRenderableEvents,
   TextNodeRenderable,
   TextRenderable,
+  TextTableRenderable,
+  type RenderContext,
   type TextNodeOptions,
 } from "@opentui/core"
 import { decodeHTMLStrict } from "entities"
-import { onCleanup, useContext } from "solid-js"
+import { createContext, onCleanup, useContext } from "solid-js"
 import { createRenderer } from "./renderer/index.js"
 import { getComponentCatalogue, RendererContext, SlotRenderable } from "./elements/index.js"
 import { getNextId } from "./utils/id-counter.js"
@@ -35,6 +37,9 @@ class TextNode extends TextNodeRenderable {
 }
 
 export type DomNode = BaseRenderable
+
+/** @internal Portal allocation target, separate from the renderer exposed to application hooks. */
+export const RenderableContext = createContext<() => RenderContext>()
 
 /**
  * Gets the id of a node, or content if it's a text chunk.
@@ -140,6 +145,8 @@ function _removeNode(parent: DomNode, node: DomNode): void {
   })
 }
 
+export { _removeNode as removeNode }
+
 function _createTextNode(value: string | number, decodeEntities: boolean): TextNode {
   log("Creating text node:", value)
 
@@ -176,8 +183,8 @@ function _getParentNode(childNode: DomNode): DomNode | undefined {
   return parent
 }
 
-export const {
-  render: _render,
+const {
+  render: renderRoot,
   effect,
   memo,
   createComponent,
@@ -193,7 +200,7 @@ export const {
   createElement(tagName: string): DomNode {
     log("Creating element:", tagName)
     const id = getNextId(tagName)
-    const solidRenderer = useContext(RendererContext)
+    const solidRenderer = useContext(RenderableContext)?.() ?? useContext(RendererContext)
     if (!solidRenderer) {
       throw new Error("No renderer found")
     }
@@ -354,6 +361,10 @@ export const {
         break
       case "text":
       case "content": {
+        if (name === "content" && node instanceof TextTableRenderable) {
+          node.content = value
+          break
+        }
         const textValue = typeof value === "string" ? value : Array.isArray(value) ? value.join("") : `${value}`
         // @ts-expect-error todo validate if prop is actually settable
         node[name] = textValue
@@ -425,3 +436,31 @@ export const {
     return nextSibling
   },
 })
+
+export {
+  effect,
+  memo,
+  createComponent,
+  createElement,
+  createTextNode,
+  insertNode,
+  insert,
+  spread,
+  setProp,
+  mergeProps,
+  use,
+}
+
+/** @internal Start an independent root without inheriting a Portal allocation target. */
+export function _render(code: () => DomNode, root: DomNode): () => void {
+  return renderRoot(
+    () =>
+      RenderableContext.Provider({
+        value: root instanceof Renderable ? () => root.ctx : undefined,
+        get children() {
+          return code() as any
+        },
+      }) as unknown as DomNode,
+    root,
+  )
+}

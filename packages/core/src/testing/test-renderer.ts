@@ -5,7 +5,6 @@ import {
   type CliRendererExternalOutputEvent,
   type CliRendererFrameEvent,
 } from "../renderer.js"
-import type { NativeSpanFeed } from "../NativeSpanFeed.js"
 import type { NativeRenderStats } from "../zig.js"
 import { createMockKeys } from "./mock-keys.js"
 import { createMockMouse } from "./mock-mouse.js"
@@ -21,10 +20,6 @@ export interface TestRendererOptions extends CliRendererConfig {
 export type TestRenderer = CliRenderer
 export type MockInput = ReturnType<typeof createMockKeys>
 export type MockMouse = ReturnType<typeof createMockMouse>
-
-type RendererFeedAccess = {
-  _feed?: NativeSpanFeed | null
-}
 
 export interface TestFlushOptions {
   maxPasses?: number
@@ -163,7 +158,7 @@ function waitForNextFrameOrIdle(renderer: TestRenderer): Promise<CliRendererFram
     return Promise.resolve(null)
   }
 
-  return new Promise((resolve) => {
+  return new Promise((resolve, reject) => {
     let settled = false
 
     const cleanup = () => {
@@ -171,26 +166,26 @@ function waitForNextFrameOrIdle(renderer: TestRenderer): Promise<CliRendererFram
       renderer.off(CliRenderEvents.DESTROY, onDestroy)
     }
 
-    const finish = (event: CliRendererFrameEvent | null) => {
+    const finish = (settle: () => void) => {
       if (settled) return
       settled = true
       cleanup()
-      resolve(event)
+      settle()
     }
 
     const onFrame = (event: CliRendererFrameEvent) => {
-      finish(event)
+      finish(() => resolve(event))
     }
 
     const onDestroy = () => {
-      finish(null)
+      finish(() => resolve(null))
     }
 
     renderer.on(CliRenderEvents.FRAME, onFrame)
     renderer.once(CliRenderEvents.DESTROY, onDestroy)
 
     if (!scheduler.isRunning) {
-      renderer.idle().then(() => finish(null))
+      renderer.idle().then(onDestroy, (error) => finish(() => reject(error)))
     }
   })
 }
@@ -216,12 +211,12 @@ export async function createTestRenderer(options: TestRendererOptions): Promise<
   const mockMouse = createMockMouse(renderer)
 
   const renderOnce = async () => {
-    const feed = (renderer as unknown as RendererFeedAccess)._feed
-    if (feed?.isBackpressured()) {
-      await feed.idle()
+    if (renderer.getSchedulerState().isRendering) {
+      //@ts-expect-error - this is a test renderer
+      await renderer.loop(true)
     }
     //@ts-expect-error - this is a test renderer
-    await renderer.loop()
+    await renderer.loop(true)
   }
 
   const captureCharFrame = () => {
@@ -303,10 +298,15 @@ export async function createTestRenderer(options: TestRendererOptions): Promise<
     waitOptions: TestWaitForOptions = {},
   ): Promise<string> => {
     const maxPasses = normalizePositiveInteger(waitOptions.maxPasses, DEFAULT_MAX_PASSES)
-    let frame = captureCharFrame()
+    let frame = ""
 
     for (let pass = 0; pass <= maxPasses; pass++) {
       await drainImmediateWork()
+      if (renderer.getSchedulerState().isRendering) {
+        //@ts-expect-error - this is a test renderer
+        await renderer.loop(true)
+        if (renderer.getSchedulerState().isRendering) continue
+      }
       frame = captureCharFrame()
       if (await predicate(frame)) {
         return frame
@@ -324,7 +324,6 @@ export async function createTestRenderer(options: TestRendererOptions): Promise<
       await waitForNextFrameOrIdle(renderer)
     }
 
-    frame = captureCharFrame()
     throw createWaitError(renderer, `Timed out waiting for frame predicate after ${maxPasses} passes`, frame)
   }
 
@@ -367,7 +366,7 @@ async function setupTestRenderer(config: TestRendererOptions) {
   // Direct construction skips setupTerminal(); native bytes are routed to an
   // explicit memory destination so tests do not depend on process stdout or feed
   // backpressure behavior. CliRenderer still owns native renderer creation and
-  // applies the same useThread defaults as production construction.
+  // applies the same output policy as production construction.
   return new CliRenderer(stdin, stdout, width, height, {
     ...config,
     bufferedOutput: config.bufferedOutput ?? "memory",

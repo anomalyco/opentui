@@ -86,6 +86,10 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
+      - name: Verify context ABI
+        working-directory: packages/native
+        run: zig build test-abi --summary all
+
       - name: Verify build outputs
         run: |
           set -e
@@ -128,6 +132,7 @@ jobs:
         run: |
           set -e
           mkdir -p artifacts/native-notices
+          cp packages/native/README.md artifacts/native-notices/README.md
           cp LICENSE artifacts/native-notices/LICENSE
           cp packages/core/THIRD_PARTY_LICENSES/GHOSTTY artifacts/native-notices/LICENSE-GHOSTTY
           cp packages/native/src/vendor/wuffs/LICENSE artifacts/native-notices/LICENSE-WUFFS
@@ -143,6 +148,7 @@ jobs:
           set -e
           mkdir -p artifacts/native-darwin-x64
           cp packages/core/node_modules/@opentui/core-darwin-x64/libopentui.dylib artifacts/native-darwin-x64/
+          cp packages/native/lib/x86_64-macos/{libopentui.a,opentui.h} artifacts/native-darwin-x64/
           cp artifacts/native-notices/* artifacts/native-darwin-x64/
           cd artifacts
           zip -r native-darwin-x64.zip native-darwin-x64/
@@ -155,6 +161,7 @@ jobs:
           set -e
           mkdir -p artifacts/native-darwin-arm64
           cp packages/core/node_modules/@opentui/core-darwin-arm64/libopentui.dylib artifacts/native-darwin-arm64/
+          cp packages/native/lib/aarch64-macos/{libopentui.a,opentui.h} artifacts/native-darwin-arm64/
           cp artifacts/native-notices/* artifacts/native-darwin-arm64/
           cd artifacts
           zip -r native-darwin-arm64.zip native-darwin-arm64/
@@ -167,6 +174,7 @@ jobs:
           set -e
           mkdir -p artifacts/native-linux-x64
           cp packages/core/node_modules/@opentui/core-linux-x64/libopentui.so artifacts/native-linux-x64/
+          cp packages/native/lib/x86_64-linux/{libopentui.a,opentui.h} artifacts/native-linux-x64/
           cp artifacts/native-notices/* artifacts/native-linux-x64/
           cd artifacts
           zip -r native-linux-x64.zip native-linux-x64/
@@ -179,6 +187,7 @@ jobs:
           set -e
           mkdir -p artifacts/native-linux-x64-musl
           cp packages/core/node_modules/@opentui/core-linux-x64-musl/libopentui.so artifacts/native-linux-x64-musl/
+          cp packages/native/lib/x86_64-linux-musl/{libopentui.a,opentui.h} artifacts/native-linux-x64-musl/
           cp artifacts/native-notices/* artifacts/native-linux-x64-musl/
           cd artifacts
           zip -r native-linux-x64-musl.zip native-linux-x64-musl/
@@ -191,6 +200,7 @@ jobs:
           set -e
           mkdir -p artifacts/native-windows-x64
           cp packages/core/node_modules/@opentui/core-win32-x64/opentui.dll artifacts/native-windows-x64/
+          cp packages/native/lib/x86_64-windows/{opentui-static.lib,opentui.lib,opentui.h} artifacts/native-windows-x64/
           cp artifacts/native-notices/* artifacts/native-windows-x64/
           cd artifacts
           zip -r native-windows-x64.zip native-windows-x64/
@@ -203,6 +213,7 @@ jobs:
           set -e
           mkdir -p artifacts/native-linux-arm64
           cp packages/core/node_modules/@opentui/core-linux-arm64/libopentui.so artifacts/native-linux-arm64/
+          cp packages/native/lib/aarch64-linux/{libopentui.a,opentui.h} artifacts/native-linux-arm64/
           cp artifacts/native-notices/* artifacts/native-linux-arm64/
           cd artifacts
           zip -r native-linux-arm64.zip native-linux-arm64/
@@ -215,6 +226,7 @@ jobs:
           set -e
           mkdir -p artifacts/native-linux-arm64-musl
           cp packages/core/node_modules/@opentui/core-linux-arm64-musl/libopentui.so artifacts/native-linux-arm64-musl/
+          cp packages/native/lib/aarch64-linux-musl/{libopentui.a,opentui.h} artifacts/native-linux-arm64-musl/
           cp artifacts/native-notices/* artifacts/native-linux-arm64-musl/
           cd artifacts
           zip -r native-linux-arm64-musl.zip native-linux-arm64-musl/
@@ -227,6 +239,7 @@ jobs:
           set -e
           mkdir -p artifacts/native-windows-arm64
           cp packages/core/node_modules/@opentui/core-win32-arm64/opentui.dll artifacts/native-windows-arm64/
+          cp packages/native/lib/aarch64-windows/{opentui-static.lib,opentui.lib,opentui.h} artifacts/native-windows-arm64/
           cp artifacts/native-notices/* artifacts/native-windows-arm64/
           cd artifacts
           zip -r native-windows-arm64.zip native-windows-arm64/

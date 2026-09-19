@@ -1,19 +1,10 @@
 import { describe, expect, it } from "bun:test"
-import { BoxRenderable, Yoga } from "@opentui/core"
+import { BoxRenderable } from "@opentui/core"
 import { createTestRenderer } from "@opentui/core/testing"
 import { batch, createRoot, createSignal } from "solid-js"
 import { createSlotNode, insert } from "../index.js"
 
 type MoveOrder = "remove-then-insert" | "insert-then-remove"
-
-function assignDistinctLayoutConstructor(parent: BoxRenderable): void {
-  const layoutNode = parent.getLayoutNode() as Yoga.Node & { constructor?: { create?: () => Yoga.Node } }
-
-  Object.defineProperty(layoutNode, "constructor", {
-    value: { create: () => Yoga.default.Node.create() },
-    configurable: true,
-  })
-}
 
 async function runMoveScenario(order: MoveOrder) {
   const setup = await createTestRenderer({ width: 40, height: 10 })
@@ -30,8 +21,6 @@ async function runMoveScenario(order: MoveOrder) {
 
   setup.renderer.root.add(parentA)
   setup.renderer.root.add(parentB)
-  assignDistinctLayoutConstructor(parentA)
-  assignDistinctLayoutConstructor(parentB)
 
   const slot = createSlotNode()
   const controls = createRoot((dispose) => {
@@ -86,17 +75,18 @@ async function runMoveScenario(order: MoveOrder) {
 }
 
 describe("slot placeholder moves", () => {
-  it("recreates incompatible layout placeholders for remove-then-insert moves", async () => {
+  it("preserves attachment for remove-then-insert registration order", async () => {
     const { controls, movedChild, originalChild, parentA, parentB, setup, slot } =
       await runMoveScenario("remove-then-insert")
 
     try {
       expect(movedChild).not.toBe(originalChild)
+      expect(originalChild.isDestroyed).toBe(true)
       expect(parentA.getChildren()).toHaveLength(0)
       expect(parentB.getChildren()).toHaveLength(1)
       expect(parentB.getChildren()[0]).toBe(movedChild)
       expect(movedChild.parent).toBe(parentB)
-      expect((movedChild as any).destroyed).toBe(false)
+      expect(movedChild.isDestroyed).toBe(false)
       expect((slot as any).destroyed).toBe(false)
     } finally {
       controls.dispose()
@@ -104,7 +94,7 @@ describe("slot placeholder moves", () => {
     }
   })
 
-  it("recreates incompatible layout placeholders for insert-then-remove moves", async () => {
+  it("recreates attached layout placeholders for insert-then-remove moves", async () => {
     const { controls, movedChild, originalChild, parentA, parentB, setup, slot } =
       await runMoveScenario("insert-then-remove")
 
@@ -114,7 +104,7 @@ describe("slot placeholder moves", () => {
       expect(parentB.getChildren()).toHaveLength(1)
       expect(parentB.getChildren()[0]).toBe(movedChild)
       expect(movedChild.parent).toBe(parentB)
-      expect((movedChild as any).destroyed).toBe(false)
+      expect(movedChild.isDestroyed).toBe(false)
       expect((slot as any).destroyed).toBe(false)
     } finally {
       controls.dispose()

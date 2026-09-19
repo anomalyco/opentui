@@ -3,35 +3,28 @@ import { createTestRenderer, type TestRenderer } from "../testing/test-renderer.
 import { RendererControlState } from "../renderer.js"
 
 let renderer: TestRenderer
-let renderOnce: () => Promise<void>
 
-async function expectIdleToResolveImmediately(renderer: TestRenderer): Promise<void> {
-  const idlePromise = renderer.idle()
-  let resolved = false
-
-  idlePromise.then(() => {
-    resolved = true
-  })
-
-  await Promise.resolve()
-
-  expect(resolved).toBe(true)
-  await idlePromise
+async function expectIdleWithoutAnotherFrame(renderer: TestRenderer): Promise<void> {
+  const frameId = renderer.frameId
+  await renderer.idle()
+  expect(renderer.frameId).toBe(frameId)
+  expect(renderer.getSchedulerState().isRendering).toBe(false)
 }
 
 beforeEach(async () => {
-  ;({ renderer, renderOnce } = await createTestRenderer({}))
+  ;({ renderer } = await createTestRenderer({}))
 })
 
-afterEach(() => {
+afterEach(async () => {
   renderer.destroy()
+  await renderer.closed
 })
 
-test("idle() resolves immediately when renderer is already idle", async () => {
+test("idle() resolves without another frame when renderer is already idle", async () => {
   expect(renderer.controlState).toBe(RendererControlState.IDLE)
   expect(renderer.isRunning).toBe(false)
 
-  await expectIdleToResolveImmediately(renderer)
+  await expectIdleWithoutAnotherFrame(renderer)
 })
 
 test("idle() waits for running renderer to stop", async () => {
@@ -62,12 +55,12 @@ test("idle() waits for paused renderer after requestRender()", async () => {
   expect(renderer.isRunning).toBe(false)
 })
 
-test("idle() resolves immediately after requestRender() completes", async () => {
+test("idle() resolves without another frame after requestRender() completes", async () => {
   renderer.requestRender()
 
   await renderer.idle()
 
-  await expectIdleToResolveImmediately(renderer)
+  await expectIdleWithoutAnotherFrame(renderer)
 })
 
 test("multiple idle() calls all resolve when renderer becomes idle", async () => {
@@ -115,11 +108,10 @@ test("idle() resolves after explicit pause", async () => {
   expect(renderer.isRunning).toBe(false)
 })
 
-test("idle() resolves immediately when called on paused renderer", async () => {
+test("idle() resolves without another frame when called on paused renderer", async () => {
   renderer.start()
   renderer.pause()
-
-  await expectIdleToResolveImmediately(renderer)
+  await expectIdleWithoutAnotherFrame(renderer)
 })
 
 test("idle() resolves when renderer is destroyed", async () => {
@@ -132,10 +124,11 @@ test("idle() resolves when renderer is destroyed", async () => {
   await idlePromise
 })
 
-test("idle() resolves immediately when called on destroyed renderer", async () => {
+test("idle() resolves without another frame when called on destroyed renderer", async () => {
   renderer.destroy()
+  await renderer.closed
 
-  await expectIdleToResolveImmediately(renderer)
+  await expectIdleWithoutAnotherFrame(renderer)
 })
 
 test("idle() waits through multiple requestRender() calls", async () => {
@@ -194,7 +187,7 @@ test("idle() can be used in a loop to wait between operations", async () => {
 test("idle() works with requestAnimationFrame", async () => {
   let frameCallbackExecuted = false
 
-  requestAnimationFrame(() => {
+  renderer.requestAnimationFrame(() => {
     frameCallbackExecuted = true
   })
 
@@ -206,9 +199,9 @@ test("idle() works with requestAnimationFrame", async () => {
 test("idle() waits for all animation frames to complete", async () => {
   let count = 0
 
-  requestAnimationFrame(() => {
+  renderer.requestAnimationFrame(() => {
     count++
-    requestAnimationFrame(() => {
+    renderer.requestAnimationFrame(() => {
       count++
     })
   })
