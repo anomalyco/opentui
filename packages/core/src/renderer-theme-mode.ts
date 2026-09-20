@@ -5,6 +5,8 @@ import type { ThemeMode } from "./types.js"
 const OSC_THEME_RESPONSE =
   /\x1b](10|11);(?:(?:rgb:)([0-9a-fA-F]+)\/([0-9a-fA-F]+)\/([0-9a-fA-F]+)|#([0-9a-fA-F]{6}))(?:\x07|\x1b\\)/g
 
+const DEVICE_ATTRIBUTES_REPLY = /\x1b\[\?[0-9;]*c/
+
 function scaleOscThemeComponent(component: string): string {
   const value = parseInt(component, 16)
   const maxValue = (1 << (4 * component.length)) - 1
@@ -109,6 +111,25 @@ export class RendererThemeMode {
     if (sequence === "\x1b[?997;1n" || sequence === "\x1b[?997;2n") {
       this.requestThemeOscColors()
       return { handled: true, changedMode: null }
+    }
+
+    if (
+      DEVICE_ATTRIBUTES_REPLY.test(sequence) &&
+      this.themeQueryPending &&
+      this.themeOscForeground === null &&
+      this.themeOscBackground === null
+    ) {
+      // DA1 fences the startup query burst the same way the trailing CPRs fence the explicit-width
+      // probes: the color queries are written before CSI c and terminals answer in order, so a DA1
+      // reply with no colors means they were ignored. Resolve the waiters with the current mode
+      // (null), but keep the query pending so a late OSC reply still applies the mode.
+      for (const waiter of this.waiters) {
+        if (waiter.timeoutHandle !== null) {
+          this.clock.clearTimeout(waiter.timeoutHandle)
+        }
+        waiter.resolve(this._themeMode)
+      }
+      this.waiters.clear()
     }
 
     let handledOscThemeResponse = false
