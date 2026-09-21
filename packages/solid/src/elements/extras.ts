@@ -37,12 +37,8 @@ export function Portal(props: { mount?: DomNode; ref?: (el: {}) => void; childre
       el.add(container)
       props.ref && (props as any).ref(container)
       onCleanup(() => {
-        // The portal attaches/detaches its container directly via el.add/el.remove,
-        // bypassing the reconciler. Because the container subtree is never reconciler-
-        // managed, the reconciler's removeNode -> destroyRecursively path never runs for
-        // it, so descendants (e.g. ScrollBoxRenderable) never execute destroySelf() and
-        // leak renderer-level listeners. Detach synchronously so the portal disappears
-        // immediately, then destroy the orphaned subtree on the next tick.
+        //Since the portal never goes through the reconciler's normal removal process,
+        // we need to manually remove and destroy its container to avoid memory leaks.
         el.remove(container)
         process.nextTick(() => {
           if (!container.parent) {
