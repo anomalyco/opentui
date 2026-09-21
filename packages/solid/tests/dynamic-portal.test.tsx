@@ -214,6 +214,37 @@ describe("SolidJS Renderer - Dynamic and Portal Components", () => {
       expect(frame).toContain("Second portal")
       expect(testSetup.renderer.root.getChildren().length).toBe(3)
     })
+
+    it("should release portal child listeners on unmount", async () => {
+      const [showPortal, setShowPortal] = createSignal(false)
+
+      testSetup = await testRender(
+        () => (
+          <box>
+            <Show when={showPortal()}>
+              <Portal>
+                <scrollbox>
+                  <text>Portal content</text>
+                </scrollbox>
+              </Portal>
+            </Show>
+          </box>
+        ),
+        { width: 20, height: 5 },
+      )
+
+      await testSetup.renderOnce()
+      const baseline = testSetup.renderer.listenerCount("selection")
+
+      setShowPortal(true)
+      await testSetup.renderOnce()
+      expect(testSetup.renderer.listenerCount("selection")).toBe(baseline + 1)
+
+      setShowPortal(false)
+      await testSetup.renderOnce()
+      await Bun.sleep(0)
+      expect(testSetup.renderer.listenerCount("selection")).toBe(baseline)
+    })
   })
 
   describe("<Dynamic> + <Portal> Integration", () => {
