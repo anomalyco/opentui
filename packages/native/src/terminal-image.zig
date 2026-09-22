@@ -1,4 +1,5 @@
 const std = @import("std");
+const gp = @import("grapheme.zig");
 const native_image = @import("image.zig");
 
 pub const KittyPixelFormat = enum { auto, rgb, rgba };
@@ -173,12 +174,22 @@ pub fn writeKittyTransmitFormat(writer: anytype, image: *native_image.Image, id:
 }
 
 // Kitty draws z < INT32_MIN/2 under cells with a non-default background.
-// Image cells almost always sit on themed TUI chrome, so that layer becomes
-// a solid box in terminals that honor the spec (cmux/libghostty). Stay in
-// [INT32_MIN/2, 0): above cell backgrounds, under glyphs. Covering is still
-// done by dropping the placement when reservation cells are overwritten.
+// Themed terminals paint those backgrounds, which hides an image in that
+// band. Stay in [INT32_MIN/2, 0): above cell backgrounds, under glyphs.
+// Overwritten reservation cells are excluded by the renderer; z only
+// orders a placement against text and cell backgrounds.
 pub fn kittyPlacementZ(placement_id: u32) i32 {
-    return @as(i32, std.math.minInt(i32) / 2) + @as(i32, @intCast(placement_id));
+    // Every legal placement id keeps the sum inside that band.
+    comptime {
+        const below_bg: i32 = std.math.minInt(i32) / 2;
+        const max_z = below_bg + @as(i32, gp.IMAGE_ID_MASK);
+        std.debug.assert(max_z < 0);
+        std.debug.assert(max_z >= below_bg);
+    }
+    std.debug.assert(placement_id <= gp.IMAGE_ID_MASK);
+    const z = @as(i32, std.math.minInt(i32) / 2) + @as(i32, @intCast(placement_id));
+    std.debug.assert(z < 0);
+    return z;
 }
 
 pub fn writeKittyPlacement(
