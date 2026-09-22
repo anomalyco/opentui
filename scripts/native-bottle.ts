@@ -1,4 +1,4 @@
-import { spawnSync } from "node:child_process"
+import { execFileSync, spawnSync } from "node:child_process"
 import { createHash } from "node:crypto"
 import {
   existsSync,
@@ -15,27 +15,44 @@ import { dirname, join, resolve } from "node:path"
 import process from "node:process"
 import { fileURLToPath } from "node:url"
 
-// Linked libraries for CI, keyed by native inputs, Zig version, and the ReleaseFast target set.
-// This is not a Zig cache. Only the cross-compile job saves the bottle. A host build must not.
+// Linked libraries and their separated symbols for CI. Keyed by native inputs, Zig version,
+// and the ReleaseFast target set. Darwin symbol separation needs the original Zig object
+// files, so a hit installs the symbols saved with the bottle instead of running dsymutil.
+// Only the cross-compile job saves the bottle. A host build must not.
 
-const BOTTLE_VERSION = 1
-const KEY_PREFIX = "native-bottle-v1"
+const BOTTLE_VERSION = 2
+const KEY_PREFIX = "native-bottle-v2"
 const OPTIMIZE = "ReleaseFast"
 const MANIFEST_NAME = "bottle-manifest.json"
 
 // These paths are the inputs of `zig build -Doptimize=ReleaseFast`. Generated output is not an input.
 const INPUTS = ["build.zig", "build.zig.zon", "scripts/prepare-zig-deps.sh", "src"] as const
 
-// Output names match packages/native/build.zig. File names match packages/core/scripts/build.ts.
-const BOTTLE_LIBRARIES: ReadonlyArray<{ dir: string; files: readonly string[] }> = [
-  { dir: "x86_64-linux", files: ["libopentui.so"] },
-  { dir: "aarch64-linux", files: ["libopentui.so"] },
-  { dir: "x86_64-linux-musl", files: ["libopentui.so"] },
-  { dir: "aarch64-linux-musl", files: ["libopentui.so"] },
-  { dir: "x86_64-macos", files: ["libopentui.dylib"] },
-  { dir: "aarch64-macos", files: ["libopentui.dylib"] },
-  { dir: "x86_64-windows", files: ["opentui.dll", "opentui.pdb"] },
-  { dir: "aarch64-windows", files: ["opentui.dll", "opentui.pdb"] },
+// Output names match packages/native/build.zig. Package and symbol directories match build.ts.
+const BOTTLE_LIBRARIES: ReadonlyArray<{
+  dir: string
+  files: readonly string[]
+  package: string
+  symbols: string
+}> = [
+  { dir: "x86_64-linux", files: ["libopentui.so"], package: "core-linux-x64", symbols: "linux-x64" },
+  { dir: "aarch64-linux", files: ["libopentui.so"], package: "core-linux-arm64", symbols: "linux-arm64" },
+  { dir: "x86_64-linux-musl", files: ["libopentui.so"], package: "core-linux-x64-musl", symbols: "linux-x64-musl" },
+  {
+    dir: "aarch64-linux-musl",
+    files: ["libopentui.so"],
+    package: "core-linux-arm64-musl",
+    symbols: "linux-arm64-musl",
+  },
+  { dir: "x86_64-macos", files: ["libopentui.dylib"], package: "core-darwin-x64", symbols: "darwin-x64" },
+  { dir: "aarch64-macos", files: ["libopentui.dylib"], package: "core-darwin-arm64", symbols: "darwin-arm64" },
+  { dir: "x86_64-windows", files: ["opentui.dll", "opentui.pdb"], package: "core-win32-x64", symbols: "win32-x64" },
+  {
+    dir: "aarch64-windows",
+    files: ["opentui.dll", "opentui.pdb"],
+    package: "core-win32-arm64",
+    symbols: "win32-arm64",
+  },
 ]
 
 interface BottleManifest {
@@ -143,22 +160,43 @@ function verifyBottle(root: string, zigVersion: string, inputsRoot: string): voi
     throw new Error(`Native bottle Zig version is ${manifest.zig}, expected ${zigVersion}`)
   if (manifest.optimize !== OPTIMIZE) throw new Error(`Native bottle optimize mode is ${manifest.optimize}`)
 
-  const expected = bottleLibraryPaths().sort()
+  for (const relativePath of bottleLibraryPaths()) {
+    if (!manifest.files[relativePath]) throw new Error(`Native bottle manifest is missing ${relativePath}`)
+  }
+  for (const library of BOTTLE_LIBRARIES) {
+    const symbolManifest = `symbols/${library.symbols}/manifest.json`
+    if (!manifest.files[symbolManifest]) throw new Error(`Native bottle manifest is missing ${symbolManifest}`)
+  }
+
   const listed = Object.keys(manifest.files).sort()
-  if (listed.join("\n") !== expected.join("\n"))
-    throw new Error("Native bottle manifest does not list the required libraries")
-
-  for (const relativePath of expected) {
+  for (const relativePath of listed) {
     const path = absolute(root, relativePath)
-    if (!existsSync(path)) throw new Error(`Missing bottled library: ${relativePath}`)
+    if (!existsSync(path)) throw new Error(`Missing bottled file: ${relativePath}`)
     const actual = createHash("sha256").update(readFileSync(path)).digest("hex")
-    if (actual !== manifest.files[relativePath]) throw new Error(`Bottled library hash mismatch: ${relativePath}`)
+    if (actual !== manifest.files[relativePath]) throw new Error(`Bottled file hash mismatch: ${relativePath}`)
   }
 
-  for (const file of listFiles(root)) {
-    if (file === MANIFEST_NAME) continue
-    if (!expected.includes(file)) throw new Error(`Unexpected native bottle file: ${file}`)
-  }
+  const onDisk = listFiles(root)
+    .filter((file) => file !== MANIFEST_NAME)
+    .sort()
+  if (onDisk.join("\n") !== listed.join("\n")) throw new Error("Native bottle contents do not match its manifest")
+}
+
+function sha256(path: string): string {
+  return createHash("sha256").update(readFileSync(path)).digest("hex")
+}
+
+function stageFile(staged: string, files: Record<string, string>, relativePath: string, source: string): void {
+  if (!existsSync(source)) throw new Error(`Missing native bottle file: ${relativePath}`)
+  files[relativePath] = sha256(source)
+  const destination = absolute(staged, relativePath)
+  mkdirSync(dirname(destination), { recursive: true })
+  writeFileSync(destination, readFileSync(source))
+}
+
+function distributionSource(root: string, library: (typeof BOTTLE_LIBRARIES)[number], file: string): string {
+  if (file.endsWith(".pdb")) return absolute(root, `${library.dir}/${file}`)
+  return join(coreDir, "node_modules", "@opentui", library.package, file)
 }
 
 function stageBottle(root: string, zigVersion: string, inputsRoot: string): void {
@@ -167,14 +205,17 @@ function stageBottle(root: string, zigVersion: string, inputsRoot: string): void
   const files: Record<string, string> = {}
   const staged = mkdtempSync(join(tmpdir(), "opentui-native-bottle-"))
   try {
-    for (const relativePath of bottleLibraryPaths()) {
-      const source = absolute(root, relativePath)
-      if (!existsSync(source)) throw new Error(`Missing native library: ${relativePath}`)
-      const bytes = readFileSync(source)
-      files[relativePath] = createHash("sha256").update(bytes).digest("hex")
-      const destination = absolute(staged, relativePath)
-      mkdirSync(dirname(destination), { recursive: true })
-      writeFileSync(destination, bytes)
+    for (const library of BOTTLE_LIBRARIES) {
+      for (const file of library.files) {
+        stageFile(staged, files, `${library.dir}/${file}`, distributionSource(root, library, file))
+      }
+      const symbolRoot = join(nativeRoot, "symbols", library.symbols)
+      if (!existsSync(join(symbolRoot, "manifest.json"))) {
+        throw new Error(`Missing separated symbols: ${library.symbols}`)
+      }
+      for (const file of listFiles(symbolRoot)) {
+        stageFile(staged, files, `symbols/${library.symbols}/${file}`, absolute(symbolRoot, file))
+      }
     }
     const manifest: BottleManifest = {
       version: BOTTLE_VERSION,
@@ -187,7 +228,7 @@ function stageBottle(root: string, zigVersion: string, inputsRoot: string): void
     verifyBottle(staged, zigVersion, inputsRoot)
     rmSync(root, { recursive: true, force: true })
     mkdirSync(root, { recursive: true })
-    for (const relativePath of [MANIFEST_NAME, ...bottleLibraryPaths()]) {
+    for (const relativePath of [MANIFEST_NAME, ...Object.keys(files)]) {
       const destination = absolute(root, relativePath)
       mkdirSync(dirname(destination), { recursive: true })
       writeFileSync(destination, readFileSync(absolute(staged, relativePath)))
@@ -197,8 +238,37 @@ function stageBottle(root: string, zigVersion: string, inputsRoot: string): void
   }
 }
 
+function installBottledSymbols(): void {
+  const version = JSON.parse(readFileSync(join(coreDir, "package.json"), "utf8")).version as string
+  const commit = execFileSync("git", ["rev-parse", "HEAD"], { cwd: repoRoot, encoding: "utf8" }).trim()
+  for (const library of BOTTLE_LIBRARIES) {
+    const source = join(libRoot, "symbols", library.symbols)
+    const destination = join(nativeRoot, "symbols", library.symbols)
+    rmSync(destination, { recursive: true, force: true })
+    for (const file of listFiles(source)) {
+      const target = absolute(destination, file)
+      mkdirSync(dirname(target), { recursive: true })
+      writeFileSync(target, readFileSync(absolute(source, file)))
+    }
+    const manifestPath = join(destination, "manifest.json")
+    const manifest = JSON.parse(readFileSync(manifestPath, "utf8")) as {
+      binary: string
+      version: string
+      commit: string
+      preSigningSha256: string
+    }
+    const binary = join(coreDir, "node_modules", "@opentui", library.package, manifest.binary)
+    if (!existsSync(binary)) throw new Error(`Missing installed binary for ${library.symbols}: ${manifest.binary}`)
+    manifest.version = version
+    manifest.commit = commit
+    manifest.preSigningSha256 = sha256(binary)
+    writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`)
+  }
+}
+
 function packagePlan(options: PackageOptions): string[][] {
-  if (options.all && options.skipSymbols) throw new Error("The cross-compile bottle still separates symbols")
+  const skipSymbols = options.skipSymbols || (options.hit && options.all)
+  if (options.all && skipSymbols && !options.hit) throw new Error("A cross-compile miss must separate symbols")
   const native = options.hit
     ? [
         "bun",
@@ -206,7 +276,7 @@ function packagePlan(options: PackageOptions): string[][] {
         "--native",
         "--skip-zig",
         ...(options.all ? ["--all"] : []),
-        ...(options.skipSymbols ? ["--skip-symbols"] : []),
+        ...(skipSymbols ? ["--skip-symbols"] : []),
       ]
     : [
         "bun",
@@ -226,6 +296,7 @@ function runPackage(options: PackageOptions): void {
     if (result.error) throw result.error
     if (result.status !== 0) process.exit(result.status ?? 1)
   }
+  if (options.hit && options.all) installBottledSymbols()
 }
 
 function readFlag(name: string): string | undefined {

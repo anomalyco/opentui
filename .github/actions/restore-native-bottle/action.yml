@@ -29,6 +29,7 @@ runs:
       with:
         path: packages/native/lib
         key: ${{ steps.hash.outputs.key }}
+        enableCrossOsArchive: true
 
     - id: decide
       shell: bash

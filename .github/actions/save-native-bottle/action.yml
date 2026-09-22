@@ -19,3 +19,4 @@ runs:
       with:
         path: packages/native/lib
         key: ${{ inputs.key }}
+        enableCrossOsArchive: true
