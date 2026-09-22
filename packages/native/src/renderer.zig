@@ -186,6 +186,9 @@ const ImageDirty = struct {
     background_hash: u64,
     lower_occupancy_hash: u64,
     propagated: bool = false,
+    // Kitty reservation scan for this frame. Change detection, the Kitty
+    // writer, and staging all read it, so the placement area is scanned once.
+    reservation: PlacementReservation = .{ .intact = true, .hash = 0 },
 };
 
 const ImageProtocol = enum { fallback, sixel, kitty };
@@ -1333,6 +1336,14 @@ pub const CliRenderer = struct {
     // A cell stays reserved while it shows this placement or a higher Kitty
     // placement, which the terminal composites by z. Text, fills, and images
     // on another protocol paint the cell, so they exclude it.
+    fn imageCharReserved(self: *CliRenderer, buffer: *const OptimizedBuffer, placement: OptimizedBuffer.ImagePlacement, char: u32) bool {
+        if (!gp.isImageChar(char)) return false;
+        const id = gp.imageIdFromChar(char);
+        if (id == placement.placement_id) return true;
+        if (id < placement.placement_id or id > buffer.image_placements.items.len) return false;
+        return self.nextPlacementProtocol(buffer.image_placements.items[id - 1]) == .kitty;
+    }
+
     fn placementCellReserved(
         self: *CliRenderer,
         buffer: *const OptimizedBuffer,
@@ -1342,15 +1353,13 @@ pub const CliRenderer = struct {
     ) bool {
         const x = placement.x + @as(i32, @intCast(ox));
         const y = placement.y + @as(i32, @intCast(oy));
-        if (x < 0 or y < 0) return false;
-        const cell = buffer.get(@intCast(x), @intCast(y)) orelse return false;
-        if (!gp.isImageChar(cell.char)) return false;
-        const id = gp.imageIdFromChar(cell.char);
-        if (id == placement.placement_id) return true;
-        if (id < placement.placement_id or id > buffer.image_placements.items.len) return false;
-        return self.nextPlacementProtocol(buffer.image_placements.items[id - 1]) == .kitty;
+        if (x < 0 or y < 0 or x >= buffer.width or y >= buffer.height) return false;
+        const index = @as(usize, @intCast(y)) * buffer.width + @as(usize, @intCast(x));
+        return self.imageCharReserved(buffer, placement, buffer.buffer.char[index]);
     }
 
+    // Scans the placement area once. Only the char plane is read, and each
+    // row is hashed in chunks so the per-cell work is a load and a compare.
     fn placementReservation(
         self: *CliRenderer,
         buffer: *const OptimizedBuffer,
@@ -1358,16 +1367,34 @@ pub const CliRenderer = struct {
     ) PlacementReservation {
         var hasher = std.hash.Wyhash.init(0x6b697474_792d7276);
         var intact = placement.width > 0 and placement.height > 0;
-        var y: u32 = 0;
-        while (y < placement.height) : (y += 1) {
-            var x: u32 = 0;
-            while (x < placement.width) : (x += 1) {
-                const reserved = self.placementCellReserved(buffer, placement, x, y);
-                if (!reserved) intact = false;
-                hasher.update(&.{@intFromBool(reserved)});
+        var chunk: [256]u8 = undefined;
+        var oy: u32 = 0;
+        while (oy < placement.height) : (oy += 1) {
+            const y = placement.y + @as(i32, @intCast(oy));
+            const row_visible = y >= 0 and y < buffer.height;
+            const row_start = if (row_visible) @as(usize, @intCast(y)) * buffer.width else 0;
+            var ox: u32 = 0;
+            while (ox < placement.width) {
+                const count: u32 = @min(placement.width - ox, @as(u32, chunk.len));
+                for (chunk[0..count], 0..) |*flag, offset| {
+                    const x = placement.x + @as(i32, @intCast(ox + offset));
+                    const visible = row_visible and x >= 0 and x < buffer.width;
+                    const reserved = visible and
+                        self.imageCharReserved(buffer, placement, buffer.buffer.char[row_start + @as(usize, @intCast(x))]);
+                    if (!reserved) intact = false;
+                    flag.* = @intFromBool(reserved);
+                }
+                hasher.update(chunk[0..count]);
+                ox += count;
             }
         }
         return .{ .intact = intact, .hash = hasher.final() };
+    }
+
+    fn placementReservationState(self: *const CliRenderer, placement_id: u32) PlacementReservation {
+        // imageDirty covers every placement unless this frame already failed.
+        if (placement_id == 0 or placement_id > self.imageDirty.items.len) return .{ .intact = true, .hash = 0 };
+        return self.imageDirty.items[placement_id - 1].reservation;
     }
 
     fn prepareSnapshotImages(
@@ -1872,8 +1899,8 @@ pub const CliRenderer = struct {
                 a.pixel_width != b.pixel_width or a.pixel_height != b.pixel_height) return true;
             if (a.source_x != b.source_x or a.source_y != b.source_y or a.source_width != b.source_width or a.source_height != b.source_height or a.opacity != b.opacity) return true;
             if (self.nextPlacementProtocol(a) != b.protocol) return true;
-            if (self.nextPlacementProtocol(a) == .kitty) {
-                const reservation = self.placementReservation(self.nextRenderBuffer, a);
+            if (self.nextPlacementProtocol(a) == .kitty and index < self.imageDirty.items.len) {
+                const reservation = self.imageDirty.items[index].reservation;
                 if (reservation.intact != b.reservation_intact or reservation.hash != b.reservation_hash) return true;
             }
             if (index < self.imageDirty.items.len and self.imageDirty.items[index].background_hash != b.background_hash) return true;
@@ -2009,6 +2036,10 @@ pub const CliRenderer = struct {
                 .protocol = protocol,
                 .background_hash = background_hash,
                 .lower_occupancy_hash = lower_occupancy_hash,
+                .reservation = if (protocol == .kitty)
+                    self.placementReservation(self.nextRenderBuffer, placement)
+                else
+                    .{ .intact = true, .hash = 0 },
             });
         }
         while (true) {
@@ -2060,10 +2091,7 @@ pub const CliRenderer = struct {
         std.debug.assert(self.pendingImages.capacity >= self.nextRenderBuffer.image_placements.items.len);
         for (self.nextRenderBuffer.image_placements.items, 0..) |placement, index| {
             const protocol = self.nextPlacementProtocol(placement);
-            const reservation = if (protocol == .kitty)
-                self.placementReservation(self.nextRenderBuffer, placement)
-            else
-                PlacementReservation{ .intact = true, .hash = 0 };
+            const reservation = self.placementReservationState(placement.placement_id);
             self.pendingImages.appendAssumeCapacity(.{
                 .image_handle = placement.image_handle,
                 .placement_id = placement.placement_id,
@@ -2273,7 +2301,7 @@ pub const CliRenderer = struct {
             null;
         const image_id = self.kittyImageId(placement.placement_id);
         const downscaled = kittyDownscaleApplies(placement);
-        const reservation = self.placementReservation(self.nextRenderBuffer, placement);
+        const reservation = self.placementReservationState(placement.placement_id);
         const retransmit = if (previous) |committed| blk: {
             const previous_downscaled = kittyDownscaleAppliesTo(
                 committed.source_width,
