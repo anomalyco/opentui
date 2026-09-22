@@ -273,6 +273,7 @@ export default module.default
           keywords: [...(packageJson.keywords ?? []), "prebuild", "prebuilt"],
           exports: {
             ".": {
+              node: "./index.js",
               bun: "./index.bun.js",
               import: "./index.js",
               types: "./index.d.ts",

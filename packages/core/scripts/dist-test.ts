@@ -170,6 +170,17 @@ function assertRuntimeOutputs(): void {
   if (distPackage.exports["./node-assets"]?.import !== "./node-assets.js") {
     throw new Error("Missing @opentui/core/node-assets package export")
   }
+  const nativePackage = JSON.parse(readFileSync(join(nativePackageDir, "package.json"), "utf8")) as {
+    exports?: { "."?: Record<string, string> }
+  }
+  const nativeExport = nativePackage.exports?.["."]
+  if (
+    nativeExport?.node !== "./index.js" ||
+    nativeExport.bun !== "./index.bun.js" ||
+    Object.keys(nativeExport).indexOf("node") > Object.keys(nativeExport).indexOf("bun")
+  ) {
+    throw new Error("Native package exports must prefer the Node loader when both node and bun conditions are active")
+  }
   const workerExport = distPackage.exports["./parser.worker"]
   if (
     workerExport?.bun !== "./parser.worker.js" ||
