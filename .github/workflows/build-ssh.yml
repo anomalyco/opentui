@@ -16,6 +16,7 @@ concurrency:
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
   NODE_VERSION: 26.7.0
+  ZIG_VERSION: 0.16.0
 
 jobs:
   test:
@@ -37,23 +38,27 @@ jobs:
         with:
           bun-version: 1.4.1
 
+      - name: Install dependencies
+        run: bun install
+
+      - name: Restore native bottle
+        id: bottle
+        uses: ./.github/actions/restore-native-bottle
+        with:
+          zig-version: ${{ env.ZIG_VERSION }}
+
       - name: Setup Zig
+        if: steps.bottle.outputs.cache-hit != 'true'
         uses: mlugg/setup-zig@v2
         with:
-          version: 0.16.0
+          version: ${{ env.ZIG_VERSION }}
           # Keep Zig's cache path on the workspace drive, but do not restore/save
           # stale .zig-cache archives on Windows can contain missing cache files.
           use-cache: ${{ runner.os != 'Windows' }}
           cache-key: build-ssh
 
-      - name: Install dependencies
-        run: bun install
-
       - name: Build core
-        run: |
-          cd packages/core
-          bun run build:native --skip-symbols
-          bun run build:lib
+        run: bun scripts/native-bottle.ts package --hit "${{ steps.bottle.outputs.cache-hit }}" --zig "${{ env.ZIG_VERSION }}" --skip-symbols --lib
 
       - name: Build framework declarations
         run: |
@@ -108,18 +113,24 @@ jobs:
         with:
           node-version: ${{ env.NODE_VERSION }}
 
-      - name: Setup Zig
-        uses: mlugg/setup-zig@v2
-        with:
-          version: 0.16.0
-          cache-key: build-ssh-packed
-
       - name: Install dependencies
         run: bun install
 
+      - name: Restore native bottle
+        id: bottle
+        uses: ./.github/actions/restore-native-bottle
+        with:
+          zig-version: ${{ env.ZIG_VERSION }}
+
+      - name: Setup Zig
+        if: steps.bottle.outputs.cache-hit != 'true'
+        uses: mlugg/setup-zig@v2
+        with:
+          version: ${{ env.ZIG_VERSION }}
+          cache-key: build-ssh-packed
+
       - name: Build core
-        working-directory: packages/core
-        run: bun run build
+        run: bun scripts/native-bottle.ts package --hit "${{ steps.bottle.outputs.cache-hit }}" --zig "${{ env.ZIG_VERSION }}" --skip-symbols --lib
 
       - name: Build SSH
         working-directory: packages/ssh

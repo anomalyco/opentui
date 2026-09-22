@@ -31,33 +31,48 @@ jobs:
         with:
           bun-version: 1.4.1
 
+      - name: Install dependencies
+        run: bun install
+
+      - name: Restore native bottle
+        id: bottle
+        uses: ./.github/actions/restore-native-bottle
+        with:
+          zig-version: ${{ env.ZIG_VERSION }}
+
       - name: Setup Zig
+        if: steps.bottle.outputs.cache-hit != 'true'
         uses: mlugg/setup-zig@v2
         with:
           version: ${{ env.ZIG_VERSION }}
           use-cache: false
 
       - name: Restore Zig cache
+        if: steps.bottle.outputs.cache-hit != 'true'
         uses: actions/cache@v5
         with:
           path: packages/native/.zig-cache
           key: zig-v1-${{ runner.os }}-${{ env.ZIG_VERSION }}-${{ github.run_id }}-${{ github.job }}
           restore-keys: zig-v1-${{ runner.os }}-${{ env.ZIG_VERSION }}-
 
-      - name: Install dependencies
-        run: bun install
-
       - name: Setup cross-platform symbol tools
         uses: ./.github/actions/setup-native-symbol-tools
 
-      - name: Build native libraries (cross-compile all platforms)
-        run: |
-          cd packages/core
-          bun run build:native --all
+      - name: Build or package native libraries
+        run: bun scripts/native-bottle.ts package --hit "${{ steps.bottle.outputs.cache-hit }}" --zig "${{ env.ZIG_VERSION }}" --all
 
+      # A saved bottle already passed this compile check for the same inputs.
       - name: Build custom target without Ghostty VT
+        if: steps.bottle.outputs.cache-hit != 'true'
         working-directory: packages/native
         run: zig build -Dlibrary-target=x86_64-freebsd -Doptimize=ReleaseFast
+
+      - name: Save native bottle
+        if: steps.bottle.outputs.cache-hit != 'true'
+        uses: ./.github/actions/save-native-bottle
+        with:
+          key: ${{ steps.bottle.outputs.key }}
+          zig-version: ${{ env.ZIG_VERSION }}
 
       - name: Verify release symbol archives
         run: bun packages/core/scripts/package-native-symbols.ts
