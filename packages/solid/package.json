@@ -1,6 +1,6 @@
 {
   "name": "@opentui/solid",
-  "version": "0.5.11",
+  "version": "0.5.12",
   "description": "SolidJS renderer for OpenTUI",
   "repository": {
     "type": "git",
