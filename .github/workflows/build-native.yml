@@ -55,7 +55,7 @@ jobs:
         run: bun install
 
       - name: Setup cross-platform symbol tools
-        uses: ./.github/actions/setup-native-symbol-tools
+        uses: $/.github/actions/setup-native-symbol-tools
 
       - name: Build packages (cross-compile for all platforms)
         run: |

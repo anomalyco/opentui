@@ -48,7 +48,7 @@ jobs:
         run: bun install
 
       - name: Setup cross-platform symbol tools
-        uses: ./.github/actions/setup-native-symbol-tools
+        uses: $/.github/actions/setup-native-symbol-tools
 
       - name: Build native libraries (cross-compile all platforms)
         run: |
@@ -140,7 +140,7 @@ jobs:
 
       - name: Enable Linux core dumps
         if: runner.os == 'Linux'
-        uses: ./.github/actions/enable-linux-coredumps
+        uses: $/.github/actions/enable-linux-coredumps
 
       - name: Run native tests
         working-directory: packages/core
@@ -186,7 +186,7 @@ jobs:
 
       - name: Upload Linux core dumps
         if: failure() && runner.os == 'Linux'
-        uses: ./.github/actions/upload-linux-coredumps
+        uses: $/.github/actions/upload-linux-coredumps
         with:
           name: crash-dumps-core-${{ matrix.os }}-${{ github.run_attempt }}
 
