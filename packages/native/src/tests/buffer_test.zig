@@ -3625,3 +3625,38 @@ test "OptimizedBuffer frame buffer merge multiplies nested placement opacity" {
     // 0.5 * 0.5 = 0.25 -> 64 of 255.
     try std.testing.expect(@abs(@as(i16, target.image_placements.items[0].opacity) - 64) <= 1);
 }
+
+test "OptimizedBuffer - fillRect sets contrasting foreground on light and dark backgrounds" {
+    const pool = gp.initGlobalPool(std.testing.allocator);
+    defer gp.deinitGlobalPool();
+
+    var buf = try OptimizedBuffer.init(
+        std.testing.allocator,
+        10,
+        5,
+        .{ .pool = pool, .id = "test-buffer" },
+    );
+    defer buf.deinit();
+
+    // Fill with light background (e.g. #F5F5F5)
+    const light_bg = ansi.rgbColor(245, 245, 245, 255);
+    buf.fillRect(0, 0, 10, 5, light_bg);
+
+    const light_cell = buf.get(0, 0).?;
+    try std.testing.expectEqual(@as(u32, buffer_mod.DEFAULT_SPACE_CHAR), light_cell.char);
+    // Foreground should contrast with light background -> black (0, 0, 0)
+    try std.testing.expectEqual(@as(u8, 0), ansi.red(light_cell.fg));
+    try std.testing.expectEqual(@as(u8, 0), ansi.green(light_cell.fg));
+    try std.testing.expectEqual(@as(u8, 0), ansi.blue(light_cell.fg));
+
+    // Fill with dark background (e.g. #1E1E1E)
+    const dark_bg = ansi.rgbColor(30, 30, 30, 255);
+    buf.fillRect(0, 0, 10, 5, dark_bg);
+
+    const dark_cell = buf.get(0, 0).?;
+    try std.testing.expectEqual(@as(u32, buffer_mod.DEFAULT_SPACE_CHAR), dark_cell.char);
+    // Foreground should contrast with dark background -> white (255, 255, 255)
+    try std.testing.expectEqual(@as(u8, 255), ansi.red(dark_cell.fg));
+    try std.testing.expectEqual(@as(u8, 255), ansi.green(dark_cell.fg));
+    try std.testing.expectEqual(@as(u8, 255), ansi.blue(dark_cell.fg));
+}

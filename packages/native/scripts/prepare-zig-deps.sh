@@ -50,7 +50,7 @@ if is_ready; then
 fi
 
 mkdir -p "$TEMP_DIR"
-tar -xzf "$ARCHIVE" -C "$TEMP_DIR"
+tar --force-local -xzf "$ARCHIVE" -C "$TEMP_DIR"
 printf '%s\n' "$ARCHIVE_ID" > "$TEMP_DIR/.ready"
 rm -rf "$DEPS_DIR"
 mv "$TEMP_DIR" "$DEPS_DIR"
