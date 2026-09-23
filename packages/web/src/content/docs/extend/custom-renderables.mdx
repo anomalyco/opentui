@@ -164,6 +164,10 @@ buffer is read when native code paints the frame, so do not change it again duri
 encoded Unicode that the hook destroys or frees afterward stays alive until then. For whole-frame effects, use a
 post-process function.
 
+A drawing call in a hook checks ranges and types immediately and records nothing when it throws. Native code checks the
+remaining input, such as control characters in text, when it paints the frame. Such an error fails that frame and emits
+`render:error`; it does not throw inside the hook.
+
 Do not implement traversal, manual hit insertion, or frame orchestration through `render()` overrides.
 Use cursor options instead of `renderCursor()` overrides.
 
