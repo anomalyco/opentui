@@ -94,7 +94,7 @@ Use `await renderer.idle()` to wait until demand-driven work settles. `getSchedu
 
 ### Cooperative frames
 
-Set `nativeSceneWorkBudget` to a positive unsigned 32-bit integer to yield during frame preparation. It counts preparation visits, view-preparation entries, and feedback records between yields. If a yield accepts a layout change, preparation restarts once and completes without further yields.
+Set `nativeSceneWorkBudget` to a positive unsigned 32-bit integer to yield during frame preparation. It counts preparation visits, view-preparation entries, and feedback records between yields. If a yield accepts a layout change, preparation restarts once, and the rest of the frame runs without yields.
 
 The quota does not bound elapsed time or cells. Yoga, sibling sorting, final publication, painting, and output encoding still run synchronously. Painting never yields, so a frame never mixes cells from before and after a mutation. The scheduler also cannot preempt an application callback.
 

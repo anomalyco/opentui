@@ -56,3 +56,44 @@ test("native work budget presents frames while every event-loop turn mutates lay
     await renderer.closed
   }
 })
+
+test("native work budget presents frames while every turn resizes a node with a resize hook", async () => {
+  const { renderer, renderOnce } = await createTestRenderer({
+    nativeSceneWorkBudget: 1,
+    width: 40,
+    height: 4,
+    clock: new ManualClock(),
+  })
+  const errors: unknown[] = []
+  let frames = 0
+  let resizes = 0
+  renderer.on(CliRenderEvents.RENDER_ERROR, ({ error }) => errors.push(error))
+  renderer.on(CliRenderEvents.FRAME, () => frames++)
+  const column = new BoxRenderable(renderer, { flexDirection: "column" })
+  renderer.root.add(column)
+  for (let index = 0; index < 8; index++) column.add(new TextRenderable(renderer, { content: `line ${index}` }))
+  const resized = new BoxRenderable(renderer, { width: 1, height: 1 })
+  resized.on("resize", () => resizes++)
+  column.add(resized)
+  let running = true
+  const mutate = (async () => {
+    for (let width = 2; running; width = (width % 30) + 1) {
+      await setImmediate()
+      resized.width = width
+    }
+  })()
+  try {
+    for (let frame = 0; frame < 4; frame++) await renderOnce()
+  } finally {
+    running = false
+    await mutate
+  }
+  try {
+    assert.deepEqual(errors, [])
+    assert.equal(frames, 4)
+    assert.ok(resizes > 0)
+  } finally {
+    renderer.destroy()
+    await renderer.closed
+  }
+})

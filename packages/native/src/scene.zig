@@ -193,6 +193,8 @@ const Attempt = struct {
     pending: ?FrameRequest = null,
     remaining_work: u32,
     bounded_work: bool,
+    // After a yielded mutation restarts preparation, the attempt never yields again.
+    restarted: bool = false,
     feedback_work_remaining: usize = 0,
     preparing: enum { none, traversal, views } = .none,
     prepare_depth: usize = 0,
@@ -744,8 +746,8 @@ pub const Scene = struct {
             if (options.max_layout_rounds != active.options.max_layout_rounds or
                 options.max_host_requests != active.options.max_host_requests or
                 (reply.kind == api.OT_SCENE_FRAME_RECORD) != (recording != null)) return error.InvalidOptions;
-            self.attempt.?.remaining_work = if (reply.kind == api.OT_SCENE_FRAME_YIELD) max_work_items else @min(active.remaining_work, max_work_items);
-            self.attempt.?.bounded_work = max_work_items != std.math.maxInt(u32) or (reply.kind != api.OT_SCENE_FRAME_YIELD and active.bounded_work);
+            self.attempt.?.remaining_work = if (active.restarted) std.math.maxInt(u32) else if (reply.kind == api.OT_SCENE_FRAME_YIELD) max_work_items else @min(active.remaining_work, max_work_items);
+            self.attempt.?.bounded_work = !active.restarted and (max_work_items != std.math.maxInt(u32) or (reply.kind != api.OT_SCENE_FRAME_YIELD and active.bounded_work));
             self.attempt.?.options = options;
             self.attempt.?.pending = null;
         } else {
@@ -781,6 +783,7 @@ pub const Scene = struct {
             // runs without further yields, so steady mutations cannot starve the frame.
             active.bounded_work = false;
             active.remaining_work = std.math.maxInt(u32);
+            active.restarted = true;
         }
         const restart_feedback = yielded and active.preparing == .none and active.feedback_work_remaining == 0 and
             (self.preparation_dirty or try self.needsSolve(cli, root));
