@@ -5,6 +5,7 @@ pub const LinkPoolError = error{
     InvalidId,
     WrongGeneration,
     UrlTooLong,
+    RefcountOverflow,
 };
 
 // ID layout within 24 bits: [ generation (8 bits) | slot_index (16 bits) ]
@@ -68,16 +69,19 @@ pub const LinkPool = struct {
         const slot_count_max = SLOT_MASK + 1;
         if (self.num_slots > slot_count_max - self.slots_per_page) return LinkPoolError.OutOfMemory;
 
+        const new_num_slots = self.num_slots + self.slots_per_page;
         const add_bytes = self.slot_size_bytes * self.slots_per_page;
 
         try self.slots.ensureTotalCapacity(self.allocator, self.slots.items.len + add_bytes);
-        try self.slots.appendNTimes(self.allocator, 0, add_bytes);
+        // Every published slot must be able to return without allocating.
+        try self.free_list.ensureTotalCapacity(self.allocator, new_num_slots);
+        self.slots.appendNTimesAssumeCapacity(0, add_bytes);
 
         var i: u32 = 0;
         while (i < self.slots_per_page) : (i += 1) {
-            try self.free_list.append(self.allocator, self.num_slots + i);
+            self.free_list.appendAssumeCapacity(self.num_slots + i);
         }
-        self.num_slots += self.slots_per_page;
+        self.num_slots = new_num_slots;
     }
 
     fn slotPtr(self: *LinkPool, slot_index: u32) *u8 {
@@ -148,14 +152,23 @@ pub const LinkPool = struct {
         }
     }
 
-    pub fn alloc(self: *LinkPool, url: []const u8) LinkPoolError!IdPayload {
+    /// Return one owned live reference. Failed acquisition leaves no stranded
+    /// slot or interned identity. Internal pages may remain allocated.
+    pub fn acquire(self: *LinkPool, url: []const u8) LinkPoolError!IdPayload {
         if (url.len > self.slot_capacity) {
             return LinkPoolError.UrlTooLong;
         }
-
         if (self.lookupOrInvalidate(url)) |live_id| {
+            try self.incref(live_id);
             return live_id;
         }
+        return self.acquireNew(url);
+    }
+
+    fn acquireNew(self: *LinkPool, url: []const u8) LinkPoolError!IdPayload {
+        var copy: [MAX_URL_LENGTH]u8 = undefined;
+        @memcpy(copy[0..url.len], url);
+        const owned = copy[0..url.len];
 
         if (self.free_list.items.len == 0) try self.grow();
 
@@ -165,19 +178,37 @@ pub const LinkPool = struct {
 
         std.debug.assert(header_ptr.generation < GEN_MASK);
         const new_generation = header_ptr.generation + 1;
-
         header_ptr.* = .{
-            .len = @intCast(url.len),
+            .len = @intCast(owned.len),
             .refcount = 0,
             .generation = new_generation,
         };
-
         const data_ptr = @as([*]u8, @ptrCast(p)) + @sizeOf(SlotHeader);
-        @memcpy(data_ptr[0..url.len], url);
+        @memcpy(data_ptr[0..owned.len], owned);
+        errdefer self.releaseSlot(slot_index, new_generation);
 
-        return packId(slot_index, new_generation);
+        const id = try packId(slot_index, new_generation);
+        try self.internLiveId(id, owned);
+        errdefer self.removeInternedLiveId(owned, id);
+
+        header_ptr.refcount = 1;
+        return id;
     }
 
+    fn releaseSlot(self: *LinkPool, slot_index: u32, expected_generation: u32) void {
+        const p = self.slotPtr(slot_index);
+        const header_ptr = slotHeaderPtr(p);
+        std.debug.assert(header_ptr.generation == expected_generation);
+        std.debug.assert(header_ptr.refcount == 0);
+        if (header_ptr.generation == GEN_MASK) {
+            header_ptr.generation = RETIRED_GENERATION;
+            self.retired_slot_count += 1;
+        } else {
+            self.free_list.appendAssumeCapacity(slot_index);
+        }
+    }
+
+    /// Retain an already-live ID. First-use interning stays inside acquire.
     pub fn incref(self: *LinkPool, id: IdPayload) LinkPoolError!void {
         const unpacked = unpackId(id);
         if (unpacked.slot_index >= self.num_slots) return LinkPoolError.InvalidId;
@@ -188,14 +219,9 @@ pub const LinkPool = struct {
         if (header_ptr.generation != unpacked.generation) {
             return LinkPoolError.WrongGeneration;
         }
-
-        const old_refcount = header_ptr.refcount;
-        header_ptr.refcount +%= 1;
-
-        if (old_refcount == 0) {
-            const live_url = try self.get(id);
-            try self.internLiveId(id, live_url);
-        }
+        if (header_ptr.refcount == 0) return LinkPoolError.InvalidId;
+        if (header_ptr.refcount == std.math.maxInt(u32)) return LinkPoolError.RefcountOverflow;
+        header_ptr.refcount += 1;
     }
 
     pub fn decref(self: *LinkPool, id: IdPayload) LinkPoolError!void {
@@ -216,12 +242,7 @@ pub const LinkPool = struct {
         header_ptr.refcount -%= 1;
 
         if (header_ptr.refcount == 0) {
-            if (header_ptr.generation == GEN_MASK) {
-                header_ptr.generation = RETIRED_GENERATION;
-                self.retired_slot_count += 1;
-            } else {
-                try self.free_list.append(self.allocator, unpacked.slot_index);
-            }
+            self.releaseSlot(unpacked.slot_index, unpacked.generation);
         }
     }
 
@@ -294,15 +315,24 @@ pub const LinkTracker = struct {
         self.used_ids.clearRetainingCapacity();
     }
 
+    /// Track document membership once per URL, independent of its chunk count.
+    pub fn trackUrl(self: *LinkTracker, url: []const u8) LinkPoolError!IdPayload {
+        if (self.pool.lookupOrInvalidate(url)) |id| {
+            if (self.used_ids.contains(id)) return id;
+        }
+        const id = try self.pool.acquire(url);
+        errdefer self.pool.decref(id) catch unreachable;
+        try self.used_ids.put(id, 1);
+        return id;
+    }
+
     pub fn addCellRef(self: *LinkTracker, id: u32) void {
         const res = self.used_ids.getOrPut(id) catch |err| {
             std.debug.panic("LinkTracker.addCellRef getOrPut failed: {}\n", .{err});
         };
         if (!res.found_existing) {
-            // First time seeing this ID - try to incref in pool
             self.pool.incref(id) catch {
-                // Invalid ID (not allocated in pool) - silently ignore
-                // This can happen with garbage in attribute bits
+                _ = self.used_ids.remove(id);
                 return;
             };
             res.value_ptr.* = 1;
@@ -331,19 +361,3 @@ pub const LinkTracker = struct {
         return @intCast(self.used_ids.count());
     }
 };
-
-var GLOBAL_LINK_POOL: ?LinkPool = null;
-
-pub fn initGlobalLinkPool(allocator: std.mem.Allocator) *LinkPool {
-    if (GLOBAL_LINK_POOL == null) {
-        GLOBAL_LINK_POOL = LinkPool.init(allocator);
-    }
-    return &GLOBAL_LINK_POOL.?;
-}
-
-pub fn deinitGlobalLinkPool() void {
-    if (GLOBAL_LINK_POOL) |*p| {
-        p.deinit();
-        GLOBAL_LINK_POOL = null;
-    }
-}

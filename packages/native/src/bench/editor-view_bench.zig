@@ -1,4 +1,5 @@
 const std = @import("std");
+const TestPools = @import("../tests/test-pools.zig").TestPools;
 const bench_utils = @import("../bench-utils.zig");
 const edit_buffer = @import("../edit-buffer.zig");
 const editor_view = @import("../editor-view.zig");
@@ -158,16 +159,16 @@ pub fn run(
     _: bool,
     bench_filter: ?[]const u8,
 ) ![]BenchResult {
-    const pool = gp.initGlobalPool(allocator);
-    const link_pool = link.initGlobalLinkPool(allocator);
+    var pools = TestPools.init(allocator);
+    defer pools.deinit();
 
     var results: std.ArrayList(BenchResult) = .empty;
     errdefer results.deinit(allocator);
 
     const iterations: usize = 20;
-    try benchMoveDownBoundary(io, allocator, pool, link_pool, iterations, bench_filter, &results);
-    try benchMoveUpBoundary(io, allocator, pool, link_pool, iterations, bench_filter, &results);
-    try benchVisualEOLBoundary(io, allocator, pool, link_pool, iterations, bench_filter, &results);
+    try benchMoveDownBoundary(io, allocator, &pools.graphemes, &pools.links, iterations, bench_filter, &results);
+    try benchMoveUpBoundary(io, allocator, &pools.graphemes, &pools.links, iterations, bench_filter, &results);
+    try benchVisualEOLBoundary(io, allocator, &pools.graphemes, &pools.links, iterations, bench_filter, &results);
 
     return results.toOwnedSlice(allocator);
 }

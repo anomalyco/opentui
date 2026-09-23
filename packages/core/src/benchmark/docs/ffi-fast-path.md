@@ -20,6 +20,11 @@ This suite evaluates OpenTUI FFI wrapper overhead across Bun and Node without ch
 
 Scenarios use production wrappers and live native objects. Setup, calibration, verification, and teardown are outside the retained sample. Output probes reject incorrect work.
 
+The retired RendererHandle split-transition and split-snapshot calls are no longer benchmark scenarios.
+The remaining scenarios cover standalone buffers, text, editors, images, audio, and span decoding.
+Use the render workload preflights and packed-distribution fixtures for retained Context/Session frame and split-output checks.
+Historical comparisons must select matching retained scenarios from recorded reports or frozen revisions.
+
 `ffi-fast-path-paired-benchmark.ts` is the preferred comparison: it balances revision order, runs retained batches sequentially, records provenance and diagnostics, and reports paired nominal and multiplicity-adjusted bootstrap intervals. Negative deltas are faster; safety requires the adjusted upper bound to stay at or below a 3% regression.
 
 Calibration failures retry a complete pair. Retained timing and pair-gap drift are reported without censoring; lifecycle failures abort the run.

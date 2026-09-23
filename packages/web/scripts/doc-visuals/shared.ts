@@ -38,7 +38,6 @@ export async function renderDocVisual(fixture: DocVisualFixture) {
     setup = await createTestRenderer({
       width: fixture.width,
       height: fixture.height,
-      useThread: false,
       remote: false,
       forwardEnvKeys: [],
     })

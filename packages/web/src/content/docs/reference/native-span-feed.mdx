@@ -1,6 +1,6 @@
 ---
 title: NativeSpanFeed
-description: Attach, drain, backpressure, and close the borrowed native byte feed used by custom renderer output
+description: Attach, drain, and close an independent native byte feed with borrowed callback memory
 skill:
   intents: [native-span-feed, custom-stdout, output-transport, backpressure]
 ---
@@ -11,12 +11,12 @@ skill:
 a Node.js stream and has no `read()`, `write()`, or `pipe()` method.
 
 Most applications must not create one. Pass streams to `createCliRenderer()` as described in
-[Renderer custom output](/docs/core-concepts/renderer#custom-streams). The renderer owns feed setup, write-callback
-backpressure, shutdown drains, and destruction.
+[Renderer custom output](/docs/core-concepts/renderer#custom-streams). The renderer uses checked Session output,
+not this TypeScript feed wrapper.
 
 Direct use is for a native integration that already produces bytes through a native span-feed pointer.
 
-## Renderer-managed use
+## Renderer output uses Sessions
 
 ```typescript
 const renderer = await createCliRenderer({
@@ -29,11 +29,12 @@ const renderer = await createCliRenderer({
 })
 ```
 
-When `stdout` is not `process.stdout` and `bufferedOutput` is not `"memory"`, the renderer creates a feed. It passes
-each borrowed view to the original `stdout.write()` and keeps the native chunk pinned until the write callback runs.
+`CliRenderer` uses `NativeSession` to copy output tickets into host-owned storage.
+The driver calls the original `stdout.write()` and acknowledges each ticket after its write callback succeeds.
+It also handles output pressure and terminal restoration.
 
-During destruction, the renderer drains existing spans, destroys the native renderer, drains shutdown bytes, removes
-handlers, and closes the feed.
+The native Session uses a feed internally. That does not make its output a borrowed `NativeSpanFeed.onData()` view.
+Read [How Core uses native](/docs/native/core#complete-output-and-release-resources) for the renderer's contract.
 
 ## Public wrapper API
 
@@ -118,8 +119,8 @@ interface NativeSpanFeedOptions {
 `maxBytes` limits chunk allocation only. It does not cap the span-ring allocation. Under `"grow"`, the ring doubles
 when it fills and has no separate byte limit.
 
-Default renderer-managed feeds are growable and uncapped. This lets shutdown control bytes publish while earlier
-chunks remain pinned. A direct integration should set a finite `maxBytes` when it needs a memory bound.
+These independent feed defaults do not apply to checked Session output.
+Sessions use bounded output storage and reserve control capacity separately.
 
 ## Borrowed callback memory
 
@@ -205,8 +206,8 @@ Then call `close()` again. The wrapper has no method that completes a native res
 Calling `close()` from a data handler stops after the current span and can drop queued spans when final destruction
 runs. Drain required data before closing.
 
-After `renderer.destroy()` returns, a custom writable can still have callback promises in the microtask queue. Let
-those write callbacks settle before destroying the underlying transport.
+For a renderer, await `renderer.closed` after `renderer.destroy()` and before releasing its transport.
+Renderer shutdown follows the Session contract, not this independent feed's `close()` method.
 
 Read [Lifecycle and cleanup](/docs/core-concepts/lifecycle) for renderer shutdown ordering.
 

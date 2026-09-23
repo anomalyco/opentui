@@ -418,10 +418,11 @@ export class Timeline {
       subTimeline.timeline.pause()
     })
     this.isPlaying = false
-    if (this.onPause) {
-      this.onPause()
+    try {
+      this.onPause?.()
+    } finally {
+      this.notifyStateChange()
     }
-    this.notifyStateChange()
     return this
   }
 
@@ -489,38 +490,51 @@ export class Timeline {
       this.isPlaying = false
       this.isComplete = true
 
-      if (this.onComplete) {
-        this.onComplete()
+      try {
+        this.onComplete?.()
+      } finally {
+        this.notifyStateChange()
       }
-      this.notifyStateChange()
     }
   }
 }
 
+const rendererEngines = new WeakMap<CliRenderer, TimelineEngine>()
+const timelineOwners = new WeakMap<Timeline, TimelineEngine>()
+
 class TimelineEngine {
   private timelines: Set<Timeline> = new Set()
   private renderer: CliRenderer | null = null
-  private frameCallback: ((deltaTime: number) => Promise<void>) | null = null
+  private frameCallback = async (deltaTime: number): Promise<void> => {
+    this.update(deltaTime)
+  }
   private isLive: boolean = false
   public defaults = {
     frameRate: 60,
   }
 
+  /** Attaches to one explicit owner. Detach first to move an engine to another renderer. */
   attach(renderer: CliRenderer): void {
+    if (renderer.isDestroyed) throw new Error("Cannot attach timelines to a destroyed renderer")
+    if (this.renderer === renderer) {
+      if (!renderer.hasFrameCallback(this.frameCallback)) renderer.setFrameCallback(this.frameCallback)
+      return
+    }
     if (this.renderer) {
-      this.detach()
+      throw new Error("Timeline engine is already attached; use getTimelineEngine(renderer) for another renderer")
     }
-
+    const existing = rendererEngines.get(renderer)
+    if (existing && existing !== this)
+      throw new Error("Renderer already has a timeline engine; use getTimelineEngine(renderer)")
     this.renderer = renderer
-    this.frameCallback = async (deltaTime: number) => {
-      this.update(deltaTime)
-    }
-
+    rendererEngines.set(renderer, this)
     renderer.setFrameCallback(this.frameCallback)
+    this.updateLiveState()
   }
 
   detach(): void {
-    if (this.renderer && this.frameCallback) {
+    if (this.renderer) {
+      rendererEngines.delete(this.renderer)
       this.renderer.removeFrameCallback(this.frameCallback)
       if (this.isLive) {
         this.renderer.dropLive()
@@ -528,7 +542,6 @@ class TimelineEngine {
       }
     }
     this.renderer = null
-    this.frameCallback = null
   }
 
   private updateLiveState(): void {
@@ -552,7 +565,10 @@ class TimelineEngine {
   }
 
   register(timeline: Timeline): void {
+    const owner = timelineOwners.get(timeline)
+    if (owner && owner !== this) throw new Error("Timeline belongs to another timeline engine; unregister it first")
     if (!this.timelines.has(timeline)) {
+      timelineOwners.set(timeline, this)
       this.timelines.add(timeline)
       timeline.addStateChangeListener(this.onTimelineStateChange)
       this.updateLiveState()
@@ -562,6 +578,7 @@ class TimelineEngine {
   unregister(timeline: Timeline): void {
     if (this.timelines.has(timeline)) {
       this.timelines.delete(timeline)
+      timelineOwners.delete(timeline)
       timeline.removeStateChangeListener(this.onTimelineStateChange)
       this.updateLiveState()
     }
@@ -569,6 +586,7 @@ class TimelineEngine {
 
   clear(): void {
     for (const timeline of this.timelines) {
+      timelineOwners.delete(timeline)
       timeline.removeStateChangeListener(this.onTimelineStateChange)
     }
     this.timelines.clear()
@@ -577,6 +595,7 @@ class TimelineEngine {
 
   update(deltaTime: number): void {
     for (const timeline of this.timelines) {
+      if (this.renderer?.isDestroyed) break
       if (!timeline.synced) {
         timeline.update(deltaTime)
       }
@@ -584,15 +603,39 @@ class TimelineEngine {
   }
 }
 
+/** Default engine for manual updates or explicit single-renderer attach(). Frameworks use getTimelineEngine(). */
 export const engine = new TimelineEngine()
 
-export function createTimeline(options: TimelineOptions = {}): Timeline {
+/** Returns the renderer's engine and restores its frame callback if the caller cleared renderer callbacks.
+ * Renderer destruction unregisters its timelines and releases the engine's live request. */
+export function getTimelineEngine(renderer: CliRenderer): TimelineEngine {
+  const owner = rendererEngines.get(renderer) ?? new TimelineEngine()
+  owner.attach(renderer)
+  return owner
+}
+
+/** @internal Renderer finalization releases ownership even when a destroy listener throws. */
+export function destroyTimelineEngine(renderer: CliRenderer): void {
+  const owner = rendererEngines.get(renderer)
+  if (!owner) return
+  try {
+    owner.clear()
+  } finally {
+    owner.detach()
+  }
+}
+
+/** Creates and registers a timeline, playing unless autoplay is false.
+ * Pass the renderer explicitly for independent sessions: createTimeline({ duration: 500 }, renderer).
+ * Omitting the renderer retains the shipped default-engine API; it does not choose a renderer implicitly. */
+export function createTimeline(options: TimelineOptions = {}, renderer?: CliRenderer): Timeline {
+  const owner = renderer ? getTimelineEngine(renderer) : engine
   const timeline = new Timeline(options)
   if (options.autoplay !== false) {
     timeline.play()
   }
 
-  engine.register(timeline)
+  owner.register(timeline)
 
   return timeline
 }

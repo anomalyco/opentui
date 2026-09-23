@@ -129,7 +129,7 @@ export async function run(renderer: CliRenderer): Promise<void> {
   const spriteAnimator = new SpriteAnimator(scene)
   const explosionManager = new ExplosionManager(scene)
 
-  renderer.on("resize", (newWidth, newHeight) => {
+  const resizeHandler = (newWidth: number, newHeight: number) => {
     framebuffer.resize(newWidth, newHeight)
 
     pCamera.aspect = engine.aspectRatio
@@ -141,7 +141,9 @@ export async function run(renderer: CliRenderer): Promise<void> {
     oCamera.top = orthoViewHeight / 2
     oCamera.bottom = orthoViewHeight / -2
     oCamera.updateProjectionMatrix()
-  })
+  }
+  renderer.on("resize", resizeHandler)
+  framebufferRenderable.once("destroyed", () => renderer.off("resize", resizeHandler))
 
   const NUM_SPRITES = 8
 
@@ -417,7 +419,7 @@ export function destroy(renderer: CliRenderer): void {
 
     for (const id of ["main", "sprite-animation-container"]) {
       const child = renderer.root.getRenderable(id)
-      if (child) renderer.root.remove(child)
+      child?.destroyRecursively()
     }
     renderer.clearFrameCallbacks()
 

@@ -8,12 +8,14 @@ import { SyntaxStyle } from "../../syntax-style.js"
 import { RGBA } from "../../lib/RGBA.js"
 
 let currentRenderer: TestRenderer
+let syntaxStyle: SyntaxStyle
 let renderOnce: () => Promise<void>
 let captureCharFrame: () => string
 
 beforeEach(async () => {
   const testRenderer = await createTestRenderer({ width: 60, height: 20 })
   currentRenderer = testRenderer.renderer
+  syntaxStyle = SyntaxStyle.fromStyles({ default: { fg: RGBA.fromValues(1, 1, 1, 1) } }, currentRenderer.nativeScene)
   renderOnce = testRenderer.renderOnce
   captureCharFrame = testRenderer.captureCharFrame
 })
@@ -21,7 +23,9 @@ beforeEach(async () => {
 afterEach(async () => {
   if (currentRenderer) {
     currentRenderer.destroy()
+    await currentRenderer.closed
   }
+  syntaxStyle.destroy()
 })
 
 // Helper to generate multi-line code content
@@ -44,10 +48,6 @@ async function settleCodeRenderables(...codeRenderables: CodeRenderable[]): Prom
 
 describe("LineNumberRenderable in ScrollBox", () => {
   test("single Code renderable with line numbers in ScrollBox - correct dimensions", async () => {
-    const syntaxStyle = SyntaxStyle.fromStyles({
-      default: { fg: RGBA.fromValues(1, 1, 1, 1) },
-    })
-
     const code = generateCode(20) // 80 lines of code
     const codeRenderable = new CodeRenderable(currentRenderer, {
       id: "code-1",
@@ -112,10 +112,6 @@ describe("LineNumberRenderable in ScrollBox", () => {
   })
 
   test("single Code renderable in ScrollBox - scroll and verify dimensions", async () => {
-    const syntaxStyle = SyntaxStyle.fromStyles({
-      default: { fg: RGBA.fromValues(1, 1, 1, 1) },
-    })
-
     const code = generateCode(30) // 120 lines of code
     const codeRenderable = new CodeRenderable(currentRenderer, {
       id: "code-scroll",
@@ -199,10 +195,6 @@ describe("LineNumberRenderable in ScrollBox", () => {
   })
 
   test("multiple Code renderables with line numbers in ScrollBox - correct dimensions", async () => {
-    const syntaxStyle = SyntaxStyle.fromStyles({
-      default: { fg: RGBA.fromValues(1, 1, 1, 1) },
-    })
-
     const scrollBox = new ScrollBoxRenderable(currentRenderer, {
       id: "scroll-multi",
       width: "100%",
@@ -294,10 +286,6 @@ describe("LineNumberRenderable in ScrollBox", () => {
   })
 
   test("nested boxes with different border styles - dimensions correct", async () => {
-    const syntaxStyle = SyntaxStyle.fromStyles({
-      default: { fg: RGBA.fromValues(1, 1, 1, 1) },
-    })
-
     const code = generateCode(25)
     const codeRenderable = new CodeRenderable(currentRenderer, {
       id: "code-nested",
@@ -390,10 +378,6 @@ describe("LineNumberRenderable in ScrollBox", () => {
   })
 
   test("ScrollBox with horizontal and vertical scrolling - dimensions stable", async () => {
-    const syntaxStyle = SyntaxStyle.fromStyles({
-      default: { fg: RGBA.fromValues(1, 1, 1, 1) },
-    })
-
     // Create very long lines
     const longLines: string[] = []
     for (let i = 1; i <= 50; i++) {
@@ -490,10 +474,6 @@ describe("LineNumberRenderable in ScrollBox", () => {
   })
 
   test("gutter width changes with line count - verify remeasure", async () => {
-    const syntaxStyle = SyntaxStyle.fromStyles({
-      default: { fg: RGBA.fromValues(1, 1, 1, 1) },
-    })
-
     // Start with 9 lines (1 digit line numbers)
     let code = generateCode(2) // 8 lines
     const codeRenderable = new CodeRenderable(currentRenderer, {
@@ -573,10 +553,6 @@ describe("LineNumberRenderable in ScrollBox", () => {
   })
 
   test("line colors span full width in ScrollBox", async () => {
-    const syntaxStyle = SyntaxStyle.fromStyles({
-      default: { fg: RGBA.fromValues(1, 1, 1, 1) },
-    })
-
     const code = generateCode(15)
     const codeRenderable = new CodeRenderable(currentRenderer, {
       id: "code-colors",
@@ -635,10 +611,6 @@ describe("LineNumberRenderable in ScrollBox", () => {
   })
 
   test("viewport culling with line numbers - dimensions stable", async () => {
-    const syntaxStyle = SyntaxStyle.fromStyles({
-      default: { fg: RGBA.fromValues(1, 1, 1, 1) },
-    })
-
     const scrollBox = new ScrollBoxRenderable(currentRenderer, {
       id: "scroll-culling",
       width: "100%",
@@ -711,10 +683,6 @@ describe("LineNumberRenderable in ScrollBox", () => {
 
   test("EXPECTED FAILURE: Box width changes unexpectedly on first few renders", async () => {
     // This test documents a known issue where box widths may flicker on initial renders
-    const syntaxStyle = SyntaxStyle.fromStyles({
-      default: { fg: RGBA.fromValues(1, 1, 1, 1) },
-    })
-
     const code = generateCode(30)
     const codeRenderable = new CodeRenderable(currentRenderer, {
       id: "code-flicker",
@@ -773,10 +741,6 @@ describe("LineNumberRenderable in ScrollBox", () => {
   })
 
   test("EXPECTED FAILURE: Gutter height may not match parent height initially", async () => {
-    const syntaxStyle = SyntaxStyle.fromStyles({
-      default: { fg: RGBA.fromValues(1, 1, 1, 1) },
-    })
-
     const code = generateCode(50)
     const codeRenderable = new CodeRenderable(currentRenderer, {
       id: "code-height",

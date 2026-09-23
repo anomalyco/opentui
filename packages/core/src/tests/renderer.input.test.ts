@@ -5,15 +5,13 @@ import { type KeyEvent } from "../lib/KeyHandler.js"
 import { Buffer } from "node:buffer"
 import { Renderable, type RenderableOptions } from "../Renderable.js"
 import { createTestRenderer, type TestRenderer, type TestRendererOptions } from "../testing/test-renderer.js"
-import { createTerminalCapabilities } from "../testing/terminal-capabilities.js"
+import { TestWriteStream } from "../testing/test-streams.js"
 import { ManualClock } from "../testing/manual-clock.js"
 import type { RenderContext } from "../types.js"
-import type { RenderLib } from "../zig.js"
 
 let currentRenderer: TestRenderer
 let kittyRenderer: TestRenderer
-let mockProcessCapabilityResponse: any
-let mockGetTerminalCapabilities: RenderLib["getTerminalCapabilities"]
+let themeQueryRenderer: TestRenderer | undefined
 let currentClock: ManualClock
 let kittyClock: ManualClock
 
@@ -22,37 +20,16 @@ beforeEach(async () => {
   kittyClock = new ManualClock()
   ;({ renderer: currentRenderer } = await createTestRenderer({ clock: currentClock }))
   ;({ renderer: kittyRenderer } = await createTestRenderer({ kittyKeyboard: true, clock: kittyClock }))
-
-  // Mock native capability functions to avoid interfering with the test terminal
-  // @ts-expect-error - mocking for test
-  mockProcessCapabilityResponse = currentRenderer.lib.processCapabilityResponse
-  // @ts-expect-error - mocking for test
-  mockGetTerminalCapabilities = currentRenderer.lib.getTerminalCapabilities
-
-  // @ts-expect-error - mocking for test
-  currentRenderer.lib.processCapabilityResponse = () => {}
-  // @ts-expect-error - mocking for test
-  currentRenderer.lib.getTerminalCapabilities = () => createTerminalCapabilities()
-
-  // @ts-expect-error - mocking for test
-  kittyRenderer.lib.processCapabilityResponse = () => {}
-  // @ts-expect-error - mocking for test
-  kittyRenderer.lib.getTerminalCapabilities = () => createTerminalCapabilities()
+  await currentRenderer.setupTerminal()
+  await kittyRenderer.setupTerminal()
 })
 
-afterEach(() => {
-  // Restore mocks
-  // @ts-expect-error - restore mock
-  currentRenderer.lib.processCapabilityResponse = mockProcessCapabilityResponse
-  // @ts-expect-error - restore mock
-  currentRenderer.lib.getTerminalCapabilities = mockGetTerminalCapabilities
-  // @ts-expect-error - restore mock
-  kittyRenderer.lib.processCapabilityResponse = mockProcessCapabilityResponse
-  // @ts-expect-error - restore mock
-  kittyRenderer.lib.getTerminalCapabilities = mockGetTerminalCapabilities
-
+afterEach(async () => {
   currentRenderer.destroy()
   kittyRenderer.destroy()
+  themeQueryRenderer?.destroy()
+  await Promise.all([currentRenderer.closed, kittyRenderer.closed, themeQueryRenderer?.closed])
+  themeQueryRenderer = undefined
 })
 
 async function triggerInput(sequence: string): Promise<KeyEvent> {
@@ -127,36 +104,35 @@ async function createRoutingRenderer(options: Partial<TestRendererOptions> = {})
 
 async function createThemeQueryRenderer(): Promise<{
   renderer: TestRenderer
-  queryThemeColorsCalls: { count: number }
+  captureQueries: () => Promise<string[]>
   clock: ManualClock
 }> {
   const clock = new ManualClock()
-  const stdout = {
-    isTTY: true,
-    columns: 80,
-    rows: 24,
-    write: () => true,
-    getColorDepth: () => 24,
-  } as any
+  const writes: string[] = []
+  const stdout = new TestWriteStream(80, 24)
+  stdout._write = (bytes, _encoding, callback) => {
+    writes.push(bytes.toString())
+    callback()
+  }
 
   const { renderer } = await createTestRenderer({
     clock,
-    stdout,
-    useThread: false,
+    stdout: stdout as NodeJS.WriteStream,
+    bufferedOutput: "stdout",
+    remote: true,
+    forwardEnvKeys: [],
   })
+  themeQueryRenderer = renderer
+  await renderer.setupTerminal()
+  await renderer.nativeScene!.driver.idle()
+  writes.length = 0
 
-  // @ts-expect-error - mocking for test
-  renderer.lib.processCapabilityResponse = () => {}
-  // @ts-expect-error - mocking for test
-  renderer.lib.getTerminalCapabilities = () => createTerminalCapabilities()
-
-  const queryThemeColorsCalls = { count: 0 }
-  // @ts-expect-error - mocking for test
-  renderer.lib.queryThemeColors = () => {
-    queryThemeColorsCalls.count += 1
+  const captureQueries = async () => {
+    await renderer.nativeScene!.driver.idle()
+    return writes.join("").match(/\x1b\]1[01];\?\x07/g) ?? []
   }
 
-  return { renderer, queryThemeColorsCalls, clock }
+  return { renderer, captureQueries, clock }
 }
 
 test("basic letters via keyInput events", async () => {
@@ -1796,7 +1772,7 @@ test("OSC 10/11 fallback sets initial theme mode once both colors arrive", () =>
 })
 
 test("CSI 997 does not set theme mode directly and triggers an OSC refresh query", async () => {
-  const { renderer, queryThemeColorsCalls, clock } = await createThemeQueryRenderer()
+  const { renderer, captureQueries, clock } = await createThemeQueryRenderer()
   const themeModes: string[] = []
   renderer.on("theme_mode", (mode) => {
     themeModes.push(mode)
@@ -1807,25 +1783,21 @@ test("CSI 997 does not set theme mode directly and triggers an OSC refresh query
 
   expect(renderer.themeMode).toBeNull()
   expect(themeModes).toEqual([])
-  expect(queryThemeColorsCalls.count).toBe(1)
-
-  renderer.destroy()
+  expect(await captureQueries()).toEqual(["\x1b]10;?\x07", "\x1b]11;?\x07"])
 })
 
 test("CSI 997 does not query theme colors again while a refresh is already pending", async () => {
-  const { renderer, queryThemeColorsCalls, clock } = await createThemeQueryRenderer()
+  const { renderer, captureQueries, clock } = await createThemeQueryRenderer()
 
   renderer.stdin.emit("data", Buffer.from("\x1b[?997;1n"))
   advanceClock(clock)
 
-  expect(queryThemeColorsCalls.count).toBe(1)
+  expect(await captureQueries()).toEqual(["\x1b]10;?\x07", "\x1b]11;?\x07"])
 
   renderer.stdin.emit("data", Buffer.from("\x1b[?997;2n"))
   advanceClock(clock)
 
-  expect(queryThemeColorsCalls.count).toBe(1)
-
-  renderer.destroy()
+  expect(await captureQueries()).toEqual(["\x1b]10;?\x07", "\x1b]11;?\x07"])
 })
 
 test("conflicting CSI 997 before initial OSC replies does not override the OSC-derived mode", () => {
@@ -1846,7 +1818,7 @@ test("conflicting CSI 997 before initial OSC replies does not override the OSC-d
 })
 
 test("CSI 997 refreshes theme mode only after fresh OSC 10 and 11 replies arrive", async () => {
-  const { renderer, queryThemeColorsCalls, clock } = await createThemeQueryRenderer()
+  const { renderer, captureQueries, clock } = await createThemeQueryRenderer()
   const themeModes: string[] = []
   renderer.on("theme_mode", (mode) => {
     themeModes.push(mode)
@@ -1864,7 +1836,7 @@ test("CSI 997 refreshes theme mode only after fresh OSC 10 and 11 replies arrive
 
   expect(renderer.themeMode).toBe("dark")
   expect(themeModes).toEqual(["dark"])
-  expect(queryThemeColorsCalls.count).toBe(1)
+  expect(await captureQueries()).toEqual(["\x1b]10;?\x07", "\x1b]11;?\x07"])
 
   renderer.stdin.emit("data", Buffer.from("\x1b]10;#000000\x07"))
   advanceClock(clock)
@@ -1877,12 +1849,10 @@ test("CSI 997 refreshes theme mode only after fresh OSC 10 and 11 replies arrive
 
   expect(renderer.themeMode).toBe("light")
   expect(themeModes).toEqual(["dark", "light"])
-
-  renderer.destroy()
 })
 
 test("CSI 997 refresh timeout restores background override state without changing theme mode", async () => {
-  const { renderer, queryThemeColorsCalls, clock } = await createThemeQueryRenderer()
+  const { renderer, captureQueries, clock } = await createThemeQueryRenderer()
   const themeModes: string[] = []
   renderer.on("theme_mode", (mode) => {
     themeModes.push(mode)
@@ -1897,15 +1867,13 @@ test("CSI 997 refresh timeout restores background override state without changin
 
   expect(renderer.themeMode).toBe("dark")
   expect(themeModes).toEqual(["dark"])
-  expect(queryThemeColorsCalls.count).toBe(1)
+  expect(await captureQueries()).toEqual(["\x1b]10;?\x07", "\x1b]11;?\x07"])
 
   advanceClock(clock, 1)
   await flushMicrotasks()
 
   expect(renderer.themeMode).toBe("dark")
   expect(themeModes).toEqual(["dark"])
-
-  renderer.destroy()
 })
 
 test("CSI 997 refresh with the same OSC-derived mode does not emit twice", () => {
@@ -2472,6 +2440,7 @@ describe("stdin routing", () => {
     const { renderer, clock } = await createRoutingRenderer()
 
     try {
+      await renderer.setupTerminal()
       const events: Array<{ name: string; meta: boolean }> = []
       renderer.keyInput.on("keypress", (event) => {
         events.push({ name: event.name, meta: event.meta })
@@ -2480,8 +2449,8 @@ describe("stdin routing", () => {
       renderer.stdin.emit("data", Buffer.from("\x1b["))
       advanceClock(clock, 5)
 
-      renderer.suspend()
-      renderer.resume()
+      await renderer.suspend()
+      await renderer.resume()
 
       renderer.stdin.emit("data", Buffer.from("x"))
       advanceClock(clock)

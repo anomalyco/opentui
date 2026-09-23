@@ -223,7 +223,7 @@ describe("SolidJS Renderer - Dynamic and Portal Components", () => {
 
         const placeholder = host.getChildren()[0]
         expect(placeholder).toBeInstanceOf(LayoutSlotRenderable)
-        expect(placeholder!.getLayoutNode().isFreed()).toBe(false)
+        expect(placeholder!.isFreed()).toBe(false)
       }
     })
 

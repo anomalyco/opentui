@@ -30,24 +30,47 @@ jobs:
           git diff --name-only "$BASE_SHA"...HEAD \
             | sed -n 's#^\(packages/[^/]*\)/.*#\1#p' \
             | sort -u > "$RUNNER_TEMP/changed-packages"
-          if grep -qx packages/native "$RUNNER_TEMP/changed-packages"; then
-            echo "native=true" >> "$GITHUB_OUTPUT"
+          # JS tests import the host native library. bun install only has the
+          # published optionalDependency, which does not include this branch's ABI.
+          if grep -E -qx 'packages/(native|core|react|solid|three|examples|ssh)' "$RUNNER_TEMP/changed-packages"; then
+            echo "build_native=true" >> "$GITHUB_OUTPUT"
+          fi
+          if grep -qx packages/core "$RUNNER_TEMP/changed-packages"; then
+            echo "core=true" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
         with:
-          bun-version: 1.3.14
+          bun-version: 1.4.1
 
       - name: Setup Zig
-        if: steps.changes.outputs.native == 'true'
+        if: steps.changes.outputs.build_native == 'true'
         uses: mlugg/setup-zig@v2
         with:
           version: 0.16.0
           use-cache: false
 
+      - name: Restore Zig cache
+        if: steps.changes.outputs.build_native == 'true'
+        uses: actions/cache@v5
+        with:
+          path: packages/native/.zig-cache
+          key: zig-v1-${{ runner.os }}-0.16.0-${{ github.run_id }}-${{ github.job }}
+          restore-keys: zig-v1-${{ runner.os }}-0.16.0-
+
       - name: Install dependencies
         run: bun install
+
+      - name: Build native library
+        if: steps.changes.outputs.build_native == 'true'
+        working-directory: packages/core
+        run: bun run build:native --skip-symbols
+
+      - name: Build core library
+        if: steps.changes.outputs.core == 'true'
+        working-directory: packages/core
+        run: bun run build:lib
 
       - name: Check formatting and lint
         run: |
@@ -58,6 +81,8 @@ jobs:
         run: |
           while IFS= read -r package; do
             [ -f "$package/package.json" ] || continue
-            bun run --cwd "$package" --if-present typecheck
-            bun run --cwd "$package" --if-present test
+            for script in typecheck test; do
+              bun -p "require('./$package/package.json').scripts?.['$script'] ?? ''" | grep -q . || continue
+              bun run --cwd "$package" "$script"
+            done
           done < "$RUNNER_TEMP/changed-packages"

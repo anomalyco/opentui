@@ -323,6 +323,50 @@ describe("edit buffer bindings addon", () => {
     offSuspension()
   })
 
+  test("mapping suspension restores every previous editor after reentrant focus", () => {
+    const keymap = getKeymap(renderer)
+    const [first, second, third] = [0, 1, 2].map(() => {
+      const textarea = new TextareaRenderable(renderer, { width: 20, height: 3, initialValue: "abc" })
+      renderer.root.add(textarea)
+      return textarea
+    })
+    const off = registerTextareaMappingSuspension(keymap, renderer)
+    try {
+      first.focus()
+      first.once("blurred", () => third.focus())
+      second.focus()
+      expect(renderer.currentFocusedEditor).toBe(third)
+      expect(first.traits.suspend).toBeUndefined()
+      expect(third.traits.suspend).toBe(true)
+    } finally {
+      off()
+    }
+    first.focus()
+    first.cursorOffset = 3
+    mockInput.pressArrow("left")
+    expect(first.cursorOffset).toBe(2)
+  })
+
+  test("a superseded focus notification does not clear a newly started key sequence", () => {
+    const keymap = getKeymap(renderer)
+    registerEditBufferCommands(keymap, renderer)
+    keymap.registerLayer({ bindings: [{ key: "dd", cmd: "input.delete.line" }] })
+    const [first, second] = [0, 1].map(() => {
+      const textarea = new TextareaRenderable(renderer, { width: 20, height: 3, initialValue: "one\ntwo" })
+      renderer.root.add(textarea)
+      return textarea
+    })
+    first.focus()
+    first.once("blurred", () => {
+      second.blur()
+      second.focus()
+    })
+    second.once("focused", () => mockInput.pressKey("d"))
+    second.focus()
+    mockInput.pressKey("d")
+    expect(second.plainText).toBe("two")
+  })
+
   test("does not double-run textarea actions when a global binding uses the same stroke", () => {
     const keymap = getKeymap(renderer)
 

@@ -1256,7 +1256,7 @@ class SplitFooterDemo {
     this.renderer.off(CliRenderEvents.THEME_MODE, this.handleThemeMode)
     this.renderer.off(CliRenderEvents.DESTROY, this.handleRendererDestroy)
 
-    this.renderer.root.remove(this.shell)
+    this.shell.destroyRecursively()
 
     if (!this.renderer.isDestroyed) {
       this.renderer.externalOutputMode = "passthrough"

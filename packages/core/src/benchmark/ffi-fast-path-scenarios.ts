@@ -2,7 +2,8 @@
 
 import { writeFileSync } from "node:fs"
 import { resolve } from "node:path"
-import { OptimizedBuffer } from "../buffer.js"
+import stringWidth from "string-width"
+import { OptimizedBuffer, ResourceContext } from "../buffer.js"
 import { EditBuffer } from "../edit-buffer.js"
 import { EditorView } from "../editor-view.js"
 import { BorderCharArrays } from "../lib/border.js"
@@ -10,7 +11,6 @@ import { RGBA } from "../lib/RGBA.js"
 import { NativeImage } from "../image.js"
 import { TextBufferView } from "../text-buffer-view.js"
 import { TextBuffer } from "../text-buffer.js"
-import { createTestRenderer, type TestRenderer } from "../testing/test-renderer.js"
 import { SpanInfoStruct } from "../zig-structs.js"
 import { resolveRenderLib, NativeAudioStreamCloseReason, NativeAudioStreamFormat, type RenderLib } from "../zig.js"
 import { createCalibrationPlan, type CalibrationPlan } from "./ffi-fast-path-calibration.js"
@@ -19,7 +19,6 @@ type RuntimeName = "bun" | "node"
 
 interface BenchmarkContext {
   lib: RenderLib
-  renderer: TestRenderer
 }
 
 interface ScenarioRuntime {
@@ -88,20 +87,8 @@ const scenario = scenarios.find((candidate) => candidate.name === scenarioName)
 
 if (!scenario) throw new Error(`unknown scenario: ${scenarioName}`)
 
-const rendererSetup = await createTestRenderer({
-  width: 16,
-  height: 8,
-  screenMode: "split-footer",
-  footerHeight: 2,
-  externalOutputMode: "passthrough",
-  consoleMode: "disabled",
-  useMouse: false,
-  useThread: false,
-  clearOnShutdown: false,
-  maxFps: Number.POSITIVE_INFINITY,
-})
-
-const context: BenchmarkContext = { lib: resolveRenderLib(), renderer: rendererSetup.renderer }
+const resources = new ResourceContext({ objectCapacity: 16, renderCellsMax: 4096 })
+const context: BenchmarkContext = { lib: resolveRenderLib() }
 let runtime: ScenarioRuntime | undefined
 
 try {
@@ -153,76 +140,12 @@ try {
   try {
     runtime?.teardown()
   } finally {
-    rendererSetup.renderer.destroy()
+    resources.destroy()
   }
 }
 
 function createScenarios(): ScenarioDefinition[] {
   return [
-    {
-      name: "renderer_set_pending_split_footer_transition",
-      operation: "setPendingSplitFooterTransition",
-      description: "Store alternating valid split-footer transitions on a live renderer",
-      setup: ({ lib, renderer }) => {
-        const snapshot = lib.createOptimizedBuffer(1, 1, "unicode", false, "ffi-bench-transition")
-        lib.bufferSetCell(snapshot.ptr, 0, 0, "x", COLORS.fg, COLORS.bg, 0)
-        lib.resetSplitScrollback(renderer.rendererPtr, 4, 6)
-        return {
-          run: (operations) => {
-            for (let index = 0; index < operations; index++) {
-              const alternate = index & 1
-              lib.setPendingSplitFooterTransition(renderer.rendererPtr, 1, 2 + alternate, 2, 3 - alternate, 2, 1)
-            }
-            return operations
-          },
-          observe: () => {
-            const result = lib.commitSplitFooterSnapshot(renderer.rendererPtr, snapshot, 1, false, false, 6, false)
-            const splitOutputOffset = lib.getSplitOutputOffset(renderer.rendererPtr, 6)
-            if (splitOutputOffset !== 3) throw new Error(`split transition was not applied: ${splitOutputOffset}`)
-            return hashNumbers(
-              result.status,
-              result.renderOffset,
-              splitOutputOffset,
-              renderer.getNativeStats().nativeFrameCount,
-            )
-          },
-          teardown: () => snapshot.destroy(),
-        }
-      },
-    },
-    {
-      name: "renderer_commit_split_footer_snapshot",
-      operation: "commitSplitFooterSnapshot",
-      description: "Append a one-cell snapshot inside a valid split-footer frame batch",
-      setup: ({ lib, renderer }) => {
-        const snapshot = lib.createOptimizedBuffer(1, 1, "unicode", false, "ffi-bench-split-commit")
-        lib.bufferSetCell(snapshot.ptr, 0, 0, "c", COLORS.fg, COLORS.bg, 0)
-        return {
-          run: (operations) => {
-            let signal = 0
-            for (let index = 0; index < operations; index++) {
-              const result = lib.commitSplitFooterSnapshot(
-                renderer.rendererPtr,
-                snapshot,
-                1,
-                true,
-                true,
-                6,
-                false,
-                false,
-                false,
-              )
-              signal = (signal + result.status + result.renderOffset) >>> 0
-            }
-            return signal
-          },
-          observe: () => bufferChecksum(snapshot),
-          teardown: () => {
-            snapshot.destroy()
-          },
-        }
-      },
-    },
     createFrameBufferScenario(false),
     createFrameBufferScenario(true),
     createDrawImageScenario("cell", 1, 1),
@@ -236,10 +159,9 @@ function createScenarios(): ScenarioDefinition[] {
       "Blend one translucent cell through the production wrapper",
       2,
       2,
-      (lib, buffer, operations) => {
+      (buffer, operations) => {
         for (let index = 0; index < operations; index++) {
-          lib.bufferSetCellWithAlphaBlending(
-            buffer.ptr,
+          buffer.setCellWithAlphaBlending(
             index & 1,
             (index >>> 1) & 1,
             index & 1 ? "b" : "a",
@@ -257,9 +179,9 @@ function createScenarios(): ScenarioDefinition[] {
       "Set one scalar cell through the production wrapper",
       2,
       2,
-      (lib, buffer, operations) => {
+      (buffer, operations) => {
         for (let index = 0; index < operations; index++) {
-          lib.bufferSetCell(buffer.ptr, index & 1, (index >>> 1) & 1, index & 1 ? "s" : "t", COLORS.fg, COLORS.bg, 1)
+          buffer.setCell(index & 1, (index >>> 1) & 1, index & 1 ? "s" : "t", COLORS.fg, COLORS.bg, 1)
         }
         return operations
       },
@@ -307,7 +229,7 @@ function createDrawImageScenario(label: string, width: number, height: number): 
     operation: "OptimizedBuffer.drawImage",
     description: `Clear and draw a retained image into a ${width}x${height} cell placement through the production wrapper`,
     setup: () => {
-      const buffer = OptimizedBuffer.create(width, height)
+      const buffer = OptimizedBuffer.create(width, height, "unicode", { owner: resources })
       const pixels = new Uint8Array(320 * 200 * 4)
       for (let index = 0; index < pixels.length; index += 4) {
         pixels[index] = (index >>> 2) & 0xff
@@ -403,7 +325,7 @@ function createSpanInfoDecodeScenario(): ScenarioDefinition {
       const view = new DataView(buffer)
       for (let index = 0; index < count; index++) {
         SpanInfoStruct.packInto(
-          { chunkPtr: index + 1, offset: index * 4, len: 4, chunkIndex: index, reserved: 0 },
+          { chunkPtr: index + 1, offset: index * 4, len: 4, chunkIndex: index, slotIndex: 0 },
           view,
           index * SpanInfoStruct.size,
         )
@@ -429,15 +351,15 @@ function createLogicalCursorScenario(): ScenarioDefinition {
     name: "reusable_logical_cursor_public",
     operation: "editBufferGetCursorPosition",
     description: "Return a fresh logical cursor from internally reused FFI storage",
-    setup: ({ lib }) => {
-      const editBuffer = EditBuffer.create("unicode")
+    setup: () => {
+      const editBuffer = EditBuffer.create("unicode", resources)
       editBuffer.setText("logical cursor")
       editBuffer.setCursorByOffset(3)
       return {
         run: (operations) => {
           let signal = 0
           for (let index = 0; index < operations; index++) {
-            const cursor = lib.editBufferGetCursorPosition(editBuffer.ptr)
+            const cursor = editBuffer.getCursorPosition()
             signal = (signal + cursor.offset) >>> 0
           }
           return signal
@@ -454,8 +376,8 @@ function createVisualCursorScenario(): ScenarioDefinition {
     name: "reusable_visual_cursor_public",
     operation: "editorViewGetVisualCursor",
     description: "Return a fresh visual cursor from internally reused FFI storage",
-    setup: ({ lib }) => {
-      const editBuffer = EditBuffer.create("unicode")
+    setup: () => {
+      const editBuffer = EditBuffer.create("unicode", resources)
       editBuffer.setText("visual cursor")
       editBuffer.setCursorByOffset(4)
       const editorView = EditorView.create(editBuffer, 16, 4)
@@ -463,7 +385,7 @@ function createVisualCursorScenario(): ScenarioDefinition {
         run: (operations) => {
           let signal = 0
           for (let index = 0; index < operations; index++) {
-            const cursor = lib.editorViewGetVisualCursor(editorView.ptr)
+            const cursor = editorView.getVisualCursor()
             signal = (signal + cursor.offset) >>> 0
           }
           return signal
@@ -483,8 +405,8 @@ function createMeasureResultScenario(): ScenarioDefinition {
     name: "reusable_measure_result_public",
     operation: "textBufferViewMeasureForDimensions",
     description: "Return a fresh text measurement result from internally reused FFI storage",
-    setup: ({ lib }) => {
-      const textBuffer = TextBuffer.create("unicode")
+    setup: () => {
+      const textBuffer = TextBuffer.create("unicode", resources)
       textBuffer.setText("measure this text across wrapped lines")
       const textBufferView = TextBufferView.create(textBuffer)
       textBufferView.setWrapMode("word")
@@ -492,7 +414,7 @@ function createMeasureResultScenario(): ScenarioDefinition {
         run: (operations) => {
           let signal = 0
           for (let index = 0; index < operations; index++) {
-            const measure = lib.textBufferViewMeasureForDimensions(textBufferView.ptr, 10, 100)
+            const measure = textBufferView.measureForDimensions(10, 100)
             signal = (signal + (measure?.lineCount ?? 0)) >>> 0
           }
           return signal
@@ -512,19 +434,27 @@ function createFrameBufferScenario(region: boolean): ScenarioDefinition {
     name: `buffer_draw_frame_buffer_${region ? "region" : "full"}`,
     operation: "drawFrameBuffer",
     description: region ? "Copy an explicit one-cell source region" : "Copy a complete two-cell frame buffer",
-    setup: ({ lib }) => {
-      const target = lib.createOptimizedBuffer(2, 1, "unicode", false, `ffi-bench-frame-target-${region}`)
-      const source = lib.createOptimizedBuffer(2, 1, "unicode", false, `ffi-bench-frame-source-${region}`)
-      lib.bufferDrawText(source.ptr, "fr", 0, 0, COLORS.fg, COLORS.bg, 0)
+    setup: () => {
+      const target = OptimizedBuffer.create(2, 1, "unicode", {
+        owner: resources,
+        respectAlpha: false,
+        id: `ffi-bench-frame-target-${region}`,
+      })
+      const source = OptimizedBuffer.create(2, 1, "unicode", {
+        owner: resources,
+        respectAlpha: false,
+        id: `ffi-bench-frame-source-${region}`,
+      })
+      source.drawText("fr", 0, 0, COLORS.fg, COLORS.bg, 0)
       return {
         run: (operations) => {
           if (region) {
             for (let index = 0; index < operations; index++) {
-              lib.drawFrameBuffer(target.ptr, index & 1, 0, source.ptr, index & 1, 0, 1, 1)
+              target.drawFrameBuffer(index & 1, 0, source, index & 1, 0, 1, 1)
             }
           } else {
             for (let index = 0; index < operations; index++) {
-              lib.drawFrameBuffer(target.ptr, 0, 0, source.ptr)
+              target.drawFrameBuffer(0, 0, source)
             }
           }
           return operations
@@ -545,25 +475,23 @@ function createDrawTextScenario(variant: "short" | "long" | "unicode", text: str
     name: `buffer_draw_text_${variant}`,
     operation: "bufferDrawText",
     description: `Draw ${variant} text through the encoding and FFI wrapper`,
-    setup: ({ lib }) => {
-      const buffer = lib.createOptimizedBuffer(
-        Math.max(2, codePoints.length + 2),
-        1,
-        "unicode",
-        false,
-        `ffi-bench-text-${variant}`,
-      )
+    setup: () => {
+      const buffer = OptimizedBuffer.create(Math.max(2, codePoints.length + 2), 1, "unicode", {
+        owner: resources,
+        respectAlpha: false,
+        id: `ffi-bench-text-${variant}`,
+      })
       return {
         run: (operations) => {
           for (let index = 0; index < operations; index++) {
-            lib.bufferDrawText(buffer.ptr, text, 0, 0, COLORS.fg, COLORS.bg, index & 1)
+            buffer.drawText(text, 0, 0, COLORS.fg, COLORS.bg, index & 1)
           }
           return operations
         },
         observe: () => {
-          lib.bufferDrawText(buffer.ptr, text, 0, 0, COLORS.fg, COLORS.bg, 0)
+          buffer.drawText(text, 0, 0, COLORS.fg, COLORS.bg, 0)
           if (variant !== "unicode") {
-            const chars = buffer.buffers.char
+            const chars = buffer.withBuffers((cells) => cells.char.slice())
             for (let index = 0; index < codePoints.length; index++) {
               if (chars[index] !== codePoints[index]) {
                 throw new Error(
@@ -585,21 +513,25 @@ function createDrawCharScenario(packed: boolean): ScenarioDefinition {
     name: `buffer_draw_char_${packed ? "packed_grapheme" : "scalar"}`,
     operation: "bufferDrawChar",
     description: packed ? "Draw a retained encoded grapheme handle" : "Draw a Unicode scalar value",
-    setup: ({ lib }) => {
-      const buffer = lib.createOptimizedBuffer(2, 1, "unicode", false, `ffi-bench-char-${packed}`)
-      const encoded = packed ? lib.encodeUnicode("👩‍🚀", "unicode") : null
+    setup: () => {
+      const buffer = OptimizedBuffer.create(2, 1, "unicode", {
+        owner: resources,
+        respectAlpha: false,
+        id: `ffi-bench-char-${packed}`,
+      })
+      const encoded = packed ? buffer.encodeUnicode("👩‍🚀") : null
       const char = packed ? encoded?.data[0]?.char : "Z".codePointAt(0)
-      if (char === undefined || (packed && char <= 0x80000000)) throw new Error("failed to create packed grapheme")
+      if (char === undefined) throw new Error("failed to create packed grapheme")
       return {
         run: (operations) => {
           for (let index = 0; index < operations; index++) {
-            lib.bufferDrawChar(buffer.ptr, char, index & 1, 0, COLORS.fg, COLORS.bg, index & 1)
+            buffer.drawChar(char, index & 1, 0, COLORS.fg, COLORS.bg, index & 1)
           }
           return operations
         },
         observe: () => bufferChecksum(buffer),
         teardown: () => {
-          if (encoded) lib.freeUnicode(encoded)
+          if (encoded) buffer.freeUnicode(encoded)
           buffer.destroy()
         },
       }
@@ -619,14 +551,12 @@ function createSuperSampleScenario(
     name: `buffer_draw_super_sample_buffer_${variant}`,
     operation: "bufferDrawSuperSampleBuffer",
     description: `Draw a ${terminalWidth}x${terminalHeight} terminal image from a retained RGBA pixel buffer`,
-    setup: ({ lib }) => {
-      const buffer = lib.createOptimizedBuffer(
-        terminalWidth,
-        terminalHeight,
-        "unicode",
-        false,
-        `ffi-bench-super-sample-${variant}`,
-      )
+    setup: () => {
+      const buffer = OptimizedBuffer.create(terminalWidth, terminalHeight, "unicode", {
+        owner: resources,
+        respectAlpha: false,
+        id: `ffi-bench-super-sample-${variant}`,
+      })
       const pixels = new Uint8Array(alignedBytesPerRow * pixelHeight)
       for (let index = 0; index < pixels.length; index += 4) {
         pixels[index] = (index >>> 2) & 0xff
@@ -637,15 +567,7 @@ function createSuperSampleScenario(
       return {
         run: (operations) => {
           for (let index = 0; index < operations; index++) {
-            lib.bufferDrawSuperSampleBuffer(
-              buffer.ptr,
-              0,
-              0,
-              pixels,
-              pixels.byteLength,
-              "rgba8unorm",
-              alignedBytesPerRow,
-            )
+            buffer.drawSuperSampleBuffer(0, 0, pixels, pixels.byteLength, "rgba8unorm", alignedBytesPerRow)
           }
           return operations
         },
@@ -667,14 +589,12 @@ function createPackedBufferScenario(
     name: `buffer_draw_packed_buffer_${variant}`,
     operation: "bufferDrawPackedBuffer",
     description: `Draw a valid ${terminalWidth}x${terminalHeight} CellResult payload at ${posX},${posY}`,
-    setup: ({ lib }) => {
-      const buffer = lib.createOptimizedBuffer(
-        terminalWidth + posX,
-        terminalHeight + posY,
-        "unicode",
-        false,
-        `ffi-bench-packed-buffer-${variant}`,
-      )
+    setup: () => {
+      const buffer = OptimizedBuffer.create(terminalWidth + posX, terminalHeight + posY, "unicode", {
+        owner: resources,
+        respectAlpha: false,
+        id: `ffi-bench-packed-buffer-${variant}`,
+      })
       const packed = new ArrayBuffer(terminalWidth * terminalHeight * 48)
       const view = new DataView(packed)
       for (let cell = 0; cell < terminalWidth * terminalHeight; cell++) {
@@ -693,15 +613,7 @@ function createPackedBufferScenario(
       return {
         run: (operations) => {
           for (let index = 0; index < operations; index++) {
-            lib.bufferDrawPackedBuffer(
-              buffer.ptr,
-              packedBytes,
-              packedBytes.byteLength,
-              posX,
-              posY,
-              terminalWidth,
-              terminalHeight,
-            )
+            buffer.drawPackedBuffer(packedBytes, packedBytes.byteLength, posX, posY, terminalWidth, terminalHeight)
           }
           return operations
         },
@@ -724,43 +636,23 @@ function createGrayscaleScenario(
     name: `buffer_draw_grayscale_buffer${supersampled ? "_supersampled" : ""}_${variant}`,
     operation: supersampled ? "bufferDrawGrayscaleBufferSupersampled" : "bufferDrawGrayscaleBuffer",
     description: `Draw a ${terminalWidth}x${terminalHeight} ${supersampled ? "supersampled " : ""}grayscale image`,
-    setup: ({ lib }) => {
-      const buffer = lib.createOptimizedBuffer(
-        terminalWidth,
-        terminalHeight,
-        "unicode",
-        false,
-        `ffi-bench-grayscale-${supersampled}-${variant}`,
-      )
+    setup: () => {
+      const buffer = OptimizedBuffer.create(terminalWidth, terminalHeight, "unicode", {
+        owner: resources,
+        respectAlpha: false,
+        id: `ffi-bench-grayscale-${supersampled}-${variant}`,
+      })
       const intensities = new Float32Array(sourceWidth * sourceHeight)
       for (let index = 0; index < intensities.length; index++) intensities[index] = (index % 17) / 16
       return {
         run: (operations) => {
           if (supersampled) {
             for (let index = 0; index < operations; index++) {
-              lib.bufferDrawGrayscaleBufferSupersampled(
-                buffer.ptr,
-                0,
-                0,
-                intensities,
-                sourceWidth,
-                sourceHeight,
-                COLORS.fg,
-                COLORS.bg,
-              )
+              buffer.drawGrayscaleBufferSupersampled(0, 0, intensities, sourceWidth, sourceHeight, COLORS.fg, COLORS.bg)
             }
           } else {
             for (let index = 0; index < operations; index++) {
-              lib.bufferDrawGrayscaleBuffer(
-                buffer.ptr,
-                0,
-                0,
-                intensities,
-                sourceWidth,
-                sourceHeight,
-                COLORS.fg,
-                COLORS.bg,
-              )
+              buffer.drawGrayscaleBuffer(0, 0, intensities, sourceWidth, sourceHeight, COLORS.fg, COLORS.bg)
             }
           }
           return operations
@@ -788,22 +680,17 @@ function createGridScenario(
     `Draw a ${columnOffsets.length - 1}x${rowOffsets.length - 1} grid with valid offset arrays`,
     width,
     height,
-    (lib, buffer, operations) => {
+    (buffer, operations) => {
       for (let index = 0; index < operations; index++) {
-        lib.bufferDrawGrid(
-          buffer.ptr,
-          BorderCharArrays.single,
-          COLORS.fg,
-          COLORS.bg,
+        buffer.drawGrid({
+          borderChars: BorderCharArrays.single,
+          borderFg: COLORS.fg,
+          borderBg: COLORS.bg,
           columnOffsets,
-          columnOffsets.length - 1,
           rowOffsets,
-          rowOffsets.length - 1,
-          {
-            drawInner: true,
-            drawOuter: true,
-          },
-        )
+          drawInner: true,
+          drawOuter: true,
+        })
       }
       return operations
     },
@@ -824,22 +711,20 @@ function createBoxScenario(
     `Draw a ${width}x${height} ${variant} box through the production wrapper`,
     width,
     height,
-    (lib, buffer, operations) => {
+    (buffer, operations) => {
       for (let index = 0; index < operations; index++) {
-        lib.bufferDrawBox(
-          buffer.ptr,
-          0,
-          0,
+        buffer.drawBox({
+          x: 0,
+          y: 0,
           width,
           height,
-          BorderCharArrays.single,
-          packedOptions,
-          COLORS.fg,
-          COLORS.bg,
-          COLORS.fg,
-          title,
-          bottomTitle,
-        )
+          border: (packedOptions & 15) !== 0,
+          shouldFill: (packedOptions & 16) !== 0,
+          borderColor: COLORS.fg,
+          backgroundColor: COLORS.bg,
+          title: title ?? undefined,
+          bottomTitle: bottomTitle ?? undefined,
+        })
       }
       return operations
     },
@@ -852,29 +737,30 @@ function createTextRangeScenario(editable: boolean, variant: "short" | "multilin
       ? ["alpha beta", "gamma delta", "unicode 界"]
       : Array.from({ length: 200 }, (_, index) => `line ${index.toString().padStart(3, "0")} unicode 界🙂 payload`)
   const text = lines.join("\n")
-  const maxLength = new TextEncoder().encode(text).byteLength
+  const lineOffsets = [0]
+  for (const line of lines) lineOffsets.push(lineOffsets.at(-1)! + stringWidth(line) + 1)
   return {
     name: `${editable ? "edit" : "text"}_buffer_get_text_range_by_coords_${variant}`,
     operation: editable ? "editBufferGetTextRangeByCoords" : "textBufferGetTextRangeByCoords",
     description: `Read a ${variant} coordinate range from a live ${editable ? "EditBuffer" : "TextBuffer"}`,
-    setup: ({ lib }) => {
-      const owner = editable ? EditBuffer.create("unicode") : TextBuffer.create("unicode")
+    setup: () => {
+      const owner = editable ? EditBuffer.create("unicode", resources) : TextBuffer.create("unicode", resources)
       owner.setText(text)
       const getRange = editable
         ? (startCol: number, endRow: number, endCol: number) =>
-            lib.editBufferGetTextRangeByCoords((owner as EditBuffer).ptr, 0, startCol, endRow, endCol, maxLength)
+            (owner as EditBuffer).getTextRangeByCoords(0, startCol, endRow, endCol)
         : (startCol: number, endRow: number, endCol: number) =>
-            lib.textBufferGetTextRangeByCoords((owner as TextBuffer).ptr, 0, startCol, endRow, endCol, maxLength)
+            (owner as TextBuffer).getTextRange(startCol, lineOffsets[endRow]! + endCol)
       return {
         run: (operations) => {
           let signal = 0
           for (let index = 0; index < operations; index++) {
-            const bytes = getRange(
+            const range = getRange(
               index & 1,
               variant === "short" ? 1 : lines.length - 1,
               variant === "short" ? 5 + (index & 1) : lines.at(-1)!.length,
             )
-            signal = (signal + (bytes?.byteLength ?? 0) + (bytes?.[0] ?? 0)) >>> 0
+            signal = (signal + range.length + (range.charCodeAt(0) || 0)) >>> 0
           }
           return signal
         },
@@ -885,8 +771,7 @@ function createTextRangeScenario(editable: boolean, variant: "short" | "multilin
             variant === "short"
               ? `${lines[0]}\n${lines[1]!.slice(0, endCol)}`
               : `${lines.slice(0, -1).join("\n")}\n${lines.at(-1)!.slice(0, -1)}`
-          const bytes = getRange(0, endRow, endCol)
-          const actual = bytes ? new TextDecoder().decode(bytes) : null
+          const actual = getRange(0, endRow, endCol)
           if (actual !== expected) throw new Error(`range verification failed: expected ${expected}, got ${actual}`)
           return stringChecksum(actual)
         },
@@ -903,11 +788,12 @@ function createTextBufferSelectionScenario(update: boolean, styled: boolean): Sc
     name: `text_buffer_view_${update ? "update" : "set"}_local_selection_${styled ? "styled" : "plain"}`,
     operation: update ? "textBufferViewUpdateLocalSelection" : "textBufferViewSetLocalSelection",
     description: `${update ? "Update" : "Set"} a ${styled ? "styled" : "plain"} local selection on a live TextBufferView`,
-    setup: ({ lib }) => {
-      const buffer = TextBuffer.create("unicode")
+    setup: () => {
+      const buffer = TextBuffer.create("unicode", resources)
       buffer.setText("alpha beta\ngamma delta")
       const view = TextBufferView.create(buffer)
       view.setViewportSize(20, 2)
+      view.setSelectionOccupancy("boundary")
       view.setLocalSelection(0, 0, 1, 0, bg ?? undefined, fg ?? undefined)
       return {
         run: (operations) => {
@@ -915,15 +801,15 @@ function createTextBufferSelectionScenario(update: boolean, styled: boolean): Sc
           for (let index = 0; index < operations; index++) {
             const focus = index & 1 ? 5 : 9
             const changed = update
-              ? lib.textBufferViewUpdateLocalSelection(view.ptr, 0, 0, focus, 0, bg, fg)
-              : lib.textBufferViewSetLocalSelection(view.ptr, 0, 0, focus, 0, bg, fg)
+              ? view.updateLocalSelection(0, 0, focus, 0, bg ?? undefined, fg ?? undefined)
+              : view.setLocalSelection(0, 0, focus, 0, bg ?? undefined, fg ?? undefined)
             signal = (signal + Number(changed) + focus) >>> 0
           }
           return signal
         },
         observe: () => {
-          if (update) lib.textBufferViewUpdateLocalSelection(view.ptr, 0, 0, 5, 0, bg, fg)
-          else lib.textBufferViewSetLocalSelection(view.ptr, 0, 0, 5, 0, bg, fg)
+          if (update) view.updateLocalSelection(0, 0, 5, 0, bg ?? undefined, fg ?? undefined)
+          else view.setLocalSelection(0, 0, 5, 0, bg ?? undefined, fg ?? undefined)
           const selected = view.getSelectedText()
           if (selected !== "alpha") throw new Error(`selection verification failed: ${selected}`)
           return stringChecksum(selected)
@@ -944,8 +830,8 @@ function createEditorSelectionScenario(update: boolean, styled: boolean): Scenar
     name: `editor_view_${update ? "update" : "set"}_local_selection_${styled ? "styled" : "plain"}`,
     operation: update ? "editorViewUpdateLocalSelection" : "editorViewSetLocalSelection",
     description: `${update ? "Update" : "Set"} a ${styled ? "styled" : "plain"} local selection on a live EditorView`,
-    setup: ({ lib }) => {
-      const buffer = EditBuffer.create("unicode")
+    setup: () => {
+      const buffer = EditBuffer.create("unicode", resources)
       buffer.setText("alpha beta\ngamma delta")
       const view = EditorView.create(buffer, 20, 2)
       view.setLocalSelection(0, 0, 1, 0, bg ?? undefined, fg ?? undefined, false, false)
@@ -955,8 +841,8 @@ function createEditorSelectionScenario(update: boolean, styled: boolean): Scenar
           for (let index = 0; index < operations; index++) {
             const focus = index & 1 ? 5 : 9
             const changed = update
-              ? lib.editorViewUpdateLocalSelection(view.ptr, 0, 0, focus, 0, bg, fg, false, false)
-              : lib.editorViewSetLocalSelection(view.ptr, 0, 0, focus, 0, bg, fg, false, false)
+              ? view.updateLocalSelection(0, 0, focus, 0, bg ?? undefined, fg ?? undefined, false, false)
+              : view.setLocalSelection(0, 0, focus, 0, bg ?? undefined, fg ?? undefined, false, false)
             signal = (signal + Number(changed) + focus) >>> 0
           }
           return signal
@@ -977,16 +863,20 @@ function createSingleBufferScenario(
   description: string,
   width: number,
   height: number,
-  run: (lib: RenderLib, buffer: OptimizedBuffer, operations: number) => number,
+  run: (buffer: OptimizedBuffer, operations: number) => number,
 ): ScenarioDefinition {
   return {
     name,
     operation,
     description,
-    setup: ({ lib }) => {
-      const buffer = lib.createOptimizedBuffer(width, height, "unicode", false, `ffi-bench-${name}`)
+    setup: () => {
+      const buffer = OptimizedBuffer.create(width, height, "unicode", {
+        owner: resources,
+        respectAlpha: false,
+        id: `ffi-bench-${name}`,
+      })
       return {
-        run: (operations) => run(lib, buffer, operations),
+        run: (operations) => run(buffer, operations),
         observe: () => bufferChecksum(buffer),
         teardown: () => buffer.destroy(),
       }
@@ -1055,14 +945,15 @@ async function waitForStartSignal(): Promise<void> {
 }
 
 function bufferChecksum(buffer: OptimizedBuffer): number {
-  const buffers = buffer.buffers
-  let hash = 2166136261
-  for (const values of [buffers.char, buffers.fg, buffers.bg, buffers.attributes]) {
-    for (let index = 0; index < values.length; index++) {
-      hash = Math.imul(hash ^ values[index]!, 16777619)
+  return buffer.withBuffers((buffers) => {
+    let hash = 2166136261
+    for (const values of [buffers.char, buffers.fg, buffers.bg, buffers.attributes]) {
+      for (let index = 0; index < values.length; index++) {
+        hash = Math.imul(hash ^ values[index]!, 16777619)
+      }
     }
-  }
-  return hash >>> 0
+    return hash >>> 0
+  })
 }
 
 function stringChecksum(value: string): number {
