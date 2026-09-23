@@ -1,11 +1,13 @@
 #!/usr/bin/env bun
 
 import { spawnSync } from "node:child_process"
+import assert from "node:assert/strict"
 import { readFileSync, rmSync, writeFileSync } from "node:fs"
 import { availableParallelism, tmpdir } from "node:os"
 import { dirname, join, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
 import { isSupportedNode26Version } from "../../../../scripts/node26.mjs"
+import type { ParityEvidence, ScenarioResult } from "./render-traversal-benchmark.js"
 
 type RuntimeName = "bun" | "node"
 
@@ -15,18 +17,12 @@ interface ScenarioConfig {
   warmupIterations: number
 }
 
-interface ScenarioResult {
-  name: string
-  avgMs: number
-  medianMs: number
-  p95Ms: number
-  rmePercent: number
-}
-
 interface ChildPayload {
   metadata: {
     runtime: { name: RuntimeName; version: string; platform: string; arch: string }
     checksum: number
+    sink: "memory"
+    parity: Record<string, ParityEvidence>
   }
   scenarios: ScenarioResult[]
 }
@@ -64,28 +60,48 @@ const quiet = process.argv.includes("--no-output")
 if (suite !== "quick" && suite !== "default" && suite !== "long") {
   throw new Error(`invalid --suite=${suite}`)
 }
+if (optionalArg("scene-backend") !== null) {
+  throw new Error("--scene-backend has been removed; the renderer uses native scenes")
+}
 
 const nodeVersion = readNodeVersion()
 if (!isSupportedNode26Version(nodeVersion)) {
   throw new Error(`Node v26.4.0 or later is required, got ${nodeVersion}`)
 }
 
+const verifiedScenarios = new Set(listScenarios(true))
 const listedScenarios = listScenarios()
+const requestedScenarios = scenarioFilter?.split(",")
+for (const name of requestedScenarios ?? []) {
+  if (!listedScenarios.includes(name)) throw new Error(`unknown scenario: ${name}`)
+}
 const scenarios = listedScenarios
-  .filter((name) => !scenarioFilter || scenarioFilter.split(",").includes(name))
+  .filter((name) => !requestedScenarios || requestedScenarios.includes(name))
   .map((name) => configureScenario(name, suite))
 
 if (scenarios.length === 0) throw new Error("no benchmark scenarios selected")
 
-buildNodeBenchmark()
-
 const results = new Map<string, Run[]>()
+const parity = new Map<string, ParityEvidence>()
 for (const scenario of scenarios) {
   results.set(`${scenario.name}:bun`, [])
   results.set(`${scenario.name}:node`, [])
 }
 
 try {
+  buildNodeBenchmark()
+  for (const scenario of scenarios.filter((scenario) => verifiedScenarios.has(scenario.name))) {
+    for (const runtime of ["bun", "node"] as const) {
+      if (!quiet) console.log(`verifying scenario=${scenario.name} runtime=${runtime}`)
+      const child = runChild(runtime, scenario, -1, true)
+      const evidence = child.metadata.parity[scenario.name]
+      assert.ok(evidence, `${runtime} returned no parity evidence for ${scenario.name}`)
+      if (parity.has(scenario.name)) {
+        assert.deepEqual(evidence, parity.get(scenario.name), `${scenario.name}: runtime output parity failed`)
+      }
+      parity.set(scenario.name, evidence)
+    }
+  }
   for (let round = 0; round < runs; round++) {
     const scenarioOrder = round % 2 === 0 ? scenarios : [...scenarios].reverse()
     const runtimeOrder: RuntimeName[] = round % 2 === 0 ? ["bun", "node"] : ["node", "bun"]
@@ -93,7 +109,16 @@ try {
     for (const scenario of scenarioOrder) {
       for (const runtime of runtimeOrder) {
         if (!quiet) process.stdout.write(`round=${round + 1}/${runs} scenario=${scenario.name} runtime=${runtime}\r`)
-        results.get(`${scenario.name}:${runtime}`)!.push(runChild(runtime, scenario, round))
+        const child = runChild(runtime, scenario, round)
+        assert.deepEqual(child.metadata.parity[scenario.name], parity.get(scenario.name), "parity evidence changed")
+        results.get(`${scenario.name}:${runtime}`)!.push({
+          ...child.scenarios[0]!,
+          round,
+          runtime,
+          runtimeVersion: child.metadata.runtime.version,
+          wallMs: child.wallMs,
+          checksum: child.metadata.checksum,
+        })
       }
     }
   }
@@ -106,9 +131,14 @@ if (!quiet) process.stdout.write("\n")
 const summaries = scenarios.map((scenario) => {
   const bun = results.get(`${scenario.name}:bun`)!
   const node = results.get(`${scenario.name}:node`)!
+  const sceneNodes = bun[0]!.sceneNodes
+  for (const run of [...bun, ...node]) {
+    assert.deepEqual(run.sceneNodes, sceneNodes, `${scenario.name}: scene node counts differ between runs`)
+  }
   return {
     name: scenario.name,
     config: scenario,
+    sceneNodes,
     bun: summarize(bun),
     node: summarize(node),
     nodeToBun: pairedStats(bun, node, (bunRun, nodeRun) => nodeRun.avgMs / bunRun.avgMs),
@@ -126,7 +156,8 @@ const payload = {
     arch: process.arch,
     availableParallelism: availableParallelism(),
   },
-  config: { runs, scenarios: scenarios.length },
+  config: { runs, scenarios: scenarios.length, sink: "memory" },
+  parity: Object.fromEntries(parity),
   results: summaries,
 }
 
@@ -136,7 +167,16 @@ if (!quiet) {
       `scenario=${summary.name}` +
         ` bun=${summary.bun.avgMs.median.toFixed(4)}ms` +
         ` node=${summary.node.avgMs.median.toFixed(4)}ms` +
-        ` nodeToBun=${summary.nodeToBun.median.toFixed(3)}x`,
+        ` nodeToBun=${summary.nodeToBun.median.toFixed(3)}x` +
+        (summary.sceneNodes
+          ? ` sceneNodes=${summary.sceneNodes.initial}->${summary.sceneNodes.timedMin}-${summary.sceneNodes.timedMax} limit=${summary.sceneNodes.limit}`
+          : "") +
+        (summary.bun.scene && summary.node.scene
+          ? ` sceneBun=${summary.bun.scene.avgMs.median.toFixed(4)}ms sceneNode=${summary.node.scene.avgMs.median.toFixed(4)}ms`
+          : "") +
+        (summary.bun.nativeRender && summary.node.nativeRender
+          ? ` nativeRenderBun=${summary.bun.nativeRender.avgMs.median.toFixed(4)}ms nativeRenderNode=${summary.node.nativeRender.avgMs.median.toFixed(4)}ms`
+          : ""),
     )
   }
 }
@@ -146,11 +186,15 @@ if (outputPath) {
   if (!quiet) console.log(`results=${resolve(outputPath)}`)
 }
 
-function listScenarios(): string[] {
-  const child = spawnSync(process.execPath, [sourcePath, "--list-scenarios"], {
-    cwd: packageRoot,
-    encoding: "utf8",
-  })
+function listScenarios(verifyOnly = false): string[] {
+  const child = spawnSync(
+    process.execPath,
+    [sourcePath, "--list-scenarios", ...(verifyOnly ? ["--verify-only"] : [])],
+    {
+      cwd: packageRoot,
+      encoding: "utf8",
+    },
+  )
   if (child.status !== 0) throw new Error(`failed to list scenarios: ${child.stderr || child.stdout}`)
   return child.stdout.trim().split("\n").filter(Boolean)
 }
@@ -179,7 +223,12 @@ function buildNodeBenchmark(): void {
   if (child.status !== 0) throw new Error(`failed to build Node benchmark: ${child.stderr || child.stdout}`)
 }
 
-function runChild(runtime: RuntimeName, scenario: ScenarioConfig, round: number): Run {
+function runChild(
+  runtime: RuntimeName,
+  scenario: ScenarioConfig,
+  round: number,
+  verifyOnly = false,
+): ChildPayload & { wallMs: number } {
   const resultPath = join(tmpdir(), `opentui-render-benchmark-${process.pid}-${runtime}-${round}-${scenario.name}.json`)
   rmSync(resultPath, { force: true })
 
@@ -194,35 +243,37 @@ function runChild(runtime: RuntimeName, scenario: ScenarioConfig, round: number)
     `--json=${resultPath}`,
     "--no-output",
   )
+  if (verifyOnly) command.push("--verify-only")
 
-  const start = performance.now()
-  const child = spawnSync(command[0]!, command.slice(1), {
-    cwd: packageRoot,
-    encoding: "utf8",
-    env: process.env,
-    timeout: 120_000,
-  })
-  const wallMs = performance.now() - start
+  try {
+    const start = performance.now()
+    const child = spawnSync(command[0]!, command.slice(1), {
+      cwd: packageRoot,
+      encoding: "utf8",
+      env: process.env,
+      timeout: 120_000,
+    })
+    const wallMs = performance.now() - start
 
-  if (child.error) throw child.error
-  if (child.status !== 0) {
-    throw new Error(`${runtime} ${scenario.name} failed: ${child.stderr || child.stdout}`)
-  }
+    if (child.error) throw child.error
+    if (child.status !== 0) {
+      throw new Error(`${runtime} ${scenario.name} failed: ${child.stderr || child.stdout}`)
+    }
 
-  const payload = JSON.parse(readFileSync(resultPath, "utf8")) as ChildPayload
-  rmSync(resultPath, { force: true })
-  const result = payload.scenarios[0]
-  if (!result || result.name !== scenario.name) throw new Error(`${runtime} returned the wrong scenario`)
-  if (payload.metadata.runtime.name !== runtime)
-    throw new Error(`expected ${runtime}, got ${payload.metadata.runtime.name}`)
+    const payload = JSON.parse(readFileSync(resultPath, "utf8")) as ChildPayload
+    if (!verifyOnly) {
+      const result = payload.scenarios[0]
+      if (!result || result.name !== scenario.name) throw new Error(`${runtime} returned the wrong scenario`)
+      if (verifiedScenarios.has(scenario.name) && !result.scene) throw new Error(`${runtime} returned no scene timing`)
+      if (verifiedScenarios.has(scenario.name) && !result.nativeRender)
+        throw new Error(`${runtime} returned no native render timing`)
+    }
+    assert.equal(payload.metadata.runtime.name, runtime)
+    assert.equal(payload.metadata.sink, "memory")
 
-  return {
-    ...result,
-    round,
-    runtime,
-    runtimeVersion: payload.metadata.runtime.version,
-    wallMs,
-    checksum: payload.metadata.checksum,
+    return { ...payload, wallMs }
+  } finally {
+    rmSync(resultPath, { force: true })
   }
 }
 
@@ -239,12 +290,34 @@ function configureScenario(name: string, selectedSuite: string): ScenarioConfig 
 }
 
 function summarize(runsForRuntime: Run[]) {
+  const scenes = runsForRuntime.flatMap((run) => (run.scene ? [run.scene] : []))
+  const nativeRenders = runsForRuntime.flatMap((run) => (run.nativeRender ? [run.nativeRender] : []))
+  assert.ok(scenes.length === 0 || scenes.length === runsForRuntime.length, "incomplete scene timing samples")
+  assert.equal(nativeRenders.length, scenes.length, "incomplete native render timing samples")
   return {
     avgMs: stats(runsForRuntime.map((run) => run.avgMs)),
     medianMs: stats(runsForRuntime.map((run) => run.medianMs)),
     p95Ms: stats(runsForRuntime.map((run) => run.p95Ms)),
     rmePercent: stats(runsForRuntime.map((run) => run.rmePercent)),
     processWallMs: stats(runsForRuntime.map((run) => run.wallMs)),
+    scene:
+      scenes.length > 0
+        ? {
+            avgMs: stats(scenes.map((scene) => scene.avgMs)),
+            medianMs: stats(scenes.map((scene) => scene.medianMs)),
+            p95Ms: stats(scenes.map((scene) => scene.p95Ms)),
+            rmePercent: stats(scenes.map((scene) => scene.rmePercent)),
+          }
+        : undefined,
+    nativeRender:
+      nativeRenders.length > 0
+        ? {
+            avgMs: stats(nativeRenders.map((render) => render.avgMs)),
+            medianMs: stats(nativeRenders.map((render) => render.medianMs)),
+            p95Ms: stats(nativeRenders.map((render) => render.p95Ms)),
+            rmePercent: stats(nativeRenders.map((render) => render.rmePercent)),
+          }
+        : undefined,
   }
 }
 
@@ -277,11 +350,16 @@ function integerArg(name: string, fallback: number, minimum: number): number {
 }
 
 function stringArg(name: string, fallback: string): string {
-  const prefix = `--${name}=`
-  return process.argv.find((argument) => argument.startsWith(prefix))?.slice(prefix.length) ?? fallback
+  return optionalArg(name) ?? fallback
 }
 
 function optionalArg(name: string): string | null {
   const prefix = `--${name}=`
-  return process.argv.find((argument) => argument.startsWith(prefix))?.slice(prefix.length) ?? null
+  const index = process.argv.findIndex((argument) => argument === `--${name}` || argument.startsWith(prefix))
+  if (index === -1) return null
+  const argument = process.argv[index]!
+  if (argument.startsWith(prefix)) return argument.slice(prefix.length)
+  const value = process.argv[index + 1]
+  if (value === undefined || value.startsWith("--")) throw new Error(`--${name} requires a value`)
+  return value
 }

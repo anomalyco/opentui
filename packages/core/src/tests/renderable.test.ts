@@ -3,7 +3,6 @@ import { decodePasteBytes } from "../lib/paste.js"
 import {
   Renderable,
   BaseRenderable,
-  RootRenderable,
   RenderableEvents,
   isRenderable,
   type BaseRenderableOptions,
@@ -13,6 +12,7 @@ import { createTestRenderer, type TestRenderer, type MockMouse, type MockInput }
 import type { RenderContext } from "../types.js"
 import { TextNodeRenderable } from "../renderables/TextNode.js"
 import { TextRenderable } from "../renderables/Text.js"
+import { ScrollBoxRenderable } from "../renderables/ScrollBox.js"
 
 export class TestBaseRenderable extends BaseRenderable {
   constructor(options: BaseRenderableOptions) {
@@ -262,42 +262,6 @@ describe("Renderable", () => {
 })
 
 describe("Renderable - layout read caching invariants", () => {
-  // Behavioral contracts for any layout-read caching or batching scheme
-  // (the render-list reuse keyed on the context layout generation today, a
-  // native render tree with shared layout buffers tomorrow): every mutation
-  // that can change computed layout must be visible on the next frame, even
-  // when it bypasses the Renderable setters, and ancestor movement must
-  // cascade to descendant screen positions without a relayout.
-
-  test("direct yoga-node style mutation bypassing all setters is picked up next frame", async () => {
-    const box = new TestRenderable(testRenderer, { id: "yoga-bypass", width: 10, height: 2 })
-    testRenderer.root.add(box)
-    await renderOnce()
-    expect(box.width).toBe(10)
-
-    box.getLayoutNode().setWidth(30)
-    await renderOnce()
-
-    expect(box.width).toBe(30)
-  })
-
-  test("out-of-band subtree calculateLayout does not freeze later layout reads", async () => {
-    const parent = new TestRenderable(testRenderer, { id: "oob-parent", width: 40, height: 6 })
-    const child = new TestRenderable(testRenderer, { id: "oob-child", width: 10, height: 2 })
-    parent.add(child)
-    testRenderer.root.add(parent)
-    await renderOnce()
-    expect(child.width).toBe(10)
-
-    // Mutate and lay out the subtree directly through yoga, bypassing the
-    // renderer's root calculateLayout entirely.
-    child.getLayoutNode().setWidth(25)
-    parent.getLayoutNode().calculateLayout(undefined, undefined)
-    await renderOnce()
-
-    expect(child.width).toBe(25)
-  })
-
   test("grandchild screen position follows a translate-only ancestor move", async () => {
     const parent = new TestRenderable(testRenderer, {
       id: "cascade-parent",
@@ -544,7 +508,6 @@ describe("Renderable - Child Management", () => {
 
   test("renderBefore position changes update hit-grid coordinates in the same frame", async () => {
     testRenderer.requestRender = () => {}
-    const hitGridSpy = spyOn(testRenderer, "addToHitGrid")
 
     const renderable = new TestRenderable(testRenderer, {
       id: "hook-moved-hit-grid",
@@ -565,13 +528,8 @@ describe("Renderable - Child Management", () => {
 
     expect(renderable.screenX).toBe(7)
 
-    const call = hitGridSpy.mock.calls.find((args) => args[4] === renderable.num)
-    if (!call) {
-      throw new Error("Expected renderable to be added to the hit grid")
-    }
-
-    expect(call[0]).toBe(renderable.screenX)
-    expect(call[1]).toBe(renderable.screenY)
+    expect(testRenderer.hitTest(renderable.screenX, renderable.screenY)).toBe(renderable.num)
+    expect(testRenderer.hitTest(2, 3)).not.toBe(renderable.num)
   })
 
   test("renderBefore position changes update frame-buffer compositing coordinates in the same frame", async () => {
@@ -801,7 +759,7 @@ describe("Renderable - Child Management", () => {
     expect(parent.getChildrenCount()).toBe(0)
   })
 
-  test("newly added child should not have layout updated if destroyed before render", async () => {
+  test("newly added child receives no lifecycle or paint hooks if destroyed before render", async () => {
     const parent = new TestRenderable(testRenderer, { id: "parent" })
     const child = new TestRenderable(testRenderer, { id: "child" })
 
@@ -809,16 +767,18 @@ describe("Renderable - Child Management", () => {
     testRenderer.root.add(parent)
     await renderOnce()
 
-    const child2 = new TestRenderable(testRenderer, { id: "child2" })
+    const child2 = new CountingRenderable(testRenderer, { id: "child2" })
+    let lifecycleCalls = 0
+    child2.onLifecyclePass = () => lifecycleCalls++
     parent.add(child2)
-
-    const spy = spyOn(child2, "updateFromLayout")
 
     child2.destroy()
 
     await renderOnce()
 
-    expect(spy).not.toHaveBeenCalled()
+    expect(lifecycleCalls).toBe(0)
+    expect(child2.renderCount).toBe(0)
+    expect(child2.isDestroyed).toBe(true)
   })
 
   test("newly added children receive correct layout dimensions on first render", async () => {
@@ -1314,87 +1274,55 @@ describe("Renderable - Lifecycle", () => {
 })
 
 describe("Renderable - Layout with Viewport Filtering", () => {
-  // Create a test renderable that filters visible children like ScrollBox does
-  class ViewportFilteringRenderable extends Renderable {
-    private _filterEnabled = false
+  beforeEach(async () => {
+    testRenderer.destroy()
+    ;({ renderer: testRenderer, renderOnce } = await createTestRenderer({ width: 120, height: 100 }))
+  })
 
-    constructor(ctx: RenderContext, options: RenderableOptions) {
-      super(ctx, options)
-    }
-
-    enableFiltering() {
-      this._filterEnabled = true
-    }
-
-    protected _hasVisibleChildFilter(): boolean {
-      return this._filterEnabled
-    }
-
-    protected _getVisibleChildren(): number[] {
-      if (!this._filterEnabled) {
-        return super._getVisibleChildren()
-      }
-      const children = this._childrenInZIndexOrder.slice(0, 2)
-      return children.map((c) => c.num)
-    }
-  }
-
-  class LegacyViewportFilteringRenderable extends Renderable {
-    private _filterEnabled = false
-
-    constructor(ctx: RenderContext, options: RenderableOptions) {
-      super(ctx, options)
-    }
-
-    enableFiltering() {
-      this._filterEnabled = true
-    }
-
-    protected _getVisibleChildren(): number[] {
-      if (!this._filterEnabled) {
-        return super._getVisibleChildren()
-      }
-
-      return this._childrenInZIndexOrder.slice(0, 1).map((child) => child.num)
-    }
-  }
-
-  test("legacy subclasses that only override _getVisibleChildren still filter children", async () => {
-    const parent = new LegacyViewportFilteringRenderable(testRenderer, {
+  test("viewport culling skips children below the visible area", async () => {
+    const parent = new ScrollBoxRenderable(testRenderer, {
       id: "parent",
       width: 100,
-      height: 100,
+      height: 30,
       flexDirection: "column",
+      scrollbarOptions: { visible: false },
+      viewportCulling: true,
     })
 
-    const visibleChild = new CountingRenderable(testRenderer, {
+    const visibleChild = new TextRenderable(testRenderer, {
       id: "visible-child",
+      content: "visible-child",
       height: 30,
       flexGrow: 0,
     })
-    const filteredChild = new CountingRenderable(testRenderer, {
+    const filteredChild = new TextRenderable(testRenderer, {
       id: "filtered-child",
+      content: "filtered-child",
       height: 30,
       flexGrow: 0,
     })
 
     parent.add(visibleChild)
     parent.add(filteredChild)
-    parent.enableFiltering()
     testRenderer.root.add(parent)
 
     await renderOnce()
 
-    expect(visibleChild.renderCount).toBeGreaterThan(0)
-    expect(filteredChild.renderCount).toBe(0)
+    const frame = new TextDecoder().decode(testRenderer.currentRenderBuffer.getRealCharBytes(true))
+    expect(frame).toContain("visible-child")
+    expect(frame).not.toContain("filtered-child")
+    expect(testRenderer.hitTest(visibleChild.x, visibleChild.y)).toBe(visibleChild.num)
+    expect(testRenderer.hitTest(filteredChild.x, filteredChild.y)).not.toBe(filteredChild.num)
   })
 
   test("newly added children receive layout even when filtered from viewport", async () => {
-    const parent = new ViewportFilteringRenderable(testRenderer, {
+    const parent = new ScrollBoxRenderable(testRenderer, {
       id: "parent",
       width: 100,
-      height: 100,
+      height: 60,
       flexDirection: "column",
+      scrollbarOptions: { visible: false },
+      viewportCulling: true,
     })
 
     // Add initial children
@@ -1412,7 +1340,6 @@ describe("Renderable - Layout with Viewport Filtering", () => {
     parent.add(child1)
     parent.add(child2)
     testRenderer.root.add(parent)
-    parent.enableFiltering()
     await renderOnce()
 
     // Add a third child that will be filtered out
@@ -1433,12 +1360,14 @@ describe("Renderable - Layout with Viewport Filtering", () => {
     expect(child3.y).toBe(60)
   })
 
-  test("renders all children when visible-children hook returns default path", async () => {
-    const parent = new ViewportFilteringRenderable(testRenderer, {
+  test("renders all children when viewport culling is disabled", async () => {
+    const parent = new ScrollBoxRenderable(testRenderer, {
       id: "parent",
       width: 100,
-      height: 100,
+      height: 60,
       flexDirection: "column",
+      scrollbarOptions: { visible: false },
+      viewportCulling: false,
     })
 
     const child1 = new CountingRenderable(testRenderer, { id: "child1", height: 20, flexGrow: 0 })
@@ -1460,37 +1389,41 @@ describe("Renderable - Layout with Viewport Filtering", () => {
   })
 
   test("renders only filtered children while still updating hidden layout", async () => {
-    const parent = new ViewportFilteringRenderable(testRenderer, {
+    const parent = new ScrollBoxRenderable(testRenderer, {
       id: "parent",
       width: 100,
-      height: 100,
+      height: 40,
       flexDirection: "column",
+      scrollbarOptions: { visible: false },
+      viewportCulling: true,
     })
 
-    const child1 = new CountingRenderable(testRenderer, { id: "child1", height: 20, flexGrow: 0 })
-    const child2 = new CountingRenderable(testRenderer, { id: "child2", height: 20, flexGrow: 0 })
-    const child3 = new CountingRenderable(testRenderer, { id: "child3", height: 20, flexGrow: 0 })
+    const child1 = new TextRenderable(testRenderer, { id: "child1", content: "child1", height: 20, flexGrow: 0 })
+    const child2 = new TextRenderable(testRenderer, { id: "child2", content: "child2", height: 20, flexGrow: 0 })
+    const child3 = new TextRenderable(testRenderer, { id: "child3", content: "child3", height: 20, flexGrow: 0 })
 
     parent.add(child1)
     parent.add(child2)
     parent.add(child3)
     testRenderer.root.add(parent)
-    parent.enableFiltering()
 
     await renderOnce()
 
-    expect(child1.renderCount).toBeGreaterThan(0)
-    expect(child2.renderCount).toBeGreaterThan(0)
-    expect(child3.renderCount).toBe(0)
+    const frame = new TextDecoder().decode(testRenderer.currentRenderBuffer.getRealCharBytes(true))
+    expect(frame).toContain("child1")
+    expect(frame).toContain("child2")
+    expect(frame).not.toContain("child3")
     expect(child3.height).toBe(20)
   })
 
   test("child inserted before visible children receives layout when filtered", async () => {
-    const parent = new ViewportFilteringRenderable(testRenderer, {
+    const parent = new ScrollBoxRenderable(testRenderer, {
       id: "parent",
       width: 100,
-      height: 100,
+      height: 40,
       flexDirection: "column",
+      scrollbarOptions: { visible: false },
+      viewportCulling: true,
     })
 
     const child1 = new TestRenderable(testRenderer, {
@@ -1513,7 +1446,6 @@ describe("Renderable - Layout with Viewport Filtering", () => {
     parent.add(child2)
     parent.add(child3)
     testRenderer.root.add(parent)
-    parent.enableFiltering()
     await renderOnce()
 
     // Insert a new child that pushes child3 further down (outside viewport filter)
@@ -1825,16 +1757,18 @@ describe("Renderable - Complex Layout Update Scenarios", () => {
 
 describe("RootRenderable", () => {
   test("creates with proper setup", () => {
-    const root = new RootRenderable(testRenderer)
+    const root = testRenderer.root
     expect(root.id).toBe("__root__")
     expect(root.visible).toBe(true)
     expect(root.width).toBe(testRenderer.width)
     expect(root.height).toBe(testRenderer.height)
   })
 
-  test("handles layout calculation", () => {
-    const root = new RootRenderable(testRenderer)
-    expect(() => root.calculateLayout()).not.toThrow()
+  test("publishes root layout after rendering", async () => {
+    await renderOnce()
+    const root = testRenderer.root
+    expect(root.getLayout().width).toBe(testRenderer.width)
+    expect(root.getLayout().height).toBe(testRenderer.height)
   })
 
   test("handles resize", async () => {

@@ -4,7 +4,7 @@ import { resolve } from "node:path"
 import type { Writable } from "node:stream"
 import { fileURLToPath } from "node:url"
 
-import { defaultBenchmarkCases } from "./js-benchmark-cases.js"
+import { allBenchmarkCases, defaultBenchmarkCases } from "./js-benchmark-cases.js"
 import { manifestHash, runBenchmarks, type BenchmarkCase, type HarnessOptions } from "./js-benchmark-harness.js"
 
 export const PROTOCOL: HarnessOptions = {
@@ -42,18 +42,31 @@ export async function runBenchmarkCli(args: readonly string[], dependencies: Cli
     await dependencies.stderr.flush()
   }
 
-  if (args.length !== 1 || args[0] !== "--format=json") {
-    await diagnostic("usage: bench:js --format=json")
+  const formatJson = args.includes("--format=json")
+  const caseArguments = args.filter((arg) => arg.startsWith("--case="))
+  const unknown = args.filter((arg) => arg !== "--format=json" && !arg.startsWith("--case="))
+  if (
+    args.filter((arg) => arg === "--format=json").length > 1 ||
+    caseArguments.length > 1 ||
+    unknown.length > 0 ||
+    (!formatJson && caseArguments.length === 0)
+  ) {
+    await diagnostic("usage: bench:js [--format=json] [--case=<name>]")
     return 2
   }
 
   try {
     const options = dependencies.options ?? PROTOCOL
-    const { manifest, results } = await runBenchmarks(dependencies.cases ?? defaultBenchmarkCases, options)
+    const caseName = caseArguments[0]?.slice("--case=".length)
+    if (caseName === "") throw new Error("unknown benchmark case: ")
+    const available = dependencies.cases ?? (caseName ? allBenchmarkCases : defaultBenchmarkCases)
+    const cases = caseName ? available.filter((benchmark) => benchmark.name === caseName) : available
+    if (caseName && cases.length === 0) throw new Error(`unknown benchmark case: ${caseName}`)
+    const { manifest, results } = await runBenchmarks(cases, options)
     const runtime = dependencies.jsRuntime ?? detectRuntime()
     const document = {
       schema_version: 2,
-      benchmark_suite: "core-default",
+      benchmark_suite: caseName ? "core-case" : "core-default",
       protocol_version: options.protocolVersion,
       js_runtime: runtime,
       runtime_version: dependencies.runtimeVersion ?? readRuntimeVersion(runtime),
@@ -61,13 +74,27 @@ export async function runBenchmarkCli(args: readonly string[], dependencies: Cli
       manifest: { hash: manifestHash(manifest), ...manifest },
       results,
     }
-    dependencies.stdout.write(`${JSON.stringify(document)}\n`)
+    dependencies.stdout.write(formatJson ? `${JSON.stringify(document)}\n` : formatResult(document.results[0]!))
     await dependencies.stdout.flush()
     return 0
   } catch (error) {
     await diagnostic(error instanceof Error ? error.message : String(error))
     return 1
   }
+}
+
+function formatResult(result: {
+  category: string
+  name: string
+  batch_iterations: number
+  batch_elapsed_ns: number[]
+}) {
+  const samples = result.batch_elapsed_ns
+    .map((elapsed) => elapsed / result.batch_iterations / 1_000_000)
+    .sort((a, b) => a - b)
+  const middle = samples.length >> 1
+  const median = samples.length % 2 === 0 ? (samples[middle - 1]! + samples[middle]!) / 2 : samples[middle]!
+  return `${result.category}/${result.name}: ${median.toFixed(4)} ms/op\n`
 }
 
 function readZigVersion(): string {

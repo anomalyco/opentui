@@ -2,6 +2,7 @@
 
 import {
   CliRenderer,
+  CliRenderEvents,
   createCliRenderer,
   TextRenderable,
   BoxRenderable,
@@ -11,6 +12,7 @@ import {
   cyan,
   yellow,
   magenta,
+  type Selection,
 } from "@opentui/core"
 import { setupCommonDemoKeys } from "./lib/standalone-keys.js"
 
@@ -320,7 +322,7 @@ Line 4: Yet another extremely long line with lots of text to demonstrate middle 
   })
   selectionBox.add(selectionEndText)
 
-  renderer.on("selection", (selection) => {
+  const selectionHandler = (selection: Selection | null) => {
     if (!selectionStatusText || !selectionStartText || !selectionMiddleText || !selectionEndText) return
 
     const selectedText = selection?.getSelectedText()
@@ -350,7 +352,9 @@ Line 4: Yet another extremely long line with lots of text to demonstrate middle 
       selectionMiddleText.content = ""
       selectionEndText.content = ""
     }
-  })
+  }
+  renderer.on("selection", selectionHandler)
+  mainContainer.once("destroyed", () => rendererInstance.off("selection", selectionHandler))
 
   updateFooterText()
 }
@@ -467,6 +471,8 @@ export function destroy(rendererInstance: CliRenderer): void {
   multilineText2 = null
   styledText = null
   allTextElements.length = 0
+  truncateEnabled = false
+  wrapMode = "none"
   rendererInstance.clearSelection()
 }
 
@@ -475,6 +481,7 @@ if (import.meta.main) {
     targetFps: 30,
     exitOnCtrlC: true,
   })
+  renderer.once(CliRenderEvents.DESTROY, () => destroy(renderer))
   run(renderer)
   setupCommonDemoKeys(renderer)
   renderer.start()

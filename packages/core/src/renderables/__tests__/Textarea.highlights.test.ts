@@ -28,7 +28,7 @@ describe("Textarea - Syntax Highlighting Tests", () => {
   describe("Syntax Highlighting", () => {
     describe("SyntaxStyle Management", () => {
       it("should set syntax style via constructor option", async () => {
-        const style = SyntaxStyle.create()
+        const style = SyntaxStyle.create(currentRenderer.nativeScene)
         const styleId = style.registerStyle("keyword", {
           fg: RGBA.fromValues(0, 1, 0, 1),
           bold: true,
@@ -53,14 +53,14 @@ describe("Textarea - Syntax Highlighting Tests", () => {
 
         expect(editor.syntaxStyle).toBe(null)
 
-        const style = SyntaxStyle.create()
+        const style = SyntaxStyle.create(currentRenderer.nativeScene)
         editor.syntaxStyle = style
 
         expect(editor.syntaxStyle).toBe(style)
       })
 
       it("should clear syntax style when set to null", async () => {
-        const style = SyntaxStyle.create()
+        const style = SyntaxStyle.create(currentRenderer.nativeScene)
 
         const { textarea: editor } = await createTextareaRenderable(currentRenderer, renderOnce, {
           initialValue: "test",
@@ -79,7 +79,7 @@ describe("Textarea - Syntax Highlighting Tests", () => {
 
     describe("Highlight Management", () => {
       it("should add highlight by line and column range", async () => {
-        const style = SyntaxStyle.create()
+        const style = SyntaxStyle.create(currentRenderer.nativeScene)
         const styleId = style.registerStyle("highlight", {
           fg: RGBA.fromValues(1, 0, 0, 1),
         })
@@ -103,7 +103,7 @@ describe("Textarea - Syntax Highlighting Tests", () => {
       })
 
       it("should add multiple highlights to same line", async () => {
-        const style = SyntaxStyle.create()
+        const style = SyntaxStyle.create(currentRenderer.nativeScene)
         const keywordId = style.registerStyle("keyword", { fg: RGBA.fromValues(1, 0, 0, 1) })
         const stringId = style.registerStyle("string", { fg: RGBA.fromValues(0, 1, 0, 1) })
 
@@ -128,7 +128,7 @@ describe("Textarea - Syntax Highlighting Tests", () => {
       })
 
       it("should add highlight by character range", async () => {
-        const style = SyntaxStyle.create()
+        const style = SyntaxStyle.create(currentRenderer.nativeScene)
         const styleId = style.registerStyle("highlight", {
           fg: RGBA.fromValues(1, 1, 0, 1),
         })
@@ -153,7 +153,7 @@ describe("Textarea - Syntax Highlighting Tests", () => {
       })
 
       it("should add highlight with custom priority", async () => {
-        const style = SyntaxStyle.create()
+        const style = SyntaxStyle.create(currentRenderer.nativeScene)
         const lowPriorityId = style.registerStyle("low", { fg: RGBA.fromValues(0.5, 0.5, 0.5, 1) })
         const highPriorityId = style.registerStyle("high", { fg: RGBA.fromValues(1, 0, 0, 1) })
 
@@ -174,7 +174,7 @@ describe("Textarea - Syntax Highlighting Tests", () => {
       })
 
       it("should add highlight with reference ID", async () => {
-        const style = SyntaxStyle.create()
+        const style = SyntaxStyle.create(currentRenderer.nativeScene)
         const styleId = style.registerStyle("ref-highlight", {
           fg: RGBA.fromValues(0, 0, 1, 1),
         })
@@ -195,7 +195,7 @@ describe("Textarea - Syntax Highlighting Tests", () => {
       })
 
       it("should remove highlights by reference ID", async () => {
-        const style = SyntaxStyle.create()
+        const style = SyntaxStyle.create(currentRenderer.nativeScene)
         const styleId1 = style.registerStyle("style1", { fg: RGBA.fromValues(1, 0, 0, 1) })
         const styleId2 = style.registerStyle("style2", { fg: RGBA.fromValues(0, 1, 0, 1) })
 
@@ -222,7 +222,7 @@ describe("Textarea - Syntax Highlighting Tests", () => {
       })
 
       it("should clear highlights for specific line", async () => {
-        const style = SyntaxStyle.create()
+        const style = SyntaxStyle.create(currentRenderer.nativeScene)
         const styleId = style.registerStyle("style", { fg: RGBA.fromValues(1, 1, 1, 1) })
 
         const { textarea: editor } = await createTextareaRenderable(currentRenderer, renderOnce, {
@@ -248,7 +248,7 @@ describe("Textarea - Syntax Highlighting Tests", () => {
       })
 
       it("should clear all highlights", async () => {
-        const style = SyntaxStyle.create()
+        const style = SyntaxStyle.create(currentRenderer.nativeScene)
         const styleId = style.registerStyle("style", { fg: RGBA.fromValues(1, 1, 1, 1) })
 
         const { textarea: editor } = await createTextareaRenderable(currentRenderer, renderOnce, {
@@ -296,7 +296,7 @@ describe("Textarea - Syntax Highlighting Tests", () => {
       })
 
       it("should handle highlights spanning multiple lines via character range", async () => {
-        const style = SyntaxStyle.create()
+        const style = SyntaxStyle.create(currentRenderer.nativeScene)
         const styleId = style.registerStyle("multiline", {
           bg: RGBA.fromValues(0.2, 0.2, 0.2, 1),
         })
@@ -331,7 +331,7 @@ describe("Textarea - Syntax Highlighting Tests", () => {
       })
 
       it("should preserve highlights after text editing when using hlRef", async () => {
-        const style = SyntaxStyle.create()
+        const style = SyntaxStyle.create(currentRenderer.nativeScene)
         const styleId = style.registerStyle("persistent", {
           fg: RGBA.fromValues(1, 0, 1, 1),
         })
@@ -361,7 +361,7 @@ describe("Textarea - Syntax Highlighting Tests", () => {
       })
 
       it("should handle multiple highlights with different priorities", async () => {
-        const style = SyntaxStyle.create()
+        const style = SyntaxStyle.create(currentRenderer.nativeScene)
         const baseId = style.registerStyle("base", { fg: RGBA.fromValues(0.5, 0.5, 0.5, 1) })
         const mediumId = style.registerStyle("medium", { fg: RGBA.fromValues(0, 1, 0, 1) })
         const highId = style.registerStyle("high", { fg: RGBA.fromValues(1, 0, 0, 1) })
@@ -387,7 +387,7 @@ describe("Textarea - Syntax Highlighting Tests", () => {
       })
 
       it("should clear highlights when removing by ref across multiple lines", async () => {
-        const style = SyntaxStyle.create()
+        const style = SyntaxStyle.create(currentRenderer.nativeScene)
         const styleId = style.registerStyle("temp", { bg: RGBA.fromValues(0.1, 0.1, 0.1, 1) })
 
         const { textarea: editor } = await createTextareaRenderable(currentRenderer, renderOnce, {
@@ -415,7 +415,7 @@ describe("Textarea - Syntax Highlighting Tests", () => {
       })
 
       it("should handle empty highlights without hlRef", async () => {
-        const style = SyntaxStyle.create()
+        const style = SyntaxStyle.create(currentRenderer.nativeScene)
         const styleId = style.registerStyle("no-ref", { fg: RGBA.fromValues(1, 1, 1, 1) })
 
         const { textarea: editor } = await createTextareaRenderable(currentRenderer, renderOnce, {
@@ -448,7 +448,7 @@ describe("Textarea - Syntax Highlighting Tests", () => {
       })
 
       it("should handle char range spanning entire buffer", async () => {
-        const style = SyntaxStyle.create()
+        const style = SyntaxStyle.create(currentRenderer.nativeScene)
         const styleId = style.registerStyle("all", { bg: RGBA.fromValues(0.1, 0.1, 0.1, 1) })
 
         const { textarea: editor } = await createTextareaRenderable(currentRenderer, renderOnce, {
@@ -467,7 +467,7 @@ describe("Textarea - Syntax Highlighting Tests", () => {
       })
 
       it("should handle updating highlights after clearing specific line", async () => {
-        const style = SyntaxStyle.create()
+        const style = SyntaxStyle.create(currentRenderer.nativeScene)
         const styleId = style.registerStyle("test", { fg: RGBA.fromValues(1, 1, 0, 1) })
 
         const { textarea: editor } = await createTextareaRenderable(currentRenderer, renderOnce, {
@@ -493,7 +493,7 @@ describe("Textarea - Syntax Highlighting Tests", () => {
       })
 
       it("should handle zero-width highlights (should be ignored)", async () => {
-        const style = SyntaxStyle.create()
+        const style = SyntaxStyle.create(currentRenderer.nativeScene)
         const styleId = style.registerStyle("zero", { fg: RGBA.fromValues(1, 0, 0, 1) })
 
         const { textarea: editor } = await createTextareaRenderable(currentRenderer, renderOnce, {
@@ -511,7 +511,7 @@ describe("Textarea - Syntax Highlighting Tests", () => {
       })
 
       it("should handle multiple reference IDs independently", async () => {
-        const style = SyntaxStyle.create()
+        const style = SyntaxStyle.create(currentRenderer.nativeScene)
         const styleId = style.registerStyle("ref-style", { fg: RGBA.fromValues(1, 1, 1, 1) })
 
         const { textarea: editor } = await createTextareaRenderable(currentRenderer, renderOnce, {
@@ -539,9 +539,11 @@ describe("Textarea - Syntax Highlighting Tests", () => {
 
     describe("Highlight Rendering Integration", () => {
       it("should render highlighted text without crashing", async () => {
-        const buffer = OptimizedBuffer.create(80, 24, "wcwidth")
+        const buffer = OptimizedBuffer.create(80, 24, "wcwidth", {
+          owner: currentRenderer.nativeScene,
+        })
 
-        const style = SyntaxStyle.create()
+        const style = SyntaxStyle.create(currentRenderer.nativeScene)
         const styleId = style.registerStyle("keyword", {
           fg: RGBA.fromValues(1, 0, 0, 1),
           bold: true,
@@ -563,7 +565,7 @@ describe("Textarea - Syntax Highlighting Tests", () => {
       })
 
       it("should handle highlights with overlapping ranges", async () => {
-        const style = SyntaxStyle.create()
+        const style = SyntaxStyle.create(currentRenderer.nativeScene)
         const style1 = style.registerStyle("style1", { fg: RGBA.fromValues(1, 0, 0, 1) })
         const style2 = style.registerStyle("style2", { fg: RGBA.fromValues(0, 1, 0, 1) })
 
@@ -580,7 +582,9 @@ describe("Textarea - Syntax Highlighting Tests", () => {
         const highlights = editor.getLineHighlights(0)
         expect(highlights.length).toBe(2)
 
-        const buffer = OptimizedBuffer.create(80, 24, "wcwidth")
+        const buffer = OptimizedBuffer.create(80, 24, "wcwidth", {
+          owner: currentRenderer.nativeScene,
+        })
 
         // Should render without crashing
         buffer.drawEditorView(editor.editorView, 0, 0)

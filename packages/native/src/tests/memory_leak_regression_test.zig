@@ -23,7 +23,7 @@ test "GraphemePool - out-of-range slot returns InvalidId before dereference" {
     var pool = GraphemePool.init(std.testing.allocator);
     defer pool.deinit();
 
-    _ = try pool.alloc("allocated");
+    _ = try pool.acquire("allocated");
 
     // Class 0 exists after the allocation, but the highest encodable slot has
     // not been allocated. Public operations must reject it before slot access.
@@ -34,44 +34,43 @@ test "GraphemePool - out-of-range slot returns InvalidId before dereference" {
     try std.testing.expectError(GraphemePoolError.InvalidId, pool.getRefcount(invalid_id));
 }
 
-test "GraphemePool - unreferenced slot cannot be freed twice" {
+test "GraphemePool - last release cannot be decref'd again" {
     var pool = GraphemePool.init(std.testing.allocator);
     defer pool.deinit();
 
-    const id = try pool.alloc("pending");
-    try pool.freeUnreferenced(id);
+    const id = try pool.acquire("live");
+    try pool.decref(id);
 
-    try std.testing.expectError(GraphemePoolError.InvalidId, pool.freeUnreferenced(id));
+    try std.testing.expectError(GraphemePoolError.InvalidId, pool.decref(id));
     try std.testing.expectError(GraphemePoolError.InvalidId, pool.get(id));
 }
 
-test "GraphemePool - decref release cannot be freed again as pending" {
-    var pool = GraphemePool.init(std.testing.allocator);
-    defer pool.deinit();
-
-    const id = try pool.alloc("live");
-    try pool.incref(id);
-    try pool.decref(id);
-
-    try std.testing.expectError(GraphemePoolError.InvalidId, pool.freeUnreferenced(id));
-}
-
-test "GraphemePool - failed first incref preserves pending ownership" {
-    var pool = GraphemePool.init(std.testing.allocator);
-    defer pool.deinit();
-
-    const id = try pool.alloc("owned");
-    const allocator = pool.allocator;
-    var failing_allocator = std.testing.FailingAllocator.init(
-        std.testing.allocator,
-        .{ .fail_index = 0 },
-    );
-    pool.allocator = failing_allocator.allocator();
-    defer pool.allocator = allocator;
-
-    try std.testing.expectError(GraphemePoolError.OutOfMemory, pool.incref(id));
-    try std.testing.expectEqual(@as(u32, 0), try pool.getRefcount(id));
-    try pool.freeUnreferenced(id);
+test "GraphemePool - failed first-use acquire leaves no live reference" {
+    var fail_offset: usize = 0;
+    while (fail_offset < 16) : (fail_offset += 1) {
+        var failing = std.testing.FailingAllocator.init(std.testing.allocator, .{});
+        var pool = GraphemePool.initWithOptions(failing.allocator(), .{
+            .slots_per_page = [_]u32{ 1, 1, 1, 1, 1 },
+        });
+        defer pool.deinit();
+        failing.fail_index = fail_offset;
+        const result = pool.acquire("owned");
+        failing.fail_index = std.math.maxInt(usize);
+        if (result) |id| {
+            try std.testing.expect(!failing.has_induced_failure);
+            try std.testing.expectEqual(@as(u32, 1), try pool.getRefcount(id));
+            try pool.decref(id);
+        } else |err| {
+            try std.testing.expectEqual(error.OutOfMemory, err);
+            try std.testing.expect(failing.has_induced_failure);
+        }
+        try std.testing.expectEqual(@as(u32, 0), pool.interned_live_ids.count());
+        const retry = try pool.acquire("owned");
+        try std.testing.expectEqual(@as(u32, 1), try pool.getRefcount(retry));
+        try pool.decref(retry);
+        if (result) |_| break else |_| {}
+    }
+    try std.testing.expect(fail_offset < 16);
 }
 
 test "GraphemePool - growth allocation failure leaves state reusable" {
@@ -84,12 +83,11 @@ test "GraphemePool - growth allocation failure leaves state reusable" {
     });
     defer pool.deinit();
 
-    try std.testing.expectError(GraphemePoolError.OutOfMemory, pool.alloc("value"));
+    try std.testing.expectError(GraphemePoolError.OutOfMemory, pool.acquire("value"));
     try std.testing.expect(failing_allocator.has_induced_failure);
 
     failing_allocator.fail_index = std.math.maxInt(usize);
-    const id = try pool.alloc("value");
-    try pool.incref(id);
+    const id = try pool.acquire("value");
     try std.testing.expectEqualSlices(u8, "value", try pool.get(id));
     try pool.decref(id);
 }
@@ -104,8 +102,7 @@ test "GraphemePool - defer cleanup on failure path" {
     for (0..5) |i| {
         var buffer: [8]u8 = undefined;
         const slice = std.fmt.bufPrint(&buffer, "{d}", .{i}) catch unreachable;
-        const gid = try pool.alloc(slice);
-        try pool.incref(gid);
+        const gid = try pool.acquire(slice);
         try allocated_ids.append(std.testing.allocator, gid);
     }
 
@@ -114,10 +111,13 @@ test "GraphemePool - defer cleanup on failure path" {
         try pool.decref(id);
     }
 
-    // Force slot reuse
-    for (0..5) |_| {
-        _ = try pool.alloc("reuse");
+    var reused: [5]u32 = undefined;
+    for (&reused, 0..) |*id, i| {
+        var buffer: [8]u8 = undefined;
+        const slice = std.fmt.bufPrint(&buffer, "r{d}", .{i}) catch unreachable;
+        id.* = try pool.acquire(slice);
     }
+    defer for (reused) |id| pool.decref(id) catch {};
 
     for (allocated_ids.items) |id| {
         try std.testing.expectError(GraphemePoolError.WrongGeneration, pool.get(id));
@@ -145,15 +145,13 @@ test "GraphemePool - pending grapheme cleanup on failure" {
         }
     }
 
-    const gid1 = try pool.alloc("grapheme1");
+    const gid1 = try pool.acquire("grapheme1");
     pending_gid = gid1;
-    try pool.incref(gid1);
     try result_graphemes.append(std.testing.allocator, gid1);
     pending_gid = null;
 
-    const gid2 = try pool.alloc("grapheme2");
+    const gid2 = try pool.acquire("grapheme2");
     pending_gid = gid2;
-    try pool.incref(gid2);
     // Simulate failure before storing - pending_gid remains set
 }
 
@@ -186,20 +184,18 @@ test "encodeUnicode - cleanup on mid-operation failure" {
                 }
             }
 
-            const gid1 = pool.alloc("emoji1") catch return result;
+            const gid1 = pool.acquire("emoji1") catch return result;
             result.captured_ids[result.captured_count] = gid1;
             result.captured_count += 1;
             pending_gid = gid1;
-            pool.incref(gid1) catch return result;
             stored_ids[stored_count] = gid1;
             stored_count += 1;
             pending_gid = null;
 
-            const gid2 = pool.alloc("emoji2") catch return result;
+            const gid2 = pool.acquire("emoji2") catch return result;
             result.captured_ids[result.captured_count] = gid2;
             result.captured_count += 1;
             pending_gid = gid2;
-            pool.incref(gid2) catch return result;
 
             if (should_fail) {
                 return result;
@@ -221,11 +217,13 @@ test "encodeUnicode - cleanup on mid-operation failure" {
     try std.testing.expect(!sim_result.success);
     try std.testing.expectEqual(@as(usize, 2), sim_result.captured_count);
 
-    // Force slot reuse by allocating enough graphemes to cycle through freed slots
-    // Allocate more than captured to ensure freed slots get reused
-    for (0..4) |_| {
-        _ = try pool.alloc("reuse");
+    var reused: [4]u32 = undefined;
+    for (&reused, 0..) |*id, i| {
+        var buffer: [8]u8 = undefined;
+        const slice = std.fmt.bufPrint(&buffer, "r{d}", .{i}) catch unreachable;
+        id.* = try pool.acquire(slice);
     }
+    defer for (reused) |id| pool.decref(id) catch {};
 
     // Verify cleanup: old IDs should now have wrong generation
     for (sim_result.captured_ids[0..sim_result.captured_count]) |old_id| {

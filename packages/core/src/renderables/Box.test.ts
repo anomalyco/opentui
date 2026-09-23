@@ -24,12 +24,12 @@ function getCellIndex(x: number, y: number): number {
 }
 
 function getCellChar(x: number, y: number): string {
-  return String.fromCodePoint(testRenderer.currentRenderBuffer.buffers.char[getCellIndex(x, y)])
+  return testRenderer.currentRenderBuffer.withBuffers(({ char }) => String.fromCodePoint(char[getCellIndex(x, y)]))
 }
 
 function getCellForeground(x: number, y: number): [number, number, number, number] {
   const index = getCellIndex(x, y) * 4
-  return RGBA.fromArray(testRenderer.currentRenderBuffer.buffers.fg.slice(index, index + 4)).toInts()
+  return testRenderer.currentRenderBuffer.withBuffers(({ fg }) => RGBA.fromArray(fg.slice(index, index + 4)).toInts())
 }
 
 describe("BoxRenderable - focusable option", () => {
@@ -251,13 +251,15 @@ describe("BoxRenderable - transparent border blending", () => {
     await renderOnce()
 
     const buffer = testRenderer.currentRenderBuffer
-    expect(buffer.buffers.char[0]).toBe("┃".codePointAt(0)!)
-    expect({
-      fg: RGBA.fromArray(buffer.buffers.fg.slice(0, 4)).toInts(),
-      bg: RGBA.fromArray(buffer.buffers.bg.slice(0, 4)).toInts(),
-    }).toEqual({
-      fg: panel.toInts(),
-      bg: panel.toInts(),
+    buffer.withBuffers(({ char, fg, bg }) => {
+      expect(char[0]).toBe("┃".codePointAt(0)!)
+      expect({
+        fg: RGBA.fromArray(fg.slice(0, 4)).toInts(),
+        bg: RGBA.fromArray(bg.slice(0, 4)).toInts(),
+      }).toEqual({
+        fg: panel.toInts(),
+        bg: panel.toInts(),
+      })
     })
   })
 })

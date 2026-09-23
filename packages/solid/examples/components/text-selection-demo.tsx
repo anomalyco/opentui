@@ -1,7 +1,7 @@
 import { Selection } from "@opentui/core"
 import { ConsolePosition } from "@opentui/core"
 import { render, useRenderer, useSelectionHandler, type TextProps } from "@opentui/solid"
-import { createEffect, createSignal, onMount } from "solid-js"
+import { createEffect, createSignal, onCleanup, onMount } from "solid-js"
 
 const words = ["Hello", "World", "OpenTUI", "SolidJS", "ReactJS", "TypeScript", "JavaScript", "CSS", "HTML", "JSX"]
 
@@ -12,9 +12,10 @@ export default function TextSelectionDemo() {
 
   onMount(() => {
     renderer.setBackgroundColor("#0d1117")
-    setInterval(() => {
+    const timer = setInterval(() => {
       setSelectedWord((w) => (w === words.length - 1 ? 0 : w + 1))
     }, 1000)
+    onCleanup(() => clearInterval(timer))
   })
 
   const [statusText, setStatusText] = createSignal("No selection - try selecting across different nested elements")

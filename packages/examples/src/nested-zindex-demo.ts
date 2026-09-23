@@ -342,7 +342,7 @@ export function destroy(renderer: CliRenderer): void {
 
   for (const id of ["main-title", "parent-container"]) {
     const child = renderer.root.getRenderable(id)
-    if (child) renderer.root.remove(child)
+    child?.destroyRecursively()
   }
 
   renderer.clearFrameCallbacks()

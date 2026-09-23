@@ -10,6 +10,7 @@ import { TextAttributes, type CapturedFrame } from "../types.js"
 import { StyledText } from "../lib/styled-text.js"
 
 let currentRenderer: TestRenderer
+let syntaxStyle: SyntaxStyle
 let renderOnce: () => Promise<void>
 let captureFrame: () => string
 let captureSpans: () => CapturedFrame
@@ -67,6 +68,7 @@ beforeEach(async () => {
   clock = new ManualClock()
   const testRenderer = await createTestRenderer({ width: 80, height: 24 })
   currentRenderer = testRenderer.renderer
+  syntaxStyle = SyntaxStyle.fromStyles({ default: { fg: RGBA.fromValues(1, 1, 1, 1) } }, currentRenderer.nativeScene)
   renderOnce = testRenderer.renderOnce
   captureFrame = testRenderer.captureCharFrame
   captureSpans = testRenderer.captureSpans
@@ -101,15 +103,20 @@ function recordHighlightContents(mockClient: MockTreeSitterClient): string[] {
 afterEach(async () => {
   if (currentRenderer) {
     currentRenderer.destroy()
+    await currentRenderer.closed
   }
+  syntaxStyle.destroy()
 })
 
 test("CodeRenderable - basic construction", async () => {
-  const syntaxStyle = SyntaxStyle.fromStyles({
-    default: { fg: RGBA.fromValues(1, 1, 1, 1) },
-    keyword: { fg: RGBA.fromValues(0, 0, 1, 1) },
-    string: { fg: RGBA.fromValues(0, 1, 0, 1) },
-  })
+  const syntaxStyle = SyntaxStyle.fromStyles(
+    {
+      default: { fg: RGBA.fromValues(1, 1, 1, 1) },
+      keyword: { fg: RGBA.fromValues(0, 0, 1, 1) },
+      string: { fg: RGBA.fromValues(0, 1, 0, 1) },
+    },
+    currentRenderer.nativeScene,
+  )
 
   const codeRenderable = new CodeRenderable(currentRenderer, {
     id: "test-code",
@@ -126,10 +133,6 @@ test("CodeRenderable - basic construction", async () => {
 })
 
 test("CodeRenderable - content updates", async () => {
-  const syntaxStyle = SyntaxStyle.fromStyles({
-    default: { fg: RGBA.fromValues(1, 1, 1, 1) },
-  })
-
   const codeRenderable = new CodeRenderable(currentRenderer, {
     id: "test-code",
     content: "original content",
@@ -145,10 +148,6 @@ test("CodeRenderable - content updates", async () => {
 })
 
 test("CodeRenderable - filetype updates", async () => {
-  const syntaxStyle = SyntaxStyle.fromStyles({
-    default: { fg: RGBA.fromValues(1, 1, 1, 1) },
-  })
-
   const codeRenderable = new CodeRenderable(currentRenderer, {
     id: "test-code",
     content: "console.log('test');",
@@ -164,10 +163,13 @@ test("CodeRenderable - filetype updates", async () => {
 })
 
 test("CodeRenderable - re-highlights when content changes during active highlighting", async () => {
-  const syntaxStyle = SyntaxStyle.fromStyles({
-    default: { fg: RGBA.fromValues(1, 1, 1, 1) },
-    keyword: { fg: RGBA.fromValues(0, 0, 1, 1) },
-  })
+  const syntaxStyle = SyntaxStyle.fromStyles(
+    {
+      default: { fg: RGBA.fromValues(1, 1, 1, 1) },
+      keyword: { fg: RGBA.fromValues(0, 0, 1, 1) },
+    },
+    currentRenderer.nativeScene,
+  )
 
   const mockClient = new MockTreeSitterClient()
   mockClient.setMockResult({
@@ -211,10 +213,6 @@ test("CodeRenderable - re-highlights when content changes during active highligh
 })
 
 test("CodeRenderable - multiple content changes during highlighting", async () => {
-  const syntaxStyle = SyntaxStyle.fromStyles({
-    default: { fg: RGBA.fromValues(1, 1, 1, 1) },
-  })
-
   const mockClient = new MockTreeSitterClient()
   mockClient.setMockResult({ highlights: [] })
 
@@ -255,7 +253,7 @@ test("CodeRenderable - multiple content changes during highlighting", async () =
 })
 
 test("CodeRenderable - coalesces streaming updates while highlighting", async () => {
-  const syntaxStyle = SyntaxStyle.create()
+  const syntaxStyle = SyntaxStyle.create(currentRenderer.nativeScene)
   const mockClient = new MockTreeSitterClient()
   const highlightCalls = recordHighlightContents(mockClient)
 
@@ -308,7 +306,7 @@ test("CodeRenderable - coalesces streaming updates while highlighting", async ()
 })
 
 test("CodeRenderable - removing filetype shows the latest unstyled streaming content", async () => {
-  const syntaxStyle = SyntaxStyle.create()
+  const syntaxStyle = SyntaxStyle.create(currentRenderer.nativeScene)
   const mockClient = new MockTreeSitterClient()
   const highlightCalls = recordHighlightContents(mockClient)
   const codeRenderable = new CodeRenderable(currentRenderer, {
@@ -345,7 +343,7 @@ test("CodeRenderable - removing filetype shows the latest unstyled streaming con
 })
 
 test("CodeRenderable - disabling streaming preserves the queued latest highlight", async () => {
-  const syntaxStyle = SyntaxStyle.create()
+  const syntaxStyle = SyntaxStyle.create(currentRenderer.nativeScene)
   const mockClient = new MockTreeSitterClient()
   const highlightCalls = recordHighlightContents(mockClient)
   const codeRenderable = new CodeRenderable(currentRenderer, {
@@ -382,7 +380,7 @@ test("CodeRenderable - disabling streaming preserves the queued latest highlight
 })
 
 test("CodeRenderable - streaming updates wait behind an unresolved non-streaming highlight", async () => {
-  const syntaxStyle = SyntaxStyle.create()
+  const syntaxStyle = SyntaxStyle.create(currentRenderer.nativeScene)
   const mockClient = new MockTreeSitterClient()
   const highlightCalls = recordHighlightContents(mockClient)
   const codeRenderable = new CodeRenderable(currentRenderer, {
@@ -416,10 +414,6 @@ test("CodeRenderable - streaming updates wait behind an unresolved non-streaming
 })
 
 test("CodeRenderable - uses fallback rendering when no filetype provided", async () => {
-  const syntaxStyle = SyntaxStyle.fromStyles({
-    default: { fg: RGBA.fromValues(1, 1, 1, 1) },
-  })
-
   const codeRenderable = new CodeRenderable(currentRenderer, {
     id: "test-code",
     content: "const message = 'hello world';",
@@ -436,10 +430,6 @@ test("CodeRenderable - uses fallback rendering when no filetype provided", async
 })
 
 test("CodeRenderable - uses fallback rendering when highlighting throws error", async () => {
-  const syntaxStyle = SyntaxStyle.fromStyles({
-    default: { fg: RGBA.fromValues(1, 1, 1, 1) },
-  })
-
   const mockClient = new MockTreeSitterClient()
 
   mockClient.highlightOnce = async () => {
@@ -467,10 +457,6 @@ test("CodeRenderable - uses fallback rendering when highlighting throws error", 
 })
 
 test("CodeRenderable - handles empty content", async () => {
-  const syntaxStyle = SyntaxStyle.fromStyles({
-    default: { fg: RGBA.fromValues(1, 1, 1, 1) },
-  })
-
   const codeRenderable = new CodeRenderable(currentRenderer, {
     id: "test-code",
     content: "",
@@ -487,10 +473,6 @@ test("CodeRenderable - handles empty content", async () => {
 })
 
 test("CodeRenderable - empty content does not trigger highlighting", async () => {
-  const syntaxStyle = SyntaxStyle.fromStyles({
-    default: { fg: RGBA.fromValues(1, 1, 1, 1) },
-  })
-
   const mockClient = new MockTreeSitterClient()
   mockClient.setMockResult({ highlights: [] })
 
@@ -551,10 +533,13 @@ test("CodeRenderable - empty content does not trigger highlighting", async () =>
 test("CodeRenderable - text renders immediately before highlighting completes", async () => {
   resize(32, 2)
 
-  const syntaxStyle = SyntaxStyle.fromStyles({
-    default: { fg: RGBA.fromValues(1, 1, 1, 1) },
-    keyword: { fg: RGBA.fromValues(0, 0, 1, 1) },
-  })
+  const syntaxStyle = SyntaxStyle.fromStyles(
+    {
+      default: { fg: RGBA.fromValues(1, 1, 1, 1) },
+      keyword: { fg: RGBA.fromValues(0, 0, 1, 1) },
+    },
+    currentRenderer.nativeScene,
+  )
 
   const mockClient = new MockTreeSitterClient()
   mockClient.setMockResult({
@@ -592,10 +577,13 @@ test("CodeRenderable - text renders immediately before highlighting completes", 
 })
 
 test("CodeRenderable - batches concurrent content and filetype updates", async () => {
-  const syntaxStyle = SyntaxStyle.fromStyles({
-    default: { fg: RGBA.fromValues(1, 1, 1, 1) },
-    keyword: { fg: RGBA.fromValues(0, 0, 1, 1) },
-  })
+  const syntaxStyle = SyntaxStyle.fromStyles(
+    {
+      default: { fg: RGBA.fromValues(1, 1, 1, 1) },
+      keyword: { fg: RGBA.fromValues(0, 0, 1, 1) },
+    },
+    currentRenderer.nativeScene,
+  )
 
   let highlightCount = 0
   const mockClient = new MockTreeSitterClient()
@@ -641,7 +629,7 @@ test("CodeRenderable - batches concurrent content and filetype updates", async (
 })
 
 test("CodeRenderable - filetype change invalidates an active highlight before rendering", async () => {
-  const syntaxStyle = SyntaxStyle.create()
+  const syntaxStyle = SyntaxStyle.create(currentRenderer.nativeScene)
   const mockClient = new MockTreeSitterClient()
   const filetypes: string[] = []
   const highlightOnce = mockClient.highlightOnce.bind(mockClient)
@@ -672,10 +660,6 @@ test("CodeRenderable - filetype change invalidates an active highlight before re
 })
 
 test("CodeRenderable - batches multiple updates in same tick into single highlight", async () => {
-  const syntaxStyle = SyntaxStyle.fromStyles({
-    default: { fg: RGBA.fromValues(1, 1, 1, 1) },
-  })
-
   let highlightCount = 0
   const highlightCalls: Array<{ content: string; filetype: string }> = []
   const mockClient = new MockTreeSitterClient()
@@ -724,12 +708,15 @@ test("CodeRenderable - batches multiple updates in same tick into single highlig
 })
 
 test("CodeRenderable - renders markdown with TypeScript injection correctly", async () => {
-  const syntaxStyle = SyntaxStyle.fromStyles({
-    default: { fg: RGBA.fromValues(1, 1, 1, 1) },
-    keyword: { fg: RGBA.fromValues(1, 0, 0, 1) }, // Red
-    string: { fg: RGBA.fromValues(0, 1, 0, 1) }, // Green
-    "markup.heading.1": { fg: RGBA.fromValues(0, 0, 1, 1) }, // Blue
-  })
+  const syntaxStyle = SyntaxStyle.fromStyles(
+    {
+      default: { fg: RGBA.fromValues(1, 1, 1, 1) },
+      keyword: { fg: RGBA.fromValues(1, 0, 0, 1) }, // Red
+      string: { fg: RGBA.fromValues(0, 1, 0, 1) }, // Green
+      "markup.heading.1": { fg: RGBA.fromValues(0, 0, 1, 1) }, // Blue
+    },
+    currentRenderer.nativeScene,
+  )
 
   const markdownCode = `# Hello\n\n\`\`\`typescript\nconst msg: string = "hi";\n\`\`\``
 
@@ -755,7 +742,7 @@ test("CodeRenderable - renders markdown with TypeScript injection correctly", as
 })
 
 test("CodeRenderable - coalesces non-streaming updates behind an unresolved highlight", async () => {
-  const syntaxStyle = SyntaxStyle.create()
+  const syntaxStyle = SyntaxStyle.create(currentRenderer.nativeScene)
   const mockClient = new MockTreeSitterClient()
   const highlightCalls = recordHighlightContents(mockClient)
   const codeRenderable = new CodeRenderable(currentRenderer, {
@@ -786,10 +773,6 @@ test("CodeRenderable - coalesces non-streaming updates behind an unresolved high
 })
 
 test("CodeRenderable - concealment is enabled by default", async () => {
-  const syntaxStyle = SyntaxStyle.fromStyles({
-    default: { fg: RGBA.fromValues(1, 1, 1, 1) },
-  })
-
   const codeRenderable = new CodeRenderable(currentRenderer, {
     id: "test-code",
     content: "const message = 'hello';",
@@ -801,10 +784,6 @@ test("CodeRenderable - concealment is enabled by default", async () => {
 })
 
 test("CodeRenderable - concealment can be disabled explicitly", async () => {
-  const syntaxStyle = SyntaxStyle.fromStyles({
-    default: { fg: RGBA.fromValues(1, 1, 1, 1) },
-  })
-
   const codeRenderable = new CodeRenderable(currentRenderer, {
     id: "test-code",
     content: "const message = 'hello';",
@@ -817,10 +796,13 @@ test("CodeRenderable - concealment can be disabled explicitly", async () => {
 })
 
 test("CodeRenderable - applies concealment to styled text", async () => {
-  const syntaxStyle = SyntaxStyle.fromStyles({
-    default: { fg: RGBA.fromValues(1, 1, 1, 1) },
-    keyword: { fg: RGBA.fromValues(0, 0, 1, 1) },
-  })
+  const syntaxStyle = SyntaxStyle.fromStyles(
+    {
+      default: { fg: RGBA.fromValues(1, 1, 1, 1) },
+      keyword: { fg: RGBA.fromValues(0, 0, 1, 1) },
+    },
+    currentRenderer.nativeScene,
+  )
 
   const mockClient = new MockTreeSitterClient()
   mockClient.setMockResult({
@@ -851,10 +833,6 @@ test("CodeRenderable - applies concealment to styled text", async () => {
 })
 
 test("CodeRenderable - updating conceal triggers re-highlighting", async () => {
-  const syntaxStyle = SyntaxStyle.fromStyles({
-    default: { fg: RGBA.fromValues(1, 1, 1, 1) },
-  })
-
   const mockClient = new MockTreeSitterClient()
   mockClient.setMockResult({ highlights: [] })
 
@@ -886,10 +864,6 @@ test("CodeRenderable - updating conceal triggers re-highlighting", async () => {
 })
 
 test("CodeRenderable - drawUnstyledText is true by default", async () => {
-  const syntaxStyle = SyntaxStyle.fromStyles({
-    default: { fg: RGBA.fromValues(1, 1, 1, 1) },
-  })
-
   const codeRenderable = new CodeRenderable(currentRenderer, {
     id: "test-code",
     content: "const message = 'hello';",
@@ -901,10 +875,6 @@ test("CodeRenderable - drawUnstyledText is true by default", async () => {
 })
 
 test("CodeRenderable - drawUnstyledText can be set to false", async () => {
-  const syntaxStyle = SyntaxStyle.fromStyles({
-    default: { fg: RGBA.fromValues(1, 1, 1, 1) },
-  })
-
   const codeRenderable = new CodeRenderable(currentRenderer, {
     id: "test-code",
     content: "const message = 'hello';",
@@ -917,10 +887,13 @@ test("CodeRenderable - drawUnstyledText can be set to false", async () => {
 })
 
 test("CodeRenderable - with drawUnstyledText=true, text renders before highlighting", async () => {
-  const syntaxStyle = SyntaxStyle.fromStyles({
-    default: { fg: RGBA.fromValues(1, 1, 1, 1) },
-    keyword: { fg: RGBA.fromValues(0, 0, 1, 1) },
-  })
+  const syntaxStyle = SyntaxStyle.fromStyles(
+    {
+      default: { fg: RGBA.fromValues(1, 1, 1, 1) },
+      keyword: { fg: RGBA.fromValues(0, 0, 1, 1) },
+    },
+    currentRenderer.nativeScene,
+  )
 
   const mockClient = new MockTreeSitterClient()
   mockClient.setMockResult({
@@ -953,10 +926,13 @@ test("CodeRenderable - with drawUnstyledText=true, text renders before highlight
 })
 
 test("CodeRenderable - with drawUnstyledText=false, text does not render before highlighting but lineCount is correct", async () => {
-  const syntaxStyle = SyntaxStyle.fromStyles({
-    default: { fg: RGBA.fromValues(1, 1, 1, 1) },
-    keyword: { fg: RGBA.fromValues(0, 0, 1, 1) },
-  })
+  const syntaxStyle = SyntaxStyle.fromStyles(
+    {
+      default: { fg: RGBA.fromValues(1, 1, 1, 1) },
+      keyword: { fg: RGBA.fromValues(0, 0, 1, 1) },
+    },
+    currentRenderer.nativeScene,
+  )
 
   const mockClient = new MockTreeSitterClient()
   mockClient.setMockResult({
@@ -995,10 +971,6 @@ test("CodeRenderable - with drawUnstyledText=false, text does not render before 
 })
 
 test("CodeRenderable - updating drawUnstyledText from false to true triggers re-highlighting", async () => {
-  const syntaxStyle = SyntaxStyle.fromStyles({
-    default: { fg: RGBA.fromValues(1, 1, 1, 1) },
-  })
-
   const mockClient = new MockTreeSitterClient()
   mockClient.setMockResult({ highlights: [] })
 
@@ -1041,10 +1013,6 @@ test("CodeRenderable - updating drawUnstyledText from false to true triggers re-
 })
 
 test("CodeRenderable - updating drawUnstyledText from true to false triggers re-highlighting", async () => {
-  const syntaxStyle = SyntaxStyle.fromStyles({
-    default: { fg: RGBA.fromValues(1, 1, 1, 1) },
-  })
-
   const mockClient = new MockTreeSitterClient()
   mockClient.setMockResult({ highlights: [] })
 
@@ -1076,10 +1044,6 @@ test("CodeRenderable - updating drawUnstyledText from true to false triggers re-
 })
 
 test("CodeRenderable - uses fallback rendering on error even with drawUnstyledText=false", async () => {
-  const syntaxStyle = SyntaxStyle.fromStyles({
-    default: { fg: RGBA.fromValues(1, 1, 1, 1) },
-  })
-
   const mockClient = new MockTreeSitterClient()
 
   mockClient.highlightOnce = async () => {
@@ -1106,10 +1070,6 @@ test("CodeRenderable - uses fallback rendering on error even with drawUnstyledTe
 })
 
 test("CodeRenderable - with drawUnstyledText=false and no filetype, fallback is used", async () => {
-  const syntaxStyle = SyntaxStyle.fromStyles({
-    default: { fg: RGBA.fromValues(1, 1, 1, 1) },
-  })
-
   const codeRenderable = new CodeRenderable(currentRenderer, {
     id: "test-code",
     content: "const message = 'hello world';",
@@ -1128,10 +1088,13 @@ test("CodeRenderable - with drawUnstyledText=false and no filetype, fallback is 
 })
 
 test("CodeRenderable - with drawUnstyledText=false, multiple updates only render final highlighted text", async () => {
-  const syntaxStyle = SyntaxStyle.fromStyles({
-    default: { fg: RGBA.fromValues(1, 1, 1, 1) },
-    keyword: { fg: RGBA.fromValues(0, 0, 1, 1) },
-  })
+  const syntaxStyle = SyntaxStyle.fromStyles(
+    {
+      default: { fg: RGBA.fromValues(1, 1, 1, 1) },
+      keyword: { fg: RGBA.fromValues(0, 0, 1, 1) },
+    },
+    currentRenderer.nativeScene,
+  )
 
   const mockClient = new MockTreeSitterClient()
   mockClient.setMockResult({
@@ -1188,12 +1151,15 @@ test("CodeRenderable - with drawUnstyledText=false, multiple updates only render
 // instead of the arbitrary 500ms wait
 // it worked before because text was set anyway for drawUnstyledText=false
 test.skip("CodeRenderable - simulates markdown stream from LLM with async updates", async () => {
-  const syntaxStyle = SyntaxStyle.fromStyles({
-    default: { fg: RGBA.fromValues(1, 1, 1, 1) },
-    keyword: { fg: RGBA.fromValues(0, 0, 1, 1) },
-    string: { fg: RGBA.fromValues(0, 1, 0, 1) },
-    "markup.heading.1": { fg: RGBA.fromValues(0, 0, 1, 1) },
-  })
+  const syntaxStyle = SyntaxStyle.fromStyles(
+    {
+      default: { fg: RGBA.fromValues(1, 1, 1, 1) },
+      keyword: { fg: RGBA.fromValues(0, 0, 1, 1) },
+      string: { fg: RGBA.fromValues(0, 1, 0, 1) },
+      "markup.heading.1": { fg: RGBA.fromValues(0, 0, 1, 1) },
+    },
+    currentRenderer.nativeScene,
+  )
 
   // Base markdown content that we'll repeat to grow to ~1MB
   const baseMarkdownContent = `# Code Example
@@ -1266,10 +1232,6 @@ console.log(message);
 })
 
 test("CodeRenderable - streaming option is false by default", async () => {
-  const syntaxStyle = SyntaxStyle.fromStyles({
-    default: { fg: RGBA.fromValues(1, 1, 1, 1) },
-  })
-
   const codeRenderable = new CodeRenderable(currentRenderer, {
     id: "test-code",
     content: "const message = 'hello';",
@@ -1281,10 +1243,6 @@ test("CodeRenderable - streaming option is false by default", async () => {
 })
 
 test("CodeRenderable - streaming can be enabled", async () => {
-  const syntaxStyle = SyntaxStyle.fromStyles({
-    default: { fg: RGBA.fromValues(1, 1, 1, 1) },
-  })
-
   const codeRenderable = new CodeRenderable(currentRenderer, {
     id: "test-code",
     content: "const message = 'hello';",
@@ -1297,10 +1255,13 @@ test("CodeRenderable - streaming can be enabled", async () => {
 })
 
 test("CodeRenderable - streaming mode respects drawUnstyledText only for initial content", async () => {
-  const syntaxStyle = SyntaxStyle.fromStyles({
-    default: { fg: RGBA.fromValues(1, 1, 1, 1) },
-    keyword: { fg: RGBA.fromValues(0, 0, 1, 1) },
-  })
+  const syntaxStyle = SyntaxStyle.fromStyles(
+    {
+      default: { fg: RGBA.fromValues(1, 1, 1, 1) },
+      keyword: { fg: RGBA.fromValues(0, 0, 1, 1) },
+    },
+    currentRenderer.nativeScene,
+  )
 
   const mockClient = new MockTreeSitterClient()
   mockClient.setMockResult({
@@ -1339,7 +1300,7 @@ test("CodeRenderable - updating initial styled text refreshes an unresolved stre
     id: "test-code-streaming-styled-preview",
     content: "[Label](https://example.com)",
     filetype: "markdown",
-    syntaxStyle: SyntaxStyle.create(),
+    syntaxStyle: SyntaxStyle.create(currentRenderer.nativeScene),
     treeSitterClient: mockClient,
     streaming: true,
     drawUnstyledText: true,
@@ -1373,10 +1334,13 @@ test("CodeRenderable - updating initial styled text refreshes an unresolved stre
 })
 
 test("CodeRenderable - streaming mode with drawUnstyledText=false waits for new highlights", async () => {
-  const syntaxStyle = SyntaxStyle.fromStyles({
-    default: { fg: RGBA.fromValues(1, 1, 1, 1) },
-    keyword: { fg: RGBA.fromValues(0, 0, 1, 1) },
-  })
+  const syntaxStyle = SyntaxStyle.fromStyles(
+    {
+      default: { fg: RGBA.fromValues(1, 1, 1, 1) },
+      keyword: { fg: RGBA.fromValues(0, 0, 1, 1) },
+    },
+    currentRenderer.nativeScene,
+  )
 
   const mockClient = new MockTreeSitterClient({ autoResolveTimeout: 10, clock })
   mockClient.setMockResult({
@@ -1413,10 +1377,6 @@ test("CodeRenderable - streaming mode with drawUnstyledText=false waits for new 
 })
 
 test("CodeRenderable - onChunks callback can transform chunks when highlights are empty", async () => {
-  const syntaxStyle = SyntaxStyle.fromStyles({
-    default: { fg: RGBA.fromValues(1, 1, 1, 1) },
-  })
-
   const mockClient = new MockTreeSitterClient()
   mockClient.setMockResult({ highlights: [] })
 
@@ -1465,7 +1425,7 @@ test("CodeRenderable - onChunks receives exact source ranges for concealed repla
     id: "test-code-source-ranges",
     content,
     filetype: "markdown",
-    syntaxStyle: SyntaxStyle.create(),
+    syntaxStyle: SyntaxStyle.create(currentRenderer.nativeScene),
     treeSitterClient: mockClient,
     onChunks: (chunks, context) => {
       observedChunks = chunks.map((item) => item.text)
@@ -1489,10 +1449,13 @@ test("CodeRenderable - onChunks receives exact source ranges for concealed repla
 
 test("CodeRenderable - baseHighlight applies a style when parser highlights are empty", async () => {
   const quoteColor = RGBA.fromValues(0.25, 0.5, 0.75, 1)
-  const syntaxStyle = SyntaxStyle.fromStyles({
-    default: { fg: RGBA.fromValues(1, 1, 1, 1) },
-    "markup.quote": { fg: quoteColor, italic: true },
-  })
+  const syntaxStyle = SyntaxStyle.fromStyles(
+    {
+      default: { fg: RGBA.fromValues(1, 1, 1, 1) },
+      "markup.quote": { fg: quoteColor, italic: true },
+    },
+    currentRenderer.nativeScene,
+  )
 
   const mockClient = new MockTreeSitterClient()
   mockClient.setMockResult({ highlights: [] })
@@ -1517,11 +1480,14 @@ test("CodeRenderable - baseHighlight applies a style when parser highlights are 
 test("CodeRenderable - parser highlights override baseHighlight properties and inherit unspecified ones", async () => {
   const quoteColor = RGBA.fromValues(0.25, 0.5, 0.75, 1)
   const keywordColor = RGBA.fromValues(1, 0, 0, 1)
-  const syntaxStyle = SyntaxStyle.fromStyles({
-    default: { fg: RGBA.fromValues(1, 1, 1, 1) },
-    "markup.quote": { fg: quoteColor, italic: true },
-    keyword: { fg: keywordColor },
-  })
+  const syntaxStyle = SyntaxStyle.fromStyles(
+    {
+      default: { fg: RGBA.fromValues(1, 1, 1, 1) },
+      "markup.quote": { fg: quoteColor, italic: true },
+      keyword: { fg: keywordColor },
+    },
+    currentRenderer.nativeScene,
+  )
 
   const mockClient = new MockTreeSitterClient()
   mockClient.setMockResult({
@@ -1550,11 +1516,14 @@ test("CodeRenderable - parser highlights override baseHighlight properties and i
 })
 
 test("CodeRenderable - onHighlight receives parser highlights without baseHighlight", async () => {
-  const syntaxStyle = SyntaxStyle.fromStyles({
-    default: { fg: RGBA.fromValues(1, 1, 1, 1) },
-    "markup.quote": { fg: RGBA.fromValues(0.25, 0.5, 0.75, 1) },
-    keyword: { fg: RGBA.fromValues(1, 0, 0, 1) },
-  })
+  const syntaxStyle = SyntaxStyle.fromStyles(
+    {
+      default: { fg: RGBA.fromValues(1, 1, 1, 1) },
+      "markup.quote": { fg: RGBA.fromValues(0.25, 0.5, 0.75, 1) },
+      keyword: { fg: RGBA.fromValues(1, 0, 0, 1) },
+    },
+    currentRenderer.nativeScene,
+  )
 
   const mockClient = new MockTreeSitterClient()
   mockClient.setMockResult({
@@ -1583,10 +1552,13 @@ test("CodeRenderable - onHighlight receives parser highlights without baseHighli
 
 test("CodeRenderable - changing baseHighlight re-highlights content", async () => {
   const quoteColor = RGBA.fromValues(0.25, 0.5, 0.75, 1)
-  const syntaxStyle = SyntaxStyle.fromStyles({
-    default: { fg: RGBA.fromValues(1, 1, 1, 1) },
-    "markup.quote": { fg: quoteColor },
-  })
+  const syntaxStyle = SyntaxStyle.fromStyles(
+    {
+      default: { fg: RGBA.fromValues(1, 1, 1, 1) },
+      "markup.quote": { fg: quoteColor },
+    },
+    currentRenderer.nativeScene,
+  )
 
   const mockClient = new MockTreeSitterClient()
   mockClient.setMockResult({ highlights: [] })
@@ -1610,10 +1582,13 @@ test("CodeRenderable - changing baseHighlight re-highlights content", async () =
 })
 
 test("CodeRenderable - onHighlight callback receives highlights and context", async () => {
-  const syntaxStyle = SyntaxStyle.fromStyles({
-    default: { fg: RGBA.fromValues(1, 1, 1, 1) },
-    keyword: { fg: RGBA.fromValues(0, 0, 1, 1) },
-  })
+  const syntaxStyle = SyntaxStyle.fromStyles(
+    {
+      default: { fg: RGBA.fromValues(1, 1, 1, 1) },
+      keyword: { fg: RGBA.fromValues(0, 0, 1, 1) },
+    },
+    currentRenderer.nativeScene,
+  )
 
   const mockClient = new MockTreeSitterClient()
   mockClient.setMockResult({
@@ -1658,11 +1633,14 @@ test("CodeRenderable - onHighlight callback receives highlights and context", as
 })
 
 test("CodeRenderable - onHighlight callback can add custom highlights", async () => {
-  const syntaxStyle = SyntaxStyle.fromStyles({
-    default: { fg: RGBA.fromValues(1, 1, 1, 1) },
-    keyword: { fg: RGBA.fromValues(0, 0, 1, 1) },
-    "custom.highlight": { fg: RGBA.fromValues(1, 0, 0, 1) },
-  })
+  const syntaxStyle = SyntaxStyle.fromStyles(
+    {
+      default: { fg: RGBA.fromValues(1, 1, 1, 1) },
+      keyword: { fg: RGBA.fromValues(0, 0, 1, 1) },
+      "custom.highlight": { fg: RGBA.fromValues(1, 0, 0, 1) },
+    },
+    currentRenderer.nativeScene,
+  )
 
   const mockClient = new MockTreeSitterClient()
   mockClient.setMockResult({
@@ -1706,10 +1684,13 @@ test("CodeRenderable - onHighlight callback can add custom highlights", async ()
 })
 
 test("CodeRenderable - onHighlight callback returning undefined uses original highlights", async () => {
-  const syntaxStyle = SyntaxStyle.fromStyles({
-    default: { fg: RGBA.fromValues(1, 1, 1, 1) },
-    keyword: { fg: RGBA.fromValues(0, 0, 1, 1) },
-  })
+  const syntaxStyle = SyntaxStyle.fromStyles(
+    {
+      default: { fg: RGBA.fromValues(1, 1, 1, 1) },
+      keyword: { fg: RGBA.fromValues(0, 0, 1, 1) },
+    },
+    currentRenderer.nativeScene,
+  )
 
   const mockClient = new MockTreeSitterClient()
   mockClient.setMockResult({
@@ -1742,10 +1723,13 @@ test("CodeRenderable - onHighlight callback returning undefined uses original hi
 })
 
 test("CodeRenderable - onHighlight callback is called on re-highlighting when content changes", async () => {
-  const syntaxStyle = SyntaxStyle.fromStyles({
-    default: { fg: RGBA.fromValues(1, 1, 1, 1) },
-    keyword: { fg: RGBA.fromValues(0, 0, 1, 1) },
-  })
+  const syntaxStyle = SyntaxStyle.fromStyles(
+    {
+      default: { fg: RGBA.fromValues(1, 1, 1, 1) },
+      keyword: { fg: RGBA.fromValues(0, 0, 1, 1) },
+    },
+    currentRenderer.nativeScene,
+  )
 
   const mockClient = new MockTreeSitterClient()
   mockClient.setMockResult({
@@ -1786,11 +1770,14 @@ test("CodeRenderable - onHighlight callback is called on re-highlighting when co
 })
 
 test("CodeRenderable - onHighlight callback supports async functions", async () => {
-  const syntaxStyle = SyntaxStyle.fromStyles({
-    default: { fg: RGBA.fromValues(1, 1, 1, 1) },
-    keyword: { fg: RGBA.fromValues(0, 0, 1, 1) },
-    "async.highlight": { fg: RGBA.fromValues(0, 1, 0, 1) },
-  })
+  const syntaxStyle = SyntaxStyle.fromStyles(
+    {
+      default: { fg: RGBA.fromValues(1, 1, 1, 1) },
+      keyword: { fg: RGBA.fromValues(0, 0, 1, 1) },
+      "async.highlight": { fg: RGBA.fromValues(0, 1, 0, 1) },
+    },
+    currentRenderer.nativeScene,
+  )
 
   const mockClient = new MockTreeSitterClient()
   mockClient.setMockResult({
@@ -1834,10 +1821,13 @@ test("CodeRenderable - onHighlight callback supports async functions", async () 
 })
 
 test("CodeRenderable - streaming mode caches highlights between updates", async () => {
-  const syntaxStyle = SyntaxStyle.fromStyles({
-    default: { fg: RGBA.fromValues(1, 1, 1, 1) },
-    keyword: { fg: RGBA.fromValues(0, 0, 1, 1) },
-  })
+  const syntaxStyle = SyntaxStyle.fromStyles(
+    {
+      default: { fg: RGBA.fromValues(1, 1, 1, 1) },
+      keyword: { fg: RGBA.fromValues(0, 0, 1, 1) },
+    },
+    currentRenderer.nativeScene,
+  )
 
   const mockClient = new MockTreeSitterClient()
   mockClient.setMockResult({
@@ -1877,10 +1867,13 @@ test("CodeRenderable - streaming mode caches highlights between updates", async 
 })
 
 test("CodeRenderable - streaming mode works with large content updates", async () => {
-  const syntaxStyle = SyntaxStyle.fromStyles({
-    default: { fg: RGBA.fromValues(1, 1, 1, 1) },
-    keyword: { fg: RGBA.fromValues(0, 0, 1, 1) },
-  })
+  const syntaxStyle = SyntaxStyle.fromStyles(
+    {
+      default: { fg: RGBA.fromValues(1, 1, 1, 1) },
+      keyword: { fg: RGBA.fromValues(0, 0, 1, 1) },
+    },
+    currentRenderer.nativeScene,
+  )
 
   const mockClient = new MockTreeSitterClient()
   mockClient.setMockResult({
@@ -1924,10 +1917,13 @@ test("CodeRenderable - streaming mode works with large content updates", async (
 })
 
 test("CodeRenderable - disabling streaming clears cached highlights", async () => {
-  const syntaxStyle = SyntaxStyle.fromStyles({
-    default: { fg: RGBA.fromValues(1, 1, 1, 1) },
-    keyword: { fg: RGBA.fromValues(0, 0, 1, 1) },
-  })
+  const syntaxStyle = SyntaxStyle.fromStyles(
+    {
+      default: { fg: RGBA.fromValues(1, 1, 1, 1) },
+      keyword: { fg: RGBA.fromValues(0, 0, 1, 1) },
+    },
+    currentRenderer.nativeScene,
+  )
 
   const mockClient = new MockTreeSitterClient()
   mockClient.setMockResult({
@@ -1960,10 +1956,13 @@ test("CodeRenderable - disabling streaming clears cached highlights", async () =
 })
 
 test("CodeRenderable - streaming mode with drawUnstyledText=false shows nothing initially", async () => {
-  const syntaxStyle = SyntaxStyle.fromStyles({
-    default: { fg: RGBA.fromValues(1, 1, 1, 1) },
-    keyword: { fg: RGBA.fromValues(0, 0, 1, 1) },
-  })
+  const syntaxStyle = SyntaxStyle.fromStyles(
+    {
+      default: { fg: RGBA.fromValues(1, 1, 1, 1) },
+      keyword: { fg: RGBA.fromValues(0, 0, 1, 1) },
+    },
+    currentRenderer.nativeScene,
+  )
 
   const mockClient = new MockTreeSitterClient()
   mockClient.setMockResult({
@@ -1997,10 +1996,6 @@ test("CodeRenderable - streaming mode with drawUnstyledText=false shows nothing 
 })
 
 test("CodeRenderable - streaming mode handles empty cached highlights gracefully", async () => {
-  const syntaxStyle = SyntaxStyle.fromStyles({
-    default: { fg: RGBA.fromValues(1, 1, 1, 1) },
-  })
-
   const mockClient = new MockTreeSitterClient()
   mockClient.setMockResult({
     highlights: [],
@@ -2030,10 +2025,6 @@ test("CodeRenderable - streaming mode handles empty cached highlights gracefully
 })
 
 test("CodeRenderable - selection across two Code renderables in flex row", async () => {
-  const syntaxStyle = SyntaxStyle.fromStyles({
-    default: { fg: RGBA.fromValues(1, 1, 1, 1) },
-  })
-
   const container = new BoxRenderable(currentRenderer, {
     id: "container",
     width: 80,
@@ -2102,10 +2093,13 @@ test("CodeRenderable - selection across two Code renderables in flex row", async
 })
 
 test("CodeRenderable - content update during async highlighting does not get overwritten by stale highlight result", async () => {
-  const syntaxStyle = SyntaxStyle.fromStyles({
-    default: { fg: RGBA.fromValues(1, 1, 1, 1) },
-    keyword: { fg: RGBA.fromValues(0, 0, 1, 1) },
-  })
+  const syntaxStyle = SyntaxStyle.fromStyles(
+    {
+      default: { fg: RGBA.fromValues(1, 1, 1, 1) },
+      keyword: { fg: RGBA.fromValues(0, 0, 1, 1) },
+    },
+    currentRenderer.nativeScene,
+  )
 
   const mockClient = new MockTreeSitterClient()
   mockClient.setMockResult({
@@ -2151,10 +2145,6 @@ test("CodeRenderable - content update during async highlighting does not get ove
 })
 
 test("CodeRenderable - lineCount is correct immediately with drawUnstyledText=false", async () => {
-  const syntaxStyle = SyntaxStyle.fromStyles({
-    default: { fg: RGBA.fromValues(1, 1, 1, 1) },
-  })
-
   const mockClient = new MockTreeSitterClient()
   mockClient.setMockResult({ highlights: [] })
 
@@ -2189,10 +2179,6 @@ test("CodeRenderable - lineCount is correct immediately with drawUnstyledText=fa
 })
 
 test("CodeRenderable - lineCount updates correctly when content changes with drawUnstyledText=false", async () => {
-  const syntaxStyle = SyntaxStyle.fromStyles({
-    default: { fg: RGBA.fromValues(1, 1, 1, 1) },
-  })
-
   const mockClient = new MockTreeSitterClient()
   mockClient.setMockResult({ highlights: [] })
 
@@ -2224,10 +2210,6 @@ test("CodeRenderable - lineCount updates correctly when content changes with dra
 })
 
 test("CodeRenderable - lineInfo is accessible with drawUnstyledText=false before highlighting", async () => {
-  const syntaxStyle = SyntaxStyle.fromStyles({
-    default: { fg: RGBA.fromValues(1, 1, 1, 1) },
-  })
-
   const mockClient = new MockTreeSitterClient()
   mockClient.setMockResult({ highlights: [] })
 
@@ -2260,10 +2242,6 @@ test("CodeRenderable - lineInfo is accessible with drawUnstyledText=false before
 })
 
 test("CodeRenderable - lineInfo source lines account for concealed whole lines", async () => {
-  const syntaxStyle = SyntaxStyle.fromStyles({
-    default: { fg: RGBA.fromValues(1, 1, 1, 1) },
-  })
-
   const content = "```ts\nfirst\n```\n```ts\nsecond\n```\ntail"
   const mockClient = new MockTreeSitterClient()
   mockClient.setMockResult({
@@ -2302,10 +2280,6 @@ test("CodeRenderable - lineInfo source lines account for concealed whole lines",
 })
 
 test("CodeRenderable - lineInfo source lines account for multiline concealed ranges", async () => {
-  const syntaxStyle = SyntaxStyle.fromStyles({
-    default: { fg: RGBA.fromValues(1, 1, 1, 1) },
-  })
-
   const mockClient = new MockTreeSitterClient()
   mockClient.setMockResult({
     highlights: [[0, 3, "conceal", { conceal: "", concealLines: "" }]],
@@ -2328,10 +2302,6 @@ test("CodeRenderable - lineInfo source lines account for multiline concealed ran
 })
 
 test("CodeRenderable - skipped concealed lines preserve pending empty rendered line source", async () => {
-  const syntaxStyle = SyntaxStyle.fromStyles({
-    default: { fg: RGBA.fromValues(1, 1, 1, 1) },
-  })
-
   const content = "visible\n```\n```ts"
   const mockClient = new MockTreeSitterClient()
   mockClient.setMockResult({
@@ -2358,10 +2328,6 @@ test("CodeRenderable - skipped concealed lines preserve pending empty rendered l
 })
 
 test("CodeRenderable - concealed lineInfo source cache invalidates when wrap mode changes", async () => {
-  const syntaxStyle = SyntaxStyle.fromStyles({
-    default: { fg: RGBA.fromValues(1, 1, 1, 1) },
-  })
-
   const content = "```ts\nabcdefghijklmnopqrst\n```\ntail"
   const mockClient = new MockTreeSitterClient()
   mockClient.setMockResult({
@@ -2394,10 +2360,6 @@ test("CodeRenderable - concealed lineInfo source cache invalidates when wrap mod
 })
 
 test("CodeRenderable - plainText reflects content immediately with drawUnstyledText=false", async () => {
-  const syntaxStyle = SyntaxStyle.fromStyles({
-    default: { fg: RGBA.fromValues(1, 1, 1, 1) },
-  })
-
   const mockClient = new MockTreeSitterClient()
   mockClient.setMockResult({ highlights: [] })
 
@@ -2437,10 +2399,6 @@ test("CodeRenderable - plainText reflects content immediately with drawUnstyledT
 })
 
 test("CodeRenderable - textLength is correct with drawUnstyledText=false", async () => {
-  const syntaxStyle = SyntaxStyle.fromStyles({
-    default: { fg: RGBA.fromValues(1, 1, 1, 1) },
-  })
-
   const mockClient = new MockTreeSitterClient()
   mockClient.setMockResult({ highlights: [] })
 
@@ -2467,10 +2425,6 @@ test("CodeRenderable - textLength is correct with drawUnstyledText=false", async
 })
 
 test("CodeRenderable - streaming mode with drawUnstyledText=false has correct lineCount", async () => {
-  const syntaxStyle = SyntaxStyle.fromStyles({
-    default: { fg: RGBA.fromValues(1, 1, 1, 1) },
-  })
-
   const mockClient = new MockTreeSitterClient()
   mockClient.setMockResult({ highlights: [] })
 
@@ -2517,13 +2471,16 @@ test("CodeRenderable - streaming mode with drawUnstyledText=false has correct li
 test("CodeRenderable - streaming with conceal and drawUnstyledText=false should not jump when fenced code blocks are concealed", async () => {
   resize(80, 20)
 
-  const syntaxStyle = SyntaxStyle.fromStyles({
-    default: { fg: RGBA.fromValues(1, 1, 1, 1) },
-    keyword: { fg: RGBA.fromValues(0, 0, 1, 1) },
-    string: { fg: RGBA.fromValues(0, 1, 0, 1) },
-    "markup.heading.1": { fg: RGBA.fromValues(0, 0, 1, 1) },
-    "markup.raw.block": { fg: RGBA.fromValues(0.5, 0.5, 0.5, 1) },
-  })
+  const syntaxStyle = SyntaxStyle.fromStyles(
+    {
+      default: { fg: RGBA.fromValues(1, 1, 1, 1) },
+      keyword: { fg: RGBA.fromValues(0, 0, 1, 1) },
+      string: { fg: RGBA.fromValues(0, 1, 0, 1) },
+      "markup.heading.1": { fg: RGBA.fromValues(0, 0, 1, 1) },
+      "markup.raw.block": { fg: RGBA.fromValues(0.5, 0.5, 0.5, 1) },
+    },
+    currentRenderer.nativeScene,
+  )
 
   const codeRenderable = new CodeRenderable(currentRenderer, {
     id: "test-markdown",
@@ -2611,10 +2568,6 @@ test("CodeRenderable - streaming with conceal and drawUnstyledText=false should 
 })
 
 test("CodeRenderable - streaming with drawUnstyledText=false falls back to unstyled text when highlights fail", async () => {
-  const syntaxStyle = SyntaxStyle.fromStyles({
-    default: { fg: RGBA.fromValues(1, 1, 1, 1) },
-  })
-
   const mockClient = new MockTreeSitterClient({ autoResolveTimeout: 10, clock })
 
   const codeRenderable = new CodeRenderable(currentRenderer, {
