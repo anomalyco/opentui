@@ -118,9 +118,7 @@ export interface KittyImageTransportStatus {
 export interface CliRendererConfig {
   /** Transfer this driver's ownership after attachment succeeds. Requires the same stdout. */
   nativeSession?: NativeSession
-  /** Opt-in native paint members per event-loop turn. Yoga and encoding remain synchronous. */
-  nativeScenePaintBudget?: number
-  /** Opt-in native preparation/feedback items per turn. Yoga, cell drawing, and encoding remain synchronous. */
+  /** Opt-in native preparation/feedback items per turn. Yoga, painting, and encoding remain synchronous. */
   nativeSceneWorkBudget?: number
   // Read input from this stream. Defaults to process.stdin. Any `Readable`
   // works; capabilities like `setRawMode` are duck-typed and used when present.
@@ -1163,11 +1161,9 @@ export class CliRenderer extends EventEmitter implements RenderContext {
     this._usesProcessStdout = stdout === process.stdout
     this.realStdoutWrite = stdout.write
 
-    for (const name of ["nativeScenePaintBudget", "nativeSceneWorkBudget"] as const) {
-      const budget = config[name]
-      if (budget !== undefined && (!Number.isInteger(budget) || budget <= 0 || budget > 0xffff_ffff)) {
-        throw new Error(`${name} must be a positive u32`)
-      }
+    const workBudget = config.nativeSceneWorkBudget
+    if (workBudget !== undefined && (!Number.isInteger(workBudget) || workBudget <= 0 || workBudget > 0xffff_ffff)) {
+      throw new Error("nativeSceneWorkBudget must be a positive u32")
     }
     this.kittyTransportMode = config.kittyImageTransport ?? "raw"
     const transportCode = KITTY_IMAGE_TRANSPORTS.indexOf(this.kittyTransportMode)
@@ -1229,12 +1225,7 @@ export class CliRenderer extends EventEmitter implements RenderContext {
           this.releaseStreamLease()
         })
       void this.nativeClosed.catch(() => {})
-      this.nativeScene = new NativeScene(
-        this.nativeSession,
-        this,
-        config.nativeScenePaintBudget,
-        config.nativeSceneWorkBudget,
-      )
+      this.nativeScene = new NativeScene(this.nativeSession, this, config.nativeSceneWorkBudget)
       this.nativeSession.setKittyImageTransport(transportCode)
     } catch (error) {
       // A supplied Session transfers only after attachRenderer succeeds.

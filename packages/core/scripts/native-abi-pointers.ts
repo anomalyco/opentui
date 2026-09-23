@@ -275,7 +275,7 @@ export const nativePointerPolicies = {
   ot_scene_get_layout: { 0: context, 1: buffer, 3: buffer },
   ot_scene_paint: { 0: context, 1: buffer, 2: buffer, 5: buffer },
   ot_scene_set_hooks: { 0: context, 1: buffer, 2: buffer },
-  ot_scene_frame_step_with_geometry: { 0: context, 1: buffer, 2: optional, 3: buffer, 6: buffer, 7: buffer },
+  ot_scene_frame_step_with_geometry: { 0: context, 1: buffer, 2: optional, 3: buffer, 5: buffer, 6: buffer },
   ot_scene_frame_acquire_buffer_lease: { 0: context, 1: buffer, 2: buffer, 4: buffer },
   ot_scene_frame_draw_buffer: { 0: context, 1: buffer, 2: buffer, 3: buffer },
   ot_scene_frame_commit: { 0: context, 1: buffer, 2: buffer, 4: buffer },

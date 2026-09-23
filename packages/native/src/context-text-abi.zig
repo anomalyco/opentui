@@ -786,7 +786,7 @@ test "Context shared text ABI selects native paint only for an exact self reques
     geometry.struct_size = @sizeOf(c.ot_scene_frame_geometry);
     geometry.abi_version = c.OT_CONTEXT_ABI_VERSION;
     const unlimited = std.math.maxInt(u32);
-    try std.testing.expectEqual(c.OT_OK, abi.ot_scene_frame_step_with_geometry(&owner, &session, null, &config, unlimited, unlimited, &frame, &geometry));
+    try std.testing.expectEqual(c.OT_OK, abi.ot_scene_frame_step_with_geometry(&owner, &session, null, &config, unlimited, &frame, &geometry));
     try std.testing.expectEqual(c.OT_SCENE_FRAME_RENDER_SELF, frame.kind);
     try std.testing.expectEqual(c.OT_INVALID_ARGUMENT, ot_scene_select_text_view_paint(&owner, &node, null, 1));
     try std.testing.expectEqual(c.OT_INVALID_ARGUMENT, ot_scene_select_text_view_paint(&owner, &node, &frame, 2));

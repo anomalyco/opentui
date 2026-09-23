@@ -312,7 +312,6 @@ const PaintMember = struct {
 const Prefix = struct {
     destination: BufferIdentity,
     membership_epoch: u64,
-    remaining: u32,
     cursor: u32 = 0,
     phase: enum { before, self, after, hit } = .before,
     editor_cursor_pending: bool = false,
@@ -784,13 +783,13 @@ pub const Scene = struct {
     /// Limits stay fixed; paint options can change on a checked acknowledgement.
     /// Validate the complete ticket before resolving any ticket node or consuming work.
     pub fn frameStep(self: *Scene, objects: *const handles.Table, cli: *renderer.CliRenderer, previous: ?FrameRequest, options: FrameOptions, allow_host: bool) !FrameRequest {
-        return self.frameStepWorkBudgeted(objects, cli, previous, options, allow_host, std.math.maxInt(u32), std.math.maxInt(u32));
+        return self.frameStepWorkBudgeted(objects, cli, previous, options, allow_host, std.math.maxInt(u32));
     }
 
-    pub fn frameStepWorkBudgeted(self: *Scene, objects: *const handles.Table, cli: *renderer.CliRenderer, previous: ?FrameRequest, options: FrameOptions, allow_host: bool, max_paint_members: u32, max_work_items: u32) !FrameRequest {
+    pub fn frameStepWorkBudgeted(self: *Scene, objects: *const handles.Table, cli: *renderer.CliRenderer, previous: ?FrameRequest, options: FrameOptions, allow_host: bool, max_work_items: u32) !FrameRequest {
         errdefer self.work.clearRetainingCapacity();
         try buffer.validateColor(options.background);
-        if (max_paint_members == 0 or max_work_items == 0) return error.InvalidOptions;
+        if (max_work_items == 0) return error.InvalidOptions;
         // Reject before solving: a rejected one-call paint must not consume layout notifications.
         if (!allow_host and self.hook_count != 0) return error.UnsupportedResource;
         if (previous) |reply| {
@@ -801,9 +800,6 @@ pub const Scene = struct {
             if (!std.meta.eql(reply, pending)) return error.StaleFrame;
             if (options.max_layout_rounds != active.options.max_layout_rounds or
                 options.max_host_requests != active.options.max_host_requests) return error.InvalidOptions;
-            if (self.prefix) |*prefix| {
-                prefix.remaining = if (reply.kind == api.OT_SCENE_FRAME_YIELD) max_paint_members else @min(prefix.remaining, max_paint_members);
-            }
             self.attempt.?.remaining_work = if (reply.kind == api.OT_SCENE_FRAME_YIELD) max_work_items else @min(active.remaining_work, max_work_items);
             self.attempt.?.bounded_work = max_work_items != std.math.maxInt(u32) or (reply.kind != api.OT_SCENE_FRAME_YIELD and active.bounded_work);
             self.attempt.?.options = options;
@@ -836,7 +832,7 @@ pub const Scene = struct {
         defer if (self.attempt != null) self.work.clearRetainingCapacity();
         const active = &self.attempt.?;
         const reusable_work = active.request_id == 0 and !active.bounded_work and
-            max_paint_members == std.math.maxInt(u32) and self.hook_count == 0 and self.filter_count == 0;
+            self.hook_count == 0 and self.filter_count == 0;
         const root = if (active.root.context_id != 0) blk: {
             const value = objects.get(active.root, .native_renderable, native.NativeRenderable) catch return error.StaleFrame;
             if (self.root != value or value.scene_node == null or value.scene_node.?.owner != self) return error.StaleFrame;
@@ -991,14 +987,14 @@ pub const Scene = struct {
             const membership_epoch = std.math.add(u64, self.membership_epoch, 1) catch return error.RequestLimit;
             var paint_count: u32 = 0;
             var paint_hooks = false;
-            if (self.hook_count != 0 or self.work.items.len > max_paint_members) {
+            if (self.hook_count != 0) {
                 for (self.work.items) |entry| {
                     if (!entry.visible or entry.node.scene_node.?.kind == api.OT_SCENE_ROOT) continue;
                     paint_count += 1;
                     paint_hooks = paint_hooks or entry.node.scene_node.?.hook_flags & scene_paint_hook_flags != 0;
                 }
             }
-            if (paint_hooks or paint_count > max_paint_members) {
+            if (paint_hooks) {
                 // One member per prepared node; host insertions cannot grow this list.
                 try self.paint_members.ensureTotalCapacityPrecise(self.allocator, paint_count);
                 for (self.work.items) |member| {
@@ -1015,7 +1011,6 @@ pub const Scene = struct {
                 self.prefix = .{
                     .destination = BufferIdentity.init(cli.getNextBuffer()),
                     .membership_epoch = membership_epoch,
-                    .remaining = max_paint_members,
                 };
                 try self.beginPaint(cli, active.options);
                 if (try self.continuePaint(objects, cli)) |request_value| return request_value;
@@ -1304,13 +1299,6 @@ pub const Scene = struct {
         const prefix = &self.prefix.?;
         const target = cli.getNextBuffer();
         while (prefix.cursor < self.paint_members.items.len) {
-            if (prefix.remaining == 0) {
-                std.debug.assert(prefix.phase == .before and prefix.removed == null and !prefix.editor_cursor_pending and !prefix.text_paint_pending);
-                target.clearScissorRects();
-                target.clearOpacity();
-                return try self.request(self.root.?.scene_node.?, api.OT_SCENE_FRAME_YIELD);
-            }
-            // Charge once on completion or skip, so hook replies cannot replenish the run.
             const member = self.paint_members.items[prefix.cursor];
             target.clearScissorRects();
             target.clearOpacity();
@@ -1340,7 +1328,6 @@ pub const Scene = struct {
                 prefix.image_native_pending = false;
                 // The retired token cannot identify a live node after slot reuse.
                 addHit(cli, layout, member.clip, removed.num, removed.token, self.attempt.?.options);
-                prefix.remaining -= 1;
                 prefix.cursor += 1;
                 prefix.phase = .before;
                 removed.control.deinit(removed.kind, self.allocator);
@@ -1349,7 +1336,6 @@ pub const Scene = struct {
             }
             const value = objects.get(member.node, .native_renderable, native.NativeRenderable) catch {
                 prefix.text_paint_pending = false;
-                prefix.remaining -= 1;
                 prefix.cursor += 1;
                 prefix.phase = .before;
                 continue;
@@ -1404,7 +1390,6 @@ pub const Scene = struct {
             if (prefix.image_native_pending) try finishImagePaint(target, node.control.image, layout);
             prefix.image_native_pending = false;
             addHit(cli, layout, member.clip, node.num, node.token, self.attempt.?.options);
-            prefix.remaining -= 1;
             prefix.cursor += 1;
             prefix.phase = .before;
         }

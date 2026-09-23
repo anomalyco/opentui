@@ -241,21 +241,20 @@ Outstanding leases still need release.
 ## Yield between pieces of work
 
 A host may need time for input or timers before a large frame finishes.
-The two quota arguments to `ot_scene_frame_step_with_geometry` let native code return `OT_SCENE_FRAME_YIELD`:
+The `max_work_items` argument to `ot_scene_frame_step_with_geometry` lets native code return `OT_SCENE_FRAME_YIELD` during preparation.
+It counts preparation visits, candidate-view preparation, and feedback records.
 
-- `max_paint_members` counts completed or skipped paint members.
-- `max_work_items` counts preparation visits, candidate-view preparation, and feedback records.
-
-Both are positive unsigned 32-bit values.
-Passing `UINT32_MAX` for both from the start selects synchronous preparation and painting without scheduling yields.
+The quota is a positive unsigned 32-bit value.
+Passing `UINT32_MAX` from the start selects synchronous preparation without scheduling yields.
 
 On `YIELD`, schedule another host turn and then acknowledge the exact request.
 A yield replenishes the quota. A hook acknowledgement does not.
-Paint yields occur between complete node paint sequences, never between that node's before/self/after/hit steps.
 Yield requests do not consume `max_host_requests` and grant no drawing or commit permission.
 
+Painting never yields. Once preparation finishes, the frame paints in one pass.
+
 Quotas count work items, not milliseconds or cells.
-Yoga, allocation, sorting, final paint-list preparation, individual draws, and output encoding still contain synchronous work.
+Yoga, allocation, sorting, final paint-list preparation, painting, and output encoding still contain synchronous work.
 A quota cannot interrupt a slow host hook.
 
 An accepted size-changing resize at a scheduling yield cancels the old attempt.

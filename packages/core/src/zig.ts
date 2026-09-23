@@ -6792,7 +6792,6 @@ export class FFIRenderLib {
     session: SessionHandle,
     previous: NativeSceneFrameRequest | null,
     options: NativeSceneFrameOptions,
-    maxPaintMembers?: number,
     maxWorkItems?: number,
   ): NativeSceneFrameRequest {
     const layout = nativeLayouts.ot_scene_frame_options
@@ -6821,8 +6820,6 @@ export class FFIRenderLib {
         options.preserveUnwritten ?? false,
         "Scene preserve unwritten cells",
       )
-      const budget =
-        maxPaintMembers === undefined ? 0xffffffff : toSafeFFIU32Length(maxPaintMembers, "Scene paint budget")
       const workBudget = maxWorkItems === undefined ? 0xffffffff : toSafeFFIU32Length(maxWorkItems, "Scene work budget")
       if (workBudget === 0) throw new RangeError("Scene work budget must be positive")
       const output = encodeSceneFrameRequest(context, previous, scratch)
@@ -6838,7 +6835,6 @@ export class FFIRenderLib {
           previous === null ? null : output,
           config,
           output,
-          budget,
           workBudget,
           geometry,
         )
@@ -6850,7 +6846,6 @@ export class FFIRenderLib {
             handle,
             previous === null ? null : output,
             config,
-            budget,
             workBudget,
             output,
             geometry,
@@ -6905,7 +6900,6 @@ export class FFIRenderLib {
     previous: BigUint64Array | null,
     config: Uint32Array,
     output: BigUint64Array,
-    budget: number,
     workBudget: number,
     geometry: Uint32Array,
   ): void {
@@ -6919,7 +6913,6 @@ export class FFIRenderLib {
             handle,
             previous,
             config,
-            budget,
             workBudget,
             output,
             geometry,

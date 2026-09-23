@@ -49,15 +49,11 @@ test "Scene frame authority checks every field in layout update prefix paint and
     }
     var seen = [_]bool{false} ** 8;
     var work_yield = false;
-    var paint_yield = false;
     var previous: ?scene.FrameRequest = null;
     for (0..128) |_| {
-        const request = try owner.sceneFrameStepWorkBudgeted(id, previous, options, 1, 1);
+        const request = try owner.sceneFrameStepWorkBudgeted(id, previous, options, 1);
         seen[request.kind] = true;
-        if (request.kind == 6) {
-            work_yield = work_yield or state.prefix == null;
-            paint_yield = paint_yield or state.prefix != null;
-        }
+        if (request.kind == 6) work_yield = work_yield or state.prefix == null;
         try testing.expectError(error.WrongSession, owner.sceneFrameAcquireBufferLease(other, request, .next));
         try testing.expectError(error.WrongContext, peer.sceneFrameAcquireBufferLease(foreign, request, .next));
         try testing.expectError(error.WrongContext, peer.sceneFrameCommit(foreign, request, true));
@@ -71,7 +67,7 @@ test "Scene frame authority checks every field in layout update prefix paint and
             const expected = if (comptime std.mem.eql(u8, field.name, "session")) error.WrongSession else error.StaleFrame;
             try testing.expectError(expected, owner.sceneFrameAcquireBufferLease(id, forged, .next));
             try testing.expectError(expected, owner.sceneFrameCommit(id, forged, true));
-            try testing.expectError(expected, owner.sceneFrameStepWorkBudgeted(id, forged, options, 1, 1));
+            try testing.expectError(expected, owner.sceneFrameStepWorkBudgeted(id, forged, options, 1));
         }
         var wrong_context = request;
         wrong_context.session.context_id += 1;
@@ -95,7 +91,7 @@ test "Scene frame authority checks every field in layout update prefix paint and
         previous = request;
     } else return error.TestUnexpectedResult;
     for (seen) |visited| try testing.expect(visited);
-    try testing.expect(work_yield and paint_yield);
+    try testing.expect(work_yield);
 }
 
 test "Scene frame resize retires storage without replacing painted or prefix tickets" {
