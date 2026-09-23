@@ -60,6 +60,29 @@ test "Scene work budget restarts once after a yielded mutation and completes wit
     try f.owner.sceneFrameCancel(f.id, request.frame_id);
 }
 
+test "Scene work budget stays unbounded after a restart even when hook replies follow" {
+    const f = try Fixture.init(testing.allocator, 12, 3, .{ .output = transport });
+    defer f.deinit();
+    const child = try box(f.owner, f.id, f.root, 2, 0);
+    try f.owner.sceneSetHooks(child, c.OT_SCENE_HOOK_RESIZE, 1, 1, 1);
+    var limited = options;
+    limited.max_layout_rounds = 3;
+    var previous: ?scene.FrameRequest = null;
+    var width: f32 = 1;
+    const done = for (0..64) |_| {
+        const request = try f.owner.sceneFrameStepWorkBudgeted(f.id, previous, limited, 1);
+        if (request.kind == c.OT_SCENE_FRAME_DONE) break request;
+        if (request.kind == c.OT_SCENE_FRAME_YIELD) {
+            // Every yield accepts a mutation that resizes the hooked node.
+            width += 1;
+            try f.owner.sceneSetStyle(child, 4, 0, 0, 1, width, 1);
+        } else try testing.expectEqual(@as(u32, c.OT_SCENE_FRAME_RESIZE), request.kind);
+        previous = request;
+    } else return error.TestUnexpectedResult;
+    try testing.expectEqual(width, (try f.owner.sceneGetLayout(child, false)).width);
+    try f.owner.sceneFrameCancel(f.id, done.frame_id);
+}
+
 test "Scene work budget unchanged yields keep the quota and exhaust no layout rounds" {
     const f = try Fixture.init(testing.allocator, 12, 3, .{ .output = transport });
     defer f.deinit();
