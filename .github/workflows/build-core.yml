@@ -115,6 +115,14 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v6
 
+      # Hash native files before install and test steps write into packages/native.
+      - name: Restore native test result
+        id: native-tested
+        uses: actions/cache/restore@v5
+        with:
+          path: .native-tests-passed
+          key: native-tests-v1-${{ matrix.os }}-${{ env.ZIG_VERSION }}-${{ hashFiles('packages/native/**', '.github/workflows/build-core.yml') }}
+
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
         with:
@@ -126,13 +134,14 @@ jobs:
           node-version: ${{ env.NODE_VERSION }}
 
       - name: Setup Zig
+        if: steps.native-tested.outputs.cache-hit != 'true'
         uses: mlugg/setup-zig@v2
         with:
           version: ${{ env.ZIG_VERSION }}
           use-cache: false
 
       - name: Restore Zig cache
-        if: runner.os != 'Windows'
+        if: runner.os != 'Windows' && steps.native-tested.outputs.cache-hit != 'true'
         uses: actions/cache@v5
         with:
           path: packages/native/.zig-cache
@@ -159,10 +168,19 @@ jobs:
         uses: ./.github/actions/enable-linux-coredumps
 
       - name: Run native tests
+        if: steps.native-tested.outputs.cache-hit != 'true'
         working-directory: packages/core
         run: |
           if [ "$(uname -s)" = Linux ]; then ulimit -c unlimited; fi
           bun run test:native
+          echo "${{ github.sha }}" > ../../.native-tests-passed
+
+      - name: Save native test result
+        if: steps.native-tested.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v5
+        with:
+          path: .native-tests-passed
+          key: ${{ steps.native-tested.outputs.cache-primary-key }}
 
       - name: Build TypeScript library
         run: |
