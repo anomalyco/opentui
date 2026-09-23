@@ -392,7 +392,6 @@ export enum NativeSceneHook {
   RenderAfter = nativeConstants.OT_SCENE_HOOK_RENDER_AFTER,
   RenderSelf = nativeConstants.OT_SCENE_HOOK_RENDER_SELF,
   IdleUpdate = nativeConstants.OT_SCENE_HOOK_IDLE_UPDATE,
-  ResumeNativeText = nativeConstants.OT_SCENE_HOOK_RESUME_NATIVE_TEXT,
 }
 
 export enum NativeSceneFrame {
@@ -3847,24 +3846,6 @@ export class FFIRenderLib {
       nativeResult(
         "ot_scene_set_text_view_paint",
         this.opentui.symbols.ot_scene_set_text_view_paint(pointer, handle, value),
-      )
-    })
-  }
-
-  public sceneSelectTextViewPaint(
-    context: NativeContextHandle,
-    node: SceneNodeHandle,
-    frame: NativeSceneFrameRequest,
-    enabled: boolean,
-  ): void {
-    const handle = encodeContextHandle(context, node)
-    const request = encodeSceneFrameRequest(context, frame)
-    const value = toFFIBool(enabled, "Text view native paint selected")
-    this.getYogaHost().runMutation(() => {
-      const pointer = this.nativeContextPointer(context, "ot_scene_select_text_view_paint")
-      nativeResult(
-        "ot_scene_select_text_view_paint",
-        this.opentui.symbols.ot_scene_select_text_view_paint(pointer, handle, request, value),
       )
     })
   }
