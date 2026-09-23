@@ -47,6 +47,36 @@ test "TextChunk layout cache retries and releases partial allocations" {
     }
 }
 
+test "TextChunk static ellipsis keeps byte ranges separate from registered text" {
+    var registry = MemRegistry.init(testing.allocator);
+    defer registry.deinit();
+
+    var ellipsis: Segment = .{ .text = .{
+        .mem_id = 0,
+        .byte_start = 0,
+        .byte_end = 3,
+        .width_cols = 3,
+        .flags = TextChunk.Flags.ASCII_ONLY | TextChunk.Flags.STATIC_ELLIPSIS,
+    } };
+    var ordinary = ellipsis;
+    ordinary.text.flags = TextChunk.Flags.ASCII_ONLY;
+    try testing.expectEqualStrings("...", ellipsis.getBytes(&registry));
+    try testing.expectEqualStrings("", ordinary.getBytes(&registry));
+
+    try testing.expectEqual(@as(u8, 0), try registry.register("abcdef", false));
+    try testing.expectEqualStrings("...", ellipsis.getBytes(&registry));
+    try testing.expectEqualStrings("abc", ordinary.getBytes(&registry));
+    ordinary.text.byte_start = 3;
+    ordinary.text.byte_end = 6;
+    try testing.expect(!Segment.canMerge(&ellipsis, &ordinary));
+
+    ellipsis.text.byte_start = 1;
+    try testing.expectEqualStrings("..", ellipsis.getBytes(&registry));
+    registry.clear();
+    try testing.expectEqualStrings("..", ellipsis.getBytes(&registry));
+    try testing.expectEqualStrings("", ordinary.getBytes(&registry));
+}
+
 test "TextChunk.getLayoutInfo returns direct byte and column metadata" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();

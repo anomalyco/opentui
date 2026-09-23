@@ -6,6 +6,7 @@ const tbv = @import("text-buffer-view.zig");
 const edv = @import("editor-view.zig");
 const math = std.math;
 const assert = std.debug.assert;
+const fillU32 = @import("utils.zig").fillU32;
 
 const gp = @import("grapheme.zig");
 const link = @import("link.zig");
@@ -13,6 +14,7 @@ const native_image = @import("image.zig");
 
 const logger = @import("logger.zig");
 const utf8 = @import("utf8.zig");
+const api = @import("context_abi_c");
 
 pub const RGBA = ansi.RGBA;
 pub const Vec3f = @Vector(3, f32);
@@ -23,6 +25,42 @@ const TextBufferView = tbv.TextBufferView;
 const EditorView = edv.EditorView;
 
 pub const DEFAULT_SPACE_CHAR: u32 = 32;
+/// Bounds segmentation and provisional storage for one checked text draw call.
+pub const text_bytes_max: u32 = api.OT_BUFFER_TEXT_BYTES_MAX;
+
+pub fn validateColor(color: RGBA) error{InvalidOptions}!void {
+    const intent = ansi.intent(color);
+    if (ansi.getMeta(color) != ansi.packMeta(intent, if (intent == .indexed) ansi.slot(color) else 0)) return error.InvalidOptions;
+}
+
+/// Checked text accepts controls: layout gives them zero width, and cells never hold them.
+pub fn validateTextInput(text: []const u8) error{ TextLimit, InvalidUnicode }!void {
+    if (text.len > text_bytes_max) return error.TextLimit;
+    if (!std.unicode.utf8ValidateSlice(text)) return error.InvalidUnicode;
+}
+
+/// The grapheme pool stores at most this many bytes per cluster.
+pub const grapheme_bytes_max = 128;
+
+/// Reports whether one cell may hold a cluster. The renderer prints cell text as is, so a
+/// control code point (C0, DEL, or C1) would move the terminal cursor, and the grapheme pool
+/// stores at most grapheme_bytes_max bytes. Checked draws write any other cluster as blank
+/// cells of its width instead of failing. Text layout gives a lone control zero width.
+pub fn isPrintableGlyph(bytes: []const u8) bool {
+    if (bytes.len > grapheme_bytes_max) return false;
+    for (bytes, 0..) |byte, index| {
+        if (byte < 0x20 or byte == 0x7f) return false;
+        // U+0080..U+009F encode as C2 80..C2 9F.
+        if (byte == 0xc2 and index + 1 < bytes.len and bytes[index + 1] < 0xa0) return false;
+    }
+    return true;
+}
+
+/// The code point form of the control rule in isPrintableGlyph.
+pub fn isControlCodepoint(codepoint: u32) bool {
+    return codepoint < 0x20 or (codepoint >= 0x7f and codepoint <= 0x9f);
+}
+
 const MAX_UNICODE_CODEPOINT: u32 = 0x10FFFF;
 const BLOCK_CHAR: u32 = 0x2588; // Full block █
 const QUADRANT_CHARS_COUNT = 16;
@@ -69,6 +107,454 @@ pub const BufferError = error{
     InvalidDimensions,
     InvalidUnicode,
     BufferTooSmall,
+    GenerationExhausted,
+};
+
+pub const BufferArrays = struct {
+    char: []u32,
+    fg: []RGBA,
+    bg: []RGBA,
+    attributes: []u32,
+};
+
+pub const BufferSnapshot = struct {
+    buffer: BufferArrays,
+    width: u32,
+    height: u32,
+    generation: u64,
+    pool: *gp.GraphemePool,
+
+    pub fn getRealCharSize(self: *const BufferSnapshot, add_line_breaks: bool) BufferError!u32 {
+        return self.resolveChars(null, add_line_breaks, null);
+    }
+
+    pub fn writeResolvedChars(
+        self: *const BufferSnapshot,
+        output: []u8,
+        add_line_breaks: bool,
+    ) BufferError!u32 {
+        return self.resolveChars(output, add_line_breaks, null);
+    }
+
+    pub fn writeResolvedCells(
+        self: *const BufferSnapshot,
+        output: []u8,
+        add_line_breaks: bool,
+        cell_lengths: []u8,
+    ) BufferError!u32 {
+        return self.resolveChars(output, add_line_breaks, cell_lengths);
+    }
+
+    fn resolveChars(
+        self: *const BufferSnapshot,
+        output: ?[]u8,
+        add_line_breaks: bool,
+        cell_lengths: ?[]u8,
+    ) BufferError!u32 {
+        assert(self.width > 0 and self.height > 0);
+        assert(@as(u64, self.width) * self.height == self.buffer.char.len);
+        if (cell_lengths) |lengths| {
+            if (lengths.len < self.buffer.char.len) return error.BufferTooSmall;
+        }
+        var written: u32 = 0;
+        for (self.buffer.char, 0..) |char_code, index| {
+            var encoded: [4]u8 = undefined;
+            const bytes: []const u8 = resolved: {
+                if (gp.isContinuationChar(char_code)) break :resolved "";
+                if (gp.isGraphemeChar(char_code)) {
+                    break :resolved self.pool.get(gp.graphemeIdFromChar(char_code)) catch " ";
+                }
+                const codepoint = if (gp.isImageChar(char_code))
+                    quadrantChars[gp.imageFallbackFromChar(char_code)]
+                else
+                    char_code;
+                if (codepoint == 0 or codepoint > MAX_UNICODE_CODEPOINT) break :resolved " ";
+                const length = std.unicode.utf8Encode(@intCast(codepoint), &encoded) catch break :resolved " ";
+                break :resolved encoded[0..length];
+            };
+            const length = math.cast(u32, bytes.len) orelse return error.InvalidDimensions;
+            const end = math.add(u32, written, length) catch return error.InvalidDimensions;
+            if (output) |destination| {
+                if (end > destination.len) return error.BufferTooSmall;
+                @memcpy(destination[written..end], bytes);
+            }
+            if (cell_lengths) |lengths| {
+                // Pool entries are at most 128 bytes; continuations contribute no bytes.
+                assert(length <= std.math.maxInt(u8));
+                lengths[index] = @intCast(length);
+            }
+            written = end;
+            if (add_line_breaks and (index + 1) % self.width == 0) {
+                const row_end = math.add(u32, written, 1) catch return error.InvalidDimensions;
+                if (output) |destination| {
+                    if (row_end > destination.len) return error.BufferTooSmall;
+                    destination[written] = '\n';
+                }
+                written = row_end;
+            }
+        }
+        return written;
+    }
+};
+
+/// One allocation generation. The buffer owns one reference until retirement;
+/// each lease owns another. No owner keeps a list of retired storage.
+pub const BufferStorage = struct {
+    allocator: Allocator,
+    buffer: BufferArrays,
+    width: u32,
+    height: u32,
+    generation: u64,
+    // Cells each array holds. In-place resizes keep arrays at least as large as the cell count.
+    capacity: u32,
+    ref_count: u32 = 1,
+    retired: bool = false,
+    // Requested allocation bytes for this header, its four arrays, trackers, and placements.
+    // Shared pool allocations belong to the context, not this storage.
+    retained_bytes: u64,
+    // One checked owner charges each distinct storage. Raw leases affect only
+    // ref_count; tracker growth stays charged until the last checked release.
+    lease_budget: ?struct {
+        bytes: *u64,
+        bytes_max: *const u64,
+        checked_ref_count: u32,
+    } = null,
+    grapheme_tracker: gp.GraphemeTracker,
+    link_tracker: link.LinkTracker,
+    image_placements: std.ArrayListUnmanaged(OptimizedBuffer.ImagePlacement) = .empty,
+
+    const cell_bytes = 2 * @sizeOf(u32) + 2 * @sizeOf(RGBA);
+
+    fn init(
+        allocator: Allocator,
+        width: u32,
+        height: u32,
+        generation: u64,
+        pool: *gp.GraphemePool,
+        link_pool: *link.LinkPool,
+    ) BufferError!*BufferStorage {
+        if (width == 0 or height == 0) return error.InvalidDimensions;
+        const size = math.mul(u32, width, height) catch return error.InvalidDimensions;
+        const array_bytes = math.mul(usize, size, cell_bytes) catch return error.InvalidDimensions;
+        const self = try allocator.create(BufferStorage);
+        errdefer allocator.destroy(self);
+        const chars = try allocator.alloc(u32, size);
+        errdefer allocator.free(chars);
+        const fg = try allocator.alloc(RGBA, size);
+        errdefer allocator.free(fg);
+        const bg = try allocator.alloc(RGBA, size);
+        errdefer allocator.free(bg);
+        const attributes = try allocator.alloc(u32, size);
+        const tracker_allocator = self.resourceAllocator();
+        self.* = .{
+            .allocator = allocator,
+            .buffer = .{ .char = chars, .fg = fg, .bg = bg, .attributes = attributes },
+            .width = width,
+            .height = height,
+            .generation = generation,
+            .capacity = size,
+            .retained_bytes = @as(u64, array_bytes) + @sizeOf(BufferStorage),
+            .grapheme_tracker = gp.GraphemeTracker.init(tracker_allocator, pool),
+            .link_tracker = link.LinkTracker.init(tracker_allocator, link_pool),
+        };
+        return self;
+    }
+
+    fn retire(self: *BufferStorage) void {
+        assert(!self.retired);
+        self.retired = true;
+        self.release();
+    }
+
+    fn snapshot(self: *const BufferStorage) BufferSnapshot {
+        return .{
+            .buffer = self.buffer,
+            .width = self.width,
+            .height = self.height,
+            .generation = self.generation,
+            .pool = self.grapheme_tracker.pool,
+        };
+    }
+
+    fn release(self: *BufferStorage) void {
+        assert(self.ref_count > 0);
+        self.ref_count -= 1;
+        if (self.ref_count != 0) return;
+        assert(self.retired);
+        self.grapheme_tracker.deinit();
+        self.link_tracker.deinit();
+        for (self.image_placements.items) |placement| placement.image.deinit();
+        self.image_placements.deinit(self.resourceAllocator());
+        self.freeArrays();
+        self.allocator.destroy(self);
+    }
+
+    fn freeArrays(self: *BufferStorage) void {
+        self.allocator.free(self.buffer.char.ptr[0..self.capacity]);
+        self.allocator.free(self.buffer.fg.ptr[0..self.capacity]);
+        self.allocator.free(self.buffer.bg.ptr[0..self.capacity]);
+        self.allocator.free(self.buffer.attributes.ptr[0..self.capacity]);
+    }
+
+    /// Resizes storage that only its buffer references, so no lease can observe the old cells.
+    /// Leases charge the arrays' full capacity, so capacity stays within half again the cells:
+    /// the arrays are reused while that holds, and otherwise every array is replaced before any
+    /// is freed, so failure changes nothing.
+    fn resizeExclusive(self: *BufferStorage, width: u32, height: u32, cells_max: u32) BufferError!void {
+        assert(self.ref_count == 1 and self.lease_budget == null and !self.retired);
+        const size = math.mul(u32, width, height) catch return error.InvalidDimensions;
+        // The caller bounds the cells, so growth never caps capacity below them.
+        assert(size <= cells_max);
+        const generation = math.add(u64, self.generation, 1) catch return error.GenerationExhausted;
+        if (size > self.capacity or self.capacity > size +| size / 2) {
+            // Growing past the old capacity reserves half of it again, so a buffer that grows a row
+            // at a time or alternates sizes reallocates rarely. A larger jump or a shrink takes the
+            // exact cells. Either way capacity stays within half again the cells.
+            const capacity = if (size > self.capacity) @min(cells_max, @max(size, self.capacity +| self.capacity / 2)) else size;
+            const chars = try self.allocator.alloc(u32, capacity);
+            errdefer self.allocator.free(chars);
+            const fg = try self.allocator.alloc(RGBA, capacity);
+            errdefer self.allocator.free(fg);
+            const bg = try self.allocator.alloc(RGBA, capacity);
+            errdefer self.allocator.free(bg);
+            const attributes = try self.allocator.alloc(u32, capacity);
+            self.retained_bytes = self.retained_bytes - @as(u64, self.capacity) * cell_bytes + @as(u64, capacity) * cell_bytes;
+            self.freeArrays();
+            self.buffer = .{ .char = chars, .fg = fg, .bg = bg, .attributes = attributes };
+            self.capacity = capacity;
+        }
+        assert(size <= self.capacity and self.capacity <= size +| size / 2);
+        self.buffer = .{
+            .char = self.buffer.char.ptr[0..size],
+            .fg = self.buffer.fg.ptr[0..size],
+            .bg = self.buffer.bg.ptr[0..size],
+            .attributes = self.buffer.attributes.ptr[0..size],
+        };
+        self.width = width;
+        self.height = height;
+        self.generation = generation;
+    }
+
+    pub fn ensureTrackerCapacity(self: *BufferStorage, graphemes: u64, links: u64) error{ OutOfMemory, TrackerLimit }!void {
+        // Hash maps round to a u32 power-of-two capacity. Reject overflow before allocation.
+        const entries_max = ((@as(u64, 1) << 31) - 1) * std.hash_map.default_max_load_percentage / 100;
+        if (graphemes > entries_max or links > entries_max) return error.TrackerLimit;
+        try self.grapheme_tracker.used_ids.ensureTotalCapacity(@intCast(graphemes));
+        try self.link_tracker.used_ids.ensureTotalCapacity(@intCast(links));
+    }
+
+    fn resourceAllocator(self: *BufferStorage) Allocator {
+        return .{ .ptr = self, .vtable = &.{
+            .alloc = trackerAlloc,
+            .resize = Allocator.noResize,
+            .remap = Allocator.noRemap,
+            .free = trackerFree,
+        } };
+    }
+
+    fn trackerAlloc(ptr: *anyopaque, len: usize, alignment: std.mem.Alignment, ret_addr: usize) ?[*]u8 {
+        const self: *BufferStorage = @ptrCast(@alignCast(ptr));
+        if (self.lease_budget) |budget| {
+            assert(budget.bytes.* <= budget.bytes_max.*);
+            if (len > budget.bytes_max.* - budget.bytes.*) return null;
+        }
+        const result = self.allocator.rawAlloc(len, alignment, ret_addr) orelse return null;
+        self.retained_bytes += len;
+        if (self.lease_budget) |budget| budget.bytes.* += len;
+        return result;
+    }
+
+    fn trackerFree(ptr: *anyopaque, memory: []u8, alignment: std.mem.Alignment, ret_addr: usize) void {
+        const self: *BufferStorage = @ptrCast(@alignCast(ptr));
+        self.allocator.rawFree(memory, alignment, ret_addr);
+        self.retained_bytes -= memory.len;
+        if (self.lease_budget) |budget| {
+            assert(budget.bytes.* >= memory.len);
+            budget.bytes.* -= memory.len;
+        }
+    }
+};
+
+/// Move-only owner-thread lease; copying the value does not acquire a reference.
+/// The allocator and both pools must outlive release, including after retirement.
+/// A snapshot aliases live mutable cells, not a frozen frame. Resize/deinit make
+/// it stale, but its arrays and tracked IDs remain allocated until release.
+/// Release cannot revoke saved raw aliases. Do not use them after release or
+/// change tagged IDs through the arrays without maintaining the trackers.
+pub const BufferLease = struct {
+    storage: ?*BufferStorage,
+
+    pub const count_max_default: u32 = 4096;
+    pub const bytes_max_default: u64 = 64 * 1024 * 1024;
+
+    /// The owner serializes acquisition, publication, and release. Publication
+    /// failure must releaseChecked; reserved tracker capacity may remain reusable.
+    pub fn acquireChecked(
+        target: *OptimizedBuffer,
+        count: *u32,
+        count_max: u32,
+        bytes: *u64,
+        bytes_max: *const u64,
+    ) error{ LeaseLimit, LeaseBytesLimit, OutOfMemory }!BufferLease {
+        if (count.* >= count_max) return error.LeaseLimit;
+        const storage = target.storage;
+        const already_leased = storage.lease_budget != null;
+        assert(bytes.* <= bytes_max.*);
+        if (!already_leased and storage.retained_bytes > bytes_max.* - bytes.*) {
+            return error.LeaseBytesLimit;
+        }
+        // A buffer's current storage is never retired, so the lease starts current.
+        var lease = target.acquireLease() catch return error.LeaseLimit;
+        errdefer lease.release();
+        if (!already_leased) {
+            // Reserve every cell and one in-flight replacement.
+            const entries = @as(u64, storage.buffer.char.len) + 1;
+            storage.ensureTrackerCapacity(entries, entries) catch |err| return switch (err) {
+                error.TrackerLimit => error.LeaseLimit,
+                error.OutOfMemory => error.OutOfMemory,
+            };
+            if (storage.retained_bytes > bytes_max.* - bytes.*) return error.LeaseBytesLimit;
+        }
+        if (storage.lease_budget) |*budget| {
+            assert(budget.bytes == bytes);
+            assert(budget.bytes_max == bytes_max);
+            assert(budget.checked_ref_count > 0);
+            assert(budget.checked_ref_count <= count.*);
+            budget.checked_ref_count += 1;
+        } else {
+            storage.lease_budget = .{
+                .bytes = bytes,
+                .bytes_max = bytes_max,
+                .checked_ref_count = 1,
+            };
+            bytes.* += storage.retained_bytes;
+        }
+        count.* += 1;
+        // The first checked lease reserved an entry per cell, so tracked writes cannot fail.
+        assert(storage.grapheme_tracker.used_ids.capacity() > storage.buffer.char.len);
+        assert(storage.link_tracker.used_ids.capacity() > storage.buffer.char.len);
+        return lease;
+    }
+
+    /// Consume the registry identity before calling this: reclaiming storage can
+    /// reenter the owner through its allocator. Only the last release uncharges it.
+    pub fn releaseChecked(self: *BufferLease, count: *u32, bytes: *u64, bytes_max: *const u64) void {
+        const storage = self.storage orelse return;
+        self.storage = null;
+        const budget = &storage.lease_budget.?;
+        assert(budget.bytes == bytes);
+        assert(budget.bytes_max == bytes_max);
+        assert(budget.checked_ref_count > 0);
+        assert(budget.checked_ref_count <= count.*);
+        budget.checked_ref_count -= 1;
+        if (budget.checked_ref_count == 0) {
+            assert(bytes.* >= storage.retained_bytes);
+            bytes.* -= storage.retained_bytes;
+            storage.lease_budget = null;
+        }
+        count.* -= 1;
+        storage.release();
+    }
+
+    pub fn isCurrent(self: *const BufferLease) bool {
+        const storage = self.storage orelse return false;
+        return !storage.retired;
+    }
+
+    pub fn snapshot(self: *const BufferLease) error{ LeaseReleased, StaleLease }!BufferSnapshot {
+        const storage = self.storage orelse return error.LeaseReleased;
+        if (storage.retired) return error.StaleLease;
+        return storage.snapshot();
+    }
+
+    pub fn release(self: *BufferLease) void {
+        const storage = self.storage orelse return;
+        self.storage = null;
+        storage.release();
+    }
+};
+
+/// A glyph that a text view draw wrote at column x of its current row.
+const MarkBase = struct { x: u32, char: u32 };
+
+/// One glyph of a text row with at least one cell to draw.
+const TextGlyph = struct {
+    bytes: []const u8,
+    x: u32,
+    /// Display cells of the whole glyph.
+    width: u32,
+    /// A blank glyph draws `count` spaces from x. Any other glyph is one cell character.
+    blank: bool,
+    count: u32,
+};
+
+/// Places the glyphs of one text row for drawText and drawTextChecked. Controls and other
+/// zero-width clusters take no cells. A tab or a cluster that a cell cannot hold is blank
+/// (see isPrintableGlyph): its spaces clip one by one, also left of column 0. Any other glyph
+/// draws only when all of its cells are inside the target and its scissor. Every glyph
+/// advances by the width it is drawn with, so clipping never moves the visible glyphs.
+const TextRow = struct {
+    target: *const OptimizedBuffer,
+    text: []const u8,
+    /// Sparse metadata from utf8.findRenderClusterInfo for text.
+    clusters: []const utf8.RenderClusterInfo,
+    x: i32,
+    y: i32,
+    byte_offset: usize = 0,
+    cluster_index: usize = 0,
+    advance_cells: u64 = 0,
+
+    const tab_width: u8 = 2;
+
+    fn next(self: *TextRow) ?TextGlyph {
+        const target = self.target;
+        // A glyph is at most two cells per byte, so the columns fit in i64.
+        while (self.byte_offset < self.text.len and self.x + @as(i64, @intCast(self.advance_cells)) < target.width) {
+            const start = self.byte_offset;
+            // Unchecked text can be invalid UTF-8, which ends a cluster at another byte.
+            while (self.cluster_index < self.clusters.len and self.clusters[self.cluster_index].byte_start < start) {
+                self.cluster_index += 1;
+            }
+            const cluster: ?utf8.RenderClusterInfo = if (self.cluster_index < self.clusters.len and
+                self.clusters[self.cluster_index].byte_start == start) self.clusters[self.cluster_index] else null;
+            if (cluster) |entry| {
+                self.byte_offset += entry.byte_len;
+                self.cluster_index += 1;
+            } else {
+                // Sparse metadata omits zero-width clusters, not their UTF-8 bytes.
+                const length = std.unicode.utf8ByteSequenceLength(self.text[start]) catch 1;
+                self.byte_offset = @min(start + length, self.text.len);
+            }
+            const bytes = self.text[start..self.byte_offset];
+            const width = if (cluster != null and target.width_method != .wcwidth)
+                cluster.?.width_cols
+            else
+                utf8.getWidthAt(bytes, 0, tab_width, target.width_method);
+            if (width == 0) continue;
+            const glyph_x = self.x + @as(i64, @intCast(self.advance_cells));
+            self.advance_cells += width;
+            const blank = !isPrintableGlyph(bytes);
+            // A glyph that starts left of column 0 is clipped, even a wide glyph that reaches column 0.
+            if (!blank and glyph_x < 0) continue;
+            const first: u32 = @intCast(@max(glyph_x, 0));
+            const end = @min(glyph_x + width, target.width);
+            const count: u32 = if (!blank) 1 else if (end > first) @intCast(end - first) else 0;
+            if (!self.isVisible(first, if (blank) count else width, blank)) continue;
+            return .{ .bytes = bytes, .x = first, .width = width, .blank = blank, .count = count };
+        }
+        return null;
+    }
+
+    /// Blank cells need one cell in the scissor; a glyph needs all of its cells in the target and scissor.
+    fn isVisible(self: *const TextRow, first: u32, cells: u32, blank: bool) bool {
+        if (cells > self.target.width - first) return false;
+        for (0..cells) |offset| {
+            const inside = self.target.isPointInScissor(@intCast(first + offset), self.y);
+            if (blank and inside) return true;
+            if (!blank and !inside) return false;
+        }
+        return !blank;
+    }
 };
 
 pub inline fn rgbaEqual(a: RGBA, b: RGBA) bool {
@@ -81,6 +567,10 @@ pub const Cell = struct {
     bg: RGBA,
     attributes: u32,
 };
+
+inline fn isPrintableAscii(bytes: []const u8) bool {
+    return bytes.len == 1 and bytes[0] >= 0x20 and bytes[0] < 0x7f;
+}
 
 inline fn makeCell(char: u32, fg: RGBA, bg: RGBA, attributes: u32) Cell {
     return .{
@@ -176,14 +666,11 @@ pub const OptimizedBuffer = struct {
         protocol: native_image.RenderProtocol,
     };
 
-    buffer: struct {
-        char: []u32,
-        fg: []RGBA,
-        bg: []RGBA,
-        attributes: []u32,
-    },
-    /// Cells allocated in each array. Resize reuses the arrays while the cells fit within it.
-    capacity: u32,
+    buffer: BufferArrays,
+    storage: *BufferStorage,
+    owner_context_id: u64 = 0,
+    cells_max: u32 = math.maxInt(u32),
+    ref_count: u32 = 1,
     width: u32,
     height: u32,
     respectAlpha: bool,
@@ -191,14 +678,15 @@ pub const OptimizedBuffer = struct {
     allocator: Allocator,
     pool: *gp.GraphemePool,
     link_pool: *link.LinkPool,
+    logger: *const logger.Logger,
 
-    grapheme_tracker: gp.GraphemeTracker,
-    link_tracker: link.LinkTracker,
+    grapheme_tracker: *gp.GraphemeTracker,
+    link_tracker: *link.LinkTracker,
     width_method: utf8.WidthMethod,
     id: []const u8,
     scissor_stack: std.ArrayListUnmanaged(ClipRect),
     opacity_stack: std.ArrayListUnmanaged(f32),
-    image_placements: std.ArrayListUnmanaged(ImagePlacement),
+    image_placements: *std.ArrayListUnmanaged(ImagePlacement),
 
     const InitOptions = struct {
         respectAlpha: bool = false,
@@ -206,7 +694,8 @@ pub const OptimizedBuffer = struct {
         pool: *gp.GraphemePool,
         width_method: utf8.WidthMethod = .unicode,
         id: []const u8 = "unnamed buffer",
-        link_pool: ?*link.LinkPool = null,
+        link_pool: *link.LinkPool,
+        logger: *const logger.Logger = logger.processLogger(),
     };
 
     const BoxTitleLayout = struct {
@@ -218,59 +707,36 @@ pub const OptimizedBuffer = struct {
 
     pub fn init(allocator: Allocator, width: u32, height: u32, options: InitOptions) BufferError!*OptimizedBuffer {
         if (width == 0 or height == 0) {
-            logger.warn("OptimizedBuffer.init: Invalid dimensions {}x{}", .{ width, height });
+            options.logger.warn("OptimizedBuffer.init: Invalid dimensions {}x{}", .{ width, height });
             return BufferError.InvalidDimensions;
         }
+
+        const storage = try BufferStorage.init(allocator, width, height, 1, options.pool, options.link_pool);
+        errdefer storage.retire();
 
         const self = allocator.create(OptimizedBuffer) catch return BufferError.OutOfMemory;
         errdefer allocator.destroy(self);
 
-        const size = width * height;
-
         const owned_id = allocator.dupe(u8, options.id) catch return BufferError.OutOfMemory;
-        errdefer allocator.free(owned_id);
-
-        var scissor_stack: std.ArrayListUnmanaged(ClipRect) = .empty;
-        errdefer scissor_stack.deinit(allocator);
-
-        var opacity_stack: std.ArrayListUnmanaged(f32) = .empty;
-        errdefer opacity_stack.deinit(allocator);
-
-        const lp = options.link_pool orelse link.initGlobalLinkPool(allocator);
-        const char_buffer = allocator.alloc(u32, size) catch return BufferError.OutOfMemory;
-        errdefer allocator.free(char_buffer);
-
-        const fg_buffer = allocator.alloc(RGBA, size) catch return BufferError.OutOfMemory;
-        errdefer allocator.free(fg_buffer);
-
-        const bg_buffer = allocator.alloc(RGBA, size) catch return BufferError.OutOfMemory;
-        errdefer allocator.free(bg_buffer);
-
-        const attributes_buffer = allocator.alloc(u32, size) catch return BufferError.OutOfMemory;
-        errdefer allocator.free(attributes_buffer);
 
         self.* = .{
-            .buffer = .{
-                .char = char_buffer,
-                .fg = fg_buffer,
-                .bg = bg_buffer,
-                .attributes = attributes_buffer,
-            },
-            .capacity = size,
+            .buffer = storage.buffer,
+            .storage = storage,
             .width = width,
             .height = height,
             .respectAlpha = options.respectAlpha,
             .blendBackdropColor = options.blendBackdropColor,
             .allocator = allocator,
             .pool = options.pool,
-            .link_pool = lp,
-            .grapheme_tracker = gp.GraphemeTracker.init(allocator, options.pool),
-            .link_tracker = link.LinkTracker.init(allocator, lp),
+            .link_pool = options.link_pool,
+            .logger = options.logger,
+            .grapheme_tracker = &storage.grapheme_tracker,
+            .link_tracker = &storage.link_tracker,
             .width_method = options.width_method,
             .id = owned_id,
-            .scissor_stack = scissor_stack,
-            .opacity_stack = opacity_stack,
-            .image_placements = .empty,
+            .scissor_stack = .empty,
+            .opacity_stack = .empty,
+            .image_placements = &storage.image_placements,
         };
 
         @memset(self.buffer.char, 0);
@@ -281,6 +747,16 @@ pub const OptimizedBuffer = struct {
         return self;
     }
 
+    /// Acquisition cannot allocate. The owning context must also bound its total
+    /// leases and distinct pinned storage bytes, including retired generations.
+    pub fn acquireLease(self: *OptimizedBuffer) error{LeaseLimitExceeded}!BufferLease {
+        assert(!self.storage.retired);
+        if (self.storage.ref_count == math.maxInt(u32)) return error.LeaseLimitExceeded;
+        self.storage.ref_count += 1;
+        return .{ .storage = self.storage };
+    }
+
+    // Raw getters do not pin storage. Use acquireLease across resize/deinit.
     pub fn getCharPtr(self: *OptimizedBuffer) [*]u32 {
         return self.buffer.char.ptr;
     }
@@ -298,25 +774,22 @@ pub const OptimizedBuffer = struct {
     }
 
     pub fn deinit(self: *OptimizedBuffer) void {
+        assert(self.ref_count > 0);
+        self.ref_count -= 1;
+        if (self.ref_count != 0) return;
         const allocator = self.allocator;
         defer allocator.destroy(self);
 
-        self.clearImagePlacements();
         self.opacity_stack.deinit(self.allocator);
-        self.image_placements.deinit(self.allocator);
         self.scissor_stack.deinit(self.allocator);
-        self.link_tracker.deinit();
-        self.grapheme_tracker.deinit();
-        self.freeCells();
+        self.storage.retire();
         self.allocator.free(self.id);
         self.* = undefined;
     }
 
-    fn freeCells(self: *OptimizedBuffer) void {
-        self.allocator.free(self.buffer.char.ptr[0..self.capacity]);
-        self.allocator.free(self.buffer.fg.ptr[0..self.capacity]);
-        self.allocator.free(self.buffer.bg.ptr[0..self.capacity]);
-        self.allocator.free(self.buffer.attributes.ptr[0..self.capacity]);
+    pub fn retain(self: *OptimizedBuffer) error{ObjectLimit}!void {
+        if (self.ref_count == math.maxInt(u32)) return error.ObjectLimit;
+        self.ref_count += 1;
     }
 
     pub fn getCurrentScissorRect(self: *const OptimizedBuffer) ?ClipRect {
@@ -437,40 +910,76 @@ pub const OptimizedBuffer = struct {
         self.opacity_stack.clearRetainingCapacity();
     }
 
-    pub fn resize(self: *OptimizedBuffer, width: u32, height: u32) BufferError!void {
-        if (self.width == width and self.height == height) return;
-        if (width == 0 or height == 0) return BufferError.InvalidDimensions;
+    /// Owns an unpublished replacement. Commit or deinit before resizing or
+    /// destroying the target buffer. Preparing leaves existing leases current.
+    pub const PreparedResize = struct {
+        target: *OptimizedBuffer,
+        storage: ?*BufferStorage = null,
 
-        const size = width * height;
-        if (size > self.capacity or self.capacity > size +| size / 2) {
-            // Growing past the capacity reserves half of it again, so a buffer that grows a row at a
-            // time or alternates sizes reallocates rarely. A larger jump or a shrink takes the exact
-            // cells. Either way capacity stays within half again the cells. Every array is allocated
-            // before any is freed, so a failed resize leaves the buffer unchanged.
-            const capacity = if (size > self.capacity) @max(size, self.capacity +| self.capacity / 2) else size;
-            const chars = self.allocator.alloc(u32, capacity) catch return BufferError.OutOfMemory;
-            errdefer self.allocator.free(chars);
-            const fg = self.allocator.alloc(RGBA, capacity) catch return BufferError.OutOfMemory;
-            errdefer self.allocator.free(fg);
-            const bg = self.allocator.alloc(RGBA, capacity) catch return BufferError.OutOfMemory;
-            errdefer self.allocator.free(bg);
-            const attributes = self.allocator.alloc(u32, capacity) catch return BufferError.OutOfMemory;
-            self.freeCells();
-            self.buffer = .{ .char = chars, .fg = fg, .bg = bg, .attributes = attributes };
-            self.capacity = capacity;
+        pub fn deinit(self: *PreparedResize) void {
+            const storage = self.storage orelse return;
+            self.storage = null;
+            storage.retire();
         }
-        self.buffer = .{
-            .char = self.buffer.char.ptr[0..size],
-            .fg = self.buffer.fg.ptr[0..size],
-            .bg = self.buffer.bg.ptr[0..size],
-            .attributes = self.buffer.attributes.ptr[0..size],
-        };
-        self.width = width;
-        self.height = height;
 
-        // Reused and new arrays hold stale or undefined cells. Clearing initializes every cell and
-        // releases the grapheme and link references of the old cells.
+        pub fn commit(self: *PreparedResize) void {
+            const storage = self.storage orelse return;
+            const target = self.target;
+            const previous = target.storage;
+            assert(storage.generation - 1 == previous.generation);
+            self.storage = null;
+            target.adoptStorage(storage);
+            target.clear(ansi.rgbColor(0, 0, 0, 255), null);
+            previous.retire();
+        }
+    };
+
+    /// The buffer mirrors its storage's arrays, size, and trackers for direct field access.
+    fn adoptStorage(self: *OptimizedBuffer, storage: *BufferStorage) void {
+        self.storage = storage;
+        self.buffer = storage.buffer;
+        self.width = storage.width;
+        self.height = storage.height;
+        self.grapheme_tracker = &storage.grapheme_tracker;
+        self.link_tracker = &storage.link_tracker;
+        self.image_placements = &storage.image_placements;
+    }
+
+    /// Returns whether the size differs from the current one. The same size is a no-op.
+    fn checkResize(self: *const OptimizedBuffer, width: u32, height: u32) BufferError!bool {
+        if (self.width == width and self.height == height) return false;
+        if (width == 0 or height == 0) return BufferError.InvalidDimensions;
+        const cells = math.mul(u32, width, height) catch return error.InvalidDimensions;
+        if (cells > self.cells_max) return error.InvalidDimensions;
+        return true;
+    }
+
+    pub fn prepareResize(self: *OptimizedBuffer, width: u32, height: u32) BufferError!PreparedResize {
+        if (!try self.checkResize(width, height)) return .{ .target = self };
+        const generation = math.add(u64, self.storage.generation, 1) catch return error.GenerationExhausted;
+        return .{
+            .target = self,
+            .storage = try BufferStorage.init(self.allocator, width, height, generation, self.pool, self.link_pool),
+        };
+    }
+
+    pub fn resize(self: *OptimizedBuffer, width: u32, height: u32) BufferError!void {
+        const storage = self.storage;
+        if (storage.ref_count != 1 or storage.lease_budget != null) {
+            var prepared = try self.prepareResize(width, height);
+            prepared.commit();
+            return;
+        }
+        if (!try self.checkResize(width, height)) return;
+        // Replacing unleased storage would only trade the arrays for fresh pages of the same size.
+        try storage.resizeExclusive(width, height, self.cells_max);
+        self.adoptStorage(storage);
         self.clear(ansi.rgbColor(0, 0, 0, 255), null);
+        // A replacement generation starts without tracker or placement capacity, which leases charge.
+        storage.grapheme_tracker.used_ids.clearAndFree();
+        storage.link_tracker.used_ids.clearAndFree();
+        storage.image_placements.clearAndFree(storage.resourceAllocator());
+        assert(storage.retained_bytes == @sizeOf(BufferStorage) + @as(u64, storage.capacity) * BufferStorage.cell_bytes);
     }
 
     fn coordsToIndex(self: *const OptimizedBuffer, x: u32, y: u32) u32 {
@@ -489,8 +998,8 @@ pub const OptimizedBuffer = struct {
         self.link_tracker.clear();
         self.grapheme_tracker.clear();
         self.clearImagePlacements();
-        @memset(self.buffer.char, @intCast(cellChar));
-        @memset(self.buffer.attributes, 0);
+        fillU32(self.buffer.char, cellChar);
+        fillU32(self.buffer.attributes, 0);
         @memset(self.buffer.fg, ansi.rgbColor(255, 255, 255, 255));
         @memset(self.buffer.bg, bg);
     }
@@ -498,6 +1007,64 @@ pub const OptimizedBuffer = struct {
     fn clearImagePlacements(self: *OptimizedBuffer) void {
         for (self.image_placements.items) |placement| placement.image.deinit();
         self.image_placements.clearRetainingCapacity();
+    }
+
+    pub fn syncImagePlacements(self: *OptimizedBuffer, source: *const OptimizedBuffer) error{ OutOfMemory, TrackerLimit }!void {
+        assert(self != source);
+        for (source.image_placements.items) |placement| {
+            if (placement.image.ref_count > math.maxInt(u32) - source.image_placements.items.len) return error.TrackerLimit;
+        }
+        try self.image_placements.ensureTotalCapacity(self.storage.resourceAllocator(), source.image_placements.items.len);
+        self.clearImagePlacements();
+        for (source.image_placements.items) |placement| {
+            placement.image.retain();
+            self.image_placements.appendAssumeCapacity(placement);
+        }
+    }
+
+    /// Replace all cells and references, without compositing or applying draw state.
+    /// Rejection preserves both buffers; reserved tracking capacity may remain.
+    pub fn copyFrom(self: *OptimizedBuffer, source: *const OptimizedBuffer) !void {
+        assert(self.pool == source.pool and self.link_pool == source.link_pool);
+        if (self.storage == source.storage or self.width != source.width or self.height != source.height) {
+            return error.InvalidOptions;
+        }
+        try source.checkImageResources();
+        try self.checkImageResources();
+        inline for (.{ source.grapheme_tracker, source.link_tracker }) |tracker| {
+            var ids = tracker.used_ids.keyIterator();
+            while (ids.next()) |id| {
+                const refs = try tracker.pool.getRefcount(id.*);
+                assert(refs > 0);
+                if (refs == math.maxInt(u32)) return error.TrackerLimit;
+            }
+        }
+        try self.storage.ensureTrackerCapacity(
+            source.grapheme_tracker.used_ids.count(),
+            source.link_tracker.used_ids.count(),
+        );
+        try self.syncImagePlacements(source);
+
+        // Source membership pins each ID, so rebuilding the preallocated trackers
+        // retains live IDs without first-use interning.
+        self.grapheme_tracker.clear();
+        var graphemes = source.grapheme_tracker.used_ids.iterator();
+        while (graphemes.next()) |entry| {
+            const id = entry.key_ptr.*;
+            self.grapheme_tracker.add(id);
+            self.grapheme_tracker.used_ids.getPtr(id).?.* = entry.value_ptr.*;
+        }
+        self.link_tracker.clear();
+        var links = source.link_tracker.used_ids.iterator();
+        while (links.next()) |entry| {
+            const id = entry.key_ptr.*;
+            self.link_tracker.addCellRef(id);
+            self.link_tracker.used_ids.getPtr(id).?.* = entry.value_ptr.*;
+        }
+        @memcpy(self.buffer.char, source.buffer.char);
+        @memcpy(self.buffer.fg, source.buffer.fg);
+        @memcpy(self.buffer.bg, source.buffer.bg);
+        @memcpy(self.buffer.attributes, source.buffer.attributes);
     }
 
     /// Write a single cell and update link tracker. No grapheme tracking,
@@ -525,7 +1092,10 @@ pub const OptimizedBuffer = struct {
     fn setInternal(self: *OptimizedBuffer, comptime span_cleanup: bool, x: u32, y: u32, cell: Cell) void {
         const index = self.validateAndIndex(x, y) orelse return;
         const prev_char = self.buffer.char[index];
-        const prev_link_id = ansi.TextAttributes.getLinkId(self.buffer.attributes[index]);
+        const new_link_id = ansi.TextAttributes.getLinkId(cell.attributes);
+        // Cleanup can remove the last old cell using the replacement's link.
+        if (new_link_id != 0) self.link_tracker.addCellRef(new_link_id);
+        defer if (new_link_id != 0) self.link_tracker.removeCellRef(new_link_id);
         var tracker_replaced = false;
 
         if (!span_cleanup) {
@@ -558,7 +1128,7 @@ pub const OptimizedBuffer = struct {
                     if (x + new_width > self.width) break :blk null;
                     break :blk gp.graphemeIdFromChar(cell.char);
                 };
-                self.grapheme_tracker.replace(id, new_grapheme_id);
+                if (new_grapheme_id) |new_id| self.grapheme_tracker.add(new_id);
                 tracker_replaced = true;
 
                 const span_start = index - @min(left, index - row_start);
@@ -569,6 +1139,11 @@ pub const OptimizedBuffer = struct {
                     const span_char = self.buffer.char[span_i];
                     if (!(gp.isGraphemeChar(span_char) or gp.isContinuationChar(span_char))) continue;
                     if (gp.graphemeIdFromChar(span_char) != id) continue;
+
+                    // Overlaps can leave continuations after their start was replaced.
+                    if (gp.isGraphemeChar(span_char)) {
+                        self.grapheme_tracker.remove(id);
+                    }
 
                     const span_link_id = ansi.TextAttributes.getLinkId(self.buffer.attributes[span_i]);
                     if (span_link_id != 0) {
@@ -589,6 +1164,11 @@ pub const OptimizedBuffer = struct {
                 const end_of_line = (y + 1) * self.width;
                 var eol_i = index;
                 while (eol_i < end_of_line) : (eol_i += 1) {
+                    const eol_char = self.buffer.char[eol_i];
+                    // The start at index was already accounted for above.
+                    if (eol_i != index and gp.isGraphemeChar(eol_char)) {
+                        self.grapheme_tracker.remove(gp.graphemeIdFromChar(eol_char));
+                    }
                     const eol_link_id = ansi.TextAttributes.getLinkId(self.buffer.attributes[eol_i]);
                     if (eol_link_id != 0) {
                         self.link_tracker.removeCellRef(eol_link_id);
@@ -598,7 +1178,6 @@ pub const OptimizedBuffer = struct {
                 @memset(self.buffer.attributes[index..end_of_line], cell.attributes);
                 @memset(self.buffer.fg[index..end_of_line], cell.fg);
                 @memset(self.buffer.bg[index..end_of_line], cell.bg);
-                const new_link_id = ansi.TextAttributes.getLinkId(cell.attributes);
                 if (new_link_id != 0) {
                     const cells_written = end_of_line - index;
                     var link_i: u32 = 0;
@@ -609,23 +1188,12 @@ pub const OptimizedBuffer = struct {
                 return;
             }
 
-            self.buffer.char[index] = cell.char;
-            self.buffer.fg[index] = cell.fg;
-            self.buffer.bg[index] = cell.bg;
-            self.buffer.attributes[index] = cell.attributes;
+            self.writeCellAndLinks(index, cell);
 
             const id: u32 = gp.graphemeIdFromChar(cell.char);
             const is_same_grapheme_start = gp.isGraphemeChar(prev_char) and prev_char == cell.char;
             if (!tracker_replaced and !is_same_grapheme_start) {
                 self.grapheme_tracker.add(id);
-            }
-
-            const new_link_id = ansi.TextAttributes.getLinkId(cell.attributes);
-            if (prev_link_id != 0 and prev_link_id != new_link_id) {
-                self.link_tracker.removeCellRef(prev_link_id);
-            }
-            if (new_link_id != 0 and new_link_id != prev_link_id) {
-                self.link_tracker.addCellRef(new_link_id);
             }
 
             if (width > 1) {
@@ -634,7 +1202,30 @@ pub const OptimizedBuffer = struct {
                 if (max_right > 0) {
                     var cont_i: u32 = 1;
                     while (cont_i <= max_right) : (cont_i += 1) {
-                        const cont_link_id = ansi.TextAttributes.getLinkId(self.buffer.attributes[index + cont_i]);
+                        const cont_index = index + cont_i;
+                        const cont_char = self.buffer.char[cont_index];
+                        if (gp.isGraphemeChar(cont_char)) {
+                            const old_id = gp.graphemeIdFromChar(cont_char);
+                            self.grapheme_tracker.remove(old_id);
+                            if (span_cleanup) {
+                                // Ordinary writes must not leave a tail outside the new span.
+                                const tail_end = cont_index + @min(
+                                    gp.charRightExtent(cont_char),
+                                    row_end_index - cont_index,
+                                );
+                                var tail_i = index + width;
+                                while (tail_i <= tail_end) : (tail_i += 1) {
+                                    const tail_char = self.buffer.char[tail_i];
+                                    if (!gp.isContinuationChar(tail_char)) continue;
+                                    if (gp.graphemeIdFromChar(tail_char) != old_id) continue;
+                                    const tail_link_id = ansi.TextAttributes.getLinkId(self.buffer.attributes[tail_i]);
+                                    if (tail_link_id != 0) self.link_tracker.removeCellRef(tail_link_id);
+                                    self.buffer.char[tail_i] = DEFAULT_SPACE_CHAR;
+                                    self.buffer.attributes[tail_i] = 0;
+                                }
+                            }
+                        }
+                        const cont_link_id = ansi.TextAttributes.getLinkId(self.buffer.attributes[cont_index]);
                         if (cont_link_id != 0) {
                             self.link_tracker.removeCellRef(cont_link_id);
                         }
@@ -732,79 +1323,8 @@ pub const OptimizedBuffer = struct {
         return regular_char_bytes + total_grapheme_bytes;
     }
 
-    /// Write all resolved character bytes to the given output buffer
-    /// Returns the number of bytes written, or 0 if the output buffer is too small
     pub fn writeResolvedChars(self: *const OptimizedBuffer, output_buffer: []u8, addLineBreaks: bool) BufferError!u32 {
-        var bytes_written: u32 = 0;
-        const total_cells = self.width * self.height;
-
-        var i: u32 = 0;
-        while (i < total_cells) : (i += 1) {
-            const char_code = self.buffer.char[i];
-
-            if (gp.isImageChar(char_code)) {
-                const fallback = quadrantChars[gp.imageFallbackFromChar(char_code)];
-                var utf8_bytes: [4]u8 = undefined;
-                const utf8_len = std.unicode.utf8Encode(@intCast(fallback), &utf8_bytes) catch unreachable;
-                if (bytes_written + utf8_len > output_buffer.len) return BufferError.BufferTooSmall;
-                @memcpy(output_buffer[bytes_written .. bytes_written + utf8_len], utf8_bytes[0..utf8_len]);
-                bytes_written += @intCast(utf8_len);
-            } else if (gp.isGraphemeChar(char_code)) {
-                const gid = gp.graphemeIdFromChar(char_code);
-                if (self.pool.get(gid)) |grapheme_bytes| {
-                    if (bytes_written + grapheme_bytes.len > output_buffer.len) {
-                        return BufferError.BufferTooSmall;
-                    }
-                    @memcpy(output_buffer[bytes_written .. bytes_written + grapheme_bytes.len], grapheme_bytes);
-                    bytes_written += @intCast(grapheme_bytes.len);
-                } else |_| {
-                    if (bytes_written + 1 > output_buffer.len) {
-                        return BufferError.BufferTooSmall;
-                    }
-                    output_buffer[bytes_written] = ' ';
-                    bytes_written += 1;
-                }
-            } else if (gp.isContinuationChar(char_code)) {
-                continue;
-            } else {
-                const codepoint = char_code;
-
-                if (codepoint == 0 or codepoint > 0x10FFFF) {
-                    if (bytes_written + 1 > output_buffer.len) {
-                        return BufferError.BufferTooSmall;
-                    }
-                    output_buffer[bytes_written] = ' ';
-                    bytes_written += 1;
-                    continue;
-                }
-
-                var utf8_bytes: [4]u8 = undefined;
-                const utf8_len = std.unicode.utf8Encode(@intCast(codepoint), &utf8_bytes) catch {
-                    if (bytes_written + 1 > output_buffer.len) {
-                        return BufferError.BufferTooSmall;
-                    }
-                    output_buffer[bytes_written] = ' ';
-                    bytes_written += 1;
-                    continue;
-                };
-
-                if (bytes_written + utf8_len > output_buffer.len) {
-                    return BufferError.BufferTooSmall;
-                }
-                @memcpy(output_buffer[bytes_written .. bytes_written + utf8_len], utf8_bytes[0..utf8_len]);
-                bytes_written += @intCast(utf8_len);
-            }
-
-            if (addLineBreaks and (i + 1) % self.width == 0) {
-                if (bytes_written + 1 > output_buffer.len) {
-                    return BufferError.BufferTooSmall;
-                }
-                output_buffer[bytes_written] = '\n';
-                bytes_written += 1;
-            }
-        }
-
-        return bytes_written;
+        return self.storage.snapshot().writeResolvedChars(output_buffer, addLineBreaks);
     }
 
     pub fn blendCells(self: *const OptimizedBuffer, overlayCell: Cell, destCell: Cell) Cell {
@@ -1204,10 +1724,10 @@ pub const OptimizedBuffer = struct {
                 const rowSliceBg = self.buffer.bg[rowStartIndex .. rowStartIndex + rowWidth];
                 const rowSliceAttrs = self.buffer.attributes[rowStartIndex .. rowStartIndex + rowWidth];
 
-                @memset(rowSliceChar, @intCast(DEFAULT_SPACE_CHAR));
+                fillU32(rowSliceChar, DEFAULT_SPACE_CHAR);
                 @memset(rowSliceFg, ansi.rgbColor(255, 255, 255, 255));
                 @memset(rowSliceBg, bg);
-                @memset(rowSliceAttrs, 0);
+                fillU32(rowSliceAttrs, 0);
             }
         }
     }
@@ -1279,6 +1799,81 @@ pub const OptimizedBuffer = struct {
         return self.drawVisibleText(text, x, @intCast(y), fg, bg, attributes);
     }
 
+    /// Draw one row of UTF-8 with base style bits and packed color intent.
+    /// Tabs retain drawText's two-cell expansion, and glyphs place as in TextRow. A signed
+    /// position draws only the cells inside the buffer, with the same clipping as drawTextClipped.
+    /// Reject oversized input, invalid UTF-8, and unqualified image resources.
+    /// Rejection preserves cells and live references; prepared capacity may remain.
+    pub fn drawTextChecked(
+        self: *OptimizedBuffer,
+        text: []const u8,
+        x: i32,
+        y: i32,
+        fg: RGBA,
+        bg: ?RGBA,
+        attributes: u32,
+    ) error{ InvalidUnicode, InvalidOptions, TextLimit, UnsupportedResource, OutOfMemory, TrackerLimit }!void {
+        if (text.len > text_bytes_max) return error.TextLimit;
+        try self.checkImageResources();
+        if (attributes & ~ansi.TextAttributes.ATTRIBUTE_BASE_MASK != 0) return error.InvalidOptions;
+        try validateColor(fg);
+        if (bg) |background| try validateColor(background);
+        try validateTextInput(text);
+        if (y < 0 or x >= self.width or y >= self.height or text.len == 0) return;
+        const row: u32 = @intCast(y);
+        try self.checkDrawState();
+        const opacity = self.getCurrentOpacity();
+        if (self.skipTransparentCellDraw(opacity, isFullyTransparent(opacity, fg, bg orelse ansi.rgbColor(0, 0, 0, 0)))) return;
+
+        var scratch = std.heap.stackFallback(4096, self.allocator);
+        const scratch_allocator = scratch.get();
+        // Pool growth can move input borrowed from this same pool.
+        const input = try scratch_allocator.dupe(u8, text);
+        defer scratch_allocator.free(input);
+        var clusters: std.ArrayListUnmanaged(utf8.RenderClusterInfo) = .empty;
+        defer clusters.deinit(scratch_allocator);
+        try utf8.findRenderClusterInfo(scratch_allocator, input, TextRow.tab_width, utf8.isAsciiOnly(input), self.width_method, &clusters);
+
+        const PreparedRun = struct { x: u32, char: u32, count: u32 };
+        var runs: std.ArrayListUnmanaged(PreparedRun) = .empty;
+        defer {
+            for (runs.items) |run| {
+                if (gp.isGraphemeChar(run.char)) self.pool.decref(gp.graphemeIdFromChar(run.char)) catch unreachable;
+            }
+            runs.deinit(scratch_allocator);
+        }
+        var grapheme_count: u32 = 0;
+        var layout: TextRow = .{ .target = self, .text = input, .clusters = clusters.items, .x = x, .y = y };
+        while (layout.next()) |glyph| {
+            try runs.ensureUnusedCapacity(scratch_allocator, 1);
+            const encoded: u32 = if (glyph.blank) DEFAULT_SPACE_CHAR else if (glyph.bytes.len == 1) glyph.bytes[0] else encoded: {
+                const id = try self.acquireGlyph(glyph.bytes);
+                grapheme_count += 1;
+                break :encoded gp.packGraphemeStart(id, glyph.width);
+            };
+            runs.appendAssumeCapacity(.{ .x = glyph.x, .char = encoded, .count = glyph.count });
+        }
+        if (runs.items.len == 0) return;
+        // Runs go left to right without overlap, so each cell is written at most once.
+        for (runs.items[0 .. runs.items.len - 1], runs.items[1..]) |previous, run| {
+            const cells = if (gp.isGraphemeChar(previous.char)) gp.encodedCharWidth(previous.char) else previous.count;
+            assert(previous.x + cells <= run.x);
+        }
+        try self.storage.ensureTrackerCapacity(
+            @min(@as(u64, self.grapheme_tracker.getGraphemeCount()) + grapheme_count, @as(u64, self.buffer.char.len) + 1),
+            self.link_tracker.getLinkCount(),
+        );
+
+        for (runs.items) |run| {
+            const background = bg orelse self.get(run.x, row).?.bg;
+            const cell = makeCell(run.char, fg, background, attributes);
+            for (0..run.count) |offset| {
+                const column = run.x + @as(u32, @intCast(offset));
+                self.setTextCell(column, row, cell);
+            }
+        }
+    }
+
     /// Draw one already-segmented grapheme with an authoritative terminal-cell width.
     pub fn drawGrapheme(
         self: *OptimizedBuffer,
@@ -1296,13 +1891,59 @@ pub const OptimizedBuffer = struct {
             if (!self.isPointInScissor(@intCast(x + offset), @intCast(y))) return;
         }
 
+        var retained_gid: ?u32 = null;
+        defer if (retained_gid) |gid| self.pool.decref(gid) catch unreachable;
         const encoded_char: u32 = if (grapheme_bytes.len == 1 and cell_width == 1 and grapheme_bytes[0] >= 32)
             grapheme_bytes[0]
         else blk: {
-            const gid = self.pool.alloc(grapheme_bytes) catch return BufferError.OutOfMemory;
+            const gid = self.pool.acquire(grapheme_bytes) catch return BufferError.OutOfMemory;
+            retained_gid = gid;
             break :blk gp.packGraphemeStart(gid & gp.GRAPHEME_ID_MASK, cell_width);
         };
         self.set(x, y, makeCell(encoded_char, fg, bg, attributes));
+    }
+
+    /// Preserve the supplied cell width and raw-cell semantics after preparing pool ownership.
+    /// A cluster that a cell cannot hold (see isPrintableGlyph) draws as spaces of that width.
+    /// The caller validates retained image resources once before drawing its cells.
+    pub fn drawGraphemeChecked(
+        self: *OptimizedBuffer,
+        grapheme_bytes: []const u8,
+        cell_width: u8,
+        x: u32,
+        y: u32,
+        fg: RGBA,
+        bg: RGBA,
+        attributes: u32,
+    ) error{ InvalidUnicode, InvalidOptions, OutOfMemory, TrackerLimit }!void {
+        if (attributes & ~ansi.TextAttributes.ATTRIBUTE_BASE_MASK != 0) return error.InvalidOptions;
+        try validateColor(fg);
+        try validateColor(bg);
+        if (grapheme_bytes.len == 0 or cell_width == 0 or x >= self.width or y >= self.height) return;
+        if (cell_width > self.width - x) return;
+        try self.checkDrawState();
+        for (0..cell_width) |offset| {
+            if (!self.isPointInScissor(@intCast(x + offset), @intCast(y))) return;
+        }
+        if (!std.unicode.utf8ValidateSlice(grapheme_bytes)) return error.InvalidUnicode;
+        if (!isPrintableGlyph(grapheme_bytes)) {
+            for (0..cell_width) |offset| {
+                self.set(x + @as(u32, @intCast(offset)), y, makeCell(DEFAULT_SPACE_CHAR, fg, bg, attributes));
+            }
+            return;
+        }
+        if (grapheme_bytes.len == 1 and cell_width == 1) {
+            self.set(x, y, makeCell(grapheme_bytes[0], fg, bg, attributes));
+            return;
+        }
+
+        const id = try self.acquireGlyph(grapheme_bytes);
+        defer self.pool.decref(id) catch unreachable;
+        try self.storage.ensureTrackerCapacity(
+            @as(u64, self.grapheme_tracker.getGraphemeCount()) + 1,
+            self.link_tracker.getLinkCount(),
+        );
+        self.set(x, y, makeCell(gp.packGraphemeStart(id, cell_width), fg, bg, attributes));
     }
 
     fn drawVisibleText(
@@ -1323,142 +1964,49 @@ pub const OptimizedBuffer = struct {
 
         const is_ascii_only = utf8.isAsciiOnly(text);
         if (explicit_colors_opaque and is_ascii_only) {
-            var printable = true;
-            for (text) |byte| {
-                if (byte < 32 or byte > 126) {
-                    printable = false;
-                    break;
-                }
+            const background = bg.?;
+            // Each printable ASCII byte is one cell, so the bytes left of column 0 are clipped.
+            const clipped_byte_count: usize = if (x < 0) @min(text.len, @abs(x)) else 0;
+            var char_x: u32 = @intCast(@max(x, 0));
+            for (text[clipped_byte_count..]) |byte| {
+                if (char_x >= self.width) break;
+                self.set(char_x, y, makeCell(byte, fg, background, attributes));
+                char_x += 1;
             }
-            if (printable) {
-                const background = bg.?;
-                // Each printable ASCII byte is one cell, so the bytes left of column 0 are clipped.
-                const clipped_byte_count: usize = if (x < 0) @min(text.len, @abs(x)) else 0;
-                var char_x: u32 = @intCast(@max(x, 0));
-                for (text[clipped_byte_count..]) |byte| {
-                    if (char_x >= self.width) break;
-                    self.set(char_x, y, makeCell(byte, fg, background, attributes));
-                    char_x += 1;
-                }
-                return;
-            }
+            return;
         }
 
-        var render_cluster_list: std.ArrayListUnmanaged(utf8.RenderClusterInfo) = .empty;
-        defer render_cluster_list.deinit(self.allocator);
+        var clusters: std.ArrayListUnmanaged(utf8.RenderClusterInfo) = .empty;
+        defer clusters.deinit(self.allocator);
+        try utf8.findRenderClusterInfo(self.allocator, text, TextRow.tab_width, is_ascii_only, self.width_method, &clusters);
 
-        const tab_width: u8 = 2;
-        try utf8.findRenderClusterInfo(self.allocator, text, tab_width, is_ascii_only, self.width_method, &render_cluster_list);
-        const render_clusters = render_cluster_list.items;
-
-        var advance_cells: u32 = 0;
-        var byte_offset: u32 = 0;
-        var col: u32 = 0;
-        var special_idx: usize = 0;
-
-        text_loop: while (byte_offset < text.len) {
-            const char_x_wide = @as(i64, x) + advance_cells;
-            if (char_x_wide >= self.width) break;
-            const char_x: i32 = @intCast(char_x_wide);
-            // Only a tab is drawn from a column left of 0; it clips each of its cells.
-            const cell_x: u32 = @intCast(@max(char_x, 0));
-
-            const at_special = special_idx < render_clusters.len and render_clusters[special_idx].col_start == col;
-
-            var grapheme_bytes: []const u8 = undefined;
-            var cluster_width_cols: u32 = undefined;
-
-            if (at_special) {
-                const g = render_clusters[special_idx];
-                grapheme_bytes = text[g.byte_start .. g.byte_start + g.byte_len];
-                cluster_width_cols = g.width_cols;
-                byte_offset = g.byte_start + g.byte_len;
-                special_idx += 1;
-            } else {
-                if (byte_offset >= text.len) break;
-                grapheme_bytes = text[byte_offset .. byte_offset + 1];
-                cluster_width_cols = 1;
-                byte_offset += 1;
+        var layout: TextRow = .{ .target = self, .text = text, .clusters = clusters.items, .x = x, .y = @intCast(y) };
+        while (layout.next()) |glyph| {
+            const background = bg orelse self.get(glyph.x, y).?.bg;
+            var retained_id: ?u32 = null;
+            defer if (retained_id) |id| self.pool.decref(id) catch unreachable;
+            const char: u32 = if (glyph.blank) DEFAULT_SPACE_CHAR else if (glyph.bytes.len == 1) glyph.bytes[0] else char: {
+                const id = self.pool.acquire(glyph.bytes) catch return BufferError.OutOfMemory;
+                retained_id = id;
+                break :char gp.packGraphemeStart(id, glyph.width);
+            };
+            const cell = makeCell(char, fg, background, attributes);
+            for (0..glyph.count) |offset| {
+                const column = glyph.x + @as(u32, @intCast(offset));
+                if (explicit_colors_opaque) self.set(column, y, cell) else self.setTextCell(column, y, cell);
             }
-
-            const is_tab = grapheme_bytes.len == 1 and grapheme_bytes[0] == '\t';
-            const cluster_byte_start = if (at_special) render_clusters[special_idx - 1].byte_start else byte_offset - 1;
-            if (!is_tab and char_x < 0) {
-                // Clip a glyph that starts left of column 0, even a wide glyph that reaches column 0.
-                // Advance as a drawn glyph does, so the visible glyphs keep their columns.
-                advance_cells += utf8.getWidthAt(text, cluster_byte_start, tab_width, self.width_method);
-                col += cluster_width_cols;
-                continue;
-            }
-            if (!is_tab and !self.isPointInScissor(char_x, @intCast(y))) {
-                advance_cells += cluster_width_cols;
-                col += cluster_width_cols;
-                continue;
-            }
-
-            var bgColor: RGBA = undefined;
-            if (bg) |b| {
-                bgColor = b;
-            } else if (self.get(cell_x, y)) |existingCell| {
-                bgColor = existingCell.bg;
-            } else {
-                bgColor = ansi.rgbColor(0, 0, 0, 255);
-            }
-
-            const cell_width = utf8.getWidthAt(text, cluster_byte_start, tab_width, self.width_method);
-            if (cell_width == 0) {
-                col += cluster_width_cols;
-                continue;
-            }
-            if (cell_width > 1 and !is_tab) {
-                if (cell_x + cell_width > self.width) {
-                    advance_cells += cluster_width_cols;
-                    col += cluster_width_cols;
-                    continue;
-                }
-                for (1..cell_width) |span_offset| {
-                    if (!self.isPointInScissor(char_x + @as(i32, @intCast(span_offset)), @intCast(y))) {
-                        advance_cells += cluster_width_cols;
-                        col += cluster_width_cols;
-                        continue :text_loop;
-                    }
-                }
-            }
-
-            if (is_tab) {
-                var tab_col: u32 = 0;
-                while (tab_col < cluster_width_cols) : (tab_col += 1) {
-                    const tab_x = @as(i64, char_x) + tab_col;
-                    if (tab_x < 0) continue;
-                    if (tab_x >= self.width) break;
-                    if (!self.isPointInScissor(@intCast(tab_x), @intCast(y))) continue;
-
-                    const tab_cell_x: u32 = @intCast(tab_x);
-                    const cell = makeCell(DEFAULT_SPACE_CHAR, fg, bgColor, attributes);
-                    if (explicit_colors_opaque) self.set(tab_cell_x, y, cell) else self.setTextCell(tab_cell_x, y, cell);
-                }
-                advance_cells += cluster_width_cols;
-                col += cluster_width_cols;
-                continue;
-            }
-
-            var encoded_char: u32 = 0;
-            if (grapheme_bytes.len == 1 and cell_width == 1 and grapheme_bytes[0] >= 32) {
-                encoded_char = @as(u32, grapheme_bytes[0]);
-            } else {
-                const gid = self.pool.alloc(grapheme_bytes) catch return BufferError.OutOfMemory;
-                encoded_char = gp.packGraphemeStart(gid & gp.GRAPHEME_ID_MASK, cell_width);
-            }
-
-            const cell = makeCell(encoded_char, fg, bgColor, attributes);
-            if (explicit_colors_opaque) self.set(cell_x, y, cell) else self.setTextCell(cell_x, y, cell);
-
-            advance_cells += cell_width;
-            col += cluster_width_cols;
         }
     }
 
     pub fn drawFrameBuffer(self: *OptimizedBuffer, destX: i32, destY: i32, frameBuffer: *OptimizedBuffer, sourceX: ?u32, sourceY: ?u32, sourceWidth: ?u32, sourceHeight: ?u32) void {
+        self.drawFrameBufferInternal(destX, destY, frameBuffer, sourceX, sourceY, sourceWidth, sourceHeight, false) catch unreachable;
+    }
+
+    pub fn drawFrameBufferChecked(self: *OptimizedBuffer, destX: i32, destY: i32, frameBuffer: *OptimizedBuffer, sourceX: ?u32, sourceY: ?u32, sourceWidth: ?u32, sourceHeight: ?u32) !void {
+        try self.drawFrameBufferInternal(destX, destY, frameBuffer, sourceX, sourceY, sourceWidth, sourceHeight, true);
+    }
+
+    fn drawFrameBufferInternal(self: *OptimizedBuffer, destX: i32, destY: i32, frameBuffer: *OptimizedBuffer, sourceX: ?u32, sourceY: ?u32, sourceWidth: ?u32, sourceHeight: ?u32, checked: bool) !void {
         if (self.width == 0 or self.height == 0 or frameBuffer.width == 0 or frameBuffer.height == 0) return;
 
         const opacity = self.getCurrentOpacity();
@@ -1498,7 +2046,7 @@ pub const OptimizedBuffer = struct {
         const clippedEndX = @min(endDestX, @as(i32, @intCast(clippedRect.x + @as(i32, @intCast(clippedRect.width)) - 1)));
         const clippedEndY = @min(endDestY, @as(i32, @intCast(clippedRect.y + @as(i32, @intCast(clippedRect.height)) - 1)));
 
-        if (!graphemeAware and !frameBuffer.respectAlpha and !linkAware and !imageAware) {
+        if (opacity == 1.0 and !graphemeAware and !frameBuffer.respectAlpha and !linkAware and !imageAware) {
             // Fast path: direct memory copy
             const first_source_y = srcY + @as(u32, @intCast(clippedStartY - destY));
             const first_source_x = srcX + @as(u32, @intCast(clippedStartX - destX));
@@ -1541,9 +2089,15 @@ pub const OptimizedBuffer = struct {
         }
 
         const has_source_images = frameBuffer.image_placements.items.len != 0;
+        if (checked and frameBuffer.image_placements.items.len > gp.IMAGE_ID_MASK - self.image_placements.items.len) return error.ObjectLimit;
+        if (checked) {
+            for (frameBuffer.image_placements.items) |placement| {
+                if (placement.image.ref_count > math.maxInt(u32) - frameBuffer.image_placements.items.len) return error.ObjectLimit;
+            }
+        }
         var empty_image_id_map = [_]u32{0};
         const allocated_image_id_map = if (has_source_images)
-            self.allocator.alloc(u32, frameBuffer.image_placements.items.len + 1) catch null
+            self.allocator.alloc(u32, frameBuffer.image_placements.items.len + 1) catch |err| if (checked) return err else null
         else
             null;
         const image_id_map = allocated_image_id_map orelse empty_image_id_map[0..];
@@ -1552,16 +2106,17 @@ pub const OptimizedBuffer = struct {
         var can_copy_images = allocated_image_id_map != null;
         if (can_copy_images) {
             self.image_placements.ensureTotalCapacity(
-                self.allocator,
+                self.storage.resourceAllocator(),
                 self.image_placements.items.len + frameBuffer.image_placements.items.len,
-            ) catch {
+            ) catch |err| {
+                if (checked) return err;
                 can_copy_images = false;
             };
         }
         for (frameBuffer.image_placements.items, 1..) |placement, source_id| {
             if (!can_copy_images or self.image_placements.items.len >= gp.IMAGE_ID_MASK) break;
-            const full_x = destX + placement.x - @as(i32, @intCast(srcX));
-            const full_y = destY + placement.y - @as(i32, @intCast(srcY));
+            const full_x = @as(i64, destX) + placement.x - srcX;
+            const full_y = @as(i64, destY) + placement.y - srcY;
             const x0 = @max(full_x, clippedStartX);
             const y0 = @max(full_y, clippedStartY);
             const x1 = @min(full_x + @as(i32, @intCast(placement.width)), clippedEndX + 1);
@@ -1581,8 +2136,8 @@ pub const OptimizedBuffer = struct {
                 .placement_id = @intCast(self.image_placements.items.len + 1),
                 .image_handle = placement.image_handle,
                 .image = placement.image,
-                .x = x0,
-                .y = y0,
+                .x = @intCast(x0),
+                .y = @intCast(y0),
                 .width = visible_width,
                 .height = visible_height,
                 .pixel_width = if (placement.pixel_width == 0) 0 else @intCast((@as(u64, visible_width) * placement.pixel_width + placement.width - 1) / placement.width),
@@ -1600,7 +2155,7 @@ pub const OptimizedBuffer = struct {
 
         var dY = clippedStartY;
         while (dY <= clippedEndY) : (dY += 1) {
-            var lastDrawnGraphemeId: u32 = 0;
+            var lastDrawnGraphemeId: ?u32 = null;
 
             var dX = clippedStartX;
             while (dX <= clippedEndX) : (dX += 1) {
@@ -1655,7 +2210,13 @@ pub const OptimizedBuffer = struct {
                     }
 
                     if (gp.isGraphemeChar(srcChar)) {
-                        lastDrawnGraphemeId = srcChar & gp.GRAPHEME_ID_MASK;
+                        if (gp.charRightExtent(srcChar) > @as(u32, @intCast(clippedEndX - dX))) {
+                            // Partial spans become styled spaces, as at the left edge.
+                            srcChar = DEFAULT_SPACE_CHAR;
+                            lastDrawnGraphemeId = null;
+                        } else {
+                            lastDrawnGraphemeId = srcChar & gp.GRAPHEME_ID_MASK;
+                        }
                     }
 
                     self.setCellWithAlphaBlendingCell(
@@ -1666,11 +2227,10 @@ pub const OptimizedBuffer = struct {
                     continue;
                 }
 
-                self.setCellWithAlphaBlendingRawCell(
-                    @intCast(dX),
-                    @intCast(dY),
-                    makeCell(srcChar, srcFg, srcBg, srcAttr),
-                );
+                const cell = makeCell(srcChar, srcFg, srcBg, srcAttr);
+                if (imageAware) {
+                    self.setCellWithAlphaBlendingRawImageAware(@intCast(dX), @intCast(dY), cell);
+                } else self.setCellWithAlphaBlendingRawCell(@intCast(dX), @intCast(dY), cell);
             }
         }
     }
@@ -1682,7 +2242,20 @@ pub const OptimizedBuffer = struct {
         x: i32,
         y: i32,
     ) void {
-        self.drawTextBufferInternal(TextBufferView, text_buffer_view, x, y);
+        self.drawTextBufferInternal(TextBufferView, false, text_buffer_view, x, y) catch |err| {
+            self.logger.warn("drawTextBuffer failed: {}", .{err});
+        };
+    }
+
+    /// Errors can leave partial cells. The frame owner must clear or discard them.
+    /// Every cell write has tracker capacity and a live glyph reference prepared.
+    pub fn drawTextBufferChecked(
+        self: *OptimizedBuffer,
+        text_buffer_view: *TextBufferView,
+        x: i32,
+        y: i32,
+    ) !void {
+        return self.drawTextBufferInternal(TextBufferView, true, text_buffer_view, x, y);
     }
 
     /// Internal implementation that accepts either TextBufferView or EditorView
@@ -1690,17 +2263,35 @@ pub const OptimizedBuffer = struct {
     fn drawTextBufferInternal(
         self: *OptimizedBuffer,
         comptime ViewType: type,
+        comptime checked: bool,
         view: *ViewType,
         x: i32,
         y: i32,
-    ) void {
+    ) !void {
         view.setDrawY(y);
         const opacity = self.getCurrentOpacity();
         if (opacity == 0.0) return;
 
         const virtual_lines = view.getVirtualLines();
+        const layout_view = if (ViewType == TextBufferView) view else view.getTextBufferView();
+        if (checked and (layout_view.virtual_lines_dirty or
+            (layout_view.truncate and layout_view.viewport != null and !layout_view.truncation_applied)))
+        {
+            return error.OutOfMemory;
+        }
         const viewport = view.getViewport();
         const text_buffer = view.getTextBuffer();
+        const tab_indicator = view.getTabIndicator();
+        const tab_indicator_color = view.getTabIndicatorColor();
+        var indicator_bytes: [4]u8 = undefined;
+        const indicator_length = if (tab_indicator) |scalar|
+            std.unicode.utf8Encode(std.math.cast(u21, scalar) orelse return error.InvalidUnicode, &indicator_bytes) catch return error.InvalidUnicode
+        else
+            0;
+        const indicator_width = if (indicator_length != 0)
+            utf8.getGraphemeWidthAt(indicator_bytes[0..indicator_length], 0, text_buffer.tabWidth(), text_buffer.widthMethod())
+        else
+            0;
         const text_defaults = text_buffer.defaults();
         const PrefilledViewportBg = struct {
             bg: RGBA,
@@ -1718,7 +2309,7 @@ pub const OptimizedBuffer = struct {
 
         if (virtual_lines.len == 0) return;
 
-        const firstVisibleLine: u32 = if (y < 0) @intCast(-y) else 0;
+        const firstVisibleLine: u32 = if (y < 0) @intCast(-@as(i64, y)) else 0;
         const bufferBottomY = self.height;
         const lastPossibleLine = if (y >= @as(i32, @intCast(bufferBottomY)))
             0
@@ -1738,6 +2329,7 @@ pub const OptimizedBuffer = struct {
         const total_line_count = text_buffer.lineCount();
 
         const line_info = view.getCachedLineInfo();
+        const selection = view.getSelection();
         var document_cell_offset: u32 = if (firstVisibleLine < line_info.line_start_cols.len)
             line_info.line_start_cols[firstVisibleLine]
         else
@@ -1755,6 +2347,8 @@ pub const OptimizedBuffer = struct {
             currentX = x + align_pad;
             var rendered_col_in_vline: u32 = 0;
             document_cell_offset = vline.document_cell_offset;
+            // The glyph that this draw wrote just before the current cluster, if any.
+            var mark_base: ?MarkBase = null;
 
             const vline_span_info = view.getVirtualLineSpans(vline_idx);
             const spans = vline_span_info.spans;
@@ -1796,7 +2390,10 @@ pub const OptimizedBuffer = struct {
             for (vline.chunks.items) |vchunk| {
                 const chunk = vchunk.chunk;
                 const chunk_bytes = chunk.getBytes(text_buffer.memRegistry());
-                const render_clusters = chunk.getRenderClusters(text_buffer.getAllocator(), text_buffer.memRegistry(), text_buffer.tabWidth(), text_buffer.widthMethod()) catch continue;
+                const render_clusters = chunk.getRenderClusters(text_buffer.getAllocator(), text_buffer.memRegistry(), text_buffer.tabWidth(), text_buffer.widthMethod()) catch |err| {
+                    if (checked) return err;
+                    continue;
+                };
                 const line_col_offset = vline.document_cell_offset;
 
                 if (currentX >= @as(i32, @intCast(self.width))) {
@@ -1819,6 +2416,7 @@ pub const OptimizedBuffer = struct {
 
                     var grapheme_bytes: []const u8 = undefined;
                     var cluster_width_cols: u32 = undefined;
+                    var ascii = false;
 
                     if (at_special) {
                         const g = render_clusters[special_idx];
@@ -1832,9 +2430,15 @@ pub const OptimizedBuffer = struct {
                         const cp_len = std.unicode.utf8ByteSequenceLength(chunk_bytes[byte_offset]) catch 1;
                         const next_byte_offset = @min(byte_offset + cp_len, byte_end);
                         grapheme_bytes = chunk_bytes[byte_offset..next_byte_offset];
-                        cluster_width_cols = 1;
+                        // Sparse metadata omits printable ASCII and zero-width control characters.
+                        // Printable ASCII is one cell under every width method.
+                        ascii = isPrintableAscii(grapheme_bytes);
+                        cluster_width_cols = if (ascii) 1 else utf8.getWidthAt(grapheme_bytes, 0, text_buffer.tabWidth(), text_buffer.widthMethod());
                         byte_offset = next_byte_offset;
                     }
+                    // Only a glyph that this iteration draws, or a zero-width cluster, sets it again.
+                    const previous_glyph = mark_base;
+                    mark_base = null;
 
                     if (rendered_col_in_vline < horizontal_offset) {
                         document_cell_offset += cluster_width_cols;
@@ -1867,7 +2471,8 @@ pub const OptimizedBuffer = struct {
                     }
 
                     const is_tab = grapheme_bytes.len == 1 and grapheme_bytes[0] == '\t';
-                    if (!is_tab and !self.isPointInScissor(currentX, currentY)) {
+                    const is_blank = !ascii and !isPrintableGlyph(grapheme_bytes);
+                    if (!is_blank and !self.isPointInScissor(currentX, currentY)) {
                         document_cell_offset += cluster_width_cols;
                         currentX += @as(i32, @intCast(cluster_width_cols));
                         rendered_col_in_vline += cluster_width_cols;
@@ -1875,7 +2480,7 @@ pub const OptimizedBuffer = struct {
                         continue;
                     }
 
-                    if (cluster_width_cols > 1 and !is_tab) {
+                    if (cluster_width_cols > 1 and !is_blank) {
                         if (rendered_col_in_vline + cluster_width_cols > horizontal_offset + viewport_width or
                             currentX < 0 or currentX + @as(i32, @intCast(cluster_width_cols)) > @as(i32, @intCast(self.width)))
                         {
@@ -1997,7 +2602,7 @@ pub const OptimizedBuffer = struct {
 
                     var cell_idx: u32 = 0;
                     while (cell_idx < cluster_width_cols) : (cell_idx += 1) {
-                        if (view.getSelection()) |sel| {
+                        if (selection) |sel| {
                             const isSelected = selection_offset + cell_idx >= sel.start and selection_offset + cell_idx < sel.end;
                             if (isSelected) {
                                 if (sel.bgColor) |selBg| {
@@ -2015,9 +2620,14 @@ pub const OptimizedBuffer = struct {
                         }
                     }
 
-                    // Skip zero-width characters (ZWJ, VS16, etc.) - don't render them
-                    // Don't increment col since they take no space
                     if (cluster_width_cols == 0) {
+                        // A combining mark joins the glyph before it; other zero-width clusters keep it.
+                        if (previous_glyph) |glyph| {
+                            mark_base = if (utf8.isCombiningMark(grapheme_bytes))
+                                try self.attachCombiningMark(checked, grapheme_bytes, glyph, @intCast(currentY))
+                            else
+                                glyph;
+                        }
                         continue;
                     }
 
@@ -2037,15 +2647,26 @@ pub const OptimizedBuffer = struct {
                         }
                     }
 
-                    // TextBuffer/Textarea typically render opaque glyphs onto a
-                    // transparent bg. Reuse the direct transparent-text write
-                    // path instead of paying for generic per-cell blending.
-                    const useTransparentTextFastPath = self.getCurrentOpacity() == 1.0 and ansi.alpha(drawBg) == 0;
+                    const link_id = ansi.TextAttributes.getLinkId(drawAttributes);
+                    if (link_id != 0) {
+                        // set() pins the link and then writes its cells, so leave a spare
+                        // map entry even after the first insertion by its void tracker.
+                        try self.storage.ensureTrackerCapacity(
+                            self.grapheme_tracker.getGraphemeCount(),
+                            @as(u64, self.link_tracker.getLinkCount()) + 2,
+                        );
+                        const refs = try self.link_pool.getRefcount(link_id);
+                        if (refs >= math.maxInt(u32) - 1) return error.TrackerLimit;
+                        self.link_pool.incref(link_id) catch |err| switch (err) {
+                            error.RefcountOverflow => return error.TrackerLimit,
+                            error.InvalidId, error.WrongGeneration => return err,
+                            error.OutOfMemory, error.UrlTooLong => unreachable,
+                        };
+                    }
+                    defer if (link_id != 0) self.link_pool.decref(link_id) catch unreachable;
 
-                    if (is_tab) {
-                        const tab_indicator = view.getTabIndicator();
-                        const tab_indicator_color = view.getTabIndicatorColor();
-
+                    if (is_blank) {
+                        const useTransparentTextFastPath = opacity == 1.0 and ansi.alpha(drawBg) == 0;
                         var tab_col: u32 = 0;
                         while (tab_col < cluster_width_cols) : (tab_col += 1) {
                             if (rendered_col_in_vline + tab_col >= horizontal_offset + viewport_width) break;
@@ -2054,8 +2675,26 @@ pub const OptimizedBuffer = struct {
                             if (tab_x >= @as(i32, @intCast(self.width))) break;
                             if (!self.isPointInScissor(tab_x, currentY)) continue;
 
-                            const char = if (tab_col == 0 and tab_indicator != null) tab_indicator.? else DEFAULT_SPACE_CHAR;
-                            const fg = if (tab_col == 0 and tab_indicator_color != null) tab_indicator_color.? else drawFg;
+                            var char = DEFAULT_SPACE_CHAR;
+                            var fg = drawFg;
+                            if (is_tab and tab_col == 0 and indicator_width > 0 and indicator_width <= cluster_width_cols and
+                                @as(u64, rendered_col_in_vline) + indicator_width <= @as(u64, horizontal_offset) + viewport_width)
+                            {
+                                if (indicator_width == 1) {
+                                    char = tab_indicator.?;
+                                    fg = tab_indicator_color orelse drawFg;
+                                } else if (indicator_width <= self.width - @as(u32, @intCast(tab_x))) {
+                                    var visible = true;
+                                    for (1..indicator_width) |offset| {
+                                        if (!self.isPointInScissor(tab_x + @as(i32, @intCast(offset)), currentY)) visible = false;
+                                    }
+                                    if (visible) {
+                                        _ = try self.drawTextBufferGrapheme(checked, indicator_bytes[0..indicator_length], indicator_width, @intCast(tab_x), @intCast(currentY), tab_indicator_color orelse drawFg, drawBg, drawAttributes);
+                                        tab_col += indicator_width - 1;
+                                        continue;
+                                    }
+                                }
+                            }
 
                             if (useTransparentTextFastPath) {
                                 const index = self.coordsToIndex(@intCast(tab_x), @intCast(currentY));
@@ -2070,37 +2709,18 @@ pub const OptimizedBuffer = struct {
                                 makeCell(char, fg, drawBg, drawAttributes),
                             );
                         }
-                    } else {
-                        var encoded_char: u32 = 0;
-                        if (grapheme_bytes.len == 1 and cluster_width_cols == 1 and grapheme_bytes[0] >= 32) {
-                            encoded_char = @as(u32, grapheme_bytes[0]);
-                        } else {
-                            const gid = self.pool.alloc(grapheme_bytes) catch |err| {
-                                logger.warn("GraphemePool.alloc FAILED for grapheme (len={d}, bytes={any}): {}", .{ grapheme_bytes.len, grapheme_bytes, err });
-                                document_cell_offset += cluster_width_cols;
-                                currentX += @as(i32, @intCast(cluster_width_cols));
-                                col += cluster_width_cols;
-                                continue;
-                            };
-                            encoded_char = gp.packGraphemeStart(gid & gp.GRAPHEME_ID_MASK, cluster_width_cols);
-                        }
-
-                        if (useTransparentTextFastPath) {
-                            const index = self.coordsToIndex(@intCast(currentX), @intCast(currentY));
-                            if (self.trySetTransparentTextCellFast(index, encoded_char, drawFg, drawAttributes)) {
-                                document_cell_offset += cluster_width_cols;
-                                currentX += @as(i32, @intCast(cluster_width_cols));
-                                rendered_col_in_vline += cluster_width_cols;
-                                col += cluster_width_cols;
-                                continue;
-                            }
-                        }
-
-                        self.setCellWithAlphaBlendingCell(
-                            @intCast(currentX),
-                            @intCast(currentY),
-                            makeCell(encoded_char, drawFg, drawBg, drawAttributes),
-                        );
+                    } else if (ascii and opacity == 1.0 and ansi.alpha(drawBg) == 0 and
+                        self.trySetTransparentTextCellFast(
+                            self.coordsToIndex(@intCast(currentX), @intCast(currentY)),
+                            grapheme_bytes[0],
+                            drawFg,
+                            drawAttributes,
+                        ))
+                    {
+                        // Opaque ASCII over a transparent background needs no pool or blending work.
+                        mark_base = .{ .x = @intCast(currentX), .char = grapheme_bytes[0] };
+                    } else if (try self.drawTextBufferGrapheme(checked, grapheme_bytes, cluster_width_cols, @intCast(currentX), @intCast(currentY), drawFg, drawBg, drawAttributes)) |char| {
+                        mark_base = .{ .x = @intCast(currentX), .char = char };
                     }
 
                     document_cell_offset += cluster_width_cols;
@@ -2124,6 +2744,75 @@ pub const OptimizedBuffer = struct {
         }
     }
 
+    /// Combines a zero-width mark with the glyph that this draw wrote just before it, as if both
+    /// were one cluster. The cell keeps its colors, which already have opacity applied.
+    /// Returns the combined glyph, or null when the cell does not hold that glyph or cannot
+    /// hold the combination.
+    fn attachCombiningMark(self: *OptimizedBuffer, comptime checked: bool, mark: []const u8, base: MarkBase, y: u32) !?MarkBase {
+        const index = self.coordsToIndex(base.x, y);
+        // A blended space keeps the glyph under it, which this draw did not write.
+        if (self.buffer.char[index] != base.char) return null;
+        var ascii: [1]u8 = undefined;
+        const base_bytes: []const u8 = if (gp.isGraphemeChar(base.char))
+            // The cell holds a tracker reference, so the pool entry is live.
+            self.pool.get(gp.graphemeIdFromChar(base.char)) catch unreachable
+        else bytes: {
+            // Text views write only printable ASCII as a scalar cell.
+            assert(base.char >= 0x20 and base.char < 0x7f);
+            ascii[0] = @intCast(base.char);
+            break :bytes &ascii;
+        };
+        var combined: [grapheme_bytes_max]u8 = undefined;
+        if (base_bytes.len + mark.len > combined.len) return null;
+        @memcpy(combined[0..base_bytes.len], base_bytes);
+        @memcpy(combined[base_bytes.len..][0..mark.len], mark);
+        const id = self.acquireGlyph(combined[0 .. base_bytes.len + mark.len]) catch |err| {
+            if (checked) return err;
+            self.logger.warn("Failed to allocate grapheme: {}", .{err});
+            return null;
+        };
+        defer self.pool.decref(id) catch unreachable;
+        try self.storage.ensureTrackerCapacity(
+            @as(u64, self.grapheme_tracker.getGraphemeCount()) + 1,
+            self.link_tracker.getLinkCount(),
+        );
+        const char = gp.packGraphemeStart(id, gp.encodedCharWidth(base.char));
+        self.set(base.x, y, makeCell(char, self.buffer.fg[index], self.buffer.bg[index], self.buffer.attributes[index]));
+        return .{ .x = base.x, .char = char };
+    }
+
+    /// Returns the cell character it drew, or null when it drew nothing.
+    fn drawTextBufferGrapheme(self: *OptimizedBuffer, comptime checked: bool, bytes: []const u8, width: u32, x: u32, y: u32, fg: RGBA, bg: RGBA, attributes: u32) !?u32 {
+        const opacity = self.getCurrentOpacity();
+        if (self.skipTransparentCellDraw(opacity, isFullyTransparent(opacity, fg, bg))) return null;
+        var encoded_char: u32 = 0;
+        var retained_gid: ?u32 = null;
+        defer if (retained_gid) |gid| self.pool.decref(gid) catch unreachable;
+        if (bytes.len == 1 and width == 1 and bytes[0] >= 32) {
+            encoded_char = @as(u32, bytes[0]);
+        } else {
+            const gid = self.acquireGlyph(bytes) catch |err| {
+                if (checked) return err;
+                self.logger.warn("Failed to allocate grapheme: {}", .{err});
+                return null;
+            };
+            // Temporary reference reclaims glyphs discarded by blending.
+            retained_gid = gid;
+            try self.storage.ensureTrackerCapacity(
+                @as(u64, self.grapheme_tracker.getGraphemeCount()) + 1,
+                self.link_tracker.getLinkCount(),
+            );
+            encoded_char = gp.packGraphemeStart(gid & gp.GRAPHEME_ID_MASK, width);
+        }
+        // Opaque text on transparent backgrounds avoids generic per-cell blending.
+        if (opacity == 1.0 and ansi.alpha(bg) == 0) {
+            const index = self.coordsToIndex(x, y);
+            if (self.trySetTransparentTextCellFast(index, encoded_char, fg, attributes)) return encoded_char;
+        }
+        self.setCellWithAlphaBlendingCell(x, y, makeCell(encoded_char, fg, bg, attributes));
+        return encoded_char;
+    }
+
     /// Draw an EditorView to this OptimizedBuffer
     /// EditorView wraps TextBufferView, so we just delegate to drawTextBufferInternal
     /// EditorView handles viewport management and returns only the visible lines
@@ -2133,7 +2822,18 @@ pub const OptimizedBuffer = struct {
         x: i32,
         y: i32,
     ) void {
-        self.drawTextBufferInternal(EditorView, editor_view, x, y);
+        self.drawTextBufferInternal(EditorView, false, editor_view, x, y) catch |err| {
+            self.logger.warn("drawEditorView failed: {}", .{err});
+        };
+    }
+
+    pub fn drawEditorViewChecked(
+        self: *OptimizedBuffer,
+        editor_view: *EditorView,
+        x: i32,
+        y: i32,
+    ) !void {
+        return self.drawTextBufferInternal(EditorView, true, editor_view, x, y);
     }
 
     /// Draw a complete border grid in a single call.
@@ -2155,7 +2855,8 @@ pub const OptimizedBuffer = struct {
         if (!drawInner and !drawOuter) return;
 
         const opacity = self.getCurrentOpacity();
-        if (isFullyTransparent(opacity, borderFg, borderBg)) return;
+        if (self.skipTransparentCellDraw(opacity, isFullyTransparent(opacity, borderFg, borderBg))) return;
+        const transparent_fast = opacity == 1.0 and ansi.alpha(borderBg) == 0 and gridBorderCharsSingleWidth(borderChars);
 
         const hChar = borderChars[@intFromEnum(BorderCharIndex.horizontal)];
         const vChar = borderChars[@intFromEnum(BorderCharIndex.vertical)];
@@ -2163,6 +2864,8 @@ pub const OptimizedBuffer = struct {
         const bufHeight = self.height;
         const bufWidthI32 = @as(i32, @intCast(bufWidth));
         const bufHeightI32 = @as(i32, @intCast(bufHeight));
+        var first_visible_column: u32 = 0;
+        while (first_visible_column <= columnCount and columnOffsets[first_visible_column] < 0) : (first_visible_column += 1) {}
 
         // Draw row-by-row: horizontal border line, then vertical borders for the row's content area
         var rowIdx: u32 = 0;
@@ -2174,7 +2877,7 @@ pub const OptimizedBuffer = struct {
 
             // --- horizontal border line: intersections + fills ---
             if (should_draw_horizontal and borderY >= 0) {
-                var colBorderIdx: u32 = 0;
+                var colBorderIdx: u32 = first_visible_column;
                 while (colBorderIdx <= columnCount) : (colBorderIdx += 1) {
                     const is_outer_col = colBorderIdx == 0 or colBorderIdx == columnCount;
                     const should_draw_vertical = if (is_outer_col) drawOuter else drawInner;
@@ -2190,15 +2893,15 @@ pub const OptimizedBuffer = struct {
                     const has_right = colBorderIdx < columnCount;
                     const intersection = tableBorderIntersectionByConnections(borderChars, has_up, has_down, has_left, has_right);
 
-                    self.setRaw(@as(u32, @intCast(bx)), @as(u32, @intCast(borderY)), .{ .char = intersection, .fg = borderFg, .bg = borderBg, .attributes = 0 });
+                    self.setGridCell(transparent_fast, @intCast(bx), @intCast(borderY), intersection, borderFg, borderBg);
                 }
 
-                var colIdx: u32 = 0;
+                var colIdx: u32 = first_visible_column -| 1;
                 while (colIdx < columnCount) : (colIdx += 1) {
                     const has_boundary_after = if (colIdx < columnCount - 1) drawInner else drawOuter;
                     const boundary_padding: i32 = if (has_boundary_after) 0 else 1;
-                    const startX = columnOffsets[colIdx] + 1;
-                    const endX = columnOffsets[colIdx + 1] + boundary_padding;
+                    const startX = @as(i64, columnOffsets[colIdx]) + 1;
+                    const endX = @as(i64, columnOffsets[colIdx + 1]) + boundary_padding;
 
                     if (startX >= bufWidthI32) break;
                     if (endX <= 0) continue;
@@ -2208,10 +2911,9 @@ pub const OptimizedBuffer = struct {
 
                     if (clampedStart < clampedEnd) {
                         const borderYU32 = @as(u32, @intCast(borderY));
-                        @memset(self.buffer.char[borderYU32 * bufWidth + clampedStart .. borderYU32 * bufWidth + clampedEnd], hChar);
-                        @memset(self.buffer.fg[borderYU32 * bufWidth + clampedStart .. borderYU32 * bufWidth + clampedEnd], borderFg);
-                        @memset(self.buffer.bg[borderYU32 * bufWidth + clampedStart .. borderYU32 * bufWidth + clampedEnd], borderBg);
-                        @memset(self.buffer.attributes[borderYU32 * bufWidth + clampedStart .. borderYU32 * bufWidth + clampedEnd], 0);
+                        for (clampedStart..clampedEnd) |x| {
+                            self.setGridCell(transparent_fast, @intCast(x), borderYU32, hChar, borderFg, borderBg);
+                        }
                     }
                 }
             }
@@ -2221,14 +2923,11 @@ pub const OptimizedBuffer = struct {
             // --- vertical borders for each content line in this row ---
             const has_row_boundary_after = if (rowIdx < rowCount - 1) drawInner else drawOuter;
             const row_boundary_padding: i32 = if (has_row_boundary_after) 0 else 1;
-            const contentStartY = borderY + 1;
-            const contentEndY = rowOffsets[rowIdx + 1] + row_boundary_padding;
+            const contentStartY = @max(0, @as(i64, borderY) + 1);
+            const contentEndY = @as(i64, rowOffsets[rowIdx + 1]) + row_boundary_padding;
             var cy = contentStartY;
             while (cy < contentEndY and cy < bufHeightI32) : (cy += 1) {
-                if (cy < 0) continue;
-
-                const rowBase = @as(u32, @intCast(cy)) * bufWidth;
-                var colBorderIdx: u32 = 0;
+                var colBorderIdx: u32 = first_visible_column;
                 while (colBorderIdx <= columnCount) : (colBorderIdx += 1) {
                     const is_outer_col = colBorderIdx == 0 or colBorderIdx == columnCount;
                     const should_draw_vertical = if (is_outer_col) drawOuter else drawInner;
@@ -2238,14 +2937,29 @@ pub const OptimizedBuffer = struct {
                     if (bx >= bufWidthI32) break;
                     if (bx < 0) continue;
 
-                    const idx = rowBase + @as(u32, @intCast(bx));
-                    self.buffer.char[idx] = vChar;
-                    self.buffer.fg[idx] = borderFg;
-                    self.buffer.bg[idx] = borderBg;
-                    self.buffer.attributes[idx] = 0;
+                    self.setGridCell(transparent_fast, @intCast(bx), @intCast(cy), vChar, borderFg, borderBg);
                 }
             }
         }
+    }
+
+    fn gridBorderCharsSingleWidth(borderChars: [*]const u32) bool {
+        for (0..@typeInfo(BorderCharIndex).@"enum".fields.len) |index| {
+            const char = borderChars[index];
+            if (char == 0 or !isSingleWidthBorderChar(char)) return false;
+        }
+        return true;
+    }
+
+    /// Opaque border glyphs over a transparent background keep the destination background,
+    /// which is the result blending produces, so they skip the per-cell blend.
+    inline fn setGridCell(self: *OptimizedBuffer, transparent_fast: bool, x: u32, y: u32, char: u32, fg: RGBA, bg: RGBA) void {
+        if (transparent_fast and self.isPointInScissor(@intCast(x), @intCast(y)) and
+            self.trySetTransparentTextCellFast(self.coordsToIndex(x, y), char, fg, 0))
+        {
+            return;
+        }
+        self.setCellWithAlphaBlending(x, y, char, fg, bg, 0);
     }
 
     fn tableBorderIntersectionByConnections(borderChars: [*]const u32, hasUp: bool, hasDown: bool, hasLeft: bool, hasRight: bool) u32 {
@@ -2290,6 +3004,8 @@ pub const OptimizedBuffer = struct {
         return self.getCurrentOpacity() == 1.0 and
             ansi.alpha(borderColor) == 255 and
             ansi.alpha(backgroundColor) == 0 and
+            self.isPointInScissor(x, y) and
+            self.isPointInScissor(x + @as(i32, @intCast(width)) - 1, y + @as(i32, @intCast(height)) - 1) and
             !self.grapheme_tracker.hasAny() and
             !self.link_tracker.hasAny() and
             isSingleWidthBorderChar(borderChars[@intFromEnum(BorderCharIndex.topLeft)]) and
@@ -2319,6 +3035,51 @@ pub const OptimizedBuffer = struct {
         bottomTitle: ?[]const u8,
         bottomTitleAlignment: u8, // 0=left, 1=center, 2=right
     ) !void {
+        return self.drawBoxInternal(false, x, y, width, height, borderChars, borderSides, borderColor, backgroundColor, titleColor, shouldFill, title, titleAlignment, bottomTitle, bottomTitleAlignment);
+    }
+
+    /// Scene titles use the checked text path; any failure invalidates the frame.
+    pub fn drawBoxChecked(
+        self: *OptimizedBuffer,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+        borderChars: [*]const u32,
+        borderSides: BorderSides,
+        borderColor: RGBA,
+        backgroundColor: RGBA,
+        titleColor: RGBA,
+        shouldFill: bool,
+        title: ?[]const u8,
+        titleAlignment: u8,
+        bottomTitle: ?[]const u8,
+        bottomTitleAlignment: u8,
+    ) !void {
+        // Box geometry uses i32 cell arithmetic, so the far edges must fit i32.
+        if (width > math.maxInt(i32) or height > math.maxInt(i32) or
+            @as(i64, x) + width > math.maxInt(i32) or @as(i64, y) + height > math.maxInt(i32)) return error.InvalidDimensions;
+        return self.drawBoxInternal(true, x, y, width, height, borderChars, borderSides, borderColor, backgroundColor, titleColor, shouldFill, title, titleAlignment, bottomTitle, bottomTitleAlignment);
+    }
+
+    inline fn drawBoxInternal(
+        self: *OptimizedBuffer,
+        comptime checked_titles: bool,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+        borderChars: [*]const u32,
+        borderSides: BorderSides,
+        borderColor: RGBA,
+        backgroundColor: RGBA,
+        titleColor: RGBA,
+        shouldFill: bool,
+        title: ?[]const u8,
+        titleAlignment: u8,
+        bottomTitle: ?[]const u8,
+        bottomTitleAlignment: u8,
+    ) !void {
         const opacity = self.getCurrentOpacity();
 
         const border_bg_transparent = isFullyTransparent(opacity, borderColor, backgroundColor);
@@ -2329,6 +3090,7 @@ pub const OptimizedBuffer = struct {
             if (opacity == 0.0) return;
         }
         return self.drawVisibleBox(
+            checked_titles,
             x,
             y,
             width,
@@ -2351,6 +3113,7 @@ pub const OptimizedBuffer = struct {
 
     fn drawVisibleBox(
         self: *OptimizedBuffer,
+        comptime checked_titles: bool,
         x: i32,
         y: i32,
         width: u32,
@@ -2550,13 +3313,21 @@ pub const OptimizedBuffer = struct {
 
         if (titleLayout.shouldDraw) {
             if (title) |titleText| {
-                try self.drawText(titleText, @intCast(titleLayout.x), @intCast(startY), titleColor, backgroundColor, 0);
+                if (checked_titles) {
+                    try self.drawTextChecked(titleText, titleLayout.x, startY, titleColor, backgroundColor, 0);
+                } else {
+                    try self.drawText(titleText, @intCast(titleLayout.x), @intCast(startY), titleColor, backgroundColor, 0);
+                }
             }
         }
 
         if (bottomTitleLayout.shouldDraw) {
             if (bottomTitle) |titleText| {
-                try self.drawText(titleText, @intCast(bottomTitleLayout.x), @intCast(endY), titleColor, backgroundColor, 0);
+                if (checked_titles) {
+                    try self.drawTextChecked(titleText, bottomTitleLayout.x, endY, titleColor, backgroundColor, 0);
+                } else {
+                    try self.drawText(titleText, @intCast(bottomTitleLayout.x), @intCast(endY), titleColor, backgroundColor, 0);
+                }
             }
         }
     }
@@ -2622,9 +3393,10 @@ pub const OptimizedBuffer = struct {
     ) !bool {
         const opacity = opacityToU8(self.getCurrentOpacity());
         if (opacity == 0) return false;
+        if (image.ref_count == math.maxInt(u32) or self.image_placements.items.len >= gp.IMAGE_ID_MASK) return error.ObjectLimit;
         if (width == 0 or height == 0 or source_width == 0 or source_height == 0 or
             source_x >= image.width() or source_y >= image.height() or source_width > image.width() - source_x or
-            source_height > image.height() - source_y or self.image_placements.items.len >= gp.IMAGE_ID_MASK or
+            source_height > image.height() - source_y or
             self.width > std.math.maxInt(i32) or self.height > std.math.maxInt(i32)) return false;
         var clip_x0 = @max(@as(i64, pos_x), 0);
         var clip_y0 = @max(@as(i64, pos_y), 0);
@@ -2651,7 +3423,7 @@ pub const OptimizedBuffer = struct {
         const clipped_pixel_width = if (pixel_width == 0) 0 else @as(u32, @intCast((@as(u64, clipped_width) * pixel_width + width - 1) / width));
         const clipped_pixel_height = if (pixel_height == 0) 0 else @as(u32, @intCast((@as(u64, clipped_height) * pixel_height + height - 1) / height));
         const placement_id: u32 = @intCast(self.image_placements.items.len + 1);
-        try self.image_placements.append(self.allocator, .{
+        try self.image_placements.append(self.storage.resourceAllocator(), .{
             .placement_id = placement_id,
             .image_handle = image_handle,
             .image = @constCast(image),
@@ -2748,6 +3520,51 @@ pub const OptimizedBuffer = struct {
         self.clearImagePlacements();
     }
 
+    pub fn checkImageResources(self: *const OptimizedBuffer) error{UnsupportedResource}!void {
+        for (self.image_placements.items) |placement| {
+            if (self.owner_context_id == 0 or placement.image.owner_context_id != self.owner_context_id) return error.UnsupportedResource;
+        }
+    }
+
+    fn checkPixelDraw(self: *const OptimizedBuffer) !void {
+        try self.checkImageResources();
+        try self.checkDrawState();
+    }
+
+    /// Checked draws use i32 cell arithmetic, so the target and its scissor end must fit i32.
+    fn checkDrawState(self: *const OptimizedBuffer) error{InvalidOptions}!void {
+        if (self.width > math.maxInt(i32) or self.height > math.maxInt(i32)) return error.InvalidOptions;
+        if (self.getCurrentScissorRect()) |clip| {
+            if (clip.width > math.maxInt(i32) or clip.height > math.maxInt(i32) or
+                @as(i64, clip.x) + clip.width > math.maxInt(i32) or
+                @as(i64, clip.y) + clip.height > math.maxInt(i32)) return error.InvalidOptions;
+        }
+        const opacity = self.getCurrentOpacity();
+        if (!math.isFinite(opacity) or opacity < 0 or opacity > 1) return error.InvalidOptions;
+    }
+
+    /// Takes a temporary pool reference for a glyph that a cell will hold. The caller releases
+    /// it after the cell write, so the destination tracker can still take its first reference.
+    fn acquireGlyph(self: *OptimizedBuffer, bytes: []const u8) error{ OutOfMemory, TrackerLimit }!u32 {
+        // Callers draw a cluster over grapheme_bytes_max as blank cells instead.
+        assert(bytes.len <= grapheme_bytes_max);
+        const id = self.pool.acquire(bytes) catch |err| return switch (err) {
+            error.OutOfMemory => error.OutOfMemory,
+            error.RefcountOverflow => error.TrackerLimit,
+            error.GraphemeTooLong, error.InvalidId, error.WrongGeneration => unreachable,
+        };
+        if ((self.pool.getRefcount(id) catch unreachable) == math.maxInt(u32)) {
+            self.pool.decref(id) catch unreachable;
+            return error.TrackerLimit;
+        }
+        return id;
+    }
+
+    pub fn drawSuperSampleBufferChecked(self: *OptimizedBuffer, x: i32, y: i32, pixels: []const u8, format: u8, stride: u32) !void {
+        try self.checkPixelDraw();
+        try self.drawSuperSampleBufferInternal(x, y, pixels, format, stride);
+    }
+
     /// Draw a buffer of pixel data using super sampling (2x2 pixels per character cell)
     /// alignedBytesPerRow: The number of bytes per row in the pixelData buffer, considering alignment/padding.
     pub fn drawSuperSampleBuffer(
@@ -2759,41 +3576,46 @@ pub const OptimizedBuffer = struct {
         format: u8, // 0: bgra8unorm, 1: rgba8unorm
         alignedBytesPerRow: u32,
     ) void {
+        self.drawSuperSampleBufferInternal(posX, posY, pixelData[0..len], format, alignedBytesPerRow) catch {};
+    }
+
+    fn drawSuperSampleBufferInternal(self: *OptimizedBuffer, posX: i32, posY: i32, pixels: []const u8, format: u8, alignedBytesPerRow: u32) !void {
+        if (format > 1 or alignedBytesPerRow == 0 or alignedBytesPerRow % 4 != 0) return error.InvalidOptions;
+        if (pixels.len % alignedBytesPerRow != 0) return error.InvalidOptions;
         const bytesPerPixel = 4;
         const isBGRA = (format == 0);
+        const sourceWidth = alignedBytesPerRow / bytesPerPixel;
+        // Each cell samples 2x2 source pixels. Draw only the source cells inside the buffer.
+        const source_cells_x: i64 = (sourceWidth + 1) / 2;
+        const source_cells_y: i64 = @intCast((pixels.len / alignedBytesPerRow + 1) / 2);
+        const start_x: u32 = @intCast(@max(0, posX));
+        const start_y: u32 = @intCast(@max(0, posY));
+        const end_x = @min(@as(i64, self.width), @as(i64, posX) + source_cells_x);
+        const end_y = @min(@as(i64, self.height), @as(i64, posY) + source_cells_y);
 
-        // TODO: A more robust implementation might take source width/height explicitly.
-
-        // Start at the first cell inside the buffer. A negative position clips the source.
-        var y_cell: u32 = @intCast(@max(posY, 0));
-        while (y_cell < self.height) : (y_cell += 1) {
-            var x_cell: u32 = @intCast(@max(posX, 0));
-            while (x_cell < self.width) : (x_cell += 1) {
+        var y_cell = start_y;
+        while (y_cell < end_y) : (y_cell += 1) {
+            var x_cell = start_x;
+            while (x_cell < end_x) : (x_cell += 1) {
                 if (!self.isPointInScissor(@intCast(x_cell), @intCast(y_cell))) {
                     continue;
                 }
 
-                const renderX: u64 = @intCast((@as(i64, x_cell) - posX) * 2);
-                const renderY: u64 = @intCast((@as(i64, y_cell) - posY) * 2);
+                const renderX: usize = @intCast((@as(i64, x_cell) - posX) * 2);
+                const renderY: usize = @intCast((@as(i64, y_cell) - posY) * 2);
 
-                // A far negative position puts these indices past the pixel data. Saturate and clamp
-                // them to len, which getPixelColor reads as an out-of-bounds pixel.
-                const tlIndex = renderY *| alignedBytesPerRow +| renderX *| bytesPerPixel;
-                const blIndex = (renderY + 1) *| alignedBytesPerRow +| renderX *| bytesPerPixel;
+                const tlIndex: usize = @intCast(renderY * alignedBytesPerRow + renderX * bytesPerPixel);
+                const trIndex: usize = tlIndex + bytesPerPixel;
+                const blIndex: usize = @intCast((renderY + 1) * alignedBytesPerRow + renderX * bytesPerPixel);
+                const brIndex: usize = blIndex + bytesPerPixel;
 
-                const indices = [_]usize{
-                    @intCast(@min(tlIndex, len)),
-                    @intCast(@min(tlIndex +| bytesPerPixel, len)),
-                    @intCast(@min(blIndex, len)),
-                    @intCast(@min(blIndex +| bytesPerPixel, len)),
+                const missing = ansi.rgbColor(255, 0, 255, 0);
+                const pixelsRgba = [4]RGBA{
+                    getPixelColor(tlIndex, pixels.ptr, pixels.len, isBGRA),
+                    if (renderX + 1 < sourceWidth) getPixelColor(trIndex, pixels.ptr, pixels.len, isBGRA) else missing,
+                    getPixelColor(blIndex, pixels.ptr, pixels.len, isBGRA),
+                    if (renderX + 1 < sourceWidth) getPixelColor(brIndex, pixels.ptr, pixels.len, isBGRA) else missing,
                 };
-
-                // Get RGBA colors for TL, TR, BL, BR
-                var pixelsRgba: [4]RGBA = undefined;
-                pixelsRgba[0] = getPixelColor(indices[0], pixelData, len, isBGRA); // TL
-                pixelsRgba[1] = getPixelColor(indices[1], pixelData, len, isBGRA); // TR
-                pixelsRgba[2] = getPixelColor(indices[2], pixelData, len, isBGRA); // BL
-                pixelsRgba[3] = getPixelColor(indices[3], pixelData, len, isBGRA); // BR
 
                 const cellResult = renderQuadrantBlock(pixelsRgba);
 
@@ -2809,6 +3631,12 @@ pub const OptimizedBuffer = struct {
         }
     }
 
+    /// Validates visible cells before writing. The borrowed input may be unaligned.
+    pub fn drawPackedBufferChecked(self: *OptimizedBuffer, data: []const u8, x: i32, y: i32, width: u32, height: u32) !void {
+        try self.checkPixelDraw();
+        try self.drawPackedBufferInternal(true, data, x, y, width, height);
+    }
+
     /// Draw a buffer of pixel data using pre-computed super sample results from compute shader
     /// data contains an array of CellResult structs (48 bytes each)
     /// Each CellResult: bg(16) + fg(16) + char(4) + padding1(4) + padding2(4) + padding3(4) = 48 bytes
@@ -2821,42 +3649,44 @@ pub const OptimizedBuffer = struct {
         terminalWidthCells: u32,
         terminalHeightCells: u32,
     ) void {
+        self.drawPackedBufferInternal(false, data[0..dataLen], posX, posY, terminalWidthCells, terminalHeightCells) catch {};
+    }
+
+    fn drawPackedBufferInternal(self: *OptimizedBuffer, comptime checked: bool, data: []const u8, posX: i32, posY: i32, terminalWidthCells: u32, terminalHeightCells: u32) !void {
         const cellResultSize = 48;
-        const numCells = dataLen / cellResultSize;
-        const bufferWidthCells = terminalWidthCells;
-        if (bufferWidthCells == 0) return;
-
-        var i: usize = 0;
-        while (i < numCells) : (i += 1) {
-            const cellDataOffset = i * cellResultSize;
-
-            const cellX = @as(i64, posX) + @as(i64, @intCast(i % bufferWidthCells));
-            const cellY = @as(i64, posY) + @as(i64, @intCast(i / bufferWidthCells));
-
-            if (cellX < 0 or cellY < 0) continue;
-            if (cellX >= terminalWidthCells or cellY >= terminalHeightCells) continue;
-            if (cellX >= self.width or cellY >= self.height) continue;
-
-            if (!self.isPointInScissor(@intCast(cellX), @intCast(cellY))) continue;
-
-            const bgPtr = @as([*]const f32, @ptrCast(@alignCast(data + cellDataOffset)));
-            const bg: RGBA = ansi.rgbaFromFloats(bgPtr[0], bgPtr[1], bgPtr[2], bgPtr[3]);
-
-            const fgPtr = @as([*]const f32, @ptrCast(@alignCast(data + cellDataOffset + 16)));
-            const fg: RGBA = ansi.rgbaFromFloats(fgPtr[0], fgPtr[1], fgPtr[2], fgPtr[3]);
-
-            const charPtr = @as([*]const u32, @ptrCast(@alignCast(data + cellDataOffset + 32)));
-            var char = charPtr[0];
-
-            if (char == 0 or char > MAX_UNICODE_CODEPOINT) {
-                char = DEFAULT_SPACE_CHAR;
+        const required = math.mul(u64, @as(u64, terminalWidthCells) * terminalHeightCells, cellResultSize) catch return error.InvalidDimensions;
+        if (data.len < required or data.len % cellResultSize != 0) return error.InvalidOptions;
+        // Skip the source cells left of or above the buffer.
+        const skip_x: u32 = @intCast(@min(terminalWidthCells, @max(0, -@as(i64, posX))));
+        const skip_y: u32 = @intCast(@min(terminalHeightCells, @max(0, -@as(i64, posY))));
+        const start_x: u32 = @intCast(@max(0, posX));
+        const start_y: u32 = @intCast(@max(0, posY));
+        if (start_x >= self.width or start_y >= self.height) return;
+        const width = @min(terminalWidthCells - skip_x, self.width - start_x);
+        const height = @min(terminalHeightCells - skip_y, self.height - start_y);
+        inline for (0..(if (checked) 2 else 1)) |pass| {
+            for (0..height) |y| {
+                for (0..width) |x| {
+                    const cellX = start_x + @as(u32, @intCast(x));
+                    const cellY = start_y + @as(u32, @intCast(y));
+                    if (!self.isPointInScissor(@intCast(cellX), @intCast(cellY))) continue;
+                    const offset = ((skip_y + y) * terminalWidthCells + skip_x + x) * cellResultSize;
+                    const colors = @as(*align(1) const [8]f32, @ptrCast(data.ptr + offset));
+                    if (checked and pass == 0) {
+                        for (colors) |channel| if (!math.isFinite(channel)) return error.InvalidOptions;
+                        continue;
+                    }
+                    const bg = ansi.rgbaFromFloats(colors[0], colors[1], colors[2], colors[3]);
+                    const fg = ansi.rgbaFromFloats(colors[4], colors[5], colors[6], colors[7]);
+                    var char = @as(*align(1) const u32, @ptrCast(data.ptr + offset + 32)).*;
+                    if (char == 0 or char > MAX_UNICODE_CODEPOINT or (char >= 0xd800 and char <= 0xdfff)) {
+                        char = DEFAULT_SPACE_CHAR;
+                    } else if (char < 32 or (char > 126 and char < 0x2580) or !isSingleWidthBorderChar(char)) {
+                        char = BLOCK_CHAR;
+                    }
+                    self.setCellWithAlphaBlending(cellX, cellY, char, fg, bg, 0);
+                }
             }
-
-            if (char < 32 or (char > 126 and char < 0x2580)) {
-                char = BLOCK_CHAR;
-            }
-
-            self.setCellWithAlphaBlending(@intCast(cellX), @intCast(cellY), char, fg, bg, 0);
         }
     }
 
@@ -2877,60 +3707,7 @@ pub const OptimizedBuffer = struct {
         fgColor: ?RGBA,
         bgColor: ?RGBA,
     ) void {
-        const bg = bgColor orelse ansi.rgbColor(0, 0, 0, 0);
-        if (srcWidth == 0 or srcHeight == 0) return;
-        if (posX >= @as(i32, @intCast(self.width)) or posY >= @as(i32, @intCast(self.height))) return;
-
-        const startX: u32 = if (posX < 0) @intCast(-posX) else 0;
-        const startY: u32 = if (posY < 0) @intCast(-posY) else 0;
-
-        const destStartX: u32 = if (posX < 0) 0 else @intCast(posX);
-        const destStartY: u32 = if (posY < 0) 0 else @intCast(posY);
-
-        if (startX >= srcWidth or startY >= srcHeight) return;
-
-        const visibleWidth = @min(srcWidth - startX, self.width - destStartX);
-        const visibleHeight = @min(srcHeight - startY, self.height - destStartY);
-
-        if (visibleWidth == 0 or visibleHeight == 0) return;
-
-        const baseFg = fgColor orelse ansi.rgbColor(255, 255, 255, 255);
-
-        const opacity = self.getCurrentOpacity();
-        const graphemeAware = self.grapheme_tracker.hasAny();
-        const linkAware = self.link_tracker.hasAny();
-
-        var srcY: u32 = startY;
-        var destY: u32 = destStartY;
-        while (srcY < startY + visibleHeight) : ({
-            srcY += 1;
-            destY += 1;
-        }) {
-            var srcX: u32 = startX;
-            var destX: u32 = destStartX;
-            while (srcX < startX + visibleWidth) : ({
-                srcX += 1;
-                destX += 1;
-            }) {
-                if (!self.isPointInScissor(@intCast(destX), @intCast(destY))) continue;
-
-                const srcIndex = srcY * srcWidth + srcX;
-                const intensity = intensities[srcIndex];
-
-                if (intensity < 0.01) continue;
-
-                const char = getGrayscaleChar(intensity);
-
-                const gray = @min(@max(intensity, 0.0), 1.0);
-                const fg = applyOpacity(baseFg, opacityToU8(gray * opacity));
-
-                if (graphemeAware or linkAware) {
-                    self.setCellWithAlphaBlendingCell(destX, destY, makeCell(char, fg, bg, 0));
-                } else {
-                    self.setCellWithAlphaBlendingRawCell(destX, destY, makeCell(char, fg, bg, 0));
-                }
-            }
-        }
+        self.drawGrayscaleBufferInternal(false, false, posX, posY, intensities, srcWidth, srcHeight, fgColor, bgColor) catch {};
     }
 
     pub fn drawGrayscaleBufferSupersampled(
@@ -2943,15 +3720,31 @@ pub const OptimizedBuffer = struct {
         fgColor: ?RGBA,
         bgColor: ?RGBA,
     ) void {
+        self.drawGrayscaleBufferInternal(false, true, posX, posY, intensities, srcWidth, srcHeight, fgColor, bgColor) catch {};
+    }
+
+    /// Only visible samples are inspected; invalid input rejects before any writes.
+    pub fn drawGrayscaleBufferChecked(self: *OptimizedBuffer, posX: i32, posY: i32, intensities: []align(1) const f32, srcWidth: u32, srcHeight: u32, fgColor: ?RGBA, bgColor: ?RGBA, supersampled: bool) !void {
+        try self.checkPixelDraw();
+        const count = math.mul(u32, srcWidth, srcHeight) catch return error.InvalidDimensions;
+        if (intensities.len < count) return error.InvalidOptions;
+        if (fgColor) |fg| try validateColor(fg);
+        if (bgColor) |bg| try validateColor(bg);
+        try self.drawGrayscaleBufferInternal(true, supersampled, posX, posY, intensities.ptr, srcWidth, srcHeight, fgColor, bgColor);
+    }
+
+    fn drawGrayscaleBufferInternal(self: *OptimizedBuffer, comptime checked: bool, supersampled: bool, posX: i32, posY: i32, intensities: [*]align(1) const f32, srcWidth: u32, srcHeight: u32, fgColor: ?RGBA, bgColor: ?RGBA) !void {
+        _ = math.mul(u32, srcWidth, srcHeight) catch return error.InvalidDimensions;
         const bg = bgColor orelse ansi.rgbColor(0, 0, 0, 0);
-        const termWidth = srcWidth / 2;
-        const termHeight = srcHeight / 2;
+        const scale: u32 = if (supersampled) 2 else 1;
+        const termWidth = srcWidth / scale;
+        const termHeight = srcHeight / scale;
 
         if (termWidth == 0 or termHeight == 0) return;
         if (posX >= @as(i32, @intCast(self.width)) or posY >= @as(i32, @intCast(self.height))) return;
 
-        const startX: u32 = if (posX < 0) @intCast(-posX) else 0;
-        const startY: u32 = if (posY < 0) @intCast(-posY) else 0;
+        const startX: u32 = if (posX < 0) @intCast(-@as(i64, posX)) else 0;
+        const startY: u32 = if (posY < 0) @intCast(-@as(i64, posY)) else 0;
 
         const destStartX: u32 = if (posX < 0) 0 else @intCast(posX);
         const destStartY: u32 = if (posY < 0) 0 else @intCast(posY);
@@ -2965,51 +3758,43 @@ pub const OptimizedBuffer = struct {
 
         const baseFg = fgColor orelse ansi.rgbColor(255, 255, 255, 255);
 
-        const opacity = self.getCurrentOpacity();
         const graphemeAware = self.grapheme_tracker.hasAny();
         const linkAware = self.link_tracker.hasAny();
-
-        const maxIdx = srcHeight * srcWidth;
-        var cellY: u32 = startY;
-        var destY: u32 = destStartY;
-        while (cellY < startY + visibleHeight) : ({
-            cellY += 1;
-            destY += 1;
-        }) {
-            var cellX: u32 = startX;
-            var destX: u32 = destStartX;
-            while (cellX < startX + visibleWidth) : ({
-                cellX += 1;
-                destX += 1;
-            }) {
-                if (!self.isPointInScissor(@intCast(destX), @intCast(destY))) continue;
-
-                const qx = cellX * 2;
-                const qy = cellY * 2;
-
-                const tlIdx = qy * srcWidth + qx;
-                const trIdx = qy * srcWidth + qx + 1;
-                const blIdx = (qy + 1) * srcWidth + qx;
-                const brIdx = (qy + 1) * srcWidth + qx + 1;
-
-                const tl: f32 = if (tlIdx < maxIdx) intensities[tlIdx] else 0.0;
-                const tr: f32 = if (trIdx < maxIdx and qx + 1 < srcWidth) intensities[trIdx] else 0.0;
-                const bl: f32 = if (blIdx < maxIdx and qy + 1 < srcHeight) intensities[blIdx] else 0.0;
-                const br: f32 = if (brIdx < maxIdx and qx + 1 < srcWidth and qy + 1 < srcHeight) intensities[brIdx] else 0.0;
-
-                const avgIntensity = (tl + tr + bl + br) / 4.0;
-
-                if (avgIntensity < 0.01) continue;
-
-                const char = getGrayscaleChar(avgIntensity);
-
-                const gray = @min(@max(avgIntensity, 0.0), 1.0);
-                const fg = applyOpacity(baseFg, opacityToU8(gray * opacity));
-
-                if (graphemeAware or linkAware) {
-                    self.setCellWithAlphaBlendingCell(destX, destY, makeCell(char, fg, bg, 0));
-                } else {
-                    self.setCellWithAlphaBlendingRawCell(destX, destY, makeCell(char, fg, bg, 0));
+        const imageAware = self.image_placements.items.len != 0;
+        inline for (0..(if (checked) 2 else 1)) |pass| {
+            for (0..visibleHeight) |y| {
+                for (0..visibleWidth) |x| {
+                    const destX = destStartX + @as(u32, @intCast(x));
+                    const destY = destStartY + @as(u32, @intCast(y));
+                    if (!self.isPointInScissor(@intCast(destX), @intCast(destY))) continue;
+                    const index = ((startY + y) * srcWidth + startX + x) * scale;
+                    const samples = if (supersampled)
+                        [4]f32{ intensities[index], intensities[index + 1], intensities[index + srcWidth], intensities[index + srcWidth + 1] }
+                    else
+                        @as([4]f32, @splat(intensities[index]));
+                    var finite = true;
+                    for (samples) |value| finite = finite and math.isFinite(value);
+                    if (!finite) {
+                        if (checked) return error.InvalidOptions;
+                        continue;
+                    }
+                    if (checked and pass == 0) continue;
+                    var intensity = samples[0];
+                    if (supersampled) {
+                        intensity = (samples[0] + samples[1] + samples[2] + samples[3]) / 4;
+                        if (!math.isFinite(intensity)) intensity = samples[0] / 4 + samples[1] / 4 + samples[2] / 4 + samples[3] / 4;
+                    }
+                    if (intensity < 0.01) continue;
+                    const char = getGrayscaleChar(intensity);
+                    const gray = math.clamp(intensity, 0.0, 1.0);
+                    const fg = applyOpacity(baseFg, opacityToU8(gray));
+                    if (graphemeAware or linkAware) {
+                        self.setCellWithAlphaBlendingCell(destX, destY, makeCell(char, fg, bg, 0));
+                    } else if (imageAware) {
+                        self.setCellWithAlphaBlendingRawImageAware(destX, destY, makeCell(char, fg, bg, 0));
+                    } else {
+                        self.setCellWithAlphaBlendingRawCell(destX, destY, makeCell(char, fg, bg, 0));
+                    }
                 }
             }
         }

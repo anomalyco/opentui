@@ -42,8 +42,8 @@ jobs:
         with:
           zig-version: ${{ env.ZIG_VERSION }}
 
+      # The native ABI check in packages/core/scripts/build.ts needs Zig even when a cache skips the Zig build.
       - name: Setup Zig
-        if: steps.bottle.outputs.cache-hit != 'true'
         uses: mlugg/setup-zig@v2
         with:
           version: ${{ env.ZIG_VERSION }}
@@ -129,8 +129,8 @@ jobs:
         with:
           node-version: ${{ env.NODE_VERSION }}
 
+      # The native ABI check in packages/core/scripts/build.ts needs Zig even when a cache skips the Zig build.
       - name: Setup Zig
-        if: steps.native-tested.outputs.cache-hit != 'true'
         uses: mlugg/setup-zig@v2
         with:
           version: ${{ env.ZIG_VERSION }}
@@ -150,6 +150,7 @@ jobs:
         run: |
           if [ "$(uname -s)" = Linux ]; then ulimit -c unlimited; fi
           bun run test:native
+          bun run test:native:lifetime
           echo "${{ github.sha }}" > ../../.native-tests-passed
 
       - name: Save native test result
@@ -279,6 +280,13 @@ jobs:
         with:
           bun-version: 1.4.1
 
+      # The native ABI check in packages/core/scripts/build.ts needs Zig even when a cache skips the Zig build.
+      - name: Setup Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: ${{ env.ZIG_VERSION }}
+          use-cache: false
+
       - name: Install dependencies
         run: bun install
 
@@ -374,7 +382,7 @@ jobs:
         working-directory: packages/core
         run: |
           test "$(bun --version)" = "1.3.14"
-          bun test src/tests/ffi-borrowed-pointer-callsites.test.ts
+          bun test src/tests/audio.test.ts src/tests/clipboard-native-lifecycle.test.ts src/tests/image.test.ts
 
   # Gate job for branch protection
   build-complete:

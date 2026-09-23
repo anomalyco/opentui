@@ -49,8 +49,8 @@ jobs:
         with:
           zig-version: ${{ env.ZIG_VERSION }}
 
+      # The native ABI check in packages/core/scripts/build.ts needs Zig even when a cache skips the Zig build.
       - name: Setup Zig
-        if: steps.bottle.outputs.cache-hit != 'true'
         uses: mlugg/setup-zig@v2
         with:
           version: ${{ env.ZIG_VERSION }}
@@ -109,8 +109,8 @@ jobs:
         with:
           zig-version: ${{ env.ZIG_VERSION }}
 
+      # The native ABI check in packages/core/scripts/build.ts needs Zig even when a cache skips the Zig build.
       - name: Setup Zig
-        if: steps.bottle.outputs.cache-hit != 'true'
         uses: mlugg/setup-zig@v2
         with:
           version: ${{ env.ZIG_VERSION }}

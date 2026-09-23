@@ -11,8 +11,23 @@ import {
   defaultKeyAliases,
   mergeKeyAliases,
 } from "../lib/keybinding.internal.js"
-import { type StyledText, fg } from "../lib/styled-text.js"
+import { StyledText, fg } from "../lib/styled-text.js"
 import type { ExtmarksController } from "../lib/extmarks.js"
+
+// Native editing rejects these, so typed and pasted text drops them. Paste keeps tab, CR, and LF.
+const unsupportedKeyCharacters = /[\x00-\x1f\x7f-\x9f]/
+const unsupportedPasteCharacters = /[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]/g
+
+function clonePlaceholder(value: StyledText | string | null): StyledText | string | null {
+  if (value === null || typeof value === "string") return value
+  return new StyledText(
+    value.chunks.map((chunk) => ({
+      ...chunk,
+      fg: chunk.fg ? RGBA.clone(chunk.fg) : undefined,
+      bg: chunk.bg ? RGBA.clone(chunk.bg) : undefined,
+    })),
+  )
+}
 
 export type TextareaAction =
   | "move-left"
@@ -176,40 +191,49 @@ export class TextareaRenderable extends EditBufferRenderable {
     }
     super(ctx, baseOptions)
 
-    // Store unfocused colors separately (parent's properties get overwritten when focused)
-    this._unfocusedBackgroundColor = parseColor(options.backgroundColor || defaults.backgroundColor)
-    this._unfocusedTextColor = parseColor(options.textColor || defaults.textColor)
-    this._focusedBackgroundColor = parseColor(
-      options.focusedBackgroundColor || options.backgroundColor || defaults.focusedBackgroundColor,
-    )
-    this._focusedTextColor = parseColor(options.focusedTextColor || options.textColor || defaults.focusedTextColor)
-    this._placeholder = options.placeholder ?? defaults.placeholder
-    this._placeholderColor = parseColor(options.placeholderColor ?? defaults.placeholderColor)
+    try {
+      // Store unfocused colors separately (parent's properties get overwritten when focused)
+      this._unfocusedBackgroundColor = RGBA.clone(parseColor(options.backgroundColor || defaults.backgroundColor))
+      this._unfocusedTextColor = RGBA.clone(parseColor(options.textColor || defaults.textColor))
+      this._focusedBackgroundColor = RGBA.clone(
+        parseColor(options.focusedBackgroundColor || options.backgroundColor || defaults.focusedBackgroundColor),
+      )
+      this._focusedTextColor = RGBA.clone(
+        parseColor(options.focusedTextColor || options.textColor || defaults.focusedTextColor),
+      )
+      this._placeholder = clonePlaceholder(options.placeholder ?? defaults.placeholder)
+      this._placeholderColor = RGBA.clone(parseColor(options.placeholderColor ?? defaults.placeholderColor))
 
-    this._keyAliasMap = mergeKeyAliases(defaultKeyAliases, options.keyAliasMap || {})
-    this._keyBindings = options.keyBindings || []
-    const mergedBindings = mergeKeyBindings(defaultTextareaKeyBindings, this._keyBindings)
-    this._keyBindingsMap = buildKeyBindingsMap(mergedBindings, this._keyAliasMap)
-    this._actionHandlers = this.buildActionHandlers()
-    this._submitListener = options.onSubmit
+      this._keyAliasMap = mergeKeyAliases(defaultKeyAliases, options.keyAliasMap || {})
+      this._keyBindings = options.keyBindings || []
+      const mergedBindings = mergeKeyBindings(defaultTextareaKeyBindings, this._keyBindings)
+      this._keyBindingsMap = buildKeyBindingsMap(mergedBindings, this._keyAliasMap)
+      this._actionHandlers = this.buildActionHandlers()
+      this._submitListener = options.onSubmit
 
-    if (options.initialValue) {
-      this.setText(options.initialValue)
-      this._initialValueSet = true
+      const initialValue = options.initialValue
+      if (initialValue) {
+        this.runMutation(() => {
+          this.setText(initialValue)
+          this._initialValueSet = true
+        })
+      }
+      this.updateColors()
+
+      this.applyPlaceholder(this._placeholder)
+    } catch (error) {
+      this.rollbackConstruction(error)
     }
-    this.updateColors()
-
-    this.applyPlaceholder(this._placeholder)
   }
 
-  private applyPlaceholder(placeholder: StyledText | string | null): void {
+  private applyPlaceholder(placeholder: StyledText | string | null, color = this._placeholderColor): void {
     if (placeholder === null) {
       this.editorView.setPlaceholderStyledText([])
       return
     }
 
     if (typeof placeholder === "string") {
-      const colorStyle = fg(this._placeholderColor)
+      const colorStyle = fg(color)
       const chunks = [colorStyle(placeholder)]
       this.editorView.setPlaceholderStyledText(chunks)
     } else {
@@ -259,7 +283,7 @@ export class TextareaRenderable extends EditBufferRenderable {
   }
 
   public handlePaste(event: PasteEvent): void {
-    this.insertText(stripAnsiSequences(decodePasteBytes(event.bytes)))
+    this.insertText(stripAnsiSequences(decodePasteBytes(event.bytes)).replace(unsupportedPasteCharacters, ""))
   }
 
   public handleKeyPress(key: KeyEvent): boolean {
@@ -280,17 +304,7 @@ export class TextareaRenderable extends EditBufferRenderable {
         return true
       }
 
-      if (key.sequence) {
-        const firstCharCode = key.sequence.charCodeAt(0)
-
-        if (firstCharCode < 32) {
-          return false
-        }
-
-        if (firstCharCode === 127) {
-          return false
-        }
-
+      if (key.sequence && !unsupportedKeyCharacters.test(key.sequence)) {
         this.insertText(key.sequence)
         return true
       }
@@ -300,6 +314,7 @@ export class TextareaRenderable extends EditBufferRenderable {
   }
 
   private updateColors(): void {
+    if (this.isDestroyed) return
     const effectiveBg = this._focused ? this._focusedBackgroundColor : this._unfocusedBackgroundColor
     const effectiveFg = this._focused ? this._focusedTextColor : this._unfocusedTextColor
 
@@ -314,81 +329,71 @@ export class TextareaRenderable extends EditBufferRenderable {
 
   public blur(): void {
     super.blur()
-    if (!this.isDestroyed) {
-      this.updateColors()
-    }
+    this.updateColors()
   }
 
   get placeholder(): StyledText | string | null {
-    return this._placeholder
+    return clonePlaceholder(this._placeholder)
   }
 
   set placeholder(value: StyledText | string | null | undefined) {
-    const normalizedValue = value ?? null
+    const normalizedValue = clonePlaceholder(value ?? null)
     if (this._placeholder !== normalizedValue) {
-      this._placeholder = normalizedValue
-      this.applyPlaceholder(normalizedValue)
-      this.requestRender()
+      this.runMutation(() => {
+        this.applyPlaceholder(normalizedValue)
+        this._placeholder = normalizedValue
+        this.requestRender()
+      })
     }
   }
 
   get placeholderColor(): RGBA {
-    return this._placeholderColor
+    return RGBA.clone(this._placeholderColor)
   }
 
   set placeholderColor(value: ColorInput) {
-    const newColor = parseColor(value ?? TextareaRenderable.defaults.placeholderColor)
-    if (this._placeholderColor !== newColor) {
-      this._placeholderColor = newColor
-      this.applyPlaceholder(this._placeholder)
+    const color = RGBA.clone(parseColor(value ?? TextareaRenderable.defaults.placeholderColor))
+    this.runMutation(() => {
+      this.applyPlaceholder(this._placeholder, color)
+      this._placeholderColor = color
       this.requestRender()
-    }
+    })
   }
 
   override get backgroundColor(): RGBA {
-    return this._unfocusedBackgroundColor
+    return RGBA.clone(this._unfocusedBackgroundColor)
   }
 
   override set backgroundColor(value: RGBA | string | undefined) {
-    const newColor = parseColor(value ?? TextareaRenderable.defaults.backgroundColor)
-    if (this._unfocusedBackgroundColor !== newColor) {
-      this._unfocusedBackgroundColor = newColor
-      this.updateColors()
-    }
+    this._unfocusedBackgroundColor = RGBA.clone(parseColor(value ?? TextareaRenderable.defaults.backgroundColor))
+    this.updateColors()
   }
 
   override get textColor(): RGBA {
-    return this._unfocusedTextColor
+    return RGBA.clone(this._unfocusedTextColor)
   }
 
   override set textColor(value: RGBA | string | undefined) {
-    const newColor = parseColor(value ?? TextareaRenderable.defaults.textColor)
-    if (this._unfocusedTextColor !== newColor) {
-      this._unfocusedTextColor = newColor
-      this.updateColors()
-    }
+    this._unfocusedTextColor = RGBA.clone(parseColor(value ?? TextareaRenderable.defaults.textColor))
+    this.updateColors()
   }
 
   set focusedBackgroundColor(value: ColorInput) {
-    const newColor = parseColor(value ?? TextareaRenderable.defaults.focusedBackgroundColor)
-    if (this._focusedBackgroundColor !== newColor) {
-      this._focusedBackgroundColor = newColor
-      this.updateColors()
-    }
+    this._focusedBackgroundColor = RGBA.clone(parseColor(value ?? TextareaRenderable.defaults.focusedBackgroundColor))
+    this.updateColors()
   }
 
   set focusedTextColor(value: ColorInput) {
-    const newColor = parseColor(value ?? TextareaRenderable.defaults.focusedTextColor)
-    if (this._focusedTextColor !== newColor) {
-      this._focusedTextColor = newColor
-      this.updateColors()
-    }
+    this._focusedTextColor = RGBA.clone(parseColor(value ?? TextareaRenderable.defaults.focusedTextColor))
+    this.updateColors()
   }
 
   set initialValue(value: string) {
     if (!this._initialValueSet) {
-      this.setText(value)
-      this._initialValueSet = true
+      this.runMutation(() => {
+        this.setText(value)
+        this._initialValueSet = true
+      })
     }
   }
 

@@ -49,7 +49,7 @@ Then build your first app with the [quickstart](https://opentui.com/docs/getting
 
 ## Runtime and platform support
 
-`@opentui/core` runs on Bun 1.3.0 or later, or on Node.js 26.4.0 or later with ECMAScript modules (ESM) and
+`@opentui/core` runs on Bun 1.3.14 or later, or on Node.js 26.4.0 or later with ECMAScript modules (ESM) and
 `--experimental-ffi`.
 
 Use Bun 1.4.0 or later on native Windows arm64.

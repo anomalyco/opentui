@@ -6,6 +6,7 @@ const eb = @import("edit-buffer.zig");
 const iter_mod = @import("text-buffer-iterators.zig");
 const ss = @import("syntax-style.zig");
 const event_emitter = @import("event-emitter.zig");
+const NativeRenderable = @import("native-renderable.zig").NativeRenderable;
 
 const EditBuffer = eb.EditBuffer;
 
@@ -40,6 +41,7 @@ const CursorVisualAffinity = struct {
 /// It also holds a reference to an EditBuffer for cursor/editing operations
 pub const EditorView = struct {
     text_buffer_view: *UnifiedTextBufferView,
+    measure_dependents: ?*NativeRenderable = null,
     edit_buffer: *EditBuffer, // Reference to the EditBuffer (not owned)
     scroll_margin: f32, // Fraction of viewport height (0.0-0.5) to keep cursor away from edges
     desired_visual_col: ?u32, // Preserved visual column for visual up/down navigation
@@ -50,6 +52,8 @@ pub const EditorView = struct {
 
     placeholder_buffer: ?*UnifiedTextBuffer,
     placeholder_syntax_style: ?*ss.SyntaxStyle,
+    /// Preferred registry slot for the placeholder's owned input bytes.
+    placeholder_mem_id: ?u8,
     placeholder_active: bool,
 
     // Memory management
@@ -94,6 +98,7 @@ pub const EditorView = struct {
             },
             .placeholder_buffer = null,
             .placeholder_syntax_style = null,
+            .placeholder_mem_id = null,
             .placeholder_active = false,
             .global_allocator = global_allocator,
         };
@@ -116,7 +121,9 @@ pub const EditorView = struct {
         const global_allocator = self.global_allocator;
         defer global_allocator.destroy(self);
 
+        while (self.measure_dependents) |dependent| dependent.setMeasureTarget(.none) catch unreachable;
         self.edit_buffer.events.off(.cursorChanged, self.cursor_changed_listener);
+        self.text_buffer_view.deinit();
 
         if (self.placeholder_syntax_style) |style| {
             style.deinit();
@@ -126,7 +133,6 @@ pub const EditorView = struct {
             placeholder.deinit();
         }
 
-        self.text_buffer_view.deinit();
         self.* = undefined;
     }
 
@@ -154,11 +160,13 @@ pub const EditorView = struct {
     /// Respects scroll margins to prevent immediate re-scrolling by ensureCursorVisible.
     pub fn makeCursorVisible(self: *EditorView) void {
         const vp = self.text_buffer_view.getViewport() orelse return;
+        if (vp.height == 0 or vp.width == 0) return;
         const cursor = self.edit_buffer.getPrimaryCursor();
         const vcursor = self.getPrimaryVisualCursorAbsolute();
 
         const viewport_height = vp.height;
-        const margin_lines = @max(1, @as(u32, @intFromFloat(@as(f32, @floatFromInt(viewport_height)) * self.scroll_margin)));
+        const raw_margin_lines = @max(1, @as(u32, @intFromFloat(@as(f32, @floatFromInt(viewport_height)) * self.scroll_margin)));
+        const margin_lines = @min(raw_margin_lines, viewport_height - 1);
 
         const cursor_above_viewport = vcursor.visual_row < vp.y;
         const cursor_below_viewport = vcursor.visual_row >= vp.y + vp.height;
@@ -180,15 +188,13 @@ pub const EditorView = struct {
                 const line_width = iter_mod.lineWidthAt(self.edit_buffer.tb.rope(), target_logical_row);
                 const target_col = @min(cursor.col, line_width);
 
-                if (self.edit_buffer.cursors.items.len > 0) {
-                    const offset = iter_mod.coordsToOffset(self.edit_buffer.tb.rope(), target_logical_row, target_col) orelse return;
-                    self.edit_buffer.cursors.items[0] = .{
-                        .row = target_logical_row,
-                        .col = target_col,
-                        .desired_col = target_col,
-                        .offset = offset,
-                    };
-                }
+                const offset = iter_mod.coordsToOffset(self.edit_buffer.tb.rope(), target_logical_row, target_col) orelse return;
+                self.edit_buffer.cursor = .{
+                    .row = target_logical_row,
+                    .col = target_col,
+                    .desired_col = target_col,
+                    .offset = offset,
+                };
             }
         }
     }
@@ -265,6 +271,10 @@ pub const EditorView = struct {
     /// Always ensures cursor visibility since cursor movements don't mark buffer dirty
     /// Note: With eager viewport updates in onCursorChanged, this is mainly for rendering methods
     pub fn updateBeforeRender(self: *EditorView) void {
+        _ = self.updateCursorBeforeRender();
+    }
+
+    fn updateCursorBeforeRender(self: *EditorView) ?VisualCursor {
         self.updatePlaceholderVisibility();
 
         const has_selection = self.text_buffer_view.selection != null;
@@ -272,7 +282,9 @@ pub const EditorView = struct {
         if (!has_selection or self.selection_follow_cursor) {
             const vcursor = self.getPrimaryVisualCursorAbsolute();
             self.ensureCursorVisible(vcursor.visual_row);
+            return vcursor;
         }
+        return null;
     }
 
     /// Automatically ensures cursor is visible before rendering
@@ -289,9 +301,7 @@ pub const EditorView = struct {
 
     pub fn getLogicalLineInfo(self: *EditorView) tbv.LineInfo {
         self.updatePlaceholderVisibility();
-        self.text_buffer_view.virtual_lines_dirty = true;
-        const line_info = self.text_buffer_view.getLogicalLineInfo();
-        return line_info;
+        return self.text_buffer_view.getLogicalLineInfo();
     }
 
     pub fn getTextBufferView(self: *EditorView) *UnifiedTextBufferView {
@@ -446,15 +456,12 @@ pub const EditorView = struct {
         const line_width = iter_mod.lineWidthAt(self.edit_buffer.tb.rope(), focus_coords.row);
         if (focus_coords.col > line_width) return;
 
-        // Update cursor to focus position
-        if (self.edit_buffer.cursors.items.len > 0) {
-            self.edit_buffer.cursors.items[0] = .{
-                .row = focus_coords.row,
-                .col = focus_coords.col,
-                .desired_col = focus_coords.col,
-                .offset = focus_offset,
-            };
-        }
+        self.edit_buffer.cursor = .{
+            .row = focus_coords.row,
+            .col = focus_coords.col,
+            .desired_col = focus_coords.col,
+            .offset = focus_offset,
+        };
     }
 
     pub fn getSelectedTextIntoBuffer(self: *EditorView, out_buffer: []u8) usize {
@@ -505,10 +512,6 @@ pub const EditorView = struct {
 
     pub fn getPrimaryCursor(self: *const EditorView) eb.Cursor {
         return self.edit_buffer.getPrimaryCursor();
-    }
-
-    pub fn getCursor(self: *const EditorView, idx: usize) ?eb.Cursor {
-        return self.edit_buffer.getCursor(idx);
     }
 
     pub fn getText(self: *EditorView, out_buffer: []u8) usize {
@@ -589,8 +592,7 @@ pub const EditorView = struct {
 
     /// Returns viewport-relative visual coordinates for external API consumers
     pub fn getVisualCursor(self: *EditorView) VisualCursor {
-        self.updateBeforeRender();
-        const vcursor = self.getPrimaryVisualCursorAbsolute();
+        const vcursor = self.updateCursorBeforeRender() orelse self.getPrimaryVisualCursorAbsolute();
 
         // Convert absolute visual coordinates to viewport-relative for the API
         const vp = self.text_buffer_view.getViewport() orelse return vcursor;
@@ -699,84 +701,37 @@ pub const EditorView = struct {
 
     pub fn moveUpVisual(self: *EditorView) void {
         const vcursor = self.getPrimaryVisualCursorAbsolute();
-
-        if (vcursor.visual_row == 0) {
-            return;
-        }
-
-        const target_visual_row = vcursor.visual_row - 1;
-
-        // This persists across empty/narrow lines to restore column when possible
-        if (self.desired_visual_col == null) {
-            self.desired_visual_col = vcursor.visual_col;
-        }
-        const desired_visual_col = self.desired_visual_col.?;
-
-        const vlines = self.text_buffer_view.virtual_lines.items;
-        const target_visual_col = if (self.text_buffer_view.getSelectionOccupancy() == .boundary)
-            @min(desired_visual_col, vlines[target_visual_row].width_cols)
-        else
-            clampVisualColToStayOnVisualRow(vlines, target_visual_row, desired_visual_col);
-
-        if (self.visualToLogicalCursor(target_visual_row, target_visual_col)) |new_vcursor| {
-            if (self.edit_buffer.cursors.items.len > 0) {
-                self.edit_buffer.cursors.items[0] = .{
-                    .row = new_vcursor.logical_row,
-                    .col = new_vcursor.logical_col,
-                    .desired_col = new_vcursor.logical_col,
-                    .offset = new_vcursor.offset,
-                };
-                self.cursor_visual_affinity = null;
-                if (self.text_buffer_view.getSelectionOccupancy() == .boundary) {
-                    self.setCursorAffinityForAbsoluteRow(target_visual_row);
-                }
-                self.ensureCursorVisible(new_vcursor.visual_row);
-
-                // Restore desired_visual_col after the cursor change event resets it
-                self.desired_visual_col = desired_visual_col;
-            }
-        }
+        if (vcursor.visual_row == 0) return;
+        self.moveToVisualRow(vcursor, vcursor.visual_row - 1);
     }
 
     pub fn moveDownVisual(self: *EditorView) void {
         const vcursor = self.getPrimaryVisualCursorAbsolute();
+        if (vcursor.visual_row + 1 >= self.text_buffer_view.virtual_lines.items.len) return;
+        self.moveToVisualRow(vcursor, vcursor.visual_row + 1);
+    }
 
-        const vlines = self.text_buffer_view.virtual_lines.items;
-
-        if (vcursor.visual_row + 1 >= vlines.len) {
-            return;
-        }
-
-        const target_visual_row = vcursor.visual_row + 1;
-
+    fn moveToVisualRow(self: *EditorView, vcursor: VisualCursor, target_visual_row: u32) void {
         // This persists across empty/narrow lines to restore column when possible
-        if (self.desired_visual_col == null) {
-            self.desired_visual_col = vcursor.visual_col;
-        }
-        const desired_visual_col = self.desired_visual_col.?;
-        const target_visual_col = if (self.text_buffer_view.getSelectionOccupancy() == .boundary)
+        const desired_visual_col = self.desired_visual_col orelse vcursor.visual_col;
+        self.desired_visual_col = desired_visual_col;
+        const vlines = self.text_buffer_view.virtual_lines.items;
+        const boundary = self.text_buffer_view.getSelectionOccupancy() == .boundary;
+        const target_visual_col = if (boundary)
             @min(desired_visual_col, vlines[target_visual_row].width_cols)
         else
             clampVisualColToStayOnVisualRow(vlines, target_visual_row, desired_visual_col);
 
-        if (self.visualToLogicalCursor(target_visual_row, target_visual_col)) |new_vcursor| {
-            if (self.edit_buffer.cursors.items.len > 0) {
-                self.edit_buffer.cursors.items[0] = .{
-                    .row = new_vcursor.logical_row,
-                    .col = new_vcursor.logical_col,
-                    .desired_col = new_vcursor.logical_col,
-                    .offset = new_vcursor.offset,
-                };
-                self.cursor_visual_affinity = null;
-                if (self.text_buffer_view.getSelectionOccupancy() == .boundary) {
-                    self.setCursorAffinityForAbsoluteRow(target_visual_row);
-                }
-                self.ensureCursorVisible(new_vcursor.visual_row);
-
-                // Restore desired_visual_col after the cursor change event resets it
-                self.desired_visual_col = desired_visual_col;
-            }
-        }
+        const new_vcursor = self.visualToLogicalCursor(target_visual_row, target_visual_col) orelse return;
+        self.edit_buffer.cursor = .{
+            .row = new_vcursor.logical_row,
+            .col = new_vcursor.logical_col,
+            .desired_col = new_vcursor.logical_col,
+            .offset = new_vcursor.offset,
+        };
+        self.cursor_visual_affinity = null;
+        if (boundary) self.setCursorAffinityForAbsoluteRow(target_visual_row);
+        self.ensureCursorVisible(new_vcursor.visual_row);
     }
 
     pub fn deleteSelectedText(self: *EditorView) !void {
@@ -803,6 +758,28 @@ pub const EditorView = struct {
         };
 
         try self.edit_buffer.deleteRange(start_cursor, end_cursor);
+        self.resetLocalSelection();
+        self.updateBeforeRender();
+    }
+
+    pub fn replaceSelectedText(self: *EditorView, bytes: []const u8) !u32 {
+        const inserted: u32 = if (bytes.len > 0) 2 else 0;
+        if (self.getSelection()) |selection| {
+            // A placeholder selection has no corresponding editable range.
+            if (selection.end <= self.edit_buffer.tb.rope().totalWeight()) {
+                try self.edit_buffer.replaceRange(selection.start, selection.end, bytes, .{
+                    .ctx = self,
+                    .handle = finishSelectedDeletion,
+                });
+                return inserted | @as(u32, @intFromBool(selection.start != selection.end));
+            }
+        }
+        try self.edit_buffer.insertText(bytes);
+        return inserted;
+    }
+
+    fn finishSelectedDeletion(ctx: *anyopaque) void {
+        const self: *EditorView = @ptrCast(@alignCast(ctx));
         self.resetLocalSelection();
         self.updateBeforeRender();
     }
@@ -920,39 +897,51 @@ pub const EditorView = struct {
     // Placeholder - Visual Only
     // ============================================================================
 
-    pub fn setPlaceholderStyledText(self: *EditorView, chunks: []const tb.StyledChunk) !void {
-        if (chunks.len == 0) {
-            if (self.placeholder_syntax_style) |style| {
-                style.deinit();
-                self.placeholder_syntax_style = null;
-            }
-            if (self.placeholder_buffer) |placeholder| {
-                placeholder.deinit();
-                self.placeholder_buffer = null;
-            }
-            if (self.placeholder_active) {
-                self.text_buffer_view.switchToOriginalBuffer();
-                self.placeholder_active = false;
-            }
-            return;
+    pub fn clearPlaceholder(self: *EditorView) void {
+        if (self.placeholder_active) {
+            self.text_buffer_view.switchToOriginalBuffer();
+            self.placeholder_active = false;
         }
-
-        if (self.placeholder_buffer == null) {
-            self.placeholder_buffer = try UnifiedTextBuffer.init(
-                self.global_allocator,
-                self.edit_buffer.tb.pool,
-                self.edit_buffer.tb.link_pool,
-                self.edit_buffer.tb.width_method,
-            );
-            const syntax_style = try ss.SyntaxStyle.init(self.global_allocator);
-            self.placeholder_syntax_style = syntax_style;
-            const placeholder = self.placeholder_buffer.?;
-            placeholder.setSyntaxStyle(syntax_style);
+        if (self.placeholder_syntax_style) |style| {
+            style.deinit();
+            self.placeholder_syntax_style = null;
         }
+        if (self.placeholder_buffer) |placeholder| {
+            placeholder.deinit();
+            self.placeholder_buffer = null;
+        }
+        self.placeholder_mem_id = null;
+    }
 
-        const placeholder = self.placeholder_buffer.?;
-
-        try placeholder.setStyledText(chunks);
+    /// Consume registry-allocator bytes and a fresh style only on success; move prepared links.
+    /// The caller validates UTF-8 and bounds, as for UnifiedTextBuffer.replaceOwnedStyledText.
+    pub fn setPlaceholderOwnedStyledText(
+        self: *EditorView,
+        text: []const u8,
+        style: *ss.SyntaxStyle,
+        chunks: []const tb.OwnedStyledChunk,
+        prepared_links: ?*@import("link.zig").LinkTracker,
+    ) !void {
+        const placeholder = self.placeholder_buffer orelse try UnifiedTextBuffer.initWithOptions(
+            self.global_allocator,
+            self.edit_buffer.tb.pool,
+            self.edit_buffer.tb.link_pool,
+            self.edit_buffer.tb.width_method,
+            .{ .io = self.edit_buffer.tb.io, .logger = self.edit_buffer.tb.logger },
+        );
+        errdefer if (self.placeholder_buffer == null) placeholder.deinit();
+        const mem_id = try placeholder.replaceOwnedStyledText(
+            text,
+            self.placeholder_mem_id,
+            style,
+            chunks,
+            prepared_links,
+        );
+        const previous_style = self.placeholder_syntax_style;
+        self.placeholder_buffer = placeholder;
+        self.placeholder_syntax_style = style;
+        self.placeholder_mem_id = mem_id;
+        if (previous_style) |previous| previous.deinit();
 
         if (self.placeholder_active) {
             self.text_buffer_view.virtual_lines_dirty = true;

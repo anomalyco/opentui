@@ -1,5 +1,8 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test"
+import assert from "node:assert/strict"
+import { Renderable, RenderableEvents } from "../Renderable.js"
 import { BoxRenderable } from "../renderables/Box.js"
+import { LineNumberRenderable } from "../renderables/LineNumberRenderable.js"
 import { TextareaRenderable } from "../renderables/Textarea.js"
 import { TextRenderable } from "../renderables/Text.js"
 import { createTestRenderer, type TestRenderer } from "../testing/test-renderer.js"
@@ -16,8 +19,9 @@ beforeEach(async () => {
   ;({ renderer, renderOnce } = await createTestRenderer({ width: 80, height: 30 }))
 })
 
-afterEach(() => {
+afterEach(async () => {
   renderer.destroy()
+  await renderer.closed
 })
 
 function maybeCollectGarbage(): void {
@@ -34,35 +38,100 @@ function expectSize(
 }
 
 describe("native-backed measurement lifecycle", () => {
-  test("destroying a text renderable keeps sibling measurement working", async () => {
-    const parent = new BoxRenderable(renderer, { width: 40, flexDirection: "column", alignItems: "flex-start" })
-    const first = new TextRenderable(renderer, { content: "AAAAA", wrapMode: "none", alignSelf: "flex-start" })
-    const second = new TextRenderable(renderer, { content: "BBBBBBBBBB", wrapMode: "none", alignSelf: "flex-start" })
-    parent.add(first)
-    parent.add(second)
-    renderer.root.add(parent)
-    await renderOnce()
-
-    expectSize(first, { width: 5, height: 1 })
-    expectSize(second, { width: 10, height: 1 })
-
-    first.destroy()
-    await renderOnce()
-    expectSize(second, { width: 10, height: 1 })
-
-    second.content = "CCC"
-    await renderOnce()
-    expectSize(second, { width: 3, height: 1 })
+  test("line-number setup failure after gutter construction releases listeners and ownership", () => {
+    const target = new TextRenderable(renderer, { content: "owned" })
+    renderer.root.add(target)
+    const registered = new Set(Renderable.renderablesByNumber.keys())
+    Object.defineProperty(target, "virtualLineCount", {
+      get() {
+        throw new Error("line info failed")
+      },
+    })
+    expect(() => new LineNumberRenderable(renderer, { target })).toThrow("line info failed")
+    expect(new Set(Renderable.renderablesByNumber.keys())).toEqual(registered)
+    expect(target.listenerCount("line-info-change")).toBe(0)
+    expect(target.plainText).toBe("owned")
+    target.destroy()
   })
 
-  test("destroying a textarea keeps sibling measurement working", async () => {
-    const parent = new BoxRenderable(renderer, { width: 40, flexDirection: "column", alignItems: "flex-start" })
-    const first = new TextareaRenderable(renderer, { initialValue: "AAAAA", wrapMode: "none", alignSelf: "flex-start" })
-    const second = new TextareaRenderable(renderer, {
-      initialValue: "BBBBBBBBBB",
-      wrapMode: "none",
-      alignSelf: "flex-start",
+  test.each(["target", "reentrant target", "owner", "gutter"])(
+    "line-number %s teardown releases the gutter without remounting",
+    (entry) => {
+      const target = new TextRenderable(renderer, { content: "owned" })
+      const replacement = new TextRenderable(renderer, { content: "new" })
+      const lines = new LineNumberRenderable(renderer, { target })
+      const gutter = lines.getChildren().find((node) => node !== target)!
+      if (entry === "reentrant target") target.on(RenderableEvents.DESTROYED, () => lines.clearTarget())
+      if (entry === "owner") gutter.on(RenderableEvents.DESTROYED, () => lines.add(replacement))
+      try {
+        if (entry === "owner") lines.destroy()
+        else if (entry === "gutter") gutter.destroy()
+        else target.destroy()
+        expect(target.parent).toBeNull()
+        expect(target.listenerCount("line-info-change")).toBe(0)
+        expect(lines.getChildrenCount()).toBe(0)
+        expect(target.isDestroyed).toBe(entry === "target" || entry === "reentrant target")
+        expect(gutter.isFreed()).toBe(true)
+        expect(replacement.parent).toBeNull()
+        expect(replacement.listenerCount("line-info-change")).toBe(0)
+      } finally {
+        lines.destroy()
+        target.destroy()
+        replacement.destroy()
+      }
+    },
+  )
+
+  test.each([false, true])("recursive teardown defers parent reentry and preserves the child error=%s", (throws) => {
+    const parent = new BoxRenderable(renderer, {})
+    const first = new TextRenderable(renderer, { content: "first" })
+    const second = new TextRenderable(renderer, { content: "second" })
+    renderer.root.add(parent)
+    parent.add(first)
+    parent.add(second)
+    const events: string[] = []
+    const failure = new Error("child failed")
+    first.on(RenderableEvents.DESTROYED, () => {
+      events.push("first")
+      parent.destroy()
+      parent.destroyRecursively()
+      if (throws) throw failure
     })
+    second.on(RenderableEvents.DESTROYED, () => events.push("second"))
+    parent.on(RenderableEvents.DESTROYED, () => {
+      events.push("parent")
+      expect([first.isFreed(), second.isFreed(), parent.isFreed()]).toEqual([true, true, false])
+      if (throws) throw new Error("later parent failure")
+    })
+    if (throws)
+      assert.throws(
+        () => parent.destroyRecursively(),
+        (error) => error === failure,
+      )
+    else parent.destroyRecursively()
+    expect(events).toEqual(["first", "second", "parent"])
+    expect(parent.isFreed()).toBe(true)
+  })
+
+  test.each([
+    [
+      "text renderable",
+      (content: string) => new TextRenderable(renderer, { content, wrapMode: "none", alignSelf: "flex-start" }),
+      (renderable: TextRenderable | TextareaRenderable, content: string) => {
+        ;(renderable as TextRenderable).content = content
+      },
+    ],
+    [
+      "textarea",
+      (content: string) =>
+        new TextareaRenderable(renderer, { initialValue: content, wrapMode: "none", alignSelf: "flex-start" }),
+      (renderable: TextRenderable | TextareaRenderable, content: string) =>
+        (renderable as TextareaRenderable).setText(content),
+    ],
+  ] as const)("destroying a %s keeps sibling measurement working", async (_, create, setContent) => {
+    const parent = new BoxRenderable(renderer, { width: 40, flexDirection: "column", alignItems: "flex-start" })
+    const first = create("AAAAA")
+    const second = create("BBBBBBBBBB")
     parent.add(first)
     parent.add(second)
     renderer.root.add(parent)
@@ -75,7 +144,7 @@ describe("native-backed measurement lifecycle", () => {
     await renderOnce()
     expectSize(second, { width: 10, height: 1 })
 
-    second.setText("CCC")
+    setContent(second, "CCC")
     await renderOnce()
     expectSize(second, { width: 3, height: 1 })
   })

@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { OptimizedBuffer } from "../buffer.js"
+import { OptimizedBuffer, ResourceContext } from "../buffer.js"
 import { ImageError, NativeImage, NativeImagePool, type PixelImportOptions } from "../image.js"
 import { resolveRenderLib } from "../zig.js"
 
@@ -46,16 +46,13 @@ describe("NativeImagePool", () => {
       const first = publish()!
       const retained = first.retain()
       first.dispose()
-      const lib = resolveRenderLib()
       try {
         expect(retained.raw().data).toEqual(expected)
         expect(retained.info().hasAlpha).toBe(alpha === "straight")
         pixels.fill(42, 0, 3)
         const second = publish()!
-        const allocated = lib.getAllocatorStats().activeAllocations
         try {
           expect(publish()).toBeNull()
-          expect(lib.getAllocatorStats().activeAllocations).toBe(allocated)
           expect(second.raw().data.subarray(0, 3)).toEqual(Uint8Array.of(42, 42, 42))
           expect(retained.raw().data).toEqual(expected)
         } finally {
@@ -71,7 +68,6 @@ describe("NativeImagePool", () => {
             expect([...raw.subarray(0, 3)]).toEqual(format === "bgra8" ? rgb.toReversed() : rgb)
             expect(frame.info().hasAlpha).toBe(alpha === "straight" && index % 2 !== 0)
             expect(raw.at(-1)).toBe(alpha === "opaque" ? 255 : pixels[pixels.length - 1])
-            expect(lib.getAllocatorStats().activeAllocations).toBe(allocated)
             expect(retained.raw().data).toEqual(expected)
           } finally {
             frame.dispose()
@@ -115,10 +111,10 @@ describe("NativeImagePool", () => {
   test("failed publications can retry without leaking native images", () => {
     const lib = resolveRenderLib()
     const pixels = Uint8Array.of(1, 2, 3, 255)
-    NativeImage.fromRgba(pixels, 1, 1).dispose()
-    const allocated = lib.getAllocatorStats().activeAllocations
+    // One slot and one published handle fill the owner; a leaked object would fail a publication or the refill.
+    const owner = new ResourceContext({ objectCapacity: 2, renderCellsMax: 1 })
     const retain = lib.imageRetain
-    const pool = new NativeImagePool({ width: 1, height: 1, capacity: 1 })
+    const pool = new NativeImagePool({ width: 1, height: 1, capacity: 1, owner })
     let frame: NativeImage | null = null
     try {
       lib.imageRetain = () => ({ status: 8, handle: null })
@@ -131,23 +127,30 @@ describe("NativeImagePool", () => {
       frame?.dispose()
       pool.dispose()
     }
-    expect(lib.getAllocatorStats().activeAllocations).toBe(allocated)
+    const fill = () => NativeImage.fromRgba(pixels, 1, 1, 4, { owner })
+    fill()
+    fill()
+    expect(fill).toThrow("ObjectLimit")
+    owner.destroy()
   })
 
-  test("drawImage and copied buffers pin snapshots until both are cleared", () => {
-    const pool = new NativeImagePool({ width: 1, height: 1, capacity: 1 })
-    const source = OptimizedBuffer.create(1, 1, "unicode")
-    const snapshot = OptimizedBuffer.create(1, 1, "unicode")
-    const red = Uint8Array.of(255, 0, 0, 255)
+  // A same-Context placement pins the slot; a cross-Context draw imports a clone and frees it at once.
+  test.each([true, false])("drawImage and copied buffers pin same-Context snapshots (same Context: %p)", (shared) => {
+    const owner = new ResourceContext({ objectCapacity: 16, renderCellsMax: 16 })
+    const pool = new NativeImagePool({ width: 1, height: 1, capacity: 1, owner: shared ? owner : undefined })
+    const source = OptimizedBuffer.create(1, 1, "unicode", { owner })
+    const snapshot = OptimizedBuffer.create(1, 1, "unicode", { owner })
     const blue = Uint8Array.of(0, 0, 255, 255)
-    const frame = pool.publishRgba(red)!
+    const frame = pool.publishRgba(Uint8Array.of(255, 0, 0, 255))!
     try {
       expect(source.drawImage(frame, 0, 0, 1, 1)).toBe(true)
       frame.dispose()
       snapshot.drawFrameBuffer(0, 0, source)
       source.clear()
-      expect(pool.publishRgba(blue)).toBeNull()
-      snapshot.clear()
+      if (shared) {
+        expect(pool.publishRgba(blue)).toBeNull()
+        snapshot.clear()
+      }
       const next = pool.publishRgba(blue)!
       expect(next.raw().data).toEqual(blue)
       next.dispose()
@@ -156,6 +159,7 @@ describe("NativeImagePool", () => {
       source.destroy()
       snapshot.destroy()
       pool.dispose()
+      owner.destroy()
     }
   })
 

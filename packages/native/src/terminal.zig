@@ -281,7 +281,36 @@ pub fn setHostEnvVar(self: *Terminal, allocator: std.mem.Allocator, key: []const
     self.checkEnvironmentOverrides();
 }
 
+pub fn adoptHostEnvironment(self: *Terminal, environment: std.process.Environ.Map) void {
+    std.debug.assert(self.host_env_map == null and self.opts.env_map == null);
+    self.host_env_map = environment;
+    self.opts.env_map = &self.host_env_map.?;
+    self.checkEnvironmentOverrides();
+}
+
 pub fn resetState(self: *Terminal, tty: anytype) !void {
+    try self.resetInputModes(tty);
+
+    if (self.state.alt_screen) {
+        try self.exitAltScreen(tty);
+    } else {
+        switch (builtin.os.tag) {
+            .windows => {
+                try tty.writeByte('\r');
+                var i: u16 = 0;
+                while (i < self.state.cursor.row) : (i += 1) {
+                    try tty.writeAll(ansi.ANSI.reverseIndex);
+                }
+                try tty.writeAll(ansi.ANSI.eraseBelowCursor);
+            },
+            else => {},
+        }
+    }
+
+    try self.resetOutputModes(tty);
+}
+
+pub fn resetInputModes(self: *Terminal, tty: anytype) !void {
     try tty.writeAll(ansi.ANSI.showCursor);
     try tty.writeAll(ansi.ANSI.reset);
     try tty.writeAll(ansi.ANSI.resetMousePointer);
@@ -306,28 +335,14 @@ pub fn resetState(self: *Terminal, tty: anytype) !void {
     if (self.state.focus_tracking) {
         try self.setFocusTracking(tty, false);
     }
+}
 
-    if (self.state.alt_screen) {
-        try self.exitAltScreen(tty);
-    } else {
-        switch (builtin.os.tag) {
-            .windows => {
-                try tty.writeByte('\r');
-                var i: u16 = 0;
-                while (i < self.state.cursor.row) : (i += 1) {
-                    try tty.writeAll(ansi.ANSI.reverseIndex);
-                }
-                try tty.writeAll(ansi.ANSI.eraseBelowCursor);
-            },
-            else => {},
-        }
-    }
-
+pub fn resetOutputModes(self: *Terminal, tty: anytype) !void {
     if (self.state.color_scheme_updates) {
         try self.setColorSchemeUpdates(tty, false);
     }
 
-    self.setTerminalTitle(tty, "");
+    try ansi.ANSI.setTerminalTitleOutput(tty, "");
 
     // OSC 111 is intentionally disabled for now. In Ghostty, sending the
     // reset alone is enough to poison later OSC 11 background reporting for
@@ -656,7 +671,7 @@ fn parseOsc99NotificationQuery(self: *Terminal, response: []const u8) void {
     }
 }
 
-fn checkEnvironmentOverrides(self: *Terminal) void {
+pub fn checkEnvironmentOverrides(self: *Terminal) void {
     if (self.isXtversionTmux()) {
         self.multiplexer = .tmux;
     } else if (self.isXtversionZellij()) {
@@ -1877,4 +1892,27 @@ pub fn refusesForcedSixel(self: *Terminal) bool {
 
 pub fn getTerminalVersion(self: *Terminal) []const u8 {
     return self.term_info.version[0..self.term_info.version_len];
+}
+
+/// Discard input that the terminal queued on process stdin and the host has not read, such as mouse reports sent
+/// before mouse tracking was disabled. Best effort: a no-op when stdin is not a terminal.
+pub fn flushInput() void {
+    if (builtin.os.tag == .windows) {
+        const WindowsConsole = struct {
+            extern "kernel32" fn GetStdHandle(handle: std.os.windows.DWORD) callconv(.winapi) std.os.windows.HANDLE;
+            extern "kernel32" fn FlushConsoleInputBuffer(handle: std.os.windows.HANDLE) callconv(.winapi) std.os.windows.BOOL;
+        };
+        const stdin_handle = WindowsConsole.GetStdHandle(@bitCast(@as(i32, -10)));
+        _ = WindowsConsole.FlushConsoleInputBuffer(stdin_handle);
+        return;
+    }
+    const tciflush: c_int = switch (builtin.os.tag) {
+        .linux => 0,
+        .macos => 1,
+        else => return,
+    };
+    const PosixTerminal = struct {
+        extern "c" fn tcflush(fd: c_int, queue_selector: c_int) c_int;
+    };
+    _ = PosixTerminal.tcflush(0, tciflush);
 }

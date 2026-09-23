@@ -224,11 +224,11 @@ export function destroy(rendererInstance: CliRenderer): void {
   }
 
   const asciiDemo = rendererInstance.root.getRenderable("ascii-demo")
-  if (asciiDemo) rendererInstance.root.remove(asciiDemo)
+  asciiDemo?.destroyRecursively()
 
   if (parentContainer) {
     const fontsContainer = rendererInstance.root.getRenderable("fonts-container")
-    if (fontsContainer) rendererInstance.root.remove(fontsContainer)
+    fontsContainer?.destroyRecursively()
     parentContainer = null
   }
 

@@ -3,7 +3,9 @@ import {
   InputRenderable,
   InputRenderableEvents,
   RenderableEvents,
+  CliRenderEvents,
   type CliRenderer,
+  type TimerHandle,
   t,
   bold,
   fg,
@@ -18,6 +20,7 @@ let passwordInput: InputRenderable | null = null
 let commentInput: InputRenderable | null = null
 let renderer: CliRenderer | null = null
 let keyboardHandler: ((key: any) => void) | null = null
+let destroyHandler: (() => void) | null = null
 let keyLegendDisplay: TextRenderable | null = null
 let statusDisplay: TextRenderable | null = null
 let lastActionText: string = "Welcome to InputRenderable demo! Use Tab to navigate between fields."
@@ -25,6 +28,7 @@ let lastActionColor: string = "#FFCC00"
 let activeInputIndex: number = 0
 
 const inputElements: InputRenderable[] = []
+const actionTimeouts = new Set<TimerHandle>()
 
 function getActiveInput(): InputRenderable | null {
   return inputElements[activeInputIndex] || null
@@ -122,6 +126,15 @@ function navigateToInput(index: number): void {
   updateDisplays()
 }
 
+function resetActionColorAfter(delay: number): void {
+  const timeout = renderer!.clock.setTimeout(() => {
+    actionTimeouts.delete(timeout)
+    lastActionColor = "#FFCC00"
+    updateDisplays()
+  }, delay)
+  actionTimeouts.add(timeout)
+}
+
 function resetInputs(): void {
   nameInput!.value = ""
   emailInput!.value = ""
@@ -132,14 +145,13 @@ function resetInputs(): void {
   lastActionColor = "#FF00FF"
   updateDisplays()
 
-  setTimeout(() => {
-    lastActionColor = "#FFCC00"
-    updateDisplays()
-  }, 1000)
+  resetActionColorAfter(1000)
 }
 
 export function run(rendererInstance: CliRenderer): void {
   renderer = rendererInstance
+  destroyHandler = () => destroy(rendererInstance)
+  rendererInstance.once(CliRenderEvents.DESTROY, destroyHandler)
   renderer.setBackgroundColor("#001122")
 
   const parentContainer = new BoxRenderable(renderer, {
@@ -261,10 +273,7 @@ export function run(rendererInstance: CliRenderer): void {
       lastActionText = `*** ${getInputName(input)} CHANGED: "${value}" ***`
       lastActionColor = "#FF00FF"
       updateDisplays()
-      setTimeout(() => {
-        lastActionColor = "#FFCC00"
-        updateDisplays()
-      }, 1000)
+      resetActionColorAfter(1000)
     })
 
     input.on(InputRenderableEvents.ENTER, (value: string) => {
@@ -281,10 +290,7 @@ export function run(rendererInstance: CliRenderer): void {
       lastActionText = `*** ${inputName} SUBMITTED: "${value}" ${isValid ? "(Valid)" : "(Invalid)"} ***`
       lastActionColor = isValid ? "#00FF00" : "#FF0000"
       updateDisplays()
-      setTimeout(() => {
-        lastActionColor = "#FFCC00"
-        updateDisplays()
-      }, 1500)
+      resetActionColorAfter(1500)
     })
 
     input.on(RenderableEvents.FOCUSED, () => {
@@ -341,10 +347,20 @@ export function run(rendererInstance: CliRenderer): void {
 }
 
 export function destroy(rendererInstance: CliRenderer): void {
+  if (renderer !== rendererInstance) return
+  if (destroyHandler) {
+    rendererInstance.off(CliRenderEvents.DESTROY, destroyHandler)
+    destroyHandler = null
+  }
   if (keyboardHandler) {
     rendererInstance.keyInput.off("keypress", keyboardHandler)
     keyboardHandler = null
   }
+
+  // Blur callbacks read every field and may schedule action timers.
+  for (const input of inputElements) input.blur()
+  for (const timeout of actionTimeouts) rendererInstance.clock.clearTimeout(timeout)
+  actionTimeouts.clear()
 
   inputElements.forEach((input) => {
     if (input) {
@@ -355,7 +371,7 @@ export function destroy(rendererInstance: CliRenderer): void {
   inputElements.length = 0
 
   const parentContainer = rendererInstance.root.getRenderable("parent-container")
-  if (parentContainer) rendererInstance.root.remove(parentContainer)
+  parentContainer?.destroyRecursively()
 
   nameInput = null
   emailInput = null

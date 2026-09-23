@@ -26,12 +26,15 @@ import { MarkdownRenderable, SyntaxStyle, RGBA, createCliRenderer } from "@opent
 
 const renderer = await createCliRenderer()
 
-const syntaxStyle = SyntaxStyle.fromStyles({
-  "markup.heading.1": { fg: RGBA.fromHex("#58A6FF"), bold: true },
-  "markup.list": { fg: RGBA.fromHex("#FF7B72") },
-  "markup.raw": { fg: RGBA.fromHex("#A5D6FF") },
-  default: { fg: RGBA.fromHex("#E6EDF3") },
-})
+const syntaxStyle = SyntaxStyle.fromStyles(
+  {
+    "markup.heading.1": { fg: RGBA.fromHex("#58A6FF"), bold: true },
+    "markup.list": { fg: RGBA.fromHex("#FF7B72") },
+    "markup.raw": { fg: RGBA.fromHex("#A5D6FF") },
+    default: { fg: RGBA.fromHex("#E6EDF3") },
+  },
+  renderer.nativeScene,
+)
 
 const markdown = new MarkdownRenderable(renderer, {
   id: "readme",
@@ -100,9 +103,12 @@ To use it, render with `internalBlockMode: "top-level"`. The renderable keeps ea
 ```typescript
 import { MarkdownRenderable, RGBA, SyntaxStyle } from "@opentui/core"
 
-const syntaxStyle = SyntaxStyle.fromStyles({
-  default: { fg: RGBA.fromHex("#E6EDF3") },
-})
+const syntaxStyle = SyntaxStyle.fromStyles(
+  {
+    default: { fg: RGBA.fromHex("#E6EDF3") },
+  },
+  renderer.nativeScene,
+)
 
 const md = new MarkdownRenderable(renderer, {
   content: "",
@@ -225,7 +231,7 @@ import {
   type MarkdownCodeBlockRenderer,
 } from "@opentui/core"
 
-const syntaxStyle = SyntaxStyle.fromStyles({ default: {} })
+const syntaxStyle = SyntaxStyle.fromStyles({ default: {} }, renderer.nativeScene)
 
 const renderTaskFlow =
   (renderer: CliRenderer): MarkdownCodeBlockRenderer =>
@@ -275,6 +281,8 @@ const markdown = new MarkdownRenderable(renderer, {
 | `internalBlockMode` | `"coalesced" \| "top-level"`                                                    | `"coalesced"` | Experimental: expose top-level blocks as separate renderables |
 | `treeSitterClient`  | `TreeSitterClient`                                                              | -             | Custom Tree-sitter client for code blocks                     |
 | `renderNode`        | `(token: Token, context: RenderNodeContext) => Renderable \| null \| undefined` | -             | Custom render hook per markdown block                         |
+
+Markdown applies `syntaxStyle`, `fg`, `bg`, `conceal`, and `concealCode` changes in its own `onLifecyclePass` hook. If you assign `onLifecyclePass` on a Markdown renderable, even to `null`, call `refreshStyles()` after each of these changes.
 
 OpenTUI bundles a limited parser set. See the [Tree-sitter reference](/docs/reference/tree-sitter) before you highlight other fenced-code languages.
 

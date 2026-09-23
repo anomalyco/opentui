@@ -1,18 +1,23 @@
 import { describe, expect, it, beforeEach, afterEach, spyOn } from "bun:test"
+import { OptimizedBuffer, ResourceContext } from "./buffer.js"
 import { TextBuffer } from "./text-buffer.js"
 import { TextBufferView } from "./text-buffer-view.js"
 import { StyledText, stringToStyledText } from "./lib/styled-text.js"
 import { RGBA } from "./lib/RGBA.js"
-import { OptimizedBuffer } from "./buffer.js"
-import { resolveRenderLib } from "./zig.js"
+
+let resourceContext: ResourceContext
+beforeEach(() => {
+  resourceContext = new ResourceContext({ objectCapacity: 32, renderCellsMax: 4096 })
+})
+afterEach(() => resourceContext.destroy())
 
 it("cached word and CJK breaks retain streaming source order", () => {
   const part = "AB \u65e5\u672c\u3002\u8a9e\u6587 "
   const layouts = []
   for (const fragmented of [false, true]) {
-    const buffer = TextBuffer.create("wcwidth")
+    const buffer = TextBuffer.create("wcwidth", resourceContext)
     const view = TextBufferView.create(buffer)
-    const screen = OptimizedBuffer.create(10, 256, "wcwidth")
+    const screen = OptimizedBuffer.create(10, 256, "wcwidth", { owner: resourceContext })
     try {
       if (fragmented) {
         for (let i = 0; i < 64; i++) buffer.append(part)
@@ -81,9 +86,9 @@ for (const method of ["unicode", "unicode-wide", "wcwidth"] as const) {
     ["kana punctuation", ["AB \u30ab", "\u30fb\u30ca"], 6, ["AB", "\u30ab\u30fb\u30ca"]],
   ] as const) {
     it(`word wrapping preserves ${name} across appends (${method})`, () => {
-      const buffer = TextBuffer.create(method)
+      const buffer = TextBuffer.create(method, resourceContext)
       const view = TextBufferView.create(buffer)
-      const screen = OptimizedBuffer.create(width + 1, 8, method)
+      const screen = OptimizedBuffer.create(width + 1, 8, method, { owner: resourceContext })
       try {
         for (const part of parts) buffer.append(part)
         view.setWrapMode("word")
@@ -121,9 +126,9 @@ for (const method of ["unicode", "unicode-wide"] as const) {
     ["\u306f", "\u309a", "\u3072"],
   ]) {
     it(`word wrapping retains an appended kana mark (${method}, ${mark.codePointAt(0)})`, () => {
-      const buffer = TextBuffer.create(method)
+      const buffer = TextBuffer.create(method, resourceContext)
       const view = TextBufferView.create(buffer)
-      const screen = OptimizedBuffer.create(8, 2, method)
+      const screen = OptimizedBuffer.create(8, 2, method, { owner: resourceContext })
       try {
         buffer.setText(base)
         buffer.append(mark + suffix)
@@ -146,7 +151,7 @@ describe("TextBufferView", () => {
   let view: TextBufferView
 
   beforeEach(() => {
-    buffer = TextBuffer.create("wcwidth")
+    buffer = TextBuffer.create("wcwidth", resourceContext)
     view = TextBufferView.create(buffer)
   })
 
@@ -163,7 +168,14 @@ describe("TextBufferView", () => {
       const selected = view.getSelectedText()
       const selection = view.getSelection()
       const visible = view.lineInfo
+      const symbols = (resourceContext.renderLib as unknown as { opentui: { symbols: Record<string, () => number> } })
+        .opentui.symbols
+      const getLines = spyOn(symbols, "ot_text_buffer_view_get_lines")
       const sources = view.getLineSources(9995, 3)
+      // Native copies at most the requested rows (argument 5 is the row capacity), not the whole table.
+      const capacities = getLines.mock.calls.map((args: unknown[]) => args[5])
+      getLines.mockRestore()
+      expect(Math.max(...(capacities as number[]))).toBe(3)
       expect(sources).toEqual([9995, 9996, 9997])
       expect(view.getLineSources(9999, 10)).toEqual([9999])
       expect(view.getLineSources(10000, 1)).toEqual([])
@@ -388,249 +400,176 @@ describe("TextBufferView", () => {
     })
   })
 
-  describe("getSelectedText", () => {
-    it("should return empty string when no selection", () => {
-      const styledText = stringToStyledText("Hello World")
-      buffer.setStyledText(styledText)
-
-      const selectedText = view.getSelectedText()
-      expect(selectedText).toBe("")
+  describe("selection", () => {
+    // Each row: text, selection calls, then the selected text and the range in cell offsets (a newline counts one).
+    // Local selections are inclusive: the cell under the focus is selected too.
+    it.each<[string, string, ((view: TextBufferView) => unknown)[], string, { start: number; end: number } | null]>([
+      ["no selection", "Hello World", [], "", null],
+      ["offsets", "Hello World", [(v) => v.setSelection(6, 11)], "World", { start: 6, end: 11 }],
+      [
+        "offsets across a newline",
+        "Line 1\nLine 2\nLine 3",
+        [(v) => v.setSelection(0, 9)],
+        "Line 1\nLi",
+        { start: 0, end: 9 },
+      ],
+      [
+        "offsets over wide characters (the end snaps past the emoji)",
+        "Hello 世界 🌟",
+        [(v) => v.setSelection(6, 12)],
+        "世界 🌟",
+        { start: 6, end: 13 },
+      ],
+      ["reset", "Hello World", [(v) => v.setSelection(6, 11), (v) => v.resetSelection()], "", null],
+      [
+        "update grows",
+        "Hello World",
+        [(v) => v.setSelection(0, 5), (v) => v.updateSelection(11)],
+        "Hello World",
+        { start: 0, end: 11 },
+      ],
+      [
+        "update shrinks",
+        "Hello World",
+        [(v) => v.setSelection(0, 11), (v) => v.updateSelection(5)],
+        "Hello",
+        { start: 0, end: 5 },
+      ],
+      ["update without a selection", "Hello World", [(v) => v.updateSelection(5)], "", null],
+      ["local", "Hello World", [(v) => v.setLocalSelection(0, 0, 5, 0)], "Hello ", { start: 0, end: 6 }],
+      [
+        "local update keeps the anchor",
+        "Hello World",
+        [
+          (v) => v.setLocalSelection(0, 0, 5, 0),
+          (v) => v.updateLocalSelection(0, 0, 11, 0),
+          (v) => v.updateLocalSelection(0, 0, 3, 0),
+        ],
+        "Hell",
+        { start: 0, end: 4 },
+      ],
+      [
+        "local update across lines",
+        "Line 1\nLine 2\nLine 3",
+        [(v) => v.setLocalSelection(2, 0, 2, 0), (v) => v.updateLocalSelection(2, 0, 4, 1)],
+        "ne 1\nLine ",
+        { start: 2, end: 12 },
+      ],
+      [
+        "local update without an anchor",
+        "Hello World",
+        [(v) => v.updateLocalSelection(0, 0, 5, 0)],
+        "Hello ",
+        { start: 0, end: 6 },
+      ],
+      [
+        "local update backward",
+        "Hello World",
+        [(v) => v.setLocalSelection(11, 0, 11, 0), (v) => v.updateLocalSelection(11, 0, 6, 0)],
+        "World",
+        { start: 6, end: 11 },
+      ],
+      ["a cell press is empty", "alpha beta", [(v) => v.setLocalSelection(6, 0, 6, 0)], "", null],
+      [
+        "word press",
+        "alpha beta gamma",
+        [(v) => v.setLocalSelection(6, 0, 6, 0, undefined, undefined, "word")],
+        "beta",
+        { start: 6, end: 10 },
+      ],
+      [
+        "line press",
+        "alpha beta\ngamma",
+        [(v) => v.setLocalSelection(2, 1, 2, 1, undefined, undefined, "line")],
+        "gamma",
+        { start: 11, end: 16 },
+      ],
+    ])("%s", (_name, text, calls, selectedText, selection) => {
+      buffer.setStyledText(stringToStyledText(text))
+      // Every local call reports a change.
+      expect(calls.map((call) => call(view)).filter((result) => typeof result === "boolean")).not.toContain(false)
+      expect([view.getSelectedText(), view.getSelection(), view.hasSelection()]).toEqual([
+        selectedText,
+        selection,
+        selection !== null,
+      ])
     })
 
-    it("should return selected text for simple selection", () => {
-      const styledText = stringToStyledText("Hello World")
-      buffer.setStyledText(styledText)
-
-      view.setSelection(6, 11)
-      const selectedText = view.getSelectedText()
-      expect(selectedText).toBe("World")
-    })
-
-    it("should return selected text with newlines", () => {
-      const styledText = stringToStyledText("Line 1\nLine 2\nLine 3")
-      buffer.setStyledText(styledText)
-
-      // Rope offsets: "Line 1" (0-5) + newline (6) + "Line 2" (7-12) + newline (13) + "Line 3" (14-19)
-      // Selection [0, 9) = "Line 1" (0-5) + newline (6) + "Li" (7-8) = 9 chars
-      view.setSelection(0, 9)
-      const selectedText = view.getSelectedText()
-      expect(selectedText).toBe("Line 1\nLi")
-    })
-
-    it("should handle Unicode characters in selection", () => {
-      const styledText = stringToStyledText("Hello 世界 🌟")
-      buffer.setStyledText(styledText)
-
-      view.setSelection(6, 12)
-      const selectedText = view.getSelectedText()
-      expect(selectedText).toBe("世界 🌟")
-    })
-
-    it("should handle selection reset", () => {
-      const styledText = stringToStyledText("Hello World")
-      buffer.setStyledText(styledText)
-
-      view.setSelection(6, 11)
-      expect(view.getSelectedText()).toBe("World")
-
-      view.resetSelection()
-      expect(view.getSelectedText()).toBe("")
-    })
-
-    it("should return null bytes for zero-length selected-text output buffer", () => {
-      buffer.setText("Hello World")
-      view.setSelection(0, 5)
-
-      const selectedBytes = (view as any).lib.textBufferViewGetSelectedTextBytes(view.ptr, 0)
-
-      expect(selectedBytes).toBeNull()
-    })
-
-    it("should return null bytes for zero-length plain-text output buffer", () => {
-      buffer.setText("Hello World")
-
-      const plainBytes = (view as any).lib.textBufferViewGetPlainTextBytes(view.ptr, 0)
-
-      expect(plainBytes).toBeNull()
-    })
-  })
-
-  describe("selection state", () => {
-    it("should track selection state", () => {
-      const styledText = stringToStyledText("Hello World")
-      buffer.setStyledText(styledText)
-
-      expect(view.hasSelection()).toBe(false)
-
-      view.setSelection(0, 5)
-      expect(view.hasSelection()).toBe(true)
-
-      const selection = view.getSelection()
-      expect(selection).toEqual({ start: 0, end: 5 })
-
-      view.resetSelection()
-      expect(view.hasSelection()).toBe(false)
-    })
-
-    it("should update selection end position", () => {
-      const styledText = stringToStyledText("Hello World")
-      buffer.setStyledText(styledText)
-
-      view.setSelection(0, 5)
-      expect(view.getSelectedText()).toBe("Hello")
-
-      view.updateSelection(11)
-      expect(view.getSelectedText()).toBe("Hello World")
-
-      const selection = view.getSelection()
-      expect(selection).toEqual({ start: 0, end: 11 })
-    })
-
-    it("should shrink selection with updateSelection", () => {
-      const styledText = stringToStyledText("Hello World")
-      buffer.setStyledText(styledText)
-
-      view.setSelection(0, 11)
-      expect(view.getSelectedText()).toBe("Hello World")
-
-      view.updateSelection(5)
-      expect(view.getSelectedText()).toBe("Hello")
-
-      const selection = view.getSelection()
-      expect(selection).toEqual({ start: 0, end: 5 })
-    })
-
-    it("should do nothing when updateSelection called with no selection", () => {
-      const styledText = stringToStyledText("Hello World")
-      buffer.setStyledText(styledText)
-
-      expect(view.hasSelection()).toBe(false)
-
-      view.updateSelection(5)
-      expect(view.hasSelection()).toBe(false)
-      expect(view.getSelectedText()).toBe("")
-    })
-
-    it("should update local selection focus position", () => {
-      const styledText = stringToStyledText("Hello World")
-      buffer.setStyledText(styledText)
-
-      // Inclusive selection: the cell under the focus (5, the space) is selected too.
-      const changed1 = view.setLocalSelection(0, 0, 5, 0)
-      expect(changed1).toBe(true)
-      expect(view.getSelectedText()).toBe("Hello ")
-
-      const changed2 = view.updateLocalSelection(0, 0, 11, 0)
-      expect(changed2).toBe(true)
-      expect(view.getSelectedText()).toBe("Hello World")
-    })
-
-    it("should update local selection across lines", () => {
-      const styledText = stringToStyledText("Line 1\nLine 2\nLine 3")
-      buffer.setStyledText(styledText)
-
-      view.setLocalSelection(2, 0, 2, 0)
-
-      const changed = view.updateLocalSelection(2, 0, 4, 1)
-      expect(changed).toBe(true)
-
-      const selectedText = view.getSelectedText()
-      expect(selectedText).toContain("ne 1")
-      expect(selectedText).toContain("Line")
-    })
-
-    it("should fallback to setLocalSelection when updateLocalSelection called with no existing anchor", () => {
-      const styledText = stringToStyledText("Hello World")
-      buffer.setStyledText(styledText)
-
-      const changed = view.updateLocalSelection(0, 0, 5, 0)
-      expect(changed).toBe(true)
-      expect(view.hasSelection()).toBe(true)
-      expect(view.getSelectedText()).toBe("Hello ")
-    })
-
-    it("should preserve anchor when updating local selection", () => {
-      const styledText = stringToStyledText("Hello World")
-      buffer.setStyledText(styledText)
-
-      view.setLocalSelection(0, 0, 5, 0)
-      expect(view.getSelectedText()).toBe("Hello ")
-
-      view.updateLocalSelection(0, 0, 6, 0)
-      expect(view.getSelectedText()).toBe("Hello W")
-
-      view.updateLocalSelection(0, 0, 11, 0)
-      expect(view.getSelectedText()).toBe("Hello World")
-
-      view.updateLocalSelection(0, 0, 3, 0)
-      expect(view.getSelectedText()).toBe("Hell")
-    })
-
-    it("should handle backward selection with updateLocalSelection", () => {
-      const styledText = stringToStyledText("Hello World")
-      buffer.setStyledText(styledText)
-
-      view.setLocalSelection(11, 0, 11, 0)
-
-      const changed = view.updateLocalSelection(11, 0, 6, 0)
-      expect(changed).toBe(true)
-      expect(view.getSelectedText()).toBe("World")
-    })
-
-    it("should select a word with word behavior on the same cell", () => {
-      const styledText = stringToStyledText("alpha beta gamma")
-      buffer.setStyledText(styledText)
-
-      const changed = view.setLocalSelection(6, 0, 6, 0, undefined, undefined, "word")
-      expect(changed).toBe(true)
-      expect(view.getSelectedText()).toBe("beta")
-    })
-
-    it("should keep a cell press zero-width", () => {
-      const styledText = stringToStyledText("alpha beta")
-      buffer.setStyledText(styledText)
-
-      view.setLocalSelection(6, 0, 6, 0)
-      expect(view.getSelectedText()).toBe("")
-      expect(view.hasSelection()).toBe(false)
+    // Resets skip native while a view is marked clear; that is sound only if a clear view has no native selection.
+    it.each([1, 2, 3])("never marks a view with a selection clear (seed %j)", (seed) => {
+      let state = seed
+      const random = (count: number) => {
+        state ^= state << 13
+        state ^= state >>> 17
+        state ^= state << 5
+        return (state >>> 0) % count
+      }
+      const texts = ["alpha beta\ngamma 世界\n\tdelta", "x", "", "one two three four"]
+      const behaviors = ["cell", "word", "line"] as const
+      const local = (): [number, number, number, number] => [random(12), random(4), random(12), random(4)]
+      const replacement = resourceContext.renderLib.encodeTextBufferStyledText(stringToStyledText("x y"))
+      const operations = [
+        () => view.setSelection(random(20), 20 + random(10)),
+        () => view.updateSelection(random(30)),
+        () => view.setLocalSelection(...local(), undefined, undefined, behaviors[random(3)]),
+        () => view.updateLocalSelection(...local(), undefined, undefined, behaviors[random(3)]),
+        () => view.resetSelection(),
+        () => view.resetLocalSelection(),
+        () => buffer.setText(texts[random(texts.length)]),
+        () => view.setSelectionOccupancy(random(2) === 0 ? "boundary" : "cell"),
+        () =>
+          TextBuffer._replaceStyledTextBatch(
+            [{ textBuffer: buffer, textBufferView: view, text: replacement }],
+            () => {},
+          ),
+      ]
+      buffer.setText(texts[0])
+      for (let step = 0; step < 300; step++) {
+        operations[random(operations.length)]()
+        if ((view as unknown as { selectionClear: boolean }).selectionClear) expect(view.hasSelection()).toBe(false)
+      }
     })
 
     it("resets a selection once and skips resets of a clear view", () => {
       buffer.setStyledText(stringToStyledText("Hello World"))
-      const lib = resolveRenderLib()
-      const reset = spyOn(lib, "textBufferViewResetSelection")
-      const resetLocal = spyOn(lib, "textBufferViewResetLocalSelection")
+      const symbols = (resourceContext.renderLib as unknown as { opentui: { symbols: Record<string, () => number> } })
+        .opentui.symbols
+      const select = spyOn(symbols, "ot_text_buffer_view_select")
       try {
-        view.resetSelection()
         view.resetLocalSelection()
-        expect(reset).toHaveBeenCalledTimes(0)
-        expect(resetLocal).toHaveBeenCalledTimes(0)
+        view.resetSelection()
+        expect(select).toHaveBeenCalledTimes(0)
+
+        view.setLocalSelection(0, 0, 4, 0)
+        expect(view.getSelectedText()).toBe("Hello")
+        view.resetLocalSelection()
+        view.resetLocalSelection()
+        // One call selected, one reset.
+        expect(select).toHaveBeenCalledTimes(2)
+        expect(view.hasSelection()).toBe(false)
 
         view.setSelection(0, 5)
         view.resetSelection()
-        view.resetSelection()
-        expect(reset).toHaveBeenCalledTimes(1)
+        expect(select).toHaveBeenCalledTimes(4)
         expect(view.hasSelection()).toBe(false)
-
-        view.setLocalSelection(0, 0, 5, 0)
-        view.resetLocalSelection()
-        view.resetLocalSelection()
-        expect(resetLocal).toHaveBeenCalledTimes(1)
-        expect(view.hasSelection()).toBe(false)
-
-        // A local reset clears a selection that setSelection made, and a reset clears a local one.
-        view.setSelection(0, 5)
-        view.resetLocalSelection()
-        expect(view.hasSelection()).toBe(false)
-        view.updateLocalSelection(0, 0, 3, 0)
-        view.resetSelection()
-        expect(view.hasSelection()).toBe(false)
-        expect(reset).toHaveBeenCalledTimes(2)
-        expect(resetLocal).toHaveBeenCalledTimes(2)
       } finally {
-        reset.mockRestore()
-        resetLocal.mockRestore()
+        select.mockRestore()
       }
+    })
+
+    it("rejects resets of a clear view during a Yoga callback", () => {
+      const host = resourceContext.renderLib.getYogaHost()
+      const failures: string[] = []
+      for (const reset of [() => view.resetLocalSelection(), () => view.resetSelection()]) {
+        host.invokeCallback(() => {
+          try {
+            reset()
+          } catch (error) {
+            failures.push((error as Error).message)
+          }
+        })
+      }
+      expect(failures).toEqual(["Cannot mutate Yoga during a callback", "Cannot mutate Yoga during a callback"])
     })
 
     it("rejects resets of a destroyed clear view", () => {
@@ -638,6 +577,37 @@ describe("TextBufferView", () => {
       other.destroy()
       expect(() => other.resetSelection()).toThrow("TextBufferView is destroyed")
       expect(() => other.resetLocalSelection()).toThrow("TextBufferView is destroyed")
+    })
+
+    it("rejects resets of a clear view whose native Context is gone", () => {
+      const owner = new ResourceContext({ objectCapacity: 4, renderCellsMax: 64 })
+      const text = TextBuffer.create("wcwidth", owner)
+      const clear = TextBufferView.create(text)
+      owner.renderLib.destroyContext(owner.context)
+      expect(() => clear.resetLocalSelection()).toThrow("WrongContext")
+      expect(() => clear.resetSelection()).toThrow("WrongContext")
+    })
+
+    it("does not carry selection colors into a later selection", () => {
+      buffer.setStyledText(stringToStyledText("Hello"))
+      const screen = OptimizedBuffer.create(8, 1, "wcwidth", { owner: resourceContext })
+      const selectedBackground = () => {
+        screen.clear()
+        screen.drawTextBuffer(view, 0, 0)
+        return screen.withBuffers(({ bg }) => Array.from(bg.subarray(0, 4)))
+      }
+      try {
+        view.setSelection(0, 5, RGBA.fromInts(255, 0, 0, 255))
+        const red = selectedBackground()
+        view.setSelection(0, 5)
+        const inverted = selectedBackground()
+        expect(inverted).not.toEqual(red)
+        view.resetLocalSelection()
+        view.setSelection(0, 5, RGBA.fromInts(255, 0, 0, 255))
+        expect(selectedBackground()).toEqual(red)
+      } finally {
+        screen.destroy()
+      }
     })
   })
 
@@ -841,8 +811,11 @@ describe("TextBufferView", () => {
       view.setWrapMode("char")
       const first = view.measureForDimensions(10, 10)!
       const second = view.measureForDimensions(5, 10)!
+      const repeated = view.measureForDimensions(10, 1)!
 
       expect(first).not.toBe(second)
+      expect(repeated).not.toBe(first)
+      expect(repeated).toEqual(first)
       expect(first).toEqual({ lineCount: 1, widthColsMax: 10 })
       expect(second).toEqual({ lineCount: 2, widthColsMax: 5 })
     })

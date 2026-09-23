@@ -7,6 +7,8 @@
     "build": "bun run prepare:zig && zig build -Doptimize=ReleaseFast",
     "build:dev": "bun run prepare:zig && zig build -Doptimize=Debug",
     "test": "bun run prepare:zig && sh scripts/test.sh",
+    "test:lifetime": "bun run prepare:zig && zig build test-lifetime --summary all",
+    "test:branch-cov": "bun run prepare:zig && bun scripts/branch-cov.ts",
     "bench": "bun run prepare:zig && zig build bench -Dbench-optimize=ReleaseFast --",
     "bench:ffi": "bun run prepare:zig && zig build bench-ffi",
     "clean": "bun ../../scripts/clean.ts --native"

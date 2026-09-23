@@ -1,36 +1,66 @@
 import { EventEmitter } from "node:events"
 import { expect, test } from "bun:test"
 import type { AuthContext, ClientInfo, Connection } from "ssh2"
+import type { AuthOutcome } from "../../auth.js"
 import { createConnectionHandler } from "../../connection.js"
 import { createSafeInvoke } from "../../safe.js"
-import { deferred } from "../support.js"
+import { deferred, TestChannel, waitFor } from "../support.js"
 
-test("each accepted connection disables Nagle's algorithm", async () => {
-  const errors: unknown[] = []
-  const calls: unknown[] = []
-  const client = Object.assign(new EventEmitter(), {
-    setNoDelay(enabled: boolean) {
-      calls.push(enabled)
-    },
-    end() {},
-    _sock: { destroy() {} },
-  }) as unknown as Connection
-  const handler = createConnectionHandler({
-    authenticator: {
-      advertisedMethods: () => ["none"],
-      authenticate: async () => ({ type: "reject", methods: ["none"] }),
-      handle: async () => ({ type: "reject", methods: ["none"] }),
-    },
+type HandlerOptions = Parameters<typeof createConnectionHandler>[0]
+
+const clientInfo = { ip: "127.0.0.1", port: 1234 } as ClientInfo
+const accept = async (): Promise<AuthOutcome> => ({ type: "accept", identity: { method: "none", username: "x" } })
+const reject = async (): Promise<AuthOutcome> => ({ type: "reject", methods: ["none"] })
+
+function testHandler(options: Partial<HandlerOptions> & { handle?: HandlerOptions["authenticator"]["handle"] } = {}) {
+  const { handle = reject, ...rest } = options
+  return createConnectionHandler({
+    authenticator: { advertisedMethods: () => ["none"], authenticate: reject, handle },
     middlewares: [],
     handler: () => {},
-    safe: createSafeInvoke((error) => errors.push(error)),
+    safe: createSafeInvoke(() => {}),
     idleTimeoutMs: undefined,
     maxTimeoutMs: undefined,
     sessionLimits: { perConnection: 1, global: 1 },
+    ...rest,
   })
+}
+
+/** ssh2 client `Connection` stand-in that counts `end()` and socket destruction. */
+function testClient(setNoDelay: (this: EventEmitter, enabled: boolean) => void = () => {}) {
+  const calls = { end: 0, destroy: 0 }
+  const client = Object.assign(new EventEmitter(), {
+    setNoDelay,
+    end: () => void calls.end++,
+    _sock: { destroy: () => void calls.destroy++ },
+  }) as unknown as Connection
+  return { client, calls }
+}
+
+/** Requests a shell on a new ssh2 session and returns how the server answered it. */
+function requestShell(client: Connection, channel: unknown = new TestChannel()) {
+  const result = { accepted: 0, rejected: 0 }
+  const sshSession = new EventEmitter()
+  client.emit("session", () => sshSession)
+  sshSession.emit(
+    "shell",
+    () => {
+      result.accepted++
+      return channel
+    },
+    () => result.rejected++,
+  )
+  return result
+}
+
+test("each accepted connection disables Nagle's algorithm", async () => {
+  const errors: unknown[] = []
+  const noDelay: boolean[] = []
+  const { client } = testClient((enabled) => noDelay.push(enabled))
+  const handler = testHandler({ safe: createSafeInvoke((error) => errors.push(error)) })
   try {
-    handler.onConnection(client, { ip: "127.0.0.1", port: 1234 } as ClientInfo)
-    expect(calls).toEqual([true])
+    handler.onConnection(client, clientInfo)
+    expect(noDelay).toEqual([true])
     expect(errors).toEqual([])
   } finally {
     await handler.closeAll()
@@ -40,43 +70,18 @@ test("each accepted connection disables Nagle's algorithm", async () => {
 test("a no-delay transport failure preserves connection cleanup", async () => {
   const failure = new Error("custom transport failure")
   const errors: unknown[] = []
-  let endCalls = 0
-  let destroyCalls = 0
-  const client = Object.assign(new EventEmitter(), {
-    setNoDelay(this: EventEmitter) {
-      this.emit("close")
-      throw failure
-    },
-    end() {
-      endCalls++
-    },
-    _sock: {
-      destroy() {
-        destroyCalls++
-      },
-    },
-  }) as unknown as Connection
-  const handler = createConnectionHandler({
-    authenticator: {
-      advertisedMethods: () => ["none"],
-      authenticate: async () => ({ type: "reject", methods: ["none"] }),
-      handle: async () => ({ type: "reject", methods: ["none"] }),
-    },
-    middlewares: [],
-    handler: () => {},
-    safe: createSafeInvoke((error) => errors.push(error)),
-    idleTimeoutMs: undefined,
-    maxTimeoutMs: undefined,
-    sessionLimits: { perConnection: 1, global: 1 },
+  const { client, calls } = testClient(function () {
+    this.emit("close")
+    throw failure
   })
+  const handler = testHandler({ safe: createSafeInvoke((error) => errors.push(error)) })
   try {
-    expect(() => handler.onConnection(client, { ip: "127.0.0.1", port: 1234 } as ClientInfo)).not.toThrow()
+    expect(() => handler.onConnection(client, clientInfo)).not.toThrow()
     expect(errors).toEqual([failure])
   } finally {
     await handler.closeAll()
   }
-  expect(endCalls).toBe(0)
-  expect(destroyCalls).toBe(0)
+  expect(calls).toEqual({ end: 0, destroy: 0 })
 })
 
 test("an authentication decision is ignored after the connection closes", async () => {
@@ -84,29 +89,16 @@ test("an authentication decision is ignored after the connection closes", async 
   const decision = deferred<void>()
   let accepts = 0
   let rejects = 0
-  const client = Object.assign(new EventEmitter(), {
-    setNoDelay() {},
-    end() {},
-    _sock: { destroy() {} },
-  }) as unknown as Connection
-  const handler = createConnectionHandler({
-    authenticator: {
-      advertisedMethods: () => ["none"],
-      authenticate: async () => ({ type: "reject", methods: ["none"] }),
-      async handle() {
-        started.resolve()
-        await decision.promise
-        return { type: "accept", identity: { method: "none", username: "late" } }
-      },
-    },
-    middlewares: [],
-    handler: () => {},
-    safe: createSafeInvoke(() => {}),
-    idleTimeoutMs: undefined,
-    maxTimeoutMs: undefined,
+  const { client } = testClient()
+  const handler = testHandler({
     sessionLimits: { perConnection: 1, global: 100 },
+    async handle() {
+      started.resolve()
+      await decision.promise
+      return { type: "accept", identity: { method: "none", username: "late" } }
+    },
   })
-  handler.onConnection(client, { ip: "127.0.0.1", port: 1234 } as ClientInfo)
+  handler.onConnection(client, clientInfo)
   handler.setAccepting(true)
   client.emit("authentication", {
     method: "none",
@@ -124,278 +116,84 @@ test("an authentication decision is ignored after the connection closes", async 
   expect(rejects).toBe(0)
 })
 
-test("closeAll waits for a logically closed bridge to finish draining", async () => {
-  let rawCallback: (() => void) | undefined
-  const channel = Object.assign(new EventEmitter(), {
-    write(_data: Buffer | string, callback?: () => void) {
-      rawCallback = callback
-      return false
-    },
-    pause() {},
-    resume() {},
-    exit() {},
-    close() {},
-  })
-  const sshSession = new EventEmitter()
-  let clientEndCalls = 0
-  const client = Object.assign(new EventEmitter(), {
-    setNoDelay() {},
-    end() {
-      clientEndCalls++
-    },
-    _sock: { destroy() {} },
-  }) as unknown as Connection
-  const handler = createConnectionHandler({
-    authenticator: {
-      advertisedMethods: () => ["none"],
-      authenticate: async () => ({ type: "reject", methods: ["none"] }),
-      handle: async () => ({ type: "accept", identity: { method: "none", username: "x" } }),
-    },
-    middlewares: [
-      (session) => {
-        session.write("pending")
-      },
-    ],
-    handler: () => {},
-    safe: createSafeInvoke(() => {}),
-    idleTimeoutMs: undefined,
-    maxTimeoutMs: undefined,
+test("native closeAll force-closes a client that never drains", async () => {
+  const errors: unknown[] = []
+  const channel = new TestChannel()
+  channel.hold()
+  const { client, calls } = testClient()
+  const handler = testHandler({
+    handle: accept,
+    middlewares: [(session) => session.write("never drains")],
+    safe: createSafeInvoke((error) => errors.push(error)),
     sessionLimits: { perConnection: 1, global: 100 },
   })
-  handler.onConnection(client, { ip: "127.0.0.1", port: 1234 } as ClientInfo)
+  handler.onConnection(client, clientInfo)
   handler.setAccepting(true)
   client.emit("ready")
-  client.emit("session", () => sshSession)
-  sshSession.emit("shell", () => channel)
+  requestShell(client, channel)
   await Promise.resolve()
   await Promise.resolve()
+
+  await handler.closeAll()
+  expect(calls.destroy).toBe(1)
+  expect(channel.exits).toEqual([1])
+  expect(errors.map((error) => (error as Error).message)).toEqual([
+    "NativeSession graceful close timed out; output cancelled without restoration",
+  ])
+})
+
+test("closeAll rejects late shells while waiting for a logically closed bridge's write acknowledgement", async () => {
+  const channel = new TestChannel()
+  channel.hold()
+  const { client, calls } = testClient()
+  const handler = testHandler({
+    handle: accept,
+    middlewares: [(session) => session.write("pending")],
+    sessionLimits: { perConnection: 2, global: 2 },
+  })
+  handler.onConnection(client, clientInfo)
+  handler.setAccepting(true)
+  client.emit("ready")
+  requestShell(client, channel)
+  await waitFor(() => channel.pendingWrite)
 
   let closed = false
   const closing = handler.closeAll().then(() => {
     closed = true
   })
   await Promise.resolve()
+  expect(requestShell(client, channel)).toEqual({ accepted: 0, rejected: 1 })
   expect(closed).toBe(false)
-  expect(clientEndCalls).toBe(0)
-
-  rawCallback?.()
+  expect(calls.end).toBe(0)
+  channel.release()
   await closing
-  expect(clientEndCalls).toBe(1)
-})
-
-test("closeAll force-closes a client that never drains", async () => {
-  const channel = Object.assign(new EventEmitter(), {
-    write() {
-      return false
-    },
-    pause() {},
-    resume() {},
-    exit() {},
-    close() {},
-  })
-  const sshSession = new EventEmitter()
-  let socketDestroyCalls = 0
-  const client = Object.assign(new EventEmitter(), {
-    setNoDelay() {},
-    end() {},
-    _sock: {
-      destroy() {
-        socketDestroyCalls++
-      },
-    },
-  }) as unknown as Connection
-  const handler = createConnectionHandler({
-    authenticator: {
-      advertisedMethods: () => ["none"],
-      authenticate: async () => ({ type: "reject", methods: ["none"] }),
-      handle: async () => ({ type: "accept", identity: { method: "none", username: "x" } }),
-    },
-    middlewares: [
-      (session) => {
-        session.write("never drains")
-      },
-    ],
-    handler: () => {},
-    safe: createSafeInvoke(() => {}),
-    idleTimeoutMs: undefined,
-    maxTimeoutMs: undefined,
-    sessionLimits: { perConnection: 1, global: 100 },
-  })
-  handler.onConnection(client, { ip: "127.0.0.1", port: 1234 } as ClientInfo)
-  handler.setAccepting(true)
-  client.emit("ready")
-  client.emit("session", () => sshSession)
-  sshSession.emit("shell", () => channel)
-  await Promise.resolve()
-  await Promise.resolve()
-
-  await handler.closeAll()
-  expect(socketDestroyCalls).toBe(1)
-})
-
-test("closeAll rejects shells requested after shutdown begins", async () => {
-  let rawCallback: (() => void) | undefined
-  const channel = Object.assign(new EventEmitter(), {
-    write(_data: Buffer | string, callback?: () => void) {
-      rawCallback = callback
-      return false
-    },
-    pause() {},
-    resume() {},
-    exit() {},
-    close() {},
-  })
-  const client = Object.assign(new EventEmitter(), {
-    setNoDelay() {},
-    end() {},
-    _sock: { destroy() {} },
-  }) as unknown as Connection
-  const handler = createConnectionHandler({
-    authenticator: {
-      advertisedMethods: () => ["none"],
-      authenticate: async () => ({ type: "reject", methods: ["none"] }),
-      handle: async () => ({ type: "accept", identity: { method: "none", username: "x" } }),
-    },
-    middlewares: [
-      (session) => {
-        session.write("pending")
-      },
-    ],
-    handler: () => {},
-    safe: createSafeInvoke(() => {}),
-    idleTimeoutMs: undefined,
-    maxTimeoutMs: undefined,
-    sessionLimits: { perConnection: 2, global: 2 },
-  })
-  handler.onConnection(client, { ip: "127.0.0.1", port: 1234 } as ClientInfo)
-  handler.setAccepting(true)
-  client.emit("ready")
-
-  const firstSession = new EventEmitter()
-  client.emit("session", () => firstSession)
-  firstSession.emit(
-    "shell",
-    () => channel,
-    () => {},
-  )
-  await Promise.resolve()
-  await Promise.resolve()
-
-  const closing = handler.closeAll()
-  await Promise.resolve()
-  let accepted = 0
-  let rejected = 0
-  const lateSession = new EventEmitter()
-  client.emit("session", () => lateSession)
-  lateSession.emit(
-    "shell",
-    () => {
-      accepted++
-      return channel
-    },
-    () => rejected++,
-  )
-
-  expect(accepted).toBe(0)
-  expect(rejected).toBe(1)
-  rawCallback?.()
-  await closing
+  expect(calls.end).toBe(1)
 })
 
 test("a bridge setup failure releases reserved capacity", () => {
   const errors: unknown[] = []
-  const client = Object.assign(new EventEmitter(), {
-    setNoDelay() {},
-    end() {},
-    _sock: { destroy() {} },
-  }) as unknown as Connection
-  const handler = createConnectionHandler({
-    authenticator: {
-      advertisedMethods: () => ["none"],
-      authenticate: async () => ({ type: "reject", methods: ["none"] }),
-      handle: async () => ({ type: "accept", identity: { method: "none", username: "x" } }),
-    },
-    middlewares: [],
-    handler: () => {},
-    safe: createSafeInvoke((error) => errors.push(error)),
-    idleTimeoutMs: undefined,
-    maxTimeoutMs: undefined,
-    sessionLimits: { perConnection: 1, global: 1 },
-  })
-  handler.onConnection(client, { ip: "127.0.0.1", port: 1234 } as ClientInfo)
+  const { client } = testClient()
+  const handler = testHandler({ handle: accept, safe: createSafeInvoke((error) => errors.push(error)) })
+  handler.onConnection(client, clientInfo)
   handler.setAccepting(true)
   client.emit("ready")
 
-  let accepts = 0
-  let rejects = 0
-  for (let i = 0; i < 2; i++) {
-    const sshSession = new EventEmitter()
-    client.emit("session", () => sshSession)
-    sshSession.emit(
-      "shell",
-      () => {
-        accepts++
-        return {}
-      },
-      () => rejects++,
-    )
-  }
-
-  expect(accepts).toBe(2)
-  expect(rejects).toBe(0)
+  for (let shell = 0; shell < 2; shell++) expect(requestShell(client, {})).toEqual({ accepted: 1, rejected: 0 })
   expect(errors).toHaveLength(2)
 })
 
 test("per-connection and global limits reject before accepting a shell", async () => {
-  const connectionHandler = createConnectionHandler({
-    authenticator: {
-      advertisedMethods: () => ["none"],
-      authenticate: async () => ({ type: "reject", methods: ["none"] }),
-      handle: async () => ({ type: "accept", identity: { method: "none", username: "x" } }),
-    },
+  const handler = testHandler({
+    handle: accept,
     middlewares: [() => new Promise(() => {})],
-    handler: () => {},
-    safe: createSafeInvoke(() => {}),
-    idleTimeoutMs: undefined,
-    maxTimeoutMs: undefined,
     sessionLimits: { perConnection: 1, global: 2 },
   })
-  connectionHandler.setAccepting(true)
-
+  handler.setAccepting(true)
   const connect = () => {
-    const client = Object.assign(new EventEmitter(), {
-      setNoDelay() {},
-      end() {},
-      _sock: { destroy() {} },
-    }) as unknown as Connection
-    connectionHandler.onConnection(client, { ip: "127.0.0.1", port: 1234 } as ClientInfo)
+    const { client } = testClient()
+    handler.onConnection(client, clientInfo)
     client.emit("ready")
     return client
-  }
-  const requestShell = (client: Connection) => {
-    const sshSession = new EventEmitter()
-    const channel = Object.assign(new EventEmitter(), {
-      write(_data: Buffer | string, callback?: () => void) {
-        callback?.()
-        return true
-      },
-      pause() {},
-      resume() {},
-      exit() {},
-      close() {},
-    })
-    let accepted = 0
-    let rejected = 0
-    client.emit("session", () => sshSession)
-    sshSession.emit(
-      "shell",
-      () => {
-        accepted++
-        return channel
-      },
-      () => rejected++,
-    )
-    return { accepted, rejected }
   }
 
   const firstClient = connect()
@@ -404,5 +202,5 @@ test("per-connection and global limits reject before accepting a shell", async (
   expect(requestShell(connect())).toEqual({ accepted: 1, rejected: 0 })
   expect(requestShell(connect())).toEqual({ accepted: 0, rejected: 1 })
 
-  await connectionHandler.closeAll()
+  await handler.closeAll()
 })

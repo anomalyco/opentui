@@ -1,5 +1,6 @@
 import {
   CliRenderer,
+  CliRenderEvents,
   createCliRenderer,
   t,
   blue,
@@ -21,12 +22,12 @@ let counter = 0
 let frameCallback: ((deltaTime: number) => Promise<void>) | null = null
 let updateFrequency = 1 // Updates per frame (1 = every frame, 2 = every 2 frames, etc.)
 let complexTemplateCounter = 0
-let startTime = Date.now()
 let keyboardHandler: ((key: KeyEvent) => void) | null = null
 let dashboardBox: BoxRenderable | null = null
 let complexDisplay: TextRenderable | null = null
 
 export function run(rendererInstance: CliRenderer): void {
+  const startTime = Date.now()
   const renderer = rendererInstance
   renderer.start()
   renderer.setBackgroundColor("#001122")
@@ -260,15 +261,13 @@ export function destroy(rendererInstance: CliRenderer): void {
   }
 
   if (parentContainer) {
-    const styledTextContainer = rendererInstance.root.getRenderable("styled-text-container")
-    if (styledTextContainer) rendererInstance.root.remove(styledTextContainer)
+    parentContainer.destroyRecursively()
     parentContainer = null
   }
 
   counter = 0
   updateFrequency = 1
   complexTemplateCounter = 0
-  startTime = Date.now()
   dashboardBox = null
   complexDisplay = null
 }
@@ -278,6 +277,7 @@ if (import.meta.main) {
     exitOnCtrlC: true,
     targetFps: 60,
   })
+  renderer.once(CliRenderEvents.DESTROY, () => destroy(renderer))
   run(renderer)
   setupCommonDemoKeys(renderer)
 }

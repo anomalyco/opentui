@@ -413,6 +413,14 @@ pub inline fn eastAsianWidth(cp: u21) u32 {
     return if (width > 0) @intCast(width) else 0;
 }
 
+pub inline fn isCombiningMark(bytes: []const u8) bool {
+    if (bytes.len == 0) return false;
+    return switch (uucode.get(.general_category, decodeUtf8Unchecked(bytes, 0).cp)) {
+        .mark_nonspacing, .mark_spacing_combining, .mark_enclosing => true,
+        else => false,
+    };
+}
+
 /// Calculate width from east asian width property and Unicode properties
 /// Returns -1 for control characters (they don't contribute to width)
 inline fn eawToWidth(cp: u21, eaw: uucode.types.EastAsianWidth) i16 {
@@ -1197,6 +1205,30 @@ fn findPosByWidthWCWidth(
     }
 
     return .{ .byte_offset = @intCast(text.len), .grapheme_count = codepoint_count, .columns_used = columns_used };
+}
+
+/// Byte length of the zero-width grapheme clusters that start `text`, such as a combining
+/// mark that an edit placed in a chunk of its own.
+pub fn zeroWidthPrefixLen(text: []const u8, tab_width: u8, width_method: WidthMethod) usize {
+    var pos: usize = 0;
+    var cluster_start: usize = 0;
+    var prev_cp: ?u21 = null;
+    var break_state: uucode.grapheme.BreakState = .default;
+    var width_state = GraphemeWidthState.init(0, 0, width_method);
+    while (pos < text.len) {
+        const decoded = decodeUtf8Unchecked(text, pos);
+        const cp_width = charWidth(text[pos], decoded.cp, tab_width);
+        if (prev_cp == null or isGraphemeBreak(prev_cp, decoded.cp, &break_state, width_method)) {
+            if (width_state.width > 0) return cluster_start;
+            cluster_start = pos;
+            width_state = GraphemeWidthState.init(decoded.cp, cp_width, width_method);
+        } else {
+            width_state.addCodepoint(decoded.cp, cp_width);
+        }
+        prev_cp = decoded.cp;
+        pos += decoded.len;
+    }
+    return if (width_state.width > 0) cluster_start else text.len;
 }
 
 /// Get width at byte offset - proxy function that dispatches based on width_method

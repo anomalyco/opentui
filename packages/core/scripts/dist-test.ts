@@ -25,6 +25,77 @@ const packageJson = JSON.parse(readFileSync(join(rootDir, "package.json"), "utf8
 const nativePackageName = `${packageJson.name}-${process.platform}-${process.arch}`
 const nativePackageDir = join(rootDir, "node_modules", nativePackageName)
 
+const nativeSceneSmoke = `
+const scene = await testing.createTestRenderer({
+  width: 16, height: 6, useMouse: true,
+  screenMode: "main-screen", externalOutputMode: "passthrough", consoleMode: "disabled",
+})
+try {
+  const failures = []
+  scene.renderer.on(core.CliRenderEvents.RENDER_ERROR, (event) => failures.push(event.error))
+  const box = new core.BoxRenderable(scene.renderer, {
+    width: 10, height: 3, border: true,
+    renderAfter(buffer) {
+      buffer.drawText("!", this.x + this.width - 2, this.y + 1, core.RGBA.fromHex("#ffffff"))
+    },
+  })
+  scene.renderer.root.add(box)
+  const text = new core.TextRenderable(scene.renderer, {
+    selectable: false, content: "text", alignSelf: "flex-start",
+  })
+  box.add(text)
+  let measureWidth = 6
+  text.setMeasureProvider(() => {
+    if (text.plainText.length === 0 || text.parent !== box) {
+      throw new Error("Packed native measurement lost read-only reentry")
+    }
+    return { width: measureWidth, height: 1 }
+  })
+  const editor = new core.TextareaRenderable(scene.renderer, { width: 8, height: 2, initialValue: "edit" })
+  scene.renderer.root.add(editor)
+  await scene.renderOnce()
+  if (text.width !== 6 || text.x !== 1 || text.y !== 1 || editor.y !== 3 ||
+      scene.renderer.hitTest(0, 0) !== box.num || scene.renderer.hitTest(text.x, text.y) !== text.num ||
+      !scene.captureCharFrame().includes("text") || !scene.captureCharFrame().includes("edit")) {
+    throw new Error("Packed native scene lost rendering, layout, measurement, or hit testing")
+  }
+  scene.renderer.currentRenderBuffer.withBuffers(({ char }) => {
+    if (char[0] !== 0x250c || char[scene.renderer.width + 8] !== 33) {
+      throw new Error("Packed native scene lost built-in or custom paint")
+    }
+  })
+
+  box.width = 12
+  measureWidth = 5
+  text.invalidateIntrinsicSize()
+  text.content = "next"
+  editor.gotoBufferEnd()
+  editor.insertText("!")
+  await scene.renderOnce()
+  if (box.width !== 12 || text.width !== 5 || editor.plainText !== "edit!" ||
+      !scene.captureCharFrame().includes("next") || !scene.captureCharFrame().includes("edit!")) {
+    throw new Error("Packed native scene lost layout, text, or editor mutation")
+  }
+
+  const failure = new Error("packed measurement failure")
+  const frames = scene.renderer.getNativeStats().nativeFrameCount
+  text.setMeasureProvider(() => { throw failure })
+  await scene.renderOnce()
+  if (failures.length !== 1 || failures[0] !== failure || scene.renderer.getNativeStats().nativeFrameCount !== frames) {
+    throw new Error("Packed native measurement failure escaped containment")
+  }
+  text.setMeasureProvider(() => ({ width: 4, height: 1 }))
+  await scene.renderOnce()
+  if (text.width !== 4 || failures.length !== 1 || !scene.captureCharFrame().includes("next") ||
+      scene.renderer.getNativeStats().nativeFrameCount !== frames + 1) {
+    throw new Error("Packed native measurement failed to recover")
+  }
+} finally {
+  scene.renderer.destroy()
+  await scene.renderer.closed
+}
+`
+
 const declarationPaths = ["index.d.ts", "node-assets.d.ts", "testing.d.ts", "lib/tree-sitter/parser.worker.d.ts"]
 
 function runCommand(
@@ -298,9 +369,16 @@ assert.deepEqual(
   manifest.map((asset) => asset.key).toSorted(),
 )
 
-const buffer = core.OptimizedBuffer.create(2, 1, "unicode")
-assert.equal(buffer.width, 2)
-buffer.destroy()
+const owner = new core.ResourceContext({ objectCapacity: 16, renderCellsMax: 64 })
+try {
+  const buffer = core.OptimizedBuffer.create(2, 1, "unicode", { owner })
+  assert.equal(buffer.width, 2)
+  buffer.destroy()
+} finally {
+  owner.destroy()
+}
+
+${nativeSceneSmoke}
 
 const image = core.NativeImage.fromRgba(Uint8Array.of(1, 2, 3, 255), 1, 1)
 const raw = image.takeRaw()
@@ -450,6 +528,7 @@ describe("${packageJson.name} dist smoke test", () => {
     } finally {
       imported.dispose()
     }
+    ${nativeSceneSmoke}
   })
 })
 `,

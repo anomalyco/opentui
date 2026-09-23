@@ -5,7 +5,7 @@
 // Starts a Bun HTTP + WebSocket server that serves xterm.js and mirrors one
 // server-side Pong match across every connected browser tab. Each tab gets its
 // own CliRenderer wired to WebSocket-backed stdin/stdout streams: renderer
-// output is allocated a NativeSpanFeed and sent as ANSI bytes to xterm.js, while
+// a native Session sends renderer output as ANSI bytes to xterm.js, while
 // keyboard bytes and resize events flow back to CliRenderer.stdin and
 // renderer.resize().
 //
@@ -682,29 +682,26 @@ function stepGame() {
 resetSharedGame()
 setInterval(stepGame, GAME_TICK_MS)
 
-function closeSession(ws: ServerWebSocket<Session>, code = 1000, reason = "quit") {
+async function closeSession(ws: ServerWebSocket<Session>, code = 1000, reason = "quit") {
   if (ws.data.closed) return
   ws.data.closed = true
   finishPendingWrite(ws.data)
 
   const renderer = ws.data.renderer
   ws.data.renderer = null
-  if (renderer) {
-    try {
-      renderer.destroy()
-    } catch (err) {
-      console.error("error destroying renderer before WS close", err)
-    }
-  }
-
-  queueMicrotask(() => {
+  try {
+    renderer?.destroy()
+    await renderer?.closed
+  } catch (err) {
+    console.error("error destroying renderer before WS close", err)
+  } finally {
     finishPendingWrite(ws.data)
     try {
       ws.close(code, reason)
     } catch {
       // Socket may already be closing.
     }
-  })
+  }
 }
 
 /**

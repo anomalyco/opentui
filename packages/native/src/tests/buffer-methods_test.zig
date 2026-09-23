@@ -1,8 +1,9 @@
 const std = @import("std");
+const TestPools = @import("test-pools.zig").TestPools;
+const link = @import("../link.zig");
 const buffer_mod = @import("../buffer.zig");
 const buffer_effects = @import("../buffer-methods.zig");
 const ansi = @import("../ansi.zig");
-const gp = @import("../grapheme.zig");
 
 const OptimizedBuffer = buffer_mod.OptimizedBuffer;
 const RGBA = buffer_mod.RGBA;
@@ -61,44 +62,97 @@ const INVERT_MATRIX = [16]f32{
     0.0, 0.0, 0.0, 1.0, // Alpha output
 };
 
-test "colorMatrix - identity matrix leaves colors unchanged" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
+fn fillDistinctColors(buf: *OptimizedBuffer) void {
+    for (buf.buffer.fg, buf.buffer.bg, 0..) |*fg, *bg, index| {
+        const value: u8 = @intCast(index * 37 % 256);
+        fg.* = ansi.rgbColor(value, 255 - value, value / 2, 200);
+        bg.* = ansi.rgbColor(255 - value, value / 3, value, 255);
+    }
+}
 
-    var buf = try OptimizedBuffer.init(
-        std.testing.allocator,
-        4,
-        4,
-        .{ .pool = pool, .id = "test-buffer" },
-    );
+test "colorMatrix and colorMatrixUniform leave cells unchanged for no-op input" {
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
+    const buf = try OptimizedBuffer.init(std.testing.allocator, 3, 2, .{ .link_pool = &pools.links, .pool = &pools.graphemes });
     defer buf.deinit();
+    const inf = std.math.inf(f32);
+    const nan = std.math.nan(f32);
+    const big: f32 = 4_294_967_296.0;
+    const Case = struct { matrix: []const f32 = &SEPIA_MATRIX, mask: ?[]const f32, strength: f32 = 1 };
+    for ([_]Case{
+        .{ .matrix = &IDENTITY_MATRIX, .mask = &.{ 0, 0, 1, 2, 1, 1 } },
+        .{ .matrix = &IDENTITY_MATRIX, .mask = null },
+        .{ .matrix = SEPIA_MATRIX[0..15], .mask = &.{ 0, 0, 1 } },
+        .{ .matrix = SEPIA_MATRIX[0..15], .mask = null },
+        .{ .mask = &.{} },
+        .{ .mask = &.{0} },
+        .{ .mask = &.{ 0, 0 } },
+        // The buffer is 3x2, so x == 3 and y == 2 are outside it.
+        .{ .mask = &.{ 3, 0, 1, 0, 2, 1, -1, 0, 1, 0, -1, 1, big, 0, 1, 0, big, 1 } },
+        .{ .mask = &.{ nan, 0, 1, 0, nan, 1, inf, 0, 1, 0, -inf, 1 } },
+        .{ .mask = &.{ 0, 0, 0, 1, 1, inf, 2, 1, nan } },
+        .{ .mask = &.{ 0, 0, 1 }, .strength = inf },
+        .{ .mask = &.{ 0, 0, 1 }, .strength = nan },
+        .{ .mask = &.{ 0, 0, 1 }, .strength = 0 },
+        .{ .mask = null, .strength = 0 },
+        .{ .mask = null, .strength = inf },
+        .{ .mask = null, .strength = nan },
+    }) |case| {
+        for ([_]ColorTarget{ .FG, .BG, .Both }) |target| {
+            errdefer std.debug.print("case={any} target={t}\n", .{ case, target });
+            fillDistinctColors(buf);
+            const fg = buf.buffer.fg[0..6].*;
+            const bg = buf.buffer.bg[0..6].*;
+            if (case.mask) |mask| {
+                buffer_effects.colorMatrix(buf, case.matrix, mask, case.strength, target);
+            } else {
+                buffer_effects.colorMatrixUniform(buf, case.matrix, case.strength, target);
+            }
+            for (fg, buf.buffer.fg) |want, got| try expectRGBAApprox(want, got, 0);
+            for (bg, buf.buffer.bg) |want, got| try expectRGBAApprox(want, got, 0);
+        }
+    }
+}
 
-    const bg = ansi.rgbaFromFloats(0.0, 0.0, 0.0, 1.0);
-    const red = ansi.rgbaFromFloats(1.0, 0.0, 0.0, 1.0);
-
-    buf.clear(bg, null);
-    buf.buffer.fg[0] = red; // (0, 0)
-    buf.buffer.fg[5] = red; // (1, 1)
-
-    // Apply identity to specific cells: (0, 0) and (1, 1) with strength 1.0
-    // cellMask format: [x, y, strength, x, y, strength, ...]
-    const cell_mask = [_]f32{ 0.0, 0.0, 1.0, 1.0, 1.0, 1.0 };
-    buffer_effects.colorMatrix(buf, &IDENTITY_MATRIX, &cell_mask, 1.0, ColorTarget.FG); // target=1 (FG)
-
-    // Colors should be unchanged
-    try expectRGBAApprox(red, buf.buffer.fg[0], 0.0001);
-    try expectRGBAApprox(red, buf.buffer.fg[5], 0.0001);
+test "colorMatrixUniform equals colorMatrix with a full-strength mask over every cell" {
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
+    var mask: [3 * 17 * 3]f32 = undefined;
+    // Widths around the four-cell SIMD stride exercise the vector and scalar tails.
+    for ([_][2]u32{ .{ 1, 1 }, .{ 3, 1 }, .{ 4, 1 }, .{ 5, 1 }, .{ 17, 3 } }) |size| {
+        const uniform = try OptimizedBuffer.init(std.testing.allocator, size[0], size[1], .{ .link_pool = &pools.links, .pool = &pools.graphemes });
+        defer uniform.deinit();
+        const masked = try OptimizedBuffer.init(std.testing.allocator, size[0], size[1], .{ .link_pool = &pools.links, .pool = &pools.graphemes });
+        defer masked.deinit();
+        const cells = size[0] * size[1];
+        for (0..cells) |index| {
+            mask[index * 3 ..][0..3].* = .{ @floatFromInt(index % size[0]), @floatFromInt(index / size[0]), 1 };
+        }
+        for ([_]*const [16]f32{ &SEPIA_MATRIX, &GRAYSCALE_MATRIX, &INVERT_MATRIX }) |matrix| {
+            for ([_]f32{ 1, 0.5, -0.25 }) |strength| {
+                for ([_]ColorTarget{ .FG, .BG, .Both }) |target| {
+                    errdefer std.debug.print("size={any} strength={d} target={t}\n", .{ size, strength, target });
+                    fillDistinctColors(uniform);
+                    fillDistinctColors(masked);
+                    buffer_effects.colorMatrixUniform(uniform, matrix, strength, target);
+                    buffer_effects.colorMatrix(masked, matrix, mask[0 .. cells * 3], strength, target);
+                    for (masked.buffer.fg, uniform.buffer.fg) |want, got| try expectRGBAApprox(want, got, 0.001);
+                    for (masked.buffer.bg, uniform.buffer.bg) |want, got| try expectRGBAApprox(want, got, 0.001);
+                }
+            }
+        }
+    }
 }
 
 test "colorMatrix - applies transformation to specified cells only" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
     var buf = try OptimizedBuffer.init(
         std.testing.allocator,
         3,
         3,
-        .{ .pool = pool, .id = "test-buffer" },
+        .{ .link_pool = &pools.links, .pool = &pools.graphemes, .id = "test-buffer" },
     );
     defer buf.deinit();
 
@@ -126,14 +180,14 @@ test "colorMatrix - applies transformation to specified cells only" {
 }
 
 test "colorMatrix - globalStrength scales individual cell strengths" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
     var buf = try OptimizedBuffer.init(
         std.testing.allocator,
         2,
         1,
-        .{ .pool = pool, .id = "test-buffer" },
+        .{ .link_pool = &pools.links, .pool = &pools.graphemes, .id = "test-buffer" },
     );
     defer buf.deinit();
 
@@ -159,14 +213,14 @@ test "colorMatrix - globalStrength scales individual cell strengths" {
 }
 
 test "colorMatrix - respects target parameter" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
     var buf = try OptimizedBuffer.init(
         std.testing.allocator,
         2,
         1,
-        .{ .pool = pool, .id = "test-buffer" },
+        .{ .link_pool = &pools.links, .pool = &pools.graphemes, .id = "test-buffer" },
     );
     defer buf.deinit();
 
@@ -203,100 +257,15 @@ test "colorMatrix - respects target parameter" {
     try expectRGBAApprox(ansi.rgbaFromFloats(gray_blue, gray_blue, gray_blue, 1.0), buf.buffer.bg[0], 0.001);
 }
 
-test "colorMatrix - skips out-of-bounds coordinates" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-
-    var buf = try OptimizedBuffer.init(
-        std.testing.allocator,
-        3,
-        3,
-        .{ .pool = pool, .id = "test-buffer" },
-    );
-    defer buf.deinit();
-
-    const bg = ansi.rgbaFromFloats(0.0, 0.0, 0.0, 1.0);
-    const red = ansi.rgbaFromFloats(1.0, 0.0, 0.0, 1.0);
-
-    buf.clear(bg, null);
-    buf.buffer.fg[4] = red; // (1, 1)
-
-    // Apply to out-of-bounds and valid cell
-    const cell_mask = [_]f32{ 10.0, 10.0, 1.0, 1.0, 1.0, 1.0 }; // (10, 10) is OOB
-    buffer_effects.colorMatrix(buf, &SEPIA_MATRIX, &cell_mask, 1.0, ColorTarget.FG);
-
-    // Valid cell should be transformed
-    const expected_r = 0.393;
-    const expected_g = 0.349;
-    const expected_b = 0.272;
-    try expectRGBAApprox(ansi.rgbaFromFloats(expected_r, expected_g, expected_b, 1.0), buf.buffer.fg[4], 0.001);
-}
-
-test "colorMatrix - skips NaN and Inf coordinates" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-
-    var buf = try OptimizedBuffer.init(
-        std.testing.allocator,
-        3,
-        3,
-        .{ .pool = pool, .id = "test-buffer" },
-    );
-    defer buf.deinit();
-
-    const bg = ansi.rgbaFromFloats(0.0, 0.0, 0.0, 1.0);
-    const red = ansi.rgbaFromFloats(1.0, 0.0, 0.0, 1.0);
-
-    buf.clear(bg, null);
-    buf.buffer.fg[4] = red; // (1, 1)
-
-    // Apply with NaN and valid coordinates
-    const nan = std.math.nan(f32);
-    const cell_mask = [_]f32{ nan, 1.0, 1.0, 1.0, 1.0, 1.0 };
-    buffer_effects.colorMatrix(buf, &SEPIA_MATRIX, &cell_mask, 1.0, ColorTarget.FG);
-
-    // Valid cell should be transformed
-    const expected_r = 0.393;
-    const expected_g = 0.349;
-    const expected_b = 0.272;
-    try expectRGBAApprox(ansi.rgbaFromFloats(expected_r, expected_g, expected_b, 1.0), buf.buffer.fg[4], 0.001);
-}
-
-test "colorMatrix - skips zero strength cells" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-
-    var buf = try OptimizedBuffer.init(
-        std.testing.allocator,
-        2,
-        1,
-        .{ .pool = pool, .id = "test-buffer" },
-    );
-    defer buf.deinit();
-
-    const bg = ansi.rgbaFromFloats(0.0, 0.0, 0.0, 1.0);
-    const red = ansi.rgbaFromFloats(1.0, 0.0, 0.0, 1.0);
-
-    buf.clear(bg, null);
-    buf.buffer.fg[0] = red;
-
-    // Apply with zero strength
-    const cell_mask = [_]f32{ 0.0, 0.0, 0.0 };
-    buffer_effects.colorMatrix(buf, &SEPIA_MATRIX, &cell_mask, 1.0, ColorTarget.FG);
-
-    // Color should be unchanged
-    try expectRGBAApprox(red, buf.buffer.fg[0], 0.0001);
-}
-
 test "colorMatrix - handles multiple cells in mask" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
     var buf = try OptimizedBuffer.init(
         std.testing.allocator,
         4,
         4,
-        .{ .pool = pool, .id = "test-buffer" },
+        .{ .link_pool = &pools.links, .pool = &pools.graphemes, .id = "test-buffer" },
     );
     defer buf.deinit();
 
@@ -347,14 +316,14 @@ test "colorMatrix - handles multiple cells in mask" {
 }
 
 test "colorMatrix - truncates incomplete mask triplets" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
     var buf = try OptimizedBuffer.init(
         std.testing.allocator,
         3,
         1,
-        .{ .pool = pool, .id = "test-buffer" },
+        .{ .link_pool = &pools.links, .pool = &pools.graphemes, .id = "test-buffer" },
     );
     defer buf.deinit();
 
@@ -379,59 +348,6 @@ test "colorMatrix - truncates incomplete mask triplets" {
     try expectRGBAApprox(red, buf.buffer.fg[1], 0.0001);
 }
 
-test "colorMatrix - empty mask returns early" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-
-    var buf = try OptimizedBuffer.init(
-        std.testing.allocator,
-        2,
-        1,
-        .{ .pool = pool, .id = "test-buffer" },
-    );
-    defer buf.deinit();
-
-    const bg = ansi.rgbaFromFloats(0.0, 0.0, 0.0, 1.0);
-    const red = ansi.rgbaFromFloats(1.0, 0.0, 0.0, 1.0);
-
-    buf.clear(bg, null);
-    buf.buffer.fg[0] = red;
-
-    // Empty mask - should return early
-    const empty_mask: [0]f32 = .{};
-    buffer_effects.colorMatrix(buf, &SEPIA_MATRIX, &empty_mask, 1.0, ColorTarget.FG);
-
-    // Color should be unchanged
-    try expectRGBAApprox(red, buf.buffer.fg[0], 0.0001);
-}
-
-test "colorMatrix - empty matrix returns early" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-
-    var buf = try OptimizedBuffer.init(
-        std.testing.allocator,
-        2,
-        1,
-        .{ .pool = pool, .id = "test-buffer" },
-    );
-    defer buf.deinit();
-
-    const bg = ansi.rgbaFromFloats(0.0, 0.0, 0.0, 1.0);
-    const red = ansi.rgbaFromFloats(1.0, 0.0, 0.0, 1.0);
-
-    buf.clear(bg, null);
-    buf.buffer.fg[0] = red;
-
-    // Empty matrix - should return early
-    const empty_matrix: [0]f32 = .{};
-    const cell_mask = [_]f32{ 0.0, 0.0, 1.0 };
-    buffer_effects.colorMatrix(buf, &empty_matrix, &cell_mask, 1.0, ColorTarget.FG);
-
-    // Color should be unchanged
-    try expectRGBAApprox(red, buf.buffer.fg[0], 0.0001);
-}
-
 // Test matrix that modifies alpha channel
 const ALPHA_MODIFY_MATRIX = [16]f32{
     1.0, 0.0, 0.0, 0.0, // Red output
@@ -441,14 +357,14 @@ const ALPHA_MODIFY_MATRIX = [16]f32{
 };
 
 test "colorMatrix - alpha channel transformation" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
     var buf = try OptimizedBuffer.init(
         std.testing.allocator,
         2,
         1,
-        .{ .pool = pool, .id = "test-buffer" },
+        .{ .link_pool = &pools.links, .pool = &pools.graphemes, .id = "test-buffer" },
     );
     defer buf.deinit();
 
@@ -466,123 +382,16 @@ test "colorMatrix - alpha channel transformation" {
     try expectRGBAApprox(ansi.rgbaFromFloats(1.0, 0.0, 0.0, 0.5), buf.buffer.fg[0], 0.0001);
 }
 
-test "colorMatrix - mask with only 1 element" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-
-    var buf = try OptimizedBuffer.init(
-        std.testing.allocator,
-        2,
-        1,
-        .{ .pool = pool, .id = "test-buffer" },
-    );
-    defer buf.deinit();
-
-    const bg = ansi.rgbaFromFloats(0.0, 0.0, 0.0, 1.0);
-    const red = ansi.rgbaFromFloats(1.0, 0.0, 0.0, 1.0);
-
-    buf.clear(bg, null);
-    buf.buffer.fg[0] = red;
-
-    // Mask with only 1 element (incomplete triplet)
-    const cell_mask = [_]f32{0.0};
-    buffer_effects.colorMatrix(buf, &SEPIA_MATRIX, &cell_mask, 1.0, ColorTarget.FG);
-
-    // Color should be unchanged (no complete triplets to process)
-    try expectRGBAApprox(red, buf.buffer.fg[0], 0.0001);
-}
-
-test "colorMatrix - mask with only 2 elements" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-
-    var buf = try OptimizedBuffer.init(
-        std.testing.allocator,
-        2,
-        1,
-        .{ .pool = pool, .id = "test-buffer" },
-    );
-    defer buf.deinit();
-
-    const bg = ansi.rgbaFromFloats(0.0, 0.0, 0.0, 1.0);
-    const red = ansi.rgbaFromFloats(1.0, 0.0, 0.0, 1.0);
-
-    buf.clear(bg, null);
-    buf.buffer.fg[0] = red;
-    buf.buffer.fg[1] = red;
-
-    // Mask with only 2 elements (incomplete triplet)
-    const cell_mask = [_]f32{ 0.0, 0.0 };
-    buffer_effects.colorMatrix(buf, &SEPIA_MATRIX, &cell_mask, 1.0, ColorTarget.FG);
-
-    // Colors should be unchanged (no complete triplets to process)
-    try expectRGBAApprox(red, buf.buffer.fg[0], 0.0001);
-    try expectRGBAApprox(red, buf.buffer.fg[1], 0.0001);
-}
-
-test "colorMatrix - infinity strength is skipped" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-
-    var buf = try OptimizedBuffer.init(
-        std.testing.allocator,
-        2,
-        1,
-        .{ .pool = pool, .id = "test-buffer" },
-    );
-    defer buf.deinit();
-
-    const bg = ansi.rgbaFromFloats(0.0, 0.0, 0.0, 1.0);
-    const red = ansi.rgbaFromFloats(1.0, 0.0, 0.0, 1.0);
-
-    buf.clear(bg, null);
-    buf.buffer.fg[0] = red;
-
-    // Apply with infinity strength (should be skipped)
-    const inf = std.math.inf(f32);
-    const cell_mask = [_]f32{ 0.0, 0.0, inf };
-    buffer_effects.colorMatrix(buf, &SEPIA_MATRIX, &cell_mask, 1.0, ColorTarget.FG);
-
-    // Color should be unchanged
-    try expectRGBAApprox(red, buf.buffer.fg[0], 0.0001);
-}
-
-test "colorMatrix - non-finite global strength is skipped" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-
-    var buf = try OptimizedBuffer.init(
-        std.testing.allocator,
-        2,
-        1,
-        .{ .pool = pool, .id = "test-buffer" },
-    );
-    defer buf.deinit();
-
-    const bg = ansi.rgbaFromFloats(0.0, 0.0, 0.0, 1.0);
-    const red = ansi.rgbaFromFloats(1.0, 0.0, 0.0, 1.0);
-
-    buf.clear(bg, null);
-    buf.buffer.fg[0] = red;
-
-    const inf = std.math.inf(f32);
-    const cell_mask = [_]f32{ 0.0, 0.0, 1.0 };
-    buffer_effects.colorMatrix(buf, &SEPIA_MATRIX, &cell_mask, inf, ColorTarget.FG);
-
-    // Color should be unchanged
-    try expectRGBAApprox(red, buf.buffer.fg[0], 0.0001);
-}
-
 test "colorMatrix - large buffer with SIMD and scalar mix" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
     // 100 pixels = 25 SIMD batches of 4
     var buf = try OptimizedBuffer.init(
         std.testing.allocator,
         100,
         1,
-        .{ .pool = pool, .id = "test-buffer" },
+        .{ .link_pool = &pools.links, .pool = &pools.graphemes, .id = "test-buffer" },
     );
     defer buf.deinit();
 
@@ -607,165 +416,17 @@ test "colorMatrix - large buffer with SIMD and scalar mix" {
     }
 }
 
-test "colorMatrix - negative coordinates are skipped" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-
-    var buf = try OptimizedBuffer.init(
-        std.testing.allocator,
-        3,
-        3,
-        .{ .pool = pool, .id = "test-buffer" },
-    );
-    defer buf.deinit();
-
-    const bg = ansi.rgbaFromFloats(0.0, 0.0, 0.0, 1.0);
-    const red = ansi.rgbaFromFloats(1.0, 0.0, 0.0, 1.0);
-
-    buf.clear(bg, null);
-    buf.buffer.fg[4] = red; // (1, 1)
-
-    // Apply with negative coordinates followed by valid
-    const cell_mask = [_]f32{ -1.0, -1.0, 1.0, 1.0, 1.0, 1.0 };
-    buffer_effects.colorMatrix(buf, &SEPIA_MATRIX, &cell_mask, 1.0, ColorTarget.FG);
-
-    // Valid cell should be transformed
-    const expected_r = 0.393;
-    const expected_g = 0.349;
-    const expected_b = 0.272;
-    try expectRGBAApprox(ansi.rgbaFromFloats(expected_r, expected_g, expected_b, 1.0), buf.buffer.fg[4], 0.001);
-}
-
-test "colorMatrix - finite coordinates larger than u32 max are skipped" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-
-    var buf = try OptimizedBuffer.init(
-        std.testing.allocator,
-        3,
-        3,
-        .{ .pool = pool, .id = "test-buffer" },
-    );
-    defer buf.deinit();
-
-    const bg = ansi.rgbaFromFloats(0.0, 0.0, 0.0, 1.0);
-    const red = ansi.rgbaFromFloats(1.0, 0.0, 0.0, 1.0);
-
-    buf.clear(bg, null);
-    buf.buffer.fg[4] = red; // (1, 1)
-
-    // First triplet uses finite but out-of-range coordinates for u32 conversion.
-    // Second triplet is valid and should still be processed.
-    const huge = std.math.floatMax(f32);
-    const cell_mask = [_]f32{ huge, huge, 1.0, 1.0, 1.0, 1.0 };
-    buffer_effects.colorMatrix(buf, &SEPIA_MATRIX, &cell_mask, 1.0, ColorTarget.FG);
-
-    const expected_r = 0.393;
-    const expected_g = 0.349;
-    const expected_b = 0.272;
-    try expectRGBAApprox(ansi.rgbaFromFloats(expected_r, expected_g, expected_b, 1.0), buf.buffer.fg[4], 0.001);
-}
-
 // ==================== colorMatrixUniform Tests ====================
 
-test "colorMatrixUniform - identity matrix leaves colors unchanged" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-
-    var buf = try OptimizedBuffer.init(
-        std.testing.allocator,
-        4,
-        1,
-        .{ .pool = pool, .id = "test-buffer" },
-    );
-    defer buf.deinit();
-
-    const bg = ansi.rgbaFromFloats(0.0, 0.0, 0.0, 1.0);
-    const red = ansi.rgbaFromFloats(1.0, 0.0, 0.0, 1.0);
-    const green = ansi.rgbaFromFloats(0.0, 1.0, 0.0, 1.0);
-    const blue = ansi.rgbaFromFloats(0.0, 0.0, 1.0, 1.0);
-    const white = ansi.rgbaFromFloats(1.0, 1.0, 1.0, 1.0);
-
-    buf.clear(bg, null);
-
-    // Set specific colors at different positions
-    buf.buffer.fg[0] = red;
-    buf.buffer.fg[1] = green;
-    buf.buffer.fg[2] = blue;
-    buf.buffer.fg[3] = white;
-
-    // Apply identity matrix at full strength to foreground
-    buffer_effects.colorMatrixUniform(buf, &IDENTITY_MATRIX, 1.0, ColorTarget.FG);
-
-    // Colors should be unchanged
-    try expectRGBAApprox(red, buf.buffer.fg[0], 0.0001);
-    try expectRGBAApprox(green, buf.buffer.fg[1], 0.0001);
-    try expectRGBAApprox(blue, buf.buffer.fg[2], 0.0001);
-    try expectRGBAApprox(white, buf.buffer.fg[3], 0.0001);
-}
-
-test "colorMatrixUniform - zero strength has no effect" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-
-    var buf = try OptimizedBuffer.init(
-        std.testing.allocator,
-        2,
-        2,
-        .{ .pool = pool, .id = "test-buffer" },
-    );
-    defer buf.deinit();
-
-    const bg = ansi.rgbaFromFloats(0.0, 0.0, 0.0, 1.0);
-    const red = ansi.rgbaFromFloats(1.0, 0.0, 0.0, 1.0);
-
-    buf.clear(bg, null);
-
-    @memset(buf.buffer.fg, red);
-
-    // Apply sepia matrix with zero strength
-    buffer_effects.colorMatrixUniform(buf, &SEPIA_MATRIX, 0.0, ColorTarget.FG);
-
-    // Colors should be unchanged
-    try expectRGBAApprox(red, buf.buffer.fg[0], 0.0001);
-    try expectRGBAApprox(red, buf.buffer.fg[3], 0.0001);
-}
-
-test "colorMatrixUniform - non-finite strength has no effect" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-
-    var buf = try OptimizedBuffer.init(
-        std.testing.allocator,
-        2,
-        1,
-        .{ .pool = pool, .id = "test-buffer" },
-    );
-    defer buf.deinit();
-
-    const bg = ansi.rgbaFromFloats(0.0, 0.0, 0.0, 1.0);
-    const red = ansi.rgbaFromFloats(1.0, 0.0, 0.0, 1.0);
-
-    buf.clear(bg, null);
-    buf.buffer.fg[0] = red;
-    buf.buffer.fg[1] = red;
-
-    const nan = std.math.nan(f32);
-    buffer_effects.colorMatrixUniform(buf, &SEPIA_MATRIX, nan, ColorTarget.FG);
-
-    try expectRGBAApprox(red, buf.buffer.fg[0], 0.0001);
-    try expectRGBAApprox(red, buf.buffer.fg[1], 0.0001);
-}
-
 test "colorMatrixUniform - grayscale transformation" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
     var buf = try OptimizedBuffer.init(
         std.testing.allocator,
         3,
         1,
-        .{ .pool = pool, .id = "test-buffer" },
+        .{ .link_pool = &pools.links, .pool = &pools.graphemes, .id = "test-buffer" },
     );
     defer buf.deinit();
 
@@ -796,14 +457,14 @@ test "colorMatrixUniform - grayscale transformation" {
 }
 
 test "colorMatrixUniform - partial strength blends with original" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
     var buf = try OptimizedBuffer.init(
         std.testing.allocator,
         2,
         1,
-        .{ .pool = pool, .id = "test-buffer" },
+        .{ .link_pool = &pools.links, .pool = &pools.graphemes, .id = "test-buffer" },
     );
     defer buf.deinit();
 
@@ -829,14 +490,14 @@ test "colorMatrixUniform - partial strength blends with original" {
 }
 
 test "colorMatrixUniform - target affects correct buffers" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
     var buf = try OptimizedBuffer.init(
         std.testing.allocator,
         2,
         1,
-        .{ .pool = pool, .id = "test-buffer" },
+        .{ .link_pool = &pools.links, .pool = &pools.graphemes, .id = "test-buffer" },
     );
     defer buf.deinit();
 
@@ -885,77 +546,15 @@ test "colorMatrixUniform - target affects correct buffers" {
     try expectRGBAApprox(ansi.rgbaFromFloats(gray_blue, gray_blue, gray_blue, 1.0), buf.buffer.bg[0], 0.001);
 }
 
-test "colorMatrixUniform - handles buffer sizes not divisible by 4" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-
-    // Test with 5 pixels (1 SIMD batch of 4 + 1 scalar remainder)
-    var buf = try OptimizedBuffer.init(
-        std.testing.allocator,
-        5,
-        1,
-        .{ .pool = pool, .id = "test-buffer" },
-    );
-    defer buf.deinit();
-
-    const bg = ansi.rgbaFromFloats(0.0, 0.0, 0.0, 1.0);
-    const red = ansi.rgbaFromFloats(1.0, 0.0, 0.0, 1.0);
-
-    buf.clear(bg, null);
-
-    // Set all FG to red
-    for (0..5) |i| {
-        buf.buffer.fg[i] = red;
-    }
-
-    // Apply sepia at full strength
-    buffer_effects.colorMatrixUniform(buf, &SEPIA_MATRIX, 1.0, ColorTarget.FG);
-
-    // All pixels should be transformed (including the scalar fallback)
-    const expected_r = 0.393;
-    const expected_g = 0.349;
-    const expected_b = 0.272;
-
-    for (0..5) |i| {
-        try expectRGBAApprox(ansi.rgbaFromFloats(expected_r, expected_g, expected_b, 1.0), buf.buffer.fg[i], 0.001);
-    }
-}
-
-test "colorMatrixUniform - empty matrix returns early" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-
-    var buf = try OptimizedBuffer.init(
-        std.testing.allocator,
-        2,
-        1,
-        .{ .pool = pool, .id = "test-buffer" },
-    );
-    defer buf.deinit();
-
-    const bg = ansi.rgbaFromFloats(0.0, 0.0, 0.0, 1.0);
-    const red = ansi.rgbaFromFloats(1.0, 0.0, 0.0, 1.0);
-
-    buf.clear(bg, null);
-    buf.buffer.fg[0] = red;
-
-    // Empty matrix - should return early without changes
-    const empty_matrix: [0]f32 = .{};
-    buffer_effects.colorMatrixUniform(buf, &empty_matrix, 1.0, ColorTarget.FG);
-
-    // Color should be unchanged
-    try expectRGBAApprox(red, buf.buffer.fg[0], 0.0001);
-}
-
 test "colorMatrixUniform - alpha channel transformation" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
     var buf = try OptimizedBuffer.init(
         std.testing.allocator,
         2,
         1,
-        .{ .pool = pool, .id = "test-buffer" },
+        .{ .link_pool = &pools.links, .pool = &pools.graphemes, .id = "test-buffer" },
     );
     defer buf.deinit();
 
@@ -977,81 +576,15 @@ test "colorMatrixUniform - alpha channel transformation" {
     try expectRGBAApprox(ansi.rgbaFromFloats(0.0, 1.0, 0.0, 0.25), buf.buffer.fg[1], 0.0001);
 }
 
-test "colorMatrixUniform - very small buffer (less than 4 pixels)" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-
-    // Test with 2 pixels (all scalar, no SIMD)
-    var buf = try OptimizedBuffer.init(
-        std.testing.allocator,
-        2,
-        1,
-        .{ .pool = pool, .id = "test-buffer" },
-    );
-    defer buf.deinit();
-
-    const bg = ansi.rgbaFromFloats(0.0, 0.0, 0.0, 1.0);
-    const red = ansi.rgbaFromFloats(1.0, 0.0, 0.0, 1.0);
-    const green = ansi.rgbaFromFloats(0.0, 1.0, 0.0, 1.0);
-
-    buf.clear(bg, null);
-    buf.buffer.fg[0] = red;
-    buf.buffer.fg[1] = green;
-
-    // Apply sepia at full strength
-    buffer_effects.colorMatrixUniform(buf, &SEPIA_MATRIX, 1.0, ColorTarget.FG);
-
-    // Both pixels should be transformed correctly using scalar path
-    const expected_red_r = 0.393;
-    const expected_red_g = 0.349;
-    const expected_red_b = 0.272;
-    try expectRGBAApprox(ansi.rgbaFromFloats(expected_red_r, expected_red_g, expected_red_b, 1.0), buf.buffer.fg[0], 0.001);
-
-    // Green transformed: R=0.769, G=0.686, B=0.534
-    const expected_green_r = 0.769;
-    const expected_green_g = 0.686;
-    const expected_green_b = 0.534;
-    try expectRGBAApprox(ansi.rgbaFromFloats(expected_green_r, expected_green_g, expected_green_b, 1.0), buf.buffer.fg[1], 0.001);
-}
-
-test "colorMatrixUniform - single pixel buffer" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-
-    // Test with 1 pixel (edge case)
-    var buf = try OptimizedBuffer.init(
-        std.testing.allocator,
-        1,
-        1,
-        .{ .pool = pool, .id = "test-buffer" },
-    );
-    defer buf.deinit();
-
-    const bg = ansi.rgbaFromFloats(0.0, 0.0, 0.0, 1.0);
-    const red = ansi.rgbaFromFloats(1.0, 0.0, 0.0, 1.0);
-
-    buf.clear(bg, null);
-    buf.buffer.fg[0] = red;
-
-    // Apply sepia at full strength
-    buffer_effects.colorMatrixUniform(buf, &SEPIA_MATRIX, 1.0, ColorTarget.FG);
-
-    // Pixel should be transformed correctly
-    const expected_r = 0.393;
-    const expected_g = 0.349;
-    const expected_b = 0.272;
-    try expectRGBAApprox(ansi.rgbaFromFloats(expected_r, expected_g, expected_b, 1.0), buf.buffer.fg[0], 0.001);
-}
-
 test "colorMatrixUniform - values can exceed 1.0 (no clamping)" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
     var buf = try OptimizedBuffer.init(
         std.testing.allocator,
         2,
         1,
-        .{ .pool = pool, .id = "test-buffer" },
+        .{ .link_pool = &pools.links, .pool = &pools.graphemes, .id = "test-buffer" },
     );
     defer buf.deinit();
 
@@ -1074,38 +607,4 @@ test "colorMatrixUniform - values can exceed 1.0 (no clamping)" {
 
     // Values should exceed 1.0 (no clamping)
     try expectRGBAApprox(ansi.rgbaFromFloats(1.0, 1.0, 1.0, 1.0), buf.buffer.fg[0], 0.0001);
-}
-
-test "colorMatrixUniform - 3 pixel buffer (simd_end = 0, all scalar)" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-
-    // 3 pixels - simd_end will be 0, so all processed via scalar
-    var buf = try OptimizedBuffer.init(
-        std.testing.allocator,
-        3,
-        1,
-        .{ .pool = pool, .id = "test-buffer" },
-    );
-    defer buf.deinit();
-
-    const bg = ansi.rgbaFromFloats(0.0, 0.0, 0.0, 1.0);
-    const red = ansi.rgbaFromFloats(1.0, 0.0, 0.0, 1.0);
-
-    buf.clear(bg, null);
-    for (0..3) |i| {
-        buf.buffer.fg[i] = red;
-    }
-
-    // Apply sepia
-    buffer_effects.colorMatrixUniform(buf, &SEPIA_MATRIX, 1.0, ColorTarget.FG);
-
-    // All 3 should be transformed via scalar path
-    const expected_r = 0.393;
-    const expected_g = 0.349;
-    const expected_b = 0.272;
-
-    for (0..3) |i| {
-        try expectRGBAApprox(ansi.rgbaFromFloats(expected_r, expected_g, expected_b, 1.0), buf.buffer.fg[i], 0.001);
-    }
 }

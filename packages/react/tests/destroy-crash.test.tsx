@@ -1,5 +1,6 @@
 import { describe, expect, it } from "bun:test"
-import React, { useEffect, useState } from "react"
+import type { BoxRenderable } from "@opentui/core"
+import React, { useEffect, useRef, useState } from "react"
 import { createTestRenderer } from "@opentui/core/testing"
 import { createRoot } from "../src/reconciler/renderer.js"
 
@@ -47,20 +48,28 @@ describe("Renderer Destroy Crash with Pending React Updates", () => {
 
     const root = createRoot(testSetup.renderer)
 
+    let cleanedUp = false
     function App() {
       const [lines, setLines] = useState<string[]>([])
+      const ref = useRef<BoxRenderable>(null)
 
       useEffect(() => {
+        const box = ref.current!
         // Interval keeps firing after destroy() because React isn't unmounted
         const interval = setInterval(() => {
           setLines((prev) => [...prev, `Line ${prev.length + 1}`])
         }, 5)
 
-        return () => clearInterval(interval)
+        return () => {
+          clearInterval(interval)
+          // React runs this cleanup after renderer.destroy() destroyed the tree: the write must be a no-op.
+          box.width = 5
+          cleanedUp = true
+        }
       }, [])
 
       return (
-        <box flexDirection="column" border borderStyle="single">
+        <box ref={ref} flexDirection="column" border borderStyle="single">
           <text bold>OpenTUI Crash Repro</text>
           {lines.slice(-10).map((line, i) => (
             <text key={`line-${i}-${line}`}>{line}</text>
@@ -85,7 +94,6 @@ describe("Renderer Destroy Crash with Pending React Updates", () => {
     // This is when the crash occurs if the bug is present
     await Bun.sleep(100)
 
-    // If we reach here without crashing, the bug is fixed
-    expect(true).toBe(true)
+    expect(cleanedUp).toBe(true)
   })
 })

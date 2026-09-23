@@ -1,5 +1,3 @@
-import type { PasteEvent } from "../lib/KeyHandler.js"
-import { decodePasteBytes, stripAnsiSequences } from "../lib/paste.js"
 import type { RenderContext } from "../types.js"
 import {
   TextareaRenderable,
@@ -86,13 +84,17 @@ export class InputRenderable extends TextareaRenderable {
       ],
     })
 
-    this._maxLength = maxLength
-    this._minLength = minLength
-    this._lastCommittedValue = this.plainText
+    try {
+      this._maxLength = maxLength
+      this._minLength = minLength
+      this._lastCommittedValue = this.plainText
 
-    // Set cursor to end of initial value
-    if (initialValue) {
-      this.cursorOffset = initialValue.length
+      // Set cursor to end of initial value
+      if (initialValue) {
+        this.cursorOffset = initialValue.length
+      }
+    } catch (error) {
+      this.rollbackConstruction(error)
     }
   }
 
@@ -101,16 +103,6 @@ export class InputRenderable extends TextareaRenderable {
    */
   public override newLine(): boolean {
     return false
-  }
-
-  /**
-   * Handle paste - strip newlines and enforce maxLength
-   */
-  public override handlePaste(event: PasteEvent): void {
-    const sanitized = stripAnsiSequences(decodePasteBytes(event.bytes)).replace(/[\n\r]/g, "")
-    if (sanitized) {
-      this.insertText(sanitized)
-    }
   }
 
   /**
@@ -125,8 +117,10 @@ export class InputRenderable extends TextareaRenderable {
     if (remaining <= 0) return
 
     const toInsert = sanitized.substring(0, remaining)
-    super.insertText(toInsert)
-    this.emit(InputRenderableEvents.INPUT, this.plainText)
+    this.runMutation(() => {
+      super.insertText(toInsert)
+      this.emit(InputRenderableEvents.INPUT, this.plainText)
+    })
   }
 
   public get value(): string {
@@ -137,9 +131,11 @@ export class InputRenderable extends TextareaRenderable {
     const newValue = value.substring(0, this._maxLength).replace(/[\n\r]/g, "")
     const currentValue = this.plainText
     if (currentValue !== newValue) {
-      this.setText(newValue)
-      this.cursorOffset = newValue.length
-      this.emit(InputRenderableEvents.INPUT, newValue)
+      this.runMutation(() => {
+        this.setText(newValue)
+        this.cursorOffset = newValue.length
+        this.emit(InputRenderableEvents.INPUT, newValue)
+      })
     }
   }
 
@@ -236,10 +232,14 @@ export class InputRenderable extends TextareaRenderable {
   }
 
   public set maxLength(maxLength: number) {
-    this._maxLength = maxLength
     const currentValue = this.plainText
     if (currentValue.length > maxLength) {
-      this.setText(currentValue.substring(0, maxLength))
+      this.runMutation(() => {
+        this.setText(currentValue.substring(0, maxLength))
+        this._maxLength = maxLength
+      })
+    } else {
+      this._maxLength = maxLength
     }
   }
 

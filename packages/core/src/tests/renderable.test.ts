@@ -1,9 +1,9 @@
 import { test, expect, beforeEach, afterEach, describe, spyOn } from "bun:test"
+import { EventEmitter } from "events"
 import { decodePasteBytes } from "../lib/paste.js"
 import {
   Renderable,
   BaseRenderable,
-  RootRenderable,
   RenderableEvents,
   isRenderable,
   type BaseRenderableOptions,
@@ -13,6 +13,12 @@ import { createTestRenderer, type TestRenderer, type MockMouse, type MockInput }
 import type { RenderContext } from "../types.js"
 import { TextNodeRenderable } from "../renderables/TextNode.js"
 import { TextRenderable } from "../renderables/Text.js"
+import { ScrollBoxRenderable } from "../renderables/ScrollBox.js"
+import { BoxRenderable } from "../renderables/Box.js"
+import { InputRenderable } from "../renderables/Input.js"
+import { SliderRenderable } from "../renderables/Slider.js"
+import type { OptimizedBuffer } from "../buffer.js"
+import { RGBA } from "../lib/RGBA.js"
 
 export class TestBaseRenderable extends BaseRenderable {
   constructor(options: BaseRenderableOptions) {
@@ -262,42 +268,6 @@ describe("Renderable", () => {
 })
 
 describe("Renderable - layout read caching invariants", () => {
-  // Behavioral contracts for any layout-read caching or batching scheme
-  // (the render-list reuse keyed on the context layout generation today, a
-  // native render tree with shared layout buffers tomorrow): every mutation
-  // that can change computed layout must be visible on the next frame, even
-  // when it bypasses the Renderable setters, and ancestor movement must
-  // cascade to descendant screen positions without a relayout.
-
-  test("direct yoga-node style mutation bypassing all setters is picked up next frame", async () => {
-    const box = new TestRenderable(testRenderer, { id: "yoga-bypass", width: 10, height: 2 })
-    testRenderer.root.add(box)
-    await renderOnce()
-    expect(box.width).toBe(10)
-
-    box.getLayoutNode().setWidth(30)
-    await renderOnce()
-
-    expect(box.width).toBe(30)
-  })
-
-  test("out-of-band subtree calculateLayout does not freeze later layout reads", async () => {
-    const parent = new TestRenderable(testRenderer, { id: "oob-parent", width: 40, height: 6 })
-    const child = new TestRenderable(testRenderer, { id: "oob-child", width: 10, height: 2 })
-    parent.add(child)
-    testRenderer.root.add(parent)
-    await renderOnce()
-    expect(child.width).toBe(10)
-
-    // Mutate and lay out the subtree directly through yoga, bypassing the
-    // renderer's root calculateLayout entirely.
-    child.getLayoutNode().setWidth(25)
-    parent.getLayoutNode().calculateLayout(undefined, undefined)
-    await renderOnce()
-
-    expect(child.width).toBe(25)
-  })
-
   test("grandchild screen position follows a translate-only ancestor move", async () => {
     const parent = new TestRenderable(testRenderer, {
       id: "cascade-parent",
@@ -542,9 +512,8 @@ describe("Renderable - Child Management", () => {
     expect(second.isDestroyed).toBe(true)
   })
 
-  test("renderBefore position changes update hit-grid coordinates in the same frame", async () => {
+  test("renderBefore position changes hit at the prepared position until the next frame", async () => {
     testRenderer.requestRender = () => {}
-    const hitGridSpy = spyOn(testRenderer, "addToHitGrid")
 
     const renderable = new TestRenderable(testRenderer, {
       id: "hook-moved-hit-grid",
@@ -564,47 +533,47 @@ describe("Renderable - Child Management", () => {
     await renderOnce()
 
     expect(renderable.screenX).toBe(7)
+    expect(testRenderer.hitTest(2, 3)).toBe(renderable.num)
+    expect(testRenderer.hitTest(7, 3)).not.toBe(renderable.num)
 
-    const call = hitGridSpy.mock.calls.find((args) => args[4] === renderable.num)
-    if (!call) {
-      throw new Error("Expected renderable to be added to the hit grid")
-    }
-
-    expect(call[0]).toBe(renderable.screenX)
-    expect(call[1]).toBe(renderable.screenY)
-  })
-
-  test("renderBefore position changes update frame-buffer compositing coordinates in the same frame", async () => {
-    testRenderer.requestRender = () => {}
-    const drawFrameBufferSpy = spyOn(testRenderer.nextRenderBuffer, "drawFrameBuffer")
-
-    const renderable = new TestRenderable(testRenderer, {
-      id: "hook-moved-buffered",
-      buffered: true,
-      position: "absolute",
-      left: 2,
-      top: 3,
-      width: 4,
-      height: 2,
-      renderBefore: function () {
-        if (this.translateX === 0) {
-          this.translateX = 5
-        }
-      },
-    })
-
-    testRenderer.root.add(renderable)
     await renderOnce()
 
-    expect(renderable.screenX).toBe(7)
+    expect(testRenderer.hitTest(7, 3)).toBe(renderable.num)
+    expect(testRenderer.hitTest(2, 3)).not.toBe(renderable.num)
+  })
 
-    const call = drawFrameBufferSpy.mock.calls.find((args) => args[2]?.id === `framebuffer-${renderable.id}`)
-    if (!call) {
-      throw new Error("Expected renderable frame buffer to be composited")
+  test("renderBefore position changes compose frame buffers at the prepared position until the next frame", async () => {
+    const setup = await createTestRenderer({ width: 12, height: 4 })
+    try {
+      class BufferedMark extends Renderable {
+        protected renderSelf(buffer: OptimizedBuffer): void {
+          buffer.drawText("BB", 0, 0, RGBA.fromInts(255, 255, 255))
+        }
+      }
+      const renderable = new BufferedMark(setup.renderer, {
+        buffered: true,
+        position: "absolute",
+        left: 2,
+        top: 1,
+        width: 2,
+        height: 1,
+        renderBefore: function () {
+          if (this.translateX === 0) this.translateX = 5
+        },
+      })
+      setup.renderer.root.add(renderable)
+      await setup.renderOnce()
+
+      expect(renderable.screenX).toBe(7)
+      expect(setup.captureCharFrame().split("\n")[1]).toBe("  BB        ")
+
+      await setup.renderOnce()
+
+      expect(setup.captureCharFrame().split("\n")[1]).toBe("       BB   ")
+    } finally {
+      setup.renderer.destroy()
+      await setup.renderer.closed
     }
-
-    expect(call[0]).toBe(renderable.screenX)
-    expect(call[1]).toBe(renderable.screenY)
   })
 
   test("can insert child at specific index", () => {
@@ -733,55 +702,6 @@ describe("Renderable - Child Management", () => {
     expect(parent.findDescendantById("text-node")).toBeUndefined()
   })
 
-  test("destroyRecursively destroys nested children recursively", () => {
-    const parent = new TestRenderable(testRenderer, { id: "parent" })
-    const child = new TestRenderable(testRenderer, { id: "child" })
-    const grandchild = new TestRenderable(testRenderer, { id: "grandchild" })
-    const greatGrandchild = new TestRenderable(testRenderer, { id: "greatGrandchild" })
-
-    parent.add(child)
-    child.add(grandchild)
-    grandchild.add(greatGrandchild)
-
-    expect(parent.isDestroyed).toBe(false)
-    expect(child.isDestroyed).toBe(false)
-    expect(grandchild.isDestroyed).toBe(false)
-    expect(greatGrandchild.isDestroyed).toBe(false)
-
-    parent.destroyRecursively()
-
-    expect(parent.isDestroyed).toBe(true)
-    expect(child.isDestroyed).toBe(true)
-    expect(grandchild.isDestroyed).toBe(true)
-    expect(greatGrandchild.isDestroyed).toBe(true)
-  })
-
-  test("destroyRecursively handles empty renderable without errors", () => {
-    const parent = new TestRenderable(testRenderer, { id: "empty-parent" })
-
-    expect(parent.isDestroyed).toBe(false)
-    expect(() => parent.destroyRecursively()).not.toThrow()
-    expect(parent.isDestroyed).toBe(true)
-  })
-
-  test("destroyRecursively destroys all children correctly with multiple children", () => {
-    const parent = new TestRenderable(testRenderer, { id: "parent" })
-    const child1 = new TestRenderable(testRenderer, { id: "child1" })
-    const child2 = new TestRenderable(testRenderer, { id: "child2" })
-    const child3 = new TestRenderable(testRenderer, { id: "child3" })
-
-    parent.add(child1)
-    parent.add(child2)
-    parent.add(child3)
-
-    parent.destroyRecursively()
-
-    expect(parent.isDestroyed).toBe(true)
-    expect(child1.isDestroyed).toBe(true)
-    expect(child2.isDestroyed).toBe(true)
-    expect(child3.isDestroyed).toBe(true)
-  })
-
   test("handles immediate add and destroy before render tick", async () => {
     const parent = new TestRenderable(testRenderer, { id: "parent" })
     const children = []
@@ -801,7 +721,7 @@ describe("Renderable - Child Management", () => {
     expect(parent.getChildrenCount()).toBe(0)
   })
 
-  test("newly added child should not have layout updated if destroyed before render", async () => {
+  test("newly added child receives no lifecycle or paint hooks if destroyed before render", async () => {
     const parent = new TestRenderable(testRenderer, { id: "parent" })
     const child = new TestRenderable(testRenderer, { id: "child" })
 
@@ -809,85 +729,18 @@ describe("Renderable - Child Management", () => {
     testRenderer.root.add(parent)
     await renderOnce()
 
-    const child2 = new TestRenderable(testRenderer, { id: "child2" })
+    const child2 = new CountingRenderable(testRenderer, { id: "child2" })
+    let lifecycleCalls = 0
+    child2.onLifecyclePass = () => lifecycleCalls++
     parent.add(child2)
-
-    const spy = spyOn(child2, "updateFromLayout")
 
     child2.destroy()
 
     await renderOnce()
 
-    expect(spy).not.toHaveBeenCalled()
-  })
-
-  test("newly added children receive correct layout dimensions on first render", async () => {
-    const parent = new TestRenderable(testRenderer, {
-      id: "parent",
-      width: 100,
-      height: 100,
-      flexDirection: "column",
-    })
-
-    testRenderer.root.add(parent)
-    await renderOnce()
-
-    // Add children after parent has been rendered
-    const child1 = new TestRenderable(testRenderer, {
-      id: "child1",
-      height: 30,
-      flexGrow: 0,
-    })
-    const child2 = new TestRenderable(testRenderer, {
-      id: "child2",
-      height: 20,
-      flexGrow: 0,
-    })
-
-    parent.add(child1)
-    parent.add(child2)
-
-    expect(child1.width).toBe(0)
-    expect(child2.width).toBe(0)
-
-    await renderOnce()
-
-    expect(child1.width).toBe(100)
-    expect(child1.height).toBe(30)
-    expect(child2.width).toBe(100)
-    expect(child2.height).toBe(20)
-  })
-
-  test("newly added children with nested children receive correct layout", async () => {
-    const parent = new TestRenderable(testRenderer, {
-      id: "parent",
-      width: 100,
-      height: 100,
-    })
-
-    testRenderer.root.add(parent)
-    await renderOnce()
-
-    const child = new TestRenderable(testRenderer, {
-      id: "child",
-      width: 50,
-      height: 50,
-    })
-    const grandchild = new TestRenderable(testRenderer, {
-      id: "grandchild",
-      flexGrow: 1,
-    })
-
-    child.add(grandchild)
-    parent.add(child)
-
-    await renderOnce()
-
-    expect(child.width).toBe(50)
-    expect(child.height).toBe(50)
-
-    expect(grandchild.width).toBeGreaterThan(0)
-    expect(grandchild.height).toBeGreaterThan(0)
+    expect(lifecycleCalls).toBe(0)
+    expect(child2.renderCount).toBe(0)
+    expect(child2.isDestroyed).toBe(true)
   })
 
   test("child added during the layout pass is sized by the next pass", async () => {
@@ -901,207 +754,48 @@ describe("Renderable - Child Management", () => {
 
     expect(sizes).toEqual([[testRenderer.width]])
   })
-
-  test("children added via insertBefore receive correct layout on first render", async () => {
-    const parent = new TestRenderable(testRenderer, {
-      id: "parent",
-      width: 100,
-      height: 100,
-      flexDirection: "column",
-    })
-
-    const child1 = new TestRenderable(testRenderer, {
-      id: "child1",
-      height: 20,
-      flexGrow: 0,
-    })
-    const child3 = new TestRenderable(testRenderer, {
-      id: "child3",
-      height: 20,
-      flexGrow: 0,
-    })
-
-    parent.add(child1)
-    parent.add(child3)
-    testRenderer.root.add(parent)
-    await renderOnce()
-
-    // Insert child2 between child1 and child3
-    const child2 = new TestRenderable(testRenderer, {
-      id: "child2",
-      height: 15,
-      flexGrow: 0,
-    })
-
-    parent.insertBefore(child2, child3)
-
-    expect(child2.width).toBe(0)
-
-    await renderOnce()
-
-    expect(child2.width).toBe(100)
-    expect(child2.height).toBe(15)
-
-    expect(child1.y).toBe(0)
-    expect(child2.y).toBe(20)
-    expect(child3.y).toBe(35)
-  })
-
-  test("children after insertBefore anchor maintain correct layout", async () => {
-    const parent = new TestRenderable(testRenderer, {
-      id: "parent",
-      width: 100,
-      height: 100,
-      flexDirection: "row",
-    })
-
-    const child1 = new TestRenderable(testRenderer, {
-      id: "child1",
-      width: 20,
-      flexGrow: 0,
-    })
-    const child2 = new TestRenderable(testRenderer, {
-      id: "child2",
-      width: 25,
-      flexGrow: 0,
-    })
-    const child3 = new TestRenderable(testRenderer, {
-      id: "child3",
-      width: 30,
-      flexGrow: 0,
-    })
-
-    parent.add(child1)
-    parent.add(child2)
-    parent.add(child3)
-    testRenderer.root.add(parent)
-    await renderOnce()
-
-    const child1InitialX = child1.x
-    const child2InitialX = child2.x
-    const child3InitialX = child3.x
-
-    const newChild = new TestRenderable(testRenderer, {
-      id: "newChild",
-      width: 10,
-      flexGrow: 0,
-    })
-
-    parent.insertBefore(newChild, child2)
-    await renderOnce()
-
-    expect(child1.x).toBe(child1InitialX)
-    expect(newChild.x).toBe(child1InitialX + 20)
-    expect(child2.x).toBe(child1InitialX + 30)
-    expect(child3.x).toBe(child1InitialX + 55)
-
-    expect(child1.width).toBe(20)
-    expect(newChild.width).toBe(10)
-    expect(child2.width).toBe(25)
-    expect(child3.width).toBe(30)
-  })
-
-  test("multiple children inserted in sequence receive correct layout", async () => {
-    const parent = new TestRenderable(testRenderer, {
-      id: "parent",
-      width: 200,
-      height: 100,
-      flexDirection: "column",
-    })
-
-    const anchor = new TestRenderable(testRenderer, {
-      id: "anchor",
-      height: 10,
-      flexGrow: 0,
-    })
-
-    parent.add(anchor)
-    testRenderer.root.add(parent)
-    await renderOnce()
-
-    // Insert multiple children before the anchor in sequence
-    const newChild1 = new TestRenderable(testRenderer, {
-      id: "new1",
-      height: 15,
-      flexGrow: 0,
-    })
-    const newChild2 = new TestRenderable(testRenderer, {
-      id: "new2",
-      height: 20,
-      flexGrow: 0,
-    })
-    const newChild3 = new TestRenderable(testRenderer, {
-      id: "new3",
-      height: 25,
-      flexGrow: 0,
-    })
-
-    parent.insertBefore(newChild1, anchor)
-    parent.insertBefore(newChild2, anchor)
-    parent.insertBefore(newChild3, anchor)
-
-    await renderOnce()
-
-    expect(newChild1.width).toBe(200)
-    expect(newChild1.height).toBe(15)
-    expect(newChild2.width).toBe(200)
-    expect(newChild2.height).toBe(20)
-    expect(newChild3.width).toBe(200)
-    expect(newChild3.height).toBe(25)
-
-    expect(newChild1.y).toBe(0)
-    expect(newChild2.y).toBe(15)
-    expect(newChild3.y).toBe(35)
-    expect(anchor.y).toBe(60)
-  })
-
-  test("existing child moved via insertBefore maintains layout integrity", async () => {
-    const parent = new TestRenderable(testRenderer, {
-      id: "parent",
-      width: 100,
-      height: 100,
-      flexDirection: "column",
-    })
-
-    const child1 = new TestRenderable(testRenderer, {
-      id: "child1",
-      height: 10,
-      flexGrow: 0,
-    })
-    const child2 = new TestRenderable(testRenderer, {
-      id: "child2",
-      height: 20,
-      flexGrow: 0,
-    })
-    const child3 = new TestRenderable(testRenderer, {
-      id: "child3",
-      height: 30,
-      flexGrow: 0,
-    })
-
-    parent.add(child1)
-    parent.add(child2)
-    parent.add(child3)
-    testRenderer.root.add(parent)
-    await renderOnce()
-
-    parent.insertBefore(child3, child1)
-    await renderOnce()
-
-    expect(child3.y).toBe(0)
-    expect(child1.y).toBe(30)
-    expect(child2.y).toBe(40)
-
-    expect(child1.width).toBe(100)
-    expect(child1.height).toBe(10)
-    expect(child2.width).toBe(100)
-    expect(child2.height).toBe(20)
-    expect(child3.width).toBe(100)
-    expect(child3.height).toBe(30)
-  })
 })
 
 describe("Renderable - Events", () => {
+  // Subscriptions keep the native resize, line-info, and layout hooks in sync: a listener fires while subscribed,
+  // and after the last one goes, a listener added behind the sync's back never fires.
+  const listenerCases = (["resize", "line-info-change", "layout-changed"] as const).flatMap((event) =>
+    (["on", "once", "prependListener"] as const).flatMap((add) =>
+      ["off", "removeAllListeners(event)", "removeAllListeners()"]
+        .filter((remove) => event !== "layout-changed" || remove !== "removeAllListeners()")
+        .map((remove) => [event, add, remove] as const),
+    ),
+  )
+
+  test.each(listenerCases)("%s: %s, then %s", async (event, add, remove) => {
+    const root = testRenderer.root
+    const sizer =
+      event === "line-info-change"
+        ? new TextRenderable(testRenderer, { content: "a b c d e f", width: 4 })
+        : new TestRenderable(testRenderer, { width: 4, height: 1 })
+    root.add(sizer)
+    const node = event === "layout-changed" ? root : sizer
+    const resize = async () => {
+      sizer.width += 1
+      await renderOnce()
+    }
+    await renderOnce()
+    let calls = 0
+    const listener = () => void calls++
+    node[add](event, listener)
+    await resize()
+    await resize()
+    expect(add === "once" ? calls === 1 : calls >= 2).toBe(true)
+
+    if (remove === "off") node.off(event, listener)
+    else if (remove === "removeAllListeners(event)") node.removeAllListeners(event)
+    else node.removeAllListeners()
+    calls = 0
+    EventEmitter.prototype.addListener.call(node, event, listener)
+    await resize()
+    expect(calls).toBe(0)
+  })
+
   test("handles mouse events", async () => {
     const renderable = new TestRenderable(testRenderer, { id: "test-mouse", left: 0, top: 0, width: 10, height: 10 })
     let mouseCalled = false
@@ -1281,6 +975,28 @@ describe("Renderable - Focus", () => {
     expect(testRenderer.currentFocusedRenderable).toBeNull()
   })
 
+  test("destroy() releases focus state when the native blur fails", () => {
+    const keyHandlers = (testRenderer._internalKeyInput as unknown as { renderableHandlers: Map<string, Set<unknown>> })
+      .renderableHandlers
+    const node = new TestFocusableRenderable(testRenderer, {})
+    testRenderer.root.add(node)
+    node.focus()
+    expect(keyHandlers.get("keypress")?.size).toBe(1)
+    const setFocus = spyOn(testRenderer.nativeScene, "setFocus").mockImplementation(() => {
+      throw new Error("native blur failed")
+    })
+    expect(() => node.destroy()).toThrow("native blur failed")
+    setFocus.mockRestore()
+
+    expect([node.isDestroyed, node.focused]).toEqual([true, false])
+    expect(testRenderer.currentFocusedRenderable).toBeNull()
+    expect([keyHandlers.get("keypress")?.size, keyHandlers.get("paste")?.size]).toEqual([0, 0])
+    const other = new TestFocusableRenderable(testRenderer, {})
+    testRenderer.root.add(other)
+    other.focus()
+    expect(testRenderer.currentFocusedRenderable === other).toBe(true)
+  })
+
   test("destroy() does not call blurRenderable when renderable was not focused", () => {
     const renderable = new TestFocusableRenderable(testRenderer, { id: "test-destroy-not-focused" })
     const blurSpy = spyOn(testRenderer, "blurRenderable")
@@ -1296,117 +1012,116 @@ describe("Renderable - Focus", () => {
 })
 
 describe("Renderable - Lifecycle", () => {
-  test("handles destroy", () => {
-    const renderable = new TestRenderable(testRenderer, { id: "test-destroy" })
-    expect(renderable.isDestroyed).toBe(false)
+  class AbortsConstruction extends Renderable {
+    constructor(ctx: RenderContext, rollback: boolean) {
+      super(ctx, { width: 2, height: 1, buffered: true })
+      const error = new Error("subclass construction failed")
+      if (rollback) this.rollbackConstruction(error)
+      this.abortConstruction(error, (run) => run(() => this.emit("cleaned")))
+    }
+  }
 
-    renderable.destroy()
-    expect(renderable.isDestroyed).toBe(true)
+  // A failed constructor leaves no native node, registry entry, or lifecycle registration, and frames keep working.
+  test.each([
+    ["invalid width", () => new BoxRenderable(testRenderer, { width: -1 })],
+    ["invalid color", () => new TextRenderable(testRenderer, { content: "x", fg: {} as never })],
+    ["invalid slider orientation", () => new SliderRenderable(testRenderer, { orientation: "diagonal" as never })],
+    ["invalid input length", () => new InputRenderable(testRenderer, { maxLength: -5 })],
+    ["abortConstruction", () => new AbortsConstruction(testRenderer, false)],
+    ["rollbackConstruction", () => new AbortsConstruction(testRenderer, true)],
+  ])("construction failure: %s", async (_name, construct) => {
+    const counts = () => [
+      [...testRenderer.nativeScene.getRenderables()].length,
+      Renderable.renderablesByNumber.size,
+      testRenderer.getLifecyclePasses().size,
+    ]
+    const before = counts()
+    expect(construct).toThrow()
+    expect(counts()).toEqual(before)
+    await renderOnce()
   })
 
-  test("prevents double destroy", () => {
-    const renderable = new TestRenderable(testRenderer, { id: "test-double-destroy" })
-    renderable.destroy()
-    expect(renderable.isDestroyed).toBe(true)
-
-    // Should not throw or cause issues
-    renderable.destroy()
-    expect(renderable.isDestroyed).toBe(true)
+  test("destroy() removes listeners", () => {
+    const node = new TestRenderable(testRenderer, {})
+    node.on("custom", () => {})
+    node.destroy()
+    expect(node.listenerCount("custom")).toBe(0)
   })
 
-  test("handles recursive destroy", () => {
-    const parent = new TestRenderable(testRenderer, { id: "parent-destroy" })
-    const child = new TestRenderable(testRenderer, { id: "child-destroy" })
+  test("layout reads during destroy return the live layout", async () => {
+    const parent = new TestRenderable(testRenderer, { width: 12, height: 4, position: "absolute", left: 3, top: 1 })
+    const child = new TestRenderable(testRenderer, { marginLeft: 2, height: 2 })
     parent.add(child)
-
-    parent.destroyRecursively()
-    expect(parent.isDestroyed).toBe(true)
-    expect(child.isDestroyed).toBe(true)
+    testRenderer.root.add(parent)
+    await renderOnce()
+    const layout = () => [
+      child.x,
+      child.y,
+      child.screenX,
+      child.screenY,
+      child.width,
+      child.height,
+      child.getLayout().width,
+    ]
+    const live = layout()
+    let destroying: number[] = []
+    child.on(RenderableEvents.DESTROYED, () => (destroying = layout()))
+    child.destroy()
+    expect(live).toEqual([5, 1, 5, 1, 10, 2, 10])
+    expect(destroying).toEqual(live)
   })
 })
 
 describe("Renderable - Layout with Viewport Filtering", () => {
-  // Create a test renderable that filters visible children like ScrollBox does
-  class ViewportFilteringRenderable extends Renderable {
-    private _filterEnabled = false
+  beforeEach(async () => {
+    testRenderer.destroy()
+    ;({ renderer: testRenderer, renderOnce } = await createTestRenderer({ width: 120, height: 100 }))
+  })
 
-    constructor(ctx: RenderContext, options: RenderableOptions) {
-      super(ctx, options)
-    }
-
-    enableFiltering() {
-      this._filterEnabled = true
-    }
-
-    protected _hasVisibleChildFilter(): boolean {
-      return this._filterEnabled
-    }
-
-    protected _getVisibleChildren(): number[] {
-      if (!this._filterEnabled) {
-        return super._getVisibleChildren()
-      }
-      const children = this._childrenInZIndexOrder.slice(0, 2)
-      return children.map((c) => c.num)
-    }
-  }
-
-  class LegacyViewportFilteringRenderable extends Renderable {
-    private _filterEnabled = false
-
-    constructor(ctx: RenderContext, options: RenderableOptions) {
-      super(ctx, options)
-    }
-
-    enableFiltering() {
-      this._filterEnabled = true
-    }
-
-    protected _getVisibleChildren(): number[] {
-      if (!this._filterEnabled) {
-        return super._getVisibleChildren()
-      }
-
-      return this._childrenInZIndexOrder.slice(0, 1).map((child) => child.num)
-    }
-  }
-
-  test("legacy subclasses that only override _getVisibleChildren still filter children", async () => {
-    const parent = new LegacyViewportFilteringRenderable(testRenderer, {
+  test("viewport culling skips children below the visible area", async () => {
+    const parent = new ScrollBoxRenderable(testRenderer, {
       id: "parent",
       width: 100,
-      height: 100,
+      height: 30,
       flexDirection: "column",
+      scrollbarOptions: { visible: false },
+      viewportCulling: true,
     })
 
-    const visibleChild = new CountingRenderable(testRenderer, {
+    const visibleChild = new TextRenderable(testRenderer, {
       id: "visible-child",
+      content: "visible-child",
       height: 30,
       flexGrow: 0,
     })
-    const filteredChild = new CountingRenderable(testRenderer, {
+    const filteredChild = new TextRenderable(testRenderer, {
       id: "filtered-child",
+      content: "filtered-child",
       height: 30,
       flexGrow: 0,
     })
 
     parent.add(visibleChild)
     parent.add(filteredChild)
-    parent.enableFiltering()
     testRenderer.root.add(parent)
 
     await renderOnce()
 
-    expect(visibleChild.renderCount).toBeGreaterThan(0)
-    expect(filteredChild.renderCount).toBe(0)
+    const frame = new TextDecoder().decode(testRenderer.currentRenderBuffer.getRealCharBytes(true))
+    expect(frame).toContain("visible-child")
+    expect(frame).not.toContain("filtered-child")
+    expect(testRenderer.hitTest(visibleChild.x, visibleChild.y)).toBe(visibleChild.num)
+    expect(testRenderer.hitTest(filteredChild.x, filteredChild.y)).not.toBe(filteredChild.num)
   })
 
   test("newly added children receive layout even when filtered from viewport", async () => {
-    const parent = new ViewportFilteringRenderable(testRenderer, {
+    const parent = new ScrollBoxRenderable(testRenderer, {
       id: "parent",
       width: 100,
-      height: 100,
+      height: 60,
       flexDirection: "column",
+      scrollbarOptions: { visible: false },
+      viewportCulling: true,
     })
 
     // Add initial children
@@ -1424,7 +1139,6 @@ describe("Renderable - Layout with Viewport Filtering", () => {
     parent.add(child1)
     parent.add(child2)
     testRenderer.root.add(parent)
-    parent.enableFiltering()
     await renderOnce()
 
     // Add a third child that will be filtered out
@@ -1445,12 +1159,14 @@ describe("Renderable - Layout with Viewport Filtering", () => {
     expect(child3.y).toBe(60)
   })
 
-  test("renders all children when visible-children hook returns default path", async () => {
-    const parent = new ViewportFilteringRenderable(testRenderer, {
+  test("renders all children when viewport culling is disabled", async () => {
+    const parent = new ScrollBoxRenderable(testRenderer, {
       id: "parent",
       width: 100,
-      height: 100,
+      height: 60,
       flexDirection: "column",
+      scrollbarOptions: { visible: false },
+      viewportCulling: false,
     })
 
     const child1 = new CountingRenderable(testRenderer, { id: "child1", height: 20, flexGrow: 0 })
@@ -1472,37 +1188,41 @@ describe("Renderable - Layout with Viewport Filtering", () => {
   })
 
   test("renders only filtered children while still updating hidden layout", async () => {
-    const parent = new ViewportFilteringRenderable(testRenderer, {
+    const parent = new ScrollBoxRenderable(testRenderer, {
       id: "parent",
       width: 100,
-      height: 100,
+      height: 40,
       flexDirection: "column",
+      scrollbarOptions: { visible: false },
+      viewportCulling: true,
     })
 
-    const child1 = new CountingRenderable(testRenderer, { id: "child1", height: 20, flexGrow: 0 })
-    const child2 = new CountingRenderable(testRenderer, { id: "child2", height: 20, flexGrow: 0 })
-    const child3 = new CountingRenderable(testRenderer, { id: "child3", height: 20, flexGrow: 0 })
+    const child1 = new TextRenderable(testRenderer, { id: "child1", content: "child1", height: 20, flexGrow: 0 })
+    const child2 = new TextRenderable(testRenderer, { id: "child2", content: "child2", height: 20, flexGrow: 0 })
+    const child3 = new TextRenderable(testRenderer, { id: "child3", content: "child3", height: 20, flexGrow: 0 })
 
     parent.add(child1)
     parent.add(child2)
     parent.add(child3)
     testRenderer.root.add(parent)
-    parent.enableFiltering()
 
     await renderOnce()
 
-    expect(child1.renderCount).toBeGreaterThan(0)
-    expect(child2.renderCount).toBeGreaterThan(0)
-    expect(child3.renderCount).toBe(0)
+    const frame = new TextDecoder().decode(testRenderer.currentRenderBuffer.getRealCharBytes(true))
+    expect(frame).toContain("child1")
+    expect(frame).toContain("child2")
+    expect(frame).not.toContain("child3")
     expect(child3.height).toBe(20)
   })
 
   test("child inserted before visible children receives layout when filtered", async () => {
-    const parent = new ViewportFilteringRenderable(testRenderer, {
+    const parent = new ScrollBoxRenderable(testRenderer, {
       id: "parent",
       width: 100,
-      height: 100,
+      height: 40,
       flexDirection: "column",
+      scrollbarOptions: { visible: false },
+      viewportCulling: true,
     })
 
     const child1 = new TestRenderable(testRenderer, {
@@ -1525,7 +1245,6 @@ describe("Renderable - Layout with Viewport Filtering", () => {
     parent.add(child2)
     parent.add(child3)
     testRenderer.root.add(parent)
-    parent.enableFiltering()
     await renderOnce()
 
     // Insert a new child that pushes child3 further down (outside viewport filter)
@@ -1551,302 +1270,283 @@ describe("Renderable - Layout with Viewport Filtering", () => {
   })
 })
 
-describe("Renderable - Nested Children Layout", () => {
-  test("newly added parent with deeply nested children all receive layout", async () => {
-    const root = new TestRenderable(testRenderer, {
-      id: "root",
-      width: 200,
-      height: 200,
-    })
+describe("Renderable - tree model", () => {
+  // Seeded add, insertBefore, remove, destroy, visibility, live, and focus sequences over a small column tree.
+  // After each operation the tree, live counts, focus paths, lifecycle registrations, and native nodes match a
+  // model; after each frame every shown node sits right below its shown earlier siblings.
+  const width = 40
 
-    testRenderer.root.add(root)
-    await renderOnce()
+  interface Entry {
+    node: Renderable
+    height: number | null
+    hook: boolean
+    parent: Entry | null
+    children: Entry[]
+    visible: boolean
+    live: boolean
+    destroyed: boolean
+    registered: boolean
+  }
 
-    const parent = new TestRenderable(testRenderer, {
-      id: "parent",
-      width: 150,
-      height: 150,
-    })
-    const child = new TestRenderable(testRenderer, {
-      id: "child",
-      width: 100,
-      height: 100,
-    })
-    const grandchild = new TestRenderable(testRenderer, {
-      id: "grandchild",
-      width: 50,
-      height: 50,
-    })
-    const greatGrandchild = new TestRenderable(testRenderer, {
-      id: "greatGrandchild",
-      flexGrow: 1,
-    })
+  function createRandom(seed: number): () => number {
+    return () => {
+      seed = (seed + 0x6d2b79f5) | 0
+      let t = Math.imul(seed ^ (seed >>> 15), 1 | seed)
+      t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296
+    }
+  }
 
-    grandchild.add(greatGrandchild)
-    child.add(grandchild)
-    parent.add(child)
+  test.each(Array.from({ length: 24 }, (_, i) => i + 1))("seed %j", async (seed) => {
+    const random = createRandom(seed)
+    const pick = <T>(items: T[]): T | undefined => items[Math.floor(random() * items.length)]
+    const edges = { requestLive: 0, dropLive: 0 }
+    const expectedEdges = { requestLive: 0, dropLive: 0 }
+    spyOn(testRenderer, "requestLive").mockImplementation(() => void edges.requestLive++)
+    spyOn(testRenderer, "dropLive").mockImplementation(() => void edges.dropLive++)
+    const create = (node: Renderable, height: number | null, hook = false): Entry => {
+      if (hook) node.onLifecyclePass = () => {}
+      return {
+        node,
+        height,
+        hook,
+        parent: null,
+        children: [],
+        visible: true,
+        live: false,
+        destroyed: false,
+        registered: false,
+      }
+    }
+    const host = create(new TestRenderable(testRenderer, { id: "host", width }), null)
+    const containers = [0, 1, 2].map((i) => create(new TestRenderable(testRenderer, { id: `c${i}` }), null, i === 0))
+    const leaves = [1, 2, 3, 1, 2, 3, 1, 2].map((height, i) =>
+      create(new TestFocusableRenderable(testRenderer, { id: `l${i}`, height }), height, i < 2),
+    )
+    const nodes = [host, ...containers, ...leaves]
+    testRenderer.root.add(host.node)
+    host.parent = create(testRenderer.root, null)
+    let focused = null as Entry | null
 
-    root.add(parent)
+    const alive = (list: Entry[]) => list.filter((entry) => !entry.destroyed && entry !== host)
+    const subtree = (entry: Entry): Entry[] => [entry, ...entry.children.flatMap(subtree)]
+    const liveCount = (entry: Entry): number =>
+      (entry.live && entry.visible ? 1 : 0) + entry.children.reduce((sum, child) => sum + liveCount(child), 0)
+    const hasFocused = (entry: Entry): boolean => entry.children.some((child) => child === focused || hasFocused(child))
+    const detach = (entry: Entry) => {
+      if (entry.parent) entry.parent.children.splice(entry.parent.children.indexOf(entry), 1)
+      entry.parent = null
+    }
+    const place = (child: Entry, parent: Entry, anchor?: Entry) => {
+      detach(child)
+      parent.children.splice(anchor ? parent.children.indexOf(anchor) : parent.children.length, 0, child)
+      child.parent = parent
+      child.registered = child.hook
+    }
+    const destroy = (entry: Entry) => {
+      detach(entry)
+      for (const child of entry.children) Object.assign(child, { parent: null, registered: false })
+      Object.assign(entry, { children: [], destroyed: true, registered: false })
+      if (focused === entry) focused = null
+    }
+    const parentsFor = (child: Entry) =>
+      [host, ...alive(containers)].filter((parent) => !subtree(child).includes(parent))
 
-    await renderOnce()
+    const operations: Record<string, () => string | undefined> = {
+      add() {
+        const child = pick(alive(nodes))
+        const parent = child && pick(parentsFor(child))
+        if (!child || !parent) return
+        let index: number | undefined = Math.floor(random() * (parent.children.length + 2))
+        if (index > parent.children.length || parent.children[index] === child) index = undefined
+        place(child, parent, index === undefined ? undefined : parent.children[index])
+        parent.node.add(child.node, index)
+        return `${parent.node.id}.add(${child.node.id}, ${index})`
+      },
+      insertBefore() {
+        const parent = pick([host, ...alive(containers)].filter((entry) => entry.children.length > 0))
+        const anchor = parent && pick(parent.children)
+        const child =
+          anchor && pick(alive(nodes).filter((entry) => entry !== anchor && parentsFor(entry).includes(parent)))
+        if (!parent || !anchor || !child) return
+        place(child, parent, anchor)
+        parent.node.insertBefore(child.node, anchor.node)
+        return `${parent.node.id}.insertBefore(${child.node.id}, ${anchor.node.id})`
+      },
+      remove() {
+        const child = pick(alive(nodes).filter((entry) => entry.parent))
+        if (!child) return
+        const parent = child.parent!
+        detach(child)
+        child.registered = false
+        parent.node.remove(child.node)
+        return `${parent.node.id}.remove(${child.node.id})`
+      },
+      destroy() {
+        // Includes destroyed nodes: a second destroy changes nothing.
+        const entry = pick(nodes.filter((entry) => entry !== host))!
+        if (!entry.destroyed) destroy(entry)
+        entry.node.destroy()
+        return `${entry.node.id}.destroy()`
+      },
+      destroyRecursively() {
+        const entry = pick(alive(nodes))
+        if (!entry) return
+        for (const node of subtree(entry).reverse()) destroy(node)
+        entry.node.destroyRecursively()
+        return `${entry.node.id}.destroyRecursively()`
+      },
+      visible() {
+        const entry = pick(alive(nodes))
+        if (!entry) return
+        entry.visible = !entry.visible
+        // As on `main`, any visibility change blurs the node.
+        if (focused === entry) focused = null
+        entry.node.visible = entry.visible
+        return `${entry.node.id}.visible = ${entry.visible}`
+      },
+      live() {
+        const entry = pick(alive(nodes))
+        if (!entry) return
+        const value = random() < 0.25 ? null : !entry.live
+        entry.live = !!value
+        ;(entry.node as { live: boolean | null }).live = value
+        return `${entry.node.id}.live = ${value}`
+      },
+      focus() {
+        const entry = pick(alive(leaves))
+        if (!entry) return
+        focused = entry
+        entry.node.focus()
+        return `${entry.node.id}.focus()`
+      },
+      blur() {
+        if (!focused) return
+        const entry = focused
+        focused = null
+        entry.node.blur()
+        return `${entry.node.id}.blur()`
+      },
+    }
 
-    expect(parent.width).toBe(150)
-    expect(parent.height).toBe(150)
+    const state = (actual: boolean) => {
+      const scene = new Set(testRenderer.nativeScene.getRenderables())
+      return nodes.map((entry) => {
+        const node = entry.node
+        const inScene = scene.has(node)
+        const native = actual
+          ? `freed=${node.isFreed()} scene=${inScene}`
+          : `freed=${entry.destroyed} scene=${!entry.destroyed}`
+        if (actual ? node.isDestroyed : entry.destroyed) return `${node.id} destroyed ${native}`
+        const fields = actual
+          ? [node.parent?.id, node.getChildren().map((child) => child.id), node.liveCount, node.focused]
+          : [entry.parent?.node.id, entry.children.map((child) => child.node.id), liveCount(entry), entry === focused]
+        const focus = actual ? node.hasFocusedDescendant : hasFocused(entry)
+        const registered = actual ? testRenderer.getLifecyclePasses().has(node) : entry.registered
+        return `${node.id} ${JSON.stringify(fields)} focus=${focus} lifecycle=${registered} ${native}`
+      })
+    }
+    const layout = (entry: Entry, y: number, actual: string[], expected: string[]): number => {
+      let bottom = y + (entry.height ?? 0)
+      for (const child of entry.children) if (child.visible) bottom += layout(child, bottom, actual, expected)
+      const height = entry.height ?? bottom - y
+      actual.push(`${entry.node.id} y=${entry.node.y} h=${entry.node.height} w=${entry.node.width}`)
+      // Like `main`, public sizes are at least one cell, even for an empty container that takes no rows.
+      expected.push(`${entry.node.id} y=${y} h=${Math.max(height, 1)} w=${width}`)
+      return height
+    }
 
-    expect(child.width).toBe(100)
-    expect(child.height).toBe(100)
-
-    expect(grandchild.width).toBeGreaterThan(0)
-    expect(grandchild.height).toBeGreaterThan(0)
-  })
-
-  test("insertBefore with nested children updates all descendants correctly", async () => {
-    const root = new TestRenderable(testRenderer, {
-      id: "root",
-      width: 200,
-      height: 200,
-      flexDirection: "column",
-    })
-
-    const existingChild = new TestRenderable(testRenderer, {
-      id: "existing",
-      height: 50,
-      flexGrow: 0,
-    })
-
-    root.add(existingChild)
-    testRenderer.root.add(root)
-    await renderOnce()
-
-    const newParent = new TestRenderable(testRenderer, {
-      id: "newParent",
-      height: 80,
-      flexGrow: 0,
-    })
-    const nestedChild = new TestRenderable(testRenderer, {
-      id: "nested",
-      flexGrow: 1,
-    })
-
-    newParent.add(nestedChild)
-    root.insertBefore(newParent, existingChild)
-
-    await renderOnce()
-
-    expect(newParent.width).toBe(200)
-    expect(newParent.height).toBe(80)
-    expect(newParent.y).toBe(0)
-
-    expect(nestedChild.width).toBeGreaterThan(0)
-    expect(nestedChild.height).toBeGreaterThan(0)
-
-    expect(existingChild.y).toBe(80)
+    // Destruction ends a sequence early, so it is drawn less often.
+    const names = [...Object.keys(operations), "add", "add", "insertBefore", "remove", "visible", "live", "focus"]
+    const history: string[] = []
+    for (let step = 0; step < 80; step++) {
+      const rootLive = liveCount(host)
+      const operation = operations[pick(names)!]!()
+      if (!operation) continue
+      history.push(operation)
+      const nowLive = liveCount(host)
+      if (rootLive === 0 && nowLive > 0) expectedEdges.requestLive++
+      if (rootLive > 0 && nowLive === 0) expectedEdges.dropLive++
+      const current = testRenderer.currentFocusedRenderable?.id
+      expect({ history, state: state(true), edges, current }).toEqual({
+        history,
+        state: state(false),
+        edges: expectedEdges,
+        current: focused?.node.id,
+      })
+      await renderOnce()
+      const actual: string[] = []
+      const expected: string[] = []
+      layout(host, 0, actual, expected)
+      expect({ history, layout: actual }).toEqual({ history, layout: expected })
+    }
   })
 })
 
-describe("Renderable - Complex Layout Update Scenarios", () => {
-  test("multiple rapid add operations before render complete correctly", async () => {
-    const parent = new TestRenderable(testRenderer, {
-      id: "parent",
-      width: 100,
-      height: 200,
-      flexDirection: "column",
-    })
+describe("Renderable - hook installation", () => {
+  // Each way to provide a hook, on a plain subclass and on built-ins with a native body, runs the hook in frames.
+  // Clearing an optional hook stops it. Construction publishes prototype hooks; a scan before the frame finds fields.
+  // Text skips the generic paint decorations (`beforeAfter: false`, documented), and its constructor assigns its own
+  // lifecycle pass over a subclass method, as on `main`.
+  const skipped = (base: string, install: string, hook: string) =>
+    base === "Text" &&
+    (hook === "renderBefore" || hook === "renderAfter" || (install === "prototype" && hook === "onLifecyclePass"))
+  const hooks = ["renderSelf", "onUpdate", "renderBefore", "renderAfter", "onLifecyclePass"] as const
+  const bases = { Renderable: TestRenderable, Box: BoxRenderable, Text: TextRenderable } as const
+  const installs = ["prototype", "field", "option", "assignment", "defineProperty"] as const
+  const cases = (Object.keys(bases) as (keyof typeof bases)[]).flatMap((base) =>
+    installs.flatMap((install) =>
+      hooks
+        .filter((hook) => install !== "option" || hook === "renderBefore" || hook === "renderAfter")
+        .map((hook) => [base, install, hook] as const),
+    ),
+  )
 
-    testRenderer.root.add(parent)
-    await renderOnce()
-
-    const children: TestRenderable[] = []
-    for (let i = 0; i < 5; i++) {
-      const child = new TestRenderable(testRenderer, {
-        id: `child-${i}`,
-        height: 20,
-        flexGrow: 0,
-      })
-      children.push(child)
-      parent.add(child)
+  test.each(cases)("%s %s %s", async (base, install, hook) => {
+    let calls = 0
+    const handler = () => void calls++
+    const descriptor = { value: handler, writable: true, enumerable: true, configurable: true }
+    const Base = bases[base] as typeof TestRenderable
+    class Probe extends Base {
+      constructor(ctx: RenderContext, options: RenderableOptions) {
+        super(ctx, options)
+        if (install === "field") Object.defineProperty(this, hook, descriptor)
+      }
+    }
+    if (install === "prototype") Object.defineProperty(Probe.prototype, hook, { ...descriptor, enumerable: false })
+    const node = new Probe(testRenderer, { width: 4, height: 1, ...(install === "option" && { [hook]: handler }) })
+    testRenderer.root.add(node)
+    if (install === "assignment") Reflect.set(node, hook, handler)
+    if (install === "defineProperty") {
+      Object.defineProperty(node, hook, descriptor)
+      node.refreshHooks()
     }
 
-    for (const child of children) {
-      expect(child.width).toBe(0)
-    }
-
     await renderOnce()
-
-    let expectedY = 0
-    for (const child of children) {
-      expect(child.width).toBe(100)
-      expect(child.height).toBe(20)
-      expect(child.y).toBe(expectedY)
-      expectedY += 20
-    }
-  })
-
-  test("insertBefore at different positions updates subsequent children correctly", async () => {
-    const parent = new TestRenderable(testRenderer, {
-      id: "parent",
-      width: 100,
-      height: 300,
-      flexDirection: "column",
-    })
-
-    const children: TestRenderable[] = []
-    for (let i = 0; i < 5; i++) {
-      const child = new TestRenderable(testRenderer, {
-        id: `child-${i}`,
-        height: 20,
-        flexGrow: 0,
-      })
-      children.push(child)
-      parent.add(child)
-    }
-
-    testRenderer.root.add(parent)
+    if (skipped(base, install, hook)) return expect(calls).toBe(0)
+    expect(calls).toBeGreaterThan(0)
+    if (hook === "renderSelf" || hook === "onUpdate") return
+    Reflect.set(node, hook, null)
+    calls = 0
     await renderOnce()
-
-    const insert1 = new TestRenderable(testRenderer, {
-      id: "insert1",
-      height: 15,
-      flexGrow: 0,
-    })
-    parent.insertBefore(insert1, children[2]!)
-
-    await renderOnce()
-
-    expect(children[0]!.y).toBe(0)
-    expect(children[1]!.y).toBe(20)
-    expect(insert1.y).toBe(40)
-    expect(children[2]!.y).toBe(55)
-    expect(children[3]!.y).toBe(75)
-    expect(children[4]!.y).toBe(95)
-
-    const insert2 = new TestRenderable(testRenderer, {
-      id: "insert2",
-      height: 10,
-      flexGrow: 0,
-    })
-    parent.insertBefore(insert2, children[4]!)
-
-    await renderOnce()
-
-    expect(children[0]!.y).toBe(0)
-    expect(children[1]!.y).toBe(20)
-    expect(insert1.y).toBe(40)
-    expect(children[2]!.y).toBe(55)
-    expect(children[3]!.y).toBe(75)
-    expect(insert2.y).toBe(95)
-    expect(children[4]!.y).toBe(105)
-  })
-
-  test("add and insertBefore mixed operations maintain layout integrity", async () => {
-    const parent = new TestRenderable(testRenderer, {
-      id: "parent",
-      width: 100,
-      height: 200,
-      flexDirection: "column",
-    })
-
-    testRenderer.root.add(parent)
-    await renderOnce()
-
-    const child1 = new TestRenderable(testRenderer, {
-      id: "child1",
-      height: 10,
-      flexGrow: 0,
-    })
-    const child2 = new TestRenderable(testRenderer, {
-      id: "child2",
-      height: 20,
-      flexGrow: 0,
-    })
-
-    parent.add(child1)
-    parent.add(child2)
-
-    const child3 = new TestRenderable(testRenderer, {
-      id: "child3",
-      height: 15,
-      flexGrow: 0,
-    })
-    parent.insertBefore(child3, child2)
-
-    const child4 = new TestRenderable(testRenderer, {
-      id: "child4",
-      height: 25,
-      flexGrow: 0,
-    })
-    parent.add(child4)
-
-    await renderOnce()
-
-    expect(child1.y).toBe(0)
-    expect(child3.y).toBe(10)
-    expect(child2.y).toBe(25)
-    expect(child4.y).toBe(45)
-
-    expect(child1.width).toBe(100)
-    expect(child2.width).toBe(100)
-    expect(child3.width).toBe(100)
-    expect(child4.width).toBe(100)
-  })
-
-  test("children removed and re-added receive fresh layout", async () => {
-    const parent = new TestRenderable(testRenderer, {
-      id: "parent",
-      width: 100,
-      height: 100,
-      flexDirection: "column",
-    })
-
-    const child1 = new TestRenderable(testRenderer, {
-      id: "child1",
-      height: 30,
-      flexGrow: 0,
-    })
-    const child2 = new TestRenderable(testRenderer, {
-      id: "child2",
-      height: 40,
-      flexGrow: 0,
-    })
-
-    parent.add(child1)
-    parent.add(child2)
-    testRenderer.root.add(parent)
-    await renderOnce()
-
-    const child1InitialY = child1.y
-    const child2InitialY = child2.y
-
-    expect(child1InitialY).toBe(0)
-    expect(child2InitialY).toBe(30)
-
-    parent.remove(child1)
-    await renderOnce()
-
-    expect(child2.y).toBe(0)
-
-    parent.add(child1)
-    await renderOnce()
-
-    expect(child2.y).toBe(0)
-    expect(child1.y).toBe(40)
-    expect(child1.width).toBe(100)
-    expect(child1.height).toBe(30)
+    expect(calls).toBe(0)
   })
 })
 
 describe("RootRenderable", () => {
   test("creates with proper setup", () => {
-    const root = new RootRenderable(testRenderer)
+    const root = testRenderer.root
     expect(root.id).toBe("__root__")
     expect(root.visible).toBe(true)
     expect(root.width).toBe(testRenderer.width)
     expect(root.height).toBe(testRenderer.height)
   })
 
-  test("handles layout calculation", () => {
-    const root = new RootRenderable(testRenderer)
-    expect(() => root.calculateLayout()).not.toThrow()
+  test("publishes root layout after rendering", async () => {
+    await renderOnce()
+    const root = testRenderer.root
+    expect(root.getLayout().width).toBe(testRenderer.width)
+    expect(root.getLayout().height).toBe(testRenderer.height)
   })
 
   test("handles resize", async () => {

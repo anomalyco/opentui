@@ -1460,7 +1460,7 @@ export function destroy(renderer: CliRenderer): void {
   renderer.removePostProcessFn(fftBackgroundPostProcess)
 
   const rootRenderable = renderer.root.getRenderable("native-audio-demo-root")
-  if (rootRenderable) renderer.root.remove(rootRenderable)
+  rootRenderable?.destroyRecursively()
   root = null
   titleText = null
   statusText = null

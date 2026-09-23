@@ -1,6 +1,6 @@
-import { createCliRenderer, parseColor, SyntaxStyle } from "@opentui/core"
-import { createRoot, useKeyboard } from "@opentui/react"
-import { useState, useMemo } from "react"
+import { createCliRenderer, DiffRenderable, parseColor, RenderableEvents, SyntaxStyle } from "@opentui/core"
+import { createRoot, useKeyboard, useRenderer } from "@opentui/react"
+import { useState, useLayoutEffect, useRef } from "react"
 
 interface DiffTheme {
   name: string
@@ -196,6 +196,10 @@ Other:
 }
 
 export function App() {
+  const renderer = useRenderer()
+  const diffRef = useRef<DiffRenderable | null>(null)
+  const ownedStyle = useRef<SyntaxStyle | null>(null)
+  const [syntaxStyle, setSyntaxStyle] = useState<SyntaxStyle | null>(null)
   const [themeIndex, setThemeIndex] = useState(0)
   const [view, setView] = useState<"unified" | "split">("unified")
   const [showLineNumbers, setShowLineNumbers] = useState(true)
@@ -203,7 +207,33 @@ export function App() {
   const [showHelp, setShowHelp] = useState(false)
 
   const theme = themes[themeIndex]
-  const syntaxStyle = useMemo(() => SyntaxStyle.fromStyles(theme.syntaxStyle), [theme])
+  useLayoutEffect(() => {
+    const style = SyntaxStyle.fromStyles(theme.syntaxStyle, renderer.nativeScene!)
+    const previous = ownedStyle.current
+    ownedStyle.current = style
+    try {
+      const diff = diffRef.current
+      if (diff && !diff.isDestroyed) diff.syntaxStyle = style
+      setSyntaxStyle(style)
+    } finally {
+      previous?.destroy()
+    }
+  }, [renderer, theme])
+
+  useLayoutEffect(() => {
+    return () => {
+      const style = ownedStyle.current
+      ownedStyle.current = null
+      if (!style) return
+      const diff = diffRef.current
+      if (diff && !diff.isDestroyed) {
+        // Diff destroys its detached panes after emitting its own destroy event.
+        diff.prependOnceListener(RenderableEvents.DESTROYED, () => queueMicrotask(() => style.destroy()))
+      } else {
+        style.destroy()
+      }
+    }
+  }, [renderer])
 
   useKeyboard((key) => {
     if (key.raw === "?") {
@@ -223,6 +253,8 @@ export function App() {
       setThemeIndex((prev) => (prev + 1) % themes.length)
     }
   })
+
+  if (!syntaxStyle) return null
 
   return (
     <box
@@ -247,6 +279,10 @@ export function App() {
       </box>
 
       <diff
+        ref={(node) => {
+          // React clears refs before passive host destruction.
+          if (node) diffRef.current = node
+        }}
         diff={exampleDiff}
         view={view}
         filetype="typescript"

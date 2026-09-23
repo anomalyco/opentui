@@ -1,6 +1,5 @@
 const std = @import("std");
 const builtin = @import("builtin");
-const io = if (builtin.is_test) std.testing.io else @import("root").io;
 const terminal_image = @import("terminal-image.zig");
 const native_image = @import("image.zig");
 
@@ -11,16 +10,17 @@ pub const Fallback = enum(u32) { none, not_ready, unavailable, budget, busy, pre
 // A stalled terminal may pin at most eight files and 64 MiB per renderer.
 pub const LEASES_MAX = 8;
 pub const BYTES_MAX = terminal_image.KITTY_PREPARE_BYTES_MAX;
-pub const TIMEOUT_MS = 5000;
+pub const TIMEOUT_NS: u64 = 5 * std.time.ns_per_s;
 
 const Lease = struct {
     id: u32 = 0,
     path: [768]u8 = undefined,
     path_len: usize = 0,
     size: usize = 0,
-    deadline_ms: i64 = 0,
+    deadline_ns: ?u64 = null,
+    unpublished: bool = false,
 
-    fn release(self: *Lease) void {
+    fn release(self: *Lease, io: std.Io) void {
         if (self.path_len == 0) return;
         std.Io.Dir.deleteFileAbsolute(io, self.path[0..self.path_len]) catch |err| {
             // Keep failed unlinks accounted for and retry on the next expiry/teardown.
@@ -31,6 +31,7 @@ const Lease = struct {
 };
 
 pub const Transport = struct {
+    io: std.Io,
     mode: Mode = .raw,
     effective: terminal_image.KittyEncoding = .raw,
     file_state: FileState = .disabled,
@@ -41,10 +42,6 @@ pub const Transport = struct {
     query_ok: bool = false,
     upload_ok: bool = false,
     retry_images: bool = false,
-
-    pub fn nowMs() i64 {
-        return @intCast(std.Io.Clock.now(.awake, io).toMilliseconds());
-    }
 
     pub fn pendingBytes(self: *const Transport) usize {
         var bytes: usize = 0;
@@ -60,13 +57,35 @@ pub const Transport = struct {
 
     pub fn cancel(self: *Transport, reason: FileState) void {
         self.retry_images = self.retry_images or self.file_state == .ready;
-        for (&self.leases) |*lease| lease.release();
+        for (&self.leases) |*lease| lease.release(self.io);
         if (self.mode == .file or self.file_state != .disabled) self.file_state = if (self.pendingCount() == 0) reason else .io_error;
     }
 
-    pub fn expire(self: *Transport, now_ms: i64) void {
+    /// Release new leases of a skipped frame; a published frame keeps them until ACK or expiry.
+    pub fn finishFrame(self: *Transport, published: bool) void {
+        for (&self.leases) |*lease| {
+            if (lease.unpublished and !published) lease.release(self.io);
+            lease.unpublished = false;
+        }
+    }
+
+    /// Arm new leases without releasing files referenced by an encoded frame.
+    /// Clamp at the end of the clock range so deadlines never wrap.
+    pub fn arm(self: *Transport, now_ns: u64) void {
+        for (&self.leases) |*lease| {
+            if (lease.path_len != 0 and lease.deadline_ns == null) {
+                lease.deadline_ns = now_ns +| TIMEOUT_NS;
+            }
+        }
+    }
+
+    /// Arm new leases on their first host clock observation. Clamp at the end of
+    /// the clock range so expiry never wraps or extends beyond five seconds.
+    pub fn expire(self: *Transport, now_ns: u64) void {
+        self.arm(now_ns);
         for (self.leases) |lease| {
-            if (lease.path_len != 0 and now_ms >= lease.deadline_ms) {
+            if (lease.path_len == 0) continue;
+            if (now_ns >= lease.deadline_ns.?) {
                 // Timeout is cancellation, never evidence that a terminal consumed a file.
                 // Disable the medium permanently so late ACKs cannot release new leases.
                 self.cancel(.timeout);
@@ -76,6 +95,7 @@ pub const Transport = struct {
     }
 
     fn createLease(self: *Transport, id: u32, image: *native_image.Image, directory: []const u8) !*Lease {
+        const io = self.io;
         if (builtin.os.tag == .windows) return error.Unsupported;
         if (!std.fs.path.isAbsolute(directory)) return error.InvalidDirectory;
         const size = try terminal_image.kittyPayloadSize(image);
@@ -99,14 +119,13 @@ pub const Transport = struct {
         const file = try std.Io.Dir.createFileAbsolute(io, path, .{ .exclusive = true, .permissions = .fromMode(0o600) });
         lease.path_len = path.len;
         lease.size = size;
-        errdefer lease.release();
+        errdefer lease.release(io);
         defer file.close(io);
         var buffer: [8192]u8 = undefined;
         var output = file.writerStreaming(io, &buffer);
         try terminal_image.writeKittyPayload(&output.interface, image);
         try output.interface.flush();
         lease.id = id;
-        lease.deadline_ms = nowMs() + TIMEOUT_MS;
         return lease;
     }
 
@@ -128,6 +147,8 @@ pub const Transport = struct {
             .metadata = .{ .width = 1, .height = 1, .has_alpha = 0 },
         };
         self.file_state = .probing;
+        self.query_ok = false;
+        self.upload_ok = false;
         errdefer self.cancel(.io_error);
         self.query_id = first_id;
         self.upload_probe_id = first_id + 1;
@@ -158,7 +179,7 @@ pub const Transport = struct {
             } else {
                 if (image_id == self.query_id) self.query_ok = true else self.upload_ok = true;
                 if (self.query_ok and self.upload_ok) {
-                    for (&self.leases) |*lease| lease.release();
+                    for (&self.leases) |*lease| lease.release(self.io);
                     self.file_state = if (self.pendingCount() == 0) .ready else .io_error;
                     if (self.file_state == .ready and self.mode == .file) self.retry_images = true;
                 }
@@ -168,7 +189,7 @@ pub const Transport = struct {
         for (&self.leases) |*lease| {
             if (lease.path_len == 0 or lease.id != image_id) continue;
             if (ok) {
-                lease.release();
+                lease.release(self.io);
                 if (lease.path_len != 0) self.cancel(.io_error);
             } else self.cancel(.unsupported);
             return true;
@@ -179,7 +200,6 @@ pub const Transport = struct {
     pub fn transmit(self: *Transport, allocator: std.mem.Allocator, writer: anytype, image: *native_image.Image, id: u32, tmux: bool, directory: []const u8) !void {
         self.fallback = .none;
         if (self.mode == .file) file: {
-            self.expire(nowMs());
             if (self.file_state != .ready or tmux) {
                 self.fallback = if (self.file_state == .probing) .not_ready else .unavailable;
                 break :file;
@@ -194,10 +214,8 @@ pub const Transport = struct {
                 if (self.fallback == .preparation) self.cancel(.io_error);
                 break :file;
             };
-            writeReference(writer, lease, image, id, 't') catch |err| {
-                self.cancel(.io_error);
-                return err;
-            };
+            lease.unpublished = true;
+            try writeReference(writer, lease, image, id, 't');
             self.effective = .file;
             return;
         }

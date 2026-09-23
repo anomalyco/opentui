@@ -1,4 +1,4 @@
-import { describe, expect, it, afterEach } from "bun:test"
+import { describe, expect, it, afterEach, spyOn } from "bun:test"
 import { TextareaRenderable } from "../renderables/Textarea.js"
 import { createTestRenderer, type TestRenderer, type MockInput } from "../testing/test-renderer.js"
 import { type ExtmarksController } from "./extmarks.js"
@@ -598,7 +598,7 @@ describe("ExtmarksController", () => {
     it("should apply highlight for extmark with styleId", async () => {
       await setup("Hello World")
 
-      const style = SyntaxStyle.create()
+      const style = SyntaxStyle.create(currentRenderer.nativeScene)
       const styleId = style.registerStyle("link", {
         fg: RGBA.fromValues(0, 0, 1, 1),
       })
@@ -621,7 +621,7 @@ describe("ExtmarksController", () => {
     it("should correctly position highlights in middle of single line", async () => {
       await setup("AAAA")
 
-      const style = SyntaxStyle.create()
+      const style = SyntaxStyle.create(currentRenderer.nativeScene)
       const styleId = style.registerStyle("test", {
         fg: RGBA.fromValues(1, 0, 0, 1),
       })
@@ -644,7 +644,7 @@ describe("ExtmarksController", () => {
     it("should correctly position highlights across newlines", async () => {
       await setup("AAAA\nBBBB\nCCCC")
 
-      const style = SyntaxStyle.create()
+      const style = SyntaxStyle.create(currentRenderer.nativeScene)
       const styleId = style.registerStyle("test", {
         fg: RGBA.fromValues(1, 0, 0, 1),
       })
@@ -679,7 +679,7 @@ describe("ExtmarksController", () => {
     it("should correctly position multiline highlights", async () => {
       await setup("AAA\nBBB\nCCC")
 
-      const style = SyntaxStyle.create()
+      const style = SyntaxStyle.create(currentRenderer.nativeScene)
       const styleId = style.registerStyle("test", {
         fg: RGBA.fromValues(0, 1, 0, 1),
       })
@@ -721,7 +721,7 @@ describe("ExtmarksController", () => {
     it("should update highlights when extmark position changes", async () => {
       await setup("Hello World")
 
-      const style = SyntaxStyle.create()
+      const style = SyntaxStyle.create(currentRenderer.nativeScene)
       const styleId = style.registerStyle("link", {
         fg: RGBA.fromValues(0, 0, 1, 1),
       })
@@ -746,7 +746,7 @@ describe("ExtmarksController", () => {
     it("should remove highlight when extmark is deleted", async () => {
       await setup("Hello World")
 
-      const style = SyntaxStyle.create()
+      const style = SyntaxStyle.create(currentRenderer.nativeScene)
       const styleId = style.registerStyle("link", {
         fg: RGBA.fromValues(0, 0, 1, 1),
       })
@@ -766,6 +766,26 @@ describe("ExtmarksController", () => {
 
       const highlightsAfter = textarea.getLineHighlights(0)
       expect(highlightsAfter.length).toBe(0)
+    })
+
+    it("should not keep an extmark whose highlight native rejects", async () => {
+      await setup("Hello World")
+      const style = SyntaxStyle.create(currentRenderer.nativeScene)
+      const styleId = style.registerStyle("link", { fg: RGBA.fromValues(0, 0, 1, 1) })
+      textarea.syntaxStyle = style
+      const kept = extmarks.create({ start: 0, end: 5, styleId, priority: 255 })
+      const errors = spyOn(console, "error")
+      try {
+        expect(() => extmarks.create({ start: 6, end: 11, styleId, priority: 256 })).toThrow()
+        expect(extmarks.getAll().map((extmark) => extmark.id)).toEqual([kept])
+        textarea.focus()
+        currentMockInput.pressKey("X")
+        await renderOnce()
+        expect(errors).not.toHaveBeenCalled()
+        expect(textarea.getLineHighlights(0)).toMatchObject([{ start: 1, end: 6, styleId, priority: 255 }])
+      } finally {
+        errors.mockRestore()
+      }
     })
   })
 
@@ -858,7 +878,7 @@ describe("ExtmarksController", () => {
     it("should highlight only virtual marker without extending to end of line", async () => {
       await setup("text [VIRTUAL] more text")
 
-      const style = SyntaxStyle.create()
+      const style = SyntaxStyle.create(currentRenderer.nativeScene)
       const styleId = style.registerStyle("virtual", {
         fg: RGBA.fromValues(0.3, 0.7, 1.0, 1.0),
         bg: RGBA.fromValues(0.1, 0.2, 0.3, 1.0),
@@ -886,7 +906,7 @@ describe("ExtmarksController", () => {
     it("should highlight virtual marker in middle with text after", async () => {
       await setup("abc [MARKER] def")
 
-      const style = SyntaxStyle.create()
+      const style = SyntaxStyle.create(currentRenderer.nativeScene)
       const styleId = style.registerStyle("virtual", {
         fg: RGBA.fromValues(0.3, 0.7, 1.0, 1.0),
       })
@@ -916,7 +936,7 @@ describe("ExtmarksController", () => {
 
       await setup(text)
 
-      const style = SyntaxStyle.create()
+      const style = SyntaxStyle.create(currentRenderer.nativeScene)
       const styleId = style.registerStyle("virtual", {
         fg: RGBA.fromValues(0.3, 0.7, 1.0, 1.0),
         bg: RGBA.fromValues(0.1, 0.2, 0.3, 1.0),
@@ -961,7 +981,7 @@ Try moving your cursor through the [VIRTUAL] markers below:
 
       await setup(initialContent)
 
-      const style = SyntaxStyle.create()
+      const style = SyntaxStyle.create(currentRenderer.nativeScene)
       const virtualStyleId = style.registerStyle("virtual", {
         fg: RGBA.fromValues(0.3, 0.7, 1.0, 1.0),
         bg: RGBA.fromValues(0.1, 0.2, 0.3, 1.0),
@@ -1008,7 +1028,7 @@ Try moving your cursor through the [VIRTUAL] markers below:
     it("should maintain correct positions after deleting first extmark", async () => {
       await setup("abc [VIRTUAL] def [VIRTUAL] ghi")
 
-      const style = SyntaxStyle.create()
+      const style = SyntaxStyle.create(currentRenderer.nativeScene)
       const styleId = style.registerStyle("virtual", {
         fg: RGBA.fromValues(0.3, 0.7, 1.0, 1.0),
       })
@@ -1064,7 +1084,7 @@ Press ESC to return to main menu.`
 
       await setup(initialContent)
 
-      const style = SyntaxStyle.create()
+      const style = SyntaxStyle.create(currentRenderer.nativeScene)
       const virtualStyleId = style.registerStyle("virtual", {
         fg: RGBA.fromValues(0.3, 0.7, 1.0, 1.0),
         bg: RGBA.fromValues(0.1, 0.2, 0.3, 1.0),
@@ -1878,7 +1898,7 @@ Press ESC to return to main menu.`
 
   describe("Edge Cases", () => {
     it("should handle extmark at start of text", async () => {
-      await setup("Hello World")
+      await setup("Hello\nWorld")
 
       const id = extmarks.create({
         start: 0,
@@ -1891,6 +1911,14 @@ Press ESC to return to main menu.`
 
       currentMockInput.pressArrow("right")
       expect(textarea.cursorOffset).toBe(5)
+      currentMockInput.pressArrow("left")
+      expect(textarea.cursorOffset).toBe(0)
+      textarea.editBuffer.setCursorByOffset(5)
+      textarea.editBuffer.setCursorByOffset(0)
+      expect(textarea.cursorOffset).toBe(0)
+      textarea.cursorOffset = 6
+      currentMockInput.pressArrow("up")
+      expect(textarea.cursorOffset).toBe(0)
 
       const extmark = extmarks.get(id)
       expect(extmark).not.toBeNull()
