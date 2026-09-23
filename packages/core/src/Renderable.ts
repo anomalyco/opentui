@@ -2159,7 +2159,9 @@ export abstract class Renderable extends BaseRenderable {
     recorder: NativePaintRecorder,
     geometryRevision: number | undefined,
   ): void {
-    if (this._isDestroyed || slot.hookGeneration !== this._nativeSceneHookGeneration) return
+    // Native code paints the phases the slot requested even if an earlier hook changed this
+    // node's hooks, so record them with the current methods instead of skipping the slot.
+    if (this._isDestroyed) return
     const previousLayout = this._nativeSceneHookLayout
     const revision = this._ctx.nativeScene.currentGeometryRevision
     this._nativeSceneHookLayout = {
