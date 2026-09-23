@@ -553,7 +553,10 @@ ot_status ot_scene_set_hooks(ot_context *, const ot_handle *node, const ot_scene
  * code then paints the whole frame in one pass and returns DONE. At each slot,
  * it plays RENDER_BEFORE, then RENDER_SELF in place of the node's native body,
  * then native editor cursor maintenance, then RENDER_AFTER, before the node's
- * children. A slot without a recorded phase draws nothing for that phase.
+ * children. A slot without a recorded phase draws nothing for that phase. An
+ * IMAGE node with a backing buffer from ot_scene_set_image plays its phases into
+ * that buffer, in buffer coordinates, after native code clears it and before
+ * composing it.
  * recording must be NULL with zero length for every other acknowledgement.
  *
  * Hooks run before painting starts. Membership, geometry, clipping, and opacity
