@@ -10,6 +10,7 @@ import { BoxRenderable } from "./Box.js"
 import { settleDiffHighlighting } from "./__tests__/renderable-test-utils.js"
 
 let currentRenderer: TestRenderer
+let syntaxStyle: SyntaxStyle
 let renderOnce: () => Promise<void>
 let captureFrame: () => string
 let mockClient: MockTreeSitterClient
@@ -26,6 +27,7 @@ beforeEach(async () => {
     clock,
   })
   currentRenderer = testRenderer.renderer
+  syntaxStyle = SyntaxStyle.fromStyles({ default: { fg: RGBA.fromValues(1, 1, 1, 1) } }, currentRenderer.nativeScene)
   renderOnce = testRenderer.renderOnce
   captureFrame = testRenderer.captureCharFrame
 })
@@ -33,21 +35,19 @@ beforeEach(async () => {
 afterEach(async () => {
   if (currentRenderer) {
     currentRenderer.destroy()
+    await currentRenderer.closed
   }
   if (mockClient) {
     mockClient.resolveAllHighlightOnce()
     await mockClient.destroy()
   }
+  syntaxStyle.destroy()
 })
 
 // When highlights conceal formatting characters (like **), line lengths change,
 // potentially triggering wrapping changes, height changes, and onResize.
 // This test ensures onResize doesn't cause content resets that create endless loops.
 test("DiffRenderable - no endless loop when concealing markdown formatting", async () => {
-  const syntaxStyle = SyntaxStyle.fromStyles({
-    default: { fg: RGBA.fromValues(1, 1, 1, 1) },
-  })
-
   const markdownDiff = `--- a/test.md
 +++ b/test.md
 @@ -1,2 +1,2 @@
@@ -101,10 +101,6 @@ test("DiffRenderable - no endless loop when concealing markdown formatting", asy
 // Tests that line numbers align correctly and gutter heights are properly sized
 // when switching between view modes and wrap modes in split view
 test("DiffRenderable - line number alignment and gutter heights in split view with wrapping", async () => {
-  const syntaxStyle = SyntaxStyle.fromStyles({
-    default: { fg: RGBA.fromValues(1, 1, 1, 1) },
-  })
-
   const markdownDiff = `--- a/test.md
 +++ b/test.md
 @@ -1,2 +1,2 @@
@@ -230,10 +226,6 @@ test("DiffRenderable - line number alignment and gutter heights in split view wi
 })
 
 test("DiffRenderable - hunk row offsets account for concealed markdown lines", async () => {
-  const syntaxStyle = SyntaxStyle.fromStyles({
-    default: { fg: RGBA.fromValues(1, 1, 1, 1) },
-  })
-
   const markdownDiff = `--- a/test.md
 +++ b/test.md
 @@ -1,3 +1,3 @@
@@ -291,9 +283,6 @@ test("DiffRenderable - hunk row offsets account for concealed markdown lines", a
 })
 
 test("DiffRenderable - hunk row offsets map concealed hunk starts to the next visible line", async () => {
-  const syntaxStyle = SyntaxStyle.fromStyles({
-    default: { fg: RGBA.fromValues(1, 1, 1, 1) },
-  })
   const fenceHighlights = (content: string): SimpleHighlight[] => {
     const highlights: SimpleHighlight[] = []
     let start = content.indexOf("```")
@@ -348,10 +337,6 @@ test("DiffRenderable - hunk row offsets map concealed hunk starts to the next vi
 })
 
 test("DiffRenderable - hunk row offsets account for multiline concealed ranges", async () => {
-  const syntaxStyle = SyntaxStyle.fromStyles({
-    default: { fg: RGBA.fromValues(1, 1, 1, 1) },
-  })
-
   const diff = `--- a/test.txt
 +++ b/test.txt
 @@ -1,2 +1,2 @@

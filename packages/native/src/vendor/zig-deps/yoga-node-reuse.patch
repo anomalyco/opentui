@@ -1,0 +1,23 @@
+diff --git a/yoga/node/Node.cpp b/yoga/node/Node.cpp
+--- a/yoga/node/Node.cpp
++++ b/yoga/node/Node.cpp
+@@ -367,7 +367,7 @@
+ 
+ void Node::clearChildren() {
+   children_.clear();
+-  children_.shrink_to_fit();
++  contentsChildrenCount_ = 0;
+ }
+ 
+ // Other Methods
+@@ -436,7 +436,10 @@
+   yoga::assertFatalWithNode(
+       this, owner_ == nullptr, "Cannot reset a node still attached to a owner");
+ 
++  // Retain only detached pointer storage; all style and layout state is fresh.
++  auto children = std::move(children_);
+   *this = Node{getConfig()};
++  children_ = std::move(children);
+ }
+ 
+ } // namespace facebook::yoga

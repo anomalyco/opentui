@@ -1,4 +1,4 @@
-export { ConfigError, DenyError, SshError } from "./errors.js"
+export { ConfigError, DenyError, OutputPressureError, SshError } from "./errors.js"
 export { type LogEvent, type LoggingOptions, logging } from "./logging.js"
 export { createServer } from "./server.js"
 export type {

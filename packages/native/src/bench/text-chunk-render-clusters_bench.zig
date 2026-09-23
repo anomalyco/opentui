@@ -2,7 +2,6 @@ const std = @import("std");
 const bench_utils = @import("../bench-utils.zig");
 const seg_mod = @import("../text-buffer-segment.zig");
 const mem_registry_mod = @import("../mem-registry.zig");
-const gp = @import("../grapheme.zig");
 
 const TextChunk = seg_mod.TextChunk;
 const MemRegistry = mem_registry_mod.MemRegistry;
@@ -219,9 +218,6 @@ pub fn run(
     show_mem: bool,
     bench_filter: ?[]const u8,
 ) ![]BenchResult {
-    // Global pool and unicode data are initialized once in bench.zig
-    _ = gp.initGlobalPool(allocator);
-
     var results: std.ArrayList(BenchResult) = .empty;
     errdefer results.deinit(allocator);
 

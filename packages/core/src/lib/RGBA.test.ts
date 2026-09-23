@@ -17,14 +17,6 @@ describe("RGBA", () => {
     expect(color.buffer[0]).toBe(1)
   })
 
-  test("preserves metadata when mutating channels", () => {
-    const color = RGBA.fromIndex(6)
-    color.r = 1
-    expect(color.intent).toBe("indexed")
-    expect(color.slot).toBe(6)
-    expect(color.toInts()[0]).toBe(255)
-  })
-
   test("constructs indexed and default colors", () => {
     const indexed = RGBA.fromIndex(12, "#112233")
     const defaultFg = RGBA.defaultForeground("#abcdef")

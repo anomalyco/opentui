@@ -1,3 +1,11 @@
+import { ResourceContext } from "../buffer.js"
+
+let resourceContext: ResourceContext
+beforeEach(() => {
+  resourceContext = new ResourceContext({ objectCapacity: 65536, renderCellsMax: 1000000 })
+})
+afterEach(() => resourceContext.destroy())
+
 import { test, expect, beforeEach, afterEach, describe, spyOn } from "bun:test"
 import { createTestRenderer, type TestRenderer, type MockMouse, MockTreeSitterClient } from "../testing.js"
 import { ScrollBoxRenderable } from "../renderables/ScrollBox.js"
@@ -298,6 +306,17 @@ describe("ScrollBoxRenderable - padding behavior", () => {
 })
 
 describe("ScrollBoxRenderable - destroyRecursively", () => {
+  test("selection dispatch continues when an earlier listener destroys the ScrollBox", () => {
+    const scrollbox = new ScrollBoxRenderable(testRenderer, { id: "scrollbox" })
+    testRenderer.root.add(scrollbox)
+
+    let laterCalls = 0
+    testRenderer.prependOnceListener("selection", () => scrollbox.destroyRecursively())
+    testRenderer.on("selection", () => laterCalls++)
+    testRenderer.emit("selection", null)
+    expect(laterCalls).toBe(1)
+  })
+
   test("destroys internal ScrollBox components", () => {
     const parent = new ScrollBoxRenderable(testRenderer, { id: "scroll-parent" })
     const child = new BoxRenderable(testRenderer, { id: "child" })
@@ -542,7 +561,7 @@ describe("ScrollBoxRenderable - Mouse interaction", () => {
 
 describe("ScrollBoxRenderable - Content Visibility", () => {
   test("renders markdown prose in scrollbox before highlighting completes", async () => {
-    const syntaxStyle = SyntaxStyle.fromTheme([])
+    const syntaxStyle = SyntaxStyle.fromTheme([], resourceContext)
     const scrollBox = new ScrollBoxRenderable(testRenderer, {
       width: 100,
       height: 20,
@@ -576,7 +595,7 @@ describe("ScrollBoxRenderable - Content Visibility", () => {
   })
 
   test("maintains visibility when scrolling with many Code elements", async () => {
-    const syntaxStyle = SyntaxStyle.fromTheme([])
+    const syntaxStyle = SyntaxStyle.fromTheme([], resourceContext)
 
     const parent = new BoxRenderable(testRenderer, {
       flexDirection: "column",
@@ -668,7 +687,7 @@ world
   })
 
   test("maintains visibility when scrolling with many Code elements (setter-based, like SolidJS)", async () => {
-    const syntaxStyle = SyntaxStyle.fromTheme([])
+    const syntaxStyle = SyntaxStyle.fromTheme([], resourceContext)
 
     const parent = new BoxRenderable(testRenderer, {
       flexDirection: "column",
@@ -758,7 +777,7 @@ world
   })
 
   test("maintains visibility with simple Code elements (constructor)", async () => {
-    const syntaxStyle = SyntaxStyle.fromTheme([])
+    const syntaxStyle = SyntaxStyle.fromTheme([], resourceContext)
 
     const parent = new BoxRenderable(testRenderer, {
       flexDirection: "column",
@@ -828,7 +847,7 @@ world
   })
 
   test("maintains visibility with simple Code elements (setter-based, like SolidJS)", async () => {
-    const syntaxStyle = SyntaxStyle.fromTheme([])
+    const syntaxStyle = SyntaxStyle.fromTheme([], resourceContext)
 
     const parent = new BoxRenderable(testRenderer, {
       flexDirection: "column",
@@ -947,7 +966,7 @@ world
   })
 
   test("stays scrolled to bottom with growing code renderables in sticky scroll mode", async () => {
-    const syntaxStyle = SyntaxStyle.fromTheme([])
+    const syntaxStyle = SyntaxStyle.fromTheme([], resourceContext)
     // Use manual-resolving mock client for deterministic behavior
     const autoResolvingClient = createMockTreeSitterClient()
 
@@ -1169,7 +1188,7 @@ console.log(processor.reduce((acc, val) => acc + val, 0))`
   })
 
   test("scrolls CodeRenderable with LineNumberRenderable using mouse wheel", async () => {
-    const syntaxStyle = SyntaxStyle.fromTheme([])
+    const syntaxStyle = SyntaxStyle.fromTheme([], resourceContext)
 
     const scrollBox = new ScrollBoxRenderable(testRenderer, {
       width: 40,
@@ -1227,7 +1246,7 @@ console.log(processor.reduce((acc, val) => acc + val, 0))`
   })
 
   test("sticky scroll bottom stays at bottom when gradually filled with code renderables", async () => {
-    const syntaxStyle = SyntaxStyle.fromTheme([])
+    const syntaxStyle = SyntaxStyle.fromTheme([], resourceContext)
 
     const scrollBox = new ScrollBoxRenderable(testRenderer, {
       width: 40,
@@ -1282,7 +1301,7 @@ console.log(processor.reduce((acc, val) => acc + val, 0))`
 
     const root = new BoxRenderable(renderer, { flexDirection: "column", width: 118, height: 38, gap: 0 })
     const header = new BoxRenderable(renderer, { height: 3, border: true })
-    header.add(new TextRenderable(testRenderer, { content: "HEADER" }))
+    header.add(new TextRenderable(renderer, { content: "HEADER" }))
     root.add(header)
 
     const outer = new ScrollBoxRenderable(renderer, { height: 25, border: true, overflow: "hidden", scrollY: true })

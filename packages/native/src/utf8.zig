@@ -413,6 +413,14 @@ pub inline fn eastAsianWidth(cp: u21) u32 {
     return if (width > 0) @intCast(width) else 0;
 }
 
+pub inline fn isCombiningMark(bytes: []const u8) bool {
+    if (bytes.len == 0) return false;
+    return switch (uucode.get(.general_category, decodeUtf8Unchecked(bytes, 0).cp)) {
+        .mark_nonspacing, .mark_spacing_combining, .mark_enclosing => true,
+        else => false,
+    };
+}
+
 /// Calculate width from east asian width property and Unicode properties
 /// Returns -1 for control characters (they don't contribute to width)
 inline fn eawToWidth(cp: u21, eaw: uucode.types.EastAsianWidth) i16 {

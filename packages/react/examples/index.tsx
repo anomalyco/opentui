@@ -190,6 +190,7 @@ export const ExamplesIndex = () => {
 if (import.meta.main) {
   const renderer = await createCliRenderer()
   createRoot(renderer).render(<ExamplesIndex />)
+  await renderer.closed
 }
 
 export default ExamplesIndex

@@ -407,7 +407,6 @@ export class CLICanvas {
       this.mapAsyncTimeMs = performance.now() - mapStart
 
       if (this.destroyed) {
-        textureBuffer.unmap()
         return
       }
 

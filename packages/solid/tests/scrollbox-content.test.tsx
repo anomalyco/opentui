@@ -1,3 +1,11 @@
+import { ResourceContext } from "@opentui/core"
+
+let resourceContext: ResourceContext
+beforeEach(() => {
+  resourceContext = new ResourceContext({ objectCapacity: 65536, renderCellsMax: 1000000 })
+})
+afterEach(() => resourceContext.destroy())
+
 import { describe, expect, it, beforeEach, afterEach } from "bun:test"
 import { testRender } from "../index.js"
 import { createSignal, createMemo, createEffect, For } from "solid-js"
@@ -81,7 +89,7 @@ describe("ScrollBox Content Visibility", () => {
   })
 
   it("should maintain content visibility with code blocks in scrollbox", async () => {
-    const syntaxStyle = SyntaxStyle.fromTheme([])
+    const syntaxStyle = SyntaxStyle.fromTheme([], resourceContext)
     const codeBlock = `
 
 # HELLO
@@ -193,7 +201,7 @@ world
   })
 
   it("maintains visibility with many Code elements", async () => {
-    const syntaxStyle = SyntaxStyle.fromTheme([])
+    const syntaxStyle = SyntaxStyle.fromTheme([], resourceContext)
     const [count, setCount] = createSignal(0)
 
     let scrollRef: ScrollBoxRenderable | undefined
@@ -306,7 +314,7 @@ world
   })
 
   it("does not split 'uses' in last message between widths 80-100", async () => {
-    const syntaxStyle = SyntaxStyle.fromTheme([])
+    const syntaxStyle = SyntaxStyle.fromTheme([], resourceContext)
     const [items, setItems] = createSignal<string[]>([])
     let scrollRef: ScrollBoxRenderable | undefined
 

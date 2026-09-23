@@ -146,9 +146,10 @@ fn runScenario(
 
 pub fn run(io: std.Io, allocator: std.mem.Allocator, show_mem: bool, bench_filter: ?[]const u8) ![]bench_utils.BenchResult {
     _ = show_mem;
-    const pool = gp.initGlobalPool(allocator);
-    defer gp.deinitGlobalPool();
-    defer link.deinitGlobalLinkPool();
+    var pool_storage = gp.GraphemePool.init(allocator);
+    defer pool_storage.deinit();
+    const pool = &pool_storage;
+
     const source = try image.createFromRgba(allocator, &[_]u8{ 10, 20, 30, 255 }, 1, 1, 4);
     defer source.deinit();
 

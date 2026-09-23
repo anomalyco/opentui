@@ -11,16 +11,16 @@ class SelectionAnchor {
     absoluteX: number,
     absoluteY: number,
   ) {
-    this.relativeX = absoluteX - this.renderable.x
-    this.relativeY = absoluteY - this.renderable.y
+    this.relativeX = absoluteX - Math.trunc(this.renderable.x)
+    this.relativeY = absoluteY - Math.trunc(this.renderable.y)
   }
 
   get x(): number {
-    return this.renderable.x + this.relativeX
+    return Math.trunc(this.renderable.x) + this.relativeX
   }
 
   get y(): number {
-    return this.renderable.y + this.relativeY
+    return Math.trunc(this.renderable.y) + this.relativeY
   }
 }
 

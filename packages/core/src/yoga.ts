@@ -1,37 +1,42 @@
+import { nativeConstants } from "./native-abi.generated.js"
 import {
+  NATIVE_EDGE_NONE,
+  NATIVE_STYLE_BORDER_WIDTH,
+  NativeStyleFlags,
+  NativeStyleGroup,
   resolveRenderLib,
-  type NativeYogaDirtiedCallback,
-  type NativeYogaMeasureCallback,
   type RenderLib,
+  type SceneNodeHandle,
 } from "./zig.js"
 import type { FFICallbackInstance, Pointer } from "./platform/ffi.js"
+import type { NativeScene } from "./NativeScene.js"
 
 export enum Align {
-  Auto = 0,
-  FlexStart = 1,
-  Center = 2,
-  FlexEnd = 3,
-  Stretch = 4,
-  Baseline = 5,
-  SpaceBetween = 6,
-  SpaceAround = 7,
-  SpaceEvenly = 8,
+  Auto = nativeConstants.OT_ALIGN_AUTO,
+  FlexStart = nativeConstants.OT_ALIGN_FLEX_START,
+  Center = nativeConstants.OT_ALIGN_CENTER,
+  FlexEnd = nativeConstants.OT_ALIGN_FLEX_END,
+  Stretch = nativeConstants.OT_ALIGN_STRETCH,
+  Baseline = nativeConstants.OT_ALIGN_BASELINE,
+  SpaceBetween = nativeConstants.OT_ALIGN_SPACE_BETWEEN,
+  SpaceAround = nativeConstants.OT_ALIGN_SPACE_AROUND,
+  SpaceEvenly = nativeConstants.OT_ALIGN_SPACE_EVENLY,
 }
 
 export enum BoxSizing {
-  BorderBox = 0,
-  ContentBox = 1,
+  BorderBox = nativeConstants.OT_BOX_SIZING_BORDER_BOX,
+  ContentBox = nativeConstants.OT_BOX_SIZING_CONTENT_BOX,
 }
 
 export enum Dimension {
-  Width = 0,
-  Height = 1,
+  Width = nativeConstants.OT_DIMENSION_WIDTH,
+  Height = nativeConstants.OT_DIMENSION_HEIGHT,
 }
 
 export enum Direction {
-  Inherit = 0,
-  LTR = 1,
-  RTL = 2,
+  Inherit = nativeConstants.OT_DIRECTION_INHERIT,
+  LTR = nativeConstants.OT_DIRECTION_LTR,
+  RTL = nativeConstants.OT_DIRECTION_RTL,
 }
 
 export enum Display {
@@ -41,15 +46,15 @@ export enum Display {
 }
 
 export enum Edge {
-  Left = 0,
-  Top = 1,
-  Right = 2,
-  Bottom = 3,
-  Start = 4,
-  End = 5,
-  Horizontal = 6,
-  Vertical = 7,
-  All = 8,
+  Left = nativeConstants.OT_EDGE_LEFT,
+  Top = nativeConstants.OT_EDGE_TOP,
+  Right = nativeConstants.OT_EDGE_RIGHT,
+  Bottom = nativeConstants.OT_EDGE_BOTTOM,
+  Start = nativeConstants.OT_EDGE_START,
+  End = nativeConstants.OT_EDGE_END,
+  Horizontal = nativeConstants.OT_EDGE_HORIZONTAL,
+  Vertical = nativeConstants.OT_EDGE_VERTICAL,
+  All = nativeConstants.OT_EDGE_ALL,
 }
 
 export enum Errata {
@@ -66,25 +71,25 @@ export enum ExperimentalFeature {
 }
 
 export enum FlexDirection {
-  Column = 0,
-  ColumnReverse = 1,
-  Row = 2,
-  RowReverse = 3,
+  Column = nativeConstants.OT_FLEX_DIRECTION_COLUMN,
+  ColumnReverse = nativeConstants.OT_FLEX_DIRECTION_COLUMN_REVERSE,
+  Row = nativeConstants.OT_FLEX_DIRECTION_ROW,
+  RowReverse = nativeConstants.OT_FLEX_DIRECTION_ROW_REVERSE,
 }
 
 export enum Gutter {
-  Column = 0,
-  Row = 1,
-  All = 2,
+  Column = nativeConstants.OT_GUTTER_COLUMN,
+  Row = nativeConstants.OT_GUTTER_ROW,
+  All = nativeConstants.OT_GUTTER_ALL,
 }
 
 export enum Justify {
-  FlexStart = 0,
-  Center = 1,
-  FlexEnd = 2,
-  SpaceBetween = 3,
-  SpaceAround = 4,
-  SpaceEvenly = 5,
+  FlexStart = nativeConstants.OT_JUSTIFY_FLEX_START,
+  Center = nativeConstants.OT_JUSTIFY_CENTER,
+  FlexEnd = nativeConstants.OT_JUSTIFY_FLEX_END,
+  SpaceBetween = nativeConstants.OT_JUSTIFY_SPACE_BETWEEN,
+  SpaceAround = nativeConstants.OT_JUSTIFY_SPACE_AROUND,
+  SpaceEvenly = nativeConstants.OT_JUSTIFY_SPACE_EVENLY,
 }
 
 export enum LogLevel {
@@ -97,9 +102,9 @@ export enum LogLevel {
 }
 
 export enum MeasureMode {
-  Undefined = 0,
-  Exactly = 1,
-  AtMost = 2,
+  Undefined = nativeConstants.OT_MEASURE_UNDEFINED,
+  Exactly = nativeConstants.OT_MEASURE_EXACTLY,
+  AtMost = nativeConstants.OT_MEASURE_AT_MOST,
 }
 
 export enum NodeType {
@@ -108,28 +113,28 @@ export enum NodeType {
 }
 
 export enum Overflow {
-  Visible = 0,
-  Hidden = 1,
-  Scroll = 2,
+  Visible = nativeConstants.OT_OVERFLOW_VISIBLE,
+  Hidden = nativeConstants.OT_OVERFLOW_HIDDEN,
+  Scroll = nativeConstants.OT_OVERFLOW_SCROLL,
 }
 
 export enum PositionType {
-  Static = 0,
-  Relative = 1,
-  Absolute = 2,
+  Static = nativeConstants.OT_POSITION_STATIC,
+  Relative = nativeConstants.OT_POSITION_RELATIVE,
+  Absolute = nativeConstants.OT_POSITION_ABSOLUTE,
 }
 
 export enum Unit {
-  Undefined = 0,
-  Point = 1,
-  Percent = 2,
-  Auto = 3,
+  Undefined = nativeConstants.OT_UNIT_UNDEFINED,
+  Point = nativeConstants.OT_UNIT_POINT,
+  Percent = nativeConstants.OT_UNIT_PERCENT,
+  Auto = nativeConstants.OT_UNIT_AUTO,
 }
 
 export enum Wrap {
-  NoWrap = 0,
-  Wrap = 1,
-  WrapReverse = 2,
+  NoWrap = nativeConstants.OT_FLEX_WRAP_NONE,
+  Wrap = nativeConstants.OT_FLEX_WRAP_WRAP,
+  WrapReverse = nativeConstants.OT_FLEX_WRAP_REVERSE,
 }
 
 export const ALIGN_AUTO = Align.Auto
@@ -248,40 +253,114 @@ export type DirtiedFunction = (node: Node) => void
 type ValueInput = number | "auto" | `${number}%` | Value | undefined
 type ValueInputNoAuto = number | `${number}%` | Value | undefined
 
-const YogaEnumKind = {
-  Direction: 0,
-  FlexDirection: 1,
-  JustifyContent: 2,
-  AlignContent: 3,
-  AlignItems: 4,
-  AlignSelf: 5,
-  PositionType: 6,
-  FlexWrap: 7,
-  Overflow: 8,
-  Display: 9,
-  BoxSizing: 10,
+export const YogaEnumKind = {
+  Direction: nativeConstants.OT_STYLE_ENUM_DIRECTION,
+  FlexDirection: nativeConstants.OT_STYLE_ENUM_FLEX_DIRECTION,
+  JustifyContent: nativeConstants.OT_STYLE_ENUM_JUSTIFY_CONTENT,
+  AlignContent: nativeConstants.OT_STYLE_ENUM_ALIGN_CONTENT,
+  AlignItems: nativeConstants.OT_STYLE_ENUM_ALIGN_ITEMS,
+  AlignSelf: nativeConstants.OT_STYLE_ENUM_ALIGN_SELF,
+  PositionType: nativeConstants.OT_STYLE_ENUM_POSITION_TYPE,
+  FlexWrap: nativeConstants.OT_STYLE_ENUM_FLEX_WRAP,
+  Overflow: nativeConstants.OT_STYLE_ENUM_OVERFLOW,
+  Display: nativeConstants.OT_STYLE_ENUM_DISPLAY,
+  BoxSizing: nativeConstants.OT_STYLE_ENUM_BOX_SIZING,
 } as const
 
-const YogaFloatKind = {
-  Flex: 0,
-  FlexGrow: 1,
-  FlexShrink: 2,
-  AspectRatio: 3,
+export const YogaFloatKind = {
+  Flex: nativeConstants.OT_STYLE_FLOAT_FLEX,
+  FlexGrow: nativeConstants.OT_STYLE_FLOAT_FLEX_GROW,
+  FlexShrink: nativeConstants.OT_STYLE_FLOAT_FLEX_SHRINK,
+  AspectRatio: nativeConstants.OT_STYLE_FLOAT_ASPECT_RATIO,
 } as const
 
-const YogaValueKind = {
-  Width: 0,
-  Height: 1,
-  MinWidth: 2,
-  MinHeight: 3,
-  MaxWidth: 4,
-  MaxHeight: 5,
-  FlexBasis: 6,
-  Margin: 7,
-  Padding: 8,
-  Position: 9,
-  Gap: 10,
+export const YogaValueKind = {
+  Width: nativeConstants.OT_STYLE_VALUE_WIDTH,
+  Height: nativeConstants.OT_STYLE_VALUE_HEIGHT,
+  MinWidth: nativeConstants.OT_STYLE_VALUE_MIN_WIDTH,
+  MinHeight: nativeConstants.OT_STYLE_VALUE_MIN_HEIGHT,
+  MaxWidth: nativeConstants.OT_STYLE_VALUE_MAX_WIDTH,
+  MaxHeight: nativeConstants.OT_STYLE_VALUE_MAX_HEIGHT,
+  FlexBasis: nativeConstants.OT_STYLE_VALUE_FLEX_BASIS,
+  Margin: nativeConstants.OT_STYLE_VALUE_MARGIN,
+  Padding: nativeConstants.OT_STYLE_VALUE_PADDING,
+  Position: nativeConstants.OT_STYLE_VALUE_POSITION,
+  Gap: nativeConstants.OT_STYLE_VALUE_GAP,
 } as const
+
+export type YogaEnumKindId = (typeof YogaEnumKind)[keyof typeof YogaEnumKind]
+export type YogaFloatKindId = (typeof YogaFloatKind)[keyof typeof YogaFloatKind]
+export type YogaValueKindId = (typeof YogaValueKind)[keyof typeof YogaValueKind]
+
+type SceneStyleNode = { _getSceneHandle(owner: NativeScene): SceneNodeHandle }
+
+export function sceneSetEnum(scene: NativeScene, node: SceneStyleNode, kind: YogaEnumKindId, value: number): void {
+  scene.setStyle(node, NativeStyleGroup.Enum, kind, NATIVE_EDGE_NONE, Unit.Undefined, value)
+}
+
+export function sceneGetEnum(
+  scene: NativeScene,
+  node: SceneStyleNode,
+  kind: YogaEnumKindId,
+  fallback?: number,
+): number {
+  return scene.getStyle(node, NativeStyleGroup.Enum, kind, NATIVE_EDGE_NONE).value ?? fallback
+}
+
+export function sceneSetFloat(
+  scene: NativeScene,
+  node: SceneStyleNode,
+  kind: YogaFloatKindId,
+  value: number | undefined,
+): void {
+  scene.setStyle(node, NativeStyleGroup.Float, kind, NATIVE_EDGE_NONE, Unit.Undefined, value ?? NaN)
+}
+
+export function sceneGetFloat(scene: NativeScene, node: SceneStyleNode, kind: YogaFloatKindId): number {
+  return scene.getStyle(node, NativeStyleGroup.Float, kind, NATIVE_EDGE_NONE).value
+}
+
+export function sceneSetValue(
+  scene: NativeScene,
+  node: SceneStyleNode,
+  kind: YogaValueKindId,
+  edge: number,
+  valueInput: ValueInput,
+): void {
+  const value = parseYogaValue(valueInput)
+  scene.setStyle(node, NativeStyleGroup.Value, kind, edge, value.unit, value.value)
+}
+
+export function sceneGetValue(scene: NativeScene, node: SceneStyleNode, kind: YogaValueKindId, edge: number): Value {
+  return scene.getStyle(node, NativeStyleGroup.Value, kind, edge)
+}
+
+export function sceneSetDimension(
+  scene: NativeScene,
+  node: SceneStyleNode,
+  dimension: Dimension,
+  input: ValueInput,
+  disableFlexShrink: boolean = false,
+): void {
+  const value = parseYogaValue(input)
+  scene.setStyle(
+    node,
+    NativeStyleGroup.Dimension,
+    dimension,
+    NATIVE_EDGE_NONE,
+    value.unit,
+    value.value,
+    disableFlexShrink ? NativeStyleFlags.DisableFlexShrink : NativeStyleFlags.None,
+  )
+}
+
+export function sceneSetBorder(scene: NativeScene, node: SceneStyleNode, edge: Edge, border: number | undefined): void {
+  scene.setStyle(node, NativeStyleGroup.Border, NATIVE_STYLE_BORDER_WIDTH, edge, Unit.Point, border ?? NaN)
+}
+
+export function sceneGetBorder(scene: NativeScene, node: SceneStyleNode, edge: Edge): number {
+  return scene.getStyle(node, NativeStyleGroup.Border, NATIVE_STYLE_BORDER_WIDTH, edge).value
+}
 
 const YogaEdgeLayoutKind = {
   Margin: 0,
@@ -291,69 +370,135 @@ const YogaEdgeLayoutKind = {
 
 const UNDEFINED_VALUE: Value = { unit: Unit.Undefined, value: NaN }
 
-const nodeRegistry = new Map<Pointer, Node>()
-// JS-measured Yoga nodes share one native callback per loaded library. Yoga passes
-// the node pointer back to JS, and these registries route to the per-node handler.
-// This keeps Node.setMeasureFunc()/setDirtiedFunc() while avoiding one JSCallback
-// allocation per measured node.
-const measureRegistry = new Map<Pointer, MeasureFunction>()
-const dirtiedRegistry = new Map<Pointer, { node: Node; callback: DirtiedFunction }>()
-let measureCallback: FFICallbackInstance | null = null
-let measureCallbackLib: RenderLib | null = null
-let dirtiedCallback: FFICallbackInstance | null = null
-let dirtiedCallbackLib: RenderLib | null = null
-
-function lib(): RenderLib {
-  return resolveRenderLib()
+export enum YogaStatus {
+  Ok = 0,
+  InvalidArgument = 1,
+  OutOfMemory = 2,
+  Exception = 3,
+  Poisoned = 4,
+  Busy = 5,
+  DepthLimit = 6,
 }
 
-function ensureMeasureCallback(): void {
-  const renderLib = lib()
-  if (measureCallback?.ptr && measureCallbackLib === renderLib) return
+export class YogaError extends Error {
+  readonly name = "YogaError"
 
-  const callback: NativeYogaMeasureCallback = (node, width, widthMode, height, heightMode) => {
-    const measureFunc = node ? measureRegistry.get(node) : undefined
-    const result = measureFunc?.(width, widthMode as MeasureMode, height, heightMode as MeasureMode)
-    renderLib.yogaStoreMeasureResult(result?.width ?? NaN, result?.height ?? NaN)
+  constructor(
+    readonly operation: string,
+    readonly status: YogaStatus,
+  ) {
+    super(`${operation} failed: ${YogaStatus[status] ?? "Unknown"} (status ${status})`)
   }
-
-  measureCallback = renderLib.createYogaMeasureCallback(callback)
-  if (!measureCallback.ptr) {
-    measureCallback.close()
-    measureCallback = null
-    throw new Error("Failed to create Yoga measure callback")
-  }
-
-  renderLib.yogaSetMeasureCallback(measureCallback.ptr)
-  measureCallbackLib = renderLib
 }
 
-function ensureDirtiedCallback(): void {
-  const renderLib = lib()
-  if (dirtiedCallback?.ptr && dirtiedCallbackLib === renderLib) return
+/** Callback state owned by one loaded RenderLib, never by the process. */
+export class YogaHost {
+  readonly configs = new Map<Pointer, Config>()
+  private readonly pendingScenes = new Set<NativeScene>()
+  private defaultConfig?: Config
+  private callbackDepth = 0
+  private mutationDepth = 0
+  private callbackError?: { value: unknown }
 
-  const callback: NativeYogaDirtiedCallback = (node) => {
-    if (!node) return
-    const registration = dirtiedRegistry.get(node)
-    if (registration) registration.callback(registration.node)
+  constructor(private readonly renderLib: RenderLib) {}
+
+  getDefaultConfig(): Config {
+    if (!this.defaultConfig || this.configs.get(this.defaultConfig.ptr) !== this.defaultConfig) {
+      this.defaultConfig = Config.create(this.renderLib)
+    }
+    return this.defaultConfig
   }
 
-  dirtiedCallback = renderLib.createYogaDirtiedCallback(callback)
-  if (!dirtiedCallback.ptr) {
-    dirtiedCallback.close()
-    dirtiedCallback = null
-    throw new Error("Failed to create Yoga dirtied callback")
+  assertMutable(): void {
+    if (this.callbackDepth !== 0) throw new Error("Cannot mutate Yoga during a callback")
   }
 
-  renderLib.yogaSetDirtiedCallback(dirtiedCallback.ptr)
-  dirtiedCallbackLib = renderLib
+  stageScene(scene: NativeScene): void {
+    this.pendingScenes.add(scene)
+  }
+
+  forgetScene(scene: NativeScene): void {
+    this.pendingScenes.delete(scene)
+  }
+
+  flushSceneMutations(): void {
+    this.assertMutable()
+    for (const scene of this.pendingScenes) scene.flushStaged()
+  }
+
+  /** Whether a Yoga callback is executing on this library's owner thread. */
+  get inCallback(): boolean {
+    return this.callbackDepth !== 0
+  }
+
+  invokeCallback(callback: () => unknown): void {
+    this.callbackDepth++
+    try {
+      rejectAsyncCallback(callback())
+    } catch (error) {
+      this.callbackError ??= { value: error }
+    } finally {
+      this.callbackDepth--
+    }
+  }
+
+  runMutation<T>(operation: () => T): T {
+    this.assertMutable()
+    this.mutationDepth++
+    let result!: T
+    let failure: { value: unknown } | undefined
+    try {
+      result = operation()
+    } catch (error) {
+      failure = { value: error }
+    } finally {
+      this.mutationDepth--
+    }
+    this.throwCallbackError(failure)
+    return result
+  }
+
+  throwCallbackError(failure?: { value: unknown }): void {
+    if (this.callbackDepth !== 0 || this.mutationDepth !== 0) {
+      if (failure) throw failure.value
+      return
+    }
+    const callbackError = this.callbackError
+    this.callbackError = undefined
+    if (failure && callbackError) {
+      throw new AggregateError([failure.value, callbackError.value], "Yoga operation and callback both failed")
+    }
+    if (failure) throw failure.value
+    if (callbackError) throw callbackError.value
+  }
+
+  dispose(): void {
+    this.assertMutable()
+    for (const config of this.configs.values()) config.assertUnused()
+    for (const config of this.configs.values()) config.free()
+    this.defaultConfig = undefined
+    this.pendingScenes.clear()
+  }
+}
+
+export function rejectAsyncCallback(value: unknown): void {
+  if (
+    value !== null &&
+    (typeof value === "object" || typeof value === "function") &&
+    "then" in value &&
+    typeof value.then === "function"
+  ) {
+    // Report the synchronous contract error, not an unrelated unhandled rejection.
+    void Promise.resolve(value).catch(() => {})
+    throw new TypeError("Yoga callbacks must be synchronous", { cause: value })
+  }
 }
 
 function isValueObject(value: unknown): value is Value {
   return typeof value === "object" && value !== null && "unit" in value && "value" in value
 }
 
-function parseValue(value: ValueInput): Value {
+export function parseYogaValue(value: ValueInput): Value {
   if (isValueObject(value)) {
     return value
   }
@@ -392,14 +537,28 @@ function normalizeLayoutInput(value: number | "auto" | undefined): number {
 
 export class Config {
   readonly ptr: Pointer
+  readonly nodes = new Map<Pointer, Node>()
+  readonly measures = new Map<Pointer, MeasureFunction>()
+  readonly dirtied = new Map<Pointer, { node: Node; callback: DirtiedFunction }>()
   private freed = false
+  private measureCallback?: FFICallbackInstance
+  private dirtiedCallback?: FFICallbackInstance
 
-  private constructor(ptr: Pointer) {
+  private constructor(
+    ptr: Pointer,
+    readonly renderLib: RenderLib,
+    private readonly ownsConfig: boolean,
+  ) {
     this.ptr = ptr
+    renderLib.getYogaHost().configs.set(ptr, this)
   }
 
-  static create(): Config {
-    return new Config(lib().yogaConfigCreate())
+  static create(renderLib: RenderLib = resolveRenderLib()): Config {
+    return new Config(renderLib.yogaConfigCreate(), renderLib, true)
+  }
+
+  static fromBorrowedPointer(ptr: Pointer, renderLib: RenderLib = resolveRenderLib()): Config {
+    return renderLib.getYogaHost().configs.get(ptr) ?? new Config(ptr, renderLib, false)
   }
 
   static destroy(config: Config): void {
@@ -408,66 +567,119 @@ export class Config {
 
   free(): void {
     if (this.freed) return
+    this.renderLib.getYogaHost().assertMutable()
+    this.assertUnused()
+    if (this.ownsConfig) {
+      this.renderLib.yogaConfigFree(this.ptr)
+    } else if (this.measureCallback?.ptr) {
+      this.renderLib.yogaConfigClearCallbacks(this.ptr, this.measureCallback.ptr)
+    }
+    this.measureCallback?.close()
+    this.dirtiedCallback?.close()
+    this.renderLib.getYogaHost().configs.delete(this.ptr)
     this.freed = true
-    lib().yogaConfigFree(this.ptr)
+  }
+
+  assertUnused(): void {
+    if (this.nodes.size !== 0) throw new Error("Cannot free Yoga config while Yoga nodes are active")
+  }
+
+  assertAlive(): void {
+    if (this.freed) throw new Error("Yoga config is freed")
+  }
+
+  ensureCallbacks(): void {
+    this.assertAlive()
+    this.renderLib.getYogaHost().assertMutable()
+    if (this.measureCallback) return
+    const measure = this.renderLib.createYogaMeasureCallback((node, width, widthMode, height, heightMode) => {
+      const result = node ? this.measures.get(node)?.(width, widthMode, height, heightMode) : undefined
+      rejectAsyncCallback(result)
+      this.renderLib.yogaStoreMeasureResult(this.ptr, result?.width ?? NaN, result?.height ?? NaN)
+    })
+    let dirtied: FFICallbackInstance | undefined
+    try {
+      dirtied = this.renderLib.createYogaDirtiedCallback((node) => {
+        const registration = node ? this.dirtied.get(node) : undefined
+        return registration?.callback(registration.node)
+      })
+      if (!measure.ptr || !dirtied.ptr) throw new Error("Failed to create Yoga callbacks")
+      if (!this.renderLib.yogaConfigSetCallbacks(this.ptr, measure.ptr, dirtied.ptr)) {
+        throw new Error("Yoga config callbacks are owned by another native library facade")
+      }
+      this.measureCallback = measure
+      this.dirtiedCallback = dirtied
+    } catch (error) {
+      measure.close()
+      dirtied?.close()
+      throw error
+    }
   }
 
   setUseWebDefaults(useWebDefaults: boolean): void {
     if (this.freed) return
-    lib().yogaConfigSetUseWebDefaults(this.ptr, useWebDefaults)
+    this.renderLib.yogaConfigSetUseWebDefaults(this.ptr, useWebDefaults)
   }
 
   useWebDefaults(): boolean {
     if (this.freed) return false
-    return lib().yogaConfigGetUseWebDefaults(this.ptr)
+    return this.renderLib.yogaConfigGetUseWebDefaults(this.ptr)
   }
 
   setPointScaleFactor(pointScaleFactor: number): void {
     if (this.freed) return
-    lib().yogaConfigSetPointScaleFactor(this.ptr, pointScaleFactor)
+    this.renderLib.yogaConfigSetPointScaleFactor(this.ptr, pointScaleFactor)
   }
 
   getPointScaleFactor(): number {
     if (this.freed) return 0
-    return lib().yogaConfigGetPointScaleFactor(this.ptr)
+    return this.renderLib.yogaConfigGetPointScaleFactor(this.ptr)
   }
 
   setErrata(errata: Errata): void {
     if (this.freed) return
-    lib().yogaConfigSetErrata(this.ptr, errata)
+    this.renderLib.yogaConfigSetErrata(this.ptr, errata)
   }
 
   getErrata(): Errata {
     if (this.freed) return Errata.None
-    return lib().yogaConfigGetErrata(this.ptr) as Errata
+    return this.renderLib.yogaConfigGetErrata(this.ptr) as Errata
   }
 
   setExperimentalFeatureEnabled(feature: ExperimentalFeature, enabled: boolean): void {
     if (this.freed) return
-    lib().yogaConfigSetExperimentalFeatureEnabled(this.ptr, feature, enabled)
+    this.renderLib.yogaConfigSetExperimentalFeatureEnabled(this.ptr, feature, enabled)
   }
 
   isExperimentalFeatureEnabled(feature: ExperimentalFeature): boolean {
     if (this.freed) return false
-    return lib().yogaConfigIsExperimentalFeatureEnabled(this.ptr, feature)
+    return this.renderLib.yogaConfigIsExperimentalFeatureEnabled(this.ptr, feature)
   }
 }
 
 export class Node {
-  readonly ptr: Pointer
   private freed = false
 
-  private constructor(ptr: Pointer) {
-    this.ptr = ptr
-    nodeRegistry.set(ptr, this)
+  private constructor(
+    readonly ptr: Pointer,
+    private readonly config: Config,
+  ) {
+    config.nodes.set(ptr, this)
+  }
+
+  private get renderLib(): RenderLib {
+    return this.config.renderLib
   }
 
   static create(config?: Config): Node {
-    return Node.fromPointer(config ? lib().yogaNodeCreateWithConfig(config.ptr) : lib().yogaNodeCreate())
+    config ??= resolveRenderLib().getYogaHost().getDefaultConfig()
+    config.assertAlive()
+    return Node.fromPointer(config.renderLib.yogaNodeCreateWithConfig(config.ptr), config.renderLib)
   }
 
   static createForOpenTUI(): Node {
-    return Node.fromPointer(lib().yogaNodeCreateForOpenTUI())
+    const renderLib = resolveRenderLib()
+    return Node.fromPointer(renderLib.yogaNodeCreateForOpenTUI(), renderLib)
   }
 
   static createDefault(): Node {
@@ -482,108 +694,126 @@ export class Node {
     node.free()
   }
 
-  private static fromPointer(ptr: Pointer): Node {
-    const existing = nodeRegistry.get(ptr)
+  private static fromPointer(ptr: Pointer, renderLib: RenderLib): Node {
+    const config = Config.fromBorrowedPointer(renderLib.yogaNodeGetConfig(ptr), renderLib)
+    const existing = config.nodes.get(ptr)
     if (existing) return existing
-    return new Node(ptr)
+    return new Node(ptr, config)
   }
 
   isFreed(): boolean {
     return this.freed
   }
 
+  assertMutable(): void {
+    this.renderLib.getYogaHost().assertMutable()
+  }
+
+  runMutation<T>(operation: () => T): T {
+    return this.renderLib.getYogaHost().runMutation(operation)
+  }
+
   free(): void {
     if (this.freed) return
-    this.unsetMeasureFunc()
-    this.unsetDirtiedFunc()
-    lib().yogaNodeFree(this.ptr)
-    this.markFreed()
+    this.assertMutable()
+
+    this.runMutation(() => {
+      this.renderLib.yogaNodeFree(this.ptr)
+      this.markFreed()
+    })
   }
 
   freeRecursive(): void {
     if (this.freed) return
+    this.assertMutable()
     const nodes = this.collectSubtree([])
-    for (const node of nodes) {
-      node.unregisterCallbacks()
-    }
-    lib().yogaNodeFreeRecursive(this.ptr)
-    for (const node of nodes) {
-      node.markFreed()
-    }
+    this.runMutation(() => {
+      this.renderLib.yogaNodeFreeRecursive(this.ptr)
+      for (const node of nodes) node.markFreed()
+    })
   }
 
   reset(): void {
     if (this.freed) return
-    this.unsetMeasureFunc()
-    this.unsetDirtiedFunc()
-    lib().yogaNodeReset(this.ptr)
+    this.runMutation(() => {
+      this.renderLib.yogaNodeReset(this.ptr)
+      this.unregisterCallbacks()
+    })
   }
 
   copyStyle(node: Node): void {
     if (this.freed) return
-    lib().yogaNodeCopyStyle(this.ptr, node.ptr)
+    this.assertSameLibrary(node)
+    this.renderLib.yogaNodeCopyStyle(this.ptr, node.ptr)
   }
 
   insertChild(child: Node, index: number): void {
     if (this.freed) return
-    lib().yogaNodeInsertChild(this.ptr, child.ptr, index)
+    this.assertSameLibrary(child)
+    this.renderLib.yogaNodeInsertChild(this.ptr, child.ptr, index)
   }
 
   removeChild(child: Node): void {
     if (this.freed) return
-    lib().yogaNodeRemoveChild(this.ptr, child.ptr)
+    this.assertSameLibrary(child)
+    this.renderLib.yogaNodeRemoveChild(this.ptr, child.ptr)
   }
 
   removeAllChildren(): void {
     if (this.freed) return
-    lib().yogaNodeRemoveAllChildren(this.ptr)
+    this.renderLib.yogaNodeRemoveAllChildren(this.ptr)
   }
 
   getChild(index: number): Node | null {
     if (this.freed) return null
-    const child = lib().yogaNodeGetChild(this.ptr, index)
-    return child ? Node.fromPointer(child) : null
+    const child = this.renderLib.yogaNodeGetChild(this.ptr, index)
+    return child ? Node.fromPointer(child, this.renderLib) : null
   }
 
   getChildCount(): number {
     if (this.freed) return 0
-    return lib().yogaNodeGetChildCount(this.ptr)
+    return this.renderLib.yogaNodeGetChildCount(this.ptr)
   }
 
   getParent(): Node | null {
     if (this.freed) return null
-    const parent = lib().yogaNodeGetParent(this.ptr)
-    return parent ? Node.fromPointer(parent) : null
+    const parent = this.renderLib.yogaNodeGetParent(this.ptr)
+    return parent ? Node.fromPointer(parent, this.renderLib) : null
   }
 
   calculateLayout(width?: number | "auto", height?: number | "auto", direction: Direction = Direction.LTR): void {
     if (this.freed) return
-    lib().yogaNodeCalculateLayout(this.ptr, normalizeLayoutInput(width), normalizeLayoutInput(height), direction)
+    this.renderLib.yogaNodeCalculateLayout(
+      this.ptr,
+      normalizeLayoutInput(width),
+      normalizeLayoutInput(height),
+      direction,
+    )
   }
 
   hasNewLayout(): boolean {
     if (this.freed) return false
-    return lib().yogaNodeGetHasNewLayout(this.ptr)
+    return this.renderLib.yogaNodeGetHasNewLayout(this.ptr)
   }
 
   markLayoutSeen(): void {
     if (this.freed) return
-    lib().yogaNodeSetHasNewLayout(this.ptr, false)
+    this.renderLib.yogaNodeSetHasNewLayout(this.ptr, false)
   }
 
   markDirty(): void {
     if (this.freed) return
-    lib().yogaNodeMarkDirty(this.ptr)
+    this.renderLib.yogaNodeMarkDirty(this.ptr)
   }
 
   isDirty(): boolean {
     if (this.freed) return true
-    return lib().yogaNodeIsDirty(this.ptr)
+    return this.renderLib.yogaNodeIsDirty(this.ptr)
   }
 
   getComputedLayout(): Layout {
     if (this.freed) return { left: 0, top: 0, right: 0, bottom: 0, width: 0, height: 0 }
-    return lib().yogaNodeGetComputedLayout(this.ptr)
+    return this.renderLib.yogaNodeGetComputedLayout(this.ptr)
   }
 
   getComputedLeft(): number {
@@ -612,17 +842,17 @@ export class Node {
 
   getComputedMargin(edge: Edge): number {
     if (this.freed) return 0
-    return lib().yogaNodeLayoutGetEdge(this.ptr, YogaEdgeLayoutKind.Margin, edge)
+    return this.renderLib.yogaNodeLayoutGetEdge(this.ptr, YogaEdgeLayoutKind.Margin, edge)
   }
 
   getComputedPadding(edge: Edge): number {
     if (this.freed) return 0
-    return lib().yogaNodeLayoutGetEdge(this.ptr, YogaEdgeLayoutKind.Padding, edge)
+    return this.renderLib.yogaNodeLayoutGetEdge(this.ptr, YogaEdgeLayoutKind.Padding, edge)
   }
 
   getComputedBorder(edge: Edge): number {
     if (this.freed) return 0
-    return lib().yogaNodeLayoutGetEdge(this.ptr, YogaEdgeLayoutKind.Border, edge)
+    return this.renderLib.yogaNodeLayoutGetEdge(this.ptr, YogaEdgeLayoutKind.Border, edge)
   }
 
   setDirection(direction: Direction): void {
@@ -746,119 +976,151 @@ export class Node {
   }
 
   setFlexBasis(flexBasis: ValueInput): void {
-    this.setValue(YogaValueKind.FlexBasis, 0, flexBasis)
+    this.setValue(YogaValueKind.FlexBasis, NATIVE_EDGE_NONE, flexBasis)
   }
 
   setFlexBasisPercent(flexBasis: number | undefined): void {
     this.setValue(
       YogaValueKind.FlexBasis,
-      0,
+      NATIVE_EDGE_NONE,
       flexBasis === undefined ? undefined : { unit: Unit.Percent, value: flexBasis },
     )
   }
 
   setFlexBasisAuto(): void {
-    this.setValue(YogaValueKind.FlexBasis, 0, "auto")
+    this.setValue(YogaValueKind.FlexBasis, NATIVE_EDGE_NONE, "auto")
   }
 
   getFlexBasis(): Value {
-    return this.getValue(YogaValueKind.FlexBasis, 0)
+    return this.getValue(YogaValueKind.FlexBasis, NATIVE_EDGE_NONE)
   }
 
   setWidth(width: ValueInput): void {
-    this.setValue(YogaValueKind.Width, 0, width)
+    this.setValue(YogaValueKind.Width, NATIVE_EDGE_NONE, width)
+  }
+
+  setDimension(dimension: Dimension, input: ValueInput, disableFlexShrink: boolean = false): void {
+    if (this.freed) return
+    const value = parseYogaValue(input)
+    this.renderLib.yogaNodeStyleSetDimension(this.ptr, dimension, value.unit, value.value, disableFlexShrink)
+  }
+
+  setPositions(positions: readonly [ValueInput, ValueInput, ValueInput, ValueInput]): void {
+    if (this.freed) return
+    const units = new Uint32Array(Edge.Bottom + 1)
+    const values = new Float32Array(Edge.Bottom + 1)
+    let mask = 0
+    for (let edge = 0; edge <= Edge.Bottom; edge++) {
+      if (positions[edge] === undefined) continue
+      const value = parseYogaValue(positions[edge])
+      if (!Number.isInteger(value.unit) || value.unit < Unit.Undefined || value.unit > Unit.Auto) {
+        throw new YogaError("yogaNodeStyleSetPositionsChecked", YogaStatus.InvalidArgument)
+      }
+      mask |= 1 << edge
+      units[edge] = value.unit
+      values[edge] = value.value
+    }
+    this.renderLib.yogaNodeStyleSetPositions(this.ptr, mask, units, values)
   }
 
   setWidthPercent(width: number | undefined): void {
-    this.setValue(YogaValueKind.Width, 0, width === undefined ? undefined : { unit: Unit.Percent, value: width })
+    this.setValue(
+      YogaValueKind.Width,
+      NATIVE_EDGE_NONE,
+      width === undefined ? undefined : { unit: Unit.Percent, value: width },
+    )
   }
 
   setWidthAuto(): void {
-    this.setValue(YogaValueKind.Width, 0, "auto")
+    this.setValue(YogaValueKind.Width, NATIVE_EDGE_NONE, "auto")
   }
 
   getWidth(): Value {
-    return this.getValue(YogaValueKind.Width, 0)
+    return this.getValue(YogaValueKind.Width, NATIVE_EDGE_NONE)
   }
 
   setHeight(height: ValueInput): void {
-    this.setValue(YogaValueKind.Height, 0, height)
+    this.setValue(YogaValueKind.Height, NATIVE_EDGE_NONE, height)
   }
 
   setHeightPercent(height: number | undefined): void {
-    this.setValue(YogaValueKind.Height, 0, height === undefined ? undefined : { unit: Unit.Percent, value: height })
+    this.setValue(
+      YogaValueKind.Height,
+      NATIVE_EDGE_NONE,
+      height === undefined ? undefined : { unit: Unit.Percent, value: height },
+    )
   }
 
   setHeightAuto(): void {
-    this.setValue(YogaValueKind.Height, 0, "auto")
+    this.setValue(YogaValueKind.Height, NATIVE_EDGE_NONE, "auto")
   }
 
   getHeight(): Value {
-    return this.getValue(YogaValueKind.Height, 0)
+    return this.getValue(YogaValueKind.Height, NATIVE_EDGE_NONE)
   }
 
   setMinWidth(minWidth: ValueInputNoAuto): void {
-    this.setValue(YogaValueKind.MinWidth, 0, minWidth)
+    this.setValue(YogaValueKind.MinWidth, NATIVE_EDGE_NONE, minWidth)
   }
 
   setMinWidthPercent(minWidth: number | undefined): void {
     this.setValue(
       YogaValueKind.MinWidth,
-      0,
+      NATIVE_EDGE_NONE,
       minWidth === undefined ? undefined : { unit: Unit.Percent, value: minWidth },
     )
   }
 
   getMinWidth(): Value {
-    return this.getValue(YogaValueKind.MinWidth, 0)
+    return this.getValue(YogaValueKind.MinWidth, NATIVE_EDGE_NONE)
   }
 
   setMinHeight(minHeight: ValueInputNoAuto): void {
-    this.setValue(YogaValueKind.MinHeight, 0, minHeight)
+    this.setValue(YogaValueKind.MinHeight, NATIVE_EDGE_NONE, minHeight)
   }
 
   setMinHeightPercent(minHeight: number | undefined): void {
     this.setValue(
       YogaValueKind.MinHeight,
-      0,
+      NATIVE_EDGE_NONE,
       minHeight === undefined ? undefined : { unit: Unit.Percent, value: minHeight },
     )
   }
 
   getMinHeight(): Value {
-    return this.getValue(YogaValueKind.MinHeight, 0)
+    return this.getValue(YogaValueKind.MinHeight, NATIVE_EDGE_NONE)
   }
 
   setMaxWidth(maxWidth: ValueInputNoAuto): void {
-    this.setValue(YogaValueKind.MaxWidth, 0, maxWidth)
+    this.setValue(YogaValueKind.MaxWidth, NATIVE_EDGE_NONE, maxWidth)
   }
 
   setMaxWidthPercent(maxWidth: number | undefined): void {
     this.setValue(
       YogaValueKind.MaxWidth,
-      0,
+      NATIVE_EDGE_NONE,
       maxWidth === undefined ? undefined : { unit: Unit.Percent, value: maxWidth },
     )
   }
 
   getMaxWidth(): Value {
-    return this.getValue(YogaValueKind.MaxWidth, 0)
+    return this.getValue(YogaValueKind.MaxWidth, NATIVE_EDGE_NONE)
   }
 
   setMaxHeight(maxHeight: ValueInputNoAuto): void {
-    this.setValue(YogaValueKind.MaxHeight, 0, maxHeight)
+    this.setValue(YogaValueKind.MaxHeight, NATIVE_EDGE_NONE, maxHeight)
   }
 
   setMaxHeightPercent(maxHeight: number | undefined): void {
     this.setValue(
       YogaValueKind.MaxHeight,
-      0,
+      NATIVE_EDGE_NONE,
       maxHeight === undefined ? undefined : { unit: Unit.Percent, value: maxHeight },
     )
   }
 
   getMaxHeight(): Value {
-    return this.getValue(YogaValueKind.MaxHeight, 0)
+    return this.getValue(YogaValueKind.MaxHeight, NATIVE_EDGE_NONE)
   }
 
   setMargin(edge: Edge, margin: ValueInput): void {
@@ -927,32 +1189,32 @@ export class Node {
 
   setBorder(edge: Edge, border: number | undefined): void {
     if (this.freed) return
-    lib().yogaNodeStyleSetBorder(this.ptr, edge, border ?? NaN)
+    this.renderLib.yogaNodeStyleSetBorder(this.ptr, edge, border ?? NaN)
   }
 
   getBorder(edge: Edge): number {
     if (this.freed) return NaN
-    return lib().yogaNodeStyleGetBorder(this.ptr, edge)
+    return this.renderLib.yogaNodeStyleGetBorder(this.ptr, edge)
   }
 
   setIsReferenceBaseline(isReferenceBaseline: boolean): void {
     if (this.freed) return
-    lib().yogaNodeSetIsReferenceBaseline(this.ptr, isReferenceBaseline)
+    this.renderLib.yogaNodeSetIsReferenceBaseline(this.ptr, isReferenceBaseline)
   }
 
   isReferenceBaseline(): boolean {
     if (this.freed) return false
-    return lib().yogaNodeIsReferenceBaseline(this.ptr)
+    return this.renderLib.yogaNodeIsReferenceBaseline(this.ptr)
   }
 
   setAlwaysFormsContainingBlock(alwaysFormsContainingBlock: boolean): void {
     if (this.freed) return
-    lib().yogaNodeSetAlwaysFormsContainingBlock(this.ptr, alwaysFormsContainingBlock)
+    this.renderLib.yogaNodeSetAlwaysFormsContainingBlock(this.ptr, alwaysFormsContainingBlock)
   }
 
   getAlwaysFormsContainingBlock(): boolean {
     if (this.freed) return false
-    return lib().yogaNodeGetAlwaysFormsContainingBlock(this.ptr)
+    return this.renderLib.yogaNodeGetAlwaysFormsContainingBlock(this.ptr)
   }
 
   // A Yoga node has a single measure slot, shared with native-backed measurement
@@ -960,72 +1222,76 @@ export class Node {
   // measure target replaces the native one, and vice versa.
   setMeasureFunc(measureFunc: MeasureFunction | null): void {
     if (this.freed) return
-    this.unsetMeasureFunc()
+    if (!measureFunc) return this.unsetMeasureFunc()
 
-    if (!measureFunc) return
-
-    ensureMeasureCallback()
-    measureRegistry.set(this.ptr, measureFunc)
-    lib().yogaNodeSetMeasureFunc(this.ptr, true)
+    this.config.ensureCallbacks()
+    this.runMutation(() => {
+      this.renderLib.yogaNodeSetMeasureFunc(this.ptr, true)
+      this.config.measures.set(this.ptr, measureFunc)
+    })
   }
 
   unsetMeasureFunc(): void {
     if (this.freed) return
-    lib().yogaNodeUnsetMeasureFunc(this.ptr)
-    measureRegistry.delete(this.ptr)
+    this.runMutation(() => {
+      this.renderLib.yogaNodeUnsetMeasureFunc(this.ptr)
+      this.config.measures.delete(this.ptr)
+    })
   }
 
   hasMeasureFunc(): boolean {
     if (this.freed) return false
-    return lib().yogaNodeHasMeasureFunc(this.ptr)
+    return this.renderLib.yogaNodeHasMeasureFunc(this.ptr)
   }
 
   setDirtiedFunc(dirtiedFunc: DirtiedFunction | null): void {
     if (this.freed) return
-    this.unsetDirtiedFunc()
+    if (!dirtiedFunc) return this.unsetDirtiedFunc()
 
-    if (!dirtiedFunc) return
-
-    ensureDirtiedCallback()
-    dirtiedRegistry.set(this.ptr, { node: this, callback: dirtiedFunc })
-    lib().yogaNodeSetDirtiedFunc(this.ptr, true)
+    this.config.ensureCallbacks()
+    this.runMutation(() => {
+      this.renderLib.yogaNodeSetDirtiedFunc(this.ptr, true)
+      this.config.dirtied.set(this.ptr, { node: this, callback: dirtiedFunc })
+    })
   }
 
   unsetDirtiedFunc(): void {
     if (this.freed) return
-    lib().yogaNodeUnsetDirtiedFunc(this.ptr)
-    dirtiedRegistry.delete(this.ptr)
+    this.runMutation(() => {
+      this.renderLib.yogaNodeUnsetDirtiedFunc(this.ptr)
+      this.config.dirtied.delete(this.ptr)
+    })
   }
 
-  private setEnum(kind: number, value: number): void {
+  private setEnum(kind: YogaEnumKindId, value: number): void {
     if (this.freed) return
-    lib().yogaNodeStyleSetEnum(this.ptr, kind, value)
+    this.renderLib.yogaNodeStyleSetEnum(this.ptr, kind, value)
   }
 
-  private getEnum(kind: number, fallback: number): number {
+  private getEnum(kind: YogaEnumKindId, fallback: number): number {
     if (this.freed) return fallback
-    return lib().yogaNodeStyleGetEnum(this.ptr, kind)
+    return this.renderLib.yogaNodeStyleGetEnum(this.ptr, kind)
   }
 
-  private setFloat(kind: number, value: number | undefined): void {
+  private setFloat(kind: YogaFloatKindId, value: number | undefined): void {
     if (this.freed) return
-    lib().yogaNodeStyleSetFloat(this.ptr, kind, value ?? NaN)
+    this.renderLib.yogaNodeStyleSetFloat(this.ptr, kind, value ?? NaN)
   }
 
-  private getFloat(kind: number): number {
+  private getFloat(kind: YogaFloatKindId): number {
     if (this.freed) return NaN
-    return lib().yogaNodeStyleGetFloat(this.ptr, kind)
+    return this.renderLib.yogaNodeStyleGetFloat(this.ptr, kind)
   }
 
-  private setValue(kind: number, edgeOrGutter: number, valueInput: ValueInput): void {
+  private setValue(kind: YogaValueKindId, edgeOrGutter: number, valueInput: ValueInput): void {
     if (this.freed) return
-    const value = parseValue(valueInput)
-    lib().yogaNodeStyleSetValue(this.ptr, kind, edgeOrGutter, value.unit, value.value)
+    const value = parseYogaValue(valueInput)
+    this.renderLib.yogaNodeStyleSetValue(this.ptr, kind, edgeOrGutter, value.unit, value.value)
   }
 
-  private getValue(kind: number, edgeOrGutter: number): Value {
+  private getValue(kind: YogaValueKindId, edgeOrGutter: number): Value {
     if (this.freed) return UNDEFINED_VALUE
-    return unpackValue(lib().yogaNodeStyleGetValue(this.ptr, kind, edgeOrGutter))
+    return unpackValue(this.renderLib.yogaNodeStyleGetValue(this.ptr, kind, edgeOrGutter))
   }
 
   private collectSubtree(nodes: Node[]): Node[] {
@@ -1037,14 +1303,19 @@ export class Node {
   }
 
   private unregisterCallbacks(): void {
-    measureRegistry.delete(this.ptr)
-    dirtiedRegistry.delete(this.ptr)
+    this.config.measures.delete(this.ptr)
+    this.config.dirtied.delete(this.ptr)
   }
 
   private markFreed(): void {
     this.unregisterCallbacks()
     this.freed = true
-    nodeRegistry.delete(this.ptr)
+    this.config.nodes.delete(this.ptr)
+  }
+
+  private assertSameLibrary(node: Node): void {
+    if (this.renderLib !== node.renderLib) throw new Error("Yoga nodes belong to different native libraries")
+    if (node.freed) throw new Error("Yoga node is freed")
   }
 }
 

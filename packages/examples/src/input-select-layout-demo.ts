@@ -387,10 +387,10 @@ export function destroy(rendererInstance: CliRenderer): void {
   if (textInput) textInput.destroy()
 
   // Clean up elements directly from root
-  if (headerBox) rendererInstance.root.remove(headerBox)
-  if (selectContainerBox) rendererInstance.root.remove(selectContainerBox)
-  if (inputContainerBox) rendererInstance.root.remove(inputContainerBox)
-  if (footerBox) rendererInstance.root.remove(footerBox)
+  headerBox?.destroyRecursively()
+  selectContainerBox?.destroyRecursively()
+  inputContainerBox?.destroyRecursively()
+  footerBox?.destroyRecursively()
 
   // Clean up all elements
   header = null

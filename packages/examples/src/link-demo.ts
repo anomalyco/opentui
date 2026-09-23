@@ -14,6 +14,7 @@ import {
   getLinkId,
   type MouseEvent,
   type OptimizedBuffer,
+  type KeyEvent,
   type RenderContext,
   type StyledText,
 } from "@opentui/core"
@@ -140,18 +141,18 @@ export function run(renderer: CliRenderer): void {
   container.add(header)
 
   // Toggle drag mode with 'd' key
-  const handleKeypress = (event: { name: string }): void => {
+  const keyHandler = (event: KeyEvent) => {
     if (event.name === "d") {
       dragModeEnabled = !dragModeEnabled
       header.content = getHeaderContent()
     }
   }
+  renderer.addPostProcessFn(highlightHoveredLink)
+  renderer.keyInput.on("keypress", keyHandler)
   container.once(RenderableEvents.DESTROYED, () => {
     renderer.removePostProcessFn(highlightHoveredLink)
-    renderer.keyInput.off("keypress", handleKeypress)
+    renderer.keyInput.off("keypress", keyHandler)
   })
-  renderer.addPostProcessFn(highlightHoveredLink)
-  renderer.keyInput.on("keypress", handleKeypress)
 
   // Card 1: Project Info
   createCard(
@@ -242,6 +243,10 @@ function createCard(
 }
 
 export function destroy(renderer: CliRenderer): void {
+  for (const box of draggableBoxes) {
+    box.destroyRecursively()
+  }
+  draggableBoxes = []
   dragModeEnabled = false
   renderer.root.getRenderable("main-container")?.destroyRecursively()
   renderer.setMousePointer("default")

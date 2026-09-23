@@ -3,15 +3,9 @@ import { dirname, join } from "node:path"
 import process from "node:process"
 import { pathToFileURL } from "node:url"
 import "./external-plugin-runtime"
-import {
-  Slot,
-  createSolidSlotRegistry,
-  type SlotMode,
-  type SolidPlugin,
-  useKeyboard,
-  useRenderer,
-} from "@opentui/solid"
-import { createEffect, createMemo, createSignal, on, onCleanup, onMount, Show } from "solid-js"
+import { createSlotRegistry } from "@opentui/core"
+import { Slot, type SlotMode, type SolidPlugin, useKeyboard, useRenderer } from "@opentui/solid"
+import { createEffect, createMemo, createSignal, on, onCleanup, onMount, Show, type JSX } from "solid-js"
 import { resolveExternalPluginCandidates } from "./external-plugin-path.js"
 
 const STATUSBAR_LABEL = "host-status"
@@ -150,7 +144,11 @@ function nextStatusbarMode(mode: SlotMode): SlotMode {
 
 export default function ExternalPluginSlotsDemo() {
   const renderer = useRenderer()
-  const registry = createSolidSlotRegistry<ExternalPluginSlots, ExternalPluginContext>(renderer, hostContext)
+  const registry = createSlotRegistry<JSX.Element, ExternalPluginSlots, ExternalPluginContext>(
+    renderer,
+    "solid:external-plugin-demo",
+    hostContext,
+  )
   const AppSlot = Slot<ExternalPluginSlots, ExternalPluginContext>
 
   const [statusbarMode, setStatusbarMode] = createSignal<SlotMode>("append")

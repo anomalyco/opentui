@@ -88,6 +88,9 @@ extract "$TMP_DIR/yoga.tar.gz" "$SOURCE_DIR/yoga"
 mkdir -p "$DEPS_DIR/yoga"
 cp "$SOURCE_DIR/yoga/LICENSE" "$DEPS_DIR/yoga/LICENSE"
 cp -R "$SOURCE_DIR/yoga/yoga" "$DEPS_DIR/yoga/yoga"
+git -C "$DEPS_DIR/yoga" apply "$VENDOR_DIR/zig-deps/yoga-error-boundary.patch"
+git -C "$DEPS_DIR/yoga" apply "$VENDOR_DIR/zig-deps/yoga-cache-rounding.patch"
+git -C "$DEPS_DIR/yoga" apply "$VENDOR_DIR/zig-deps/yoga-node-reuse.patch"
 
 find "$DEPS_DIR" -type d -exec chmod 0755 {} +
 find "$DEPS_DIR" -type f -exec chmod 0644 {} +

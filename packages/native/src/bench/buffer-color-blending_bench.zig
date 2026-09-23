@@ -1,4 +1,5 @@
 const std = @import("std");
+const TestPools = @import("../tests/test-pools.zig").TestPools;
 const ansi = @import("../ansi.zig");
 const bench_utils = @import("../bench-utils.zig");
 const buffer = @import("../buffer.zig");
@@ -45,10 +46,10 @@ fn rgba(r: f32, g: f32, b: f32, a: f32) buffer.RGBA {
 fn setupTextBuffer(
     allocator: std.mem.Allocator,
     pool: *gp.GraphemePool,
+    link_pool: *link.LinkPool,
     text: []const u8,
     wrap_width: ?u32,
 ) !struct { *UnifiedTextBuffer, *UnifiedTextBufferView } {
-    const link_pool = link.initGlobalLinkPool(allocator);
     const tb = try UnifiedTextBuffer.init(allocator, pool, link_pool, .unicode);
     errdefer tb.deinit();
 
@@ -71,6 +72,7 @@ fn runTranslucentBoxes(
     io: std.Io,
     allocator: std.mem.Allocator,
     pool: *gp.GraphemePool,
+    link_pool: *link.LinkPool,
     show_mem: bool,
     iterations: usize,
     bench_filter: ?[]const u8,
@@ -85,7 +87,7 @@ fn runTranslucentBoxes(
     const run_translucent_opacity = bench_utils.matchesBenchFilter(name_translucent_opacity, bench_filter);
     if (!run_translucent_bg and !run_translucent_opacity) return results.toOwnedSlice(allocator);
 
-    const buf = try OptimizedBuffer.init(allocator, BUFFER_WIDTH, BUFFER_HEIGHT, .{ .pool = pool });
+    const buf = try OptimizedBuffer.init(allocator, BUFFER_WIDTH, BUFFER_HEIGHT, .{ .link_pool = link_pool, .pool = pool });
     defer buf.deinit();
 
     var final_mem: usize = 0;
@@ -208,6 +210,7 @@ fn runTranslucentTextBuffers(
     io: std.Io,
     allocator: std.mem.Allocator,
     pool: *gp.GraphemePool,
+    link_pool: *link.LinkPool,
     show_mem: bool,
     iterations: usize,
     bench_filter: ?[]const u8,
@@ -222,7 +225,7 @@ fn runTranslucentTextBuffers(
     const run_translucent_opacity = bench_utils.matchesBenchFilter(name_translucent_opacity, bench_filter);
     if (!run_translucent_bg and !run_translucent_opacity) return results.toOwnedSlice(allocator);
 
-    const buf = try OptimizedBuffer.init(allocator, BUFFER_WIDTH, BUFFER_HEIGHT, .{ .pool = pool });
+    const buf = try OptimizedBuffer.init(allocator, BUFFER_WIDTH, BUFFER_HEIGHT, .{ .link_pool = link_pool, .pool = pool });
     defer buf.deinit();
 
     var final_mem: usize = 0;
@@ -238,7 +241,7 @@ fn runTranslucentTextBuffers(
             errdefer allocator.free(views);
 
             for (0..TEXT_COUNT) |j| {
-                tbs[j], views[j] = try setupTextBuffer(allocator, pool, TEXT_CONTENT, 100);
+                tbs[j], views[j] = try setupTextBuffer(allocator, pool, link_pool, TEXT_CONTENT, 100);
                 tbs[j].setDefaultFg(rgba(0.8, 0.8, 0.8, 1.0));
                 tbs[j].setDefaultBg(rgba(0.2, 0.2, 0.2, 0.5));
                 try tbs[j].setText(TEXT_CONTENT);
@@ -287,7 +290,7 @@ fn runTranslucentTextBuffers(
             errdefer allocator.free(views);
 
             for (0..TEXT_COUNT) |j| {
-                tbs[j], views[j] = try setupTextBuffer(allocator, pool, TEXT_CONTENT, 100);
+                tbs[j], views[j] = try setupTextBuffer(allocator, pool, link_pool, TEXT_CONTENT, 100);
                 tbs[j].setDefaultFg(rgba(0.8, 0.8, 0.8, 1.0));
                 tbs[j].setDefaultBg(rgba(0.2, 0.2, 0.2, 1.0));
                 try tbs[j].setText(TEXT_CONTENT);
@@ -335,6 +338,7 @@ fn runTranslucentFillOverImageMarkers(
     io: std.Io,
     allocator: std.mem.Allocator,
     pool: *gp.GraphemePool,
+    link_pool: *link.LinkPool,
     iterations: usize,
     bench_filter: ?[]const u8,
 ) ![]BenchResult {
@@ -343,7 +347,7 @@ fn runTranslucentFillOverImageMarkers(
 
     const source = try image.createFromRgba(allocator, &[_]u8{ 10, 20, 30, 255 }, 1, 1, 4);
     defer source.deinit();
-    const buf = try OptimizedBuffer.init(allocator, BUFFER_WIDTH, BUFFER_HEIGHT, .{ .pool = pool });
+    const buf = try OptimizedBuffer.init(allocator, BUFFER_WIDTH, BUFFER_HEIGHT, .{ .link_pool = link_pool, .pool = pool });
     defer buf.deinit();
     const overlay = rgba(0.2, 0.3, 0.8, 0.5);
 
@@ -378,20 +382,21 @@ pub fn run(
     show_mem: bool,
     bench_filter: ?[]const u8,
 ) ![]BenchResult {
-    const pool = gp.initGlobalPool(allocator);
+    var pools = TestPools.init(allocator);
+    defer pools.deinit();
 
     var all_results: std.ArrayList(BenchResult) = .empty;
     errdefer all_results.deinit(allocator);
 
     const iterations: usize = 10;
 
-    const boxes_results = try runTranslucentBoxes(io, allocator, pool, show_mem, iterations, bench_filter);
+    const boxes_results = try runTranslucentBoxes(io, allocator, &pools.graphemes, &pools.links, show_mem, iterations, bench_filter);
     try all_results.appendSlice(allocator, boxes_results);
 
-    const text_buffers_results = try runTranslucentTextBuffers(io, allocator, pool, show_mem, iterations, bench_filter);
+    const text_buffers_results = try runTranslucentTextBuffers(io, allocator, &pools.graphemes, &pools.links, show_mem, iterations, bench_filter);
     try all_results.appendSlice(allocator, text_buffers_results);
 
-    const image_marker_results = try runTranslucentFillOverImageMarkers(io, allocator, pool, iterations, bench_filter);
+    const image_marker_results = try runTranslucentFillOverImageMarkers(io, allocator, &pools.graphemes, &pools.links, iterations, bench_filter);
     try all_results.appendSlice(allocator, image_marker_results);
 
     return all_results.toOwnedSlice(allocator);

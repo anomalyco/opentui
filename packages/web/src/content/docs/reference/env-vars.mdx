@@ -64,21 +64,19 @@ captures stdout only in `"split-footer"`. Any other explicit value forces passth
 
 ## Diagnostics
 
-| Variable                | Type      | Default | Read time             | Purpose                                                   |
-| ----------------------- | --------- | ------- | --------------------- | --------------------------------------------------------- |
-| `OTUI_TS_STYLE_WARN`    | `string`  | `false` | First style lookup    | Warn about missing Tree-sitter syntax styles              |
-| `OTUI_DEBUG_FFI`        | `boolean` | `false` | First FFI use         | Enable FFI debug logging                                  |
-| `OTUI_TRACE_FFI`        | `boolean` | `false` | First FFI use         | Enable FFI tracing                                        |
-| `OTUI_SHOW_STATS`       | `boolean` | `false` | Renderer creation     | Show the renderer stats overlay at startup                |
-| `SHOW_CONSOLE`          | `boolean` | `false` | Renderer creation     | Open the built-in console overlay at startup              |
-| `OTUI_DUMP_CAPTURES`    | `boolean` | `false` | Renderer exit handler | Dump captured stdout and console caches from that handler |
-| `OTUI_NO_NATIVE_RENDER` | `boolean` | `false` | Renderer creation     | Skip the Zig native frame renderer                        |
+| Variable             | Type      | Default | Read time             | Purpose                                                   |
+| -------------------- | --------- | ------- | --------------------- | --------------------------------------------------------- |
+| `OTUI_TS_STYLE_WARN` | `string`  | `false` | First style lookup    | Warn about missing Tree-sitter syntax styles              |
+| `OTUI_DEBUG_FFI`     | `boolean` | `false` | First FFI use         | Enable FFI debug logging                                  |
+| `OTUI_TRACE_FFI`     | `boolean` | `false` | First FFI use         | Enable FFI tracing                                        |
+| `OTUI_SHOW_STATS`    | `boolean` | `false` | Renderer creation     | Show the renderer stats overlay at startup                |
+| `SHOW_CONSOLE`       | `boolean` | `false` | Renderer creation     | Open the built-in console overlay at startup              |
+| `OTUI_DUMP_CAPTURES` | `boolean` | `false` | Renderer exit handler | Dump captured stdout and console caches from that handler |
 
 `OTUI_TS_STYLE_WARN` behaves like a presence string. Any explicit nonempty value, including `false`, enables warnings.
 
-`OTUI_NO_NATIVE_RENDER` does not stop the render loop. In `"split-footer"` mode, output flushing can still write ANSI
-cursor movement and clear sequences. `OTUI_DUMP_CAPTURES` runs from the renderer exit handler. Calling
-`renderer.destroy()` directly does not trigger that dump by itself.
+`OTUI_DUMP_CAPTURES` runs from the renderer exit handler. Calling `renderer.destroy()` directly does not trigger that
+dump by itself.
 
 ## Build-time and startup values
 

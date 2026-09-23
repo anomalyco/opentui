@@ -7,12 +7,14 @@ import { SyntaxStyle } from "../../syntax-style.js"
 import { RGBA } from "../../lib/RGBA.js"
 
 let currentRenderer: TestRenderer
+let syntaxStyle: SyntaxStyle
 let renderOnce: () => Promise<void>
 let captureCharFrame: () => string
 
 beforeEach(async () => {
   const testRenderer = await createTestRenderer({ width: 50, height: 40 })
   currentRenderer = testRenderer.renderer
+  syntaxStyle = SyntaxStyle.fromStyles({ default: { fg: RGBA.fromValues(1, 1, 1, 1) } }, currentRenderer.nativeScene)
   renderOnce = testRenderer.renderOnce
   captureCharFrame = testRenderer.captureCharFrame
 })
@@ -20,15 +22,13 @@ beforeEach(async () => {
 afterEach(async () => {
   if (currentRenderer) {
     currentRenderer.destroy()
+    await currentRenderer.closed
   }
+  syntaxStyle.destroy()
 })
 
 describe("LineNumber in ScrollBox - Simple Core Test", () => {
   test("LineNumber with Code in ScrollBox should wrap content height", async () => {
-    const syntaxStyle = SyntaxStyle.fromStyles({
-      default: { fg: RGBA.fromValues(1, 1, 1, 1) },
-    })
-
     const codeContent = `function test() {
   return true;
 }`
@@ -78,10 +78,6 @@ describe("LineNumber in ScrollBox - Simple Core Test", () => {
   })
 
   test("Multiple LineNumber blocks in ScrollBox should each wrap content", async () => {
-    const syntaxStyle = SyntaxStyle.fromStyles({
-      default: { fg: RGBA.fromValues(1, 1, 1, 1) },
-    })
-
     const scrollBox = new ScrollBoxRenderable(currentRenderer, {
       id: "scroll-multi",
       width: "100%",

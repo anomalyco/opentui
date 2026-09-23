@@ -108,6 +108,38 @@ writeFileSync(${JSON.stringify(manifestPath)}, JSON.stringify(assets))
   return JSON.parse(readFileSync(manifestPath, "utf8")) as NodeAsset[]
 }
 
+const rendererFixture = `
+const scene = await createTestRenderer({ width: 8, height: 3, useMouse: true, remote: true, forwardEnvKeys: [] })
+try {
+  assert.ok(scene.renderer.nativeScene)
+  const box = new BoxRenderable(scene.renderer, { width: 8, height: 3, border: true })
+  const text = new TextRenderable(scene.renderer, { content: "native", width: 6, height: 1 })
+  box.add(text)
+  scene.renderer.root.add(box)
+  await scene.renderOnce()
+  assert.ok(scene.captureCharFrame().includes("native"))
+  assert.deepEqual([text.x, text.y, text.width, text.height], [1, 1, 6, 1])
+  assert.equal(scene.renderer.hitTest(1, 1), text.num)
+  const frames = scene.renderer.getNativeStats().nativeFrameCount
+  text.content = "update"
+  await scene.renderOnce()
+  assert.ok(scene.captureCharFrame().includes("update"))
+  assert.equal(scene.renderer.getNativeStats().nativeFrameCount, frames + 1)
+} finally {
+  scene.renderer.destroy()
+  await scene.renderer.closed
+}
+
+const owner = new ResourceContext({ objectCapacity: 16, renderCellsMax: 64 })
+try {
+  const buffer = OptimizedBuffer.create(4, 2, "unicode", { owner })
+  assert.equal(buffer.width, 4)
+  buffer.destroy()
+} finally {
+  owner.destroy()
+}
+`
+
 function writeApplication(consumerDir: string): void {
   writeFileSync(
     join(consumerDir, "app.mjs"),
@@ -116,15 +148,13 @@ import { mkdtempSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { isAbsolute, join } from "node:path"
 import { isSea } from "node:sea"
-import { OptimizedBuffer, TreeSitterClient } from ${JSON.stringify(packageJson.name)}
+import { BoxRenderable, OptimizedBuffer, ResourceContext, TextRenderable, TreeSitterClient } from ${JSON.stringify(packageJson.name)}
+import { createTestRenderer } from ${JSON.stringify(`${packageJson.name}/testing`)}
 
 assert.equal(isSea(), true)
 assert.ok(process.env.OTUI_ASSET_ROOT)
 assert.equal(isAbsolute(process.env.OTUI_ASSET_ROOT), true)
-
-const buffer = OptimizedBuffer.create(4, 2, "unicode")
-assert.equal(buffer.width, 4)
-buffer.destroy()
+${rendererFixture}
 
 const dataPath = mkdtempSync(join(tmpdir(), "opentui-sea-tree-sitter-"))
 const client = new TreeSitterClient({ dataPath })
@@ -152,16 +182,13 @@ import { join } from "node:path"
 import { createTestRenderer } from ${JSON.stringify(`${packageJson.name}/testing`)}
 import * as Yoga from ${JSON.stringify(`${packageJson.name}/yoga`)}
 
-import { OptimizedBuffer, TreeSitterClient, Yoga as CoreYoga } from ${JSON.stringify(packageJson.name)}
+import { BoxRenderable, OptimizedBuffer, ResourceContext, TextRenderable, TreeSitterClient, Yoga as CoreYoga } from ${JSON.stringify(packageJson.name)}
 
 assert.equal(typeof createTestRenderer, "function")
 assert.equal(CoreYoga.Node, Yoga.Node)
 const yogaNode = Yoga.Node.create()
 yogaNode.free()
-
-const buffer = OptimizedBuffer.create(4, 2, "unicode")
-assert.equal(buffer.width, 4)
-buffer.destroy()
+${rendererFixture}
 
 const dataPath = mkdtempSync(join(tmpdir(), "opentui-bun-tree-sitter-"))
 const client = new TreeSitterClient({ dataPath })
