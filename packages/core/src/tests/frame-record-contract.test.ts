@@ -151,3 +151,27 @@ test("resources a hook records and then frees stay alive until native code paint
 
   expect(captureCharFrame().split("\n")[0].trimEnd()).toBe("A👋B ok")
 })
+
+test("a drawing call that throws records nothing, so a hook that catches it still paints", async () => {
+  const { renderer, renderOnce, captureCharFrame } = setup
+  const errors: unknown[] = []
+  renderer.on(CliRenderEvents.RENDER_ERROR, ({ error }) => errors.push(error))
+  let caught = 0
+  class Recovering extends Renderable {
+    protected renderSelf(buffer: OptimizedBuffer): void {
+      try {
+        buffer.drawText("bad", this.x + 0.5, this.y, white)
+      } catch {
+        caught++
+      }
+      buffer.drawText("ok", this.x, this.y, white)
+    }
+  }
+  renderer.root.add(new Recovering(renderer, { width: 4, height: 1 }))
+
+  await renderOnce()
+
+  expect(caught).toBe(1)
+  expect(errors).toEqual([])
+  expect(captureCharFrame().split("\n")[0].trimEnd()).toBe("ok")
+})
