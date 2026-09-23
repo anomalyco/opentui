@@ -310,15 +310,6 @@ pub fn ot_scene_set_text_view_paint(context: ?*Owner, node: ?*const c.ot_handle,
     return c.OT_OK;
 }
 
-pub fn ot_scene_select_text_view_paint(context: ?*Owner, node: ?*const c.ot_handle, frame: ?*const c.ot_scene_frame_request, enabled: u32) callconv(.c) c.ot_status {
-    const status = abi.sessionContextStatus(context);
-    if (status != c.OT_OK) return status;
-    if (node == null or frame == null or enabled > 1) return fail(context, error.InvalidOptions);
-    const request = abi.frameRequestFromC(frame.?.*) catch |err| return fail(context, err);
-    context.?.core.sceneSelectTextViewPaint(abi.handleFromC(node.?.*), request, enabled == 1) catch |err| return fail(context, err);
-    return c.OT_OK;
-}
-
 pub fn ot_buffer_draw_text_view(context: ?*Owner, target: ?*const c.ot_handle, frame: ?*const c.ot_scene_frame_request, source: ?*const c.ot_handle, x: i32, y: i32) callconv(.c) c.ot_status {
     const status = abi.sessionContextStatus(context);
     if (status != c.OT_OK) return status;
@@ -763,7 +754,7 @@ test "Context shared text ABI preserves empty chunk ordinals" {
     try std.testing.expectEqual(@as(u32, 0), buffer.getByteSize());
 }
 
-test "Context shared text ABI selects native paint only for an exact self request" {
+test "Context shared text ABI records a text view in place of the native body" {
     var owner: Owner = .{ .gpa = .init, .io_threaded = .init_single_threaded, .core = undefined, .owner_thread = std.Thread.getCurrentId() };
     defer owner.io_threaded.deinit();
     owner.core = try ctx.Context.init(std.testing.allocator, owner.io_threaded.io(), .{});
@@ -773,11 +764,14 @@ test "Context shared text ABI selects native paint only for an exact self reques
     const session = abi.handleToC(session_id);
     const root = try owner.core.sceneCreateNode(session_id, c.OT_SCENE_ROOT, 1);
     const node_id = try owner.core.sceneCreateNode(session_id, c.OT_SCENE_TEXT_VIEW, 2);
-    const node = abi.handleToC(node_id);
     try owner.core.sceneMoveNode(node_id, root, 0);
     try owner.core.sceneSetStyle(node_id, 4, 0, 0, 1, 4, 1);
     try owner.core.sceneSetStyle(node_id, 4, 1, 0, 1, 1, 1);
-    try owner.core.sceneSetHooks(node_id, c.OT_SCENE_HOOK_RENDER_SELF | c.OT_SCENE_HOOK_RESUME_NATIVE_TEXT, 1, 4, 1);
+    const text_id = try owner.core.createTextBuffer(.unicode);
+    const view_id = try owner.core.createTextBufferView(text_id);
+    try owner.core.textBufferSetText(text_id, "ab");
+    try owner.core.sceneSetTextView(node_id, view_id);
+    try owner.core.sceneSetHooks(node_id, c.OT_SCENE_HOOK_RENDER_SELF, 1, 4, 1);
     const config: c.ot_scene_frame_options = .{ .struct_size = @sizeOf(c.ot_scene_frame_options), .abi_version = c.OT_CONTEXT_ABI_VERSION, .background = .{ 0, 0, 0, 255 }, .use_mouse = 0, .excluded_hit_num = 0, .max_layout_rounds = 8, .max_host_requests = 64, .preserve_unwritten = 0 };
     var frame = std.mem.zeroes(c.ot_scene_frame_request);
     frame.struct_size = @sizeOf(c.ot_scene_frame_request);
@@ -786,22 +780,24 @@ test "Context shared text ABI selects native paint only for an exact self reques
     geometry.struct_size = @sizeOf(c.ot_scene_frame_geometry);
     geometry.abi_version = c.OT_CONTEXT_ABI_VERSION;
     const unlimited = std.math.maxInt(u32);
-    try std.testing.expectEqual(c.OT_OK, abi.ot_scene_frame_step_with_geometry(&owner, &session, null, &config, unlimited, &frame, &geometry));
-    try std.testing.expectEqual(c.OT_SCENE_FRAME_RENDER_SELF, frame.kind);
-    try std.testing.expectEqual(c.OT_INVALID_ARGUMENT, ot_scene_select_text_view_paint(&owner, &node, null, 1));
-    try std.testing.expectEqual(c.OT_INVALID_ARGUMENT, ot_scene_select_text_view_paint(&owner, &node, &frame, 2));
-    frame.reserved[0] = 1;
-    try std.testing.expectEqual(c.OT_INVALID_ARGUMENT, ot_scene_select_text_view_paint(&owner, &node, &frame, 1));
-    frame.reserved[0] = 0;
-    frame.abi_version = 2;
-    try std.testing.expectEqual(c.OT_UNSUPPORTED_VERSION, ot_scene_select_text_view_paint(&owner, &node, &frame, 1));
-    frame.abi_version = c.OT_CONTEXT_ABI_VERSION;
-    frame.request_id += 1;
-    try std.testing.expectEqual(c.OT_STALE_FRAME, ot_scene_select_text_view_paint(&owner, &node, &frame, 1));
-    frame.request_id -= 1;
-    try std.testing.expectEqual(c.OT_OK, ot_scene_set_text_view_paint(&owner, &node, 0));
-    try std.testing.expectEqual(c.OT_OK, ot_scene_select_text_view_paint(&owner, &node, &frame, 1));
-    try std.testing.expect(!(try owner.core.raw().getRenderable(node_id)).scene_node.?.control.text_view.paint);
+    try std.testing.expectEqual(c.OT_OK, abi.ot_scene_frame_step_with_geometry(&owner, &session, null, &config, unlimited, null, 0, &frame, &geometry));
+    try std.testing.expectEqual(c.OT_SCENE_FRAME_RECORD, frame.kind);
+    var slot: c.ot_scene_paint_slot = undefined;
+    var count: u32 = 0;
+    try std.testing.expectEqual(c.OT_OK, abi.ot_scene_frame_get_paint_slots(&owner, &session, &frame, @ptrCast(&slot), 1, &count));
+    try std.testing.expectEqual(@as(u32, 1), count);
+    try std.testing.expectEqual(@as(u32, c.OT_SCENE_HOOK_RENDER_SELF | c.OT_SCENE_HOOK_RENDER_AFTER), slot.hooks | c.OT_SCENE_HOOK_RENDER_AFTER);
+    const Recording = extern struct { slot: c.ot_scene_record_slot, view: c.ot_scene_record_view };
+    const recording: Recording = .{
+        .slot = .{ .header = .{ .size = @sizeOf(c.ot_scene_record_slot), .operation = c.OT_SCENE_RECORD_SLOT }, .slot = 0, .phase = c.OT_SCENE_RECORD_PHASE_SELF },
+        .view = .{ .header = .{ .size = @sizeOf(c.ot_scene_record_view), .operation = c.OT_SCENE_RECORD_TEXT_VIEW }, .source = abi.handleToC(view_id), .x = 1, .y = 0 },
+    };
+    try std.testing.expectEqual(c.OT_INVALID_ARGUMENT, abi.ot_scene_frame_step_with_geometry(&owner, &session, &frame, &config, unlimited, null, 1, &frame, &geometry));
+    try std.testing.expectEqual(c.OT_OK, abi.ot_scene_frame_step_with_geometry(&owner, &session, &frame, &config, unlimited, std.mem.asBytes(&recording), @sizeOf(Recording), &frame, &geometry));
+    try std.testing.expectEqual(c.OT_SCENE_FRAME_DONE, frame.kind);
+    const cells = (try owner.core.raw().getSessionRenderer(session_id)).getNextBuffer();
+    try std.testing.expectEqual(@as(u32, ' '), cells.get(0, 0).?.char);
+    try std.testing.expectEqual(@as(u32, 'a'), cells.get(1, 0).?.char);
+    try std.testing.expectEqual(@as(u32, 'b'), cells.get(2, 0).?.char);
     try owner.core.sceneFrameCancel(session_id, frame.frame_id);
-    try std.testing.expectEqual(c.OT_STALE_FRAME, ot_scene_select_text_view_paint(&owner, &node, &frame, 1));
 }

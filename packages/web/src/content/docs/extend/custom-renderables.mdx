@@ -144,25 +144,32 @@ layout trees. Read [Layout](/docs/core-concepts/layout) for sizing, rounding, an
 ## Use paint hooks
 
 The native scene owns layout, traversal, visibility, clipping, hit registration, and built-in drawing. JavaScript
-measurement, lifecycle, and custom paint hooks run on the owner thread at their established frame positions.
+measurement, lifecycle, and custom paint hooks run on the owner thread.
 
-For paint hooks, native code returns a request, JavaScript runs the hook, and native code resumes after the host acknowledges it.
-Measurement instead uses a synchronous native-to-JavaScript callback. [How Core uses native](/docs/native/core) explains both paths.
+Paint hooks record drawing. After layout, OpenTUI runs every visible node's hooks in paint order. Native code then paints
+the frame in one pass and plays each node's recorded drawing at that node's position. Measurement instead uses a
+synchronous native-to-JavaScript callback. [How Core uses native](/docs/native/core) explains both paths.
 
-For an ordinary custom renderable, painting runs `renderBefore`, `renderSelf()`, and then `renderAfter`. The after hook
-runs after that node's own drawing, not after its descendants. Override `renderSelf()` on a custom `Renderable` for
+For an ordinary custom renderable, painting draws `renderBefore`, `renderSelf()`, and then `renderAfter`. The after hook
+draws after that node's own drawing, not after its descendants. Override `renderSelf()` on a custom `Renderable` for
 custom drawing. For built-in boxes, use `renderBefore` or `renderAfter` around native drawing.
 
 Text and editor components skip the generic `renderBefore` and `renderAfter` hooks. To extend their drawing, override
-`renderSelf(buffer, deltaTime)` and call `super.renderSelf(buffer, deltaTime)` before drawing an overlay. The inherited
-drawing completes synchronously, so the override can inspect its cells with `withBuffers()`.
+`renderSelf(buffer, deltaTime)` and call `super.renderSelf(buffer, deltaTime)` before drawing an overlay.
+
+The buffer a paint hook receives records drawing calls, so a hook cannot read the frame. `buffers`, `withBuffers()`,
+`getRealCharBytes()`, and `getSpanLines()` throw. To apply an effect to existing cells, draw into a buffer the renderable
+owns, for example with `drawToBuffer()`, read or change that buffer, and compose it with `drawFrameBuffer()`. A composed
+buffer is read when native code paints the frame, so do not change it again during the same frame. For whole-frame
+effects, use a post-process function.
 
 Do not implement traversal, manual hit insertion, or frame orchestration through `render()` overrides.
 Use cursor options instead of `renderCursor()` overrides.
 
-Draw hooks run after layout and paint-list preparation. Prefer update or lifecycle hooks for state changes.
-During painting, the native scene skips destroyed nodes. Newly inserted children wait for the next prepared frame.
-An ordered paint hook can update an already scheduled later node.
+Paint hooks run after layout and before painting. Prefer update or lifecycle hooks for state changes.
+A paint hook's color or text change paints in the same frame, even for a node earlier in paint order. Layout changes,
+such as a new size, position, or child, wait for the next frame. The native scene skips nodes destroyed during hooks,
+including a node that destroys itself.
 
 In demand mode, repeated render requests coalesce.
 But an unconditional request on every draw still creates a continuous rerender loop.
@@ -224,7 +231,7 @@ drawing inside the renderable's computed rectangle. See [Buffer API](/docs/refer
 Text renderables expose `drawToBuffer(buffer, x, y)` to paint their current text viewport into an owned buffer.
 The coordinates belong to the destination buffer, so `(0, 0)` is suitable for a local scratch surface.
 This drawing does not change the text's layout, allocate a second text resource, or insert hit regions.
-Use `withBuffers()` for scoped cell effects.
+Use `withBuffers()` on an owned buffer for scoped cell effects.
 Use the buffer's checked clipping and opacity operations for local drawing limits.
 
 ## Schedule updates

@@ -225,7 +225,7 @@ Use [View both frames](/docs/native/frames#view-both-frames) to display them in 
 ## Add host drawing
 
 The program can draw at a specific position in the frame without taking over scene traversal.
-Add an after-paint hook to the label, then use frame steps to draw a mark after native code paints its text:
+Add an after-paint hook to the label, then record a mark that native code draws after the label's text:
 
 ```text frame=hello
 ┌──────────┐
@@ -242,11 +242,18 @@ In `main`, add this block after mounting the label and before the first `write_f
     CHECK(ot_scene_set_hooks(context, &label, &hooks));
 ```
 
-This registers a request, not a function pointer. Hook generations start above zero and must increase when the registration changes.
+This registers a paint slot, not a function pointer. Hook generations start above zero and must increase when the registration changes.
 
 Replace `submit_frame` with this function. Keep `write_frame` and the cleanup unchanged:
 
 ```c example=hook-submit
+struct mark_recording {
+    ot_scene_record_slot slot;
+    ot_scene_record_draw draw;
+    ot_buffer_draw_text_record text;
+    uint8_t bytes[4];
+};
+
 static ot_status submit_frame(ot_context *context, const ot_handle *session, uint32_t *outcome) {
     const ot_scene_frame_options options = {
         RECORD(ot_scene_frame_options), .background = {0, 0, 0, 255},
@@ -254,42 +261,56 @@ static ot_status submit_frame(ot_context *context, const ot_handle *session, uin
     };
     ot_scene_frame_request request = {RECORD(ot_scene_frame_request)};
     ot_scene_frame_geometry geometry = {RECORD(ot_scene_frame_geometry)};
-    const ot_scene_frame_request *previous = NULL;
+    ot_status status = ot_scene_frame_step_with_geometry(context, session, NULL, &options,
+        UINT32_MAX, NULL, 0, &request, &geometry);
+    if (status != OT_OK) return status;
+    if (request.kind != OT_SCENE_FRAME_RECORD) return OT_UNSUPPORTED_RESOURCE;
 
-    for (;;) {
-        ot_status status = ot_scene_frame_step_with_geometry(context, session, previous,
-            &options, UINT32_MAX, &request, &geometry);
-        if (status != OT_OK) return status;
-        if (request.kind == OT_SCENE_FRAME_DONE) {
-            return ot_scene_frame_commit(context, session, &request, 0, outcome);
-        }
-        if (request.kind != OT_SCENE_FRAME_RENDER_AFTER || request.num != 3) {
-            return OT_UNSUPPORTED_RESOURCE;
-        }
+    ot_scene_paint_slot slot;
+    uint32_t slot_count = 0;
+    status = ot_scene_frame_get_paint_slots(context, session, &request, &slot, 1, &slot_count);
+    if (status != OT_OK) return status;
+    if (slot_count != 1 || slot.num != 3) return OT_UNSUPPORTED_RESOURCE;
 
-        const ot_buffer_draw_text_record mark = {
+    const struct mark_recording recording = {
+        .slot = {
+            .header = {.size = sizeof(ot_scene_record_slot), .operation = OT_SCENE_RECORD_SLOT},
+            .slot = 0, .phase = OT_SCENE_RECORD_PHASE_AFTER,
+        },
+        .draw = {
+            .header = {
+                .size = sizeof(struct mark_recording) - sizeof(ot_scene_record_slot),
+                .operation = OT_SCENE_RECORD_DRAW,
+            },
+            .text_length = 1,
+        },
+        .text = {
             .header = { RECORD(ot_buffer_draw_text_record), .operation = OT_BUFFER_DRAW_TEXT },
             .x = 10, .y = 1, .foreground = {255, 255, 255, 255},
-        };
-        status = ot_buffer_draw(context, session, &request, &mark.header, NULL,
-            (const uint8_t *)"!", 1, NULL, 0);
-        if (status != OT_OK) return status;
-        previous = &request;
-    }
+        },
+        .bytes = "!",
+    };
+    status = ot_scene_frame_step_with_geometry(context, session, &request, &options,
+        UINT32_MAX, (const uint8_t *)&recording, sizeof recording, &request, &geometry);
+    if (status != OT_OK) return status;
+    return ot_scene_frame_commit(context, session, &request, 0, outcome);
 }
 ```
 
-The first call starts a frame because `previous` is `NULL`.
-Each later call acknowledges the exact returned request and resumes where native code stopped.
+The first call prepares the frame and returns a `RECORD` request instead of painting.
+Its one slot is the label, number `3`. The second call acknowledges that exact request with the recording, and native code paints the whole frame.
 The request and result can use the same storage, as above.
 
-This program registers only one hook, on label number `3`, and uses no scheduling yields.
+The recording has two records: a `SLOT` record for the label's after phase, then a `DRAW` record.
+The `DRAW` record contains an `ot_buffer_draw_text_record` followed by its text bytes.
+Every record size is a multiple of 8, so the text keeps three zero padding bytes.
+
 The `8` preparation rounds and `64` host requests are explicit application limits, not C defaults.
 The `UINT32_MAX` quota selects synchronous preparation from the start.
 
-The drawing coordinates are fixed for this 12-by-3 area. A dynamic layout can use the step's separate geometry observations.
+The drawing coordinates are fixed for this 12-by-3 area. A dynamic layout can use the slot's paint geometry.
 Any error returns to `main`'s Session cancellation path.
-The [frame contract](/docs/native/frames#read-and-acknowledge-requests) covers request records, phases, and permitted operations.
+The [frame contract](/docs/native/frames#record-paint-hooks) covers slots, recordings, and paint order.
 
 Recompile and run with the same commands as before. The second output file now updates the screen to:
 

@@ -746,6 +746,8 @@ export const DOC_MANIFEST = {
     runtimes: ["Native"],
     searchSymbols: [
       "ot_scene_frame_step_with_geometry",
+      "ot_scene_frame_get_paint_slots",
+      "ot_scene_record_header",
       "ot_scene_frame_commit",
       "ot_scene_frame_request",
       "ot_scene_flush",

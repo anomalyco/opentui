@@ -10,7 +10,7 @@ To produce it, the native library paints terminal cells and encodes them as outp
 Your program, the _host_, chooses native delivery or forwards those bytes through its own stream.
 
 Drawing and delivery do not necessarily finish together. The cells can be ready while a slow connection is still sending earlier output.
-The frame API keeps these stages separate. It also lets the host draw at specific positions or give other work a turn before painting continues.
+The frame API keeps these stages separate. It also lets the host draw at specific positions or give other work a turn during preparation.
 
 ## Paint, submit, and deliver
 
@@ -23,7 +23,7 @@ Start with a frame that needs only native drawing:
 A finished cell grid is not yet a presented frame. Native code publishes the frame only after delivery completes.
 
 `ot_scene_paint` completes that painting in one call.
-To draw part of a frame yourself, use the step-and-resume path below. It uses the same scene and drawing engine.
+To draw part of a frame yourself, use the step path below. It uses the same scene and drawing engine.
 
 ## Draw after the label
 
@@ -35,28 +35,29 @@ Suppose the interface contains a box with a text label, and the host needs to dr
 └──────────┘
 ```
 
-An after-paint _hook_ reserves a position for host work after the label's own drawing.
-Registering that hook tells native code when to return control. It does not install a function pointer for native code to call during painting.
+An after-paint _hook_ reserves a position for host drawing after the label's own drawing.
+Registering that hook does not install a function pointer for native code to call during painting.
 
 `ot_scene_frame_step_with_geometry` starts or continues the frame.
-When it reaches the hook, it returns a _request_ identifying the node and the work to do.
-The host draws `!`, then calls the same operation with that exact request to acknowledge it and continue.
-When painting finishes, the returned request has kind `DONE`.
+When preparation finishes, it returns one `RECORD` _request_ instead of painting.
+The request's _slots_ list every node whose hooks the host must record, in paint order.
+The host records `!` for the label's after slot, then calls the same operation with that exact request and the _recording_.
+Native code paints the whole frame in one pass. It plays the recording at the label's position and returns a request of kind `DONE`.
 The finished cells form a _draft_: they still need to be committed and delivered.
 
 ```text
 ┌─ Native frame step ─────────────────┐
-│ Lay out and paint the box and label │
-│ Return RENDER_AFTER for the label   │
+│ Lay out the box and label           │
+│ Return RECORD with the label's slot │
 └────────────────┬────────────────────┘
                  ↓
 ┌─ Host ──────────────────────────────┐
-│ Draw ! at cell (10, 1)              │
-│ Call the frame step with its reply  │
+│ Record ! at cell (10, 1)            │
+│ Call the frame step with it         │
 └────────────────┬────────────────────┘
                  ↓
 ┌─ Native frame step ─────────────────┐
-│ Finish painting and return DONE     │
+│ Paint the frame and return DONE     │
 └────────────────┬────────────────────┘
                  ↓
 ┌─ Host ──────────────────────────────┐
@@ -65,8 +66,7 @@ The finished cells form a _draft_: they still need to be committed and delivered
 ```
 
 The first step uses a `NULL` previous request. Later steps pass back the returned record without reconstructing it.
-Native code keeps its position between calls, so continuing does not draw the label again.
-No worker or asynchronous paint callback is involved: the native call returns before the host draws the mark.
+No worker or asynchronous paint callback is involved: every host hook runs before native code paints any cell.
 
 The [C guide](/docs/native/c#add-host-drawing) implements this sequence in a complete program.
 
@@ -80,26 +80,47 @@ On `OT_OK`, the returned request kind tells the host what to do:
 | `OT_SCENE_FRAME_UPDATE` (`1`)         | Run the node's update work                              |
 | `OT_SCENE_FRAME_RESIZE` (`2`)         | Process the node's resize or related view notification  |
 | `OT_SCENE_FRAME_LAYOUT_CHANGED` (`3`) | Process the root's layout notification                  |
-| `OT_SCENE_FRAME_RENDER_BEFORE` (`4`)  | Draw before the node's own drawing                      |
-| `OT_SCENE_FRAME_RENDER_SELF` (`7`)    | Draw instead of the node's native body                  |
-| `OT_SCENE_FRAME_RENDER_AFTER` (`5`)   | Draw after the node's own drawing                       |
-| `OT_SCENE_FRAME_YIELD` (`6`)          | Schedule a later turn before continuing                 |
-
-Before, self, and after drawing belong to one node's paint sequence, before its children.
-An after hook on the box would run before the label, not after the whole subtree.
-Sibling `zIndex` determines local paint order. It is not a global sort of all nodes.
+| `OT_SCENE_FRAME_RECORD` (`4`)         | Record every slot's paint hooks and submit them         |
+| `OT_SCENE_FRAME_YIELD` (`5`)          | Schedule a later turn before continuing                 |
 
 The entire `ot_scene_frame_request` is a _frame ticket_.
 It identifies the Session, root, node, frame, request, and generations, along with the kind, public number, dimensions, and reserved fields.
 Preserve the whole record. A frame ID alone cannot acknowledge a request.
 Native code allows one outstanding ordered request and rejects altered or stale replies.
 
-Hook flag bits are not request-kind values. For example, `OT_SCENE_HOOK_RENDER_AFTER` is `16`, but its returned request kind is `5`.
-Hook generations start above zero and must increase when the registration changes.
-
 `ot_scene_frame_geometry` is a separate observation, not part of the ticket.
 Its flags identify valid paint and public-layout snapshots. Accepted mutations can invalidate them before the next step.
 Do not copy geometry fields into an acknowledgement.
+
+## Record paint hooks
+
+A node registers paint hooks with `OT_SCENE_HOOK_RENDER_BEFORE`, `OT_SCENE_HOOK_RENDER_SELF`, and `OT_SCENE_HOOK_RENDER_AFTER`.
+Hook generations start above zero and must increase when the registration changes.
+
+For a `RECORD` request, `ot_scene_frame_get_paint_slots` copies one `ot_scene_paint_slot` for each hooked node.
+A slot names the node, its hooks, and the geometry, clip, and opacity that native code paints it with.
+Run the hooks of every slot in slot order, then acknowledge the request with one recording.
+
+A recording is a byte stream of records. Each record starts with `ot_scene_record_header`, and its size is a multiple of 8.
+A `SLOT` record starts the commands for one phase of one slot. The other records are drawing commands, such as `DRAW` for text, fills, boxes, and buffer composition.
+They use the same fields and checks as the matching `ot_buffer_draw_*` and `ot_buffer_*` operations.
+A phase that draws nothing needs no `SLOT` record.
+
+Native code plays each node's phases around its own drawing, before its children:
+
+1. The before phase.
+2. The self phase, which replaces the node's native body. Without `RENDER_SELF`, the native body draws.
+3. Native editor cursor maintenance.
+4. The after phase.
+
+An after hook on the box would therefore draw before the label, not after the whole subtree.
+Sibling `zIndex` determines local paint order. It is not a global sort of all nodes.
+Each phase starts with only the slot's clip and opacity. Stack commands apply above that entry.
+
+Commands read the resources they name when native code plays them, not when the host records them.
+A command whose buffer, view, image, node, or Unicode handle was destroyed before playback draws nothing.
+A malformed stream or an invalid command fails the step and cancels the attempt without presenting cells.
+The [checked header](https://github.com/anomalyco/opentui/blob/main/packages/native/include/opentui.h) defines every record layout.
 
 ## Commit the draft, then complete output
 
@@ -165,23 +186,26 @@ Completion means your transport accepted delivery, not that a remote terminal vi
 
 ## Access the framebuffer
 
-Checked drawing operations need no raw cell pointer.
-The Session handle and current paint ticket identify the destination within a frame.
+Paint hooks cannot read the frame: they run before native code paints it.
+A hook that needs to read cells draws into an offscreen buffer it owns, reads that buffer, and records a `COMPOSE` command.
+
+After `DONE`, checked drawing operations can change the finished draft before commit, for example to apply a whole-frame effect.
+The Session handle and the `DONE` ticket identify the destination.
 Drawing to an independent offscreen buffer instead uses that buffer's handle and a `NULL` frame argument.
 
 For an effect that reads existing cells, acquire a storage lease with `ot_scene_frame_acquire_buffer_lease`.
-It accepts before/self/after-paint requests or `DONE`, not update, resize, layout, or yield requests.
-Release every frame-qualified lease before resume, commit, or another frame, including leases that became stale.
+It accepts only the `DONE` ticket.
+Release every frame-qualified lease before commit or another frame, including leases that became stale.
 
 These values answer different questions:
 
 | Value         | Purpose                                               |
 | ------------- | ----------------------------------------------------- |
-| Frame ticket  | Which frame and paint position may this call use?     |
+| Frame ticket  | Which finished frame may this call use?               |
 | Storage lease | Which cell allocation stays alive during this access? |
 | Output ticket | Which copied bytes did the transport deliver?         |
 
-Neither a paint request nor `DONE` acquires a lease automatically.
+`DONE` does not acquire a lease automatically.
 An ordinary storage lease cannot bypass an active draft's frame checks.
 [Resources and ownership](/docs/native/resources#borrow-cells-for-one-synchronous-operation) explains array lifetime and text-reference restrictions.
 
@@ -215,24 +239,20 @@ If a preparation hook changes the scene, native code repeats the necessary prepa
 An update hook runs at most once per node per attempt.
 
 The host sets positive `max_layout_rounds` and `max_host_requests` limits and keeps them fixed throughout the attempt.
-Exhausted preparation rounds fail before painting. The request limit also applies during painting.
+Exhausted preparation rounds fail before painting. A `RECORD` request counts as one host request.
 Failure does not present partial cells or undo accepted application changes.
 
-Once painting starts, the prepared drawing order stays fixed, but not every node property does:
+Paint hooks run after preparation and before painting. The prepared membership stays fixed, but node properties stay live:
 
-| Change in a paint hook                       | Effect on this frame                                                                          |
-| -------------------------------------------- | --------------------------------------------------------------------------------------------- |
-| Change a later node's background             | Its later drawing can use the new color                                                       |
-| Insert a node                                | It waits for the next prepared frame                                                          |
-| Destroy an upcoming node                     | Native code skips it                                                                          |
-| Destroy a node whose drawing already started | Its retained drawing and after phase can finish, without restoring its handle or hit identity |
-| Reparent a scheduled node                    | Its scheduled paint position stays fixed                                                      |
-| Change clipping or inherited opacity         | Prepared clipping and opacity stay fixed                                                      |
-| Change a node's own translation              | Its paint coordinates can change, but its descendants' prepared coordinates do not refresh    |
+| Change in a paint hook               | Effect on this frame                                                   |
+| ------------------------------------ | ---------------------------------------------------------------------- |
+| Change any node's background         | Its drawing uses the new color, even for a node earlier in paint order |
+| Insert a node                        | It waits for the next prepared frame                                   |
+| Destroy a node, including itself     | Native code skips it with its recording and hit identity               |
+| Reparent or move a scheduled node    | It paints at its prepared position; the change waits a frame           |
+| Change clipping or inherited opacity | Prepared clipping and opacity stay fixed                               |
 
 Prefer changing application state before painting. These rules preserve ordered drawing effects, not an atomic application transaction.
-A continued paint sequence does not make every resource of a destroyed node usable.
-For example, Core still destroys a buffered custom node's private buffer even if a remaining hook runs.
 
 To abandon an attempt or draft while keeping the Session, call `ot_scene_frame_cancel` with its frame ID.
 Cancellation revokes that frame's access and submission. It does not undo mutations, callback effects, or promise to clear scratch cells.
@@ -263,7 +283,7 @@ A quota cannot interrupt a slow host hook.
 
 An accepted size-changing resize at a scheduling yield cancels the old attempt.
 Start another attempt with the accepted mutations intact.
-A resize inside a synchronous paint hook instead replaces storage while keeping prepared membership. It can clear cells already painted.
+During a `RECORD` request, resize rejects with `OT_FRAME_BUSY` until the host submits the recording.
 
 ## Measure custom content
 

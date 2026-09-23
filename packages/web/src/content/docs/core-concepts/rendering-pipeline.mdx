@@ -46,7 +46,7 @@ See [Layout](/docs/core-concepts/layout) and [custom measurement](/docs/extend/c
 ## 4. The scene composes terminal cells
 
 Native code paints built-in bodies into `nextRenderBuffer` in prepared order.
-For a host paint hook, native code returns a request. JavaScript runs the hook, flushes its changes, and resumes the same frame.
+When nodes have host paint hooks, native code first returns one record request. JavaScript runs every hook in paint order and records its drawing. Native code then paints the frame in one pass and plays each recording at its node's position.
 
 A buffered custom renderable draws its own body into a private `OptimizedBuffer` before composition into the next buffer.
 Buffering does not combine its entire child subtree into one surface.

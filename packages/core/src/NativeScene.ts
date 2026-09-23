@@ -2,7 +2,7 @@ import type { NativeSession } from "./NativeSession.js"
 import type { Renderable, RenderableOptions } from "./Renderable.js"
 import type { ImageFit } from "./renderables/Image.js"
 import type { NativeImage } from "./image.js"
-import type { OptimizedBuffer } from "./buffer.js"
+import { OptimizedBuffer } from "./buffer.js"
 import type { ImageRenderProtocol } from "./types.js"
 import { RendererControlState, type CliRenderer } from "./renderer.js"
 import type { StyledText } from "./lib/styled-text.js"
@@ -10,7 +10,7 @@ import type { RGBA } from "./lib/RGBA.js"
 import type { LocalSelectionBounds } from "./lib/selection.js"
 import { Edge, YogaValueKind, type Value, type MeasureFunction, type YogaHost } from "./yoga.js"
 import {
-  isNativeScenePaintFrame,
+  NativePaintRecorder,
   NativeSceneFrame,
   NativeSessionRenderStatus,
   NativeStyleFlags,
@@ -37,7 +37,6 @@ const maxHostRequests = 65_536
 
 type PaintContinuation = {
   request: NativeSceneFrameRequest
-  currentPaint?: { renderable: Renderable; handle: SceneNodeHandle }
   wait: Promise<void>
   cancelled: boolean
   restart?: boolean
@@ -118,7 +117,7 @@ export class NativeScene {
   readonly lifecyclePasses = new NativeLifecyclePasses()
   private readonly nodes = new Map<number, Renderable>()
   private paintedFrame: NativeSceneFrameRequest | null = null
-  private prefixFrame: NativeSceneFrameRequest | null = null
+  private paintRecording?: { recorder: NativePaintRecorder; buffer: OptimizedBuffer }
   private cancelPaintYield: ((restart?: boolean) => void) | null = null
   private destroyed = false
   private destroying = false
@@ -133,18 +132,15 @@ export class NativeScene {
 
   constructor(
     readonly driver: NativeSession,
-    private readonly renderer: Pick<
-      CliRenderer,
-      "root" | "nextRenderBuffer" | "isDestroyed" | "controlState" | "unregisterLifecyclePass"
-    >,
+    private readonly renderer: Pick<CliRenderer, "root" | "isDestroyed" | "controlState" | "unregisterLifecyclePass">,
     private readonly workBudget?: number,
   ) {
     this.yogaHost = driver.renderLib.getYogaHost()
   }
 
-  /** @internal Buffer wrappers borrow the active prefix or completed paint ticket. */
+  /** @internal Buffer wrappers borrow the completed paint ticket. */
   get frame(): NativeSceneFrameRequest | null {
-    return this.prefixFrame ?? this.paintedFrame
+    return this.paintedFrame
   }
 
   /** @internal Accepted geometry mutations invalidate hook-local layout observations. */
@@ -525,11 +521,10 @@ export class NativeScene {
     return this.driver.renderLib.sceneGetText(this.driver.context, renderable._getSceneHandle(this))
   }
 
-  /** @internal Inherited Text drawing runs at the caller's exact paint position. */
+  /** @internal Inherited Text drawing records or draws at the caller's position. */
   drawText(renderable: Renderable, buffer: OptimizedBuffer, x: number, y: number): void {
     this.flushStaged()
-    const target = buffer._getSceneDrawTarget(this)
-    this.driver.renderLib.contextDrawSceneText(target, renderable._getSceneHandle(this), x, y)
+    buffer._drawSceneText(this, renderable._getSceneHandle(this), x, y)
   }
 
   setTextSelection(
@@ -669,7 +664,7 @@ export class NativeScene {
     continuation?: PaintContinuation,
   ): PaintContinuation | undefined {
     let request: NativeSceneFrameRequest | null = continuation?.request ?? null
-    let currentPaint = continuation?.currentPaint
+    let recording: Uint8Array | null = null
     let yielded = false
     try {
       while (
@@ -684,7 +679,7 @@ export class NativeScene {
         if (this.renderer.controlState === RendererControlState.EXPLICIT_SUSPENDED) return
         const options = { ...getPaintOptions(), maxLayoutRounds, maxHostRequests }
         if (this.destroyed || this.destroying || this.driver.disposed || this.renderer.isDestroyed) return
-        // Lifecycle passes and paint hooks stage writes; native must accept them before it resumes.
+        // Lifecycle passes and hooks stage writes; native must accept them before it continues.
         this.flushStaged()
         const geometryRevision = this.geometryRevision
         request = this.driver.renderLib.sceneFrameStep(
@@ -693,7 +688,9 @@ export class NativeScene {
           request,
           options,
           this.workBudget,
+          recording,
         )
+        recording = null
         request.geometryRevision = geometryRevision
         if (request.kind === NativeSceneFrame.Done) {
           this.paintedFrame = request
@@ -701,14 +698,8 @@ export class NativeScene {
         }
         if (request.kind === NativeSceneFrame.Yield) {
           const wait = Promise.withResolvers<void>()
-          const state: PaintContinuation = continuation ?? {
-            request,
-            currentPaint,
-            wait: wait.promise,
-            cancelled: false,
-          }
+          const state: PaintContinuation = continuation ?? { request, wait: wait.promise, cancelled: false }
           state.request = request
-          state.currentPaint = currentPaint
           state.wait = wait.promise
           const cancel = this.driver.scheduler.schedule(wait.resolve)
           this.cancelPaintYield = (restart = false) => {
@@ -724,16 +715,6 @@ export class NativeScene {
           yielded = true
           return state
         }
-        // An entered node finishes self/after even when before destroys it.
-        const retained =
-          (request.kind === NativeSceneFrame.RenderAfter || request.kind === NativeSceneFrame.RenderSelf) &&
-          currentPaint?.renderable.num === request.num
-            ? currentPaint
-            : undefined
-        currentPaint = undefined
-        const renderable = retained?.renderable ?? this.nodes.get(request.num)
-        if (!renderable || (renderable.isDestroyed && !retained)) continue
-        const handle = retained?.handle ?? renderable._getSceneHandle(this)
         const root = this.renderer.root._getSceneHandle(this)
         const session = this.driver.session
         if (
@@ -742,26 +723,20 @@ export class NativeScene {
           request.session.generation !== session.generation ||
           request.root.contextId !== root.contextId ||
           request.root.slot !== root.slot ||
-          request.root.generation !== root.generation ||
-          request.node.contextId !== handle.contextId ||
-          request.node.slot !== handle.slot ||
-          request.node.generation !== handle.generation
+          request.root.generation !== root.generation
         ) {
           throw new Error("Native scene returned a stale host request")
         }
-        if (request.kind === NativeSceneFrame.RenderBefore || request.kind === NativeSceneFrame.RenderSelf) {
-          currentPaint = { renderable, handle }
+        if (request.kind === NativeSceneFrame.Record) {
+          recording = this.recordPaint(request, deltaTime)
+          continue
         }
-        if (isNativeScenePaintFrame(request.kind)) {
-          this.prefixFrame = request
-          this.renderer.root._setCurrentRenderable(renderable)
+        const renderable = this.nodes.get(request.num)
+        if (!renderable || renderable.isDestroyed) continue
+        if (!sameHandle(request.node, renderable._getSceneHandle(this))) {
+          throw new Error("Native scene returned a stale host request")
         }
-        try {
-          renderable._runNativeSceneHook(request, deltaTime, this.renderer.nextRenderBuffer)
-          this.renderer.root._setCurrentRenderable(undefined)
-        } finally {
-          this.prefixFrame = null
-        }
+        renderable._runNativeSceneHook(request, deltaTime)
       }
     } finally {
       if (!yielded && request && request !== this.paintedFrame && !this.driver.disposed) {
@@ -772,6 +747,44 @@ export class NativeScene {
         }
       }
     }
+  }
+
+  /** Run every slot's paint hooks in paint order before native code paints the frame. */
+  private recordPaint(request: NativeSceneFrameRequest, deltaTime: number): Uint8Array | null {
+    const { renderLib: lib, context, session } = this.driver
+    const slots = lib.sceneFrameGetPaintSlots(context, session, request)
+    const paint = (this.paintRecording ??= this.createPaintRecording())
+    paint.recorder.begin(context)
+    try {
+      for (let index = 0; index < slots.length; index++) {
+        if (this.destroyed || this.destroying || this.driver.disposed || this.renderer.isDestroyed) return null
+        const slot = slots[index]
+        const renderable = this.nodes.get(slot.num)
+        if (!renderable || renderable.isDestroyed) continue
+        if (!sameHandle(slot.node, renderable._getSceneHandle(this))) {
+          throw new Error("Native scene returned a stale paint slot")
+        }
+        this.renderer.root._setCurrentRenderable(renderable)
+        renderable._recordNativeScenePaint(
+          slot,
+          index,
+          deltaTime,
+          paint.buffer,
+          paint.recorder,
+          request.geometryRevision,
+        )
+        this.renderer.root._setCurrentRenderable(undefined)
+      }
+      return paint.recorder.recording
+    } finally {
+      paint.recorder.end()
+    }
+  }
+
+  private createPaintRecording(): { recorder: NativePaintRecorder; buffer: OptimizedBuffer } {
+    const recorder = new NativePaintRecorder()
+    const { renderLib: lib, context, session } = this.driver
+    return { recorder, buffer: OptimizedBuffer.fromRecorder(lib, context, session, recorder) }
   }
 
   commit(force = false): NativeSessionRenderStatus {
@@ -857,4 +870,8 @@ export class NativeScene {
     }
     if (failure) throw failure.error
   }
+}
+
+function sameHandle(left: SceneNodeHandle, right: SceneNodeHandle): boolean {
+  return left.contextId === right.contextId && left.slot === right.slot && left.generation === right.generation
 }

@@ -1249,7 +1249,10 @@ pub const Context = struct {
     pub fn drawBufferUnicode(self: *Context, handle: Handle, frame: ?scene.FrameRequest, source_handle: Handle, index: u32, x: i32, y: i32, foreground: buf.RGBA, background: buf.RGBA, attributes: u32) !void {
         try self.beginMutation();
         defer self.mutating = false;
-        const target = try self.bufferDrawTarget(handle, frame);
+        try self.drawUnicodeOn(try self.bufferDrawTarget(handle, frame), source_handle, index, x, y, foreground, background, attributes);
+    }
+
+    pub fn drawUnicodeOn(self: *Context, target: *buf.OptimizedBuffer, source_handle: Handle, index: u32, x: i32, y: i32, foreground: buf.RGBA, background: buf.RGBA, attributes: u32) !void {
         const source = try self.getUnicode(source_handle);
         if (index >= source.chars.len) return error.InvalidOptions;
         try buf.validateColor(foreground);
@@ -1477,7 +1480,10 @@ pub const Context = struct {
     pub fn drawBufferImage(self: *Context, handle: Handle, frame: ?scene.FrameRequest, source_handle: Handle, options: ImageDraw) !bool {
         try self.beginMutation();
         defer self.mutating = false;
-        const target = try self.bufferDrawTarget(handle, frame);
+        return self.drawImageOn(try self.bufferDrawTarget(handle, frame), source_handle, options);
+    }
+
+    pub fn drawImageOn(self: *Context, target: *buf.OptimizedBuffer, source_handle: Handle, options: ImageDraw) !bool {
         const source = try self.getImage(source_handle);
         try target.checkImageResources();
         if (options.source_x > source.width() or options.source_y > source.height()) return error.InvalidOptions;
@@ -1590,7 +1596,11 @@ pub const Context = struct {
     pub fn drawBuffer(self: *Context, handle: Handle, frame: ?scene.FrameRequest, options: BufferDraw, text: []const u8, bottom_title: []const u8) !void {
         try self.beginMutation();
         defer self.mutating = false;
-        const target = try self.bufferDrawTarget(handle, frame);
+        try self.drawBufferOn(try self.bufferDrawTarget(handle, frame), frame != null, options, text, bottom_title);
+    }
+
+    /// Frame targets keep their scene-owned alpha mode.
+    pub fn drawBufferOn(self: *Context, target: *buf.OptimizedBuffer, frame_target: bool, options: BufferDraw, text: []const u8, bottom_title: []const u8) !void {
         const background = options.background orelse ansi.rgbColor(0, 0, 0, 0);
         for ([_]buf.RGBA{ options.foreground, background, options.title_color }) |color| try buf.validateColor(color);
         if (options.attributes & ~ansi.TextAttributes.ATTRIBUTE_BASE_MASK != 0) return error.InvalidOptions;
@@ -1598,7 +1608,7 @@ pub const Context = struct {
         switch (options.operation) {
             .clear => target.clear(background, null),
             .respect_alpha => {
-                if (frame != null or options.packed_options > api.OT_BUFFER_RESPECT_ALPHA) return error.InvalidOptions;
+                if (frame_target or options.packed_options > api.OT_BUFFER_RESPECT_ALPHA) return error.InvalidOptions;
                 target.respectAlpha = options.packed_options == api.OT_BUFFER_RESPECT_ALPHA;
             },
             .compose => try drawContextBuffer(target, try self.getBuffer(options.source orelse return error.InvalidOptions), options.x, options.y, options.crop),
@@ -1647,9 +1657,11 @@ pub const Context = struct {
     pub fn bufferStack(self: *Context, handle: Handle, frame: ?scene.FrameRequest, options: BufferStack) !f32 {
         try self.beginMutation();
         defer self.mutating = false;
-        const target = try self.bufferDrawTarget(handle, frame);
-        // Each paint request starts with exactly one scene-owned clip and opacity.
-        const floor: usize = if (frame) |ticket| @intFromBool(ticket.kind != api.OT_SCENE_FRAME_DONE) else 0;
+        return bufferStackOn(try self.bufferDrawTarget(handle, frame), 0, options);
+    }
+
+    /// Entries below floor belong to the scene; recorded paint starts with one clip and opacity.
+    pub fn bufferStackOn(target: *buf.OptimizedBuffer, floor: usize, options: BufferStack) !f32 {
         std.debug.assert(target.scissor_stack.items.len >= floor);
         std.debug.assert(target.opacity_stack.items.len >= floor);
         switch (options.operation) {
@@ -1681,7 +1693,10 @@ pub const Context = struct {
     pub fn drawGrid(self: *Context, handle: Handle, frame: ?scene.FrameRequest, options: BufferGrid, columns: []const i32, rows: []const i32) !void {
         try self.beginMutation();
         defer self.mutating = false;
-        const target = try self.bufferDrawTarget(handle, frame);
+        try self.drawGridOn(try self.bufferDrawTarget(handle, frame), options, columns, rows);
+    }
+
+    pub fn drawGridOn(self: *Context, target: *buf.OptimizedBuffer, options: BufferGrid, columns: []const i32, rows: []const i32) !void {
         try target.checkImageResources();
         try buf.validateColor(options.foreground);
         try buf.validateColor(options.background);
@@ -1709,7 +1724,10 @@ pub const Context = struct {
     pub fn drawSuperSampleBuffer(self: *Context, handle: Handle, frame: ?scene.FrameRequest, data: []const u8, x: u32, y: u32, format: u32, stride: u32) !void {
         try self.beginMutation();
         defer self.mutating = false;
-        const target = try self.bufferDrawTarget(handle, frame);
+        try drawSuperSampleOn(try self.bufferDrawTarget(handle, frame), data, x, y, format, stride);
+    }
+
+    pub fn drawSuperSampleOn(target: *buf.OptimizedBuffer, data: []const u8, x: u32, y: u32, format: u32, stride: u32) !void {
         if (format > 1) return error.InvalidOptions;
         try target.drawSuperSampleBufferChecked(x, y, data, @intCast(format), stride);
     }
@@ -1724,7 +1742,10 @@ pub const Context = struct {
     pub fn colorMatrixBuffer(self: *Context, handle: Handle, frame: ?scene.FrameRequest, matrix: []align(1) const f32, mask: ?[]align(1) const f32, strength: f32, channel: u32) !void {
         try self.beginMutation();
         defer self.mutating = false;
-        const target = try self.bufferDrawTarget(handle, frame);
+        try self.colorMatrixOn(try self.bufferDrawTarget(handle, frame), matrix, mask, strength, channel);
+    }
+
+    pub fn colorMatrixOn(self: *Context, target: *buf.OptimizedBuffer, matrix: []align(1) const f32, mask: ?[]align(1) const f32, strength: f32, channel: u32) !void {
         if (matrix.len != 16 or !std.math.isFinite(strength) or channel < 1 or channel > 3) return error.InvalidOptions;
         for (matrix) |value| if (!std.math.isFinite(value)) return error.InvalidOptions;
         if (mask) |cells| {
@@ -1751,7 +1772,10 @@ pub const Context = struct {
     pub fn drawTextBufferView(self: *Context, handle: Handle, frame: ?scene.FrameRequest, view_handle: Handle, x: i32, y: i32) !void {
         try self.beginMutation();
         defer self.mutating = false;
-        const target = try self.bufferDrawTarget(handle, frame);
+        try self.drawTextViewOn(try self.bufferDrawTarget(handle, frame), view_handle, x, y);
+    }
+
+    pub fn drawTextViewOn(self: *Context, target: *buf.OptimizedBuffer, view_handle: Handle, x: i32, y: i32) !void {
         const view = try self.getTextBufferView(view_handle);
         if (x >= target.width or y >= target.height) return;
         try view.prepareView();
@@ -1761,7 +1785,10 @@ pub const Context = struct {
     pub fn drawEditorView(self: *Context, handle: Handle, frame: ?scene.FrameRequest, view_handle: Handle, x: i32, y: i32) !void {
         try self.beginMutation();
         defer self.mutating = false;
-        const target = try self.bufferDrawTarget(handle, frame);
+        try self.drawEditorViewOn(try self.bufferDrawTarget(handle, frame), view_handle, x, y);
+    }
+
+    pub fn drawEditorViewOn(self: *Context, target: *buf.OptimizedBuffer, view_handle: Handle, x: i32, y: i32) !void {
         const editor = try self.getEditorView(view_handle);
         if (x >= target.width or y >= target.height) return;
         try target.drawEditorViewChecked(editor.view, x, y);
@@ -1770,7 +1797,10 @@ pub const Context = struct {
     pub fn drawSceneText(self: *Context, handle: Handle, frame: ?scene.FrameRequest, node_handle: Handle, x: i32, y: i32) !void {
         try self.beginMutation();
         defer self.mutating = false;
-        const target = try self.bufferDrawTarget(handle, frame);
+        try self.drawSceneTextOn(try self.bufferDrawTarget(handle, frame), node_handle, x, y);
+    }
+
+    pub fn drawSceneTextOn(self: *Context, target: *buf.OptimizedBuffer, node_handle: Handle, x: i32, y: i32) !void {
         const node = try self.sceneNode(node_handle);
         const text = node.scene_node.?.text orelse return error.WrongKind;
         if (x >= target.width or y >= target.height) return;
@@ -1813,7 +1843,7 @@ pub const Context = struct {
                 const access = try self.objects.get(handle, .frame_buffer_lease, FrameBufferLease);
                 const value = self.getSession(access.frame.session) catch return error.StaleLease;
                 const owned = value.scene orelse return error.StaleLease;
-                const painted = owned.checkFrameAccess(access.frame) catch return error.StaleLease;
+                const painted = owned.checkPainted(access.frame) catch return error.StaleLease;
                 const attached = value.renderer orelse return error.StaleLease;
                 if (painted.membership_epoch != access.membership_epoch or
                     !painted.destination.matches(attached.getNextBuffer())) return error.StaleLease;
@@ -2072,13 +2102,6 @@ pub const Context = struct {
         const node = value.scene_node.?;
         if (node.kind != api.OT_SCENE_TEXT_VIEW) return error.WrongKind;
         node.control.text_view.paint = enabled;
-    }
-
-    pub fn sceneSelectTextViewPaint(self: *Context, handle: Handle, frame: scene.FrameRequest, enabled: bool) !void {
-        try self.beginMutation();
-        defer self.mutating = false;
-        const value = try self.sceneMutableNode(handle);
-        try value.scene_node.?.owner.selectTextViewPaint(value, frame, enabled);
     }
 
     pub fn sceneHasMeasure(self: *Context, handle: Handle) !bool {
@@ -2779,7 +2802,7 @@ pub const Context = struct {
             attached.getNextBuffer().clear(attached.backgroundColor, null);
             @memset(attached.nextHitGrid, 0);
         }
-        const result = try owned.frameStep(&self.objects, attached, null, .{
+        const result = try owned.frameStep(self, attached, null, .{
             .background = background,
             .use_mouse = use_mouse,
             .excluded_hit_num = excluded_hit_num,
@@ -2791,10 +2814,15 @@ pub const Context = struct {
     }
 
     pub fn sceneFrameStep(self: *Context, session_handle: Handle, previous: ?scene.FrameRequest, options: scene.FrameOptions) !scene.FrameRequest {
-        return self.sceneFrameStepWorkBudgeted(session_handle, previous, options, std.math.maxInt(u32));
+        return self.sceneFrameStepWithRecording(session_handle, previous, options, std.math.maxInt(u32), null);
     }
 
     pub fn sceneFrameStepWorkBudgeted(self: *Context, session_handle: Handle, previous: ?scene.FrameRequest, options: scene.FrameOptions, max_work_items: u32) !scene.FrameRequest {
+        return self.sceneFrameStepWithRecording(session_handle, previous, options, max_work_items, null);
+    }
+
+    /// recording acknowledges a RECORD request and must be null for every other step.
+    pub fn sceneFrameStepWithRecording(self: *Context, session_handle: Handle, previous: ?scene.FrameRequest, options: scene.FrameOptions, max_work_items: u32, recording: ?[]const u8) !scene.FrameRequest {
         try self.beginMutation();
         defer self.mutating = false;
         const value = try self.getSession(session_handle);
@@ -2804,7 +2832,13 @@ pub const Context = struct {
         const owned = value.scene orelse return error.SceneNotAttached;
         if (value.frame_end_offset != null or attached.pendingPresentation != null) return error.PresentationPending;
         if (attached.width > std.math.maxInt(i32) or attached.height > std.math.maxInt(i32)) return error.InvalidDimensions;
-        return owned.frameStepWorkBudgeted(&self.objects, attached, previous, options, true, max_work_items);
+        return owned.frameStepWorkBudgeted(self, attached, previous, options, true, max_work_items, recording);
+    }
+
+    pub fn sceneFramePaintSlots(self: *Context, session_handle: Handle, frame: scene.FrameRequest) ![]const scene.PaintSlot {
+        try self.checkSceneRead();
+        const owned = (try self.getSession(session_handle)).scene orelse return error.SceneNotAttached;
+        return owned.paintSlots(frame);
     }
 
     pub fn sceneFrameAcquireBufferLease(self: *Context, session_handle: Handle, frame: scene.FrameRequest, which: RendererBuffer) !Handle {
@@ -2813,7 +2847,7 @@ pub const Context = struct {
         const value = try self.getSession(session_handle);
         try value.checkRendering();
         const owned = value.scene orelse return error.SceneNotAttached;
-        const painted = try owned.checkFrameAccess(frame);
+        const painted = try owned.checkPainted(frame);
         const attached = value.renderer orelse return error.RendererNotAttached;
         if (!painted.destination.matches(attached.getNextBuffer())) return error.StaleFrame;
         if (self.lease_count >= self.lease_count_max) return error.LeaseLimit;
@@ -2856,7 +2890,7 @@ pub const Context = struct {
         const attached = value.renderer orelse return error.RendererNotAttached;
         if (value.frame_end_offset != null or attached.pendingPresentation != null) return error.PresentationPending;
         const owned = value.scene orelse return error.SceneNotAttached;
-        const access = try owned.checkFrameAccess(frame);
+        const access = try owned.checkPainted(frame);
         const target = attached.getNextBuffer();
         if (!access.destination.matches(target)) return error.StaleFrame;
         return target;

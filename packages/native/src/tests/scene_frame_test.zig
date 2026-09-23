@@ -3,6 +3,7 @@ const testing = std.testing;
 const Fixture = @import("scene_fixture_test.zig").Fixture;
 const context = @import("../context.zig");
 const scene = @import("../scene.zig");
+const c = @import("context_abi_c");
 const transport: @import("../session.zig").Options = .{ .chunk_size = 4096, .control_capacity = 4096 };
 
 const options: scene.FrameOptions = .{
@@ -29,7 +30,7 @@ fn drain(owner: *context.Context, id: context.Handle) !void {
     return error.TestUnexpectedResult;
 }
 
-test "Scene frame authority checks every field in layout update prefix paint and work phases" {
+test "Scene frame authority checks every field in layout update record paint and work phases" {
     const owner = try context.Context.init(testing.allocator, testing.io, .{});
     defer owner.deinit() catch unreachable;
     const peer = try context.Context.init(testing.allocator, testing.io, .{});
@@ -47,13 +48,14 @@ test "Scene frame authority checks every field in layout update prefix paint and
         try owner.sceneMoveNode(child, root, @intCast(index));
         if (index == 0) try owner.sceneSetHooks(child, 59, 1, 0, 0);
     }
-    var seen = [_]bool{false} ** 8;
+    var seen = [_]bool{false} ** 6;
     var work_yield = false;
     var previous: ?scene.FrameRequest = null;
     for (0..128) |_| {
-        const request = try owner.sceneFrameStepWorkBudgeted(id, previous, options, 1);
+        const recording: ?[]const u8 = if (previous != null and previous.?.kind == c.OT_SCENE_FRAME_RECORD) &.{} else null;
+        const request = try owner.sceneFrameStepWithRecording(id, previous, options, 1, recording);
         seen[request.kind] = true;
-        if (request.kind == 6) work_yield = work_yield or state.prefix == null;
+        if (request.kind == c.OT_SCENE_FRAME_YIELD) work_yield = true;
         try testing.expectError(error.WrongSession, owner.sceneFrameAcquireBufferLease(other, request, .next));
         try testing.expectError(error.WrongContext, peer.sceneFrameAcquireBufferLease(foreign, request, .next));
         try testing.expectError(error.WrongContext, peer.sceneFrameCommit(foreign, request, true));
@@ -73,7 +75,7 @@ test "Scene frame authority checks every field in layout update prefix paint and
         wrong_context.session.context_id += 1;
         try testing.expectError(error.WrongContext, owner.sceneFrameStep(id, wrong_context, options));
         if (previous) |consumed| try testing.expectError(error.StaleFrame, owner.sceneFrameStep(id, consumed, options));
-        if (request.kind == 0 or request.kind == 4 or request.kind == 5 or request.kind == 7) {
+        if (request.kind == c.OT_SCENE_FRAME_DONE) {
             for ([_]context.RendererBuffer{ .current, .next }) |destination| {
                 const lease = try owner.sceneFrameAcquireBufferLease(id, request, destination);
                 _ = try owner.bufferLeaseSnapshot(lease);
@@ -94,46 +96,46 @@ test "Scene frame authority checks every field in layout update prefix paint and
     try testing.expect(work_yield);
 }
 
-test "Scene frame resize retires storage without replacing painted or prefix tickets" {
-    for ([_]bool{ false, true }) |painted| {
-        const f = try Fixture.init(testing.allocator, 4, 1, .{});
-        defer f.deinit();
-        if (!painted) _ = try prefix(f.owner, f.id);
-        var frame = try f.step(null, options, if (painted) 0 else 4, null);
-        const original = frame;
-        const lease = try f.owner.sceneFrameAcquireBufferLease(f.id, frame, .next);
-        const before = try f.owner.bufferLeaseSnapshot(lease);
-        before.buffer.char[0] = 'A';
-        try f.owner.resizeSessionRenderer(f.id, 4, 1);
-        try testing.expectEqualDeep(before, try f.owner.bufferLeaseSnapshot(lease));
-        try f.owner.resizeSessionRenderer(f.id, 5, 1);
-        try testing.expectError(error.StaleLease, f.owner.bufferLeaseSnapshot(lease));
-        before.buffer.char[0] = 'Z';
-        if (painted) {
-            try testing.expectError(error.FrameBusy, f.owner.sceneFrameCommit(f.id, frame, true));
-        } else try testing.expectError(error.FrameBusy, f.owner.sceneFrameStep(f.id, frame, options));
-        const replacement = try f.owner.sceneFrameAcquireBufferLease(f.id, frame, .next);
-        const after = try f.owner.bufferLeaseSnapshot(replacement);
-        try testing.expectEqual(before.generation + 1, after.generation);
-        try testing.expectEqual(@as(u32, 5), after.width);
-        try testing.expectEqual(@as(u32, ' '), after.buffer.char[0]);
-        after.buffer.char[4] = 'B';
-        try f.owner.releaseBufferLease(lease);
-        try f.owner.releaseBufferLease(replacement);
-        if (!painted) {
-            frame = try f.step(frame, options, 5, null);
-            frame = try f.step(frame, options, 0, null);
-        }
-        try testing.expectEqual(original.frame_id, frame.frame_id);
-        try testing.expectEqual(original.layout_epoch, frame.layout_epoch);
-        _ = try f.owner.sceneFrameCommit(f.id, frame, true);
-        try drain(f.owner, f.id);
-        try testing.expectEqual(@as(u32, 'B'), f.cli.getCurrentBuffer().buffer.char[4]);
-    }
+test "Scene frame resize retires storage without replacing painted tickets" {
+    const f = try Fixture.init(testing.allocator, 4, 1, .{});
+    defer f.deinit();
+    const frame = try f.step(null, options, 0, null);
+    const lease = try f.owner.sceneFrameAcquireBufferLease(f.id, frame, .next);
+    const before = try f.owner.bufferLeaseSnapshot(lease);
+    before.buffer.char[0] = 'A';
+    try f.owner.resizeSessionRenderer(f.id, 4, 1);
+    try testing.expectEqualDeep(before, try f.owner.bufferLeaseSnapshot(lease));
+    try f.owner.resizeSessionRenderer(f.id, 5, 1);
+    try testing.expectError(error.StaleLease, f.owner.bufferLeaseSnapshot(lease));
+    before.buffer.char[0] = 'Z';
+    try testing.expectError(error.FrameBusy, f.owner.sceneFrameCommit(f.id, frame, true));
+    const replacement = try f.owner.sceneFrameAcquireBufferLease(f.id, frame, .next);
+    const after = try f.owner.bufferLeaseSnapshot(replacement);
+    try testing.expectEqual(before.generation + 1, after.generation);
+    try testing.expectEqual(@as(u32, 5), after.width);
+    try testing.expectEqual(@as(u32, ' '), after.buffer.char[0]);
+    after.buffer.char[4] = 'B';
+    try f.owner.releaseBufferLease(lease);
+    try f.owner.releaseBufferLease(replacement);
+    _ = try f.owner.sceneFrameCommit(f.id, frame, true);
+    try drain(f.owner, f.id);
+    try testing.expectEqual(@as(u32, 'B'), f.cli.getCurrentBuffer().buffer.char[4]);
 }
 
-test "Scene frame cancellation revokes painted and prefix authority but pins scratch cells until release" {
-    for ([_]bool{ false, true }) |hooked| {
+test "Scene frame record requests reject resize until the recording is submitted" {
+    const f = try Fixture.init(testing.allocator, 4, 1, .{});
+    defer f.deinit();
+    _ = try hooked(f.owner, f.id);
+    const request = try f.step(null, options, c.OT_SCENE_FRAME_RECORD, null);
+    try testing.expectError(error.FrameBusy, f.owner.resizeSessionRenderer(f.id, 5, 1));
+    try testing.expectError(error.StaleFrame, f.owner.sceneFrameAcquireBufferLease(f.id, request, .next));
+    const done = try f.owner.sceneFrameStepWithRecording(f.id, request, options, std.math.maxInt(u32), &.{});
+    try testing.expectEqual(@as(u32, c.OT_SCENE_FRAME_DONE), done.kind);
+    try f.owner.sceneFrameCancel(f.id, done.frame_id);
+}
+
+test "Scene frame cancellation revokes painted authority but pins scratch cells until release" {
+    for ([_]bool{ false, true }) |hooked_frame| {
         const f = try Fixture.init(testing.allocator, 4, 1, .{ .output = transport });
         defer f.deinit();
         const child = try f.owner.sceneCreateNode(f.id, 1, 2);
@@ -144,8 +146,9 @@ test "Scene frame cancellation revokes painted and prefix authority but pins scr
         try drain(f.owner, f.id);
         try testing.expectEqual(@as(u32, 2), try f.owner.sceneHitTest(f.id, 0, 0));
         try f.owner.sceneSetPaint(child, .{ .translateX = 1 });
-        const pending = if (hooked) try prefix(f.owner, f.id) else null;
-        const frame = try f.step(null, options, if (hooked) 4 else 0, pending);
+        const pending = if (hooked_frame) try hooked(f.owner, f.id) else null;
+        var frame = try f.step(null, options, if (hooked_frame) c.OT_SCENE_FRAME_RECORD else c.OT_SCENE_FRAME_DONE, null);
+        if (hooked_frame) frame = try f.owner.sceneFrameStepWithRecording(f.id, frame, options, std.math.maxInt(u32), &.{});
         const lease = try f.owner.sceneFrameAcquireBufferLease(f.id, frame, .next);
         const snapshot = try f.owner.bufferLeaseSnapshot(lease);
         snapshot.buffer.char[0] = 'Z';
@@ -261,31 +264,13 @@ test "Scene painted commit admission rejection retains the draft for retry" {
     try drain(f.owner, f.id);
 }
 
-fn prefix(owner: *context.Context, id: context.Handle) !context.Handle {
+fn hooked(owner: *context.Context, id: context.Handle) !context.Handle {
     const root = (try owner.raw().getSession(id)).scene.?.root.?.scene_node.?.handle;
     const child = try owner.sceneCreateNode(id, 1, 2);
     try owner.sceneSetStyle(child, 4, 0, 0, 1, 1, 1);
     try owner.sceneSetHooks(child, 8 | 16, 1, 1, 1);
     try owner.sceneMoveNode(child, root, 0);
     return child;
-}
-
-test "Scene prefix root destruction retains scoped cells until explicit cancellation" {
-    const f = try Fixture.init(testing.allocator, 4, 1, .{ .output = transport });
-    defer f.deinit();
-    _ = try prefix(f.owner, f.id);
-    const before = try f.owner.sceneFrameStep(f.id, null, options);
-    const lease = try f.owner.sceneFrameAcquireBufferLease(f.id, before, .next);
-    defer f.owner.releaseBufferLease(lease) catch unreachable;
-    const snapshot = try f.owner.bufferLeaseSnapshot(lease);
-    snapshot.buffer.char[0] = 'A';
-    try f.owner.sceneDestroyNode(f.root);
-    try testing.expectEqualDeep(snapshot, try f.owner.bufferLeaseSnapshot(lease));
-    const nested = try f.owner.sceneFrameAcquireBufferLease(f.id, before, .next);
-    defer f.owner.releaseBufferLease(nested) catch unreachable;
-    try testing.expectEqual(@as(u32, 'A'), (try f.owner.bufferLeaseSnapshot(nested)).buffer.char[0]);
-    try f.owner.sceneFrameCancel(f.id, before.frame_id);
-    try testing.expectError(error.StaleLease, f.owner.bufferLeaseSnapshot(lease));
 }
 
 test "Scene idle update metadata keeps the native one call path and excludes host counts" {
