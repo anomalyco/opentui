@@ -121,3 +121,33 @@ test("an owned buffer composed by a hook reads its cells when native code paints
 
   expect(captureCharFrame().split("\n")[0].trimEnd()).toBe("cd")
 })
+
+test("resources a hook records and then frees stay alive until native code paints them", async () => {
+  const { renderer, renderOnce, captureCharFrame } = setup
+  class Scratch extends Renderable {
+    protected renderSelf(buffer: OptimizedBuffer): void {
+      const encoded = buffer.encodeUnicode("A👋B")
+      try {
+        let x = this.x
+        for (const glyph of encoded.data) {
+          buffer.drawChar(glyph.char, x, this.y, white, clear)
+          x += glyph.width
+        }
+      } finally {
+        buffer.freeUnicode(encoded)
+      }
+      const scratch = OptimizedBuffer.create(2, 1, "unicode", { owner: this.ctx.nativeScene })
+      try {
+        scratch.drawText("ok", 0, 0, white)
+        buffer.drawFrameBuffer(this.x + 5, this.y, scratch)
+      } finally {
+        scratch.destroy()
+      }
+    }
+  }
+  renderer.root.add(new Scratch(renderer, { width: 8, height: 1 }))
+
+  await renderOnce()
+
+  expect(captureCharFrame().split("\n")[0].trimEnd()).toBe("A👋B ok")
+})

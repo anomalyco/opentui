@@ -2008,6 +2008,8 @@ export class NativePaintRecorder {
   private colors = new Uint16Array(this.buffer)
   private length = 0
   private context: NativeContextHandle | null = null
+  private open = false
+  private readonly releases: (() => void)[] = []
   private pendingSlot = -1
   private pendingPhase = 0
   private readonly opacity: number[] = [1]
@@ -2016,14 +2018,36 @@ export class NativePaintRecorder {
   private readonly handleRecord = createContextHandleRecord()
 
   begin(context: NativeContextHandle): void {
+    this.settle()
     this.context = context
+    this.open = true
     this.length = 0
     this.pendingSlot = -1
   }
 
+  /** Stop recording. Deferred releases wait for settle(). */
   end(): void {
     this.context = null
     this.pendingSlot = -1
+  }
+
+  /** Keep a resource that a recording names alive until native code has painted it. */
+  deferRelease(release: () => void): boolean {
+    if (!this.open) return false
+    this.releases.push(release)
+    return true
+  }
+
+  /** Run deferred releases after the frame step that consumed the recording. */
+  settle(): void {
+    this.open = false
+    for (const release of this.releases.splice(0)) {
+      try {
+        release()
+      } catch {
+        // Context teardown may have released the resource already.
+      }
+    }
   }
 
   /** The encoded stream, or null when nothing was recorded. Valid until the next begin(). */
