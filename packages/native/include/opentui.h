@@ -2230,8 +2230,8 @@ ot_status ot_buffer_color_matrix(ot_context *, const ot_handle *, const ot_scene
 /* A paint recording acknowledges a RECORD request. It is one byte stream of
  * records. The stream must be 8-byte aligned and at most OT_SCENE_RECORD_BYTES_MAX
  * bytes. Every record starts with ot_scene_record_header; size counts the whole
- * record, including its trailing variable data, rounded up to a multiple of 8
- * with zero padding. Reserved fields must be zero.
+ * record, including its trailing variable data, rounded up to a multiple of 8.
+ * Native code ignores padding bytes. Reserved fields must be zero.
  *
  * A SLOT record starts the commands for one phase of one slot. Slots and phases
  * must appear in increasing order, at most once, and only for phases set in the
