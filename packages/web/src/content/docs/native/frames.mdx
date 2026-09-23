@@ -251,6 +251,10 @@ On `YIELD`, schedule another host turn and then acknowledge the exact request.
 A yield replenishes the quota. A hook acknowledgement does not.
 Yield requests do not consume `max_host_requests` and grant no drawing or commit permission.
 
+A host can change the scene while an attempt waits at a yield.
+If that change needs new layout, preparation restarts once and finishes without further yields.
+Steady changes at every turn therefore cannot exhaust `max_layout_rounds`.
+
 Painting never yields. Once preparation finishes, the frame paints in one pass.
 
 Quotas count work items, not milliseconds or cells.

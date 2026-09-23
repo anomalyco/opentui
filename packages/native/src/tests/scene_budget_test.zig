@@ -42,23 +42,41 @@ test "Scene warmed preparation cannot bypass the work budget" {
     }
 }
 
-test "Scene work budget preparation restarts consume layout rounds without rolling back mutations" {
+test "Scene work budget restarts once after a yielded mutation and completes without further yields" {
     const f = try Fixture.init(testing.allocator, 12, 3, .{ .output = transport });
     defer f.deinit();
     const child = try box(f.owner, f.id, f.root, 2, 0);
     var limited = options;
     limited.max_layout_rounds = 2;
     var request = try f.owner.sceneFrameStepWorkBudgeted(f.id, null, limited, 1);
+    try testing.expectEqual(@as(u32, 6), request.kind);
     try f.owner.sceneSetStyle(child, 4, 0, 0, 1, 2, 1);
     request = try f.owner.sceneFrameStepWorkBudgeted(f.id, request, limited, 1);
-    try f.owner.sceneSetStyle(child, 4, 0, 0, 1, 3, 1);
-    try testing.expectError(error.LayoutLimit, f.owner.sceneFrameStepWorkBudgeted(f.id, request, limited, 1));
-    try testing.expect(f.state.attempt == null and f.state.prepared.items.len == 0 and f.state.preparation_stack.items.len == 0);
-    try testing.expectEqual(@as(f32, 0), (try f.owner.sceneGetLayout(child, false)).width);
-    const retry = try f.owner.sceneFrameStep(f.id, null, options);
-    try testing.expect(retry.frame_id > request.frame_id);
-    try testing.expectEqual(@as(f32, 3), (try f.owner.sceneGetLayout(child, false)).width);
-    try f.owner.sceneFrameCancel(f.id, retry.frame_id);
+    try testing.expectEqual(@as(u32, 0), request.kind);
+    try testing.expectEqual(@as(f32, 2), (try f.owner.sceneGetLayout(child, false)).width);
+    const painted = f.cli.getNextBuffer();
+    try testing.expectEqual(ansi.rgbColor(2, 0, 0, 255), painted.get(1, 0).?.bg);
+    try testing.expectEqual(ansi.rgbColor(0, 0, 0, 255), painted.get(2, 0).?.bg);
+    try f.owner.sceneFrameCancel(f.id, request.frame_id);
+}
+
+test "Scene work budget unchanged yields keep the quota and exhaust no layout rounds" {
+    const f = try Fixture.init(testing.allocator, 12, 3, .{ .output = transport });
+    defer f.deinit();
+    for (0..3) |index| _ = try box(f.owner, f.id, f.root, @intCast(index + 2), @intCast(index));
+    var limited = options;
+    limited.max_layout_rounds = 1;
+    var previous: ?scene.FrameRequest = null;
+    var yields: u32 = 0;
+    const done = for (0..64) |_| {
+        const request = try f.owner.sceneFrameStepWorkBudgeted(f.id, previous, limited, 1);
+        if (request.kind == 0) break request;
+        try testing.expectEqual(@as(u32, 6), request.kind);
+        yields += 1;
+        previous = request;
+    } else return error.TestUnexpectedResult;
+    try testing.expect(yields > 1);
+    try f.owner.sceneFrameCancel(f.id, done.frame_id);
 }
 
 test "Scene work budget rejects late invalid transforms before publishing prepared geometry" {
