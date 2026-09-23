@@ -54,7 +54,8 @@ The public lifecycle method is named `destroy()`, not `dispose()`.
 
 `CliRenderer` exposes `nextRenderBuffer` and `currentRenderBuffer`. The renderer owns both.
 
-- Renderables and post-process callbacks draw into `nextRenderBuffer`.
+- Native scene painting and post-process callbacks draw into `nextRenderBuffer`.
+- Paint hooks receive a separate recording buffer. Its drawing calls record commands that native code plays when it paints `nextRenderBuffer`. It cannot read cells.
 - Native rendering compares the next buffer with `currentRenderBuffer`.
 - The native encoder can change the current buffer before output admission or presentation. It is not a last-presented snapshot.
 - The native encoder clears the next buffer after encoding.
@@ -212,10 +213,10 @@ integers with nonnegative dimensions and signed 32-bit endpoints. Opacity must
 be finite; finite values still clamp to `0..1`. Rejected operations leave the
 accepted stack unchanged.
 
-A native paint hook inherits the scene's clipping and opacity. Its pop and clear
-calls affect only its own entries, not inherited state. The renderer resets custom
-entries between hooks, including after a throwing hook. A saved frame buffer cannot
-be used outside its active frame scope.
+A paint hook's buffer starts each hook with the node's clipping and opacity. Its pop
+and clear calls affect only its own entries, not inherited state. Custom entries reset
+between hooks. The buffer records drawing only while its frame runs hooks, so a saved
+hook buffer cannot draw later.
 
 Retained offscreen buffers keep their stacks until you pop, clear, or destroy them.
 Use `try`/`finally` to balance scopes when your drawing code can throw. Use

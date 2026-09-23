@@ -5,6 +5,7 @@ const context = @import("../context.zig");
 const scene = @import("../scene.zig");
 const transport: @import("../session.zig").Options = .{ .chunk_size = 4096, .control_capacity = 4096 };
 const ansi = @import("../ansi.zig");
+const c = @import("context_abi_c");
 
 const options: scene.FrameOptions = .{
     .background = .{ 0, 0, 0, 255 },
@@ -33,12 +34,11 @@ test "Scene warmed preparation cannot bypass the work budget" {
         try f.owner.sceneFrameCancel(f.id, f.state.last_frame_id);
         f.state.test_prepare_steps = 0;
         const request = try f.owner.sceneFrameStepWorkBudgeted(f.id, null, options, budget);
-        try testing.expectEqual(@as(u32, if (index == 0) 6 else 0), request.kind);
+        try testing.expectEqual(@as(u32, if (index == 0) c.OT_SCENE_FRAME_YIELD else c.OT_SCENE_FRAME_DONE), request.kind);
         try testing.expect(f.state.test_prepare_steps > 0);
         try testing.expectEqual(@as(usize, 0), f.state.work.items.len);
-        try testing.expect(f.state.prefix == null);
         try f.owner.sceneFrameCancel(f.id, request.frame_id);
-        try testing.expect(f.state.attempt == null and f.state.prefix == null);
+        try testing.expect(f.state.attempt == null);
     }
 }
 
@@ -49,7 +49,7 @@ test "Scene work budget restarts once after a yielded mutation and completes wit
     var limited = options;
     limited.max_layout_rounds = 2;
     var request = try f.owner.sceneFrameStepWorkBudgeted(f.id, null, limited, 1);
-    try testing.expectEqual(@as(u32, 6), request.kind);
+    try testing.expectEqual(@as(u32, c.OT_SCENE_FRAME_YIELD), request.kind);
     try f.owner.sceneSetStyle(child, 4, 0, 0, 1, 2, 1);
     request = try f.owner.sceneFrameStepWorkBudgeted(f.id, request, limited, 1);
     try testing.expectEqual(@as(u32, 0), request.kind);
@@ -71,7 +71,7 @@ test "Scene work budget unchanged yields keep the quota and exhaust no layout ro
     const done = for (0..64) |_| {
         const request = try f.owner.sceneFrameStepWorkBudgeted(f.id, previous, limited, 1);
         if (request.kind == 0) break request;
-        try testing.expectEqual(@as(u32, 6), request.kind);
+        try testing.expectEqual(@as(u32, c.OT_SCENE_FRAME_YIELD), request.kind);
         yields += 1;
         previous = request;
     } else return error.TestUnexpectedResult;
@@ -90,7 +90,7 @@ test "Scene work budget rejects late invalid transforms before publishing prepar
             try testing.expectEqual(error.InvalidDimensions, err);
             break;
         };
-        try testing.expectEqual(@as(u32, 6), request.kind);
+        try testing.expectEqual(@as(u32, c.OT_SCENE_FRAME_YIELD), request.kind);
     } else return error.TestUnexpectedResult;
     try testing.expectEqual(@as(f32, 0), (try f.owner.sceneGetLayout(f.root, false)).width);
     try testing.expectEqual(@as(f64, std.math.maxInt(i32)) + 1, (try f.owner.sceneGetLayout(f.root, false)).screenX);
@@ -152,11 +152,11 @@ test "Scene work budget hook replies cannot replenish feedback quota or consume 
     const update = for (0..32) |_| {
         const request = try f.owner.sceneFrameStepWorkBudgeted(f.id, previous, limited, 1);
         if (request.kind == 1) break request;
-        try testing.expectEqual(@as(u32, 6), request.kind);
+        try testing.expectEqual(@as(u32, c.OT_SCENE_FRAME_YIELD), request.kind);
         previous = request;
     } else return error.TestUnexpectedResult;
     const yielded = try f.owner.sceneFrameStepWorkBudgeted(f.id, update, limited, 100);
-    try testing.expectEqual(@as(u32, 6), yielded.kind);
+    try testing.expectEqual(@as(u32, c.OT_SCENE_FRAME_YIELD), yielded.kind);
     try testing.expectEqual(@as(u32, 1), f.state.attempt.?.requests);
     const done = try f.owner.sceneFrameStepWorkBudgeted(f.id, yielded, limited, 100);
     try testing.expectEqual(@as(u32, 0), done.kind);
@@ -172,14 +172,14 @@ test "Scene work budget changed transforms never mix saved parents with live chi
         if (change_during_preparation) {
             try f.owner.sceneSetPaint(f.root, .{ .translateX = -2 });
             previous = try f.owner.sceneFrameStepWorkBudgeted(f.id, null, options, 1);
-            try testing.expectEqual(@as(u32, 6), previous.?.kind);
+            try testing.expectEqual(@as(u32, c.OT_SCENE_FRAME_YIELD), previous.?.kind);
         }
         try f.owner.sceneSetPaint(f.root, .{});
         try f.owner.sceneSetPaint(child, .{ .translateX = -2147483647, .background = .{ 2, 0, 0, 255 } });
         const done = for (0..32) |_| {
             const request = try f.owner.sceneFrameStepWorkBudgeted(f.id, previous, options, 1);
             if (request.kind == 0) break request;
-            try testing.expectEqual(@as(u32, 6), request.kind);
+            try testing.expectEqual(@as(u32, c.OT_SCENE_FRAME_YIELD), request.kind);
             previous = request;
         } else return error.TestUnexpectedResult;
         try testing.expectEqual(@as(f64, -2147483647), (try f.owner.sceneGetPaintLayout(child)).screenX);

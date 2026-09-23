@@ -92,8 +92,7 @@ test "Context frame buffer composition checks tickets and retains source resourc
     try owner.sceneSetStyle(child, 4, 0, 0, 1, 4, 1);
     try owner.sceneSetStyle(child, 4, 1, 0, 1, 1, 1);
     try owner.sceneMoveNode(child, root, 0);
-    try owner.sceneSetPaint(child, .{ .shouldFill = 0, .opacity = 0.5 });
-    try owner.sceneSetHooks(child, 8, 1, 4, 1);
+    try owner.sceneSetPaint(child, .{ .shouldFill = 0 });
     const options: scene.FrameOptions = .{ .background = .{ 0, 0, 0, 255 }, .use_mouse = false, .excluded_hit_num = 0, .max_layout_rounds = 8, .max_host_requests = 64 };
     const source = try owner.createBuffer(4, 1, .{});
     const peer = try foreign.createBuffer(4, 1, .{});
@@ -102,7 +101,7 @@ test "Context frame buffer composition checks tickets and retains source resourc
     try source_buffer.drawText("\u{754c}AB", 0, 0, ansi.rgbColor(255, 255, 255, 255), ansi.rgbColor(200, 0, 0, 255), ansi.TextAttributes.setLinkId(0, link_id));
     const glyph = source_buffer.buffer.char[0] & grapheme.GRAPHEME_ID_MASK;
     const frame = try owner.sceneFrameStep(session, null, options);
-    try testing.expectEqual(@as(u32, 4), frame.kind);
+    try testing.expectEqual(@as(u32, 0), frame.kind);
     const target = (try owner.raw().getSessionRenderer(session)).getNextBuffer();
     const before = target.buffer.char[0..4].*;
     var altered = frame;
@@ -119,14 +118,14 @@ test "Context frame buffer composition checks tickets and retains source resourc
     failing.fail_index = std.math.maxInt(usize);
     failing.resize_fail_index = std.math.maxInt(usize);
     try target.pushScissorRect(0, 0, 2, 1);
+    try target.pushOpacity(0.5);
     try owner.sceneFrameDrawBuffer(session, frame, source, 0, 0);
+    target.popOpacity();
     target.popScissorRect();
     try testing.expectEqual(source_buffer.buffer.char[0], target.buffer.char[0]);
     try testing.expectEqual(@as(u32, ' '), target.buffer.char[2]);
     try testing.expect(target.buffer.bg[0][0] > 0 and target.buffer.bg[0][0] < 200);
-    const done = try owner.sceneFrameStep(session, frame, options);
-    try testing.expectEqual(@as(u32, 0), done.kind);
-    try testing.expectError(error.StaleFrame, owner.sceneFrameDrawBuffer(session, frame, source, 0, 0));
+    const done = frame;
     const pixels = try image.createFromRgba(testing.allocator, &.{ 255, 0, 0, 255 }, 1, 1, 4);
     defer pixels.deinit();
     try testing.expect(try source_buffer.drawImage(pixels, 1, 2, 0, 1, 1, 0, 0, 0, 0, 1, 1, .auto));

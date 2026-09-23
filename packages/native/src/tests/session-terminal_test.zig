@@ -158,7 +158,7 @@ test "Session suspension rejection preserves yielded and synchronous preparation
     const root = try f.owner.sceneCreateNode(f.id, 0, 1);
     try f.owner.sceneSetHooks(root, 1, 1, 8, 2);
     const request = try f.owner.sceneFrameStepWorkBudgeted(f.id, null, scene_options, 1);
-    try testing.expectEqual(@as(u32, 6), request.kind);
+    try testing.expectEqual(@as(u32, @import("context_abi_c").OT_SCENE_FRAME_YIELD), request.kind);
     try testing.expectError(error.InvalidTerminalState, f.owner.suspendSession(f.id));
     try testing.expectEqual(.uninitialized, f.value.getTerminalState().phase);
     try testing.expectEqualDeep(request, f.value.scene.?.attempt.?.pending.?);
