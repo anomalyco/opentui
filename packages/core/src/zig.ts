@@ -2070,35 +2070,42 @@ export class NativePaintRecorder {
   }
 
   draw(options: NativeBufferDraw): void {
-    if (options.operation === "respectAlpha") throw new Error("Paint hooks cannot change the frame alpha mode")
-    const layout = nativeLayouts.ot_scene_record_draw
-    const text = options.operation === "text" || options.operation === "box" ? (options.text ?? "") : ""
-    const bottom = options.operation === "box" ? (options.bottomTitle ?? "") : ""
-    const record = layout.size + nativeLayouts.ot_buffer_draw_box.size
-    const base = this.reserve(nativeConstants.OT_SCENE_RECORD_DRAW, record + (text.length + bottom.length) * 3)
-    const encoded = encodeBufferDrawRecord(
-      this.activeContext(),
-      options,
-      this.words,
-      this.signed,
-      this.colors,
-      base + layout.size,
-      this.handleRecord,
-    )
-    if (encoded.source) {
-      this.bytes.set(
-        new Uint8Array(encoded.source.buffer, encoded.source.byteOffset, 16),
-        base + layout.fields.source.offset,
+    const length = this.length
+    const slot = this.pendingSlot
+    try {
+      if (options.operation === "respectAlpha") throw new Error("Paint hooks cannot change the frame alpha mode")
+      const layout = nativeLayouts.ot_scene_record_draw
+      const text = options.operation === "text" || options.operation === "box" ? (options.text ?? "") : ""
+      const bottom = options.operation === "box" ? (options.bottomTitle ?? "") : ""
+      const record = layout.size + nativeLayouts.ot_buffer_draw_box.size
+      const base = this.reserve(nativeConstants.OT_SCENE_RECORD_DRAW, record + (text.length + bottom.length) * 3)
+      const encoded = encodeBufferDrawRecord(
+        this.activeContext(),
+        options,
+        this.words,
+        this.signed,
+        this.colors,
+        base + layout.size,
+        this.handleRecord,
       )
+      if (encoded.source) {
+        this.bytes.set(
+          new Uint8Array(encoded.source.buffer, encoded.source.byteOffset, 16),
+          base + layout.fields.source.offset,
+        )
+      }
+      let end = base + layout.size + encoded.size
+      const textLength = this.encodeText(text, end)
+      end += textLength
+      const bottomLength = this.encodeText(bottom, end)
+      end += bottomLength
+      this.words[(base + layout.fields.text_length.offset) / 4] = textLength
+      this.words[(base + layout.fields.bottom_length.offset) / 4] = bottomLength
+      this.finish(base, end)
+    } catch (error) {
+      this.rollback(length, slot)
+      throw error
     }
-    let end = base + layout.size + encoded.size
-    const textLength = this.encodeText(text, end)
-    end += textLength
-    const bottomLength = this.encodeText(bottom, end)
-    end += bottomLength
-    this.words[(base + layout.fields.text_length.offset) / 4] = textLength
-    this.words[(base + layout.fields.bottom_length.offset) / 4] = bottomLength
-    this.finish(base, end)
   }
 
   stack(options: NativeBufferStack): number {
@@ -2163,39 +2170,53 @@ export class NativePaintRecorder {
   }
 
   grid(options: NativeBufferGrid): void {
-    const layout = nativeLayouts.ot_scene_record_grid
-    const optionsLayout = nativeLayouts.ot_buffer_grid_options
-    const { borderChars, borderFg, borderBg, columnOffsets, rowOffsets, drawInner, drawOuter } = options
-    if (borderChars.length !== 11) throw new RangeError("Border characters must contain 11 Unicode scalars")
-    const columns = viewOf(columnOffsets, Int32Array)
-    const rows = viewOf(rowOffsets, Int32Array)
-    const base = this.reserve(nativeConstants.OT_SCENE_RECORD_GRID, layout.size + (columns.length + rows.length) * 4)
-    const record = base + layout.fields.options.offset
-    const fields = optionsLayout.fields
-    this.words[(record + fields.struct_size.offset) / 4] = optionsLayout.size
-    this.words[(record + fields.abi_version.offset) / 4] = nativeConstants.OT_CONTEXT_ABI_VERSION
-    this.words[(record + fields.flags.offset) / 4] =
-      toFFIBool(drawInner, "Grid inner borders") | (toFFIBool(drawOuter, "Grid outer borders") << 1)
-    contextBufferColor(borderFg, this.colors, (record + fields.foreground.offset) / 2)
-    contextBufferColor(borderBg, this.colors, (record + fields.background.offset) / 2)
-    this.words.set(borderChars, (record + fields.border_chars.offset) / 4)
-    this.words[(base + layout.fields.column_count.offset) / 4] = columns.length
-    this.words[(base + layout.fields.row_count.offset) / 4] = rows.length
-    this.signed.set(columns, (base + layout.size) / 4)
-    this.signed.set(rows, (base + layout.size) / 4 + columns.length)
+    const length = this.length
+    const slot = this.pendingSlot
+    try {
+      const layout = nativeLayouts.ot_scene_record_grid
+      const optionsLayout = nativeLayouts.ot_buffer_grid_options
+      const { borderChars, borderFg, borderBg, columnOffsets, rowOffsets, drawInner, drawOuter } = options
+      if (borderChars.length !== 11) throw new RangeError("Border characters must contain 11 Unicode scalars")
+      const columns = viewOf(columnOffsets, Int32Array)
+      const rows = viewOf(rowOffsets, Int32Array)
+      const base = this.reserve(nativeConstants.OT_SCENE_RECORD_GRID, layout.size + (columns.length + rows.length) * 4)
+      const record = base + layout.fields.options.offset
+      const fields = optionsLayout.fields
+      this.words[(record + fields.struct_size.offset) / 4] = optionsLayout.size
+      this.words[(record + fields.abi_version.offset) / 4] = nativeConstants.OT_CONTEXT_ABI_VERSION
+      this.words[(record + fields.flags.offset) / 4] =
+        toFFIBool(drawInner, "Grid inner borders") | (toFFIBool(drawOuter, "Grid outer borders") << 1)
+      contextBufferColor(borderFg, this.colors, (record + fields.foreground.offset) / 2)
+      contextBufferColor(borderBg, this.colors, (record + fields.background.offset) / 2)
+      this.words.set(borderChars, (record + fields.border_chars.offset) / 4)
+      this.words[(base + layout.fields.column_count.offset) / 4] = columns.length
+      this.words[(base + layout.fields.row_count.offset) / 4] = rows.length
+      this.signed.set(columns, (base + layout.size) / 4)
+      this.signed.set(rows, (base + layout.size) / 4 + columns.length)
+    } catch (error) {
+      this.rollback(length, slot)
+      throw error
+    }
   }
 
   packed(data: Uint8Array | PointerInput, byteLength: number, x: number, y: number, width: number, height: number) {
-    const layout = nativeLayouts.ot_scene_record_packed
-    const input = recordedPixels(data, byteLength)
-    const base = this.reserve(nativeConstants.OT_SCENE_RECORD_PACKED, layout.size + input.byteLength)
-    const fields = layout.fields
-    this.words[(base + fields.x.offset) / 4] = toSafeFFIU32Length(x, "Packed buffer dimension")
-    this.words[(base + fields.y.offset) / 4] = toSafeFFIU32Length(y, "Packed buffer dimension")
-    this.words[(base + fields.width.offset) / 4] = toSafeFFIU32Length(width, "Packed buffer dimension")
-    this.words[(base + fields.height.offset) / 4] = toSafeFFIU32Length(height, "Packed buffer dimension")
-    this.words[(base + fields.byte_count.offset) / 4] = input.byteLength
-    this.bytes.set(input, base + layout.size)
+    const length = this.length
+    const slot = this.pendingSlot
+    try {
+      const layout = nativeLayouts.ot_scene_record_packed
+      const input = recordedPixels(data, byteLength)
+      const base = this.reserve(nativeConstants.OT_SCENE_RECORD_PACKED, layout.size + input.byteLength)
+      const fields = layout.fields
+      this.words[(base + fields.x.offset) / 4] = toSafeFFIU32Length(x, "Packed buffer dimension")
+      this.words[(base + fields.y.offset) / 4] = toSafeFFIU32Length(y, "Packed buffer dimension")
+      this.words[(base + fields.width.offset) / 4] = toSafeFFIU32Length(width, "Packed buffer dimension")
+      this.words[(base + fields.height.offset) / 4] = toSafeFFIU32Length(height, "Packed buffer dimension")
+      this.words[(base + fields.byte_count.offset) / 4] = input.byteLength
+      this.bytes.set(input, base + layout.size)
+    } catch (error) {
+      this.rollback(length, slot)
+      throw error
+    }
   }
 
   supersample(
@@ -2206,17 +2227,24 @@ export class NativePaintRecorder {
     format: "rgba8unorm" | "bgra8unorm",
     stride: number,
   ): void {
-    if (format !== "rgba8unorm" && format !== "bgra8unorm") throw new TypeError("Unknown pixel format")
-    const layout = nativeLayouts.ot_scene_record_supersample
-    const input = recordedPixels(data, byteLength)
-    const base = this.reserve(nativeConstants.OT_SCENE_RECORD_SUPERSAMPLE, layout.size + input.byteLength)
-    const fields = layout.fields
-    this.words[(base + fields.x.offset) / 4] = toSafeFFIU32Length(x, "Supersample buffer dimension")
-    this.words[(base + fields.y.offset) / 4] = toSafeFFIU32Length(y, "Supersample buffer dimension")
-    this.words[(base + fields.format.offset) / 4] = format === "bgra8unorm" ? 0 : 1
-    this.words[(base + fields.stride.offset) / 4] = toSafeFFIU32Length(stride, "Supersample buffer dimension")
-    this.words[(base + fields.byte_count.offset) / 4] = input.byteLength
-    this.bytes.set(input, base + layout.size)
+    const length = this.length
+    const slot = this.pendingSlot
+    try {
+      if (format !== "rgba8unorm" && format !== "bgra8unorm") throw new TypeError("Unknown pixel format")
+      const layout = nativeLayouts.ot_scene_record_supersample
+      const input = recordedPixels(data, byteLength)
+      const base = this.reserve(nativeConstants.OT_SCENE_RECORD_SUPERSAMPLE, layout.size + input.byteLength)
+      const fields = layout.fields
+      this.words[(base + fields.x.offset) / 4] = toSafeFFIU32Length(x, "Supersample buffer dimension")
+      this.words[(base + fields.y.offset) / 4] = toSafeFFIU32Length(y, "Supersample buffer dimension")
+      this.words[(base + fields.format.offset) / 4] = format === "bgra8unorm" ? 0 : 1
+      this.words[(base + fields.stride.offset) / 4] = toSafeFFIU32Length(stride, "Supersample buffer dimension")
+      this.words[(base + fields.byte_count.offset) / 4] = input.byteLength
+      this.bytes.set(input, base + layout.size)
+    } catch (error) {
+      this.rollback(length, slot)
+      throw error
+    }
   }
 
   grayscale(
@@ -2229,65 +2257,95 @@ export class NativePaintRecorder {
     background: RGBA | null,
     supersampled: boolean,
   ): void {
-    if (!(data instanceof Float32Array)) throw new TypeError("Grayscale input must be a Float32Array")
-    const samples = viewOf(data, Float32Array)
-    const layout = nativeLayouts.ot_scene_record_grayscale
-    const fields = layout.fields
-    const base = this.reserve(nativeConstants.OT_SCENE_RECORD_GRAYSCALE, layout.size + samples.length * 4)
-    this.signed[(base + fields.x.offset) / 4] = embeddedTerminalI32(x, "Grayscale x")
-    this.signed[(base + fields.y.offset) / 4] = embeddedTerminalI32(y, "Grayscale y")
-    this.words[(base + fields.width.offset) / 4] = toSafeFFIU32Length(width, "Grayscale source width")
-    this.words[(base + fields.height.offset) / 4] = toSafeFFIU32Length(height, "Grayscale source height")
-    this.words[(base + fields.flags.offset) / 4] =
-      (foreground === null ? 0 : nativeConstants.OT_SCENE_RECORD_GRAYSCALE_FOREGROUND) |
-      (background === null ? 0 : nativeConstants.OT_SCENE_RECORD_GRAYSCALE_BACKGROUND) |
-      (toFFIBool(supersampled, "Grayscale supersampling") ? nativeConstants.OT_SCENE_RECORD_GRAYSCALE_SUPERSAMPLED : 0)
-    this.words[(base + fields.sample_count.offset) / 4] = samples.length
-    if (foreground !== null) contextBufferColor(foreground, this.colors, (base + fields.foreground.offset) / 2)
-    if (background !== null) contextBufferColor(background, this.colors, (base + fields.background.offset) / 2)
-    this.floats.set(samples, (base + layout.size) / 4)
+    const length = this.length
+    const slot = this.pendingSlot
+    try {
+      if (!(data instanceof Float32Array)) throw new TypeError("Grayscale input must be a Float32Array")
+      const samples = viewOf(data, Float32Array)
+      const layout = nativeLayouts.ot_scene_record_grayscale
+      const fields = layout.fields
+      const base = this.reserve(nativeConstants.OT_SCENE_RECORD_GRAYSCALE, layout.size + samples.length * 4)
+      this.signed[(base + fields.x.offset) / 4] = embeddedTerminalI32(x, "Grayscale x")
+      this.signed[(base + fields.y.offset) / 4] = embeddedTerminalI32(y, "Grayscale y")
+      this.words[(base + fields.width.offset) / 4] = toSafeFFIU32Length(width, "Grayscale source width")
+      this.words[(base + fields.height.offset) / 4] = toSafeFFIU32Length(height, "Grayscale source height")
+      this.words[(base + fields.flags.offset) / 4] =
+        (foreground === null ? 0 : nativeConstants.OT_SCENE_RECORD_GRAYSCALE_FOREGROUND) |
+        (background === null ? 0 : nativeConstants.OT_SCENE_RECORD_GRAYSCALE_BACKGROUND) |
+        (toFFIBool(supersampled, "Grayscale supersampling")
+          ? nativeConstants.OT_SCENE_RECORD_GRAYSCALE_SUPERSAMPLED
+          : 0)
+      this.words[(base + fields.sample_count.offset) / 4] = samples.length
+      if (foreground !== null) contextBufferColor(foreground, this.colors, (base + fields.foreground.offset) / 2)
+      if (background !== null) contextBufferColor(background, this.colors, (base + fields.background.offset) / 2)
+      this.floats.set(samples, (base + layout.size) / 4)
+    } catch (error) {
+      this.rollback(length, slot)
+      throw error
+    }
   }
 
   colorMatrix(matrix: Float32Array, mask: Float32Array | null, strength: number, channel: number): void {
-    for (const value of [matrix, mask]) {
-      if (value !== null && !(value instanceof Float32Array))
-        throw new TypeError("Color matrix input must be a Float32Array")
+    const length = this.length
+    const slot = this.pendingSlot
+    try {
+      for (const value of [matrix, mask]) {
+        if (value !== null && !(value instanceof Float32Array))
+          throw new TypeError("Color matrix input must be a Float32Array")
+      }
+      if (matrix.length !== 16) throw new RangeError("Color matrix must contain 16 floats")
+      if (!Number.isFinite(strength)) throw new RangeError("Color matrix strength must be finite")
+      const cells = mask === null ? null : viewOf(mask, Float32Array)
+      const layout = nativeLayouts.ot_scene_record_color_matrix
+      const fields = layout.fields
+      const base = this.reserve(nativeConstants.OT_SCENE_RECORD_COLOR_MATRIX, layout.size + (cells?.length ?? 0) * 4)
+      this.floats.set(viewOf(matrix, Float32Array), (base + fields.matrix.offset) / 4)
+      this.floats[(base + fields.strength.offset) / 4] = strength
+      this.words[(base + fields.channel.offset) / 4] = toSafeFFIU32Length(channel, "Color matrix channel")
+      this.words[(base + fields.has_mask.offset) / 4] = cells === null ? 0 : 1
+      this.words[(base + fields.mask_count.offset) / 4] = cells?.length ?? 0
+      if (cells) this.floats.set(cells, (base + layout.size) / 4)
+    } catch (error) {
+      this.rollback(length, slot)
+      throw error
     }
-    if (matrix.length !== 16) throw new RangeError("Color matrix must contain 16 floats")
-    if (!Number.isFinite(strength)) throw new RangeError("Color matrix strength must be finite")
-    const cells = mask === null ? null : viewOf(mask, Float32Array)
-    const layout = nativeLayouts.ot_scene_record_color_matrix
-    const fields = layout.fields
-    const base = this.reserve(nativeConstants.OT_SCENE_RECORD_COLOR_MATRIX, layout.size + (cells?.length ?? 0) * 4)
-    this.floats.set(viewOf(matrix, Float32Array), (base + fields.matrix.offset) / 4)
-    this.floats[(base + fields.strength.offset) / 4] = strength
-    this.words[(base + fields.channel.offset) / 4] = toSafeFFIU32Length(channel, "Color matrix channel")
-    this.words[(base + fields.has_mask.offset) / 4] = cells === null ? 0 : 1
-    this.words[(base + fields.mask_count.offset) / 4] = cells?.length ?? 0
-    if (cells) this.floats.set(cells, (base + layout.size) / 4)
   }
 
   /** Draw a text-buffer view, editor view, or scene text node. */
   view(operation: "text" | "editor" | "scene", source: ContextObjectHandle, x: number, y: number): void {
-    const layout = nativeLayouts.ot_scene_record_view
-    const base = this.reserve(
-      operation === "text"
-        ? nativeConstants.OT_SCENE_RECORD_TEXT_VIEW
-        : operation === "editor"
-          ? nativeConstants.OT_SCENE_RECORD_EDITOR_VIEW
-          : nativeConstants.OT_SCENE_RECORD_SCENE_TEXT,
-      layout.size,
-    )
-    this.encodeHandle(source, base + layout.fields.source.offset)
-    this.signed[(base + layout.fields.x.offset) / 4] = embeddedTerminalI32(x, "View x") || 0
-    this.signed[(base + layout.fields.y.offset) / 4] = embeddedTerminalI32(y, "View y") || 0
+    const length = this.length
+    const slot = this.pendingSlot
+    try {
+      const layout = nativeLayouts.ot_scene_record_view
+      const base = this.reserve(
+        operation === "text"
+          ? nativeConstants.OT_SCENE_RECORD_TEXT_VIEW
+          : operation === "editor"
+            ? nativeConstants.OT_SCENE_RECORD_EDITOR_VIEW
+            : nativeConstants.OT_SCENE_RECORD_SCENE_TEXT,
+        layout.size,
+      )
+      this.encodeHandle(source, base + layout.fields.source.offset)
+      this.signed[(base + layout.fields.x.offset) / 4] = embeddedTerminalI32(x, "View x") || 0
+      this.signed[(base + layout.fields.y.offset) / 4] = embeddedTerminalI32(y, "View y") || 0
+    } catch (error) {
+      this.rollback(length, slot)
+      throw error
+    }
   }
 
   image(source: ContextImageHandle, options: NativeContextImageDraw): void {
-    const layout = nativeLayouts.ot_scene_record_image
-    const base = this.reserve(nativeConstants.OT_SCENE_RECORD_IMAGE, layout.size)
-    this.encodeHandle(source, base + layout.fields.image.offset)
-    encodeImageDrawOptions(options, this.words, this.signed, base + layout.fields.options.offset)
+    const length = this.length
+    const slot = this.pendingSlot
+    try {
+      const layout = nativeLayouts.ot_scene_record_image
+      const base = this.reserve(nativeConstants.OT_SCENE_RECORD_IMAGE, layout.size)
+      this.encodeHandle(source, base + layout.fields.image.offset)
+      encodeImageDrawOptions(options, this.words, this.signed, base + layout.fields.options.offset)
+    } catch (error) {
+      this.rollback(length, slot)
+      throw error
+    }
   }
 
   unicode(
@@ -2299,16 +2357,29 @@ export class NativePaintRecorder {
     background: RGBA,
     attributes: number,
   ): void {
-    const layout = nativeLayouts.ot_scene_record_unicode
-    const fields = layout.fields
-    const base = this.reserve(nativeConstants.OT_SCENE_RECORD_UNICODE, layout.size)
-    this.encodeHandle(source, base + fields.unicode.offset)
-    this.words[(base + fields.index.offset) / 4] = toSafeFFIU32Length(index, "Unicode character index")
-    this.signed[(base + fields.x.offset) / 4] = embeddedTerminalI32(x, "Unicode x")
-    this.signed[(base + fields.y.offset) / 4] = embeddedTerminalI32(y, "Unicode y")
-    this.words[(base + fields.attributes.offset) / 4] = toSafeFFIU32Length(attributes, "Unicode attributes")
-    contextBufferColor(foreground, this.colors, (base + fields.foreground.offset) / 2)
-    contextBufferColor(background, this.colors, (base + fields.background.offset) / 2)
+    const length = this.length
+    const slot = this.pendingSlot
+    try {
+      const layout = nativeLayouts.ot_scene_record_unicode
+      const fields = layout.fields
+      const base = this.reserve(nativeConstants.OT_SCENE_RECORD_UNICODE, layout.size)
+      this.encodeHandle(source, base + fields.unicode.offset)
+      this.words[(base + fields.index.offset) / 4] = toSafeFFIU32Length(index, "Unicode character index")
+      this.signed[(base + fields.x.offset) / 4] = embeddedTerminalI32(x, "Unicode x")
+      this.signed[(base + fields.y.offset) / 4] = embeddedTerminalI32(y, "Unicode y")
+      this.words[(base + fields.attributes.offset) / 4] = toSafeFFIU32Length(attributes, "Unicode attributes")
+      contextBufferColor(foreground, this.colors, (base + fields.foreground.offset) / 2)
+      contextBufferColor(background, this.colors, (base + fields.background.offset) / 2)
+    } catch (error) {
+      this.rollback(length, slot)
+      throw error
+    }
+  }
+
+  /** A call that throws leaves no partial record, so the hook can recover. */
+  private rollback(length: number, slot: number): void {
+    this.length = length
+    this.pendingSlot = slot
   }
 
   private activeContext(): NativeContextHandle {
