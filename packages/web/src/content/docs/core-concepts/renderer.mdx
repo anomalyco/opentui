@@ -94,11 +94,11 @@ Use `await renderer.idle()` to wait until demand-driven work settles. `getSchedu
 
 ### Cooperative frames
 
-Set `nativeScenePaintBudget` to a positive integer to yield between completed paint members. Set `nativeSceneWorkBudget` to count preparation visits, view-preparation entries, and feedback records between yields. Both are optional and use unsigned 32-bit limits.
+Set `nativeSceneWorkBudget` to a positive unsigned 32-bit integer to yield during frame preparation. It counts preparation visits, view-preparation entries, and feedback records between yields.
 
-These quotas do not bound elapsed time or cells. Yoga, sibling sorting, final publication, individual drawing operations, and output encoding can still run synchronously. The scheduler also cannot preempt an application callback.
+The quota does not bound elapsed time or cells. Yoga, sibling sorting, final publication, painting, and output encoding still run synchronously. Painting never yields, so a frame never mixes cells from before and after a mutation. The scheduler also cannot preempt an application callback.
 
-An accepted changed-size resize supersedes a draft parked at a scheduling yield. The replacement frame keeps accepted mutations and callback side effects; cancellation is not rollback. Output already admitted retains its ordering and completion accounting. Synchronous paint-hook resize retains its compatibility behavior, including the possibility of clearing an already-painted prefix.
+An accepted changed-size resize supersedes a draft parked at a scheduling yield. The replacement frame keeps accepted mutations and callback side effects; cancellation is not rollback. Output already admitted retains its ordering and completion accounting.
 
 Use the renderer-owned [animation APIs](/docs/application-apis/animation#animation-callbacks) rather than process-global animation callbacks when you host multiple sessions.
 

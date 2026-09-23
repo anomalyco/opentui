@@ -2791,14 +2791,10 @@ pub const Context = struct {
     }
 
     pub fn sceneFrameStep(self: *Context, session_handle: Handle, previous: ?scene.FrameRequest, options: scene.FrameOptions) !scene.FrameRequest {
-        return self.sceneFrameStepBudgeted(session_handle, previous, options, std.math.maxInt(u32));
+        return self.sceneFrameStepWorkBudgeted(session_handle, previous, options, std.math.maxInt(u32));
     }
 
-    pub fn sceneFrameStepBudgeted(self: *Context, session_handle: Handle, previous: ?scene.FrameRequest, options: scene.FrameOptions, max_paint_members: u32) !scene.FrameRequest {
-        return self.sceneFrameStepWorkBudgeted(session_handle, previous, options, max_paint_members, std.math.maxInt(u32));
-    }
-
-    pub fn sceneFrameStepWorkBudgeted(self: *Context, session_handle: Handle, previous: ?scene.FrameRequest, options: scene.FrameOptions, max_paint_members: u32, max_work_items: u32) !scene.FrameRequest {
+    pub fn sceneFrameStepWorkBudgeted(self: *Context, session_handle: Handle, previous: ?scene.FrameRequest, options: scene.FrameOptions, max_work_items: u32) !scene.FrameRequest {
         try self.beginMutation();
         defer self.mutating = false;
         const value = try self.getSession(session_handle);
@@ -2808,7 +2804,7 @@ pub const Context = struct {
         const owned = value.scene orelse return error.SceneNotAttached;
         if (value.frame_end_offset != null or attached.pendingPresentation != null) return error.PresentationPending;
         if (attached.width > std.math.maxInt(i32) or attached.height > std.math.maxInt(i32)) return error.InvalidDimensions;
-        return owned.frameStepWorkBudgeted(&self.objects, attached, previous, options, true, max_paint_members, max_work_items);
+        return owned.frameStepWorkBudgeted(&self.objects, attached, previous, options, true, max_work_items);
     }
 
     pub fn sceneFrameAcquireBufferLease(self: *Context, session_handle: Handle, frame: scene.FrameRequest, which: RendererBuffer) !Handle {

@@ -258,7 +258,7 @@ static ot_status submit_frame(ot_context *context, const ot_handle *session, uin
 
     for (;;) {
         ot_status status = ot_scene_frame_step_with_geometry(context, session, previous,
-            &options, UINT32_MAX, UINT32_MAX, &request, &geometry);
+            &options, UINT32_MAX, &request, &geometry);
         if (status != OT_OK) return status;
         if (request.kind == OT_SCENE_FRAME_DONE) {
             return ot_scene_frame_commit(context, session, &request, 0, outcome);
@@ -285,7 +285,7 @@ The request and result can use the same storage, as above.
 
 This program registers only one hook, on label number `3`, and uses no scheduling yields.
 The `8` preparation rounds and `64` host requests are explicit application limits, not C defaults.
-Both `UINT32_MAX` quotas select synchronous preparation and painting from the start.
+The `UINT32_MAX` quota selects synchronous preparation from the start.
 
 The drawing coordinates are fixed for this 12-by-3 area. A dynamic layout can use the step's separate geometry observations.
 Any error returns to `main`'s Session cancellation path.

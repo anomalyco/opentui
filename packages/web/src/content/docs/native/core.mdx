@@ -157,13 +157,13 @@ Core runs node paint hooks synchronously and does not await their returned promi
 A hook request returns control at a specific paint position. It is not an event-loop scheduling break.
 
 Scheduling yields use `OT_SCENE_FRAME_YIELD` instead.
-Core can request them through positive unsigned 32-bit `nativeScenePaintBudget` and `nativeSceneWorkBudget` options.
+Core can request them during preparation through the positive unsigned 32-bit `nativeSceneWorkBudget` option.
 The Session scheduler's default continuation uses `setImmediate()` to allow a later event-loop turn.
 `NativeScene.paint()` returns a promise only when that continuation is necessary.
-Omit both options for no quota-based yields.
+Omit the option for no quota-based yields.
 
 Core's internal driver sets `max_layout_rounds` to `8` and `max_host_requests` to `65_536`.
-Quotas and request limits do not interrupt Yoga or a slow JavaScript hook.
+The quota and request limits do not interrupt Yoga or a slow JavaScript hook.
 See the native [yield contract](/docs/native/frames#yield-between-pieces-of-work) for counted work and resize behavior.
 
 Two other waits occur outside node hooks:
