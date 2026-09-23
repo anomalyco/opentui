@@ -108,7 +108,7 @@ test "renderer emits Kitty image once and leaves unchanged frame empty" {
     try std.testing.expect(try test_renderer.renderer.getNextBuffer().drawImage(value, image_handle, 0, 0, 1, 1, 0, 0, 0, 0, 1, 1, .auto));
     try std.testing.expectEqual(renderer.RenderStatus.rendered, test_renderer.renderer.render(true));
     try std.testing.expect(std.mem.find(u8, test_renderer.memory.lastWrite(), "\x1b_Ga=t,f=24,s=1,v=1,i=") != null);
-    try std.testing.expect(std.mem.find(u8, test_renderer.memory.lastWrite(), "c=1,r=1,x=0,y=0,w=1,h=1,C=1,z=-1499999999") != null);
+    try std.testing.expect(std.mem.find(u8, test_renderer.memory.lastWrite(), "c=1,r=1,x=0,y=0,w=1,h=1,C=1,z=-1073741823") != null);
 
     try std.testing.expect(try test_renderer.renderer.getNextBuffer().drawImage(value, image_handle, 0, 0, 1, 1, 0, 0, 0, 0, 1, 1, .auto));
     try std.testing.expectEqual(renderer.RenderStatus.rendered, test_renderer.renderer.render(false));
@@ -814,8 +814,230 @@ fn expectPlaneCoversImage(protocol: image.RenderProtocol) !void {
     }
 }
 
-test "renderer keeps Kitty placement under an alpha-colored plane" {
-    try expectPlaneCoversImage(.kitty);
+// The escape that drops every placement of a live Kitty image and keeps its
+// data. Live image ids are the renderer's salt plus the buffer placement id.
+fn expectKittyPlacementsDeleted(test_renderer: *const TestRenderer, output: []const u8, placement_id: u32) !void {
+    var expected: [64]u8 = undefined;
+    const escape = try std.fmt.bufPrint(&expected, "\x1b_Ga=d,d=i,i={d},q=2\x1b\\", .{
+        test_renderer.renderer.imageIdSalt + placement_id,
+    });
+    try std.testing.expect(std.mem.find(u8, output, escape) != null);
+}
+
+test "renderer covers Kitty cells without hiding the rest of the image" {
+    const pool = gp.initGlobalPool(std.testing.allocator);
+    defer gp.deinitGlobalPool();
+    defer link.deinitGlobalLinkPool();
+    var test_renderer = try TestRenderer.create(std.testing.allocator, 2, 1, pool);
+    defer test_renderer.deinit();
+    const value = try image.createFromRgba(std.testing.allocator, &[_]u8{
+        255, 0,   0, 255,
+        0,   255, 0, 255,
+    }, 2, 1, 8);
+    const image_handle = try handles.insert(.image, @ptrCast(value));
+    defer {
+        const token = handles.beginDestroy(image_handle, .image, image.Image).?;
+        token.ptr.deinit();
+        handles.finishDestroy(token.handle);
+    }
+
+    var next = test_renderer.renderer.getNextBuffer();
+    try std.testing.expect(try next.drawImage(value, image_handle, 0, 0, 2, 1, 0, 0, 0, 0, 2, 1, .kitty));
+    try std.testing.expectEqual(renderer.RenderStatus.rendered, test_renderer.renderer.render(true));
+
+    next = test_renderer.renderer.getNextBuffer();
+    try std.testing.expect(try next.drawImage(value, image_handle, 0, 0, 2, 1, 0, 0, 0, 0, 2, 1, .kitty));
+    next.fillRect(0, 0, 1, 1, ansi.rgbaFromFloats(0.0, 0.0, 1.0, 0.5));
+    try std.testing.expectEqual(renderer.RenderStatus.rendered, test_renderer.renderer.render(false));
+    const covered = test_renderer.memory.lastWrite();
+    try std.testing.expect(std.mem.find(u8, covered, "\x1b_Ga=t") == null);
+    try expectKittyPlacementsDeleted(&test_renderer, covered, 1);
+    try std.testing.expect(std.mem.find(u8, covered, "\x1b[1;2H") != null);
+    try std.testing.expect(std.mem.find(u8, covered, "c=1,r=1,x=1,y=0,w=1,h=1,C=1,z=-1073741823") != null);
+    try std.testing.expect(std.mem.find(u8, covered, "c=2,r=1") == null);
+
+    next = test_renderer.renderer.getNextBuffer();
+    try std.testing.expect(try next.drawImage(value, image_handle, 0, 0, 2, 1, 0, 0, 0, 0, 2, 1, .kitty));
+    next.fillRect(0, 0, 1, 1, ansi.rgbaFromFloats(0.0, 0.0, 1.0, 0.5));
+    try std.testing.expectEqual(renderer.RenderStatus.rendered, test_renderer.renderer.render(false));
+    try std.testing.expectEqual(@as(usize, 0), test_renderer.memory.lastWrite().len);
+
+    next = test_renderer.renderer.getNextBuffer();
+    try std.testing.expect(try next.drawImage(value, image_handle, 0, 0, 2, 1, 0, 0, 0, 0, 2, 1, .kitty));
+    try std.testing.expectEqual(renderer.RenderStatus.rendered, test_renderer.renderer.render(false));
+    const restored = test_renderer.memory.lastWrite();
+    try std.testing.expect(std.mem.find(u8, restored, "\x1b_Ga=t") == null);
+    try expectKittyPlacementsDeleted(&test_renderer, restored, 1);
+    try std.testing.expect(std.mem.find(u8, restored, "c=2,r=1,x=0,y=0,w=2,h=1,C=1,z=-1073741823") != null);
+}
+
+test "renderer deletes a fully covered Kitty placement" {
+    const pool = gp.initGlobalPool(std.testing.allocator);
+    defer gp.deinitGlobalPool();
+    defer link.deinitGlobalLinkPool();
+    var test_renderer = try TestRenderer.create(std.testing.allocator, 1, 1, pool);
+    defer test_renderer.deinit();
+    const value = try image.createFromRgba(std.testing.allocator, &[_]u8{ 255, 0, 0, 255 }, 1, 1, 4);
+    const image_handle = try handles.insert(.image, @ptrCast(value));
+    defer {
+        const token = handles.beginDestroy(image_handle, .image, image.Image).?;
+        token.ptr.deinit();
+        handles.finishDestroy(token.handle);
+    }
+
+    var next = test_renderer.renderer.getNextBuffer();
+    try std.testing.expect(try next.drawImage(value, image_handle, 0, 0, 1, 1, 0, 0, 0, 0, 1, 1, .kitty));
+    try std.testing.expectEqual(renderer.RenderStatus.rendered, test_renderer.renderer.render(true));
+
+    next = test_renderer.renderer.getNextBuffer();
+    try std.testing.expect(try next.drawImage(value, image_handle, 0, 0, 1, 1, 0, 0, 0, 0, 1, 1, .kitty));
+    next.fillRect(0, 0, 1, 1, ansi.rgbColor(0, 0, 255, 255));
+    try std.testing.expectEqual(renderer.RenderStatus.rendered, test_renderer.renderer.render(false));
+    const covered = test_renderer.memory.lastWrite();
+    try expectKittyPlacementsDeleted(&test_renderer, covered, 1);
+    try std.testing.expect(std.mem.find(u8, covered, "a=p") == null);
+    try std.testing.expect(std.mem.find(u8, covered, "\x1b_Ga=t") == null);
+}
+
+test "renderer keeps a Kitty image whole under an overlapping Kitty image" {
+    const pool = gp.initGlobalPool(std.testing.allocator);
+    defer gp.deinitGlobalPool();
+    defer link.deinitGlobalLinkPool();
+    var test_renderer = try TestRenderer.create(std.testing.allocator, 2, 1, pool);
+    defer test_renderer.deinit();
+    const red = try image.createFromRgba(std.testing.allocator, &[_]u8{
+        255, 0, 0, 255,
+        255, 0, 0, 255,
+    }, 2, 1, 8);
+    const transparent = try image.createFromRgba(std.testing.allocator, &[_]u8{ 0, 0, 0, 0 }, 1, 1, 4);
+    const red_handle = try handles.insert(.image, @ptrCast(red));
+    const transparent_handle = try handles.insert(.image, @ptrCast(transparent));
+    defer for ([_]u32{ transparent_handle, red_handle }) |handle| {
+        const token = handles.beginDestroy(handle, .image, image.Image).?;
+        token.ptr.deinit();
+        handles.finishDestroy(token.handle);
+    };
+
+    // The terminal composites Kitty placements by z, so the lower image keeps
+    // its full rectangle and shows through the upper image's alpha.
+    var next = test_renderer.renderer.getNextBuffer();
+    try std.testing.expect(try next.drawImage(red, red_handle, 0, 0, 2, 1, 0, 0, 0, 0, 2, 1, .kitty));
+    try std.testing.expect(try next.drawImage(transparent, transparent_handle, 1, 0, 1, 1, 0, 0, 0, 0, 1, 1, .kitty));
+    try std.testing.expectEqual(renderer.RenderStatus.rendered, test_renderer.renderer.render(true));
+    const layered = test_renderer.memory.lastWrite();
+    try std.testing.expect(std.mem.find(u8, layered, ",p=1,c=2,r=1,x=0,y=0,w=2,h=1,C=1,z=-1073741823") != null);
+    try std.testing.expect(std.mem.find(u8, layered, ",p=2,c=1,r=1,x=0,y=0,w=1,h=1,C=1,z=-1073741822") != null);
+    try std.testing.expect(std.mem.find(u8, layered, "p=2147483648") == null);
+
+    // Text paints the shared cell, so both placements lose it.
+    next = test_renderer.renderer.getNextBuffer();
+    try std.testing.expect(try next.drawImage(red, red_handle, 0, 0, 2, 1, 0, 0, 0, 0, 2, 1, .kitty));
+    try std.testing.expect(try next.drawImage(transparent, transparent_handle, 1, 0, 1, 1, 0, 0, 0, 0, 1, 1, .kitty));
+    try next.drawText("X", 1, 0, .{ 255, 255, 255, 255 }, null, 0);
+    try std.testing.expectEqual(renderer.RenderStatus.rendered, test_renderer.renderer.render(false));
+    const covered = test_renderer.memory.lastWrite();
+    try expectKittyPlacementsDeleted(&test_renderer, covered, 1);
+    try expectKittyPlacementsDeleted(&test_renderer, covered, 2);
+    try std.testing.expectEqual(@as(usize, 1), std.mem.count(u8, covered, "a=p"));
+    try std.testing.expect(std.mem.find(u8, covered, ",p=2147483648,c=1,r=1,x=0,y=0,w=1,h=1,C=1,z=-1073741823") != null);
+}
+
+test "renderer merges uncovered Kitty rows into one placement" {
+    const pool = gp.initGlobalPool(std.testing.allocator);
+    defer gp.deinitGlobalPool();
+    defer link.deinitGlobalLinkPool();
+    var test_renderer = try TestRenderer.create(std.testing.allocator, 2, 3, pool);
+    defer test_renderer.deinit();
+    var pixels: [2 * 3 * 4]u8 = undefined;
+    @memset(&pixels, 255);
+    const value = try image.createFromRgba(std.testing.allocator, &pixels, 2, 3, 2 * 4);
+    const image_handle = try handles.insert(.image, @ptrCast(value));
+    defer {
+        const token = handles.beginDestroy(image_handle, .image, image.Image).?;
+        token.ptr.deinit();
+        handles.finishDestroy(token.handle);
+    }
+
+    var next = test_renderer.renderer.getNextBuffer();
+    try std.testing.expect(try next.drawImage(value, image_handle, 0, 0, 2, 3, 0, 0, 0, 0, 2, 3, .kitty));
+    try std.testing.expectEqual(renderer.RenderStatus.rendered, test_renderer.renderer.render(true));
+
+    // Covering the top-left cell leaves one run on row 0 and two identical
+    // rows below it, which become a single two-row rectangle. Run ids are
+    // per owner and start at 2^31.
+    next = test_renderer.renderer.getNextBuffer();
+    try std.testing.expect(try next.drawImage(value, image_handle, 0, 0, 2, 3, 0, 0, 0, 0, 2, 3, .kitty));
+    next.fillRect(0, 0, 1, 1, ansi.rgbColor(0, 0, 255, 255));
+    try std.testing.expectEqual(renderer.RenderStatus.rendered, test_renderer.renderer.render(false));
+    const covered = test_renderer.memory.lastWrite();
+    try expectKittyPlacementsDeleted(&test_renderer, covered, 1);
+    try std.testing.expectEqual(@as(usize, 2), std.mem.count(u8, covered, "a=p"));
+    try std.testing.expect(std.mem.find(u8, covered, ",p=2147483648,c=1,r=1,x=1,y=0,w=1,h=1,C=1,z=-1073741823") != null);
+    try std.testing.expect(std.mem.find(u8, covered, ",p=2147483649,c=2,r=2,x=0,y=1,w=2,h=2,C=1,z=-1073741823") != null);
+
+    next = test_renderer.renderer.getNextBuffer();
+    try std.testing.expect(try next.drawImage(value, image_handle, 0, 0, 2, 3, 0, 0, 0, 0, 2, 3, .kitty));
+    try std.testing.expectEqual(renderer.RenderStatus.rendered, test_renderer.renderer.render(false));
+    const restored = test_renderer.memory.lastWrite();
+    try expectKittyPlacementsDeleted(&test_renderer, restored, 1);
+    try std.testing.expect(std.mem.find(u8, restored, ",p=1,c=2,r=3,x=0,y=0,w=2,h=3,C=1,z=-1073741823") != null);
+}
+
+test "renderer deletes committed Kitty runs after a failed frame" {
+    const pool = gp.initGlobalPool(std.testing.allocator);
+    defer gp.deinitGlobalPool();
+    defer link.deinitGlobalLinkPool();
+    var test_renderer = try TestRenderer.create(std.testing.allocator, 2, 1, pool);
+    defer test_renderer.deinit();
+    test_renderer.renderer.terminal.caps.sixel = true;
+    const value = try image.createFromRgba(std.testing.allocator, &[_]u8{
+        255, 0,   0, 255,
+        0,   255, 0, 255,
+    }, 2, 1, 8);
+    const sixel = try image.createFromRgba(std.testing.allocator, &[_]u8{ 0, 0, 255, 255 }, 1, 1, 4);
+    const image_handle = try handles.insert(.image, @ptrCast(value));
+    const sixel_handle = try handles.insert(.image, @ptrCast(sixel));
+    defer for ([_]u32{ sixel_handle, image_handle }) |handle| {
+        const token = handles.beginDestroy(handle, .image, image.Image).?;
+        token.ptr.deinit();
+        handles.finishDestroy(token.handle);
+    };
+    // Both image lists swap on commit, so size both before the first frame.
+    try test_renderer.renderer.imageDirty.ensureTotalCapacity(std.testing.allocator, 2);
+    try test_renderer.renderer.pendingImages.ensureTotalCapacity(std.testing.allocator, 2);
+    try test_renderer.renderer.currentImages.ensureTotalCapacity(std.testing.allocator, 2);
+
+    var next = test_renderer.renderer.getNextBuffer();
+    try std.testing.expect(try next.drawImage(value, image_handle, 0, 0, 2, 1, 0, 0, 0, 0, 2, 1, .kitty));
+    next.fillRect(0, 0, 1, 1, ansi.rgbColor(0, 0, 255, 255));
+    try std.testing.expectEqual(renderer.RenderStatus.rendered, test_renderer.renderer.render(true));
+    try std.testing.expect(std.mem.find(u8, test_renderer.memory.lastWrite(), ",p=2147483648,c=1,r=1,x=1,y=0,w=1,h=1") != null);
+
+    // Coverage moves, the run delete is written, then Sixel preparation fails
+    // and the whole frame is dropped. The terminal still shows the first run.
+    next = test_renderer.renderer.getNextBuffer();
+    try std.testing.expect(try next.drawImage(value, image_handle, 0, 0, 2, 1, 0, 0, 0, 0, 2, 1, .kitty));
+    next.fillRect(1, 0, 1, 1, ansi.rgbColor(0, 0, 255, 255));
+    try std.testing.expect(try next.drawImage(sixel, sixel_handle, 1, 0, 1, 1, 2, 2, 0, 0, 1, 1, .sixel));
+    const written_before = test_renderer.memory.bytes.items.len;
+    var failing = std.testing.FailingAllocator.init(std.testing.allocator, .{ .fail_index = 0 });
+    test_renderer.renderer.allocator = failing.allocator();
+    const status = test_renderer.renderer.render(false);
+    test_renderer.renderer.allocator = std.testing.allocator;
+    try std.testing.expect(failing.has_induced_failure);
+    try std.testing.expectEqual(renderer.RenderStatus.failed, status);
+    try std.testing.expectEqual(written_before, test_renderer.memory.bytes.items.len);
+
+    // The forced repaint must delete the run that is actually on the terminal
+    // without freeing the image, then place the new run.
+    next = test_renderer.renderer.getNextBuffer();
+    try std.testing.expect(try next.drawImage(value, image_handle, 0, 0, 2, 1, 0, 0, 0, 0, 2, 1, .kitty));
+    next.fillRect(1, 0, 1, 1, ansi.rgbColor(0, 0, 255, 255));
+    try std.testing.expectEqual(renderer.RenderStatus.rendered, test_renderer.renderer.render(false));
+    const recovered = test_renderer.memory.lastWrite();
+    try expectKittyPlacementsDeleted(&test_renderer, recovered, 1);
+    try std.testing.expect(std.mem.find(u8, recovered, "\x1b_Ga=t") == null);
+    try std.testing.expect(std.mem.find(u8, recovered, ",p=2147483648,c=1,r=1,x=0,y=0,w=1,h=1") != null);
 }
 
 test "renderer splits changed background runs around clean Kitty image cells" {
@@ -2644,10 +2866,41 @@ test "renderer - split scrollback uses native Kitty when Kitty is selected" {
     const output = test_renderer.memory.lastWrite();
     try std.testing.expect(std.mem.find(u8, output, "\x1b_Ga=t") != null);
     try std.testing.expect(std.mem.find(u8, output, "\x1b_Ga=p") != null);
+    try std.testing.expect(std.mem.find(u8, output, "C=1,z=-1073741823") != null);
     try std.testing.expect(std.mem.find(u8, output, ",U=1,") == null);
     try std.testing.expect(std.mem.find(u8, output, "\u{10EEEE}") == null);
     try std.testing.expect(std.mem.find(u8, output, "█") == null);
     try std.testing.expect(std.mem.find(u8, output, "48;2;1;2;3") == null);
+}
+
+test "renderer - split scrollback covered Kitty image uses blocks" {
+    const pool = gp.initGlobalPool(std.testing.allocator);
+    defer gp.deinitGlobalPool();
+    var local_link_pool = link.LinkPool.init(std.testing.allocator);
+    defer local_link_pool.deinit();
+    var test_renderer = try TestRenderer.create(std.testing.allocator, 4, 3, pool);
+    defer test_renderer.deinit();
+    const value = try image.createFromRgba(std.testing.allocator, &[_]u8{ 255, 0, 0, 255 }, 1, 1, 4);
+    const image_handle = try handles.insert(.image, @ptrCast(value));
+    defer {
+        const token = handles.beginDestroy(image_handle, .image, image.Image).?;
+        token.ptr.deinit();
+        handles.finishDestroy(token.handle);
+    }
+    test_renderer.renderer.terminal.processCapabilityResponse("\x1b_Gi=31337;OK\x1b\\");
+    var snapshot = try OptimizedBuffer.init(std.testing.allocator, 2, 1, .{ .pool = pool, .link_pool = &local_link_pool });
+    defer snapshot.deinit();
+    try std.testing.expect(try snapshot.drawImage(value, image_handle, 0, 0, 2, 1, 0, 0, 0, 0, 1, 1, .auto));
+    try snapshot.drawText("X", 0, 0, .{ 255, 255, 255, 255 }, null, 0);
+    _ = test_renderer.renderer.resetSplitScrollback(2, 2);
+
+    const result = test_renderer.renderer.commitSplitFooterSnapshotBatched(snapshot, 2, false, true, 2, false, true, true);
+    try std.testing.expectEqual(renderer.RenderStatus.rendered, result.status);
+    const output = test_renderer.memory.lastWrite();
+    try std.testing.expect(std.mem.find(u8, output, "\x1b_Ga=p") == null);
+    try std.testing.expect(std.mem.find(u8, output, "\x1b_Ga=t") == null);
+    try std.testing.expect(std.mem.findScalar(u8, output, 'X') != null);
+    try std.testing.expect(std.mem.find(u8, output, "█") != null);
 }
 
 test "renderer - split scrollback images remain addressable before and across pinning" {
