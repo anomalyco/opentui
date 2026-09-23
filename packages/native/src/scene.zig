@@ -1299,17 +1299,16 @@ pub const Scene = struct {
                 continue;
             }
             if (builtin.is_test) self.test_paint_setups += 1;
+            // A natively composed image buffer receives its node's hook drawing, like its body.
+            const surface = if (node.kind == api.OT_SCENE_IMAGE) node.control.image.buffer else null;
             try enterMember(target, member);
             if (node.kind == api.OT_SCENE_IMAGE) try beginImagePaint(node.control.image, member.layout);
-            try scene_record.play(owner, target, recording, segments[0]);
-            try enterMember(target, member);
+            try playPhase(owner, target, surface, member, recording, segments[0]);
             if (hooks & api.OT_SCENE_HOOK_RENDER_SELF != 0) {
-                try scene_record.play(owner, target, recording, segments[1]);
-                try enterMember(target, member);
+                try playPhase(owner, target, surface, member, recording, segments[1]);
             } else try self.paintNode(cli, entry);
             if (node.kind == api.OT_SCENE_EDITOR) try self.paintEditorCursor(cli, node, member.layout);
-            try scene_record.play(owner, target, recording, segments[2]);
-            try enterMember(target, member);
+            try playPhase(owner, target, surface, member, recording, segments[2]);
             if (node.kind == api.OT_SCENE_IMAGE) try finishImagePaint(target, node.control.image, member.layout);
             addHit(cli, member.layout, member.clip, node.num, node.token, options);
         }
@@ -1322,6 +1321,20 @@ pub const Scene = struct {
         target.clearOpacity();
         try target.pushScissorRect(member.clip.x, member.clip.y, member.clip.width, member.clip.height);
         try target.pushOpacity(member.opacity);
+    }
+
+    /// Play one phase into the frame, or into the node's own buffer with empty stacks.
+    fn playPhase(owner: *Context, target: *buffer.OptimizedBuffer, surface: ?*buffer.OptimizedBuffer, member: PaintMember, recording: []const u8, segment: scene_record.Segment) !void {
+        if (segment.start == segment.end) return;
+        const local = surface orelse {
+            try scene_record.play(owner, target, 1, recording, segment);
+            return enterMember(target, member);
+        };
+        defer local.clearScissorRects();
+        defer local.clearOpacity();
+        local.clearScissorRects();
+        local.clearOpacity();
+        try scene_record.play(owner, local, 0, recording, segment);
     }
 
     fn paintNode(self: *Scene, cli: *renderer.CliRenderer, entry: Work) !void {

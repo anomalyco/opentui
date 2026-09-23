@@ -211,14 +211,14 @@ pub fn index(bytes: []const u8, slots: []const PaintSlot, segments: []Segments) 
     }
 }
 
-/// Play one indexed segment on the Session's next buffer. The caller owns the
-/// scene clip and opacity entries at the bottom of the target's stacks.
-pub fn play(owner: *Context, target: *buffer.OptimizedBuffer, bytes: []const u8, segment: Segment) !void {
+/// Play one indexed segment. The caller owns the first floor entries of the
+/// target's clip and opacity stacks.
+pub fn play(owner: *Context, target: *buffer.OptimizedBuffer, floor: usize, bytes: []const u8, segment: Segment) !void {
     var offset: usize = segment.start;
     while (offset < segment.end) {
         const header = try fixed(c.ot_scene_record_header, bytes[offset..]);
         const body = bytes[offset..][0..header.size];
-        run(owner, target, header.operation, body) catch |err| switch (err) {
+        run(owner, target, floor, header.operation, body) catch |err| switch (err) {
             error.StaleHandle => {},
             else => return err,
         };
@@ -226,7 +226,7 @@ pub fn play(owner: *Context, target: *buffer.OptimizedBuffer, bytes: []const u8,
     }
 }
 
-fn run(owner: *Context, target: *buffer.OptimizedBuffer, operation: u32, body: []const u8) !void {
+fn run(owner: *Context, target: *buffer.OptimizedBuffer, floor: usize, operation: u32, body: []const u8) !void {
     switch (operation) {
         c.OT_SCENE_RECORD_DRAW => {
             const value = try fixed(c.ot_scene_record_draw, body);
@@ -243,7 +243,7 @@ fn run(owner: *Context, target: *buffer.OptimizedBuffer, operation: u32, body: [
         c.OT_SCENE_RECORD_STACK => {
             const value = try fixed(c.ot_scene_record_stack, body);
             if (value.operation > c.OT_BUFFER_STACK_CLEAR_OPACITY) return error.InvalidOptions;
-            _ = try Context.bufferStackOn(target, 1, .{
+            _ = try Context.bufferStackOn(target, floor, .{
                 .operation = @enumFromInt(value.operation),
                 .x = value.x,
                 .y = value.y,

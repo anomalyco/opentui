@@ -116,6 +116,7 @@ Native code plays each node's phases around its own drawing, before its children
 An after hook on the box would therefore draw before the label, not after the whole subtree.
 Sibling `zIndex` determines local paint order. It is not a global sort of all nodes.
 Each phase starts with only the slot's clip and opacity. Stack commands apply above that entry.
+An `IMAGE` node with a backing buffer from `ot_scene_set_image` is the exception: its phases draw into that buffer, in buffer coordinates, before native code composes it.
 
 Commands read the resources they name when native code plays them, not when the host records them.
 A command whose buffer, view, image, node, or Unicode handle was destroyed before playback draws nothing.
