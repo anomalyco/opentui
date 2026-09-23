@@ -228,8 +228,8 @@ To copy resolved UTF-8, use `ot_buffer_lease_get_real_char_size` and `ot_buffer_
 Color entries use the low byte for a channel. Higher bits can preserve indexed-color or terminal-default intent.
 Do not discard that metadata when applying a raw color effect.
 
-During a scene draft, framebuffer access also requires the current frame ticket.
-The ticket identifies the permitted paint position. The lease keeps storage alive. Neither reports output delivery.
+During a scene draft, framebuffer access also requires the draft's `DONE` ticket.
+The ticket identifies the finished frame. The lease keeps storage alive. Neither reports output delivery.
 [Frames and output](/docs/native/frames#access-the-framebuffer) shows how those roles fit together.
 
 ## Finish work before destroying owners

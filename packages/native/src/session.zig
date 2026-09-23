@@ -519,13 +519,13 @@ pub const Session = struct {
 
     pub fn checkLayoutIdle(self: *const Session) Error!void {
         if (self.scene) |owned| {
-            if (owned.attempt != null and !owned.isPainting()) return error.FrameBusy;
+            if (owned.attempt != null) return error.FrameBusy;
         }
     }
 
     pub fn cancelSceneFrame(self: *Session) void {
         if (self.scene) |owned| {
-            if (owned.painted != null or owned.isPainting()) {
+            if (owned.painted != null) {
                 if (self.renderer) |attached| {
                     @memset(attached.nextHitGrid, 0);
                     attached.getNextBuffer().clearScissorRects();
@@ -564,7 +564,7 @@ pub const Session = struct {
 
     pub fn suspendTerminal(self: *Session) Error!void {
         try self.checkOpen();
-        const preparation_yielded = if (self.scene) |owned| owned.isYielded() and !owned.isPainting() else false;
+        const preparation_yielded = if (self.scene) |owned| owned.isYielded() else false;
         if (!preparation_yielded) try self.checkLayoutIdle();
         switch (self.lifecycle.phase) {
             .suspending, .suspended => return,

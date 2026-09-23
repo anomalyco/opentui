@@ -446,15 +446,12 @@ typedef struct ot_scene_cursor_state {
 #define OT_SCENE_HOOK_RENDER_AFTER UINT32_C(16)
 #define OT_SCENE_HOOK_RENDER_SELF UINT32_C(32)
 #define OT_SCENE_HOOK_IDLE_UPDATE UINT32_C(64)
-#define OT_SCENE_HOOK_RESUME_NATIVE_TEXT UINT32_C(128)
 #define OT_SCENE_FRAME_DONE UINT32_C(0)
 #define OT_SCENE_FRAME_UPDATE UINT32_C(1)
 #define OT_SCENE_FRAME_RESIZE UINT32_C(2)
 #define OT_SCENE_FRAME_LAYOUT_CHANGED UINT32_C(3)
-#define OT_SCENE_FRAME_RENDER_BEFORE UINT32_C(4)
-#define OT_SCENE_FRAME_RENDER_AFTER UINT32_C(5)
-#define OT_SCENE_FRAME_YIELD UINT32_C(6)
-#define OT_SCENE_FRAME_RENDER_SELF UINT32_C(7)
+#define OT_SCENE_FRAME_RECORD UINT32_C(4)
+#define OT_SCENE_FRAME_YIELD UINT32_C(5)
 
 typedef struct ot_scene_hooks {
     uint32_t struct_size;
@@ -505,6 +502,26 @@ typedef struct ot_scene_frame_geometry {
     ot_scene_layout public_layout;
 } ot_scene_frame_geometry;
 
+/* One node whose paint hooks a RECORD request asks the host to record, in paint
+ * order. hooks holds the RENDER_BEFORE, RENDER_SELF, and RENDER_AFTER bits to
+ * record. paint is the prepared geometry native code paints at; clip and opacity
+ * are the inherited paint state. flags has OT_SCENE_GEOMETRY_PAINT and, when the
+ * public observation succeeded, OT_SCENE_GEOMETRY_PUBLIC. */
+typedef struct ot_scene_paint_slot {
+    ot_handle node;
+    uint64_t hook_generation;
+    uint32_t num;
+    uint32_t hooks;
+    int32_t clip_x;
+    int32_t clip_y;
+    uint32_t clip_width;
+    uint32_t clip_height;
+    float opacity;
+    uint32_t flags;
+    ot_scene_layout paint;
+    ot_scene_layout public_layout;
+} ot_scene_paint_slot;
+
 /* All phase records require exact size/version and zero reserved fields. Hook
  * generations are nonzero and must increase on every change. Initial dimensions
  * seed the resize baseline only before the first layout. Later subscriptions use
@@ -512,8 +529,6 @@ typedef struct ot_scene_frame_geometry {
  * IDLE_UPDATE consumes the normal update position without a host request or callback.
  * It does not count as a host hook and cannot be combined with UPDATE.
  * Non-root nodes accept RENDER_BEFORE, RENDER_SELF, and RENDER_AFTER.
- * TEXT, EDITOR, and TEXT_VIEW require RENDER_SELF when RENDER_BEFORE is set, because
- * their native drawing resources retire with the node. RENDER_AFTER alone is allowed.
  * Root paint flags are rejected.
  * Rejected registrations leave hook flags, generation, and resize baselines unchanged.
  * No custom measurement or native-to-host callbacks are installed. */
@@ -527,65 +542,75 @@ ot_status ot_scene_set_hooks(ot_context *, const ot_handle *node, const ot_scene
  * UPDATE runs at most once per node per attempt; getter refresh
  * and resize ordering preserve the mounted and newly placed node contracts.
  * LAYOUT_CHANGED follows an actual Yoga solve, before updates. Layout/preparation
- * limits fail before paint. Request limits also apply during painting. Failure
- * cancels the attempt without presenting partial cells or rolling back mutations.
- * RENDER_BEFORE and RENDER_AFTER bracket a node's own drawing, before children.
- * RENDER_SELF replaces native self drawing with a checked host drawing request.
- * Native editor cursor maintenance follows RENDER_SELF, before RENDER_AFTER.
- * Prepared membership, clipping, and opacity stay fixed. Later paint values and
- * explicitly changed node translations remain live. New nodes wait for the next
- * frame; reparented nodes keep their scheduled positions. Destroyed upcoming nodes
- * skip; an entered node retains its own drawing and after request without reviving
- * its handle or hit identity. Release every qualified scope before resuming.
+ * limits fail before paint. Failure cancels the attempt without presenting
+ * partial cells or rolling back mutations.
+ *
+ * When preparation finishes and a visible node has paint hooks, the step returns
+ * one RECORD request instead of painting. It names the root and counts as one host
+ * request. Read its slots with ot_scene_frame_get_paint_slots, run every slot's
+ * hooks in slot order, and acknowledge the RECORD ticket with the recording: one
+ * byte stream of ot_scene_record_* records (see ot_scene_record_header). Native
+ * code then paints the whole frame in one pass and returns DONE. At each slot,
+ * it plays RENDER_BEFORE, then RENDER_SELF in place of the node's native body,
+ * then native editor cursor maintenance, then RENDER_AFTER, before the node's
+ * children. A slot without a recorded phase draws nothing for that phase.
+ * recording must be NULL with zero length for every other acknowledgement.
+ *
+ * Hooks run before painting starts. Membership, geometry, clipping, and opacity
+ * stay as prepared for the RECORD request; later paint values stay live.
+ * Destroyed slot nodes and destroyed paint members are skipped with their
+ * recordings and hits. New nodes wait for the next frame. Layout mutations mark
+ * the next frame dirty. During RECORD, render, resize, setup, and suspend reject
+ * with OT_FRAME_BUSY, and the ticket grants no buffer access.
+ *
  * DONE names a retained painted draft, not presentation or a preparation attempt.
- * Native code retains its membership, destination, and storage identity. Neither
- * a paint request nor DONE acquires a buffer lease automatically. Acquire
- * qualified access below only when needed, and explicitly commit or cancel the
- * draft before another frame.
+ * Native code retains its membership, destination, and storage identity. DONE
+ * does not acquire a buffer lease automatically. Acquire qualified access below
+ * only when needed, and explicitly commit or cancel the draft before another frame.
  * During preparation without an explicit YIELD, render, resize, buffer draw,
  * buffer borrowing, setup, and suspend reject with OT_FRAME_BUSY. Close,
  * cancellation, root destruction, and owner teardown invalidate preparation
  * attempts. At an explicit YIELD, an accepted dimension change cancels the
  * attempt; rejection preserves it. Suspension validates terminal phase first
  * and cancels only a preparation/feedback YIELD, without discarding admitted output.
- * During a synchronous paint-hook pause, resize requalifies storage without
- * rebuilding membership. During paint pauses, setup and suspend retain the
- * ticket and existing scopes but prevent new access or continuation while
- * terminal-inactive.
- * Root destruction retains the current scope until cancellation, but cannot resume
- * painting. After DONE, destroying nodes
- * or the root leaves painted cells and capture intact without repainting. Commit,
- * frame or Session cancellation, and owner teardown still end draft access.
+ * After DONE, destroying nodes or the root leaves painted cells and capture intact
+ * without repainting. Commit, frame or Session cancellation, and owner teardown
+ * still end draft access.
  *
- * Painting never yields: once painting starts, it completes within host hook
- * requests. max_work_items is a positive quota for preparation node visits,
- * candidate-view preparation, and feedback records. Hook replies clamp remaining
- * work without replenishing it; an exact YIELD reply starts another work quota.
- * Zero rejects without consuming a request. A mutation accepted at a YIELD
+ * Painting never yields. max_work_items is a positive quota for preparation node
+ * visits, candidate-view preparation, and feedback records. Hook replies clamp
+ * remaining work without replenishing it; an exact YIELD reply starts another work
+ * quota. Zero rejects without consuming a request. A mutation accepted at a YIELD
  * that dirties preparation restarts it once; the restarted work runs without
  * further yields, so steady mutations cannot exhaust max_layout_rounds.
- * YIELD has kind 6, names the root, and requires the exact returned ticket; num,
- * width, height, and hook_generation are zero. It grants no buffer access or
- * commit authority and does not count against max_host_requests. Request IDs
- * increase across both hooks and YIELD. UINT32_MAX selects synchronous
- * preparation only on begin or an exact YIELD reply. A hook reply cannot switch
- * an already-bounded run to uncharged preparation. The quota bounds counted work
- * items, not cells or elapsed time. Yoga, allocation/reservation, final
- * paint-list preparation and publication, painting, and output encoding remain
- * synchronous.
+ * YIELD names the root and requires the exact returned ticket; num, width,
+ * height, and hook_generation are zero. It grants no buffer access or commit
+ * authority and does not count against max_host_requests. Request IDs increase
+ * across both hooks and YIELD. UINT32_MAX selects synchronous preparation only on
+ * begin or an exact YIELD reply. A hook reply cannot switch an already-bounded run
+ * to uncharged preparation. The quota bounds counted work items, not cells or
+ * elapsed time. Yoga, allocation/reservation, final paint-list preparation and
+ * publication, painting, and output encoding remain synchronous.
  *
  * Geometry observations are produced after phase publication.
  * Geometry is not ticket authority and must not be echoed in acknowledgements.
  * Each flag marks a valid snapshot; absent snapshots are zeroed, including for
- * destroyed continuations, DONE and YIELD. Observation failures do not fail the
- * step: a caller needing that observation must use the checked layout query.
+ * RECORD, DONE, and YIELD. Observation failures do not fail the step: a caller
+ * needing that observation must use the checked layout query.
  * Accepted mutations may invalidate these snapshots before the next step.
  * out_geometry requires exact size/version and zero reserved before advancement.
  * All buffers are borrowed only for this call. previous may alias out_request;
  * the two output records must be distinct. */
 ot_status ot_scene_frame_step_with_geometry(ot_context *, const ot_handle *session,
     const ot_scene_frame_request *previous, const ot_scene_frame_options *, uint32_t max_work_items,
+    const uint8_t *recording, uint32_t recording_length,
     ot_scene_frame_request *out_request, ot_scene_frame_geometry *out_geometry);
+/* Copy the slots of the exact pending RECORD request. out_count receives the total
+ * slot count; min(capacity, total) slots are written in paint order. NULL out_slots
+ * requires zero capacity. Recording refers to slots by their index. */
+ot_status ot_scene_frame_get_paint_slots(ot_context *, const ot_handle *session,
+    const ot_scene_frame_request *record_request, ot_scene_paint_slot *out_slots,
+    uint32_t capacity, uint32_t *out_count);
 /* Cancel preparation or a retained painted draft. A stale frame ID rejects without
  * cancelling the active frame. Cancellation immediately revokes qualified access
  * and submission; pending hits cannot publish. Release every acquired scope even
@@ -774,9 +799,8 @@ ot_status ot_scene_get_text_lines(ot_context *, const ot_handle *node, ot_scene_
  * combine that geometry with current accepted ancestor relationships
  * and translations immediately, without running layout. OT_LAYOUT_YOGA instead
  * copies the six actual Yoga computed values, including zero dimensions, and
- * sets screen_x/y to zero. OT_LAYOUT_PAINT copies cached paint geometry, including
- * screen_x/y. During a paint prefix, reparenting and ancestor translations do not
- * change those coordinates; the node's own translation setters refresh them.
+ * sets screen_x/y to zero. OT_LAYOUT_PAINT copies prepared paint geometry, including
+ * screen_x/y. During a RECORD request, mutations do not change those coordinates.
  * These reads do not run layout. Other selectors reject without changing output. */
 ot_status ot_scene_get_layout(ot_context *, const ot_handle *node, uint32_t observation, ot_scene_layout *out_layout);
 /* Paint a hook-free scene and retain its DONE draft in out_frame. Commit it with
@@ -1681,10 +1705,6 @@ ot_status ot_text_buffer_view_measure(ot_context *, const ot_handle *, uint32_t 
 ot_status ot_scene_set_text_view(ot_context *, const ot_handle *node, const ot_handle *view);
 /* Only gates built-in painting, not layout, viewport preparation or hit membership. */
 ot_status ot_scene_set_text_view_paint(ot_context *, const ot_handle *node, uint32_t enabled);
-/* Select native text drawing for the exact active self request, independently
- * of the persistent paint gate. Reuses the existing frame request record. */
-ot_status ot_scene_select_text_view_paint(ot_context *, const ot_handle *node,
-    const ot_scene_frame_request *, uint32_t enabled);
 /* NULL frame selects an owned offscreen buffer. A frame requires the exact active
  * custom paint destination. The source view must belong to this Context. */
 ot_status ot_buffer_draw_text_view(ot_context *, const ot_handle *target, const ot_scene_frame_request *,
@@ -1840,8 +1860,7 @@ typedef struct ot_buffer_lease_snapshot {
     uint64_t reserved;
 } ot_buffer_lease_snapshot;
 
-/* Acquire local frame access for the exact pending RENDER_BEFORE, RENDER_SELF,
- * RENDER_AFTER, or retained DONE record. which is
+/* Acquire local frame access for the exact retained DONE record. which is
  * OT_SESSION_BUFFER_CURRENT or NEXT. Both require this qualified operation while
  * a draft is live; ordinary Session draw, render, and borrowing cannot bypass it.
  * The frame and snapshot require exact size/version and zero reserved fields.
@@ -1849,7 +1868,7 @@ typedef struct ot_buffer_lease_snapshot {
  * validates frame membership, destination, and storage identity; copied or forged
  * record fields do not replace that validation. Existing lease limits, raw-plane
  * restrictions, validation, capture, and release operations apply.
- * Release all qualified scopes before resume, commit, or a new frame, including stale ones.
+ * Release all qualified scopes before commit or a new frame, including stale ones.
  * An accepted size-changing resize replaces and requalifies draft storage natively
  * without repainting. Old scopes return OT_STALE_LEASE; later acquisitions use the
  * new size with the same request record. Setup before the first accepted frame and
@@ -2120,8 +2139,8 @@ ot_status ot_buffer_resize(
     uint32_t width,
     uint32_t height);
 
-/* Draw into an owned buffer, or a Session's next buffer with the exact active
- * prefix/painted ticket. frame must be NULL for an owned buffer and non-NULL
+/* Draw into an owned buffer, or a Session's next buffer with the exact retained
+ * DONE ticket. frame must be NULL for an owned buffer and non-NULL
  * for a Session. source is a same-Context buffer for COMPOSE only.
  * text is used only for TEXT or the BOX top title; bottom_title is BOX-only.
  * Other operations require zero byte counts for unused spans.
@@ -2149,8 +2168,7 @@ ot_status ot_buffer_draw(ot_context *context, const ot_handle *target,
  * Opacity must be finite and is clamped to [0, 1]. Pass it as a one-float
  * buffer so host FFI can keep the portable integer/buffer calling convention.
  * Only PUSH operations use their corresponding rectangle/opacity arguments.
- * Pop on an empty custom stack is a no-op. Pop/clear cannot remove inherited
- * scene clip or opacity. Custom frame stacks reset on callback acknowledgement
+ * Pop on an empty custom stack is a no-op. Custom frame stacks reset on commit
  * or frame cancellation; owned buffer stacks persist until explicitly
  * popped/cleared or destroyed. out_opacity is required and receives the
  * effective opacity on success only. */
@@ -2204,6 +2222,162 @@ ot_status ot_buffer_draw_grayscale(ot_context *, const ot_handle *, const ot_sce
 ot_status ot_buffer_color_matrix(ot_context *, const ot_handle *, const ot_scene_frame_request *,
     const float *matrix, uint32_t matrix_count, const float *mask, uint32_t mask_count,
     const float *strength, uint32_t channel);
+
+/* A paint recording acknowledges a RECORD request. It is one byte stream of
+ * records. The stream must be 8-byte aligned and at most OT_SCENE_RECORD_BYTES_MAX
+ * bytes. Every record starts with ot_scene_record_header; size counts the whole
+ * record, including its trailing variable data, rounded up to a multiple of 8
+ * with zero padding. Reserved fields must be zero.
+ *
+ * A SLOT record starts the commands for one phase of one slot. Slots and phases
+ * must appear in increasing order, at most once, and only for phases set in the
+ * slot's hooks. Every other record belongs to the latest SLOT record. The stream
+ * is validated before painting; an invalid stream fails the step and cancels the
+ * attempt without presenting cells.
+ *
+ * Commands draw into the Session's next buffer with the same rules as the named
+ * operations, inside the slot's clip and opacity. STACK entries apply above that
+ * scene-owned entry and reset between phases. Native code plays each command when
+ * it paints the slot, so a command that names a buffer, view, image, node, or
+ * Unicode handle reads that resource then, not when it was recorded. A command
+ * whose resource was destroyed before playback draws nothing. Other invalid
+ * commands fail the step without presenting cells. */
+#define OT_SCENE_RECORD_BYTES_MAX UINT32_C(67108864)
+#define OT_SCENE_RECORD_PHASE_BEFORE UINT32_C(0)
+#define OT_SCENE_RECORD_PHASE_SELF UINT32_C(1)
+#define OT_SCENE_RECORD_PHASE_AFTER UINT32_C(2)
+#define OT_SCENE_RECORD_SLOT UINT32_C(0)
+#define OT_SCENE_RECORD_DRAW UINT32_C(1)
+#define OT_SCENE_RECORD_STACK UINT32_C(2)
+#define OT_SCENE_RECORD_GRID UINT32_C(3)
+#define OT_SCENE_RECORD_PACKED UINT32_C(4)
+#define OT_SCENE_RECORD_SUPERSAMPLE UINT32_C(5)
+#define OT_SCENE_RECORD_GRAYSCALE UINT32_C(6)
+#define OT_SCENE_RECORD_COLOR_MATRIX UINT32_C(7)
+#define OT_SCENE_RECORD_TEXT_VIEW UINT32_C(8)
+#define OT_SCENE_RECORD_EDITOR_VIEW UINT32_C(9)
+#define OT_SCENE_RECORD_SCENE_TEXT UINT32_C(10)
+#define OT_SCENE_RECORD_IMAGE UINT32_C(11)
+#define OT_SCENE_RECORD_UNICODE UINT32_C(12)
+#define OT_SCENE_RECORD_GRAYSCALE_FOREGROUND UINT32_C(1)
+#define OT_SCENE_RECORD_GRAYSCALE_BACKGROUND UINT32_C(2)
+#define OT_SCENE_RECORD_GRAYSCALE_SUPERSAMPLED UINT32_C(4)
+
+typedef struct ot_scene_record_header {
+    uint32_t size;
+    uint32_t operation;
+} ot_scene_record_header;
+
+typedef struct ot_scene_record_slot {
+    ot_scene_record_header header;
+    uint32_t slot;
+    uint32_t phase;
+} ot_scene_record_slot;
+
+/* Followed by one complete ot_buffer_draw_* record, then text_length text bytes
+ * and bottom_length bottom-title bytes, as for ot_buffer_draw. source names the
+ * COMPOSE source and must be zero otherwise. RESPECT_ALPHA rejects. */
+typedef struct ot_scene_record_draw {
+    ot_scene_record_header header;
+    ot_handle source;
+    uint32_t text_length;
+    uint32_t bottom_length;
+} ot_scene_record_draw;
+
+/* As for ot_buffer_stack. */
+typedef struct ot_scene_record_stack {
+    ot_scene_record_header header;
+    uint32_t operation;
+    int32_t x;
+    int32_t y;
+    uint32_t width;
+    uint32_t height;
+    float opacity;
+} ot_scene_record_stack;
+
+/* Followed by column_count and then row_count int32_t offsets, as for
+ * ot_buffer_draw_grid. */
+typedef struct ot_scene_record_grid {
+    ot_scene_record_header header;
+    ot_buffer_grid_options options;
+    uint32_t column_count;
+    uint32_t row_count;
+} ot_scene_record_grid;
+
+/* Followed by byte_count bytes, as for ot_buffer_draw_packed. */
+typedef struct ot_scene_record_packed {
+    ot_scene_record_header header;
+    uint32_t x;
+    uint32_t y;
+    uint32_t width;
+    uint32_t height;
+    uint32_t byte_count;
+    uint32_t reserved;
+} ot_scene_record_packed;
+
+/* Followed by byte_count bytes, as for ot_buffer_draw_supersample. */
+typedef struct ot_scene_record_supersample {
+    ot_scene_record_header header;
+    uint32_t x;
+    uint32_t y;
+    uint32_t format;
+    uint32_t stride;
+    uint32_t byte_count;
+    uint32_t reserved;
+} ot_scene_record_supersample;
+
+/* Followed by sample_count floats, as for ot_buffer_draw_grayscale. flags
+ * selects the optional colors and supersampling. */
+typedef struct ot_scene_record_grayscale {
+    ot_scene_record_header header;
+    int32_t x;
+    int32_t y;
+    uint32_t width;
+    uint32_t height;
+    uint32_t flags;
+    uint32_t sample_count;
+    uint16_t foreground[4];
+    uint16_t background[4];
+} ot_scene_record_grayscale;
+
+/* Followed by mask_count floats, as for ot_buffer_color_matrix. has_mask 0
+ * selects uniform application and requires zero mask_count. */
+typedef struct ot_scene_record_color_matrix {
+    ot_scene_record_header header;
+    float matrix[16];
+    float strength;
+    uint32_t channel;
+    uint32_t has_mask;
+    uint32_t mask_count;
+} ot_scene_record_color_matrix;
+
+/* TEXT_VIEW, EDITOR_VIEW, and SCENE_TEXT draw a text-buffer view, an editor
+ * view, or a scene text node, as for their ot_buffer_draw_* operations. */
+typedef struct ot_scene_record_view {
+    ot_scene_record_header header;
+    ot_handle source;
+    int32_t x;
+    int32_t y;
+} ot_scene_record_view;
+
+/* As for ot_buffer_draw_image. */
+typedef struct ot_scene_record_image {
+    ot_scene_record_header header;
+    ot_handle image;
+    ot_image_draw_options options;
+} ot_scene_record_image;
+
+/* As for ot_buffer_draw_unicode. */
+typedef struct ot_scene_record_unicode {
+    ot_scene_record_header header;
+    ot_handle unicode;
+    uint32_t index;
+    int32_t x;
+    int32_t y;
+    uint32_t attributes;
+    uint16_t foreground[4];
+    uint16_t background[4];
+} ot_scene_record_unicode;
 
 /* Retain one offscreen storage generation under the same limits and raw-plane
  * restrictions as Session leases. The snapshot requires exact size/version and
@@ -2268,8 +2442,7 @@ ot_status ot_session_draw_buffer(
     int32_t y);
 
 /* Same resource and coordinate rules as ot_session_draw_buffer, but authorized
- * by a current before/self/after-paint request or painted draft. Preserves the native
- * fixed-membership paint scope, including scissor and opacity. No source borrow
+ * by a retained DONE draft. No source borrow
  * survives return; pending presentation and stale tickets reject drawing. */
 ot_status ot_scene_frame_draw_buffer(ot_context *context, const ot_handle *session,
     const ot_scene_frame_request *frame_request, const ot_handle *source, int32_t x, int32_t y);

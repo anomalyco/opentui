@@ -48,14 +48,16 @@ import type { RenderContext } from "./types.js"
 import { RGBA } from "./lib/RGBA.js"
 import { nativeConstants } from "./native-abi.generated.js"
 import {
-  isNativeScenePaintFrame,
   NATIVE_EDGE_NONE,
   NativeBorder,
   NativeSceneFrame,
   NativeSceneHook,
+  NativeScenePaintPhase,
+  type NativePaintRecorder,
   type NativeSceneFrameRequest,
   type NativeSceneLayout,
   type NativeScenePaint,
+  type NativeScenePaintSlot,
   type SceneNodeHandle,
 } from "./zig.js"
 import {
@@ -165,8 +167,9 @@ export interface RenderableOptions<T extends BaseRenderable = BaseRenderable> ex
   live?: boolean
   opacity?: number
 
-  // Draw-only hooks for custom rendering/decorations. They run after layout
-  // and viewport culling, so do not mutate layout, children, or reactive state here.
+  // Draw-only hooks for custom decorations. They run after layout and viewport
+  // culling and record drawing that native code paints later in the frame, so they
+  // cannot read the frame. Layout changes made here wait for the next frame.
   // Culled children do not run these hooks.
   renderBefore?: (this: T, buffer: OptimizedBuffer, deltaTime: number) => void
   renderAfter?: (this: T, buffer: OptimizedBuffer, deltaTime: number) => void
@@ -338,7 +341,6 @@ export abstract class Renderable extends BaseRenderable {
   private _nativeSceneHooksRegistered = false
   private _nativeSceneResize = false
   private _nativeSceneResizeCallbacks?: { onResize: unknown; onLayoutResize: unknown }
-  private _nativeScenePaintBuffer?: { frameId: bigint; buffer: OptimizedBuffer }
   private _nativeSceneHookLayout?: {
     revision: number
     layout?: NativeSceneLayout
@@ -2112,91 +2114,94 @@ export abstract class Renderable extends BaseRenderable {
   }
 
   /** @internal Refresh only requested host hooks, never walk wrappers to collect layout. */
-  _runNativeSceneHook(request: NativeSceneFrameRequest, deltaTime: number, buffer: OptimizedBuffer): void {
-    if (
-      (this._isDestroyed &&
-        request.kind !== NativeSceneFrame.RenderAfter &&
-        request.kind !== NativeSceneFrame.RenderSelf) ||
-      request.hookGeneration !== this._nativeSceneHookGeneration
-    )
-      return
+  _runNativeSceneHook(request: NativeSceneFrameRequest, deltaTime: number): void {
+    if (this._isDestroyed || request.hookGeneration !== this._nativeSceneHookGeneration) return
     const previousLayout = this._nativeSceneHookLayout
     const revision = this._ctx.nativeScene.currentGeometryRevision
     const currentGeometry = request.geometryRevision === revision
     this._nativeSceneHookLayout = { revision, layout: currentGeometry ? request.publicLayout : undefined }
     try {
-      if (
-        !this._isDestroyed &&
-        (isNativeScenePaintFrame(request.kind) || (request.kind === NativeSceneFrame.Resize && this._nativeSceneResize))
-      ) {
-        this._nativeSceneHookLayout.paintLayout =
-          (currentGeometry && request.paintLayout) || this._ctx.nativeScene.getLayout(this, "paint")
-        this._nativeSceneHookLayout.paintRevision = revision
+      switch (request.kind) {
+        case NativeSceneFrame.Update:
+          this.onUpdate(deltaTime)
+          break
+        case NativeSceneFrame.Resize:
+          if (this._nativeSceneResize) {
+            this._nativeSceneHookLayout.paintLayout =
+              (currentGeometry && request.paintLayout) || this._ctx.nativeScene.getLayout(this, "paint")
+            this._nativeSceneHookLayout.paintRevision = revision
+            this.onLayoutResize(request.width, request.height)
+          } else {
+            const resize = this.nativeIntegration.lifecycle?.resize
+            if (!resize || resize === "host") {
+              this.onSizeChange?.call(this)
+              if (!this._isDestroyed) this.emit("resize")
+            }
+            if (!this._isDestroyed && this.nativeIntegration.lineInfo) this.emit("line-info-change")
+          }
+          break
+        case NativeSceneFrame.LayoutChanged:
+          this.emit(LayoutEvents.LAYOUT_CHANGED)
+          break
       }
-      // Text/editor bodies draw into the supplied destination before native composition.
-      let renderBuffer =
-        this.nativeIntegration.paintBuffer !== "destination" && this.buffered && this.frameBuffer
-          ? this.frameBuffer
-          : buffer
-      if (isNativeScenePaintFrame(request.kind)) {
-        if (this._nativeScenePaintBuffer?.frameId !== request.frameId) {
-          this._nativeScenePaintBuffer = { frameId: request.frameId, buffer: renderBuffer }
-        }
-        renderBuffer = this._nativeScenePaintBuffer.buffer
-        try {
-          return renderBuffer._withNativePaint(() => this.runNativeSceneHook(request, deltaTime, buffer, renderBuffer))
-        } catch (error) {
-          this._nativeScenePaintBuffer = undefined
-          throw error
-        } finally {
-          if (request.kind === NativeSceneFrame.RenderAfter) this._nativeScenePaintBuffer = undefined
-        }
-      }
-      this.runNativeSceneHook(request, deltaTime, buffer, renderBuffer)
     } finally {
       this._nativeSceneHookLayout = previousLayout
     }
   }
 
-  private runNativeSceneHook(
-    request: NativeSceneFrameRequest,
+  /** @internal Record this node's paint hooks for one slot. Native code paints the
+   * recording at the slot's prepared position after every slot has recorded. */
+  _recordNativeScenePaint(
+    slot: NativeScenePaintSlot,
+    index: number,
     deltaTime: number,
-    buffer: OptimizedBuffer,
-    renderBuffer: OptimizedBuffer,
+    frame: OptimizedBuffer,
+    recorder: NativePaintRecorder,
+    geometryRevision: number | undefined,
   ): void {
-    switch (request.kind) {
-      case NativeSceneFrame.Update:
-        this.onUpdate(deltaTime)
-        break
-      case NativeSceneFrame.Resize:
-        if (this._nativeSceneResize) this.onLayoutResize(request.width, request.height)
-        else {
-          const resize = this.nativeIntegration.lifecycle?.resize
-          if (!resize || resize === "host") {
-            this.onSizeChange?.call(this)
-            if (!this._isDestroyed) this.emit("resize")
-          }
-          if (!this._isDestroyed && this.nativeIntegration.lineInfo) this.emit("line-info-change")
-        }
-        break
-      case NativeSceneFrame.LayoutChanged:
-        this.emit(LayoutEvents.LAYOUT_CHANGED)
-        break
-      case NativeSceneFrame.RenderBefore:
-        this.renderBefore?.call(this, renderBuffer, deltaTime)
-        break
-      case NativeSceneFrame.RenderAfter:
+    if (this._isDestroyed || slot.hookGeneration !== this._nativeSceneHookGeneration) return
+    const previousLayout = this._nativeSceneHookLayout
+    const revision = this._ctx.nativeScene.currentGeometryRevision
+    this._nativeSceneHookLayout = {
+      revision,
+      layout: geometryRevision === revision ? slot.publicLayout : undefined,
+      paintLayout: slot.paintLayout,
+      paintRevision: revision,
+    }
+    // Text and editor bodies draw into the destination; other buffered bodies draw into their own buffer.
+    const buffer =
+      this.nativeIntegration.paintBuffer !== "destination" && this.buffered && this.frameBuffer
+        ? this.frameBuffer
+        : frame
+    try {
+      if (slot.hooks & NativeSceneHook.RenderBefore) {
+        recorder.slot(index, NativeScenePaintPhase.Before, slot.opacity)
+        this.renderBefore?.call(this, buffer, deltaTime)
+        // Native code drops a node destroyed by its own hook, with its recording.
+        if (this._isDestroyed) return
+      }
+      if (slot.hooks & NativeSceneHook.RenderSelf) {
+        recorder.slot(index, NativeScenePaintPhase.Self, slot.opacity)
+        if (this.nativeIntegration.beforeAfter === false) this.markClean()
+        this._invokeNativePaint(buffer, deltaTime)
+        if (this._isDestroyed) return
+      }
+      if (slot.hooks & NativeSceneHook.RenderAfter) {
+        recorder.slot(index, NativeScenePaintPhase.After, slot.opacity)
         if (this.nativeIntegration.beforeAfter !== false) {
-          this.renderAfter?.call(this, renderBuffer, deltaTime)
+          this.renderAfter?.call(this, buffer, deltaTime)
           this.markClean()
         }
-        if (this.nativeIntegration.bufferComposition !== "native" && this.buffered && this.frameBuffer)
-          buffer.drawFrameBuffer(Math.trunc(this._screenX), Math.trunc(this._screenY), this.frameBuffer)
-        break
-      case NativeSceneFrame.RenderSelf:
-        if (this.nativeIntegration.beforeAfter === false) this.markClean()
-        this._invokeNativePaint(renderBuffer, deltaTime)
-        break
+        if (
+          !this._isDestroyed &&
+          this.nativeIntegration.bufferComposition !== "native" &&
+          this.buffered &&
+          this.frameBuffer
+        )
+          frame.drawFrameBuffer(Math.trunc(this._screenX), Math.trunc(this._screenY), this.frameBuffer)
+      }
+    } finally {
+      this._nativeSceneHookLayout = previousLayout
     }
   }
 

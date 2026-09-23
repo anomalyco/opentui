@@ -399,19 +399,26 @@ export enum NativeSceneFrame {
   Update = nativeConstants.OT_SCENE_FRAME_UPDATE,
   Resize = nativeConstants.OT_SCENE_FRAME_RESIZE,
   LayoutChanged = nativeConstants.OT_SCENE_FRAME_LAYOUT_CHANGED,
-  RenderBefore = nativeConstants.OT_SCENE_FRAME_RENDER_BEFORE,
-  RenderAfter = nativeConstants.OT_SCENE_FRAME_RENDER_AFTER,
+  Record = nativeConstants.OT_SCENE_FRAME_RECORD,
   Yield = nativeConstants.OT_SCENE_FRAME_YIELD,
-  RenderSelf = nativeConstants.OT_SCENE_FRAME_RENDER_SELF,
 }
 
-/** Before, self, and after share the prepared paint destination. */
-export function isNativeScenePaintFrame(kind: NativeSceneFrame): boolean {
-  return (
-    kind === NativeSceneFrame.RenderBefore ||
-    kind === NativeSceneFrame.RenderAfter ||
-    kind === NativeSceneFrame.RenderSelf
-  )
+export enum NativeScenePaintPhase {
+  Before = nativeConstants.OT_SCENE_RECORD_PHASE_BEFORE,
+  Self = nativeConstants.OT_SCENE_RECORD_PHASE_SELF,
+  After = nativeConstants.OT_SCENE_RECORD_PHASE_AFTER,
+}
+
+/** One node whose paint hooks a RECORD request asks the host to record, in paint order. */
+export interface NativeScenePaintSlot {
+  readonly node: SceneNodeHandle
+  readonly num: number
+  /** RenderBefore, RenderSelf, and RenderAfter hook bits to record. */
+  readonly hooks: number
+  readonly hookGeneration: bigint
+  readonly opacity: number
+  readonly paintLayout: NativeSceneLayout
+  readonly publicLayout?: NativeSceneLayout
 }
 
 /** An issued request. Pass it back unchanged; geometry is observation, not acknowledgement authority. */
@@ -1155,6 +1162,7 @@ function createSceneFrameRecord() {
 function createBufferDrawRecord() {
   const buffer = new ArrayBuffer(nativeLayouts.ot_buffer_draw_box.size)
   return {
+    words: new Uint32Array(buffer),
     records: BUFFER_DRAW_LAYOUTS.map((layout) => new Uint32Array(buffer, 0, layout.size / 4)),
     signed: new Int32Array(buffer),
     colors: new Uint16Array(buffer),
@@ -1168,19 +1176,21 @@ function encodeDrawPosition(
   signed: Int32Array,
   fields: { x: { offset: number }; y: { offset: number } },
   options: BufferDrawPosition,
+  base = 0,
 ): void {
-  signed[fields.x.offset / 4] = embeddedTerminalI32(options.x ?? 0, "Buffer x")
-  signed[fields.y.offset / 4] = embeddedTerminalI32(options.y ?? 0, "Buffer y")
+  signed[(base + fields.x.offset) / 4] = embeddedTerminalI32(options.x ?? 0, "Buffer x")
+  signed[(base + fields.y.offset) / 4] = embeddedTerminalI32(options.y ?? 0, "Buffer y")
 }
 
 function encodeDrawColors(
   colors: Uint16Array,
   fields: { foreground: { offset: number }; background: { offset: number } },
   options: BufferDrawColors,
+  base = 0,
 ): boolean {
   const { foreground, background } = options
-  if (foreground !== undefined) contextBufferColor(foreground, colors, fields.foreground.offset / 2)
-  if (background !== undefined) contextBufferColor(background, colors, fields.background.offset / 2)
+  if (foreground !== undefined) contextBufferColor(foreground, colors, (base + fields.foreground.offset) / 2)
+  if (background !== undefined) contextBufferColor(background, colors, (base + fields.background.offset) / 2)
   return background !== undefined
 }
 
@@ -1251,6 +1261,152 @@ function encodeSceneFrameRequest(
     words[layout.fields.height.offset / 4] = toSafeFFIU32Length(frame.height, "Scene request height")
   }
   return record
+}
+
+type EncodedBufferDraw = {
+  operation: number
+  size: number
+  text: string
+  bottom: string
+  source: BigUint64Array | null
+}
+
+/** Encode one ot_buffer_draw_* record at byte offset base; the caller zeroes nothing. */
+function encodeBufferDrawRecord(
+  context: NativeContextHandle,
+  options: NativeBufferDraw,
+  words: Uint32Array,
+  signed: Int32Array,
+  colors: Uint16Array,
+  base: number,
+  sourceRecord: ReturnType<typeof createContextHandleRecord> = createContextHandleRecord(),
+): EncodedBufferDraw {
+  const { operation } = options
+  const operationId = BUFFER_DRAW_OPERATIONS.indexOf(operation)
+  if (operationId < 0) throw new TypeError("Invalid checked buffer drawing operation")
+  const size = BUFFER_DRAW_LAYOUTS[operationId].size
+  const word = base / 4
+  const half = base / 2
+  const header = nativeLayouts.ot_buffer_draw_header.fields
+  words.fill(0, word, word + size / 4)
+  words[word + header.struct_size.offset / 4] = size
+  words[word + header.abi_version.offset / 4] = nativeConstants.OT_CONTEXT_ABI_VERSION
+  words[word + header.operation.offset / 4] = operationId
+  let source: BigUint64Array | null = null
+  let text = ""
+  let bottom = ""
+  switch (operation) {
+    case "clear": {
+      const { background } = options
+      if (background !== undefined)
+        contextBufferColor(background, colors, half + nativeLayouts.ot_buffer_draw_clear.fields.background.offset / 2)
+      break
+    }
+    case "fill": {
+      const fields = nativeLayouts.ot_buffer_draw_fill.fields
+      encodeDrawPosition(signed, fields, options, base)
+      words[word + fields.width.offset / 4] = toSafeFFIU32Length(options.width ?? 0, "Buffer width")
+      words[word + fields.height.offset / 4] = toSafeFFIU32Length(options.height ?? 0, "Buffer height")
+      const { background } = options
+      if (background !== undefined) contextBufferColor(background, colors, half + fields.background.offset / 2)
+      break
+    }
+    case "text": {
+      const fields = nativeLayouts.ot_buffer_draw_text_record.fields
+      encodeDrawPosition(signed, fields, options, base)
+      words[word + fields.attributes.offset / 4] = toSafeFFIU32Length(options.attributes ?? 0, "Buffer attributes")
+      if (encodeDrawColors(colors, fields, options, base))
+        words[word + header.flags.offset / 4] = nativeConstants.OT_BUFFER_DRAW_HAS_BACKGROUND
+      text = options.text ?? ""
+      break
+    }
+    case "cell":
+    case "cellBlend":
+    case "char": {
+      const fields = nativeLayouts.ot_buffer_draw_cell.fields
+      encodeDrawPosition(signed, fields, options, base)
+      words[word + fields.character.offset / 4] = toSafeFFIU32Length(options.char ?? 32, "Buffer character")
+      words[word + fields.attributes.offset / 4] = toSafeFFIU32Length(options.attributes ?? 0, "Buffer attributes")
+      encodeDrawColors(colors, fields, options, base)
+      break
+    }
+    case "box": {
+      const fields = nativeLayouts.ot_buffer_draw_box.fields
+      encodeDrawPosition(signed, fields, options, base)
+      words[word + fields.width.offset / 4] = toSafeFFIU32Length(options.width ?? 0, "Buffer width")
+      words[word + fields.height.offset / 4] = toSafeFFIU32Length(options.height ?? 0, "Buffer height")
+      words[word + fields.packed_options.offset / 4] = toSafeFFIU32Length(
+        options.packedOptions ?? 0,
+        "Buffer box options",
+      )
+      encodeDrawColors(colors, fields, options, base)
+      const { titleColor, borderChars } = options
+      if (titleColor !== undefined) contextBufferColor(titleColor, colors, half + fields.title_color.offset / 2)
+      if (borderChars !== undefined) {
+        if (borderChars.length !== 11) throw new RangeError("Border characters must contain 11 Unicode scalars")
+        words.set(borderChars, word + fields.border_chars.offset / 4)
+      }
+      text = options.text ?? ""
+      bottom = options.bottomTitle ?? ""
+      break
+    }
+    case "compose": {
+      const fields = nativeLayouts.ot_buffer_draw_compose.fields
+      source = encodeContextHandle(context, options.source, sourceRecord.record, sourceRecord.words)
+      encodeDrawPosition(signed, fields, options, base)
+      const { sourceX, sourceY, sourceWidth, sourceHeight } = options
+      words[word + fields.source_x.offset / 4] = toSafeFFIU32Length(sourceX ?? 0, "Buffer source x")
+      words[word + fields.source_y.offset / 4] = toSafeFFIU32Length(sourceY ?? 0, "Buffer source y")
+      words[word + fields.source_width.offset / 4] = toSafeFFIU32Length(sourceWidth ?? 0, "Buffer source width")
+      words[word + fields.source_height.offset / 4] = toSafeFFIU32Length(sourceHeight ?? 0, "Buffer source height")
+      words[word + header.flags.offset / 4] =
+        (sourceWidth === undefined ? 0 : nativeConstants.OT_BUFFER_DRAW_HAS_SOURCE_WIDTH) |
+        (sourceHeight === undefined ? 0 : nativeConstants.OT_BUFFER_DRAW_HAS_SOURCE_HEIGHT)
+      break
+    }
+    case "respectAlpha":
+      words[word + nativeLayouts.ot_buffer_draw_alpha.fields.enabled.offset / 4] = toFFIBool(
+        options.enabled,
+        "Buffer respect alpha",
+      )
+      break
+  }
+  return { operation: operationId, size, text, bottom, source }
+}
+
+/** Encode ot_image_draw_options at byte offset base into zeroed storage. */
+function encodeImageDrawOptions(options: NativeContextImageDraw, words: Uint32Array, signed: Int32Array, base: number) {
+  const fields = nativeLayouts.ot_image_draw_options.fields
+  const word = base / 4
+  words[word + fields.struct_size.offset / 4] = nativeLayouts.ot_image_draw_options.size
+  words[word + fields.abi_version.offset / 4] = nativeConstants.OT_CONTEXT_ABI_VERSION
+  const protocolId = IMAGE_PROTOCOL_TO_ID[options.protocol ?? "auto"]
+  if (!Number.isInteger(protocolId)) throw new TypeError("Unknown image protocol")
+  words[word + fields.protocol.offset / 4] = protocolId
+  for (const [field, coordinate] of [
+    ["x", options.x ?? 0],
+    ["y", options.y ?? 0],
+  ] as const) {
+    if (!Number.isInteger(coordinate) || coordinate < -0x80000000 || coordinate > 0x7fffffff) {
+      throw new RangeError("Image coordinates must be signed 32-bit integers")
+    }
+    signed[word + fields[field].offset / 4] = coordinate
+  }
+  const sourceWidth = options.sourceWidth
+  const sourceHeight = options.sourceHeight
+  words[word + fields.flags.offset / 4] = (sourceWidth === undefined ? 0 : 1) | (sourceHeight === undefined ? 0 : 2)
+  for (const [field, value] of [
+    ["width", options.width],
+    ["height", options.height],
+    ["pixel_width", options.pixelWidth ?? 0],
+    ["pixel_height", options.pixelHeight ?? 0],
+    ["source_x", options.sourceX ?? 0],
+    ["source_y", options.sourceY ?? 0],
+    ["source_width", sourceWidth ?? 0],
+    ["source_height", sourceHeight ?? 0],
+  ] as const) {
+    words[word + fields[field].offset / 4] = toSafeFFIU32Length(value, "Image drawing dimension")
+  }
 }
 
 function viewOrNull<T extends ArrayBufferView>(value: T): T | null {
@@ -1827,6 +1983,384 @@ export class SceneStaging {
     }
     this.lastBase = last
   }
+}
+
+const recordHeader = nativeLayouts.ot_scene_record_header.fields
+const recordBytesMax = nativeConstants.OT_SCENE_RECORD_BYTES_MAX
+const stackDepthMax = nativeConstants.OT_BUFFER_STACK_DEPTH_MAX
+
+function viewOf<T extends Int32Array | Float32Array | Uint32Array>(value: T, Type: new (...args: any[]) => T): T {
+  return new Type(
+    typedArrayAccessors.buffer.get!.call(value),
+    typedArrayAccessors.byteOffset.get!.call(value),
+    typedArrayAccessors.length.get!.call(value),
+  )
+}
+
+/** Encodes paint hooks into the ot_scene_record stream that acknowledges one RECORD request.
+ * Recorded commands draw when native code paints the frame, not when a hook calls them. */
+export class NativePaintRecorder {
+  private buffer = new ArrayBuffer(16_384)
+  private bytes = new Uint8Array(this.buffer)
+  private words = new Uint32Array(this.buffer)
+  private signed = new Int32Array(this.buffer)
+  private floats = new Float32Array(this.buffer)
+  private colors = new Uint16Array(this.buffer)
+  private length = 0
+  private context: NativeContextHandle | null = null
+  private pendingSlot = -1
+  private pendingPhase = 0
+  private readonly opacity: number[] = [1]
+  private scissors = 0
+  private readonly encoder = new TextEncoder()
+  private readonly handleRecord = createContextHandleRecord()
+
+  begin(context: NativeContextHandle): void {
+    this.context = context
+    this.length = 0
+    this.pendingSlot = -1
+  }
+
+  end(): void {
+    this.context = null
+    this.pendingSlot = -1
+  }
+
+  /** The encoded stream, or null when nothing was recorded. Valid until the next begin(). */
+  get recording(): Uint8Array | null {
+    return this.length === 0 ? null : this.bytes.subarray(0, this.length)
+  }
+
+  /** Start one slot phase. Its SLOT record is written only if the phase draws. */
+  slot(slot: number, phase: NativeScenePaintPhase, opacity: number): void {
+    this.activeContext()
+    this.pendingSlot = slot
+    this.pendingPhase = phase
+    this.opacity.length = 1
+    this.opacity[0] = opacity
+    this.scissors = 0
+  }
+
+  get currentOpacity(): number {
+    return this.opacity[this.opacity.length - 1]
+  }
+
+  draw(options: NativeBufferDraw): void {
+    if (options.operation === "respectAlpha") throw new Error("Paint hooks cannot change the frame alpha mode")
+    const layout = nativeLayouts.ot_scene_record_draw
+    const text = options.operation === "text" || options.operation === "box" ? (options.text ?? "") : ""
+    const bottom = options.operation === "box" ? (options.bottomTitle ?? "") : ""
+    const record = layout.size + nativeLayouts.ot_buffer_draw_box.size
+    const base = this.reserve(nativeConstants.OT_SCENE_RECORD_DRAW, record + (text.length + bottom.length) * 3)
+    const encoded = encodeBufferDrawRecord(
+      this.activeContext(),
+      options,
+      this.words,
+      this.signed,
+      this.colors,
+      base + layout.size,
+      this.handleRecord,
+    )
+    if (encoded.source) {
+      this.bytes.set(
+        new Uint8Array(encoded.source.buffer, encoded.source.byteOffset, 16),
+        base + layout.fields.source.offset,
+      )
+    }
+    let end = base + layout.size + encoded.size
+    const textLength = this.encodeText(text, end)
+    end += textLength
+    const bottomLength = this.encodeText(bottom, end)
+    end += bottomLength
+    this.words[(base + layout.fields.text_length.offset) / 4] = textLength
+    this.words[(base + layout.fields.bottom_length.offset) / 4] = bottomLength
+    this.finish(base, end)
+  }
+
+  stack(options: NativeBufferStack): number {
+    const operation = BUFFER_STACK_OPERATIONS.indexOf(options.operation)
+    if (operation < 0) throw new TypeError("Invalid checked buffer stack operation")
+    const x = options.x ?? 0
+    const y = options.y ?? 0
+    for (const coordinate of [x, y]) {
+      if (!Number.isInteger(coordinate) || coordinate < -0x80000000 || coordinate > 0x7fffffff) {
+        throw new RangeError("Buffer scissor coordinates must be signed 32-bit integers")
+      }
+    }
+    const width = toSafeFFIU32Length(options.width ?? 0, "Buffer scissor width")
+    const height = toSafeFFIU32Length(options.height ?? 0, "Buffer scissor height")
+    const opacity = options.opacity ?? 1
+    if (!Number.isFinite(opacity)) throw new RangeError("Buffer opacity must be finite")
+    const clamped = Math.max(0, Math.min(1, opacity))
+    switch (options.operation) {
+      case "getOpacity":
+        this.activeContext()
+        return this.currentOpacity
+      case "pushScissor":
+        if (width > 0x7fffffff || height > 0x7fffffff || x + width > 0x7fffffff || y + height > 0x7fffffff) {
+          throw new NativeError("ot_buffer_stack", NativeStatus.InvalidArgument)
+        }
+        if (this.scissors >= stackDepthMax) throw new NativeError("ot_buffer_stack", NativeStatus.ObjectLimit)
+        break
+      case "pushOpacity":
+        if (this.opacity.length - 1 >= stackDepthMax) throw new NativeError("ot_buffer_stack", NativeStatus.ObjectLimit)
+        break
+    }
+    const layout = nativeLayouts.ot_scene_record_stack
+    const base = this.reserve(nativeConstants.OT_SCENE_RECORD_STACK, layout.size)
+    const fields = layout.fields
+    this.words[(base + fields.operation.offset) / 4] = operation
+    this.signed[(base + fields.x.offset) / 4] = x
+    this.signed[(base + fields.y.offset) / 4] = y
+    this.words[(base + fields.width.offset) / 4] = width
+    this.words[(base + fields.height.offset) / 4] = height
+    this.floats[(base + fields.opacity.offset) / 4] = clamped
+    switch (options.operation) {
+      case "pushScissor":
+        this.scissors++
+        break
+      case "popScissor":
+        this.scissors = Math.max(0, this.scissors - 1)
+        break
+      case "clearScissors":
+        this.scissors = 0
+        break
+      case "pushOpacity":
+        this.opacity.push(Math.fround(this.currentOpacity * Math.fround(clamped)))
+        break
+      case "popOpacity":
+        if (this.opacity.length > 1) this.opacity.pop()
+        break
+      case "clearOpacity":
+        this.opacity.length = 1
+        break
+    }
+    return this.currentOpacity
+  }
+
+  grid(options: NativeBufferGrid): void {
+    const layout = nativeLayouts.ot_scene_record_grid
+    const optionsLayout = nativeLayouts.ot_buffer_grid_options
+    const { borderChars, borderFg, borderBg, columnOffsets, rowOffsets, drawInner, drawOuter } = options
+    if (borderChars.length !== 11) throw new RangeError("Border characters must contain 11 Unicode scalars")
+    const columns = viewOf(columnOffsets, Int32Array)
+    const rows = viewOf(rowOffsets, Int32Array)
+    const base = this.reserve(nativeConstants.OT_SCENE_RECORD_GRID, layout.size + (columns.length + rows.length) * 4)
+    const record = base + layout.fields.options.offset
+    const fields = optionsLayout.fields
+    this.words[(record + fields.struct_size.offset) / 4] = optionsLayout.size
+    this.words[(record + fields.abi_version.offset) / 4] = nativeConstants.OT_CONTEXT_ABI_VERSION
+    this.words[(record + fields.flags.offset) / 4] =
+      toFFIBool(drawInner, "Grid inner borders") | (toFFIBool(drawOuter, "Grid outer borders") << 1)
+    contextBufferColor(borderFg, this.colors, (record + fields.foreground.offset) / 2)
+    contextBufferColor(borderBg, this.colors, (record + fields.background.offset) / 2)
+    this.words.set(borderChars, (record + fields.border_chars.offset) / 4)
+    this.words[(base + layout.fields.column_count.offset) / 4] = columns.length
+    this.words[(base + layout.fields.row_count.offset) / 4] = rows.length
+    this.signed.set(columns, (base + layout.size) / 4)
+    this.signed.set(rows, (base + layout.size) / 4 + columns.length)
+  }
+
+  packed(data: Uint8Array | PointerInput, byteLength: number, x: number, y: number, width: number, height: number) {
+    const layout = nativeLayouts.ot_scene_record_packed
+    const input = recordedPixels(data, byteLength)
+    const base = this.reserve(nativeConstants.OT_SCENE_RECORD_PACKED, layout.size + input.byteLength)
+    const fields = layout.fields
+    this.words[(base + fields.x.offset) / 4] = toSafeFFIU32Length(x, "Packed buffer dimension")
+    this.words[(base + fields.y.offset) / 4] = toSafeFFIU32Length(y, "Packed buffer dimension")
+    this.words[(base + fields.width.offset) / 4] = toSafeFFIU32Length(width, "Packed buffer dimension")
+    this.words[(base + fields.height.offset) / 4] = toSafeFFIU32Length(height, "Packed buffer dimension")
+    this.words[(base + fields.byte_count.offset) / 4] = input.byteLength
+    this.bytes.set(input, base + layout.size)
+  }
+
+  supersample(
+    data: Uint8Array | PointerInput,
+    byteLength: number,
+    x: number,
+    y: number,
+    format: "rgba8unorm" | "bgra8unorm",
+    stride: number,
+  ): void {
+    if (format !== "rgba8unorm" && format !== "bgra8unorm") throw new TypeError("Unknown pixel format")
+    const layout = nativeLayouts.ot_scene_record_supersample
+    const input = recordedPixels(data, byteLength)
+    const base = this.reserve(nativeConstants.OT_SCENE_RECORD_SUPERSAMPLE, layout.size + input.byteLength)
+    const fields = layout.fields
+    this.words[(base + fields.x.offset) / 4] = toSafeFFIU32Length(x, "Supersample buffer dimension")
+    this.words[(base + fields.y.offset) / 4] = toSafeFFIU32Length(y, "Supersample buffer dimension")
+    this.words[(base + fields.format.offset) / 4] = format === "bgra8unorm" ? 0 : 1
+    this.words[(base + fields.stride.offset) / 4] = toSafeFFIU32Length(stride, "Supersample buffer dimension")
+    this.words[(base + fields.byte_count.offset) / 4] = input.byteLength
+    this.bytes.set(input, base + layout.size)
+  }
+
+  grayscale(
+    data: Float32Array,
+    x: number,
+    y: number,
+    width: number,
+    height: number,
+    foreground: RGBA | null,
+    background: RGBA | null,
+    supersampled: boolean,
+  ): void {
+    if (!(data instanceof Float32Array)) throw new TypeError("Grayscale input must be a Float32Array")
+    const samples = viewOf(data, Float32Array)
+    const layout = nativeLayouts.ot_scene_record_grayscale
+    const fields = layout.fields
+    const base = this.reserve(nativeConstants.OT_SCENE_RECORD_GRAYSCALE, layout.size + samples.length * 4)
+    this.signed[(base + fields.x.offset) / 4] = embeddedTerminalI32(x, "Grayscale x")
+    this.signed[(base + fields.y.offset) / 4] = embeddedTerminalI32(y, "Grayscale y")
+    this.words[(base + fields.width.offset) / 4] = toSafeFFIU32Length(width, "Grayscale source width")
+    this.words[(base + fields.height.offset) / 4] = toSafeFFIU32Length(height, "Grayscale source height")
+    this.words[(base + fields.flags.offset) / 4] =
+      (foreground === null ? 0 : nativeConstants.OT_SCENE_RECORD_GRAYSCALE_FOREGROUND) |
+      (background === null ? 0 : nativeConstants.OT_SCENE_RECORD_GRAYSCALE_BACKGROUND) |
+      (toFFIBool(supersampled, "Grayscale supersampling") ? nativeConstants.OT_SCENE_RECORD_GRAYSCALE_SUPERSAMPLED : 0)
+    this.words[(base + fields.sample_count.offset) / 4] = samples.length
+    if (foreground !== null) contextBufferColor(foreground, this.colors, (base + fields.foreground.offset) / 2)
+    if (background !== null) contextBufferColor(background, this.colors, (base + fields.background.offset) / 2)
+    this.floats.set(samples, (base + layout.size) / 4)
+  }
+
+  colorMatrix(matrix: Float32Array, mask: Float32Array | null, strength: number, channel: number): void {
+    for (const value of [matrix, mask]) {
+      if (value !== null && !(value instanceof Float32Array))
+        throw new TypeError("Color matrix input must be a Float32Array")
+    }
+    if (matrix.length !== 16) throw new RangeError("Color matrix must contain 16 floats")
+    if (!Number.isFinite(strength)) throw new RangeError("Color matrix strength must be finite")
+    const cells = mask === null ? null : viewOf(mask, Float32Array)
+    const layout = nativeLayouts.ot_scene_record_color_matrix
+    const fields = layout.fields
+    const base = this.reserve(nativeConstants.OT_SCENE_RECORD_COLOR_MATRIX, layout.size + (cells?.length ?? 0) * 4)
+    this.floats.set(viewOf(matrix, Float32Array), (base + fields.matrix.offset) / 4)
+    this.floats[(base + fields.strength.offset) / 4] = strength
+    this.words[(base + fields.channel.offset) / 4] = toSafeFFIU32Length(channel, "Color matrix channel")
+    this.words[(base + fields.has_mask.offset) / 4] = cells === null ? 0 : 1
+    this.words[(base + fields.mask_count.offset) / 4] = cells?.length ?? 0
+    if (cells) this.floats.set(cells, (base + layout.size) / 4)
+  }
+
+  /** Draw a text-buffer view, editor view, or scene text node. */
+  view(operation: "text" | "editor" | "scene", source: ContextObjectHandle, x: number, y: number): void {
+    const layout = nativeLayouts.ot_scene_record_view
+    const base = this.reserve(
+      operation === "text"
+        ? nativeConstants.OT_SCENE_RECORD_TEXT_VIEW
+        : operation === "editor"
+          ? nativeConstants.OT_SCENE_RECORD_EDITOR_VIEW
+          : nativeConstants.OT_SCENE_RECORD_SCENE_TEXT,
+      layout.size,
+    )
+    this.encodeHandle(source, base + layout.fields.source.offset)
+    this.signed[(base + layout.fields.x.offset) / 4] = embeddedTerminalI32(x, "View x") || 0
+    this.signed[(base + layout.fields.y.offset) / 4] = embeddedTerminalI32(y, "View y") || 0
+  }
+
+  image(source: ContextImageHandle, options: NativeContextImageDraw): void {
+    const layout = nativeLayouts.ot_scene_record_image
+    const base = this.reserve(nativeConstants.OT_SCENE_RECORD_IMAGE, layout.size)
+    this.encodeHandle(source, base + layout.fields.image.offset)
+    encodeImageDrawOptions(options, this.words, this.signed, base + layout.fields.options.offset)
+  }
+
+  unicode(
+    source: ContextUnicodeHandle,
+    index: number,
+    x: number,
+    y: number,
+    foreground: RGBA,
+    background: RGBA,
+    attributes: number,
+  ): void {
+    const layout = nativeLayouts.ot_scene_record_unicode
+    const fields = layout.fields
+    const base = this.reserve(nativeConstants.OT_SCENE_RECORD_UNICODE, layout.size)
+    this.encodeHandle(source, base + fields.unicode.offset)
+    this.words[(base + fields.index.offset) / 4] = toSafeFFIU32Length(index, "Unicode character index")
+    this.signed[(base + fields.x.offset) / 4] = embeddedTerminalI32(x, "Unicode x")
+    this.signed[(base + fields.y.offset) / 4] = embeddedTerminalI32(y, "Unicode y")
+    this.words[(base + fields.attributes.offset) / 4] = toSafeFFIU32Length(attributes, "Unicode attributes")
+    contextBufferColor(foreground, this.colors, (base + fields.foreground.offset) / 2)
+    contextBufferColor(background, this.colors, (base + fields.background.offset) / 2)
+  }
+
+  private activeContext(): NativeContextHandle {
+    if (this.context === null) throw new Error("Paint hooks record only while the frame requests them")
+    return this.context
+  }
+
+  private encodeHandle(handle: ContextObjectHandle, offset: number): void {
+    const record = encodeContextHandle(this.activeContext(), handle, this.handleRecord.record, this.handleRecord.words)
+    this.bytes.set(new Uint8Array(record.buffer, record.byteOffset, record.byteLength), offset)
+  }
+
+  private encodeText(text: string, offset: number): number {
+    if (text === "") return 0
+    const { read, written } = this.encoder.encodeInto(text, this.bytes.subarray(offset))
+    if (read !== text.length || written > NATIVE_BUFFER_TEXT_BYTES_MAX) {
+      throw new RangeError("Buffer text exceeds the native byte limit")
+    }
+    return written
+  }
+
+  /** Append one zeroed record of at most size bytes and return its offset. */
+  private reserve(operation: number, size: number): number {
+    this.activeContext()
+    if (this.pendingSlot >= 0) {
+      const slot = nativeLayouts.ot_scene_record_slot
+      const base = this.append(nativeConstants.OT_SCENE_RECORD_SLOT, slot.size)
+      this.words[(base + slot.fields.slot.offset) / 4] = this.pendingSlot
+      this.words[(base + slot.fields.phase.offset) / 4] = this.pendingPhase
+      this.pendingSlot = -1
+    }
+    return this.append(operation, size)
+  }
+
+  private append(operation: number, size: number): number {
+    const total = (size + 7) & ~7
+    const base = this.length
+    const end = base + total
+    if (end > this.bytes.length) this.grow(end)
+    this.bytes.fill(0, base, end)
+    this.words[(base + recordHeader.size.offset) / 4] = total
+    this.words[(base + recordHeader.operation.offset) / 4] = operation
+    this.length = end
+    return base
+  }
+
+  /** Shrink a record reserved with an upper bound to its encoded end. */
+  private finish(base: number, end: number): void {
+    const total = (end - base + 7) & ~7
+    this.bytes.fill(0, end, base + total)
+    this.words[(base + recordHeader.size.offset) / 4] = total
+    this.length = base + total
+  }
+
+  private grow(need: number): void {
+    if (need > recordBytesMax) throw new RangeError(`Paint recording exceeds ${recordBytesMax} bytes`)
+    const next = new ArrayBuffer(Math.min(recordBytesMax, Math.max(need, this.bytes.length * 2)))
+    const bytes = new Uint8Array(next)
+    bytes.set(this.bytes.subarray(0, this.length))
+    this.buffer = next
+    this.bytes = bytes
+    this.words = new Uint32Array(next)
+    this.signed = new Int32Array(next)
+    this.floats = new Float32Array(next)
+    this.colors = new Uint16Array(next)
+  }
+}
+
+function recordedPixels(data: Uint8Array | PointerInput, length: number): Uint8Array {
+  if (typeof data === "number" || typeof data === "bigint") {
+    throw new TypeError("Paint hooks record pixel data from a Uint8Array, not a native address")
+  }
+  const input = sessionBytes(data, "Pixel buffer byte length")
+  const count = toSafeFFIU32Length(length, "Pixel buffer byte count")
+  if (count > input.byteLength) throw new RangeError("Pixel byte count exceeds the supplied view")
+  return input.subarray(0, count)
 }
 
 function encodeEditorStyle(style: NativeEditorStyle): Uint32Array {
@@ -2543,6 +3077,7 @@ export class FFIRenderLib {
   private bufferDrawRecord: ReturnType<typeof createBufferDrawRecord> | undefined
   private sceneLayoutRecord: ReturnType<typeof createSceneLayoutRecord> | undefined
   private sceneFrameRecord: ReturnType<typeof createSceneFrameRecord> | undefined = createSceneFrameRecord()
+  private scenePaintSlots = new BigUint64Array((nativeLayouts.ot_scene_paint_slot.size * 16) / 8)
   private sceneCreateRecord: ReturnType<typeof createSceneNodeRecord> | undefined = createSceneNodeRecord()
   private sceneDestroyHandle: ReturnType<typeof createContextHandleRecord> | undefined = createContextHandleRecord()
   private sceneMoveRecord: ReturnType<typeof createSceneNodeRecord> | undefined = createSceneNodeRecord()
@@ -4794,36 +5329,7 @@ export class FFIRenderLib {
     const ticket = frame === null ? null : encodeSceneFrameRequest(context, frame)
     const source = encodeContextHandle(context, image)
     const record = new Uint32Array(layout.size / 4)
-    const signed = new Int32Array(record.buffer)
-    record[layout.fields.struct_size.offset / 4] = record.byteLength
-    record[layout.fields.abi_version.offset / 4] = nativeConstants.OT_CONTEXT_ABI_VERSION
-    const protocolId = IMAGE_PROTOCOL_TO_ID[options.protocol ?? "auto"]
-    if (!Number.isInteger(protocolId)) throw new TypeError("Unknown image protocol")
-    record[layout.fields.protocol.offset / 4] = protocolId
-    for (const [field, coordinate] of [
-      ["x", options.x ?? 0],
-      ["y", options.y ?? 0],
-    ] as const) {
-      if (!Number.isInteger(coordinate) || coordinate < -0x80000000 || coordinate > 0x7fffffff) {
-        throw new RangeError("Image coordinates must be signed 32-bit integers")
-      }
-      signed[layout.fields[field].offset / 4] = coordinate
-    }
-    const sourceWidth = options.sourceWidth
-    const sourceHeight = options.sourceHeight
-    record[layout.fields.flags.offset / 4] = (sourceWidth === undefined ? 0 : 1) | (sourceHeight === undefined ? 0 : 2)
-    for (const [field, value] of [
-      ["width", options.width],
-      ["height", options.height],
-      ["pixel_width", options.pixelWidth ?? 0],
-      ["pixel_height", options.pixelHeight ?? 0],
-      ["source_x", options.sourceX ?? 0],
-      ["source_y", options.sourceY ?? 0],
-      ["source_width", sourceWidth ?? 0],
-      ["source_height", sourceHeight ?? 0],
-    ] as const) {
-      record[layout.fields[field].offset / 4] = toSafeFFIU32Length(value, "Image drawing dimension")
-    }
+    encodeImageDrawOptions(options, record, new Int32Array(record.buffer), 0)
     const output = new Uint32Array(1)
     this.getYogaHost().runMutation(() => {
       const pointer = this.nativeContextPointer(context, "ot_buffer_draw_image")
@@ -4997,98 +5503,12 @@ export class FFIRenderLib {
       const { context, target, frame } = drawing
       const handle = encodeContextHandle(context, target, scratch.handle.record, scratch.handle.words)
       const ticket = frame === null ? null : encodeSceneFrameRequest(context, frame, scratch.frame)
-      const { operation } = options
-      const operationId = BUFFER_DRAW_OPERATIONS.indexOf(operation)
-      if (operationId < 0) throw new TypeError("Invalid checked buffer drawing operation")
-      const record = scratch.records[operationId]
       const { signed, colors } = scratch
-      const header = nativeLayouts.ot_buffer_draw_header.fields
-      record.fill(0)
-      record[header.struct_size.offset / 4] = record.byteLength
-      record[header.abi_version.offset / 4] = nativeConstants.OT_CONTEXT_ABI_VERSION
-      record[header.operation.offset / 4] = operationId
-      let source: BigUint64Array | null = null
-      let textValue = ""
-      let bottomValue = ""
-      switch (operation) {
-        case "clear": {
-          const { background } = options
-          if (background !== undefined)
-            contextBufferColor(background, colors, nativeLayouts.ot_buffer_draw_clear.fields.background.offset / 2)
-          break
-        }
-        case "fill": {
-          const fields = nativeLayouts.ot_buffer_draw_fill.fields
-          encodeDrawPosition(signed, fields, options)
-          record[fields.width.offset / 4] = toSafeFFIU32Length(options.width ?? 0, "Buffer width")
-          record[fields.height.offset / 4] = toSafeFFIU32Length(options.height ?? 0, "Buffer height")
-          const { background } = options
-          if (background !== undefined) contextBufferColor(background, colors, fields.background.offset / 2)
-          break
-        }
-        case "text": {
-          const fields = nativeLayouts.ot_buffer_draw_text_record.fields
-          encodeDrawPosition(signed, fields, options)
-          record[fields.attributes.offset / 4] = toSafeFFIU32Length(options.attributes ?? 0, "Buffer attributes")
-          if (encodeDrawColors(colors, fields, options))
-            record[header.flags.offset / 4] = nativeConstants.OT_BUFFER_DRAW_HAS_BACKGROUND
-          textValue = options.text ?? ""
-          break
-        }
-        case "cell":
-        case "cellBlend":
-        case "char": {
-          const fields = nativeLayouts.ot_buffer_draw_cell.fields
-          encodeDrawPosition(signed, fields, options)
-          record[fields.character.offset / 4] = toSafeFFIU32Length(options.char ?? 32, "Buffer character")
-          record[fields.attributes.offset / 4] = toSafeFFIU32Length(options.attributes ?? 0, "Buffer attributes")
-          encodeDrawColors(colors, fields, options)
-          break
-        }
-        case "box": {
-          const fields = nativeLayouts.ot_buffer_draw_box.fields
-          encodeDrawPosition(signed, fields, options)
-          record[fields.width.offset / 4] = toSafeFFIU32Length(options.width ?? 0, "Buffer width")
-          record[fields.height.offset / 4] = toSafeFFIU32Length(options.height ?? 0, "Buffer height")
-          record[fields.packed_options.offset / 4] = toSafeFFIU32Length(
-            options.packedOptions ?? 0,
-            "Buffer box options",
-          )
-          encodeDrawColors(colors, fields, options)
-          const { titleColor, borderChars } = options
-          if (titleColor !== undefined) contextBufferColor(titleColor, colors, fields.title_color.offset / 2)
-          if (borderChars !== undefined) {
-            if (borderChars.length !== 11) throw new RangeError("Border characters must contain 11 Unicode scalars")
-            record.set(borderChars, fields.border_chars.offset / 4)
-          }
-          textValue = options.text ?? ""
-          bottomValue = options.bottomTitle ?? ""
-          break
-        }
-        case "compose": {
-          const fields = nativeLayouts.ot_buffer_draw_compose.fields
-          const sourceHandle = options.source
-          source = encodeContextHandle(context, sourceHandle, scratch.source.record, scratch.source.words)
-          encodeDrawPosition(signed, fields, options)
-          const { sourceX, sourceY, sourceWidth, sourceHeight } = options
-          record[fields.source_x.offset / 4] = toSafeFFIU32Length(sourceX ?? 0, "Buffer source x")
-          record[fields.source_y.offset / 4] = toSafeFFIU32Length(sourceY ?? 0, "Buffer source y")
-          record[fields.source_width.offset / 4] = toSafeFFIU32Length(sourceWidth ?? 0, "Buffer source width")
-          record[fields.source_height.offset / 4] = toSafeFFIU32Length(sourceHeight ?? 0, "Buffer source height")
-          record[header.flags.offset / 4] =
-            (sourceWidth === undefined ? 0 : nativeConstants.OT_BUFFER_DRAW_HAS_SOURCE_WIDTH) |
-            (sourceHeight === undefined ? 0 : nativeConstants.OT_BUFFER_DRAW_HAS_SOURCE_HEIGHT)
-          break
-        }
-        case "respectAlpha":
-          record[nativeLayouts.ot_buffer_draw_alpha.fields.enabled.offset / 4] = toFFIBool(
-            options.enabled,
-            "Buffer respect alpha",
-          )
-          break
-      }
-      const text = textValue === "" ? this.emptyBytes : this.encoder.encode(textValue)
-      const bottom = bottomValue === "" ? this.emptyBytes : this.encoder.encode(bottomValue)
+      const encoded = encodeBufferDrawRecord(context, options, scratch.words, signed, colors, 0, scratch.source)
+      const record = scratch.records[encoded.operation]
+      const source = encoded.source
+      const text = encoded.text === "" ? this.emptyBytes : this.encoder.encode(encoded.text)
+      const bottom = encoded.bottom === "" ? this.emptyBytes : this.encoder.encode(encoded.bottom)
       if (text.byteLength > NATIVE_BUFFER_TEXT_BYTES_MAX || bottom.byteLength > NATIVE_BUFFER_TEXT_BYTES_MAX) {
         throw new RangeError("Buffer text exceeds the native byte limit")
       }
@@ -6767,13 +7187,15 @@ export class FFIRenderLib {
     }
   }
 
-  /** Paint options can change between steps; attempt limits remain fixed. */
+  /** Paint options can change between steps; attempt limits remain fixed.
+   * A RECORD acknowledgement passes its recording; null records nothing. */
   public sceneFrameStep(
     context: NativeContextHandle,
     session: SessionHandle,
     previous: NativeSceneFrameRequest | null,
     options: NativeSceneFrameOptions,
     maxWorkItems?: number,
+    recording: Uint8Array | null = null,
   ): NativeSceneFrameRequest {
     const layout = nativeLayouts.ot_scene_frame_options
     this.getYogaHost().assertMutable()
@@ -6803,6 +7225,8 @@ export class FFIRenderLib {
       )
       const workBudget = maxWorkItems === undefined ? 0xffffffff : toSafeFFIU32Length(maxWorkItems, "Scene work budget")
       if (workBudget === 0) throw new RangeError("Scene work budget must be positive")
+      const recordingLength = recording === null ? 0 : toSafeFFIU32Length(recording.byteLength, "Scene recording")
+      const recordingView = recordingLength === 0 ? null : recording
       const output = encodeSceneFrameRequest(context, previous, scratch)
       const operation = "ot_scene_frame_step_with_geometry"
       const measures = this.sceneMeasures.get(context)?.nodes.size
@@ -6817,6 +7241,8 @@ export class FFIRenderLib {
           config,
           output,
           workBudget,
+          recordingView,
+          recordingLength,
           geometry,
         )
       } else {
@@ -6828,6 +7254,8 @@ export class FFIRenderLib {
             previous === null ? null : output,
             config,
             workBudget,
+            recordingView,
+            recordingLength,
             output,
             geometry,
           ),
@@ -6882,6 +7310,8 @@ export class FFIRenderLib {
     config: Uint32Array,
     output: BigUint64Array,
     workBudget: number,
+    recording: Uint8Array | null,
+    recordingLength: number,
     geometry: Uint32Array,
   ): void {
     let accepted = false
@@ -6895,6 +7325,8 @@ export class FFIRenderLib {
             previous,
             config,
             workBudget,
+            recording,
+            recordingLength,
             output,
             geometry,
           ),
@@ -6911,6 +7343,57 @@ export class FFIRenderLib {
         )
       throw error
     }
+  }
+
+  /** Slots of the exact pending RECORD request, in paint order. */
+  public sceneFrameGetPaintSlots(
+    context: NativeContextHandle,
+    session: SessionHandle,
+    frame: NativeSceneFrameRequest,
+  ): NativeScenePaintSlot[] {
+    const layout = nativeLayouts.ot_scene_paint_slot
+    const fields = layout.fields
+    const node = nativeLayouts.ot_handle.fields
+    const handle = encodeContextHandle(context, session)
+    const ticket = encodeSceneFrameRequest(context, frame)
+    const count = new Uint32Array(1)
+    const pointer = this.nativeContextPointer(context, "ot_scene_frame_get_paint_slots")
+    let scratch = this.scenePaintSlots
+    for (;;) {
+      const capacity = scratch.byteLength / layout.size
+      nativeResult(
+        "ot_scene_frame_get_paint_slots",
+        this.opentui.symbols.ot_scene_frame_get_paint_slots(pointer, handle, ticket, scratch, capacity, count),
+      )
+      if (count[0] <= capacity) break
+      scratch = this.scenePaintSlots = new BigUint64Array((count[0] * layout.size) / 8)
+    }
+    const words = new Uint32Array(scratch.buffer)
+    const values = new Float32Array(scratch.buffer)
+    const coordinates = new Float64Array(scratch.buffer)
+    const slots: NativeScenePaintSlot[] = new Array(count[0])
+    for (let index = 0; index < count[0]; index++) {
+      const base = index * layout.size
+      const flags = words[(base + fields.flags.offset) / 4]
+      slots[index] = {
+        node: {
+          context,
+          contextId: scratch[(base + fields.node.offset + node.context_id.offset) / 8],
+          slot: words[(base + fields.node.offset + node.slot.offset) / 4],
+          generation: words[(base + fields.node.offset + node.generation.offset) / 4],
+        } as SceneNodeHandle,
+        num: words[(base + fields.num.offset) / 4],
+        hooks: words[(base + fields.hooks.offset) / 4],
+        hookGeneration: scratch[(base + fields.hook_generation.offset) / 8],
+        opacity: values[(base + fields.opacity.offset) / 4],
+        paintLayout: decodeSceneLayout(values, coordinates, base + fields.paint.offset),
+        publicLayout:
+          flags & nativeConstants.OT_SCENE_GEOMETRY_PUBLIC
+            ? decodeSceneLayout(values, coordinates, base + fields.public_layout.offset)
+            : undefined,
+      }
+    }
+    return slots
   }
 
   public sceneFrameAcquireBufferLease(

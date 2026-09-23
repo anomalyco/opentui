@@ -81,37 +81,36 @@ test "Scene box details allocation failure preserves old titles and releases rep
     try testing.expect(failures > 0 and failures < 8);
 }
 
-test "Scene box details prefix replacement destruction cancellation and teardown own titles" {
+test "Scene box details replaced during a record batch paint live and destroyed boxes own nothing" {
     for (0..4) |exit| {
         const owner = try context.Context.init(testing.allocator, testing.io, .{});
         defer owner.deinit() catch unreachable;
         const fixture = try setup(owner);
         try owner.sceneSetBoxDetails(fixture.box, .{ .title = "old", .custom_border_chars = custom });
         try owner.sceneSetHooks(fixture.box, 24, 1, 12, 3);
-        const before = try owner.sceneFrameStep(fixture.session, null, options);
-        try testing.expectEqual(@as(u32, 4), before.kind);
+        const request = try owner.sceneFrameStep(fixture.session, null, options);
+        try testing.expectEqual(@as(u32, @import("context_abi_c").OT_SCENE_FRAME_RECORD), request.kind);
         var top = "new".*;
         var bottom = "end".*;
         try owner.sceneSetBoxDetails(fixture.box, .{ .title = &top, .bottom_title = &bottom, .custom_border_chars = custom });
         @memset(&top, 'x');
         @memset(&bottom, 'x');
-        try owner.sceneDestroyNode(fixture.box);
+        if (exit != 3) try owner.sceneDestroyNode(fixture.box);
         if (exit == 0) {
-            try owner.sceneFrameCancel(fixture.session, before.frame_id);
+            try owner.sceneFrameCancel(fixture.session, request.frame_id);
             continue;
         }
         if (exit == 1) continue;
         if (exit == 2) {
             try owner.sceneDestroyNode(fixture.root);
-            try testing.expectError(error.StaleFrame, owner.sceneFrameStep(fixture.session, before, options));
+            try testing.expectError(error.StaleFrame, owner.sceneFrameStepWithRecording(fixture.session, request, options, std.math.maxInt(u32), &.{}));
             continue;
         }
-        const after = try owner.sceneFrameStep(fixture.session, before, options);
-        try testing.expectEqual(@as(u32, 5), after.kind);
+        const done = try owner.sceneFrameStepWithRecording(fixture.session, request, options, std.math.maxInt(u32), &.{});
+        try testing.expectEqual(@as(u32, 0), done.kind);
         const target = (try owner.raw().getSessionRenderer(fixture.session)).getNextBuffer();
         try expectRow(target, 0, "A-new------B");
         try expectRow(target, 2, "C-end------D");
-        try testing.expectEqual(@as(u32, 0), (try owner.sceneFrameStep(fixture.session, after, options)).kind);
     }
 }
 
@@ -139,7 +138,7 @@ test "Scene box details checked title draw reports allocation failure and defaul
     try owner.sceneSetBoxDetails(fixture.box, .{ .title = &title });
     try testing.expectError(error.OutOfMemory, repaint(owner, fixture.session, options.background, true, 0));
     try testing.expect(failing.has_induced_failure);
-    try testing.expect(state.attempt == null and state.prefix == null);
+    try testing.expect(state.attempt == null);
     for (target.buffer.char) |char| try testing.expectEqual(@as(u32, ' '), char);
     target.allocator = allocator;
     try repaint(owner, fixture.session, options.background, true, 0);
