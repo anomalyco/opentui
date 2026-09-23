@@ -49,11 +49,14 @@ const client = getTreeSitterClient()
 try {
   await client.initialize()
 
-  const syntaxStyle = SyntaxStyle.fromStyles({
-    keyword: { bold: true },
-    string: { fg: RGBA.fromHex("#777777") },
-    default: { fg: RGBA.fromHex("#E6EDF3") },
-  })
+  const syntaxStyle = SyntaxStyle.fromStyles(
+    {
+      keyword: { bold: true },
+      string: { fg: RGBA.fromHex("#777777") },
+      default: { fg: RGBA.fromHex("#E6EDF3") },
+    },
+    renderer.nativeScene!,
+  )
 
   renderer.root.add(
     new CodeRenderable(renderer, {

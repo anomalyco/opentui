@@ -156,15 +156,25 @@ test("a middleware that neither calls next() nor denies still closes the session
 // authorizes the session, so a denial writes to the main screen and persists
 // instead of being wiped with the alternate-screen buffer.
 test("a denied session never enters the alternate screen; the reason persists", async () => {
+  let handlers = 0
+  const errors: unknown[] = []
   const server = track(
-    createServer({ auth: "open", hostKey: { pem: HOST_KEY }, startupBanner: false })
+    createServer({
+      auth: "open",
+      hostKey: { pem: HOST_KEY },
+      startupBanner: false,
+      onError: (error) => errors.push(error),
+    })
       .use((s) => s.deny("DENIED"))
-      .serve(() => {}),
+      .serve(() => {
+        handlers++
+      }),
   )
 
   const raw = await captureShellOutput(server)
-  expect(raw).toContain("DENIED") // the rejection reached the client…
-  expect(raw).not.toContain("[?1049h") // not swallowed by the alternate screen
+  expect(raw).toBe("DENIED\r\n")
+  expect(handlers).toBe(0)
+  expect(errors).toEqual([])
 }, 15000)
 
 // deny() throws, so a `return next()` after it is unreachable and the framework

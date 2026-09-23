@@ -1,8 +1,7 @@
 const std = @import("std");
+const TestPools = @import("test-pools.zig").TestPools;
 const text_buffer = @import("../text-buffer.zig");
 const text_buffer_view = @import("../text-buffer-view.zig");
-const gp = @import("../grapheme.zig");
-const link = @import("../link.zig");
 
 const TextBuffer = text_buffer.TextBuffer;
 const TextBufferView = text_buffer_view.TextBufferView;
@@ -10,27 +9,28 @@ const TextBufferView = text_buffer_view.TextBufferView;
 const ViewPair = struct {
     tb: *TextBuffer,
     view: *TextBufferView,
+    pools: *TestPools,
 };
 
 fn initView(text: []const u8) !ViewPair {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    errdefer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    errdefer link.deinitGlobalLinkPool();
+    const pools = try std.testing.allocator.create(TestPools);
+    errdefer std.testing.allocator.destroy(pools);
+    pools.* = TestPools.init(std.testing.allocator);
+    errdefer pools.deinit();
 
-    const tb = try TextBuffer.init(std.testing.allocator, pool, link_pool, .unicode);
+    const tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .unicode);
     errdefer tb.deinit();
     const view = try TextBufferView.init(std.testing.allocator, tb);
     errdefer view.deinit();
     try tb.setText(text);
-    return .{ .tb = tb, .view = view };
+    return .{ .tb = tb, .view = view, .pools = pools };
 }
 
 fn deinitView(pair: ViewPair) void {
     pair.view.deinit();
     pair.tb.deinit();
-    gp.deinitGlobalPool();
-    link.deinitGlobalLinkPool();
+    pair.pools.deinit();
+    std.testing.allocator.destroy(pair.pools);
 }
 
 fn expectSelected(

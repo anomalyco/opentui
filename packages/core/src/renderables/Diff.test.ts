@@ -6,14 +6,17 @@ import { createMockMouse, createTestRenderer, type TestRenderer } from "../testi
 import { MockTreeSitterClient } from "../testing/mock-tree-sitter-client.js"
 import type { SimpleHighlight } from "../lib/tree-sitter/types.js"
 import { settleDiffHighlighting } from "./__tests__/renderable-test-utils.js"
+import type { CodeRenderable } from "./Code.js"
 
 let currentRenderer: TestRenderer
+let syntaxStyle: SyntaxStyle
 let renderOnce: () => Promise<void>
 let captureFrame: () => string
 
 beforeEach(async () => {
   const testRenderer = await createTestRenderer({ width: 80, height: 20 })
   currentRenderer = testRenderer.renderer
+  syntaxStyle = SyntaxStyle.fromStyles({ default: { fg: RGBA.fromValues(1, 1, 1, 1) } }, currentRenderer.nativeScene)
   renderOnce = testRenderer.renderOnce
   captureFrame = testRenderer.captureCharFrame
 })
@@ -21,7 +24,9 @@ beforeEach(async () => {
 afterEach(async () => {
   if (currentRenderer) {
     currentRenderer.destroy()
+    await currentRenderer.closed
   }
+  syntaxStyle.destroy()
 })
 
 const simpleDiff = `--- a/test.js
@@ -79,10 +84,6 @@ const largeDiff = `--- a/large.js
  const line51 = 'context';`
 
 test("DiffRenderable - basic construction with unified view", async () => {
-  const syntaxStyle = SyntaxStyle.fromStyles({
-    default: { fg: RGBA.fromValues(1, 1, 1, 1) },
-  })
-
   const diffRenderable = new DiffRenderable(currentRenderer, {
     id: "test-diff",
     diff: simpleDiff,
@@ -95,10 +96,6 @@ test("DiffRenderable - basic construction with unified view", async () => {
 })
 
 test("DiffRenderable - basic construction with split view", async () => {
-  const syntaxStyle = SyntaxStyle.fromStyles({
-    default: { fg: RGBA.fromValues(1, 1, 1, 1) },
-  })
-
   const diffRenderable = new DiffRenderable(currentRenderer, {
     id: "test-diff",
     diff: simpleDiff,
@@ -111,10 +108,6 @@ test("DiffRenderable - basic construction with split view", async () => {
 })
 
 test("DiffRenderable - defaults to unified view", async () => {
-  const syntaxStyle = SyntaxStyle.fromStyles({
-    default: { fg: RGBA.fromValues(1, 1, 1, 1) },
-  })
-
   const diffRenderable = new DiffRenderable(currentRenderer, {
     id: "test-diff",
     diff: simpleDiff,
@@ -125,10 +118,6 @@ test("DiffRenderable - defaults to unified view", async () => {
 })
 
 test("DiffRenderable - unified view renders correctly", async () => {
-  const syntaxStyle = SyntaxStyle.fromStyles({
-    default: { fg: RGBA.fromValues(1, 1, 1, 1) },
-  })
-
   const diffRenderable = new DiffRenderable(currentRenderer, {
     id: "test-diff",
     diff: simpleDiff,
@@ -150,10 +139,6 @@ test("DiffRenderable - unified view renders correctly", async () => {
 })
 
 test("DiffRenderable - split view renders correctly", async () => {
-  const syntaxStyle = SyntaxStyle.fromStyles({
-    default: { fg: RGBA.fromValues(1, 1, 1, 1) },
-  })
-
   const diffRenderable = new DiffRenderable(currentRenderer, {
     id: "test-diff",
     diff: simpleDiff,
@@ -176,10 +161,6 @@ test("DiffRenderable - split view renders correctly", async () => {
 })
 
 test("DiffRenderable - multi-line diff unified view", async () => {
-  const syntaxStyle = SyntaxStyle.fromStyles({
-    default: { fg: RGBA.fromValues(1, 1, 1, 1) },
-  })
-
   const diffRenderable = new DiffRenderable(currentRenderer, {
     id: "test-diff",
     diff: multiLineDiff,
@@ -202,10 +183,6 @@ test("DiffRenderable - multi-line diff unified view", async () => {
 })
 
 test("DiffRenderable - multi-line diff split view", async () => {
-  const syntaxStyle = SyntaxStyle.fromStyles({
-    default: { fg: RGBA.fromValues(1, 1, 1, 1) },
-  })
-
   const diffRenderable = new DiffRenderable(currentRenderer, {
     id: "test-diff",
     diff: multiLineDiff,
@@ -228,10 +205,6 @@ test("DiffRenderable - multi-line diff split view", async () => {
 })
 
 test("DiffRenderable - add-only diff unified view", async () => {
-  const syntaxStyle = SyntaxStyle.fromStyles({
-    default: { fg: RGBA.fromValues(1, 1, 1, 1) },
-  })
-
   const diffRenderable = new DiffRenderable(currentRenderer, {
     id: "test-diff",
     diff: addOnlyDiff,
@@ -251,10 +224,6 @@ test("DiffRenderable - add-only diff unified view", async () => {
 })
 
 test("DiffRenderable - add-only diff split view", async () => {
-  const syntaxStyle = SyntaxStyle.fromStyles({
-    default: { fg: RGBA.fromValues(1, 1, 1, 1) },
-  })
-
   const diffRenderable = new DiffRenderable(currentRenderer, {
     id: "test-diff",
     diff: addOnlyDiff,
@@ -275,10 +244,6 @@ test("DiffRenderable - add-only diff split view", async () => {
 })
 
 test("DiffRenderable - remove-only diff unified view", async () => {
-  const syntaxStyle = SyntaxStyle.fromStyles({
-    default: { fg: RGBA.fromValues(1, 1, 1, 1) },
-  })
-
   const diffRenderable = new DiffRenderable(currentRenderer, {
     id: "test-diff",
     diff: removeOnlyDiff,
@@ -298,10 +263,6 @@ test("DiffRenderable - remove-only diff unified view", async () => {
 })
 
 test("DiffRenderable - remove-only diff split view", async () => {
-  const syntaxStyle = SyntaxStyle.fromStyles({
-    default: { fg: RGBA.fromValues(1, 1, 1, 1) },
-  })
-
   const diffRenderable = new DiffRenderable(currentRenderer, {
     id: "test-diff",
     diff: removeOnlyDiff,
@@ -322,10 +283,6 @@ test("DiffRenderable - remove-only diff split view", async () => {
 })
 
 test("DiffRenderable - large line numbers displayed correctly", async () => {
-  const syntaxStyle = SyntaxStyle.fromStyles({
-    default: { fg: RGBA.fromValues(1, 1, 1, 1) },
-  })
-
   const diffRenderable = new DiffRenderable(currentRenderer, {
     id: "test-diff",
     diff: largeDiff,
@@ -347,10 +304,6 @@ test("DiffRenderable - large line numbers displayed correctly", async () => {
 })
 
 test("DiffRenderable - can toggle view mode", async () => {
-  const syntaxStyle = SyntaxStyle.fromStyles({
-    default: { fg: RGBA.fromValues(1, 1, 1, 1) },
-  })
-
   const diffRenderable = new DiffRenderable(currentRenderer, {
     id: "test-diff",
     diff: simpleDiff,
@@ -378,10 +331,6 @@ test("DiffRenderable - can toggle view mode", async () => {
 })
 
 test("DiffRenderable - can update diff content", async () => {
-  const syntaxStyle = SyntaxStyle.fromStyles({
-    default: { fg: RGBA.fromValues(1, 1, 1, 1) },
-  })
-
   const diffRenderable = new DiffRenderable(currentRenderer, {
     id: "test-diff",
     diff: simpleDiff,
@@ -407,10 +356,6 @@ test("DiffRenderable - can update diff content", async () => {
 })
 
 test("DiffRenderable - can toggle line numbers", async () => {
-  const syntaxStyle = SyntaxStyle.fromStyles({
-    default: { fg: RGBA.fromValues(1, 1, 1, 1) },
-  })
-
   const diffRenderable = new DiffRenderable(currentRenderer, {
     id: "test-diff",
     diff: simpleDiff,
@@ -434,10 +379,13 @@ test("DiffRenderable - can toggle line numbers", async () => {
 })
 
 test("DiffRenderable - can update filetype", async () => {
-  const syntaxStyle = SyntaxStyle.fromStyles({
-    default: { fg: RGBA.fromValues(1, 1, 1, 1) },
-    keyword: { fg: RGBA.fromValues(1, 0, 0, 1) },
-  })
+  const syntaxStyle = SyntaxStyle.fromStyles(
+    {
+      default: { fg: RGBA.fromValues(1, 1, 1, 1) },
+      keyword: { fg: RGBA.fromValues(1, 0, 0, 1) },
+    },
+    currentRenderer.nativeScene,
+  )
 
   const diffRenderable = new DiffRenderable(currentRenderer, {
     id: "test-diff",
@@ -460,10 +408,6 @@ test("DiffRenderable - can update filetype", async () => {
 })
 
 test("DiffRenderable - handles empty diff", async () => {
-  const syntaxStyle = SyntaxStyle.fromStyles({
-    default: { fg: RGBA.fromValues(1, 1, 1, 1) },
-  })
-
   const diffRenderable = new DiffRenderable(currentRenderer, {
     id: "test-diff",
     diff: "",
@@ -481,10 +425,6 @@ test("DiffRenderable - handles empty diff", async () => {
 })
 
 test("DiffRenderable - handles diff with no changes", async () => {
-  const syntaxStyle = SyntaxStyle.fromStyles({
-    default: { fg: RGBA.fromValues(1, 1, 1, 1) },
-  })
-
   const noChangeDiff = `--- a/test.js
 +++ b/test.js
 @@ -1,3 +1,3 @@
@@ -509,10 +449,6 @@ test("DiffRenderable - handles diff with no changes", async () => {
 })
 
 test("DiffRenderable - can update wrapMode", async () => {
-  const syntaxStyle = SyntaxStyle.fromStyles({
-    default: { fg: RGBA.fromValues(1, 1, 1, 1) },
-  })
-
   const diffRenderable = new DiffRenderable(currentRenderer, {
     id: "test-diff",
     diff: simpleDiff,
@@ -533,10 +469,6 @@ test("DiffRenderable - can update wrapMode", async () => {
 })
 
 test("DiffRenderable - split view alignment with empty lines", async () => {
-  const syntaxStyle = SyntaxStyle.fromStyles({
-    default: { fg: RGBA.fromValues(1, 1, 1, 1) },
-  })
-
   // Diff with additions that should create empty lines on left
   const alignmentDiff = `--- a/test.js
 +++ b/test.js
@@ -569,10 +501,6 @@ test("DiffRenderable - split view alignment with empty lines", async () => {
 })
 
 test("DiffRenderable - context lines shown on both sides in split view", async () => {
-  const syntaxStyle = SyntaxStyle.fromStyles({
-    default: { fg: RGBA.fromValues(1, 1, 1, 1) },
-  })
-
   const diffRenderable = new DiffRenderable(currentRenderer, {
     id: "test-diff",
     diff: multiLineDiff,
@@ -593,10 +521,6 @@ test("DiffRenderable - context lines shown on both sides in split view", async (
 })
 
 test("DiffRenderable - custom colors applied correctly", async () => {
-  const syntaxStyle = SyntaxStyle.fromStyles({
-    default: { fg: RGBA.fromValues(1, 1, 1, 1) },
-  })
-
   const diffRenderable = new DiffRenderable(currentRenderer, {
     id: "test-diff",
     diff: simpleDiff,
@@ -619,10 +543,6 @@ test("DiffRenderable - custom colors applied correctly", async () => {
 })
 
 test("DiffRenderable - line number fg/bg colors update after construction", async () => {
-  const syntaxStyle = SyntaxStyle.fromStyles({
-    default: { fg: RGBA.fromValues(1, 1, 1, 1) },
-  })
-
   const diffRenderable = new DiffRenderable(currentRenderer, {
     id: "test-diff",
     diff: simpleDiff,
@@ -639,7 +559,7 @@ test("DiffRenderable - line number fg/bg colors update after construction", asyn
 
   const findCharPosition = (char: string): { x: number; y: number } | null => {
     const buffer = currentRenderer.currentRenderBuffer
-    const charBuffer = buffer.buffers.char
+    const charBuffer = buffer.withBuffers(({ char }) => char.slice())
     const codePoint = char.codePointAt(0)
     if (codePoint === undefined) return null
 
@@ -656,15 +576,14 @@ test("DiffRenderable - line number fg/bg colors update after construction", asyn
 
   const getColorAt = (channel: "fg" | "bg", x: number, y: number) => {
     const buffer = currentRenderer.currentRenderBuffer
-    const colorBuffer = channel === "fg" ? buffer.buffers.fg : buffer.buffers.bg
     const offset = (y * buffer.width + x) * 4
 
-    return {
-      r: (colorBuffer[offset] & 0xff) / 255,
-      g: (colorBuffer[offset + 1] & 0xff) / 255,
-      b: (colorBuffer[offset + 2] & 0xff) / 255,
-      a: (colorBuffer[offset + 3] & 0xff) / 255,
-    }
+    return buffer.withBuffers((cells) => ({
+      r: (cells[channel][offset] & 0xff) / 255,
+      g: (cells[channel][offset + 1] & 0xff) / 255,
+      b: (cells[channel][offset + 2] & 0xff) / 255,
+      a: (cells[channel][offset + 3] & 0xff) / 255,
+    }))
   }
 
   const expectColorClose = (
@@ -693,10 +612,6 @@ test("DiffRenderable - line number fg/bg colors update after construction", asyn
 })
 
 test("DiffRenderable - line numbers hidden for empty alignment lines in split view", async () => {
-  const syntaxStyle = SyntaxStyle.fromStyles({
-    default: { fg: RGBA.fromValues(1, 1, 1, 1) },
-  })
-
   const diffRenderable = new DiffRenderable(currentRenderer, {
     id: "test-diff",
     diff: addOnlyDiff,
@@ -718,10 +633,6 @@ test("DiffRenderable - line numbers hidden for empty alignment lines in split vi
 })
 
 test("DiffRenderable - stable rendering across multiple frames (no visual glitches)", async () => {
-  const syntaxStyle = SyntaxStyle.fromStyles({
-    default: { fg: RGBA.fromValues(1, 1, 1, 1) },
-  })
-
   const diffRenderable = new DiffRenderable(currentRenderer, {
     id: "test-diff",
     diff: multiLineDiff,
@@ -781,10 +692,6 @@ test("DiffRenderable - stable rendering across multiple frames (no visual glitch
 })
 
 test("DiffRenderable - can be constructed without diff and set via setter", async () => {
-  const syntaxStyle = SyntaxStyle.fromStyles({
-    default: { fg: RGBA.fromValues(1, 1, 1, 1) },
-  })
-
   // Construct without diff
   const diffRenderable = new DiffRenderable(currentRenderer, {
     id: "test-diff",
@@ -812,10 +719,6 @@ test("DiffRenderable - can be constructed without diff and set via setter", asyn
 })
 
 test("DiffRenderable - consistent left padding for line numbers > 9", async () => {
-  const syntaxStyle = SyntaxStyle.fromStyles({
-    default: { fg: RGBA.fromValues(1, 1, 1, 1) },
-  })
-
   // Create a diff with line numbers that go into double digits
   const diffWith10PlusLines = `--- a/test.js
 +++ b/test.js
@@ -876,10 +779,6 @@ test("DiffRenderable - consistent left padding for line numbers > 9", async () =
 })
 
 test("DiffRenderable - line numbers are correct in unified view", async () => {
-  const syntaxStyle = SyntaxStyle.fromStyles({
-    default: { fg: RGBA.fromValues(1, 1, 1, 1) },
-  })
-
   const diffRenderable = new DiffRenderable(currentRenderer, {
     id: "test-diff",
     diff: simpleDiff,
@@ -908,10 +807,6 @@ test("DiffRenderable - line numbers are correct in unified view", async () => {
 })
 
 test("DiffRenderable - line numbers are correct in split view", async () => {
-  const syntaxStyle = SyntaxStyle.fromStyles({
-    default: { fg: RGBA.fromValues(1, 1, 1, 1) },
-  })
-
   const diffRenderable = new DiffRenderable(currentRenderer, {
     id: "test-diff",
     diff: simpleDiff,
@@ -939,10 +834,6 @@ test("DiffRenderable - line numbers are correct in split view", async () => {
 })
 
 test("DiffRenderable - split view should not wrap lines prematurely", async () => {
-  const syntaxStyle = SyntaxStyle.fromStyles({
-    default: { fg: RGBA.fromValues(1, 1, 1, 1) },
-  })
-
   // Create a diff with long lines that should fit in split view
   const longLineDiff = `--- a/test.js
 +++ b/test.js
@@ -989,10 +880,6 @@ test("DiffRenderable - split view should not wrap lines prematurely", async () =
 })
 
 test("DiffRenderable - split view alignment with calculator diff", async () => {
-  const syntaxStyle = SyntaxStyle.fromStyles({
-    default: { fg: RGBA.fromValues(1, 1, 1, 1) },
-  })
-
   const calculatorDiff = `--- a/calculator.ts
 +++ b/calculator.ts
 @@ -1,13 +1,20 @@
@@ -1049,10 +936,6 @@ test("DiffRenderable - split view alignment with calculator diff", async () => {
 })
 
 test("DiffRenderable - switching between unified and split views multiple times", async () => {
-  const syntaxStyle = SyntaxStyle.fromStyles({
-    default: { fg: RGBA.fromValues(1, 1, 1, 1) },
-  })
-
   const diffRenderable = new DiffRenderable(currentRenderer, {
     id: "test-diff",
     diff: simpleDiff,
@@ -1101,10 +984,6 @@ test("DiffRenderable - switching between unified and split views multiple times"
 })
 
 test("DiffRenderable - wrapMode works in unified view", async () => {
-  const syntaxStyle = SyntaxStyle.fromStyles({
-    default: { fg: RGBA.fromValues(1, 1, 1, 1) },
-  })
-
   // Create a diff with a very long line that will wrap
   const longLineDiff = `--- a/test.js
 +++ b/test.js
@@ -1160,9 +1039,12 @@ test("DiffRenderable - split view with wrapMode honors wrapping alignment", asyn
   const renderOnce = testRenderer.renderOnce
   const captureFrame = testRenderer.captureCharFrame
 
-  const syntaxStyle = SyntaxStyle.fromStyles({
-    default: { fg: RGBA.fromValues(1, 1, 1, 1) },
-  })
+  const syntaxStyle = SyntaxStyle.fromStyles(
+    {
+      default: { fg: RGBA.fromValues(1, 1, 1, 1) },
+    },
+    renderer.nativeScene,
+  )
 
   const calculatorDiff = `--- a/calculator.ts
 +++ b/calculator.ts
@@ -1239,9 +1121,12 @@ test("DiffRenderable - context lines show new line numbers in unified view", asy
   const renderOnce = testRenderer.renderOnce
   const captureFrame = testRenderer.captureCharFrame
 
-  const syntaxStyle = SyntaxStyle.fromStyles({
-    default: { fg: RGBA.fromValues(1, 1, 1, 1) },
-  })
+  const syntaxStyle = SyntaxStyle.fromStyles(
+    {
+      default: { fg: RGBA.fromValues(1, 1, 1, 1) },
+    },
+    renderer.nativeScene,
+  )
 
   // This diff adds lines in the middle, so context lines after additions
   // should show their NEW line numbers, not old ones
@@ -1313,10 +1198,6 @@ test("DiffRenderable - context lines show new line numbers in unified view", asy
 })
 
 test("DiffRenderable - multiple hunks in unified view", async () => {
-  const syntaxStyle = SyntaxStyle.fromStyles({
-    default: { fg: RGBA.fromValues(1, 1, 1, 1) },
-  })
-
   // Diff with three separate hunks
   const multiHunkDiff = `--- a/file.js
 +++ b/file.js
@@ -1375,10 +1256,6 @@ test("DiffRenderable - multiple hunks in unified view", async () => {
 })
 
 test("DiffRenderable - multiple hunks in split view", async () => {
-  const syntaxStyle = SyntaxStyle.fromStyles({
-    default: { fg: RGBA.fromValues(1, 1, 1, 1) },
-  })
-
   const multiHunkDiff = `--- a/file.js
 +++ b/file.js
 @@ -1,3 +1,3 @@
@@ -1425,10 +1302,6 @@ test("DiffRenderable - multiple hunks in split view", async () => {
 })
 
 test("DiffRenderable - no newline at end of file in unified view", async () => {
-  const syntaxStyle = SyntaxStyle.fromStyles({
-    default: { fg: RGBA.fromValues(1, 1, 1, 1) },
-  })
-
   const noNewlineDiff = `--- a/test.js
 +++ b/test.js
 @@ -1,3 +1,3 @@
@@ -1467,10 +1340,6 @@ test("DiffRenderable - no newline at end of file in unified view", async () => {
 })
 
 test("DiffRenderable - no newline at end of file in split view", async () => {
-  const syntaxStyle = SyntaxStyle.fromStyles({
-    default: { fg: RGBA.fromValues(1, 1, 1, 1) },
-  })
-
   const noNewlineDiff = `--- a/test.js
 +++ b/test.js
 @@ -1,3 +1,3 @@
@@ -1508,10 +1377,6 @@ test("DiffRenderable - no newline at end of file in split view", async () => {
 })
 
 test("DiffRenderable - asymmetric block with more removes than adds in split view", async () => {
-  const syntaxStyle = SyntaxStyle.fromStyles({
-    default: { fg: RGBA.fromValues(1, 1, 1, 1) },
-  })
-
   const asymmetricDiff = `--- a/test.js
 +++ b/test.js
 @@ -1,7 +1,4 @@
@@ -1568,10 +1433,6 @@ test("DiffRenderable - asymmetric block with more removes than adds in split vie
 })
 
 test("DiffRenderable - asymmetric block with more adds than removes in split view", async () => {
-  const syntaxStyle = SyntaxStyle.fromStyles({
-    default: { fg: RGBA.fromValues(1, 1, 1, 1) },
-  })
-
   const asymmetricDiff = `--- a/test.js
 +++ b/test.js
 @@ -1,4 +1,7 @@
@@ -1622,10 +1483,6 @@ test("DiffRenderable - asymmetric block with more adds than removes in split vie
 })
 
 test("DiffRenderable - back-to-back change blocks without context lines in split view", async () => {
-  const syntaxStyle = SyntaxStyle.fromStyles({
-    default: { fg: RGBA.fromValues(1, 1, 1, 1) },
-  })
-
   const backToBackDiff = `--- a/test.js
 +++ b/test.js
 @@ -1,4 +1,4 @@
@@ -1672,10 +1529,6 @@ test("DiffRenderable - back-to-back change blocks without context lines in split
 })
 
 test("DiffRenderable - very long lines wrapping multiple times in split view", async () => {
-  const syntaxStyle = SyntaxStyle.fromStyles({
-    default: { fg: RGBA.fromValues(1, 1, 1, 1) },
-  })
-
   const longLineDiff = `--- a/test.js
 +++ b/test.js
 @@ -1,3 +1,3 @@
@@ -1723,10 +1576,6 @@ test("DiffRenderable - very long lines wrapping multiple times in split view", a
 })
 
 test("DiffRenderable - rapid diff updates trigger microtask coalescing", async () => {
-  const syntaxStyle = SyntaxStyle.fromStyles({
-    default: { fg: RGBA.fromValues(1, 1, 1, 1) },
-  })
-
   const diffRenderable = new DiffRenderable(currentRenderer, {
     id: "test-diff",
     diff: simpleDiff,
@@ -1765,10 +1614,6 @@ test("DiffRenderable - rapid diff updates trigger microtask coalescing", async (
 })
 
 test("DiffRenderable - explicit content background colors differ from gutter", async () => {
-  const syntaxStyle = SyntaxStyle.fromStyles({
-    default: { fg: RGBA.fromValues(1, 1, 1, 1) },
-  })
-
   const diffRenderable = new DiffRenderable(currentRenderer, {
     id: "test-diff",
     diff: simpleDiff,
@@ -1811,10 +1656,6 @@ test("DiffRenderable - explicit content background colors differ from gutter", a
 })
 
 test("DiffRenderable - malformed diff string handled gracefully", async () => {
-  const syntaxStyle = SyntaxStyle.fromStyles({
-    default: { fg: RGBA.fromValues(1, 1, 1, 1) },
-  })
-
   const malformedDiff = `This is not a valid diff format
 Just some random text
 Without proper headers`
@@ -1841,10 +1682,6 @@ Without proper headers`
 })
 
 test("DiffRenderable - invalid diff format shows error with raw diff", async () => {
-  const syntaxStyle = SyntaxStyle.fromStyles({
-    default: { fg: RGBA.fromValues(1, 1, 1, 1) },
-  })
-
   // This diff has a malformed hunk header that will cause parsePatch to throw
   // The hunk header must have the format @@ -oldStart,oldLines +newStart,newLines @@
   const invalidDiff = `--- a/test.js
@@ -1881,10 +1718,6 @@ test("DiffRenderable - invalid diff format shows error with raw diff", async () 
 })
 
 test("DiffRenderable - diff with only context lines (no changes)", async () => {
-  const syntaxStyle = SyntaxStyle.fromStyles({
-    default: { fg: RGBA.fromValues(1, 1, 1, 1) },
-  })
-
   const contextOnlyDiff = `--- a/test.js
 +++ b/test.js
 @@ -1,5 +1,5 @@
@@ -1924,10 +1757,6 @@ test("DiffRenderable - diff with only context lines (no changes)", async () => {
 })
 
 test("DiffRenderable - should not leak listeners on unified view updates", async () => {
-  const syntaxStyle = SyntaxStyle.fromStyles({
-    default: { fg: RGBA.fromValues(1, 1, 1, 1) },
-  })
-
   const diffRenderable = new DiffRenderable(currentRenderer, {
     id: "test-diff",
     diff: simpleDiff,
@@ -1960,10 +1789,6 @@ test("DiffRenderable - should not leak listeners on unified view updates", async
 })
 
 test("DiffRenderable - should not leak listeners on split view updates", async () => {
-  const syntaxStyle = SyntaxStyle.fromStyles({
-    default: { fg: RGBA.fromValues(1, 1, 1, 1) },
-  })
-
   const diffRenderable = new DiffRenderable(currentRenderer, {
     id: "test-diff",
     diff: simpleDiff,
@@ -2002,10 +1827,6 @@ test("DiffRenderable - should not leak listeners on split view updates", async (
 })
 
 test("DiffRenderable - should not leak listeners when switching views", async () => {
-  const syntaxStyle = SyntaxStyle.fromStyles({
-    default: { fg: RGBA.fromValues(1, 1, 1, 1) },
-  })
-
   const diffRenderable = new DiffRenderable(currentRenderer, {
     id: "test-diff",
     diff: simpleDiff,
@@ -2039,10 +1860,6 @@ test("DiffRenderable - should not leak listeners when switching views", async ()
 })
 
 test("DiffRenderable - should not leak listeners on rapid property changes", async () => {
-  const syntaxStyle = SyntaxStyle.fromStyles({
-    default: { fg: RGBA.fromValues(1, 1, 1, 1) },
-  })
-
   const diffRenderable = new DiffRenderable(currentRenderer, {
     id: "test-diff",
     diff: simpleDiff,
@@ -2077,10 +1894,6 @@ test("DiffRenderable - should not leak listeners on rapid property changes", asy
 })
 
 test("DiffRenderable - can toggle conceal with markdown diff", async () => {
-  const syntaxStyle = SyntaxStyle.fromStyles({
-    default: { fg: RGBA.fromValues(1, 1, 1, 1) },
-  })
-
   const mockClient = new MockTreeSitterClient()
 
   const markdownDiff = `--- a/test.md
@@ -2136,10 +1949,6 @@ test("DiffRenderable - can toggle conceal with markdown diff", async () => {
 })
 
 test("DiffRenderable - conceal works in split view", async () => {
-  const syntaxStyle = SyntaxStyle.fromStyles({
-    default: { fg: RGBA.fromValues(1, 1, 1, 1) },
-  })
-
   const mockClient = new MockTreeSitterClient()
 
   const markdownDiff = `--- a/test.md
@@ -2187,10 +1996,6 @@ test("DiffRenderable - conceal works in split view", async () => {
 })
 
 test("DiffRenderable - conceal defaults to false when not specified", async () => {
-  const syntaxStyle = SyntaxStyle.fromStyles({
-    default: { fg: RGBA.fromValues(1, 1, 1, 1) },
-  })
-
   const diffRenderable = new DiffRenderable(currentRenderer, {
     id: "test-diff",
     diff: simpleDiff,
@@ -2208,10 +2013,6 @@ test("DiffRenderable - conceal defaults to false when not specified", async () =
 })
 
 test("DiffRenderable - should handle resize with wrapping without leaking listeners", async () => {
-  const syntaxStyle = SyntaxStyle.fromStyles({
-    default: { fg: RGBA.fromValues(1, 1, 1, 1) },
-  })
-
   const diffRenderable = new DiffRenderable(currentRenderer, {
     id: "test-diff",
     diff: simpleDiff,
@@ -2247,10 +2048,6 @@ test("DiffRenderable - should handle resize with wrapping without leaking listen
 })
 
 test("DiffRenderable - gutter configuration updates work correctly", async () => {
-  const syntaxStyle = SyntaxStyle.fromStyles({
-    default: { fg: RGBA.fromValues(1, 1, 1, 1) },
-  })
-
   const diffRenderable = new DiffRenderable(currentRenderer, {
     id: "test-diff",
     diff: simpleDiff,
@@ -2294,10 +2091,6 @@ test("DiffRenderable - gutter configuration updates work correctly", async () =>
 })
 
 test("DiffRenderable - target remains functional after multiple updates", async () => {
-  const syntaxStyle = SyntaxStyle.fromStyles({
-    default: { fg: RGBA.fromValues(1, 1, 1, 1) },
-  })
-
   const diffRenderable = new DiffRenderable(currentRenderer, {
     id: "test-diff",
     diff: multiLineDiff,
@@ -2347,10 +2140,6 @@ test("DiffRenderable - target remains functional after multiple updates", async 
 
 test("DiffRenderable - split view scroll is not synchronized by default", async () => {
   const mockMouse = createMockMouse(currentRenderer)
-  const syntaxStyle = SyntaxStyle.fromStyles({
-    default: { fg: RGBA.fromValues(1, 1, 1, 1) },
-  })
-
   const diffRenderable = new DiffRenderable(currentRenderer, {
     id: "test-diff",
     diff: multiLineDiff,
@@ -2387,10 +2176,6 @@ test("DiffRenderable - split view scroll is not synchronized by default", async 
 
 test("DiffRenderable - split view wheel scroll keeps panes synchronized", async () => {
   const mockMouse = createMockMouse(currentRenderer)
-  const syntaxStyle = SyntaxStyle.fromStyles({
-    default: { fg: RGBA.fromValues(1, 1, 1, 1) },
-  })
-
   const diffRenderable = new DiffRenderable(currentRenderer, {
     id: "test-diff",
     diff: multiLineDiff,
@@ -2427,10 +2212,6 @@ test("DiffRenderable - split view wheel scroll keeps panes synchronized", async 
 })
 
 test("DiffRenderable - gutter remains in correct position after updates", async () => {
-  const syntaxStyle = SyntaxStyle.fromStyles({
-    default: { fg: RGBA.fromValues(1, 1, 1, 1) },
-  })
-
   const diffRenderable = new DiffRenderable(currentRenderer, {
     id: "test-diff",
     diff: simpleDiff,
@@ -2471,10 +2252,6 @@ test("DiffRenderable - gutter remains in correct position after updates", async 
 })
 
 test("DiffRenderable - properly cleans up listeners on destroy", async () => {
-  const syntaxStyle = SyntaxStyle.fromStyles({
-    default: { fg: RGBA.fromValues(1, 1, 1, 1) },
-  })
-
   const diffRenderable = new DiffRenderable(currentRenderer, {
     id: "test-diff",
     diff: simpleDiff,
@@ -2526,9 +2303,12 @@ test("DiffRenderable - line numbers update correctly after resize causes wrappin
   const captureFrame = testRenderer.captureCharFrame
   const resize = testRenderer.resize
 
-  const syntaxStyle = SyntaxStyle.fromStyles({
-    default: { fg: RGBA.fromValues(1, 1, 1, 1) },
-  })
+  const syntaxStyle = SyntaxStyle.fromStyles(
+    {
+      default: { fg: RGBA.fromValues(1, 1, 1, 1) },
+    },
+    renderer.nativeScene,
+  )
 
   const longLineDiff = `--- a/test.js
 +++ b/test.js
@@ -2614,9 +2394,6 @@ test("DiffRenderable - line numbers update correctly after resize causes wrappin
 })
 
 test("DiffRenderable - fg prop is passed to CodeRenderable on construction", async () => {
-  const syntaxStyle = SyntaxStyle.fromStyles({
-    default: { fg: RGBA.fromValues(1, 1, 1, 1) },
-  })
   const customFg = "#000000"
 
   const diffRenderable = new DiffRenderable(currentRenderer, {
@@ -2640,9 +2417,6 @@ test("DiffRenderable - fg prop is passed to CodeRenderable on construction", asy
 })
 
 test("DiffRenderable - fg prop can be updated via setter", async () => {
-  const syntaxStyle = SyntaxStyle.fromStyles({
-    default: { fg: RGBA.fromValues(1, 1, 1, 1) },
-  })
   const initialFg = "#000000"
   const updatedFg = "#333333"
 
@@ -2669,9 +2443,6 @@ test("DiffRenderable - fg prop can be updated via setter", async () => {
 })
 
 test("DiffRenderable - fg prop is passed to both CodeRenderables in split view", async () => {
-  const syntaxStyle = SyntaxStyle.fromStyles({
-    default: { fg: RGBA.fromValues(1, 1, 1, 1) },
-  })
   const customFg = "#222222"
 
   const diffRenderable = new DiffRenderable(currentRenderer, {
@@ -2699,9 +2470,6 @@ test("DiffRenderable - fg prop is passed to both CodeRenderables in split view",
 })
 
 test("DiffRenderable - fg prop updates both CodeRenderables in split view", async () => {
-  const syntaxStyle = SyntaxStyle.fromStyles({
-    default: { fg: RGBA.fromValues(1, 1, 1, 1) },
-  })
   const initialFg = "#111111"
   const updatedFg = "#444444"
 
@@ -2730,10 +2498,6 @@ test("DiffRenderable - fg prop updates both CodeRenderables in split view", asyn
 })
 
 test("DiffRenderable - fg prop defaults to undefined when not specified", async () => {
-  const syntaxStyle = SyntaxStyle.fromStyles({
-    default: { fg: RGBA.fromValues(1, 1, 1, 1) },
-  })
-
   const diffRenderable = new DiffRenderable(currentRenderer, {
     id: "test-diff",
     diff: simpleDiff,
@@ -2750,9 +2514,6 @@ test("DiffRenderable - fg prop defaults to undefined when not specified", async 
 })
 
 test("DiffRenderable - fg prop can be set to undefined to clear it", async () => {
-  const syntaxStyle = SyntaxStyle.fromStyles({
-    default: { fg: RGBA.fromValues(1, 1, 1, 1) },
-  })
   const initialFg = "#000000"
 
   const diffRenderable = new DiffRenderable(currentRenderer, {
@@ -2777,9 +2538,6 @@ test("DiffRenderable - fg prop can be set to undefined to clear it", async () =>
 })
 
 test("DiffRenderable - fg prop accepts RGBA directly", async () => {
-  const syntaxStyle = SyntaxStyle.fromStyles({
-    default: { fg: RGBA.fromValues(1, 1, 1, 1) },
-  })
   const customFg = RGBA.fromValues(0.2, 0.2, 0.2, 1)
 
   const diffRenderable = new DiffRenderable(currentRenderer, {
@@ -2808,7 +2566,29 @@ test("DiffRenderable - split view with word wrapping: changing diff content shou
   // Use terminal width that matches the demo (~116 chars)
   const testRenderer = await createTestRenderer({ width: 116, height: 30 })
   const renderer = testRenderer.renderer
+  const renderOnce = testRenderer.renderOnce
   const captureFrame = testRenderer.captureCharFrame
+  const captureHighlightedFrame = async (diff: DiffRenderable) => {
+    const panes = ["leftCodeRenderable", "rightCodeRenderable"].map((name) => Reflect.get(diff, name) as CodeRenderable)
+    // Alignment after highlighting can change padding and start another highlight during render.
+    for (let round = 0; round < 8; round++) {
+      const pending = panes.map((pane) => pane.highlightingDone)
+      await Promise.all(pending)
+      await renderOnce()
+      if (panes.some((pane, index) => pane.isHighlighting || pane.highlightingDone !== pending[index])) continue
+      const frame = captureFrame()
+      for (const start of [0, 58]) {
+        expect(
+          frame
+            .split("\n")
+            .map((line) => line.slice(start, start + 58))
+            .join("\n"),
+        ).toContain("terminalDemo")
+      }
+      return frame
+    }
+    throw new Error("Diff highlight and alignment did not settle")
+  }
 
   // GitHub Dark theme - EXACTLY as in diff-demo.ts
   const theme = {
@@ -2827,25 +2607,28 @@ test("DiffRenderable - split view with word wrapping: changing diff content shou
   }
 
   // Syntax style EXACTLY as in diff-demo.ts GitHub Dark theme
-  const syntaxStyle = SyntaxStyle.fromStyles({
-    keyword: { fg: parseColor("#FF7B72"), bold: true },
-    "keyword.import": { fg: parseColor("#FF7B72"), bold: true },
-    string: { fg: parseColor("#A5D6FF") },
-    comment: { fg: parseColor("#8B949E"), italic: true },
-    number: { fg: parseColor("#79C0FF") },
-    boolean: { fg: parseColor("#79C0FF") },
-    constant: { fg: parseColor("#79C0FF") },
-    function: { fg: parseColor("#D2A8FF") },
-    "function.call": { fg: parseColor("#D2A8FF") },
-    constructor: { fg: parseColor("#FFA657") },
-    type: { fg: parseColor("#FFA657") },
-    operator: { fg: parseColor("#FF7B72") },
-    variable: { fg: parseColor("#E6EDF3") },
-    property: { fg: parseColor("#79C0FF") },
-    bracket: { fg: parseColor("#F0F6FC") },
-    punctuation: { fg: parseColor("#F0F6FC") },
-    default: { fg: parseColor("#E6EDF3") },
-  })
+  const syntaxStyle = SyntaxStyle.fromStyles(
+    {
+      keyword: { fg: parseColor("#FF7B72"), bold: true },
+      "keyword.import": { fg: parseColor("#FF7B72"), bold: true },
+      string: { fg: parseColor("#A5D6FF") },
+      comment: { fg: parseColor("#8B949E"), italic: true },
+      number: { fg: parseColor("#79C0FF") },
+      boolean: { fg: parseColor("#79C0FF") },
+      constant: { fg: parseColor("#79C0FF") },
+      function: { fg: parseColor("#D2A8FF") },
+      "function.call": { fg: parseColor("#D2A8FF") },
+      constructor: { fg: parseColor("#FFA657") },
+      type: { fg: parseColor("#FFA657") },
+      operator: { fg: parseColor("#FF7B72") },
+      variable: { fg: parseColor("#E6EDF3") },
+      property: { fg: parseColor("#79C0FF") },
+      bracket: { fg: parseColor("#F0F6FC") },
+      punctuation: { fg: parseColor("#F0F6FC") },
+      default: { fg: parseColor("#E6EDF3") },
+    },
+    renderer.nativeScene,
+  )
 
   // contentExamples[0] - TypeScript Calculator diff
   const calculatorDiff = `--- a/calculator.ts
@@ -2952,7 +2735,8 @@ test("DiffRenderable - split view with word wrapping: changing diff content shou
   await Promise.resolve()
   await renderOnce()
 
-  const correctFrame = captureFrame()
+  const correctFrame = await captureHighlightedFrame(correctDiff)
+  expect(correctFrame).toContain("terminalDemo")
 
   // Clean up (destroyRecursively already detaches from the parent)
   parentContainer1.destroyRecursively()
@@ -3014,7 +2798,7 @@ test("DiffRenderable - split view with word wrapping: changing diff content shou
   await Promise.resolve()
   await renderOnce()
 
-  const buggyFrame = captureFrame()
+  const buggyFrame = await captureHighlightedFrame(buggyDiff)
 
   // Clean up
   renderer.destroy()
@@ -3027,10 +2811,6 @@ test("DiffRenderable - split view with word wrapping: changing diff content shou
 })
 
 test("DiffRenderable - setLineColor applies color to line", async () => {
-  const syntaxStyle = SyntaxStyle.fromStyles({
-    default: { fg: RGBA.fromValues(1, 1, 1, 1) },
-  })
-
   const diffRenderable = new DiffRenderable(currentRenderer, {
     id: "test-diff",
     diff: simpleDiff,
@@ -3046,10 +2826,6 @@ test("DiffRenderable - setLineColor applies color to line", async () => {
 })
 
 test("DiffRenderable - highlightLines applies color to range", async () => {
-  const syntaxStyle = SyntaxStyle.fromStyles({
-    default: { fg: RGBA.fromValues(1, 1, 1, 1) },
-  })
-
   const diffRenderable = new DiffRenderable(currentRenderer, {
     id: "test-diff",
     diff: multiLineDiff,
@@ -3063,10 +2839,6 @@ test("DiffRenderable - highlightLines applies color to range", async () => {
 })
 
 test("DiffRenderable - setLineColors and clearAllLineColors", async () => {
-  const syntaxStyle = SyntaxStyle.fromStyles({
-    default: { fg: RGBA.fromValues(1, 1, 1, 1) },
-  })
-
   const diffRenderable = new DiffRenderable(currentRenderer, {
     id: "test-diff",
     diff: simpleDiff,
@@ -3085,10 +2857,6 @@ test("DiffRenderable - setLineColors and clearAllLineColors", async () => {
 })
 
 test("DiffRenderable - line highlighting works in split view", async () => {
-  const syntaxStyle = SyntaxStyle.fromStyles({
-    default: { fg: RGBA.fromValues(1, 1, 1, 1) },
-  })
-
   const diffRenderable = new DiffRenderable(currentRenderer, {
     id: "test-diff",
     diff: simpleDiff,
@@ -3123,8 +2891,6 @@ const threeHunkDiff = `--- a/file.js
  }`
 
 test("DiffRenderable - getHunkRowOffsets returns the first row of each hunk (unified)", async () => {
-  const syntaxStyle = SyntaxStyle.fromStyles({ default: { fg: RGBA.fromValues(1, 1, 1, 1) } })
-
   const diffRenderable = new DiffRenderable(currentRenderer, {
     id: "test-diff",
     diff: threeHunkDiff,
@@ -3143,8 +2909,6 @@ test("DiffRenderable - getHunkRowOffsets returns the first row of each hunk (uni
 })
 
 test("DiffRenderable - getHunkRowOffsets accounts for wrapped lines (unified)", async () => {
-  const syntaxStyle = SyntaxStyle.fromStyles({ default: { fg: RGBA.fromValues(1, 1, 1, 1) } })
-
   const longLine = "x".repeat(220)
   const wrappingDiff = `--- a/file.js
 +++ b/file.js
@@ -3187,8 +2951,6 @@ test("DiffRenderable - getHunkRowOffsets accounts for wrapped lines (unified)", 
 })
 
 test("DiffRenderable - getHunkRowOffsets uses split-view rows (split)", async () => {
-  const syntaxStyle = SyntaxStyle.fromStyles({ default: { fg: RGBA.fromValues(1, 1, 1, 1) } })
-
   const diffRenderable = new DiffRenderable(currentRenderer, {
     id: "test-diff",
     diff: threeHunkDiff,

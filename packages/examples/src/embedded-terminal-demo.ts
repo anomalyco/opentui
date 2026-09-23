@@ -71,15 +71,23 @@ export function run(renderer: CliRenderer): void {
   terminal.focus()
 }
 
-export function destroy(renderer: CliRenderer): void {
+export async function destroy(renderer: CliRenderer): Promise<void> {
   terminal?.blur()
-  shellProcess?.kill()
-  shellProcess?.terminal?.close()
+  const child = shellProcess
   shellProcess = null
-  if (container) renderer.root.remove(container)
-  container?.destroy()
+  child?.kill()
+  child?.terminal?.close()
+  container?.destroyRecursively()
   container = null
   terminal = null
+  if (child) {
+    const forceKill = setTimeout(() => child.kill("SIGKILL"), 250)
+    try {
+      await child.exited
+    } finally {
+      clearTimeout(forceKill)
+    }
+  }
 }
 
 if (import.meta.main) {

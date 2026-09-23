@@ -1,8 +1,18 @@
-import { createCliRenderer, LineNumberRenderable, RGBA, SyntaxStyle } from "@opentui/core"
-import { createRoot, useKeyboard } from "@opentui/react"
-import { useEffect, useRef, useState } from "react"
+import {
+  CodeRenderable,
+  createCliRenderer,
+  LineNumberRenderable,
+  RenderableEvents,
+  RGBA,
+  SyntaxStyle,
+} from "@opentui/core"
+import { createRoot, useKeyboard, useRenderer } from "@opentui/react"
+import { useEffect, useLayoutEffect, useRef, useState } from "react"
 
 export default function App() {
+  const renderer = useRenderer()
+  const codeRef = useRef<CodeRenderable | null>(null)
+  const [syntaxStyle, setSyntaxStyle] = useState<SyntaxStyle | null>(null)
   const [showLineNumbers, setShowLineNumbers] = useState(true)
   const [showDiffHighlights, setShowDiffHighlights] = useState(false)
   const [showDiagnostics, setShowDiagnostics] = useState(false)
@@ -25,17 +35,31 @@ console.log('Sum:', sum)
 const evens = results.filter(n => n % 2 === 0)
 console.log('Even numbers:', evens)`
 
-  const syntaxStyle = SyntaxStyle.fromStyles({
-    keyword: { fg: RGBA.fromHex("#C792EA") },
-    function: { fg: RGBA.fromHex("#82AAFF") },
-    string: { fg: RGBA.fromHex("#C3E88D") },
-    number: { fg: RGBA.fromHex("#F78C6C") },
-    comment: { fg: RGBA.fromHex("#546E7A") },
-    type: { fg: RGBA.fromHex("#FFCB6B") },
-    operator: { fg: RGBA.fromHex("#89DDFF") },
-    variable: { fg: RGBA.fromHex("#EEFFFF") },
-    default: { fg: RGBA.fromHex("#A6ACCD") },
-  })
+  useLayoutEffect(() => {
+    const style = SyntaxStyle.fromStyles(
+      {
+        keyword: { fg: RGBA.fromHex("#C792EA") },
+        function: { fg: RGBA.fromHex("#82AAFF") },
+        string: { fg: RGBA.fromHex("#C3E88D") },
+        number: { fg: RGBA.fromHex("#F78C6C") },
+        comment: { fg: RGBA.fromHex("#546E7A") },
+        type: { fg: RGBA.fromHex("#FFCB6B") },
+        operator: { fg: RGBA.fromHex("#89DDFF") },
+        variable: { fg: RGBA.fromHex("#EEFFFF") },
+        default: { fg: RGBA.fromHex("#A6ACCD") },
+      },
+      renderer.nativeScene!,
+    )
+    setSyntaxStyle(style)
+    return () => {
+      const code = codeRef.current
+      if (code && !code.isDestroyed && code.syntaxStyle === style) {
+        code.prependOnceListener(RenderableEvents.DESTROYED, () => style.destroy())
+      } else {
+        style.destroy()
+      }
+    }
+  }, [renderer])
 
   let lineNumberRef = useRef<LineNumberRenderable>(null)
 
@@ -118,6 +142,8 @@ console.log('Even numbers:', evens)`
     }
   }
 
+  if (!syntaxStyle) return null
+
   return (
     <box flexDirection="column" width="100%" height="100%" gap={1}>
       <box flexDirection="column" backgroundColor="#0D1117" padding={1} flexShrink={0} border borderColor="#30363D">
@@ -140,6 +166,10 @@ console.log('Even numbers:', evens)`
           height="100%"
         >
           <code
+            ref={(node) => {
+              // React clears refs before passive host destruction.
+              if (node) codeRef.current = node
+            }}
             content={codeContent}
             filetype="typescript"
             syntaxStyle={syntaxStyle}

@@ -1313,7 +1313,7 @@ describe("TextRenderable Selection", () => {
 
       expect(text.hasSelection()).toBe(true)
 
-      const { bg } = buffer.buffers
+      const bg = buffer.withBuffers(({ bg }) => bg.slice())
       const bufferWidth = buffer.width
 
       const ellipsisIdx = text.y * bufferWidth + text.x + 3
@@ -1343,7 +1343,7 @@ describe("TextRenderable Selection", () => {
 
       expect(text.hasSelection()).toBe(true)
 
-      const { bg } = buffer.buffers
+      const bg = buffer.withBuffers(({ bg }) => bg.slice())
       const bufferWidth = buffer.width
 
       const ellipsisIdx = (text.y + 1) * bufferWidth + text.x + 3
@@ -1444,7 +1444,7 @@ describe("TextRenderable Selection", () => {
     })
 
     it("should render empty buffer correctly", async () => {
-      currentRenderer.currentRenderBuffer.clear()
+      await renderOnce()
       const frame = captureFrame()
       expect(frame).toMatchSnapshot()
     })

@@ -36,13 +36,13 @@ try {
 
 ## Accepted sources
 
-| API                                                       | Accepted input                                                                                                    |
-| --------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------- |
-| `NativeImage.load(source, options?)`                      | Path string, `file:`, HTTP(S), `blob:`, or `data:` URL, `URL`, `Blob`, `Response`, `Uint8Array`, or `ArrayBuffer` |
-| `NativeImage.decode(data)`                                | Encoded `Uint8Array` or `ArrayBuffer`                                                                             |
-| `NativeImage.fromRgba(pixels, width, height, stride?)`    | Straight-alpha sRGB RGBA8 `Uint8Array`                                                                            |
-| `NativeImage.fromPixels(pixels, width, height, options?)` | sRGB RGBA8 or BGRA8 `Uint8Array`, with straight or opaque alpha                                                   |
-| `imageInfo(data)`                                         | Encoded `Uint8Array` or `ArrayBuffer`                                                                             |
+| API                                                              | Accepted input                                                                                                    |
+| ---------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------- |
+| `NativeImage.load(source, options?)`                             | Path string, `file:`, HTTP(S), `blob:`, or `data:` URL, `URL`, `Blob`, `Response`, `Uint8Array`, or `ArrayBuffer` |
+| `NativeImage.decode(data, options?)`                             | Encoded `Uint8Array` or `ArrayBuffer`                                                                             |
+| `NativeImage.fromRgba(pixels, width, height, stride?, options?)` | Straight-alpha sRGB RGBA8 `Uint8Array`                                                                            |
+| `NativeImage.fromPixels(pixels, width, height, options?)`        | sRGB RGBA8 or BGRA8 `Uint8Array`, with straight or opaque alpha                                                   |
+| `imageInfo(data, options?)`                                      | Encoded `Uint8Array` or `ArrayBuffer`                                                                             |
 
 Format detection reads encoded bytes. It does not trust a filename, URL suffix, response header, or file extension.
 
@@ -57,6 +57,7 @@ the final row is optional.
 
 ```typescript
 interface PixelImportOptions {
+  owner?: ResourceContext
   stride?: number
   format?: "rgba8" | "bgra8"
   alpha?: "straight" | "opaque"
@@ -87,6 +88,7 @@ The image reports `format: "raw-rgba"` and `colorStatus: "explicit-srgb"`, even 
 
 ```typescript
 interface ImageLoadOptions {
+  owner?: ResourceContext
   signal?: AbortSignal
   fetch?: (input: URL, init?: RequestInit) => Promise<Response>
 }
@@ -97,6 +99,57 @@ interface ImageLoadOptions {
 
 Paths, blobs, and response bodies are fully buffered before native decode. `load()` rejects a non-success HTTP status
 before it reads the body.
+
+## Choose a Context owner
+
+Images use checked Context handles. `ImageCreateOptions` selects an explicit owner:
+
+```typescript
+interface ImageCreateOptions {
+  owner?: ResourceContext
+}
+```
+
+`decode()`, `fromRgba()`, and `imageInfo()` accept these options.
+`ImageLoadOptions`, `PixelImportOptions`, and `NativeImagePoolOptions` also include `owner`.
+Use `renderer.nativeScene.resourceContext` to create an image in the renderer's Context.
+
+Without an explicit owner, constructors share an automatic Context with 4,096 object slots.
+Derived images, retained handles, and raw-pixel leases keep that Context alive.
+The last release destroys it. An explicit `ResourceContext` keeps its application-controlled lifetime.
+
+This example releases the raw lease before destroying its Context:
+
+```typescript example=image-owner
+import { NativeImage, ResourceContext } from "@opentui/core"
+
+const owner = new ResourceContext({ objectCapacity: 4, renderCellsMax: 1 })
+try {
+  const image = NativeImage.fromPixels(Uint8Array.of(255, 0, 0, 255), 1, 1, { owner })
+  try {
+    const raw = image.takeRaw()
+    try {
+      console.log(Array.from(raw.data).join(","))
+    } finally {
+      raw.dispose()
+    }
+  } finally {
+    image.dispose()
+  }
+} finally {
+  owner.destroy()
+}
+```
+
+Output:
+
+```text example=image-owner-output
+255,0,0,255
+```
+
+Destroying an explicit Context invalidates its remaining image wrappers. Their `dispose()` calls still complete wrapper cleanup.
+A live raw-pixel lease blocks Context destruction. Release the lease before retrying destruction.
+Read [Resources and ownership](/docs/native/resources#create-images-in-a-context) for checked image limits and transfer rules.
 
 ## Format behavior
 
@@ -166,10 +219,11 @@ try {
 `takeRaw()` consumes the `NativeImage`. Later image access throws, while `image.dispose()` remains a safe no-op.
 
 `OwnedRawImage.data` aliases native memory. Keep the owner alive while any consumer uses the view.
-`OwnedRawImage.dispose()` is idempotent and required. It frees the native allocation and invalidates `data`.
+`OwnedRawImage.dispose()` is idempotent and required. It releases the checked lease and invalidates `data` and all saved aliases.
+The lease uses the Context's lease-count and byte limits. It keeps an automatic Context alive and blocks explicit Context destruction.
 
-`takeRaw()` requires one exclusive native reference. It throws while another retained handle or a native buffer keeps
-the image alive. Dispose extra handles and clear or destroy those buffers first.
+`takeRaw()` requires one exclusive native reference to the original storage.
+Another retained handle or a same-Context buffer placement can block transfer. Release those references before transferring the pixels.
 
 ## Share or copy a handle
 
@@ -181,6 +235,11 @@ the image alive. Dispose extra handles and clear or destroy those buffers first.
 
 Dispose every retained, cloned, decoded, and transformed handle separately. Disposing one retained handle does not
 invalidate another retained handle.
+
+Drawing within the same Context retains immutable storage without copying it.
+A cross-Context binding caches a checked clone in the destination Context. Wrapper cleanup releases those imported handles.
+A destination buffer that retains a clone does not pin the original pixels.
+`ImageRenderable.source` also retains the source wrapper's storage, so that reference can still block `takeRaw()`.
 
 ## Reuse pixel storage
 
@@ -216,15 +275,16 @@ you do not need to call `requestRender()`.
 Each publication creates a new JavaScript wrapper and native handle. This prevents source equality checks and
 terminal-protocol caches from hiding a new frame.
 
-- `new NativeImagePool({ width, height, capacity? })` fixes the dimensions and slot count. Capacity defaults to `3`
+- `new NativeImagePool({ width, height, capacity?, owner? })` fixes the dimensions, slot count, and optional Context owner. Capacity defaults to `3`
   and must be an integer from `1` through `8`. Native image dimension and memory limits apply on the first publication.
 - `publishRgba(pixels, stride = width * 4)` copies top-left, straight-alpha, sRGB RGBA8 bytes without retaining caller
   memory. It accepts row padding. The input must include every row's pixels, but padding after the final row is optional.
 - `publishPixels(pixels, options?)` accepts the same `PixelImportOptions` as `NativeImage.fromPixels()`. It converts
   RGBA8 or BGRA8 with straight or opaque alpha directly into a reusable slot, without a JavaScript staging buffer.
+  The pool constructor selects the Context owner. A publication's `owner` option does not override it.
 - The pool allocates slots only as needed, up to `capacity * width * height * 4` bytes of pixel storage.
   Reuse does not allocate another pixel buffer. Encoding and rendering can allocate separately.
-- The pool can reuse a slot only after all published handles and native buffer placements release it.
+- The pool can reuse a slot only after all published handles and same-Context buffer placements release it.
   Retained images, renderable sources, and buffer snapshots keep their original pixels. Dispose frames when you no
   longer need them.
 - Both publication methods return `null` if every slot is still in use. They do not allocate pixel storage, queue,
@@ -234,6 +294,7 @@ terminal-protocol caches from hiding a new frame.
   calling them.
 - `dispose()` releases the pool's references and rejects future publications. Repeated calls are safe.
   Published frames remain valid and still need disposal.
+  If native admission rejects cleanup, the pool remains available for a cleanup retry.
 - Pools cannot resize. Create a new pool for new dimensions. Then dispose the old pool.
 - `takeRaw()` cannot transfer a frame while the pool owns its slot. Use `raw()` or `copyTo()`, or dispose the pool first.
 
@@ -308,6 +369,9 @@ runs.
 
 JavaScript option and geometry validation uses `TypeError` and `RangeError`. All image methods except `dispose()` throw
 after disposal or transfer.
+
+Context admission and capacity failures can throw `NativeError`, with a `NativeStatus` value.
+These errors include Context object or lease limits. They are separate from the image codec's `ImageError` codes.
 
 | Limit                    | Value           |
 | ------------------------ | --------------- |
