@@ -682,14 +682,19 @@ export class NativeScene {
         // Lifecycle passes and hooks stage writes; native must accept them before it continues.
         this.flushStaged()
         const geometryRevision = this.geometryRevision
-        request = this.driver.renderLib.sceneFrameStep(
-          this.driver.context,
-          this.driver.session,
-          request,
-          options,
-          this.workBudget,
-          recording,
-        )
+        try {
+          request = this.driver.renderLib.sceneFrameStep(
+            this.driver.context,
+            this.driver.session,
+            request,
+            options,
+            this.workBudget,
+            recording,
+          )
+        } finally {
+          // Resources a recording names stay alive until native code has painted it.
+          this.paintRecording?.recorder.settle()
+        }
         recording = null
         request.geometryRevision = geometryRevision
         if (request.kind === NativeSceneFrame.Done) {
@@ -739,6 +744,7 @@ export class NativeScene {
         renderable._runNativeSceneHook(request, deltaTime)
       }
     } finally {
+      this.paintRecording?.recorder.settle()
       if (!yielded && request && request !== this.paintedFrame && !this.driver.disposed) {
         try {
           this.driver.renderLib.sceneFrameCancel(this.driver.context, this.driver.session, request.frameId)
