@@ -175,3 +175,25 @@ test("a drawing call that throws records nothing, so a hook that catches it stil
   expect(errors).toEqual([])
   expect(captureCharFrame().split("\n")[0].trimEnd()).toBe("ok")
 })
+
+test("a slot whose hooks an earlier hook replaced still records its body", async () => {
+  const { renderer, renderOnce, captureCharFrame } = setup
+  class Later extends Renderable {
+    protected renderSelf(buffer: OptimizedBuffer): void {
+      buffer.drawText("LATER", this.x, this.y, white)
+    }
+  }
+  const later = new Later(renderer, { width: 5, height: 1 })
+  class Earlier extends Renderable {
+    protected renderSelf(): void {
+      later.renderAfter = () => {}
+    }
+  }
+  renderer.root.add(new Earlier(renderer, { width: 5, height: 1 }))
+  renderer.root.add(later)
+
+  for (let frame = 0; frame < 3; frame++) {
+    await renderOnce()
+    expect(captureCharFrame().split("\n")[1].trimEnd()).toBe("LATER")
+  }
+})

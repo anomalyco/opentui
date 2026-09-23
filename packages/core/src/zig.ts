@@ -415,7 +415,6 @@ export interface NativeScenePaintSlot {
   readonly num: number
   /** RenderBefore, RenderSelf, and RenderAfter hook bits to record. */
   readonly hooks: number
-  readonly hookGeneration: bigint
   readonly opacity: number
   readonly paintLayout: NativeSceneLayout
   readonly publicLayout?: NativeSceneLayout
@@ -7479,7 +7478,6 @@ export class FFIRenderLib {
         } as SceneNodeHandle,
         num: words[(base + fields.num.offset) / 4],
         hooks: words[(base + fields.hooks.offset) / 4],
-        hookGeneration: scratch[(base + fields.hook_generation.offset) / 8],
         opacity: values[(base + fields.opacity.offset) / 4],
         paintLayout: decodeSceneLayout(values, coordinates, base + fields.paint.offset),
         publicLayout:
