@@ -514,18 +514,6 @@ export class NativeScene {
     this.driver.renderLib.sceneSetTextViewPaint(this.driver.context, renderable._getSceneHandle(this), enabled)
   }
 
-  selectTextViewPaint(renderable: Renderable, enabled: boolean): void {
-    this.flushStaged()
-    const frame = this.frame
-    if (!frame) throw new Error("Native text paint selection requires an active frame")
-    this.driver.renderLib.sceneSelectTextViewPaint(
-      this.driver.context,
-      renderable._getSceneHandle(this),
-      frame,
-      enabled,
-    )
-  }
-
   setEditorOptions(renderable: Renderable, options: NativeSceneEditorOptions): void {
     this.flushStaged()
     this.driver.renderLib.sceneSetEditorOptions(this.driver.context, renderable._getSceneHandle(this), options)

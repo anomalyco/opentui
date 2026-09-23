@@ -191,13 +191,12 @@ Use `construction: "prototype"` only when the class adds no hook fields during c
 Use `"fields"` when it does. Subclasses without their own description retain bounded discovery for derived fields and intermediate-constructor attachment.
 An ordinary custom `Renderable` can use that default discovery path without a declaration.
 
-The `body` field has three forms:
+The `body` field has two forms:
 
-| Form                         | Behavior                                                                                           |
-| ---------------------------- | -------------------------------------------------------------------------------------------------- |
-| `"host"`                     | Dispatch the body's drawing to the host.                                                           |
-| `{ native: method }`         | Identify the method whose work the native node already implements. An override uses host dispatch. |
-| `{ textController: method }` | Run the host text controller, then resume native text drawing. `CodeRenderable` uses this form.    |
+| Form                 | Behavior                                                                                           |
+| -------------------- | -------------------------------------------------------------------------------------------------- |
+| `"host"`             | Dispatch the body's drawing to the host.                                                           |
+| `{ native: method }` | Identify the method whose work the native node already implements. An override uses host dispatch. |
 
 A native-body description does not compile a JavaScript method into native code.
 Use that form only when the native node already supplies the method's drawing behavior.

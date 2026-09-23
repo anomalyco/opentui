@@ -198,7 +198,6 @@ export interface NativeRenderableIntegration {
   readonly body:
     | "host"
     | { readonly native: (buffer: OptimizedBuffer, deltaTime: number) => void; readonly buffered?: boolean }
-    | { readonly textController: (buffer: OptimizedBuffer, deltaTime: number) => void }
   readonly lifecycle?: {
     readonly resize?: "host" | { readonly native: (width: number, height: number) => void }
     readonly update?:
@@ -1986,12 +1985,6 @@ export abstract class Renderable extends BaseRenderable {
     )
   }
 
-  /** @internal Code's entered controller decision also selects this request's native text paint. */
-  _usesNativeTextController(renderSelf: unknown): boolean {
-    const body = this.nativeIntegration.body
-    return !this.buffered && typeof body === "object" && "textController" in body && renderSelf === body.textController
-  }
-
   private needsHostResize(onResize: unknown): boolean {
     const resize = this.nativeIntegration.lifecycle?.resize
     if (resize === "host") return true
@@ -2108,7 +2101,6 @@ export abstract class Renderable extends BaseRenderable {
           (nativeFlags & ~NativeSceneHook.Resize) |
           (lineInfo && this.nativeIntegration.lineInfo ? NativeSceneHook.Resize : 0)
       }
-      if (this._usesNativeTextController(renderSelf)) nativeFlags |= NativeSceneHook.ResumeNativeText
       if (nativeFlags & NativeSceneHook.RenderSelf) nativeFlags |= NativeSceneHook.RenderAfter
       scene.setHooks(this, nativeFlags, generation, this.styledDimension("width"), this.styledDimension("height"))
       this._nativeSceneHooksRegistered = true

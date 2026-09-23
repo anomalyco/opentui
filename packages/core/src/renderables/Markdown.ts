@@ -21,7 +21,6 @@ import {
 import type { TreeSitterClient } from "../lib/tree-sitter/index.js"
 import { infoStringToFiletype } from "../lib/tree-sitter/resolve-ft.js"
 import { parseMarkdownIncremental, type ParseState } from "./markdown-parser.js"
-import type { OptimizedBuffer } from "../buffer.js"
 import { detectLinks, normalizeMarkdownLinkTarget } from "../lib/detect-links.js"
 import type { SimpleHighlight } from "../lib/tree-sitter/types.js"
 import { MAX_LINK_URL_BYTES } from "../zig.js"
@@ -301,6 +300,7 @@ export class MarkdownRenderable extends Renderable {
   _blockStates: BlockState[] = []
   _stableBlockCount = 0
   private _styleDirty: boolean = false
+  private readonly applyStyleChanges = () => this.rerenderDirtyStyles()
   private _highlightMarkdownLinks: OnHighlightCallback = (highlights, context) =>
     this.addMarkdownLinkHighlights(highlights, context.content)
   private _linkifyMarkdownChunks: OnChunksCallback = detectLinks
@@ -392,6 +392,7 @@ export class MarkdownRenderable extends Renderable {
       this._internalBlockMode = options.internalBlockMode ?? this._contentDefaultOptions.internalBlockMode
 
       this.updateBlocks()
+      this.onLifecyclePass = this.applyStyleChanges
 
       let subscription = MarkdownRenderable._capabilitySubscriptions.get(ctx)
       if (!subscription) {
@@ -440,8 +441,7 @@ export class MarkdownRenderable extends Renderable {
   set syntaxStyle(value: SyntaxStyle) {
     if (this._syntaxStyle !== value) {
       this._syntaxStyle = value
-      // Mark dirty - actual re-render happens in renderSelf
-      this._styleDirty = true
+      this.markStyleDirty()
     }
   }
 
@@ -453,7 +453,7 @@ export class MarkdownRenderable extends Renderable {
     const next = value ? RGBA.clone(parseColor(value)) : undefined
     if (!colorsEqual(this._fg, next)) {
       this._fg = next
-      this._styleDirty = true
+      this.markStyleDirty()
     }
   }
 
@@ -465,7 +465,7 @@ export class MarkdownRenderable extends Renderable {
     const next = value ? RGBA.clone(parseColor(value)) : undefined
     if (!colorsEqual(this._bg, next)) {
       this._bg = next
-      this._styleDirty = true
+      this.markStyleDirty()
     }
   }
 
@@ -476,8 +476,7 @@ export class MarkdownRenderable extends Renderable {
   set conceal(value: boolean) {
     if (this._conceal !== value) {
       this._conceal = value
-      // Mark dirty - actual re-render happens in renderSelf
-      this._styleDirty = true
+      this.markStyleDirty()
     }
   }
 
@@ -488,8 +487,7 @@ export class MarkdownRenderable extends Renderable {
   set concealCode(value: boolean) {
     if (this._concealCode !== value) {
       this._concealCode = value
-      // Mark dirty - actual re-render happens in renderSelf
-      this._styleDirty = true
+      this.markStyleDirty()
     }
   }
 
@@ -2368,17 +2366,27 @@ export class MarkdownRenderable extends Renderable {
 
   public refreshStyles(): void {
     this._styleDirty = false
+    this._ctx.nativeScene.lifecyclePasses.refresh(this)
     this.rerenderBlocks()
     this.requestRender()
   }
 
-  protected renderSelf(buffer: OptimizedBuffer, deltaTime: number): void {
-    // Check if style/conceal changed - re-render blocks before rendering
-    if (this._styleDirty) {
-      this._styleDirty = false
-      this.rerenderBlocks()
-    }
-    super.renderSelf(buffer, deltaTime)
+  // Style changes rebuild blocks before layout, so new blocks paint in the same frame.
+  private markStyleDirty(): void {
+    this._styleDirty = true
+    this._ctx.nativeScene.lifecyclePasses.refresh(this)
+  }
+
+  private rerenderDirtyStyles(): void {
+    if (!this._styleDirty) return
+    this._styleDirty = false
+    this._ctx.nativeScene.lifecyclePasses.refresh(this)
+    this.rerenderBlocks()
+  }
+
+  override _needsLifecyclePass(): boolean {
+    if (this.onLifecyclePass !== this.applyStyleChanges) return super._needsLifecyclePass()
+    return this._styleDirty
   }
 
   protected destroySelf(): void {

@@ -530,6 +530,32 @@ test("CodeRenderable - empty content does not trigger highlighting", async () =>
   expect(captureFrame()).not.toContain("first")
 })
 
+test("CodeRenderable - schedules highlighting before paint only while visible", async () => {
+  const mockClient = new MockTreeSitterClient()
+  mockClient.setMockResult({ highlights: [] })
+  const contents = recordHighlightContents(mockClient)
+  const options = { filetype: "javascript", syntaxStyle, treeSitterClient: mockClient, drawUnstyledText: false }
+  const hidden = new CodeRenderable(currentRenderer, { ...options, content: "hidden", visible: false })
+  const shown = new CodeRenderable(currentRenderer, { ...options, content: "shown" })
+  currentRenderer.root.add(hidden)
+  currentRenderer.root.add(shown)
+
+  await renderOnce()
+  expect(contents).toEqual(["shown"])
+  expect(captureFrame()).not.toContain("shown")
+
+  mockClient.resolveAllHighlightOnce()
+  await waitForHighlight(shown)
+  await renderOnce()
+  expect(captureFrame()).toContain("shown")
+
+  hidden.visible = true
+  await renderOnce()
+  expect(contents).toEqual(["shown", "hidden"])
+  mockClient.resolveAllHighlightOnce()
+  await waitForHighlight(hidden)
+})
+
 test("CodeRenderable - text renders immediately before highlighting completes", async () => {
   resize(32, 2)
 
