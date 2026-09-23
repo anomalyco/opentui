@@ -3114,7 +3114,7 @@ test("renderNode setter rerenders same-type top-level blocks", async () => {
   `)
 })
 
-test("paint-time style refresh destroys prepared children and defers their replacements until the next frame", async () => {
+test("style refresh replaces children before layout so replacements paint in the same frame", async () => {
   let content = "old"
   const md = createMarkdownRenderable({
     content: "# Heading",
@@ -3141,14 +3141,10 @@ test("paint-time style refresh destroys prepared children and defers their repla
 
   await renderOnce()
 
-  expect(calls).toEqual(["before", "add", "after"])
+  expect(calls).toEqual(["add", "before", "after"])
   expect(original.isDestroyed).toBe(true)
   expect(md.getChildren()[0]).not.toBe(original)
   expect(md.getChildren()[0].parent).toBe(md)
-  expect(captureFrame().trimEnd()).toBe("")
-
-  await renderOnce()
-
   expect(captureFrame().trimEnd()).toBe("new")
 })
 

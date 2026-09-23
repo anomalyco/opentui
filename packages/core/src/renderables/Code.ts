@@ -50,7 +50,14 @@ export class CodeRenderable extends TextBufferRenderable {
   static override readonly nativeIntegration = this.defineNativeIntegration({
     ...TextBufferRenderable.nativeIntegration,
     kind: "text_view",
-    body: { textController: this.prototype.renderSelf },
+    body: { native: this.prototype.renderSelf },
+    lifecycle: {
+      ...TextBufferRenderable.nativeIntegration.lifecycle,
+      update: {
+        idle: this.prototype.onUpdate,
+        active: (renderable) => (renderable as CodeRenderable)._needsHighlightUpdate,
+      },
+    },
   })
 
   private _content: string
@@ -76,7 +83,6 @@ export class CodeRenderable extends TextBufferRenderable {
   // Temporary rendered-line -> source-line map for concealment; native extmarks should replace this.
   private _renderedLineSources?: number[]
   private _mappedLineInfo?: LineInfo
-  private _nativeTextPaint: boolean = false
 
   protected _contentDefaultOptions = {
     content: "",
@@ -108,10 +114,10 @@ export class CodeRenderable extends TextBufferRenderable {
           this.textBuffer.setText(this._content)
         }
         this.updateTextInfo()
-        this._shouldRenderTextBuffer = this._drawUnstyledText || !this._filetype
+        this.setShouldRenderTextBuffer(this._drawUnstyledText || !this._filetype)
       }
 
-      this._highlightsDirty = this._content.length > 0
+      this.setHighlightsDirty(this._content.length > 0)
     } catch (error) {
       this.rollbackConstruction(error)
     }
@@ -122,8 +128,25 @@ export class CodeRenderable extends TextBufferRenderable {
   }
 
   private invalidateHighlights(): void {
-    this._highlightsDirty = true
+    this.setHighlightsDirty(true)
     this._highlightSnapshotId++
+  }
+
+  /** @internal Visible nodes schedule highlighting in their update hook, before layout and paint. */
+  get _needsHighlightUpdate(): boolean {
+    return this._highlightsDirty
+  }
+
+  private setHighlightsDirty(value: boolean): void {
+    if (this._highlightsDirty === value) return
+    this._highlightsDirty = value
+    if (!this.isDestroyed) this.refreshNativeSceneHooks()
+  }
+
+  private setShouldRenderTextBuffer(value: boolean): void {
+    if (this._shouldRenderTextBuffer === value) return
+    this._shouldRenderTextBuffer = value
+    if (!this.isDestroyed) this._ctx.nativeScene.setTextViewPaint(this, value)
   }
 
   set content(value: string) {
@@ -335,7 +358,7 @@ export class CodeRenderable extends TextBufferRenderable {
     const content = this._content
 
     if (!this._filetype) {
-      this._shouldRenderTextBuffer = true
+      this.setShouldRenderTextBuffer(true)
       return
     }
 
@@ -343,7 +366,7 @@ export class CodeRenderable extends TextBufferRenderable {
     const shouldDrawUnstyledNow = this._streaming ? isInitialContent && this._drawUnstyledText : this._drawUnstyledText
 
     if (this._streaming && !isInitialContent) {
-      this._shouldRenderTextBuffer = true
+      this.setShouldRenderTextBuffer(true)
     } else if (shouldDrawUnstyledNow) {
       if (this._initialStyledText) {
         this.textBuffer.setStyledText(this._initialStyledText)
@@ -351,9 +374,9 @@ export class CodeRenderable extends TextBufferRenderable {
         this.textBuffer.setText(content)
       }
       this.setRenderedLineSources(undefined)
-      this._shouldRenderTextBuffer = true
+      this.setShouldRenderTextBuffer(true)
     } else {
-      this._shouldRenderTextBuffer = false
+      this.setShouldRenderTextBuffer(false)
     }
   }
 
@@ -437,9 +460,9 @@ export class CodeRenderable extends TextBufferRenderable {
         this.setRenderedLineSources(undefined)
       }
 
-      this._shouldRenderTextBuffer = true
+      this.setShouldRenderTextBuffer(true)
       this._isHighlighting = false
-      this._highlightsDirty = false
+      this.setHighlightsDirty(false)
       this.updateTextInfo()
       this.requestRender()
     } catch (error) {
@@ -452,9 +475,9 @@ export class CodeRenderable extends TextBufferRenderable {
       if (this.isDestroyed) return
       this.textBuffer.setText(content)
       this.setRenderedLineSources(undefined)
-      this._shouldRenderTextBuffer = true
+      this.setShouldRenderTextBuffer(true)
       this._isHighlighting = false
-      this._highlightsDirty = false
+      this.setHighlightsDirty(false)
       this.updateTextInfo()
       this.requestRender()
     }
@@ -592,70 +615,59 @@ export class CodeRenderable extends TextBufferRenderable {
     return this.textBuffer.getLineHighlights(lineIdx)
   }
 
-  protected override _invokeNativePaint(buffer: OptimizedBuffer, _deltaTime: number): void {
-    // Highlight callbacks may replace hooks; retain the entered native draw decision.
-    const scene = this._ctx.nativeScene
-    const renderSelf = this.renderSelf
-    const previous = this._nativeTextPaint
-    this._nativeTextPaint = this._usesNativeTextController(renderSelf)
-    try {
-      if (!this.isDestroyed) scene.selectTextViewPaint(this, this._nativeTextPaint)
-      renderSelf.call(this, buffer)
-    } finally {
-      this._nativeTextPaint = previous
+  protected override onUpdate(deltaTime: number): void {
+    super.onUpdate(deltaTime)
+    this.scheduleHighlights()
+  }
+
+  private scheduleHighlights(): void {
+    if (!this._highlightsDirty || this.isDestroyed) return
+
+    const hasContent = this._content.length > 0
+    if (!hasContent || !this._filetype) {
+      this.setShouldRenderTextBuffer(hasContent)
+      this.setHighlightsDirty(false)
+      this.clearPendingHighlight()
+
+      if (hasContent) {
+        this.textBuffer.setText(this._content)
+        this.setRenderedLineSources(undefined)
+        this.updateTextInfo()
+      }
+      return
     }
+
+    this.ensureVisibleTextBeforeHighlight()
+    this.setHighlightsDirty(false)
+    if (this._highlightLoopActive) {
+      this._isHighlighting = true
+      this._highlightRerun = true
+      this._highlightingPromise = this._highlightPromise!
+      return
+    }
+
+    const { promise: highlightingPromise, resolve, reject } = Promise.withResolvers<void>()
+    this._highlightLoopActive = true
+    this._highlightPromise = highlightingPromise
+    this._highlightingPromise = highlightingPromise
+    const clearHighlight = () => {
+      if (this._highlightPromise === highlightingPromise) {
+        this._highlightPromise = undefined
+      }
+    }
+    void this.runHighlights().then(
+      () => {
+        clearHighlight()
+        resolve()
+      },
+      (error) => {
+        clearHighlight()
+        reject(error)
+      },
+    )
   }
 
   protected renderSelf(buffer: OptimizedBuffer): void {
-    if (this._highlightsDirty) {
-      if (this.isDestroyed) return
-
-      const hasContent = this._content.length > 0
-      if (!hasContent || !this._filetype) {
-        this._shouldRenderTextBuffer = hasContent
-        this._highlightsDirty = false
-        this.clearPendingHighlight()
-
-        if (hasContent) {
-          this.textBuffer.setText(this._content)
-          this.setRenderedLineSources(undefined)
-          this.updateTextInfo()
-        }
-      } else {
-        this.ensureVisibleTextBeforeHighlight()
-        this._highlightsDirty = false
-        if (this._highlightLoopActive) {
-          this._isHighlighting = true
-          this._highlightRerun = true
-          this._highlightingPromise = this._highlightPromise!
-        } else {
-          const { promise: highlightingPromise, resolve, reject } = Promise.withResolvers<void>()
-          this._highlightLoopActive = true
-          this._highlightPromise = highlightingPromise
-          this._highlightingPromise = highlightingPromise
-          const clearHighlight = () => {
-            if (this._highlightPromise === highlightingPromise) {
-              this._highlightPromise = undefined
-            }
-          }
-          void this.runHighlights().then(
-            () => {
-              clearHighlight()
-              resolve()
-            },
-            (error) => {
-              clearHighlight()
-              reject(error)
-            },
-          )
-        }
-      }
-    }
-
-    if (this._nativeTextPaint) {
-      if (!this.isDestroyed) this._ctx.nativeScene.setTextViewPaint(this, this._shouldRenderTextBuffer)
-      return
-    }
     if (!this._shouldRenderTextBuffer) return
     super.renderSelf(buffer)
   }
