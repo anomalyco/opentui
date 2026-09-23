@@ -2168,9 +2168,13 @@ export abstract class Renderable extends BaseRenderable {
       paintLayout: slot.paintLayout,
       paintRevision: revision,
     }
-    // Text and editor bodies draw into the destination; other buffered bodies draw into their own buffer.
+    // Buffered bodies draw into their own buffer. When native code composes that buffer, it
+    // plays the recording into it after clearing it, so those hooks record like the rest.
     const buffer =
-      this.nativeIntegration.paintBuffer !== "destination" && this.buffered && this.frameBuffer
+      this.nativeIntegration.paintBuffer !== "destination" &&
+      this.nativeIntegration.bufferComposition !== "native" &&
+      this.buffered &&
+      this.frameBuffer
         ? this.frameBuffer
         : frame
     try {

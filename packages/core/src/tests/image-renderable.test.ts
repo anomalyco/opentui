@@ -6,6 +6,7 @@ import { ImageLoadError, NativeImage, NativeImagePool } from "../image.js"
 import { createCliRenderer } from "../renderer.js"
 import { ImageRenderable, resolveImageRenderProtocol } from "../renderables/Image.js"
 import { TextRenderable } from "../renderables/Text.js"
+import { RGBA } from "../lib/RGBA.js"
 import { createTestRenderer, type TestRenderer, type TestRendererSetup } from "../testing/test-renderer.js"
 import { createTestStdin, TestWriteStream } from "../testing/test-streams.js"
 import { createTerminalCapabilities } from "../testing/terminal-capabilities.js"
@@ -284,6 +285,33 @@ describe("ImageRenderable image loading", () => {
     expect(lines[0].slice(0, 4)).toBe("    ")
     expect(lines[1].slice(0, 4)).toBe("████")
     expect(lines[3].slice(0, 4)).toBe("    ")
+  })
+
+  test("draws buffered image hooks around the image in its own buffer", async () => {
+    const white = RGBA.fromInts(255, 255, 255)
+    const renderable = new ImageRenderable(renderer, {
+      source: await readFile(new URL("rgba.png", FIXTURES)),
+      buffered: true,
+      protocol: "blocks",
+      fit: "fill",
+      position: "absolute",
+      left: 1,
+      width: 4,
+      height: 2,
+      renderBefore(buffer) {
+        buffer.drawText("B", 0, 1, white)
+      },
+      renderAfter(buffer) {
+        buffer.drawText("XY", 0, 0, white)
+      },
+    })
+    renderer.root.add(renderable)
+    await renderable.loadPromise
+    await setup.renderOnce()
+
+    const lines = setup.captureCharFrame().split("\n")
+    expect(lines[0].slice(0, 5)).toBe(" XY██")
+    expect(lines[1].slice(0, 5)).toBe(" ████")
   })
 
   test("preserves lower content beneath a zero-opacity image", async () => {
