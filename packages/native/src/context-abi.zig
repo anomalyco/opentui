@@ -2278,7 +2278,7 @@ fn frameRequestToC(result: scene.FrameRequest) c.ot_scene_frame_request {
     };
 }
 
-pub fn ot_scene_frame_step_with_geometry(context: ?*ContextHandle, session_ptr: ?*const c.ot_handle, previous_ptr: ?*const c.ot_scene_frame_request, options_ptr: ?*const c.ot_scene_frame_options, max_paint_members: u32, max_work_items: u32, out_ptr: ?*c.ot_scene_frame_request, geometry_ptr: ?*c.ot_scene_frame_geometry) callconv(.c) c.ot_status {
+pub fn ot_scene_frame_step_with_geometry(context: ?*ContextHandle, session_ptr: ?*const c.ot_handle, previous_ptr: ?*const c.ot_scene_frame_request, options_ptr: ?*const c.ot_scene_frame_options, max_work_items: u32, out_ptr: ?*c.ot_scene_frame_request, geometry_ptr: ?*c.ot_scene_frame_geometry) callconv(.c) c.ot_status {
     const status = sessionContextStatus(context);
     if (status != c.OT_OK) return status;
     const owner = context.?;
@@ -2300,7 +2300,7 @@ pub fn ot_scene_frame_step_with_geometry(context: ?*ContextHandle, session_ptr: 
         .max_layout_rounds = options.max_layout_rounds,
         .max_host_requests = options.max_host_requests,
         .preserve_unwritten = options.preserve_unwritten == 1,
-    }, max_paint_members, max_work_items) catch |err| return sessionError(owner, err);
+    }, max_work_items) catch |err| return sessionError(owner, err);
     out.* = frameRequestToC(result);
     geometry.* = std.mem.zeroes(c.ot_scene_frame_geometry);
     geometry.struct_size = @sizeOf(c.ot_scene_frame_geometry);
@@ -2864,7 +2864,7 @@ test "Context console ABI validates rectangle frame and diagnostic arguments" {
     geometry.struct_size = @sizeOf(c.ot_scene_frame_geometry);
     geometry.abi_version = c.OT_CONTEXT_ABI_VERSION;
     const unlimited = std.math.maxInt(u32);
-    try std.testing.expectEqual(c.OT_OK, ot_scene_frame_step_with_geometry(handle, &session, null, &config, unlimited, unlimited, &frame, &geometry));
+    try std.testing.expectEqual(c.OT_OK, ot_scene_frame_step_with_geometry(handle, &session, null, &config, unlimited, &frame, &geometry));
     try std.testing.expectEqual(c.OT_INVALID_ARGUMENT, ot_scene_frame_draw_buffer(handle, &session, null, &buffer, 0, 0));
     frame.reserved[0] = 1;
     try std.testing.expectEqual(c.OT_INVALID_ARGUMENT, ot_scene_frame_draw_buffer(handle, &session, &frame, &buffer, 0, 0));
@@ -3427,33 +3427,33 @@ test "Scene frame geometry reports delivered observations without expanding tick
     geometry.struct_size = @sizeOf(c.ot_scene_frame_geometry);
     geometry.abi_version = c.OT_CONTEXT_ABI_VERSION;
     const unlimited = std.math.maxInt(u32);
-    try std.testing.expectEqual(c.OT_INVALID_ARGUMENT, ot_scene_frame_step_with_geometry(&owner, &id, null, &config, unlimited, unlimited, &output, null));
+    try std.testing.expectEqual(c.OT_INVALID_ARGUMENT, ot_scene_frame_step_with_geometry(&owner, &id, null, &config, unlimited, &output, null));
     geometry.reserved = 1;
-    try std.testing.expectEqual(c.OT_INVALID_ARGUMENT, ot_scene_frame_step_with_geometry(&owner, &id, null, &config, unlimited, unlimited, &output, &geometry));
+    try std.testing.expectEqual(c.OT_INVALID_ARGUMENT, ot_scene_frame_step_with_geometry(&owner, &id, null, &config, unlimited, &output, &geometry));
     geometry.reserved = 0;
-    try std.testing.expectEqual(c.OT_OK, ot_scene_frame_step_with_geometry(&owner, &id, null, &config, unlimited, unlimited, &output, &geometry));
+    try std.testing.expectEqual(c.OT_OK, ot_scene_frame_step_with_geometry(&owner, &id, null, &config, unlimited, &output, &geometry));
     try std.testing.expectEqual(c.OT_SCENE_FRAME_UPDATE, output.kind);
     try std.testing.expectEqual(@as(f32, 6), geometry.paint.width);
     try std.testing.expectEqual(@as(f32, 0), geometry.public_layout.width);
     const update = output;
     const snapshot = geometry;
     geometry.abi_version += 1;
-    try std.testing.expectEqual(c.OT_UNSUPPORTED_VERSION, ot_scene_frame_step_with_geometry(&owner, &id, &update, &config, unlimited, unlimited, &output, &geometry));
+    try std.testing.expectEqual(c.OT_UNSUPPORTED_VERSION, ot_scene_frame_step_with_geometry(&owner, &id, &update, &config, unlimited, &output, &geometry));
     try std.testing.expectEqualDeep(update, output);
     geometry = snapshot;
-    try std.testing.expectEqual(c.OT_OK, ot_scene_frame_step_with_geometry(&owner, &id, &output, &config, unlimited, unlimited, &output, &geometry));
+    try std.testing.expectEqual(c.OT_OK, ot_scene_frame_step_with_geometry(&owner, &id, &output, &config, unlimited, &output, &geometry));
     try std.testing.expectEqual(c.OT_SCENE_FRAME_RESIZE, output.kind);
     try std.testing.expectEqual(@as(f32, 6), geometry.public_layout.width);
     try std.testing.expectEqual(@as(u32, 3), geometry.flags);
-    try std.testing.expectEqual(c.OT_OK, ot_scene_frame_step_with_geometry(&owner, &id, &output, &config, unlimited, unlimited, &output, &geometry));
+    try std.testing.expectEqual(c.OT_OK, ot_scene_frame_step_with_geometry(&owner, &id, &output, &config, unlimited, &output, &geometry));
     try std.testing.expectEqual(c.OT_SCENE_FRAME_RENDER_BEFORE, output.kind);
     try owner.core.sceneDestroyNode(box);
-    try std.testing.expectEqual(c.OT_OK, ot_scene_frame_step_with_geometry(&owner, &id, &output, &config, unlimited, unlimited, &output, &geometry));
+    try std.testing.expectEqual(c.OT_OK, ot_scene_frame_step_with_geometry(&owner, &id, &output, &config, unlimited, &output, &geometry));
     try std.testing.expectEqual(c.OT_SCENE_FRAME_RENDER_AFTER, output.kind);
     try std.testing.expectEqual(@as(u32, 0), geometry.flags);
     try std.testing.expectEqualDeep(std.mem.zeroes(c.ot_scene_layout), geometry.paint);
     try std.testing.expectEqualDeep(std.mem.zeroes(c.ot_scene_layout), geometry.public_layout);
-    try std.testing.expectEqual(c.OT_OK, ot_scene_frame_step_with_geometry(&owner, &id, &output, &config, unlimited, unlimited, &output, &geometry));
+    try std.testing.expectEqual(c.OT_OK, ot_scene_frame_step_with_geometry(&owner, &id, &output, &config, unlimited, &output, &geometry));
     try std.testing.expectEqual(c.OT_SCENE_FRAME_DONE, output.kind);
     try std.testing.expectEqual(@as(u32, 0), geometry.flags);
     try owner.core.sceneFrameCancel(session, output.frame_id);
@@ -3487,15 +3487,13 @@ test "Scene work budget ABI preserves unlimited dispatch and exact preparation t
     geometry.struct_size = @sizeOf(c.ot_scene_frame_geometry);
     geometry.abi_version = c.OT_CONTEXT_ABI_VERSION;
     const unlimited = std.math.maxInt(u32);
-    try std.testing.expectEqual(c.OT_OK, ot_scene_frame_step_with_geometry(&owner, &id, null, &config, unlimited, unlimited, &output, &geometry));
+    try std.testing.expectEqual(c.OT_OK, ot_scene_frame_step_with_geometry(&owner, &id, null, &config, unlimited, &output, &geometry));
     try std.testing.expectEqual(c.OT_SCENE_FRAME_DONE, output.kind);
     try owner.core.sceneFrameCancel(session, output.frame_id);
     const before = output;
-    try std.testing.expectEqual(c.OT_INVALID_ARGUMENT, ot_scene_frame_step_with_geometry(&owner, &id, null, &config, unlimited, 0, &output, &geometry));
+    try std.testing.expectEqual(c.OT_INVALID_ARGUMENT, ot_scene_frame_step_with_geometry(&owner, &id, null, &config, 0, &output, &geometry));
     try std.testing.expectEqualDeep(before, output);
-    try std.testing.expectEqual(c.OT_INVALID_ARGUMENT, ot_scene_frame_step_with_geometry(&owner, &id, null, &config, 0, unlimited, &output, &geometry));
-    try std.testing.expectEqualDeep(before, output);
-    try std.testing.expectEqual(c.OT_OK, ot_scene_frame_step_with_geometry(&owner, &id, null, &config, unlimited, 1, &output, &geometry));
+    try std.testing.expectEqual(c.OT_OK, ot_scene_frame_step_with_geometry(&owner, &id, null, &config, 1, &output, &geometry));
     try std.testing.expectEqual(c.OT_SCENE_FRAME_YIELD, output.kind);
     try std.testing.expectEqualDeep(handleToC(root), output.node);
     try std.testing.expectEqual(@as(u32, 0), output.num | output.width | output.height);
@@ -3503,13 +3501,13 @@ test "Scene work budget ABI preserves unlimited dispatch and exact preparation t
     const first = output;
     var stale = first;
     stale.request_id += 1;
-    try std.testing.expectEqual(c.OT_STALE_FRAME, ot_scene_frame_step_with_geometry(&owner, &id, &stale, &config, unlimited, 1, &output, &geometry));
+    try std.testing.expectEqual(c.OT_STALE_FRAME, ot_scene_frame_step_with_geometry(&owner, &id, &stale, &config, 1, &output, &geometry));
     try std.testing.expectEqualDeep(first, output);
-    try std.testing.expectEqual(c.OT_INVALID_ARGUMENT, ot_scene_frame_step_with_geometry(&owner, &id, &first, &config, unlimited, 0, &output, &geometry));
+    try std.testing.expectEqual(c.OT_INVALID_ARGUMENT, ot_scene_frame_step_with_geometry(&owner, &id, &first, &config, 0, &output, &geometry));
     try std.testing.expectEqualDeep(first, output);
     try std.testing.expectError(error.StaleFrame, owner.core.sceneFrameAcquireBufferLease(session, try frameRequestFromC(output), .next));
     for (0..16) |_| {
-        try std.testing.expectEqual(c.OT_OK, ot_scene_frame_step_with_geometry(&owner, &id, &output, &config, unlimited, 1, &output, &geometry));
+        try std.testing.expectEqual(c.OT_OK, ot_scene_frame_step_with_geometry(&owner, &id, &output, &config, 1, &output, &geometry));
         if (output.kind == c.OT_SCENE_FRAME_DONE) break;
         try std.testing.expectEqual(c.OT_SCENE_FRAME_YIELD, output.kind);
         try std.testing.expectEqual(first.frame_id, output.frame_id);
@@ -3559,49 +3557,49 @@ test "Scene feedback ABI validates records and preserves the pending ticket on r
     const unlimited = std.math.maxInt(u32);
     const sentinel = output;
     config.preserve_unwritten = 2;
-    try std.testing.expectEqual(c.OT_INVALID_ARGUMENT, ot_scene_frame_step_with_geometry(handle, &id, null, &config, unlimited, unlimited, &output, &geometry));
+    try std.testing.expectEqual(c.OT_INVALID_ARGUMENT, ot_scene_frame_step_with_geometry(handle, &id, null, &config, unlimited, &output, &geometry));
     try std.testing.expectEqualDeep(sentinel, output);
     config.preserve_unwritten = 0;
-    try std.testing.expectEqual(c.OT_OK, ot_scene_frame_step_with_geometry(handle, &id, null, &config, unlimited, unlimited, &output, &geometry));
+    try std.testing.expectEqual(c.OT_OK, ot_scene_frame_step_with_geometry(handle, &id, null, &config, unlimited, &output, &geometry));
     try std.testing.expectEqual(c.OT_SCENE_FRAME_UPDATE, output.kind);
     try std.testing.expectEqual(@as(u32, 6), output.width);
     const first = output;
     var invalid = first;
     invalid.reserved[1] = 1;
-    try std.testing.expectEqual(c.OT_INVALID_ARGUMENT, ot_scene_frame_step_with_geometry(handle, &id, &invalid, &config, unlimited, unlimited, &output, &geometry));
+    try std.testing.expectEqual(c.OT_INVALID_ARGUMENT, ot_scene_frame_step_with_geometry(handle, &id, &invalid, &config, unlimited, &output, &geometry));
     try std.testing.expectEqualDeep(first, output);
     invalid = first;
     invalid.struct_size -= 1;
-    try std.testing.expectEqual(c.OT_INVALID_ARGUMENT, ot_scene_frame_step_with_geometry(handle, &id, &invalid, &config, unlimited, unlimited, &output, &geometry));
+    try std.testing.expectEqual(c.OT_INVALID_ARGUMENT, ot_scene_frame_step_with_geometry(handle, &id, &invalid, &config, unlimited, &output, &geometry));
     invalid = first;
     invalid.abi_version += 1;
-    try std.testing.expectEqual(c.OT_UNSUPPORTED_VERSION, ot_scene_frame_step_with_geometry(handle, &id, &invalid, &config, unlimited, unlimited, &output, &geometry));
+    try std.testing.expectEqual(c.OT_UNSUPPORTED_VERSION, ot_scene_frame_step_with_geometry(handle, &id, &invalid, &config, unlimited, &output, &geometry));
     invalid = first;
     invalid.hook_generation += 1;
-    try std.testing.expectEqual(c.OT_STALE_FRAME, ot_scene_frame_step_with_geometry(handle, &id, &invalid, &config, unlimited, unlimited, &output, &geometry));
+    try std.testing.expectEqual(c.OT_STALE_FRAME, ot_scene_frame_step_with_geometry(handle, &id, &invalid, &config, unlimited, &output, &geometry));
     config.max_layout_rounds = 2;
-    try std.testing.expectEqual(c.OT_INVALID_ARGUMENT, ot_scene_frame_step_with_geometry(handle, &id, &first, &config, unlimited, unlimited, &output, &geometry));
+    try std.testing.expectEqual(c.OT_INVALID_ARGUMENT, ot_scene_frame_step_with_geometry(handle, &id, &first, &config, unlimited, &output, &geometry));
     config.max_layout_rounds = 1;
     try std.testing.expectEqualDeep(first, output);
     var render_status: u32 = 999;
     try std.testing.expectEqual(c.OT_FRAME_BUSY, ot_session_render(handle, &id, 1, &render_status));
     try std.testing.expectEqual(@as(u32, 999), render_status);
     // An in-place acknowledgement is valid: input is copied before output publication.
-    try std.testing.expectEqual(c.OT_OK, ot_scene_frame_step_with_geometry(handle, &id, &output, &config, unlimited, unlimited, &output, &geometry));
+    try std.testing.expectEqual(c.OT_OK, ot_scene_frame_step_with_geometry(handle, &id, &output, &config, unlimited, &output, &geometry));
     try std.testing.expectEqual(c.OT_SCENE_FRAME_RESIZE, output.kind);
     const second = output;
-    try std.testing.expectEqual(c.OT_STALE_FRAME, ot_scene_frame_step_with_geometry(handle, &id, &first, &config, unlimited, unlimited, &output, &geometry));
+    try std.testing.expectEqual(c.OT_STALE_FRAME, ot_scene_frame_step_with_geometry(handle, &id, &first, &config, unlimited, &output, &geometry));
     try std.testing.expectEqualDeep(second, output);
     try std.testing.expectEqual(c.OT_STALE_FRAME, ot_scene_frame_cancel(handle, &id, output.frame_id + 1));
     try std.testing.expectEqual(c.OT_OK, ot_scene_frame_cancel(handle, &id, output.frame_id));
-    try std.testing.expectEqual(c.OT_STALE_FRAME, ot_scene_frame_step_with_geometry(handle, &id, &second, &config, unlimited, unlimited, &output, &geometry));
+    try std.testing.expectEqual(c.OT_STALE_FRAME, ot_scene_frame_step_with_geometry(handle, &id, &second, &config, unlimited, &output, &geometry));
     hooks.flags = 1;
     hooks.generation = 2;
     try std.testing.expectEqual(c.OT_OK, ot_scene_set_hooks(handle, &root, &hooks));
-    try std.testing.expectEqual(c.OT_OK, ot_scene_frame_step_with_geometry(handle, &id, null, &config, unlimited, unlimited, &output, &geometry));
+    try std.testing.expectEqual(c.OT_OK, ot_scene_frame_step_with_geometry(handle, &id, null, &config, unlimited, &output, &geometry));
     try std.testing.expectEqual(c.OT_OK, ot_scene_set_style(handle, &root, 4, 0, 0, 1, 3, 1));
     const before_limit = output;
-    try std.testing.expectEqual(c.OT_LAYOUT_LIMIT, ot_scene_frame_step_with_geometry(handle, &id, &output, &config, unlimited, unlimited, &output, &geometry));
+    try std.testing.expectEqual(c.OT_LAYOUT_LIMIT, ot_scene_frame_step_with_geometry(handle, &id, &output, &config, unlimited, &output, &geometry));
     try std.testing.expectEqualDeep(before_limit, output);
     try std.testing.expectEqual(@as(u64, 0), (try owner.core.sceneGetStats(session)).frameCount);
 }
