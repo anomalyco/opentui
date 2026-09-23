@@ -1,4 +1,4 @@
-import { CliRenderer, CliRenderEvents, engine } from "@opentui/core"
+import { CliRenderer, CliRenderEvents } from "@opentui/core"
 import React, { type ReactNode } from "react"
 import type { OpaqueRoot } from "react-reconciler"
 import { AppContext } from "../components/app.js"
@@ -41,8 +41,6 @@ export function createRoot(renderer: CliRenderer): Root {
 
   return {
     render: (node: ReactNode) => {
-      engine.attach(renderer)
-
       container = _render(
         React.createElement(
           AppContext.Provider,

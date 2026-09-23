@@ -8,19 +8,19 @@ skill:
 
 # Animation and Timeline
 
-OpenTUI animates mutable numeric properties with `Timeline`. The global timeline engine connects timeline updates to renderer frames.
+OpenTUI animates mutable numeric properties with `Timeline`. Each renderer can own an independent timeline engine.
 
 Use a timeline for numeric renderable properties or application state. The API mutates each target directly.
 
 ## Animate a renderable
 
-Attach the global engine before you create or play a registered timeline.
+Pass the renderer when you create a registered timeline.
 
 ```typescript
-import { BoxRenderable, createCliRenderer, createTimeline, engine } from "@opentui/core"
+import { BoxRenderable, createCliRenderer, createTimeline, getTimelineEngine } from "@opentui/core"
 
 const renderer = await createCliRenderer()
-engine.attach(renderer)
+const engine = getTimelineEngine(renderer)
 const root = renderer.root
 
 const box = new BoxRenderable(renderer, {
@@ -39,11 +39,14 @@ const finished = new Promise<void>((resolve) => {
   finish = resolve
 })
 
-const timeline = createTimeline({
-  duration: 600,
-  autoplay: false,
-  onComplete: finish,
-})
+const timeline = createTimeline(
+  {
+    duration: 600,
+    autoplay: false,
+    onComplete: finish,
+  },
+  renderer,
+)
 
 timeline.add(box, {
   left: 30,
@@ -58,8 +61,8 @@ try {
 } finally {
   timeline.pause()
   engine.unregister(timeline)
-  engine.detach()
   renderer.destroy()
+  await renderer.closed
 }
 ```
 
@@ -69,12 +72,13 @@ See [Renderer live rendering](/docs/core-concepts/renderer#live-rendering) for t
 
 ## Imports
 
-Core exports the class, factory, global engine, and public types from the package root:
+Core exports the class, factory, renderer-owned engine lookup, default engine, and public types from the package root:
 
 ```typescript
 import {
   Timeline,
   createTimeline,
+  getTimelineEngine,
   engine,
   type AnimationOptions,
   type EasingFunctions,
@@ -97,13 +101,13 @@ import { useTimeline } from "@opentui/solid"
 
 Construction and registration are separate behaviors.
 
-| API                                    | Initial state                               | Registration            |
-| -------------------------------------- | ------------------------------------------- | ----------------------- |
-| `new Timeline(options?)`               | Always paused, including `autoplay: true`   | Not registered          |
-| `createTimeline(options?)`             | Plays unless `autoplay` is `false`          | Registers with `engine` |
-| React or Solid `useTimeline(options?)` | Plays on mount unless `autoplay` is `false` | Registers on mount      |
+| API                                    | Initial state                               | Registration                                         |
+| -------------------------------------- | ------------------------------------------- | ---------------------------------------------------- |
+| `new Timeline(options?)`               | Always paused, including `autoplay: true`   | Not registered                                       |
+| `createTimeline(options?, renderer?)`  | Plays unless `autoplay` is `false`          | Uses the renderer's engine, or `engine` when omitted |
+| React or Solid `useTimeline(options?)` | Plays on mount unless `autoplay` is `false` | Uses the component's renderer on mount               |
 
-`new Timeline()` stores the `autoplay` option but does not act on it. Call `play()` and `engine.register()` yourself when you use the class directly.
+`new Timeline()` stores the `autoplay` option but does not act on it. Call `play()` and register it with `getTimelineEngine(renderer)` when you use the class directly.
 
 `createTimeline()` calls `play()` before it registers the timeline. Registration then updates renderer liveness.
 
@@ -239,7 +243,7 @@ Normal completed items and callbacks remain in `items`. Only a completed `once` 
 
 `play()` on a completed non-looping timeline calls `restart()`. `play()` on a paused incomplete timeline keeps `currentTime`.
 
-`update()` expects elapsed milliseconds. The global engine supplies renderer frame deltas, but tests and headless code can call it directly.
+`update()` expects elapsed milliseconds. An attached engine supplies its renderer's frame deltas, but tests and headless code can call it directly.
 
 Use finite non-negative values for `deltaTime`, item `duration`, `loopDelay`, and start times. The current implementation does not validate these timing values.
 
@@ -282,26 +286,28 @@ Current limitation: `update()` evaluates synced children before it checks whethe
 
 Do not depend on a pending child staying idle after its parent pauses. Unregister the parent during the pause, or add the child after resume.
 
-## Global engine
+## Engine ownership
 
-`engine` is one process-global scheduler. It can attach to one `CliRenderer` at a time.
+`getTimelineEngine(renderer)` returns the engine for that renderer. It also restores the engine's frame callback if application code cleared renderer callbacks. Renderer destruction unregisters its timelines and detaches the engine.
+
+The exported `engine` remains available for manual updates or explicit single-renderer attachment. Omitting the renderer from `createTimeline()` uses this default engine; it never selects the last-created renderer. Detach before explicitly moving an engine to a different renderer. A timeline can belong to only one engine at a time.
 
 | Method                 | Behavior                                                     |
 | ---------------------- | ------------------------------------------------------------ |
-| `attach(renderer)`     | Detaches any prior renderer and installs a frame callback    |
+| `attach(renderer)`     | Installs a frame callback; rejects a different active owner  |
 | `detach()`             | Removes the frame callback and drops engine-owned live state |
 | `register(timeline)`   | Adds one timeline and watches its state                      |
 | `unregister(timeline)` | Removes one timeline and its state listener                  |
-| `clear()`              | Unregisters all timelines from the global engine             |
+| `clear()`              | Unregisters all timelines from this engine                   |
 | `update(deltaTime)`    | Updates every registered timeline that is not synced         |
 
-Attach the renderer before `createTimeline()` or `play()`. `attach()` installs the callback but does not recheck timelines that already started.
+`attach()` checks already-playing timelines and updates the renderer's live state. You do not need an explicit attach call when using `getTimelineEngine(renderer)` or `createTimeline(options, renderer)`.
 
 The engine requests live rendering when any registered, unsynced timeline is playing and incomplete. It drops live rendering after the last such timeline stops.
 
 `createTimeline()` never unregisters its result. A completed timeline remains in the engine set until application cleanup unregisters it.
 
-`engine.clear()` affects every application owner. Do not use it for component cleanup or for one independently owned timeline.
+An engine can serve several components in one renderer. Do not use `clear()` for component cleanup or for one independently owned timeline.
 
 `engine.defaults.frameRate` currently exists, but the engine does not read it. Renderer frame scheduling controls update cadence.
 
@@ -311,10 +317,10 @@ The canonical Core cleanup sequence is:
 
 1. Call `timeline.pause()`.
 2. Call `engine.unregister(timeline)`.
-3. Call `engine.detach()` only when this owner attached the renderer.
+3. Call `engine.detach()` only when this owner explicitly controls the whole engine.
 4. Destroy the renderer through the application's normal lifecycle.
 
-Unregister synced children that were registered separately. A child made with `new Timeline()` does not need global unregistration unless you registered it.
+Unregister synced children that were registered separately. A child made with `new Timeline()` does not need unregistration unless you registered it.
 
 Do not call `renderer.requestLive()` or `renderer.dropLive()` for a registered timeline. The engine balances its own live request.
 
@@ -329,7 +335,7 @@ See [Lifecycle and cleanup](/docs/core-concepts/lifecycle) for renderer ownershi
 | React `useTimeline()`   | Hook mount effect registers and normally plays it  | Effect cleanup pauses and unregisters the mount instance |
 | Solid `useTimeline()`   | Hook mount handler registers and normally plays it | Cleanup pauses and unregisters it                        |
 
-The React `createRoot(renderer).render(...)` path attaches the engine. Solid `render(...)` and `testRender(...)` also attach it.
+React and Solid use the component's renderer-owned engine. Creating or destroying a root for another renderer does not move that engine or unregister its timelines.
 
 Both hooks treat their option input as setup-time data. Later option changes do not update the mounted timeline.
 
@@ -345,7 +351,15 @@ The React package has a regression test that checks timeline identity across a s
 
 The Solid hook creates one timeline during component setup. Its options are not reactive after setup.
 
-The Solid package does not currently have a direct `useTimeline` hook test. Treat setup-time option handling as the current behavior in both frameworks.
+Both framework packages test independent renderer ownership and hook cleanup.
+
+## Animation callbacks
+
+Use `renderer.requestAnimationFrame(callback)` and `renderer.cancelAnimationFrame(handle)` for one-shot animation work. Requests and cancellation belong to that renderer. Renderer destruction cancels its pending requests.
+
+OpenTUI no longer installs or replaces process-global `requestAnimationFrame`, `cancelAnimationFrame`, or `window` properties. Migrate terminal applications to the renderer methods; browser animation APIs are unchanged.
+
+The shared Session scheduler services ready work between callbacks and parks Sessions awaiting output or host replies. It cannot preempt a synchronous JavaScript callback. Timeline item counts and callback execution time still affect service delay.
 
 ## Limits and unsupported features
 

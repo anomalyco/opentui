@@ -93,10 +93,7 @@ export function run(renderer: CliRenderer): void {
 }
 
 export function destroy(renderer: CliRenderer): void {
-  renderer.root.getChildren().forEach((child) => {
-    renderer.root.remove(child)
-    child.destroyRecursively()
-  })
+  renderer.root.getRenderable("main-container")?.destroyRecursively()
   scrollBox = null
   statusText = null
   hoveredItem = null

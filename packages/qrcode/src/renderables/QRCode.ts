@@ -81,6 +81,9 @@ abstract class BaseQRCodeRenderable<
     const scale = normalizeScale(options.scale ?? defaults.scale)
     const fit = options.fit ?? defaults.fit
     const encoded = encodeContent(content, errorCorrectionLevel)
+    const foregroundColor = RGBA.clone(parseColor(options.foregroundColor ?? defaults.foregroundColor))
+    const backgroundColor = RGBA.clone(parseColor(options.backgroundColor ?? defaults.backgroundColor))
+    const fallbackColor = RGBA.clone(parseColor(options.fallbackColor ?? defaults.fallbackColor))
 
     super(ctx, {
       ...options,
@@ -91,10 +94,10 @@ abstract class BaseQRCodeRenderable<
     this._quietZone = quietZone
     this._scale = scale
     this._fit = fit
-    this._foregroundColor = options.foregroundColor ? parseColor(options.foregroundColor) : defaults.foregroundColor
-    this._backgroundColor = options.backgroundColor ? parseColor(options.backgroundColor) : defaults.backgroundColor
+    this._foregroundColor = foregroundColor
+    this._backgroundColor = backgroundColor
     this._fallbackContent = options.fallbackContent ?? defaults.fallbackContent
-    this._fallbackColor = options.fallbackColor ? parseColor(options.fallbackColor) : defaults.fallbackColor
+    this._fallbackColor = fallbackColor
     this.encoded = encoded
     this.modules = encoded.toMatrix()
 
@@ -169,21 +172,21 @@ abstract class BaseQRCodeRenderable<
   }
 
   public get foregroundColor(): RGBA {
-    return this._foregroundColor
+    return RGBA.clone(this._foregroundColor)
   }
 
   public set foregroundColor(value: ColorInput) {
-    this._foregroundColor = parseColor(value)
+    this._foregroundColor = RGBA.clone(parseColor(value))
     this.invalidateRenderBuffer()
     this.requestRender()
   }
 
   public get backgroundColor(): RGBA {
-    return this._backgroundColor
+    return RGBA.clone(this._backgroundColor)
   }
 
   public set backgroundColor(value: ColorInput) {
-    this._backgroundColor = parseColor(value)
+    this._backgroundColor = RGBA.clone(parseColor(value))
     this.invalidateRenderBuffer()
     this.requestRender()
   }
@@ -202,11 +205,11 @@ abstract class BaseQRCodeRenderable<
   }
 
   public get fallbackColor(): RGBA {
-    return this._fallbackColor
+    return RGBA.clone(this._fallbackColor)
   }
 
   public set fallbackColor(value: ColorInput) {
-    this._fallbackColor = parseColor(value)
+    this._fallbackColor = RGBA.clone(parseColor(value))
     this.invalidateRenderBuffer()
     this.requestRender()
   }
@@ -302,7 +305,7 @@ abstract class BaseQRCodeRenderable<
 
   private remeasure(): void {
     this.invalidateRenderBuffer()
-    this.yogaNode.markDirty()
+    this.invalidateIntrinsicSize()
     this.requestRender()
   }
 
@@ -321,6 +324,7 @@ abstract class BaseQRCodeRenderable<
     }
 
     this.renderBuffer = OptimizedBuffer.create(this.width, this.height, this._ctx.widthMethod, {
+      owner: this._ctx.nativeScene!,
       respectAlpha: true,
       id: `qrcode-renderable-${this.id}`,
     })
@@ -329,7 +333,7 @@ abstract class BaseQRCodeRenderable<
   }
 
   private setupMeasureFunc(): void {
-    this.yogaNode.setMeasureFunc((width, widthMode, height, heightMode) => {
+    this.setMeasureProvider((width, widthMode, height, heightMode) => {
       const scale = this.resolveMeasuredScale(width, widthMode, height, heightMode)
       if (scale > 0) {
         return getDimensionsForScale(this.encoded.size, this._quietZone, scale)

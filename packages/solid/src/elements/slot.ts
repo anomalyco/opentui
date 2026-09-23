@@ -1,19 +1,4 @@
-import { BaseRenderable, isTextNodeRenderable, TextNodeRenderable, TextRenderable, Yoga } from "@opentui/core"
-
-type LayoutNodeProvider = {
-  getLayoutNode?: () => Yoga.Node
-}
-
-type LayoutNodeConstructor = { create?: () => Yoga.Node } | undefined
-
-function getLayoutNodeConstructor(parent?: BaseRenderable): LayoutNodeConstructor {
-  const parentLayoutNode = (parent as LayoutNodeProvider | undefined)?.getLayoutNode?.()
-  return parentLayoutNode?.constructor as LayoutNodeConstructor
-}
-
-function createLayoutSlotYogaNode(parentNodeConstructor?: LayoutNodeConstructor): Yoga.Node {
-  return parentNodeConstructor?.create?.() ?? Yoga.default.Node.create()
-}
+import { BaseRenderable, isTextNodeRenderable, Renderable, TextNodeRenderable, TextRenderable } from "@opentui/core"
 
 class SlotBaseRenderable extends BaseRenderable {
   constructor(id: string) {
@@ -83,79 +68,37 @@ export class TextSlotRenderable extends TextNodeRenderable {
     const slotParent = this.slotParent
     this.slotParent = undefined
 
-    slotParent?.destroy()
+    this.parent?.remove(this)
+    slotParent?.didDestroySlotChild(this)
     super.destroy()
+  }
+
+  public override destroyRecursively(): void {
+    this.destroy()
   }
 }
 
-export class LayoutSlotRenderable extends SlotBaseRenderable {
-  protected yogaNode: Yoga.Node
-  protected slotParent?: SlotRenderable
-  protected destroyed: boolean = false
-  private yogaNodeConstructor: LayoutNodeConstructor
-  private yogaNodeFreed: boolean = false
+export class LayoutSlotRenderable extends Renderable {
+  private slotParent?: SlotRenderable
 
-  constructor(id: string, parent?: SlotRenderable, layoutParent?: BaseRenderable) {
-    super(id)
-
-    this._visible = false
+  constructor(id: string, parent: SlotRenderable, layoutParent: Renderable) {
+    super(layoutParent.ctx, { id, visible: false })
     this.slotParent = parent
-    this.yogaNodeConstructor = getLayoutNodeConstructor(layoutParent)
-    this.yogaNode = createLayoutSlotYogaNode(this.yogaNodeConstructor)
-    this.yogaNode.setDisplay(Yoga.Display.None)
   }
-
-  public getLayoutNode(): Yoga.Node {
-    return this.yogaNode
-  }
-
-  public updateFromLayout() {}
-
-  public updateLayout() {}
-
-  public onRemove() {}
 
   public isCompatibleWith(layoutParent?: BaseRenderable): boolean {
-    return this.yogaNodeConstructor === getLayoutNodeConstructor(layoutParent)
-  }
-
-  public detachFromSlot(): void {
-    this.slotParent = undefined
-  }
-
-  private freeYogaNode(): void {
-    if (this.yogaNodeFreed) {
-      return
-    }
-
-    this.yogaNodeFreed = true
-
-    try {
-      this.yogaNode.free()
-    } catch {}
+    return layoutParent instanceof Renderable && layoutParent.ctx.nativeScene === this.ctx.nativeScene
   }
 
   public disposeWithoutSlotCascade(): void {
-    if (this.destroyed) {
-      return
-    }
-
-    this.destroyed = true
-    this.detachFromSlot()
-    this.freeYogaNode()
+    this.slotParent = undefined
+    this.destroy()
   }
 
-  public override destroy(): void {
-    if (this.destroyed) {
-      return
-    }
-    this.destroyed = true
-
+  protected override destroySelf(): void {
     const slotParent = this.slotParent
     this.slotParent = undefined
-
-    this.freeYogaNode()
-    slotParent?.destroy()
+    slotParent?.didDestroySlotChild(this)
   }
 }
 
@@ -269,7 +212,7 @@ export class SlotRenderable extends SlotBaseRenderable {
 
   private disposeDetachedIncompatibleLayoutNodes(parent: BaseRenderable): void {
     for (const [mappedParent, layoutNode] of this.layoutNodesByParent) {
-      if (layoutNode.parent || layoutNode.isCompatibleWith(parent)) {
+      if (layoutNode.parent || (!this.isTextSlotParent(parent) && layoutNode.isCompatibleWith(parent))) {
         continue
       }
 
@@ -333,7 +276,9 @@ export class SlotRenderable extends SlotBaseRenderable {
     this.disposeDetachedTextNodes()
     this.disposeDetachedIncompatibleLayoutNodes(parent)
 
-    const layoutNode = new LayoutSlotRenderable(`slot-layout-${this.id}-${++this.layoutNodeCount}`, this, parent)
+    const id = `slot-layout-${this.id}-${++this.layoutNodeCount}`
+    if (!(parent instanceof Renderable)) throw new Error("Layout slots require a renderable parent")
+    const layoutNode = new LayoutSlotRenderable(id, this, parent)
     this.layoutNodesByParent.set(parent, layoutNode)
     return layoutNode
   }
@@ -348,6 +293,10 @@ export class SlotRenderable extends SlotBaseRenderable {
 
   didRemoveSlotChild(parent: BaseRenderable, child: BaseRenderable): void {
     const hasOtherAttachedSlotChildren = this.hasOtherAttachedSlotChildren(child)
+
+    if (this.parent === parent) {
+      this.parent = this.getAttachedSlotParent(child)
+    }
 
     if (
       hasOtherAttachedSlotChildren &&
@@ -366,10 +315,16 @@ export class SlotRenderable extends SlotBaseRenderable {
       this.layoutNodesByParent.delete(parent)
       child.disposeWithoutSlotCascade()
     }
+  }
 
-    if (this.parent === parent) {
-      this.parent = this.getAttachedSlotParent(child)
+  didDestroySlotChild(child: BaseRenderable): void {
+    const nodes = child instanceof TextSlotRenderable ? this.textNodesByParent : this.layoutNodesByParent
+    for (const [parent, node] of nodes) {
+      if (node !== child) continue
+      this.didRemoveSlotChild(parent, child)
+      break
     }
+    if (!this.hasOtherAttachedSlotChildren(child)) this.destroy()
   }
 
   public override destroy(): void {
@@ -378,16 +333,18 @@ export class SlotRenderable extends SlotBaseRenderable {
     }
     this.destroyed = true
 
-    const layoutNodes = new Set(this.layoutNodesByParent.values())
+    this.parent = null
+    const nodes = new Set<BaseRenderable>([...this.layoutNodesByParent.values(), ...this.textNodesByParent.values()])
     this.layoutNodesByParent.clear()
-    for (const layoutNode of layoutNodes) {
-      layoutNode.destroy()
-    }
-
-    const textNodes = new Set(this.textNodesByParent.values())
     this.textNodesByParent.clear()
-    for (const textNode of textNodes) {
-      textNode.destroy()
+    let failure: { error: unknown } | undefined
+    for (const node of nodes) {
+      try {
+        node.destroy()
+      } catch (error) {
+        failure ??= { error }
+      }
     }
+    if (failure) throw failure.error
   }
 }

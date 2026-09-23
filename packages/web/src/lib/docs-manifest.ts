@@ -8,8 +8,9 @@ export const DOC_SECTIONS = [
   { id: "plugin-slots", title: "Plugin slots", order: 7 },
   { id: "keymap", title: "Keymap", order: 8 },
   { id: "integrations", title: "Integrations", order: 9 },
-  { id: "ship", title: "Ship", order: 10 },
-  { id: "reference", title: "Reference", order: 11 },
+  { id: "native", title: "Native", order: 10 },
+  { id: "ship", title: "Ship", order: 11 },
+  { id: "reference", title: "Reference", order: 12 },
 ] as const
 
 export type DocSectionId = (typeof DOC_SECTIONS)[number]["id"]
@@ -119,6 +120,7 @@ const CANONICAL_SECTION: Record<DocSectionId, string> = {
   "plugin-slots": "Extend / Plugin slots",
   keymap: "Extend / Keymap",
   integrations: "Integrate",
+  native: "Native rendering and embedding",
   ship: "Ship",
   reference: "Reference / Lookup",
 }
@@ -240,13 +242,26 @@ export const DOC_MANIFEST = {
     primaryNav: false,
     status: "Maintained internals",
     searchSymbols: ["OptimizedBuffer", "CliRenderer", "render"],
-    related: ["core-concepts/layout", "components/frame-buffer", "components/image"],
+    related: [
+      "native/overview",
+      "native/frames",
+      "core-concepts/layout",
+      "components/frame-buffer",
+      "components/image",
+    ],
   }),
   "extend/custom-renderables": page("core", 10, "Custom renderables", "task-guide", {
     canonicalSection: "Extend / Custom UI",
     primaryNav: false,
     status: "Advanced",
-    searchSymbols: ["BaseRenderable", "Renderable", "render", "measure"],
+    searchSymbols: [
+      "BaseRenderable",
+      "Renderable",
+      "render",
+      "measure",
+      "nativeIntegration",
+      "defineNativeIntegration",
+    ],
     related: ["core-concepts/renderables", "core-concepts/lifecycle", "bindings/react", "bindings/solid"],
   }),
 
@@ -708,6 +723,80 @@ export const DOC_MANIFEST = {
     related: ["components/qr-code"],
   }),
 
+  "native/overview": page("native", 1, "Overview", "concept", {
+    status: "Experimental native ABI",
+    packages: ["@opentui/native"],
+    availability: NOT_APPLICABLE,
+    runtimes: ["Native"],
+    searchSymbols: ["retained scene", "native rendering"],
+    related: ["native/resources", "native/frames", "native/host-io-time", "native/core", "native/c", "native/zig"],
+  }),
+  "native/resources": page("native", 2, "Resources and ownership", "low-level-api", {
+    status: "Experimental native ABI",
+    packages: ["@opentui/native"],
+    availability: NOT_APPLICABLE,
+    runtimes: ["Native"],
+    searchSymbols: ["ot_handle", "ot_context_destroy", "ot_buffer_create", "ot_styled_text_chunk", "storage lease"],
+    related: ["native/overview", "native/frames", "native/host-io-time", "native/core", "native/c", "native/zig"],
+  }),
+  "native/frames": page("native", 3, "Frames and output", "low-level-api", {
+    status: "Experimental native ABI",
+    packages: ["@opentui/native"],
+    availability: NOT_APPLICABLE,
+    runtimes: ["Native"],
+    searchSymbols: [
+      "ot_scene_frame_step_with_geometry",
+      "ot_scene_frame_commit",
+      "ot_scene_frame_request",
+      "ot_scene_flush",
+      "ot_session_pump",
+      "ot_session_complete_output",
+    ],
+    related: ["native/resources", "native/host-io-time", "native/core", "native/c", "native/zig"],
+  }),
+  "native/host-io-time": page("native", 4, "Host I/O and time", "low-level-api", {
+    status: "Experimental native ABI",
+    packages: ["@opentui/native"],
+    availability: NOT_APPLICABLE,
+    runtimes: ["Native"],
+    searchSymbols: ["ot_session_poll_kitty_image_transport", "ot_session_pump_exit", "Context I/O", "Session clock"],
+    related: ["native/resources", "native/frames", "native/core", "native/c", "native/zig"],
+  }),
+  "native/core": page("native", 5, "How Core uses native", "internals", {
+    status: "Maintained Core integration",
+    searchSymbols: [
+      "NativeScene",
+      "NativeSession",
+      "ResourceContext",
+      "NativeResourceOwner",
+      "BufferAccess",
+      "nativeScenePaintBudget",
+      "nativeSceneWorkBudget",
+    ],
+    related: [
+      "native/overview",
+      "core-concepts/rendering-pipeline",
+      "extend/custom-renderables",
+      "reference/buffer-api",
+    ],
+  }),
+  "native/c": page("native", 6, "C", "integration", {
+    status: "Experimental native ABI",
+    packages: ["@opentui/native"],
+    availability: NOT_APPLICABLE,
+    runtimes: ["Native"],
+    searchSymbols: ["ot_context_create", "ot_scene_create_node", "opentui.h", "C ABI"],
+    related: ["native/resources", "native/frames", "native/host-io-time", "native/zig"],
+  }),
+  "native/zig": page("native", 7, "Zig", "integration", {
+    status: "Experimental native module",
+    packages: ["@opentui/native"],
+    availability: NOT_APPLICABLE,
+    runtimes: ["Native"],
+    searchSymbols: ["Zig", "Context.init", "Context.raw", "sceneCreateNode", "scenePaint", "commitSceneFrame"],
+    related: ["native/resources", "native/frames", "native/host-io-time", "native/c"],
+  }),
+
   "reference/standalone-executables": page("ship", 2, "Standalone executables", "task-guide", {
     packages: ["@opentui/core", "@opentui/react", "@opentui/solid"],
     availability: FRAMEWORKS,
@@ -910,6 +999,16 @@ export const DOC_LEARNING_SEQUENCES: DocLearningSequence[] = [
       "test-and-debug/native-crashes",
       "test-and-debug/troubleshooting",
     ],
+  },
+  {
+    id: "native",
+    title: "Native C learning path",
+    pages: ["native/overview", "native/resources", "native/frames", "native/host-io-time", "native/core", "native/c"],
+  },
+  {
+    id: "native-zig",
+    title: "Native Zig learning path",
+    pages: ["native/overview", "native/resources", "native/frames", "native/host-io-time", "native/core", "native/zig"],
   },
   {
     id: "ship",

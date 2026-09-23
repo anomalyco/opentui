@@ -117,6 +117,7 @@ pub const TextChunk = struct {
     pub const Flags = struct {
         pub const ASCII_ONLY: u8 = 0b00000001; // Printable ASCII only (32..126).
         pub const HAS_TAB: u8 = 0b00000010;
+        pub const STATIC_ELLIPSIS: u8 = 0b00000100; // View bytes survive registry reset.
     };
 
     pub fn isAsciiOnly(self: *const TextChunk) bool {
@@ -141,7 +142,10 @@ pub const TextChunk = struct {
     }
 
     pub fn getBytes(self: *const TextChunk, mem_registry: *const MemRegistry) []const u8 {
-        const mem_buf = mem_registry.get(self.mem_id) orelse return &[_]u8{};
+        const mem_buf: []const u8 = if ((self.flags & Flags.STATIC_ELLIPSIS) != 0)
+            "..."
+        else
+            mem_registry.get(self.mem_id) orelse return &[_]u8{};
         return mem_buf[self.byte_start..self.byte_end];
     }
 

@@ -2,6 +2,7 @@
 
 import {
   CliRenderer,
+  CliRenderEvents,
   createCliRenderer,
   TextRenderable,
   BoxRenderable,
@@ -11,6 +12,7 @@ import {
   green,
   yellow,
   cyan,
+  type KeyEvent,
 } from "@opentui/core"
 import { TextNodeRenderable } from "@opentui/core"
 import { setupCommonDemoKeys } from "./lib/standalone-keys.js"
@@ -82,7 +84,7 @@ ${underline("Current:")} Example 1 - Basic TextNode Creation`,
   showExample1()
 
   // Set up keyboard controls
-  renderer.keyInput.on("keypress", (event) => {
+  const keyHandler = (event: KeyEvent) => {
     const key = event.sequence
     if (key === "1") {
       showExample1()
@@ -97,7 +99,9 @@ ${underline("Current:")} Example 1 - Basic TextNode Creation`,
     } else if (key === "r" || key === "R") {
       resetDemo()
     }
-  })
+  }
+  renderer.keyInput.on("keypress", keyHandler)
+  mainContainer.once("destroyed", () => renderer.keyInput.off("keypress", keyHandler))
 }
 
 function showExample1(): void {
@@ -410,6 +414,7 @@ if (import.meta.main) {
     enableMouseMovement: true,
     exitOnCtrlC: true,
   })
+  renderer.once(CliRenderEvents.DESTROY, () => destroy(renderer))
   run(renderer)
   setupCommonDemoKeys(renderer)
   // renderer.start()

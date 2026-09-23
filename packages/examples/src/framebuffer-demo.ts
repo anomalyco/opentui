@@ -635,7 +635,7 @@ export function destroy(renderer: CliRenderer): void {
   renderer.clearFrameCallbacks()
 
   if (parentContainer) {
-    renderer.root.remove(parentContainer)
+    parentContainer.destroyRecursively()
     parentContainer = null
   }
 
@@ -652,7 +652,7 @@ export function destroy(renderer: CliRenderer): void {
     "emoji-demo",
   ]) {
     const child = renderer.root.getRenderable(id)
-    if (child) renderer.root.remove(child)
+    child?.destroyRecursively()
   }
 
   boxX = 10

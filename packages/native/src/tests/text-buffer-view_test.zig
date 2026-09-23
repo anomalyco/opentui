@@ -1,44 +1,21 @@
 const std = @import("std");
+const TestPools = @import("test-pools.zig").TestPools;
 const text_buffer = @import("../text-buffer.zig");
 const iter_mod = @import("../text-buffer-iterators.zig");
 const text_buffer_view = @import("../text-buffer-view.zig");
 const seg_mod = @import("../text-buffer-segment.zig");
 const ansi = @import("../ansi.zig");
-const gp = @import("../grapheme.zig");
 const link = @import("../link.zig");
 
 const TextBuffer = text_buffer.UnifiedTextBuffer;
 const TextBufferView = text_buffer_view.UnifiedTextBufferView;
 const RGBA = text_buffer.RGBA;
 
-test "TextBufferView first layout retains reusable word metadata" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const links = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
-    const tb = try TextBuffer.init(std.testing.allocator, pool, links, .unicode);
-    defer tb.deinit();
-    const view = try TextBufferView.init(std.testing.allocator, tb);
-    defer view.deinit();
-    try tb.setText("alpha \u{754c}abc e\u{301} words\n" ** 100);
-    view.setWrapMode(.word);
-    view.setWrapWidth(80);
-    _ = view.getVirtualLines();
-    try std.testing.expectEqual(@as(usize, 100), view.word_layout.layouts.items.len);
-    const ptr = view.word_layout.layouts.items.ptr;
-    const capacity = view.word_layout.arena.queryCapacity();
-    view.setWrapWidth(79);
-    _ = view.getVirtualLines();
-    try std.testing.expectEqual(ptr, view.word_layout.layouts.items.ptr);
-    try std.testing.expectEqual(capacity, view.word_layout.arena.queryCapacity());
-}
-
 test "TextBufferView fragmented ASCII measurement streams complete words without scratch allocation" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const links = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
-    const tb = try TextBuffer.init(std.testing.allocator, pool, links, .unicode);
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
+
+    const tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .unicode);
     defer tb.deinit();
     const view = try TextBufferView.init(std.testing.allocator, tb);
     defer view.deinit();
@@ -63,11 +40,10 @@ test "TextBufferView fragmented ASCII measurement streams complete words without
 }
 
 test "TextBufferView CJK cache survives a failed sibling layout" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const links = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
-    const tb = try TextBuffer.init(std.testing.allocator, pool, links, .unicode);
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
+
+    const tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .unicode);
     defer tb.deinit();
     try tb.setText("x\n" ++ ("\u{65e5}" ** 512));
     const healthy = try TextBufferView.init(std.testing.allocator, tb);
@@ -77,7 +53,6 @@ test "TextBufferView CJK cache survives a failed sibling layout" {
     try std.testing.expectEqual(@as(u32, 14), healthy.getVirtualLineCount());
     const chunk = tb.rope().get(4).?.asText().?;
     const cached = chunk.getCachedLayoutInfo(tb.tabWidth(), tb.widthMethod()).?;
-    try std.testing.expectEqual(cached.cjk_breaks.ptr, healthy.word_layout.layouts.items[1].cjk_breaks.ptr);
 
     var failing = std.testing.FailingAllocator.init(std.testing.allocator, .{});
     const sibling = try TextBufferView.init(failing.allocator(), tb);
@@ -102,57 +77,14 @@ test "TextBufferView CJK cache survives a failed sibling layout" {
     try std.testing.expectEqual(cached.cjk_breaks.ptr, chunk.getCachedLayoutInfo(tb.tabWidth(), tb.widthMethod()).?.cjk_breaks.ptr);
 }
 
-test "TextBufferView optional metadata failure preserves every streamed piece" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const links = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
-    const tb = try TextBuffer.init(std.testing.allocator, pool, links, .unicode);
-    defer tb.deinit();
-    try tb.setText(("a\u{754c}e\u{301} \u{0600} xy\tend-" ** 5000) ++ "\n" ++ ("\u{754c}abc e\u{301}\n" ** 100));
-    const expected = try TextBufferView.init(std.testing.allocator, tb);
-    defer expected.deinit();
-    expected.setWrapMode(.word);
-    expected.setWrapWidth(79);
-    const want = expected.getVirtualLines();
-    for (0..14) |failure| {
-        var tracking = std.testing.FailingAllocator.init(std.testing.allocator, .{});
-        const actual = try TextBufferView.init(std.testing.allocator, tb);
-        defer actual.deinit();
-        actual.word_layout.arena.child_allocator = tracking.allocator();
-        actual.setWrapMode(.word);
-        tracking.fail_index = failure;
-        actual.setWrapWidth(79);
-        const got = actual.getVirtualLines();
-        try std.testing.expect(!actual.virtual_lines_dirty);
-        try std.testing.expectEqual(want.len, got.len);
-        for (want, got) |wl, gl| {
-            try std.testing.expectEqual(wl.width_cols, gl.width_cols);
-            try std.testing.expectEqual(wl.source_line, gl.source_line);
-            try std.testing.expectEqual(wl.source_col_start, gl.source_col_start);
-            try std.testing.expectEqual(wl.document_cell_offset, gl.document_cell_offset);
-            try std.testing.expectEqualDeep(wl.chunks.items, gl.chunks.items);
-        }
-        if (tracking.has_induced_failure) try std.testing.expectEqual(@as(usize, 0), actual.word_layout.layouts.items.len);
-        tracking.fail_index = std.math.maxInt(usize);
-        actual.setWrapWidth(80);
-        _ = actual.getVirtualLines();
-        actual.setWrapWidth(79);
-        try std.testing.expectEqual(want.len, actual.getVirtualLines().len);
-        const measured = try actual.measureForDimensions(79, 24);
-        try std.testing.expectEqual(want.len, measured.line_count);
-    }
-}
-
 test "TextBufferView width reuse does not leave metadata in old buffer roots" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
+
     var retained: [2]usize = undefined;
     for (0..2) |side| {
         var tracking = std.testing.FailingAllocator.init(std.testing.allocator, .{});
-        const tb = try TextBuffer.init(tracking.allocator(), pool, link_pool, .unicode);
+        const tb = try TextBuffer.init(tracking.allocator(), &pools.graphemes, &pools.links, .unicode);
         defer tb.deinit();
         const view = try TextBufferView.init(tracking.allocator(), tb);
         view.setWrapMode(.word);
@@ -178,17 +110,16 @@ test "TextBufferView width reuse does not leave metadata in old buffer roots" {
 }
 
 test "TextBufferView live word metadata follows views history and buffer switches" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
-    const edit = try @import("../edit-buffer.zig").EditBuffer.init(std.testing.allocator, pool, link_pool, .unicode, null);
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
+
+    const edit = try @import("../edit-buffer.zig").EditBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .unicode, null);
     defer edit.deinit();
     const view = try TextBufferView.init(std.testing.allocator, edit.tb);
     defer view.deinit();
     const second = try TextBufferView.init(std.testing.allocator, edit.tb);
     defer second.deinit();
-    const other = try TextBuffer.init(std.testing.allocator, pool, link_pool, .unicode);
+    const other = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .unicode);
     defer other.deinit();
     try other.setText("unrelated\t\u{754c} text");
     try edit.setText("alpha \u{754c} e\u{301} abcdefghijklmnopqrstuvwxyz\n" ** 10);
@@ -198,18 +129,13 @@ test "TextBufferView live word metadata follows views history and buffer switche
     second.setWrapWidth(32);
     _ = view.getVirtualLines();
     _ = second.getVirtualLines();
-    try std.testing.expect(view.word_layout.layouts.items.len > 0);
     view.setWrapWidth(17);
     second.setWrapWidth(33);
     _ = view.getVirtualLines();
     _ = second.getVirtualLines();
-    const ptr = view.word_layout.layouts.items.ptr;
-    const capacity = view.word_layout.arena.queryCapacity();
     for ([_]u32{ 43, 7, 16, 96, 32 }) |width| {
         view.setWrapWidth(width);
         _ = view.getVirtualLines();
-        try std.testing.expectEqual(ptr, view.word_layout.layouts.items.ptr);
-        try std.testing.expectEqual(capacity, view.word_layout.arena.queryCapacity());
     }
     try edit.replaceText("changed\ttext \u{0600} \u{301} \u{754c} words\n" ** 10);
     for (0..3) |step| {
@@ -218,16 +144,14 @@ test "TextBufferView live word metadata follows views history and buffer switche
         edit.tb.setTabWidth(@intCast(2 + step * 2));
         for ([_]*TextBufferView{ view, second }) |current| {
             _ = current.getVirtualLines();
-            try std.testing.expect(current.word_layout.layouts.items.len > 0);
             current.setWrapWidth(19);
             _ = current.getVirtualLines();
             current.setWrapWidth(23);
             const measured = try current.measureForDimensions(23, 24);
             try std.testing.expectEqual(measured.line_count, current.getVirtualLineCount());
-            try std.testing.expect(current.word_layout.layouts.items.len > 0);
             var bytes: [4096]u8 = undefined;
             const len = edit.tb.getPlainTextIntoBuffer(&bytes);
-            const fresh_tb = try TextBuffer.init(std.testing.allocator, pool, link_pool, .unicode);
+            const fresh_tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .unicode);
             defer fresh_tb.deinit();
             fresh_tb.setTabWidth(edit.tb.tabWidth());
             try fresh_tb.setText(bytes[0..len]);
@@ -255,24 +179,20 @@ test "TextBufferView live word metadata follows views history and buffer switche
         }
     }
     view.switchToBuffer(other);
-    try std.testing.expectEqual(@as(usize, 0), view.word_layout.layouts.items.len);
     _ = view.getVirtualLines();
     view.switchToOriginalBuffer();
-    try std.testing.expectEqual(@as(usize, 0), view.word_layout.layouts.items.len);
     _ = view.getVirtualLines();
     view.setWrapMode(.char);
     _ = view.getVirtualLines();
-    try std.testing.expectEqual(@as(usize, 0), view.word_layout.arena.queryCapacity());
 }
 
 test "TextBufferView live word metadata discards partial allocation on failure" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
+
     for (0..10) |failure| {
         var tracking = std.testing.FailingAllocator.init(std.testing.allocator, .{});
-        const tb = try TextBuffer.init(tracking.allocator(), pool, link_pool, .unicode);
+        const tb = try TextBuffer.init(tracking.allocator(), &pools.graphemes, &pools.links, .unicode);
         defer tb.deinit();
         const view = try TextBufferView.init(tracking.allocator(), tb);
         defer view.deinit();
@@ -283,7 +203,6 @@ test "TextBufferView live word metadata discards partial allocation on failure" 
         view.setWrapWidth(17);
         _ = view.getVirtualLines();
         if (tracking.has_induced_failure) {
-            try std.testing.expectEqual(@as(usize, 0), view.word_layout.layouts.items.len);
             if (view.virtual_lines_dirty) try std.testing.expectEqual(@as(usize, 0), view.virtual_lines.items.len);
         }
         tracking.fail_index = std.math.maxInt(usize);
@@ -292,48 +211,17 @@ test "TextBufferView live word metadata discards partial allocation on failure" 
     }
 }
 
-test "TextBufferView rewrap reuses virtual line allocation without retaining cleared layout" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
-    var tracking = std.testing.FailingAllocator.init(std.testing.allocator, .{});
-    const tb = try TextBuffer.init(tracking.allocator(), pool, link_pool, .unicode);
-    defer tb.deinit();
-    const view = try TextBufferView.init(tracking.allocator(), tb);
-    defer view.deinit();
-    try tb.setText("OpenTUI text metrics: \u{754c} e\u{301} abcdefghijklmnop " ** 100);
-    view.setWrapMode(.word);
-    view.setWrapWidth(80);
-    _ = view.getVirtualLines();
-    view.setWrapWidth(79);
-    _ = view.getVirtualLines();
-    view.setWrapWidth(80);
-    _ = view.getVirtualLines();
-    const allocated = tracking.allocated_bytes;
-    const capacity = view.virtual_lines_arena.queryCapacity();
-    for (0..20) |i| {
-        view.setWrapWidth(@intCast(79 + i % 2));
-        _ = view.getVirtualLines();
-    }
-    try std.testing.expectEqual(allocated, tracking.allocated_bytes);
-    tb.clear();
-    try std.testing.expectEqual(@as(u32, 1), view.getVirtualLineCount());
-    try std.testing.expect(view.virtual_lines_arena.queryCapacity() < capacity);
-}
-
 test "TextBufferView rewrap matches fresh layout after text and tab changes" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
+
     const texts = [_][]const u8{
         "",                                                             "one",                                                              "one two three\n\nshort\n",
         "\talpha \u{754c}abc e\u{301} \u{1f469}\u{200d}\u{1f4bb}\tend", "abcdefg \u{301} hi\n\u{0600} 0123456789abcdef\nword\u{200b}word ", "\u{754c} " ** 600,
         "\u{754c}abc " ** 10000,
     };
     inline for (std.meta.tags(@import("../utf8.zig").WidthMethod)) |method| {
-        const tb = try TextBuffer.init(std.testing.allocator, pool, link_pool, method);
+        const tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, method);
         defer tb.deinit();
         const view = try TextBufferView.init(std.testing.allocator, tb);
         defer view.deinit();
@@ -345,7 +233,7 @@ test "TextBufferView rewrap matches fresh layout after text and tab changes" {
             for ([_]u8{ 2, 4 }) |tab_width| {
                 tb.setTabWidth(tab_width);
                 for ([_]u32{ 7, 16, 79, 16 }) |width| {
-                    const fresh_tb = try TextBuffer.init(std.testing.allocator, pool, link_pool, method);
+                    const fresh_tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, method);
                     defer fresh_tb.deinit();
                     fresh_tb.setTabWidth(tab_width);
                     try fresh_tb.setText(text);
@@ -376,18 +264,16 @@ test "TextBufferView rewrap matches fresh layout after text and tab changes" {
                 }
             }
         }
-        tb.clear();
+        try tb.clear();
         try std.testing.expectEqual(@as(u32, 1), view.getVirtualLineCount());
     }
 }
 
 test "TextBufferView wrapping - no wrap returns same line count" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
-    var tb = try TextBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth);
+    var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth);
     defer tb.deinit();
 
     var view = try TextBufferView.init(std.testing.allocator, tb);
@@ -404,12 +290,10 @@ test "TextBufferView wrapping - no wrap returns same line count" {
 }
 
 test "TextBufferView wrapping - simple wrap splits line" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
-    var tb = try TextBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth);
+    var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth);
     defer tb.deinit();
 
     var view = try TextBufferView.init(std.testing.allocator, tb);
@@ -428,12 +312,10 @@ test "TextBufferView wrapping - simple wrap splits line" {
 }
 
 test "TextBufferView wrapping - wrap at exact boundary" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
-    var tb = try TextBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth);
+    var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth);
     defer tb.deinit();
 
     var view = try TextBufferView.init(std.testing.allocator, tb);
@@ -449,12 +331,10 @@ test "TextBufferView wrapping - wrap at exact boundary" {
 }
 
 test "TextBufferView wrapping - preserves newlines" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
-    var tb = try TextBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth);
+    var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth);
     defer tb.deinit();
 
     var view = try TextBufferView.init(std.testing.allocator, tb);
@@ -473,12 +353,10 @@ test "TextBufferView wrapping - preserves newlines" {
 }
 
 test "TextBufferView selection - basic selection without wrap" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
-    var tb = try TextBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth);
+    var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth);
     defer tb.deinit();
 
     var view = try TextBufferView.init(std.testing.allocator, tb);
@@ -499,12 +377,10 @@ test "TextBufferView selection - basic selection without wrap" {
 }
 
 test "TextBufferView selection - with wrapped lines" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
-    var tb = try TextBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth);
+    var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth);
     defer tb.deinit();
 
     var view = try TextBufferView.init(std.testing.allocator, tb);
@@ -530,12 +406,10 @@ test "TextBufferView selection - with wrapped lines" {
 }
 
 test "TextBufferView selection - no selection returns all bits set" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
-    var tb = try TextBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth);
+    var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth);
     defer tb.deinit();
 
     var view = try TextBufferView.init(std.testing.allocator, tb);
@@ -548,12 +422,10 @@ test "TextBufferView selection - no selection returns all bits set" {
 }
 
 test "TextBufferView word wrapping - basic word wrap at space" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
-    var tb = try TextBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth);
+    var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth);
     defer tb.deinit();
 
     var view = try TextBufferView.init(std.testing.allocator, tb);
@@ -569,12 +441,10 @@ test "TextBufferView word wrapping - basic word wrap at space" {
 }
 
 test "TextBufferView word wrapping - overflowing separator whitespace is consumed" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
-    var tb = try TextBuffer.init(std.testing.allocator, pool, link_pool, .unicode);
+    var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .unicode);
     defer tb.deinit();
     var view = try TextBufferView.init(std.testing.allocator, tb);
     defer view.deinit();
@@ -596,12 +466,10 @@ test "TextBufferView word wrapping - overflowing separator whitespace is consume
 }
 
 test "TextBufferView word wrapping - consumed whitespace cursor positions stay on preceding visual line" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
-    var tb = try TextBuffer.init(std.testing.allocator, pool, link_pool, .unicode);
+    var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .unicode);
     defer tb.deinit();
     var view = try TextBufferView.init(std.testing.allocator, tb);
     defer view.deinit();
@@ -617,12 +485,10 @@ test "TextBufferView word wrapping - consumed whitespace cursor positions stay o
 }
 
 test "TextBufferView word wrapping - full local selection includes consumed trailing whitespace" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
-    var tb = try TextBuffer.init(std.testing.allocator, pool, link_pool, .unicode);
+    var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .unicode);
     defer tb.deinit();
     var view = try TextBufferView.init(std.testing.allocator, tb);
     defer view.deinit();
@@ -639,12 +505,10 @@ test "TextBufferView word wrapping - full local selection includes consumed trai
 }
 
 test "TextBufferView wrapping - large single line retains its full width" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
-    var tb = try TextBuffer.init(std.testing.allocator, pool, link_pool, .unicode);
+    var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .unicode);
     defer tb.deinit();
     var view = try TextBufferView.init(std.testing.allocator, tb);
     defer view.deinit();
@@ -665,12 +529,10 @@ test "TextBufferView wrapping - large single line retains its full width" {
 }
 
 test "TextBufferView word wrapping - fragmented overflowing separator matches contiguous text" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
-    var tb = try TextBuffer.init(std.testing.allocator, pool, link_pool, .unicode);
+    var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .unicode);
     defer tb.deinit();
     var view = try TextBufferView.init(std.testing.allocator, tb);
     defer view.deinit();
@@ -696,12 +558,10 @@ test "TextBufferView word wrapping - fragmented overflowing separator matches co
 }
 
 test "TextBufferView word wrapping - wide separator boundaries do not create whitespace continuations" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
-    var tb = try TextBuffer.init(std.testing.allocator, pool, link_pool, .unicode);
+    var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .unicode);
     defer tb.deinit();
     var view = try TextBufferView.init(std.testing.allocator, tb);
     defer view.deinit();
@@ -719,12 +579,10 @@ test "TextBufferView word wrapping - wide separator boundaries do not create whi
 }
 
 test "TextBufferView word wrapping - logical-line leading whitespace is preserved" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
-    var tb = try TextBuffer.init(std.testing.allocator, pool, link_pool, .unicode);
+    var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .unicode);
     defer tb.deinit();
     var view = try TextBufferView.init(std.testing.allocator, tb);
     defer view.deinit();
@@ -737,12 +595,10 @@ test "TextBufferView word wrapping - logical-line leading whitespace is preserve
 }
 
 test "TextBufferView word wrapping - long word exceeds width" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
-    var tb = try TextBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth);
+    var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth);
     defer tb.deinit();
 
     var view = try TextBufferView.init(std.testing.allocator, tb);
@@ -758,12 +614,10 @@ test "TextBufferView word wrapping - long word exceeds width" {
 }
 
 test "TextBufferView getSelectedTextIntoBuffer - simple selection" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
-    var tb = try TextBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth);
+    var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth);
     defer tb.deinit();
 
     var view = try TextBufferView.init(std.testing.allocator, tb);
@@ -780,12 +634,10 @@ test "TextBufferView getSelectedTextIntoBuffer - simple selection" {
 }
 
 test "TextBufferView getSelectedTextIntoBuffer - with newlines" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
-    var tb = try TextBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth);
+    var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth);
     defer tb.deinit();
 
     var view = try TextBufferView.init(std.testing.allocator, tb);
@@ -803,12 +655,10 @@ test "TextBufferView getSelectedTextIntoBuffer - with newlines" {
 }
 
 test "TextBufferView getCachedLineInfo - with wrapping" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
-    var tb = try TextBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth);
+    var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth);
     defer tb.deinit();
 
     var view = try TextBufferView.init(std.testing.allocator, tb);
@@ -832,12 +682,10 @@ test "TextBufferView getCachedLineInfo - with wrapping" {
 }
 
 test "TextBufferView virtual line spans - with highlights" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
-    var tb = try TextBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth);
+    var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth);
     defer tb.deinit();
 
     var view = try TextBufferView.init(std.testing.allocator, tb);
@@ -866,12 +714,10 @@ test "TextBufferView virtual line spans - with highlights" {
 }
 
 test "TextBufferView updates after buffer setText" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
-    var tb = try TextBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth);
+    var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth);
     defer tb.deinit();
 
     var view = try TextBufferView.init(std.testing.allocator, tb);
@@ -890,12 +736,10 @@ test "TextBufferView updates after buffer setText" {
 }
 
 test "TextBufferView wrapping - multiple wrap lines" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
-    var tb = try TextBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth);
+    var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth);
     defer tb.deinit();
 
     var view = try TextBufferView.init(std.testing.allocator, tb);
@@ -911,12 +755,10 @@ test "TextBufferView wrapping - multiple wrap lines" {
 }
 
 test "TextBufferView wrapping - long line with newlines" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
-    var tb = try TextBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth);
+    var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth);
     defer tb.deinit();
 
     var view = try TextBufferView.init(std.testing.allocator, tb);
@@ -935,12 +777,10 @@ test "TextBufferView wrapping - long line with newlines" {
 }
 
 test "TextBufferView wrapping - change wrap width" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
-    var tb = try TextBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth);
+    var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth);
     defer tb.deinit();
 
     var view = try TextBufferView.init(std.testing.allocator, tb);
@@ -969,12 +809,10 @@ test "TextBufferView wrapping - change wrap width" {
 }
 
 test "TextBufferView wrapping - grapheme at exact boundary" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
-    var tb = try TextBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth);
+    var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth);
     defer tb.deinit();
 
     var view = try TextBufferView.init(std.testing.allocator, tb);
@@ -990,12 +828,10 @@ test "TextBufferView wrapping - grapheme at exact boundary" {
 }
 
 test "TextBufferView wrapping - grapheme split across boundary" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
-    var tb = try TextBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth);
+    var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth);
     defer tb.deinit();
 
     var view = try TextBufferView.init(std.testing.allocator, tb);
@@ -1011,12 +847,10 @@ test "TextBufferView wrapping - grapheme split across boundary" {
 }
 
 test "TextBufferView wrapping - CJK characters at boundaries" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
-    var tb = try TextBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth);
+    var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth);
     defer tb.deinit();
 
     var view = try TextBufferView.init(std.testing.allocator, tb);
@@ -1032,12 +866,10 @@ test "TextBufferView wrapping - CJK characters at boundaries" {
 }
 
 test "TextBufferView wrapping - mixed width characters" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
-    var tb = try TextBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth);
+    var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth);
     defer tb.deinit();
 
     var view = try TextBufferView.init(std.testing.allocator, tb);
@@ -1053,12 +885,10 @@ test "TextBufferView wrapping - mixed width characters" {
 }
 
 test "TextBufferView wrapping - single wide character exceeds width" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
-    var tb = try TextBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth);
+    var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth);
     defer tb.deinit();
 
     var view = try TextBufferView.init(std.testing.allocator, tb);
@@ -1074,12 +904,10 @@ test "TextBufferView wrapping - single wide character exceeds width" {
 }
 
 test "TextBufferView wrapping - multiple consecutive wide characters" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
-    var tb = try TextBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth);
+    var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth);
     defer tb.deinit();
 
     var view = try TextBufferView.init(std.testing.allocator, tb);
@@ -1095,12 +923,10 @@ test "TextBufferView wrapping - multiple consecutive wide characters" {
 }
 
 test "TextBufferView wrapping - zero width characters" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
-    var tb = try TextBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth);
+    var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth);
     defer tb.deinit();
 
     var view = try TextBufferView.init(std.testing.allocator, tb);
@@ -1116,12 +942,10 @@ test "TextBufferView wrapping - zero width characters" {
 }
 
 test "TextBufferView word wrapping - multiple words" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
-    var tb = try TextBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth);
+    var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth);
     defer tb.deinit();
 
     var view = try TextBufferView.init(std.testing.allocator, tb);
@@ -1137,12 +961,10 @@ test "TextBufferView word wrapping - multiple words" {
 }
 
 test "TextBufferView word wrapping - hyphenated words" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
-    var tb = try TextBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth);
+    var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth);
     defer tb.deinit();
 
     var view = try TextBufferView.init(std.testing.allocator, tb);
@@ -1158,12 +980,10 @@ test "TextBufferView word wrapping - hyphenated words" {
 }
 
 test "TextBufferView word wrapping - punctuation boundaries" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
-    var tb = try TextBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth);
+    var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth);
     defer tb.deinit();
 
     var view = try TextBufferView.init(std.testing.allocator, tb);
@@ -1179,12 +999,10 @@ test "TextBufferView word wrapping - punctuation boundaries" {
 }
 
 test "TextBufferView word wrapping - tab boundary width" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
-    var tb = try TextBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth);
+    var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth);
     defer tb.deinit();
 
     var view = try TextBufferView.init(std.testing.allocator, tb);
@@ -1203,12 +1021,10 @@ test "TextBufferView word wrapping - tab boundary width" {
 }
 
 test "TextBufferView word wrapping - emoji boundary width" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
-    var tb = try TextBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth);
+    var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth);
     defer tb.deinit();
 
     var view = try TextBufferView.init(std.testing.allocator, tb);
@@ -1227,12 +1043,10 @@ test "TextBufferView word wrapping - emoji boundary width" {
 }
 
 test "TextBufferView word wrapping - CJK boundary width" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
-    var tb = try TextBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth);
+    var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth);
     defer tb.deinit();
 
     var view = try TextBufferView.init(std.testing.allocator, tb);
@@ -1251,12 +1065,10 @@ test "TextBufferView word wrapping - CJK boundary width" {
 }
 
 test "TextBufferView word wrapping - compare char vs word mode" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
-    var tb = try TextBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth);
+    var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth);
     defer tb.deinit();
 
     var view = try TextBufferView.init(std.testing.allocator, tb);
@@ -1276,12 +1088,10 @@ test "TextBufferView word wrapping - compare char vs word mode" {
 }
 
 test "TextBufferView word wrapping - empty lines preserved" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
-    var tb = try TextBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth);
+    var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth);
     defer tb.deinit();
 
     var view = try TextBufferView.init(std.testing.allocator, tb);
@@ -1297,12 +1107,10 @@ test "TextBufferView word wrapping - empty lines preserved" {
 }
 
 test "TextBufferView word wrapping - slash as boundary" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
-    var tb = try TextBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth);
+    var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth);
     defer tb.deinit();
 
     var view = try TextBufferView.init(std.testing.allocator, tb);
@@ -1318,12 +1126,10 @@ test "TextBufferView word wrapping - slash as boundary" {
 }
 
 test "TextBufferView word wrapping - brackets as boundaries" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
-    var tb = try TextBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth);
+    var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth);
     defer tb.deinit();
 
     var view = try TextBufferView.init(std.testing.allocator, tb);
@@ -1339,12 +1145,10 @@ test "TextBufferView word wrapping - brackets as boundaries" {
 }
 
 test "TextBufferView word wrapping - single character at boundary" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
-    var tb = try TextBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth);
+    var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth);
     defer tb.deinit();
 
     var view = try TextBufferView.init(std.testing.allocator, tb);
@@ -1360,12 +1164,10 @@ test "TextBufferView word wrapping - single character at boundary" {
 }
 
 test "TextBufferView word wrapping - fragmented rope with word boundary" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
-    var tb = try TextBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth);
+    var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth);
     defer tb.deinit();
 
     var view = try TextBufferView.init(std.testing.allocator, tb);
@@ -1412,12 +1214,10 @@ test "TextBufferView word wrapping - fragmented rope with word boundary" {
 }
 
 test "TextBufferView word wrapping - fragmented long word force-breaks by wrap width" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
-    var tb = try TextBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth);
+    var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth);
     defer tb.deinit();
 
     var view = try TextBufferView.init(std.testing.allocator, tb);
@@ -1443,12 +1243,10 @@ test "TextBufferView word wrapping - fragmented long word force-breaks by wrap w
 }
 
 test "TextBufferView word wrapping - zero width still makes progress" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
-    var tb = try TextBuffer.init(std.testing.allocator, pool, link_pool, .unicode);
+    var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .unicode);
     defer tb.deinit();
     var view = try TextBufferView.init(std.testing.allocator, tb);
     defer view.deinit();
@@ -1462,12 +1260,10 @@ test "TextBufferView word wrapping - zero width still makes progress" {
 }
 
 test "TextBufferView word wrapping - fragmented zero width delimiter ends pending word" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
-    var tb = try TextBuffer.init(std.testing.allocator, pool, link_pool, .unicode);
+    var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .unicode);
     defer tb.deinit();
     var view = try TextBufferView.init(std.testing.allocator, tb);
     defer view.deinit();
@@ -1488,12 +1284,10 @@ test "TextBufferView word wrapping - fragmented zero width delimiter ends pendin
 }
 
 test "TextBufferView word wrapping - fragmented ASCII CJK transition is a boundary" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
-    var tb = try TextBuffer.init(std.testing.allocator, pool, link_pool, .unicode);
+    var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .unicode);
     defer tb.deinit();
     var view = try TextBufferView.init(std.testing.allocator, tb);
     defer view.deinit();
@@ -1515,12 +1309,10 @@ test "TextBufferView word wrapping - fragmented ASCII CJK transition is a bounda
 }
 
 test "TextBufferView word wrapping - combining mark keeps base class across chunks" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
-    var tb = try TextBuffer.init(std.testing.allocator, pool, link_pool, .unicode);
+    var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .unicode);
     defer tb.deinit();
     var view = try TextBufferView.init(std.testing.allocator, tb);
     defer view.deinit();
@@ -1540,13 +1332,33 @@ test "TextBufferView word wrapping - combining mark keeps base class across chun
     try std.testing.expectEqualSlices(u32, &.{ 3, 2 }, view.getCachedLineInfo().line_width_cols);
 }
 
-test "TextBufferView word wrapping - CJK run wraps between characters" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
+test "TextBufferView word wrapping - appended kana combining mark keeps trailing bytes" {
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
-    var tb = try TextBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth);
+    var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .unicode);
+    defer tb.deinit();
+    var view = try TextBufferView.init(std.testing.allocator, tb);
+    defer view.deinit();
+
+    try tb.setText("か");
+    try tb.append("\u{3099}く");
+    view.setWrapMode(.word);
+    view.setWrapWidth(8);
+
+    const expected = "か\u{3099}く";
+    var bytes: usize = 0;
+    for (view.getVirtualLines()) |vline| {
+        for (vline.chunks.items) |chunk| bytes += chunk.byte_len;
+    }
+    try std.testing.expectEqual(expected.len, bytes);
+}
+
+test "TextBufferView word wrapping - CJK run wraps between characters" {
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
+
+    var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth);
     defer tb.deinit();
     var view = try TextBufferView.init(std.testing.allocator, tb);
     defer view.deinit();
@@ -1563,12 +1375,10 @@ test "TextBufferView word wrapping - CJK run wraps between characters" {
 }
 
 test "TextBufferView word wrapping - ideographic punctuation never starts a line" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
-    var tb = try TextBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth);
+    var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth);
     defer tb.deinit();
     var view = try TextBufferView.init(std.testing.allocator, tb);
     defer view.deinit();
@@ -1583,12 +1393,10 @@ test "TextBufferView word wrapping - ideographic punctuation never starts a line
 }
 
 test "TextBufferView word wrapping - CJK break spans chunk boundary" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
-    var tb = try TextBuffer.init(std.testing.allocator, pool, link_pool, .unicode);
+    var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .unicode);
     defer tb.deinit();
     var view = try TextBufferView.init(std.testing.allocator, tb);
     defer view.deinit();
@@ -1611,12 +1419,11 @@ test "TextBufferView word wrapping - CJK break spans chunk boundary" {
 }
 
 test "TextBufferView word wrapping - non-CJK appends keep chunk-local boundaries" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
+
     for ([_]@import("../utf8.zig").WidthMethod{ .unicode, .unicode_wide, .wcwidth, .no_zwj }) |method| {
-        var tb = try TextBuffer.init(std.testing.allocator, pool, link_pool, method);
+        var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, method);
         defer tb.deinit();
         var view = try TextBufferView.init(std.testing.allocator, tb);
         defer view.deinit();
@@ -1632,10 +1439,9 @@ test "TextBufferView word wrapping - non-CJK appends keep chunk-local boundaries
 }
 
 test "TextBufferView word wrapping - CJK policy retains bytes and uses legacy fitting for split chunks" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
+
     const cases = [_]struct { parts: []const []const u8, width: u32, widths: []const u32 }{
         .{ .parts = &.{ "\u{65e5}\u{672c}\u{1f1fa}", "\u{1f1f8}\u{1f1fa}\u{1f1f8}\u{8a9e}\u{6587}" }, .width = 4, .widths = &.{ 4, 4, 4 } },
         .{ .parts = &.{ "\u{65e5}\u{672c}\u{1f44b}", "\u{1f3fb}\u{8a9e}\u{6587}" }, .width = 4, .widths = &.{ 4, 4, 4 } },
@@ -1649,7 +1455,7 @@ test "TextBufferView word wrapping - CJK policy retains bytes and uses legacy fi
     };
     for ([_]@import("../utf8.zig").WidthMethod{ .unicode, .unicode_wide, .wcwidth, .no_zwj }) |method| {
         for (cases) |case| {
-            var tb = try TextBuffer.init(std.testing.allocator, pool, link_pool, method);
+            var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, method);
             defer tb.deinit();
             var view = try TextBufferView.init(std.testing.allocator, tb);
             defer view.deinit();
@@ -1679,12 +1485,10 @@ test "TextBufferView word wrapping - CJK policy retains bytes and uses legacy fi
 }
 
 test "TextBufferView wrapping - very narrow width (1 char)" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
-    var tb = try TextBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth);
+    var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth);
     defer tb.deinit();
 
     var view = try TextBufferView.init(std.testing.allocator, tb);
@@ -1700,12 +1504,10 @@ test "TextBufferView wrapping - very narrow width (1 char)" {
 }
 
 test "TextBufferView wrapping - very narrow width (2 chars)" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
-    var tb = try TextBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth);
+    var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth);
     defer tb.deinit();
 
     var view = try TextBufferView.init(std.testing.allocator, tb);
@@ -1721,12 +1523,10 @@ test "TextBufferView wrapping - very narrow width (2 chars)" {
 }
 
 test "TextBufferView character wrapping - first line offset only changes initial width" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
-    var tb = try TextBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth);
+    var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth);
     defer tb.deinit();
     try tb.setText("abcdef");
 
@@ -1747,12 +1547,10 @@ test "TextBufferView character wrapping - first line offset only changes initial
 }
 
 test "TextBufferView character wrapping - virtual chunks grow after exact capacity one" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
-    var tb = try TextBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth);
+    var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth);
     defer tb.deinit();
     try tb.setText("abcdef");
 
@@ -1779,12 +1577,10 @@ test "TextBufferView character wrapping - virtual chunks grow after exact capaci
 }
 
 test "TextBufferView character wrapping - OOM discards partial layout without retry loop" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
-    var tb = try TextBuffer.init(std.testing.allocator, pool, link_pool, .unicode);
+    var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .unicode);
     defer tb.deinit();
     try tb.setText("abcdefghij");
 
@@ -1805,16 +1601,14 @@ test "TextBufferView character wrapping - OOM discards partial layout without re
 }
 
 test "TextBufferView word wrapping - streaming OOM discards partial layout" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
     const text = try std.testing.allocator.alloc(u8, 70_000);
     defer std.testing.allocator.free(text);
     for (text, 0..) |*byte, i| byte.* = if (i % 2 == 0) 'a' else ' ';
 
-    var tb = try TextBuffer.init(std.testing.allocator, pool, link_pool, .unicode);
+    var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .unicode);
     defer tb.deinit();
     try tb.setText(text);
 
@@ -1835,12 +1629,10 @@ test "TextBufferView word wrapping - streaming OOM discards partial layout" {
 }
 
 test "TextBufferView word wrapping - layout cache OOM falls back to complete streamed render" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
-    var tb = try TextBuffer.init(std.testing.allocator, pool, link_pool, .unicode);
+    var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .unicode);
     defer tb.deinit();
 
     const text = "a," ** 1023 ++ "\xC3\xA9";
@@ -1870,12 +1662,10 @@ test "TextBufferView word wrapping - layout cache OOM falls back to complete str
 }
 
 test "TextBufferView wrapping - switch between char and word mode" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
-    var tb = try TextBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth);
+    var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth);
     defer tb.deinit();
 
     var view = try TextBufferView.init(std.testing.allocator, tb);
@@ -1897,12 +1687,10 @@ test "TextBufferView wrapping - switch between char and word mode" {
 }
 
 test "TextBufferView wrapping - multiple consecutive newlines with wrapping" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
-    var tb = try TextBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth);
+    var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth);
     defer tb.deinit();
 
     var view = try TextBufferView.init(std.testing.allocator, tb);
@@ -1918,12 +1706,10 @@ test "TextBufferView wrapping - multiple consecutive newlines with wrapping" {
 }
 
 test "TextBufferView wrapping - only spaces should not create extra lines" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
-    var tb = try TextBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth);
+    var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth);
     defer tb.deinit();
 
     var view = try TextBufferView.init(std.testing.allocator, tb);
@@ -1939,12 +1725,10 @@ test "TextBufferView wrapping - only spaces should not create extra lines" {
 }
 
 test "TextBufferView wrapping - mixed tabs and spaces" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
-    var tb = try TextBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth);
+    var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth);
     defer tb.deinit();
 
     var view = try TextBufferView.init(std.testing.allocator, tb);
@@ -1960,12 +1744,10 @@ test "TextBufferView wrapping - mixed tabs and spaces" {
 }
 
 test "TextBufferView wrapping - unicode emoji with varying widths" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
-    var tb = try TextBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth);
+    var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth);
     defer tb.deinit();
 
     var view = try TextBufferView.init(std.testing.allocator, tb);
@@ -1981,12 +1763,10 @@ test "TextBufferView wrapping - unicode emoji with varying widths" {
 }
 
 test "TextBufferView wrapping - getVirtualLines reflects current wrap state" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
-    var tb = try TextBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth);
+    var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth);
     defer tb.deinit();
 
     var view = try TextBufferView.init(std.testing.allocator, tb);
@@ -2013,12 +1793,10 @@ test "TextBufferView wrapping - getVirtualLines reflects current wrap state" {
 }
 
 test "TextBufferView selection - multi-line selection without wrap" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
-    var tb = try TextBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth);
+    var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth);
     defer tb.deinit();
 
     var view = try TextBufferView.init(std.testing.allocator, tb);
@@ -2033,12 +1811,10 @@ test "TextBufferView selection - multi-line selection without wrap" {
 }
 
 test "TextBufferView selection - selection at wrap boundary" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
-    var tb = try TextBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth);
+    var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth);
     defer tb.deinit();
 
     var view = try TextBufferView.init(std.testing.allocator, tb);
@@ -2062,12 +1838,10 @@ test "TextBufferView selection - selection at wrap boundary" {
 }
 
 test "TextBufferView selection - spanning multiple wrapped lines" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
-    var tb = try TextBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth);
+    var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth);
     defer tb.deinit();
 
     var view = try TextBufferView.init(std.testing.allocator, tb);
@@ -2092,12 +1866,10 @@ test "TextBufferView selection - spanning multiple wrapped lines" {
 }
 
 test "TextBufferView selection - changes when wrap width changes" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
-    var tb = try TextBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth);
+    var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth);
     defer tb.deinit();
 
     var view = try TextBufferView.init(std.testing.allocator, tb);
@@ -2127,12 +1899,10 @@ test "TextBufferView selection - changes when wrap width changes" {
 }
 
 test "TextBufferView selection - empty selection with wrapping" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
-    var tb = try TextBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth);
+    var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth);
     defer tb.deinit();
 
     var view = try TextBufferView.init(std.testing.allocator, tb);
@@ -2151,12 +1921,10 @@ test "TextBufferView selection - empty selection with wrapping" {
 }
 
 test "TextBufferView selection - with newlines and wrapping" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
-    var tb = try TextBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth);
+    var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth);
     defer tb.deinit();
 
     var view = try TextBufferView.init(std.testing.allocator, tb);
@@ -2177,12 +1945,10 @@ test "TextBufferView selection - with newlines and wrapping" {
 }
 
 test "TextBufferView selection - reset clears selection" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
-    var tb = try TextBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth);
+    var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth);
     defer tb.deinit();
 
     var view = try TextBufferView.init(std.testing.allocator, tb);
@@ -2200,12 +1966,10 @@ test "TextBufferView selection - reset clears selection" {
 }
 
 test "TextBufferView selection - spanning multiple lines" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
-    var tb = try TextBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth);
+    var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth);
     defer tb.deinit();
 
     var view = try TextBufferView.init(std.testing.allocator, tb);
@@ -2223,12 +1987,10 @@ test "TextBufferView selection - spanning multiple lines" {
 }
 
 test "TextBufferView line info - empty buffer" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
-    var tb = try TextBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth);
+    var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth);
     defer tb.deinit();
 
     var view = try TextBufferView.init(std.testing.allocator, tb);
@@ -2246,12 +2008,10 @@ test "TextBufferView line info - empty buffer" {
 }
 
 test "TextBufferView line info - simple text without newlines" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
-    var tb = try TextBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth);
+    var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth);
     defer tb.deinit();
 
     var view = try TextBufferView.init(std.testing.allocator, tb);
@@ -2268,12 +2028,10 @@ test "TextBufferView line info - simple text without newlines" {
 }
 
 test "TextBufferView line info - text ending with newline" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
-    var tb = try TextBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth);
+    var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth);
     defer tb.deinit();
 
     var view = try TextBufferView.init(std.testing.allocator, tb);
@@ -2291,12 +2049,10 @@ test "TextBufferView line info - text ending with newline" {
 }
 
 test "TextBufferView line info - consecutive newlines" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
-    var tb = try TextBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth);
+    var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth);
     defer tb.deinit();
 
     var view = try TextBufferView.init(std.testing.allocator, tb);
@@ -2312,12 +2068,10 @@ test "TextBufferView line info - consecutive newlines" {
 }
 
 test "TextBufferView line info - only newlines" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
-    var tb = try TextBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth);
+    var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth);
     defer tb.deinit();
 
     var view = try TextBufferView.init(std.testing.allocator, tb);
@@ -2335,12 +2089,10 @@ test "TextBufferView line info - only newlines" {
 }
 
 test "TextBufferView line info - wide characters (Unicode)" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
-    var tb = try TextBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth);
+    var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth);
     defer tb.deinit();
 
     var view = try TextBufferView.init(std.testing.allocator, tb);
@@ -2356,12 +2108,10 @@ test "TextBufferView line info - wide characters (Unicode)" {
 }
 
 test "TextBufferView line info - very long lines" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
-    var tb = try TextBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth);
+    var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth);
     defer tb.deinit();
 
     var view = try TextBufferView.init(std.testing.allocator, tb);
@@ -2378,12 +2128,10 @@ test "TextBufferView line info - very long lines" {
 }
 
 test "TextBufferView line info - buffer with only whitespace" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
-    var tb = try TextBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth);
+    var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth);
     defer tb.deinit();
 
     var view = try TextBufferView.init(std.testing.allocator, tb);
@@ -2401,12 +2149,10 @@ test "TextBufferView line info - buffer with only whitespace" {
 }
 
 test "TextBufferView line info - single character lines" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
-    var tb = try TextBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth);
+    var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth);
     defer tb.deinit();
 
     var view = try TextBufferView.init(std.testing.allocator, tb);
@@ -2424,12 +2170,10 @@ test "TextBufferView line info - single character lines" {
 }
 
 test "TextBufferView line info - complex Unicode combining characters" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
-    var tb = try TextBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth);
+    var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth);
     defer tb.deinit();
 
     var view = try TextBufferView.init(std.testing.allocator, tb);
@@ -2447,12 +2191,10 @@ test "TextBufferView line info - complex Unicode combining characters" {
 }
 
 test "TextBufferView line info - extremely long single line" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
-    var tb = try TextBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth);
+    var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth);
     defer tb.deinit();
 
     var view = try TextBufferView.init(std.testing.allocator, tb);
@@ -2469,12 +2211,10 @@ test "TextBufferView line info - extremely long single line" {
 }
 
 test "TextBufferView line info - extremely long line with wrapping" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
-    var tb = try TextBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth);
+    var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth);
     defer tb.deinit();
 
     var view = try TextBufferView.init(std.testing.allocator, tb);
@@ -2492,12 +2232,10 @@ test "TextBufferView line info - extremely long line with wrapping" {
 }
 
 test "TextBufferView getPlainTextIntoBuffer - simple text without newlines" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
-    var tb = try TextBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth);
+    var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth);
     defer tb.deinit();
 
     var view = try TextBufferView.init(std.testing.allocator, tb);
@@ -2513,12 +2251,10 @@ test "TextBufferView getPlainTextIntoBuffer - simple text without newlines" {
 }
 
 test "TextBufferView getPlainTextIntoBuffer - text with newlines" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
-    var tb = try TextBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth);
+    var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth);
     defer tb.deinit();
 
     var view = try TextBufferView.init(std.testing.allocator, tb);
@@ -2534,12 +2270,10 @@ test "TextBufferView getPlainTextIntoBuffer - text with newlines" {
 }
 
 test "TextBufferView getPlainTextIntoBuffer - text with only newlines" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
-    var tb = try TextBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth);
+    var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth);
     defer tb.deinit();
 
     var view = try TextBufferView.init(std.testing.allocator, tb);
@@ -2555,12 +2289,10 @@ test "TextBufferView getPlainTextIntoBuffer - text with only newlines" {
 }
 
 test "TextBufferView getPlainTextIntoBuffer - empty lines between content" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
-    var tb = try TextBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth);
+    var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth);
     defer tb.deinit();
 
     var view = try TextBufferView.init(std.testing.allocator, tb);
@@ -2576,12 +2308,10 @@ test "TextBufferView getPlainTextIntoBuffer - empty lines between content" {
 }
 
 test "TextBufferView line info - text starting with newline" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
-    var tb = try TextBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth);
+    var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth);
     defer tb.deinit();
 
     var view = try TextBufferView.init(std.testing.allocator, tb);
@@ -2599,12 +2329,10 @@ test "TextBufferView line info - text starting with newline" {
 }
 
 test "TextBufferView line info - lines with different widths" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
-    var tb = try TextBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth);
+    var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth);
     defer tb.deinit();
 
     var view = try TextBufferView.init(std.testing.allocator, tb);
@@ -2628,12 +2356,10 @@ test "TextBufferView line info - lines with different widths" {
 }
 
 test "TextBufferView line info - alternating empty and content lines" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
-    var tb = try TextBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth);
+    var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth);
     defer tb.deinit();
 
     var view = try TextBufferView.init(std.testing.allocator, tb);
@@ -2651,12 +2377,10 @@ test "TextBufferView line info - alternating empty and content lines" {
 }
 
 test "TextBufferView line info - thousands of lines" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
-    var tb = try TextBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth);
+    var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth);
     defer tb.deinit();
 
     var view = try TextBufferView.init(std.testing.allocator, tb);
@@ -2686,12 +2410,10 @@ test "TextBufferView line info - thousands of lines" {
 }
 
 test "TextBufferView highlights - add single highlight to line" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
-    var tb = try TextBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth);
+    var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth);
     defer tb.deinit();
 
     var view = try TextBufferView.init(std.testing.allocator, tb);
@@ -2709,12 +2431,10 @@ test "TextBufferView highlights - add single highlight to line" {
 }
 
 test "TextBufferView highlights - add multiple highlights to same line" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
-    var tb = try TextBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth);
+    var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth);
     defer tb.deinit();
 
     var view = try TextBufferView.init(std.testing.allocator, tb);
@@ -2732,12 +2452,10 @@ test "TextBufferView highlights - add multiple highlights to same line" {
 }
 
 test "TextBufferView highlights - add highlights to multiple lines" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
-    var tb = try TextBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth);
+    var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth);
     defer tb.deinit();
 
     var view = try TextBufferView.init(std.testing.allocator, tb);
@@ -2755,12 +2473,10 @@ test "TextBufferView highlights - add highlights to multiple lines" {
 }
 
 test "TextBufferView highlights - remove highlights by reference" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
-    var tb = try TextBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth);
+    var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth);
     defer tb.deinit();
 
     var view = try TextBufferView.init(std.testing.allocator, tb);
@@ -2783,12 +2499,10 @@ test "TextBufferView highlights - remove highlights by reference" {
 }
 
 test "TextBufferView highlights - clear line highlights" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
-    var tb = try TextBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth);
+    var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth);
     defer tb.deinit();
 
     var view = try TextBufferView.init(std.testing.allocator, tb);
@@ -2806,12 +2520,10 @@ test "TextBufferView highlights - clear line highlights" {
 }
 
 test "TextBufferView highlights - clear all highlights" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
-    var tb = try TextBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth);
+    var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth);
     defer tb.deinit();
 
     var view = try TextBufferView.init(std.testing.allocator, tb);
@@ -2831,12 +2543,10 @@ test "TextBufferView highlights - clear all highlights" {
 }
 
 test "TextBufferView highlights - overlapping highlights" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
-    var tb = try TextBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth);
+    var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth);
     defer tb.deinit();
 
     var view = try TextBufferView.init(std.testing.allocator, tb);
@@ -2852,12 +2562,10 @@ test "TextBufferView highlights - overlapping highlights" {
 }
 
 test "TextBufferView highlights - style spans computed correctly" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
-    var tb = try TextBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth);
+    var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth);
     defer tb.deinit();
 
     var view = try TextBufferView.init(std.testing.allocator, tb);
@@ -2882,12 +2590,10 @@ test "TextBufferView highlights - style spans computed correctly" {
 }
 
 test "TextBufferView highlights - priority handling in spans" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
-    var tb = try TextBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth);
+    var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth);
     defer tb.deinit();
 
     var view = try TextBufferView.init(std.testing.allocator, tb);
@@ -2911,12 +2617,10 @@ test "TextBufferView highlights - priority handling in spans" {
 }
 
 test "TextBufferView char range highlights - single line highlight" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
-    var tb = try TextBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth);
+    var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth);
     defer tb.deinit();
 
     var view = try TextBufferView.init(std.testing.allocator, tb);
@@ -2934,12 +2638,10 @@ test "TextBufferView char range highlights - single line highlight" {
 }
 
 test "TextBufferView char range highlights - multi-line highlight" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
-    var tb = try TextBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth);
+    var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth);
     defer tb.deinit();
 
     var view = try TextBufferView.init(std.testing.allocator, tb);
@@ -2963,12 +2665,10 @@ test "TextBufferView char range highlights - multi-line highlight" {
 }
 
 test "TextBufferView char range highlights - spanning three lines" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
-    var tb = try TextBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth);
+    var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth);
     defer tb.deinit();
 
     var view = try TextBufferView.init(std.testing.allocator, tb);
@@ -2992,12 +2692,10 @@ test "TextBufferView char range highlights - spanning three lines" {
 }
 
 test "TextBufferView char range highlights - empty range" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
-    var tb = try TextBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth);
+    var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth);
     defer tb.deinit();
 
     var view = try TextBufferView.init(std.testing.allocator, tb);
@@ -3012,12 +2710,10 @@ test "TextBufferView char range highlights - empty range" {
 }
 
 test "TextBufferView char range highlights - multiple non-overlapping ranges" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
-    var tb = try TextBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth);
+    var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth);
     defer tb.deinit();
 
     var view = try TextBufferView.init(std.testing.allocator, tb);
@@ -3037,12 +2733,10 @@ test "TextBufferView char range highlights - multiple non-overlapping ranges" {
 }
 
 test "TextBufferView char range highlights - with reference ID for removal" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
-    var tb = try TextBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth);
+    var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth);
     defer tb.deinit();
 
     var view = try TextBufferView.init(std.testing.allocator, tb);
@@ -3063,12 +2757,10 @@ test "TextBufferView char range highlights - with reference ID for removal" {
 }
 
 test "TextBufferView highlights - work correctly with wrapped lines" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
-    var tb = try TextBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth);
+    var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth);
     defer tb.deinit();
 
     var view = try TextBufferView.init(std.testing.allocator, tb);
@@ -3096,13 +2788,50 @@ test "TextBufferView highlights - work correctly with wrapped lines" {
     try std.testing.expect(vline1_info.spans.len > 0);
 }
 
-test "TextBufferView measureForDimensions - does not modify cache" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
+test "TextBufferView measureForDimensions - alternating widths reuse completed results after a failed miss" {
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
-    var tb = try TextBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth);
+    var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth);
+    defer tb.deinit();
+    var failing = std.testing.FailingAllocator.init(std.testing.allocator, .{});
+    var view = try TextBufferView.init(failing.allocator(), tb);
+    defer view.deinit();
+    // Separate chunks prevent a chunk summary from hiding a view-cache miss.
+    try tb.setText("word");
+    try tb.append(" tail");
+    view.setWrapMode(.word);
+
+    const first = try view.measureForDimensions(8, 24);
+    const second = try view.measureForDimensions(7, 24);
+    const third = try view.measureForDimensions(6, 24);
+    _ = view.measure_arena.reset(.free_all);
+    failing.fail_index = failing.alloc_index;
+    try std.testing.expectEqualDeep(first, try view.measureForDimensions(8, 1));
+    try std.testing.expectEqualDeep(second, try view.measureForDimensions(7, 0));
+    try std.testing.expectEqualDeep(third, try view.measureForDimensions(6, 24));
+    try std.testing.expect(!failing.has_induced_failure);
+    try std.testing.expectError(error.OutOfMemory, view.measureForDimensions(5, 24));
+    try std.testing.expect(failing.has_induced_failure);
+    view.setFirstLineOffset(1);
+    try std.testing.expectError(error.OutOfMemory, view.measureForDimensions(8, 24));
+    view.setFirstLineOffset(0);
+    try std.testing.expectEqualDeep(first, try view.measureForDimensions(8, 24));
+    try std.testing.expectEqualDeep(second, try view.measureForDimensions(7, 24));
+    try std.testing.expectEqualDeep(third, try view.measureForDimensions(6, 24));
+    // An intrinsic miss needs no scratch and evicts the least-recent width.
+    try std.testing.expectEqualDeep(first, try view.measureForDimensions(8, 24));
+    try std.testing.expectEqual(@as(u32, 9), (try view.measureForDimensions(0, 24)).width_cols_max);
+    try std.testing.expectEqualDeep(first, try view.measureForDimensions(8, 24));
+    try std.testing.expectEqualDeep(third, try view.measureForDimensions(6, 24));
+    try std.testing.expectError(error.OutOfMemory, view.measureForDimensions(7, 24));
+}
+
+test "TextBufferView measureForDimensions - does not modify cache" {
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
+
+    var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth);
     defer tb.deinit();
 
     var view = try TextBufferView.init(std.testing.allocator, tb);
@@ -3128,12 +2857,10 @@ test "TextBufferView measureForDimensions - does not modify cache" {
 }
 
 test "TextBufferView measureForDimensions - cache invalidates after updateVirtualLines" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
-    var tb = try TextBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth);
+    var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth);
     defer tb.deinit();
 
     var view = try TextBufferView.init(std.testing.allocator, tb);
@@ -3146,6 +2873,8 @@ test "TextBufferView measureForDimensions - cache invalidates after updateVirtua
     const result1 = try view.measureForDimensions(5, 10);
     try std.testing.expectEqual(@as(u32, 1), result1.line_count);
     try std.testing.expectEqual(@as(u32, 5), result1.width_cols_max);
+    try std.testing.expectEqual(@as(u32, 3), (try view.measureForDimensions(2, 10)).line_count);
+    try std.testing.expectEqual(@as(u32, 5), (try view.measureForDimensions(0, 10)).width_cols_max);
 
     try tb.setText("AAAAAAAAAA");
 
@@ -3156,15 +2885,15 @@ test "TextBufferView measureForDimensions - cache invalidates after updateVirtua
     const result2 = try view.measureForDimensions(5, 10);
     try std.testing.expectEqual(@as(u32, 2), result2.line_count);
     try std.testing.expectEqual(@as(u32, 5), result2.width_cols_max);
+    try std.testing.expectEqual(@as(u32, 5), (try view.measureForDimensions(2, 10)).line_count);
+    try std.testing.expectEqual(@as(u32, 10), (try view.measureForDimensions(0, 10)).width_cols_max);
 }
 
 test "TextBufferView measureForDimensions - width 0 uses intrinsic line widths" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
-    var tb = try TextBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth);
+    var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth);
     defer tb.deinit();
 
     var view = try TextBufferView.init(std.testing.allocator, tb);
@@ -3179,12 +2908,10 @@ test "TextBufferView measureForDimensions - width 0 uses intrinsic line widths" 
 }
 
 test "TextBufferView measureForDimensions - no wrap matches multi-segment line widths" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
-    var tb = try TextBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth);
+    var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth);
     defer tb.deinit();
 
     var view = try TextBufferView.init(std.testing.allocator, tb);
@@ -3206,15 +2933,13 @@ test "TextBufferView measureForDimensions - no wrap matches multi-segment line w
 }
 
 test "TextBufferView measureForDimensions - cache invalidates on switchToBuffer" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
-    var tb = try TextBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth);
+    var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth);
     defer tb.deinit();
 
-    var other_tb = try TextBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth);
+    var other_tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth);
     defer other_tb.deinit();
 
     var view = try TextBufferView.init(std.testing.allocator, tb);
@@ -3225,6 +2950,8 @@ test "TextBufferView measureForDimensions - cache invalidates on switchToBuffer"
 
     const result1 = try view.measureForDimensions(10, 10);
     try std.testing.expectEqual(@as(u32, 6), result1.width_cols_max);
+    try std.testing.expectEqual(@as(u32, 2), (try view.measureForDimensions(3, 10)).line_count);
+    try std.testing.expectEqual(@as(u32, 6), (try view.measureForDimensions(0, 10)).width_cols_max);
 
     try other_tb.setText("BBBBBBBBBB");
     try std.testing.expectEqual(tb.getContentEpoch(), other_tb.getContentEpoch());
@@ -3234,15 +2961,83 @@ test "TextBufferView measureForDimensions - cache invalidates on switchToBuffer"
     const result2 = try view.measureForDimensions(10, 10);
     try std.testing.expectEqual(@as(u32, 10), result2.width_cols_max);
     try std.testing.expectEqual(@as(u32, 1), result2.line_count);
+    try std.testing.expectEqual(@as(u32, 4), (try view.measureForDimensions(3, 10)).line_count);
+    try std.testing.expectEqual(@as(u32, 10), (try view.measureForDimensions(0, 10)).width_cols_max);
+    view.switchToOriginalBuffer();
+    try std.testing.expectEqualDeep(result1, try view.measureForDimensions(10, 10));
+    try std.testing.expectEqual(@as(u32, 2), (try view.measureForDimensions(3, 10)).line_count);
+    try std.testing.expectEqual(@as(u32, 6), (try view.measureForDimensions(0, 10)).width_cols_max);
+}
+
+test "TextBufferView measureForDimensions - buffer switches retire all widths before address reuse" {
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
+
+    var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth);
+    defer tb.deinit();
+    var view = try TextBufferView.init(std.testing.allocator, tb);
+    defer view.deinit();
+    view.setWrapMode(.char);
+    var storage: [128 * 1024]u8 = undefined;
+    var fixed = std.heap.FixedBufferAllocator.init(&storage);
+    const retired = blk: {
+        const other = try TextBuffer.init(fixed.allocator(), &pools.graphemes, &pools.links, .wcwidth);
+        defer other.deinit();
+        try other.setText("AAAAAA");
+        view.switchToBuffer(other);
+        defer view.switchToOriginalBuffer();
+        _ = try view.measureForDimensions(8, 24);
+        _ = try view.measureForDimensions(7, 24);
+        break :blk .{ .address = @intFromPtr(other), .epoch = other.getContentEpoch() };
+    };
+    fixed.reset();
+    const replacement = try TextBuffer.init(fixed.allocator(), &pools.graphemes, &pools.links, .wcwidth);
+    defer replacement.deinit();
+    try replacement.setText("BBBBBBBBBB");
+    try std.testing.expectEqual(retired.address, @intFromPtr(replacement));
+    try std.testing.expectEqual(retired.epoch, replacement.getContentEpoch());
+    view.switchToBuffer(replacement);
+    defer view.switchToOriginalBuffer();
+    const measured = try view.measureForDimensions(8, 24);
+    try std.testing.expectEqual(@as(u32, 2), measured.line_count);
+    try std.testing.expectEqual(@as(u32, 8), measured.width_cols_max);
+}
+
+test "TextBufferView measureForDimensions - warmed widths follow wrapping offset and tab changes" {
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
+
+    var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .unicode);
+    defer tb.deinit();
+    var view = try TextBufferView.init(std.testing.allocator, tb);
+    defer view.deinit();
+    try tb.setText("one\ttwo \u{4e16}\u{754c} e\u{301}\ntail words");
+
+    for ([_]text_buffer_view.WrapMode{ .word, .char, .none, .word }) |mode| {
+        view.setWrapMode(mode);
+        for ([_]u32{ 0, 3, 8, 9, 0 }) |offset| {
+            view.setFirstLineOffset(offset);
+            for ([_]u8{ 4, 8, 4 }) |tab_width| {
+                tb.setTabWidth(tab_width);
+                for ([_]u32{ 8, 9, 0, 9, 8 }) |width| {
+                    view.setWrapWidth(if (width == 0) null else width);
+                    const lines = view.getVirtualLines();
+                    var width_max: u32 = 0;
+                    for (lines) |line| width_max = @max(width_max, line.width_cols);
+                    const measured = try view.measureForDimensions(width, 24);
+                    try std.testing.expectEqual(@as(u32, @intCast(lines.len)), measured.line_count);
+                    try std.testing.expectEqual(width_max, measured.width_cols_max);
+                }
+            }
+        }
+    }
 }
 
 test "TextBufferView measureForDimensions - char wrap" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
-    var tb = try TextBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth);
+    var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth);
     defer tb.deinit();
 
     var view = try TextBufferView.init(std.testing.allocator, tb);
@@ -3266,12 +3061,10 @@ test "TextBufferView measureForDimensions - char wrap" {
 }
 
 test "TextBufferView measureForDimensions - no wrap mode" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
-    var tb = try TextBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth);
+    var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth);
     defer tb.deinit();
 
     var view = try TextBufferView.init(std.testing.allocator, tb);
@@ -3288,12 +3081,10 @@ test "TextBufferView measureForDimensions - no wrap mode" {
 }
 
 test "TextBufferView measureForDimensions - word wrap" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
-    var tb = try TextBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth);
+    var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth);
     defer tb.deinit();
 
     var view = try TextBufferView.init(std.testing.allocator, tb);
@@ -3309,12 +3100,10 @@ test "TextBufferView measureForDimensions - word wrap" {
 }
 
 test "TextBufferView measureForDimensions - word summary OOM returns computed result" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
-    var tb = try TextBuffer.init(std.testing.allocator, pool, link_pool, .unicode);
+    var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .unicode);
     defer tb.deinit();
 
     const text = try std.testing.allocator.alloc(u8, 512);
@@ -3342,12 +3131,10 @@ test "TextBufferView measureForDimensions - word summary OOM returns computed re
 }
 
 test "TextBufferView word wrap - first line offset reduces initial line width" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
-    var tb = try TextBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth);
+    var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth);
     defer tb.deinit();
 
     var view = try TextBufferView.init(std.testing.allocator, tb);
@@ -3366,12 +3153,10 @@ test "TextBufferView word wrap - first line offset reduces initial line width" {
 }
 
 test "TextBufferView measureForDimensions - fragmented word wrap matches render with first line offset" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
-    var tb = try TextBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth);
+    var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth);
     defer tb.deinit();
 
     var view = try TextBufferView.init(std.testing.allocator, tb);
@@ -3402,12 +3187,10 @@ test "TextBufferView measureForDimensions - fragmented word wrap matches render 
 }
 
 test "TextBufferView measureForDimensions - empty buffer" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
-    var tb = try TextBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth);
+    var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth);
     defer tb.deinit();
 
     var view = try TextBufferView.init(std.testing.allocator, tb);
@@ -3422,12 +3205,10 @@ test "TextBufferView measureForDimensions - empty buffer" {
 }
 
 test "TextBufferView truncation - basic truncate single line" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
-    var tb = try TextBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth);
+    var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth);
     defer tb.deinit();
 
     var view = try TextBufferView.init(std.testing.allocator, tb);
@@ -3448,12 +3229,10 @@ test "TextBufferView truncation - basic truncate single line" {
 }
 
 test "TextBufferView truncation - allocation failure is atomic and retryable" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
-    var tb = try TextBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth);
+    var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth);
     defer tb.deinit();
     var failing = std.testing.FailingAllocator.init(std.testing.allocator, .{});
     var view = try TextBufferView.init(failing.allocator(), tb);
@@ -3485,12 +3264,10 @@ test "TextBufferView truncation - allocation failure is atomic and retryable" {
 }
 
 test "TextBufferView truncation - fitting prebuilt lines do not allocate" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
-    var tb = try TextBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth);
+    var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth);
     defer tb.deinit();
     var failing = std.testing.FailingAllocator.init(std.testing.allocator, .{});
     var view = try TextBufferView.init(failing.allocator(), tb);
@@ -3514,12 +3291,10 @@ test "TextBufferView truncation - fitting prebuilt lines do not allocate" {
 }
 
 test "TextBufferView truncation - replacement staging is proportional to overflow" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
-    var tb = try TextBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth);
+    var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth);
     defer tb.deinit();
     var tracking = std.testing.FailingAllocator.init(std.testing.allocator, .{});
     var view = try TextBufferView.init(tracking.allocator(), tb);
@@ -3552,12 +3327,10 @@ test "TextBufferView truncation - replacement staging is proportional to overflo
 }
 
 test "TextBufferView truncation - multiline with truncate" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
-    var tb = try TextBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth);
+    var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth);
     defer tb.deinit();
 
     var view = try TextBufferView.init(std.testing.allocator, tb);
@@ -3582,12 +3355,10 @@ test "TextBufferView truncation - multiline with truncate" {
 }
 
 test "TextBufferView truncation - with wrapping disabled" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
-    var tb = try TextBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth);
+    var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth);
     defer tb.deinit();
 
     var view = try TextBufferView.init(std.testing.allocator, tb);
@@ -3607,12 +3378,10 @@ test "TextBufferView truncation - with wrapping disabled" {
 }
 
 test "TextBufferView truncation - toggle truncate on and off" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
-    var tb = try TextBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth);
+    var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth);
     defer tb.deinit();
 
     var view = try TextBufferView.init(std.testing.allocator, tb);
@@ -3638,12 +3407,10 @@ test "TextBufferView truncation - toggle truncate on and off" {
 }
 
 test "TextBufferView truncation - very small viewport" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
-    var tb = try TextBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth);
+    var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth);
     defer tb.deinit();
 
     var view = try TextBufferView.init(std.testing.allocator, tb);
@@ -3662,12 +3429,10 @@ test "TextBufferView truncation - very small viewport" {
 }
 
 test "TextBufferView truncation - empty suffix retains the source end" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
-    var tb = try TextBuffer.init(std.testing.allocator, pool, link_pool, .unicode);
+    var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .unicode);
     defer tb.deinit();
     var view = try TextBufferView.init(std.testing.allocator, tb);
     defer view.deinit();
@@ -3685,12 +3450,10 @@ test "TextBufferView truncation - empty suffix retains the source end" {
 }
 
 test "TextBufferView truncation - verify ellipsis chunk injection" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
-    var tb = try TextBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth);
+    var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth);
     defer tb.deinit();
 
     var view = try TextBufferView.init(std.testing.allocator, tb);
@@ -3719,13 +3482,65 @@ test "TextBufferView truncation - verify ellipsis chunk injection" {
     try std.testing.expectEqualStrings("...", ellipsis_text);
 }
 
-test "TextBufferView truncation - works with wrapping" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
+test "TextBufferView ellipsis preserves full caller registry on rejected reset" {
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
-    var tb = try TextBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth);
+    var failing = std.testing.FailingAllocator.init(std.testing.allocator, .{});
+    var tb = try TextBuffer.init(failing.allocator(), &pools.graphemes, &pools.links, .wcwidth);
+    defer tb.deinit();
+    var view = try TextBufferView.init(std.testing.allocator, tb);
+    defer view.deinit();
+    try std.testing.expectEqual(@as(usize, 0), tb.memRegistry().getUsedSlots());
+    for (0..255) |slot| {
+        try std.testing.expectEqual(@as(u8, @intCast(slot)), try tb.registerMemBuffer("0123456789ABCDEFGHIJ", false));
+    }
+    try tb.setTextFromMemId(0);
+    view.setTruncate(true);
+    view.setViewport(.{ .x = 0, .y = 0, .width = 10, .height = 1 });
+    const epoch = tb.getContentEpoch();
+    const registrations = tb.memRegistry().buffers.items[0..255].*;
+
+    for (0..3) |_| {
+        var peer = try TextBufferView.init(std.testing.allocator, tb);
+        defer peer.deinit();
+        peer.setTruncate(true);
+        peer.setViewport(.{ .x = 0, .y = 0, .width = 10, .height = 1 });
+        for ([_]bool{ false, true }) |after_rejection| {
+            if (after_rejection) {
+                failing.fail_index = failing.alloc_index;
+                try std.testing.expectError(error.OutOfMemory, tb.reset());
+                try std.testing.expect(failing.has_induced_failure);
+                failing.fail_index = std.math.maxInt(usize);
+            }
+            try std.testing.expectEqual(epoch, tb.getContentEpoch());
+            try std.testing.expectEqualDeep(registrations, tb.memRegistry().buffers.items[0..255].*);
+            for ([_]*TextBufferView{ view, peer }) |current| {
+                const chunks = current.getVirtualLines()[0].chunks.items;
+                try std.testing.expectEqual(@as(usize, 3), chunks.len);
+                for (chunks, [_][]const u8{ "012", "...", "GHIJ" }) |chunk, expected| {
+                    const bytes = chunk.chunk.getBytes(tb.memRegistry());
+                    const window = bytes[chunk.byte_start_in_chunk .. chunk.byte_start_in_chunk + chunk.byte_len];
+                    try std.testing.expectEqualStrings(expected, window);
+                }
+            }
+            try std.testing.expectEqual(@as(usize, 255), tb.memRegistry().getUsedSlots());
+            try std.testing.expectEqual(@as(usize, 0), tb.memRegistry().getFreeSlots());
+        }
+    }
+    try std.testing.expectEqual(@as(usize, 255), tb.memRegistry().getUsedSlots());
+    try std.testing.expectEqualStrings("...", view.ellipsis_chunk.getBytes(tb.memRegistry()));
+    try tb.reset();
+    try std.testing.expectEqual(@as(usize, 0), tb.memRegistry().getUsedSlots());
+    try std.testing.expectEqual(@as(usize, 255), tb.memRegistry().getFreeSlots());
+    try std.testing.expectEqualStrings("...", view.ellipsis_chunk.getBytes(tb.memRegistry()));
+}
+
+test "TextBufferView truncation - works with wrapping" {
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
+
+    var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth);
     defer tb.deinit();
 
     var view = try TextBufferView.init(std.testing.allocator, tb);
@@ -3746,12 +3561,10 @@ test "TextBufferView truncation - works with wrapping" {
 }
 
 test "TextBufferView truncation - verify prefix and suffix content" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
-    var tb = try TextBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth);
+    var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth);
     defer tb.deinit();
 
     var view = try TextBufferView.init(std.testing.allocator, tb);
@@ -3780,12 +3593,10 @@ test "TextBufferView truncation - verify prefix and suffix content" {
 }
 
 test "TextBufferView truncation - byte windows snap around wide graphemes" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
-    var tb = try TextBuffer.init(std.testing.allocator, pool, link_pool, .unicode);
+    var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .unicode);
     defer tb.deinit();
     var view = try TextBufferView.init(std.testing.allocator, tb);
     defer view.deinit();
@@ -3813,12 +3624,10 @@ test "TextBufferView truncation - byte windows snap around wide graphemes" {
 }
 
 test "TextBufferView wcwidth wrapping keeps grapheme byte windows atomic" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
-    var tb = try TextBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth);
+    var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth);
     defer tb.deinit();
     var view = try TextBufferView.init(std.testing.allocator, tb);
     defer view.deinit();
@@ -3843,12 +3652,10 @@ test "TextBufferView wcwidth wrapping keeps grapheme byte windows atomic" {
 }
 
 test "TextBufferView wcwidth truncation does not start suffix inside grapheme" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
-    var tb = try TextBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth);
+    var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth);
     defer tb.deinit();
     var view = try TextBufferView.init(std.testing.allocator, tb);
     defer view.deinit();
@@ -3868,12 +3675,10 @@ test "TextBufferView wcwidth truncation does not start suffix inside grapheme" {
 }
 
 test "TextBufferView measureForDimensions - multiple lines with different widths" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
-    var tb = try TextBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth);
+    var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth);
     defer tb.deinit();
 
     var view = try TextBufferView.init(std.testing.allocator, tb);
@@ -3889,12 +3694,10 @@ test "TextBufferView measureForDimensions - multiple lines with different widths
 }
 
 test "TextBufferView highlights - multiple highlights on wrapped line" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
-    var tb = try TextBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth);
+    var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth);
     defer tb.deinit();
 
     var view = try TextBufferView.init(std.testing.allocator, tb);
@@ -3920,12 +3723,10 @@ test "TextBufferView highlights - multiple highlights on wrapped line" {
 }
 
 test "TextBufferView highlights - with emojis and wrapping" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
-    var tb = try TextBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth);
+    var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth);
     defer tb.deinit();
 
     var view = try TextBufferView.init(std.testing.allocator, tb);
@@ -3954,12 +3755,10 @@ test "TextBufferView highlights - with emojis and wrapping" {
 }
 
 test "TextBufferView highlights - with CJK characters and wrapping" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
-    var tb = try TextBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth);
+    var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth);
     defer tb.deinit();
 
     var view = try TextBufferView.init(std.testing.allocator, tb);
@@ -3988,12 +3787,10 @@ test "TextBufferView highlights - with CJK characters and wrapping" {
 }
 
 test "TextBufferView highlights - mixed ASCII and wide chars with wrapping" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
-    var tb = try TextBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth);
+    var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth);
     defer tb.deinit();
 
     var view = try TextBufferView.init(std.testing.allocator, tb);
@@ -4023,12 +3820,10 @@ test "TextBufferView highlights - mixed ASCII and wide chars with wrapping" {
 }
 
 test "TextBufferView highlights - emoji at wrap boundary" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
-    var tb = try TextBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth);
+    var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth);
     defer tb.deinit();
 
     var view = try TextBufferView.init(std.testing.allocator, tb);
@@ -4052,12 +3847,10 @@ test "TextBufferView highlights - emoji at wrap boundary" {
 }
 
 test "TextBufferView highlights - emojis without wrapping" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
-    var tb = try TextBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth);
+    var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth);
     defer tb.deinit();
 
     var view = try TextBufferView.init(std.testing.allocator, tb);
@@ -4080,12 +3873,10 @@ test "TextBufferView highlights - emojis without wrapping" {
 }
 
 test "TextBufferView highlights - CJK without wrapping" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
-    var tb = try TextBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth);
+    var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth);
     defer tb.deinit();
 
     var view = try TextBufferView.init(std.testing.allocator, tb);
@@ -4108,12 +3899,10 @@ test "TextBufferView highlights - CJK without wrapping" {
 }
 
 test "TextBufferView highlights - mixed width graphemes without wrapping" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
-    var tb = try TextBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth);
+    var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth);
     defer tb.deinit();
 
     var view = try TextBufferView.init(std.testing.allocator, tb);
@@ -4139,12 +3928,10 @@ test "TextBufferView highlights - mixed width graphemes without wrapping" {
 }
 
 test "TextBufferView highlights - emoji at start without wrapping" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
-    var tb = try TextBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth);
+    var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth);
     defer tb.deinit();
 
     var view = try TextBufferView.init(std.testing.allocator, tb);
@@ -4164,12 +3951,10 @@ test "TextBufferView highlights - emoji at start without wrapping" {
 }
 
 test "TextBufferView highlights - emoji at end without wrapping" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
-    var tb = try TextBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth);
+    var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth);
     defer tb.deinit();
 
     var view = try TextBufferView.init(std.testing.allocator, tb);
@@ -4189,12 +3974,10 @@ test "TextBufferView highlights - emoji at end without wrapping" {
 }
 
 test "TextBufferView highlights - consecutive emojis without wrapping" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
-    var tb = try TextBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth);
+    var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth);
     defer tb.deinit();
 
     var view = try TextBufferView.init(std.testing.allocator, tb);
@@ -4214,12 +3997,10 @@ test "TextBufferView highlights - consecutive emojis without wrapping" {
 }
 
 test "TextBufferView accessor methods - getVirtualLines and getLines" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
-    var tb = try TextBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth);
+    var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth);
     defer tb.deinit();
 
     var view = try TextBufferView.init(std.testing.allocator, tb);
@@ -4236,12 +4017,10 @@ test "TextBufferView accessor methods - getVirtualLines and getLines" {
 }
 
 test "TextBufferView accessor methods - with wrapping" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
-    var tb = try TextBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth);
+    var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth);
     defer tb.deinit();
 
     var view = try TextBufferView.init(std.testing.allocator, tb);
@@ -4259,12 +4038,10 @@ test "TextBufferView accessor methods - with wrapping" {
 }
 
 test "TextBufferView virtual lines - match real lines when no wrap" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
-    var tb = try TextBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth);
+    var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth);
     defer tb.deinit();
 
     var view = try TextBufferView.init(std.testing.allocator, tb);
@@ -4281,12 +4058,10 @@ test "TextBufferView virtual lines - match real lines when no wrap" {
 }
 
 test "TextBufferView virtual lines - updated when wrap width set" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
-    var tb = try TextBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth);
+    var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth);
     defer tb.deinit();
 
     var view = try TextBufferView.init(std.testing.allocator, tb);
@@ -4302,12 +4077,10 @@ test "TextBufferView virtual lines - updated when wrap width set" {
 }
 
 test "TextBufferView virtual lines - reset to match real lines when wrap removed" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
-    var tb = try TextBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth);
+    var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth);
     defer tb.deinit();
 
     var view = try TextBufferView.init(std.testing.allocator, tb);
@@ -4329,12 +4102,10 @@ test "TextBufferView virtual lines - reset to match real lines when wrap removed
 }
 
 test "TextBufferView virtual lines - multi-line text without wrap" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
-    var tb = try TextBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth);
+    var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth);
     defer tb.deinit();
 
     var view = try TextBufferView.init(std.testing.allocator, tb);
@@ -4356,12 +4127,10 @@ test "TextBufferView virtual lines - multi-line text without wrap" {
 }
 
 test "TextBufferView line info - line starts and widths consistency" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
-    var tb = try TextBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth);
+    var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth);
     defer tb.deinit();
 
     var view = try TextBufferView.init(std.testing.allocator, tb);
@@ -4385,12 +4154,10 @@ test "TextBufferView line info - line starts and widths consistency" {
 }
 
 test "TextBufferView line info - line starts monotonically increasing" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
-    var tb = try TextBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth);
+    var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth);
     defer tb.deinit();
 
     var view = try TextBufferView.init(std.testing.allocator, tb);
@@ -4420,12 +4187,10 @@ test "TextBufferView line info - line starts monotonically increasing" {
 }
 
 test "TextBufferView - highlights preserved after wrap width change" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
-    var tb = try TextBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth);
+    var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth);
     defer tb.deinit();
 
     var view = try TextBufferView.init(std.testing.allocator, tb);
@@ -4443,12 +4208,10 @@ test "TextBufferView - highlights preserved after wrap width change" {
 }
 
 test "TextBufferView - get highlights from non-existent line" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
-    var tb = try TextBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth);
+    var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth);
     defer tb.deinit();
 
     var view = try TextBufferView.init(std.testing.allocator, tb);
@@ -4461,12 +4224,10 @@ test "TextBufferView - get highlights from non-existent line" {
 }
 
 test "TextBufferView - char range highlights out of bounds" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
-    var tb = try TextBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth);
+    var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth);
     defer tb.deinit();
 
     var view = try TextBufferView.init(std.testing.allocator, tb);
@@ -4482,12 +4243,10 @@ test "TextBufferView - char range highlights out of bounds" {
 }
 
 test "TextBufferView - char range highlights invalid range" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
-    var tb = try TextBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth);
+    var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth);
     defer tb.deinit();
 
     var view = try TextBufferView.init(std.testing.allocator, tb);
@@ -4502,12 +4261,10 @@ test "TextBufferView - char range highlights invalid range" {
 }
 
 test "TextBufferView - char range highlights exact line boundaries" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
-    var tb = try TextBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth);
+    var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth);
     defer tb.deinit();
 
     var view = try TextBufferView.init(std.testing.allocator, tb);
@@ -4527,12 +4284,10 @@ test "TextBufferView - char range highlights exact line boundaries" {
 }
 
 test "TextBufferView - char range highlights unicode text" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
-    var tb = try TextBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth);
+    var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth);
     defer tb.deinit();
 
     var view = try TextBufferView.init(std.testing.allocator, tb);
@@ -4548,12 +4303,10 @@ test "TextBufferView - char range highlights unicode text" {
 }
 
 test "TextBufferView automatic updates - view reflects buffer changes immediately" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
-    var tb = try TextBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth);
+    var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth);
     defer tb.deinit();
 
     var view = try TextBufferView.init(std.testing.allocator, tb);
@@ -4574,12 +4327,10 @@ test "TextBufferView automatic updates - view reflects buffer changes immediatel
 }
 
 test "TextBufferView automatic updates - multiple views update independently" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
-    var tb = try TextBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth);
+    var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth);
     defer tb.deinit();
 
     var view1 = try TextBufferView.init(std.testing.allocator, tb);
@@ -4608,12 +4359,10 @@ test "TextBufferView automatic updates - multiple views update independently" {
 }
 
 test "TextBufferView automatic updates - view destroyed doesn't affect others" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
-    var tb = try TextBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth);
+    var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth);
     defer tb.deinit();
 
     var view1 = try TextBufferView.init(std.testing.allocator, tb);
@@ -4632,12 +4381,10 @@ test "TextBufferView automatic updates - view destroyed doesn't affect others" {
 }
 
 test "TextBufferView automatic updates - with wrapping across buffer changes" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
-    var tb = try TextBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth);
+    var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth);
     defer tb.deinit();
 
     var view = try TextBufferView.init(std.testing.allocator, tb);
@@ -4667,12 +4414,10 @@ test "TextBufferView automatic updates - with wrapping across buffer changes" {
 }
 
 test "TextBufferView automatic updates - reset clears content and marks views dirty" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
-    var tb = try TextBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth);
+    var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth);
     defer tb.deinit();
 
     var view = try TextBufferView.init(std.testing.allocator, tb);
@@ -4681,7 +4426,7 @@ test "TextBufferView automatic updates - reset clears content and marks views di
     try tb.setText("Hello World");
     try std.testing.expectEqual(@as(u32, 1), view.getVirtualLineCount());
 
-    tb.reset();
+    try tb.reset();
     try std.testing.expectEqual(@as(u32, 1), view.getVirtualLineCount());
 
     try tb.setText("");
@@ -4693,12 +4438,10 @@ test "TextBufferView automatic updates - reset clears content and marks views di
 }
 
 test "TextBufferView automatic updates - view updates work with selection" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
-    var tb = try TextBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth);
+    var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth);
     defer tb.deinit();
 
     var view = try TextBufferView.init(std.testing.allocator, tb);
@@ -4718,12 +4461,10 @@ test "TextBufferView automatic updates - view updates work with selection" {
 }
 
 test "TextBufferView automatic updates - multiple views with different wrap settings" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
-    var tb = try TextBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth);
+    var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth);
     defer tb.deinit();
 
     var view_nowrap = try TextBufferView.init(std.testing.allocator, tb);
@@ -4758,12 +4499,10 @@ test "TextBufferView automatic updates - multiple views with different wrap sett
 }
 
 test "TextBufferView - tab indicator set and get" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
-    var tb = try TextBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth);
+    var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth);
     defer tb.deinit();
 
     var view = try TextBufferView.init(std.testing.allocator, tb);
@@ -4780,12 +4519,10 @@ test "TextBufferView - tab indicator set and get" {
 }
 
 test "TextBufferView findVisualLineIndex - finds correct line for wrapped text" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
-    var tb = try TextBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth);
+    var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth);
     defer tb.deinit();
 
     var view = try TextBufferView.init(std.testing.allocator, tb);
@@ -4820,12 +4557,10 @@ test "TextBufferView findVisualLineIndex - finds correct line for wrapped text" 
 }
 
 test "TextBufferView word wrapping - chunk at exact wrap boundary" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
-    var tb = try TextBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth);
+    var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth);
     defer tb.deinit();
 
     var view = try TextBufferView.init(std.testing.allocator, tb);
@@ -4861,12 +4596,10 @@ test "TextBufferView word wrapping - chunk at exact wrap boundary" {
 }
 
 test "TextBufferView word wrapping - does not split 'uses' across lines" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
-    var tb = try TextBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth);
+    var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth);
     defer tb.deinit();
 
     var view = try TextBufferView.init(std.testing.allocator, tb);

@@ -33,9 +33,12 @@ import {
 
 const renderer = await createCliRenderer()
 
-const syntaxStyle = SyntaxStyle.fromStyles({
-  default: { fg: RGBA.fromHex("#E6EDF3") },
-})
+const syntaxStyle = SyntaxStyle.fromStyles(
+  {
+    default: { fg: RGBA.fromHex("#E6EDF3") },
+  },
+  renderer.nativeScene!,
+)
 
 const code = new CodeRenderable(renderer, {
   id: "code",

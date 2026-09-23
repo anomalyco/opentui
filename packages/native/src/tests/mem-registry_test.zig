@@ -295,6 +295,45 @@ test "MemRegistry - unregister basic" {
     try std.testing.expect(registry.get(id) == null);
 }
 
+test "MemRegistry - cancel latest registration without allocation" {
+    for ([_]?u8{ null, 1, 3 }) |reuse_id| {
+        for ([_]bool{ false, true }) |owned| {
+            var failing = std.testing.FailingAllocator.init(std.testing.allocator, .{});
+            var registry = MemRegistry.init(failing.allocator());
+            defer registry.deinit();
+            const kept = try failing.allocator().dupe(u8, "kept");
+            _ = try registry.register(kept, true);
+            for (0..3) |_| _ = try registry.register("unused", false);
+            if (reuse_id) |id| {
+                try registry.unregister(2);
+                try registry.unregister(id);
+            }
+            const old_count = registry.buffers.items.len;
+            const old_free_count = registry.free_slots.items.len;
+            var old_free: [2]u8 = undefined;
+            @memcpy(old_free[0..old_free_count], registry.free_slots.items);
+            const text = if (owned) try failing.allocator().dupe(u8, "provisional") else "provisional";
+            const id = try registry.register(text, owned);
+            const old_freed_bytes = failing.freed_bytes;
+            failing.fail_index = failing.alloc_index;
+            failing.resize_fail_index = failing.resize_index;
+
+            registry.cancelLastRegistration(id, old_count);
+
+            try std.testing.expect(!failing.has_induced_failure);
+            try std.testing.expectEqual(failing.fail_index, failing.alloc_index);
+            try std.testing.expectEqual(failing.resize_fail_index, failing.resize_index);
+            try std.testing.expectEqual(old_freed_bytes + @as(usize, if (owned) text.len else 0), failing.freed_bytes);
+            try std.testing.expectEqual(old_count, registry.buffers.items.len);
+            try std.testing.expectEqualSlices(u8, old_free[0..old_free_count], registry.free_slots.items);
+            try std.testing.expect(registry.get(id) == null);
+            try std.testing.expectEqualStrings("kept", registry.get(0).?);
+            try std.testing.expectEqual(id, try registry.register("retry", false));
+            try std.testing.expect(!failing.has_induced_failure);
+        }
+    }
+}
+
 test "MemRegistry - unregister owned buffer frees memory" {
     var registry = MemRegistry.init(std.testing.allocator);
     defer registry.deinit();
