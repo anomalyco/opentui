@@ -843,8 +843,14 @@ pub const Scene = struct {
             if (try self.continuePaint(objects, cli)) |request_value| return request_value;
             return self.finishPaint(cli, prefix.membership_epoch, false);
         }
-        const restart_feedback = previous != null and previous.?.kind == api.OT_SCENE_FRAME_YIELD and
-            active.preparing == .none and active.feedback_work_remaining == 0 and
+        const yielded = previous != null and previous.?.kind == api.OT_SCENE_FRAME_YIELD;
+        if (yielded and active.bounded_work and (self.preparation_dirty or try self.needsSolve(cli, root))) {
+            // A mutation accepted at a yield restarts preparation once. The restarted work
+            // runs without further yields, so steady mutations cannot starve the frame.
+            active.bounded_work = false;
+            active.remaining_work = std.math.maxInt(u32);
+        }
+        const restart_feedback = yielded and active.preparing == .none and active.feedback_work_remaining == 0 and
             (self.preparation_dirty or try self.needsSolve(cli, root));
         if (active.rounds == 0 or active.preparing != .none or restart_feedback) {
             if (!try self.prepareRound(objects, cli, root, reusable_work)) return self.request(root.?.scene_node.?, api.OT_SCENE_FRAME_YIELD);

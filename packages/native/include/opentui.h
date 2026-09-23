@@ -561,7 +561,9 @@ ot_status ot_scene_set_hooks(ot_context *, const ot_handle *node, const ot_scene
  * requests. max_work_items is a positive quota for preparation node visits,
  * candidate-view preparation, and feedback records. Hook replies clamp remaining
  * work without replenishing it; an exact YIELD reply starts another work quota.
- * Zero rejects without consuming a request.
+ * Zero rejects without consuming a request. A mutation accepted at a YIELD
+ * that dirties preparation restarts it once; the restarted work runs without
+ * further yields, so steady mutations cannot exhaust max_layout_rounds.
  * YIELD has kind 6, names the root, and requires the exact returned ticket; num,
  * width, height, and hook_generation are zero. It grants no buffer access or
  * commit authority and does not count against max_host_requests. Request IDs
