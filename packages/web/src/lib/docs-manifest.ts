@@ -770,7 +770,6 @@ export const DOC_MANIFEST = {
       "ResourceContext",
       "NativeResourceOwner",
       "BufferAccess",
-      "nativeScenePaintBudget",
       "nativeSceneWorkBudget",
     ],
     related: [

@@ -137,7 +137,6 @@ export class NativeScene {
       CliRenderer,
       "root" | "nextRenderBuffer" | "isDestroyed" | "controlState" | "unregisterLifecyclePass"
     >,
-    private readonly paintBudget?: number,
     private readonly workBudget?: number,
   ) {
     this.yogaHost = driver.renderLib.getYogaHost()
@@ -705,7 +704,6 @@ export class NativeScene {
           this.driver.session,
           request,
           options,
-          this.paintBudget,
           this.workBudget,
         )
         request.geometryRevision = geometryRevision

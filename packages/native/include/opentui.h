@@ -549,42 +549,28 @@ ot_status ot_scene_set_hooks(ot_context *, const ot_handle *node, const ot_scene
  * attempt; rejection preserves it. Suspension validates terminal phase first
  * and cancels only a preparation/feedback YIELD, without discarding admitted output.
  * During a synchronous paint-hook pause, resize requalifies storage without
- * rebuilding membership. During paint pauses, including paint YIELD, setup and
- * suspend retain the ticket and existing scopes but prevent new access or
- * continuation while terminal-inactive.
+ * rebuilding membership. During paint pauses, setup and suspend retain the
+ * ticket and existing scopes but prevent new access or continuation while
+ * terminal-inactive.
  * Root destruction retains the current scope until cancellation, but cannot resume
  * painting. After DONE, destroying nodes
  * or the root leaves painted cells and capture intact without repainting. Commit,
  * frame or Session cancellation, and owner teardown still end draft access.
  *
- * max_paint_members is a positive quota per run between scheduling yields.
- * Each member costs one unit when completed or skipped, including destroyed or
- * stale members. Hook replies
- * do not replenish the quota. Painting starts with max_paint_members units; an
- * exact YIELD acknowledgement replenishes it. A changed maximum on a hook reply
- * clamps the remaining units, including the current member, without adding any.
- * Each call completes or skips at most max_paint_members members. Zero rejects
- * without consuming a request.
- * YIELD pauses only between complete members, never within a node's before/self/
- * after/hit sequence. Its node names the root; num, width, height, and
- * hook_generation are zero. Acknowledge the exact ticket to continue, or cancel
- * the frame. YIELD grants neither buffer access nor commit authority and does not
- * count against max_host_requests. Request IDs increase across both hooks and YIELD.
- * Prepared membership is fixed; partial hits and frame stats are not published.
- *
- * max_work_items is a positive quota for preparation node visits, candidate-view
- * preparation, and feedback records, independent of the paint-member quota.
- * Hook replies clamp remaining work without replenishing it; an exact YIELD reply
- * starts another work quota. Zero rejects without consuming a request.
- * Preparation YIELD also has kind 6, names the root, and requires the exact returned
- * ticket. It grants no buffer access or commit authority. Cancellation and stale
- * ticket checks are unchanged. UINT32_MAX selects synchronous preparation only on
- * begin or an exact YIELD reply. A hook reply cannot switch an already-bounded run
- * to uncharged preparation. Using UINT32_MAX for both quotas from the start keeps
- * preparation and painting synchronous without scheduling yields.
- * Quotas bound counted work items and paint members, not cells or elapsed time.
- * Yoga, allocation/reservation, final paint-list preparation and publication,
- * per-member view/cell work, and output encoding remain synchronous.
+ * Painting never yields: once painting starts, it completes within host hook
+ * requests. max_work_items is a positive quota for preparation node visits,
+ * candidate-view preparation, and feedback records. Hook replies clamp remaining
+ * work without replenishing it; an exact YIELD reply starts another work quota.
+ * Zero rejects without consuming a request.
+ * YIELD has kind 6, names the root, and requires the exact returned ticket; num,
+ * width, height, and hook_generation are zero. It grants no buffer access or
+ * commit authority and does not count against max_host_requests. Request IDs
+ * increase across both hooks and YIELD. UINT32_MAX selects synchronous
+ * preparation only on begin or an exact YIELD reply. A hook reply cannot switch
+ * an already-bounded run to uncharged preparation. The quota bounds counted work
+ * items, not cells or elapsed time. Yoga, allocation/reservation, final
+ * paint-list preparation and publication, painting, and output encoding remain
+ * synchronous.
  *
  * Geometry observations are produced after phase publication.
  * Geometry is not ticket authority and must not be echoed in acknowledgements.
@@ -596,8 +582,8 @@ ot_status ot_scene_set_hooks(ot_context *, const ot_handle *node, const ot_scene
  * All buffers are borrowed only for this call. previous may alias out_request;
  * the two output records must be distinct. */
 ot_status ot_scene_frame_step_with_geometry(ot_context *, const ot_handle *session,
-    const ot_scene_frame_request *previous, const ot_scene_frame_options *, uint32_t max_paint_members,
-    uint32_t max_work_items, ot_scene_frame_request *out_request, ot_scene_frame_geometry *out_geometry);
+    const ot_scene_frame_request *previous, const ot_scene_frame_options *, uint32_t max_work_items,
+    ot_scene_frame_request *out_request, ot_scene_frame_geometry *out_geometry);
 /* Cancel preparation or a retained painted draft. A stale frame ID rejects without
  * cancelling the active frame. Cancellation immediately revokes qualified access
  * and submission; pending hits cannot publish. Release every acquired scope even
