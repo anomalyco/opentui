@@ -13,6 +13,8 @@ import type { RenderContext } from "../types.js"
 import { TextNodeRenderable } from "../renderables/TextNode.js"
 import { TextRenderable } from "../renderables/Text.js"
 import { ScrollBoxRenderable } from "../renderables/ScrollBox.js"
+import type { OptimizedBuffer } from "../buffer.js"
+import { RGBA } from "../lib/RGBA.js"
 
 export class TestBaseRenderable extends BaseRenderable {
   constructor(options: BaseRenderableOptions) {
@@ -506,7 +508,7 @@ describe("Renderable - Child Management", () => {
     expect(second.isDestroyed).toBe(true)
   })
 
-  test("renderBefore position changes update hit-grid coordinates in the same frame", async () => {
+  test("renderBefore position changes hit at the prepared position until the next frame", async () => {
     testRenderer.requestRender = () => {}
 
     const renderable = new TestRenderable(testRenderer, {
@@ -527,42 +529,47 @@ describe("Renderable - Child Management", () => {
     await renderOnce()
 
     expect(renderable.screenX).toBe(7)
+    expect(testRenderer.hitTest(2, 3)).toBe(renderable.num)
+    expect(testRenderer.hitTest(7, 3)).not.toBe(renderable.num)
 
-    expect(testRenderer.hitTest(renderable.screenX, renderable.screenY)).toBe(renderable.num)
+    await renderOnce()
+
+    expect(testRenderer.hitTest(7, 3)).toBe(renderable.num)
     expect(testRenderer.hitTest(2, 3)).not.toBe(renderable.num)
   })
 
-  test("renderBefore position changes update frame-buffer compositing coordinates in the same frame", async () => {
-    testRenderer.requestRender = () => {}
-    const drawFrameBufferSpy = spyOn(testRenderer.nextRenderBuffer, "drawFrameBuffer")
-
-    const renderable = new TestRenderable(testRenderer, {
-      id: "hook-moved-buffered",
-      buffered: true,
-      position: "absolute",
-      left: 2,
-      top: 3,
-      width: 4,
-      height: 2,
-      renderBefore: function () {
-        if (this.translateX === 0) {
-          this.translateX = 5
+  test("renderBefore position changes compose frame buffers at the prepared position until the next frame", async () => {
+    const setup = await createTestRenderer({ width: 12, height: 4 })
+    try {
+      class BufferedMark extends Renderable {
+        protected renderSelf(buffer: OptimizedBuffer): void {
+          buffer.drawText("BB", 0, 0, RGBA.fromInts(255, 255, 255))
         }
-      },
-    })
+      }
+      const renderable = new BufferedMark(setup.renderer, {
+        buffered: true,
+        position: "absolute",
+        left: 2,
+        top: 1,
+        width: 2,
+        height: 1,
+        renderBefore: function () {
+          if (this.translateX === 0) this.translateX = 5
+        },
+      })
+      setup.renderer.root.add(renderable)
+      await setup.renderOnce()
 
-    testRenderer.root.add(renderable)
-    await renderOnce()
+      expect(renderable.screenX).toBe(7)
+      expect(setup.captureCharFrame().split("\n")[1]).toBe("  BB        ")
 
-    expect(renderable.screenX).toBe(7)
+      await setup.renderOnce()
 
-    const call = drawFrameBufferSpy.mock.calls.find((args) => args[2]?.id === `framebuffer-${renderable.id}`)
-    if (!call) {
-      throw new Error("Expected renderable frame buffer to be composited")
+      expect(setup.captureCharFrame().split("\n")[1]).toBe("       BB   ")
+    } finally {
+      setup.renderer.destroy()
+      await setup.renderer.closed
     }
-
-    expect(call[0]).toBe(renderable.screenX)
-    expect(call[1]).toBe(renderable.screenY)
   })
 
   test("can insert child at specific index", () => {

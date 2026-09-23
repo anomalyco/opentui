@@ -81,19 +81,21 @@ The [test renderer](/docs/core-concepts/testing) captures this first frame witho
 └──────────┘
 ```
 
-The hook runs after the box's own drawing, before its children. Thus, the label draws `Ready` in that same frame.
+Paint hooks run after layout and before native code paints any cell. Thus, the label draws `Ready` in that same frame.
 Native code does not invoke the JavaScript function from inside painting:
 
 1. `CliRenderer.loop()` calls `NativeScene.paint()`.
 2. `NativeScene.advancePaint()` calls `RenderLib.sceneFrameStep()`, which reaches `ot_scene_frame_step_with_geometry`.
-3. Native code paints the box and returns its after-paint request, kind `5`.
-4. Core finds the JavaScript renderable and calls `Renderable._runNativeSceneHook()`.
-5. That method calls the box's `renderAfter` function, which changes the label.
-6. Core calls the native frame step again with the exact request. Native code continues to the label.
+3. Native code prepares the frame and returns one record request, kind `4`, instead of painting.
+4. Core reads the request's paint slots and calls `Renderable._recordNativeScenePaint()` for each hooked node, in paint order.
+5. The box's `renderAfter` function receives a recording buffer and changes the label.
+6. Core calls the native frame step again with the exact request and the recording. Native code paints the frame in one pass.
 
 These are synchronous calls on the JavaScript thread. The hook stays on the JavaScript object.
-The native request tells Core when to call it.
+The buffer a hook receives records drawing, so a frame with many hooks costs two native steps, not one per hook.
+It cannot read the frame. Draw into an owned buffer and compose it instead.
 
+A text change in a hook paints in the same frame. A layout change, such as a new width or a new child, waits for the next frame.
 Use paint hooks for drawing effects, not as the default place to update application state.
 Core's text and editor components skip generic before/after hooks.
 Their custom drawing contract is in [Custom renderables](/docs/extend/custom-renderables#use-paint-hooks).
@@ -138,7 +140,7 @@ Their host projections publish after native acceptance.
 
 Before each frame step, `NativeScene.advancePaint()` calls `flushStaged()`.
 Native reads and other operations that need those values also flush them.
-This is why a hook's pending color changes reach native code before a later node draws.
+This is why a hook's pending color changes reach native code before it paints the frame.
 Before synchronous measurement callbacks, the driver also flushes other scenes so read-only queries can observe their writes.
 React and Solid use these same driver boundaries.
 
@@ -154,7 +156,7 @@ Deferred callback errors can surface after native acceptance and host publicatio
 ## Distinguish hooks from scheduling waits
 
 Core runs node paint hooks synchronously and does not await their returned promises.
-A hook request returns control at a specific paint position. It is not an event-loop scheduling break.
+A record request returns control once per frame, before painting. It is not an event-loop scheduling break.
 
 Scheduling yields use `OT_SCENE_FRAME_YIELD` instead.
 Core can request them during preparation through the positive unsigned 32-bit `nativeSceneWorkBudget` option.
@@ -269,8 +271,7 @@ Core then reconciles hover and emits `frame`.
 Core does not use the TypeScript `NativeSpanFeed` wrapper for this output path.
 
 During resize, renderer buffer wrappers keep their identity while their native storage changes.
-During destruction, a buffered custom node loses its private buffer even if its remaining paint hook runs.
-Neither a retained JavaScript wrapper nor a continued hook makes destroyed storage usable.
+A retained JavaScript wrapper does not make destroyed storage usable.
 
 Release custom-renderable resources synchronously in `destroySelf()`.
 For renderer shutdown, call `renderer.destroy()` and await `renderer.closed`.

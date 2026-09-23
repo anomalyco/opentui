@@ -5,6 +5,7 @@ const Context = @import("context.zig").Context;
 const BufferDraw = @import("context.zig").BufferDraw;
 const ObjectHandle = @import("context-handles.zig").Handle;
 const scene = @import("scene.zig");
+const scene_record = @import("scene-record.zig");
 
 test {
     _ = @import("tests/scene_flush_test.zig");
@@ -424,26 +425,9 @@ pub fn ot_buffer_draw_image(context: ?*ContextHandle, target_ptr: ?*const c.ot_h
     const source = image_ptr orelse return sessionError(owner, error.InvalidOptions);
     const options = options_ptr orelse return sessionError(owner, error.InvalidOptions);
     const out = out_ptr orelse return sessionError(owner, error.InvalidOptions);
-    if (options.struct_size != @sizeOf(c.ot_image_draw_options)) return sessionError(owner, error.InvalidOptions);
-    if (options.abi_version != c.OT_CONTEXT_ABI_VERSION) return sessionError(owner, error.UnsupportedVersion);
-    if (options.flags & ~@as(u32, c.OT_IMAGE_DRAW_SOURCE_WIDTH | c.OT_IMAGE_DRAW_SOURCE_HEIGHT) != 0 or
-        options.protocol > c.OT_IMAGE_PROTOCOL_BLOCKS or options.reserved[0] != 0 or options.reserved[1] != 0 or
-        (options.flags & c.OT_IMAGE_DRAW_SOURCE_WIDTH == 0 and options.source_width != 0) or
-        (options.flags & c.OT_IMAGE_DRAW_SOURCE_HEIGHT == 0 and options.source_height != 0)) return sessionError(owner, error.InvalidOptions);
+    const draw = scene_record.imageDrawFromC(options) catch |err| return sessionError(owner, err);
     const frame = if (frame_ptr) |record| frameRequestFromC(record.*) catch |err| return sessionError(owner, err) else null;
-    out.* = @intFromBool(owner.core.drawBufferImage(handleFromC(target.*), frame, handleFromC(source.*), .{
-        .x = options.x,
-        .y = options.y,
-        .width = options.width,
-        .height = options.height,
-        .pixel_width = options.pixel_width,
-        .pixel_height = options.pixel_height,
-        .source_x = options.source_x,
-        .source_y = options.source_y,
-        .source_width = if (options.flags & c.OT_IMAGE_DRAW_SOURCE_WIDTH != 0) options.source_width else null,
-        .source_height = if (options.flags & c.OT_IMAGE_DRAW_SOURCE_HEIGHT != 0) options.source_height else null,
-        .protocol = @enumFromInt(options.protocol),
-    }) catch |err| return sessionError(owner, err));
+    out.* = @intFromBool(owner.core.drawBufferImage(handleFromC(target.*), frame, handleFromC(source.*), draw) catch |err| return sessionError(owner, err));
     return c.OT_OK;
 }
 
@@ -611,76 +595,7 @@ pub fn ot_buffer_resize(
     return c.OT_OK;
 }
 
-fn bufferDrawRecord(comptime T: type, header: *const c.ot_buffer_draw_header, flags: u32) !*const T {
-    if (header.struct_size != @sizeOf(T) or header.flags & ~flags != 0) return error.InvalidOptions;
-    return @ptrCast(header);
-}
-
-fn bufferDrawFromC(header: *const c.ot_buffer_draw_header) !BufferDraw {
-    if (header.struct_size < @sizeOf(c.ot_buffer_draw_header)) return error.InvalidOptions;
-    if (header.abi_version != c.OT_CONTEXT_ABI_VERSION) return error.UnsupportedVersion;
-    if (header.operation > c.OT_BUFFER_DRAW_RESPECT_ALPHA) return error.InvalidOptions;
-    var draw: BufferDraw = .{ .operation = @enumFromInt(header.operation) };
-    switch (draw.operation) {
-        .clear => {
-            const record = try bufferDrawRecord(c.ot_buffer_draw_clear, header, 0);
-            draw.background = record.background;
-        },
-        .fill => {
-            const record = try bufferDrawRecord(c.ot_buffer_draw_fill, header, 0);
-            draw.x = record.x;
-            draw.y = record.y;
-            draw.width = record.width;
-            draw.height = record.height;
-            draw.background = record.background;
-        },
-        .text => {
-            const record = try bufferDrawRecord(c.ot_buffer_draw_text_record, header, c.OT_BUFFER_DRAW_HAS_BACKGROUND);
-            draw.x = record.x;
-            draw.y = record.y;
-            draw.attributes = record.attributes;
-            draw.foreground = record.foreground;
-            if (header.flags & c.OT_BUFFER_DRAW_HAS_BACKGROUND != 0) draw.background = record.background;
-        },
-        .cell, .cell_blend, .char => {
-            const record = try bufferDrawRecord(c.ot_buffer_draw_cell, header, 0);
-            draw.x = record.x;
-            draw.y = record.y;
-            draw.char = record.character;
-            draw.attributes = record.attributes;
-            draw.foreground = record.foreground;
-            draw.background = record.background;
-        },
-        .box => {
-            const record = try bufferDrawRecord(c.ot_buffer_draw_box, header, 0);
-            draw.x = record.x;
-            draw.y = record.y;
-            draw.width = record.width;
-            draw.height = record.height;
-            draw.packed_options = record.packed_options;
-            draw.foreground = record.foreground;
-            draw.background = record.background;
-            draw.title_color = record.title_color;
-            draw.border_chars = record.border_chars;
-        },
-        .compose => {
-            const record = try bufferDrawRecord(c.ot_buffer_draw_compose, header, c.OT_BUFFER_DRAW_HAS_SOURCE_WIDTH | c.OT_BUFFER_DRAW_HAS_SOURCE_HEIGHT);
-            draw.x = record.x;
-            draw.y = record.y;
-            draw.crop = .{
-                .x = record.source_x,
-                .y = record.source_y,
-                .width = if (header.flags & c.OT_BUFFER_DRAW_HAS_SOURCE_WIDTH != 0) record.source_width else null,
-                .height = if (header.flags & c.OT_BUFFER_DRAW_HAS_SOURCE_HEIGHT != 0) record.source_height else null,
-            };
-        },
-        .respect_alpha => {
-            const record = try bufferDrawRecord(c.ot_buffer_draw_alpha, header, 0);
-            draw.packed_options = record.enabled;
-        },
-    }
-    return draw;
-}
+const bufferDrawFromC = scene_record.bufferDrawFromC;
 
 pub fn ot_buffer_draw(context: ?*ContextHandle, target_ptr: ?*const c.ot_handle, frame_ptr: ?*const c.ot_scene_frame_request, options_ptr: ?*const c.ot_buffer_draw_header, source_ptr: ?*const c.ot_handle, text_ptr: ?[*]const u8, text_len: u32, bottom_ptr: ?[*]const u8, bottom_len: u32) callconv(.c) c.ot_status {
     const status = sessionContextStatus(context);
@@ -726,18 +641,10 @@ pub fn ot_buffer_draw_grid(context: ?*ContextHandle, target_ptr: ?*const c.ot_ha
     const owner = context.?;
     const target = target_ptr orelse return sessionError(owner, error.InvalidOptions);
     const options = options_ptr orelse return sessionError(owner, error.InvalidOptions);
-    if (options.struct_size != @sizeOf(c.ot_buffer_grid_options) or options.reserved != 0 or
-        options.flags & ~@as(u32, c.OT_BUFFER_GRID_INNER | c.OT_BUFFER_GRID_OUTER) != 0 or
-        (column_count != 0 and columns_ptr == null) or (row_count != 0 and rows_ptr == null)) return sessionError(owner, error.InvalidOptions);
-    if (options.abi_version != c.OT_CONTEXT_ABI_VERSION) return sessionError(owner, error.UnsupportedVersion);
+    if ((column_count != 0 and columns_ptr == null) or (row_count != 0 and rows_ptr == null)) return sessionError(owner, error.InvalidOptions);
+    const grid = scene_record.gridFromC(options) catch |err| return sessionError(owner, err);
     const frame = if (frame_ptr) |record| frameRequestFromC(record.*) catch |err| return sessionError(owner, err) else null;
-    owner.core.drawGrid(handleFromC(target.*), frame, .{
-        .border_chars = options.border_chars,
-        .foreground = options.foreground,
-        .background = options.background,
-        .draw_inner = options.flags & c.OT_BUFFER_GRID_INNER != 0,
-        .draw_outer = options.flags & c.OT_BUFFER_GRID_OUTER != 0,
-    }, if (columns_ptr) |ptr| ptr[0..column_count] else &.{}, if (rows_ptr) |ptr| ptr[0..row_count] else &.{}) catch |err| return sessionError(owner, err);
+    owner.core.drawGrid(handleFromC(target.*), frame, grid, if (columns_ptr) |ptr| ptr[0..column_count] else &.{}, if (rows_ptr) |ptr| ptr[0..row_count] else &.{}) catch |err| return sessionError(owner, err);
     return c.OT_OK;
 }
 
@@ -2278,7 +2185,7 @@ fn frameRequestToC(result: scene.FrameRequest) c.ot_scene_frame_request {
     };
 }
 
-pub fn ot_scene_frame_step_with_geometry(context: ?*ContextHandle, session_ptr: ?*const c.ot_handle, previous_ptr: ?*const c.ot_scene_frame_request, options_ptr: ?*const c.ot_scene_frame_options, max_work_items: u32, out_ptr: ?*c.ot_scene_frame_request, geometry_ptr: ?*c.ot_scene_frame_geometry) callconv(.c) c.ot_status {
+pub fn ot_scene_frame_step_with_geometry(context: ?*ContextHandle, session_ptr: ?*const c.ot_handle, previous_ptr: ?*const c.ot_scene_frame_request, options_ptr: ?*const c.ot_scene_frame_options, max_work_items: u32, recording_ptr: ?[*]const u8, recording_len: u32, out_ptr: ?*c.ot_scene_frame_request, geometry_ptr: ?*c.ot_scene_frame_geometry) callconv(.c) c.ot_status {
     const status = sessionContextStatus(context);
     if (status != c.OT_OK) return status;
     const owner = context.?;
@@ -2291,21 +2198,25 @@ pub fn ot_scene_frame_step_with_geometry(context: ?*ContextHandle, session_ptr: 
     if (out.struct_size != @sizeOf(c.ot_scene_frame_request) or out.reserved[0] != 0 or out.reserved[1] != 0) return sessionError(owner, error.InvalidOptions);
     if (out.abi_version != c.OT_CONTEXT_ABI_VERSION) return sessionError(owner, error.UnsupportedVersion);
     const previous = if (previous_ptr) |record| frameRequestFromC(record.*) catch |err| return sessionError(owner, err) else null;
+    if (recording_len != 0 and recording_ptr == null) return sessionError(owner, error.InvalidOptions);
+    const recording: ?[]const u8 = if (previous != null and previous.?.kind == c.OT_SCENE_FRAME_RECORD)
+        if (recording_ptr) |bytes| bytes[0..recording_len] else &.{}
+    else if (recording_ptr != null) return sessionError(owner, error.InvalidOptions) else null;
     if (options.struct_size != @sizeOf(c.ot_scene_frame_options) or options.preserve_unwritten > 1 or options.use_mouse > 1) return sessionError(owner, error.InvalidOptions);
     if (options.abi_version != c.OT_CONTEXT_ABI_VERSION) return sessionError(owner, error.UnsupportedVersion);
-    const result = owner.core.sceneFrameStepWorkBudgeted(handleFromC(id.*), previous, .{
+    const result = owner.core.sceneFrameStepWithRecording(handleFromC(id.*), previous, .{
         .background = options.background,
         .use_mouse = options.use_mouse == 1,
         .excluded_hit_num = options.excluded_hit_num,
         .max_layout_rounds = options.max_layout_rounds,
         .max_host_requests = options.max_host_requests,
         .preserve_unwritten = options.preserve_unwritten == 1,
-    }, max_work_items) catch |err| return sessionError(owner, err);
+    }, max_work_items, recording) catch |err| return sessionError(owner, err);
     out.* = frameRequestToC(result);
     geometry.* = std.mem.zeroes(c.ot_scene_frame_geometry);
     geometry.struct_size = @sizeOf(c.ot_scene_frame_geometry);
     geometry.abi_version = c.OT_CONTEXT_ABI_VERSION;
-    if (result.kind == c.OT_SCENE_FRAME_DONE or result.kind == c.OT_SCENE_FRAME_YIELD) return c.OT_OK;
+    if (result.kind == c.OT_SCENE_FRAME_DONE or result.kind == c.OT_SCENE_FRAME_YIELD or result.kind == c.OT_SCENE_FRAME_RECORD) return c.OT_OK;
     const node = result.node;
     // Public observations advance during refresh, after the ticket is created.
     if (owner.core.sceneGetPaintLayout(node)) |layout| {
@@ -2316,6 +2227,37 @@ pub fn ot_scene_frame_step_with_geometry(context: ?*ContextHandle, session_ptr: 
         geometry.public_layout = sceneLayoutToC(layout);
         geometry.flags |= c.OT_SCENE_GEOMETRY_PUBLIC;
     } else |_| {}
+    return c.OT_OK;
+}
+
+pub fn ot_scene_frame_get_paint_slots(context: ?*ContextHandle, session_ptr: ?*const c.ot_handle, request_ptr: ?*const c.ot_scene_frame_request, slots_ptr: ?[*]c.ot_scene_paint_slot, capacity: u32, out_count_ptr: ?*u32) callconv(.c) c.ot_status {
+    const status = sessionContextStatus(context);
+    if (status != c.OT_OK) return status;
+    const owner = context.?;
+    const id = session_ptr orelse return sessionError(owner, error.InvalidOptions);
+    const request = request_ptr orelse return sessionError(owner, error.InvalidOptions);
+    const out_count = out_count_ptr orelse return sessionError(owner, error.InvalidOptions);
+    if (capacity != 0 and slots_ptr == null) return sessionError(owner, error.InvalidOptions);
+    const frame = frameRequestFromC(request.*) catch |err| return sessionError(owner, err);
+    const slots = owner.core.sceneFramePaintSlots(handleFromC(id.*), frame) catch |err| return sessionError(owner, err);
+    for (slots, 0..) |slot, index| {
+        if (index == capacity) break;
+        slots_ptr.?[index] = .{
+            .node = handleToC(slot.node),
+            .hook_generation = slot.hook_generation,
+            .num = slot.num,
+            .hooks = slot.hooks,
+            .clip_x = slot.clip.x,
+            .clip_y = slot.clip.y,
+            .clip_width = slot.clip.width,
+            .clip_height = slot.clip.height,
+            .opacity = slot.opacity,
+            .flags = c.OT_SCENE_GEOMETRY_PAINT | if (slot.public_layout != null) c.OT_SCENE_GEOMETRY_PUBLIC else 0,
+            .paint = sceneLayoutToC(slot.layout),
+            .public_layout = if (slot.public_layout) |layout| sceneLayoutToC(layout) else std.mem.zeroes(c.ot_scene_layout),
+        };
+    }
+    out_count.* = @intCast(slots.len);
     return c.OT_OK;
 }
 
@@ -2864,7 +2806,7 @@ test "Context console ABI validates rectangle frame and diagnostic arguments" {
     geometry.struct_size = @sizeOf(c.ot_scene_frame_geometry);
     geometry.abi_version = c.OT_CONTEXT_ABI_VERSION;
     const unlimited = std.math.maxInt(u32);
-    try std.testing.expectEqual(c.OT_OK, ot_scene_frame_step_with_geometry(handle, &session, null, &config, unlimited, &frame, &geometry));
+    try std.testing.expectEqual(c.OT_OK, ot_scene_frame_step_with_geometry(handle, &session, null, &config, unlimited, null, 0, &frame, &geometry));
     try std.testing.expectEqual(c.OT_INVALID_ARGUMENT, ot_scene_frame_draw_buffer(handle, &session, null, &buffer, 0, 0));
     frame.reserved[0] = 1;
     try std.testing.expectEqual(c.OT_INVALID_ARGUMENT, ot_scene_frame_draw_buffer(handle, &session, &frame, &buffer, 0, 0));
@@ -3211,7 +3153,7 @@ const TestBackgroundProperty = extern struct {
     background: [4]u16,
 };
 
-test "Scene flush ABI paints live copied background during a host hook pause" {
+test "Scene flush ABI paints a background copied during the record batch" {
     const ansi = @import("ansi.zig");
     var owner: ContextHandle = .{ .gpa = .init, .io_threaded = .init_single_threaded, .core = undefined, .owner_thread = std.Thread.getCurrentId() };
     defer owner.io_threaded.deinit();
@@ -3229,8 +3171,8 @@ test "Scene flush ABI paints live copied background during a host hook pause" {
     try core.sceneSetHooks(box, c.OT_SCENE_HOOK_RENDER_BEFORE, 1, 4, 1);
     const options: scene.FrameOptions = .{ .background = .{ 0, 0, 0, 255 }, .use_mouse = false, .excluded_hit_num = 0, .max_layout_rounds = 8, .max_host_requests = 64 };
     const before = try core.sceneFrameStep(session, null, options);
-    try std.testing.expectEqual(c.OT_SCENE_FRAME_RENDER_BEFORE, before.kind);
-    try std.testing.expectEqual(box, before.node);
+    try std.testing.expectEqual(c.OT_SCENE_FRAME_RECORD, before.kind);
+    try std.testing.expectEqual(root, before.node);
     const id = handleToC(box);
     const color = ansi.indexedColor(42, 0, 200, 0);
     var input: [1]TestBackgroundProperty = .{.{ .node = id, .background = color }};
@@ -3238,7 +3180,7 @@ test "Scene flush ABI paints live copied background during a host hook pause" {
     try std.testing.expectEqual(c.OT_OK, ot_scene_flush(&owner, std.mem.asBytes(&input), @sizeOf(@TypeOf(input)), &applied));
     try std.testing.expectEqual(@as(u32, 1), applied);
     @memset(&input[0].background, 0);
-    const done = try core.sceneFrameStep(session, before, options);
+    const done = try core.sceneFrameStepWithRecording(session, before, options, std.math.maxInt(u32), &.{});
     try std.testing.expectEqual(c.OT_SCENE_FRAME_DONE, done.kind);
     const target = (try core.raw().getSessionRenderer(session)).getNextBuffer();
     try std.testing.expectEqual(color, target.get(1, 1).?.bg);
@@ -3427,33 +3369,50 @@ test "Scene frame geometry reports delivered observations without expanding tick
     geometry.struct_size = @sizeOf(c.ot_scene_frame_geometry);
     geometry.abi_version = c.OT_CONTEXT_ABI_VERSION;
     const unlimited = std.math.maxInt(u32);
-    try std.testing.expectEqual(c.OT_INVALID_ARGUMENT, ot_scene_frame_step_with_geometry(&owner, &id, null, &config, unlimited, &output, null));
+    try std.testing.expectEqual(c.OT_INVALID_ARGUMENT, ot_scene_frame_step_with_geometry(&owner, &id, null, &config, unlimited, null, 0, &output, null));
     geometry.reserved = 1;
-    try std.testing.expectEqual(c.OT_INVALID_ARGUMENT, ot_scene_frame_step_with_geometry(&owner, &id, null, &config, unlimited, &output, &geometry));
+    try std.testing.expectEqual(c.OT_INVALID_ARGUMENT, ot_scene_frame_step_with_geometry(&owner, &id, null, &config, unlimited, null, 0, &output, &geometry));
     geometry.reserved = 0;
-    try std.testing.expectEqual(c.OT_OK, ot_scene_frame_step_with_geometry(&owner, &id, null, &config, unlimited, &output, &geometry));
+    try std.testing.expectEqual(c.OT_OK, ot_scene_frame_step_with_geometry(&owner, &id, null, &config, unlimited, null, 0, &output, &geometry));
     try std.testing.expectEqual(c.OT_SCENE_FRAME_UPDATE, output.kind);
     try std.testing.expectEqual(@as(f32, 6), geometry.paint.width);
     try std.testing.expectEqual(@as(f32, 0), geometry.public_layout.width);
     const update = output;
     const snapshot = geometry;
     geometry.abi_version += 1;
-    try std.testing.expectEqual(c.OT_UNSUPPORTED_VERSION, ot_scene_frame_step_with_geometry(&owner, &id, &update, &config, unlimited, &output, &geometry));
+    try std.testing.expectEqual(c.OT_UNSUPPORTED_VERSION, ot_scene_frame_step_with_geometry(&owner, &id, &update, &config, unlimited, null, 0, &output, &geometry));
     try std.testing.expectEqualDeep(update, output);
     geometry = snapshot;
-    try std.testing.expectEqual(c.OT_OK, ot_scene_frame_step_with_geometry(&owner, &id, &output, &config, unlimited, &output, &geometry));
+    const empty: [1]u64 = .{0};
+    try std.testing.expectEqual(c.OT_INVALID_ARGUMENT, ot_scene_frame_step_with_geometry(&owner, &id, &output, &config, unlimited, @ptrCast(&empty), 0, &output, &geometry));
+    try std.testing.expectEqual(c.OT_OK, ot_scene_frame_step_with_geometry(&owner, &id, &output, &config, unlimited, null, 0, &output, &geometry));
     try std.testing.expectEqual(c.OT_SCENE_FRAME_RESIZE, output.kind);
     try std.testing.expectEqual(@as(f32, 6), geometry.public_layout.width);
     try std.testing.expectEqual(@as(u32, 3), geometry.flags);
-    try std.testing.expectEqual(c.OT_OK, ot_scene_frame_step_with_geometry(&owner, &id, &output, &config, unlimited, &output, &geometry));
-    try std.testing.expectEqual(c.OT_SCENE_FRAME_RENDER_BEFORE, output.kind);
-    try owner.core.sceneDestroyNode(box);
-    try std.testing.expectEqual(c.OT_OK, ot_scene_frame_step_with_geometry(&owner, &id, &output, &config, unlimited, &output, &geometry));
-    try std.testing.expectEqual(c.OT_SCENE_FRAME_RENDER_AFTER, output.kind);
+    try std.testing.expectEqual(c.OT_OK, ot_scene_frame_step_with_geometry(&owner, &id, &output, &config, unlimited, null, 0, &output, &geometry));
+    try std.testing.expectEqual(c.OT_SCENE_FRAME_RECORD, output.kind);
     try std.testing.expectEqual(@as(u32, 0), geometry.flags);
     try std.testing.expectEqualDeep(std.mem.zeroes(c.ot_scene_layout), geometry.paint);
     try std.testing.expectEqualDeep(std.mem.zeroes(c.ot_scene_layout), geometry.public_layout);
-    try std.testing.expectEqual(c.OT_OK, ot_scene_frame_step_with_geometry(&owner, &id, &output, &config, unlimited, &output, &geometry));
+    var slots: [2]c.ot_scene_paint_slot = undefined;
+    var count: u32 = 99;
+    try std.testing.expectEqual(c.OT_INVALID_ARGUMENT, ot_scene_frame_get_paint_slots(&owner, &id, &output, null, 1, &count));
+    try std.testing.expectEqual(c.OT_OK, ot_scene_frame_get_paint_slots(&owner, &id, &output, null, 0, &count));
+    try std.testing.expectEqual(@as(u32, 1), count);
+    try std.testing.expectEqual(c.OT_OK, ot_scene_frame_get_paint_slots(&owner, &id, &output, &slots, slots.len, &count));
+    try std.testing.expectEqualDeep(handleToC(box), slots[0].node);
+    try std.testing.expectEqual(@as(u32, 2), slots[0].num);
+    try std.testing.expectEqual(@as(u32, 8 | 16), slots[0].hooks);
+    try std.testing.expectEqual(@as(u32, c.OT_SCENE_GEOMETRY_PAINT | c.OT_SCENE_GEOMETRY_PUBLIC), slots[0].flags);
+    try std.testing.expectEqual(@as(f32, 6), slots[0].paint.width);
+    try std.testing.expectEqual(@as(f32, 6), slots[0].public_layout.width);
+    try std.testing.expectEqual(@as(u32, 6), slots[0].clip_width);
+    try std.testing.expectEqual(@as(f32, 1), slots[0].opacity);
+    var stale = output;
+    stale.request_id += 1;
+    try std.testing.expectEqual(c.OT_STALE_FRAME, ot_scene_frame_get_paint_slots(&owner, &id, &stale, &slots, slots.len, &count));
+    try owner.core.sceneDestroyNode(box);
+    try std.testing.expectEqual(c.OT_OK, ot_scene_frame_step_with_geometry(&owner, &id, &output, &config, unlimited, null, 0, &output, &geometry));
     try std.testing.expectEqual(c.OT_SCENE_FRAME_DONE, output.kind);
     try std.testing.expectEqual(@as(u32, 0), geometry.flags);
     try owner.core.sceneFrameCancel(session, output.frame_id);
@@ -3487,13 +3446,13 @@ test "Scene work budget ABI preserves unlimited dispatch and exact preparation t
     geometry.struct_size = @sizeOf(c.ot_scene_frame_geometry);
     geometry.abi_version = c.OT_CONTEXT_ABI_VERSION;
     const unlimited = std.math.maxInt(u32);
-    try std.testing.expectEqual(c.OT_OK, ot_scene_frame_step_with_geometry(&owner, &id, null, &config, unlimited, &output, &geometry));
+    try std.testing.expectEqual(c.OT_OK, ot_scene_frame_step_with_geometry(&owner, &id, null, &config, unlimited, null, 0, &output, &geometry));
     try std.testing.expectEqual(c.OT_SCENE_FRAME_DONE, output.kind);
     try owner.core.sceneFrameCancel(session, output.frame_id);
     const before = output;
-    try std.testing.expectEqual(c.OT_INVALID_ARGUMENT, ot_scene_frame_step_with_geometry(&owner, &id, null, &config, 0, &output, &geometry));
+    try std.testing.expectEqual(c.OT_INVALID_ARGUMENT, ot_scene_frame_step_with_geometry(&owner, &id, null, &config, 0, null, 0, &output, &geometry));
     try std.testing.expectEqualDeep(before, output);
-    try std.testing.expectEqual(c.OT_OK, ot_scene_frame_step_with_geometry(&owner, &id, null, &config, 1, &output, &geometry));
+    try std.testing.expectEqual(c.OT_OK, ot_scene_frame_step_with_geometry(&owner, &id, null, &config, 1, null, 0, &output, &geometry));
     try std.testing.expectEqual(c.OT_SCENE_FRAME_YIELD, output.kind);
     try std.testing.expectEqualDeep(handleToC(root), output.node);
     try std.testing.expectEqual(@as(u32, 0), output.num | output.width | output.height);
@@ -3501,13 +3460,13 @@ test "Scene work budget ABI preserves unlimited dispatch and exact preparation t
     const first = output;
     var stale = first;
     stale.request_id += 1;
-    try std.testing.expectEqual(c.OT_STALE_FRAME, ot_scene_frame_step_with_geometry(&owner, &id, &stale, &config, 1, &output, &geometry));
+    try std.testing.expectEqual(c.OT_STALE_FRAME, ot_scene_frame_step_with_geometry(&owner, &id, &stale, &config, 1, null, 0, &output, &geometry));
     try std.testing.expectEqualDeep(first, output);
-    try std.testing.expectEqual(c.OT_INVALID_ARGUMENT, ot_scene_frame_step_with_geometry(&owner, &id, &first, &config, 0, &output, &geometry));
+    try std.testing.expectEqual(c.OT_INVALID_ARGUMENT, ot_scene_frame_step_with_geometry(&owner, &id, &first, &config, 0, null, 0, &output, &geometry));
     try std.testing.expectEqualDeep(first, output);
     try std.testing.expectError(error.StaleFrame, owner.core.sceneFrameAcquireBufferLease(session, try frameRequestFromC(output), .next));
     for (0..16) |_| {
-        try std.testing.expectEqual(c.OT_OK, ot_scene_frame_step_with_geometry(&owner, &id, &output, &config, 1, &output, &geometry));
+        try std.testing.expectEqual(c.OT_OK, ot_scene_frame_step_with_geometry(&owner, &id, &output, &config, 1, null, 0, &output, &geometry));
         if (output.kind == c.OT_SCENE_FRAME_DONE) break;
         try std.testing.expectEqual(c.OT_SCENE_FRAME_YIELD, output.kind);
         try std.testing.expectEqual(first.frame_id, output.frame_id);
@@ -3557,49 +3516,49 @@ test "Scene feedback ABI validates records and preserves the pending ticket on r
     const unlimited = std.math.maxInt(u32);
     const sentinel = output;
     config.preserve_unwritten = 2;
-    try std.testing.expectEqual(c.OT_INVALID_ARGUMENT, ot_scene_frame_step_with_geometry(handle, &id, null, &config, unlimited, &output, &geometry));
+    try std.testing.expectEqual(c.OT_INVALID_ARGUMENT, ot_scene_frame_step_with_geometry(handle, &id, null, &config, unlimited, null, 0, &output, &geometry));
     try std.testing.expectEqualDeep(sentinel, output);
     config.preserve_unwritten = 0;
-    try std.testing.expectEqual(c.OT_OK, ot_scene_frame_step_with_geometry(handle, &id, null, &config, unlimited, &output, &geometry));
+    try std.testing.expectEqual(c.OT_OK, ot_scene_frame_step_with_geometry(handle, &id, null, &config, unlimited, null, 0, &output, &geometry));
     try std.testing.expectEqual(c.OT_SCENE_FRAME_UPDATE, output.kind);
     try std.testing.expectEqual(@as(u32, 6), output.width);
     const first = output;
     var invalid = first;
     invalid.reserved[1] = 1;
-    try std.testing.expectEqual(c.OT_INVALID_ARGUMENT, ot_scene_frame_step_with_geometry(handle, &id, &invalid, &config, unlimited, &output, &geometry));
+    try std.testing.expectEqual(c.OT_INVALID_ARGUMENT, ot_scene_frame_step_with_geometry(handle, &id, &invalid, &config, unlimited, null, 0, &output, &geometry));
     try std.testing.expectEqualDeep(first, output);
     invalid = first;
     invalid.struct_size -= 1;
-    try std.testing.expectEqual(c.OT_INVALID_ARGUMENT, ot_scene_frame_step_with_geometry(handle, &id, &invalid, &config, unlimited, &output, &geometry));
+    try std.testing.expectEqual(c.OT_INVALID_ARGUMENT, ot_scene_frame_step_with_geometry(handle, &id, &invalid, &config, unlimited, null, 0, &output, &geometry));
     invalid = first;
     invalid.abi_version += 1;
-    try std.testing.expectEqual(c.OT_UNSUPPORTED_VERSION, ot_scene_frame_step_with_geometry(handle, &id, &invalid, &config, unlimited, &output, &geometry));
+    try std.testing.expectEqual(c.OT_UNSUPPORTED_VERSION, ot_scene_frame_step_with_geometry(handle, &id, &invalid, &config, unlimited, null, 0, &output, &geometry));
     invalid = first;
     invalid.hook_generation += 1;
-    try std.testing.expectEqual(c.OT_STALE_FRAME, ot_scene_frame_step_with_geometry(handle, &id, &invalid, &config, unlimited, &output, &geometry));
+    try std.testing.expectEqual(c.OT_STALE_FRAME, ot_scene_frame_step_with_geometry(handle, &id, &invalid, &config, unlimited, null, 0, &output, &geometry));
     config.max_layout_rounds = 2;
-    try std.testing.expectEqual(c.OT_INVALID_ARGUMENT, ot_scene_frame_step_with_geometry(handle, &id, &first, &config, unlimited, &output, &geometry));
+    try std.testing.expectEqual(c.OT_INVALID_ARGUMENT, ot_scene_frame_step_with_geometry(handle, &id, &first, &config, unlimited, null, 0, &output, &geometry));
     config.max_layout_rounds = 1;
     try std.testing.expectEqualDeep(first, output);
     var render_status: u32 = 999;
     try std.testing.expectEqual(c.OT_FRAME_BUSY, ot_session_render(handle, &id, 1, &render_status));
     try std.testing.expectEqual(@as(u32, 999), render_status);
     // An in-place acknowledgement is valid: input is copied before output publication.
-    try std.testing.expectEqual(c.OT_OK, ot_scene_frame_step_with_geometry(handle, &id, &output, &config, unlimited, &output, &geometry));
+    try std.testing.expectEqual(c.OT_OK, ot_scene_frame_step_with_geometry(handle, &id, &output, &config, unlimited, null, 0, &output, &geometry));
     try std.testing.expectEqual(c.OT_SCENE_FRAME_RESIZE, output.kind);
     const second = output;
-    try std.testing.expectEqual(c.OT_STALE_FRAME, ot_scene_frame_step_with_geometry(handle, &id, &first, &config, unlimited, &output, &geometry));
+    try std.testing.expectEqual(c.OT_STALE_FRAME, ot_scene_frame_step_with_geometry(handle, &id, &first, &config, unlimited, null, 0, &output, &geometry));
     try std.testing.expectEqualDeep(second, output);
     try std.testing.expectEqual(c.OT_STALE_FRAME, ot_scene_frame_cancel(handle, &id, output.frame_id + 1));
     try std.testing.expectEqual(c.OT_OK, ot_scene_frame_cancel(handle, &id, output.frame_id));
-    try std.testing.expectEqual(c.OT_STALE_FRAME, ot_scene_frame_step_with_geometry(handle, &id, &second, &config, unlimited, &output, &geometry));
+    try std.testing.expectEqual(c.OT_STALE_FRAME, ot_scene_frame_step_with_geometry(handle, &id, &second, &config, unlimited, null, 0, &output, &geometry));
     hooks.flags = 1;
     hooks.generation = 2;
     try std.testing.expectEqual(c.OT_OK, ot_scene_set_hooks(handle, &root, &hooks));
-    try std.testing.expectEqual(c.OT_OK, ot_scene_frame_step_with_geometry(handle, &id, null, &config, unlimited, &output, &geometry));
+    try std.testing.expectEqual(c.OT_OK, ot_scene_frame_step_with_geometry(handle, &id, null, &config, unlimited, null, 0, &output, &geometry));
     try std.testing.expectEqual(c.OT_OK, ot_scene_set_style(handle, &root, 4, 0, 0, 1, 3, 1));
     const before_limit = output;
-    try std.testing.expectEqual(c.OT_LAYOUT_LIMIT, ot_scene_frame_step_with_geometry(handle, &id, &output, &config, unlimited, &output, &geometry));
+    try std.testing.expectEqual(c.OT_LAYOUT_LIMIT, ot_scene_frame_step_with_geometry(handle, &id, &output, &config, unlimited, null, 0, &output, &geometry));
     try std.testing.expectEqualDeep(before_limit, output);
     try std.testing.expectEqual(@as(u64, 0), (try owner.core.sceneGetStats(session)).frameCount);
 }
@@ -3786,7 +3745,7 @@ test "Scene ABI records preserve rejected outputs and read real Session metadata
     try std.testing.expectEqual(c.OT_OK, ot_scene_destroy_node(handle, &box));
 }
 
-test "Scene ABI paint layout preserves prepared coordinates through reparenting" {
+test "Scene ABI paint layout preserves prepared coordinates through reparenting and translation" {
     const handle: ?*ContextHandle = try createTestContext(.{ .object_capacity = 8, .render_cells_max = 12 });
     defer std.testing.expectEqual(c.OT_OK, ot_context_destroy(handle)) catch unreachable;
     const core = handle.?.core;
@@ -3809,11 +3768,9 @@ test "Scene ABI paint layout preserves prepared coordinates through reparenting"
     try core.sceneSetHooks(source, 8, 1, 2, 1);
     try core.sceneSetHooks(child, 56, 1, 2, 1);
     const options: scene.FrameOptions = .{ .background = .{ 0, 0, 0, 255 }, .use_mouse = true, .excluded_hit_num = 0, .max_layout_rounds = 8, .max_host_requests = 64 };
-    var request = try core.sceneFrameStep(session, null, options);
-    try std.testing.expectEqual(source, request.node);
+    const request = try core.sceneFrameStep(session, null, options);
+    try std.testing.expectEqual(c.OT_SCENE_FRAME_RECORD, request.kind);
     try core.sceneMoveNode(child, destination, 0);
-    request = try core.sceneFrameStep(session, request, options);
-    try std.testing.expectEqual(child, request.node);
     const child_c = handleToC(child);
     var layout = std.mem.zeroes(c.ot_scene_layout);
     layout.struct_size = @sizeOf(c.ot_scene_layout);
@@ -3829,7 +3786,7 @@ test "Scene ABI paint layout preserves prepared coordinates through reparenting"
     try std.testing.expectEqual(@as(f64, 1), layout.screen_x);
     try core.sceneSetPaint(child, .{ .translateX = 2 });
     try std.testing.expectEqual(c.OT_OK, ot_scene_get_layout(handle, &child_c, 2, &layout));
-    try std.testing.expectEqual(@as(f64, 8), layout.screen_x);
+    try std.testing.expectEqual(@as(f64, 1), layout.screen_x);
     const before = layout;
     core.mutating = true;
     const busy = ot_scene_get_layout(handle, &child_c, 2, &layout);

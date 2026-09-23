@@ -118,7 +118,7 @@
     "src/tests/destroy-on-exit.test.ts",
     "src/tests/destroy-during-render.test.ts",
     "src/tests/frame-callback-contract.test.ts",
-    "src/tests/frame-prefix-contract.test.ts",
+    "src/tests/frame-record-contract.test.ts",
     "src/tests/ffi-borrowed-pointer-callsites.test.ts",
     "src/tests/hover-cursor.test.ts",
     "src/tests/native-backed-measurement-lifecycle.test.ts",
