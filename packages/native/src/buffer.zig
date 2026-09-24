@@ -288,15 +288,17 @@ pub const BufferStorage = struct {
     }
 
     /// Resizes storage that only its buffer references, so no lease can observe the old cells.
-    /// The arrays are reused while they hold the cells and keep no more than four times as many;
-    /// otherwise every array is replaced before any is freed, so failure changes nothing.
+    /// Leases charge the arrays' full capacity, so capacity stays within half again the cells:
+    /// the arrays are reused while that holds, and otherwise every array is replaced before any
+    /// is freed, so failure changes nothing.
     fn resizeExclusive(self: *BufferStorage, width: u32, height: u32, cells_max: u32) BufferError!void {
         assert(self.ref_count == 1 and self.lease_budget == null and !self.retired);
         const size = math.mul(u32, width, height) catch return error.InvalidDimensions;
         const generation = math.add(u64, self.generation, 1) catch return error.GenerationExhausted;
-        if (size > self.capacity or size < self.capacity / 4) {
-            // Growth reserves half again so a buffer that grows one row at a time reallocates rarely.
-            const capacity = if (size > self.capacity) @min(cells_max, @max(size, self.capacity +| self.capacity / 2)) else size;
+        const capacity_max = size +| size / 2;
+        if (size > self.capacity or self.capacity > capacity_max) {
+            // Growth reserves the full headroom so a buffer that grows one row at a time reallocates rarely.
+            const capacity = if (size > self.capacity) @min(cells_max, capacity_max) else size;
             const chars = try self.allocator.alloc(u32, capacity);
             errdefer self.allocator.free(chars);
             const fg = try self.allocator.alloc(RGBA, capacity);
@@ -861,6 +863,10 @@ pub const OptimizedBuffer = struct {
         self.width = width;
         self.height = height;
         self.clear(ansi.rgbColor(0, 0, 0, 255), null);
+        // A replacement generation starts without tracker or placement capacity, which leases charge.
+        storage.grapheme_tracker.used_ids.clearAndFree();
+        storage.link_tracker.used_ids.clearAndFree();
+        storage.image_placements.clearAndFree(storage.resourceAllocator());
     }
 
     fn coordsToIndex(self: *const OptimizedBuffer, x: u32, y: u32) u32 {
