@@ -19,7 +19,7 @@ export class TextBufferView {
   private textBuffer: TextBuffer
   private _destroyed: boolean = false
   // Only these selection calls change a text view's selection, and resetting a clear one does
-  // nothing, so resets skip native code until a selection call may have set one.
+  // nothing, so resets skip the native call until a selection call may have set one.
   private selectionClear = true
 
   constructor(
@@ -97,8 +97,12 @@ export class TextBufferView {
 
   public resetSelection(): void {
     this.guard()
-    if (this.selectionClear) return this.lib.getYogaHost().assertMutable()
-    this.lib.contextTextBufferViewResetSelection(this.native.handle.context, this.native.handle, false)
+    this.lib.contextTextBufferViewResetSelection(
+      this.native.handle.context,
+      this.native.handle,
+      false,
+      this.selectionClear,
+    )
     this.selectionClear = true
   }
 
@@ -160,8 +164,12 @@ export class TextBufferView {
 
   public resetLocalSelection(): void {
     this.guard()
-    if (this.selectionClear) return this.lib.getYogaHost().assertMutable()
-    this.lib.contextTextBufferViewResetSelection(this.native.handle.context, this.native.handle, true)
+    this.lib.contextTextBufferViewResetSelection(
+      this.native.handle.context,
+      this.native.handle,
+      true,
+      this.selectionClear,
+    )
     this.selectionClear = true
   }
 
