@@ -1865,21 +1865,18 @@ export class SceneStaging {
    * and NaN values, and signed zeros, can compare equal under Yoga's rules, so they never qualify.
    */
   private stylesDiffer(packedA: number, valueA: number, packedB: number, valueB: number): boolean {
-    this.styleValueWords[0] = valueA
-    const a = this.styleValue[0]
-    this.styleValueWords[0] = valueB
-    const b = this.styleValue[0]
-    if (Number.isNaN(a) || Number.isNaN(b)) return false
-    const unitA = packedA >>> 24
-    const unitB = packedB >>> 24
-    const undefinedUnit = nativeConstants.OT_UNIT_UNDEFINED
+    // f32 bit patterns: NaN has an all-ones exponent and a nonzero mantissa; both zeros compare equal.
+    if ((valueA & 0x7f80_0000) === 0x7f80_0000 && (valueA & 0x007f_ffff) !== 0) return false
+    if ((valueB & 0x7f80_0000) === 0x7f80_0000 && (valueB & 0x007f_ffff) !== 0) return false
     const group = packedA & 0xff
     if (group === nativeConstants.OT_STYLE_VALUE || group === nativeConstants.OT_STYLE_DIMENSION) {
-      if (unitA === undefinedUnit || unitB === undefinedUnit) return false
+      const unitA = packedA >>> 24
+      const unitB = packedB >>> 24
+      if (unitA === nativeConstants.OT_UNIT_UNDEFINED || unitB === nativeConstants.OT_UNIT_UNDEFINED) return false
       if (unitA !== unitB) return true
       if (unitA === nativeConstants.OT_UNIT_AUTO) return false
     }
-    return a !== b
+    return valueA !== valueB && ((valueA | valueB) & 0x7fff_ffff) !== 0
   }
 
   /**
