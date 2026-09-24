@@ -2547,6 +2547,13 @@ function encodeEditorStyle(style: NativeEditorStyle): Uint32Array {
   return record
 }
 
+function bufferStackCoordinate(coordinate: number): number {
+  if (!Number.isInteger(coordinate) || coordinate < -0x80000000 || coordinate > 0x7fffffff) {
+    throw new RangeError("Buffer scissor coordinates must be signed 32-bit integers")
+  }
+  return coordinate
+}
+
 function sceneHitCoordinate(coordinate: number): void {
   if (!Number.isInteger(coordinate) || coordinate < -0x8000_0000 || coordinate > 0x7fff_ffff) {
     throw new RangeError("Scene hit coordinates must be signed 32-bit integers")
@@ -3273,6 +3280,8 @@ export class FFIRenderLib {
   })
   private readonly selectionResetChanged = new Uint32Array(1)
   private readonly hitTestOutput = new Uint32Array(1)
+  private readonly bufferStackInput = new Float32Array(1)
+  private readonly bufferStackOutput = new Float32Array(1)
   private drawTextBytes: Uint8Array | undefined
   private drawBottomBytes: Uint8Array | undefined
   private opentui: ReturnType<typeof getOpenTUILib>
@@ -5770,19 +5779,17 @@ export class FFIRenderLib {
     const ticket = frame === null ? null : encodeSceneFrameRequest(context, frame)
     const operation = BUFFER_STACK_OPERATIONS.indexOf(options.operation)
     if (operation < 0) throw new TypeError("Invalid checked buffer stack operation")
-    const x = options.x ?? 0
-    const y = options.y ?? 0
-    for (const coordinate of [x, y]) {
-      if (!Number.isInteger(coordinate) || coordinate < -0x80000000 || coordinate > 0x7fffffff) {
-        throw new RangeError("Buffer scissor coordinates must be signed 32-bit integers")
-      }
-    }
+    const x = bufferStackCoordinate(options.x ?? 0)
+    const y = bufferStackCoordinate(options.y ?? 0)
     const width = toSafeFFIU32Length(options.width ?? 0, "Buffer scissor width")
     const height = toSafeFFIU32Length(options.height ?? 0, "Buffer scissor height")
     const opacity = options.opacity ?? 1
     if (!Number.isFinite(opacity)) throw new RangeError("Buffer opacity must be finite")
-    const input = new Float32Array([Math.max(0, Math.min(1, opacity))])
-    const output = new Float32Array(1)
+    // Stack operations never call back into JavaScript, so one input and output pair serves every call.
+    const input = this.bufferStackInput
+    const output = this.bufferStackOutput
+    input[0] = Math.max(0, Math.min(1, opacity))
+    output[0] = 0
     const pointer = this.nativeContextPointer(context, "ot_buffer_stack")
     nativeResult(
       "ot_buffer_stack",
