@@ -4933,13 +4933,23 @@ export class CliRenderer extends EventEmitter implements RenderContext {
           }
 
           if (this._isRunning || this.immediateRerenderRequested) {
-            const targetFrameTime = this.immediateRerenderRequested ? this.minTargetFrameTime : this.targetFrameTime
-            const delay = Math.max(1, targetFrameTime - Math.floor(overallFrameTime))
+            const immediate = this.immediateRerenderRequested
+            const targetFrameTime = immediate ? this.minTargetFrameTime : this.targetFrameTime
+            const remaining = targetFrameTime - Math.floor(overallFrameTime)
             this.immediateRerenderRequested = false
-            this.renderTimeout = this.clock.setTimeout(() => {
-              this.renderTimeout = null
+            if (immediate && remaining <= 0) {
+              // Hooks request renders during the frame. When that frame is already due, the ready
+              // scheduler runs it on the next host turn instead of waiting for a timer.
               this.queueFrame()
-            }, delay)
+            } else {
+              this.renderTimeout = this.clock.setTimeout(
+                () => {
+                  this.renderTimeout = null
+                  this.queueFrame()
+                },
+                Math.max(1, remaining),
+              )
+            }
           } else {
             this.clock.clearTimeout(this.renderTimeout!)
             this.renderTimeout = null
