@@ -60,6 +60,25 @@ test "Scene checked measurement rejects busy frames and preserves layout on wron
     try testing.expect(!owner.mutating);
 }
 
+test "Scene node churn keeps free token slots and resolves live tokens" {
+    const owner = try context.Context.init(testing.allocator, testing.io, .{});
+    defer owner.deinit() catch unreachable;
+    const id = try session(owner, 8, 2);
+    const root = try owner.sceneCreateNode(id, 0, 1);
+    const live = try owner.sceneCreateNode(id, 1, 2);
+    try owner.sceneMoveNode(live, root, 0);
+    const owned = (try owner.raw().getRenderable(root)).scene_node.?.owner;
+    for (0..20_000) |index| {
+        const node = try owner.sceneCreateNode(id, 1, @intCast(index + 3));
+        try owner.sceneDestroyNode(node);
+        const unused = owned.tokens.capacity() - owned.tokens.count();
+        try testing.expect(owned.token_tombstones < unused / 2 + 1);
+    }
+    try testing.expectEqual(@as(u32, 2), owned.tokens.count());
+    const live_node = (try owner.raw().getRenderable(live)).scene_node.?;
+    try testing.expect(std.meta.eql(live, owned.tokens.get(live_node.token).?));
+}
+
 test "Scene retained surface binding rejects before replacing and releases each reference" {
     const owner = try context.Context.init(testing.allocator, testing.io, .{});
     defer owner.deinit() catch unreachable;
