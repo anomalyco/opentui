@@ -1084,8 +1084,28 @@ function pixelInput(data: Uint8Array | PointerInput, length: number): Uint8Array
   return input
 }
 
+const handleWords = nativeLayouts.ot_handle.size / 4
+
+type EncodedContextHandle = { readonly record: BigUint64Array; readonly words: Uint32Array }
+
 // Handles never change, so each one keeps a single encoded record. Native code only reads handle inputs.
-const encodedContextHandles = new WeakMap<ContextObjectHandle, BigUint64Array>()
+const encodedContextHandles = new WeakMap<ContextObjectHandle, EncodedContextHandle>()
+
+function encodedContextHandle(context: NativeContextHandle, handle: ContextObjectHandle): EncodedContextHandle {
+  // Independent native images can issue the same numeric IDs.
+  if (handle.context !== context) throw new NativeError("Context handle", NativeStatus.WrongContext)
+  const cached = encodedContextHandles.get(handle)
+  if (cached !== undefined) return cached
+  const layout = nativeLayouts.ot_handle
+  const record = new BigUint64Array(layout.size / 8)
+  const words = new Uint32Array(record.buffer)
+  record[layout.fields.context_id.offset / 8] = toFFIU64(handle.contextId, "Handle contextId")
+  words[layout.fields.slot.offset / 4] = toSafeFFIU32Length(handle.slot, "Handle slot")
+  words[layout.fields.generation.offset / 4] = toSafeFFIU32Length(handle.generation, "Handle generation")
+  const encoded = { record, words }
+  encodedContextHandles.set(handle, encoded)
+  return encoded
+}
 
 // Typed arrays preserve native byte order; layout metadata comes from the C header.
 function encodeContextHandle(
@@ -1094,29 +1114,11 @@ function encodeContextHandle(
   record?: BigUint64Array,
   words?: Uint32Array,
 ): BigUint64Array {
-  // Independent native images can issue the same numeric IDs.
-  if (handle.context !== context) throw new NativeError("Context handle", NativeStatus.WrongContext)
-  if (record !== undefined) {
-    writeContextHandle(handle, record, words)
-    return record
-  }
-  const cached = encodedContextHandles.get(handle)
-  if (cached !== undefined) return cached
-  const encoded = new BigUint64Array(nativeLayouts.ot_handle.size / 8)
-  writeContextHandle(handle, encoded)
-  encodedContextHandles.set(handle, encoded)
-  return encoded
-}
-
-function writeContextHandle(
-  handle: ContextObjectHandle,
-  record: BigUint64Array,
-  words: Uint32Array = new Uint32Array(record.buffer, record.byteOffset, nativeLayouts.ot_handle.size / 4),
-): void {
-  const layout = nativeLayouts.ot_handle
-  record[layout.fields.context_id.offset / 8] = toFFIU64(handle.contextId, "Handle contextId")
-  words[layout.fields.slot.offset / 4] = toSafeFFIU32Length(handle.slot, "Handle slot")
-  words[layout.fields.generation.offset / 4] = toSafeFFIU32Length(handle.generation, "Handle generation")
+  const encoded = encodedContextHandle(context, handle)
+  if (record === undefined) return encoded.record
+  words ??= new Uint32Array(record.buffer, record.byteOffset, handleWords)
+  for (let index = 0; index < handleWords; index++) words[index] = encoded.words[index]
+  return record
 }
 
 function createContextHandleRecord(record = new BigUint64Array(nativeLayouts.ot_handle.size / 8)) {
@@ -1494,7 +1496,6 @@ function createScenePaintRecord() {
   const record = createContextRecord(nativeLayouts.ot_scene_paint_options)
   return {
     record,
-    handle: createContextHandleRecord(),
     payload: new Uint32Array(record.buffer, 8, 16),
     background: new Uint16Array(record.buffer, nativeLayouts.ot_scene_paint_options.fields.background.offset, 4),
     floats: new Float32Array(record.buffer),
@@ -1683,7 +1684,6 @@ export class SceneStaging {
   private entryCount = 0
   private encodedWords = 0
   private lastBase = 0
-  private handleScratch: ReturnType<typeof createContextHandleRecord> | undefined = createContextHandleRecord()
   private paintScratch: ReturnType<typeof createScenePaintRecord> | undefined = createScenePaintRecord()
 
   constructor(initialCapacity = 64) {
@@ -1715,25 +1715,27 @@ export class SceneStaging {
     if (this.borrowed) throw new Error("Cannot change staged scene inputs during a native flush")
   }
 
-  private checkHandle(context: NativeContextHandle, handle: ReturnType<typeof createContextHandleRecord>): void {
+  /** Returns the node's staged visual record, if any. */
+  private checkHandle(context: NativeContextHandle, handle: Uint32Array): number | undefined {
     this.assertWritable()
     if (
       this.context !== undefined &&
-      (this.context !== context || this.contextWords[0] !== handle.words[0] || this.contextWords[1] !== handle.words[1])
+      (this.context !== context || this.contextWords[0] !== handle[0] || this.contextWords[1] !== handle[1])
     ) {
       throw new NativeError("Context handle", NativeStatus.WrongContext)
     }
-    const entry = this.paintBySlot.get(handle.words[2])
-    if (entry !== undefined && this.words[entry + 3] !== handle.words[3]) {
+    const entry = this.paintBySlot.get(handle[2])
+    if (entry !== undefined && this.words[entry + 3] !== handle[3]) {
       throw new NativeError("Context handle", NativeStatus.StaleHandle)
     }
+    return entry
   }
 
-  private bind(context: NativeContextHandle, handle: ReturnType<typeof createContextHandleRecord>): boolean {
+  private bind(context: NativeContextHandle, handle: Uint32Array): boolean {
     if (this.context !== undefined) return false
     this.context = context
-    this.contextWords[0] = handle.words[0]
-    this.contextWords[1] = handle.words[1]
+    this.contextWords[0] = handle[0]
+    this.contextWords[1] = handle[1]
     return true
   }
 
@@ -1747,15 +1749,20 @@ export class SceneStaging {
     this.floats = new Float32Array(next.buffer)
   }
 
-  private reserve(handleWords: Uint32Array, fields: number): number {
+  /** Callers write every field word; only the trailing alignment word needs clearing. */
+  private reserve(handle: Uint32Array, fields: number): number {
     if (this.full) throw new NativeError("ot_scene_flush", NativeStatus.ObjectLimit)
     const length = propertyWordLength(fields)
     this.ensureWords(this.encodedWords + length)
     const base = this.encodedWords
-    this.words.fill(0, base, base + length)
-    this.words.set(handleWords.subarray(0, 4), base)
-    this.words[base + 4] = fields
-    this.words[base + 5] = length * 4
+    const words = this.words
+    words[base + length - 1] = 0
+    words[base] = handle[0]
+    words[base + 1] = handle[1]
+    words[base + 2] = handle[2]
+    words[base + 3] = handle[3]
+    words[base + 4] = fields
+    words[base + 5] = length * 4
     this.encodedWords += length
     this.entryCount++
     this.lastBase = base
@@ -1782,41 +1789,28 @@ export class SceneStaging {
     validateSceneStyle(group, kind, edge, unit, value, flags)
     // Yoga ignores edges for dimensions; do not let unused u32 bits spill into the unit byte.
     if (group === 2 && kind < 7) edge = 0
+    const handle = encodedContextHandle(context, node).words
+    this.checkHandle(context, handle)
+    const target = group | (kind << 8) | (edge << 16)
+    const last = this.lastBase
+    // Rewriting the same property as the newest record is last-write-wins; nothing can observe the old value.
     if (
       this.entryCount !== 0 &&
-      this.context === context &&
-      node.context === context &&
-      this.words[this.lastBase + 4] === propertyStyle &&
-      this.words[this.lastBase + 2] === node.slot &&
-      this.words[this.lastBase + 3] === node.generation
+      this.words[last + 4] === propertyStyle &&
+      this.words[last + 2] === handle[2] &&
+      this.words[last + 3] === handle[3] &&
+      (this.words[last + 6] & 0x00ff_ffff) === target &&
+      this.words[last + 7] === flags
     ) {
-      const paintOffset = this.paintBySlot.get(node.slot)
-      if (paintOffset !== undefined && this.words[paintOffset + 3] !== node.generation) {
-        throw new NativeError("Context handle", NativeStatus.StaleHandle)
-      }
-      this.packScratch[0] = this.words[this.lastBase]
-      this.packScratch[1] = this.words[this.lastBase + 1]
-      this.packScratch[2] = this.words[this.lastBase + 2]
-      this.packScratch[3] = this.words[this.lastBase + 3]
-      const base = this.reserve(this.packScratch, propertyStyle)
-      this.words[base + 6] = group | (kind << 8) | (edge << 16) | (unit << 24)
-      this.words[base + 7] = flags
-      this.floats[base + 8] = value
+      this.words[last + 6] = target | (unit << 24)
+      this.floats[last + 8] = value
       return false
     }
-    const scratch = this.handleScratch ?? createContextHandleRecord()
-    this.handleScratch = undefined
-    try {
-      encodeContextHandle(context, node, scratch.record, scratch.words)
-      this.checkHandle(context, scratch)
-      const base = this.reserve(scratch.words, propertyStyle)
-      this.words[base + 6] = group | (kind << 8) | (edge << 16) | (unit << 24)
-      this.words[base + 7] = flags
-      this.floats[base + 8] = value
-      return this.bind(context, scratch)
-    } finally {
-      this.handleScratch ??= scratch
-    }
+    const base = this.reserve(handle, propertyStyle)
+    this.words[base + 6] = target | (unit << 24)
+    this.words[base + 7] = flags
+    this.floats[base + 8] = value
+    return this.bind(context, handle)
   }
 
   stageBackground(
@@ -1829,10 +1823,10 @@ export class SceneStaging {
     const scratch = this.paintScratch ?? createScenePaintRecord()
     this.paintScratch = undefined
     try {
-      encodeContextHandle(context, node, scratch.handle.record, scratch.handle.words)
+      const handle = encodedContextHandle(context, node).words
       contextBufferColor(color, scratch.background)
       owner?.assertMutable()
-      return this.publishPaint(context, nativeConstants.OT_SCENE_PROPERTY_BACKGROUND, scratch)
+      return this.publishPaint(context, handle, nativeConstants.OT_SCENE_PROPERTY_BACKGROUND, scratch)
     } finally {
       this.paintScratch ??= scratch
     }
@@ -1848,10 +1842,10 @@ export class SceneStaging {
     const scratch = this.paintScratch ?? createScenePaintRecord()
     this.paintScratch = undefined
     try {
-      encodeContextHandle(context, node, scratch.handle.record, scratch.handle.words)
+      const handle = encodedContextHandle(context, node).words
       const fields = encodeScenePaint(paint, scratch)
       owner?.assertMutable()
-      return this.publishPaint(context, fields, scratch)
+      return this.publishPaint(context, handle, fields, scratch)
     } finally {
       this.paintScratch ??= scratch
     }
@@ -1859,13 +1853,13 @@ export class SceneStaging {
 
   private publishPaint(
     context: NativeContextHandle,
+    handle: Uint32Array,
     fields: number,
     scratch: ReturnType<typeof createScenePaintRecord>,
   ): boolean {
-    this.checkHandle(context, scratch.handle)
+    let entry = this.checkHandle(context, handle)
     if (fields === 0) return false
-    const slot = scratch.handle.words[2]
-    let entry = this.paintBySlot.get(slot)
+    const slot = handle[2]
     const translation =
       fields & (nativeConstants.OT_SCENE_PROPERTY_TRANSLATE_X | nativeConstants.OT_SCENE_PROPERTY_TRANSLATE_Y)
     if (entry !== undefined && translation !== 0 && entry !== this.lastBase) {
@@ -1882,14 +1876,14 @@ export class SceneStaging {
     }
     let base: number
     if (entry === undefined) {
-      base = this.reserve(scratch.handle.words, fields)
+      base = this.reserve(handle, fields)
       this.paintBySlot.set(slot, base)
       this.writePackedFields(base, fields, fields, scratch, null, 0)
     } else {
       base = entry
       this.mergePackedPaint(base, fields, scratch)
     }
-    return this.bind(context, scratch.handle)
+    return this.bind(context, handle)
   }
 
   private packedFieldEquals(base: number, fields: number, bitIndex: number, record: Uint32Array): boolean {
@@ -1916,18 +1910,18 @@ export class SceneStaging {
       this.words.set(scratch.payload, base + propertyHeaderWords)
       return
     }
+    const words = this.words
+    const record = scratch.record
     let dest = base + propertyHeaderWords
     let oldOff = 0
-    for (let index = 0; index < scenePropertyWords.length; index++) {
+    for (let index = 0; index < scenePropertyWords.length && recordFields >>> index !== 0; index++) {
       const bit = 1 << index
       if (!(recordFields & bit)) continue
       const field = scenePropertyWords[index]
       if (writeMask & bit) {
-        for (let word = 0; word < field.length; word++) {
-          this.words[dest + word] = scratch.record[field.offset + word]
-        }
+        for (let word = 0; word < field.length; word++) words[dest + word] = record[field.offset + word]
       } else if (oldPayload) {
-        for (let word = 0; word < field.length; word++) this.words[dest + word] = oldPayload[oldOff + word]
+        for (let word = 0; word < field.length; word++) words[dest + word] = oldPayload[oldOff + word]
       }
       dest += field.length
       if (oldFields & bit) oldOff += field.length
