@@ -603,7 +603,8 @@ pub fn ot_buffer_draw(context: ?*ContextHandle, target_ptr: ?*const c.ot_handle,
     const owner = context.?;
     const target = target_ptr orelse return sessionError(owner, error.InvalidOptions);
     const options = options_ptr orelse return sessionError(owner, error.InvalidOptions);
-    var draw = bufferDrawFromC(options) catch |err| return sessionError(owner, err);
+    var draw: BufferDraw = undefined;
+    bufferDrawFromC(options, &draw) catch |err| return sessionError(owner, err);
     if (text_len > c.OT_BUFFER_TEXT_BYTES_MAX or bottom_len > c.OT_BUFFER_TEXT_BYTES_MAX or
         (text_len != 0 and text_ptr == null) or (bottom_len != 0 and bottom_ptr == null) or
         (draw.operation == .compose) != (source_ptr != null) or
@@ -611,7 +612,7 @@ pub fn ot_buffer_draw(context: ?*ContextHandle, target_ptr: ?*const c.ot_handle,
         (bottom_len != 0 and draw.operation != .box)) return sessionError(owner, error.InvalidOptions);
     const frame = if (frame_ptr) |record| frameRequestFromC(record.*) catch |err| return sessionError(owner, err) else null;
     draw.source = if (source_ptr) |source| handleFromC(source.*) else null;
-    owner.core.drawBuffer(handleFromC(target.*), frame, draw, if (text_ptr) |bytes| bytes[0..text_len] else &.{}, if (bottom_ptr) |bytes| bytes[0..bottom_len] else &.{}) catch |err| return sessionError(owner, err);
+    owner.core.drawBuffer(handleFromC(target.*), frame, &draw, if (text_ptr) |bytes| bytes[0..text_len] else &.{}, if (bottom_ptr) |bytes| bytes[0..bottom_len] else &.{}) catch |err| return sessionError(owner, err);
     return c.OT_OK;
 }
 
