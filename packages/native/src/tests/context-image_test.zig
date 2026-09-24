@@ -89,13 +89,13 @@ test "Context image failed imports and checked composition preserve accepted sta
     const refs = pixels.ref_count;
     for (0..2) |offset| {
         failing.fail_index = failing.alloc_index + offset;
-        try testing.expectError(error.OutOfMemory, owner.drawBuffer(destination, null, .{ .operation = .compose, .source = source }, "", ""));
+        try testing.expectError(error.OutOfMemory, owner.drawBuffer(destination, null, &.{ .operation = .compose, .source = source }, "", ""));
         failing.fail_index = std.math.maxInt(usize);
         try testing.expectEqualSlices(u32, &before, target.buffer.char);
         try testing.expectEqual(@as(usize, 0), target.image_placements.items.len);
         try testing.expectEqual(refs, pixels.ref_count);
     }
-    try owner.drawBuffer(destination, null, .{ .operation = .compose, .source = source, .x = -1 }, "", "");
+    try owner.drawBuffer(destination, null, &.{ .operation = .compose, .source = source, .x = -1 }, "", "");
     try testing.expectEqual(@as(usize, 1), target.image_placements.items.len);
     try testing.expectEqual(@as(u32, 2), target.image_placements.items[0].width);
     try owner.destroy(imported);
@@ -107,7 +107,7 @@ test "Context image failed imports and checked composition preserve accepted sta
     try target.materializeImageFallbacks();
     try testing.expectEqual(@as(usize, 0), target.image_placements.items.len);
     try testing.expect(!grapheme.isImageChar(target.buffer.char[0]));
-    try owner.drawBuffer(destination, null, .{ .operation = .clear }, "", "");
+    try owner.drawBuffer(destination, null, &.{ .operation = .clear }, "", "");
 }
 
 const frame_options: scene.FrameOptions = .{

@@ -25,11 +25,13 @@ fn bufferDrawRecord(comptime T: type, header: *const c.ot_buffer_draw_header, fl
     return @ptrCast(header);
 }
 
-pub fn bufferDrawFromC(header: *const c.ot_buffer_draw_header) !context.BufferDraw {
+/// Decodes into caller storage. Returning the record by value made callers reload it with wide
+/// loads just after narrow field stores, which stalls on store forwarding on every primitive draw.
+pub fn bufferDrawFromC(header: *const c.ot_buffer_draw_header, draw: *context.BufferDraw) !void {
     if (header.struct_size < @sizeOf(c.ot_buffer_draw_header)) return error.InvalidOptions;
     if (header.abi_version != c.OT_CONTEXT_ABI_VERSION) return error.UnsupportedVersion;
     if (header.operation > c.OT_BUFFER_DRAW_RESPECT_ALPHA) return error.InvalidOptions;
-    var draw: context.BufferDraw = .{ .operation = @enumFromInt(header.operation) };
+    draw.* = .{ .operation = @enumFromInt(header.operation) };
     switch (draw.operation) {
         .clear => {
             const record = try bufferDrawRecord(c.ot_buffer_draw_clear, header, 0);
@@ -88,7 +90,6 @@ pub fn bufferDrawFromC(header: *const c.ot_buffer_draw_header) !context.BufferDr
             draw.packed_options = record.enabled;
         },
     }
-    return draw;
 }
 
 pub fn gridFromC(options: *const c.ot_buffer_grid_options) !context.BufferGrid {
@@ -232,13 +233,14 @@ fn run(owner: *Context, target: *buffer.OptimizedBuffer, floor: usize, operation
             const value = try fixed(c.ot_scene_record_draw, body);
             const record = body[@sizeOf(c.ot_scene_record_draw)..];
             const header = try fixed(c.ot_buffer_draw_header, record);
-            var draw = try bufferDrawFromC(header);
+            var draw: context.BufferDraw = undefined;
+            try bufferDrawFromC(header, &draw);
             const text = record[header.struct_size..][0..value.text_length];
             const bottom = record[header.struct_size + value.text_length ..][0..value.bottom_length];
             if ((text.len != 0 and draw.operation != .text and draw.operation != .box) or
                 (bottom.len != 0 and draw.operation != .box)) return error.InvalidOptions;
             if (draw.operation == .compose) draw.source = handleFromC(value.source);
-            try owner.drawBufferOn(target, true, draw, text, bottom);
+            try owner.drawBufferOn(target, true, &draw, text, bottom);
         },
         c.OT_SCENE_RECORD_STACK => {
             const value = try fixed(c.ot_scene_record_stack, body);
