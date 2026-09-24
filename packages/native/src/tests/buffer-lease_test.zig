@@ -63,6 +63,55 @@ test "Resolved buffer capture uses the checked Session snapshot pool and exact c
     try std.testing.expectError(error.StaleLease, owner.bufferLeaseSnapshot(current));
 }
 
+test "Unleased buffer resize reuses storage and is transactional when it grows" {
+    var pool = gp.GraphemePool.init(std.testing.allocator);
+    defer pool.deinit();
+    var links = link.LinkPool.init(std.testing.allocator);
+    defer links.deinit();
+    var failing = std.testing.FailingAllocator.init(std.testing.allocator, .{});
+    const target = try buffer.OptimizedBuffer.init(failing.allocator(), 4, 4, .{
+        .pool = &pool,
+        .link_pool = &links,
+    });
+    defer target.deinit();
+    const storage = target.storage;
+    const cell: buffer.Cell = .{ .char = 'x', .fg = ansi.rgbColor(1, 2, 3, 255), .bg = ansi.rgbColor(4, 5, 6, 255), .attributes = 0 };
+
+    target.set(0, 0, cell);
+    try target.resize(4, 3);
+    try std.testing.expectEqual(storage, target.storage);
+    try std.testing.expectEqual(@as(u64, 2), storage.generation);
+    try std.testing.expectEqual(@as(usize, 12), target.buffer.char.len);
+    try std.testing.expectEqual(@as(u32, ' '), target.get(0, 0).?.char);
+
+    // Each array needs a replacement to grow past its capacity; any failure keeps the old arrays.
+    for (0..4) |fail_index| {
+        target.set(1, 1, cell);
+        const bytes_before = failing.allocated_bytes - failing.freed_bytes;
+        failing.fail_index = failing.alloc_index + fail_index;
+        try std.testing.expectError(error.OutOfMemory, target.resize(8, 8));
+        failing.fail_index = std.math.maxInt(usize);
+        try std.testing.expectEqual(bytes_before, failing.allocated_bytes - failing.freed_bytes);
+        try std.testing.expectEqual(@as(u32, 4), target.width);
+        try std.testing.expectEqual(@as(u32, 3), target.height);
+        try std.testing.expectEqual(@as(u64, 2), storage.generation);
+        try std.testing.expectEqualDeep(cell, target.get(1, 1).?);
+    }
+
+    try target.resize(8, 8);
+    try std.testing.expectEqual(@as(u64, 3), storage.generation);
+    try std.testing.expectEqual(@as(usize, 64), target.buffer.char.len);
+    try std.testing.expect(storage.capacity >= 64);
+    try std.testing.expectEqual(@as(u32, ' '), target.get(7, 7).?.char);
+
+    // A lease keeps the old cells observable, so resizing moves to new storage.
+    var lease = try target.acquireLease();
+    defer lease.release();
+    try target.resize(2, 2);
+    try std.testing.expect(storage != target.storage);
+    try std.testing.expect(!lease.isCurrent());
+}
+
 test "Buffer lease resize is transactional at every replacement allocation" {
     var pool = gp.GraphemePool.init(std.testing.allocator);
     defer pool.deinit();
