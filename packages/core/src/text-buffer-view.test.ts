@@ -462,26 +462,28 @@ describe("TextBufferView", () => {
 
     it("resets a selection once and skips resets of a clear view", () => {
       buffer.setStyledText(stringToStyledText("Hello World"))
-      const lib = resourceContext.renderLib
-      const reset = spyOn(lib, "contextTextBufferViewResetSelection")
+      const symbols = (resourceContext.renderLib as unknown as { opentui: { symbols: Record<string, () => number> } })
+        .opentui.symbols
+      const select = spyOn(symbols, "ot_text_buffer_view_select")
       try {
         view.resetLocalSelection()
         view.resetSelection()
-        expect(reset).toHaveBeenCalledTimes(0)
+        expect(select).toHaveBeenCalledTimes(0)
 
         view.setLocalSelection(0, 0, 4, 0)
         expect(view.getSelectedText()).toBe("Hello")
         view.resetLocalSelection()
         view.resetLocalSelection()
-        expect(reset).toHaveBeenCalledTimes(1)
+        // One call selected, one reset.
+        expect(select).toHaveBeenCalledTimes(2)
         expect(view.hasSelection()).toBe(false)
 
         view.setSelection(0, 5)
         view.resetSelection()
-        expect(reset).toHaveBeenCalledTimes(2)
+        expect(select).toHaveBeenCalledTimes(4)
         expect(view.hasSelection()).toBe(false)
       } finally {
-        reset.mockRestore()
+        select.mockRestore()
       }
     })
 
@@ -498,6 +500,15 @@ describe("TextBufferView", () => {
         })
       }
       expect(failures).toEqual(["Cannot mutate Yoga during a callback", "Cannot mutate Yoga during a callback"])
+    })
+
+    it("rejects resets of a clear view whose native Context is gone", () => {
+      const owner = new ResourceContext({ objectCapacity: 4, renderCellsMax: 64 })
+      const text = TextBuffer.create("wcwidth", owner)
+      const clear = TextBufferView.create(text)
+      owner.renderLib.destroyContext(owner.context)
+      expect(() => clear.resetLocalSelection()).toThrow("WrongContext")
+      expect(() => clear.resetSelection()).toThrow("WrongContext")
     })
 
     it("does not carry selection colors into a later selection", () => {
