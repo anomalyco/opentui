@@ -1839,11 +1839,14 @@ export class SceneStaging {
       (this.words[last + 6] & 0x00ff_ffff) === target &&
       this.words[last + 7] === flags
     ) {
+      const words = this.words
+      // Yoga ignores a write equal to the value it holds, so a bit-identical write does nothing.
+      if (words[last + 6] === packed && words[last + 8] === valueWord) return false
       if (this.rewriteStyleRun(last, packed, valueWord)) return false
       const previous = last
       const base = this.reserve(handle, propertyStyle)
       this.writeStyle(base, packed, flags, valueWord)
-      this.runBase = previous
+      if (this.stylesDiffer(words[previous + 6], words[previous + 8], packed, valueWord)) this.runBase = previous
       return false
     }
     const base = this.reserve(handle, propertyStyle)
@@ -1858,19 +1861,44 @@ export class SceneStaging {
   }
 
   /**
-   * Coalesces consecutive writes to one node property into at most two records whose values differ.
-   * Yoga marks a node dirty when a write changes a value, so a run dirties the node exactly when it
-   * contains two distinct values or its one value differs from Yoga's. Keeping two distinct values
-   * and the newest value last preserves that and the final style. Returns false to append instead.
+   * Whether Yoga certainly treats two staged values of one property as different. Undefined, auto
+   * and NaN values, and signed zeros, can compare equal under Yoga's rules, so they never qualify.
+   */
+  private stylesDiffer(packedA: number, valueA: number, packedB: number, valueB: number): boolean {
+    this.styleValueWords[0] = valueA
+    const a = this.styleValue[0]
+    this.styleValueWords[0] = valueB
+    const b = this.styleValue[0]
+    if (Number.isNaN(a) || Number.isNaN(b)) return false
+    const unitA = packedA >>> 24
+    const unitB = packedB >>> 24
+    const undefinedUnit = nativeConstants.OT_UNIT_UNDEFINED
+    const group = packedA & 0xff
+    if (group === nativeConstants.OT_STYLE_VALUE || group === nativeConstants.OT_STYLE_DIMENSION) {
+      if (unitA === undefinedUnit || unitB === undefinedUnit) return false
+      if (unitA !== unitB) return true
+      if (unitA === nativeConstants.OT_UNIT_AUTO) return false
+    }
+    return a !== b
+  }
+
+  /**
+   * Coalesces consecutive writes to one node property. The stream keeps a run of two records only
+   * while Yoga certainly sees their values as different, and the newest value stays last. Yoga then
+   * marks the node dirty, as some write in the original run would have, and ends with the same
+   * value. Any write that cannot keep that guarantee is appended instead. Returns false to append.
    */
   private rewriteStyleRun(last: number, packed: number, valueWord: number): boolean {
-    const words = this.words
-    if (words[last + 6] === packed && words[last + 8] === valueWord) return true
     const run = this.runBase
     if (run < 0) return false
+    const words = this.words
+    if (!this.stylesDiffer(words[last + 6], words[last + 8], packed, valueWord)) return false
     if (words[run + 6] === packed && words[run + 8] === valueWord) {
+      // Restoring the older value: the replaced newest value becomes the differing one.
       words[run + 6] = words[last + 6]
       words[run + 8] = words[last + 8]
+    } else if (!this.stylesDiffer(words[run + 6], words[run + 8], packed, valueWord)) {
+      return false
     }
     words[last + 6] = packed
     words[last + 8] = valueWord
