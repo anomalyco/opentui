@@ -295,10 +295,11 @@ pub const BufferStorage = struct {
         assert(self.ref_count == 1 and self.lease_budget == null and !self.retired);
         const size = math.mul(u32, width, height) catch return error.InvalidDimensions;
         const generation = math.add(u64, self.generation, 1) catch return error.GenerationExhausted;
-        const capacity_max = size +| size / 2;
-        if (size > self.capacity or self.capacity > capacity_max) {
-            // Growth reserves the full headroom so a buffer that grows one row at a time reallocates rarely.
-            const capacity = if (size > self.capacity) @min(cells_max, capacity_max) else size;
+        if (size > self.capacity or self.capacity > size +| size / 2) {
+            // Growing past the old capacity reserves half of it again, so a buffer that grows a row
+            // at a time or alternates sizes reallocates rarely. A larger jump or a shrink takes the
+            // exact cells. Either way capacity stays within half again the cells.
+            const capacity = if (size > self.capacity) @min(cells_max, @max(size, self.capacity +| self.capacity / 2)) else size;
             const chars = try self.allocator.alloc(u32, capacity);
             errdefer self.allocator.free(chars);
             const fg = try self.allocator.alloc(RGBA, capacity);
