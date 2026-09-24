@@ -97,7 +97,7 @@ export class TextBufferView {
 
   public resetSelection(): void {
     this.guard()
-    if (this.selectionClear) return
+    if (this.selectionClear) return this.lib.getYogaHost().assertMutable()
     this.lib.contextTextBufferViewResetSelection(this.native.handle.context, this.native.handle, false)
     this.selectionClear = true
   }
@@ -160,7 +160,7 @@ export class TextBufferView {
 
   public resetLocalSelection(): void {
     this.guard()
-    if (this.selectionClear) return
+    if (this.selectionClear) return this.lib.getYogaHost().assertMutable()
     this.lib.contextTextBufferViewResetSelection(this.native.handle.context, this.native.handle, true)
     this.selectionClear = true
   }
