@@ -1593,14 +1593,15 @@ pub const Context = struct {
 
     /// A Session target requires the exact active prefix or painted-frame ticket.
     /// No handle or raw address can grant access to a Session's framebuffer alone.
-    pub fn drawBuffer(self: *Context, handle: Handle, frame: ?scene.FrameRequest, options: BufferDraw, text: []const u8, bottom_title: []const u8) !void {
+    pub fn drawBuffer(self: *Context, handle: Handle, frame: ?scene.FrameRequest, options: *const BufferDraw, text: []const u8, bottom_title: []const u8) !void {
         try self.beginMutation();
         defer self.mutating = false;
         try self.drawBufferOn(try self.bufferDrawTarget(handle, frame), frame != null, options, text, bottom_title);
     }
 
-    /// Frame targets keep their scene-owned alpha mode.
-    pub fn drawBufferOn(self: *Context, target: *buf.OptimizedBuffer, frame_target: bool, options: BufferDraw, text: []const u8, bottom_title: []const u8) !void {
+    /// Frame targets keep their scene-owned alpha mode. The options stay behind a pointer: copying
+    /// the record on every primitive draw costs more than drawing a small primitive.
+    pub fn drawBufferOn(self: *Context, target: *buf.OptimizedBuffer, frame_target: bool, options: *const BufferDraw, text: []const u8, bottom_title: []const u8) !void {
         const background = options.background orelse ansi.rgbColor(0, 0, 0, 0);
         for ([_]buf.RGBA{ options.foreground, background, options.title_color }) |color| try buf.validateColor(color);
         if (options.attributes & ~ansi.TextAttributes.ATTRIBUTE_BASE_MASK != 0) return error.InvalidOptions;
