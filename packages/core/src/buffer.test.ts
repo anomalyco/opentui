@@ -51,6 +51,36 @@ describe("OptimizedBuffer", () => {
     buffer.drawText("a".repeat(65_536), 0, 0, fg)
   })
 
+  it("converts both box titles before a title's toString can draw", () => {
+    const other = OptimizedBuffer.create(12, 1, "unicode", { owner: resourceContext })
+    const white = RGBA.fromInts(255, 255, 255)
+    try {
+      const bottomTitle = {
+        toString() {
+          other.drawText("XYZ", 0, 0, white)
+          return "BOT"
+        },
+      }
+      buffer.drawBox({
+        x: 0,
+        y: 0,
+        width: 12,
+        height: 3,
+        border: true,
+        borderColor: white,
+        title: "TOP",
+        bottomTitle,
+      } as never)
+      const rows = buffer.withBuffers(({ char }) =>
+        [0, 2].map((y) => String.fromCodePoint(...char.subarray(y * 20, y * 20 + 12))),
+      )
+      expect(rows[0]).toContain("TOP")
+      expect(rows[1]).toContain("BOT")
+    } finally {
+      other.destroy()
+    }
+  })
+
   it("rejects native resize failures without publishing dimensions and retries", () => {
     const fg = RGBA.fromInts(255, 255, 255)
     const bg = RGBA.fromInts(0, 0, 0)
