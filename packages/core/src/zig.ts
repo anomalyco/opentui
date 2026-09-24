@@ -1085,39 +1085,50 @@ function pixelInput(data: Uint8Array | PointerInput, length: number): Uint8Array
 }
 
 const handleWords = nativeLayouts.ot_handle.size / 4
-
-type EncodedContextHandle = { readonly record: BigUint64Array; readonly words: Uint32Array }
+const handleSlotWord = nativeLayouts.ot_handle.fields.slot.offset / 4
+const handleGenerationWord = nativeLayouts.ot_handle.fields.generation.offset / 4
+// A u64 splits into two native-order words; the low word comes first on little-endian hosts.
+const handleContextLowWord =
+  nativeLayouts.ot_handle.fields.context_id.offset / 4 + (new Uint8Array(new Uint32Array([1]).buffer)[0] === 1 ? 0 : 1)
+const handleContextHighWord = handleContextLowWord ^ 1
 
 // Handles never change, so each one keeps a single encoded record. Native code only reads handle inputs.
-const encodedContextHandles = new WeakMap<ContextObjectHandle, EncodedContextHandle>()
+// Plain word arrays keep inline storage; creating an ArrayBuffer per handle costs far more.
+const encodedContextHandles = new WeakMap<ContextObjectHandle, Uint32Array>()
 
-function encodedContextHandle(context: NativeContextHandle, handle: ContextObjectHandle): EncodedContextHandle {
+function encodedContextHandle(context: NativeContextHandle, handle: ContextObjectHandle): Uint32Array {
   // Independent native images can issue the same numeric IDs.
   if (handle.context !== context) throw new NativeError("Context handle", NativeStatus.WrongContext)
   const cached = encodedContextHandles.get(handle)
   if (cached !== undefined) return cached
-  const layout = nativeLayouts.ot_handle
-  const record = new BigUint64Array(layout.size / 8)
-  const words = new Uint32Array(record.buffer)
-  record[layout.fields.context_id.offset / 8] = toFFIU64(handle.contextId, "Handle contextId")
-  words[layout.fields.slot.offset / 4] = toSafeFFIU32Length(handle.slot, "Handle slot")
-  words[layout.fields.generation.offset / 4] = toSafeFFIU32Length(handle.generation, "Handle generation")
-  const encoded = { record, words }
-  encodedContextHandles.set(handle, encoded)
-  return encoded
+  const contextId = toFFIU64(handle.contextId, "Handle contextId")
+  const words = new Uint32Array(handleWords)
+  words[handleContextLowWord] = Number(contextId & 0xffff_ffffn)
+  words[handleContextHighWord] = Number(contextId >> 32n)
+  words[handleSlotWord] = toSafeFFIU32Length(handle.slot, "Handle slot")
+  words[handleGenerationWord] = toSafeFFIU32Length(handle.generation, "Handle generation")
+  encodedContextHandles.set(handle, words)
+  return words
 }
 
 // Typed arrays preserve native byte order; layout metadata comes from the C header.
+function encodeContextHandle(context: NativeContextHandle, handle: ContextObjectHandle): Uint32Array
+function encodeContextHandle(
+  context: NativeContextHandle,
+  handle: ContextObjectHandle,
+  record: BigUint64Array,
+  words?: Uint32Array,
+): BigUint64Array
 function encodeContextHandle(
   context: NativeContextHandle,
   handle: ContextObjectHandle,
   record?: BigUint64Array,
   words?: Uint32Array,
-): BigUint64Array {
+): Uint32Array | BigUint64Array {
   const encoded = encodedContextHandle(context, handle)
-  if (record === undefined) return encoded.record
+  if (record === undefined) return encoded
   words ??= new Uint32Array(record.buffer, record.byteOffset, handleWords)
-  for (let index = 0; index < handleWords; index++) words[index] = encoded.words[index]
+  for (let index = 0; index < handleWords; index++) words[index] = encoded[index]
   return record
 }
 
@@ -1139,17 +1150,19 @@ function createSceneHooksRecord() {
   }
 }
 
+/** Reads an ot_handle from native-order words, or from a u64 record and its word view. */
 function decodeContextHandle(
   context: NativeContextHandle,
-  record: BigUint64Array,
-  words: Uint32Array = new Uint32Array(record.buffer, record.byteOffset, nativeLayouts.ot_handle.size / 4),
+  record: BigUint64Array | Uint32Array,
+  words?: Uint32Array,
 ): ContextObjectHandle {
-  const layout = nativeLayouts.ot_handle
+  const source =
+    record instanceof Uint32Array ? record : (words ?? new Uint32Array(record.buffer, record.byteOffset, handleWords))
   return {
     context,
-    contextId: record[layout.fields.context_id.offset / 8],
-    slot: words[layout.fields.slot.offset / 4],
-    generation: words[layout.fields.generation.offset / 4],
+    contextId: BigInt(source[handleContextLowWord]) | (BigInt(source[handleContextHighWord]) << 32n),
+    slot: source[handleSlotWord],
+    generation: source[handleGenerationWord],
   }
 }
 
@@ -1789,7 +1802,7 @@ export class SceneStaging {
     validateSceneStyle(group, kind, edge, unit, value, flags)
     // Yoga ignores edges for dimensions; do not let unused u32 bits spill into the unit byte.
     if (group === 2 && kind < 7) edge = 0
-    const handle = encodedContextHandle(context, node).words
+    const handle = encodedContextHandle(context, node)
     this.checkHandle(context, handle)
     const target = group | (kind << 8) | (edge << 16)
     const last = this.lastBase
@@ -1823,7 +1836,7 @@ export class SceneStaging {
     const scratch = this.paintScratch ?? createScenePaintRecord()
     this.paintScratch = undefined
     try {
-      const handle = encodedContextHandle(context, node).words
+      const handle = encodedContextHandle(context, node)
       contextBufferColor(color, scratch.background)
       owner?.assertMutable()
       return this.publishPaint(context, handle, nativeConstants.OT_SCENE_PROPERTY_BACKGROUND, scratch)
@@ -1842,7 +1855,7 @@ export class SceneStaging {
     const scratch = this.paintScratch ?? createScenePaintRecord()
     this.paintScratch = undefined
     try {
-      const handle = encodedContextHandle(context, node).words
+      const handle = encodedContextHandle(context, node)
       const fields = encodeScenePaint(paint, scratch)
       owner?.assertMutable()
       return this.publishPaint(context, handle, fields, scratch)
@@ -2515,6 +2528,12 @@ function encodeEditorStyle(style: NativeEditorStyle): Uint32Array {
     record[layout.fields.attributes.offset / 4] = toSafeFFIU32Length(attributes, "Editor style attributes")
   }
   return record
+}
+
+function sceneHitCoordinate(coordinate: number): void {
+  if (!Number.isInteger(coordinate) || coordinate < -0x8000_0000 || coordinate > 0x7fff_ffff) {
+    throw new RangeError("Scene hit coordinates must be signed 32-bit integers")
+  }
 }
 
 function createEditorSelectionRecord() {
@@ -3236,6 +3255,7 @@ export class FFIRenderLib {
     operation: NativeEditorSelectionOperation.LocalReset,
   })
   private readonly selectionResetChanged = new Uint32Array(1)
+  private readonly hitTestOutput = new Uint32Array(1)
   private opentui: ReturnType<typeof getOpenTUILib>
   private iccCacheClient = false
   // Layout reads are synchronous and non-reentrant. Retain one backing buffer so
@@ -3373,7 +3393,7 @@ export class FFIRenderLib {
     }
     const record = createContextRecord(layout)
     record[layout.fields.width_method.offset / 4] = widthMethod === "no-zwj" ? 2 : widthMethodCode(widthMethod)
-    const output = new BigUint64Array(nativeLayouts.ot_handle.size / 8)
+    const output = new Uint32Array(handleWords)
     const pointer = this.nativeContextPointer(context, "ot_text_buffer_create")
     nativeResult("ot_text_buffer_create", this.opentui.symbols.ot_text_buffer_create(pointer, record, output))
     try {
@@ -3396,7 +3416,7 @@ export class FFIRenderLib {
     const bytes = this.encoder.encode(text)
     const count = toSafeFFIU32Length(bytes.byteLength, "Unicode input bytes")
     const method = widthMethod === "no-zwj" ? 2 : widthMethodCode(widthMethod)
-    const output = new BigUint64Array(nativeLayouts.ot_handle.size / 8)
+    const output = new Uint32Array(handleWords)
     const pointer = this.nativeContextPointer(context, "ot_unicode_create")
     nativeResult(
       "ot_unicode_create",
@@ -3667,7 +3687,7 @@ export class FFIRenderLib {
       options.maxScrollback ?? 10_000,
       "Embedded terminal maxScrollback",
     )
-    const output = new BigUint64Array(nativeLayouts.ot_handle.size / 8)
+    const output = new Uint32Array(handleWords)
     const pointer = this.nativeContextPointer(context, "ot_embedded_terminal_create")
     nativeResult(
       "ot_embedded_terminal_create",
@@ -4025,7 +4045,7 @@ export class FFIRenderLib {
   ): ContextTextBufferViewHandle {
     this.getYogaHost().assertMutable()
     const handle = encodeContextHandle(context, text)
-    const output = new BigUint64Array(nativeLayouts.ot_handle.size / 8)
+    const output = new Uint32Array(handleWords)
     const pointer = this.nativeContextPointer(context, "ot_text_buffer_view_create")
     nativeResult("ot_text_buffer_view_create", this.opentui.symbols.ot_text_buffer_view_create(pointer, handle, output))
     try {
@@ -4149,7 +4169,6 @@ export class FFIRenderLib {
     const layout = nativeLayouts.ot_text_buffer_replacement
     const chunkLayout = nativeLayouts.ot_styled_text_chunk
     const records = new Uint32Array((count * layout.size) / 4)
-    const handles = new BigUint64Array(records.buffer)
     const bytes = new Uint8Array(byteCount)
     const chunks = new Uint32Array((chunkCount * chunkLayout.size) / 4)
     const urls = new Uint8Array(urlByteCount)
@@ -4162,8 +4181,8 @@ export class FFIRenderLib {
       const offset = (index * layout.size) / 4
       records[offset + layout.fields.struct_size.offset / 4] = layout.size
       records[offset + layout.fields.abi_version.offset / 4] = nativeConstants.OT_CONTEXT_ABI_VERSION
-      handles.set(encodeContextHandle(context, buffer), offset / 2 + layout.fields.buffer.offset / 8)
-      handles.set(encodeContextHandle(context, view), offset / 2 + layout.fields.view.offset / 8)
+      records.set(encodeContextHandle(context, buffer), offset + layout.fields.buffer.offset / 4)
+      records.set(encodeContextHandle(context, view), offset + layout.fields.view.offset / 4)
       records[offset + layout.fields.byte_offset.offset / 4] = byteCount
       records[offset + layout.fields.byte_count.offset / 4] = text.bytes.length
       records[offset + layout.fields.chunk_offset.offset / 4] = chunkCount
@@ -4639,7 +4658,7 @@ export class FFIRenderLib {
     }
     const record = createContextRecord(layout)
     record[layout.fields.width_method.offset / 4] = widthMethod === "no-zwj" ? 2 : widthMethodCode(widthMethod)
-    const output = new BigUint64Array(nativeLayouts.ot_handle.size / 8)
+    const output = new Uint32Array(handleWords)
     const pointer = this.nativeContextPointer(context, "ot_edit_buffer_create")
     nativeResult("ot_edit_buffer_create", this.opentui.symbols.ot_edit_buffer_create(pointer, record, output))
     try {
@@ -4671,7 +4690,7 @@ export class FFIRenderLib {
     const handle = encodeContextHandle(context, editBuffer)
     const columns = toSafeFFIU32Length(width, "Editor view width")
     const rows = toSafeFFIU32Length(height, "Editor view height")
-    const output = new BigUint64Array(nativeLayouts.ot_handle.size / 8)
+    const output = new Uint32Array(handleWords)
     const pointer = this.nativeContextPointer(context, "ot_editor_view_create")
     nativeResult(
       "ot_editor_view_create",
@@ -4694,7 +4713,7 @@ export class FFIRenderLib {
 
   public createContextSyntaxStyle(context: NativeContextHandle): ContextSyntaxStyleHandle {
     this.getYogaHost().assertMutable()
-    const output = new BigUint64Array(nativeLayouts.ot_handle.size / 8)
+    const output = new Uint32Array(handleWords)
     const pointer = this.nativeContextPointer(context, "ot_syntax_style_create")
     nativeResult("ot_syntax_style_create", this.opentui.symbols.ot_syntax_style_create(pointer, output))
     try {
@@ -5650,7 +5669,7 @@ export class FFIRenderLib {
     record[layout.fields.height.offset / 4] = toSafeFFIU32Length(options.height, "Context buffer height")
     record[layout.fields.width_method.offset / 4] = widthMethod === "no-zwj" ? 2 : widthMethodCode(widthMethod)
     record[layout.fields.flags.offset / 4] = toFFIBool(options.respectAlpha ?? false, "Context buffer respectAlpha")
-    const output = new BigUint64Array(nativeLayouts.ot_handle.size / 8)
+    const output = new Uint32Array(handleWords)
     const pointer = this.nativeContextPointer(context, "ot_buffer_create")
     nativeResult("ot_buffer_create", this.opentui.symbols.ot_buffer_create(pointer, record, output))
     try {
@@ -5935,7 +5954,7 @@ export class FFIRenderLib {
       options.controlCapacity ?? 0,
       "Session controlCapacity",
     )
-    const output = new BigUint64Array(nativeLayouts.ot_handle.size / 8)
+    const output = new Uint32Array(handleWords)
     const pointer = this.nativeContextPointer(context, "ot_session_create")
     nativeResult("ot_session_create", this.opentui.symbols.ot_session_create(pointer, record, output))
     return decodeContextHandle(context, output) as SessionHandle
@@ -7264,7 +7283,7 @@ export class FFIRenderLib {
     return this.sceneTextMetrics(context, encodeContextHandle(context, node))
   }
 
-  private sceneTextMetrics(context: NativeContextHandle, handle: BigUint64Array): NativeSceneTextMetrics {
+  private sceneTextMetrics(context: NativeContextHandle, handle: Uint32Array): NativeSceneTextMetrics {
     const layout = nativeLayouts.ot_scene_text_info
     const output = createContextRecord(layout)
     const pointer = this.nativeContextPointer(context, "ot_scene_get_text_info")
@@ -7623,12 +7642,10 @@ export class FFIRenderLib {
 
   public sceneHitTest(context: NativeContextHandle, session: SessionHandle, x: number, y: number): number {
     const handle = encodeContextHandle(context, session)
-    for (const coordinate of [x, y]) {
-      if (!Number.isInteger(coordinate) || coordinate < -0x8000_0000 || coordinate > 0x7fff_ffff) {
-        throw new RangeError("Scene hit coordinates must be signed 32-bit integers")
-      }
-    }
-    const output = new Uint32Array(1)
+    sceneHitCoordinate(x)
+    sceneHitCoordinate(y)
+    // Hit tests never call back into JavaScript, so one output word serves every test.
+    const output = this.hitTestOutput
     const pointer = this.nativeContextPointer(context, "ot_scene_hit_test")
     nativeResult("ot_scene_hit_test", this.opentui.symbols.ot_scene_hit_test(pointer, handle, x, y, output))
     return output[0]
@@ -8862,9 +8879,9 @@ export class FFIRenderLib {
   private imageOutput(
     context: NativeContextHandle,
     operation: string,
-    call: (pointer: Pointer, output: BigUint64Array) => number,
+    call: (pointer: Pointer, output: Uint32Array) => number,
   ): { status: number; handle: ImageHandle | null } {
-    const output = new BigUint64Array(nativeLayouts.ot_handle.size / 8)
+    const output = new Uint32Array(handleWords)
     const status = this.imageCall(context, operation, (pointer) => call(pointer, output))
     if (status !== 0) return { status, handle: null }
     try {
