@@ -268,6 +268,7 @@ pub const SharedText = struct {
     input_mem_id: u8,
     owned_style: ?*syntax_style.SyntaxStyle = null,
     views: ?*TextView = null,
+    pool_next: ?*SharedText = null,
 
     pub fn checkMutable(self: *SharedText) yoga.Error!void {
         var next = self.views;
@@ -512,6 +513,11 @@ pub const Context = struct {
     text_pool: ?*Text = null,
     text_pool_count: u32 = 0,
     text_pool_bytes: usize = 0,
+    // Idle standalone text buffers. Creating and freeing one maps and unmaps allocator pages,
+    // which costs more than the buffer's own setup, so Markdown and Code blocks reuse them.
+    shared_text_pool: ?*SharedText = null,
+    shared_text_pool_count: u32 = 0,
+    shared_text_pool_bytes: usize = 0,
 
     // Cover a rebuilt grid without retaining a Context's entire object capacity.
     pub const node_pool_count_max = 512;
@@ -662,6 +668,10 @@ pub const Context = struct {
         while (self.text_pool) |text| {
             self.text_pool = text.pool_next;
             self.freeTextStorage(text);
+        }
+        while (self.shared_text_pool) |text| {
+            self.shared_text_pool = text.pool_next;
+            self.freeSharedTextStorage(text);
         }
         self.yoga_config.deinit();
         self.graphemes.deinit();
@@ -2990,17 +3000,53 @@ pub const Context = struct {
         try self.beginMutation();
         defer self.mutating = false;
         try self.objects.checkCapacity();
+        const value = try self.takeSharedTextStorage(width_method);
+        errdefer self.freeSharedTextStorage(value);
+        const input_mem_id = try value.buffer.registerMemBuffer("", false);
+        const handle = try self.objects.insert(.text_buffer, value);
+        value.* = .{ .handle = handle, .buffer = value.buffer, .input_mem_id = input_mem_id };
+        return handle;
+    }
+
+    fn takeSharedTextStorage(self: *Context, width_method: utf8.WidthMethod) !*SharedText {
+        if (self.shared_text_pool) |value| {
+            self.shared_text_pool = value.pool_next;
+            self.shared_text_pool_count -= 1;
+            self.shared_text_pool_bytes -= @sizeOf(SharedText) + value.buffer.retainedStorageBytes();
+            errdefer self.freeSharedTextStorage(value);
+            try value.buffer.reinitStorage(width_method);
+            return value;
+        }
         const value = try self.allocator.create(SharedText);
         errdefer self.allocator.destroy(value);
         const buffer = try text_buffer.UnifiedTextBuffer.initWithOptions(self.allocator, &self.graphemes, &self.links, width_method, .{
             .io = self.io,
             .logger = &self.logger,
         });
-        errdefer buffer.deinit();
-        const input_mem_id = try buffer.registerMemBuffer("", false);
-        const handle = try self.objects.insert(.text_buffer, value);
-        value.* = .{ .handle = handle, .buffer = buffer, .input_mem_id = input_mem_id };
-        return handle;
+        value.* = .{ .handle = undefined, .buffer = buffer, .input_mem_id = 0 };
+        return value;
+    }
+
+    /// The caller has destroyed every view and the owned style.
+    fn releaseSharedTextStorage(self: *Context, value: *SharedText) void {
+        std.debug.assert(value.views == null and value.owned_style == null);
+        if (!self.closing and self.shared_text_pool_count < @min(self.objects.slots.len, text_pool_count_max)) {
+            value.buffer.retireStorage();
+            const bytes = @sizeOf(SharedText) + value.buffer.retainedStorageBytes();
+            if (bytes <= text_storage_bytes_max and bytes <= text_pool_bytes_max - self.shared_text_pool_bytes) {
+                value.pool_next = self.shared_text_pool;
+                self.shared_text_pool = value;
+                self.shared_text_pool_count += 1;
+                self.shared_text_pool_bytes += bytes;
+                return;
+            }
+        }
+        self.freeSharedTextStorage(value);
+    }
+
+    fn freeSharedTextStorage(self: *Context, value: *SharedText) void {
+        value.buffer.deinit();
+        self.allocator.destroy(value);
     }
 
     fn getTextBuffer(self: *Context, handle: Handle) Error!*SharedText {
@@ -3796,9 +3842,11 @@ pub const Context = struct {
             .text_buffer => {
                 const value: *SharedText = @ptrCast(@alignCast(token.ptr));
                 while (value.views) |view| self.destroyToken(self.objects.beginDestroy(view.handle) catch unreachable);
-                value.buffer.deinit();
+                // Detach the buffer from its style before the style goes away.
+                value.buffer.setSyntaxStyle(null);
                 if (value.owned_style) |style| style.deinit();
-                self.allocator.destroy(value);
+                value.owned_style = null;
+                self.releaseSharedTextStorage(value);
             },
             .text_buffer_view => {
                 const value: *TextView = @ptrCast(@alignCast(token.ptr));
