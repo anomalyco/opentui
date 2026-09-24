@@ -427,6 +427,10 @@ pub const Cell = struct {
     attributes: u32,
 };
 
+inline fn isPrintableAscii(bytes: []const u8) bool {
+    return bytes.len == 1 and bytes[0] >= 0x20 and bytes[0] < 0x7f;
+}
+
 inline fn makeCell(char: u32, fg: RGBA, bg: RGBA, attributes: u32) Cell {
     return .{
         .char = char,
@@ -2376,7 +2380,11 @@ pub const OptimizedBuffer = struct {
                         const next_byte_offset = @min(byte_offset + cp_len, byte_end);
                         grapheme_bytes = chunk_bytes[byte_offset..next_byte_offset];
                         // Sparse metadata also omits zero-width control characters.
-                        cluster_width_cols = utf8.getWidthAt(grapheme_bytes, 0, text_buffer.tabWidth(), text_buffer.widthMethod());
+                        // Printable ASCII is one cell under every width method.
+                        cluster_width_cols = if (isPrintableAscii(grapheme_bytes))
+                            1
+                        else
+                            utf8.getWidthAt(grapheme_bytes, 0, text_buffer.tabWidth(), text_buffer.widthMethod());
                         byte_offset = next_byte_offset;
                     }
 
@@ -2644,6 +2652,16 @@ pub const OptimizedBuffer = struct {
                                 makeCell(char, fg, drawBg, drawAttributes),
                             );
                         }
+                    } else if (cluster_width_cols == 1 and isPrintableAscii(grapheme_bytes) and
+                        opacity == 1.0 and ansi.alpha(drawBg) == 0 and
+                        self.trySetTransparentTextCellFast(
+                            self.coordsToIndex(@intCast(currentX), @intCast(currentY)),
+                            grapheme_bytes[0],
+                            drawFg,
+                            drawAttributes,
+                        ))
+                    {
+                        // Opaque ASCII over a transparent background needs no pool or blending work.
                     } else {
                         try self.drawTextBufferGrapheme(checked, grapheme_bytes, cluster_width_cols, @intCast(currentX), @intCast(currentY), drawFg, drawBg, drawAttributes);
                     }
@@ -2787,6 +2805,7 @@ pub const OptimizedBuffer = struct {
 
         const opacity = self.getCurrentOpacity();
         if (self.skipTransparentCellDraw(opacity, isFullyTransparent(opacity, borderFg, borderBg))) return;
+        const transparent_fast = opacity == 1.0 and ansi.alpha(borderBg) == 0 and gridBorderCharsSingleWidth(borderChars);
 
         const hChar = borderChars[@intFromEnum(BorderCharIndex.horizontal)];
         const vChar = borderChars[@intFromEnum(BorderCharIndex.vertical)];
@@ -2823,7 +2842,7 @@ pub const OptimizedBuffer = struct {
                     const has_right = colBorderIdx < columnCount;
                     const intersection = tableBorderIntersectionByConnections(borderChars, has_up, has_down, has_left, has_right);
 
-                    self.setCellWithAlphaBlending(@intCast(bx), @intCast(borderY), intersection, borderFg, borderBg, 0);
+                    self.setGridCell(transparent_fast, @intCast(bx), @intCast(borderY), intersection, borderFg, borderBg);
                 }
 
                 var colIdx: u32 = first_visible_column -| 1;
@@ -2842,7 +2861,7 @@ pub const OptimizedBuffer = struct {
                     if (clampedStart < clampedEnd) {
                         const borderYU32 = @as(u32, @intCast(borderY));
                         for (clampedStart..clampedEnd) |x| {
-                            self.setCellWithAlphaBlending(@intCast(x), borderYU32, hChar, borderFg, borderBg, 0);
+                            self.setGridCell(transparent_fast, @intCast(x), borderYU32, hChar, borderFg, borderBg);
                         }
                     }
                 }
@@ -2867,10 +2886,29 @@ pub const OptimizedBuffer = struct {
                     if (bx >= bufWidthI32) break;
                     if (bx < 0) continue;
 
-                    self.setCellWithAlphaBlending(@intCast(bx), @intCast(cy), vChar, borderFg, borderBg, 0);
+                    self.setGridCell(transparent_fast, @intCast(bx), @intCast(cy), vChar, borderFg, borderBg);
                 }
             }
         }
+    }
+
+    fn gridBorderCharsSingleWidth(borderChars: [*]const u32) bool {
+        for (0..@typeInfo(BorderCharIndex).@"enum".fields.len) |index| {
+            const char = borderChars[index];
+            if (char == 0 or !isSingleWidthBorderChar(char)) return false;
+        }
+        return true;
+    }
+
+    /// Opaque border glyphs over a transparent background keep the destination background,
+    /// which is the result blending produces, so they skip the per-cell blend.
+    inline fn setGridCell(self: *OptimizedBuffer, transparent_fast: bool, x: u32, y: u32, char: u32, fg: RGBA, bg: RGBA) void {
+        if (transparent_fast and self.isPointInScissor(@intCast(x), @intCast(y)) and
+            self.trySetTransparentTextCellFast(self.coordsToIndex(x, y), char, fg, 0))
+        {
+            return;
+        }
+        self.setCellWithAlphaBlending(x, y, char, fg, bg, 0);
     }
 
     fn tableBorderIntersectionByConnections(borderChars: [*]const u32, hasUp: bool, hasDown: bool, hasLeft: bool, hasRight: bool) u32 {
