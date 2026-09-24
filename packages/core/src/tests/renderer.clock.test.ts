@@ -167,6 +167,24 @@ test("intermediateRender() replaces the pending live frame timer", async () => {
   expect(clock.timers.size).toBe(1)
 })
 
+test("a render that a hook requests when the next frame is already due waits for no timer", async () => {
+  renderer.maxFps = Number.POSITIVE_INFINITY
+  const text = new TextRenderable(renderer, { content: "hook" })
+  let requests = 1
+  text.onUpdate = () => {
+    if (requests-- > 0) text.requestRender()
+  }
+  renderer.root.add(text)
+
+  renderer.requestRender()
+  await serviceReadyFrames()
+
+  expect(requests).toBe(-1)
+  expect(renderer.getStats().nativeFrameCount).toBe(2)
+  // @ts-expect-error - inspect private manual clock timers in regression test
+  expect(clock.timers.size).toBe(0)
+})
+
 function skipNativeFrame(): NativeSessionRenderStatus {
   renderer.nativeScene.cancelFrame()
   return NativeSessionRenderStatus.Skipped
