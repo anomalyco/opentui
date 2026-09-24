@@ -62,7 +62,31 @@ pub fn rgbaComponentToU8(component: f32) u8 {
     if (!std.math.isFinite(component)) return 0;
 
     const clamped = std.math.clamp(component, 0.0, 1.0);
-    return @intFromFloat(@round(clamped * 255.0));
+    return roundByte(clamped * 255.0);
+}
+
+/// Rounds half away from zero like @round for values in [0, 255]. Baseline x86-64 has no
+/// rounding instruction, so @round becomes a libm call on every color channel. Truncation
+/// is one instruction, and the fraction is exact because both operands share an exponent range.
+inline fn roundByte(value: f32) u8 {
+    std.debug.assert(value >= 0.0 and value <= 255.0);
+    const whole: u8 = @intFromFloat(value);
+    return whole + @intFromBool(value - @as(f32, @floatFromInt(whole)) >= 0.5);
+}
+
+test "roundByte matches @round across the byte range" {
+    var steps: u32 = 0;
+    while (steps <= 1 << 20) : (steps += 1) {
+        const component = @as(f32, @floatFromInt(steps)) / (1 << 20);
+        try std.testing.expectEqual(@as(u8, @intFromFloat(@round(component * 255.0))), roundByte(component * 255.0));
+    }
+    for (0..256) |byte| {
+        const half = @as(f32, @floatFromInt(byte)) + 0.5;
+        for ([_]f32{ half, std.math.nextAfter(f32, half, 0), std.math.nextAfter(f32, half, 256) }) |value| {
+            if (value > 255.0) continue;
+            try std.testing.expectEqual(@as(u8, @intFromFloat(@round(value))), roundByte(value));
+        }
+    }
 }
 
 /// Convert a 0-255 byte back to a 0.0-1.0 float.
