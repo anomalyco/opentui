@@ -163,6 +163,7 @@ export class OptimizedBuffer {
   public respectAlpha: boolean = false
   private _destroyed: boolean = false
   private _nativePaintAccess: (() => BufferAccess) | null = null
+  private _bufferTarget: NativeDrawingTarget | undefined
   /** A recording that composes this buffer; destruction waits until it has painted. */
   private _recordedBy?: NativePaintRecorder
 
@@ -182,7 +183,8 @@ export class OptimizedBuffer {
   private checkedTarget(): NativeDrawingTarget {
     const source = this.source
     if ("buffer" in source) {
-      return { context: source.context, target: source.buffer, frame: null }
+      // A Context buffer's target never changes, so every draw shares one frozen record.
+      return (this._bufferTarget ??= Object.freeze({ context: source.context, target: source.buffer, frame: null }))
     }
     if ("recorder" in source) throw new Error(recordedFrameAccess)
     const frame = source.getFrame?.()

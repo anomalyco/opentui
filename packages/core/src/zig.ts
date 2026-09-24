@@ -1199,9 +1199,7 @@ function createBufferDrawRecord() {
     records: BUFFER_DRAW_LAYOUTS.map((layout) => new Uint32Array(buffer, 0, layout.size / 4)),
     signed: new Int32Array(buffer),
     colors: new Uint16Array(buffer),
-    handle: createContextHandleRecord(),
     source: createContextHandleRecord(),
-    frame: createSceneFrameRecord(),
   }
 }
 
@@ -3256,6 +3254,8 @@ export class FFIRenderLib {
   })
   private readonly selectionResetChanged = new Uint32Array(1)
   private readonly hitTestOutput = new Uint32Array(1)
+  private drawTextBytes: Uint8Array | undefined
+  private drawBottomBytes: Uint8Array | undefined
   private opentui: ReturnType<typeof getOpenTUILib>
   private iccCacheClient = false
   // Layout reads are synchronous and non-reentrant. Retain one backing buffer so
@@ -5706,17 +5706,17 @@ export class FFIRenderLib {
     this.bufferDrawRecord = undefined
     try {
       const { context, target, frame } = drawing
-      const handle = encodeContextHandle(context, target, scratch.handle.record, scratch.handle.words)
-      const ticket = frame === null ? null : encodeSceneFrameRequest(context, frame, scratch.frame)
+      const handle = encodeContextHandle(context, target)
+      const ticket = frame === null ? null : encodeSceneFrameRequest(context, frame)
       const { signed, colors } = scratch
       const encoded = encodeBufferDrawRecord(context, options, scratch.words, signed, colors, 0, scratch.source)
       const record = scratch.records[encoded.operation]
       const source = encoded.source
-      const text = encoded.text === "" ? this.emptyBytes : this.encoder.encode(encoded.text)
-      const bottom = encoded.bottom === "" ? this.emptyBytes : this.encoder.encode(encoded.bottom)
-      if (text.byteLength > NATIVE_BUFFER_TEXT_BYTES_MAX || bottom.byteLength > NATIVE_BUFFER_TEXT_BYTES_MAX) {
-        throw new RangeError("Buffer text exceeds the native byte limit")
-      }
+      // No JavaScript runs between these encodes and the call, so the text buffers can be shared.
+      const textBytes = (this.drawTextBytes ??= new Uint8Array(NATIVE_BUFFER_TEXT_BYTES_MAX))
+      const bottomBytes = (this.drawBottomBytes ??= new Uint8Array(NATIVE_BUFFER_TEXT_BYTES_MAX))
+      const textLength = this.encodeDrawText(encoded.text, textBytes)
+      const bottomLength = this.encodeDrawText(encoded.bottom, bottomBytes)
       const pointer = this.nativeContextPointer(context, "ot_buffer_draw")
       nativeResult(
         "ot_buffer_draw",
@@ -5726,15 +5726,23 @@ export class FFIRenderLib {
           ticket,
           record,
           source,
-          text,
-          text.byteLength,
-          bottom,
-          bottom.byteLength,
+          textLength === 0 ? this.emptyBytes : textBytes,
+          textLength,
+          bottomLength === 0 ? this.emptyBytes : bottomBytes,
+          bottomLength,
         ),
       )
     } finally {
       this.bufferDrawRecord ??= scratch
     }
+  }
+
+  /** Encodes into a buffer sized to the native limit; text that does not fit exceeds that limit. */
+  private encodeDrawText(text: string, output: Uint8Array): number {
+    if (text === "") return 0
+    const { read, written } = this.encoder.encodeInto(text, output)
+    if (read !== text.length) throw new RangeError("Buffer text exceeds the native byte limit")
+    return written
   }
 
   public contextBufferStack({ context, target, frame }: NativeDrawingTarget, options: NativeBufferStack): number {
