@@ -112,6 +112,32 @@ test "Unleased buffer resize reuses storage and is transactional when it grows" 
     try std.testing.expect(!lease.isCurrent());
 }
 
+test "Unleased buffer resize charges leases what a fresh buffer of that size would" {
+    var pool = gp.GraphemePool.init(std.testing.allocator);
+    defer pool.deinit();
+    var links = link.LinkPool.init(std.testing.allocator);
+    defer links.deinit();
+    const target = try buffer.OptimizedBuffer.init(std.testing.allocator, 100, 100, .{ .pool = &pool, .link_pool = &links });
+    defer target.deinit();
+    var count: u32 = 0;
+    var bytes: u64 = 0;
+    const bytes_max: u64 = std.math.maxInt(u64);
+    // A checked lease reserves tracker entries for every cell.
+    var lease = try buffer.BufferLease.acquireChecked(target, &count, 16, &bytes, &bytes_max);
+    lease.releaseChecked(&count, &bytes, &bytes_max);
+
+    for ([_][2]u32{ .{ 10, 10 }, .{ 12, 10 }, .{ 11, 10 } }) |size| {
+        try target.resize(size[0], size[1]);
+        const fresh = try buffer.OptimizedBuffer.init(std.testing.allocator, size[0], size[1], .{ .pool = &pool, .link_pool = &links });
+        defer fresh.deinit();
+        // Growth keeps at most half again the live cells.
+        const cell_bytes = 2 * @sizeOf(u32) + 2 * @sizeOf(buffer.RGBA);
+        const headroom = @as(u64, target.storage.capacity - size[0] * size[1]) * cell_bytes;
+        try std.testing.expect(target.storage.capacity * 2 <= size[0] * size[1] * 3);
+        try std.testing.expectEqual(fresh.storage.retained_bytes + headroom, target.storage.retained_bytes);
+    }
+}
+
 test "Buffer lease resize is transactional at every replacement allocation" {
     var pool = gp.GraphemePool.init(std.testing.allocator);
     defer pool.deinit();
