@@ -18,6 +18,9 @@ export class TextBufferView {
   private native: { owner: ResourceContext; handle: ContextTextBufferViewHandle }
   private textBuffer: TextBuffer
   private _destroyed: boolean = false
+  // Only these selection calls change a text view's selection, and resetting a clear one does
+  // nothing, so resets skip native code until a selection call may have set one.
+  private selectionClear = true
 
   constructor(
     lib: RenderLib,
@@ -71,6 +74,7 @@ export class TextBufferView {
 
   public setSelection(start: number, end: number, bgColor?: RGBA, fgColor?: RGBA): void {
     this.guard()
+    this.selectionClear = false
     this.lib.contextTextBufferViewSelect(this.native.handle.context, this.native.handle, {
       operation: NativeEditorSelectionOperation.Set,
       start,
@@ -82,6 +86,7 @@ export class TextBufferView {
 
   public updateSelection(end: number, bgColor?: RGBA, fgColor?: RGBA): void {
     this.guard()
+    this.selectionClear = false
     this.lib.contextTextBufferViewSelect(this.native.handle.context, this.native.handle, {
       operation: NativeEditorSelectionOperation.Update,
       end,
@@ -92,7 +97,9 @@ export class TextBufferView {
 
   public resetSelection(): void {
     this.guard()
+    if (this.selectionClear) return
     this.lib.contextTextBufferViewResetSelection(this.native.handle.context, this.native.handle, false)
+    this.selectionClear = true
   }
 
   public getSelection(): { start: number; end: number } | null {
@@ -115,6 +122,7 @@ export class TextBufferView {
     behavior: SelectionBehavior = "cell",
   ): boolean {
     this.guard()
+    this.selectionClear = false
     return this.lib.contextTextBufferViewSelect(this.native.handle.context, this.native.handle, {
       operation: NativeEditorSelectionOperation.Local,
       anchorX,
@@ -137,6 +145,7 @@ export class TextBufferView {
     behavior: SelectionBehavior = "cell",
   ): boolean {
     this.guard()
+    this.selectionClear = false
     return this.lib.contextTextBufferViewSelect(this.native.handle.context, this.native.handle, {
       operation: NativeEditorSelectionOperation.LocalUpdate,
       anchorX,
@@ -151,7 +160,9 @@ export class TextBufferView {
 
   public resetLocalSelection(): void {
     this.guard()
+    if (this.selectionClear) return
     this.lib.contextTextBufferViewResetSelection(this.native.handle.context, this.native.handle, true)
+    this.selectionClear = true
   }
 
   public setSelectionOccupancy(occupancy: SelectionOccupancy): void {
