@@ -48,7 +48,7 @@ test "Context checked character drawing rejects colliding encoded IDs from disti
     const foreign_buffer = try foreign.raw().getBuffer(peer);
     const char = foreign_buffer.buffer.char[0];
     try testing.expectEqual(char, target.buffer.char[0]);
-    try testing.expectError(error.InvalidOptions, owner.drawBuffer(id, null, .{ .operation = .char, .char = char }, "", ""));
+    try testing.expectError(error.InvalidOptions, owner.drawBuffer(id, null, &.{ .operation = .char, .char = char }, "", ""));
     try testing.expectEqualStrings("\u{754c}", try owner.graphemes.get(grapheme.graphemeIdFromChar(char)));
     try testing.expectEqualStrings("\u{8a9e}", try foreign.graphemes.get(grapheme.graphemeIdFromChar(char)));
 }
