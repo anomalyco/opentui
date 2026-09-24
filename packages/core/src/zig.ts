@@ -2614,6 +2614,11 @@ function encodeEditorStyle(style: NativeEditorStyle): Uint32Array {
   return record
 }
 
+/** TextEncoder.encode converted any value to a string; draws keep that for callers that pass non-strings. */
+function drawTextString(text: string): string {
+  return typeof text === "string" ? text : `${text}`
+}
+
 function bufferStackCoordinate(coordinate: number): number {
   if (!Number.isInteger(coordinate) || coordinate < -0x80000000 || coordinate > 0x7fffffff) {
     throw new RangeError("Buffer scissor coordinates must be signed 32-bit integers")
@@ -5810,8 +5815,11 @@ export class FFIRenderLib {
       // No JavaScript runs between these encodes and the call, so the text buffers can be shared.
       const textBytes = (this.drawTextBytes ??= new Uint8Array(NATIVE_BUFFER_TEXT_BYTES_MAX))
       const bottomBytes = (this.drawBottomBytes ??= new Uint8Array(NATIVE_BUFFER_TEXT_BYTES_MAX))
-      const textLength = this.encodeDrawText(encoded.text, textBytes)
-      const bottomLength = this.encodeDrawText(encoded.bottom, bottomBytes)
+      // Convert both titles first: a caller's toString can draw and reuse the shared buffers.
+      const text = drawTextString(encoded.text)
+      const bottom = drawTextString(encoded.bottom)
+      const textLength = this.encodeDrawText(text, textBytes)
+      const bottomLength = this.encodeDrawText(bottom, bottomBytes)
       const pointer = this.nativeContextPointer(context, "ot_buffer_draw")
       nativeResult(
         "ot_buffer_draw",
@@ -5835,10 +5843,8 @@ export class FFIRenderLib {
   /** Encodes into a buffer sized to the native limit; text that does not fit exceeds that limit. */
   private encodeDrawText(text: string, output: Uint8Array): number {
     if (text === "") return 0
-    // TextEncoder.encode converted any value to a string; keep that for callers that pass non-strings.
-    const value = typeof text === "string" ? text : `${text}`
-    const { read, written } = this.encoder.encodeInto(value, output)
-    if (read !== value.length) throw new RangeError("Buffer text exceeds the native byte limit")
+    const { read, written } = this.encoder.encodeInto(text, output)
+    if (read !== text.length) throw new RangeError("Buffer text exceeds the native byte limit")
     return written
   }
 
