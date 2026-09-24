@@ -122,6 +122,7 @@ export class NativeScene {
   private destroyed = false
   private destroying = false
   private geometryRevision = 0
+  private layoutRevision = 0
   // Style and paint setters stage here; native sees them at the next flush boundary.
   private readonly staging = new SceneStaging()
   // Only construction and failed explicit refreshes need deferred discovery.
@@ -148,8 +149,21 @@ export class NativeScene {
     return this.geometryRevision
   }
 
+  /** @internal Layout reads return the same values until this changes. Undefined while callbacks run inside
+   * native layout, because that layout is still being computed. */
+  get observedLayoutRevision(): number | undefined {
+    if (this.yogaHost.inCallback || this.destroyed || this.driver.disposed) return undefined
+    return this.layoutRevision
+  }
+
   private changeGeometry(): void {
     this.geometryRevision = this.geometryRevision === Number.MAX_SAFE_INTEGER ? 0 : this.geometryRevision + 1
+    this.changeLayout()
+  }
+
+  /** Native layout and frame calls can publish new observations without a host write. */
+  private changeLayout(): void {
+    this.layoutRevision = this.layoutRevision === Number.MAX_SAFE_INTEGER ? 0 : this.layoutRevision + 1
   }
 
   /** @internal Whether style or paint writes await native acceptance. */
@@ -596,7 +610,11 @@ export class NativeScene {
       this.drainHookScans()
       this.assertAlive()
       this.flushStaged()
-      this.driver.renderLib.sceneMeasureLayout(this.driver.context, this.driver.session, owner._getSceneHandle(this))
+      try {
+        this.driver.renderLib.sceneMeasureLayout(this.driver.context, this.driver.session, owner._getSceneHandle(this))
+      } finally {
+        this.changeLayout()
+      }
       return Math.max(1, Math.trunc(this.getLayout(root, true).height))
     } finally {
       if (!attached && root.parent === owner) owner.remove(root)
@@ -692,6 +710,7 @@ export class NativeScene {
             recording,
           )
         } finally {
+          this.changeLayout()
           // Resources a recording names stay alive until native code has painted it.
           this.paintRecording?.recorder.settle()
         }
@@ -746,6 +765,7 @@ export class NativeScene {
     } finally {
       this.paintRecording?.recorder.settle()
       if (!yielded && request && request !== this.paintedFrame && !this.driver.disposed) {
+        this.changeLayout()
         try {
           this.driver.renderLib.sceneFrameCancel(this.driver.context, this.driver.session, request.frameId)
         } catch {
@@ -821,6 +841,7 @@ export class NativeScene {
     const frame = this.paintedFrame
     this.paintedFrame = null
     if (!frame || this.driver.disposed) return
+    this.changeLayout()
     try {
       this.driver.renderLib.sceneFrameCancel(this.driver.context, this.driver.session, frame.frameId)
     } catch {
