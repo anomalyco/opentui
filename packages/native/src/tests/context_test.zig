@@ -5,6 +5,7 @@ const yoga = @import("../yoga.zig");
 const ansi = @import("../ansi.zig");
 const buffer = @import("../buffer.zig");
 const gp = @import("../grapheme.zig");
+const utf8 = @import("../utf8.zig");
 const Fixture = @import("scene_fixture_test.zig").Fixture;
 
 test {
@@ -53,6 +54,34 @@ fn layout(owner: *context.Context, node: context.Handle) !@import("../scene.zig"
     const session = (try owner.raw().getRenderable(node)).scene_node.?.owner.session;
     try @import("scene_fixture_test.zig").repaint(owner, session, .{ 0, 0, 0, 255 }, false, 0);
     return owner.sceneGetLayout(node, true);
+}
+
+test "Destroyed text buffers are reused without their text, style, or views" {
+    const owner = try context.Context.init(std.testing.allocator, std.testing.io, .{});
+    defer owner.deinit() catch unreachable;
+    const first = try owner.createTextBuffer(.wcwidth);
+    const style = try owner.createSyntaxStyle();
+    const view = try owner.createTextBufferView(first);
+    try owner.textBufferSetText(first, "first text");
+    try owner.textBufferSetSyntaxStyle(first, style);
+    const storage = (try owner.raw().getTextBuffer(first)).buffer;
+    try owner.destroy(first);
+    try std.testing.expectError(error.StaleHandle, owner.raw().getTextBufferView(view));
+    try std.testing.expectEqual(@as(u32, 1), owner.shared_text_pool_count);
+
+    const second = try owner.createTextBuffer(.unicode);
+    try std.testing.expectEqual(@as(u32, 0), owner.shared_text_pool_count);
+    const reused = (try owner.raw().getTextBuffer(second)).buffer;
+    try std.testing.expectEqual(storage, reused);
+    try std.testing.expectEqual(@as(u32, 0), reused.getByteSize());
+    try std.testing.expect(reused.getSyntaxStyle() == null);
+    try std.testing.expectEqual(utf8.WidthMethod.unicode, reused.widthMethod());
+    try owner.textBufferSetText(second, "second");
+    var out: [16]u8 = undefined;
+    try std.testing.expectEqualStrings("second", out[0..try owner.textBufferGetRange(second, 0, 6, &out)]);
+    try owner.destroy(style);
+    // Destroyed buffers stay pooled until the Context closes; the testing allocator checks the release.
+    try owner.destroy(second);
 }
 
 test "Session scene teardown releases measure borrowers without destroying shared text" {
