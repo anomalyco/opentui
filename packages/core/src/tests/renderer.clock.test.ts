@@ -169,12 +169,13 @@ test("intermediateRender() replaces the pending live frame timer", async () => {
 
 test("a render that a hook requests when the next frame is already due waits for no timer", async () => {
   renderer.maxFps = Number.POSITIVE_INFINITY
-  const text = new TextRenderable(renderer, { content: "hook" })
   let requests = 1
-  text.onUpdate = () => {
-    if (requests-- > 0) text.requestRender()
+  class RequestingText extends TextRenderable {
+    protected override onUpdate(): void {
+      if (requests-- > 0) this.requestRender()
+    }
   }
-  renderer.root.add(text)
+  renderer.root.add(new RequestingText(renderer, { content: "hook" }))
 
   renderer.requestRender()
   await serviceReadyFrames()
