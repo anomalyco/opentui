@@ -136,6 +136,22 @@ test "Unleased buffer resize charges leases what a fresh buffer of that size wou
         try std.testing.expect(target.storage.capacity * 2 <= size[0] * size[1] * 3);
         try std.testing.expectEqual(fresh.storage.retained_bytes + headroom, target.storage.retained_bytes);
     }
+
+    // A jump past half again the capacity keeps exactly the cells, as a fresh buffer would.
+    try target.resize(200, 60);
+    try std.testing.expectEqual(@as(u32, 12000), target.storage.capacity);
+    const fresh = try buffer.OptimizedBuffer.init(std.testing.allocator, 200, 60, .{ .pool = &pool, .link_pool = &links });
+    defer fresh.deinit();
+    try std.testing.expectEqual(fresh.storage.retained_bytes, target.storage.retained_bytes);
+
+    // Sizes that alternate by a row reuse the arrays after the first growth.
+    try target.resize(100, 20);
+    try target.resize(100, 21);
+    const chars = target.buffer.char.ptr;
+    for (0..10) |index| {
+        try target.resize(100, if (index % 2 == 0) 20 else 21);
+        try std.testing.expectEqual(chars, target.buffer.char.ptr);
+    }
 }
 
 test "Buffer lease resize is transactional at every replacement allocation" {
