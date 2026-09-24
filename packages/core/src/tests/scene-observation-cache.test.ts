@@ -55,6 +55,19 @@ describe("scene layout observations", () => {
     await setup.renderOnce()
     expect(changes).toBe(1)
     expect(box.width).toBe(5)
+
+    // Values Yoga compares as equal although their bits differ still leave the run dirty.
+    for (const writes of [
+      [0, 10, -0],
+      [-0, 10, 0],
+      [{ unit: 0, value: 1 }, 10, { unit: 0, value: 2 }],
+      [undefined, 10, { unit: 1, value: NaN }],
+    ]) {
+      changes = 0
+      for (const value of writes) box.setMinWidth(value as never)
+      await setup.renderOnce()
+      expect(changes).toBe(1)
+    }
   })
 })
 
