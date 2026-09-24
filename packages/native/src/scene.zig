@@ -358,6 +358,8 @@ pub const Scene = struct {
     last_token: u32 = 0,
     last_placement: u64 = 0,
     tokens: std.AutoHashMapUnmanaged(u32, handles.Handle) = .empty,
+    // Each removal leaves a tombstone that inserts never reclaim; see removeToken.
+    token_tombstones: u32 = 0,
     style_node: yoga.YGNodeRef,
     work: std.ArrayListUnmanaged(Work) = .empty,
     prepared: std.ArrayListUnmanaged(Prepared) = .empty,
@@ -448,6 +450,21 @@ pub const Scene = struct {
         self.work.clearRetainingCapacity();
     }
 
+    /// Tokens only increase, so steady create/destroy churn fills the map with tombstones until
+    /// every insert and miss probes the whole table. Rehashing once tombstones take half of the
+    /// slots that live entries leave keeps probes short. The load limit leaves at least a fifth of
+    /// the slots unused, so the cost is a bounded number of slots per removal.
+    fn removeToken(self: *Scene, token: u32) void {
+        const removed = self.tokens.remove(token);
+        std.debug.assert(removed);
+        self.token_tombstones += 1;
+        const unused = self.tokens.capacity() - self.tokens.count();
+        if (self.token_tombstones >= unused / 2) {
+            self.tokens.rehash(std.hash_map.AutoContext(u32){});
+            self.token_tombstones = 0;
+        }
+    }
+
     pub fn move(self: *Scene, value: *native.NativeRenderable, destination: ?*native.NativeRenderable, index: u32) !void {
         const node = value.scene_node.?;
         if (node.kind == api.OT_SCENE_ROOT) return error.YogaInvalidArgument;
@@ -531,8 +548,7 @@ pub const Scene = struct {
             self.layout_pending = false;
             if (self.attempt != null) self.cancelFrame();
         }
-        const removed = self.tokens.remove(node.token);
-        std.debug.assert(removed);
+        self.removeToken(node.token);
         self.count -= 1;
         self.hook_count -= @intFromBool(node.hook_flags & ~@as(u32, api.OT_SCENE_HOOK_IDLE_UPDATE) != 0);
         self.layout_hook_count -= @intFromBool(node.hook_flags & scene_layout_hook_flags != 0);
