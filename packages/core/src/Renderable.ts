@@ -347,6 +347,11 @@ export abstract class Renderable extends BaseRenderable {
     paintRevision?: number
     paintLayout?: NativeSceneLayout
   }
+  // Layout reads between native layout passes and host writes return the same values.
+  private _observedLayout?: NativeSceneLayout
+  private _observedLayoutRevision = -1
+  private _computedLayout?: NativeSceneLayout
+  private _computedLayoutRevision = -1
   private _nativeSceneMethods?: Partial<Record<(typeof nativeSceneMethodNames)[number], unknown>>
   private _nativeSceneMethodsPending = false
   private _mouseListener: ((event: MouseEvent) => void) | null = null
@@ -856,10 +861,16 @@ export abstract class Renderable extends BaseRenderable {
     const cached = this._nativeSceneHookLayout
     const revision = scene.currentGeometryRevision
     if (cached?.layout && cached.revision === revision) return cached.layout
+    const layoutRevision = scene.observedLayoutRevision
+    if (layoutRevision !== undefined && this._observedLayoutRevision === layoutRevision) return this._observedLayout!
     const layout = scene.getLayout(this)
     if (cached) {
       cached.revision = revision
       cached.layout = layout
+    }
+    if (layoutRevision !== undefined) {
+      this._observedLayout = layout
+      this._observedLayoutRevision = layoutRevision
     }
     return layout
   }
@@ -1110,7 +1121,22 @@ export abstract class Renderable extends BaseRenderable {
   }
 
   getComputedLayout(): Layout {
-    const { left, top, right, bottom, width, height } = this._ctx.nativeScene.getLayout(this, true)
+    const scene = this._ctx.nativeScene
+    const revision = scene.observedLayoutRevision
+    let layout = this._computedLayout
+    if (
+      revision === undefined ||
+      this._computedLayoutRevision !== revision ||
+      layout === undefined ||
+      this._yogaFreed
+    ) {
+      layout = scene.getLayout(this, true)
+      if (revision !== undefined) {
+        this._computedLayout = layout
+        this._computedLayoutRevision = revision
+      }
+    }
+    const { left, top, right, bottom, width, height } = layout
     return { left, top, right, bottom, width, height }
   }
 
