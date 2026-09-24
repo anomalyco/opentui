@@ -119,9 +119,9 @@ export interface NativeContextOptions {
 
 export interface ContextObjectHandle {
   readonly context: NativeContextHandle
-  contextId: bigint
-  slot: number
-  generation: number
+  readonly contextId: bigint
+  readonly slot: number
+  readonly generation: number
 }
 
 declare const contextResourceBrand: unique symbol
@@ -1084,20 +1084,39 @@ function pixelInput(data: Uint8Array | PointerInput, length: number): Uint8Array
   return input
 }
 
+// Handles never change, so each one keeps a single encoded record. Native code only reads handle inputs.
+const encodedContextHandles = new WeakMap<ContextObjectHandle, BigUint64Array>()
+
 // Typed arrays preserve native byte order; layout metadata comes from the C header.
 function encodeContextHandle(
   context: NativeContextHandle,
   handle: ContextObjectHandle,
-  record: BigUint64Array = new BigUint64Array(nativeLayouts.ot_handle.size / 8),
-  words: Uint32Array = new Uint32Array(record.buffer, record.byteOffset, nativeLayouts.ot_handle.size / 4),
+  record?: BigUint64Array,
+  words?: Uint32Array,
 ): BigUint64Array {
-  const layout = nativeLayouts.ot_handle
   // Independent native images can issue the same numeric IDs.
   if (handle.context !== context) throw new NativeError("Context handle", NativeStatus.WrongContext)
+  if (record !== undefined) {
+    writeContextHandle(handle, record, words)
+    return record
+  }
+  const cached = encodedContextHandles.get(handle)
+  if (cached !== undefined) return cached
+  const encoded = new BigUint64Array(nativeLayouts.ot_handle.size / 8)
+  writeContextHandle(handle, encoded)
+  encodedContextHandles.set(handle, encoded)
+  return encoded
+}
+
+function writeContextHandle(
+  handle: ContextObjectHandle,
+  record: BigUint64Array,
+  words: Uint32Array = new Uint32Array(record.buffer, record.byteOffset, nativeLayouts.ot_handle.size / 4),
+): void {
+  const layout = nativeLayouts.ot_handle
   record[layout.fields.context_id.offset / 8] = toFFIU64(handle.contextId, "Handle contextId")
   words[layout.fields.slot.offset / 4] = toSafeFFIU32Length(handle.slot, "Handle slot")
   words[layout.fields.generation.offset / 4] = toSafeFFIU32Length(handle.generation, "Handle generation")
-  return record
 }
 
 function createContextHandleRecord(record = new BigUint64Array(nativeLayouts.ot_handle.size / 8)) {
@@ -1217,7 +1236,32 @@ function decodeSceneLayout(values: Float32Array, coordinates: Float64Array, offs
   }
 }
 
+// Encoded tickets only use readonly request fields, and hooks draw many times under one ticket.
+const encodedSceneFrameRequests = new WeakMap<NativeSceneFrameRequest, BigUint64Array>()
+
 function encodeSceneFrameRequest(
+  context: NativeContextHandle,
+  frame: NativeSceneFrameRequest | null,
+  scratch?: ReturnType<typeof createSceneFrameRecord>,
+): BigUint64Array {
+  if (scratch === undefined && frame !== null) {
+    const cached = encodedSceneFrameRequests.get(frame)
+    if (
+      cached !== undefined &&
+      frame.session.context === context &&
+      frame.root.context === context &&
+      frame.node.context === context
+    ) {
+      return cached
+    }
+    const encoded = writeSceneFrameRequest(context, frame)
+    encodedSceneFrameRequests.set(frame, encoded)
+    return encoded
+  }
+  return writeSceneFrameRequest(context, frame, scratch)
+}
+
+function writeSceneFrameRequest(
   context: NativeContextHandle,
   frame: NativeSceneFrameRequest | null,
   scratch?: ReturnType<typeof createSceneFrameRecord>,
@@ -2479,25 +2523,38 @@ function encodeEditorStyle(style: NativeEditorStyle): Uint32Array {
   return record
 }
 
-function encodeEditorSelection(selection: NativeEditorSelection): Uint32Array {
+function createEditorSelectionRecord() {
+  const record = createContextRecord(nativeLayouts.ot_editor_selection)
+  return {
+    record,
+    coordinates: new Int32Array(record.buffer),
+    colors: new Uint16Array(record.buffer),
+    changed: new Uint32Array(1),
+  }
+}
+
+function editorSelectionCoordinate(value: number): number {
+  if (!Number.isInteger(value) || value < -0x80000000 || value > 0x7fffffff) {
+    throw new RangeError("Editor selection coordinates must fit signed 32-bit cells")
+  }
+  return value
+}
+
+function encodeEditorSelection(
+  selection: NativeEditorSelection,
+  scratch: ReturnType<typeof createEditorSelectionRecord> = createEditorSelectionRecord(),
+): Uint32Array {
   const layout = nativeLayouts.ot_editor_selection
-  const record = createContextRecord(layout)
+  const { record, coordinates, colors } = scratch
+  record.fill(0, layout.fields.operation.offset / 4)
   record[layout.fields.operation.offset / 4] = toSafeFFIU32Length(selection.operation, "Editor selection operation")
   record[layout.fields.behavior.offset / 4] = toSafeFFIU32Length(selection.behavior ?? 0, "Editor selection behavior")
   record[layout.fields.start.offset / 4] = toSafeFFIU32Length(selection.start ?? 0, "Editor selection start")
   record[layout.fields.end.offset / 4] = toSafeFFIU32Length(selection.end ?? 0, "Editor selection end")
-  const coordinates = new Int32Array(record.buffer)
-  for (const [field, value] of [
-    ["anchor_x", selection.anchorX ?? 0],
-    ["anchor_y", selection.anchorY ?? 0],
-    ["focus_x", selection.focusX ?? 0],
-    ["focus_y", selection.focusY ?? 0],
-  ] as const) {
-    if (!Number.isInteger(value) || value < -0x80000000 || value > 0x7fffffff) {
-      throw new RangeError("Editor selection coordinates must fit signed 32-bit cells")
-    }
-    coordinates[layout.fields[field].offset / 4] = value
-  }
+  coordinates[layout.fields.anchor_x.offset / 4] = editorSelectionCoordinate(selection.anchorX ?? 0)
+  coordinates[layout.fields.anchor_y.offset / 4] = editorSelectionCoordinate(selection.anchorY ?? 0)
+  coordinates[layout.fields.focus_x.offset / 4] = editorSelectionCoordinate(selection.focusX ?? 0)
+  coordinates[layout.fields.focus_y.offset / 4] = editorSelectionCoordinate(selection.focusY ?? 0)
   record[layout.fields.update_cursor.offset / 4] = toFFIBool(
     selection.updateCursor ?? false,
     "Editor selection updateCursor",
@@ -2507,7 +2564,6 @@ function encodeEditorSelection(selection: NativeEditorSelection): Uint32Array {
     "Editor selection followCursor",
   )
   const { fg, bg } = selection
-  const colors = new Uint16Array(record.buffer)
   if (fg != null) {
     record[layout.fields.flags.offset / 4] |= NativeEditorStyleMask.Foreground
     contextBufferColor(fg, colors, layout.fields.foreground.offset / 2)
@@ -3177,6 +3233,15 @@ export class FFIRenderLib {
   private sceneMoveRecord: ReturnType<typeof createSceneNodeRecord> | undefined = createSceneNodeRecord()
   private sceneHooksRecord: ReturnType<typeof createSceneHooksRecord> | undefined = createSceneHooksRecord()
   private sceneFlushApplied: Uint32Array | undefined = new Uint32Array(1)
+  private editorSelectionRecord: ReturnType<typeof createEditorSelectionRecord> | undefined =
+    createEditorSelectionRecord()
+  // Info reads never call back into JavaScript, so one output record serves every read.
+  private readonly editorViewInfoRecord = createContextRecord(nativeLayouts.ot_editor_view_info)
+  private readonly selectionResetRecord = encodeEditorSelection({ operation: NativeEditorSelectionOperation.Reset })
+  private readonly localSelectionResetRecord = encodeEditorSelection({
+    operation: NativeEditorSelectionOperation.LocalReset,
+  })
+  private readonly selectionResetChanged = new Uint32Array(1)
   private opentui: ReturnType<typeof getOpenTUILib>
   private iccCacheClient = false
   // Layout reads are synchronous and non-reentrant. Retain one backing buffer so
@@ -4359,16 +4424,39 @@ export class FFIRenderLib {
     selection: NativeEditorSelection,
   ): boolean {
     const handle = encodeContextHandle(context, view)
-    const record = encodeEditorSelection(selection)
-    const changed = new Uint32Array(1)
-    this.getYogaHost().runMutation(() => {
-      const pointer = this.nativeContextPointer(context, "ot_text_buffer_view_select")
-      nativeResult(
-        "ot_text_buffer_view_select",
-        this.opentui.symbols.ot_text_buffer_view_select(pointer, handle, record, changed),
-      )
-    })
-    return changed[0] !== 0
+    const scratch = this.editorSelectionRecord ?? createEditorSelectionRecord()
+    this.editorSelectionRecord = undefined
+    try {
+      const record = encodeEditorSelection(selection, scratch)
+      const changed = scratch.changed
+      changed[0] = 0
+      this.getYogaHost().runMutation(() => {
+        const pointer = this.nativeContextPointer(context, "ot_text_buffer_view_select")
+        nativeResult(
+          "ot_text_buffer_view_select",
+          this.opentui.symbols.ot_text_buffer_view_select(pointer, handle, record, changed),
+        )
+      })
+      return changed[0] !== 0
+    } finally {
+      this.editorSelectionRecord ??= scratch
+    }
+  }
+
+  /** Resets read only the operation, so each uses one prepared record. Text view selection never calls back. */
+  public contextTextBufferViewResetSelection(
+    context: NativeContextHandle,
+    view: ContextTextBufferViewHandle,
+    local: boolean,
+  ): void {
+    const handle = encodeContextHandle(context, view)
+    const record = local ? this.localSelectionResetRecord : this.selectionResetRecord
+    this.getYogaHost().assertMutable()
+    const pointer = this.nativeContextPointer(context, "ot_text_buffer_view_select")
+    nativeResult(
+      "ot_text_buffer_view_select",
+      this.opentui.symbols.ot_text_buffer_view_select(pointer, handle, record, this.selectionResetChanged),
+    )
   }
 
   public contextTextBufferViewGetInfo(
@@ -4377,7 +4465,10 @@ export class FFIRenderLib {
   ): NativeEditorViewInfo {
     const layout = nativeLayouts.ot_editor_view_info
     const handle = encodeContextHandle(context, view)
-    const output = createContextRecord(layout)
+    const output = this.editorViewInfoRecord
+    output.fill(0)
+    output[layout.fields.struct_size.offset / 4] = layout.size
+    output[layout.fields.abi_version.offset / 4] = nativeConstants.OT_CONTEXT_ABI_VERSION
     const pointer = this.nativeContextPointer(context, "ot_text_buffer_view_get_info")
     nativeResult(
       "ot_text_buffer_view_get_info",
@@ -5093,16 +5184,23 @@ export class FFIRenderLib {
     selection: NativeEditorSelection,
   ): boolean {
     const handle = encodeContextHandle(context, view)
-    const record = encodeEditorSelection(selection)
-    const changed = new Uint32Array(1)
-    this.getYogaHost().runMutation(() => {
-      const pointer = this.nativeContextPointer(context, "ot_editor_view_select")
-      nativeResult(
-        "ot_editor_view_select",
-        this.opentui.symbols.ot_editor_view_select(pointer, handle, record, changed),
-      )
-    })
-    return changed[0] !== 0
+    const scratch = this.editorSelectionRecord ?? createEditorSelectionRecord()
+    this.editorSelectionRecord = undefined
+    try {
+      const record = encodeEditorSelection(selection, scratch)
+      const changed = scratch.changed
+      changed[0] = 0
+      this.getYogaHost().runMutation(() => {
+        const pointer = this.nativeContextPointer(context, "ot_editor_view_select")
+        nativeResult(
+          "ot_editor_view_select",
+          this.opentui.symbols.ot_editor_view_select(pointer, handle, record, changed),
+        )
+      })
+      return changed[0] !== 0
+    } finally {
+      this.editorSelectionRecord ??= scratch
+    }
   }
 
   public contextEditorViewGetInfo(

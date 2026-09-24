@@ -27,6 +27,22 @@ describe("native handles", () => {
     }
   })
 
+  test("a copied handle is encoded from its own fields", () => {
+    const lib = resolveRenderLib()
+    const context = lib.createContext({ objectCapacity: 2, renderCellsMax: 20 })
+    try {
+      const text = lib.createContextTextBuffer(context)
+      lib.contextTextBufferSetText(context, text, lib.encoder.encode("live"))
+      expect(lib.contextTextBufferGetText(context, text)).toBe("live")
+      const stale = { ...text, generation: text.generation + 1 }
+      expect(() => lib.contextTextBufferGetText(context, stale)).toThrow("StaleHandle")
+      expect(() => lib.contextTextBufferGetText(context, { ...text, slot: 0x7fff_ffff })).toThrow()
+      expect(lib.contextTextBufferGetText(context, text)).toBe("live")
+    } finally {
+      lib.destroyContext(context)
+    }
+  })
+
   test("checked resource handles reject stale and wrong-kind access", () => {
     const owner = new ResourceContext({ objectCapacity: 12, renderCellsMax: 32 })
     const { renderLib: lib, context } = owner

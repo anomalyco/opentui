@@ -92,9 +92,7 @@ export class TextBufferView {
 
   public resetSelection(): void {
     this.guard()
-    this.lib.contextTextBufferViewSelect(this.native.handle.context, this.native.handle, {
-      operation: NativeEditorSelectionOperation.Reset,
-    })
+    this.lib.contextTextBufferViewResetSelection(this.native.handle.context, this.native.handle, false)
   }
 
   public getSelection(): { start: number; end: number } | null {
@@ -153,9 +151,7 @@ export class TextBufferView {
 
   public resetLocalSelection(): void {
     this.guard()
-    this.lib.contextTextBufferViewSelect(this.native.handle.context, this.native.handle, {
-      operation: NativeEditorSelectionOperation.LocalReset,
-    })
+    this.lib.contextTextBufferViewResetSelection(this.native.handle.context, this.native.handle, true)
   }
 
   public setSelectionOccupancy(occupancy: SelectionOccupancy): void {

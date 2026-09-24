@@ -460,6 +460,28 @@ describe("TextBufferView", () => {
       expect(view.hasSelection()).toBe(false)
     })
 
+    it("does not carry selection colors into a later selection", () => {
+      buffer.setStyledText(stringToStyledText("Hello"))
+      const screen = OptimizedBuffer.create(8, 1, "wcwidth", { owner: resourceContext })
+      const selectedBackground = () => {
+        screen.clear()
+        screen.drawTextBuffer(view, 0, 0)
+        return screen.withBuffers(({ bg }) => Array.from(bg.subarray(0, 4)))
+      }
+      try {
+        view.setSelection(0, 5, RGBA.fromInts(255, 0, 0, 255))
+        const red = selectedBackground()
+        view.setSelection(0, 5)
+        const inverted = selectedBackground()
+        expect(inverted).not.toEqual(red)
+        view.resetLocalSelection()
+        view.setSelection(0, 5, RGBA.fromInts(255, 0, 0, 255))
+        expect(selectedBackground()).toEqual(red)
+      } finally {
+        screen.destroy()
+      }
+    })
+
     it("should update selection end position", () => {
       const styledText = stringToStyledText("Hello World")
       buffer.setStyledText(styledText)
