@@ -1707,6 +1707,8 @@ export class SceneStaging {
   private floats: Float32Array
   private readonly paintBySlot = new Map<number, number>()
   private readonly packScratch = new Uint32Array(16)
+  private readonly styleValue = new Float32Array(1)
+  private readonly styleValueWords = new Uint32Array(this.styleValue.buffer)
   private context?: NativeContextHandle
   private readonly contextId = new BigUint64Array(1)
   private readonly contextWords = new Uint32Array(this.contextId.buffer)
@@ -1714,6 +1716,8 @@ export class SceneStaging {
   private entryCount = 0
   private encodedWords = 0
   private lastBase = 0
+  // Base of the record just before lastBase when both set the same node property, else -1.
+  private runBase = -1
   private paintScratch: ReturnType<typeof createScenePaintRecord> | undefined = createScenePaintRecord()
 
   constructor(initialCapacity = 64) {
@@ -1796,6 +1800,7 @@ export class SceneStaging {
     this.encodedWords += length
     this.entryCount++
     this.lastBase = base
+    this.runBase = -1
     return base
   }
 
@@ -1822,8 +1827,10 @@ export class SceneStaging {
     const handle = encodedContextHandle(context, node)
     this.checkHandle(context, handle)
     const target = group | (kind << 8) | (edge << 16)
+    const packed = target | (unit << 24)
+    this.styleValue[0] = value
+    const valueWord = this.styleValueWords[0]
     const last = this.lastBase
-    // Rewriting the same property as the newest record is last-write-wins; nothing can observe the old value.
     if (
       this.entryCount !== 0 &&
       this.words[last + 4] === propertyStyle &&
@@ -1832,15 +1839,42 @@ export class SceneStaging {
       (this.words[last + 6] & 0x00ff_ffff) === target &&
       this.words[last + 7] === flags
     ) {
-      this.words[last + 6] = target | (unit << 24)
-      this.floats[last + 8] = value
+      if (this.rewriteStyleRun(last, packed, valueWord)) return false
+      const previous = last
+      const base = this.reserve(handle, propertyStyle)
+      this.writeStyle(base, packed, flags, valueWord)
+      this.runBase = previous
       return false
     }
     const base = this.reserve(handle, propertyStyle)
-    this.words[base + 6] = target | (unit << 24)
-    this.words[base + 7] = flags
-    this.floats[base + 8] = value
+    this.writeStyle(base, packed, flags, valueWord)
     return this.bind(context, handle)
+  }
+
+  private writeStyle(base: number, packed: number, flags: number, valueWord: number): void {
+    this.words[base + 6] = packed
+    this.words[base + 7] = flags
+    this.words[base + 8] = valueWord
+  }
+
+  /**
+   * Coalesces consecutive writes to one node property into at most two records whose values differ.
+   * Yoga marks a node dirty when a write changes a value, so a run dirties the node exactly when it
+   * contains two distinct values or its one value differs from Yoga's. Keeping two distinct values
+   * and the newest value last preserves that and the final style. Returns false to append instead.
+   */
+  private rewriteStyleRun(last: number, packed: number, valueWord: number): boolean {
+    const words = this.words
+    if (words[last + 6] === packed && words[last + 8] === valueWord) return true
+    const run = this.runBase
+    if (run < 0) return false
+    if (words[run + 6] === packed && words[run + 8] === valueWord) {
+      words[run + 6] = words[last + 6]
+      words[run + 8] = words[last + 8]
+    }
+    words[last + 6] = packed
+    words[last + 8] = valueWord
+    return true
   }
 
   stageBackground(
@@ -1978,6 +2012,7 @@ export class SceneStaging {
     }
     this.encodedWords += delta
     if (this.lastBase >= base + oldLen) this.lastBase += delta
+    if (this.runBase >= base + oldLen) this.runBase += delta
     this.words.fill(0, base + propertyHeaderWords, base + newLen)
     this.words[base + 4] = merged
     this.words[base + 5] = newLen * 4
@@ -1997,6 +2032,7 @@ export class SceneStaging {
     this.entryCount = 0
     this.encodedWords = 0
     this.lastBase = 0
+    this.runBase = -1
     this.paintBySlot.clear()
     this.context = undefined
   }
@@ -2008,6 +2044,8 @@ export class SceneStaging {
     if (!this.borrowed) throw new Error("Scene flush inputs were not borrowed")
     this.borrowed = false
     if (applied === this.entryCount) return this.clear()
+    // An unchanged stream keeps its indexes, including the open style run.
+    if (applied === 0) return
     let source = 0
     for (let index = 0; index < applied; index++) source += this.words[source + 5] / 4
     this.words.copyWithin(0, source, this.encodedWords)
@@ -2049,6 +2087,7 @@ export class SceneStaging {
       offset += this.words[offset + 5] / 4
     }
     this.lastBase = last
+    this.runBase = -1
   }
 }
 

@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test"
 import { nativeConstants } from "../native-abi.generated.js"
+import { LayoutEvents } from "../Renderable.js"
 import { BoxRenderable } from "../renderables/Box.js"
 import { createTestRenderer, type TestRenderer } from "../testing.js"
 import { SceneStaging, type NativeContextHandle, type SceneNodeHandle } from "../zig.js"
@@ -37,6 +38,24 @@ describe("scene layout observations", () => {
     box.destroy()
     expect(() => box.getComputedLayout()).toThrow()
   })
+
+  test("a style set and restored before a frame still runs layout", async () => {
+    const setup = await createTestRenderer({ width: 20, height: 5 })
+    renderer = setup.renderer
+    const box = new BoxRenderable(renderer, { width: 5, height: 1 })
+    renderer.root.add(box)
+    await setup.renderOnce()
+    let changes = 0
+    renderer.root.on(LayoutEvents.LAYOUT_CHANGED, () => changes++)
+    await setup.renderOnce()
+    expect(changes).toBe(0)
+
+    box.width = 10
+    box.width = 5
+    await setup.renderOnce()
+    expect(changes).toBe(1)
+    expect(box.width).toBe(5)
+  })
 })
 
 describe("scene staging", () => {
@@ -45,24 +64,36 @@ describe("scene staging", () => {
   const { OT_STYLE_DIMENSION, OT_DIMENSION_WIDTH, OT_DIMENSION_HEIGHT, OT_UNIT_POINT, OT_STYLE_DISABLE_FLEX_SHRINK } =
     nativeConstants
 
-  test("rewrites the newest record only when it sets the same property", () => {
+  test("keeps a run of writes to one property as at most two differing records", () => {
     const staging = new SceneStaging()
     const width = (value: number, flags = 0) =>
       staging.stageStyle(context, node, OT_STYLE_DIMENSION, OT_DIMENSION_WIDTH, 0, OT_UNIT_POINT, value, flags)
+    const values = () => {
+      const words = staging._views(context)
+      const floats = new Float32Array(words.buffer)
+      const result = Array.from({ length: staging.count }, (_, index) => floats[index * 10 + 8])
+      staging.consume(0)
+      return result
+    }
     width(10)
+    width(10)
+    expect(values()).toEqual([10])
     width(20)
-    expect(staging.count).toBe(1)
-    staging.stageStyle(context, node, OT_STYLE_DIMENSION, OT_DIMENSION_HEIGHT, 0, OT_UNIT_POINT, 5, 0)
+    expect(values()).toEqual([10, 20])
     width(30)
-    expect(staging.count).toBe(3)
-    width(40, OT_STYLE_DISABLE_FLEX_SHRINK)
-    expect(staging.count).toBe(4)
-    staging.stageStyle(context, { ...node, slot: 4 }, OT_STYLE_DIMENSION, OT_DIMENSION_WIDTH, 0, OT_UNIT_POINT, 1, 0)
-    expect(staging.count).toBe(5)
+    expect(values()).toEqual([10, 30])
+    // Returning to the older value keeps a differing value ahead of it, so Yoga still sees a change.
+    width(10)
+    expect(values()).toEqual([30, 10])
+    width(10)
+    expect(values()).toEqual([30, 10])
 
-    const words = staging._views(context)
-    const floats = new Float32Array(words.buffer)
-    expect(floats[8]).toBe(20)
-    expect(staging.byteLength).toBe(5 * 40)
+    staging.stageStyle(context, node, OT_STYLE_DIMENSION, OT_DIMENSION_HEIGHT, 0, OT_UNIT_POINT, 5, 0)
+    width(40)
+    width(50)
+    expect(values()).toEqual([30, 10, 5, 40, 50])
+    width(60, OT_STYLE_DISABLE_FLEX_SHRINK)
+    staging.stageStyle(context, { ...node, slot: 4 }, OT_STYLE_DIMENSION, OT_DIMENSION_WIDTH, 0, OT_UNIT_POINT, 1, 0)
+    expect(values()).toEqual([30, 10, 5, 40, 50, 60, 1])
   })
 })
