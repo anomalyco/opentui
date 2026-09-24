@@ -4553,16 +4553,21 @@ export class FFIRenderLib {
     }
   }
 
-  /** Resets read only the operation, so each uses one prepared record. Text view selection never calls back. */
+  /**
+   * Resets read only the operation, so each uses one prepared record. Text view selection never calls back.
+   * A reset of a view with no selection changes nothing, so `clear` skips the native call after the checks.
+   */
   public contextTextBufferViewResetSelection(
     context: NativeContextHandle,
     view: ContextTextBufferViewHandle,
     local: boolean,
+    clear = false,
   ): void {
     const handle = encodeContextHandle(context, view)
     const record = local ? this.localSelectionResetRecord : this.selectionResetRecord
     this.getYogaHost().assertMutable()
     const pointer = this.nativeContextPointer(context, "ot_text_buffer_view_select")
+    if (clear) return
     nativeResult(
       "ot_text_buffer_view_select",
       this.opentui.symbols.ot_text_buffer_view_select(pointer, handle, record, this.selectionResetChanged),
