@@ -5807,8 +5807,10 @@ export class FFIRenderLib {
   /** Encodes into a buffer sized to the native limit; text that does not fit exceeds that limit. */
   private encodeDrawText(text: string, output: Uint8Array): number {
     if (text === "") return 0
-    const { read, written } = this.encoder.encodeInto(text, output)
-    if (read !== text.length) throw new RangeError("Buffer text exceeds the native byte limit")
+    // TextEncoder.encode converted any value to a string; keep that for callers that pass non-strings.
+    const value = typeof text === "string" ? text : `${text}`
+    const { read, written } = this.encoder.encodeInto(value, output)
+    if (read !== value.length) throw new RangeError("Buffer text exceeds the native byte limit")
     return written
   }
 

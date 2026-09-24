@@ -40,6 +40,17 @@ describe("OptimizedBuffer", () => {
     expect([copy.width, copy.height, copy.char.length]).toEqual([20, 5, 100])
   })
 
+  it("draws text given as a non-string and enforces the text byte limit", () => {
+    const fg = RGBA.fromInts(255, 255, 255)
+    buffer.drawText(123 as never, 0, 0, fg)
+    buffer.drawText(["a", "b"] as never, 0, 1, fg)
+    expect(
+      buffer.withBuffers(({ char }) => String.fromCodePoint(...char.subarray(0, 3), ...char.subarray(20, 23))),
+    ).toBe("123a,b")
+    expect(() => buffer.drawText("a".repeat(65_537), 0, 0, fg)).toThrow("Buffer text exceeds the native byte limit")
+    buffer.drawText("a".repeat(65_536), 0, 0, fg)
+  })
+
   it("rejects native resize failures without publishing dimensions and retries", () => {
     const fg = RGBA.fromInts(255, 255, 255)
     const bg = RGBA.fromInts(0, 0, 0)
