@@ -1,4 +1,4 @@
-import { describe, expect, it, beforeEach, afterEach } from "bun:test"
+import { describe, expect, it, beforeEach, afterEach, spyOn } from "bun:test"
 import { OptimizedBuffer, ResourceContext } from "./buffer.js"
 import { TextBuffer } from "./text-buffer.js"
 import { TextBufferView } from "./text-buffer-view.js"
@@ -458,6 +458,31 @@ describe("TextBufferView", () => {
 
       view.resetSelection()
       expect(view.hasSelection()).toBe(false)
+    })
+
+    it("resets a selection once and skips resets of a clear view", () => {
+      buffer.setStyledText(stringToStyledText("Hello World"))
+      const lib = resourceContext.renderLib
+      const reset = spyOn(lib, "contextTextBufferViewResetSelection")
+      try {
+        view.resetLocalSelection()
+        view.resetSelection()
+        expect(reset).toHaveBeenCalledTimes(0)
+
+        view.setLocalSelection(0, 0, 4, 0)
+        expect(view.getSelectedText()).toBe("Hello")
+        view.resetLocalSelection()
+        view.resetLocalSelection()
+        expect(reset).toHaveBeenCalledTimes(1)
+        expect(view.hasSelection()).toBe(false)
+
+        view.setSelection(0, 5)
+        view.resetSelection()
+        expect(reset).toHaveBeenCalledTimes(2)
+        expect(view.hasSelection()).toBe(false)
+      } finally {
+        reset.mockRestore()
+      }
     })
 
     it("does not carry selection colors into a later selection", () => {
