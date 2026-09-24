@@ -1092,22 +1092,38 @@ const handleContextLowWord =
   nativeLayouts.ot_handle.fields.context_id.offset / 4 + (new Uint8Array(new Uint32Array([1]).buffer)[0] === 1 ? 0 : 1)
 const handleContextHighWord = handleContextLowWord ^ 1
 
-// Handles never change, so each one keeps a single encoded record. Native code only reads handle inputs.
-// Plain word arrays keep inline storage; creating an ArrayBuffer per handle costs far more.
-const encodedContextHandles = new WeakMap<ContextObjectHandle, Uint32Array>()
+/** Handles that native code issues. Each keeps its encoded record: handles never change, and native
+ * code only reads handle inputs. The record is private, so object copies re-encode their own fields. */
+class IssuedContextHandle implements ContextObjectHandle {
+  // Plain word arrays keep inline storage; creating an ArrayBuffer per handle costs far more.
+  readonly #words: Uint32Array
+
+  constructor(
+    readonly context: NativeContextHandle,
+    readonly contextId: bigint,
+    readonly slot: number,
+    readonly generation: number,
+    words: Uint32Array,
+  ) {
+    this.#words = words
+  }
+
+  static wordsOf(handle: ContextObjectHandle): Uint32Array | undefined {
+    return #words in handle ? (handle as IssuedContextHandle).#words : undefined
+  }
+}
 
 function encodedContextHandle(context: NativeContextHandle, handle: ContextObjectHandle): Uint32Array {
   // Independent native images can issue the same numeric IDs.
   if (handle.context !== context) throw new NativeError("Context handle", NativeStatus.WrongContext)
-  const cached = encodedContextHandles.get(handle)
-  if (cached !== undefined) return cached
+  const issued = IssuedContextHandle.wordsOf(handle)
+  if (issued !== undefined) return issued
   const contextId = toFFIU64(handle.contextId, "Handle contextId")
   const words = new Uint32Array(handleWords)
   words[handleContextLowWord] = Number(contextId & 0xffff_ffffn)
   words[handleContextHighWord] = Number(contextId >> 32n)
   words[handleSlotWord] = toSafeFFIU32Length(handle.slot, "Handle slot")
   words[handleGenerationWord] = toSafeFFIU32Length(handle.generation, "Handle generation")
-  encodedContextHandles.set(handle, words)
   return words
 }
 
@@ -1158,12 +1174,15 @@ function decodeContextHandle(
 ): ContextObjectHandle {
   const source =
     record instanceof Uint32Array ? record : (words ?? new Uint32Array(record.buffer, record.byteOffset, handleWords))
-  return {
+  const encoded = new Uint32Array(handleWords)
+  for (let index = 0; index < handleWords; index++) encoded[index] = source[index]
+  return new IssuedContextHandle(
     context,
-    contextId: BigInt(source[handleContextLowWord]) | (BigInt(source[handleContextHighWord]) << 32n),
-    slot: source[handleSlotWord],
-    generation: source[handleGenerationWord],
-  }
+    BigInt(encoded[handleContextLowWord]) | (BigInt(encoded[handleContextHighWord]) << 32n),
+    encoded[handleSlotWord],
+    encoded[handleGenerationWord],
+    encoded,
+  )
 }
 
 function createSceneFrameRecord() {
