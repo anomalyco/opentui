@@ -485,6 +485,21 @@ describe("TextBufferView", () => {
       }
     })
 
+    it("rejects resets of a clear view during a Yoga callback", () => {
+      const host = resourceContext.renderLib.getYogaHost()
+      const failures: string[] = []
+      for (const reset of [() => view.resetLocalSelection(), () => view.resetSelection()]) {
+        host.invokeCallback(() => {
+          try {
+            reset()
+          } catch (error) {
+            failures.push((error as Error).message)
+          }
+        })
+      }
+      expect(failures).toEqual(["Cannot mutate Yoga during a callback", "Cannot mutate Yoga during a callback"])
+    })
+
     it("does not carry selection colors into a later selection", () => {
       buffer.setStyledText(stringToStyledText("Hello"))
       const screen = OptimizedBuffer.create(8, 1, "wcwidth", { owner: resourceContext })
