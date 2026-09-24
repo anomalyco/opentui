@@ -34,6 +34,39 @@ test "Grid primitive clips and blends every border write path" {
     }
 }
 
+test "Grid primitive over a transparent background matches per-cell blending" {
+    const owner = try context.Context.init(testing.allocator, testing.io, .{});
+    defer owner.deinit() catch unreachable;
+    const target = try owner.raw().getBuffer(try owner.createBuffer(7, 5, .{}));
+    const expected = try owner.raw().getBuffer(try owner.createBuffer(7, 5, .{}));
+    const clear = ansi.rgbColor(0, 0, 0, 0);
+    const white = ansi.rgbColor(255, 255, 255, 255);
+    for ([_]*@TypeOf(target.*){ target, expected }) |buffer| {
+        buffer.clear(black, null);
+        for (0..5) |y| {
+            for (0..7) |x| {
+                // Spaces over glyphs keep the glyph, so the grid also covers that rule.
+                const char: u32 = if (x == 3 and y == 1) 'g' else ' ';
+                buffer.setCellWithAlphaBlending(@intCast(x), @intCast(y), char, white, ansi.rgbColor(@intCast(x * 30), @intCast(y * 40), 9, 255), 0);
+            }
+        }
+        try buffer.pushScissorRect(1, 1, 4, 3);
+    }
+    const spaced = [_]u32{ '+', '+', '+', '+', '-', ' ', '+', '+', '+', '+', '+' };
+    target.drawGrid(&spaced, red, clear, &columns, 2, &rows, 2, true, true);
+    for (0..5) |y| {
+        for (0..7) |x| {
+            const char: ?u32 = if (x % 3 == 0 and y % 2 == 0) '+' else if (x % 3 == 0) ' ' else if (y % 2 == 0) '-' else null;
+            if (char) |value| expected.setCellWithAlphaBlending(@intCast(x), @intCast(y), value, red, clear, 0);
+        }
+    }
+    try testing.expectEqualSlices(u32, expected.buffer.char, target.buffer.char);
+    try testing.expectEqualDeep(expected.buffer.fg, target.buffer.fg);
+    try testing.expectEqualDeep(expected.buffer.bg, target.buffer.bg);
+    try testing.expectEqualSlices(u32, expected.buffer.attributes, target.buffer.attributes);
+    try testing.expectEqual(@as(u32, 'g'), target.get(3, 1).?.char);
+}
+
 const PackedCell = extern struct {
     bg: [4]f32 = .{ 0, 0, 0, 1 },
     fg: [4]f32 = .{ 1, 0, 0, 1 },
