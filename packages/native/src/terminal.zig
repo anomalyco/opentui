@@ -748,6 +748,13 @@ fn checkEnvironmentOverrides(self: *Terminal) void {
     const env_is_forwarded = if (self.host_env_map) |*host_env_map| env_map == host_env_map else false;
     self.applyKnownUnicodeWidthIdentity();
     if (self.opts.remote_mode == .auto and self.remote and env_is_forwarded) {
+        // The forwarded env still describes the remote endpoint's color depth:
+        // sshd adopts TERM from the client's pty request, and COLORTERM only
+        // arrives when the client side forwards it. Keep honoring both so
+        // 256-color-only terminals do not fall back to truecolor SGR. Terminal
+        // identity heuristics below stay untrusted: host values such as
+        // TERM_PROGRAM can describe the wrong endpoint.
+        self.applyColorDepthEnv(env_map);
         return;
     }
 
@@ -785,10 +792,11 @@ fn checkEnvironmentOverrides(self: *Terminal) void {
         }
     }
 
+    // Color depth keys describe the terminal endpoint in every mode (see
+    // applyColorDepthEnv).
+    self.applyColorDepthEnv(env_map);
+
     if (env_map.get("TERM")) |term| {
-        if (std.ascii.findIgnoreCase(term, "256color") != null) {
-            self.caps.ansi256 = true;
-        }
         self.applyNotificationHeuristic(term);
         self.is_foot = self.is_foot or std.ascii.findIgnoreCase(term, "foot") != null;
     }
@@ -868,15 +876,6 @@ fn checkEnvironmentOverrides(self: *Terminal) void {
                 @memcpy(self.term_info.name[0..name.len], name);
                 self.term_info.name_len = name.len;
             }
-        }
-    }
-
-    if (env_map.get("COLORTERM")) |colorterm| {
-        if (std.mem.eql(u8, colorterm, "truecolor") or
-            std.mem.eql(u8, colorterm, "24bit"))
-        {
-            self.caps.rgb = true;
-            self.caps.ansi256 = true;
         }
     }
 
@@ -986,6 +985,23 @@ fn checkEnvironmentOverrides(self: *Terminal) void {
                     self.caps.osc52 = true;
                 }
             }
+        }
+    }
+}
+
+fn applyColorDepthEnv(self: *Terminal, env_map: *const std.process.Environ.Map) void {
+    if (env_map.get("TERM")) |term| {
+        if (std.ascii.findIgnoreCase(term, "256color") != null) {
+            self.caps.ansi256 = true;
+        }
+    }
+
+    if (env_map.get("COLORTERM")) |colorterm| {
+        if (std.mem.eql(u8, colorterm, "truecolor") or
+            std.mem.eql(u8, colorterm, "24bit"))
+        {
+            self.caps.rgb = true;
+            self.caps.ansi256 = true;
         }
     }
 }
