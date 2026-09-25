@@ -91,8 +91,8 @@ test("SliderRenderable > Custom step size", async () => {
   slider.viewPortSize = 20
   expect(slider.viewPortSize).toBe(20)
 
-  slider.viewPortSize = 150 // Should be clamped to max range (100)
-  expect(slider.viewPortSize).toBe(100)
+  slider.viewPortSize = 150
+  expect(slider.viewPortSize).toBe(150)
 
   slider.viewPortSize = 0 // Should be clamped to minimum (0.01)
   expect(slider.viewPortSize).toBe(0.01)
@@ -152,7 +152,7 @@ test("SliderRenderable > Vertical thumb size calculation", async () => {
 
   slider.viewPortSize = 150
   // @ts-expect-error - Testing private method
-  expect(slider.getVirtualThumbSize()).toBe(50)
+  expect(slider.getVirtualThumbSize()).toBe(60)
 })
 
 test("SliderRenderable > Horizontal thumb size calculation", async () => {

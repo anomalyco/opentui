@@ -84,7 +84,7 @@ export class SliderRenderable extends Renderable {
   }
 
   set viewPortSize(size: number) {
-    const clampedSize = Math.max(0.01, Math.min(size, this._max - this._min))
+    const clampedSize = Math.max(0.01, size)
     if (clampedSize !== this._viewPortSize) {
       this._viewPortSize = clampedSize
       this.requestRender()
