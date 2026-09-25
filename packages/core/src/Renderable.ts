@@ -1326,14 +1326,14 @@ export abstract class Renderable extends BaseRenderable {
   }
 
   public remove(child: BaseRenderable): void {
-    if (!(child instanceof BaseRenderable)) {
+    if (!isRenderable(child)) {
       throw new Error("remove expects a renderable child object")
     }
 
     // Membership in _childrenInLayoutOrder proves child is a Renderable with a
     // layout node; anything else (text nodes, children of other parents,
     // already-detached renderables) is a caller bug worth surfacing in dev.
-    const index = this._childrenInLayoutOrder.indexOf(child as Renderable)
+    const index = this._childrenInLayoutOrder.indexOf(child)
     if (index === -1) {
       if (process.env.NODE_ENV !== "production") {
         console.warn(`Renderable with id ${child.id} is not a child of ${this.id}, skipping remove`)
