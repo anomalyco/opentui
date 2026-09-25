@@ -213,9 +213,6 @@ image_protocol: ImageProtocol = .auto,
 kitty_graphics_queried: bool = false,
 sixel_queried: bool = false,
 skip_explicit_width_query: bool = false,
-graphics_query_pending: bool = false,
-sixel_query_pending: bool = false,
-capability_queries_pending: bool = false,
 startup_cursor_query_pending: bool = false,
 startup_cursor_query_captured: bool = false,
 explicit_width_probe_reports_pending: u8 = 0,
@@ -349,11 +346,7 @@ pub fn exitAltScreen(self: *Terminal, tty: anytype) !void {
 
 pub fn queryTerminalSend(self: *Terminal, tty: anytype) !void {
     self.checkEnvironmentOverrides();
-    const is_tmux = self.isInTmux();
     self.unicode_wide_locked = self.caps.unicode == .unicode_wide;
-    self.graphics_query_pending = !self.skip_graphics_query and !is_tmux;
-    self.sixel_query_pending = !self.skip_graphics_query and !is_tmux;
-    self.capability_queries_pending = false;
     self.startup_cursor_query_pending = true;
     self.startup_cursor_query_captured = false;
 
@@ -365,7 +358,7 @@ pub fn queryTerminalSend(self: *Terminal, tty: anytype) !void {
     try self.queryThemeColors(tty);
     self.state.theme_queries_sent = true;
 
-    // Send xtversion first (doesn't need DCS wrapping - used for tmux detection)
+    // Send xtversion first (used for tmux detection)
     try tty.writeAll(ansi.ANSI.xtversion ++
         ansi.ANSI.hideCursor ++
         ansi.ANSI.saveCursorState);
@@ -373,30 +366,19 @@ pub fn queryTerminalSend(self: *Terminal, tty: anytype) !void {
     // Capture the current cursor position before temporary home-position queries.
     try tty.writeAll(ansi.ANSI.cursorPositionRequest);
 
-    if (is_tmux) {
-        if (self.is_foot) {
-            try tty.writeAll(ansi.ANSI.capabilityQueriesFootIsBroken);
-        } else {
-            try tty.writeAll(ansi.ANSI.capabilityQueries);
-        }
+    // Probes are never DCS wrapped. tmux answers the probes it implements and
+    // drops the rest; passthrough replies are not routed back to the pane that
+    // asked.
+    if (self.is_foot) {
+        try tty.writeAll(ansi.ANSI.capabilityQueriesFootIsBroken);
     } else {
-        if (self.is_foot) {
-            try tty.writeAll(ansi.ANSI.capabilityQueriesFootIsBroken);
-        } else {
-            try tty.writeAll(ansi.ANSI.capabilityQueries);
-        }
-        self.capability_queries_pending = true;
+        try tty.writeAll(ansi.ANSI.capabilityQueries);
     }
 
-    if (!self.skip_graphics_query) {
-        if (is_tmux) {
-            // tmux can answer DA for its virtual terminal. A passthrough Kitty
-            // reply has no pane ownership and may reach a different active pane.
-            try tty.writeAll(ansi.ANSI.primaryDeviceAttrs);
-        } else {
-            try tty.writeAll(ansi.ANSI.kittyGraphicsQuery);
-            try tty.writeAll(ansi.ANSI.primaryDeviceAttrs);
-        }
+    // Inside tmux, graphics replies cannot describe the passthrough endpoint.
+    if (!self.skip_graphics_query and !self.isInTmux()) {
+        try tty.writeAll(ansi.ANSI.kittyGraphicsQuery);
+        try tty.writeAll(ansi.ANSI.primaryDeviceAttrs);
     }
 
     if (!self.skip_explicit_width_query) {
@@ -412,18 +394,6 @@ pub fn queryTerminalSend(self: *Terminal, tty: anytype) !void {
     }
 
     try tty.writeAll(ansi.ANSI.restoreCursorState);
-}
-
-pub fn sendPendingQueries(self: *Terminal, _: anytype) !bool {
-    if (!self.term_info.from_xtversion) return false;
-
-    // Startup already queried either the direct terminal or tmux's virtual
-    // terminal. Never retry through passthrough: replies are not pane-scoped.
-    self.capability_queries_pending = false;
-    self.graphics_query_pending = false;
-    self.sixel_query_pending = false;
-
-    return false;
 }
 
 pub fn enableDetectedFeatures(self: *Terminal, tty: anytype, use_kitty_keyboard: bool) !void {
@@ -1150,9 +1120,7 @@ fn parseKittyGraphicsResponse(self: *Terminal, response: []const u8) void {
 }
 
 fn parseSixelDeviceAttributes(self: *Terminal, response: []const u8) void {
-    // Inside tmux, an unwrapped DA response describes tmux's virtual terminal,
-    // not the outer terminal that receives passthrough Sixel output.
-    if (!self.graphics_enabled or self.isInTmux()) return;
+    if (!self.graphics_enabled) return;
     var offset: usize = 0;
     while (std.mem.findPos(u8, response, offset, "\x1b[?")) |start| {
         var end = start + 3;
@@ -1412,6 +1380,10 @@ pub fn processCapabilityResponse(self: *Terminal, response: []const u8) void {
     }
 
     if (self.isInTmux()) {
+        // tmux has reported pane focus changes since 1.8 but answers DECRQM
+        // for mode 1004 only since 3.6.
+        self.caps.focus_tracking = true;
+
         // Graphics replies inside tmux either have no pane ownership (Kitty
         // passthrough) or describe tmux itself rather than the passthrough
         // endpoint (DA/Sixel). Neither can select an outer image protocol.
@@ -1855,9 +1827,6 @@ pub fn getTerminalName(self: *Terminal) []const u8 {
 /// explicit override is authoritative. Apple Terminal has no XTVERSION, so
 /// TERM_PROGRAM is the only identity.
 pub fn refusesForcedSixel(self: *Terminal) bool {
-    // tmux's outer terminal is intentionally not probed because replies are
-    // not pane-scoped. An explicit override is therefore the authority; tmux's
-    // own DA response must neither authorize nor reject passthrough output.
     if (self.isInTmux()) return false;
     if (self.caps.sixel) return false;
     if (self.term_info.from_xtversion) {

@@ -343,24 +343,6 @@ pub const ANSI = struct {
     pub const screenDcsStart = "\x1bP";
     pub const screenDcsEnd = "\x1b\\";
 
-    pub fn wrapForTmux(comptime seq: []const u8) []const u8 {
-        comptime {
-            var result: []const u8 = tmuxDcsStart;
-            for (seq) |c| {
-                if (c == '\x1b') {
-                    result = result ++ "\x1b\x1b";
-                } else {
-                    result = result ++ &[_]u8{c};
-                }
-            }
-            return result ++ tmuxDcsEnd;
-        }
-    }
-
-    pub const kittyGraphicsQueryTmux = wrapForTmux(kittyGraphicsQuery);
-    pub const primaryDeviceAttrsTmux = wrapForTmux(primaryDeviceAttrs);
-    pub const capabilityQueriesTmux = wrapForTmux(capabilityQueriesBase) ++ csiUQuery ++ notificationQueries;
-    pub const capabilityQueriesFootIsBrokenTmux = wrapForTmux(capabilityQueriesBase) ++ csiUQuery;
     pub const sixelGeometryQuery = "\x1b[?2;1;0S";
     pub const cursorPositionRequest = "\x1b[6n";
     pub const explicitWidthQuery = "\x1b]66;w=1; \x1b\\";
