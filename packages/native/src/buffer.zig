@@ -182,6 +182,8 @@ pub const OptimizedBuffer = struct {
         bg: []RGBA,
         attributes: []u32,
     },
+    /// Cells allocated in each array. Resize reuses the arrays while the cells fit within it.
+    capacity: u32,
     width: u32,
     height: u32,
     respectAlpha: bool,
@@ -254,6 +256,7 @@ pub const OptimizedBuffer = struct {
                 .bg = bg_buffer,
                 .attributes = attributes_buffer,
             },
+            .capacity = size,
             .width = width,
             .height = height,
             .respectAlpha = options.respectAlpha,
@@ -304,12 +307,16 @@ pub const OptimizedBuffer = struct {
         self.scissor_stack.deinit(self.allocator);
         self.link_tracker.deinit();
         self.grapheme_tracker.deinit();
-        self.allocator.free(self.buffer.char);
-        self.allocator.free(self.buffer.fg);
-        self.allocator.free(self.buffer.bg);
-        self.allocator.free(self.buffer.attributes);
+        self.freeCells();
         self.allocator.free(self.id);
         self.* = undefined;
+    }
+
+    fn freeCells(self: *OptimizedBuffer) void {
+        self.allocator.free(self.buffer.char.ptr[0..self.capacity]);
+        self.allocator.free(self.buffer.fg.ptr[0..self.capacity]);
+        self.allocator.free(self.buffer.bg.ptr[0..self.capacity]);
+        self.allocator.free(self.buffer.attributes.ptr[0..self.capacity]);
     }
 
     pub fn getCurrentScissorRect(self: *const OptimizedBuffer) ?ClipRect {
@@ -427,17 +434,34 @@ pub const OptimizedBuffer = struct {
         if (width == 0 or height == 0) return BufferError.InvalidDimensions;
 
         const size = width * height;
-
-        self.buffer.char = self.allocator.realloc(self.buffer.char, size) catch return BufferError.OutOfMemory;
-        self.buffer.fg = self.allocator.realloc(self.buffer.fg, size) catch return BufferError.OutOfMemory;
-        self.buffer.bg = self.allocator.realloc(self.buffer.bg, size) catch return BufferError.OutOfMemory;
-        self.buffer.attributes = self.allocator.realloc(self.buffer.attributes, size) catch return BufferError.OutOfMemory;
-
+        if (size > self.capacity or self.capacity > size +| size / 2) {
+            // Growing past the capacity reserves half of it again, so a buffer that grows a row at a
+            // time or alternates sizes reallocates rarely. A larger jump or a shrink takes the exact
+            // cells. Either way capacity stays within half again the cells. Every array is allocated
+            // before any is freed, so a failed resize leaves the buffer unchanged.
+            const capacity = if (size > self.capacity) @max(size, self.capacity +| self.capacity / 2) else size;
+            const chars = self.allocator.alloc(u32, capacity) catch return BufferError.OutOfMemory;
+            errdefer self.allocator.free(chars);
+            const fg = self.allocator.alloc(RGBA, capacity) catch return BufferError.OutOfMemory;
+            errdefer self.allocator.free(fg);
+            const bg = self.allocator.alloc(RGBA, capacity) catch return BufferError.OutOfMemory;
+            errdefer self.allocator.free(bg);
+            const attributes = self.allocator.alloc(u32, capacity) catch return BufferError.OutOfMemory;
+            self.freeCells();
+            self.buffer = .{ .char = chars, .fg = fg, .bg = bg, .attributes = attributes };
+            self.capacity = capacity;
+        }
+        self.buffer = .{
+            .char = self.buffer.char.ptr[0..size],
+            .fg = self.buffer.fg.ptr[0..size],
+            .bg = self.buffer.bg.ptr[0..size],
+            .attributes = self.buffer.attributes.ptr[0..size],
+        };
         self.width = width;
         self.height = height;
 
-        // Always clear after resize to initialize cells (realloc doesn't zero memory)
-        // This handles both growing (new cells are garbage) and shrinking (grapheme cleanup)
+        // Reused and new arrays hold stale or undefined cells. Clearing initializes every cell and
+        // releases the grapheme and link references of the old cells.
         self.clear(ansi.rgbColor(0, 0, 0, 255), null);
     }
 
