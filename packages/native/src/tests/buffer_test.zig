@@ -2340,6 +2340,63 @@ test "OptimizedBuffer - cells are initialized after resize grow" {
     try std.testing.expectEqual(@as(u32, 32), cell.?.char);
 }
 
+test "OptimizedBuffer - resize reuses its arrays while the cells fit" {
+    const pool = gp.initGlobalPool(std.testing.allocator);
+    defer gp.deinitGlobalPool();
+
+    var buf = try OptimizedBuffer.init(std.testing.allocator, 10, 10, .{ .pool = pool, .id = "test-buffer" });
+    defer buf.deinit();
+    const white = ansi.rgbaFromFloats(1.0, 1.0, 1.0, 1.0);
+
+    // Growing a row reserves half the capacity again.
+    try buf.resize(10, 11);
+    try std.testing.expectEqual(@as(u32, 150), buf.capacity);
+    const chars = buf.buffer.char.ptr;
+
+    // Alternating sizes keeps the arrays and clears the cells drawn before the resize.
+    try buf.drawText("hello", 0, 10, white, null, 0);
+    try buf.resize(10, 10);
+    try std.testing.expectEqual(chars, buf.buffer.char.ptr);
+    try buf.resize(10, 11);
+    try std.testing.expectEqual(chars, buf.buffer.char.ptr);
+    try std.testing.expectEqual(@as(usize, 110), buf.buffer.char.len);
+    try std.testing.expectEqual(@as(usize, 110), buf.buffer.attributes.len);
+    for (buf.buffer.char) |char| try std.testing.expectEqual(@as(u32, 32), char);
+
+    // A large jump takes the exact cells, and so does a shrink that would leave more headroom.
+    try buf.resize(40, 40);
+    try std.testing.expectEqual(@as(u32, 1600), buf.capacity);
+    try buf.resize(2, 2);
+    try std.testing.expectEqual(@as(u32, 4), buf.capacity);
+    try std.testing.expectEqual(@as(usize, 4), buf.buffer.fg.len);
+}
+
+test "OptimizedBuffer - failed resize leaves the buffer unchanged" {
+    const pool = gp.initGlobalPool(std.testing.allocator);
+    defer gp.deinitGlobalPool();
+
+    for ([_][2]u32{ .{ 20, 20 }, .{ 2, 2 } }) |size| {
+        for (0..4) |failure| {
+            var failing = std.testing.FailingAllocator.init(std.testing.allocator, .{});
+            var buf = try OptimizedBuffer.init(failing.allocator(), 10, 10, .{ .pool = pool, .id = "test-buffer" });
+            defer buf.deinit();
+
+            failing.fail_index = failing.alloc_index + failure;
+            try std.testing.expectError(error.OutOfMemory, buf.resize(size[0], size[1]));
+            try std.testing.expectEqual(@as(u32, 10), buf.width);
+            try std.testing.expectEqual(@as(u32, 10), buf.height);
+            try std.testing.expectEqual(@as(usize, 100), buf.buffer.char.len);
+            try std.testing.expectEqual(@as(usize, 100), buf.buffer.fg.len);
+            try std.testing.expectEqual(@as(usize, 100), buf.buffer.bg.len);
+            try std.testing.expectEqual(@as(usize, 100), buf.buffer.attributes.len);
+
+            failing.fail_index = std.math.maxInt(usize);
+            try buf.resize(size[0], size[1]);
+            try std.testing.expectEqual(@as(usize, size[0] * size[1]), buf.buffer.char.len);
+        }
+    }
+}
+
 test "OptimizedBuffer - link encoding round-trip" {
     const pool = gp.initGlobalPool(std.testing.allocator);
     defer gp.deinitGlobalPool();
