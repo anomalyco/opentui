@@ -2888,6 +2888,46 @@ test "EditorView - placeholder renders to buffer when empty" {
     try std.testing.expect(!std.mem.startsWith(u8, result2, "Type something..."));
 }
 
+test "EditorView - replacing an active word-wrapped placeholder refreshes byte boundaries" {
+    const pool = gp.initGlobalPool(std.testing.allocator);
+    defer gp.deinitGlobalPool();
+    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
+    defer link.deinitGlobalLinkPool();
+
+    const eb = try EditBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth, null);
+    defer eb.deinit();
+    const ev = try EditorView.init(std.testing.allocator, eb, 70, 4);
+    defer ev.deinit();
+    ev.setWrapMode(.word);
+
+    var screen = try opt_buffer_mod.OptimizedBuffer.init(
+        std.testing.allocator,
+        70,
+        4,
+        .{ .pool = pool, .width_method = .wcwidth },
+    );
+    defer screen.deinit();
+
+    // The viewport fits both strings; only the placeholder's byte/column boundaries change.
+    const placeholders = [_][]const u8{ "Worker running, Esc to stop...", "Edit \u{1f680} text, / show help..." };
+    for (placeholders) |placeholder| {
+        const chunks = [_]text_buffer.StyledChunk{.{
+            .text_ptr = placeholder.ptr,
+            .text_len = placeholder.len,
+            .fg_ptr = null,
+            .bg_ptr = null,
+            .attributes = 0,
+        }};
+        try ev.setPlaceholderStyledText(&chunks);
+        screen.clear(ansi.rgbaFromFloats(0.0, 0.0, 0.0, 1.0), 32);
+        screen.drawEditorView(ev, 0, 0);
+
+        var chars: [1000]u8 = undefined;
+        const written = try screen.writeResolvedChars(&chars, false);
+        try std.testing.expectEqualStrings(placeholder, std.mem.trimEnd(u8, chars[0..written], " \n"));
+    }
+}
+
 test "EditorView - placeholder shrink clears tail and preserves background" {
     const pool = gp.initGlobalPool(std.testing.allocator);
     defer gp.deinitGlobalPool();

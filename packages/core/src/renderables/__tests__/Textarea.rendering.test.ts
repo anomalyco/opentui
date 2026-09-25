@@ -1104,6 +1104,21 @@ describe("Textarea - Rendering Tests", () => {
       expect(editor.plainText).toBe("")
     })
 
+    it("redraws all Unicode placeholder characters after word boundaries change", async () => {
+      const { textarea: editor } = await createTextareaRenderable(currentRenderer, renderOnce, {
+        width: 70,
+        height: 4,
+        wrapMode: "word",
+        placeholder: "Worker running, Esc to stop...",
+      })
+      expect(captureFrame().split("\n")[0].trimEnd()).toBe("Worker running, Esc to stop...")
+
+      editor.placeholder = "Edit \u{1f680} text, / show help..."
+      await renderOnce()
+      expect(captureFrame().split("\n")[0].trimEnd()).toBe("Edit \u{1f680} text, / show help...")
+      expect(editor.plainText).toBe("")
+    })
+
     it("should update placeholder text dynamically", async () => {
       const { textarea: editor } = await createTextareaRenderable(currentRenderer, renderOnce, {
         initialValue: "",
