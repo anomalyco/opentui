@@ -695,6 +695,35 @@ You can use \`const x = 42\` in your code.`
     }
   }, 10000)
 
+  test("should conceal the backslash of markdown backslash escapes", async () => {
+    const client = new TreeSitterClient({ dataPath })
+
+    try {
+      await client.initialize()
+
+      const content = "Escaped \\~ and \\* here"
+      const result = await client.highlightOnce(content, "markdown")
+
+      expect(result.highlights).toBeDefined()
+
+      const escapeHighlights = result.highlights!.filter((hl) => hl[2] === "string.escape")
+      // "Escaped " is 8 bytes: the escapes sit at [8,10) and [15,17).
+      // Each must collapse to a 1-byte conceal covering only the backslash;
+      // no full-range string.escape may remain, so the escaped character
+      // renders unstyled (CommonMark: "\~" renders as "~").
+      expect(escapeHighlights).toHaveLength(2)
+      expect(escapeHighlights.map((hl) => [hl[0], hl[1]])).toEqual([
+        [8, 9],
+        [15, 16],
+      ])
+      for (const hl of escapeHighlights) {
+        expect(hl[3]).toMatchObject({ conceal: "" })
+      }
+    } finally {
+      await client.destroy()
+    }
+  }, 10000)
+
   test("should highlight code blocks in markdown using language-specific injection", async () => {
     const client = new TreeSitterClient({ dataPath })
 
