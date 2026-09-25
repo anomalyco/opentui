@@ -2440,6 +2440,16 @@ export fn textBufferViewSetTextAlign(view_handle: NativeHandle, alignment: u8) v
     object_ptr.setTextAlign(textAlign);
 }
 
+export fn textBufferViewSetWrapIndent(view_handle: NativeHandle, indent: u8) void {
+    const object_ptr = acquireTextBufferView(view_handle) orelse return;
+    const wrapIndent: text_buffer.WrapIndent = switch (indent) {
+        0 => .none,
+        1 => .same,
+        else => .none,
+    };
+    object_ptr.setWrapIndent(wrapIndent);
+}
+
 export fn textBufferViewSetFirstLineOffset(view_handle: NativeHandle, offset: u32) void {
     const object_ptr = acquireTextBufferView(view_handle) orelse return;
     object_ptr.setFirstLineOffset(offset);
@@ -3009,6 +3019,16 @@ export fn editorViewSetWrapMode(view_handle: NativeHandle, mode: u8) void {
         else => .none,
     };
     object_ptr.setWrapMode(wrapMode);
+}
+
+export fn editorViewSetWrapIndent(view_handle: NativeHandle, indent: u8) void {
+    const object_ptr = acquireEditorView(view_handle) orelse return;
+    const wrapIndent: text_buffer.WrapIndent = switch (indent) {
+        0 => .none,
+        1 => .same,
+        else => .none,
+    };
+    object_ptr.setWrapIndent(wrapIndent);
 }
 
 // EditorView selection methods - delegate to TextBufferView

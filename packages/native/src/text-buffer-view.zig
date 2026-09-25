@@ -9,6 +9,7 @@ const UnifiedTextBuffer = tb.UnifiedTextBuffer;
 const RGBA = tb.RGBA;
 const TextSelection = tb.TextSelection;
 pub const WrapMode = tb.WrapMode;
+pub const WrapIndent = tb.WrapIndent;
 const TextChunk = seg_mod.TextChunk;
 const StyleSpan = tb.StyleSpan;
 
@@ -159,6 +160,7 @@ const PendingWordPieceFit = struct {
 pub const VirtualLine = struct {
     chunks: std.ArrayListUnmanaged(VirtualChunk),
     width_cols: u32,
+    pad_cols: u32,
     document_cell_offset: u32,
     source_line: usize,
     source_col_start: u32,
@@ -170,6 +172,7 @@ pub const VirtualLine = struct {
         return .{
             .chunks = .empty,
             .width_cols = 0,
+            .pad_cols = 0,
             .document_cell_offset = 0,
             .source_line = 0,
             .source_col_start = 0,
@@ -245,6 +248,7 @@ pub const UnifiedTextBufferView = struct {
     viewport: ?Viewport,
     wrap_width: ?u32,
     wrap_mode: WrapMode,
+    wrap_indent: WrapIndent,
     text_align: TextAlign,
     first_line_offset: u32,
     // Hit-testing uses the last draw origin; before the first draw, assume row zero.
@@ -274,6 +278,7 @@ pub const UnifiedTextBufferView = struct {
     // code paths clear dirty (e.g., updateVirtualLines).
     cached_measure_width: ?u32,
     cached_measure_wrap_mode: WrapMode,
+    cached_measure_wrap_indent: WrapIndent,
     cached_measure_first_line_offset: u32,
     cached_measure_result: ?MeasureResult,
     cached_measure_epoch: u64,
@@ -306,6 +311,7 @@ pub const UnifiedTextBufferView = struct {
             .viewport = null,
             .wrap_width = null,
             .wrap_mode = .none,
+            .wrap_indent = .none,
             .text_align = .left,
             .first_line_offset = 0,
             .draw_y = 0,
@@ -327,6 +333,7 @@ pub const UnifiedTextBufferView = struct {
             .ellipsis_chunk = ellipsis_chunk,
             .cached_measure_width = null,
             .cached_measure_wrap_mode = .none,
+            .cached_measure_wrap_indent = .none,
             .cached_measure_first_line_offset = 0,
             .cached_measure_result = null,
             .cached_measure_epoch = 0,
@@ -410,6 +417,14 @@ pub const UnifiedTextBufferView = struct {
         self.text_align = alignment;
     }
 
+    pub fn setWrapIndent(self: *Self, indent: WrapIndent) void {
+        if (self.wrap_indent != indent) {
+            self.wrap_indent = indent;
+            self.virtual_lines_dirty = true;
+            self.truncation_applied = false;
+        }
+    }
+
     pub fn getTextAlign(self: *const Self) TextAlign {
         return self.text_align;
     }
@@ -468,8 +483,8 @@ pub const UnifiedTextBufferView = struct {
             calculateUnwrappedVirtualLines(virtual_allocator, self.text_buffer, output)
         else switch (self.wrap_mode) {
             .none => unreachable,
-            .char => calculateVirtualLinesGeneric(.render, .char, virtual_allocator, self.text_buffer, self.wrap_width.?, self.first_line_offset, output, null),
-            .word => calculateVirtualLinesGeneric(.render, .word, virtual_allocator, self.text_buffer, self.wrap_width.?, self.first_line_offset, output, &self.word_layout),
+            .char => calculateVirtualLinesGeneric(.render, .char, virtual_allocator, self.text_buffer, self.wrap_width.?, self.wrap_indent, self.first_line_offset, output, null),
+            .word => calculateVirtualLinesGeneric(.render, .word, virtual_allocator, self.text_buffer, self.wrap_width.?, self.wrap_indent, self.first_line_offset, output, &self.word_layout),
         };
         if (!calculated) {
             // Builders append to parallel arrays; discard partial output as a unit
@@ -1165,7 +1180,8 @@ pub const UnifiedTextBufferView = struct {
         const align_pad: i32 = @intCast(self.getLineAlignmentPad(vline_idx, vline.width_cols));
         const aligned_abs_x = abs_x - align_pad;
 
-        var localX = @max(0, @min(aligned_abs_x, @as(i32, @intCast(max_local_x))));
+        const content_x = aligned_abs_x - @as(i32, @intCast(vline.pad_cols));
+        var localX = @max(0, @min(content_x, @as(i32, @intCast(max_local_x))));
 
         if (vline.is_truncated) {
             const ellipsis_width: u32 = 3;
@@ -1343,7 +1359,7 @@ pub const UnifiedTextBufferView = struct {
         };
         var overflow_count: usize = 0;
         for (self.virtual_lines.items) |vline| {
-            if (vline.width_cols > vp.width) overflow_count += 1;
+            if (vline.pad_cols + vline.width_cols > vp.width) overflow_count += 1;
         }
         if (overflow_count == 0) return true;
 
@@ -1355,17 +1371,18 @@ pub const UnifiedTextBufferView = struct {
 
         var replacement_index: usize = 0;
         for (self.virtual_lines.items) |vline| {
-            if (vline.width_cols <= vp.width) continue;
+            if (vline.pad_cols + vline.width_cols <= vp.width) continue;
             const replacement = &replacements[replacement_index];
             replacement_index += 1;
             replacement.truncation_suffix_col_start = vline.width_cols;
+            const content_vp_width = if (vp.width > vline.pad_cols) vp.width - vline.pad_cols else 0;
 
-            if (vp.width <= ellipsis_width) {
+            if (content_vp_width <= ellipsis_width) {
                 replacement.is_truncated = true;
                 continue;
             }
 
-            const available_width = vp.width - ellipsis_width;
+            const available_width = content_vp_width - ellipsis_width;
             const prefix_width = available_width / 2;
             const suffix_width = available_width - prefix_width;
 
@@ -1432,7 +1449,7 @@ pub const UnifiedTextBufferView = struct {
 
         replacement_index = 0;
         for (self.virtual_lines.items) |*vline| {
-            if (vline.width_cols <= vp.width) continue;
+            if (vline.pad_cols + vline.width_cols <= vp.width) continue;
             const replacement = replacements[replacement_index];
             replacement_index += 1;
             vline.chunks = replacement.chunks;
@@ -1455,6 +1472,7 @@ pub const UnifiedTextBufferView = struct {
                 if (self.cached_measure_width) |cached_width| {
                     if (cached_width == width and
                         self.cached_measure_wrap_mode == self.wrap_mode and
+                        self.cached_measure_wrap_indent == self.wrap_indent and
                         self.cached_measure_first_line_offset == self.first_line_offset)
                     {
                         return result;
@@ -1479,6 +1497,7 @@ pub const UnifiedTextBufferView = struct {
 
             self.cached_measure_width = width;
             self.cached_measure_wrap_mode = self.wrap_mode;
+            self.cached_measure_wrap_indent = self.wrap_indent;
             self.cached_measure_first_line_offset = self.first_line_offset;
             self.cached_measure_result = result;
             self.cached_measure_epoch = epoch;
@@ -1494,13 +1513,14 @@ pub const UnifiedTextBufferView = struct {
         var result: MeasureResult = .{ .line_count = 0, .width_cols_max = 0 };
         const calculated = switch (self.wrap_mode) {
             .none => unreachable,
-            .char => calculateVirtualLinesGeneric(.measure, .char, measure_allocator, self.text_buffer, width, self.first_line_offset, &result, null),
-            .word => calculateVirtualLinesGeneric(.measure, .word, measure_allocator, self.text_buffer, width, self.first_line_offset, &result, null),
+            .char => calculateVirtualLinesGeneric(.measure, .char, measure_allocator, self.text_buffer, width, self.wrap_indent, self.first_line_offset, &result, null),
+            .word => calculateVirtualLinesGeneric(.measure, .word, measure_allocator, self.text_buffer, width, self.wrap_indent, self.first_line_offset, &result, null),
         };
         if (!calculated) return TextBufferViewError.OutOfMemory;
 
         self.cached_measure_width = width;
         self.cached_measure_wrap_mode = self.wrap_mode;
+        self.cached_measure_wrap_indent = self.wrap_indent;
         self.cached_measure_first_line_offset = self.first_line_offset;
         self.cached_measure_result = result;
         self.cached_measure_epoch = epoch;
@@ -1510,6 +1530,24 @@ pub const UnifiedTextBufferView = struct {
     }
 
     const CalculationMode = enum { render, measure };
+
+    /// Display-column width of a leading run of ASCII space/tab only.
+    /// Tabs use the same fixed tab width as the text buffer's character measurement.
+    fn accumulateLeadingIndentCols(bytes: []const u8, tab_width: u8, start_indent: u32) struct { indent: u32, finalized: bool } {
+        var indent = start_indent;
+        var i: usize = 0;
+        while (i < bytes.len) {
+            if (bytes[i] == ' ') {
+                indent += 1;
+            } else if (bytes[i] == '\t') {
+                indent += tab_width;
+            } else {
+                return .{ .indent = indent, .finalized = true };
+            }
+            i += 1;
+        }
+        return .{ .indent = indent, .finalized = false };
+    }
 
     fn calculateUnwrappedVirtualLines(
         allocator: Allocator,
@@ -1605,6 +1643,7 @@ pub const UnifiedTextBufferView = struct {
         allocator: Allocator,
         text_buffer: *UnifiedTextBuffer,
         wrap_w: u32,
+        wrap_indent: WrapIndent,
         first_line_offset: u32,
         result: if (calculation == .render) VirtualLineOutput else *MeasureResult,
         word_layout: ?*WordLayoutStorage,
@@ -1619,6 +1658,9 @@ pub const UnifiedTextBufferView = struct {
             word_layout_index: usize = 0,
             wrap_w: u32,
             current_wrap_width: u32,
+            indent_cols: u32 = 0,
+            indent_finalized: bool = false,
+            continuation_pad: u32 = 0,
             document_cell_offset: u32 = 0,
             line_idx: u32 = 0,
             source_line_col_offset: u32 = 0,
@@ -1643,7 +1685,40 @@ pub const UnifiedTextBufferView = struct {
             failed: bool = false,
 
             fn lineWrapWidth(wctx: *@This()) u32 {
+                const has_continuation = if (comptime calculation == .render)
+                    wctx.current_line_vline_count > 0
+                else
+                    wctx.logical_measure_line_count > 0;
+                if (has_continuation and wctx.continuation_pad > 0 and wctx.continuation_pad < wctx.current_wrap_width) {
+                    return wctx.current_wrap_width - wctx.continuation_pad;
+                }
                 return wctx.current_wrap_width;
+            }
+
+            fn finalizeContinuationPad(wctx: *@This()) void {
+                if (wctx.indent_finalized) return;
+                wctx.indent_finalized = true;
+                if (wctx.wrap_indent != .same or wctx.indent_cols == 0 or wctx.indent_cols >= wctx.wrap_w) {
+                    wctx.continuation_pad = 0;
+                } else {
+                    wctx.continuation_pad = wctx.indent_cols;
+                }
+            }
+
+            fn accumulateIndentFromChunk(wctx: *@This(), chunk: *const TextChunk) void {
+                if (wctx.indent_finalized or wctx.wrap_indent != .same) return;
+                const bytes = chunk.getBytes(wctx.text_buffer.memRegistry());
+                var i: usize = 0;
+                while (i < bytes.len) : (i += 1) {
+                    if (bytes[i] == ' ') {
+                        wctx.indent_cols += 1;
+                    } else if (bytes[i] == '\t') {
+                        wctx.indent_cols += wctx.text_buffer.tabWidth();
+                    } else {
+                        wctx.finalizeContinuationPad();
+                        break;
+                    }
+                }
             }
 
             fn wordWrapWidth(wctx: *@This()) u32 {
@@ -1653,6 +1728,7 @@ pub const UnifiedTextBufferView = struct {
             fn commitVirtualLine(wctx: *@This()) Allocator.Error!void {
                 if (comptime calculation == .render) {
                     wctx.current_vline.width_cols = wctx.current_vline_width_cols;
+                    wctx.current_vline.pad_cols = if (wctx.current_line_vline_count > 0) wctx.continuation_pad else 0;
                     wctx.current_vline.source_line = wctx.line_idx;
                     wctx.current_vline.source_col_start = wctx.source_line_col_offset;
                 }
@@ -1672,10 +1748,11 @@ pub const UnifiedTextBufferView = struct {
             fn recordVirtualLine(wctx: *@This()) Allocator.Error!void {
                 if (comptime calculation == .measure) {
                     wctx.result.line_count += 1;
-                    wctx.result.width_cols_max = @max(wctx.result.width_cols_max, wctx.current_vline_width_cols);
+                    const painted_width = wctx.current_vline_width_cols + if (wctx.logical_measure_line_count > 0) wctx.continuation_pad else 0;
+                    wctx.result.width_cols_max = @max(wctx.result.width_cols_max, painted_width);
                     if (comptime wrap_mode == .word) {
                         wctx.logical_measure_line_count += 1;
-                        wctx.logical_measure_width_max = @max(wctx.logical_measure_width_max, wctx.current_vline_width_cols);
+                        wctx.logical_measure_width_max = @max(wctx.logical_measure_width_max, painted_width);
                     }
                 } else {
                     const out = wctx.result;
@@ -2200,6 +2277,7 @@ pub const UnifiedTextBufferView = struct {
             fn segment_callback(ctx_ptr: *anyopaque, _: u32, chunk: *const TextChunk, chunk_idx_in_line: u32) void {
                 const wctx = @as(*@This(), @ptrCast(@alignCast(ctx_ptr)));
                 if (wctx.failed) return;
+                wctx.accumulateIndentFromChunk(chunk);
 
                 if (comptime wrap_mode == .word) {
                     // Printable ASCII cannot join graphemes across chunks. Stream it,
@@ -2261,25 +2339,33 @@ pub const UnifiedTextBufferView = struct {
                 const wctx = @as(*@This(), @ptrCast(@alignCast(ctx_ptr)));
                 if (wctx.failed) return;
 
+                if (!wctx.indent_finalized) {
+                    wctx.indent_cols = 0;
+                    wctx.finalizeContinuationPad();
+                }
+
                 var used_measure_cache = false;
                 var measure_cache_chunk: ?*const TextChunk = null;
                 var measure_cache_first_width: u32 = 0;
                 if (comptime wrap_mode == .word and calculation == .measure) {
                     if (wctx.word_line_first_chunk != null and wctx.word_line_chunks.items.len == 0) {
                         const chunk = wctx.word_line_first_chunk.?;
-                        measure_cache_chunk = chunk;
                         const first_width = wctx.lineWrapWidth();
-                        measure_cache_first_width = first_width;
-                        if (chunk.getWordMeasureSummary(
-                            wctx.wrap_w,
-                            first_width,
-                            wctx.text_buffer.tabWidth(),
-                            wctx.text_buffer.widthMethod(),
-                        )) |summary| {
-                            wctx.result.line_count += summary.line_count;
-                            wctx.result.width_cols_max = @max(wctx.result.width_cols_max, summary.width_max);
-                            wctx.document_cell_offset += chunk.width_cols;
-                            used_measure_cache = true;
+                        // The cached summary does not include continuation padding.
+                        if (wctx.wrap_indent == .none) {
+                            measure_cache_chunk = chunk;
+                            measure_cache_first_width = first_width;
+                            if (chunk.getWordMeasureSummary(
+                                wctx.wrap_w,
+                                first_width,
+                                wctx.text_buffer.tabWidth(),
+                                wctx.text_buffer.widthMethod(),
+                            )) |summary| {
+                                wctx.result.line_count += summary.line_count;
+                                wctx.result.width_cols_max = @max(wctx.result.width_cols_max, summary.width_max);
+                                wctx.document_cell_offset += chunk.width_cols;
+                                used_measure_cache = true;
+                            }
                         }
                     }
                 }
@@ -2308,6 +2394,7 @@ pub const UnifiedTextBufferView = struct {
                 if (!used_measure_cache and (has_content or line_info.width_cols == 0)) {
                     if (comptime calculation == .render) {
                         wctx.current_vline.width_cols = wctx.current_vline_width_cols;
+                        wctx.current_vline.pad_cols = if (wctx.current_line_vline_count > 0) wctx.continuation_pad else 0;
                         wctx.current_vline.source_line = wctx.line_idx;
                         wctx.current_vline.source_col_start = wctx.source_line_col_offset;
                     }
@@ -2367,6 +2454,9 @@ pub const UnifiedTextBufferView = struct {
                     wctx.current_line_first_vline_idx = @intCast(wctx.result.virtual_lines.items.len);
                     wctx.current_line_vline_count = 0;
                 }
+                wctx.indent_cols = 0;
+                wctx.indent_finalized = false;
+                wctx.continuation_pad = 0;
                 if (comptime wrap_mode == .word) {
                     wctx.source_line_has_non_whitespace = false;
                     wctx.source_line_cjk_breaks = true;
@@ -2388,6 +2478,7 @@ pub const UnifiedTextBufferView = struct {
             .word_layout = word_layout,
             .word_line_preflight = if (comptime wrap_mode == .word) !text_buffer.rope().root.metrics().custom.ascii_only else {},
             .wrap_w = wrap_w,
+            .wrap_indent = wrap_indent,
             .current_wrap_width = if (first_line_offset > 0 and first_line_offset < wrap_w)
                 wrap_w - first_line_offset
             else

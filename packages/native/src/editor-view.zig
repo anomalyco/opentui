@@ -22,6 +22,12 @@ pub const EditorViewError = error{
 /// Visual coordinates (visual_row, visual_col) are VIEWPORT-RELATIVE.
 /// This means visual_row=0 is the first visible line in the viewport, not the first line in the document.
 /// Logical coordinates (logical_row, logical_col) are document-absolute.
+///
+/// visual_col convention:
+/// - Public paint APIs (`getVisualCursor`, `getVisualSOL`, `getVisualEOL`) include
+///   wrapIndent continuation pad so the column matches painted geometry.
+/// - Internal translation (`logicalToVisualCursor`, `visualToLogicalCursor`, affinity)
+///   is content-relative: 0 is the first content cell of the virtual line.
 pub const VisualCursor = struct {
     visual_row: u32, // Viewport-relative row (0 = top of viewport)
     visual_col: u32, // Viewport-relative column (0 = left edge of viewport when not wrapping)
@@ -42,7 +48,7 @@ pub const EditorView = struct {
     text_buffer_view: *UnifiedTextBufferView,
     edit_buffer: *EditBuffer, // Reference to the EditBuffer (not owned)
     scroll_margin: f32, // Fraction of viewport height (0.0-0.5) to keep cursor away from edges
-    desired_visual_col: ?u32, // Preserved visual column for visual up/down navigation
+    desired_visual_col: ?u32, // Preserved painted column (including wrap indent) for visual up/down navigation
     cursor_visual_affinity: ?CursorVisualAffinity,
     selection_updates_cursor: bool,
     selection_follow_cursor: bool, // Keep viewport synced during selection
@@ -503,6 +509,10 @@ pub const EditorView = struct {
         self.text_buffer_view.setWrapMode(mode);
     }
 
+    pub fn setWrapIndent(self: *EditorView, indent: tb.WrapIndent) void {
+        self.text_buffer_view.setWrapIndent(indent);
+    }
+
     pub fn getPrimaryCursor(self: *const EditorView) eb.Cursor {
         return self.edit_buffer.getPrimaryCursor();
     }
@@ -587,27 +597,43 @@ pub const EditorView = struct {
         self.setCursorAffinityForAbsoluteRow(absolute_row);
     }
 
-    /// Returns viewport-relative visual coordinates for external API consumers
+    /// Returns viewport-relative visual coordinates for external API consumers.
+    /// visual_col includes soft-wrap continuation pad so it matches painted geometry.
     pub fn getVisualCursor(self: *EditorView) VisualCursor {
         self.updateBeforeRender();
         const vcursor = self.getPrimaryVisualCursorAbsolute();
+        const pad_cols = self.padColsForVisualRow(vcursor.visual_row);
 
         // Convert absolute visual coordinates to viewport-relative for the API
-        const vp = self.text_buffer_view.getViewport() orelse return vcursor;
+        const vp = self.text_buffer_view.getViewport() orelse {
+            return .{
+                .visual_row = vcursor.visual_row,
+                .visual_col = vcursor.visual_col + pad_cols,
+                .logical_row = vcursor.logical_row,
+                .logical_col = vcursor.logical_col,
+                .offset = vcursor.offset,
+            };
+        };
 
         const viewport_relative_row = if (vcursor.visual_row >= vp.y) vcursor.visual_row - vp.y else 0;
-        const viewport_relative_col = if (self.text_buffer_view.wrap_mode == .none)
+        const content_col = if (self.text_buffer_view.wrap_mode == .none)
             (if (vcursor.visual_col >= vp.x) vcursor.visual_col - vp.x else 0)
         else
             vcursor.visual_col;
 
         return .{
             .visual_row = viewport_relative_row,
-            .visual_col = viewport_relative_col,
+            .visual_col = content_col + pad_cols,
             .logical_row = vcursor.logical_row,
             .logical_col = vcursor.logical_col,
             .offset = vcursor.offset,
         };
+    }
+
+    fn padColsForVisualRow(self: *EditorView, visual_row: u32) u32 {
+        const vlines = self.text_buffer_view.virtual_lines.items;
+        if (visual_row >= vlines.len) return 0;
+        return vlines[visual_row].pad_cols;
     }
 
     /// This accounts for line wrapping by finding which virtual line contains the logical position
@@ -706,17 +732,18 @@ pub const EditorView = struct {
 
         const target_visual_row = vcursor.visual_row - 1;
 
-        // This persists across empty/narrow lines to restore column when possible
+        // Preserve painted X across empty/narrow lines and different continuation pads.
         if (self.desired_visual_col == null) {
-            self.desired_visual_col = vcursor.visual_col;
+            self.desired_visual_col = vcursor.visual_col + self.padColsForVisualRow(vcursor.visual_row);
         }
         const desired_visual_col = self.desired_visual_col.?;
 
         const vlines = self.text_buffer_view.virtual_lines.items;
+        const target_content_col = desired_visual_col -| vlines[target_visual_row].pad_cols;
         const target_visual_col = if (self.text_buffer_view.getSelectionOccupancy() == .boundary)
-            @min(desired_visual_col, vlines[target_visual_row].width_cols)
+            @min(target_content_col, vlines[target_visual_row].width_cols)
         else
-            clampVisualColToStayOnVisualRow(vlines, target_visual_row, desired_visual_col);
+            clampVisualColToStayOnVisualRow(vlines, target_visual_row, target_content_col);
 
         if (self.visualToLogicalCursor(target_visual_row, target_visual_col)) |new_vcursor| {
             if (self.edit_buffer.cursors.items.len > 0) {
@@ -749,15 +776,16 @@ pub const EditorView = struct {
 
         const target_visual_row = vcursor.visual_row + 1;
 
-        // This persists across empty/narrow lines to restore column when possible
+        // Preserve painted X across empty/narrow lines and different continuation pads.
         if (self.desired_visual_col == null) {
-            self.desired_visual_col = vcursor.visual_col;
+            self.desired_visual_col = vcursor.visual_col + self.padColsForVisualRow(vcursor.visual_row);
         }
         const desired_visual_col = self.desired_visual_col.?;
+        const target_content_col = desired_visual_col -| vlines[target_visual_row].pad_cols;
         const target_visual_col = if (self.text_buffer_view.getSelectionOccupancy() == .boundary)
-            @min(desired_visual_col, vlines[target_visual_row].width_cols)
+            @min(target_content_col, vlines[target_visual_row].width_cols)
         else
-            clampVisualColToStayOnVisualRow(vlines, target_visual_row, desired_visual_col);
+            clampVisualColToStayOnVisualRow(vlines, target_visual_row, target_content_col);
 
         if (self.visualToLogicalCursor(target_visual_row, target_visual_col)) |new_vcursor| {
             if (self.edit_buffer.cursors.items.len > 0) {
@@ -854,7 +882,8 @@ pub const EditorView = struct {
 
         return .{
             .visual_row = vcursor.visual_row,
-            .visual_col = 0,
+            // Viewport column of first content cell (after continuation pad).
+            .visual_col = vline.pad_cols,
             .logical_row = logical_row,
             .logical_col = logical_col,
             .offset = offset,
@@ -900,7 +929,7 @@ pub const EditorView = struct {
 
         return .{
             .visual_row = vcursor.visual_row,
-            .visual_col = target_visual_col,
+            .visual_col = vline.pad_cols + target_visual_col,
             .logical_row = logical_row,
             .logical_col = logical_col,
             .offset = offset,
@@ -909,7 +938,8 @@ pub const EditorView = struct {
 
     pub fn gotoVisualLineEnd(self: *EditorView) void {
         const eol = self.getVisualEOL();
-        self.cursor_visual_affinity = .{ .offset = eol.offset, .visual_row = eol.visual_row, .visual_col = eol.visual_col };
+        const content_col = eol.visual_col -| self.padColsForVisualRow(eol.visual_row);
+        self.cursor_visual_affinity = .{ .offset = eol.offset, .visual_row = eol.visual_row, .visual_col = content_col };
         self.edit_buffer.setCursor(eol.logical_row, eol.logical_col) catch {
             self.cursor_visual_affinity = null;
             return;

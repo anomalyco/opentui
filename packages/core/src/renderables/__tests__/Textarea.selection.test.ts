@@ -697,6 +697,48 @@ describe("Textarea - Selection Tests", () => {
       expect(selectedText).toBe("Line 1\nL")
     })
 
+    it.each(["cell", "boundary"] as const)(
+      "preserves wrapIndent alignment during Shift+Down and Shift+Up with %s occupancy",
+      async (selectionOccupancy) => {
+        const text = "    " + "aaa ".repeat(12)
+        const { textarea: editor } = await createTextareaRenderable(currentRenderer, renderOnce, {
+          initialValue: text,
+          width: 20,
+          height: 10,
+          wrapMode: "word",
+          wrapIndent: "same",
+          selectionOccupancy,
+        })
+        editor.focus()
+        editor.editBuffer.setCursor(0, 4)
+        await renderOnce()
+
+        const inclusiveCell = selectionOccupancy === "cell" ? 1 : 0
+        for (const [direction, row] of [
+          ["down", 1],
+          ["down", 2],
+          ["up", 1],
+        ] as const) {
+          currentMockInput.pressArrow(direction, { shift: true })
+          await renderOnce()
+          expect(editor.visualCursor.visualRow).toBe(row)
+          expect(editor.visualCursor.visualCol).toBe(4)
+          expect(editor.logicalCursor.col).toBe(4 + row * 16)
+          expect(editor.getSelectedText()).toBe(text.slice(4, 4 + row * 16 + inclusiveCell))
+        }
+
+        editor.clearSelection()
+        editor.editBuffer.setCursor(0, 36)
+        for (const row of [1, 0]) {
+          currentMockInput.pressArrow("up", { shift: true })
+          await renderOnce()
+          expect(editor.visualCursor.visualRow).toBe(row)
+          expect(editor.visualCursor.visualCol).toBe(4)
+          expect(editor.getSelectedText()).toBe(text.slice(4 + row * 16, 36 + inclusiveCell))
+        }
+      },
+    )
+
     it("should select with shift+up", async () => {
       const { textarea: editor } = await createTextareaRenderable(currentRenderer, renderOnce, {
         initialValue: "Line 1\nLine 2\nLine 3",

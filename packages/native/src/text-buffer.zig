@@ -28,6 +28,7 @@ pub const TextBufferError = seg_mod.TextBufferError;
 pub const Highlight = seg_mod.Highlight;
 pub const StyleSpan = seg_mod.StyleSpan;
 pub const WrapMode = seg_mod.WrapMode;
+pub const WrapIndent = seg_mod.WrapIndent;
 pub const RenderClusterInfo = seg_mod.RenderClusterInfo;
 
 pub const SyntaxStyle = ss.SyntaxStyle;
