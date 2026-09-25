@@ -1,5 +1,7 @@
 ---
 import SocialMeta from "../components/SocialMeta.astro"
+import themeScript from "../scripts/theme.js?raw"
+import "../styles/cobalt.css"
 
 interface Props {
   title: string
@@ -27,14 +29,7 @@ const { title, description, wide = false, robots } = Astro.props
     <meta name="theme-color" media="(prefers-color-scheme: dark)" content="#000000" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <link rel="preload" href="/fonts/OpenTUIMono-Regular.woff2" as="font" type="font/woff2" crossorigin />
-    <script is:inline>
-      const theme = localStorage.getItem("theme")
-      if (theme === "light" || theme === "blue" || theme === "dark") {
-        document.documentElement.dataset.theme = theme
-        const color = theme === "dark" ? "#000000" : "#ffffff"
-        for (const meta of document.querySelectorAll('meta[name="theme-color"]')) meta.content = color
-      }
-    </script>
+    <script is:inline set:html={themeScript} />
   </head>
   <body>
     <slot name="nav" />
@@ -114,6 +109,8 @@ const { title, description, wide = false, robots } = Astro.props
     /* Keep the centered layout stable between pages with and without a
      * scrollbar. */
     scrollbar-gutter: stable;
+    /* Show only the thumb; the track blends into the page. */
+    scrollbar-color: var(--muted-color) transparent;
   }
 
   body {

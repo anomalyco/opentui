@@ -1774,6 +1774,95 @@ test("CliRenderer split-footer resize cleanup uses the visible footer surface wh
   writeOutSpy.mockRestore()
 })
 
+test("CliRenderer split-footer width shrink clears from the visible settling footer origin", async () => {
+  const result = await createTestRenderer({
+    width: 80,
+    height: 24,
+    screenMode: "split-footer",
+    footerHeight: 6,
+    externalOutputMode: "capture-stdout",
+    consoleMode: "disabled",
+  })
+
+  renderer = result.renderer
+  ;(renderer as any)._terminalIsSetup = true
+
+  expect((renderer as any).renderOffset).toBe(1)
+
+  const writeOutSpy = spyOn(renderer as any, "writeOut")
+
+  result.resize(44, 22)
+
+  expect(writeOutSpy).toHaveBeenCalledTimes(1)
+  expect(writeOutSpy.mock.calls[0]?.[0]).toBe(ANSI.moveCursorAndClear(2, 1))
+
+  writeOutSpy.mockRestore()
+})
+
+test("CliRenderer split-footer width shrink clears from a mid-settling footer origin above the bottom-anchored band", async () => {
+  const result = await createTestRenderer({
+    width: 80,
+    height: 24,
+    screenMode: "split-footer",
+    footerHeight: 6,
+    externalOutputMode: "capture-stdout",
+    consoleMode: "disabled",
+  })
+
+  renderer = result.renderer
+  ;(renderer as any)._terminalIsSetup = true
+
+  ;(renderer as any).stdout.write("a\n")
+  await result.renderOnce()
+  ;(renderer as any).stdout.write("b\n")
+  await result.renderOnce()
+  ;(renderer as any).stdout.write("c\n")
+  await result.renderOnce()
+  ;(renderer as any).stdout.write("d\n")
+  await result.renderOnce()
+
+  expect((renderer as any).renderOffset).toBe(5)
+
+  const writeOutSpy = spyOn(renderer as any, "writeOut")
+
+  result.resize(44, 24)
+
+  expect(writeOutSpy).toHaveBeenCalledTimes(1)
+  expect(writeOutSpy.mock.calls[0]?.[0]).toBe(ANSI.moveCursorAndClear(6, 1))
+
+  writeOutSpy.mockRestore()
+})
+
+test("CliRenderer split-footer width shrink retains the broader scrub band when pinned", async () => {
+  const result = await createTestRenderer({
+    width: 80,
+    height: 24,
+    screenMode: "split-footer",
+    footerHeight: 6,
+    externalOutputMode: "capture-stdout",
+    consoleMode: "disabled",
+  })
+
+  renderer = result.renderer
+  ;(renderer as any)._terminalIsSetup = true
+
+  for (let i = 0; i < 20; i++) {
+    ;(renderer as any).stdout.write(`line-${i}\n`)
+    await result.renderOnce()
+  }
+
+  expect((renderer as any).renderOffset).toBe(18)
+
+  const writeOutSpy = spyOn(renderer as any, "writeOut")
+
+  result.resize(44, 24)
+
+  expect(writeOutSpy).toHaveBeenCalledTimes(1)
+  expect(writeOutSpy.mock.calls[0]?.[0]).toBe(ANSI.moveCursorAndClear(12, 1))
+
+  writeOutSpy.mockRestore()
+})
+
 test("CliRenderer split-footer resize cleanup uses the visible source top line across width and height resize while a deferred footer transition is pending", async () => {
   const result = await createTestRenderer({
     width: 40,

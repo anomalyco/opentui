@@ -9,6 +9,10 @@
   input-driven work and test lifecycle failures.
 - Do not interchange byte lengths, code points, graphemes, and terminal display-cell widths.
 - `oxfmt` is the formatting source of truth (`semi: false`, `printWidth: 120`); avoid unrelated formatting churn.
+- In delegated tasks, name the local rendering behavior, owned files, and required checks. Describe ordinary
+  renderer work as correctness and compatibility testing; reserve security terminology for actual security work.
+  Use concrete scopes such as frame parity, callback ordering, resource cleanup, or loopback SSH output tests.
+  Request an independent correctness review and a separate reproduction check of actionable findings.
 
 ## Tooling And Runtimes
 
@@ -41,11 +45,14 @@ terminal or platform is unavailable locally.
   `u32`/`u64`, not backend-only ABI names such as `usize`, `napi_env`, or `napi_value`; represent `i64`/`u64` as `bigint`,
   native booleans as `0`/`1`, and shared pointers as `number | bigint`.
 - Default to `buffer` for transient, non-null `TypedArray` parameters and pass the view directly. Do not call `ptr()`.
-- Use `ptr` only when a parameter can be null, accepts a numeric native address, is a callback, or receives a raw
-  `ArrayBuffer`. Pass transient owner objects directly to `ptr` parameters; do not pre-resolve them.
-- On Bun 1.3.14, `DataView` is not accepted by `buffer` or `ptr`. You MUST pass an equivalent typed array such as
+- For a raw `ArrayBuffer`, create one `Uint8Array` view over it, keep that view, and declare `buffer`. A `buffer` call
+  costs less than a `ptr` call. `buffer` rejects an argument that is not a view with a `TypeError`. `ptr` sends a bad
+  argument to native code as an address.
+- Use `ptr` only when a parameter can be null, accepts a numeric native address, or is a callback. Pass transient owner
+  objects directly to `ptr` parameters. Do not pre-resolve them.
+- Bun 1.3 does not accept `DataView` directly for `buffer` or `ptr` parameters. Pass an equivalent typed array such as
   `new Uint8Array(view.buffer, view.byteOffset, view.byteLength)`.
-- On Bun 1.4+, a non-null `DataView` MUST use `buffer` and be passed directly.
+- On Bun 1.4+, use `buffer` when you pass a `DataView` directly to FFI.
 - Use `ptr(view)` only when native code stores the address beyond the call. Before resolving it, access `view.buffer` to
   move any inline typed-array storage into a stable `ArrayBuffer`, then keep the view alive for the complete native
   lifetime. The order is required: `const owner = view.buffer; const address = ptr(view)`. Calling `ptr(view)` first and

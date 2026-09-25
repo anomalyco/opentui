@@ -821,7 +821,7 @@ pub const EditBuffer = struct {
             if (seg.isBreak() or seg.isLineStart()) break;
             if (seg.asText()) |chunk| {
                 const next_cols = cols_before + chunk.width_cols;
-                const layout = self.tb.getLayoutInfoFor(chunk) catch {
+                const layout = self.tb.getWordLayoutInfoFor(chunk) catch {
                     cols_before = next_cols;
                     passed_cursor = passed_cursor or cursor.col < next_cols;
                     previous_word_class = .other;
@@ -908,7 +908,7 @@ pub const EditBuffer = struct {
             if (seg.asText()) |chunk| {
                 const next_cols = cols_before + chunk.width_cols;
 
-                const layout = self.tb.getLayoutInfoFor(chunk) catch {
+                const layout = self.tb.getWordLayoutInfoFor(chunk) catch {
                     cols_before = next_cols;
                     previous_word_class = .other;
                     continue;

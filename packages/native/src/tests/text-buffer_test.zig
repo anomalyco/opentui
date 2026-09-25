@@ -6,6 +6,123 @@ const iter_mod = @import("../text-buffer-iterators.zig");
 
 const TextBuffer = text_buffer.UnifiedTextBuffer;
 
+test "TextBuffer CJK layout cache does not retain replaced dense metadata" {
+    const pool = gp.initGlobalPool(std.testing.allocator);
+    defer gp.deinitGlobalPool();
+    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
+    defer link.deinitGlobalLinkPool();
+
+    var tracking = std.testing.FailingAllocator.init(std.testing.allocator, .{});
+    const tb = try TextBuffer.init(tracking.allocator(), pool, link_pool, .unicode);
+    defer tb.deinit();
+    const view = try @import("../text-buffer-view.zig").TextBufferView.init(tracking.allocator(), tb);
+    defer view.deinit();
+    view.setWrapMode(.word);
+    view.setWrapWidth(80);
+
+    var text = ("\u{65e5}" ** 4096).*;
+    const mem_id = try tb.registerMemBuffer(&text, false);
+    try tb.setTextFromMemId(mem_id);
+    try std.testing.expectEqual(@as(u32, 103), view.getVirtualLineCount());
+    const initial_bytes = tracking.allocated_bytes - tracking.freed_bytes;
+    for (0..200) |i| {
+        @memcpy(text[text.len - 3 ..], if (i % 2 == 0) "\u{672c}" else "\u{65e5}");
+        try tb.setTextFromMemId(mem_id);
+        try std.testing.expectEqual(@as(u32, 103), view.getVirtualLineCount());
+    }
+    const final_bytes = tracking.allocated_bytes - tracking.freed_bytes;
+    // Persistent rope nodes may grow, but obsolete per-character layouts must not.
+    try std.testing.expect(final_bytes - initial_bytes < 1024 * 1024);
+
+    const original_chunk = tb.rope().get(1).?.asText().?;
+    const cached_ptr = original_chunk.getCachedLayoutInfo(2, .unicode).?.cjk_breaks.ptr;
+    try tb.append("\nx");
+    try std.testing.expect(original_chunk.getCachedLayoutInfo(2, .unicode) != null);
+    try std.testing.expectEqual(@as(u32, 104), view.getVirtualLineCount());
+    try std.testing.expectEqual(cached_ptr, original_chunk.getCachedLayoutInfo(2, .unicode).?.cjk_breaks.ptr);
+
+    try tb.rope().setSegments(&.{ .{ .linestart = {} }, .{ .text = tb.createChunk(mem_id, 0, 6) } });
+    tb.markViewsDirty();
+    const replacement_chunk = tb.rope().get(1).?.asText().?;
+    _ = try tb.getWordLayoutInfoFor(replacement_chunk);
+    try std.testing.expectEqual(@as(u32, 1), view.getVirtualLineCount());
+    try std.testing.expect(replacement_chunk.cold.?.wrap_breaks != null);
+    try std.testing.expect(original_chunk.getCachedLayoutInfo(2, .unicode) == null);
+}
+
+test "TextBuffer CJK layout cache survives history and multiple views" {
+    const pool = gp.initGlobalPool(std.testing.allocator);
+    defer gp.deinitGlobalPool();
+    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
+    defer link.deinitGlobalLinkPool();
+    const tb = try TextBuffer.init(std.testing.allocator, pool, link_pool, .unicode);
+    defer tb.deinit();
+    const TextBufferView = @import("../text-buffer-view.zig").TextBufferView;
+    const first = try TextBufferView.init(std.testing.allocator, tb);
+    defer first.deinit();
+    const second = try TextBufferView.init(std.testing.allocator, tb);
+    defer second.deinit();
+    first.setWrapMode(.word);
+    first.setWrapWidth(80);
+    second.setWrapMode(.word);
+    second.setWrapWidth(100);
+
+    const original = "\u{65e5}" ** 512;
+    const replacement = "\u{672c}" ** 400;
+    try tb.setText(original);
+    try std.testing.expectEqual(@as(u32, 13), first.getVirtualLineCount());
+    const original_chunk = tb.rope().get(1).?.asText().?;
+    const cached_ptr = original_chunk.getCachedLayoutInfo(2, .unicode).?.cjk_breaks.ptr;
+    try std.testing.expectEqual(@as(u32, 11), second.getVirtualLineCount());
+    try std.testing.expectEqual(cached_ptr, original_chunk.getCachedLayoutInfo(2, .unicode).?.cjk_breaks.ptr);
+    tb.setTabWidth(4);
+    try std.testing.expectEqual(cached_ptr, original_chunk.getCachedLayoutInfo(2, .unicode).?.cjk_breaks.ptr);
+    try std.testing.expectEqual(@as(u32, 13), first.getVirtualLineCount());
+    try std.testing.expectEqual(cached_ptr, original_chunk.getCachedLayoutInfo(4, .unicode).?.cjk_breaks.ptr);
+    tb.setTabWidth(2);
+    try tb.rope().store_undo("original");
+
+    try tb.setText(replacement);
+    try std.testing.expect(original_chunk.getCachedLayoutInfo(2, .unicode) == null);
+    try std.testing.expectEqual(@as(u32, 10), first.getVirtualLineCount());
+    try std.testing.expectEqual(@as(u32, 8), second.getVirtualLineCount());
+    try std.testing.expectEqualStrings("original", try tb.undo("replacement"));
+    tb.markViewsDirty();
+    try std.testing.expectEqual(original_chunk, tb.rope().get(1).?.asText().?);
+
+    for ([_]*TextBufferView{ first, second }, [_]u32{ 80, 100 }) |view, width| {
+        var byte_offset: u32 = 0;
+        for (view.getVirtualLines()) |line| {
+            try std.testing.expect(line.width_cols <= width);
+            for (line.chunks.items) |chunk| {
+                try std.testing.expectEqual(byte_offset, chunk.byte_start_in_chunk);
+                const bytes = chunk.chunk.getBytes(tb.memRegistry());
+                try std.testing.expectEqualStrings(original[byte_offset..][0..chunk.byte_len], bytes[chunk.byte_start_in_chunk..][0..chunk.byte_len]);
+                byte_offset += chunk.byte_len;
+            }
+        }
+        try std.testing.expectEqual(original.len, byte_offset);
+    }
+    try std.testing.expectEqualStrings("replacement", try tb.redo());
+    tb.markViewsDirty();
+    try std.testing.expectEqual(@as(u32, 10), first.getVirtualLineCount());
+    try std.testing.expectEqual(@as(u32, 8), second.getVirtualLineCount());
+
+    tb.reset();
+    try std.testing.expectEqual(@as(u32, 1), first.getVirtualLineCount());
+    try tb.setText(original);
+    try std.testing.expectEqual(@as(u32, 11), second.getVirtualLineCount());
+    try tb.setStyledText(&.{.{
+        .text_ptr = replacement.ptr,
+        .text_len = replacement.len,
+        .fg_ptr = null,
+        .bg_ptr = null,
+        .attributes = 0,
+    }});
+    try std.testing.expectEqual(@as(u32, 10), first.getVirtualLineCount());
+    try std.testing.expectEqual(@as(u32, 8), second.getVirtualLineCount());
+}
+
 test "TextBuffer init - creates empty buffer" {
     const pool = gp.initGlobalPool(std.testing.allocator);
     defer gp.deinitGlobalPool();
@@ -595,44 +712,6 @@ test "TextBuffer reset - clears all content" {
     tb.reset();
     try std.testing.expectEqual(@as(u32, 0), tb.getLength());
     try std.testing.expectEqual(@as(u32, 1), tb.getLineCount());
-}
-
-test "TextBuffer line iteration - walkLines callback" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
-
-    var tb = try TextBuffer.init(std.testing.allocator, pool, link_pool, .unicode);
-    defer tb.deinit();
-
-    const text = "First\nSecond\nThird";
-    try tb.setText(text);
-
-    const Context = struct {
-        lines: std.ArrayListUnmanaged(iter_mod.LineInfo),
-        allocator: std.mem.Allocator,
-
-        fn callback(ctx_ptr: *anyopaque, line_info: iter_mod.LineInfo) void {
-            const ctx = @as(*@This(), @ptrCast(@alignCast(ctx_ptr)));
-            ctx.lines.append(ctx.allocator, line_info) catch {};
-        }
-    };
-
-    var ctx: Context = .{ .lines = .empty, .allocator = std.testing.allocator };
-    defer ctx.lines.deinit(std.testing.allocator);
-
-    iter_mod.walkLines(tb.rope(), &ctx, Context.callback, true);
-
-    try std.testing.expectEqual(@as(usize, 3), ctx.lines.items.len);
-    try std.testing.expectEqual(@as(u32, 0), ctx.lines.items[0].line_idx);
-    try std.testing.expectEqual(@as(u32, 5), ctx.lines.items[0].width_cols);
-
-    try std.testing.expectEqual(@as(u32, 1), ctx.lines.items[1].line_idx);
-    try std.testing.expectEqual(@as(u32, 6), ctx.lines.items[1].width_cols);
-
-    try std.testing.expectEqual(@as(u32, 2), ctx.lines.items[2].line_idx);
-    try std.testing.expectEqual(@as(u32, 5), ctx.lines.items[2].width_cols);
 }
 
 test "TextBuffer line queries - comprehensive rope coordinate checks" {
@@ -1641,9 +1720,12 @@ test "TextBuffer setText - then deleteRange via EditBuffer - validate markers" {
 
     try eb.deleteRange(.{ .row = 2, .col = 0 }, .{ .row = 2, .col = 6 });
 
-    try std.testing.expectEqual(@as(u32, 2), eb.getTextBuffer().lineCount());
+    var output: [32]u8 = undefined;
+    try std.testing.expectEqualStrings("Line 1\nLine 2\n", output[0..eb.getText(&output)]);
+    try std.testing.expectEqual(@as(u32, 3), eb.getTextBuffer().lineCount());
     try std.testing.expectEqual(@as(u32, 2), eb.getTextBuffer().rope().markerCount(.brk));
-    try std.testing.expectEqual(@as(u32, 2), eb.getTextBuffer().rope().markerCount(.linestart));
+    try std.testing.expectEqual(@as(u32, 3), eb.getTextBuffer().rope().markerCount(.linestart));
+    try std.testing.expectEqual(@as(u32, 0), eb.getTextBuffer().lineWidthAt(2));
 }
 
 test "TextBuffer setStyledText - repeated calls with SyntaxStyle (crash reproduction)" {

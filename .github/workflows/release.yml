@@ -422,9 +422,16 @@ jobs:
           cd "$WORK_DIR"
 
           # Verify all expected release assets exist
+          # These are the matching symbols from the build job, never a Debug
+          # rebuild. Keep them as release assets beyond CI artifact expiration.
+          for target in darwin-x64 darwin-arm64 linux-x64 linux-arm64 linux-x64-musl linux-arm64-musl win32-x64 win32-arm64; do
+            source="artifacts/native-symbols-$FULL_TAG/native-symbols-$target.zip"
+            test -s "$source"
+            cp "$source" "release-assets/opentui-symbols-v${FULL_TAG}-${target}.zip"
+          done
           echo ""
           echo "Verifying all release assets..."
-          EXPECTED_ASSETS=12  # 8 native targets + 4 examples (no linux-arm64, no windows-arm64)
+          EXPECTED_ASSETS=20  # 8 native targets + 8 symbol archives + 4 examples
           ACTUAL_ASSETS=$(ls -1 release-assets/*.zip 2>/dev/null | wc -l | tr -d ' ')
 
           if [ "$ACTUAL_ASSETS" -ne "$EXPECTED_ASSETS" ]; then
@@ -435,6 +442,7 @@ jobs:
 
           echo "✅ All $ACTUAL_ASSETS release assets prepared:"
           echo "   - 8 native binaries (all targets)"
+          echo "   - 8 matching native symbol archives (all targets)"
           echo "   - 4 example executables (darwin-x64, darwin-arm64, linux-x64, windows-x64)"
           ls -lah release-assets/
 

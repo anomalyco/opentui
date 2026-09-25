@@ -1,6 +1,6 @@
 {
   "name": "@opentui/keymap",
-  "version": "0.5.9",
+  "version": "0.5.12",
   "description": "Standalone keymap package for OpenTUI",
   "license": "MIT",
   "repository": {
@@ -90,7 +90,7 @@
   "devDependencies": {
     "@opentui/react": "workspace:*",
     "@opentui/solid": "workspace:*",
-    "@types/bun": "1.3.14",
+    "@types/bun": "1.4.1",
     "@types/node": "^24.0.0",
     "@types/react": "^19.2.0",
     "react": ">=19.2.0",

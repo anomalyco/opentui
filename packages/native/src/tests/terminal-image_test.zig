@@ -1,6 +1,20 @@
 const std = @import("std");
+const gp = @import("../grapheme.zig");
 const terminal_image = @import("../terminal-image.zig");
 const image = @import("../image.zig");
+
+test "kitty placement z stays above cell backgrounds" {
+    const z = terminal_image.kittyPlacementZ(1);
+    const below_bg = @as(i32, std.math.minInt(i32) / 2);
+    const max_z = terminal_image.kittyPlacementZ(gp.IMAGE_ID_MASK);
+    try std.testing.expectEqual(below_bg + 1, z);
+    try std.testing.expect(z < 0);
+    try std.testing.expect(z >= below_bg);
+    try std.testing.expect(terminal_image.kittyPlacementZ(2) > z);
+    try std.testing.expect(max_z < 0);
+    try std.testing.expect(max_z >= below_bg);
+    try std.testing.expect(max_z > z);
+}
 
 const DecodedSixel = struct {
     indices: []u8,
@@ -135,6 +149,95 @@ pub fn decodeKittyChunks(payload: []const u8) ![]u8 {
         offset = end + 2;
     }
     return decoded.toOwnedSlice(std.testing.allocator);
+}
+
+test "kitty zlib roundtrips RGB and RGBA with a real inflater" {
+    for ([_]bool{ false, true }) |alpha| {
+        const pixels = try std.testing.allocator.alloc(u8, 256 * 128 * 4);
+        defer std.testing.allocator.free(pixels);
+        var prng = std.Random.DefaultPrng.init(711);
+        prng.random().bytes(pixels);
+        for (0..pixels.len / 4) |i| {
+            if (i >= pixels.len / 8) @memset(pixels[i * 4 ..][0..3], 90);
+            pixels[i * 4 + 3] = if (alpha) 127 else 255;
+        }
+        const value = try image.createFromRgba(std.testing.allocator, pixels, 256, 128, 1024);
+        defer value.deinit();
+        var output: std.Io.Writer.Allocating = .init(std.testing.allocator);
+        defer output.deinit();
+        try std.testing.expectEqual(.zlib, try terminal_image.writeKittyTransmitEncoded(std.testing.allocator, &output.writer, value, 19, alpha, true));
+        try std.testing.expect(std.mem.find(u8, output.written(), if (alpha) "f=32" else "f=24") != null);
+        try std.testing.expect(std.mem.find(u8, output.written(), "m=1") != null);
+        if (alpha) try std.testing.expect(std.mem.startsWith(u8, output.written(), "\x1bPtmux;"));
+        const unwrapped = try std.mem.replaceOwned(u8, std.testing.allocator, output.written(), "\x1b\x1b", "\x1b");
+        defer std.testing.allocator.free(unwrapped);
+        const compressed = try decodeKittyChunks(unwrapped);
+        defer std.testing.allocator.free(compressed);
+        var input: std.Io.Reader = .fixed(compressed);
+        var window: [std.compress.flate.max_window_len]u8 = undefined;
+        var inflater = std.compress.flate.Decompress.init(&input, .zlib, &window);
+        const decoded = try inflater.reader.allocRemaining(std.testing.allocator, .limited(pixels.len + 1));
+        defer std.testing.allocator.free(decoded);
+        const channels: usize = if (alpha) 4 else 3;
+        try std.testing.expectEqual(pixels.len / 4 * channels, decoded.len);
+        for (0..pixels.len / 4) |i| {
+            try std.testing.expectEqualSlices(u8, pixels[i * 4 ..][0..channels], decoded[i * channels ..][0..channels]);
+        }
+        try std.testing.expect(compressed.len < decoded.len);
+    }
+}
+
+test "kitty zlib expansion falls back to unchanged raw output" {
+    var pixels: [64 * 64 * 4]u8 = undefined;
+    var prng = std.Random.DefaultPrng.init(18271);
+    prng.random().bytes(&pixels);
+    const value = try image.createFromRgba(std.testing.allocator, &pixels, 64, 64, 256);
+    defer value.deinit();
+    var raw: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer raw.deinit();
+    try terminal_image.writeKittyTransmit(&raw.writer, value, 20, false);
+    var output: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer output.deinit();
+    try std.testing.expectEqual(.raw, try terminal_image.writeKittyTransmitEncoded(std.testing.allocator, &output.writer, value, 20, false, true));
+    try std.testing.expectEqualSlices(u8, raw.written(), output.written());
+}
+
+test "kitty zlib allocation failures fall back even when the input compresses" {
+    const pixels = [_]u8{42} ** (64 * 64 * 4);
+    const value = try image.createFromRgba(std.testing.allocator, &pixels, 64, 64, 256);
+    defer value.deinit();
+    var raw: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer raw.deinit();
+    try terminal_image.writeKittyTransmit(&raw.writer, value, 20, false);
+    var failure: usize = 0;
+    while (true) : (failure += 1) {
+        var failing = std.testing.FailingAllocator.init(std.testing.allocator, .{ .fail_index = failure });
+        var output: std.Io.Writer.Allocating = .init(std.testing.allocator);
+        defer output.deinit();
+        const encoding = try terminal_image.writeKittyTransmitEncoded(failing.allocator(), &output.writer, value, 20, false, true);
+        if (!failing.has_induced_failure) {
+            try std.testing.expectEqual(.zlib, encoding);
+            break;
+        }
+        try std.testing.expectEqual(.raw, encoding);
+        try std.testing.expectEqualSlices(u8, raw.written(), output.written());
+    }
+}
+
+test "kitty zlib preserves PNG and propagates output failures without leaking" {
+    var pixels: [1024]u8 = @splat(255);
+    const value = try image.createFromRgba(std.testing.allocator, &pixels, 16, 16, 64);
+    defer value.deinit();
+    var failed: std.Io.Writer = .failing;
+    try std.testing.expectError(error.WriteFailed, terminal_image.writeKittyTransmitEncoded(std.testing.allocator, &failed, value, 21, false, true));
+    const png = try value.ensureEncodedPng();
+    var output: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer output.deinit();
+    try std.testing.expectEqual(.png, try terminal_image.writeKittyTransmitEncoded(std.testing.allocator, &output.writer, value, 21, false, true));
+    const decoded = try decodeKittyChunks(output.written());
+    defer std.testing.allocator.free(decoded);
+    try std.testing.expectEqualSlices(u8, png, decoded);
+    try std.testing.expect(std.mem.find(u8, output.written(), "o=z") == null);
 }
 
 test "kitty transmission chunks RGBA payloads and places without cursor movement" {

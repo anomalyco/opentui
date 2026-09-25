@@ -4,10 +4,205 @@ const ansi = @import("../ansi.zig");
 const gp = @import("../grapheme.zig");
 const link = @import("../link.zig");
 const ss = @import("../syntax-style.zig");
+const utf8 = @import("../utf8.zig");
 
 const TextBuffer = text_buffer.UnifiedTextBuffer;
 const RGBA = text_buffer.RGBA;
 const Highlight = text_buffer.Highlight;
+
+test "TextBuffer styled seek - JSON tokens retain every line span" {
+    const pool = gp.initGlobalPool(std.testing.allocator);
+    defer gp.deinitGlobalPool();
+    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
+    defer link.deinitGlobalLinkPool();
+    const tb = try TextBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth);
+    defer tb.deinit();
+    const style = try ss.SyntaxStyle.init(std.testing.allocator);
+    defer style.deinit();
+    tb.setSyntaxStyle(style);
+    const line_count = 200;
+    const chunks = try std.testing.allocator.alloc(text_buffer.StyledChunk, line_count * 5);
+    defer std.testing.allocator.free(chunks);
+    for (0..line_count) |row| {
+        for ([_][]const u8{ "  ", "\"field\"", ": ", "123", ",\n" }, 0..) |text, token| {
+            chunks[row * 5 + token] = .{
+                .text_ptr = text.ptr,
+                .text_len = text.len,
+                .fg_ptr = null,
+                .bg_ptr = null,
+                .attributes = @intCast(token),
+            };
+        }
+    }
+    for (0..2) |_| {
+        try tb.setStyledText(chunks);
+        try std.testing.expectEqual(line_count + 1, tb.getLineCount());
+        try std.testing.expectEqual(chunks.len, tb.getHighlightCount());
+        try std.testing.expectEqual(chunks.len, style.getStyleCount());
+        for (0..line_count) |row| {
+            const highlights = tb.getLineHighlights(row);
+            const spans = tb.line_spans.items[row].items;
+            try std.testing.expectEqual(5, highlights.len);
+            try std.testing.expectEqual(5, spans.len);
+            for ([_]u32{ 0, 2, 9, 11, 14 }, [_]u32{ 2, 9, 11, 14, 15 }, 0..) |start, end, token| {
+                try std.testing.expectEqual(start, highlights[token].col_start);
+                try std.testing.expectEqual(end, highlights[token].col_end);
+                try std.testing.expect(highlights[token].internal);
+                try std.testing.expectEqual(1, highlights[token].priority);
+                try std.testing.expectEqual(token, style.resolveById(highlights[token].style_id).?.attributes);
+                try std.testing.expectEqual(start, spans[token].col);
+                try std.testing.expectEqual(end, spans[token].next_col);
+                try std.testing.expectEqual(highlights[token].style_id, spans[token].style_id);
+            }
+        }
+        try std.testing.expectEqual(0, tb.getLineHighlights(line_count).len);
+    }
+}
+
+test "TextBuffer styled seek - newline excluded ranges across empty lines" {
+    const pool = gp.initGlobalPool(std.testing.allocator);
+    defer gp.deinitGlobalPool();
+    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
+    defer link.deinitGlobalLinkPool();
+    const tb = try TextBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth);
+    defer tb.deinit();
+    try tb.setText("\n\nabc\n\ndef\n\n");
+    try tb.addHighlightByCharRange(3, 6, 1, 1, 42);
+    try std.testing.expectEqual(1, tb.getHighlightCount());
+    try std.testing.expectEqual(0, tb.getLineHighlights(4)[0].col_start);
+    try std.testing.expectEqual(3, tb.getLineHighlights(4)[0].col_end);
+    tb.startHighlightsTransaction();
+    try tb.addHighlightByCharRange(2, 4, 2, 5, 43);
+    tb.endHighlightsTransaction();
+    try std.testing.expectEqual(3, tb.getHighlightCount());
+    try std.testing.expectEqual(2, tb.getLineHighlights(2)[0].col_start);
+    try std.testing.expectEqual(3, tb.getLineHighlights(2)[0].col_end);
+    try std.testing.expectEqual(0, tb.getLineHighlights(4)[1].col_start);
+    try std.testing.expectEqual(1, tb.getLineHighlights(4)[1].col_end);
+    try std.testing.expectEqual(2, tb.line_spans.items[4].items[0].style_id);
+    tb.removeHighlightsByRef(43);
+    try std.testing.expectEqual(1, tb.getHighlightCount());
+    try std.testing.expectEqual(1, tb.line_spans.items[4].items[0].style_id);
+    try tb.addHighlightByCharRange(6, 100, 2, 1, 0);
+    try std.testing.expectEqual(1, tb.getHighlightCount());
+}
+
+test "TextBuffer styled seek - display widths multiline chunks and links" {
+    const pool = gp.initGlobalPool(std.testing.allocator);
+    defer gp.deinitGlobalPool();
+    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
+    defer link.deinitGlobalLinkPool();
+    const first = "\t\u{4e16}\u{754c}";
+    const emoji = "\u{1f469}\u{200d}\u{1f4bb}";
+    const combining = "e\u{301}";
+    const url = "https://example.com/fixture.json";
+    const fg = ansi.rgbaFromFloats(1, 0, 0, 1);
+    const bg = ansi.rgbaFromFloats(0, 0, 1, 1);
+    for (std.enums.values(utf8.WidthMethod)) |method| {
+        const tb = try TextBuffer.init(std.testing.allocator, pool, link_pool, method);
+        defer tb.deinit();
+        const style = try ss.SyntaxStyle.init(std.testing.allocator);
+        defer style.deinit();
+        tb.setSyntaxStyle(style);
+        for ([_]u8{ 2, 4 }) |tab_width| {
+            tb.setTabWidth(tab_width);
+            var chunks: [5]text_buffer.StyledChunk = undefined;
+            for ([_][]const u8{ "\n\n", first ++ "\n\n" ++ emoji, "", "\n" ++ combining ++ "\n\tX", "\n\n" }, 0..) |text, i| {
+                chunks[i] = .{
+                    .text_ptr = text.ptr,
+                    .text_len = text.len,
+                    .fg_ptr = @ptrCast(&fg),
+                    .bg_ptr = @ptrCast(&bg),
+                    .attributes = 3,
+                    .link_ptr = url.ptr,
+                    .link_len = url.len,
+                };
+            }
+            try tb.setStyledText(&chunks);
+            try std.testing.expectEqual(9, tb.getLineCount());
+            try std.testing.expectEqual(4, tb.getHighlightCount());
+            try std.testing.expectEqual(2, style.getStyleCount());
+            for ([_]usize{ 2, 4, 5, 6 }, [_][]const u8{ first, emoji, combining, "\tX" }) |row, text| {
+                const highlights = tb.getLineHighlights(row);
+                try std.testing.expectEqual(1, highlights.len);
+                try std.testing.expectEqual(0, highlights[0].col_start);
+                try std.testing.expectEqual(tb.measureText(text), highlights[0].col_end);
+                const definition = style.resolveById(highlights[0].style_id).?;
+                try std.testing.expectEqualDeep(fg, definition.fg.?);
+                try std.testing.expectEqualDeep(bg, definition.bg.?);
+                const link_id = ansi.TextAttributes.getLinkId(definition.attributes);
+                try std.testing.expectEqual(ansi.TextAttributes.setLinkId(3, link_id), definition.attributes);
+                try std.testing.expectEqualStrings(url, try link_pool.get(link_id));
+                try std.testing.expectEqual(1, try link_pool.getRefcount(link_id));
+            }
+            const text = "\n\n" ++ first ++ "\n\n" ++ emoji ++ "\n" ++ combining ++ "\n\tX\n\n";
+            var output: [text.len]u8 = undefined;
+            try std.testing.expectEqualStrings(text, output[0..tb.getPlainTextIntoBuffer(&output)]);
+            const offset = tb.measureText(first ++ emoji ++ combining);
+            try tb.addHighlightByCharRange(offset, offset + tb.measureText("\tX"), 99, 9, 42);
+            try std.testing.expectEqual(2, tb.getLineHighlights(6).len);
+            try std.testing.expectEqual(99, tb.line_spans.items[6].items[0].style_id);
+            tb.removeHighlightsByRef(42);
+            try std.testing.expectEqual(4, tb.getHighlightCount());
+        }
+    }
+}
+
+test "TextBuffer styled seek - arbitrary range order after replacing rope" {
+    const pool = gp.initGlobalPool(std.testing.allocator);
+    defer gp.deinitGlobalPool();
+    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
+    defer link.deinitGlobalLinkPool();
+    const tb = try TextBuffer.init(std.testing.allocator, pool, link_pool, .unicode);
+    defer tb.deinit();
+    const style = try ss.SyntaxStyle.init(std.testing.allocator);
+    defer style.deinit();
+    tb.setSyntaxStyle(style);
+    const style_id = try style.registerStyle("token", null, null, 1);
+    const count = 5000;
+    const text = try std.testing.allocator.alloc(u8, count * 3);
+    defer std.testing.allocator.free(text);
+    for (0..count) |i| @memcpy(text[i * 3 ..][0..3], "\nx\n");
+    try tb.setText("previous rope");
+    try tb.addHighlightByCharRange(1, 3, style_id, 1, 42);
+    tb.clearAllHighlights();
+    try tb.setText(text);
+    tb.startHighlightsTransaction();
+    for (0..count) |i| {
+        const start: u32 = @intCast(count - i - 1);
+        try tb.addHighlightByCharRange(start, start + 1, style_id, 1, 42);
+    }
+    tb.endHighlightsTransaction();
+    try std.testing.expectEqual(count, tb.getHighlightCount());
+    for (0..count) |i| {
+        try std.testing.expectEqual(0, tb.getLineHighlights(i * 2).len);
+        const highlights = tb.getLineHighlights(i * 2 + 1);
+        try std.testing.expectEqual(1, highlights.len);
+        try std.testing.expectEqual(0, highlights[0].col_start);
+        try std.testing.expectEqual(1, highlights[0].col_end);
+        try std.testing.expectEqual(style_id, tb.line_spans.items[i * 2 + 1].items[0].style_id);
+    }
+}
+
+test "TextBuffer styled text - failed growth keeps storage safe to reuse" {
+    const pool = gp.initGlobalPool(std.testing.allocator);
+    defer gp.deinitGlobalPool();
+    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
+    defer link.deinitGlobalLinkPool();
+    var failing = std.testing.FailingAllocator.init(std.testing.allocator, .{});
+    const tb = try TextBuffer.init(failing.allocator(), pool, link_pool, .unicode);
+    defer tb.deinit();
+    const small = [_]text_buffer.StyledChunk{.{ .text_ptr = "a".ptr, .text_len = 1, .fg_ptr = null, .bg_ptr = null, .attributes = 0 }};
+    const large = [_]text_buffer.StyledChunk{.{ .text_ptr = "larger".ptr, .text_len = 6, .fg_ptr = null, .bg_ptr = null, .attributes = 0 }};
+    try tb.setStyledText(&small);
+
+    failing.fail_index = failing.alloc_index;
+    try std.testing.expectError(error.OutOfMemory, tb.setStyledText(&large));
+    failing.fail_index = std.math.maxInt(usize);
+    try tb.setStyledText(&small);
+    var output: [1]u8 = undefined;
+    try std.testing.expectEqualStrings("a", output[0..tb.getPlainTextIntoBuffer(&output)]);
+}
 
 test "TextBuffer coords - addHighlightByCoords" {
     const pool = gp.initGlobalPool(std.testing.allocator);
@@ -46,6 +241,26 @@ test "TextBuffer coords - addHighlightByCoords multi-line" {
 
     try std.testing.expectEqual(@as(usize, 1), line0_highlights.len);
     try std.testing.expectEqual(@as(usize, 1), line1_highlights.len);
+    try std.testing.expectEqual(@as(u32, 3), line0_highlights[0].col_start);
+    try std.testing.expectEqual(@as(u32, 5), line0_highlights[0].col_end);
+    try std.testing.expectEqual(@as(u32, 0), line1_highlights[0].col_start);
+    try std.testing.expectEqual(@as(u32, 3), line1_highlights[0].col_end);
+}
+
+test "TextBuffer coords - highlights after empty lines keep line-local columns" {
+    const pool = gp.initGlobalPool(std.testing.allocator);
+    defer gp.deinitGlobalPool();
+    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
+    defer link.deinitGlobalLinkPool();
+    const tb = try TextBuffer.init(std.testing.allocator, pool, link_pool, .unicode);
+    defer tb.deinit();
+
+    try tb.setText("a\n\nword");
+    try tb.addHighlightByCoords(2, 1, 2, 3, 1, 1, 0);
+    const highlights = tb.getLineHighlights(2);
+    try std.testing.expectEqual(@as(usize, 1), highlights.len);
+    try std.testing.expectEqual(@as(u32, 1), highlights[0].col_start);
+    try std.testing.expectEqual(@as(u32, 3), highlights[0].col_end);
 }
 
 // ===== Highlight System Tests =====

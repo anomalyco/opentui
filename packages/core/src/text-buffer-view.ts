@@ -131,6 +131,11 @@ export class TextBufferView {
     this.lib.textBufferViewSetWrapMode(this.viewPtr, mode)
   }
 
+  public setTextAlign(alignment: "left" | "center" | "right"): void {
+    this.guard()
+    this.lib.textBufferViewSetTextAlign(this.viewPtr, alignment)
+  }
+
   public setFirstLineOffset(offset: number): void {
     this.guard()
     this.lib.textBufferViewSetFirstLineOffset(this.viewPtr, offset)
@@ -154,6 +159,11 @@ export class TextBufferView {
   public get logicalLineInfo(): LineInfo {
     this.guard()
     return this.lib.textBufferViewGetLogicalLineInfo(this.viewPtr)
+  }
+
+  public getLineSources(startLine: number, lineCount: number): number[] {
+    this.guard()
+    return this.lib.textBufferViewGetLineSources(this.viewPtr, startLine, lineCount)
   }
 
   public getSelectedText(): string {

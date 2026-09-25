@@ -14,6 +14,7 @@ const treeSitterStyledTextDataPath = resolve(tmpdir(), "tree-sitter-styled-text-
 const treeSitterCacheTestDataPath = resolve(tmpdir(), "tree-sitter-cache-test")
 const treeSitterDefaultDataPath = resolve(tmpdir(), "tree-sitter-default-node-test")
 const treeSitterMarkdownRenderableTestDataPath = resolve(tmpdir(), "tree-sitter-markdown-renderable-test-data")
+const treeSitterLineNumberTestDataPath = resolve(tmpdir(), "tree-sitter-line-number-test-data")
 const textBufferTestDataPath = resolve(tmpdir(), "text-buffer-node-test")
 const runtimeAssetTestDataPath = resolve(tmpdir(), "opentui-runtime-asset-node-test")
 const audioRecorderTestDataPath = resolve(tmpdir(), "opentui-audio-recorder-node-test")
@@ -25,12 +26,14 @@ const treeSitterClientTestDataPaths = [
   "tree-sitter-conceal-test-data",
   "tree-sitter-edge-case-test-data",
   "tree-sitter-reactive-data-path-test",
+  "tree-sitter-diff-resize-test-data",
 ].map((name) => resolve(tmpdir(), name))
 const treeSitterTestDataPaths = [
   treeSitterStyledTextDataPath,
   treeSitterCacheTestDataPath,
   treeSitterDefaultDataPath,
   treeSitterMarkdownRenderableTestDataPath,
+  treeSitterLineNumberTestDataPath,
   textBufferTestDataPath,
   runtimeAssetTestDataPath,
   audioRecorderTestDataPath,
@@ -68,6 +71,7 @@ const emittedAllowlist = [
   ".node-test/src/lib/RGBA.test.js",
   ".node-test/src/lib/tree-sitter/resolve-ft.test.js",
   ".node-test/src/tests/renderer.kitty-flags.test.js",
+  ".node-test/src/tests/renderer.kitty-transport.test.js",
   ".node-test/src/buffer.test.js",
   ".node-test/src/tests/renderer.idle.test.js",
   ".node-test/src/tests/renderer.notifications.test.js",
@@ -77,6 +81,7 @@ const emittedAllowlist = [
   ".node-test/src/renderables/Box.test.js",
   ".node-test/src/renderables/Code.test.js",
   ".node-test/src/renderables/Diff.regression.test.js",
+  ".node-test/src/renderables/Diff.resize-wrap.test.js",
   ".node-test/src/renderables/Diff.test.js",
   ".node-test/src/renderables/EditBufferRenderable.test.js",
   ".node-test/src/renderables/EmbeddedTerminal.test.js",
@@ -86,6 +91,7 @@ const emittedAllowlist = [
   ".node-test/src/renderables/TabSelect.test.js",
   ".node-test/src/renderables/TimeToFirstDraw.test.js",
   ".node-test/src/renderables/__tests__/Code.test.js",
+  ".node-test/src/renderables/__tests__/LineNumberRenderable.paint-window.test.js",
   ".node-test/src/renderables/__tests__/LineNumberRenderable.scrollbox-simple.test.js",
   ".node-test/src/renderables/__tests__/LineNumberRenderable.scrollbox.test.js",
   ".node-test/src/renderables/__tests__/LineNumberRenderable.test.js",
@@ -139,9 +145,11 @@ const emittedAllowlist = [
   ".node-test/src/tests/renderable.snapshot.test.js",
   ".node-test/src/tests/allocator-stats.test.js",
   ".node-test/src/tests/audio-stream.test.js",
+  ".node-test/src/tests/audio-pcm-stream.test.js",
   ".node-test/src/tests/clipboard-native-lifecycle.test.js",
   ".node-test/src/tests/audio.test.js",
   ".node-test/src/tests/image-renderable.test.js",
+  ".node-test/src/tests/image-pool.test.js",
   ".node-test/src/tests/image.test.js",
   ".node-test/src/tests/destroy-on-exit.test.js",
   ".node-test/src/tests/destroy-during-render.test.js",
@@ -162,6 +170,7 @@ const emittedAllowlist = [
   ".node-test/src/tests/renderer.core-slot-binding.test.js",
   ".node-test/src/tests/renderer.cursor.test.js",
   ".node-test/src/tests/renderer.destroy-during-render.test.js",
+  ".node-test/src/tests/renderer.frame-admission.test.js",
   ".node-test/src/tests/renderer.focus.test.js",
   ".node-test/src/tests/renderer.focus-restore.test.js",
   ".node-test/src/tests/renderer.input.test.js",

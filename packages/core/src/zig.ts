@@ -102,6 +102,17 @@ import { isBunfsPath } from "./lib/bunfs.js"
 import { resolveNativeLibraryPath } from "#opentui/runtime-assets"
 import { allocStruct } from "bun-ffi-structs"
 
+export const MAX_LINK_URL_BYTES = 512
+
+// Struct outputs use `buffer` instead of `ptr`. A `buffer` call is about 3x cheaper on Bun 1.3 and 2.5x cheaper on
+// Bun 1.4. `buffer` rejects an argument that is not a view with a TypeError. `ptr` accepts a number as a raw address.
+// `buffer` also skips the Node pointer normalizer. Bun 1.3 rejects ArrayBuffer and DataView for `buffer`, so keep one
+// Uint8Array view per reusable struct.
+function allocFFIStruct(structDefinition: Parameters<typeof allocStruct>[0]) {
+  const storage = allocStruct(structDefinition)
+  return { ...storage, ffiView: new Uint8Array(storage.buffer) }
+}
+
 registerEnvVar({
   name: "OPENTUI_LIBC",
   description: "Select Linux native libc package. Supported values: glibc, musl.",
@@ -268,8 +279,46 @@ registerEnvVar({
 // Cursor & mouse pointer style mappings (avoid recreation on each call)
 const CURSOR_STYLE_TO_ID = { block: 0, line: 1, underline: 2, default: 3 } as const
 const CURSOR_ID_TO_STYLE = ["block", "line", "underline", "default"] as const
-const MOUSE_STYLE_TO_ID = { default: 0, pointer: 1, text: 2, crosshair: 3, move: 4, "not-allowed": 5 } as const
+const MOUSE_STYLE_TO_ID = {
+  auto: 0,
+  default: 1,
+  none: 2,
+  "context-menu": 3,
+  help: 4,
+  pointer: 5,
+  progress: 6,
+  wait: 7,
+  cell: 8,
+  crosshair: 9,
+  text: 10,
+  "vertical-text": 11,
+  alias: 12,
+  copy: 13,
+  move: 14,
+  "no-drop": 15,
+  "not-allowed": 16,
+  grab: 17,
+  grabbing: 18,
+  "all-scroll": 19,
+  "col-resize": 20,
+  "row-resize": 21,
+  "n-resize": 22,
+  "e-resize": 23,
+  "s-resize": 24,
+  "w-resize": 25,
+  "ne-resize": 26,
+  "nw-resize": 27,
+  "se-resize": 28,
+  "sw-resize": 29,
+  "ew-resize": 30,
+  "ns-resize": 31,
+  "nesw-resize": 32,
+  "nwse-resize": 33,
+  "zoom-in": 34,
+  "zoom-out": 35,
+} as const
 const MAX_FFI_U32 = 0xffff_ffff
+
 // Global singleton state for FFI tracing to prevent duplicate exit handlers
 let globalTraceSymbols: Record<string, number[]> | null = null
 let globalFFILogPath: string | null = null
@@ -433,6 +482,10 @@ function getOpenTUILib(libPath?: string) {
       args: ["u32"],
       returns: "i32",
     },
+    embeddedTerminalSetTransparentBackground: {
+      args: ["u32", "u8"],
+      returns: "i32",
+    },
     embeddedTerminalScroll: {
       args: ["u32", "i32"],
       returns: "i32",
@@ -454,11 +507,11 @@ function getOpenTUILib(libPath?: string) {
       returns: "i32",
     },
     embeddedTerminalCursor: {
-      args: ["u32", "ptr"],
+      args: ["u32", "buffer"],
       returns: "i32",
     },
     embeddedTerminalEncodeKey: {
-      args: ["u32", "ptr", "ptr", "u32", "ptr", "u32", "ptr", "u32", "ptr"],
+      args: ["u32", "buffer", "ptr", "u32", "ptr", "u32", "ptr", "u32", "ptr"],
       returns: "i32",
     },
     embeddedTerminalEncodeMouse: {
@@ -818,7 +871,7 @@ function getOpenTUILib(libPath?: string) {
       returns: "void",
     },
     bufferDrawImage: {
-      args: ["u32", "u32", "ptr"],
+      args: ["u32", "u32", "buffer"],
       returns: "u8",
     },
     bufferDrawPackedBuffer: {
@@ -834,7 +887,7 @@ function getOpenTUILib(libPath?: string) {
       returns: "void",
     },
     bufferDrawGrid: {
-      args: ["u32", "buffer", "buffer", "buffer", "buffer", "u32", "buffer", "u32", "ptr"],
+      args: ["u32", "buffer", "buffer", "buffer", "buffer", "u32", "buffer", "u32", "buffer"],
       returns: "void",
     },
     bufferDrawBox: {
@@ -1162,6 +1215,10 @@ function getOpenTUILib(libPath?: string) {
       args: ["u32", "u8"],
       returns: "void",
     },
+    textBufferViewSetTextAlign: {
+      args: ["u32", "u8"],
+      returns: "void",
+    },
     textBufferViewSetFirstLineOffset: {
       args: ["u32", "u32"],
       returns: "void",
@@ -1207,7 +1264,7 @@ function getOpenTUILib(libPath?: string) {
       returns: "void",
     },
     textBufferViewMeasureForDimensions: {
-      args: ["u32", "u32", "u32", "ptr"],
+      args: ["u32", "u32", "u32", "buffer"],
       returns: "bool",
     },
     bufferDrawTextBufferView: {
@@ -1359,7 +1416,7 @@ function getOpenTUILib(libPath?: string) {
       returns: "void",
     },
     editBufferGetCursorPosition: {
-      args: ["u32", "ptr"],
+      args: ["u32", "buffer"],
       returns: "void",
     },
     editBufferGetId: {
@@ -1403,19 +1460,19 @@ function getOpenTUILib(libPath?: string) {
       returns: "void",
     },
     editBufferGetNextWordBoundary: {
-      args: ["u32", "ptr"],
+      args: ["u32", "buffer"],
       returns: "void",
     },
     editBufferGetPrevWordBoundary: {
-      args: ["u32", "ptr"],
+      args: ["u32", "buffer"],
       returns: "void",
     },
     editBufferGetEOL: {
-      args: ["u32", "ptr"],
+      args: ["u32", "buffer"],
       returns: "void",
     },
     editBufferOffsetToPosition: {
-      args: ["u32", "u32", "ptr"],
+      args: ["u32", "u32", "buffer"],
       returns: "bool",
     },
     editBufferPositionToOffset: {
@@ -1495,7 +1552,7 @@ function getOpenTUILib(libPath?: string) {
 
     // EditorView VisualCursor methods
     editorViewGetVisualCursor: {
-      args: ["u32", "ptr"],
+      args: ["u32", "buffer"],
       returns: "void",
     },
 
@@ -1516,23 +1573,23 @@ function getOpenTUILib(libPath?: string) {
       returns: "void",
     },
     editorViewGetNextWordBoundary: {
-      args: ["u32", "ptr"],
+      args: ["u32", "buffer"],
       returns: "void",
     },
     editorViewGetPrevWordBoundary: {
-      args: ["u32", "ptr"],
+      args: ["u32", "buffer"],
       returns: "void",
     },
     editorViewGetEOL: {
-      args: ["u32", "ptr"],
+      args: ["u32", "buffer"],
       returns: "void",
     },
     editorViewGetVisualSOL: {
-      args: ["u32", "ptr"],
+      args: ["u32", "buffer"],
       returns: "void",
     },
     editorViewGetVisualEOL: {
-      args: ["u32", "ptr"],
+      args: ["u32", "buffer"],
       returns: "void",
     },
     editorViewGotoVisualLineEnd: {
@@ -1593,6 +1650,8 @@ function getOpenTUILib(libPath?: string) {
     imageTestFailIccProfileCopyAllocationOnce: { args: [], returns: "void" },
     imageDecode: { args: ["ptr", "u32", "buffer"], returns: "u32" },
     imageCreateFromRgba: { args: ["ptr", "u64", "u32", "u32", "u32", "buffer"], returns: "u32" },
+    imageCreateFromPixels: { args: ["buffer", "u64", "u32", "u32", "u32", "u32", "u32", "buffer"], returns: "u32" },
+    imageUpdatePixels: { args: ["u32", "buffer", "u64", "u32", "u32", "u32"], returns: "u32" },
     imageDestroy: { args: ["u32"], returns: "void" },
     imageRetain: { args: ["u32", "buffer"], returns: "u32" },
     imageGetInfo: { args: ["u32", "ptr"], returns: "u32" },
@@ -1616,6 +1675,11 @@ function getOpenTUILib(libPath?: string) {
       args: ["u32", "ptr", "u32"],
       returns: "void",
     },
+    setKittyImageTransport: { args: ["u32", "u32"], returns: "u32" },
+    getKittyImageTransport: { args: ["u32", "buffer"], returns: "void" },
+    pollKittyImageTransport: { args: ["u32"], returns: "u32" },
+    cancelKittyImageTransport: { args: ["u32", "u32"], returns: "void" },
+    processKittyImageReply: { args: ["u32", "buffer", "u32"], returns: "u32" },
 
     // Unicode encoding API
     encodeUnicode: {
@@ -1923,7 +1987,7 @@ function getOpenTUILib(libPath?: string) {
       returns: "i32",
     },
     audioCreateStream: {
-      args: ["u32", "ptr", "ptr"],
+      args: ["u32", "buffer", "buffer"],
       returns: "i32",
     },
     audioWriteStream: {
@@ -1951,11 +2015,11 @@ function getOpenTUILib(libPath?: string) {
       returns: "i32",
     },
     audioGetStreamStats: {
-      args: ["u32", "u32", "ptr"],
+      args: ["u32", "u32", "buffer"],
       returns: "i32",
     },
     audioCloseStream: {
-      args: ["u32", "u32", "u32", "ptr"],
+      args: ["u32", "u32", "u32", "buffer"],
       returns: "i32",
     },
     audioLoad: {
@@ -2463,9 +2527,11 @@ export interface RenderLib extends AudioEngineLib {
     // multiple stdout snapshots. Defaults preserve old one-call behavior.
     beginFrame?: boolean,
     finalizeFrame?: boolean,
+    controlOutput?: boolean,
   ) => NativeRenderOperationResult
   getNextBuffer: (renderer: RendererHandle) => OptimizedBuffer
   getCurrentBuffer: (renderer: RendererHandle) => OptimizedBuffer
+  linkGetUrl: (linkId: number, maxLen?: number) => string
   rendererSetPaletteState: (
     renderer: RendererHandle,
     palette: readonly RGBA[],
@@ -2873,11 +2939,13 @@ export interface RenderLib extends AudioEngineLib {
   textBufferViewGetSelectionOccupancy: (view: TextBufferViewHandle) => SelectionOccupancy
   textBufferViewSetWrapWidth: (view: TextBufferViewHandle, width: number) => void
   textBufferViewSetWrapMode: (view: TextBufferViewHandle, mode: "none" | "char" | "word") => void
+  textBufferViewSetTextAlign: (view: TextBufferViewHandle, alignment: "left" | "center" | "right") => void
   textBufferViewSetFirstLineOffset: (view: TextBufferViewHandle, offset: number) => void
   textBufferViewSetViewportSize: (view: TextBufferViewHandle, width: number, height: number) => void
   textBufferViewSetViewport: (view: TextBufferViewHandle, x: number, y: number, width: number, height: number) => void
   textBufferViewGetLineInfo: (view: TextBufferViewHandle) => LineInfo
   textBufferViewGetLogicalLineInfo: (view: TextBufferViewHandle) => LineInfo
+  textBufferViewGetLineSources: (view: TextBufferViewHandle, startLine: number, lineCount: number) => number[]
   textBufferViewGetSelectedTextBytes: (view: TextBufferViewHandle, maxLength: number) => Uint8Array | null
   textBufferViewGetPlainTextBytes: (view: TextBufferViewHandle, maxLength: number) => Uint8Array | null
   textBufferViewSetTabIndicator: (view: TextBufferViewHandle, indicator: number) => void
@@ -3090,6 +3158,15 @@ export interface RenderLib extends AudioEngineLib {
     height: number,
     stride: number,
   ) => { status: number; handle: ImageHandle | null }
+  imageCreateFromPixels: (
+    pixels: Uint8Array,
+    width: number,
+    height: number,
+    stride: number,
+    format: number,
+    alpha: number,
+  ) => { status: number; handle: ImageHandle | null }
+  imageUpdatePixels: (image: ImageHandle, pixels: Uint8Array, stride: number, format: number, alpha: number) => number
   imageDestroy: (image: ImageHandle) => void
   imageRetain: (image: ImageHandle) => { status: number; handle: ImageHandle | null }
   imageGetInfo: (image: ImageHandle) => { status: number; info: NativeImageInfo }
@@ -3131,6 +3208,11 @@ export interface RenderLib extends AudioEngineLib {
 
   getTerminalCapabilities: (renderer: RendererHandle) => TerminalCapabilities
   processCapabilityResponse: (renderer: RendererHandle, response: string) => void
+  setKittyImageTransport: (renderer: RendererHandle, mode: number) => boolean
+  getKittyImageTransport: (renderer: RendererHandle) => Uint32Array
+  pollKittyImageTransport: (renderer: RendererHandle) => boolean
+  cancelKittyImageTransport: (renderer: RendererHandle, failed: boolean) => void
+  processKittyImageReply: (renderer: RendererHandle, response: string) => number
 
   encodeUnicode: (
     text: string,
@@ -3173,6 +3255,7 @@ export interface RenderLib extends AudioEngineLib {
   embeddedTerminalWrite: (handle: EmbeddedTerminalHandle, data: string | Uint8Array) => void
   embeddedTerminalResize: (handle: EmbeddedTerminalHandle, cols: number, rows: number) => void
   embeddedTerminalInvalidate: (handle: EmbeddedTerminalHandle) => void
+  embeddedTerminalSetTransparentBackground: (handle: EmbeddedTerminalHandle, transparent: boolean) => void
   embeddedTerminalScroll: (handle: EmbeddedTerminalHandle, delta: number) => void
   embeddedTerminalSetSelection: (
     handle: EmbeddedTerminalHandle,
@@ -3202,11 +3285,11 @@ class FFIRenderLib implements RenderLib {
   private readonly yogaLayout = new Float32Array(6)
   private readonly ffiStructStorage = {
     logicalCursor: {
-      ...allocStruct(LogicalCursorStruct),
+      ...allocFFIStruct(LogicalCursorStruct),
       result: { row: 0, col: 0, offset: 0 } as LogicalCursor,
     },
     visualCursor: {
-      ...allocStruct(VisualCursorStruct),
+      ...allocFFIStruct(VisualCursorStruct),
       result: {
         visualRow: 0,
         visualCol: 0,
@@ -3216,13 +3299,13 @@ class FFIRenderLib implements RenderLib {
       } as VisualCursor,
     },
     measureResult: {
-      ...allocStruct(MeasureResultStruct),
+      ...allocFFIStruct(MeasureResultStruct),
       result: { lineCount: 0, widthColsMax: 0 } as MeasureResult,
     },
-    embeddedTerminalCursor: allocStruct(EmbeddedTerminalCursorStruct),
-    embeddedTerminalKeyOptions: allocStruct(EmbeddedTerminalKeyOptionsStruct),
+    embeddedTerminalCursor: allocFFIStruct(EmbeddedTerminalCursorStruct),
+    embeddedTerminalKeyOptions: allocFFIStruct(EmbeddedTerminalKeyOptionsStruct),
     audioStreamStats: {
-      ...allocStruct(AudioStreamStatsStruct),
+      ...allocFFIStruct(AudioStreamStatsStruct),
       result: {
         bytesReceived: 0n,
         framesDecoded: 0n,
@@ -3237,8 +3320,8 @@ class FFIRenderLib implements RenderLib {
         readyGeneration: 0,
       } as NativeAudioStreamStats,
     },
-    imageDrawOptions: allocStruct(ImageDrawOptionsStruct),
-    gridDrawOptions: allocStruct(GridDrawOptionsStruct),
+    imageDrawOptions: allocFFIStruct(ImageDrawOptionsStruct),
+    gridDrawOptions: allocFFIStruct(GridDrawOptionsStruct),
   }
   private disposed = false
   private clipboardServices = new Set<ClipboardServiceHandle>()
@@ -3317,6 +3400,13 @@ class FFIRenderLib implements RenderLib {
     embeddedTerminalResult(this.opentui.symbols.embeddedTerminalInvalidate(handle), "invalidation")
   }
 
+  public embeddedTerminalSetTransparentBackground(handle: EmbeddedTerminalHandle, transparent: boolean): void {
+    embeddedTerminalResult(
+      this.opentui.symbols.embeddedTerminalSetTransparentBackground(handle, transparent ? 1 : 0),
+      "transparent background update",
+    )
+  }
+
   public embeddedTerminalScroll(handle: EmbeddedTerminalHandle, delta: number): void {
     embeddedTerminalResult(
       this.opentui.symbols.embeddedTerminalScroll(handle, embeddedTerminalI32(delta, "scroll delta")),
@@ -3377,7 +3467,7 @@ class FFIRenderLib implements RenderLib {
 
   public embeddedTerminalCursor(handle: EmbeddedTerminalHandle): EmbeddedTerminalCursor {
     const storage = this.ffiStructStorage.embeddedTerminalCursor
-    embeddedTerminalResult(this.opentui.symbols.embeddedTerminalCursor(handle, storage.buffer), "cursor query")
+    embeddedTerminalResult(this.opentui.symbols.embeddedTerminalCursor(handle, storage.ffiView), "cursor query")
     const result = EmbeddedTerminalCursorStruct.unpack(storage.buffer)
     return {
       x: result.x,
@@ -3413,7 +3503,7 @@ class FFIRenderLib implements RenderLib {
     const encode = (output: Uint8Array) =>
       this.opentui.symbols.embeddedTerminalEncodeKey(
         handle,
-        options.buffer,
+        options.ffiView,
         keyCodeLength === 0 ? null : keyCode,
         keyCodeLength,
         textLength === 0 ? null : text,
@@ -4040,7 +4130,7 @@ class FFIRenderLib implements RenderLib {
       storage.view,
       0,
     )
-    return Boolean(this.opentui.symbols.bufferDrawImage(buffer, image, storage.buffer))
+    return Boolean(this.opentui.symbols.bufferDrawImage(buffer, image, storage.ffiView))
   }
 
   public bufferDrawPackedBuffer(
@@ -4133,7 +4223,7 @@ class FFIRenderLib implements RenderLib {
       columnCount,
       rowOffsets,
       rowCount,
-      this.ffiStructStorage.gridDrawOptions.buffer,
+      this.ffiStructStorage.gridDrawOptions.ffiView,
     )
   }
 
@@ -4187,7 +4277,7 @@ class FFIRenderLib implements RenderLib {
     return this.opentui.symbols.linkAlloc(viewOrNull(urlBytes), urlBytes.byteLength)
   }
 
-  public linkGetUrl(linkId: number, maxLen: number = 512): string {
+  public linkGetUrl(linkId: number, maxLen: number = MAX_LINK_URL_BYTES): string {
     const outBuffer = new Uint8Array(maxLen)
     const actualLen = this.opentui.symbols.linkGetUrl(linkId, viewOrNull(outBuffer), maxLen)
     return this.decoder.decode(outBuffer.slice(0, actualLen))
@@ -4269,13 +4359,15 @@ class FFIRenderLib implements RenderLib {
     force: boolean,
     beginFrame: boolean = true,
     finalizeFrame: boolean = true,
+    controlOutput: boolean = false,
   ): NativeRenderOperationResult {
     const flags =
       ffiBool(startOnNewLine) |
       (ffiBool(trailingNewline) << 1) |
       (ffiBool(force) << 2) |
       (ffiBool(beginFrame) << 3) |
-      (ffiBool(finalizeFrame) << 4)
+      (ffiBool(finalizeFrame) << 4) |
+      (ffiBool(controlOutput) << 5)
 
     return this.unpackRenderOperationResult(
       this.opentui.symbols.commitSplitFooterSnapshot(renderer, snapshot.ptr, rowColumns, flags, pinnedRenderOffset),
@@ -5223,6 +5315,11 @@ class FFIRenderLib implements RenderLib {
     this.opentui.symbols.textBufferViewSetWrapMode(view, modeValue)
   }
 
+  public textBufferViewSetTextAlign(view: Pointer, alignment: "left" | "center" | "right"): void {
+    const alignValue = alignment === "left" ? 0 : alignment === "center" ? 1 : 2
+    this.opentui.symbols.textBufferViewSetTextAlign(view, alignValue)
+  }
+
   public textBufferViewSetFirstLineOffset(view: Pointer, offset: number): void {
     this.opentui.symbols.textBufferViewSetFirstLineOffset(view, offset)
   }
@@ -5273,6 +5370,25 @@ class FFIRenderLib implements RenderLib {
 
   public textBufferViewGetVirtualLineCount(view: Pointer): number {
     return this.opentui.symbols.textBufferViewGetVirtualLineCount(view)
+  }
+
+  public textBufferViewGetLineSources(view: Pointer, startLine: number, lineCount: number): number[] {
+    toSafeFFIU32Length(startLine, "visual row start")
+    toSafeFFIU32Length(lineCount, "visual row count")
+    if (lineCount === 0) return []
+
+    const outBuffer = new ArrayBuffer(LineInfoStruct.size)
+    this.textBufferViewGetLogicalLineInfoDirect(view, outBuffer)
+    const data = new DataView(outBuffer)
+    const sources = LineInfoStruct.arrayFields.get("sources")!
+    const count = Math.max(0, Math.min(lineCount, data.getUint32(sources.lengthOffset, true) - startLine))
+    if (count === 0) return []
+
+    // The existing ABI returns borrowed native arrays. Copy the requested range synchronously,
+    // before any mutation can invalidate those pointers; never move the live text viewport.
+    return Array.from(
+      new Uint32Array(toArrayBuffer(toPointer(data.getBigUint64(sources.arrayOffset, true)), startLine * 4, count * 4)),
+    )
   }
 
   private textBufferViewGetLineInfoDirect(view: Pointer, outBuffer: ArrayBuffer): void {
@@ -5329,7 +5445,7 @@ class FFIRenderLib implements RenderLib {
 
   public textBufferViewMeasureForDimensions(view: Pointer, width: number, height: number): MeasureResult | null {
     const storage = this.ffiStructStorage.measureResult
-    const success = this.opentui.symbols.textBufferViewMeasureForDimensions(view, width, height, storage.buffer)
+    const success = this.opentui.symbols.textBufferViewMeasureForDimensions(view, width, height, storage.ffiView)
     if (!success) return null
     const result = MeasureResultStruct.unpackInto(storage.view, storage.result)
     return { lineCount: result.lineCount, widthColsMax: result.widthColsMax }
@@ -5642,7 +5758,7 @@ class FFIRenderLib implements RenderLib {
 
   public editBufferGetCursorPosition(buffer: Pointer): LogicalCursor {
     const storage = this.ffiStructStorage.logicalCursor
-    this.opentui.symbols.editBufferGetCursorPosition(buffer, storage.buffer)
+    this.opentui.symbols.editBufferGetCursorPosition(buffer, storage.ffiView)
     const cursor = LogicalCursorStruct.unpackInto(storage.view, storage.result)
     return { row: cursor.row, col: cursor.col, offset: cursor.offset }
   }
@@ -5701,28 +5817,28 @@ class FFIRenderLib implements RenderLib {
 
   public editBufferGetNextWordBoundary(buffer: Pointer): LogicalCursor {
     const storage = this.ffiStructStorage.logicalCursor
-    this.opentui.symbols.editBufferGetNextWordBoundary(buffer, storage.buffer)
+    this.opentui.symbols.editBufferGetNextWordBoundary(buffer, storage.ffiView)
     const cursor = LogicalCursorStruct.unpackInto(storage.view, storage.result)
     return { row: cursor.row, col: cursor.col, offset: cursor.offset }
   }
 
   public editBufferGetPrevWordBoundary(buffer: Pointer): LogicalCursor {
     const storage = this.ffiStructStorage.logicalCursor
-    this.opentui.symbols.editBufferGetPrevWordBoundary(buffer, storage.buffer)
+    this.opentui.symbols.editBufferGetPrevWordBoundary(buffer, storage.ffiView)
     const cursor = LogicalCursorStruct.unpackInto(storage.view, storage.result)
     return { row: cursor.row, col: cursor.col, offset: cursor.offset }
   }
 
   public editBufferGetEOL(buffer: Pointer): LogicalCursor {
     const storage = this.ffiStructStorage.logicalCursor
-    this.opentui.symbols.editBufferGetEOL(buffer, storage.buffer)
+    this.opentui.symbols.editBufferGetEOL(buffer, storage.ffiView)
     const cursor = LogicalCursorStruct.unpackInto(storage.view, storage.result)
     return { row: cursor.row, col: cursor.col, offset: cursor.offset }
   }
 
   public editBufferOffsetToPosition(buffer: Pointer, offset: number): LogicalCursor | null {
     const storage = this.ffiStructStorage.logicalCursor
-    const success = this.opentui.symbols.editBufferOffsetToPosition(buffer, offset, storage.buffer)
+    const success = this.opentui.symbols.editBufferOffsetToPosition(buffer, offset, storage.ffiView)
     if (!success) return null
     const cursor = LogicalCursorStruct.unpackInto(storage.view, storage.result)
     return { row: cursor.row, col: cursor.col, offset: cursor.offset }
@@ -5922,7 +6038,7 @@ class FFIRenderLib implements RenderLib {
 
   public editorViewGetVisualCursor(view: Pointer): VisualCursor {
     const storage = this.ffiStructStorage.visualCursor
-    this.opentui.symbols.editorViewGetVisualCursor(view, storage.buffer)
+    this.opentui.symbols.editorViewGetVisualCursor(view, storage.ffiView)
     const cursor = VisualCursorStruct.unpackInto(storage.view, storage.result)
     return { ...cursor }
   }
@@ -5945,35 +6061,35 @@ class FFIRenderLib implements RenderLib {
 
   public editorViewGetNextWordBoundary(view: Pointer): VisualCursor {
     const storage = this.ffiStructStorage.visualCursor
-    this.opentui.symbols.editorViewGetNextWordBoundary(view, storage.buffer)
+    this.opentui.symbols.editorViewGetNextWordBoundary(view, storage.ffiView)
     const cursor = VisualCursorStruct.unpackInto(storage.view, storage.result)
     return { ...cursor }
   }
 
   public editorViewGetPrevWordBoundary(view: Pointer): VisualCursor {
     const storage = this.ffiStructStorage.visualCursor
-    this.opentui.symbols.editorViewGetPrevWordBoundary(view, storage.buffer)
+    this.opentui.symbols.editorViewGetPrevWordBoundary(view, storage.ffiView)
     const cursor = VisualCursorStruct.unpackInto(storage.view, storage.result)
     return { ...cursor }
   }
 
   public editorViewGetEOL(view: Pointer): VisualCursor {
     const storage = this.ffiStructStorage.visualCursor
-    this.opentui.symbols.editorViewGetEOL(view, storage.buffer)
+    this.opentui.symbols.editorViewGetEOL(view, storage.ffiView)
     const cursor = VisualCursorStruct.unpackInto(storage.view, storage.result)
     return { ...cursor }
   }
 
   public editorViewGetVisualSOL(view: Pointer): VisualCursor {
     const storage = this.ffiStructStorage.visualCursor
-    this.opentui.symbols.editorViewGetVisualSOL(view, storage.buffer)
+    this.opentui.symbols.editorViewGetVisualSOL(view, storage.ffiView)
     const cursor = VisualCursorStruct.unpackInto(storage.view, storage.result)
     return { ...cursor }
   }
 
   public editorViewGetVisualEOL(view: Pointer): VisualCursor {
     const storage = this.ffiStructStorage.visualCursor
-    this.opentui.symbols.editorViewGetVisualEOL(view, storage.buffer)
+    this.opentui.symbols.editorViewGetVisualEOL(view, storage.ffiView)
     const cursor = VisualCursorStruct.unpackInto(storage.view, storage.result)
     return { ...cursor }
   }
@@ -6049,6 +6165,29 @@ class FFIRenderLib implements RenderLib {
   public processCapabilityResponse(renderer: Pointer, response: string): void {
     const responseBytes = this.encoder.encode(response)
     this.opentui.symbols.processCapabilityResponse(renderer, viewOrNull(responseBytes), responseBytes.byteLength)
+  }
+
+  public setKittyImageTransport(renderer: RendererHandle, mode: number): boolean {
+    return this.opentui.symbols.setKittyImageTransport(renderer, mode) !== 0
+  }
+
+  public getKittyImageTransport(renderer: RendererHandle): Uint32Array {
+    const status = new Uint32Array(6)
+    this.opentui.symbols.getKittyImageTransport(renderer, status)
+    return status
+  }
+
+  public pollKittyImageTransport(renderer: RendererHandle): boolean {
+    return this.opentui.symbols.pollKittyImageTransport(renderer) !== 0
+  }
+
+  public cancelKittyImageTransport(renderer: RendererHandle, failed: boolean): void {
+    this.opentui.symbols.cancelKittyImageTransport(renderer, failed ? 1 : 0)
+  }
+
+  public processKittyImageReply(renderer: RendererHandle, response: string): number {
+    const bytes = this.encoder.encode(response)
+    return this.opentui.symbols.processKittyImageReply(renderer, bytes, bytes.byteLength)
   }
 
   public encodeUnicode(
@@ -6265,15 +6404,17 @@ class FFIRenderLib implements RenderLib {
   ): { status: number; streamId: number | null } {
     if (
       !isFFIU32(options.groupId) ||
-      (options.format !== NativeAudioStreamFormat.Mp3 && options.format !== NativeAudioStreamFormat.Flac)
+      !isFFIU32(options.sampleRate ?? 0) ||
+      !isFFIU32(options.channels ?? 0) ||
+      !Object.values(NativeAudioStreamFormat).includes(options.format)
     ) {
       return { status: -1, streamId: null }
     }
-    const optionsBuffer = AudioStreamCreateOptionsStruct.pack(options)
-    const outBuffer = new ArrayBuffer(4)
+    const optionsBuffer = new Uint8Array(AudioStreamCreateOptionsStruct.pack(options))
+    const outBuffer = new Uint32Array(1)
     const status = this.opentui.symbols.audioCreateStream(engine, optionsBuffer, outBuffer)
     if (status !== 0) return { status, streamId: null }
-    return { status, streamId: new Uint32Array(outBuffer)[0] ?? null }
+    return { status, streamId: outBuffer[0] ?? null }
   }
 
   public audioWriteStream(engine: AudioEngineHandle, streamId: number, data: Uint8Array): number {
@@ -6304,7 +6445,7 @@ class FFIRenderLib implements RenderLib {
 
   public audioGetStreamStats(engine: AudioEngineHandle, streamId: number): NativeAudioStreamStats | null {
     const storage = this.ffiStructStorage.audioStreamStats
-    const status = this.opentui.symbols.audioGetStreamStats(engine, streamId, storage.buffer)
+    const status = this.opentui.symbols.audioGetStreamStats(engine, streamId, storage.ffiView)
     if (status !== 0) return null
     const stats = AudioStreamStatsStruct.unpackInto(storage.view, storage.result) as NativeAudioStreamStats
     return { ...stats }
@@ -6316,7 +6457,7 @@ class FFIRenderLib implements RenderLib {
     reason: NativeAudioStreamCloseReason,
   ): { status: number; stats: NativeAudioStreamStats | null } {
     const storage = this.ffiStructStorage.audioStreamStats
-    const status = this.opentui.symbols.audioCloseStream(engine, streamId, reason, storage.buffer)
+    const status = this.opentui.symbols.audioCloseStream(engine, streamId, reason, storage.ffiView)
     if (status !== 0) return { status, stats: null }
     const stats = AudioStreamStatsStruct.unpackInto(storage.view, storage.result) as NativeAudioStreamStats
     return { status, stats: { ...stats } }
@@ -6580,6 +6721,39 @@ class FFIRenderLib implements RenderLib {
       output,
     )
     return this.imageHandleResult(status, output)
+  }
+
+  public imageCreateFromPixels(
+    pixels: Uint8Array,
+    width: number,
+    height: number,
+    stride: number,
+    format: number,
+    alpha: number,
+  ): { status: number; handle: ImageHandle | null } {
+    const output = new Uint32Array(1)
+    const status = this.opentui.symbols.imageCreateFromPixels(
+      pixels,
+      BigInt(pixels.byteLength),
+      width,
+      height,
+      stride,
+      format,
+      alpha,
+      output,
+    )
+    return this.imageHandleResult(status, output)
+  }
+
+  // Internal pool owners only, not a general image mutation API. Publish with a fresh retained handle.
+  public imageUpdatePixels(
+    image: ImageHandle,
+    pixels: Uint8Array,
+    stride: number,
+    format: number,
+    alpha: number,
+  ): number {
+    return this.opentui.symbols.imageUpdatePixels(image, pixels, BigInt(pixels.byteLength), stride, format, alpha)
   }
 
   public imageDestroy(image: ImageHandle): void {

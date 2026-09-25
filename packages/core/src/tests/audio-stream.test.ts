@@ -2572,7 +2572,7 @@ test("Audio enforces the documented HTTP content-type policy", async () => {
     mp3: new Uint8Array(await readFile(MP3_URL)),
     flac: new Uint8Array(await readFile(FLAC_URL)),
   }
-  const scenarios: Array<{ format: AudioStreamFormat; contentTypes: Array<string | undefined> }> = [
+  const scenarios: Array<{ format: keyof typeof fixtures; contentTypes: Array<string | undefined> }> = [
     {
       format: "mp3",
       contentTypes: [

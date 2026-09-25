@@ -1,6 +1,6 @@
 {
   "name": "@opentui/qrcode",
-  "version": "0.5.9",
+  "version": "0.5.12",
   "description": "QR code encoder and renderable for OpenTUI",
   "license": "MIT",
   "repository": {
@@ -49,7 +49,7 @@
   "devDependencies": {
     "@opentui/react": "workspace:*",
     "@opentui/solid": "workspace:*",
-    "@types/bun": "1.3.14",
+    "@types/bun": "1.4.1",
     "@types/node": "^24.0.0",
     "typescript": "^5"
   },

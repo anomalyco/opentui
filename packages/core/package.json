@@ -9,7 +9,7 @@
   "types": "src/index.ts",
   "module": "src/index.ts",
   "main": "src/index.ts",
-  "version": "0.5.9",
+  "version": "0.5.12",
   "type": "module",
   "imports": {
     "#opentui/runtime-assets": {
@@ -31,6 +31,7 @@
     "bench:native": "cd ../native && bun run bench --",
     "bench:native:ffi": "cd ../native && bun run bench:ffi",
     "bench:js": "bun src/benchmark/js-benchmark.ts",
+    "bench:image-pool": "bun src/benchmark/image-pool-benchmark.ts",
     "bench:js:node": "bun scripts/bench-js-node.ts",
     "bench:layout": "bun src/benchmark/layout-benchmark.ts",
     "bench:box-draw": "bun src/benchmark/box-draw-benchmark.ts",
@@ -39,6 +40,7 @@
     "bench:mouse-events": "bun src/benchmark/mouse-event-benchmark.ts",
     "bench:render-compare": "bun src/benchmark/render-runtime-compare.ts",
     "bench:ffi-fast-path": "bun src/benchmark/ffi-fast-path-benchmark.ts",
+    "bench:image-import": "bun src/benchmark/image-import-benchmark.ts",
     "bench:ffi-fast-path-paired": "bun src/benchmark/ffi-fast-path-paired-benchmark.ts",
     "bench:ffi-fast-path-compare": "bun src/benchmark/ffi-fast-path-compare.ts",
     "stress:ffi-fast-path": "bun src/benchmark/ffi-fast-path-stress.ts",
@@ -50,12 +52,13 @@
     "test:standalone": "bun scripts/standalone-test.ts",
     "test:js": "bun test --path-ignore-patterns='src/zig/zig-pkg/**'",
     "test:js:node": "bun scripts/test-node.ts",
+    "typecheck": "tsc --noEmit -p tsconfig.build.json",
     "test": "bun run test:js"
   },
   "license": "MIT",
   "devDependencies": {
     "@opentui/keymap": "workspace:*",
-    "@types/bun": "1.3.14",
+    "@types/bun": "1.4.1",
     "@types/node": "^24.0.0",
     "commander": "^13.1.0",
     "typescript": "^5",
@@ -72,14 +75,14 @@
     "web-tree-sitter": "0.25.10"
   },
   "optionalDependencies": {
-    "@opentui/core-darwin-x64": "0.5.9",
-    "@opentui/core-darwin-arm64": "0.5.9",
-    "@opentui/core-linux-x64": "0.5.9",
-    "@opentui/core-linux-arm64": "0.5.9",
-    "@opentui/core-win32-x64": "0.5.9",
-    "@opentui/core-win32-arm64": "0.5.9",
-    "@opentui/core-linux-x64-musl": "0.5.9",
-    "@opentui/core-linux-arm64-musl": "0.5.9"
+    "@opentui/core-darwin-x64": "0.5.12",
+    "@opentui/core-darwin-arm64": "0.5.12",
+    "@opentui/core-linux-x64": "0.5.12",
+    "@opentui/core-linux-arm64": "0.5.12",
+    "@opentui/core-win32-x64": "0.5.12",
+    "@opentui/core-win32-arm64": "0.5.12",
+    "@opentui/core-linux-x64-musl": "0.5.12",
+    "@opentui/core-linux-arm64-musl": "0.5.12"
   },
   "exports": {
     ".": {
@@ -126,6 +129,7 @@
     }
   },
   "engines": {
-    "bun": ">=1.3.0"
+    "bun": ">=1.3.0",
+    "node": ">=26.4.0"
   }
 }

@@ -1,6 +1,7 @@
 .zig-cache
 zig-out
 lib
+symbols
 zig-pkg
 zig-deps
 .zig-deps.*

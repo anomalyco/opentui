@@ -29,32 +29,62 @@ jobs:
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
         with:
-          bun-version: 1.3.14
+          bun-version: 1.4.1
+
+      - name: Install dependencies
+        run: bun install
+
+      - name: Restore native bottle
+        id: bottle
+        uses: ./.github/actions/restore-native-bottle
+        with:
+          zig-version: ${{ env.ZIG_VERSION }}
 
       - name: Setup Zig
+        if: steps.bottle.outputs.cache-hit != 'true'
         uses: mlugg/setup-zig@v2
         with:
           version: ${{ env.ZIG_VERSION }}
           use-cache: false
 
       - name: Restore Zig cache
+        if: steps.bottle.outputs.cache-hit != 'true'
         uses: actions/cache@v5
         with:
           path: packages/native/.zig-cache
           key: zig-v1-${{ runner.os }}-${{ env.ZIG_VERSION }}-${{ github.run_id }}-${{ github.job }}
           restore-keys: zig-v1-${{ runner.os }}-${{ env.ZIG_VERSION }}-
 
-      - name: Install dependencies
-        run: bun install
+      - name: Setup cross-platform symbol tools
+        if: steps.bottle.outputs.cache-hit != 'true'
+        uses: ./.github/actions/setup-native-symbol-tools
 
-      - name: Build native libraries (cross-compile all platforms)
-        run: |
-          cd packages/core
-          bun run build:native --all
+      - name: Build or package native libraries
+        run: bun scripts/native-bottle.ts package --hit "${{ steps.bottle.outputs.cache-hit }}" --zig "${{ env.ZIG_VERSION }}" --all
 
+      # A saved bottle already passed this compile check for the same inputs.
       - name: Build custom target without Ghostty VT
+        if: steps.bottle.outputs.cache-hit != 'true'
         working-directory: packages/native
         run: zig build -Dlibrary-target=x86_64-freebsd -Doptimize=ReleaseFast
+
+      - name: Save native bottle
+        if: steps.bottle.outputs.cache-hit != 'true'
+        uses: ./.github/actions/save-native-bottle
+        with:
+          key: ${{ steps.bottle.outputs.key }}
+          zig-version: ${{ env.ZIG_VERSION }}
+
+      - name: Verify release symbol archives
+        run: bun packages/core/scripts/package-native-symbols.ts
+
+      - name: Upload symbol verification artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: native-symbols
+          path: artifacts/native-symbols/*.zip
+          if-no-files-found: error
+          retention-days: 1
 
       - name: Upload native artifacts
         uses: actions/upload-artifact@v7
@@ -85,10 +115,18 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v6
 
+      # Hash native files before install and test steps write into packages/native.
+      - name: Restore native test result
+        id: native-tested
+        uses: actions/cache/restore@v5
+        with:
+          path: .native-tests-passed
+          key: native-tests-v1-${{ matrix.os }}-${{ env.ZIG_VERSION }}-${{ hashFiles('packages/native/**', '.github/workflows/build-core.yml') }}
+
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
         with:
-          bun-version: 1.3.14
+          bun-version: 1.4.1
 
       - name: Setup Node
         uses: actions/setup-node@v6
@@ -96,13 +134,14 @@ jobs:
           node-version: ${{ env.NODE_VERSION }}
 
       - name: Setup Zig
+        if: steps.native-tested.outputs.cache-hit != 'true'
         uses: mlugg/setup-zig@v2
         with:
           version: ${{ env.ZIG_VERSION }}
           use-cache: false
 
       - name: Restore Zig cache
-        if: runner.os != 'Windows'
+        if: runner.os != 'Windows' && steps.native-tested.outputs.cache-hit != 'true'
         uses: actions/cache@v5
         with:
           path: packages/native/.zig-cache
@@ -129,10 +168,19 @@ jobs:
         uses: ./.github/actions/enable-linux-coredumps
 
       - name: Run native tests
+        if: steps.native-tested.outputs.cache-hit != 'true'
         working-directory: packages/core
         run: |
           if [ "$(uname -s)" = Linux ]; then ulimit -c unlimited; fi
           bun run test:native
+          echo "${{ github.sha }}" > ../../.native-tests-passed
+
+      - name: Save native test result
+        if: steps.native-tested.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v5
+        with:
+          path: .native-tests-passed
+          key: ${{ steps.native-tested.outputs.cache-primary-key }}
 
       - name: Build TypeScript library
         run: |
@@ -159,6 +207,10 @@ jobs:
           if [ "$(uname -s)" = Linux ]; then ulimit -c unlimited; fi
           bun run test:dist --skip-build
 
+      - name: Test separate ELF symbols
+        if: runner.os == 'Linux'
+        run: bun test packages/core/scripts/native-symbols.test.ts
+
       - name: Test Node SEA executable
         if: runner.os == 'Linux'
         working-directory: packages/core
@@ -172,16 +224,49 @@ jobs:
         with:
           name: crash-dumps-core-${{ matrix.os }}-${{ github.run_attempt }}
 
+  bun-1-compat:
+    name: Bun 1.3 compatibility
+    needs: build
+    runs-on: blacksmith-8vcpu-ubuntu-2404
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Setup development Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.1
+
+      - name: Install dependencies
+        run: bun install
+
+      - name: Download native artifacts
+        uses: actions/download-artifact@v8
+        with:
+          name: native-libraries
+          path: packages/core/node_modules/@opentui/
+
+      - name: Setup runtime Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.14
+
+      - name: Test portable FFI arguments
+        working-directory: packages/core
+        run: |
+          test "$(bun --version)" = "1.3.14"
+          bun test src/tests/ffi-borrowed-pointer-callsites.test.ts
+
   # Gate job for branch protection
   build-complete:
     name: Core - Build and Test
-    needs: [test]
+    needs: [test, bun-1-compat]
     runs-on: blacksmith-4vcpu-ubuntu-2404
     if: always()
     steps:
       - name: Check test results
         run: |
-          if [ "${{ needs.test.result }}" != "success" ]; then
+          if [ "${{ needs.test.result }}" != "success" ] || [ "${{ needs['bun-1-compat'].result }}" != "success" ]; then
             echo "Tests failed"
             exit 1
           fi

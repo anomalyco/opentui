@@ -124,6 +124,31 @@ function add(a, b) {
     expect(reconstructed).toBe(originalCode)
   })
 
+  test("records exactly one original source range per emitted chunk, including conceal replacements", () => {
+    const content = "xx [xx](https://example.com) xx"
+    const labelStart = content.indexOf("xx", 3)
+    const urlStart = content.indexOf("https://")
+    const highlights: SimpleHighlight[] = [
+      [3, 4, "conceal", { conceal: "" }],
+      [labelStart, labelStart + 2, "markup.link.label"],
+      [labelStart + 2, labelStart + 3, "conceal", { conceal: "xx" }],
+      [urlStart, urlStart + "https://example.com".length, "markup.link.url"],
+    ]
+    const ranges: Array<{ start: number; end: number }> = []
+
+    const chunks = treeSitterToTextChunks(content, highlights, syntaxStyle, { ranges })
+
+    expect(chunks.map((item) => item.text)).toEqual(["xx ", "xx", "xx", "(", "https://example.com", ") xx"])
+    expect(ranges).toEqual([
+      { start: 0, end: 3 },
+      { start: 4, end: 6 },
+      { start: 6, end: 7 },
+      { start: 7, end: 8 },
+      { start: 8, end: 27 },
+      { start: 27, end: 31 },
+    ])
+  })
+
   test("should apply different styles to different syntax elements", async () => {
     const jsCode = "const number = 42; // comment"
 

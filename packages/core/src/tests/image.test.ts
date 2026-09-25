@@ -541,6 +541,122 @@ describe("NativeImage", () => {
     }
   })
 
+  test("fromPixels imports strided subarrays in both formats and alpha modes", () => {
+    const rgba = [255, 0, 0, 255, 0, 255, 0, 128, 0, 0, 255, 0, 7, 11, 23, 254]
+    for (const format of ["rgba8", "bgra8"] as const) {
+      for (const alpha of ["straight", "opaque"] as const) {
+        const source = new Uint8Array(24).fill(99)
+        for (let index = 0; index < 4; index++) {
+          const src = index * 4
+          const dst = 1 + Math.floor(index / 2) * 11 + (index % 2) * 4
+          source.set(
+            [
+              rgba[src + (format === "bgra8" ? 2 : 0)],
+              rgba[src + 1],
+              rgba[src + (format === "bgra8" ? 0 : 2)],
+              rgba[src + 3],
+            ],
+            dst,
+          )
+        }
+        const before = source.slice()
+        const image = NativeImage.fromPixels(source.subarray(1, 20), 2, 2, {
+          format,
+          stride: 11,
+          alpha,
+          colorSpace: "srgb",
+        })
+        try {
+          expect(source).toEqual(before)
+          source.fill(0)
+          expect(image.raw()).toEqual({
+            data: Uint8Array.from(rgba.map((value, index) => (alpha === "opaque" && index % 4 === 3 ? 255 : value))),
+            width: 2,
+            height: 2,
+            stride: 8,
+            format: "rgba8",
+            colorSpace: "srgb",
+            alpha: "straight",
+          })
+          expect(image.info()).toEqual({
+            width: 2,
+            height: 2,
+            sourceWidth: 2,
+            sourceHeight: 2,
+            format: "raw-rgba",
+            colorStatus: "explicit-srgb",
+            orientation: 1,
+            hasAlpha: alpha === "straight",
+          })
+        } finally {
+          image.dispose()
+        }
+      }
+    }
+  })
+
+  test("fromPixels defaults to straight RGBA and does not count padding as transparency", () => {
+    const source = Uint8Array.of(1, 2, 3, 255, 0, 0, 0, 0, 4, 5, 6, 255, 0, 0, 0, 0)
+    const image = NativeImage.fromPixels(source, 1, 2, { stride: 8 })
+    try {
+      expect(image.info().hasAlpha).toBe(false)
+      expect([...image.raw().data]).toEqual([1, 2, 3, 255, 4, 5, 6, 255])
+    } finally {
+      image.dispose()
+    }
+  })
+
+  test("fromPixels owns pixels after the source buffer is detached", () => {
+    const source = Uint8Array.of(3, 2, 1, 128)
+    const image = NativeImage.fromPixels(source, 1, 1, { format: "bgra8" })
+    structuredClone(source.buffer, { transfer: [source.buffer] })
+    try {
+      expect(source.byteLength).toBe(0)
+      expect([...image.raw().data]).toEqual([1, 2, 3, 128])
+    } finally {
+      image.dispose()
+    }
+    expect(() => NativeImage.fromPixels(source, 1, 1)).toThrow()
+  })
+
+  test("fromPixels forces opaque alpha for later image operations", () => {
+    const image = NativeImage.fromPixels(Uint8Array.of(0, 0, 255, 0), 1, 1, { format: "bgra8", alpha: "opaque" })
+    const base = NativeImage.fromRgba(Uint8Array.of(0, 0, 255, 255), 1, 1)
+    const composite = base.composite(image)
+    try {
+      expect([...composite.raw().data]).toEqual([255, 0, 0, 255])
+    } finally {
+      composite.dispose()
+      base.dispose()
+      image.dispose()
+    }
+  })
+
+  test("fromPixels rejects invalid options, geometry, and short views", () => {
+    const pixels = new Uint8Array(24)
+    for (const value of [0, -1, 1.5, NaN, Infinity, 0x1_0000_0000]) {
+      expect(() => NativeImage.fromPixels(pixels, value, 1)).toThrow(RangeError)
+      expect(() => NativeImage.fromPixels(pixels, 1, value)).toThrow(RangeError)
+      expect(() => NativeImage.fromPixels(pixels, 1, 1, { stride: value })).toThrow(RangeError)
+    }
+    for (const value of ["rgb8", "rgba8unorm", "toString", 1]) {
+      expect(() => NativeImage.fromPixels(pixels, 1, 1, { format: value as never })).toThrow(TypeError)
+    }
+    expect(() => NativeImage.fromPixels(pixels, 1, 1, { alpha: "premultiplied" as never })).toThrow(TypeError)
+    expect(() => NativeImage.fromPixels(pixels, 1, 1, { colorSpace: "display-p3" as never })).toThrow(TypeError)
+    expect(() => NativeImage.fromPixels(new Uint32Array(4) as never, 1, 1)).toThrow(TypeError)
+    expectImageErrorCode(() => NativeImage.fromPixels(pixels, 2, 2, { stride: 7 }), "invalid-argument")
+    expectImageErrorCode(() => NativeImage.fromPixels(pixels.subarray(1, 20), 2, 2, { stride: 12 }), "invalid-argument")
+    expectImageErrorCode(() => NativeImage.fromPixels(new Uint8Array(), 1, 1), "invalid-argument")
+    expectImageErrorCode(
+      () => NativeImage.fromPixels(pixels, 1, 0xffff_ffff, { stride: 0xffff_ffff }),
+      "invalid-argument",
+    )
+    expect(() => NativeImage.fromPixels(pixels, 0xffff_ffff, 1)).toThrow(RangeError)
+    expectImageErrorCode(() => NativeImage.fromPixels(pixels, 0xffff_ffff, 1, { stride: 4 }), "invalid-argument")
+    expectImageErrorCode(() => NativeImage.fromPixels(new Uint8Array(16_385 * 4), 16_385, 1), "dimension-limit")
+  })
+
   test("ensureEncodedPng keeps a raw RGBA image usable and rejects disposed images", () => {
     const image = NativeImage.fromRgba(Uint8Array.of(1, 2, 3, 255, 4, 5, 6, 128), 2, 1)
     try {

@@ -40,8 +40,10 @@ npm install @opentui/ssh
 
 `@opentui/core` is a peer dependency. Supported runtimes are Bun ≥ 1.3.0 and
 Node.js ≥ 26.4.0. CI runs the SSH integration suite with Bun on macOS, Linux,
-and Windows, and installs, imports, starts, and closes the packed ESM package
-on Node.js.
+and Windows. CI also installs, imports, starts, and closes the packed ESM
+package on Node.js.
+
+Use Bun ≥ 1.4.0 on native Windows arm64.
 
 ## The shape: `createServer(config).serve(handler)`
 

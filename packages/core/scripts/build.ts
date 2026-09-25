@@ -1,4 +1,4 @@
-import { spawnSync, type SpawnSyncReturns } from "node:child_process"
+import { execFileSync, spawnSync, type SpawnSyncReturns } from "node:child_process"
 import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from "fs"
 import { basename, dirname, isAbsolute, join, relative, resolve } from "path"
 import { ModuleKind, ScriptTarget, transpileModule } from "typescript"
@@ -6,6 +6,7 @@ import { fileURLToPath } from "url"
 import process from "process"
 import path from "path"
 import { variants, type Variant } from "./variants"
+import { separateNativeSymbols } from "./native-symbols"
 
 interface PackageJson {
   name: string
@@ -53,6 +54,7 @@ const isDev = args.includes("--dev")
 const buildAll = args.includes("--all") // Build for all platforms
 const gpaSafeStats = args.includes("--gpa-safe-stats")
 const skipZig = args.includes("--skip-zig")
+const skipSymbols = args.includes("--skip-symbols")
 
 const getHostVariant = (): Variant => {
   const hostVariant = variants.find((variant) => variant.platform === process.platform && variant.arch === process.arch)
@@ -222,6 +224,20 @@ if (buildNative) {
       console.log(`Skipping ${platform}-${arch}: no libraries found`)
       rmSync(nativeDir, { recursive: true, force: true })
       continue
+    }
+
+    if (!isDev && !skipSymbols && libraryFileName) {
+      separateNativeSymbols({
+        binary: join(nativeDir, libraryFileName),
+        symbolsDir: join(nativeRoot, "symbols", `${platform}-${arch}${abi ? `-${abi}` : ""}`),
+        platform,
+        target: getZigTarget(platform, arch, abi),
+        version: packageJson.version,
+        commit: execFileSync("git", ["rev-parse", "HEAD"], { cwd: rootDir, encoding: "utf8" }).trim(),
+        abi: abi ?? (platform === "linux" || platform === "win32" ? "gnu" : undefined),
+        pdb: join(libDir, "opentui.pdb"),
+        buildDir: nativeRoot,
+      })
     }
 
     const indexJsContent = `import { fileURLToPath } from "node:url"
@@ -569,6 +585,7 @@ if (buildLib) {
         homepage: packageJson.homepage,
         repository: packageJson.repository,
         bugs: packageJson.bugs,
+        engines: packageJson.engines,
         exports,
         dependencies: packageJson.dependencies,
         peerDependencies: packageJson.peerDependencies,

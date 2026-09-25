@@ -42,6 +42,49 @@ fn benchSetStyledTextOperations(
     const pool = gp.initGlobalPool(global_alloc);
     const link_pool = link.initGlobalLinkPool(global_alloc);
 
+    // Tokens and gap chunks grow with the number of lines, as in parsed JSON.
+    inline for (.{ 200, 1000, 5000 }) |line_count| {
+        const name = std.fmt.comptimePrint("setStyledText - JSON tokens ({d} lines, {d} chunks)", .{ line_count, line_count * 5 });
+        if (bench_utils.matchesBenchFilter(name, bench_filter)) {
+            const color = rgba(0.7, 0.9, 1.0, 1.0);
+            const chunks = try allocator.alloc(StyledChunk, line_count * 5);
+            defer allocator.free(chunks);
+            for (0..line_count) |row| {
+                for ([_][]const u8{ "  ", "\"field\"", ": ", "123", ",\n" }, 0..) |text, token| {
+                    chunks[row * 5 + token] = .{
+                        .text_ptr = text.ptr,
+                        .text_len = text.len,
+                        .fg_ptr = if (token % 2 == 1) rgbaToPtr(&color) else null,
+                        .bg_ptr = null,
+                        .attributes = if (token == 1) 1 else 0,
+                    };
+                }
+            }
+            var stats: BenchStats = .{};
+            for (0..5) |_| {
+                const tb = try TextBuffer.init(allocator, pool, link_pool, .wcwidth);
+                defer tb.deinit();
+                const style = try SyntaxStyle.init(allocator);
+                defer style.deinit();
+                tb.setSyntaxStyle(style);
+                const timer = bench_utils.BenchTimer.start(io);
+                try tb.setStyledText(chunks);
+                stats.record(timer.read());
+                if (tb.getHighlightCount() != chunks.len or style.getStyleCount() != chunks.len)
+                    return error.MissingTokenHighlights;
+            }
+            try results.append(allocator, .{
+                .name = name,
+                .min_ns = stats.min_ns,
+                .avg_ns = stats.avg(),
+                .max_ns = stats.max_ns,
+                .total_ns = stats.total_ns,
+                .iterations = 5,
+                .mem_stats = null,
+            });
+        }
+    }
+
     // Single chunk - baseline
     {
         const name = "setStyledText - single chunk (55 chars)";

@@ -8,4 +8,9 @@ declare module "ssh2" {
     /** The client's requested `TERM`. Sent at runtime; omitted by @types/ssh2. */
     term?: string
   }
+
+  interface Connection {
+    /** Calls `setNoDelay()` on the underlying socket. Documented by ssh2; omitted by @types/ssh2. */
+    setNoDelay(noDelay?: boolean): this
+  }
 }

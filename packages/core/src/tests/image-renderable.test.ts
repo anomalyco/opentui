@@ -3,7 +3,7 @@ import { readFile, rm } from "node:fs/promises"
 import { resolve } from "node:path"
 
 import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test"
-import { ImageLoadError, NativeImage } from "../image.js"
+import { ImageLoadError, NativeImage, NativeImagePool } from "../image.js"
 import { createCliRenderer } from "../renderer.js"
 import { ImageRenderable, resolveImageRenderProtocol } from "../renderables/Image.js"
 import { TextRenderable } from "../renderables/Text.js"
@@ -387,6 +387,89 @@ describe("ImageRenderable image loading", () => {
       expect(stdout.take().toString("binary")).toContain("\x1bP0;1;0q")
     } finally {
       outputRenderer.destroy()
+    }
+  })
+
+  for (const protocol of ["kitty", "sixel"] as const) {
+    test(`reused pool storage refreshes ${protocol} output on a demand-driven renderer`, async () => {
+      const stdin = createTestStdin()
+      const stdout = new ImageOutputStream(8, 4) as ImageOutputStream & NodeJS.WriteStream
+      const outputRenderer = await createCliRenderer({ stdin, stdout, consoleMode: "disabled" })
+      const pool = new NativeImagePool({ width: 1, height: 1 })
+      const pixels = new Uint8Array(4)
+      try {
+        stdin.emit("data", Buffer.from("\x1b[4;80;80t"))
+        const renderable = new ImageRenderable(outputRenderer, {
+          protocol,
+          fit: "fill",
+          position: "absolute",
+          width: 1,
+          height: 1,
+        })
+        outputRenderer.root.add(renderable)
+        await outputRenderer.idle()
+        await flushWritable(stdout)
+        stdout.take()
+
+        for (let index = 0; index < pool.capacity + 1; index++) {
+          pixels[0] = 255 - index * 25
+          pixels[1] = index * 25
+          pixels[2] = index * 13
+          pixels[3] = 255
+          const frame = pool.publishRgba(pixels)
+          expect(frame).not.toBeNull()
+          if (protocol === "kitty") frame!.ensureEncodedPng()
+          renderable.source = frame!
+          frame!.dispose()
+          await renderable.loadPromise
+          // source publication must schedule its own render, without requestRender().
+          await outputRenderer.idle()
+          await flushWritable(stdout)
+          const output = stdout.take().toString("binary")
+          if (protocol === "kitty") {
+            const payload = output.match(/\x1b_Ga=t,f=100,[^;]*;([^\x1b]+)/)?.[1]
+            expect(payload).toBeDefined()
+            const decoded = NativeImage.decode(Buffer.from(payload!, "base64"))
+            try {
+              expect(decoded.raw().data).toEqual(pixels)
+            } finally {
+              decoded.dispose()
+            }
+          } else {
+            expect(output).toContain("\x1bP0;1;0q")
+            const color = [...pixels.subarray(0, 3)].map((channel) => Math.round((channel * 100) / 255)).join(";")
+            expect(output).toContain(`;2;${color}`)
+          }
+        }
+      } finally {
+        outputRenderer.destroy()
+        pool.dispose()
+      }
+    })
+  }
+
+  test("canceled native source loads and destruction release pool slots", async () => {
+    const pool = new NativeImagePool({ width: 1, height: 1, capacity: 2 })
+    const onLoad = mock(() => {})
+    const renderable = new ImageRenderable(renderer, { onLoad })
+    const pixels = Uint8Array.of(1, 2, 3, 255)
+    const frames: Array<NativeImage | null> = []
+    try {
+      for (let index = 0; index < pool.capacity + 1; index++) {
+        const frame = pool.publishRgba(pixels)!
+        expect(frame).not.toBeNull()
+        renderable.source = frame
+        frame.dispose()
+      }
+      renderable.destroy()
+      await renderable.loadPromise
+      expect(onLoad).not.toHaveBeenCalled()
+      for (let index = 0; index < pool.capacity; index++) frames.push(pool.publishRgba(pixels))
+      expect(frames).not.toContain(null)
+    } finally {
+      for (const frame of frames) frame?.dispose()
+      renderable.destroy()
+      pool.dispose()
     }
   })
 

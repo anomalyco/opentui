@@ -411,10 +411,8 @@ export class CLICanvas {
         return
       }
 
-      const mappedRangePtr = textureBuffer.getMappedRangePtr(0, textureBuffer.size)
-      const bufPtr = mappedRangePtr
-
       if (this.superSample === SuperSampleType.CPU) {
+        const bufPtr = textureBuffer.getMappedRangePtr(0, textureBuffer.size)
         const format = contextFormat === "bgra8unorm" ? "bgra8unorm" : "rgba8unorm"
         const ssStart = performance.now()
         buffer.drawSuperSampleBuffer(0, 0, bufPtr, textureBuffer.size, format, alignedBytesPerRow)

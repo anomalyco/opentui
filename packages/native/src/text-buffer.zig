@@ -63,6 +63,7 @@ pub const UnifiedTextBuffer = struct {
     allocator: Allocator,
     global_allocator: Allocator,
     arena: *std.heap.ArenaAllocator,
+    layout_cache: seg_mod.ChunkLayoutCache,
 
     _rope: UnifiedRope,
     syntax_style: ?*const SyntaxStyle,
@@ -209,7 +210,11 @@ pub const UnifiedTextBuffer = struct {
     }
 
     pub fn getLayoutInfoFor(self: *const Self, chunk: *const TextChunk) TextBufferError!seg_mod.ChunkLayoutInfo {
-        return chunk.getLayoutInfo(self.allocator, &self.mem_registry, self.tab_width, self.width_method);
+        return chunk.getLayoutInfo(self.allocator, @constCast(&self.layout_cache), &self.mem_registry, self.tab_width, self.width_method);
+    }
+
+    pub fn getWordLayoutInfoFor(self: *const Self, chunk: *const TextChunk) TextBufferError!seg_mod.WordLayoutInfo {
+        return chunk.getWordLayoutInfo(self.allocator, @constCast(&self.layout_cache), &self.mem_registry, self.tab_width, self.width_method);
     }
 
     /// Accessor: walk all lines and segments via callbacks.
@@ -259,6 +264,7 @@ pub const UnifiedTextBuffer = struct {
             .allocator = internal_allocator,
             .global_allocator = global_allocator,
             .arena = internal_arena,
+            .layout_cache = .{ .allocator = global_allocator },
             ._rope = init_rope,
             .syntax_style = null,
             .pool = pool,
@@ -319,6 +325,7 @@ pub const UnifiedTextBuffer = struct {
         }
 
         self.mem_registry.deinit();
+        self.layout_cache.clear();
         self.arena.deinit();
         global_allocator.destroy(self.arena);
         self.* = undefined;
@@ -408,12 +415,14 @@ pub const UnifiedTextBuffer = struct {
     /// Use this for frequent text updates where undo/redo history should be preserved.
     pub fn clear(self: *Self) void {
         self.clearLinkRefs();
+        self.layout_cache.clear();
         self._rope.clear();
         self.markAllViewsDirty();
     }
 
     pub fn reset(self: *Self) void {
         self.clearLinkRefs();
+        self.layout_cache.clear();
 
         // Free highlight/span arrays (they use global_allocator, not arena)
         for (self.line_highlights.items) |*hl_list| {
@@ -948,7 +957,8 @@ pub const UnifiedTextBuffer = struct {
     ) TextBufferError!void {
         const char_start = iter_mod.coordsToOffset(&self._rope, start_row, start_col) orelse return TextBufferError.InvalidIndex;
         const char_end = iter_mod.coordsToOffset(&self._rope, end_row, end_col) orelse return TextBufferError.InvalidIndex;
-        return self.addHighlightByCharRange(char_start, char_end, style_id, priority, hl_ref);
+        // Rope offsets include line breaks; highlight offsets do not.
+        return self.addHighlightByCharRange(char_start - start_row, char_end - end_row, style_id, priority, hl_ref);
     }
 
     /// Add highlight by character range
@@ -960,7 +970,7 @@ pub const UnifiedTextBuffer = struct {
         priority: u8,
         hl_ref: u16,
     ) TextBufferError!void {
-        return self.addHighlightByCharRangeInternal(char_start, char_end, style_id, priority, hl_ref, false);
+        _ = try self.addHighlightByCharRangeInternal(char_start, char_end, style_id, priority, hl_ref, false, null);
     }
 
     fn addHighlightByCharRangeInternal(
@@ -971,66 +981,50 @@ pub const UnifiedTextBuffer = struct {
         priority: u8,
         hl_ref: u16,
         internal: bool,
-    ) TextBufferError!void {
+        line_hint: ?u32,
+    ) TextBufferError!u32 {
         const line_count = self.getLineCount();
         if (char_start >= char_end or line_count == 0) {
-            return;
+            return line_hint orelse 0;
         }
 
-        // Walk lines to find which lines this highlight affects
-        const Context = struct {
-            buffer: *Self,
-            char_start: u32,
-            char_end: u32,
-            style_id: u32,
-            priority: u8,
-            hl_ref: u16,
-            internal: bool,
-            start_line_idx: ?usize = null,
-
-            fn callback(ctx_ptr: *anyopaque, line_info: LineInfo) void {
-                const ctx = @as(*@This(), @ptrCast(@alignCast(ctx_ptr)));
-                const line_start_col_offset = line_info.col_offset;
-                const line_end_col_offset = line_info.col_offset + line_info.width_cols;
-
-                // Skip lines before the highlight
-                if (line_end_col_offset <= ctx.char_start) return;
-                // Stop after the highlight ends
-                if (line_start_col_offset >= ctx.char_end) return;
-
-                // This line overlaps with the highlight
-                const col_start = if (ctx.char_start > line_start_col_offset)
-                    ctx.char_start - line_start_col_offset
-                else
-                    0;
-
-                const col_end = if (ctx.char_end < line_end_col_offset)
-                    ctx.char_end - line_start_col_offset
-                else
-                    line_info.width_cols;
-
-                ctx.buffer.addHighlightInternal(
-                    line_info.line_idx,
-                    col_start,
-                    col_end,
-                    ctx.style_id,
-                    ctx.priority,
-                    ctx.hl_ref,
-                    ctx.internal,
-                ) catch {};
+        // Highlight offsets exclude newlines, unlike rope weights and offsetToCoords.
+        // Seek by line end so empty lines at the starting boundary are skipped too.
+        var left = line_hint orelse 0;
+        if (line_hint == null) {
+            var right: u32 = line_count;
+            while (left < right) {
+                const mid = left + (right - left) / 2;
+                const marker = self._rope.getMarker(.linestart, mid) orelse return left;
+                const line_end = marker.global_weight - mid + iter_mod.lineWidthAt(&self._rope, mid);
+                if (line_end <= char_start) {
+                    left = mid + 1;
+                } else {
+                    right = mid;
+                }
             }
-        };
+        }
 
-        var ctx: Context = .{
-            .buffer = self,
-            .char_start = char_start,
-            .char_end = char_end,
-            .style_id = style_id,
-            .priority = priority,
-            .hl_ref = hl_ref,
-            .internal = internal,
-        };
-        iter_mod.walkLines(&self._rope, &ctx, Context.callback, false);
+        var line_idx = left;
+        while (line_idx < line_count) : (line_idx += 1) {
+            const marker = self._rope.getMarker(.linestart, line_idx) orelse return line_idx;
+            const line_start = marker.global_weight - line_idx;
+            const width = iter_mod.lineWidthAt(&self._rope, line_idx);
+            const line_end = line_start + width;
+            if (line_end <= char_start) continue;
+            if (line_start >= char_end) break;
+            self.addHighlightInternal(
+                line_idx,
+                char_start -| line_start,
+                @min(char_end - line_start, width),
+                style_id,
+                priority,
+                hl_ref,
+                internal,
+            ) catch {};
+            if (line_end >= char_end) return line_idx;
+        }
+        return line_idx;
     }
 
     fn clearInternalHighlights(self: *Self) void {
@@ -1164,10 +1158,10 @@ pub const UnifiedTextBuffer = struct {
         self._rope = UnifiedRope.init(self.allocator) catch return TextBufferError.OutOfMemory;
 
         if (total_len > self.styled_capacity) {
+            const new_buf = self.global_allocator.alloc(u8, total_len) catch return TextBufferError.OutOfMemory;
             if (self.styled_buffer) |old_buf| {
                 self.global_allocator.free(old_buf);
             }
-            const new_buf = self.global_allocator.alloc(u8, total_len) catch return TextBufferError.OutOfMemory;
             self.styled_buffer = new_buf;
             self.styled_capacity = total_len;
         }
@@ -1199,12 +1193,15 @@ pub const UnifiedTextBuffer = struct {
             self.startHighlightsTransaction();
             defer self.endHighlightsTransaction();
 
-            var char_pos: u32 = 0;
+            var width_cursor = utf8.TextWidthCursor{ .text = full_text, .tab_width = self.tab_width, .width_method = self.width_method };
+            var byte_end: usize = 0;
+            var line_hint: u32 = 0;
             for (chunks, 0..) |chunk, i| {
-                const chunk_text = chunk.text_ptr[0..chunk.text_len];
-                const chunk_len = self.measureText(chunk_text);
+                const char_pos = width_cursor.columns;
+                byte_end += chunk.text_len;
+                const char_end = width_cursor.advanceTo(byte_end);
 
-                if (chunk_len > 0) {
+                if (char_end > char_pos) {
                     const fg = if (chunk.fg_ptr) |fgPtr| utils.ptrToRGBA(fgPtr) else null;
                     const bg = if (chunk.bg_ptr) |bgPtr| utils.ptrToRGBA(bgPtr) else null;
 
@@ -1233,10 +1230,16 @@ pub const UnifiedTextBuffer = struct {
                         .attributes = attributes,
                     }) catch continue;
 
-                    self.addHighlightByCharRangeInternal(char_pos, char_pos + chunk_len, style_id, 1, 0, true) catch {};
+                    line_hint = self.addHighlightByCharRangeInternal(
+                        char_pos,
+                        char_end,
+                        style_id,
+                        1,
+                        0,
+                        true,
+                        line_hint,
+                    ) catch line_hint;
                 }
-
-                char_pos += chunk_len;
             }
         }
     }

@@ -20,6 +20,9 @@ Start with the visible symptom. Run the diagnostic in its row, then open the lin
 
 ## Node.js and native loading
 
+For a native crash, use [Native crash debugging](/docs/test-and-debug/native-crashes) to load matching release symbols
+and collect a useful report.
+
 | Symptom                                                    | Diagnostic and first action                                                                                                                                                                                                                                                                                              | Canonical guide                                                                                                                             |
 | ---------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------- |
 | `OpenTUI native FFI is not available for this runtime yet` | Run `node --version`. It must print `v26.4.0` or later. Start the ESM app with `node --experimental-ffi app.mjs`. With `--permission`, also grant `--allow-ffi` and native-library read access.                                                                                                                          | [Node.js runtime](/docs/getting-started/runtime-support#runtime-versions)                                                                   |

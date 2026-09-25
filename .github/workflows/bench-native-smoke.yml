@@ -13,7 +13,7 @@ concurrency:
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
-  BUN_VERSION: 1.3.14
+  BUN_VERSION: 1.4.1
   ZIG_VERSION: 0.16.0
 
 jobs:

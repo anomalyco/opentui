@@ -364,7 +364,7 @@ test "drawTextBuffer - issue 799 CJK word wrap has no duplicated glyphs" {
         "在aber (“但”)引入的转折从句前表示让步：虽然，的确",
         .word,
         15,
-        &.{ "在aber (“但”)", "引入的转折从句", "前表示让步：", "虽然，的确" },
+        &.{ "在aber (“但”)引", "入的转折从句前", "表示让步：虽", "然，的确" },
         null,
     );
 }
@@ -2458,6 +2458,65 @@ test "drawTextBuffer - complex multilingual text with diverse scripts and emojis
     try std.testing.expect(line_count > 15);
 }
 
+test "drawTextBuffer - wide glyph skips every crossed highlight boundary" {
+    const pool = gp.initGlobalPool(std.testing.allocator);
+    defer gp.deinitGlobalPool();
+    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
+    defer link.deinitGlobalLinkPool();
+    const tb = try TextBuffer.init(std.testing.allocator, pool, link_pool, .unicode);
+    defer tb.deinit();
+    const style = try ss.SyntaxStyle.init(std.testing.allocator);
+    defer style.deinit();
+    tb.setSyntaxStyle(style);
+    const red = try style.registerStyle("red", ansi.rgbaFromFloats(1, 0, 0, 1), null, 0);
+    const green_color = ansi.rgbaFromFloats(0, 1, 0, 1);
+    const green = try style.registerStyle("green", green_color, null, 0);
+    try tb.setText("界X");
+    try tb.addHighlight(0, 0, 1, red, 1, 0);
+    try tb.addHighlight(0, 1, 2, red, 1, 0);
+    try tb.addHighlight(0, 2, 3, green, 1, 0);
+    const view = try TextBufferView.init(std.testing.allocator, tb);
+    defer view.deinit();
+    const output = try OptimizedBuffer.init(std.testing.allocator, 4, 1, .{ .pool = pool, .width_method = .unicode });
+    defer output.deinit();
+    output.clear(ansi.rgbaFromFloats(0, 0, 0, 1), 32);
+    output.drawTextBuffer(view, 0, 0);
+    try std.testing.expectEqual(@as(u32, 'X'), output.get(2, 0).?.char);
+    try std.testing.expectEqualDeep(green_color, output.get(2, 0).?.fg);
+}
+
+test "setStyledText - scalar-split grapheme keeps the following token color" {
+    const pool = gp.initGlobalPool(std.testing.allocator);
+    defer gp.deinitGlobalPool();
+    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
+    defer link.deinitGlobalLinkPool();
+    const red = ansi.rgbaFromFloats(1, 0, 0, 1);
+    const green = ansi.rgbaFromFloats(0, 1, 0, 1);
+    inline for (.{ .wcwidth, .unicode, .no_zwj, .unicode_wide }) |method| {
+        const tb = try TextBuffer.init(std.testing.allocator, pool, link_pool, method);
+        defer tb.deinit();
+        const style = try ss.SyntaxStyle.init(std.testing.allocator);
+        defer style.deinit();
+        tb.setSyntaxStyle(style);
+        const view = try TextBufferView.init(std.testing.allocator, tb);
+        defer view.deinit();
+        const output = try OptimizedBuffer.init(std.testing.allocator, 12, 1, .{ .pool = pool, .width_method = method });
+        defer output.deinit();
+        const chunks = [_]StyledChunk{
+            .{ .text_ptr = "👩".ptr, .text_len = "👩".len, .fg_ptr = @ptrCast(&red), .bg_ptr = null, .attributes = 0 },
+            .{ .text_ptr = "\u{200d}".ptr, .text_len = "\u{200d}".len, .fg_ptr = @ptrCast(&red), .bg_ptr = null, .attributes = 0 },
+            .{ .text_ptr = "💻".ptr, .text_len = "💻".len, .fg_ptr = @ptrCast(&red), .bg_ptr = null, .attributes = 0 },
+            .{ .text_ptr = "X".ptr, .text_len = 1, .fg_ptr = @ptrCast(&green), .bg_ptr = null, .attributes = 0 },
+        };
+        try tb.setStyledText(&chunks);
+        output.clear(ansi.rgbaFromFloats(0, 0, 0, 1), 32);
+        output.drawTextBuffer(view, 0, 0);
+        const cell = output.get(tb.measureText("👩‍💻"), 0).?;
+        try std.testing.expectEqual(@as(u32, 'X'), cell.char);
+        try std.testing.expectEqualDeep(green, cell.fg);
+    }
+}
+
 test "setStyledText - highlight positioning with Unicode text" {
     const pool = gp.initGlobalPool(std.testing.allocator);
     defer gp.deinitGlobalPool();
@@ -3637,4 +3696,88 @@ test "drawTextBuffer - Thai ว่ grapheme in quotes occupies one cell" {
     const result = out_buffer[0..written];
 
     try std.testing.expect(std.mem.find(u8, result, "\"ว่\"") != null);
+}
+
+test "alignmentPadCols - left/center/right offsets and wide-line clamp" {
+    try std.testing.expectEqual(@as(u32, 0), text_buffer_view.alignmentPadCols(.left, 20, 4));
+    try std.testing.expectEqual(@as(u32, 8), text_buffer_view.alignmentPadCols(.center, 20, 4));
+    try std.testing.expectEqual(@as(u32, 7), text_buffer_view.alignmentPadCols(.center, 20, 5));
+    try std.testing.expectEqual(@as(u32, 16), text_buffer_view.alignmentPadCols(.right, 20, 4));
+    try std.testing.expectEqual(@as(u32, 0), text_buffer_view.alignmentPadCols(.center, 10, 10));
+    try std.testing.expectEqual(@as(u32, 0), text_buffer_view.alignmentPadCols(.right, 10, 12));
+}
+
+fn expectAlignedRows(alignment: text_buffer_view.TextAlign, first_line_offset: u32, expected_pads: []const usize) !void {
+    const pool = gp.initGlobalPool(std.testing.allocator);
+    defer gp.deinitGlobalPool();
+    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
+    defer link.deinitGlobalLinkPool();
+
+    var tb = try TextBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth);
+    defer tb.deinit();
+    var view = try TextBufferView.init(std.testing.allocator, tb);
+    defer view.deinit();
+    try tb.setText("hi\nworld");
+    view.setViewport(.{ .x = 0, .y = 0, .width = 10, .height = 2 });
+    view.setTextAlign(alignment);
+    view.setFirstLineOffset(first_line_offset);
+
+    var opt_buffer = try OptimizedBuffer.init(
+        std.testing.allocator,
+        10,
+        2,
+        .{ .pool = pool, .width_method = .wcwidth },
+    );
+    defer opt_buffer.deinit();
+    opt_buffer.clear(ansi.rgbaFromFloats(0.0, 0.0, 0.0, 1.0), 32);
+    opt_buffer.drawTextBuffer(view, 0, 0);
+
+    const expected_rows = [_][]const u8{ "hi", "world" };
+    for (expected_pads, 0..) |expected_pad, y| {
+        const row = try resolvedRow(std.testing.allocator, opt_buffer, pool, @intCast(y));
+        defer std.testing.allocator.free(row);
+        try std.testing.expect(std.unicode.utf8ValidateSlice(row));
+
+        var first_glyph: usize = 0;
+        while (first_glyph < row.len and row[first_glyph] == ' ') : (first_glyph += 1) {}
+        try std.testing.expectEqual(expected_pad, first_glyph);
+        try std.testing.expectEqualStrings(expected_rows[y], std.mem.trim(u8, row, " \x03"));
+    }
+
+    const selection_x: i32 = @intCast(expected_pads[0]);
+    _ = view.setLocalSelection(selection_x, 0, selection_x + 1, 0, null, null);
+    var selected: [2]u8 = undefined;
+    try std.testing.expectEqualStrings("hi", selected[0..view.getSelectedTextIntoBuffer(&selected)]);
+
+    for ([_]u32{ 1, 0 }) |draw_y| {
+        opt_buffer.clear(ansi.rgbaFromFloats(0.0, 0.0, 0.0, 1.0), 32);
+        opt_buffer.drawTextBuffer(view, 0, @intCast(draw_y));
+        const x: i32 = if (draw_y == 0) @intCast(expected_pads[0]) else switch (alignment) {
+            .left => 0,
+            .center => 4,
+            .right => 8,
+        };
+        try std.testing.expectEqual(@as(u32, 'h'), opt_buffer.get(@intCast(x), draw_y).?.char);
+        _ = view.setLocalSelection(x, 0, x + 1, 0, null, null);
+        try std.testing.expectEqualStrings("hi", selected[0..view.getSelectedTextIntoBuffer(&selected)]);
+    }
+
+    for ([_]bool{ false, true }) |scroll_viewport| {
+        view.setViewport(.{ .x = 0, .y = if (scroll_viewport) 1 else 0, .width = 10, .height = 2 });
+        opt_buffer.clear(ansi.rgbaFromFloats(0.0, 0.0, 0.0, 1.0), 32);
+        opt_buffer.drawTextBuffer(view, 0, if (scroll_viewport) 0 else -1);
+        try std.testing.expectEqual(@as(u32, 'w'), opt_buffer.get(@intCast(expected_pads[1]), 0).?.char);
+    }
+}
+
+test "drawTextBuffer - textAlign centers and right-aligns each rendered line" {
+    try expectAlignedRows(.left, 0, &.{ 0, 0 });
+    try expectAlignedRows(.center, 0, &.{ 4, 2 });
+    try expectAlignedRows(.right, 0, &.{ 8, 5 });
+}
+
+test "drawTextBuffer - textAlign keeps mid-line continuations flush with the tail" {
+    try expectAlignedRows(.left, 4, &.{ 0, 0 });
+    try expectAlignedRows(.center, 4, &.{ 0, 2 });
+    try expectAlignedRows(.right, 4, &.{ 0, 5 });
 }

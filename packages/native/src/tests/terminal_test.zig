@@ -25,6 +25,7 @@ test "parseXtversion - ghostty format" {
     try testing.expectEqualStrings("1.1.3", term.getTerminalVersion());
     try testing.expect(term.term_info.from_xtversion);
     try testing.expect(term.caps.osc52);
+    try testing.expect(term.caps.hyperlinks);
 }
 
 test "parseXtversion - tmux format" {
@@ -711,6 +712,17 @@ test "setHostEnvVar applies env overrides in shared library mode" {
     try testing.expect(term.skip_graphics_query);
 }
 
+test "environment overrides - direct Windows Terminal hyperlinks do not require TERM" {
+    var env = std.process.Environ.Map.init(testing.allocator);
+    defer env.deinit();
+    try env.put("WT_SESSION", "test-session");
+
+    const term = Terminal.init(.{ .env_map = &env });
+
+    try testing.expect(term.caps.rgb);
+    try testing.expectEqual(builtin.os.tag == .windows, term.caps.hyperlinks);
+}
+
 test "environment overrides - enables hyperlinks for WSL Windows Terminal xterm" {
     var env = std.process.Environ.Map.init(testing.allocator);
     defer env.deinit();
@@ -743,6 +755,78 @@ test "environment overrides - does not enable hyperlinks for WSL non-xterm terms
 
     const term = Terminal.init(.{ .env_map = &env });
 
+    try testing.expect(!term.caps.hyperlinks);
+}
+
+test "environment overrides - foot hyperlinks require a direct terminal" {
+    var env = std.process.Environ.Map.init(testing.allocator);
+    defer env.deinit();
+    try env.put("TERM", "foot");
+
+    const direct = Terminal.init(.{ .env_map = &env });
+    try testing.expect(direct.caps.hyperlinks);
+
+    try env.put("STY", "1234.session");
+    const inherited = Terminal.init(.{ .env_map = &env });
+    try testing.expectEqual(Terminal.Multiplexer.screen, inherited.multiplexer);
+    try testing.expect(!inherited.caps.hyperlinks);
+}
+
+test "environment overrides - foot hyperlinks are revoked after forwarded multiplexer detection" {
+    const multiplexers = [_]struct {
+        key: []const u8,
+        value: []const u8,
+        kind: Terminal.Multiplexer,
+    }{
+        .{ .key = "STY", .value = "1234.session", .kind = .screen },
+        .{ .key = "TERM_PROGRAM", .value = "tmux", .kind = .tmux },
+    };
+
+    for (multiplexers) |multiplexer| {
+        var term = Terminal.init(.{});
+        defer term.deinit();
+
+        try term.setHostEnvVar(testing.allocator, "TERM", "foot");
+        try testing.expect(term.caps.hyperlinks);
+
+        try term.setHostEnvVar(testing.allocator, multiplexer.key, multiplexer.value);
+        try testing.expectEqual(multiplexer.kind, term.multiplexer);
+        try testing.expect(!term.caps.hyperlinks);
+    }
+}
+
+test "environment overrides - rgb does not imply hyperlinks after recheck for unknown truecolor terminals" {
+    var term = Terminal.init(.{});
+    defer term.deinit();
+
+    try term.setHostEnvVar(testing.allocator, "TERM", "xterm-256color");
+    try term.setHostEnvVar(testing.allocator, "COLORTERM", "truecolor");
+
+    try testing.expect(term.caps.rgb);
+    try testing.expect(!term.caps.hyperlinks);
+
+    try term.setHostEnvVar(testing.allocator, "OPENTUI_FORCE_UNICODE", "1");
+
+    try testing.expect(term.caps.rgb);
+    try testing.expect(!term.caps.hyperlinks);
+}
+
+test "environment overrides - rgb does not imply hyperlinks after recheck for inherited Windows Terminal screen" {
+    var env = std.process.Environ.Map.init(testing.allocator);
+    defer env.deinit();
+    try env.put("WSL_INTEROP", "/run/WSL/123_interop");
+    try env.put("WT_SESSION", "test-session");
+    try env.put("TERM", "screen");
+
+    var term = Terminal.init(.{ .env_map = &env });
+    defer term.deinit();
+
+    try testing.expect(term.caps.rgb);
+    try testing.expect(!term.caps.hyperlinks);
+
+    try term.setHostEnvVar(testing.allocator, "TERM", "screen");
+
+    try testing.expect(term.caps.rgb);
     try testing.expect(!term.caps.hyperlinks);
 }
 
@@ -1121,6 +1205,7 @@ test "processCapabilityResponse - foot applies osc52 heuristic without explicit 
     try testing.expect(!term.caps.rgb);
     try testing.expect(!term.caps.ansi256);
     try testing.expect(term.caps.osc52);
+    try testing.expect(term.caps.hyperlinks);
     try testing.expect(!term.caps.explicit_cursor_positioning);
 }
 

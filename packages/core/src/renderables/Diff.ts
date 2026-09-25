@@ -99,7 +99,7 @@ export class DiffRenderable extends Renderable {
   private rightCodeRenderable: CodeRenderable | null = null
 
   private pendingRebuild: boolean = false
-  private _lastWidth: number = 0
+  private _lastCodeWidths: [number, number] = [0, 0]
 
   private errorTextRenderable: TextRenderable | null = null
   private errorCodeRenderable: CodeRenderable | null = null
@@ -218,17 +218,6 @@ export class DiffRenderable extends Renderable {
     return false
   }
 
-  protected override onResize(width: number, height: number): void {
-    super.onResize(width, height)
-
-    if (this._view === "split" && this._wrapMode !== "none" && this._wrapMode !== undefined) {
-      if (this._lastWidth !== width) {
-        this._lastWidth = width
-        this.requestRebuild()
-      }
-    }
-  }
-
   private requestRebuild(): void {
     if (this.pendingRebuild) {
       return
@@ -260,8 +249,19 @@ export class DiffRenderable extends Renderable {
     // Wrapping or async concealment can change the visual row for an existing hunk anchor.
     this.invalidateHunkRowOffsets()
 
-    if (!this._waitingForHighlight) return
     if (!this.leftCodeRenderable || !this.rightCodeRenderable) return
+
+    // View changes and gutter remeasurement can resize panes without resizing the Diff.
+    if (
+      this._view === "split" &&
+      (this._wrapMode === "word" || this._wrapMode === "char") &&
+      (this.leftCodeRenderable.width !== this._lastCodeWidths[0] ||
+        this.rightCodeRenderable.width !== this._lastCodeWidths[1])
+    ) {
+      this.requestRebuild()
+    }
+
+    if (!this._waitingForHighlight) return
 
     const leftIsHighlighting = this.leftCodeRenderable.isHighlighting
     const rightIsHighlighting = this.rightCodeRenderable.isHighlighting
@@ -465,6 +465,9 @@ export class DiffRenderable extends Renderable {
       sideRef.fg = this._lineNumberFg
       sideRef.bg = this._lineNumberBg
       sideRef.setLineColors(lineColors)
+      // Preserve the viewer's width-only gutter reservation across alignment rebuilds.
+      const padding = sideRef.getLineSigns().get(-1)
+      if (padding) lineSigns.set(-1, padding)
       sideRef.setLineSigns(lineSigns)
       sideRef.setLineNumbers(lineNumbers)
       sideRef.setHideLineNumbers(hideLineNumbers)
@@ -716,6 +719,7 @@ export class DiffRenderable extends Renderable {
 
     const preLeftContent = leftLogicalLines.map((l) => l.content).join("\n")
     const preRightContent = rightLogicalLines.map((l) => l.content).join("\n")
+    this._lastCodeWidths = [this.leftCodeRenderable?.width ?? 0, this.rightCodeRenderable?.width ?? 0]
 
     const needsConsistentConcealing =
       (this._wrapMode === "word" || this._wrapMode === "char") && this._conceal && this._filetype

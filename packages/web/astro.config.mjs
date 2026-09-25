@@ -75,6 +75,51 @@ const codeBlue = grayscaleTheme({
   comment: "#7783c5",
 })
 
+const codeCobalt = {
+  name: "opentui-cobalt",
+  type: "light",
+  colors: {
+    "editor.foreground": "#200f1a",
+    "editor.background": "#fffdf8",
+  },
+  settings: [
+    { settings: { foreground: "#200f1a", background: "#fffdf8" } },
+    {
+      scope: ["comment", "punctuation.definition.comment"],
+      settings: { foreground: "#71676c", fontStyle: "italic" },
+    },
+    {
+      scope: ["keyword", "storage"],
+      settings: { foreground: "#c32f18", fontStyle: "bold" },
+    },
+    {
+      scope: ["keyword.operator"],
+      settings: { foreground: "#200f1a", fontStyle: "" },
+    },
+    {
+      scope: ["string", "constant", "support.constant", "markup.inline.raw"],
+      settings: { foreground: "#2046e8" },
+    },
+    {
+      scope: [
+        "entity.name.function",
+        "entity.name.type",
+        "entity.name.class",
+        "entity.name.tag",
+        "support.function",
+        "support.type",
+        "support.class",
+        "variable.function",
+      ],
+      settings: { foreground: "#202b81" },
+    },
+    {
+      scope: ["constant.numeric", "constant.language"],
+      settings: { foreground: "#946400" },
+    },
+  ],
+}
+
 export default defineConfig({
   integrations: [
     mdx(),
@@ -102,6 +147,7 @@ export default defineConfig({
         light: codeLight,
         dark: codeDark,
         blue: codeBlue,
+        cobalt: codeCobalt,
       },
       transformers: [copyButtonTransformer],
     },

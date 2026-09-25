@@ -36,20 +36,52 @@ try {
 
 ## Accepted sources
 
-| API                                                    | Accepted input                                                                                                    |
-| ------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------- |
-| `NativeImage.load(source, options?)`                   | Path string, `file:`, HTTP(S), `blob:`, or `data:` URL, `URL`, `Blob`, `Response`, `Uint8Array`, or `ArrayBuffer` |
-| `NativeImage.decode(data)`                             | Encoded `Uint8Array` or `ArrayBuffer`                                                                             |
-| `NativeImage.fromRgba(pixels, width, height, stride?)` | Straight-alpha sRGB RGBA8 `Uint8Array`                                                                            |
-| `imageInfo(data)`                                      | Encoded `Uint8Array` or `ArrayBuffer`                                                                             |
+| API                                                       | Accepted input                                                                                                    |
+| --------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------- |
+| `NativeImage.load(source, options?)`                      | Path string, `file:`, HTTP(S), `blob:`, or `data:` URL, `URL`, `Blob`, `Response`, `Uint8Array`, or `ArrayBuffer` |
+| `NativeImage.decode(data)`                                | Encoded `Uint8Array` or `ArrayBuffer`                                                                             |
+| `NativeImage.fromRgba(pixels, width, height, stride?)`    | Straight-alpha sRGB RGBA8 `Uint8Array`                                                                            |
+| `NativeImage.fromPixels(pixels, width, height, options?)` | sRGB RGBA8 or BGRA8 `Uint8Array`, with straight or opaque alpha                                                   |
+| `imageInfo(data)`                                         | Encoded `Uint8Array` or `ArrayBuffer`                                                                             |
 
 Format detection reads encoded bytes. It does not trust a filename, URL suffix, response header, or file extension.
 
-`decode()` and `fromRgba()` copy caller data into native ownership. `imageInfo()` returns metadata without retaining an
-image handle. It can decode pixels when validation needs pixel inspection.
+`decode()`, `fromRgba()`, and `fromPixels()` copy your data into native memory. `imageInfo()` returns metadata
+without retaining an image handle. It can decode pixels when validation needs pixel inspection.
 
-`fromRgba()` defaults `stride` to `width * 4`. The stride must fit one complete row. The input must contain every row,
-including stride padding.
+For `fromRgba()` and `fromPixels()`, `stride` is the byte distance between row starts. It defaults to `width * 4` and
+must fit a complete row. The input view must contain at least `(height - 1) * stride + width * 4` bytes. Padding after
+the final row is optional.
+
+### Pixel import options
+
+```typescript
+interface PixelImportOptions {
+  stride?: number
+  format?: "rgba8" | "bgra8"
+  alpha?: "straight" | "opaque"
+  colorSpace?: "srgb"
+}
+```
+
+`fromPixels()` defaults to `format: "rgba8"`, `alpha: "straight"`, and `colorSpace: "srgb"`. It copies rows from a
+top-left origin into packed native RGBA8 storage. The same pass converts BGRA to RGBA and detects transparency.
+
+`alpha: "opaque"` ignores source alpha and writes 255 to every destination alpha channel. It does not unpremultiply
+RGB values. The API does not support premultiplied alpha or color spaces other than sRGB.
+
+Pass a subarray directly to import part of a mapped buffer. The native call does not retain or change the view.
+Keep the source stable during the call. After the call returns, you can reuse, detach, or unmap the buffer.
+
+```typescript
+const image = NativeImage.fromPixels(mappedPixels, width, height, {
+  format: "bgra8",
+  stride: bytesPerRow,
+  alpha: "opaque",
+})
+```
+
+The image reports `format: "raw-rgba"` and `colorStatus: "explicit-srgb"`, even for BGRA input.
 
 ### Load options
 
@@ -68,13 +100,13 @@ before it reads the body.
 
 ## Format behavior
 
-| Format   | Decode behavior                                                                                        |
-| -------- | ------------------------------------------------------------------------------------------------------ |
-| PNG      | Supports alpha, sRGB chunks, supported cICP, RGB or grayscale ICC v2/v4 profiles, and EXIF orientation |
-| JPEG     | Produces opaque RGBA8 and applies EXIF orientation                                                     |
-| WebP     | Supports lossy, lossless, and alpha images. Animated WebP is rejected.                                 |
-| GIF      | Decodes the first displayed frame on the logical canvas                                                |
-| Raw RGBA | Uses caller-supplied straight-alpha sRGB RGBA8 pixels                                                  |
+| Format     | Decode behavior                                                                                        |
+| ---------- | ------------------------------------------------------------------------------------------------------ |
+| PNG        | Supports alpha, sRGB chunks, supported cICP, RGB or grayscale ICC v2/v4 profiles, and EXIF orientation |
+| JPEG       | Produces opaque RGBA8 and applies EXIF orientation                                                     |
+| WebP       | Supports lossy, lossless, and alpha images. Animated WebP is rejected.                                 |
+| GIF        | Decodes the first displayed frame on the logical canvas                                                |
+| Raw pixels | Imports caller-supplied sRGB RGBA8 or BGRA8 into straight-alpha RGBA8 pixels                           |
 
 `NativeImage` does not expose animation frames or timing. GIF becomes one image. Animated WebP reports an unsupported
 feature.
@@ -150,6 +182,61 @@ the image alive. Dispose extra handles and clear or destroy those buffers first.
 Dispose every retained, cloned, decoded, and transformed handle separately. Disposing one retained handle does not
 invalidate another retained handle.
 
+## Reuse pixel storage
+
+`NativeImagePool` reuses a fixed number of native pixel buffers, called slots, for frames of the same size.
+Each successful publication copies the pixels into a free slot and returns an immutable `NativeImage`.
+
+```typescript
+import { ImageRenderable, NativeImagePool } from "@opentui/core"
+
+const pool = new NativeImagePool({ width: 640, height: 480, capacity: 3 })
+const view = new ImageRenderable(renderer, { width: 80, height: 24 })
+renderer.root.add(view)
+
+function onPixels(pixels: Uint8Array): boolean {
+  const frame = pool.publishRgba(pixels)
+  if (!frame) return false
+  try {
+    view.source = frame
+  } finally {
+    frame.dispose()
+  }
+  return true
+}
+
+// Stop the producer before teardown.
+view.destroy()
+pool.dispose()
+```
+
+The `ImageRenderable.source` setter retains the frame synchronously. It requests a render when the load settles, so
+you do not need to call `requestRender()`.
+
+Each publication creates a new JavaScript wrapper and native handle. This prevents source equality checks and
+terminal-protocol caches from hiding a new frame.
+
+- `new NativeImagePool({ width, height, capacity? })` fixes the dimensions and slot count. Capacity defaults to `3`
+  and must be an integer from `1` through `8`. Native image dimension and memory limits apply on the first publication.
+- `publishRgba(pixels, stride = width * 4)` copies top-left, straight-alpha, sRGB RGBA8 bytes without retaining caller
+  memory. It accepts row padding. The input must include every row's pixels, but padding after the final row is optional.
+- `publishPixels(pixels, options?)` accepts the same `PixelImportOptions` as `NativeImage.fromPixels()`. It converts
+  RGBA8 or BGRA8 with straight or opaque alpha directly into a reusable slot, without a JavaScript staging buffer.
+- The pool allocates slots only as needed, up to `capacity * width * height * 4` bytes of pixel storage.
+  Reuse does not allocate another pixel buffer. Encoding and rendering can allocate separately.
+- The pool can reuse a slot only after all published handles and native buffer placements release it.
+  Retained images, renderable sources, and buffer snapshots keep their original pixels. Dispose frames when you no
+  longer need them.
+- Both publication methods return `null` if every slot is still in use. They do not allocate pixel storage, queue,
+  block, or replace a frame. Drop the incoming frame or retry after consumers release a slot. Invalid input throws
+  instead of returning `null`.
+- Both methods finish synchronously, with no acquisition token or pending operation to cancel. To cancel input, stop
+  calling them.
+- `dispose()` releases the pool's references and rejects future publications. Repeated calls are safe.
+  Published frames remain valid and still need disposal.
+- Pools cannot resize. Create a new pool for new dimensions. Then dispose the old pool.
+- `takeRaw()` cannot transfer a frame while the pool owns its slot. Use `raw()` or `copyTo()`, or dispose the pool first.
+
 ## Transform images
 
 Operations do not mutate the source. Each successful operation returns a new `NativeImage`.
@@ -217,6 +304,7 @@ runs.
 - `invalid-handle`, `unsupported-format`, `unsupported-color-space`, or `malformed-data`
 - `dimension-limit`, `memory-limit`, `invalid-argument`, or `out-of-memory`
 - `output-too-small`, `internal-error`, or `unsupported-feature`
+- `busy` for retained native pool slots. Pool publication methods return `null` instead of throwing this status.
 
 JavaScript option and geometry validation uses `TypeError` and `RangeError`. All image methods except `dispose()` throw
 after disposal or transfer.

@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test"
 import { createTestRenderer, type TestRendererSetup } from "../testing/test-renderer.js"
 import { KeyEvent } from "../lib/KeyHandler.js"
+import { parseKeypress } from "../lib/parse.keypress.js"
 import { RGBA } from "../lib/RGBA.js"
 import { resolveRenderLib } from "../zig.js"
 import { EmbeddedTerminalRenderable } from "./EmbeddedTerminal.js"
@@ -47,6 +48,21 @@ describe("EmbeddedTerminalRenderable", () => {
 
     await setup.renderOnce()
     expect(setup.captureCharFrame()).toBe(first)
+  })
+
+  test("toggles the pane background between the configured color and the terminal default", async () => {
+    const terminal = new EmbeddedTerminalRenderable(setup.renderer, { width: 20, height: 4 })
+    setup.renderer.root.add(terminal)
+    await setup.renderOnce()
+    expect(setup.captureSpans().lines[0]?.spans[0]?.bg.intent).toBe("rgb")
+
+    terminal.transparentBackground = true
+    await setup.renderOnce()
+    expect(setup.captureSpans().lines[0]?.spans[0]?.bg.intent).toBe("default")
+
+    terminal.transparentBackground = false
+    await setup.renderOnce()
+    expect(setup.captureSpans().lines[0]?.spans[0]?.bg.intent).toBe("rgb")
   })
 
   test("preserves mouse callbacks and their renderable context", async () => {
@@ -274,6 +290,45 @@ describe("EmbeddedTerminalRenderable", () => {
         ),
       ),
     ).toBe("\x1b[27u")
+  })
+
+  test.each([
+    ["plain Dvorak u", 1, "\x1b[117::102;1u", "u"],
+    ["plain Dvorak d", 1, "\x1b[100::104;1u", "d"],
+    ["Dvorak Ctrl+U", 1, "\x1b[117::102;5u", "\x1b[117;5u"],
+    ["Dvorak Ctrl+D", 1, "\x1b[100::104;5u", "\x1b[100;5u"],
+    ["Dvorak Ctrl+Shift+U", 1, "\x1b[117:85:102;6u", "\x1b[117;6u"],
+    ["Cyrillic Ctrl+ф", 1, "\x1b[1092::97;5u", "\x1b[1092;5u"],
+    ["QWERTY Ctrl+U", 1, "\x1b[117;5u", "\x1b[117;5u"],
+    ["Dvorak Ctrl+U in legacy mode", 0, "\x1b[117::102;5u", "\x15"],
+    ["Dvorak Ctrl+D in legacy mode", 0, "\x1b[100::104;5u", "\x04"],
+    ["Dvorak Ctrl+U with its base-layout alternative", 5, "\x1b[117::102;5u", "\x1b[117::102;5u"],
+    ["Dvorak Ctrl+D with its base-layout alternative", 5, "\x1b[100::104;5u", "\x1b[100::104;5u"],
+  ])("preserves %s", (_label, flags, raw, expected) => {
+    const terminal = new EmbeddedTerminalRenderable(setup.renderer, { width: 20, height: 4 })
+    setup.renderer.root.add(terminal)
+    terminal.write(`\x1b[>${flags}u`)
+
+    const parsed = parseKeypress(raw, { useKittyKeyboard: true })!
+    expect(new TextDecoder().decode(terminal.encodeKey(new KeyEvent(parsed)))).toBe(expected)
+  })
+
+  test("forwards Dvorak press, repeat, and release with the same active-layout key", () => {
+    const output: string[] = []
+    const terminal = new EmbeddedTerminalRenderable(setup.renderer, {
+      width: 20,
+      height: 4,
+      onData: (data) => output.push(new TextDecoder().decode(data)),
+    })
+    setup.renderer.root.add(terminal)
+    terminal.write("\x1b[>3u")
+    terminal.focus()
+
+    for (const raw of ["\x1b[117::102;5u", "\x1b[117::102;5:2u", "\x1b[117::102;5:3u"]) {
+      setup.renderer.keyInput.processParsedKey(parseKeypress(raw, { useKittyKeyboard: true })!)
+    }
+
+    expect(output).toEqual(["\x1b[117;5u", "\x1b[117;5:2u", "\x1b[117;5:3u"])
   })
 
   test("drains the preserved response prefix after overflow", () => {

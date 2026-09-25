@@ -79,6 +79,45 @@ describe("Word wrap algorithmic complexity", () => {
   const COMPLEXITY_THRESHOLD = 1.75
   const MEASURE_WIDTHS = [76, 77, 78, 79, 80, 81, 82, 83]
 
+  it("a split grapheme does not disable ASCII fitting for the remaining word", () => {
+    const control = TextBuffer.create("wcwidth")
+    const split = TextBuffer.create("wcwidth")
+    const controlView = TextBufferView.create(control)
+    const splitView = TextBufferView.create(split)
+    try {
+      for (const buffer of [control, split]) {
+        buffer.setText("\u{1f44b}")
+        buffer.append(buffer === split ? "\u{1f3fb}" : "\u{1f44b}")
+        buffer.append("x".repeat(64000))
+        buffer.append("y")
+      }
+      controlView.setWrapMode("word")
+      splitView.setWrapMode("word")
+      for (const width of MEASURE_WIDTHS) {
+        expect(splitView.measureForDimensions(width, 100)).toEqual(controlView.measureForDimensions(width, 100))
+      }
+      const controlMeasure = (width: number) => {
+        controlView.measureForDimensions(width, 100)
+      }
+      const rounds = calibrateRoundsPerSample(controlMeasure, MEASURE_WIDTHS)
+      const ratio = measureMedianRatio(
+        controlMeasure,
+        (width) => {
+          splitView.measureForDimensions(width, 100)
+        },
+        MEASURE_WIDTHS,
+        rounds,
+      )
+      // The shared ASCII suffix must not inherit the prefix's scalar Unicode scan.
+      expect(ratio).toBeLessThan(5)
+    } finally {
+      splitView.destroy()
+      controlView.destroy()
+      split.destroy()
+      control.destroy()
+    }
+  })
+
   it("should have O(n) complexity for word wrap without word breaks", () => {
     const smallSize = 20000
     const largeSize = 40000

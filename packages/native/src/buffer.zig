@@ -1632,6 +1632,7 @@ pub const OptimizedBuffer = struct {
         x: i32,
         y: i32,
     ) void {
+        view.setDrawY(y);
         const opacity = self.getCurrentOpacity();
         if (opacity == 0.0) return;
 
@@ -1683,15 +1684,16 @@ pub const OptimizedBuffer = struct {
         for (virtual_lines[firstVisibleLine..lastPossibleLine], 0..) |vline, slice_idx| {
             if (currentY >= bufferBottomY) break;
 
-            currentX = x;
-            var rendered_col_in_vline: u32 = 0;
-            document_cell_offset = vline.document_cell_offset;
-
             // When viewport is set, virtual_lines is a slice starting from viewport.y
             // But getVirtualLineSpans expects absolute indices, so we need to use the absolute index
             // slice_idx is relative to the slice (0, 1, 2...), we need to add viewport offset + firstVisibleLine
             const viewport_offset: u32 = if (viewport) |vp| vp.y else 0;
             const vline_idx = viewport_offset + firstVisibleLine + slice_idx;
+            const align_pad: i32 = @intCast(view.getLineAlignmentPad(vline_idx, vline.width_cols));
+            currentX = x + align_pad;
+            var rendered_col_in_vline: u32 = 0;
+            document_cell_offset = vline.document_cell_offset;
+
             const vline_span_info = view.getVirtualLineSpans(vline_idx);
             const spans = vline_span_info.spans;
             const col_offset = vline_span_info.source_col_start;
@@ -1858,7 +1860,7 @@ pub const OptimizedBuffer = struct {
                         }
                     }
 
-                    if (source_col_pos >= next_change_col and span_idx + 1 < spans.len) {
+                    while (source_col_pos >= next_change_col and span_idx + 1 < spans.len) {
                         span_idx += 1;
                         const new_span = spans[span_idx];
 

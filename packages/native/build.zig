@@ -732,6 +732,9 @@ fn buildTarget(
         .root_source_file = b.path(ROOT_SOURCE_FILE),
         .target = target,
         .optimize = optimize,
+        // Release symbols must describe this exact optimized code. The package
+        // build detaches them before stripping only the distribution copy.
+        .strip = false,
     });
 
     applyDependencies(b, module, optimize, target, build_options);
@@ -742,6 +745,8 @@ fn buildTarget(
         .linkage = .dynamic,
     });
 
+    if (target.result.os.tag == .linux and optimize != .Debug) lib.build_id = .sha1;
+
     addNativeAudioDependencies(b, module, target, macos_sdk_path);
     addYogaDependencies(b, module);
 
@@ -751,6 +756,9 @@ fn buildTarget(
                 .custom = try std.fmt.allocPrint(b.allocator, "../lib/{s}", .{output_name}),
             },
         },
+        .pdb_dir = if (optimize == .Debug) .default else if (target.result.os.tag == .windows) .{ .override = .{
+            .custom = try std.fmt.allocPrint(b.allocator, "../lib/{s}", .{output_name}),
+        } } else .disabled,
     });
 
     const build_step_name = try std.fmt.allocPrint(b.allocator, "build-{s}", .{output_name});

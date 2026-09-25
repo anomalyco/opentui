@@ -222,6 +222,7 @@ const THREE_EXAMPLES: ExampleDefinition[] = includeThreeExamples
         "3D golden star with particle effects and animated text celebrating 5000 stars",
         () => import("./golden-star-demo.js"),
       ),
+      threeExample("Magick Arena", "WebGPU arena with pooled native image frames", () => import("./magick/demo.js")),
       threeExample("Physics Planck", "2D physics with Planck.js", () => import("./physx-planck-2d-demo.js")),
       threeExample("Physics Rapier", "2D physics with Rapier", () => import("./physx-rapier-2d-demo.js")),
       threeExample("Phong Lighting", "Phong lighting model demo", () => import("./lights-phong-demo.js")),
@@ -242,6 +243,11 @@ const THREE_EXAMPLES: ExampleDefinition[] = includeThreeExamples
         "Golden Star Demo",
         "3D golden star with particle effects and animated text celebrating 5000 stars",
       ),
+      {
+        name: "Magick Arena",
+        description: "WebGPU arena with pooled native image frames (Bun only)",
+        unavailableMessage: "Magick Arena requires Bun and bun-webgpu.",
+      },
       unavailableThreeExample("Physics Planck", "2D physics with Planck.js"),
       unavailableThreeExample("Physics Rapier", "2D physics with Rapier"),
       unavailableThreeExample("Phong Lighting", "Phong lighting model demo"),
@@ -378,7 +384,7 @@ const EXAMPLE_SECTIONS: ExampleSection[] = [
     },
     {
       name: "Mouse Interaction Demo",
-      description: "Interactive mouse trails and clickable cells demonstration",
+      description: "Interactive mouse trails, draggable boxes, clickable cells, and pointer styles",
       run: mouseInteractionExample.run,
       destroy: mouseInteractionExample.destroy,
     },
@@ -1501,6 +1507,7 @@ class ExampleSelector {
 const renderer = await createCliRenderer({
   exitOnCtrlC: false,
   targetFps: 60,
+  useKittyKeyboard: { events: true, allKeysAsEscapes: true },
   // useAlternateScreen: false,
 })
 

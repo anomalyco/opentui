@@ -1,7 +1,90 @@
 const std = @import("std");
+const gp = @import("grapheme.zig");
 const native_image = @import("image.zig");
 
 pub const KittyPixelFormat = enum { auto, rgb, rgba };
+pub const KittyEncoding = enum(u32) { raw, zlib, png, file };
+// Bound optional preparation independently of the image decoder's limits.
+pub const KITTY_PREPARE_BYTES_MAX = 64 * 1024 * 1024;
+
+pub fn kittyPayloadSize(image: *native_image.Image) !usize {
+    if (image.encoded_png) |png| return png.len;
+    const count = try std.math.mul(usize, image.width(), image.height());
+    return std.math.mul(usize, count, if (image.metadata.has_alpha == 0) 3 else 4);
+}
+
+pub fn writeKittyPayload(writer: anytype, image: *native_image.Image) !void {
+    if (image.encoded_png) |png| return writer.writeAll(png);
+    const pixels = try image.ensurePixels();
+    const count = try std.math.mul(usize, image.width(), image.height());
+    if (pixels.len != try std.math.mul(usize, count, 4)) return error.InvalidImageData;
+    if (image.metadata.has_alpha != 0) return writer.writeAll(pixels);
+    var rgb: [3072]u8 = undefined;
+    var offset: usize = 0;
+    while (offset < count) {
+        const n: usize = @min(count - offset, rgb.len / 3);
+        for (0..n) |i| @memcpy(rgb[i * 3 ..][0..3], pixels[(offset + i) * 4 ..][0..3]);
+        try writer.writeAll(rgb[0 .. n * 3]);
+        offset += n;
+    }
+}
+
+fn compressKittyPayload(allocator: std.mem.Allocator, image: *native_image.Image, output: *std.Io.Writer) !void {
+    const flate = std.compress.flate;
+    const compressor = try allocator.create(flate.Compress);
+    defer allocator.destroy(compressor);
+    const window = try allocator.alloc(u8, flate.max_window_len);
+    defer allocator.free(window);
+    compressor.* = try flate.Compress.init(output, window, .zlib, .fastest);
+    try writeKittyPayload(&compressor.writer, image);
+    try compressor.finish();
+}
+
+pub fn writeKittyTransmitEncoded(
+    allocator: std.mem.Allocator,
+    writer: anytype,
+    image: *native_image.Image,
+    id: u32,
+    tmux: bool,
+    compress: bool,
+) !KittyEncoding {
+    const fallback: KittyEncoding = if (image.encoded_png != null) .png else .raw;
+    if (compress and fallback == .raw) compressed: {
+        const size = try kittyPayloadSize(image);
+        if (size <= 8 or size > KITTY_PREPARE_BYTES_MAX) break :compressed;
+        // A fixed writer stops expansion before any compressed bytes reach stdout.
+        const bytes = allocator.alloc(u8, size) catch break :compressed;
+        defer allocator.free(bytes);
+        var output: std.Io.Writer = .fixed(bytes);
+        compressKittyPayload(allocator, image, &output) catch break :compressed;
+        const base64 = std.base64.standard.Encoder;
+        if (base64.calcSize(output.buffered().len) + ",o=z".len >= base64.calcSize(size)) break :compressed;
+        var offset: usize = 0;
+        const payload = output.buffered();
+        while (offset < payload.len) {
+            const end = @min(offset + 3072, payload.len);
+            if (tmux) try writer.writeAll("\x1bPtmux;\x1b\x1b_G") else try writer.writeAll("\x1b_G");
+            if (offset == 0) {
+                try writer.print("a=t,f={d},s={d},v={d},i={d},o=z,m={d},q=2;", .{
+                    @as(u32, if (image.metadata.has_alpha == 0) 24 else 32),
+                    image.width(),
+                    image.height(),
+                    id,
+                    @intFromBool(end < payload.len),
+                });
+            } else {
+                try writer.print("m={d},q=2;", .{@intFromBool(end < payload.len)});
+            }
+            var encoded: [4096]u8 = undefined;
+            try writer.writeAll(std.base64.standard.Encoder.encode(&encoded, payload[offset..end]));
+            if (tmux) try writer.writeAll("\x1b\x1b\\\x1b\\") else try writer.writeAll("\x1b\\");
+            offset = end;
+        }
+        return .zlib;
+    }
+    try writeKittyTransmit(writer, image, id, tmux);
+    return fallback;
+}
 
 pub fn writeKittyTransmit(writer: anytype, image: *native_image.Image, id: u32, tmux: bool) !void {
     return writeKittyTransmitFormat(writer, image, id, tmux, .auto);
@@ -88,6 +171,25 @@ pub fn writeKittyTransmitFormat(writer: anytype, image: *native_image.Image, id:
         offset = end;
         first = false;
     }
+}
+
+// Kitty draws z < INT32_MIN/2 under cells with a non-default background.
+// Themed terminals paint those backgrounds, which hides an image in that
+// band. Stay in [INT32_MIN/2, 0): above cell backgrounds, under glyphs.
+// Overwritten reservation cells are excluded by the renderer; z only
+// orders a placement against text and cell backgrounds.
+pub fn kittyPlacementZ(placement_id: u32) i32 {
+    // Every legal placement id keeps the sum inside that band.
+    comptime {
+        const below_bg: i32 = std.math.minInt(i32) / 2;
+        const max_z = below_bg + @as(i32, gp.IMAGE_ID_MASK);
+        std.debug.assert(max_z < 0);
+        std.debug.assert(max_z >= below_bg);
+    }
+    std.debug.assert(placement_id <= gp.IMAGE_ID_MASK);
+    const z = @as(i32, std.math.minInt(i32) / 2) + @as(i32, @intCast(placement_id));
+    std.debug.assert(z < 0);
+    return z;
 }
 
 pub fn writeKittyPlacement(

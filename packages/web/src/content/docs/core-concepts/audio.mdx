@@ -10,7 +10,7 @@ skill:
 
 OpenTUI plays, mixes, and captures audio through a native miniaudio engine. The `Audio` class in `@opentui/core` owns the engine and its resources.
 
-This page covers the engine and loaded-sound playback. See [Streaming audio](/docs/application-apis/audio-streaming) for encoded byte sources and radio URLs. See [Audio capture and recording](/docs/application-apis/audio-capture) for input devices, Float32 PCM, and WAV files.
+This page covers the engine and loaded-sound playback. See [Streaming audio](/docs/application-apis/audio-streaming) for PCM or encoded byte sources and radio URLs. See [Audio capture and recording](/docs/application-apis/audio-capture) for input devices, Float32 PCM, and WAV files.
 
 ## Play a loaded sound
 
@@ -77,7 +77,7 @@ A failed automatic start destroys the partial native engine. Successful automati
 
 Audio uses the same native runtime as the renderer. Read [Runtime and platform support](/docs/getting-started/runtime-support) for setup and distribution details.
 
-The local requirements are Bun 1.3.0 or later, or Node.js 26.4.0 or later with experimental FFI. Native packages support macOS, Linux, and Windows on x64 and arm64.
+The local requirements are Bun 1.3.0 or later, or Node.js 26.4.0 or later with experimental FFI. Native packages support macOS, Linux, and Windows on x64 and arm64. Use Bun 1.4.0 or later on native Windows arm64.
 
 Linux selects glibc by default. Set the documented libc selector when the target needs musl. Audio has no browser target.
 
@@ -88,6 +88,8 @@ Linux selects glibc by default. Set the documented libc selector when the target
 Both methods decode the complete WAV, FLAC, or MP3 input into native interleaved Float32 samples. The loaded-sound decoder does not include Vorbis support.
 
 Use [Streaming audio](/docs/application-apis/audio-streaming) for long MP3 or FLAC media. Streaming does not retain the complete decoded sound.
+
+For generated audio or an external decoder, use `await audio.playStream(source, { format: "pcm", sampleFormat: "f32le", sampleRate: 44100, channels: 1 })`. The source supplies little-endian Float32 bytes through a `ReadableStream<Uint8Array>` or `AsyncIterable<Uint8Array>`. It returns the same `AudioStream` as encoded playback; source EOF flushes and drains audio before `stream.closed` resolves.
 
 Each encoded input must fit the native unsigned 32-bit byte length. The maximum input length is `4,294,967,295` bytes.
 
@@ -157,7 +159,7 @@ The device stays open until `stop()` or `dispose()`. Idle voices do not close it
 
 Headless mode makes progress only when the application calls `mixFrames()`. Call it at the output cadence that consumes the requested number of frames.
 
-Loaded voices and encoded streams also need this consumption to advance. A finite stream cannot finish while its decoded PCM remains unconsumed.
+Loaded voices and streams also need this consumption to advance. A finite stream cannot finish while its PCM remains unconsumed.
 
 `stop()` preserves loaded sounds, groups, and their handles. Call `start()` or `startMixer()` before later playback needs to advance.
 
@@ -193,7 +195,7 @@ Selection fails while normal playback or the headless mixer runs. Call `stop()` 
 
 Group and master volumes also clamp to `0..4`. `group(name)` returns the existing group when the same name appears again.
 
-The engine supports 32 active loaded voices and encoded streams in total. A stream reserves one of the same slots.
+The engine supports 32 active loaded voices, encoded streams, and PCM streams in total. A stream reserves one of the same slots.
 
 `AudioSound`, `AudioVoice`, and `AudioGroup` are numeric handles local to one engine. Do not pass them to another `Audio` instance.
 
@@ -215,7 +217,7 @@ Tap reads do not consume data. Repeated reads can return the same latest frames.
 
 Only `framesRead * channels` values in the returned `frames` array contain tapped data. Remaining allocated values contain zero.
 
-The master tap combines loaded sounds and encoded streams. It cannot isolate one voice, group, or stream.
+The master tap combines loaded sounds, encoded streams, and PCM streams. It cannot isolate one voice, group, or stream.
 
 OpenTUI does not calculate a fast Fourier transform (FFT). Run an FFT on tap samples in application code.
 
@@ -224,7 +226,7 @@ OpenTUI does not calculate a fast Fourier transform (FFT). Run an FFT on tap sam
 | Field          | Meaning                                                                 |
 | -------------- | ----------------------------------------------------------------------- |
 | `soundsLoaded` | Loaded sounds that are not unloaded                                     |
-| `voicesActive` | Active loaded voices plus encoded streams                               |
+| `voicesActive` | Active loaded voices plus encoded and PCM streams                       |
 | `framesMixed`  | Frames mixed through device or manual output                            |
 | `lockMisses`   | Device callbacks that returned silence because the engine lock was busy |
 | `lastPeak`     | Peak absolute sample in the last mixed buffer                           |

@@ -1,6 +1,7 @@
 {
   "name": "@opentui",
   "private": true,
+  "packageManager": "bun@1.4.1",
   "workspaces": [
     "packages/*",
     "packages/solid/examples"

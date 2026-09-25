@@ -13,6 +13,7 @@ export interface EmbeddedTerminalOptions extends RenderableOptions<EmbeddedTermi
   cols?: number
   rows?: number
   maxScrollback?: number
+  transparentBackground?: boolean
   onData?: (data: Uint8Array, source: EmbeddedTerminalDataSource) => void
   onTerminalResize?: (cols: number, rows: number) => void
   onScreenChange?: () => void
@@ -48,6 +49,7 @@ export class EmbeddedTerminalRenderable extends Renderable {
   private keyreleaseHandler: ((key: KeyEvent) => void) | null = null
   private hadRenderHooks = false
   private selection = false
+  private _transparentBackground = false
 
   constructor(ctx: RenderContext, options: EmbeddedTerminalOptions) {
     const cols = options.cols ?? (typeof options.width === "number" ? options.width : 80)
@@ -67,6 +69,7 @@ export class EmbeddedTerminalRenderable extends Renderable {
 
     try {
       this.handle = this.lib.createEmbeddedTerminal({ cols, rows, maxScrollback: options.maxScrollback })
+      this.transparentBackground = options.transparentBackground ?? false
       this.setupMouse(options)
     } catch (error) {
       this.destroy()
@@ -96,6 +99,19 @@ export class EmbeddedTerminalRenderable extends Renderable {
 
   public set onScreenChange(value: (() => void) | undefined) {
     this._onScreenChange = value
+  }
+
+  public get transparentBackground(): boolean {
+    return this._transparentBackground
+  }
+
+  public set transparentBackground(value: boolean) {
+    if (this._transparentBackground === value) return
+    this._transparentBackground = value
+    if (this.handle !== null) {
+      this.lib.embeddedTerminalSetTransparentBackground(this.handle, value)
+      this.requestRender()
+    }
   }
 
   public screen(): EmbeddedTerminalScreen {
@@ -148,7 +164,7 @@ export class EmbeddedTerminalRenderable extends Renderable {
       key: physical,
       mods: modifiers(key),
       text,
-      unshiftedCodepoint: key.baseCode ?? physicalUnshiftedCodepoint(physical),
+      unshiftedCodepoint: unshiftedCodepoint(key, physical),
     })
   }
 
@@ -382,8 +398,9 @@ function modifiers(input: {
 
 function physicalKey(key: KeyEvent) {
   if (key.code && !key.code.startsWith("[")) return key.code
-  if (/^[a-z]$/i.test(key.name)) return `Key${key.name.toUpperCase()}`
-  if (/^[0-9]$/.test(key.name)) return `Digit${key.name}`
+  const name = key.baseCode === undefined ? key.name : String.fromCodePoint(key.baseCode)
+  if (/^[a-z]$/i.test(name)) return `Key${name.toUpperCase()}`
+  if (/^[0-9]$/.test(name)) return `Digit${name}`
   return (
     {
       backspace: "Backspace",
@@ -413,7 +430,10 @@ function textualKey(key: KeyEvent) {
   if ([...key.name].length === 1 || /[^\x00-\x7f]/.test(key.name)) return key.name
 }
 
-function physicalUnshiftedCodepoint(code: string | undefined) {
+function unshiftedCodepoint(key: KeyEvent, code: string | undefined) {
+  // Kitty's baseCode is a physical-layout alternative, not the active layout's character.
+  if (key.name === "space") return 32
+  if ([...key.name].length === 1) return key.name.codePointAt(0)!
   if (code?.startsWith("Key") && code.length === 4) return code.charCodeAt(3) + 32
   if (code?.startsWith("Digit") && code.length === 6) return code.charCodeAt(5)
   return 0

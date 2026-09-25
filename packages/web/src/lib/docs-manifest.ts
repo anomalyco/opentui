@@ -210,7 +210,14 @@ export const DOC_MANIFEST = {
     related: ["components/box", "components/scrollbox", "core-concepts/rendering-pipeline"],
   }),
   "core-concepts/interaction": page("core", 4, "Interaction", "concept", {
-    searchSymbols: ["MouseEvent", "FocusableRenderable", "Selection", "SelectionEvent"],
+    searchSymbols: [
+      "MouseEvent",
+      "MousePointerStyle",
+      "setMousePointer",
+      "FocusableRenderable",
+      "Selection",
+      "SelectionEvent",
+    ],
     related: ["core-concepts/keyboard", "components/input", "components/text", "core-concepts/testing"],
   }),
   "core-concepts/keyboard": page("core", 5, "Keyboard input", "concept", {
@@ -582,7 +589,11 @@ export const DOC_MANIFEST = {
     searchSymbols: ["TimeToFirstDrawRenderable", "TimeToFirstDraw"],
     related: ["core-concepts/renderer", "core-concepts/testing"],
   }),
-  "test-and-debug/troubleshooting": page("test-debug", 4, "Troubleshooting", "task-guide", {
+  "test-and-debug/native-crashes": page("test-debug", 4, "Native crash debugging", "task-guide", {
+    searchSymbols: ["GDB", "LLDB", "PDB", "dSYM", "debug symbols", "core dump"],
+    related: ["test-and-debug/troubleshooting", "getting-started/runtime-support"],
+  }),
+  "test-and-debug/troubleshooting": page("test-debug", 5, "Troubleshooting", "task-guide", {
     packages: [
       "@opentui/core",
       "@opentui/react",
@@ -896,6 +907,7 @@ export const DOC_LEARNING_SEQUENCES: DocLearningSequence[] = [
       "core-concepts/testing",
       "core-concepts/console",
       "test-and-debug/rendering-diagnostics",
+      "test-and-debug/native-crashes",
       "test-and-debug/troubleshooting",
     ],
   },

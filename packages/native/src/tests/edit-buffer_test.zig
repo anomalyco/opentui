@@ -10,6 +10,34 @@ const EditBuffer = edit_buffer.EditBuffer;
 const TextBufferView = text_buffer_view.TextBufferView;
 const Cursor = edit_buffer.Cursor;
 
+test "EditBuffer - deleting final line contents preserves empty line" {
+    const pool = gp.initGlobalPool(std.testing.allocator);
+    defer gp.deinitGlobalPool();
+    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
+    defer link.deinitGlobalLinkPool();
+
+    const eb = try EditBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth, null);
+    defer eb.deinit();
+    try eb.setText("a\nb");
+    try eb.setCursor(1, 0);
+    try eb.deleteForward();
+
+    var text: [16]u8 = undefined;
+    try std.testing.expectEqualStrings("a\n", text[0..eb.getText(&text)]);
+    try std.testing.expectEqual(@as(u32, 2), eb.tb.getLineCount());
+    try std.testing.expectEqual(@as(u32, 1), eb.tb.lineWidthAt(0));
+    try std.testing.expectEqual(@as(u32, 0), eb.tb.lineWidthAt(1));
+    try eb.tb.addHighlightByCharRange(1, 2, 1, 1, 0);
+    try std.testing.expectEqual(@as(usize, 0), eb.tb.getHighlightCount());
+
+    _ = try eb.undo();
+    try std.testing.expectEqualStrings("a\nb", text[0..eb.getText(&text)]);
+    _ = try eb.redo();
+    try std.testing.expectEqualStrings("a\n", text[0..eb.getText(&text)]);
+    try eb.insertText("c");
+    try std.testing.expectEqualStrings("a\nc", text[0..eb.getText(&text)]);
+}
+
 test "EditBuffer - init and deinit" {
     const pool = gp.initGlobalPool(std.testing.allocator);
     defer gp.deinitGlobalPool();
@@ -362,6 +390,27 @@ test "EditBuffer - combining mark keeps word class across chunks" {
 
     try eb.setCursor(0, 5);
     try std.testing.expectEqual(@as(u32, 1), eb.getPrevWordBoundary().col);
+}
+
+test "EditBuffer - word boundary treats CJK run as one word" {
+    const pool = gp.initGlobalPool(std.testing.allocator);
+    defer gp.deinitGlobalPool();
+    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
+    defer link.deinitGlobalLinkPool();
+
+    var eb = try EditBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth, null);
+    defer eb.deinit();
+
+    // Intercharacter wrap opportunities must not step word motion per character.
+    try eb.setText("日本語文字");
+
+    try eb.setCursor(0, 0);
+    const next_cursor = eb.getNextWordBoundary();
+    try std.testing.expectEqual(@as(u32, 10), next_cursor.col);
+
+    try eb.setCursor(0, 10);
+    const prev_cursor = eb.getPrevWordBoundary();
+    try std.testing.expectEqual(@as(u32, 0), prev_cursor.col);
 }
 
 test "EditBuffer - word boundary keeps Hangul run grouped" {
