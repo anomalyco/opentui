@@ -1,0 +1,84 @@
+---
+title: Test Recording
+description: Record input, resize, frame checkpoints, and export replayable tests
+order: 13
+skill:
+  intents: [test-recording, replay, session-recorder, snapshots, input]
+---
+
+# Test Recording
+
+`TestSessionRecorder` records a deterministic test session on top of `createTestRenderer()`.
+It captures raw stdin bytes from keyboard and mouse mocks, terminal resizes, explicit waits, checkpoints, and optionally every rendered frame.
+
+Use the existing `TestRecorder` when you only need frame capture. Use `TestSessionRecorder` when you want to turn an interaction into a replayable regression test.
+
+```typescript
+import { createTestRenderer, TestSessionRecorder } from "@opentui/core/testing"
+
+const setup = await createTestRenderer({ width: 80, height: 24 })
+const recorder = new TestSessionRecorder(setup, {
+  metadata: { name: "command palette accepts query" },
+  recordFrames: true,
+})
+
+recorder.start()
+setup.mockInput.pressKey("k", { ctrl: true })
+await recorder.flush()
+await setup.mockInput.typeText("settings")
+await recorder.flush()
+recorder.checkpoint("filtered settings results")
+recorder.stop()
+
+const session = recorder.session
+const testSource = recorder.exportReplayTest({
+  setupCode: "  await mountApp(setup.renderer)\n",
+})
+```
+
+## Replay
+
+```typescript
+import { test, expect } from "bun:test"
+import { createTestRenderer, replayTestSession, type RecordedTestSession } from "@opentui/core/testing"
+
+const session = {
+  // paste the exported session JSON here
+} satisfies RecordedTestSession
+
+test("replays command palette regression", async () => {
+  const setup = await createTestRenderer({ width: session.width, height: session.height })
+  try {
+    await mountApp(setup.renderer)
+    await replayTestSession(session, setup, { assertCheckpoints: true })
+    expect(setup.captureCharFrame()).toBe(session.finalFrame)
+  } finally {
+    setup.renderer.destroy()
+  }
+})
+```
+
+## What gets recorded
+
+| Step         | Source                                                            | Replay behavior                         |
+| ------------ | ----------------------------------------------------------------- | --------------------------------------- |
+| `stdin`      | `renderer.stdin.emit("data", bytes)` from keyboard or mouse mocks | Re-emits the same bytes                 |
+| `resize`     | `setup.resize(width, height)`                                     | Calls `resize()` and flushes by default |
+| `wait`       | `recorder.flush()` or `recorder.waitForVisualIdle()`              | Waits using the same helper             |
+| `checkpoint` | `recorder.checkpoint(name)`                                       | Optional assertion during replay        |
+| `frame`      | Render frame events when `recordFrames` is true                   | Stored for debugging; not replayed      |
+| `note`       | `recorder.note(message)`                                          | Stored as human context; not replayed   |
+
+## Notes
+
+The exported test includes a `setupCode` placeholder because the recorder cannot know how to mount your app. Mount the same renderables, React tree, or Solid tree before calling `replayTestSession()`.
+
+For large sessions, set `recordFrames: false` or pass a `frameLimit` to keep the fixture small.
+
+## Minimal Example
+
+See `packages/core/src/testing/examples/test-session-recorder-demo-app.ts` for a tiny app that renders typed input, submit count, and terminal size.
+
+Run it from the repo root with `bun packages/core/src/testing/examples/test-session-recorder-demo-app.ts`, then type text, Backspace, and Enter. Press Ctrl+C to exit.
+
+The matching `packages/core/src/testing/examples/test-session-recorder-demo-app.test.ts` records a session against one test renderer, replays it into a fresh renderer, asserts a checkpoint, and compares the final frame.
