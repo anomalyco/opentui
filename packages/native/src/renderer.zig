@@ -138,7 +138,43 @@ const CommittedImage = struct {
     protocol: ImageProtocol,
     background_hash: u64 = 0,
     lower_occupancy_hash: u64 = 0,
+    // Kitty rectangle still fully reserved, and a fingerprint of which cells are.
+    // A partial overlay must rebuild placements; an unchanged overlay must not.
+    reservation_intact: bool = true,
+    reservation_hash: u64 = 0,
 };
+
+// Run placement ids start above every buffer placement id. Kitty scopes
+// placement ids to an image id and each owner has its own image id, so runs
+// of different owners never collide and no run needs tracking: a placement
+// delete by image id drops the owner rectangle or its runs alike.
+const KITTY_RUN_ID_MIN: u32 = 0x8000_0000;
+
+comptime {
+    std.debug.assert(KITTY_RUN_ID_MIN > gp.IMAGE_ID_MASK);
+}
+
+const PlacementReservation = struct {
+    intact: bool,
+    hash: u64,
+};
+
+const SourceSpan = struct {
+    start: u32,
+    len: u32,
+};
+
+// Map a cell run onto the placement's source rectangle. The end uses the same
+// ceiling division as drawImage so adjacent runs meet without a gap.
+fn kittySourceSpan(origin: u32, length: u32, offset: u32, count: u32, span: u32) ?SourceSpan {
+    if (span == 0 or count == 0 or length == 0) return null;
+    if (offset > span or count > span - offset) return null;
+    const start_u64 = @as(u64, origin) + (@as(u64, offset) * length) / span;
+    const end_u64 = @as(u64, origin) + (@as(u64, offset + count) * length + span - 1) / span;
+    const end = @min(end_u64, @as(u64, origin) + length);
+    if (end <= start_u64 or start_u64 > std.math.maxInt(u32)) return null;
+    return .{ .start = @intCast(start_u64), .len = @intCast(end - start_u64) };
+}
 
 // Per-frame invalidation state for one placement. Sixel pixels live inside the
 // covered cells, so a changed Sixel placement must clear and repaint its own
@@ -150,6 +186,9 @@ const ImageDirty = struct {
     background_hash: u64,
     lower_occupancy_hash: u64,
     propagated: bool = false,
+    // Kitty reservation scan for this frame. Change detection, the Kitty
+    // writer, and staging all read it, so the placement area is scanned once.
+    reservation: PlacementReservation = .{ .intact = true, .hash = 0 },
 };
 
 const ImageProtocol = enum { fallback, sixel, kitty };
@@ -1290,19 +1329,72 @@ pub const CliRenderer = struct {
         return true;
     }
 
-    fn snapshotPlacementUncovered(snapshot: *const OptimizedBuffer, placement: OptimizedBuffer.ImagePlacement) bool {
-        var y: u32 = 0;
-        while (y < placement.height) : (y += 1) {
-            var x: u32 = 0;
-            while (x < placement.width) : (x += 1) {
-                const cell = snapshot.get(
-                    @intCast(placement.x + @as(i32, @intCast(x))),
-                    @intCast(placement.y + @as(i32, @intCast(y))),
-                ) orelse return false;
-                if (!gp.isImageChar(cell.char) or gp.imageIdFromChar(cell.char) != placement.placement_id) return false;
+    fn snapshotPlacementUncovered(self: *CliRenderer, snapshot: *const OptimizedBuffer, placement: OptimizedBuffer.ImagePlacement) bool {
+        return self.placementReservation(snapshot, placement).intact;
+    }
+
+    // A cell stays reserved while it shows this placement or a higher Kitty
+    // placement, which the terminal composites by z. Text, fills, and images
+    // on another protocol paint the cell, so they exclude it.
+    fn imageCharReserved(self: *CliRenderer, buffer: *const OptimizedBuffer, placement: OptimizedBuffer.ImagePlacement, char: u32) bool {
+        if (!gp.isImageChar(char)) return false;
+        const id = gp.imageIdFromChar(char);
+        if (id == placement.placement_id) return true;
+        if (id < placement.placement_id or id > buffer.image_placements.items.len) return false;
+        return self.nextPlacementProtocol(buffer.image_placements.items[id - 1]) == .kitty;
+    }
+
+    fn placementCellReserved(
+        self: *CliRenderer,
+        buffer: *const OptimizedBuffer,
+        placement: OptimizedBuffer.ImagePlacement,
+        ox: u32,
+        oy: u32,
+    ) bool {
+        const x = placement.x + @as(i32, @intCast(ox));
+        const y = placement.y + @as(i32, @intCast(oy));
+        if (x < 0 or y < 0 or x >= buffer.width or y >= buffer.height) return false;
+        const index = @as(usize, @intCast(y)) * buffer.width + @as(usize, @intCast(x));
+        return self.imageCharReserved(buffer, placement, buffer.buffer.char[index]);
+    }
+
+    // Scans the placement area once. Only the char plane is read, and each
+    // row is hashed in chunks so the per-cell work is a load and a compare.
+    fn placementReservation(
+        self: *CliRenderer,
+        buffer: *const OptimizedBuffer,
+        placement: OptimizedBuffer.ImagePlacement,
+    ) PlacementReservation {
+        var hasher = std.hash.Wyhash.init(0x6b697474_792d7276);
+        var intact = placement.width > 0 and placement.height > 0;
+        var chunk: [256]u8 = undefined;
+        var oy: u32 = 0;
+        while (oy < placement.height) : (oy += 1) {
+            const y = placement.y + @as(i32, @intCast(oy));
+            const row_visible = y >= 0 and y < buffer.height;
+            const row_start = if (row_visible) @as(usize, @intCast(y)) * buffer.width else 0;
+            var ox: u32 = 0;
+            while (ox < placement.width) {
+                const count: u32 = @min(placement.width - ox, @as(u32, chunk.len));
+                for (chunk[0..count], 0..) |*flag, offset| {
+                    const x = placement.x + @as(i32, @intCast(ox + offset));
+                    const visible = row_visible and x >= 0 and x < buffer.width;
+                    const reserved = visible and
+                        self.imageCharReserved(buffer, placement, buffer.buffer.char[row_start + @as(usize, @intCast(x))]);
+                    if (!reserved) intact = false;
+                    flag.* = @intFromBool(reserved);
+                }
+                hasher.update(chunk[0..count]);
+                ox += count;
             }
         }
-        return true;
+        return .{ .intact = intact, .hash = hasher.final() };
+    }
+
+    fn placementReservationState(self: *const CliRenderer, placement_id: u32) PlacementReservation {
+        // imageDirty covers every placement unless this frame already failed.
+        if (placement_id == 0 or placement_id > self.imageDirty.items.len) return .{ .intact = true, .hash = 0 };
+        return self.imageDirty.items[placement_id - 1].reservation;
     }
 
     fn prepareSnapshotImages(
@@ -1340,7 +1432,7 @@ pub const CliRenderer = struct {
                 return .{};
             }
             for (placements) |placement| {
-                if (!snapshotPlacementUncovered(snapshot, placement)) {
+                if (!self.snapshotPlacementUncovered(snapshot, placement)) {
                     try snapshot.materializeImageFallbacks();
                     return .{};
                 }
@@ -1360,6 +1452,13 @@ pub const CliRenderer = struct {
         )) {
             try snapshot.materializeImageFallbacks();
             return .{};
+        }
+        // A raised z no longer hides overwritten cells. Fall back, as Sixel does.
+        for (placements) |placement| {
+            if (!self.snapshotPlacementUncovered(snapshot, placement)) {
+                try snapshot.materializeImageFallbacks();
+                return .{};
+            }
         }
         const base = self.reserveKittyHistoryImageIds(placements.len) orelse {
             try snapshot.materializeImageFallbacks();
@@ -1450,7 +1549,7 @@ pub const CliRenderer = struct {
             placement.placement_id,
             placement.width,
             placement.height,
-            -1_500_000_000 + @as(i32, @intCast(placement.placement_id)),
+            terminal_image.kittyPlacementZ(placement.placement_id),
             self.terminal.isInTmux(),
         );
     }
@@ -1800,6 +1899,10 @@ pub const CliRenderer = struct {
                 a.pixel_width != b.pixel_width or a.pixel_height != b.pixel_height) return true;
             if (a.source_x != b.source_x or a.source_y != b.source_y or a.source_width != b.source_width or a.source_height != b.source_height or a.opacity != b.opacity) return true;
             if (self.nextPlacementProtocol(a) != b.protocol) return true;
+            if (self.nextPlacementProtocol(a) == .kitty and index < self.imageDirty.items.len) {
+                const reservation = self.imageDirty.items[index].reservation;
+                if (reservation.intact != b.reservation_intact or reservation.hash != b.reservation_hash) return true;
+            }
             if (index < self.imageDirty.items.len and self.imageDirty.items[index].background_hash != b.background_hash) return true;
             if (index < self.imageDirty.items.len and self.imageDirty.items[index].lower_occupancy_hash != b.lower_occupancy_hash) return true;
         }
@@ -1933,6 +2036,10 @@ pub const CliRenderer = struct {
                 .protocol = protocol,
                 .background_hash = background_hash,
                 .lower_occupancy_hash = lower_occupancy_hash,
+                .reservation = if (protocol == .kitty)
+                    self.placementReservation(self.nextRenderBuffer, placement)
+                else
+                    .{ .intact = true, .hash = 0 },
             });
         }
         while (true) {
@@ -1983,6 +2090,8 @@ pub const CliRenderer = struct {
         self.pendingImages.clearRetainingCapacity();
         std.debug.assert(self.pendingImages.capacity >= self.nextRenderBuffer.image_placements.items.len);
         for (self.nextRenderBuffer.image_placements.items, 0..) |placement, index| {
+            const protocol = self.nextPlacementProtocol(placement);
+            const reservation = self.placementReservationState(placement.placement_id);
             self.pendingImages.appendAssumeCapacity(.{
                 .image_handle = placement.image_handle,
                 .placement_id = placement.placement_id,
@@ -1997,9 +2106,11 @@ pub const CliRenderer = struct {
                 .source_width = placement.source_width,
                 .source_height = placement.source_height,
                 .opacity = placement.opacity,
-                .protocol = self.nextPlacementProtocol(placement),
+                .protocol = protocol,
                 .background_hash = if (index < self.imageDirty.items.len) self.imageDirty.items[index].background_hash else 0,
                 .lower_occupancy_hash = if (index < self.imageDirty.items.len) self.imageDirty.items[index].lower_occupancy_hash else 0,
+                .reservation_intact = reservation.intact,
+                .reservation_hash = reservation.hash,
             });
         }
     }
@@ -2107,6 +2218,155 @@ pub const CliRenderer = struct {
         return .{ .image = opacity_image orelse source, .owned = opacity_image != null };
     }
 
+    fn placementRowsMatch(self: *CliRenderer, placement: OptimizedBuffer.ImagePlacement, row_a: u32, row_b: u32) bool {
+        var ox: u32 = 0;
+        while (ox < placement.width) : (ox += 1) {
+            const reserved_a = self.placementCellReserved(self.nextRenderBuffer, placement, ox, row_a);
+            const reserved_b = self.placementCellReserved(self.nextRenderBuffer, placement, ox, row_b);
+            if (reserved_a != reserved_b) return false;
+        }
+        return true;
+    }
+
+    // A Kitty placement is one rectangle, so a cell overlay cannot punch a hole
+    // in it. Emit one placement per uncovered run instead. Consecutive rows
+    // with the same coverage share a placement, so an uncovered band keeps the
+    // owner's exact source mapping and the escape count follows the overlay
+    // shape rather than the image height. z stays on the owner id so ordering
+    // does not follow the run id.
+    fn writeKittyReservationRuns(
+        self: *CliRenderer,
+        writer: anytype,
+        placement: OptimizedBuffer.ImagePlacement,
+        image_id: u32,
+        downscaled: bool,
+        tmux: bool,
+    ) !void {
+        const src_x0: u32 = if (downscaled) 0 else placement.source_x;
+        const src_y0: u32 = if (downscaled) 0 else placement.source_y;
+        const src_w: u32 = if (downscaled) placement.pixel_width else placement.source_width;
+        const src_h: u32 = if (downscaled) placement.pixel_height else placement.source_height;
+        const z = terminal_image.kittyPlacementZ(placement.placement_id);
+        var run_index: u32 = 0;
+        var band_y: u32 = 0;
+        var band_end: u32 = 0;
+        while (band_y < placement.height) : (band_y = band_end) {
+            band_end = band_y + 1;
+            while (band_end < placement.height and self.placementRowsMatch(placement, band_y, band_end)) band_end += 1;
+            const src_y = kittySourceSpan(src_y0, src_h, band_y, band_end - band_y, placement.height) orelse continue;
+            var ox: u32 = 0;
+            while (ox < placement.width) {
+                if (!self.placementCellReserved(self.nextRenderBuffer, placement, ox, band_y)) {
+                    ox += 1;
+                    continue;
+                }
+                const start = ox;
+                while (ox < placement.width and self.placementCellReserved(self.nextRenderBuffer, placement, ox, band_y)) ox += 1;
+                const src_x = kittySourceSpan(src_x0, src_w, start, ox - start, placement.width) orelse continue;
+                // Runs never outnumber cells, so the id space above KITTY_RUN_ID_MIN suffices.
+                std.debug.assert(run_index < std.math.maxInt(u32) - KITTY_RUN_ID_MIN);
+                try terminal_image.writeKittyPlacement(
+                    writer,
+                    image_id,
+                    KITTY_RUN_ID_MIN + run_index,
+                    @intCast(placement.x + @as(i32, @intCast(start))),
+                    @intCast(placement.y + @as(i32, @intCast(band_y)) + @as(i32, @intCast(self.renderOffset))),
+                    ox - start,
+                    band_end - band_y,
+                    src_x.start,
+                    src_y.start,
+                    src_x.len,
+                    src_y.len,
+                    z,
+                    tmux,
+                );
+                run_index += 1;
+            }
+        }
+    }
+
+    // Re-emit one Kitty placement when its transmit, geometry, or coverage
+    // changed, or when a full repaint is forced. Deletes address the image id,
+    // not individual placements, so a dropped frame leaves nothing to reconcile.
+    fn writeKittyPlacementUpdate(
+        self: *CliRenderer,
+        writer: anytype,
+        placement: OptimizedBuffer.ImagePlacement,
+        force_place: bool,
+        tmux: bool,
+    ) !void {
+        const previous = if (self.currentImageForPlacement(placement.placement_id)) |current|
+            if (current.protocol == .kitty and current.image_handle == placement.image_handle) current else null
+        else
+            null;
+        const image_id = self.kittyImageId(placement.placement_id);
+        const downscaled = kittyDownscaleApplies(placement);
+        const reservation = self.placementReservationState(placement.placement_id);
+        const retransmit = if (previous) |committed| blk: {
+            const previous_downscaled = kittyDownscaleAppliesTo(
+                committed.source_width,
+                committed.source_height,
+                committed.pixel_width,
+                committed.pixel_height,
+            );
+            const source_changed = committed.source_x != placement.source_x or committed.source_y != placement.source_y or
+                committed.source_width != placement.source_width or committed.source_height != placement.source_height;
+            break :blk committed.opacity != placement.opacity or previous_downscaled != downscaled or
+                (downscaled and (source_changed or committed.pixel_width != placement.pixel_width or committed.pixel_height != placement.pixel_height));
+        } else false;
+        const geometry_changed = if (previous) |committed|
+            committed.x != placement.x or committed.y != placement.y or committed.width != placement.width or
+                committed.height != placement.height or committed.source_x != placement.source_x or
+                committed.source_y != placement.source_y or committed.source_width != placement.source_width or
+                committed.source_height != placement.source_height
+        else
+            false;
+        const coverage_changed = if (previous) |committed|
+            committed.reservation_intact != reservation.intact or committed.reservation_hash != reservation.hash
+        else
+            true;
+        if (previous != null and !retransmit and !force_place and !coverage_changed and !geometry_changed) return;
+
+        if (retransmit) {
+            // Frees the image and every placement of it, runs included.
+            try terminal_image.writeKittyDelete(writer, image_id, null, true, tmux);
+        } else if (previous != null) {
+            // Drops the owner rectangle or its runs, whichever is on the
+            // terminal, and keeps the image data for the new placements.
+            try terminal_image.writeKittyDelete(writer, image_id, null, false, tmux);
+        }
+        if (previous == null or retransmit) {
+            const transmit = try self.kittyPlacementTransmit(placement, .escape);
+            defer if (transmit.owned) transmit.image.deinit();
+            const directory = if (self.kittyTransport.mode == .file) self.kittyTempDirectory() else "";
+            try self.kittyTransport.transmit(self.allocator, writer, transmit.image, image_id, tmux, directory);
+        }
+        if (placement.x < 0 or placement.y < 0) return;
+        if (!reservation.intact) {
+            try self.writeKittyReservationRuns(writer, placement, image_id, downscaled, tmux);
+            return;
+        }
+        // A downscaled transmit already contains exactly the placement's
+        // source rectangle; otherwise the full image was transmitted and the
+        // placement escape selects the visible portion.
+        const normalized = downscaled;
+        try terminal_image.writeKittyPlacement(
+            writer,
+            image_id,
+            placement.placement_id,
+            @intCast(placement.x),
+            @intCast(placement.y + @as(i32, @intCast(self.renderOffset))),
+            placement.width,
+            placement.height,
+            if (normalized) 0 else placement.source_x,
+            if (normalized) 0 else placement.source_y,
+            if (downscaled) placement.pixel_width else placement.source_width,
+            if (downscaled) placement.pixel_height else placement.source_height,
+            terminal_image.kittyPlacementZ(placement.placement_id),
+            tmux,
+        );
+    }
+
     fn writeKittyImages(self: *CliRenderer, writer: anytype, force_place: bool) !void {
         const tmux = self.terminal.isInTmux();
         const next = self.nextRenderBuffer.image_placements.items;
@@ -2117,6 +2377,7 @@ pub const CliRenderer = struct {
                 break :blk placement.placement_id == current.placement_id and placement.image_handle == current.image_handle and
                     self.nextPlacementProtocol(placement) == .kitty;
             } else false;
+            // Frees the image and every placement of it, runs included.
             if (!placement_found) try terminal_image.writeKittyDelete(
                 writer,
                 self.kittyImageId(current.placement_id),
@@ -2127,56 +2388,7 @@ pub const CliRenderer = struct {
         }
         for (next) |placement| {
             if (self.nextPlacementProtocol(placement) != .kitty) continue;
-            const previous = if (self.currentImageForPlacement(placement.placement_id)) |current|
-                if (current.protocol == .kitty and current.image_handle == placement.image_handle) current else null
-            else
-                null;
-            const image_id = self.kittyImageId(placement.placement_id);
-            const downscaled = kittyDownscaleApplies(placement);
-            const retransmit = if (previous) |committed| blk: {
-                const previous_downscaled = kittyDownscaleAppliesTo(
-                    committed.source_width,
-                    committed.source_height,
-                    committed.pixel_width,
-                    committed.pixel_height,
-                );
-                const source_changed = committed.source_x != placement.source_x or committed.source_y != placement.source_y or
-                    committed.source_width != placement.source_width or committed.source_height != placement.source_height;
-                break :blk committed.opacity != placement.opacity or previous_downscaled != downscaled or
-                    (downscaled and (source_changed or committed.pixel_width != placement.pixel_width or committed.pixel_height != placement.pixel_height));
-            } else false;
-            if (previous == null or retransmit) {
-                if (retransmit) try terminal_image.writeKittyDelete(writer, image_id, null, true, tmux);
-                const transmit = try self.kittyPlacementTransmit(placement, .escape);
-                defer if (transmit.owned) transmit.image.deinit();
-                const directory = if (self.kittyTransport.mode == .file) self.kittyTempDirectory() else "";
-                try self.kittyTransport.transmit(self.allocator, writer, transmit.image, image_id, tmux, directory);
-            } else if (force_place or previous.?.x != placement.x or previous.?.y != placement.y or previous.?.width != placement.width or previous.?.height != placement.height or
-                previous.?.source_x != placement.source_x or previous.?.source_y != placement.source_y or previous.?.source_width != placement.source_width or
-                previous.?.source_height != placement.source_height)
-            {
-                try terminal_image.writeKittyDelete(writer, image_id, placement.placement_id, false, tmux);
-            } else continue;
-            if (placement.x < 0 or placement.y < 0) continue;
-            // A downscaled transmit already contains exactly the placement's
-            // source rectangle; otherwise the full image was transmitted and the
-            // placement escape selects the visible portion.
-            const normalized = downscaled;
-            try terminal_image.writeKittyPlacement(
-                writer,
-                image_id,
-                placement.placement_id,
-                @intCast(placement.x),
-                @intCast(placement.y + @as(i32, @intCast(self.renderOffset))),
-                placement.width,
-                placement.height,
-                if (normalized) 0 else placement.source_x,
-                if (normalized) 0 else placement.source_y,
-                if (downscaled) placement.pixel_width else placement.source_width,
-                if (downscaled) placement.pixel_height else placement.source_height,
-                -1_500_000_000 + @as(i32, @intCast(placement.placement_id)),
-                tmux,
-            );
+            try self.writeKittyPlacementUpdate(writer, placement, force_place, tmux);
         }
     }
 
