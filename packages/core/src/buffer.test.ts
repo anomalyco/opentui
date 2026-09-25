@@ -365,4 +365,64 @@ describe("OptimizedBuffer", () => {
       parent.destroy()
     })
   })
+
+  describe("draw text encoding", () => {
+    const white = RGBA.fromInts(255, 255, 255)
+    const black = RGBA.fromInts(0, 0, 0)
+    const rows = (target: OptimizedBuffer) =>
+      new TextDecoder()
+        .decode(target.getRealCharBytes(true))
+        .split("\n")
+        .map((row) => row.trimEnd())
+
+    it("draws non-string text as TextEncoder converts it", () => {
+      buffer.clear(black)
+      buffer.drawText(123 as never, 0, 0, white)
+      buffer.drawText(["a", "b"] as never, 0, 1, white)
+      buffer.drawText(undefined as never, 0, 2, white)
+      buffer.drawText(null as never, 0, 3, white)
+      expect(rows(buffer).slice(0, 4)).toEqual(["123", "a,b", "", "null"])
+    })
+
+    it("draws only the latest text after longer and multi-byte text", () => {
+      buffer.clear(black)
+      buffer.drawText("é漢😀 wide", 0, 0, white)
+      buffer.drawText("x".repeat(5000), 0, 1, white)
+      buffer.drawText("ok", 0, 1, white)
+      buffer.drawText("é漢😀", 0, 2, white)
+      buffer.drawText("ab", 0, 2, white)
+      expect(rows(buffer).slice(0, 3)).toEqual(["é漢😀 wide", "ok" + "x".repeat(18), "ab 😀"])
+    })
+
+    it("converts both box titles before a title's toString can draw", () => {
+      const other = OptimizedBuffer.create(12, 1, "unicode", { id: "other-buffer" })
+      try {
+        other.clear(black)
+        buffer.clear(black)
+        const bottomTitle = {
+          toString() {
+            other.drawText("XYZ", 0, 0, white)
+            return "BOT"
+          },
+        }
+        buffer.drawBox({
+          x: 0,
+          y: 0,
+          width: 12,
+          height: 3,
+          border: true,
+          borderColor: white,
+          backgroundColor: black,
+          title: "TOP",
+          bottomTitle: bottomTitle as never,
+        })
+        const [top, , bottom] = rows(buffer)
+        expect(top).toContain("TOP")
+        expect(bottom).toContain("BOT")
+        expect(rows(other)[0]).toBe("XYZ")
+      } finally {
+        other.destroy()
+      }
+    })
+  })
 })
