@@ -14,6 +14,7 @@ import * as solidComponentsRuntime from "@opentui/solid/components"
 import * as solidJsxRuntime from "@opentui/solid/jsx-runtime"
 import * as solidJsxDevRuntime from "@opentui/solid/jsx-dev-runtime"
 import { ensureSolidTransformPlugin } from "./solid-plugin.js"
+import { isSolidJsxSource, useSolidJsxImportSource } from "./solid-transform.js"
 
 const runtimePluginSupportInstalledKey = Symbol.for("opentui.solid.runtime-plugin-support")
 
@@ -87,22 +88,31 @@ export function ensureRuntimePluginSupport(options: SolidRuntimePluginSupportOpt
     return false
   }
 
-  ensureSolidTransformPlugin({
-    moduleName: runtimeModuleIdForSpecifier("@opentui/solid"),
-    resolvePath(specifier) {
-      if (!isCoreRuntimeModuleSpecifier(specifier) && !modules[specifier]) {
-        return null
-      }
+  const moduleName = runtimeModuleIdForSpecifier("@opentui/solid")
+  const resolvePath = (specifier: string): string | null => {
+    if (!isCoreRuntimeModuleSpecifier(specifier) && !modules[specifier]) {
+      return null
+    }
 
-      return runtimeModuleIdForSpecifier(specifier)
-    },
-  })
+    return runtimeModuleIdForSpecifier(specifier)
+  }
+
+  ensureSolidTransformPlugin({ moduleName, resolvePath })
 
   registerBunPlugin(
     createRuntimePlugin({
       core,
       additional: modules,
       rewrite: options.rewrite,
+      sourceTransform: {
+        matches: isSolidJsxSource,
+        transform(contents, _path, loader) {
+          return {
+            contents: useSolidJsxImportSource(contents, moduleName),
+            loader,
+          }
+        },
+      },
     }),
   )
 

@@ -78,11 +78,13 @@ describe("runtime plugin", () => {
 
     const coreModuleFactory = modules.get(coreResolution.path)
     const coreTestingModuleFactory = modules.get(coreTestingResolution.path)
+    const coreTestingAliasFactory = modules.get(`${coreResolution.path}/testing`)
 
     expect(coreModuleFactory).toBeDefined()
     expect(coreTestingModuleFactory).toBeDefined()
+    expect(coreTestingAliasFactory).toBeDefined()
 
-    if (!coreModuleFactory || !coreTestingModuleFactory) {
+    if (!coreModuleFactory || !coreTestingModuleFactory || !coreTestingAliasFactory) {
       throw new Error("Expected core runtime module factories")
     }
 
@@ -98,6 +100,14 @@ describe("runtime plugin", () => {
 
     expect(coreTestingModule.loader).toBe("object")
     expect(typeof coreTestingModule.exports.createTestRenderer).toBe("function")
+
+    const coreTestingAliasModule = (await coreTestingAliasFactory()) as {
+      exports: Record<string, unknown>
+      loader: string
+    }
+
+    expect(coreTestingAliasModule.loader).toBe("object")
+    expect(coreTestingAliasModule.exports.createTestRenderer).toBe(coreTestingModule.exports.createTestRenderer)
   })
 
   it("registers @opentui/three only when added explicitly", async () => {
