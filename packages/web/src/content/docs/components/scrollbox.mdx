@@ -60,6 +60,28 @@ offset: 0 / 7
 └──────────────────────────────┘
 ```
 
+## Preserve the viewport during content updates
+
+Use `preserveViewport` to keep a visible child at the same viewport-relative position while content is inserted or resized before it. Preservation remains active until it is canceled and stops automatically if the anchor is removed or the scroll position changes.
+
+```typescript
+const anchor = scrollbox.getRenderable("message-20")
+const preservation = anchor ? scrollbox.preserveViewport(anchor) : undefined
+
+try {
+  await prependOlderMessages()
+  await new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())))
+} finally {
+  preservation?.cancel()
+}
+```
+
+The anchor must be a direct child of the ScrollBox. If a declarative renderer may replace that child during reconciliation, pass its stable child ID so ScrollBox can follow the replacement. Explicit viewport preservation takes precedence over sticky scrolling while its scope is active.
+
+```typescript
+const preservation = anchor ? scrollbox.preserveViewport(anchor, { id: "message-20" }) : undefined
+```
+
 ## Sticky scroll
 
 Enable sticky scroll to keep content pinned to an edge as new content arrives. Set both `stickyScroll` and `stickyStart` because `stickyStart` has no default.
