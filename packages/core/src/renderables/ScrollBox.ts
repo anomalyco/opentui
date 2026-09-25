@@ -141,6 +141,12 @@ export class ScrollBoxRenderable extends BoxRenderable {
   private _stickyStart?: "bottom" | "top" | "left" | "right"
   private _hasManualScroll: boolean = false
   private _isApplyingStickyScroll: boolean = false
+  // The scrollable range seen by the previous `recalculateBarProps`, used to
+  // tell a deliberate scroll to the sticky edge apart from a position that was
+  // clamped there when the range shrank.
+  private _lastMaxScrollTop: number | undefined = undefined
+  private _lastMaxScrollLeft: number | undefined = undefined
+  private _rangeShrank: boolean = false
   private scrollAccel: ScrollAcceleration
 
   get stickyScroll(): boolean {
@@ -232,7 +238,10 @@ export class ScrollBoxRenderable extends BoxRenderable {
     const hasScrollableContent = maxScrollTop > 1 || maxScrollLeft > 1
 
     if (this._isApplyingStickyScroll) {
-      if (this._hasManualScroll && hasScrollableContent && this.isAtStickyPosition()) {
+      // `isAtStickyPosition()` is not enough on its own: when the range shrank,
+      // the position was clamped onto the edge rather than scrolled there, so
+      // the reader never returned and manual mode has to survive.
+      if (this._hasManualScroll && hasScrollableContent && this.isAtStickyPosition() && !this._rangeShrank) {
         this._hasManualScroll = false
       }
       return
@@ -751,6 +760,23 @@ export class ScrollBoxRenderable extends BoxRenderable {
     const wasApplyingStickyScroll = this._isApplyingStickyScroll
     this._isApplyingStickyScroll = true
 
+    // Derived from the content and viewport directly rather than from
+    // `scrollHeight`/`scrollWidth`, because it has to be known before the bar
+    // sizes below are assigned. Assigning them changes the scrollable range,
+    // and a shrinking range clamps the position onto the new maximum.
+    const nextMaxScrollTop = Math.max(0, this.content.height - this.viewport.height)
+    const nextMaxScrollLeft = Math.max(0, this.content.width - this.viewport.width)
+    // A clamped position sits exactly on the new maximum, which is
+    // indistinguishable from the reader having scrolled back to the edge. The
+    // direction of the range change is what separates the two: only a range that
+    // did not shrink can carry a deliberate scroll to the edge.
+    const rangeShrank =
+      (this._lastMaxScrollTop !== undefined && nextMaxScrollTop < this._lastMaxScrollTop) ||
+      (this._lastMaxScrollLeft !== undefined && nextMaxScrollLeft < this._lastMaxScrollLeft)
+    this._rangeShrank = rangeShrank
+    this._lastMaxScrollTop = nextMaxScrollTop
+    this._lastMaxScrollLeft = nextMaxScrollLeft
+
     try {
       this.verticalScrollBar.scrollSize = this.content.height
       this.verticalScrollBar.viewportSize = this.viewport.height
@@ -758,8 +784,8 @@ export class ScrollBoxRenderable extends BoxRenderable {
       this.horizontalScrollBar.viewportSize = this.viewport.width
 
       if (this._stickyScroll) {
-        const newMaxScrollTop = Math.max(0, this.scrollHeight - this.viewport.height)
-        const newMaxScrollLeft = Math.max(0, this.scrollWidth - this.viewport.width)
+        const newMaxScrollTop = nextMaxScrollTop
+        const newMaxScrollLeft = nextMaxScrollLeft
         const stickyStart = this._stickyStart
 
         if (stickyStart && !this._hasManualScroll) {
@@ -767,6 +793,7 @@ export class ScrollBoxRenderable extends BoxRenderable {
         } else if (
           stickyStart &&
           this._hasManualScroll &&
+          !rangeShrank &&
           this.isAtStickyReengagePoint(stickyStart, newMaxScrollTop, newMaxScrollLeft)
         ) {
           // User scrolled back to the sticky edge during streaming; re-engage sticky.
@@ -788,6 +815,7 @@ export class ScrollBoxRenderable extends BoxRenderable {
       }
     } finally {
       this._isApplyingStickyScroll = wasApplyingStickyScroll
+      this._rangeShrank = false
     }
 
     // NOTE: This is obviously a workaround for something,
