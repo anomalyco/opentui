@@ -502,6 +502,13 @@ describe("TextBufferView", () => {
       expect(failures).toEqual(["Cannot mutate Yoga during a callback", "Cannot mutate Yoga during a callback"])
     })
 
+    it("rejects resets of a destroyed clear view", () => {
+      const other = TextBufferView.create(buffer)
+      other.destroy()
+      expect(() => other.resetSelection()).toThrow("TextBufferView is destroyed")
+      expect(() => other.resetLocalSelection()).toThrow("TextBufferView is destroyed")
+    })
+
     it("rejects resets of a clear view whose native Context is gone", () => {
       const owner = new ResourceContext({ objectCapacity: 4, renderCellsMax: 64 })
       const text = TextBuffer.create("wcwidth", owner)
