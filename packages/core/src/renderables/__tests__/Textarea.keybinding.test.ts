@@ -3278,4 +3278,126 @@ describe("Textarea - Keybinding Tests", () => {
       expect(visualSelection).not.toBe(logicalSelection)
     })
   })
+
+  describe("Arrow Boundary Clamping", () => {
+    it("shift+up on first line extends selection to start", async () => {
+      const { textarea: editor } = await createTextareaRenderable(currentRenderer, renderOnce, {
+        initialValue: "Hello",
+        width: 40,
+        height: 10,
+        selectable: true,
+      })
+
+      editor.focus()
+      editor.editBuffer.setCursor(0, 3)
+
+      currentMockInput.pressArrow("up", { shift: true })
+
+      expect(editor.logicalCursor.row).toBe(0)
+      expect(editor.logicalCursor.col).toBe(0)
+      expect(editor.getSelectedText()).toBe("Hell")
+    })
+
+    it("shift+down on last line extends selection to end", async () => {
+      const { textarea: editor } = await createTextareaRenderable(currentRenderer, renderOnce, {
+        initialValue: "Line 1\nLine 2\nLine 3",
+        width: 40,
+        height: 10,
+        selectable: true,
+      })
+
+      editor.focus()
+      editor.editBuffer.setCursor(2, 2)
+
+      currentMockInput.pressArrow("down", { shift: true })
+
+      expect(editor.logicalCursor.row).toBe(2)
+      expect(editor.logicalCursor.col).toBe(6)
+      expect(editor.getSelectedText()).toBe("ne 3")
+    })
+
+    it("plain up on first line clamps cursor to start", async () => {
+      const { textarea: editor } = await createTextareaRenderable(currentRenderer, renderOnce, {
+        initialValue: "Hello",
+        width: 40,
+        height: 10,
+      })
+
+      editor.focus()
+      editor.editBuffer.setCursor(0, 3)
+
+      currentMockInput.pressArrow("up")
+
+      expect(editor.logicalCursor.row).toBe(0)
+      expect(editor.logicalCursor.col).toBe(0)
+    })
+
+    it("plain down on last line clamps cursor to end", async () => {
+      const { textarea: editor } = await createTextareaRenderable(currentRenderer, renderOnce, {
+        initialValue: "Line 1\nLine 2\nLine 3",
+        width: 40,
+        height: 10,
+      })
+
+      editor.focus()
+      editor.editBuffer.setCursor(2, 2)
+
+      currentMockInput.pressArrow("down")
+
+      expect(editor.logicalCursor.row).toBe(2)
+      expect(editor.logicalCursor.col).toBe(6)
+    })
+
+    it("shift+up when already at start of first line selects nothing", async () => {
+      const { textarea: editor } = await createTextareaRenderable(currentRenderer, renderOnce, {
+        initialValue: "Hello",
+        width: 40,
+        height: 10,
+        selectable: true,
+      })
+
+      editor.focus()
+      editor.editBuffer.setCursor(0, 0)
+
+      currentMockInput.pressArrow("up", { shift: true })
+
+      expect(editor.logicalCursor.col).toBe(0)
+      expect(editor.getSelectedText()).toBe("")
+    })
+
+    it("shift+down when already at end of last line selects nothing", async () => {
+      const { textarea: editor } = await createTextareaRenderable(currentRenderer, renderOnce, {
+        initialValue: "Line 1\nLine 2\nLine 3",
+        width: 40,
+        height: 10,
+        selectable: true,
+      })
+
+      editor.focus()
+      editor.editBuffer.setCursor(2, 6)
+
+      currentMockInput.pressArrow("down", { shift: true })
+
+      expect(editor.logicalCursor.col).toBe(6)
+      expect(editor.getSelectedText()).toBe("")
+    })
+
+    it("shift+up on first line of multi-line selects to column 0", async () => {
+      const { textarea: editor } = await createTextareaRenderable(currentRenderer, renderOnce, {
+        initialValue: "Line 1\nLine 2\nLine 3",
+        width: 40,
+        height: 10,
+        selectable: true,
+      })
+
+      editor.focus()
+      editor.editBuffer.setCursor(0, 4)
+
+      currentMockInput.pressArrow("up", { shift: true })
+
+      expect(editor.logicalCursor.row).toBe(0)
+      expect(editor.logicalCursor.col).toBe(0)
+      expect(editor.getSelectedText()).toBe("Line ")
+    })
+  })
 })
