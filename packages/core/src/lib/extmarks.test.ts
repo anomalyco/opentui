@@ -1387,6 +1387,89 @@ Press ESC to return to main menu.`
     })
   })
 
+  describe("Virtual Extmark - Word Deletion (Atomic Blocks)", () => {
+    it("should delete the whole virtual extmark block when deleteWordBackward intersects it", async () => {
+      await setup("[Pasted ~3 lines] ")
+
+      const id = extmarks.create({
+        start: 0,
+        end: 18,
+        virtual: true,
+      })
+
+      textarea.focus()
+      textarea.cursorOffset = 18
+
+      textarea.deleteWordBackward()
+
+      expect(extmarks.get(id)).toBeNull()
+      expect(textarea.plainText).toBe("")
+    })
+
+    it("should delete the whole virtual extmark block when deleteWordForward intersects it", async () => {
+      await setup("[Pasted ~3 lines] ")
+
+      const id = extmarks.create({
+        start: 0,
+        end: 18,
+        virtual: true,
+      })
+
+      textarea.focus()
+      textarea.cursorOffset = 0
+
+      textarea.deleteWordForward()
+
+      expect(extmarks.get(id)).toBeNull()
+      expect(textarea.plainText).toBe("")
+    })
+
+    it("should not delete the virtual extmark block when deleting the word before it", async () => {
+      await setup("hello [Pasted ~3 lines] ")
+
+      const id = extmarks.create({
+        start: 6,
+        end: 24,
+        virtual: true,
+      })
+
+      textarea.focus()
+      textarea.cursorOffset = 5
+
+      textarea.deleteWordBackward()
+
+      const extmark = extmarks.get(id)
+      expect(extmark).not.toBeNull()
+      expect(extmark?.start).toBe(1)
+      expect(extmark?.end).toBe(19)
+      expect(textarea.plainText).toBe(" [Pasted ~3 lines] ")
+    })
+
+    it("should delete all intersected virtual extmark blocks in one gesture", async () => {
+      await setup("[Image 1] [Pasted ~3 lines] ")
+
+      const id1 = extmarks.create({
+        start: 0,
+        end: 9,
+        virtual: true,
+      })
+      const id2 = extmarks.create({
+        start: 10,
+        end: 27,
+        virtual: true,
+      })
+
+      textarea.focus()
+      textarea.cursorOffset = 28
+
+      textarea.deleteToLineStart()
+
+      expect(extmarks.get(id1)).toBeNull()
+      expect(extmarks.get(id2)).toBeNull()
+      expect(textarea.plainText).toBe("")
+    })
+  })
+
   describe("deleteToLineEnd() Operations", () => {
     it("should remove extmark when deleteToLineEnd covers it", async () => {
       await setup("Hello World")

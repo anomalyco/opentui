@@ -357,6 +357,23 @@ export class ExtmarksController {
       const endOffset = this.positionToOffset(endLine, endCol)
       const length = endOffset - startOffset
 
+      const virtualExtmarks = this.findVirtualExtmarksIntersecting(startOffset, endOffset)
+      if (virtualExtmarks.length > 0) {
+        const start = Math.min(startOffset, ...virtualExtmarks.map((extmark) => extmark.start))
+        const end = Math.max(endOffset, ...virtualExtmarks.map((extmark) => extmark.end))
+        for (const extmark of virtualExtmarks) {
+          this.deleteExtmarkById(extmark.id)
+        }
+
+        const startCursor = this.offsetToPosition(start)
+        const endCursor = this.offsetToPosition(end)
+        this.originalDeleteRange(startCursor.row, startCursor.col, endCursor.row, endCursor.col)
+        this.adjustExtmarksAfterDeletion(start, end - start)
+        this.updateHighlights()
+
+        return
+      }
+
       this.originalDeleteRange(startLine, startCol, endLine, endCol)
       this.adjustExtmarksAfterDeletion(startOffset, length)
     }
@@ -524,6 +541,12 @@ export class ExtmarksController {
       }
     }
     return null
+  }
+
+  private findVirtualExtmarksIntersecting(start: number, end: number): Extmark[] {
+    return Array.from(this.extmarks.values()).filter(
+      (extmark) => extmark.virtual && extmark.start < end && extmark.end > start,
+    )
   }
 
   private adjustExtmarksAfterInsertion(insertOffset: number, length: number): void {
