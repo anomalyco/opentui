@@ -1341,8 +1341,6 @@ function writeSceneFrameRequest(
 type EncodedBufferDraw = {
   operation: number
   size: number
-  text: string
-  bottom: string
   source: BigUint64Array | null
 }
 
@@ -1368,8 +1366,6 @@ function encodeBufferDrawRecord(
   words[word + header.abi_version.offset / 4] = nativeConstants.OT_CONTEXT_ABI_VERSION
   words[word + header.operation.offset / 4] = operationId
   let source: BigUint64Array | null = null
-  let text = ""
-  let bottom = ""
   switch (operation) {
     case "clear": {
       const { background } = options
@@ -1392,7 +1388,6 @@ function encodeBufferDrawRecord(
       words[word + fields.attributes.offset / 4] = toSafeFFIU32Length(options.attributes ?? 0, "Buffer attributes")
       if (encodeDrawColors(colors, fields, options, base))
         words[word + header.flags.offset / 4] = nativeConstants.OT_BUFFER_DRAW_HAS_BACKGROUND
-      text = options.text ?? ""
       break
     }
     case "cell":
@@ -1421,8 +1416,6 @@ function encodeBufferDrawRecord(
         if (borderChars.length !== 11) throw new RangeError("Border characters must contain 11 Unicode scalars")
         words.set(borderChars, word + fields.border_chars.offset / 4)
       }
-      text = options.text ?? ""
-      bottom = options.bottomTitle ?? ""
       break
     }
     case "compose": {
@@ -1446,7 +1439,7 @@ function encodeBufferDrawRecord(
       )
       break
   }
-  return { operation: operationId, size, text, bottom, source }
+  return { operation: operationId, size, source }
 }
 
 /** Encode ot_image_draw_options at byte offset base into zeroed storage. */
@@ -2201,13 +2194,14 @@ export class NativePaintRecorder {
   }
 
   draw(options: NativeBufferDraw): void {
+    // Convert first: a caller's toString can draw, and its records must survive this draw's rollback.
+    const text = drawRecordText(options)
+    const bottom = drawRecordBottomTitle(options)
     const length = this.length
     const slot = this.pendingSlot
     try {
       if (options.operation === "respectAlpha") throw new Error("Paint hooks cannot change the frame alpha mode")
       const layout = nativeLayouts.ot_scene_record_draw
-      const text = options.operation === "text" || options.operation === "box" ? (options.text ?? "") : ""
-      const bottom = options.operation === "box" ? (options.bottomTitle ?? "") : ""
       const record = layout.size + nativeLayouts.ot_buffer_draw_box.size
       const base = this.reserve(nativeConstants.OT_SCENE_RECORD_DRAW, record + (text.length + bottom.length) * 3)
       const encoded = encodeBufferDrawRecord(
@@ -2612,8 +2606,19 @@ function encodeEditorStyle(style: NativeEditorStyle): Uint32Array {
 }
 
 /** TextEncoder.encode converted any value to a string; draws keep that for callers that pass non-strings. */
-function drawTextString(text: string): string {
-  return typeof text === "string" ? text : `${text}`
+/** Converts drawing text as TextEncoder.encode did: undefined draws nothing and other values use ToString. */
+function drawTextString(text: unknown): string {
+  return typeof text === "string" ? text : text === undefined ? "" : `${text}`
+}
+
+/** A box title draws only when it is truthy, as it did before drawing records. */
+function drawRecordText(options: NativeBufferDraw): string {
+  if (options.operation === "text") return drawTextString(options.text)
+  return options.operation === "box" && options.text ? drawTextString(options.text) : ""
+}
+
+function drawRecordBottomTitle(options: NativeBufferDraw): string {
+  return options.operation === "box" && options.bottomTitle ? drawTextString(options.bottomTitle) : ""
 }
 
 function bufferStackCoordinate(coordinate: number): number {
@@ -5804,6 +5809,9 @@ export class FFIRenderLib {
 
   public contextDrawBuffer(drawing: NativeDrawingTarget, options: NativeBufferDraw): void {
     this.getYogaHost().assertMutable()
+    // Convert first: a caller's toString can draw and reuse the scratch record and text buffers.
+    const text = drawRecordText(options)
+    const bottom = drawRecordBottomTitle(options)
     const scratch = this.bufferDrawRecord ?? createBufferDrawRecord()
     this.bufferDrawRecord = undefined
     try {
@@ -5817,9 +5825,6 @@ export class FFIRenderLib {
       // No JavaScript runs between these encodes and the call, so the text buffers can be shared.
       const textBytes = (this.drawTextBytes ??= new Uint8Array(NATIVE_BUFFER_TEXT_BYTES_MAX))
       const bottomBytes = (this.drawBottomBytes ??= new Uint8Array(NATIVE_BUFFER_TEXT_BYTES_MAX))
-      // Convert both titles first: a caller's toString can draw and reuse the shared buffers.
-      const text = drawTextString(encoded.text)
-      const bottom = drawTextString(encoded.bottom)
       const textLength = this.encodeDrawText(text, textBytes)
       const bottomLength = this.encodeDrawText(bottom, bottomBytes)
       const pointer = this.nativeContextPointer(context, "ot_buffer_draw")
