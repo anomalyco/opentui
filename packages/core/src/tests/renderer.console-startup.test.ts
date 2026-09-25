@@ -135,7 +135,10 @@ test("CliRenderer uses its shared clock for debounced resize", async () => {
   })
 
   renderer = result.renderer
-  ;(renderer as any).handleResize(70, 30)
+  const stdout = (renderer as unknown as { stdout: { columns: number; rows: number } }).stdout
+  stdout.columns = 70
+  stdout.rows = 30
+  ;(renderer as unknown as { handleResize: () => void }).handleResize()
 
   expect(renderer.width).toBe(40)
   expect(renderer.height).toBe(20)
