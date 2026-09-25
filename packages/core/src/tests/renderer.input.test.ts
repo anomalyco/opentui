@@ -2019,6 +2019,89 @@ test("waitForThemeMode resolves with current theme mode when renderer is destroy
   await expect(themeModePromise).resolves.toBeNull()
 })
 
+test("DA1 reply resolves theme mode waiters with null while a late OSC reply still applies the mode", async () => {
+  const themeModes: string[] = []
+  currentRenderer.on("theme_mode", (mode) => {
+    themeModes.push(mode)
+  })
+
+  let resolvedThemeMode: string | null | undefined
+  currentRenderer.waitForThemeMode(500).then((mode) => {
+    resolvedThemeMode = mode
+  })
+
+  currentRenderer.stdin.emit("data", Buffer.from("\x1b[?64;1;2;6;9;15;22c"))
+  advanceCurrentClock()
+  await flushMicrotasks()
+
+  expect(resolvedThemeMode).toBeNull()
+
+  // The query stays pending, so a late reply still applies the mode.
+  currentRenderer.stdin.emit("data", Buffer.from("\x1b]10;#000000\x07"))
+  currentRenderer.stdin.emit("data", Buffer.from("\x1b]11;#ffffff\x07"))
+  advanceCurrentClock()
+
+  expect(currentRenderer.themeMode).toBe("light")
+  expect(themeModes).toEqual(["light"])
+})
+
+test("DA1 reply does not resolve theme mode waiters once an OSC color has arrived", async () => {
+  let resolvedThemeMode: string | null | undefined
+  currentRenderer.waitForThemeMode(500).then((mode) => {
+    resolvedThemeMode = mode
+  })
+
+  currentRenderer.stdin.emit("data", Buffer.from("\x1b]11;#ffffff\x07"))
+  currentRenderer.stdin.emit("data", Buffer.from("\x1b[?1;2c"))
+  advanceCurrentClock()
+  await flushMicrotasks()
+
+  expect(resolvedThemeMode).toBeUndefined()
+
+  currentRenderer.stdin.emit("data", Buffer.from("\x1b]10;#000000\x07"))
+  advanceCurrentClock()
+
+  expect(currentRenderer.themeMode).toBe("light")
+})
+
+test("DA1 reply during a CSI 997 refresh resolves theme mode waiters with null", async () => {
+  let resolvedThemeMode: string | null | undefined
+  currentRenderer.waitForThemeMode(500).then((mode) => {
+    resolvedThemeMode = mode
+  })
+
+  currentRenderer.stdin.emit("data", Buffer.from("\x1b[?997;2n"))
+  currentRenderer.stdin.emit("data", Buffer.from("\x1b[?1;2c"))
+  advanceCurrentClock()
+  await flushMicrotasks()
+
+  expect(resolvedThemeMode).toBeNull()
+
+  currentRenderer.stdin.emit("data", Buffer.from("\x1b]10;#000000\x07"))
+  currentRenderer.stdin.emit("data", Buffer.from("\x1b]11;#ffffff\x07"))
+  advanceCurrentClock()
+
+  expect(currentRenderer.themeMode).toBe("light")
+})
+
+test("DA1 reply reaches capability processing after theme-mode handling", async () => {
+  let resolvedThemeMode: string | null | undefined
+  currentRenderer.waitForThemeMode(500).then((mode) => {
+    resolvedThemeMode = mode
+  })
+  const capabilityEvents: unknown[] = []
+  currentRenderer.on("capabilities", () => {
+    capabilityEvents.push(null)
+  })
+
+  currentRenderer.stdin.emit("data", Buffer.from("\x1b[?62;c"))
+  advanceCurrentClock()
+  await flushMicrotasks()
+
+  expect(resolvedThemeMode).toBeNull()
+  expect(capabilityEvents.length).toBeGreaterThan(0)
+})
+
 test("pixel resolution response should not trigger keypress", async () => {
   const keypresses: KeyEvent[] = []
   currentRenderer.keyInput.on("keypress", (event) => {

@@ -908,6 +908,24 @@ test "queryTerminalSend - sends unwrapped queries when not in tmux" {
     try testing.expect(term.sixel_query_pending);
 }
 
+test "queryTerminalSend - writes theme queries before the Device Attributes query" {
+    // RendererThemeMode treats a DA1 reply with no colors as proof the color queries were
+    // ignored, which only holds if the color queries are written first in the same burst.
+    var term = Terminal.init(.{});
+
+    var writer = TestWriter.init(testing.allocator);
+    defer writer.deinit();
+
+    try term.queryTerminalSend(&writer);
+
+    const output = writer.getWritten();
+
+    const idx_osc_theme_queries = std.mem.find(u8, output, ansi.ANSI.oscThemeQueries).?;
+    const idx_primary_device_attrs = std.mem.find(u8, output, ansi.ANSI.primaryDeviceAttrs).?;
+
+    try testing.expect(idx_osc_theme_queries < idx_primary_device_attrs);
+}
+
 test "queryTerminalSend - sends DCS wrapped queries when in tmux" {
     var env = std.process.Environ.Map.init(testing.allocator);
     defer env.deinit();

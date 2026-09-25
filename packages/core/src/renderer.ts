@@ -3585,9 +3585,11 @@ export class CliRenderer extends EventEmitter implements RenderContext {
       }
       return false
     })
+    // The theme handler must see DA1 replies before the capability handler consumes them: it uses
+    // an unanswered color query at DA1 time to stop waiting for the theme mode.
+    this.addInputHandler(this.themeModeHandler)
     this.addInputHandler(this.capabilityHandler)
     this.addInputHandler(this.focusHandler)
-    this.addInputHandler(this.themeModeHandler)
 
     if (this.stdin.setRawMode) {
       this.stdin.setRawMode(true)
