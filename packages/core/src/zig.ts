@@ -352,6 +352,13 @@ function isFFIU32(value: number): boolean {
   return Number.isInteger(value) && value >= 0 && value <= MAX_FFI_U32
 }
 
+const DRAW_TEXT_SCRATCH_BYTES = 4096
+
+/** Converts draw text as TextEncoder.encode does: undefined becomes "", other values use ToString. */
+function drawTextString(text: unknown): string {
+  return typeof text === "string" ? text : text === undefined ? "" : `${text}`
+}
+
 function viewOrNull<T extends ArrayBufferView>(value: T): T | null {
   return value.byteLength === 0 ? null : value
 }
@@ -3327,6 +3334,8 @@ class FFIRenderLib implements RenderLib {
   private clipboardServices = new Set<ClipboardServiceHandle>()
   public readonly encoder: TextEncoder = new TextEncoder()
   public readonly decoder: TextDecoder = new TextDecoder()
+  private readonly drawTextScratch = new Uint8Array(DRAW_TEXT_SCRATCH_BYTES)
+  private readonly drawBottomTitleScratch = new Uint8Array(DRAW_TEXT_SCRATCH_BYTES)
   private logCallbackWrapper: FFICallbackInstance | null = null
   private eventCallbackWrapper: FFICallbackInstance | null = null
   private eventSinkPtr: EventSinkHandle | null = null
@@ -4002,20 +4011,19 @@ class FFIRenderLib implements RenderLib {
     bgColor?: RGBA,
     attributes?: number,
   ) {
-    const textBytes = this.encoder.encode(text)
     const bg = optionalRgbaBuffer(bgColor)
     const fg = rgbaBuffer(color)
+    const string = drawTextString(text)
+    const bytes = this.drawTextStorage(string, this.drawTextScratch)
+    // No JavaScript runs between this encode and the call, so every draw can reuse the scratch.
+    const length = this.encoder.encodeInto(string, bytes).written
 
-    this.opentui.symbols.bufferDrawText(
-      buffer,
-      viewOrNull(textBytes),
-      textBytes.byteLength,
-      x,
-      y,
-      fg,
-      bg,
-      attributes ?? 0,
-    )
+    this.opentui.symbols.bufferDrawText(buffer, length === 0 ? null : bytes, length, x, y, fg, bg, attributes ?? 0)
+  }
+
+  /** A UTF-16 code unit encodes to at most three UTF-8 bytes, so only longer text allocates. */
+  private drawTextStorage(text: string, scratch: Uint8Array): Uint8Array {
+    return text.length * 3 <= scratch.byteLength ? scratch : new Uint8Array(text.length * 3)
   }
 
   public bufferSetCellWithAlphaBlending(
@@ -4241,13 +4249,16 @@ class FFIRenderLib implements RenderLib {
     title: string | null,
     bottomTitle: string | null,
   ): void {
-    const titleBytes = title ? this.encoder.encode(title) : null
-    const titleLen = titleBytes?.byteLength ?? 0
-    const titleBuffer = titleBytes ? titleBytes : null
-
-    const bottomTitleBytes = bottomTitle ? this.encoder.encode(bottomTitle) : null
-    const bottomTitleLen = bottomTitleBytes?.byteLength ?? 0
-    const bottomTitleBuffer = bottomTitleBytes ? bottomTitleBytes : null
+    const border = rgbaBuffer(borderColor)
+    const background = rgbaBuffer(backgroundColor)
+    const titleFg = rgbaBuffer(titleColor)
+    // Convert both titles before encoding either, because a title's toString can draw and reuse the scratch.
+    const top = title ? drawTextString(title) : null
+    const bottom = bottomTitle ? drawTextString(bottomTitle) : null
+    const topBytes = top === null ? null : this.drawTextStorage(top, this.drawTextScratch)
+    const bottomBytes = bottom === null ? null : this.drawTextStorage(bottom, this.drawBottomTitleScratch)
+    const topLength = top === null ? 0 : this.encoder.encodeInto(top, topBytes!).written
+    const bottomLength = bottom === null ? 0 : this.encoder.encodeInto(bottom, bottomBytes!).written
 
     this.opentui.symbols.bufferDrawBox(
       buffer,
@@ -4257,13 +4268,13 @@ class FFIRenderLib implements RenderLib {
       height,
       borderChars,
       packedOptions,
-      rgbaBuffer(borderColor),
-      rgbaBuffer(backgroundColor),
-      rgbaBuffer(titleColor),
-      titleBuffer,
-      titleLen,
-      bottomTitleBuffer,
-      bottomTitleLen,
+      border,
+      background,
+      titleFg,
+      topBytes,
+      topLength,
+      bottomBytes,
+      bottomLength,
     )
   }
 
