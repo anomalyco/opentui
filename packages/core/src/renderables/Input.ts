@@ -120,7 +120,9 @@ export class InputRenderable extends TextareaRenderable {
     const sanitized = text.replace(/[\n\r]/g, "")
     if (!sanitized) return
 
-    const currentLength = this.plainText.length
+    // The inserted text replaces any selection, so it does not count against maxLength.
+    const selectedLength = this.hasSelection() ? this.getSelectedText().length : 0
+    const currentLength = this.plainText.length - selectedLength
     const remaining = this._maxLength - currentLength
     if (remaining <= 0) return
 

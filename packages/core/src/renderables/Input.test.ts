@@ -305,6 +305,32 @@ describe("InputRenderable", () => {
       expect(input.value).toBe("abc")
     })
 
+    it("should replace selected text when the input is at maxLength", () => {
+      const { input } = createInputRenderable({
+        maxLength: 5,
+        value: "hello",
+      })
+
+      input.focus()
+      input.selectAll()
+
+      mockInput.pressKey("x")
+      expect(input.value).toBe("x")
+    })
+
+    it("should count the replaced selection when pasting under maxLength", () => {
+      const { input } = createInputRenderable({
+        maxLength: 5,
+        value: "hell",
+      })
+
+      input.focus()
+      input.selectAll()
+
+      mockInput.pasteBracketedText("world")
+      expect(input.value).toBe("world")
+    })
+
     it("should respect minLength when submitting", () => {
       const { input } = createInputRenderable({
         minLength: 3,
