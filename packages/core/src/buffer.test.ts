@@ -485,5 +485,18 @@ describe("OptimizedBuffer", () => {
       buffer.drawText("ab", 0, 2, white)
       expect(rows(buffer).slice(0, 3)).toEqual(["é漢😀 wide", "ok" + "x".repeat(18), "ab 😀"])
     })
+
+    it("draws all of a multi-byte text whose UTF-8 is longer than its UTF-16 length", () => {
+      const owner = new ResourceContext({ objectCapacity: 4, renderCellsMax: 3000 })
+      const wide = OptimizedBuffer.create(3000, 1, "unicode", { owner, id: "wide-buffer" })
+      try {
+        const text = "漢".repeat(1400)
+        wide.drawText(text, 0, 0, white)
+        expect(rows(wide)[0]).toBe(text)
+      } finally {
+        wide.destroy()
+        owner.destroy()
+      }
+    })
   })
 })
