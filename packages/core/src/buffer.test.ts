@@ -394,6 +394,17 @@ describe("OptimizedBuffer", () => {
       expect(rows(buffer).slice(0, 3)).toEqual(["é漢😀 wide", "ok" + "x".repeat(18), "ab 😀"])
     })
 
+    it("draws all of a multi-byte text whose UTF-8 is longer than its UTF-16 length", () => {
+      const wide = OptimizedBuffer.create(3000, 1, "unicode", { id: "wide-buffer" })
+      try {
+        const text = "漢".repeat(1400)
+        wide.drawText(text, 0, 0, white)
+        expect(rows(wide)[0]).toBe(text)
+      } finally {
+        wide.destroy()
+      }
+    })
+
     it("converts both box titles before a title's toString can draw", () => {
       const other = OptimizedBuffer.create(12, 1, "unicode", { id: "other-buffer" })
       try {
