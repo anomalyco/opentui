@@ -257,6 +257,21 @@ test "Session clipboard rejects inactive phases and unsupported capability witho
     try testing.expectEqual(@as(usize, 0), f.value.output.staged_bytes);
 }
 
+test "Session enables focus tracking after late tmux detection without passthrough probes" {
+    const f = try Fixture.initWithOptions(testing.allocator, testing.io, 4, 2, transport, .{ .object_capacity = 2 });
+    defer f.deinit();
+    var now_ns: u64 = 0;
+    var bytes: [8192]u8 = undefined;
+    try f.owner.setupSessionTerminal(f.id, .{});
+    _ = try f.driveOutput(&now_ns, .active, &bytes, 32);
+
+    // tmux before 3.6 answers XTVERSION but not DECRQM.
+    try f.value.control(.{ .capability_response = "\x1bP>|tmux 3.5a\x1b\\" });
+    const output = try f.driveOutput(&now_ns, .active, &bytes, 32);
+    try testing.expect(std.mem.find(u8, output, ansi.ANSI.focusSet) != null);
+    try testing.expect(std.mem.find(u8, output, ansi.ANSI.tmuxDcsStart) == null);
+}
+
 test "Session Kitty image transport is readable before setup and probes only while active" {
     const f = try Fixture.initWithOptions(testing.allocator, testing.io, 4, 2, transport, .{ .object_capacity = 2 });
     defer f.deinit();
