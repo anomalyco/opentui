@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const Allocator = std.mem.Allocator;
 
 /// Packed color with embedded metadata.
@@ -68,8 +69,10 @@ pub fn rgbaComponentToU8(component: f32) u8 {
 /// Rounds half away from zero like @round for values in [0, 255]. Baseline x86-64 has no
 /// rounding instruction, so @round becomes a libm call on every color channel. Truncation
 /// is one instruction, and the fraction is exact because both operands share an exponent range.
+/// Other targets keep @round, which aarch64 lowers to a single fcvtas.
 inline fn roundByte(value: f32) u8 {
     std.debug.assert(value >= 0.0 and value <= 255.0);
+    if (comptime !builtin.cpu.arch.isX86()) return @intFromFloat(@round(value));
     const whole: u8 = @intFromFloat(value);
     return whole + @intFromBool(value - @as(f32, @floatFromInt(whole)) >= 0.5);
 }
