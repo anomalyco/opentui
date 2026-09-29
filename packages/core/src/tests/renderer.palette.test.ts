@@ -13,6 +13,8 @@ import { TextRenderable } from "../renderables/Text.js"
 
 const OSC_SUPPORT_TIMEOUT_MS = 300
 const renderers = new Set<CliRenderer>()
+// Native setup on Windows assumes ConPTY truecolor, so it never reports ANSI-256 without RGB.
+const ansi256OnlyTest = process.platform === "win32" ? test.skip : test
 
 afterEach(async () => {
   for (const renderer of renderers) {
@@ -566,7 +568,7 @@ describe("Palette cache invalidation", () => {
     renderer.destroy()
   })
 
-  test("getPalette syncs native palette state again after cache invalidation and refetch", async () => {
+  ansi256OnlyTest("getPalette syncs native palette state again after cache invalidation and refetch", async () => {
     const { renderer, clock } = await createPaletteRenderer({
       environment: { TERM: "xterm-256color", TERM_PROGRAM: "Apple_Terminal" },
       emitSpecialColors: false,
@@ -587,28 +589,31 @@ describe("Palette cache invalidation", () => {
     renderer.destroy()
   })
 
-  test("theme mode changes clear palette cache and schedule native palette refresh when native palette is needed", async () => {
-    const { renderer } = await createPaletteRenderer({
-      environment: { TERM: "xterm-256color", TERM_PROGRAM: "Apple_Terminal" },
-      primeTheme: false,
-    })
-    expect(renderer.capabilities?.rgb).toBe(false)
-    const clear = spyOn(renderer, "clearPaletteCache")
-    // @ts-expect-error - spying on private method for native palette refresh scheduling
-    const refresh = spyOn(renderer, "refreshPalette")
+  ansi256OnlyTest(
+    "theme mode changes clear palette cache and schedule native palette refresh when native palette is needed",
+    async () => {
+      const { renderer } = await createPaletteRenderer({
+        environment: { TERM: "xterm-256color", TERM_PROGRAM: "Apple_Terminal" },
+        primeTheme: false,
+      })
+      expect(renderer.capabilities?.rgb).toBe(false)
+      const clear = spyOn(renderer, "clearPaletteCache")
+      // @ts-expect-error - spying on private method for native palette refresh scheduling
+      const refresh = spyOn(renderer, "refreshPalette")
 
-    renderer.stdin.emit("data", Buffer.from("\x1b]10;#ffffff\x07"))
-    renderer.stdin.emit("data", Buffer.from("\x1b]11;#000000\x07"))
-    await flushAsync()
+      renderer.stdin.emit("data", Buffer.from("\x1b]10;#ffffff\x07"))
+      renderer.stdin.emit("data", Buffer.from("\x1b]11;#000000\x07"))
+      await flushAsync()
 
-    expect(renderer.themeMode).toBe("dark")
-    expect(clear).toHaveBeenCalledTimes(1)
-    expect(refresh).toHaveBeenCalledTimes(1)
+      expect(renderer.themeMode).toBe("dark")
+      expect(clear).toHaveBeenCalledTimes(1)
+      expect(refresh).toHaveBeenCalledTimes(1)
 
-    clear.mockRestore()
-    refresh.mockRestore()
-    renderer.destroy()
-  })
+      clear.mockRestore()
+      refresh.mockRestore()
+      renderer.destroy()
+    },
+  )
 
   test("theme mode changes schedule palette refresh for truecolor terminals with palette listeners", async () => {
     const { renderer } = await createPaletteRenderer({ primeTheme: false })
@@ -671,7 +676,7 @@ describe("Palette cache invalidation", () => {
     renderer.destroy()
   })
 
-  test("setupTerminal refreshes palette on ANSI-256 non-truecolor startup", async () => {
+  ansi256OnlyTest("setupTerminal refreshes palette on ANSI-256 non-truecolor startup", async () => {
     const { renderer } = await createPaletteRenderer({
       useMouse: false,
       setup: false,
@@ -791,7 +796,7 @@ describe("Palette detector cleanup", () => {
     expect(renderer._paletteCache.size).toBe(0)
   })
 
-  test("destroy ignores pending native palette publish", async () => {
+  ansi256OnlyTest("destroy ignores pending native palette publish", async () => {
     const { renderer, clock } = await createPaletteRenderer({
       environment: { TERM: "xterm-256color", TERM_PROGRAM: "Apple_Terminal" },
       emitSpecialColors: false,
