@@ -40,8 +40,8 @@ jobs:
         with:
           zig-version: ${{ env.ZIG_VERSION }}
 
+      # The native ABI check in packages/core/scripts/build.ts needs Zig even when a cache skips the Zig build.
       - name: Setup Zig
-        if: steps.bottle.outputs.cache-hit != 'true'
         uses: mlugg/setup-zig@v2
         with:
           version: ${{ env.ZIG_VERSION }}
@@ -127,8 +127,8 @@ jobs:
         with:
           node-version: ${{ env.NODE_VERSION }}
 
+      # The native ABI check in packages/core/scripts/build.ts needs Zig even when a cache skips the Zig build.
       - name: Setup Zig
-        if: steps.native-tested.outputs.cache-hit != 'true'
         uses: mlugg/setup-zig@v2
         with:
           version: ${{ env.ZIG_VERSION }}
@@ -276,6 +276,13 @@ jobs:
         uses: oven-sh/setup-bun@v2
         with:
           bun-version: 1.4.1
+
+      # The native ABI check in packages/core/scripts/build.ts needs Zig even when a cache skips the Zig build.
+      - name: Setup Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: ${{ env.ZIG_VERSION }}
+          use-cache: false
 
       - name: Install dependencies
         run: bun install
