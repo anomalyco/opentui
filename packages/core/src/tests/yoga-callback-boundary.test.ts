@@ -16,7 +16,7 @@ test("Yoga callback failures unwind safely and remain isolated by owner", () => 
     stderr: "",
     error: undefined,
   })
-  expect(child.stdout.trim()).toMatch(
-    /^(?:Measure function returned an invalid dimension to Yoga: \[width=nan, height=nan\])*Yoga callback boundary passed$/,
-  )
+  // Yoga's default logger writes through C stdio. Windows flushes it at exit, after the child's console.log output.
+  const warning = "Measure function returned an invalid dimension to Yoga: [width=nan, height=nan]"
+  expect(child.stdout.replaceAll(warning, "").trim()).toBe("Yoga callback boundary passed")
 })
