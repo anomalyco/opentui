@@ -3932,17 +3932,6 @@ export class CliRenderer extends EventEmitter implements RenderContext {
 
   private handleResize(width: number, height: number): void {
     if (this._isDestroyed) return
-    if (this._splitHeight > 0) {
-      if (this.resizeTimeoutId !== null) {
-        this.clock.clearTimeout(this.resizeTimeoutId)
-        this.resizeTimeoutId = null
-      }
-      const sawDifferentSize = this.pendingResizeSawDifferentSize
-      this.pendingResizeSawDifferentSize = false
-      this.processResize(width, height, sawDifferentSize)
-      return
-    }
-
     if (width !== this._terminalWidth || height !== this._terminalHeight) this.pendingResizeSawDifferentSize = true
 
     if (this.resizeTimeoutId !== null) {
@@ -3950,12 +3939,21 @@ export class CliRenderer extends EventEmitter implements RenderContext {
       this.resizeTimeoutId = null
     }
 
+    if (this._splitHeight > 0) {
+      this.applyPendingResize(width, height)
+      return
+    }
+
     this.resizeTimeoutId = this.clock.setTimeout(() => {
       this.resizeTimeoutId = null
-      const sawDifferentSize = this.pendingResizeSawDifferentSize
-      this.pendingResizeSawDifferentSize = false
-      this.processResize(width, height, sawDifferentSize)
+      this.applyPendingResize(width, height)
     }, this.resizeDebounceDelay)
+  }
+
+  private applyPendingResize(width: number, height: number): void {
+    const sawDifferentSize = this.pendingResizeSawDifferentSize
+    this.pendingResizeSawDifferentSize = false
+    this.processResize(width, height, sawDifferentSize)
   }
 
   private queryPixelResolution() {
