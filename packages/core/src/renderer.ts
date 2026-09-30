@@ -3937,8 +3937,9 @@ export class CliRenderer extends EventEmitter implements RenderContext {
         this.clock.clearTimeout(this.resizeTimeoutId)
         this.resizeTimeoutId = null
       }
+      const sawDifferentSize = this.pendingResizeSawDifferentSize
       this.pendingResizeSawDifferentSize = false
-      this.processResize(width, height)
+      this.processResize(width, height, sawDifferentSize)
       return
     }
 
@@ -3953,13 +3954,7 @@ export class CliRenderer extends EventEmitter implements RenderContext {
       this.resizeTimeoutId = null
       const sawDifferentSize = this.pendingResizeSawDifferentSize
       this.pendingResizeSawDifferentSize = false
-      if (width === this._terminalWidth && height === this._terminalHeight && sawDifferentSize) {
-        // The terminal may have cleared or reflowed its cells during the skipped intermediate resize.
-        this.forceFullRepaintRequested = true
-        this.requestRender()
-        return
-      }
-      this.processResize(width, height)
+      this.processResize(width, height, sawDifferentSize)
     }, this.resizeDebounceDelay)
   }
 
@@ -3972,8 +3967,15 @@ export class CliRenderer extends EventEmitter implements RenderContext {
     this.lib.queryPixelResolution(this.rendererPtr)
   }
 
-  private processResize(width: number, height: number): void {
-    if (width === this._terminalWidth && height === this._terminalHeight) return
+  private processResize(width: number, height: number, repaintIfUnchanged = false): void {
+    if (width === this._terminalWidth && height === this._terminalHeight) {
+      if (repaintIfUnchanged) {
+        // The terminal may have cleared or reflowed its cells during the skipped intermediate resize.
+        this.forceFullRepaintRequested = true
+        this.requestRender()
+      }
+      return
+    }
 
     if (
       this._terminalIsSetup &&

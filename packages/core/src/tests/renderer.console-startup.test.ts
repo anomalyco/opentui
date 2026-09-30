@@ -224,6 +224,29 @@ test("CliRenderer consumes a pending debounced resize when split-footer resizes 
   expect(requests).toBe(0)
 })
 
+test("CliRenderer repaints a skipped resize after switching to split-footer", async () => {
+  const clock = new ManualClock()
+  const result = await createTestRenderer({ width: 80, height: 24, clock, screenMode: "alternate-screen" })
+  renderer = result.renderer
+  await result.renderOnce()
+
+  ;(renderer as any).handleResize(60, 20)
+  renderer.screenMode = "split-footer"
+  await result.renderOnce()
+
+  const render = spyOn((renderer as any).lib, "render")
+  const requestRender = spyOn(renderer, "requestRender")
+  ;(renderer as any).handleResize(80, 24)
+  const requests = requestRender.mock.calls.length
+  await result.renderOnce()
+  const forcedRepaint = render.mock.calls.some((call) => call[1] === true)
+  render.mockRestore()
+  requestRender.mockRestore()
+
+  expect(requests).toBe(1)
+  expect(forcedRepaint).toBe(true)
+})
+
 test("CliRenderer applies explicit screen and output modes", async () => {
   const result = await createTestRenderer({
     screenMode: "split-footer",
