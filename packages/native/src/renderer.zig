@@ -785,11 +785,28 @@ pub const CliRenderer = struct {
         self.backgroundColor = rgba;
         self.nextRenderBuffer.setBlendBackdropColor(ansi.rgbColor(ansi.red(rgba), ansi.green(rgba), ansi.blue(rgba), 255));
 
-        // Do not mirror renderer background to terminal default background via
-        // OSC 11 for now. In Ghostty, once OSC 11 has been used, later system
-        // light/dark theme changes can leave OSC 11 queries stuck on stale bg
-        // values even after OSC 111 resets. Theme detection relies on fresh
-        // OSC 10/11 replies, so mutating terminal default bg here breaks that.
+        if (!self.terminal.supportsBackgroundColorOverride()) return;
+
+        if (ansi.alpha(rgba) == 0) {
+            if (self.terminal.state.terminal_bg_overridden) {
+                self.writeOut(ansi.ANSI.resetTerminalBgColor);
+                self.terminal.state.terminal_bg_overridden = false;
+            }
+            return;
+        }
+
+        var sequence_buffer: [32]u8 = undefined;
+        const sequence = std.fmt.bufPrint(
+            &sequence_buffer,
+            "\x1b]11;rgb:{x:0>2}/{x:0>2}/{x:0>2}\x07",
+            .{
+                ansi.red(rgba),
+                ansi.green(rgba),
+                ansi.blue(rgba),
+            },
+        ) catch return;
+        self.writeOut(sequence);
+        self.terminal.state.terminal_bg_overridden = true;
     }
 
     fn resetFallbackPaletteState(self: *CliRenderer) void {
