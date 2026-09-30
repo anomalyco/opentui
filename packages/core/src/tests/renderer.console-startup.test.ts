@@ -5,7 +5,7 @@ import { capture } from "../console.js"
 import { clearEnvCache } from "../lib/env.js"
 import { createTestRenderer, type TestRenderer } from "../testing/test-renderer.js"
 import { ManualClock } from "../testing/manual-clock.js"
-import { TextRenderable, type ScrollbackRenderContext } from "../index.js"
+import { CliRenderEvents, TextRenderable, type ScrollbackRenderContext } from "../index.js"
 
 let renderer: TestRenderer | null = null
 let previousShowConsole: string | undefined
@@ -149,6 +149,79 @@ test("CliRenderer uses its shared clock for debounced resize", async () => {
 
   expect(renderer.width).toBe(70)
   expect(renderer.height).toBe(30)
+})
+
+test("CliRenderer repaints when a debounced resize returns to the original size", async () => {
+  const clock = new ManualClock()
+  const result = await createTestRenderer({ width: 80, height: 24, clock, screenMode: "alternate-screen" })
+  renderer = result.renderer
+  await result.renderOnce()
+
+  const render = spyOn((renderer as any).lib, "render")
+  const resize = spyOn((renderer as any).lib, "resizeRenderer")
+  const requestRender = spyOn(renderer, "requestRender")
+  let resizeEvents = 0
+  renderer.on(CliRenderEvents.RESIZE, () => resizeEvents++)
+
+  ;(renderer as any).handleResize(60, 20)
+  clock.advance(50)
+  ;(renderer as any).handleResize(80, 24)
+  clock.advance(99)
+
+  expect(renderer.width).toBe(80)
+  expect(renderer.height).toBe(24)
+  expect(resizeEvents).toBe(0)
+
+  clock.advance(1)
+  const requests = requestRender.mock.calls.length
+  await result.renderOnce()
+  const forcedRepaint = render.mock.calls.some((call) => call[1] === true)
+  const nativeResizes = resize.mock.calls.length
+  render.mockRestore()
+  resize.mockRestore()
+  requestRender.mockRestore()
+
+  expect(renderer.width).toBe(80)
+  expect(renderer.height).toBe(24)
+  expect(resizeEvents).toBe(0)
+  expect(nativeResizes).toBe(0)
+  expect(requests).toBe(1)
+  expect(forcedRepaint).toBe(true)
+})
+
+test("CliRenderer ignores a size-unchanged resize signal without an intermediate size change", async () => {
+  const clock = new ManualClock()
+  const result = await createTestRenderer({ width: 80, height: 24, clock, screenMode: "alternate-screen" })
+  renderer = result.renderer
+  await result.renderOnce()
+
+  const requestRender = spyOn(renderer, "requestRender")
+  ;(renderer as any).handleResize(80, 24)
+  clock.advance(100)
+  const requests = requestRender.mock.calls.length
+  requestRender.mockRestore()
+
+  expect(requests).toBe(0)
+})
+
+test("CliRenderer consumes a pending debounced resize when split-footer resizes immediately", async () => {
+  const clock = new ManualClock()
+  const result = await createTestRenderer({ width: 80, height: 24, clock, screenMode: "alternate-screen" })
+  renderer = result.renderer
+
+  ;(renderer as any).handleResize(60, 20)
+  renderer.screenMode = "split-footer"
+  ;(renderer as any).handleResize(70, 30)
+  await result.renderOnce()
+
+  const requestRender = spyOn(renderer, "requestRender")
+  clock.advance(100)
+  const requests = requestRender.mock.calls.length
+  requestRender.mockRestore()
+
+  expect(renderer.width).toBe(70)
+  expect(renderer.height).toBe(12)
+  expect(requests).toBe(0)
 })
 
 test("CliRenderer applies explicit screen and output modes", async () => {

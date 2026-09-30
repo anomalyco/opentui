@@ -866,6 +866,7 @@ export class CliRenderer extends EventEmitter implements RenderContext {
   private animationRequest: Map<number, FrameRequestCallback> = new Map()
 
   private resizeTimeoutId: TimerHandle | null = null
+  private pendingResizeSawDifferentSize = false
   private capabilityTimeoutId: TimerHandle | null = null
   private kittyTransportTimer: TimerHandle | null = null
   private kittyTransportMode: KittyImageTransport
@@ -3932,9 +3933,16 @@ export class CliRenderer extends EventEmitter implements RenderContext {
   private handleResize(width: number, height: number): void {
     if (this._isDestroyed) return
     if (this._splitHeight > 0) {
+      if (this.resizeTimeoutId !== null) {
+        this.clock.clearTimeout(this.resizeTimeoutId)
+        this.resizeTimeoutId = null
+      }
+      this.pendingResizeSawDifferentSize = false
       this.processResize(width, height)
       return
     }
+
+    if (width !== this._terminalWidth || height !== this._terminalHeight) this.pendingResizeSawDifferentSize = true
 
     if (this.resizeTimeoutId !== null) {
       this.clock.clearTimeout(this.resizeTimeoutId)
@@ -3943,6 +3951,14 @@ export class CliRenderer extends EventEmitter implements RenderContext {
 
     this.resizeTimeoutId = this.clock.setTimeout(() => {
       this.resizeTimeoutId = null
+      const sawDifferentSize = this.pendingResizeSawDifferentSize
+      this.pendingResizeSawDifferentSize = false
+      if (width === this._terminalWidth && height === this._terminalHeight && sawDifferentSize) {
+        // The terminal may have cleared or reflowed its cells during the skipped intermediate resize.
+        this.forceFullRepaintRequested = true
+        this.requestRender()
+        return
+      }
       this.processResize(width, height)
     }, this.resizeDebounceDelay)
   }
