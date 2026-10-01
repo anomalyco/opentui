@@ -302,6 +302,8 @@ export class OptimizedBuffer {
 
   public fillRect(x: number, y: number, width: number, height: number, bg: RGBA): void {
     this.guard()
+    // An empty rectangle draws nothing. A negative extent would wrap to a huge u32 at the FFI boundary.
+    if (width <= 0 || height <= 0) return
     this.lib.bufferFillRect(this.bufferPtr, x, y, width, height, bg)
   }
 

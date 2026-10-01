@@ -49,6 +49,23 @@ describe("OptimizedBuffer", () => {
     }
   })
 
+  it("fills nothing for a non-positive extent", () => {
+    // Bun wraps a negative u32 argument into a huge extent, so the wrapper must return before the FFI call.
+    const target = OptimizedBuffer.create(3, 2, "unicode", { id: "empty-extents" })
+    try {
+      const red = RGBA.fromInts(255, 0, 0)
+      target.clear(RGBA.fromInts(0, 0, 0))
+
+      target.fillRect(1, 0, -1, 1, red)
+      target.fillRect(1, 0, 1, -1, red)
+      target.fillRect(1, 0, 0, 1, red)
+
+      expect([0, 1, 2, 3, 4, 5].map((cell) => target.buffers.bg[cell * 4] & 0xff)).toEqual([0, 0, 0, 0, 0, 0])
+    } finally {
+      target.destroy()
+    }
+  })
+
   it("draws images as reserved cells with resolved fallback glyphs", () => {
     const image = NativeImage.fromRgba(
       Uint8Array.of(255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255, 255, 255, 255, 255),
