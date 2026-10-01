@@ -773,6 +773,40 @@ test "OptimizedBuffer - alpha blending downgrades blended metadata to rgb" {
     try std.testing.expectEqual(ansi.ColorIntent.rgb, ansi.intent(bg_blended_cell.bg));
 }
 
+test "OptimizedBuffer - blending cell setters skip coordinates outside the buffer" {
+    const pool = gp.initGlobalPool(std.testing.allocator);
+    defer gp.deinitGlobalPool();
+
+    var buf = try OptimizedBuffer.init(std.testing.allocator, 2, 2, .{ .pool = pool, .id = "outside-cell-setters" });
+    defer buf.deinit();
+
+    const base_bg = ansi.rgbaFromFloats(0.0, 0.0, 0.0, 1.0);
+    buf.clear(base_bg, null);
+    const opaque_fg = ansi.rgbaFromFloats(1.0, 1.0, 1.0, 1.0);
+    const translucent_bg = ansi.rgbaFromFloats(1.0, 0.0, 0.0, 0.5);
+
+    // Bun FFI passes a negative JavaScript coordinate to a u32 parameter as its two's-complement value.
+    const outside = [_]u32{ 2, std.math.maxInt(i32) + 1, std.math.maxInt(u32) };
+    for ([_]bool{ false, true }) |scissored| {
+        if (scissored) try buf.pushScissorRect(0, 0, 2, 2);
+        for (outside) |coordinate| {
+            const points = [_][2]u32{ .{ coordinate, 0 }, .{ 0, coordinate } };
+            for (points) |point| {
+                buf.drawChar('X', point[0], point[1], opaque_fg, base_bg, 0);
+                buf.drawChar('X', point[0], point[1], opaque_fg, translucent_bg, 0);
+                buf.setCellWithAlphaBlending(point[0], point[1], 'X', opaque_fg, translucent_bg, 0);
+                buf.setCellWithAlphaBlendingRaw(point[0], point[1], 'X', opaque_fg, translucent_bg, 0);
+            }
+        }
+    }
+
+    for (0..2) |y| {
+        for (0..2) |x| {
+            try std.testing.expectEqual(buffer_mod.DEFAULT_SPACE_CHAR, buf.get(@intCast(x), @intCast(y)).?.char);
+        }
+    }
+}
+
 test "OptimizedBuffer - transparent framebuffer cell background stays transparent over backdrop" {
     const pool = gp.initGlobalPool(std.testing.allocator);
     defer gp.deinitGlobalPool();

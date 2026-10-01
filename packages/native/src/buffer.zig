@@ -330,6 +330,14 @@ pub const OptimizedBuffer = struct {
             y >= scissor.y and y < scissor.y + @as(i32, @intCast(scissor.height));
     }
 
+    /// Reports whether a cell is inside the buffer and the active scissor. The bounds check runs
+    /// first because a u32 coordinate from FFI can be a wrapped negative value that does not fit
+    /// in the signed scissor coordinates.
+    fn isCellInBufferAndScissor(self: *const OptimizedBuffer, x: u32, y: u32) bool {
+        if (x >= self.width or y >= self.height) return false;
+        return self.isPointInScissor(@intCast(x), @intCast(y));
+    }
+
     pub fn isRectInScissor(self: *const OptimizedBuffer, x: i32, y: i32, width: u32, height: u32) bool {
         const scissor = self.getCurrentScissorRect() orelse return true;
 
@@ -652,8 +660,7 @@ pub const OptimizedBuffer = struct {
 
     /// Validate coordinates and return buffer index, or null if out of bounds / scissor.
     fn validateAndIndex(self: *OptimizedBuffer, x: u32, y: u32) ?u32 {
-        if (x >= self.width or y >= self.height) return null;
-        if (!self.isPointInScissor(@intCast(x), @intCast(y))) return null;
+        if (!self.isCellInBufferAndScissor(x, y)) return null;
         return self.coordsToIndex(x, y);
     }
 
@@ -927,7 +934,7 @@ pub const OptimizedBuffer = struct {
     }
 
     inline fn setCellWithAlphaBlendingCellWithoutImages(self: *OptimizedBuffer, x: u32, y: u32, cell: Cell) void {
-        if (!self.isPointInScissor(@intCast(x), @intCast(y))) return;
+        if (!self.isCellInBufferAndScissor(x, y)) return;
         const opacity = self.getCurrentOpacity();
         if (isFullyTransparent(opacity, cell.fg, cell.bg)) return;
         if (isFullyOpaque(opacity, cell.fg, cell.bg)) {
@@ -946,7 +953,7 @@ pub const OptimizedBuffer = struct {
     }
 
     inline fn setVisibleCellWithAlphaBlending(self: *OptimizedBuffer, x: u32, y: u32, cell: Cell, opacity: f32, fully_transparent: bool) void {
-        if (!self.isPointInScissor(@intCast(x), @intCast(y))) return;
+        if (!self.isCellInBufferAndScissor(x, y)) return;
         if (isFullyOpaque(opacity, cell.fg, cell.bg)) {
             self.set(x, y, cell);
             return;
@@ -982,7 +989,7 @@ pub const OptimizedBuffer = struct {
     }
 
     fn setCellWithAlphaBlendingRawCell(self: *OptimizedBuffer, x: u32, y: u32, cell: Cell) void {
-        if (!self.isPointInScissor(@intCast(x), @intCast(y))) return;
+        if (!self.isCellInBufferAndScissor(x, y)) return;
 
         const opacity = self.getCurrentOpacity();
         if (opacity == 0.0) return;
