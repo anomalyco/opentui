@@ -217,10 +217,12 @@ jobs:
           ) > "$node_log" 2>&1 &
           node_pid=$!
 
+          # test:js leaves the pipe it writes to non-blocking. Without cat in between, printing the Node log
+          # to the step output fails with EAGAIN.
           start=$SECONDS
           bun_status=0
           OTUI_TREE_SITTER_WORKER_PATH="$(bun -e 'import { resolve } from "node:path"; console.log(resolve("dist/parser.worker.js"))')" \
-            bun run test:js || bun_status=$?
+            bun run test:js 2>&1 | cat || bun_status=$?
           echo "Bun TypeScript tests took $((SECONDS - start))s"
 
           node_status=0
