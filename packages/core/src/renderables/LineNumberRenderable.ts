@@ -375,7 +375,6 @@ export class LineNumberRenderable extends Renderable {
   private _lineNumberOffset: number
   private _hideLineNumbers: Set<number>
   private _lineNumbers: Map<number, number>
-  private _isDestroying: boolean = false
   private handleLineInfoChange = (): void => {
     // When line info changes in the target, remeasure the gutter
     this.gutter?.remeasure()
@@ -487,11 +486,6 @@ export class LineNumberRenderable extends Renderable {
 
   // Override remove to prevent removing gutter/target directly
   public override remove(child: BaseRenderable): void {
-    if (this._isDestroying) {
-      super.remove(child)
-      return
-    }
-
     if (this.gutter && child === this.gutter) {
       throw new Error("LineNumberRenderable: Cannot remove gutter directly.")
     }
@@ -501,15 +495,14 @@ export class LineNumberRenderable extends Renderable {
     super.remove(child)
   }
 
-  // Override destroyRecursively to properly clean up internal components
   public override destroyRecursively(): void {
-    this._isDestroying = true
-    this.target?.off("line-info-change", this.handleLineInfoChange)
+    const target = this.target
+    this.clearTarget()
+    target?.destroyRecursively()
     super.destroyRecursively()
   }
 
   public override destroy(): void {
-    if (this.isDestroyed) return
     this.clearTarget()
     super.destroy()
   }
@@ -517,11 +510,11 @@ export class LineNumberRenderable extends Renderable {
   public clearTarget(): void {
     if (this.target) {
       this.target.off("line-info-change", this.handleLineInfoChange)
-      if (this.target.parent === this) super.remove(this.target)
+      super.remove(this.target)
       this.target = null
     }
     if (this.gutter) {
-      if (this.gutter.parent === this) super.remove(this.gutter)
+      super.remove(this.gutter)
       this.gutter.destroy()
       this.gutter = null
     }

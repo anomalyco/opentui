@@ -1,5 +1,5 @@
 import { describe, expect, it, beforeEach, afterEach } from "bun:test"
-import { testRender, Dynamic, Portal } from "../index.js"
+import { testRender, Dynamic, LayoutSlotRenderable, Portal } from "../index.js"
 import { createSignal, Show } from "solid-js"
 import { createSpy } from "@opentui/core/testing"
 import type { BoxRenderable } from "@opentui/core"
@@ -191,6 +191,40 @@ describe("SolidJS Renderer - Dynamic and Portal Components", () => {
       await testSetup.renderOnce()
       frame = testSetup.captureCharFrame()
       expect(frame).not.toContain("Portal content")
+    })
+
+    it("should give a reinserted portal marker a live placeholder", async () => {
+      const [showPortal, setShowPortal] = createSignal(true)
+      const nextTick = () => new Promise<void>((resolve) => process.nextTick(resolve))
+      let host!: BoxRenderable
+
+      testSetup = await testRender(
+        () => {
+          const portal = (
+            <Portal>
+              <text>Portal content</text>
+            </Portal>
+          )
+          return (
+            <box ref={host}>
+              {showPortal() ? portal : null}
+              <text>After portal</text>
+            </box>
+          )
+        },
+        { width: 20, height: 5 },
+      )
+
+      for (let i = 0; i < 3; i++) {
+        setShowPortal(false)
+        await nextTick()
+        setShowPortal(true)
+        await nextTick()
+
+        const placeholder = host.getChildren()[0]
+        expect(placeholder).toBeInstanceOf(LayoutSlotRenderable)
+        expect(placeholder!.getLayoutNode().isFreed()).toBe(false)
+      }
     })
 
     it("should handle multiple portals", async () => {

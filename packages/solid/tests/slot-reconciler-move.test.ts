@@ -87,7 +87,7 @@ async function runMoveScenario(order: MoveOrder) {
 }
 
 describe("slot placeholder moves", () => {
-  it.each([false, true])("keeps rejected slots reusable (existing host: %s)", async (attached) => {
+  it.each([false, true])("keeps rejected slots reusable (existing host: %p)", async (attached) => {
     const setup = await createTestRenderer({ width: 20, height: 5 })
     const rejecting = new LineNumberRenderable(setup.renderer, {})
     setup.renderer.root.add(rejecting)

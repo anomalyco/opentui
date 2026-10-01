@@ -184,10 +184,8 @@ export abstract class BaseRenderable extends EventEmitter {
   }
 
   public destroyRecursively(): void {
-    for (const child of [...this.getChildren()]) {
-      child.destroyRecursively()
-    }
-    this.destroy()
+    // Default implementation: do nothing
+    // Override this method to provide custom destruction logic
   }
 
   public get visible(): boolean {

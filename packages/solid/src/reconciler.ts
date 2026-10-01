@@ -105,11 +105,10 @@ function _insertNode(parent: DomNode, node: DomNode, anchor?: DomNode): void {
     }
   }
 
-  try {
-    parent.add(node, anchorIndex)
-  } finally {
-    slot?.disposeDetachedSlotChild(parent)
-  }
+  parent.add(node, anchorIndex)
+
+  // Hosts such as LineNumberRenderable ignore children they do not render.
+  if (slot && !node.parent) node.destroy()
 }
 
 function _removeNode(parent: DomNode, node: DomNode): void {

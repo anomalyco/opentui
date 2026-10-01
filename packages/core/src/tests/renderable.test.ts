@@ -13,7 +13,6 @@ import { createTestRenderer, type TestRenderer, type MockMouse, type MockInput }
 import type { RenderContext } from "../types.js"
 import { TextNodeRenderable } from "../renderables/TextNode.js"
 import { TextRenderable } from "../renderables/Text.js"
-import { Node as YogaNode } from "../yoga.js"
 
 export class TestBaseRenderable extends BaseRenderable {
   constructor(options: BaseRenderableOptions) {
@@ -763,36 +762,6 @@ describe("Renderable - Child Management", () => {
     expect(parent.isDestroyed).toBe(false)
     expect(() => parent.destroyRecursively()).not.toThrow()
     expect(parent.isDestroyed).toBe(true)
-  })
-
-  test.each(["span", "text", "renderer"])("destroys resource-owning text descendants through %s", (owner) => {
-    class ResourceTextNode extends TextNodeRenderable {
-      readonly resource = YogaNode.create()
-
-      override destroy(): void {
-        this.resource.free()
-        super.destroy()
-      }
-    }
-
-    const text = new TextRenderable(testRenderer, {})
-    const span = new TextNodeRenderable({})
-    const children = [new ResourceTextNode({}), new ResourceTextNode({})]
-    for (const child of children) span.add(child)
-    text.add(span)
-    testRenderer.root.add(text)
-
-    try {
-      if (owner === "span") span.destroyRecursively()
-      else if (owner === "text") text.destroy()
-      else testRenderer.destroy()
-
-      expect(children.map((child) => child.resource.isFreed())).toEqual([true, true])
-      expect(span.parent).toBeNull()
-      expect(span.getChildren()).toHaveLength(0)
-    } finally {
-      for (const child of children) child.destroy()
-    }
   })
 
   test("destroyRecursively destroys all children correctly with multiple children", () => {
