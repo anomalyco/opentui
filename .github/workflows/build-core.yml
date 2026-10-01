@@ -47,14 +47,6 @@ jobs:
           version: ${{ env.ZIG_VERSION }}
           use-cache: false
 
-      - name: Restore Zig cache
-        if: steps.bottle.outputs.cache-hit != 'true'
-        uses: actions/cache@v5
-        with:
-          path: packages/native/.zig-cache
-          key: zig-v1-${{ runner.os }}-${{ env.ZIG_VERSION }}-${{ github.run_id }}-${{ github.job }}
-          restore-keys: zig-v1-${{ runner.os }}-${{ env.ZIG_VERSION }}-
-
       - name: Setup cross-platform symbol tools
         if: steps.bottle.outputs.cache-hit != 'true'
         uses: ./.github/actions/setup-native-symbol-tools
@@ -140,14 +132,6 @@ jobs:
           version: ${{ env.ZIG_VERSION }}
           use-cache: false
 
-      - name: Restore Zig cache
-        if: runner.os != 'Windows' && steps.native-tested.outputs.cache-hit != 'true'
-        uses: actions/cache@v5
-        with:
-          path: packages/native/.zig-cache
-          key: zig-v1-${{ runner.os }}-${{ env.ZIG_VERSION }}-${{ github.run_id }}-${{ github.job }}
-          restore-keys: zig-v1-${{ runner.os }}-${{ env.ZIG_VERSION }}-
-
       - name: Install dependencies
         run: bun install
 
@@ -162,6 +146,12 @@ jobs:
           echo "Checking for ${{ matrix.platform }} native library..."
           ls -la packages/core/node_modules/@opentui/
           ls -la packages/core/node_modules/@opentui/core-${{ matrix.platform }}/
+
+      # Package workflows restore this runner's library instead of building it.
+      - name: Save native host bottle
+        uses: ./.github/actions/save-native-host-bottle
+        with:
+          zig-version: ${{ env.ZIG_VERSION }}
 
       - name: Enable Linux core dumps
         if: runner.os == 'Linux'

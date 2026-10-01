@@ -41,9 +41,9 @@ jobs:
       - name: Install dependencies
         run: bun install
 
-      - name: Restore native bottle
+      - name: Restore native host bottle
         id: bottle
-        uses: ./.github/actions/restore-native-bottle
+        uses: ./.github/actions/restore-native-host-bottle
         with:
           zig-version: ${{ env.ZIG_VERSION }}
 
@@ -116,9 +116,9 @@ jobs:
       - name: Install dependencies
         run: bun install
 
-      - name: Restore native bottle
+      - name: Restore native host bottle
         id: bottle
-        uses: ./.github/actions/restore-native-bottle
+        uses: ./.github/actions/restore-native-host-bottle
         with:
           zig-version: ${{ env.ZIG_VERSION }}
 
