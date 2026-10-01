@@ -785,7 +785,7 @@ test "OptimizedBuffer - blending cell setters skip coordinates outside the buffe
     const opaque_fg = ansi.rgbaFromFloats(1.0, 1.0, 1.0, 1.0);
     const translucent_bg = ansi.rgbaFromFloats(1.0, 0.0, 0.0, 0.5);
 
-    // Bun FFI passes a negative JavaScript coordinate to a u32 parameter as its two's-complement value.
+    // A u32 coordinate at or above 2^31 has no i32 value for the scissor check.
     const outside = [_]u32{ 2, std.math.maxInt(i32) + 1, std.math.maxInt(u32) };
     for ([_]bool{ false, true }) |scissored| {
         if (scissored) try buf.pushScissorRect(0, 0, 2, 2);
@@ -805,6 +805,97 @@ test "OptimizedBuffer - blending cell setters skip coordinates outside the buffe
             try std.testing.expectEqual(buffer_mod.DEFAULT_SPACE_CHAR, buf.get(@intCast(x), @intCast(y)).?.char);
         }
     }
+}
+
+fn expectRowChars(buf: *OptimizedBuffer, y: u32, expected: []const u8) !void {
+    for (expected, 0..) |char, x| {
+        try std.testing.expectEqual(@as(u32, char), buf.get(@intCast(x), y).?.char);
+    }
+}
+
+test "OptimizedBuffer - text and rectangles at signed positions draw their visible part" {
+    const pool = gp.initGlobalPool(std.testing.allocator);
+    defer gp.deinitGlobalPool();
+
+    var buf = try OptimizedBuffer.init(std.testing.allocator, 4, 5, .{ .pool = pool, .id = "signed-draw-positions" });
+    defer buf.deinit();
+
+    const black = ansi.rgbaFromFloats(0.0, 0.0, 0.0, 1.0);
+    const white = ansi.rgbaFromFloats(1.0, 1.0, 1.0, 1.0);
+    const red = ansi.rgbaFromFloats(1.0, 0.0, 0.0, 1.0);
+    const min = std.math.minInt(i32);
+    buf.clear(black, null);
+
+    // Opaque printable ASCII uses the byte fast path. Text without a background uses the cluster path.
+    try buf.drawTextClipped("ABCDE", -2, 0, white, black, 0);
+    // The wide glyph covers columns -1 and 0, so it is clipped and column 0 keeps its cell.
+    try buf.drawTextClipped("A世BC", -2, 1, white, null, 0);
+    try buf.drawTextClipped("\tX", -1, 2, white, red, 0);
+    try buf.drawTextClipped("e\u{301}XY", -1, 3, white, null, 0);
+    try buf.pushScissorRect(1, 4, 2, 1);
+    try buf.drawTextClipped("WXYZ", -1, 4, white, null, 0);
+    buf.popScissorRect();
+    // These draws have no cell inside the buffer.
+    try buf.drawTextClipped("ZZZZ", 0, -1, white, black, 0);
+    try buf.drawTextClipped("ZZZZ", min, 0, white, black, 0);
+    try buf.drawTextClipped("Z世ZZ", min, 0, white, null, 0);
+
+    try expectRowChars(buf, 0, "CDE ");
+    try expectRowChars(buf, 1, " BC ");
+    try expectRowChars(buf, 2, " X  ");
+    try std.testing.expect(buffer_mod.rgbaEqual(red, buf.get(0, 2).?.bg));
+    try expectRowChars(buf, 3, "XY  ");
+    try expectRowChars(buf, 4, " YZ ");
+
+    buf.fillRectClipped(-1, -1, 2, 2, red);
+    buf.fillRectClipped(std.math.maxInt(i32), min, std.math.maxInt(u32), std.math.maxInt(u32), white);
+    buf.fillRectClipped(min, 4, std.math.maxInt(u32), 1, red);
+
+    try std.testing.expect(buffer_mod.rgbaEqual(red, buf.get(0, 0).?.bg));
+    try std.testing.expect(buffer_mod.rgbaEqual(black, buf.get(1, 0).?.bg));
+    try std.testing.expect(buffer_mod.rgbaEqual(black, buf.get(0, 1).?.bg));
+    try std.testing.expect(buffer_mod.rgbaEqual(red, buf.get(3, 4).?.bg));
+}
+
+test "OptimizedBuffer - pixel buffers at signed positions draw their visible part" {
+    const pool = gp.initGlobalPool(std.testing.allocator);
+    defer gp.deinitGlobalPool();
+
+    var buf = try OptimizedBuffer.init(std.testing.allocator, 2, 1, .{ .pool = pool, .id = "signed-pixel-buffers" });
+    defer buf.deinit();
+    const black = ansi.rgbaFromFloats(0.0, 0.0, 0.0, 1.0);
+
+    // Two cells of 2x2 RGBA pixels: a red cell, then a blue cell.
+    const red = [4]u8{ 255, 0, 0, 255 };
+    const blue = [4]u8{ 0, 0, 255, 255 };
+    const pixels = red ++ red ++ blue ++ blue ++ red ++ red ++ blue ++ blue;
+
+    buf.drawSuperSampleBuffer(0, 0, &pixels, pixels.len, 1, 16);
+    const blue_cell = buf.get(1, 0).?;
+    buf.clear(black, null);
+    // The visible cells of the first two draws map past the end of the pixels.
+    buf.drawSuperSampleBuffer(std.math.minInt(i32), 0, &pixels, pixels.len, 1, std.math.maxInt(u32));
+    buf.drawSuperSampleBuffer(0, std.math.minInt(i32), &pixels, pixels.len, 1, std.math.maxInt(u32));
+    buf.drawSuperSampleBuffer(-1, 0, &pixels, pixels.len, 1, 16);
+
+    const cell = buf.get(0, 0).?;
+    try std.testing.expectEqual(blue_cell.char, cell.char);
+    try std.testing.expect(buffer_mod.rgbaEqual(blue_cell.fg, cell.fg));
+    try std.testing.expect(buffer_mod.rgbaEqual(blue_cell.bg, cell.bg));
+
+    // Each packed cell is bg(4 f32), fg(4 f32), char(u32), and 12 padding bytes.
+    const packed_cells = [2][12]f32{
+        .{ 0, 0, 0, 1, 1, 1, 1, 1, @bitCast(@as(u32, 'A')), 0, 0, 0 },
+        .{ 0, 0, 0, 1, 1, 1, 1, 1, @bitCast(@as(u32, 'B')), 0, 0, 0 },
+    };
+    const packed_bytes = std.mem.sliceAsBytes(&packed_cells);
+
+    buf.clear(black, null);
+    buf.drawPackedBuffer(packed_bytes.ptr, packed_bytes.len, -1, 0, 2, 1);
+    buf.drawPackedBuffer(packed_bytes.ptr, packed_bytes.len, 0, -1, 2, 1);
+    buf.drawPackedBuffer(packed_bytes.ptr, packed_bytes.len, 0, 0, 0, 1);
+
+    try expectRowChars(buf, 0, "B ");
 }
 
 test "OptimizedBuffer - transparent framebuffer cell background stays transparent over backdrop" {

@@ -702,19 +702,19 @@ function getOpenTUILib(libPath?: string) {
     },
 
     bufferDrawText: {
-      args: ["u32", "ptr", "u32", "u32", "u32", "buffer", "ptr", "u32"],
+      args: ["u32", "ptr", "u32", "i32", "i32", "buffer", "ptr", "u32"],
       returns: "void",
     },
     bufferSetCellWithAlphaBlending: {
-      args: ["u32", "u32", "u32", "u32", "buffer", "buffer", "u32"],
+      args: ["u32", "i32", "i32", "u32", "buffer", "buffer", "u32"],
       returns: "void",
     },
     bufferSetCell: {
-      args: ["u32", "u32", "u32", "u32", "buffer", "buffer", "u32"],
+      args: ["u32", "i32", "i32", "u32", "buffer", "buffer", "u32"],
       returns: "void",
     },
     bufferFillRect: {
-      args: ["u32", "u32", "u32", "u32", "u32", "buffer"],
+      args: ["u32", "i32", "i32", "u32", "u32", "buffer"],
       returns: "void",
     },
     bufferColorMatrix: {
@@ -874,7 +874,7 @@ function getOpenTUILib(libPath?: string) {
     },
 
     bufferDrawSuperSampleBuffer: {
-      args: ["u32", "u32", "u32", "ptr", "u32", "u8", "u32"],
+      args: ["u32", "i32", "i32", "ptr", "u32", "u8", "u32"],
       returns: "void",
     },
     bufferDrawImage: {
@@ -882,7 +882,7 @@ function getOpenTUILib(libPath?: string) {
       returns: "u8",
     },
     bufferDrawPackedBuffer: {
-      args: ["u32", "ptr", "u32", "u32", "u32", "u32", "u32"],
+      args: ["u32", "ptr", "u32", "i32", "i32", "u32", "u32"],
       returns: "void",
     },
     bufferDrawGrayscaleBuffer: {
@@ -1698,7 +1698,7 @@ function getOpenTUILib(libPath?: string) {
       returns: "void",
     },
     bufferDrawChar: {
-      args: ["u32", "u32", "u32", "u32", "buffer", "buffer", "u32"],
+      args: ["u32", "u32", "i32", "i32", "buffer", "buffer", "u32"],
       returns: "void",
     },
 

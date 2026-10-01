@@ -26,6 +26,29 @@ describe("OptimizedBuffer", () => {
     expect([...buffer.buffers.attributes.slice(0, attributes.length)]).toEqual(attributes)
   })
 
+  it("clips draws at negative positions", () => {
+    // Node FFI rejects a negative u32 argument, so every call here also checks that positions cross FFI as i32.
+    const target = OptimizedBuffer.create(3, 2, "unicode", { id: "negative-positions" })
+    try {
+      const white = RGBA.fromInts(255, 255, 255)
+      const black = RGBA.fromInts(0, 0, 0)
+      target.clear(black)
+
+      target.setCell(-1, 0, "S", white, black)
+      target.setCellWithAlphaBlending(0, -1, "A", white, black)
+      target.drawChar("D".codePointAt(0)!, -1, -1, white, black)
+      target.drawSuperSampleBuffer(-1, -1, new Uint8Array(16), 16, "rgba8unorm", 8)
+      target.drawPackedBuffer(new Uint8Array(48), 48, -1, -1, 1, 1)
+      target.drawText("ABCD", -2, 1, white, black)
+      target.fillRect(-1, -1, 2, 2, RGBA.fromInts(255, 0, 0))
+
+      expect(new TextDecoder().decode(target.getRealCharBytes(true))).toBe("   \nCD \n")
+      expect([0, 1, 3].map((cell) => target.buffers.bg[cell * 4] & 0xff)).toEqual([255, 0, 0])
+    } finally {
+      target.destroy()
+    }
+  })
+
   it("draws images as reserved cells with resolved fallback glyphs", () => {
     const image = NativeImage.fromRgba(
       Uint8Array.of(255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255, 255, 255, 255, 255),
