@@ -436,6 +436,7 @@ export class OptimizedBuffer {
     terminalHeightCells: number,
   ): void {
     this.guard()
+    if (dataLen <= 0 || terminalWidthCells <= 0 || terminalHeightCells <= 0) return
     this.lib.bufferDrawPackedBuffer(
       this.bufferPtr,
       typeof data === "number" || typeof data === "bigint" ? toPointer(data) : data,
@@ -502,6 +503,7 @@ export class OptimizedBuffer {
     bottomTitleAlignment?: "left" | "center" | "right"
   }): void {
     this.guard()
+    if (options.width <= 0 || options.height <= 0) return
     const style = parseBorderStyle(options.borderStyle, "single")
     const borderChars: Uint32Array = options.customBorderChars ?? BorderCharArrays[style]
 
@@ -530,7 +532,8 @@ export class OptimizedBuffer {
 
   public pushScissorRect(x: number, y: number, width: number, height: number): void {
     this.guard()
-    this.lib.bufferPushScissorRect(this.bufferPtr, x, y, width, height)
+    // A non-positive extent is an empty clip rect. Push it anyway so the matching pop stays balanced.
+    this.lib.bufferPushScissorRect(this.bufferPtr, x, y, Math.max(0, width), Math.max(0, height))
   }
 
   public popScissorRect(): void {

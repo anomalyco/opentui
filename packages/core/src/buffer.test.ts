@@ -129,6 +129,81 @@ describe("OptimizedBuffer", () => {
     }
   })
 
+  describe("non-positive extents", () => {
+    // Bun wraps a negative u32 argument and Node FFI rejects it, so these must not reach native code.
+    const white = RGBA.fromInts(255, 255, 255)
+    const black = RGBA.fromInts(0, 0, 0)
+    const red = RGBA.fromInts(255, 0, 0)
+    const snapshot = () => ({
+      char: [...buffer.buffers.char],
+      fg: [...buffer.buffers.fg],
+      bg: [...buffer.buffers.bg],
+    })
+
+    it("clips everything inside a scissor rect with a non-positive extent", () => {
+      buffer.clear(black)
+      const blank = snapshot()
+
+      buffer.pushScissorRect(0, 0, -1, 5)
+      buffer.fillRect(0, 0, 20, 5, red)
+      buffer.popScissorRect()
+
+      buffer.pushScissorRect(0, 0, 20, 5)
+      buffer.pushScissorRect(0, 0, 20, -1)
+      buffer.drawText("hidden", 0, 0, white, black)
+      buffer.popScissorRect()
+      buffer.popScissorRect()
+
+      expect(snapshot()).toEqual(blank)
+    })
+
+    it("skips drawBox with a non-positive extent", () => {
+      buffer.clear(black)
+      const blank = snapshot()
+
+      for (const [width, height] of [
+        [-1, 3],
+        [3, -1],
+      ]) {
+        buffer.drawBox({
+          x: 0,
+          y: 0,
+          width,
+          height,
+          border: true,
+          borderColor: white,
+          backgroundColor: red,
+          shouldFill: true,
+          title: "title",
+        })
+      }
+
+      expect(snapshot()).toEqual(blank)
+    })
+
+    it("skips drawPackedBuffer with a non-positive length or cell count", () => {
+      const cellCount = 20 * 5
+      const packed = new Uint8Array(cellCount * 48)
+      const floats = new Float32Array(packed.buffer)
+      const words = new Uint32Array(packed.buffer)
+      for (let cell = 0; cell < cellCount; cell++) {
+        floats.set([1, 0, 0, 1, 1, 1, 1, 1], cell * 12)
+        words[cell * 12 + 8] = "X".codePointAt(0)!
+      }
+      buffer.clear(black)
+      const blank = snapshot()
+
+      buffer.drawPackedBuffer(packed, -48, 0, 0, 20, 5)
+      buffer.drawPackedBuffer(packed, packed.byteLength, 0, 0, 0, 5)
+      buffer.drawPackedBuffer(packed, packed.byteLength, 0, 0, -1, 5)
+      buffer.drawPackedBuffer(packed, packed.byteLength, 0, 0, 20, -1)
+      expect(snapshot()).toEqual(blank)
+
+      buffer.drawPackedBuffer(packed, packed.byteLength, 0, 0, 20, 5)
+      expect(snapshot()).not.toEqual(blank)
+    })
+  })
+
   describe("encodeUnicode", () => {
     it("should encode simple ASCII text", () => {
       const encoded = buffer.encodeUnicode("Hello")
