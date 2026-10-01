@@ -2470,7 +2470,26 @@ test("DiffRenderable - gutter remains in correct position after updates", async 
   }
 })
 
-test("DiffRenderable - properly cleans up listeners on destroy", async () => {
+test("DiffRenderable - releases default syntax styles after replacing them with a borrowed style", () => {
+  const diff = new DiffRenderable(currentRenderer, { diff: simpleDiff, view: "split" })
+  currentRenderer.root.add(diff)
+  const defaults = [diff["leftCodeRenderable"]!.syntaxStyle, diff["rightCodeRenderable"]!.syntaxStyle]
+  const borrowed = SyntaxStyle.create()
+
+  try {
+    diff.syntaxStyle = borrowed
+    diff.destroyRecursively()
+
+    for (const style of defaults) expect(() => style.getStyleCount()).toThrow("destroyed")
+    expect(borrowed.getStyleCount()).toBe(0)
+  } finally {
+    diff.destroyRecursively()
+    for (const style of defaults) style.destroy()
+    borrowed.destroy()
+  }
+})
+
+test.each(["destroy", "destroyRecursively"] as const)("DiffRenderable - %s frees cached views", async (cleanup) => {
   const syntaxStyle = SyntaxStyle.fromStyles({
     default: { fg: RGBA.fromValues(1, 1, 1, 1) },
   })
@@ -2503,19 +2522,24 @@ test("DiffRenderable - properly cleans up listeners on destroy", async () => {
   expect(leftCountBeforeDestroy).toBeGreaterThan(0)
   expect(rightCountBeforeDestroy).toBeGreaterThan(0)
 
-  // Destroy the diff
-  diffRenderable.destroyRecursively()
+  const sides = diffRenderable.getChildren()
+  diffRenderable.diff = "--- a/test.js\n+++ b/test.js\n@@ -a,b +c,d @@\n invalid"
+  await renderOnce()
+  const errorNodes = diffRenderable.getChildren()
+  expect(errorNodes).toHaveLength(2)
+  diffRenderable.diff = simpleDiff
+  diffRenderable.view = "unified"
+  await renderOnce()
 
-  // The LineNumberRenderables should have been destroyed
-  // Check that they're either null or destroyed
-  const leftSide = (diffRenderable as any).leftSide
-  const rightSide = (diffRenderable as any).rightSide
-
-  if (leftSide) {
-    expect(leftSide.isDestroyed).toBe(true)
-  }
-  if (rightSide) {
-    expect(rightSide.isDestroyed).toBe(true)
+  try {
+    diffRenderable[cleanup]()
+    for (const node of [...sides, ...errorNodes, leftCodeRenderable, rightCodeRenderable]) {
+      expect(node.getLayoutNode().isFreed()).toBe(true)
+      expect(node.listenerCount("line-info-change")).toBe(0)
+    }
+  } finally {
+    for (const node of [...sides, ...errorNodes]) node.destroyRecursively()
+    syntaxStyle.destroy()
   }
 })
 

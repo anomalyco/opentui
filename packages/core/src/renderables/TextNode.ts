@@ -223,6 +223,12 @@ export class TextNodeRenderable extends BaseRenderable {
     this.requestRender()
   }
 
+  public override destroy(): void {
+    this.parent?.remove(this)
+    this.clear()
+    this.removeAllListeners()
+  }
+
   public mergeStyles(parentStyle: { fg?: RGBA; bg?: RGBA; attributes: number; link?: { url: string } }): {
     fg?: RGBA
     bg?: RGBA

@@ -83,8 +83,8 @@ export class TextSlotRenderable extends TextNodeRenderable {
     const slotParent = this.slotParent
     this.slotParent = undefined
 
-    slotParent?.destroy()
     super.destroy()
+    slotParent?.didDestroySlotChild(this)
   }
 }
 
@@ -154,8 +154,9 @@ export class LayoutSlotRenderable extends SlotBaseRenderable {
     const slotParent = this.slotParent
     this.slotParent = undefined
 
+    this.parent?.remove(this)
     this.freeYogaNode()
-    slotParent?.destroy()
+    slotParent?.didDestroySlotChild(this)
   }
 }
 
@@ -372,11 +373,36 @@ export class SlotRenderable extends SlotBaseRenderable {
     }
   }
 
+  private forgetSlotChild(child: LayoutSlotRenderable | TextSlotRenderable): void {
+    const nodes = child instanceof LayoutSlotRenderable ? this.layoutNodesByParent : this.textNodesByParent
+    for (const [parent, node] of nodes) {
+      if (node === child) nodes.delete(parent)
+    }
+
+    this.parent = this.getAttachedSlotParent()
+  }
+
+  disposeDetachedSlotChild(parent: BaseRenderable): void {
+    const child = this.getSlotChildForRemoval(parent)
+    if ((child instanceof LayoutSlotRenderable || child instanceof TextSlotRenderable) && !child.parent) {
+      child.disposeWithoutSlotCascade()
+      this.forgetSlotChild(child)
+    }
+  }
+
+  didDestroySlotChild(child: LayoutSlotRenderable | TextSlotRenderable): void {
+    if (this.destroyed) return
+
+    this.forgetSlotChild(child)
+    if (!this.parent) this.destroy()
+  }
+
   public override destroy(): void {
     if (this.destroyed) {
       return
     }
     this.destroyed = true
+    this.parent = null
 
     const layoutNodes = new Set(this.layoutNodesByParent.values())
     this.layoutNodesByParent.clear()

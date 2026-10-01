@@ -141,7 +141,7 @@ export class TextRenderable extends TextBufferRenderable {
   }
 
   destroy(): void {
-    this.rootTextNode.children.length = 0
+    this.rootTextNode.destroyRecursively()
     super.destroy()
   }
 }

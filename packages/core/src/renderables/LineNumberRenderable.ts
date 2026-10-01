@@ -444,17 +444,7 @@ export class LineNumberRenderable extends Renderable {
   private setTarget(target: Renderable & LineInfoProvider): void {
     if (this.target === target) return
 
-    if (this.target) {
-      // Remove event listener from old target
-      this.target.off("line-info-change", this.handleLineInfoChange)
-      super.remove(this.target)
-    }
-
-    if (this.gutter) {
-      super.remove(this.gutter)
-      this.gutter = null
-    }
-
+    this.clearTarget()
     this.target = target
 
     // Listen for line info changes from target
@@ -514,25 +504,25 @@ export class LineNumberRenderable extends Renderable {
   // Override destroyRecursively to properly clean up internal components
   public override destroyRecursively(): void {
     this._isDestroying = true
-
-    if (this.target) {
-      this.target.off("line-info-change", this.handleLineInfoChange)
-    }
-
+    this.target?.off("line-info-change", this.handleLineInfoChange)
     super.destroyRecursively()
+  }
 
-    this.gutter = null
-    this.target = null
+  public override destroy(): void {
+    if (this.isDestroyed) return
+    this.clearTarget()
+    super.destroy()
   }
 
   public clearTarget(): void {
     if (this.target) {
       this.target.off("line-info-change", this.handleLineInfoChange)
-      super.remove(this.target)
+      if (this.target.parent === this) super.remove(this.target)
       this.target = null
     }
     if (this.gutter) {
-      super.remove(this.gutter)
+      if (this.gutter.parent === this) super.remove(this.gutter)
+      this.gutter.destroy()
       this.gutter = null
     }
   }
