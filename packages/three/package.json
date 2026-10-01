@@ -14,7 +14,7 @@
   "type": "module",
   "scripts": {
     "build": "bun scripts/build.ts",
-    "publish": "bun scripts/publish.ts"
+    "publish": "bun ../../scripts/npm-publish.ts publish @opentui/three"
   },
   "exports": {
     ".": {
