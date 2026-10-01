@@ -24,7 +24,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [blacksmith-8vcpu-ubuntu-2404, blacksmith-8vcpu-windows-2025]
+        os: [blacksmith-8vcpu-ubuntu-2404]
     runs-on: ${{ matrix.os }}
     defaults:
       run:
