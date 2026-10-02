@@ -1542,7 +1542,7 @@ test("streaming structured lists reuse existing renderables while appending", as
   expect(firstTextAfter).toBe(firstTextBefore)
 })
 
-test("streaming structured list updates keep previous item text visible while highlighting", async () => {
+test("streaming structured list updates keep current item text visible while highlighting", async () => {
   const mockTreeSitterClient = new MockTreeSitterClient()
   const md = createMarkdownRenderable({
     id: "markdown-streaming-structured-list-no-flicker",
@@ -1581,9 +1581,9 @@ test("streaming structured list updates keep previous item text visible while hi
   const framesBeforeHighlight = recorder.recordedFrames.map((recorded) => recorded.frame)
   expect(framesBeforeHighlight.length).toBeGreaterThan(0)
   for (const frame of framesBeforeHighlight) {
-    expect(frame).toContain("- alp")
-    expect(frame).toContain("- bet")
-    expect(frame).toContain("- gam")
+    expect(frame).toContain("- alpha")
+    expect(frame).toContain("- beta")
+    expect(frame).toContain("- gamma")
   }
 
   expect(mockTreeSitterClient.isHighlighting()).toBe(true)
@@ -1598,7 +1598,7 @@ test("streaming structured list updates keep previous item text visible while hi
   expect(finalFrame).toContain("- gamma")
 })
 
-test("streaming nested structured list updates keep previous nested text visible while highlighting", async () => {
+test("streaming nested structured list updates keep current nested text visible while highlighting", async () => {
   const mockTreeSitterClient = new MockTreeSitterClient()
   const initialContent = `1. First ordered item with \`inline code\`.
 2. Second ordered item before a nested list:
@@ -1653,8 +1653,8 @@ test("streaming nested structured list updates keep previous nested text visible
   expect(framesBeforeHighlight.length).toBeGreaterThan(0)
   for (const frame of framesBeforeHighlight) {
     expect(frame).toContain("2. Second ordered item before a nested list:")
-    expect(frame).toContain("- Nested bullet with a long phrase.")
-    expect(frame).toContain("- Nested bullet before fenced co")
+    expect(frame).toContain("- Nested bullet with a long phrase that should wrap")
+    expect(frame).toContain("- Nested bullet before fenced code:")
   }
 
   expect(mockTreeSitterClient.isHighlighting()).toBe(true)
