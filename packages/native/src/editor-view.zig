@@ -955,7 +955,9 @@ pub const EditorView = struct {
         try placeholder.setStyledText(chunks);
 
         if (self.placeholder_active) {
-            self.text_buffer_view.virtual_lines_dirty = true;
+            // The view is registered with the edit buffer, so placeholder edits do not
+            // invalidate its word-layout cache. Rebind to discard old byte boundaries.
+            self.text_buffer_view.switchToBuffer(placeholder);
         }
 
         self.updatePlaceholderVisibility();
