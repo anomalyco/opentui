@@ -1,5 +1,5 @@
 export type NodeAssetTarget = {
-  readonly platform: "darwin" | "linux" | "win32"
+  readonly platform: "darwin" | "linux" | "win32" | "freebsd"
   readonly arch: "arm64" | "x64"
   readonly libc?: "glibc" | "musl"
 }
@@ -14,6 +14,7 @@ const NATIVE_FILE_NAMES = {
   darwin: "libopentui.dylib",
   linux: "libopentui.so",
   win32: "opentui.dll",
+  freebsd: "libopentui.so",
 } as const
 
 export function getNativeAssetDescriptor(target: NodeAssetTarget): NativeAssetDescriptor {
