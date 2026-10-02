@@ -229,6 +229,7 @@ state: struct {
     pixel_mouse: bool = false,
     color_scheme_updates: bool = false,
     theme_queries_sent: bool = false,
+    terminal_bg_overridden: bool = false,
     focus_tracking: bool = false,
     modify_other_keys: bool = false,
     mouse_pointer: MousePointerStyle = .default,
@@ -327,11 +328,30 @@ pub fn resetState(self: *Terminal, tty: anytype) !void {
 
     self.setTerminalTitle(tty, "");
 
-    // OSC 111 is intentionally disabled for now. In Ghostty, sending the
-    // reset alone is enough to poison later OSC 11 background reporting for
-    // system light/dark theme changes, which breaks theme detection on the
-    // next app startup even though the immediate reset appears to work.
-    // try tty.writeAll(ansi.ANSI.resetTerminalBgColor);
+    if (self.state.terminal_bg_overridden) {
+        try tty.writeAll(ansi.ANSI.resetTerminalBgColor);
+        self.state.terminal_bg_overridden = false;
+    }
+}
+
+pub fn supportsBackgroundColorOverride(self: *Terminal) bool {
+    const env_map = self.opts.env_map orelse return false;
+    if (env_map.get("WT_SESSION") == null or self.multiplexer != .none) return false;
+
+    // Ghostty can keep reporting the overridden OSC 11 color after a system
+    // theme change, including after OSC 111. Do not enable this workaround if
+    // terminal identity is known to be anything other than Windows Terminal.
+    if (self.term_info.from_xtversion) {
+        return std.ascii.eqlIgnoreCase(self.getTerminalName(), "Windows Terminal");
+    }
+    if (self.term_info.name_len > 0) {
+        const name = self.getTerminalName();
+        if (!std.ascii.eqlIgnoreCase(name, "Windows Terminal") and
+            !std.ascii.eqlIgnoreCase(name, "Windows_Terminal") and
+            !std.ascii.eqlIgnoreCase(name, "vscode")) return false;
+    }
+
+    return true;
 }
 
 pub fn enterAltScreen(self: *Terminal, tty: anytype) !void {
