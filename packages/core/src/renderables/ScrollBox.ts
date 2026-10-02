@@ -1,7 +1,7 @@
 import { type KeyEvent } from "../lib/index.js"
 import { getObjectsInViewport } from "../lib/objects-in-viewport.js"
 import { LinearScrollAccel, MacOSScrollAccel, type ScrollAcceleration } from "../lib/scroll-acceleration.js"
-import type { BaseRenderable, Renderable, RenderableOptions } from "../Renderable.js"
+import type { BaseRenderable, Renderable, RenderableOptions, RenderCommand } from "../Renderable.js"
 import type { MouseEvent } from "../renderer.js"
 import type { RenderContext } from "../types.js"
 import { BoxRenderable, type BoxOptions } from "./Box.js"
@@ -140,6 +140,7 @@ export class ScrollBoxRenderable extends BoxRenderable {
   private _stickyScrollRight: boolean = false
   private _stickyStart?: "bottom" | "top" | "left" | "right"
   private _hasManualScroll: boolean = false
+  private _lastContentExtentY: number = -1
   private _isApplyingStickyScroll: boolean = false
   private scrollAccel: ScrollAcceleration
 
@@ -399,6 +400,21 @@ export class ScrollBoxRenderable extends BoxRenderable {
 
   protected onUpdate(deltaTime: number): void {
     this.handleAutoScroll(deltaTime)
+  }
+
+  public updateLayout(deltaTime: number, renderList: RenderCommand[] = []): void {
+    super.updateLayout(deltaTime, renderList)
+
+    // `recalculateBarProps` is otherwise driven only by the content's and the
+    // viewport's own `onSizeChange`, so content that grows deeper in the
+    // subtree without changing the content node's own height never reaches the
+    // scrollbar. Running after `super.updateLayout` means every descendant has
+    // already refreshed its layout this frame, so the extent is current.
+    const extent = this.content.getSubtreeExtentY()
+    if (extent !== this._lastContentExtentY) {
+      this._lastContentExtentY = extent
+      this.recalculateBarProps()
+    }
   }
 
   public scrollBy(delta: number | { x: number; y: number }, unit: ScrollUnit = "absolute"): void {
@@ -752,7 +768,14 @@ export class ScrollBoxRenderable extends BoxRenderable {
     this._isApplyingStickyScroll = true
 
     try {
-      this.verticalScrollBar.scrollSize = this.content.height
+      // Not `content.height`: see `getSubtreeExtentY`. When Yoga reports a
+      // content height its own children overflow, the rows past that height are
+      // laid out and painted but sit below `scrollHeight`, so nothing can
+      // scroll to them and `stickyStart: "bottom"` pins short of the real
+      // bottom. The extent equals the height whenever the layout is sound, so
+      // this only ever corrects the broken case.
+      this._lastContentExtentY = this.content.getSubtreeExtentY()
+      this.verticalScrollBar.scrollSize = this._lastContentExtentY
       this.verticalScrollBar.viewportSize = this.viewport.height
       this.horizontalScrollBar.scrollSize = this.content.width
       this.horizontalScrollBar.viewportSize = this.viewport.width
