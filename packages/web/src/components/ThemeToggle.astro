@@ -5,44 +5,6 @@
   </svg>
 </button>
 
-<script>
-  const toggle = document.querySelector<HTMLButtonElement>("[data-theme-toggle]")!
-  const systemTheme = matchMedia("(prefers-color-scheme: dark)")
-  const themes = ["light", "blue", "dark"] as const
-  type Theme = (typeof themes)[number]
-  const colors: Record<Theme, string> = { light: "#ffffff", blue: "#ffffff", dark: "#000000" }
-  const labels: Record<Theme, string> = { light: "Use light mode", blue: "Use blue tint", dark: "Use dark mode" }
-
-  function current(): Theme {
-    const theme = document.documentElement.dataset.theme as Theme | undefined
-    if (theme && themes.includes(theme)) return theme
-    return systemTheme.matches ? "dark" : "light"
-  }
-
-  function next(): Theme {
-    return themes[(themes.indexOf(current()) + 1) % themes.length]
-  }
-
-  function updateLabel() {
-    const label = labels[next()]
-    toggle.ariaLabel = label
-    toggle.title = label
-  }
-
-  toggle.addEventListener("click", () => {
-    const theme = next()
-    document.documentElement.dataset.theme = theme
-    localStorage.setItem("theme", theme)
-    for (const meta of document.querySelectorAll<HTMLMetaElement>('meta[name="theme-color"]')) {
-      meta.content = colors[theme]
-    }
-    updateLabel()
-  })
-
-  systemTheme.addEventListener("change", updateLabel)
-  updateLabel()
-</script>
-
 <style>
   button {
     display: inline-flex;

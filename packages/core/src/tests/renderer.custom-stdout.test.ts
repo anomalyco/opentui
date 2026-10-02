@@ -3,6 +3,8 @@ import { Writable } from "stream"
 import { createCliRenderer, CliRenderer, CliRenderEvents } from "../renderer.js"
 import { BoxRenderable } from "../renderables/Box.js"
 import { ImageRenderable } from "../renderables/Image.js"
+import { MarkdownRenderable } from "../renderables/Markdown.js"
+import { SyntaxStyle } from "../syntax-style.js"
 import { ManualClock } from "../testing/manual-clock.js"
 import { createTestStdin, TestWriteStream } from "../testing/test-streams.js"
 
@@ -167,6 +169,89 @@ test("non-process stdout: rendered bytes flow to the custom Writable", async () 
   expect(received.length).toBeGreaterThan(0)
   // ANSI escape sequences contain ESC (0x1b).
   expect(received.includes(0x1b)).toBe(true)
+})
+
+test("late Ghostty capability detection emits OSC 8 for compact Markdown links", async () => {
+  const stdin = createTestStdin()
+  const stdout = createCollectingStdout(100, 8)
+  const renderer = await createCliRenderer({ stdin, stdout, useMouse: true })
+  destroyFns.push(() => renderer.destroy())
+
+  const syntaxStyle = SyntaxStyle.fromStyles({ default: { fg: "#ffffff" } })
+  destroyFns.push(() => syntaxStyle.destroy())
+
+  renderer.root.add(
+    new MarkdownRenderable(renderer, {
+      content: "| Link |\n| --- |\n| [OpenTUI](https://github.com/anomalyco/opentui) |\n| https://example.com/path |",
+      syntaxStyle,
+      tableOptions: { style: "columns", widthMode: "content" },
+    }),
+  )
+  await renderer.idle()
+  await flushWritable(stdout)
+
+  const initialFrame = new TextDecoder().decode(renderer.currentRenderBuffer.getRealCharBytes(true))
+  expect(initialFrame).toContain("OpenTUI (https://github.com/anomalyco/opentui)")
+  expect(initialFrame.match(/https:\/\/example\.com\/path/g)).toHaveLength(1)
+  expect(stdout.getWrittenBytes().toString("binary")).not.toContain("\x1b]8;id=")
+
+  stdout.clearWrites()
+  stdin.emit("data", Buffer.from("\x1bP>|ghostty 1.1.3\x1b\\"))
+  await renderer.idle()
+  await flushWritable(stdout)
+
+  const finalFrame = new TextDecoder().decode(renderer.currentRenderBuffer.getRealCharBytes(true))
+  const output = stdout.getWrittenBytes().toString("binary")
+  expect(renderer.capabilities?.hyperlinks).toBe(true)
+  expect(finalFrame).toContain("OpenTUI")
+  expect(finalFrame).not.toContain("github.com/anomalyco/opentui")
+  expect(finalFrame.match(/https:\/\/example\.com\/path/g)).toHaveLength(1)
+  expect(output).toContain(";https://github.com/anomalyco/opentui\x1b\\")
+  expect(output).toContain(";https://example.com/path\x1b\\")
+  expect(output).toContain("\x1b]8;;\x1b\\")
+})
+
+test("unidentified truecolor terminals preserve the visible Markdown link fallback", async () => {
+  const previousTerm = process.env.TERM
+  const previousColorTerm = process.env.COLORTERM
+  process.env.TERM = "xterm-256color"
+  process.env.COLORTERM = "truecolor"
+
+  try {
+    const stdout = createCollectingStdout(80, 6)
+    const renderer = await createCliRenderer({
+      stdin: createTestStdin(),
+      stdout,
+      remote: false,
+      forwardEnvKeys: ["TERM", "COLORTERM"],
+    })
+    destroyFns.push(() => renderer.destroy())
+
+    const syntaxStyle = SyntaxStyle.fromStyles({ default: { fg: "#ffffff" } })
+    destroyFns.push(() => syntaxStyle.destroy())
+    renderer.root.add(
+      new MarkdownRenderable(renderer, {
+        content: "| Link |\n|---|\n| [OpenTUI](https://example.com/docs) |",
+        syntaxStyle,
+        tableOptions: { style: "columns", widthMode: "content" },
+      }),
+    )
+
+    await renderer.idle()
+    await flushWritable(stdout)
+
+    expect(renderer.capabilities?.rgb).toBe(true)
+    expect(renderer.capabilities?.hyperlinks).toBe(false)
+    expect(new TextDecoder().decode(renderer.currentRenderBuffer.getRealCharBytes(true))).toContain(
+      "OpenTUI (https://example.com/docs)",
+    )
+    expect(stdout.getWrittenBytes().toString("binary")).not.toContain("\x1b]8;id=")
+  } finally {
+    if (previousTerm === undefined) delete process.env.TERM
+    else process.env.TERM = previousTerm
+    if (previousColorTerm === undefined) delete process.env.COLORTERM
+    else process.env.COLORTERM = previousColorTerm
+  }
 })
 
 test("auto images use detected Kitty graphics and delete cleared placements", async () => {

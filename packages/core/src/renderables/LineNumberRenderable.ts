@@ -375,7 +375,6 @@ export class LineNumberRenderable extends Renderable {
   private _lineNumberOffset: number
   private _hideLineNumbers: Set<number>
   private _lineNumbers: Map<number, number>
-  private _isDestroying: boolean = false
   private handleLineInfoChange = (): void => {
     // When line info changes in the target, remeasure the gutter
     this.gutter?.remeasure()
@@ -444,17 +443,7 @@ export class LineNumberRenderable extends Renderable {
   private setTarget(target: Renderable & LineInfoProvider): void {
     if (this.target === target) return
 
-    if (this.target) {
-      // Remove event listener from old target
-      this.target.off("line-info-change", this.handleLineInfoChange)
-      super.remove(this.target)
-    }
-
-    if (this.gutter) {
-      super.remove(this.gutter)
-      this.gutter = null
-    }
-
+    this.clearTarget()
     this.target = target
 
     // Listen for line info changes from target
@@ -497,11 +486,6 @@ export class LineNumberRenderable extends Renderable {
 
   // Override remove to prevent removing gutter/target directly
   public override remove(child: BaseRenderable): void {
-    if (this._isDestroying) {
-      super.remove(child)
-      return
-    }
-
     if (this.gutter && child === this.gutter) {
       throw new Error("LineNumberRenderable: Cannot remove gutter directly.")
     }
@@ -511,18 +495,16 @@ export class LineNumberRenderable extends Renderable {
     super.remove(child)
   }
 
-  // Override destroyRecursively to properly clean up internal components
   public override destroyRecursively(): void {
-    this._isDestroying = true
-
-    if (this.target) {
-      this.target.off("line-info-change", this.handleLineInfoChange)
-    }
-
+    const target = this.target
+    this.clearTarget()
+    target?.destroyRecursively()
     super.destroyRecursively()
+  }
 
-    this.gutter = null
-    this.target = null
+  public override destroy(): void {
+    this.clearTarget()
+    super.destroy()
   }
 
   public clearTarget(): void {
@@ -533,6 +515,7 @@ export class LineNumberRenderable extends Renderable {
     }
     if (this.gutter) {
       super.remove(this.gutter)
+      this.gutter.destroy()
       this.gutter = null
     }
   }

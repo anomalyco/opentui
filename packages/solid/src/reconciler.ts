@@ -68,13 +68,14 @@ function _insertNode(parent: DomNode, node: DomNode, anchor?: DomNode): void {
     node instanceof TextNode,
   )
 
-  if (node instanceof SlotRenderable) {
-    node.parent = parent
-    node = node.getSlotChild(parent)
+  const slot = node instanceof SlotRenderable ? node : undefined
+  if (slot) {
+    slot.parent = parent
+    node = slot.getSlotChild(parent)
   }
 
   if (anchor && anchor instanceof SlotRenderable) {
-    anchor = anchor.getSlotChild(parent)
+    anchor = anchor.getSlotChildForRemoval(parent)
   }
 
   if (isTextNodeRenderable(node)) {
@@ -95,19 +96,19 @@ function _insertNode(parent: DomNode, node: DomNode, anchor?: DomNode): void {
     throw new Error("Tried to mount a non base renderable")
   }
 
-  if (!anchor) {
-    parent.add(node)
-    return
-  }
-
-  const children = getNodeChildren(parent)
-
-  const anchorIndex = children.indexOf(anchor)
-  if (anchorIndex === -1) {
-    log("[INSERT]", "Could not find anchor", logId(parent), logId(anchor), "[children]", ...children.map((c) => c.id))
+  let anchorIndex: number | undefined
+  if (anchor) {
+    const children = getNodeChildren(parent)
+    anchorIndex = children.indexOf(anchor)
+    if (anchorIndex === -1) {
+      log("[INSERT]", "Could not find anchor", logId(parent), logId(anchor), "[children]", ...children.map((c) => c.id))
+    }
   }
 
   parent.add(node, anchorIndex)
+
+  // Hosts such as LineNumberRenderable ignore children they do not render.
+  if (slot && !node.parent) node.destroy()
 }
 
 function _removeNode(parent: DomNode, node: DomNode): void {

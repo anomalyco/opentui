@@ -12,7 +12,9 @@ import {
 import type { DocVisualFixture } from "./shared"
 
 const foreground = RGBA.defaultForeground()
+const background = RGBA.defaultBackground()
 const muted = RGBA.fromIndex(244)
+const surface = RGBA.fromIndex(235)
 
 export const foundationVisuals: DocVisualFixture[] = [
   {
@@ -27,6 +29,38 @@ export const foundationVisuals: DocVisualFixture[] = [
         t`${fg(muted)("underline  ")}${underline("Documentation")}`,
       ]) {
         renderer.root.add(new TextRenderable(renderer, { content, fg: foreground }))
+      }
+    },
+  },
+  {
+    id: "text-align-lines",
+    label:
+      "The same two lines in a 10-column viewport. Left starts at column 0. Center and right pad each rendered line. As a result, hi sits farther inward than world",
+    width: 34,
+    height: 4,
+    render({ renderer }) {
+      const row = new BoxRenderable(renderer, { flexDirection: "row", gap: 2 })
+      renderer.root.add(row)
+
+      for (const align of ["left", "center", "right"] as const) {
+        const column = new BoxRenderable(renderer, { width: 10 })
+        row.add(column)
+        column.add(new TextRenderable(renderer, { content: align, fg: foreground, bg: background }))
+        column.add(new TextRenderable(renderer, { content: "0123456789", fg: muted, bg: background }))
+
+        const viewport = new BoxRenderable(renderer, { width: 10, height: 2, backgroundColor: surface })
+        column.add(viewport)
+        viewport.add(
+          new TextRenderable(renderer, {
+            content: "hi\nworld",
+            width: 10,
+            height: 2,
+            wrapMode: "none",
+            textAlign: align,
+            fg: foreground,
+            bg: surface,
+          }),
+        )
       }
     },
   },

@@ -54,6 +54,7 @@ const isDev = args.includes("--dev")
 const buildAll = args.includes("--all") // Build for all platforms
 const gpaSafeStats = args.includes("--gpa-safe-stats")
 const skipZig = args.includes("--skip-zig")
+const skipSymbols = args.includes("--skip-symbols")
 
 const getHostVariant = (): Variant => {
   const hostVariant = variants.find((variant) => variant.platform === process.platform && variant.arch === process.arch)
@@ -225,7 +226,7 @@ if (buildNative) {
       continue
     }
 
-    if (!isDev && libraryFileName) {
+    if (!isDev && !skipSymbols && libraryFileName) {
       separateNativeSymbols({
         binary: join(nativeDir, libraryFileName),
         symbolsDir: join(nativeRoot, "symbols", `${platform}-${arch}${abi ? `-${abi}` : ""}`),
@@ -584,6 +585,7 @@ if (buildLib) {
         homepage: packageJson.homepage,
         repository: packageJson.repository,
         bugs: packageJson.bugs,
+        engines: packageJson.engines,
         exports,
         dependencies: packageJson.dependencies,
         peerDependencies: packageJson.peerDependencies,

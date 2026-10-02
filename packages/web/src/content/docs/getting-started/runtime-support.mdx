@@ -19,6 +19,8 @@ Check the runtime, native artifact, permission, asset, and package requirements 
 
 The Node.js acceptance scripts accept Node.js 26.4 or later.
 
+Use Bun 1.4.0 or later on native Windows arm64 because Bun 1.3 does not support FFI on that target.
+
 Use ESM for Node.js applications. The Core root has an asynchronous ESM graph. A CommonJS `require("@opentui/core")`
 call fails with `ERR_REQUIRE_ASYNC_MODULE`.
 

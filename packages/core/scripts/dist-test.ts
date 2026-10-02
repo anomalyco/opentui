@@ -481,7 +481,12 @@ function assertNodeStaticImportFailure(
 }
 
 function installAndTest(nodeDir: string, bunDir: string): void {
-  runCommand("npm", ["install", "--ignore-scripts", "--no-package-lock"], nodeDir, "Node dist test install failed")
+  runCommand(
+    "npm",
+    ["install", "--engine-strict", "--ignore-scripts", "--no-package-lock"],
+    nodeDir,
+    "Node dist test install failed",
+  )
   runCommand(nodePath, ["-e", `import(${JSON.stringify(packageJson.name)})`], nodeDir, "Node import smoke check failed")
   runCommand(nodePath, ["--experimental-ffi", "--no-warnings", "index.mjs"], nodeDir, "Node dist smoke tests failed", {
     timeout: 60_000,

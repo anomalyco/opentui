@@ -52,6 +52,8 @@ Then build your first app with the [quickstart](https://opentui.com/docs/getting
 `@opentui/core` runs on Bun 1.3.0 or later, or on Node.js 26.4.0 or later with ECMAScript modules (ESM) and
 `--experimental-ffi`.
 
+Use Bun 1.4.0 or later on native Windows arm64.
+
 The native ABI and the generated platform packages, such as `@opentui/core-linux-x64`, are internal distribution
 surfaces, not application APIs.
 

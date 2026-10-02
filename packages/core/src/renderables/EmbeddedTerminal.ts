@@ -13,6 +13,7 @@ export interface EmbeddedTerminalOptions extends RenderableOptions<EmbeddedTermi
   cols?: number
   rows?: number
   maxScrollback?: number
+  transparentBackground?: boolean
   onData?: (data: Uint8Array, source: EmbeddedTerminalDataSource) => void
   onTerminalResize?: (cols: number, rows: number) => void
   onScreenChange?: () => void
@@ -48,6 +49,7 @@ export class EmbeddedTerminalRenderable extends Renderable {
   private keyreleaseHandler: ((key: KeyEvent) => void) | null = null
   private hadRenderHooks = false
   private selection = false
+  private _transparentBackground = false
 
   constructor(ctx: RenderContext, options: EmbeddedTerminalOptions) {
     const cols = options.cols ?? (typeof options.width === "number" ? options.width : 80)
@@ -67,6 +69,7 @@ export class EmbeddedTerminalRenderable extends Renderable {
 
     try {
       this.handle = this.lib.createEmbeddedTerminal({ cols, rows, maxScrollback: options.maxScrollback })
+      this.transparentBackground = options.transparentBackground ?? false
       this.setupMouse(options)
     } catch (error) {
       this.destroy()
@@ -96,6 +99,19 @@ export class EmbeddedTerminalRenderable extends Renderable {
 
   public set onScreenChange(value: (() => void) | undefined) {
     this._onScreenChange = value
+  }
+
+  public get transparentBackground(): boolean {
+    return this._transparentBackground
+  }
+
+  public set transparentBackground(value: boolean) {
+    if (this._transparentBackground === value) return
+    this._transparentBackground = value
+    if (this.handle !== null) {
+      this.lib.embeddedTerminalSetTransparentBackground(this.handle, value)
+      this.requestRender()
+    }
   }
 
   public screen(): EmbeddedTerminalScreen {

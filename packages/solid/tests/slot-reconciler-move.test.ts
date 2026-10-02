@@ -1,8 +1,9 @@
 import { describe, expect, it } from "bun:test"
-import { BoxRenderable, Yoga } from "@opentui/core"
+import { BoxRenderable, LineNumberRenderable, TextRenderable, Yoga } from "@opentui/core"
 import { createTestRenderer } from "@opentui/core/testing"
 import { batch, createRoot, createSignal } from "solid-js"
-import { createSlotNode, insert } from "../index.js"
+import { createSlotNode, insert, insertNode } from "../index.js"
+import { LayoutSlotRenderable } from "../src/elements/slot.js"
 
 type MoveOrder = "remove-then-insert" | "insert-then-remove"
 
@@ -86,6 +87,38 @@ async function runMoveScenario(order: MoveOrder) {
 }
 
 describe("slot placeholder moves", () => {
+  it.each([false, true])("keeps rejected slots reusable (existing host: %p)", async (attached) => {
+    const setup = await createTestRenderer({ width: 20, height: 5 })
+    const rejecting = new LineNumberRenderable(setup.renderer, {})
+    setup.renderer.root.add(rejecting)
+    const slot = createSlotNode()
+
+    try {
+      if (attached) insertNode(setup.renderer.root, slot)
+      const rejected = slot.getSlotChild(rejecting)
+      if (!(rejected instanceof LayoutSlotRenderable)) throw new Error("Expected layout placeholder")
+      const yoga = rejected.getLayoutNode()
+      insertNode(rejecting, slot)
+
+      expect(yoga.isFreed()).toBe(true)
+      expect(slot.getSlotChildForRemoval(rejecting)).toBeUndefined()
+
+      insertNode(rejecting, new TextRenderable(setup.renderer, { content: "target" }), slot)
+      expect(slot.getSlotChildForRemoval(rejecting)).toBeUndefined()
+
+      insertNode(setup.renderer.root, slot)
+      const accepted = slot.getSlotChild(setup.renderer.root)
+      if (!(accepted instanceof LayoutSlotRenderable)) throw new Error("Expected layout placeholder")
+      expect(accepted.parent).toBe(setup.renderer.root)
+      expect(accepted.getLayoutNode().isFreed()).toBe(false)
+      setup.renderer.destroy()
+      expect(accepted.getLayoutNode().isFreed()).toBe(true)
+    } finally {
+      setup.renderer.destroy()
+      slot.destroy()
+    }
+  })
+
   it("recreates incompatible layout placeholders for remove-then-insert moves", async () => {
     const { controls, movedChild, originalChild, parentA, parentB, setup, slot } =
       await runMoveScenario("remove-then-insert")
@@ -122,7 +155,7 @@ describe("slot placeholder moves", () => {
     }
   })
 
-  it("promotes slot.parent back to another attached host when the newest placeholder is removed", async () => {
+  it.each(["remove", "destroy subtree"])("preserves the other attached slot host on %s", async (cleanup) => {
     const setup = await createTestRenderer({ width: 40, height: 10 })
     const parentA = new BoxRenderable(setup.renderer, {
       id: "slot-parent-host-a",
@@ -144,21 +177,33 @@ describe("slot placeholder moves", () => {
       slot.parent = parentA
       const childA = slot.getSlotChild(parentA)
       parentA.add(childA)
+      const yogaA = parentA.getLayoutNode().getChild(0)!
 
       slot.parent = parentB
       const childB = slot.getSlotChild(parentB)
       parentB.add(childB)
+      const yogaB = parentB.getLayoutNode().getChild(0)!
 
       expect(slot.parent).toBe(parentB)
 
-      parentB.remove(childB)
-      slot.didRemoveSlotChild(parentB, childB)
+      if (cleanup === "remove") {
+        parentB.remove(childB)
+        slot.didRemoveSlotChild(parentB, childB)
+      } else {
+        parentB.destroyRecursively()
+      }
 
       expect(slot.parent).toBe(parentA)
       expect(parentA.getChildren()[0]).toBe(childA)
       expect(parentB.getChildren()).toHaveLength(0)
+      expect(yogaA.isFreed()).toBe(false)
+      expect(yogaB.isFreed()).toBe(true)
+
+      setup.renderer.destroy()
+      expect(yogaA.isFreed()).toBe(true)
     } finally {
       setup.renderer.destroy()
+      slot.destroy()
     }
   })
 })

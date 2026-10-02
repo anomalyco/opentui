@@ -110,6 +110,27 @@ afterEach(() => {
 })
 
 describe("LineNumberRenderable", () => {
+  test.each(["clearTarget", "destroy"] as const)("%s frees the gutter and preserves the target", async (cleanup) => {
+    const { renderer } = await createTestRenderer({ width: 20, height: 5 })
+    const target = new MockTextBuffer(renderer, { text: "content" })
+    const numbers = new LineNumberRenderable(renderer, { target })
+    renderer.root.add(numbers)
+    const gutter = numbers.getChildren()[0]!
+
+    try {
+      numbers[cleanup]()
+
+      expect(numbers.getChildren()).toHaveLength(0)
+      expect(target.parent).toBeNull()
+      expect(target.isDestroyed).toBe(false)
+      expect(target.listenerCount("line-info-change")).toBe(0)
+      expect(gutter.getLayoutNode().isFreed()).toBe(true)
+    } finally {
+      gutter.destroy()
+      target.destroy()
+    }
+  })
+
   test("renders line numbers correctly", async () => {
     const { renderer, renderOnce, captureCharFrame } = await createTestRenderer({
       width: 20,

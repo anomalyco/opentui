@@ -49,7 +49,7 @@ Add `-g` to install the skill globally.
 
 ## Development
 
-Development requires Bun 1.3.0 or later and Zig 0.16.0.
+Development requires Bun 1.4.1 or later and Zig 0.16.0.
 
 See [AGENTS.md](AGENTS.md) for engineering, tooling, and verification conventions.
 

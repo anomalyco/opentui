@@ -1144,6 +1144,11 @@ pub fn Rope(comptime T: type) type {
             return self.redo_history != null and self.curr_history != null;
         }
 
+        /// Returns whether an undo or redo root can still reference replaced nodes.
+        pub fn hasHistory(self: *const Self) bool {
+            return self.undo_history != null or self.redo_history != null or self.curr_history != null;
+        }
+
         pub fn clear_history(self: *Self) void {
             self.undo_history = null;
             self.redo_history = null;

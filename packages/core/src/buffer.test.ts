@@ -26,6 +26,46 @@ describe("OptimizedBuffer", () => {
     expect([...buffer.buffers.attributes.slice(0, attributes.length)]).toEqual(attributes)
   })
 
+  it("clips draws at negative positions", () => {
+    // Node FFI rejects a negative u32 argument, so every call here also checks that positions cross FFI as i32.
+    const target = OptimizedBuffer.create(3, 2, "unicode", { id: "negative-positions" })
+    try {
+      const white = RGBA.fromInts(255, 255, 255)
+      const black = RGBA.fromInts(0, 0, 0)
+      target.clear(black)
+
+      target.setCell(-1, 0, "S", white, black)
+      target.setCellWithAlphaBlending(0, -1, "A", white, black)
+      target.drawChar("D".codePointAt(0)!, -1, -1, white, black)
+      target.drawSuperSampleBuffer(-1, -1, new Uint8Array(16), 16, "rgba8unorm", 8)
+      target.drawPackedBuffer(new Uint8Array(48), 48, -1, -1, 1, 1)
+      target.drawText("ABCD", -2, 1, white, black)
+      target.fillRect(-1, -1, 2, 2, RGBA.fromInts(255, 0, 0))
+
+      expect(new TextDecoder().decode(target.getRealCharBytes(true))).toBe("   \nCD \n")
+      expect([0, 1, 3].map((cell) => target.buffers.bg[cell * 4] & 0xff)).toEqual([255, 0, 0])
+    } finally {
+      target.destroy()
+    }
+  })
+
+  it("fills nothing for a non-positive extent", () => {
+    // Bun wraps a negative u32 argument into a huge extent, so the wrapper must return before the FFI call.
+    const target = OptimizedBuffer.create(3, 2, "unicode", { id: "empty-extents" })
+    try {
+      const red = RGBA.fromInts(255, 0, 0)
+      target.clear(RGBA.fromInts(0, 0, 0))
+
+      target.fillRect(1, 0, -1, 1, red)
+      target.fillRect(1, 0, 1, -1, red)
+      target.fillRect(1, 0, 0, 1, red)
+
+      expect([0, 1, 2, 3, 4, 5].map((cell) => target.buffers.bg[cell * 4] & 0xff)).toEqual([0, 0, 0, 0, 0, 0])
+    } finally {
+      target.destroy()
+    }
+  })
+
   it("draws images as reserved cells with resolved fallback glyphs", () => {
     const image = NativeImage.fromRgba(
       Uint8Array.of(255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255, 255, 255, 255, 255),
@@ -87,6 +127,81 @@ describe("OptimizedBuffer", () => {
     } finally {
       image.dispose()
     }
+  })
+
+  describe("non-positive extents", () => {
+    // Bun wraps a negative u32 argument and Node FFI rejects it, so these must not reach native code.
+    const white = RGBA.fromInts(255, 255, 255)
+    const black = RGBA.fromInts(0, 0, 0)
+    const red = RGBA.fromInts(255, 0, 0)
+    const snapshot = () => ({
+      char: [...buffer.buffers.char],
+      fg: [...buffer.buffers.fg],
+      bg: [...buffer.buffers.bg],
+    })
+
+    it("clips everything inside a scissor rect with a non-positive extent", () => {
+      buffer.clear(black)
+      const blank = snapshot()
+
+      buffer.pushScissorRect(0, 0, -1, 5)
+      buffer.fillRect(0, 0, 20, 5, red)
+      buffer.popScissorRect()
+
+      buffer.pushScissorRect(0, 0, 20, 5)
+      buffer.pushScissorRect(0, 0, 20, -1)
+      buffer.drawText("hidden", 0, 0, white, black)
+      buffer.popScissorRect()
+      buffer.popScissorRect()
+
+      expect(snapshot()).toEqual(blank)
+    })
+
+    it("skips drawBox with a non-positive extent", () => {
+      buffer.clear(black)
+      const blank = snapshot()
+
+      for (const [width, height] of [
+        [-1, 3],
+        [3, -1],
+      ]) {
+        buffer.drawBox({
+          x: 0,
+          y: 0,
+          width,
+          height,
+          border: true,
+          borderColor: white,
+          backgroundColor: red,
+          shouldFill: true,
+          title: "title",
+        })
+      }
+
+      expect(snapshot()).toEqual(blank)
+    })
+
+    it("skips drawPackedBuffer with a non-positive length or cell count", () => {
+      const cellCount = 20 * 5
+      const packed = new Uint8Array(cellCount * 48)
+      const floats = new Float32Array(packed.buffer)
+      const words = new Uint32Array(packed.buffer)
+      for (let cell = 0; cell < cellCount; cell++) {
+        floats.set([1, 0, 0, 1, 1, 1, 1, 1], cell * 12)
+        words[cell * 12 + 8] = "X".codePointAt(0)!
+      }
+      buffer.clear(black)
+      const blank = snapshot()
+
+      buffer.drawPackedBuffer(packed, -48, 0, 0, 20, 5)
+      buffer.drawPackedBuffer(packed, packed.byteLength, 0, 0, 0, 5)
+      buffer.drawPackedBuffer(packed, packed.byteLength, 0, 0, -1, 5)
+      buffer.drawPackedBuffer(packed, packed.byteLength, 0, 0, 20, -1)
+      expect(snapshot()).toEqual(blank)
+
+      buffer.drawPackedBuffer(packed, packed.byteLength, 0, 0, 20, 5)
+      expect(snapshot()).not.toEqual(blank)
+    })
   })
 
   describe("encodeUnicode", () => {
@@ -363,6 +478,77 @@ describe("OptimizedBuffer", () => {
 
       child.destroy()
       parent.destroy()
+    })
+  })
+
+  describe("draw text encoding", () => {
+    const white = RGBA.fromInts(255, 255, 255)
+    const black = RGBA.fromInts(0, 0, 0)
+    const rows = (target: OptimizedBuffer) =>
+      new TextDecoder()
+        .decode(target.getRealCharBytes(true))
+        .split("\n")
+        .map((row) => row.trimEnd())
+
+    it("draws non-string text as TextEncoder converts it", () => {
+      buffer.clear(black)
+      buffer.drawText(123 as never, 0, 0, white)
+      buffer.drawText(["a", "b"] as never, 0, 1, white)
+      buffer.drawText(undefined as never, 0, 2, white)
+      buffer.drawText(null as never, 0, 3, white)
+      expect(rows(buffer).slice(0, 4)).toEqual(["123", "a,b", "", "null"])
+    })
+
+    it("draws only the latest text after longer and multi-byte text", () => {
+      buffer.clear(black)
+      buffer.drawText("é漢😀 wide", 0, 0, white)
+      buffer.drawText("x".repeat(5000), 0, 1, white)
+      buffer.drawText("ok", 0, 1, white)
+      buffer.drawText("é漢😀", 0, 2, white)
+      buffer.drawText("ab", 0, 2, white)
+      expect(rows(buffer).slice(0, 3)).toEqual(["é漢😀 wide", "ok" + "x".repeat(18), "ab 😀"])
+    })
+
+    it("draws all of a multi-byte text whose UTF-8 is longer than its UTF-16 length", () => {
+      const wide = OptimizedBuffer.create(3000, 1, "unicode", { id: "wide-buffer" })
+      try {
+        const text = "漢".repeat(1400)
+        wide.drawText(text, 0, 0, white)
+        expect(rows(wide)[0]).toBe(text)
+      } finally {
+        wide.destroy()
+      }
+    })
+
+    it("converts both box titles before a title's toString can draw", () => {
+      const other = OptimizedBuffer.create(12, 1, "unicode", { id: "other-buffer" })
+      try {
+        other.clear(black)
+        buffer.clear(black)
+        const bottomTitle = {
+          toString() {
+            other.drawText("XYZ", 0, 0, white)
+            return "BOT"
+          },
+        }
+        buffer.drawBox({
+          x: 0,
+          y: 0,
+          width: 12,
+          height: 3,
+          border: true,
+          borderColor: white,
+          backgroundColor: black,
+          title: "TOP",
+          bottomTitle: bottomTitle as never,
+        })
+        const [top, , bottom] = rows(buffer)
+        expect(top).toContain("TOP")
+        expect(bottom).toContain("BOT")
+        expect(rows(other)[0]).toBe("XYZ")
+      } finally {
+        other.destroy()
+      }
     })
   })
 })

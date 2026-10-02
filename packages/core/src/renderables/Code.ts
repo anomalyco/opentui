@@ -21,6 +21,7 @@ export type OnHighlightCallback = (
 
 export interface ChunkRenderContext extends HighlightContext {
   highlights: SimpleHighlight[]
+  sourceRanges?: Array<{ start: number; end: number }>
 }
 
 export type OnChunksCallback = (
@@ -124,7 +125,7 @@ export class CodeRenderable extends TextBufferRenderable {
         return
       }
 
-      if (this._initialStyledText && this._drawUnstyledText) {
+      if (value && this._initialStyledText && this._drawUnstyledText) {
         this.textBuffer.setStyledText(this._initialStyledText)
       } else {
         this.textBuffer.setText(value)
@@ -132,6 +133,15 @@ export class CodeRenderable extends TextBufferRenderable {
       this.setRenderedLineSources(undefined)
       this.updateTextInfo()
     }
+  }
+
+  public updateStreamingPreview(content: string, initialStyledText: StyledText): void {
+    this._content = content
+    this._initialStyledText = initialStyledText
+    this.invalidateHighlights()
+    this.textBuffer.setStyledText(initialStyledText)
+    this.setRenderedLineSources(undefined)
+    this.updateTextInfo()
   }
 
   public override get lineInfo(): LineInfo {
@@ -229,6 +239,11 @@ export class CodeRenderable extends TextBufferRenderable {
 
   set initialStyledText(value: StyledText | undefined) {
     if (this._initialStyledText !== value) {
+      if (value && this._streaming && this._drawUnstyledText && this._isHighlighting) {
+        this.updateStreamingPreview(this._content, value)
+        return
+      }
+
       this._initialStyledText = value
       this.invalidateHighlights()
     }
@@ -382,16 +397,19 @@ export class CodeRenderable extends TextBufferRenderable {
       }
 
       if (highlights.length > 0 || this._onChunks || this._baseHighlight) {
+        const sourceRanges: Array<{ start: number; end: number }> | undefined = this._onChunks ? [] : undefined
         const context: ChunkRenderContext = {
           content,
           filetype,
           syntaxStyle: this._syntaxStyle,
           highlights,
+          sourceRanges,
         }
 
         let chunks = treeSitterToTextChunks(content, highlights, this._syntaxStyle, {
           enabled: this._conceal,
           baseHighlight: this._baseHighlight,
+          ranges: sourceRanges,
         })
         // onChunks may rewrite text arbitrarily, so the conceal-only source map would be invalid.
         const renderedLineSources = this._onChunks ? undefined : this.getConcealLinesSourceMap(content, highlights)

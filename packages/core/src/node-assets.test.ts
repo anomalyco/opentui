@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test"
 import { isAbsolute } from "node:path"
 
+import { defaultParserAssetPaths } from "./lib/tree-sitter/default-parsers.js"
 import { getNodeAssets } from "./node-assets.js"
 
 describe("getNodeAssets", () => {
@@ -28,7 +29,7 @@ describe("getNodeAssets", () => {
 
     expect(first).toEqual(second)
     expect(keys).toEqual([...keys].sort())
-    expect(keys).toHaveLength(14)
+    expect(keys).toHaveLength(3 + defaultParserAssetPaths.length)
     expect(keys).toContain("@opentui/core/parser.worker.js")
     expect(keys).toContain("@opentui/core/assets/markdown/highlights.scm")
     expect(keys).toContain("web-tree-sitter/tree-sitter.wasm")

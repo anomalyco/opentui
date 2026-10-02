@@ -111,7 +111,7 @@ Kitty preserves image alpha, Sixel treats alpha below 128 as transparent, and bl
 
 Use `OPENTUI_IMAGE_PROTOCOL=auto|kitty|sixel|blocks` to set the global default. `OPENTUI_GRAPHICS=false` disables Kitty and Sixel detection. See [Environment variables](/docs/reference/env-vars).
 
-Split-footer scrollback snapshots use the same protocol resolution as live images. They use Kitty placement, Sixel with detected pixel geometry, or Unicode quadrant blocks. Snapshots with mixed effective protocols, overlapping images, or covered Sixel cells use blocks. Native scrollback images can render before the footer is pinned. Each image must fit within the output width and the height available above the pinned footer, and its snapshot must start at the beginning of a line. Await `loadPromise` before rendering an image into a `ScrollbackSurface`. See [Writing to scrollback](/docs/core-concepts/renderer#writing-to-scrollback).
+Split-footer scrollback snapshots use the same protocol resolution as live images. They use Kitty placement, Sixel with detected pixel geometry, or Unicode quadrant blocks. Snapshots with mixed effective protocols, overlapping images, or covered Sixel or Kitty cells use blocks. Native scrollback images can render before the footer is pinned. Each image must fit within the output width and the height available above the pinned footer, and its snapshot must start at the beginning of a line. Await `loadPromise` before rendering an image into a `ScrollbackSurface`. See [Writing to scrollback](/docs/core-concepts/renderer#writing-to-scrollback).
 
 `resolveImageRenderProtocol(requested, capabilities, hasResolution)` exposes the same protocol-resolution policy for code that needs it without constructing a renderable.
 

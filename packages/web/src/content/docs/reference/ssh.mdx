@@ -21,7 +21,8 @@ SSH is an access transport. It is not an application packaging format. See
 bun add @opentui/ssh @opentui/core
 ```
 
-`@opentui/core` is a peer dependency. The SSH package declares Bun >=1.3.0 and Node.js >=26.4.0. The SSH Node CI lane
+`@opentui/core` is a peer dependency. The SSH package declares Bun >=1.3.0 and Node.js >=26.4.0. Use Bun >=1.4.0 on
+native Windows arm64. The SSH Node CI lane
 runs on Linux x64. Its packed Node consumer test uses a Core stub, so that test does not start the native renderer. See
 [Runtime and platform support](/docs/getting-started/runtime-support) before you run the native renderer with Node.js.
 

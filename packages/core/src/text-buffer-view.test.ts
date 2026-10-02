@@ -1,8 +1,145 @@
-import { describe, expect, it, beforeEach, afterEach } from "bun:test"
+import { describe, expect, it, beforeEach, afterEach, spyOn } from "bun:test"
 import { TextBuffer } from "./text-buffer.js"
 import { TextBufferView } from "./text-buffer-view.js"
 import { StyledText, stringToStyledText } from "./lib/styled-text.js"
 import { RGBA } from "./lib/RGBA.js"
+import { OptimizedBuffer } from "./buffer.js"
+import { resolveRenderLib } from "./zig.js"
+
+it("cached word and CJK breaks retain streaming source order", () => {
+  const part = "AB \u65e5\u672c\u3002\u8a9e\u6587 "
+  const layouts = []
+  for (const fragmented of [false, true]) {
+    const buffer = TextBuffer.create("wcwidth")
+    const view = TextBufferView.create(buffer)
+    const screen = OptimizedBuffer.create(10, 256, "wcwidth")
+    try {
+      if (fragmented) {
+        for (let i = 0; i < 64; i++) buffer.append(part)
+      } else {
+        buffer.setText(part.repeat(64))
+      }
+      view.setWrapMode("word")
+      for (const width of [6, 8, 6]) {
+        view.setWrapWidth(width)
+        screen.clear()
+        screen.drawTextBuffer(view, 0, 0)
+        const lines = view.lineInfo
+        layouts.push({
+          rows: new TextDecoder().decode(screen.getRealCharBytes(true)),
+          starts: lines.lineStartCols,
+          widths: lines.lineWidthCols,
+        })
+      }
+    } finally {
+      screen.destroy()
+      view.destroy()
+      buffer.destroy()
+    }
+  }
+  expect(layouts.slice(0, 3)).toEqual(layouts.slice(3))
+})
+
+for (const method of ["unicode", "unicode-wide", "wcwidth"] as const) {
+  for (const [name, parts, width, expectedRows] of [
+    [
+      "mixed CJK and split flags using the existing word policy",
+      ["\u65e5\u672c\u{1f1fa}", "\u{1f1f8}\u{1f1fa}\u{1f1f8}\u8a9e\u6587"],
+      4,
+      ["\u65e5\u672c", "\u{1f1fa}\u{1f1f8}\u{1f1fa}\u{1f1f8}", "\u8a9e\u6587"],
+    ],
+    [
+      "non-CJK chunk-local flag boundaries",
+      ["\u{1f1e6}", "\u{1f1e7}\u{1f1e8}", "\u{1f1e9}\u{1f1ea}\u{1f1eb}"],
+      3,
+      ["\u{1f1e6}\u{1f1e7}\u{1f1e8}", "\u{1f1e9}\u{1f1ea}\u{1f1eb}"],
+    ],
+    [
+      "mixed CJK and a split modifier using the existing word policy",
+      ["\u65e5\u672c\u{1f44b}", "\u{1f3fb}\u8a9e\u6587"],
+      4,
+      ["\u65e5\u672c", "\u{1f44b}\u{1f3fb}", "\u8a9e\u6587"],
+    ],
+    [
+      "mixed CJK and a split ZWJ using the existing word policy",
+      ["\u65e5\u672c\u{1f469}\u200d", "\u{1f4bb}\u8a9e\u6587"],
+      4,
+      ["\u65e5\u672c", "\u{1f469}\u200d\u{1f4bb}", "\u8a9e\u6587"],
+    ],
+    [
+      "existing modifier and ZWJ limitations",
+      ["\u65e5\u672c\u{1f469}", "\u{1f3fb}\u200d\u{1f4bb}\u8a9e\u6587"],
+      6,
+      ["\u65e5\u672c\u{1f469}", "\u{1f3fb}\u200d\u{1f4bb}\u8a9e", "\u6587"],
+    ],
+    [
+      "CJK opportunities on logical lines following an unsafe line",
+      ["\u65e5\u672c\u{1f44b}", "\u{1f3fb}\u8a9e\u6587\n\nA \u65e5\u672c\u8a9e"],
+      4,
+      ["\u65e5\u672c", "\u{1f44b}\u{1f3fb}", "\u8a9e\u6587", "A \u65e5", "\u672c\u8a9e"],
+    ],
+    ["kana punctuation", ["AB \u30ab", "\u30fb\u30ca"], 6, ["AB", "\u30ab\u30fb\u30ca"]],
+  ] as const) {
+    it(`word wrapping preserves ${name} across appends (${method})`, () => {
+      const buffer = TextBuffer.create(method)
+      const view = TextBufferView.create(buffer)
+      const screen = OptimizedBuffer.create(width + 1, 8, method)
+      try {
+        for (const part of parts) buffer.append(part)
+        view.setWrapMode("word")
+        for (const wrapWidth of [width, width + 1, width]) {
+          view.setWrapWidth(wrapWidth)
+          const measure = view.measureForDimensions(wrapWidth, 8)
+          const lines = view.lineInfo
+          expect(Math.max(...lines.lineWidthCols)).toBeLessThanOrEqual(wrapWidth)
+          expect(measure).toEqual({
+            lineCount: lines.lineWidthCols.length,
+            widthColsMax: Math.max(...lines.lineWidthCols),
+          })
+        }
+        screen.clear()
+        screen.drawTextBuffer(view, 0, 0)
+        const rows = new TextDecoder()
+          .decode(screen.getRealCharBytes(true))
+          .split("\n")
+          .map((row) => row.trimEnd())
+          .filter(Boolean)
+        expect(rows).toEqual([...expectedRows])
+        expect(buffer.getPlainText()).toBe(parts.join(""))
+      } finally {
+        screen.destroy()
+        view.destroy()
+        buffer.destroy()
+      }
+    })
+  }
+}
+
+for (const method of ["unicode", "unicode-wide"] as const) {
+  for (const [base, mark, suffix] of [
+    ["\u304b", "\u3099", "\u304f"],
+    ["\u306f", "\u309a", "\u3072"],
+  ]) {
+    it(`word wrapping retains an appended kana mark (${method}, ${mark.codePointAt(0)})`, () => {
+      const buffer = TextBuffer.create(method)
+      const view = TextBufferView.create(buffer)
+      const screen = OptimizedBuffer.create(8, 2, method)
+      try {
+        buffer.setText(base)
+        buffer.append(mark + suffix)
+        view.setWrapMode("word")
+        view.setWrapWidth(8)
+        screen.clear()
+        screen.drawTextBuffer(view, 0, 0)
+        expect(new TextDecoder().decode(screen.getRealCharBytes(true)).trim()).toBe(base + mark + suffix)
+      } finally {
+        screen.destroy()
+        view.destroy()
+        buffer.destroy()
+      }
+    })
+  }
+}
 
 describe("TextBufferView", () => {
   let buffer: TextBuffer
@@ -456,6 +593,51 @@ describe("TextBufferView", () => {
       view.setLocalSelection(6, 0, 6, 0)
       expect(view.getSelectedText()).toBe("")
       expect(view.hasSelection()).toBe(false)
+    })
+
+    it("resets a selection once and skips resets of a clear view", () => {
+      buffer.setStyledText(stringToStyledText("Hello World"))
+      const lib = resolveRenderLib()
+      const reset = spyOn(lib, "textBufferViewResetSelection")
+      const resetLocal = spyOn(lib, "textBufferViewResetLocalSelection")
+      try {
+        view.resetSelection()
+        view.resetLocalSelection()
+        expect(reset).toHaveBeenCalledTimes(0)
+        expect(resetLocal).toHaveBeenCalledTimes(0)
+
+        view.setSelection(0, 5)
+        view.resetSelection()
+        view.resetSelection()
+        expect(reset).toHaveBeenCalledTimes(1)
+        expect(view.hasSelection()).toBe(false)
+
+        view.setLocalSelection(0, 0, 5, 0)
+        view.resetLocalSelection()
+        view.resetLocalSelection()
+        expect(resetLocal).toHaveBeenCalledTimes(1)
+        expect(view.hasSelection()).toBe(false)
+
+        // A local reset clears a selection that setSelection made, and a reset clears a local one.
+        view.setSelection(0, 5)
+        view.resetLocalSelection()
+        expect(view.hasSelection()).toBe(false)
+        view.updateLocalSelection(0, 0, 3, 0)
+        view.resetSelection()
+        expect(view.hasSelection()).toBe(false)
+        expect(reset).toHaveBeenCalledTimes(2)
+        expect(resetLocal).toHaveBeenCalledTimes(2)
+      } finally {
+        reset.mockRestore()
+        resetLocal.mockRestore()
+      }
+    })
+
+    it("rejects resets of a destroyed clear view", () => {
+      const other = TextBufferView.create(buffer)
+      other.destroy()
+      expect(() => other.resetSelection()).toThrow("TextBufferView is destroyed")
+      expect(() => other.resetLocalSelection()).toThrow("TextBufferView is destroyed")
     })
   })
 

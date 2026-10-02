@@ -40,6 +40,10 @@ export class EditorView {
     return new EditorView(lib, viewPtr, editBuffer)
   }
 
+  public get isDestroyed(): boolean {
+    return this._destroyed
+  }
+
   private guard(): void {
     if (this._destroyed) throw new Error("EditorView is destroyed")
   }

@@ -55,6 +55,7 @@ import { type Clock, type TimerHandle, SystemClock } from "./lib/clock.js"
 import { StdinParser, type StdinEvent, type StdinParserProtocolContext } from "./lib/stdin-parser.js"
 import { matchesKeyBinding } from "./lib/keybinding.internal.js"
 import { RendererThemeMode } from "./renderer-theme-mode.js"
+import { getLinkId } from "./utils.js"
 
 registerEnvVar({
   name: "OTUI_DUMP_CAPTURES",
@@ -865,6 +866,7 @@ export class CliRenderer extends EventEmitter implements RenderContext {
   private animationRequest: Map<number, FrameRequestCallback> = new Map()
 
   private resizeTimeoutId: TimerHandle | null = null
+  private pendingResizeSawDifferentSize = false
   private capabilityTimeoutId: TimerHandle | null = null
   private kittyTransportTimer: TimerHandle | null = null
   private kittyTransportMode: KittyImageTransport
@@ -1350,8 +1352,9 @@ export class CliRenderer extends EventEmitter implements RenderContext {
   private removeExitListeners(): void {
     if (!this._exitListenersAdded || this.exitSignals.length === 0) return
 
+    const processEvents = process as EventEmitter
     this.exitSignals.forEach((signal) => {
-      process.removeListener(signal, this.exitHandler)
+      processEvents.removeListener(signal, this.exitHandler)
     })
 
     this._exitListenersAdded = false
@@ -1441,14 +1444,15 @@ export class CliRenderer extends EventEmitter implements RenderContext {
   }
 
   public addToHitGrid(x: number, y: number, width: number, height: number, id: number) {
-    if (!this._useMouse) return
+    if (!this._useMouse || width <= 0 || height <= 0) return
     if (id !== this.capturedRenderable?.num) {
       this.lib.addToHitGrid(this.rendererPtr, x, y, width, height, id)
     }
   }
 
   public pushHitGridScissorRect(x: number, y: number, width: number, height: number): void {
-    this.lib.hitGridPushScissorRect(this.rendererPtr, x, y, width, height)
+    // A non-positive extent is an empty clip rect. Push it anyway so the matching pop stays balanced.
+    this.lib.hitGridPushScissorRect(this.rendererPtr, x, y, Math.max(0, width), Math.max(0, height))
   }
 
   public popHitGridScissorRect(): void {
@@ -2049,6 +2053,10 @@ export class CliRenderer extends EventEmitter implements RenderContext {
     const destroyListener = (): void => {
       destroySurface()
     }
+    const capabilitiesListener = (capabilities: TerminalCapabilities): void => {
+      snapshotContext.capabilities = capabilities
+      renderContext.emit(CliRenderEvents.CAPABILITIES, capabilities)
+    }
 
     const assertNotDestroyed = (): void => {
       if (surfaceDestroyed) {
@@ -2275,6 +2283,7 @@ export class CliRenderer extends EventEmitter implements RenderContext {
 
       surfaceDestroyed = true
       renderer.off(CliRenderEvents.DESTROY, destroyListener)
+      renderer.off(CliRenderEvents.CAPABILITIES, capabilitiesListener)
 
       let destroyError: unknown = null
 
@@ -2301,6 +2310,7 @@ export class CliRenderer extends EventEmitter implements RenderContext {
     }
 
     renderer.on(CliRenderEvents.DESTROY, destroyListener)
+    renderer.on(CliRenderEvents.CAPABILITIES, capabilitiesListener)
 
     return {
       get renderContext(): RenderContext {
@@ -3859,6 +3869,20 @@ export class CliRenderer extends EventEmitter implements RenderContext {
     return this.lib.checkHit(this.rendererPtr, x, y)
   }
 
+  public getLinkIdAt(x: number, y: number): number {
+    if (this._isDestroyed || !Number.isInteger(x) || !Number.isInteger(y)) return 0
+
+    const buffer = this.currentRenderBuffer
+    if (x < 0 || y < 0 || x >= buffer.width || y >= buffer.height) return 0
+
+    return getLinkId(buffer.buffers.attributes[y * buffer.width + x])
+  }
+
+  public getLinkAt(x: number, y: number): string | null {
+    const linkId = this.getLinkIdAt(x, y)
+    return linkId === 0 ? null : this.currentRenderBuffer.lib.linkGetUrl(linkId) || null
+  }
+
   private takeMemorySnapshot(): void {
     if (this._isDestroyed) return
 
@@ -3907,7 +3931,7 @@ export class CliRenderer extends EventEmitter implements RenderContext {
 
   private handleResize(): void {
     if (this._isDestroyed) return
-    const resize = () => {
+    const readDimensions = () => {
       const stdout = this.stdout as NodeJS.WriteStream & { _refreshSize?: () => void }
       const stdin = this.stdin as NodeJS.ReadStream & {
         columns?: number
@@ -3918,15 +3942,31 @@ export class CliRenderer extends EventEmitter implements RenderContext {
       const sizeSource = !stdout.isTTY && stdin.isTTY ? stdin : stdout
       // PTY bridges can deliver SIGWINCH before the stream's cached dimensions reflect the new window size.
       sizeSource._refreshSize?.()
-      const width = sizeSource.columns
-      const height = sizeSource.rows
-      if (width && width > 0 && height && height > 0) this.processResize(width, height)
+      return { width: sizeSource.columns, height: sizeSource.rows }
+    }
+    const resize = () => {
+      const { width, height } = readDimensions()
+      if (width && width > 0 && height && height > 0) {
+        if (width !== this._terminalWidth || height !== this._terminalHeight) {
+          this.pendingResizeSawDifferentSize = true
+        }
+        this.applyPendingResize(width, height)
+      }
     }
     if (this._splitHeight > 0) {
       resize()
       return
     }
-
+    const initialSize = readDimensions()
+    if (
+      initialSize.width &&
+      initialSize.width > 0 &&
+      initialSize.height &&
+      initialSize.height > 0 &&
+      (initialSize.width !== this._terminalWidth || initialSize.height !== this._terminalHeight)
+    ) {
+      this.pendingResizeSawDifferentSize = true
+    }
     if (this.resizeTimeoutId !== null) {
       this.clock.clearTimeout(this.resizeTimeoutId)
       this.resizeTimeoutId = null
@@ -3938,6 +3978,12 @@ export class CliRenderer extends EventEmitter implements RenderContext {
     }, this.resizeDebounceDelay)
   }
 
+  private applyPendingResize(width: number, height: number): void {
+    const sawDifferentSize = this.pendingResizeSawDifferentSize
+    this.pendingResizeSawDifferentSize = false
+    this.processResize(width, height, sawDifferentSize)
+  }
+
   private queryPixelResolution() {
     this.pixelResolutionRequeryPending = true
     if (this._controlState === RendererControlState.EXPLICIT_SUSPENDED || this.waitingForPixelResolution) return
@@ -3947,8 +3993,15 @@ export class CliRenderer extends EventEmitter implements RenderContext {
     this.lib.queryPixelResolution(this.rendererPtr)
   }
 
-  private processResize(width: number, height: number): void {
-    if (width === this._terminalWidth && height === this._terminalHeight) return
+  private processResize(width: number, height: number, repaintIfUnchanged = false): void {
+    if (width === this._terminalWidth && height === this._terminalHeight) {
+      if (repaintIfUnchanged) {
+        // The terminal may have cleared or reflowed its cells during the skipped intermediate resize.
+        this.forceFullRepaintRequested = true
+        this.requestRender()
+      }
+      return
+    }
 
     if (
       this._terminalIsSetup &&
@@ -3987,12 +4040,17 @@ export class CliRenderer extends EventEmitter implements RenderContext {
     const splitFooterActive = this._screenMode === "split-footer"
 
     if (splitFooterActive) {
-      // Width shrink historically needs a broader scrub band, but if resize interrupts
-      // a deferred footer transition we also need to clear from that visible source surface.
+      // Width shrink historically needs a broader bottom-anchored scrub band so wrapped
+      // footer cells above a pinned surface are erased. Never start that clear below the
+      // visible footer origin, or a settling footer leaves stale rows. Interrupted
+      // transitions may still have an earlier source that must also be included.
       let clearStart: number | null = null
 
       if (width < prevWidth && visiblePreviousSplitHeight > 0) {
-        clearStart = Math.max(previousTerminalHeight - visiblePreviousSplitHeight * 2, 1)
+        clearStart = Math.min(
+          this.renderOffset + 1,
+          Math.max(previousTerminalHeight - visiblePreviousSplitHeight * 2, 1),
+        )
       }
 
       if (pendingSplitFooterTransition !== null) {
@@ -4401,12 +4459,14 @@ export class CliRenderer extends EventEmitter implements RenderContext {
       this.lib.cancelKittyImageTransport(this.rendererPtr, false)
     }
 
+    // Bun 1.4's types narrow process.removeListener to its memoryPressure overload.
+    const processEvents = process as EventEmitter
     if (this._usesProcessStdout) {
-      process.removeListener("SIGWINCH", this.sigwinchHandler)
+      processEvents.removeListener("SIGWINCH", this.sigwinchHandler)
     }
-    process.removeListener("uncaughtException", this.handleError)
-    process.removeListener("unhandledRejection", this.handleError)
-    process.removeListener("warning", this.warningHandler)
+    processEvents.removeListener("uncaughtException", this.handleError)
+    processEvents.removeListener("unhandledRejection", this.handleError)
+    processEvents.removeListener("warning", this.warningHandler)
     this.removeExitListeners()
 
     if (this.resizeTimeoutId !== null) {

@@ -392,6 +392,27 @@ test "EditBuffer - combining mark keeps word class across chunks" {
     try std.testing.expectEqual(@as(u32, 1), eb.getPrevWordBoundary().col);
 }
 
+test "EditBuffer - word boundary treats CJK run as one word" {
+    const pool = gp.initGlobalPool(std.testing.allocator);
+    defer gp.deinitGlobalPool();
+    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
+    defer link.deinitGlobalLinkPool();
+
+    var eb = try EditBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth, null);
+    defer eb.deinit();
+
+    // Intercharacter wrap opportunities must not step word motion per character.
+    try eb.setText("日本語文字");
+
+    try eb.setCursor(0, 0);
+    const next_cursor = eb.getNextWordBoundary();
+    try std.testing.expectEqual(@as(u32, 10), next_cursor.col);
+
+    try eb.setCursor(0, 10);
+    const prev_cursor = eb.getPrevWordBoundary();
+    try std.testing.expectEqual(@as(u32, 0), prev_cursor.col);
+}
+
 test "EditBuffer - word boundary keeps Hangul run grouped" {
     const pool = gp.initGlobalPool(std.testing.allocator);
     defer gp.deinitGlobalPool();
