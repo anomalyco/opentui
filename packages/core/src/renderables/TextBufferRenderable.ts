@@ -16,6 +16,7 @@ export interface TextBufferOptions extends RenderableOptions<TextBufferRenderabl
   selectable?: boolean
   attributes?: number
   wrapMode?: "none" | "char" | "word"
+  textAlign?: "left" | "center" | "right"
   tabIndicator?: string | number
   tabIndicatorColor?: string | RGBA
   truncate?: boolean
@@ -30,6 +31,7 @@ export abstract class TextBufferRenderable extends Renderable implements LineInf
   protected _selectionBg: RGBA | undefined
   protected _selectionFg: RGBA | undefined
   protected _wrapMode: "none" | "char" | "word" = "word"
+  protected _textAlign: "left" | "center" | "right" = "left"
   protected lastLocalSelection: LocalSelectionBounds | null = null
   protected _tabIndicator?: string | number
   protected _tabIndicatorColor?: RGBA
@@ -51,6 +53,7 @@ export abstract class TextBufferRenderable extends Renderable implements LineInf
     selectable: true,
     attributes: 0,
     wrapMode: "word" as "none" | "char" | "word",
+    textAlign: "left" as "left" | "center" | "right",
     tabIndicator: undefined,
     tabIndicatorColor: undefined,
     truncate: false,
@@ -66,6 +69,7 @@ export abstract class TextBufferRenderable extends Renderable implements LineInf
     this._selectionFg = options.selectionFg ? parseColor(options.selectionFg) : this._defaultOptions.selectionFg
     this.selectable = options.selectable ?? this._defaultOptions.selectable
     this._wrapMode = options.wrapMode ?? this._defaultOptions.wrapMode
+    this._textAlign = options.textAlign ?? this._defaultOptions.textAlign
     this._tabIndicator = options.tabIndicator ?? this._defaultOptions.tabIndicator
     this._tabIndicatorColor = options.tabIndicatorColor
       ? parseColor(options.tabIndicatorColor)
@@ -80,6 +84,7 @@ export abstract class TextBufferRenderable extends Renderable implements LineInf
     this.textBuffer.setSyntaxStyle(this._textBufferSyntaxStyle)
 
     this.textBufferView.setWrapMode(this._wrapMode)
+    this.textBufferView.setTextAlign(this._textAlign)
     this.textBufferView.setFirstLineOffset(this._firstLineOffset)
     this.setupNativeRenderable()
 
@@ -306,6 +311,18 @@ export abstract class TextBufferRenderable extends Renderable implements LineInf
       }
       // Changing wrap mode can change dimensions, so mark yoga node dirty to trigger re-measurement
       this.yogaNode.markDirty()
+      this.requestRender()
+    }
+  }
+
+  get textAlign(): "left" | "center" | "right" {
+    return this._textAlign
+  }
+
+  set textAlign(value: "left" | "center" | "right") {
+    if (this._textAlign !== value) {
+      this._textAlign = value
+      this.textBufferView.setTextAlign(this._textAlign)
       this.requestRender()
     }
   }

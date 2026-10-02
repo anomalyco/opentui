@@ -1689,6 +1689,39 @@ test "loadFile - loads and renders file correctly" {
     try std.testing.expect(std.mem.startsWith(u8, render_result, "ABC"));
 }
 
+test "loadFile - registered file content survives text replacement" {
+    const pool = gp.initGlobalPool(std.testing.allocator);
+    defer gp.deinitGlobalPool();
+    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
+    defer link.deinitGlobalLinkPool();
+
+    var tb = try TextBuffer.init(std.testing.allocator, pool, link_pool, .unicode);
+    defer tb.deinit();
+
+    const test_content = "ABC\nDEF";
+    const tmpdir = std.testing.tmpDir(.{});
+    var tmp = tmpdir;
+    defer tmp.cleanup();
+
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "test.txt", .data = test_content });
+    const file_path = try tmp.dir.realPathFileAlloc(std.testing.io, "test.txt", std.testing.allocator);
+    defer std.testing.allocator.free(file_path);
+
+    // Two replacements settle the rope arena into one block that later resets reuse.
+    const other_mem_id = try tb.registerMemBuffer("other line\n" ** 64, false);
+    try tb.setTextFromMemId(other_mem_id);
+    try tb.setTextFromMemId(other_mem_id);
+
+    try tb.loadFile(file_path);
+    const file_mem_id = other_mem_id + 1;
+    try tb.setTextFromMemId(other_mem_id);
+    try std.testing.expectEqualStrings(test_content, tb.getMemBuffer(file_mem_id).?);
+
+    try tb.setTextFromMemId(file_mem_id);
+    var out_buffer: [16]u8 = undefined;
+    try std.testing.expectEqualStrings(test_content, out_buffer[0..tb.getPlainTextIntoBuffer(&out_buffer)]);
+}
+
 test "drawTextBuffer - horizontal viewport offset renders correctly without wrapping" {
     const pool = gp.initGlobalPool(std.testing.allocator);
     defer gp.deinitGlobalPool();
@@ -3696,4 +3729,88 @@ test "drawTextBuffer - Thai ว่ grapheme in quotes occupies one cell" {
     const result = out_buffer[0..written];
 
     try std.testing.expect(std.mem.find(u8, result, "\"ว่\"") != null);
+}
+
+test "alignmentPadCols - left/center/right offsets and wide-line clamp" {
+    try std.testing.expectEqual(@as(u32, 0), text_buffer_view.alignmentPadCols(.left, 20, 4));
+    try std.testing.expectEqual(@as(u32, 8), text_buffer_view.alignmentPadCols(.center, 20, 4));
+    try std.testing.expectEqual(@as(u32, 7), text_buffer_view.alignmentPadCols(.center, 20, 5));
+    try std.testing.expectEqual(@as(u32, 16), text_buffer_view.alignmentPadCols(.right, 20, 4));
+    try std.testing.expectEqual(@as(u32, 0), text_buffer_view.alignmentPadCols(.center, 10, 10));
+    try std.testing.expectEqual(@as(u32, 0), text_buffer_view.alignmentPadCols(.right, 10, 12));
+}
+
+fn expectAlignedRows(alignment: text_buffer_view.TextAlign, first_line_offset: u32, expected_pads: []const usize) !void {
+    const pool = gp.initGlobalPool(std.testing.allocator);
+    defer gp.deinitGlobalPool();
+    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
+    defer link.deinitGlobalLinkPool();
+
+    var tb = try TextBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth);
+    defer tb.deinit();
+    var view = try TextBufferView.init(std.testing.allocator, tb);
+    defer view.deinit();
+    try tb.setText("hi\nworld");
+    view.setViewport(.{ .x = 0, .y = 0, .width = 10, .height = 2 });
+    view.setTextAlign(alignment);
+    view.setFirstLineOffset(first_line_offset);
+
+    var opt_buffer = try OptimizedBuffer.init(
+        std.testing.allocator,
+        10,
+        2,
+        .{ .pool = pool, .width_method = .wcwidth },
+    );
+    defer opt_buffer.deinit();
+    opt_buffer.clear(ansi.rgbaFromFloats(0.0, 0.0, 0.0, 1.0), 32);
+    opt_buffer.drawTextBuffer(view, 0, 0);
+
+    const expected_rows = [_][]const u8{ "hi", "world" };
+    for (expected_pads, 0..) |expected_pad, y| {
+        const row = try resolvedRow(std.testing.allocator, opt_buffer, pool, @intCast(y));
+        defer std.testing.allocator.free(row);
+        try std.testing.expect(std.unicode.utf8ValidateSlice(row));
+
+        var first_glyph: usize = 0;
+        while (first_glyph < row.len and row[first_glyph] == ' ') : (first_glyph += 1) {}
+        try std.testing.expectEqual(expected_pad, first_glyph);
+        try std.testing.expectEqualStrings(expected_rows[y], std.mem.trim(u8, row, " \x03"));
+    }
+
+    const selection_x: i32 = @intCast(expected_pads[0]);
+    _ = view.setLocalSelection(selection_x, 0, selection_x + 1, 0, null, null);
+    var selected: [2]u8 = undefined;
+    try std.testing.expectEqualStrings("hi", selected[0..view.getSelectedTextIntoBuffer(&selected)]);
+
+    for ([_]u32{ 1, 0 }) |draw_y| {
+        opt_buffer.clear(ansi.rgbaFromFloats(0.0, 0.0, 0.0, 1.0), 32);
+        opt_buffer.drawTextBuffer(view, 0, @intCast(draw_y));
+        const x: i32 = if (draw_y == 0) @intCast(expected_pads[0]) else switch (alignment) {
+            .left => 0,
+            .center => 4,
+            .right => 8,
+        };
+        try std.testing.expectEqual(@as(u32, 'h'), opt_buffer.get(@intCast(x), draw_y).?.char);
+        _ = view.setLocalSelection(x, 0, x + 1, 0, null, null);
+        try std.testing.expectEqualStrings("hi", selected[0..view.getSelectedTextIntoBuffer(&selected)]);
+    }
+
+    for ([_]bool{ false, true }) |scroll_viewport| {
+        view.setViewport(.{ .x = 0, .y = if (scroll_viewport) 1 else 0, .width = 10, .height = 2 });
+        opt_buffer.clear(ansi.rgbaFromFloats(0.0, 0.0, 0.0, 1.0), 32);
+        opt_buffer.drawTextBuffer(view, 0, if (scroll_viewport) 0 else -1);
+        try std.testing.expectEqual(@as(u32, 'w'), opt_buffer.get(@intCast(expected_pads[1]), 0).?.char);
+    }
+}
+
+test "drawTextBuffer - textAlign centers and right-aligns each rendered line" {
+    try expectAlignedRows(.left, 0, &.{ 0, 0 });
+    try expectAlignedRows(.center, 0, &.{ 4, 2 });
+    try expectAlignedRows(.right, 0, &.{ 8, 5 });
+}
+
+test "drawTextBuffer - textAlign keeps mid-line continuations flush with the tail" {
+    try expectAlignedRows(.left, 4, &.{ 0, 0 });
+    try expectAlignedRows(.center, 4, &.{ 0, 2 });
+    try expectAlignedRows(.right, 4, &.{ 0, 5 });
 }

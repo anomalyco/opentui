@@ -1109,8 +1109,10 @@ export abstract class Renderable extends BaseRenderable {
     this._screenX = parentScreenX + this._x + this._translateX
     this._screenY = parentScreenY + this._y + this._translateY
 
-    const newWidth = Math.max(layout.width, 1)
-    const newHeight = Math.max(layout.height, 1)
+    // Yoga reports NaN for a node attached after this frame's layout pass.
+    // Keep the last size until the next pass lays the node out.
+    const newWidth = Number.isNaN(layout.width) ? oldWidth : Math.max(layout.width, 1)
+    const newHeight = Number.isNaN(layout.height) ? oldHeight : Math.max(layout.height, 1)
     const sizeChanged = oldWidth !== newWidth || oldHeight !== newHeight
 
     this._widthValue = newWidth

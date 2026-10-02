@@ -35,6 +35,7 @@ pub const EmbeddedTerminal = struct {
     }
     pub fn freeSelectedText(_: *EmbeddedTerminal, _: [:0]const u8) void {}
     pub fn invalidate(_: *EmbeddedTerminal) void {}
+    pub fn setTransparentBackground(_: *EmbeddedTerminal, _: bool) void {}
     pub fn compose(_: *EmbeddedTerminal, _: *buffer.OptimizedBuffer, _: i32, _: i32) Error!void {
         return error.Unsupported;
     }

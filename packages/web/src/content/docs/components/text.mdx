@@ -122,6 +122,36 @@ const text = new TextRenderable(renderer, {
 })
 ```
 
+## Align lines
+
+`textAlign` pads each rendered line inside the text width. The pad for one line does not depend on the longest line.
+
+```typescript
+const text = new TextRenderable(renderer, {
+  content: "hi\nworld",
+  width: 10,
+  height: 2,
+  textAlign: "center",
+})
+```
+
+```text terminal=text-align-lines
+left        center      right
+0123456789  0123456789  0123456789
+hi              hi              hi
+world         world          world
+```
+
+`"left"` is the default. `"center"` and `"right"` use leftover columns in the text width. A line that already fills the text width does not move.
+
+Set a width, or let a parent stretch the text. Alignment has no effect when every line already fills the text width.
+
+Wrapping runs first. Then `textAlign` pads each rendered line.
+
+Change `textAlign` after mount with `text.textAlign = "right"`. `CodeRenderable` inherits the same option.
+
+`textAlign` does not replace [Yoga box alignment](/docs/core-concepts/layout#alignment).
+
 ## Text selection
 
 Enable text selection for copying:
@@ -142,15 +172,17 @@ const nonSelectable = new TextRenderable(renderer, {
 
 ## Properties
 
-| Property                         | Type                              | Default      | Description                  |
-| -------------------------------- | --------------------------------- | ------------ | ---------------------------- |
-| `content`                        | `string \| StyledText`            | `""`         | The text content to display  |
-| `fg`                             | `string \| RGBA`                  | `#FFFFFF`    | Foreground (text) color      |
-| `bg`                             | `string \| RGBA`                  | transparent  | Background color             |
-| `attributes`                     | `TextAttributes`                  | `0`          | Text styling attributes      |
-| `selectable`                     | `boolean`                         | `true`       | Whether text can be selected |
-| `position`                       | `"relative" \| "absolute"`        | `"relative"` | Positioning mode             |
-| `left`, `top`, `right`, `bottom` | `number \| "auto" \| "{number}%"` | -            | Position offsets             |
+| Property                         | Type                              | Default      | Description                              |
+| -------------------------------- | --------------------------------- | ------------ | ---------------------------------------- |
+| `content`                        | `string \| StyledText`            | `""`         | The text content to display              |
+| `fg`                             | `string \| RGBA`                  | `#FFFFFF`    | Foreground (text) color                  |
+| `bg`                             | `string \| RGBA`                  | transparent  | Background color                         |
+| `attributes`                     | `TextAttributes`                  | `0`          | Text styling attributes                  |
+| `selectable`                     | `boolean`                         | `true`       | Whether text can be selected             |
+| `wrapMode`                       | `"none" \| "char" \| "word"`      | `"word"`     | Line wrapping mode                       |
+| `textAlign`                      | `"left" \| "center" \| "right"`   | `"left"`     | Per-line alignment within the text width |
+| `position`                       | `"relative" \| "absolute"`        | `"relative"` | Positioning mode                         |
+| `left`, `top`, `right`, `bottom` | `number \| "auto" \| "{number}%"` | -            | Position offsets                         |
 
 ## Example: status bar
 
@@ -184,4 +216,4 @@ renderer.root.add(statusBar)
 
 ## Related concepts
 
-Read [Text and terminal cells](/docs/core-concepts/text-and-cells) for graphemes, wrapping, and display-cell widths. See [Colors](/docs/core-concepts/colors), [Layout](/docs/core-concepts/layout), and [Interaction, focus, and selection](/docs/core-concepts/interaction) for shared behavior. Use [Box](/docs/components/box) to lay out text with other components.
+Read [Text and terminal cells](/docs/core-concepts/text-and-cells) for graphemes, wrapping, alignment, and display-cell widths. See [Colors](/docs/core-concepts/colors), [Layout](/docs/core-concepts/layout), and [Interaction, focus, and selection](/docs/core-concepts/interaction) for shared behavior. Use [Box](/docs/components/box) to lay out text with other components.

@@ -210,7 +210,14 @@ export const DOC_MANIFEST = {
     related: ["components/box", "components/scrollbox", "core-concepts/rendering-pipeline"],
   }),
   "core-concepts/interaction": page("core", 4, "Interaction", "concept", {
-    searchSymbols: ["MouseEvent", "FocusableRenderable", "Selection", "SelectionEvent"],
+    searchSymbols: [
+      "MouseEvent",
+      "MousePointerStyle",
+      "setMousePointer",
+      "FocusableRenderable",
+      "Selection",
+      "SelectionEvent",
+    ],
     related: ["core-concepts/keyboard", "components/input", "components/text", "core-concepts/testing"],
   }),
   "core-concepts/keyboard": page("core", 5, "Keyboard input", "concept", {

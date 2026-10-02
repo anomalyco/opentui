@@ -11,9 +11,15 @@ pub fn compose(
     target: *buffer.OptimizedBuffer,
     origin_x: i32,
     origin_y: i32,
+    transparent_background: bool,
 ) Error!void {
     const dirty = state.dirty;
     if (dirty == .false) return;
+
+    const default_bg = if (transparent_background)
+        ansi.defaultColor(state.colors.background.r, state.colors.background.g, state.colors.background.b, 255)
+    else
+        color(state.colors.background);
 
     const rows = state.row_data.slice();
     const row_dirty = rows.items(.dirty);
@@ -24,7 +30,7 @@ pub fn compose(
 
         const dest_y = origin_y + @as(i32, @intCast(y));
         if (dest_y >= 0 and dest_y < target.getHeight()) {
-            clearRow(target, origin_x, @intCast(dest_y), state.cols, state.colors.foreground, state.colors.background);
+            clearRow(target, origin_x, @intCast(dest_y), state.cols, state.colors.foreground, default_bg);
             try composeRow(
                 allocator,
                 row_cells[y].slice(),
@@ -33,6 +39,7 @@ pub fn compose(
                 origin_x,
                 @intCast(dest_y),
                 &state.colors,
+                default_bg,
             );
         }
 
@@ -66,6 +73,7 @@ fn composeRow(
     origin_x: i32,
     dest_y: u32,
     colors: *const ghostty.RenderState.Colors,
+    default_bg: buffer.RGBA,
 ) Error!void {
     const raw_items = cells.items(.raw);
     const graphemes = cells.items(.grapheme);
@@ -89,8 +97,8 @@ fn composeRow(
 
         const grapheme: []const u21 = if (raw.hasGrapheme()) graphemes[x] else &.{};
         const style = if (raw.hasStyling()) styles[x] else @TypeOf(styles[x]){};
-        var fg = style.fg(.{ .default = colors.foreground, .palette = &colors.palette });
-        var bg = style.bg(&raw, &colors.palette) orelse colors.background;
+        var fg = color(style.fg(.{ .default = colors.foreground, .palette = &colors.palette }));
+        var bg = if (style.bg(&raw, &colors.palette)) |explicit| color(explicit) else default_bg;
         if (style.flags.inverse) std.mem.swap(@TypeOf(fg), &fg, &bg);
         if (selection) |range| {
             if (x < text_end and x + raw.gridWidth() > range[0] and x <= range[1]) std.mem.swap(@TypeOf(fg), &fg, &bg);
@@ -151,6 +159,7 @@ fn draw(target: *buffer.OptimizedBuffer, text: []const u8, cell_width: u8, x: u3
 }
 
 fn color(value: anytype) buffer.RGBA {
+    if (@TypeOf(value) == buffer.RGBA) return value;
     return ansi.rgbColor(value.r, value.g, value.b, 255);
 }
 

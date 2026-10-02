@@ -223,6 +223,7 @@ interface ResolvedTableRenderableOptions {
   showBorders: boolean
   borderStyle: BorderStyle
   borderColor: ColorInput
+  fg?: RGBA
   selectable: boolean
 }
 
@@ -1514,6 +1515,7 @@ export class MarkdownRenderable extends Renderable {
       showBorders: borders,
       borderStyle: this._tableOptions?.borderStyle ?? "single",
       borderColor: this._tableOptions?.borderColor ?? this.getStyle("conceal")?.fg ?? "#888888",
+      fg: this._fg,
       selectable: this._tableOptions?.selectable ?? true,
     }
   }
@@ -1533,6 +1535,7 @@ export class MarkdownRenderable extends Renderable {
     tableRenderable.showBorders = options.showBorders
     tableRenderable.borderStyle = options.borderStyle
     tableRenderable.borderColor = options.borderColor
+    tableRenderable.fg = options.fg
     tableRenderable.selectable = options.selectable
   }
 
@@ -1575,6 +1578,7 @@ export class MarkdownRenderable extends Renderable {
       showBorders: options.showBorders,
       borderStyle: options.borderStyle,
       borderColor: options.borderColor,
+      fg: options.fg,
       selectable: options.selectable,
     })
     this._ownedStructuredRenderables.add(table)

@@ -1,9 +1,10 @@
-import { describe, expect, it, beforeEach, afterEach } from "bun:test"
+import { describe, expect, it, beforeEach, afterEach, spyOn } from "bun:test"
 import { TextBuffer } from "./text-buffer.js"
 import { TextBufferView } from "./text-buffer-view.js"
 import { StyledText, stringToStyledText } from "./lib/styled-text.js"
 import { RGBA } from "./lib/RGBA.js"
 import { OptimizedBuffer } from "./buffer.js"
+import { resolveRenderLib } from "./zig.js"
 
 it("cached word and CJK breaks retain streaming source order", () => {
   const part = "AB \u65e5\u672c\u3002\u8a9e\u6587 "
@@ -592,6 +593,51 @@ describe("TextBufferView", () => {
       view.setLocalSelection(6, 0, 6, 0)
       expect(view.getSelectedText()).toBe("")
       expect(view.hasSelection()).toBe(false)
+    })
+
+    it("resets a selection once and skips resets of a clear view", () => {
+      buffer.setStyledText(stringToStyledText("Hello World"))
+      const lib = resolveRenderLib()
+      const reset = spyOn(lib, "textBufferViewResetSelection")
+      const resetLocal = spyOn(lib, "textBufferViewResetLocalSelection")
+      try {
+        view.resetSelection()
+        view.resetLocalSelection()
+        expect(reset).toHaveBeenCalledTimes(0)
+        expect(resetLocal).toHaveBeenCalledTimes(0)
+
+        view.setSelection(0, 5)
+        view.resetSelection()
+        view.resetSelection()
+        expect(reset).toHaveBeenCalledTimes(1)
+        expect(view.hasSelection()).toBe(false)
+
+        view.setLocalSelection(0, 0, 5, 0)
+        view.resetLocalSelection()
+        view.resetLocalSelection()
+        expect(resetLocal).toHaveBeenCalledTimes(1)
+        expect(view.hasSelection()).toBe(false)
+
+        // A local reset clears a selection that setSelection made, and a reset clears a local one.
+        view.setSelection(0, 5)
+        view.resetLocalSelection()
+        expect(view.hasSelection()).toBe(false)
+        view.updateLocalSelection(0, 0, 3, 0)
+        view.resetSelection()
+        expect(view.hasSelection()).toBe(false)
+        expect(reset).toHaveBeenCalledTimes(2)
+        expect(resetLocal).toHaveBeenCalledTimes(2)
+      } finally {
+        reset.mockRestore()
+        resetLocal.mockRestore()
+      }
+    })
+
+    it("rejects resets of a destroyed clear view", () => {
+      const other = TextBufferView.create(buffer)
+      other.destroy()
+      expect(() => other.resetSelection()).toThrow("TextBufferView is destroyed")
+      expect(() => other.resetLocalSelection()).toThrow("TextBufferView is destroyed")
     })
   })
 

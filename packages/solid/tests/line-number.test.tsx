@@ -1,6 +1,6 @@
-import { describe, test, expect, beforeEach, afterEach } from "bun:test"
+import { describe, test, expect, beforeEach, afterEach, spyOn } from "bun:test"
 import { testRender } from "../index.js"
-import { SyntaxStyle } from "@opentui/core"
+import { SyntaxStyle, Yoga } from "@opentui/core"
 import { MockTreeSitterClient } from "@opentui/core/testing"
 import { createSignal, Show } from "solid-js"
 
@@ -72,6 +72,31 @@ console.log(test())`
     expect(frame).toContain(" 2 ") // Line number 2
     expect(frame).toContain(" 3 ") // Line number 3
     expect(frame).toContain(" 4 ") // Line number 4
+  })
+
+  test("frees ignored conditional placeholders", async () => {
+    const createNode = spyOn(Yoga.default.Node, "create")
+    try {
+      testSetup = await testRender(() => (
+        <line_number>
+          <Show when={false}>
+            <text>inactive</text>
+          </Show>
+          <text>target</text>
+        </line_number>
+      ))
+      await testSetup.renderOnce()
+      expect(testSetup.captureCharFrame()).toContain("target")
+      expect(createNode).toHaveBeenCalled()
+
+      testSetup.renderer.destroy()
+      await new Promise<void>((resolve) => process.nextTick(resolve))
+      for (const { value } of createNode.mock.results) expect(value.isFreed()).toBe(true)
+    } finally {
+      testSetup?.renderer.destroy()
+      for (const { value } of createNode.mock.results) value.free()
+      createNode.mockRestore()
+    }
   })
 
   test("handles conditional removal of line number element", async () => {

@@ -384,7 +384,7 @@ const EXAMPLE_SECTIONS: ExampleSection[] = [
     },
     {
       name: "Mouse Interaction Demo",
-      description: "Interactive mouse trails and clickable cells demonstration",
+      description: "Interactive mouse trails, draggable boxes, clickable cells, and pointer styles",
       run: mouseInteractionExample.run,
       destroy: mouseInteractionExample.destroy,
     },

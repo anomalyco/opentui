@@ -3,6 +3,9 @@ title: Interaction, focus, and selection
 description: Handle mouse input, renderable focus, terminal focus reports, and text selection
 ---
 
+{/* docs-lint-disable mdx-esm-import */}
+import MousePointerPreview from "../../../components/MousePointerPreview.astro"
+
 # Interaction, focus, and selection
 
 OpenTUI routes mouse input through rendered cell bounds. It tracks one focused renderable and one global text selection per renderer.
@@ -100,6 +103,49 @@ After a left-button drag starts on a renderable, OpenTUI captures later drag eve
 On release, the source receives `drag-end` and `up`. The renderable under the pointer receives `drop` with `event.source`, then its normal `up` event.
 
 Right-button and middle-button drags follow hit testing without this capture. A selectable-text drag follows the selection path instead.
+
+## Mouse pointer styles
+
+`renderer.setMousePointer()` changes the mouse pointer style in the terminal pane. The style applies to the renderer,
+not to an individual renderable. Use `onMouseOver` to set the style. Use `onMouseOut` to restore `"default"`.
+
+```typescript
+import { BoxRenderable, createCliRenderer, type MousePointerStyle } from "@opentui/core"
+
+const renderer = await createCliRenderer()
+
+function setPointer(style: MousePointerStyle) {
+  renderer.setMousePointer(style)
+  renderer.requestRender()
+}
+
+const button = new BoxRenderable(renderer, {
+  width: 12,
+  height: 3,
+  border: true,
+  onMouseOver: () => setPointer("pointer"),
+  onMouseOut: () => setPointer("default"),
+})
+
+renderer.root.add(button)
+```
+
+A demand-driven renderer writes the new style during its next frame. If the handler does not change a renderable
+property, call `requestRender()` to request the next frame.
+
+`MousePointerStyle` accepts the following CSS cursor values. Move your pointer over a value to preview the pointer from
+your browser and operating system. Your terminal can show a different pointer.
+
+{/* docs-lint-disable mdx-component-node */}
+
+<MousePointerPreview />
+
+OpenTUI sends each value with [OSC 22](https://sw.kovidgoyal.net/kitty/pointer-shapes/), but it does not detect OSC 22
+support. A terminal can ignore an unsupported value or use the nearest available style. `"none"` hides the pointer if
+the terminal supports this value.
+
+The style changes only the pointer appearance. It does not change hit testing or mouse event delivery. Keep visible
+focus states and keyboard alternatives for every pointer interaction. `renderer.destroy()` resets the terminal pointer.
 
 ## Renderable focus
 
