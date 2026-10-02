@@ -19,6 +19,12 @@ interface LogicalLine {
   hunkStart?: boolean
 }
 
+// jsdiff keeps an empty hunk line as "" (GNU diff --suppress-blank-empty, or an editor that
+// trimmed the trailing space) and counts it as context, like git apply does.
+function hunkLineMarker(line: string): string {
+  return line.length === 0 ? " " : line[0]
+}
+
 export interface DiffRenderableOptions extends RenderableOptions<DiffRenderable> {
   diff?: string
   syncScroll?: boolean
@@ -532,7 +538,7 @@ export class DiffRenderable extends Renderable {
       let newLineNum = hunk.newStart
 
       for (const line of hunk.lines) {
-        const firstChar = line[0]
+        const firstChar = hunkLineMarker(line)
         const content = line.slice(1)
 
         if (firstChar === "+") {
@@ -635,7 +641,7 @@ export class DiffRenderable extends Renderable {
       let i = 0
       while (i < hunk.lines.length) {
         const line = hunk.lines[i]
-        const firstChar = line[0]
+        const firstChar = hunkLineMarker(line)
 
         if (firstChar === " ") {
           const content = line.slice(1)
@@ -662,7 +668,7 @@ export class DiffRenderable extends Renderable {
 
           while (i < hunk.lines.length) {
             const currentLine = hunk.lines[i]
-            const currentChar = currentLine[0]
+            const currentChar = hunkLineMarker(currentLine)
 
             if (currentChar === " " || currentChar === "\\") {
               break
