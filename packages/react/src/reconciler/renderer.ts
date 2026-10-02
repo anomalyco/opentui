@@ -28,6 +28,7 @@ export type Root = {
  */
 export function createRoot(renderer: CliRenderer): Root {
   let container: OpaqueRoot | null = null
+  let renderVersion = 0
 
   const cleanup = () => {
     if (container) {
@@ -43,14 +44,18 @@ export function createRoot(renderer: CliRenderer): Root {
     render: (node: ReactNode) => {
       engine.attach(renderer)
 
-      container = _render(
-        React.createElement(
-          AppContext.Provider,
-          { value: { keyHandler: renderer.keyInput, renderer } },
-          React.createElement(ErrorBoundary, null, node),
-        ),
-        renderer.root,
+      const element = React.createElement(
+        AppContext.Provider,
+        { value: { keyHandler: renderer.keyInput, renderer } },
+        // Explicit renders can retry a failed tree without remounting healthy trees.
+        React.createElement(ErrorBoundary, { resetKey: ++renderVersion, children: node }),
       )
+
+      if (container) {
+        reconciler.updateContainer(element, container, null, () => {})
+      } else {
+        container = _render(element, renderer.root)
+      }
     },
 
     unmount: cleanup,
