@@ -495,6 +495,10 @@ class ParserWorker {
                 _injectedQuery: injectedParser.queries.highlights, // Store the correct query reference
                 node: {
                   ...match.node,
+                  // web-tree-sitter node type is a prototype getter, so the
+                  // spread above drops it; carry it explicitly for consumers
+                  // that dispatch on node.type.
+                  type: match.node.type,
                   startPosition: {
                     row: match.node.startPosition.row + injectionNode.startPosition.row,
                     column:
@@ -760,6 +764,23 @@ class ParserWorker {
       }
       if (concealLines !== undefined) {
         meta.concealLines = concealLines
+      }
+
+      // CommonMark: a backslash escape renders as the escaped character, not
+      // the literal "\x". The markdown_inline grammar emits backslash_escape
+      // as one atomic token spanning both characters, so the split cannot be
+      // expressed as a query conceal rule (conceal replaces whole ranges).
+      // Conceal the backslash byte here and drop the escape styling from the
+      // remainder so the escaped punctuation renders as plain text. An
+      // explicit conceal on the node set by a query still wins.
+      if (
+        concealValue === undefined &&
+        node.type === "backslash_escape" &&
+        isInjection &&
+        injectionLang === "markdown_inline"
+      ) {
+        highlights.push([node.startIndex, node.startIndex + 1, match.name, { ...meta, conceal: "" }])
+        continue
       }
 
       if (Object.keys(meta).length > 0) {
