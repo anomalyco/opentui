@@ -37,6 +37,15 @@ describe("InputRenderable", () => {
       expect(input.focusable).toBe(true)
     })
 
+    it("should not accept onSubmit as an option (submit is exposed via the ENTER event)", () => {
+      const { input } = createInputRenderable({
+        width: 20,
+        // @ts-expect-error - onSubmit is not a valid InputRenderable option
+        onSubmit: () => {},
+      })
+      expect(input).toBeInstanceOf(InputRenderable)
+    })
+
     it("should initialize with custom options", () => {
       const { input } = createInputRenderable({
         value: "test",

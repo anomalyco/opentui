@@ -13,7 +13,8 @@ export type InputKeyBinding = TextareaKeyBinding
 
 export interface InputRenderableOptions extends Omit<
   TextareaOptions,
-  "height" | "minHeight" | "maxHeight" | "initialValue"
+  // onSubmit omitted: submit() emits the ENTER event and never calls the inherited listener
+  "height" | "minHeight" | "maxHeight" | "initialValue" | "onSubmit"
 > {
   /** Initial text value (newlines are stripped) */
   value?: string
