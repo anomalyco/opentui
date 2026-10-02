@@ -17,7 +17,7 @@ import type { RenderContext } from "../types.js"
 export interface BoxOptions<TRenderable extends Renderable = BoxRenderable> extends RenderableOptions<TRenderable> {
   backgroundColor?: string | RGBA
   borderStyle?: BorderStyle
-  border?: boolean | BorderSides[]
+  border?: boolean | BorderSides[] | null
   borderColor?: string | RGBA
   customBorderChars?: BorderCharacters
   shouldFill?: boolean
@@ -46,6 +46,7 @@ function isGapType(value: any): value is number | undefined {
 export class BoxRenderable extends Renderable {
   protected _backgroundColor: RGBA
   protected _border: boolean | BorderSides[]
+  private _implicitBorder = false
   protected _borderStyle: BorderStyle
   protected _borderColor: RGBA
   protected _focusedBorderColor: RGBA
@@ -84,6 +85,7 @@ export class BoxRenderable extends Renderable {
       (options.borderStyle || options.borderColor || options.focusedBorderColor || options.customBorderChars)
     ) {
       this._border = true
+      this._implicitBorder = true
     }
     this._borderStyle = parseBorderStyle(options.borderStyle, this._defaultOptions.borderStyle)
     this._borderColor = parseColor(options.borderColor || this._defaultOptions.borderColor)
@@ -114,6 +116,7 @@ export class BoxRenderable extends Renderable {
     // borderStyle, borderColor, focusedBorderColor
     if (this._border === false) {
       this._border = true
+      this._implicitBorder = true
       this.borderSides = getBorderSides(this._border)
       this.applyYogaBorders()
     }
@@ -145,10 +148,12 @@ export class BoxRenderable extends Renderable {
     return this._border
   }
 
-  public set border(value: boolean | BorderSides[]) {
-    if (this._border !== value) {
-      this._border = value
-      this.borderSides = getBorderSides(value)
+  public set border(value: boolean | BorderSides[] | null | undefined) {
+    const next = value ?? false
+    this._implicitBorder = false
+    if (this._border !== next) {
+      this._border = next
+      this.borderSides = getBorderSides(next)
       this.applyYogaBorders()
       this.requestRender()
     }
@@ -158,7 +163,28 @@ export class BoxRenderable extends Renderable {
     return this._borderStyle
   }
 
-  public set borderStyle(value: BorderStyle) {
+  public set borderStyle(value: BorderStyle | null | undefined) {
+    // Clearing the style (null/undefined) resets it to the default style and
+    // removes the border only when the border was implicitly enabled through
+    // initializeBorder(). An explicit border option keeps a default-styled
+    // border, so prop application order cannot clobber it.
+    if (value == null) {
+      if (this._implicitBorder && this._border !== false) {
+        this._implicitBorder = false
+        this._border = false
+        this.borderSides = getBorderSides(this._border)
+        this.applyYogaBorders()
+      }
+      const fallback = parseBorderStyle(value, this._defaultOptions.borderStyle)
+      if (this._borderStyle !== fallback) {
+        this._borderStyle = fallback
+      }
+      if (this._customBorderCharsObj === undefined) {
+        this._customBorderChars = undefined
+      }
+      this.requestRender()
+      return
+    }
     const _value = parseBorderStyle(value, this._defaultOptions.borderStyle)
     if (this._borderStyle !== _value || !this._border) {
       this._borderStyle = _value
@@ -172,11 +198,15 @@ export class BoxRenderable extends Renderable {
     return this._borderColor
   }
 
-  public set borderColor(value: RGBA | string) {
+  public set borderColor(value: RGBA | string | null | undefined) {
     const newColor = parseColor(value ?? this._defaultOptions.borderColor)
     if (this._borderColor !== newColor) {
       this._borderColor = newColor
-      this.initializeBorder()
+      // Clearing the color (null/undefined) resets it to the default without
+      // force-enabling a border on an otherwise borderless box.
+      if (value != null) {
+        this.initializeBorder()
+      }
       this.requestRender()
     }
   }
@@ -185,11 +215,15 @@ export class BoxRenderable extends Renderable {
     return this._focusedBorderColor
   }
 
-  public set focusedBorderColor(value: RGBA | string) {
+  public set focusedBorderColor(value: RGBA | string | null | undefined) {
     const newColor = parseColor(value ?? this._defaultOptions.focusedBorderColor)
     if (this._focusedBorderColor !== newColor) {
       this._focusedBorderColor = newColor
-      this.initializeBorder()
+      // Clearing the color (null/undefined) resets it to the default without
+      // force-enabling a border on an otherwise borderless box.
+      if (value != null) {
+        this.initializeBorder()
+      }
       if (this._focused) {
         this.requestRender()
       }
