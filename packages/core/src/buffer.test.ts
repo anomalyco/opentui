@@ -122,6 +122,48 @@ describe("OptimizedBuffer", () => {
     buffer.withBuffers((cells) => expect([...cells.attributes.slice(0, attributes.length)]).toEqual(attributes))
   })
 
+  it("clips draws at negative positions", () => {
+    // Positions cross the native API as signed i32, so every call here also checks that negative positions encode.
+    const target = OptimizedBuffer.create(3, 2, "unicode", { owner: resourceContext, id: "negative-positions" })
+    try {
+      const white = RGBA.fromInts(255, 255, 255)
+      const black = RGBA.fromInts(0, 0, 0)
+      target.clear(black)
+
+      target.setCell(-1, 0, "S", white, black)
+      target.setCellWithAlphaBlending(0, -1, "A", white, black)
+      target.drawChar("D".codePointAt(0)!, -1, -1, white, black)
+      target.drawSuperSampleBuffer(-1, -1, new Uint8Array(16), 16, "rgba8unorm", 8)
+      target.drawPackedBuffer(new Uint8Array(48), 48, -1, -1, 1, 1)
+      target.drawText("ABCD", -2, 1, white, black)
+      target.fillRect(-1, -1, 2, 2, RGBA.fromInts(255, 0, 0))
+
+      expect(new TextDecoder().decode(target.getRealCharBytes(true))).toBe("   \nCD \n")
+      expect(target.withBuffers(({ bg }) => [0, 1, 3].map((cell) => bg[cell * 4] & 0xff))).toEqual([255, 0, 0])
+    } finally {
+      target.destroy()
+    }
+  })
+
+  it("fills nothing for a non-positive extent", () => {
+    // Native extents are unsigned, so the wrapper must return before a negative extent reaches native code.
+    const target = OptimizedBuffer.create(3, 2, "unicode", { owner: resourceContext, id: "empty-extents" })
+    try {
+      const red = RGBA.fromInts(255, 0, 0)
+      target.clear(RGBA.fromInts(0, 0, 0))
+
+      target.fillRect(1, 0, -1, 1, red)
+      target.fillRect(1, 0, 1, -1, red)
+      target.fillRect(1, 0, 0, 1, red)
+
+      expect(target.withBuffers(({ bg }) => [0, 1, 2, 3, 4, 5].map((cell) => bg[cell * 4] & 0xff))).toEqual([
+        0, 0, 0, 0, 0, 0,
+      ])
+    } finally {
+      target.destroy()
+    }
+  })
+
   it("draws images as reserved cells with resolved fallback glyphs", () => {
     const image = NativeImage.fromRgba(
       Uint8Array.of(255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255, 255, 255, 255, 255),
@@ -180,6 +222,78 @@ describe("OptimizedBuffer", () => {
     } finally {
       image.dispose()
     }
+  })
+
+  describe("non-positive extents", () => {
+    // Native extents are unsigned, so these must not reach native code as negative values.
+    const white = RGBA.fromInts(255, 255, 255)
+    const black = RGBA.fromInts(0, 0, 0)
+    const red = RGBA.fromInts(255, 0, 0)
+    const snapshot = () =>
+      buffer.withBuffers((cells) => ({ char: [...cells.char], fg: [...cells.fg], bg: [...cells.bg] }))
+
+    it("clips everything inside a scissor rect with a non-positive extent", () => {
+      buffer.clear(black)
+      const blank = snapshot()
+
+      buffer.pushScissorRect(0, 0, -1, 5)
+      buffer.fillRect(0, 0, 20, 5, red)
+      buffer.popScissorRect()
+
+      buffer.pushScissorRect(0, 0, 20, 5)
+      buffer.pushScissorRect(0, 0, 20, -1)
+      buffer.drawText("hidden", 0, 0, white, black)
+      buffer.popScissorRect()
+      buffer.popScissorRect()
+
+      expect(snapshot()).toEqual(blank)
+    })
+
+    it("skips drawBox with a non-positive extent", () => {
+      buffer.clear(black)
+      const blank = snapshot()
+
+      for (const [width, height] of [
+        [-1, 3],
+        [3, -1],
+      ]) {
+        buffer.drawBox({
+          x: 0,
+          y: 0,
+          width,
+          height,
+          border: true,
+          borderColor: white,
+          backgroundColor: red,
+          shouldFill: true,
+          title: "title",
+        })
+      }
+
+      expect(snapshot()).toEqual(blank)
+    })
+
+    it("skips drawPackedBuffer with a non-positive length or cell count", () => {
+      const cellCount = 20 * 5
+      const packed = new Uint8Array(cellCount * 48)
+      const floats = new Float32Array(packed.buffer)
+      const words = new Uint32Array(packed.buffer)
+      for (let cell = 0; cell < cellCount; cell++) {
+        floats.set([1, 0, 0, 1, 1, 1, 1, 1], cell * 12)
+        words[cell * 12 + 8] = "X".codePointAt(0)!
+      }
+      buffer.clear(black)
+      const blank = snapshot()
+
+      buffer.drawPackedBuffer(packed, -48, 0, 0, 20, 5)
+      buffer.drawPackedBuffer(packed, packed.byteLength, 0, 0, 0, 5)
+      buffer.drawPackedBuffer(packed, packed.byteLength, 0, 0, -1, 5)
+      buffer.drawPackedBuffer(packed, packed.byteLength, 0, 0, 20, -1)
+      expect(snapshot()).toEqual(blank)
+
+      buffer.drawPackedBuffer(packed, packed.byteLength, 0, 0, 20, 5)
+      expect(snapshot()).not.toEqual(blank)
+    })
   })
 
   describe("encodeUnicode", () => {

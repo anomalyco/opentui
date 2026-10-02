@@ -838,7 +838,7 @@ test "OptimizedBuffer drawTextChecked validates all input before drawing and enf
     const attributes = target.buffer.attributes[0..4].*;
     for ([_][]const u8{ "ok\xff", "\x80", "\xc0\xaf", "\xed\xa0\x80", "\xf4\x90\x80\x80", "\xf0\x9f" }) |text| {
         try std.testing.expectError(error.InvalidUnicode, target.drawTextChecked(text, 0, 0, fg, bg, 0));
-        try std.testing.expectError(error.InvalidUnicode, target.drawTextChecked(text, std.math.maxInt(u32), 0, fg, bg, 0));
+        try std.testing.expectError(error.InvalidUnicode, target.drawTextChecked(text, std.math.maxInt(i32), 0, fg, bg, 0));
     }
     for (0..0xa0) |codepoint| {
         if (codepoint == '\t' or (codepoint >= 0x20 and codepoint < 0x7f)) continue;
@@ -1097,6 +1097,99 @@ test "OptimizedBuffer - text and rectangles at signed positions draw their visib
     try std.testing.expect(buffer_mod.rgbaEqual(black, buf.get(1, 0).?.bg));
     try std.testing.expect(buffer_mod.rgbaEqual(black, buf.get(0, 1).?.bg));
     try std.testing.expect(buffer_mod.rgbaEqual(red, buf.get(3, 4).?.bg));
+}
+
+test "OptimizedBuffer - pixel buffers at signed positions draw their visible part" {
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
+
+    var buf = try OptimizedBuffer.init(std.testing.allocator, 2, 1, .{ .link_pool = &pools.links, .pool = &pools.graphemes, .id = "signed-pixel-buffers" });
+    defer buf.deinit();
+    const black = ansi.rgbaFromFloats(0.0, 0.0, 0.0, 1.0);
+
+    // Two cells of 2x2 RGBA pixels: a red cell, then a blue cell.
+    const red = [4]u8{ 255, 0, 0, 255 };
+    const blue = [4]u8{ 0, 0, 255, 255 };
+    const pixels = red ++ red ++ blue ++ blue ++ red ++ red ++ blue ++ blue;
+
+    buf.drawSuperSampleBuffer(0, 0, &pixels, pixels.len, 1, 16);
+    const blue_cell = buf.get(1, 0).?;
+    buf.clear(black, null);
+    // The visible cells of the first two draws map past the end of the pixels.
+    buf.drawSuperSampleBuffer(std.math.minInt(i32), 0, &pixels, pixels.len, 1, std.math.maxInt(u32));
+    buf.drawSuperSampleBuffer(0, std.math.minInt(i32), &pixels, pixels.len, 1, std.math.maxInt(u32));
+    buf.drawSuperSampleBuffer(-1, 0, &pixels, pixels.len, 1, 16);
+
+    const cell = buf.get(0, 0).?;
+    try std.testing.expectEqual(blue_cell.char, cell.char);
+    try std.testing.expect(buffer_mod.rgbaEqual(blue_cell.fg, cell.fg));
+    try std.testing.expect(buffer_mod.rgbaEqual(blue_cell.bg, cell.bg));
+
+    // Each packed cell is bg(4 f32), fg(4 f32), char(u32), and 12 padding bytes.
+    const packed_cells = [2][12]f32{
+        .{ 0, 0, 0, 1, 1, 1, 1, 1, @bitCast(@as(u32, 'A')), 0, 0, 0 },
+        .{ 0, 0, 0, 1, 1, 1, 1, 1, @bitCast(@as(u32, 'B')), 0, 0, 0 },
+    };
+    const packed_bytes = std.mem.sliceAsBytes(&packed_cells);
+
+    buf.clear(black, null);
+    buf.drawPackedBuffer(packed_bytes.ptr, packed_bytes.len, -1, 0, 2, 1);
+    buf.drawPackedBuffer(packed_bytes.ptr, packed_bytes.len, 0, -1, 2, 1);
+    buf.drawPackedBuffer(packed_bytes.ptr, packed_bytes.len, 0, 0, 0, 1);
+
+    try expectRowChars(buf, 0, "B ");
+}
+
+test "OptimizedBuffer - checked text at signed positions clips like drawTextClipped" {
+    const black = ansi.rgbaFromFloats(0.0, 0.0, 0.0, 1.0);
+    const white = ansi.rgbaFromFloats(1.0, 1.0, 1.0, 1.0);
+    const red = ansi.rgbaFromFloats(1.0, 0.0, 0.0, 1.0);
+    const min = std.math.minInt(i32);
+    const Draw = struct { text: []const u8, x: i32, y: i32, bg: ?RGBA, scissor: bool = false };
+    const draws = [_]Draw{
+        .{ .text = "ABCDE", .x = -2, .y = 0, .bg = black },
+        .{ .text = "A\u{4e16}BC", .x = -2, .y = 1, .bg = null },
+        .{ .text = "\tX", .x = -1, .y = 2, .bg = red },
+        .{ .text = "\tY", .x = -2, .y = 2, .bg = red },
+        .{ .text = "e\u{301}XY", .x = -1, .y = 3, .bg = null },
+        .{ .text = "WXYZ", .x = -1, .y = 4, .bg = null, .scissor = true },
+        .{ .text = "AB\u{4e16}", .x = -1, .y = 5, .bg = null },
+        .{ .text = "ZZZZ", .x = 0, .y = -1, .bg = black },
+        .{ .text = "ZZZZ", .x = min, .y = 0, .bg = black },
+        .{ .text = "Z\u{4e16}ZZ", .x = min, .y = 0, .bg = null },
+    };
+
+    var expected_pools = TestPools.init(std.testing.allocator);
+    defer expected_pools.deinit();
+    var checked_pools = TestPools.init(std.testing.allocator);
+    defer checked_pools.deinit();
+    const expected = try OptimizedBuffer.init(std.testing.allocator, 4, 6, .{ .link_pool = &expected_pools.links, .pool = &expected_pools.graphemes, .id = "clipped-text" });
+    defer expected.deinit();
+    const checked = try OptimizedBuffer.init(std.testing.allocator, 4, 6, .{ .link_pool = &checked_pools.links, .pool = &checked_pools.graphemes, .id = "checked-clipped-text" });
+    defer checked.deinit();
+
+    for ([_]*OptimizedBuffer{ expected, checked }) |target| target.clear(black, null);
+    for (draws) |draw| {
+        if (draw.scissor) {
+            try expected.pushScissorRect(1, 4, 2, 1);
+            try checked.pushScissorRect(1, 4, 2, 1);
+        }
+        try expected.drawTextClipped(draw.text, draw.x, draw.y, white, draw.bg, 0);
+        try checked.drawTextChecked(draw.text, draw.x, draw.y, white, draw.bg, 0);
+        if (draw.scissor) {
+            expected.popScissorRect();
+            checked.popScissorRect();
+        }
+    }
+
+    try expectRowChars(checked, 0, "CDE ");
+    // The wide glyph after a clipped prefix keeps its columns.
+    try std.testing.expectEqual(@as(u32, 'B'), checked.get(0, 5).?.char);
+    try std.testing.expect(gp.isGraphemeChar(checked.get(1, 5).?.char));
+    try std.testing.expectEqualSlices(u32, expected.buffer.char, checked.buffer.char);
+    try std.testing.expectEqualSlices(u32, expected.buffer.attributes, checked.buffer.attributes);
+    for (expected.buffer.fg, checked.buffer.fg) |want, got| try std.testing.expect(buffer_mod.rgbaEqual(want, got));
+    for (expected.buffer.bg, checked.buffer.bg) |want, got| try std.testing.expect(buffer_mod.rgbaEqual(want, got));
 }
 
 test "OptimizedBuffer - transparent framebuffer cell background stays transparent over backdrop" {
@@ -3999,10 +4092,10 @@ test "OptimizedBuffer drawTextChecked warm draws avoid heap allocation" {
         target.clear(background, null);
         try target.pushScissorRect(0, 0, 140, 44);
         try target.pushOpacity(1.0);
-        for (0..8) |_| try target.drawTextChecked(case.text, case.x, case.y, foreground, case.bg, 0);
+        for (0..8) |_| try target.drawTextChecked(case.text, @intCast(case.x), @intCast(case.y), foreground, case.bg, 0);
         const allocations = requests.allocations;
         const resizes = requests.resize_index;
-        for (0..64) |_| try target.drawTextChecked(case.text, case.x, case.y, foreground, case.bg, 0);
+        for (0..64) |_| try target.drawTextChecked(case.text, @intCast(case.x), @intCast(case.y), foreground, case.bg, 0);
         try std.testing.expectEqual(allocations, requests.allocations);
         try std.testing.expectEqual(resizes, requests.resize_index);
         try std.testing.expectEqualSlices(RGBA, expected.buffer.fg, target.buffer.fg);

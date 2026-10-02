@@ -1,7 +1,7 @@
 // Generated from packages/native/include/opentui.h and scripts/native-abi-pointers.ts.
 // Run `bun run generate:abi` in packages/core. Do not edit.
 // Inspect audit input: bun scripts/native-abi.ts --audit
-// ABI audit SHA-256: f3fd354bcc3658d7d10f72dc3710051a778f9cd550c89cae65562fc2d3605d93
+// ABI audit SHA-256: 512106714e53b73121217b4391806fd78baa420def73fee2d40e059535ce876c
 
 export const nativeSymbols = {
   ot_scene_set_hooks: { args: ["ptr", "buffer", "buffer"], returns: "i32" },
@@ -199,9 +199,9 @@ export const nativeSymbols = {
     returns: "i32",
   },
   ot_buffer_draw_grid: { args: ["ptr", "buffer", "ptr", "buffer", "buffer", "u32", "buffer", "u32"], returns: "i32" },
-  ot_buffer_draw_packed: { args: ["ptr", "buffer", "ptr", "ptr", "u32", "u32", "u32", "u32", "u32"], returns: "i32" },
+  ot_buffer_draw_packed: { args: ["ptr", "buffer", "ptr", "ptr", "u32", "i32", "i32", "u32", "u32"], returns: "i32" },
   ot_buffer_draw_supersample: {
-    args: ["ptr", "buffer", "ptr", "ptr", "u32", "u32", "u32", "u32", "u32"],
+    args: ["ptr", "buffer", "ptr", "ptr", "u32", "i32", "i32", "u32", "u32"],
     returns: "i32",
   },
   ot_buffer_draw_grayscale: {
@@ -1295,8 +1295,8 @@ export const nativeLayouts = {
     alignment: 4,
     fields: {
       header: { offset: 0, size: 8, alignment: 4, type: "ot_scene_record_header" },
-      x: { offset: 8, size: 4, alignment: 4, type: "u32" },
-      y: { offset: 12, size: 4, alignment: 4, type: "u32" },
+      x: { offset: 8, size: 4, alignment: 4, type: "i32" },
+      y: { offset: 12, size: 4, alignment: 4, type: "i32" },
       width: { offset: 16, size: 4, alignment: 4, type: "u32" },
       height: { offset: 20, size: 4, alignment: 4, type: "u32" },
       byte_count: { offset: 24, size: 4, alignment: 4, type: "u32" },
@@ -1308,8 +1308,8 @@ export const nativeLayouts = {
     alignment: 4,
     fields: {
       header: { offset: 0, size: 8, alignment: 4, type: "ot_scene_record_header" },
-      x: { offset: 8, size: 4, alignment: 4, type: "u32" },
-      y: { offset: 12, size: 4, alignment: 4, type: "u32" },
+      x: { offset: 8, size: 4, alignment: 4, type: "i32" },
+      y: { offset: 12, size: 4, alignment: 4, type: "i32" },
       format: { offset: 16, size: 4, alignment: 4, type: "u32" },
       stride: { offset: 20, size: 4, alignment: 4, type: "u32" },
       byte_count: { offset: 24, size: 4, alignment: 4, type: "u32" },

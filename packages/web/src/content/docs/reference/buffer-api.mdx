@@ -132,6 +132,10 @@ with the same owner. Do not inspect their bits or retain them after `freeUnicode
 | `drawText`                 | `drawText(text, x, y, fg, bg?, attributes = 0, selection?)` segments and clips Unicode text                            |
 | `fillRect`                 | `fillRect(x, y, width, height, bg)` paints the rectangle through tracker-aware cell paths                              |
 
+Positions are integer cells from `-2^31` to `2^31 - 1`, so they can be negative. These methods draw only the cells
+inside the buffer. `drawText()` skips a wide grapheme that starts left of column 0. `fillRect()` draws nothing when
+`width` or `height` is 0 or less.
+
 The optional `drawText()` selection object has `{ start, end, bgColor?, fgColor? }`. Its implementation slices the
 JavaScript string with UTF-16 indexes and adds the same values to the cell x-coordinate. It is reliable only for
 one-cell Basic Multilingual Plane text. Use `TextBufferView` or `EditorView` selection for general Unicode text.

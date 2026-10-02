@@ -2332,8 +2332,8 @@ export class NativePaintRecorder {
       const input = recordedPixels(data, byteLength)
       const base = this.reserve(nativeConstants.OT_SCENE_RECORD_PACKED, layout.size + input.byteLength)
       const fields = layout.fields
-      this.words[(base + fields.x.offset) / 4] = toSafeFFIU32Length(x, "Packed buffer dimension")
-      this.words[(base + fields.y.offset) / 4] = toSafeFFIU32Length(y, "Packed buffer dimension")
+      this.signed[(base + fields.x.offset) / 4] = embeddedTerminalI32(x, "Packed buffer x")
+      this.signed[(base + fields.y.offset) / 4] = embeddedTerminalI32(y, "Packed buffer y")
       this.words[(base + fields.width.offset) / 4] = toSafeFFIU32Length(width, "Packed buffer dimension")
       this.words[(base + fields.height.offset) / 4] = toSafeFFIU32Length(height, "Packed buffer dimension")
       this.words[(base + fields.byte_count.offset) / 4] = input.byteLength
@@ -2360,8 +2360,8 @@ export class NativePaintRecorder {
       const input = recordedPixels(data, byteLength)
       const base = this.reserve(nativeConstants.OT_SCENE_RECORD_SUPERSAMPLE, layout.size + input.byteLength)
       const fields = layout.fields
-      this.words[(base + fields.x.offset) / 4] = toSafeFFIU32Length(x, "Supersample buffer dimension")
-      this.words[(base + fields.y.offset) / 4] = toSafeFFIU32Length(y, "Supersample buffer dimension")
+      this.signed[(base + fields.x.offset) / 4] = embeddedTerminalI32(x, "Supersample buffer x")
+      this.signed[(base + fields.y.offset) / 4] = embeddedTerminalI32(y, "Supersample buffer y")
       this.words[(base + fields.format.offset) / 4] = format === "bgra8unorm" ? 0 : 1
       this.words[(base + fields.stride.offset) / 4] = toSafeFFIU32Length(stride, "Supersample buffer dimension")
       this.words[(base + fields.byte_count.offset) / 4] = input.byteLength
@@ -5925,11 +5925,24 @@ export class FFIRenderLib {
     const ticket = frame === null ? null : encodeSceneFrameRequest(context, frame)
     const length = toSafeFFIU32Length(byteLength, "Packed buffer byte count")
     const input = pixelInput(data, length)
-    const dimensions = [x, y, width, height].map((value) => toSafeFFIU32Length(value, "Packed buffer dimension"))
+    const cellX = embeddedTerminalI32(x, "Packed buffer x")
+    const cellY = embeddedTerminalI32(y, "Packed buffer y")
+    const cellWidth = toSafeFFIU32Length(width, "Packed buffer dimension")
+    const cellHeight = toSafeFFIU32Length(height, "Packed buffer dimension")
     const pointer = this.nativeContextPointer(context, "ot_buffer_draw_packed")
     nativeResult(
       "ot_buffer_draw_packed",
-      this.opentui.symbols.ot_buffer_draw_packed(pointer, handle, ticket, input, length, ...dimensions),
+      this.opentui.symbols.ot_buffer_draw_packed(
+        pointer,
+        handle,
+        ticket,
+        input,
+        length,
+        cellX,
+        cellY,
+        cellWidth,
+        cellHeight,
+      ),
     )
   }
 
@@ -5948,13 +5961,24 @@ export class FFIRenderLib {
     if (format !== "rgba8unorm" && format !== "bgra8unorm") throw new TypeError("Unknown pixel format")
     const length = toSafeFFIU32Length(byteLength, "Supersample buffer byte count")
     const input = pixelInput(data, length)
-    const dimensions = [x, y, format === "bgra8unorm" ? 0 : 1, stride].map((value) =>
-      toSafeFFIU32Length(value, "Supersample buffer dimension"),
-    )
+    const cellX = embeddedTerminalI32(x, "Supersample buffer x")
+    const cellY = embeddedTerminalI32(y, "Supersample buffer y")
+    const pixelFormat = format === "bgra8unorm" ? 0 : 1
+    const rowBytes = toSafeFFIU32Length(stride, "Supersample buffer dimension")
     const pointer = this.nativeContextPointer(context, "ot_buffer_draw_supersample")
     nativeResult(
       "ot_buffer_draw_supersample",
-      this.opentui.symbols.ot_buffer_draw_supersample(pointer, handle, ticket, input, length, ...dimensions),
+      this.opentui.symbols.ot_buffer_draw_supersample(
+        pointer,
+        handle,
+        ticket,
+        input,
+        length,
+        cellX,
+        cellY,
+        pixelFormat,
+        rowBytes,
+      ),
     )
   }
 

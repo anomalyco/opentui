@@ -1472,12 +1472,10 @@ pub const Scene = struct {
             try paintSlider(target, control.slider, layout, clip);
         } else if (kind == api.OT_SCENE_ARROW) {
             const arrow = control.arrow;
-            const x: i32 = @intFromFloat(layout.screenX);
-            const y: i32 = @intFromFloat(layout.screenY);
-            if (x >= 0 and y >= 0) try target.drawTextChecked(
+            try target.drawTextChecked(
                 arrow.text orelse arrows[arrow.direction],
-                @intCast(x),
-                @intCast(y),
+                @intFromFloat(layout.screenX),
+                @intFromFloat(layout.screenY),
                 arrow.foreground,
                 arrow.background,
                 arrow.attributes,

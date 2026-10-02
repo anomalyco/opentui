@@ -1696,14 +1696,15 @@ pub const OptimizedBuffer = struct {
     }
 
     /// Draw one row of UTF-8 with base style bits and packed color intent.
-    /// Tabs retain drawText's two-cell expansion.
+    /// Tabs retain drawText's two-cell expansion. A signed position draws only the cells inside
+    /// the buffer, with the same clipping as drawTextClipped.
     /// Reject controls, oversized input/visible graphemes, and unqualified image resources.
     /// Rejection preserves cells and live references; prepared capacity may remain.
     pub fn drawTextChecked(
         self: *OptimizedBuffer,
         text: []const u8,
-        x: u32,
-        y: u32,
+        x: i32,
+        y: i32,
         fg: RGBA,
         bg: ?RGBA,
         attributes: u32,
@@ -1714,7 +1715,8 @@ pub const OptimizedBuffer = struct {
         try validateColor(fg);
         if (bg) |background| try validateColor(background);
         try validateTextInput(text);
-        if (x >= self.width or y >= self.height or text.len == 0) return;
+        if (y < 0 or x >= self.width or y >= self.height or text.len == 0) return;
+        const row: u32 = @intCast(y);
         if (self.width > math.maxInt(i32) or self.height > math.maxInt(i32)) return error.InvalidOptions;
         if (self.getCurrentScissorRect()) |clip| {
             if (clip.width > math.maxInt(i32) or clip.height > math.maxInt(i32) or
@@ -1747,7 +1749,8 @@ pub const OptimizedBuffer = struct {
         var cluster_index: usize = 0;
         var advance_cells: u32 = 0;
         var grapheme_count: u32 = 0;
-        while (byte_offset < input.len and advance_cells < self.width - x) {
+        // advance_cells is at most two cells per input byte, so the sum fits in i64.
+        while (byte_offset < input.len and @as(i64, x) + advance_cells < self.width) {
             const start = byte_offset;
             const cluster: ?utf8.RenderClusterInfo = if (cluster_index < clusters.items.len and
                 clusters.items[cluster_index].byte_start == start) clusters.items[cluster_index] else null;
@@ -1765,18 +1768,27 @@ pub const OptimizedBuffer = struct {
                 utf8.getWidthAt(bytes, 0, tab_width, self.width_method);
             if (cell_width == 0) continue;
             const cluster_width = if (cluster) |entry| entry.width_cols else cell_width;
-            const char_x = x + advance_cells;
+            const char_x_wide = @as(i64, x) + advance_cells;
             const is_tab = bytes.len == 1 and bytes[0] == '\t';
-            const count = if (is_tab) @min(cluster_width, self.width - char_x) else 1;
+            if (!is_tab and char_x_wide < 0) {
+                // Clip a glyph that starts left of column 0, even a wide glyph that reaches column 0.
+                // Advance as a drawn glyph does, so the visible glyphs keep their columns.
+                advance_cells += cell_width;
+                continue;
+            }
+            // Only a tab is drawn from a column left of 0; it clips each of its cells.
+            const char_x: u32 = @intCast(@max(char_x_wide, 0));
+            const tab_end = @min(char_x_wide + cluster_width, self.width);
+            const count: u32 = if (!is_tab) 1 else if (tab_end > char_x) @intCast(tab_end - char_x) else 0;
             var visible = false;
             if (is_tab) {
                 for (0..count) |offset| {
-                    visible = visible or self.isPointInScissor(@intCast(char_x + offset), @intCast(y));
+                    visible = visible or self.isPointInScissor(@intCast(char_x + offset), y);
                 }
             } else if (cell_width <= self.width - char_x) {
                 visible = true;
                 for (0..cell_width) |offset| {
-                    if (!self.isPointInScissor(@intCast(char_x + offset), @intCast(y))) {
+                    if (!self.isPointInScissor(@intCast(char_x + offset), y)) {
                         visible = false;
                         break;
                     }
@@ -1808,11 +1820,11 @@ pub const OptimizedBuffer = struct {
         );
 
         for (runs.items) |run| {
-            const background = bg orelse self.get(run.x, y).?.bg;
+            const background = bg orelse self.get(run.x, row).?.bg;
             const cell = makeCell(run.char, fg, background, attributes);
             for (0..run.count) |offset| {
                 const column = run.x + @as(u32, @intCast(offset));
-                self.setTextCell(column, y, cell);
+                self.setTextCell(column, row, cell);
             }
         }
     }
@@ -3360,7 +3372,7 @@ pub const OptimizedBuffer = struct {
         if (titleLayout.shouldDraw) {
             if (title) |titleText| {
                 if (checked_titles) {
-                    try self.drawTextChecked(titleText, @intCast(titleLayout.x), @intCast(startY), titleColor, backgroundColor, 0);
+                    try self.drawTextChecked(titleText, titleLayout.x, startY, titleColor, backgroundColor, 0);
                 } else {
                     try self.drawText(titleText, @intCast(titleLayout.x), @intCast(startY), titleColor, backgroundColor, 0);
                 }
@@ -3370,7 +3382,7 @@ pub const OptimizedBuffer = struct {
         if (bottomTitleLayout.shouldDraw) {
             if (bottomTitle) |titleText| {
                 if (checked_titles) {
-                    try self.drawTextChecked(titleText, @intCast(bottomTitleLayout.x), @intCast(endY), titleColor, backgroundColor, 0);
+                    try self.drawTextChecked(titleText, bottomTitleLayout.x, endY, titleColor, backgroundColor, 0);
                 } else {
                     try self.drawText(titleText, @intCast(bottomTitleLayout.x), @intCast(endY), titleColor, backgroundColor, 0);
                 }
@@ -3584,7 +3596,7 @@ pub const OptimizedBuffer = struct {
         if (!math.isFinite(opacity) or opacity < 0 or opacity > 1) return error.InvalidOptions;
     }
 
-    pub fn drawSuperSampleBufferChecked(self: *OptimizedBuffer, x: u32, y: u32, pixels: []const u8, format: u8, stride: u32) !void {
+    pub fn drawSuperSampleBufferChecked(self: *OptimizedBuffer, x: i32, y: i32, pixels: []const u8, format: u8, stride: u32) !void {
         try self.checkPixelDraw();
         try self.drawSuperSampleBufferInternal(x, y, pixels, format, stride);
     }
@@ -3593,8 +3605,8 @@ pub const OptimizedBuffer = struct {
     /// alignedBytesPerRow: The number of bytes per row in the pixelData buffer, considering alignment/padding.
     pub fn drawSuperSampleBuffer(
         self: *OptimizedBuffer,
-        posX: u32,
-        posY: u32,
+        posX: i32,
+        posY: i32,
         pixelData: [*]const u8,
         len: usize,
         format: u8, // 0: bgra8unorm, 1: rgba8unorm
@@ -3603,26 +3615,30 @@ pub const OptimizedBuffer = struct {
         self.drawSuperSampleBufferInternal(posX, posY, pixelData[0..len], format, alignedBytesPerRow) catch {};
     }
 
-    fn drawSuperSampleBufferInternal(self: *OptimizedBuffer, posX: u32, posY: u32, pixels: []const u8, format: u8, alignedBytesPerRow: u32) !void {
+    fn drawSuperSampleBufferInternal(self: *OptimizedBuffer, posX: i32, posY: i32, pixels: []const u8, format: u8, alignedBytesPerRow: u32) !void {
         if (format > 1 or alignedBytesPerRow == 0 or alignedBytesPerRow % 4 != 0) return error.InvalidOptions;
         if (pixels.len % alignedBytesPerRow != 0) return error.InvalidOptions;
-        if (posX >= self.width or posY >= self.height) return;
         const bytesPerPixel = 4;
         const isBGRA = (format == 0);
         const sourceWidth = alignedBytesPerRow / bytesPerPixel;
-        const width: u32 = @intCast(@min(self.width - posX, (sourceWidth + 1) / 2));
-        const height: u32 = @intCast(@min(self.height - posY, (pixels.len / alignedBytesPerRow + 1) / 2));
+        // Each cell samples 2x2 source pixels. Draw only the source cells inside the buffer.
+        const source_cells_x: i64 = (sourceWidth + 1) / 2;
+        const source_cells_y: i64 = @intCast((pixels.len / alignedBytesPerRow + 1) / 2);
+        const start_x: u32 = @intCast(@max(0, posX));
+        const start_y: u32 = @intCast(@max(0, posY));
+        const end_x = @min(@as(i64, self.width), @as(i64, posX) + source_cells_x);
+        const end_y = @min(@as(i64, self.height), @as(i64, posY) + source_cells_y);
 
-        var y_cell = posY;
-        while (y_cell < posY + height) : (y_cell += 1) {
-            var x_cell = posX;
-            while (x_cell < posX + width) : (x_cell += 1) {
+        var y_cell = start_y;
+        while (y_cell < end_y) : (y_cell += 1) {
+            var x_cell = start_x;
+            while (x_cell < end_x) : (x_cell += 1) {
                 if (!self.isPointInScissor(@intCast(x_cell), @intCast(y_cell))) {
                     continue;
                 }
 
-                const renderX: usize = @as(usize, x_cell - posX) * 2;
-                const renderY: usize = @as(usize, y_cell - posY) * 2;
+                const renderX: usize = @intCast((@as(i64, x_cell) - posX) * 2);
+                const renderY: usize = @intCast((@as(i64, y_cell) - posY) * 2);
 
                 const tlIndex: usize = @intCast(renderY * alignedBytesPerRow + renderX * bytesPerPixel);
                 const trIndex: usize = tlIndex + bytesPerPixel;
@@ -3652,7 +3668,7 @@ pub const OptimizedBuffer = struct {
     }
 
     /// Validates visible cells before writing. The borrowed input may be unaligned.
-    pub fn drawPackedBufferChecked(self: *OptimizedBuffer, data: []const u8, x: u32, y: u32, width: u32, height: u32) !void {
+    pub fn drawPackedBufferChecked(self: *OptimizedBuffer, data: []const u8, x: i32, y: i32, width: u32, height: u32) !void {
         try self.checkPixelDraw();
         try self.drawPackedBufferInternal(true, data, x, y, width, height);
     }
@@ -3664,28 +3680,33 @@ pub const OptimizedBuffer = struct {
         self: *OptimizedBuffer,
         data: [*]const u8,
         dataLen: usize,
-        posX: u32,
-        posY: u32,
+        posX: i32,
+        posY: i32,
         terminalWidthCells: u32,
         terminalHeightCells: u32,
     ) void {
         self.drawPackedBufferInternal(false, data[0..dataLen], posX, posY, terminalWidthCells, terminalHeightCells) catch {};
     }
 
-    fn drawPackedBufferInternal(self: *OptimizedBuffer, comptime checked: bool, data: []const u8, posX: u32, posY: u32, terminalWidthCells: u32, terminalHeightCells: u32) !void {
+    fn drawPackedBufferInternal(self: *OptimizedBuffer, comptime checked: bool, data: []const u8, posX: i32, posY: i32, terminalWidthCells: u32, terminalHeightCells: u32) !void {
         const cellResultSize = 48;
         const required = math.mul(u64, @as(u64, terminalWidthCells) * terminalHeightCells, cellResultSize) catch return error.InvalidDimensions;
         if (data.len < required or data.len % cellResultSize != 0) return error.InvalidOptions;
-        if (posX >= self.width or posY >= self.height) return;
-        const width = @min(terminalWidthCells, self.width - posX);
-        const height = @min(terminalHeightCells, self.height - posY);
+        // Skip the source cells left of or above the buffer.
+        const skip_x: u32 = @intCast(@min(terminalWidthCells, @max(0, -@as(i64, posX))));
+        const skip_y: u32 = @intCast(@min(terminalHeightCells, @max(0, -@as(i64, posY))));
+        const start_x: u32 = @intCast(@max(0, posX));
+        const start_y: u32 = @intCast(@max(0, posY));
+        if (start_x >= self.width or start_y >= self.height) return;
+        const width = @min(terminalWidthCells - skip_x, self.width - start_x);
+        const height = @min(terminalHeightCells - skip_y, self.height - start_y);
         inline for (0..(if (checked) 2 else 1)) |pass| {
             for (0..height) |y| {
                 for (0..width) |x| {
-                    const cellX = posX + @as(u32, @intCast(x));
-                    const cellY = posY + @as(u32, @intCast(y));
+                    const cellX = start_x + @as(u32, @intCast(x));
+                    const cellY = start_y + @as(u32, @intCast(y));
                     if (!self.isPointInScissor(@intCast(cellX), @intCast(cellY))) continue;
-                    const offset = (y * terminalWidthCells + x) * cellResultSize;
+                    const offset = ((skip_y + y) * terminalWidthCells + skip_x + x) * cellResultSize;
                     const colors = @as(*align(1) const [8]f32, @ptrCast(data.ptr + offset));
                     if (checked and pass == 0) {
                         for (colors) |channel| if (!math.isFinite(channel)) return error.InvalidOptions;

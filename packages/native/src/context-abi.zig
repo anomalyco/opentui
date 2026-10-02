@@ -649,7 +649,7 @@ pub fn ot_buffer_draw_grid(context: ?*ContextHandle, target_ptr: ?*const c.ot_ha
     return c.OT_OK;
 }
 
-pub fn ot_buffer_draw_packed(context: ?*ContextHandle, target_ptr: ?*const c.ot_handle, frame_ptr: ?*const c.ot_scene_frame_request, data_ptr: ?[*]const u8, byte_count: u32, x: u32, y: u32, width: u32, height: u32) callconv(.c) c.ot_status {
+pub fn ot_buffer_draw_packed(context: ?*ContextHandle, target_ptr: ?*const c.ot_handle, frame_ptr: ?*const c.ot_scene_frame_request, data_ptr: ?[*]const u8, byte_count: u32, x: i32, y: i32, width: u32, height: u32) callconv(.c) c.ot_status {
     const status = sessionContextStatus(context);
     if (status != c.OT_OK) return status;
     const owner = context.?;
@@ -660,7 +660,7 @@ pub fn ot_buffer_draw_packed(context: ?*ContextHandle, target_ptr: ?*const c.ot_
     return c.OT_OK;
 }
 
-pub fn ot_buffer_draw_supersample(context: ?*ContextHandle, target_ptr: ?*const c.ot_handle, frame_ptr: ?*const c.ot_scene_frame_request, data_ptr: ?[*]const u8, byte_count: u32, x: u32, y: u32, format: u32, stride: u32) callconv(.c) c.ot_status {
+pub fn ot_buffer_draw_supersample(context: ?*ContextHandle, target_ptr: ?*const c.ot_handle, frame_ptr: ?*const c.ot_scene_frame_request, data_ptr: ?[*]const u8, byte_count: u32, x: i32, y: i32, format: u32, stride: u32) callconv(.c) c.ot_status {
     const status = sessionContextStatus(context);
     if (status != c.OT_OK) return status;
     const owner = context.?;

@@ -1753,6 +1753,9 @@ ot_status ot_buffer_draw_scene_text(ot_context *, const ot_handle *target, const
  * (HAS_SOURCE_WIDTH and HAS_SOURCE_HEIGHT). Without HAS_BACKGROUND, text
  * uses the background at each glyph or tab start. Omitted source extents use
  * the remaining source dimensions; an explicit zero extent draws nothing.
+ * Positions are signed cells. FILL and TEXT draw only their cells inside the
+ * target; TEXT skips a wide glyph that starts left of column 0. CELL, CELL_BLEND,
+ * and CHAR at a position outside the target draw nothing.
  * All records and byte spans are borrowed only for the call. */
 typedef struct ot_buffer_draw_header {
     uint32_t struct_size;
@@ -2203,14 +2206,16 @@ ot_status ot_buffer_draw_grid(ot_context *context, const ot_handle *target,
  * Supersampling uses format 0=BGRA, 1=RGBA, and a nonzero stride divisible by 4.
  * Input must contain whole rows. Row padding is input; destination width clips it.
  * Missing neighbors at odd source edges are transparent.
+ * Packed and supersampled positions are signed cells; a negative position clips
+ * the source cells left of or above the destination.
  * Grayscale sample_count counts floats, not bytes; width * height must fit u32
  * and the supplied span. Visible samples must be finite. supersampled is 0 or 1;
  * 2x grayscale ignores an incomplete final sample row/column. Optional colors
  * contain packed RGBA with canonical color intent. Preflight work is destination-bounded. */
 ot_status ot_buffer_draw_packed(ot_context *, const ot_handle *, const ot_scene_frame_request *,
-    const uint8_t *data, uint32_t byte_count, uint32_t x, uint32_t y, uint32_t width, uint32_t height);
+    const uint8_t *data, uint32_t byte_count, int32_t x, int32_t y, uint32_t width, uint32_t height);
 ot_status ot_buffer_draw_supersample(ot_context *, const ot_handle *, const ot_scene_frame_request *,
-    const uint8_t *data, uint32_t byte_count, uint32_t x, uint32_t y, uint32_t format, uint32_t stride);
+    const uint8_t *data, uint32_t byte_count, int32_t x, int32_t y, uint32_t format, uint32_t stride);
 ot_status ot_buffer_draw_grayscale(ot_context *, const ot_handle *, const ot_scene_frame_request *,
     const float *data, uint32_t sample_count, int32_t x, int32_t y, uint32_t width, uint32_t height,
     const uint16_t *foreground, const uint16_t *background, uint32_t supersampled);
@@ -2311,8 +2316,8 @@ typedef struct ot_scene_record_grid {
 /* Followed by byte_count bytes, as for ot_buffer_draw_packed. */
 typedef struct ot_scene_record_packed {
     ot_scene_record_header header;
-    uint32_t x;
-    uint32_t y;
+    int32_t x;
+    int32_t y;
     uint32_t width;
     uint32_t height;
     uint32_t byte_count;
@@ -2322,8 +2327,8 @@ typedef struct ot_scene_record_packed {
 /* Followed by byte_count bytes, as for ot_buffer_draw_supersample. */
 typedef struct ot_scene_record_supersample {
     ot_scene_record_header header;
-    uint32_t x;
-    uint32_t y;
+    int32_t x;
+    int32_t y;
     uint32_t format;
     uint32_t stride;
     uint32_t byte_count;

@@ -1579,8 +1579,8 @@ pub const Context = struct {
         self: *Context,
         handle: Handle,
         text: []const u8,
-        x: u32,
-        y: u32,
+        x: i32,
+        y: i32,
         foreground: buf.RGBA,
         background: ?buf.RGBA,
         attributes: u32,
@@ -1649,13 +1649,17 @@ pub const Context = struct {
                     if (options.char > 0x10ffff or (options.char >= 0xd800 and options.char <= 0xdfff) or
                         options.char < 32 or (options.char >= 127 and options.char <= 159)) return error.InvalidOptions;
                 }
+                // Text and fills draw their part inside the target. A cell outside it draws nothing.
+                switch (options.operation) {
+                    .text => return target.drawTextChecked(text, options.x, options.y, options.foreground, options.background, options.attributes),
+                    .fill => return target.fillRectClipped(options.x, options.y, options.width, options.height, background),
+                    else => {},
+                }
                 if (options.x < 0 or options.y < 0) return;
                 const x: u32 = @intCast(options.x);
                 const y: u32 = @intCast(options.y);
                 if (x >= target.width or y >= target.height) return;
                 switch (options.operation) {
-                    .text => try target.drawTextChecked(text, x, y, options.foreground, options.background, options.attributes),
-                    .fill => target.fillRect(x, y, @min(options.width, target.width - x), @min(options.height, target.height - y), background),
                     .cell => target.set(x, y, .{ .char = options.char, .fg = options.foreground, .bg = background, .attributes = options.attributes }),
                     .cell_blend => target.setCellWithAlphaBlending(x, y, options.char, options.foreground, background, options.attributes),
                     .char => target.drawChar(options.char, x, y, options.foreground, background, options.attributes),
@@ -1725,20 +1729,20 @@ pub const Context = struct {
         target.drawGrid(&options.border_chars, options.foreground, options.background, columns.ptr, @intCast(columns.len - 1), rows.ptr, @intCast(rows.len - 1), options.draw_inner, options.draw_outer);
     }
 
-    pub fn drawPackedBuffer(self: *Context, handle: Handle, frame: ?scene.FrameRequest, data: []const u8, x: u32, y: u32, width: u32, height: u32) !void {
+    pub fn drawPackedBuffer(self: *Context, handle: Handle, frame: ?scene.FrameRequest, data: []const u8, x: i32, y: i32, width: u32, height: u32) !void {
         try self.beginMutation();
         defer self.mutating = false;
         const target = try self.bufferDrawTarget(handle, frame);
         try target.drawPackedBufferChecked(data, x, y, width, height);
     }
 
-    pub fn drawSuperSampleBuffer(self: *Context, handle: Handle, frame: ?scene.FrameRequest, data: []const u8, x: u32, y: u32, format: u32, stride: u32) !void {
+    pub fn drawSuperSampleBuffer(self: *Context, handle: Handle, frame: ?scene.FrameRequest, data: []const u8, x: i32, y: i32, format: u32, stride: u32) !void {
         try self.beginMutation();
         defer self.mutating = false;
         try drawSuperSampleOn(try self.bufferDrawTarget(handle, frame), data, x, y, format, stride);
     }
 
-    pub fn drawSuperSampleOn(target: *buf.OptimizedBuffer, data: []const u8, x: u32, y: u32, format: u32, stride: u32) !void {
+    pub fn drawSuperSampleOn(target: *buf.OptimizedBuffer, data: []const u8, x: i32, y: i32, format: u32, stride: u32) !void {
         if (format > 1) return error.InvalidOptions;
         try target.drawSuperSampleBufferChecked(x, y, data, @intCast(format), stride);
     }
