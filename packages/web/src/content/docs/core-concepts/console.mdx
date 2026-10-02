@@ -55,7 +55,7 @@ OpenTUI replaces the global console with a `node:console.Console` whose output s
 - `console.error()`
 - `console.debug()`
 
-Each overlay entry contains a wall-clock `Date`, a log level, and the original argument array. Display formatting uses `util.inspect()` with depth `2`. Info, warning, error, debug, and default log entries use separate configured colors.
+Each overlay entry contains a wall-clock `Date`, a log level, and the original argument array. Display formatting follows `util.format()`, the same policy `console.log` uses: a leading string substitutes format specifiers such as `%s`, `%d`, and `%j`, top-level strings print raw with their escapes interpreted, and other values are inspected at depth `2`. Info, warning, error, debug, and default log entries use separate configured colors.
 
 Other methods supplied by `node:console.Console` can write to the internal captured stdout or stderr streams. They do not become overlay entries through the five-method log path. `OTUI_DUMP_CAPTURES` can include this captured output when the renderer signal handler runs.
 
