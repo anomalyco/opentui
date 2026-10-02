@@ -58,6 +58,25 @@ Both constructors convert a non-finite channel to `0`. Channel setters apply the
 
 `RGBA.clone()` copies all channels and metadata. `equals()` compares the complete packed value, including color intent.
 
+## Update retained colors
+
+Built-in renderables copy colors when you assign them. Color getters return detached values.
+Changes to an input `RGBA`, a getter result, or its `buffer` do not update the retained scene.
+This remains true even when another property causes a redraw.
+
+Assign the property again to publish a new value:
+
+```typescript
+const accent = RGBA.fromHex("#22c55e")
+box.backgroundColor = accent
+accent.r = 1
+box.backgroundColor = accent
+```
+
+The second assignment takes a new snapshot, even though it receives the same object.
+The same rule applies to retained text styles, selections, placeholders, and gutter colors.
+For immediate drawing, you can still reuse and mutate an `RGBA` between calls.
+
 ## Use alpha
 
 An alpha value of zero is transparent. Intermediate alpha values blend during supported buffer-composition operations.
@@ -136,6 +155,9 @@ Default foreground uses `[255, 255, 255]` as its snapshot. Default background us
 An optional snapshot supplies RGBA data for blending and early frames. It does not change the indexed or default intent.
 
 Detected palette changes can alter terminal output for indexed and default intent. Read [Terminal capabilities](/docs/reference/terminal-capabilities) for detection timing.
+
+Cursor color controls use the RGB snapshot. Passing default foreground intent as a cursor color does not request
+a terminal cursor-color reset.
 
 ## Understand packed transport
 

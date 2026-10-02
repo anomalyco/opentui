@@ -34,7 +34,7 @@ const HOST_KEY_PREFIX = "native-host-bottle-v1"
 const HOST_MANIFEST_NAME = "host-bottle-manifest.json"
 
 // These paths are the inputs of `zig build -Doptimize=ReleaseFast`. Generated output is not an input.
-const INPUTS = ["build.zig", "build.zig.zon", "scripts/prepare-zig-deps.sh", "src"] as const
+const INPUTS = ["build.zig", "build.zig.zon", "include", "scripts/prepare-zig-deps.sh", "src"] as const
 
 // Output names match packages/native/build.zig. Package and symbol directories match build.ts.
 const BOTTLE_LIBRARIES: ReadonlyArray<{

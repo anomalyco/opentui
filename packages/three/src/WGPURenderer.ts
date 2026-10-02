@@ -132,6 +132,18 @@ export class ThreeCliRenderer {
         alpha: this.alpha,
       })
 
+      // Three 0.177 creates and starts _animation inside init(), with no public context option.
+      // Bind on assignment before start(), then restore the ordinary instance property.
+      const cliRenderer = this.cliRenderer
+      Object.defineProperty(this.threeRenderer, "_animation", {
+        configurable: true,
+        get: () => null,
+        set(animation: NonNullable<WebGPURenderer["_animation"]>) {
+          animation.setContext(cliRenderer)
+          Object.defineProperty(this, "_animation", { value: animation, writable: true, configurable: true })
+        },
+      })
+
       this.setBackgroundColor(this.backgroundColor)
 
       this.threeRenderer.toneMapping = NoToneMapping
@@ -199,7 +211,7 @@ export class ThreeCliRenderer {
   public async drawScene(root: Scene, buffer: OptimizedBuffer, deltaTime: number): Promise<void> {
     await this.renderMethod(root, this.activeCamera, buffer, deltaTime)
 
-    if (this.doRenderStats) {
+    if (!this.destroyed && this.doRenderStats) {
       this.renderStats(buffer)
     }
   }
@@ -225,6 +237,7 @@ export class ThreeCliRenderer {
       const totalStart = performance.now()
       const renderStart = performance.now()
       await this.threeRenderer!.render(root, camera)
+      if (this.destroyed) return
       this.renderTimeMs = performance.now() - renderStart
 
       const readbackStart = performance.now()
@@ -275,6 +288,7 @@ export class ThreeCliRenderer {
 
     this.cliRenderer.off("resize", this.resizeHandler)
     this.cliRenderer.off(CliRenderEvents.DEBUG_OVERLAY_TOGGLE, this.debugToggleHandler)
+    this.cliRenderer.off(CliRenderEvents.DESTROY, this.destroyHandler)
 
     if (this.canvas) {
       this.canvas.destroy()

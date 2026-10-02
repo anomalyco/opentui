@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { OptimizedBuffer } from "../buffer.js"
+import { OptimizedBuffer, ResourceContext } from "../buffer.js"
 import { ImageError, NativeImage, NativeImagePool, type PixelImportOptions } from "../image.js"
 import { resolveRenderLib } from "../zig.js"
 
@@ -135,9 +135,10 @@ describe("NativeImagePool", () => {
   })
 
   test("drawImage and copied buffers pin snapshots until both are cleared", () => {
+    const owner = new ResourceContext({ objectCapacity: 16, renderCellsMax: 16 })
     const pool = new NativeImagePool({ width: 1, height: 1, capacity: 1 })
-    const source = OptimizedBuffer.create(1, 1, "unicode")
-    const snapshot = OptimizedBuffer.create(1, 1, "unicode")
+    const source = OptimizedBuffer.create(1, 1, "unicode", { owner })
+    const snapshot = OptimizedBuffer.create(1, 1, "unicode", { owner })
     const red = Uint8Array.of(255, 0, 0, 255)
     const blue = Uint8Array.of(0, 0, 255, 255)
     const frame = pool.publishRgba(red)!
@@ -146,16 +147,17 @@ describe("NativeImagePool", () => {
       frame.dispose()
       snapshot.drawFrameBuffer(0, 0, source)
       source.clear()
-      expect(pool.publishRgba(blue)).toBeNull()
-      snapshot.clear()
+      // Context drawing imports a clone, so disposing the published frame frees the slot.
       const next = pool.publishRgba(blue)!
       expect(next.raw().data).toEqual(blue)
       next.dispose()
+      snapshot.clear()
     } finally {
       frame.dispose()
       source.destroy()
       snapshot.destroy()
       pool.dispose()
+      owner.destroy()
     }
   })
 

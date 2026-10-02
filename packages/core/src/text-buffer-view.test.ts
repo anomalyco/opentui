@@ -1,18 +1,23 @@
 import { describe, expect, it, beforeEach, afterEach, spyOn } from "bun:test"
+import { OptimizedBuffer, ResourceContext } from "./buffer.js"
 import { TextBuffer } from "./text-buffer.js"
 import { TextBufferView } from "./text-buffer-view.js"
 import { StyledText, stringToStyledText } from "./lib/styled-text.js"
 import { RGBA } from "./lib/RGBA.js"
-import { OptimizedBuffer } from "./buffer.js"
-import { resolveRenderLib } from "./zig.js"
+
+let resourceContext: ResourceContext
+beforeEach(() => {
+  resourceContext = new ResourceContext({ objectCapacity: 32, renderCellsMax: 4096 })
+})
+afterEach(() => resourceContext.destroy())
 
 it("cached word and CJK breaks retain streaming source order", () => {
   const part = "AB \u65e5\u672c\u3002\u8a9e\u6587 "
   const layouts = []
   for (const fragmented of [false, true]) {
-    const buffer = TextBuffer.create("wcwidth")
+    const buffer = TextBuffer.create("wcwidth", resourceContext)
     const view = TextBufferView.create(buffer)
-    const screen = OptimizedBuffer.create(10, 256, "wcwidth")
+    const screen = OptimizedBuffer.create(10, 256, "wcwidth", { owner: resourceContext })
     try {
       if (fragmented) {
         for (let i = 0; i < 64; i++) buffer.append(part)
@@ -81,9 +86,9 @@ for (const method of ["unicode", "unicode-wide", "wcwidth"] as const) {
     ["kana punctuation", ["AB \u30ab", "\u30fb\u30ca"], 6, ["AB", "\u30ab\u30fb\u30ca"]],
   ] as const) {
     it(`word wrapping preserves ${name} across appends (${method})`, () => {
-      const buffer = TextBuffer.create(method)
+      const buffer = TextBuffer.create(method, resourceContext)
       const view = TextBufferView.create(buffer)
-      const screen = OptimizedBuffer.create(width + 1, 8, method)
+      const screen = OptimizedBuffer.create(width + 1, 8, method, { owner: resourceContext })
       try {
         for (const part of parts) buffer.append(part)
         view.setWrapMode("word")
@@ -121,9 +126,9 @@ for (const method of ["unicode", "unicode-wide"] as const) {
     ["\u306f", "\u309a", "\u3072"],
   ]) {
     it(`word wrapping retains an appended kana mark (${method}, ${mark.codePointAt(0)})`, () => {
-      const buffer = TextBuffer.create(method)
+      const buffer = TextBuffer.create(method, resourceContext)
       const view = TextBufferView.create(buffer)
-      const screen = OptimizedBuffer.create(8, 2, method)
+      const screen = OptimizedBuffer.create(8, 2, method, { owner: resourceContext })
       try {
         buffer.setText(base)
         buffer.append(mark + suffix)
@@ -146,7 +151,7 @@ describe("TextBufferView", () => {
   let view: TextBufferView
 
   beforeEach(() => {
-    buffer = TextBuffer.create("wcwidth")
+    buffer = TextBuffer.create("wcwidth", resourceContext)
     view = TextBufferView.create(buffer)
   })
 
@@ -436,23 +441,6 @@ describe("TextBufferView", () => {
       view.resetSelection()
       expect(view.getSelectedText()).toBe("")
     })
-
-    it("should return null bytes for zero-length selected-text output buffer", () => {
-      buffer.setText("Hello World")
-      view.setSelection(0, 5)
-
-      const selectedBytes = (view as any).lib.textBufferViewGetSelectedTextBytes(view.ptr, 0)
-
-      expect(selectedBytes).toBeNull()
-    })
-
-    it("should return null bytes for zero-length plain-text output buffer", () => {
-      buffer.setText("Hello World")
-
-      const plainBytes = (view as any).lib.textBufferViewGetPlainTextBytes(view.ptr, 0)
-
-      expect(plainBytes).toBeNull()
-    })
   })
 
   describe("selection state", () => {
@@ -470,6 +458,86 @@ describe("TextBufferView", () => {
 
       view.resetSelection()
       expect(view.hasSelection()).toBe(false)
+    })
+
+    it("resets a selection once and skips resets of a clear view", () => {
+      buffer.setStyledText(stringToStyledText("Hello World"))
+      const symbols = (resourceContext.renderLib as unknown as { opentui: { symbols: Record<string, () => number> } })
+        .opentui.symbols
+      const select = spyOn(symbols, "ot_text_buffer_view_select")
+      try {
+        view.resetLocalSelection()
+        view.resetSelection()
+        expect(select).toHaveBeenCalledTimes(0)
+
+        view.setLocalSelection(0, 0, 4, 0)
+        expect(view.getSelectedText()).toBe("Hello")
+        view.resetLocalSelection()
+        view.resetLocalSelection()
+        // One call selected, one reset.
+        expect(select).toHaveBeenCalledTimes(2)
+        expect(view.hasSelection()).toBe(false)
+
+        view.setSelection(0, 5)
+        view.resetSelection()
+        expect(select).toHaveBeenCalledTimes(4)
+        expect(view.hasSelection()).toBe(false)
+      } finally {
+        select.mockRestore()
+      }
+    })
+
+    it("rejects resets of a clear view during a Yoga callback", () => {
+      const host = resourceContext.renderLib.getYogaHost()
+      const failures: string[] = []
+      for (const reset of [() => view.resetLocalSelection(), () => view.resetSelection()]) {
+        host.invokeCallback(() => {
+          try {
+            reset()
+          } catch (error) {
+            failures.push((error as Error).message)
+          }
+        })
+      }
+      expect(failures).toEqual(["Cannot mutate Yoga during a callback", "Cannot mutate Yoga during a callback"])
+    })
+
+    it("rejects resets of a destroyed clear view", () => {
+      const other = TextBufferView.create(buffer)
+      other.destroy()
+      expect(() => other.resetSelection()).toThrow("TextBufferView is destroyed")
+      expect(() => other.resetLocalSelection()).toThrow("TextBufferView is destroyed")
+    })
+
+    it("rejects resets of a clear view whose native Context is gone", () => {
+      const owner = new ResourceContext({ objectCapacity: 4, renderCellsMax: 64 })
+      const text = TextBuffer.create("wcwidth", owner)
+      const clear = TextBufferView.create(text)
+      owner.renderLib.destroyContext(owner.context)
+      expect(() => clear.resetLocalSelection()).toThrow("WrongContext")
+      expect(() => clear.resetSelection()).toThrow("WrongContext")
+    })
+
+    it("does not carry selection colors into a later selection", () => {
+      buffer.setStyledText(stringToStyledText("Hello"))
+      const screen = OptimizedBuffer.create(8, 1, "wcwidth", { owner: resourceContext })
+      const selectedBackground = () => {
+        screen.clear()
+        screen.drawTextBuffer(view, 0, 0)
+        return screen.withBuffers(({ bg }) => Array.from(bg.subarray(0, 4)))
+      }
+      try {
+        view.setSelection(0, 5, RGBA.fromInts(255, 0, 0, 255))
+        const red = selectedBackground()
+        view.setSelection(0, 5)
+        const inverted = selectedBackground()
+        expect(inverted).not.toEqual(red)
+        view.resetLocalSelection()
+        view.setSelection(0, 5, RGBA.fromInts(255, 0, 0, 255))
+        expect(selectedBackground()).toEqual(red)
+      } finally {
+        screen.destroy()
+      }
     })
 
     it("should update selection end position", () => {
@@ -593,51 +661,6 @@ describe("TextBufferView", () => {
       view.setLocalSelection(6, 0, 6, 0)
       expect(view.getSelectedText()).toBe("")
       expect(view.hasSelection()).toBe(false)
-    })
-
-    it("resets a selection once and skips resets of a clear view", () => {
-      buffer.setStyledText(stringToStyledText("Hello World"))
-      const lib = resolveRenderLib()
-      const reset = spyOn(lib, "textBufferViewResetSelection")
-      const resetLocal = spyOn(lib, "textBufferViewResetLocalSelection")
-      try {
-        view.resetSelection()
-        view.resetLocalSelection()
-        expect(reset).toHaveBeenCalledTimes(0)
-        expect(resetLocal).toHaveBeenCalledTimes(0)
-
-        view.setSelection(0, 5)
-        view.resetSelection()
-        view.resetSelection()
-        expect(reset).toHaveBeenCalledTimes(1)
-        expect(view.hasSelection()).toBe(false)
-
-        view.setLocalSelection(0, 0, 5, 0)
-        view.resetLocalSelection()
-        view.resetLocalSelection()
-        expect(resetLocal).toHaveBeenCalledTimes(1)
-        expect(view.hasSelection()).toBe(false)
-
-        // A local reset clears a selection that setSelection made, and a reset clears a local one.
-        view.setSelection(0, 5)
-        view.resetLocalSelection()
-        expect(view.hasSelection()).toBe(false)
-        view.updateLocalSelection(0, 0, 3, 0)
-        view.resetSelection()
-        expect(view.hasSelection()).toBe(false)
-        expect(reset).toHaveBeenCalledTimes(2)
-        expect(resetLocal).toHaveBeenCalledTimes(2)
-      } finally {
-        reset.mockRestore()
-        resetLocal.mockRestore()
-      }
-    })
-
-    it("rejects resets of a destroyed clear view", () => {
-      const other = TextBufferView.create(buffer)
-      other.destroy()
-      expect(() => other.resetSelection()).toThrow("TextBufferView is destroyed")
-      expect(() => other.resetLocalSelection()).toThrow("TextBufferView is destroyed")
     })
   })
 
@@ -841,8 +864,11 @@ describe("TextBufferView", () => {
       view.setWrapMode("char")
       const first = view.measureForDimensions(10, 10)!
       const second = view.measureForDimensions(5, 10)!
+      const repeated = view.measureForDimensions(10, 1)!
 
       expect(first).not.toBe(second)
+      expect(repeated).not.toBe(first)
+      expect(repeated).toEqual(first)
       expect(first).toEqual({ lineCount: 1, widthColsMax: 10 })
       expect(second).toEqual({ lineCount: 2, widthColsMax: 5 })
     })

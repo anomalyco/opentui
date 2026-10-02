@@ -1,7 +1,14 @@
-import { test, expect } from "bun:test"
+import { test, expect, beforeEach, afterEach } from "bun:test"
 import { resolveRenderLib } from "../zig.js"
+import { ResourceContext } from "../buffer.js"
+import { TextBuffer } from "../text-buffer.js"
 
 const lib = resolveRenderLib()
+let owner: ResourceContext
+beforeEach(() => {
+  owner = new ResourceContext({ objectCapacity: 1, renderCellsMax: 1 })
+})
+afterEach(() => owner.destroy())
 
 function expectValidAllocatorStats(stats: ReturnType<typeof lib.getAllocatorStats>): void {
   expect(Number.isFinite(stats.totalRequestedBytes)).toBe(true)
@@ -28,7 +35,7 @@ test("getAllocatorStats returns allocator stats", () => {
   const before = lib.getAllocatorStats()
   expectValidAllocatorStats(before)
 
-  const textBuffer = lib.createTextBuffer("unicode")
+  const textBuffer = TextBuffer.create("unicode", owner)
   textBuffer.append("allocator stats smoke test")
 
   const after = lib.getAllocatorStats()
@@ -42,7 +49,7 @@ test("getArenaAllocatedBytes returns a finite byte count", () => {
   expect(Number.isFinite(before)).toBe(true)
   expect(before).toBeGreaterThanOrEqual(0)
 
-  const textBuffer = lib.createTextBuffer("unicode")
+  const textBuffer = TextBuffer.create("unicode", owner)
   textBuffer.append("x".repeat(256 * 1024))
 
   const after = lib.getArenaAllocatedBytes()

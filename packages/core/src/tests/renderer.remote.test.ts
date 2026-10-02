@@ -45,8 +45,7 @@ async function getCapabilitiesFromChild(
     }
 
     try {
-      const internals = renderer
-      const caps = internals.lib.getTerminalCapabilities(renderer.rendererPtr)
+      const caps = renderer.capabilities
       process.stdout.write(JSON.stringify(caps) + "\\n")
     } finally {
       renderer.destroy()

@@ -41,7 +41,8 @@ npm install @opentui/ssh
 `@opentui/core` is a peer dependency. Supported runtimes are Bun ≥ 1.3.0 and
 Node.js ≥ 26.4.0. CI runs the SSH integration suite with Bun on macOS, Linux,
 and Windows. CI also installs, imports, starts, and closes the packed ESM
-package on Node.js.
+package on Node.js. Start Node applications that create renderers with
+`node --experimental-ffi server.mjs`.
 
 Use Bun ≥ 1.4.0 on native Windows arm64.
 
@@ -93,6 +94,48 @@ a gating middleware that declines never spins one up). Everything else is shared
 | `onClose(cb)`   | Fires when the client disconnects; do your OWN per-session cleanup here (the renderer is torn down for you).                                                                                                                                 |
 | `write(data)`   | Raw bytes straight to the client, bypassing the renderer's frame diffing — the escape hatch for terminal control the renderer doesn't model (OSC 52 clipboard, window title, a bell).                                                        |
 | `end()`         | Force-close just this session.                                                                                                                                                                                                               |
+
+### Native transport
+
+Core's native scene and bounded Session output serve every shell. Core, React, and
+Solid applications use the same renderer attached to the SSH session.
+
+```ts
+createServer({}).serve((session) => {
+  session.renderer.root.add(
+    new TextRenderable(session.renderer, {
+      content: "Native SSH",
+    }),
+  )
+})
+```
+
+Each shell gets one Session before middleware runs. Middleware output, terminal
+setup, frames, raw writes, and restoration share its ordered output budget.
+The native driver borrows the actual SSH channel and acknowledges bytes on write
+completion, not `drain`. It does not add a second output queue or copy adapter.
+Core's production limits currently allow 4 MiB of retained output and reserve
+restoration capacity; queued and unacknowledged bytes remain charged.
+
+`session.write()` is still synchronous and returns `void`. Temporary capacity
+pressure throws `OutputPressureError` with code `"OUTPUT_PRESSURE"`; the rejected
+call accepts no bytes. An individual write larger than the Session limit throws
+`RangeError` before string encoding. SSH does not queue, drop, or replay rejected
+writes. Writes after logical close remain no-ops. `deny(reason)` always closes and
+throws `DenyError`, even when it cannot admit the reason; admission errors go to
+`onError`, and denial never creates a renderer.
+
+Before attachment, `cols` and `rows` track the requested PTY size. After attachment,
+Core coalesces window changes while output is pending. The session dimensions and
+`onResize` publish only the size Core accepts, with the renderer already resized.
+
+`end()` and `onClose` mark logical teardown, not completed terminal restoration.
+SSH waits for Session close before attachment or `renderer.closed` afterward before
+closing the channel. `server.close()` drains native sessions under Core's bounded
+close deadline. Output failure or expiry goes to `onError` and cancels pending
+output without claiming restoration; `renderer.closed` rejects on failure.
+Connection loss and peer shell close cancel the Session immediately, including during middleware.
+Cleanup does not wait for ssh2's channel close event, which unread input can delay.
 
 ## The three hand-offs
 
@@ -232,8 +275,10 @@ everything. Inline arrows need no annotation (their `identity`/`context` flow fr
 the builder); to name and reuse one, type it as `Middleware` (or
 `MiddlewareFunction` when it must read upstream context). A gating
 middleware's `deny()` runs before the handler, so the handler never runs **and the
-renderer is never created** — the reason lands on the main screen and persists,
-exactly what a rejection wants. (The renderer is the app's resource: middleware
+renderer is never created**. When output admission and transport succeed, the
+reason appears on the main screen without entering the alternate screen. In native
+mode, denial still closes the session and throws `DenyError` if admission or output
+failure prevents delivery. (The renderer is the app's resource: middleware
 see a `MiddlewareSession` without it; only the handler's `Session` has it.) See
 [`examples/middleware.ts`](./examples/middleware.ts).
 

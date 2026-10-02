@@ -307,7 +307,7 @@ export function destroy(renderer: CliRenderer): void {
   }
 
   const rootContainer = renderer.root.getRenderable("root-container")
-  if (rootContainer) renderer.root.remove(rootContainer)
+  rootContainer?.destroyRecursively()
 
   renderer.clearFrameCallbacks()
   renderer.setCursorPosition(0, 0, false)

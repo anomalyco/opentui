@@ -6,6 +6,65 @@ const SyntaxStyle = syntax_style.SyntaxStyle;
 const StyleDefinition = syntax_style.StyleDefinition;
 const RGBA = syntax_style.RGBA;
 
+test "SyntaxStyle rejection - allocation failures preserve registrations and IDs" {
+    var succeeded = false;
+    for (0..16) |fail_index| {
+        const style = try SyntaxStyle.init(std.testing.allocator);
+        defer style.deinit();
+        for (0..6) |index| {
+            var name_buffer: [16]u8 = undefined;
+            const name = try std.fmt.bufPrint(&name_buffer, "accepted-{d}", .{index});
+            _ = try style.registerStyle(name, null, null, @intCast(index));
+        }
+        const allocator = style.allocator;
+        var failing = std.testing.FailingAllocator.init(allocator, .{ .fail_index = fail_index, .resize_fail_index = 0 });
+        style.allocator = failing.allocator();
+        const result = style.registerStyle("candidate", null, null, 42);
+        style.allocator = allocator;
+        if (result) |id| {
+            try std.testing.expect(!failing.has_induced_failure);
+            try std.testing.expectEqual(@as(u32, 7), id);
+            try std.testing.expectEqual(@as(u32, 42), style.getStyleByName("candidate").?.attributes);
+            succeeded = true;
+            break;
+        } else |err| {
+            try std.testing.expectEqual(error.OutOfMemory, err);
+            try std.testing.expect(failing.has_induced_failure);
+        }
+        try std.testing.expectEqual(@as(usize, 6), style.getStyleCount());
+        try std.testing.expectEqual(@as(u32, 6), style.name_to_id.count());
+        try std.testing.expect(style.resolveByName("candidate") == null);
+        try std.testing.expectEqual(@as(u32, 7), style.next_id);
+        for (0..6) |index| {
+            var name_buffer: [16]u8 = undefined;
+            const name = try std.fmt.bufPrint(&name_buffer, "accepted-{d}", .{index});
+            try std.testing.expectEqual(@as(u32, @intCast(index + 1)), style.resolveByName(name).?);
+            try std.testing.expectEqual(@as(u32, @intCast(index)), style.getStyleByName(name).?.attributes);
+        }
+        try std.testing.expectEqual(@as(u32, 7), try style.registerStyle("candidate", null, null, 42));
+    }
+    try std.testing.expect(succeeded);
+}
+
+test "SyntaxStyle rejection - exhausted IDs preserve existing styles" {
+    const style = try SyntaxStyle.init(std.testing.allocator);
+    defer style.deinit();
+    style.next_id = std.math.maxInt(u32);
+    const id = try style.registerStyle("last", null, null, 1);
+    try std.testing.expectEqual(std.math.maxInt(u32), id);
+    try std.testing.expectError(error.InvalidId, style.registerStyle("overflow", null, null, 2));
+    try std.testing.expect(style.resolveByName("overflow") == null);
+    try std.testing.expectEqual(@as(usize, 1), style.getStyleCount());
+
+    const allocator = style.allocator;
+    var failing = std.testing.FailingAllocator.init(allocator, .{ .fail_index = 0 });
+    style.allocator = failing.allocator();
+    defer style.allocator = allocator;
+    try std.testing.expectEqual(id, try style.registerStyle("last", null, null, 3));
+    try std.testing.expect(!failing.has_induced_failure);
+    try std.testing.expectEqual(@as(u32, 3), style.resolveById(id).?.attributes);
+}
+
 test "SyntaxStyle - init and deinit" {
     const style = try SyntaxStyle.init(std.testing.allocator);
     defer style.deinit();

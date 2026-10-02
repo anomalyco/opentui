@@ -21,17 +21,17 @@ let resizeRenderer: (width: number, height: number) => void
 let mockMouse: MockMouse
 
 function getCharAt(buffer: TestRenderer["currentRenderBuffer"], x: number, y: number): number {
-  return buffer.buffers.char[y * buffer.width + x] ?? 0
+  return buffer.withBuffers(({ char }) => char[y * buffer.width + x] ?? 0)
 }
 
 function getFgAt(buffer: TestRenderer["currentRenderBuffer"], x: number, y: number): RGBA {
   const index = (y * buffer.width + x) * 4
-  return RGBA.fromArray(buffer.buffers.fg.slice(index, index + 4))
+  return buffer.withBuffers(({ fg }) => RGBA.fromArray(fg.slice(index, index + 4)))
 }
 
 function getBgAt(buffer: TestRenderer["currentRenderBuffer"], x: number, y: number): RGBA {
   const index = (y * buffer.width + x) * 4
-  return RGBA.fromArray(buffer.buffers.bg.slice(index, index + 4))
+  return buffer.withBuffers(({ bg }) => RGBA.fromArray(bg.slice(index, index + 4)))
 }
 
 function findVerticalBorderXs(buffer: TestRenderer["currentRenderBuffer"], y: number): number[] {
@@ -355,32 +355,20 @@ describe("TextTableRenderable", () => {
     expect(frame).toContain("Description")
   })
 
-  test("keeps intrinsic width in content mode when extra space is available", async () => {
-    const table = new TextTableRenderable(renderer, {
-      left: 0,
-      top: 0,
-      width: 34,
-      wrapMode: "word",
-      columnWidthMode: "content",
-      content: [
-        [cell("A"), cell("B")],
-        [cell("1"), cell("2")],
-      ],
-    })
-
+  test("rejected wrapMode preserves state and permits retry", () => {
+    const table = new TextTableRenderable(renderer, { wrapMode: "word", content: [[cell("alpha beta gamma")]] })
+    const observer = new BoxRenderable(renderer, { position: "absolute", alignSelf: "flex-start" })
     renderer.root.add(table)
-    await renderOnce()
-
-    const lines = captureFrame().split("\n")
-    const headerY = lines.findIndex((line) => line.includes("A") && line.includes("B"))
-    expect(headerY).toBeGreaterThanOrEqual(0)
-
-    const buffer = renderer.currentRenderBuffer
-    const borderXs = findVerticalBorderXs(buffer, headerY)
-
-    expect(borderXs.length).toBe(3)
-    expect(borderXs[0]).toBe(0)
-    expect(borderXs[borderXs.length - 1]).toBeLessThan(33)
+    renderer.root.add(observer)
+    observer.setMeasureProvider(() => {
+      table.wrapMode = "char"
+      return { width: 1, height: 1 }
+    })
+    expect(() => renderer.nativeScene.measureSnapshot(observer)).toThrow("Cannot mutate Yoga during a callback")
+    expect(table.wrapMode).toBe("word")
+    observer.setMeasureProvider(null)
+    table.wrapMode = "char"
+    expect(table.wrapMode).toBe("char")
   })
 
   test("fills available width by default in full mode", async () => {

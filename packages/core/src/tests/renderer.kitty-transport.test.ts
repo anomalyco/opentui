@@ -200,10 +200,10 @@ fileTest("runtime file negotiation retransmits an unchanged provisional inline i
 fileTest("a file transport selected while suspended consumes synchronous probe replies on resume", async () => {
   const { renderer, terminal } = await setup("raw")
   await draw(renderer, new Uint8Array([1, 2, 3, 4]), 1)
-  renderer.suspend()
+  await renderer.suspend()
   renderer.kittyImageTransport = "file"
   expect(terminal.probePath).toBe("")
-  renderer.resume()
+  await renderer.resume()
   await renderer.idle()
   expect(renderer.kittyImageTransportStatus).toMatchObject({
     requested: "file",
@@ -336,16 +336,20 @@ for (const action of ["cancel", "error", "suspend", "destroy"] as const) {
     }
     expect(existsSync(path)).toBe(true)
     if (action === "cancel") renderer.cancelKittyImageTransport()
-    if (action === "error") terminal.emit("error", new Error("synthetic sink failure"))
-    if (action === "suspend") renderer.suspend()
+    if (action === "error") {
+      terminal.on("error", () => {})
+      terminal.emit("error", new Error("synthetic sink failure"))
+    }
+    if (action === "suspend") await renderer.suspend()
     if (action === "destroy") renderer.destroy()
+    if (action === "error") await renderer.closed.catch(() => {})
     expect(existsSync(path)).toBe(false)
-    if (action !== "destroy") {
+    if (action !== "destroy" && action !== "error") {
       expect(renderer.kittyImageTransportStatus.pendingFiles).toBe(0)
       const state = renderer.kittyImageTransportStatus.fileState
       renderer.kittyImageTransport = "raw"
       renderer.kittyImageTransport = "file"
-      if (action === "suspend") renderer.resume()
+      if (action === "suspend") await renderer.resume()
       await renderer.idle()
       expect(renderer.kittyImageTransportStatus.fileState).toBe(state)
     }

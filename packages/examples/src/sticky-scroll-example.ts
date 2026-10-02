@@ -1,5 +1,5 @@
 import { BoxRenderable, type CliRenderer, createCliRenderer, TextRenderable, t, fg, bold } from "@opentui/core"
-import { ScrollBoxRenderable } from "@opentui/core"
+import { ScrollBoxRenderable, CliRenderEvents, type KeyEvent } from "@opentui/core"
 import { setupCommonDemoKeys } from "./lib/standalone-keys.js"
 
 let scrollBox: ScrollBoxRenderable | null = null
@@ -257,7 +257,7 @@ export function run(rendererInstance: CliRenderer): void {
     addItem(false)
   }
 
-  rendererInstance.keyInput.on("keypress", (key) => {
+  const keyHandler = (key: KeyEvent) => {
     if (key.name === "s" && scrollBox) {
       // Toggle sticky scroll
       const currentSticky = scrollBox.stickyScroll
@@ -278,7 +278,9 @@ export function run(rendererInstance: CliRenderer): void {
     } else if (key.name === "e" && scrollBox) {
       clearAllItems() // Clear all items
     }
-  })
+  }
+  rendererInstance.keyInput.on("keypress", keyHandler)
+  mainContainer.once("destroyed", () => rendererInstance.keyInput.off("keypress", keyHandler))
 }
 
 export function destroy(rendererInstance: CliRenderer): void {
@@ -295,6 +297,9 @@ export function destroy(rendererInstance: CliRenderer): void {
   }
   animatedItems.clear()
 
+  itemCount = 0
+  scrollBox = null
+  instructionsBox = null
   renderer = null
 }
 
@@ -303,6 +308,7 @@ if (import.meta.main) {
     exitOnCtrlC: true,
   })
 
+  renderer.once(CliRenderEvents.DESTROY, () => destroy(renderer))
   run(renderer)
   setupCommonDemoKeys(renderer)
 }

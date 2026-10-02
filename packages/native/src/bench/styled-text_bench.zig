@@ -1,9 +1,9 @@
 const std = @import("std");
+const TestPools = @import("../tests/test-pools.zig").TestPools;
 const ansi = @import("../ansi.zig");
 const bench_utils = @import("../bench-utils.zig");
 const text_buffer_mod = @import("../text-buffer.zig");
 const syntax_style_mod = @import("../syntax-style.zig");
-const gp = @import("../grapheme.zig");
 const link = @import("../link.zig");
 
 const BenchResult = bench_utils.BenchResult;
@@ -11,18 +11,44 @@ const BenchStats = bench_utils.BenchStats;
 const MemStats = bench_utils.MemStats;
 const TextBuffer = text_buffer_mod.UnifiedTextBuffer;
 const RGBA = text_buffer_mod.RGBA;
-const StyledChunk = text_buffer_mod.StyledChunk; // Use the unified type from text-buffer
 const SyntaxStyle = syntax_style_mod.SyntaxStyle;
 
 pub const benchName = "Styled Text Operations";
 
-// Helper to convert RGBA to pointer for benchmark
-fn rgbaToPtr(color: *const RGBA) [*]const u16 {
-    return @as([*]const u16, @ptrCast(color));
-}
+const Part = struct {
+    text: []const u8,
+    fg: ?RGBA = null,
+    attributes: u32 = 0,
+};
 
 fn rgba(r: f32, g: f32, b: f32, a: f32) RGBA {
     return ansi.rgbaFromFloats(r, g, b, a);
+}
+
+fn commitOwnedStyledText(
+    tb: *TextBuffer,
+    allocator: std.mem.Allocator,
+    style: *SyntaxStyle,
+    parts: []const Part,
+) !void {
+    var total_len: usize = 0;
+    for (parts) |part| total_len += part.text.len;
+    const text = try allocator.alloc(u8, total_len);
+    errdefer allocator.free(text);
+    const ranges = try allocator.alloc(text_buffer_mod.OwnedStyledChunk, parts.len);
+    defer allocator.free(ranges);
+    var offset: usize = 0;
+    for (parts, ranges, 0..) |part, *range, i| {
+        @memcpy(text[offset..][0..part.text.len], part.text);
+        var name_buf: [16]u8 = undefined;
+        const name = std.fmt.bufPrint(&name_buf, "{d}", .{i}) catch unreachable;
+        range.* = .{
+            .byte_count = @intCast(part.text.len),
+            .style_id = try style.registerStyle(name, part.fg, null, part.attributes),
+        };
+        offset += part.text.len;
+    }
+    _ = try tb.replaceOwnedStyledText(text, null, style, ranges, null);
 }
 
 fn benchSetStyledTextOperations(
@@ -39,38 +65,34 @@ fn benchSetStyledTextOperations(
     defer arena.deinit();
     const global_alloc = arena.allocator();
 
-    const pool = gp.initGlobalPool(global_alloc);
-    const link_pool = link.initGlobalLinkPool(global_alloc);
+    var pools = TestPools.init(global_alloc);
+    defer pools.deinit();
 
     // Tokens and gap chunks grow with the number of lines, as in parsed JSON.
     inline for (.{ 200, 1000, 5000 }) |line_count| {
-        const name = std.fmt.comptimePrint("setStyledText - JSON tokens ({d} lines, {d} chunks)", .{ line_count, line_count * 5 });
+        const name = std.fmt.comptimePrint("replaceOwnedStyledText - JSON tokens ({d} lines, {d} chunks)", .{ line_count, line_count * 5 });
         if (bench_utils.matchesBenchFilter(name, bench_filter)) {
             const color = rgba(0.7, 0.9, 1.0, 1.0);
-            const chunks = try allocator.alloc(StyledChunk, line_count * 5);
-            defer allocator.free(chunks);
+            var parts: [line_count * 5]Part = undefined;
             for (0..line_count) |row| {
                 for ([_][]const u8{ "  ", "\"field\"", ": ", "123", ",\n" }, 0..) |text, token| {
-                    chunks[row * 5 + token] = .{
-                        .text_ptr = text.ptr,
-                        .text_len = text.len,
-                        .fg_ptr = if (token % 2 == 1) rgbaToPtr(&color) else null,
-                        .bg_ptr = null,
+                    parts[row * 5 + token] = .{
+                        .text = text,
+                        .fg = if (token % 2 == 1) color else null,
                         .attributes = if (token == 1) 1 else 0,
                     };
                 }
             }
             var stats: BenchStats = .{};
             for (0..5) |_| {
-                const tb = try TextBuffer.init(allocator, pool, link_pool, .wcwidth);
+                const tb = try TextBuffer.init(allocator, &pools.graphemes, &pools.links, .wcwidth);
                 defer tb.deinit();
                 const style = try SyntaxStyle.init(allocator);
                 defer style.deinit();
-                tb.setSyntaxStyle(style);
                 const timer = bench_utils.BenchTimer.start(io);
-                try tb.setStyledText(chunks);
+                try commitOwnedStyledText(tb, allocator, style, &parts);
                 stats.record(timer.read());
-                if (tb.getHighlightCount() != chunks.len or style.getStyleCount() != chunks.len)
+                if (tb.getHighlightCount() != parts.len or style.getStyleCount() != parts.len)
                     return error.MissingTokenHighlights;
             }
             try results.append(allocator, .{
@@ -87,7 +109,7 @@ fn benchSetStyledTextOperations(
 
     // Single chunk - baseline
     {
-        const name = "setStyledText - single chunk (55 chars)";
+        const name = "replaceOwnedStyledText - single chunk (55 chars)";
         if (bench_utils.matchesBenchFilter(name, bench_filter)) {
             var stats: BenchStats = .{};
 
@@ -95,23 +117,15 @@ fn benchSetStyledTextOperations(
             const fg_color = rgba(1.0, 1.0, 1.0, 1.0);
 
             for (0..iterations) |_| {
-                const tb = try TextBuffer.init(allocator, pool, link_pool, .wcwidth);
+                const tb = try TextBuffer.init(allocator, &pools.graphemes, &pools.links, .wcwidth);
                 defer tb.deinit();
 
                 const style = try SyntaxStyle.init(allocator);
                 defer style.deinit();
-                tb.setSyntaxStyle(style);
-
-                const chunks = [_]StyledChunk{.{
-                    .text_ptr = text.ptr,
-                    .text_len = text.len,
-                    .fg_ptr = rgbaToPtr(&fg_color),
-                    .bg_ptr = null,
-                    .attributes = 0,
-                }};
+                const parts = [_]Part{.{ .text = text, .fg = fg_color }};
 
                 const timer = bench_utils.BenchTimer.start(io);
-                try tb.setStyledText(&chunks);
+                try commitOwnedStyledText(tb, allocator, style, &parts);
                 stats.record(timer.read());
             }
 
@@ -129,7 +143,7 @@ fn benchSetStyledTextOperations(
 
     // Multiple small chunks
     {
-        const name = "setStyledText - 6 small chunks (~6 chars each)";
+        const name = "replaceOwnedStyledText - 6 small chunks (~6 chars each)";
         if (bench_utils.matchesBenchFilter(name, bench_filter)) {
             var stats: BenchStats = .{};
 
@@ -141,31 +155,22 @@ fn benchSetStyledTextOperations(
             const magenta = rgba(1.0, 0.0, 1.0, 1.0);
 
             for (0..iterations) |_| {
-                const tb = try TextBuffer.init(allocator, pool, link_pool, .wcwidth);
+                const tb = try TextBuffer.init(allocator, &pools.graphemes, &pools.links, .wcwidth);
                 defer tb.deinit();
 
                 const style = try SyntaxStyle.init(allocator);
                 defer style.deinit();
-                tb.setSyntaxStyle(style);
-
-                const text0 = "Red ";
-                const text1 = "Green ";
-                const text2 = "Blue ";
-                const text3 = "Yellow ";
-                const text4 = "Cyan ";
-                const text5 = "Magenta ";
-
-                const chunks = [_]StyledChunk{
-                    .{ .text_ptr = text0.ptr, .text_len = text0.len, .fg_ptr = rgbaToPtr(&red), .bg_ptr = null, .attributes = 0 },
-                    .{ .text_ptr = text1.ptr, .text_len = text1.len, .fg_ptr = rgbaToPtr(&green), .bg_ptr = null, .attributes = 0 },
-                    .{ .text_ptr = text2.ptr, .text_len = text2.len, .fg_ptr = rgbaToPtr(&blue), .bg_ptr = null, .attributes = 0 },
-                    .{ .text_ptr = text3.ptr, .text_len = text3.len, .fg_ptr = rgbaToPtr(&yellow), .bg_ptr = null, .attributes = 0 },
-                    .{ .text_ptr = text4.ptr, .text_len = text4.len, .fg_ptr = rgbaToPtr(&cyan), .bg_ptr = null, .attributes = 0 },
-                    .{ .text_ptr = text5.ptr, .text_len = text5.len, .fg_ptr = rgbaToPtr(&magenta), .bg_ptr = null, .attributes = 0 },
+                const parts = [_]Part{
+                    .{ .text = "Red ", .fg = red },
+                    .{ .text = "Green ", .fg = green },
+                    .{ .text = "Blue ", .fg = blue },
+                    .{ .text = "Yellow ", .fg = yellow },
+                    .{ .text = "Cyan ", .fg = cyan },
+                    .{ .text = "Magenta ", .fg = magenta },
                 };
 
                 const timer = bench_utils.BenchTimer.start(io);
-                try tb.setStyledText(&chunks);
+                try commitOwnedStyledText(tb, allocator, style, &parts);
                 stats.record(timer.read());
             }
 
@@ -183,7 +188,7 @@ fn benchSetStyledTextOperations(
 
     // Many chunks (simulating syntax highlighted code)
     {
-        const name = "setStyledText - 8 chunks (syntax highlighting)";
+        const name = "replaceOwnedStyledText - 8 chunks (syntax highlighting)";
         if (bench_utils.matchesBenchFilter(name, bench_filter)) {
             var stats: BenchStats = .{};
 
@@ -193,36 +198,24 @@ fn benchSetStyledTextOperations(
             const number_color = rgba(0.7, 1.0, 0.7, 1.0);
 
             for (0..iterations) |_| {
-                const tb = try TextBuffer.init(allocator, pool, link_pool, .wcwidth);
+                const tb = try TextBuffer.init(allocator, &pools.graphemes, &pools.links, .wcwidth);
                 defer tb.deinit();
 
                 const style = try SyntaxStyle.init(allocator);
                 defer style.deinit();
-                tb.setSyntaxStyle(style);
-
-                // Simulate a line of syntax highlighted code: "const x = 42;"
-                const t0 = "const";
-                const t1 = " ";
-                const t2 = "x";
-                const t3 = " ";
-                const t4 = "=";
-                const t5 = " ";
-                const t6 = "42";
-                const t7 = ";";
-
-                const chunks = [_]StyledChunk{
-                    .{ .text_ptr = t0.ptr, .text_len = t0.len, .fg_ptr = rgbaToPtr(&keyword_color), .bg_ptr = null, .attributes = 0 },
-                    .{ .text_ptr = t1.ptr, .text_len = t1.len, .fg_ptr = null, .bg_ptr = null, .attributes = 0 },
-                    .{ .text_ptr = t2.ptr, .text_len = t2.len, .fg_ptr = rgbaToPtr(&identifier_color), .bg_ptr = null, .attributes = 0 },
-                    .{ .text_ptr = t3.ptr, .text_len = t3.len, .fg_ptr = null, .bg_ptr = null, .attributes = 0 },
-                    .{ .text_ptr = t4.ptr, .text_len = t4.len, .fg_ptr = rgbaToPtr(&operator_color), .bg_ptr = null, .attributes = 0 },
-                    .{ .text_ptr = t5.ptr, .text_len = t5.len, .fg_ptr = null, .bg_ptr = null, .attributes = 0 },
-                    .{ .text_ptr = t6.ptr, .text_len = t6.len, .fg_ptr = rgbaToPtr(&number_color), .bg_ptr = null, .attributes = 0 },
-                    .{ .text_ptr = t7.ptr, .text_len = t7.len, .fg_ptr = rgbaToPtr(&operator_color), .bg_ptr = null, .attributes = 0 },
+                const parts = [_]Part{
+                    .{ .text = "const", .fg = keyword_color },
+                    .{ .text = " " },
+                    .{ .text = "x", .fg = identifier_color },
+                    .{ .text = " " },
+                    .{ .text = "=", .fg = operator_color },
+                    .{ .text = " " },
+                    .{ .text = "42", .fg = number_color },
+                    .{ .text = ";", .fg = operator_color },
                 };
 
                 const timer = bench_utils.BenchTimer.start(io);
-                try tb.setStyledText(&chunks);
+                try commitOwnedStyledText(tb, allocator, style, &parts);
                 stats.record(timer.read());
             }
 
@@ -240,37 +233,23 @@ fn benchSetStyledTextOperations(
 
     // Large text with many chunks (simplified)
     {
-        const name = "setStyledText - 10 chunks (~120 chars total)";
+        const name = "replaceOwnedStyledText - 10 chunks (~120 chars total)";
         if (bench_utils.matchesBenchFilter(name, bench_filter)) {
             var stats: BenchStats = .{};
 
             const text = "Lorem ipsum ";
+            const color = rgba(1.0, 0.5, 0.5, 1.0);
 
             for (0..iterations) |_| {
-                const tb = try TextBuffer.init(allocator, pool, link_pool, .wcwidth);
+                const tb = try TextBuffer.init(allocator, &pools.graphemes, &pools.links, .wcwidth);
                 defer tb.deinit();
 
                 const style = try SyntaxStyle.init(allocator);
                 defer style.deinit();
-                tb.setSyntaxStyle(style);
-
-                // Just repeat the same chunk 10 times
-                const color = rgba(1.0, 0.5, 0.5, 1.0);
-                const chunks = [_]StyledChunk{
-                    .{ .text_ptr = text.ptr, .text_len = text.len, .fg_ptr = rgbaToPtr(&color), .bg_ptr = null, .attributes = 0 },
-                    .{ .text_ptr = text.ptr, .text_len = text.len, .fg_ptr = rgbaToPtr(&color), .bg_ptr = null, .attributes = 0 },
-                    .{ .text_ptr = text.ptr, .text_len = text.len, .fg_ptr = rgbaToPtr(&color), .bg_ptr = null, .attributes = 0 },
-                    .{ .text_ptr = text.ptr, .text_len = text.len, .fg_ptr = rgbaToPtr(&color), .bg_ptr = null, .attributes = 0 },
-                    .{ .text_ptr = text.ptr, .text_len = text.len, .fg_ptr = rgbaToPtr(&color), .bg_ptr = null, .attributes = 0 },
-                    .{ .text_ptr = text.ptr, .text_len = text.len, .fg_ptr = rgbaToPtr(&color), .bg_ptr = null, .attributes = 0 },
-                    .{ .text_ptr = text.ptr, .text_len = text.len, .fg_ptr = rgbaToPtr(&color), .bg_ptr = null, .attributes = 0 },
-                    .{ .text_ptr = text.ptr, .text_len = text.len, .fg_ptr = rgbaToPtr(&color), .bg_ptr = null, .attributes = 0 },
-                    .{ .text_ptr = text.ptr, .text_len = text.len, .fg_ptr = rgbaToPtr(&color), .bg_ptr = null, .attributes = 0 },
-                    .{ .text_ptr = text.ptr, .text_len = text.len, .fg_ptr = rgbaToPtr(&color), .bg_ptr = null, .attributes = 0 },
-                };
+                const parts = [_]Part{.{ .text = text, .fg = color }} ** 10;
 
                 const timer = bench_utils.BenchTimer.start(io);
-                try tb.setStyledText(&chunks);
+                try commitOwnedStyledText(tb, allocator, style, &parts);
                 stats.record(timer.read());
             }
 
@@ -288,34 +267,26 @@ fn benchSetStyledTextOperations(
 
     // Chunks with attributes (bold, italic, etc.)
     {
-        const name = "setStyledText - 5 chunks with attributes";
+        const name = "replaceOwnedStyledText - 5 chunks with attributes";
         if (bench_utils.matchesBenchFilter(name, bench_filter)) {
             var stats: BenchStats = .{};
 
             for (0..iterations) |_| {
-                const tb = try TextBuffer.init(allocator, pool, link_pool, .wcwidth);
+                const tb = try TextBuffer.init(allocator, &pools.graphemes, &pools.links, .wcwidth);
                 defer tb.deinit();
 
                 const style = try SyntaxStyle.init(allocator);
                 defer style.deinit();
-                tb.setSyntaxStyle(style);
-
-                const t0 = "Normal ";
-                const t1 = "Bold ";
-                const t2 = "Italic ";
-                const t3 = "Underline ";
-                const t4 = "Bold+Italic ";
-
-                const chunks = [_]StyledChunk{
-                    .{ .text_ptr = t0.ptr, .text_len = t0.len, .fg_ptr = null, .bg_ptr = null, .attributes = 0 },
-                    .{ .text_ptr = t1.ptr, .text_len = t1.len, .fg_ptr = null, .bg_ptr = null, .attributes = 1 },
-                    .{ .text_ptr = t2.ptr, .text_len = t2.len, .fg_ptr = null, .bg_ptr = null, .attributes = 2 },
-                    .{ .text_ptr = t3.ptr, .text_len = t3.len, .fg_ptr = null, .bg_ptr = null, .attributes = 4 },
-                    .{ .text_ptr = t4.ptr, .text_len = t4.len, .fg_ptr = null, .bg_ptr = null, .attributes = 3 },
+                const parts = [_]Part{
+                    .{ .text = "Normal " },
+                    .{ .text = "Bold ", .attributes = 1 },
+                    .{ .text = "Italic ", .attributes = 2 },
+                    .{ .text = "Underline ", .attributes = 4 },
+                    .{ .text = "Bold+Italic ", .attributes = 3 },
                 };
 
                 const timer = bench_utils.BenchTimer.start(io);
-                try tb.setStyledText(&chunks);
+                try commitOwnedStyledText(tb, allocator, style, &parts);
                 stats.record(timer.read());
             }
 
@@ -348,8 +319,8 @@ fn benchHighlightOperations(
     defer arena.deinit();
     const global_alloc = arena.allocator();
 
-    const pool = gp.initGlobalPool(global_alloc);
-    const link_pool = link.initGlobalLinkPool(global_alloc);
+    var pools = TestPools.init(global_alloc);
+    defer pools.deinit();
 
     // Baseline: 1000 sequential addHighlightByCharRange calls (unbatched)
     {
@@ -358,7 +329,7 @@ fn benchHighlightOperations(
             var stats: BenchStats = .{};
 
             for (0..iterations) |_| {
-                const tb = try TextBuffer.init(allocator, pool, link_pool, .wcwidth);
+                const tb = try TextBuffer.init(allocator, &pools.graphemes, &pools.links, .wcwidth);
                 defer tb.deinit();
 
                 const style = try SyntaxStyle.init(allocator);
@@ -401,7 +372,7 @@ fn benchHighlightOperations(
             var stats: BenchStats = .{};
 
             for (0..iterations) |_| {
-                const tb = try TextBuffer.init(allocator, pool, link_pool, .wcwidth);
+                const tb = try TextBuffer.init(allocator, &pools.graphemes, &pools.links, .wcwidth);
                 defer tb.deinit();
 
                 const style = try SyntaxStyle.init(allocator);
@@ -441,15 +412,14 @@ fn benchHighlightOperations(
         }
     }
 
-    // setStyledText with 100 chunks (realistic syntax highlighting scenario)
+    // replaceOwnedStyledText with 100 chunks (realistic syntax highlighting scenario)
     {
-        const name = "setStyledText - 100 chunks (realistic code)";
+        const name = "replaceOwnedStyledText - 100 chunks (realistic code)";
         if (bench_utils.matchesBenchFilter(name, bench_filter)) {
             var stats: BenchStats = .{};
 
-            // Build a realistic multi-line code snippet with 100 chunks
-            var chunk_list: std.ArrayList(StyledChunk) = .empty;
-            defer chunk_list.deinit(allocator);
+            var parts: std.ArrayList(Part) = .empty;
+            defer parts.deinit(allocator);
 
             const keyword_color = rgba(0.8, 0.4, 1.0, 1.0);
             const identifier_color = rgba(0.7, 0.9, 1.0, 1.0);
@@ -457,30 +427,28 @@ fn benchHighlightOperations(
             const number_color = rgba(0.7, 1.0, 0.7, 1.0);
             const string_color = rgba(0.9, 0.8, 0.5, 1.0);
 
-            // Repeat a pattern to create 100 chunks
             for (0..10) |_| {
-                try chunk_list.append(allocator, .{ .text_ptr = "const".ptr, .text_len = 5, .fg_ptr = rgbaToPtr(&keyword_color), .bg_ptr = null, .attributes = 0 });
-                try chunk_list.append(allocator, .{ .text_ptr = " ".ptr, .text_len = 1, .fg_ptr = null, .bg_ptr = null, .attributes = 0 });
-                try chunk_list.append(allocator, .{ .text_ptr = "myVar".ptr, .text_len = 5, .fg_ptr = rgbaToPtr(&identifier_color), .bg_ptr = null, .attributes = 0 });
-                try chunk_list.append(allocator, .{ .text_ptr = " ".ptr, .text_len = 1, .fg_ptr = null, .bg_ptr = null, .attributes = 0 });
-                try chunk_list.append(allocator, .{ .text_ptr = "=".ptr, .text_len = 1, .fg_ptr = rgbaToPtr(&operator_color), .bg_ptr = null, .attributes = 0 });
-                try chunk_list.append(allocator, .{ .text_ptr = " ".ptr, .text_len = 1, .fg_ptr = null, .bg_ptr = null, .attributes = 0 });
-                try chunk_list.append(allocator, .{ .text_ptr = "42".ptr, .text_len = 2, .fg_ptr = rgbaToPtr(&number_color), .bg_ptr = null, .attributes = 0 });
-                try chunk_list.append(allocator, .{ .text_ptr = ";".ptr, .text_len = 1, .fg_ptr = rgbaToPtr(&operator_color), .bg_ptr = null, .attributes = 0 });
-                try chunk_list.append(allocator, .{ .text_ptr = "\n".ptr, .text_len = 1, .fg_ptr = null, .bg_ptr = null, .attributes = 0 });
-                try chunk_list.append(allocator, .{ .text_ptr = "\"str\"".ptr, .text_len = 5, .fg_ptr = rgbaToPtr(&string_color), .bg_ptr = null, .attributes = 0 });
+                try parts.append(allocator, .{ .text = "const", .fg = keyword_color });
+                try parts.append(allocator, .{ .text = " " });
+                try parts.append(allocator, .{ .text = "myVar", .fg = identifier_color });
+                try parts.append(allocator, .{ .text = " " });
+                try parts.append(allocator, .{ .text = "=", .fg = operator_color });
+                try parts.append(allocator, .{ .text = " " });
+                try parts.append(allocator, .{ .text = "42", .fg = number_color });
+                try parts.append(allocator, .{ .text = ";", .fg = operator_color });
+                try parts.append(allocator, .{ .text = "\n" });
+                try parts.append(allocator, .{ .text = "\"str\"", .fg = string_color });
             }
 
             for (0..iterations) |_| {
-                const tb = try TextBuffer.init(allocator, pool, link_pool, .wcwidth);
+                const tb = try TextBuffer.init(allocator, &pools.graphemes, &pools.links, .wcwidth);
                 defer tb.deinit();
 
                 const style = try SyntaxStyle.init(allocator);
                 defer style.deinit();
-                tb.setSyntaxStyle(style);
 
                 const timer = bench_utils.BenchTimer.start(io);
-                try tb.setStyledText(chunk_list.items);
+                try commitOwnedStyledText(tb, allocator, style, parts.items);
                 stats.record(timer.read());
             }
 

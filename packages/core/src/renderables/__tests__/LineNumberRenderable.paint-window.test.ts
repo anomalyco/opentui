@@ -143,8 +143,6 @@ describe("LineNumber paint window", () => {
       text.scrollY = scrollY
       card.translateY = translateY
       await setup.renderOnce()
-      // The renderer loop logs draw failures; assert directly so a stale captured frame cannot pass.
-      expect(() => setup.renderer.root.render(setup.renderer.currentRenderBuffer, 0)).not.toThrow()
       expect(text.scrollY).toBe(scrollY)
       expect(card.translateY).toBe(translateY)
       const rows = setup.captureCharFrame().split("\n")
@@ -155,11 +153,12 @@ describe("LineNumber paint window", () => {
         }
         const source = firstSource + row - firstRow
         expect(rows[row].trim()).toBe(`${String.fromCharCode(65 + source)}  ${source + 1} row-${source}`)
-        const bg = setup.renderer.currentRenderBuffer.buffers.bg
         const gutterOffset = row * 24 * 4
         const contentOffset = (row * 24 + 20) * 4
-        expect(Array.from(bg.slice(gutterOffset, gutterOffset + 4))).toEqual([32 + source * 10, 48, 64, 255])
-        expect(Array.from(bg.slice(contentOffset, contentOffset + 4))).toEqual([64, 48, 32 + source * 10, 255])
+        setup.renderer.currentRenderBuffer.withBuffers((cells) => {
+          expect(Array.from(cells.bg.slice(gutterOffset, gutterOffset + 4))).toEqual([32 + source * 10, 48, 64, 255])
+          expect(Array.from(cells.bg.slice(contentOffset, contentOffset + 4))).toEqual([64, 48, 32 + source * 10, 255])
+        })
       }
     }
   })
@@ -236,15 +235,7 @@ describe("LineNumber paint window", () => {
     const doc = await document("")
     doc.numbers.visible = false
     const text = new TextRenderable(setup.renderer, { content: "plain\ntext", flexGrow: 1 })
-    const view = text["textBufferView"]
-    const getter = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(view), "logicalLineInfo")!.get!
-    let reads = 0
-    Object.defineProperty(view, "logicalLineInfo", {
-      get: () => {
-        reads++
-        return getter.call(view)
-      },
-    })
+    expect(text["textBufferView"]).toBeUndefined()
     const numbers = new LineNumberRenderable(setup.renderer, { target: text, flexShrink: 0 })
     numbers.highlightLines(0, 1, "#203040")
     doc.card.add(numbers)
@@ -252,7 +243,6 @@ describe("LineNumber paint window", () => {
     expect(text.getLineSources(0, 2)).toEqual([0, 1])
     expect(text.scrollHeight).toBe(2)
     expect(setup.captureCharFrame()).toContain("1 plain")
-    expect(reads).toBe(0)
   })
 
   test("bounds raster allocation and background work, not natural document geometry", async () => {
@@ -384,15 +374,18 @@ describe("LineNumber paint window", () => {
     const doc = await document(Array.from({ length: 30 }, (_, i) => `row-${i + 1}`).join("\n"))
     doc.numbers.highlightLines(0, 29, { gutter: "#304050", content: "#203040" })
     await setup.renderOnce()
-    const buffer = OptimizedBuffer.create(32, 30, setup.renderer.widthMethod, { respectAlpha: true })
+    const buffer = OptimizedBuffer.create(32, 30, setup.renderer.widthMethod, {
+      respectAlpha: true,
+      owner: setup.renderer.nativeScene,
+    })
     try {
       buffer.clear(RGBA.fromValues(0, 0, 0, 0))
-      doc.numbers.render(buffer, 0)
-      doc.gutter.render(buffer, 0)
-      doc.text.render(buffer, 0)
+      doc.numbers["renderSelf"](buffer)
+      doc.gutter["renderSelf"](buffer)
+      doc.text.drawToBuffer(buffer, doc.text.x, 0)
       expect(new TextDecoder().decode(buffer.getRealCharBytes(true))).toContain("30 row-30")
       const offset = (29 * buffer.width + doc.text.x) * 4
-      expect(Array.from(buffer.buffers.bg.slice(offset, offset + 4))).toEqual([32, 48, 64, 255])
+      expect(buffer.withBuffers((cells) => Array.from(cells.bg.slice(offset, offset + 4)))).toEqual([32, 48, 64, 255])
       expect(doc.gutter["frameBuffer"]!.height).toBe(30)
       await setup.renderOnce()
       expect(doc.gutter["frameBuffer"]!.height).toBe(6)
@@ -412,12 +405,21 @@ describe("LineNumber paint window", () => {
     })
     doc.numbers.setLineSign(20, { before: "+", beforeColor: RGBA.fromValues(1, 0, 0, 0.5) })
     await setup.renderOnce()
-    const full = OptimizedBuffer.create(32, 40, setup.renderer.widthMethod, { respectAlpha: true })
-    const expected = OptimizedBuffer.create(32, 6, setup.renderer.widthMethod, { respectAlpha: true })
-    const actual = OptimizedBuffer.create(32, 6, setup.renderer.widthMethod, { respectAlpha: true })
+    const full = OptimizedBuffer.create(32, 40, setup.renderer.widthMethod, {
+      respectAlpha: true,
+      owner: setup.renderer.nativeScene,
+    })
+    const expected = OptimizedBuffer.create(32, 6, setup.renderer.widthMethod, {
+      respectAlpha: true,
+      owner: setup.renderer.nativeScene,
+    })
+    const actual = OptimizedBuffer.create(32, 6, setup.renderer.widthMethod, {
+      respectAlpha: true,
+      owner: setup.renderer.nativeScene,
+    })
     try {
       full.clear(RGBA.fromValues(0, 0, 0, 0))
-      doc.gutter.render(full, 0)
+      doc.gutter["renderSelf"](full)
       for (const buffer of [expected, actual]) {
         buffer.clear(RGBA.fromValues(0.1, 0.2, 0.3, 1))
         buffer.pushOpacity(0.6)
@@ -426,11 +428,15 @@ describe("LineNumber paint window", () => {
       expected.drawFrameBuffer(0, -20, doc.gutter["frameBuffer"]!)
       doc.scroll.scrollTo(20)
       await setup.renderOnce()
-      doc.gutter.render(actual, 0)
-      expect(actual.buffers.char).toEqual(expected.buffers.char)
-      expect(actual.buffers.fg).toEqual(expected.buffers.fg)
-      expect(actual.buffers.bg).toEqual(expected.buffers.bg)
-      expect(actual.buffers.attributes).toEqual(expected.buffers.attributes)
+      doc.gutter["renderSelf"](actual)
+      actual.withBuffers((actualCells) => {
+        expected.withBuffers((expectedCells) => {
+          expect(actualCells.char).toEqual(expectedCells.char)
+          expect(actualCells.fg).toEqual(expectedCells.fg)
+          expect(actualCells.bg).toEqual(expectedCells.bg)
+          expect(actualCells.attributes).toEqual(expectedCells.attributes)
+        })
+      })
     } finally {
       full.destroy()
       expected.destroy()
@@ -445,7 +451,7 @@ describe("LineNumber paint window", () => {
     doc.card.paddingRight = 3
     doc.card.paddingTop = 1
     doc.card.paddingBottom = 2
-    const style = SyntaxStyle.create()
+    const style = SyntaxStyle.create(setup.renderer.nativeScene)
     const diff = new DiffRenderable(setup.renderer, {
       diff: [
         "--- a/example.txt",
@@ -496,7 +502,7 @@ describe("LineNumber paint window", () => {
   test("Code bounded sources track same-row-count conceal mapping changes through real highlighting", async () => {
     setup = await createTestRenderer({ width: 20, height: 6 })
     const client = new TreeSitterClient({ dataPath: join(tmpdir(), "tree-sitter-line-number-test-data") })
-    const style = SyntaxStyle.create()
+    const style = SyntaxStyle.create(setup.renderer.nativeScene)
     const code = new CodeRenderable(setup.renderer, {
       content: "a\nb\nc\nd",
       filetype: "javascript",

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "bun:test"
-import { TextAttributes, TextRenderable, getLinkId, parseColor, type RenderContext } from "@opentui/core"
+import { TextAttributes, TextRenderable, getLinkId, parseColor, type OptimizedBuffer } from "@opentui/core"
 import { createTestRenderer } from "@opentui/core/testing"
 import { onCleanup } from "solid-js"
 import { createScrollbackWriter, useRenderer, useTerminalDimensions, writeSolidToScrollback } from "../index.js"
@@ -8,41 +8,10 @@ let testSetup: Awaited<ReturnType<typeof createTestRenderer>> | null = null
 const decoder = new TextDecoder()
 
 type QueuedSnapshotCommit = {
-  snapshot: {
-    height: number
-    getRealCharBytes: (addLineBreaks?: boolean) => Uint8Array
-    getSpanLines: () => Array<{
-      spans: Array<{ text: string; attributes: number; fg: ReturnType<typeof parseColor> }>
-    }>
-    destroy: () => void
-    buffers: {
-      attributes: Uint32Array
-    }
-  }
+  snapshot: OptimizedBuffer
   rowColumns: number
   startOnNewLine: boolean
   trailingNewline: boolean
-}
-
-class UpdateProbeRenderable extends TextRenderable {
-  private updates = 0
-
-  constructor(ctx: RenderContext) {
-    super(ctx, {
-      id: "update-probe",
-      position: "absolute",
-      left: 0,
-      top: 0,
-      width: 1,
-      height: 1,
-      content: "0",
-    })
-  }
-
-  protected override onUpdate(_deltaTime: number): void {
-    this.updates += 1
-    this.content = `${this.updates}`
-  }
 }
 
 function claimSingleCommit(renderer: Awaited<ReturnType<typeof createTestRenderer>>["renderer"]): QueuedSnapshotCommit {
@@ -104,7 +73,9 @@ describe("createScrollbackWriter", () => {
       expect(alertSpan?.fg.equals(parseColor("red"))).toBe(true)
       expect((alertSpan?.attributes ?? 0) & TextAttributes.BOLD).toBe(TextAttributes.BOLD)
 
-      const hasLinkAttributes = [...commit.snapshot.buffers.attributes].some((attributes) => getLinkId(attributes) > 0)
+      const hasLinkAttributes = commit.snapshot.withBuffers((cells) =>
+        cells.attributes.some((attributes) => getLinkId(attributes) > 0),
+      )
       expect(hasLinkAttributes).toBe(true)
     } finally {
       commit.snapshot.destroy()
@@ -145,13 +116,18 @@ describe("createScrollbackWriter", () => {
     try {
       const committedText = decoder.decode(commit.snapshot.getRealCharBytes(true))
       expect(commit.snapshot.height).toBe(2)
-      expect(committedText).toContain("12x2")
+      expect(
+        committedText
+          .trimEnd()
+          .split("\n")
+          .map((line) => line.trimEnd()),
+      ).toEqual(["12x2", "12x2"])
     } finally {
       commit.snapshot.destroy()
     }
   })
 
-  it("does not run renderable onUpdate during auto-height measurement", async () => {
+  it.each([false, true])("auto-height measurement skips updates and paint hooks (nested flow: %p)", async (nested) => {
     const setup = await createTestRenderer({
       width: 40,
       height: 10,
@@ -162,13 +138,37 @@ describe("createScrollbackWriter", () => {
     })
     testSetup = setup
 
+    let updates = 0
+    let paints = 0
+    class Probe extends TextRenderable {
+      protected override onUpdate() {
+        this.content = String(++updates)
+      }
+    }
     setup.renderer.writeToScrollback(
-      createScrollbackWriter(() => new UpdateProbeRenderable(useRenderer()), { width: 1 }),
+      createScrollbackWriter(
+        () =>
+          nested ? (
+            <box renderBefore={() => paints++}>{new Probe(useRenderer(), { content: "0" })}</box>
+          ) : (
+            new Probe(useRenderer(), {
+              content: "0",
+              position: "absolute",
+              left: 0,
+              top: 0,
+              width: 1,
+              height: 1,
+            })
+          ),
+        { width: 1 },
+      ),
     )
 
     const commit = claimSingleCommit(setup.renderer)
 
     try {
+      expect(updates).toBe(1)
+      expect(paints).toBe(nested ? 1 : 0)
       expect(decoder.decode(commit.snapshot.getRealCharBytes(true)).trim()).toBe("1")
     } finally {
       commit.snapshot.destroy()

@@ -381,12 +381,12 @@ export function destroy(renderer: CliRenderer): void {
   }
 
   for (const box of draggableBoxes) {
-    renderer.root.remove(box)
+    box.destroyRecursively()
   }
   draggableBoxes = []
 
   const parentContainer = renderer.root.getRenderable("parent-container")
-  if (parentContainer) renderer.root.remove(parentContainer)
+  parentContainer?.destroyRecursively()
   renderer.setCursorPosition(0, 0, false)
 }
 

@@ -1,4 +1,6 @@
 const std = @import("std");
+const TestPools = @import("../tests/test-pools.zig").TestPools;
+const link = @import("../link.zig");
 const ansi = @import("../ansi.zig");
 const bench_utils = @import("../bench-utils.zig");
 const buffer = @import("../buffer.zig");
@@ -45,6 +47,7 @@ fn runTransparentBoxes(
     io: std.Io,
     allocator: std.mem.Allocator,
     pool: *gp.GraphemePool,
+    link_pool: *link.LinkPool,
     show_mem: bool,
     iterations: usize,
     bench_filter: ?[]const u8,
@@ -61,7 +64,7 @@ fn runTransparentBoxes(
     const run_both_alpha = bench_utils.matchesBenchFilter(name_both_alpha, bench_filter);
     if (!run_opacity and !run_bg_alpha and !run_both_alpha) return results.toOwnedSlice(allocator);
 
-    const buf = try OptimizedBuffer.init(allocator, BUFFER_WIDTH, BUFFER_HEIGHT, .{ .pool = pool });
+    const buf = try OptimizedBuffer.init(allocator, BUFFER_WIDTH, BUFFER_HEIGHT, .{ .link_pool = link_pool, .pool = pool });
     defer buf.deinit();
 
     var final_mem: usize = 0;
@@ -239,6 +242,7 @@ fn runFilledBoxes(
     io: std.Io,
     allocator: std.mem.Allocator,
     pool: *gp.GraphemePool,
+    link_pool: *link.LinkPool,
     show_mem: bool,
     iterations: usize,
     bench_filter: ?[]const u8,
@@ -255,7 +259,7 @@ fn runFilledBoxes(
     const run_translucent_opacity = bench_utils.matchesBenchFilter(name_translucent_opacity, bench_filter);
     if (!run_opaque and !run_translucent_bg and !run_translucent_opacity) return results.toOwnedSlice(allocator);
 
-    const buf = try OptimizedBuffer.init(allocator, BUFFER_WIDTH, BUFFER_HEIGHT, .{ .pool = pool });
+    const buf = try OptimizedBuffer.init(allocator, BUFFER_WIDTH, BUFFER_HEIGHT, .{ .link_pool = link_pool, .pool = pool });
     defer buf.deinit();
 
     var final_mem: usize = 0;
@@ -432,6 +436,7 @@ fn runFilledBoxesTitle(
     io: std.Io,
     allocator: std.mem.Allocator,
     pool: *gp.GraphemePool,
+    link_pool: *link.LinkPool,
     show_mem: bool,
     iterations: usize,
     bench_filter: ?[]const u8,
@@ -444,7 +449,7 @@ fn runFilledBoxesTitle(
     const run_title = bench_utils.matchesBenchFilter(name_title, bench_filter);
     if (!run_title) return results.toOwnedSlice(allocator);
 
-    const buf = try OptimizedBuffer.init(allocator, BUFFER_WIDTH, BUFFER_HEIGHT, .{ .pool = pool });
+    const buf = try OptimizedBuffer.init(allocator, BUFFER_WIDTH, BUFFER_HEIGHT, .{ .link_pool = link_pool, .pool = pool });
     defer buf.deinit();
 
     const border_color = rgba(0.5, 0.5, 0.5, 1.0);
@@ -508,6 +513,7 @@ fn runFilledBoxesBorders(
     io: std.Io,
     allocator: std.mem.Allocator,
     pool: *gp.GraphemePool,
+    link_pool: *link.LinkPool,
     show_mem: bool,
     iterations: usize,
     bench_filter: ?[]const u8,
@@ -520,7 +526,7 @@ fn runFilledBoxesBorders(
     const run_noborders = bench_utils.matchesBenchFilter(name_noborders, bench_filter);
     if (!run_noborders) return results.toOwnedSlice(allocator);
 
-    const buf = try OptimizedBuffer.init(allocator, BUFFER_WIDTH, BUFFER_HEIGHT, .{ .pool = pool });
+    const buf = try OptimizedBuffer.init(allocator, BUFFER_WIDTH, BUFFER_HEIGHT, .{ .link_pool = link_pool, .pool = pool });
     defer buf.deinit();
 
     const border_color = rgba(0.5, 0.5, 0.5, 1.0);
@@ -584,6 +590,7 @@ fn runFilledBoxesClipped(
     io: std.Io,
     allocator: std.mem.Allocator,
     pool: *gp.GraphemePool,
+    link_pool: *link.LinkPool,
     show_mem: bool,
     iterations: usize,
     bench_filter: ?[]const u8,
@@ -600,7 +607,7 @@ fn runFilledBoxesClipped(
     const run_negative = bench_utils.matchesBenchFilter(name_negative_coords, bench_filter);
     if (!run_fully and !run_half and !run_negative) return results.toOwnedSlice(allocator);
 
-    const buf = try OptimizedBuffer.init(allocator, BUFFER_WIDTH, BUFFER_HEIGHT, .{ .pool = pool });
+    const buf = try OptimizedBuffer.init(allocator, BUFFER_WIDTH, BUFFER_HEIGHT, .{ .link_pool = link_pool, .pool = pool });
     defer buf.deinit();
 
     const border_color = rgba(0.5, 0.5, 0.5, 1.0);
@@ -766,26 +773,27 @@ pub fn run(
     show_mem: bool,
     bench_filter: ?[]const u8,
 ) ![]BenchResult {
-    const pool = gp.initGlobalPool(allocator);
+    var pools = TestPools.init(allocator);
+    defer pools.deinit();
 
     var all_results: std.ArrayList(BenchResult) = .empty;
     errdefer all_results.deinit(allocator);
 
     const iterations: usize = 10;
 
-    const transparent_results = try runTransparentBoxes(io, allocator, pool, show_mem, iterations, bench_filter);
+    const transparent_results = try runTransparentBoxes(io, allocator, &pools.graphemes, &pools.links, show_mem, iterations, bench_filter);
     try all_results.appendSlice(allocator, transparent_results);
 
-    const filled_results = try runFilledBoxes(io, allocator, pool, show_mem, iterations, bench_filter);
+    const filled_results = try runFilledBoxes(io, allocator, &pools.graphemes, &pools.links, show_mem, iterations, bench_filter);
     try all_results.appendSlice(allocator, filled_results);
 
-    const title_results = try runFilledBoxesTitle(io, allocator, pool, show_mem, iterations, bench_filter);
+    const title_results = try runFilledBoxesTitle(io, allocator, &pools.graphemes, &pools.links, show_mem, iterations, bench_filter);
     try all_results.appendSlice(allocator, title_results);
 
-    const partial_results = try runFilledBoxesBorders(io, allocator, pool, show_mem, iterations, bench_filter);
+    const partial_results = try runFilledBoxesBorders(io, allocator, &pools.graphemes, &pools.links, show_mem, iterations, bench_filter);
     try all_results.appendSlice(allocator, partial_results);
 
-    const clipped_results = try runFilledBoxesClipped(io, allocator, pool, show_mem, iterations, bench_filter);
+    const clipped_results = try runFilledBoxesClipped(io, allocator, &pools.graphemes, &pools.links, show_mem, iterations, bench_filter);
     try all_results.appendSlice(allocator, clipped_results);
 
     return all_results.toOwnedSlice(allocator);

@@ -406,18 +406,18 @@ export class TerminalConsole extends EventEmitter {
     this._debugModeEnabled = this.options.startInDebugMode
     terminalConsoleCache.setCollectCallerInfo(this._debugModeEnabled)
 
-    this._rgbaInfo = parseColor(this.options.colorInfo)
-    this._rgbaWarn = parseColor(this.options.colorWarn)
-    this._rgbaError = parseColor(this.options.colorError)
-    this._rgbaDebug = parseColor(this.options.colorDebug)
-    this._rgbaDefault = parseColor(this.options.colorDefault)
-    this.backgroundColor = parseColor(this.options.backgroundColor)
-    this._rgbaTitleBar = parseColor(this.options.titleBarColor)
-    this._rgbaTitleBarText = parseColor(this.options.titleBarTextColor || this.options.colorDefault)
+    this._rgbaInfo = RGBA.clone(parseColor(this.options.colorInfo))
+    this._rgbaWarn = RGBA.clone(parseColor(this.options.colorWarn))
+    this._rgbaError = RGBA.clone(parseColor(this.options.colorError))
+    this._rgbaDebug = RGBA.clone(parseColor(this.options.colorDebug))
+    this._rgbaDefault = RGBA.clone(parseColor(this.options.colorDefault))
+    this.backgroundColor = RGBA.clone(parseColor(this.options.backgroundColor))
+    this._rgbaTitleBar = RGBA.clone(parseColor(this.options.titleBarColor))
+    this._rgbaTitleBarText = RGBA.clone(parseColor(this.options.titleBarTextColor || this.options.colorDefault))
     this._title = this.options.title
-    this._rgbaCursor = parseColor(this.options.cursorColor)
-    this._rgbaSelection = parseColor(this.options.selectionColor)
-    this._rgbaCopyButton = parseColor(this.options.copyButtonColor)
+    this._rgbaCursor = RGBA.clone(parseColor(this.options.cursorColor))
+    this._rgbaSelection = RGBA.clone(parseColor(this.options.selectionColor))
+    this._rgbaCopyButton = RGBA.clone(parseColor(this.options.copyButtonColor))
 
     this._keyAliasMap = mergeKeyAliases(defaultKeyAliases, options.keyAliasMap || {})
     this._keyBindings = options.keyBindings || []
@@ -655,13 +655,6 @@ export class TerminalConsole extends EventEmitter {
           const errorProps = arg
           return `Error: ${errorProps.message}\n` + (errorProps.stack ? `${errorProps.stack}\n` : "")
         }
-        if (typeof arg === "object" && arg !== null) {
-          try {
-            return util.inspect(arg, { depth: 2 })
-          } catch (e) {
-            return String(arg)
-          }
-        }
         try {
           return util.inspect(arg, { depth: 2 })
         } catch (e) {
@@ -669,6 +662,11 @@ export class TerminalConsole extends EventEmitter {
         }
       })
       .join(" ")
+      .replace(/\r\n/g, "\n")
+      .replace(
+        /[\x00-\x08\x0b-\x1f\x7f-\x9f]/g,
+        (control) => `\\x${control.charCodeAt(0).toString(16).padStart(2, "0")}`,
+      )
   }
 
   public resize(width: number, height: number): void {
@@ -725,17 +723,18 @@ export class TerminalConsole extends EventEmitter {
   }
 
   public show(): void {
+    if (this.renderer.isDestroyed) throw new Error("Cannot show the console after renderer destruction")
     if (!this.isVisible) {
-      this.isVisible = true
-      this._processCachedLogs()
-      terminalConsoleCache.setCachingEnabled(false)
-
       if (!this.frameBuffer) {
         this.frameBuffer = OptimizedBuffer.create(this.consoleWidth, this.consoleHeight, this.renderer.widthMethod, {
           respectAlpha: this.backgroundColor.a < 1,
           id: "console framebuffer",
+          owner: this.renderer.nativeScene,
         })
       }
+      this.isVisible = true
+      this._processCachedLogs()
+      terminalConsoleCache.setCachingEnabled(false)
       const logCount = terminalConsoleCache.cachedLogs.length
       const visibleLogLines = Math.min(this.consoleHeight, logCount)
       this.currentLineIndex = Math.max(0, visibleLogLines - 1)
@@ -761,6 +760,8 @@ export class TerminalConsole extends EventEmitter {
     this.hide()
     this.deactivate()
     terminalConsoleCache.off("entry", this._entryListener)
+    this.frameBuffer?.destroy()
+    this.frameBuffer = null
   }
 
   public getCachedLogs(): string {

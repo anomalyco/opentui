@@ -55,23 +55,27 @@ export interface SessionCommon<Id extends Identity = Identity> {
   readonly identity: Id
   /** Terminal type reported by the client (e.g. "xterm-256color"). */
   readonly term: string
-  /** Current terminal size; updates on resize. */
+  /** Requested PTY size before attachment; native mode publishes accepted renderer sizes afterward. */
   readonly cols: number
   readonly rows: number
   /** Whether the client requested a PTY; false for bare shell channels. */
   readonly hasPty: boolean
   /** Client socket address for logging, rate limiting, and policy. */
   readonly remoteAddress: RemoteAddress
-  /** Fired when the client resizes; renderer is already resized for you. */
+  /** Fired after resize acceptance; native mode coalesces pending requests in Core. */
   onResize(cb: (cols: number, rows: number) => void): () => void
   /**
-   * Fired when the client disconnects. The renderer is already destroyed; use this
-   * for app-owned teardown such as framework roots, timers, or counters.
+   * Fired at logical session close. Use this for app-owned teardown such as
+   * framework roots, timers, or counters. Renderer creation and native output
+   * cleanup can still be pending; await an attached native renderer's `closed`
+   * promise to observe completion or failure.
    */
   onClose(cb: () => void): () => void
   /**
    * Write raw bytes to the client terminal, bypassing frame diffing — the escape
    * hatch for control the renderer doesn't model (OSC 52, title, bell). No-op once closed.
+   * Native mode throws OutputPressureError on temporary pressure, or RangeError if the
+   * write exceeds total capacity. Rejection accepts no bytes and is never queued or replayed.
    */
   write(data: Buffer | string): void
   /** Force-close this session. */
@@ -91,7 +95,8 @@ export interface MiddlewareSession<
   readonly context: Ctx
   /**
    * Deny this session before the handler runs. A reason is written to the main
-   * screen, the session closes, and the middleware chain unwinds as intended.
+   * screen when output admission succeeds. The session closes and the chain unwinds
+   * even if the reason cannot be written.
    */
   deny(reason?: string): never
 }

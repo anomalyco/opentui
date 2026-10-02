@@ -1,4 +1,4 @@
-import { describe, expect, it, afterAll, beforeAll } from "bun:test"
+import { describe, expect, it, afterAll, beforeAll, spyOn } from "bun:test"
 import { InputRenderable, type InputRenderableOptions, InputRenderableEvents } from "./Input.js"
 import { decodePasteBytes } from "../lib/paste.js"
 import { createTestRenderer } from "../testing/test-renderer.js"
@@ -24,6 +24,41 @@ describe("InputRenderable", () => {
       renderer.destroy()
     }
   })
+
+  it.each(["value", "maxLength"] as const)(
+    "%s preserves its state on rejected replacement, then allows retry",
+    (property) => {
+      const { input } = createInputRenderable({ width: 20, value: "before", maxLength: 20 })
+      const failure = new Error("rejected input replacement")
+      let reject = true
+      const original = input.editBuffer.setText.bind(input.editBuffer)
+      const replace = spyOn(input.editBuffer, "setText").mockImplementation((text) => {
+        if (reject) throw failure
+        original(text)
+      })
+      const values: string[] = []
+      input.on(InputRenderableEvents.INPUT, (value: string) => values.push(value))
+      const update = () => {
+        if (property === "value") input.value = "after"
+        else input.maxLength = 3
+      }
+      try {
+        expect(update).toThrow(failure)
+        expect(input.maxLength).toBe(20)
+        expect(input.value).toBe("before")
+        reject = false
+        update()
+        expect(input.maxLength).toBe(property === "value" ? 20 : 3)
+        expect(input.value).toBe(property === "value" ? "after" : "bef")
+        expect(input.cursorOffset).toBe(property === "value" ? 5 : 0)
+        expect(values).toEqual(property === "value" ? ["after"] : [])
+        expect(replace).toHaveBeenCalledTimes(2)
+      } finally {
+        replace.mockRestore()
+        input.destroy()
+      }
+    },
+  )
 
   describe("Initialization", () => {
     it("should initialize properly with default options", () => {

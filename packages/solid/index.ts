@@ -1,4 +1,4 @@
-import { CliRenderer, createCliRenderer, engine, type CliRendererConfig } from "@opentui/core"
+import { CliRenderer, createCliRenderer, type CliRendererConfig } from "@opentui/core"
 import { createTestRenderer, type TestRendererOptions } from "@opentui/core/testing"
 import type { JSX } from "./jsx-runtime.js"
 import { RendererContext } from "./src/elements/index.js"
@@ -78,7 +78,6 @@ export const render = async (node: () => JSX.Element, rendererOrConfig: CliRende
           },
         })
 
-  engine.attach(renderer)
   mountSolidRoot(renderer, node)
 }
 
@@ -90,7 +89,6 @@ export const testRender = async (node: () => JSX.Element, renderConfig: TestRend
     },
   })
 
-  engine.attach(testSetup.renderer)
   mountSolidRoot(testSetup.renderer, node)
 
   return testSetup

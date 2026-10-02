@@ -8,7 +8,6 @@ import { deflateSync, inflateSync } from "node:zlib"
 
 import { describe, expect, test } from "bun:test"
 import { ImageError, ImageLoadError, NativeImage, imageInfo, type ImageErrorCode } from "../image.js"
-import { toArrayBuffer } from "../platform/ffi.js"
 import { resolveRenderLib } from "../zig.js"
 
 const PNG_1X1 = Uint8Array.from(
@@ -698,16 +697,14 @@ describe("NativeImage", () => {
       expect([...raw.data]).toEqual([...pixels])
       expect(() => image.info()).toThrow("disposed")
 
-      const pointer = resolveRenderLib().imageGetPixelsPtr(handle)
-      expect(pointer).not.toBeNull()
-      const alias = new Uint8Array(toArrayBuffer(pointer!, 0, pixels.byteLength))
+      expect(resolveRenderLib().imageGetInfo(handle).status).toBe(1)
       raw.data[0] = 42
-      expect(alias[0]).toBe(42)
+      expect(raw.data[0]).toBe(42)
     } finally {
       raw.dispose()
       raw.dispose()
     }
-    expect(resolveRenderLib().imageGetPixelsPtr(handle)).toBeNull()
+    expect(() => resolveRenderLib().imageGetInfo(handle)).toThrow()
   })
 
   test("takeRaw reports deferred PNG decode errors", async () => {

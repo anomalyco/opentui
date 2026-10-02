@@ -19,10 +19,33 @@ import {
   AudioRecorderError,
   setupAudio,
 } from "../audio.js"
-import { NativeAudioStreamFormat, resolveRenderLib } from "../zig.js"
+import { FFIRenderLib, NativeAudioStreamFormat, resolveRenderLib } from "../zig.js"
 
 const SAMPLE_RATE = 48_000
 const audioRecorderTestRoot = process.env.OTUI_AUDIO_RECORDER_TEST_TMPDIR ?? tmpdir()
+
+test("audio numeric handles retain library ownership and never alias replacements", () => {
+  const first = new FFIRenderLib()
+  const second = new FFIRenderLib()
+  const engine = first.createAudioEngine()!
+  const other = second.createAudioEngine()!
+  try {
+    expect(second.audioStartMixer(engine)).toBe(-1)
+    expect(first.audioStartMixer(other)).toBe(-1)
+    first.destroyAudioEngine(engine)
+    const replacement = first.createAudioEngine()!
+    expect(replacement).not.toBe(engine)
+    expect(first.audioGetStats(engine)).toBeNull()
+    expect(first.audioStartMixer(replacement)).toBe(0)
+    first.destroyAudioEngine(replacement)
+    expect(first.createAudioEngine({ playbackChannels: 256 })).toBeNull()
+  } finally {
+    first.destroyAudioEngine(engine)
+    second.destroyAudioEngine(other)
+    first.dispose()
+    second.dispose()
+  }
+})
 
 function buildPcm16Wav(samples: number[], channels: number): Uint8Array {
   if (channels <= 0 || samples.length % channels !== 0) {

@@ -1,19 +1,17 @@
 const std = @import("std");
+const TestPools = @import("test-pools.zig").TestPools;
 const edit_buffer = @import("../edit-buffer.zig");
 const text_buffer_view = @import("../text-buffer-view.zig");
-const gp = @import("../grapheme.zig");
 const link = @import("../link.zig");
 
 const EditBuffer = edit_buffer.EditBuffer;
 const TextBufferView = text_buffer_view.TextBufferView;
 
 test "Word wrap - editing around wrap boundary creates correct wrap" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
-    var eb = try EditBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth, null);
+    var eb = try EditBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth, null);
     defer eb.deinit();
 
     var view = try TextBufferView.init(std.testing.allocator, eb.getTextBuffer());
@@ -38,12 +36,10 @@ test "Word wrap - editing around wrap boundary creates correct wrap" {
 }
 
 test "Word wrap - backspace and retype near boundary" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
-    var eb = try EditBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth, null);
+    var eb = try EditBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth, null);
     defer eb.deinit();
 
     var view = try TextBufferView.init(std.testing.allocator, eb.getTextBuffer());
@@ -76,12 +72,10 @@ test "Word wrap - backspace and retype near boundary" {
 }
 
 test "Word wrap - type character by character near boundary" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
-    var eb = try EditBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth, null);
+    var eb = try EditBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth, null);
     defer eb.deinit();
 
     var view = try TextBufferView.init(std.testing.allocator, eb.getTextBuffer());
@@ -130,12 +124,10 @@ test "Word wrap - type character by character near boundary" {
 }
 
 test "Word wrap - insert word in middle causes rewrap" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
-    var eb = try EditBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth, null);
+    var eb = try EditBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth, null);
     defer eb.deinit();
 
     var view = try TextBufferView.init(std.testing.allocator, eb.getTextBuffer());
@@ -157,12 +149,10 @@ test "Word wrap - insert word in middle causes rewrap" {
 }
 
 test "Word wrap - delete word causes rewrap" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
-    var eb = try EditBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth, null);
+    var eb = try EditBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth, null);
     defer eb.deinit();
 
     var view = try TextBufferView.init(std.testing.allocator, eb.getTextBuffer());
@@ -187,12 +177,10 @@ test "Word wrap - delete word causes rewrap" {
 }
 
 test "Word wrap - rapid edits maintain correct wrapping" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
-    var eb = try EditBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth, null);
+    var eb = try EditBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth, null);
     defer eb.deinit();
 
     var view = try TextBufferView.init(std.testing.allocator, eb.getTextBuffer());
@@ -223,12 +211,10 @@ test "Word wrap - rapid edits maintain correct wrapping" {
 }
 
 test "Word wrap - fragmented at exact word boundary" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
-    var eb = try EditBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth, null);
+    var eb = try EditBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth, null);
     defer eb.deinit();
 
     var view = try TextBufferView.init(std.testing.allocator, eb.getTextBuffer());
@@ -250,12 +236,10 @@ test "Word wrap - fragmented at exact word boundary" {
 }
 
 test "Word wrap - stale rollback state after newline with EditBuffer inserts" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
-    var eb = try EditBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth, null);
+    var eb = try EditBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth, null);
     defer eb.deinit();
 
     var view = try TextBufferView.init(std.testing.allocator, eb.getTextBuffer());
@@ -288,12 +272,10 @@ test "Word wrap - stale rollback state after newline with EditBuffer inserts" {
 }
 
 test "Word wrap - chunk boundary at start of word" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
-    var eb = try EditBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth, null);
+    var eb = try EditBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth, null);
     defer eb.deinit();
 
     var view = try TextBufferView.init(std.testing.allocator, eb.getTextBuffer());
@@ -318,12 +300,10 @@ test "Word wrap - chunk boundary at start of word" {
 }
 
 test "Word wrap - multiple edits create complex fragmentation" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
-    var eb = try EditBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth, null);
+    var eb = try EditBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth, null);
     defer eb.deinit();
 
     var view = try TextBufferView.init(std.testing.allocator, eb.getTextBuffer());
@@ -362,12 +342,10 @@ test "Word wrap - multiple edits create complex fragmentation" {
 }
 
 test "Word wrap - insert at wrap boundary with existing wrap" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
-    var eb = try EditBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth, null);
+    var eb = try EditBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth, null);
     defer eb.deinit();
 
     var view = try TextBufferView.init(std.testing.allocator, eb.getTextBuffer());
@@ -394,12 +372,10 @@ test "Word wrap - insert at wrap boundary with existing wrap" {
 }
 
 test "Word wrap - word at exact wrap width" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
-    var eb = try EditBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth, null);
+    var eb = try EditBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth, null);
     defer eb.deinit();
 
     var view = try TextBufferView.init(std.testing.allocator, eb.getTextBuffer());
@@ -423,12 +399,10 @@ test "Word wrap - word at exact wrap width" {
 }
 
 test "Word wrap - debug virtual line contents" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
-    var eb = try EditBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth, null);
+    var eb = try EditBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth, null);
     defer eb.deinit();
 
     var view = try TextBufferView.init(std.testing.allocator, eb.getTextBuffer());
@@ -449,12 +423,10 @@ test "Word wrap - debug virtual line contents" {
 }
 
 test "Word wrap - incremental character edits near boundary" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
-    var eb = try EditBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth, null);
+    var eb = try EditBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth, null);
     defer eb.deinit();
 
     var view = try TextBufferView.init(std.testing.allocator, eb.getTextBuffer());

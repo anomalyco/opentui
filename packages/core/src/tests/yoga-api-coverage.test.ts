@@ -89,18 +89,27 @@ describe("native Yoga API coverage", () => {
   })
 
   test("covers recursive free marking all known subtree wrappers freed", () => {
-    const root = Yoga.Node.create()
-    const child = Yoga.Node.create()
-    const grandchild = Yoga.Node.create()
+    const config = Yoga.Config.create()
+    const root = Yoga.Node.create(config)
+    const child = Yoga.Node.create(config)
+    const grandchild = Yoga.Node.create(config)
 
     root.insertChild(child, 0)
     child.insertChild(grandchild, 0)
+    grandchild.setMeasureFunc(() => ({ width: 1, height: 1 }))
+    grandchild.setDirtiedFunc(() => {})
+    root.calculateLayout()
+    expect(grandchild.getComputedHeight()).toBe(1)
 
     root.freeRecursive()
 
     expect(root.isFreed()).toBe(true)
     expect(child.isFreed()).toBe(true)
     expect(grandchild.isFreed()).toBe(true)
+    expect(config.nodes.size).toBe(0)
+    expect(config.measures.size).toBe(0)
+    expect(config.dirtied.size).toBe(0)
+    config.free()
   })
 
   test("covers enum, float, value, and edge style round trips", () => {
@@ -368,9 +377,9 @@ describe("native Yoga API coverage", () => {
     expect(root.hasMeasureFunc()).toBe(false)
 
     root.setMeasureFunc((width, widthMode, height, heightMode) => {
-      expect(width).toBeNaN()
+      expect(Number.isNaN(width)).toBe(true)
       expect(widthMode).toBe(MeasureMode.Undefined)
-      expect(height).toBeNaN()
+      expect(Number.isNaN(height)).toBe(true)
       expect(heightMode).toBe(MeasureMode.Undefined)
       return { width: 10, height: 10 }
     })

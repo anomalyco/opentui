@@ -7,7 +7,7 @@ import {
   useKeyboard,
   useRenderer,
 } from "@opentui/solid"
-import { createEffect, createMemo, createSignal, on, onCleanup, onMount, Show, type JSX } from "solid-js"
+import { batch, createEffect, createMemo, createSignal, on, onCleanup, onMount, Show, type JSX } from "solid-js"
 
 type DemoSlots = {
   statusbar: { label: string }
@@ -217,11 +217,13 @@ export default function PluginSlotsDemo() {
         setRefreshNonce((current) => current + 1)
         return
       case "x":
-        setClockCrashEnabled(false)
-        setActivityCrashEnabled(false)
-        setErrorLines([])
-        registry.clearPluginErrors()
-        setRefreshNonce((current) => current + 1)
+        batch(() => {
+          setClockCrashEnabled(false)
+          setActivityCrashEnabled(false)
+          setErrorLines([])
+          registry.clearPluginErrors()
+          setRefreshNonce((current) => current + 1)
+        })
         return
       case "c":
         if (key.ctrl) {

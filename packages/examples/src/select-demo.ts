@@ -213,14 +213,10 @@ export function destroy(rendererInstance: CliRenderer): void {
     keyboardHandler = null
   }
 
-  if (selectElement) {
-    rendererInstance.root.remove(selectElement)
-    selectElement.destroy()
-    selectElement = null
-  }
-
+  selectElement?.destroy()
+  selectElement = null
   const parentContainer = rendererInstance.root.getRenderable("parent-container")
-  if (parentContainer) rendererInstance.root.remove(parentContainer)
+  parentContainer?.destroyRecursively()
 
   keyLegendDisplay = null
   statusDisplay = null

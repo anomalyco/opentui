@@ -29,7 +29,7 @@ pub fn build(b: *std.Build) void {
 
     const run = b.addRunArtifact(executable);
     run.step.dependOn(b.getInstallStep());
-    const run_step = b.step("run", "Render two frames without JavaScript");
+    const run_step = b.step("run", "Write hello.ansi and ready.ansi from a retained scene");
     run_step.dependOn(&run.step);
 
     const test_module = b.createModule(.{

@@ -31,6 +31,7 @@ export class ThreeRenderable extends Renderable {
 
   constructor(ctx: RenderContext, options: ThreeRenderableOptions) {
     const { scene = null, camera, renderer, autoAspect = true, ...renderableOptions } = options
+    const clearColor = renderer?.backgroundColor ? RGBA.clone(renderer.backgroundColor) : RGBA.fromValues(0, 0, 0, 1)
     super(ctx, { ...renderableOptions, buffered: true, live: options.live ?? true })
 
     const cliRenderer = ctx as CliRenderer
@@ -41,7 +42,7 @@ export class ThreeRenderable extends Renderable {
     this.cliRenderer = cliRenderer
     this.scene = scene
     this.autoAspect = autoAspect
-    this.clearColor = renderer?.backgroundColor ?? RGBA.fromValues(0, 0, 0, 1)
+    this.clearColor = clearColor
 
     const { width, height } = this.getRenderSize()
     this.engine = new ThreeCliRenderer(cliRenderer, {
@@ -49,6 +50,7 @@ export class ThreeRenderable extends Renderable {
       height,
       autoResize: false,
       ...renderer,
+      backgroundColor: this.clearColor,
     })
 
     if (camera) {

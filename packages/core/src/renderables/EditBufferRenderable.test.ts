@@ -4,6 +4,8 @@ import { EditBufferRenderableEvents, isEditBufferRenderable } from "./EditBuffer
 import { InputRenderable } from "./Input.js"
 import { TextareaRenderable } from "./Textarea.js"
 import { createTestRenderer, type TestRenderer } from "../testing/test-renderer.js"
+import { StyledText } from "../lib/styled-text.js"
+import { RGBA } from "../lib/RGBA.js"
 
 describe("EditBufferRenderable", () => {
   let renderer: TestRenderer
@@ -15,6 +17,19 @@ describe("EditBufferRenderable", () => {
 
   afterEach(() => {
     renderer.destroy()
+  })
+
+  test("Textarea rejects linked placeholders without poisoning later color updates", async () => {
+    const editor = new TextareaRenderable(renderer, { width: 12, height: 2, placeholder: "kept" })
+    renderer.root.add(editor)
+    const linked = new StyledText([{ __isChunk: true, text: "rejected", link: { url: "https://example.com" } }])
+    expect(() => {
+      editor.placeholder = linked
+    }).toThrow("link")
+    const color = RGBA.fromHex("#ff0000")
+    editor.placeholderColor = color
+    await renderOnce()
+    expect(renderer.currentRenderBuffer.getSpanLines()[0].spans[0]).toMatchObject({ text: "kept", fg: color })
   })
 
   test("brands textarea and input instances", async () => {
@@ -201,6 +216,8 @@ describe("EditBufferRenderable", () => {
     })
 
     renderer.root.add(textarea)
+    textarea.translateX = 0.5
+    textarea.translateY = -0.5
     await renderOnce()
 
     textarea.cursorOffset = 2

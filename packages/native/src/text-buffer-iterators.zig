@@ -22,6 +22,44 @@ pub const Coords = struct {
     col: u32,
 };
 
+/// Note: Takes mutable rope for lazy marker cache rebuilding
+pub fn walkLines(
+    rope: *UnifiedRope,
+    ctx: *anyopaque,
+    callback: *const fn (ctx: *anyopaque, line_info: LineInfo) void,
+    include_newlines_in_offset: bool,
+) void {
+    const linestart_count = rope.markerCount(.linestart);
+    if (linestart_count == 0) return;
+
+    var i: u32 = 0;
+    while (i < linestart_count) : (i += 1) {
+        const marker = rope.getMarker(.linestart, i) orelse continue;
+        const line_start_weight = marker.global_weight;
+        const width_cols = lineWidthAt(rope, i);
+        const seg_end = if (i + 1 < linestart_count) blk: {
+            const next_marker = rope.getMarker(.linestart, i + 1) orelse break :blk marker.leaf_index + 1;
+            break :blk next_marker.leaf_index;
+        } else blk: {
+            break :blk rope.count();
+        };
+
+        // Line i has i newlines before it (one after each previous line)
+        const col_offset = if (include_newlines_in_offset)
+            line_start_weight
+        else
+            line_start_weight - i;
+
+        callback(ctx, .{
+            .line_idx = i,
+            .col_offset = col_offset,
+            .width_cols = width_cols,
+            .seg_start = marker.leaf_index,
+            .seg_end = seg_end,
+        });
+    }
+}
+
 /// This is the most efficient way to iterate lines and their content
 pub fn walkLinesAndSegments(
     rope: *const UnifiedRope,
@@ -325,51 +363,51 @@ pub fn getPrevGraphemeWidth(rope: *UnifiedRope, mem_registry: *const MemRegistry
 
 /// Extract text between display-width offsets into a buffer
 /// Automatically snaps to grapheme boundaries:
-/// - start_offset excludes graphemes that start before it
-/// - end_offset includes graphemes that start before it
-/// Returns number of bytes written to out_buffer
+/// - start_offset snaps backward to the containing grapheme
+/// - end_offset snaps forward to include a partially selected grapheme
+/// Returns bytes written, or the exact byte count when out_buffer is null.
 pub fn extractTextBetweenOffsets(
     rope: *const UnifiedRope,
     mem_registry: *const MemRegistry,
     tab_width: u8,
     start_offset: u32,
     end_offset: u32,
-    out_buffer: []u8,
+    out_buffer: ?[]u8,
     width_method: utf8.WidthMethod,
 ) usize {
     if (start_offset >= end_offset) return 0;
-    if (out_buffer.len == 0) return 0;
+    if (out_buffer) |out| if (out.len == 0) return 0;
 
-    const line_count = rope.root.metrics().custom.linestart_count;
-
-    var out_index: usize = 0;
-    var col_offset: u32 = 0;
+    const first = rope.findByWeight(start_offset) orelse return 0;
 
     const Context = struct {
-        rope: *const UnifiedRope,
         mem_registry: *const MemRegistry,
         tab_width: u8,
-        out_buffer: []u8,
-        out_index: *usize,
-        col_offset: *u32,
+        out_buffer: ?[]u8,
+        out_index: usize = 0,
+        col_offset: u32,
         start: u32,
         end: u32,
-        line_count: u32,
         width_method: utf8.WidthMethod,
 
-        fn segment_callback(ctx_ptr: *anyopaque, line_idx: u32, chunk: *const TextChunk, chunk_idx_in_line: u32) void {
-            _ = line_idx;
-            _ = chunk_idx_in_line;
+        fn walk(ctx_ptr: *anyopaque, segment: *const Segment, _: u32) UnifiedRope.Node.WalkerResult {
             const ctx = @as(*@This(), @ptrCast(@alignCast(ctx_ptr)));
-
-            const chunk_start_offset = ctx.col_offset.*;
-            const chunk_end_offset = chunk_start_offset + chunk.width_cols;
-
-            // Skip chunk if it's entirely outside range
-            if (chunk_end_offset <= ctx.start or chunk_start_offset >= ctx.end) {
-                ctx.col_offset.* = chunk_end_offset;
-                return;
+            if (ctx.col_offset >= ctx.end) return .{ .keep_walking = false };
+            if (segment.asText()) |chunk| {
+                ctx.text(chunk);
+            } else if (segment.isBreak()) {
+                if (ctx.col_offset >= ctx.start) ctx.append("\n");
+                ctx.col_offset += 1;
             }
+            return .{};
+        }
+
+        fn text(ctx: *@This(), chunk: *const TextChunk) void {
+            const chunk_start_offset = ctx.col_offset;
+            const chunk_end_offset = chunk_start_offset + chunk.width_cols;
+            ctx.col_offset = chunk_end_offset;
+
+            if (chunk_end_offset <= ctx.start) return;
 
             const chunk_bytes = chunk.getBytes(ctx.mem_registry);
             const is_ascii_only = (chunk.flags & TextChunk.Flags.ASCII_ONLY) != 0;
@@ -392,48 +430,32 @@ pub fn extractTextBetweenOffsets(
 
             if (byte_start < byte_end and byte_start < chunk_bytes.len) {
                 const actual_end = @min(byte_end, @as(u32, @intCast(chunk_bytes.len)));
-                const selected_bytes = chunk_bytes[byte_start..actual_end];
-                const copy_len = @min(selected_bytes.len, ctx.out_buffer.len - ctx.out_index.*);
-
-                if (copy_len > 0) {
-                    @memcpy(ctx.out_buffer[ctx.out_index.* .. ctx.out_index.* + copy_len], selected_bytes[0..copy_len]);
-                    ctx.out_index.* += copy_len;
-                }
+                ctx.append(chunk_bytes[byte_start..actual_end]);
             }
-
-            ctx.col_offset.* = chunk_end_offset;
         }
 
-        fn line_end_callback(ctx_ptr: *anyopaque, line_info: LineInfo) void {
-            const ctx = @as(*@This(), @ptrCast(@alignCast(ctx_ptr)));
-
-            // Add newline when the newline offset is inside the selected range,
-            // even for empty logical lines.
-            const newline_offset = ctx.col_offset.*;
-            if (line_info.line_idx < ctx.line_count - 1 and newline_offset >= ctx.start and newline_offset < ctx.end and ctx.out_index.* < ctx.out_buffer.len) {
-                ctx.out_buffer[ctx.out_index.*] = '\n';
-                ctx.out_index.* += 1;
+        fn append(ctx: *@This(), bytes: []const u8) void {
+            if (ctx.out_buffer) |out| {
+                const count = @min(bytes.len, out.len - ctx.out_index);
+                @memcpy(out[ctx.out_index..][0..count], bytes[0..count]);
+                ctx.out_index += count;
+            } else {
+                ctx.out_index += bytes.len;
             }
-
-            // Account for newline in display offset
-            ctx.col_offset.* += 1;
         }
     };
 
     var ctx: Context = .{
-        .rope = rope,
         .mem_registry = mem_registry,
         .tab_width = tab_width,
         .out_buffer = out_buffer,
-        .out_index = &out_index,
-        .col_offset = &col_offset,
+        .col_offset = first.start_weight,
         .start = start_offset,
         .end = end_offset,
-        .line_count = line_count,
         .width_method = width_method,
     };
 
-    walkLinesAndSegments(rope, &ctx, Context.segment_callback, Context.line_end_callback);
+    rope.walk_from(first.leaf_index, &ctx, Context.walk) catch unreachable;
 
-    return out_index;
+    return ctx.out_index;
 }
