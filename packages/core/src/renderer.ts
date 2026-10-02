@@ -1446,14 +1446,15 @@ export class CliRenderer extends EventEmitter implements RenderContext {
   }
 
   public addToHitGrid(x: number, y: number, width: number, height: number, id: number) {
-    if (!this._useMouse) return
+    if (!this._useMouse || width <= 0 || height <= 0) return
     if (id !== this.capturedRenderable?.num) {
       this.lib.addToHitGrid(this.rendererPtr, x, y, width, height, id)
     }
   }
 
   public pushHitGridScissorRect(x: number, y: number, width: number, height: number): void {
-    this.lib.hitGridPushScissorRect(this.rendererPtr, x, y, width, height)
+    // A non-positive extent is an empty clip rect. Push it anyway so the matching pop stays balanced.
+    this.lib.hitGridPushScissorRect(this.rendererPtr, x, y, Math.max(0, width), Math.max(0, height))
   }
 
   public popHitGridScissorRect(): void {
