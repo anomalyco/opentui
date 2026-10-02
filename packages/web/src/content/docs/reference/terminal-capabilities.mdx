@@ -138,8 +138,10 @@ A custom `stdout` that uses the native span feed defaults to `remote: true`. Ope
 host terminal is the stream's real peer.
 
 Auto-detection recognizes `SSH_CONNECTION`, `SSH_CLIENT`, `SSH_TTY`, and `MOSH_CONNECTION`. In an auto-detected remote
-session, OpenTUI does not apply the process host's forwarded terminal heuristics by default. This prevents a host
-`TERM_PROGRAM` value from describing the wrong terminal endpoint.
+session, OpenTUI does not apply the process host's forwarded terminal identity heuristics by default. This prevents a
+host `TERM_PROGRAM` value from describing the wrong terminal endpoint. Color depth keys stay trusted in every mode:
+`TERM`'s `256color` suffix enables `ansi256`, and a forwarded `COLORTERM` of `truecolor` or `24bit` enables `rgb`,
+because `ssh` adopts `TERM` from the client's PTY request.
 
 `forwardEnvKeys` selects process environment names that OpenTUI sends to native detection. Explicit remote mode
 defaults to an empty list. Other modes default to the documented terminal, SSH, tmux, Zellij, width, graphics,
