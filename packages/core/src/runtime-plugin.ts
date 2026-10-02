@@ -49,6 +49,7 @@ export type RuntimeModuleEntry = RuntimeModuleExports | RuntimeModuleLoader
 interface SourceAnalysis {
   importSpecifiers: string[]
   needsRuntimeSpecifierRewrite: boolean
+  needsSourceTransform: boolean
 }
 
 export interface RuntimePluginRewriteOptions {
@@ -56,10 +57,29 @@ export interface RuntimePluginRewriteOptions {
   nodeModulesBareSpecifiers?: boolean
 }
 
+export type RuntimePluginSourceLoader = "js" | "ts" | "jsx" | "tsx"
+
+export interface RuntimePluginSourceTransformResult {
+  contents: string
+  loader: RuntimePluginSourceLoader
+}
+
+export interface RuntimePluginSourceTransform {
+  /** Selects exact-path loaders that need host-owned source preparation. */
+  matches(path: string): boolean
+  /** Runs after runtime import rewriting and preserves the original module path. */
+  transform(
+    contents: string,
+    path: string,
+    loader: RuntimePluginSourceLoader,
+  ): RuntimePluginSourceTransformResult | Promise<RuntimePluginSourceTransformResult>
+}
+
 export interface CreateRuntimePluginOptions {
   core?: RuntimeModuleEntry
   additional?: Record<string, RuntimeModuleEntry>
   rewrite?: RuntimePluginRewriteOptions
+  sourceTransform?: RuntimePluginSourceTransform
 }
 
 const CORE_RUNTIME_SPECIFIER = "@opentui/core"
@@ -237,7 +257,7 @@ const resolveRuntimePluginRewriteOptions = (
   }
 }
 
-const runtimeLoaderForPath = (path: string): "js" | "ts" | "jsx" | "tsx" | null => {
+const runtimeLoaderForPath = (path: string): RuntimePluginSourceLoader | null => {
   const cleanPath = sourcePath(path)
 
   if (cleanPath.endsWith(".tsx")) {
@@ -433,6 +453,7 @@ const rewriteRuntimeSpecifiers = (code: string, runtimeModuleIdsBySpecifier: Map
 
 export function createRuntimePlugin(input: CreateRuntimePluginOptions = {}): BunPlugin {
   const runtimeModules = new Map<string, RuntimeModuleEntry>()
+  const sourceTransform = input.sourceTransform
   runtimeModules.set(CORE_RUNTIME_SPECIFIER, input.core ?? (coreRuntime as RuntimeModuleExports))
   runtimeModules.set(CORE_TESTING_RUNTIME_SPECIFIER, loadCoreTestingRuntimeModule)
   const rewriteOptions = resolveRuntimePluginRewriteOptions(input.rewrite)
@@ -446,6 +467,18 @@ export function createRuntimePlugin(input: CreateRuntimePluginOptions = {}): Bun
     runtimeModuleIdsBySpecifier.set(specifier, runtimeModuleIdForSpecifier(specifier))
   }
 
+  const runtimeModuleEntriesByAlias = new Map<string, RuntimeModuleEntry>()
+  // JSX runtimes append subpaths to their configured import source. Keep those
+  // composed virtual ids on the same host-owned module instances.
+  for (const [specifier, moduleEntry] of runtimeModules) {
+    for (const baseSpecifier of runtimeModules.keys()) {
+      if (!specifier.startsWith(`${baseSpecifier}/`)) continue
+      const baseModuleId = runtimeModuleIdsBySpecifier.get(baseSpecifier)
+      if (!baseModuleId) continue
+      runtimeModuleEntriesByAlias.set(`${baseModuleId}${specifier.slice(baseSpecifier.length)}`, moduleEntry)
+    }
+  }
+
   return {
     name: "bun-plugin-opentui-runtime-modules",
     setup: (build) => {
@@ -454,7 +487,11 @@ export function createRuntimePlugin(input: CreateRuntimePluginOptions = {}): Bun
       const nodeModulesBareRewritePackageRoots = new Set<string>()
       const packageTypeByPackageJsonPath = new Map<string, "module" | "commonjs">()
       const sourceAnalysisByPath = new Map<string, SourceAnalysis>()
-      const nodeModulesRuntimeRewritePathsByPath = new Map<string, string[]>()
+      const nodeModulesRewritePathsByPath = new Map<string, string[]>()
+
+      const needsSourceTransform = (path: string): boolean => {
+        return sourceTransform?.matches(path) ?? false
+      }
 
       const installRewriteLoader = (path: string): void => {
         const resolvedTargetPath = sourcePath(path)
@@ -496,10 +533,11 @@ export function createRuntimePlugin(input: CreateRuntimePluginOptions = {}): Bun
             ? rewriteImportsFromResolveParents(runtimeRewrittenContents, resolveParentsByRecency)
             : runtimeRewrittenContents
 
-          return {
-            contents: transformedContents,
-            loader,
-          }
+          const source = sourceTransform?.matches(loadedPath)
+            ? await sourceTransform.transform(transformedContents, loadedPath, loader)
+            : { contents: transformedContents, loader }
+
+          return source
         })
       }
 
@@ -515,7 +553,11 @@ export function createRuntimePlugin(input: CreateRuntimePluginOptions = {}): Bun
           contents = readFileSync(normalizedPath, "utf8")
         } catch (error) {
           if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") {
-            const analysis = { importSpecifiers: [], needsRuntimeSpecifierRewrite: false }
+            const analysis = {
+              importSpecifiers: [],
+              needsRuntimeSpecifierRewrite: false,
+              needsSourceTransform: false,
+            }
             sourceAnalysisByPath.set(normalizedPath, analysis)
             return analysis
           }
@@ -528,20 +570,21 @@ export function createRuntimePlugin(input: CreateRuntimePluginOptions = {}): Bun
           needsRuntimeSpecifierRewrite: importSpecifiers.some((specifier) =>
             runtimeModuleIdsBySpecifier.has(specifier),
           ),
+          needsSourceTransform: needsSourceTransform(normalizedPath),
         }
 
         sourceAnalysisByPath.set(normalizedPath, analysis)
         return analysis
       }
 
-      const collectNodeModulesRuntimeRewritePaths = (path: string, visiting = new Set<string>()): string[] => {
+      const collectNodeModulesRewritePaths = (path: string, visiting = new Set<string>()): string[] => {
         const normalizedPath = normalizeSourcePath(path)
 
         if (!isNodeModulesEsmPath(normalizedPath, packageTypeByPackageJsonPath)) {
           return []
         }
 
-        const cachedPaths = nodeModulesRuntimeRewritePathsByPath.get(normalizedPath)
+        const cachedPaths = nodeModulesRewritePathsByPath.get(normalizedPath)
         if (cachedPaths) {
           return cachedPaths
         }
@@ -555,7 +598,7 @@ export function createRuntimePlugin(input: CreateRuntimePluginOptions = {}): Bun
         const rewritePaths = new Set<string>()
         const analysis = analyzeSourcePath(normalizedPath)
 
-        if (analysis.needsRuntimeSpecifierRewrite) {
+        if (analysis.needsRuntimeSpecifierRewrite || analysis.needsSourceTransform) {
           rewritePaths.add(normalizedPath)
         }
 
@@ -565,7 +608,7 @@ export function createRuntimePlugin(input: CreateRuntimePluginOptions = {}): Bun
             continue
           }
 
-          for (const nestedPath of collectNodeModulesRuntimeRewritePaths(resolvedPath, visiting)) {
+          for (const nestedPath of collectNodeModulesRewritePaths(resolvedPath, visiting)) {
             rewritePaths.add(nestedPath)
           }
         }
@@ -573,7 +616,7 @@ export function createRuntimePlugin(input: CreateRuntimePluginOptions = {}): Bun
         visiting.delete(normalizedPath)
 
         const resolvedRewritePaths = [...rewritePaths]
-        nodeModulesRuntimeRewritePathsByPath.set(normalizedPath, resolvedRewritePaths)
+        nodeModulesRewritePathsByPath.set(normalizedPath, resolvedRewritePaths)
         return resolvedRewritePaths
       }
 
@@ -590,6 +633,13 @@ export function createRuntimePlugin(input: CreateRuntimePluginOptions = {}): Bun
         }))
 
         build.onResolve({ filter: exactSpecifierFilter(specifier) }, () => ({ path: moduleId }))
+      }
+
+      for (const [moduleId, moduleEntry] of runtimeModuleEntriesByAlias) {
+        build.module(moduleId, async () => ({
+          exports: await resolveRuntimeModuleExports(moduleEntry),
+          loader: "object",
+        }))
       }
 
       build.onResolve({ filter: /.*/ }, (args) => {
@@ -609,11 +659,17 @@ export function createRuntimePlugin(input: CreateRuntimePluginOptions = {}): Bun
           return undefined
         }
 
-        if (!rewriteOptions.nodeModulesRuntimeSpecifiers && !rewriteOptions.nodeModulesBareSpecifiers) {
+        const analysis = analyzeSourcePath(path)
+
+        if (
+          !analysis.needsSourceTransform &&
+          !rewriteOptions.nodeModulesRuntimeSpecifiers &&
+          !rewriteOptions.nodeModulesBareSpecifiers
+        ) {
           return undefined
         }
 
-        for (const rewritePath of collectNodeModulesRuntimeRewritePaths(path)) {
+        for (const rewritePath of collectNodeModulesRewritePaths(path)) {
           installRewriteLoader(rewritePath)
         }
 
@@ -627,7 +683,10 @@ export function createRuntimePlugin(input: CreateRuntimePluginOptions = {}): Bun
           return undefined
         }
 
-        if (!rewriteOptions.nodeModulesRuntimeSpecifiers || !analyzeSourcePath(path).needsRuntimeSpecifierRewrite) {
+        if (
+          !analysis.needsSourceTransform &&
+          (!rewriteOptions.nodeModulesRuntimeSpecifiers || !analysis.needsRuntimeSpecifierRewrite)
+        ) {
           return undefined
         }
 
