@@ -2019,6 +2019,41 @@ test("waitForThemeMode resolves with current theme mode when renderer is destroy
   await expect(themeModePromise).resolves.toBeNull()
 })
 
+test("late OSC 11 reply arriving after the query timeout still applies the theme mode", async () => {
+  const { renderer, queryThemeColorsCalls, clock } = await createThemeQueryRenderer()
+  const themeModes: string[] = []
+  renderer.on("theme_mode", (mode) => {
+    themeModes.push(mode)
+  })
+
+  // Establish an initial dark mode.
+  renderer.stdin.emit("data", Buffer.from("\x1b]10;#ffffff\x07"))
+  renderer.stdin.emit("data", Buffer.from("\x1b]11;#000000\x07"))
+  advanceClock(clock)
+  expect(renderer.themeMode).toBe("dark")
+
+  // Terminal reports a theme change. opentui re-queries OSC 10/11.
+  renderer.stdin.emit("data", Buffer.from("\x1b[?997;2n"))
+  advanceClock(clock, 249)
+  expect(queryThemeColorsCalls.count).toBe(1)
+
+  // Let the 250ms query timeout fire with no reply yet. Waiters stop waiting,
+  // but a delayed reply must still be honored rather than silently dropped.
+  advanceClock(clock, 1)
+  await flushMicrotasks()
+  expect(renderer.themeMode).toBe("dark")
+
+  // The terminal finally answers with a light background after the timeout.
+  renderer.stdin.emit("data", Buffer.from("\x1b]10;#000000\x07"))
+  renderer.stdin.emit("data", Buffer.from("\x1b]11;#ffffff\x07"))
+  advanceClock(clock)
+
+  expect(renderer.themeMode).toBe("light")
+  expect(themeModes).toEqual(["dark", "light"])
+
+  renderer.destroy()
+})
+
 test("pixel resolution response should not trigger keypress", async () => {
   const keypresses: KeyEvent[] = []
   currentRenderer.keyInput.on("keypress", (event) => {
