@@ -182,6 +182,8 @@ pub const OptimizedBuffer = struct {
         bg: []RGBA,
         attributes: []u32,
     },
+    /// Cells allocated in each array. Resize reuses the arrays while the cells fit within it.
+    capacity: u32,
     width: u32,
     height: u32,
     respectAlpha: bool,
@@ -254,6 +256,7 @@ pub const OptimizedBuffer = struct {
                 .bg = bg_buffer,
                 .attributes = attributes_buffer,
             },
+            .capacity = size,
             .width = width,
             .height = height,
             .respectAlpha = options.respectAlpha,
@@ -304,12 +307,16 @@ pub const OptimizedBuffer = struct {
         self.scissor_stack.deinit(self.allocator);
         self.link_tracker.deinit();
         self.grapheme_tracker.deinit();
-        self.allocator.free(self.buffer.char);
-        self.allocator.free(self.buffer.fg);
-        self.allocator.free(self.buffer.bg);
-        self.allocator.free(self.buffer.attributes);
+        self.freeCells();
         self.allocator.free(self.id);
         self.* = undefined;
+    }
+
+    fn freeCells(self: *OptimizedBuffer) void {
+        self.allocator.free(self.buffer.char.ptr[0..self.capacity]);
+        self.allocator.free(self.buffer.fg.ptr[0..self.capacity]);
+        self.allocator.free(self.buffer.bg.ptr[0..self.capacity]);
+        self.allocator.free(self.buffer.attributes.ptr[0..self.capacity]);
     }
 
     pub fn getCurrentScissorRect(self: *const OptimizedBuffer) ?ClipRect {
@@ -321,6 +328,14 @@ pub const OptimizedBuffer = struct {
         const scissor = self.getCurrentScissorRect() orelse return true;
         return x >= scissor.x and x < scissor.x + @as(i32, @intCast(scissor.width)) and
             y >= scissor.y and y < scissor.y + @as(i32, @intCast(scissor.height));
+    }
+
+    /// Reports whether a cell is inside the buffer and the active scissor. The bounds check runs
+    /// first because a u32 coordinate at or above 2^31 does not fit in the signed scissor
+    /// coordinates.
+    fn isCellInBufferAndScissor(self: *const OptimizedBuffer, x: u32, y: u32) bool {
+        if (x >= self.width or y >= self.height) return false;
+        return self.isPointInScissor(@intCast(x), @intCast(y));
     }
 
     pub fn isRectInScissor(self: *const OptimizedBuffer, x: i32, y: i32, width: u32, height: u32) bool {
@@ -427,17 +442,34 @@ pub const OptimizedBuffer = struct {
         if (width == 0 or height == 0) return BufferError.InvalidDimensions;
 
         const size = width * height;
-
-        self.buffer.char = self.allocator.realloc(self.buffer.char, size) catch return BufferError.OutOfMemory;
-        self.buffer.fg = self.allocator.realloc(self.buffer.fg, size) catch return BufferError.OutOfMemory;
-        self.buffer.bg = self.allocator.realloc(self.buffer.bg, size) catch return BufferError.OutOfMemory;
-        self.buffer.attributes = self.allocator.realloc(self.buffer.attributes, size) catch return BufferError.OutOfMemory;
-
+        if (size > self.capacity or self.capacity > size +| size / 2) {
+            // Growing past the capacity reserves half of it again, so a buffer that grows a row at a
+            // time or alternates sizes reallocates rarely. A larger jump or a shrink takes the exact
+            // cells. Either way capacity stays within half again the cells. Every array is allocated
+            // before any is freed, so a failed resize leaves the buffer unchanged.
+            const capacity = if (size > self.capacity) @max(size, self.capacity +| self.capacity / 2) else size;
+            const chars = self.allocator.alloc(u32, capacity) catch return BufferError.OutOfMemory;
+            errdefer self.allocator.free(chars);
+            const fg = self.allocator.alloc(RGBA, capacity) catch return BufferError.OutOfMemory;
+            errdefer self.allocator.free(fg);
+            const bg = self.allocator.alloc(RGBA, capacity) catch return BufferError.OutOfMemory;
+            errdefer self.allocator.free(bg);
+            const attributes = self.allocator.alloc(u32, capacity) catch return BufferError.OutOfMemory;
+            self.freeCells();
+            self.buffer = .{ .char = chars, .fg = fg, .bg = bg, .attributes = attributes };
+            self.capacity = capacity;
+        }
+        self.buffer = .{
+            .char = self.buffer.char.ptr[0..size],
+            .fg = self.buffer.fg.ptr[0..size],
+            .bg = self.buffer.bg.ptr[0..size],
+            .attributes = self.buffer.attributes.ptr[0..size],
+        };
         self.width = width;
         self.height = height;
 
-        // Always clear after resize to initialize cells (realloc doesn't zero memory)
-        // This handles both growing (new cells are garbage) and shrinking (grapheme cleanup)
+        // Reused and new arrays hold stale or undefined cells. Clearing initializes every cell and
+        // releases the grapheme and link references of the old cells.
         self.clear(ansi.rgbColor(0, 0, 0, 255), null);
     }
 
@@ -628,8 +660,7 @@ pub const OptimizedBuffer = struct {
 
     /// Validate coordinates and return buffer index, or null if out of bounds / scissor.
     fn validateAndIndex(self: *OptimizedBuffer, x: u32, y: u32) ?u32 {
-        if (x >= self.width or y >= self.height) return null;
-        if (!self.isPointInScissor(@intCast(x), @intCast(y))) return null;
+        if (!self.isCellInBufferAndScissor(x, y)) return null;
         return self.coordsToIndex(x, y);
     }
 
@@ -903,7 +934,7 @@ pub const OptimizedBuffer = struct {
     }
 
     inline fn setCellWithAlphaBlendingCellWithoutImages(self: *OptimizedBuffer, x: u32, y: u32, cell: Cell) void {
-        if (!self.isPointInScissor(@intCast(x), @intCast(y))) return;
+        if (!self.isCellInBufferAndScissor(x, y)) return;
         const opacity = self.getCurrentOpacity();
         if (isFullyTransparent(opacity, cell.fg, cell.bg)) return;
         if (isFullyOpaque(opacity, cell.fg, cell.bg)) {
@@ -922,7 +953,7 @@ pub const OptimizedBuffer = struct {
     }
 
     inline fn setVisibleCellWithAlphaBlending(self: *OptimizedBuffer, x: u32, y: u32, cell: Cell, opacity: f32, fully_transparent: bool) void {
-        if (!self.isPointInScissor(@intCast(x), @intCast(y))) return;
+        if (!self.isCellInBufferAndScissor(x, y)) return;
         if (isFullyOpaque(opacity, cell.fg, cell.bg)) {
             self.set(x, y, cell);
             return;
@@ -958,7 +989,7 @@ pub const OptimizedBuffer = struct {
     }
 
     fn setCellWithAlphaBlendingRawCell(self: *OptimizedBuffer, x: u32, y: u32, cell: Cell) void {
-        if (!self.isPointInScissor(@intCast(x), @intCast(y))) return;
+        if (!self.isCellInBufferAndScissor(x, y)) return;
 
         const opacity = self.getCurrentOpacity();
         if (opacity == 0.0) return;
@@ -1181,7 +1212,8 @@ pub const OptimizedBuffer = struct {
         }
     }
 
-    fn fillRectClipped(
+    /// Fills the part of a rectangle at a signed position that is inside the buffer.
+    pub fn fillRectClipped(
         self: *OptimizedBuffer,
         x: i32,
         y: i32,
@@ -1189,20 +1221,19 @@ pub const OptimizedBuffer = struct {
         height: u32,
         bg: RGBA,
     ) void {
-        if (width == 0 or height == 0) return;
+        // i64 holds any i32 position plus any u32 extent.
+        const start_x = @max(0, @as(i64, x));
+        const start_y = @max(0, @as(i64, y));
+        const end_x = @min(@as(i64, self.width), @as(i64, x) + width);
+        const end_y = @min(@as(i64, self.height), @as(i64, y) + height);
 
-        const startX = @max(0, x);
-        const startY = @max(0, y);
-        const endX = @min(@as(i32, @intCast(self.width)) - 1, x + @as(i32, @intCast(width)) - 1);
-        const endY = @min(@as(i32, @intCast(self.height)) - 1, y + @as(i32, @intCast(height)) - 1);
-
-        if (startX > endX or startY > endY) return;
+        if (start_x >= end_x or start_y >= end_y) return;
 
         self.fillRect(
-            @intCast(startX),
-            @intCast(startY),
-            @intCast(endX - startX + 1),
-            @intCast(endY - startY + 1),
+            @intCast(start_x),
+            @intCast(start_y),
+            @intCast(end_x - start_x),
+            @intCast(end_y - start_y),
             bg,
         );
     }
@@ -1228,9 +1259,24 @@ pub const OptimizedBuffer = struct {
         bg: ?RGBA,
         attributes: u32,
     ) BufferError!void {
+        if (x >= self.width or y >= self.height) return;
+        return self.drawTextClipped(text, @intCast(x), @intCast(y), fg, bg, attributes);
+    }
+
+    /// Draws the part of a text at a signed position that is inside the buffer.
+    pub inline fn drawTextClipped(
+        self: *OptimizedBuffer,
+        text: []const u8,
+        x: i32,
+        y: i32,
+        fg: RGBA,
+        bg: ?RGBA,
+        attributes: u32,
+    ) BufferError!void {
+        if (y < 0) return;
         const opacity = self.getCurrentOpacity();
         if (isFullyTransparent(opacity, fg, bg orelse ansi.rgbColor(0, 0, 0, 0)) and (opacity == 0.0 or self.image_placements.items.len == 0)) return;
-        return self.drawVisibleText(text, x, y, fg, bg, attributes);
+        return self.drawVisibleText(text, x, @intCast(y), fg, bg, attributes);
     }
 
     /// Draw one already-segmented grapheme with an authoritative terminal-cell width.
@@ -1262,7 +1308,7 @@ pub const OptimizedBuffer = struct {
     fn drawVisibleText(
         self: *OptimizedBuffer,
         text: []const u8,
-        x: u32,
+        x: i32,
         y: u32,
         fg: RGBA,
         bg: ?RGBA,
@@ -1286,10 +1332,13 @@ pub const OptimizedBuffer = struct {
             }
             if (printable) {
                 const background = bg.?;
-                for (text, 0..) |byte, offset| {
-                    const char_x = x + @as(u32, @intCast(offset));
+                // Each printable ASCII byte is one cell, so the bytes left of column 0 are clipped.
+                const clipped_byte_count: usize = if (x < 0) @min(text.len, @abs(x)) else 0;
+                var char_x: u32 = @intCast(@max(x, 0));
+                for (text[clipped_byte_count..]) |byte| {
                     if (char_x >= self.width) break;
                     self.set(char_x, y, makeCell(byte, fg, background, attributes));
+                    char_x += 1;
                 }
                 return;
             }
@@ -1308,8 +1357,11 @@ pub const OptimizedBuffer = struct {
         var special_idx: usize = 0;
 
         text_loop: while (byte_offset < text.len) {
-            const charX = x + advance_cells;
-            if (charX >= self.width) break;
+            const char_x_wide = @as(i64, x) + advance_cells;
+            if (char_x_wide >= self.width) break;
+            const char_x: i32 = @intCast(char_x_wide);
+            // Only a tab is drawn from a column left of 0; it clips each of its cells.
+            const cell_x: u32 = @intCast(@max(char_x, 0));
 
             const at_special = special_idx < render_clusters.len and render_clusters[special_idx].col_start == col;
 
@@ -1330,7 +1382,15 @@ pub const OptimizedBuffer = struct {
             }
 
             const is_tab = grapheme_bytes.len == 1 and grapheme_bytes[0] == '\t';
-            if (!is_tab and !self.isPointInScissor(@intCast(charX), @intCast(y))) {
+            const cluster_byte_start = if (at_special) render_clusters[special_idx - 1].byte_start else byte_offset - 1;
+            if (!is_tab and char_x < 0) {
+                // Clip a glyph that starts left of column 0, even a wide glyph that reaches column 0.
+                // Advance as a drawn glyph does, so the visible glyphs keep their columns.
+                advance_cells += utf8.getWidthAt(text, cluster_byte_start, tab_width, self.width_method);
+                col += cluster_width_cols;
+                continue;
+            }
+            if (!is_tab and !self.isPointInScissor(char_x, @intCast(y))) {
                 advance_cells += cluster_width_cols;
                 col += cluster_width_cols;
                 continue;
@@ -1339,25 +1399,25 @@ pub const OptimizedBuffer = struct {
             var bgColor: RGBA = undefined;
             if (bg) |b| {
                 bgColor = b;
-            } else if (self.get(charX, y)) |existingCell| {
+            } else if (self.get(cell_x, y)) |existingCell| {
                 bgColor = existingCell.bg;
             } else {
                 bgColor = ansi.rgbColor(0, 0, 0, 255);
             }
 
-            const cell_width = utf8.getWidthAt(text, if (at_special) render_clusters[special_idx - 1].byte_start else byte_offset - 1, tab_width, self.width_method);
+            const cell_width = utf8.getWidthAt(text, cluster_byte_start, tab_width, self.width_method);
             if (cell_width == 0) {
                 col += cluster_width_cols;
                 continue;
             }
             if (cell_width > 1 and !is_tab) {
-                if (charX + cell_width > self.width) {
+                if (cell_x + cell_width > self.width) {
                     advance_cells += cluster_width_cols;
                     col += cluster_width_cols;
                     continue;
                 }
                 for (1..cell_width) |span_offset| {
-                    if (!self.isPointInScissor(@intCast(charX + @as(u32, @intCast(span_offset))), @intCast(y))) {
+                    if (!self.isPointInScissor(char_x + @as(i32, @intCast(span_offset)), @intCast(y))) {
                         advance_cells += cluster_width_cols;
                         col += cluster_width_cols;
                         continue :text_loop;
@@ -1368,12 +1428,14 @@ pub const OptimizedBuffer = struct {
             if (is_tab) {
                 var tab_col: u32 = 0;
                 while (tab_col < cluster_width_cols) : (tab_col += 1) {
-                    const tab_x = charX + tab_col;
+                    const tab_x = @as(i64, char_x) + tab_col;
+                    if (tab_x < 0) continue;
                     if (tab_x >= self.width) break;
                     if (!self.isPointInScissor(@intCast(tab_x), @intCast(y))) continue;
 
+                    const tab_cell_x: u32 = @intCast(tab_x);
                     const cell = makeCell(DEFAULT_SPACE_CHAR, fg, bgColor, attributes);
-                    if (explicit_colors_opaque) self.set(tab_x, y, cell) else self.setTextCell(tab_x, y, cell);
+                    if (explicit_colors_opaque) self.set(tab_cell_x, y, cell) else self.setTextCell(tab_cell_x, y, cell);
                 }
                 advance_cells += cluster_width_cols;
                 col += cluster_width_cols;
@@ -1389,7 +1451,7 @@ pub const OptimizedBuffer = struct {
             }
 
             const cell = makeCell(encoded_char, fg, bgColor, attributes);
-            if (explicit_colors_opaque) self.set(charX, y, cell) else self.setTextCell(charX, y, cell);
+            if (explicit_colors_opaque) self.set(cell_x, y, cell) else self.setTextCell(cell_x, y, cell);
 
             advance_cells += cell_width;
             col += cluster_width_cols;
@@ -2714,8 +2776,8 @@ pub const OptimizedBuffer = struct {
     /// alignedBytesPerRow: The number of bytes per row in the pixelData buffer, considering alignment/padding.
     pub fn drawSuperSampleBuffer(
         self: *OptimizedBuffer,
-        posX: u32,
-        posY: u32,
+        posX: i32,
+        posY: i32,
         pixelData: [*]const u8,
         len: usize,
         format: u8, // 0: bgra8unorm, 1: rgba8unorm
@@ -2726,23 +2788,29 @@ pub const OptimizedBuffer = struct {
 
         // TODO: A more robust implementation might take source width/height explicitly.
 
-        var y_cell = posY;
+        // Start at the first cell inside the buffer. A negative position clips the source.
+        var y_cell: u32 = @intCast(@max(posY, 0));
         while (y_cell < self.height) : (y_cell += 1) {
-            var x_cell = posX;
+            var x_cell: u32 = @intCast(@max(posX, 0));
             while (x_cell < self.width) : (x_cell += 1) {
                 if (!self.isPointInScissor(@intCast(x_cell), @intCast(y_cell))) {
                     continue;
                 }
 
-                const renderX: u32 = (x_cell - posX) * 2;
-                const renderY: u32 = (y_cell - posY) * 2;
+                const renderX: u64 = @intCast((@as(i64, x_cell) - posX) * 2);
+                const renderY: u64 = @intCast((@as(i64, y_cell) - posY) * 2);
 
-                const tlIndex: usize = @intCast(renderY * alignedBytesPerRow + renderX * bytesPerPixel);
-                const trIndex: usize = tlIndex + bytesPerPixel;
-                const blIndex: usize = @intCast((renderY + 1) * alignedBytesPerRow + renderX * bytesPerPixel);
-                const brIndex: usize = blIndex + bytesPerPixel;
+                // A far negative position puts these indices past the pixel data. Saturate and clamp
+                // them to len, which getPixelColor reads as an out-of-bounds pixel.
+                const tlIndex = renderY *| alignedBytesPerRow +| renderX *| bytesPerPixel;
+                const blIndex = (renderY + 1) *| alignedBytesPerRow +| renderX *| bytesPerPixel;
 
-                const indices = [_]usize{ tlIndex, trIndex, blIndex, brIndex };
+                const indices = [_]usize{
+                    @intCast(@min(tlIndex, len)),
+                    @intCast(@min(tlIndex +| bytesPerPixel, len)),
+                    @intCast(@min(blIndex, len)),
+                    @intCast(@min(blIndex +| bytesPerPixel, len)),
+                };
 
                 // Get RGBA colors for TL, TR, BL, BR
                 var pixelsRgba: [4]RGBA = undefined;
@@ -2772,22 +2840,24 @@ pub const OptimizedBuffer = struct {
         self: *OptimizedBuffer,
         data: [*]const u8,
         dataLen: usize,
-        posX: u32,
-        posY: u32,
+        posX: i32,
+        posY: i32,
         terminalWidthCells: u32,
         terminalHeightCells: u32,
     ) void {
         const cellResultSize = 48;
         const numCells = dataLen / cellResultSize;
         const bufferWidthCells = terminalWidthCells;
+        if (bufferWidthCells == 0) return;
 
         var i: usize = 0;
         while (i < numCells) : (i += 1) {
             const cellDataOffset = i * cellResultSize;
 
-            const cellX = posX + @as(u32, @intCast(i % bufferWidthCells));
-            const cellY = posY + @as(u32, @intCast(i / bufferWidthCells));
+            const cellX = @as(i64, posX) + @as(i64, @intCast(i % bufferWidthCells));
+            const cellY = @as(i64, posY) + @as(i64, @intCast(i / bufferWidthCells));
 
+            if (cellX < 0 or cellY < 0) continue;
             if (cellX >= terminalWidthCells or cellY >= terminalHeightCells) continue;
             if (cellX >= self.width or cellY >= self.height) continue;
 
@@ -2810,7 +2880,7 @@ pub const OptimizedBuffer = struct {
                 char = BLOCK_CHAR;
             }
 
-            self.setCellWithAlphaBlending(cellX, cellY, char, fg, bg, 0);
+            self.setCellWithAlphaBlending(@intCast(cellX), @intCast(cellY), char, fg, bg, 0);
         }
     }
 

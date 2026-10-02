@@ -453,7 +453,7 @@ test "renderer does not send forced Sixel to Apple Terminal" {
     try std.testing.expect(std.mem.find(u8, output, "█") != null);
 }
 
-test "renderer does not send forced Sixel through tmux XTVERSION" {
+test "renderer honors forced Sixel through tmux independently of tmux DA" {
     const pool = gp.initGlobalPool(std.testing.allocator);
     defer gp.deinitGlobalPool();
     defer link.deinitGlobalLinkPool();
@@ -469,13 +469,30 @@ test "renderer does not send forced Sixel through tmux XTVERSION" {
         handles.finishDestroy(token.handle);
     }
     test_renderer.renderer.terminal.processCapabilityResponse("\x1bP>|tmux 3.5a\x1b\\");
+    test_renderer.renderer.terminal.processCapabilityResponse("\x1b[?62;4c");
 
     try std.testing.expect(try test_renderer.renderer.getNextBuffer().drawImage(value, image_handle, 0, 0, 1, 1, 2, 2, 0, 0, 1, 1, .sixel));
     try std.testing.expectEqual(renderer.RenderStatus.rendered, test_renderer.renderer.render(true));
     const output = test_renderer.memory.lastWrite();
-    try std.testing.expect(std.mem.find(u8, output, "\x1bP0;1;0q") == null);
-    try std.testing.expect(std.mem.find(u8, output, "\x1bPtmux;") == null);
-    try std.testing.expect(std.mem.find(u8, output, "█") != null);
+    try std.testing.expect(std.mem.find(u8, output, "\x1bPtmux;") != null);
+    try std.testing.expect(std.mem.find(u8, output, "\x1b\x1bP0;1;0q") != null);
+}
+
+test "renderer enables focus tracking after late tmux detection without passthrough probes" {
+    const pool = gp.initGlobalPool(std.testing.allocator);
+    defer gp.deinitGlobalPool();
+    defer link.deinitGlobalLinkPool();
+    var test_renderer = try TestRenderer.create(std.testing.allocator, 4, 2, pool);
+    defer test_renderer.deinit();
+
+    var writer = DiscardTerminalWriter{};
+    try test_renderer.renderer.terminal.queryTerminalSend(&writer);
+    // tmux before 3.6 answers XTVERSION but not DECRQM.
+    test_renderer.renderer.processCapabilityResponse("\x1bP>|tmux 3.5a\x1b\\");
+
+    const output = test_renderer.memory.lastWrite();
+    try std.testing.expect(std.mem.find(u8, output, ansi.ANSI.focusSet) != null);
+    try std.testing.expect(std.mem.find(u8, output, ansi.ANSI.tmuxDcsStart) == null);
 }
 
 test "renderer does not send forced Sixel to Kitty" {

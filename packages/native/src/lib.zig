@@ -1797,9 +1797,9 @@ export fn bufferWriteResolvedChars(buffer_handle: NativeHandle, outputPtr: ?[*]u
     return object_ptr.writeResolvedChars(output_slice, addLineBreaks) catch 0;
 }
 
-export fn bufferDrawText(buffer_handle: NativeHandle, text: ?[*]const u8, textLen: u32, x: u32, y: u32, fg: [*]const u16, bg: ?[*]const u16, attributes: u32) void {
+export fn bufferDrawText(buffer_handle: NativeHandle, text: ?[*]const u8, textLen: u32, x: i32, y: i32, fg: [*]const u16, bg: ?[*]const u16, attributes: u32) void {
     const object_ptr = acquireBuffer(buffer_handle) orelse return;
-    object_ptr.drawText(
+    object_ptr.drawTextClipped(
         sliceFromPtrLen(text, textLen),
         x,
         y,
@@ -1809,14 +1809,16 @@ export fn bufferDrawText(buffer_handle: NativeHandle, text: ?[*]const u8, textLe
     ) catch {};
 }
 
-export fn bufferSetCellWithAlphaBlending(buffer_handle: NativeHandle, x: u32, y: u32, char: u32, fg: [*]const u16, bg: [*]const u16, attributes: u32) void {
+export fn bufferSetCellWithAlphaBlending(buffer_handle: NativeHandle, x: i32, y: i32, char: u32, fg: [*]const u16, bg: [*]const u16, attributes: u32) void {
     const object_ptr = acquireBuffer(buffer_handle) orelse return;
-    object_ptr.setCellWithAlphaBlending(x, y, char, ptrToRGBA(fg), ptrToRGBA(bg), attributes);
+    if (x < 0 or y < 0) return;
+    object_ptr.setCellWithAlphaBlending(@intCast(x), @intCast(y), char, ptrToRGBA(fg), ptrToRGBA(bg), attributes);
 }
 
-export fn bufferSetCell(buffer_handle: NativeHandle, x: u32, y: u32, char: u32, fg: [*]const u16, bg: [*]const u16, attributes: u32) void {
+export fn bufferSetCell(buffer_handle: NativeHandle, x: i32, y: i32, char: u32, fg: [*]const u16, bg: [*]const u16, attributes: u32) void {
     const object_ptr = acquireBuffer(buffer_handle) orelse return;
-    object_ptr.set(x, y, .{
+    if (x < 0 or y < 0) return;
+    object_ptr.set(@intCast(x), @intCast(y), .{
         .char = char,
         .fg = ptrToRGBA(fg),
         .bg = ptrToRGBA(bg),
@@ -1824,9 +1826,9 @@ export fn bufferSetCell(buffer_handle: NativeHandle, x: u32, y: u32, char: u32, 
     });
 }
 
-export fn bufferFillRect(buffer_handle: NativeHandle, x: u32, y: u32, width: u32, height: u32, bg: [*]const u16) void {
+export fn bufferFillRect(buffer_handle: NativeHandle, x: i32, y: i32, width: u32, height: u32, bg: [*]const u16) void {
     const object_ptr = acquireBuffer(buffer_handle) orelse return;
-    object_ptr.fillRect(x, y, width, height, ptrToRGBA(bg));
+    object_ptr.fillRectClipped(x, y, width, height, ptrToRGBA(bg));
 }
 
 export fn bufferColorMatrix(buffer_handle: NativeHandle, matrixPtr: [*]const f32, cellMaskPtr: [*]const f32, cellMaskCount: u32, strength: f32, target: u8) void {
@@ -1846,7 +1848,7 @@ export fn bufferColorMatrixUniform(buffer_handle: NativeHandle, matrixPtr: [*]co
     buffer_effects.colorMatrixUniform(object_ptr, matrix, strength, targetEnum);
 }
 
-export fn bufferDrawPackedBuffer(buffer_handle: NativeHandle, data: [*]const u8, dataLen: u32, posX: u32, posY: u32, terminalWidthCells: u32, terminalHeightCells: u32) void {
+export fn bufferDrawPackedBuffer(buffer_handle: NativeHandle, data: [*]const u8, dataLen: u32, posX: i32, posY: i32, terminalWidthCells: u32, terminalHeightCells: u32) void {
     const object_ptr = acquireBuffer(buffer_handle) orelse return;
     object_ptr.drawPackedBuffer(data, dataLen, posX, posY, terminalWidthCells, terminalHeightCells);
 }
@@ -1913,7 +1915,7 @@ export fn bufferClearOpacity(buffer_handle: NativeHandle) void {
     object_ptr.clearOpacity();
 }
 
-export fn bufferDrawSuperSampleBuffer(buffer_handle: NativeHandle, x: u32, y: u32, pixelData: [*]const u8, len: u32, format: u8, alignedBytesPerRow: u32) void {
+export fn bufferDrawSuperSampleBuffer(buffer_handle: NativeHandle, x: i32, y: i32, pixelData: [*]const u8, len: u32, format: u8, alignedBytesPerRow: u32) void {
     const object_ptr = acquireBuffer(buffer_handle) orelse return;
     object_ptr.drawSuperSampleBuffer(x, y, pixelData, len, format, alignedBytesPerRow);
 }
@@ -4012,12 +4014,13 @@ export fn freeUnicode(charsPtr: ?[*]const EncodedChar, charsLen: u32) void {
 export fn bufferDrawChar(
     buffer_handle: NativeHandle,
     char: u32,
-    x: u32,
-    y: u32,
+    x: i32,
+    y: i32,
     fg: [*]const u16,
     bg: [*]const u16,
     attributes: u32,
 ) void {
     const object_ptr = acquireBuffer(buffer_handle) orelse return;
-    object_ptr.drawChar(char, x, y, ptrToRGBA(fg), ptrToRGBA(bg), attributes);
+    if (x < 0 or y < 0) return;
+    object_ptr.drawChar(char, @intCast(x), @intCast(y), ptrToRGBA(fg), ptrToRGBA(bg), attributes);
 }

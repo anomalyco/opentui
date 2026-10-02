@@ -3417,10 +3417,6 @@ pub const CliRenderer = struct {
     pub fn processCapabilityResponse(self: *CliRenderer, response: []const u8) void {
         self.terminal.processCapabilityResponse(response);
         var writer: std.Io.Writer = .fixed(&self.writeOutBuf);
-        _ = self.terminal.sendPendingQueries(&writer) catch |err| blk: {
-            logger.warn("Failed to send pending queries: {}", .{err});
-            break :blk false;
-        };
         const useKitty = self.terminal.opts.kitty_keyboard_flags > 0;
         self.terminal.enableDetectedFeatures(&writer, useKitty) catch {};
         self.writeOut(writer.buffered());

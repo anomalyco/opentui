@@ -24,7 +24,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [blacksmith-8vcpu-ubuntu-2404, blacksmith-8vcpu-windows-2025]
+        os: [blacksmith-8vcpu-ubuntu-2404]
     runs-on: ${{ matrix.os }}
     defaults:
       run:
@@ -41,9 +41,9 @@ jobs:
       - name: Install dependencies
         run: bun install
 
-      - name: Restore native bottle
+      - name: Restore native host bottle
         id: bottle
-        uses: ./.github/actions/restore-native-bottle
+        uses: ./.github/actions/restore-native-host-bottle
         with:
           zig-version: ${{ env.ZIG_VERSION }}
 
@@ -53,14 +53,6 @@ jobs:
         with:
           version: ${{ env.ZIG_VERSION }}
           use-cache: false
-
-      - name: Restore Zig cache
-        if: steps.bottle.outputs.cache-hit != 'true' && runner.os != 'Windows'
-        uses: actions/cache@v5
-        with:
-          path: packages/native/.zig-cache
-          key: zig-v1-${{ runner.os }}-${{ env.ZIG_VERSION }}-${{ github.run_id }}-${{ github.job }}
-          restore-keys: zig-v1-${{ runner.os }}-${{ env.ZIG_VERSION }}-
 
       - name: Build core
         run: bun scripts/native-bottle.ts package --hit "${{ steps.bottle.outputs.cache-hit }}" --zig "${{ env.ZIG_VERSION }}" --skip-symbols --lib
@@ -109,9 +101,9 @@ jobs:
       - name: Install dependencies
         run: bun install
 
-      - name: Restore native bottle
+      - name: Restore native host bottle
         id: bottle
-        uses: ./.github/actions/restore-native-bottle
+        uses: ./.github/actions/restore-native-host-bottle
         with:
           zig-version: ${{ env.ZIG_VERSION }}
 
@@ -121,14 +113,6 @@ jobs:
         with:
           version: ${{ env.ZIG_VERSION }}
           use-cache: false
-
-      - name: Restore Zig cache
-        if: steps.bottle.outputs.cache-hit != 'true'
-        uses: actions/cache@v5
-        with:
-          path: packages/native/.zig-cache
-          key: zig-v1-${{ runner.os }}-${{ env.ZIG_VERSION }}-${{ github.run_id }}-${{ github.job }}
-          restore-keys: zig-v1-${{ runner.os }}-${{ env.ZIG_VERSION }}-
 
       - name: Build core
         run: bun scripts/native-bottle.ts package --hit "${{ steps.bottle.outputs.cache-hit }}" --zig "${{ env.ZIG_VERSION }}" --skip-symbols --lib

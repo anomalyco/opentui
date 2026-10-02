@@ -1,6 +1,6 @@
 {
   "name": "@opentui/react",
-  "version": "0.5.12",
+  "version": "0.5.14",
   "description": "React renderer for building terminal user interfaces using OpenTUI core",
   "license": "MIT",
   "repository": {
@@ -42,7 +42,7 @@
     "build": "bun run scripts/build.ts",
     "build:examples": "bun examples/build.ts",
     "build:dev": "bun run scripts/build.ts --dev",
-    "publish": "bun run scripts/publish.ts",
+    "publish": "bun ../../scripts/npm-publish.ts publish @opentui/react",
     "test": "bun test"
   },
   "devDependencies": {

@@ -9,7 +9,7 @@
   "types": "src/index.ts",
   "module": "src/index.ts",
   "main": "src/index.ts",
-  "version": "0.5.12",
+  "version": "0.5.14",
   "type": "module",
   "imports": {
     "#opentui/runtime-assets": {
@@ -47,7 +47,7 @@
     "bench:text-table": "bun src/benchmark/text-table-benchmark.ts",
     "bench:text-table-width": "bun src/benchmark/text-table-width-benchmark.ts",
     "bench:ts": "bun src/benchmark/native-span-feed-benchmark.ts --suite=quick --json=src/benchmark/latest-quick-bench-run.json && bun src/benchmark/native-span-feed-benchmark.ts --suite=default --json=src/benchmark/latest-default-bench-run.json && bun src/benchmark/native-span-feed-benchmark.ts --suite=large --json=src/benchmark/latest-large-bench-run.json && bun src/benchmark/native-span-feed-benchmark.ts --suite=all --json=src/benchmark/latest-all-bench-run.json && bun src/benchmark/native-span-feed-async-benchmark.ts --json=src/benchmark/latest-async-bench-run.json",
-    "publish": "bun scripts/publish.ts",
+    "publish": "bun ../../scripts/npm-publish.ts publish @opentui/core",
     "test:dist": "bun scripts/dist-test.ts",
     "test:standalone": "bun scripts/standalone-test.ts",
     "test:js": "bun test --path-ignore-patterns='src/zig/zig-pkg/**'",
@@ -75,14 +75,14 @@
     "web-tree-sitter": "0.25.10"
   },
   "optionalDependencies": {
-    "@opentui/core-darwin-x64": "0.5.12",
-    "@opentui/core-darwin-arm64": "0.5.12",
-    "@opentui/core-linux-x64": "0.5.12",
-    "@opentui/core-linux-arm64": "0.5.12",
-    "@opentui/core-win32-x64": "0.5.12",
-    "@opentui/core-win32-arm64": "0.5.12",
-    "@opentui/core-linux-x64-musl": "0.5.12",
-    "@opentui/core-linux-arm64-musl": "0.5.12"
+    "@opentui/core-darwin-x64": "0.5.14",
+    "@opentui/core-darwin-arm64": "0.5.14",
+    "@opentui/core-linux-x64": "0.5.14",
+    "@opentui/core-linux-arm64": "0.5.14",
+    "@opentui/core-win32-x64": "0.5.14",
+    "@opentui/core-win32-arm64": "0.5.14",
+    "@opentui/core-linux-x64-musl": "0.5.14",
+    "@opentui/core-linux-arm64-musl": "0.5.14"
   },
   "exports": {
     ".": {

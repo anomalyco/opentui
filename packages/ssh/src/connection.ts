@@ -145,6 +145,9 @@ export function createConnectionHandler(dependencies: ConnectionDependencies): {
       clients.delete(client)
     })
     client.on("error", (err: Error) => safe.report(err))
+    // Nagle would hold a frame's later packets until the client's delayed ACK. Set it
+    // after the close/error handlers so a failure takes the normal cleanup path.
+    void safe(() => client.setNoDelay(true))
   }
 
   const closeAll = async () => {

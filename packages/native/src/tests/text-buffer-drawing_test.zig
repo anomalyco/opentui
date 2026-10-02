@@ -1689,6 +1689,39 @@ test "loadFile - loads and renders file correctly" {
     try std.testing.expect(std.mem.startsWith(u8, render_result, "ABC"));
 }
 
+test "loadFile - registered file content survives text replacement" {
+    const pool = gp.initGlobalPool(std.testing.allocator);
+    defer gp.deinitGlobalPool();
+    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
+    defer link.deinitGlobalLinkPool();
+
+    var tb = try TextBuffer.init(std.testing.allocator, pool, link_pool, .unicode);
+    defer tb.deinit();
+
+    const test_content = "ABC\nDEF";
+    const tmpdir = std.testing.tmpDir(.{});
+    var tmp = tmpdir;
+    defer tmp.cleanup();
+
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "test.txt", .data = test_content });
+    const file_path = try tmp.dir.realPathFileAlloc(std.testing.io, "test.txt", std.testing.allocator);
+    defer std.testing.allocator.free(file_path);
+
+    // Two replacements settle the rope arena into one block that later resets reuse.
+    const other_mem_id = try tb.registerMemBuffer("other line\n" ** 64, false);
+    try tb.setTextFromMemId(other_mem_id);
+    try tb.setTextFromMemId(other_mem_id);
+
+    try tb.loadFile(file_path);
+    const file_mem_id = other_mem_id + 1;
+    try tb.setTextFromMemId(other_mem_id);
+    try std.testing.expectEqualStrings(test_content, tb.getMemBuffer(file_mem_id).?);
+
+    try tb.setTextFromMemId(file_mem_id);
+    var out_buffer: [16]u8 = undefined;
+    try std.testing.expectEqualStrings(test_content, out_buffer[0..tb.getPlainTextIntoBuffer(&out_buffer)]);
+}
+
 test "drawTextBuffer - horizontal viewport offset renders correctly without wrapping" {
     const pool = gp.initGlobalPool(std.testing.allocator);
     defer gp.deinitGlobalPool();

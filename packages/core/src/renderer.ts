@@ -866,6 +866,7 @@ export class CliRenderer extends EventEmitter implements RenderContext {
   private animationRequest: Map<number, FrameRequestCallback> = new Map()
 
   private resizeTimeoutId: TimerHandle | null = null
+  private pendingResizeSawDifferentSize = false
   private capabilityTimeoutId: TimerHandle | null = null
   private kittyTransportTimer: TimerHandle | null = null
   private kittyTransportMode: KittyImageTransport
@@ -1445,14 +1446,15 @@ export class CliRenderer extends EventEmitter implements RenderContext {
   }
 
   public addToHitGrid(x: number, y: number, width: number, height: number, id: number) {
-    if (!this._useMouse) return
+    if (!this._useMouse || width <= 0 || height <= 0) return
     if (id !== this.capturedRenderable?.num) {
       this.lib.addToHitGrid(this.rendererPtr, x, y, width, height, id)
     }
   }
 
   public pushHitGridScissorRect(x: number, y: number, width: number, height: number): void {
-    this.lib.hitGridPushScissorRect(this.rendererPtr, x, y, width, height)
+    // A non-positive extent is an empty clip rect. Push it anyway so the matching pop stays balanced.
+    this.lib.hitGridPushScissorRect(this.rendererPtr, x, y, Math.max(0, width), Math.max(0, height))
   }
 
   public popHitGridScissorRect(): void {
@@ -3931,20 +3933,28 @@ export class CliRenderer extends EventEmitter implements RenderContext {
 
   private handleResize(width: number, height: number): void {
     if (this._isDestroyed) return
-    if (this._splitHeight > 0) {
-      this.processResize(width, height)
-      return
-    }
+    if (width !== this._terminalWidth || height !== this._terminalHeight) this.pendingResizeSawDifferentSize = true
 
     if (this.resizeTimeoutId !== null) {
       this.clock.clearTimeout(this.resizeTimeoutId)
       this.resizeTimeoutId = null
     }
 
+    if (this._splitHeight > 0) {
+      this.applyPendingResize(width, height)
+      return
+    }
+
     this.resizeTimeoutId = this.clock.setTimeout(() => {
       this.resizeTimeoutId = null
-      this.processResize(width, height)
+      this.applyPendingResize(width, height)
     }, this.resizeDebounceDelay)
+  }
+
+  private applyPendingResize(width: number, height: number): void {
+    const sawDifferentSize = this.pendingResizeSawDifferentSize
+    this.pendingResizeSawDifferentSize = false
+    this.processResize(width, height, sawDifferentSize)
   }
 
   private queryPixelResolution() {
@@ -3956,8 +3966,15 @@ export class CliRenderer extends EventEmitter implements RenderContext {
     this.lib.queryPixelResolution(this.rendererPtr)
   }
 
-  private processResize(width: number, height: number): void {
-    if (width === this._terminalWidth && height === this._terminalHeight) return
+  private processResize(width: number, height: number, repaintIfUnchanged = false): void {
+    if (width === this._terminalWidth && height === this._terminalHeight) {
+      if (repaintIfUnchanged) {
+        // The terminal may have cleared or reflowed its cells during the skipped intermediate resize.
+        this.forceFullRepaintRequested = true
+        this.requestRender()
+      }
+      return
+    }
 
     if (
       this._terminalIsSetup &&

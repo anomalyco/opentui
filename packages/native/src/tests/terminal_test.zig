@@ -192,6 +192,32 @@ test "graphics identity - multiplexers do not imply outer graphics" {
     try testing.expect(!zellij.caps.sixel);
 }
 
+test "graphics detection - tmux ignores unowned Kitty replies" {
+    var env = std.process.Environ.Map.init(testing.allocator);
+    defer env.deinit();
+    try env.put("TMUX", "/tmp/tmux-1000/default,12345,0");
+
+    var known_tmux = Terminal.init(.{ .env_map = &env });
+    known_tmux.processCapabilityResponse("\x1b_Gi=31337;OK\x1b\\");
+    try testing.expect(!known_tmux.kitty_graphics_queried);
+    try testing.expect(!known_tmux.caps.kitty_graphics);
+
+    var late_tmux = Terminal.init(.{});
+    late_tmux.processCapabilityResponse("\x1b_Gi=31337;OK\x1b\\\x1bP>|tmux 3.5a\x1b\\");
+    try testing.expect(!late_tmux.kitty_graphics_queried);
+    try testing.expect(!late_tmux.caps.kitty_graphics);
+}
+
+test "tmux reports focus tracking without DECRQM" {
+    var env = std.process.Environ.Map.init(testing.allocator);
+    defer env.deinit();
+    try env.put("TMUX", "/tmp/tmux-1000/default,12345,0");
+
+    var term = Terminal.init(.{ .env_map = &env });
+    term.processCapabilityResponse("\x1bP>|tmux 3.5a\x1b\\");
+    try testing.expect(term.caps.focus_tracking);
+}
+
 test "graphics identity - query response upgrades an unknown terminal" {
     var term = Terminal.init(.{});
     term.processCapabilityResponse("\x1bP>|unknown 1.0\x1b\\");
@@ -241,16 +267,55 @@ test "refusesForcedSixel - XTVERSION replaces leftover Apple Terminal env" {
     try testing.expect(!iterm.refusesForcedSixel());
 }
 
-test "refusesForcedSixel - tmux XTVERSION is not a Sixel endpoint" {
+test "tmux DA does not describe the passthrough Sixel endpoint" {
     var env = std.process.Environ.Map.init(testing.allocator);
     defer env.deinit();
     try env.put("TERM_PROGRAM", "Apple_Terminal");
     var term = Terminal.init(.{ .env_map = &env });
     term.processCapabilityResponse("\x1bP>|tmux 3.5a\x1b\\");
-    try testing.expect(term.refusesForcedSixel());
+    try testing.expect(!term.caps.sixel);
+    try testing.expect(!term.refusesForcedSixel());
 
     term.processCapabilityResponse("\x1b[?62;4c");
+    try testing.expect(!term.caps.sixel);
     try testing.expect(!term.refusesForcedSixel());
+}
+
+test "known tmux ignores its own Sixel DA response" {
+    var env = std.process.Environ.Map.init(testing.allocator);
+    defer env.deinit();
+    try env.put("TMUX", "/tmp/tmux-1000/default,12345,0");
+
+    var supported_tmux = Terminal.init(.{ .env_map = &env });
+    supported_tmux.processCapabilityResponse("\x1b[?1;2;4c");
+    try testing.expect(!supported_tmux.caps.sixel);
+    try testing.expect(!supported_tmux.refusesForcedSixel());
+
+    var unsupported_tmux = Terminal.init(.{ .env_map = &env });
+    unsupported_tmux.processCapabilityResponse("\x1b[?1;2c");
+    try testing.expect(!unsupported_tmux.caps.sixel);
+    try testing.expect(!unsupported_tmux.refusesForcedSixel());
+}
+
+test "late tmux detection clears its Sixel DA response" {
+    var term = Terminal.init(.{});
+    term.processCapabilityResponse("\x1b[?1;2;4c\x1bP>|tmux 3.7b\x1b\\");
+    try testing.expect(term.isInTmux());
+    try testing.expect(!term.caps.sixel);
+    try testing.expect(!term.sixel_queried);
+    try testing.expect(!term.refusesForcedSixel());
+
+    var da_first = Terminal.init(.{});
+    da_first.processCapabilityResponse("\x1b[?1;2;4c");
+    da_first.processCapabilityResponse("\x1bP>|tmux 3.7b\x1b\\");
+    try testing.expect(!da_first.caps.sixel);
+    try testing.expect(!da_first.sixel_queried);
+
+    var da_last = Terminal.init(.{});
+    da_last.processCapabilityResponse("\x1bP>|tmux 3.7b\x1b\\");
+    da_last.processCapabilityResponse("\x1b[?1;2;4c");
+    try testing.expect(!da_last.caps.sixel);
+    try testing.expect(!da_last.sixel_queried);
 }
 
 test "graphics identity - environment name alone is not authoritative" {
@@ -901,14 +966,9 @@ test "queryTerminalSend - sends unwrapped queries when not in tmux" {
 
     // Should NOT contain tmux DCS wrapper
     try testing.expect(std.mem.find(u8, output, "\x1bPtmux;") == null);
-
-    // Should mark capability queries as pending
-    try testing.expect(term.capability_queries_pending);
-    try testing.expect(term.graphics_query_pending);
-    try testing.expect(term.sixel_query_pending);
 }
 
-test "queryTerminalSend - sends DCS wrapped queries when in tmux" {
+test "queryTerminalSend - keeps response-generating queries inside tmux" {
     var env = std.process.Environ.Map.init(testing.allocator);
     defer env.deinit();
     try env.put("TMUX", "/tmp/tmux-1000/default,12345,0");
@@ -930,13 +990,16 @@ test "queryTerminalSend - sends DCS wrapped queries when in tmux" {
     try testing.expect(std.mem.find(u8, output, "\x1b[?996n") == null);
     try testing.expect(std.mem.find(u8, output, "\x1bPtmux;\x1b\x1b]10;?") == null);
 
-    // Should contain tmux DCS wrapper start and doubled ESC for queries
-    // wrapForTmux wraps all queries together with one DCS envelope
-    try testing.expect(std.mem.find(u8, output, "\x1bPtmux;\x1b\x1bP+q4d73\x1b\x1b\\") != null);
-    try testing.expect(std.mem.find(u8, output, "\x1b\x1b[?1016$p") != null);
+    // tmux answers the queries it implements through the originating pane's PTY.
+    try testing.expect(std.mem.find(u8, output, "\x1bP+q4d73\x1b\\") != null);
+    try testing.expect(std.mem.find(u8, output, "\x1b[?1016$p") != null);
 
-    // Should NOT mark capability queries as pending (already sent wrapped)
-    try testing.expect(!term.capability_queries_pending);
+    // Passthrough replies have no pane ownership and may reach another pane.
+    try testing.expect(std.mem.find(u8, output, "\x1bPtmux;") == null);
+
+    // tmux's graphics replies describe tmux, not the passthrough endpoint.
+    try testing.expect(std.mem.find(u8, output, ansi.ANSI.kittyGraphicsQuery) == null);
+    try testing.expect(std.mem.find(u8, output, ansi.ANSI.primaryDeviceAttrs) == null);
 }
 
 test "queryTerminalSend - sends plain theme queries when TMUX is set" {
@@ -959,112 +1022,6 @@ test "queryTerminalSend - sends plain theme queries when TMUX is set" {
     try testing.expect(std.mem.find(u8, output, ansi.ANSI.oscThemeQueries) != null);
     try testing.expect(std.mem.find(u8, output, "\x1bPtmux;\x1b\x1b]10;?") == null);
     try testing.expect(std.mem.find(u8, output, "\x1b[?996n") == null);
-}
-
-test "sendPendingQueries - sends wrapped queries after tmux detected via xtversion" {
-    var term = Terminal.init(.{});
-    term.multiplexer = .none;
-    term.capability_queries_pending = true;
-    term.graphics_query_pending = true;
-
-    // Simulate tmux detected via xtversion
-    term.processCapabilityResponse("\x1bP>|tmux 3.5a\x1b\\");
-
-    var writer = TestWriter.init(testing.allocator);
-    defer writer.deinit();
-
-    const did_send = try term.sendPendingQueries(&writer);
-
-    try testing.expect(did_send);
-
-    const output = writer.getWritten();
-
-    // Should send DCS wrapped capability queries (wrapForTmux wraps all queries together)
-    try testing.expect(std.mem.find(u8, output, "\x1bPtmux;\x1b\x1bP+q4d73\x1b\x1b\\") != null);
-    try testing.expect(std.mem.find(u8, output, "\x1b\x1b[?1016$p") != null);
-
-    // Should send DCS wrapped graphics query
-    try testing.expect(std.mem.find(u8, output, "\x1bPtmux;\x1b\x1b_G") != null);
-
-    // Should clear pending flags
-    try testing.expect(!term.capability_queries_pending);
-    try testing.expect(!term.graphics_query_pending);
-}
-
-test "sendPendingQueries - clears already-sent direct graphics probes after non-tmux xtversion" {
-    var term = Terminal.init(.{});
-    term.multiplexer = .none;
-    term.capability_queries_pending = true;
-    term.graphics_query_pending = true;
-
-    // Simulate non-tmux terminal detected via xtversion
-    term.term_info.from_xtversion = true;
-    term.term_info.name_len = 5;
-    @memcpy(term.term_info.name[0..5], "kitty");
-
-    var writer = TestWriter.init(testing.allocator);
-    defer writer.deinit();
-
-    const did_send = try term.sendPendingQueries(&writer);
-
-    try testing.expect(!did_send);
-
-    const output = writer.getWritten();
-
-    // Should NOT send DCS wrapped capability queries (not tmux)
-    try testing.expect(std.mem.find(u8, output, "\x1bPtmux;") == null);
-
-    // Initial startup already sent the direct graphics query.
-    try testing.expect(std.mem.find(u8, output, "\x1b_Gi=31337") == null);
-
-    // Should clear pending flags
-    try testing.expect(!term.capability_queries_pending);
-    try testing.expect(!term.graphics_query_pending);
-}
-
-test "sendPendingQueries - waits for xtversion before any passthrough retry" {
-    var term = Terminal.init(.{});
-    term.multiplexer = .none;
-    term.term_info.from_xtversion = false;
-    term.capability_queries_pending = true;
-    term.graphics_query_pending = true;
-
-    var writer = TestWriter.init(testing.allocator);
-    defer writer.deinit();
-
-    const did_send = try term.sendPendingQueries(&writer);
-
-    try testing.expect(!did_send);
-
-    const output = writer.getWritten();
-
-    // Initial startup already sent the direct graphics query.
-    try testing.expect(std.mem.find(u8, output, "\x1b_Gi=31337") == null);
-    try testing.expect(std.mem.find(u8, output, "\x1bPtmux;") == null);
-
-    try testing.expect(term.graphics_query_pending);
-
-    // Capability queries should NOT be re-sent (no xtversion means we don't know if tmux,
-    // but they were already sent unwrapped in queryTerminalSend)
-    try testing.expect(term.capability_queries_pending);
-}
-
-test "sendPendingQueries - skips graphics when skip_graphics_query is set" {
-    var term = Terminal.init(.{});
-    term.multiplexer = .tmux;
-    term.skip_graphics_query = true;
-    term.graphics_query_pending = true;
-    term.capability_queries_pending = false;
-
-    var writer = TestWriter.init(testing.allocator);
-    defer writer.deinit();
-
-    const did_send = try term.sendPendingQueries(&writer);
-
-    try testing.expect(!did_send);
-
-    const output = writer.getWritten();
-    try testing.expect(std.mem.find(u8, output, "Gi=31337") == null);
 }
 
 test "isXtversionTmux - detects tmux from xtversion" {

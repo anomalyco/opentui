@@ -14,6 +14,9 @@ export class TextBufferView {
   private viewPtr: TextBufferViewHandle
   private textBuffer: TextBuffer
   private _destroyed: boolean = false
+  // Only this wrapper sets the native view's selection, and a reset clears all of it, so while this
+  // is true the view has no selection and a reset can skip the native call.
+  private selectionClear: boolean = true
 
   constructor(lib: RenderLib, ptr: TextBufferViewHandle, textBuffer: TextBuffer) {
     this.lib = lib
@@ -39,17 +42,21 @@ export class TextBufferView {
 
   public setSelection(start: number, end: number, bgColor?: RGBA, fgColor?: RGBA): void {
     this.guard()
+    this.selectionClear = false
     this.lib.textBufferViewSetSelection(this.viewPtr, start, end, bgColor || null, fgColor || null)
   }
 
   public updateSelection(end: number, bgColor?: RGBA, fgColor?: RGBA): void {
     this.guard()
+    this.selectionClear = false
     this.lib.textBufferViewUpdateSelection(this.viewPtr, end, bgColor || null, fgColor || null)
   }
 
   public resetSelection(): void {
     this.guard()
+    if (this.selectionClear) return
     this.lib.textBufferViewResetSelection(this.viewPtr)
+    this.selectionClear = true
   }
 
   public getSelection(): { start: number; end: number } | null {
@@ -72,6 +79,7 @@ export class TextBufferView {
     behavior: SelectionBehavior = "cell",
   ): boolean {
     this.guard()
+    this.selectionClear = false
     return this.lib.textBufferViewSetLocalSelection(
       this.viewPtr,
       anchorX,
@@ -94,6 +102,7 @@ export class TextBufferView {
     behavior: SelectionBehavior = "cell",
   ): boolean {
     this.guard()
+    this.selectionClear = false
     return this.lib.textBufferViewUpdateLocalSelection(
       this.viewPtr,
       anchorX,
@@ -108,7 +117,9 @@ export class TextBufferView {
 
   public resetLocalSelection(): void {
     this.guard()
+    if (this.selectionClear) return
     this.lib.textBufferViewResetLocalSelection(this.viewPtr)
+    this.selectionClear = true
   }
 
   public setSelectionOccupancy(occupancy: SelectionOccupancy): void {

@@ -166,9 +166,11 @@ window change. Read [SSH](/docs/reference/ssh) for the full session setup.
 OpenTUI detects tmux from XTVERSION, `TMUX`, `TERM_PROGRAM=tmux`, or a `TERM` prefix. It detects Zellij from XTVERSION
 or Zellij environment keys. It detects GNU Screen from `STY` or a `TERM` prefix.
 
-Detection changes query wrapping and feature policy:
+Detection changes feature policy:
 
-- tmux can cause a second, DCS-wrapped query pass after XTVERSION identifies it.
+- tmux receives unwrapped probes and answers the ones it implements. OpenTUI does not probe the outer terminal through
+  tmux passthrough because tmux does not route those replies to the pane that asked.
+- tmux skips Kitty and Sixel detection and enables focus tracking.
 - GNU Screen disables graphics queries and selects conservative width behavior.
 - Zellij accepts notification support only from an OSC 99 query or an explicit override.
 - Multiplexer detection can set `explicit_cursor_positioning` and `unicode` conservatively.
