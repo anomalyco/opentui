@@ -195,7 +195,6 @@ const Attempt = struct {
     bounded_work: bool,
     // After a yielded mutation restarts preparation, the attempt never yields again.
     restarted: bool = false,
-    feedback_work_remaining: usize = 0,
     preparing: enum { none, traversal, views } = .none,
     prepare_depth: usize = 0,
     prepare_cursor: usize = 0,
@@ -803,9 +802,8 @@ pub const Scene = struct {
             active.remaining_work = std.math.maxInt(u32);
             active.restarted = true;
         }
-        const restart_feedback = yielded and active.preparing == .none and active.feedback_work_remaining == 0 and
-            (self.preparation_dirty or try self.needsSolve(cli, root));
-        if (active.rounds == 0 or active.preparing != .none or restart_feedback) {
+        // A restart during feedback finishes the queued feedback, then the dirty check below starts the round.
+        if (active.rounds == 0 or active.preparing != .none) {
             if (!try self.prepareRound(objects, cli, root, reusable_work)) return self.request(root.?.scene_node.?, api.OT_SCENE_FRAME_YIELD);
         }
         while (true) {
@@ -824,7 +822,6 @@ pub const Scene = struct {
             while (self.feedback.items.len != 0) {
                 if (active.remaining_work == 0) return self.request(root.?.scene_node.?, api.OT_SCENE_FRAME_YIELD);
                 active.remaining_work -= 1;
-                active.feedback_work_remaining -|= 1;
                 const operation = self.feedback.pop().?;
                 if (builtin.is_test and operation.kind == .filtered_refresh) self.test_filtered_refresh_steps += 1;
                 const value = objects.get(operation.node, .native_renderable, native.NativeRenderable) catch continue;
@@ -1147,9 +1144,6 @@ pub const Scene = struct {
             }
         }
         if (phases) {
-            // Seven node phases plus a repeated parent prepass per placement bound a stable round.
-            // Dirty retries get a new round at the next scheduling boundary, not inside host hooks.
-            active.feedback_work_remaining = std.math.mul(usize, self.work.items.len, 8) catch return error.ObjectLimit;
             // Prepass, filtered refresh, and selected updates never hold simultaneous batches for one parent.
             const capacity = std.math.mul(usize, self.work.items.len, 4) catch return error.ObjectLimit;
             try self.feedback.ensureTotalCapacity(self.allocator, capacity);
