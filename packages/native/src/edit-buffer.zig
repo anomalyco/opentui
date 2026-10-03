@@ -227,6 +227,13 @@ pub const EditBuffer = struct {
         if (self.notify) |notify| notify.callback(notify.userdata, event);
     }
 
+    /// Runs the synchronous cursor listeners (editor views) before notifying the Context.
+    fn publishCursor(self: *EditBuffer, content_changed: bool) void {
+        self.events.emit(.cursorChanged);
+        self.emitNativeEvent(.cursor_changed);
+        if (content_changed) self.emitNativeEvent(.content_changed);
+    }
+
     pub fn getTextBuffer(self: *EditBuffer) *UnifiedTextBuffer {
         return self.tb;
     }
@@ -246,8 +253,7 @@ pub const EditBuffer = struct {
 
         self.cursor = .{ .row = clamped_row, .col = clamped_col, .desired_col = clamped_col, .offset = offset };
 
-        self.events.emit(.cursorChanged);
-        self.emitNativeEvent(.cursor_changed);
+        self.publishCursor(false);
     }
 
     pub fn setCursorByOffset(self: *EditBuffer, offset: u32) !void {
@@ -303,8 +309,7 @@ pub const EditBuffer = struct {
         cursor.col = new_col;
         cursor.offset = iter_mod.coordsToOffset(self.tb.rope(), cursor.row, new_col) orelse 0;
 
-        self.events.emit(.cursorChanged);
-        self.emitNativeEvent(.cursor_changed);
+        self.publishCursor(false);
     }
 
     fn addCheckpoint(self: *const EditBuffer) AddBuffer.Checkpoint {
@@ -434,9 +439,7 @@ pub const EditBuffer = struct {
         }
 
         self.tb.markViewsDirty();
-        self.events.emit(.cursorChanged);
-        self.emitNativeEvent(.cursor_changed);
-        self.emitNativeEvent(.content_changed);
+        self.publishCursor(true);
     }
 
     pub fn deleteRange(self: *EditBuffer, start_cursor: Cursor, end_cursor: Cursor) !void {
@@ -470,9 +473,7 @@ pub const EditBuffer = struct {
         const offset = iter_mod.coordsToOffset(self.tb.rope(), clamped_row, clamped_col) orelse 0;
         self.cursor = .{ .row = clamped_row, .col = clamped_col, .desired_col = clamped_col, .offset = offset };
 
-        self.events.emit(.cursorChanged);
-        self.emitNativeEvent(.cursor_changed);
-        self.emitNativeEvent(.content_changed);
+        self.publishCursor(true);
     }
 
     /// Replace an exclusive display-cell range, preserving delete-then-insert history and events.
@@ -547,9 +548,7 @@ pub const EditBuffer = struct {
         rope.version = candidate.version;
         self.cursor = cursor;
         self.tb.markViewsDirty();
-        self.events.emit(.cursorChanged);
-        self.emitNativeEvent(.cursor_changed);
-        self.emitNativeEvent(.content_changed);
+        self.publishCursor(true);
     }
 
     fn cursorAfterDeletion(rope: *const UnifiedRope, deleted: *const UnifiedRope, offset: u32) Cursor {
@@ -666,8 +665,7 @@ pub const EditBuffer = struct {
         cursor.desired_col = cursor.col;
         cursor.offset = iter_mod.coordsToOffset(self.tb.rope(), cursor.row, cursor.col) orelse 0;
 
-        self.events.emit(.cursorChanged);
-        self.emitNativeEvent(.cursor_changed);
+        self.publishCursor(false);
     }
 
     pub fn moveRight(self: *EditBuffer) void {
@@ -686,8 +684,7 @@ pub const EditBuffer = struct {
         cursor.desired_col = cursor.col;
         cursor.offset = iter_mod.coordsToOffset(self.tb.rope(), cursor.row, cursor.col) orelse 0;
 
-        self.events.emit(.cursorChanged);
-        self.emitNativeEvent(.cursor_changed);
+        self.publishCursor(false);
     }
 
     pub fn moveUp(self: *EditBuffer) void {
@@ -706,8 +703,7 @@ pub const EditBuffer = struct {
             cursor.offset = iter_mod.coordsToOffset(self.tb.rope(), cursor.row, cursor.col) orelse 0;
         }
 
-        self.events.emit(.cursorChanged);
-        self.emitNativeEvent(.cursor_changed);
+        self.publishCursor(false);
     }
 
     pub fn moveDown(self: *EditBuffer) void {
@@ -727,8 +723,7 @@ pub const EditBuffer = struct {
             cursor.offset = iter_mod.coordsToOffset(self.tb.rope(), cursor.row, cursor.col) orelse 0;
         }
 
-        self.events.emit(.cursorChanged);
-        self.emitNativeEvent(.cursor_changed);
+        self.publishCursor(false);
     }
 
     /// Set text and completely reset the buffer state (clears history, resets add_buffer)
@@ -773,9 +768,7 @@ pub const EditBuffer = struct {
     fn finishTextReplacement(self: *EditBuffer) void {
         // The origin needs no marker lookup.
         self.cursor = .{ .row = 0, .col = 0 };
-        self.events.emit(.cursorChanged);
-        self.emitNativeEvent(.cursor_changed);
-        self.emitNativeEvent(.content_changed);
+        self.publishCursor(true);
     }
 
     pub fn getText(self: *EditBuffer, out_buffer: []u8) usize {
@@ -794,22 +787,13 @@ pub const EditBuffer = struct {
                 .{ .row = cursor.row + 1, .col = 0 },
             );
         } else if (cursor.row > 0) {
+            // deleteRange leaves the cursor at the end of the previous line.
             const prev_line_width = iter_mod.lineWidthAt(self.tb.rope(), cursor.row - 1);
             const curr_line_width = iter_mod.lineWidthAt(self.tb.rope(), cursor.row);
-
             try self.deleteRange(
                 .{ .row = cursor.row - 1, .col = prev_line_width },
                 .{ .row = cursor.row, .col = curr_line_width },
             );
-
-            self.tb.markViewsDirty();
-
-            const new_row = cursor.row - 1;
-            const new_col = prev_line_width;
-            const new_offset = iter_mod.coordsToOffset(self.tb.rope(), new_row, new_col) orelse 0;
-            self.cursor = .{ .row = new_row, .col = new_col, .desired_col = new_col, .offset = new_offset };
-            self.events.emit(.cursorChanged);
-            self.emitNativeEvent(.cursor_changed);
         } else {
             const line_width = iter_mod.lineWidthAt(self.tb.rope(), cursor.row);
             if (line_width > 0) {

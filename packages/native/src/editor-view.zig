@@ -701,80 +701,37 @@ pub const EditorView = struct {
 
     pub fn moveUpVisual(self: *EditorView) void {
         const vcursor = self.getPrimaryVisualCursorAbsolute();
-
-        if (vcursor.visual_row == 0) {
-            return;
-        }
-
-        const target_visual_row = vcursor.visual_row - 1;
-
-        // This persists across empty/narrow lines to restore column when possible
-        if (self.desired_visual_col == null) {
-            self.desired_visual_col = vcursor.visual_col;
-        }
-        const desired_visual_col = self.desired_visual_col.?;
-
-        const vlines = self.text_buffer_view.virtual_lines.items;
-        const target_visual_col = if (self.text_buffer_view.getSelectionOccupancy() == .boundary)
-            @min(desired_visual_col, vlines[target_visual_row].width_cols)
-        else
-            clampVisualColToStayOnVisualRow(vlines, target_visual_row, desired_visual_col);
-
-        if (self.visualToLogicalCursor(target_visual_row, target_visual_col)) |new_vcursor| {
-            self.edit_buffer.cursor = .{
-                .row = new_vcursor.logical_row,
-                .col = new_vcursor.logical_col,
-                .desired_col = new_vcursor.logical_col,
-                .offset = new_vcursor.offset,
-            };
-            self.cursor_visual_affinity = null;
-            if (self.text_buffer_view.getSelectionOccupancy() == .boundary) {
-                self.setCursorAffinityForAbsoluteRow(target_visual_row);
-            }
-            self.ensureCursorVisible(new_vcursor.visual_row);
-
-            // Restore desired_visual_col after the cursor change event resets it
-            self.desired_visual_col = desired_visual_col;
-        }
+        if (vcursor.visual_row == 0) return;
+        self.moveToVisualRow(vcursor, vcursor.visual_row - 1);
     }
 
     pub fn moveDownVisual(self: *EditorView) void {
         const vcursor = self.getPrimaryVisualCursorAbsolute();
+        if (vcursor.visual_row + 1 >= self.text_buffer_view.virtual_lines.items.len) return;
+        self.moveToVisualRow(vcursor, vcursor.visual_row + 1);
+    }
 
-        const vlines = self.text_buffer_view.virtual_lines.items;
-
-        if (vcursor.visual_row + 1 >= vlines.len) {
-            return;
-        }
-
-        const target_visual_row = vcursor.visual_row + 1;
-
+    fn moveToVisualRow(self: *EditorView, vcursor: VisualCursor, target_visual_row: u32) void {
         // This persists across empty/narrow lines to restore column when possible
-        if (self.desired_visual_col == null) {
-            self.desired_visual_col = vcursor.visual_col;
-        }
-        const desired_visual_col = self.desired_visual_col.?;
-        const target_visual_col = if (self.text_buffer_view.getSelectionOccupancy() == .boundary)
+        const desired_visual_col = self.desired_visual_col orelse vcursor.visual_col;
+        self.desired_visual_col = desired_visual_col;
+        const vlines = self.text_buffer_view.virtual_lines.items;
+        const boundary = self.text_buffer_view.getSelectionOccupancy() == .boundary;
+        const target_visual_col = if (boundary)
             @min(desired_visual_col, vlines[target_visual_row].width_cols)
         else
             clampVisualColToStayOnVisualRow(vlines, target_visual_row, desired_visual_col);
 
-        if (self.visualToLogicalCursor(target_visual_row, target_visual_col)) |new_vcursor| {
-            self.edit_buffer.cursor = .{
-                .row = new_vcursor.logical_row,
-                .col = new_vcursor.logical_col,
-                .desired_col = new_vcursor.logical_col,
-                .offset = new_vcursor.offset,
-            };
-            self.cursor_visual_affinity = null;
-            if (self.text_buffer_view.getSelectionOccupancy() == .boundary) {
-                self.setCursorAffinityForAbsoluteRow(target_visual_row);
-            }
-            self.ensureCursorVisible(new_vcursor.visual_row);
-
-            // Restore desired_visual_col after the cursor change event resets it
-            self.desired_visual_col = desired_visual_col;
-        }
+        const new_vcursor = self.visualToLogicalCursor(target_visual_row, target_visual_col) orelse return;
+        self.edit_buffer.cursor = .{
+            .row = new_vcursor.logical_row,
+            .col = new_vcursor.logical_col,
+            .desired_col = new_vcursor.logical_col,
+            .offset = new_vcursor.offset,
+        };
+        self.cursor_visual_affinity = null;
+        if (boundary) self.setCursorAffinityForAbsoluteRow(target_visual_row);
+        self.ensureCursorVisible(new_vcursor.visual_row);
     }
 
     pub fn deleteSelectedText(self: *EditorView) !void {
