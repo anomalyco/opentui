@@ -166,19 +166,24 @@ describe("Textarea - Undo/Redo Tests", () => {
           if (text.length > 0) edit(start, 0, text)
         }
         const where = `seed ${seed} step ${step}: ${log.slice(-8).join(" ")}`
-        expect({
-          where,
-          text: editor.plainText,
-          cursor: editor.cursorOffset,
-          canUndo: editor.editBuffer.canUndo(),
-          canRedo: editor.editBuffer.canRedo(),
-        }).toEqual({
-          where,
-          text: state.text.join(""),
-          cursor: offset(state.cursor),
-          canUndo: undo.length > 0,
-          canRedo: redo.length > 0 && restored?.text === state.text,
-        })
+        // One string, so every mismatch prints the seed and step.
+        expect(
+          JSON.stringify({
+            where,
+            text: editor.plainText,
+            cursor: editor.cursorOffset,
+            canUndo: editor.editBuffer.canUndo(),
+            canRedo: editor.editBuffer.canRedo(),
+          }),
+        ).toBe(
+          JSON.stringify({
+            where,
+            text: state.text.join(""),
+            cursor: offset(state.cursor),
+            canUndo: undo.length > 0,
+            canRedo: redo.length > 0 && restored?.text === state.text,
+          }),
+        )
       }
       editor.destroy()
     }
