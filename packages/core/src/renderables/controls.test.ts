@@ -1,16 +1,21 @@
 import { afterAll, beforeAll, expect, test } from "bun:test"
 import { KeyEvent } from "../lib/KeyHandler.js"
-import { createTestRenderer, type TestRenderer } from "../testing/test-renderer.js"
+import { ManualClock } from "../testing/manual-clock.js"
+import { createTestRenderer, type TestRendererSetup } from "../testing/test-renderer.js"
+import { BoxRenderable } from "./Box.js"
 import { FrameBufferRenderable } from "./FrameBuffer.js"
 import { ScrollBarRenderable } from "./ScrollBar.js"
 import { ScrollBoxRenderable } from "./ScrollBox.js"
 import { SelectRenderable } from "./Select.js"
 import { TabSelectRenderable } from "./TabSelect.js"
 
-let renderer: TestRenderer
+const clock = new ManualClock()
+let setup: TestRendererSetup
+let renderer: TestRendererSetup["renderer"]
 
 beforeAll(async () => {
-  ;({ renderer } = await createTestRenderer({ width: 40, height: 12 }))
+  setup = await createTestRenderer({ width: 40, height: 12, clock })
+  renderer = setup.renderer
 })
 
 afterAll(() => {
@@ -123,6 +128,65 @@ test.each(navigation)("%s", (_, Control, options, steps, expected) => {
   })
   expect(trace.join(" ")).toBe(expected)
   node.destroy()
+})
+
+// Steps: a key, `#n` for scrollTo(n, n), `[shift+]wheel:direction`, `arrow:start|end` (click), or `auto:x,y`
+// (updateAutoScroll, then a 100 ms frame). Each step records scrollTop,scrollLeft and a "!" prefix when a key is not
+// handled; an auto step adds "-" when auto-scroll stopped. Edge distances 1, 2, 3 pick the fast, medium, slow speeds.
+const scrolling: [string, object, string, string][] = [
+  [
+    "keys",
+    { scrollX: true },
+    "down j up k right l left h pagedown pageup end home a",
+    "2,0 4,0 2,0 0,0 0,4 0,8 0,4 0,0 5,0 0,0 90,0 0,0 !0,0",
+  ],
+  ["keys without scrollX", {}, "right l end", "0,0 0,0 90,0"],
+  [
+    "wheel",
+    { scrollX: true },
+    "wheel:down wheel:up wheel:right wheel:left shift+wheel:down shift+wheel:up",
+    "1,0 0,0 0,1 0,0 0,1 0,0",
+  ],
+  ["arrows", { scrollbarOptions: { showArrows: true } }, "arrow:end arrow:end arrow:start", "5,0 10,0 5,0"],
+  [
+    "auto-scroll",
+    { scrollX: true },
+    "#10 auto:10,9 auto:10,8 auto:10,7 auto:10,0 auto:0,5 auto:19,5 auto:10,5",
+    "10,10 17,10 20,10 21,10 15,10 15,3 15,10 15,10-",
+  ],
+  ["auto-scroll without scrollX", {}, "#10 auto:0,5", "10,0 10,0-"],
+]
+
+test.each(scrolling)("ScrollBox %s", async (_, options, steps, expected) => {
+  const scroll = new ScrollBoxRenderable(renderer, { width: 20, height: 10, ...options })
+  scroll.add(new BoxRenderable(renderer, { width: 100, height: 100 }))
+  renderer.root.add(scroll)
+  await setup.renderOnce()
+  const trace: string[] = []
+  for (const step of steps.split(" ")) {
+    const [kind, arg] = step.split(":")
+    let token = ""
+    if (step.startsWith("#")) scroll.scrollTo({ x: Number(step.slice(1)), y: Number(step.slice(1)) })
+    else if (kind.endsWith("wheel"))
+      await setup.mockMouse.scroll(5, 5, arg as "up", { modifiers: { shift: kind !== "wheel" } })
+    else if (kind === "arrow") {
+      const arrow = arg === "end" ? scroll.verticalScrollBar.endArrow : scroll.verticalScrollBar.startArrow
+      await setup.mockMouse.click(arrow.x, arrow.y)
+    } else if (kind === "auto") {
+      scroll.updateAutoScroll(...(arg.split(",").map(Number) as [number, number]))
+      clock.advance(100)
+      await setup.renderOnce()
+      if (!scroll.live) token = "-"
+    } else if (!scroll.handleKeyPress(key(step))) token = "!"
+    expect([scroll.content.translateX + scroll.scrollLeft, scroll.content.translateY + scroll.scrollTop]).toEqual([
+      0, 0,
+    ])
+    trace.push(
+      token === "!" ? `!${scroll.scrollTop},${scroll.scrollLeft}` : `${scroll.scrollTop},${scroll.scrollLeft}${token}`,
+    )
+  }
+  expect(trace.join(" ")).toBe(expected)
+  scroll.destroyRecursively()
 })
 
 // The setters are covered by renderable-nullish-props.test.ts; these are the methods and the instance accessor.
