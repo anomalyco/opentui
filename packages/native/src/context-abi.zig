@@ -4201,6 +4201,89 @@ test "Context ABI Session leases preserve rejected outputs and map storage limit
     try std.testing.expectEqual(c.OT_CONTEXT_BUSY, ot_context_destroy(owner));
 }
 
+test "Context ABI rejects invalid arguments before writing outputs" {
+    const valid: c.ot_context_options = .{
+        .struct_size = @sizeOf(c.ot_context_options),
+        .abi_version = c.OT_CONTEXT_ABI_VERSION,
+        .flags = 0,
+        .object_capacity = 1,
+        .render_cells_max = 1,
+        .reserved = .{ 0, 0, 0 },
+    };
+    var options: [8]c.ot_context_options = @splat(valid);
+    options[0].struct_size += 1;
+    options[1].abi_version += 1;
+    options[2].flags = 1;
+    options[3].object_capacity = 0;
+    options[4].render_cells_max = 0;
+    for (0..3) |index| options[5 + index].reserved[index] = 1;
+    for (options, 0..) |invalid, index| {
+        var out: ?*ContextHandle = @ptrFromInt(@alignOf(ContextHandle));
+        const expected = if (index == 1) c.OT_UNSUPPORTED_VERSION else c.OT_INVALID_ARGUMENT;
+        try std.testing.expectEqual(expected, ot_context_create(&invalid, &out));
+        try std.testing.expect(out == null);
+    }
+    try std.testing.expectEqual(c.OT_INVALID_ARGUMENT, ot_context_create(&valid, null));
+    try std.testing.expectEqual(c.OT_INVALID_ARGUMENT, ot_context_destroy(null));
+
+    const handle = try createTestContext(.{ .object_capacity = 1, .render_cells_max = 1 });
+    defer std.testing.expectEqual(c.OT_OK, ot_context_destroy(handle)) catch unreachable;
+    handle.core.logger.warn("kept", .{});
+    const error_valid: c.ot_context_error = .{ .struct_size = @sizeOf(c.ot_context_error), .abi_version = c.OT_CONTEXT_ABI_VERSION, .status = 77, .reserved = 77 };
+    const drain_valid: c.ot_diagnostic_drain = .{ .struct_size = @sizeOf(c.ot_diagnostic_drain), .abi_version = c.OT_CONTEXT_ABI_VERSION, .count = 77, .remaining = 77, .dropped = 77 };
+    var record: c.ot_diagnostic = std.mem.zeroes(c.ot_diagnostic);
+    record.reserved = 77;
+    const Case = struct {
+        status: c.ot_status,
+        context: ?*ContextHandle,
+        other_thread: bool = false,
+        error_size: u32 = 0,
+        error_version: u32 = 0,
+        drain_size: u32 = 0,
+        drain_version: u32 = 0,
+        out: bool = true,
+    };
+    const cases = [_]Case{
+        .{ .status = c.OT_INVALID_ARGUMENT, .context = null },
+        .{ .status = c.OT_WRONG_THREAD, .context = handle, .other_thread = true },
+        .{ .status = c.OT_INVALID_ARGUMENT, .context = handle, .out = false },
+        .{ .status = c.OT_INVALID_ARGUMENT, .context = handle, .error_size = 1, .drain_size = 1 },
+        .{ .status = c.OT_UNSUPPORTED_VERSION, .context = handle, .error_version = 1, .drain_version = 1 },
+    };
+    for (cases) |case| {
+        var details = error_valid;
+        details.struct_size += case.error_size;
+        details.abi_version += case.error_version;
+        var drain = drain_valid;
+        drain.struct_size += case.drain_size;
+        drain.abi_version += case.drain_version;
+        var count: u32 = 77;
+        if (case.other_thread) handle.owner_thread += 1;
+        defer if (case.other_thread) {
+            handle.owner_thread -= 1;
+        };
+        try std.testing.expectEqual(case.status, ot_context_get_last_error(case.context, if (case.out) &details else null));
+        try std.testing.expectEqual(case.status, ot_context_drain_diagnostics(case.context, @ptrCast(&record), 1, if (case.out) &drain else null));
+        if (case.error_size == 0 and case.error_version == 0) {
+            try std.testing.expectEqual(case.status, ot_context_get_link_url(case.context, 1, null, 0, if (case.out) &count else null));
+        }
+        try std.testing.expectEqual(@as(c.ot_status, 77), details.status);
+        try std.testing.expectEqual(@as(u64, 77), drain.dropped);
+        try std.testing.expectEqual(@as(u32, 77), record.reserved);
+        try std.testing.expectEqual(@as(u32, 77), count);
+    }
+    var drain = drain_valid;
+    handle.core.closing = true;
+    const closing_status = ot_context_drain_diagnostics(handle, @ptrCast(&record), 1, &drain);
+    handle.core.closing = false;
+    try std.testing.expectEqual(c.OT_CONTEXT_BUSY, closing_status);
+    try std.testing.expectEqual(c.OT_INVALID_ARGUMENT, ot_context_drain_diagnostics(handle, null, 1, &drain));
+    try std.testing.expectEqual(@as(u64, 77), drain.dropped);
+    try std.testing.expectEqual(@as(u32, 77), record.reserved);
+    try std.testing.expectEqual(c.OT_OK, ot_context_drain_diagnostics(handle, @ptrCast(&record), 1, &drain));
+    try std.testing.expectEqualStrings("kept", record.message[0..record.message_len]);
+}
+
 test "Context ABI creation clears failed Yoga output and retries without retaining backing storage" {
     const yoga = @import("yoga.zig");
     const options: c.ot_context_options = .{
