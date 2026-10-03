@@ -5,8 +5,6 @@ import {
   Edge,
   FlexDirection,
   Gutter,
-  PositionType,
-  Unit,
   type Layout,
   type MeasureFunction,
   type Value,
@@ -17,7 +15,6 @@ import {
   YogaValueKind,
   parseYogaValue,
   sceneGetEnum,
-  sceneGetFloat,
   sceneGetValue,
   sceneSetDimension,
   sceneSetEnum,
@@ -893,7 +890,7 @@ export abstract class Renderable extends BaseRenderable {
     this.runMutation(() => {
       const key = dimension === Dimension.Width ? "_width" : "_height"
       const disableShrink = typeof value === "number" && this._flexShrink === 1
-      this.yogaSetDimension(dimension, value, disableShrink)
+      sceneSetDimension(this._ctx.nativeScene, this, dimension, value, disableShrink)
       this[key] = value
       if (disableShrink) this._flexShrink = 0
       this.requestRender()
@@ -972,10 +969,6 @@ export abstract class Renderable extends BaseRenderable {
     sceneSetFloat(this._ctx.nativeScene, this, kind, value)
   }
 
-  private yogaGetFloat(kind: (typeof YogaFloatKind)[keyof typeof YogaFloatKind]): number {
-    return sceneGetFloat(this._ctx.nativeScene, this, kind)
-  }
-
   private yogaSetValue(
     kind: (typeof YogaValueKind)[keyof typeof YogaValueKind],
     edge: number,
@@ -989,95 +982,79 @@ export abstract class Renderable extends BaseRenderable {
     return this.isFreed() ? UNDEFINED_VALUE : sceneGetValue(this._ctx.nativeScene, this, kind, edge)
   }
 
-  setDisplay(display: Display): void {
+  private setDisplay(display: Display): void {
     this.yogaSetEnum(YogaEnumKind.Display, display)
   }
 
-  getFlexDirection(): FlexDirection {
+  private getFlexDirection(): FlexDirection {
     return this.yogaGetEnum(YogaEnumKind.FlexDirection, FlexDirection.Column) as FlexDirection
   }
 
-  setFlexDirection(flexDirection: FlexDirection): void {
+  private setFlexDirection(flexDirection: FlexDirection): void {
     this.yogaSetEnum(YogaEnumKind.FlexDirection, flexDirection)
   }
 
-  setFlexWrap(flexWrap: number): void {
+  private setFlexWrap(flexWrap: number): void {
     this.yogaSetEnum(YogaEnumKind.FlexWrap, flexWrap)
   }
 
-  setAlignItems(alignItems: number): void {
+  private setAlignItems(alignItems: number): void {
     this.yogaSetEnum(YogaEnumKind.AlignItems, alignItems)
   }
 
-  setJustifyContent(justifyContent: number): void {
+  private setJustifyContent(justifyContent: number): void {
     this.yogaSetEnum(YogaEnumKind.JustifyContent, justifyContent)
   }
 
-  setAlignSelf(alignSelf: number): void {
+  private setAlignSelf(alignSelf: number): void {
     this.yogaSetEnum(YogaEnumKind.AlignSelf, alignSelf)
   }
 
-  setPositionType(positionType: number): void {
+  private setPositionType(positionType: number): void {
     this.yogaSetEnum(YogaEnumKind.PositionType, positionType)
   }
 
-  setOverflow(overflow: number): void {
+  private setOverflow(overflow: number): void {
     this.yogaSetEnum(YogaEnumKind.Overflow, overflow)
   }
 
-  setFlexGrow(flexGrow: number | undefined): void {
+  private setFlexGrow(flexGrow: number | undefined): void {
     this.yogaSetFloat(YogaFloatKind.FlexGrow, flexGrow)
   }
 
-  getFlexGrow(): number {
-    return this.yogaGetFloat(YogaFloatKind.FlexGrow)
-  }
-
-  setFlexShrink(flexShrink: number | undefined): void {
+  private setFlexShrink(flexShrink: number | undefined): void {
     this.yogaSetFloat(YogaFloatKind.FlexShrink, flexShrink)
   }
 
-  getFlexShrink(): number {
-    return this.yogaGetFloat(YogaFloatKind.FlexShrink)
-  }
-
-  getPositionType(): PositionType {
-    return this.yogaGetEnum(YogaEnumKind.PositionType, PositionType.Relative) as PositionType
-  }
-
-  setFlexBasis(flexBasis: number | "auto" | `${number}%` | undefined): void {
+  private setFlexBasis(flexBasis: number | "auto" | `${number}%` | undefined): void {
     this.yogaSetValue(YogaValueKind.FlexBasis, NATIVE_EDGE_NONE, flexBasis)
   }
 
-  setWidth(width: number | "auto" | `${number}%`): void {
+  private setWidth(width: number | "auto" | `${number}%`): void {
     this.yogaSetValue(YogaValueKind.Width, NATIVE_EDGE_NONE, width)
   }
 
-  setHeight(height: number | "auto" | `${number}%`): void {
+  private setHeight(height: number | "auto" | `${number}%`): void {
     this.yogaSetValue(YogaValueKind.Height, NATIVE_EDGE_NONE, height)
   }
 
-  setMinWidth(minWidth: number | `${number}%` | undefined): void {
+  private setMinWidth(minWidth: number | `${number}%` | undefined): void {
     this.yogaSetValue(YogaValueKind.MinWidth, NATIVE_EDGE_NONE, minWidth)
   }
 
-  getMinWidth(): Value {
-    return this.yogaGetValue(YogaValueKind.MinWidth, NATIVE_EDGE_NONE)
-  }
-
-  setMaxWidth(maxWidth: number | `${number}%` | undefined): void {
+  private setMaxWidth(maxWidth: number | `${number}%` | undefined): void {
     this.yogaSetValue(YogaValueKind.MaxWidth, NATIVE_EDGE_NONE, maxWidth)
   }
 
-  setMinHeight(minHeight: number | `${number}%` | undefined): void {
+  private setMinHeight(minHeight: number | `${number}%` | undefined): void {
     this.yogaSetValue(YogaValueKind.MinHeight, NATIVE_EDGE_NONE, minHeight)
   }
 
-  setMaxHeight(maxHeight: number | `${number}%` | undefined): void {
+  private setMaxHeight(maxHeight: number | `${number}%` | undefined): void {
     this.yogaSetValue(YogaValueKind.MaxHeight, NATIVE_EDGE_NONE, maxHeight)
   }
 
-  setMargin(edge: Edge, margin: number | "auto" | `${number}%` | undefined): void {
+  private setMargin(edge: Edge, margin: number | "auto" | `${number}%` | undefined): void {
     this.yogaSetValue(YogaValueKind.Margin, edge, margin)
   }
 
@@ -1085,15 +1062,11 @@ export abstract class Renderable extends BaseRenderable {
     return this.yogaGetValue(YogaValueKind.Margin, edge)
   }
 
-  getPosition(edge: Edge): Value {
-    return this.yogaGetValue(YogaValueKind.Position, edge)
-  }
-
-  setPadding(edge: Edge, padding: number | `${number}%` | undefined): void {
+  private setPadding(edge: Edge, padding: number | `${number}%` | undefined): void {
     this.yogaSetValue(YogaValueKind.Padding, edge, padding)
   }
 
-  setGap(gutter: Gutter, gap: number | `${number}%` | undefined): void {
+  protected setGap(gutter: Gutter, gap: number | `${number}%` | undefined): void {
     this.yogaSetValue(YogaValueKind.Gap, gutter, gap)
   }
 
@@ -1101,29 +1074,13 @@ export abstract class Renderable extends BaseRenderable {
     return this.yogaGetValue(YogaValueKind.Width, NATIVE_EDGE_NONE)
   }
 
-  getHeight(): Value {
-    return this.yogaGetValue(YogaValueKind.Height, NATIVE_EDGE_NONE)
-  }
-
-  yogaSetDimension(
-    dimension: Dimension,
-    input: number | "auto" | `${number}%`,
-    disableFlexShrink: boolean = false,
-  ): void {
-    sceneSetDimension(this._ctx.nativeScene, this, dimension, input, disableFlexShrink)
-  }
-
-  setPositions(positions: readonly [unknown, unknown, unknown, unknown]): void {
-    this.assertMutable()
+  private setPositions(positions: readonly (number | "auto" | `${number}%` | undefined)[]): void {
     const units = new Uint32Array(Edge.Bottom + 1)
     const values = new Float32Array(Edge.Bottom + 1)
     let mask = 0
     for (let edge = 0; edge <= Edge.Bottom; edge++) {
       if (positions[edge] === undefined) continue
-      const value = parseYogaValue(positions[edge] as number | "auto" | `${number}%` | Value | undefined)
-      if (!Number.isInteger(value.unit) || value.unit < Unit.Undefined || value.unit > Unit.Auto) {
-        throw new RangeError("Invalid Yoga position unit")
-      }
+      const value = parseYogaValue(positions[edge])
       mask |= 1 << edge
       units[edge] = value.unit
       values[edge] = value.value
@@ -1151,24 +1108,12 @@ export abstract class Renderable extends BaseRenderable {
     return { left, top, right, bottom, width, height }
   }
 
-  getComputedTop(): number {
-    return this.getComputedLayout().top
-  }
-
-  getComputedWidth(): number {
-    return this.getComputedLayout().width
-  }
-
-  getComputedHeight(): number {
-    return this.getComputedLayout().height
-  }
-
-  setMeasureFunc(measure: MeasureFunction | null): void {
+  private setMeasureFunc(measure: MeasureFunction | null): void {
     this.assertMutable()
     this._ctx.nativeScene.setMeasureFunc(this, measure)
   }
 
-  hasMeasureFunc(): boolean {
+  private hasMeasureFunc(): boolean {
     return this._ctx.nativeScene.hasMeasureFunc(this)
   }
 
