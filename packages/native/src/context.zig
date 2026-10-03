@@ -3184,8 +3184,9 @@ pub const Context = struct {
         try text.checkMutable();
         try validateTextBytes(text.buffer, bytes, text.buffer.getByteSize());
         if (bytes.len == 0) return;
-        // Each append takes a registry slot. When none is left, one owned copy of the document
-        // replaces them all, so each byte is copied again only once per 254 appends.
+        // Each append takes a registry slot. When none is left, one owned copy of the whole
+        // document replaces them all. Every 254th append copies the document, so a long append
+        // stream costs O(n^2) bytes copied in total; see U04 R3 for the amortized follow-up.
         if (text.buffer.mem_registry.getFreeSlots() == 0) try text.buffer.flattenMemRegistry();
         const copy = try self.allocator.dupe(u8, bytes);
         errdefer self.allocator.free(copy);
