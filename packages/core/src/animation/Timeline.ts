@@ -603,13 +603,13 @@ class TimelineEngine {
   }
 }
 
-/** Default engine for manual updates or explicit single-renderer attach(). Frameworks use getTimelineEngine(). */
+/** Default engine. The first renderer passed to getTimelineEngine() drives it until that renderer is destroyed. */
 export const engine = new TimelineEngine()
 
 /** Returns the renderer's engine and restores its frame callback if the caller cleared renderer callbacks.
  * Renderer destruction unregisters its timelines and releases the engine's live request. */
 export function getTimelineEngine(renderer: CliRenderer): TimelineEngine {
-  const owner = rendererEngines.get(renderer) ?? new TimelineEngine()
+  const owner = rendererEngines.get(renderer) ?? (engine["renderer"] ? new TimelineEngine() : engine)
   owner.attach(renderer)
   return owner
 }
@@ -627,7 +627,7 @@ export function destroyTimelineEngine(renderer: CliRenderer): void {
 
 /** Creates and registers a timeline, playing unless autoplay is false.
  * Pass the renderer explicitly for independent sessions: createTimeline({ duration: 500 }, renderer).
- * Omitting the renderer retains the shipped default-engine API; it does not choose a renderer implicitly. */
+ * Omitting the renderer uses the default engine, which React and Solid render() attach to their renderer. */
 export function createTimeline(options: TimelineOptions = {}, renderer?: CliRenderer): Timeline {
   const owner = renderer ? getTimelineEngine(renderer) : engine
   const timeline = new Timeline(options)
