@@ -32,7 +32,7 @@ const syntaxStyle = SyntaxStyle.fromStyles(
     string: { fg: RGBA.fromHex("#A5D6FF") },
     keyword: { fg: RGBA.fromHex("#FF7B72"), bold: true },
   },
-  renderer.nativeScene!,
+  renderer.nativeScene,
 )
 
 const patch = `diff --git a/app.ts b/app.ts

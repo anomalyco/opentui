@@ -1,4 +1,3 @@
-import { assertRenderableMutable } from "../lib/renderable-layout.js"
 import { Renderable, type RenderableOptions } from "../Renderable.js"
 import { type RenderContext, type TerminalCapabilities } from "../types.js"
 import { SyntaxStyle, type StyleDefinition } from "../syntax-style.js"
@@ -427,7 +426,7 @@ export class MarkdownRenderable extends Renderable {
   set content(value: string) {
     if (this.isDestroyed) return
     if (this._content !== value) {
-      assertRenderableMutable(this)
+      this.assertMutable()
       this._content = value
       this.updateBlocks()
       this.requestRender()
@@ -498,7 +497,7 @@ export class MarkdownRenderable extends Renderable {
   set streaming(value: boolean) {
     if (this.isDestroyed) return
     if (this._streaming !== value) {
-      assertRenderableMutable(this)
+      this.assertMutable()
       this._streaming = value
       this.updateBlocks(true)
     }
@@ -518,8 +517,8 @@ export class MarkdownRenderable extends Renderable {
   }
 
   set renderNode(value: MarkdownOptions["renderNode"] | undefined) {
-    if (this._renderNode === value) return
-    assertRenderableMutable(this)
+    if (this.isDestroyed || this._renderNode === value) return
+    this.assertMutable()
     this._renderNode = value
     this.clearBlockStates()
     this._parseState = null
@@ -532,8 +531,8 @@ export class MarkdownRenderable extends Renderable {
   }
 
   set internalBlockMode(value: "coalesced" | "top-level") {
-    if (this._internalBlockMode === value) return
-    assertRenderableMutable(this)
+    if (this.isDestroyed || this._internalBlockMode === value) return
+    this.assertMutable()
     this._internalBlockMode = value
     this.updateBlocks(true)
     this.requestRender()

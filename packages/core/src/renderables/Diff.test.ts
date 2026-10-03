@@ -1,12 +1,13 @@
-import { test, expect, beforeEach, afterEach } from "bun:test"
-import { DiffRenderable } from "./Diff.js"
+import { test, expect, beforeEach, afterEach, spyOn } from "bun:test"
+import { DiffRenderable, type DiffRenderableOptions } from "./Diff.js"
+import { Renderable } from "../Renderable.js"
 import { SyntaxStyle } from "../syntax-style.js"
 import { RGBA, parseColor } from "../lib/RGBA.js"
 import { createMockMouse, createTestRenderer, type TestRenderer } from "../testing.js"
 import { MockTreeSitterClient } from "../testing/mock-tree-sitter-client.js"
 import type { SimpleHighlight } from "../lib/tree-sitter/types.js"
 import { settleDiffHighlighting } from "./__tests__/renderable-test-utils.js"
-import type { CodeRenderable } from "./Code.js"
+import { CodeRenderable } from "./Code.js"
 
 let currentRenderer: TestRenderer
 let syntaxStyle: SyntaxStyle
@@ -83,224 +84,121 @@ const largeDiff = `--- a/large.js
  const line50 = 'context';
  const line51 = 'context';`
 
-test("DiffRenderable - basic construction with unified view", async () => {
-  const diffRenderable = new DiffRenderable(currentRenderer, {
-    id: "test-diff",
-    diff: simpleDiff,
-    view: "unified",
-    syntaxStyle,
-  })
+const threeHunkDiff = `--- a/file.js
++++ b/file.js
+@@ -1,3 +1,3 @@
+ function first() {
+-  return 1;
++  return "one";
+ }
+@@ -15,4 +15,5 @@
+ function second() {
+   var x = 10;
++  var y = 20;
+   return x;
+ }
+@@ -30,3 +31,3 @@
+ function third() {
+-  console.log("old");
++  console.log("new");
+ }`
 
-  expect(diffRenderable.diff).toBe(simpleDiff)
-  expect(diffRenderable.view).toBe("unified")
-})
+const noNewlineDiff = `--- a/test.js
++++ b/test.js
+@@ -1,3 +1,3 @@
+ line1
+ line2
+-line3
+\\ No newline at end of file
++line3_modified
+\\ No newline at end of file`
 
-test("DiffRenderable - basic construction with split view", async () => {
-  const diffRenderable = new DiffRenderable(currentRenderer, {
-    id: "test-diff",
-    diff: simpleDiff,
-    view: "split",
-    syntaxStyle,
-  })
+type View = "unified" | "split" | undefined
+// Snapshot keys are "<test name>: <hint> 1", so the rows keep the names of the tests they replaced.
+const frameCases: Array<
+  [name: string, diff: string, view: View, hint: string, texts: string[], rows?: [string, RegExp][]]
+> = [
+  [
+    "unified view renders correctly",
+    simpleDiff,
+    "unified",
+    "unified view simple diff",
+    [],
+    [
+      ['console.log("Hello");', /^ *2 -/],
+      ['console.log("Hello, World!")', /^ *2 \+/],
+    ],
+  ],
+  [
+    "split view renders correctly",
+    simpleDiff,
+    "split",
+    "split view simple diff",
+    ["console.log", "Hello", "World"],
+    [['console.log("Hello, World!")', /^ *2 -.*2 \+.*console\.log\("Hello, World!"\)/]],
+  ],
+  ["multi-line diff unified view", multiLineDiff, "unified", "unified view multi-line diff", ["subtract", "a * b * 1"]],
+  ["multi-line diff split view", multiLineDiff, "split", "split view multi-line diff", ["a * b", "subtract"]],
+  ["add-only diff unified view", addOnlyDiff, "unified", "unified view add-only diff", ["newFunction"]],
+  ["add-only diff split view", addOnlyDiff, "split", "split view add-only diff", ["newFunction"]],
+  ["remove-only diff unified view", removeOnlyDiff, "unified", "unified view remove-only diff", ["oldFunction"]],
+  ["remove-only diff split view", removeOnlyDiff, "split", "split view remove-only diff", ["oldFunction"]],
+  [
+    "large line numbers displayed correctly",
+    largeDiff,
+    undefined,
+    "unified view large line numbers",
+    [],
+    [["line44 = 'added'", /^ *44 \+/]],
+  ],
+  [
+    "multiple hunks in unified view",
+    threeHunkDiff,
+    "unified",
+    "unified view multiple hunks",
+    [],
+    [
+      ['return "one"', /2 \+/],
+      ["var y = 20", /17 \+/],
+      ['console.log("new")', /32 \+/],
+    ],
+  ],
+  [
+    "multiple hunks in split view",
+    threeHunkDiff,
+    "split",
+    "split view multiple hunks",
+    ['return "one"', "var y = 20", 'console.log("new")', "return 1", 'console.log("old")'],
+  ],
+  [
+    "no newline at end of file in unified view",
+    noNewlineDiff,
+    "unified",
+    "unified view with no newline marker",
+    ["line3_modified"],
+  ],
+  [
+    "no newline at end of file in split view",
+    noNewlineDiff,
+    "split",
+    "split view with no newline marker",
+    ["line3_modified"],
+  ],
+]
 
-  expect(diffRenderable.diff).toBe(simpleDiff)
-  expect(diffRenderable.view).toBe("split")
-})
-
-test("DiffRenderable - defaults to unified view", async () => {
-  const diffRenderable = new DiffRenderable(currentRenderer, {
-    id: "test-diff",
-    diff: simpleDiff,
-    syntaxStyle,
-  })
-
-  expect(diffRenderable.view).toBe("unified")
-})
-
-test("DiffRenderable - unified view renders correctly", async () => {
-  const diffRenderable = new DiffRenderable(currentRenderer, {
-    id: "test-diff",
-    diff: simpleDiff,
-    view: "unified",
-    syntaxStyle,
-    width: "100%",
-    height: "100%",
-  })
-
+test.each(frameCases)("DiffRenderable - %s", async (_name, diff, view, hint, texts, rows = []) => {
+  const diffRenderable = new DiffRenderable(currentRenderer, { diff, view, syntaxStyle, width: "100%", height: "100%" })
+  expect([diffRenderable.diff, diffRenderable.view, diffRenderable.fg]).toEqual([diff, view ?? "unified", undefined])
   currentRenderer.root.add(diffRenderable)
   await renderOnce()
 
   const frame = captureFrame()
-  expect(frame).toMatchSnapshot("unified view simple diff")
-
-  // Check that both removed and added lines are present
-  expect(frame).toContain('console.log("Hello")')
-  expect(frame).toContain('console.log("Hello, World!")')
-})
-
-test("DiffRenderable - split view renders correctly", async () => {
-  const diffRenderable = new DiffRenderable(currentRenderer, {
-    id: "test-diff",
-    diff: simpleDiff,
-    view: "split",
-    syntaxStyle,
-    width: "100%",
-    height: "100%",
-  })
-
-  currentRenderer.root.add(diffRenderable)
-  await renderOnce()
-
-  const frame = captureFrame()
-  expect(frame).toMatchSnapshot("split view simple diff")
-
-  // In split view, both sides should be visible (may be wrapped)
-  expect(frame).toContain("console.log")
-  expect(frame).toContain("Hello")
-  expect(frame).toContain("World")
-})
-
-test("DiffRenderable - multi-line diff unified view", async () => {
-  const diffRenderable = new DiffRenderable(currentRenderer, {
-    id: "test-diff",
-    diff: multiLineDiff,
-    view: "unified",
-    syntaxStyle,
-    width: "100%",
-    height: "100%",
-  })
-
-  currentRenderer.root.add(diffRenderable)
-  await renderOnce()
-
-  const frame = captureFrame()
-  expect(frame).toMatchSnapshot("unified view multi-line diff")
-
-  // Check for additions
-  expect(frame).toContain("function subtract")
-  // Check for modifications
-  expect(frame).toContain("a * b * 1")
-})
-
-test("DiffRenderable - multi-line diff split view", async () => {
-  const diffRenderable = new DiffRenderable(currentRenderer, {
-    id: "test-diff",
-    diff: multiLineDiff,
-    view: "split",
-    syntaxStyle,
-    width: "100%",
-    height: "100%",
-  })
-
-  currentRenderer.root.add(diffRenderable)
-  await renderOnce()
-
-  const frame = captureFrame()
-  expect(frame).toMatchSnapshot("split view multi-line diff")
-
-  // Left side should have old code
-  expect(frame).toContain("a * b")
-  // Right side should have new code
-  expect(frame).toContain("subtract")
-})
-
-test("DiffRenderable - add-only diff unified view", async () => {
-  const diffRenderable = new DiffRenderable(currentRenderer, {
-    id: "test-diff",
-    diff: addOnlyDiff,
-    view: "unified",
-    syntaxStyle,
-    width: "100%",
-    height: "100%",
-  })
-
-  currentRenderer.root.add(diffRenderable)
-  await renderOnce()
-
-  const frame = captureFrame()
-  expect(frame).toMatchSnapshot("unified view add-only diff")
-
-  expect(frame).toContain("newFunction")
-})
-
-test("DiffRenderable - add-only diff split view", async () => {
-  const diffRenderable = new DiffRenderable(currentRenderer, {
-    id: "test-diff",
-    diff: addOnlyDiff,
-    view: "split",
-    syntaxStyle,
-    width: "100%",
-    height: "100%",
-  })
-
-  currentRenderer.root.add(diffRenderable)
-  await renderOnce()
-
-  const frame = captureFrame()
-  expect(frame).toMatchSnapshot("split view add-only diff")
-
-  // Right side should have the new function
-  expect(frame).toContain("newFunction")
-})
-
-test("DiffRenderable - remove-only diff unified view", async () => {
-  const diffRenderable = new DiffRenderable(currentRenderer, {
-    id: "test-diff",
-    diff: removeOnlyDiff,
-    view: "unified",
-    syntaxStyle,
-    width: "100%",
-    height: "100%",
-  })
-
-  currentRenderer.root.add(diffRenderable)
-  await renderOnce()
-
-  const frame = captureFrame()
-  expect(frame).toMatchSnapshot("unified view remove-only diff")
-
-  expect(frame).toContain("oldFunction")
-})
-
-test("DiffRenderable - remove-only diff split view", async () => {
-  const diffRenderable = new DiffRenderable(currentRenderer, {
-    id: "test-diff",
-    diff: removeOnlyDiff,
-    view: "split",
-    syntaxStyle,
-    width: "100%",
-    height: "100%",
-  })
-
-  currentRenderer.root.add(diffRenderable)
-  await renderOnce()
-
-  const frame = captureFrame()
-  expect(frame).toMatchSnapshot("split view remove-only diff")
-
-  // Left side should have the old function
-  expect(frame).toContain("oldFunction")
-})
-
-test("DiffRenderable - large line numbers displayed correctly", async () => {
-  const diffRenderable = new DiffRenderable(currentRenderer, {
-    id: "test-diff",
-    diff: largeDiff,
-    view: "unified",
-    syntaxStyle,
-    showLineNumbers: true,
-    width: "100%",
-    height: "100%",
-  })
-
-  currentRenderer.root.add(diffRenderable)
-  await renderOnce()
-
-  const frame = captureFrame()
-  expect(frame).toMatchSnapshot("unified view large line numbers")
-
-  // Check that line numbers in the 40s are displayed
-  expect(frame).toMatch(/4[0-9]/)
+  expect(frame).toMatchSnapshot(hint)
+  for (const text of texts) expect(frame).toContain(text)
+  // The parser drops "\\ No newline at end of file" markers.
+  expect(frame).not.toContain("No newline at end of file")
+  const lines = frame.split("\n")
+  for (const [text, pattern] of rows) expect(lines.find((line) => line.includes(text))).toMatch(pattern)
 })
 
 test("DiffRenderable - can toggle view mode", async () => {
@@ -778,61 +676,6 @@ test("DiffRenderable - consistent left padding for line numbers > 9", async () =
   expect(line16Match![1].length).toBeGreaterThanOrEqual(1) // At least 1 space of left padding
 })
 
-test("DiffRenderable - line numbers are correct in unified view", async () => {
-  const diffRenderable = new DiffRenderable(currentRenderer, {
-    id: "test-diff",
-    diff: simpleDiff,
-    view: "unified",
-    syntaxStyle,
-    showLineNumbers: true,
-    width: "100%",
-    height: "100%",
-  })
-
-  currentRenderer.root.add(diffRenderable)
-  await renderOnce()
-
-  const frame = captureFrame()
-  const frameLines = frame.split("\n")
-
-  // Line 2 is removed (old file line 2)
-  const removedLine = frameLines.find((l) => l.includes('console.log("Hello");'))
-  expect(removedLine).toBeTruthy()
-  expect(removedLine).toMatch(/^ *2 -/)
-
-  // Line 2 is added (new file line 2) - NOT line 3!
-  const addedLine = frameLines.find((l) => l.includes('console.log("Hello, World!")'))
-  expect(addedLine).toBeTruthy()
-  expect(addedLine).toMatch(/^ *2 \+/)
-})
-
-test("DiffRenderable - line numbers are correct in split view", async () => {
-  const diffRenderable = new DiffRenderable(currentRenderer, {
-    id: "test-diff",
-    diff: simpleDiff,
-    view: "split",
-    syntaxStyle,
-    showLineNumbers: true,
-    width: "100%",
-    height: "100%",
-  })
-
-  currentRenderer.root.add(diffRenderable)
-  await renderOnce()
-
-  const frame = captureFrame()
-  const frameLines = frame.split("\n")
-
-  // In split view, both sides are on the same terminal line
-  // Left side: line 2 is removed, Right side: line 2 is added
-  const splitLine = frameLines.find((l) => l.includes('console.log("Hello, World!")'))
-  expect(splitLine).toBeTruthy()
-  // Should contain line 2 with - on left side
-  expect(splitLine).toMatch(/^ *2 -/)
-  // Should contain line 2 with + on right side (later in the same line)
-  expect(splitLine).toMatch(/2 \+.*console\.log\("Hello, World!"\)/)
-})
-
 test("DiffRenderable - split view should not wrap lines prematurely", async () => {
   // Create a diff with long lines that should fit in split view
   const longLineDiff = `--- a/test.js
@@ -1195,185 +1038,6 @@ test("DiffRenderable - context lines show new line numbers in unified view", asy
 
   // Clean up
   renderer.destroy()
-})
-
-test("DiffRenderable - multiple hunks in unified view", async () => {
-  // Diff with three separate hunks
-  const multiHunkDiff = `--- a/file.js
-+++ b/file.js
-@@ -1,3 +1,3 @@
- function first() {
--  return 1;
-+  return "one";
- }
-@@ -15,4 +15,5 @@
- function second() {
-   var x = 10;
-+  var y = 20;
-   return x;
- }
-@@ -30,3 +31,3 @@
- function third() {
--  console.log("old");
-+  console.log("new");
- }`
-
-  const diffRenderable = new DiffRenderable(currentRenderer, {
-    id: "test-diff",
-    diff: multiHunkDiff,
-    view: "unified",
-    syntaxStyle,
-    showLineNumbers: true,
-    width: "100%",
-    height: "100%",
-  })
-
-  currentRenderer.root.add(diffRenderable)
-  await renderOnce()
-
-  const frame = captureFrame()
-  expect(frame).toMatchSnapshot("unified view multiple hunks")
-
-  // All three hunks should be present
-  expect(frame).toContain('return "one"')
-  expect(frame).toContain("var y = 20")
-  expect(frame).toContain('console.log("new")')
-
-  // Line numbers should be correct for each hunk
-  const frameLines = frame.split("\n")
-
-  // First hunk around line 2
-  const firstHunkLine = frameLines.find((l) => l.includes('return "one"'))
-  expect(firstHunkLine).toMatch(/2 \+/)
-
-  // Second hunk around line 17 (added line)
-  const secondHunkLine = frameLines.find((l) => l.includes("var y = 20"))
-  expect(secondHunkLine).toMatch(/17 \+/)
-
-  // Third hunk around line 32
-  const thirdHunkLine = frameLines.find((l) => l.includes('console.log("new")'))
-  expect(thirdHunkLine).toMatch(/32 \+/)
-})
-
-test("DiffRenderable - multiple hunks in split view", async () => {
-  const multiHunkDiff = `--- a/file.js
-+++ b/file.js
-@@ -1,3 +1,3 @@
- function first() {
--  return 1;
-+  return "one";
- }
-@@ -15,4 +15,5 @@
- function second() {
-   var x = 10;
-+  var y = 20;
-   return x;
- }
-@@ -30,3 +31,3 @@
- function third() {
--  console.log("old");
-+  console.log("new");
- }`
-
-  const diffRenderable = new DiffRenderable(currentRenderer, {
-    id: "test-diff",
-    diff: multiHunkDiff,
-    view: "split",
-    syntaxStyle,
-    showLineNumbers: true,
-    width: "100%",
-    height: "100%",
-  })
-
-  currentRenderer.root.add(diffRenderable)
-  await renderOnce()
-
-  const frame = captureFrame()
-  expect(frame).toMatchSnapshot("split view multiple hunks")
-
-  // All three hunks should be present in split view
-  expect(frame).toContain('return "one"')
-  expect(frame).toContain("var y = 20")
-  expect(frame).toContain('console.log("new")')
-
-  // Both old and new content should be visible
-  expect(frame).toContain("return 1")
-  expect(frame).toContain('console.log("old")')
-})
-
-test("DiffRenderable - no newline at end of file in unified view", async () => {
-  const noNewlineDiff = `--- a/test.js
-+++ b/test.js
-@@ -1,3 +1,3 @@
- line1
- line2
--line3
-\\ No newline at end of file
-+line3_modified
-\\ No newline at end of file`
-
-  const diffRenderable = new DiffRenderable(currentRenderer, {
-    id: "test-diff",
-    diff: noNewlineDiff,
-    view: "unified",
-    syntaxStyle,
-    showLineNumbers: true,
-    width: "100%",
-    height: "100%",
-  })
-
-  currentRenderer.root.add(diffRenderable)
-  await renderOnce()
-
-  const frame = captureFrame()
-  expect(frame).toMatchSnapshot("unified view with no newline marker")
-
-  // Should show both old and new versions
-  expect(frame).toContain("line3")
-  expect(frame).toContain("line3_modified")
-
-  // Should NOT show the "No newline" marker as content
-  // (it's a special marker that should be skipped)
-  const frameLines = frame.split("\n")
-  const markerLines = frameLines.filter((l) => l.includes("No newline at end of file"))
-  expect(markerLines.length).toBe(0)
-})
-
-test("DiffRenderable - no newline at end of file in split view", async () => {
-  const noNewlineDiff = `--- a/test.js
-+++ b/test.js
-@@ -1,3 +1,3 @@
- line1
- line2
--line3
-\\ No newline at end of file
-+line3_modified
-\\ No newline at end of file`
-
-  const diffRenderable = new DiffRenderable(currentRenderer, {
-    id: "test-diff",
-    diff: noNewlineDiff,
-    view: "split",
-    syntaxStyle,
-    showLineNumbers: true,
-    width: "100%",
-    height: "100%",
-  })
-
-  currentRenderer.root.add(diffRenderable)
-  await renderOnce()
-
-  const frame = captureFrame()
-  expect(frame).toMatchSnapshot("split view with no newline marker")
-
-  // Both sides should show their respective versions
-  expect(frame).toContain("line3")
-  expect(frame).toContain("line3_modified")
-
-  // Should NOT show the "No newline" marker
-  const frameLines = frame.split("\n")
-  const markerLines = frameLines.filter((l) => l.includes("No newline at end of file"))
-  expect(markerLines.length).toBe(0)
 })
 
 test("DiffRenderable - asymmetric block with more removes than adds in split view", async () => {
@@ -1756,141 +1420,41 @@ test("DiffRenderable - diff with only context lines (no changes)", async () => {
   expect(changedLines.length).toBe(0)
 })
 
-test("DiffRenderable - should not leak listeners on unified view updates", async () => {
-  const diffRenderable = new DiffRenderable(currentRenderer, {
-    id: "test-diff",
-    diff: simpleDiff,
-    view: "unified",
-    syntaxStyle,
-    width: "100%",
-    height: "100%",
-  })
+const listenerChurn: Array<[string, Partial<DiffRenderableOptions>, (diff: DiffRenderable, i: number) => void]> = [
+  [
+    "unified diff updates",
+    { view: "unified" },
+    (diff, i) => (diff.diff = simpleDiff.replace('"Hello"', `"Hello${i}"`)),
+  ],
+  ["split diff updates", { view: "split" }, (diff, i) => (diff.diff = simpleDiff.replace('"Hello"', `"Hello${i}"`))],
+  ["view switches", { view: "unified" }, (diff, i) => (diff.view = i % 2 === 0 ? "split" : "unified")],
+  [
+    "rapid property changes",
+    { view: "split" },
+    (diff, i) => {
+      diff.wrapMode = i % 2 === 0 ? "word" : "char"
+      diff.addedBg = i % 2 === 0 ? "#ff0000" : "#00ff00"
+      diff.removedBg = i % 2 === 0 ? "#0000ff" : "#ffff00"
+    },
+  ],
+  ["wrapped resizes", { view: "split", wrapMode: "word", width: 100 }, (diff, i) => (diff.width = 50 + i * 5)],
+]
 
+test.each(listenerChurn)("DiffRenderable - does not leak line-info listeners on %s", async (_name, options, change) => {
+  const diffRenderable = new DiffRenderable(currentRenderer, { diff: simpleDiff, syntaxStyle, ...options })
   currentRenderer.root.add(diffRenderable)
   await renderOnce()
+  const panes = () => [(diffRenderable as any).leftCodeRenderable, (diffRenderable as any).rightCodeRenderable]
 
-  // Get the underlying CodeRenderable (leftCodeRenderable in unified view)
-  const codeRenderable = (diffRenderable as any).leftCodeRenderable
-  expect(codeRenderable).toBeDefined()
-
-  // Check initial listener count
-  const initialListenerCount = codeRenderable.listenerCount("line-info-change")
-  expect(initialListenerCount).toBeGreaterThanOrEqual(1)
-
-  // Update the diff multiple times - this should not add more listeners
   for (let i = 0; i < 10; i++) {
-    diffRenderable.diff = simpleDiff.replace('"Hello"', `"Hello${i}"`)
+    change(diffRenderable, i)
     await renderOnce()
+    // Flush a split-view rebuild.
+    await Promise.resolve()
+    await renderOnce()
+    // One listener from the Diff and one from the pane's gutter.
+    for (const pane of panes()) if (pane) expect(pane.listenerCount("line-info-change")).toBe(2)
   }
-
-  // Check that listener count hasn't grown
-  const finalListenerCount = codeRenderable.listenerCount("line-info-change")
-  expect(finalListenerCount).toBe(initialListenerCount)
-})
-
-test("DiffRenderable - should not leak listeners on split view updates", async () => {
-  const diffRenderable = new DiffRenderable(currentRenderer, {
-    id: "test-diff",
-    diff: simpleDiff,
-    view: "split",
-    syntaxStyle,
-    width: "100%",
-    height: "100%",
-  })
-
-  currentRenderer.root.add(diffRenderable)
-  await renderOnce()
-
-  // Get the underlying CodeRenderables
-  const leftCodeRenderable = (diffRenderable as any).leftCodeRenderable
-  const rightCodeRenderable = (diffRenderable as any).rightCodeRenderable
-  expect(leftCodeRenderable).toBeDefined()
-  expect(rightCodeRenderable).toBeDefined()
-
-  // Check initial listener counts
-  const leftInitialCount = leftCodeRenderable.listenerCount("line-info-change")
-  const rightInitialCount = rightCodeRenderable.listenerCount("line-info-change")
-  expect(leftInitialCount).toBeGreaterThanOrEqual(1)
-  expect(rightInitialCount).toBeGreaterThanOrEqual(1)
-
-  // Update the diff multiple times - this should not add more listeners
-  for (let i = 0; i < 10; i++) {
-    diffRenderable.diff = simpleDiff.replace('"Hello"', `"Hello${i}"`)
-    await renderOnce()
-  }
-
-  // Check that listener counts haven't grown
-  const leftFinalCount = leftCodeRenderable.listenerCount("line-info-change")
-  const rightFinalCount = rightCodeRenderable.listenerCount("line-info-change")
-  expect(leftFinalCount).toBe(leftInitialCount)
-  expect(rightFinalCount).toBe(rightInitialCount)
-})
-
-test("DiffRenderable - should not leak listeners when switching views", async () => {
-  const diffRenderable = new DiffRenderable(currentRenderer, {
-    id: "test-diff",
-    diff: simpleDiff,
-    view: "unified",
-    syntaxStyle,
-    width: "100%",
-    height: "100%",
-  })
-
-  currentRenderer.root.add(diffRenderable)
-  await renderOnce()
-
-  // Get initial renderables
-  const leftCodeRenderable = (diffRenderable as any).leftCodeRenderable
-  expect(leftCodeRenderable).toBeDefined()
-  const initialLeftCount = leftCodeRenderable.listenerCount("line-info-change")
-
-  // Switch to split view and back multiple times
-  for (let i = 0; i < 5; i++) {
-    diffRenderable.view = "split"
-    await renderOnce()
-
-    diffRenderable.view = "unified"
-    await renderOnce()
-  }
-
-  const finalLeftCount = leftCodeRenderable.listenerCount("line-info-change")
-
-  // Listener count should remain stable (allow some flexibility for implementation details)
-  expect(finalLeftCount).toBeLessThanOrEqual(initialLeftCount + 2)
-})
-
-test("DiffRenderable - should not leak listeners on rapid property changes", async () => {
-  const diffRenderable = new DiffRenderable(currentRenderer, {
-    id: "test-diff",
-    diff: simpleDiff,
-    view: "split",
-    syntaxStyle,
-    width: "100%",
-    height: "100%",
-  })
-
-  currentRenderer.root.add(diffRenderable)
-  await renderOnce()
-
-  const leftCodeRenderable = (diffRenderable as any).leftCodeRenderable
-  const rightCodeRenderable = (diffRenderable as any).rightCodeRenderable
-  const leftInitialCount = leftCodeRenderable.listenerCount("line-info-change")
-  const rightInitialCount = rightCodeRenderable.listenerCount("line-info-change")
-
-  // Make rapid changes that trigger rebuilds
-  for (let i = 0; i < 10; i++) {
-    diffRenderable.wrapMode = i % 2 === 0 ? "word" : "char"
-    diffRenderable.addedBg = i % 2 === 0 ? "#ff0000" : "#00ff00"
-    diffRenderable.removedBg = i % 2 === 0 ? "#0000ff" : "#ffff00"
-    await renderOnce()
-  }
-
-  const leftFinalCount = leftCodeRenderable.listenerCount("line-info-change")
-  const rightFinalCount = rightCodeRenderable.listenerCount("line-info-change")
-
-  // Listener counts should remain stable
-  expect(leftFinalCount).toBe(leftInitialCount)
-  expect(rightFinalCount).toBe(rightInitialCount)
 })
 
 test("DiffRenderable - can toggle conceal with markdown diff", async () => {
@@ -2010,41 +1574,6 @@ test("DiffRenderable - conceal defaults to false when not specified", async () =
   await renderOnce()
 
   expect(diffRenderable.conceal).toBe(false)
-})
-
-test("DiffRenderable - should handle resize with wrapping without leaking listeners", async () => {
-  const diffRenderable = new DiffRenderable(currentRenderer, {
-    id: "test-diff",
-    diff: simpleDiff,
-    view: "split",
-    syntaxStyle,
-    wrapMode: "word",
-    width: 100,
-    height: "100%",
-  })
-
-  currentRenderer.root.add(diffRenderable)
-  await renderOnce()
-
-  const leftCodeRenderable = (diffRenderable as any).leftCodeRenderable
-  const rightCodeRenderable = (diffRenderable as any).rightCodeRenderable
-  const leftInitialCount = leftCodeRenderable.listenerCount("line-info-change")
-  const rightInitialCount = rightCodeRenderable.listenerCount("line-info-change")
-
-  // Simulate multiple resizes (which trigger rebuilds in split view with wrapping)
-  for (let i = 0; i < 10; i++) {
-    diffRenderable.width = 50 + i * 5
-    await renderOnce()
-    // Flush microtask rebuild
-    await Promise.resolve()
-    await renderOnce()
-  }
-
-  const leftFinalCount = leftCodeRenderable.listenerCount("line-info-change")
-  const rightFinalCount = rightCodeRenderable.listenerCount("line-info-change")
-
-  expect(leftFinalCount).toBe(leftInitialCount)
-  expect(rightFinalCount).toBe(rightInitialCount)
 })
 
 test("DiffRenderable - gutter configuration updates work correctly", async () => {
@@ -2251,6 +1780,26 @@ test("DiffRenderable - gutter remains in correct position after updates", async 
   }
 })
 
+test("DiffRenderable - construction failure releases the panes it built", () => {
+  const live = Renderable.renderablesByNumber.size
+  const updateTextInfo = CodeRenderable.prototype["updateTextInfo"]
+  let calls = 0
+  const failSecondPane = spyOn(CodeRenderable.prototype as any, "updateTextInfo").mockImplementation(
+    function (this: CodeRenderable) {
+      if (++calls === 2) throw new Error("second pane failed")
+      updateTextInfo.call(this)
+    },
+  )
+  try {
+    expect(() => new DiffRenderable(currentRenderer, { diff: simpleDiff, view: "split", syntaxStyle })).toThrow(
+      "second pane failed",
+    )
+  } finally {
+    failSecondPane.mockRestore()
+  }
+  expect(Renderable.renderablesByNumber.size).toBe(live)
+})
+
 test("DiffRenderable - releases default syntax styles after replacing them with a borrowed style", () => {
   const diff = new DiffRenderable(currentRenderer, { diff: simpleDiff, view: "split" })
   currentRenderer.root.add(diff)
@@ -2308,13 +1857,26 @@ test.each(["destroy", "destroyRecursively"] as const)("DiffRenderable - %s frees
   diffRenderable.view = "unified"
   await renderOnce()
 
+  const warn = spyOn(console, "warn")
   try {
     diffRenderable[cleanup]()
     for (const node of [...sides, ...errorNodes, leftCodeRenderable, rightCodeRenderable]) {
       expect(node.isFreed()).toBe(true)
       expect(node.listenerCount("line-info-change")).toBe(0)
     }
+
+    // Writes after destroy build no panes, and queries read no destroyed pane.
+    const live = Renderable.renderablesByNumber.size
+    diffRenderable.diff = largeDiff
+    diffRenderable.view = "split"
+    diffRenderable.syntaxStyle = undefined
+    expect(diffRenderable.getHunkRowOffsets()).toEqual([0])
+    await Promise.resolve()
+    expect(Renderable.renderablesByNumber.size).toBe(live)
+    expect((diffRenderable as any).fallbackSyntaxStyle).toBeUndefined()
+    expect(warn).not.toHaveBeenCalled()
   } finally {
+    warn.mockRestore()
     for (const node of [...sides, ...errorNodes]) node.destroyRecursively()
   }
 })
@@ -2416,171 +1978,31 @@ test("DiffRenderable - line numbers update correctly after resize causes wrappin
   renderer.destroy()
 })
 
-test("DiffRenderable - fg prop is passed to CodeRenderable on construction", async () => {
-  const customFg = "#000000"
+test.each(["unified", "split"] as const)(
+  "DiffRenderable - %s view passes fg and selection colors to its panes",
+  async (view) => {
+    const names = ["fg", "selectionBg", "selectionFg"] as const
+    const initial = { fg: "#000000", selectionBg: "#111111", selectionFg: RGBA.fromValues(0.2, 0.2, 0.2, 1) }
+    const diffRenderable = new DiffRenderable(currentRenderer, { diff: simpleDiff, view, syntaxStyle, ...initial })
+    currentRenderer.root.add(diffRenderable)
+    await renderOnce()
+    const panes = [(diffRenderable as any).leftCodeRenderable, (diffRenderable as any).rightCodeRenderable]
+    if (view === "unified") panes.pop()
 
-  const diffRenderable = new DiffRenderable(currentRenderer, {
-    id: "test-diff",
-    diff: simpleDiff,
-    view: "unified",
-    syntaxStyle,
-    fg: customFg,
-    width: "100%",
-    height: "100%",
-  })
+    for (const colors of [initial, { fg: "#333333", selectionBg: RGBA.fromHex("#444444"), selectionFg: "#555555" }]) {
+      if (colors !== initial) Object.assign(diffRenderable, colors)
+      await renderOnce()
+      for (const name of names) {
+        expect(diffRenderable[name]).toEqual(parseColor(colors[name]))
+        for (const pane of panes) expect(pane[name]).toEqual(parseColor(colors[name]))
+      }
+    }
 
-  currentRenderer.root.add(diffRenderable)
-  await renderOnce()
-
-  expect(diffRenderable.fg).toEqual(RGBA.fromHex(customFg))
-
-  const leftCodeRenderable = (diffRenderable as any).leftCodeRenderable
-  expect(leftCodeRenderable).toBeDefined()
-  expect(leftCodeRenderable.fg).toEqual(RGBA.fromHex(customFg))
-})
-
-test("DiffRenderable - fg prop can be updated via setter", async () => {
-  const initialFg = "#000000"
-  const updatedFg = "#333333"
-
-  const diffRenderable = new DiffRenderable(currentRenderer, {
-    id: "test-diff",
-    diff: simpleDiff,
-    view: "unified",
-    syntaxStyle,
-    fg: initialFg,
-    width: "100%",
-    height: "100%",
-  })
-
-  currentRenderer.root.add(diffRenderable)
-  await renderOnce()
-
-  diffRenderable.fg = updatedFg
-  await renderOnce()
-
-  expect(diffRenderable.fg).toEqual(RGBA.fromHex(updatedFg))
-
-  const leftCodeRenderable = (diffRenderable as any).leftCodeRenderable
-  expect(leftCodeRenderable.fg).toEqual(RGBA.fromHex(updatedFg))
-})
-
-test("DiffRenderable - fg prop is passed to both CodeRenderables in split view", async () => {
-  const customFg = "#222222"
-
-  const diffRenderable = new DiffRenderable(currentRenderer, {
-    id: "test-diff",
-    diff: simpleDiff,
-    view: "split",
-    syntaxStyle,
-    fg: customFg,
-    width: "100%",
-    height: "100%",
-  })
-
-  currentRenderer.root.add(diffRenderable)
-  await renderOnce()
-
-  expect(diffRenderable.fg).toEqual(RGBA.fromHex(customFg))
-
-  const leftCodeRenderable = (diffRenderable as any).leftCodeRenderable
-  const rightCodeRenderable = (diffRenderable as any).rightCodeRenderable
-
-  expect(leftCodeRenderable).toBeDefined()
-  expect(rightCodeRenderable).toBeDefined()
-  expect(leftCodeRenderable.fg).toEqual(RGBA.fromHex(customFg))
-  expect(rightCodeRenderable.fg).toEqual(RGBA.fromHex(customFg))
-})
-
-test("DiffRenderable - fg prop updates both CodeRenderables in split view", async () => {
-  const initialFg = "#111111"
-  const updatedFg = "#444444"
-
-  const diffRenderable = new DiffRenderable(currentRenderer, {
-    id: "test-diff",
-    diff: simpleDiff,
-    view: "split",
-    syntaxStyle,
-    fg: initialFg,
-    width: "100%",
-    height: "100%",
-  })
-
-  currentRenderer.root.add(diffRenderable)
-  await renderOnce()
-
-  const leftCodeRenderable = (diffRenderable as any).leftCodeRenderable
-  const rightCodeRenderable = (diffRenderable as any).rightCodeRenderable
-
-  diffRenderable.fg = updatedFg
-  await renderOnce()
-
-  expect(diffRenderable.fg).toEqual(RGBA.fromHex(updatedFg))
-  expect(leftCodeRenderable.fg).toEqual(RGBA.fromHex(updatedFg))
-  expect(rightCodeRenderable.fg).toEqual(RGBA.fromHex(updatedFg))
-})
-
-test("DiffRenderable - fg prop defaults to undefined when not specified", async () => {
-  const diffRenderable = new DiffRenderable(currentRenderer, {
-    id: "test-diff",
-    diff: simpleDiff,
-    view: "unified",
-    syntaxStyle,
-    width: "100%",
-    height: "100%",
-  })
-
-  currentRenderer.root.add(diffRenderable)
-  await renderOnce()
-
-  expect(diffRenderable.fg).toBeUndefined()
-})
-
-test("DiffRenderable - fg prop can be set to undefined to clear it", async () => {
-  const initialFg = "#000000"
-
-  const diffRenderable = new DiffRenderable(currentRenderer, {
-    id: "test-diff",
-    diff: simpleDiff,
-    view: "unified",
-    syntaxStyle,
-    fg: initialFg,
-    width: "100%",
-    height: "100%",
-  })
-
-  currentRenderer.root.add(diffRenderable)
-  await renderOnce()
-
-  expect(diffRenderable.fg).toEqual(RGBA.fromHex(initialFg))
-
-  diffRenderable.fg = undefined
-  await renderOnce()
-
-  expect(diffRenderable.fg).toBeUndefined()
-})
-
-test("DiffRenderable - fg prop accepts RGBA directly", async () => {
-  const customFg = RGBA.fromValues(0.2, 0.2, 0.2, 1)
-
-  const diffRenderable = new DiffRenderable(currentRenderer, {
-    id: "test-diff",
-    diff: simpleDiff,
-    view: "unified",
-    syntaxStyle,
-    fg: customFg,
-    width: "100%",
-    height: "100%",
-  })
-
-  currentRenderer.root.add(diffRenderable)
-  await renderOnce()
-
-  expect(diffRenderable.fg).toEqual(customFg)
-
-  const leftCodeRenderable = (diffRenderable as any).leftCodeRenderable
-  expect(leftCodeRenderable.fg).toEqual(customFg)
-})
+    Object.assign(diffRenderable, { fg: undefined, selectionBg: undefined, selectionFg: undefined })
+    await renderOnce()
+    for (const name of names) expect(diffRenderable[name]).toBeUndefined()
+  },
+)
 
 test("DiffRenderable - split view with word wrapping: changing diff content should not misalign sides", async () => {
   const { BoxRenderable } = await import("./Box.js")
@@ -2833,103 +2255,36 @@ test("DiffRenderable - split view with word wrapping: changing diff content shou
   expect(buggyFrame).toBe(correctFrame)
 })
 
-test("DiffRenderable - setLineColor applies color to line", async () => {
-  const diffRenderable = new DiffRenderable(currentRenderer, {
-    id: "test-diff",
-    diff: simpleDiff,
-    view: "unified",
-    syntaxStyle,
-  })
-  currentRenderer.root.add(diffRenderable)
+test.each(["unified", "split"] as const)(
+  "DiffRenderable - line color methods update every gutter in %s view",
+  (view) => {
+    const diffRenderable = new DiffRenderable(currentRenderer, { diff: multiLineDiff, view, syntaxStyle })
+    currentRenderer.root.add(diffRenderable)
+    const sides = [(diffRenderable as any).leftSide, (diffRenderable as any).rightSide].slice(
+      0,
+      view === "split" ? 2 : 1,
+    )
+    const expectColors = (lines: number[], color?: string, part: "gutter" | "content" = "gutter") => {
+      for (const side of sides) {
+        for (const line of lines) expect(side.getLineColors()[part].get(line)).toEqual(color && parseColor(color))
+      }
+    }
 
-  diffRenderable.setLineColor(0, "#ff0000")
-  diffRenderable.setLineColor(1, { gutter: "#00ff00", content: "#0000ff" })
-  diffRenderable.clearLineColor(0)
-  diffRenderable.clearLineColor(1)
-})
-
-test("DiffRenderable - highlightLines applies color to range", async () => {
-  const diffRenderable = new DiffRenderable(currentRenderer, {
-    id: "test-diff",
-    diff: multiLineDiff,
-    view: "unified",
-    syntaxStyle,
-  })
-  currentRenderer.root.add(diffRenderable)
-
-  diffRenderable.highlightLines(0, 3, "#ff0000")
-  diffRenderable.clearHighlightLines(0, 3)
-})
-
-test("DiffRenderable - setLineColors and clearAllLineColors", async () => {
-  const diffRenderable = new DiffRenderable(currentRenderer, {
-    id: "test-diff",
-    diff: simpleDiff,
-    view: "unified",
-    syntaxStyle,
-  })
-  currentRenderer.root.add(diffRenderable)
-
-  const lineColors = new Map<number, string>()
-  lineColors.set(0, "#ff0000")
-  lineColors.set(1, "#00ff00")
-  lineColors.set(2, "#0000ff")
-
-  diffRenderable.setLineColors(lineColors)
-  diffRenderable.clearAllLineColors()
-})
-
-test("DiffRenderable - line highlighting works in split view", async () => {
-  const diffRenderable = new DiffRenderable(currentRenderer, {
-    id: "test-diff",
-    diff: simpleDiff,
-    view: "split",
-    syntaxStyle,
-  })
-  currentRenderer.root.add(diffRenderable)
-
-  diffRenderable.setLineColor(0, "#ff0000")
-  diffRenderable.highlightLines(0, 2, "#00ff00")
-  diffRenderable.clearHighlightLines(0, 2)
-  diffRenderable.clearAllLineColors()
-})
-
-const threeHunkDiff = `--- a/file.js
-+++ b/file.js
-@@ -1,3 +1,3 @@
- function first() {
--  return 1;
-+  return "one";
- }
-@@ -15,4 +15,5 @@
- function second() {
-   var x = 10;
-+  var y = 20;
-   return x;
- }
-@@ -30,3 +31,3 @@
- function third() {
--  console.log("old");
-+  console.log("new");
- }`
-
-test("DiffRenderable - getHunkRowOffsets returns the first row of each hunk (unified)", async () => {
-  const diffRenderable = new DiffRenderable(currentRenderer, {
-    id: "test-diff",
-    diff: threeHunkDiff,
-    view: "unified",
-    syntaxStyle,
-    showLineNumbers: true,
-    width: "100%",
-    height: "100%",
-  })
-
-  currentRenderer.root.add(diffRenderable)
-  await renderOnce()
-
-  // Hunks flatten into one column: 4 lines, then 5 lines, then 4 lines.
-  expect(diffRenderable.getHunkRowOffsets()).toEqual([0, 4, 9])
-})
+    diffRenderable.setLineColor(0, { gutter: "#00ff00", content: "#0000ff" })
+    expectColors([0], "#00ff00")
+    expectColors([0], "#0000ff", "content")
+    diffRenderable.clearLineColor(0)
+    expectColors([0])
+    diffRenderable.highlightLines(0, 2, "#ff0000")
+    expectColors([0, 1, 2], "#ff0000")
+    diffRenderable.clearHighlightLines(0, 2)
+    expectColors([0, 1, 2])
+    diffRenderable.setLineColors(new Map([[3, "#ff0000"]]))
+    for (const side of sides) expect([...side.getLineColors().gutter.keys()]).toEqual([3])
+    diffRenderable.clearAllLineColors()
+    for (const side of sides) expect(side.getLineColors().gutter.size).toBe(0)
+  },
+)
 
 test("DiffRenderable - getHunkRowOffsets accounts for wrapped lines (unified)", async () => {
   const longLine = "x".repeat(220)
@@ -2973,29 +2328,15 @@ test("DiffRenderable - getHunkRowOffsets accounts for wrapped lines (unified)", 
   expect(diffRenderable.getHunkRowOffsets()).toEqual([sources.indexOf(0), sources.indexOf(4), sources.indexOf(8)])
 })
 
-test("DiffRenderable - getHunkRowOffsets uses split-view rows (split)", async () => {
-  const diffRenderable = new DiffRenderable(currentRenderer, {
-    id: "test-diff",
-    diff: threeHunkDiff,
-    view: "split",
-    syntaxStyle,
-    showLineNumbers: true,
-    width: "100%",
-    height: "100%",
-  })
-
+// Unified view flattens the hunks into one column (4, 5, then 4 rows). Split view pairs adds and removes side by
+// side, so the add-only second hunk leaves the left column one row shorter.
+test.each([
+  ["unified", threeHunkDiff, [0, 4, 9]],
+  ["split", threeHunkDiff, [0, 3, 8]],
+  ["unified", undefined, []],
+] as const)("DiffRenderable - getHunkRowOffsets in %s view (%#)", async (view, diff, expected) => {
+  const diffRenderable = new DiffRenderable(currentRenderer, { diff, view, syntaxStyle, width: "100%", height: "100%" })
   currentRenderer.root.add(diffRenderable)
   await renderOnce()
-
-  // Split view pairs adds/removes side by side, so the add-only second hunk leaves the
-  // left column one row shorter than the unified flattening.
-  expect(diffRenderable.getHunkRowOffsets()).toEqual([0, 3, 8])
-})
-
-test("DiffRenderable - getHunkRowOffsets is empty without a diff", async () => {
-  const diffRenderable = new DiffRenderable(currentRenderer, { id: "test-diff" })
-  currentRenderer.root.add(diffRenderable)
-  await renderOnce()
-
-  expect(diffRenderable.getHunkRowOffsets()).toEqual([])
+  expect(diffRenderable.getHunkRowOffsets()).toEqual([...expected])
 })

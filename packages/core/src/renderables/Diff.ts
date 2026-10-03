@@ -169,12 +169,8 @@ export class DiffRenderable extends Renderable {
         this.buildView()
       }
     } catch (error) {
-      try {
-        super.destroyRecursively()
-      } catch {
-        // Preserve the construction failure.
-      }
-      throw error
+      // destroySelf destroys every pane, attached or not.
+      this.rollbackConstruction(error)
     }
   }
 
@@ -203,6 +199,7 @@ export class DiffRenderable extends Renderable {
   }
 
   private buildView(): void {
+    if (this.isDestroyed) return
     this._hunkStartLines = []
     this.invalidateHunkRowOffsets()
 
@@ -353,6 +350,8 @@ export class DiffRenderable extends Renderable {
       ]) {
         if (child && !child.isDestroyed) run(() => child.destroyRecursively())
       }
+      this.leftSide = this.rightSide = this.leftCodeRenderable = this.rightCodeRenderable = null
+      this.errorTextRenderable = this.errorCodeRenderable = null
       run(() => this.fallbackSyntaxStyle?.destroy())
     })
   }
@@ -1031,11 +1030,10 @@ export class DiffRenderable extends Renderable {
 
   public set syntaxStyle(value: SyntaxStyle | undefined) {
     if (this._syntaxStyle !== value) {
-      const style = value ?? (this.fallbackSyntaxStyle ??= SyntaxStyle.create(this.ctx.nativeScene))
       this._syntaxStyle = value
       // Inactive panes can still finish highlighting after their theme is replaced.
       for (const code of [this.leftCodeRenderable, this.rightCodeRenderable, this.errorCodeRenderable]) {
-        if (code && !code.isDestroyed) code.syntaxStyle = style
+        if (code && !code.isDestroyed) code.syntaxStyle = this.codeSyntaxStyle
       }
       this.rebuildView()
     }

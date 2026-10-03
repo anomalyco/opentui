@@ -181,7 +181,6 @@ const editorSetters = [
 ]
 const throwsAfterDestroy: Record<string, string[]> = {
   CodeRenderable: ["scrollX", "scrollY"], // U20 (TextBufferRenderable setters)
-  MarkdownRenderable: ["internalBlockMode", "renderNode"], // U23
   TextBufferRenderable: ["scrollX", "scrollY"], // U20
   TextRenderable: ["content", "scrollX", "scrollY"], // U20
   TextTableRenderable: ["wrapMode"], // U20
