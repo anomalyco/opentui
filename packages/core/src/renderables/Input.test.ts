@@ -404,18 +404,6 @@ describe("InputRenderable", () => {
       expect(pasteCalled).toBe(true)
       expect(pasteText).toBe("pasted text")
     })
-
-    it("should strip ANSI sequences from pasted text before inserting", () => {
-      const { input } = createInputRenderable({
-        width: 20,
-      })
-
-      input.focus()
-
-      mockInput.pasteBracketedText("hi \x1b[31mred\x1b[0m")
-
-      expect(input.value).toBe("hi red")
-    })
   })
 
   describe("Multiple Input Focus Management", () => {

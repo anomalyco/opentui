@@ -1,6 +1,4 @@
 import { runRenderableMutation } from "../lib/renderable-layout.js"
-import type { PasteEvent } from "../lib/KeyHandler.js"
-import { decodePasteBytes, stripAnsiSequences } from "../lib/paste.js"
 import type { RenderContext } from "../types.js"
 import {
   TextareaRenderable,
@@ -106,16 +104,6 @@ export class InputRenderable extends TextareaRenderable {
    */
   public override newLine(): boolean {
     return false
-  }
-
-  /**
-   * Handle paste - strip newlines and enforce maxLength
-   */
-  public override handlePaste(event: PasteEvent): void {
-    const sanitized = stripAnsiSequences(decodePasteBytes(event.bytes)).replace(/[\n\r]/g, "")
-    if (sanitized) {
-      this.insertText(sanitized)
-    }
   }
 
   /**
