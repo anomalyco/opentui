@@ -3754,13 +3754,12 @@ export class FFIRenderLib {
     const fg = contextBufferColor(foreground)
     const bg = contextBufferColor(background)
     const attrs = toSafeFFIU32Length(attributes, "Unicode attributes")
-    this.getYogaHost().runMutation(() => {
-      const pointer = this.nativeContextPointer(context, "ot_buffer_draw_unicode")
-      nativeResult(
-        "ot_buffer_draw_unicode",
-        this.opentui.symbols.ot_buffer_draw_unicode(pointer, handle, ticket, source, item, column, row, fg, bg, attrs),
-      )
-    })
+    this.getYogaHost().assertMutable()
+    const pointer = this.nativeContextPointer(context, "ot_buffer_draw_unicode")
+    nativeResult(
+      "ot_buffer_draw_unicode",
+      this.opentui.symbols.ot_buffer_draw_unicode(pointer, handle, ticket, source, item, column, row, fg, bg, attrs),
+    )
   }
 
   public createContextEmbeddedTerminal(
