@@ -82,7 +82,8 @@ test("native measured leaves reject children and destroyed providers cannot pois
   other.setMeasureProvider(() => ({ width: 5, height: 1 }))
   peer.renderer.root.add(other)
   box.destroy()
-  assert.throws(() => box.setMeasureProvider(() => ({ width: 7, height: 1 })), /destroyed/)
+  // A destroyed renderable ignores the write.
+  box.setMeasureProvider(() => ({ width: 7, height: 1 }))
   await peer.renderOnce()
   assert.equal(other.width, 5)
 })
