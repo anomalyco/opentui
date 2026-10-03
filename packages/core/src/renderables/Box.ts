@@ -1,4 +1,3 @@
-import { runRenderableMutation } from "../lib/renderable-layout.js"
 import { Gutter } from "../yoga.js"
 import { type RenderableOptions, Renderable } from "../Renderable.js"
 import type { OptimizedBuffer } from "../buffer.js"
@@ -194,7 +193,7 @@ export class BoxRenderable extends Renderable {
   public set borderStyle(value: BorderStyle) {
     const _value = parseBorderStyle(value, this._defaultOptions.borderStyle)
     if (this._borderStyle !== _value || !this._border) {
-      runRenderableMutation(this, () => {
+      this.runMutation(() => {
         this._ctx.nativeScene.setBoxBorderStyle(
           this,
           _value,

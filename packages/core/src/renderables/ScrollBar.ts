@@ -1,4 +1,3 @@
-import { assertRenderableMutable } from "../lib/renderable-layout.js"
 import type { OptimizedBuffer } from "../buffer.js"
 import { parseColor, RGBA, type ColorInput } from "../lib/index.js"
 import type { KeyEvent } from "../lib/KeyHandler.js"
@@ -71,7 +70,7 @@ export class ScrollBarRenderable extends Renderable {
 
   set scrollSize(value: number) {
     if (this.isDestroyed) return
-    assertRenderableMutable(this)
+    this.assertMutable()
     value ??= 0
     if (!Number.isFinite(value) || !Number.isFinite(value - this._viewportSize)) {
       throw new RangeError("Scene scroll sizes and ranges must be finite numbers")
@@ -87,7 +86,7 @@ export class ScrollBarRenderable extends Renderable {
 
   set scrollPosition(value: number) {
     if (this.isDestroyed) return
-    assertRenderableMutable(this)
+    this.assertMutable()
     const newPosition = Math.round(Math.min(Math.max(0, value ?? 0), this.scrollSize - this.viewportSize))
     if (!Number.isFinite(newPosition)) {
       throw new RangeError("Scene scroll positions must be finite numbers")
@@ -103,7 +102,7 @@ export class ScrollBarRenderable extends Renderable {
 
   set viewportSize(value: number) {
     if (this.isDestroyed) return
-    assertRenderableMutable(this)
+    this.assertMutable()
     value ??= 0
     if (!Number.isFinite(value) || !Number.isFinite(this._scrollSize - value)) {
       throw new RangeError("Scene viewport sizes and ranges must be finite numbers")
@@ -124,7 +123,7 @@ export class ScrollBarRenderable extends Renderable {
 
   set showArrows(value: boolean) {
     if (this.isDestroyed || value === this._showArrows) return
-    assertRenderableMutable(this)
+    this.assertMutable()
     this._showArrows = value
     this.startArrow.visible = value
     if (this.isDestroyed || this.endArrow.isDestroyed) return
