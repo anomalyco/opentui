@@ -146,6 +146,111 @@ test "Session snapshot-only output preserves footer cells and invalidates the ne
     try testing.expect(cli.force_full_repaint);
 }
 
+test "Session screen changes write mode packets only for an active terminal" {
+    const Fixture = @import("session-terminal_test.zig").Fixture;
+    const push = std.fmt.comptimePrint(ansi.ANSI.csiUPush, .{5});
+    const Case = struct {
+        phase: session.TerminalPhase,
+        alternate: bool,
+        kitty: bool = false,
+        pending_frame: bool = false,
+        trailing: usize = 4,
+        result: ?anyerror = null,
+        packet: []const u8 = "",
+    };
+    const cases = [_]Case{
+        .{ .phase = .uninitialized, .alternate = true },
+        .{ .phase = .uninitialized, .alternate = true, .pending_frame = true, .result = error.PresentationPending },
+        .{ .phase = .setting_up, .alternate = false, .result = error.TerminalInactive },
+        .{ .phase = .active, .alternate = true },
+        .{ .phase = .active, .alternate = false, .packet = ansi.ANSI.switchToMainScreen },
+        .{ .phase = .active, .alternate = false, .kitty = true, .packet = ansi.ANSI.csiUPop ++ ansi.ANSI.switchToMainScreen ++ push },
+        .{ .phase = .active, .alternate = false, .trailing = session.control_packet_bytes_max, .result = error.InvalidOptions },
+        .{ .phase = .suspended, .alternate = false },
+    };
+    const trailing = [_]u8{'t'} ** session.control_packet_bytes_max;
+    for (cases) |case| {
+        const f = try Fixture.init(testing.allocator, testing.io, 4, 2);
+        defer f.deinit();
+        var bytes: [16 * 1024]u8 = undefined;
+        var now: u64 = 0;
+        if (case.phase != .uninitialized) try f.owner.setupSessionTerminal(f.id, .{});
+        if (case.phase == .active or case.phase == .suspended) try f.drive(&now, .active);
+        if (case.phase == .suspended) {
+            try f.owner.suspendSession(f.id);
+            try f.drive(&now, .suspended);
+        }
+        if (case.kitty) {
+            f.cli.terminal.state.kitty_keyboard = true;
+            f.cli.terminal.state.kitty_keyboard_flags = 5;
+        }
+        if (case.pending_frame) {
+            try f.cli.getNextBuffer().drawTextChecked("x", 0, 0, ansi.rgbColor(255, 255, 255, 255), null, 0);
+            try testing.expectEqual(session.RenderStatus.pending, try f.value.render(true));
+        }
+        const before = f.snapshot();
+        const alternate_before = f.cli.useAlternateScreen;
+        const result = f.value.setScreen(case.alternate, 6, 3, trailing[0..case.trailing]);
+        if (case.result) |expected| {
+            try testing.expectError(expected, result);
+            try testing.expectEqualDeep(before, f.snapshot());
+            try testing.expectEqual(alternate_before, f.cli.useAlternateScreen);
+            try testing.expectEqual(@as(u32, 4), f.cli.width);
+            continue;
+        }
+        try result;
+        const output = try f.drain(&bytes);
+        try testing.expectEqualStrings(case.packet, output[0..case.packet.len]);
+        try testing.expectEqualStrings(trailing[0..case.trailing], output[case.packet.len..]);
+        try testing.expectEqual(@as(u32, 6), f.cli.width);
+        try testing.expectEqual(@as(u32, 3), f.cli.height);
+        try testing.expectEqual(case.alternate, f.cli.useAlternateScreen);
+        try testing.expect(f.cli.force_full_repaint and f.cli.imageScreenInvalidated);
+        try testing.expectEqual(case.kitty, f.cli.terminal.state.kitty_keyboard);
+        if (case.packet.len != 0) try testing.expectEqual(case.alternate, f.cli.terminal.state.alt_screen);
+    }
+}
+
+test "Session detached sync copies parent terminal capabilities only into an idle child" {
+    const owner = try context.Context.init(testing.allocator, testing.io, .{});
+    defer owner.deinit() catch unreachable;
+    var handles: [3]context.Handle = undefined;
+    for (&handles) |*handle| handle.* = try owner.createSession(.{});
+    defer for (handles) |handle| owner.cancelSession(handle) catch unreachable;
+    for (handles[0..2]) |handle| try owner.attachSessionRenderer(handle, 4, 2, .{ .forwarded_env = &.{} });
+    const parent = try owner.raw().getSession(handles[0]);
+    const child = try owner.raw().getSession(handles[1]);
+    const bare = try owner.raw().getSession(handles[2]);
+    const other = try context.Context.init(testing.allocator, testing.io, .{});
+    defer other.deinit() catch unreachable;
+    const foreign_handle = try other.createSession(.{});
+    defer other.cancelSession(foreign_handle) catch unreachable;
+    const foreign = try other.raw().getSession(foreign_handle);
+
+    const source = parent.renderer.?;
+    source.terminal.caps.kitty_graphics = true;
+    source.terminal.caps.unicode = .unicode;
+    source.terminal.image_protocol = .kitty;
+    source.image_resolution = .{ .terminal_width = 4, .terminal_height = 2, .pixel_width = 40, .pixel_height = 40 };
+    try testing.expectError(error.InvalidOptions, child.syncDetached(child));
+    try testing.expectError(error.WrongContext, child.syncDetached(foreign));
+    try testing.expectError(error.RendererNotAttached, child.syncDetached(bare));
+    try testing.expectError(error.RendererNotAttached, bare.syncDetached(parent));
+    try child.renderer.?.getNextBuffer().drawTextChecked("x", 0, 0, ansi.rgbColor(255, 255, 255, 255), null, 0);
+    try testing.expectEqual(session.RenderStatus.pending, try child.render(true));
+    try testing.expectError(error.InvalidOptions, child.syncDetached(parent));
+    try testing.expect(!child.renderer.?.terminal.caps.kitty_graphics);
+    var out: [256]u8 = undefined;
+    while (try owner.readOutput(handles[1], &out)) |ticket| try owner.completeOutput(handles[1], ticket, .written);
+
+    try child.syncDetached(parent);
+    const target = child.renderer.?;
+    try testing.expectEqualDeep(source.terminal.caps, target.terminal.caps);
+    try testing.expectEqual(.kitty, target.terminal.image_protocol);
+    try testing.expectEqualDeep(source.image_resolution, target.image_resolution);
+    try testing.expectEqual(.unicode, target.getNextBuffer().width_method);
+}
+
 fn copyWithAllocationFailures(allocator: std.mem.Allocator, split: bool) !void {
     const owner = try context.Context.init(allocator, testing.io, .{});
     defer owner.deinit() catch unreachable;

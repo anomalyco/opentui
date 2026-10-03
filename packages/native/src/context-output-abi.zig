@@ -208,6 +208,73 @@ test "Context output ABI rejects malformed snapshot tables and controls without 
     try std.testing.expectEqual(c.OT_INVALID_ARGUMENT, ot_session_sync_detached(context, &id, &id));
 }
 
+test "Context split control decodes every command and rejects out-of-range arguments" {
+    const context: ?*abi.ContextHandle = try abi.createTestContext(.{ .object_capacity = 16, .render_cells_max = 64 });
+    defer std.testing.expectEqual(c.OT_OK, abi.ot_context_destroy(context)) catch unreachable;
+    const core = context.?.core;
+    const native_id = try core.createSession(.{});
+    const id = abi.handleToC(native_id);
+    var control = std.mem.zeroes(c.ot_split_control);
+    control.struct_size = @sizeOf(c.ot_split_control);
+    control.abi_version = c.OT_CONTEXT_ABI_VERSION;
+    var out: u32 = 99;
+    try std.testing.expectEqual(c.OT_RENDERER_NOT_ATTACHED, ot_session_split_control(context, &id, &control, &out));
+    try core.attachSessionRenderer(native_id, 8, 4, .{ .remote_mode = .remote });
+    const cli = (try core.raw().getSession(native_id)).renderer.?;
+    const max = std.math.maxInt(u16);
+    // Expected out is null for a rejection, which leaves out unchanged.
+    const Row = struct { command: u32, arguments: [6]u32 = @splat(0), status: c.ot_status = c.OT_OK, out: ?u32 = null };
+    const rows = [_]Row{
+        .{ .command = 0, .arguments = .{ 2, 3, 0, 0, 0, 0 }, .out = 2 },
+        .{ .command = 0, .arguments = .{ max + 1, 3, 0, 0, 0, 0 }, .status = c.OT_INVALID_ARGUMENT },
+        .{ .command = 1, .arguments = .{ 1, 0, 0, 0, 0, 0 }, .out = 1 },
+        .{ .command = 1, .arguments = .{ max + 1, 0, 0, 0, 0, 0 }, .status = c.OT_INVALID_ARGUMENT },
+        .{ .command = 2, .arguments = .{ 4, 0, 0, 0, 0, 0 }, .out = 2 },
+        .{ .command = 3, .arguments = .{ 7, 0, 0, 0, 0, 0 }, .out = 7 },
+        .{ .command = 3, .arguments = .{ max + 1, 0, 0, 0, 0, 0 }, .status = c.OT_INVALID_ARGUMENT },
+        .{ .command = 4, .arguments = .{ 1, 1, 1, 2, 1, 1 }, .out = 7 },
+        .{ .command = 4, .arguments = .{ 3, 1, 1, 2, 1, 1 }, .status = c.OT_INVALID_ARGUMENT },
+        .{ .command = 4, .arguments = .{ 2, max, 1, 0, 0, 0 }, .status = c.OT_INVALID_ARGUMENT },
+        .{ .command = 4, .arguments = .{ 1, 0, 0, 0, 0, max + 1 }, .status = c.OT_INVALID_ARGUMENT },
+        .{ .command = 5, .out = 7 },
+        .{ .command = 6, .status = c.OT_INVALID_ARGUMENT },
+    };
+    for (rows) |row| {
+        control.command = row.command;
+        control.arguments = row.arguments;
+        out = 99;
+        const transition = cli.pendingSplitFooterTransition;
+        try std.testing.expectEqual(row.status, ot_session_split_control(context, &id, &control, &out));
+        try std.testing.expectEqual(row.out orelse 99, out);
+        if (row.out == null) try std.testing.expectEqual(transition, cli.pendingSplitFooterTransition);
+        if (row.command == 4 and row.out != null) try std.testing.expectEqual(.viewport_scroll, cli.pendingSplitFooterTransition.mode);
+        if (row.command == 5) try std.testing.expectEqual(.none, cli.pendingSplitFooterTransition.mode);
+    }
+
+    // A pending presentation allows only the output-offset query.
+    var status: u32 = 99;
+    var snapshot = std.mem.zeroes(c.ot_split_snapshot);
+    snapshot.buffer = abi.handleToC(try core.createBuffer(8, 1, .{}));
+    snapshot.row_columns = 8;
+    snapshot.flags = 4;
+    try std.testing.expectEqual(c.OT_INVALID_ARGUMENT, ot_session_render_split(context, &id, null, @ptrCast(&snapshot), 1, 3, 0, &status));
+    snapshot.flags = 2;
+    var stale = snapshot;
+    stale.buffer.generation += 1;
+    try std.testing.expectEqual(c.OT_STALE_HANDLE, ot_session_render_split(context, &id, null, @ptrCast(&stale), 1, 3, 0, &status));
+    try std.testing.expectEqual(@as(u32, 99), status);
+    try std.testing.expectEqual(c.OT_OK, ot_session_render_split(context, &id, null, @ptrCast(&snapshot), 1, 3, 0, &status));
+    try std.testing.expectEqual(c.OT_RENDER_PENDING, status);
+    control.arguments = @splat(0);
+    for ([_]u32{ 0, 1, 3, 5 }) |command| {
+        control.command = command;
+        try std.testing.expectEqual(c.OT_OUTPUT_BUSY, ot_session_split_control(context, &id, &control, &out));
+    }
+    control.command = 2;
+    try std.testing.expectEqual(c.OT_OK, ot_session_split_control(context, &id, &control, &out));
+    try core.cancelSession(native_id);
+}
+
 test "Context layout-only measurement validates ownership and preserves frame preparation" {
     const context: ?*abi.ContextHandle = try abi.createTestContext(.{ .object_capacity = 32, .render_cells_max = 64 });
     defer std.testing.expectEqual(c.OT_OK, abi.ot_context_destroy(context)) catch unreachable;
