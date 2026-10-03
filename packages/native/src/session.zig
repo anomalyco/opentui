@@ -144,7 +144,8 @@ pub const TerminalOptions = struct {
     mouse: bool = true,
     mouse_movement: bool = true,
     kitty_keyboard_flags: u8 = (terminal.Options{}).kitty_keyboard_flags,
-    /// Applies to both suspension and close, as in renderer restoration.
+    /// Applies to both suspension and close, as in renderer restoration, once
+    /// setup or resume has claimed the main-screen surface.
     clear_on_close: bool = true,
 };
 
@@ -216,28 +217,50 @@ pub const SplitControl = union(enum) {
     clear_transition,
 };
 
+/// Declaration order is step order; Lifecycle.assertValid relies on it.
+const Step = enum {
+    idle,
+    query,
+    setup_screen,
+    reserve_rows,
+    enable,
+    activate,
+    delete_images,
+    reset_input,
+    restore_rows,
+    reset_output,
+    settle_first,
+    show_cursor,
+    settle_second,
+};
+
 const Lifecycle = struct {
     phase: TerminalPhase = .uninitialized,
-    step: enum {
-        idle,
-        query,
-        setup_screen,
-        reserve_rows,
-        enable,
-        activate,
-        delete_images,
-        reset_input,
-        restore_rows,
-        reset_output,
-        settle_first,
-        show_cursor,
-        settle_second,
-    } = .idle,
+    step: Step = .idle,
     mouse: bool = false,
     mouse_movement: bool = true,
     rows_remaining: u32 = 0,
+    /// Main-screen rows that enable moves back up. Fixed when setup or resume is
+    /// accepted, because split controls and snapshots can change renderOffset later.
+    rows_return: u32 = 0,
+    /// Enable has published, so restoration may clear the rendered main-screen
+    /// area. Before that, the visible screen still holds shell output.
+    screen_claimed: bool = false,
     image_index: usize = 0,
     deadline_ns: ?u64 = null,
+
+    fn assertValid(self: Lifecycle, state: State) void {
+        const step = @intFromEnum(self.step);
+        std.debug.assert(switch (self.phase) {
+            .uninitialized, .active, .suspended, .restored, .failed, .cancelled => self.step == .idle,
+            .setting_up => step >= @intFromEnum(Step.query) and step <= @intFromEnum(Step.activate),
+            .resuming => step >= @intFromEnum(Step.setup_screen) and step <= @intFromEnum(Step.activate),
+            .suspending, .closing => step >= @intFromEnum(Step.delete_images),
+        });
+        std.debug.assert((state == .failed) == (self.phase == .failed));
+        std.debug.assert((state == .cancelled) == (self.phase == .cancelled));
+        if (self.phase == .closing) std.debug.assert(state == .closing);
+    }
 };
 
 pub const State = enum { open, closing, closed, failed, cancelled };
@@ -247,9 +270,10 @@ pub const RenderStatus = enum {
     presented,
     /// One accepted frame still awaits output completion; no second frame is accepted.
     pending,
-    /// Backpressure rejected and cleared the drawn frame before output admission.
+    /// Output pressure rejected and cleared the drawn frame without publishing bytes.
     skipped,
-    /// Encoding or admission failed without publishing bytes. Transport stays open.
+    /// The frame cannot be published: it is larger than the empty queue, or
+    /// encoding or allocation failed. No bytes were published; transport stays open.
     failed,
 };
 
@@ -571,7 +595,7 @@ pub const Session = struct {
         if (self.lifecycle.phase != .uninitialized) return error.InvalidTerminalState;
         if (self.frame_end_offset != null or value.renderStats.frameCount != 0) return error.InvalidTerminalState;
         try self.checkTerminalStart(options.kitty_keyboard_flags);
-        const rows = if (!options.use_alternate_screen and value.renderOffset == 0) value.height - 1 else 0;
+        const rows = if (options.use_alternate_screen) 0 else value.height - 1;
         const packets = try setupPackets(try cleanupPackets(0), rows, true);
         try self.reserveControlSequence(packets);
         value.useAlternateScreen = options.use_alternate_screen;
@@ -583,6 +607,7 @@ pub const Session = struct {
             .mouse = options.mouse,
             .mouse_movement = options.mouse_movement,
             .rows_remaining = rows,
+            .rows_return = if (value.renderOffset == 0) rows else 0,
         };
     }
 
@@ -617,6 +642,7 @@ pub const Session = struct {
         self.lifecycle.phase = .resuming;
         self.lifecycle.step = .setup_screen;
         self.lifecycle.rows_remaining = rows;
+        self.lifecycle.rows_return = rows;
     }
 
     pub fn getTerminalState(self: *const Session) TerminalState {
@@ -655,7 +681,7 @@ pub const Session = struct {
             },
             else => return error.TerminalInactive,
         }
-        try self.checkTerminalOutput();
+        self.assertTerminalOutput();
         switch (command) {
             .title => |title| {
                 if (title.len > title_bytes_max) return error.InvalidOptions;
@@ -689,7 +715,7 @@ pub const Session = struct {
         try self.checkOpen();
         const value = self.renderer orelse return error.RendererNotAttached;
         if (self.lifecycle.phase != .active) return error.TerminalInactive;
-        try self.checkTerminalOutput();
+        self.assertTerminalOutput();
         const title_len = if (title) |text| text.len else 0;
         if (message.len > control_packet_bytes_max or title_len > control_packet_bytes_max - message.len) return false;
         var candidate = value.terminal;
@@ -705,7 +731,16 @@ pub const Session = struct {
         try self.checkOpen();
         const value = self.renderer orelse return error.RendererNotAttached;
         if (!value.setKittyImageTransport(mode)) return error.InvalidOptions;
-        if (self.lifecycle.phase == .active) value.startKittyFileProbeFromSession();
+        if (self.lifecycle.phase == .active) self.startKittyProbe(value);
+    }
+
+    /// A probe that output dropped never reaches the terminal; a later start retries it.
+    fn startKittyProbe(self: *Session, value: *renderer.CliRenderer) void {
+        const idle = value.kittyTransport.file_state == .disabled;
+        const published = self.output.getStats().bytes_written;
+        value.startKittyFileProbeFromSession();
+        const dropped = self.output.getStats().bytes_written == published;
+        if (idle and dropped and value.kittyTransport.file_state == .probing) value.kittyTransport.cancel(.disabled);
     }
 
     pub fn kittyImageTransportStatus(self: *Session) Error![6]u32 {
@@ -738,8 +773,7 @@ pub const Session = struct {
     pub fn startKittyFileProbe(self: *Session) Error!void {
         try self.checkOpen();
         const value = self.renderer orelse return error.RendererNotAttached;
-        if (self.lifecycle.phase != .active) return;
-        value.startKittyFileProbeFromSession();
+        if (self.lifecycle.phase == .active) self.startKittyProbe(value);
     }
 
     fn validatePaletteQuery(bytes: []const u8) Error!void {
@@ -778,8 +812,9 @@ pub const Session = struct {
         try self.checkOpen();
         const value = self.renderer orelse return error.RendererNotAttached;
         if (self.lifecycle.phase != .active) return error.TerminalInactive;
-        try self.checkTerminalOutput();
-        if (self.output.staged_bytes != 0) return error.Busy;
+        self.assertTerminalOutput();
+        // Only this call stages bytes, and it clears them before returning.
+        std.debug.assert(self.output.staged_bytes == 0);
         const output_len = value.terminal.clipboardSequenceSize(bytes.len) catch return false;
         // Charge ordinary capacity before allocating or encoding large payloads.
         // Clipboard writes cannot borrow restoration storage or counter headroom.
@@ -834,6 +869,7 @@ pub const Session = struct {
     }
 
     fn pumpWork(self: *Session, now_ns: ?u64, work_budget: u32) Error!PumpResult {
+        defer self.lifecycle.assertValid(self.state);
         var remaining = work_budget;
         while (remaining > 0) : (remaining -= 1) {
             if (!self.isDrained()) return .{ .status = .output_pending };
@@ -864,15 +900,17 @@ pub const Session = struct {
                         self.lifecycle.step = .show_cursor;
                         self.lifecycle.deadline_ns = null;
                     } else {
-                        try self.output.setControlSequenceReservation(.{});
+                        // A drained queue holds no control spans, staged, or reserved bytes.
+                        self.output.setControlSequenceReservation(.{}) catch unreachable;
                         const value = self.renderer.?;
                         value.currentImages.clearRetainingCapacity();
                         value.invalidateTerminalState();
                         self.lifecycle.deadline_ns = null;
                         self.lifecycle.step = .idle;
+                        self.lifecycle.screen_claimed = false;
                         self.lifecycle.phase = if (self.state == .closing) .restored else .suspended;
                         if (self.state == .closing) {
-                            try self.output.close();
+                            self.output.close() catch unreachable;
                             self.state = .closed;
                             return .{ .status = .closed };
                         }
@@ -892,24 +930,23 @@ pub const Session = struct {
         return .{ .status = if (self.isDrained()) .again else .output_pending };
     }
 
-    fn checkTerminalOutput(self: *const Session) Error!void {
+    /// Session renderers own their feed and never run legacy setup or batch split frames.
+    fn assertTerminalOutput(self: *const Session) void {
         const value = self.renderer.?;
-        if (value.terminalSetup or value.backend != .feed or value.backend.feed.feed != self.output or
-            self.output.callback != null or self.output.in_callback or value.backend.feed.frameActive)
-        {
-            return error.IncompatibleOutput;
-        }
-        if (value.splitBatchActive or value.pendingSplitFooterTransition.mode != .none) return error.SplitRenderPending;
+        std.debug.assert(!value.terminalSetup and !value.splitBatchActive);
+        std.debug.assert(value.backend == .feed and value.backend.feed.feed == self.output);
+        std.debug.assert(!value.backend.feed.frameActive);
+        std.debug.assert(self.output.callback == null and !self.output.in_callback);
     }
 
     fn checkTerminalStart(self: *Session, kitty_keyboard_flags: u8) Error!void {
-        try self.checkTerminalOutput();
+        self.assertTerminalOutput();
         const value = self.renderer.?;
-        if (value.height == 0 or value.renderOffset == std.math.maxInt(u32) or
-            kitty_keyboard_flags & ~@as(u8, 0b11111) != 0)
-        {
-            return error.InvalidOptions;
-        }
+        // Attachment, resize, and screen changes reject zero rows; reset_output adds one row.
+        std.debug.assert(value.height > 0 and value.renderOffset < std.math.maxInt(u32));
+        // Reserved rows follow the current footer geometry, which a transition replaces.
+        if (value.pendingSplitFooterTransition.mode != .none) return error.SplitRenderPending;
+        if (kitty_keyboard_flags & ~@as(u8, 0b11111) != 0) return error.InvalidOptions;
         if (@as(u64, self.output.control_chunks) * self.output.options.chunk_size < control_packet_bytes_max) {
             return error.NoSpace;
         }
@@ -1022,12 +1059,11 @@ pub const Session = struct {
                 if (progress.rows_remaining == 0) progress.step = .enable;
             },
             .enable => {
-                if (!value.useAlternateScreen and value.renderOffset == 0 and value.height > 1) {
-                    try writer.print("\x1b[{d}A", .{value.height - 1});
-                }
+                if (progress.rows_return != 0) try writer.print("\x1b[{d}A", .{progress.rows_return});
                 try writer.writeAll(ansi.ANSI.hideCursor);
                 try candidate.enableDetectedFeatures(writer, candidate.opts.kitty_keyboard_flags != 0);
                 try candidate.setMouseMode(writer, progress.mouse, progress.mouse_movement);
+                progress.screen_claimed = true;
                 progress.step = .activate;
             },
             .delete_images => {
@@ -1042,8 +1078,8 @@ pub const Session = struct {
                 progress.step = .reset_output;
                 if (candidate.state.alt_screen) {
                     try candidate.exitAltScreen(writer);
-                } else if (builtin.os.tag == .windows and !value.useAlternateScreen and
-                    value.clearOnShutdown and value.renderOffset == 0)
+                } else if (builtin.os.tag == .windows and progress.screen_claimed and
+                    !value.useAlternateScreen and value.clearOnShutdown and value.renderOffset == 0)
                 {
                     try writer.writeByte('\r');
                     progress.rows_remaining = candidate.state.cursor.row;
@@ -1062,7 +1098,7 @@ pub const Session = struct {
             },
             .reset_output => {
                 try candidate.resetOutputModes(writer);
-                if (!value.useAlternateScreen and value.clearOnShutdown) {
+                if (progress.screen_claimed and !value.useAlternateScreen and value.clearOnShutdown) {
                     if (value.renderOffset == 0) {
                         try writer.writeAll("\x1b[H\x1b[J");
                     } else {
@@ -1228,6 +1264,7 @@ pub const Session = struct {
         self.cancelSceneFrame();
         self.state = .failed;
         self.lifecycle.phase = .failed;
+        self.lifecycle.step = .idle;
         self.lifecycle.deadline_ns = null;
         self.finishPresentation(.failed);
     }
@@ -1260,9 +1297,10 @@ pub const Session = struct {
             .failed => return error.SessionFailed,
             .cancelled => return error.SessionCancelled,
         }
+        defer self.lifecycle.assertValid(self.state);
         self.cancelSceneFrame();
         switch (self.lifecycle.phase) {
-            .uninitialized, .suspended, .restored => {
+            .uninitialized, .suspended => {
                 try self.output.close();
                 self.state = if (self.isDrained()) .closed else .closing;
                 if (self.lifecycle.phase == .suspended) self.lifecycle.phase = .restored;
@@ -1275,7 +1313,7 @@ pub const Session = struct {
                 self.lifecycle.phase = .closing;
                 self.state = .closing;
             },
-            .closing, .failed, .cancelled => unreachable,
+            .restored, .closing, .failed, .cancelled => unreachable,
         }
     }
 
@@ -1297,6 +1335,7 @@ pub const Session = struct {
         self.pending = null;
         self.state = .cancelled;
         self.lifecycle.phase = .cancelled;
+        self.lifecycle.step = .idle;
         self.lifecycle.deadline_ns = null;
         std.debug.assert(self.isDrained());
     }

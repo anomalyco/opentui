@@ -1,6 +1,7 @@
 const std = @import("std");
 const testing = std.testing;
 const session = @import("../session.zig");
+const renderer = @import("../renderer.zig");
 const ansi = @import("../ansi.zig");
 const builtin = @import("builtin");
 
@@ -55,30 +56,29 @@ test "Session controls gate inactive phases and reject malformed or over-limit i
         .{ .title = "\xc2\x9b" },
         .{ .title = "\xff" },
         .{ .title = &long_title },
-        .{ .capability_response = &long_response },
-        .{ .capability_response = "" },
-        .{ .capability_response = "tmux" },
-        .{ .capability_response = "\x1bP>|tmux 3.5a" },
-        .{ .capability_response = "\x1bP>|kitty\x00\x1b\\" },
-        .{ .capability_response = "\x1bP1+r4d73=zz\x1b\\" },
-        .{ .capability_response = "\x1bP1+rtmux\x1b\\" },
-        .{ .capability_response = "\x1b]1337;Capabilities=No" },
-        .{ .capability_response = "\x1b_Gi=31337;OK\x07" },
-        .{ .capability_response = "\x1b_Gtmux;OK\x1b\\" },
-        .{ .capability_response = "\x1b_Gi=31337oops;OK\x1b\\" },
-        .{ .capability_response = "\x1b[?0u\x1b[?2004;2" },
-        .{ .capability_response = "\x1b[?0uX" },
-        .{ .capability_response = "\x1b[?32u" },
-        .{ .capability_response = "\x1b[?1004;5$y" },
-        .{ .capability_response = "\x1b[?11016;2$y" },
-        .{ .capability_response = "\x1b[0;1R" },
-        .{ .capability_response = "\x1b[65536;1R" },
         .{ .kitty_keyboard_flags = 32 },
         .{ .kitty_keyboard_flags = 255 },
+    };
+    // One reply per rule: framing, DCS, OSC, APC, then each CSI form.
+    const replies = [_][]const u8{
+        &long_response,          "",                       "tmux",                        "\x1bOP",
+        "\x1bP>|tmux 3.5a",      "\x1bP>|kitty\x00\x1b\\", "\x1bP>|\x1b\\",               "\x1bP>|term\xc3\xa9\x1b\\",
+        "\x1bP1+r4d73=zz\x1b\\", "\x1bP1+rtmux\x1b\\",     "\x1bP2+r4d73\x1b\\",          "\x1bP1+r4d73=78=78\x1b\\",
+        "\x1bP1+r4d7=78\x1b\\",  "\x1bP1+r=78\x1b\\",      "\x1b]1337;Capabilities=No",   "\x1b]11;rgb:0/0/0\x07",
+        "\x1b_Gi=31337;OK\x07",  "\x1b_Gtmux;OK\x1b\\",    "\x1b_Gi=31337oops;OK\x1b\\",  "\x1b_Gi=1\x1b\\",
+        "\x1b_G;OK\x1b\\",       "\x1b_Gi=1;\x1b\\",       "\x1b_Gi=4294967296;OK\x1b\\", "\x1b[?0u\x1b[?2004;2",
+        "\x1b[?0uX",             "\x1b[5n",                "\x1b[?1004;5$y",              "\x1b[?11016;2$y",
+        "\x1b[1016;2$y",         "\x1b[?1016;2y",          "\x1b[?1016;2;1$y",            "\x1b[?1049;2$y",
+        "\x1b[?32u",             "\x1b[1u",                "\x1b[?1;2u",                  "\x1b[0;1R",
+        "\x1b[65536;1R",         "\x1b[62c",
     };
     const before = f.snapshot();
     for (invalid) |command| {
         try testing.expectError(error.InvalidOptions, f.value.control(command));
+        try testing.expectEqualDeep(before, f.snapshot());
+    }
+    for (replies) |reply| {
+        try testing.expectError(error.InvalidOptions, f.value.control(.{ .capability_response = reply }));
         try testing.expectEqualDeep(before, f.snapshot());
     }
     try f.value.control(commands[0]);
@@ -154,6 +154,7 @@ test "Session controls bound input and output without allocation after attachmen
     for ([_]session.Control{
         .{ .capability_response = &response },
         .{ .capability_response = "\x1bP1+r4d73=7878\x1b\\\x1b_Gi=31337;OK\x1b\\\x1b[?62;4c" },
+        .{ .capability_response = "\x1bP0+r\x1b\\\x1bP1+r4d73\x1b\\\x1b[?c\x1b[?2026;0$y" },
         .{ .capability_response = "\x1b]99;i=opentui-notifications:p=?;p=title\x07\x1b]1337;Capabilities=No\x1b\\" },
         .{ .mouse = .motion },
         .{ .kitty_keyboard_flags = 31 },
@@ -257,6 +258,28 @@ test "Session clipboard rejects inactive phases and unsupported capability witho
     try testing.expectEqual(@as(usize, 0), f.value.output.staged_bytes);
 }
 
+test "Session side channels ignore a pending split transition that terminal starts wait for" {
+    const f = try Fixture.initWithOptions(testing.allocator, testing.io, 4, 2, transport, .{ .object_capacity = 2 });
+    defer f.deinit();
+    var now_ns: u64 = 0;
+    var bytes: [8192]u8 = undefined;
+    try f.owner.setupSessionTerminal(f.id, .{});
+    _ = try f.driveOutput(&now_ns, .active, &bytes, 32);
+    // The next split frame applies the transition atomically; side channels never move the cursor.
+    const transition: renderer.SplitFooterTransition = .{ .mode = .clear_stale_rows, .source_height = 1, .target_height = 1 };
+    _ = try f.value.splitControl(.{ .transition = transition });
+    try f.value.control(.{ .capability_response = "\x1b[?1016;2$y" });
+    try testing.expect(try f.value.writeClipboard(.clipboard, "copied"));
+    _ = try f.value.triggerNotification("done", null);
+    try testing.expectEqualDeep(transition, f.cli.pendingSplitFooterTransition);
+    _ = try f.drain(&bytes);
+    try f.owner.suspendSession(f.id);
+    _ = try f.driveOutput(&now_ns, .suspended, &bytes, 32);
+    try testing.expectError(error.SplitRenderPending, f.owner.resumeSession(f.id));
+    _ = try f.value.splitControl(.clear_transition);
+    try f.owner.resumeSession(f.id);
+}
+
 test "Session enables focus tracking after late tmux detection without passthrough probes" {
     const f = try Fixture.initWithOptions(testing.allocator, testing.io, 4, 2, transport, .{ .object_capacity = 2 });
     defer f.deinit();
@@ -283,9 +306,18 @@ test "Session Kitty image transport is readable before setup and probes only whi
     try testing.expectEqual(.disabled, f.cli.kittyTransport.file_state);
 
     var now_ns: u64 = 0;
-    var bytes: [8192]u8 = undefined;
+    var bytes: [16 * 1024]u8 = undefined;
     try f.owner.setupSessionTerminal(f.id, .{});
     _ = try f.driveOutput(&now_ns, .active, &bytes, 32);
+    // The terminal never sees a probe that output cannot admit, so it must not wait for replies.
+    const blocker = [_]u8{'x'} ** (3 * 4096);
+    try f.owner.writeSession(f.id, &blocker);
+    const queued = f.value.getStats();
+    try f.value.startKittyFileProbe();
+    try testing.expectEqualDeep(queued, f.value.getStats());
+    try testing.expectEqual(@as(u32, 0), f.cli.kittyTransport.pendingCount());
+    try testing.expectEqual(if (builtin.os.tag == .windows) .unsupported else .disabled, f.cli.kittyTransport.file_state);
+    _ = try f.drain(&bytes);
     try f.value.startKittyFileProbe();
     if (builtin.os.tag == .windows) {
         try testing.expectEqual(.unsupported, f.cli.kittyTransport.file_state);

@@ -231,7 +231,7 @@ test "Session renderer completes its byte endpoint between raw writes" {
     const queued = value.getStats();
     try testing.expectEqual(.pending, try owner.renderSession(id, true));
     try testing.expectEqualDeep(queued, value.getStats());
-    try testing.expectError(error.Busy, owner.resizeSessionRenderer(id, 2, 4));
+    try testing.expectError(error.PresentationPending, owner.resizeSessionRenderer(id, 2, 4));
     var invalid = prefix;
     invalid.len += 1;
     try testing.expectError(error.InvalidTicket, owner.completeOutput(id, invalid, .written));
@@ -260,7 +260,12 @@ test "Session renderer completes its byte endpoint between raw writes" {
     try testing.expectEqual(@as(u64, "after".len), value.getStats().outstanding_bytes);
     try testing.expect(value.frame_end_offset == null);
 
-    try testing.expectError(error.Busy, owner.resizeSessionRenderer(id, 2, 4));
+    // Queued raw output does not depend on renderer geometry.
+    const raw_queued = value.getStats();
+    try owner.resizeSessionRenderer(id, 2, 4);
+    try testing.expectEqual(@as(u32, 2), cli.width);
+    try testing.expectEqual(@as(u32, 4), cli.height);
+    try testing.expectEqualDeep(raw_queued, value.getStats());
     try testing.expectError(error.ContextBusy, owner.destroy(id));
     try testing.expectError(error.ContextBusy, owner.deinit());
     try testing.expect(!owner.closing and !owner.mutating);
@@ -268,11 +273,6 @@ test "Session renderer completes its byte endpoint between raw writes" {
     try testing.expectEqual(@as(u32, 1), owner.objects.live_count);
     try testing.expectEqualStrings("after", try drain(owner, id, &bytes));
     try testing.expectEqual(value.getStats().bytes_written, value.completed_bytes);
-    const drained = value.getStats();
-    try owner.resizeSessionRenderer(id, 2, 4);
-    try testing.expectEqual(@as(u32, 2), cli.width);
-    try testing.expectEqual(@as(u32, 4), cli.height);
-    try testing.expectEqualDeep(drained, value.getStats());
 }
 
 test "Session renderer skips frames under output pressure and fails frames that never fit" {

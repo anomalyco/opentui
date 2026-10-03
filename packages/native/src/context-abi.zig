@@ -1299,21 +1299,18 @@ pub fn ot_session_control(
     if (options.abi_version != c.OT_CONTEXT_ABI_VERSION) return sessionError(owner, error.UnsupportedVersion);
     if (options.reserved != 0 or (byte_count != 0 and bytes_ptr == null)) return sessionError(owner, error.InvalidOptions);
     const payload = options.kind == c.OT_CONTROL_CAPABILITY_RESPONSE or options.kind == c.OT_CONTROL_TITLE or options.kind == c.OT_CONTROL_CURSOR or options.kind == c.OT_CONTROL_PALETTE_QUERY;
-    if ((!payload and byte_count != 0) or (payload and options.argument != 0)) return sessionError(owner, error.InvalidOptions);
+    const argument_max: u32 = switch (options.kind) {
+        c.OT_CONTROL_MOUSE => @intFromEnum(@import("session.zig").MouseMode.motion),
+        c.OT_CONTROL_KITTY_KEYBOARD_FLAGS => 31,
+        else => 0,
+    };
+    if ((!payload and byte_count != 0) or options.argument > argument_max) return sessionError(owner, error.InvalidOptions);
     const bytes = if (bytes_ptr) |ptr| ptr[0..byte_count] else &.{};
     const command: @import("session.zig").Control = switch (options.kind) {
         c.OT_CONTROL_CAPABILITY_RESPONSE => .{ .capability_response = bytes },
         c.OT_CONTROL_TITLE => .{ .title = bytes },
-        c.OT_CONTROL_MOUSE => .{ .mouse = switch (options.argument) {
-            0 => .disabled,
-            1 => .drag,
-            2 => .motion,
-            else => return sessionError(owner, error.InvalidOptions),
-        } },
-        c.OT_CONTROL_KITTY_KEYBOARD_FLAGS => .{ .kitty_keyboard_flags = if (options.argument <= 31)
-            @intCast(options.argument)
-        else
-            return sessionError(owner, error.InvalidOptions) },
+        c.OT_CONTROL_MOUSE => .{ .mouse = @enumFromInt(options.argument) },
+        c.OT_CONTROL_KITTY_KEYBOARD_FLAGS => .{ .kitty_keyboard_flags = @intCast(options.argument) },
         c.OT_CONTROL_RESTORE_MODES => .restore_modes,
         c.OT_CONTROL_QUERY_PIXEL_RESOLUTION => .query_pixel_resolution,
         c.OT_CONTROL_QUERY_THEME_COLORS => .query_theme_colors,
@@ -1348,7 +1345,6 @@ pub fn ot_session_control(
         },
         else => return sessionError(owner, error.InvalidOptions),
     };
-    if (options.kind >= c.OT_CONTROL_RESTORE_MODES and options.argument != 0) return sessionError(owner, error.InvalidOptions);
     owner.core.controlSession(handleFromC(id.*), command) catch |err| return sessionError(owner, err);
     return c.OT_OK;
 }
@@ -3187,31 +3183,238 @@ test "Context editor ABI validates bindings records and readonly admission" {
     try std.testing.expectEqual(c.OT_OK, ot_edit_buffer_destroy(handle, &edit));
 }
 
-test "Context session cursor ABI accepts every mouse pointer shape" {
-    const handle: ?*ContextHandle = try createTestContext(.{ .object_capacity = 4, .render_cells_max = 16 });
-    defer std.testing.expectEqual(c.OT_OK, ot_context_destroy(handle)) catch unreachable;
-    const core = handle.?.core;
-    const session = try core.createSession(.{});
-    try core.attachSessionRenderer(session, 8, 2, .{ .remote_mode = .remote });
-    const id = handleToC(session);
-    const terminal = &(try core.raw().getSession(session)).renderer.?.terminal;
-    const options: c.ot_session_control_options = .{
-        .struct_size = @sizeOf(c.ot_session_control_options),
-        .abi_version = c.OT_CONTEXT_ABI_VERSION,
-        .kind = c.OT_CONTROL_CURSOR,
-        .argument = 0,
-        .reserved = 0,
-    };
+fn cursorUpdate(fields: u32, values: anytype) c.ot_session_cursor_update {
     var update = std.mem.zeroes(c.ot_session_cursor_update);
-    update.fields = c.OT_CURSOR_MOUSE_POINTER;
-    for ([_]u32{ c.OT_MOUSE_POINTER_TEXT, c.OT_MOUSE_POINTER_MAX }) |shape| {
-        update.mouse_pointer = @intCast(shape);
-        try std.testing.expectEqual(c.OT_OK, ot_session_control(handle, &id, &options, std.mem.asBytes(&update), @sizeOf(c.ot_session_cursor_update)));
-        try std.testing.expectEqual(shape, @intFromEnum(terminal.getMousePointer()));
+    update.fields = fields;
+    inline for (std.meta.fields(@TypeOf(values))) |field| @field(update, field.name) = @field(values, field.name);
+    return update;
+}
+
+test "Context ABI Session control decodes kinds arguments and cursor records before admission" {
+    const context = try createTestContext(.{ .object_capacity = 1, .render_cells_max = 16 });
+    defer std.testing.expectEqual(c.OT_OK, ot_context_destroy(context)) catch unreachable;
+    const session = try context.core.createSession(.{});
+    try context.core.attachSessionRenderer(session, 8, 2, .{ .remote_mode = .remote });
+    const id = handleToC(session);
+    const terminal = &(try context.core.raw().getSession(session)).renderer.?.terminal;
+    const Cursor = c.ot_session_cursor_update;
+    const Case = struct {
+        kind: u32 = c.OT_CONTROL_CURSOR,
+        argument: u32 = 0,
+        bytes: []const u8 = "",
+        cursor: ?Cursor = null,
+        cursor_size: u32 = @sizeOf(Cursor),
+        null_bytes: bool = false,
+        struct_size: u32 = @sizeOf(c.ot_session_control_options),
+        abi_version: u32 = c.OT_CONTEXT_ABI_VERSION,
+        reserved: u32 = 0,
+        // Well-formed terminal controls reach admission, which rejects the uninitialized terminal.
+        status: c.ot_status = c.OT_INVALID_ARGUMENT,
+    };
+    const cases = [_]Case{
+        .{ .kind = c.OT_CONTROL_TITLE, .bytes = "t", .struct_size = @sizeOf(c.ot_session_control_options) + 1 },
+        .{ .kind = c.OT_CONTROL_TITLE, .bytes = "t", .abi_version = c.OT_CONTEXT_ABI_VERSION + 1, .status = c.OT_UNSUPPORTED_VERSION },
+        .{ .kind = c.OT_CONTROL_TITLE, .bytes = "t", .reserved = 1 },
+        .{ .kind = c.OT_CONTROL_TITLE, .null_bytes = true },
+        .{ .kind = 0 },
+        .{ .kind = c.OT_CONTROL_PALETTE_QUERY + 1 },
+        .{ .kind = c.OT_CONTROL_RESTORE_MODES, .bytes = "x" },
+        // Cursor records have an exact size, known fields, bounded values, and zero unselected values.
+        .{ .cursor = cursorUpdate(0, .{}), .argument = 1 },
+        .{ .cursor = cursorUpdate(0, .{}), .cursor_size = @sizeOf(Cursor) - 1 },
+        .{ .cursor = cursorUpdate(32, .{}) },
+        .{ .cursor = cursorUpdate(c.OT_CURSOR_POSITION, .{ .visible = 2 }) },
+        .{ .cursor = cursorUpdate(c.OT_CURSOR_STYLE, .{ .style = 4 }) },
+        .{ .cursor = cursorUpdate(c.OT_CURSOR_BLINKING, .{ .blinking = 2 }) },
+        .{ .cursor = cursorUpdate(c.OT_CURSOR_MOUSE_POINTER, .{ .mouse_pointer = c.OT_MOUSE_POINTER_MAX + 1 }) },
+        .{ .cursor = cursorUpdate(0, .{ .y = 1 }) },
+        .{ .cursor = cursorUpdate(0, .{ .visible = 1 }) },
+        .{ .cursor = cursorUpdate(0, .{ .style = 1 }) },
+        .{ .cursor = cursorUpdate(0, .{ .blinking = 1 }) },
+        .{ .cursor = cursorUpdate(0, .{ .mouse_pointer = 1 }) },
+        .{ .cursor = cursorUpdate(0, .{ .color = .{ 0, 0, 0, 1 } }) },
+        .{ .cursor = cursorUpdate(c.OT_CURSOR_MOUSE_POINTER, .{ .mouse_pointer = c.OT_MOUSE_POINTER_TEXT }), .status = c.OT_OK },
+        .{ .cursor = cursorUpdate(0x1f, .{
+            .x = 3,
+            .y = 2,
+            .visible = 1,
+            .style = 3,
+            .blinking = 1,
+            .mouse_pointer = c.OT_MOUSE_POINTER_MAX,
+            .color = .{ 1, 2, 3, 4 },
+        }), .status = c.OT_OK },
+    } ++ comptime kinds: {
+        // Each terminal kind rejects an argument above its limit; at the limit it reaches admission.
+        const kinds = .{
+            .{ c.OT_CONTROL_CAPABILITY_RESPONSE, 0, "\x1b[?0u" }, .{ c.OT_CONTROL_TITLE, 0, "t" },
+            .{ c.OT_CONTROL_MOUSE, 2, "" },                       .{ c.OT_CONTROL_KITTY_KEYBOARD_FLAGS, 31, "" },
+            .{ c.OT_CONTROL_RESTORE_MODES, 0, "" },               .{ c.OT_CONTROL_QUERY_PIXEL_RESOLUTION, 0, "" },
+            .{ c.OT_CONTROL_QUERY_THEME_COLORS, 0, "" },          .{ c.OT_CONTROL_RESET_BACKGROUND, 0, "" },
+            .{ c.OT_CONTROL_PALETTE_QUERY, 0, "\x1b]10;?\x07" },
+        };
+        var rows: [2 * kinds.len]Case = undefined;
+        for (kinds, 0..) |kind, index| rows[2 * index ..][0..2].* = .{
+            .{ .kind = kind[0], .argument = kind[1] + 1, .bytes = kind[2] },
+            .{ .kind = kind[0], .argument = kind[1], .bytes = kind[2], .status = c.OT_INVALID_PHASE },
+        };
+        break :kinds rows;
+    };
+    for (cases) |case| {
+        const options: c.ot_session_control_options = .{
+            .struct_size = case.struct_size,
+            .abi_version = case.abi_version,
+            .kind = case.kind,
+            .argument = case.argument,
+            .reserved = case.reserved,
+        };
+        const bytes = if (case.cursor) |*update| std.mem.asBytes(update)[0..case.cursor_size] else case.bytes;
+        const before = terminal.*;
+        const status = ot_session_control(context, &id, &options, if (case.null_bytes) null else bytes.ptr, if (case.null_bytes) 1 else @intCast(bytes.len));
+        try std.testing.expectEqual(case.status, status);
+        if (status != c.OT_OK) try std.testing.expectEqualDeep(before, terminal.*);
     }
-    update.mouse_pointer = c.OT_MOUSE_POINTER_MAX + 1;
-    try std.testing.expectEqual(c.OT_INVALID_ARGUMENT, ot_session_control(handle, &id, &options, std.mem.asBytes(&update), @sizeOf(c.ot_session_cursor_update)));
     try std.testing.expectEqual(@as(u32, c.OT_MOUSE_POINTER_MAX), @intFromEnum(terminal.getMousePointer()));
+    try std.testing.expectEqual(@as(u8, 3), @intFromEnum(terminal.getCursorStyle().style));
+    try std.testing.expect(terminal.getCursorStyle().blinking);
+}
+
+test "Context ABI Session environment attachment decodes interleaved entries and rejects the whole payload" {
+    const context = try createTestContext(.{ .object_capacity = 1, .render_cells_max = 2 });
+    defer std.testing.expectEqual(c.OT_OK, ot_context_destroy(context)) catch unreachable;
+    const session = try context.core.createSession(.{});
+    const id = handleToC(session);
+    const Case = struct {
+        entries: []const [2][]const u8 = &.{.{ "KEY", "value" }},
+        struct_size: u32 = @sizeOf(c.ot_session_renderer_env_options),
+        abi_version: u32 = c.OT_CONTEXT_ABI_VERSION,
+        remote_mode: u32 = c.OT_SESSION_REMOTE_LOCAL,
+        reserved: u32 = 0,
+        entry_count: ?u32 = null,
+        byte_count: ?u32 = null,
+        // Bytes past the encoded entries; negative values truncate them.
+        byte_delta: i32 = 0,
+        null_payload: bool = false,
+        status: c.ot_status = c.OT_INVALID_ARGUMENT,
+    };
+    const cases = [_]Case{
+        .{ .struct_size = @sizeOf(c.ot_session_renderer_env_options) + 1 },
+        .{ .abi_version = c.OT_CONTEXT_ABI_VERSION + 1, .status = c.OT_UNSUPPORTED_VERSION },
+        .{ .reserved = 1 },
+        .{ .remote_mode = c.OT_SESSION_REMOTE_REMOTE + 1 },
+        .{ .entry_count = c.OT_SESSION_ENV_ENTRIES_MAX + 1 },
+        .{ .byte_count = c.OT_SESSION_ENV_BYTES_MAX + 1 },
+        .{ .null_payload = true },
+        // Each entry is key length, value length, key bytes, value bytes.
+        .{ .entry_count = 2 },
+        .{ .byte_delta = -6 },
+        .{ .byte_delta = -1 },
+        .{ .byte_delta = 1 },
+        .{ .entries = &.{.{ "", "value" }} },
+        .{ .entries = &.{.{ "K=Y", "value" }} },
+        .{ .entries = &.{.{ "K\x00Y", "value" }} },
+        .{ .entries = &.{.{ "KEY", "va\x00ue" }} },
+        .{ .entries = &.{.{ "\xff", "value" }} },
+        .{ .entries = &.{.{ "KEY", "\xffvalue" }} },
+        .{ .entries = &.{ .{ "KEY", "old" }, .{ "OTHER", "" }, .{ "KEY", "n\xc3\xbc" } }, .status = c.OT_OK },
+    };
+    for (cases) |case| {
+        var payload: [64]u8 = @splat(0);
+        var writer: std.Io.Writer = .fixed(&payload);
+        for (case.entries) |entry| {
+            try writer.writeInt(u32, @intCast(entry[0].len), .little);
+            try writer.writeInt(u32, @intCast(entry[1].len), .little);
+            try writer.writeAll(entry[0]);
+            try writer.writeAll(entry[1]);
+        }
+        const encoded: i32 = @intCast(writer.buffered().len);
+        const options: c.ot_session_renderer_env_options = .{
+            .struct_size = case.struct_size,
+            .abi_version = case.abi_version,
+            .width = 2,
+            .height = 1,
+            .remote_mode = case.remote_mode,
+            .entry_count = case.entry_count orelse @intCast(case.entries.len),
+            .byte_count = case.byte_count orelse @intCast(encoded + case.byte_delta),
+            .reserved = case.reserved,
+        };
+        const bytes: ?[*]const u8 = if (case.null_payload) null else &payload;
+        try std.testing.expectEqual(case.status, ot_session_attach_renderer_with_env(context, &id, &options, bytes));
+        const attached = (try context.core.raw().getSession(session)).renderer;
+        try std.testing.expectEqual(case.status == c.OT_OK, attached != null);
+    }
+    const environment = (try context.core.raw().getSessionRenderer(session)).terminal.opts.env_map.?;
+    try std.testing.expectEqual(@as(usize, 2), environment.count());
+    try std.testing.expectEqualStrings("n\xc3\xbc", environment.get("KEY").?);
+}
+
+test "Context ABI Session setup and capability records validate before changing state" {
+    const context = try createTestContext(.{ .object_capacity = 3, .render_cells_max = 16 });
+    defer std.testing.expectEqual(c.OT_OK, ot_context_destroy(context)) catch unreachable;
+    const unattached = handleToC(try context.core.createSession(.{}));
+    const session = try context.core.createSession(.{ .chunk_size = 4096, .chunk_count = 3, .span_capacity = 3, .control_capacity = 4096 });
+    try context.core.attachSessionRenderer(session, 4, 2, .{ .remote_mode = .remote });
+    const id = handleToC(session);
+    const value = try context.core.raw().getSession(session);
+    const cli = value.renderer.?;
+
+    var capabilities = std.mem.zeroes(c.ot_session_capabilities);
+    capabilities.struct_size = @sizeOf(c.ot_session_capabilities) + 1;
+    try std.testing.expectEqual(c.OT_INVALID_ARGUMENT, ot_session_get_capabilities(context, &id, &capabilities));
+    capabilities.struct_size -= 1;
+    capabilities.abi_version = c.OT_CONTEXT_ABI_VERSION + 1;
+    try std.testing.expectEqual(c.OT_UNSUPPORTED_VERSION, ot_session_get_capabilities(context, &id, &capabilities));
+    capabilities.abi_version -= 1;
+    const rejected = capabilities;
+    try std.testing.expectEqual(c.OT_RENDERER_NOT_ATTACHED, ot_session_get_capabilities(context, &unattached, &capabilities));
+    try std.testing.expectEqualDeep(rejected, capabilities);
+    // Every capability owns one distinct flag.
+    var seen: u32 = 0;
+    inline for (std.meta.fields(@TypeOf(cli.terminal.caps))) |field| {
+        if (field.type != bool) continue;
+        const saved = cli.terminal.caps;
+        defer cli.terminal.caps = saved;
+        cli.terminal.caps = .{};
+        @field(cli.terminal.caps, field.name) = true;
+        try std.testing.expectEqual(c.OT_OK, ot_session_get_capabilities(context, &id, &capabilities));
+        try std.testing.expectEqual(@as(u32, 1), @popCount(capabilities.flags));
+        try std.testing.expect(seen & capabilities.flags == 0);
+        seen |= capabilities.flags;
+    }
+    try std.testing.expectEqual(@as(u32, 17), @popCount(seen));
+    cli.terminal.processCapabilityResponse("\x1bP>|kitty(0.40.1)\x1b\\");
+    try std.testing.expectEqual(c.OT_OK, ot_session_get_capabilities(context, &id, &capabilities));
+    try std.testing.expectEqualStrings("kitty", capabilities.term_name[0..capabilities.term_name_len]);
+    try std.testing.expectEqualStrings("0.40.1", capabilities.term_version[0..capabilities.term_version_len]);
+    try std.testing.expectEqual(@as(u32, 1), capabilities.term_from_xtversion);
+    try std.testing.expect(std.mem.allEqual(u8, capabilities.term_name[capabilities.term_name_len..], 0));
+
+    // Drawing semantics are tested on Context; these rows cover the C wrapper.
+    const source = handleToC(try context.core.createBuffer(2, 1, .{}));
+    try std.testing.expectEqual(c.OT_INVALID_ARGUMENT, ot_session_draw_buffer(context, &id, null, 0, 0));
+    try std.testing.expectEqual(c.OT_OK, ot_session_draw_buffer(context, &id, &source, 2, 1));
+
+    const valid: c.ot_session_terminal_options = .{
+        .struct_size = @sizeOf(c.ot_session_terminal_options),
+        .abi_version = c.OT_CONTEXT_ABI_VERSION,
+        .flags = c.OT_TERMINAL_ALTERNATE_SCREEN | c.OT_TERMINAL_MOUSE | c.OT_TERMINAL_CLEAR_ON_CLOSE,
+        .kitty_keyboard_flags = 31,
+    };
+    var invalid: [4]c.ot_session_terminal_options = @splat(valid);
+    invalid[0].struct_size += 1;
+    invalid[1].abi_version += 1;
+    invalid[2].flags |= c.OT_TERMINAL_CLEAR_ON_CLOSE << 1;
+    invalid[3].kitty_keyboard_flags = 32;
+    try std.testing.expectEqual(c.OT_INVALID_ARGUMENT, ot_session_setup_terminal(context, &id, null));
+    for (invalid, 0..) |options, index| {
+        const expected = if (index == 1) c.OT_UNSUPPORTED_VERSION else c.OT_INVALID_ARGUMENT;
+        try std.testing.expectEqual(expected, ot_session_setup_terminal(context, &id, &options));
+        try std.testing.expectEqual(.uninitialized, value.getTerminalState().phase);
+    }
+    try std.testing.expectEqual(c.OT_OK, ot_session_setup_terminal(context, &id, &valid));
+    try std.testing.expect(cli.useAlternateScreen and cli.clearOnShutdown);
+    try std.testing.expect(value.lifecycle.mouse and !value.lifecycle.mouse_movement);
+    try std.testing.expectEqual(@as(u8, 31), cli.terminal.opts.kitty_keyboard_flags);
+    value.cancel();
 }
 
 test "Scene flush ABI copies background and preserves paint on acceptance and rejection" {

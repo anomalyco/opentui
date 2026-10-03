@@ -880,10 +880,11 @@ typedef struct ot_session_renderer_options {
 #define OT_SESSION_ENV_ENTRIES_MAX UINT32_C(256)
 #define OT_SESSION_ENV_BYTES_MAX UINT32_C(65536)
 
-/* Additive attachment with initialization-only copied host environment. Payload
- * contains entry_count repetitions of little-endian u32 key/value byte lengths,
- * then key bytes and value bytes. UTF-8 keys are nonempty and exclude NUL/'=';
- * values exclude NUL. Duplicate keys use the last value. Empty payload opts out.
+/* Additive attachment with initialization-only copied host environment. For each
+ * of entry_count entries, the payload holds the little-endian u32 key and value
+ * byte lengths, then the key bytes and the value bytes. Keys and values are
+ * UTF-8 without NUL; keys are nonempty and exclude '='. byte_count includes the
+ * eight length bytes per entry. Duplicate keys use the last value. Empty payload opts out.
  * Auto detects remote sessions but ignores forwarded host hints when remote;
  * explicit local/remote modes apply all supplied hints. No process env is read.
  * reserved is zero. Payload and options are borrowed only for the call. */
@@ -912,7 +913,10 @@ typedef struct ot_split_snapshot {
 /* command: reset=0, sync=1, output-offset=2, render-offset=3, transition=4,
  * clear-transition=5. Reset uses seed rows/pinned offset; sync and offset commands
  * use argument 0. Transition uses mode (viewport-scroll=1, clear=2), source top,
- * source height, target top, target height, scroll rows. Unused arguments are zero. */
+ * source height, target top, target height, scroll rows. Unused arguments are zero.
+ * Until a split frame applies it or clear-transition drops it, a pending transition
+ * makes ordinary frames, setup, and resume return OT_OUTPUT_BUSY. Controls, clipboard
+ * writes, and notifications do not move the cursor and do not wait for it. */
 typedef struct ot_split_control {
     uint32_t struct_size;
     uint32_t abi_version;
@@ -1586,7 +1590,9 @@ ot_status ot_session_set_image_resolution(ot_context *, const ot_handle *session
  * 3=budget, 4=busy, 5=preparation, 6=compression. pending_bytes fits u32.
  * Set, poll, cancel, and reply require an attached renderer and may run in any
  * open phase so resume can consume probe replies before JS restores control.
- * File probes emit only while the terminal is active and not suspended. */
+ * File probes emit only while the terminal is active and not suspended. A probe
+ * that ordinary output cannot admit is not started: file_state stays disabled
+ * until a later set or start call after output drains. */
 typedef struct ot_session_kitty_image_transport {
     uint32_t struct_size;
     uint32_t abi_version;
@@ -1916,7 +1922,9 @@ ot_status ot_scene_frame_commit(ot_context *, const ot_handle *session,
 
 /* flags is a combination of the four OT_TERMINAL_* option bits above. Other bits
  * must be zero. kitty_keyboard_flags accepts bits 0 through 4, or zero to disable
- * Kitty keyboard. clear-on-close also controls surface clearing on suspend. */
+ * Kitty keyboard. clear-on-close also controls surface clearing on suspend. It
+ * clears only a surface that setup or resume claimed: a close before their mode
+ * packet leaves visible shell output in place. */
 typedef struct ot_session_terminal_options {
     uint32_t struct_size;
     uint32_t abi_version;

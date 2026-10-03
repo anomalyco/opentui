@@ -361,6 +361,11 @@ test "kitty file query requires medium and explicit image ACK, not ordinary fram
     try std.testing.expect(!f.transport.handleReply("\x1b_Gi=7,i=8;OK\x1b\\"));
     try std.testing.expect(f.transport.handleReply("\x1b_Gi=7;OK\x1b\\"));
     try std.testing.expectEqual(.probing, f.transport.file_state);
+    // A Session restarts a probe that output dropped; the restart needs both ACKs again.
+    f.transport.cancel(.disabled);
+    try f.probe();
+    try std.testing.expect(f.transport.handleReply("\x1b_Gi=8;OK\x1b\\"));
+    try std.testing.expectEqual(.probing, f.transport.file_state);
     f.transport.expire(std.math.maxInt(u64));
     try std.testing.expectEqual(.timeout, f.transport.file_state);
     try std.testing.expectEqual(@as(u32, 0), f.transport.pendingCount());

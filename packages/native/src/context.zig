@@ -1012,7 +1012,8 @@ pub const Context = struct {
         const attached = value.renderer orelse return error.RendererNotAttached;
         const cells = std.math.mul(u32, width, height) catch return error.InvalidDimensions;
         if (width == 0 or height == 0 or cells > self.render_cells_max) return error.InvalidDimensions;
-        if (!value.isDrained()) return error.Busy;
+        // Only a pending frame depends on geometry; the renderer rejects it.
+        std.debug.assert((value.frame_end_offset != null) == (attached.pendingPresentation != null));
         const changed = attached.width != width or attached.height != height;
         try attached.resize(width, height);
         if (yielded and changed) {

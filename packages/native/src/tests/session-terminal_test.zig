@@ -181,7 +181,7 @@ test "Session suspension rejection preserves yielded and synchronous preparation
     try testing.expectEqualDeep(synchronous, f.value.scene.?.attempt.?.pending.?);
 }
 
-test "Session suspended resize requires drained output and preserves rendering gates" {
+test "Session suspended resize accepts queued output and preserves rendering gates" {
     const f = try Fixture.init(testing.allocator, testing.io, 4, 2);
     defer f.deinit();
     _ = try f.owner.sceneCreateNode(f.id, 0, 1);
@@ -194,19 +194,17 @@ test "Session suspended resize requires drained output and preserves rendering g
     try f.drive(&now_ns, .suspended);
 
     try f.owner.writeSession(f.id, "shell");
-    try testing.expectError(error.Busy, f.owner.resizeSessionRenderer(f.id, 2, 4));
-    const ticket = (try f.owner.readOutput(f.id, bytes[0..2])).?;
-    try testing.expectError(error.Busy, f.owner.resizeSessionRenderer(f.id, 2, 4));
-    try f.owner.completeOutput(f.id, ticket, .written);
-    _ = try f.drain(&bytes);
     const written = f.value.getStats().bytes_written;
-
+    try f.owner.resizeSessionRenderer(f.id, 3, 3);
+    const ticket = (try f.owner.readOutput(f.id, bytes[0..2])).?;
     try f.owner.resizeSessionRenderer(f.id, 2, 4);
     try testing.expectEqual(@as(u32, 2), f.cli.width);
     try testing.expectEqual(@as(u32, 4), f.cli.height);
     try testing.expectEqual(@as(u32, 2), f.cli.getCurrentBuffer().width);
     try testing.expectEqual(@as(u32, 4), f.cli.getNextBuffer().height);
     try testing.expectEqual(written, f.value.getStats().bytes_written);
+    try f.owner.completeOutput(f.id, ticket, .written);
+    try testing.expectEqualStrings("ell", try f.drain(&bytes));
     try testing.expectEqual(.suspended, f.value.getTerminalState().phase);
     try testing.expectError(error.TerminalInactive, f.owner.renderSession(f.id, true));
     try testing.expectError(error.TerminalInactive, f.owner.scenePaint(f.id, .{ 0, 0, 0, 255 }, false, 0));
@@ -240,9 +238,6 @@ test "Session terminal rejects invalid setup and preserves a rejected control dr
     defer f.deinit();
     const original = f.cli.terminal;
     try testing.expectError(error.InvalidOptions, f.owner.setupSessionTerminal(f.id, .{ .kitty_keyboard_flags = 32 }));
-    f.cli.terminalSetup = true;
-    try testing.expectError(error.IncompatibleOutput, f.owner.setupSessionTerminal(f.id, .{}));
-    f.cli.terminalSetup = false;
     try testing.expectEqualDeep(original, f.cli.terminal);
     try testing.expectEqual(.uninitialized, f.value.getTerminalState().phase);
     try f.owner.setupSessionTerminal(f.id, .{ .kitty_keyboard_flags = 31 });
@@ -279,6 +274,50 @@ test "Session terminal main-screen reservation is chunked and repositions once" 
     try testing.expect(std.mem.startsWith(u8, try f.drain(&bytes), "\x1b[8194A"));
     try testing.expectEqual(.idle, (try f.owner.pumpSession(f.id, 0, 1)).status);
     try testing.expectEqual(.active, f.value.getTerminalState().phase);
+}
+
+/// Counts the rows reserved after the last screen setup and checks the matching cursor return.
+fn expectReservedRows(output: []const u8, rows: usize, moves_up: bool) !void {
+    const start = std.mem.findLast(u8, output, ansi.ANSI.saveCursorState).?;
+    try testing.expectEqual(rows, std.mem.count(u8, output[start..], "\n"));
+    var up: [16]u8 = undefined;
+    const sequence = try std.fmt.bufPrint(&up, "\x1b[{d}A", .{rows});
+    try testing.expectEqual(moves_up, std.mem.find(u8, output[start..], sequence) != null);
+}
+
+test "Session terminal setup reserves main-screen rows and repositions by the accepted rows" {
+    const cases = [_]struct { render_offset: u32, changed_offset: ?u32 = null, resumed: bool = false, moves_up: bool }{
+        .{ .render_offset = 0, .moves_up = true },
+        // Split setup scrolls shell output above the footer, as on main.
+        .{ .render_offset = 2, .moves_up = false },
+        // A split change after the query packet cannot unpair emitted rows and their return.
+        .{ .render_offset = 0, .changed_offset = 1, .moves_up = true },
+        // Resume fixes its rows before a pending suspended snapshot moves the footer.
+        .{ .render_offset = 0, .resumed = true, .moves_up = true },
+    };
+    for (cases) |case| {
+        const f = try Fixture.init(testing.allocator, testing.io, 4, 3);
+        defer f.deinit();
+        var now_ns: u64 = 0;
+        var bytes: [16 * 1024]u8 = undefined;
+        _ = try f.value.splitControl(.{ .render_offset = case.render_offset });
+        try f.owner.setupSessionTerminal(f.id, .{ .use_alternate_screen = false });
+        try testing.expectEqual(.output_pending, (try f.owner.pumpSession(f.id, now_ns, 1)).status);
+        var len = (try f.drain(&bytes)).len;
+        if (case.changed_offset) |offset| _ = try f.value.splitControl(.{ .render_offset = offset });
+        len += (try f.driveOutput(&now_ns, .active, bytes[len..], 32)).len;
+        if (case.resumed) {
+            try f.owner.suspendSession(f.id);
+            try f.drive(&now_ns, .suspended);
+            const snapshot = try f.owner.raw().getBuffer(try f.owner.createBuffer(4, 1, .{}));
+            const commits = [_]renderer.SplitSnapshot{.{ .snapshot = snapshot, .row_columns = 4 }};
+            try testing.expectEqual(.pending, try f.value.renderSplit(null, &commits, 2, false));
+            try f.owner.resumeSession(f.id);
+            len = (try f.driveOutput(&now_ns, .active, &bytes, 64)).len;
+            try testing.expectEqual(@as(u32, 2), f.cli.renderOffset);
+        }
+        try expectReservedRows(bytes[0..len], 2, case.moves_up);
+    }
 }
 
 test "Session terminal Windows cursor-row work remains bounded at the saved-row limit" {
@@ -342,6 +381,119 @@ test "Session terminal close interrupts setup frames and suspension without clos
         try testing.expect(f.value.output.closed);
         try testing.expect(now_ns >= 2 * session.cursor_settle_ns);
         try testing.expectEqual(@as(u32, if (phase == .setup) 0 else 22), f.cli.checkHit(0, 0));
+    }
+}
+
+test "Session terminal close clears the main screen only after setup or resume claimed it" {
+    // Setup publishes query, screen, rows, then enable; resume starts at the screen packet.
+    const cases = [_]struct { packets: ?u32, resumed: bool = false, render_offset: u32 = 0, clears: bool }{
+        .{ .packets = 0, .clears = false },
+        .{ .packets = 1, .clears = false },
+        .{ .packets = 3, .clears = false },
+        .{ .packets = 3, .render_offset = 2, .clears = false },
+        .{ .packets = 1, .resumed = true, .clears = false },
+        .{ .packets = null, .clears = true },
+        .{ .packets = null, .render_offset = 2, .clears = true },
+        .{ .packets = null, .resumed = true, .clears = true },
+    };
+    for (cases) |case| {
+        const f = try Fixture.init(testing.allocator, testing.io, 4, 3);
+        defer f.deinit();
+        var now_ns: u64 = 0;
+        var bytes: [16 * 1024]u8 = undefined;
+        _ = try f.value.splitControl(.{ .render_offset = case.render_offset });
+        try f.owner.setupSessionTerminal(f.id, .{ .use_alternate_screen = false });
+        if (case.resumed) {
+            try f.drive(&now_ns, .active);
+            try f.owner.suspendSession(f.id);
+            try f.drive(&now_ns, .suspended);
+            try f.owner.resumeSession(f.id);
+        }
+        if (case.packets) |packets| {
+            for (0..packets) |_| {
+                try testing.expectEqual(.output_pending, (try f.owner.pumpSession(f.id, now_ns, 1)).status);
+                _ = try f.drain(&bytes);
+            }
+        } else try f.drive(&now_ns, .active);
+        try f.owner.beginSessionClose(f.id);
+        const restoration = try f.driveOutput(&now_ns, .restored, &bytes, 32);
+        try testing.expectEqual(case.clears, std.mem.find(u8, restoration, ansi.ANSI.eraseBelowCursor) != null);
+        try testing.expect(std.mem.endsWith(u8, restoration, ansi.ANSI.showCursor));
+    }
+}
+
+test "Session terminal random operation sequences preserve rejected state and always close" {
+    var prng = std.Random.DefaultPrng.init(0x5e55_1013);
+    const random = prng.random();
+    for (0..256) |_| {
+        const f = try Fixture.init(testing.allocator, testing.io, 4, 3);
+        defer f.deinit();
+        var now_ns: u64 = 0;
+        var bytes: [16 * 1024]u8 = undefined;
+        var ticket: ?session.OutputTicket = null;
+        // Most runs exercise managed transitions; the rest keep raw output.
+        if (random.uintLessThan(u8, 8) != 0) try f.owner.setupSessionTerminal(f.id, .{ .use_alternate_screen = random.boolean() });
+        for (0..96) |_| {
+            const before = f.snapshot();
+            // Weighted toward pumping so most runs reach every phase; early close is rare.
+            const result: anyerror!void = switch (random.uintLessThan(u8, 32)) {
+                0...2 => f.owner.setupSessionTerminal(f.id, .{ .use_alternate_screen = random.boolean() }),
+                3, 4 => f.owner.suspendSession(f.id),
+                5, 6 => f.owner.resumeSession(f.id),
+                7 => if (random.uintLessThan(u8, 4) == 0) f.owner.beginSessionClose(f.id),
+                8...19 => blk: {
+                    now_ns += random.uintLessThan(u64, 2 * session.cursor_settle_ns);
+                    _ = f.owner.pumpSession(f.id, now_ns, random.intRangeAtMost(u32, 1, 3)) catch |err| break :blk err;
+                    if (ticket == null) _ = try f.drain(&bytes);
+                },
+                20, 21 => blk: {
+                    if (ticket) |accepted| {
+                        ticket = null;
+                        break :blk f.owner.completeOutput(f.id, accepted, .written);
+                    }
+                    ticket = f.owner.readOutput(f.id, bytes[0..random.intRangeAtMost(usize, 1, 4096)]) catch |err| break :blk err;
+                },
+                22 => f.owner.writeSession(f.id, "raw"),
+                23 => f.value.control(.{ .title = "t" }),
+                24 => f.owner.resizeSessionRenderer(f.id, 4, random.intRangeAtMost(u32, 2, 3)),
+                25 => blk: {
+                    _ = f.value.splitControl(.{ .render_offset = random.uintAtMost(u32, 1) }) catch |err| break :blk err;
+                },
+                26 => blk: {
+                    // Cursor intent is accepted in every open phase and emits nothing until a frame.
+                    const reservation = f.value.output.control_sequence;
+                    const style: @TypeOf(f.cli.terminal.state.cursor.style) = if (random.boolean()) .line else .block;
+                    f.owner.controlSession(f.id, .{ .cursor = .{ .style = style, .blinking = true } }) catch |err| {
+                        try testing.expect(f.value.state != .open);
+                        break :blk err;
+                    };
+                    try testing.expectEqual(style, f.cli.terminal.state.cursor.style);
+                    try testing.expectEqualDeep(before.stats, f.value.getStats());
+                    try testing.expectEqualDeep(reservation, f.value.output.control_sequence);
+                },
+                else => blk: {
+                    // Rendering before setup forbids setup; keep most runs managed.
+                    if (f.value.lifecycle.phase == .uninitialized and random.uintLessThan(u8, 8) != 0) break :blk;
+                    // Raw renderer drawing is valid only between presentations.
+                    if (f.value.frame_end_offset == null) try f.paint("x", 1);
+                    _ = f.owner.renderSession(f.id, random.boolean()) catch |err| break :blk err;
+                },
+            };
+            if (result) |_| {} else |_| try testing.expectEqualDeep(before, f.snapshot());
+        }
+        if (ticket) |accepted| try f.owner.completeOutput(f.id, accepted, .written);
+        try f.owner.beginSessionClose(f.id);
+        for (0..256) |_| {
+            const result = try f.owner.pumpSession(f.id, now_ns, 4);
+            switch (result.status) {
+                .closed => break,
+                .output_pending => _ = try f.drain(&bytes),
+                .wait_until => now_ns = result.deadline_ns.?,
+                .again, .idle => {},
+            }
+        }
+        try testing.expectEqual(.closed, f.value.state);
+        try testing.expect(f.value.canDestroy());
     }
 }
 

@@ -138,6 +138,8 @@ pub const Transport = struct {
             .metadata = .{ .width = 1, .height = 1, .has_alpha = 0 },
         };
         self.file_state = .probing;
+        self.query_ok = false;
+        self.upload_ok = false;
         errdefer self.cancel(.io_error);
         self.query_id = first_id;
         self.upload_probe_id = first_id + 1;

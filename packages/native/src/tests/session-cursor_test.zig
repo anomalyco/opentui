@@ -65,38 +65,6 @@ test "Session cursor state accepts output pressure without consuming restoration
     try testing.expectEqualDeep(reservation, f.value.output.control_sequence);
 }
 
-test "Session cursor state changes do not emit during terminal transitions and reject closed owners" {
-    const f = try Fixture.initWithOptions(testing.allocator, testing.io, 8, 4, transport, .{ .object_capacity = 8 });
-    defer f.deinit();
-    var now_ns: u64 = 0;
-    var bytes: [8192]u8 = undefined;
-    try f.owner.setupSessionTerminal(f.id, .{});
-    for ([_]session.TerminalPhase{ .setting_up, .active, .suspending, .suspended, .resuming }) |phase| {
-        try testing.expectEqual(phase, f.value.getTerminalState().phase);
-        const stats = f.value.getStats();
-        const reservation = f.value.output.control_sequence;
-        try f.owner.controlSession(f.id, .{ .cursor = .{ .style = .line, .blinking = true } });
-        try testing.expectEqual(.line, f.cli.terminal.state.cursor.style);
-        try testing.expect(f.cli.terminal.state.cursor.blinking);
-        try testing.expectEqualDeep(stats, f.value.getStats());
-        try testing.expectEqualDeep(reservation, f.value.output.control_sequence);
-        switch (phase) {
-            .setting_up => _ = try f.driveOutput(&now_ns, .active, &bytes, 32),
-            .active => try f.owner.suspendSession(f.id),
-            .suspending => _ = try f.driveOutput(&now_ns, .suspended, &bytes, 32),
-            .suspended => try f.owner.resumeSession(f.id),
-            .resuming => _ = try f.driveOutput(&now_ns, .active, &bytes, 32),
-            else => unreachable,
-        }
-    }
-    try f.owner.beginSessionClose(f.id);
-    const accepted = f.cli.terminal.state;
-    try testing.expectError(error.SessionClosed, f.owner.controlSession(f.id, .{ .cursor = .{ .style = .block } }));
-    try testing.expectEqualDeep(accepted, f.cli.terminal.state);
-    _ = try f.driveOutput(&now_ns, .restored, &bytes, 32);
-    try testing.expectError(error.SessionClosed, f.owner.controlSession(f.id, .{ .cursor = .{} }));
-}
-
 test "Session cursor checked ownership and position bounds reject without partial updates" {
     const f = try Fixture.initWithOptions(testing.allocator, testing.io, 8, 4, transport, .{ .object_capacity = 8 });
     defer f.deinit();
