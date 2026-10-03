@@ -3263,6 +3263,18 @@ export enum LogLevel {
 // Indexed by LogLevel.
 const LOG_METHODS = ["error", "warn", "info", "debug"] as const
 
+/** Native destroy symbols that take a Context and one object handle. */
+type ContextObjectDestroySymbol =
+  | "ot_buffer_destroy"
+  | "ot_edit_buffer_destroy"
+  | "ot_editor_view_destroy"
+  | "ot_embedded_terminal_destroy"
+  | "ot_image_destroy"
+  | "ot_syntax_style_destroy"
+  | "ot_text_buffer_destroy"
+  | "ot_text_buffer_view_destroy"
+  | "ot_unicode_destroy"
+
 /**
  * VisualCursor represents a cursor position with both visual and logical coordinates.
  * Visual coordinates (visualRow, visualCol) are VIEWPORT-RELATIVE.
@@ -3462,6 +3474,18 @@ export class FFIRenderLib {
       events.buffers.clear()
     }
     this.contextEditEvents.delete(context)
+  }
+
+  /** Destroys one Context object through the native destroy symbol of its kind. */
+  private destroyContextObject(
+    context: NativeContextHandle,
+    object: ContextObjectHandle,
+    operation: ContextObjectDestroySymbol,
+  ): void {
+    this.getYogaHost().assertMutable()
+    const handle = encodeContextHandle(context, object)
+    const pointer = this.nativeContextPointer(context, operation)
+    nativeResult(operation, this.opentui.symbols[operation](pointer, handle))
   }
 
   public contextGetLinkUrl(context: NativeContextHandle, linkId: number): string {
