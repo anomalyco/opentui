@@ -100,7 +100,7 @@ export class ScrollBoxRenderable extends BoxRenderable {
   public readonly horizontalScrollBar: ScrollBarRenderable
   public readonly verticalScrollBar: ScrollBarRenderable
 
-  protected _focusable: boolean = true
+  protected static override readonly defaultFocusable = true
   private selectionListener?: () => void
 
   private autoScrollMouseX: number = 0

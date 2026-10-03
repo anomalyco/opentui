@@ -7,7 +7,6 @@ import {
   InputRenderableEvents,
   isTextNodeRenderable,
   isEditBufferRenderable,
-  parseColor,
   Renderable,
   RootTextNodeRenderable,
   ScrollBoxRenderable,
@@ -255,9 +254,9 @@ const {
       }
 
       if (name === "style") {
-        node.attributes |= createTextAttributes(value)
-        node.fg = value.fg ? parseColor(value.fg) : node.fg
-        node.bg = value.bg ? parseColor(value.bg) : node.bg
+        node.attributes = (node.attributes & ~createTextAttributes(prev)) | createTextAttributes(value)
+        node.fg = value?.fg
+        node.bg = value?.bg
         return
       }
 
@@ -366,7 +365,7 @@ const {
           node.content = value
           break
         }
-        const textValue = typeof value === "string" ? value : Array.isArray(value) ? value.join("") : `${value}`
+        const textValue = typeof value === "string" ? value : Array.isArray(value) ? value.join("") : `${value ?? ""}`
         // @ts-expect-error todo validate if prop is actually settable
         node[name] = textValue
         break

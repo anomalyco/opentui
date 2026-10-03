@@ -1,5 +1,5 @@
 import assert from "node:assert/strict"
-import { TextAttributes, type BoxRenderable, type TextRenderable } from "@opentui/core"
+import { RGBA, TextAttributes, type BoxRenderable, type TextRenderable } from "@opentui/core"
 import { createTestRenderer, ManualClock } from "@opentui/core/testing"
 import { batch, createSignal, For } from "solid-js"
 import { Dynamic, insert, render, type JSX } from "@opentui/solid"
@@ -53,14 +53,46 @@ export async function refSpreadScene() {
 }
 
 export async function optionalAttributesScene() {
-  const [bold, setBold] = createSignal(false)
+  const [on, setOn] = createSignal(false)
+  // A static undefined expression compiles to one `setProp(el, name, undefined)` at creation.
+  const focusable: boolean | undefined = undefined
+  let box!: BoxRenderable
+  let text!: TextRenderable
   await withScene(
-    () => <text attributes={bold() ? TextAttributes.BOLD : undefined}>text</text>,
+    () => (
+      <box
+        ref={box}
+        focusable={focusable}
+        border
+        title="T"
+        titleAlignment={on() ? "center" : undefined}
+        shouldFill={on() ? false : undefined}
+        width={7}
+        height={4}
+      >
+        <text ref={text} attributes={on() ? TextAttributes.BOLD : undefined} wrapMode={on() ? "char" : undefined}>
+          <span style={on() ? { fg: "#ff0000", bold: true } : undefined}>x</span>
+        </text>
+        <text content={on() ? "c" : undefined} />
+      </box>
+    ),
     async (setup) => {
       for (const enabled of [false, true, false]) {
-        setBold(enabled)
+        setOn(enabled)
         await setup.renderOnce()
-        assert.equal(setup.captureSpans().lines[0]!.spans[0]!.attributes, enabled ? TextAttributes.BOLD : 0)
+        const frame = setup
+          .captureCharFrame()
+          .split("\n")
+          .map((line) => line.trimEnd())
+        assert.equal(frame[0], enabled ? "┌──T──┐" : "┌─T───┐")
+        assert.equal(frame[2], enabled ? "│c    │" : "│     │")
+        const span = setup.captureSpans().lines[1]!.spans.find((span) => span.text.includes("x"))!
+        assert.equal(span.attributes, enabled ? TextAttributes.BOLD : 0)
+        assert.equal(span.fg.equals(RGBA.fromHex("#ff0000")), enabled)
+        assert.deepEqual(
+          [box.focusable, box.titleAlignment, box.shouldFill, text.attributes, text.wrapMode],
+          [false, enabled ? "center" : "left", !enabled, enabled ? TextAttributes.BOLD : 0, enabled ? "char" : "word"],
+        )
       }
     },
   )

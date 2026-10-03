@@ -101,7 +101,7 @@ export abstract class EditBufferRenderable extends Renderable implements LineInf
   });
 
   [BrandedEditBufferRenderable] = true
-  protected _focusable: boolean = true
+  protected static override readonly defaultFocusable = true
   private _traits: EditorTraits = {}
 
   protected _textColor: RGBA
@@ -273,7 +273,7 @@ export abstract class EditBufferRenderable extends Renderable implements LineInf
 
   set cursorOffset(offset: number) {
     this.clearSelection()
-    this.editorView.setCursorByOffset(offset)
+    this.editorView.setCursorByOffset(offset ?? 0)
     this.requestRender()
   }
 
@@ -388,6 +388,7 @@ export abstract class EditBufferRenderable extends Renderable implements LineInf
   }
 
   set showCursor(value: boolean) {
+    value ??= this._defaultOptions.showCursor
     if (this._showCursor !== value) {
       this.setNativeEditorOptions({ showCursor: value })
       this._showCursor = value
@@ -400,7 +401,7 @@ export abstract class EditBufferRenderable extends Renderable implements LineInf
   }
 
   set cursorColor(value: RGBA | string) {
-    const newColor = RGBA.clone(parseColor(value))
+    const newColor = RGBA.clone(parseColor(value ?? this._defaultOptions.cursorColor))
     this.setNativeEditorOptions({ color: newColor })
     this._cursorColor = newColor
     if (this._focused) {
@@ -447,6 +448,7 @@ export abstract class EditBufferRenderable extends Renderable implements LineInf
   }
 
   set tabIndicator(value: string | number | undefined) {
+    value ??= this._defaultOptions.tabIndicator
     if (this._tabIndicator !== value) {
       this._tabIndicator = value
       if (value !== undefined) {

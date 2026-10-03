@@ -296,10 +296,13 @@ export class TextTableRenderable extends Renderable {
   }
 
   public set outerBorder(value: boolean) {
-    if (this._outerBorder === value) return
+    // A nullish write restores the constructor default: follow `border`.
+    if (value == null) this._hasExplicitOuterBorder = false
+    const next = value ?? this._border
+    if (this._outerBorder === next) return
 
-    this._hasExplicitOuterBorder = true
-    this._outerBorder = value
+    this._hasExplicitOuterBorder = value != null
+    this._outerBorder = next
     this.invalidateLayoutAndRaster()
   }
 
@@ -335,7 +338,7 @@ export class TextTableRenderable extends Renderable {
   }
 
   public set borderColor(value: ColorInput) {
-    this._borderColor = RGBA.clone(parseColor(value))
+    this._borderColor = RGBA.clone(parseColor(value ?? this._defaultOptions.borderColor))
     this.invalidateRasterOnly()
   }
 

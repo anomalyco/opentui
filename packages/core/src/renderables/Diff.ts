@@ -52,6 +52,18 @@ export interface DiffRenderableOptions extends RenderableOptions<DiffRenderable>
   removedLineNumberBg?: string | RGBA
 }
 
+const defaultColors = {
+  lineNumberFg: "#888888",
+  lineNumberBg: "transparent",
+  addedBg: "#1a4d1a",
+  removedBg: "#4d1a1a",
+  contextBg: "transparent",
+  addedSignColor: "#22c55e",
+  removedSignColor: "#ef4444",
+  addedLineNumberBg: "transparent",
+  removedLineNumberBg: "transparent",
+}
+
 export class DiffRenderable extends Renderable {
   static override readonly nativeIntegration = this.defineNativeIntegration({
     ...Renderable.nativeIntegration,
@@ -135,20 +147,22 @@ export class DiffRenderable extends Renderable {
 
       // LineNumberRenderable options
       this._showLineNumbers = options.showLineNumbers ?? true
-      this._lineNumberFg = RGBA.clone(parseColor(options.lineNumberFg ?? "#888888"))
-      this._lineNumberBg = RGBA.clone(parseColor(options.lineNumberBg ?? "transparent"))
+      this._lineNumberFg = RGBA.clone(parseColor(options.lineNumberFg ?? defaultColors.lineNumberFg))
+      this._lineNumberBg = RGBA.clone(parseColor(options.lineNumberBg ?? defaultColors.lineNumberBg))
 
       // Diff styling
-      this._addedBg = RGBA.clone(parseColor(options.addedBg ?? "#1a4d1a"))
-      this._removedBg = RGBA.clone(parseColor(options.removedBg ?? "#4d1a1a"))
-      this._contextBg = RGBA.clone(parseColor(options.contextBg ?? "transparent"))
+      this._addedBg = RGBA.clone(parseColor(options.addedBg ?? defaultColors.addedBg))
+      this._removedBg = RGBA.clone(parseColor(options.removedBg ?? defaultColors.removedBg))
+      this._contextBg = RGBA.clone(parseColor(options.contextBg ?? defaultColors.contextBg))
       this._addedContentBg = options.addedContentBg ? RGBA.clone(parseColor(options.addedContentBg)) : null
       this._removedContentBg = options.removedContentBg ? RGBA.clone(parseColor(options.removedContentBg)) : null
       this._contextContentBg = options.contextContentBg ? RGBA.clone(parseColor(options.contextContentBg)) : null
-      this._addedSignColor = RGBA.clone(parseColor(options.addedSignColor ?? "#22c55e"))
-      this._removedSignColor = RGBA.clone(parseColor(options.removedSignColor ?? "#ef4444"))
-      this._addedLineNumberBg = RGBA.clone(parseColor(options.addedLineNumberBg ?? "transparent"))
-      this._removedLineNumberBg = RGBA.clone(parseColor(options.removedLineNumberBg ?? "transparent"))
+      this._addedSignColor = RGBA.clone(parseColor(options.addedSignColor ?? defaultColors.addedSignColor))
+      this._removedSignColor = RGBA.clone(parseColor(options.removedSignColor ?? defaultColors.removedSignColor))
+      this._addedLineNumberBg = RGBA.clone(parseColor(options.addedLineNumberBg ?? defaultColors.addedLineNumberBg))
+      this._removedLineNumberBg = RGBA.clone(
+        parseColor(options.removedLineNumberBg ?? defaultColors.removedLineNumberBg),
+      )
 
       if (this._diff) {
         this.parseDiff()
@@ -1065,7 +1079,7 @@ export class DiffRenderable extends Renderable {
   }
 
   public set addedBg(value: string | RGBA) {
-    this._addedBg = RGBA.clone(parseColor(value))
+    this._addedBg = RGBA.clone(parseColor(value ?? defaultColors.addedBg))
     this.rebuildView()
   }
 
@@ -1074,7 +1088,7 @@ export class DiffRenderable extends Renderable {
   }
 
   public set removedBg(value: string | RGBA) {
-    this._removedBg = RGBA.clone(parseColor(value))
+    this._removedBg = RGBA.clone(parseColor(value ?? defaultColors.removedBg))
     this.rebuildView()
   }
 
@@ -1083,7 +1097,7 @@ export class DiffRenderable extends Renderable {
   }
 
   public set contextBg(value: string | RGBA) {
-    this._contextBg = RGBA.clone(parseColor(value))
+    this._contextBg = RGBA.clone(parseColor(value ?? defaultColors.contextBg))
     this.rebuildView()
   }
 
@@ -1092,7 +1106,7 @@ export class DiffRenderable extends Renderable {
   }
 
   public set addedSignColor(value: string | RGBA) {
-    this._addedSignColor = RGBA.clone(parseColor(value))
+    this._addedSignColor = RGBA.clone(parseColor(value ?? defaultColors.addedSignColor))
     this.rebuildView()
   }
 
@@ -1101,7 +1115,7 @@ export class DiffRenderable extends Renderable {
   }
 
   public set removedSignColor(value: string | RGBA) {
-    this._removedSignColor = RGBA.clone(parseColor(value))
+    this._removedSignColor = RGBA.clone(parseColor(value ?? defaultColors.removedSignColor))
     this.rebuildView()
   }
 
@@ -1110,7 +1124,7 @@ export class DiffRenderable extends Renderable {
   }
 
   public set addedLineNumberBg(value: string | RGBA) {
-    this._addedLineNumberBg = RGBA.clone(parseColor(value))
+    this._addedLineNumberBg = RGBA.clone(parseColor(value ?? defaultColors.addedLineNumberBg))
     this.rebuildView()
   }
 
@@ -1119,7 +1133,7 @@ export class DiffRenderable extends Renderable {
   }
 
   public set removedLineNumberBg(value: string | RGBA) {
-    this._removedLineNumberBg = RGBA.clone(parseColor(value))
+    this._removedLineNumberBg = RGBA.clone(parseColor(value ?? defaultColors.removedLineNumberBg))
     this.rebuildView()
   }
 
@@ -1128,7 +1142,7 @@ export class DiffRenderable extends Renderable {
   }
 
   public set lineNumberFg(value: string | RGBA) {
-    this._lineNumberFg = RGBA.clone(parseColor(value))
+    this._lineNumberFg = RGBA.clone(parseColor(value ?? defaultColors.lineNumberFg))
     this.rebuildView()
   }
 
@@ -1137,7 +1151,7 @@ export class DiffRenderable extends Renderable {
   }
 
   public set lineNumberBg(value: string | RGBA) {
-    this._lineNumberBg = RGBA.clone(parseColor(value))
+    this._lineNumberBg = RGBA.clone(parseColor(value ?? defaultColors.lineNumberBg))
     this.rebuildView()
   }
 

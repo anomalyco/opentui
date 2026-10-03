@@ -117,3 +117,30 @@ it("keeps direct content ahead of JSX edits, including an explicit empty replace
     expect(setup.captureCharFrame().trim()).toBe(content === manual ? "manual" : "")
   }
 })
+
+it("resets removed props and style keys to their defaults", async () => {
+  let box!: BoxRenderable
+  let text!: TextRenderable
+  let setOn!: (on: boolean) => void
+  function App() {
+    const [on, set] = useState(true)
+    setOn = set
+    const boxProps = on
+      ? { titleAlignment: "center" as const, focusable: true, shouldFill: false, style: { translateX: 1 } }
+      : { style: {} }
+    return (
+      <box ref={(node) => (box = node!)} title="T" border width={7} height={3} {...boxProps}>
+        <text ref={(node) => (text = node!)} {...(on ? { wrapMode: "char" as const, truncate: true } : {})}>
+          hi
+        </text>
+      </box>
+    )
+  }
+  setup = await testRender(<App />, { width: 8, height: 3, clock: new ManualClock() })
+  await setup.renderOnce()
+  act(() => setOn(false))
+  await setup.renderOnce()
+  expect(setup.captureCharFrame().split("\n")[0]).toBe("┌─T───┐ ")
+  expect([box.titleAlignment, box.focusable, box.shouldFill, box.translateX]).toEqual(["left", false, true, 0])
+  expect([text.wrapMode, text.truncate]).toEqual(["word", false])
+})

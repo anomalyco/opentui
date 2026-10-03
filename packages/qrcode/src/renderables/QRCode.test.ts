@@ -127,6 +127,21 @@ describe("QRCodeRenderable (native)", () => {
     expect(qr.height).toBe(15)
   })
 
+  it.each(["foregroundColor", "backgroundColor", "fallbackColor"] as const)(
+    "restores the default %s after a null or undefined write",
+    async (prop) => {
+      const qr = new QRCodeRenderable(testRenderer, { content: "HELLO WORLD" })
+      const fallback = qr[prop]
+      testRenderer.root.add(qr)
+      for (const value of [null, undefined]) {
+        qr[prop] = "#123456"
+        qr[prop] = value as unknown as string
+        await renderOnce()
+        expect(qr[prop].equals(fallback)).toBe(true)
+      }
+    },
+  )
+
   it("rejects quiet zones smaller than the QR Code minimum", () => {
     expect(
       () =>
