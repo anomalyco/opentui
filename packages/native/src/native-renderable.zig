@@ -71,12 +71,14 @@ pub const NativeRenderable = struct {
     }
 
     pub fn setMeasureTargetPreservingProvider(self: *NativeRenderable, target: MeasureTarget, preserve_provider: bool) native_yoga.Error!void {
+        std.debug.assert((self.measure_dependents == null) == (self.measure_target == .none));
         try native_yoga.check(if (preserve_provider) native_yoga.nodeTeardownStatus(self.yoga_node) else switch (target) {
             .none => native_yoga.yogaNodeSetNativeMeasureFunc(self.yoga_node, null, null),
             else => native_yoga.yogaNodeSetNativeMeasureFunc(self.yoga_node, self, &NativeRenderable.measure),
         });
         const invalidate = self.context_owned and (target != .none or self.measure_target != .none);
         if (self.measure_dependents) |head| {
+            std.debug.assert((self.measure_previous == null) == (head.* == self));
             if (self.measure_previous) |previous| {
                 previous.measure_next = self.measure_next;
             } else {

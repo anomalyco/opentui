@@ -225,11 +225,9 @@ fn enumValue(value: anytype) u32 {
 
 fn getContext(node: YGNodeConstRef) ?*CallbackContext {
     if (node == null) return null;
-    const existing = c.YGNodeGetContext(node);
-    if (existing) |ptr| {
-        return @ptrCast(@alignCast(ptr));
-    }
-    return null;
+    const ctx: *CallbackContext = @ptrCast(@alignCast(c.YGNodeGetContext(node) orelse return null));
+    std.debug.assert(ctx.node == node);
+    return ctx;
 }
 
 fn nodeStatus(node: YGNodeConstRef, mutation: bool, teardown: bool) Status {
@@ -260,6 +258,7 @@ fn configStatusLocked(config: *Config) Status {
     // visiting every connected configuration on every cached layout call.
     var cursor = config.nodes;
     while (cursor) |ctx| : (cursor = ctx.config_next) {
+        std.debug.assert(ctx.config == config);
         if (treeRoot(ctx).active_root != null) return .busy;
     }
     return .ok;
@@ -296,12 +295,10 @@ fn treeList(root: YGNodeRef) *CallbackContext {
     return head;
 }
 
-pub fn reportMeasureError(node: YGNodeConstRef, err: anyerror) void {
-    const ctx = getContext(node) orelse return;
-    const root = treeRoot(ctx).active_root orelse return;
-    if (root.measure_error == .ok) {
-        root.measure_error = if (err == error.OutOfMemory) .out_of_memory else .exception;
-    }
+pub fn reportMeasureError(node: YGNodeConstRef, err: error{OutOfMemory}) void {
+    // Native measurement runs only inside a checked layout of this tree.
+    const root = treeRoot(getContext(node).?).active_root.?;
+    if (root.measure_error == .ok) root.measure_error = fromError(err);
 }
 
 fn internalMeasureFunc(
@@ -744,6 +741,8 @@ pub export fn yogaNodeCalculateLayoutChecked(node: YGNodeRef, width: f32, height
     const root = getContext(node) orelse return .invalid_argument;
     const top = treeRoot(root);
     if (top.active_root != null) return .busy;
+    // Placement rejects poisoned nodes, so a whole tree is poisoned or none of it.
+    std.debug.assert(root.poisoned == top.poisoned);
     if (root.poisoned) return .poisoned;
     if (direction > c.YGDirectionRTL) return .invalid_argument;
     for ([_]f32{ width, height }) |dimension| {
