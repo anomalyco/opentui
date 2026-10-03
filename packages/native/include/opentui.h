@@ -2249,11 +2249,14 @@ ot_status ot_buffer_color_matrix(ot_context *, const ot_handle *, const ot_scene
  *
  * Commands draw into the Session's next buffer with the same rules as the named
  * operations, inside the slot's clip and opacity. STACK entries apply above that
- * scene-owned entry and reset between phases. Native code plays each command when
- * it paints the slot, so a command that names a buffer, view, image, node, or
- * Unicode handle reads that resource then, not when it was recorded. A command
- * whose resource was destroyed before playback draws nothing. Other invalid
- * commands fail the step without presenting cells. */
+ * scene-owned entry and reset between phases. Exceptions: a DRAW with
+ * OT_BUFFER_DRAW_CLEAR and COLOR_MATRIX act on the whole buffer, like their named
+ * operations, and ignore the clip and opacity. CLEAR overwrites every cell and
+ * removes the image placements that earlier slots painted. Native code plays each
+ * command when it paints the slot, so a command that names a buffer, view, image,
+ * node, or Unicode handle reads that resource then, not when it was recorded. A
+ * command whose resource was destroyed before playback draws nothing. Other
+ * invalid commands fail the step without presenting cells. */
 #define OT_SCENE_RECORD_BYTES_MAX UINT32_C(67108864)
 #define OT_SCENE_RECORD_PHASE_BEFORE UINT32_C(0)
 #define OT_SCENE_RECORD_PHASE_SELF UINT32_C(1)
