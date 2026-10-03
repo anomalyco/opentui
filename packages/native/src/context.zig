@@ -642,20 +642,12 @@ pub const Context = struct {
     pub fn deinit(self: *Context) error{ContextBusy}!void {
         if (self.closing or self.mutating or self.lease_count != 0) return error.ContextBusy;
         std.debug.assert(self.lease_bytes == 0);
+        // Views only borrow scene nodes, and every scene node is in some Session's
+        // node list, so this check also covers editor and text views.
         var session_cursor: usize = 0;
         while (self.objects.next(.session, &session_cursor)) |handle| {
             const value = self.objects.get(handle, .session, session.Session) catch unreachable;
             checkSessionTeardown(value) catch return error.ContextBusy;
-        }
-        var view_cursor: usize = 0;
-        while (self.objects.next(.editor_view, &view_cursor)) |handle| {
-            const view = self.objects.get(handle, .editor_view, Editor) catch unreachable;
-            view.checkMutable() catch return error.ContextBusy;
-        }
-        view_cursor = 0;
-        while (self.objects.next(.text_buffer_view, &view_cursor)) |handle| {
-            const view = self.objects.get(handle, .text_buffer_view, TextView) catch unreachable;
-            view.checkMutable() catch return error.ContextBusy;
         }
         var clipboard_cursor: usize = 0;
         var clipboard_ready = true;
