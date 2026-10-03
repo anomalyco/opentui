@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const build_options = @import("build_options");
 const c = @import("context_abi_c");
 const Context = @import("context.zig").Context;
@@ -20,10 +21,14 @@ const image_transport = @import("context-image-abi.zig");
 const clipboard_transport = @import("clipboard-abi.zig");
 pub const ot_edit_buffer_command = editor_transport.ot_edit_buffer_command;
 
+/// Each C Context owns a private allocator. Process allocator stats do not
+/// include Context memory. Test builds back it with std.testing.allocator and
+/// enable safety, so a test that leaks Context memory fails.
 pub const ContextHandle = struct {
     gpa: std.heap.DebugAllocator(.{
         .enable_memory_limit = build_options.gpa_safe_stats,
-        .safety = build_options.gpa_safe_stats,
+        .safety = build_options.gpa_safe_stats or builtin.is_test,
+        .backing_allocator_zeroes = !builtin.is_test,
     }),
     io_threaded: std.Io.Threaded,
     core: *Context,
@@ -40,7 +45,8 @@ pub fn ot_context_create(
     options_ptr: ?*const c.ot_context_options,
     out_context_ptr: ?*?*ContextHandle,
 ) callconv(.c) c.ot_status {
-    return createContext(options_ptr, out_context_ptr, std.heap.page_allocator);
+    const backing = if (builtin.is_test) std.testing.allocator else std.heap.page_allocator;
+    return createContext(options_ptr, out_context_ptr, backing);
 }
 
 fn createContext(
@@ -93,6 +99,7 @@ pub fn ot_context_destroy(context: ?*ContextHandle) callconv(.c) c.ot_status {
         return handle.last_error;
     };
     handle.io_threaded.deinit();
+    // Safety builds log each leak, which fails the test that leaked.
     _ = handle.gpa.deinit();
     std.heap.c_allocator.destroy(handle);
     return c.OT_OK;
@@ -4188,7 +4195,7 @@ test "Context ABI creation clears failed Yoga output and retries without retaini
         .render_cells_max = 2,
         .reserved = .{ 0, 0, 0 },
     };
-    var backing = std.testing.FailingAllocator.init(std.heap.page_allocator, .{});
+    var backing = std.testing.FailingAllocator.init(std.testing.allocator, .{});
     var handle: ?*ContextHandle = @ptrFromInt(@alignOf(ContextHandle));
     yoga.testFailAfter(0);
     defer yoga.testFailAfter(-1);
@@ -4212,8 +4219,7 @@ test "Context ABI creation releases backing storage at every allocation failure"
         .render_cells_max = 2,
         .reserved = .{ 0, 0, 0 },
     };
-    // Page backing preserves the DebugAllocator's zero-filled allocation contract.
-    var baseline = std.testing.FailingAllocator.init(std.heap.page_allocator, .{});
+    var baseline = std.testing.FailingAllocator.init(std.testing.allocator, .{});
     var handle: ?*ContextHandle = null;
     try std.testing.expectEqual(c.OT_OK, createContext(&options, &handle, baseline.allocator()));
     try std.testing.expectEqual(c.OT_OK, ot_context_destroy(handle));
@@ -4221,7 +4227,7 @@ test "Context ABI creation releases backing storage at every allocation failure"
     try std.testing.expectEqual(baseline.allocated_bytes, baseline.freed_bytes);
 
     for (0..baseline.allocations) |fail_index| {
-        var failing = std.testing.FailingAllocator.init(std.heap.page_allocator, .{ .fail_index = fail_index });
+        var failing = std.testing.FailingAllocator.init(std.testing.allocator, .{ .fail_index = fail_index });
         handle = @ptrFromInt(@alignOf(ContextHandle));
         const status = createContext(&options, &handle, failing.allocator());
         defer if (status == c.OT_OK) std.testing.expectEqual(c.OT_OK, ot_context_destroy(handle)) catch unreachable;
@@ -4241,8 +4247,8 @@ test "Context ABI preserves its allocator and I/O through busy destruction and p
         .render_cells_max = 2,
         .reserved = .{ 0, 0, 0 },
     };
-    var backing = std.testing.FailingAllocator.init(std.heap.page_allocator, .{});
-    var peer_backing = std.testing.FailingAllocator.init(std.heap.page_allocator, .{});
+    var backing = std.testing.FailingAllocator.init(std.testing.allocator, .{});
+    var peer_backing = std.testing.FailingAllocator.init(std.testing.allocator, .{});
     var handle: ?*ContextHandle = null;
     var peer: ?*ContextHandle = null;
     try std.testing.expectEqual(c.OT_OK, createContext(&options, &handle, backing.allocator()));
