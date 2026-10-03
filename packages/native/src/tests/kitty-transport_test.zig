@@ -102,48 +102,35 @@ test "Session Kitty files use Context I/O for creation writes and cleanup" {
     try std.testing.expectEqual(@as(u32, 0), f.cli.kittyTransport.pendingCount());
 }
 
-test "Session Kitty expiry follows host pump time while terminal output is pending" {
-    var supplied: FileIo = .{};
-    const f = try sessionKitty(&supplied);
-    defer f.deinit();
-    var now_ns: u64 = 100;
-    try f.drive(&now_ns, .active);
-    try f.value.setKittyImageTransport(2);
-    const clocks = supplied.clocks;
-    try std.testing.expectEqual(.output_pending, (try f.owner.pumpSession(f.id, now_ns, 1)).status);
-    const deadline = now_ns + 5 * std.time.ns_per_s;
-    supplied.time_ns = std.math.maxInt(i96);
-    _ = try f.owner.pumpSession(f.id, deadline - 1, 1);
-    try std.testing.expectEqual(.probing, f.cli.kittyTransport.file_state);
-    _ = try f.owner.pumpSession(f.id, deadline, 1);
-    try std.testing.expectEqual(.timeout, f.cli.kittyTransport.file_state);
-    try std.testing.expectEqual(@as(u32, 0), f.cli.kittyTransport.pendingCount());
-    try std.testing.expectEqual(clocks, supplied.clocks);
-}
-
-test "Session Kitty polls share clock admission with pumps and arm after an idle host" {
-    var supplied: FileIo = .{};
-    const f = try sessionKitty(&supplied);
-    defer f.deinit();
-    var now_ns: u64 = 0;
-    try f.drive(&now_ns, .active);
-    try f.value.setKittyImageTransport(2);
-    const clocks = supplied.clocks;
-    now_ns = 100 * std.time.ns_per_s;
-    _ = try f.owner.sessionPollKittyImageTransport(f.id, now_ns);
-    try std.testing.expectEqual(.probing, f.cli.kittyTransport.file_state);
-    try std.testing.expectError(error.InvalidClock, f.owner.pumpSession(f.id, now_ns - 1, 1));
-    try std.testing.expectError(error.InvalidClock, f.owner.sessionPollKittyImageTransport(f.id, now_ns - 1));
-    const deadline = now_ns + kitty.TIMEOUT_NS;
-    try std.testing.expectError(error.InvalidBudget, f.owner.pumpSession(f.id, deadline, 0));
-    try std.testing.expectEqual(now_ns, f.value.last_pump_ns.?);
-    _ = try f.owner.pumpSession(f.id, now_ns, 1);
-    _ = try f.owner.sessionPollKittyImageTransport(f.id, deadline - 1);
-    try std.testing.expectEqual(.probing, f.cli.kittyTransport.file_state);
-    _ = try f.owner.sessionPollKittyImageTransport(f.id, deadline);
-    try std.testing.expectEqual(.timeout, f.cli.kittyTransport.file_state);
-    try std.testing.expectEqual(@as(u32, 0), f.cli.kittyTransport.pendingCount());
-    try std.testing.expectEqual(clocks, supplied.clocks);
+test "Session Kitty expiry follows host pump or poll time from the first sample after an idle host" {
+    for ([_]bool{ false, true }) |poll| {
+        var supplied: FileIo = .{};
+        const f = try sessionKitty(&supplied);
+        defer f.deinit();
+        var now_ns: u64 = 0;
+        try f.drive(&now_ns, .active);
+        try f.value.setKittyImageTransport(2);
+        const clocks = supplied.clocks;
+        supplied.time_ns = std.math.maxInt(i96);
+        now_ns = 100 * std.time.ns_per_s;
+        const deadline = now_ns + kitty.TIMEOUT_NS;
+        // Equal samples are valid; expiry runs while the probe output is still pending.
+        for ([_]u64{ now_ns, now_ns, deadline - 1, deadline }) |sample| {
+            if (poll) {
+                _ = try f.owner.sessionPollKittyImageTransport(f.id, sample);
+            } else {
+                try std.testing.expectEqual(.output_pending, (try f.owner.pumpSession(f.id, sample, 1)).status);
+            }
+            try std.testing.expectEqual(if (sample == deadline) kitty.FileState.timeout else .probing, f.cli.kittyTransport.file_state);
+        }
+        try std.testing.expectEqual(@as(u32, 0), f.cli.kittyTransport.pendingCount());
+        try std.testing.expectEqual(clocks, supplied.clocks);
+        // Pumps and polls share clock admission; a rejected budget keeps the clock.
+        try std.testing.expectError(error.InvalidClock, f.owner.pumpSession(f.id, deadline - 1, 1));
+        try std.testing.expectError(error.InvalidClock, f.owner.sessionPollKittyImageTransport(f.id, deadline - 1));
+        try std.testing.expectError(error.InvalidBudget, f.owner.pumpSession(f.id, deadline + 1, 0));
+        try std.testing.expectEqual(deadline, f.value.last_pump_ns.?);
+    }
 }
 
 test "Session Kitty file preparation closes files and uses injected failure cleanup" {
@@ -182,7 +169,6 @@ test "Session Kitty files of a frame skipped for output pressure are released an
     const f = try @import("session-terminal_test.zig").Fixture.initWithOptions(std.testing.allocator, std.testing.io, 4, 1, .{ .chunk_size = 64, .chunk_count = 8, .span_capacity = 8 }, .{});
     defer f.deinit();
     f.cli.terminal.graphics_enabled = true;
-    f.cli.terminal.caps.kitty_graphics = true;
     f.cli.kittyTransport.mode = .file;
     f.cli.kittyTransport.file_state = .ready;
     const value = try image.createFromRgba(std.testing.allocator, &.{ 1, 2, 3, 255 }, 1, 1, 4);
