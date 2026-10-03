@@ -480,6 +480,87 @@ pub const BufferLease = struct {
 /// A glyph that a text view draw wrote at column x of its current row.
 const MarkBase = struct { x: u32, char: u32 };
 
+/// One glyph of a text row with at least one cell to draw.
+const TextGlyph = struct {
+    bytes: []const u8,
+    /// First column to draw.
+    x: u32,
+    /// Display cells of the whole glyph.
+    width: u32,
+    /// A blank glyph draws `count` spaces from x. Any other glyph is one cell character.
+    blank: bool,
+    count: u32,
+};
+
+/// Places the glyphs of one text row for drawText and drawTextChecked. Controls and other
+/// zero-width clusters take no cells. A tab or a cluster that a cell cannot hold is blank
+/// (see isPrintableGlyph): its spaces clip one by one, also left of column 0. Any other glyph
+/// draws only when all of its cells are inside the target and its scissor. Every glyph
+/// advances by the width it is drawn with, so clipping never moves the visible glyphs.
+const TextRow = struct {
+    target: *const OptimizedBuffer,
+    text: []const u8,
+    /// Sparse metadata from utf8.findRenderClusterInfo for text.
+    clusters: []const utf8.RenderClusterInfo,
+    x: i32,
+    y: i32,
+    byte_offset: usize = 0,
+    cluster_index: usize = 0,
+    advance_cells: u64 = 0,
+
+    const tab_width: u8 = 2;
+
+    fn next(self: *TextRow) ?TextGlyph {
+        const target = self.target;
+        // A glyph is at most two cells per byte, so the columns fit in i64.
+        while (self.byte_offset < self.text.len and self.x + @as(i64, @intCast(self.advance_cells)) < target.width) {
+            const start = self.byte_offset;
+            // Unchecked text can be invalid UTF-8, which ends a cluster at another byte.
+            while (self.cluster_index < self.clusters.len and self.clusters[self.cluster_index].byte_start < start) {
+                self.cluster_index += 1;
+            }
+            const cluster: ?utf8.RenderClusterInfo = if (self.cluster_index < self.clusters.len and
+                self.clusters[self.cluster_index].byte_start == start) self.clusters[self.cluster_index] else null;
+            if (cluster) |entry| {
+                self.byte_offset += entry.byte_len;
+                self.cluster_index += 1;
+            } else {
+                // Sparse metadata omits zero-width clusters, not their UTF-8 bytes.
+                const length = std.unicode.utf8ByteSequenceLength(self.text[start]) catch 1;
+                self.byte_offset = @min(start + length, self.text.len);
+            }
+            const bytes = self.text[start..self.byte_offset];
+            const width = if (cluster != null and target.width_method != .wcwidth)
+                cluster.?.width_cols
+            else
+                utf8.getWidthAt(bytes, 0, tab_width, target.width_method);
+            if (width == 0) continue;
+            const glyph_x = self.x + @as(i64, @intCast(self.advance_cells));
+            self.advance_cells += width;
+            const blank = !isPrintableGlyph(bytes);
+            // A glyph that starts left of column 0 is clipped, even a wide glyph that reaches column 0.
+            if (!blank and glyph_x < 0) continue;
+            const first: u32 = @intCast(@max(glyph_x, 0));
+            const end = @min(glyph_x + width, target.width);
+            const count: u32 = if (!blank) 1 else if (end > first) @intCast(end - first) else 0;
+            if (!self.isVisible(first, if (blank) count else width, blank)) continue;
+            return .{ .bytes = bytes, .x = first, .width = width, .blank = blank, .count = count };
+        }
+        return null;
+    }
+
+    /// Blank cells need one cell in the scissor; a glyph needs all of its cells in the target and scissor.
+    fn isVisible(self: *const TextRow, first: u32, cells: u32, blank: bool) bool {
+        if (cells > self.target.width - first) return false;
+        for (0..cells) |offset| {
+            const inside = self.target.isPointInScissor(@intCast(first + offset), self.y);
+            if (blank and inside) return true;
+            if (!blank and !inside) return false;
+        }
+        return !blank;
+    }
+};
+
 pub inline fn rgbaEqual(a: RGBA, b: RGBA) bool {
     return a[0] == b[0] and a[1] == b[1] and a[2] == b[2] and a[3] == b[3];
 }
@@ -1755,8 +1836,7 @@ pub const OptimizedBuffer = struct {
         defer scratch_allocator.free(input);
         var clusters: std.ArrayListUnmanaged(utf8.RenderClusterInfo) = .empty;
         defer clusters.deinit(scratch_allocator);
-        const tab_width: u8 = 2;
-        try utf8.findRenderClusterInfo(scratch_allocator, input, tab_width, utf8.isAsciiOnly(input), self.width_method, &clusters);
+        try utf8.findRenderClusterInfo(scratch_allocator, input, TextRow.tab_width, utf8.isAsciiOnly(input), self.width_method, &clusters);
 
         const PreparedRun = struct { x: u32, char: u32, count: u32 };
         var runs: std.ArrayListUnmanaged(PreparedRun) = .empty;
@@ -1766,73 +1846,21 @@ pub const OptimizedBuffer = struct {
             }
             runs.deinit(scratch_allocator);
         }
-        var byte_offset: usize = 0;
-        var cluster_index: usize = 0;
-        var advance_cells: u32 = 0;
         var grapheme_count: u32 = 0;
-        // advance_cells is at most two cells per input byte, so the sum fits in i64.
-        while (byte_offset < input.len and @as(i64, x) + advance_cells < self.width) {
-            const start = byte_offset;
-            const cluster: ?utf8.RenderClusterInfo = if (cluster_index < clusters.items.len and
-                clusters.items[cluster_index].byte_start == start) clusters.items[cluster_index] else null;
-            if (cluster) |entry| {
-                byte_offset += entry.byte_len;
-                cluster_index += 1;
-            } else {
-                // Sparse metadata omits zero-width clusters, not their UTF-8 bytes.
-                byte_offset += std.unicode.utf8ByteSequenceLength(input[start]) catch unreachable;
-            }
-            const bytes = input[start..byte_offset];
-            const cell_width = if (cluster != null and self.width_method != .wcwidth)
-                cluster.?.width_cols
-            else
-                utf8.getWidthAt(bytes, 0, tab_width, self.width_method);
-            if (cell_width == 0) continue;
-            const char_x_wide = @as(i64, x) + advance_cells;
-            // A tab or a cluster that a cell cannot hold draws as spaces, which clip one by one.
-            const blank = !isPrintableGlyph(bytes);
-            if (!blank and char_x_wide < 0) {
-                // Clip a glyph that starts left of column 0, even a wide glyph that reaches column 0.
-                // Advance as a drawn glyph does, so the visible glyphs keep their columns.
-                advance_cells += cell_width;
-                continue;
-            }
-            // Only blank cells are drawn from a column left of 0.
-            const char_x: u32 = @intCast(@max(char_x_wide, 0));
-            const blank_end = @min(char_x_wide + cell_width, self.width);
-            const count: u32 = if (!blank) 1 else if (blank_end > char_x) @intCast(blank_end - char_x) else 0;
-            var visible = false;
-            if (blank) {
-                for (0..count) |offset| {
-                    visible = visible or self.isPointInScissor(@intCast(char_x + offset), y);
-                }
-            } else if (cell_width <= self.width - char_x) {
-                visible = true;
-                for (0..cell_width) |offset| {
-                    if (!self.isPointInScissor(@intCast(char_x + offset), y)) {
-                        visible = false;
-                        break;
-                    }
-                }
-            }
-            if (!visible) {
-                advance_cells += cell_width;
-                continue;
-            }
-
+        var layout: TextRow = .{ .target = self, .text = input, .clusters = clusters.items, .x = x, .y = y };
+        while (layout.next()) |glyph| {
             try runs.ensureUnusedCapacity(scratch_allocator, 1);
-            const encoded: u32 = if (blank) DEFAULT_SPACE_CHAR else if (bytes.len == 1) bytes[0] else encoded: {
-                const id = self.pool.acquire(bytes) catch |err| return mapGraphemeAcquire(err);
+            const encoded: u32 = if (glyph.blank) DEFAULT_SPACE_CHAR else if (glyph.bytes.len == 1) glyph.bytes[0] else encoded: {
+                const id = self.pool.acquire(glyph.bytes) catch |err| return mapGraphemeAcquire(err);
                 // Leave one reference for the destination tracker's first use.
                 if ((self.pool.getRefcount(id) catch unreachable) == math.maxInt(u32)) {
                     self.pool.decref(id) catch unreachable;
                     return error.TrackerLimit;
                 }
                 grapheme_count += 1;
-                break :encoded gp.packGraphemeStart(id, cell_width);
+                break :encoded gp.packGraphemeStart(id, glyph.width);
             };
-            runs.appendAssumeCapacity(.{ .x = char_x, .char = encoded, .count = count });
-            advance_cells += cell_width;
+            runs.appendAssumeCapacity(.{ .x = glyph.x, .char = encoded, .count = glyph.count });
         }
         if (runs.items.len == 0) return;
         try self.storage.ensureTrackerCapacity(
@@ -1950,141 +1978,37 @@ pub const OptimizedBuffer = struct {
 
         const is_ascii_only = utf8.isAsciiOnly(text);
         if (explicit_colors_opaque and is_ascii_only) {
-            var printable = true;
-            for (text) |byte| {
-                if (byte < 32 or byte > 126) {
-                    printable = false;
-                    break;
-                }
+            const background = bg.?;
+            // Each printable ASCII byte is one cell, so the bytes left of column 0 are clipped.
+            const clipped_byte_count: usize = if (x < 0) @min(text.len, @abs(x)) else 0;
+            var char_x: u32 = @intCast(@max(x, 0));
+            for (text[clipped_byte_count..]) |byte| {
+                if (char_x >= self.width) break;
+                self.set(char_x, y, makeCell(byte, fg, background, attributes));
+                char_x += 1;
             }
-            if (printable) {
-                const background = bg.?;
-                // Each printable ASCII byte is one cell, so the bytes left of column 0 are clipped.
-                const clipped_byte_count: usize = if (x < 0) @min(text.len, @abs(x)) else 0;
-                var char_x: u32 = @intCast(@max(x, 0));
-                for (text[clipped_byte_count..]) |byte| {
-                    if (char_x >= self.width) break;
-                    self.set(char_x, y, makeCell(byte, fg, background, attributes));
-                    char_x += 1;
-                }
-                return;
-            }
+            return;
         }
 
-        var render_cluster_list: std.ArrayListUnmanaged(utf8.RenderClusterInfo) = .empty;
-        defer render_cluster_list.deinit(self.allocator);
+        var clusters: std.ArrayListUnmanaged(utf8.RenderClusterInfo) = .empty;
+        defer clusters.deinit(self.allocator);
+        try utf8.findRenderClusterInfo(self.allocator, text, TextRow.tab_width, is_ascii_only, self.width_method, &clusters);
 
-        const tab_width: u8 = 2;
-        try utf8.findRenderClusterInfo(self.allocator, text, tab_width, is_ascii_only, self.width_method, &render_cluster_list);
-        const render_clusters = render_cluster_list.items;
-
-        var advance_cells: u32 = 0;
-        var byte_offset: u32 = 0;
-        var col: u32 = 0;
-        var special_idx: usize = 0;
-
-        text_loop: while (byte_offset < text.len) {
-            const char_x_wide = @as(i64, x) + advance_cells;
-            if (char_x_wide >= self.width) break;
-            const char_x: i32 = @intCast(char_x_wide);
-            // Only a tab is drawn from a column left of 0; it clips each of its cells.
-            const cell_x: u32 = @intCast(@max(char_x, 0));
-
-            const at_special = special_idx < render_clusters.len and render_clusters[special_idx].col_start == col;
-
-            var grapheme_bytes: []const u8 = undefined;
-            var cluster_width_cols: u32 = undefined;
-
-            if (at_special) {
-                const g = render_clusters[special_idx];
-                grapheme_bytes = text[g.byte_start .. g.byte_start + g.byte_len];
-                cluster_width_cols = g.width_cols;
-                byte_offset = g.byte_start + g.byte_len;
-                special_idx += 1;
-            } else {
-                if (byte_offset >= text.len) break;
-                grapheme_bytes = text[byte_offset .. byte_offset + 1];
-                cluster_width_cols = 1;
-                byte_offset += 1;
+        var layout: TextRow = .{ .target = self, .text = text, .clusters = clusters.items, .x = x, .y = @intCast(y) };
+        while (layout.next()) |glyph| {
+            const background = bg orelse self.get(glyph.x, y).?.bg;
+            var retained_id: ?u32 = null;
+            defer if (retained_id) |id| self.pool.decref(id) catch unreachable;
+            const char: u32 = if (glyph.blank) DEFAULT_SPACE_CHAR else if (glyph.bytes.len == 1) glyph.bytes[0] else char: {
+                const id = self.pool.acquire(glyph.bytes) catch return BufferError.OutOfMemory;
+                retained_id = id;
+                break :char gp.packGraphemeStart(id, glyph.width);
+            };
+            const cell = makeCell(char, fg, background, attributes);
+            for (0..glyph.count) |offset| {
+                const column = glyph.x + @as(u32, @intCast(offset));
+                if (explicit_colors_opaque) self.set(column, y, cell) else self.setTextCell(column, y, cell);
             }
-
-            const is_tab = grapheme_bytes.len == 1 and grapheme_bytes[0] == '\t';
-            const cluster_byte_start = if (at_special) render_clusters[special_idx - 1].byte_start else byte_offset - 1;
-            // A clipped glyph advances as a drawn glyph does, so the visible glyphs keep their columns.
-            const cell_width = utf8.getWidthAt(text, cluster_byte_start, tab_width, self.width_method);
-            if (!is_tab and char_x < 0) {
-                // Clip a glyph that starts left of column 0, even a wide glyph that reaches column 0.
-                advance_cells += cell_width;
-                col += cluster_width_cols;
-                continue;
-            }
-            if (!is_tab and !self.isPointInScissor(char_x, @intCast(y))) {
-                advance_cells += cell_width;
-                col += cluster_width_cols;
-                continue;
-            }
-
-            var bgColor: RGBA = undefined;
-            if (bg) |b| {
-                bgColor = b;
-            } else if (self.get(cell_x, y)) |existingCell| {
-                bgColor = existingCell.bg;
-            } else {
-                bgColor = ansi.rgbColor(0, 0, 0, 255);
-            }
-
-            if (cell_width == 0) {
-                col += cluster_width_cols;
-                continue;
-            }
-            if (cell_width > 1 and !is_tab) {
-                if (cell_x + cell_width > self.width) {
-                    advance_cells += cell_width;
-                    col += cluster_width_cols;
-                    continue;
-                }
-                for (1..cell_width) |span_offset| {
-                    if (!self.isPointInScissor(char_x + @as(i32, @intCast(span_offset)), @intCast(y))) {
-                        advance_cells += cell_width;
-                        col += cluster_width_cols;
-                        continue :text_loop;
-                    }
-                }
-            }
-
-            if (is_tab) {
-                var tab_col: u32 = 0;
-                while (tab_col < cluster_width_cols) : (tab_col += 1) {
-                    const tab_x = @as(i64, char_x) + tab_col;
-                    if (tab_x < 0) continue;
-                    if (tab_x >= self.width) break;
-                    if (!self.isPointInScissor(@intCast(tab_x), @intCast(y))) continue;
-
-                    const tab_cell_x: u32 = @intCast(tab_x);
-                    const cell = makeCell(DEFAULT_SPACE_CHAR, fg, bgColor, attributes);
-                    if (explicit_colors_opaque) self.set(tab_cell_x, y, cell) else self.setTextCell(tab_cell_x, y, cell);
-                }
-                advance_cells += cluster_width_cols;
-                col += cluster_width_cols;
-                continue;
-            }
-
-            var encoded_char: u32 = 0;
-            var retained_gid: ?u32 = null;
-            defer if (retained_gid) |gid| self.pool.decref(gid) catch unreachable;
-            if (grapheme_bytes.len == 1 and cell_width == 1 and grapheme_bytes[0] >= 32) {
-                encoded_char = @as(u32, grapheme_bytes[0]);
-            } else {
-                const gid = self.pool.acquire(grapheme_bytes) catch return BufferError.OutOfMemory;
-                retained_gid = gid;
-                encoded_char = gp.packGraphemeStart(gid & gp.GRAPHEME_ID_MASK, cell_width);
-            }
-
-            const cell = makeCell(encoded_char, fg, bgColor, attributes);
-            if (explicit_colors_opaque) self.set(cell_x, y, cell) else self.setTextCell(cell_x, y, cell);
-
-            advance_cells += cell_width;
-            col += cluster_width_cols;
         }
     }
 

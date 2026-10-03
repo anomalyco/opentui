@@ -1381,39 +1381,45 @@ test "OptimizedBuffer - checked text at signed positions clips like drawTextClip
         .{ .text = "ZZZZ", .x = 0, .y = -1, .bg = black },
         .{ .text = "ZZZZ", .x = min, .y = 0, .bg = black },
         .{ .text = "Z\u{4e16}ZZ", .x = min, .y = 0, .bg = null },
+        // Sparse cluster metadata omits zero-width code points and controls.
+        .{ .text = "\u{200b}A\u{200d}\u{4e2d}Z", .x = 0, .y = 6, .bg = black },
+        .{ .text = "a\x1b\u{4e2d}\u{85}b", .x = 0, .y = 7, .bg = null },
+        .{ .text = "x" ++ "e" ++ "\u{301}" ** 64 ++ "y\tz", .x = -1, .y = 8, .bg = black },
     };
 
-    var expected_pools = TestPools.init(std.testing.allocator);
-    defer expected_pools.deinit();
-    var checked_pools = TestPools.init(std.testing.allocator);
-    defer checked_pools.deinit();
-    const expected = try OptimizedBuffer.init(std.testing.allocator, 4, 6, .{ .link_pool = &expected_pools.links, .pool = &expected_pools.graphemes, .id = "clipped-text" });
-    defer expected.deinit();
-    const checked = try OptimizedBuffer.init(std.testing.allocator, 4, 6, .{ .link_pool = &checked_pools.links, .pool = &checked_pools.graphemes, .id = "checked-clipped-text" });
-    defer checked.deinit();
+    for (std.enums.values(@import("../utf8.zig").WidthMethod)) |width_method| {
+        errdefer std.debug.print("width_method={t}\n", .{width_method});
+        var expected_pools = TestPools.init(std.testing.allocator);
+        defer expected_pools.deinit();
+        var checked_pools = TestPools.init(std.testing.allocator);
+        defer checked_pools.deinit();
+        const expected = try OptimizedBuffer.init(std.testing.allocator, 4, 9, .{ .link_pool = &expected_pools.links, .pool = &expected_pools.graphemes, .width_method = width_method });
+        defer expected.deinit();
+        const checked = try OptimizedBuffer.init(std.testing.allocator, 4, 9, .{ .link_pool = &checked_pools.links, .pool = &checked_pools.graphemes, .width_method = width_method });
+        defer checked.deinit();
 
-    for ([_]*OptimizedBuffer{ expected, checked }) |target| target.clear(black, null);
-    for (draws) |draw| {
-        if (draw.scissor) {
-            try expected.pushScissorRect(1, 4, 2, 1);
-            try checked.pushScissorRect(1, 4, 2, 1);
+        for ([_]*OptimizedBuffer{ expected, checked }) |target| target.clear(black, null);
+        for (draws) |draw| {
+            if (draw.scissor) {
+                try expected.pushScissorRect(1, 4, 2, 1);
+                try checked.pushScissorRect(1, 4, 2, 1);
+            }
+            try expected.drawTextClipped(draw.text, draw.x, draw.y, white, draw.bg, 0);
+            try checked.drawTextChecked(draw.text, draw.x, draw.y, white, draw.bg, 0);
+            if (draw.scissor) {
+                expected.popScissorRect();
+                checked.popScissorRect();
+            }
         }
-        try expected.drawTextClipped(draw.text, draw.x, draw.y, white, draw.bg, 0);
-        try checked.drawTextChecked(draw.text, draw.x, draw.y, white, draw.bg, 0);
-        if (draw.scissor) {
-            expected.popScissorRect();
-            checked.popScissorRect();
-        }
+
+        try expectRowChars(checked, 0, "CDE ");
+        // The wide glyph after a clipped prefix keeps its columns.
+        try std.testing.expectEqual(@as(u32, 'B'), checked.get(0, 5).?.char);
+        try std.testing.expect(gp.isGraphemeChar(checked.get(1, 5).?.char));
+        try expectRowChars(checked, 8, " y  ");
+        try expectSameCells(expected, checked);
+        try expectNoControlCells(expected);
     }
-
-    try expectRowChars(checked, 0, "CDE ");
-    // The wide glyph after a clipped prefix keeps its columns.
-    try std.testing.expectEqual(@as(u32, 'B'), checked.get(0, 5).?.char);
-    try std.testing.expect(gp.isGraphemeChar(checked.get(1, 5).?.char));
-    try std.testing.expectEqualSlices(u32, expected.buffer.char, checked.buffer.char);
-    try std.testing.expectEqualSlices(u32, expected.buffer.attributes, checked.buffer.attributes);
-    for (expected.buffer.fg, checked.buffer.fg) |want, got| try std.testing.expect(buffer_mod.rgbaEqual(want, got));
-    for (expected.buffer.bg, checked.buffer.bg) |want, got| try std.testing.expect(buffer_mod.rgbaEqual(want, got));
 }
 
 test "OptimizedBuffer - a scissor never moves the text glyphs it leaves visible" {
