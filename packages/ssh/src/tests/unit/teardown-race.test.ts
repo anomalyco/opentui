@@ -550,10 +550,8 @@ test("fuzz: arbitrary PTY dimensions remain finite, positive, and bounded", asyn
 
 const teardownError = new Error("ECONNRESET")
 
-// The todo row still logs "Error destroying root renderable" from NativeScene (U16 D2; the fix is U14's).
-// `bun test --todo` fails once it passes; then drop the marker.
 const teardownCases = [
-  { name: "the server closes the session during renderer setup", during: "setup", end: "destroy", todo: "U14" },
+  { name: "the server closes the session during renderer setup", during: "setup", end: "destroy" },
   { name: "the client disconnects during renderer setup", during: "setup", end: "disconnect" },
   { name: "the channel closes during renderer setup", during: "setup", end: "close" },
   { name: "the channel fails during renderer setup", during: "setup", end: "error" },
@@ -563,8 +561,7 @@ const teardownCases = [
 ] as const
 
 for (const row of teardownCases) {
-  const define = "todo" in row ? test.todo : test
-  define(`ordinary teardown with a real renderer reports nothing extra: ${row.name}`, () => runTeardown(row))
+  test(`ordinary teardown with a real renderer reports nothing extra: ${row.name}`, () => runTeardown(row))
 }
 
 async function runTeardown({ during, end }: (typeof teardownCases)[number]): Promise<void> {
