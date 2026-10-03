@@ -496,7 +496,7 @@ describe("TextBufferView", () => {
     })
 
     // Resets skip native while a view is marked clear; that is sound only if a clear view has no native selection.
-    it.each([1, 2, 3])("never marks a view with a selection clear (seed %i)", (seed) => {
+    it.each([1, 2, 3])("never marks a view with a selection clear (seed %j)", (seed) => {
       let state = seed
       const random = (count: number) => {
         state ^= state << 13

@@ -694,7 +694,7 @@ describe("TextRenderable Selection", () => {
   })
 
   // Random TextNode edits, often several per render, checked against a model of the tree after each render.
-  it.each([1, 2, 3])("composes TextNode trees like a reference model (seed %i)", async (seed) => {
+  it.each([1, 2, 3])("composes TextNode trees like a reference model (seed %j)", async (seed) => {
     let state = seed
     const random = (count: number) => {
       state ^= state << 13
@@ -763,9 +763,12 @@ describe("TextRenderable Selection", () => {
         if (parent === root) text.fg = fg
         else parent.node.fg = fg
         parent.fg = fg
-      } else if (operation === 5 && parent !== root) {
-        parent.bg = colors[random(4)]
-        parent.node.bg = parent.bg
+      } else if (operation === 5) {
+        // The Text's own bg must reach children without one; the root always has a bg.
+        const bg = colors[random(4)] ?? (parent === root ? colors[3] : undefined)
+        if (parent === root) text.bg = bg
+        else parent.node.bg = bg
+        parent.bg = bg
       } else if (operation === 6 && random(4) === 0) {
         text.clear()
         for (const child of [...root.children]) if (typeof child !== "string") detach(child)

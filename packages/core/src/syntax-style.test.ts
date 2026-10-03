@@ -43,7 +43,7 @@ describe("NativeSyntaxStyle", () => {
   })
 
   // Names, IDs, scope fallback, definitions, merging, and caches against a plain reference model.
-  it.each([1, 2, 3])("matches a reference model over random operations (seed %i)", (seed) => {
+  it.each([1, 2, 3])("matches a reference model over random operations (seed %j)", (seed) => {
     let state = seed
     const random = (count: number) => {
       state ^= state << 13
