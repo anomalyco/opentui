@@ -7,10 +7,13 @@ import {
   CliRenderEvents,
   type CliRendererConfig,
 } from "../renderer.js"
+import { NativeSession } from "../NativeSession.js"
 import { BoxRenderable } from "../renderables/Box.js"
 import { ImageRenderable } from "../renderables/Image.js"
+import { TextRenderable } from "../renderables/Text.js"
+import { settle, settleUntil } from "../testing/harness.js"
 import { ManualClock } from "../testing/manual-clock.js"
-import { createTestStdin, TestWriteStream } from "../testing/test-streams.js"
+import { createTestStdin, RecordingWriteStream, TestWriteStream } from "../testing/test-streams.js"
 import { NativeSessionRenderStatus } from "../zig.js"
 
 const PNG_1X1 = Uint8Array.from(
@@ -1616,6 +1619,51 @@ test("Session idle waits until the Writable callback settles", async () => {
   stdout.releaseWrites()
   await idle
   expect(settled).toBe(true)
+})
+
+test("raw output pressure delays a running renderer until the Session drains", async () => {
+  const stdout = new RecordingWriteStream(40, 4)
+  const clock = new ManualClock()
+  const driver = new NativeSession(stdout, {
+    output: { chunkSize: 64, spanCapacity: 8, maxBytes: 512n, controlCapacity: 0 },
+  })
+  const renderer = new CliRenderer(createTestStdin(), stdout as unknown as NodeJS.WriteStream, 40, 4, {
+    nativeSession: driver,
+    clock,
+    remote: true,
+    screenMode: "main-screen",
+    consoleMode: "disabled",
+    exitSignals: [],
+  })
+  renderers.add(renderer)
+  const errors = spyOn(console, "error").mockImplementation(() => {})
+  destroyFns.push(() => {
+    errors.mockRestore()
+    stdout.release()
+  })
+  let frames = 0
+  renderer.on(CliRenderEvents.FRAME, () => frames++)
+
+  // Raw output leaves less free capacity than the frame needs, but the frame fits an empty queue.
+  stdout.hold()
+  expect(driver.write(new Uint8Array(400).fill(0x41))).toBe(true)
+  await settleUntil(() => stdout.pendingWrite)
+  renderer.root.add(new TextRenderable(renderer, { content: `${"x".repeat(40)}\n${"y".repeat(40)}` }))
+  renderer.start()
+  clock.advance(40)
+  await settle(16)
+  expect(frames).toBe(0)
+
+  stdout.release()
+  for (let frame = 0; frame < 4; frame++) {
+    await settle(16)
+    clock.advance(40)
+  }
+  await settle(16)
+  expect(frames).toBeGreaterThanOrEqual(3)
+  expect(renderer.isRunning).toBe(true)
+  expect(renderer.getSchedulerState().hasScheduledRender).toBe(true)
+  expect(errors).not.toHaveBeenCalled()
 })
 
 test("split-footer custom stdout publishes captured commits after in-flight controls", async () => {
