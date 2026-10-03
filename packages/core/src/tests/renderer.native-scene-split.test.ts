@@ -167,6 +167,17 @@ test("captured stdout that fails mid-write queues and leaks none of its rows", a
   expect(externalOutput.takeText()).toBe("d")
 })
 
+test("capture-stdout set after destruction leaves stdout uncaptured", async () => {
+  const stdout = createTestStdout(24, 10)
+  const { renderer } = await setup({ stdout, externalOutputMode: "passthrough" })
+  const write = stdout.write
+  renderer.destroy()
+  await renderer.closed
+  renderer.externalOutputMode = "capture-stdout"
+  expect(stdout.write).toBe(write)
+  expect(stdout.write("after destruction\n")).toBe(true)
+})
+
 test.each([
   ["writer", "NaN rowColumns", { rowColumns: Number.NaN }, null],
   ["surface", "NaN rowColumns", { rowColumns: Number.NaN }, null],

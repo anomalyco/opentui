@@ -1832,8 +1832,9 @@ export class CliRenderer extends EventEmitter implements RenderContext {
     }
 
     if (this._isDestroyed) {
+      // A destroyed renderer cannot paint captured rows, so it never captures stdout again.
       this.pendingExternalOutputMode = null
-      this.applyExternalOutputMode(mode)
+      if (mode === "passthrough") this.applyExternalOutputMode(mode)
       return
     }
     if (this.rendering || this.pendingNativeMode || this.externalOutputQueue.size > 0) {
