@@ -30,7 +30,7 @@ const excludedProps: Record<string, string> = {
   "ASCIIFontRenderable.font": "font lookup without a default",
   "SelectRenderable.font": "font lookup without a default",
   "SliderRenderable.orientation": "required option (setter new on this branch)",
-  "ArrowRenderable.direction": "required option",
+  "ArrowRenderable.direction": "required option without a default; main stored it raw, this branch rejects it",
   "TimeToFirstDrawRenderable.fg": "frame fails at paint (file has no owner unit)",
   "TimeToFirstDrawRenderable.color": "frame fails at paint (file has no owner unit)",
   "EmbeddedTerminalRenderable.focusable": "accepted, but the constructor sets focus, not the class default (U24)",
@@ -127,6 +127,8 @@ test.each(renderableClasses)("%s setters accept null and undefined", async (name
     const reads: unknown[] = []
     const node = new RenderableClass(renderer, classOptions(name))
     renderer.root.add(node)
+    // Focus-only colors paint only while focused.
+    node.focus()
     for (const value of writes) {
       try {
         ;(node as unknown as Record<string, unknown>)[prop] = value
