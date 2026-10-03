@@ -114,6 +114,14 @@ pub fn ot_text_buffer_replace_styled_batch(
 }
 
 comptime {
+    // ot_text_buffer_view_command decodes these vocabularies with @enumFromInt.
+    const view_mod = @import("text-buffer-view.zig");
+    std.debug.assert(@intFromEnum(view_mod.WrapMode.none) == c.OT_SCENE_WRAP_NONE);
+    std.debug.assert(@intFromEnum(view_mod.WrapMode.char) == c.OT_SCENE_WRAP_CHAR);
+    std.debug.assert(@intFromEnum(view_mod.WrapMode.word) == c.OT_SCENE_WRAP_WORD);
+    std.debug.assert(@intFromEnum(view_mod.TextAlign.left) == c.OT_SCENE_ALIGN_LEFT);
+    std.debug.assert(@intFromEnum(view_mod.TextAlign.center) == c.OT_SCENE_ALIGN_CENTER);
+    std.debug.assert(@intFromEnum(view_mod.TextAlign.right) == c.OT_SCENE_ALIGN_RIGHT);
     std.debug.assert(c.OT_TEXT_REPLACEMENT_COUNT_MAX == ctx.Context.text_replacement_count_max);
     std.debug.assert(c.OT_TEXT_REPLACEMENT_CHUNKS_MAX == ctx.Context.text_replacement_chunks_max);
     std.debug.assert(c.OT_TEXT_REPLACEMENT_BYTES_MAX == ctx.Context.text_replacement_bytes_max);
@@ -211,7 +219,7 @@ pub fn ot_text_buffer_view_command(context: ?*Owner, id: ?*const c.ot_handle, co
     if (id == null or command > c.OT_TEXT_VIEW_TEXT_ALIGN or
         (command == c.OT_TEXT_VIEW_WRAP_MODE and argument > c.OT_SCENE_WRAP_WORD) or
         (command == c.OT_TEXT_VIEW_TRUNCATE and argument > 1) or
-        (command == c.OT_TEXT_VIEW_TEXT_ALIGN and argument > 2)) return fail(owner, error.InvalidOptions);
+        (command == c.OT_TEXT_VIEW_TEXT_ALIGN and argument > c.OT_SCENE_ALIGN_RIGHT)) return fail(owner, error.InvalidOptions);
     const operation: ctx.TextViewCommand = switch (command) {
         c.OT_TEXT_VIEW_WRAP_WIDTH => .{ .wrap_width = if (argument == 0) null else argument },
         c.OT_TEXT_VIEW_WRAP_MODE => .{ .wrap_mode = @enumFromInt(argument) },
