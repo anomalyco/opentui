@@ -54,13 +54,8 @@ export function sceneSetEnum(scene: NativeScene, node: SceneStyleNode, kind: Yog
   scene.setStyle(node, NativeStyleGroup.Enum, kind, NATIVE_EDGE_NONE, Unit.Undefined, value)
 }
 
-export function sceneGetEnum(
-  scene: NativeScene,
-  node: SceneStyleNode,
-  kind: YogaEnumKindId,
-  fallback?: number,
-): number {
-  return scene.getStyle(node, NativeStyleGroup.Enum, kind, NATIVE_EDGE_NONE).value ?? fallback
+export function sceneGetEnum(scene: NativeScene, node: SceneStyleNode, kind: YogaEnumKindId): number {
+  return scene.getStyle(node, NativeStyleGroup.Enum, kind, NATIVE_EDGE_NONE).value
 }
 
 export function sceneSetFloat(
