@@ -1,12 +1,13 @@
 import type { EventEmitter } from "node:events"
 import { Duplex } from "node:stream"
-import { expect, test } from "bun:test"
+import { expect, spyOn, test } from "bun:test"
+import { CliRenderEvents, TextRenderable } from "@opentui/core"
 import type { ServerChannel } from "ssh2"
 import { createSessionBridge, DEFAULT_PTY, MAX_PTY, type RendererFactory } from "../../bridge.js"
 import { runSession } from "../../run-session.js"
 import { createSafeInvoke } from "../../safe.js"
-import type { SessionHandler } from "../../types.js"
-import { waitFor } from "../support.js"
+import type { Session, SessionHandler } from "../../types.js"
+import { sleep, TestChannel, waitFor } from "../support.js"
 
 /**
  * The teardown race: the renderer is lazy, so a client can disconnect in the
@@ -565,3 +566,71 @@ test("fuzz: arbitrary PTY dimensions remain finite, positive, and bounded", asyn
     await entered
   }
 })
+
+const teardownError = new Error("ECONNRESET")
+
+// The todo row still logs "Error destroying root renderable" from NativeScene (U16 D2; the fix is U14's).
+// `bun test --todo` fails once it passes; then drop the marker.
+const teardownCases = [
+  { name: "the server closes the session during renderer setup", during: "setup", end: "destroy", todo: "U14" },
+  { name: "the client disconnects during renderer setup", during: "setup", end: "disconnect" },
+  { name: "the channel closes during renderer setup", during: "setup", end: "close" },
+  { name: "the client disconnects while a frame is pending", during: "frame", end: "disconnect" },
+  { name: "the channel closes while a frame is pending", during: "frame", end: "close" },
+  { name: "the channel fails while a frame is pending", during: "frame", end: "error" },
+] as const
+
+for (const row of teardownCases) {
+  const define = "todo" in row ? test.todo : test
+  define(`ordinary teardown with a real renderer reports nothing extra: ${row.name}`, () => runTeardown(row))
+}
+
+async function runTeardown({ during, end }: (typeof teardownCases)[number]): Promise<void> {
+  const channel = new TestChannel()
+  const reported: unknown[] = []
+  const safe = createSafeInvoke((error) => reported.push(error))
+  const bridge = createSessionBridge(channel as unknown as ServerChannel, {
+    pty: { term: "xterm-256color", cols: 20, rows: 5, hasPty: true },
+    identity: { method: "none", username: "teardown" },
+    idleTimeoutMs: undefined,
+    maxTimeoutMs: undefined,
+    safe,
+  })
+  const errors = spyOn(console, "error").mockImplementation(() => {})
+  let session: Session | undefined
+  let renderErrors = 0
+  try {
+    if (during === "setup") channel.hold()
+    runSession([], (value) => void (session = value), bridge, safe)
+    if (during === "setup") await waitFor(() => channel.pendingWrite, 8000, 1)
+    else {
+      await waitFor(() => session !== undefined, 8000, 1)
+      const renderer = session!.renderer
+      renderer.on(CliRenderEvents.RENDER_ERROR, () => renderErrors++)
+      await renderer.idle()
+      channel.hold()
+      renderer.root.add(new TextRenderable(renderer, { content: "pending" }))
+      renderer.requestRender()
+      await waitFor(() => channel.pendingWrite && renderer.getSchedulerState().isRendering, 8000, 1)
+    }
+
+    if (end === "close" || end === "error") {
+      const closed = new Promise((resolve) => channel.once("close", resolve))
+      channel.destroy(end === "error" ? teardownError : undefined)
+      await closed
+    }
+    const closing = end === "disconnect" ? bridge.disconnect() : bridge.destroy()
+    channel.release()
+    await closing
+    await sleep(25)
+
+    expect(session === undefined).toBe(during === "setup")
+    expect(renderErrors).toBe(0)
+    expect(reported).toEqual(end === "error" ? [teardownError] : [])
+    expect(errors.mock.calls.map((call) => String(call[0]))).toEqual([])
+  } finally {
+    errors.mockRestore()
+    channel.release()
+    await bridge.destroy()
+  }
+}
