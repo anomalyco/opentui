@@ -4648,11 +4648,18 @@ test "TextBufferView word wrapping - does not split 'uses' across lines" {
     try std.testing.expect(!split_found);
 }
 
-/// Whether a chunk boundary falls inside a grapheme cluster, as an edit that types a
-/// combining mark after its base character leaves it. Character wrapping handles a
-/// split before a combining mark (`allow_combining`); see U04 X1 for the other splits.
-fn splitsGrapheme(tb: *TextBuffer, allow_combining: bool) bool {
+/// Whether a chunk boundary falls inside a grapheme cluster in a way that wrapping cannot
+/// see across chunks yet (U04 X1): a join with visible width (an emoji modifier, ZWJ
+/// sequence, or flag pair) or, in word mode, a combining mark that changes the word class
+/// of the cluster before it (after a space or symbol) or sits in text with CJK words,
+/// whose break policy changes when a chunk joins the previous one.
+fn splitsGrapheme(tb: *TextBuffer, mode: text_buffer_view.WrapMode) bool {
     const utf8 = @import("../utf8.zig");
+    var text: [1024]u8 = undefined;
+    var codepoints = std.unicode.Utf8View.initUnchecked(text[0..tb.getPlainTextIntoBuffer(&text)]).iterator();
+    const has_cjk_words = while (codepoints.nextCodepoint()) |cp| {
+        if (cp > 0x7F and utf8.isWordCodepoint(cp)) break true;
+    } else false;
     var previous: ?[]const u8 = null;
     var index: u32 = 0;
     while (index < tb.rope().count()) : (index += 1) {
@@ -4673,6 +4680,7 @@ fn splitsGrapheme(tb: *TextBuffer, allow_combining: bool) bool {
             }
             const first = utf8.decodeUtf8Unchecked(bytes, 0).cp;
             const combining = first != 0x200D and utf8.zeroWidthPrefixLen(bytes, tb.tabWidth(), .unicode) > 0;
+            const allow_combining = mode == .char or (!has_cjk_words and last.? <= 0x7F and utf8.isWordCodepoint(last.?));
             if (!(allow_combining and combining) and !utf8.isGraphemeBreak(last, first, &state, .unicode)) return true;
         };
         previous = bytes;
@@ -4753,7 +4761,7 @@ test "TextBufferView edited text wraps like freshly loaded text" {
                 for (0..random.intRangeAtMost(usize, 1, 3)) |_| try edit.insertText(tokens[random.uintLessThan(usize, tokens.len)]);
             }
             for ([_]text_buffer_view.WrapMode{ .char, .word }) |mode| {
-                if (splitsGrapheme(edit.tb, mode == .char)) continue;
+                if (splitsGrapheme(edit.tb, mode)) continue;
                 for ([_]u32{ 1, 2, 3, 4, 5, 7 }) |width| try expectSameWrap(edit.tb, width, mode);
             }
         }
