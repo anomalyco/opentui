@@ -200,6 +200,8 @@ describe("scene staging", () => {
 
   const show = (value: unknown) =>
     JSON.stringify(value, (_, item) => (Object.is(item, -0) ? "-0" : Number.isNaN(item) ? "NaN" : item))
+  const showRecords = (records: StagedRecord[]) =>
+    show(records.map((record) => ({ ...record, paint: record.paint && [...record.paint] })))
 
   function randomOperations(random: () => number): Operation[] {
     const pick = <T>(items: readonly T[]): T => items[Math.floor(random() * items.length)]
@@ -261,6 +263,7 @@ describe("scene staging", () => {
       }
       staging._views(context)
       staging.consume(count)
+      check(showRecords(readStream(staging)) === showRecords(stream.slice(count)), "consume kept other records")
     }
 
     for (const operation of operations) {
