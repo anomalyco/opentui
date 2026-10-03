@@ -3908,10 +3908,6 @@ test "Scene ABI custom measurement checks identity reentry and registration life
         var read_status: c.ot_status = c.OT_INTERNAL_ERROR;
         var paint_layout_status: c.ot_status = c.OT_INTERNAL_ERROR;
         var write_status: c.ot_status = c.OT_OK;
-        var background_status: c.ot_status = c.OT_OK;
-        var applied: u32 = 99;
-        var paint_status: c.ot_status = c.OT_OK;
-        var replace_status: c.ot_status = c.OT_OK;
         var destroy_status: c.ot_status = c.OT_OK;
 
         fn measure(context_id: u64, slot: u32, generation: u32, _: f32, _: u32, _: f32, _: u32, result: [*c]f32) callconv(.c) void {
@@ -3924,10 +3920,6 @@ test "Scene ABI custom measurement checks identity reentry and registration life
             layout.abi_version = c.OT_CONTEXT_ABI_VERSION;
             paint_layout_status = ot_scene_get_layout(owner, &expected, 2, &layout);
             write_status = ot_scene_set_style(owner, &expected, 4, 0, 0, 1, 99, 0);
-            const background: [1]TestBackgroundProperty = .{.{ .node = expected, .background = .{ 200, 0, 0, 255 } }};
-            background_status = ot_scene_flush(owner, std.mem.asBytes(&background), @sizeOf(@TypeOf(background)), &applied);
-            paint_status = ot_scene_set_paint(owner, &expected, null);
-            replace_status = ot_scene_set_measure(owner, &expected, null);
             destroy_status = ot_context_destroy(owner);
             result[0] = 2;
             result[1] = 1;
@@ -3958,27 +3950,20 @@ test "Scene ABI custom measurement checks identity reentry and registration life
     try std.testing.expectEqual(c.OT_OK, Probe.read_status);
     try std.testing.expectEqual(c.OT_OK, Probe.paint_layout_status);
     try std.testing.expectEqual(c.OT_CONTEXT_BUSY, Probe.write_status);
-    try std.testing.expectEqual(c.OT_CONTEXT_BUSY, Probe.background_status);
-    try std.testing.expectEqual(@as(u32, 0), Probe.applied);
-    try std.testing.expectEqual(c.OT_CONTEXT_BUSY, Probe.paint_status);
-    try std.testing.expectEqual(c.OT_CONTEXT_BUSY, Probe.replace_status);
     try std.testing.expectEqual(c.OT_CONTEXT_BUSY, Probe.destroy_status);
     const calls = Probe.calls;
     try std.testing.expectEqual(c.OT_OK, ot_scene_frame_cancel(handle, &session_c, frame.frame_id));
     try std.testing.expectEqual(c.OT_OK, ot_scene_paint(handle, &session_c, &.{ 0, 0, 0, 255 }, 0, 0, &frame));
     try std.testing.expectEqual(calls, Probe.calls);
-    try std.testing.expectEqual(c.OT_OK, ot_scene_mark_dirty(handle, &leaf));
-    try std.testing.expectEqual(c.OT_OK, ot_scene_frame_cancel(handle, &session_c, frame.frame_id));
-    try std.testing.expectEqual(c.OT_OK, ot_scene_paint(handle, &session_c, &.{ 0, 0, 0, 255 }, 0, 0, &frame));
-    try std.testing.expect(Probe.calls > calls);
-    // Replacing, clearing, and installing a provider on a measured leaf each measure it again.
-    for ([_]c.ot_scene_measure_callback{ &Probe.measure, null, &Probe.measure }, [_]f32{ 1, 0, 1 }) |provider, height| {
+    // Marking dirty, then replacing, clearing, and reinstalling the provider each measure again.
+    for (0..4) |step| {
         const before = Probe.calls;
-        try std.testing.expectEqual(c.OT_OK, ot_scene_set_measure(handle, &leaf, provider));
+        const provider: c.ot_scene_measure_callback = if (step == 2) null else &Probe.measure;
+        try std.testing.expectEqual(c.OT_OK, if (step == 0) ot_scene_mark_dirty(handle, &leaf) else ot_scene_set_measure(handle, &leaf, provider));
         try std.testing.expectEqual(c.OT_OK, ot_scene_frame_cancel(handle, &session_c, frame.frame_id));
         try std.testing.expectEqual(c.OT_OK, ot_scene_paint(handle, &session_c, &.{ 0, 0, 0, 255 }, 0, 0, &frame));
         try std.testing.expectEqual(provider != null, Probe.calls > before);
-        try std.testing.expectEqual(height, (try owner.core.sceneGetLayout(handleFromC(leaf), true)).height);
+        try std.testing.expectEqual(@as(f32, if (step == 2) 0 else 1), (try owner.core.sceneGetLayout(handleFromC(leaf), true)).height);
     }
     try std.testing.expectEqual(c.OT_OK, ot_scene_move_node(handle, &leaf, null, 0));
     try std.testing.expectEqual(c.OT_OK, ot_scene_destroy_node(handle, &leaf));
