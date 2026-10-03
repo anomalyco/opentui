@@ -80,9 +80,10 @@ describe("Textarea - Undo/Redo Tests", () => {
     })
   })
 
-  // Every step drives the editor through keys or the API and compares it with a reference document. The history
-  // mirrors the native rope: undo restores the state before an edit, and redo restores the state that the first undo
-  // left. clear replaces the text without an undo point, so redo stays unavailable until the next undo.
+  // Every step drives the editor through keys or the API and compares it with a reference document; Shift+Backspace
+  // and Shift+Delete act like Backspace and Delete. The history mirrors the native rope: undo restores the state before
+  // an edit, and redo restores the state that the first undo left. clear replaces the text without an undo point, so
+  // redo stays unavailable until the next undo.
   it("should match a reference document across random edits", async () => {
     const tokens = ["a", "Z", " ", "日", "\n"]
     const ops = ["type", "type", "paste", "backspace", "delete", "left", "right", "home", "end", "undo", "redo"]
@@ -125,10 +126,10 @@ describe("Textarea - Undo/Redo Tests", () => {
           await currentMockInput.pasteBracketedText(text.join(""))
           edit(state.cursor, 0, text)
         } else if (op === "backspace") {
-          currentMockInput.pressBackspace()
+          currentMockInput.pressBackspace({ shift: next(2) === 1 })
           if (state.cursor > 0) edit(state.cursor - 1, 1)
         } else if (op === "delete") {
-          currentMockInput.pressKey("DELETE")
+          currentMockInput.pressKey("DELETE", { shift: next(2) === 1 })
           if (state.cursor < state.text.length) edit(state.cursor, 1)
         } else if (op === "left" || op === "right") {
           currentMockInput.pressArrow(op)
@@ -159,7 +160,7 @@ describe("Textarea - Undo/Redo Tests", () => {
           const text = Array.from({ length: next(3) }, pick)
           log.push(`[${start},${end})=${JSON.stringify(text.join(""))}`)
           editor.setSelection(offset(start), offset(end))
-          if (text.length === 0) currentMockInput.pressBackspace()
+          if (text.length === 0) currentMockInput.pressBackspace({ shift: next(2) === 1 })
           else await currentMockInput.pasteBracketedText(text.join(""))
           edit(start, end - start)
           if (text.length > 0) edit(start, 0, text)
