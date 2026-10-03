@@ -39,6 +39,8 @@ pub const OwnedStyledChunk = struct {
     style_id: u32,
 };
 
+// A static empty document, so releasing a rope never allocates. Every buffer shares
+// these read-only nodes; rope code mutates only branches and counted text leaves.
 const empty_document_line: UnifiedRope.Node = .{ .leaf = .{ .data = .{ .linestart = {} } } };
 const empty_document_sentinel: UnifiedRope.Node = .{ .leaf = .{ .data = Segment.empty(), .is_sentinel = true } };
 
@@ -479,6 +481,9 @@ pub const UnifiedTextBuffer = struct {
         self.clearLinkRefs();
         self.layout_cache.clear();
         if (!self._rope.hasHistory()) {
+            // Rope nodes are never freed one at a time, so resetting the arena is how
+            // replaced text releases memory. Cold layout states belong to its chunks.
+            std.debug.assert(self.layout_cache.first == null);
             const previous = self._rope;
             _ = self.arena.reset(.retain_capacity);
             self._rope = .{

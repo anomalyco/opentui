@@ -11,6 +11,27 @@ const TextBuffer = text_buffer.UnifiedTextBuffer;
 const TextBufferView = text_buffer_view.UnifiedTextBufferView;
 const RGBA = text_buffer.RGBA;
 
+test "TextBufferView first layout retains reusable word metadata" {
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
+
+    const tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .unicode);
+    defer tb.deinit();
+    const view = try TextBufferView.init(std.testing.allocator, tb);
+    defer view.deinit();
+    try tb.setText("alpha \u{754c}abc e\u{301} words\n" ** 100);
+    view.setWrapMode(.word);
+    view.setWrapWidth(80);
+    _ = view.getVirtualLines();
+    try std.testing.expectEqual(@as(usize, 100), view.word_layout.layouts.items.len);
+    const ptr = view.word_layout.layouts.items.ptr;
+    const capacity = view.word_layout.arena.queryCapacity();
+    view.setWrapWidth(79);
+    _ = view.getVirtualLines();
+    try std.testing.expectEqual(ptr, view.word_layout.layouts.items.ptr);
+    try std.testing.expectEqual(capacity, view.word_layout.arena.queryCapacity());
+}
+
 test "TextBufferView fragmented ASCII measurement streams complete words without scratch allocation" {
     var pools = TestPools.init(std.testing.allocator);
     defer pools.deinit();
@@ -53,6 +74,7 @@ test "TextBufferView CJK cache survives a failed sibling layout" {
     try std.testing.expectEqual(@as(u32, 14), healthy.getVirtualLineCount());
     const chunk = tb.rope().get(4).?.asText().?;
     const cached = chunk.getCachedLayoutInfo(tb.tabWidth(), tb.widthMethod()).?;
+    try std.testing.expectEqual(cached.cjk_breaks.ptr, healthy.word_layout.layouts.items[1].cjk_breaks.ptr);
 
     var failing = std.testing.FailingAllocator.init(std.testing.allocator, .{});
     const sibling = try TextBufferView.init(failing.allocator(), tb);
@@ -75,6 +97,47 @@ test "TextBufferView CJK cache survives a failed sibling layout" {
     healthy.setWrapWidth(80);
     try std.testing.expectEqual(@as(u32, 14), healthy.getVirtualLineCount());
     try std.testing.expectEqual(cached.cjk_breaks.ptr, chunk.getCachedLayoutInfo(tb.tabWidth(), tb.widthMethod()).?.cjk_breaks.ptr);
+}
+
+test "TextBufferView optional metadata failure preserves every streamed piece" {
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
+
+    const tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .unicode);
+    defer tb.deinit();
+    try tb.setText(("a\u{754c}e\u{301} \u{0600} xy\tend-" ** 5000) ++ "\n" ++ ("\u{754c}abc e\u{301}\n" ** 100));
+    const expected = try TextBufferView.init(std.testing.allocator, tb);
+    defer expected.deinit();
+    expected.setWrapMode(.word);
+    expected.setWrapWidth(79);
+    const want = expected.getVirtualLines();
+    for (0..14) |failure| {
+        var tracking = std.testing.FailingAllocator.init(std.testing.allocator, .{});
+        const actual = try TextBufferView.init(std.testing.allocator, tb);
+        defer actual.deinit();
+        actual.word_layout.arena.child_allocator = tracking.allocator();
+        actual.setWrapMode(.word);
+        tracking.fail_index = failure;
+        actual.setWrapWidth(79);
+        const got = actual.getVirtualLines();
+        try std.testing.expect(!actual.virtual_lines_dirty);
+        try std.testing.expectEqual(want.len, got.len);
+        for (want, got) |wl, gl| {
+            try std.testing.expectEqual(wl.width_cols, gl.width_cols);
+            try std.testing.expectEqual(wl.source_line, gl.source_line);
+            try std.testing.expectEqual(wl.source_col_start, gl.source_col_start);
+            try std.testing.expectEqual(wl.document_cell_offset, gl.document_cell_offset);
+            try std.testing.expectEqualDeep(wl.chunks.items, gl.chunks.items);
+        }
+        if (tracking.has_induced_failure) try std.testing.expectEqual(@as(usize, 0), actual.word_layout.layouts.items.len);
+        tracking.fail_index = std.math.maxInt(usize);
+        actual.setWrapWidth(80);
+        _ = actual.getVirtualLines();
+        actual.setWrapWidth(79);
+        try std.testing.expectEqual(want.len, actual.getVirtualLines().len);
+        const measured = try actual.measureForDimensions(79, 24);
+        try std.testing.expectEqual(want.len, measured.line_count);
+    }
 }
 
 test "TextBufferView width reuse does not leave metadata in old buffer roots" {
@@ -129,13 +192,18 @@ test "TextBufferView live word metadata follows views history and buffer switche
     second.setWrapWidth(32);
     _ = view.getVirtualLines();
     _ = second.getVirtualLines();
+    try std.testing.expect(view.word_layout.layouts.items.len > 0);
     view.setWrapWidth(17);
     second.setWrapWidth(33);
     _ = view.getVirtualLines();
     _ = second.getVirtualLines();
+    const ptr = view.word_layout.layouts.items.ptr;
+    const capacity = view.word_layout.arena.queryCapacity();
     for ([_]u32{ 43, 7, 16, 96, 32 }) |width| {
         view.setWrapWidth(width);
         _ = view.getVirtualLines();
+        try std.testing.expectEqual(ptr, view.word_layout.layouts.items.ptr);
+        try std.testing.expectEqual(capacity, view.word_layout.arena.queryCapacity());
     }
     try edit.replaceText("changed\ttext \u{0600} \u{301} \u{754c} words\n" ** 10);
     for (0..3) |step| {
@@ -144,11 +212,13 @@ test "TextBufferView live word metadata follows views history and buffer switche
         edit.tb.setTabWidth(@intCast(2 + step * 2));
         for ([_]*TextBufferView{ view, second }) |current| {
             _ = current.getVirtualLines();
+            try std.testing.expect(current.word_layout.layouts.items.len > 0);
             current.setWrapWidth(19);
             _ = current.getVirtualLines();
             current.setWrapWidth(23);
             const measured = try current.measureForDimensions(23, 24);
             try std.testing.expectEqual(measured.line_count, current.getVirtualLineCount());
+            try std.testing.expect(current.word_layout.layouts.items.len > 0);
             var bytes: [4096]u8 = undefined;
             const len = edit.tb.getPlainTextIntoBuffer(&bytes);
             const fresh_tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .unicode);
@@ -179,11 +249,14 @@ test "TextBufferView live word metadata follows views history and buffer switche
         }
     }
     view.switchToBuffer(other);
+    try std.testing.expectEqual(@as(usize, 0), view.word_layout.layouts.items.len);
     _ = view.getVirtualLines();
     view.switchToOriginalBuffer();
+    try std.testing.expectEqual(@as(usize, 0), view.word_layout.layouts.items.len);
     _ = view.getVirtualLines();
     view.setWrapMode(.char);
     _ = view.getVirtualLines();
+    try std.testing.expectEqual(@as(usize, 0), view.word_layout.arena.queryCapacity());
 }
 
 test "TextBufferView live word metadata discards partial allocation on failure" {
@@ -203,12 +276,42 @@ test "TextBufferView live word metadata discards partial allocation on failure" 
         view.setWrapWidth(17);
         _ = view.getVirtualLines();
         if (tracking.has_induced_failure) {
+            try std.testing.expectEqual(@as(usize, 0), view.word_layout.layouts.items.len);
             if (view.virtual_lines_dirty) try std.testing.expectEqual(@as(usize, 0), view.virtual_lines.items.len);
         }
         tracking.fail_index = std.math.maxInt(usize);
         const measured = try view.measureForDimensions(17, 24);
         try std.testing.expectEqual(measured.line_count, view.getVirtualLineCount());
     }
+}
+
+test "TextBufferView rewrap reuses virtual line allocation without retaining cleared layout" {
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
+
+    var tracking = std.testing.FailingAllocator.init(std.testing.allocator, .{});
+    const tb = try TextBuffer.init(tracking.allocator(), &pools.graphemes, &pools.links, .unicode);
+    defer tb.deinit();
+    const view = try TextBufferView.init(tracking.allocator(), tb);
+    defer view.deinit();
+    try tb.setText("OpenTUI text metrics: \u{754c} e\u{301} abcdefghijklmnop " ** 100);
+    view.setWrapMode(.word);
+    view.setWrapWidth(80);
+    _ = view.getVirtualLines();
+    view.setWrapWidth(79);
+    _ = view.getVirtualLines();
+    view.setWrapWidth(80);
+    _ = view.getVirtualLines();
+    const allocated = tracking.allocated_bytes;
+    const capacity = view.virtual_lines_arena.queryCapacity();
+    for (0..20) |i| {
+        view.setWrapWidth(@intCast(79 + i % 2));
+        _ = view.getVirtualLines();
+    }
+    try std.testing.expectEqual(allocated, tracking.allocated_bytes);
+    try tb.clear();
+    try std.testing.expectEqual(@as(u32, 1), view.getVirtualLineCount());
+    try std.testing.expect(view.virtual_lines_arena.queryCapacity() < capacity);
 }
 
 test "TextBufferView rewrap matches fresh layout after text and tab changes" {
