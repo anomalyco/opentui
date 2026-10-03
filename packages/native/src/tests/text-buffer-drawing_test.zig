@@ -3814,3 +3814,75 @@ test "drawTextBuffer - textAlign keeps mid-line continuations flush with the tai
     try expectAlignedRows(.center, 4, &.{ 0, 2 });
     try expectAlignedRows(.right, 4, &.{ 0, 5 });
 }
+
+test "drawTextBuffer - wrap indent pad preserves the background underneath" {
+    const pool = gp.initGlobalPool(std.testing.allocator);
+    defer gp.deinitGlobalPool();
+    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
+    defer link.deinitGlobalLinkPool();
+
+    var tb = try TextBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth);
+    defer tb.deinit();
+    var view = try TextBufferView.init(std.testing.allocator, tb);
+    defer view.deinit();
+    try tb.setText("    aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+    view.setWrapMode(.char);
+    view.setWrapIndent(.same);
+    view.setViewport(.{ .x = 0, .y = 0, .width = 20, .height = 3 });
+
+    var opt_buffer = try OptimizedBuffer.init(
+        std.testing.allocator,
+        20,
+        3,
+        .{ .pool = pool, .width_method = .wcwidth },
+    );
+    defer opt_buffer.deinit();
+    const red_bg = ansi.rgbaFromFloats(1.0, 0.0, 0.0, 1.0);
+    opt_buffer.clear(red_bg, 32);
+    opt_buffer.drawTextBuffer(view, 0, 0);
+
+    try std.testing.expectEqual(@as(u32, 4), view.getVirtualLines()[1].pad_cols);
+    for ([_]u32{ 0, 3 }) |x| {
+        try std.testing.expect(buffer.rgbaEqual(red_bg, opt_buffer.get(x, 1).?.bg));
+    }
+}
+
+test "drawTextBuffer - textAlign places wrap indent continuations where hit testing expects" {
+    const pool = gp.initGlobalPool(std.testing.allocator);
+    defer gp.deinitGlobalPool();
+    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
+    defer link.deinitGlobalLinkPool();
+
+    var tb = try TextBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth);
+    defer tb.deinit();
+    var view = try TextBufferView.init(std.testing.allocator, tb);
+    defer view.deinit();
+    try tb.setText("    aaaaaaaaaaaaaaaabcde");
+    view.setWrapMode(.char);
+    view.setWrapIndent(.same);
+    view.setViewport(.{ .x = 0, .y = 0, .width = 20, .height = 2 });
+
+    var opt_buffer = try OptimizedBuffer.init(
+        std.testing.allocator,
+        20,
+        2,
+        .{ .pool = pool, .width_method = .wcwidth },
+    );
+    defer opt_buffer.deinit();
+
+    // Row 1 paints 4 pad cells and "bcde"; alignment applies to the whole painted row.
+    for ([_]text_buffer_view.TextAlign{ .left, .center, .right }, [_]u32{ 4, 10, 16 }) |alignment, content_x| {
+        view.setTextAlign(alignment);
+        opt_buffer.clear(ansi.rgbaFromFloats(0.0, 0.0, 0.0, 1.0), 32);
+        opt_buffer.drawTextBuffer(view, 0, 0);
+
+        const row = try resolvedRow(std.testing.allocator, opt_buffer, pool, 1);
+        defer std.testing.allocator.free(row);
+        try std.testing.expectEqual(@as(?usize, content_x), std.mem.indexOfScalar(u8, row, 'b'));
+
+        const d_x: i32 = @intCast(content_x + 2);
+        _ = view.setLocalSelection(d_x, 1, d_x + 1, 1, null, null);
+        var selected: [4]u8 = undefined;
+        try std.testing.expectEqualStrings("de", selected[0..view.getSelectedTextIntoBuffer(&selected)]);
+    }
+}

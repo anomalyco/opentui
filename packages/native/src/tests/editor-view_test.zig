@@ -3941,6 +3941,33 @@ test "EditorView wrap indent - edit reflow matches fresh setText" {
     for (fresh, after_edit) |a, b| {
         try std.testing.expectEqual(a.pad_cols, b.pad_cols);
         try std.testing.expectEqual(a.width_cols, b.width_cols);
-        try std.testing.expectEqual(a.source_col_offset, b.source_col_offset);
+        try std.testing.expectEqual(a.source_col_start, b.source_col_start);
+    }
+}
+
+test "EditorView wrap indent - pad keeps the editor background" {
+    const pool = gp.initGlobalPool(std.testing.allocator);
+    defer gp.deinitGlobalPool();
+    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
+    defer link.deinitGlobalLinkPool();
+
+    var eb = try EditBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth, null);
+    defer eb.deinit();
+    const editor_bg = ansi.rgbColor(0, 0, 200, 255);
+    eb.getTextBuffer().setDefaultBg(editor_bg);
+
+    var ev = try EditorView.init(std.testing.allocator, eb, 20, 3);
+    defer ev.deinit();
+    ev.setWrapMode(.char);
+    ev.setWrapIndent(.same);
+    try eb.setText("    aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+
+    var opt_buffer = try opt_buffer_mod.OptimizedBuffer.init(std.testing.allocator, 20, 3, .{ .pool = pool });
+    defer opt_buffer.deinit();
+    opt_buffer.drawEditorView(ev, 0, 0);
+
+    try std.testing.expectEqual(@as(u32, 4), ev.getVirtualLines()[1].pad_cols);
+    for ([_]u32{ 0, 3 }) |x| {
+        try std.testing.expect(opt_buffer_mod.rgbaEqual(editor_bg, opt_buffer.get(x, 1).?.bg));
     }
 }

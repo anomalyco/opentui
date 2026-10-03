@@ -5139,7 +5139,7 @@ test "TextBufferView wrap indent - click on pad maps to content start" {
 
     const vlines = view.getVirtualLines();
     try std.testing.expect(vlines.len >= 2);
-    const content_start = vlines[1].col_offset;
+    const content_start = vlines[1].document_cell_offset;
 
     // Click on pad column 0 of continuation row
     _ = view.setLocalSelection(0, 1, 1, 1, null, null);
@@ -5241,4 +5241,55 @@ test "TextBufferView wrap indent - truncation accounts for pad" {
     try std.testing.expect(vlines.len >= 2);
     try std.testing.expectEqual(@as(u32, 4), vlines[1].pad_cols);
     try std.testing.expect(vlines[1].pad_cols + vlines[1].width_cols <= 18);
+}
+
+fn expectWrapIndentRowsFit(view: *TextBufferView) !void {
+    for ([_]text_buffer_view.WrapMode{ .char, .word }) |mode| {
+        view.setWrapMode(mode);
+        // Narrower rows cannot hold a 4-column tab even without a pad.
+        var width: u32 = 4;
+        while (width <= 30) : (width += 1) {
+            view.setWrapWidth(width);
+            const vlines = view.getVirtualLines();
+            var painted_max: u32 = 0;
+            for (vlines) |vline| {
+                try std.testing.expect(vline.pad_cols + vline.width_cols <= width);
+                painted_max = @max(painted_max, vline.pad_cols + vline.width_cols);
+            }
+            const measured = try view.measureForDimensions(width, 10);
+            try std.testing.expectEqual(@as(u32, @intCast(vlines.len)), measured.line_count);
+            try std.testing.expectEqual(painted_max, measured.width_cols_max);
+        }
+    }
+}
+
+test "TextBufferView wrap indent - continuation rows stay within wrap width" {
+    const pool = gp.initGlobalPool(std.testing.allocator);
+    defer gp.deinitGlobalPool();
+    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
+    defer link.deinitGlobalLinkPool();
+
+    var tb = try TextBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth);
+    defer tb.deinit();
+
+    var view = try TextBufferView.init(std.testing.allocator, tb);
+    defer view.deinit();
+    view.setWrapIndent(.same);
+    tb.setTabWidth(4);
+
+    // Words that fit a full row but not an indented continuation must still wrap.
+    for ([_][]const u8{ "        see aaaaaaaaaaaaaaaaaa end", "\t\tfoo\tbarbazquxquux corge grault" }) |text| {
+        try tb.setText(text);
+        try expectWrapIndentRowsFit(view);
+    }
+
+    // Continuations keep room for a wide grapheme or a tab.
+    try tb.setText("    \u{4e2d}\u{6587}\u{4e2d}\u{6587}\u{4e2d}\u{6587}");
+    try expectWrapIndentRowsFit(view);
+
+    // An indent split across chunks cannot gain a pad after its whitespace wrapped.
+    try tb.setText(" " ** 18);
+    try tb.append("foo bar baz");
+    view.setFirstLineOffset(15);
+    try expectWrapIndentRowsFit(view);
 }

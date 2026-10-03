@@ -1177,7 +1177,7 @@ pub const UnifiedTextBufferView = struct {
         const max_local_x = self.maxLocalXOnVisualLine(self.virtual_lines.items, vline_idx);
 
         // Undo the draw-time alignment offset so clicks map to the painted character.
-        const align_pad: i32 = @intCast(self.getLineAlignmentPad(vline_idx, vline.width_cols));
+        const align_pad: i32 = @intCast(self.getLineAlignmentPad(vline_idx, vline.pad_cols + vline.width_cols));
         const aligned_abs_x = abs_x - align_pad;
 
         const content_x = aligned_abs_x - @as(i32, @intCast(vline.pad_cols));
@@ -1531,24 +1531,6 @@ pub const UnifiedTextBufferView = struct {
 
     const CalculationMode = enum { render, measure };
 
-    /// Display-column width of a leading run of ASCII space/tab only.
-    /// Tabs use the same fixed tab width as the text buffer's character measurement.
-    fn accumulateLeadingIndentCols(bytes: []const u8, tab_width: u8, start_indent: u32) struct { indent: u32, finalized: bool } {
-        var indent = start_indent;
-        var i: usize = 0;
-        while (i < bytes.len) {
-            if (bytes[i] == ' ') {
-                indent += 1;
-            } else if (bytes[i] == '\t') {
-                indent += tab_width;
-            } else {
-                return .{ .indent = indent, .finalized = true };
-            }
-            i += 1;
-        }
-        return .{ .indent = indent, .finalized = false };
-    }
-
     fn calculateUnwrappedVirtualLines(
         allocator: Allocator,
         text_buffer: *UnifiedTextBuffer,
@@ -1657,6 +1639,7 @@ pub const UnifiedTextBufferView = struct {
             word_layout: ?*WordLayoutStorage,
             word_layout_index: usize = 0,
             wrap_w: u32,
+            wrap_indent: WrapIndent,
             current_wrap_width: u32,
             indent_cols: u32 = 0,
             indent_finalized: bool = false,
@@ -1680,7 +1663,7 @@ pub const UnifiedTextBufferView = struct {
             word_chunk: if (wrap_mode == .word) ?*const TextChunk else void = if (wrap_mode == .word) null else {},
             word_chunk_col_start: if (wrap_mode == .word) u32 else void = if (wrap_mode == .word) 0 else {},
             word_chunk_byte_start: if (wrap_mode == .word) u32 else void = if (wrap_mode == .word) 0 else {},
-            logical_measure_line_count: if (wrap_mode == .word and calculation == .measure) u32 else void = if (wrap_mode == .word and calculation == .measure) 0 else {},
+            logical_measure_line_count: if (calculation == .measure) u32 else void = if (calculation == .measure) 0 else {},
             logical_measure_width_max: if (wrap_mode == .word and calculation == .measure) u32 else void = if (wrap_mode == .word and calculation == .measure) 0 else {},
             failed: bool = false,
 
@@ -1695,10 +1678,16 @@ pub const UnifiedTextBufferView = struct {
                 return wctx.current_wrap_width;
             }
 
+            /// Leaves continuations room for a wide grapheme or a tab. Evaluated before
+            /// the line's first row commits, so current_wrap_width is that row's width.
+            fn indentFitsContinuation(wctx: *const @This()) bool {
+                return wctx.indent_cols + @max(2, wctx.text_buffer.tabWidth()) <= wctx.current_wrap_width;
+            }
+
             fn finalizeContinuationPad(wctx: *@This()) void {
                 if (wctx.indent_finalized) return;
                 wctx.indent_finalized = true;
-                if (wctx.wrap_indent != .same or wctx.indent_cols == 0 or wctx.indent_cols >= wctx.wrap_w) {
+                if (wctx.wrap_indent != .same or wctx.indent_cols == 0 or !wctx.indentFitsContinuation()) {
                     wctx.continuation_pad = 0;
                 } else {
                     wctx.continuation_pad = wctx.indent_cols;
@@ -1715,6 +1704,12 @@ pub const UnifiedTextBufferView = struct {
                     } else if (bytes[i] == '\t') {
                         wctx.indent_cols += wctx.text_buffer.tabWidth();
                     } else {
+                        wctx.finalizeContinuationPad();
+                        break;
+                    }
+                    // Settle before leading whitespace can fill the first row; a pad
+                    // decided after a row commits would not match that row's width.
+                    if (!wctx.indentFitsContinuation()) {
                         wctx.finalizeContinuationPad();
                         break;
                     }
@@ -1750,8 +1745,8 @@ pub const UnifiedTextBufferView = struct {
                     wctx.result.line_count += 1;
                     const painted_width = wctx.current_vline_width_cols + if (wctx.logical_measure_line_count > 0) wctx.continuation_pad else 0;
                     wctx.result.width_cols_max = @max(wctx.result.width_cols_max, painted_width);
+                    wctx.logical_measure_line_count += 1;
                     if (comptime wrap_mode == .word) {
-                        wctx.logical_measure_line_count += 1;
                         wctx.logical_measure_width_max = @max(wctx.logical_measure_width_max, painted_width);
                     }
                 } else {
@@ -1979,7 +1974,11 @@ pub const UnifiedTextBufferView = struct {
                 while (piece.width_cols > 0 and !wctx.failed) {
                     const wrap_limit_cols = wctx.wordWrapWidth();
                     if (piece.width_cols <= wrap_limit_cols) {
-                        if (wctx.current_vline_width_cols > 0 and wctx.current_vline_width_cols + piece.width_cols > wrap_limit_cols and !commitVirtualLineSticky(wctx)) return;
+                        if (wctx.current_vline_width_cols > 0 and wctx.current_vline_width_cols + piece.width_cols > wrap_limit_cols) {
+                            if (!commitVirtualLineSticky(wctx)) return;
+                            // A wrap-indented continuation may be narrower than the row just committed.
+                            continue;
+                        }
                         _ = addVirtualChunkSticky(wctx, chunk, piece.byte_start, piece.byte_end - piece.byte_start, piece.col_start_in_chunk, piece.width_cols);
                         return;
                     }
@@ -2462,8 +2461,8 @@ pub const UnifiedTextBufferView = struct {
                     wctx.source_line_cjk_breaks = true;
                     wctx.word_line_last_cp = null;
                 }
+                if (comptime calculation == .measure) wctx.logical_measure_line_count = 0;
                 if (comptime wrap_mode == .word and calculation == .measure) {
-                    wctx.logical_measure_line_count = 0;
                     wctx.logical_measure_width_max = 0;
                 }
             }
