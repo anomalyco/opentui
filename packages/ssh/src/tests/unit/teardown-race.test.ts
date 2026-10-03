@@ -1,5 +1,6 @@
+import { Readable } from "node:stream"
 import { expect, spyOn, test } from "bun:test"
-import { CliRenderEvents, TextRenderable } from "@opentui/core"
+import { CliRenderEvents, createCliRenderer, TextRenderable } from "@opentui/core"
 import type { ServerChannel } from "ssh2"
 import { createSessionBridge, DEFAULT_PTY, MAX_PTY, type RendererFactory } from "../../bridge.js"
 import { runSession } from "../../run-session.js"
@@ -323,16 +324,25 @@ test("a disconnect during renderer setup is teardown, not a reported error", asy
   expect(rc.wasDestroyed()).toBe(true) // late renderer released, not leaked
 })
 
-test("a genuine renderer-creation failure is still reported", async () => {
+test.each([
+  { name: "before", fail: () => Promise.reject(new Error("createCliRenderer failed")) },
+  {
+    // The constructor disposes the Session it took; only the creation failure is reported.
+    name: "after",
+    fail: (config: Parameters<RendererFactory>[0]) => {
+      const stdin = Object.assign(new Readable({ read() {} }), {
+        setRawMode(enabled: boolean) {
+          if (enabled) throw new Error("createCliRenderer failed")
+        },
+      })
+      return createCliRenderer({ ...config, stdin: stdin as unknown as NodeJS.ReadStream })
+    },
+  },
+])("a genuine renderer-creation failure $name Session attachment is reported once", async ({ fail }) => {
   const errors: unknown[] = []
   let handlerRan = false
   const safe = createSafeInvoke((e) => errors.push(e))
-  const { bridge } = testBridge({
-    safe,
-    createRenderer: (() => {
-      throw new Error("createCliRenderer failed")
-    }) as unknown as RendererFactory,
-  })
+  const { bridge } = testBridge({ safe, createRenderer: fail as RendererFactory })
 
   runSession(
     [],
@@ -345,7 +355,7 @@ test("a genuine renderer-creation failure is still reported", async () => {
   await flush()
 
   expect(handlerRan).toBe(false)
-  expect(errors).toHaveLength(1) // a real failure IS reported…
+  expect(errors.map((error) => (error as Error).message)).toEqual(["createCliRenderer failed"])
   expect(bridge.closed).toBe(true) // …and the half-open session was torn down
 })
 

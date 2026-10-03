@@ -296,10 +296,18 @@ export function createSessionBridge(channel: ServerChannel, options: SessionBrid
   channel.on("close", onChannelClose)
   channel.on("error", onChannelError)
 
-  // A Session failure is reported here once; a closed channel already reported its own error.
-  void nativeSession.closed.catch((error) => {
+  // A Session failure is reported here once; a closed channel already reported its own error, and runSession
+  // reports a renderer creation failure that is not this Session failure.
+  void nativeSession.closed.catch(async (error) => {
     void destroy()
-    if (!channelClosed) safe.report(error)
+    const failure = await creatingRenderer?.then(
+      () => undefined,
+      (creationError: unknown) => creationError,
+    )
+    if (channelClosed || (failure !== undefined && failure !== error && !nativeSession.isCloseInterruption(failure))) {
+      return
+    }
+    safe.report(error)
   })
 
   // Use current dimensions so resizes during middleware are honored.
