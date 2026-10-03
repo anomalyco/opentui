@@ -1,5 +1,4 @@
 import { ResourceContext } from "./buffer.js"
-import { resolveRenderLib } from "./zig.js"
 import { describe, expect, test, beforeEach, afterEach } from "bun:test"
 import { EditBuffer } from "./edit-buffer.js"
 

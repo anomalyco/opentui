@@ -8,6 +8,7 @@ import {
   type PointerInput,
 } from "./platform/ffi.js"
 import { writeFile } from "./platform/runtime.js"
+import { isWorkerRuntime } from "./platform/worker.js"
 import { existsSync, writeFileSync } from "fs"
 import {
   ATTRIBUTE_BASE_MASK,
@@ -984,6 +985,9 @@ const BUFFER_STACK_OPERATIONS = [
 ] as const
 const SCENE_ARROW_DIRECTIONS = ["up", "down", "left", "right"] as const
 const MAX_FFI_U32 = 0xffff_ffff
+// Main-thread libraries, oldest first. The newest owns the process-global native log callback. Worker libraries never
+// install one: native code would keep calling it after the Worker exits.
+const processLogLibraries: FFIRenderLib[] = []
 // Global singleton state for FFI tracing to prevent duplicate exit handlers
 let globalTraceSymbols: Record<string, number[]> | null = null
 let globalFFILogPath: string | null = null
@@ -7838,10 +7842,7 @@ export class FFIRenderLib {
   }
 
   private setupLogging() {
-    if (this.logCallbackWrapper) {
-      return
-    }
-
+    if (isWorkerRuntime) return
     const logCallback = this.opentui.createCallback(
       (level: number, msgPtr: Pointer, msgLen: number) => {
         try {
@@ -7871,10 +7872,20 @@ export class FFIRenderLib {
     }
 
     this.setLogCallback(logCallback.ptr)
+    processLogLibraries.push(this)
   }
 
   private setLogCallback(callbackPtr: Pointer | null) {
     this.opentui.symbols.setLogCallback(callbackPtr)
+  }
+
+  /** Hands the process log callback to the newest remaining main-thread library, or clears it after the last one. */
+  private releaseProcessLog(): void {
+    const index = processLogLibraries.indexOf(this)
+    if (index < 0) return
+    processLogLibraries.splice(index, 1)
+    if (index < processLogLibraries.length) return
+    this.setLogCallback(processLogLibraries.at(-1)?.logCallbackWrapper?.ptr ?? null)
   }
 
   public dispose(): void {
@@ -7890,7 +7901,7 @@ export class FFIRenderLib {
     this.yogaHost?.dispose()
     this.disposed = true
     try {
-      this.setLogCallback(null)
+      this.releaseProcessLog()
     } finally {
       try {
         if (this.iccCacheClient) {

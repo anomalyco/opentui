@@ -176,6 +176,8 @@
     "src/tests/yoga-callback-stress.test.ts",
     "src/tests/yoga-callback-boundary.test.ts",
     "src/tests/yoga-callback-boundary-child.ts",
+    "src/tests/native-log-worker-child.ts",
+    "src/tests/native-log-worker.fixture.ts",
     "src/tests/yoga-setters.test.ts",
     "src/tests/wrap-resize-perf.test.ts",
     "src/text-buffer.test.ts",

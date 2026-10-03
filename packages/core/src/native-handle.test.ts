@@ -1,4 +1,6 @@
 import { describe, expect, spyOn, test } from "bun:test"
+import { spawnSync } from "node:child_process"
+import { fileURLToPath } from "node:url"
 import { OptimizedBuffer, ResourceContext } from "./buffer.js"
 import { RGBA } from "./lib/RGBA.js"
 import { TextBuffer } from "./text-buffer.js"
@@ -168,6 +170,22 @@ describe("native handles", () => {
     } finally {
       lib.destroyContext(context)
     }
+  })
+
+  test("the process log callback survives Worker exit and disposal of other libraries", () => {
+    const extension = import.meta.url.endsWith(".ts") ? "ts" : "js"
+    const runtimeArgs = "bun" in process.versions ? [] : process.execArgv.filter((arg) => !arg.startsWith("--test"))
+    const child = spawnSync(
+      process.execPath,
+      [...runtimeArgs, fileURLToPath(new URL(`tests/native-log-worker-child.${extension}`, import.meta.url))],
+      { encoding: "utf8", timeout: 10_000, env: { ...process.env, OTUI_GHOSTTY_LOG_LEVEL: "warn" } },
+    )
+    expect({ status: child.status, signal: child.signal, stdout: child.stdout.trim() }).toEqual({
+      status: 0,
+      signal: null,
+      stdout: "native log survived",
+    })
+    expect(child.stderr).toContain("(stream) unimplemented CSI action")
   })
 
   test("render library path cannot change after native use", () => {
