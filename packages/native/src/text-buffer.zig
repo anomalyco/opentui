@@ -1002,6 +1002,54 @@ pub const UnifiedTextBuffer = struct {
         self.mem_registry.buffers.items[mem_id].owned = owned;
     }
 
+    /// Copy every chunk's bytes, in document order, into one owned slot 0 and rebuild the rope
+    /// over it. Chunk boundaries and widths are kept, so highlights, spans, and links stay valid.
+    /// Every other slot is released, so the caller must hold no other memory ID. Requires empty
+    /// history, because history roots would still reference the released slots.
+    pub fn flattenMemRegistry(self: *Self) TextBufferError!void {
+        std.debug.assert(!self._rope.hasHistory());
+        const byte_count = self._rope.root.metrics().custom.total_bytes;
+        const bytes = self.global_allocator.alloc(u8, byte_count) catch return TextBufferError.OutOfMemory;
+        errdefer self.global_allocator.free(bytes);
+        const segments = self._rope.to_array(self.global_allocator) catch return TextBufferError.OutOfMemory;
+        defer self.global_allocator.free(segments);
+        var offset: u32 = 0;
+        for (segments) |*segment| {
+            const chunk = switch (segment.*) {
+                .text => |*chunk| chunk,
+                else => continue,
+            };
+            const chunk_bytes = chunk.getBytes(&self.mem_registry);
+            @memcpy(bytes[offset..][0..chunk_bytes.len], chunk_bytes);
+            // Cold layout state lives in the retired arena.
+            chunk.* = .{
+                .mem_id = 0,
+                .byte_start = offset,
+                .byte_end = offset + @as(u32, @intCast(chunk_bytes.len)),
+                .width_cols = chunk.width_cols,
+                .flags = chunk.flags,
+            };
+            offset = chunk.byte_end;
+        }
+        std.debug.assert(offset == byte_count);
+
+        var replacement_arena = std.heap.ArenaAllocator.init(self.global_allocator);
+        defer replacement_arena.deinit();
+        var candidate = UnifiedRope.from_sliceWithConfig(replacement_arena.allocator(), segments, self._rope.config) catch
+            return TextBufferError.OutOfMemory;
+        candidate.version = self._rope.version +% 1;
+        self.mem_registry.buffers.ensureTotalCapacity(self.global_allocator, 1) catch return TextBufferError.OutOfMemory;
+
+        self.layout_cache.clear();
+        std.mem.swap(std.heap.ArenaAllocator, self.arena, &replacement_arena);
+        self._rope = candidate;
+        self._rope.allocator = self.allocator;
+        self._rope.marker_cache = UnifiedRope.MarkerCache.init(self.allocator);
+        self.mem_registry.clear();
+        self.mem_registry.buffers.appendAssumeCapacity(.{ .data = bytes, .owned = true, .active = true });
+        self.markAllViewsDirty();
+    }
+
     /// Append text from a pre-registered memory ID
     pub fn appendFromMemId(self: *Self, mem_id: u8) TextBufferError!void {
         const text = self.mem_registry.get(mem_id) orelse return TextBufferError.InvalidMemId;

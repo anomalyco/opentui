@@ -392,6 +392,41 @@ test "Context exact text ranges retain grapheme and newline boundaries" {
     }
 }
 
+test "Context shared text keeps appending after the memory registry fills" {
+    const core = try ctx.Context.init(std.testing.allocator, std.testing.io, .{});
+    defer core.deinit() catch unreachable;
+    const handle = try core.createTextBuffer(.unicode);
+    const resource = try core.raw().getTextBuffer(handle);
+    const red: @import("ansi.zig").RGBA = .{ 255, 0, 0, 255 };
+    try core.textBufferSetStyledText(handle, "ab\ncd", &.{ .{ .byte_count = 2, .foreground = red }, .{ .byte_count = 3 } });
+    const style_id = resource.buffer.getLineHighlights(0)[0].style_id;
+
+    // Each append takes one registry slot; the registry has 255 and the replacement slot uses one.
+    var expected: std.ArrayListUnmanaged(u8) = .empty;
+    defer expected.deinit(std.testing.allocator);
+    try expected.appendSlice(std.testing.allocator, "ab\ncd");
+    for (0..1000) |index| {
+        const bytes: []const u8 = if (index % 3 == 0) "\n\u{754c}" else "x";
+        try core.textBufferAppend(handle, bytes);
+        try expected.appendSlice(std.testing.allocator, bytes);
+        try std.testing.expect(resource.buffer.mem_registry.buffers.items.len <= 255);
+    }
+
+    const actual = try std.testing.allocator.alloc(u8, expected.items.len);
+    defer std.testing.allocator.free(actual);
+    try std.testing.expectEqual(expected.items.len, try core.textBufferGetRange(handle, 0, std.math.maxInt(u32), actual));
+    try std.testing.expectEqualStrings(expected.items, actual);
+    // Flattening keeps the styled prefix and every line width.
+    try std.testing.expectEqual(style_id, resource.buffer.getLineHighlights(0)[0].style_id);
+    try std.testing.expectEqual(2, resource.buffer.getLineHighlights(0)[0].col_end);
+    try std.testing.expectEqual(2, resource.buffer.getHighlightCount());
+    try std.testing.expectEqual(resource.buffer.measureText(expected.items[std.mem.lastIndexOfScalar(u8, expected.items, '\n').? + 1 ..]), resource.buffer.lineWidthAt(resource.buffer.getLineCount() - 1));
+
+    // A replacement still reclaims every append slot.
+    try core.textBufferSetText(handle, "done");
+    try std.testing.expectEqual(1, resource.buffer.mem_registry.buffers.items.len);
+}
+
 test "Context shared text ABI rejects malformed replacement and preserves short-copy output" {
     var owner: Owner = .{ .gpa = .init, .io_threaded = .init_single_threaded, .core = undefined, .owner_thread = std.Thread.getCurrentId() };
     defer owner.io_threaded.deinit();

@@ -2239,6 +2239,47 @@ test "TextBuffer reset allocation failure preserves the document and allows retr
     return error.MissingSuccessfulReset;
 }
 
+test "TextBuffer flattenMemRegistry keeps the document and is atomic under allocation failure" {
+    var pool = gp.GraphemePool.init(std.testing.allocator);
+    defer pool.deinit();
+    var links = link.LinkPool.init(std.testing.allocator);
+    defer links.deinit();
+    for (0..64) |offset| {
+        var failing = std.testing.FailingAllocator.init(std.testing.allocator, .{});
+        const tb = try TextBuffer.init(failing.allocator(), &pool, &links, .unicode);
+        defer tb.deinit();
+        try tb.setText("ab");
+        // A grapheme split across appends keeps its per-chunk widths after flattening.
+        for ([_][]const u8{ "c", "\u{301}", "\n\u{754c}", "e" }) |bytes| try tb.append(bytes);
+        try tb.addHighlightByCharRange(1, 4, 1, 1, 7);
+        const view = try tb.registerView();
+        tb.clearViewDirty(view);
+        const before = TextState.capture(tb);
+        const widths = [_]u32{ tb.lineWidthAt(0), tb.lineWidthAt(1) };
+        try std.testing.expectEqual(5, before.slots);
+        failing.fail_index = failing.alloc_index + offset;
+        failing.resize_fail_index = failing.resize_index;
+        const result = tb.flattenMemRegistry();
+        failing.fail_index = std.math.maxInt(usize);
+        failing.resize_fail_index = std.math.maxInt(usize);
+        if (result) |_| {} else |err| {
+            try std.testing.expectEqual(error.OutOfMemory, err);
+            try std.testing.expectEqualDeep(before, TextState.capture(tb));
+            try std.testing.expect(!tb.isViewDirty(view));
+            continue;
+        }
+        var after = TextState.capture(tb);
+        try std.testing.expectEqual(1, after.slots);
+        try std.testing.expect(tb.isViewDirty(view));
+        after.slots = before.slots;
+        after.epoch = before.epoch;
+        try std.testing.expectEqualDeep(before, after);
+        try std.testing.expectEqualSlices(u32, &widths, &.{ tb.lineWidthAt(0), tb.lineWidthAt(1) });
+        return;
+    }
+    return error.MissingSuccessfulFlatten;
+}
+
 test "addHighlightByCharRange - single line highlight should not extend to EOL" {
     var pools = TestPools.init(std.testing.allocator);
     defer pools.deinit();
