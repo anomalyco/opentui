@@ -681,8 +681,7 @@ describe("LineNumberRenderable in ScrollBox", () => {
     expect(frame2).toMatchSnapshot()
   })
 
-  test("EXPECTED FAILURE: Box width changes unexpectedly on first few renders", async () => {
-    // This test documents a known issue where box widths may flicker on initial renders
+  test("box size stays stable across the first renders", async () => {
     const code = generateCode(30)
     const codeRenderable = new CodeRenderable(currentRenderer, {
       id: "code-flicker",
@@ -731,8 +730,6 @@ describe("LineNumberRenderable in ScrollBox", () => {
       heights.push(box.height)
     }
 
-    // This assertion SHOULD pass if the bug is fixed
-    // If it fails, it documents the flickering issue
     const allWidthsSame = widths.every((w) => w === widths[0])
     const allHeightsSame = heights.every((h) => h === heights[0])
 
@@ -740,7 +737,7 @@ describe("LineNumberRenderable in ScrollBox", () => {
     expect(allHeightsSame).toBe(true)
   })
 
-  test("EXPECTED FAILURE: Gutter height may not match parent height initially", async () => {
+  test("gutter height matches its LineNumber parent after the first render", async () => {
     const code = generateCode(50)
     const codeRenderable = new CodeRenderable(currentRenderer, {
       id: "code-height",
@@ -784,8 +781,6 @@ describe("LineNumberRenderable in ScrollBox", () => {
     const gutter = lineNumberRenderable["gutter"]!
     const expectedHeight = lineNumberRenderable.height
 
-    // Gutter should have same height as its parent LineNumberRenderable
-    // This may fail if there's a layout issue
     expect(gutter.height).toBe(expectedHeight)
   })
 })
