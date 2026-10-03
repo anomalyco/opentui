@@ -641,13 +641,14 @@ export abstract class Renderable extends BaseRenderable {
   public blur(): void {
     if (!this._focused) return
 
-    this._ctx.nativeScene.setFocus(this, false)
+    // Release JS focus state before native: destroy must not leave focus on a node whose native blur failed.
     this._focused = false
     const keypress = this.keypressHandler
     const paste = this.pasteHandler
     this.keypressHandler = null
     this.pasteHandler = null
     this.runCleanup((run) => {
+      run(() => this._ctx.nativeScene.setFocus(this, false))
       if (keypress) run(() => this.ctx._internalKeyInput.offInternal("keypress", keypress))
       if (paste) run(() => this.ctx._internalKeyInput.offInternal("paste", paste))
       run(() => this.propagateFocusChange(false))

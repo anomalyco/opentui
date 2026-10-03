@@ -1248,6 +1248,28 @@ describe("Renderable - Focus", () => {
     expect(testRenderer.currentFocusedRenderable).toBeNull()
   })
 
+  test("destroy() releases focus state when the native blur fails", () => {
+    const keyHandlers = (testRenderer._internalKeyInput as unknown as { renderableHandlers: Map<string, Set<unknown>> })
+      .renderableHandlers
+    const node = new TestFocusableRenderable(testRenderer, {})
+    testRenderer.root.add(node)
+    node.focus()
+    expect(keyHandlers.get("keypress")?.size).toBe(1)
+    const setFocus = spyOn(testRenderer.nativeScene, "setFocus").mockImplementation(() => {
+      throw new Error("native blur failed")
+    })
+    expect(() => node.destroy()).toThrow("native blur failed")
+    setFocus.mockRestore()
+
+    expect([node.isDestroyed, node.focused]).toEqual([true, false])
+    expect(testRenderer.currentFocusedRenderable).toBeNull()
+    expect([keyHandlers.get("keypress")?.size, keyHandlers.get("paste")?.size]).toEqual([0, 0])
+    const other = new TestFocusableRenderable(testRenderer, {})
+    testRenderer.root.add(other)
+    other.focus()
+    expect(testRenderer.currentFocusedRenderable === other).toBe(true)
+  })
+
   test("destroy() does not call blurRenderable when renderable was not focused", () => {
     const renderable = new TestFocusableRenderable(testRenderer, { id: "test-destroy-not-focused" })
     const blurSpy = spyOn(testRenderer, "blurRenderable")
