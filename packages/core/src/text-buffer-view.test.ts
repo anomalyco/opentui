@@ -168,7 +168,14 @@ describe("TextBufferView", () => {
       const selected = view.getSelectedText()
       const selection = view.getSelection()
       const visible = view.lineInfo
+      const symbols = (resourceContext.renderLib as unknown as { opentui: { symbols: Record<string, () => number> } })
+        .opentui.symbols
+      const getLines = spyOn(symbols, "ot_text_buffer_view_get_lines")
       const sources = view.getLineSources(9995, 3)
+      // Native copies at most the requested rows (argument 5 is the row capacity), not the whole table.
+      const capacities = getLines.mock.calls.map((args: unknown[]) => args[5])
+      getLines.mockRestore()
+      expect(Math.max(...(capacities as number[]))).toBe(3)
       expect(sources).toEqual([9995, 9996, 9997])
       expect(view.getLineSources(9999, 10)).toEqual([9999])
       expect(view.getLineSources(10000, 1)).toEqual([])
@@ -393,71 +400,134 @@ describe("TextBufferView", () => {
     })
   })
 
-  describe("getSelectedText", () => {
-    it("should return empty string when no selection", () => {
-      const styledText = stringToStyledText("Hello World")
-      buffer.setStyledText(styledText)
-
-      const selectedText = view.getSelectedText()
-      expect(selectedText).toBe("")
+  describe("selection", () => {
+    // Each row: text, selection calls, then the selected text and the range in cell offsets (a newline counts one).
+    // Local selections are inclusive: the cell under the focus is selected too.
+    it.each<[string, string, ((view: TextBufferView) => unknown)[], string, { start: number; end: number } | null]>([
+      ["no selection", "Hello World", [], "", null],
+      ["offsets", "Hello World", [(v) => v.setSelection(6, 11)], "World", { start: 6, end: 11 }],
+      [
+        "offsets across a newline",
+        "Line 1\nLine 2\nLine 3",
+        [(v) => v.setSelection(0, 9)],
+        "Line 1\nLi",
+        { start: 0, end: 9 },
+      ],
+      [
+        "offsets over wide characters (the end snaps past the emoji)",
+        "Hello 世界 🌟",
+        [(v) => v.setSelection(6, 12)],
+        "世界 🌟",
+        { start: 6, end: 13 },
+      ],
+      ["reset", "Hello World", [(v) => v.setSelection(6, 11), (v) => v.resetSelection()], "", null],
+      [
+        "update grows",
+        "Hello World",
+        [(v) => v.setSelection(0, 5), (v) => v.updateSelection(11)],
+        "Hello World",
+        { start: 0, end: 11 },
+      ],
+      [
+        "update shrinks",
+        "Hello World",
+        [(v) => v.setSelection(0, 11), (v) => v.updateSelection(5)],
+        "Hello",
+        { start: 0, end: 5 },
+      ],
+      ["update without a selection", "Hello World", [(v) => v.updateSelection(5)], "", null],
+      ["local", "Hello World", [(v) => v.setLocalSelection(0, 0, 5, 0)], "Hello ", { start: 0, end: 6 }],
+      [
+        "local update keeps the anchor",
+        "Hello World",
+        [
+          (v) => v.setLocalSelection(0, 0, 5, 0),
+          (v) => v.updateLocalSelection(0, 0, 11, 0),
+          (v) => v.updateLocalSelection(0, 0, 3, 0),
+        ],
+        "Hell",
+        { start: 0, end: 4 },
+      ],
+      [
+        "local update across lines",
+        "Line 1\nLine 2\nLine 3",
+        [(v) => v.setLocalSelection(2, 0, 2, 0), (v) => v.updateLocalSelection(2, 0, 4, 1)],
+        "ne 1\nLine ",
+        { start: 2, end: 12 },
+      ],
+      [
+        "local update without an anchor",
+        "Hello World",
+        [(v) => v.updateLocalSelection(0, 0, 5, 0)],
+        "Hello ",
+        { start: 0, end: 6 },
+      ],
+      [
+        "local update backward",
+        "Hello World",
+        [(v) => v.setLocalSelection(11, 0, 11, 0), (v) => v.updateLocalSelection(11, 0, 6, 0)],
+        "World",
+        { start: 6, end: 11 },
+      ],
+      ["a cell press is empty", "alpha beta", [(v) => v.setLocalSelection(6, 0, 6, 0)], "", null],
+      [
+        "word press",
+        "alpha beta gamma",
+        [(v) => v.setLocalSelection(6, 0, 6, 0, undefined, undefined, "word")],
+        "beta",
+        { start: 6, end: 10 },
+      ],
+      [
+        "line press",
+        "alpha beta\ngamma",
+        [(v) => v.setLocalSelection(2, 1, 2, 1, undefined, undefined, "line")],
+        "gamma",
+        { start: 11, end: 16 },
+      ],
+    ])("%s", (_name, text, calls, selectedText, selection) => {
+      buffer.setStyledText(stringToStyledText(text))
+      // Every local call reports a change.
+      expect(calls.map((call) => call(view)).filter((result) => typeof result === "boolean")).not.toContain(false)
+      expect([view.getSelectedText(), view.getSelection(), view.hasSelection()]).toEqual([
+        selectedText,
+        selection,
+        selection !== null,
+      ])
     })
 
-    it("should return selected text for simple selection", () => {
-      const styledText = stringToStyledText("Hello World")
-      buffer.setStyledText(styledText)
-
-      view.setSelection(6, 11)
-      const selectedText = view.getSelectedText()
-      expect(selectedText).toBe("World")
-    })
-
-    it("should return selected text with newlines", () => {
-      const styledText = stringToStyledText("Line 1\nLine 2\nLine 3")
-      buffer.setStyledText(styledText)
-
-      // Rope offsets: "Line 1" (0-5) + newline (6) + "Line 2" (7-12) + newline (13) + "Line 3" (14-19)
-      // Selection [0, 9) = "Line 1" (0-5) + newline (6) + "Li" (7-8) = 9 chars
-      view.setSelection(0, 9)
-      const selectedText = view.getSelectedText()
-      expect(selectedText).toBe("Line 1\nLi")
-    })
-
-    it("should handle Unicode characters in selection", () => {
-      const styledText = stringToStyledText("Hello 世界 🌟")
-      buffer.setStyledText(styledText)
-
-      view.setSelection(6, 12)
-      const selectedText = view.getSelectedText()
-      expect(selectedText).toBe("世界 🌟")
-    })
-
-    it("should handle selection reset", () => {
-      const styledText = stringToStyledText("Hello World")
-      buffer.setStyledText(styledText)
-
-      view.setSelection(6, 11)
-      expect(view.getSelectedText()).toBe("World")
-
-      view.resetSelection()
-      expect(view.getSelectedText()).toBe("")
-    })
-  })
-
-  describe("selection state", () => {
-    it("should track selection state", () => {
-      const styledText = stringToStyledText("Hello World")
-      buffer.setStyledText(styledText)
-
-      expect(view.hasSelection()).toBe(false)
-
-      view.setSelection(0, 5)
-      expect(view.hasSelection()).toBe(true)
-
-      const selection = view.getSelection()
-      expect(selection).toEqual({ start: 0, end: 5 })
-
-      view.resetSelection()
-      expect(view.hasSelection()).toBe(false)
+    // Resets skip native while a view is marked clear; that is sound only if a clear view has no native selection.
+    it.each([1, 2, 3])("never marks a view with a selection clear (seed %j)", (seed) => {
+      let state = seed
+      const random = (count: number) => {
+        state ^= state << 13
+        state ^= state >>> 17
+        state ^= state << 5
+        return (state >>> 0) % count
+      }
+      const texts = ["alpha beta\ngamma 世界\n\tdelta", "x", "", "one two three four"]
+      const behaviors = ["cell", "word", "line"] as const
+      const local = (): [number, number, number, number] => [random(12), random(4), random(12), random(4)]
+      const replacement = resourceContext.renderLib.encodeTextBufferStyledText(stringToStyledText("x y"))
+      const operations = [
+        () => view.setSelection(random(20), 20 + random(10)),
+        () => view.updateSelection(random(30)),
+        () => view.setLocalSelection(...local(), undefined, undefined, behaviors[random(3)]),
+        () => view.updateLocalSelection(...local(), undefined, undefined, behaviors[random(3)]),
+        () => view.resetSelection(),
+        () => view.resetLocalSelection(),
+        () => buffer.setText(texts[random(texts.length)]),
+        () => view.setSelectionOccupancy(random(2) === 0 ? "boundary" : "cell"),
+        () =>
+          TextBuffer._replaceStyledTextBatch(
+            [{ textBuffer: buffer, textBufferView: view, text: replacement }],
+            () => {},
+          ),
+      ]
+      buffer.setText(texts[0])
+      for (let step = 0; step < 300; step++) {
+        operations[random(operations.length)]()
+        if ((view as unknown as { selectionClear: boolean }).selectionClear) expect(view.hasSelection()).toBe(false)
+      }
     })
 
     it("resets a selection once and skips resets of a clear view", () => {
@@ -538,129 +608,6 @@ describe("TextBufferView", () => {
       } finally {
         screen.destroy()
       }
-    })
-
-    it("should update selection end position", () => {
-      const styledText = stringToStyledText("Hello World")
-      buffer.setStyledText(styledText)
-
-      view.setSelection(0, 5)
-      expect(view.getSelectedText()).toBe("Hello")
-
-      view.updateSelection(11)
-      expect(view.getSelectedText()).toBe("Hello World")
-
-      const selection = view.getSelection()
-      expect(selection).toEqual({ start: 0, end: 11 })
-    })
-
-    it("should shrink selection with updateSelection", () => {
-      const styledText = stringToStyledText("Hello World")
-      buffer.setStyledText(styledText)
-
-      view.setSelection(0, 11)
-      expect(view.getSelectedText()).toBe("Hello World")
-
-      view.updateSelection(5)
-      expect(view.getSelectedText()).toBe("Hello")
-
-      const selection = view.getSelection()
-      expect(selection).toEqual({ start: 0, end: 5 })
-    })
-
-    it("should do nothing when updateSelection called with no selection", () => {
-      const styledText = stringToStyledText("Hello World")
-      buffer.setStyledText(styledText)
-
-      expect(view.hasSelection()).toBe(false)
-
-      view.updateSelection(5)
-      expect(view.hasSelection()).toBe(false)
-      expect(view.getSelectedText()).toBe("")
-    })
-
-    it("should update local selection focus position", () => {
-      const styledText = stringToStyledText("Hello World")
-      buffer.setStyledText(styledText)
-
-      // Inclusive selection: the cell under the focus (5, the space) is selected too.
-      const changed1 = view.setLocalSelection(0, 0, 5, 0)
-      expect(changed1).toBe(true)
-      expect(view.getSelectedText()).toBe("Hello ")
-
-      const changed2 = view.updateLocalSelection(0, 0, 11, 0)
-      expect(changed2).toBe(true)
-      expect(view.getSelectedText()).toBe("Hello World")
-    })
-
-    it("should update local selection across lines", () => {
-      const styledText = stringToStyledText("Line 1\nLine 2\nLine 3")
-      buffer.setStyledText(styledText)
-
-      view.setLocalSelection(2, 0, 2, 0)
-
-      const changed = view.updateLocalSelection(2, 0, 4, 1)
-      expect(changed).toBe(true)
-
-      const selectedText = view.getSelectedText()
-      expect(selectedText).toContain("ne 1")
-      expect(selectedText).toContain("Line")
-    })
-
-    it("should fallback to setLocalSelection when updateLocalSelection called with no existing anchor", () => {
-      const styledText = stringToStyledText("Hello World")
-      buffer.setStyledText(styledText)
-
-      const changed = view.updateLocalSelection(0, 0, 5, 0)
-      expect(changed).toBe(true)
-      expect(view.hasSelection()).toBe(true)
-      expect(view.getSelectedText()).toBe("Hello ")
-    })
-
-    it("should preserve anchor when updating local selection", () => {
-      const styledText = stringToStyledText("Hello World")
-      buffer.setStyledText(styledText)
-
-      view.setLocalSelection(0, 0, 5, 0)
-      expect(view.getSelectedText()).toBe("Hello ")
-
-      view.updateLocalSelection(0, 0, 6, 0)
-      expect(view.getSelectedText()).toBe("Hello W")
-
-      view.updateLocalSelection(0, 0, 11, 0)
-      expect(view.getSelectedText()).toBe("Hello World")
-
-      view.updateLocalSelection(0, 0, 3, 0)
-      expect(view.getSelectedText()).toBe("Hell")
-    })
-
-    it("should handle backward selection with updateLocalSelection", () => {
-      const styledText = stringToStyledText("Hello World")
-      buffer.setStyledText(styledText)
-
-      view.setLocalSelection(11, 0, 11, 0)
-
-      const changed = view.updateLocalSelection(11, 0, 6, 0)
-      expect(changed).toBe(true)
-      expect(view.getSelectedText()).toBe("World")
-    })
-
-    it("should select a word with word behavior on the same cell", () => {
-      const styledText = stringToStyledText("alpha beta gamma")
-      buffer.setStyledText(styledText)
-
-      const changed = view.setLocalSelection(6, 0, 6, 0, undefined, undefined, "word")
-      expect(changed).toBe(true)
-      expect(view.getSelectedText()).toBe("beta")
-    })
-
-    it("should keep a cell press zero-width", () => {
-      const styledText = stringToStyledText("alpha beta")
-      buffer.setStyledText(styledText)
-
-      view.setLocalSelection(6, 0, 6, 0)
-      expect(view.getSelectedText()).toBe("")
-      expect(view.hasSelection()).toBe(false)
     })
   })
 

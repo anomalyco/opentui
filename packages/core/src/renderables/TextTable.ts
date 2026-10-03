@@ -1,4 +1,3 @@
-import { assertRenderableMutable, runRenderableMutation } from "../lib/renderable-layout.js"
 import { MeasureMode } from "../yoga.js"
 import { type RenderableOptions, Renderable } from "../Renderable.js"
 import type { OptimizedBuffer } from "../buffer.js"
@@ -185,7 +184,7 @@ export class TextTableRenderable extends Renderable {
       this._defaultAttributes = options.attributes ?? this._defaultOptions.attributes
 
       this.setupMeasureFunc()
-      runRenderableMutation(this, () => this.rebuildCells(this._content))
+      this.runMutation(() => this.rebuildCells(this._content))
     } catch (error) {
       this.abortConstruction(error, () => this.destroyCells())
     }
@@ -196,7 +195,7 @@ export class TextTableRenderable extends Renderable {
   }
 
   public set content(value: TextTableContent) {
-    runRenderableMutation(this, () => this.rebuildCells(value ?? []))
+    this.runMutation(() => this.rebuildCells(value ?? []))
   }
 
   public get wrapMode(): "none" | "char" | "word" {
@@ -205,14 +204,13 @@ export class TextTableRenderable extends Renderable {
 
   public set wrapMode(value: "none" | "char" | "word") {
     if (this._wrapMode === value) return
-    assertRenderableMutable(this)
-    this._wrapMode = value
-    for (const row of this._cells) {
-      for (const cell of row) {
-        cell.textBufferView.setWrapMode(value)
+    this.runMutation(() => {
+      this._wrapMode = value
+      for (const row of this._cells) {
+        for (const cell of row) cell.textBufferView.setWrapMode(value)
       }
-    }
-    this.invalidateLayoutAndRaster()
+      this.invalidateLayoutAndRaster()
+    })
   }
 
   public get columnWidthMode(): TextTableColumnWidthMode {
@@ -1052,16 +1050,8 @@ export class TextTableRenderable extends Renderable {
 
       for (let colIdx = 0; colIdx < this._columnCount; colIdx++) {
         const cellX = (colOffsets[colIdx] ?? 0) + 1
-        const colWidth = colWidths[colIdx] ?? 1
-        if (this._backgroundColor.a < 1) {
-          for (let y = cellY; y < cellY + rowHeight; y++) {
-            for (let x = cellX; x < cellX + colWidth; x++) {
-              buffer.setCell(x, y, " ", this._defaultFg, this._backgroundColor, this._defaultAttributes)
-            }
-          }
-        } else {
-          buffer.fillRect(cellX, cellY, colWidth, rowHeight, this._backgroundColor)
-        }
+        // Only opaque backgrounds reach this direct redraw (see redrawSelectionRows).
+        buffer.fillRect(cellX, cellY, colWidths[colIdx] ?? 1, rowHeight, this._backgroundColor)
       }
     }
   }

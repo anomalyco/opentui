@@ -8,6 +8,7 @@ import {
   type MeasureResult,
   type RenderLib,
   type ContextTextBufferViewHandle,
+  type NativeEditorSelection,
 } from "./zig.js"
 import type { TextBuffer } from "./text-buffer.js"
 import type { NativeResourceOwner, ResourceContext } from "./buffer.js"
@@ -72,38 +73,29 @@ export class TextBufferView {
     return this.native.handle
   }
 
-  public setSelection(start: number, end: number, bgColor?: RGBA, fgColor?: RGBA): void {
+  private select(selection: NativeEditorSelection): boolean {
     this.guard()
     this.selectionClear = false
-    this.lib.contextTextBufferViewSelect(this.native.handle.context, this.native.handle, {
-      operation: NativeEditorSelectionOperation.Set,
-      start,
-      end,
-      bg: bgColor,
-      fg: fgColor,
-    })
+    return this.lib.contextTextBufferViewSelect(this.native.handle.context, this.native.handle, selection)
+  }
+
+  private reset(local: boolean): void {
+    this.guard()
+    const { context } = this.native.handle
+    this.lib.contextTextBufferViewResetSelection(context, this.native.handle, local, this.selectionClear)
+    this.selectionClear = true
+  }
+
+  public setSelection(start: number, end: number, bgColor?: RGBA, fgColor?: RGBA): void {
+    this.select({ operation: NativeEditorSelectionOperation.Set, start, end, bg: bgColor, fg: fgColor })
   }
 
   public updateSelection(end: number, bgColor?: RGBA, fgColor?: RGBA): void {
-    this.guard()
-    this.selectionClear = false
-    this.lib.contextTextBufferViewSelect(this.native.handle.context, this.native.handle, {
-      operation: NativeEditorSelectionOperation.Update,
-      end,
-      bg: bgColor,
-      fg: fgColor,
-    })
+    this.select({ operation: NativeEditorSelectionOperation.Update, end, bg: bgColor, fg: fgColor })
   }
 
   public resetSelection(): void {
-    this.guard()
-    this.lib.contextTextBufferViewResetSelection(
-      this.native.handle.context,
-      this.native.handle,
-      false,
-      this.selectionClear,
-    )
-    this.selectionClear = true
+    this.reset(false)
   }
 
   public getSelection(): { start: number; end: number } | null {
@@ -125,9 +117,7 @@ export class TextBufferView {
     fgColor?: RGBA,
     behavior: SelectionBehavior = "cell",
   ): boolean {
-    this.guard()
-    this.selectionClear = false
-    return this.lib.contextTextBufferViewSelect(this.native.handle.context, this.native.handle, {
+    return this.select({
       operation: NativeEditorSelectionOperation.Local,
       anchorX,
       anchorY,
@@ -148,9 +138,7 @@ export class TextBufferView {
     fgColor?: RGBA,
     behavior: SelectionBehavior = "cell",
   ): boolean {
-    this.guard()
-    this.selectionClear = false
-    return this.lib.contextTextBufferViewSelect(this.native.handle.context, this.native.handle, {
+    return this.select({
       operation: NativeEditorSelectionOperation.LocalUpdate,
       anchorX,
       anchorY,
@@ -163,14 +151,7 @@ export class TextBufferView {
   }
 
   public resetLocalSelection(): void {
-    this.guard()
-    this.lib.contextTextBufferViewResetSelection(
-      this.native.handle.context,
-      this.native.handle,
-      true,
-      this.selectionClear,
-    )
-    this.selectionClear = true
+    this.reset(true)
   }
 
   public setSelectionOccupancy(occupancy: SelectionOccupancy): void {
@@ -186,44 +167,25 @@ export class TextBufferView {
     return this.lib.contextTextBufferViewGetInfo(this.native.handle.context, this.native.handle).selectionOccupancy
   }
 
-  public setWrapWidth(width: number | null): void {
+  private command(command: NativeTextViewCommand, argument: number): void {
     this.guard()
-    return this.lib.contextTextBufferViewCommand(
-      this.native.handle.context,
-      this.native.handle,
-      NativeTextViewCommand.WrapWidth,
-      width ?? 0,
-    )
+    this.lib.contextTextBufferViewCommand(this.native.handle.context, this.native.handle, command, argument)
+  }
+
+  public setWrapWidth(width: number | null): void {
+    this.command(NativeTextViewCommand.WrapWidth, width ?? 0)
   }
 
   public setWrapMode(mode: "none" | "char" | "word"): void {
-    this.guard()
-    return this.lib.contextTextBufferViewCommand(
-      this.native.handle.context,
-      this.native.handle,
-      NativeTextViewCommand.WrapMode,
-      mode === "none" ? 0 : mode === "char" ? 1 : 2,
-    )
+    this.command(NativeTextViewCommand.WrapMode, mode === "none" ? 0 : mode === "char" ? 1 : 2)
   }
 
   public setTextAlign(alignment: "left" | "center" | "right"): void {
-    this.guard()
-    return this.lib.contextTextBufferViewCommand(
-      this.native.handle.context,
-      this.native.handle,
-      NativeTextViewCommand.TextAlign,
-      alignment === "left" ? 0 : alignment === "center" ? 1 : 2,
-    )
+    this.command(NativeTextViewCommand.TextAlign, alignment === "left" ? 0 : alignment === "center" ? 1 : 2)
   }
 
   public setFirstLineOffset(offset: number): void {
-    this.guard()
-    return this.lib.contextTextBufferViewCommand(
-      this.native.handle.context,
-      this.native.handle,
-      NativeTextViewCommand.FirstLineOffset,
-      offset,
-    )
+    this.command(NativeTextViewCommand.FirstLineOffset, offset)
   }
 
   public setViewportSize(width: number, height: number): void {
@@ -258,15 +220,8 @@ export class TextBufferView {
 
   public getLineSources(startLine: number, lineCount: number): number[] {
     this.guard()
-    for (const [value, name] of [
-      [startLine, "start line"],
-      [lineCount, "line count"],
-    ] as const) {
-      if (!Number.isInteger(value) || value < 0 || value > 0xffff_ffff) {
-        throw new RangeError(`${name} must be a u32 integer`)
-      }
-    }
-    return this.logicalLineInfo.lineSources.slice(startLine, startLine + lineCount)
+    const { context } = this.native.handle
+    return this.lib.contextTextBufferViewGetLines(context, this.native.handle, true, startLine, lineCount).lineSources
   }
 
   public getSelectedText(): string {
@@ -280,14 +235,8 @@ export class TextBufferView {
   }
 
   public setTabIndicator(indicator: string | number): void {
-    this.guard()
     const codePoint = typeof indicator === "string" ? (indicator.codePointAt(0) ?? 0) : indicator
-    return this.lib.contextTextBufferViewCommand(
-      this.native.handle.context,
-      this.native.handle,
-      NativeTextViewCommand.TabIndicator,
-      codePoint,
-    )
+    this.command(NativeTextViewCommand.TabIndicator, codePoint)
   }
 
   public setTabIndicatorColor(color: RGBA): void {
@@ -296,13 +245,7 @@ export class TextBufferView {
   }
 
   public setTruncate(truncate: boolean): void {
-    this.guard()
-    return this.lib.contextTextBufferViewCommand(
-      this.native.handle.context,
-      this.native.handle,
-      NativeTextViewCommand.Truncate,
-      truncate ? 1 : 0,
-    )
+    this.command(NativeTextViewCommand.Truncate, truncate ? 1 : 0)
   }
 
   public measureForDimensions(width: number, height: number): MeasureResult | null {

@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, test } from "bun:test"
+import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test"
 import { OptimizedBuffer } from "../buffer.js"
 import { RGBA } from "../lib/RGBA.js"
 import { bold, green, red, yellow } from "../lib/styled-text.js"
@@ -371,12 +371,16 @@ describe("TextTableRenderable", () => {
     expect(table.wrapMode).toBe("char")
   })
 
-  test("fills available width by default in full mode", async () => {
+  test.each([
+    ["fills available width by default in full mode", undefined, [0, 17, 33]],
+    ["keeps intrinsic width in content mode when extra space is available", "content" as const, [0, 2, 4]],
+  ])("%s", async (_name, columnWidthMode, expected) => {
     const table = new TextTableRenderable(renderer, {
       left: 0,
       top: 0,
       width: 34,
       wrapMode: "word",
+      columnWidthMode,
       content: [
         [cell("A"), cell("B")],
         [cell("1"), cell("2")],
@@ -393,7 +397,7 @@ describe("TextTableRenderable", () => {
     const buffer = renderer.currentRenderBuffer
     const borderXs = findVerticalBorderXs(buffer, headerY)
 
-    expect(borderXs).toEqual([0, 17, 33])
+    expect(borderXs).toEqual(expected)
   })
 
   test("fills available width in no-wrap mode when columnWidthMode is full", async () => {
@@ -741,6 +745,36 @@ describe("TextTableRenderable", () => {
     expect(after).toMatchSnapshot("content setter update")
   })
 
+  test("replaces same-shape content in one batch and falls back to new cells beyond the batch limit", async () => {
+    // 300 changed cells exceed OT_TEXT_REPLACEMENT_COUNT_MAX (256).
+    const grid = (tag: string, rows: number) =>
+      Array.from({ length: rows }, (_, row) => [cell(`${tag}${row}`), row === 1 ? null : cell(tag)])
+    const table = new TextTableRenderable(renderer, { left: 0, top: 0, wrapMode: "none", content: grid("a", 3) })
+    renderer.root.add(table)
+    const create = spyOn(renderer.nativeScene.driver.renderLib, "createContextTextBuffer")
+    const rows = async () => {
+      await renderOnce()
+      return captureFrame()
+        .split("\n")
+        .filter((line) => /[a-z]\d/.test(line))
+        .slice(0, 3)
+        .map((line) => line.replace(/[│ ]+/g, " ").trim())
+    }
+    try {
+      table.content = grid("b", 3)
+      expect(await rows()).toEqual(["b0 b", "b1", "b2 b"])
+      expect(create).toHaveBeenCalledTimes(0)
+      // A sparse row renders empty cells.
+      table.content = [...grid("c", 150), undefined as never]
+      create.mockClear()
+      table.content = grid("d", 151)
+      expect(await rows()).toEqual(["d0 d", "d1", "d2 d"])
+      expect(create).toHaveBeenCalledTimes(301)
+    } finally {
+      create.mockRestore()
+    }
+  })
+
   test("renders a final bottom border", async () => {
     const table = new TextTableRenderable(renderer, {
       left: 0,
@@ -1005,7 +1039,8 @@ describe("TextTableRenderable", () => {
     expect(table.getSelectedText()).toBe("colB\tcolC\na1\tb1\tc1\na2\tb2\tc2\na3\tb3\tc3")
   })
 
-  test("selection colors reset when drag retracts back to the anchor", async () => {
+  // An opaque table background redraws the selection rows directly into the table's buffer.
+  test.each([undefined, "#000000"])("selection colors reset when drag retracts (table background %s)", async (bg) => {
     const defaultFg = RGBA.fromHex("#111111")
     const defaultBg = RGBA.fromValues(0, 0, 0, 1)
     const selectionFg = RGBA.fromHex("#fefefe")
@@ -1014,6 +1049,7 @@ describe("TextTableRenderable", () => {
     const table = new TextTableRenderable(renderer, {
       left: 0,
       top: 0,
+      backgroundColor: bg,
       fg: defaultFg,
       bg: defaultBg,
       selectionFg,

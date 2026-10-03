@@ -4121,10 +4121,7 @@ export class FFIRenderLib {
   }
 
   public destroyContextTextBuffer(context: NativeContextHandle, text: ContextTextBufferHandle): void {
-    this.getYogaHost().assertMutable()
-    const handle = encodeContextHandle(context, text)
-    const pointer = this.nativeContextPointer(context, "ot_text_buffer_destroy")
-    nativeResult("ot_text_buffer_destroy", this.opentui.symbols.ot_text_buffer_destroy(pointer, handle))
+    this.destroyContextObject(context, text, "ot_text_buffer_destroy")
   }
 
   public createContextTextBufferView(
@@ -4145,10 +4142,7 @@ export class FFIRenderLib {
   }
 
   public destroyContextTextBufferView(context: NativeContextHandle, view: ContextTextBufferViewHandle): void {
-    this.getYogaHost().assertMutable()
-    const handle = encodeContextHandle(context, view)
-    const pointer = this.nativeContextPointer(context, "ot_text_buffer_view_destroy")
-    nativeResult("ot_text_buffer_view_destroy", this.opentui.symbols.ot_text_buffer_view_destroy(pointer, handle))
+    this.destroyContextObject(context, view, "ot_text_buffer_view_destroy")
   }
 
   public contextTextBufferSetText(
@@ -4192,9 +4186,8 @@ export class FFIRenderLib {
     context: NativeContextHandle,
     text: ContextTextBufferHandle,
     content: StyledText,
-    beforeNative?: () => void,
   ): void {
-    this.contextTextBufferSetEncodedStyledText(context, text, this.encodeTextBufferStyledText(content), beforeNative)
+    this.contextTextBufferSetEncodedStyledText(context, text, this.encodeTextBufferStyledText(content))
   }
 
   public encodeTextBufferStyledText(content: StyledText): NativeEncodedStyledText {
@@ -4205,12 +4198,10 @@ export class FFIRenderLib {
     context: NativeContextHandle,
     text: ContextTextBufferHandle,
     encoded: NativeEncodedStyledText,
-    beforeNative?: () => void,
   ): void {
     const handle = encodeContextHandle(context, text)
     const { bytes, records, count, urlBytes } = encoded
     this.getYogaHost().runMutation(() => {
-      beforeNative?.()
       const pointer = this.nativeContextPointer(context, "ot_text_buffer_set_styled_text")
       nativeResult(
         "ot_text_buffer_set_styled_text",
@@ -4606,24 +4597,30 @@ export class FFIRenderLib {
     context: NativeContextHandle,
     view: ContextTextBufferViewHandle,
     logical = false,
+    firstLine = 0,
+    lineCount = MAX_FFI_U32,
   ): LineInfo {
     const layout = nativeLayouts.ot_editor_measure
     const handle = encodeContextHandle(context, view)
     const mode = toFFIBool(logical, "Text logical lines")
+    const first = toSafeFFIU32Length(firstLine, "Text first line")
+    const capacity = toSafeFFIU32Length(lineCount, "Text line count")
     const output = createContextRecord(layout)
     const pointer = this.nativeContextPointer(context, "ot_text_buffer_view_get_lines")
     nativeResult(
       "ot_text_buffer_view_get_lines",
       this.opentui.symbols.ot_text_buffer_view_get_lines(pointer, handle, mode, 0, null, 0, output),
     )
-    const count = output[layout.fields.line_count.offset / 4]
+    const total = output[layout.fields.line_count.offset / 4]
+    // Copy only the requested window, so a viewport read does not scale with the document (main #1462).
+    const count = Math.min(capacity, Math.max(0, total - first))
     const lines = new Uint32Array(count * (nativeLayouts.ot_scene_text_line.size / 4))
     if (count !== 0) {
       nativeResult(
         "ot_text_buffer_view_get_lines",
-        this.opentui.symbols.ot_text_buffer_view_get_lines(pointer, handle, mode, 0, lines, count, output),
+        this.opentui.symbols.ot_text_buffer_view_get_lines(pointer, handle, mode, first, lines, count, output),
       )
-      if (output[layout.fields.line_count.offset / 4] !== count)
+      if (output[layout.fields.line_count.offset / 4] !== total)
         throw new NativeError("ot_text_buffer_view_get_lines", NativeStatus.InternalError)
     }
     return decodeContextTextLines(lines, output[layout.fields.width_cols_max.offset / 4])
@@ -4810,10 +4807,7 @@ export class FFIRenderLib {
   }
 
   public destroyContextSyntaxStyle(context: NativeContextHandle, style: ContextSyntaxStyleHandle): void {
-    this.getYogaHost().assertMutable()
-    const handle = encodeContextHandle(context, style)
-    const pointer = this.nativeContextPointer(context, "ot_syntax_style_destroy")
-    nativeResult("ot_syntax_style_destroy", this.opentui.symbols.ot_syntax_style_destroy(pointer, handle))
+    this.destroyContextObject(context, style, "ot_syntax_style_destroy")
   }
 
   public contextEditBufferSetSyntaxStyle(
