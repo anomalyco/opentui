@@ -168,6 +168,42 @@ test "TextBuffer styled seek - arbitrary range order after replacing rope" {
     }
 }
 
+test "TextBuffer styled seek - range highlights visit only overlapping lines" {
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
+
+    const tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .unicode);
+    defer tb.deinit();
+    const line_count = 100_000;
+    const text = try std.testing.allocator.alloc(u8, line_count * 3 - 1);
+    defer std.testing.allocator.free(text);
+    for (0..line_count) |row| @memcpy(text[row * 3 ..][0..2], "ab");
+    for (1..line_count) |row| text[row * 3 - 1] = '\n';
+    try tb.setText(text);
+    try std.testing.expectEqual(line_count, tb.getLineCount());
+
+    // Highlight offsets exclude newlines, so line `row` starts at offset `row * 2`.
+    const cases = [_]struct { start: u32, end: u32, first: u32, last: u32 }{
+        .{ .start = 90_000 * 2 + 1, .end = 90_000 * 2 + 2, .first = 90_000, .last = 90_000 },
+        .{ .start = 50_000 * 2 + 1, .end = 50_009 * 2 + 1, .first = 50_000, .last = 50_009 },
+        .{ .start = line_count * 2 - 1, .end = line_count * 2 + 5, .first = line_count - 1, .last = line_count - 1 },
+    };
+    for (cases) |case| {
+        tb.clearAllHighlights();
+        const lookups_before = tb.rope().marker_lookups;
+        try tb.addHighlightByCharRange(case.start, case.end, 1, 1, 0);
+        const lookups = tb.rope().marker_lookups - lookups_before;
+        const lines_spanned = case.last - case.first + 1;
+        // Each binary search probe reads three markers and each spanned line at most five.
+        try std.testing.expect(lookups <= 3 * (std.math.log2_int_ceil(u32, line_count) + 1) + 5 * lines_spanned);
+        try std.testing.expectEqual(lines_spanned, tb.getHighlightCount());
+        try std.testing.expectEqual(0, tb.getLineHighlights(case.first - 1).len);
+        try std.testing.expectEqual(case.start - case.first * 2, tb.getLineHighlights(case.first)[0].col_start);
+        try std.testing.expectEqual(@min(case.end - case.last * 2, 2), tb.getLineHighlights(case.last)[0].col_end);
+        try std.testing.expectEqual(0, tb.getLineHighlights(case.last + 1).len);
+    }
+}
+
 test "TextBuffer styled text - failed growth keeps storage safe to reuse" {
     var pools = TestPools.init(std.testing.allocator);
     defer pools.deinit();

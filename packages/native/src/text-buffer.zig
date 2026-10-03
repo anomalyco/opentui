@@ -1296,8 +1296,9 @@ pub const UnifiedTextBuffer = struct {
             if (addition.highlights.capacity > 0) {
                 std.mem.swap(@TypeOf(addition.highlights), &self.line_highlights.items[line_idx], &addition.highlights);
             }
+            // Only styled text replacement creates internal highlights, and it builds them in one pass.
+            std.debug.assert(!addition.highlight.internal);
             self.line_highlights.items[line_idx].appendAssumeCapacity(addition.highlight);
-            if (addition.highlight.internal) self.internal_highlight_count += 1;
             if (self.highlight_batch_depth == 0) {
                 std.mem.swap(@TypeOf(addition.spans), &self.line_spans.items[line_idx], &addition.spans);
             } else {
@@ -1466,92 +1467,57 @@ pub const UnifiedTextBuffer = struct {
         priority: u8,
         hl_ref: u16,
     ) TextBufferError!void {
-        return self.addHighlightByCharRangeInternal(char_start, char_end, style_id, priority, hl_ref, false);
-    }
-
-    fn addHighlightByCharRangeInternal(
-        self: *Self,
-        char_start: u32,
-        char_end: u32,
-        style_id: u32,
-        priority: u8,
-        hl_ref: u16,
-        internal: bool,
-    ) TextBufferError!void {
         const line_count = self.getLineCount();
         if (char_start >= char_end or line_count == 0) {
             return;
         }
 
-        // Walk lines to find which lines this highlight affects
-        const Context = struct {
-            buffer: *Self,
-            char_start: u32,
-            char_end: u32,
-            style_id: u32,
-            priority: u8,
-            hl_ref: u16,
-            internal: bool,
-            additions: std.ArrayListUnmanaged(HighlightAddition) = .empty,
-            err: ?TextBufferError = null,
-
-            fn callback(ctx_ptr: *anyopaque, line_info: LineInfo) void {
-                const ctx = @as(*@This(), @ptrCast(@alignCast(ctx_ptr)));
-                if (ctx.err != null) return;
-                ctx.prepareLine(line_info) catch |err| {
-                    ctx.err = err;
-                };
-            }
-
-            fn prepareLine(ctx: *@This(), line_info: LineInfo) TextBufferError!void {
-                const line_start_col_offset = line_info.col_offset;
-                const line_end_col_offset = line_info.col_offset + line_info.width_cols;
-
-                // Skip lines before the highlight
-                if (line_end_col_offset <= ctx.char_start) return;
-                // Stop after the highlight ends
-                if (line_start_col_offset >= ctx.char_end) return;
-
-                // This line overlaps with the highlight
-                const col_start = if (ctx.char_start > line_start_col_offset)
-                    ctx.char_start - line_start_col_offset
-                else
-                    0;
-
-                const col_end = if (ctx.char_end < line_end_col_offset)
-                    ctx.char_end - line_start_col_offset
-                else
-                    line_info.width_cols;
-
-                if (col_start >= col_end) return;
-                try ctx.additions.ensureUnusedCapacity(ctx.buffer.global_allocator, 1);
-                ctx.additions.appendAssumeCapacity(try ctx.buffer.prepareHighlight(line_info.line_idx, .{
+        var additions: std.ArrayListUnmanaged(HighlightAddition) = .empty;
+        defer {
+            for (additions.items) |*addition| addition.deinit(self.global_allocator);
+            additions.deinit(self.global_allocator);
+        }
+        // Highlight offsets exclude newlines, unlike rope weights and offsetToCoords.
+        // Seek by line end so empty lines at the starting boundary are skipped too.
+        var line_idx = self.firstLineEndingAfter(char_start, line_count);
+        while (line_idx < line_count) : (line_idx += 1) {
+            const marker = self._rope.getMarker(.linestart, line_idx) orelse break;
+            const line_start = marker.global_weight - line_idx;
+            if (line_start >= char_end) break;
+            const width = iter_mod.lineWidthAt(&self._rope, line_idx);
+            const col_start = char_start -| line_start;
+            const col_end = @min(char_end - line_start, width);
+            if (col_start < col_end) {
+                try additions.ensureUnusedCapacity(self.global_allocator, 1);
+                additions.appendAssumeCapacity(try self.prepareHighlight(line_idx, .{
                     .col_start = col_start,
                     .col_end = col_end,
-                    .style_id = ctx.style_id,
-                    .priority = ctx.priority,
-                    .hl_ref = ctx.hl_ref,
-                    .internal = ctx.internal,
+                    .style_id = style_id,
+                    .priority = priority,
+                    .hl_ref = hl_ref,
+                    .internal = false,
                 }));
             }
-        };
-
-        var ctx: Context = .{
-            .buffer = self,
-            .char_start = char_start,
-            .char_end = char_end,
-            .style_id = style_id,
-            .priority = priority,
-            .hl_ref = hl_ref,
-            .internal = internal,
-        };
-        defer {
-            for (ctx.additions.items) |*addition| addition.deinit(self.global_allocator);
-            ctx.additions.deinit(self.global_allocator);
+            if (line_start + width >= char_end) break;
         }
-        iter_mod.walkLines(&self._rope, &ctx, Context.callback, false);
-        if (ctx.err) |err| return err;
-        try self.commitHighlights(ctx.additions.items);
+        try self.commitHighlights(additions.items);
+    }
+
+    /// Returns the first line whose newline-excluded end offset is past `offset`.
+    fn firstLineEndingAfter(self: *Self, offset: u32, line_count: u32) u32 {
+        var left: u32 = 0;
+        var right: u32 = line_count;
+        while (left < right) {
+            const mid = left + (right - left) / 2;
+            const marker = self._rope.getMarker(.linestart, mid) orelse return left;
+            const line_end = marker.global_weight - mid + iter_mod.lineWidthAt(&self._rope, mid);
+            if (line_end <= offset) {
+                left = mid + 1;
+            } else {
+                right = mid;
+            }
+        }
+        return left;
     }
 
     /// Remove all highlights with a specific reference ID
