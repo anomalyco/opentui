@@ -72,6 +72,26 @@ test "Context cell draws write a space for a control code point" {
     }
 }
 
+test "Context box draws reject edges past i32 before drawing" {
+    const owner = try context.Context.init(testing.allocator, testing.io, .{});
+    defer owner.deinit() catch unreachable;
+    const id = try owner.createBuffer(3, 2, .{});
+    const target = try owner.raw().getBuffer(id);
+    try owner.clearBuffer(id, ansi.rgbColor(0, 0, 0, 255));
+    const box: context.BufferDraw = .{ .operation = .box, .x = -1, .width = 3, .height = 2, .packed_options = 15, .foreground = ansi.rgbColor(255, 255, 255, 255), .border_chars = .{ '+', '+', '+', '+', '-', '|', 0, 0, 0, 0, 0 } };
+    for ([_][4]i64{ .{ std.math.maxInt(i32), 0, 1, 1 }, .{ 0, std.math.maxInt(i32), 1, 1 }, .{ 0, 0, std.math.maxInt(u32), 1 }, .{ 0, 0, 1, @as(i64, std.math.maxInt(i32)) + 1 } }) |edges| {
+        var invalid = box;
+        invalid.x = @intCast(edges[0]);
+        invalid.y = @intCast(edges[1]);
+        invalid.width = @intCast(edges[2]);
+        invalid.height = @intCast(edges[3]);
+        try testing.expectError(error.InvalidDimensions, owner.drawBuffer(id, null, &invalid, "", ""));
+    }
+    try testing.expectEqualSlices(u32, &.{ ' ', ' ', ' ', ' ', ' ', ' ' }, target.buffer.char);
+    try owner.drawBuffer(id, null, &box, "", "");
+    try testing.expectEqualSlices(u32, &.{ '-', '+', ' ', '-', '+', ' ' }, target.buffer.char);
+}
+
 test "Context fill rectangle clips unsigned extents and keeps leases current" {
     const owner = try context.Context.init(testing.allocator, testing.io, .{});
     defer owner.deinit() catch unreachable;
