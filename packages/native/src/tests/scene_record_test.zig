@@ -276,7 +276,7 @@ test "Scene record CLEAR and COLOR_MATRIX act on the whole frame, outside the sl
         try f.owner.sceneSetStyle(parent, 4, 0, 0, 1, 4, 1);
         try f.owner.sceneSetStyle(parent, 0, 8, 0, 0, 1, 0);
         try f.owner.sceneSetPaint(parent, .{ .shouldFill = 0 });
-        const child = try node(f.owner, f.id, parent, 6, 4, 0);
+        const child = try node(f.owner, f.id, parent, 1, 4, 0);
         try f.owner.sceneSetPaint(child, .{ .opacity = 0.5 });
         try f.owner.sceneSetHooks(child, c.OT_SCENE_HOOK_RENDER_AFTER, 1, 2, 1);
         const request = try f.step(null, options, c.OT_SCENE_FRAME_RECORD, null);
@@ -450,6 +450,8 @@ fn paintScene(f: Fixture) !context.Handle {
     const edit = try f.owner.createEditBuffer(.unicode);
     try f.owner.editSetText(edit, "ed", false);
     try f.owner.sceneSetEditorView(try placed(f, c.OT_SCENE_EDITOR, 10, 8, 2, 4), try f.owner.createEditorView(edit, 4, 1));
+    // A newly placed hidden node joins hook-free candidate work but must not paint.
+    try f.owner.sceneSetStyle(try placed(f, c.OT_SCENE_BOX, 11, 8, 3, 4), 0, 9, 0, 0, 1, 0);
     return backed;
 }
 
