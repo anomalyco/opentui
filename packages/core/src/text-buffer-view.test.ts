@@ -168,7 +168,14 @@ describe("TextBufferView", () => {
       const selected = view.getSelectedText()
       const selection = view.getSelection()
       const visible = view.lineInfo
+      const symbols = (resourceContext.renderLib as unknown as { opentui: { symbols: Record<string, () => number> } })
+        .opentui.symbols
+      const getLines = spyOn(symbols, "ot_text_buffer_view_get_lines")
       const sources = view.getLineSources(9995, 3)
+      // Native copies at most the requested rows (argument 5 is the row capacity), not the whole table.
+      const capacities = getLines.mock.calls.map((args: unknown[]) => args[5])
+      getLines.mockRestore()
+      expect(Math.max(...(capacities as number[]))).toBe(3)
       expect(sources).toEqual([9995, 9996, 9997])
       expect(view.getLineSources(9999, 10)).toEqual([9999])
       expect(view.getLineSources(10000, 1)).toEqual([])
