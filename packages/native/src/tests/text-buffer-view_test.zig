@@ -2992,49 +2992,6 @@ test "TextBufferView measureForDimensions - cache invalidates after updateVirtua
     try std.testing.expectEqual(@as(u32, 10), (try view.measureForDimensions(0, 10)).width_cols_max);
 }
 
-test "TextBufferView measureForDimensions - width 0 uses intrinsic line widths" {
-    var pools = TestPools.init(std.testing.allocator);
-    defer pools.deinit();
-
-    var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth);
-    defer tb.deinit();
-
-    var view = try TextBufferView.init(std.testing.allocator, tb);
-    defer view.deinit();
-
-    try tb.setText("abc\ndefghij");
-    view.setWrapMode(.char);
-
-    const result = try view.measureForDimensions(0, 24);
-    try std.testing.expectEqual(tb.getLineCount(), result.line_count);
-    try std.testing.expectEqual(iter_mod.getMaxLineWidth(tb.rope()), result.width_cols_max);
-}
-
-test "TextBufferView measureForDimensions - no wrap matches multi-segment line widths" {
-    var pools = TestPools.init(std.testing.allocator);
-    defer pools.deinit();
-
-    var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth);
-    defer tb.deinit();
-
-    var view = try TextBufferView.init(std.testing.allocator, tb);
-    defer view.deinit();
-
-    try tb.setText("AAAA");
-    try tb.append("BBBB");
-    view.setWrapMode(.none);
-
-    const line_info = view.getCachedLineInfo();
-    var expected_max: u32 = 0;
-    for (line_info.line_width_cols) |w| {
-        expected_max = @max(expected_max, w);
-    }
-
-    const result = try view.measureForDimensions(80, 24);
-    try std.testing.expectEqual(expected_max, result.width_cols_max);
-    try std.testing.expectEqual(@as(u32, @intCast(line_info.line_width_cols.len)), result.line_count);
-}
-
 test "TextBufferView measureForDimensions - cache invalidates on switchToBuffer" {
     var pools = TestPools.init(std.testing.allocator);
     defer pools.deinit();
@@ -3136,70 +3093,42 @@ test "TextBufferView measureForDimensions - warmed widths follow wrapping offset
     }
 }
 
-test "TextBufferView measureForDimensions - char wrap" {
+test "TextBufferView measureForDimensions - matches the rendered layout" {
     var pools = TestPools.init(std.testing.allocator);
     defer pools.deinit();
-
-    var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth);
-    defer tb.deinit();
-
-    var view = try TextBufferView.init(std.testing.allocator, tb);
-    defer view.deinit();
-
-    try tb.setText("ABCDEFGHIJKLMNOPQRST");
-    view.setWrapMode(.char);
-
-    // Test different widths
-    const result1 = try view.measureForDimensions(10, 10);
-    try std.testing.expectEqual(@as(u32, 2), result1.line_count);
-    try std.testing.expectEqual(@as(u32, 10), result1.width_cols_max);
-
-    const result2 = try view.measureForDimensions(5, 10);
-    try std.testing.expectEqual(@as(u32, 4), result2.line_count);
-    try std.testing.expectEqual(@as(u32, 5), result2.width_cols_max);
-
-    const result3 = try view.measureForDimensions(20, 10);
-    try std.testing.expectEqual(@as(u32, 1), result3.line_count);
-    try std.testing.expectEqual(@as(u32, 20), result3.width_cols_max);
-}
-
-test "TextBufferView measureForDimensions - no wrap mode" {
-    var pools = TestPools.init(std.testing.allocator);
-    defer pools.deinit();
-
-    var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth);
-    defer tb.deinit();
-
-    var view = try TextBufferView.init(std.testing.allocator, tb);
-    defer view.deinit();
-
-    try tb.setText("Hello\nWorld\nTest");
-    view.setWrapMode(.none);
-
-    // With no wrap, width shouldn't matter
-    const result = try view.measureForDimensions(3, 10);
-    try std.testing.expectEqual(@as(u32, 3), result.line_count);
-    // width_cols_max should be the longest line
-    try std.testing.expect(result.width_cols_max >= 4);
-}
-
-test "TextBufferView measureForDimensions - word wrap" {
-    var pools = TestPools.init(std.testing.allocator);
-    defer pools.deinit();
-
-    var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth);
-    defer tb.deinit();
-
-    var view = try TextBufferView.init(std.testing.allocator, tb);
-    defer view.deinit();
-
-    try tb.setText("Hello wonderful world");
-    view.setWrapMode(.word);
-
-    const result = try view.measureForDimensions(10, 10);
-    // Should wrap at word boundaries
-    try std.testing.expect(result.line_count >= 2);
-    try std.testing.expect(result.width_cols_max <= 10);
+    const tokens = [_][]const u8{ "a", "word ", " ", "\t", "\n", "\u{4e16}", "\u{1f44d}", "e\u{301}", "-", "abcdefghij" };
+    const methods = std.enums.values(@import("../utf8.zig").WidthMethod);
+    var prng = std.Random.DefaultPrng.init(0x3ea5);
+    const random = prng.random();
+    for (0..200) |iteration| {
+        var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, methods[iteration % methods.len]);
+        defer tb.deinit();
+        var view = try TextBufferView.init(std.testing.allocator, tb);
+        defer view.deinit();
+        // Appended tokens are separate chunks; one replacement is a single chunk per line.
+        var text: [160]u8 = undefined;
+        var len: usize = 0;
+        for (0..random.uintAtMost(usize, 12)) |_| {
+            const token = tokens[random.uintLessThan(usize, tokens.len)];
+            @memcpy(text[len..][0..token.len], token);
+            len += token.len;
+            if (iteration % 2 == 0) try tb.append(token);
+        }
+        if (iteration % 2 == 1) try tb.setText(text[0..len]);
+        for ([_]text_buffer_view.WrapMode{ .none, .char, .word }) |mode| {
+            view.setWrapMode(mode);
+            for ([_]u32{ 0, 1, 3, 7, 12, 80 }) |width| {
+                const measured = try view.measureForDimensions(width, 24);
+                // Width 0 measures intrinsic lines, like rendering without a wrap width.
+                view.setWrapWidth(if (width == 0) null else width);
+                var width_cols_max: u32 = 0;
+                for (view.getVirtualLines()) |line| width_cols_max = @max(width_cols_max, line.width_cols);
+                errdefer std.debug.print("text \"{f}\" mode {s} width {d}\n", .{ std.zig.fmtString(text[0..len]), @tagName(mode), width });
+                try std.testing.expectEqual(view.getVirtualLineCount(), measured.line_count);
+                try std.testing.expectEqual(width_cols_max, measured.width_cols_max);
+            }
+        }
+    }
 }
 
 test "TextBufferView measureForDimensions - word summary OOM returns computed result" {
@@ -3287,24 +3216,6 @@ test "TextBufferView measureForDimensions - fragmented word wrap matches render 
 
     try std.testing.expectEqual(@as(u32, @intCast(vlines.len)), measured.line_count);
     try std.testing.expectEqual(rendered_width_max, measured.width_cols_max);
-}
-
-test "TextBufferView measureForDimensions - empty buffer" {
-    var pools = TestPools.init(std.testing.allocator);
-    defer pools.deinit();
-
-    var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth);
-    defer tb.deinit();
-
-    var view = try TextBufferView.init(std.testing.allocator, tb);
-    defer view.deinit();
-
-    try tb.setText("");
-    view.setWrapMode(.char);
-
-    const result = try view.measureForDimensions(10, 10);
-    try std.testing.expectEqual(@as(u32, 1), result.line_count);
-    try std.testing.expectEqual(@as(u32, 0), result.width_cols_max);
 }
 
 test "TextBufferView truncation - basic truncate single line" {
@@ -3775,25 +3686,6 @@ test "TextBufferView wcwidth truncation does not start suffix inside grapheme" {
     const window = bytes[suffix.byte_start_in_chunk .. suffix.byte_start_in_chunk + suffix.byte_len];
     try std.testing.expect(std.unicode.utf8ValidateSlice(window));
     try std.testing.expectEqualStrings("Z", window);
-}
-
-test "TextBufferView measureForDimensions - multiple lines with different widths" {
-    var pools = TestPools.init(std.testing.allocator);
-    defer pools.deinit();
-
-    var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth);
-    defer tb.deinit();
-
-    var view = try TextBufferView.init(std.testing.allocator, tb);
-    defer view.deinit();
-
-    try tb.setText("Short\nAVeryLongLineHere\nMedium");
-    view.setWrapMode(.char);
-
-    const result = try view.measureForDimensions(10, 10);
-    // "Short" (1 line), "AVeryLongLineHere" (2 lines), "Medium" (1 line) = 4 lines
-    try std.testing.expectEqual(@as(u32, 4), result.line_count);
-    try std.testing.expectEqual(@as(u32, 10), result.width_cols_max);
 }
 
 test "TextBufferView highlights - multiple highlights on wrapped line" {
