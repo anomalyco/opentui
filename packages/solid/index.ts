@@ -1,4 +1,4 @@
-import { CliRenderer, createCliRenderer, type CliRendererConfig } from "@opentui/core"
+import { CliRenderer, createCliRenderer, getTimelineEngine, type CliRendererConfig } from "@opentui/core"
 import { createTestRenderer, type TestRendererOptions } from "@opentui/core/testing"
 import type { JSX } from "./jsx-runtime.js"
 import { RendererContext } from "./src/elements/index.js"
@@ -7,6 +7,7 @@ import { _render as renderInternal, createComponent } from "./src/reconciler.js"
 type DisposeFn = () => void
 
 const mountSolidRoot = (renderer: CliRenderer, node: () => JSX.Element) => {
+  if (!renderer.isDestroyed) getTimelineEngine(renderer)
   let dispose: DisposeFn | undefined
   let disposeRequested = false
   let disposed = false
