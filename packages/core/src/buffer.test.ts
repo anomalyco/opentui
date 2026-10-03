@@ -40,18 +40,7 @@ describe("OptimizedBuffer", () => {
     expect([copy.width, copy.height, copy.char.length]).toEqual([20, 5, 100])
   })
 
-  it("draws text given as a non-string and enforces the text byte limit", () => {
-    const fg = RGBA.fromInts(255, 255, 255)
-    buffer.drawText(123 as never, 0, 0, fg)
-    buffer.drawText(["a", "b"] as never, 0, 1, fg)
-    expect(
-      buffer.withBuffers(({ char }) => String.fromCodePoint(...char.subarray(0, 3), ...char.subarray(20, 23))),
-    ).toBe("123a,b")
-    expect(() => buffer.drawText("a".repeat(65_537), 0, 0, fg)).toThrow("Buffer text exceeds the native byte limit")
-    buffer.drawText("a".repeat(65_536), 0, 0, fg)
-  })
-
-  it("converts both box titles before a title's toString can draw", () => {
+  it("converts both box titles before a title's toString can draw and skips title controls", () => {
     const other = OptimizedBuffer.create(12, 1, "unicode", { owner: resourceContext })
     const white = RGBA.fromInts(255, 255, 255)
     try {
@@ -68,7 +57,7 @@ describe("OptimizedBuffer", () => {
         height: 3,
         border: true,
         borderColor: white,
-        title: "TOP",
+        title: "T\nO\x1bP",
         bottomTitle,
       } as never)
       const rows = buffer.withBuffers(({ char }) =>
@@ -588,13 +577,19 @@ describe("OptimizedBuffer", () => {
         .split("\n")
         .map((row) => row.trimEnd())
 
-    it("draws non-string text as TextEncoder converts it", () => {
+    it("draws non-string text as TextEncoder converts it, skips controls, and enforces the byte limit", () => {
       buffer.clear(black)
       buffer.drawText(123 as never, 0, 0, white)
       buffer.drawText(["a", "b"] as never, 0, 1, white)
       buffer.drawText(undefined as never, 0, 2, white)
       buffer.drawText(null as never, 0, 3, white)
-      expect(rows(buffer).slice(0, 4)).toEqual(["123", "a,b", "", "null"])
+      // Controls take no cells. A tab and a grapheme too long for a cell draw as spaces of their width.
+      buffer.drawText("a\r\nb\x1b\x7f\u0085c\td" + "e" + "\u0301".repeat(64) + "f", 0, 4, white)
+      expect(rows(buffer).slice(0, 5)).toEqual(["123", "a,b", "", "null", "abc  d f"])
+      expect(() => buffer.drawText("a".repeat(65_537), 0, 0, white)).toThrow(
+        "Buffer text exceeds the native byte limit",
+      )
+      buffer.drawText("a".repeat(65_536), 0, 0, white)
     })
 
     it("draws only the latest text after longer and multi-byte text", () => {
