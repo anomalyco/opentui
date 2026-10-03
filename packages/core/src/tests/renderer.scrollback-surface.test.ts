@@ -10,11 +10,12 @@ import { ImageRenderable } from "../renderables/Image.js"
 import { MarkdownRenderable } from "../renderables/Markdown.js"
 import { TextRenderable } from "../renderables/Text.js"
 import { SyntaxStyle } from "../syntax-style.js"
-import { createTestRenderer, MockTreeSitterClient, type TestRenderer } from "../testing.js"
+import { createTestRenderer, MockTreeSitterClient, setRendererCapabilities, type TestRenderer } from "../testing.js"
 import type { RenderContext } from "../types.js"
+import { getLinkId } from "../utils.js"
 
 type ClaimedCommit = {
-  snapshot: Pick<OptimizedBuffer, "height" | "withBuffers" | "getRealCharBytes" | "destroy">
+  snapshot: Pick<OptimizedBuffer, "width" | "height" | "widthMethod" | "withBuffers" | "getRealCharBytes" | "destroy">
   rowColumns: number
   startOnNewLine: boolean
   trailingNewline: boolean
@@ -305,6 +306,64 @@ test("ScrollbackSurface works with MarkdownRenderable top-level blocks", async (
   }
 })
 
+test("ScrollbackSurface forwards hyperlink capability changes to existing Markdown tables", async () => {
+  const { renderer } = await createSplitFooterRenderer()
+  setRendererCapabilities(renderer, { hyperlinks: false })
+  const capabilityListenerCount = renderer.listenerCount("capabilities")
+  const surface = renderer.createScrollbackSurface({ startOnNewLine: true })
+  const mockTreeSitterClient = createMockTreeSitterClient({ autoResolveTimeout: 0 })
+  mockTreeSitterClient.setMockResult({ highlights: [] })
+  const url = "https://example.com/table"
+  const markdown = new MarkdownRenderable(surface.renderContext, {
+    id: "surface-markdown-capability-transition",
+    content: `| Link |\n|---|\n| [OpenTUI](${url}) |`,
+    syntaxStyle,
+    tableOptions: { widthMode: "content" },
+    treeSitterClient: mockTreeSitterClient,
+  })
+
+  surface.root.add(markdown)
+  await surface.settle()
+  const table = markdown._blockStates[0]!.renderable
+  surface.commitRows(0, surface.height)
+
+  for (const hyperlinks of [true, false]) {
+    const capabilities = setRendererCapabilities(renderer, { hyperlinks })
+    renderer.emit("capabilities", capabilities)
+    expect(surface.renderContext.capabilities).toBe(capabilities)
+    await surface.settle()
+    expect(markdown._blockStates[0]!.renderable).toBe(table)
+    surface.commitRows(0, surface.height)
+  }
+
+  const commits = claimCommits(renderer)
+
+  try {
+    expect(commits).toHaveLength(3)
+    const frames = commits.map((commit) => decoder.decode(commit.snapshot.getRealCharBytes(true)))
+    expect(frames[0]).toContain(`OpenTUI (${url})`)
+    expect(frames[1]).toContain("\u2502OpenTUI\u2502")
+    expect(frames[1]).not.toContain(url)
+    expect(frames[2]).toContain(`OpenTUI (${url})`)
+
+    const driver = renderer.nativeScene.driver
+    for (const [index, commit] of commits.entries()) {
+      const lines = frames[index]!.split("\n")
+      const y = lines.findIndex((line) => line.includes("OpenTUI"))
+      expect(y).toBeGreaterThanOrEqual(0)
+      const x = lines[y]!.indexOf("OpenTUI")
+
+      const attributes = commit.snapshot.withBuffers((cells) => cells.attributes[y * cells.width + x]!)
+      expect(driver.renderLib.contextGetLinkUrl(driver.context, getLinkId(attributes))).toBe(url)
+    }
+  } finally {
+    destroyClaimedCommits(commits)
+  }
+
+  surface.destroy()
+  expect(renderer.listenerCount("capabilities")).toBe(capabilityListenerCount)
+})
+
 test("ScrollbackSurface commitRows respects top-level block margins from custom renderNode blocks", async () => {
   const { renderer } = await createSplitFooterRenderer()
   const surface = renderer.createScrollbackSurface({ startOnNewLine: true })
@@ -519,37 +578,35 @@ test("ScrollbackSurface preserves inline first-line offset when the first markdo
   expect(replacementRenderable.height).toBe(2)
 })
 
-test("ScrollbackSurface.commitRows rejects stale geometry after resize", async () => {
-  const { renderer, resize } = await createSplitFooterRenderer({
-    width: 40,
-    height: 10,
-    footerHeight: 4,
-  })
-
-  const surface = renderer.createScrollbackSurface()
-  const text = new TextRenderable(surface.renderContext, {
-    id: "surface-resize",
-    content: "resize me",
-    width: "100%",
-  })
-
-  surface.root.add(text)
+test.each([
+  ["a resize", ({ resize }: Awaited<ReturnType<typeof createSplitFooterRenderer>>) => resize(60, 16)],
+  [
+    "a width method change",
+    ({ renderer }: Awaited<ReturnType<typeof createSplitFooterRenderer>>) =>
+      setRendererCapabilities(renderer, { unicode: "wcwidth" }),
+  ],
+] as const)("ScrollbackSurface.commitRows rejects rows rendered before %s", async (_name, change) => {
+  const setup = await createSplitFooterRenderer({ width: 40, height: 10, footerHeight: 4 })
+  const surface = setup.renderer.createScrollbackSurface()
+  surface.root.add(new TextRenderable(surface.renderContext, { content: "resize me", width: "100%" }))
   surface.render()
 
-  resize(60, 16)
+  change(setup)
 
-  expect(() => {
-    surface.commitRows(0, surface.height)
-  }).toThrow("ScrollbackSurface.commitRows requires render() after renderer geometry changes")
-
+  expect(() => surface.commitRows(0, surface.height)).toThrow(
+    "ScrollbackSurface.commitRows requires render() after renderer geometry changes",
+  )
   surface.render()
+  surface.commitRows(0, surface.height)
 
-  expect(() => {
-    surface.commitRows(0, surface.height)
-  }).not.toThrow()
-
-  const commits = claimCommits(renderer)
-  destroyClaimedCommits(commits)
+  const commits = claimCommits(setup.renderer)
+  try {
+    expect(commits.map(({ snapshot }) => [snapshot.width, snapshot.widthMethod])).toEqual([
+      [setup.renderer.width, setup.renderer.widthMethod],
+    ])
+  } finally {
+    destroyClaimedCommits(commits)
+  }
 })
 
 test("CliRenderer writeToScrollback lays out tall snapshots against the resolved snapshot height", async () => {

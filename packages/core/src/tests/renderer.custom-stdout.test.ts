@@ -426,7 +426,60 @@ test("split-footer Kitty scrollback does not rasterize images to terminal pixel 
   expect(output).toContain("after-image")
 })
 
-test("split-footer queues native image scrollback until the footer is pinned", async () => {
+test.each([
+  { name: "Kitty", response: "\x1b_Gi=31337;OK\x1b\\", placement: "\x1b_Ga=p" },
+  { name: "Sixel", response: "\x1b[?1;4c", placement: "\x1bP0;1;0q" },
+])("split-footer preserves $name images after resize replay resets", async ({ response, placement }) => {
+  const stdin = createTestStdin()
+  const stdout = createCollectingStdout(80, 24)
+  const renderer = await createCliRenderer({
+    stdin,
+    stdout,
+    screenMode: "split-footer",
+    footerHeight: 3,
+    externalOutputMode: "capture-stdout",
+    consoleMode: "disabled",
+  })
+  destroyFns.push(() => renderer.destroy())
+  stdin.emit("data", Buffer.from(response + "\x1b[4;480;800t\x1b[21;1R"))
+  await renderer.idle()
+
+  for (const size of [undefined, { width: 90, height: 28 }, { width: 20, height: 8 }]) {
+    if (size) {
+      renderer.resize(size.width, size.height)
+      stdin.emit("data", Buffer.from(`\x1b[4;${size.height * 20};${size.width * 10}t`))
+      renderer.resetSplitFooterForReplay({ clearSavedLines: true })
+      await renderer.idle()
+    }
+    await flushWritable(stdout)
+    stdout.clearWrites()
+
+    const surface = renderer.createScrollbackSurface({ startOnNewLine: true })
+    try {
+      const image = new ImageRenderable(surface.renderContext, {
+        source: PNG_1X1,
+        width: 2,
+        height: 5,
+        fit: "fill",
+      })
+      surface.root.add(image)
+      await image.loadPromise
+      surface.render()
+      surface.commitRows(0, surface.height, { trailingNewline: true })
+    } finally {
+      surface.destroy()
+    }
+    await renderer.idle()
+    await flushWritable(stdout)
+
+    const output = stdout.getWrittenBytes().toString("utf8")
+    expect(output).toContain(placement)
+    expect(output).toContain("\x1b[4A\r")
+    expect(output).not.toContain("\u2588")
+  }
+})
+
+test("split-footer queues native image scrollback until the startup cursor reply", async () => {
   const stdin = createTestStdin()
   const stdout = createCollectingStdout(8, 6)
   const renderer = await createCliRenderer({

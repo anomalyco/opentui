@@ -1,11 +1,19 @@
 import { afterEach, describe, expect, it } from "bun:test"
-import { TextAttributes, TextRenderable, getLinkId, parseColor, type OptimizedBuffer } from "@opentui/core"
+import { Renderable, TextAttributes, TextRenderable, getLinkId, parseColor, type OptimizedBuffer } from "@opentui/core"
 import { createTestRenderer } from "@opentui/core/testing"
 import { onCleanup } from "solid-js"
 import { createScrollbackWriter, useRenderer, useTerminalDimensions, writeSolidToScrollback } from "../index.js"
 
 let testSetup: Awaited<ReturnType<typeof createTestRenderer>> | null = null
 const decoder = new TextDecoder()
+const splitFooter = {
+  width: 40,
+  height: 10,
+  screenMode: "split-footer",
+  footerHeight: 4,
+  externalOutputMode: "capture-stdout",
+  consoleMode: "disabled",
+} as const
 
 type QueuedSnapshotCommit = {
   snapshot: OptimizedBuffer
@@ -214,6 +222,79 @@ describe("createScrollbackWriter", () => {
       expect(commit.rowColumns).toBe(7)
       expect(commit.startOnNewLine).toBe(false)
       expect(commit.trailingNewline).toBe(false)
+    } finally {
+      commit.snapshot.destroy()
+    }
+  })
+
+  it.each([
+    ["width", { width: Number.NaN }],
+    ["height", { height: Number.POSITIVE_INFINITY }],
+  ] as const)("rejects a non-finite %s before rendering", async (axis, options) => {
+    testSetup = await createTestRenderer(splitFooter)
+    let rendered = false
+    expect(() =>
+      writeSolidToScrollback(
+        testSetup!.renderer,
+        () => {
+          rendered = true
+          return <text>never</text>
+        },
+        options,
+      ),
+    ).toThrow(`createScrollbackWriter requires a finite ${axis}`)
+    expect(rendered).toBe(false)
+    expect(claimCommits(testSetup.renderer)).toEqual([])
+  })
+
+  it("releases every renderable when the node throws", async () => {
+    testSetup = await createTestRenderer(splitFooter)
+    const registered = new Set(Renderable.renderablesByNumber.keys())
+    let cleanups = 0
+    expect(() =>
+      writeSolidToScrollback(testSetup!.renderer, () => {
+        onCleanup(() => cleanups++)
+        return (
+          <box>
+            <text>partial</text>
+            {(() => {
+              throw new Error("node failed")
+            })()}
+          </box>
+        )
+      }),
+    ).toThrow("node failed")
+    expect(cleanups).toBe(1)
+    expect(new Set(Renderable.renderablesByNumber.keys())).toEqual(registered)
+    expect(claimCommits(testSetup.renderer)).toEqual([])
+    writeSolidToScrollback(testSetup.renderer, () => <text>next</text>, { width: 4 })
+    const commit = claimSingleCommit(testSetup.renderer)
+    try {
+      expect(decoder.decode(commit.snapshot.getRealCharBytes(true)).trim()).toBe("next")
+    } finally {
+      commit.snapshot.destroy()
+    }
+  })
+
+  it.each([
+    ["an explicit height", { height: 3 }, 3],
+    // Each measurement adds a line, so auto-height gives up after its pass limit and keeps every line.
+    ["auto-height that never settles", {}, 9],
+  ] as const)("sizes the snapshot by %s", async (_name, options, height) => {
+    testSetup = await createTestRenderer(splitFooter)
+    writeSolidToScrollback(
+      testSetup.renderer,
+      () => {
+        const renderer = useRenderer()
+        return <text>{Array.from({ length: renderer.height + 1 }, (_, line) => `line ${line}`).join("\n")}</text>
+      },
+      { width: 10, ...options },
+    )
+    const commit = claimSingleCommit(testSetup.renderer)
+    try {
+      expect(commit.snapshot.height).toBe(height)
+      const rows = decoder.decode(commit.snapshot.getRealCharBytes(true)).trimEnd().split("\n")
+      expect(rows.at(-1)).toBe(`line ${height - 1}`)
     } finally {
       commit.snapshot.destroy()
     }

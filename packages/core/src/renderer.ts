@@ -52,6 +52,7 @@ import {
   type GetPaletteOptions,
 } from "./lib/terminal-palette.js"
 import { calculateRenderGeometry } from "./lib/render-geometry.js"
+import { stringWidth } from "./platform/runtime.js"
 import {
   isCapabilityResponse,
   isPixelResolutionResponse,
@@ -397,6 +398,12 @@ type ExternalOutputCommit = {
   nativeSnapshot?: ContextBufferHandle
 }
 
+// One captured stdout row of `cells` terminal cells.
+type StdoutRow = { line: string; cells: number; trailingNewline: boolean }
+
+const STDOUT_TAB_WIDTH = 8
+const graphemeSegmenter = new Intl.Segmenter(undefined, { granularity: "grapheme" })
+
 type PendingSplitFooterTransition = {
   mode: "viewport-scroll" | "clear-stale-rows"
   sourceTopLine: number
@@ -406,14 +413,43 @@ type PendingSplitFooterTransition = {
   scrollLines?: number
 }
 
-class ExternalOutputQueue {
-  private commits: Array<ExternalOutputCommit & { cells: number }> = []
-  private cells = 0
+/**
+ * Columns of each snapshot row up to `rowColumns`, without trailing empty cells. The continuation cells of a trailing
+ * wide grapheme stay: they occupy terminal columns.
+ */
+function snapshotRowWidths(snapshot: OptimizedBuffer, rowColumns: number): number[] {
+  return snapshot.withBuffers(({ width, height, char }) => {
+    const widths: number[] = []
+    for (let y = 0; y < height; y += 1) {
+      let x = rowColumns
+      while (x > 0 && char[y * width + x - 1] === 0) x -= 1
+      widths.push(x)
+    }
+    return widths
+  })
+}
 
-  constructor(
-    private readonly maxCells: number,
-    private readonly maxCommits: number,
-  ) {}
+type QueuedCommit = ExternalOutputCommit & { cells: number; rowWidths: readonly number[] }
+
+/** Runs every cleanup, then rethrows the first failure. */
+function runCleanups(cleanups: readonly (() => void)[]): void {
+  let failure: { error: unknown } | undefined
+  for (const cleanup of cleanups) {
+    try {
+      cleanup()
+    } catch (error) {
+      failure ??= { error }
+    }
+  }
+  if (failure) throw failure.error
+}
+
+// Unbounded, as on main. One native split render admits at most the Session output capacity at 24 bytes per snapshot
+// cell, so each batch takes head commits up to that many cells, and a larger single commit is refused.
+class ExternalOutputQueue {
+  private commits: QueuedCommit[] = []
+
+  constructor(private readonly maxCells: number) {}
 
   owns(snapshot: OptimizedBuffer): boolean {
     return this.commits.some((commit) => commit.snapshot === snapshot)
@@ -424,41 +460,56 @@ class ExternalOutputQueue {
   }
 
   writeSnapshots(commits: readonly ExternalOutputCommit[]): void {
-    const entries = commits.map((commit) => ({ ...commit, cells: commit.snapshot.width * commit.snapshot.height }))
-    const cells = entries.reduce((total, commit) => total + commit.cells, 0)
-    if (commits.length > this.maxCommits - this.commits.length || cells > this.maxCells - this.cells) {
-      throw new Error("Scrollback snapshot queue capacity exceeded")
+    // Every frame renders the queue head, so one invalid entry would fail every later frame and the close flush.
+    for (const { rowColumns, snapshot } of commits) {
+      if (!Number.isInteger(rowColumns) || rowColumns < 0 || rowColumns > snapshot.width) {
+        throw new RangeError("Scrollback commit rowColumns must be an integer from 0 to the snapshot width")
+      }
+      if (snapshot.width * snapshot.height > this.maxCells) {
+        throw new Error("Scrollback snapshot exceeds the Session output capacity")
+      }
     }
+    // Queued snapshots never change, so tail-column predictions read each one once, here.
+    const entries = commits.map((commit) => ({
+      ...commit,
+      cells: commit.snapshot.width * commit.snapshot.height,
+      rowWidths: snapshotRowWidths(commit.snapshot, commit.rowColumns),
+    }))
     for (const entry of entries) this.commits.push(entry)
-    this.cells += cells
   }
 
-  peek(limit: number = Number.POSITIVE_INFINITY): readonly ExternalOutputCommit[] {
-    const clampedLimit = Number.isFinite(limit) ? Math.max(1, Math.trunc(limit)) : this.commits.length
-    return this.commits.slice(0, clampedLimit)
+  /** The head commits, at most `limit`, that fit one native split render. Never empty unless the queue is. */
+  batch(limit: number): readonly QueuedCommit[] {
+    // An empty batch would never drain the queue.
+    if (!(limit >= 1)) throw new RangeError("ExternalOutputQueue.batch requires a limit of at least 1")
+    let count = 0
+    let cells = 0
+    while (count < Math.min(limit, this.commits.length)) {
+      cells += this.commits[count]!.cells
+      if (cells > this.maxCells) break
+      count += 1
+    }
+    return this.commits.slice(0, count)
+  }
+
+  peek(limit: number = Number.POSITIVE_INFINITY): readonly QueuedCommit[] {
+    return this.commits.slice(0, limit)
   }
 
   claim(): ExternalOutputCommit[] {
     const output = this.commits
     this.commits = []
-    this.cells = 0
     return output
   }
 
   drop(count: number): void {
-    for (const commit of this.commits.splice(0, count)) {
-      this.cells -= commit.cells
-      commit.snapshot.destroy()
-    }
+    for (const commit of this.commits.splice(0, count)) commit.snapshot.destroy()
   }
 
   clear(): void {
     this.drop(this.commits.length)
   }
 }
-
-const CHAR_FLAG_CONTINUATION = 0xc0000000 >>> 0
-const CHAR_FLAG_MASK = 0xc0000000 >>> 0
 
 class ScrollbackSnapshotRenderContext extends EventEmitter implements RenderContext {
   public width: number
@@ -551,16 +602,12 @@ class ScrollbackSnapshotRenderContext extends EventEmitter implements RenderCont
   public destroy(): void {
     if (this.isDestroyed) return
     this.isDestroyed = true
-    let failure: { error: unknown } | undefined
-    for (const emitter of [this, this.keyInput, this._internalKeyInput]) {
-      try {
-        emitter.removeAllListeners()
-      } catch (error) {
-        failure ??= { error }
-      }
-    }
-    this.disposeSession()
-    if (failure) throw failure.error
+    runCleanups([
+      () => this.removeAllListeners(),
+      () => this.keyInput.removeAllListeners(),
+      () => this._internalKeyInput.removeAllListeners(),
+      () => this.disposeSession(),
+    ])
   }
 
   private disposeSession(): void {
@@ -1220,7 +1267,7 @@ export class CliRenderer extends EventEmitter implements RenderContext {
         },
       )
       this.nativeSession = driver
-      this.externalOutputQueue = new ExternalOutputQueue(Number(driver.maxWriteBytes / 24n), driver.maxSnapshotCount)
+      this.externalOutputQueue = new ExternalOutputQueue(Number(driver.maxWriteBytes / 24n))
       this.nativeDestroyWait = Promise.withResolvers<void>()
       this.nativeClosed = this.nativeSession.closed
         .finally(() => this.nativeDestroyWait!.promise)
@@ -1817,8 +1864,9 @@ export class CliRenderer extends EventEmitter implements RenderContext {
     }
 
     if (this._isDestroyed) {
+      // A destroyed renderer cannot paint captured rows, so it never captures stdout again.
       this.pendingExternalOutputMode = null
-      this.applyExternalOutputMode(mode)
+      if (mode === "passthrough") this.applyExternalOutputMode(mode)
       return
     }
     if (this.rendering || this.pendingNativeMode || this.externalOutputQueue.size > 0) {
@@ -2059,25 +2107,33 @@ export class CliRenderer extends EventEmitter implements RenderContext {
         owner: renderer.nativeScene,
       })
     } catch (error) {
-      try {
-        internalRoot?.destroyRecursively()
-      } finally {
-        snapshotContext.destroy()
-      }
+      runCleanups([() => internalRoot?.destroyRecursively(), () => snapshotContext.destroy()])
       throw error
     }
 
+    // Renderer geometry that a render depends on; rows rendered at another geometry cannot be committed.
+    const readGeometry = (): string =>
+      [
+        renderer.width,
+        renderer.widthMethod,
+        renderer._terminalWidth,
+        renderer._terminalHeight,
+        renderer.resolution?.width,
+        renderer.resolution?.height,
+      ].join()
+    let renderedGeometry = readGeometry()
     let surfaceWidth = renderer.width
     let surfaceHeight = 1
-    let surfaceWidthMethod = renderer.widthMethod
-    let surfaceTerminalWidth = renderer._terminalWidth
-    let surfaceTerminalHeight = renderer._terminalHeight
-    let surfaceResolutionWidth = renderer.resolution?.width ?? null
-    let surfaceResolutionHeight = renderer.resolution?.height ?? null
     let surfaceDestroyed = false
     let hasRendered = false
     let nextCommitStartOnNewLine = startOnNewLine
     const pendingWaits = new Set<() => void>()
+
+    // Late capability replies (for example hyperlink support) must reach content that is already mounted.
+    const capabilitiesListener = (capabilities: TerminalCapabilities): void => {
+      snapshotContext.capabilities = capabilities
+      renderContext.emit(CliRenderEvents.CAPABILITIES, capabilities)
+    }
 
     const assertNotDestroyed = (): void => {
       if (surfaceDestroyed) {
@@ -2092,14 +2148,7 @@ export class CliRenderer extends EventEmitter implements RenderContext {
     }
 
     const assertGeometryStillCurrent = (): void => {
-      if (
-        renderer.width !== surfaceWidth ||
-        renderer.widthMethod !== surfaceWidthMethod ||
-        renderer._terminalWidth !== surfaceTerminalWidth ||
-        renderer._terminalHeight !== surfaceTerminalHeight ||
-        (renderer.resolution?.width ?? null) !== surfaceResolutionWidth ||
-        (renderer.resolution?.height ?? null) !== surfaceResolutionHeight
-      ) {
+      if (readGeometry() !== renderedGeometry) {
         throw new Error("ScrollbackSurface.commitRows requires render() after renderer geometry changes")
       }
     }
@@ -2165,6 +2214,7 @@ export class CliRenderer extends EventEmitter implements RenderContext {
       assertNotDestroyed()
       hasRendered = false
 
+      const geometry = readGeometry()
       const width = renderer.width
       const widthMethod = renderer.widthMethod
 
@@ -2176,56 +2226,34 @@ export class CliRenderer extends EventEmitter implements RenderContext {
       snapshotContext.capabilities = renderer.capabilities
       publicRoot.width = width
 
-      const renderPass = (height: number): void => {
-        snapshotContext.height = height
-        internalRoot!.resize(width, height)
-        backingBuffer.resize(width, height)
-        backingBuffer.clear(TRANSPARENT_RGBA)
-        snapshotContext.frameId += 1
-        snapshotContext.renderSnapshot(internalRoot!, backingBuffer)
-      }
-
       let targetHeight = Math.max(1, surfaceHeight)
 
-      if (surfaceWidthMethod !== widthMethod) {
+      if (backingBuffer.widthMethod !== widthMethod) {
         const replacement = OptimizedBuffer.create(width, targetHeight, widthMethod, {
           id: `scrollback-surface-buffer-${surfaceId}`,
           owner: renderer.nativeScene,
         })
         backingBuffer.destroy()
         backingBuffer = replacement
-      } else {
-        backingBuffer.resize(width, targetHeight)
       }
 
-      for (let pass = 0; pass < MAX_SCROLLBACK_SURFACE_HEIGHT_PASSES; pass += 1) {
-        renderPass(targetHeight)
+      // Render until the content height settles; after the pass limit, keep the last measured height.
+      for (let pass = 0; ; pass += 1) {
+        snapshotContext.height = targetHeight
+        internalRoot!.resize(width, targetHeight)
+        backingBuffer.resize(width, targetHeight)
+        backingBuffer.clear(TRANSPARENT_RGBA)
+        snapshotContext.frameId += 1
+        snapshotContext.renderSnapshot(internalRoot!, backingBuffer)
 
         const measuredHeight = Math.max(1, publicRoot.height)
-        if (measuredHeight === targetHeight) {
-          surfaceWidth = width
-          surfaceHeight = measuredHeight
-          surfaceWidthMethod = widthMethod
-          surfaceTerminalWidth = renderer._terminalWidth
-          surfaceTerminalHeight = renderer._terminalHeight
-          surfaceResolutionWidth = renderer.resolution?.width ?? null
-          surfaceResolutionHeight = renderer.resolution?.height ?? null
-          hasRendered = true
-          return
-        }
-
+        if (pass === MAX_SCROLLBACK_SURFACE_HEIGHT_PASSES || measuredHeight === targetHeight) break
         targetHeight = measuredHeight
       }
 
-      renderPass(targetHeight)
-
+      renderedGeometry = geometry
       surfaceWidth = width
       surfaceHeight = targetHeight
-      surfaceWidthMethod = widthMethod
-      surfaceTerminalWidth = renderer._terminalWidth
-      surfaceTerminalHeight = renderer._terminalHeight
-      surfaceResolutionWidth = renderer.resolution?.width ?? null
-      surfaceResolutionHeight = renderer.resolution?.height ?? null
       hasRendered = true
     }
 
@@ -2271,7 +2299,7 @@ export class CliRenderer extends EventEmitter implements RenderContext {
       }
 
       const rowCount = endRowExclusive - startRow
-      const commitBuffer = OptimizedBuffer.create(surfaceWidth, rowCount, surfaceWidthMethod, {
+      const commitBuffer = OptimizedBuffer.create(surfaceWidth, rowCount, backingBuffer.widthMethod, {
         id: `scrollback-surface-commit-${surfaceId}`,
         owner: renderer.nativeScene,
       })
@@ -2300,25 +2328,19 @@ export class CliRenderer extends EventEmitter implements RenderContext {
 
       surfaceDestroyed = true
       renderer.detachedSurfaces.delete(destroySurface)
+      renderer.off(CliRenderEvents.CAPABILITIES, capabilitiesListener)
       for (const cancel of pendingWaits) cancel()
 
-      let failure: { error: unknown } | undefined
-      for (const cleanup of [
+      runCleanups([
         () => internalRoot!.destroyRecursively(),
         () => backingBuffer.destroy(),
         () => renderContext.removeAllListeners(),
         () => snapshotContext.destroy(),
-      ]) {
-        try {
-          cleanup()
-        } catch (error) {
-          failure ??= { error }
-        }
-      }
-      if (failure) throw failure.error
+      ])
     }
 
     renderer.detachedSurfaces.add(destroySurface)
+    renderer.on(CliRenderEvents.CAPABILITIES, capabilitiesListener)
 
     return {
       get renderContext(): RenderContext {
@@ -2399,8 +2421,8 @@ export class CliRenderer extends EventEmitter implements RenderContext {
       })
       if (!snapshot || !snapshot.root) throw new Error("writeToScrollback must return a snapshot root renderable")
       const rootRenderable = snapshot.root
-      const snapshotWidth = this.getSnapshotWidth(snapshot.width, rootRenderable.width)
-      const snapshotHeight = this.getSnapshotHeight(snapshot.height, rootRenderable.height)
+      const snapshotWidth = this.getSnapshotDimension("width", snapshot.width, rootRenderable.width, this.width)
+      const snapshotHeight = this.getSnapshotDimension("height", snapshot.height, rootRenderable.height, Infinity)
 
       snapshotContext.width = snapshotWidth
       snapshotContext.height = snapshotHeight
@@ -2427,30 +2449,15 @@ export class CliRenderer extends EventEmitter implements RenderContext {
       if (snapshotBuffer && !this.externalOutputQueue.owns(snapshotBuffer)) snapshotBuffer.destroy()
       throw error
     } finally {
-      let cleanupError: unknown | null = null
-
       try {
-        snapshotRoot?.destroyRecursively()
+        runCleanups([
+          () => snapshotRoot?.destroyRecursively(),
+          () => snapshot?.teardown?.(),
+          () => snapshotContext.destroy(),
+        ])
       } catch (error) {
-        cleanupError = error
-      }
-
-      try {
-        snapshot?.teardown?.()
-      } catch (error) {
-        if (cleanupError === null) {
-          cleanupError = error
-        }
-      }
-
-      try {
-        snapshotContext.destroy()
-      } catch (error) {
-        cleanupError ??= error
-      }
-
-      if (!renderFailed && cleanupError) {
-        throw cleanupError
+        // A render failure is already propagating; it explains more than a cleanup failure.
+        if (!renderFailed) throw error
       }
     }
   }
@@ -2493,49 +2500,19 @@ export class CliRenderer extends EventEmitter implements RenderContext {
     this.requestRender()
   }
 
-  private getSnapshotWidth(value: number | undefined, fallback: number): number {
+  private getSnapshotDimension(
+    axis: "width" | "height",
+    value: number | undefined,
+    fallback: number,
+    max: number,
+  ): number {
     const rawValue = value ?? fallback
 
     if (!Number.isFinite(rawValue)) {
-      throw new Error("writeToScrollback produced a non-finite width")
+      throw new Error(`writeToScrollback produced a non-finite ${axis}`)
     }
 
-    return Math.min(Math.max(Math.trunc(rawValue), 1), Math.max(this.width, 1))
-  }
-
-  private getSnapshotHeight(value: number | undefined, fallback: number): number {
-    const rawValue = value ?? fallback
-
-    if (!Number.isFinite(rawValue)) {
-      throw new Error("writeToScrollback produced a non-finite height")
-    }
-
-    return Math.max(Math.trunc(rawValue), 1)
-  }
-
-  private getSnapshotRowWidths(snapshot: OptimizedBuffer, rowColumns: number): number[] {
-    return snapshot.withBuffers(({ width, height, char }) => {
-      const widths: number[] = []
-      const limit = Math.min(Math.max(Math.trunc(rowColumns), 0), width)
-
-      for (let y = 0; y < height; y += 1) {
-        let x = limit
-
-        while (x > 0) {
-          const cp = char[y * width + x - 1]
-          if (cp === 0 || (cp & CHAR_FLAG_MASK) === CHAR_FLAG_CONTINUATION) {
-            x -= 1
-            continue
-          }
-
-          break
-        }
-
-        widths.push(x)
-      }
-
-      return widths
-    })
+    return Math.min(Math.max(Math.trunc(rawValue), 1), Math.max(max, 1))
   }
 
   private advanceSplitTailColumn(tailColumn: number, columns: number, width: number): number {
@@ -2563,18 +2540,14 @@ export class CliRenderer extends EventEmitter implements RenderContext {
     return tail
   }
 
-  private getSplitTailColumnAfterCommit(
-    commit: ExternalOutputCommit,
-    initialTailColumn: number,
-    width: number,
-  ): number {
+  private getSplitTailColumnAfterCommit(commit: QueuedCommit, initialTailColumn: number, width: number): number {
     let tailColumn = initialTailColumn
 
     if (commit.startOnNewLine && tailColumn > 0) {
       tailColumn = 0
     }
 
-    const rowWidths = this.getSnapshotRowWidths(commit.snapshot, commit.rowColumns)
+    const rowWidths = commit.rowWidths
     for (const [index, rowWidth] of rowWidths.entries()) {
       tailColumn = this.advanceSplitTailColumn(tailColumn, rowWidth, width)
       if (index < rowWidths.length - 1 || commit.trailingNewline) {
@@ -2585,7 +2558,7 @@ export class CliRenderer extends EventEmitter implements RenderContext {
     return tailColumn
   }
 
-  private recordSplitCommit(commit: ExternalOutputCommit): void {
+  private recordSplitCommit(commit: QueuedCommit): void {
     this.splitTailColumn = this.getSplitTailColumnAfterCommit(commit, this.splitTailColumn, Math.max(this.width, 1))
   }
 
@@ -2619,8 +2592,8 @@ export class CliRenderer extends EventEmitter implements RenderContext {
       {
         snapshot: options.snapshot,
         rowColumns,
-        startOnNewLine: options.startOnNewLine ?? true,
-        trailingNewline: options.trailingNewline ?? true,
+        startOnNewLine: Boolean(options.startOnNewLine ?? true),
+        trailingNewline: Boolean(options.trailingNewline ?? true),
       },
     ])
   }
@@ -2634,9 +2607,73 @@ export class CliRenderer extends EventEmitter implements RenderContext {
     }
   }
 
-  private createStdoutSnapshotCommit(line: string, trailingNewline: boolean): ExternalOutputCommit {
+  private splitStdoutRows(text: string): StdoutRow[] {
+    // Captured stdout arrives as an arbitrary byte stream, but split append commits
+    // are row-based (line text + whether that row ended with '\n'). We normalize
+    // here because native split append expects already-decoded row intent, not raw
+    // control characters.
+    //
+    // '\r' must restart the in-progress row so in-place status updates (progress
+    // bars/spinners) do not accumulate stale prefixes in scrollback. '\n' and '\r\n'
+    // commit the row and mark newline intent for the final chunk of that logical row.
+    //
+    // Chunk rows at the renderer width in display cells, never inside a grapheme, so
+    // each commit maps to one terminal row append and keeps every cell.
+    const width = Math.max(1, this.width)
+    const rows: StdoutRow[] = []
+    // Wrapped chunks of the current logical row start at this index; '\r' drops them.
+    let rowStart = 0
+    let line = ""
+    let cells = 0
+
+    for (const { segment } of graphemeSegmenter.segment(text)) {
+      if (segment === "\r") {
+        rows.length = rowStart
+        line = ""
+        cells = 0
+        continue
+      }
+
+      if (segment === "\n" || segment === "\r\n") {
+        // Newline-only rows still need a commit so native split scrollback advances.
+        rows.push({ line, cells, trailingNewline: true })
+        rowStart = rows.length
+        line = ""
+        cells = 0
+        continue
+      }
+
+      // A tab advances to the next stop, as in a terminal, and never wraps.
+      const tabCells = Math.min(STDOUT_TAB_WIDTH - (cells % STDOUT_TAB_WIDTH), Math.max(0, width - cells))
+      const grapheme = segment === "\t" ? " ".repeat(tabCells) : segment
+      const graphemeCells = stringWidth(grapheme)
+      if (cells > 0 && cells + graphemeCells > width) {
+        // A wide grapheme that does not fit starts a terminal row; pad to the full width so native counts that row.
+        const padding = Math.max(0, width - cells)
+        rows.push({ line: line + " ".repeat(padding), cells: cells + padding, trailingNewline: false })
+        line = ""
+        cells = 0
+      }
+      line += grapheme
+      cells += graphemeCells
+    }
+
+    if (line.length > 0) {
+      rows.push({ line, cells, trailingNewline: false })
+    }
+
+    return rows
+  }
+
+  private createStdoutSnapshotCommits(text: string): ExternalOutputCommit[] {
+    const rows = this.splitStdoutRows(text)
+    if (rows.length === 0) {
+      return []
+    }
+
     // Convert captured stdout into the same commit shape used by writeToScrollback.
     // One commit format keeps split append behavior consistent across both sources.
+    // One detached context paints every row of a write: creating it costs far more than a paint.
     const snapshotContext = new ScrollbackSnapshotRenderContext(
       this.width,
       1,
@@ -2647,13 +2684,8 @@ export class CliRenderer extends EventEmitter implements RenderContext {
       this.capabilities,
       this.nativeSession,
     )
-    const maxWidth = Math.max(1, this.width)
-    const lineCells = [...line]
-    const rowColumns = Math.min(lineCells.length, maxWidth)
-    const renderedLine = lineCells.slice(0, maxWidth).join("")
-    snapshotContext.width = Math.max(1, rowColumns)
+    const commits: ExternalOutputCommit[] = []
     let snapshotRoot: RootRenderable | undefined
-    let snapshotBuffer: OptimizedBuffer | undefined
     try {
       snapshotRoot = new RootRenderable(snapshotContext)
       const snapshotRenderable = new TextRenderable(snapshotContext, {
@@ -2661,113 +2693,28 @@ export class CliRenderer extends EventEmitter implements RenderContext {
         position: "absolute",
         left: 0,
         top: 0,
-        width: Math.max(1, rowColumns),
         height: 1,
-        content: renderedLine,
-      })
-      snapshotBuffer = OptimizedBuffer.create(Math.max(1, rowColumns), 1, this.widthMethod, {
-        id: "captured-stdout-snapshot",
-        owner: this.nativeScene,
       })
       snapshotRoot.add(snapshotRenderable)
-      snapshotContext.renderSnapshot(snapshotRoot, snapshotBuffer)
-      return {
-        snapshot: snapshotBuffer,
-        rowColumns,
-        startOnNewLine: false,
-        trailingNewline,
+      for (const { line, cells, trailingNewline } of rows) {
+        const snapshotWidth = Math.max(1, cells)
+        snapshotContext.width = snapshotWidth
+        snapshotRoot.resize(snapshotWidth, 1)
+        snapshotRenderable.width = snapshotWidth
+        snapshotRenderable.content = line
+        const snapshot = OptimizedBuffer.create(snapshotWidth, 1, this.widthMethod, {
+          id: "captured-stdout-snapshot",
+          owner: this.nativeScene,
+        })
+        commits.push({ snapshot, rowColumns: cells, startOnNewLine: false, trailingNewline })
+        snapshotContext.renderSnapshot(snapshotRoot, snapshot)
       }
-    } catch (error) {
-      snapshotBuffer?.destroy()
-      throw error
-    } finally {
-      try {
-        snapshotRoot?.destroyRecursively()
-      } finally {
-        snapshotContext.destroy()
-      }
-    }
-  }
-
-  private splitStdoutRows(text: string): Array<{ line: string; trailingNewline: boolean }> {
-    // Captured stdout arrives as an arbitrary byte stream, but split append commits
-    // are row-based (line text + whether that row ended with '\n'). We normalize
-    // here because native split append expects already-decoded row intent, not raw
-    // control characters.
-    //
-    // '\r' must restart the in-progress row so in-place status updates (progress
-    // bars/spinners) do not accumulate stale prefixes in scrollback. '\n' commits
-    // the row and marks newline intent for the final chunk of that logical row.
-    const rows: Array<{ line: string; trailingNewline: boolean }> = []
-    let current = ""
-
-    for (const char of text) {
-      if (char === "\r") {
-        current = ""
-        continue
-      }
-
-      if (char === "\n") {
-        rows.push({ line: current, trailingNewline: true })
-        current = ""
-        continue
-      }
-
-      current += char
-    }
-
-    if (current.length > 0) {
-      rows.push({ line: current, trailingNewline: false })
-    }
-
-    return rows
-  }
-
-  private createStdoutSnapshotCommits(text: string): ExternalOutputCommit[] {
-    if (text.length === 0) {
-      return []
-    }
-    if (BigInt(Buffer.byteLength(text)) > this.nativeSession.maxWriteBytes) {
-      throw new Error("Captured stdout exceeds the Session output capacity")
-    }
-
-    // Chunk captured stdout into width-bounded row commits so each commit is a
-    // small, deterministic append step. This keeps bursty output smooth while
-    // preserving newline ownership on the final chunk of each logical row.
-    const commits: ExternalOutputCommit[] = []
-    // Split commits are row-oriented snapshots. We chunk by renderer width so each
-    // commit maps to a single logical terminal row append operation.
-    const chunkWidth = Math.max(1, this.width)
-    const append = (line: string, trailingNewline: boolean): void => {
-      if (commits.length >= this.nativeSession.maxSnapshotCount - this.externalOutputQueue.size) {
-        throw new Error("Scrollback snapshot queue capacity exceeded")
-      }
-      commits.push(this.createStdoutSnapshotCommit(line, trailingNewline))
-    }
-    try {
-      for (const row of this.splitStdoutRows(text)) {
-        const rowCells = [...row.line]
-        if (rowCells.length === 0) {
-          // Preserve empty-line writes: newline-only chunks still need a commit so
-          // split scrollback state advances correctly in native code.
-          append("", row.trailingNewline)
-          continue
-        }
-
-        let offset = 0
-        while (offset < rowCells.length) {
-          const chunk = rowCells.slice(offset, offset + chunkWidth).join("")
-          offset += chunkWidth
-          const isLastChunk = offset >= rowCells.length
-          // Only the final wrapped chunk carries newline intent.
-          append(chunk, isLastChunk ? row.trailingNewline : false)
-        }
-      }
-
       return commits
     } catch (error) {
       for (const commit of commits) commit.snapshot.destroy()
       throw error
+    } finally {
+      runCleanups([() => snapshotRoot?.destroyRecursively(), () => snapshotContext.destroy()])
     }
   }
 
@@ -2788,11 +2735,6 @@ export class CliRenderer extends EventEmitter implements RenderContext {
           if (!this.externalOutputQueue.owns(commit.snapshot)) commit.snapshot.destroy()
         }
         throw error
-      }
-
-      if (commits.length > 0) {
-        // Defer actual terminal writes to the render loop so commits can be batched.
-        this.requestRender()
       }
     }
 
@@ -2890,7 +2832,6 @@ export class CliRenderer extends EventEmitter implements RenderContext {
 
     if (!splitActive) {
       this.clearPendingSplitFooterTransition()
-      this.splitTailColumn = 0
       this.resetSplitScrollback()
       this.setRenderOffset(0)
       return
@@ -2900,7 +2841,6 @@ export class CliRenderer extends EventEmitter implements RenderContext {
       this.syncSplitScrollback()
     } else {
       this.clearPendingSplitFooterTransition()
-      this.splitTailColumn = 0
       this.resetSplitScrollback()
       this.setRenderOffset(this.getSplitPinnedRenderOffset())
     }
@@ -5041,7 +4981,7 @@ export class CliRenderer extends EventEmitter implements RenderContext {
       this._splitHeight > 0 && this._externalOutputMode === "capture-stdout"
         ? this.pendingNativeReplay?.remaining === 0
           ? []
-          : this.externalOutputQueue.peek(
+          : this.externalOutputQueue.batch(
               Math.min(this.maxSplitCommitsPerFrame, this.pendingNativeReplay?.remaining ?? Infinity),
             )
         : null
@@ -5083,7 +5023,7 @@ export class CliRenderer extends EventEmitter implements RenderContext {
     return "rendered"
   }
 
-  private completeNativeSplitCommits(commits: readonly ExternalOutputCommit[]): void {
+  private completeNativeSplitCommits(commits: readonly QueuedCommit[]): void {
     if (!this._isDestroyed) {
       this.syncSplitScrollback()
       for (const commit of commits) this.recordSplitCommit(commit)
@@ -5113,9 +5053,13 @@ export class CliRenderer extends EventEmitter implements RenderContext {
         }
       }
       if (remaining === 0) break
-      const commits = this.externalOutputQueue.peek(
+      const commits = this.externalOutputQueue.batch(
         Math.min(remaining, this.maxSplitCommitsPerFrame, this.pendingNativeReplay?.remaining ?? Infinity),
       )
+      // A null-frame render also reports PENDING for an earlier frame, which would complete unsent commits.
+      if (this.lib.sessionGetRendererState(driver.context, driver.session).framePending) {
+        throw new Error("Native split output flush requires no pending frame presentation")
+      }
       const result = driver.renderSplit(
         null,
         commits.map((commit) => ({ ...commit, snapshot: commit.nativeSnapshot! })),
