@@ -14,6 +14,8 @@ import { TextNodeRenderable } from "../renderables/TextNode.js"
 import { TextRenderable } from "../renderables/Text.js"
 import { ScrollBoxRenderable } from "../renderables/ScrollBox.js"
 import { BoxRenderable } from "../renderables/Box.js"
+import { InputRenderable } from "../renderables/Input.js"
+import { SliderRenderable } from "../renderables/Slider.js"
 import type { OptimizedBuffer } from "../buffer.js"
 import { RGBA } from "../lib/RGBA.js"
 
@@ -970,6 +972,35 @@ describe("Renderable - Focus", () => {
 })
 
 describe("Renderable - Lifecycle", () => {
+  class AbortsConstruction extends Renderable {
+    constructor(ctx: RenderContext, rollback: boolean) {
+      super(ctx, { width: 2, height: 1, buffered: true })
+      const error = new Error("subclass construction failed")
+      if (rollback) this.rollbackConstruction(error)
+      this.abortConstruction(error, (run) => run(() => this.emit("cleaned")))
+    }
+  }
+
+  // A failed constructor leaves no native node, registry entry, or lifecycle registration, and frames keep working.
+  test.each([
+    ["invalid width", () => new BoxRenderable(testRenderer, { width: -1 })],
+    ["invalid color", () => new TextRenderable(testRenderer, { content: "x", fg: {} as never })],
+    ["invalid slider orientation", () => new SliderRenderable(testRenderer, { orientation: "diagonal" as never })],
+    ["invalid input length", () => new InputRenderable(testRenderer, { maxLength: -5 })],
+    ["abortConstruction", () => new AbortsConstruction(testRenderer, false)],
+    ["rollbackConstruction", () => new AbortsConstruction(testRenderer, true)],
+  ])("construction failure: %s", async (_name, construct) => {
+    const counts = () => [
+      [...testRenderer.nativeScene.getRenderables()].length,
+      Renderable.renderablesByNumber.size,
+      testRenderer.getLifecyclePasses().size,
+    ]
+    const before = counts()
+    expect(construct).toThrow()
+    expect(counts()).toEqual(before)
+    await renderOnce()
+  })
+
   test("layout reads during destroy return the live layout", async () => {
     const parent = new TestRenderable(testRenderer, { width: 12, height: 4, position: "absolute", left: 3, top: 1 })
     const child = new TestRenderable(testRenderer, { marginLeft: 2, height: 2 })
