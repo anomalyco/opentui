@@ -258,6 +258,25 @@ fileTest("Kitty file probes use runtime TMPDIR set before renderer creation and 
   }
 })
 
+fileTest("a failed Kitty file write falls back to raw and keeps the renderer running", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "opentui-kitty-gone-"))
+  try {
+    process.env.TMPDIR = directory
+    const { renderer, terminal } = await setup("file")
+    expect(renderer.kittyImageTransportStatus.fileState).toBe("ready")
+    rmSync(directory, { recursive: true, force: true })
+
+    await draw(renderer, new Uint8Array([1, 2, 3, 4]), 1)
+
+    expect(renderer.isDestroyed).toBe(false)
+    expect(renderer.kittyImageTransportStatus).toMatchObject({ fileState: "io-error", fallback: "preparation" })
+    expect(terminal.uploads()[0].fields.t).toBeUndefined()
+    expect(terminal.imageBytes()).toEqual(Buffer.from([1, 2, 3, 4]))
+  } finally {
+    rmSync(directory, { recursive: true, force: true })
+  }
+})
+
 fileTest("Kitty file preserves PNG and never overwrites a pending same-ID file", async () => {
   const { renderer, terminal } = await setup("file")
   const pixels = new Uint8Array([1, 2, 3, 255])

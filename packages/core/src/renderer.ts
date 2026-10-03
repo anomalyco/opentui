@@ -1939,8 +1939,7 @@ export class CliRenderer extends EventEmitter implements RenderContext {
 
   private startKittyTransportPolling(): void {
     if (!this._terminalIsSetup || this.kittyTransportMode !== "file" || this.kittyTransportTimer !== null) return
-    // Old file transfers still need ACKs, expiry, and error cleanup after selecting an inline mode.
-    this.stdout.on("error", this.kittyOutputErrorHandler)
+    // Old file transfers still need ACKs and expiry after selecting an inline mode.
     this.kittyTransportTimer = this.clock.setInterval(() => {
       if (!this._isDestroyed && this.nativeSession.pollKittyImageTransport()) this.requestRender()
     }, 1000)
@@ -1966,11 +1965,6 @@ export class CliRenderer extends EventEmitter implements RenderContext {
     if (this._isDestroyed) return
     this.nativeSession.cancelKittyImageTransport(false)
     this.requestRender()
-  }
-
-  private kittyOutputErrorHandler = (): void => {
-    if (this._isDestroyed || this.nativeSession.disposed || this.nativeSession.error) return
-    this.nativeSession.cancelKittyImageTransport(true)
   }
 
   public triggerNotification(message: string, title?: string): boolean {
@@ -4633,7 +4627,6 @@ export class CliRenderer extends EventEmitter implements RenderContext {
     if (this.kittyTransportTimer !== null) {
       this.clock.clearInterval(this.kittyTransportTimer)
       this.kittyTransportTimer = null
-      this.stdout.off("error", this.kittyOutputErrorHandler)
       if (!this.nativeSession.disposed && !this.nativeSession.error) this.nativeSession.cancelKittyImageTransport(false)
     }
     this.pendingNativeResize = null
