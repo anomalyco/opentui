@@ -184,6 +184,18 @@ describe("Renderable", () => {
     expect(renderable.liveCount).toBe(1)
   })
 
+  test.each([null, undefined])("live = %p after live = false keeps live counts at zero", (value) => {
+    const node = new TestRenderable(testRenderer, { live: false })
+    const other = new TestRenderable(testRenderer, {})
+    testRenderer.root.add(node)
+    testRenderer.root.add(other)
+    const requestLive = spyOn(testRenderer, "requestLive")
+    ;(node as { live: boolean | null | undefined }).live = value
+    expect([node.live, testRenderer.root.liveCount]).toEqual([false, 0])
+    other.live = true
+    expect([testRenderer.root.liveCount, requestLive.mock.calls.length]).toEqual([1, 1])
+  })
+
   test("screen position cache matches x/y after layout", async () => {
     const parent = new CountingRenderable(testRenderer, {
       id: "parent",

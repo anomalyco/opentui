@@ -674,6 +674,7 @@ export abstract class Renderable extends BaseRenderable {
   }
 
   public set live(value: boolean) {
+    value ??= false
     if (this._live === value) return
 
     this._live = value
