@@ -19,8 +19,9 @@
 #endif
 
 namespace {
-// Only C++ work belongs inside this guard. A Zig thunk would let an exception
-// unwind through a Zig frame before arriving here.
+// Yoga calls Zig thunks (measure, dirtied, logger) inside this guard. They
+// re-enter C++ only through noexcept bridge functions or Yoga calls that cannot
+// throw, so no exception unwinds through a Zig frame.
 template <typename F>
 uint32_t checked(F&& operation) noexcept {
   try {
@@ -35,8 +36,23 @@ uint32_t checked(F&& operation) noexcept {
 
 constexpr float undefined = std::numeric_limits<float>::quiet_NaN();
 
+// Style kinds use the header names, so a renumbered header changes no meaning.
 bool validValue(uint32_t kind, uint32_t edge) {
-  return kind <= 10 && (kind < 7 || edge <= (kind == 10 ? YGGutterAll : YGEdgeAll));
+  switch (kind) {
+    case OT_STYLE_VALUE_WIDTH: case OT_STYLE_VALUE_HEIGHT: case OT_STYLE_VALUE_MIN_WIDTH:
+    case OT_STYLE_VALUE_MIN_HEIGHT: case OT_STYLE_VALUE_MAX_WIDTH: case OT_STYLE_VALUE_MAX_HEIGHT:
+    case OT_STYLE_VALUE_FLEX_BASIS: return true;
+    case OT_STYLE_VALUE_MARGIN: case OT_STYLE_VALUE_PADDING: case OT_STYLE_VALUE_POSITION:
+      return edge <= YGEdgeAll;
+    case OT_STYLE_VALUE_GAP: return edge <= YGGutterAll;
+    default: return false;
+  }
+}
+
+bool acceptsAuto(uint32_t kind) {
+  return kind == OT_STYLE_VALUE_WIDTH || kind == OT_STYLE_VALUE_HEIGHT ||
+      kind == OT_STYLE_VALUE_FLEX_BASIS || kind == OT_STYLE_VALUE_MARGIN ||
+      kind == OT_STYLE_VALUE_POSITION;
 }
 
 facebook::yoga::StyleLength styleLength(uint32_t unit, float value) {
@@ -199,70 +215,68 @@ uint32_t otYogaNodeLayoutGetEdge(YGNodeConstRef node, uint32_t kind, uint32_t ed
 }
 
 uint32_t otYogaNodeStyleSetEnum(YGNodeRef node, uint32_t kind, uint32_t value) noexcept {
-  constexpr uint32_t maxima[] = {
-      YGDirectionRTL,     YGFlexDirectionRowReverse, YGJustifySpaceEvenly,   YGAlignSpaceEvenly,
-      YGAlignSpaceEvenly, YGAlignSpaceEvenly,        YGPositionTypeAbsolute, YGWrapWrapReverse,
-      YGOverflowScroll,   YGDisplayContents,         YGBoxSizingContentBox};
-  if (!node || kind >= sizeof(maxima) / sizeof(maxima[0]) || value > maxima[kind])
-    return OT_YOGA_INVALID_ARGUMENT;
-  return checked([&] {
-    switch (kind) {
-      case 0: YGNodeStyleSetDirection(node, static_cast<YGDirection>(value)); break;
-      case 1: YGNodeStyleSetFlexDirection(node, static_cast<YGFlexDirection>(value)); break;
-      case 2: YGNodeStyleSetJustifyContent(node, static_cast<YGJustify>(value)); break;
-      case 3: YGNodeStyleSetAlignContent(node, static_cast<YGAlign>(value)); break;
-      case 4: YGNodeStyleSetAlignItems(node, static_cast<YGAlign>(value)); break;
-      case 5: YGNodeStyleSetAlignSelf(node, static_cast<YGAlign>(value)); break;
-      case 6: YGNodeStyleSetPositionType(node, static_cast<YGPositionType>(value)); break;
-      case 7: YGNodeStyleSetFlexWrap(node, static_cast<YGWrap>(value)); break;
-      case 8: YGNodeStyleSetOverflow(node, static_cast<YGOverflow>(value)); break;
-      case 9: YGNodeStyleSetDisplay(node, static_cast<YGDisplay>(value)); break;
-      case 10: YGNodeStyleSetBoxSizing(node, static_cast<YGBoxSizing>(value)); break;
-    }
-  });
+  if (!node) return OT_YOGA_INVALID_ARGUMENT;
+  auto set = [&]<typename T>(void (*setter)(YGNodeRef, T), T max) {
+    if (value > static_cast<uint32_t>(max)) return uint32_t{OT_YOGA_INVALID_ARGUMENT};
+    return checked([&] { setter(node, static_cast<T>(value)); });
+  };
+  switch (kind) {
+    case OT_STYLE_ENUM_DIRECTION: return set(YGNodeStyleSetDirection, YGDirectionRTL);
+    case OT_STYLE_ENUM_FLEX_DIRECTION: return set(YGNodeStyleSetFlexDirection, YGFlexDirectionRowReverse);
+    case OT_STYLE_ENUM_JUSTIFY_CONTENT: return set(YGNodeStyleSetJustifyContent, YGJustifySpaceEvenly);
+    case OT_STYLE_ENUM_ALIGN_CONTENT: return set(YGNodeStyleSetAlignContent, YGAlignSpaceEvenly);
+    case OT_STYLE_ENUM_ALIGN_ITEMS: return set(YGNodeStyleSetAlignItems, YGAlignSpaceEvenly);
+    case OT_STYLE_ENUM_ALIGN_SELF: return set(YGNodeStyleSetAlignSelf, YGAlignSpaceEvenly);
+    case OT_STYLE_ENUM_POSITION_TYPE: return set(YGNodeStyleSetPositionType, YGPositionTypeAbsolute);
+    case OT_STYLE_ENUM_FLEX_WRAP: return set(YGNodeStyleSetFlexWrap, YGWrapWrapReverse);
+    case OT_STYLE_ENUM_OVERFLOW: return set(YGNodeStyleSetOverflow, YGOverflowScroll);
+    case OT_STYLE_ENUM_DISPLAY: return set(YGNodeStyleSetDisplay, YGDisplayContents);
+    case OT_STYLE_ENUM_BOX_SIZING: return set(YGNodeStyleSetBoxSizing, YGBoxSizingContentBox);
+    default: return OT_YOGA_INVALID_ARGUMENT;
+  }
 }
 
 uint32_t otYogaNodeStyleGetEnum(YGNodeConstRef node, uint32_t kind, uint32_t* out) noexcept {
-  if (!node || !out || kind > 10) return OT_YOGA_INVALID_ARGUMENT;
-  return checked([&] {
-    switch (kind) {
-      case 0: *out = YGNodeStyleGetDirection(node); break;
-      case 1: *out = YGNodeStyleGetFlexDirection(node); break;
-      case 2: *out = YGNodeStyleGetJustifyContent(node); break;
-      case 3: *out = YGNodeStyleGetAlignContent(node); break;
-      case 4: *out = YGNodeStyleGetAlignItems(node); break;
-      case 5: *out = YGNodeStyleGetAlignSelf(node); break;
-      case 6: *out = YGNodeStyleGetPositionType(node); break;
-      case 7: *out = YGNodeStyleGetFlexWrap(node); break;
-      case 8: *out = YGNodeStyleGetOverflow(node); break;
-      case 9: *out = YGNodeStyleGetDisplay(node); break;
-      case 10: *out = YGNodeStyleGetBoxSizing(node); break;
-    }
-  });
+  if (!node || !out) return OT_YOGA_INVALID_ARGUMENT;
+  auto get = [&](auto getter) { return checked([&] { *out = getter(node); }); };
+  switch (kind) {
+    case OT_STYLE_ENUM_DIRECTION: return get(YGNodeStyleGetDirection);
+    case OT_STYLE_ENUM_FLEX_DIRECTION: return get(YGNodeStyleGetFlexDirection);
+    case OT_STYLE_ENUM_JUSTIFY_CONTENT: return get(YGNodeStyleGetJustifyContent);
+    case OT_STYLE_ENUM_ALIGN_CONTENT: return get(YGNodeStyleGetAlignContent);
+    case OT_STYLE_ENUM_ALIGN_ITEMS: return get(YGNodeStyleGetAlignItems);
+    case OT_STYLE_ENUM_ALIGN_SELF: return get(YGNodeStyleGetAlignSelf);
+    case OT_STYLE_ENUM_POSITION_TYPE: return get(YGNodeStyleGetPositionType);
+    case OT_STYLE_ENUM_FLEX_WRAP: return get(YGNodeStyleGetFlexWrap);
+    case OT_STYLE_ENUM_OVERFLOW: return get(YGNodeStyleGetOverflow);
+    case OT_STYLE_ENUM_DISPLAY: return get(YGNodeStyleGetDisplay);
+    case OT_STYLE_ENUM_BOX_SIZING: return get(YGNodeStyleGetBoxSizing);
+    default: return OT_YOGA_INVALID_ARGUMENT;
+  }
 }
 
 uint32_t otYogaNodeStyleSetFloat(YGNodeRef node, uint32_t kind, float value) noexcept {
-  if (!node || kind > 3 || std::isinf(value)) return OT_YOGA_INVALID_ARGUMENT;
-  return checked([&] {
-    switch (kind) {
-      case 0: YGNodeStyleSetFlex(node, value); break;
-      case 1: YGNodeStyleSetFlexGrow(node, value); break;
-      case 2: YGNodeStyleSetFlexShrink(node, value); break;
-      case 3: YGNodeStyleSetAspectRatio(node, value); break;
-    }
-  });
+  if (!node || std::isinf(value)) return OT_YOGA_INVALID_ARGUMENT;
+  auto set = [&](auto setter) { return checked([&] { setter(node, value); }); };
+  switch (kind) {
+    case OT_STYLE_FLOAT_FLEX: return set(YGNodeStyleSetFlex);
+    case OT_STYLE_FLOAT_FLEX_GROW: return set(YGNodeStyleSetFlexGrow);
+    case OT_STYLE_FLOAT_FLEX_SHRINK: return set(YGNodeStyleSetFlexShrink);
+    case OT_STYLE_FLOAT_ASPECT_RATIO: return set(YGNodeStyleSetAspectRatio);
+    default: return OT_YOGA_INVALID_ARGUMENT;
+  }
 }
 
 uint32_t otYogaNodeStyleGetFloat(YGNodeConstRef node, uint32_t kind, float* out) noexcept {
-  if (!node || !out || kind > 3) return OT_YOGA_INVALID_ARGUMENT;
-  return checked([&] {
-    switch (kind) {
-      case 0: *out = YGNodeStyleGetFlex(node); break;
-      case 1: *out = YGNodeStyleGetFlexGrow(node); break;
-      case 2: *out = YGNodeStyleGetFlexShrink(node); break;
-      case 3: *out = YGNodeStyleGetAspectRatio(node); break;
-    }
-  });
+  if (!node || !out) return OT_YOGA_INVALID_ARGUMENT;
+  auto get = [&](auto getter) { return checked([&] { *out = getter(node); }); };
+  switch (kind) {
+    case OT_STYLE_FLOAT_FLEX: return get(YGNodeStyleGetFlex);
+    case OT_STYLE_FLOAT_FLEX_GROW: return get(YGNodeStyleGetFlexGrow);
+    case OT_STYLE_FLOAT_FLEX_SHRINK: return get(YGNodeStyleGetFlexShrink);
+    case OT_STYLE_FLOAT_ASPECT_RATIO: return get(YGNodeStyleGetAspectRatio);
+    default: return OT_YOGA_INVALID_ARGUMENT;
+  }
 }
 
 uint32_t otYogaNodeStyleSetBorder(YGNodeRef node, uint32_t edge, float value) noexcept {
@@ -278,7 +292,8 @@ uint32_t otYogaNodeStyleGetBorder(YGNodeConstRef node, uint32_t edge, float* out
 uint32_t otYogaNodeStyleSetDimension(YGNodeRef ref, uint32_t kind, uint32_t unit, float value,
                                      uint32_t disable_flex_shrink) noexcept {
   using namespace facebook::yoga;
-  if (!ref || kind > 1 || unit > YGUnitAuto || std::isinf(value) || disable_flex_shrink > 1)
+  if (!ref || kind > YGDimensionHeight || unit > YGUnitAuto || std::isinf(value) ||
+      disable_flex_shrink > 1)
     return OT_YOGA_INVALID_ARGUMENT;
   return checked([&] {
     auto node = resolveRef(ref);
@@ -323,14 +338,14 @@ uint32_t otYogaNodeStyleSetPositions(YGNodeRef ref, uint32_t edge_mask, const ui
 uint32_t otYogaNodeStyleSetValue(YGNodeRef node, uint32_t kind, uint32_t edge, uint32_t unit,
                                  float value) noexcept {
   if (!node || !validValue(kind, edge) || unit > YGUnitAuto || std::isinf(value) ||
-      (unit == YGUnitAuto && ((kind >= 2 && kind <= 5) || kind == 8 || kind == 10)))
+      (unit == YGUnitAuto && !acceptsAuto(kind)))
     return OT_YOGA_INVALID_ARGUMENT;
   return checked([&] {
     if (unit == YGUnitUndefined) value = undefined;
     const auto e = static_cast<YGEdge>(edge);
     const auto g = static_cast<YGGutter>(edge);
     switch (kind) {
-      case 0:
+      case OT_STYLE_VALUE_WIDTH:
         if (unit == YGUnitAuto)
           YGNodeStyleSetWidthAuto(node);
         else if (unit == YGUnitPercent)
@@ -338,7 +353,7 @@ uint32_t otYogaNodeStyleSetValue(YGNodeRef node, uint32_t kind, uint32_t edge, u
         else
           YGNodeStyleSetWidth(node, value);
         break;
-      case 1:
+      case OT_STYLE_VALUE_HEIGHT:
         if (unit == YGUnitAuto)
           YGNodeStyleSetHeightAuto(node);
         else if (unit == YGUnitPercent)
@@ -346,31 +361,31 @@ uint32_t otYogaNodeStyleSetValue(YGNodeRef node, uint32_t kind, uint32_t edge, u
         else
           YGNodeStyleSetHeight(node, value);
         break;
-      case 2:
+      case OT_STYLE_VALUE_MIN_WIDTH:
         if (unit == YGUnitPercent)
           YGNodeStyleSetMinWidthPercent(node, value);
         else
           YGNodeStyleSetMinWidth(node, value);
         break;
-      case 3:
+      case OT_STYLE_VALUE_MIN_HEIGHT:
         if (unit == YGUnitPercent)
           YGNodeStyleSetMinHeightPercent(node, value);
         else
           YGNodeStyleSetMinHeight(node, value);
         break;
-      case 4:
+      case OT_STYLE_VALUE_MAX_WIDTH:
         if (unit == YGUnitPercent)
           YGNodeStyleSetMaxWidthPercent(node, value);
         else
           YGNodeStyleSetMaxWidth(node, value);
         break;
-      case 5:
+      case OT_STYLE_VALUE_MAX_HEIGHT:
         if (unit == YGUnitPercent)
           YGNodeStyleSetMaxHeightPercent(node, value);
         else
           YGNodeStyleSetMaxHeight(node, value);
         break;
-      case 6:
+      case OT_STYLE_VALUE_FLEX_BASIS:
         if (unit == YGUnitAuto)
           YGNodeStyleSetFlexBasisAuto(node);
         else if (unit == YGUnitPercent)
@@ -378,7 +393,7 @@ uint32_t otYogaNodeStyleSetValue(YGNodeRef node, uint32_t kind, uint32_t edge, u
         else
           YGNodeStyleSetFlexBasis(node, value);
         break;
-      case 7:
+      case OT_STYLE_VALUE_MARGIN:
         if (unit == YGUnitAuto)
           YGNodeStyleSetMarginAuto(node, e);
         else if (unit == YGUnitPercent)
@@ -386,13 +401,13 @@ uint32_t otYogaNodeStyleSetValue(YGNodeRef node, uint32_t kind, uint32_t edge, u
         else
           YGNodeStyleSetMargin(node, e, value);
         break;
-      case 8:
+      case OT_STYLE_VALUE_PADDING:
         if (unit == YGUnitPercent)
           YGNodeStyleSetPaddingPercent(node, e, value);
         else
           YGNodeStyleSetPadding(node, e, value);
         break;
-      case 9:
+      case OT_STYLE_VALUE_POSITION:
         if (unit == YGUnitAuto)
           YGNodeStyleSetPositionAuto(node, e);
         else if (unit == YGUnitPercent)
@@ -400,7 +415,7 @@ uint32_t otYogaNodeStyleSetValue(YGNodeRef node, uint32_t kind, uint32_t edge, u
         else
           YGNodeStyleSetPosition(node, e, value);
         break;
-      case 10:
+      case OT_STYLE_VALUE_GAP:
         if (unit == YGUnitPercent)
           YGNodeStyleSetGapPercent(node, g, value);
         else
@@ -417,17 +432,17 @@ uint32_t otYogaNodeStyleGetValue(YGNodeConstRef node, uint32_t kind, uint32_t ed
     YGValue value{};
     const auto e = static_cast<YGEdge>(edge);
     switch (kind) {
-      case 0: value = YGNodeStyleGetWidth(node); break;
-      case 1: value = YGNodeStyleGetHeight(node); break;
-      case 2: value = YGNodeStyleGetMinWidth(node); break;
-      case 3: value = YGNodeStyleGetMinHeight(node); break;
-      case 4: value = YGNodeStyleGetMaxWidth(node); break;
-      case 5: value = YGNodeStyleGetMaxHeight(node); break;
-      case 6: value = YGNodeStyleGetFlexBasis(node); break;
-      case 7: value = YGNodeStyleGetMargin(node, e); break;
-      case 8: value = YGNodeStyleGetPadding(node, e); break;
-      case 9: value = YGNodeStyleGetPosition(node, e); break;
-      case 10:
+      case OT_STYLE_VALUE_WIDTH: value = YGNodeStyleGetWidth(node); break;
+      case OT_STYLE_VALUE_HEIGHT: value = YGNodeStyleGetHeight(node); break;
+      case OT_STYLE_VALUE_MIN_WIDTH: value = YGNodeStyleGetMinWidth(node); break;
+      case OT_STYLE_VALUE_MIN_HEIGHT: value = YGNodeStyleGetMinHeight(node); break;
+      case OT_STYLE_VALUE_MAX_WIDTH: value = YGNodeStyleGetMaxWidth(node); break;
+      case OT_STYLE_VALUE_MAX_HEIGHT: value = YGNodeStyleGetMaxHeight(node); break;
+      case OT_STYLE_VALUE_FLEX_BASIS: value = YGNodeStyleGetFlexBasis(node); break;
+      case OT_STYLE_VALUE_MARGIN: value = YGNodeStyleGetMargin(node, e); break;
+      case OT_STYLE_VALUE_PADDING: value = YGNodeStyleGetPadding(node, e); break;
+      case OT_STYLE_VALUE_POSITION: value = YGNodeStyleGetPosition(node, e); break;
+      case OT_STYLE_VALUE_GAP:
         value.value = YGNodeStyleGetGap(node, static_cast<YGGutter>(edge));
         value.unit = std::isnan(value.value) ? YGUnitUndefined : YGUnitPoint;
         break;
@@ -482,7 +497,7 @@ static bool cacheAxisReference(const OTYogaCacheAxis& axis, float point_scale) {
 }
 
 uint32_t otYogaTestCacheMeasurement(const OTYogaCacheAxis* width, const OTYogaCacheAxis* height,
-                                    float point_scale, uint32_t* reference,
+                                    float point_scale, uint32_t* axis_references,
                                     uint32_t* rounding_count) noexcept {
   using namespace facebook::yoga;
   Config config(nullptr);
@@ -495,11 +510,8 @@ uint32_t otYogaTestCacheMeasurement(const OTYogaCacheAxis* width, const OTYogaCa
       static_cast<SizingMode>(height->last_mode), height->last_available,
       width->computed, height->computed, width->margin, height->margin, &config);
   *rounding_count = testPixelGridRoundCount;
-  const bool width_matches = cacheAxisReference(*width, point_scale);
-  const bool height_matches = cacheAxisReference(*height, point_scale);
-  *reference = !((isDefined(height->computed) && height->computed < 0) ||
-                 (isDefined(width->computed) && width->computed < 0)) &&
-      width_matches && height_matches;
+  *axis_references = cacheAxisReference(*width, point_scale) |
+      cacheAxisReference(*height, point_scale) << 1;
   return actual;
 }
 #endif

@@ -462,12 +462,18 @@ test "Yoga checked malformed valid-pointer calls reject before upstream assertio
     try std.testing.expectEqual(invalid, yoga.yogaNodeStyleSetValueChecked(node, 10, 3, 1, 1));
     try std.testing.expectEqual(invalid, yoga.yogaNodeStyleSetValueChecked(node, 8, 0, 3, 1));
     try std.testing.expectEqual(invalid, yoga.yogaNodeStyleSetValueChecked(node, 0, 0, 4, 1));
+    const inf = std.math.inf(f32);
+    try std.testing.expectEqual(invalid, yoga.yogaNodeStyleSetValueChecked(node, 0, 0, 1, inf));
+    try std.testing.expectEqual(invalid, yoga.yogaNodeStyleSetDimensionChecked(node, 0, 1, inf, 0));
+    try std.testing.expectEqual(invalid, yoga.yogaNodeStyleSetPositionsChecked(node, 1, &.{ 1, 1, 1, 1 }, &.{ -inf, 0, 0, 0 }));
     var edge: f32 = 123;
     try std.testing.expectEqual(invalid, yoga.yogaNodeLayoutGetEdgeChecked(node, 0, 6, &edge));
     try std.testing.expectEqual(invalid, yoga.yogaNodeLayoutGetEdgeChecked(node, 3, 0, &edge));
     try std.testing.expectEqual(@as(f32, 123), edge);
     try std.testing.expectEqual(invalid, yoga.yogaNodeMarkDirtyChecked(node));
     try std.testing.expectEqual(invalid, yoga.yogaNodeCalculateLayoutChecked(node, 1, 1, 3));
+    try std.testing.expectEqual(invalid, yoga.yogaNodeCalculateLayoutChecked(node, inf, 1, 1));
+    try std.testing.expectEqual(invalid, yoga.yogaNodeCalculateLayoutChecked(node, 1, -1, 1));
     try std.testing.expectEqual(invalid, yoga.yogaNodeInsertChildChecked(node, child, 1));
     try std.testing.expectEqual(yoga.Status.ok, yoga.yogaNodeSetMeasureFuncChecked(node, 1));
     try std.testing.expectEqual(invalid, yoga.yogaNodeInsertChildChecked(node, child, 0));
@@ -570,7 +576,7 @@ test "Yoga checked copy style preserves destination through every allocation fai
     }
 }
 
-test "Yoga checked display contents insertion failure leaves topology retryable" {
+test "Yoga checked display contents insertion failure leaves topology retryable and reuse keeps storage" {
     var config: yoga.Config = undefined;
     try config.init(std.testing.allocator, .{});
     defer config.deinit();
@@ -596,7 +602,14 @@ test "Yoga checked display contents insertion failure leaves topology retryable"
     yoga.testFailAfter(0);
     try yoga.check(yoga.yogaNodeRemoveChildChecked(node, child));
     try std.testing.expectEqual(@as(u32, 0), yoga.testContentsChildCount(node));
+    // Reset keeps the detached child storage, so reinsertion does not allocate.
+    const bytes = yoga.nodeStorageBytes(node);
     try yoga.check(yoga.yogaNodeResetChecked(node));
+    try std.testing.expectEqual(bytes, yoga.nodeStorageBytes(node));
+    try yoga.check(yoga.yogaNodeInsertChildChecked(node, child, 0));
+    try std.testing.expectEqual(@as(u32, 1), yoga.testContentsChildCount(node));
+    try yoga.check(yoga.yogaNodeRemoveAllChildrenChecked(node));
+    try std.testing.expectEqual(@as(u32, 0), yoga.testContentsChildCount(node));
 }
 
 test "Yoga checked nonroot layout failure poisons only the connected mixed-config tree" {
@@ -806,15 +819,55 @@ test "OpenTUI default Yoga nodes are independent of Context and heap-owned confi
     try std.testing.expect(yoga.yogaConfigFree(owned));
     const second = yoga.yogaNodeCreateForOpenTUI();
     defer yoga.yogaNodeFree(second);
-    try std.testing.expect(yoga.yogaNodeGetConfig(first) == yoga.yogaNodeGetConfig(second));
+    const shared = yoga.yogaNodeGetConfig(first);
+    try std.testing.expect(shared == yoga.yogaNodeGetConfig(second));
+    try std.testing.expect(!yoga.yogaConfigGetUseWebDefaults(shared));
+    try std.testing.expectEqual(@as(f32, 1), yoga.yogaConfigGetPointScaleFactor(shared));
 }
 
-test "Yoga public config free rejects a live node and permits retry" {
-    const config = yoga.yogaConfigCreate();
-    const node = yoga.yogaNodeCreateWithConfig(config);
-    try std.testing.expect(!yoga.yogaConfigFree(config));
+test "OpenTUI default Yoga config links nodes from concurrent threads" {
+    const Worker = struct {
+        gate: *std.Io.Event,
+        running: *std.atomic.Value(u32),
+        status: yoga.Status = .ok,
+
+        fn run(self: *@This()) void {
+            defer _ = self.running.fetchSub(1, .release);
+            self.gate.waitUncancelable(std.testing.io);
+            var live: [8]yoga.YGNodeRef = @splat(null);
+            defer for (live) |node| if (node != null) yoga.yogaNodeFree(node);
+            for (0..20_000) |index| {
+                const slot = &live[(index * 7) % live.len];
+                if (slot.* != null) self.status = yoga.yogaNodeFreeChecked(slot.*);
+                slot.* = null;
+                if (self.status == .ok) self.status = yoga.yogaNodeCreateForOpenTUIChecked(slot);
+                if (self.status != .ok) return;
+            }
+        }
+    };
+    const node = yoga.yogaNodeCreateForOpenTUI();
+    const ref: yoga.YGConfigRef = @constCast(yoga.yogaNodeGetConfig(node));
+    var gate: std.Io.Event = .unset;
+    var workers: [4]Worker = undefined;
+    var running: std.atomic.Value(u32) = .init(workers.len);
+    var threads: [workers.len]std.Thread = undefined;
+    var spawned: usize = 0;
+    defer {
+        gate.set(std.testing.io);
+        for (threads[0..spawned]) |thread| thread.join();
+    }
+    for (&workers, &threads) |*worker, *thread| {
+        worker.* = .{ .gate = &gate, .running = &running };
+        thread.* = try std.Thread.spawn(.{}, Worker.run, .{worker});
+        spawned += 1;
+    }
+    gate.set(std.testing.io);
+    // Setters walk every node of the config while the workers link and unlink.
+    while (running.load(.acquire) != 0) try yoga.check(yoga.yogaConfigSetPointScaleFactorChecked(ref, 1));
+    for (workers) |worker| try yoga.check(worker.status);
     yoga.yogaNodeFree(node);
-    try std.testing.expect(yoga.yogaConfigFree(config));
+    const config: *yoga.Config = @ptrCast(@alignCast(@import("yoga").YGConfigGetContext(ref)));
+    try std.testing.expect(!config.hasLiveNodes());
 }
 
 test "Yoga wrapper computes basic flex layout" {
@@ -841,19 +894,6 @@ test "Yoga wrapper computes basic flex layout" {
     try std.testing.expectApproxEqAbs(@as(f32, 100), layout.height, 0.001);
 }
 
-test "OpenTUI Yoga nodes use the native fixed config" {
-    const first = yoga.yogaNodeCreateForOpenTUI();
-    defer yoga.yogaNodeFree(first);
-    const second = yoga.yogaNodeCreateForOpenTUI();
-    defer yoga.yogaNodeFree(second);
-
-    const first_config = yoga.yogaNodeGetConfig(first);
-    const second_config = yoga.yogaNodeGetConfig(second);
-    try std.testing.expect(first_config == second_config);
-    try std.testing.expect(!yoga.yogaConfigGetUseWebDefaults(first_config));
-    try std.testing.expectEqual(@as(f32, 1), yoga.yogaConfigGetPointScaleFactor(first_config));
-}
-
 test "Yoga wrapper packs style values" {
     const node = yoga.yogaNodeCreate();
     defer yoga.yogaNodeFree(node);
@@ -866,6 +906,47 @@ test "Yoga wrapper packs style values" {
 
     try std.testing.expectEqual(@as(u32, @intFromEnum(yoga.YogaUnit.point)), unit);
     try std.testing.expectApproxEqAbs(@as(f32, 10), value, 0.001);
+}
+
+test "Yoga cache-rounding patch keeps upstream cache decisions and rounds only comparable axes" {
+    const values = [_]f32{ std.math.nan(f32), -1, 0, 9.6, 10, 10.4, 11 };
+    const scales = [_]f32{ 0, 1, 2, 0.5 };
+    var prng = std.Random.DefaultPrng.init(0x0707);
+    const random = prng.random();
+    var cached: u32 = 0;
+    for (0..10_000) |_| {
+        var axes: [2]yoga.TestCacheAxis = undefined;
+        for (&axes) |*axis| {
+            // Repeat the previous mode or size half the time, as relayout does.
+            const mode = random.uintLessThan(u32, 3);
+            const available = values[random.uintLessThan(usize, values.len)];
+            axis.* = .{
+                .mode = mode,
+                .last_mode = if (random.boolean()) mode else random.uintLessThan(u32, 3),
+                .available = available,
+                .last_available = if (random.boolean()) available else values[random.uintLessThan(usize, values.len)],
+                .computed = values[random.uintLessThan(usize, values.len)],
+                .margin = @floatFromInt(random.uintLessThan(u32, 2)),
+            };
+        }
+        const point_scale = scales[random.uintLessThan(usize, scales.len)];
+        var references: u32 = 0;
+        var rounding_count: u32 = 0;
+        const actual = yoga.testCacheMeasurement(&axes[0], &axes[1], point_scale, &references, &rounding_count);
+        // Upstream rejects a negative cached size before it compares either axis.
+        const negative = axes[0].computed < 0 or axes[1].computed < 0;
+        try std.testing.expectEqual(@intFromBool(!negative and references == 3), actual);
+        // An axis rounds only when its sizing modes match. An incompatible
+        // width skips the height axis.
+        var expected: u32 = 0;
+        if (!negative and point_scale != 0) {
+            if (axes[0].mode == axes[0].last_mode) expected += 2;
+            if (references & 1 != 0 and axes[1].mode == axes[1].last_mode) expected += 2;
+        }
+        try std.testing.expectEqual(expected, rounding_count);
+        cached += actual;
+    }
+    try std.testing.expect(cached > 500 and cached < 9500);
 }
 
 test "Yoga host callback owners use config context and cannot clear another owner" {

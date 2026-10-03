@@ -4,6 +4,9 @@ set -eu
 VENDOR_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 OUTPUT="$VENDOR_DIR/zig-deps.tar.gz"
 OUTPUT_TMP="$OUTPUT.$$.tmp"
+MANIFEST="$VENDOR_DIR/zig-deps.sha256"
+LC_ALL=C
+export LC_ALL
 
 GHOSTTY_COMMIT=727b8a02f8734840de664c060678dd66f01931f6
 GHOSTTY_SHA256=1cdde6bd3c1071de0f4ba489ee526361045e967170e8b50ca6f1d3fe0c624adf
@@ -14,13 +17,6 @@ UUCODE_OPENTUI_SHA256=f1ce9f0038c46cc75fdd4e8469baac0dce60e20517d8d32ed813bfa990
 YOGA_VERSION=3.2.1
 YOGA_SHA256=86b399ac31fd820d8ffa823c3fae31bb690b6fc45301b2a8a966c09b5a088b55
 
-for command_name in curl git gzip tar; do
-  command -v "$command_name" >/dev/null 2>&1 || {
-    echo "error: required command not found: $command_name" >&2
-    exit 1
-  }
-done
-
 if command -v sha256sum >/dev/null 2>&1; then
   sha256_file() { sha256sum "$1" | cut -d ' ' -f 1; }
 elif command -v shasum >/dev/null 2>&1; then
@@ -29,6 +25,32 @@ else
   echo "error: sha256sum or shasum is required" >&2
   exit 1
 fi
+
+# The archive and every input that produced it: this script's pins and the
+# OpenTUI changes. A mismatch means one changed without the other.
+manifest() (
+  cd "$VENDOR_DIR"
+  for path in zig-deps.tar.gz update-zig-deps.sh zig-deps/*; do
+    printf '%s  %s\n' "$(sha256_file "$path")" "$path"
+  done
+)
+
+if [ "${1:-}" = --check ]; then
+  if [ "$(manifest)" != "$(cat "$MANIFEST")" ]; then
+    echo "error: vendored Zig dependencies differ from $MANIFEST" >&2
+    echo "Run 'bun run vendor:update:zig' from packages/core." >&2
+    manifest | diff "$MANIFEST" - >&2 || true
+    exit 1
+  fi
+  exit 0
+fi
+
+for command_name in curl git gzip tar; do
+  command -v "$command_name" >/dev/null 2>&1 || {
+    echo "error: required command not found: $command_name" >&2
+    exit 1
+  }
+done
 
 download() {
   url=$1
@@ -100,5 +122,6 @@ tar --sort=name --mtime='UTC 2020-01-01' --owner=0 --group=0 --numeric-owner -C 
 gzip -n -9 "$ARCHIVE"
 cp "$ARCHIVE.gz" "$OUTPUT_TMP"
 mv "$OUTPUT_TMP" "$OUTPUT"
+manifest > "$MANIFEST"
 
 echo "Updated $OUTPUT"

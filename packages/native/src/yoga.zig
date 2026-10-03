@@ -1,5 +1,4 @@
 const std = @import("std");
-const builtin = @import("builtin");
 const c = @import("yoga");
 const logger = @import("logger.zig");
 const api = @import("context_abi_c");
@@ -143,7 +142,6 @@ pub const Config = struct {
     js_dirtied: ?JsDirtiedCallback = null,
     measure_result: ExternalYogaSize = .{ .width = std.math.nan(f32), .height = std.math.nan(f32) },
     nodes: ?*CallbackContext = null,
-    test_work_count: if (builtin.is_test) u64 else void = if (builtin.is_test) 0 else {},
     heap_owned: bool = false,
 
     pub fn init(self: *Config, allocator: std.mem.Allocator, callbacks: Callbacks) Error!void {
@@ -173,6 +171,8 @@ pub const Config = struct {
         errdefer self.allocator.destroy(callback_context);
         var node: YGNodeRef = null;
         try check(@enumFromInt(c.otYogaNodeCreate(self.ref, &node)));
+        config_mutex.lockUncancelable(process_io);
+        defer config_mutex.unlock(process_io);
         callback_context.* = .{ .config = self, .node = node, .config_next = self.nodes };
         if (self.nodes) |head| head.config_previous = callback_context;
         self.nodes = callback_context;
@@ -189,11 +189,15 @@ pub const Config = struct {
 /// yogaConfigCreate remain independently created and destroyed.
 var default_config: Config = undefined;
 var default_config_ready = false;
-var default_config_mutex: std.Io.Mutex = .init;
+/// Guards the default config's initialization, every config's node list and JS
+/// callback owner, and node frees and resets. All threads that load the library
+/// share the default config, and a config walk follows owners into nodes of any
+/// config.
+var config_mutex: std.Io.Mutex = .init;
 
 fn defaultConfig() Error!*Config {
-    default_config_mutex.lockUncancelable(process_io);
-    defer default_config_mutex.unlock(process_io);
+    config_mutex.lockUncancelable(process_io);
+    defer config_mutex.unlock(process_io);
     if (!default_config_ready) {
         try default_config.init(std.heap.c_allocator, .{});
         default_config_ready = true;
@@ -221,11 +225,9 @@ fn enumValue(value: anytype) u32 {
 
 fn getContext(node: YGNodeConstRef) ?*CallbackContext {
     if (node == null) return null;
-    const existing = c.YGNodeGetContext(node);
-    if (existing) |ptr| {
-        return @ptrCast(@alignCast(ptr));
-    }
-    return null;
+    const ctx: *CallbackContext = @ptrCast(@alignCast(c.YGNodeGetContext(node) orelse return null));
+    std.debug.assert(ctx.node == node);
+    return ctx;
 }
 
 fn nodeStatus(node: YGNodeConstRef, mutation: bool, teardown: bool) Status {
@@ -246,10 +248,17 @@ fn configContext(ref: YGConfigConstRef) ?*Config {
 
 fn configStatus(ref: YGConfigConstRef) Status {
     const config = configContext(ref) orelse return .invalid_argument;
+    config_mutex.lockUncancelable(process_io);
+    defer config_mutex.unlock(process_io);
+    return configStatusLocked(config);
+}
+
+fn configStatusLocked(config: *Config) Status {
     // Configuration changes are rare. Check owned nodes here rather than
     // visiting every connected configuration on every cached layout call.
     var cursor = config.nodes;
     while (cursor) |ctx| : (cursor = ctx.config_next) {
+        std.debug.assert(ctx.config == config);
         if (treeRoot(ctx).active_root != null) return .busy;
     }
     return .ok;
@@ -259,7 +268,6 @@ fn treeRoot(start: *CallbackContext) *CallbackContext {
     // Managed placement bounds this owner chain and rejects cycles.
     var ctx = start;
     while (true) {
-        if (builtin.is_test) ctx.config.test_work_count += 1;
         const owner = c.YGNodeGetOwner(ctx.node) orelse return ctx;
         ctx = getContext(owner).?;
     }
@@ -274,7 +282,6 @@ fn treeList(root: YGNodeRef) *CallbackContext {
     var tail = head;
     var cursor: ?*CallbackContext = head;
     while (cursor) |ctx| : (cursor = ctx.work_next) {
-        if (builtin.is_test) ctx.config.test_work_count += 1;
         for (0..c.YGNodeGetChildCount(ctx.node)) |index| {
             const child = c.YGNodeGetChild(ctx.node, index);
             const child_ctx = getContext(child).?;
@@ -288,12 +295,10 @@ fn treeList(root: YGNodeRef) *CallbackContext {
     return head;
 }
 
-pub fn reportMeasureError(node: YGNodeConstRef, err: anyerror) void {
-    const ctx = getContext(node) orelse return;
-    const root = treeRoot(ctx).active_root orelse return;
-    if (root.measure_error == .ok) {
-        root.measure_error = if (err == error.OutOfMemory) .out_of_memory else .exception;
-    }
+pub fn reportMeasureError(node: YGNodeConstRef, err: error{OutOfMemory}) void {
+    // Native measurement runs only inside a checked layout of this tree.
+    const root = treeRoot(getContext(node).?).active_root.?;
+    if (root.measure_error == .ok) root.measure_error = fromError(err);
 }
 
 fn internalMeasureFunc(
@@ -531,6 +536,9 @@ pub export fn yogaNodeFreeChecked(node: YGNodeRef) Status {
     if (status != .ok) return status;
     const ctx = getContext(node).?;
     const config = ctx.config;
+    // A config walk on another thread must not reach a freed Yoga node.
+    config_mutex.lockUncancelable(process_io);
+    defer config_mutex.unlock(process_io);
     const result: Status = @enumFromInt(c.otYogaNodeFree(node));
     if (result != .ok) return result;
     if (ctx.config_previous) |previous| {
@@ -557,7 +565,8 @@ pub export fn yogaNodeFreeRecursiveChecked(node: YGNodeRef) Status {
     while (cursor) |ctx| {
         // Keep Yoga's first-child teardown order and shared-child skip. Managed
         // insertion excludes shared/unmanaged children; raw Yoga graphs are not
-        // part of this wrapper's ownership contract.
+        // part of this wrapper's ownership contract. Here `depth` is the index
+        // of the next child to visit.
         if (c.YGNodeGetChildCount(ctx.node) > ctx.depth) {
             const child = c.YGNodeGetChild(ctx.node, ctx.depth);
             if (c.YGNodeGetOwner(child) != ctx.node) {
@@ -596,6 +605,10 @@ pub export fn yogaNodeResetChecked(node: YGNodeRef) Status {
     const status = nodeStatus(node, true, false);
     if (status != .ok) return status;
     const ctx = getContext(node).?;
+    // Other threads read node contexts in config walks and relink this node's
+    // list links in frees. Both hold the lock.
+    config_mutex.lockUncancelable(process_io);
+    defer config_mutex.unlock(process_io);
     const result: Status = @enumFromInt(c.otYogaNodeReset(node));
     // Yoga clears its context on reset. The preallocated callback state belongs
     // to this wrapper for the node's full lifetime, including a failed reset.
@@ -728,6 +741,8 @@ pub export fn yogaNodeCalculateLayoutChecked(node: YGNodeRef, width: f32, height
     const root = getContext(node) orelse return .invalid_argument;
     const top = treeRoot(root);
     if (top.active_root != null) return .busy;
+    // Placement rejects poisoned nodes, so a whole tree is poisoned or none of it.
+    std.debug.assert(root.poisoned == top.poisoned);
     if (root.poisoned) return .poisoned;
     if (direction > c.YGDirectionRTL) return .invalid_argument;
     for ([_]f32{ width, height }) |dimension| {
@@ -741,10 +756,7 @@ pub export fn yogaNodeCalculateLayoutChecked(node: YGNodeRef, width: f32, height
         // Interrupted solves and failed native measurement can leave partially
         // updated caches. Only teardown is safe, not a retry with stale geometry.
         var cursor: ?*CallbackContext = treeList(top.node);
-        while (cursor) |ctx| : (cursor = ctx.work_next) {
-            if (builtin.is_test) ctx.config.test_work_count += 1;
-            ctx.poisoned = true;
-        }
+        while (cursor) |ctx| : (cursor = ctx.work_next) ctx.poisoned = true;
     }
     top.active_root = null;
     root.measure_error = .ok;
@@ -973,8 +985,10 @@ pub export fn yogaNodeStyleGetValueChecked(node: YGNodeConstRef, kind: u32, edge
 }
 
 pub export fn yogaConfigSetCallbacks(ref: YGConfigConstRef, measure: JsMeasureCallback, dirtied: JsDirtiedCallback) bool {
-    if (configStatus(ref) != .ok) return false;
-    const config = configContext(ref).?;
+    const config = configContext(ref) orelse return false;
+    config_mutex.lockUncancelable(process_io);
+    defer config_mutex.unlock(process_io);
+    if (configStatusLocked(config) != .ok) return false;
     // The measure trampoline is also the owner's identity. A second facade
     // cannot steal a config or clear another facade's callbacks.
     if (config.js_measure != null and config.js_measure != measure) return false;
@@ -984,8 +998,10 @@ pub export fn yogaConfigSetCallbacks(ref: YGConfigConstRef, measure: JsMeasureCa
 }
 
 pub export fn yogaConfigClearCallbacks(ref: YGConfigConstRef, measure: JsMeasureCallback) bool {
-    if (configStatus(ref) != .ok) return false;
-    const config = configContext(ref).?;
+    const config = configContext(ref) orelse return false;
+    config_mutex.lockUncancelable(process_io);
+    defer config_mutex.unlock(process_io);
+    if (configStatusLocked(config) != .ok) return false;
     if (config.js_measure != measure) return false;
     config.js_measure = null;
     config.js_dirtied = null;
@@ -1071,3 +1087,5 @@ pub const testFailAfter = c.otYogaTestFailAfter;
 pub const testAllocationCount = c.otYogaTestAllocationCount;
 pub const testContentsChildCount = c.otYogaTestContentsChildCount;
 pub const testLogMessage = c.otYogaTestLogMessage;
+pub const testCacheMeasurement = c.otYogaTestCacheMeasurement;
+pub const TestCacheAxis = c.OTYogaCacheAxis;

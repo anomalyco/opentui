@@ -6,15 +6,9 @@ const text_buffer_view = @import("text-buffer-view.zig");
 const scene = @import("scene.zig");
 const buffer = @import("buffer.zig");
 
-pub const MeasureTargetKind = enum(u32) {
-    none = 0,
-    text_buffer_view = 1,
-    editor_view = 2,
-};
-
 // Generic measure targets keep Yoga independent of concrete renderable types.
 // Add target kinds here instead of adding type-specific Yoga APIs.
-pub const MeasureTarget = union(MeasureTargetKind) {
+pub const MeasureTarget = union(enum) {
     none,
     text_buffer_view: *text_buffer_view.UnifiedTextBufferView,
     editor_view: *editor_view.EditorView,
@@ -77,12 +71,14 @@ pub const NativeRenderable = struct {
     }
 
     pub fn setMeasureTargetPreservingProvider(self: *NativeRenderable, target: MeasureTarget, preserve_provider: bool) native_yoga.Error!void {
+        std.debug.assert((self.measure_dependents == null) == (self.measure_target == .none));
         try native_yoga.check(if (preserve_provider) native_yoga.nodeTeardownStatus(self.yoga_node) else switch (target) {
             .none => native_yoga.yogaNodeSetNativeMeasureFunc(self.yoga_node, null, null),
             else => native_yoga.yogaNodeSetNativeMeasureFunc(self.yoga_node, self, &NativeRenderable.measure),
         });
         const invalidate = self.context_owned and (target != .none or self.measure_target != .none);
         if (self.measure_dependents) |head| {
+            std.debug.assert((self.measure_previous == null) == (head.* == self));
             if (self.measure_previous) |previous| {
                 previous.measure_next = self.measure_next;
             } else {
