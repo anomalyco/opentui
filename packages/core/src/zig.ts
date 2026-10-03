@@ -3260,6 +3260,9 @@ export enum LogLevel {
   Debug = 3,
 }
 
+// Indexed by LogLevel.
+const LOG_METHODS = ["error", "warn", "info", "debug"] as const
+
 /**
  * VisualCursor represents a cursor position with both visual and logical coordinates.
  * Visual coordinates (visualRow, visualCol) are VIEWPORT-RELATIVE.
@@ -7851,22 +7854,7 @@ export class FFIRenderLib {
   }
 
   private logMessage(level: number, message: string): void {
-    switch (level) {
-      case LogLevel.Error:
-        console.error(message)
-        break
-      case LogLevel.Warn:
-        console.warn(message)
-        break
-      case LogLevel.Info:
-        console.info(message)
-        break
-      case LogLevel.Debug:
-        console.debug(message)
-        break
-      default:
-        console.log(message)
-    }
+    console[LOG_METHODS[level] ?? "log"](message)
   }
 
   private setupLogging() {
