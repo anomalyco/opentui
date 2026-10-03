@@ -1,5 +1,6 @@
-import { test, expect, beforeEach, afterEach } from "bun:test"
+import { test, expect, beforeEach, afterEach, spyOn } from "bun:test"
 import { DiffRenderable } from "./Diff.js"
+import { Renderable } from "../Renderable.js"
 import { SyntaxStyle } from "../syntax-style.js"
 import { RGBA, parseColor } from "../lib/RGBA.js"
 import { createMockMouse, createTestRenderer, type TestRenderer } from "../testing.js"
@@ -2308,13 +2309,26 @@ test.each(["destroy", "destroyRecursively"] as const)("DiffRenderable - %s frees
   diffRenderable.view = "unified"
   await renderOnce()
 
+  const warn = spyOn(console, "warn")
   try {
     diffRenderable[cleanup]()
     for (const node of [...sides, ...errorNodes, leftCodeRenderable, rightCodeRenderable]) {
       expect(node.isFreed()).toBe(true)
       expect(node.listenerCount("line-info-change")).toBe(0)
     }
+
+    // Writes after destroy build no panes, and queries read no destroyed pane.
+    const live = Renderable.renderablesByNumber.size
+    diffRenderable.diff = largeDiff
+    diffRenderable.view = "split"
+    diffRenderable.syntaxStyle = undefined
+    expect(diffRenderable.getHunkRowOffsets()).toEqual([0])
+    await Promise.resolve()
+    expect(Renderable.renderablesByNumber.size).toBe(live)
+    expect((diffRenderable as any).fallbackSyntaxStyle).toBeUndefined()
+    expect(warn).not.toHaveBeenCalled()
   } finally {
+    warn.mockRestore()
     for (const node of [...sides, ...errorNodes]) node.destroyRecursively()
   }
 })

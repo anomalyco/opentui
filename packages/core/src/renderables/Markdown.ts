@@ -518,7 +518,7 @@ export class MarkdownRenderable extends Renderable {
   }
 
   set renderNode(value: MarkdownOptions["renderNode"] | undefined) {
-    if (this._renderNode === value) return
+    if (this.isDestroyed || this._renderNode === value) return
     assertRenderableMutable(this)
     this._renderNode = value
     this.clearBlockStates()
@@ -532,7 +532,7 @@ export class MarkdownRenderable extends Renderable {
   }
 
   set internalBlockMode(value: "coalesced" | "top-level") {
-    if (this._internalBlockMode === value) return
+    if (this.isDestroyed || this._internalBlockMode === value) return
     assertRenderableMutable(this)
     this._internalBlockMode = value
     this.updateBlocks(true)
