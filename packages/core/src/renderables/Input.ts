@@ -1,4 +1,3 @@
-import { runRenderableMutation } from "../lib/renderable-layout.js"
 import type { RenderContext } from "../types.js"
 import {
   TextareaRenderable,
@@ -118,7 +117,7 @@ export class InputRenderable extends TextareaRenderable {
     if (remaining <= 0) return
 
     const toInsert = sanitized.substring(0, remaining)
-    runRenderableMutation(this, () => {
+    this.runMutation(() => {
       super.insertText(toInsert)
       this.emit(InputRenderableEvents.INPUT, this.plainText)
     })
@@ -132,7 +131,7 @@ export class InputRenderable extends TextareaRenderable {
     const newValue = value.substring(0, this._maxLength).replace(/[\n\r]/g, "")
     const currentValue = this.plainText
     if (currentValue !== newValue) {
-      runRenderableMutation(this, () => {
+      this.runMutation(() => {
         this.setText(newValue)
         this.cursorOffset = newValue.length
         this.emit(InputRenderableEvents.INPUT, newValue)
@@ -235,7 +234,7 @@ export class InputRenderable extends TextareaRenderable {
   public set maxLength(maxLength: number) {
     const currentValue = this.plainText
     if (currentValue.length > maxLength) {
-      runRenderableMutation(this, () => {
+      this.runMutation(() => {
         this.setText(currentValue.substring(0, maxLength))
         this._maxLength = maxLength
       })

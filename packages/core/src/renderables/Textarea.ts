@@ -1,4 +1,3 @@
-import { runRenderableMutation } from "../lib/renderable-layout.js"
 import type { KeyEvent, PasteEvent } from "../lib/KeyHandler.js"
 import { decodePasteBytes, stripAnsiSequences } from "../lib/paste.js"
 import { RGBA, parseColor, type ColorInput } from "../lib/RGBA.js"
@@ -214,7 +213,7 @@ export class TextareaRenderable extends EditBufferRenderable {
 
       const initialValue = options.initialValue
       if (initialValue) {
-        runRenderableMutation(this, () => {
+        this.runMutation(() => {
           this.setText(initialValue)
           this._initialValueSet = true
         })
@@ -340,7 +339,7 @@ export class TextareaRenderable extends EditBufferRenderable {
   set placeholder(value: StyledText | string | null | undefined) {
     const normalizedValue = clonePlaceholder(value ?? null)
     if (this._placeholder !== normalizedValue) {
-      runRenderableMutation(this, () => {
+      this.runMutation(() => {
         this.applyPlaceholder(normalizedValue)
         this._placeholder = normalizedValue
         this.requestRender()
@@ -354,7 +353,7 @@ export class TextareaRenderable extends EditBufferRenderable {
 
   set placeholderColor(value: ColorInput) {
     const color = RGBA.clone(parseColor(value ?? TextareaRenderable.defaults.placeholderColor))
-    runRenderableMutation(this, () => {
+    this.runMutation(() => {
       this.applyPlaceholder(this._placeholder, color)
       this._placeholderColor = color
       this.requestRender()
@@ -391,7 +390,7 @@ export class TextareaRenderable extends EditBufferRenderable {
 
   set initialValue(value: string) {
     if (!this._initialValueSet) {
-      runRenderableMutation(this, () => {
+      this.runMutation(() => {
         this.setText(value)
         this._initialValueSet = true
       })
