@@ -36,7 +36,8 @@ export type {
 
 import { RGBA } from "./lib/RGBA.js"
 import { isStyledText, type StyledText } from "./lib/styled-text.js"
-import { YogaError, YogaHost, YogaStatus, rejectAsyncCallback, type MeasureFunction } from "./yoga.js"
+import { YogaError, YogaStatus, type MeasureFunction } from "./yoga.js"
+import { YogaHost, rejectAsyncCallback } from "./yoga.internal.js"
 import { env, registerEnvVar } from "./lib/env.js"
 import {
   NativeSpanFeedOptionsStruct,

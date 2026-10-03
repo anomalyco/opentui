@@ -8,7 +8,8 @@ import { RendererControlState, type CliRenderer } from "./renderer.js"
 import type { StyledText } from "./lib/styled-text.js"
 import type { RGBA } from "./lib/RGBA.js"
 import type { LocalSelectionBounds } from "./lib/selection.js"
-import { Edge, YogaValueKind, type Value, type MeasureFunction, type YogaHost } from "./yoga.js"
+import { Edge, type Value, type MeasureFunction } from "./yoga.js"
+import { YogaValueKind, type YogaHost } from "./yoga.internal.js"
 import {
   NativePaintRecorder,
   NativeSceneFrame,

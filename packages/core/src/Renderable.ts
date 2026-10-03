@@ -7,6 +7,11 @@ import {
   Gutter,
   PositionType,
   Unit,
+  type Layout,
+  type MeasureFunction,
+  type Value,
+} from "./yoga.js"
+import {
   YogaEnumKind,
   YogaFloatKind,
   YogaValueKind,
@@ -18,10 +23,7 @@ import {
   sceneSetEnum,
   sceneSetFloat,
   sceneSetValue,
-  type Layout,
-  type MeasureFunction,
-  type Value,
-} from "./yoga.js"
+} from "./yoga.internal.js"
 import type { NativeScene } from "./NativeScene.js"
 import { OptimizedBuffer } from "./buffer.js"
 import type { KeyEvent, PasteEvent } from "./lib/KeyHandler.js"

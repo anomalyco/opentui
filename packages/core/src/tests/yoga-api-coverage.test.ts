@@ -15,11 +15,11 @@ import Yoga, {
   PositionType,
   Unit,
   Wrap,
-  YogaEnumKind,
   YogaError,
   YogaStatus,
   type Value,
 } from "../yoga.js"
+import { YogaEnumKind } from "../yoga.internal.js"
 import { FFIRenderLib } from "../zig.js"
 
 function expectYogaValue(actual: Value, unit: Unit, value?: number): void {
