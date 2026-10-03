@@ -933,6 +933,11 @@ pub const Scene = struct {
                 self.work.clearRetainingCapacity();
                 try self.work.ensureTotalCapacity(self.allocator, self.count);
                 if (root) |value| _ = try self.prepare(objects, value, cli.width, cli.height, .paint, false);
+                // Paint layout reports where this frame paints, including transforms accepted after preparation.
+                for (self.work.items) |entry| {
+                    entry.node.scene_node.?.layout.screenX = entry.layout.screenX;
+                    entry.node.scene_node.?.layout.screenY = entry.layout.screenY;
+                }
             }
             if (self.hook_count != 0) {
                 for (self.work.items) |entry| {
@@ -1252,8 +1257,6 @@ pub const Scene = struct {
         try self.segments.ensureTotalCapacityPrecise(self.allocator, slot_count);
         for (self.work.items) |entry| {
             const node = entry.node.scene_node.?;
-            node.layout.screenX = entry.layout.screenX;
-            node.layout.screenY = entry.layout.screenY;
             if (!entry.visible or node.kind == api.OT_SCENE_ROOT) continue;
             const hooks = node.hook_flags & scene_paint_hook_flags;
             var slot: u32 = no_slot;
