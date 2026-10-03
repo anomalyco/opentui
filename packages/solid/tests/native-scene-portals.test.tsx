@@ -149,3 +149,26 @@ it("retargets empty but not live Portals", async () => {
   right.commitRows(0, right.height)
   expect(setup.externalOutput.takeText()).toContain("retained")
 })
+
+it("ignores writes to destroyed nodes whose owners are still live", async () => {
+  const [width, setWidth] = createSignal(1)
+  const [shown, setShown] = createSignal(true)
+  const mount = new BoxRenderable(setup.renderer, {})
+  setup.renderer.root.add(mount)
+  await render(() => {
+    const hoisted = <box width={width()} />
+    return (
+      <box>
+        <Portal mount={mount}>
+          <box width={width()} />
+        </Portal>
+        {shown() ? hoisted : null}
+      </box>
+    )
+  }, setup.renderer)
+  setShown(false)
+  await tick()
+  mount.destroyRecursively()
+  // The hoisted box was destroyed after removal and the Portal box with its mount; both width effects still run.
+  expect(() => setWidth(2)).not.toThrow()
+})
