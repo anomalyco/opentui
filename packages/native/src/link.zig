@@ -1,4 +1,5 @@
 const std = @import("std");
+const assert = std.debug.assert;
 
 pub const LinkPoolError = error{
     OutOfMemory,
@@ -105,51 +106,27 @@ pub const LinkPool = struct {
         };
     }
 
-    fn removeInternedLiveId(self: *LinkPool, url: []const u8, expected_id: IdPayload) void {
-        const live_id = self.interned_live_ids.get(url) orelse return;
-        if (live_id != expected_id) return;
-        if (self.interned_live_ids.fetchRemove(url)) |removed| {
-            self.allocator.free(@constCast(removed.key));
-        }
+    fn removeInternedLiveId(self: *LinkPool, url: []const u8, id: IdPayload) void {
+        const removed = self.interned_live_ids.fetchRemove(url).?;
+        assert(removed.value == id);
+        self.allocator.free(@constCast(removed.key));
     }
 
-    fn lookupOrInvalidate(self: *LinkPool, url: []const u8) ?IdPayload {
-        const live_id = self.interned_live_ids.get(url) orelse return null;
-
-        const live_url = self.get(live_id) catch {
-            self.removeInternedLiveId(url, live_id);
-            return null;
-        };
-
-        if (!std.mem.eql(u8, live_url, url)) {
-            self.removeInternedLiveId(url, live_id);
-            return null;
+    /// The map holds exactly the live IDs: acquireNew adds an entry after its
+    /// last fallible step, and the decref that releases the slot removes it.
+    fn lookupLive(self: *LinkPool, url: []const u8) ?IdPayload {
+        const id = self.interned_live_ids.get(url) orelse return null;
+        if (std.debug.runtime_safety) {
+            assert(std.mem.eql(u8, self.get(id) catch unreachable, url));
+            assert((self.getRefcount(id) catch unreachable) > 0);
         }
-
-        const live_refcount = self.getRefcount(live_id) catch {
-            self.removeInternedLiveId(url, live_id);
-            return null;
-        };
-
-        if (live_refcount == 0) {
-            self.removeInternedLiveId(url, live_id);
-            return null;
-        }
-
-        return live_id;
+        return id;
     }
 
     fn internLiveId(self: *LinkPool, id: IdPayload, url: []const u8) LinkPoolError!void {
-        if (self.lookupOrInvalidate(url) != null) {
-            return;
-        }
-
-        const owned_key = self.allocator.dupe(u8, url) catch return LinkPoolError.OutOfMemory;
+        const owned_key = try self.allocator.dupe(u8, url);
         errdefer self.allocator.free(owned_key);
-
-        if (self.interned_live_ids.fetchPut(self.allocator, owned_key, id) catch return LinkPoolError.OutOfMemory) |replaced| {
-            self.allocator.free(@constCast(replaced.key));
-        }
+        try self.interned_live_ids.putNoClobber(self.allocator, owned_key, id);
     }
 
     /// Return one owned live reference. Failed acquisition leaves no stranded
@@ -158,7 +135,7 @@ pub const LinkPool = struct {
         if (url.len > self.slot_capacity) {
             return LinkPoolError.UrlTooLong;
         }
-        if (self.lookupOrInvalidate(url)) |live_id| {
+        if (self.lookupLive(url)) |live_id| {
             try self.incref(live_id);
             return live_id;
         }
@@ -176,7 +153,7 @@ pub const LinkPool = struct {
         const p = self.slotPtr(slot_index);
         const header_ptr = slotHeaderPtr(p);
 
-        std.debug.assert(header_ptr.generation < GEN_MASK);
+        assert(header_ptr.generation < GEN_MASK);
         const new_generation = header_ptr.generation + 1;
         header_ptr.* = .{
             .len = @intCast(owned.len),
@@ -189,8 +166,6 @@ pub const LinkPool = struct {
 
         const id = try packId(slot_index, new_generation);
         try self.internLiveId(id, owned);
-        errdefer self.removeInternedLiveId(owned, id);
-
         header_ptr.refcount = 1;
         return id;
     }
@@ -198,8 +173,9 @@ pub const LinkPool = struct {
     fn releaseSlot(self: *LinkPool, slot_index: u32, expected_generation: u32) void {
         const p = self.slotPtr(slot_index);
         const header_ptr = slotHeaderPtr(p);
-        std.debug.assert(header_ptr.generation == expected_generation);
-        std.debug.assert(header_ptr.refcount == 0);
+        assert(header_ptr.generation == expected_generation);
+        assert(header_ptr.refcount == 0);
+        assert(self.free_list.items.len + self.retired_slot_count < self.num_slots);
         if (header_ptr.generation == GEN_MASK) {
             header_ptr.generation = RETIRED_GENERATION;
             self.retired_slot_count += 1;
@@ -235,8 +211,7 @@ pub const LinkPool = struct {
         if (header_ptr.generation != unpacked.generation) return LinkPoolError.WrongGeneration;
 
         if (header_ptr.refcount == 1) {
-            const live_url = try self.get(id);
-            self.removeInternedLiveId(live_url, id);
+            self.removeInternedLiveId(self.get(id) catch unreachable, id);
         }
 
         header_ptr.refcount -%= 1;
@@ -317,7 +292,7 @@ pub const LinkTracker = struct {
 
     /// Track document membership once per URL, independent of its chunk count.
     pub fn trackUrl(self: *LinkTracker, url: []const u8) LinkPoolError!IdPayload {
-        if (self.pool.lookupOrInvalidate(url)) |id| {
+        if (self.pool.lookupLive(url)) |id| {
             if (self.used_ids.contains(id)) return id;
         }
         const id = try self.pool.acquire(url);

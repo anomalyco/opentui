@@ -132,68 +132,27 @@ pub const GraphemePool = struct {
         self.* = undefined;
     }
 
-    /// removeInternedLiveId removes an interned ID from the live set if it
-    /// matches the expected ID.
-    fn removeInternedLiveId(self: *GraphemePool, bytes: []const u8, expected_id: IdPayload) void {
-        const live_id = self.interned_live_ids.get(bytes) orelse return;
-        if (live_id != expected_id) return;
-        if (self.interned_live_ids.fetchRemove(bytes)) |removed| {
-            self.allocator.free(@constCast(removed.key));
-        }
+    fn removeInternedLiveId(self: *GraphemePool, bytes: []const u8, id: IdPayload) void {
+        const removed = self.interned_live_ids.fetchRemove(bytes).?;
+        assert(removed.value == id);
+        self.allocator.free(@constCast(removed.key));
     }
 
-    /// Return an existing interned live ID, removing stale entries encountered
-    /// while validating the map.
-    fn lookupOrInvalidate(self: *GraphemePool, bytes: []const u8) ?IdPayload {
-        const live_id = self.interned_live_ids.get(bytes) orelse return null;
-
-        // Verify that the live ID is still valid and matches the bytes. If get
-        // fails, the ID is no longer valid, so remove it from the interned map.
-        const live_bytes = self.get(live_id) catch {
-            self.removeInternedLiveId(bytes, live_id);
-            return null;
-        };
-
-        // If the bytes don't match, this means the ID was recycled and now points
-        // to different data. Invalidate the interned ID.
-        if (!std.mem.eql(u8, live_bytes, bytes)) {
-            self.removeInternedLiveId(bytes, live_id);
-            return null;
+    /// The map holds exactly the live IDs: acquireNew adds an entry after its
+    /// last fallible step, and the decref that frees the slot removes it.
+    fn lookupLive(self: *GraphemePool, bytes: []const u8) ?IdPayload {
+        const id = self.interned_live_ids.get(bytes) orelse return null;
+        if (std.debug.runtime_safety) {
+            assert(std.mem.eql(u8, self.get(id) catch unreachable, bytes));
+            assert((self.getRefcount(id) catch unreachable) > 0);
         }
-
-        // check refcount > 0 to ensure the ID is still live. If refcount is 0,
-        // the slot is free but hasn't been reused yet, so we can treat it as
-        // not found.
-        const live_refcount = self.getRefcount(live_id) catch {
-            self.removeInternedLiveId(bytes, live_id);
-            return null;
-        };
-        if (live_refcount == 0) {
-            self.removeInternedLiveId(bytes, live_id);
-            return null;
-        }
-
-        return live_id;
+        return id;
     }
 
-    /// internLiveId interns the grapheme bytes.
     fn internLiveId(self: *GraphemePool, id: IdPayload, bytes: []const u8) GraphemePoolError!void {
-        if (self.lookupOrInvalidate(bytes) != null) {
-            // Keep existing interned ID if it's still valid.
-            return;
-        }
-
-        const owned_key = self.allocator.dupe(u8, bytes) catch return GraphemePoolError.OutOfMemory;
+        const owned_key = try self.allocator.dupe(u8, bytes);
         errdefer self.allocator.free(owned_key);
-
-        if (self.interned_live_ids.fetchPut(
-            self.allocator,
-            owned_key,
-            id,
-        ) catch return GraphemePoolError.OutOfMemory) |replaced| {
-            // A previous key allocation was replaced.
-            self.allocator.free(@constCast(replaced.key));
-        }
+        try self.interned_live_ids.putNoClobber(self.allocator, owned_key, id);
     }
 
     fn classForSize(size: usize) u32 {
@@ -219,7 +178,7 @@ pub const GraphemePool = struct {
     /// slot or interned identity. Internal pages may remain allocated.
     pub fn acquire(self: *GraphemePool, bytes: []const u8) GraphemePoolError!IdPayload {
         if (bytes.len > CLASS_SIZES[CLASS_SIZES.len - 1]) return GraphemePoolError.GraphemeTooLong;
-        if (self.lookupOrInvalidate(bytes)) |live_id| {
+        if (self.lookupLive(bytes)) |live_id| {
             try self.incref(live_id);
             return live_id;
         }
@@ -238,9 +197,8 @@ pub const GraphemePool = struct {
 
         const id = try packId(class_id, slot_index, generation);
         try self.internLiveId(id, owned);
-        errdefer self.removeInternedLiveId(owned, id);
-
-        try self.classes[class_id].incref(slot_index, generation);
+        // The pending slot matches its generation, so publishing cannot fail.
+        self.classes[class_id].incref(slot_index, generation) catch unreachable;
         assert((try self.getRefcount(id)) == 1);
         return id;
     }
@@ -252,7 +210,8 @@ pub const GraphemePool = struct {
         const slot_index: u32 = id & SLOT_MASK;
         const generation: u32 = (id >> SLOT_BITS) & GENERATION_MASK;
         const old_refcount = try self.classes[class_id].getRefcount(slot_index, generation);
-        if (old_refcount == 0) return GraphemePoolError.InvalidId;
+        // Only acquireNew observes an allocated slot without a reference.
+        assert(old_refcount > 0);
         try self.classes[class_id].incref(slot_index, generation);
         assert(
             (try self.classes[class_id].getRefcount(slot_index, generation)) ==
