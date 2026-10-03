@@ -67,7 +67,7 @@ The runtime column describes the published target. A Node stub throws during imp
 | `@opentui/qrcode`                                 | Bun and Node.js                      | Supported                                       | [QR encoder](/docs/reference/qr-encoder)                         |
 | `@opentui/qrcode/react`                           | OpenTUI React                        | Runtime-specific                                | [QR code component](/docs/components/qr-code)                    |
 | `@opentui/qrcode/solid`                           | OpenTUI Solid                        | Runtime-specific                                | [QR code component](/docs/components/qr-code)                    |
-| `@opentui/ssh`                                    | Bun 1.3.0 or Node.js 26.4.0 or later | Runtime-specific                                | [SSH](/docs/reference/ssh)                                       |
+| `@opentui/ssh`                                    | Bun 1.3.7 or Node.js 26.4.0 or later | Runtime-specific                                | [SSH](/docs/reference/ssh)                                       |
 | `@opentui/three`                                  | Bun only                             | Runtime-specific, Advanced                      | [Three.js WebGPU](/docs/reference/three)                         |
 | `@opentui/three/runtime-modules`                  | Bun only                             | Runtime-specific, Advanced                      | [Runtime module loading](/docs/extend/runtime-plugins)           |
 
@@ -391,7 +391,7 @@ The package root works in Bun and Node.js. Each framework path re-exports the fu
 
 ## `@opentui/ssh`
 
-The package supports Bun 1.3.0 or later and Node.js 26.4.0 or later. Use Bun 1.4.0 or later on native Windows arm64.
+The package supports Bun 1.3.7 or later and Node.js 26.4.0 or later. Use Bun 1.4.0 or later on native Windows arm64.
 It has one public entry point.
 
 | Symbols                                                                                                                                                                                                                                                                                                                                                                    | Class            | Canonical documentation    |
@@ -492,6 +492,7 @@ Layout, hit testing, and painting now run in a native scene, and native resource
 
 ### Resources and native bindings
 
+- The minimum Bun version is 1.3.7 (was 1.3.0). Earlier Bun releases crash in native calls: Bun 1.3.0 to 1.3.3 convert some pointer arguments to wrong addresses, and Bun 1.3.4 to 1.3.6 can crash after a Worker exits.
 - The `Clipboard` class was removed. Use `renderer.copyToClipboardOSC52()` and `clearClipboardOSC52()`, or `createClipboard()` with `createHostClipboard()` and `createRendererClipboardAdapter(renderer)`.
 - Native resources belong to one owner Context. Resources from different owners cannot be used together. Drawing a `NativeImage` into a renderer copies it into the renderer's Context.
 - An image that `ImageRenderable` loads belongs to the renderer's Context and throws after `renderer.destroy()`. To keep it, load it yourself, for example with `NativeImage.load()`, and pass it as `source`.
