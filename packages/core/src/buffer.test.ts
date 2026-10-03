@@ -102,17 +102,19 @@ describe("OptimizedBuffer", () => {
   it("preserves literal attributes and passes all u32 attribute bits across per-cell calls", () => {
     const fg = RGBA.fromInts(255, 255, 255)
     const bg = RGBA.fromInts(0, 0, 0)
+    const token = buffer.encodeUnicode("e\u0301").data[0].char
     const draws = [
       (attributes: number) => buffer.setCell(0, 0, "S", fg, bg, attributes),
       (attributes: number) => buffer.setCellWithAlphaBlending(1, 0, "A", fg, bg, attributes),
       (attributes: number) => buffer.drawChar("D".codePointAt(0)!, 2, 0, fg, bg, attributes),
+      (attributes: number) => buffer.drawChar(token, 3, 0, fg, bg, attributes),
     ]
     // Native rejects a foreign link ID in bits 8..31; a truncated value would draw instead.
     draws.forEach((draw, index) => {
       draw(0xff - index)
       expect(() => draw(0x8000_00ff)).toThrow("InvalidArgument")
     })
-    buffer.withBuffers((cells) => expect([...cells.attributes.slice(0, 3)]).toEqual([0xff, 0xfe, 0xfd]))
+    buffer.withBuffers((cells) => expect([...cells.attributes.slice(0, 4)]).toEqual([0xff, 0xfe, 0xfd, 0xfc]))
   })
 
   it("clips draws at negative positions", () => {
@@ -245,11 +247,11 @@ describe("OptimizedBuffer", () => {
       for (const text of ["Hello", "", "Hi 👋 🌍", "🙈🙉🙊", "Hi 世界", "e\u0301👩\u200d💻Z", "a\tb\nc"]) {
         buffer.clear(bg)
         expected.clear(bg)
-        expected.drawText(text, 0, 0, fg, bg)
+        expected.drawText(text, 0, 1, fg, bg)
         const encoded = buffer.encodeUnicode(text)
         let x = 0
         for (const glyph of encoded.data) {
-          buffer.drawChar(glyph.char, x, 0, fg, bg)
+          buffer.drawChar(glyph.char, x, 1, fg, bg)
           x += glyph.width
         }
         buffer.freeUnicode(encoded)
