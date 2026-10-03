@@ -1,6 +1,7 @@
 import { test, expect, describe, mock, beforeEach } from "bun:test"
 import { TerminalConsole, ConsolePosition } from "./console.js"
 import { MouseEvent } from "./renderer.js"
+import { stringWidth } from "./platform/runtime.js"
 import { ManualClock } from "./testing/manual-clock.js"
 
 interface MockRenderer {
@@ -671,6 +672,38 @@ describe("TerminalConsole", () => {
           // The first line also carries the "[time] [LOG] " prefix.
           expect(lines.length).toBeLessThanOrEqual(text.length + lineCount + 32)
           expect(lines.every((line: { text: string }) => line.text.length > 0)).toBe(true)
+        }
+      }
+    })
+
+    test("wraps by display cells at grapheme boundaries without dropping text", () => {
+      const graphemes = (text: string) => [...new Intl.Segmenter(undefined, { granularity: "grapheme" }).segment(text)]
+      const samples: unknown[][] = [
+        ["hello world"],
+        ["表示幅のテスト"],
+        ["e\u0301".repeat(6)],
+        ["👩‍🚀 crew 👩‍🚀"],
+        ["short\nsecond line is longer"],
+      ]
+      for (let width = 1; width <= 12; width++) {
+        terminalConsole = new TerminalConsole({ ...mockRenderer, width, terminalWidth: width } as any, {
+          position: ConsolePosition.BOTTOM,
+        })
+        for (const args of samples) {
+          const date = new Date(0)
+          const prefix = `[${terminalConsole["formatTimestamp"](date)}] [LOG] `
+          const sources = terminalConsole["formatArguments"](args).split("\n")
+          sources[0] = prefix + sources[0]
+          const lines: { text: string; indent: boolean }[] = terminalConsole["_processLogEntry"]([date, "LOG" as any, args, null])
+
+          expect(lines.map((line) => line.text).join("")).toBe(sources.join(""))
+          expect(lines.map((line) => line.indent)).toEqual(lines.map((_, index) => index > 0))
+          const count = (texts: string[]) => texts.reduce((sum, text) => sum + graphemes(text).length, 0)
+          expect(count(lines.map((line) => line.text))).toBe(count(sources))
+          for (const line of lines) {
+            const budget = Math.max(1, width - 1 - (line.indent ? 2 : 0))
+            if (graphemes(line.text).length > 1) expect(stringWidth(line.text)).toBeLessThanOrEqual(budget)
+          }
         }
       }
     })

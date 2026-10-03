@@ -11,6 +11,7 @@ import { Capture, CapturedWritableStream } from "./lib/output.capture.js"
 import { parseColor, RGBA } from "./lib/RGBA.js"
 import { singleton } from "./lib/singleton.js"
 import { env, registerEnvVar } from "./lib/env.js"
+import { stringWidth } from "./platform/runtime.js"
 import type { KeyEvent } from "./lib/KeyHandler.js"
 import {
   type KeyBinding as BaseKeyBinding,
@@ -312,11 +313,36 @@ const DEFAULT_CONSOLE_OPTIONS: Required<
 }
 
 const INDENT_WIDTH = 2
+const graphemeSegmenter = new Intl.Segmenter(undefined, { granularity: "grapheme" })
 
 interface DisplayLine {
+  // Indented lines exclude their indent; drawing adds it.
   text: string
   level: LogLevel
   indent: boolean
+}
+
+/**
+ * Splits `text` at grapheme boundaries into segments of at most `firstCells` display cells, then `restCells`. A
+ * grapheme wider than the budget gets a segment of its own. Budgets must be at least one cell.
+ */
+function wrapDisplayCells(text: string, firstCells: number, restCells: number): string[] {
+  const segments: string[] = []
+  let segment = ""
+  let cells = 0
+  for (const { segment: grapheme } of graphemeSegmenter.segment(text)) {
+    const width = stringWidth(grapheme)
+    const budget = segments.length === 0 ? firstCells : restCells
+    if (segment.length > 0 && cells + width > budget) {
+      segments.push(segment)
+      segment = ""
+      cells = 0
+    }
+    segment += grapheme
+    cells += width
+  }
+  if (segment.length > 0) segments.push(segment)
+  return segments
 }
 
 export class TerminalConsole extends EventEmitter {
@@ -825,9 +851,6 @@ export class TerminalConsole extends EventEmitter {
           break
       }
 
-      const linePrefix = displayLine.indent ? " ".repeat(INDENT_WIDTH) : ""
-      const textToDraw = displayLine.text
-      const textAvailableWidth = this.consoleWidth - 1 - (displayLine.indent ? INDENT_WIDTH : 0)
       const showCursor = this.isFocused && lineY - 1 === this.currentLineIndex
 
       if (showCursor) {
@@ -836,7 +859,7 @@ export class TerminalConsole extends EventEmitter {
         this.frameBuffer.drawText(" ", 0, lineY, this._rgbaDefault, this.backgroundColor)
       }
 
-      const fullText = `${linePrefix}${textToDraw.substring(0, textAvailableWidth)}`
+      const fullText = (displayLine.indent ? " ".repeat(INDENT_WIDTH) : "") + displayLine.text
       const selectionRange = this.getLineSelectionRange(absoluteLineIndex)
 
       if (selectionRange) {
@@ -937,28 +960,17 @@ export class TerminalConsole extends EventEmitter {
 
     const formattedArgs = this.formatArguments(args)
     const initialLines = formattedArgs.split("\n")
+    // At least one cell per segment, so narrow consoles still make progress.
+    const cells = Math.max(1, this.consoleWidth - 1)
+    const indentedCells = Math.max(1, this.consoleWidth - 1 - INDENT_WIDTH)
 
     for (let i = 0; i < initialLines.length; i++) {
-      const lineText = initialLines[i]
       const isFirstLineOfEntry = i === 0
-      // At least one column per segment, so narrow consoles still make progress.
-      const availableWidth = Math.max(1, this.consoleWidth - 1 - (isFirstLineOfEntry ? 0 : INDENT_WIDTH))
-      const linePrefix = isFirstLineOfEntry ? prefix : " ".repeat(INDENT_WIDTH)
-      const textToWrap = isFirstLineOfEntry ? linePrefix + lineText : lineText
-
-      let currentPos = 0
-      while (currentPos < textToWrap.length || (isFirstLineOfEntry && currentPos === 0 && textToWrap.length === 0)) {
-        const segment = textToWrap.substring(currentPos, currentPos + availableWidth)
-        const isFirstSegmentOfLine = currentPos === 0
-
-        displayLines.push({
-          text: isFirstSegmentOfLine && !isFirstLineOfEntry ? linePrefix + segment : segment,
-          level: level,
-          indent: !isFirstLineOfEntry || !isFirstSegmentOfLine,
-        })
-
-        currentPos += availableWidth
-        if (isFirstLineOfEntry && currentPos === 0 && textToWrap.length === 0) break
+      const segments = isFirstLineOfEntry
+        ? wrapDisplayCells(prefix + initialLines[i], cells, indentedCells)
+        : wrapDisplayCells(initialLines[i], indentedCells, indentedCells)
+      for (let segment = 0; segment < segments.length; segment++) {
+        displayLines.push({ text: segments[segment], level, indent: !isFirstLineOfEntry || segment > 0 })
       }
     }
 
@@ -1024,9 +1036,7 @@ export class TerminalConsole extends EventEmitter {
     for (let i = selection.startLine; i <= selection.endLine; i++) {
       if (i < 0 || i >= this._displayLines.length) continue
       const line = this._displayLines[i]
-      const linePrefix = line.indent ? " ".repeat(INDENT_WIDTH) : ""
-      const textAvailableWidth = this.consoleWidth - 1 - (line.indent ? INDENT_WIDTH : 0)
-      const fullText = linePrefix + line.text.substring(0, textAvailableWidth)
+      const fullText = (line.indent ? " ".repeat(INDENT_WIDTH) : "") + line.text
       let text = fullText
 
       if (i === selection.startLine && i === selection.endLine) {
@@ -1119,9 +1129,7 @@ export class TerminalConsole extends EventEmitter {
     const line = this._displayLines[lineIndex]
     if (!line) return null
 
-    const linePrefix = line.indent ? " ".repeat(INDENT_WIDTH) : ""
-    const textAvailableWidth = this.consoleWidth - 1 - (line.indent ? INDENT_WIDTH : 0)
-    const fullTextLength = linePrefix.length + Math.min(line.text.length, textAvailableWidth)
+    const fullTextLength = (line.indent ? INDENT_WIDTH : 0) + line.text.length
 
     let start = 0
     let end = fullTextLength
