@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, expect, test } from "bun:test"
+import { afterAll, afterEach, beforeAll, expect, test } from "bun:test"
 import type { OptimizedBuffer } from "../buffer.js"
 import { KeyEvent } from "../lib/KeyHandler.js"
 import { CliRenderEvents } from "../renderer.js"
@@ -19,6 +19,11 @@ let renderer: TestRendererSetup["renderer"]
 beforeAll(async () => {
   setup = await createTestRenderer({ width: 40, height: 12, clock })
   renderer = setup.renderer
+})
+
+// A failed test must not leave nodes that later rows hit.
+afterEach(() => {
+  for (const child of renderer.root.getChildren()) child.destroyRecursively()
 })
 
 afterAll(() => {
@@ -111,7 +116,7 @@ test.each(navigation)("%s", (_, Control, options, steps, expected) => {
   const node = new Control(renderer, { width: 40, height: 10, options: items, ...options })
   let events = ""
   node.on("selectionChanged", (index: number, option: unknown) => {
-    expect(option).toBe(node.getSelectedOption())
+    expect([index, option]).toEqual([node.getSelectedIndex(), node.getSelectedOption()])
     events += "c"
   })
   node.on("itemSelected", (index: number, option: unknown) => {
@@ -144,7 +149,6 @@ test("TabSelect paints the visible tabs, the underline, the description, and scr
     "                    ▬▬▬▬▬▬▬▬▬▬",
     " one item",
   ])
-  tabs.destroy()
 })
 
 // Steps: a key, `#n` for scrollTo(n, n), `[shift+]wheel:direction`, `arrow:start|end` (click), or `auto:x,y`
@@ -203,7 +207,6 @@ test.each(scrolling)("ScrollBox %s", async (_, options, steps, expected) => {
     )
   }
   expect(trace.join(" ")).toBe(expected)
-  scroll.destroyRecursively()
 })
 
 // A subclass that overrides renderSelf paints through the JS fallback, which must match the native paint, also at
@@ -265,8 +268,6 @@ test("box titles and arrow characters accept any text", async () => {
   arrow.arrowChars = { up: text.slice(1) }
   await setup.renderOnce()
   expect(errors).toEqual([])
-  box.destroy()
-  arrow.destroy()
 })
 
 // The setters are covered by renderable-nullish-props.test.ts; these are the methods and the instance accessor.
