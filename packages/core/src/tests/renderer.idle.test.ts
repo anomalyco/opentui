@@ -1,18 +1,14 @@
 import { test, expect, beforeEach, afterEach } from "bun:test"
 import { createTestRenderer, type TestRenderer } from "../testing/test-renderer.js"
-import { RendererControlState } from "../renderer.js"
+import { settle } from "../testing/harness.js"
+import { ManualClock } from "../testing/manual-clock.js"
 
 let renderer: TestRenderer
-
-async function expectIdleWithoutAnotherFrame(renderer: TestRenderer): Promise<void> {
-  const frameId = renderer.frameId
-  await renderer.idle()
-  expect(renderer.frameId).toBe(frameId)
-  expect(renderer.getSchedulerState().isRendering).toBe(false)
-}
+let clock: ManualClock
 
 beforeEach(async () => {
-  ;({ renderer } = await createTestRenderer({}))
+  clock = new ManualClock()
+  ;({ renderer } = await createTestRenderer({ clock }))
 })
 
 afterEach(async () => {
@@ -20,193 +16,78 @@ afterEach(async () => {
   await renderer.closed
 })
 
-test("idle() resolves without another frame when renderer is already idle", async () => {
-  expect(renderer.controlState).toBe(RendererControlState.IDLE)
-  expect(renderer.isRunning).toBe(false)
+// Advances the manual clock until `idle()` resolves; fails if the renderer never becomes idle.
+async function idleWithClock(): Promise<void> {
+  let resolved = false
+  const idle = renderer.idle().then(() => (resolved = true))
+  for (let turn = 0; turn < 32 && !resolved; turn++) {
+    clock.advance(20)
+    await settle()
+  }
+  await idle
+}
 
-  await expectIdleWithoutAnotherFrame(renderer)
-})
+const scheduledWork: Record<string, { run: (target: TestRenderer) => void; frames: number; callbacks: number }> = {
+  "no work": { run: () => {}, frames: 0, callbacks: 0 },
+  "a cancelled start": { run: (target) => (target.start(), target.pause()), frames: 0, callbacks: 0 },
+  "one render request": { run: (target) => target.requestRender(), frames: 1, callbacks: 0 },
+  "coalesced render requests": { run: (target) => (target.requestRender(), target.requestRender()), frames: 1, callbacks: 0 },
+  "a paused render request": { run: (target) => (target.pause(), target.requestRender()), frames: 1, callbacks: 0 },
+  "an animation frame": { run: (target) => void target.requestAnimationFrame(() => callbacks++), frames: 1, callbacks: 1 },
+  "a nested animation frame": {
+    run: (target) =>
+      void target.requestAnimationFrame(() => {
+        callbacks++
+        target.requestAnimationFrame(() => callbacks++)
+      }),
+    frames: 2,
+    callbacks: 2,
+  },
+}
+let callbacks = 0
 
-test("idle() waits for running renderer to stop", async () => {
-  renderer.start()
-  expect(renderer.isRunning).toBe(true)
+for (const [name, { run, frames, callbacks: expectedCallbacks }] of Object.entries(scheduledWork)) {
+  test(`idle() resolves after ${name} without another frame`, async () => {
+    callbacks = 0
+    run(renderer)
+    await idleWithClock()
+    const after = { frames: renderer.frameId, callbacks, running: renderer.isRunning }
 
-  const idlePromise = renderer.idle()
+    await idleWithClock()
 
-  await new Promise((resolve) => setTimeout(resolve, 50))
-
-  renderer.stop()
-
-  await idlePromise
-
-  expect(renderer.isRunning).toBe(false)
-})
-
-test("idle() waits for paused renderer after requestRender()", async () => {
-  renderer.pause()
-  expect(renderer.isRunning).toBe(false)
-
-  renderer.requestRender()
-
-  const idlePromise = renderer.idle()
-
-  await idlePromise
-
-  expect(renderer.isRunning).toBe(false)
-})
-
-test("idle() resolves without another frame after requestRender() completes", async () => {
-  renderer.requestRender()
-
-  await renderer.idle()
-
-  await expectIdleWithoutAnotherFrame(renderer)
-})
-
-test("multiple idle() calls all resolve when renderer becomes idle", async () => {
-  renderer.start()
-
-  const idlePromise1 = renderer.idle()
-  const idlePromise2 = renderer.idle()
-  const idlePromise3 = renderer.idle()
-
-  await new Promise((resolve) => setTimeout(resolve, 50))
-
-  renderer.stop()
-
-  await Promise.all([idlePromise1, idlePromise2, idlePromise3])
-
-  expect(renderer.isRunning).toBe(false)
-})
-
-test("idle() resolves when AUTO_STARTED renderer drops all live requests", async () => {
-  renderer.requestLive()
-  expect(renderer.controlState).toBe(RendererControlState.AUTO_STARTED)
-  expect(renderer.isRunning).toBe(true)
-
-  const idlePromise = renderer.idle()
-
-  renderer.dropLive()
-
-  await idlePromise
-
-  expect(renderer.controlState).toBe(RendererControlState.IDLE)
-  expect(renderer.isRunning).toBe(false)
-})
-
-test("idle() resolves after explicit pause", async () => {
-  renderer.start()
-  expect(renderer.isRunning).toBe(true)
-
-  const idlePromise = renderer.idle()
-
-  renderer.pause()
-
-  await idlePromise
-
-  expect(renderer.controlState).toBe(RendererControlState.EXPLICIT_PAUSED)
-  expect(renderer.isRunning).toBe(false)
-})
-
-test("idle() resolves without another frame when called on paused renderer", async () => {
-  renderer.start()
-  renderer.pause()
-  await expectIdleWithoutAnotherFrame(renderer)
-})
-
-test("idle() resolves when renderer is destroyed", async () => {
-  renderer.start()
-
-  const idlePromise = renderer.idle()
-
-  renderer.destroy()
-
-  await idlePromise
-})
-
-test("idle() resolves without another frame when called on destroyed renderer", async () => {
-  renderer.destroy()
-  await renderer.closed
-
-  await expectIdleWithoutAnotherFrame(renderer)
-})
-
-test("idle() waits through multiple requestRender() calls", async () => {
-  renderer.requestRender()
-  renderer.requestRender()
-
-  await renderer.idle()
-
-  expect(renderer.isRunning).toBe(false)
-})
-
-test("idle() works correctly with stop() called during rendering", async () => {
-  renderer.start()
-
-  await new Promise((resolve) => setTimeout(resolve, 50))
-
-  const idlePromise = renderer.idle()
-
-  renderer.stop()
-
-  await idlePromise
-
-  expect(renderer.isRunning).toBe(false)
-})
-
-test("idle() resolves after pause() called during rendering", async () => {
-  renderer.start()
-
-  await new Promise((resolve) => setTimeout(resolve, 50))
-
-  const idlePromise = renderer.idle()
-
-  renderer.pause()
-
-  await idlePromise
-
-  expect(renderer.controlState).toBe(RendererControlState.EXPLICIT_PAUSED)
-  expect(renderer.isRunning).toBe(false)
-})
-
-test("idle() can be used in a loop to wait between operations", async () => {
-  const operations: string[] = []
-
-  operations.push("start")
-  renderer.requestRender()
-  await renderer.idle()
-  operations.push("rendered")
-
-  renderer.requestRender()
-  await renderer.idle()
-  operations.push("rendered again")
-
-  expect(operations).toEqual(["start", "rendered", "rendered again"])
-})
-
-test("idle() works with requestAnimationFrame", async () => {
-  let frameCallbackExecuted = false
-
-  renderer.requestAnimationFrame(() => {
-    frameCallbackExecuted = true
+    expect(after).toEqual({ frames, callbacks: expectedCallbacks, running: false })
+    expect(renderer.frameId).toBe(frames)
+    expect(renderer.getSchedulerState()).toEqual({ isRunning: false, isRendering: false, hasScheduledRender: false })
   })
+}
 
-  await renderer.idle()
+for (const halt of ["pause", "stop", "dropLive", "destroy"] as const) {
+  test(`pending idle() calls resolve when ${halt}() ends a running loop`, async () => {
+    if (halt === "dropLive") renderer.requestLive()
+    else renderer.start()
+    clock.advance(100)
+    await settle(4)
+    expect(renderer.frameId).toBeGreaterThan(0)
 
-  expect(frameCallbackExecuted).toBe(true)
-})
+    let resolved = 0
+    const waits = [renderer.idle(), renderer.idle()].map((wait) => wait.then(() => resolved++))
+    clock.advance(100)
+    await settle(4)
+    expect(resolved).toBe(0)
 
-test("idle() waits for all animation frames to complete", async () => {
-  let count = 0
-
-  renderer.requestAnimationFrame(() => {
-    count++
-    renderer.requestAnimationFrame(() => {
-      count++
-    })
+    renderer[halt]()
+    // dropLive() keeps already scheduled frames, so the clock must run them.
+    for (let turn = 0; turn < 8 && resolved < 2; turn++) {
+      clock.advance(20)
+      await settle()
+    }
+    await Promise.all(waits)
+    expect({ resolved, running: renderer.isRunning }).toEqual({ resolved: 2, running: false })
   })
+}
 
+test("idle() on a destroyed renderer resolves with closed", async () => {
+  renderer.destroy()
   await renderer.idle()
-
-  expect(count).toBe(2)
+  expect(renderer.isDestroyed).toBe(true)
 })
