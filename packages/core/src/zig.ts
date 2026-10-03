@@ -4129,10 +4129,7 @@ export class FFIRenderLib {
   }
 
   public destroyContextTextBuffer(context: NativeContextHandle, text: ContextTextBufferHandle): void {
-    this.getYogaHost().assertMutable()
-    const handle = encodeContextHandle(context, text)
-    const pointer = this.nativeContextPointer(context, "ot_text_buffer_destroy")
-    nativeResult("ot_text_buffer_destroy", this.opentui.symbols.ot_text_buffer_destroy(pointer, handle))
+    this.destroyContextObject(context, text, "ot_text_buffer_destroy")
   }
 
   public createContextTextBufferView(
@@ -4153,10 +4150,7 @@ export class FFIRenderLib {
   }
 
   public destroyContextTextBufferView(context: NativeContextHandle, view: ContextTextBufferViewHandle): void {
-    this.getYogaHost().assertMutable()
-    const handle = encodeContextHandle(context, view)
-    const pointer = this.nativeContextPointer(context, "ot_text_buffer_view_destroy")
-    nativeResult("ot_text_buffer_view_destroy", this.opentui.symbols.ot_text_buffer_view_destroy(pointer, handle))
+    this.destroyContextObject(context, view, "ot_text_buffer_view_destroy")
   }
 
   public contextTextBufferSetText(
@@ -4821,10 +4815,7 @@ export class FFIRenderLib {
   }
 
   public destroyContextSyntaxStyle(context: NativeContextHandle, style: ContextSyntaxStyleHandle): void {
-    this.getYogaHost().assertMutable()
-    const handle = encodeContextHandle(context, style)
-    const pointer = this.nativeContextPointer(context, "ot_syntax_style_destroy")
-    nativeResult("ot_syntax_style_destroy", this.opentui.symbols.ot_syntax_style_destroy(pointer, handle))
+    this.destroyContextObject(context, style, "ot_syntax_style_destroy")
   }
 
   public contextEditBufferSetSyntaxStyle(
