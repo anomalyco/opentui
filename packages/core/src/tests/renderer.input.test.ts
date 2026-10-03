@@ -2582,3 +2582,15 @@ describe("stdin routing", () => {
     }
   })
 })
+
+// Native control rejects some reply forms; the rest of the input chunk must still reach key handlers.
+for (const reply of ["\x1b[?1049;2$y", "\x1b[?1;2u", "\x1b_Gi=7\x1b\\"]) {
+  test(`keys after a rejected capability reply ${JSON.stringify(reply)} in the same chunk are delivered`, () => {
+    const keys: string[] = []
+    currentRenderer.keyInput.on("keypress", (key) => keys.push(key.name))
+
+    currentRenderer.stdin.emit("data", Buffer.from(`${reply}ab`))
+
+    expect(keys).toEqual(["a", "b"])
+  })
+}

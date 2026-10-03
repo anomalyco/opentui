@@ -3376,8 +3376,9 @@ export class CliRenderer extends EventEmitter implements RenderContext {
     try {
       this.nativeSession.control({ kind: "capability-response", bytes: Buffer.from(sequence) })
     } catch (error) {
-      if (error instanceof NativeError && error.status === NativeStatus.InvalidPhase) return false
-      throw error
+      if (!(error instanceof NativeError)) throw error
+      // A rejected reply is consumed without being applied. Throwing would reset the parser and drop later input.
+      return error.status !== NativeStatus.InvalidPhase
     } finally {
       if (transition) this.setPendingSplitFooterTransition(transition)
     }
