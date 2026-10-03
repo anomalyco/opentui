@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test"
-import type { Timeline } from "@opentui/core"
+import { createTimeline, engine, type Timeline } from "@opentui/core"
 import { act, useState } from "react"
 import { ManualClock } from "@opentui/core/testing"
 
@@ -30,6 +30,18 @@ test("useTimeline preserves its Timeline across rerenders", async () => {
 
   expect(timelines).toHaveLength(2)
   expect(timelines[1]).toBe(timelines[0])
+})
+
+test("createTimeline without a renderer animates after render()", async () => {
+  engine.detach() // A renderer leaked by an earlier test file would keep driving the default engine.
+  const clock = new ManualClock()
+  testSetup = await testRender(<text>timeline</text>, { width: 10, height: 1, clock })
+  testSetup.renderer.pause()
+  const value = { x: 0 }
+  createTimeline({ duration: 100 }).add(value, { x: 100, duration: 100 })
+  clock.advance(25)
+  await testSetup.renderOnce()
+  expect(value.x).toBe(25)
 })
 
 test("useTimeline keeps separate roots independent after either renderer is destroyed", async () => {
