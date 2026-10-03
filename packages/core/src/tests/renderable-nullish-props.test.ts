@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, expect, test } from "bun:test"
 import { isDeepStrictEqual } from "node:util"
 import * as core from "../index.js"
-import { CliRenderEvents, Renderable, RGBA, SyntaxStyle } from "../index.js"
+import { CliRenderEvents, Renderable, RGBA, SyntaxStyle, TabSelectRenderable } from "../index.js"
 import { createTestRenderer, type TestRenderer } from "../testing/test-renderer.js"
 
 // React writes `null` when a prop is removed, and Solid writes `undefined` when a prop expression becomes undefined.
@@ -56,11 +56,12 @@ const enumSamples: Record<string, unknown> = {
 
 let renderer: TestRenderer
 let renderOnce: () => Promise<void>
+let captureSpans: () => unknown
 let syntaxStyle: SyntaxStyle
 const frameErrors: string[] = []
 
 beforeAll(async () => {
-  ;({ renderer, renderOnce } = await createTestRenderer({ width: 24, height: 8 }))
+  ;({ renderer, renderOnce, captureSpans } = await createTestRenderer({ width: 24, height: 8 }))
   syntaxStyle = SyntaxStyle.create(renderer.nativeScene)
   renderer.on(CliRenderEvents.RENDER_ERROR, (event: { error: Error }) => frameErrors.push(event.error.message))
 })
@@ -159,3 +160,31 @@ test.each(renderableClasses)("%s setters accept null and undefined", async (name
   fresh.destroyRecursively()
   expect(failures).toEqual([])
 })
+
+// Write-only setters have no getter for the reset check, so compare the focused frame with a fresh node instead.
+test.each([{}, { textColor: "#00ff00", backgroundColor: "#0000ff" }])(
+  "TabSelect focused colors reset to the constructor fallback (%j)",
+  async (colors) => {
+    const tabs = [
+      { name: "a", description: "" },
+      { name: "b", description: "" },
+    ]
+    const options = { width: 12, options: tabs, ...colors }
+    const focusedFrame = async (node: TabSelectRenderable) => {
+      renderer.root.add(node)
+      node.focus()
+      await renderOnce()
+      const spans = captureSpans()
+      node.destroyRecursively()
+      return spans
+    }
+    const expected = await focusedFrame(new TabSelectRenderable(renderer, options))
+    const node = new TabSelectRenderable(renderer, {
+      ...options,
+      focusedTextColor: "red",
+      focusedBackgroundColor: "red",
+    })
+    Object.assign(node, { focusedTextColor: null, focusedBackgroundColor: undefined })
+    expect(await focusedFrame(node)).toEqual(expected)
+  },
+)

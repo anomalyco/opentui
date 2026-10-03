@@ -75,7 +75,6 @@ const defaultColors = {
   backgroundColor: "transparent",
   textColor: "#FFFFFF",
   focusedBackgroundColor: "#1a1a1a",
-  focusedTextColor: "#FFFFFF",
   selectedBackgroundColor: "#334455",
   selectedTextColor: "#FFFF00",
   selectedDescriptionColor: "#CCCCCC",
@@ -91,6 +90,7 @@ export class TabSelectRenderable extends Renderable {
   private maxVisibleTabs: number
 
   private _backgroundColor: RGBA
+  private _hasBackgroundColor: boolean
   private _textColor: RGBA
   private _focusedBackgroundColor: RGBA
   private _focusedTextColor: RGBA
@@ -112,13 +112,12 @@ export class TabSelectRenderable extends Renderable {
 
     try {
       this._backgroundColor = RGBA.clone(parseColor(options.backgroundColor || defaultColors.backgroundColor))
+      this._hasBackgroundColor = !!options.backgroundColor
       this._textColor = RGBA.clone(parseColor(options.textColor || defaultColors.textColor))
       this._focusedBackgroundColor = RGBA.clone(
         parseColor(options.focusedBackgroundColor || options.backgroundColor || defaultColors.focusedBackgroundColor),
       )
-      this._focusedTextColor = RGBA.clone(
-        parseColor(options.focusedTextColor || options.textColor || defaultColors.focusedTextColor),
-      )
+      this._focusedTextColor = RGBA.clone(parseColor(options.focusedTextColor || this._textColor))
       this._options = options.options || []
       this._tabWidth = options.tabWidth || 20
       this._showDescription = options.showDescription ?? true
@@ -363,6 +362,7 @@ export class TabSelectRenderable extends Renderable {
 
   public set backgroundColor(color: ColorInput) {
     this._backgroundColor = RGBA.clone(parseColor(color ?? defaultColors.backgroundColor))
+    this._hasBackgroundColor = color != null
     this.requestRender()
   }
 
@@ -372,12 +372,14 @@ export class TabSelectRenderable extends Renderable {
   }
 
   public set focusedBackgroundColor(color: ColorInput) {
-    this._focusedBackgroundColor = RGBA.clone(parseColor(color ?? defaultColors.focusedBackgroundColor))
+    // Like the constructor: an unset focused background follows an explicit background color.
+    const fallback = this._hasBackgroundColor ? this._backgroundColor : defaultColors.focusedBackgroundColor
+    this._focusedBackgroundColor = RGBA.clone(parseColor(color ?? fallback))
     this.requestRender()
   }
 
   public set focusedTextColor(color: ColorInput) {
-    this._focusedTextColor = RGBA.clone(parseColor(color ?? defaultColors.focusedTextColor))
+    this._focusedTextColor = RGBA.clone(parseColor(color ?? this._textColor))
     this.requestRender()
   }
 
