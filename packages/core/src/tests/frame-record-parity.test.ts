@@ -4,7 +4,7 @@ import { EditBuffer } from "../edit-buffer.js"
 import { EditorView } from "../editor-view.js"
 import { NativeImage } from "../image.js"
 import { RGBA } from "../lib/RGBA.js"
-import { Renderable } from "../Renderable.js"
+import { BoxRenderable } from "../renderables/Box.js"
 import { TextRenderable } from "../renderables/Text.js"
 import { CliRenderEvents } from "../renderer.js"
 import { createTestRenderer, type TestRendererSetup } from "../testing/test-renderer.js"
@@ -12,8 +12,9 @@ import { TextBuffer } from "../text-buffer.js"
 import { TextBufferView } from "../text-buffer-view.js"
 import { TargetChannel } from "../types.js"
 
-// Every operation draws once through a paint hook (recorded, played by native paint) and once directly into an
-// owned buffer. Both must produce the same cells, so recording changes neither what nor where a call draws.
+// Every recording command draws once through a paint hook (recorded, played by native paint) and once directly into an
+// owned buffer. Both must produce the same cells, so recording changes neither what nor where a call draws. Resource
+// rows free what they drew right after drawing it: a recording must keep it alive until native code paints.
 const width = 12
 const height = 4
 const white = RGBA.fromInts(255, 255, 255)
@@ -21,40 +22,30 @@ const red = RGBA.fromInts(255, 0, 0)
 const blue = RGBA.fromInts(0, 0, 255)
 const glass = RGBA.fromInts(0, 255, 0, 128)
 const black = RGBA.fromInts(0, 0, 0)
-const identity = new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1])
 const sepia = new Float32Array([0.39, 0.77, 0.19, 0, 0.35, 0.69, 0.17, 0, 0.27, 0.53, 0.13, 0, 0, 0, 0, 1])
+const box = { x: 0, y: 0, width: 10, height: 3, border: true, borderColor: white, backgroundColor: blue }
+const grid = {
+  borderChars: new Uint32Array(Array.from("┌┐└┘─│┬┴├┤┼", (char) => char.codePointAt(0)!)),
+  borderFg: white,
+  borderBg: blue,
+  columnOffsets: new Int32Array([0, 4, 9]),
+  rowOffsets: new Int32Array([0, 2, 3]),
+  drawInner: true,
+  drawOuter: true,
+}
 
 let setup: TestRendererSetup
-let resources: {
-  surface: OptimizedBuffer
-  textView: TextBufferView
-  editorView: EditorView
-  image: NativeImage
-  sceneText: TextRenderable
-}
+let sceneText: TextRenderable
+let pixel: NativeImage
+const scene = () => setup.renderer.nativeScene
+const pixels = new Uint8Array(4 * 4 * 4).map((_, index) => (index * 37) & 0xff)
 
 beforeAll(async () => {
   setup = await createTestRenderer({ width, height })
-  const scene = setup.renderer.nativeScene
-  const surface = OptimizedBuffer.create(3, 2, "unicode", { owner: scene })
-  surface.clear(blue)
-  surface.drawText("s1", 0, 0, white, blue)
-  surface.drawText("界", 0, 1, red)
-  const text = TextBuffer.create("unicode", scene)
-  text.setText("view\n漢字")
-  const edit = EditBuffer.create("unicode", scene)
-  edit.setText("edit")
-  const pixels = new Uint8Array(4 * 4 * 4).map((_, index) => (index * 37) & 0xff)
   // Hidden scene text keeps its layout without painting itself.
-  const sceneText = new TextRenderable(setup.renderer, { content: "scene", width: 5, height: 1, opacity: 0 })
+  sceneText = new TextRenderable(setup.renderer, { content: "scene", width: 5, height: 1, opacity: 0 })
   setup.renderer.root.add(sceneText)
-  resources = {
-    surface,
-    textView: TextBufferView.create(text),
-    editorView: EditorView.create(edit, 4, 1),
-    image: NativeImage.fromRgba(pixels, 4, 4, 16, { owner: scene.resourceContext }),
-    sceneText,
-  }
+  pixel = NativeImage.fromRgba(pixels, 1, 1, 4, { owner: scene().resourceContext })
 })
 
 afterAll(async () => {
@@ -62,123 +53,63 @@ afterAll(async () => {
   await setup.renderer.closed
 })
 
-function packedCells(cells: { char: string; fg: RGBA; bg: RGBA }[]): Uint8Array {
-  const bytes = new Uint8Array(cells.length * 48)
-  const view = new DataView(bytes.buffer)
-  cells.forEach(({ char, fg, bg }, cell) => {
-    const offset = cell * 48
-    bg.toInts().forEach((value, channel) => view.setFloat32(offset + channel * 4, value / 255, true))
-    fg.toInts().forEach((value, channel) => view.setFloat32(offset + 16 + channel * 4, value / 255, true))
-    view.setUint32(offset + 32, char.codePointAt(0)!, true)
-  })
-  return bytes
-}
-
 const operations: Record<string, (buffer: OptimizedBuffer) => void> = {
-  "ASCII text with colors and attributes": (buffer) => buffer.drawText("hello", 1, 0, red, blue, 1),
-  "wide, combined, and joined graphemes": (buffer) => {
-    buffer.drawText("漢字", 0, 0, white)
-    buffer.drawText("e\u0301👨‍👩‍👧", 0, 1, white)
+  text: (buffer) => {
+    buffer.drawText("hello", 1, 0, red, blue, 1)
+    buffer.drawText(123 as never, 7, 0, white)
+    buffer.drawText("漢字e\u0301👨‍👩‍👧", 0, 1, white)
+    buffer.drawText("a\ud800b", 0, 2, white)
+    buffer.drawText(["a", "b"] as never, 4, 2, white)
+    buffer.drawText(undefined as never, 8, 2, white)
+    buffer.drawText(null as never, 8, 2, white)
+    buffer.drawText("clipped text", -3, height - 1, white)
   },
-  "a lone surrogate": (buffer) => buffer.drawText("a\ud800b", 0, 0, white),
-  "non-string text": (buffer) => {
-    buffer.drawText(123 as never, 0, 0, white)
-    buffer.drawText(["a", "b"] as never, 4, 0, white)
-    buffer.drawText(null as never, 0, 1, white)
-    buffer.drawText(undefined as never, 6, 1, white)
-    const titles = { title: 42 as never, bottomTitle: 0 as never }
-    buffer.drawBox({
-      x: 0,
-      y: 2,
-      width: 8,
-      height: 2,
-      border: true,
-      borderColor: white,
-      backgroundColor: blue,
-      ...titles,
-    })
-  },
-  "text clipped at the edges": (buffer) => buffer.drawText("clipped text", -3, height - 1, white),
-  "fill with alpha": (buffer) => {
-    buffer.fillRect(0, 0, 6, 2, red)
-    buffer.fillRect(2, 1, 6, 2, glass)
-  },
-  "cells with and without blending": (buffer) => {
-    buffer.fillRect(0, 0, width, 1, blue)
-    buffer.setCell(1, 0, "x", white, red, 2)
-    buffer.setCellWithAlphaBlending(3, 0, "y", white, glass)
-  },
-  characters: (buffer) => {
-    buffer.drawChar(0x41, 0, 0, white, red)
-    buffer.drawChar(0x754c, 2, 0, white, blue)
-  },
-  "box with titles": (buffer) =>
-    buffer.drawBox({
-      x: 0,
-      y: 0,
-      width: 10,
-      height: 3,
-      border: true,
-      borderStyle: "rounded",
-      borderColor: white,
-      backgroundColor: blue,
-      shouldFill: true,
-      title: "top",
-      titleAlignment: "center",
-      bottomTitle: "end",
-      bottomTitleAlignment: "right",
-    }),
-  "composed buffer and region": (buffer) => {
-    buffer.drawFrameBuffer(0, 0, resources.surface)
-    buffer.drawFrameBuffer(5, 1, resources.surface, 1, 0, 2, 2)
-  },
-  clear: (buffer) => {
+  "clear, fills, cells, characters, and boxes": (buffer) => {
     buffer.drawText("gone", 0, 0, white)
     buffer.clear(red)
+    buffer.fillRect(0, 0, 6, 2, blue)
+    buffer.fillRect(2, 1, 6, 2, glass)
+    const titles = { title: "up", titleAlignment: "center", bottomTitle: "dn", bottomTitleAlignment: "right" } as const
+    buffer.drawBox({ ...box, y: 1, width: 6, borderStyle: "rounded", ...titles })
+    buffer.drawBox({ ...box, x: 6, width: 6, height: 4, shouldFill: true, title: 42 as never, bottomTitle: 0 as never })
+    buffer.setCell(1, 0, "x", white, red, 2)
+    buffer.setCellWithAlphaBlending(3, 0, "y", white, glass)
+    buffer.drawChar(0x41, 5, 0, white, red)
+    buffer.drawChar(0x754c, 2, 2, white, blue)
   },
-  "nested scissors": (buffer) => {
+  "composed buffer": (buffer) => {
+    const surface = OptimizedBuffer.create(3, 2, "unicode", { owner: scene() })
+    surface.clear(blue)
+    surface.drawText("s1", 0, 0, white, blue)
+    surface.drawText("界", 0, 1, red)
+    buffer.drawFrameBuffer(0, 0, surface)
+    buffer.drawFrameBuffer(5, 1, surface, 1, 0, 2, 2)
+    surface.destroy()
+  },
+  "scissor and opacity stacks": (buffer) => {
+    buffer.fillRect(0, 0, width, height, blue)
     buffer.pushScissorRect(1, 0, 6, 3)
     buffer.pushScissorRect(3, 1, 8, 1)
     buffer.fillRect(0, 0, width, height, red)
     buffer.popScissorRect()
+    buffer.pushOpacity(0.5)
+    buffer.pushOpacity(0.5)
     buffer.drawText("abcdefghijkl", 0, 0, white)
+    buffer.popOpacity()
+    buffer.drawText("half", 0, 2, white)
+    buffer.clearOpacity()
     buffer.clearScissorRects()
     buffer.drawText("after", 0, 3, white)
   },
-  "nested opacity": (buffer) => {
-    buffer.fillRect(0, 0, width, height, blue)
-    buffer.pushOpacity(0.5)
-    buffer.pushOpacity(0.5)
-    buffer.fillRect(0, 0, 4, 2, red)
-    buffer.popOpacity()
-    buffer.drawText("half", 4, 0, white)
-    buffer.clearOpacity()
-    buffer.drawText("full", 4, 1, white)
+  grid: (buffer) => buffer.drawGrid(grid),
+  "packed cells": (buffer) => {
+    const cells = new Float32Array(24)
+    cells.set([1, 0, 0, 1, 1, 1, 1, 1])
+    cells.set([0, 0, 1, 0.5, 0, 1, 0, 0.5], 12)
+    new Uint32Array(cells.buffer).set([0x70], 8)
+    new Uint32Array(cells.buffer).set([0x2588], 20)
+    buffer.drawPackedBuffer(new Uint8Array(cells.buffer), cells.byteLength, 1, 1, 2, 1)
   },
-  grid: (buffer) =>
-    buffer.drawGrid({
-      borderChars: new Uint32Array(Array.from("┌┐└┘─│┬┴├┤┼", (char) => char.codePointAt(0)!)),
-      borderFg: white,
-      borderBg: blue,
-      columnOffsets: new Int32Array([0, 4, 9]),
-      rowOffsets: new Int32Array([0, 2, 3]),
-      drawInner: true,
-      drawOuter: true,
-    }),
-  "packed cells": (buffer) =>
-    buffer.drawPackedBuffer(
-      packedCells([
-        { char: "p", fg: white, bg: red },
-        { char: "█", fg: blue, bg: black },
-        { char: "q", fg: glass, bg: blue },
-        { char: "r", fg: red, bg: glass },
-      ]),
-      4 * 48,
-      1,
-      1,
-      2,
-      2,
-    ),
   "supersampled pixels": (buffer) => {
     const pixels = new Uint8Array(8 * 4 * 4).map((_, index) => (index * 29) & 0xff)
     buffer.drawSuperSampleBuffer(1, 1, pixels, pixels.byteLength, "rgba8unorm", 8 * 4)
@@ -191,22 +122,39 @@ const operations: Record<string, (buffer: OptimizedBuffer) => void> = {
     buffer.drawGrayscaleBufferSupersampled(0, 2, samples, 4, 2, white, null)
     buffer.drawGrayscaleBufferSupersampled(5, 2, samples, 4, 2, null, glass)
   },
-  "uniform color matrix": (buffer) => {
-    buffer.fillRect(0, 0, width, height, red)
+  "uniform and masked color matrix": (buffer) => {
+    buffer.fillRect(0, 0, width, 2, red)
     buffer.drawText("tint", 0, 0, white, blue)
     buffer.colorMatrixUniform(sepia, 0.75, TargetChannel.Both)
-  },
-  "masked color matrix": (buffer) => {
-    buffer.fillRect(0, 0, width, height, blue)
-    buffer.colorMatrix(sepia, new Float32Array([0, 0, 1, 3, 1, 0.5, 11, 3, 1]), 1, TargetChannel.BG)
+    buffer.fillRect(0, 2, width, 2, blue)
+    buffer.colorMatrix(sepia, new Float32Array([0, 2, 1, 3, 3, 0.5, 11, 3, 1]), 1, TargetChannel.BG)
     buffer.colorMatrix(sepia, new Float32Array([1, 1, 1]), 1, TargetChannel.FG)
   },
-  "text view": (buffer) => buffer.drawTextBuffer(resources.textView, 2, 1),
-  "editor view": (buffer) => buffer.drawEditorView(resources.editorView, 1, 2),
-  "scene text": (buffer) => setup.renderer.nativeScene.drawText(resources.sceneText, buffer, 3, 0),
-  image: (buffer) => {
-    buffer.drawImage(resources.image, 0, 0, 4, 2, 0, 0, 0, 0, 4, 4, "blocks")
-    buffer.drawImage(resources.image, 5, 1, 2, 1, 0, 0, 1, 1, 2, 2, "blocks")
+  "text view": (buffer) => {
+    const text = TextBuffer.create("unicode", scene())
+    text.setText("view\n漢字")
+    const view = TextBufferView.create(text)
+    buffer.drawTextBuffer(view, 2, 1)
+    view.destroy()
+    text.destroy()
+  },
+  "editor view": (buffer) => {
+    const edit = EditBuffer.create("unicode", scene())
+    edit.setText("edit")
+    const view = EditorView.create(edit, 4, 1)
+    buffer.drawEditorView(view, 1, 2)
+    view.destroy()
+    edit.destroy()
+  },
+  "scene text": (buffer) => scene().drawText(sceneText, buffer, 3, 0),
+  // One image shares the scene's Context; the other is copied into it from the automatic image Context.
+  images: (buffer) => {
+    const shared = NativeImage.fromRgba(pixels, 4, 4, 16, { owner: scene().resourceContext })
+    const copied = NativeImage.fromRgba(pixels, 4, 4, 16)
+    buffer.drawImage(shared, 0, 0, 4, 2, 0, 0, 0, 0, 4, 4, "blocks")
+    buffer.drawImage(copied, 5, 1, 2, 1, 0, 0, 1, 1, 2, 2, "blocks")
+    shared.dispose()
+    copied.dispose()
   },
   "encoded Unicode": (buffer) => {
     const encoded = buffer.encodeUnicode("A👋B")
@@ -223,36 +171,17 @@ const operations: Record<string, (buffer: OptimizedBuffer) => void> = {
 // nothing behind, including the slot header that the first drawing call of a hook writes.
 const rejectedCalls: ((buffer: OptimizedBuffer) => void)[] = [
   (buffer) => buffer.drawText("x", 0.5, 0, white),
-  (buffer) =>
-    buffer.drawBox({
-      x: 0,
-      y: 0,
-      width: 2,
-      height: 2,
-      border: true,
-      borderColor: white,
-      backgroundColor: blue,
-      title: "\ud800".repeat(32_769),
-    }),
+  (buffer) => buffer.drawBox({ ...box, title: "\ud800".repeat(32_769) }),
   (buffer) => buffer.pushScissorRect(0x7fff_ffff, 0, 2, 1),
   (buffer) => buffer.pushOpacity(NaN),
-  (buffer) =>
-    buffer.drawGrid({
-      borderChars: new Uint32Array(11),
-      borderFg: white,
-      borderBg: blue,
-      columnOffsets: new Int32Array([0, 1]),
-      rowOffsets: new Int32Array([0, 1]),
-      drawInner: "yes" as never,
-      drawOuter: true,
-    }),
+  (buffer) => buffer.drawGrid({ ...grid, drawInner: "yes" as never }),
   (buffer) => buffer.drawPackedBuffer(new Uint8Array(48), 48, 0.5, 0, 1, 1),
   (buffer) => buffer.drawSuperSampleBuffer(0.5, 0, new Uint8Array(16), 16, "rgba8unorm", 8),
   (buffer) => buffer.drawGrayscaleBuffer(0.5, 0, new Float32Array(1), 1, 1),
-  (buffer) => buffer.colorMatrixUniform(identity, 1, -1 as never),
-  (buffer) => buffer.colorMatrix(identity, [0, 0, 1] as never),
-  (buffer) => buffer.drawTextBuffer(resources.textView, 0.5, 0),
-  (buffer) => buffer.drawImage(resources.image, 0, 0, 1, 1, 0, 0, 0, 0, 1, 1, "bogus" as never),
+  (buffer) => buffer.colorMatrixUniform(sepia, 1, -1 as never),
+  (buffer) => buffer.colorMatrix(sepia, [0, 0, 1] as never),
+  (buffer) => scene().drawText(sceneText, buffer, 0.5, 0),
+  (buffer) => buffer.drawImage(pixel, 0, 0, 1, 1, 0, 0, 0, 0, 1, 1, "bogus" as never),
   (buffer) => {
     const encoded = buffer.encodeUnicode("👋")
     try {
@@ -263,17 +192,15 @@ const rejectedCalls: ((buffer: OptimizedBuffer) => void)[] = [
   },
 ]
 
-function rejectAll(buffer: OptimizedBuffer): number {
-  let rejected = 0
-  for (const call of rejectedCalls) {
+const rejectAll = (buffer: OptimizedBuffer) =>
+  rejectedCalls.filter((call) => {
     try {
       call(buffer)
+      return false
     } catch {
-      rejected++
+      return true
     }
-  }
-  return rejected
-}
+  }).length
 
 /** One string per row: each span's text, foreground, background, and attributes. */
 function rows(buffer: OptimizedBuffer): string[] {
@@ -284,19 +211,18 @@ function rows(buffer: OptimizedBuffer): string[] {
     )
 }
 
-class Recorded extends Renderable {
-  draw?: (buffer: OptimizedBuffer) => void
-  protected renderSelf(buffer: OptimizedBuffer): void {
-    this.draw?.(buffer)
-  }
-}
-
 test.each(Object.keys(operations))("recorded %s paints the cells that direct drawing does", async (name) => {
   const { renderer, renderOnce } = setup
   const errors: unknown[] = []
   const report = ({ error }: { error: unknown }) => errors.push(error)
   renderer.on(CliRenderEvents.RENDER_ERROR, report)
-  const node = new Recorded(renderer, { position: "absolute", width, height })
+  let paint: (buffer: OptimizedBuffer) => void
+  const node = new BoxRenderable(renderer, {
+    position: "absolute",
+    width,
+    height,
+    renderAfter: (buffer) => paint(buffer),
+  })
   const direct = OptimizedBuffer.create(width, height, "unicode", { owner: renderer.nativeScene })
   try {
     // Both targets start from the same opaque cells, so blending reads the same destination.
@@ -308,20 +234,20 @@ test.each(Object.keys(operations))("recorded %s paints the cells that direct dra
       count += rejectAll(buffer)
       rejected.push(count)
     }
-    node.draw = draw
+    paint = draw
     renderer.root.add(node)
     await renderOnce()
     const recorded = rows(renderer.currentRenderBuffer)
     draw(direct)
-    if (name === "image") {
+    if (name === "images") {
       // An owned buffer keeps image placements; native resolves them when it composes the buffer into a frame.
-      node.draw = (buffer) => buffer.drawFrameBuffer(0, 0, direct)
+      paint = (buffer) => buffer.drawFrameBuffer(0, 0, direct)
       await renderOnce()
     }
 
     expect(errors).toEqual([])
     expect(rejected).toEqual([rejectedCalls.length * 2, rejectedCalls.length * 2])
-    expect(recorded).toEqual(name === "image" ? rows(renderer.currentRenderBuffer) : rows(direct))
+    expect(recorded).toEqual(name === "images" ? rows(renderer.currentRenderBuffer) : rows(direct))
   } finally {
     renderer.off(CliRenderEvents.RENDER_ERROR, report)
     node.destroy()
