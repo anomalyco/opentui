@@ -92,17 +92,18 @@ function normalizePositiveInteger(value: number | undefined, fallback: number): 
 }
 
 function createWaitError(renderer: TestRenderer, message: string, frame?: string): Error {
-  const stats = renderer.getStats()
   const scheduler = renderer.getSchedulerState()
-  const details = [
-    message,
-    `frameId: ${renderer.frameId}`,
-    `nativeFrameCount: ${stats.nativeFrameCount}`,
-    `cellsUpdated: ${stats.cellsUpdated}`,
+  const details = [message, `frameId: ${renderer.frameId}`, `destroyed: ${renderer.isDestroyed}`]
+  // Native stats are gone after destruction; a Session failure can destroy the renderer during a wait.
+  if (!renderer.isDestroyed) {
+    const stats = renderer.getStats()
+    details.push(`nativeFrameCount: ${stats.nativeFrameCount}`, `cellsUpdated: ${stats.cellsUpdated}`)
+  }
+  details.push(
     `isRunning: ${scheduler.isRunning}`,
     `isRendering: ${scheduler.isRendering}`,
     `hasScheduledRender: ${scheduler.hasScheduledRender}`,
-  ]
+  )
 
   if (frame !== undefined) {
     details.push(`lastFrame:\n${frame}`)
@@ -303,7 +304,7 @@ export async function createTestRenderer(options: TestRendererOptions): Promise<
     const maxPasses = normalizePositiveInteger(waitOptions.maxPasses, DEFAULT_MAX_PASSES)
     let frame = ""
 
-    for (let pass = 0; pass <= maxPasses; pass++) {
+    for (let pass = 0; pass <= maxPasses && !renderer.isDestroyed; pass++) {
       await drainImmediateWork()
       if (renderer.getSchedulerState().isRendering) {
         //@ts-expect-error - this is a test renderer
