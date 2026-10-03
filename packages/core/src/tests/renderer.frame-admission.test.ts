@@ -167,7 +167,7 @@ const busyResizes = {
     target.renderer.requestRender()
     target.clock.advance(100)
     await settleUntil(() => target.stdout.pendingWrite)
-    return { ...target, resize: [100, 30] as const }
+    return { ...target, size: [100, 30] }
   },
   "a parked split-footer paint": async () => {
     const target = createAdmissionRenderer(30, 12, {
@@ -196,19 +196,19 @@ const busyResizes = {
     target.clock.advance(100)
     await parked.promise
     expect(target.renderer.getSchedulerState().isRendering).toBe(true)
-    return { ...target, resize: [20, 12] as const }
+    return { ...target, size: [20, 12] }
   },
 }
 
 for (const [state, enter] of Object.entries(busyResizes)) {
   test(`resize() during ${state} applies once the Session is ready`, async () => {
-    const { renderer, stdout, clock, resize } = await enter()
+    const { renderer, stdout, clock, size } = await enter()
     const resizes: number[][] = []
     const errors: unknown[] = []
     renderer.on(CliRenderEvents.RESIZE, (width: number, height: number) => resizes.push([width, height]))
     renderer.on(CliRenderEvents.RENDER_ERROR, ({ error }) => errors.push(error))
 
-    expect(() => renderer.resize(...resize)).not.toThrow()
+    expect(() => renderer.resize(size[0], size[1])).not.toThrow()
     stdout.release()
     for (let turn = 0; turn < 8; turn++) {
       clock.advance(100)
@@ -217,7 +217,7 @@ for (const [state, enter] of Object.entries(busyResizes)) {
     await renderer.idle()
 
     expect({ size: [renderer.terminalWidth, renderer.terminalHeight], resizes, errors }).toEqual({
-      size: [...resize],
+      size,
       resizes: [[renderer.width, renderer.height]],
       errors: [],
     })
