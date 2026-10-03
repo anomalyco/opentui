@@ -290,11 +290,11 @@ Do not depend on a pending child staying idle after its parent pauses. Unregiste
 
 `getTimelineEngine(renderer)` returns the engine for that renderer. It also restores the engine's frame callback if application code cleared renderer callbacks. Renderer destruction unregisters its timelines and detaches the engine.
 
-The exported `engine` is the default engine, which `createTimeline()` uses when you omit the renderer. The first renderer passed to `getTimelineEngine()` drives it until that renderer is destroyed. React `createRoot(renderer).render()` and Solid `render()` and `testRender()` make that call. Detach before explicitly moving an engine to a different renderer. A timeline can belong to only one engine at a time.
+The exported `engine` is the default engine, which `createTimeline()` uses when you omit the renderer. It is separate from renderer-owned engines. `engine.attach(renderer)` moves it to that renderer. React `createRoot(renderer).render()` and Solid `render()` and `testRender()` call it, so the last call drives timelines without a renderer. Renderer destruction detaches the default engine but keeps its timelines. Detach a renderer-owned engine before you attach it to a different renderer. A timeline can belong to only one engine at a time.
 
 | Method                 | Behavior                                                     |
 | ---------------------- | ------------------------------------------------------------ |
-| `attach(renderer)`     | Installs a frame callback; rejects a different active owner  |
+| `attach(renderer)`     | Installs a frame callback; `engine` moves, others reject     |
 | `detach()`             | Removes the frame callback and drops engine-owned live state |
 | `register(timeline)`   | Adds one timeline and watches its state                      |
 | `unregister(timeline)` | Removes one timeline and its state listener                  |
