@@ -123,8 +123,11 @@ class ReadySessions {
 
   private arm(): void {
     if (this.failure || this.cancelTurn || this.ready.size === 0) return
+    let arming = true
     try {
       this.cancelTurn = this.host.schedule(() => {
+        // An inline turn would leave cancelTurn set after the turn ends and stall all ready work.
+        if (arming) throw new Error("NativeSessionScheduler.schedule ran a callback inline")
         this.cancelTurn = null
         // One ready callback per host turn; rotate owners before calling user code.
         const tasks = this.ready.values().next().value
@@ -147,6 +150,8 @@ class ReadySessions {
       })
     } catch (error) {
       this.fail(error)
+    } finally {
+      arming = false
     }
   }
 
@@ -753,10 +758,12 @@ export class NativeSession {
     }
     const ticket = this.lib.sessionReadOutput(this.context, this.session, this.buffer)
     if (!ticket) throw new Error("NativeSession output pending without bytes")
+    if (ticket.byteCount > this.buffer.length) throw new Error("NativeSession output ticket exceeds its buffer")
     this.writeSink(this.buffer.subarray(0, ticket.byteCount), ticket)
   }
 
   private writeSink(bytes: Uint8Array, ticket: NativeOutputTicket | null): void {
+    if (this.output) throw new Error("NativeSession output is already in flight")
     const output = { ticket, completed: false, failed: false }
     this.output = output
     // Set the gate before calling user code so even an inline drain is not lost.

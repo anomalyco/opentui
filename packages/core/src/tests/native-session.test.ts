@@ -214,6 +214,20 @@ test("a throwing host scheduler fails each Session that schedules on it, and lat
   assert.throws(() => new NativeSession(new Sink(), { scheduler, output }), /schedule failed/)
 })
 
+test("an inline host scheduler fails the Session instead of stalling ready work", async () => {
+  const scheduler: NativeSessionScheduler = {
+    now: () => 0n,
+    schedule(callback) {
+      callback()
+      return () => {}
+    },
+  }
+  const driver = new NativeSession(new Sink(), { scheduler, output })
+  driver.write(Buffer.from("x"))
+  expect(await outcome(driver.closed)).toBe("NativeSessionScheduler.schedule ran a callback inline")
+  expect(driver.disposed).toBe(true)
+})
+
 test("seeded writes reach the sink in order, and idle waits for the last acknowledgement", async () => {
   let refused = 0
   for (const [seed, outputBufferSize] of [
