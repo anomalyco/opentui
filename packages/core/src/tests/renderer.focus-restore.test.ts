@@ -42,44 +42,51 @@ afterEach(async () => {
   await renderer.closed
 })
 
+function emitFocus(sequence: string): void {
+  for (const change of sequence) {
+    renderer.stdin.emit("data", Buffer.from(change === "O" ? "\x1b[O" : "\x1b[I"))
+    clock.advance(15)
+  }
+}
+
 describe("focus restore - terminal mode re-enable on focus-in", () => {
-  test("terminal modes are NOT restored on focus-in without prior blur", async () => {
-    renderer.stdin.emit("data", Buffer.from("\x1b[I"))
-    clock.advance(15)
+  // O = focus out, I = focus in. Modes are restored on the first focus-in after each blur; events fire on changes.
+  const cases: Array<[sequence: string, restores: number, events: string[]]> = [
+    ["I", 0, ["focus"]],
+    ["O", 0, ["blur"]],
+    ["IO", 0, ["focus", "blur"]],
+    ["OI", 1, ["blur", "focus"]],
+    ["OIII", 1, ["blur", "focus"]],
+    ["OIOI", 2, ["blur", "focus", "blur", "focus"]],
+    ["OOIIOO", 1, ["blur", "focus", "blur"]],
+    ["OI".repeat(10), 10, Array.from({ length: 10 }, () => ["blur", "focus"]).flat()],
+  ]
 
-    await renderer.idle()
-    expect(output).not.toContain("\x1b[?2004h")
-  })
+  for (const [sequence, restores, events] of cases) {
+    test(`focus changes ${sequence} restore modes ${restores} times`, async () => {
+      const seen: string[] = []
+      renderer.on("focus", () => seen.push("focus"))
+      renderer.on("blur", () => seen.push("blur"))
+      let keypresses = 0
+      renderer.keyInput.on("keypress", () => keypresses++)
 
-  test("terminal modes are restored once after blur then focus-in", async () => {
-    renderer.stdin.emit("data", Buffer.from("\x1b[O"))
-    clock.advance(15)
+      emitFocus(sequence)
+      await renderer.idle()
 
-    renderer.stdin.emit("data", Buffer.from("\x1b[I"))
-    clock.advance(15)
-
-    await renderer.idle()
-    expect(output.split("\x1b[?2004h")).toHaveLength(2)
-  })
-
-  test("terminal modes are NOT restored on blur event", async () => {
-    renderer.stdin.emit("data", Buffer.from("\x1b[O"))
-    clock.advance(15)
-
-    await renderer.idle()
-    expect(output).not.toContain("\x1b[?2004h")
-  })
+      expect({ restores: output.split("\x1b[?2004h").length - 1, events: seen, keypresses }).toEqual({
+        restores,
+        events,
+        keypresses: 0,
+      })
+    })
+  }
 
   test("terminal modes are restored before output from the focus event after blur", async () => {
     renderer.on("focus", () => {
       renderer.setTerminalTitle("focus-event")
     })
 
-    renderer.stdin.emit("data", Buffer.from("\x1b[O"))
-    clock.advance(15)
-
-    renderer.stdin.emit("data", Buffer.from("\x1b[I"))
-    clock.advance(15)
+    emitFocus("OI")
 
     await renderer.idle()
     const restore = output.indexOf("\x1b[?2004h")
@@ -87,105 +94,7 @@ describe("focus restore - terminal mode re-enable on focus-in", () => {
     expect(output.indexOf("focus-event")).toBeGreaterThan(restore)
   })
 
-  test("repeated focus-in events only restore once per blur cycle", async () => {
-    renderer.stdin.emit("data", Buffer.from("\x1b[O"))
-    clock.advance(15)
-
-    renderer.stdin.emit("data", Buffer.from("\x1b[I"))
-    clock.advance(15)
-
-    renderer.stdin.emit("data", Buffer.from("\x1b[I"))
-    clock.advance(15)
-
-    renderer.stdin.emit("data", Buffer.from("\x1b[I"))
-    clock.advance(15)
-
-    await renderer.idle()
-    expect(output.split("\x1b[?2004h")).toHaveLength(2)
-  })
-
-  test("multiple blur/focus cycles each trigger one restore", async () => {
-    renderer.stdin.emit("data", Buffer.from("\x1b[O"))
-    clock.advance(15)
-
-    renderer.stdin.emit("data", Buffer.from("\x1b[I"))
-    clock.advance(15)
-
-    renderer.stdin.emit("data", Buffer.from("\x1b[O"))
-    clock.advance(15)
-
-    renderer.stdin.emit("data", Buffer.from("\x1b[I"))
-    clock.advance(15)
-
-    await renderer.idle()
-    expect(output.split("\x1b[?2004h")).toHaveLength(3)
-  })
-
-  test("focus-in emits focus event on the renderer", async () => {
-    const events: string[] = []
-
-    renderer.on("focus", () => {
-      events.push("focus")
-    })
-
-    renderer.on("blur", () => {
-      events.push("blur")
-    })
-
-    renderer.stdin.emit("data", Buffer.from("\x1b[I"))
-    clock.advance(15)
-
-    renderer.stdin.emit("data", Buffer.from("\x1b[O"))
-    clock.advance(15)
-
-    expect(events).toEqual(["focus", "blur"])
-  })
-
-  test("duplicate focus and blur sequences only emit transitions once", async () => {
-    const events: string[] = []
-
-    renderer.on("focus", () => {
-      events.push("focus")
-    })
-
-    renderer.on("blur", () => {
-      events.push("blur")
-    })
-
-    renderer.stdin.emit("data", Buffer.from("\x1b[O"))
-    clock.advance(15)
-    renderer.stdin.emit("data", Buffer.from("\x1b[O"))
-    clock.advance(15)
-
-    renderer.stdin.emit("data", Buffer.from("\x1b[I"))
-    clock.advance(15)
-    renderer.stdin.emit("data", Buffer.from("\x1b[I"))
-    clock.advance(15)
-
-    renderer.stdin.emit("data", Buffer.from("\x1b[O"))
-    clock.advance(15)
-    renderer.stdin.emit("data", Buffer.from("\x1b[O"))
-    clock.advance(15)
-
-    expect(events).toEqual(["blur", "focus", "blur"])
-  })
-
-  test("focus events do not trigger keypress events", async () => {
-    const keypresses: any[] = []
-
-    renderer.keyInput.on("keypress", (event) => {
-      keypresses.push(event)
-    })
-
-    renderer.stdin.emit("data", Buffer.from("\x1b[I"))
-    clock.advance(15)
-    renderer.stdin.emit("data", Buffer.from("\x1b[O"))
-    clock.advance(15)
-
-    expect(keypresses).toHaveLength(0)
-  })
-
-  test("mouse events work after focus restore cycle", async () => {
+  test("mouse and keyboard input work after a focus restore cycle", async () => {
     const target = new TestRenderable(renderer, {
       position: "absolute",
       left: 0,
@@ -194,78 +103,22 @@ describe("focus restore - terminal mode re-enable on focus-in", () => {
       height: renderer.height,
     })
     renderer.root.add(target)
-    renderer.start()
     await renderOnce()
-    renderer.pause()
+    let mouseEvents = 0
+    let keys = 0
+    target.onMouse = () => mouseEvents++
+    renderer.keyInput.on("keypress", () => keys++)
+
+    emitFocus("OI")
     await renderer.idle()
-
-    let mouseEventCount = 0
-    target.onMouse = () => {
-      mouseEventCount++
-    }
-
-    // Verify mouse works initially
     await mockMouse.click(5, 5)
-    expect(mouseEventCount).toBeGreaterThan(0)
-
-    const countBefore = mouseEventCount
-
-    // Simulate focus loss and regain
-    renderer.stdin.emit("data", Buffer.from("\x1b[O"))
-    clock.advance(15)
-    renderer.stdin.emit("data", Buffer.from("\x1b[I"))
-    clock.advance(15)
-
-    await renderer.idle()
-    expect(output.split("\x1b[?2004h")).toHaveLength(2)
-
-    // Verify mouse still works after focus restore
-    await mockMouse.click(5, 5)
-    expect(mouseEventCount).toBeGreaterThan(countBefore)
-
-    renderer.root.remove(target)
-    target.destroy()
-  })
-
-  test("keyboard input works after focus restore cycle", async () => {
-    renderer.start()
-
-    let keyEventCount = 0
-    const onKeypress = () => {
-      keyEventCount++
-    }
-    renderer.keyInput.on("keypress", onKeypress)
-
-    // Verify keyboard works initially
-    mockInput.pressKey("a")
-    clock.advance(15)
-    expect(keyEventCount).toBeGreaterThan(0)
-
-    const countBefore = keyEventCount
-
-    // Simulate focus loss and regain
-    renderer.stdin.emit("data", Buffer.from("\x1b[O"))
-    clock.advance(15)
-    renderer.stdin.emit("data", Buffer.from("\x1b[I"))
-    clock.advance(15)
-
-    // Verify keyboard still works after focus restore
     mockInput.pressKey("b")
     clock.advance(15)
-    expect(keyEventCount).toBeGreaterThan(countBefore)
 
-    renderer.keyInput.off("keypress", onKeypress)
-  })
-
-  test("rapid focus toggle does not cause issues", async () => {
-    // Simulate rapid alt-tab back and forth
-    for (let i = 0; i < 10; i++) {
-      renderer.stdin.emit("data", Buffer.from("\x1b[O"))
-      renderer.stdin.emit("data", Buffer.from("\x1b[I"))
-    }
-    clock.advance(15)
-
-    await renderer.idle()
-    expect(output.split("\x1b[?2004h")).toHaveLength(11)
+    expect({ restores: output.split("\x1b[?2004h").length - 1, mouse: mouseEvents > 0, keys }).toEqual({
+      restores: 1,
+      mouse: true,
+      keys: 1,
+    })
   })
 })
