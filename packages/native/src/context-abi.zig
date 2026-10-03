@@ -3214,6 +3214,75 @@ test "Context session cursor ABI accepts every mouse pointer shape" {
     try std.testing.expectEqual(@as(u32, c.OT_MOUSE_POINTER_MAX), @intFromEnum(terminal.getMousePointer()));
 }
 
+test "Context ABI Session environment attachment decodes interleaved entries and rejects the whole payload" {
+    const context = try createTestContext(.{ .object_capacity = 1, .render_cells_max = 2 });
+    defer std.testing.expectEqual(c.OT_OK, ot_context_destroy(context)) catch unreachable;
+    const session = try context.core.createSession(.{});
+    const id = handleToC(session);
+    const Case = struct {
+        entries: []const [2][]const u8 = &.{.{ "KEY", "value" }},
+        struct_size: u32 = @sizeOf(c.ot_session_renderer_env_options),
+        abi_version: u32 = c.OT_CONTEXT_ABI_VERSION,
+        remote_mode: u32 = c.OT_SESSION_REMOTE_LOCAL,
+        reserved: u32 = 0,
+        entry_count: ?u32 = null,
+        byte_count: ?u32 = null,
+        // Bytes past the encoded entries; negative values truncate them.
+        byte_delta: i32 = 0,
+        null_payload: bool = false,
+        status: c.ot_status = c.OT_INVALID_ARGUMENT,
+    };
+    const cases = [_]Case{
+        .{ .struct_size = @sizeOf(c.ot_session_renderer_env_options) + 1 },
+        .{ .abi_version = c.OT_CONTEXT_ABI_VERSION + 1, .status = c.OT_UNSUPPORTED_VERSION },
+        .{ .reserved = 1 },
+        .{ .remote_mode = c.OT_SESSION_REMOTE_REMOTE + 1 },
+        .{ .entry_count = c.OT_SESSION_ENV_ENTRIES_MAX + 1 },
+        .{ .byte_count = c.OT_SESSION_ENV_BYTES_MAX + 1 },
+        .{ .null_payload = true },
+        // Each entry is key length, value length, key bytes, value bytes.
+        .{ .entry_count = 2 },
+        .{ .byte_delta = -6 },
+        .{ .byte_delta = -1 },
+        .{ .byte_delta = 1 },
+        .{ .entries = &.{.{ "", "value" }} },
+        .{ .entries = &.{.{ "K=Y", "value" }} },
+        .{ .entries = &.{.{ "K\x00Y", "value" }} },
+        .{ .entries = &.{.{ "KEY", "va\x00ue" }} },
+        .{ .entries = &.{.{ "\xff", "value" }} },
+        .{ .entries = &.{.{ "KEY", "\xffvalue" }} },
+        .{ .entries = &.{ .{ "KEY", "old" }, .{ "OTHER", "" }, .{ "KEY", "n\xc3\xbc" } }, .status = c.OT_OK },
+    };
+    for (cases) |case| {
+        var payload: [64]u8 = @splat(0);
+        var writer: std.Io.Writer = .fixed(&payload);
+        for (case.entries) |entry| {
+            try writer.writeInt(u32, @intCast(entry[0].len), .little);
+            try writer.writeInt(u32, @intCast(entry[1].len), .little);
+            try writer.writeAll(entry[0]);
+            try writer.writeAll(entry[1]);
+        }
+        const encoded: i32 = @intCast(writer.buffered().len);
+        const options: c.ot_session_renderer_env_options = .{
+            .struct_size = case.struct_size,
+            .abi_version = case.abi_version,
+            .width = 2,
+            .height = 1,
+            .remote_mode = case.remote_mode,
+            .entry_count = case.entry_count orelse @intCast(case.entries.len),
+            .byte_count = case.byte_count orelse @intCast(encoded + case.byte_delta),
+            .reserved = case.reserved,
+        };
+        const bytes: ?[*]const u8 = if (case.null_payload) null else &payload;
+        try std.testing.expectEqual(case.status, ot_session_attach_renderer_with_env(context, &id, &options, bytes));
+        const attached = (try context.core.raw().getSession(session)).renderer;
+        try std.testing.expectEqual(case.status == c.OT_OK, attached != null);
+    }
+    const environment = (try context.core.raw().getSessionRenderer(session)).terminal.opts.env_map.?;
+    try std.testing.expectEqual(@as(usize, 2), environment.count());
+    try std.testing.expectEqualStrings("n\xc3\xbc", environment.get("KEY").?);
+}
+
 test "Scene flush ABI copies background and preserves paint on acceptance and rejection" {
     const ansi = @import("ansi.zig");
     var owner: ContextHandle = .{ .gpa = .init, .io_threaded = .init_single_threaded, .core = undefined, .owner_thread = std.Thread.getCurrentId() };

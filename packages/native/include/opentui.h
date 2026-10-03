@@ -880,10 +880,11 @@ typedef struct ot_session_renderer_options {
 #define OT_SESSION_ENV_ENTRIES_MAX UINT32_C(256)
 #define OT_SESSION_ENV_BYTES_MAX UINT32_C(65536)
 
-/* Additive attachment with initialization-only copied host environment. Payload
- * contains entry_count repetitions of little-endian u32 key/value byte lengths,
- * then key bytes and value bytes. UTF-8 keys are nonempty and exclude NUL/'=';
- * values exclude NUL. Duplicate keys use the last value. Empty payload opts out.
+/* Additive attachment with initialization-only copied host environment. For each
+ * of entry_count entries, the payload holds the little-endian u32 key and value
+ * byte lengths, then the key bytes and the value bytes. Keys and values are
+ * UTF-8 without NUL; keys are nonempty and exclude '='. byte_count includes the
+ * eight length bytes per entry. Duplicate keys use the last value. Empty payload opts out.
  * Auto detects remote sessions but ignores forwarded host hints when remote;
  * explicit local/remote modes apply all supplied hints. No process env is read.
  * reserved is zero. Payload and options are borrowed only for the call. */
