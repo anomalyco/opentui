@@ -197,7 +197,7 @@ export class ScrollBarRenderable extends Renderable {
         alignSelf: "center",
         visible: this.showArrows,
         direction: this.orientation === "vertical" ? "up" : "left",
-        height: this.orientation === "vertical" ? 1 : 1,
+        height: 1,
         ...arrowOpts,
       })
       children.push(this.startArrow)
@@ -206,7 +206,7 @@ export class ScrollBarRenderable extends Renderable {
         alignSelf: "center",
         visible: this.showArrows,
         direction: this.orientation === "vertical" ? "down" : "right",
-        height: this.orientation === "vertical" ? 1 : 1,
+        height: 1,
         ...arrowOpts,
       })
       children.push(this.endArrow)
@@ -441,12 +441,10 @@ export class ArrowRenderable extends Renderable {
   }
 
   set foregroundColor(value: ColorInput) {
-    if (this._foregroundColor !== value) {
-      const color = RGBA.clone(parseColor(value ?? defaultArrowForeground))
-      this.setNativeSceneArrow({ foregroundColor: color })
-      this._foregroundColor = color
-      this.requestRender()
-    }
+    const color = RGBA.clone(parseColor(value ?? defaultArrowForeground))
+    this.setNativeSceneArrow({ foregroundColor: color })
+    this._foregroundColor = color
+    this.requestRender()
   }
 
   get backgroundColor(): RGBA {
@@ -454,12 +452,10 @@ export class ArrowRenderable extends Renderable {
   }
 
   set backgroundColor(value: ColorInput) {
-    if (this._backgroundColor !== value) {
-      const color = RGBA.clone(parseColor(value ?? defaultArrowBackground))
-      this.setNativeSceneArrow({ backgroundColor: color })
-      this._backgroundColor = color
-      this.requestRender()
-    }
+    const color = RGBA.clone(parseColor(value ?? defaultArrowBackground))
+    this.setNativeSceneArrow({ backgroundColor: color })
+    this._backgroundColor = color
+    this.requestRender()
   }
 
   get attributes(): number {
@@ -503,17 +499,6 @@ export class ArrowRenderable extends Renderable {
   }
 
   private getArrowChar(): string {
-    switch (this._direction) {
-      case "up":
-        return this._arrowChars.up
-      case "down":
-        return this._arrowChars.down
-      case "left":
-        return this._arrowChars.left
-      case "right":
-        return this._arrowChars.right
-      default:
-        return "?"
-    }
+    return this._arrowChars[this._direction]
   }
 }

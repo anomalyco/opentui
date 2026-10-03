@@ -626,10 +626,7 @@ export class ScrollBoxRenderable extends BoxRenderable {
     this.autoScrollMouseY = mouseY
     this.cachedAutoScrollSpeed = this.getAutoScrollSpeed(mouseX, mouseY)
     this.isAutoScrolling = true
-
-    if (!this.live) {
-      this.live = true
-    }
+    this.live = true
   }
 
   public updateAutoScroll(mouseX: number, mouseY: number): void {
@@ -654,18 +651,8 @@ export class ScrollBoxRenderable extends BoxRenderable {
     this.isAutoScrolling = false
     this.autoScrollAccumulatorX = 0
     this.autoScrollAccumulatorY = 0
-
-    // Only turn off live if no other features need it
-    // For now, auto-scroll is the only feature using live, but this could be extended
-    if (wasAutoScrolling && !this.hasOtherLiveReasons()) {
-      this.live = false
-    }
-  }
-
-  private hasOtherLiveReasons(): boolean {
-    // Placeholder for future features that might need live mode
-    // For now, always return false since auto-scroll is the only user
-    return false
+    // Auto-scroll is the only reason a ScrollBox goes live.
+    if (wasAutoScrolling) this.live = false
   }
 
   private handleAutoScroll(deltaTime: number): void {

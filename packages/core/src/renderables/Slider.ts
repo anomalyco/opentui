@@ -45,12 +45,8 @@ export class SliderRenderable extends Renderable {
       this._value = options.value ?? this._min
       this._viewPortSize = options.viewPortSize ?? this.defaultViewPortSize()
       this._onChange = options.onChange
-      this._backgroundColor = options.backgroundColor
-        ? RGBA.clone(parseColor(options.backgroundColor))
-        : RGBA.clone(defaultTrackBackgroundColor)
-      this._foregroundColor = options.foregroundColor
-        ? RGBA.clone(parseColor(options.foregroundColor))
-        : RGBA.clone(defaultThumbBackgroundColor)
+      this._backgroundColor = RGBA.clone(parseColor(options.backgroundColor || defaultTrackBackgroundColor))
+      this._foregroundColor = RGBA.clone(parseColor(options.foregroundColor || defaultThumbBackgroundColor))
       this.setNativeSceneSlider()
       this.setNativeScenePaint()
       this.setupMouseHandling()
