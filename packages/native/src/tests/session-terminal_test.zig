@@ -286,12 +286,14 @@ fn expectReservedRows(output: []const u8, rows: usize, moves_up: bool) !void {
 }
 
 test "Session terminal setup reserves main-screen rows and repositions by the accepted rows" {
-    const cases = [_]struct { render_offset: u32, changed_offset: ?u32 = null, moves_up: bool }{
+    const cases = [_]struct { render_offset: u32, changed_offset: ?u32 = null, resumed: bool = false, moves_up: bool }{
         .{ .render_offset = 0, .moves_up = true },
         // Split setup scrolls shell output above the footer, as on main.
         .{ .render_offset = 2, .moves_up = false },
         // A split change after the query packet cannot unpair emitted rows and their return.
         .{ .render_offset = 0, .changed_offset = 1, .moves_up = true },
+        // Resume fixes its rows before a pending suspended snapshot moves the footer.
+        .{ .render_offset = 0, .resumed = true, .moves_up = true },
     };
     for (cases) |case| {
         const f = try Fixture.init(testing.allocator, testing.io, 4, 3);
@@ -304,27 +306,18 @@ test "Session terminal setup reserves main-screen rows and repositions by the ac
         var len = (try f.drain(&bytes)).len;
         if (case.changed_offset) |offset| _ = try f.value.splitControl(.{ .render_offset = offset });
         len += (try f.driveOutput(&now_ns, .active, bytes[len..], 32)).len;
+        if (case.resumed) {
+            try f.owner.suspendSession(f.id);
+            try f.drive(&now_ns, .suspended);
+            const snapshot = try f.owner.raw().getBuffer(try f.owner.createBuffer(4, 1, .{}));
+            const commits = [_]renderer.SplitSnapshot{.{ .snapshot = snapshot, .row_columns = 4 }};
+            try testing.expectEqual(.pending, try f.value.renderSplit(null, &commits, 2, false));
+            try f.owner.resumeSession(f.id);
+            len = (try f.driveOutput(&now_ns, .active, &bytes, 64)).len;
+            try testing.expectEqual(@as(u32, 2), f.cli.renderOffset);
+        }
         try expectReservedRows(bytes[0..len], 2, case.moves_up);
     }
-}
-
-test "Session terminal resume repositions by rows accepted before a pending snapshot completes" {
-    const f = try Fixture.init(testing.allocator, testing.io, 8, 3);
-    defer f.deinit();
-    var now_ns: u64 = 0;
-    var bytes: [32 * 1024]u8 = undefined;
-    try f.owner.setupSessionTerminal(f.id, .{ .use_alternate_screen = false });
-    try f.drive(&now_ns, .active);
-    try f.owner.suspendSession(f.id);
-    try f.drive(&now_ns, .suspended);
-    const snapshot = try f.owner.raw().getBuffer(try f.owner.createBuffer(8, 1, .{}));
-    try snapshot.drawTextChecked("snapshot", 0, 0, ansi.rgbColor(255, 255, 255, 255), null, 0);
-    const commits = [_]renderer.SplitSnapshot{.{ .snapshot = snapshot, .row_columns = 8 }};
-    try testing.expectEqual(.pending, try f.value.renderSplit(null, &commits, 2, false));
-    try f.owner.resumeSession(f.id);
-    const output = try f.driveOutput(&now_ns, .active, &bytes, 64);
-    try testing.expectEqual(@as(u32, 2), f.cli.renderOffset);
-    try expectReservedRows(output, 2, true);
 }
 
 test "Session terminal Windows cursor-row work remains bounded at the saved-row limit" {
