@@ -132,8 +132,6 @@
     "src/tests/renderer.native-scene-close-output.test.ts",
     "src/tests/renderer.native-scene-markdown.test.ts",
     "src/tests/native-scene-buffer.test.ts",
-    "src/tests/native-session-driver.test.ts",
-    "src/tests/native-session-scheduling.test.ts",
     "src/tests/renderer.scheduling.test.ts",
     "src/tests/native-detached-session.test.ts",
     "src/tests/native-span-feed-async.test.ts",
