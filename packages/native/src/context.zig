@@ -3398,7 +3398,6 @@ pub const Context = struct {
         const style = try self.getSyntaxStyle(handle);
         try self.checkStyleDependents(style);
         const id = try style.registerStyleDefinition(name, definition);
-        style.clearCache();
         self.invalidateStyleDependents(style);
         return id;
     }
