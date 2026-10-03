@@ -25,6 +25,11 @@ pub const WrapMode = enum {
     word,
 };
 
+pub const WrapIndent = enum {
+    none,
+    same,
+};
+
 pub const RenderClusterInfo = utf8.RenderClusterInfo;
 pub const ChunkLayoutInfo = utf8.ChunkLayoutInfo;
 pub const WordLayoutInfo = struct {

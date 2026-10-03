@@ -14,8 +14,11 @@ import type {
 import type { OptimizedBuffer } from "../buffer.js"
 import type { SyntaxStyle } from "../syntax-style.js"
 import { NativeMeasureTargetKind, resolveRenderLib, type NativeRenderableHandle } from "../zig.js"
+import type { WrapIndent } from "./TextBufferRenderable.js"
 
 const BrandedEditBufferRenderable: unique symbol = Symbol.for("@opentui/core/EditBufferRenderable")
+
+export type { WrapIndent }
 
 const emptyVisualCursor: VisualCursor = Object.freeze({
   visualRow: 0,
@@ -69,6 +72,7 @@ export interface EditBufferOptions extends RenderableOptions<EditBufferRenderabl
   selectable?: boolean
   attributes?: number
   wrapMode?: "none" | "char" | "word"
+  wrapIndent?: WrapIndent
   scrollMargin?: number
   scrollSpeed?: number
   showCursor?: boolean
@@ -94,6 +98,7 @@ export abstract class EditBufferRenderable extends Renderable implements LineInf
   protected _selectionBg: RGBA | undefined
   protected _selectionFg: RGBA | undefined
   protected _wrapMode: "none" | "char" | "word" = "word"
+  protected _wrapIndent: WrapIndent = "none"
   protected _scrollMargin: number = 0.2
   protected _showCursor: boolean = true
   protected _cursorColor: RGBA
@@ -122,6 +127,7 @@ export abstract class EditBufferRenderable extends Renderable implements LineInf
     selectable: true,
     attributes: 0,
     wrapMode: "word" as "none" | "char" | "word",
+    wrapIndent: "none" as WrapIndent,
     scrollMargin: 0.2,
     scrollSpeed: 16,
     showCursor: true,
@@ -144,6 +150,7 @@ export abstract class EditBufferRenderable extends Renderable implements LineInf
     this._selectionFg = options.selectionFg ? parseColor(options.selectionFg) : this._defaultOptions.selectionFg
     this.selectable = options.selectable ?? this._defaultOptions.selectable
     this._wrapMode = options.wrapMode ?? this._defaultOptions.wrapMode
+    this._wrapIndent = options.wrapIndent ?? this._defaultOptions.wrapIndent
     this._scrollMargin = options.scrollMargin ?? this._defaultOptions.scrollMargin
     this._scrollSpeed = options.scrollSpeed ?? this._defaultOptions.scrollSpeed
     this._showCursor = options.showCursor ?? this._defaultOptions.showCursor
@@ -158,6 +165,7 @@ export abstract class EditBufferRenderable extends Renderable implements LineInf
     this.editorView = EditorView.create(this.editBuffer, this.width || 80, this.height || 24)
 
     this.editorView.setWrapMode(this._wrapMode)
+    this.editorView.setWrapIndent(this._wrapIndent)
     this.editorView.setScrollMargin(this._scrollMargin)
     if (options.selectionOccupancy === "boundary") {
       this.editorView.setSelectionOccupancy("boundary")
@@ -346,6 +354,19 @@ export abstract class EditBufferRenderable extends Renderable implements LineInf
     if (this._wrapMode !== value) {
       this._wrapMode = value
       this.editorView.setWrapMode(value)
+      this.yogaNode.markDirty()
+      this.requestRender()
+    }
+  }
+
+  get wrapIndent(): WrapIndent {
+    return this._wrapIndent
+  }
+
+  set wrapIndent(value: WrapIndent) {
+    if (this._wrapIndent !== value) {
+      this._wrapIndent = value
+      this.editorView.setWrapIndent(value)
       this.yogaNode.markDirty()
       this.requestRender()
     }
