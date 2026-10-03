@@ -683,8 +683,12 @@ pub const Context = struct {
     /// A size query returns the interned URL byte count. Copies require that
     /// bound. Link id 0 and unknown IDs fail. URLs fit in MAX_URL_LENGTH bytes.
     pub fn getLinkUrl(self: *Context, id: u32, out: []u8) Error!u32 {
-        if (id == 0) return error.InvalidOptions;
-        const url = self.links.get(id) catch return error.InvalidOptions;
+        // The pool masks IDs to 24 bits and keeps released bytes until slot reuse.
+        const id_max = (link.GEN_MASK << link.SLOT_BITS) | link.SLOT_MASK;
+        if (id == 0 or id > id_max) return error.InvalidOptions;
+        const refcount = self.links.getRefcount(id) catch return error.InvalidOptions;
+        if (refcount == 0) return error.InvalidOptions;
+        const url = self.links.get(id) catch unreachable;
         std.debug.assert(url.len <= link.MAX_URL_LENGTH);
         const count: u32 = @intCast(url.len);
         if (out.len == 0) return count;

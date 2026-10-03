@@ -2509,10 +2509,16 @@ test "Context link URL ABI copies interned URLs and rejects unknown ids" {
     try std.testing.expectEqual(c.OT_OK, ot_context_get_link_url(context, id, &output, output.len, &count));
     try std.testing.expectEqual(@as(u32, url.len), count);
     try std.testing.expectEqualStrings(url, output[0..url.len]);
-    try std.testing.expectEqual(
-        c.OT_INVALID_ARGUMENT,
-        ot_context_get_link_url(context, 0, &output, output.len, &count),
-    );
+    const released = try context.?.core.links.acquire("https://released.invalid");
+    try context.?.core.links.decref(released);
+    count = 99;
+    for ([_]u32{ 0, released, id | 1 << 24 }) |invalid_id| {
+        try std.testing.expectEqual(
+            c.OT_INVALID_ARGUMENT,
+            ot_context_get_link_url(context, invalid_id, &output, output.len, &count),
+        );
+        try std.testing.expectEqual(@as(u32, 99), count);
+    }
     context.?.core.mutating = true;
     defer context.?.core.mutating = false;
     try std.testing.expectEqual(
