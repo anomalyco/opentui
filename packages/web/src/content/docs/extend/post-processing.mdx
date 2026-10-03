@@ -36,6 +36,9 @@ function stopEffect() {
 Keep the callback reference so `removePostProcessFn()` can remove it. `clearPostProcessFns()` removes every callback.
 Neither registration method starts continuous rendering.
 
+A callback must finish its buffer work synchronously. Buffer access after its first `await` throws, and the renderer
+logs the rejected promise through its unhandled-rejection handler.
+
 Pair each `requestLive()` with `dropLive()`. An application that already owns continuous rendering can omit that pair.
 Remove callbacks before you release any state that they capture.
 
