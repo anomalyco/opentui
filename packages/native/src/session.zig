@@ -571,7 +571,8 @@ pub const Session = struct {
         if (self.lifecycle.phase != .uninitialized) return error.InvalidTerminalState;
         if (self.frame_end_offset != null or value.renderStats.frameCount != 0) return error.InvalidTerminalState;
         try self.checkTerminalStart(options.kitty_keyboard_flags);
-        const rows = if (!options.use_alternate_screen and value.renderOffset == 0) value.height - 1 else 0;
+        // Scroll shell output above the renderer, including a split footer.
+        const rows = if (options.use_alternate_screen) 0 else value.height - 1;
         const packets = try setupPackets(try cleanupPackets(0), rows, true);
         try self.reserveControlSequence(packets);
         value.useAlternateScreen = options.use_alternate_screen;

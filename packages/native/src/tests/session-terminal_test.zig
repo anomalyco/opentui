@@ -279,6 +279,32 @@ test "Session terminal main-screen reservation is chunked and repositions once" 
     try testing.expectEqual(.active, f.value.getTerminalState().phase);
 }
 
+/// Counts the rows reserved after the last screen setup and checks the matching cursor return.
+fn expectReservedRows(output: []const u8, rows: usize, moves_up: bool) !void {
+    const start = std.mem.findLast(u8, output, ansi.ANSI.saveCursorState).?;
+    try testing.expectEqual(rows, std.mem.count(u8, output[start..], "\n"));
+    var up: [16]u8 = undefined;
+    const sequence = try std.fmt.bufPrint(&up, "\x1b[{d}A", .{rows});
+    try testing.expectEqual(moves_up, std.mem.find(u8, output[start..], sequence) != null);
+}
+
+test "Session terminal setup reserves main-screen rows and repositions by the accepted rows" {
+    const cases = [_]struct { render_offset: u32, moves_up: bool }{
+        .{ .render_offset = 0, .moves_up = true },
+        // Split setup scrolls shell output above the footer, as on main.
+        .{ .render_offset = 2, .moves_up = false },
+    };
+    for (cases) |case| {
+        const f = try Fixture.init(testing.allocator, testing.io, 4, 3);
+        defer f.deinit();
+        var now_ns: u64 = 0;
+        var bytes: [16 * 1024]u8 = undefined;
+        _ = try f.value.splitControl(.{ .render_offset = case.render_offset });
+        try f.owner.setupSessionTerminal(f.id, .{ .use_alternate_screen = false });
+        try expectReservedRows(try f.driveOutput(&now_ns, .active, &bytes, 32), 2, case.moves_up);
+    }
+}
+
 test "Session terminal Windows cursor-row work remains bounded at the saved-row limit" {
     const f = try Fixture.init(testing.allocator, testing.io, 4, 2);
     defer f.deinit();
