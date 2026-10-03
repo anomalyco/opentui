@@ -753,9 +753,9 @@ ot_status ot_scene_get_slider_thumb(ot_context *, const ot_handle *node, ot_scen
 /* Text nodes own their buffer/view and native measure target. Replacements copy
  * UTF-8 and preserve content on rejection. Length is bounded by u32 line/column
  * counts, accounting for tab expansion, not the offscreen drawing call budget.
- * C0/C1/DEL controls are accepted and returned by queries; painting gives them no
- * cells and never writes them to the terminal. Line endings normalize
- * to LF in queries. bytes may be NULL only for zero length. Options require exact
+ * C0/C1/DEL controls other than tab, CR, and LF are accepted and returned by
+ * queries; painting gives them no cells and never writes them to the terminal.
+ * Line endings normalize to LF in queries. bytes may be NULL only for zero length. Options require exact
  * size/version; borders and child nodes are not supported on text. */
 ot_status ot_scene_set_text(ot_context *, const ot_handle *node, const uint8_t *bytes, uint32_t byte_count);
 /* Copies a complete styled replacement. Every chunk requires exact size/version,
