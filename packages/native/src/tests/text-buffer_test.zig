@@ -682,115 +682,38 @@ test "TextBuffer line queries - comprehensive rope coordinate checks" {
 
 // ===== View Registration Tests =====
 
-test "TextBuffer view registration - multiple views can be created" {
+test "TextBuffer view registration - ids stay unique and reused, and mutations dirty every live view" {
     var pools = TestPools.init(std.testing.allocator);
     defer pools.deinit();
-
     var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .unicode);
     defer tb.deinit();
 
-    const id1 = try tb.registerView();
-    const id2 = try tb.registerView();
-    const id3 = try tb.registerView();
-
-    try std.testing.expect(id1 != id2);
-    try std.testing.expect(id2 != id3);
-    try std.testing.expect(id1 != id3);
-
-    tb.unregisterView(id1);
-    tb.unregisterView(id2);
-    tb.unregisterView(id3);
-}
-
-test "TextBuffer view registration - views marked dirty on setText" {
-    var pools = TestPools.init(std.testing.allocator);
-    defer pools.deinit();
-
-    var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .unicode);
-    defer tb.deinit();
-
-    const id1 = try tb.registerView();
-    defer tb.unregisterView(id1);
-
-    try std.testing.expect(tb.isViewDirty(id1));
-
-    tb.clearViewDirty(id1);
-    try std.testing.expect(!tb.isViewDirty(id1));
-
-    try tb.setText("Hello World");
-    try std.testing.expect(tb.isViewDirty(id1));
-
-    tb.clearViewDirty(id1);
-    try std.testing.expect(!tb.isViewDirty(id1));
-
-    try tb.setText("New text");
-    try std.testing.expect(tb.isViewDirty(id1));
-}
-
-test "TextBuffer view registration - views marked dirty on reset" {
-    var pools = TestPools.init(std.testing.allocator);
-    defer pools.deinit();
-
-    var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .unicode);
-    defer tb.deinit();
-
-    const id1 = try tb.registerView();
-    defer tb.unregisterView(id1);
-
-    tb.clearViewDirty(id1);
-    try std.testing.expect(!tb.isViewDirty(id1));
-
-    try tb.reset();
-    try std.testing.expect(tb.isViewDirty(id1));
-}
-
-test "TextBuffer view registration - ID reuse after unregister" {
-    var pools = TestPools.init(std.testing.allocator);
-    defer pools.deinit();
-
-    var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .unicode);
-    defer tb.deinit();
-
-    const id1 = try tb.registerView();
-    tb.unregisterView(id1);
-
-    const id2 = try tb.registerView();
-    defer tb.unregisterView(id2);
-
-    try std.testing.expectEqual(id1, id2);
-
-    try std.testing.expect(tb.isViewDirty(id2));
-}
-
-test "TextBuffer view registration - multiple views all marked dirty on setText" {
-    var pools = TestPools.init(std.testing.allocator);
-    defer pools.deinit();
-
-    var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .unicode);
-    defer tb.deinit();
-
-    const id1 = try tb.registerView();
-    defer tb.unregisterView(id1);
-
-    const id2 = try tb.registerView();
-    defer tb.unregisterView(id2);
-
-    const id3 = try tb.registerView();
-    defer tb.unregisterView(id3);
-
-    tb.clearViewDirty(id1);
-    tb.clearViewDirty(id2);
-    tb.clearViewDirty(id3);
-
-    try std.testing.expect(!tb.isViewDirty(id1));
-    try std.testing.expect(!tb.isViewDirty(id2));
-    try std.testing.expect(!tb.isViewDirty(id3));
-
-    try tb.setText("Test");
-
-    try std.testing.expect(tb.isViewDirty(id1));
-    try std.testing.expect(tb.isViewDirty(id2));
-    try std.testing.expect(tb.isViewDirty(id3));
+    var live: [8]?u32 = @splat(null);
+    defer for (live) |maybe| if (maybe) |id| tb.unregisterView(id);
+    var prng = std.Random.DefaultPrng.init(0x7b1e);
+    const random = prng.random();
+    for (0..200) |_| {
+        const slot = random.uintLessThan(usize, live.len);
+        if (live[slot]) |id| {
+            tb.unregisterView(id);
+            live[slot] = null;
+        } else {
+            const id = try tb.registerView();
+            // Freed ids are reused, so ids stay below the most views ever live at once.
+            try std.testing.expect(id < live.len);
+            for (live) |other| try std.testing.expect(other != id);
+            try std.testing.expect(tb.isViewDirty(id));
+            live[slot] = id;
+        }
+        for (live) |maybe| if (maybe) |id| tb.clearViewDirty(id);
+        switch (random.uintLessThan(u8, 4)) {
+            0 => try tb.setText("Hello\nWorld"),
+            1 => try tb.append("more"),
+            2 => try tb.clear(),
+            else => try tb.reset(),
+        }
+        for (live) |maybe| if (maybe) |id| try std.testing.expect(tb.isViewDirty(id));
+    }
 }
 
 // ===== Memory Registry Tests =====
