@@ -223,44 +223,28 @@ async function createSilentFollowUpPaletteRenderer(environment: Record<string, s
 }
 
 describe("Palette caching behavior", () => {
-  test("getPalette returns cached palette on subsequent calls", async () => {
-    const { renderer, clock, mockStdin, mockStdout } = await createPaletteRenderer()
+  // A repeated request for the same size returns the cached object immediately and writes no queries.
+  const cachedRequests: Array<[first: GetPaletteOptions, repeats: GetPaletteOptions[], size: number]> = [
+    [{ timeout: 300 }, [{ timeout: 300 }], 16],
+    [{ size: 16, timeout: 300 }, [{ size: 16, timeout: 300 }, { size: 16, timeout: 300 }, { size: 16 }], 16],
+    [{ timeout: 100 }, [{ timeout: 5000 }], 16],
+  ]
 
-    const palette1 = await detectPaletteAndAdvanceClock(renderer, clock, { timeout: 300 })
-    const palette2 = await detectPaletteAndAdvanceClock(renderer, clock, { timeout: 300 })
+  for (const [first, repeats, size] of cachedRequests) {
+    test(`getPalette caches ${JSON.stringify(first)} for ${JSON.stringify(repeats)}`, async () => {
+      const { renderer, clock, writes } = await createPaletteRenderer()
+      const palette = await detectPaletteAndAdvanceClock(renderer, clock, first)
+      const state = { writes: writes.length, time: clock.now() }
+      expect({ size: palette.palette.length, status: renderer.paletteDetectionStatus }).toEqual({ size, status: "cached" })
 
-    expect(palette1).toBe(palette2)
-    expect(palette1).toEqual(palette2)
+      for (const options of repeats) {
+        expect(await detectPaletteAndAdvanceClock(renderer, clock, options)).toBe(palette)
+      }
 
-    renderer.destroy()
-  })
-
-  test("getPalette caches correctly with non-256 size parameter", async () => {
-    const { renderer, clock, mockStdin, mockStdout } = await createPaletteRenderer()
-
-    const palette1 = await detectPaletteAndAdvanceClock(renderer, clock, { size: 16, timeout: 300 })
-    const palette2 = await detectPaletteAndAdvanceClock(renderer, clock, { size: 16, timeout: 300 })
-
-    expect(palette1).toBe(palette2)
-    expect(renderer.paletteDetectionStatus).toBe("cached")
-
-    renderer.destroy()
-  })
-
-  test("cached palette is returned instantly", async () => {
-    const { renderer, clock, mockStdin, mockStdout, writes } = await createPaletteRenderer()
-
-    await detectPaletteAndAdvanceClock(renderer, clock, { timeout: 300 })
-    const writeCountAfterFirst = writes.length
-
-    const timeAfterFirstDetection = clock.now()
-    await detectPaletteAndAdvanceClock(renderer, clock, { timeout: 300 })
-
-    expect(clock.now()).toBe(timeAfterFirstDetection)
-    expect(writes.length).toBe(writeCountAfterFirst)
-
-    renderer.destroy()
-  })
+      expect({ writes: writes.length, time: clock.now() }).toEqual(state)
+      renderer.destroy()
+    })
+  }
 
   test("multiple concurrent calls share same detection", async () => {
     const { renderer, clock, mockStdin, mockStdout, writes } = await createPaletteRenderer()
@@ -323,20 +307,6 @@ describe("Palette caching behavior", () => {
     // @ts-expect-error - accessing private property for testing
     const detector2 = renderer._paletteDetector
     expect(detector1).toBe(detector2)
-
-    renderer.destroy()
-  })
-
-  test("cache persists with different timeout values", async () => {
-    const { renderer, clock, mockStdin, mockStdout, writes } = await createPaletteRenderer()
-
-    const palette1 = await detectPaletteAndAdvanceClock(renderer, clock, { timeout: 100 })
-    const writeCountAfterFirst = writes.length
-
-    const palette2 = await detectPaletteAndAdvanceClock(renderer, clock, { timeout: 5000 })
-
-    expect(writes.length).toBe(writeCountAfterFirst)
-    expect(palette1).toBe(palette2)
 
     renderer.destroy()
   })
@@ -1151,26 +1121,6 @@ describe("Palette detection error handling", () => {
 })
 
 describe("Palette cache with different sizes", () => {
-  test("cache works correctly when requesting size=16 twice", async () => {
-    const { renderer, clock, mockStdin, mockStdout, writes } = await createPaletteRenderer()
-
-    const palette1 = await detectPaletteAndAdvanceClock(renderer, clock, { size: 16, timeout: 300 })
-    const writeCountAfterFirst = writes.length
-
-    expect(renderer.paletteDetectionStatus).toBe("cached")
-    expect(palette1.palette.length).toBe(16)
-
-    const timeAfterFirstDetection = clock.now()
-    const palette2 = await detectPaletteAndAdvanceClock(renderer, clock, { size: 16, timeout: 300 })
-
-    expect(clock.now()).toBe(timeAfterFirstDetection)
-    expect(writes.length).toBe(writeCountAfterFirst)
-    expect(palette1).toBe(palette2)
-    expect(renderer.paletteDetectionStatus).toBe("cached")
-
-    renderer.destroy()
-  })
-
   test("cache is invalidated when requesting different size", async () => {
     const { renderer, clock, mockStdin, mockStdout, writes } = await createPaletteRenderer({})
 
@@ -1186,34 +1136,4 @@ describe("Palette cache with different sizes", () => {
     renderer.destroy()
   })
 
-  test("cache persists across multiple identical size requests", async () => {
-    const { renderer, clock, mockStdin, mockStdout, writes } = await createPaletteRenderer()
-
-    const palette1 = await detectPaletteAndAdvanceClock(renderer, clock, { size: 16, timeout: 300 })
-    const writeCountAfterFirst = writes.length
-
-    const palette2 = await detectPaletteAndAdvanceClock(renderer, clock, { size: 16, timeout: 300 })
-    const palette3 = await detectPaletteAndAdvanceClock(renderer, clock, { size: 16, timeout: 300 })
-    const palette4 = await detectPaletteAndAdvanceClock(renderer, clock, { size: 16, timeout: 300 })
-
-    expect(writes.length).toBe(writeCountAfterFirst)
-    expect(palette1).toBe(palette2)
-    expect(palette2).toBe(palette3)
-    expect(palette3).toBe(palette4)
-
-    renderer.destroy()
-  })
-
-  test("cached call is significantly faster than initial detection", async () => {
-    const { renderer, clock, mockStdin, mockStdout } = await createPaletteRenderer()
-
-    await detectPaletteAndAdvanceClock(renderer, clock, { size: 16, timeout: 300 })
-    const timeAfterFirstDetection = clock.now()
-
-    await detectPaletteAndAdvanceClock(renderer, clock, { size: 16, timeout: 300 })
-
-    expect(clock.now()).toBe(timeAfterFirstDetection)
-
-    renderer.destroy()
-  })
 })
