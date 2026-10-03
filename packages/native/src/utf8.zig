@@ -1207,6 +1207,30 @@ fn findPosByWidthWCWidth(
     return .{ .byte_offset = @intCast(text.len), .grapheme_count = codepoint_count, .columns_used = columns_used };
 }
 
+/// Byte length of the zero-width grapheme clusters that start `text`, such as a combining
+/// mark that an edit placed in a chunk of its own.
+pub fn zeroWidthPrefixLen(text: []const u8, tab_width: u8, width_method: WidthMethod) usize {
+    var pos: usize = 0;
+    var cluster_start: usize = 0;
+    var prev_cp: ?u21 = null;
+    var break_state: uucode.grapheme.BreakState = .default;
+    var width_state = GraphemeWidthState.init(0, 0, width_method);
+    while (pos < text.len) {
+        const decoded = decodeUtf8Unchecked(text, pos);
+        const cp_width = charWidth(text[pos], decoded.cp, tab_width);
+        if (prev_cp == null or isGraphemeBreak(prev_cp, decoded.cp, &break_state, width_method)) {
+            if (width_state.width > 0) return cluster_start;
+            cluster_start = pos;
+            width_state = GraphemeWidthState.init(decoded.cp, cp_width, width_method);
+        } else {
+            width_state.addCodepoint(decoded.cp, cp_width);
+        }
+        prev_cp = decoded.cp;
+        pos += decoded.len;
+    }
+    return if (width_state.width > 0) cluster_start else text.len;
+}
+
 /// Get width at byte offset - proxy function that dispatches based on width_method
 pub fn getWidthAt(text: []const u8, byte_offset: usize, tab_width: u8, width_method: WidthMethod) u32 {
     switch (width_method) {

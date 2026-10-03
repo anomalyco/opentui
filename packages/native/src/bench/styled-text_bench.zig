@@ -412,6 +412,41 @@ fn benchHighlightOperations(
         }
     }
 
+    // Range highlights on a large document must seek to the first line, not walk every line.
+    {
+        const name = "addHighlightByCharRange - 2000 calls (10000 lines)";
+        if (bench_utils.matchesBenchFilter(name, bench_filter)) {
+            var stats: BenchStats = .{};
+            var text: std.ArrayList(u8) = .empty;
+            defer text.deinit(allocator);
+            for (0..10_000) |_| try text.appendSlice(allocator, "const value = call(argument);\n");
+
+            for (0..iterations) |_| {
+                const tb = try TextBuffer.init(allocator, &pools.graphemes, &pools.links, .wcwidth);
+                defer tb.deinit();
+                try tb.setText(text.items);
+                const total = tb.getLength();
+
+                const timer = bench_utils.BenchTimer.start(io);
+                for (0..2000) |i| {
+                    const start: u32 = @intCast((i *% 2654435761) % (total - 8));
+                    try tb.addHighlightByCharRange(start, start + 5, 1, 1, 0);
+                }
+                stats.record(timer.read());
+            }
+
+            try results.append(allocator, .{
+                .name = name,
+                .min_ns = stats.min_ns,
+                .avg_ns = stats.avg(),
+                .max_ns = stats.max_ns,
+                .total_ns = stats.total_ns,
+                .iterations = iterations,
+                .mem_stats = null,
+            });
+        }
+    }
+
     // replaceOwnedStyledText with 100 chunks (realistic syntax highlighting scenario)
     {
         const name = "replaceOwnedStyledText - 100 chunks (realistic code)";

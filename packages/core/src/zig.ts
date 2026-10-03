@@ -4646,14 +4646,14 @@ export class FFIRenderLib {
     const pointer = this.nativeContextPointer(context, "ot_text_buffer_view_get_lines")
     nativeResult(
       "ot_text_buffer_view_get_lines",
-      this.opentui.symbols.ot_text_buffer_view_get_lines(pointer, handle, mode, null, 0, output),
+      this.opentui.symbols.ot_text_buffer_view_get_lines(pointer, handle, mode, 0, null, 0, output),
     )
     const count = output[layout.fields.line_count.offset / 4]
     const lines = new Uint32Array(count * (nativeLayouts.ot_scene_text_line.size / 4))
     if (count !== 0) {
       nativeResult(
         "ot_text_buffer_view_get_lines",
-        this.opentui.symbols.ot_text_buffer_view_get_lines(pointer, handle, mode, lines, count, output),
+        this.opentui.symbols.ot_text_buffer_view_get_lines(pointer, handle, mode, 0, lines, count, output),
       )
       if (output[layout.fields.line_count.offset / 4] !== count)
         throw new NativeError("ot_text_buffer_view_get_lines", NativeStatus.InternalError)

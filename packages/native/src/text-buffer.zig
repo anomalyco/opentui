@@ -39,6 +39,8 @@ pub const OwnedStyledChunk = struct {
     style_id: u32,
 };
 
+// A static empty document, so releasing a rope never allocates. Every buffer shares
+// these read-only nodes; rope code mutates only branches and counted text leaves.
 const empty_document_line: UnifiedRope.Node = .{ .leaf = .{ .data = .{ .linestart = {} } } };
 const empty_document_sentinel: UnifiedRope.Node = .{ .leaf = .{ .data = Segment.empty(), .is_sentinel = true } };
 
@@ -359,6 +361,9 @@ pub const UnifiedTextBuffer = struct {
 
     pub fn reinitStorage(self: *Self, width_method: utf8.WidthMethod) TextBufferError!void {
         std.debug.assert(self.next_view_id == 0 and self.syntax_style == null and self.link_tracker == null);
+        // retireStorage left only capacity behind.
+        std.debug.assert(self.mem_registry.buffers.items.len == 0 and self.view_dirty_flags.items.len == 0);
+        std.debug.assert(self.line_highlights.items.len == 0 and self.line_spans.items.len == 0);
         const registry = self.mem_registry;
         const view_dirty_flags = self.view_dirty_flags;
         const free_view_ids = self.free_view_ids;
@@ -479,6 +484,9 @@ pub const UnifiedTextBuffer = struct {
         self.clearLinkRefs();
         self.layout_cache.clear();
         if (!self._rope.hasHistory()) {
+            // Rope nodes are never freed one at a time, so resetting the arena is how
+            // replaced text releases memory. Cold layout states belong to its chunks.
+            std.debug.assert(self.layout_cache.first == null);
             const previous = self._rope;
             _ = self.arena.reset(.retain_capacity);
             self._rope = .{
@@ -575,7 +583,7 @@ pub const UnifiedTextBuffer = struct {
         const previous_buffer_count = self.mem_registry.buffers.items.len;
         const mem_id = try self.mem_registry.register(text, false);
         errdefer self.mem_registry.cancelLastRegistration(mem_id, previous_buffer_count);
-        try self.setPlainText(mem_id, text, null, null, null);
+        try self.setPlainText(mem_id, text, 0, null, null, null);
     }
 
     /// Set text from a pre-registered memory ID
@@ -587,12 +595,20 @@ pub const UnifiedTextBuffer = struct {
         const text = self.mem_registry.get(mem_id) orelse return TextBufferError.InvalidMemId;
         var replacement_arena = std.heap.ArenaAllocator.init(self.global_allocator);
         defer replacement_arena.deinit();
-        try self.setPlainText(mem_id, text, null, null, &replacement_arena);
+        try self.setPlainText(mem_id, text, 0, null, null, &replacement_arena);
     }
 
     pub fn setTextFromMemIdWithUndo(self: *Self, mem_id: u8, meta: ?[]const u8) TextBufferError!void {
         const text = self.mem_registry.get(mem_id) orelse return TextBufferError.InvalidMemId;
-        try self.setPlainText(mem_id, text, meta, null, null);
+        try self.setPlainText(mem_id, text, 0, meta, null, null);
+    }
+
+    /// Replace the text with `byte_start..byte_end` of a live slot. An editor can copy each
+    /// history-preserving replacement into its append slot instead of taking one slot per call.
+    pub fn setTextFromMemRangeWithUndo(self: *Self, mem_id: u8, byte_start: u32, byte_end: u32, meta: ?[]const u8) TextBufferError!void {
+        const bytes = self.mem_registry.get(mem_id) orelse return TextBufferError.InvalidMemId;
+        if (byte_start > byte_end or byte_end > bytes.len) return TextBufferError.InvalidIndex;
+        try self.setPlainText(mem_id, bytes[byte_start..byte_end], byte_start, meta, null, null);
     }
 
     /// Replace a live preferred slot, or register a new slot if it is absent.
@@ -621,20 +637,8 @@ pub const UnifiedTextBuffer = struct {
         chunks: []const OwnedStyledChunk,
         prepared_links: ?*link.LinkTracker,
     ) TextBufferError!u8 {
-        return self.replaceOwnedStyledTextPrepared(text, mem_id, style, chunks, prepared_links, null);
-    }
-
-    pub fn replaceOwnedStyledTextPrepared(
-        self: *Self,
-        text: []const u8,
-        mem_id: ?u8,
-        style: *SyntaxStyle,
-        chunks: []const OwnedStyledChunk,
-        prepared_links: ?*link.LinkTracker,
-        retained_style: ?*SyntaxStyle,
-    ) TextBufferError!u8 {
         var prepared: PreparedOwnedStyledText = undefined;
-        try self.prepareOwnedStyledText(&prepared, text, mem_id, style, chunks, prepared_links, retained_style);
+        try self.prepareOwnedStyledText(&prepared, text, mem_id, style, chunks, prepared_links, null);
         defer prepared.deinit();
         return prepared.commit();
     }
@@ -795,7 +799,7 @@ pub const UnifiedTextBuffer = struct {
         // A provisional registration must not free caller-owned bytes on rejection.
         const id = if (reuse) mem_id.? else try self.mem_registry.register(text, false);
         errdefer if (!reuse) self.mem_registry.cancelLastRegistration(id, previous_buffer_count);
-        try self.setPlainText(id, text, null, owned, replacement_arena);
+        try self.setPlainText(id, text, 0, null, owned, replacement_arena);
         return id;
     }
 
@@ -888,19 +892,23 @@ pub const UnifiedTextBuffer = struct {
         }
     }
 
+    /// `text` starts at `byte_offset` in slot `mem_id`. A replacement publishes `text` as the
+    /// whole slot, so it starts at offset zero.
     fn setPlainText(
         self: *Self,
         mem_id: u8,
         text: []const u8,
+        byte_offset: u32,
         meta: ?[]const u8,
         replacement_owned: ?bool,
         provided_arena: ?*std.heap.ArenaAllocator,
     ) TextBufferError!void {
+        std.debug.assert(replacement_owned == null or byte_offset == 0);
         var retired_arena = std.heap.ArenaAllocator.init(self.global_allocator);
         defer retired_arena.deinit();
         const replacement_arena = provided_arena orelse
             if (meta == null and (replacement_owned != null or !self._rope.hasHistory())) &retired_arena else null;
-        var result = try self.textToSegments(self.global_allocator, text, mem_id, 0, true);
+        var result = try self.textToSegments(self.global_allocator, text, mem_id, byte_offset, true);
         defer result.segments.deinit(result.allocator);
         // The segments are the document. Do not build an empty rope just to replace it.
         // Candidate copies must not query this rope's shared marker cache.
@@ -995,6 +1003,54 @@ pub const UnifiedTextBuffer = struct {
         errdefer self.mem_registry.cancelLastRegistration(mem_id, previous_buffer_count);
         try self.appendInternal(mem_id, text);
         self.mem_registry.buffers.items[mem_id].owned = owned;
+    }
+
+    /// Copy every chunk's bytes, in document order, into one owned slot 0 and rebuild the rope
+    /// over it. Chunk boundaries and widths are kept, so highlights, spans, and links stay valid.
+    /// Every other slot is released, so the caller must hold no other memory ID. Requires empty
+    /// history, because history roots would still reference the released slots.
+    pub fn flattenMemRegistry(self: *Self) TextBufferError!void {
+        std.debug.assert(!self._rope.hasHistory());
+        const byte_count = self._rope.root.metrics().custom.total_bytes;
+        const bytes = self.global_allocator.alloc(u8, byte_count) catch return TextBufferError.OutOfMemory;
+        errdefer self.global_allocator.free(bytes);
+        const segments = self._rope.to_array(self.global_allocator) catch return TextBufferError.OutOfMemory;
+        defer self.global_allocator.free(segments);
+        var offset: u32 = 0;
+        for (segments) |*segment| {
+            const chunk = switch (segment.*) {
+                .text => |*chunk| chunk,
+                else => continue,
+            };
+            const chunk_bytes = chunk.getBytes(&self.mem_registry);
+            @memcpy(bytes[offset..][0..chunk_bytes.len], chunk_bytes);
+            // Cold layout state lives in the retired arena.
+            chunk.* = .{
+                .mem_id = 0,
+                .byte_start = offset,
+                .byte_end = offset + @as(u32, @intCast(chunk_bytes.len)),
+                .width_cols = chunk.width_cols,
+                .flags = chunk.flags,
+            };
+            offset = chunk.byte_end;
+        }
+        std.debug.assert(offset == byte_count);
+
+        var replacement_arena = std.heap.ArenaAllocator.init(self.global_allocator);
+        defer replacement_arena.deinit();
+        var candidate = UnifiedRope.from_sliceWithConfig(replacement_arena.allocator(), segments, self._rope.config) catch
+            return TextBufferError.OutOfMemory;
+        candidate.version = self._rope.version +% 1;
+        self.mem_registry.buffers.ensureTotalCapacity(self.global_allocator, 1) catch return TextBufferError.OutOfMemory;
+
+        self.layout_cache.clear();
+        std.mem.swap(std.heap.ArenaAllocator, self.arena, &replacement_arena);
+        self._rope = candidate;
+        self._rope.allocator = self.allocator;
+        self._rope.marker_cache = UnifiedRope.MarkerCache.init(self.allocator);
+        self.mem_registry.clear();
+        self.mem_registry.buffers.appendAssumeCapacity(.{ .data = bytes, .owned = true, .active = true });
+        self.markAllViewsDirty();
     }
 
     /// Append text from a pre-registered memory ID
@@ -1296,8 +1352,9 @@ pub const UnifiedTextBuffer = struct {
             if (addition.highlights.capacity > 0) {
                 std.mem.swap(@TypeOf(addition.highlights), &self.line_highlights.items[line_idx], &addition.highlights);
             }
+            // Only styled text replacement creates internal highlights, and it builds them in one pass.
+            std.debug.assert(!addition.highlight.internal);
             self.line_highlights.items[line_idx].appendAssumeCapacity(addition.highlight);
-            if (addition.highlight.internal) self.internal_highlight_count += 1;
             if (self.highlight_batch_depth == 0) {
                 std.mem.swap(@TypeOf(addition.spans), &self.line_spans.items[line_idx], &addition.spans);
             } else {
@@ -1466,92 +1523,57 @@ pub const UnifiedTextBuffer = struct {
         priority: u8,
         hl_ref: u16,
     ) TextBufferError!void {
-        return self.addHighlightByCharRangeInternal(char_start, char_end, style_id, priority, hl_ref, false);
-    }
-
-    fn addHighlightByCharRangeInternal(
-        self: *Self,
-        char_start: u32,
-        char_end: u32,
-        style_id: u32,
-        priority: u8,
-        hl_ref: u16,
-        internal: bool,
-    ) TextBufferError!void {
         const line_count = self.getLineCount();
         if (char_start >= char_end or line_count == 0) {
             return;
         }
 
-        // Walk lines to find which lines this highlight affects
-        const Context = struct {
-            buffer: *Self,
-            char_start: u32,
-            char_end: u32,
-            style_id: u32,
-            priority: u8,
-            hl_ref: u16,
-            internal: bool,
-            additions: std.ArrayListUnmanaged(HighlightAddition) = .empty,
-            err: ?TextBufferError = null,
-
-            fn callback(ctx_ptr: *anyopaque, line_info: LineInfo) void {
-                const ctx = @as(*@This(), @ptrCast(@alignCast(ctx_ptr)));
-                if (ctx.err != null) return;
-                ctx.prepareLine(line_info) catch |err| {
-                    ctx.err = err;
-                };
-            }
-
-            fn prepareLine(ctx: *@This(), line_info: LineInfo) TextBufferError!void {
-                const line_start_col_offset = line_info.col_offset;
-                const line_end_col_offset = line_info.col_offset + line_info.width_cols;
-
-                // Skip lines before the highlight
-                if (line_end_col_offset <= ctx.char_start) return;
-                // Stop after the highlight ends
-                if (line_start_col_offset >= ctx.char_end) return;
-
-                // This line overlaps with the highlight
-                const col_start = if (ctx.char_start > line_start_col_offset)
-                    ctx.char_start - line_start_col_offset
-                else
-                    0;
-
-                const col_end = if (ctx.char_end < line_end_col_offset)
-                    ctx.char_end - line_start_col_offset
-                else
-                    line_info.width_cols;
-
-                if (col_start >= col_end) return;
-                try ctx.additions.ensureUnusedCapacity(ctx.buffer.global_allocator, 1);
-                ctx.additions.appendAssumeCapacity(try ctx.buffer.prepareHighlight(line_info.line_idx, .{
+        var additions: std.ArrayListUnmanaged(HighlightAddition) = .empty;
+        defer {
+            for (additions.items) |*addition| addition.deinit(self.global_allocator);
+            additions.deinit(self.global_allocator);
+        }
+        // Highlight offsets exclude newlines, unlike rope weights and offsetToCoords.
+        // Seek by line end so empty lines at the starting boundary are skipped too.
+        var line_idx = self.firstLineEndingAfter(char_start, line_count);
+        while (line_idx < line_count) : (line_idx += 1) {
+            const marker = self._rope.getMarker(.linestart, line_idx) orelse break;
+            const line_start = marker.global_weight - line_idx;
+            if (line_start >= char_end) break;
+            const width = iter_mod.lineWidthAt(&self._rope, line_idx);
+            const col_start = char_start -| line_start;
+            const col_end = @min(char_end - line_start, width);
+            if (col_start < col_end) {
+                try additions.ensureUnusedCapacity(self.global_allocator, 1);
+                additions.appendAssumeCapacity(try self.prepareHighlight(line_idx, .{
                     .col_start = col_start,
                     .col_end = col_end,
-                    .style_id = ctx.style_id,
-                    .priority = ctx.priority,
-                    .hl_ref = ctx.hl_ref,
-                    .internal = ctx.internal,
+                    .style_id = style_id,
+                    .priority = priority,
+                    .hl_ref = hl_ref,
+                    .internal = false,
                 }));
             }
-        };
-
-        var ctx: Context = .{
-            .buffer = self,
-            .char_start = char_start,
-            .char_end = char_end,
-            .style_id = style_id,
-            .priority = priority,
-            .hl_ref = hl_ref,
-            .internal = internal,
-        };
-        defer {
-            for (ctx.additions.items) |*addition| addition.deinit(self.global_allocator);
-            ctx.additions.deinit(self.global_allocator);
+            if (line_start + width >= char_end) break;
         }
-        iter_mod.walkLines(&self._rope, &ctx, Context.callback, false);
-        if (ctx.err) |err| return err;
-        try self.commitHighlights(ctx.additions.items);
+        try self.commitHighlights(additions.items);
+    }
+
+    /// Returns the first line whose newline-excluded end offset is past `offset`.
+    fn firstLineEndingAfter(self: *Self, offset: u32, line_count: u32) u32 {
+        var left: u32 = 0;
+        var right: u32 = line_count;
+        while (left < right) {
+            const mid = left + (right - left) / 2;
+            const marker = self._rope.getMarker(.linestart, mid) orelse return left;
+            const line_end = marker.global_weight - mid + iter_mod.lineWidthAt(&self._rope, mid);
+            if (line_end <= offset) {
+                left = mid + 1;
+            } else {
+                right = mid;
+            }
+        }
+        return left;
     }
 
     /// Remove all highlights with a specific reference ID
@@ -1699,8 +1721,7 @@ pub const UnifiedTextBuffer = struct {
     /// Marks all views dirty if the width actually changes, since tab width
     /// affects measured line widths and virtual line calculations.
     pub fn setTabWidth(self: *Self, width: u8) void {
-        const clamped_width = @min(@as(u8, 254), @max(2, width));
-        const new_width = if (clamped_width % 2 == 0) clamped_width else clamped_width + 1;
+        const new_width = effectiveTabWidth(width);
         if (self.tab_width == new_width) return;
         self.tab_width = new_width;
         self.tab_metrics_generation +%= 1;
@@ -1709,11 +1730,29 @@ pub const UnifiedTextBuffer = struct {
         self.markAllViewsDirty();
     }
 
+    fn effectiveTabWidth(width: u8) u8 {
+        const clamped_width = @min(@as(u8, 254), @max(2, width));
+        return clamped_width + clamped_width % 2;
+    }
+
+    /// Reject a tab width under which the text could exceed the u32 cell bound that
+    /// Context text validation applies (every byte as one tab).
+    pub fn checkTabWidth(self: *const Self, width: u8) error{TextLimit}!void {
+        if (self.getByteSize() > (std.math.maxInt(u32) - 1) / @as(u32, effectiveTabWidth(width))) return error.TextLimit;
+    }
+
     /// Bring the active persistent root to the current tab-width generation.
     /// Widths and branch aggregates are derived state, so this deliberately
     /// updates shared const nodes; stale history roots are repaired when restored.
     fn refreshTabWidthMetrics(self: *Self) void {
         if (self._rope.metricsGeneration() == self.tab_metrics_generation) return;
+
+        // Tab presence is content-derived, so even a stale persistent root can
+        // use this aggregate to prove that its widths remain valid.
+        if (!self._rope.root.metrics().custom.has_tabs) {
+            self._rope.setMetricsGeneration(self.tab_metrics_generation);
+            return;
+        }
 
         const RefreshContext = struct {
             buffer: *Self,
@@ -1721,6 +1760,7 @@ pub const UnifiedTextBuffer = struct {
             fn refresh(ctx_ptr: *anyopaque, segment: *const Segment, _: u32) UnifiedRope.Node.WalkerResult {
                 const ctx = @as(*@This(), @ptrCast(@alignCast(ctx_ptr)));
                 if (segment.asText()) |chunk| {
+                    if (!chunk.hasTab()) return .{};
                     const mutable = @constCast(chunk);
                     const bytes = chunk.getBytes(&ctx.buffer.mem_registry);
                     mutable.width_cols = utf8.calculateTextWidth(

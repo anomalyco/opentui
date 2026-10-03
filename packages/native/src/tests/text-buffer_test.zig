@@ -185,9 +185,13 @@ test "TextBuffer tab width changes preserve large tab-free Unicode and update on
     try tb.setText(tab_free);
     try std.testing.expect(!tb.rope().root.metrics().custom.has_tabs);
     const tab_free_width = tb.lineWidthAt(0);
+    const tab_free_version = tb.rope().version;
     for (0..40) |i| {
         tb.setTabWidth(if (i % 2 == 0) 4 else 2);
         try std.testing.expectEqual(tab_free_width, tb.lineWidthAt(0));
+        // A tab-free root keeps its widths: no chunk walk, no remeasure, no marker cache rebuild.
+        try std.testing.expectEqual(tab_free_version, tb.rope().version);
+        try std.testing.expectEqual(tb.tab_metrics_generation, tb.rope().metricsGeneration());
     }
 
     const one_tab = try std.testing.allocator.dupe(u8, tab_free);
@@ -196,8 +200,10 @@ test "TextBuffer tab width changes preserve large tab-free Unicode and update on
     try tb.setText(one_tab);
     try std.testing.expect(tb.rope().root.metrics().custom.has_tabs);
     for (0..40) |i| {
+        const version = tb.rope().version;
         tb.setTabWidth(if (i % 2 == 0) 4 else 2);
         try std.testing.expectEqual(tb.measureText(one_tab), tb.lineWidthAt(0));
+        try std.testing.expect(tb.rope().version != version);
     }
 }
 
@@ -676,115 +682,38 @@ test "TextBuffer line queries - comprehensive rope coordinate checks" {
 
 // ===== View Registration Tests =====
 
-test "TextBuffer view registration - multiple views can be created" {
+test "TextBuffer view registration - ids stay unique and reused, and mutations dirty every live view" {
     var pools = TestPools.init(std.testing.allocator);
     defer pools.deinit();
-
     var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .unicode);
     defer tb.deinit();
 
-    const id1 = try tb.registerView();
-    const id2 = try tb.registerView();
-    const id3 = try tb.registerView();
-
-    try std.testing.expect(id1 != id2);
-    try std.testing.expect(id2 != id3);
-    try std.testing.expect(id1 != id3);
-
-    tb.unregisterView(id1);
-    tb.unregisterView(id2);
-    tb.unregisterView(id3);
-}
-
-test "TextBuffer view registration - views marked dirty on setText" {
-    var pools = TestPools.init(std.testing.allocator);
-    defer pools.deinit();
-
-    var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .unicode);
-    defer tb.deinit();
-
-    const id1 = try tb.registerView();
-    defer tb.unregisterView(id1);
-
-    try std.testing.expect(tb.isViewDirty(id1));
-
-    tb.clearViewDirty(id1);
-    try std.testing.expect(!tb.isViewDirty(id1));
-
-    try tb.setText("Hello World");
-    try std.testing.expect(tb.isViewDirty(id1));
-
-    tb.clearViewDirty(id1);
-    try std.testing.expect(!tb.isViewDirty(id1));
-
-    try tb.setText("New text");
-    try std.testing.expect(tb.isViewDirty(id1));
-}
-
-test "TextBuffer view registration - views marked dirty on reset" {
-    var pools = TestPools.init(std.testing.allocator);
-    defer pools.deinit();
-
-    var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .unicode);
-    defer tb.deinit();
-
-    const id1 = try tb.registerView();
-    defer tb.unregisterView(id1);
-
-    tb.clearViewDirty(id1);
-    try std.testing.expect(!tb.isViewDirty(id1));
-
-    try tb.reset();
-    try std.testing.expect(tb.isViewDirty(id1));
-}
-
-test "TextBuffer view registration - ID reuse after unregister" {
-    var pools = TestPools.init(std.testing.allocator);
-    defer pools.deinit();
-
-    var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .unicode);
-    defer tb.deinit();
-
-    const id1 = try tb.registerView();
-    tb.unregisterView(id1);
-
-    const id2 = try tb.registerView();
-    defer tb.unregisterView(id2);
-
-    try std.testing.expectEqual(id1, id2);
-
-    try std.testing.expect(tb.isViewDirty(id2));
-}
-
-test "TextBuffer view registration - multiple views all marked dirty on setText" {
-    var pools = TestPools.init(std.testing.allocator);
-    defer pools.deinit();
-
-    var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .unicode);
-    defer tb.deinit();
-
-    const id1 = try tb.registerView();
-    defer tb.unregisterView(id1);
-
-    const id2 = try tb.registerView();
-    defer tb.unregisterView(id2);
-
-    const id3 = try tb.registerView();
-    defer tb.unregisterView(id3);
-
-    tb.clearViewDirty(id1);
-    tb.clearViewDirty(id2);
-    tb.clearViewDirty(id3);
-
-    try std.testing.expect(!tb.isViewDirty(id1));
-    try std.testing.expect(!tb.isViewDirty(id2));
-    try std.testing.expect(!tb.isViewDirty(id3));
-
-    try tb.setText("Test");
-
-    try std.testing.expect(tb.isViewDirty(id1));
-    try std.testing.expect(tb.isViewDirty(id2));
-    try std.testing.expect(tb.isViewDirty(id3));
+    var live: [8]?u32 = @splat(null);
+    defer for (live) |maybe| if (maybe) |id| tb.unregisterView(id);
+    var prng = std.Random.DefaultPrng.init(0x7b1e);
+    const random = prng.random();
+    for (0..200) |_| {
+        const slot = random.uintLessThan(usize, live.len);
+        if (live[slot]) |id| {
+            tb.unregisterView(id);
+            live[slot] = null;
+        } else {
+            const id = try tb.registerView();
+            // Freed ids are reused, so ids stay below the most views ever live at once.
+            try std.testing.expect(id < live.len);
+            for (live) |other| try std.testing.expect(other != id);
+            try std.testing.expect(tb.isViewDirty(id));
+            live[slot] = id;
+        }
+        for (live) |maybe| if (maybe) |id| tb.clearViewDirty(id);
+        switch (random.uintLessThan(u8, 4)) {
+            0 => try tb.setText("Hello\nWorld"),
+            1 => try tb.append("more"),
+            2 => try tb.clear(),
+            else => try tb.reset(),
+        }
+        for (live) |maybe| if (maybe) |id| try std.testing.expect(tb.isViewDirty(id));
+    }
 }
 
 // ===== Memory Registry Tests =====
@@ -2233,6 +2162,87 @@ test "TextBuffer reset allocation failure preserves the document and allows retr
     return error.MissingSuccessfulReset;
 }
 
+test "TextBuffer flattenMemRegistry keeps the document and is atomic under allocation failure" {
+    var pool = gp.GraphemePool.init(std.testing.allocator);
+    defer pool.deinit();
+    var links = link.LinkPool.init(std.testing.allocator);
+    defer links.deinit();
+    for (0..64) |offset| {
+        var failing = std.testing.FailingAllocator.init(std.testing.allocator, .{});
+        const tb = try TextBuffer.init(failing.allocator(), &pool, &links, .unicode);
+        defer tb.deinit();
+        try tb.setText("ab");
+        // A grapheme split across appends keeps its per-chunk widths after flattening.
+        for ([_][]const u8{ "c", "\u{301}", "\n\u{754c}", "e", "\t\u{754c}" }) |bytes| try tb.append(bytes);
+        try tb.addHighlightByCharRange(1, 4, 1, 1, 7);
+        const view = try tb.registerView();
+        tb.clearViewDirty(view);
+        const before = TextState.capture(tb);
+        const widths = [_]u32{ tb.lineWidthAt(0), tb.lineWidthAt(1) };
+        try std.testing.expectEqual(6, before.slots);
+        failing.fail_index = failing.alloc_index + offset;
+        failing.resize_fail_index = failing.resize_index;
+        const result = tb.flattenMemRegistry();
+        failing.fail_index = std.math.maxInt(usize);
+        failing.resize_fail_index = std.math.maxInt(usize);
+        if (result) |_| {} else |err| {
+            try std.testing.expectEqual(error.OutOfMemory, err);
+            try std.testing.expectEqualDeep(before, TextState.capture(tb));
+            try std.testing.expect(!tb.isViewDirty(view));
+            continue;
+        }
+        var after = TextState.capture(tb);
+        try std.testing.expectEqual(1, after.slots);
+        try std.testing.expect(tb.isViewDirty(view));
+        after.slots = before.slots;
+        after.epoch = before.epoch;
+        try std.testing.expectEqualDeep(before, after);
+        try std.testing.expectEqualSlices(u32, &widths, &.{ tb.lineWidthAt(0), tb.lineWidthAt(1) });
+
+        // Chunk flags survive, so a later tab-width change still remeasures the tab.
+        tb.setTabWidth(8);
+        const fresh = try TextBuffer.init(std.testing.allocator, &pool, &links, .unicode);
+        defer fresh.deinit();
+        fresh.setTabWidth(8);
+        var text: [64]u8 = undefined;
+        try fresh.setText(text[0..tb.getPlainTextIntoBuffer(&text)]);
+        try std.testing.expectEqual(fresh.lineWidthAt(1), tb.lineWidthAt(1));
+        return;
+    }
+    return error.MissingSuccessfulFlatten;
+}
+
+test "TextBuffer history-preserving replacements from one slot do not fill the registry" {
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
+    const tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .unicode);
+    defer tb.deinit();
+
+    // Like an editor's append slot: every replacement is copied after the previous one.
+    const count = 1000;
+    const storage = try std.testing.allocator.alloc(u8, count * 16);
+    defer std.testing.allocator.free(storage);
+    const mem_id = try tb.registerMemBuffer(storage, false);
+    var ends: [count + 1]u32 = undefined;
+    ends[0] = 0;
+    for (0..count) |index| {
+        const text = try std.fmt.bufPrint(storage[ends[index]..], "v{d}\n\u{754c}", .{index});
+        ends[index + 1] = ends[index] + @as(u32, @intCast(text.len));
+        try tb.setTextFromMemRangeWithUndo(mem_id, ends[index], ends[index + 1], "meta");
+    }
+    try std.testing.expectEqual(1, tb.memRegistry().getUsedSlots());
+    try std.testing.expectError(error.InvalidIndex, tb.setTextFromMemRangeWithUndo(mem_id, 2, 1, null));
+    try std.testing.expectError(error.InvalidIndex, tb.setTextFromMemRangeWithUndo(mem_id, 0, @intCast(storage.len + 1), null));
+
+    var actual: [32]u8 = undefined;
+    var index: usize = count;
+    while (index > 0) : (index -= 1) {
+        try std.testing.expectEqualStrings(storage[ends[index - 1]..ends[index]], actual[0..tb.getPlainTextIntoBuffer(&actual)]);
+        _ = try tb.undo("meta");
+    }
+    try std.testing.expectEqual(0, tb.getPlainTextIntoBuffer(&actual));
+}
+
 test "addHighlightByCharRange - single line highlight should not extend to EOL" {
     var pools = TestPools.init(std.testing.allocator);
     defer pools.deinit();
@@ -2341,236 +2351,58 @@ test "addHighlightByCharRange - extmarks demo scenario reproduction" {
 
 // ===== TextBuffer.append() Tests =====
 
-test "TextBuffer append - to empty buffer" {
+test "TextBuffer append - documents match their concatenated text" {
+    const cases = [_]struct {
+        initial: ?[]const u8 = null,
+        clear: bool = false,
+        from_mem_id: bool = false,
+        appends: []const []const u8,
+        expected: []const u8,
+        lines: u32,
+    }{
+        .{ .appends = &.{"Hello"}, .expected = "Hello", .lines = 1 },
+        .{ .initial = "Hello", .appends = &.{" World"}, .expected = "Hello World", .lines = 1 },
+        .{ .initial = "Hello", .appends = &.{"\nWorld"}, .expected = "Hello\nWorld", .lines = 2 },
+        .{ .initial = "A\nB", .appends = &.{"\nC\nD\n"}, .expected = "A\nB\nC\nD\n", .lines = 5 },
+        .{ .appends = &.{"Line1\r\nLine2\r\nLine3"}, .expected = "Line1\nLine2\nLine3", .lines = 3 },
+        .{ .initial = "Unix\n", .appends = &.{"Windows\r\nOldMac\rEnd"}, .expected = "Unix\nWindows\nOldMac\nEnd", .lines = 4 },
+        .{ .initial = "Hello", .appends = &.{""}, .expected = "Hello", .lines = 1 },
+        .{ .initial = "Hello ", .appends = &.{"\u{4e16}\u{754c} \u{1f31f}"}, .expected = "Hello \u{4e16}\u{754c} \u{1f31f}", .lines = 1 },
+        .{ .appends = &.{ "First", "\nLine2", "\n", "Line3", " end" }, .expected = "First\nLine2\nLine3 end", .lines = 3 },
+        .{ .initial = "Line1\n", .appends = &.{ "\n", "Line3" }, .expected = "Line1\n\nLine3", .lines = 3 },
+        .{ .initial = "Initial content", .clear = true, .appends = &.{"After clear"}, .expected = "After clear", .lines = 1 },
+        .{ .from_mem_id = true, .appends = &.{"Alpha\nBeta"}, .expected = "Alpha\nBeta", .lines = 2 },
+        .{ .initial = "Alpha\nBeta", .from_mem_id = true, .appends = &.{"Gamma"}, .expected = "Alpha\nBetaGamma", .lines = 2 },
+    };
     var pools = TestPools.init(std.testing.allocator);
     defer pools.deinit();
+    for (cases) |case| {
+        var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .unicode);
+        defer tb.deinit();
+        const preserved_id = try tb.registerMemBuffer("Preserved", false);
+        const view = try tb.registerView();
+        if (case.initial) |initial| try tb.setText(initial);
+        if (case.clear) try tb.clear();
+        tb.clearViewDirty(view);
+        var appended_bytes = false;
+        for (case.appends) |bytes| {
+            if (case.from_mem_id) {
+                try tb.appendFromMemId(try tb.registerMemBuffer(bytes, false));
+            } else {
+                try tb.append(bytes);
+            }
+            appended_bytes = appended_bytes or bytes.len > 0;
+        }
 
-    var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .unicode);
-    defer tb.deinit();
-
-    try tb.append("Hello");
-
-    try std.testing.expectEqual(@as(u32, 1), tb.getLineCount());
-    try std.testing.expectEqual(@as(u32, 5), tb.getLength());
-
-    var out_buffer: [100]u8 = undefined;
-    const written = tb.getPlainTextIntoBuffer(&out_buffer);
-    try std.testing.expectEqualStrings("Hello", out_buffer[0..written]);
-}
-
-test "TextBuffer append - to non-empty buffer, no newline" {
-    var pools = TestPools.init(std.testing.allocator);
-    defer pools.deinit();
-
-    var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .unicode);
-    defer tb.deinit();
-
-    try tb.setText("Hello");
-    try tb.append(" World");
-
-    try std.testing.expectEqual(@as(u32, 1), tb.getLineCount());
-    try std.testing.expectEqual(@as(u32, 11), tb.getLength());
-
-    var out_buffer: [100]u8 = undefined;
-    const written = tb.getPlainTextIntoBuffer(&out_buffer);
-    try std.testing.expectEqualStrings("Hello World", out_buffer[0..written]);
-}
-
-test "TextBuffer append - creating new line with LF" {
-    var pools = TestPools.init(std.testing.allocator);
-    defer pools.deinit();
-
-    var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .unicode);
-    defer tb.deinit();
-
-    try tb.setText("Hello");
-    try tb.append("\nWorld");
-
-    try std.testing.expectEqual(@as(u32, 2), tb.getLineCount());
-
-    var out_buffer: [100]u8 = undefined;
-    const written = tb.getPlainTextIntoBuffer(&out_buffer);
-    try std.testing.expectEqualStrings("Hello\nWorld", out_buffer[0..written]);
-}
-
-test "TextBuffer append - multiple lines with various endings" {
-    var pools = TestPools.init(std.testing.allocator);
-    defer pools.deinit();
-
-    var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .unicode);
-    defer tb.deinit();
-
-    try tb.setText("A\nB");
-    try std.testing.expectEqual(@as(u32, 2), tb.getLineCount());
-
-    try tb.append("\nC\nD\n");
-
-    try std.testing.expectEqual(@as(u32, 5), tb.getLineCount());
-
-    var out_buffer: [100]u8 = undefined;
-    const written = tb.getPlainTextIntoBuffer(&out_buffer);
-    try std.testing.expectEqualStrings("A\nB\nC\nD\n", out_buffer[0..written]);
-}
-
-test "TextBuffer append - CRLF line endings" {
-    var pools = TestPools.init(std.testing.allocator);
-    defer pools.deinit();
-
-    var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .unicode);
-    defer tb.deinit();
-
-    try tb.append("Line1\r\nLine2\r\nLine3");
-
-    try std.testing.expectEqual(@as(u32, 3), tb.getLineCount());
-
-    var out_buffer: [100]u8 = undefined;
-    const written = tb.getPlainTextIntoBuffer(&out_buffer);
-    // CRLF should be normalized to LF
-    try std.testing.expectEqualStrings("Line1\nLine2\nLine3", out_buffer[0..written]);
-}
-
-test "TextBuffer append - mixed line endings" {
-    var pools = TestPools.init(std.testing.allocator);
-    defer pools.deinit();
-
-    var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .unicode);
-    defer tb.deinit();
-
-    try tb.setText("Unix\n");
-    try tb.append("Windows\r\nOldMac\rEnd");
-
-    try std.testing.expectEqual(@as(u32, 4), tb.getLineCount());
-
-    var out_buffer: [100]u8 = undefined;
-    const written = tb.getPlainTextIntoBuffer(&out_buffer);
-    try std.testing.expectEqualStrings("Unix\nWindows\nOldMac\nEnd", out_buffer[0..written]);
-}
-
-test "TextBuffer append - empty string is no-op" {
-    var pools = TestPools.init(std.testing.allocator);
-    defer pools.deinit();
-
-    var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .unicode);
-    defer tb.deinit();
-
-    try tb.setText("Hello");
-    const initial_length = tb.getLength();
-    const initial_line_count = tb.getLineCount();
-
-    try tb.append("");
-
-    try std.testing.expectEqual(initial_length, tb.getLength());
-    try std.testing.expectEqual(initial_line_count, tb.getLineCount());
-}
-
-test "TextBuffer append - unicode content" {
-    var pools = TestPools.init(std.testing.allocator);
-    defer pools.deinit();
-
-    var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .unicode);
-    defer tb.deinit();
-
-    try tb.setText("Hello ");
-    try tb.append("世界 🌟");
-
-    try std.testing.expectEqual(@as(u32, 1), tb.getLineCount());
-
-    var out_buffer: [100]u8 = undefined;
-    const written = tb.getPlainTextIntoBuffer(&out_buffer);
-    try std.testing.expectEqualStrings("Hello 世界 🌟", out_buffer[0..written]);
-}
-
-test "TextBuffer append - streaming/chunked append vs ground truth" {
-    var pools = TestPools.init(std.testing.allocator);
-    defer pools.deinit();
-
-    var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .unicode);
-    defer tb.deinit();
-
-    // Append in chunks
-    try tb.append("First");
-    try tb.append("\nLine2");
-    try tb.append("\n");
-    try tb.append("Line3");
-    try tb.append(" end");
-
-    // Build expected ground truth
-    var expected: std.ArrayListUnmanaged(u8) = .empty;
-    defer expected.deinit(std.testing.allocator);
-    try expected.appendSlice(std.testing.allocator, "First");
-    try expected.appendSlice(std.testing.allocator, "\nLine2");
-    try expected.appendSlice(std.testing.allocator, "\n");
-    try expected.appendSlice(std.testing.allocator, "Line3");
-    try expected.appendSlice(std.testing.allocator, " end");
-
-    var out_buffer: [100]u8 = undefined;
-    const written = tb.getPlainTextIntoBuffer(&out_buffer);
-    try std.testing.expectEqualStrings(expected.items, out_buffer[0..written]);
-
-    try std.testing.expectEqual(@as(u32, 3), tb.getLineCount());
-}
-
-test "TextBuffer append - large streaming append" {
-    var pools = TestPools.init(std.testing.allocator);
-    defer pools.deinit();
-
-    var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .unicode);
-    defer tb.deinit();
-
-    // Simulate streaming large content
-    var i: u32 = 0;
-    while (i < 100) : (i += 1) {
-        var buf: [32]u8 = undefined;
-        const line = try std.fmt.bufPrint(&buf, "Line {}\n", .{i});
-        try tb.append(line);
+        var out_buffer: [100]u8 = undefined;
+        try std.testing.expectEqualStrings(case.expected, out_buffer[0..tb.getPlainTextIntoBuffer(&out_buffer)]);
+        try std.testing.expectEqual(case.lines, tb.getLineCount());
+        try std.testing.expectEqual(tb.measureText(case.expected), tb.getLength());
+        try std.testing.expectEqual(case.lines, tb.rope().markerCount(.linestart));
+        try std.testing.expectEqual(case.lines - 1, tb.rope().markerCount(.brk));
+        try std.testing.expectEqual(appended_bytes, tb.isViewDirty(view));
+        try std.testing.expectEqualStrings("Preserved", tb.getMemBuffer(preserved_id).?);
     }
-
-    try std.testing.expectEqual(@as(u32, 101), tb.getLineCount()); // 100 lines + empty final line
-
-    // Verify first and last lines can be extracted correctly
-    try std.testing.expectEqual(@as(u32, 0), iter_mod.coordsToOffset(tb.rope(), 0, 0).?);
-    try std.testing.expect(iter_mod.coordsToOffset(tb.rope(), 99, 0).? > 0);
-}
-
-test "TextBuffer appendFromMemId - basic functionality" {
-    var pools = TestPools.init(std.testing.allocator);
-    defer pools.deinit();
-
-    var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .unicode);
-    defer tb.deinit();
-
-    const text = "Alpha\nBeta";
-    const mem_id = try tb.registerMemBuffer(text, false);
-
-    try tb.appendFromMemId(mem_id);
-
-    try std.testing.expectEqual(@as(u32, 2), tb.getLineCount());
-
-    var out_buffer: [100]u8 = undefined;
-    const written = tb.getPlainTextIntoBuffer(&out_buffer);
-    try std.testing.expectEqualStrings("Alpha\nBeta", out_buffer[0..written]);
-}
-
-test "TextBuffer appendFromMemId - append to existing content" {
-    var pools = TestPools.init(std.testing.allocator);
-    defer pools.deinit();
-
-    var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .unicode);
-    defer tb.deinit();
-
-    const text = "Gamma";
-    const mem_id = try tb.registerMemBuffer(text, false);
-
-    try tb.setText("Alpha\nBeta");
-    try std.testing.expectEqual(@as(u32, 2), tb.getLineCount());
-
-    try tb.appendFromMemId(mem_id);
-
-    try std.testing.expectEqual(@as(u32, 2), tb.getLineCount());
-
-    var out_buffer: [100]u8 = undefined;
-    const written = tb.getPlainTextIntoBuffer(&out_buffer);
-    try std.testing.expectEqualStrings("Alpha\nBetaGamma", out_buffer[0..written]);
 }
 
 test "TextBuffer appendFromMemId - invalid mem_id" {
@@ -2582,122 +2414,4 @@ test "TextBuffer appendFromMemId - invalid mem_id" {
 
     const result = tb.appendFromMemId(99);
     try std.testing.expectError(text_buffer.TextBufferError.InvalidMemId, result);
-}
-
-test "TextBuffer append - marker invariants maintained" {
-    var pools = TestPools.init(std.testing.allocator);
-    defer pools.deinit();
-
-    var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .unicode);
-    defer tb.deinit();
-
-    try tb.append("Line1\n");
-    try tb.append("Line2\n");
-    try tb.append("Line3");
-
-    const line_count = tb.getLineCount();
-    try std.testing.expectEqual(@as(u32, 3), line_count);
-
-    // Verify marker counts
-    const linestart_count = tb.rope().markerCount(.linestart);
-    try std.testing.expectEqual(line_count, linestart_count);
-
-    const break_count = tb.rope().markerCount(.brk);
-    try std.testing.expectEqual(@as(u32, 2), break_count); // 2 newlines
-}
-
-test "TextBuffer append - memory registry preserved" {
-    var pools = TestPools.init(std.testing.allocator);
-    defer pools.deinit();
-
-    var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .unicode);
-    defer tb.deinit();
-
-    const preserved_text = "Preserved";
-    const preserved_id = try tb.registerMemBuffer(preserved_text, false);
-
-    try tb.append("First\n");
-    try tb.append("Second\n");
-    try tb.append("Third");
-
-    // Preserved buffer should still be accessible
-    const retrieved = tb.getMemBuffer(preserved_id);
-    try std.testing.expect(retrieved != null);
-    try std.testing.expectEqualStrings(preserved_text, retrieved.?);
-}
-
-test "TextBuffer append - views marked dirty" {
-    var pools = TestPools.init(std.testing.allocator);
-    defer pools.deinit();
-
-    var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .unicode);
-    defer tb.deinit();
-
-    const view_id = try tb.registerView();
-    defer tb.unregisterView(view_id);
-
-    tb.clearViewDirty(view_id);
-    try std.testing.expect(!tb.isViewDirty(view_id));
-
-    try tb.append("New content");
-
-    try std.testing.expect(tb.isViewDirty(view_id));
-}
-
-test "TextBuffer append - append after clear" {
-    var pools = TestPools.init(std.testing.allocator);
-    defer pools.deinit();
-
-    var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .unicode);
-    defer tb.deinit();
-
-    try tb.setText("Initial content");
-    try tb.clear();
-
-    try tb.append("After clear");
-
-    try std.testing.expectEqual(@as(u32, 1), tb.getLineCount());
-
-    var out_buffer: [100]u8 = undefined;
-    const written = tb.getPlainTextIntoBuffer(&out_buffer);
-    try std.testing.expectEqualStrings("After clear", out_buffer[0..written]);
-}
-
-test "TextBuffer append - consecutive empty line handling" {
-    var pools = TestPools.init(std.testing.allocator);
-    defer pools.deinit();
-
-    var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .unicode);
-    defer tb.deinit();
-
-    try tb.setText("Line1\n");
-    try tb.append("\n");
-    try tb.append("Line3");
-
-    try std.testing.expectEqual(@as(u32, 3), tb.getLineCount());
-
-    var out_buffer: [100]u8 = undefined;
-    const written = tb.getPlainTextIntoBuffer(&out_buffer);
-    try std.testing.expectEqualStrings("Line1\n\nLine3", out_buffer[0..written]);
-}
-
-test "TextBuffer append - mixed append and setText" {
-    var pools = TestPools.init(std.testing.allocator);
-    defer pools.deinit();
-
-    var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .unicode);
-    defer tb.deinit();
-
-    try tb.setText("First");
-    try tb.append(" appended");
-
-    var out_buffer: [100]u8 = undefined;
-    var written = tb.getPlainTextIntoBuffer(&out_buffer);
-    try std.testing.expectEqualStrings("First appended", out_buffer[0..written]);
-
-    try tb.setText("Reset");
-    try tb.append(" again");
-
-    written = tb.getPlainTextIntoBuffer(&out_buffer);
-    try std.testing.expectEqualStrings("Reset again", out_buffer[0..written]);
 }

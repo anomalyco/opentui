@@ -27,11 +27,7 @@ pub fn ot_text_buffer_create(context: ?*Owner, options: ?*const c.ot_edit_buffer
 }
 
 pub fn ot_text_buffer_destroy(context: ?*Owner, id: ?*const c.ot_handle) callconv(.c) c.ot_status {
-    const status = abi.sessionContextStatus(context);
-    if (status != c.OT_OK) return status;
-    const value = text(context.?, id) catch |err| return fail(context, err);
-    context.?.core.destroy(value.handle) catch |err| return fail(context, err);
-    return c.OT_OK;
+    return abi.destroyKind(context, id, .text_buffer);
 }
 
 pub fn ot_text_buffer_view_create(context: ?*Owner, id: ?*const c.ot_handle, out: ?*c.ot_handle) callconv(.c) c.ot_status {
@@ -43,11 +39,7 @@ pub fn ot_text_buffer_view_create(context: ?*Owner, id: ?*const c.ot_handle, out
 }
 
 pub fn ot_text_buffer_view_destroy(context: ?*Owner, id: ?*const c.ot_handle) callconv(.c) c.ot_status {
-    const status = abi.sessionContextStatus(context);
-    if (status != c.OT_OK) return status;
-    const value = view(context.?, id) catch |err| return fail(context, err);
-    context.?.core.destroy(value.handle) catch |err| return fail(context, err);
-    return c.OT_OK;
+    return abi.destroyKind(context, id, .text_buffer_view);
 }
 
 pub fn ot_text_buffer_set_text(context: ?*Owner, id: ?*const c.ot_handle, bytes: ?[*]const u8, count: u32) callconv(.c) c.ot_status {
@@ -122,6 +114,14 @@ pub fn ot_text_buffer_replace_styled_batch(
 }
 
 comptime {
+    // ot_text_buffer_view_command decodes these vocabularies with @enumFromInt.
+    const view_mod = @import("text-buffer-view.zig");
+    std.debug.assert(@intFromEnum(view_mod.WrapMode.none) == c.OT_SCENE_WRAP_NONE);
+    std.debug.assert(@intFromEnum(view_mod.WrapMode.char) == c.OT_SCENE_WRAP_CHAR);
+    std.debug.assert(@intFromEnum(view_mod.WrapMode.word) == c.OT_SCENE_WRAP_WORD);
+    std.debug.assert(@intFromEnum(view_mod.TextAlign.left) == c.OT_SCENE_ALIGN_LEFT);
+    std.debug.assert(@intFromEnum(view_mod.TextAlign.center) == c.OT_SCENE_ALIGN_CENTER);
+    std.debug.assert(@intFromEnum(view_mod.TextAlign.right) == c.OT_SCENE_ALIGN_RIGHT);
     std.debug.assert(c.OT_TEXT_REPLACEMENT_COUNT_MAX == ctx.Context.text_replacement_count_max);
     std.debug.assert(c.OT_TEXT_REPLACEMENT_CHUNKS_MAX == ctx.Context.text_replacement_chunks_max);
     std.debug.assert(c.OT_TEXT_REPLACEMENT_BYTES_MAX == ctx.Context.text_replacement_bytes_max);
@@ -219,7 +219,7 @@ pub fn ot_text_buffer_view_command(context: ?*Owner, id: ?*const c.ot_handle, co
     if (id == null or command > c.OT_TEXT_VIEW_TEXT_ALIGN or
         (command == c.OT_TEXT_VIEW_WRAP_MODE and argument > c.OT_SCENE_WRAP_WORD) or
         (command == c.OT_TEXT_VIEW_TRUNCATE and argument > 1) or
-        (command == c.OT_TEXT_VIEW_TEXT_ALIGN and argument > 2)) return fail(owner, error.InvalidOptions);
+        (command == c.OT_TEXT_VIEW_TEXT_ALIGN and argument > c.OT_SCENE_ALIGN_RIGHT)) return fail(owner, error.InvalidOptions);
     const operation: ctx.TextViewCommand = switch (command) {
         c.OT_TEXT_VIEW_WRAP_WIDTH => .{ .wrap_width = if (argument == 0) null else argument },
         c.OT_TEXT_VIEW_WRAP_MODE => .{ .wrap_mode = @enumFromInt(argument) },
@@ -267,7 +267,7 @@ pub fn ot_text_buffer_view_get_selected_text(context: ?*Owner, id: ?*const c.ot_
     return c.OT_OK;
 }
 
-pub fn ot_text_buffer_view_get_lines(context: ?*Owner, id: ?*const c.ot_handle, logical: u32, lines: ?[*]c.ot_scene_text_line, capacity: u32, out: ?*c.ot_editor_measure) callconv(.c) c.ot_status {
+pub fn ot_text_buffer_view_get_lines(context: ?*Owner, id: ?*const c.ot_handle, logical: u32, first_line: u32, lines: ?[*]c.ot_scene_text_line, capacity: u32, out: ?*c.ot_editor_measure) callconv(.c) c.ot_status {
     const owner = admit(context, true) catch |err| return fail(context, err);
     _ = record(c.ot_editor_measure, out) catch |err| return fail(owner, err);
     if (logical > 1 or (capacity != 0 and lines == null)) return fail(owner, error.InvalidOptions);
@@ -275,10 +275,11 @@ pub fn ot_text_buffer_view_get_lines(context: ?*Owner, id: ?*const c.ot_handle, 
     value.prepareView() catch |err| return fail(owner, err);
     const info = if (logical == 1) value.view.getLogicalLineInfo() else value.view.getCachedLineInfo();
     const count = info.line_start_cols.len;
-    if (capacity != 0 and capacity < count) return fail(owner, error.BufferTooSmall);
-    if (capacity != 0) for (0..count) |index| {
-        lines.?[index] = .{ .start_cols = info.line_start_cols[index], .width_cols = info.line_width_cols[index], .source_line = info.line_sources[index], .wrap_index = info.line_wraps[index] };
-    };
+    // Copy only the requested window, so a viewport read does not scale with the document.
+    const start = @min(first_line, count);
+    for (0..@min(capacity, count - start), start..) |index, line| {
+        lines.?[index] = .{ .start_cols = info.line_start_cols[line], .width_cols = info.line_width_cols[line], .source_line = info.line_sources[line], .wrap_index = info.line_wraps[line] };
+    }
     out.?.* = .{ .struct_size = @sizeOf(c.ot_editor_measure), .abi_version = c.OT_CONTEXT_ABI_VERSION, .line_count = @intCast(count), .width_cols_max = info.line_width_cols_max };
     return c.OT_OK;
 }
@@ -390,6 +391,80 @@ test "Context exact text ranges retain grapheme and newline boundaries" {
         const count = try core.textBufferGetRange(id, case.start, case.end, &output);
         try std.testing.expectEqualStrings(case.bytes, output[0..count]);
     }
+}
+
+test "Context text view lines copy only the requested window" {
+    var owner: Owner = .{ .gpa = .init, .io_threaded = .init_single_threaded, .core = undefined, .owner_thread = std.Thread.getCurrentId() };
+    defer owner.io_threaded.deinit();
+    owner.core = try ctx.Context.init(std.testing.allocator, owner.io_threaded.io(), .{});
+    defer owner.core.deinit() catch unreachable;
+    const text_handle = try owner.core.createTextBuffer(.unicode);
+    const view_id = abi.handleToC(try owner.core.createTextBufferView(text_handle));
+    const line_count = 100_000;
+    const document = try std.testing.allocator.alloc(u8, line_count * 2 - 1);
+    defer std.testing.allocator.free(document);
+    @memset(document, '\n');
+    for (0..line_count) |row| document[row * 2] = 'a' + @as(u8, @intCast(row % 26));
+    try owner.core.textBufferSetText(text_handle, document);
+
+    var measure = std.mem.zeroes(c.ot_editor_measure);
+    measure.struct_size = @sizeOf(c.ot_editor_measure);
+    measure.abi_version = c.OT_CONTEXT_ABI_VERSION;
+    const sentinel: c.ot_scene_text_line = .{ .start_cols = 7, .width_cols = 7, .source_line = 7, .wrap_index = 7 };
+    for ([_]u32{ 0, 1 }) |logical| {
+        for ([_]struct { first: u32, copied: u32 }{
+            .{ .first = 0, .copied = 5 },
+            .{ .first = 99_990, .copied = 5 },
+            .{ .first = 99_998, .copied = 2 },
+            .{ .first = line_count, .copied = 0 },
+            .{ .first = std.math.maxInt(u32), .copied = 0 },
+        }) |case| {
+            var lines: [6]c.ot_scene_text_line = @splat(sentinel);
+            try std.testing.expectEqual(c.OT_OK, ot_text_buffer_view_get_lines(&owner, &view_id, logical, case.first, &lines, 5, &measure));
+            try std.testing.expectEqual(line_count, measure.line_count);
+            for (lines[0..case.copied], case.first..) |line, row| {
+                try std.testing.expectEqual(row, line.source_line);
+                try std.testing.expectEqual(row * 2, line.start_cols);
+                try std.testing.expectEqual(1, line.width_cols);
+            }
+            for (lines[case.copied..]) |line| try std.testing.expectEqualDeep(sentinel, line);
+        }
+    }
+}
+
+test "Context shared text keeps appending after the memory registry fills" {
+    const core = try ctx.Context.init(std.testing.allocator, std.testing.io, .{});
+    defer core.deinit() catch unreachable;
+    const handle = try core.createTextBuffer(.unicode);
+    const resource = try core.raw().getTextBuffer(handle);
+    const red: @import("ansi.zig").RGBA = .{ 255, 0, 0, 255 };
+    try core.textBufferSetStyledText(handle, "ab\ncd", &.{ .{ .byte_count = 2, .foreground = red }, .{ .byte_count = 3 } });
+    const style_id = resource.buffer.getLineHighlights(0)[0].style_id;
+
+    // Each append takes one registry slot; the registry has 255 and the replacement slot uses one.
+    var expected: std.ArrayListUnmanaged(u8) = .empty;
+    defer expected.deinit(std.testing.allocator);
+    try expected.appendSlice(std.testing.allocator, "ab\ncd");
+    for (0..1000) |index| {
+        const bytes: []const u8 = if (index % 3 == 0) "\n\u{754c}" else "x";
+        try core.textBufferAppend(handle, bytes);
+        try expected.appendSlice(std.testing.allocator, bytes);
+        try std.testing.expect(resource.buffer.mem_registry.buffers.items.len <= 255);
+    }
+
+    const actual = try std.testing.allocator.alloc(u8, expected.items.len);
+    defer std.testing.allocator.free(actual);
+    try std.testing.expectEqual(expected.items.len, try core.textBufferGetRange(handle, 0, std.math.maxInt(u32), actual));
+    try std.testing.expectEqualStrings(expected.items, actual);
+    // Flattening keeps the styled prefix and every line width.
+    try std.testing.expectEqual(style_id, resource.buffer.getLineHighlights(0)[0].style_id);
+    try std.testing.expectEqual(2, resource.buffer.getLineHighlights(0)[0].col_end);
+    try std.testing.expectEqual(2, resource.buffer.getHighlightCount());
+    try std.testing.expectEqual(resource.buffer.measureText(expected.items[std.mem.lastIndexOfScalar(u8, expected.items, '\n').? + 1 ..]), resource.buffer.lineWidthAt(resource.buffer.getLineCount() - 1));
+
+    // A replacement still reclaims every append slot.
+    try core.textBufferSetText(handle, "done");
+    try std.testing.expectEqual(1, resource.buffer.mem_registry.buffers.items.len);
 }
 
 test "Context shared text ABI rejects malformed replacement and preserves short-copy output" {

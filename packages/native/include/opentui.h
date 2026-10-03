@@ -1708,7 +1708,10 @@ ot_status ot_text_buffer_view_get_info(ot_context *, const ot_handle *, ot_edito
 /* Exact selected UTF-8 byte query/copy, as for ot_scene_get_selected_text.
  * Does not prepare lines or change the viewport. */
 ot_status ot_text_buffer_view_get_selected_text(ot_context *, const ot_handle *, uint8_t *, uint32_t capacity, uint32_t *out_count);
-ot_status ot_text_buffer_view_get_lines(ot_context *, const ot_handle *, uint32_t logical,
+/* Copies lines [first_line, first_line + capacity) clipped to the line count, which
+ * out reports. A caller receives min(capacity, line_count - first_line) lines, or
+ * none when first_line >= line_count; zero capacity only reports the count. */
+ot_status ot_text_buffer_view_get_lines(ot_context *, const ot_handle *, uint32_t logical, uint32_t first_line,
     ot_scene_text_line *, uint32_t capacity, ot_editor_measure *);
 ot_status ot_text_buffer_view_measure(ot_context *, const ot_handle *, uint32_t width, uint32_t height, ot_editor_measure *);
 ot_status ot_scene_set_text_view(ot_context *, const ot_handle *node, const ot_handle *view);

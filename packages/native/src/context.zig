@@ -3182,6 +3182,10 @@ pub const Context = struct {
         try text.checkMutable();
         try validateTextBytes(text.buffer, bytes, text.buffer.getByteSize());
         if (bytes.len == 0) return;
+        // Each append takes a registry slot. When none is left, one owned copy of the whole
+        // document replaces them all. Every 254th append copies the document, so a long append
+        // stream costs O(n^2) bytes copied in total; see U04 R3 for the amortized follow-up.
+        if (text.buffer.mem_registry.getFreeSlots() == 0) try text.buffer.flattenMemRegistry();
         const copy = try self.allocator.dupe(u8, bytes);
         errdefer self.allocator.free(copy);
         try text.buffer.appendWithOwnership(copy, true);
@@ -3245,11 +3249,8 @@ pub const Context = struct {
         defer self.mutating = false;
         const text = try self.getTextBuffer(handle);
         try text.checkMutable();
-        const tab_width: u32 = @min(254, @max(2, @as(u32, width) + width % 2));
-        // Apply validateTextBytes' conservative cell bound before remeasuring.
-        const bytes_max = (std.math.maxInt(u32) - 1) / tab_width;
-        if (text.buffer.getByteSize() > bytes_max) return error.TextLimit;
-        text.buffer.setTabWidth(@intCast(tab_width));
+        try text.buffer.checkTabWidth(width);
+        text.buffer.setTabWidth(width);
         text.invalidate();
     }
 
