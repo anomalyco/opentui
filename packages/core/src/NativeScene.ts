@@ -118,6 +118,8 @@ export class NativeScene {
   }
 
   readonly lifecyclePasses = new NativeLifecyclePasses()
+  /** @internal Renderables whose destroy walk is still running; renderer finalization waits for them. */
+  readonly cleanupOwners = new Set<Renderable>()
   private readonly nodes = new Map<number, Renderable>()
   private paintedFrame: NativeSceneFrameRequest | null = null
   private paintRecording?: { recorder: NativePaintRecorder; buffer: OptimizedBuffer }
