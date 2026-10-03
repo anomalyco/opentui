@@ -53,6 +53,8 @@ const controlCases: Array<[steps: ControlStep[], state: RendererControlState, ru
   [["start", "suspend", "resume"], STARTED, true],
   [["start", "pause", "suspend", "resume"], PAUSED, false],
   [["live", "suspend", "resume"], AUTO, true, 1],
+  [["start", "pause", "start"], STARTED, true],
+  [["start", "suspend", "resume", "auto"], AUTO, true],
   [["start", "pause", "start", "suspend", "resume", "auto", "stop"], STOPPED, false],
   [["start", "suspend", "resume", "suspend", "resume", "pause", "suspend", "resume"], PAUSED, false],
   // Live owners added or removed while suspended decide whether resume restarts automatic rendering.
