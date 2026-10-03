@@ -1,6 +1,6 @@
 import { spawnSync } from "node:child_process"
 import { createHash } from "node:crypto"
-import { closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { closeSync, mkdirSync, mkdtempSync, openSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { dirname, join, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
 import { format } from "oxfmt"
@@ -301,41 +301,6 @@ export function sceneStyleEnumMaxima(abi: HeaderABI): number[] {
   })
 }
 
-export function rustBindingRoot(): string | undefined {
-  const dir = process.env.OPENTUI_RUST_DIR
-  if (dir === undefined || dir.trim() === "") return undefined
-  const root = resolve(dir)
-  if (!existsSync(root)) throw new Error(`OPENTUI_RUST_DIR does not exist: ${root}`)
-  return root
-}
-
-export function generateRustConstants(abi: HeaderABI): Map<string, string> {
-  const rustRoot = rustBindingRoot()
-  if (rustRoot === undefined) return new Map()
-  const entries = Object.entries(abi.constants)
-  const notice =
-    "// Generated from packages/native/include/opentui.h. Run bun run generate:abi in packages/core with OPENTUI_RUST_DIR.\n"
-  return new Map([
-    [
-      resolve(rustRoot, "src/constants.generated.rs"),
-      notice +
-        entries
-          .map(([name, value]) => `pub const ${name}: ${value < 0 || name === "OT_OK" ? "i32" : "u32"} = ${value};\n`)
-          .join("") +
-        "#[cfg(test)]\nfn constants() -> Vec<u32> {\n    vec![\n" +
-        entries.map(([name]) => `        ${name} as u32,\n`).join("") +
-        "    ]\n}\n",
-    ],
-    [resolve(rustRoot, "tests/constants.generated.h"), notice + entries.map(([name]) => `${name},\n`).join("")],
-  ])
-}
-
-export function verifyRustConstants(abi: HeaderABI): void {
-  for (const [path, contents] of generateRustConstants(abi)) {
-    if (readFileSync(path, "utf8") !== contents) throw new Error(`${path} is stale; run bun run generate:abi`)
-  }
-}
-
 export function verifyNativeABI(generated: string): void {
   if (readFileSync(outputPath, "utf8") !== generated) {
     throw new Error(
@@ -352,13 +317,8 @@ if (import.meta.main) {
     throw new Error("Expected --check, --all-targets and/or --audit")
   const abi = compileHeader({ allTargets: args.includes("--all-targets") })
   const generated = await generateNativeABI(abi)
-  if (args.includes("--check")) {
-    verifyNativeABI(generated)
-    verifyRustConstants(abi)
-  } else if (!args.includes("--audit")) {
-    writeFileSync(outputPath, generated)
-    for (const [path, contents] of generateRustConstants(abi)) writeFileSync(path, contents)
-  }
+  if (args.includes("--check")) verifyNativeABI(generated)
+  else if (!args.includes("--audit")) writeFileSync(outputPath, generated)
   if (args.includes("--audit")) process.stdout.write(serializeNativeABIAudit(abi))
   else
     console.log(`Checked ABI: ${Object.keys(abi.symbols).length} symbols, ${Object.keys(abi.layouts).length} records`)
