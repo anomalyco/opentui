@@ -8940,12 +8940,7 @@ export class FFIRenderLib {
     const output = new Uint32Array(handleWords)
     const status = this.imageCall(context, operation, (pointer) => call(pointer, output))
     if (status !== 0) return { status, handle: null }
-    try {
-      return { status, handle: decodeContextHandle(context, output) as ImageHandle }
-    } catch (error) {
-      this.opentui.symbols.ot_image_destroy(this.nativeContextPointer(context, operation), output)
-      throw error
-    }
+    return { status, handle: decodeContextHandle(context, output) as ImageHandle }
   }
 
   private imageInfoOutput(
