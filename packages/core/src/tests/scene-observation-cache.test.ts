@@ -4,7 +4,7 @@ import { RGBA } from "../lib/RGBA.js"
 import { LayoutEvents, Renderable } from "../Renderable.js"
 import { BoxRenderable } from "../renderables/Box.js"
 import { createTestRenderer, type TestRenderer } from "../testing.js"
-import { SceneStaging, resolveRenderLib, type NativeContextHandle, type SceneNodeHandle } from "../zig.js"
+import { NativeStatus, SceneStaging, resolveRenderLib, type NativeContextHandle, type SceneNodeHandle } from "../zig.js"
 
 let renderer: TestRenderer | undefined
 
@@ -533,6 +533,37 @@ describe("scene staging", () => {
     expect(readStream(staging)).toEqual(before)
     stageWidth(staging, nodeAt(1, 1), 2)
     expect(staging.count).toBe(3)
+  })
+
+  test.each([
+    ["InvalidArgument", [3]],
+    ["WrongKind", [3]],
+    ["StaleHandle", [3]],
+    ["OutOfMemory", [2, 3]],
+    ["ContextBusy", [2, 3]],
+    ["ObjectLimit", [2, 3]],
+    ["InternalError", [2, 3]],
+  ] as const)("a flush that native fails with %s after one record", (status, remaining) => {
+    const staging = new SceneStaging(1)
+    for (let slot = 1; slot <= 3; slot++) stageWidth(staging, nodeAt(slot, 1))
+    // Swap in a native flush that accepts one record and then fails with the status.
+    const lib = resolveRenderLib()
+    const internals = lib as unknown as { opentui: unknown; nativeContexts: Map<NativeContextHandle, number> }
+    const opentui = internals.opentui
+    const ot_scene_flush = (_context: unknown, _updates: unknown, _bytes: number, applied: Uint32Array) => {
+      applied[0] = 1
+      return NativeStatus[status]
+    }
+    internals.opentui = { symbols: { ot_scene_flush } }
+    internals.nativeContexts.set(context, 1)
+    try {
+      expect(() => lib.sceneFlush(context, staging)).toThrow(`${status} after 1 of 3 staged entries`)
+    } finally {
+      internals.opentui = opentui
+      internals.nativeContexts.delete(context)
+    }
+    // A record native rejects for its node is dropped; any other failure keeps it for retry.
+    expect(readStream(staging).map(({ slot }) => slot)).toEqual([...remaining])
   })
 
   test("staging bounds its capacity, ignores other Contexts' nodes, and snapshots reentrant paint", () => {
