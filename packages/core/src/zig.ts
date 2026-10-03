@@ -3784,19 +3784,11 @@ export class FFIRenderLib {
       "ot_embedded_terminal_create",
       this.opentui.symbols.ot_embedded_terminal_create(pointer, record, output),
     )
-    try {
-      return decodeContextHandle(context, output) as ContextEmbeddedTerminalHandle
-    } catch (error) {
-      this.opentui.symbols.ot_embedded_terminal_destroy(pointer, output)
-      throw error
-    }
+    return decodeContextHandle(context, output) as ContextEmbeddedTerminalHandle
   }
 
   public destroyContextEmbeddedTerminal(context: NativeContextHandle, terminal: ContextEmbeddedTerminalHandle): void {
-    this.getYogaHost().assertMutable()
-    const handle = encodeContextHandle(context, terminal)
-    const pointer = this.nativeContextPointer(context, "ot_embedded_terminal_destroy")
-    nativeResult("ot_embedded_terminal_destroy", this.opentui.symbols.ot_embedded_terminal_destroy(pointer, handle))
+    this.destroyContextObject(context, terminal, "ot_embedded_terminal_destroy")
   }
 
   public contextEmbeddedTerminalWrite(
@@ -5589,11 +5581,7 @@ export class FFIRenderLib {
   }
 
   public destroyContextImage(context: NativeContextHandle, image: ContextImageHandle): void {
-    const handle = encodeContextHandle(context, image)
-    this.getYogaHost().runMutation(() => {
-      const pointer = this.nativeContextPointer(context, "ot_image_destroy")
-      nativeResult("ot_image_destroy", this.opentui.symbols.ot_image_destroy(pointer, handle))
-    })
+    this.destroyContextObject(context, image, "ot_image_destroy")
   }
 
   public sceneSetImage(
