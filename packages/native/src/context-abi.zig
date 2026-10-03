@@ -3978,6 +3978,15 @@ test "Scene ABI custom measurement checks identity reentry and registration life
     try std.testing.expectEqual(c.OT_OK, ot_scene_frame_cancel(handle, &session_c, frame.frame_id));
     try std.testing.expectEqual(c.OT_OK, ot_scene_paint(handle, &session_c, &.{ 0, 0, 0, 255 }, 0, 0, &frame));
     try std.testing.expect(Probe.calls > calls);
+    // Replacing, clearing, and installing a provider on a measured leaf each measure it again.
+    for ([_]c.ot_scene_measure_callback{ &Probe.measure, null, &Probe.measure }, [_]f32{ 1, 0, 1 }) |provider, height| {
+        const before = Probe.calls;
+        try std.testing.expectEqual(c.OT_OK, ot_scene_set_measure(handle, &leaf, provider));
+        try std.testing.expectEqual(c.OT_OK, ot_scene_frame_cancel(handle, &session_c, frame.frame_id));
+        try std.testing.expectEqual(c.OT_OK, ot_scene_paint(handle, &session_c, &.{ 0, 0, 0, 255 }, 0, 0, &frame));
+        try std.testing.expectEqual(provider != null, Probe.calls > before);
+        try std.testing.expectEqual(height, (try owner.core.sceneGetLayout(handleFromC(leaf), true)).height);
+    }
     try std.testing.expectEqual(c.OT_OK, ot_scene_move_node(handle, &leaf, null, 0));
     try std.testing.expectEqual(c.OT_OK, ot_scene_destroy_node(handle, &leaf));
     try std.testing.expectEqual(@as(u32, 0), owner.core.scene_measures.count());

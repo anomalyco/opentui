@@ -1475,9 +1475,7 @@ export abstract class Renderable extends BaseRenderable {
     if (this.isFreed()) return
     const node = this
     node.runMutation(() => {
-      if (provider === null && node.hasMeasureFunc()) this._ctx.nativeScene.markDirty(this)
       node.setMeasureFunc(provider)
-      if (provider) this._ctx.nativeScene.markDirty(this)
       this.requestRender()
     })
   }

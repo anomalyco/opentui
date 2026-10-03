@@ -2033,6 +2033,7 @@ pub const Context = struct {
             try yoga.check(yoga.yogaNodeSetNativeMeasureFunc(node.yoga_node, null, null));
             if (self.scene_measures.fetchRemove(handle.slot)) |entry| self.allocator.destroy(entry.value);
         }
+        yoga.yogaNodeInvalidateMeasure(node.yoga_node);
         node.scene_node.?.measure_overridden = true;
         node.scene_node.?.owner.work.clearRetainingCapacity();
     }
