@@ -586,6 +586,65 @@ test "Context checked history matches ABI metadata cursor and observer order" {
     try std.testing.expectEqual(0, written);
 }
 
+test "Context editor ABI rejects malformed arguments without side effects" {
+    var owner: Owner = .{ .gpa = .init, .io_threaded = .init_single_threaded, .core = undefined, .owner_thread = std.Thread.getCurrentId() };
+    defer owner.io_threaded.deinit();
+    owner.core = try ctx.Context.init(std.testing.allocator, owner.io_threaded.io(), .{});
+    defer owner.core.deinit() catch unreachable;
+    const edit_handle = try owner.core.createEditBuffer(.unicode);
+    const view_handle = try owner.core.createEditorView(edit_handle, 4, 2);
+    const edit_id = abi.handleToC(edit_handle);
+    const view_id = abi.handleToC(view_handle);
+    try owner.core.editSetText(edit_handle, "ab\ncd", false);
+    try owner.core.editSetCursor(edit_handle, 1, 1);
+    const buffer = (try owner.core.raw().getEditBuffer(edit_handle)).buffer;
+    const epoch = buffer.tb.getContentEpoch();
+    const cursor = buffer.getPrimaryCursor();
+    var bytes: [64]u8 = undefined;
+    var count: u32 = 99;
+    var position = std.mem.zeroes(c.ot_edit_position);
+    position.struct_size = @sizeOf(c.ot_edit_position);
+    position.abi_version = c.OT_CONTEXT_ABI_VERSION;
+    var viewport = std.mem.zeroes(c.ot_editor_viewport);
+    viewport.struct_size = @sizeOf(c.ot_editor_viewport);
+    viewport.abi_version = c.OT_CONTEXT_ABI_VERSION;
+    viewport.x = 1;
+    var style = std.mem.zeroes(c.ot_editor_style);
+    style.struct_size = @sizeOf(c.ot_editor_style);
+    style.abi_version = c.OT_CONTEXT_ABI_VERSION;
+    const chunks = std.mem.zeroes([2]c.ot_styled_text_chunk);
+    for (0..18) |row| {
+        const status = switch (row) {
+            0 => ot_edit_buffer_set_tab_width(&owner, &edit_id, 256),
+            1 => ot_edit_buffer_command(&owner, &edit_id, c.OT_EDIT_DEBUG_ROPE + 1, 0),
+            2 => ot_edit_buffer_command(&owner, &edit_id, c.OT_EDIT_MOVE_LEFT, 1),
+            3 => ot_edit_buffer_history(&owner, &edit_id, 2, &bytes, bytes.len, &count),
+            4 => ot_edit_buffer_history(&owner, &edit_id, 0, &bytes, bytes.len - 1, &count),
+            5 => abi.ot_edit_buffer_set_text(&owner, &edit_id, "x", 1, 2),
+            6 => abi.ot_edit_buffer_set_text(&owner, &edit_id, null, 1, 0),
+            // C0, C1 and DEL bytes other than tab, CR and LF are rejected whole.
+            7 => abi.ot_edit_buffer_set_text(&owner, &edit_id, "a\x0cb", 3, 1),
+            8 => abi.ot_edit_buffer_insert_text(&owner, &edit_id, "a\x00", 2),
+            9 => abi.ot_edit_buffer_insert_text(&owner, &edit_id, "\xc2\x85", 2),
+            10 => ot_edit_buffer_get_position(&owner, &edit_id, c.OT_EDIT_POSITION_LINE_START + 1, 0, 0, &position),
+            11 => ot_edit_buffer_get_range(&owner, &edit_id, 2, 0, 0, 0, 1, &bytes, bytes.len, &count),
+            12 => ot_edit_buffer_set_defaults(&owner, &edit_id, 0, &style),
+            13 => ot_edit_buffer_highlight(&owner, &edit_id, c.OT_EDIT_HIGHLIGHT_CLEAR_ALL + 1, 0, null),
+            14 => ot_editor_view_set_viewport(&owner, &view_id, &viewport, 1, 0),
+            15 => ot_editor_view_command(&owner, &view_id, c.OT_EDITOR_WRAP_MODE, c.OT_SCENE_WRAP_WORD + 1),
+            16 => ot_editor_view_replace_selection(&owner, &view_id, "x", 1, null),
+            17 => ot_editor_view_set_placeholder(&owner, &view_id, "a", 1, &chunks, chunks.len),
+            else => unreachable,
+        };
+        try std.testing.expectEqual(c.OT_INVALID_ARGUMENT, status);
+        try std.testing.expectEqualStrings("ab\ncd", bytes[0..buffer.getText(&bytes)]);
+        try std.testing.expectEqual(epoch, buffer.tb.getContentEpoch());
+        try std.testing.expectEqualDeep(cursor, buffer.getPrimaryCursor());
+        try std.testing.expectEqual(@as(u32, 99), count);
+        try std.testing.expect(!owner.core.mutating);
+    }
+}
+
 test "Context history-preserving set_text needs no registry slot per call" {
     const core = try ctx.Context.init(std.testing.allocator, std.testing.io, .{});
     defer core.deinit() catch unreachable;
