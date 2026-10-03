@@ -2406,4 +2406,3 @@ test "TextBuffer appendFromMemId - invalid mem_id" {
     const result = tb.appendFromMemId(99);
     try std.testing.expectError(text_buffer.TextBufferError.InvalidMemId, result);
 }
-
