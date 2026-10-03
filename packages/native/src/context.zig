@@ -1434,8 +1434,7 @@ pub const Context = struct {
         defer self.mutating = false;
         const value = try self.getEmbeddedTerminal(handle);
         if (comptime !@import("ghostty_vt_options").available) return error.Unsupported;
-        if (options.action > 2 or options.button < -1 or options.button > 7 or options.mods & ~@as(u32, 0x3f) != 0 or
-            !std.math.isFinite(options.x) or !std.math.isFinite(options.y)) return error.InvalidOptions;
+        if (options.action > 2 or options.button < -1 or options.button > 7 or options.mods & ~@as(u32, 0x3f) != 0) return error.InvalidOptions;
         const previous = value.mouse_last_cell;
         errdefer value.mouse_last_cell = previous;
         const encoded = try value.encodeMouse(.{
