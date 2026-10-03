@@ -2166,6 +2166,8 @@ export class NativePaintRecorder {
   private readonly opacity: number[] = [1]
   private scissors = 0
   private readonly encoder = new TextEncoder()
+  private textBytes?: Uint8Array
+  private bottomBytes?: Uint8Array
   private readonly handleRecord = createContextHandleRecord()
 
   begin(context: NativeContextHandle): void {
@@ -2227,9 +2229,14 @@ export class NativePaintRecorder {
     const slot = this.pendingSlot
     try {
       if (options.operation === "respectAlpha") throw new Error("Paint hooks cannot change the frame alpha mode")
+      // Encode before reserving so the record grows by the UTF-8 bytes, not by an upper bound.
+      const textBytes = (this.textBytes ??= new Uint8Array(NATIVE_BUFFER_TEXT_BYTES_MAX))
+      const bottomBytes = (this.bottomBytes ??= new Uint8Array(NATIVE_BUFFER_TEXT_BYTES_MAX))
+      const textLength = this.encodeText(text, textBytes)
+      const bottomLength = this.encodeText(bottom, bottomBytes)
       const layout = nativeLayouts.ot_scene_record_draw
       const record = layout.size + nativeLayouts.ot_buffer_draw_box.size
-      const base = this.reserve(nativeConstants.OT_SCENE_RECORD_DRAW, record + (text.length + bottom.length) * 3)
+      const base = this.reserve(nativeConstants.OT_SCENE_RECORD_DRAW, record + textLength + bottomLength)
       const encoded = encodeBufferDrawRecord(
         this.activeContext(),
         options,
@@ -2245,14 +2252,12 @@ export class NativePaintRecorder {
           base + layout.fields.source.offset,
         )
       }
-      let end = base + layout.size + encoded.size
-      const textLength = this.encodeText(text, end)
-      end += textLength
-      const bottomLength = this.encodeText(bottom, end)
-      end += bottomLength
+      const end = base + layout.size + encoded.size
+      this.bytes.set(textBytes.subarray(0, textLength), end)
+      this.bytes.set(bottomBytes.subarray(0, bottomLength), end + textLength)
       this.words[(base + layout.fields.text_length.offset) / 4] = textLength
       this.words[(base + layout.fields.bottom_length.offset) / 4] = bottomLength
-      this.finish(base, end)
+      this.finish(base, end + textLength + bottomLength)
     } catch (error) {
       this.rollback(length, slot)
       throw error
@@ -2538,12 +2543,11 @@ export class NativePaintRecorder {
     this.bytes.set(new Uint8Array(record.buffer, record.byteOffset, record.byteLength), offset)
   }
 
-  private encodeText(text: string, offset: number): number {
+  /** Encodes into a buffer sized to the native limit; text that does not fit exceeds that limit. */
+  private encodeText(text: string, output: Uint8Array): number {
     if (text === "") return 0
-    const { read, written } = this.encoder.encodeInto(text, this.bytes.subarray(offset))
-    if (read !== text.length || written > NATIVE_BUFFER_TEXT_BYTES_MAX) {
-      throw new RangeError("Buffer text exceeds the native byte limit")
-    }
+    const { read, written } = this.encoder.encodeInto(text, output)
+    if (read !== text.length) throw new RangeError("Buffer text exceeds the native byte limit")
     return written
   }
 
@@ -2574,6 +2578,10 @@ export class NativePaintRecorder {
 
   /** Shrink a record reserved with an upper bound to its encoded end. */
   private finish(base: number, end: number): void {
+    // A call that reentered the recorder while this record was encoding would be truncated here.
+    if (this.length !== base + this.words[(base + recordHeader.size.offset) / 4] || end > this.length) {
+      throw new Error("Paint recording changed while a record was encoding")
+    }
     const total = (end - base + 7) & ~7
     this.bytes.fill(0, end, base + total)
     this.words[(base + recordHeader.size.offset) / 4] = total

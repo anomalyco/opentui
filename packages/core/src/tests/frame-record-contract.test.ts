@@ -11,6 +11,8 @@ import { CliRenderEvents } from "../renderer.js"
 import { createTestRenderer, type TestRendererSetup } from "../testing/test-renderer.js"
 import { TextBuffer } from "../text-buffer.js"
 import { TextBufferView } from "../text-buffer-view.js"
+import { nativeConstants } from "../native-abi.generated.js"
+import { NATIVE_BUFFER_TEXT_BYTES_MAX, NativePaintRecorder, NativeScenePaintPhase } from "../zig.js"
 
 const red = RGBA.fromHex("#ff0000")
 const green = RGBA.fromHex("#00ff00")
@@ -253,6 +255,30 @@ test.each(
 
   expect(errors).toEqual([])
   expect(captureCharFrame().split("\n")[0].trimEnd()).toBe(resource.text)
+})
+
+test("a recorded text reserves its UTF-8 bytes against the text and recording limits", () => {
+  const recorder = new NativePaintRecorder()
+  const draw = (text: string) =>
+    recorder.draw({ operation: "text", text, x: 0, y: 0, foreground: white, background: clear, attributes: 0 })
+  recorder.begin(setup.renderer.nativeScene.driver.context)
+  try {
+    recorder.slot(0, NativeScenePaintPhase.Self, 1)
+    expect(() => draw("x".repeat(20_000_000))).toThrow("Buffer text exceeds the native byte limit")
+    expect(() => draw("é".repeat(NATIVE_BUFFER_TEXT_BYTES_MAX / 2 + 1))).toThrow("exceeds the native byte limit")
+    expect(recorder.recording).toBeNull()
+    draw("a")
+    // A rejected text leaves the recording at its initial capacity.
+    expect(recorder.recording!.buffer.byteLength).toBe(16_384)
+
+    const filler = nativeConstants.OT_SCENE_RECORD_BYTES_MAX - 70_000
+    recorder.packed(new Uint8Array(filler), filler, 0, 0, 1, 1)
+    draw("a".repeat(NATIVE_BUFFER_TEXT_BYTES_MAX))
+    expect(() => draw("a".repeat(8_000))).toThrow("Paint recording exceeds")
+  } finally {
+    recorder.end()
+    recorder.settle()
+  }
 })
 
 test("a drawing call that throws records nothing, so a hook that catches it still paints", async () => {
