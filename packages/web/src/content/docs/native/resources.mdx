@@ -179,7 +179,6 @@ Dimensions have a 16,384-pixel limit per axis and a 25,000,000-pixel limit in to
 The checked image operations also support pixel updates, metadata, transformations, composition, and pixel or PNG copies.
 `ot_image_retain` shares immutable storage within one Context. `ot_image_clone` can copy pixels and encoded data into another Context.
 An exclusive pixel update assigns a new identity to the render cache.
-`ot_image_import_compat` is an explicit bridge for a compatibility image.
 
 `ot_image_take_pixels` consumes an exclusive image handle and returns a mutable RGBA8 lease.
 The lease uses the Context's lease-count and byte limits. It blocks Context destruction until `ot_image_pixels_release` succeeds.
@@ -241,6 +240,10 @@ For a terminal-managed Session, request `ot_session_close` and deliver restorati
 For a lost transport, use `ot_session_cancel` to discard pending output.
 Cancellation does not restore a terminal that no longer receives bytes, and it does not release your outstanding leases.
 
+The first destruction attempt of a Context starts the shutdown of its host clipboard service.
+Pending clipboard operations are cancelled, and new ones return `OT_CLIPBOARD_START_SHUTTING_DOWN`.
+Destruction returns `OT_CONTEXT_BUSY` until the clipboard worker threads finish. The Context stays usable; retry destruction.
+
 In direct Zig code, pointers from `Context.raw()` getters are borrowed.
 The getters check handles but do not retain objects, pin storage, or grant checked mutation or frame authority.
 Destroy the resource through the Context, not through the raw object's destructor.
@@ -265,6 +268,7 @@ Its counts do not include Context memory.
 Call a C Context only from its creating operating-system thread, including for error queries and destruction.
 Separate Contexts can run on separate threads.
 Direct Zig Contexts permit ownership transfer only while idle and require serialized access.
+Clipboard worker threads allocate from the Context allocator, so a direct Zig Context with a clipboard service needs a thread-safe allocator.
 
 Core uses the same ownership model through its own TypeScript wrappers.
 [How Core uses native](/docs/native/core#resources-through-core) covers `ResourceContext`, resource factories, and scoped array access for Core extensions.

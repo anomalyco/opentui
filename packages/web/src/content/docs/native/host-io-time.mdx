@@ -103,7 +103,7 @@ It never gets root I/O or samples a clock itself.
 
 The C Context constructor uses the library's I/O implementation.
 Direct Zig `Context.init(allocator, io, options)` supports injection.
-Compatibility audio, local clipboard, and other non-Context services retain their own runtime boundary.
+Audio engines and host clipboard services are Context objects, but they use their own threads and clocks, not Context I/O.
 
 Read [Frames and output](/docs/native/frames#pump-terminal-work-and-close) for the pump loop and output tickets.
 [Resources and ownership](/docs/native/resources#finish-work-before-destroying-owners) defines Context and lease cleanup.
