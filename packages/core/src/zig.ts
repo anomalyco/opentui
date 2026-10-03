@@ -1752,7 +1752,9 @@ export class SceneStaging {
   }
 
   static checkStyleValue(group: number, value: number): number {
-    return group === 0 ? toSafeFFIU32Length(value, "Scene enum value") : toFFIF32(value, "Scene style value", true)
+    return group === nativeConstants.OT_STYLE_ENUM
+      ? toSafeFFIU32Length(value, "Scene enum value")
+      : toFFIF32(value, "Scene style value", true)
   }
 
   private assertWritable(): void {
@@ -1831,8 +1833,8 @@ export class SceneStaging {
     value = SceneStaging.checkStyleValue(group, value)
     flags = toSafeFFIU32Length(flags, "Scene style flags")
     validateSceneStyle(group, kind, edge, unit, value, flags)
-    // Yoga ignores edges for dimensions; do not let unused u32 bits spill into the unit byte.
-    if (group === 2 && kind < 7) edge = 0
+    // Size kinds (width through flex basis) have no edge; keep unused bits out of the packed record.
+    if (group === nativeConstants.OT_STYLE_VALUE && kind < nativeConstants.OT_STYLE_VALUE_MARGIN) edge = 0
     const handle = encodedContextHandle(context, node)
     this.checkHandle(context, handle)
     const target = group | (kind << 8) | (edge << 16)
