@@ -1001,8 +1001,10 @@ pub const EditBuffer = struct {
         return self.tb.rope().can_undo();
     }
 
+    /// `clear` replaces the root without an undo point, which leaves the redo branch unusable.
     pub fn canRedo(self: *const EditBuffer) bool {
-        return self.tb.rope().can_redo();
+        const rope = self.tb.rope();
+        return rope.can_redo() and rope.curr_history.?.root == rope.root;
     }
 
     pub fn clearHistory(self: *EditBuffer) void {

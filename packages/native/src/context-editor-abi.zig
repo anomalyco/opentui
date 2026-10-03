@@ -575,6 +575,15 @@ test "Context checked history matches ABI metadata cursor and observer order" {
         try std.testing.expectEqualStrings(first_text[0..first.getText(&first_text)], second_text[0..second.getText(&second_text)]);
         try std.testing.expectEqualDeep(first.getPrimaryCursor(), second.getPrimaryCursor());
     }
+    // Clearing after an undo drops the redo branch: redo reports no history, as on `main`.
+    try owner.core.setEditEventCallback(null, null);
+    _ = try owner.core.editHistory(checked, false);
+    try owner.core.editCommand(checked, .clear);
+    try std.testing.expect(!(try owner.core.raw().getEditBuffer(checked)).buffer.canRedo());
+    var written: u32 = 99;
+    var bytes: [64]u8 = undefined;
+    try std.testing.expectEqual(c.OT_OK, ot_edit_buffer_history(&owner, &id, 1, &bytes, bytes.len, &written));
+    try std.testing.expectEqual(0, written);
 }
 
 test "Context editor accepted deletion does not return a later layout allocation failure" {
