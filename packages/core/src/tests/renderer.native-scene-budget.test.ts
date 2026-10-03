@@ -3,9 +3,10 @@ import assert from "node:assert/strict"
 import { setImmediate } from "node:timers/promises"
 import { BoxRenderable } from "../renderables/Box.js"
 import { TextRenderable } from "../renderables/Text.js"
-import { CliRenderEvents } from "../renderer.js"
+import { CliRenderEvents, type CliRenderer } from "../renderer.js"
 import { ManualClock } from "../testing/manual-clock.js"
 import { createTestRenderer } from "../testing/test-renderer.js"
+import { NativeSceneFrame } from "../zig.js"
 
 test("nativeSceneWorkBudget rejects invalid limits", async () => {
   for (const limit of [0, -1, 0.5, NaN, Infinity, 0x1_0000_0000]) {
@@ -13,87 +14,133 @@ test("nativeSceneWorkBudget rejects invalid limits", async () => {
   }
 })
 
-test("native work budget presents frames while every event-loop turn mutates layout", async () => {
-  const { renderer, renderOnce, captureCharFrame } = await createTestRenderer({
-    nativeSceneWorkBudget: 1,
-    width: 12,
-    height: 4,
-    clock: new ManualClock(),
-  })
+async function budgetRenderer(width: number, clock?: ManualClock) {
+  const target = await createTestRenderer({ nativeSceneWorkBudget: 1, width, height: 6, clock })
   const errors: unknown[] = []
   let frames = 0
-  renderer.on(CliRenderEvents.RENDER_ERROR, ({ error }) => errors.push(error))
-  renderer.on(CliRenderEvents.FRAME, () => frames++)
-  const log = new BoxRenderable(renderer, { flexDirection: "column" })
-  renderer.root.add(log)
-  const lines = Array.from({ length: 8 }, (_, index) => {
-    const line = new TextRenderable(renderer, { content: `line ${index}` })
-    log.add(line)
+  target.renderer.on(CliRenderEvents.RENDER_ERROR, ({ error }) => errors.push(error))
+  target.renderer.on(CliRenderEvents.FRAME, () => frames++)
+  const column = new BoxRenderable(target.renderer, { flexDirection: "column" })
+  target.renderer.root.add(column)
+  const lines = Array.from({ length: 4 }, (_, index) => {
+    const line = new TextRenderable(target.renderer, { content: `line ${index}` })
+    column.add(line)
     return line
   })
-  let running = true
-  let appended = 0
-  const mutate = (async () => {
-    while (running) {
-      await setImmediate()
-      appended++
-      lines[appended % lines.length].content = `edit ${appended}`
-    }
-  })()
-  try {
-    for (let frame = 0; frame < 4; frame++) await renderOnce()
-  } finally {
-    running = false
-    await mutate
-  }
-  try {
-    assert.deepEqual(errors, [])
-    assert.ok(appended > 0)
-    assert.equal(frames, 4)
-    assert.match(captureCharFrame(), /edit \d+/)
-  } finally {
-    renderer.destroy()
-    await renderer.closed
-  }
-})
+  return { ...target, column, lines, errors, frames: () => frames }
+}
 
-test("native work budget presents frames while every turn resizes a node with a resize hook", async () => {
-  const { renderer, renderOnce } = await createTestRenderer({
-    nativeSceneWorkBudget: 1,
-    width: 40,
-    height: 4,
-    clock: new ManualClock(),
-  })
-  const errors: unknown[] = []
-  let frames = 0
-  let resizes = 0
-  renderer.on(CliRenderEvents.RENDER_ERROR, ({ error }) => errors.push(error))
-  renderer.on(CliRenderEvents.FRAME, () => frames++)
-  const column = new BoxRenderable(renderer, { flexDirection: "column" })
-  renderer.root.add(column)
-  for (let index = 0; index < 8; index++) column.add(new TextRenderable(renderer, { content: `line ${index}` }))
-  const resized = new BoxRenderable(renderer, { width: 1, height: 1 })
-  resized.on("resize", () => resizes++)
-  column.add(resized)
-  let running = true
-  const mutate = (async () => {
-    for (let width = 2; running; width = (width % 30) + 1) {
-      await setImmediate()
-      resized.width = width
+// Each turn changes the scene before the yielded continuation runs.
+const turnMutations: Record<string, (target: Awaited<ReturnType<typeof budgetRenderer>>) => (turn: number) => void> = {
+  "every turn edits text":
+    ({ lines }) =>
+    (turn) => {
+      lines[turn % lines.length].content = `edit ${turn}`
+    },
+  "every turn resizes a node with a resize hook": ({ renderer, column }) => {
+    const resized = new BoxRenderable(renderer, { width: 1, height: 1 })
+    resized.on("resize", () => {})
+    column.add(resized)
+    return (turn) => {
+      resized.width = (turn % 30) + 1
     }
-  })()
-  try {
-    for (let frame = 0; frame < 4; frame++) await renderOnce()
-  } finally {
-    running = false
-    await mutate
+  },
+}
+
+for (const [name, install] of Object.entries(turnMutations)) {
+  test(`native work budget presents frames while ${name}`, async () => {
+    const target = await budgetRenderer(40, new ManualClock())
+    const mutate = install(target)
+    let running = true
+    let turns = 0
+    const mutating = (async () => {
+      while (running) {
+        await setImmediate()
+        mutate(++turns)
+      }
+    })()
+    try {
+      for (let frame = 0; frame < 4; frame++) await target.renderOnce()
+    } finally {
+      running = false
+      await mutating
+    }
+    try {
+      assert.deepEqual(target.errors, [])
+      assert.ok(turns > 0)
+      assert.equal(target.frames(), 4)
+    } finally {
+      target.renderer.destroy()
+      await target.renderer.closed
+    }
+  })
+}
+
+/** Runs interrupt in a microtask after this renderer's next frame step that yields, while that frame is parked. */
+function atNextYield(renderer: CliRenderer, interrupt: () => Promise<void> | void): Promise<void> {
+  const { renderLib: lib, session } = renderer.nativeScene.driver
+  const step = lib.sceneFrameStep
+  const parked = Promise.withResolvers<void>()
+  lib.sceneFrameStep = function (...args) {
+    const request = step.apply(this, args)
+    if (args[1] === session && request.kind === NativeSceneFrame.Yield) {
+      lib.sceneFrameStep = step
+      queueMicrotask(() => parked.resolve(interrupt()))
+    }
+    return request
   }
-  try {
-    assert.deepEqual(errors, [])
-    assert.equal(frames, 4)
-    assert.ok(resizes > 0)
-  } finally {
-    renderer.destroy()
-    await renderer.closed
+  return parked.promise.finally(() => {
+    lib.sceneFrameStep = step
+  })
+}
+
+// A parked paint holds a native attempt; each interruption must release it without a render error.
+const parkedInterruptions: Record<string, (renderer: CliRenderer, change: () => void) => Promise<void> | void> = {
+  "suspend, then resume": async (renderer, change) => {
+    const suspended = renderer.suspend()
+    change()
+    await suspended
+    assert.equal(renderer.nativeScene.frame, null)
+    await renderer.resume()
+  },
+  resize: (renderer, change) => {
+    renderer.resize(24, 6)
+    change()
+  },
+  destroy: (renderer) => renderer.destroy(),
+}
+
+for (const [interruption, interrupt] of Object.entries(parkedInterruptions)) {
+  for (const mode of ["on demand", "running"] as const) {
+    test(`${interruption} at a parked paint (${mode}) presents the latest scene`, async () => {
+      const { renderer, renderOnce, captureCharFrame, lines, errors, frames } = await budgetRenderer(20)
+      try {
+        await renderer.setupTerminal()
+        await renderOnce()
+        if (mode === "running") renderer.start()
+        const presented = frames()
+        const parked = atNextYield(renderer, () => interrupt(renderer, () => (lines[1].content = "while parked")))
+        lines[0].content = "requested"
+        renderer.requestRender()
+        await parked
+        if (interruption === "destroy") {
+          await renderer.closed
+          assert.equal(frames(), presented)
+        } else {
+          // A running loop presents the next frame by itself; an on-demand renderer needs a request.
+          if (mode === "on demand") await renderOnce()
+          for (let turn = 0; turn < 64 && frames() === presented; turn++) await setImmediate()
+          renderer.stop()
+          await renderer.idle()
+          assert.equal(renderer.getSchedulerState().isRendering, false)
+          assert.match(captureCharFrame(), /requested[^]*while parked/)
+          if (interruption === "resize") assert.equal(renderer.width, 24)
+        }
+        assert.deepEqual(errors, [])
+      } finally {
+        renderer.destroy()
+        await renderer.closed
+      }
+    })
   }
-})
+}
