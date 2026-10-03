@@ -1710,9 +1710,6 @@ fn applyProperty(core: *Context, header: c.ot_scene_property_update, payload: []
         if (style.reserved != 0) return error.InvalidOptions;
         return core.sceneSetStyleLocked(handle, style.group, style.kind, style.edge, style.unit, style.value, style.flags);
     }
-    if (header.fields == c.OT_SCENE_PROPERTY_BACKGROUND) {
-        return core.scenePatchBackgroundLocked(handle, readProperty(@FieldType(scene.Paint, "background"), payload));
-    }
     var paint: scene.Paint = .{};
     var offset: usize = 0;
     inline for (scene.paint_fields, 0..) |name, index| {

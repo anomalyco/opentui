@@ -2249,16 +2249,7 @@ pub const Context = struct {
     }
 
     pub fn sceneSetPaint(self: *Context, handle: Handle, paint: scene.Paint) !void {
-        try self.beginMutation();
-        defer self.mutating = false;
-        return self.sceneSetPaintLocked(handle, paint);
-    }
-
-    /// Caller holds the mutation admission; used by ot_scene_flush to admit once per batch.
-    pub fn sceneSetPaintLocked(self: *Context, handle: Handle, paint: scene.Paint) !void {
-        std.debug.assert(self.mutating);
-        const node = try self.sceneMutableNode(handle);
-        try node.scene_node.?.owner.setPaint(node, paint);
+        return self.scenePatchPaint(handle, scene.paint_fields_all, paint);
     }
 
     /// Unselected fields retain accepted native state; reset-border-characters requires border style.
@@ -2280,26 +2271,6 @@ pub const Context = struct {
         if (reset) {
             if (node.control.box) |details| details.custom_border_chars = null;
         }
-    }
-
-    pub fn sceneSetBackground(self: *Context, handle: Handle, background: buf.RGBA) !void {
-        try self.beginMutation();
-        defer self.mutating = false;
-        return self.scenePatchBackgroundLocked(handle, background);
-    }
-
-    /// Caller holds the mutation admission; used by ot_scene_flush for background-only records.
-    pub fn scenePatchBackgroundLocked(self: *Context, handle: Handle, background: buf.RGBA) !void {
-        std.debug.assert(self.mutating);
-        try buf.validateColor(background);
-        const value = try self.sceneMutableNode(handle);
-        try yoga.check(yoga.nodeTeardownStatus(value.yoga_node));
-        var unused: u32 = 0;
-        try yoga.check(yoga.yogaNodeIsDirtyChecked(value.yoga_node, &unused));
-        const node = value.scene_node.?;
-        if (node.kind != api.OT_SCENE_BOX and node.paint.borderSides != api.OT_BORDER_NONE) return error.InvalidOptions;
-        if (node.owner.attempt != null) node.owner.work.clearRetainingCapacity();
-        node.paint.background = background;
     }
 
     pub fn sceneSetViewport(self: *Context, handle: Handle, viewport_handle: ?Handle) !void {

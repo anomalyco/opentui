@@ -583,10 +583,6 @@ pub const Scene = struct {
         }
     }
 
-    pub fn setPaint(self: *Scene, value: *native.NativeRenderable, paint: Paint) !void {
-        return self.setPaintPartial(value, paint_fields_all, paint);
-    }
-
     pub fn setPaintPartial(self: *Scene, value: *native.NativeRenderable, fields: u32, patch: Paint) !void {
         if (fields == 0 or fields & ~paint_fields_all != 0) return error.InvalidOptions;
         if (fields & api.OT_SCENE_PROPERTY_BACKGROUND != 0) try buffer.validateColor(patch.background);
