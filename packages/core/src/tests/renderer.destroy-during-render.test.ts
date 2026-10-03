@@ -85,7 +85,7 @@ const frameWaits: Record<string, (stdout: RecordingWriteStream, renderer: CliRen
 }
 
 for (const [wait, enter] of Object.entries(frameWaits)) {
-  for (const teardown of ["destroy"] as const) {
+  for (const teardown of ["destroy", "Session failure"] as const) {
     test(`${teardown} while a frame waits for ${wait} reports no render error`, async () => {
       const listeners = processListenerCounts()
       const stdout = new RecordingWriteStream()
@@ -117,3 +117,19 @@ for (const [wait, enter] of Object.entries(frameWaits)) {
     })
   }
 }
+
+test("a Session closed by its owner during setup does not report the interruption", async () => {
+  const { renderer } = await createTestRenderer({ consoleMode: "disabled" })
+  const logged = spyOn(console, "error").mockImplementation(() => {})
+  try {
+    const setup = renderer.setupTerminal()
+    const closing = renderer.nativeScene.driver.close()
+    await expect(setup).rejects.toThrow("interrupted by close")
+    await closing
+    renderer.destroy()
+    await renderer.closed
+    expect(logged.mock.calls.flat().map(String).filter((line) => line.includes("interrupted by close"))).toEqual([])
+  } finally {
+    logged.mockRestore()
+  }
+})

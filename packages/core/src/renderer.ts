@@ -1385,7 +1385,9 @@ export class CliRenderer extends EventEmitter implements RenderContext {
       void this.nativeSession.closed.catch((error) => {
         if (this._isDestroyed) return
         try {
-          this.handleError(error instanceof Error ? error : new Error(String(error)))
+          // A pending setup rejects with this failure; its caller reports it.
+          const setupPending = !this._terminalIsSetup && this.nativeTerminalTransition !== null
+          if (!setupPending) this.handleError(error instanceof Error ? error : new Error(String(error)))
         } catch {
           // The original Session failure remains available through closed.
         } finally {
@@ -3308,8 +3310,11 @@ export class CliRenderer extends EventEmitter implements RenderContext {
         this.resolveIdleIfNeeded()
       })
     this.nativeTerminalTransition = tracked
+    // Teardown interrupts transitions, and `closed` reports a Session failure.
     void tracked.catch((error) => {
-      if (!this._isDestroyed) this.handleError(error instanceof Error ? error : new Error(String(error)))
+      if (this.canRender && !this.nativeSession.isCloseInterruption(error)) {
+        this.handleError(error instanceof Error ? error : new Error(String(error)))
+      }
     })
     return tracked
   }
@@ -5006,10 +5011,13 @@ export class CliRenderer extends EventEmitter implements RenderContext {
       }
     } catch (error) {
       renderFailed = true
-      const renderError = error instanceof Error ? error : new Error(String(error))
-      const event: CliRendererErrorEvent = { error: renderError, renderable: this.root.takeCurrentRenderable() }
-      const handled = this.emit(CliRenderEvents.RENDER_ERROR, event)
-      if (!handled) this.handleError(renderError)
+      // Teardown abandons in-flight frames, and `closed` reports a Session failure once.
+      if (this.canRender) {
+        const renderError = error instanceof Error ? error : new Error(String(error))
+        const event: CliRendererErrorEvent = { error: renderError, renderable: this.root.takeCurrentRenderable() }
+        const handled = this.emit(CliRenderEvents.RENDER_ERROR, event)
+        if (!handled) this.handleError(renderError)
+      }
     } finally {
       const completion = this.renderingCompletion
       this.renderingCompletion = null
