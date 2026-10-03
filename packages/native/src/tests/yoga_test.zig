@@ -809,6 +809,51 @@ test "OpenTUI default Yoga nodes are independent of Context and heap-owned confi
     try std.testing.expect(yoga.yogaNodeGetConfig(first) == yoga.yogaNodeGetConfig(second));
 }
 
+test "OpenTUI default Yoga config links nodes from concurrent threads" {
+    const Worker = struct {
+        gate: *std.Io.Event,
+        running: *std.atomic.Value(u32),
+        status: yoga.Status = .ok,
+
+        fn run(self: *@This()) void {
+            defer _ = self.running.fetchSub(1, .release);
+            self.gate.waitUncancelable(std.testing.io);
+            var live: [8]yoga.YGNodeRef = @splat(null);
+            defer for (live) |node| if (node != null) yoga.yogaNodeFree(node);
+            for (0..20_000) |index| {
+                const slot = &live[(index * 7) % live.len];
+                if (slot.* != null) self.status = yoga.yogaNodeFreeChecked(slot.*);
+                slot.* = null;
+                if (self.status == .ok) self.status = yoga.yogaNodeCreateForOpenTUIChecked(slot);
+                if (self.status != .ok) return;
+            }
+        }
+    };
+    const node = yoga.yogaNodeCreateForOpenTUI();
+    const ref: yoga.YGConfigRef = @constCast(yoga.yogaNodeGetConfig(node));
+    var gate: std.Io.Event = .unset;
+    var workers: [4]Worker = undefined;
+    var running: std.atomic.Value(u32) = .init(workers.len);
+    var threads: [workers.len]std.Thread = undefined;
+    var spawned: usize = 0;
+    defer {
+        gate.set(std.testing.io);
+        for (threads[0..spawned]) |thread| thread.join();
+    }
+    for (&workers, &threads) |*worker, *thread| {
+        worker.* = .{ .gate = &gate, .running = &running };
+        thread.* = try std.Thread.spawn(.{}, Worker.run, .{worker});
+        spawned += 1;
+    }
+    gate.set(std.testing.io);
+    // Setters walk every node of the config while the workers link and unlink.
+    while (running.load(.acquire) != 0) try yoga.check(yoga.yogaConfigSetPointScaleFactorChecked(ref, 1));
+    for (workers) |worker| try yoga.check(worker.status);
+    yoga.yogaNodeFree(node);
+    const config: *yoga.Config = @ptrCast(@alignCast(@import("yoga").YGConfigGetContext(ref)));
+    try std.testing.expect(!config.hasLiveNodes());
+}
+
 test "Yoga public config free rejects a live node and permits retry" {
     const config = yoga.yogaConfigCreate();
     const node = yoga.yogaNodeCreateWithConfig(config);
