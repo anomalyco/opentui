@@ -570,7 +570,7 @@ test "Yoga checked copy style preserves destination through every allocation fai
     }
 }
 
-test "Yoga checked display contents insertion failure leaves topology retryable" {
+test "Yoga checked display contents insertion failure leaves topology retryable and reuse keeps storage" {
     var config: yoga.Config = undefined;
     try config.init(std.testing.allocator, .{});
     defer config.deinit();
@@ -596,7 +596,14 @@ test "Yoga checked display contents insertion failure leaves topology retryable"
     yoga.testFailAfter(0);
     try yoga.check(yoga.yogaNodeRemoveChildChecked(node, child));
     try std.testing.expectEqual(@as(u32, 0), yoga.testContentsChildCount(node));
+    // Reset keeps the detached child storage, so reinsertion does not allocate.
+    const bytes = yoga.nodeStorageBytes(node);
     try yoga.check(yoga.yogaNodeResetChecked(node));
+    try std.testing.expectEqual(bytes, yoga.nodeStorageBytes(node));
+    try yoga.check(yoga.yogaNodeInsertChildChecked(node, child, 0));
+    try std.testing.expectEqual(@as(u32, 1), yoga.testContentsChildCount(node));
+    try yoga.check(yoga.yogaNodeRemoveAllChildrenChecked(node));
+    try std.testing.expectEqual(@as(u32, 0), yoga.testContentsChildCount(node));
 }
 
 test "Yoga checked nonroot layout failure poisons only the connected mixed-config tree" {
