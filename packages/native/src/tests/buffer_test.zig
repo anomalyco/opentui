@@ -1109,6 +1109,71 @@ test "OptimizedBuffer checked grapheme draws write blank cells for clusters a ce
     try std.testing.expectEqual(0, pools.graphemes.interned_live_ids.count());
 }
 
+fn expectSameCells(expected: *OptimizedBuffer, actual: *OptimizedBuffer) !void {
+    for (expected.buffer.char, actual.buffer.char) |want, got| {
+        if (gp.isGraphemeChar(want) and gp.isGraphemeChar(got)) {
+            try std.testing.expectEqualStrings(try expected.pool.get(gp.graphemeIdFromChar(want)), try actual.pool.get(gp.graphemeIdFromChar(got)));
+        } else {
+            try std.testing.expectEqual(want, got);
+        }
+    }
+    try std.testing.expectEqualSlices(u32, expected.buffer.attributes, actual.buffer.attributes);
+    for (expected.buffer.fg, actual.buffer.fg) |want, got| try std.testing.expect(buffer_mod.rgbaEqual(want, got));
+    for (expected.buffer.bg, actual.buffer.bg) |want, got| try std.testing.expect(buffer_mod.rgbaEqual(want, got));
+}
+
+test "OptimizedBuffer text views attach a combining mark only to the glyph drawn before it" {
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
+    const fg = ansi.rgbColor(200, 100, 50, 255);
+    const bg = ansi.rgbColor(10, 20, 30, 255);
+    // A mark in its own chunk combines with the glyph before it, like the same cluster in one chunk.
+    for ([_]f32{ 1.0, 0.5 }) |opacity| {
+        const one_chunk = try OptimizedBuffer.init(std.testing.allocator, 4, 1, .{ .pool = &pools.graphemes, .link_pool = &pools.links });
+        defer one_chunk.deinit();
+        const two_chunks = try OptimizedBuffer.init(std.testing.allocator, 4, 1, .{ .pool = &pools.graphemes, .link_pool = &pools.links });
+        defer two_chunks.deinit();
+        for ([_]*OptimizedBuffer{ one_chunk, two_chunks }, [_][]const []const u8{ &.{"a\u{301}b"}, &.{ "a", "\u{301}b" } }) |target, chunks| {
+            target.clear(ansi.rgbColor(0, 0, 0, 255), null);
+            const content = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .unicode);
+            defer content.deinit();
+            const view = try TextBufferView.init(std.testing.allocator, content);
+            defer view.deinit();
+            try content.setText(chunks[0]);
+            for (chunks[1..]) |chunk| try content.append(chunk);
+            content.setDefaultFg(fg);
+            content.setDefaultBg(bg);
+            try target.pushOpacity(opacity);
+            try target.drawTextBufferChecked(view, 0, 0);
+        }
+        try std.testing.expectEqualStrings("a\u{301}", try pools.graphemes.get(gp.graphemeIdFromChar(two_chunks.buffer.char[0])));
+        try expectSameCells(one_chunk, two_chunks);
+    }
+
+    // A mark whose base glyph this draw did not write leaves the cell left of the view unchanged.
+    const target = try OptimizedBuffer.init(std.testing.allocator, 6, 1, .{ .pool = &pools.graphemes, .link_pool = &pools.links });
+    defer target.deinit();
+    const Case = struct { chunks: []const []const u8, scroll_x: u32 };
+    for ([_]Case{
+        .{ .chunks = &.{"\u{301}ab"}, .scroll_x = 0 },
+        .{ .chunks = &.{ "x", "\u{301}ab" }, .scroll_x = 1 },
+        .{ .chunks = &.{ "\u{4e2d}", "\u{301}ab" }, .scroll_x = 2 },
+    }) |case| {
+        target.clear(ansi.rgbColor(0, 0, 0, 255), null);
+        target.set(1, 0, .{ .char = 'Z', .fg = fg, .bg = bg, .attributes = 0 });
+        const content = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .unicode);
+        defer content.deinit();
+        const view = try TextBufferView.init(std.testing.allocator, content);
+        defer view.deinit();
+        try content.setText(case.chunks[0]);
+        for (case.chunks[1..]) |chunk| try content.append(chunk);
+        view.setViewport(.{ .x = case.scroll_x, .y = 0, .width = 4, .height = 1 });
+        try target.drawTextBufferChecked(view, 2, 0);
+        try std.testing.expectEqualSlices(u32, &.{ ' ', 'Z', 'a', 'b', ' ', ' ' }, target.buffer.char);
+    }
+    try std.testing.expectEqual(0, pools.graphemes.interned_live_ids.count());
+}
+
 test "OptimizedBuffer - drawGrapheme preserves authoritative width" {
     var pools = TestPools.init(std.testing.allocator);
     defer pools.deinit();

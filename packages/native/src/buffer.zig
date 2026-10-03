@@ -477,6 +477,9 @@ pub const BufferLease = struct {
     }
 };
 
+/// A glyph that a text view draw wrote at column x of its current row.
+const MarkBase = struct { x: u32, char: u32 };
+
 pub inline fn rgbaEqual(a: RGBA, b: RGBA) bool {
     return a[0] == b[0] and a[1] == b[1] and a[2] == b[2] and a[3] == b[3];
 }
@@ -2437,6 +2440,8 @@ pub const OptimizedBuffer = struct {
             currentX = x + align_pad;
             var rendered_col_in_vline: u32 = 0;
             document_cell_offset = vline.document_cell_offset;
+            // The glyph that this draw wrote just before the current cluster, if any.
+            var mark_base: ?MarkBase = null;
 
             const vline_span_info = view.getVirtualLineSpans(vline_idx);
             const spans = vline_span_info.spans;
@@ -2525,6 +2530,9 @@ pub const OptimizedBuffer = struct {
                             utf8.getWidthAt(grapheme_bytes, 0, text_buffer.tabWidth(), text_buffer.widthMethod());
                         byte_offset = next_byte_offset;
                     }
+                    // Only a glyph that this iteration draws, or a zero-width cluster, sets it again.
+                    const previous_glyph = mark_base;
+                    mark_base = null;
 
                     if (rendered_col_in_vline < horizontal_offset) {
                         document_cell_offset += cluster_width_cols;
@@ -2708,8 +2716,12 @@ pub const OptimizedBuffer = struct {
                     }
 
                     if (cluster_width_cols == 0) {
-                        if (utf8.isCombiningMark(grapheme_bytes)) {
-                            try self.attachCombiningMark(checked, grapheme_bytes, currentX, currentY);
+                        // A combining mark joins the glyph before it; other zero-width clusters keep it.
+                        if (previous_glyph) |glyph| {
+                            mark_base = if (utf8.isCombiningMark(grapheme_bytes))
+                                try self.attachCombiningMark(checked, grapheme_bytes, glyph, @intCast(currentY))
+                            else
+                                glyph;
                         }
                         continue;
                     }
@@ -2772,7 +2784,7 @@ pub const OptimizedBuffer = struct {
                                         if (!self.isPointInScissor(tab_x + @as(i32, @intCast(offset)), currentY)) visible = false;
                                     }
                                     if (visible) {
-                                        try self.drawTextBufferGrapheme(checked, indicator_bytes[0..indicator_length], indicator_width, @intCast(tab_x), @intCast(currentY), tab_indicator_color orelse drawFg, drawBg, drawAttributes);
+                                        _ = try self.drawTextBufferGrapheme(checked, indicator_bytes[0..indicator_length], indicator_width, @intCast(tab_x), @intCast(currentY), tab_indicator_color orelse drawFg, drawBg, drawAttributes);
                                         tab_col += indicator_width - 1;
                                         continue;
                                     }
@@ -2802,8 +2814,9 @@ pub const OptimizedBuffer = struct {
                         ))
                     {
                         // Opaque ASCII over a transparent background needs no pool or blending work.
-                    } else {
-                        try self.drawTextBufferGrapheme(checked, grapheme_bytes, cluster_width_cols, @intCast(currentX), @intCast(currentY), drawFg, drawBg, drawAttributes);
+                        mark_base = .{ .x = @intCast(currentX), .char = grapheme_bytes[0] };
+                    } else if (try self.drawTextBufferGrapheme(checked, grapheme_bytes, cluster_width_cols, @intCast(currentX), @intCast(currentY), drawFg, drawBg, drawAttributes)) |char| {
+                        mark_base = .{ .x = @intCast(currentX), .char = char };
                     }
 
                     document_cell_offset += cluster_width_cols;
@@ -2827,47 +2840,51 @@ pub const OptimizedBuffer = struct {
         }
     }
 
-    fn attachCombiningMark(self: *OptimizedBuffer, comptime checked: bool, mark: []const u8, current_x: i32, current_y: i32) !void {
-        if (current_x <= 0 or current_y < 0) return;
-        const prev_x: u32 = @intCast(current_x - 1);
-        const y: u32 = @intCast(current_y);
-        if (prev_x >= self.width or y >= self.height) return;
-        const prev = self.buffer.char[self.coordsToIndex(prev_x, y)];
-        const start_x: u32 = if (gp.isContinuationChar(prev)) blk: {
-            const left = gp.charLeftExtent(prev);
-            if (left > prev_x) return;
-            break :blk prev_x - left;
-        } else prev_x;
-        const start = self.coordsToIndex(start_x, y);
-        const char_code = self.buffer.char[start];
-        if (char_code == 0 or gp.isContinuationChar(char_code) or gp.isImageChar(char_code)) return;
-        var encoded: [4]u8 = undefined;
-        const base: []const u8 = if (gp.isGraphemeChar(char_code))
-            self.pool.get(gp.graphemeIdFromChar(char_code)) catch return
-        else blk: {
-            const codepoint = math.cast(u21, char_code) orelse return;
-            const length = std.unicode.utf8Encode(codepoint, &encoded) catch return;
-            break :blk encoded[0..length];
+    /// Combines a zero-width mark with the glyph that this draw wrote just before it, as if both
+    /// were one cluster. The cell keeps its colors, which already have opacity applied.
+    /// Returns the combined glyph, or null when the cell does not hold that glyph or cannot
+    /// hold the combination.
+    fn attachCombiningMark(self: *OptimizedBuffer, comptime checked: bool, mark: []const u8, base: MarkBase, y: u32) !?MarkBase {
+        const index = self.coordsToIndex(base.x, y);
+        // A blended space keeps the glyph under it, which this draw did not write.
+        if (self.buffer.char[index] != base.char) return null;
+        var ascii: [1]u8 = undefined;
+        const base_bytes: []const u8 = if (gp.isGraphemeChar(base.char))
+            // The cell holds a tracker reference, so the pool entry is live.
+            self.pool.get(gp.graphemeIdFromChar(base.char)) catch unreachable
+        else bytes: {
+            // Text views write only printable ASCII as a scalar cell.
+            assert(base.char >= 0x20 and base.char < 0x7f);
+            ascii[0] = @intCast(base.char);
+            break :bytes &ascii;
         };
-        var combined: [128]u8 = undefined;
-        if (base.len + mark.len > combined.len) return;
-        @memcpy(combined[0..base.len], base);
-        @memcpy(combined[base.len..][0..mark.len], mark);
-        try self.drawTextBufferGrapheme(
-            checked,
-            combined[0 .. base.len + mark.len],
-            gp.encodedCharWidth(char_code),
-            start_x,
-            y,
-            self.buffer.fg[start],
-            self.buffer.bg[start],
-            self.buffer.attributes[start],
+        var combined: [grapheme_bytes_max]u8 = undefined;
+        if (base_bytes.len + mark.len > combined.len) return null;
+        @memcpy(combined[0..base_bytes.len], base_bytes);
+        @memcpy(combined[base_bytes.len..][0..mark.len], mark);
+        const id = self.pool.acquire(combined[0 .. base_bytes.len + mark.len]) catch |err| {
+            if (checked) return mapGraphemeAcquire(err);
+            self.logger.warn("Failed to allocate grapheme: {}", .{err});
+            return null;
+        };
+        if ((self.pool.getRefcount(id) catch unreachable) == math.maxInt(u32)) {
+            self.pool.decref(id) catch unreachable;
+            return error.TrackerLimit;
+        }
+        defer self.pool.decref(id) catch unreachable;
+        try self.storage.ensureTrackerCapacity(
+            @as(u64, self.grapheme_tracker.getGraphemeCount()) + 1,
+            self.link_tracker.getLinkCount(),
         );
+        const char = gp.packGraphemeStart(id, gp.encodedCharWidth(base.char));
+        self.set(base.x, y, makeCell(char, self.buffer.fg[index], self.buffer.bg[index], self.buffer.attributes[index]));
+        return .{ .x = base.x, .char = char };
     }
 
-    fn drawTextBufferGrapheme(self: *OptimizedBuffer, comptime checked: bool, bytes: []const u8, width: u32, x: u32, y: u32, fg: RGBA, bg: RGBA, attributes: u32) !void {
+    /// Returns the cell character it drew, or null when it drew nothing.
+    fn drawTextBufferGrapheme(self: *OptimizedBuffer, comptime checked: bool, bytes: []const u8, width: u32, x: u32, y: u32, fg: RGBA, bg: RGBA, attributes: u32) !?u32 {
         const opacity = self.getCurrentOpacity();
-        if (self.skipTransparentCellDraw(opacity, isFullyTransparent(opacity, fg, bg))) return;
+        if (self.skipTransparentCellDraw(opacity, isFullyTransparent(opacity, fg, bg))) return null;
         var encoded_char: u32 = 0;
         var retained_gid: ?u32 = null;
         defer if (retained_gid) |gid| self.pool.decref(gid) catch unreachable;
@@ -2877,7 +2894,7 @@ pub const OptimizedBuffer = struct {
             const gid = self.pool.acquire(bytes) catch |err| {
                 if (checked) return mapGraphemeAcquire(err);
                 self.logger.warn("Failed to allocate grapheme: {}", .{err});
-                return;
+                return null;
             };
             if ((try self.pool.getRefcount(gid)) == math.maxInt(u32)) {
                 self.pool.decref(gid) catch unreachable;
@@ -2894,9 +2911,10 @@ pub const OptimizedBuffer = struct {
         // Opaque text on transparent backgrounds avoids generic per-cell blending.
         if (opacity == 1.0 and ansi.alpha(bg) == 0) {
             const index = self.coordsToIndex(x, y);
-            if (self.trySetTransparentTextCellFast(index, encoded_char, fg, attributes)) return;
+            if (self.trySetTransparentTextCellFast(index, encoded_char, fg, attributes)) return encoded_char;
         }
         self.setCellWithAlphaBlendingCell(x, y, makeCell(encoded_char, fg, bg, attributes));
+        return encoded_char;
     }
 
     /// Draw an EditorView to this OptimizedBuffer
