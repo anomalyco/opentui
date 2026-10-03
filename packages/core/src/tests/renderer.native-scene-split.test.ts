@@ -1,4 +1,5 @@
-import { afterEach, expect, test } from "bun:test"
+import { afterEach, expect, spyOn, test } from "bun:test"
+import { OptimizedBuffer } from "../buffer.js"
 import { NativeSession } from "../NativeSession.js"
 import { CliRenderEvents } from "../renderer.js"
 import { Renderable, RenderableEvents } from "../Renderable.js"
@@ -141,6 +142,29 @@ test.each([
   })
   stdout.write(text)
   expect(written).toEqual(commits)
+})
+
+test("captured stdout that fails mid-write queues and leaks none of its rows", async () => {
+  const stdout = createTestStdout(24, 10)
+  const { externalOutput } = await setup({ stdout })
+  const registered = new Set(Renderable.renderablesByNumber.keys())
+  const create = OptimizedBuffer.create
+  const created: OptimizedBuffer[] = []
+  const spy = spyOn(OptimizedBuffer, "create").mockImplementation((...args) => {
+    if (created.length === 2) throw new Error("allocation failed")
+    created.push(create.apply(OptimizedBuffer, args))
+    return created.at(-1)!
+  })
+  try {
+    expect(() => stdout.write("a\nb\nc\n")).toThrow("allocation failed")
+  } finally {
+    spy.mockRestore()
+  }
+  expect(created.map((buffer) => (buffer as unknown as { _destroyed: boolean })._destroyed)).toEqual([true, true])
+  expect(new Set(Renderable.renderablesByNumber.keys())).toEqual(registered)
+  expect(externalOutput.take()).toEqual([])
+  stdout.write("d\n")
+  expect(externalOutput.takeText()).toBe("d")
 })
 
 test.each([

@@ -2657,58 +2657,6 @@ export class CliRenderer extends EventEmitter implements RenderContext {
     }
   }
 
-  private createStdoutSnapshotCommit({ line, cells, trailingNewline }: StdoutRow): ExternalOutputCommit {
-    // Convert captured stdout into the same commit shape used by writeToScrollback.
-    // One commit format keeps split append behavior consistent across both sources.
-    const snapshotContext = new ScrollbackSnapshotRenderContext(
-      this.width,
-      1,
-      this.widthMethod,
-      this._terminalWidth,
-      this._terminalHeight,
-      this.resolution,
-      this.capabilities,
-      this.nativeSession,
-    )
-    const snapshotWidth = Math.max(1, cells)
-    snapshotContext.width = snapshotWidth
-    let snapshotRoot: RootRenderable | undefined
-    let snapshotBuffer: OptimizedBuffer | undefined
-    try {
-      snapshotRoot = new RootRenderable(snapshotContext)
-      const snapshotRenderable = new TextRenderable(snapshotContext, {
-        id: "captured-stdout-snapshot",
-        position: "absolute",
-        left: 0,
-        top: 0,
-        width: snapshotWidth,
-        height: 1,
-        content: line,
-      })
-      snapshotBuffer = OptimizedBuffer.create(snapshotWidth, 1, this.widthMethod, {
-        id: "captured-stdout-snapshot",
-        owner: this.nativeScene,
-      })
-      snapshotRoot.add(snapshotRenderable)
-      snapshotContext.renderSnapshot(snapshotRoot, snapshotBuffer)
-      return {
-        snapshot: snapshotBuffer,
-        rowColumns: cells,
-        startOnNewLine: false,
-        trailingNewline,
-      }
-    } catch (error) {
-      snapshotBuffer?.destroy()
-      throw error
-    } finally {
-      try {
-        snapshotRoot?.destroyRecursively()
-      } finally {
-        snapshotContext.destroy()
-      }
-    }
-  }
-
   private splitStdoutRows(text: string): StdoutRow[] {
     // Captured stdout arrives as an arbitrary byte stream, but split append commits
     // are row-based (line text + whether that row ended with '\n'). We normalize
@@ -2776,13 +2724,58 @@ export class CliRenderer extends EventEmitter implements RenderContext {
     const rows = this.splitStdoutRows(text)
     // A write is queued whole or not at all; check the budget before allocating snapshots of at least one cell each.
     this.externalOutputQueue.checkCapacity(rows.reduce((total, row) => total + Math.max(1, row.cells), 0))
+    if (rows.length === 0) {
+      return []
+    }
+
+    // Convert captured stdout into the same commit shape used by writeToScrollback.
+    // One commit format keeps split append behavior consistent across both sources.
+    // One detached context paints every row of a write: creating it costs far more than a paint.
+    const snapshotContext = new ScrollbackSnapshotRenderContext(
+      this.width,
+      1,
+      this.widthMethod,
+      this._terminalWidth,
+      this._terminalHeight,
+      this.resolution,
+      this.capabilities,
+      this.nativeSession,
+    )
     const commits: ExternalOutputCommit[] = []
+    let snapshotRoot: RootRenderable | undefined
     try {
-      for (const row of rows) commits.push(this.createStdoutSnapshotCommit(row))
+      snapshotRoot = new RootRenderable(snapshotContext)
+      const snapshotRenderable = new TextRenderable(snapshotContext, {
+        id: "captured-stdout-snapshot",
+        position: "absolute",
+        left: 0,
+        top: 0,
+        height: 1,
+      })
+      snapshotRoot.add(snapshotRenderable)
+      for (const { line, cells, trailingNewline } of rows) {
+        const snapshotWidth = Math.max(1, cells)
+        snapshotContext.width = snapshotWidth
+        snapshotRoot.resize(snapshotWidth, 1)
+        snapshotRenderable.width = snapshotWidth
+        snapshotRenderable.content = line
+        const snapshot = OptimizedBuffer.create(snapshotWidth, 1, this.widthMethod, {
+          id: "captured-stdout-snapshot",
+          owner: this.nativeScene,
+        })
+        commits.push({ snapshot, rowColumns: cells, startOnNewLine: false, trailingNewline })
+        snapshotContext.renderSnapshot(snapshotRoot, snapshot)
+      }
       return commits
     } catch (error) {
       for (const commit of commits) commit.snapshot.destroy()
       throw error
+    } finally {
+      try {
+        snapshotRoot?.destroyRecursively()
+      } finally {
+        snapshotContext.destroy()
+      }
     }
   }
 
