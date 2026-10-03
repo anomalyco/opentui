@@ -3657,6 +3657,21 @@ test "Scene Slider and Arrow ABI validate fixed records without changing accepte
     try std.testing.expectEqual(c.OT_WRONG_KIND, ot_scene_set_arrow(handle, &slider, &arrow_options, null, 0));
     try std.testing.expectEqual(c.OT_WRONG_KIND, ot_scene_get_slider_thumb(handle, &root, &output));
     try std.testing.expectEqualDeep(before, output);
+    // Arithmetic the thumb cannot represent is rejected for both the hook and layout dimensions.
+    for ([_]scene.SliderOptions{
+        .{ .orientation = 2 },
+        .{ .min = std.math.nan(f64) },
+        .{ .max = std.math.inf(f64) },
+        .{ .value = std.math.nan(f64) },
+        .{ .viewport_size = -std.math.inf(f64) },
+        .{ .min = -std.math.floatMax(f64), .max = std.math.floatMax(f64) },
+        .{ .min = -std.math.floatMax(f64), .max = 0, .value = std.math.floatMax(f64) },
+        .{ .max = std.math.floatMax(f64), .viewport_size = std.math.floatMax(f64) },
+        .{ .max = 5e-324, .value = 1 },
+        .{ .max = 1, .value = std.math.floatMax(f64), .viewport_size = 1 },
+    }) |invalid| try std.testing.expectError(error.InvalidOptions, owner.sceneSetSlider(handleFromC(slider), invalid));
+    try std.testing.expectError(error.InvalidOptions, owner.sceneSetArrow(handleFromC(arrow), .{ .direction = 4 }));
+    try std.testing.expectError(error.InvalidOptions, owner.sceneSetArrow(handleFromC(arrow), .{ .attributes = 256 }));
     try std.testing.expectEqualDeep(accepted_slider, (try owner.raw().getRenderable(handleFromC(slider))).scene_node.?.control.slider);
     try std.testing.expectEqualDeep(accepted_arrow, (try owner.raw().getRenderable(handleFromC(arrow))).scene_node.?.control.arrow);
 }
