@@ -605,55 +605,6 @@ test("CliRenderer writeToScrollback bypasses global console capture singleton", 
   expect(capture.claimOutput()).toBe("")
 })
 
-test("CliRenderer flushes captured output before switching to passthrough in split-footer", async () => {
-  const result = await createTestRenderer({
-    screenMode: "split-footer",
-    footerHeight: 6,
-    externalOutputMode: "capture-stdout",
-    consoleMode: "disabled",
-  })
-
-  renderer = result.renderer
-
-  ;(renderer as any).stdout.write("pending output\n")
-
-  expect((renderer as any).externalOutputQueue.size).toBe(1)
-
-  renderer.externalOutputMode = "passthrough"
-  await result.renderOnce()
-  expect(result.output()).toContain("pending output")
-  expect(renderer.externalOutputMode).toBe("passthrough")
-  expect((renderer as any).externalOutputQueue.size).toBe(0)
-})
-
-test("CliRenderer drains all pending split commits before switching to passthrough", async () => {
-  const result = await createTestRenderer({
-    screenMode: "split-footer",
-    footerHeight: 6,
-    externalOutputMode: "capture-stdout",
-    consoleMode: "disabled",
-  })
-
-  renderer = result.renderer
-
-  for (let i = 0; i < 10; i += 1) {
-    ;(renderer as any).stdout.write(`pending-${i}\n`)
-  }
-
-  expect((renderer as any).externalOutputQueue.size).toBe(10)
-
-  renderer.externalOutputMode = "passthrough"
-  await result.renderOnce()
-  expect((renderer as any)._externalOutputMode).toBe("capture-stdout")
-  expect((renderer as any).externalOutputQueue.size).toBe(2)
-  await result.renderOnce()
-  expect([...(result.output().match(/pending-\d/g) ?? [])]).toEqual(
-    Array.from({ length: 10 }, (_, i) => `pending-${i}`),
-  )
-  expect((renderer as any).externalOutputQueue.size).toBe(0)
-  expect(renderer.externalOutputMode).toBe("passthrough")
-})
-
 test("CliRenderer keeps stdout captured until a deferred passthrough switch drains", async () => {
   const result = await createTestRenderer({
     startupPending: true,
@@ -809,57 +760,6 @@ test("CliRenderer does not force split repaint when switching to passthrough wit
   await renderer.nativeScene.driver.idle()
   expect(result.output()).toBe("")
   expect(renderer.getNativeStats().nativeFrameCount).toBe(frames)
-})
-
-test("CliRenderer flushes pending split output before resize applies new geometry", async () => {
-  const result = await createTestRenderer({
-    width: 40,
-    height: 10,
-    screenMode: "split-footer",
-    footerHeight: 4,
-    externalOutputMode: "capture-stdout",
-    consoleMode: "disabled",
-  })
-
-  renderer = result.renderer
-  ;(renderer as any).stdout.write("before-resize\n")
-
-  let pendingAtResize = -1
-  renderer.on("resize", () => {
-    pendingAtResize = (renderer as any).externalOutputQueue.size
-  })
-
-  ;(renderer as any).processResize(60, 16)
-  await result.renderOnce()
-  expect(pendingAtResize).toBe(0)
-  expect(result.output()).toContain("before-resize")
-  expect([renderer.width, renderer.height]).toEqual([60, 4])
-})
-
-test("CliRenderer flushes pending writeToScrollback output before resize applies new geometry", async () => {
-  const result = await createTestRenderer({
-    width: 40,
-    height: 10,
-    screenMode: "split-footer",
-    footerHeight: 4,
-    externalOutputMode: "capture-stdout",
-    consoleMode: "disabled",
-  })
-
-  renderer = result.renderer
-
-  renderer.writeToScrollback(textScrollbackWrite("before-resize\n"))
-
-  let pendingAtResize = -1
-  renderer.on("resize", () => {
-    pendingAtResize = (renderer as any).externalOutputQueue.size
-  })
-
-  ;(renderer as any).processResize(60, 16)
-  await result.renderOnce()
-  expect(pendingAtResize).toBe(0)
-  expect(result.output()).toContain("before-resize")
-  expect([renderer.width, renderer.height]).toEqual([60, 4])
 })
 
 for (const [name, screenMode, change, dimensions, output] of [
@@ -1044,27 +944,6 @@ test("CliRenderer rejects overflowing native resize before publishing geometry",
   renderer.resize(4, 1)
   expect([renderer.width, renderer.height]).toEqual([4, 1])
   expect([renderer.currentRenderBuffer.width, renderer.currentRenderBuffer.height]).toEqual([4, 1])
-})
-
-test("CliRenderer resetSplitFooterForReplay clears published scrollback and starts fresh", async () => {
-  const result = await createTestRenderer({
-    width: 40,
-    height: 10,
-    screenMode: "split-footer",
-    footerHeight: 4,
-    externalOutputMode: "capture-stdout",
-    consoleMode: "disabled",
-  })
-
-  renderer = result.renderer
-  renderer.writeToScrollback(textScrollbackWrite("before-replay\n"))
-
-  renderer.resetSplitFooterForReplay({ clearSavedLines: true })
-  await result.renderOnce()
-  expect(result.output()).toContain("\x1b[r\x1b[0m\x1b[H\x1b[2J\x1b[3J\x1b[H")
-  expect((renderer as any).renderOffset).toBe(0)
-  expect((renderer as any).splitTailColumn).toBe(0)
-  expect((renderer as any).pendingSplitFooterTransition).toBeNull()
 })
 
 test("CliRenderer resetSplitFooterForReplay rejects suspended terminal ownership", async () => {
@@ -1352,25 +1231,6 @@ test("CliRenderer flushes pending split output on suspend even when startup curs
   }
 })
 
-test("CliRenderer flushes pending writeToScrollback output before suspend", async () => {
-  const result = await createTestRenderer({
-    width: 40,
-    height: 10,
-    screenMode: "split-footer",
-    footerHeight: 4,
-    externalOutputMode: "capture-stdout",
-    consoleMode: "disabled",
-  })
-
-  renderer = result.renderer
-
-  renderer.writeToScrollback(textScrollbackWrite("before-suspend\n"))
-
-  await renderer.suspend()
-  expect(result.output()).toContain("before-suspend")
-  expect(result.output().lastIndexOf("\x1b[?25h")).toBeGreaterThan(result.output().indexOf("before-suspend"))
-})
-
 test("CliRenderer clears split footer surface when leaving split-footer mode", async () => {
   const result = await createTestRenderer({
     width: 40,
@@ -1389,50 +1249,6 @@ test("CliRenderer clears split footer surface when leaving split-footer mode", a
   await renderer.nativeScene!.driver.idle()
   expect(result.output()).toContain(ANSI.moveCursorAndClear(7, 1))
   expect((renderer as any).renderOffset).toBe(0)
-})
-
-test("CliRenderer destroy flushes split output before clearing split footer surface", async () => {
-  const result = await createTestRenderer({
-    width: 40,
-    height: 10,
-    screenMode: "split-footer",
-    footerHeight: 4,
-    externalOutputMode: "capture-stdout",
-    consoleMode: "disabled",
-  })
-
-  renderer = result.renderer
-  ;(renderer as any).stdout.write("before-destroy\n")
-
-  renderer.destroy()
-  await renderer.closed
-
-  const output = result.output()
-  expect(output).toContain("before-destroy")
-  expect(output.lastIndexOf("\x1b[?25h")).toBeGreaterThan(output.indexOf("before-destroy"))
-  expect(output.lastIndexOf("\x1b[J")).toBeGreaterThan(output.indexOf("before-destroy"))
-})
-
-test("CliRenderer destroy flushes writeToScrollback output before clearing split footer surface", async () => {
-  const result = await createTestRenderer({
-    width: 40,
-    height: 10,
-    screenMode: "split-footer",
-    footerHeight: 4,
-    externalOutputMode: "capture-stdout",
-    consoleMode: "disabled",
-  })
-
-  renderer = result.renderer
-  renderer.writeToScrollback(textScrollbackWrite("before-destroy\n"))
-
-  renderer.destroy()
-  await renderer.closed
-
-  const output = result.output()
-  expect(output).toContain("before-destroy")
-  expect(output.lastIndexOf("\x1b[?25h")).toBeGreaterThan(output.indexOf("before-destroy"))
-  expect(output.lastIndexOf("\x1b[J")).toBeGreaterThan(output.indexOf("before-destroy"))
 })
 
 test("CliRenderer destroy does not clear split footer surface when clearOnShutdown is false", async () => {
@@ -2216,26 +2032,6 @@ test("CliRenderer split-footer native scrollback tracks wrapped tail state acros
   await result.renderOnce()
 
   expect((renderer as any).renderOffset).toBe(2)
-})
-
-test("CliRenderer flushes captured output when leaving split-footer for alternate-screen", async () => {
-  const result = await createTestRenderer({
-    screenMode: "split-footer",
-    footerHeight: 6,
-    externalOutputMode: "capture-stdout",
-    consoleMode: "disabled",
-  })
-
-  renderer = result.renderer
-
-  ;(renderer as any).stdout.write("pending output\n")
-  renderer.externalOutputMode = "passthrough"
-  renderer.screenMode = "alternate-screen"
-
-  await result.renderOnce()
-  expect((renderer as any).externalOutputQueue.size).toBe(0)
-  expect(result.output()).toContain("pending output")
-  expect(result.output().indexOf("\x1b[?1049h")).toBeGreaterThan(result.output().indexOf("pending output"))
 })
 
 test("CliRenderer allows env to force main-screen mode", async () => {

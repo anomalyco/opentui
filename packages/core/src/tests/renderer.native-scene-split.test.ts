@@ -123,6 +123,82 @@ test.each(["stdout", "writer"] as const)(
   },
 )
 
+// Each drain ends with `last` on the terminal. A transition that changes the split footer waits for queued rows.
+const drains = {
+  frames: (terminal: Terminal, last: string) => terminal.drainUntil(last),
+  passthrough: async (terminal: Terminal, last: string) => {
+    terminal.renderer.externalOutputMode = "passthrough"
+    // The switch waits for the queue, so this write is still captured behind it.
+    terminal.stdout.write("still captured\n")
+    await terminal.drainUntil("still captured")
+    expect(terminal.renderer.externalOutputMode).toBe("passthrough")
+    expect(terminal.stdout.text().indexOf("still captured")).toBeGreaterThan(terminal.stdout.text().indexOf(last))
+  },
+  resize: async (terminal: Terminal, last: string) => {
+    let printedAtResize = ""
+    terminal.renderer.once("resize", () => (printedAtResize = terminal.stdout.text()))
+    terminal.renderer.resize(60, 12)
+    await terminal.drainUntil(last)
+    expect(printedAtResize).toContain(last)
+    expect([terminal.renderer.width, terminal.renderer.height]).toEqual([60, 3])
+  },
+  suspend: async (terminal: Terminal, last: string) => {
+    await terminal.renderer.suspend()
+    expect(terminal.stdout.text().lastIndexOf("\x1b[?25h")).toBeGreaterThan(terminal.stdout.text().indexOf(last))
+  },
+  destroy: async (terminal: Terminal, last: string) => {
+    terminal.renderer.destroy()
+    await terminal.renderer.closed
+    for (const restore of ["\x1b[?25h", "\x1b[J"]) {
+      expect(terminal.stdout.text().lastIndexOf(restore)).toBeGreaterThan(terminal.stdout.text().indexOf(last))
+    }
+  },
+  "alternate-screen": async (terminal: Terminal, last: string) => {
+    terminal.renderer.externalOutputMode = "passthrough"
+    terminal.renderer.screenMode = "alternate-screen"
+    await terminal.drainUntil("\x1b[?1049h")
+    expect(terminal.stdout.text().indexOf("\x1b[?1049h")).toBeGreaterThan(terminal.stdout.text().indexOf(last))
+  },
+}
+
+// More rows than one frame or one flush batch carries (8).
+test.each(
+  (["stdout", "writer"] as const).flatMap((source) =>
+    Object.keys(drains).map((drain) => [source, drain as keyof typeof drains] as const),
+  ),
+)("queued %s rows reach the terminal once and in order before %s", async (source, drain) => {
+  const terminal = await setupTerminal()
+  const rows = lines(12)
+  if (source === "stdout") terminal.stdout.write(rows.join("\n") + "\n")
+  else for (const row of rows) writeRow(terminal, row)
+  await drains[drain](terminal, "line 11")
+  expect(terminal.printed(/line \d+/g)).toEqual(rows)
+})
+
+test.each(["frames", "suspend", "destroy"] as const)(
+  "a replay reset behind queued rows clears at its boundary when %s drains the queue",
+  async (drain) => {
+    const terminal = await setupTerminal()
+    terminal.stdout.write(lines(10).join("\n") + "\npartial")
+    terminal.renderer.resetSplitFooterForReplay({ clearSavedLines: true })
+    let tailColumn = -1
+    terminal.renderer.writeToScrollback(({ renderContext, tailColumn: tail }) => {
+      tailColumn = tail
+      return { root: new TextRenderable(renderContext, { content: "after", width: 5, height: 1 }) }
+    })
+    // Rows queued after the request start a fresh scrollback, not the partial row before it.
+    expect(tailColumn).toBe(0)
+    await drains[drain](terminal, "after")
+    const replay = "\x1b[r\x1b[0m\x1b[H\x1b[2J\x1b[3J\x1b[H"
+    expect(terminal.printed(/line \d+|partial|after|\x1b\[r\x1b\[0m\x1b\[H\x1b\[2J\x1b\[3J\x1b\[H/g)).toEqual([
+      ...lines(10),
+      "partial",
+      replay,
+      "after",
+    ])
+  },
+)
+
 // Each commit is "text:rowColumns", plus "\n" when it ends its line.
 test.each([
   ["wraps ASCII at the width", "abcdefghijk\n", ["abcdefghi:9", "jk:2\n"]],
