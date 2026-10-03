@@ -1586,7 +1586,9 @@ ot_status ot_session_set_image_resolution(ot_context *, const ot_handle *session
  * 3=budget, 4=busy, 5=preparation, 6=compression. pending_bytes fits u32.
  * Set, poll, cancel, and reply require an attached renderer and may run in any
  * open phase so resume can consume probe replies before JS restores control.
- * File probes emit only while the terminal is active and not suspended. */
+ * File probes emit only while the terminal is active and not suspended. A probe
+ * that ordinary output cannot admit is not started: file_state stays disabled
+ * until a later set or start call after output drains. */
 typedef struct ot_session_kitty_image_transport {
     uint32_t struct_size;
     uint32_t abi_version;

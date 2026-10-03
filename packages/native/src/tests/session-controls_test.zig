@@ -283,9 +283,18 @@ test "Session Kitty image transport is readable before setup and probes only whi
     try testing.expectEqual(.disabled, f.cli.kittyTransport.file_state);
 
     var now_ns: u64 = 0;
-    var bytes: [8192]u8 = undefined;
+    var bytes: [16 * 1024]u8 = undefined;
     try f.owner.setupSessionTerminal(f.id, .{});
     _ = try f.driveOutput(&now_ns, .active, &bytes, 32);
+    // The terminal never sees a probe that output cannot admit, so it must not wait for replies.
+    const blocker = [_]u8{'x'} ** (3 * 4096);
+    try f.owner.writeSession(f.id, &blocker);
+    const queued = f.value.getStats();
+    try f.value.startKittyFileProbe();
+    try testing.expectEqualDeep(queued, f.value.getStats());
+    try testing.expectEqual(@as(u32, 0), f.cli.kittyTransport.pendingCount());
+    try testing.expectEqual(if (builtin.os.tag == .windows) .unsupported else .disabled, f.cli.kittyTransport.file_state);
+    _ = try f.drain(&bytes);
     try f.value.startKittyFileProbe();
     if (builtin.os.tag == .windows) {
         try testing.expectEqual(.unsupported, f.cli.kittyTransport.file_state);

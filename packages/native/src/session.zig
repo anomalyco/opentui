@@ -705,7 +705,19 @@ pub const Session = struct {
         try self.checkOpen();
         const value = self.renderer orelse return error.RendererNotAttached;
         if (!value.setKittyImageTransport(mode)) return error.InvalidOptions;
-        if (self.lifecycle.phase == .active) value.startKittyFileProbeFromSession();
+        if (self.lifecycle.phase == .active) self.startKittyProbe(value);
+    }
+
+    /// The renderer drops a probe packet that ordinary output cannot admit. The
+    /// terminal never sees it, so return to disabled and let a later start retry.
+    fn startKittyProbe(self: *Session, value: *renderer.CliRenderer) void {
+        const transport = &value.kittyTransport;
+        const idle = transport.file_state == .disabled;
+        const published = self.output.getStats().bytes_written;
+        value.startKittyFileProbeFromSession();
+        if (idle and transport.file_state == .probing and self.output.getStats().bytes_written == published) {
+            transport.cancel(.disabled);
+        }
     }
 
     pub fn kittyImageTransportStatus(self: *Session) Error![6]u32 {
@@ -738,8 +750,7 @@ pub const Session = struct {
     pub fn startKittyFileProbe(self: *Session) Error!void {
         try self.checkOpen();
         const value = self.renderer orelse return error.RendererNotAttached;
-        if (self.lifecycle.phase != .active) return;
-        value.startKittyFileProbeFromSession();
+        if (self.lifecycle.phase == .active) self.startKittyProbe(value);
     }
 
     fn validatePaletteQuery(bytes: []const u8) Error!void {
