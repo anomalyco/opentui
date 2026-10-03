@@ -82,6 +82,48 @@ test "Session split output rejects pressure without mutating image snapshots" {
     try testing.expect(value.renderer.?.splitScrollback.published_rows > 0);
 }
 
+test "Session pending split frame keeps its Kitty history image IDs from a file probe" {
+    const owner = try context.Context.init(testing.allocator, testing.io, .{});
+    defer owner.deinit() catch unreachable;
+    const handle = try owner.createSession(.{ .chunk_size = 4096, .chunk_count = 4, .span_capacity = 4 });
+    defer owner.cancelSession(handle) catch unreachable;
+    try owner.attachSessionRenderer(handle, 4, 3, .{ .forwarded_env = &.{} });
+    const value = try owner.raw().getSession(handle);
+    const cli = value.renderer.?;
+    cli.terminal.processCapabilityResponse("\x1b_Gi=31337;OK\x1b\\");
+    const snapshot = try owner.raw().getBuffer(try owner.createBuffer(2, 1, .{}));
+    const decoded = try image.createFromRgba(testing.allocator, &.{ 255, 0, 0, 255 }, 1, 1, 4);
+    defer decoded.deinit();
+    const pixels = try owner.raw().getImage(try owner.importImage(decoded));
+    for (0..2) |x| try testing.expect(try snapshot.drawImage(pixels, 1, @intCast(x), 0, 1, 1, 0, 0, 0, 0, 1, 1, .auto));
+    _ = try value.splitControl(.{ .reset = .{ .seed_rows = 2, .pinned_render_offset = 2 } });
+    const commits = [_]renderer.SplitSnapshot{.{ .snapshot = snapshot, .row_columns = 2 }};
+    try testing.expectEqual(session.RenderStatus.pending, try value.renderSplit(null, &commits, 2, true));
+    const frame_end = value.frame_end_offset.?;
+
+    cli.kittyTransport.mode = .file;
+    cli.startKittyFileProbeFromSession();
+    try testing.expectEqual(.probing, cli.kittyTransport.file_state);
+    const probe_ids = [_]u32{ cli.kittyTransport.query_id, cli.kittyTransport.upload_probe_id };
+    var out: [16384]u8 = undefined;
+    var len: usize = 0;
+    while (try owner.readOutput(handle, out[len..])) |ticket| {
+        len += ticket.len;
+        try owner.completeOutput(handle, ticket, .written);
+    }
+    var frame = out[0..frame_end];
+    var frame_ids: usize = 0;
+    while (std.mem.find(u8, frame, ",i=")) |at| : (frame_ids += 1) {
+        frame = frame[at + 3 ..];
+        const end = std.mem.indexOfAny(u8, frame, ",;\x1b").?;
+        const id = try std.fmt.parseInt(u32, frame[0..end], 10);
+        for (probe_ids) |probe_id| try testing.expect(id != probe_id);
+    }
+    try testing.expect(frame_ids >= 2);
+    // Completion publishes the frame without returning the probe's IDs.
+    try testing.expect(cli.kittyHistoryNextImageId.? > probe_ids[1]);
+}
+
 test "Session snapshot-only output preserves footer cells and invalidates the next repaint" {
     const owner = try context.Context.init(testing.allocator, testing.io, .{});
     defer owner.deinit() catch unreachable;
@@ -102,6 +144,111 @@ test "Session snapshot-only output preserves footer cells and invalidates the ne
     while (try owner.readOutput(handle, &out)) |ticket| try owner.completeOutput(handle, ticket, .written);
     try testing.expectEqual(@as(u32, 'f'), cli.getCurrentBuffer().buffer.char[0]);
     try testing.expect(cli.force_full_repaint);
+}
+
+test "Session screen changes write mode packets only for an active terminal" {
+    const Fixture = @import("session-terminal_test.zig").Fixture;
+    const push = std.fmt.comptimePrint(ansi.ANSI.csiUPush, .{5});
+    const Case = struct {
+        phase: session.TerminalPhase,
+        alternate: bool,
+        kitty: bool = false,
+        pending_frame: bool = false,
+        trailing: usize = 4,
+        result: ?anyerror = null,
+        packet: []const u8 = "",
+    };
+    const cases = [_]Case{
+        .{ .phase = .uninitialized, .alternate = true },
+        .{ .phase = .uninitialized, .alternate = true, .pending_frame = true, .result = error.PresentationPending },
+        .{ .phase = .setting_up, .alternate = false, .result = error.TerminalInactive },
+        .{ .phase = .active, .alternate = true },
+        .{ .phase = .active, .alternate = false, .packet = ansi.ANSI.switchToMainScreen },
+        .{ .phase = .active, .alternate = false, .kitty = true, .packet = ansi.ANSI.csiUPop ++ ansi.ANSI.switchToMainScreen ++ push },
+        .{ .phase = .active, .alternate = false, .trailing = session.control_packet_bytes_max, .result = error.InvalidOptions },
+        .{ .phase = .suspended, .alternate = false },
+    };
+    const trailing = [_]u8{'t'} ** session.control_packet_bytes_max;
+    for (cases) |case| {
+        const f = try Fixture.init(testing.allocator, testing.io, 4, 2);
+        defer f.deinit();
+        var bytes: [16 * 1024]u8 = undefined;
+        var now: u64 = 0;
+        if (case.phase != .uninitialized) try f.owner.setupSessionTerminal(f.id, .{});
+        if (case.phase == .active or case.phase == .suspended) try f.drive(&now, .active);
+        if (case.phase == .suspended) {
+            try f.owner.suspendSession(f.id);
+            try f.drive(&now, .suspended);
+        }
+        if (case.kitty) {
+            f.cli.terminal.state.kitty_keyboard = true;
+            f.cli.terminal.state.kitty_keyboard_flags = 5;
+        }
+        if (case.pending_frame) {
+            try f.cli.getNextBuffer().drawTextChecked("x", 0, 0, ansi.rgbColor(255, 255, 255, 255), null, 0);
+            try testing.expectEqual(session.RenderStatus.pending, try f.value.render(true));
+        }
+        const before = f.snapshot();
+        const alternate_before = f.cli.useAlternateScreen;
+        const result = f.value.setScreen(case.alternate, 6, 3, trailing[0..case.trailing]);
+        if (case.result) |expected| {
+            try testing.expectError(expected, result);
+            try testing.expectEqualDeep(before, f.snapshot());
+            try testing.expectEqual(alternate_before, f.cli.useAlternateScreen);
+            try testing.expectEqual(@as(u32, 4), f.cli.width);
+            continue;
+        }
+        try result;
+        const output = try f.drain(&bytes);
+        try testing.expectEqualStrings(case.packet, output[0..case.packet.len]);
+        try testing.expectEqualStrings(trailing[0..case.trailing], output[case.packet.len..]);
+        try testing.expectEqual(@as(u32, 6), f.cli.width);
+        try testing.expectEqual(@as(u32, 3), f.cli.height);
+        try testing.expectEqual(case.alternate, f.cli.useAlternateScreen);
+        try testing.expect(f.cli.force_full_repaint and f.cli.imageScreenInvalidated);
+        try testing.expectEqual(case.kitty, f.cli.terminal.state.kitty_keyboard);
+        if (case.packet.len != 0) try testing.expectEqual(case.alternate, f.cli.terminal.state.alt_screen);
+    }
+}
+
+test "Session detached sync copies parent terminal capabilities only into an idle child" {
+    const owner = try context.Context.init(testing.allocator, testing.io, .{});
+    defer owner.deinit() catch unreachable;
+    var handles: [3]context.Handle = undefined;
+    for (&handles) |*handle| handle.* = try owner.createSession(.{});
+    defer for (handles) |handle| owner.cancelSession(handle) catch unreachable;
+    for (handles[0..2]) |handle| try owner.attachSessionRenderer(handle, 4, 2, .{ .forwarded_env = &.{} });
+    const parent = try owner.raw().getSession(handles[0]);
+    const child = try owner.raw().getSession(handles[1]);
+    const bare = try owner.raw().getSession(handles[2]);
+    const other = try context.Context.init(testing.allocator, testing.io, .{});
+    defer other.deinit() catch unreachable;
+    const foreign_handle = try other.createSession(.{});
+    defer other.cancelSession(foreign_handle) catch unreachable;
+    const foreign = try other.raw().getSession(foreign_handle);
+
+    const source = parent.renderer.?;
+    source.terminal.caps.kitty_graphics = true;
+    source.terminal.caps.unicode = .unicode;
+    source.terminal.image_protocol = .kitty;
+    source.image_resolution = .{ .terminal_width = 4, .terminal_height = 2, .pixel_width = 40, .pixel_height = 40 };
+    try testing.expectError(error.InvalidOptions, child.syncDetached(child));
+    try testing.expectError(error.WrongContext, child.syncDetached(foreign));
+    try testing.expectError(error.RendererNotAttached, child.syncDetached(bare));
+    try testing.expectError(error.RendererNotAttached, bare.syncDetached(parent));
+    try child.renderer.?.getNextBuffer().drawTextChecked("x", 0, 0, ansi.rgbColor(255, 255, 255, 255), null, 0);
+    try testing.expectEqual(session.RenderStatus.pending, try child.render(true));
+    try testing.expectError(error.InvalidOptions, child.syncDetached(parent));
+    try testing.expect(!child.renderer.?.terminal.caps.kitty_graphics);
+    var out: [256]u8 = undefined;
+    while (try owner.readOutput(handles[1], &out)) |ticket| try owner.completeOutput(handles[1], ticket, .written);
+
+    try child.syncDetached(parent);
+    const target = child.renderer.?;
+    try testing.expectEqualDeep(source.terminal.caps, target.terminal.caps);
+    try testing.expectEqual(.kitty, target.terminal.image_protocol);
+    try testing.expectEqualDeep(source.image_resolution, target.image_resolution);
+    try testing.expectEqual(.unicode, target.getNextBuffer().width_method);
 }
 
 fn copyWithAllocationFailures(allocator: std.mem.Allocator, split: bool) !void {

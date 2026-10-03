@@ -1,7 +1,7 @@
 // Generated from packages/native/include/opentui.h and scripts/native-abi-pointers.ts.
 // Run `bun run generate:abi` in packages/core. Do not edit.
 // Inspect audit input: bun scripts/native-abi.ts --audit
-// ABI audit SHA-256: 3497654e73550a233974ccfd325373fa0d8f1e27b3198575c9704ff1a9b24068
+// ABI audit SHA-256: b2db440dd7f07d7ea3c007e8d9766e28702d760147a6d4d118248c3b34037e45
 
 export const nativeSymbols = {
   ot_scene_set_hooks: { args: ["ptr", "buffer", "buffer"], returns: "i32" },
@@ -45,10 +45,7 @@ export const nativeSymbols = {
   ot_scene_get_cursor_state: { args: ["ptr", "buffer", "buffer"], returns: "i32" },
   ot_scene_frame_copy_buffer: { args: ["ptr", "buffer", "buffer", "buffer"], returns: "i32" },
   ot_scene_measure_layout: { args: ["ptr", "buffer", "buffer"], returns: "i32" },
-  ot_session_render_split: {
-    args: ["ptr", "buffer", "ptr", "ptr", "u32", "u32", "u32", "buffer", "buffer"],
-    returns: "i32",
-  },
+  ot_session_render_split: { args: ["ptr", "buffer", "ptr", "ptr", "u32", "u32", "u32", "buffer"], returns: "i32" },
   ot_session_split_control: { args: ["ptr", "buffer", "buffer", "buffer"], returns: "i32" },
   ot_session_set_screen: { args: ["ptr", "buffer", "u32", "u32", "u32", "buffer", "u32"], returns: "i32" },
   ot_session_sync_detached: { args: ["ptr", "buffer", "buffer"], returns: "i32" },

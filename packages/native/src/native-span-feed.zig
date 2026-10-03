@@ -535,6 +535,43 @@ pub const Stream = struct {
         return out;
     }
 
+    /// Check the accounting every operation preserves. Costs O(chunks + ring slots),
+    /// so tests and model checks call it between operations.
+    pub fn assertInvariants(self: *const Stream) void {
+        const ring = &self.span_ring;
+        var references: u64 = 0;
+        for (self.chunks.items) |chunk| references += chunk.refcount;
+        var spans: u64 = 0;
+        var bytes: u64 = 0;
+        var control_spans: u32 = 0;
+        for (ring.buffer[0..ring.capacity]) |entry| {
+            if (entry.state == .free) continue;
+            const chunk = self.chunks.items[entry.span.chunk_index];
+            std.debug.assert(entry.span.len != 0 and entry.span.offset + entry.span.len <= chunk.len);
+            spans += 1;
+            bytes += entry.span.len;
+            control_spans += @intFromBool(entry.span.chunk_index < self.control_chunks);
+        }
+        std.debug.assert(spans == @as(u64, ring.queued) + ring.borrowed);
+        std.debug.assert(references == spans);
+        std.debug.assert(bytes == ring.bytes);
+        std.debug.assert(control_spans == self.control_spans and self.control_spans <= self.control_chunks);
+        std.debug.assert(self.control_bytes <= @as(u64, self.control_spans) * self.options.chunk_size);
+        std.debug.assert(!(self.reserved_active and self.pending_len != 0));
+        std.debug.assert(self.write_offset <= self.options.chunk_size);
+        const producer_span: u64 = @intFromBool(self.pending_len != 0 or self.reserved_active);
+        const control_slots = self.control_chunks - self.control_spans;
+        const opts = self.options;
+        if (opts.max_bytes != 0 or opts.growth_policy == @intFromEnum(GrowthPolicy.block)) {
+            std.debug.assert(spans + producer_span + control_slots + self.stagedSpans() <= opts.span_queue_capacity);
+        }
+        if (opts.growth_policy == @intFromEnum(GrowthPolicy.block)) std.debug.assert(self.chunks.items.len == opts.initial_chunks);
+        if (opts.max_bytes != 0) {
+            std.debug.assert(@as(u64, self.chunks.items.len) * opts.chunk_size <= opts.max_bytes);
+            std.debug.assert(self.controlHeldBytes() + bytes + self.pending_len + self.reserved_len + self.staged_bytes <= opts.max_bytes);
+        }
+    }
+
     pub fn bounded(self: *Stream) bool {
         return self.options.max_bytes != 0 or
             self.options.growth_policy == @intFromEnum(GrowthPolicy.block);
@@ -555,11 +592,11 @@ pub const Stream = struct {
         return (chunks -| self.control_chunks) * self.options.chunk_size;
     }
 
-    fn stagedSpans(self: *Stream) u64 {
+    fn stagedSpans(self: *const Stream) u64 {
         return std.math.divCeil(u64, self.staged_bytes, self.options.chunk_size) catch unreachable;
     }
 
-    fn controlHeldBytes(self: *Stream) u64 {
+    fn controlHeldBytes(self: *const Stream) u64 {
         return @as(u64, self.control_chunks) * self.options.chunk_size - self.control_bytes;
     }
 

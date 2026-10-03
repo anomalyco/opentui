@@ -4737,6 +4737,62 @@ test "Session exit pump ABI validates ownership and preserves rejected outputs" 
     try std.testing.expectEqual(@as(u32, 99), result);
 }
 
+test "Session pump ABIs validate the result record and map every pump status" {
+    const handle = try createTestContext(.{ .object_capacity = 2, .render_cells_max = 16 });
+    defer std.testing.expectEqual(c.OT_OK, ot_context_destroy(handle)) catch unreachable;
+    const native_id = try handle.core.createSession(.{ .chunk_size = 4096, .chunk_count = 3, .span_capacity = 3, .control_capacity = 4096 });
+    const id = handleToC(native_id);
+    try handle.core.attachSessionRenderer(native_id, 2, 1, .{ .forwarded_env = &.{} });
+    const unset: c.ot_session_pump_result = .{ .struct_size = 1, .abi_version = 99, .status = 99, .reserved = 99, .deadline_ns = 99 };
+    var record = unset;
+    try std.testing.expectEqual(c.OT_INVALID_ARGUMENT, ot_session_pump(handle, &id, 0, 1, &record));
+    record.struct_size = @sizeOf(c.ot_session_pump_result);
+    try std.testing.expectEqual(c.OT_UNSUPPORTED_VERSION, ot_session_pump(handle, &id, 0, 1, &record));
+    record.abi_version = c.OT_CONTEXT_ABI_VERSION;
+    try std.testing.expectEqual(c.OT_INVALID_ARGUMENT, ot_session_pump(handle, &id, 0, 0, &record));
+    try std.testing.expectEqual(@as(u32, 99), record.status);
+
+    var bytes: [8192]u8 = undefined;
+    var seen = [_]bool{false} ** 5;
+    var now: u64 = 10;
+    // Setup, then suspension with its cursor-settle waits, each pumped until idle.
+    for (0..2) |phase| {
+        if (phase == 0) try handle.core.setupSessionTerminal(native_id, .{}) else try handle.core.suspendSession(native_id);
+        for (0..64) |_| {
+            try std.testing.expectEqual(c.OT_OK, ot_session_pump(handle, &id, now, 1, &record));
+            try std.testing.expectEqual(@as(u32, 0), record.reserved);
+            seen[record.status] = true;
+            switch (record.status) {
+                c.OT_PUMP_OUTPUT_PENDING => while (try handle.core.readOutput(native_id, &bytes)) |ticket| try handle.core.completeOutput(native_id, ticket, .written),
+                c.OT_PUMP_WAIT_UNTIL => {
+                    try std.testing.expect(record.deadline_ns > now);
+                    now = record.deadline_ns;
+                },
+                c.OT_PUMP_AGAIN => try std.testing.expectEqual(@as(u64, 0), record.deadline_ns),
+                c.OT_PUMP_IDLE => break,
+                else => return error.TestUnexpectedResult,
+            }
+        }
+    }
+    try std.testing.expectEqualSlices(bool, &.{ true, true, true, true, false }, &seen);
+    try std.testing.expectEqual(c.OT_INVALID_ARGUMENT, ot_session_pump(handle, &id, now - 1, 1, &record));
+    try handle.core.resumeSession(native_id);
+
+    // Exit pumping visits one restoration unit per call until the output closes.
+    var exit_seen = [_]bool{false} ** 5;
+    var status: u32 = 99;
+    for (0..64) |_| {
+        try std.testing.expectEqual(c.OT_OK, ot_session_pump_exit(handle, &id, &status));
+        exit_seen[status] = true;
+        if (status == c.OT_PUMP_CLOSED) break;
+        while (try handle.core.readOutput(native_id, &bytes)) |ticket| try handle.core.completeOutput(native_id, ticket, .written);
+    }
+    try std.testing.expect(exit_seen[c.OT_PUMP_OUTPUT_PENDING] and exit_seen[c.OT_PUMP_CLOSED]);
+    try std.testing.expectEqual(c.OT_OK, ot_session_pump(handle, &id, now, 1, &record));
+    try std.testing.expectEqual(c.OT_PUMP_CLOSED, record.status);
+    try handle.core.destroy(native_id);
+}
+
 const abi_modules = .{
     @This(),
     editor_transport,

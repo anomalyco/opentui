@@ -373,7 +373,7 @@ test "Stream - retained bytes limit chunks until release" {
     try testing.expectEqualStrings("retried!", spans[1].slice());
 }
 
-test "FeedBackend - bounded staging includes retained bytes and spans" {
+test "FeedBackend - retained bytes and spans skip a frame that fits after release" {
     const FeedBackend = @import("../renderer-output.zig").FeedBackend;
     for ([_]struct { max_bytes: u64, spans: u32, frame: []const u8 }{
         .{ .max_bytes = 32, .spans = 3, .frame = "1234567812345678" },
@@ -397,7 +397,7 @@ test "FeedBackend - bounded staging includes retained bytes and spans" {
         try testing.expectError(error.Busy, stream.close());
         try testing.expectError(error.BufferFull, writer.writeAll("x"));
         try testing.expectEqual(.skipped, backend.prepareFrame());
-        try testing.expectEqual(.failed, backend.endFrame());
+        try testing.expectEqual(.skipped, backend.endFrame());
         try testing.expectEqual(@as(usize, 0), stream.staged_bytes);
         try testing.expect(!stream.hasPendingSpans());
         try testing.expect(backend.frameBytes.capacity <= case.max_bytes);
@@ -551,258 +551,201 @@ test "FeedBackend - published frame notification can enqueue ordered controls" {
     }
 }
 
-test "Stream - create with default options" {
-    const stream = try raw.Stream.create(testing.allocator, null);
-    defer stream.destroy();
+const Borrow = struct { span: raw.SpanInfo, start: usize };
 
-    const stats = stream.getStats();
-    try testing.expect(stats.chunks >= 1);
+fn expectRejection(options: raw.Options, err: raw.StreamError) !void {
+    switch (err) {
+        // Block storage reports exhaustion as NoSpace; only growth stops at max_bytes.
+        error.MaxBytes => try testing.expect(options.growth_policy == @intFromEnum(raw.GrowthPolicy.grow) and options.max_bytes != 0),
+        error.NoSpace => {},
+        else => return err,
+    }
 }
 
-test "Stream - write and commit produces span with correct byte count" {
-    const stream = try raw.Stream.create(testing.allocator, testOptions(1024, 2, false));
-    defer stream.destroy();
+/// Accepted bytes are the FIFO model: drained, then queued, then pending bytes.
+fn expectStreamModel(stream: *raw.Stream, accepted: []const u8, drained: []const u8, borrowed: []const Borrow) !void {
+    stream.assertInvariants();
+    var queued: [16384]u8 = undefined;
+    const queued_len = stream.copyQueuedPrefix(&queued);
+    try testing.expect(queued_len < queued.len);
+    const published = drained.len + queued_len;
+    try testing.expectEqual(accepted.len, published + stream.pending_len);
+    try testing.expectEqualSlices(u8, accepted[0..drained.len], drained);
+    try testing.expectEqualSlices(u8, accepted[drained.len..published], queued[0..queued_len]);
+    var borrowed_bytes: u64 = 0;
+    for (borrowed) |entry| {
+        // Releases and later writes must never overwrite a borrowed span.
+        try testing.expectEqualSlices(u8, drained[entry.start..][0..entry.span.len], entry.span.slice());
+        borrowed_bytes += entry.span.len;
+    }
+    const stats = stream.getStats();
+    try testing.expectEqual(@as(u64, accepted.len), stats.bytes_written);
+    try testing.expectEqual(borrowed_bytes + queued_len, stats.outstanding_bytes);
+    try testing.expectEqual(@as(u32, @intCast(borrowed.len)) + stats.pending_spans, stats.outstanding_spans);
+}
 
-    const data = "hello world";
-    try stream.write(data);
+fn drainModel(stream: *raw.Stream, drained: *std.ArrayList(u8), borrowed: *std.ArrayList(Borrow), max: usize) !void {
+    var spans: [4]raw.SpanInfo = undefined;
+    const count = stream.drainSpans(spans[0..max]);
+    for (spans[0..count]) |span| {
+        try borrowed.append(testing.allocator, .{ .span = span, .start = drained.items.len });
+        try drained.appendSlice(testing.allocator, span.slice());
+    }
+}
+
+fn runStreamModel(options: raw.Options, random: std.Random) !void {
+    const allocator = testing.allocator;
+    const stream = try raw.Stream.create(allocator, options);
+    var accepted: std.ArrayList(u8) = .empty;
+    var drained: std.ArrayList(u8) = .empty;
+    var borrowed: std.ArrayList(Borrow) = .empty;
+    defer {
+        for (borrowed.items) |entry| stream.markSpanConsumed(entry.span);
+        stream.destroy();
+        accepted.deinit(allocator);
+        drained.deinit(allocator);
+        borrowed.deinit(allocator);
+    }
+    const chunk = options.chunk_size;
+    var data: [128]u8 = undefined;
+    for (0..200) |_| {
+        random.bytes(&data);
+        const len = random.uintAtMost(usize, 3 * chunk);
+        const before = stream.getStats();
+        // An unbounded stream grows its chunks and span ring instead of rejecting output.
+        const grows = !stream.bounded();
+        switch (random.uintLessThan(u8, 7)) {
+            0 => {
+                // Ordinary writes may accept a prefix before they fail.
+                const result = stream.write(data[0..len]);
+                const count = stream.getStats().bytes_written - before.bytes_written;
+                try testing.expect(count <= len);
+                try accepted.appendSlice(allocator, data[0..count]);
+                if (result) |_| try testing.expectEqual(len, count) else |err| {
+                    try testing.expect(!grows or stream.options.auto_commit_on_full == 0);
+                    try expectRejection(options, err);
+                }
+            },
+            1 => if (stream.writeAtomic(data[0..len])) |_| {
+                try accepted.appendSlice(allocator, data[0..len]);
+            } else |err| {
+                // Atomic output never interleaves with an unfinished ordinary span.
+                if (stream.pending_len != 0) try testing.expectEqual(error.Busy, err) else {
+                    try testing.expect(!grows);
+                    try expectRejection(options, err);
+                }
+                try testing.expectEqualDeep(before, stream.getStats());
+            },
+            2 => stream.commit() catch |err| try expectRejection(options, err),
+            3 => {
+                const min_len = random.intRangeAtMost(u32, 1, chunk);
+                if (stream.pending_len != 0) {
+                    try testing.expectError(error.Busy, stream.reserve(min_len));
+                } else if (stream.reserve(min_len)) |info| {
+                    try testing.expect(info.len >= min_len);
+                    const count = random.uintAtMost(u32, info.len);
+                    @memcpy(info.slice()[0..count], data[0..count]);
+                    try stream.commitReserved(count);
+                    try accepted.appendSlice(allocator, data[0..count]);
+                } else |err| try expectRejection(options, err);
+            },
+            4 => try drainModel(stream, &drained, &borrowed, random.intRangeAtMost(usize, 1, 4)),
+            5 => if (borrowed.items.len != 0) {
+                const entry = borrowed.swapRemove(random.uintLessThan(usize, borrowed.items.len));
+                try stream.releaseSpan(entry.span.slot_index, entry.span.release_id);
+            },
+            6 => {
+                var next = stream.options;
+                next.auto_commit_on_full = @intFromBool(random.boolean());
+                try stream.setOptions(next);
+            },
+            else => unreachable,
+        }
+        try expectStreamModel(stream, accepted.items, drained.items, borrowed.items);
+    }
+
+    // Draining everything returns the stream to idle with every accepted byte in order.
+    for (0..2) |_| {
+        while (stream.hasPendingSpans()) try drainModel(stream, &drained, &borrowed, 4);
+        for (borrowed.items) |entry| try stream.releaseSpan(entry.span.slot_index, entry.span.release_id);
+        borrowed.clearRetainingCapacity();
+        try stream.commit();
+    }
+    try testing.expectEqualSlices(u8, accepted.items, drained.items);
+    try expectStreamModel(stream, accepted.items, drained.items, borrowed.items);
+
+    // An idle stream reuses its storage for the largest atomic write it admits.
+    const capacity: usize = if (stream.bounded()) @intCast(stream.atomicByteLimit()) else 3 * chunk;
+    try stream.writeAtomic(data[0..capacity]);
+    try accepted.appendSlice(allocator, data[0..capacity]);
+    while (stream.hasPendingSpans()) try drainModel(stream, &drained, &borrowed, 4);
+    try expectStreamModel(stream, accepted.items, drained.items, borrowed.items);
+}
+
+test "Stream - seeded operations preserve byte order, borrowed bytes, and accounting" {
+    for (0..64) |seed| {
+        var prng = std.Random.DefaultPrng.init(seed);
+        const random = prng.random();
+        const chunk_size = ([_]u32{ 4, 8, 16 })[random.uintLessThan(usize, 3)];
+        const initial_chunks = random.intRangeAtMost(u32, 1, 3);
+        const options: raw.Options = .{
+            .chunk_size = chunk_size,
+            .initial_chunks = initial_chunks,
+            .max_bytes = switch (random.uintLessThan(u8, 3)) {
+                0 => 0,
+                1 => chunk_size * initial_chunks,
+                else => chunk_size * (initial_chunks + 3),
+            },
+            .growth_policy = random.uintLessThan(u8, 2),
+            .auto_commit_on_full = @intFromBool(random.boolean()),
+            .span_queue_capacity = ([_]u32{ 2, 5, 64 })[random.uintLessThan(usize, 3)],
+        };
+        runStreamModel(options, random) catch |err| {
+            std.debug.print("stream model failed: seed {d}, options {any}\n", .{ seed, options });
+            return err;
+        };
+    }
+}
+
+test "Stream - closed, reserved, and pending states reject conflicting operations" {
+    const stream = try raw.Stream.create(testing.allocator, testOptions(64, 1, false));
+    defer stream.destroy();
+    try testing.expectEqual(@as(u32, 4096), stream.span_ring.capacity);
+    var spans: [2]raw.SpanInfo = undefined;
+    try stream.write("");
     try stream.commit();
+    try testing.expectEqual(@as(u32, 0), stream.drainSpans(&spans));
+    try testing.expectError(error.Invalid, stream.commitReserved(0));
+    try testing.expectError(error.NoSpace, stream.reserve(65));
+    // Without auto-commit, a write larger than the free chunk space is rejected whole.
+    try testing.expectError(error.NoSpace, stream.write(&([_]u8{'x'} ** 65)));
+    try testing.expectEqual(@as(u64, 0), stream.getStats().bytes_written);
 
-    const stats = stream.getStats();
-    try testing.expectEqual(@as(u64, data.len), stats.bytes_written);
-    try testing.expectEqual(@as(u64, 1), stats.spans_committed);
-
-    const drained = drainAllSpans(stream);
-    try testing.expectEqual(@as(u64, data.len), drained);
-}
-
-test "Stream - write with auto_commit fills chunk and commits automatically" {
-    const chunk_size: u32 = 64;
-    const stream = try raw.Stream.create(testing.allocator, testOptions(chunk_size, 2, true));
-    defer stream.destroy();
-
-    const data = [_]u8{'A'} ** 64;
-    try stream.write(&data);
-
-    const stats = stream.getStats();
-    try testing.expectEqual(@as(u64, 64), stats.bytes_written);
-    try testing.expectEqual(@as(u64, 1), stats.spans_committed);
-}
-
-test "Stream - write spanning multiple chunks with auto_commit" {
-    const chunk_size: u32 = 64;
-    const stream = try raw.Stream.create(testing.allocator, testOptions(chunk_size, 2, true));
-    defer stream.destroy();
-
-    const data = [_]u8{'B'} ** 150;
-    try stream.write(&data);
-
-    const stats = stream.getStats();
-    try testing.expectEqual(@as(u64, 150), stats.bytes_written);
-    try testing.expectEqual(@as(u64, 2), stats.spans_committed);
-
-    try stream.commit();
-    const stats2 = stream.getStats();
-    try testing.expectEqual(@as(u64, 3), stats2.spans_committed);
-
-    const drained = drainAllSpans(stream);
-    try testing.expectEqual(@as(u64, 150), drained);
-}
-
-test "Stream - write returns NoSpace when auto_commit disabled and data exceeds chunk" {
-    const chunk_size: u32 = 64;
-    const stream = try raw.Stream.create(testing.allocator, testOptions(chunk_size, 2, false));
-    defer stream.destroy();
-
-    const data = [_]u8{'C'} ** 65;
-    const result = stream.write(&data);
-    try testing.expectError(raw.StreamError.NoSpace, result);
-}
-
-test "Stream - write exactly fills chunk without auto_commit succeeds" {
-    const chunk_size: u32 = 64;
-    const stream = try raw.Stream.create(testing.allocator, testOptions(chunk_size, 2, false));
-    defer stream.destroy();
-
-    const exact = [_]u8{'A'} ** 64;
-    try stream.write(&exact);
-
-    const stats = stream.getStats();
-    try testing.expectEqual(@as(u64, 64), stats.bytes_written);
-
-    try stream.commit();
-    _ = drainAllSpans(stream);
-
-    try stream.write("B");
-    try stream.commit();
-
-    const stats2 = stream.getStats();
-    try testing.expectEqual(@as(u64, 65), stats2.bytes_written);
-    try testing.expectEqual(@as(u64, 2), stats2.spans_committed);
-}
-
-test "Stream - written data matches drained span content" {
-    const chunk_size: u32 = 256;
-    const stream = try raw.Stream.create(testing.allocator, testOptions(chunk_size, 2, false));
-    defer stream.destroy();
-
-    const data = "the quick brown fox jumps over the lazy dog";
-    try stream.write(data);
-    try stream.commit();
-
-    var buf: [16]raw.SpanInfo = undefined;
-    const count = stream.drainSpans(&buf);
-    try testing.expectEqual(@as(u32, 1), count);
-
-    const span = buf[0];
-    const slice = span.slice();
-    try testing.expectEqualStrings(data, slice);
-    stream.markSpanConsumed(buf[0]);
-}
-
-test "Stream - reserve and commitReserved round-trip" {
-    const chunk_size: u32 = 256;
-    const stream = try raw.Stream.create(testing.allocator, testOptions(chunk_size, 2, false));
-    defer stream.destroy();
-
-    const info = try stream.reserve(10);
-    try testing.expect(info.len >= 10);
-
-    const dest = info.slice();
-    @memcpy(dest[0..5], "hello");
-
-    try stream.commitReserved(5);
-
-    const stats = stream.getStats();
-    try testing.expectEqual(@as(u64, 5), stats.bytes_written);
-    try testing.expectEqual(@as(u64, 1), stats.spans_committed);
-
-    const drained = drainAllSpans(stream);
-    try testing.expectEqual(@as(u64, 5), drained);
-}
-
-test "Stream - reserve returns Busy if already reserved" {
-    const stream = try raw.Stream.create(testing.allocator, testOptions(256, 2, false));
-    defer stream.destroy();
-
-    _ = try stream.reserve(1);
-    const result = stream.reserve(1);
-    try testing.expectError(raw.StreamError.Busy, result);
-
+    const info = try stream.reserve(1);
+    try testing.expectError(error.Busy, stream.reserve(1));
+    try testing.expectError(error.Busy, stream.write("x"));
+    try testing.expectError(error.Busy, stream.commit());
+    try testing.expectError(error.Busy, stream.close());
+    try testing.expectError(error.NoSpace, stream.commitReserved(info.len + 1));
     try stream.commitReserved(0);
-}
+    try testing.expectEqual(@as(u64, 0), stream.getStats().spans_committed);
 
-test "Stream - reserve returns Busy if pending data exists" {
-    const stream = try raw.Stream.create(testing.allocator, testOptions(256, 2, false));
-    defer stream.destroy();
-
-    try stream.write("some data");
-    const result = stream.reserve(1);
-    try testing.expectError(raw.StreamError.Busy, result);
-}
-
-test "Stream - write returns Busy while reservation is active" {
-    const stream = try raw.Stream.create(testing.allocator, testOptions(256, 2, false));
-    defer stream.destroy();
-
-    _ = try stream.reserve(1);
-    const result = stream.write("data");
-    try testing.expectError(raw.StreamError.Busy, result);
-
-    try stream.commitReserved(0);
-}
-
-test "Stream - write to closed stream returns Invalid" {
-    const stream = try raw.Stream.create(testing.allocator, testOptions(256, 2, false));
-    defer stream.destroy();
-
-    try stream.close();
-    const result = stream.write("data");
-    try testing.expectError(raw.StreamError.Invalid, result);
-}
-
-test "Stream - double close does not error" {
-    const stream = try raw.Stream.create(testing.allocator, testOptions(256, 2, false));
-    defer stream.destroy();
-
+    try stream.write("pending");
+    try testing.expectError(error.Busy, stream.reserve(1));
+    try stream.setOptions(testOptions(128, 1, true));
+    try testing.expectEqual(@as(u32, 64), stream.options.chunk_size);
     try stream.close();
     try stream.close();
-}
-
-test "Stream - consecutive writes without auto_commit preserves all data" {
-    // Regression: auto_commit off must not drop pending data across writes.
-
-    const chunk_size: u32 = 64;
-    const stream = try raw.Stream.create(testing.allocator, testOptions(chunk_size, 2, false));
-    defer stream.destroy();
-
-    const first = [_]u8{'A'} ** 64;
-    try stream.write(&first);
-
-    var stats = stream.getStats();
-    try testing.expectEqual(@as(u64, 64), stats.bytes_written);
-
-    const second = "BBBB";
-    try stream.write(second);
-
-    stats = stream.getStats();
-    try testing.expectEqual(@as(u64, 68), stats.bytes_written);
-    try testing.expectEqual(@as(u64, 1), stats.spans_committed);
-    try stream.commit();
-    stats = stream.getStats();
-    try testing.expectEqual(@as(u64, 2), stats.spans_committed);
-
-    const drained = drainAllSpans(stream);
-    try testing.expectEqual(@as(u64, 68), drained);
-}
-
-test "Stream - write that exactly fills chunk then write more (no auto_commit)" {
-    const chunk_size: u32 = 32;
-    const stream = try raw.Stream.create(testing.allocator, testOptions(chunk_size, 2, false));
-    defer stream.destroy();
-
-    const fill = [_]u8{'X'} ** 32;
-    try stream.write(&fill);
-
-    try stream.write("Y");
-    try stream.commit();
-
-    const stats = stream.getStats();
-    try testing.expectEqual(@as(u64, 33), stats.bytes_written);
-    try testing.expectEqual(@as(u64, 2), stats.spans_committed);
-    var buf: [16]raw.SpanInfo = undefined;
-    const count = stream.drainSpans(&buf);
-    try testing.expectEqual(@as(u32, 2), count);
-
-    const span1 = buf[0].slice();
-    try testing.expectEqual(@as(usize, 32), span1.len);
-    try testing.expectEqual(@as(u8, 'X'), span1[0]);
-    try testing.expectEqual(@as(u8, 'X'), span1[31]);
-
-    const span2 = buf[1].slice();
-    try testing.expectEqualStrings("Y", span2);
-
-    stream.markSpanConsumed(buf[0]);
-    stream.markSpanConsumed(buf[1]);
-}
-
-test "Stream - multiple chunk transitions without auto_commit" {
-    const chunk_size: u32 = 16;
-    const stream = try raw.Stream.create(testing.allocator, testOptions(chunk_size, 1, false));
-    defer stream.destroy();
-
-    try stream.write("AAAAAAAAAAAAAAAA");
-    try stream.write("BBBBBBBBBBBBBBBB");
-    try stream.write("CCCCCCCC");
-
-    var stats = stream.getStats();
-    try testing.expectEqual(@as(u64, 40), stats.bytes_written);
-    try testing.expectEqual(@as(u64, 2), stats.spans_committed);
-    try stream.commit();
-    stats = stream.getStats();
-    try testing.expectEqual(@as(u64, 3), stats.spans_committed);
-
-    const drained = drainAllSpans(stream);
-    try testing.expectEqual(@as(u64, 40), drained);
+    try testing.expectEqual(@as(u64, 1), stream.getStats().spans_committed);
+    try testing.expectError(error.Invalid, stream.write("x"));
+    try testing.expectError(error.Invalid, stream.writeAtomic("x"));
+    try testing.expectError(error.Invalid, stream.reserve(1));
+    try testing.expectError(error.Invalid, stream.commit());
+    try testing.expectError(error.Invalid, stream.commitReserved(0));
+    try testing.expectError(error.Invalid, stream.setOptions(testOptions(128, 1, true)));
+    try testing.expectEqual(@as(u32, 1), stream.drainSpans(&spans));
+    defer stream.markSpanConsumed(spans[0]);
+    try testing.expectEqualStrings("pending", spans[0].slice());
 }
 
 test "Stream - commit after small write should allow reuse of remaining chunk space" {
@@ -864,67 +807,6 @@ test "Stream - repeated small write+commit should not force chunk growth" {
     try testing.expectEqual(@as(u64, 32), drained);
 }
 
-test "Stream - max_bytes returns MaxBytes when limit is reached" {
-    const stream = try raw.Stream.create(testing.allocator, testOptionsFull(32, 2, 64, false));
-    defer stream.destroy();
-
-    try testing.expectEqual(@as(u32, 2), stream.getStats().chunks);
-
-    const fill1 = [_]u8{'A'} ** 32;
-    try stream.write(&fill1);
-    try stream.commit();
-
-    const fill2 = [_]u8{'B'} ** 32;
-    try stream.write(&fill2);
-    try stream.commit();
-
-    const result = stream.write("C");
-    try testing.expectError(raw.StreamError.MaxBytes, result);
-}
-
-test "Stream - max_bytes allows reuse after draining" {
-    const stream = try raw.Stream.create(testing.allocator, testOptionsFull(32, 2, 64, false));
-    defer stream.destroy();
-
-    const fill1 = [_]u8{'A'} ** 32;
-    try stream.write(&fill1);
-    try stream.commit();
-    const fill2 = [_]u8{'B'} ** 32;
-    try stream.write(&fill2);
-    try stream.commit();
-
-    _ = drainAllSpans(stream);
-    const fill3 = [_]u8{'C'} ** 32;
-    try stream.write(&fill3);
-    try stream.commit();
-
-    try testing.expectEqual(@as(u64, 96), stream.getStats().bytes_written);
-    try testing.expectEqual(@as(u32, 2), stream.getStats().chunks);
-}
-
-test "Stream - auto_commit with max_bytes works when consumer keeps up" {
-    const stream = try raw.Stream.create(testing.allocator, testOptionsFull(32, 2, 64, true));
-    defer stream.destroy();
-
-    const fill1 = [_]u8{'A'} ** 32;
-    try stream.write(&fill1);
-
-    _ = drainAllSpans(stream);
-
-    const fill2 = [_]u8{'B'} ** 32;
-    try stream.write(&fill2);
-
-    _ = drainAllSpans(stream);
-
-    const fill3 = [_]u8{'C'} ** 32;
-    try stream.write(&fill3);
-
-    try testing.expectEqual(@as(u64, 96), stream.getStats().bytes_written);
-    try testing.expectEqual(@as(u32, 2), stream.getStats().chunks);
-
-    _ = drainAllSpans(stream);
-}
-
 test "Stream - auto_commit with max_bytes should handle write spanning chunk boundary" {
     // Regression: auto_commit must not fail when continuing across a boundary.
 
@@ -940,26 +822,6 @@ test "Stream - auto_commit with max_bytes should handle write spanning chunk bou
     _ = drainAllSpans(stream);
 }
 
-test "Stream - memory growth under pressure allocates new chunks" {
-    const stream = try raw.Stream.create(testing.allocator, testOptions(64, 1, true));
-    defer stream.destroy();
-
-    try testing.expectEqual(@as(u32, 1), stream.getStats().chunks);
-
-    var i: usize = 0;
-    while (i < 10) : (i += 1) {
-        const data = [_]u8{@intCast(i)} ** 64;
-        try stream.write(&data);
-    }
-
-    const stats = stream.getStats();
-    try testing.expectEqual(@as(u64, 640), stats.bytes_written);
-    try testing.expect(stats.chunks >= 10);
-
-    const drained = drainAllSpans(stream);
-    try testing.expectEqual(@as(u64, 640), drained);
-}
-
 fn blockOptions(chunk_size: u32, initial_chunks: u32, auto_commit: bool) raw.Options {
     return .{
         .chunk_size = chunk_size,
@@ -969,370 +831,6 @@ fn blockOptions(chunk_size: u32, initial_chunks: u32, auto_commit: bool) raw.Opt
         .auto_commit_on_full = if (auto_commit) 1 else 0,
         .span_queue_capacity = 0,
     };
-}
-
-test "Stream - growth_policy=block prevents new chunk allocation" {
-    const chunk_size: u32 = 64;
-    const stream = try raw.Stream.create(testing.allocator, blockOptions(chunk_size, 2, false));
-    defer stream.destroy();
-
-    try testing.expectEqual(@as(u32, 2), stream.getStats().chunks);
-
-    const fill1 = [_]u8{'A'} ** 64;
-    try stream.write(&fill1);
-    try stream.commit();
-
-    const fill2 = [_]u8{'B'} ** 64;
-    try stream.write(&fill2);
-    try stream.commit();
-
-    const result = stream.write("C");
-    try testing.expectError(raw.StreamError.NoSpace, result);
-
-    try testing.expectEqual(@as(u32, 2), stream.getStats().chunks);
-}
-
-test "Stream - growth_policy=block allows reuse after draining" {
-    const chunk_size: u32 = 64;
-    const stream = try raw.Stream.create(testing.allocator, blockOptions(chunk_size, 2, false));
-    defer stream.destroy();
-
-    try stream.write(&([_]u8{'A'} ** 64));
-    try stream.commit();
-    try stream.write(&([_]u8{'B'} ** 64));
-    try stream.commit();
-
-    _ = drainAllSpans(stream);
-    try stream.write(&([_]u8{'C'} ** 64));
-    try stream.commit();
-
-    try testing.expectEqual(@as(u64, 192), stream.getStats().bytes_written);
-    try testing.expectEqual(@as(u32, 2), stream.getStats().chunks);
-}
-
-test "Stream - growth_policy=block with auto_commit returns NoSpace when pool exhausted" {
-    const chunk_size: u32 = 32;
-    const stream = try raw.Stream.create(testing.allocator, blockOptions(chunk_size, 2, true));
-    defer stream.destroy();
-
-    try stream.write(&([_]u8{'X'} ** 64));
-
-    const result = stream.write("Y");
-    try testing.expectError(raw.StreamError.NoSpace, result);
-
-    try testing.expectEqual(@as(u32, 2), stream.getStats().chunks);
-}
-
-test "Stream - span ring grows when capacity is reached" {
-    const chunk_size: u32 = 4096;
-    const stream = try raw.Stream.create(testing.allocator, testOptions(chunk_size, 1, false));
-    defer stream.destroy();
-
-    var i: u32 = 0;
-    while (i < 4096) : (i += 1) {
-        try stream.write("x");
-        try stream.commit();
-    }
-
-    try testing.expectEqual(@as(u32, 4096), stream.getStats().pending_spans);
-
-    try stream.write("y");
-    try stream.commit();
-    try testing.expectEqual(@as(u32, 4097), stream.getStats().pending_spans);
-}
-
-test "Stream - span ring recovers after draining" {
-    const chunk_size: u32 = 4096;
-    const stream = try raw.Stream.create(testing.allocator, testOptions(chunk_size, 1, false));
-    defer stream.destroy();
-
-    var i: u32 = 0;
-    while (i < 4096) : (i += 1) {
-        try stream.write("x");
-        try stream.commit();
-    }
-
-    _ = drainAllSpans(stream);
-    try testing.expectEqual(@as(u32, 0), stream.getStats().pending_spans);
-
-    try stream.write("z");
-    try stream.commit();
-    try testing.expectEqual(@as(u32, 1), stream.getStats().pending_spans);
-
-    _ = drainAllSpans(stream);
-}
-
-test "Stream - custom span_queue_capacity can grow" {
-    var opts = testOptions(4096, 1, false);
-    opts.span_queue_capacity = 8;
-    const stream = try raw.Stream.create(testing.allocator, opts);
-    defer stream.destroy();
-
-    var i: u32 = 0;
-    while (i < 8) : (i += 1) {
-        try stream.write("x");
-        try stream.commit();
-    }
-    try testing.expectEqual(@as(u32, 8), stream.getStats().pending_spans);
-
-    try stream.write("y");
-    try stream.commit();
-    try testing.expectEqual(@as(u32, 9), stream.getStats().pending_spans);
-
-    _ = drainAllSpans(stream);
-    try testing.expectEqual(@as(u32, 0), stream.getStats().pending_spans);
-
-    try stream.write("z");
-    try stream.commit();
-    try testing.expectEqual(@as(u32, 1), stream.getStats().pending_spans);
-}
-
-test "Stream - large span_queue_capacity works" {
-    var opts = testOptions(4096, 1, false);
-    opts.span_queue_capacity = 8192;
-    const stream = try raw.Stream.create(testing.allocator, opts);
-    defer stream.destroy();
-
-    var i: u32 = 0;
-    while (i < 5000) : (i += 1) {
-        try stream.write("x");
-        try stream.commit();
-    }
-    try testing.expectEqual(@as(u32, 5000), stream.getStats().pending_spans);
-
-    _ = drainAllSpans(stream);
-    try testing.expectEqual(@as(u32, 0), stream.getStats().pending_spans);
-}
-
-test "Stream - span_queue_capacity zero defaults to 4096" {
-    var opts = testOptions(4096, 1, false);
-    opts.span_queue_capacity = 0;
-    const stream = try raw.Stream.create(testing.allocator, opts);
-    defer stream.destroy();
-
-    var i: u32 = 0;
-    while (i < 4096) : (i += 1) {
-        try stream.write("x");
-        try stream.commit();
-    }
-    try testing.expectEqual(@as(u32, 4096), stream.getStats().pending_spans);
-
-    try stream.write("y");
-    try stream.commit();
-    try testing.expectEqual(@as(u32, 4097), stream.getStats().pending_spans);
-}
-
-test "Stream - data integrity across many chunks with auto_commit" {
-    const chunk_size: u32 = 64;
-    const stream = try raw.Stream.create(testing.allocator, testOptions(chunk_size, 1, true));
-    defer stream.destroy();
-
-    var source: [1024]u8 = undefined;
-    for (&source, 0..) |*b, idx| {
-        b.* = @intCast(idx % 256);
-    }
-
-    try stream.write(&source);
-    try stream.commit();
-    var received: [1024]u8 = undefined;
-    var offset: usize = 0;
-
-    var buf: [256]raw.SpanInfo = undefined;
-    while (true) {
-        const count = stream.drainSpans(&buf);
-        if (count == 0) break;
-        var i: u32 = 0;
-        while (i < count) : (i += 1) {
-            const span = buf[i];
-            const slice = span.slice();
-            @memcpy(received[offset .. offset + slice.len], slice);
-            offset += slice.len;
-            stream.markSpanConsumed(buf[i]);
-        }
-    }
-
-    try testing.expectEqual(@as(usize, 1024), offset);
-    try testing.expectEqualSlices(u8, &source, &received);
-}
-
-test "Stream - data integrity with reserve across multiple chunks" {
-    const chunk_size: u32 = 64;
-    const stream = try raw.Stream.create(testing.allocator, testOptions(chunk_size, 1, false));
-    defer stream.destroy();
-
-    var written: [256]u8 = undefined;
-    var w_offset: usize = 0;
-
-    while (w_offset < 256) {
-        const info = try stream.reserve(1);
-        const dest = info.slice();
-        const to_write = @min(dest.len, 256 - w_offset);
-        var j: usize = 0;
-        while (j < to_write) : (j += 1) {
-            const val: u8 = @intCast((w_offset + j) % 256);
-            dest[j] = val;
-            written[w_offset + j] = val;
-        }
-        try stream.commitReserved(@intCast(to_write));
-        w_offset += to_write;
-    }
-
-    var received: [256]u8 = undefined;
-    var r_offset: usize = 0;
-
-    var buf: [64]raw.SpanInfo = undefined;
-    while (true) {
-        const count = stream.drainSpans(&buf);
-        if (count == 0) break;
-        var i: u32 = 0;
-        while (i < count) : (i += 1) {
-            const slice = buf[i].slice();
-            @memcpy(received[r_offset .. r_offset + slice.len], slice);
-            r_offset += slice.len;
-            stream.markSpanConsumed(buf[i]);
-        }
-    }
-
-    try testing.expectEqual(@as(usize, 256), r_offset);
-    try testing.expectEqualSlices(u8, &written, &received);
-}
-
-test "Stream - reserve on closed stream returns Invalid" {
-    const stream = try raw.Stream.create(testing.allocator, testOptions(256, 1, false));
-    defer stream.destroy();
-
-    try stream.close();
-    const result = stream.reserve(1);
-    try testing.expectError(raw.StreamError.Invalid, result);
-}
-
-test "Stream - commit on closed stream returns Invalid" {
-    const stream = try raw.Stream.create(testing.allocator, testOptions(256, 1, false));
-    defer stream.destroy();
-
-    try stream.close();
-    const result = stream.commit();
-    try testing.expectError(raw.StreamError.Invalid, result);
-}
-
-test "Stream - commitReserved on closed stream returns Invalid" {
-    const stream = try raw.Stream.create(testing.allocator, testOptions(256, 1, false));
-    defer stream.destroy();
-
-    try stream.close();
-    const result = stream.commitReserved(0);
-    try testing.expectError(raw.StreamError.Invalid, result);
-}
-
-test "Stream - commitReserved with len exceeding reserved returns NoSpace" {
-    const stream = try raw.Stream.create(testing.allocator, testOptions(256, 1, false));
-    defer stream.destroy();
-
-    const info = try stream.reserve(1);
-    const result = stream.commitReserved(info.len + 1);
-    try testing.expectError(raw.StreamError.NoSpace, result);
-    try stream.commitReserved(0);
-}
-
-test "Stream - commitReserved without active reservation returns Invalid" {
-    const stream = try raw.Stream.create(testing.allocator, testOptions(256, 1, false));
-    defer stream.destroy();
-
-    const result = stream.commitReserved(0);
-    try testing.expectError(raw.StreamError.Invalid, result);
-}
-
-test "Stream - reserve with min_len larger than chunk returns NoSpace" {
-    const stream = try raw.Stream.create(testing.allocator, testOptions(64, 1, false));
-    defer stream.destroy();
-
-    const result = stream.reserve(65);
-    try testing.expectError(raw.StreamError.NoSpace, result);
-}
-
-test "Stream - empty write is a no-op" {
-    const stream = try raw.Stream.create(testing.allocator, testOptions(256, 1, false));
-    defer stream.destroy();
-
-    try stream.write("");
-    try testing.expectEqual(@as(u64, 0), stream.getStats().bytes_written);
-}
-
-test "Stream - commit with no pending data is a no-op" {
-    const stream = try raw.Stream.create(testing.allocator, testOptions(256, 1, false));
-    defer stream.destroy();
-
-    try stream.commit();
-    try testing.expectEqual(@as(u64, 0), stream.getStats().spans_committed);
-}
-
-test "Stream - drain with no spans returns zero" {
-    const stream = try raw.Stream.create(testing.allocator, testOptions(256, 1, false));
-    defer stream.destroy();
-
-    var buf: [16]raw.SpanInfo = undefined;
-    const count = stream.drainSpans(&buf);
-    try testing.expectEqual(@as(u32, 0), count);
-}
-
-test "Stream - close with pending data auto-commits" {
-    const stream = try raw.Stream.create(testing.allocator, testOptions(256, 1, false));
-    defer stream.destroy();
-
-    try stream.write("pending data");
-    try stream.close();
-
-    try testing.expectEqual(@as(u64, 1), stream.getStats().spans_committed);
-
-    const drained = drainAllSpans(stream);
-    try testing.expectEqual(@as(u64, 12), drained);
-}
-
-test "Stream - setOptions on closed stream returns Invalid" {
-    const stream = try raw.Stream.create(testing.allocator, testOptions(256, 1, false));
-    defer stream.destroy();
-
-    try stream.close();
-    const result = stream.setOptions(testOptions(128, 1, true));
-    try testing.expectError(raw.StreamError.Invalid, result);
-}
-
-test "Stream - setOptions ignores chunk_size (immutable after creation)" {
-    const stream = try raw.Stream.create(testing.allocator, testOptions(64, 1, true));
-    defer stream.destroy();
-
-    const fill1 = [_]u8{'A'} ** 64;
-    try stream.write(&fill1);
-
-    try stream.setOptions(testOptions(128, 1, true));
-
-    const fill2 = [_]u8{'B'} ** 64;
-    try stream.write(&fill2);
-
-    try stream.commit();
-
-    const stats = stream.getStats();
-    try testing.expectEqual(@as(u64, 128), stats.bytes_written);
-
-    const drained = drainAllSpans(stream);
-    try testing.expectEqual(@as(u64, 128), drained);
-}
-
-test "Stream - setOptions enables auto_commit mid-stream" {
-    const stream = try raw.Stream.create(testing.allocator, testOptions(64, 2, false));
-    defer stream.destroy();
-
-    try stream.write(&([_]u8{'A'} ** 32));
-    try testing.expectEqual(@as(u64, 0), stream.getStats().spans_committed);
-    try stream.commit();
-    try testing.expectEqual(@as(u64, 1), stream.getStats().spans_committed);
-
-    _ = drainAllSpans(stream);
-    try stream.setOptions(testOptions(64, 2, true));
-    try stream.write(&([_]u8{'B'} ** 64));
-    try testing.expectEqual(@as(u64, 2), stream.getStats().spans_committed);
-
-    _ = drainAllSpans(stream);
 }
 
 test "Stream - pending data survives failed commit and close allocation" {
@@ -1371,20 +869,6 @@ test "Stream - pending data survives failed commit and close allocation" {
     stream.markSpanConsumed(buf[0]);
 }
 
-test "Stream - close with active reservation returns Busy" {
-    const stream = try raw.Stream.create(testing.allocator, testOptions(256, 1, false));
-    defer stream.destroy();
-
-    _ = try stream.reserve(1);
-
-    const result = stream.close();
-    try testing.expectError(raw.StreamError.Busy, result);
-
-    try testing.expectEqual(false, stream.closed);
-    try stream.commitReserved(0);
-    try stream.close();
-}
-
 test "Stream - destroy without close commits pending data" {
     const stream = try raw.Stream.create(testing.allocator, testOptions(256, 1, false));
 
@@ -1395,38 +879,6 @@ test "Stream - destroy without close commits pending data" {
     try testing.expectEqual(@as(u64, 0), stats.spans_committed);
 
     stream.destroy();
-}
-
-test "Stream - write error mid-loop preserves already-committed spans" {
-    const stream = try raw.Stream.create(testing.allocator, testOptionsFull(32, 2, 64, true));
-    defer stream.destroy();
-
-    const data = [_]u8{'Z'} ** 96;
-    const result = stream.write(&data);
-    try testing.expectError(raw.StreamError.MaxBytes, result);
-
-    const stats = stream.getStats();
-    try testing.expectEqual(@as(u64, 2), stats.spans_committed);
-
-    const drained = drainAllSpans(stream);
-    try testing.expectEqual(@as(u64, 64), drained);
-}
-
-test "Stream - bytes_written matches total drained across all operations" {
-    const stream = try raw.Stream.create(testing.allocator, testOptions(64, 1, true));
-    defer stream.destroy();
-
-    try stream.write("short");
-    try stream.commit();
-    try stream.write(&([_]u8{'M'} ** 64));
-    try stream.write(&([_]u8{'L'} ** 200));
-
-    try stream.commit();
-
-    const stats = stream.getStats();
-    const drained = drainAllSpans(stream);
-
-    try testing.expectEqual(stats.bytes_written, drained);
 }
 
 var data_available_count: u32 = 0;
@@ -1451,20 +903,6 @@ test "Stream - write returning NoSpace emits DataAvailable exactly once" {
     const result = stream.write(&([_]u8{'B'} ** 65));
     try testing.expectError(raw.StreamError.NoSpace, result);
     try testing.expectEqual(@as(u32, 1), data_available_count);
-}
-
-test "Stream - hasPendingSpans reflects state correctly" {
-    const stream = try raw.Stream.create(testing.allocator, testOptions(256, 1, false));
-    defer stream.destroy();
-
-    try testing.expect(!stream.hasPendingSpans());
-
-    try stream.write("data");
-    try stream.commit();
-    try testing.expect(stream.hasPendingSpans());
-
-    _ = drainAllSpans(stream);
-    try testing.expect(!stream.hasPendingSpans());
 }
 
 var drain_during_write_stream: ?*raw.Stream = null;
@@ -1556,49 +994,6 @@ test "Stream - release identities survive ring growth beyond u32" {
         stream.markSpanConsumed(span);
     }
     try testing.expectEqualStrings("first", first[0].slice());
-}
-
-test "Stream - commitReserved with zero length produces no span" {
-    const stream = try raw.Stream.create(testing.allocator, testOptions(256, 1, false));
-    defer stream.destroy();
-
-    _ = try stream.reserve(1);
-    try stream.commitReserved(0);
-
-    try testing.expectEqual(@as(u64, 0), stream.getStats().spans_committed);
-    try testing.expectEqual(@as(u64, 0), stream.getStats().bytes_written);
-    try testing.expect(!stream.hasPendingSpans());
-
-    try stream.write("after");
-    try stream.commit();
-
-    try testing.expectEqual(@as(u64, 1), stream.getStats().spans_committed);
-    try testing.expectEqual(@as(u64, 5), stream.getStats().bytes_written);
-
-    const drained = drainAllSpans(stream);
-    try testing.expectEqual(@as(u64, 5), drained);
-}
-
-test "Stream - write exactly chunk_size * N with auto_commit commits all, no dangling pending" {
-    const chunk_size: u32 = 64;
-    const n: usize = 5;
-    const total = chunk_size * n;
-    const stream = try raw.Stream.create(testing.allocator, testOptions(chunk_size, 2, true));
-    defer stream.destroy();
-
-    const data = [_]u8{'E'} ** total;
-    try stream.write(&data);
-
-    const stats = stream.getStats();
-
-    try testing.expectEqual(@as(u64, n), stats.spans_committed);
-    try testing.expectEqual(@as(u64, total), stats.bytes_written);
-
-    try stream.commit();
-    try testing.expectEqual(@as(u64, n), stream.getStats().spans_committed);
-
-    const drained = drainAllSpans(stream);
-    try testing.expectEqual(@as(u64, total), drained);
 }
 
 test "Stream - chunk storage growth preserves active span refcounts" {

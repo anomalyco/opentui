@@ -134,6 +134,8 @@ const SplitFrameState = struct {
     scrollback: split_scrollback.SplitScrollback,
     render_offset: u32,
     transition: SplitFooterTransition,
+    /// Only `rollbackSplitFrame` restores this: queued bytes own their image IDs
+    /// while their presentation is pending.
     kitty_history_next_image_id: ?u32 = null,
 };
 
@@ -337,14 +339,12 @@ pub const CliRenderer = struct {
     // render completes, the buffers swap. This keeps hit testing consistent during
     // a frame. Queries see the previous frame's state, not a half-built grid.
     //
-    // On-demand sync: When scroll/translate changes between renders, the TypeScript
-    // layer can rebuild currentHitGrid directly via addToCurrentHitGridClipped. This
-    // updates hover states immediately rather than waiting for the next render.
+    // On-demand sync: addToCurrentHitGridClipped writes currentHitGrid directly, so
+    // a Zig caller can update hit targets between renders.
     //
-    // Scissor clipping: The hitScissorStack mirrors overflow:hidden regions. Elements
-    // outside their parent's visible area are excluded from hit testing. The stack
-    // uses screen coordinates. Buffered renderables need getHitGridScissorRect() to
-    // convert from buffer-local (0,0) to their actual screen position.
+    // Scissor clipping: addToHitGrid and addToCurrentHitGridClipped clip to the top
+    // of hitScissorStack (screen coordinates). Scene frames clip hits themselves;
+    // they push no rects and only clear the stack.
     currentHitGrid: []u32,
     nextHitGrid: []u32,
     hitGridWidth: u32,
@@ -989,7 +989,7 @@ pub const CliRenderer = struct {
     }
 
     pub fn setRenderOffset(self: *CliRenderer, offset: u32) void {
-        if (self.pendingPresentation != null) return;
+        std.debug.assert(self.pendingPresentation == null);
         if (self.terminalSetup and !self.useAlternateScreen and self.renderOffset > 0 and offset == 0) {
             var clearBuf: [256]u8 = undefined;
             var fixed_writer: std.Io.Writer = .fixed(&clearBuf);
@@ -1028,6 +1028,20 @@ pub const CliRenderer = struct {
         return .failed;
     }
 
+    /// Discard an encoded frame that published no bytes. Encoding already synced
+    /// currentRenderBuffer, so the next frame repaints every cell. Output pressure
+    /// skips the frame and keeps the Kitty file transport enabled.
+    fn finishUnpublishedFrame(self: *CliRenderer, status: RenderStatus) RenderStatus {
+        switch (status) {
+            .rendered => unreachable,
+            .skipped => {
+                self.invalidateTerminalState();
+                return self.finishSkippedFrame();
+            },
+            .failed => return self.finishFailedFrame(),
+        }
+    }
+
     pub fn invalidateTerminalState(self: *CliRenderer) void {
         self.force_full_repaint = true;
         self.lastCursorStyleTag = null;
@@ -1064,11 +1078,16 @@ pub const CliRenderer = struct {
         self.splitScrollback = state.scrollback;
         self.renderOffset = state.render_offset;
         self.pendingSplitFooterTransition = state.transition;
+    }
+
+    /// Undo an unpublished frame, including the Kitty history image IDs it reserved.
+    fn rollbackSplitFrame(self: *CliRenderer, state: SplitFrameState) void {
+        self.restoreSplitFrameState(state);
         self.kittyHistoryNextImageId = state.kitty_history_next_image_id;
     }
 
     fn finishSplitBatch(self: *CliRenderer, published: bool) void {
-        if (!published) self.restoreSplitFrameState(self.splitBatchStartState);
+        if (!published) self.rollbackSplitFrame(self.splitBatchStartState);
         self.splitBatchActive = false;
         self.splitBatchRedrawFooter = false;
         self.splitBatchDeltaTime = 0;
@@ -1080,10 +1099,10 @@ pub const CliRenderer = struct {
 
     /// Accept an ordinary frame into a callback-free feed without publishing its
     /// hit grid, images, or statistics. The owner must finish or discard the frame's
-    /// bytes before calling completePresentation. Failed output stops presentation
+    /// bytes before calling completePresentation, and must not change hit grids,
+    /// split state, or the terminal until then. Failed output stops presentation
     /// permanently; this helper cannot repair partially delivered terminal commands.
-    /// The owner also controls terminal lifecycle. Legacy setup and split prefixes
-    /// remain on the legacy render path until their Session adapters are available.
+    /// The owner also controls terminal lifecycle; legacy terminal setup is rejected.
     pub fn renderDeferred(self: *CliRenderer, force: bool) error{
         PresentationPending,
         PresentationFailed,
@@ -1212,11 +1231,11 @@ pub const CliRenderer = struct {
         }
 
         const status = renderStatusFromWrite(write_status);
-        if (status == .failed or self.imageRenderFailed) {
+        std.debug.assert(status != .rendered or !self.imageRenderFailed);
+        if (status != .rendered) {
             self.renderStats = previous_stats;
-            const result = self.finishFailedFrame();
-            self.restoreSplitFrameState(start_split_state);
-            return result;
+            self.rollbackSplitFrame(start_split_state);
+            return self.finishUnpublishedFrame(status);
         }
         if (deferred) {
             self.pendingPresentation = .{
@@ -1247,14 +1266,14 @@ pub const CliRenderer = struct {
     }
 
     pub fn resetSplitScrollback(self: *CliRenderer, seed_rows: u32, pinned_render_offset: u32) u32 {
-        if (self.pendingPresentation != null) return self.renderOffset;
+        std.debug.assert(self.pendingPresentation == null);
         self.splitScrollback.reset(seed_rows);
         self.renderOffset = self.splitScrollback.renderOffset(pinned_render_offset);
         return self.renderOffset;
     }
 
     pub fn syncSplitScrollback(self: *CliRenderer, pinned_render_offset: u32) u32 {
-        if (self.pendingPresentation != null) return self.renderOffset;
+        std.debug.assert(self.pendingPresentation == null);
         self.renderOffset = self.clampSplitSurfaceOffset(self.renderOffset, pinned_render_offset);
         return self.renderOffset;
     }
@@ -1272,7 +1291,7 @@ pub const CliRenderer = struct {
         target_height: u32,
         scroll_lines: u32,
     ) void {
-        if (self.pendingPresentation != null) return;
+        std.debug.assert(self.pendingPresentation == null);
         self.pendingSplitFooterTransition = .{
             .mode = mode,
             .source_top_line = source_top_line,
@@ -1284,7 +1303,7 @@ pub const CliRenderer = struct {
     }
 
     pub fn clearPendingSplitFooterTransition(self: *CliRenderer) void {
-        if (self.pendingPresentation != null) return;
+        std.debug.assert(self.pendingPresentation == null);
         self.pendingSplitFooterTransition.clear();
     }
 
@@ -1354,16 +1373,14 @@ pub const CliRenderer = struct {
         const start_split_state = self.splitFrameState();
         const previous_stats = self.renderStats;
         const status = self.prepareSplitFooterRepaintFrame(pinned_render_offset, force);
-        var result_status = status;
-        if (status == .failed) {
+        if (status != .rendered) {
             self.renderStats = previous_stats;
-            result_status = self.finishFailedFrame();
-            self.restoreSplitFrameState(start_split_state);
+            self.rollbackSplitFrame(start_split_state);
         } else {
             self.collectFrameStats(deltaTime);
         }
 
-        return self.renderResult(result_status);
+        return self.renderResult(status);
     }
 
     pub fn commitSplitFooterSnapshotBatched(
@@ -1463,9 +1480,9 @@ pub const CliRenderer = struct {
                         if (self.imageRenderFailed) b.failFrame();
                         write_status = b.endFrame();
                         const status = renderStatusFromWrite(write_status);
-                        if (status == .failed or self.imageRenderFailed) {
+                        if (status != .rendered) {
                             self.renderStats = previous_stats;
-                            result_status = self.finishFailedFrame();
+                            result_status = self.finishUnpublishedFrame(status);
                         } else {
                             self.commitPendingHitGrid();
                             self.commitPendingImageState();
@@ -1473,7 +1490,7 @@ pub const CliRenderer = struct {
                             self.collectFrameStats(deltaTime);
                         }
 
-                        self.finishSplitBatch(result_status != .failed);
+                        self.finishSplitBatch(result_status == .rendered);
                     } else {
                         result_status = .rendered;
                         self.splitBatchRedrawFooter = redraw_footer;
@@ -1525,9 +1542,9 @@ pub const CliRenderer = struct {
                     write_status = b.endFrame();
 
                     const status = renderStatusFromWrite(write_status);
-                    if (status == .failed or self.imageRenderFailed) {
+                    if (status != .rendered) {
                         self.renderStats = previous_stats;
-                        result_status = self.finishFailedFrame();
+                        result_status = self.finishUnpublishedFrame(status);
                     } else {
                         self.commitPendingHitGrid();
                         self.commitPendingImageState();
@@ -1535,7 +1552,7 @@ pub const CliRenderer = struct {
                         self.collectFrameStats(self.splitBatchDeltaTime);
                     }
 
-                    self.finishSplitBatch(result_status != .failed);
+                    self.finishSplitBatch(result_status == .rendered);
                 } else {
                     result_status = .rendered;
                 }
@@ -2119,7 +2136,7 @@ pub const CliRenderer = struct {
             },
         }
         const status = renderStatusFromWrite(write_status);
-        if (status == .failed or self.imageRenderFailed) return self.finishFailedFrame();
+        if (status != .rendered) return self.finishUnpublishedFrame(status);
         self.commitPendingHitGrid();
         self.commitPendingImageState();
         return status;
@@ -2878,8 +2895,8 @@ pub const CliRenderer = struct {
                 beginRenderFrame(writer);
                 frame_started = true;
             }
+            // The frame outcome decides the transport: output pressure keeps it enabled.
             self.writeKittyImages(writer, should_force) catch {
-                self.kittyTransport.cancel(.io_error);
                 self.force_full_repaint = true;
                 self.imageRenderFailed = true;
             };
@@ -3316,7 +3333,7 @@ pub const CliRenderer = struct {
     }
 
     pub fn clearTerminal(self: *CliRenderer) void {
-        if (self.pendingPresentation != null) return;
+        std.debug.assert(self.pendingPresentation == null);
         if (self.hasCommittedProtocol(.kitty)) {
             for (self.currentImages.items) |current| {
                 if (current.protocol != .kitty) continue;
@@ -3352,7 +3369,7 @@ pub const CliRenderer = struct {
     /// only register hits within the visible region. Later renderables overwrite
     /// earlier ones. Z-order is determined by render order.
     pub fn addToHitGrid(self: *CliRenderer, x: i32, y: i32, width: u32, height: u32, id: u32) void {
-        if (self.pendingPresentation != null) return;
+        std.debug.assert(self.pendingPresentation == null);
         const clipped = self.clipRectToHitScissor(x, y, width, height) orelse return;
         const startX = @max(0, clipped.x);
         const startY = @max(0, clipped.y);
@@ -3381,18 +3398,14 @@ pub const CliRenderer = struct {
         }
     }
 
-    /// Clear currentHitGrid before an immediate rebuild.
-    ///
-    /// Used by syncHitGridIfNeeded in TypeScript when scroll/translate changes
-    /// require updating hit targets without waiting for the next render.
+    /// Clear currentHitGrid before an immediate rebuild with addToCurrentHitGridClipped.
     pub fn clearCurrentHitGrid(self: *CliRenderer) void {
-        if (self.pendingPresentation != null) return;
+        std.debug.assert(self.pendingPresentation == null);
         @memset(self.currentHitGrid, 0);
     }
 
     /// Return whether the hit grid changed during the last completed presentation.
     /// Pending presentation queries do not consume resize invalidation.
-    /// TypeScript can use this to decide if hover state needs rechecking.
     pub fn getHitGridDirty(self: *CliRenderer) bool {
         const dirty = self.hitGridDirty;
         if (self.pendingPresentation == null) self.hitGridResizeInvalidated = false;
@@ -3478,19 +3491,17 @@ pub const CliRenderer = struct {
         }
     }
 
-    /// Clear all hit grid scissors. Called at start of render to reset state.
+    /// Clear all hit grid scissors. Scene frames call this before painting.
     pub fn hitGridClearScissorRects(self: *CliRenderer) void {
         self.hitScissorStack.clearRetainingCapacity();
     }
 
     /// Write directly to currentHitGrid with scissor clipping.
     ///
-    /// Used for immediate hit grid sync when scroll/translate changes. Unlike
-    /// addToHitGrid (which writes to nextHitGrid for the upcoming frame), this
-    /// updates the grid that checkHit reads right now. Lets hover states update
-    /// without waiting for the next render.
+    /// Unlike addToHitGrid (which writes to nextHitGrid for the upcoming frame),
+    /// this updates the grid that checkHit reads right now.
     pub fn addToCurrentHitGridClipped(self: *CliRenderer, x: i32, y: i32, width: u32, height: u32, id: u32) void {
-        if (self.pendingPresentation != null) return;
+        std.debug.assert(self.pendingPresentation == null);
         const clipped = self.clipRectToHitScissor(x, y, width, height) orelse return;
 
         const startX = @max(0, clipped.x);
