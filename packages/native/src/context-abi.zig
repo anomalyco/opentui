@@ -2442,7 +2442,7 @@ pub fn sessionError(owner: *ContextHandle, err: anyerror) c.ot_status {
         error.YogaBusy => c.OT_CONTEXT_BUSY,
         error.UnsupportedVersion => c.OT_UNSUPPORTED_VERSION,
         error.OutOfMemory => c.OT_OUT_OF_MEMORY,
-        error.ContextBusy => c.OT_CONTEXT_BUSY,
+        error.ContextBusy, error.ContextClosed => c.OT_CONTEXT_BUSY,
         error.WrongContext => c.OT_WRONG_CONTEXT,
         error.WrongKind => c.OT_WRONG_KIND,
         error.StaleHandle => c.OT_STALE_HANDLE,
@@ -4368,6 +4368,19 @@ test "Context ABI diagnostics copy bounded records and preserve failed drains" {
     try std.testing.expectEqualSlices(u8, "1", batch[0].message[0..batch[0].message_len]);
     try std.testing.expectEqualSlices(u8, "62", batch[61].message[0..batch[61].message_len]);
     try std.testing.expectEqual(99, batch[62].reserved);
+}
+
+test "Context error mapping gives every Context error a specific status" {
+    const handle = try createTestContext(.{ .object_capacity = 1, .render_cells_max = 1 });
+    defer std.testing.expectEqual(c.OT_OK, ot_context_destroy(handle)) catch unreachable;
+    // These report a broken native invariant rather than a caller error.
+    const internal = [_]anyerror{ error.ContextLimit, error.YogaException, error.YogaPoisoned };
+    inline for (@typeInfo(@import("context.zig").Error).error_set.?) |info| {
+        const err = @field(anyerror, info.name);
+        const status = sessionError(handle, err);
+        try std.testing.expectEqual(status, handle.last_error);
+        try std.testing.expectEqual(std.mem.findScalar(anyerror, &internal, err) != null, status == c.OT_INTERNAL_ERROR);
+    }
 }
 
 test "Context typed destroy helper matches every typed destroy export" {
