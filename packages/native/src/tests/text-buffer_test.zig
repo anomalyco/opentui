@@ -2173,13 +2173,13 @@ test "TextBuffer flattenMemRegistry keeps the document and is atomic under alloc
         defer tb.deinit();
         try tb.setText("ab");
         // A grapheme split across appends keeps its per-chunk widths after flattening.
-        for ([_][]const u8{ "c", "\u{301}", "\n\u{754c}", "e" }) |bytes| try tb.append(bytes);
+        for ([_][]const u8{ "c", "\u{301}", "\n\u{754c}", "e", "\t\u{754c}" }) |bytes| try tb.append(bytes);
         try tb.addHighlightByCharRange(1, 4, 1, 1, 7);
         const view = try tb.registerView();
         tb.clearViewDirty(view);
         const before = TextState.capture(tb);
         const widths = [_]u32{ tb.lineWidthAt(0), tb.lineWidthAt(1) };
-        try std.testing.expectEqual(5, before.slots);
+        try std.testing.expectEqual(6, before.slots);
         failing.fail_index = failing.alloc_index + offset;
         failing.resize_fail_index = failing.resize_index;
         const result = tb.flattenMemRegistry();
@@ -2198,6 +2198,15 @@ test "TextBuffer flattenMemRegistry keeps the document and is atomic under alloc
         after.epoch = before.epoch;
         try std.testing.expectEqualDeep(before, after);
         try std.testing.expectEqualSlices(u32, &widths, &.{ tb.lineWidthAt(0), tb.lineWidthAt(1) });
+
+        // Chunk flags survive, so a later tab-width change still remeasures the tab.
+        tb.setTabWidth(8);
+        const fresh = try TextBuffer.init(std.testing.allocator, &pool, &links, .unicode);
+        defer fresh.deinit();
+        fresh.setTabWidth(8);
+        var text: [64]u8 = undefined;
+        try fresh.setText(text[0..tb.getPlainTextIntoBuffer(&text)]);
+        try std.testing.expectEqual(fresh.lineWidthAt(1), tb.lineWidthAt(1));
         return;
     }
     return error.MissingSuccessfulFlatten;
