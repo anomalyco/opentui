@@ -76,6 +76,7 @@ describe("OptimizedBuffer", () => {
       )
       expect(rows[0]).toContain("TOP")
       expect(rows[1]).toContain("BOT")
+      expect(other.withBuffers(({ char }) => String.fromCodePoint(...char.subarray(0, 3)))).toBe("XYZ")
     } finally {
       other.destroy()
     }
@@ -109,17 +110,20 @@ describe("OptimizedBuffer", () => {
     buffer.withBuffers((cells) => expect(cells.char[11]).toBe(89))
   })
 
-  it("preserves literal attributes and rejects foreign pooled IDs across per-cell calls", () => {
+  it("preserves literal attributes and passes all u32 attribute bits across per-cell calls", () => {
     const fg = RGBA.fromInts(255, 255, 255)
     const bg = RGBA.fromInts(0, 0, 0)
-    const attributes = [0xff, 0xfe, 0xfd]
-
-    buffer.setCell(0, 0, "S", fg, bg, attributes[0])
-    buffer.setCellWithAlphaBlending(1, 0, "A", fg, bg, attributes[1])
-    buffer.drawChar("D".codePointAt(0)!, 2, 0, fg, bg, attributes[2])
-
-    expect(() => buffer.setCell(0, 0, "X", fg, bg, 0x8000_00ff)).toThrow("InvalidArgument")
-    buffer.withBuffers((cells) => expect([...cells.attributes.slice(0, attributes.length)]).toEqual(attributes))
+    const draws = [
+      (attributes: number) => buffer.setCell(0, 0, "S", fg, bg, attributes),
+      (attributes: number) => buffer.setCellWithAlphaBlending(1, 0, "A", fg, bg, attributes),
+      (attributes: number) => buffer.drawChar("D".codePointAt(0)!, 2, 0, fg, bg, attributes),
+    ]
+    // Native rejects a foreign link ID in bits 8..31; a truncated value would draw instead.
+    draws.forEach((draw, index) => {
+      draw(0xff - index)
+      expect(() => draw(0x8000_00ff)).toThrow("InvalidArgument")
+    })
+    buffer.withBuffers((cells) => expect([...cells.attributes.slice(0, 3)]).toEqual([0xff, 0xfe, 0xfd]))
   })
 
   it("clips draws at negative positions", () => {
@@ -197,17 +201,20 @@ describe("OptimizedBuffer", () => {
     }
   })
 
-  it("releases drawn images when cleared", () => {
-    const image = NativeImage.fromRgba(Uint8Array.of(1, 2, 3, 255), 1, 1)
-    let raw: ReturnType<NativeImage["takeRaw"]> | undefined
-    try {
-      expect(buffer.drawImage(image, 0, 0, 1, 1)).toBe(true)
-      buffer.clear()
-      raw = image.takeRaw()
-      expect([...raw.data]).toEqual([1, 2, 3, 255])
-    } finally {
-      raw?.dispose()
-      image.dispose()
+  it("retains a drawn same-Context image until the buffer is cleared or destroyed", () => {
+    for (const release of [() => buffer.clear(), () => buffer.destroy()]) {
+      const image = NativeImage.fromRgba(Uint8Array.of(1, 2, 3, 255), 1, 1, 4, { owner: resourceContext })
+      let raw: ReturnType<NativeImage["takeRaw"]> | undefined
+      try {
+        expect(buffer.drawImage(image, 0, 0, 1, 1)).toBe(true)
+        expect(() => image.takeRaw()).toThrow("native buffers retain the image")
+        release()
+        raw = image.takeRaw()
+        expect([...raw.data]).toEqual([1, 2, 3, 255])
+      } finally {
+        raw?.dispose()
+        image.dispose()
+      }
     }
   })
 
