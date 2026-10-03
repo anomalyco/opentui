@@ -577,11 +577,12 @@ test "Scene record paints an empty recording like a hook-free frame and plays im
     try f.owner.sceneSetText(try placed(f, c.OT_SCENE_TEXT, 3, 6, 0, 5), "hello");
     try f.owner.sceneSetSlider(try placed(f, c.OT_SCENE_SLIDER, 4, 6, 1, 4), .{ .value = 40 });
     _ = try placed(f, c.OT_SCENE_ARROW, 5, 11, 0, 1);
-    const pixels = [_]u8{ 200, 40, 0, 255 } ** 4;
-    const picture = try f.owner.createImagePixels(&pixels, 2, 2, .{ .stride = 8 });
-    try f.owner.sceneSetImage(try placed(f, c.OT_SCENE_IMAGE, 6, 0, 3, 2), picture, .fill, .blocks, null);
+    // A wide picture takes the fit path and the cropping cover path.
+    const pixels = [_]u8{ 200, 40, 0, 255, 0, 40, 200, 255 } ** 4;
+    const picture = try f.owner.createImagePixels(&pixels, 4, 2, .{ .stride = 16 });
+    try f.owner.sceneSetImage(try placed(f, c.OT_SCENE_IMAGE, 6, 0, 3, 2), picture, .fit, .blocks, null);
     const backed = try placed(f, c.OT_SCENE_IMAGE, 7, 2, 3, 2);
-    try f.owner.sceneSetImage(backed, picture, .fill, .blocks, try f.owner.createBuffer(2, 1, .{}));
+    try f.owner.sceneSetImage(backed, picture, .cover, .blocks, try f.owner.createBuffer(2, 1, .{}));
     const cells = try f.owner.createBuffer(2, 1, .{});
     try f.owner.drawBufferText(cells, "sf", 0, 0, .{ 255, 255, 255, 255 }, null, 0);
     try f.owner.sceneSetSurface(try placed(f, c.OT_SCENE_CUSTOM, 8, 6, 2, 2), cells);
