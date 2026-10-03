@@ -469,10 +469,12 @@ test "Session terminal random operation sequences preserve rejected state and al
                 26 => blk: {
                     // Cursor intent is accepted in every open phase and emits nothing until a frame.
                     const reservation = f.value.output.control_sequence;
-                    f.owner.controlSession(f.id, .{ .cursor = .{ .style = .line, .blinking = true } }) catch |err| {
+                    const style: @TypeOf(f.cli.terminal.state.cursor.style) = if (random.boolean()) .line else .block;
+                    f.owner.controlSession(f.id, .{ .cursor = .{ .style = style, .blinking = true } }) catch |err| {
                         try testing.expect(f.value.state != .open);
                         break :blk err;
                     };
+                    try testing.expectEqual(style, f.cli.terminal.state.cursor.style);
                     try testing.expectEqualDeep(before.stats, f.value.getStats());
                     try testing.expectEqualDeep(reservation, f.value.output.control_sequence);
                 },
