@@ -444,11 +444,10 @@ function runCleanups(cleanups: readonly (() => void)[]): void {
   if (failure) throw failure.error
 }
 
-// Bounded by queued snapshot cells, not by commit count: any batch of queued commits then fits one native split
-// render, which admits at most the Session's output capacity at 24 bytes per snapshot cell.
+// Unbounded, as on main. One native split render admits at most the Session output capacity at 24 bytes per snapshot
+// cell, so each batch takes head commits up to that many cells, and a larger single commit is refused.
 class ExternalOutputQueue {
   private commits: QueuedCommit[] = []
-  private cells = 0
 
   constructor(private readonly maxCells: number) {}
 
@@ -460,20 +459,16 @@ class ExternalOutputQueue {
     return this.commits.length
   }
 
-  /** Throws when `cells` more would not fit, so producers can check before they allocate snapshots. */
-  checkCapacity(cells: number): void {
-    if (cells > this.maxCells - this.cells) throw new Error("Scrollback snapshot queue capacity exceeded")
-  }
-
   writeSnapshots(commits: readonly ExternalOutputCommit[]): void {
     // Every frame renders the queue head, so one invalid entry would fail every later frame and the close flush.
     for (const { rowColumns, snapshot } of commits) {
       if (!Number.isInteger(rowColumns) || rowColumns < 0 || rowColumns > snapshot.width) {
         throw new RangeError("Scrollback commit rowColumns must be an integer from 0 to the snapshot width")
       }
+      if (snapshot.width * snapshot.height > this.maxCells) {
+        throw new Error("Scrollback snapshot exceeds the Session output capacity")
+      }
     }
-    const cells = commits.reduce((total, { snapshot }) => total + snapshot.width * snapshot.height, 0)
-    this.checkCapacity(cells)
     // Queued snapshots never change, so tail-column predictions read each one once, here.
     const entries = commits.map((commit) => ({
       ...commit,
@@ -481,27 +476,34 @@ class ExternalOutputQueue {
       rowWidths: snapshotRowWidths(commit.snapshot, commit.rowColumns),
     }))
     for (const entry of entries) this.commits.push(entry)
-    this.cells += cells
+  }
+
+  /** The head commits, at most `limit`, that fit one native split render. Never empty unless the queue is. */
+  batch(limit: number): readonly QueuedCommit[] {
+    // An empty batch would never drain the queue.
+    if (!(limit >= 1)) throw new RangeError("ExternalOutputQueue.batch requires a limit of at least 1")
+    let count = 0
+    let cells = 0
+    while (count < Math.min(limit, this.commits.length)) {
+      cells += this.commits[count]!.cells
+      if (cells > this.maxCells) break
+      count += 1
+    }
+    return this.commits.slice(0, count)
   }
 
   peek(limit: number = Number.POSITIVE_INFINITY): readonly QueuedCommit[] {
-    // An empty batch would never drain the queue.
-    if (!(limit >= 1)) throw new RangeError("ExternalOutputQueue.peek requires a limit of at least 1")
     return this.commits.slice(0, limit)
   }
 
   claim(): ExternalOutputCommit[] {
     const output = this.commits
     this.commits = []
-    this.cells = 0
     return output
   }
 
   drop(count: number): void {
-    for (const commit of this.commits.splice(0, count)) {
-      this.cells -= commit.cells
-      commit.snapshot.destroy()
-    }
+    for (const commit of this.commits.splice(0, count)) commit.snapshot.destroy()
   }
 
   clear(): void {
@@ -2662,16 +2664,7 @@ export class CliRenderer extends EventEmitter implements RenderContext {
   }
 
   private createStdoutSnapshotCommits(text: string): ExternalOutputCommit[] {
-    if (text.length === 0) {
-      return []
-    }
-    if (BigInt(Buffer.byteLength(text)) > this.nativeSession.maxWriteBytes) {
-      throw new Error("Captured stdout exceeds the Session output capacity")
-    }
-
     const rows = this.splitStdoutRows(text)
-    // A write is queued whole or not at all; check the budget before allocating snapshots of at least one cell each.
-    this.externalOutputQueue.checkCapacity(rows.reduce((total, row) => total + Math.max(1, row.cells), 0))
     if (rows.length === 0) {
       return []
     }
@@ -4986,7 +4979,7 @@ export class CliRenderer extends EventEmitter implements RenderContext {
       this._splitHeight > 0 && this._externalOutputMode === "capture-stdout"
         ? this.pendingNativeReplay?.remaining === 0
           ? []
-          : this.externalOutputQueue.peek(
+          : this.externalOutputQueue.batch(
               Math.min(this.maxSplitCommitsPerFrame, this.pendingNativeReplay?.remaining ?? Infinity),
             )
         : null
@@ -5058,7 +5051,7 @@ export class CliRenderer extends EventEmitter implements RenderContext {
         }
       }
       if (remaining === 0) break
-      const commits = this.externalOutputQueue.peek(
+      const commits = this.externalOutputQueue.batch(
         Math.min(remaining, this.maxSplitCommitsPerFrame, this.pendingNativeReplay?.remaining ?? Infinity),
       )
       // A null-frame render also reports PENDING for an earlier frame, which would complete unsent commits.

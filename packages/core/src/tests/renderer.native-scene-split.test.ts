@@ -40,8 +40,9 @@ async function setup(options: TestRendererOptions = {}) {
 }
 
 /** A set-up split-footer terminal whose native output reaches `stdout`, so tests can read the scrollback bytes. */
-async function setupTerminal(options: { maxBytes?: bigint } = {}) {
-  const stdout = new RecordingWriteStream(40, 10) as RecordingWriteStream & NodeJS.WriteStream
+async function setupTerminal(options: { columns?: number; maxBytes?: bigint } = {}) {
+  const columns = options.columns ?? 40
+  const stdout = new RecordingWriteStream(columns, 10) as RecordingWriteStream & NodeJS.WriteStream
   const nativeSession =
     options.maxBytes === undefined
       ? undefined
@@ -50,7 +51,7 @@ async function setupTerminal(options: { maxBytes?: bigint } = {}) {
         })
   const clock = new ManualClock()
   const result = await setup({
-    width: 40,
+    width: columns,
     stdout,
     nativeSession,
     bufferedOutput: "stdout",
@@ -99,31 +100,63 @@ test.each([
   expect(terminal.printed(/line \d+/g)).toEqual(rows)
 })
 
-test.each(["stdout", "writer"] as const)(
-  "a %s write past the queued cell budget throws, queues nothing, and fits after a drain",
-  async (kind) => {
-    // 1,024 queued cells: 24 bytes per snapshot cell.
-    const { renderer, stdout, externalOutput, drainUntil, printed } = await setupTerminal({ maxBytes: 24_576n })
-    const write = (rows: string[]) => {
-      if (kind === "stdout") stdout.write(rows.join("\n") + "\n")
-      else
-        renderer.writeToScrollback(({ renderContext }) => ({
-          root: new TextRenderable(renderContext, { content: rows.join("\n"), width: 40, height: rows.length }),
-        }))
+// About 460 KiB of 78-cell rows: more than the default Session output capacity (8 MiB / 24 bytes = 349,525 cells).
+const jsonRows = Array.from({ length: 6_000 }, (_, row) => `{"row":${row},"data":"`.padEnd(76, "x") + '"},')
+
+test.each([
+  ["one 460 KiB write", (terminal: Terminal) => terminal.stdout.write(jsonRows.join("\n") + "\n")],
+  [
+    "64 KiB writes with a frame after each",
+    async (terminal: Terminal) => {
+      for (let row = 0; row < jsonRows.length; row += 800) {
+        terminal.stdout.write(jsonRows.slice(row, row + 800).join("\n") + "\n")
+        await terminal.frame()
+      }
+    },
+  ],
+] as const)("captured stdout of %s is queued whole and reaches the terminal in order", async (_name, write) => {
+  const terminal = await setupTerminal({ columns: 80 })
+  await write(terminal)
+  expect(terminal.externalOutput.take()).toHaveLength(jsonRows.length)
+  terminal.renderer.destroy()
+  await terminal.renderer.closed
+  expect(terminal.printed(/"row":\d+/g)).toEqual(jsonRows.map((_, row) => `"row":${row}`))
+})
+
+const wide = (prefix: string, count: number) => lines(count).map((row) => `${prefix} ${row}`.padEnd(40, "."))
+const writeBlock = ({ renderer }: Terminal, rows: string[]) =>
+  renderer.writeToScrollback(({ renderContext }) => ({
+    root: new TextRenderable(renderContext, { content: rows.join("\n"), width: 40, height: rows.length }),
+  }))
+
+test.each(["frames", "destroy"] as const)(
+  "commits that exceed the Session output capacity together drain in separate batches through %s",
+  async (drain) => {
+    // 1,024 cells per native split render: 24 bytes per snapshot cell.
+    const terminal = await setupTerminal({ maxBytes: 24_576n })
+    writeBlock(terminal, wide("a", 15))
+    writeBlock(terminal, wide("b", 15))
+    terminal.stdout.write(wide("c", 40).join("\n") + "\n")
+    const rows = [...wide("a", 15), ...wide("b", 15), ...wide("c", 40)].map((row) => row.replace(/\.+$/, ""))
+    if (drain === "frames") {
+      await terminal.frame()
+      expect(terminal.printed(/[abc] line \d+/g)).toEqual(rows.slice(0, 15))
+      await terminal.drainUntil("c line 39")
+    } else {
+      terminal.renderer.destroy()
+      await terminal.renderer.closed
     }
-    const wide = (prefix: string, count: number) => lines(count).map((row) => `${prefix} ${row}`.padEnd(40, "."))
-    write(wide("a", 20))
-    expect(() => write(wide("b", 6))).toThrow("Scrollback snapshot queue capacity exceeded")
-    expect(externalOutput.take().flatMap(({ rows }) => rows)).toEqual(wide("a", 20))
-    await drainUntil("a line 19")
-    write(wide("b", 6))
-    await drainUntil("b line 5")
-    expect(printed(/[ab] line \d+/g)).toEqual([
-      ...lines(20).map((row) => `a ${row}`),
-      ...lines(6).map((row) => `b ${row}`),
-    ])
+    expect(terminal.printed(/[abc] line \d+/g)).toEqual(rows)
   },
 )
+
+test("a snapshot larger than the Session output capacity throws at the call and queues nothing", async () => {
+  const terminal = await setupTerminal({ maxBytes: 24_576n })
+  expect(() => writeBlock(terminal, wide("a", 30))).toThrow("Scrollback snapshot exceeds the Session output capacity")
+  expect(terminal.externalOutput.take()).toEqual([])
+  writeBlock(terminal, wide("b", 1))
+  await terminal.drainUntil("b line 0")
+})
 
 // Each drain ends with `last` on the terminal. A transition that changes the split footer waits for queued rows.
 const drains = {
