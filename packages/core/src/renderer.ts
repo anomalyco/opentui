@@ -2084,6 +2084,12 @@ export class CliRenderer extends EventEmitter implements RenderContext {
     let nextCommitStartOnNewLine = startOnNewLine
     const pendingWaits = new Set<() => void>()
 
+    // Late capability replies (for example hyperlink support) must reach content that is already mounted.
+    const capabilitiesListener = (capabilities: TerminalCapabilities): void => {
+      snapshotContext.capabilities = capabilities
+      renderContext.emit(CliRenderEvents.CAPABILITIES, capabilities)
+    }
+
     const assertNotDestroyed = (): void => {
       if (surfaceDestroyed) {
         throw new Error("ScrollbackSurface is destroyed")
@@ -2305,6 +2311,7 @@ export class CliRenderer extends EventEmitter implements RenderContext {
 
       surfaceDestroyed = true
       renderer.detachedSurfaces.delete(destroySurface)
+      renderer.off(CliRenderEvents.CAPABILITIES, capabilitiesListener)
       for (const cancel of pendingWaits) cancel()
 
       let failure: { error: unknown } | undefined
@@ -2324,6 +2331,7 @@ export class CliRenderer extends EventEmitter implements RenderContext {
     }
 
     renderer.detachedSurfaces.add(destroySurface)
+    renderer.on(CliRenderEvents.CAPABILITIES, capabilitiesListener)
 
     return {
       get renderContext(): RenderContext {
