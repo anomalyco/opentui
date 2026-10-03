@@ -1,4 +1,5 @@
 import { test, expect, beforeEach, afterEach, describe, spyOn } from "bun:test"
+import { EventEmitter } from "events"
 import { decodePasteBytes } from "../lib/paste.js"
 import {
   Renderable,
@@ -756,6 +757,45 @@ describe("Renderable - Child Management", () => {
 })
 
 describe("Renderable - Events", () => {
+  // Subscriptions keep the native resize, line-info, and layout hooks in sync: a listener fires while subscribed,
+  // and after the last one goes, a listener added behind the sync's back never fires.
+  const listenerCases = (["resize", "line-info-change", "layout-changed"] as const).flatMap((event) =>
+    (["on", "once", "prependListener"] as const).flatMap((add) =>
+      ["off", "removeAllListeners(event)", "removeAllListeners()"]
+        .filter((remove) => event !== "layout-changed" || remove !== "removeAllListeners()")
+        .map((remove) => [event, add, remove] as const),
+    ),
+  )
+
+  test.each(listenerCases)("%s: %s, then %s", async (event, add, remove) => {
+    const root = testRenderer.root
+    const sizer =
+      event === "line-info-change"
+        ? new TextRenderable(testRenderer, { content: "a b c d e f", width: 4 })
+        : new TestRenderable(testRenderer, { width: 4, height: 1 })
+    root.add(sizer)
+    const node = event === "layout-changed" ? root : sizer
+    const resize = async () => {
+      sizer.width += 1
+      await renderOnce()
+    }
+    await renderOnce()
+    let calls = 0
+    const listener = () => void calls++
+    node[add](event, listener)
+    await resize()
+    await resize()
+    expect(add === "once" ? calls === 1 : calls >= 2).toBe(true)
+
+    if (remove === "off") node.off(event, listener)
+    else if (remove === "removeAllListeners(event)") node.removeAllListeners(event)
+    else node.removeAllListeners()
+    calls = 0
+    EventEmitter.prototype.addListener.call(node, event, listener)
+    await resize()
+    expect(calls).toBe(0)
+  })
+
   test("handles mouse events", async () => {
     const renderable = new TestRenderable(testRenderer, { id: "test-mouse", left: 0, top: 0, width: 10, height: 10 })
     let mouseCalled = false
