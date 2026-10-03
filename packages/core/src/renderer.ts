@@ -4405,9 +4405,8 @@ export class CliRenderer extends EventEmitter implements RenderContext {
 
   public pause(): void {
     this._controlState = RendererControlState.EXPLICIT_PAUSED
-    this.immediateRerenderRequested = false
     this.ordinaryFrameWaitControlState = null
-    this.internalPause()
+    this.halt(false)
   }
 
   public suspend(): Promise<void> {
@@ -4445,8 +4444,7 @@ export class CliRenderer extends EventEmitter implements RenderContext {
     this._cancelPaletteDetection?.(new Error("Cannot detect palette while renderer is suspended"))
     this.resolveXtVersionWaiters()
     this.nativeScene.interruptPaint()
-    this.immediateRerenderRequested = false
-    this.internalPause()
+    this.halt(false)
 
     this.clearSplitStartupCursorSeed()
 
@@ -4542,37 +4540,20 @@ export class CliRenderer extends EventEmitter implements RenderContext {
     }
   }
 
-  private internalPause(): void {
-    this._isRunning = false
-    this.cancelReadyFrame?.()
-    this.cancelReadyFrame = null
-
-    this.clearFrameTimer()
-
-    if (!this.rendering) {
-      this.resolveIdleIfNeeded()
-    }
-  }
-
   public stop(): void {
     this._controlState = RendererControlState.EXPLICIT_STOPPED
-    this.immediateRerenderRequested = false
     this.ordinaryFrameWaitControlState = null
-    this.internalStop()
+    this.halt(true)
   }
 
-  private internalStop(): void {
+  // Pause, stop, and suspend drop queued frames; stopping a running loop also ends its memory snapshots.
+  private halt(stopSnapshots: boolean): void {
+    if (stopSnapshots && this._isRunning) this.stopMemorySnapshotTimer()
+    this._isRunning = false
+    this.immediateRerenderRequested = false
     this.cancelReadyFrame?.()
     this.cancelReadyFrame = null
     this.clearFrameTimer()
-    if (this.isRunning && !this._isDestroyed) {
-      this._isRunning = false
-
-      if (this.memorySnapshotTimer) {
-        this.clock.clearInterval(this.memorySnapshotTimer)
-        this.memorySnapshotTimer = null
-      }
-    }
     if (!this.rendering) this.resolveIdleIfNeeded()
   }
 
@@ -4671,7 +4652,6 @@ export class CliRenderer extends EventEmitter implements RenderContext {
       // not let that failure strand the remaining teardown or its completion.
       this.handleStdinParserFailure(error)
     }
-    if (this.stdin === process.stdin && this._usesProcessStdout) this.disableMouse()
     this._useMouse = false
     this.setCapturedRenderable(undefined)
 
