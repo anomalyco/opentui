@@ -232,6 +232,9 @@ pub const BufferStorage = struct {
     link_tracker: link.LinkTracker,
     image_placements: std.ArrayListUnmanaged(OptimizedBuffer.ImagePlacement) = .empty,
 
+    /// Bytes of the four cell arrays per cell.
+    const cell_bytes = 2 * @sizeOf(u32) + 2 * @sizeOf(RGBA);
+
     fn init(
         allocator: Allocator,
         width: u32,
@@ -242,7 +245,6 @@ pub const BufferStorage = struct {
     ) BufferError!*BufferStorage {
         if (width == 0 or height == 0) return error.InvalidDimensions;
         const size = math.mul(u32, width, height) catch return error.InvalidDimensions;
-        const cell_bytes = 2 * @sizeOf(u32) + 2 * @sizeOf(RGBA);
         const array_bytes = math.mul(usize, size, cell_bytes) catch return error.InvalidDimensions;
         const self = try allocator.create(BufferStorage);
         errdefer allocator.destroy(self);
@@ -311,6 +313,8 @@ pub const BufferStorage = struct {
     fn resizeExclusive(self: *BufferStorage, width: u32, height: u32, cells_max: u32) BufferError!void {
         assert(self.ref_count == 1 and self.lease_budget == null and !self.retired);
         const size = math.mul(u32, width, height) catch return error.InvalidDimensions;
+        // The caller bounds the cells, so growth never caps capacity below them.
+        assert(size <= cells_max);
         const generation = math.add(u64, self.generation, 1) catch return error.GenerationExhausted;
         if (size > self.capacity or self.capacity > size +| size / 2) {
             // Growing past the old capacity reserves half of it again, so a buffer that grows a row
@@ -324,12 +328,12 @@ pub const BufferStorage = struct {
             const bg = try self.allocator.alloc(RGBA, capacity);
             errdefer self.allocator.free(bg);
             const attributes = try self.allocator.alloc(u32, capacity);
-            const cell_bytes = 2 * @sizeOf(u32) + 2 * @sizeOf(RGBA);
             self.retained_bytes = self.retained_bytes - @as(u64, self.capacity) * cell_bytes + @as(u64, capacity) * cell_bytes;
             self.freeArrays();
             self.buffer = .{ .char = chars, .fg = fg, .bg = bg, .attributes = attributes };
             self.capacity = capacity;
         }
+        assert(size <= self.capacity and self.capacity <= size +| size / 2);
         self.buffer = .{
             .char = self.buffer.char.ptr[0..size],
             .fg = self.buffer.fg.ptr[0..size],
@@ -401,7 +405,7 @@ pub const BufferLease = struct {
         count_max: u32,
         bytes: *u64,
         bytes_max: *const u64,
-    ) error{ LeaseLimit, LeaseBytesLimit, OutOfMemory, StaleLease }!BufferLease {
+    ) error{ LeaseLimit, LeaseBytesLimit, OutOfMemory }!BufferLease {
         if (count.* >= count_max) return error.LeaseLimit;
         const storage = target.storage;
         const already_leased = storage.lease_budget != null;
@@ -409,6 +413,7 @@ pub const BufferLease = struct {
         if (!already_leased and storage.retained_bytes > bytes_max.* - bytes.*) {
             return error.LeaseBytesLimit;
         }
+        // A buffer's current storage is never retired, so the lease starts current.
         var lease = target.acquireLease() catch return error.LeaseLimit;
         errdefer lease.release();
         if (!already_leased) {
@@ -420,7 +425,6 @@ pub const BufferLease = struct {
             };
             if (storage.retained_bytes > bytes_max.* - bytes.*) return error.LeaseBytesLimit;
         }
-        if (storage.retired) return error.StaleLease;
         if (storage.lease_budget) |*budget| {
             assert(budget.bytes == bytes);
             assert(budget.bytes_max == bytes_max);
@@ -436,6 +440,9 @@ pub const BufferLease = struct {
             bytes.* += storage.retained_bytes;
         }
         count.* += 1;
+        // The first checked lease reserved an entry per cell, so tracked writes cannot fail.
+        assert(storage.grapheme_tracker.used_ids.capacity() > storage.buffer.char.len);
+        assert(storage.link_tracker.used_ids.capacity() > storage.buffer.char.len);
         return lease;
     }
 
@@ -932,23 +939,34 @@ pub const OptimizedBuffer = struct {
             const previous = target.storage;
             assert(storage.generation - 1 == previous.generation);
             self.storage = null;
-            target.storage = storage;
-            target.buffer = storage.buffer;
-            target.grapheme_tracker = &storage.grapheme_tracker;
-            target.link_tracker = &storage.link_tracker;
-            target.image_placements = &storage.image_placements;
-            target.width = storage.width;
-            target.height = storage.height;
+            target.adoptStorage(storage);
             target.clear(ansi.rgbColor(0, 0, 0, 255), null);
             previous.retire();
         }
     };
 
-    pub fn prepareResize(self: *OptimizedBuffer, width: u32, height: u32) BufferError!PreparedResize {
-        if (self.width == width and self.height == height) return .{ .target = self };
+    /// The buffer mirrors its storage's arrays, size, and trackers for direct field access.
+    fn adoptStorage(self: *OptimizedBuffer, storage: *BufferStorage) void {
+        self.storage = storage;
+        self.buffer = storage.buffer;
+        self.width = storage.width;
+        self.height = storage.height;
+        self.grapheme_tracker = &storage.grapheme_tracker;
+        self.link_tracker = &storage.link_tracker;
+        self.image_placements = &storage.image_placements;
+    }
+
+    /// Returns whether the size differs from the current one. The same size is a no-op.
+    fn checkResize(self: *const OptimizedBuffer, width: u32, height: u32) BufferError!bool {
+        if (self.width == width and self.height == height) return false;
         if (width == 0 or height == 0) return BufferError.InvalidDimensions;
         const cells = math.mul(u32, width, height) catch return error.InvalidDimensions;
         if (cells > self.cells_max) return error.InvalidDimensions;
+        return true;
+    }
+
+    pub fn prepareResize(self: *OptimizedBuffer, width: u32, height: u32) BufferError!PreparedResize {
+        if (!try self.checkResize(width, height)) return .{ .target = self };
         const generation = math.add(u64, self.storage.generation, 1) catch return error.GenerationExhausted;
         return .{
             .target = self,
@@ -963,20 +981,16 @@ pub const OptimizedBuffer = struct {
             prepared.commit();
             return;
         }
-        if (self.width == width and self.height == height) return;
-        if (width == 0 or height == 0) return BufferError.InvalidDimensions;
-        const cells = math.mul(u32, width, height) catch return error.InvalidDimensions;
-        if (cells > self.cells_max) return error.InvalidDimensions;
+        if (!try self.checkResize(width, height)) return;
         // Replacing unleased storage would only trade the arrays for fresh pages of the same size.
         try storage.resizeExclusive(width, height, self.cells_max);
-        self.buffer = storage.buffer;
-        self.width = width;
-        self.height = height;
+        self.adoptStorage(storage);
         self.clear(ansi.rgbColor(0, 0, 0, 255), null);
         // A replacement generation starts without tracker or placement capacity, which leases charge.
         storage.grapheme_tracker.used_ids.clearAndFree();
         storage.link_tracker.used_ids.clearAndFree();
         storage.image_placements.clearAndFree(storage.resourceAllocator());
+        assert(storage.retained_bytes == @sizeOf(BufferStorage) + @as(u64, storage.capacity) * BufferStorage.cell_bytes);
     }
 
     fn coordsToIndex(self: *const OptimizedBuffer, x: u32, y: u32) u32 {
