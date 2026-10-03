@@ -261,21 +261,23 @@ test "Context Yoga target rejection preserves targets during raw active layout" 
     try std.testing.expect(node.measure_target == .none);
 }
 
-test "Context teardown rejects raw active Yoga layout without losing scene ownership" {
+test "Context teardown and destroy reject every resource an active Yoga layout borrows" {
     const Probe = struct {
         owner: *context.Context = undefined,
-        session: context.Handle = undefined,
+        targets: [6]context.Handle = undefined,
+        errors: [6]?anyerror = @splat(null),
         deinit_error: ?anyerror = null,
-        destroy_error: ?anyerror = null,
 
         fn measure(data: ?*anyopaque, _: yoga.YGNodeConstRef, _: f32, _: u32, _: f32, _: u32) yoga.ExternalYogaSize {
             const self: *@This() = @ptrCast(@alignCast(data.?));
             self.owner.deinit() catch |err| {
                 self.deinit_error = err;
             };
-            self.owner.destroy(self.session) catch |err| {
-                self.destroy_error = err;
-            };
+            for (self.targets, &self.errors) |target, *result| {
+                self.owner.destroy(target) catch |err| {
+                    result.* = err;
+                };
+            }
             return .{ .width = 5, .height = 1 };
         }
     };
@@ -286,18 +288,29 @@ test "Context teardown rejects raw active Yoga layout without losing scene owner
     var alive = true;
     defer if (alive) f.deinit();
     const owner = f.owner;
-    const node_id = try owner.sceneCreateNode(f.id, 1, 2);
-    try owner.sceneMoveNode(node_id, f.root, 0);
-    const node = try owner.raw().getRenderable(node_id);
-    probe.owner = owner;
-    probe.session = f.id;
-    try yoga.check(yoga.yogaNodeSetMeasureFuncChecked(node.yoga_node, 1));
-    try yoga.check(yoga.yogaNodeCalculateLayoutChecked(node.yoga_node, std.math.nan(f32), std.math.nan(f32), 1));
+    const text = try owner.createTextBuffer(.unicode);
+    const text_view = try owner.createTextBufferView(text);
+    const edit = try owner.createEditBuffer(.unicode);
+    const editor_view = try owner.createEditorView(edit, 4, 1);
+    const text_node = try owner.sceneCreateNode(f.id, 7, 2);
+    const editor_node = try owner.sceneCreateNode(f.id, 5, 3);
+    const measured_id = try owner.sceneCreateNode(f.id, 1, 4);
+    try owner.sceneSetTextView(text_node, text_view);
+    try owner.sceneSetEditorView(editor_node, editor_view);
+    for ([_]context.Handle{ text_node, editor_node, measured_id }, 0..) |child, index| {
+        try owner.sceneMoveNode(child, f.root, @intCast(index));
+    }
+    const measured = try owner.raw().getRenderable(measured_id);
+    try yoga.check(yoga.yogaNodeSetMeasureFuncChecked(measured.yoga_node, 1));
+    // Destroying a resource that the active tree borrows would free memory Yoga still reads.
+    probe = .{ .owner = owner, .targets = .{ measured_id, text_view, text, editor_view, edit, f.id } };
+    const root = try owner.raw().getRenderable(f.root);
+    try yoga.check(yoga.yogaNodeCalculateLayoutChecked(root.yoga_node, std.math.nan(f32), std.math.nan(f32), 1));
     try std.testing.expectEqual(@as(?anyerror, error.ContextBusy), probe.deinit_error);
-    try std.testing.expectEqual(@as(?anyerror, error.YogaBusy), probe.destroy_error);
-    try std.testing.expectEqual(node, try owner.raw().getRenderable(node_id));
-    try owner.destroy(f.id);
-    try std.testing.expectError(error.StaleHandle, owner.raw().getRenderable(node_id));
+    for (probe.errors) |result| try std.testing.expectEqual(@as(?anyerror, error.YogaBusy), result);
+    try std.testing.expectEqual(measured, try owner.raw().getRenderable(measured_id));
+    for (probe.targets) |target| try owner.destroy(target);
+    try std.testing.expectEqual(@as(u32, 0), owner.objects.live_count);
     try owner.deinit();
     alive = false;
 }
