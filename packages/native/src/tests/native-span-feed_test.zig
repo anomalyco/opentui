@@ -373,7 +373,7 @@ test "Stream - retained bytes limit chunks until release" {
     try testing.expectEqualStrings("retried!", spans[1].slice());
 }
 
-test "FeedBackend - bounded staging includes retained bytes and spans" {
+test "FeedBackend - retained bytes and spans skip a frame that fits after release" {
     const FeedBackend = @import("../renderer-output.zig").FeedBackend;
     for ([_]struct { max_bytes: u64, spans: u32, frame: []const u8 }{
         .{ .max_bytes = 32, .spans = 3, .frame = "1234567812345678" },
@@ -397,7 +397,7 @@ test "FeedBackend - bounded staging includes retained bytes and spans" {
         try testing.expectError(error.Busy, stream.close());
         try testing.expectError(error.BufferFull, writer.writeAll("x"));
         try testing.expectEqual(.skipped, backend.prepareFrame());
-        try testing.expectEqual(.failed, backend.endFrame());
+        try testing.expectEqual(.skipped, backend.endFrame());
         try testing.expectEqual(@as(usize, 0), stream.staged_bytes);
         try testing.expect(!stream.hasPendingSpans());
         try testing.expect(backend.frameBytes.capacity <= case.max_bytes);

@@ -4061,7 +4061,7 @@ test "FeedBackend - split control batches bypass high water but retain atomic li
             false,
             .{ .control_output = true },
         );
-        try std.testing.expectEqual(if (bounded) renderer.RenderStatus.failed else .rendered, control.status);
+        try std.testing.expectEqual(if (bounded) renderer.RenderStatus.skipped else .rendered, control.status);
         try std.testing.expectEqualStrings("held", held[0].slice());
         try std.testing.expectEqual(.skipped, cli_renderer.backend.prepareFrame());
 
@@ -4174,7 +4174,7 @@ test "FeedBackend - failed split batch restores unpublished scrollback state" {
     try std.testing.expectEqual(@as(u32, 0), feed.drainSpans(&spans));
 }
 
-test "FeedBackend - failed split repaint restores unpublished transition state" {
+test "FeedBackend - skipped split repaint restores unpublished transition state" {
     var pools = TestPools.init(std.testing.allocator);
     defer pools.deinit();
 
@@ -4203,13 +4203,13 @@ test "FeedBackend - failed split repaint restores unpublished transition state" 
     const blocker = [_]u8{'x'} ** 65;
     try feed.writeAtomic(&blocker);
     const result = cli_renderer.repaintSplitFooter(2, true);
-    try std.testing.expectEqual(renderer.RenderStatus.failed, result.status);
+    try std.testing.expectEqual(renderer.RenderStatus.skipped, result.status);
     try std.testing.expectEqual(before_scrollback, cli_renderer.splitScrollback);
     try std.testing.expectEqual(before_offset, cli_renderer.renderOffset);
     try std.testing.expectEqual(before_transition, cli_renderer.pendingSplitFooterTransition);
 }
 
-test "FeedBackend - failed ordinary render retries split transition" {
+test "FeedBackend - skipped ordinary render retries split transition" {
     var pools = TestPools.init(std.testing.allocator);
     defer pools.deinit();
 
@@ -4237,7 +4237,7 @@ test "FeedBackend - failed ordinary render retries split transition" {
 
     const blocker = [_]u8{'x'} ** 193;
     try feed.writeAtomic(&blocker);
-    try std.testing.expectEqual(renderer.RenderStatus.failed, cli_renderer.render(true));
+    try std.testing.expectEqual(renderer.RenderStatus.skipped, cli_renderer.render(true));
     try std.testing.expectEqual(before_scrollback, cli_renderer.splitScrollback);
     try std.testing.expectEqual(before_offset, cli_renderer.renderOffset);
     try std.testing.expectEqual(before_transition, cli_renderer.pendingSplitFooterTransition);
@@ -4259,7 +4259,7 @@ test "FeedBackend - failed ordinary render retries split transition" {
     try std.testing.expect(std.mem.find(u8, output[0..output_len], "\x1b[1T") != null);
 }
 
-test "FeedBackend - failed frame keeps the published hit grid and clears failed paint" {
+test "FeedBackend - skipped frame keeps the published hit grid and clears its paint" {
     var pools = TestPools.init(std.testing.allocator);
     defer pools.deinit();
 
@@ -4291,7 +4291,7 @@ test "FeedBackend - failed frame keeps the published hit grid and clears failed 
     try cli_renderer.getNextBuffer().drawText("X", 0, 0, ansi.rgbColor(255, 255, 255, 255), null, 0);
     const blocker = [_]u8{'x'} ** 193;
     try feed.writeAtomic(&blocker);
-    try std.testing.expectEqual(renderer.RenderStatus.failed, cli_renderer.render(true));
+    try std.testing.expectEqual(renderer.RenderStatus.skipped, cli_renderer.render(true));
     try std.testing.expectEqual(@as(u32, 11), cli_renderer.checkHit(0, 0));
     try std.testing.expectEqual(cleared_char, cli_renderer.getNextBuffer().buffer.char[0]);
 
@@ -4302,7 +4302,7 @@ test "FeedBackend - failed frame keeps the published hit grid and clears failed 
     try std.testing.expectEqual(@as(u32, 22), cli_renderer.checkHit(0, 0));
 }
 
-test "FeedBackend - failed frame retries unsent terminal controls" {
+test "FeedBackend - skipped frame retries unsent terminal controls" {
     var pools = TestPools.init(std.testing.allocator);
     defer pools.deinit();
 
@@ -4334,7 +4334,7 @@ test "FeedBackend - failed frame retries unsent terminal controls" {
 
     const blocker = [_]u8{'x'} ** 65;
     try feed.writeAtomic(&blocker);
-    try std.testing.expectEqual(renderer.RenderStatus.failed, cli_renderer.render(false));
+    try std.testing.expectEqual(renderer.RenderStatus.skipped, cli_renderer.render(false));
 
     count = feed.drainSpans(&spans);
     for (spans[0..count]) |span| feed.markSpanConsumed(span);

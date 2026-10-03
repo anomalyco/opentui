@@ -953,10 +953,10 @@ pub const BufferedBackend = struct {
 /// exists only to keep failed frames from exposing partial ANSI sequences.
 ///
 /// Feed writes are in-memory ring-buffer ops with no I/O, so threading adds
-/// synchronization cost without latency-hiding benefit. Backpressure is
-/// exposed through `prepareFrame`: when the span queue is at its high-water
-/// mark, frames are skipped before diffing while already queued bytes remain
-/// durable and drain in order.
+/// synchronization cost without latency-hiding benefit. Backpressure skips
+/// frames: `prepareFrame` before diffing when the span queue is at its
+/// high-water mark, and `endFrame` when the encoded frame exceeds only the free
+/// capacity. Already queued bytes remain durable and drain in order.
 ///
 /// Zig tests that want to exercise the feed path should drain the feed directly.
 pub const FeedBackend = struct {
@@ -966,9 +966,10 @@ pub const FeedBackend = struct {
     frameActive: bool = false,
     frameWriteCount: if (builtin.is_test) usize else void = if (builtin.is_test) 0 else {},
 
-    /// Set when staging a frame fails. No bytes from a failed frame are
-    /// published; the renderer forces a later full repaint.
-    frameWriteFailed: bool = false,
+    /// The first staging or publication failure decides the frame: `.skipped`
+    /// when the frame fits once queued output drains (output pressure), else
+    /// `.failed`. Neither publishes bytes; the renderer forces a full repaint.
+    frameStatus: WriteStatus = .ok,
 
     lastWriteTimeUs: ?f64 = null,
 
@@ -995,7 +996,7 @@ pub const FeedBackend = struct {
 
     pub fn prepareFrame(self: *FeedBackend) WriteStatus {
         if (self.frameActive) return .skipped;
-        self.frameWriteFailed = false;
+        self.frameStatus = .ok;
 
         if (self.feed.hasPendingBytes()) {
             self.feed.commit() catch return .skipped;
@@ -1024,13 +1025,14 @@ pub const FeedBackend = struct {
 
     fn frameWrite(self: *FeedBackend, data: []const u8) error{BufferFull}!void {
         if (builtin.is_test) self.frameWriteCount += 1;
-        if (self.frameWriteFailed) return error.BufferFull;
+        if (self.frameStatus != .ok) return error.BufferFull;
         const required = std.math.add(usize, self.frameBytes.items.len, data.len) catch {
-            self.frameWriteFailed = true;
+            self.failFrame();
             return error.BufferFull;
         };
-        self.feed.setStagedBytes(required) catch {
-            self.frameWriteFailed = true;
+        self.feed.setStagedBytes(required) catch |err| {
+            self.frameStatus = self.admissionStatus(required, err);
+            self.failFrame();
             return error.BufferFull;
         };
         const max_bytes = self.feed.byteLimit();
@@ -1038,14 +1040,22 @@ pub const FeedBackend = struct {
             const doubled = std.math.mul(usize, self.frameBytes.capacity, 2) catch required;
             const capacity: usize = @intCast(@min(max_bytes, @max(required, @max(256, doubled))));
             self.frameBytes.ensureTotalCapacityPrecise(self.feed.allocator, capacity) catch {
-                self.frameWriteFailed = true;
+                self.failFrame();
                 return error.BufferFull;
             };
         }
         self.frameBytes.appendSlice(self.feed.allocator, data) catch {
-            self.frameWriteFailed = true;
+            self.failFrame();
             return error.BufferFull;
         };
+    }
+
+    /// Output pressure is transient: a bounded queue rejects bytes that fit
+    /// once its queued output drains. Anything else fails the frame.
+    fn admissionStatus(self: *FeedBackend, frame_bytes: usize, err: NativeSpanFeed.StreamError) WriteStatus {
+        if (err != error.NoSpace and err != error.MaxBytes) return .failed;
+        if (!self.feed.bounded() or frame_bytes > self.feed.atomicByteLimit()) return .failed;
+        return .skipped;
     }
 
     pub fn writer(self: *FeedBackend) Writer {
@@ -1054,14 +1064,16 @@ pub const FeedBackend = struct {
 
     pub fn beginFrame(self: *FeedBackend) void {
         if (builtin.is_test) self.frameWriteCount = 0;
-        self.frameWriteFailed = false;
+        self.frameStatus = .ok;
         self.frameActive = true;
         self.feed.setStagedBytes(0) catch unreachable;
         self.frameBytes.clearRetainingCapacity();
     }
 
+    /// Release the frame's staging. An earlier status wins: encoding errors after
+    /// output pressure can be its consequence.
     pub fn failFrame(self: *FeedBackend) void {
-        self.frameWriteFailed = true;
+        if (self.frameStatus == .ok) self.frameStatus = .failed;
         self.feed.setStagedBytes(0) catch unreachable;
         self.frameBytes.clearRetainingCapacity();
     }
@@ -1073,15 +1085,13 @@ pub const FeedBackend = struct {
 
     pub fn endFrame(self: *FeedBackend) WriteStatus {
         const writeStart = std.Io.Clock.awake.now(self.io);
-        var status: WriteStatus = .ok;
+        var status = self.frameStatus;
         var notify = false;
         self.feed.setStagedBytes(0) catch unreachable;
 
-        if (self.frameWriteFailed) {
-            status = .failed;
-        } else {
-            notify = self.feed.writeAtomicUnnotified(self.frameBytes.items) catch blk: {
-                status = .failed;
+        if (status == .ok) {
+            notify = self.feed.writeAtomicUnnotified(self.frameBytes.items) catch |err| blk: {
+                status = self.admissionStatus(self.frameBytes.items.len, err);
                 break :blk false;
             };
         }

@@ -287,7 +287,7 @@ test "renderer presentation rejects active output and callback reentry" {
     cli.backend.feed.cancelFrame();
 }
 
-test "renderer presentation failed or skipped admission has no completion" {
+test "renderer presentation skipped admission has no completion" {
     var fixture: Fixture = undefined;
     try fixture.init();
     defer fixture.deinit();
@@ -298,11 +298,11 @@ test "renderer presentation failed or skipped admission has no completion" {
     _ = try fixture.drain(&bytes);
     const previous_stats = cli.getRenderStats();
     const blocker = [_]u8{'x'} ** 4096;
+    // A full queue skips before encoding; one free chunk skips after encoding.
     for ([_]usize{ 4096, 4032 }) |size| {
         try fixture.feed.writeAtomic(blocker[0..size]);
         try fixture.paint("new", 22);
-        const expected: renderer.RenderStatus = if (size == 4096) .skipped else .failed;
-        try std.testing.expectEqual(expected, try cli.renderDeferred(true));
+        try std.testing.expectEqual(.skipped, try cli.renderDeferred(true));
         try std.testing.expectError(error.NoPendingPresentation, cli.completePresentation(.presented));
         try std.testing.expectEqual(@as(u32, 11), cli.checkHit(0, 0));
         try std.testing.expectEqualDeep(previous_stats, cli.getRenderStats());

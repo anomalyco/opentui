@@ -1028,6 +1028,20 @@ pub const CliRenderer = struct {
         return .failed;
     }
 
+    /// Discard an encoded frame that published no bytes. Encoding already synced
+    /// currentRenderBuffer, so the next frame repaints every cell. Output pressure
+    /// skips the frame and keeps the Kitty file transport enabled.
+    fn finishUnpublishedFrame(self: *CliRenderer, status: RenderStatus) RenderStatus {
+        switch (status) {
+            .rendered => unreachable,
+            .skipped => {
+                self.invalidateTerminalState();
+                return self.finishSkippedFrame();
+            },
+            .failed => return self.finishFailedFrame(),
+        }
+    }
+
     pub fn invalidateTerminalState(self: *CliRenderer) void {
         self.force_full_repaint = true;
         self.lastCursorStyleTag = null;
@@ -1212,11 +1226,11 @@ pub const CliRenderer = struct {
         }
 
         const status = renderStatusFromWrite(write_status);
-        if (status == .failed or self.imageRenderFailed) {
+        std.debug.assert(status != .rendered or !self.imageRenderFailed);
+        if (status != .rendered) {
             self.renderStats = previous_stats;
-            const result = self.finishFailedFrame();
             self.restoreSplitFrameState(start_split_state);
-            return result;
+            return self.finishUnpublishedFrame(status);
         }
         if (deferred) {
             self.pendingPresentation = .{
@@ -1354,16 +1368,14 @@ pub const CliRenderer = struct {
         const start_split_state = self.splitFrameState();
         const previous_stats = self.renderStats;
         const status = self.prepareSplitFooterRepaintFrame(pinned_render_offset, force);
-        var result_status = status;
-        if (status == .failed) {
+        if (status != .rendered) {
             self.renderStats = previous_stats;
-            result_status = self.finishFailedFrame();
             self.restoreSplitFrameState(start_split_state);
         } else {
             self.collectFrameStats(deltaTime);
         }
 
-        return self.renderResult(result_status);
+        return self.renderResult(status);
     }
 
     pub fn commitSplitFooterSnapshotBatched(
@@ -1463,9 +1475,9 @@ pub const CliRenderer = struct {
                         if (self.imageRenderFailed) b.failFrame();
                         write_status = b.endFrame();
                         const status = renderStatusFromWrite(write_status);
-                        if (status == .failed or self.imageRenderFailed) {
+                        if (status != .rendered) {
                             self.renderStats = previous_stats;
-                            result_status = self.finishFailedFrame();
+                            result_status = self.finishUnpublishedFrame(status);
                         } else {
                             self.commitPendingHitGrid();
                             self.commitPendingImageState();
@@ -1473,7 +1485,7 @@ pub const CliRenderer = struct {
                             self.collectFrameStats(deltaTime);
                         }
 
-                        self.finishSplitBatch(result_status != .failed);
+                        self.finishSplitBatch(result_status == .rendered);
                     } else {
                         result_status = .rendered;
                         self.splitBatchRedrawFooter = redraw_footer;
@@ -1525,9 +1537,9 @@ pub const CliRenderer = struct {
                     write_status = b.endFrame();
 
                     const status = renderStatusFromWrite(write_status);
-                    if (status == .failed or self.imageRenderFailed) {
+                    if (status != .rendered) {
                         self.renderStats = previous_stats;
-                        result_status = self.finishFailedFrame();
+                        result_status = self.finishUnpublishedFrame(status);
                     } else {
                         self.commitPendingHitGrid();
                         self.commitPendingImageState();
@@ -1535,7 +1547,7 @@ pub const CliRenderer = struct {
                         self.collectFrameStats(self.splitBatchDeltaTime);
                     }
 
-                    self.finishSplitBatch(result_status != .failed);
+                    self.finishSplitBatch(result_status == .rendered);
                 } else {
                     result_status = .rendered;
                 }
@@ -2119,7 +2131,7 @@ pub const CliRenderer = struct {
             },
         }
         const status = renderStatusFromWrite(write_status);
-        if (status == .failed or self.imageRenderFailed) return self.finishFailedFrame();
+        if (status != .rendered) return self.finishUnpublishedFrame(status);
         self.commitPendingHitGrid();
         self.commitPendingImageState();
         return status;
@@ -2878,8 +2890,8 @@ pub const CliRenderer = struct {
                 beginRenderFrame(writer);
                 frame_started = true;
             }
+            // The frame outcome decides the transport: output pressure keeps it enabled.
             self.writeKittyImages(writer, should_force) catch {
-                self.kittyTransport.cancel(.io_error);
                 self.force_full_repaint = true;
                 self.imageRenderFailed = true;
             };

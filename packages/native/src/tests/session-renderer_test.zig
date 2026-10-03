@@ -187,51 +187,61 @@ test "Session renderer no-byte frames wait only for earlier output" {
     try testing.expectEqualStrings("tail", try drain(owner, id, &bytes));
 }
 
-test "Session renderer backpressure is bounded and frame rejection needs explicit retry" {
-    for ([_]usize{ 512, 448, 64 }) |size| {
+test "Session renderer skips frames under output pressure and fails frames that never fit" {
+    const Case = struct { queued: usize, width: u32 = 4, fail_allocation: bool = false, status: session.RenderStatus };
+    const cases = [_]Case{
+        // A full queue rejects the frame before encoding and allocation.
+        .{ .queued = 512, .status = .skipped },
+        // The encoded frame exceeds only the free capacity; it fits after the queue drains.
+        .{ .queued = 448, .status = .skipped },
+        .{ .queued = 64, .fail_allocation = true, .status = .failed },
+        // The encoded frame exceeds the empty queue.
+        .{ .queued = 0, .width = 256, .status = .failed },
+    };
+    for (cases) |case| {
         var failing = testing.FailingAllocator.init(testing.allocator, .{});
-        var environment = std.process.Environ.Map.init(testing.allocator);
-        defer environment.deinit();
         const owner = try context.Context.init(failing.allocator(), testing.io, .{});
         defer owner.deinit() catch unreachable;
         const id = try owner.createSession(.{ .chunk_size = 64, .chunk_count = 8, .span_capacity = 8 });
         defer owner.cancelSession(id) catch unreachable;
-        try owner.attachSessionRenderer(id, 4, 2, .{ .env_map = &environment });
+        try owner.attachSessionRenderer(id, case.width, 2, .{ .forwarded_env = &.{} });
         const cli = try owner.raw().getSessionRenderer(id);
         const value = try owner.raw().getSession(id);
+        // Output pressure must leave a ready Kitty file transport enabled.
+        cli.kittyTransport.mode = .file;
+        cli.kittyTransport.file_state = .ready;
         const blocker = [_]u8{'x'} ** 512;
-        try owner.writeSession(id, blocker[0..size]);
+        if (case.queued != 0) try owner.writeSession(id, blocker[0..case.queued]);
         const queued = value.getStats();
         const published = cli.getRenderStats();
         try paint(cli, "new", 22);
-        if (size == blocker.len) {
-            const allocated = failing.allocated_bytes;
-            failing.fail_index = failing.alloc_index;
-            failing.resize_fail_index = failing.resize_index;
-            for (0..64) |_| {
-                try testing.expectEqual(.skipped, try owner.renderSession(id, true));
-                try testing.expectEqualDeep(queued, value.getStats());
-            }
-            try testing.expectEqual(allocated, failing.allocated_bytes);
-            try testing.expect(!failing.has_induced_failure);
-            failing.fail_index = std.math.maxInt(usize);
-            failing.resize_fail_index = std.math.maxInt(usize);
-        } else {
-            if (size == 64) failing.fail_index = failing.alloc_index;
-            try testing.expectEqual(.failed, try owner.renderSession(id, true));
-            try testing.expectEqualDeep(queued, value.getStats());
-            if (size == 64) try testing.expect(failing.has_induced_failure);
-            failing.fail_index = std.math.maxInt(usize);
+        if (case.width != 4) {
+            for (0..2) |y| try cli.getNextBuffer().drawText(&blocker, 0, @intCast(y), ansi.rgbColor(255, 255, 255, 255), null, 0);
         }
+        const allocated = failing.allocated_bytes;
+        const full = case.queued == blocker.len;
+        if (full or case.fail_allocation) failing.fail_index = failing.alloc_index;
+        if (full) failing.resize_fail_index = failing.resize_index;
+        for (0..if (full) 64 else 1) |_| {
+            try testing.expectEqual(case.status, try owner.renderSession(id, true));
+            try testing.expectEqualDeep(queued, value.getStats());
+        }
+        if (full) try testing.expectEqual(allocated, failing.allocated_bytes);
+        try testing.expectEqual(case.fail_allocation, failing.has_induced_failure);
+        failing.fail_index = std.math.maxInt(usize);
+        failing.resize_fail_index = std.math.maxInt(usize);
+        const file_state: @TypeOf(cli.kittyTransport.file_state) = if (case.status == .skipped) .ready else .io_error;
+        try testing.expectEqual(file_state, cli.kittyTransport.file_state);
         try testing.expect(value.frame_end_offset == null);
         try testing.expectEqual(.open, value.state);
         try testing.expectEqual(@as(u32, 0), cli.checkHit(0, 0));
         try testing.expectEqualDeep(published, cli.getRenderStats());
         var bytes: [512]u8 = undefined;
-        try testing.expectEqualStrings(blocker[0..size], try drain(owner, id, &bytes));
+        try testing.expectEqualStrings(blocker[0..case.queued], try drain(owner, id, &bytes));
         try testing.expectEqual(queued.bytes_written, value.getStats().bytes_written);
-        try testing.expectEqualDeep(published, cli.getRenderStats());
+        if (case.width != 4) continue;
 
+        // An unforced retry still repaints every cell: no rejected frame reached the terminal.
         try paint(cli, "new", 22);
         try testing.expectEqual(.pending, try owner.renderSession(id, false));
         try testing.expect(std.mem.find(u8, try drain(owner, id, &bytes), "new") != null);
