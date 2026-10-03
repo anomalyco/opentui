@@ -4134,11 +4134,15 @@ export class CliRenderer extends EventEmitter implements RenderContext {
    * When the renderer is attached to `process.stdout`, `SIGWINCH` is handled
    * automatically and callers do not need this method.
    *
-   * While the Session presents or paints a frame, the resize waits for that frame like `requestResize`.
+   * While the Session presents or paints a frame, the resize waits for that frame like `requestResize`. Later calls
+   * join a waiting resize, so sizes apply in order and a return to the current size still repaints everything.
    */
   public resize(width: number, height: number): void {
     if (this._isDestroyed) return
-    const pending = this.pendingNativeResize
+    if (this.pendingNativeResize !== null) {
+      this.deferResize(width, height)
+      return
+    }
     try {
       this.processResize(width, height)
     } catch (error) {
@@ -4148,15 +4152,15 @@ export class CliRenderer extends EventEmitter implements RenderContext {
       ) {
         throw error
       }
-      this.pendingNativeResize = { width, height }
-      this.pendingResizeSawDifferentSize = true
-      this.applyPendingNativeResize()
-      return
+      this.deferResize(width, height)
     }
-    if (this.pendingNativeResize === pending) {
-      this.pendingNativeResize = null
-      this.resolveIdleIfNeeded()
-    }
+  }
+
+  // Frame end, output idle, or the debounce timer applies the latest deferred size.
+  private deferResize(width: number, height: number): void {
+    if (width !== this._terminalWidth || height !== this._terminalHeight) this.pendingResizeSawDifferentSize = true
+    this.pendingNativeResize = { width, height }
+    this.applyPendingNativeResize()
   }
 
   public setBackgroundColor(color: ColorInput): void {

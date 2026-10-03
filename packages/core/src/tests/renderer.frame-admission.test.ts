@@ -167,7 +167,23 @@ const busyResizes = {
     target.renderer.requestRender()
     target.clock.advance(100)
     await settleUntil(() => target.stdout.pendingWrite)
-    return { ...target, size: [100, 30] }
+    return { ...target, sizes: [[100, 30]] }
+  },
+  // The terminal may reflow cells at the skipped size, so returning to the current size repaints everything.
+  "a pending frame presentation, then back to the current size": async () => {
+    const target = createAdmissionRenderer(80, 24)
+    let text = "A"
+    target.renderer.addPostProcessFn((buffer) => buffer.drawText(text, 0, 0, RGBA.fromInts(255, 255, 255)))
+    target.stdout.release()
+    target.renderer.requestRender()
+    target.clock.advance(100)
+    await target.renderer.idle()
+    target.stdout.hold()
+    text = "B"
+    target.renderer.requestRender()
+    target.clock.advance(100)
+    await settleUntil(() => target.stdout.pendingWrite)
+    return { ...target, sizes: [[100, 30], [80, 24]] }
   },
   "a parked split-footer paint": async () => {
     const target = createAdmissionRenderer(30, 12, {
@@ -196,19 +212,20 @@ const busyResizes = {
     target.clock.advance(100)
     await parked.promise
     expect(target.renderer.getSchedulerState().isRendering).toBe(true)
-    return { ...target, size: [20, 12] }
+    return { ...target, sizes: [[20, 12]] }
   },
 }
 
 for (const [state, enter] of Object.entries(busyResizes)) {
   test(`resize() during ${state} applies once the Session is ready`, async () => {
-    const { renderer, stdout, clock, size } = await enter()
+    const { renderer, stdout, clock, sizes } = await enter()
+    const initial = [renderer.terminalWidth, renderer.terminalHeight]
     const resizes: number[][] = []
     const errors: unknown[] = []
     renderer.on(CliRenderEvents.RESIZE, (width: number, height: number) => resizes.push([width, height]))
     renderer.on(CliRenderEvents.RENDER_ERROR, ({ error }) => errors.push(error))
 
-    expect(() => renderer.resize(size[0], size[1])).not.toThrow()
+    for (const [width, height] of sizes) expect(() => renderer.resize(width, height)).not.toThrow()
     stdout.release()
     for (let turn = 0; turn < 8; turn++) {
       clock.advance(100)
@@ -216,10 +233,13 @@ for (const [state, enter] of Object.entries(busyResizes)) {
     }
     await renderer.idle()
 
+    const size = sizes.at(-1)!
+    const reverted = size[0] === initial[0] && size[1] === initial[1]
     expect({ size: [renderer.terminalWidth, renderer.terminalHeight], resizes, errors }).toEqual({
       size,
-      resizes: [[renderer.width, renderer.height]],
+      resizes: reverted ? [] : [[renderer.width, renderer.height]],
       errors: [],
     })
+    if (reverted) expect(renderer.getNativeStats().cellsUpdated).toBe(renderer.width * renderer.height)
   })
 }
