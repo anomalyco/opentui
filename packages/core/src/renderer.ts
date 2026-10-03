@@ -1618,14 +1618,9 @@ export class CliRenderer extends EventEmitter implements RenderContext {
       return
     }
 
+    // A frame waiting for output always owns the output-idle wait handled above.
     if (this._isRunning) {
-      if (!this.rendering && !this.renderTimeout && !this.cancelReadyFrame && !this.ordinaryFrameWaitingForOutput) {
-        this.scheduleRenderTimer()
-      }
-      return
-    }
-
-    if (this.ordinaryFrameWaitingForOutput) {
+      if (!this.rendering) this.scheduleRenderTimer()
       return
     }
 
@@ -1671,20 +1666,21 @@ export class CliRenderer extends EventEmitter implements RenderContext {
     return this._isRunning
   }
 
-  private isIdleNow(): boolean {
-    if (this._isDestroyed) return true
-
-    return (
-      !this._isRunning &&
-      !this.rendering &&
-      !this.nativeTerminalTransition &&
-      !this.nativeResizeWait &&
-      (!this.pendingNativeResize || this._controlState === RendererControlState.EXPLICIT_SUSPENDED) &&
-      !this.renderTimeout &&
-      !this.cancelReadyFrame &&
-      !this.outputIdleRenderScheduled &&
-      !this.immediateRerenderRequested
+  // Work that runs a frame or applies deferred terminal state without another request.
+  private hasScheduledWork(): boolean {
+    return Boolean(
+      this.renderTimeout ||
+      this.cancelReadyFrame ||
+      this.outputIdleRenderScheduled ||
+      this.immediateRerenderRequested ||
+      this.nativeTerminalTransition ||
+      this.nativeResizeWait ||
+      (this.pendingNativeResize && this._controlState !== RendererControlState.EXPLICIT_SUSPENDED),
     )
+  }
+
+  private isIdleNow(): boolean {
+    return this._isDestroyed || (!this._isRunning && !this.rendering && !this.hasScheduledWork())
   }
 
   private resolveIdleIfNeeded(): void {
@@ -1709,15 +1705,7 @@ export class CliRenderer extends EventEmitter implements RenderContext {
     return {
       isRunning: this._isRunning,
       isRendering: this.rendering,
-      hasScheduledRender: Boolean(
-        this.renderTimeout ||
-        this.cancelReadyFrame ||
-        this.outputIdleRenderScheduled ||
-        this.immediateRerenderRequested ||
-        this.nativeTerminalTransition ||
-        this.nativeResizeWait ||
-        (this.pendingNativeResize && this._controlState !== RendererControlState.EXPLICIT_SUSPENDED),
-      ),
+      hasScheduledRender: this.hasScheduledWork(),
     }
   }
 
