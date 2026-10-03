@@ -194,9 +194,7 @@ pub const Edit = struct {
     fn receive(data: *anyopaque, notification: edit_buffer.NativeEvent) void {
         const self: *Edit = @ptrCast(@alignCast(data));
         const event: EditEvent = switch (notification) {
-            .cursor_changed => .cursor_changed,
-            .content_changed => .content_changed,
-            .history_cursor_changed => .history_cursor_changed,
+            inline else => |tag| @field(EditEvent, @tagName(tag)),
         };
         const owner = self.owner;
         const epoch = self.buffer.tb.getContentEpoch();

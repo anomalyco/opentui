@@ -110,7 +110,7 @@ pub const SyntaxStyle = struct {
         std.mem.swap(events.EventEmitter(Event), &self.emitter, &prepared.emitter);
     }
 
-    fn putStyle(self: *SyntaxStyle, name: []const u8, definition: StyleDefinition) SyntaxStyleError!u32 {
+    pub fn registerStyleDefinition(self: *SyntaxStyle, name: []const u8, definition: StyleDefinition) SyntaxStyleError!u32 {
         if (self.name_to_id.get(name)) |existing_id| {
             self.id_to_style.getPtr(existing_id).?.* = definition;
             return existing_id;
@@ -137,10 +137,6 @@ pub const SyntaxStyle = struct {
             .bg = bg,
             .attributes = attributes,
         });
-    }
-
-    pub fn registerStyleDefinition(self: *SyntaxStyle, name: []const u8, definition: StyleDefinition) SyntaxStyleError!u32 {
-        return self.putStyle(name, definition);
     }
 
     pub fn resolveById(self: *const SyntaxStyle, id: u32) ?StyleDefinition {
