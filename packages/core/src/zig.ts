@@ -2143,6 +2143,9 @@ function viewOf<T extends Int32Array | Float32Array | Uint32Array>(value: T, Typ
   )
 }
 
+// Releases that wait for the frame step painting each Context's open recording (FFIRenderLib.releaseAfterPaint).
+const releaseWindows = new WeakMap<NativeContextHandle, (() => void)[]>()
+
 /** Encodes paint hooks into the ot_scene_record stream that acknowledges one RECORD request.
  * Recorded commands draw when native code paints the frame, not when a hook calls them. */
 export class NativePaintRecorder {
@@ -2153,8 +2156,10 @@ export class NativePaintRecorder {
   private floats = new Float32Array(this.buffer)
   private colors = new Uint16Array(this.buffer)
   private length = 0
+  // Set from begin() to end(): drawing records.
   private context: NativeContextHandle | null = null
-  private open = false
+  // Set from begin() to settle(): native releases in this Context wait for the frame step.
+  private window: NativeContextHandle | null = null
   private readonly releases: (() => void)[] = []
   private pendingSlot = -1
   private pendingPhase = 0
@@ -2166,7 +2171,11 @@ export class NativePaintRecorder {
   begin(context: NativeContextHandle): void {
     this.settle()
     this.context = context
-    this.open = true
+    // A recording nested inside another one on the same Context shares the outer window, which closes later.
+    if (!releaseWindows.has(context)) {
+      releaseWindows.set(context, this.releases)
+      this.window = context
+    }
     this.length = 0
     this.pendingSlot = -1
   }
@@ -2177,16 +2186,11 @@ export class NativePaintRecorder {
     this.pendingSlot = -1
   }
 
-  /** Keep a resource that a recording names alive until native code has painted it. */
-  deferRelease(release: () => void): boolean {
-    if (!this.open) return false
-    this.releases.push(release)
-    return true
-  }
-
   /** Run deferred releases after the frame step that consumed the recording. */
   settle(): void {
-    this.open = false
+    if (this.window === null) return
+    releaseWindows.delete(this.window)
+    this.window = null
     for (const release of this.releases.splice(0)) {
       try {
         release()
@@ -7674,6 +7678,15 @@ export class FFIRenderLib {
         )
       throw error
     }
+  }
+
+  /** Run a native release now, or after the frame step that paints the Context's open paint recording.
+   * A recording names resources that native code reads only when it paints, so every resource that a
+   * paint hook can draw is released through here. */
+  public releaseAfterPaint(context: NativeContextHandle, release: () => void): void {
+    const releases = releaseWindows.get(context)
+    if (releases) releases.push(release)
+    else release()
   }
 
   /** Slots of the exact pending RECORD request, in paint order. */

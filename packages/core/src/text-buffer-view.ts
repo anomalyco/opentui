@@ -320,7 +320,9 @@ export class TextBufferView {
     this.lib.getYogaHost().runMutation(() => {
       if (!this.native.owner.disposed) {
         try {
-          this.lib.destroyContextTextBufferView(this.native.handle.context, this.native.handle)
+          this.lib.releaseAfterPaint(this.native.handle.context, () =>
+            this.lib.destroyContextTextBufferView(this.native.handle.context, this.native.handle),
+          )
         } catch (error) {
           if (!(error instanceof NativeError) || error.status !== NativeStatus.StaleHandle) throw error
         }

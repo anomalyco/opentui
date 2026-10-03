@@ -159,10 +159,10 @@ Text and editor components skip the generic `renderBefore` and `renderAfter` hoo
 
 The buffer a paint hook receives records drawing calls, so a hook cannot read the frame. `buffers`, `withBuffers()`,
 `getRealCharBytes()`, and `getSpanLines()` throw. To apply an effect to existing cells, draw into a buffer the renderable
-owns, for example with `drawToBuffer()`, read or change that buffer, and compose it with `drawFrameBuffer()`. A composed
-buffer is read when native code paints the frame, so do not change it again during the same frame. A composed buffer or
-encoded Unicode that the hook destroys or frees afterward stays alive until then. For whole-frame effects, use a
-post-process function.
+owns, for example with `drawToBuffer()`, read or change that buffer, and compose it with `drawFrameBuffer()`. Native
+code reads a drawn resource (a composed buffer, encoded Unicode, a text buffer view, an editor view, or an image) when it
+paints the frame, so do not change it again during the same frame. A resource that a hook destroys or frees after drawing
+it stays alive until then. For whole-frame effects, use a post-process function.
 
 A drawing call in a hook checks ranges and types immediately and records nothing when it throws. Native code checks the
 remaining input, such as control characters in text, when it paints the frame. Such an error fails that frame and emits

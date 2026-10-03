@@ -1,10 +1,16 @@
 import { afterEach, beforeEach, expect, test } from "bun:test"
-import { OptimizedBuffer } from "../buffer.js"
+import { OptimizedBuffer, type EncodedUnicode } from "../buffer.js"
+import { EditBuffer } from "../edit-buffer.js"
+import { EditorView } from "../editor-view.js"
+import { NativeImage } from "../image.js"
 import { RGBA } from "../lib/RGBA.js"
+import type { NativeScene } from "../NativeScene.js"
 import { Renderable } from "../Renderable.js"
 import { BoxRenderable } from "../renderables/Box.js"
 import { CliRenderEvents } from "../renderer.js"
 import { createTestRenderer, type TestRendererSetup } from "../testing/test-renderer.js"
+import { TextBuffer } from "../text-buffer.js"
+import { TextBufferView } from "../text-buffer-view.js"
 
 const red = RGBA.fromHex("#ff0000")
 const green = RGBA.fromHex("#00ff00")
@@ -153,34 +159,100 @@ test("an owned buffer composed by a hook reads its cells when native code paints
   expect(captureCharFrame().split("\n")[0].trimEnd()).toBe("cd")
 })
 
-test("resources a hook records and then frees stay alive until native code paints them", async () => {
-  const { renderer, renderOnce, captureCharFrame } = setup
-  class Scratch extends Renderable {
-    protected renderSelf(buffer: OptimizedBuffer): void {
-      const encoded = buffer.encodeUnicode("A👋B")
-      try {
-        let x = this.x
-        for (const glyph of encoded.data) {
-          buffer.drawChar(glyph.char, x, this.y, white, clear)
-          x += glyph.width
-        }
-      } finally {
-        buffer.freeUnicode(encoded)
-      }
-      const scratch = OptimizedBuffer.create(2, 1, "unicode", { owner: this.ctx.nativeScene })
-      try {
-        scratch.drawText("ok", 0, 0, white)
-        buffer.drawFrameBuffer(this.x + 5, this.y, scratch)
-      } finally {
-        scratch.destroy()
-      }
-    }
+type DrawnResource = {
+  text: string
+  draw(buffer: OptimizedBuffer, x: number): void
+  free(buffer: OptimizedBuffer): void
+}
+
+function textBuffer(scene: NativeScene) {
+  const text = TextBuffer.create("unicode", scene)
+  text.setText("ab")
+  return { text, view: TextBufferView.create(text) }
+}
+
+function editBuffer(scene: NativeScene) {
+  const edit = EditBuffer.create("unicode", scene)
+  edit.setText("ab")
+  return { edit, view: EditorView.create(edit, 2, 1) }
+}
+
+function image(owner?: NativeScene): DrawnResource {
+  const pixels = NativeImage.fromRgba(new Uint8Array(16).fill(255), 2, 2, 8, { owner: owner?.resourceContext })
+  return {
+    text: "██",
+    draw: (buffer, x) => buffer.drawImage(pixels, x, 0, 2, 1, 0, 0, 0, 0, 2, 2, "blocks"),
+    free: () => pixels.dispose(),
   }
-  renderer.root.add(new Scratch(renderer, { width: 8, height: 1 }))
+}
+
+const drawnResources: Record<string, (scene: NativeScene) => DrawnResource> = {
+  "composed buffer": (scene) => {
+    const surface = OptimizedBuffer.create(2, 1, "unicode", { owner: scene })
+    surface.drawText("ab", 0, 0, white)
+    return { text: "ab", draw: (buffer, x) => buffer.drawFrameBuffer(x, 0, surface), free: () => surface.destroy() }
+  },
+  "encoded Unicode": () => {
+    let encoded: EncodedUnicode | undefined
+    return {
+      text: "👋",
+      draw(buffer, x) {
+        encoded = buffer.encodeUnicode("👋")
+        buffer.drawChar(encoded.data[0].char, x, 0, white, clear)
+      },
+      free: (buffer) => buffer.freeUnicode(encoded!),
+    }
+  },
+  "text view": (scene) => {
+    const { view } = textBuffer(scene)
+    return { text: "ab", draw: (buffer, x) => buffer.drawTextBuffer(view, x, 0), free: () => view.destroy() }
+  },
+  "text buffer": (scene) => {
+    const { text, view } = textBuffer(scene)
+    return { text: "ab", draw: (buffer, x) => buffer.drawTextBuffer(view, x, 0), free: () => text.destroy() }
+  },
+  "editor view": (scene) => {
+    const { view } = editBuffer(scene)
+    return { text: "ab", draw: (buffer, x) => buffer.drawEditorView(view, x, 0), free: () => view.destroy() }
+  },
+  "edit buffer": (scene) => {
+    const { edit, view } = editBuffer(scene)
+    return { text: "ab", draw: (buffer, x) => buffer.drawEditorView(view, x, 0), free: () => edit.destroy() }
+  },
+  "image in the scene's Context": (scene) => image(scene),
+  "image copied from another Context": () => image(),
+}
+
+test.each(
+  Object.keys(drawnResources).flatMap((name) => [
+    [name, "the same hook"],
+    [name, "a later node's hook"],
+  ]),
+)("a hook-drawn %s that %s frees still paints in that frame", async (name, freedBy) => {
+  const { renderer, renderOnce, captureCharFrame } = setup
+  const errors: unknown[] = []
+  renderer.on(CliRenderEvents.RENDER_ERROR, ({ error }) => errors.push(error))
+  const resource = drawnResources[name](renderer.nativeScene)
+  renderer.root.add(
+    new BoxRenderable(renderer, {
+      width: 4,
+      height: 1,
+      renderAfter(buffer) {
+        resource.draw(buffer, this.x)
+        if (freedBy === "the same hook") resource.free(buffer)
+      },
+    }),
+  )
+  if (freedBy !== "the same hook") {
+    renderer.root.add(
+      new BoxRenderable(renderer, { width: 1, height: 1, renderAfter: (buffer) => resource.free(buffer) }),
+    )
+  }
 
   await renderOnce()
 
-  expect(captureCharFrame().split("\n")[0].trimEnd()).toBe("A👋B ok")
+  expect(errors).toEqual([])
+  expect(captureCharFrame().split("\n")[0].trimEnd()).toBe(resource.text)
 })
 
 test("a drawing call that throws records nothing, so a hook that catches it still paints", async () => {

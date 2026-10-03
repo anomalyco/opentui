@@ -142,7 +142,6 @@ type ContextUnicode = {
   lib: RenderLib
   handle: ContextUnicodeHandle
   tokens: number[]
-  recorder?: NativePaintRecorder
 }
 const contextUnicode = new WeakMap<object, ContextUnicode>()
 const contextUnicodeChars = new WeakMap<NativeContextHandle, Map<number, { owner: ContextUnicode; index: number }>>()
@@ -164,8 +163,6 @@ export class OptimizedBuffer {
   private _destroyed: boolean = false
   private _nativePaintAccess: (() => BufferAccess) | null = null
   private _bufferTarget: NativeDrawingTarget | undefined
-  /** A recording that composes this buffer; destruction waits until it has painted. */
-  private _recordedBy?: NativePaintRecorder
 
   // Fail loud and clear
   // Instead of trying to return values that could work or not,
@@ -617,8 +614,6 @@ export class OptimizedBuffer {
     if (!("buffer" in source) || source.context !== destination.context || frameBuffer.lib !== this.lib) {
       throw new Error("Scene composition requires a buffer owned by the same Context")
     }
-    const recorder = this.recorder
-    if (recorder) frameBuffer._recordedBy = recorder
     this.drawChecked({
       operation: "compose",
       source: source.buffer,
@@ -638,8 +633,7 @@ export class OptimizedBuffer {
       const release = () => {
         if (!source.owner.disposed) this.lib.destroyContextBuffer(source.context, source.buffer)
       }
-      if (!this._recordedBy?.deferRelease(release)) release()
-      this._recordedBy = undefined
+      this.lib.releaseAfterPaint(source.context, release)
     }
     this._destroyed = true
   }
@@ -921,7 +915,7 @@ export class OptimizedBuffer {
     }
     const context = this.source.context
     const release = () => this.lib.destroyContextUnicode(context, native.handle)
-    if (!native.recorder?.deferRelease(release)) release()
+    this.lib.releaseAfterPaint(context, release)
     const chars = contextUnicodeChars.get(this.source.context)!
     for (const token of native.tokens) chars.delete(token)
     contextUnicode.delete(encoded)
@@ -943,10 +937,7 @@ export class OptimizedBuffer {
         throw new Error("Encoded Unicode must be live and owned by the same Context")
       }
       const recorder = this.recorder
-      if (recorder) {
-        glyph.owner.recorder = recorder
-        return recorder.unicode(glyph.owner.handle, glyph.index, x, y, fg, bg, attributes)
-      }
+      if (recorder) return recorder.unicode(glyph.owner.handle, glyph.index, x, y, fg, bg, attributes)
       this.lib.contextBufferDrawUnicode(this.checkedTarget(), glyph.owner.handle, glyph.index, x, y, fg, bg, attributes)
       return
     }
