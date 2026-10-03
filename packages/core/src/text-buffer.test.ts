@@ -493,13 +493,17 @@ describe("TextBuffer", () => {
       expect(buffer.getPlainText()).toBe("After reset")
     })
 
-    it("should handle large streaming append", () => {
-      for (let i = 0; i < 100; i++) {
+    it("should handle more streaming appends than the native chunk registry holds", () => {
+      let expected = ""
+      for (let i = 0; i < 1000; i++) {
         buffer.append(`Line ${i}\n`)
+        expected += `Line ${i}\n`
       }
-      const result = buffer.getPlainText()
-      expect(result).toContain("Line 0")
-      expect(result).toContain("Line 99")
+      expect(buffer.getPlainText()).toBe(expected)
+      expect(buffer.byteSize).toBe(expected.length)
+      // Newlines take no cells.
+      expect(buffer.length).toBe(expected.length - 1000)
+      expect(buffer.getLineCount()).toBe(1001)
     })
 
     it("should mix setText and append", () => {
