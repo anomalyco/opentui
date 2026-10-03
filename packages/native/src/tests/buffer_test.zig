@@ -2370,437 +2370,101 @@ test "OptimizedBuffer - alpha blending with no link clears underlying link" {
     try std.testing.expect(!ansi.TextAttributes.hasLink(result_cell.attributes));
 }
 
-test "OptimizedBuffer - drawGrayscaleBuffer basic rendering" {
+test "OptimizedBuffer - grayscale draws equal one single-cell draw per source cell" {
     var pools = TestPools.init(std.testing.allocator);
     defer pools.deinit();
-
-    var buf = try OptimizedBuffer.init(
-        std.testing.allocator,
-        10,
-        5,
-        .{ .link_pool = &pools.links, .pool = &pools.graphemes, .id = "test-buffer" },
-    );
-    defer buf.deinit();
-
-    const bg = ansi.rgbaFromFloats(0.0, 0.0, 0.0, 1.0);
-    buf.clear(bg, null);
-
-    // Create a 3x3 intensity buffer with varying values
-    const intensities = [_]f32{
-        0.0,  0.5,  1.0,
-        0.25, 0.75, 0.0,
-        1.0,  0.0,  0.5,
-    };
-
-    buf.drawGrayscaleBuffer(2, 1, &intensities, 3, 3, null, bg);
-
-    const cell_0_0 = buf.get(2, 1).?;
-    try std.testing.expectEqual(@as(u32, 32), cell_0_0.char);
-
-    const cell_1_0 = buf.get(3, 1).?;
-    try std.testing.expect(cell_1_0.char != 32);
-    try std.testing.expect(ansi.redF(cell_1_0.fg) > 0.3);
-
-    const cell_2_0 = buf.get(4, 1).?;
-    try std.testing.expect(cell_2_0.char != 32);
-    try std.testing.expect(ansi.redF(cell_2_0.fg) > 0.9);
+    const width = 6;
+    const height = 4;
+    var buffers: [3]*OptimizedBuffer = undefined;
+    for (&buffers, 0..) |*target, index| {
+        errdefer for (buffers[0..index]) |created| created.deinit();
+        target.* = try OptimizedBuffer.init(std.testing.allocator, width, height, .{ .pool = &pools.graphemes, .link_pool = &pools.links });
+    }
+    defer for (buffers) |target| target.deinit();
+    const whole, const checked, const cells = buffers;
+    // Eight by six samples hold every intensity class: blank, below the threshold, partial, and full.
+    var samples: [8 * 6]f32 = undefined;
+    for (&samples, 0..) |*sample, index| sample.* = ([_]f32{ 0, 0.005, 0.02, 0.25, 0.5, 0.75, 1, 1.5 })[(index * 5) % 8];
+    const under = ansi.rgbColor(200, 0, 0, 255);
+    for ([_]bool{ false, true }) |supersampled| {
+        const scale: u32 = if (supersampled) 2 else 1;
+        for ([_][2]i32{ .{ 2, 1 }, .{ -1, -1 }, .{ -10, -10 }, .{ 4, 3 } }) |position| {
+            for ([_]?buffer_mod.ClipRect{ null, .{ .x = 0, .y = 0, .width = 2, .height = 2 }, .{ .x = 1, .y = 1, .width = 3, .height = 2 } }) |clip| {
+                for ([_]f32{ 1, 0.5 }) |opacity| {
+                    for ([_]?RGBA{ null, ansi.rgbColor(255, 0, 0, 255) }) |fg| {
+                        for ([_]?RGBA{ ansi.rgbColor(0, 0, 255, 255), ansi.rgbColor(0, 0, 255, 128), ansi.rgbColor(0, 0, 255, 0), null }) |bg| {
+                            errdefer std.debug.print("supersampled={} position={any} clip={any} opacity={d} fg={any} bg={any}\n", .{ supersampled, position, clip, opacity, fg, bg });
+                            for (buffers) |target| {
+                                target.clear(under, null);
+                                target.set(0, 0, .{ .char = 'Q', .fg = under, .bg = under, .attributes = 0 });
+                                if (clip) |rect| try target.pushScissorRect(rect.x, rect.y, rect.width, rect.height);
+                                try target.pushOpacity(opacity);
+                            }
+                            defer for (buffers) |target| {
+                                target.clearScissorRects();
+                                target.clearOpacity();
+                            };
+                            if (supersampled) {
+                                whole.drawGrayscaleBufferSupersampled(position[0], position[1], &samples, 8, 6, fg, bg);
+                            } else {
+                                whole.drawGrayscaleBuffer(position[0], position[1], &samples, 8, 6, fg, bg);
+                            }
+                            try checked.drawGrayscaleBufferChecked(position[0], position[1], &samples, 8, 6, fg, bg, supersampled);
+                            for (0..6 / scale) |row| {
+                                for (0..8 / scale) |column| {
+                                    var block: [4]f32 = undefined;
+                                    for (0..scale) |dy| {
+                                        for (0..scale) |dx| block[dy * scale + dx] = samples[(row * scale + dy) * 8 + column * scale + dx];
+                                    }
+                                    const x = position[0] + @as(i32, @intCast(column));
+                                    const y = position[1] + @as(i32, @intCast(row));
+                                    if (supersampled) cells.drawGrayscaleBufferSupersampled(x, y, &block, 2, 2, fg, bg) else cells.drawGrayscaleBuffer(x, y, &block, 1, 1, fg, bg);
+                                }
+                            }
+                            try expectSameCells(cells, whole);
+                            try expectSameCells(whole, checked);
+                        }
+                    }
+                }
+            }
+        }
+    }
 }
 
-test "OptimizedBuffer - drawGrayscaleBuffer negative position clipping" {
+fn rgbOf(color: RGBA) [3]u8 {
+    return .{ ansi.red(color), ansi.green(color), ansi.blue(color) };
+}
+
+test "OptimizedBuffer - grayscale cells map intensity to glyph, foreground, and blended background" {
     var pools = TestPools.init(std.testing.allocator);
     defer pools.deinit();
-
-    var buf = try OptimizedBuffer.init(
-        std.testing.allocator,
-        10,
-        5,
-        .{ .link_pool = &pools.links, .pool = &pools.graphemes, .id = "test-buffer" },
-    );
-    defer buf.deinit();
-
-    const bg = ansi.rgbaFromFloats(0.0, 0.0, 0.0, 1.0);
-    buf.clear(bg, null);
-
-    // Create a 4x4 intensity buffer
-    const intensities = [_]f32{
-        0.5, 0.5, 0.5, 0.5,
-        0.5, 0.5, 0.5, 0.5,
-        0.5, 0.5, 0.5, 0.5,
-        0.5, 0.5, 0.5, 0.5,
-    };
-
-    buf.drawGrayscaleBuffer(-1, -1, &intensities, 4, 4, null, bg);
-
-    const cell_0_0 = buf.get(0, 0).?;
-    try std.testing.expect(cell_0_0.char != 32);
-
-    const cell_2_0 = buf.get(2, 0).?;
-    try std.testing.expect(cell_2_0.char != 32);
+    const target = try OptimizedBuffer.init(std.testing.allocator, 1, 1, .{ .pool = &pools.graphemes, .link_pool = &pools.links });
+    defer target.deinit();
+    const red = ansi.rgbColor(255, 0, 0, 255);
+    const green = ansi.rgbColor(0, 255, 0, 255);
+    const blue = ansi.rgbColor(0, 0, 255, 255);
+    const Case = struct { intensity: f32, fg: ?RGBA, bg: RGBA, under: RGBA, opacity: f32 = 1, char: u32, cell_fg: ?RGBA = null, cell_bg: RGBA };
+    for ([_]Case{
+        // Below the visibility threshold the cell keeps what it held.
+        .{ .intensity = 0.005, .fg = null, .bg = blue, .under = red, .char = 'Q', .cell_fg = red, .cell_bg = red },
+        .{ .intensity = 0.02, .fg = null, .bg = blue, .under = red, .char = '.', .cell_bg = blue },
+        .{ .intensity = 1, .fg = null, .bg = blue, .under = red, .char = '$', .cell_fg = ansi.rgbColor(255, 255, 255, 255), .cell_bg = blue },
+        .{ .intensity = 1, .fg = red, .bg = blue, .under = green, .char = '$', .cell_fg = red, .cell_bg = blue },
+        .{ .intensity = 1, .fg = null, .bg = ansi.rgbColor(0, 0, 255, 0), .under = green, .char = '$', .cell_bg = green },
+        .{ .intensity = 1, .fg = null, .bg = ansi.rgbColor(0, 0, 255, 128), .under = red, .char = '$', .cell_bg = ansi.rgbColor(127, 0, 128, 255) },
+        .{ .intensity = 1, .fg = null, .bg = blue, .under = red, .opacity = 0.5, .char = '$', .cell_bg = ansi.rgbColor(127, 0, 128, 255) },
+    }) |case| {
+        errdefer std.debug.print("case={any}\n", .{case});
+        target.set(0, 0, .{ .char = 'Q', .fg = case.under, .bg = case.under, .attributes = 0 });
+        try target.pushOpacity(case.opacity);
+        defer target.popOpacity();
+        target.drawGrayscaleBuffer(0, 0, &.{case.intensity}, 1, 1, case.fg, case.bg);
+        const cell = target.get(0, 0).?;
+        try std.testing.expectEqual(case.char, cell.char);
+        if (case.cell_fg) |fg| try std.testing.expectEqual(rgbOf(fg), rgbOf(cell.fg));
+        try std.testing.expectEqual(rgbOf(case.cell_bg), rgbOf(cell.bg));
+    }
 }
-
-test "OptimizedBuffer - drawGrayscaleBuffer negative position fully clipped" {
-    var pools = TestPools.init(std.testing.allocator);
-    defer pools.deinit();
-
-    var buf = try OptimizedBuffer.init(
-        std.testing.allocator,
-        6,
-        3,
-        .{ .link_pool = &pools.links, .pool = &pools.graphemes, .id = "test-buffer" },
-    );
-    defer buf.deinit();
-
-    const bg = ansi.rgbaFromFloats(0.0, 0.0, 0.0, 1.0);
-    buf.clear(bg, null);
-
-    const intensities = [_]f32{
-        1.0, 1.0, 1.0, 1.0,
-        1.0, 1.0, 1.0, 1.0,
-        1.0, 1.0, 1.0, 1.0,
-        1.0, 1.0, 1.0, 1.0,
-    };
-
-    buf.drawGrayscaleBuffer(-10, -10, &intensities, 4, 4, null, bg);
-
-    const cell = buf.get(0, 0).?;
-    try std.testing.expectEqual(@as(u32, 32), cell.char);
-}
-
-test "OptimizedBuffer - drawGrayscaleBuffer respects scissor rect" {
-    var pools = TestPools.init(std.testing.allocator);
-    defer pools.deinit();
-
-    var buf = try OptimizedBuffer.init(
-        std.testing.allocator,
-        10,
-        5,
-        .{ .link_pool = &pools.links, .pool = &pools.graphemes, .id = "test-buffer" },
-    );
-    defer buf.deinit();
-
-    const bg = ansi.rgbaFromFloats(0.0, 0.0, 0.0, 1.0);
-    buf.clear(bg, null);
-
-    try buf.pushScissorRect(0, 0, 2, 2);
-
-    const intensities = [_]f32{
-        1.0, 1.0, 1.0, 1.0,
-        1.0, 1.0, 1.0, 1.0,
-        1.0, 1.0, 1.0, 1.0,
-        1.0, 1.0, 1.0, 1.0,
-    };
-
-    buf.drawGrayscaleBuffer(0, 0, &intensities, 4, 4, null, bg);
-
-    const cell_0_0 = buf.get(0, 0).?;
-    const cell_1_1 = buf.get(1, 1).?;
-    try std.testing.expect(cell_0_0.char != 32);
-    try std.testing.expect(cell_1_1.char != 32);
-
-    const cell_3_3 = buf.get(3, 3).?;
-    try std.testing.expectEqual(@as(u32, 32), cell_3_3.char);
-
-    buf.popScissorRect();
-}
-
-test "OptimizedBuffer - drawGrayscaleBuffer intensity to character mapping" {
-    var pools = TestPools.init(std.testing.allocator);
-    defer pools.deinit();
-
-    var buf = try OptimizedBuffer.init(
-        std.testing.allocator,
-        10,
-        5,
-        .{ .link_pool = &pools.links, .pool = &pools.graphemes, .id = "test-buffer" },
-    );
-    defer buf.deinit();
-
-    const bg = ansi.rgbaFromFloats(0.0, 0.0, 0.0, 1.0);
-    buf.clear(bg, null);
-
-    const intensities = [_]f32{
-        0.005,
-        0.02,
-        0.5,
-        1.0,
-    };
-
-    buf.drawGrayscaleBuffer(0, 0, &intensities, 4, 1, null, bg);
-
-    const cell_0 = buf.get(0, 0).?;
-    try std.testing.expectEqual(@as(u32, 32), cell_0.char);
-
-    const cell_1 = buf.get(1, 0).?;
-    try std.testing.expect(cell_1.char != 32);
-
-    const cell_3 = buf.get(3, 0).?;
-    try std.testing.expect(ansi.redF(cell_3.fg) > 0.9);
-    try std.testing.expect(ansi.greenF(cell_3.fg) > 0.9);
-    try std.testing.expect(ansi.blueF(cell_3.fg) > 0.9);
-}
-
-test "OptimizedBuffer - drawGrayscaleBuffer alpha blending preserves underlying bg" {
-    var pools = TestPools.init(std.testing.allocator);
-    defer pools.deinit();
-
-    var buf = try OptimizedBuffer.init(
-        std.testing.allocator,
-        10,
-        5,
-        .{ .link_pool = &pools.links, .pool = &pools.graphemes, .id = "test-buffer" },
-    );
-    defer buf.deinit();
-
-    const red_bg = ansi.rgbaFromFloats(1.0, 0.0, 0.0, 1.0);
-    buf.clear(red_bg, null);
-
-    const initial_cell = buf.get(1, 1).?;
-    try std.testing.expectEqual(@as(u8, 255), ansi.red(initial_cell.bg));
-    try std.testing.expectEqual(@as(u8, 0), ansi.green(initial_cell.bg));
-    try std.testing.expectEqual(@as(u8, 0), ansi.blue(initial_cell.bg));
-
-    const semi_transparent_bg = ansi.rgbaFromFloats(0.0, 0.0, 1.0, 0.5);
-    const intensities = [_]f32{
-        1.0, 1.0, 1.0,
-        1.0, 1.0, 1.0,
-        1.0, 1.0, 1.0,
-    };
-
-    buf.drawGrayscaleBuffer(0, 0, &intensities, 3, 3, null, semi_transparent_bg);
-
-    const cell = buf.get(1, 1).?;
-    try std.testing.expect(ansi.redF(cell.bg) > 0.1);
-    try std.testing.expect(ansi.blueF(cell.bg) > 0.1);
-
-    try std.testing.expect(ansi.redF(cell.fg) > 0.9);
-    try std.testing.expect(ansi.greenF(cell.fg) > 0.9);
-    try std.testing.expect(ansi.blueF(cell.fg) > 0.9);
-}
-
-test "OptimizedBuffer - drawGrayscaleBuffer fully transparent bg preserves underlying" {
-    var pools = TestPools.init(std.testing.allocator);
-    defer pools.deinit();
-
-    var buf = try OptimizedBuffer.init(
-        std.testing.allocator,
-        10,
-        5,
-        .{ .link_pool = &pools.links, .pool = &pools.graphemes, .id = "test-buffer" },
-    );
-    defer buf.deinit();
-
-    const green_bg = ansi.rgbaFromFloats(0.0, 1.0, 0.0, 1.0);
-    buf.clear(green_bg, null);
-
-    const transparent_bg = ansi.rgbaFromFloats(0.0, 0.0, 1.0, 0.0);
-    const intensities = [_]f32{
-        1.0, 1.0, 1.0,
-        1.0, 1.0, 1.0,
-        1.0, 1.0, 1.0,
-    };
-
-    buf.drawGrayscaleBuffer(0, 0, &intensities, 3, 3, null, transparent_bg);
-
-    const cell = buf.get(1, 1).?;
-    try std.testing.expectEqual(@as(u8, 0), ansi.red(cell.bg));
-    try std.testing.expectEqual(@as(u8, 255), ansi.green(cell.bg));
-    try std.testing.expectEqual(@as(u8, 0), ansi.blue(cell.bg));
-
-    try std.testing.expect(ansi.redF(cell.fg) > 0.9);
-}
-
-test "OptimizedBuffer - drawGrayscaleBuffer opaque bg overwrites underlying" {
-    var pools = TestPools.init(std.testing.allocator);
-    defer pools.deinit();
-
-    var buf = try OptimizedBuffer.init(
-        std.testing.allocator,
-        10,
-        5,
-        .{ .link_pool = &pools.links, .pool = &pools.graphemes, .id = "test-buffer" },
-    );
-    defer buf.deinit();
-
-    const red_bg = ansi.rgbaFromFloats(1.0, 0.0, 0.0, 1.0);
-    buf.clear(red_bg, null);
-
-    const blue_bg = ansi.rgbaFromFloats(0.0, 0.0, 1.0, 1.0);
-    const intensities = [_]f32{
-        1.0, 1.0, 1.0,
-        1.0, 1.0, 1.0,
-        1.0, 1.0, 1.0,
-    };
-
-    buf.drawGrayscaleBuffer(0, 0, &intensities, 3, 3, null, blue_bg);
-
-    const cell = buf.get(1, 1).?;
-    try std.testing.expectEqual(@as(u8, 0), ansi.red(cell.bg));
-    try std.testing.expectEqual(@as(u8, 0), ansi.green(cell.bg));
-    try std.testing.expectEqual(@as(u8, 255), ansi.blue(cell.bg));
-}
-
-test "OptimizedBuffer - drawGrayscaleBuffer with opacity stack" {
-    var pools = TestPools.init(std.testing.allocator);
-    defer pools.deinit();
-
-    var buf = try OptimizedBuffer.init(
-        std.testing.allocator,
-        10,
-        5,
-        .{ .link_pool = &pools.links, .pool = &pools.graphemes, .id = "test-buffer" },
-    );
-    defer buf.deinit();
-
-    const red_bg = ansi.rgbaFromFloats(1.0, 0.0, 0.0, 1.0);
-    buf.clear(red_bg, null);
-
-    try buf.pushOpacity(0.5);
-
-    const blue_bg = ansi.rgbaFromFloats(0.0, 0.0, 1.0, 1.0);
-    const intensities = [_]f32{
-        1.0, 1.0, 1.0,
-        1.0, 1.0, 1.0,
-        1.0, 1.0, 1.0,
-    };
-
-    buf.drawGrayscaleBuffer(0, 0, &intensities, 3, 3, null, blue_bg);
-
-    buf.popOpacity();
-
-    const cell = buf.get(1, 1).?;
-    try std.testing.expect(ansi.redF(cell.bg) > 0.1);
-    try std.testing.expect(ansi.blueF(cell.bg) > 0.1);
-}
-
-test "OptimizedBuffer - drawGrayscaleBufferSupersampled alpha blending" {
-    var pools = TestPools.init(std.testing.allocator);
-    defer pools.deinit();
-
-    var buf = try OptimizedBuffer.init(
-        std.testing.allocator,
-        10,
-        5,
-        .{ .link_pool = &pools.links, .pool = &pools.graphemes, .id = "test-buffer" },
-    );
-    defer buf.deinit();
-
-    const red_bg = ansi.rgbaFromFloats(1.0, 0.0, 0.0, 1.0);
-    buf.clear(red_bg, null);
-
-    const intensities = [_]f32{
-        1.0, 1.0, 1.0, 1.0,
-        1.0, 1.0, 1.0, 1.0,
-        1.0, 1.0, 1.0, 1.0,
-        1.0, 1.0, 1.0, 1.0,
-    };
-
-    const semi_transparent_bg = ansi.rgbaFromFloats(0.0, 0.0, 1.0, 0.5);
-    buf.drawGrayscaleBufferSupersampled(0, 0, &intensities, 4, 4, null, semi_transparent_bg);
-
-    const cell = buf.get(0, 0).?;
-    try std.testing.expect(ansi.redF(cell.bg) > 0.1);
-    try std.testing.expect(ansi.blueF(cell.bg) > 0.1);
-}
-
-test "OptimizedBuffer - drawGrayscaleBufferSupersampled fully transparent preserves bg" {
-    var pools = TestPools.init(std.testing.allocator);
-    defer pools.deinit();
-
-    var buf = try OptimizedBuffer.init(
-        std.testing.allocator,
-        10,
-        5,
-        .{ .link_pool = &pools.links, .pool = &pools.graphemes, .id = "test-buffer" },
-    );
-    defer buf.deinit();
-
-    const green_bg = ansi.rgbaFromFloats(0.0, 1.0, 0.0, 1.0);
-    buf.clear(green_bg, null);
-
-    const intensities = [_]f32{
-        1.0, 1.0, 1.0, 1.0,
-        1.0, 1.0, 1.0, 1.0,
-        1.0, 1.0, 1.0, 1.0,
-        1.0, 1.0, 1.0, 1.0,
-    };
-
-    const transparent_bg = ansi.rgbaFromFloats(0.0, 0.0, 1.0, 0.0);
-    buf.drawGrayscaleBufferSupersampled(0, 0, &intensities, 4, 4, null, transparent_bg);
-
-    const cell = buf.get(0, 0).?;
-    try std.testing.expectEqual(@as(u8, 0), ansi.red(cell.bg));
-    try std.testing.expectEqual(@as(u8, 255), ansi.green(cell.bg));
-    try std.testing.expectEqual(@as(u8, 0), ansi.blue(cell.bg));
-}
-
-test "OptimizedBuffer - drawGrayscaleBufferSupersampled respects scissor" {
-    var pools = TestPools.init(std.testing.allocator);
-    defer pools.deinit();
-
-    var buf = try OptimizedBuffer.init(
-        std.testing.allocator,
-        6,
-        4,
-        .{ .link_pool = &pools.links, .pool = &pools.graphemes, .id = "test-buffer" },
-    );
-    defer buf.deinit();
-
-    const bg = ansi.rgbaFromFloats(0.0, 0.0, 0.0, 1.0);
-    buf.clear(bg, null);
-
-    try buf.pushScissorRect(0, 0, 1, 1);
-
-    const intensities = [_]f32{
-        1.0, 1.0, 1.0, 1.0,
-        1.0, 1.0, 1.0, 1.0,
-        1.0, 1.0, 1.0, 1.0,
-        1.0, 1.0, 1.0, 1.0,
-    };
-
-    buf.drawGrayscaleBufferSupersampled(0, 0, &intensities, 4, 4, null, bg);
-
-    const inCell = buf.get(0, 0).?;
-    const outCell = buf.get(2, 2).?;
-    try std.testing.expect(inCell.char != 32);
-    try std.testing.expectEqual(@as(u32, 32), outCell.char);
-
-    buf.popScissorRect();
-}
-
-test "OptimizedBuffer - drawGrayscaleBufferSupersampled with opacity stack" {
-    var pools = TestPools.init(std.testing.allocator);
-    defer pools.deinit();
-
-    var buf = try OptimizedBuffer.init(
-        std.testing.allocator,
-        10,
-        5,
-        .{ .link_pool = &pools.links, .pool = &pools.graphemes, .id = "test-buffer" },
-    );
-    defer buf.deinit();
-
-    const red_bg = ansi.rgbaFromFloats(1.0, 0.0, 0.0, 1.0);
-    buf.clear(red_bg, null);
-
-    try buf.pushOpacity(0.5);
-
-    const intensities = [_]f32{
-        1.0, 1.0, 1.0, 1.0,
-        1.0, 1.0, 1.0, 1.0,
-        1.0, 1.0, 1.0, 1.0,
-        1.0, 1.0, 1.0, 1.0,
-    };
-
-    const blue_bg = ansi.rgbaFromFloats(0.0, 0.0, 1.0, 1.0);
-    buf.drawGrayscaleBufferSupersampled(0, 0, &intensities, 4, 4, null, blue_bg);
-
-    buf.popOpacity();
-
-    const cell = buf.get(0, 0).?;
-    try std.testing.expect(ansi.redF(cell.bg) > 0.1);
-    try std.testing.expect(ansi.blueF(cell.bg) > 0.1);
-}
-
 test "OptimizedBuffer - blendColors with transparent destination" {
     var pools = TestPools.init(std.testing.allocator);
     defer pools.deinit();
@@ -2851,97 +2515,6 @@ test "OptimizedBuffer - blend backdrop flattens transparent destination" {
     try std.testing.expectEqual(@as(u8, 127), ansi.green(cell.bg));
     try std.testing.expectEqual(@as(u8, 127), ansi.blue(cell.bg));
     try std.testing.expectEqual(@as(u8, 255), ansi.alpha(cell.bg));
-}
-
-test "OptimizedBuffer - drawGrayscaleBuffer with custom fg color" {
-    var pools = TestPools.init(std.testing.allocator);
-    defer pools.deinit();
-
-    var buf = try OptimizedBuffer.init(
-        std.testing.allocator,
-        10,
-        5,
-        .{ .link_pool = &pools.links, .pool = &pools.graphemes, .id = "test-buffer" },
-    );
-    defer buf.deinit();
-
-    const black_bg = ansi.rgbaFromFloats(0.0, 0.0, 0.0, 1.0);
-    buf.clear(black_bg, null);
-
-    const intensities = [_]f32{
-        1.0, 1.0, 1.0,
-        1.0, 1.0, 1.0,
-        1.0, 1.0, 1.0,
-    };
-
-    const red_fg = ansi.rgbaFromFloats(1.0, 0.0, 0.0, 1.0);
-    buf.drawGrayscaleBuffer(0, 0, &intensities, 3, 3, red_fg, black_bg);
-
-    const cell = buf.get(1, 1).?;
-    try std.testing.expect(ansi.redF(cell.fg) > 0.9);
-    try std.testing.expect(ansi.greenF(cell.fg) < 0.1);
-    try std.testing.expect(ansi.blueF(cell.fg) < 0.1);
-}
-
-test "OptimizedBuffer - drawGrayscaleBuffer custom fg with partial intensity" {
-    var pools = TestPools.init(std.testing.allocator);
-    defer pools.deinit();
-
-    var buf = try OptimizedBuffer.init(
-        std.testing.allocator,
-        10,
-        5,
-        .{ .link_pool = &pools.links, .pool = &pools.graphemes, .id = "test-buffer" },
-    );
-    defer buf.deinit();
-
-    const blue_bg = ansi.rgbaFromFloats(0.0, 0.0, 1.0, 1.0);
-    buf.clear(blue_bg, null);
-
-    const intensities = [_]f32{
-        0.5, 0.5, 0.5,
-        0.5, 0.5, 0.5,
-        0.5, 0.5, 0.5,
-    };
-
-    const green_fg = ansi.rgbaFromFloats(0.0, 1.0, 0.0, 1.0);
-    const transparent_bg = ansi.rgbaFromFloats(0.0, 0.0, 0.0, 0.0);
-    buf.drawGrayscaleBuffer(0, 0, &intensities, 3, 3, green_fg, transparent_bg);
-
-    const cell = buf.get(1, 1).?;
-    try std.testing.expect(ansi.greenF(cell.fg) > 0.2);
-    try std.testing.expect(ansi.blueF(cell.fg) > 0.2);
-}
-
-test "OptimizedBuffer - drawGrayscaleBufferSupersampled with custom fg color" {
-    var pools = TestPools.init(std.testing.allocator);
-    defer pools.deinit();
-
-    var buf = try OptimizedBuffer.init(
-        std.testing.allocator,
-        10,
-        5,
-        .{ .link_pool = &pools.links, .pool = &pools.graphemes, .id = "test-buffer" },
-    );
-    defer buf.deinit();
-
-    const black_bg = ansi.rgbaFromFloats(0.0, 0.0, 0.0, 1.0);
-    buf.clear(black_bg, null);
-
-    const intensities = [_]f32{
-        1.0, 1.0, 1.0, 1.0,
-        1.0, 1.0, 1.0, 1.0,
-        1.0, 1.0, 1.0, 1.0,
-        1.0, 1.0, 1.0, 1.0,
-    };
-
-    const cyan_fg = ansi.rgbaFromFloats(0.0, 1.0, 1.0, 1.0);
-    buf.drawGrayscaleBufferSupersampled(0, 0, &intensities, 4, 4, cyan_fg, black_bg);
-
-    const cell = buf.get(0, 0).?;
-    try std.testing.expect(ansi.redF(cell.fg) < 0.1);
-    try std.testing.expect(ansi.greenF(cell.fg) > 0.9);
-    try std.testing.expect(ansi.blueF(cell.fg) > 0.9);
 }
 
 // Overwriting a grapheme cell with the same ID but different extent bits must
