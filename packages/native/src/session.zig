@@ -254,9 +254,10 @@ pub const RenderStatus = enum {
     presented,
     /// One accepted frame still awaits output completion; no second frame is accepted.
     pending,
-    /// Backpressure rejected and cleared the drawn frame before output admission.
+    /// Output pressure rejected and cleared the drawn frame without publishing bytes.
     skipped,
-    /// Encoding or admission failed without publishing bytes. Transport stays open.
+    /// The frame cannot be published: it is larger than the empty queue, or
+    /// encoding or allocation failed. No bytes were published; transport stays open.
     failed,
 };
 
