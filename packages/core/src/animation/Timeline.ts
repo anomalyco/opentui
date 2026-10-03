@@ -513,28 +513,27 @@ class TimelineEngine {
     frameRate: 60,
   }
 
-  /** Attaches to one explicit owner. Detach first to move an engine to another renderer. */
+  /** The default engine moves to the renderer. A renderer-owned engine attaches to one owner; detach it first. */
   attach(renderer: CliRenderer): void {
     if (renderer.isDestroyed) throw new Error("Cannot attach timelines to a destroyed renderer")
     if (this.renderer === renderer) {
       if (!renderer.hasFrameCallback(this.frameCallback)) renderer.setFrameCallback(this.frameCallback)
       return
     }
-    if (this.renderer) {
+    if (this === engine) this.detach()
+    else if (this.renderer)
       throw new Error("Timeline engine is already attached; use getTimelineEngine(renderer) for another renderer")
-    }
-    const existing = rendererEngines.get(renderer)
-    if (existing && existing !== this)
+    else if (rendererEngines.has(renderer))
       throw new Error("Renderer already has a timeline engine; use getTimelineEngine(renderer)")
+    else rendererEngines.set(renderer, this)
     this.renderer = renderer
-    rendererEngines.set(renderer, this)
     renderer.setFrameCallback(this.frameCallback)
     this.updateLiveState()
   }
 
   detach(): void {
     if (this.renderer) {
-      rendererEngines.delete(this.renderer)
+      if (this !== engine) rendererEngines.delete(this.renderer)
       this.renderer.removeFrameCallback(this.frameCallback)
       if (this.isLive) {
         this.renderer.dropLive()
@@ -603,7 +602,7 @@ class TimelineEngine {
   }
 }
 
-/** Default engine for manual updates or explicit single-renderer attach(). Frameworks use getTimelineEngine(). */
+/** Default engine, kept apart from renderer-owned engines. The last React or Solid render() call drives it. */
 export const engine = new TimelineEngine()
 
 /** Returns the renderer's engine and restores its frame callback if the caller cleared renderer callbacks.
@@ -617,17 +616,14 @@ export function getTimelineEngine(renderer: CliRenderer): TimelineEngine {
 /** @internal Renderer finalization releases ownership even when a destroy listener throws. */
 export function destroyTimelineEngine(renderer: CliRenderer): void {
   const owner = rendererEngines.get(renderer)
-  if (!owner) return
-  try {
-    owner.clear()
-  } finally {
-    owner.detach()
-  }
+  owner?.clear()
+  owner?.detach()
+  if (engine["renderer"] === renderer) engine.detach()
 }
 
 /** Creates and registers a timeline, playing unless autoplay is false.
  * Pass the renderer explicitly for independent sessions: createTimeline({ duration: 500 }, renderer).
- * Omitting the renderer retains the shipped default-engine API; it does not choose a renderer implicitly. */
+ * Omitting the renderer uses the default engine, which the last React or Solid render() call attached. */
 export function createTimeline(options: TimelineOptions = {}, renderer?: CliRenderer): Timeline {
   const owner = renderer ? getTimelineEngine(renderer) : engine
   const timeline = new Timeline(options)

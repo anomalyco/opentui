@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test"
-import type { Timeline } from "@opentui/core"
+import { createTimeline, type Timeline } from "@opentui/core"
 import { act, useState } from "react"
 import { ManualClock } from "@opentui/core/testing"
 
@@ -32,7 +32,18 @@ test("useTimeline preserves its Timeline across rerenders", async () => {
   expect(timelines[1]).toBe(timelines[0])
 })
 
-test("useTimeline keeps separate roots independent after either renderer is destroyed", async () => {
+test("createTimeline without a renderer animates after render()", async () => {
+  const clock = new ManualClock()
+  testSetup = await testRender(<text>timeline</text>, { width: 10, height: 1, clock })
+  testSetup.renderer.pause()
+  const value = { x: 0 }
+  createTimeline({ duration: 25 }).add(value, { x: 100, duration: 100 })
+  clock.advance(25)
+  await testSetup.renderOnce()
+  expect(value.x).toBe(25)
+})
+
+test("useTimeline keeps roots independent; createTimeline() without a renderer follows the last render()", async () => {
   const timelines: Timeline[] = []
   function App() {
     timelines.push(useTimeline({ autoplay: false }))
@@ -47,15 +58,15 @@ test("useTimeline keeps separate roots independent after either renderer is dest
     second.renderer.pause()
     timelines[0].play()
     timelines[1].play()
+    const free = createTimeline({ duration: 30 })
     firstClock.advance(20)
     await first.renderOnce()
-    expect(timelines[0].currentTime).toBe(20)
-    expect(timelines[1].currentTime).toBe(0)
+    expect([timelines[0].currentTime, timelines[1].currentTime, free.currentTime]).toEqual([20, 0, 0])
     act(() => first.renderer.destroy())
     await first.renderer.closed
     secondClock.advance(30)
     await second.renderOnce()
-    expect(timelines[1].currentTime).toBe(30)
+    expect([timelines[1].currentTime, free.currentTime]).toEqual([30, 30])
   } finally {
     act(() => first.renderer.destroy())
     // testRender clears the process-wide act flag when either renderer closes.
