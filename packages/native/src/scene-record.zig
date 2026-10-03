@@ -136,6 +136,11 @@ fn zeroHandle(value: c.ot_handle) bool {
     return value.context_id == 0 and value.slot == 0 and value.generation == 0;
 }
 
+// Record sizes add up to four u32 lengths in usize arithmetic.
+comptime {
+    std.debug.assert(@sizeOf(usize) >= 8);
+}
+
 /// Unpadded byte count of a command record, after checking its fixed fields.
 fn commandSize(operation: u32, body: []const u8) !usize {
     switch (operation) {
@@ -215,9 +220,13 @@ pub fn index(bytes: []const u8, slots: []const PaintSlot, segments: []Segments) 
 /// Play one indexed segment. The caller owns the first floor entries of the
 /// target's clip and opacity stacks.
 pub fn play(owner: *Context, target: *buffer.OptimizedBuffer, floor: usize, bytes: []const u8, segment: Segment) !void {
+    std.debug.assert(segment.start <= segment.end and segment.end <= bytes.len);
     var offset: usize = segment.start;
     while (offset < segment.end) {
         const header = try fixed(c.ot_scene_record_header, bytes[offset..]);
+        // index validated the framing that playback walks again.
+        std.debug.assert(header.size >= @sizeOf(c.ot_scene_record_header) and header.size % 8 == 0);
+        std.debug.assert(header.size <= segment.end - offset);
         const body = bytes[offset..][0..header.size];
         run(owner, target, floor, header.operation, body) catch |err| switch (err) {
             error.StaleHandle => {},

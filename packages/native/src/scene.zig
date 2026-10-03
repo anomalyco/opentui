@@ -756,8 +756,8 @@ pub const Scene = struct {
             if (reply.session.context_id != self.session.context_id) return error.WrongContext;
             if (!std.meta.eql(reply.session, self.session)) return error.WrongSession;
             const active = self.attempt orelse return error.StaleFrame;
-            const pending = active.pending orelse return error.StaleFrame;
-            if (!std.meta.eql(reply, pending)) return error.StaleFrame;
+            // Every step that leaves an attempt returns its pending request.
+            if (!std.meta.eql(reply, active.pending.?)) return error.StaleFrame;
             if (options.max_layout_rounds != active.options.max_layout_rounds or
                 options.max_host_requests != active.options.max_host_requests or
                 (reply.kind == api.OT_SCENE_FRAME_RECORD) != (recording != null)) return error.InvalidOptions;
@@ -767,6 +767,9 @@ pub const Scene = struct {
             self.attempt.?.pending = null;
         } else {
             if (self.attempt != null or self.painted != null) return error.FrameBusy;
+            // Every attempt ends in cancelFrame, so no attempt state survives into the next one.
+            std.debug.assert(self.feedback.items.len == 0 and self.prepared.items.len == 0 and self.preparation_stack.items.len == 0);
+            std.debug.assert(self.paint_members.items.len == 0 and self.paint_slots.items.len == 0 and self.segments.items.len == 0);
             if (options.max_layout_rounds == 0 or options.max_host_requests == 0 or recording != null) return error.InvalidOptions;
             const frame_id = std.math.add(u64, self.last_frame_id, 1) catch return error.RequestLimit;
             self.attempt = .{
@@ -940,7 +943,7 @@ pub const Scene = struct {
             }
             if (self.hook_count != 0) {
                 for (self.work.items) |entry| {
-                    if (entry.visible and entry.node.scene_node.?.kind != api.OT_SCENE_ROOT and
+                    if (entry.node.scene_node.?.kind != api.OT_SCENE_ROOT and
                         entry.node.scene_node.?.hook_flags & scene_paint_hook_flags != 0) return self.requestRecord(cli, root.?);
                 }
             }
@@ -953,6 +956,7 @@ pub const Scene = struct {
 
     fn finishPaint(self: *Scene, cli: *renderer.CliRenderer, membership_epoch: u64, retain_work: bool) FrameRequest {
         const active = self.attempt.?;
+        std.debug.assert(self.painted == null);
         std.debug.assert(!retain_work or active.request_id == 0);
         const done: FrameRequest = .{
             .session = self.session,
@@ -984,6 +988,10 @@ pub const Scene = struct {
 
     fn request(self: *Scene, node: *Node, kind: u32) !FrameRequest {
         const active = &self.attempt.?;
+        std.debug.assert(active.pending == null);
+        std.debug.assert(kind >= api.OT_SCENE_FRAME_UPDATE and kind <= api.OT_SCENE_FRAME_YIELD);
+        // A restart ends the work budget, so the attempt never yields again.
+        std.debug.assert(kind != api.OT_SCENE_FRAME_YIELD or !active.restarted);
         // YIELD and RECORD name the root without describing it.
         const whole_frame = kind == api.OT_SCENE_FRAME_YIELD or kind == api.OT_SCENE_FRAME_RECORD;
         if (kind != api.OT_SCENE_FRAME_YIELD) {
@@ -1057,7 +1065,8 @@ pub const Scene = struct {
     }
 
     pub fn measureLayout(self: *Scene, objects: *const handles.Table, cli: *renderer.CliRenderer, root_handle: handles.Handle) !void {
-        if (self.attempt != null or self.painted != null) return error.FrameBusy;
+        // Session.checkFrameIdle admits measurement only without an attempt or draft.
+        std.debug.assert(self.attempt == null and self.painted == null);
         const root = try objects.get(root_handle, .native_renderable, native.NativeRenderable);
         const node = root.scene_node orelse return error.WrongKind;
         if (node.owner != self) return error.WrongSession;
@@ -1240,20 +1249,24 @@ pub const Scene = struct {
 
     /// Snapshot prepared membership and return one request for every paint hook.
     fn requestRecord(self: *Scene, cli: *renderer.CliRenderer, root: *native.NativeRenderable) !FrameRequest {
+        std.debug.assert(self.paint_members.items.len == 0 and self.paint_slots.items.len == 0);
         var member_count: usize = 0;
         var slot_count: usize = 0;
         for (self.work.items) |entry| {
             const node = entry.node.scene_node.?;
-            if (!entry.visible or node.kind == api.OT_SCENE_ROOT) continue;
+            // Paint-mode preparation never appends hidden members.
+            std.debug.assert(entry.visible);
+            if (node.kind == api.OT_SCENE_ROOT) continue;
             member_count += 1;
             slot_count += @intFromBool(node.hook_flags & scene_paint_hook_flags != 0);
         }
+        std.debug.assert(slot_count != 0);
         try self.paint_members.ensureTotalCapacityPrecise(self.allocator, member_count);
         try self.paint_slots.ensureTotalCapacityPrecise(self.allocator, slot_count);
         try self.segments.ensureTotalCapacityPrecise(self.allocator, slot_count);
         for (self.work.items) |entry| {
             const node = entry.node.scene_node.?;
-            if (!entry.visible or node.kind == api.OT_SCENE_ROOT) continue;
+            if (node.kind == api.OT_SCENE_ROOT) continue;
             const hooks = node.hook_flags & scene_paint_hook_flags;
             var slot: u32 = no_slot;
             if (hooks != 0) {
@@ -1385,21 +1398,17 @@ pub const Scene = struct {
 
     fn beginImagePaint(state: ImageState, layout: Layout) !void {
         const target = state.buffer orelse return;
-        const width: u32 = @intFromFloat(@max(1, layout.width));
-        const height: u32 = @intFromFloat(@max(1, layout.height));
-        try target.resize(width, height);
+        try target.resize(@intFromFloat(layout.width), @intFromFloat(layout.height));
         target.clear(ansi.rgbColor(0, 0, 0, 0), null);
     }
 
     fn finishImagePaint(target: *buffer.OptimizedBuffer, state: ImageState, layout: Layout) !void {
         const source = state.buffer orelse return;
-        if (layout.width == 0 or layout.height == 0) return;
         try Context.drawContextBuffer(target, source, @intFromFloat(layout.screenX), @intFromFloat(layout.screenY), .{});
     }
 
     fn paintImage(cli: *renderer.CliRenderer, state: ImageState, layout: Layout) !void {
         const source = state.source orelse return;
-        if (layout.width <= 0 or layout.height <= 0) return;
         const resolution = cli.image_resolution;
         const has_resolution = resolution.pixel_width != 0 and resolution.pixel_height != 0 and
             resolution.terminal_width != 0 and resolution.terminal_height != 0;
@@ -1584,6 +1593,8 @@ pub const Scene = struct {
                     std.debug.assert(node.prepared_frame == self.attempt.?.frame_id);
                     std.debug.assert(node.prepared_round == self.attempt.?.rounds);
                 }
+                // Image paint and hit geometry rely on at least one cell per dimension.
+                std.debug.assert(layout.width >= 1 and layout.height >= 1);
                 layout.screenX = frame.parent.screenX + @as(f64, layout.left) + node.paint.translateX;
                 layout.screenY = frame.parent.screenY + @as(f64, layout.top) + node.paint.translateY;
                 try validateLayout(layout);
