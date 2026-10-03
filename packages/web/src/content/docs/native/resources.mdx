@@ -172,7 +172,7 @@ Use the header and native library from the same revision.
 
 ## Create images in a Context
 
-`ot_image_inspect`, `ot_image_decode`, and `ot_image_create_pixels` use the Context's allocator, I/O, limits, and handle identities.
+`ot_image_inspect`, `ot_image_decode`, and `ot_image_create_pixels` use the Context's allocator, limits, and handle identities.
 Creation copies input bytes. Encoded input has a 64 MiB limit.
 Dimensions have a 16,384-pixel limit per axis and a 25,000,000-pixel limit in total.
 

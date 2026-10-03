@@ -42,7 +42,6 @@ test "Context image import owns lazy PNG and assigns fresh render identities unt
     try testing.expectEqual(@as(usize, 0), copy.pixels.len);
     try testing.expect(copy.encoded_png.?.ptr != lazy.encoded_png.?.ptr);
     try testing.expectEqual(owner.objects.context_id, copy.owner_context_id);
-    try testing.expectEqual(owner.io.userdata, copy.io.userdata);
     const render_id = copy.render_id;
     lazy.deinit();
     try testing.expectEqualSlices(u8, &.{ 255, 0, 0, 255 }, try copy.ensurePixels());
