@@ -1,7 +1,25 @@
 import { test } from "bun:test"
 import assert from "node:assert/strict"
+import { CliRenderEvents } from "../renderer.js"
 import { TextRenderable } from "../renderables/Text.js"
 import { createTestRenderer } from "../testing/test-renderer.js"
+
+test("an async post-process presents its synchronous drawing", async () => {
+  const { renderer, renderOnce, captureCharFrame } = await createTestRenderer({ width: 2, height: 1 })
+  const errors: unknown[] = []
+  renderer.on(CliRenderEvents.RENDER_ERROR, ({ error }) => errors.push(error))
+  try {
+    renderer.addPostProcessFn(async (buffer) => {
+      buffer.buffers.char[0] = 66
+    })
+    await renderOnce()
+    assert.deepEqual(errors, [])
+    assert.equal(captureCharFrame(), "B \n")
+  } finally {
+    renderer.destroy()
+    await renderer.closed
+  }
+})
 
 test("native text scene capture resolves CJK, combining graphemes, and ZWJ emoji", async () => {
   const { renderer, renderOnce, captureCharFrame, captureSpans } = await createTestRenderer({

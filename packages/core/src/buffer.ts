@@ -269,8 +269,8 @@ export class OptimizedBuffer {
     return withBufferAccess(lib, source.context, lease, callback)
   }
 
-  /** Internal synchronous post-process scope. Native views never escape as persistent buffer state. */
-  public _withNativePaint<T>(callback: () => T): T {
+  /** Internal post-process scope. Ignores the callback's result; native views never escape the synchronous part. */
+  public _withNativePaint(callback: () => void): void {
     // Guard actual access, not callback dispatch.
     const source = this.source
     if ("recorder" in source) throw new Error(recordedFrameAccess)
@@ -278,7 +278,7 @@ export class OptimizedBuffer {
     let lease: NativeContextBufferLease | undefined
     const previous = this._nativePaintAccess
     try {
-      return withLazyBufferAccess(
+      withLazyBufferAccess(
         () =>
           (lease ??=
             "session" in source
@@ -286,7 +286,7 @@ export class OptimizedBuffer {
               : lib.contextAcquireBufferLease(source.context, source.buffer)),
         (getCells) => {
           this._nativePaintAccess = getCells
-          return callback()
+          callback()
         },
         () => {
           if (lease) lib.contextValidateBufferLease(source.context, lease.handle)
