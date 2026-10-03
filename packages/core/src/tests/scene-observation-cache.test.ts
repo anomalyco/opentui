@@ -484,6 +484,14 @@ describe("scene staging", () => {
     ],
     ["a borrow for another Context", (staging) => staging._views(otherContext), "WrongContext"],
     ["a consume without a borrow", (staging) => staging.consume(0), "not borrowed"],
+    [
+      "an acknowledged prefix longer than the stream",
+      (staging) => {
+        staging._views(context)
+        staging.consume(3)
+      },
+      "Invalid scene flush prefix",
+    ],
     ["a flush for an unknown Context", (staging) => resolveRenderLib().sceneFlush(context, staging), "WrongContext"],
     [
       "a write during a native flush",

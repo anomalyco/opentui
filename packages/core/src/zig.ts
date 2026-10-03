@@ -2070,12 +2070,13 @@ export class SceneStaging {
     this.context = undefined
   }
 
-  /** Never replay the accepted prefix. Remaining records stay in wire layout. */
+  /** Never replay the accepted prefix. Remaining records stay in wire layout. An invalid
+   * acknowledgement still ends the borrow, so staging stays writable. */
   consume(applied: number): void {
-    if (!Number.isInteger(applied) || applied < 0 || applied > this.entryCount)
-      throw new Error("Invalid scene flush prefix")
     if (!this.borrowed) throw new Error("Scene flush inputs were not borrowed")
     this.borrowed = false
+    if (!Number.isInteger(applied) || applied < 0 || applied > this.entryCount)
+      throw new Error("Invalid scene flush prefix")
     if (applied === this.entryCount) return this.clear()
     // An unchanged stream keeps its indexes, including the open style run.
     if (applied === 0) return
