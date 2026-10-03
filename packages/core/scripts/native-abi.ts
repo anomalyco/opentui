@@ -230,11 +230,10 @@ export async function generateNativeABI(
         const label = `${name} argument ${position}`
         const policy = policies[name]?.[position]
         if (!policy) throw new Error(`Missing pointer policy: ${label} (${type})`)
-        if (
-          policy.ffi === "buffer" &&
-          (policy.nullable !== "never" || policy.retention !== "call" || policy.source !== "view")
-        ) {
-          throw new Error(`Invalid transient buffer policy: ${label}`)
+        // AGENTS.md: transient non-null views use buffer; everything else needs ptr.
+        const transient = policy.nullable === "never" && policy.retention === "call" && policy.source === "view"
+        if ((policy.ffi === "buffer") !== transient) {
+          throw new Error(`Pointer policy must use ${transient ? "buffer" : "ptr"}: ${label}`)
         }
         if (callback !== (policy.source === "callback")) throw new Error(`Callback policy mismatch: ${label}`)
         if (position === "returns" && policy.ffi !== "ptr") throw new Error(`Pointer returns must use ptr: ${label}`)
