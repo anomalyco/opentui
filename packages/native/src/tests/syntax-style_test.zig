@@ -67,7 +67,8 @@ test "SyntaxStyle rejection - exhausted IDs preserve existing styles" {
 
 test "SyntaxStyle - registrations match a name-to-definition model" {
     const allocator = std.testing.allocator;
-    var prng = std.Random.DefaultPrng.init(0x5717);
+    const seed = 0x5717;
+    var prng = std.Random.DefaultPrng.init(seed);
     const random = prng.random();
     const style = try SyntaxStyle.init(allocator);
     defer style.deinit();
@@ -78,6 +79,7 @@ test "SyntaxStyle - registrations match a name-to-definition model" {
     defer model.deinit(allocator);
     const names = [_][]const u8{ "keyword", "Keyword", "", "a.b-c_d@e#f", "\u{4e2d}\u{6587}\u{1f600}", "x" ** 1000, "string", "comment" };
     for (0..400) |step| {
+        errdefer std.debug.print("style model failed: seed 0x{x} step {d}\n", .{ seed, step });
         const name = names[random.uintLessThan(usize, names.len)];
         var colors: [2]RGBA = undefined;
         for (&colors) |*color| color.* = .{ random.int(u16), random.int(u16), random.int(u16), random.int(u16) };

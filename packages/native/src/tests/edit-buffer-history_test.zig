@@ -275,7 +275,8 @@ test "EditBuffer - random edit sequences match an undo history model" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
-    var prng = std.Random.DefaultPrng.init(0x0505);
+    const seed = 0x0505;
+    var prng = std.Random.DefaultPrng.init(seed);
     const random = prng.random();
     const pieces = [_][]const u8{ "a", "Hello", " ", "\t", "\n", "x\ny", "\u{754c}", "e\u{301}", "\u{1f44d}\u{1f3fd}", "\u{1f1fa}\u{1f1f8}" };
     // Mirrors the rope: undo restores `undo.pop()` and pushes `current` (or the live state) for redo.
@@ -288,7 +289,8 @@ test "EditBuffer - random edit sequences match an undo history model" {
         var current: ?Entry = null;
         var text: []const u8 = "";
         var scratch: [4096]u8 = undefined;
-        for (0..400) |_| {
+        for (0..400) |step| {
+            errdefer std.debug.print("history model failed: seed 0x{x} {s} step {d}\n", .{ seed, @tagName(method), step });
             const before: Entry = .{ .text = text, .cursor = eb.getPrimaryCursor() };
             const piece = pieces[random.uintLessThan(usize, pieces.len)];
             const Change = enum { none, if_changed, stored, reset, restored };

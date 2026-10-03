@@ -335,7 +335,10 @@ test "EditBuffer - horizontal moves and backspace step over one cursor unit" {
             eb.moveLeft();
             try std.testing.expectEqual(case.stops[index], eb.getPrimaryCursor().col);
         }
-        // Backspace from the end deletes one unit per step back to an empty line.
+        // Backspace from the end deletes one unit per step, keeping a prefix, back to an empty line.
+        var text: [64]u8 = undefined;
+        var full: [64]u8 = undefined;
+        const full_text = full[0..eb.getText(&full)];
         try eb.setCursor(0, end);
         index = case.stops.len - 1;
         while (index > 0) {
@@ -343,8 +346,8 @@ test "EditBuffer - horizontal moves and backspace step over one cursor unit" {
             try eb.backspace();
             try std.testing.expectEqual(case.stops[index], eb.getPrimaryCursor().col);
             try std.testing.expectEqual(case.stops[index], eb.tb.lineWidthAt(0));
+            try std.testing.expect(std.mem.startsWith(u8, full_text, text[0..eb.getText(&text)]));
         }
-        var text: [64]u8 = undefined;
         try std.testing.expectEqual(@as(usize, 0), eb.getText(&text));
     }
 }

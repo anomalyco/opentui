@@ -45,11 +45,12 @@ fn marginCells(size: u32, margin: f32) u32 {
 test "EditorView - random edits and moves keep the cursor inside the scroll margins" {
     var pools = TestPools.init(std.testing.allocator);
     defer pools.deinit();
-    var prng = std.Random.DefaultPrng.init(0xed17);
+    const seed = 0xed17;
+    var prng = std.Random.DefaultPrng.init(seed);
     const random = prng.random();
     const pieces = [_][]const u8{ "a", "word ", "\n", "x\ny\nz", "\t", "\u{754c}", "AAAAAAAAAABBBBBBBBBBCCCCCCCCCC", "\n\n\n\n\n\n" };
     const margins = [_]f32{ 0, 0.15, 0.3, 0.5 };
-    for (0..80) |_| {
+    for (0..80) |run| {
         const eb = try EditBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth, null);
         defer eb.deinit();
         const ev = try EditorView.init(std.testing.allocator, eb, random.intRangeAtMost(u32, 1, 24), random.intRangeAtMost(u32, 1, 10));
@@ -57,7 +58,8 @@ test "EditorView - random edits and moves keep the cursor inside the scroll marg
         ev.setWrapMode(random.enumValue(text_buffer.WrapMode));
         const margin = margins[random.uintLessThan(usize, margins.len)];
         ev.setScrollMargin(margin);
-        for (0..60) |_| {
+        for (0..60) |step| {
+            errdefer std.debug.print("viewport property failed: seed 0x{x} run {d} step {d}\n", .{ seed, run, step });
             const row_before = ev.getVisualCursor().visual_row + ev.getViewport().?.y;
             const op = random.uintLessThan(u8, 12);
             switch (op) {
