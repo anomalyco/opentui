@@ -180,11 +180,10 @@ const editorSetters = [
   "textColor",
 ]
 const throwsAfterDestroy: Record<string, string[]> = {
-  CodeRenderable: ["scrollX", "scrollY"], // U20 (TextBufferRenderable setters)
+  CodeRenderable: ["scrollX", "scrollY"], // threw on `main` too (U20 Also-on-main)
   MarkdownRenderable: ["internalBlockMode", "renderNode"], // U23
-  TextBufferRenderable: ["scrollX", "scrollY"], // U20
-  TextRenderable: ["content", "scrollX", "scrollY"], // U20
-  TextTableRenderable: ["wrapMode"], // U20
+  TextBufferRenderable: ["scrollX", "scrollY"], // threw on `main` too (U20 Also-on-main)
+  TextRenderable: ["content", "scrollX", "scrollY"], // threw on `main` too (U20 Also-on-main)
   EditBufferRenderable: editorSetters, // U21
   InputRenderable: [...editorSetters, "focusedBackgroundColor", "focusedTextColor", "maxLength", "value", "focus()"], // U21
   TextareaRenderable: [...editorSetters, "focusedBackgroundColor", "focusedTextColor", "focus()"], // U21
