@@ -114,8 +114,10 @@ Each shell gets one Session before middleware runs. Middleware output, terminal
 setup, frames, raw writes, and restoration share its ordered output budget.
 The native driver borrows the actual SSH channel and acknowledges bytes on write
 completion, not `drain`. It does not add a second output queue or copy adapter.
-Core's production limits currently allow 4 MiB of retained output and reserve
-restoration capacity; queued and unacknowledged bytes remain charged.
+Core's production limits currently allow 8 MiB of retained output and reserve one
+64 KiB chunk of it for terminal control and restoration, so one raw write can be
+at most 8,323,072 bytes (127 × 64 KiB) when nothing else is queued. Queued and
+unacknowledged bytes remain charged.
 
 `session.write()` is still synchronous and returns `void`. Temporary capacity
 pressure throws `OutputPressureError` with code `"OUTPUT_PRESSURE"`; the rejected
