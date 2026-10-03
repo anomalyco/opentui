@@ -2741,11 +2741,6 @@ export class CliRenderer extends EventEmitter implements RenderContext {
         }
         throw error
       }
-
-      if (commits.length > 0) {
-        // Defer actual terminal writes to the render loop so commits can be batched.
-        this.requestRender()
-      }
     }
 
     if (typeof resolvedCallback === "function") {
