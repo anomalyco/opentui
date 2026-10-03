@@ -33,15 +33,6 @@ pub fn validateColor(color: RGBA) error{InvalidOptions}!void {
     if (ansi.getMeta(color) != ansi.packMeta(intent, if (intent == .indexed) ansi.slot(color) else 0)) return error.InvalidOptions;
 }
 
-fn mapGraphemeAcquire(err: gp.GraphemePoolError) error{ OutOfMemory, TextLimit, TrackerLimit } {
-    return switch (err) {
-        error.OutOfMemory => error.OutOfMemory,
-        error.GraphemeTooLong => error.TextLimit,
-        error.RefcountOverflow => error.TrackerLimit,
-        error.InvalidId, error.WrongGeneration => unreachable,
-    };
-}
-
 /// Checked text accepts controls: layout gives them zero width, and cells never hold them.
 pub fn validateTextInput(text: []const u8) error{ TextLimit, InvalidUnicode }!void {
     if (text.len > text_bytes_max) return error.TextLimit;
@@ -1833,14 +1824,8 @@ pub const OptimizedBuffer = struct {
         try validateTextInput(text);
         if (y < 0 or x >= self.width or y >= self.height or text.len == 0) return;
         const row: u32 = @intCast(y);
-        if (self.width > math.maxInt(i32) or self.height > math.maxInt(i32)) return error.InvalidOptions;
-        if (self.getCurrentScissorRect()) |clip| {
-            if (clip.width > math.maxInt(i32) or clip.height > math.maxInt(i32) or
-                @as(i64, clip.x) + clip.width > math.maxInt(i32) or
-                @as(i64, clip.y) + clip.height > math.maxInt(i32)) return error.InvalidOptions;
-        }
+        try self.checkDrawState();
         const opacity = self.getCurrentOpacity();
-        if (!math.isFinite(opacity) or opacity < 0 or opacity > 1) return error.InvalidOptions;
         if (self.skipTransparentCellDraw(opacity, isFullyTransparent(opacity, fg, bg orelse ansi.rgbColor(0, 0, 0, 0)))) return;
 
         var scratch = std.heap.stackFallback(4096, self.allocator);
@@ -1865,12 +1850,7 @@ pub const OptimizedBuffer = struct {
         while (layout.next()) |glyph| {
             try runs.ensureUnusedCapacity(scratch_allocator, 1);
             const encoded: u32 = if (glyph.blank) DEFAULT_SPACE_CHAR else if (glyph.bytes.len == 1) glyph.bytes[0] else encoded: {
-                const id = self.pool.acquire(glyph.bytes) catch |err| return mapGraphemeAcquire(err);
-                // Leave one reference for the destination tracker's first use.
-                if ((self.pool.getRefcount(id) catch unreachable) == math.maxInt(u32)) {
-                    self.pool.decref(id) catch unreachable;
-                    return error.TrackerLimit;
-                }
+                const id = try self.acquireGlyph(glyph.bytes);
                 grapheme_count += 1;
                 break :encoded gp.packGraphemeStart(id, glyph.width);
             };
@@ -1933,18 +1913,13 @@ pub const OptimizedBuffer = struct {
         fg: RGBA,
         bg: RGBA,
         attributes: u32,
-    ) error{ InvalidUnicode, InvalidOptions, TextLimit, UnsupportedResource, OutOfMemory, TrackerLimit }!void {
+    ) error{ InvalidUnicode, InvalidOptions, OutOfMemory, TrackerLimit }!void {
         if (attributes & ~ansi.TextAttributes.ATTRIBUTE_BASE_MASK != 0) return error.InvalidOptions;
         try validateColor(fg);
         try validateColor(bg);
         if (grapheme_bytes.len == 0 or cell_width == 0 or x >= self.width or y >= self.height) return;
         if (cell_width > self.width - x) return;
-        if (self.width > math.maxInt(i32) or self.height > math.maxInt(i32)) return error.InvalidOptions;
-        if (self.getCurrentScissorRect()) |clip| {
-            if (clip.width > math.maxInt(i32) or clip.height > math.maxInt(i32) or
-                @as(i64, clip.x) + clip.width > math.maxInt(i32) or
-                @as(i64, clip.y) + clip.height > math.maxInt(i32)) return error.InvalidOptions;
-        }
+        try self.checkDrawState();
         for (0..cell_width) |offset| {
             if (!self.isPointInScissor(@intCast(x + offset), @intCast(y))) return;
         }
@@ -1961,11 +1936,7 @@ pub const OptimizedBuffer = struct {
             return;
         }
 
-        const id = self.pool.acquire(grapheme_bytes) catch |err| return mapGraphemeAcquire(err);
-        if ((self.pool.getRefcount(id) catch unreachable) == math.maxInt(u32)) {
-            self.pool.decref(id) catch unreachable;
-            return error.TrackerLimit;
-        }
+        const id = try self.acquireGlyph(grapheme_bytes);
         defer self.pool.decref(id) catch unreachable;
         try self.storage.ensureTrackerCapacity(
             @as(u64, self.grapheme_tracker.getGraphemeCount()) + 1,
@@ -2283,10 +2254,7 @@ pub const OptimizedBuffer = struct {
         x: i32,
         y: i32,
     ) !void {
-        self.drawTextBufferInternal(TextBufferView, true, text_buffer_view, x, y) catch |err| return switch (err) {
-            error.GraphemeTooLong => error.TextLimit,
-            else => err,
-        };
+        return self.drawTextBufferInternal(TextBufferView, true, text_buffer_view, x, y);
     }
 
     /// Internal implementation that accepts either TextBufferView or EditorView
@@ -2799,15 +2767,11 @@ pub const OptimizedBuffer = struct {
         if (base_bytes.len + mark.len > combined.len) return null;
         @memcpy(combined[0..base_bytes.len], base_bytes);
         @memcpy(combined[base_bytes.len..][0..mark.len], mark);
-        const id = self.pool.acquire(combined[0 .. base_bytes.len + mark.len]) catch |err| {
-            if (checked) return mapGraphemeAcquire(err);
+        const id = self.acquireGlyph(combined[0 .. base_bytes.len + mark.len]) catch |err| {
+            if (checked) return err;
             self.logger.warn("Failed to allocate grapheme: {}", .{err});
             return null;
         };
-        if ((self.pool.getRefcount(id) catch unreachable) == math.maxInt(u32)) {
-            self.pool.decref(id) catch unreachable;
-            return error.TrackerLimit;
-        }
         defer self.pool.decref(id) catch unreachable;
         try self.storage.ensureTrackerCapacity(
             @as(u64, self.grapheme_tracker.getGraphemeCount()) + 1,
@@ -2828,15 +2792,11 @@ pub const OptimizedBuffer = struct {
         if (bytes.len == 1 and width == 1 and bytes[0] >= 32) {
             encoded_char = @as(u32, bytes[0]);
         } else {
-            const gid = self.pool.acquire(bytes) catch |err| {
-                if (checked) return mapGraphemeAcquire(err);
+            const gid = self.acquireGlyph(bytes) catch |err| {
+                if (checked) return err;
                 self.logger.warn("Failed to allocate grapheme: {}", .{err});
                 return null;
             };
-            if ((try self.pool.getRefcount(gid)) == math.maxInt(u32)) {
-                self.pool.decref(gid) catch unreachable;
-                return error.TrackerLimit;
-            }
             // Temporary reference reclaims glyphs discarded by blending.
             retained_gid = gid;
             try self.storage.ensureTrackerCapacity(
@@ -2874,10 +2834,7 @@ pub const OptimizedBuffer = struct {
         x: i32,
         y: i32,
     ) !void {
-        self.drawTextBufferInternal(EditorView, true, editor_view, x, y) catch |err| return switch (err) {
-            error.GraphemeTooLong => error.TextLimit,
-            else => err,
-        };
+        return self.drawTextBufferInternal(EditorView, true, editor_view, x, y);
     }
 
     /// Draw a complete border grid in a single call.
@@ -3569,7 +3526,12 @@ pub const OptimizedBuffer = struct {
 
     fn checkPixelDraw(self: *const OptimizedBuffer) !void {
         try self.checkImageResources();
-        if (self.width > math.maxInt(i32) or self.height > math.maxInt(i32)) return error.InvalidDimensions;
+        try self.checkDrawState();
+    }
+
+    /// Checked draws use i32 cell arithmetic, so the target and its scissor end must fit i32.
+    fn checkDrawState(self: *const OptimizedBuffer) error{InvalidOptions}!void {
+        if (self.width > math.maxInt(i32) or self.height > math.maxInt(i32)) return error.InvalidOptions;
         if (self.getCurrentScissorRect()) |clip| {
             if (clip.width > math.maxInt(i32) or clip.height > math.maxInt(i32) or
                 @as(i64, clip.x) + clip.width > math.maxInt(i32) or
@@ -3577,6 +3539,23 @@ pub const OptimizedBuffer = struct {
         }
         const opacity = self.getCurrentOpacity();
         if (!math.isFinite(opacity) or opacity < 0 or opacity > 1) return error.InvalidOptions;
+    }
+
+    /// Takes a temporary pool reference for a glyph that a cell will hold. The caller releases
+    /// it after the cell write, so the destination tracker can still take its first reference.
+    fn acquireGlyph(self: *OptimizedBuffer, bytes: []const u8) error{ OutOfMemory, TrackerLimit }!u32 {
+        // Callers draw a cluster over grapheme_bytes_max as blank cells instead.
+        assert(bytes.len <= grapheme_bytes_max);
+        const id = self.pool.acquire(bytes) catch |err| return switch (err) {
+            error.OutOfMemory => error.OutOfMemory,
+            error.RefcountOverflow => error.TrackerLimit,
+            error.GraphemeTooLong, error.InvalidId, error.WrongGeneration => unreachable,
+        };
+        if ((self.pool.getRefcount(id) catch unreachable) == math.maxInt(u32)) {
+            self.pool.decref(id) catch unreachable;
+            return error.TrackerLimit;
+        }
+        return id;
     }
 
     pub fn drawSuperSampleBufferChecked(self: *OptimizedBuffer, x: i32, y: i32, pixels: []const u8, format: u8, stride: u32) !void {
