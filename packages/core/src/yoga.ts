@@ -1,7 +1,6 @@
 import { nativeConstants } from "./native-abi.generated.js"
 import {
   NATIVE_EDGE_NONE,
-  NATIVE_STYLE_BORDER_WIDTH,
   NativeStyleFlags,
   NativeStyleGroup,
   resolveRenderLib,
@@ -352,14 +351,6 @@ export function sceneSetDimension(
     value.value,
     disableFlexShrink ? NativeStyleFlags.DisableFlexShrink : NativeStyleFlags.None,
   )
-}
-
-export function sceneSetBorder(scene: NativeScene, node: SceneStyleNode, edge: Edge, border: number | undefined): void {
-  scene.setStyle(node, NativeStyleGroup.Border, NATIVE_STYLE_BORDER_WIDTH, edge, Unit.Point, border ?? NaN)
-}
-
-export function sceneGetBorder(scene: NativeScene, node: SceneStyleNode, edge: Edge): number {
-  return scene.getStyle(node, NativeStyleGroup.Border, NATIVE_STYLE_BORDER_WIDTH, edge).value
 }
 
 const YogaEdgeLayoutKind = {
@@ -997,30 +988,6 @@ export class Node {
 
   setWidth(width: ValueInput): void {
     this.setValue(YogaValueKind.Width, NATIVE_EDGE_NONE, width)
-  }
-
-  setDimension(dimension: Dimension, input: ValueInput, disableFlexShrink: boolean = false): void {
-    if (this.freed) return
-    const value = parseYogaValue(input)
-    this.renderLib.yogaNodeStyleSetDimension(this.ptr, dimension, value.unit, value.value, disableFlexShrink)
-  }
-
-  setPositions(positions: readonly [ValueInput, ValueInput, ValueInput, ValueInput]): void {
-    if (this.freed) return
-    const units = new Uint32Array(Edge.Bottom + 1)
-    const values = new Float32Array(Edge.Bottom + 1)
-    let mask = 0
-    for (let edge = 0; edge <= Edge.Bottom; edge++) {
-      if (positions[edge] === undefined) continue
-      const value = parseYogaValue(positions[edge])
-      if (!Number.isInteger(value.unit) || value.unit < Unit.Undefined || value.unit > Unit.Auto) {
-        throw new YogaError("yogaNodeStyleSetPositionsChecked", YogaStatus.InvalidArgument)
-      }
-      mask |= 1 << edge
-      units[edge] = value.unit
-      values[edge] = value.value
-    }
-    this.renderLib.yogaNodeStyleSetPositions(this.ptr, mask, units, values)
   }
 
   setWidthPercent(width: number | undefined): void {

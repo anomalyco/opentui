@@ -361,9 +361,6 @@ export enum NativeStyleFlags {
 /** ENUM/FLOAT/DIMENSION writes occupy this unused-edge slot. */
 export const NATIVE_EDGE_NONE = nativeConstants.OT_EDGE_NONE
 
-/** Scene border style reads use this width kind. */
-export const NATIVE_STYLE_BORDER_WIDTH = nativeConstants.OT_STYLE_BORDER_WIDTH
-
 export enum NativeBorder {
   None = nativeConstants.OT_BORDER_NONE,
   Left = nativeConstants.OT_BORDER_LEFT,
@@ -1718,7 +1715,6 @@ if (Math.max(propertyStyleWords, propertyWordLength((1 << scenePropertyWords.len
 export class SceneStaging {
   static readonly limit = nativeConstants.OT_SCENE_MUTATIONS_MAX
   private words: Uint32Array
-  private floats: Float32Array
   private readonly paintBySlot = new Map<number, number>()
   private readonly packScratch = new Uint32Array(16)
   private readonly styleValue = new Float32Array(1)
@@ -1739,7 +1735,6 @@ export class SceneStaging {
       throw new RangeError("Scene staging capacity must be within the native mutation limit")
     }
     this.words = new Uint32Array(propertySlotWords * initialCapacity)
-    this.floats = new Float32Array(this.words.buffer)
   }
 
   get pending(): boolean {
@@ -1794,7 +1789,6 @@ export class SceneStaging {
     )
     next.set(this.words.subarray(0, this.encodedWords))
     this.words = next
-    this.floats = new Float32Array(next.buffer)
   }
 
   /** Callers write every field word; only the trailing alignment word needs clearing. */
@@ -2791,8 +2785,6 @@ const yogaSymbols = {
   yogaNodeStyleSetBorderChecked: { args: ["ptr", "u32", "f32"], returns: "u32" },
   yogaNodeStyleGetBorderChecked: { args: ["ptr", "u32", "buffer"], returns: "u32" },
   yogaNodeStyleSetValueChecked: { args: ["ptr", "u32", "u32", "u32", "f32"], returns: "u32" },
-  yogaNodeStyleSetDimensionChecked: { args: ["ptr", "u32", "u32", "f32", "u32"], returns: "u32" },
-  yogaNodeStyleSetPositionsChecked: { args: ["ptr", "u32", "buffer", "buffer"], returns: "u32" },
   yogaNodeStyleGetValueChecked: { args: ["ptr", "u32", "u32", "buffer"], returns: "u32" },
   yogaNodeSetMeasureFuncChecked: { args: ["ptr", "u32"], returns: "u32" },
   yogaNodeUnsetMeasureFuncChecked: { args: ["ptr"], returns: "u32" },
@@ -7074,25 +7066,6 @@ export class FFIRenderLib {
     })
   }
 
-  public sceneSetBoxBorderStyle(
-    context: NativeContextHandle,
-    node: SceneNodeHandle,
-    style: NativeScenePaint["borderStyle"],
-    sides: number,
-  ): void {
-    const handle = encodeContextHandle(context, node)
-    const kind = SCENE_BORDER_STYLES.indexOf(style)
-    if (kind < 0) throw new TypeError("Unknown native scene border style")
-    const mask = toSafeFFIU32Length(sides, "Box border sides")
-    this.getYogaHost().runMutation(() => {
-      const pointer = this.nativeContextPointer(context, "ot_scene_set_box_border_style")
-      nativeResult(
-        "ot_scene_set_box_border_style",
-        this.opentui.symbols.ot_scene_set_box_border_style(pointer, handle, kind, mask),
-      )
-    })
-  }
-
   public sceneSetSurface(
     context: NativeContextHandle,
     node: SceneNodeHandle,
@@ -8459,23 +8432,6 @@ export class FFIRenderLib {
 
   public yogaNodeStyleSetValue(node: Pointer, kind: number, edgeOrGutter: number, unit: number, value: number): void {
     this.yogaChecked("yogaNodeStyleSetValueChecked", true, node, kind, edgeOrGutter, unit, value)
-  }
-
-  public yogaNodeStyleSetDimension(
-    node: Pointer,
-    kind: number,
-    unit: number,
-    value: number,
-    disableFlexShrink: boolean,
-  ): void {
-    this.yogaChecked("yogaNodeStyleSetDimensionChecked", true, node, kind, unit, value, ffiBool(disableFlexShrink))
-  }
-
-  public yogaNodeStyleSetPositions(node: Pointer, edgeMask: number, units: Uint32Array, values: Float32Array): void {
-    if (units.length !== 4 || values.length !== 4) {
-      throw new YogaError("yogaNodeStyleSetPositionsChecked", YogaStatus.InvalidArgument)
-    }
-    this.yogaChecked("yogaNodeStyleSetPositionsChecked", true, node, edgeMask, units, values)
   }
 
   public yogaNodeStyleGetValue(node: Pointer, kind: number, edgeOrGutter: number): number | bigint {
