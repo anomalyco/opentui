@@ -8,6 +8,7 @@ import {
   type PointerInput,
 } from "./platform/ffi.js"
 import { writeFile } from "./platform/runtime.js"
+import { isWorkerRuntime } from "./platform/worker.js"
 import { existsSync, writeFileSync } from "fs"
 import {
   ATTRIBUTE_BASE_MASK,
@@ -111,6 +112,14 @@ export type NativeContextHandle = { readonly [nativeContextBrand]: true }
 
 /** Native hyperlink URL slot bound. Longer URLs fail allocation. */
 export const MAX_LINK_URL_BYTES = 512
+
+// Struct outputs use `buffer` instead of `ptr`: the call is cheaper, and `buffer` rejects a non-view with a TypeError
+// where `ptr` would accept a number as a raw address. Bun 1.3 rejects ArrayBuffer and DataView for `buffer`, so keep one
+// Uint8Array view per reusable struct.
+function allocFFIStruct(structDefinition: Parameters<typeof allocStruct>[0]) {
+  const storage = allocStruct(structDefinition)
+  return { ...storage, ffiView: new Uint8Array(storage.buffer) }
+}
 
 export interface NativeContextOptions {
   objectCapacity: number
@@ -962,28 +971,17 @@ const SCENE_TEXT_ALIGNS = ["left", "center", "right"] as const
 const SCENE_NODE_KINDS = ["root", "box", "text", "slider", "arrow", "editor", "custom", "text_view", "image"] as const
 const IMAGE_PROTOCOL_TO_ID = { auto: 0, kitty: 1, sixel: 2, blocks: 3 } as const
 const IMAGE_FITS = ["fit", "cover", "fill"] as const
-const BUFFER_DRAW_OPERATIONS = [
-  "clear",
-  "fill",
-  "text",
-  "cell",
-  "cellBlend",
-  "char",
-  "box",
-  "compose",
-  "respectAlpha",
-] as const
-const BUFFER_DRAW_LAYOUTS = [
-  nativeLayouts.ot_buffer_draw_clear,
-  nativeLayouts.ot_buffer_draw_fill,
-  nativeLayouts.ot_buffer_draw_text_record,
-  nativeLayouts.ot_buffer_draw_cell,
-  nativeLayouts.ot_buffer_draw_cell,
-  nativeLayouts.ot_buffer_draw_cell,
-  nativeLayouts.ot_buffer_draw_box,
-  nativeLayouts.ot_buffer_draw_compose,
-  nativeLayouts.ot_buffer_draw_alpha,
-] as const
+const BUFFER_DRAW_OPERATIONS = new Map<string, { id: number; size: number }>([
+  ["clear", { id: nativeConstants.OT_BUFFER_DRAW_CLEAR, size: nativeLayouts.ot_buffer_draw_clear.size }],
+  ["fill", { id: nativeConstants.OT_BUFFER_DRAW_FILL, size: nativeLayouts.ot_buffer_draw_fill.size }],
+  ["text", { id: nativeConstants.OT_BUFFER_DRAW_TEXT, size: nativeLayouts.ot_buffer_draw_text_record.size }],
+  ["cell", { id: nativeConstants.OT_BUFFER_DRAW_CELL, size: nativeLayouts.ot_buffer_draw_cell.size }],
+  ["cellBlend", { id: nativeConstants.OT_BUFFER_DRAW_CELL_BLEND, size: nativeLayouts.ot_buffer_draw_cell.size }],
+  ["char", { id: nativeConstants.OT_BUFFER_DRAW_CHAR, size: nativeLayouts.ot_buffer_draw_cell.size }],
+  ["box", { id: nativeConstants.OT_BUFFER_DRAW_BOX, size: nativeLayouts.ot_buffer_draw_box.size }],
+  ["compose", { id: nativeConstants.OT_BUFFER_DRAW_COMPOSE, size: nativeLayouts.ot_buffer_draw_compose.size }],
+  ["respectAlpha", { id: nativeConstants.OT_BUFFER_DRAW_RESPECT_ALPHA, size: nativeLayouts.ot_buffer_draw_alpha.size }],
+])
 const BUFFER_STACK_OPERATIONS = [
   "getOpacity",
   "pushScissor",
@@ -995,6 +993,9 @@ const BUFFER_STACK_OPERATIONS = [
 ] as const
 const SCENE_ARROW_DIRECTIONS = ["up", "down", "left", "right"] as const
 const MAX_FFI_U32 = 0xffff_ffff
+// Main-thread libraries, oldest first. The newest owns the process-global native log callback. Worker libraries never
+// install one: native code would keep calling it after the Worker exits.
+const processLogLibraries: FFIRenderLib[] = []
 // Global singleton state for FFI tracing to prevent duplicate exit handlers
 let globalTraceSymbols: Record<string, number[]> | null = null
 let globalFFILogPath: string | null = null
@@ -1026,6 +1027,13 @@ function toSafeFFIU32Length(value: number, label: string): number {
 
 function isFFIU32(value: number): boolean {
   return Number.isInteger(value) && value >= 0 && value <= MAX_FFI_U32
+}
+
+function toFFII32(value: number, label: string): number {
+  if (!Number.isInteger(value) || value < -0x8000_0000 || value > 0x7fff_ffff) {
+    throw new RangeError(`${label} must be a signed 32-bit integer`)
+  }
+  return value
 }
 
 function toFFIU64(value: bigint, label: string): bigint {
@@ -1213,9 +1221,11 @@ function createSceneFrameRecord() {
 
 function createBufferDrawRecord() {
   const buffer = new ArrayBuffer(nativeLayouts.ot_buffer_draw_box.size)
+  const records: Uint32Array[] = []
+  for (const { id, size } of BUFFER_DRAW_OPERATIONS.values()) records[id] = new Uint32Array(buffer, 0, size / 4)
   return {
     words: new Uint32Array(buffer),
-    records: BUFFER_DRAW_LAYOUTS.map((layout) => new Uint32Array(buffer, 0, layout.size / 4)),
+    records,
     signed: new Int32Array(buffer),
     colors: new Uint16Array(buffer),
     source: createContextHandleRecord(),
@@ -1228,8 +1238,8 @@ function encodeDrawPosition(
   options: BufferDrawPosition,
   base = 0,
 ): void {
-  signed[(base + fields.x.offset) / 4] = embeddedTerminalI32(options.x ?? 0, "Buffer x")
-  signed[(base + fields.y.offset) / 4] = embeddedTerminalI32(options.y ?? 0, "Buffer y")
+  signed[(base + fields.x.offset) / 4] = toFFII32(options.x ?? 0, "Buffer x")
+  signed[(base + fields.y.offset) / 4] = toFFII32(options.y ?? 0, "Buffer y")
 }
 
 function encodeDrawColors(
@@ -1242,6 +1252,19 @@ function encodeDrawColors(
   if (foreground !== undefined) contextBufferColor(foreground, colors, (base + fields.foreground.offset) / 2)
   if (background !== undefined) contextBufferColor(background, colors, (base + fields.background.offset) / 2)
   return background !== undefined
+}
+
+const DIAGNOSTIC_QUEUE_MAX = 64 // Version 1 C Contexts hold at most 64 diagnostic records.
+const DIAGNOSTIC_BATCH = 8 // Eight 4 KiB records keep the cached drain storage near 33 KB.
+
+function createDiagnosticDrainRecord() {
+  const layout = nativeLayouts.ot_diagnostic_drain
+  const output = new BigUint64Array(layout.size / 8)
+  const words = new Uint32Array(output.buffer)
+  // Native code rewrites these on success and leaves them unchanged on failure, so the record stays reusable.
+  words[layout.fields.struct_size.offset / 4] = layout.size
+  words[layout.fields.abi_version.offset / 4] = nativeConstants.OT_CONTEXT_ABI_VERSION
+  return { records: new Uint32Array((DIAGNOSTIC_BATCH * nativeLayouts.ot_diagnostic.size) / 4), output, words }
 }
 
 function createSceneLayoutRecord() {
@@ -1355,9 +1378,9 @@ function encodeBufferDrawRecord(
   sourceRecord: ReturnType<typeof createContextHandleRecord> = createContextHandleRecord(),
 ): EncodedBufferDraw {
   const { operation } = options
-  const operationId = BUFFER_DRAW_OPERATIONS.indexOf(operation)
-  if (operationId < 0) throw new TypeError("Invalid checked buffer drawing operation")
-  const size = BUFFER_DRAW_LAYOUTS[operationId].size
+  const encoding = BUFFER_DRAW_OPERATIONS.get(operation)
+  if (encoding === undefined) throw new TypeError("Invalid checked buffer drawing operation")
+  const { id: operationId, size } = encoding
   const word = base / 4
   const half = base / 2
   const header = nativeLayouts.ot_buffer_draw_header.fields
@@ -1451,15 +1474,8 @@ function encodeImageDrawOptions(options: NativeContextImageDraw, words: Uint32Ar
   const protocolId = IMAGE_PROTOCOL_TO_ID[options.protocol ?? "auto"]
   if (!Number.isInteger(protocolId)) throw new TypeError("Unknown image protocol")
   words[word + fields.protocol.offset / 4] = protocolId
-  for (const [field, coordinate] of [
-    ["x", options.x ?? 0],
-    ["y", options.y ?? 0],
-  ] as const) {
-    if (!Number.isInteger(coordinate) || coordinate < -0x80000000 || coordinate > 0x7fffffff) {
-      throw new RangeError("Image coordinates must be signed 32-bit integers")
-    }
-    signed[word + fields[field].offset / 4] = coordinate
-  }
+  signed[word + fields.x.offset / 4] = toFFII32(options.x ?? 0, "Image x")
+  signed[word + fields.y.offset / 4] = toFFII32(options.y ?? 0, "Image y")
   const sourceWidth = options.sourceWidth
   const sourceHeight = options.sourceHeight
   words[word + fields.flags.offset / 4] = (sourceWidth === undefined ? 0 : 1) | (sourceHeight === undefined ? 0 : 2)
@@ -1488,13 +1504,6 @@ function embeddedTerminalDimension(value: number, name: string) {
   return value
 }
 
-function embeddedTerminalI32(value: number, name: string) {
-  if (!Number.isInteger(value) || value < -0x8000_0000 || value > 0x7fff_ffff) {
-    throw new RangeError(`Embedded terminal ${name} must be a signed 32-bit integer`)
-  }
-  return value
-}
-
 function rgbaBuffer(value: RGBA): Uint16Array {
   return value.buffer
 }
@@ -1516,11 +1525,17 @@ function contextBufferColor(value: RGBA, color: Uint16Array = new Uint16Array(4)
 }
 
 function createScenePaintRecord() {
+  const { fields } = nativeLayouts.ot_scene_paint_options
   const record = createContextRecord(nativeLayouts.ot_scene_paint_options)
   return {
     record,
-    payload: new Uint32Array(record.buffer, 8, 16),
-    background: new Uint16Array(record.buffer, nativeLayouts.ot_scene_paint_options.fields.background.offset, 4),
+    // Property fields run from z_index up to the reserved tail word.
+    payload: new Uint32Array(
+      record.buffer,
+      fields.z_index.offset,
+      (fields.reserved.offset - fields.z_index.offset) / 4,
+    ),
+    background: new Uint16Array(record.buffer, fields.background.offset, 4),
     floats: new Float32Array(record.buffer),
     doubles: new Float64Array(record.buffer),
     colors: new Uint16Array(record.buffer),
@@ -1533,10 +1548,7 @@ function encodeScenePaint(paint: NativeScenePaintUpdate, scratch: ReturnType<typ
   const zIndex = paint.zIndex
   let fields = 0
   if (zIndex !== undefined) {
-    if (!Number.isInteger(zIndex) || zIndex < -0x8000_0000 || zIndex > 0x7fff_ffff) {
-      throw new RangeError("Scene zIndex must be a signed 32-bit integer")
-    }
-    record[layout.fields.z_index.offset / 4] = zIndex
+    record[layout.fields.z_index.offset / 4] = toFFII32(zIndex, "Scene zIndex")
     fields |= nativeConstants.OT_SCENE_PROPERTY_Z_INDEX
   }
   // Mirror scene.zig setPaint's range rules so staged paint cannot fail only at flush time.
@@ -1654,34 +1666,43 @@ function validateSceneStyle(group: number, kind: number, edge: number, unit: num
   if (!valid) throw new NativeError("ot_scene_set_style", NativeStatus.InvalidArgument)
 }
 
-const scenePropertyFields = [
-  "z_index",
-  "opacity",
-  "translate_x",
-  "translate_y",
-  "border_sides",
-  "should_fill",
-  "background",
-  "border_color",
-  "border_style",
-  "focusable",
-  "focused_border_color",
-] as const
-const scenePropertyWords = scenePropertyFields.map((name) => {
+// Packed paint records hold fields in header bit order, and SceneStaging indexes these entries by bit position.
+const scenePropertyWords = (
+  [
+    ["z_index", nativeConstants.OT_SCENE_PROPERTY_Z_INDEX],
+    ["opacity", nativeConstants.OT_SCENE_PROPERTY_OPACITY],
+    ["translate_x", nativeConstants.OT_SCENE_PROPERTY_TRANSLATE_X],
+    ["translate_y", nativeConstants.OT_SCENE_PROPERTY_TRANSLATE_Y],
+    ["border_sides", nativeConstants.OT_SCENE_PROPERTY_BORDER],
+    ["should_fill", nativeConstants.OT_SCENE_PROPERTY_SHOULD_FILL],
+    ["background", nativeConstants.OT_SCENE_PROPERTY_BACKGROUND],
+    ["border_color", nativeConstants.OT_SCENE_PROPERTY_BORDER_COLOR],
+    ["border_style", nativeConstants.OT_SCENE_PROPERTY_BORDER_STYLE],
+    ["focusable", nativeConstants.OT_SCENE_PROPERTY_FOCUSABLE],
+    ["focused_border_color", nativeConstants.OT_SCENE_PROPERTY_FOCUSED_BORDER_COLOR],
+  ] as const
+).map(([name, bit], index) => {
+  if (bit !== 1 << index) throw new Error(`Scene property ${name} is out of header bit order`)
   const field = nativeLayouts.ot_scene_paint_options.fields[name]
   return { offset: field.offset / 4, length: field.size / 4 }
 })
 const propertyHeaderWords = nativeLayouts.ot_scene_property_update.size / 4
 const propertySlotWords = nativeConstants.OT_SCENE_PROPERTY_RECORD_MAX / 4
 const propertyStyle = nativeConstants.OT_SCENE_PROPERTY_STYLE
+const propertyStyleWords = propertyHeaderWords + nativeLayouts.ot_scene_style_property.size / 4
 
 function propertyWordLength(fields: number): number {
-  if (fields === propertyStyle) return 10
+  if (fields === propertyStyle) return propertyStyleWords
   let words = propertyHeaderWords
   for (let index = 0; index < scenePropertyWords.length; index++) {
     if (fields & (1 << index)) words += scenePropertyWords[index].length
   }
   return (words + 1) & ~1
+}
+
+// SceneStaging sizes its buffer in records of OT_SCENE_PROPERTY_RECORD_MAX bytes.
+if (Math.max(propertyStyleWords, propertyWordLength((1 << scenePropertyWords.length) - 1)) > propertySlotWords) {
+  throw new Error("Scene property records exceed OT_SCENE_PROPERTY_RECORD_MAX")
 }
 
 /** One ordered property stream, stored in native wire layout. Visual writes coalesce
@@ -2236,13 +2257,8 @@ export class NativePaintRecorder {
   stack(options: NativeBufferStack): number {
     const operation = BUFFER_STACK_OPERATIONS.indexOf(options.operation)
     if (operation < 0) throw new TypeError("Invalid checked buffer stack operation")
-    const x = options.x ?? 0
-    const y = options.y ?? 0
-    for (const coordinate of [x, y]) {
-      if (!Number.isInteger(coordinate) || coordinate < -0x80000000 || coordinate > 0x7fffffff) {
-        throw new RangeError("Buffer scissor coordinates must be signed 32-bit integers")
-      }
-    }
+    const x = toFFII32(options.x ?? 0, "Buffer scissor x")
+    const y = toFFII32(options.y ?? 0, "Buffer scissor y")
     const width = toSafeFFIU32Length(options.width ?? 0, "Buffer scissor width")
     const height = toSafeFFIU32Length(options.height ?? 0, "Buffer scissor height")
     const opacity = options.opacity ?? 1
@@ -2332,8 +2348,8 @@ export class NativePaintRecorder {
       const input = recordedPixels(data, byteLength)
       const base = this.reserve(nativeConstants.OT_SCENE_RECORD_PACKED, layout.size + input.byteLength)
       const fields = layout.fields
-      this.signed[(base + fields.x.offset) / 4] = embeddedTerminalI32(x, "Packed buffer x")
-      this.signed[(base + fields.y.offset) / 4] = embeddedTerminalI32(y, "Packed buffer y")
+      this.signed[(base + fields.x.offset) / 4] = toFFII32(x, "Packed buffer x")
+      this.signed[(base + fields.y.offset) / 4] = toFFII32(y, "Packed buffer y")
       this.words[(base + fields.width.offset) / 4] = toSafeFFIU32Length(width, "Packed buffer dimension")
       this.words[(base + fields.height.offset) / 4] = toSafeFFIU32Length(height, "Packed buffer dimension")
       this.words[(base + fields.byte_count.offset) / 4] = input.byteLength
@@ -2360,8 +2376,8 @@ export class NativePaintRecorder {
       const input = recordedPixels(data, byteLength)
       const base = this.reserve(nativeConstants.OT_SCENE_RECORD_SUPERSAMPLE, layout.size + input.byteLength)
       const fields = layout.fields
-      this.signed[(base + fields.x.offset) / 4] = embeddedTerminalI32(x, "Supersample buffer x")
-      this.signed[(base + fields.y.offset) / 4] = embeddedTerminalI32(y, "Supersample buffer y")
+      this.signed[(base + fields.x.offset) / 4] = toFFII32(x, "Supersample buffer x")
+      this.signed[(base + fields.y.offset) / 4] = toFFII32(y, "Supersample buffer y")
       this.words[(base + fields.format.offset) / 4] = format === "bgra8unorm" ? 0 : 1
       this.words[(base + fields.stride.offset) / 4] = toSafeFFIU32Length(stride, "Supersample buffer dimension")
       this.words[(base + fields.byte_count.offset) / 4] = input.byteLength
@@ -2390,8 +2406,8 @@ export class NativePaintRecorder {
       const layout = nativeLayouts.ot_scene_record_grayscale
       const fields = layout.fields
       const base = this.reserve(nativeConstants.OT_SCENE_RECORD_GRAYSCALE, layout.size + samples.length * 4)
-      this.signed[(base + fields.x.offset) / 4] = embeddedTerminalI32(x, "Grayscale x")
-      this.signed[(base + fields.y.offset) / 4] = embeddedTerminalI32(y, "Grayscale y")
+      this.signed[(base + fields.x.offset) / 4] = toFFII32(x, "Grayscale x")
+      this.signed[(base + fields.y.offset) / 4] = toFFII32(y, "Grayscale y")
       this.words[(base + fields.width.offset) / 4] = toSafeFFIU32Length(width, "Grayscale source width")
       this.words[(base + fields.height.offset) / 4] = toSafeFFIU32Length(height, "Grayscale source height")
       this.words[(base + fields.flags.offset) / 4] =
@@ -2451,8 +2467,8 @@ export class NativePaintRecorder {
         layout.size,
       )
       this.encodeHandle(source, base + layout.fields.source.offset)
-      this.signed[(base + layout.fields.x.offset) / 4] = embeddedTerminalI32(x, "View x") || 0
-      this.signed[(base + layout.fields.y.offset) / 4] = embeddedTerminalI32(y, "View y") || 0
+      this.signed[(base + layout.fields.x.offset) / 4] = toFFII32(x, "View x") || 0
+      this.signed[(base + layout.fields.y.offset) / 4] = toFFII32(y, "View y") || 0
     } catch (error) {
       this.rollback(length, slot)
       throw error
@@ -2490,8 +2506,8 @@ export class NativePaintRecorder {
       const base = this.reserve(nativeConstants.OT_SCENE_RECORD_UNICODE, layout.size)
       this.encodeHandle(source, base + fields.unicode.offset)
       this.words[(base + fields.index.offset) / 4] = toSafeFFIU32Length(index, "Unicode character index")
-      this.signed[(base + fields.x.offset) / 4] = embeddedTerminalI32(x, "Unicode x")
-      this.signed[(base + fields.y.offset) / 4] = embeddedTerminalI32(y, "Unicode y")
+      this.signed[(base + fields.x.offset) / 4] = toFFII32(x, "Unicode x")
+      this.signed[(base + fields.y.offset) / 4] = toFFII32(y, "Unicode y")
       this.words[(base + fields.attributes.offset) / 4] = toSafeFFIU32Length(attributes, "Unicode attributes")
       contextBufferColor(foreground, this.colors, (base + fields.foreground.offset) / 2)
       contextBufferColor(background, this.colors, (base + fields.background.offset) / 2)
@@ -2605,7 +2621,6 @@ function encodeEditorStyle(style: NativeEditorStyle): Uint32Array {
   return record
 }
 
-/** TextEncoder.encode converted any value to a string; draws keep that for callers that pass non-strings. */
 /** Converts drawing text as TextEncoder.encode did: undefined draws nothing and other values use ToString. */
 function drawTextString(text: unknown): string {
   return typeof text === "string" ? text : text === undefined ? "" : `${text}`
@@ -2621,19 +2636,6 @@ function drawRecordBottomTitle(options: NativeBufferDraw): string {
   return options.operation === "box" && options.bottomTitle ? drawTextString(options.bottomTitle) : ""
 }
 
-function bufferStackCoordinate(coordinate: number): number {
-  if (!Number.isInteger(coordinate) || coordinate < -0x80000000 || coordinate > 0x7fffffff) {
-    throw new RangeError("Buffer scissor coordinates must be signed 32-bit integers")
-  }
-  return coordinate
-}
-
-function sceneHitCoordinate(coordinate: number): void {
-  if (!Number.isInteger(coordinate) || coordinate < -0x8000_0000 || coordinate > 0x7fff_ffff) {
-    throw new RangeError("Scene hit coordinates must be signed 32-bit integers")
-  }
-}
-
 function createEditorSelectionRecord() {
   const record = createContextRecord(nativeLayouts.ot_editor_selection)
   return {
@@ -2642,13 +2644,6 @@ function createEditorSelectionRecord() {
     colors: new Uint16Array(record.buffer),
     changed: new Uint32Array(1),
   }
-}
-
-function editorSelectionCoordinate(value: number): number {
-  if (!Number.isInteger(value) || value < -0x80000000 || value > 0x7fffffff) {
-    throw new RangeError("Editor selection coordinates must fit signed 32-bit cells")
-  }
-  return value
 }
 
 function encodeEditorSelection(
@@ -2662,10 +2657,10 @@ function encodeEditorSelection(
   record[layout.fields.behavior.offset / 4] = toSafeFFIU32Length(selection.behavior ?? 0, "Editor selection behavior")
   record[layout.fields.start.offset / 4] = toSafeFFIU32Length(selection.start ?? 0, "Editor selection start")
   record[layout.fields.end.offset / 4] = toSafeFFIU32Length(selection.end ?? 0, "Editor selection end")
-  coordinates[layout.fields.anchor_x.offset / 4] = editorSelectionCoordinate(selection.anchorX ?? 0)
-  coordinates[layout.fields.anchor_y.offset / 4] = editorSelectionCoordinate(selection.anchorY ?? 0)
-  coordinates[layout.fields.focus_x.offset / 4] = editorSelectionCoordinate(selection.focusX ?? 0)
-  coordinates[layout.fields.focus_y.offset / 4] = editorSelectionCoordinate(selection.focusY ?? 0)
+  coordinates[layout.fields.anchor_x.offset / 4] = toFFII32(selection.anchorX ?? 0, "Editor selection anchorX")
+  coordinates[layout.fields.anchor_y.offset / 4] = toFFII32(selection.anchorY ?? 0, "Editor selection anchorY")
+  coordinates[layout.fields.focus_x.offset / 4] = toFFII32(selection.focusX ?? 0, "Editor selection focusX")
+  coordinates[layout.fields.focus_y.offset / 4] = toFFII32(selection.focusY ?? 0, "Editor selection focusY")
   record[layout.fields.update_cursor.offset / 4] = toFFIBool(
     selection.updateCursor ?? false,
     "Editor selection updateCursor",
@@ -2731,8 +2726,17 @@ function decodeContextTextLines(lines: Uint32Array, widthColsMax: number): LineI
   return info
 }
 
-function widthMethodCode(widthMethod: WidthMethod): number {
-  return widthMethod === "wcwidth" ? 0 : widthMethod === "unicode-wide" ? 3 : 1
+const WIDTH_METHOD_IDS = new Map<string, number>([
+  ["wcwidth", nativeConstants.OT_WIDTH_METHOD_WCWIDTH],
+  ["unicode", nativeConstants.OT_WIDTH_METHOD_UNICODE],
+  ["no-zwj", nativeConstants.OT_WIDTH_METHOD_NO_ZWJ],
+  ["unicode-wide", nativeConstants.OT_WIDTH_METHOD_UNICODE_WIDE],
+])
+
+function widthMethodId(widthMethod: WidthMethod | "no-zwj", label: string): number {
+  const id = WIDTH_METHOD_IDS.get(widthMethod)
+  if (id === undefined) throw new TypeError(`Unknown Context ${label} width method`)
+  return id
 }
 
 function widthMethodFromCode(code: number): WidthMethod {
@@ -2916,7 +2920,7 @@ function getOpenTUILib(libPath?: string) {
       returns: "i32",
     },
     audioCreateStream: {
-      args: ["ptr", "ptr", "ptr"],
+      args: ["ptr", "buffer", "buffer"],
       returns: "i32",
     },
     audioWriteStream: {
@@ -2944,11 +2948,11 @@ function getOpenTUILib(libPath?: string) {
       returns: "i32",
     },
     audioGetStreamStats: {
-      args: ["ptr", "u32", "ptr"],
+      args: ["ptr", "u32", "buffer"],
       returns: "i32",
     },
     audioCloseStream: {
-      args: ["ptr", "u32", "u32", "ptr"],
+      args: ["ptr", "u32", "u32", "buffer"],
       returns: "i32",
     },
     audioLoad: {
@@ -3270,6 +3274,21 @@ export enum LogLevel {
   Debug = 3,
 }
 
+// Indexed by LogLevel.
+const LOG_METHODS = ["error", "warn", "info", "debug"] as const
+
+/** Native destroy symbols that take a Context and one object handle. */
+type ContextObjectDestroySymbol =
+  | "ot_buffer_destroy"
+  | "ot_edit_buffer_destroy"
+  | "ot_editor_view_destroy"
+  | "ot_embedded_terminal_destroy"
+  | "ot_image_destroy"
+  | "ot_syntax_style_destroy"
+  | "ot_text_buffer_destroy"
+  | "ot_text_buffer_view_destroy"
+  | "ot_unicode_destroy"
+
 /**
  * VisualCursor represents a cursor position with both visual and logical coordinates.
  * Visual coordinates (visualRow, visualCol) are VIEWPORT-RELATIVE.
@@ -3369,7 +3388,7 @@ export class FFIRenderLib {
   private yogaHost?: YogaHost
   private readonly ffiStructStorage = {
     audioStreamStats: {
-      ...allocStruct(AudioStreamStatsStruct),
+      ...allocFFIStruct(AudioStreamStatsStruct),
       result: {
         bytesReceived: 0n,
         framesDecoded: 0n,
@@ -3415,6 +3434,7 @@ export class FFIRenderLib {
   private readonly emptyBytes = new Uint8Array(0)
   public readonly decoder: TextDecoder = new TextDecoder()
   private logCallbackWrapper: FFICallbackInstance | null = null
+  private diagnosticDrain?: ReturnType<typeof createDiagnosticDrainRecord>
   private nativeSpanFeedCallbackWrapper: FFICallbackInstance | null = null
   private nativeSpanFeedHandlers = new Map<Pointer, NativeSpanFeedEventHandler>()
 
@@ -3433,14 +3453,8 @@ export class FFIRenderLib {
     const context = Object.freeze({}) as NativeContextHandle
     if (this.disposed) throw new Error("OpenTUI native library is disposed")
     nativeResult("ot_context_create", this.opentui.symbols.ot_context_create(record, output))
-    const pointer = toPointer(output[0])
-    try {
-      this.nativeContexts.set(context, pointer)
-      return context
-    } catch (error) {
-      this.opentui.symbols.ot_context_destroy(pointer)
-      throw error
-    }
+    this.nativeContexts.set(context, toPointer(output[0]))
+    return context
   }
 
   private nativeContextPointer(context: NativeContextHandle, operation: string): Pointer {
@@ -3470,6 +3484,18 @@ export class FFIRenderLib {
     this.contextEditEvents.delete(context)
   }
 
+  /** Destroys one Context object through the native destroy symbol of its kind. */
+  private destroyContextObject(
+    context: NativeContextHandle,
+    object: ContextObjectHandle,
+    operation: ContextObjectDestroySymbol,
+  ): void {
+    this.getYogaHost().assertMutable()
+    const handle = encodeContextHandle(context, object)
+    const pointer = this.nativeContextPointer(context, operation)
+    nativeResult(operation, this.opentui.symbols[operation](pointer, handle))
+  }
+
   public contextGetLinkUrl(context: NativeContextHandle, linkId: number): string {
     const id = toSafeFFIU32Length(linkId, "Link id")
     const bytes = new Uint8Array(MAX_LINK_URL_BYTES)
@@ -3489,12 +3515,9 @@ export class FFIRenderLib {
   ): ContextTextBufferHandle {
     const layout = nativeLayouts.ot_edit_buffer_options
     this.getYogaHost().assertMutable()
-    const widthMethod = options.widthMethod ?? "unicode"
-    if (!["wcwidth", "unicode", "no-zwj", "unicode-wide"].includes(widthMethod)) {
-      throw new TypeError("Unknown Context text width method")
-    }
+    const widthMethod = widthMethodId(options.widthMethod ?? "unicode", "text")
     const record = createContextRecord(layout)
-    record[layout.fields.width_method.offset / 4] = widthMethod === "no-zwj" ? 2 : widthMethodCode(widthMethod)
+    record[layout.fields.width_method.offset / 4] = widthMethod
     const output = new Uint32Array(handleWords)
     const pointer = this.nativeContextPointer(context, "ot_text_buffer_create")
     nativeResult("ot_text_buffer_create", this.opentui.symbols.ot_text_buffer_create(pointer, record, output))
@@ -3512,12 +3535,9 @@ export class FFIRenderLib {
     widthMethod: WidthMethod | "no-zwj",
   ): ContextUnicodeHandle {
     this.getYogaHost().assertMutable()
-    if (!["wcwidth", "unicode", "no-zwj", "unicode-wide"].includes(widthMethod)) {
-      throw new TypeError("Unknown Context Unicode width method")
-    }
+    const method = widthMethodId(widthMethod, "Unicode")
     const bytes = this.encoder.encode(text)
     const count = toSafeFFIU32Length(bytes.byteLength, "Unicode input bytes")
-    const method = widthMethod === "no-zwj" ? 2 : widthMethodCode(widthMethod)
     const output = new Uint32Array(handleWords)
     const pointer = this.nativeContextPointer(context, "ot_unicode_create")
     nativeResult(
@@ -3762,8 +3782,8 @@ export class FFIRenderLib {
     const source = encodeContextHandle(context, unicode)
     const ticket = frame ? encodeSceneFrameRequest(context, frame) : null
     const item = toSafeFFIU32Length(index, "Unicode character index")
-    const column = embeddedTerminalI32(x, "Unicode x")
-    const row = embeddedTerminalI32(y, "Unicode y")
+    const column = toFFII32(x, "Unicode x")
+    const row = toFFII32(y, "Unicode y")
     const fg = contextBufferColor(foreground)
     const bg = contextBufferColor(background)
     const attrs = toSafeFFIU32Length(attributes, "Unicode attributes")
@@ -3853,7 +3873,7 @@ export class FFIRenderLib {
   ): void {
     this.getYogaHost().assertMutable()
     const handle = encodeContextHandle(context, terminal)
-    const value = embeddedTerminalI32(argument, "Embedded terminal command argument")
+    const value = toFFII32(argument, "Embedded terminal command argument")
     const pointer = this.nativeContextPointer(context, "ot_embedded_terminal_command")
     nativeResult(
       "ot_embedded_terminal_command",
@@ -3946,8 +3966,8 @@ export class FFIRenderLib {
     const handle = encodeContextHandle(context, terminal)
     const destination = encodeContextHandle(context, target)
     const ticket = frame ? encodeSceneFrameRequest(context, frame) : null
-    const column = embeddedTerminalI32(x, "Terminal composition x")
-    const row = embeddedTerminalI32(y, "Terminal composition y")
+    const column = toFFII32(x, "Terminal composition x")
+    const row = toFFII32(y, "Terminal composition y")
     this.getYogaHost().runMutation(() => {
       const pointer = this.nativeContextPointer(context, "ot_embedded_terminal_compose")
       nativeResult(
@@ -4701,8 +4721,8 @@ export class FFIRenderLib {
     const request = frame === null ? null : encodeSceneFrameRequest(context, frame)
     const source = encodeContextHandle(context, view)
     // Node FFI rejects negative zero for integer arguments.
-    const column = embeddedTerminalI32(x, "text view x") || 0
-    const row = embeddedTerminalI32(y, "text view y") || 0
+    const column = toFFII32(x, "Text view x") || 0
+    const row = toFFII32(y, "Text view y") || 0
     const pointer = this.nativeContextPointer(context, "ot_buffer_draw_text_view")
     nativeResult(
       "ot_buffer_draw_text_view",
@@ -4720,8 +4740,8 @@ export class FFIRenderLib {
     const destination = encodeContextHandle(context, target)
     const request = frame === null ? null : encodeSceneFrameRequest(context, frame)
     const source = encodeContextHandle(context, view)
-    const column = embeddedTerminalI32(x, "editor view x") || 0
-    const row = embeddedTerminalI32(y, "editor view y") || 0
+    const column = toFFII32(x, "Editor view x") || 0
+    const row = toFFII32(y, "Editor view y") || 0
     const pointer = this.nativeContextPointer(context, "ot_buffer_draw_editor_view")
     nativeResult(
       "ot_buffer_draw_editor_view",
@@ -4739,8 +4759,8 @@ export class FFIRenderLib {
     const destination = encodeContextHandle(context, target)
     const request = frame === null ? null : encodeSceneFrameRequest(context, frame)
     const source = encodeContextHandle(context, node)
-    const column = embeddedTerminalI32(x, "scene text x") || 0
-    const row = embeddedTerminalI32(y, "scene text y") || 0
+    const column = toFFII32(x, "Scene text x") || 0
+    const row = toFFII32(y, "Scene text y") || 0
     const pointer = this.nativeContextPointer(context, "ot_buffer_draw_scene_text")
     nativeResult(
       "ot_buffer_draw_scene_text",
@@ -4754,17 +4774,9 @@ export class FFIRenderLib {
   ): ContextEditBufferHandle {
     const layout = nativeLayouts.ot_edit_buffer_options
     this.getYogaHost().assertMutable()
-    const widthMethod = options.widthMethod ?? "unicode"
-    if (
-      widthMethod !== "wcwidth" &&
-      widthMethod !== "unicode" &&
-      widthMethod !== "no-zwj" &&
-      widthMethod !== "unicode-wide"
-    ) {
-      throw new TypeError("Unknown Context editor width method")
-    }
+    const widthMethod = widthMethodId(options.widthMethod ?? "unicode", "editor")
     const record = createContextRecord(layout)
-    record[layout.fields.width_method.offset / 4] = widthMethod === "no-zwj" ? 2 : widthMethodCode(widthMethod)
+    record[layout.fields.width_method.offset / 4] = widthMethod
     const output = new Uint32Array(handleWords)
     const pointer = this.nativeContextPointer(context, "ot_edit_buffer_create")
     nativeResult("ot_edit_buffer_create", this.opentui.symbols.ot_edit_buffer_create(pointer, record, output))
@@ -5762,19 +5774,11 @@ export class FFIRenderLib {
 
   public createContextBuffer(context: NativeContextHandle, options: NativeContextBufferOptions): ContextBufferHandle {
     const layout = nativeLayouts.ot_buffer_options
-    const widthMethod = options.widthMethod ?? "unicode"
-    if (
-      widthMethod !== "wcwidth" &&
-      widthMethod !== "unicode" &&
-      widthMethod !== "no-zwj" &&
-      widthMethod !== "unicode-wide"
-    ) {
-      throw new TypeError("Unknown Context buffer width method")
-    }
+    const widthMethod = widthMethodId(options.widthMethod ?? "unicode", "buffer")
     const record = createContextRecord(layout)
     record[layout.fields.width.offset / 4] = toSafeFFIU32Length(options.width, "Context buffer width")
     record[layout.fields.height.offset / 4] = toSafeFFIU32Length(options.height, "Context buffer height")
-    record[layout.fields.width_method.offset / 4] = widthMethod === "no-zwj" ? 2 : widthMethodCode(widthMethod)
+    record[layout.fields.width_method.offset / 4] = widthMethod
     record[layout.fields.flags.offset / 4] = toFFIBool(options.respectAlpha ?? false, "Context buffer respectAlpha")
     const output = new Uint32Array(handleWords)
     const pointer = this.nativeContextPointer(context, "ot_buffer_create")
@@ -5861,8 +5865,8 @@ export class FFIRenderLib {
     const ticket = frame === null ? null : encodeSceneFrameRequest(context, frame)
     const operation = BUFFER_STACK_OPERATIONS.indexOf(options.operation)
     if (operation < 0) throw new TypeError("Invalid checked buffer stack operation")
-    const x = bufferStackCoordinate(options.x ?? 0)
-    const y = bufferStackCoordinate(options.y ?? 0)
+    const x = toFFII32(options.x ?? 0, "Buffer scissor x")
+    const y = toFFII32(options.y ?? 0, "Buffer scissor y")
     const width = toSafeFFIU32Length(options.width ?? 0, "Buffer scissor width")
     const height = toSafeFFIU32Length(options.height ?? 0, "Buffer scissor height")
     const opacity = options.opacity ?? 1
@@ -5925,8 +5929,8 @@ export class FFIRenderLib {
     const ticket = frame === null ? null : encodeSceneFrameRequest(context, frame)
     const length = toSafeFFIU32Length(byteLength, "Packed buffer byte count")
     const input = pixelInput(data, length)
-    const cellX = embeddedTerminalI32(x, "Packed buffer x")
-    const cellY = embeddedTerminalI32(y, "Packed buffer y")
+    const cellX = toFFII32(x, "Packed buffer x")
+    const cellY = toFFII32(y, "Packed buffer y")
     const cellWidth = toSafeFFIU32Length(width, "Packed buffer dimension")
     const cellHeight = toSafeFFIU32Length(height, "Packed buffer dimension")
     const pointer = this.nativeContextPointer(context, "ot_buffer_draw_packed")
@@ -5961,8 +5965,8 @@ export class FFIRenderLib {
     if (format !== "rgba8unorm" && format !== "bgra8unorm") throw new TypeError("Unknown pixel format")
     const length = toSafeFFIU32Length(byteLength, "Supersample buffer byte count")
     const input = pixelInput(data, length)
-    const cellX = embeddedTerminalI32(x, "Supersample buffer x")
-    const cellY = embeddedTerminalI32(y, "Supersample buffer y")
+    const cellX = toFFII32(x, "Supersample buffer x")
+    const cellY = toFFII32(y, "Supersample buffer y")
     const pixelFormat = format === "bgra8unorm" ? 0 : 1
     const rowBytes = toSafeFFIU32Length(stride, "Supersample buffer dimension")
     const pointer = this.nativeContextPointer(context, "ot_buffer_draw_supersample")
@@ -6003,11 +6007,8 @@ export class FFIRenderLib {
       typedArrayAccessors.length.get!.call(data),
     )
     const count = toSafeFFIU32Length(input.length, "Grayscale sample count")
-    for (const coordinate of [x, y]) {
-      if (!Number.isInteger(coordinate) || coordinate < -0x80000000 || coordinate > 0x7fffffff) {
-        throw new RangeError("Grayscale coordinates must be signed 32-bit integers")
-      }
-    }
+    toFFII32(x, "Grayscale x")
+    toFFII32(y, "Grayscale y")
     const sourceWidth = toSafeFFIU32Length(width, "Grayscale source width")
     const sourceHeight = toSafeFFIU32Length(height, "Grayscale source height")
     const fg = foreground === null ? null : contextBufferColor(foreground)
@@ -6291,11 +6292,8 @@ export class FFIRenderLib {
 
   public sessionGetLinkId(context: NativeContextHandle, session: SessionHandle, x: number, y: number): number {
     const handle = encodeContextHandle(context, session)
-    for (const coordinate of [x, y]) {
-      if (!Number.isInteger(coordinate) || coordinate < -0x8000_0000 || coordinate > 0x7fff_ffff) {
-        throw new RangeError("Link coordinates must be signed 32-bit integers")
-      }
-    }
+    toFFII32(x, "Link x")
+    toFFII32(y, "Link y")
     const output = new Uint32Array(1)
     const pointer = this.nativeContextPointer(context, "ot_session_get_link_id")
     nativeResult("ot_session_get_link_id", this.opentui.symbols.ot_session_get_link_id(pointer, handle, x, y, output))
@@ -7782,8 +7780,8 @@ export class FFIRenderLib {
 
   public sceneHitTest(context: NativeContextHandle, session: SessionHandle, x: number, y: number): number {
     const handle = encodeContextHandle(context, session)
-    sceneHitCoordinate(x)
-    sceneHitCoordinate(y)
+    toFFII32(x, "Scene hit x")
+    toFFII32(y, "Scene hit y")
     // Hit tests never call back into JavaScript, so one output word serves every test.
     const output = this.hitTestOutput
     const pointer = this.nativeContextPointer(context, "ot_scene_hit_test")
@@ -7854,57 +7852,45 @@ export class FFIRenderLib {
     }
   }
 
-  public logContextDiagnostics(context: NativeContextHandle): void {
-    const pointer = this.nativeContextPointer(context, "ot_context_drain_diagnostics")
+  /** Drains queued Context diagnostics and logs the records at `maxLevel` or more severe; it drops the rest. One call
+   * drains at most one full queue. Records that console handlers add meanwhile wait for the next call. */
+  public logContextDiagnostics(context: NativeContextHandle, maxLevel: LogLevel = LogLevel.Debug): void {
     const layout = nativeLayouts.ot_diagnostic
-    const drainLayout = nativeLayouts.ot_diagnostic_drain
-    const capacity = 64 // Version 1 C Contexts hold at most 64 diagnostic records.
-    // Own each drain's storage: console hooks can reenter or destroy the Context.
-    const records = new Uint32Array((capacity * layout.size) / 4)
-    const output = new BigUint64Array(drainLayout.size / 8)
-    const words = new Uint32Array(output.buffer)
-    words[drainLayout.fields.struct_size.offset / 4] = drainLayout.size
-    words[drainLayout.fields.abi_version.offset / 4] = nativeConstants.OT_CONTEXT_ABI_VERSION
-    nativeResult(
-      "ot_context_drain_diagnostics",
-      this.opentui.symbols.ot_context_drain_diagnostics(pointer, records, capacity, output),
-    )
-    const count = words[drainLayout.fields.count.offset / 4]
-    if (count > capacity) throw new RangeError("Invalid diagnostic count")
-    for (let index = 0; index < count; index++) {
-      const offset = index * layout.size
-      const level = records[(offset + layout.fields.level.offset) / 4]
-      const length = records[(offset + layout.fields.message_len.offset) / 4]
-      if (length > layout.fields.message.size) throw new RangeError("Invalid diagnostic message length")
-      const bytes = new Uint8Array(records.buffer, offset + layout.fields.message.offset, length)
-      this.logMessage(level, this.decoder.decode(bytes))
+    const fields = nativeLayouts.ot_diagnostic_drain.fields
+    const { records, output, words } = (this.diagnosticDrain ??= createDiagnosticDrainRecord())
+    let pointer: Pointer | undefined = this.nativeContextPointer(context, "ot_context_drain_diagnostics")
+    for (let batch = 0; pointer !== undefined && batch < DIAGNOSTIC_QUEUE_MAX / DIAGNOSTIC_BATCH; batch++) {
+      nativeResult(
+        "ot_context_drain_diagnostics",
+        this.opentui.symbols.ot_context_drain_diagnostics(pointer, records, DIAGNOSTIC_BATCH, output),
+      )
+      const count = words[fields.count.offset / 4]
+      if (count > DIAGNOSTIC_BATCH) throw new RangeError("Invalid diagnostic count")
+      if (count === 0) return
+      // Decode before logging: console handlers can reenter and reuse the shared records.
+      const messages: [LogLevel, string][] = []
+      for (let index = 0; index < count; index++) {
+        const offset = index * layout.size
+        const level = records[(offset + layout.fields.level.offset) / 4]
+        const length = records[(offset + layout.fields.message_len.offset) / 4]
+        if (length > layout.fields.message.size) throw new RangeError("Invalid diagnostic message length")
+        if (level > maxLevel) continue
+        const bytes = new Uint8Array(records.buffer, offset + layout.fields.message.offset, length)
+        messages.push([level, this.decoder.decode(bytes)])
+      }
+      const remaining = words[fields.remaining.offset / 4]
+      for (const [level, message] of messages) this.logMessage(level, message)
+      // Console handlers can destroy the Context.
+      pointer = remaining === 0 ? undefined : this.nativeContexts.get(context)
     }
   }
 
   private logMessage(level: number, message: string): void {
-    switch (level) {
-      case LogLevel.Error:
-        console.error(message)
-        break
-      case LogLevel.Warn:
-        console.warn(message)
-        break
-      case LogLevel.Info:
-        console.info(message)
-        break
-      case LogLevel.Debug:
-        console.debug(message)
-        break
-      default:
-        console.log(message)
-    }
+    console[LOG_METHODS[level] ?? "log"](message)
   }
 
   private setupLogging() {
-    if (this.logCallbackWrapper) {
-      return
-    }
-
+    if (isWorkerRuntime) return
     const logCallback = this.opentui.createCallback(
       (level: number, msgPtr: Pointer, msgLen: number) => {
         try {
@@ -7934,26 +7920,39 @@ export class FFIRenderLib {
     }
 
     this.setLogCallback(logCallback.ptr)
+    processLogLibraries.push(this)
   }
 
   private setLogCallback(callbackPtr: Pointer | null) {
     this.opentui.symbols.setLogCallback(callbackPtr)
   }
 
+  /** Hands the process log callback to the newest remaining main-thread library, or clears it after the last one. */
+  private releaseProcessLog(): void {
+    const index = processLogLibraries.indexOf(this)
+    if (index < 0) return
+    processLogLibraries.splice(index, 1)
+    if (index < processLogLibraries.length) return
+    this.setLogCallback(processLogLibraries.at(-1)?.logCallbackWrapper?.ptr ?? null)
+  }
+
   public dispose(): void {
     if (this.disposed) return
-    for (const context of this.audioEngines.values()) this.releaseContext(context)
-    this.audioEngines.clear()
+    // Refuse before any release so a refused dispose leaves the library unchanged.
     if (this.clipboardServices.size > 0) {
       throw new Error("Cannot dispose OpenTUI native library while clipboard services are active")
     }
-    if (this.nativeContexts.size) {
+    if (this.nativeContexts.size !== this.audioEngines.size) {
       throw new NativeError("dispose", NativeStatus.ContextBusy)
     }
     this.yogaHost?.dispose()
+    for (const [engine, context] of this.audioEngines) {
+      this.releaseContext(context)
+      this.audioEngines.delete(engine)
+    }
     this.disposed = true
     try {
-      this.setLogCallback(null)
+      this.releaseProcessLog()
     } finally {
       try {
         if (this.iccCacheClient) {
@@ -8529,6 +8528,7 @@ export class FFIRenderLib {
     )
   }
 
+  /** Always 0: native resources no longer allocate from a process arena. */
   public getArenaAllocatedBytes(): number {
     const result = this.opentui.symbols.getArenaAllocatedBytes()
     return toSafeByteCount(result, "Arena allocated bytes")
@@ -8545,6 +8545,8 @@ export class FFIRenderLib {
     }
   }
 
+  /** Stats of the process allocator, which backs native span feeds. Each Context has its own allocator, so Context
+   * resources such as text, buffers, scenes, images, and audio engines are not counted. */
   public getAllocatorStats(): AllocatorStats {
     const statsBuffer = new ArrayBuffer(AllocatorStatsStruct.size)
     this.opentui.symbols.getAllocatorStats(statsBuffer)
@@ -8753,11 +8755,11 @@ export class FFIRenderLib {
     ) {
       return { status: -1, streamId: null }
     }
-    const optionsBuffer = AudioStreamCreateOptionsStruct.pack(options)
-    const outBuffer = new ArrayBuffer(4)
+    const optionsBuffer = new Uint8Array(AudioStreamCreateOptionsStruct.pack(options))
+    const outBuffer = new Uint32Array(1)
     const status = this.opentui.symbols.audioCreateStream(this.audioContext(engine), optionsBuffer, outBuffer)
     if (status !== 0) return { status, streamId: null }
-    return { status, streamId: new Uint32Array(outBuffer)[0] ?? null }
+    return { status, streamId: outBuffer[0] ?? null }
   }
 
   public audioWriteStream(engine: AudioEngineHandle, streamId: number, data: Uint8Array): number {
@@ -8789,7 +8791,7 @@ export class FFIRenderLib {
 
   public audioGetStreamStats(engine: AudioEngineHandle, streamId: number): NativeAudioStreamStats | null {
     const storage = this.ffiStructStorage.audioStreamStats
-    const status = this.opentui.symbols.audioGetStreamStats(this.audioContext(engine), streamId, storage.buffer)
+    const status = this.opentui.symbols.audioGetStreamStats(this.audioContext(engine), streamId, storage.ffiView)
     if (status !== 0) return null
     const stats = AudioStreamStatsStruct.unpackInto(storage.view, storage.result) as NativeAudioStreamStats
     return { ...stats }
@@ -8801,7 +8803,7 @@ export class FFIRenderLib {
     reason: NativeAudioStreamCloseReason,
   ): { status: number; stats: NativeAudioStreamStats | null } {
     const storage = this.ffiStructStorage.audioStreamStats
-    const status = this.opentui.symbols.audioCloseStream(this.audioContext(engine), streamId, reason, storage.buffer)
+    const status = this.opentui.symbols.audioCloseStream(this.audioContext(engine), streamId, reason, storage.ffiView)
     if (status !== 0) return { status, stats: null }
     const stats = AudioStreamStatsStruct.unpackInto(storage.view, storage.result) as NativeAudioStreamStats
     return { status, stats: { ...stats } }
@@ -9306,16 +9308,8 @@ export class FFIRenderLib {
     const context = base.context
     const baseHandle = encodeContextHandle(context, base)
     const overlayHandle = encodeContextHandle(context, overlay)
-    if (
-      !Number.isInteger(left) ||
-      left < -0x8000_0000 ||
-      left > 0x7fff_ffff ||
-      !Number.isInteger(top) ||
-      top < -0x8000_0000 ||
-      top > 0x7fff_ffff
-    ) {
-      throw new RangeError("Image composite coordinates must fit signed 32-bit integers")
-    }
+    toFFII32(left, "Image composite left")
+    toFFII32(top, "Image composite top")
     toSafeFFIU32Length(blend, "Image blend mode")
     if (!isFFIU32(opacity) || opacity > 255) throw new RangeError("Image opacity must be an integer from 0 to 255")
     return this.imageOutput(context, "ot_image_composite", (pointer, output) =>

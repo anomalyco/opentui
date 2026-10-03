@@ -91,10 +91,21 @@ pub const Diagnostics = struct {
 pub const Logger = union(enum) {
     callback: ?LogCallback,
     diagnostics: *Diagnostics,
+    /// The process callback from setLogCallback. Threads other than its installer drop messages.
+    process,
 
     pub fn logMessage(self: *const Logger, level: LogLevel, comptime format: []const u8, args: anytype) void {
         switch (self.*) {
             .diagnostics => |queue| queue.logMessage(level, format, args),
+            .process => {
+                // A host callback runs only on the thread that created it: Node aborts on any other
+                // thread, and a Worker's callback dies with it. Seeing a callback implies seeing its
+                // installer's thread, so a callback installed elsewhere never runs here.
+                const callback = process_callback.load(.acquire);
+                if (process_thread.load(.monotonic) != std.Thread.getCurrentId()) return;
+                const owner: Logger = .{ .callback = callback };
+                owner.logMessage(level, format, args);
+            },
             .callback => |maybe_callback| {
                 const callback = maybe_callback orelse return;
                 var buf: [Diagnostic.message_bytes_max]u8 = undefined;
@@ -126,14 +137,17 @@ pub const Logger = union(enum) {
 };
 
 /// Process-wide callback logger. Context diagnostic queues do not use this sink.
-var process_logger: Logger = .{ .callback = null };
+const process_logger: Logger = .process;
+var process_callback: std.atomic.Value(?LogCallback) = .init(null);
+var process_thread: std.atomic.Value(std.Thread.Id) = .init(0);
 
 pub fn processLogger() *const Logger {
     return &process_logger;
 }
 
 pub fn setLogCallback(callback: ?LogCallback) void {
-    process_logger = .{ .callback = callback };
+    process_thread.store(std.Thread.getCurrentId(), .monotonic);
+    process_callback.store(callback, .release);
 }
 
 pub fn logMessage(level: LogLevel, comptime format: []const u8, args: anytype) void {
@@ -154,4 +168,23 @@ pub fn info(comptime format: []const u8, args: anytype) void {
 
 pub fn debug(comptime format: []const u8, args: anytype) void {
     logMessage(.debug, format, args);
+}
+
+test "process log callback runs only on the thread that installed it" {
+    const Probe = struct {
+        var calls: std.atomic.Value(u32) = .init(0);
+        fn callback(_: u8, _: [*]const u8, _: u32) callconv(.c) void {
+            _ = calls.fetchAdd(1, .monotonic);
+        }
+        fn logFromOtherThread() void {
+            warn("other thread", .{});
+        }
+    };
+    setLogCallback(Probe.callback);
+    defer setLogCallback(null);
+    const thread = try std.Thread.spawn(.{}, Probe.logFromOtherThread, .{});
+    thread.join();
+    try std.testing.expectEqual(0, Probe.calls.load(.monotonic));
+    warn("owner thread", .{});
+    try std.testing.expectEqual(1, Probe.calls.load(.monotonic));
 }

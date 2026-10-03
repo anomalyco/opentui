@@ -42,6 +42,12 @@ function withStubbedSymbol(name: string, fn: (calls: any[][]) => void): void {
   withStubbedSymbols({ [name]: () => undefined }, (calls) => fn(calls[name]!))
 }
 
+function dataView(bytes: Uint8Array): DataView {
+  // Bun 1.3 rejects ArrayBuffer and DataView at `buffer` parameters, so struct outputs arrive as byte views.
+  expect(bytes).toBeInstanceOf(Uint8Array)
+  return new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength)
+}
+
 function fieldOffset(struct: { layoutByName: Map<string, { offset: number }> }, name: string): number {
   const field = struct.layoutByName.get(name)
   if (!field) {
@@ -52,11 +58,11 @@ function fieldOffset(struct: { layoutByName: Map<string, { offset: number }> }, 
 
 describe("borrowed pointer call sites", () => {
   test("audio stats reuse owned output storage without aliasing public results", () => {
-    const outputs: ArrayBuffer[] = []
+    const outputs: Uint8Array[] = []
     let bytesReceived = 20n
     withStubbedSymbols(
       {
-        audioGetStreamStats: (_engine, _stream, output: ArrayBuffer) => {
+        audioGetStreamStats: (_engine, _stream, output: Uint8Array) => {
           outputs.push(output)
           AudioStreamStatsStruct.packInto(
             {
@@ -72,7 +78,7 @@ describe("borrowed pointer call sites", () => {
               errorCode: 0,
               readyGeneration: 1,
             },
-            new DataView(output),
+            dataView(output),
             0,
           )
           return 0
@@ -350,7 +356,7 @@ describe("borrowed pointer call sites", () => {
           errorCode: -3,
           readyGeneration: 7,
         },
-        new DataView(args[3]),
+        dataView(args[3]),
         0,
       )
       return 0
@@ -360,7 +366,6 @@ describe("borrowed pointer call sites", () => {
       expect(calls).toHaveLength(1)
       expect(calls[0]![1]).toBe(22)
       expect(calls[0]![2]).toBe(NativeAudioStreamCloseReason.TransportError)
-      expect(calls[0]![3]).toBeInstanceOf(ArrayBuffer)
       expect(result).toEqual({
         status: 0,
         stats: {
@@ -460,6 +465,8 @@ describe("borrowed pointer call sites", () => {
         ).toEqual({ status: -1, streamId: null })
       }
       expect(calls).toHaveLength(1)
+      expect(calls[0]![1]).toBeInstanceOf(Uint8Array)
+      expect(calls[0]![2]).toBeInstanceOf(Uint32Array)
     })
   })
 
