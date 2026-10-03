@@ -11,9 +11,11 @@ import type { LocalSelectionBounds } from "./lib/selection.js"
 import { Edge, type Value, type MeasureFunction } from "./yoga.js"
 import { YogaValueKind, type YogaHost } from "./yoga.internal.js"
 import {
+  NativeError,
   NativePaintRecorder,
   NativeSceneFrame,
   NativeSessionRenderStatus,
+  NativeStatus,
   NativeStyleFlags,
   NativeStyleGroup,
   SceneStaging,
@@ -177,7 +179,8 @@ export class NativeScene {
    * Failed flushes retain their unaccepted suffix for retry, except a record that native
    * rejects for its node (InvalidArgument, WrongKind, StaleHandle). That record is dropped,
    * including other paint fields the node staged since the last flush, and the error is
-   * thrown once by whichever call flushes, which may belong to another node. */
+   * thrown once by whichever call flushes, which may belong to another node.
+   * A closing Session paints no more frames, so like a disposed one it drops staged writes. */
   flushStaged(): void {
     if (this.destroyed || this.driver.disposed) {
       this.staging.clear()
@@ -187,6 +190,9 @@ export class NativeScene {
     if (!this.staging.pending) return
     try {
       this.driver.renderLib.sceneFlush(this.driver.context, this.staging)
+    } catch (error) {
+      if (!(error instanceof NativeError) || error.status !== NativeStatus.SessionClosed) throw error
+      this.staging.clear()
     } finally {
       if (!this.staging.pending) this.yogaHost.forgetScene(this)
     }
