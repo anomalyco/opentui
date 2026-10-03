@@ -150,17 +150,17 @@ pub fn ot_context_drain_diagnostics(
         return status;
     }
 
+    // Copy straight from queue slots; a caller can loop with one buffer until remaining is 0.
     const queue = &handle.core.diagnostics;
     const count = @min(capacity, queue.count);
-    var record: [1]@import("context.zig").Diagnostic = undefined;
     for (0..count) |index| {
-        _ = queue.drain(&record);
+        const record = queue.pop().?;
         records.?[index] = .{
-            .level = @intFromEnum(record[0].level),
-            .message_len = record[0].message_len,
-            .flags = if (record[0].truncated) c.OT_DIAGNOSTIC_TRUNCATED else 0,
+            .level = @intFromEnum(record.level),
+            .message_len = record.message_len,
+            .flags = if (record.truncated) c.OT_DIAGNOSTIC_TRUNCATED else 0,
             .reserved = 0,
-            .message = record[0].message,
+            .message = record.message,
         };
     }
     out_drain_ptr.?.* = .{
@@ -4441,16 +4441,20 @@ test "Context ABI diagnostics copy bounded records and preserve failed drains" {
     try std.testing.expectEqualSlices(u8, "0", record.message[0..record.message_len]);
     try std.testing.expectEqual(62, out.remaining);
 
-    const batch = try std.testing.allocator.alloc(c.ot_diagnostic, 64);
-    defer std.testing.allocator.free(batch);
-    batch[62] = std.mem.zeroes(c.ot_diagnostic);
-    batch[62].reserved = 99;
-    try std.testing.expectEqual(c.OT_OK, ot_context_drain_diagnostics(first, batch.ptr, @intCast(batch.len), &out));
-    try std.testing.expectEqual(62, out.count);
-    try std.testing.expectEqual(0, out.remaining);
-    try std.testing.expectEqualSlices(u8, "1", batch[0].message[0..batch[0].message_len]);
-    try std.testing.expectEqualSlices(u8, "62", batch[61].message[0..batch[61].message_len]);
-    try std.testing.expectEqual(99, batch[62].reserved);
+    // One small caller buffer drains the rest in order; slots past count stay untouched.
+    var batch: [5]c.ot_diagnostic = @splat(std.mem.zeroes(c.ot_diagnostic));
+    var next: usize = 1;
+    while (out.remaining != 0) {
+        batch[batch.len - 1].reserved = 99;
+        try std.testing.expectEqual(c.OT_OK, ot_context_drain_diagnostics(first, &batch, batch.len, &out));
+        try std.testing.expectEqual(out.count == batch.len, batch[batch.len - 1].reserved == 0);
+        for (batch[0..out.count]) |copied| {
+            var expected: [2]u8 = undefined;
+            try std.testing.expectEqualStrings(try std.fmt.bufPrint(&expected, "{}", .{next}), copied.message[0..copied.message_len]);
+            next += 1;
+        }
+    }
+    try std.testing.expectEqual(63, next);
 }
 
 test "Context error mapping gives every Context error a specific status" {
