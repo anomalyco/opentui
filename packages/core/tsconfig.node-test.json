@@ -183,6 +183,10 @@
     "src/text-buffer-view.test.ts",
     "src/lib/tree-sitter/parser.worker.ts",
     "src/testing/bun-test-node.ts",
-    "src/testing/harness.test.ts"
+    "src/testing/harness.test.ts",
+    "src/tests/renderer.handler-error.test.ts",
+    "src/tests/renderer.lifecycle.test.ts",
+    "src/tests/renderer.render-error.test.ts",
+    "src/tests/renderer.render-stats.test.ts"
   ]
 }
