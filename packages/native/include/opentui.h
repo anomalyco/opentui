@@ -56,7 +56,10 @@ typedef int32_t ot_status;
  * thread may call its functions, including error queries and destruction.
  * Separate contexts may run on separate threads. Do not race a call with
  * destruction. A successful destroy invalidates every copy of the pointer;
- * stale, forged, and already-destroyed pointers are caller errors. */
+ * stale, forged, and already-destroyed pointers are caller errors.
+ * Callbacks run synchronously on the owner thread and must return normally.
+ * A C++ exception, longjmp, or thread exit through native frames skips native
+ * cleanup and is undefined behavior. */
 typedef struct ot_context ot_context;
 
 /* Context-qualified identity. A destroyed slot cannot identify its replacement.
@@ -2246,11 +2249,14 @@ ot_status ot_buffer_color_matrix(ot_context *, const ot_handle *, const ot_scene
  *
  * Commands draw into the Session's next buffer with the same rules as the named
  * operations, inside the slot's clip and opacity. STACK entries apply above that
- * scene-owned entry and reset between phases. Native code plays each command when
- * it paints the slot, so a command that names a buffer, view, image, node, or
- * Unicode handle reads that resource then, not when it was recorded. A command
- * whose resource was destroyed before playback draws nothing. Other invalid
- * commands fail the step without presenting cells. */
+ * scene-owned entry and reset between phases. Exceptions: a DRAW with
+ * OT_BUFFER_DRAW_CLEAR and COLOR_MATRIX act on the whole buffer, like their named
+ * operations, and ignore the clip and opacity. CLEAR overwrites every cell and
+ * removes the image placements that earlier slots painted. Native code plays each
+ * command when it paints the slot, so a command that names a buffer, view, image,
+ * node, or Unicode handle reads that resource then, not when it was recorded. A
+ * command whose resource was destroyed before playback draws nothing. Other
+ * invalid commands fail the step without presenting cells. */
 #define OT_SCENE_RECORD_BYTES_MAX UINT32_C(67108864)
 #define OT_SCENE_RECORD_PHASE_BEFORE UINT32_C(0)
 #define OT_SCENE_RECORD_PHASE_SELF UINT32_C(1)
@@ -2429,9 +2435,11 @@ ot_status ot_session_render(
     uint32_t force,
     uint32_t *out_result);
 
-/* Pending output prevents resize. Rejection preserves accepted dimensions.
- * Scene preparation returns OT_FRAME_BUSY. A painted draft allows resize under
- * the storage requalification rules of ot_scene_frame_acquire_buffer_lease. */
+/* A frame whose presentation is pending returns OT_OUTPUT_BUSY. Queued raw and
+ * control output does not prevent resize and stays ahead of the next frame.
+ * Rejection preserves accepted dimensions. Scene preparation returns
+ * OT_FRAME_BUSY. A painted draft allows resize under the storage
+ * requalification rules of ot_scene_frame_acquire_buffer_lease. */
 ot_status ot_session_resize_renderer(
     ot_context *context,
     const ot_handle *session,

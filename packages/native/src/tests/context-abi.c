@@ -1,28 +1,9 @@
 #include "opentui.h"
-#include <stddef.h>
-
-/* Keep layout checks for records crossing the smoke test's C/Zig boundary. */
-_Static_assert(sizeof(uintptr_t) == 8, "framebuffer addresses require 64-bit targets");
-_Static_assert(sizeof(ot_status) == 4, "status size");
-_Static_assert(sizeof(ot_context_options) == 32, "options size");
-_Static_assert(sizeof(ot_context_error) == 16, "error size");
-_Static_assert(sizeof(ot_handle) == 16 && _Alignof(ot_handle) == 8, "handle layout");
-_Static_assert(offsetof(ot_handle, generation) == 12, "handle generation offset");
-_Static_assert(sizeof(ot_buffer_lease_snapshot) == 80, "lease size");
-_Static_assert(offsetof(ot_buffer_lease_snapshot, char_ptr) == 40, "lease pointer offset");
-_Static_assert(offsetof(ot_buffer_lease_snapshot, attributes_ptr) == 64, "lease attributes offset");
-_Static_assert(sizeof(ot_buffer_draw_text_record) == 44, "text draw size");
-_Static_assert(offsetof(ot_buffer_draw_text_record, foreground) == 28, "text color offset");
-_Static_assert(sizeof(ot_output_ticket) == 32, "output ticket size");
-_Static_assert(offsetof(ot_output_ticket, request_id) == 16, "output request offset");
-_Static_assert(sizeof(ot_scene_layout) == 48, "scene layout size");
-_Static_assert(offsetof(ot_scene_layout, screen_x) == 32, "scene screen offset");
-_Static_assert(sizeof(ot_scene_frame_request) == 112, "frame request size");
-_Static_assert(offsetof(ot_scene_frame_request, frame_id) == 56, "frame ID offset");
-
-#ifndef OT_ABI_LAYOUT_ONLY
 #include <assert.h>
 #include <string.h>
+
+/* The ABI generator checks every record layout with the C compiler. */
+_Static_assert(sizeof(uintptr_t) == 8, "framebuffer addresses require 64-bit targets");
 
 #ifdef _WIN32
 #include <windows.h>
@@ -238,4 +219,3 @@ int main(void) {
     assert(ot_context_destroy(second) == OT_OK);
     return 0;
 }
-#endif

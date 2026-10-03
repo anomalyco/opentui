@@ -51,9 +51,9 @@ types cannot prove lifetimes. Review that metadata when ownership contracts chan
 Do not edit generated bindings. `check:abi` detects stale output; use
 `bun run check:abi --all-targets` to compare supported target layouts too.
 Unsupported record shapes and calling conventions reject instead of producing
-partial metadata. C compiler type assertions also verify complete function and
-callback prototypes, because Translate-C can discard callback calling-convention
-attributes.
+partial metadata. C compiler assertions also verify complete function and callback
+prototypes, record layouts, field types, and constant values, because Translate-C can
+discard callback calling-convention attributes and ignore `#pragma pack`.
 
 From `packages/native`, `bun run build` installs headers and libraries under
 `lib/<target>/`. Linux and macOS produce `libopentui.a` beside the shared library.
@@ -65,10 +65,9 @@ Static linkage still requires the relevant platform and C++ runtime libraries.
 zig build test-abi --summary all
 ```
 
-This checks C/Zig layouts for all eight supported targets and runs the C fixture with
-static and dynamic linking on the host. Linux acceptance targets glibc 2.17.
-`zig build test-abi-layout --summary all` runs only layout checks. Cross-target layout
-checks do not establish macOS/Windows runtime linkage or terminal behavior.
+This runs the C fixture with static and dynamic linking on the host. Linux acceptance
+targets glibc 2.17. `check:abi --all-targets` checks layouts for all eight supported
+targets, but does not establish macOS/Windows runtime linkage or terminal behavior.
 
 The external [`examples/hello`](examples/hello) package imports the public Zig module
 without JavaScript.

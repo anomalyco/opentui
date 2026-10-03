@@ -14,6 +14,11 @@ test "Yoga layout is available through the public Zig module" {
     try std.testing.expectEqual(@as(f32, 3), yoga.YGNodeLayoutGetHeight(node));
 }
 
+test "audio engine is available through the public Zig module" {
+    const engine = opentui.audio.create(std.testing.allocator, null) orelse return error.AudioEngineCreationFailed;
+    opentui.audio.destroy(engine);
+}
+
 const MemorySink = struct {
     const capacity = 16 * 1024;
 

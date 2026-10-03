@@ -1,6 +1,6 @@
 import { spawnSync } from "node:child_process"
 import { createHash } from "node:crypto"
-import { closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { closeSync, mkdirSync, mkdtempSync, openSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { dirname, join, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
 import { format } from "oxfmt"
@@ -65,6 +65,8 @@ function cType(type: string, callbacks: Map<string, string>): string {
   if (callbacks.has(type)) return callbacks.get(type)!
   if (type.startsWith("*const ")) return `${cType(type.slice(7), callbacks)} const *`
   if (type.startsWith("*")) return `${cType(type.slice(1), callbacks)} *`
+  const array = /^\[(\d+)\]([^[*].*)$/.exec(type)
+  if (array) return `${cType(array[2]!, callbacks)}[${array[1]}]`
   if (/^[ui](8|16|32|64)$/.test(type)) return `${type[0] === "u" ? "u" : ""}int${type.slice(1)}_t`
   if (type === "f32") return "float"
   if (type === "f64") return "double"
@@ -100,7 +102,7 @@ export function compileHeader(options: { header?: string; allTargets?: boolean }
     const abi: HeaderABI = JSON.parse(json)
     // Translate-C 0.16 drops some callback conventions, including inline parameter types.
     const callbacks = new Map<string, string>()
-    const declarations = ['#include "opentui.h"']
+    const declarations = ['#include "opentui.h"', "#include <stddef.h>"]
     const prototype = (signature: Signature, name = "") => {
       const args = signature.args.map((type) => cType(type, callbacks)).join(", ") || "void"
       return `${cType(signature.returns, callbacks)} (*${name})(${args})`
@@ -118,6 +120,21 @@ export function compileHeader(options: { header?: string; allTargets?: boolean }
         `_Static_assert(__builtin_types_compatible_p(__typeof__(&${name}), ${prototype(signature)}), "Unsupported ABI calling convention or function translation: ${name}");`,
       )
     }
+    // Translate-C can disagree with the C compiler, for example by ignoring #pragma pack.
+    for (const [name, record] of Object.entries(abi.layouts)) {
+      declarations.push(
+        `_Static_assert(sizeof(${name}) == ${record.size} && _Alignof(${name}) == ${record.alignment}, "C layout differs from Translate-C: ${name}");`,
+      )
+      for (const [field, info] of Object.entries(record.fields)) {
+        const member = `((${name} *)0)->${field}`
+        declarations.push(
+          `_Static_assert(offsetof(${name}, ${field}) == ${info.offset} && sizeof(${member}) == ${info.size} && __alignof__(${member}) == ${info.alignment} && __builtin_types_compatible_p(__typeof__(${member}), ${cType(info.type, callbacks)}), "C layout differs from Translate-C: ${name}.${field}");`,
+        )
+      }
+    }
+    for (const [name, value] of Object.entries(abi.constants)) {
+      declarations.push(`_Static_assert(${name} == ${value}, "C value differs from Translate-C: ${name}");`)
+    }
     const callbacksPath = join(temporary, "prototypes.c")
     writeFileSync(callbacksPath, declarations.join("\n"))
     const checkPrototypes = (target: string) =>
@@ -125,6 +142,9 @@ export function compileHeader(options: { header?: string; allTargets?: boolean }
         "cc",
         "-c",
         "-std=c11",
+        "-Wall",
+        "-Wextra",
+        "-Werror",
         "-I",
         dirname(headerPath),
         "-target",
@@ -213,11 +233,10 @@ export async function generateNativeABI(
         const label = `${name} argument ${position}`
         const policy = policies[name]?.[position]
         if (!policy) throw new Error(`Missing pointer policy: ${label} (${type})`)
-        if (
-          policy.ffi === "buffer" &&
-          (policy.nullable !== "never" || policy.retention !== "call" || policy.source !== "view")
-        ) {
-          throw new Error(`Invalid transient buffer policy: ${label}`)
+        // AGENTS.md: transient non-null views use buffer; everything else needs ptr.
+        const transient = policy.nullable === "never" && policy.retention === "call" && policy.source === "view"
+        if ((policy.ffi === "buffer") !== transient) {
+          throw new Error(`Pointer policy must use ${transient ? "buffer" : "ptr"}: ${label}`)
         }
         if (callback !== (policy.source === "callback")) throw new Error(`Callback policy mismatch: ${label}`)
         if (position === "returns" && policy.ffi !== "ptr") throw new Error(`Pointer returns must use ptr: ${label}`)
@@ -284,41 +303,6 @@ export function sceneStyleEnumMaxima(abi: HeaderABI): number[] {
   })
 }
 
-export function rustBindingRoot(): string | undefined {
-  const dir = process.env.OPENTUI_RUST_DIR
-  if (dir === undefined || dir.trim() === "") return undefined
-  const root = resolve(dir)
-  if (!existsSync(root)) throw new Error(`OPENTUI_RUST_DIR does not exist: ${root}`)
-  return root
-}
-
-export function generateRustConstants(abi: HeaderABI): Map<string, string> {
-  const rustRoot = rustBindingRoot()
-  if (rustRoot === undefined) return new Map()
-  const entries = Object.entries(abi.constants)
-  const notice =
-    "// Generated from packages/native/include/opentui.h. Run bun run generate:abi in packages/core with OPENTUI_RUST_DIR.\n"
-  return new Map([
-    [
-      resolve(rustRoot, "src/constants.generated.rs"),
-      notice +
-        entries
-          .map(([name, value]) => `pub const ${name}: ${value < 0 || name === "OT_OK" ? "i32" : "u32"} = ${value};\n`)
-          .join("") +
-        "#[cfg(test)]\nfn constants() -> Vec<u32> {\n    vec![\n" +
-        entries.map(([name]) => `        ${name} as u32,\n`).join("") +
-        "    ]\n}\n",
-    ],
-    [resolve(rustRoot, "tests/constants.generated.h"), notice + entries.map(([name]) => `${name},\n`).join("")],
-  ])
-}
-
-export function verifyRustConstants(abi: HeaderABI): void {
-  for (const [path, contents] of generateRustConstants(abi)) {
-    if (readFileSync(path, "utf8") !== contents) throw new Error(`${path} is stale; run bun run generate:abi`)
-  }
-}
-
 export function verifyNativeABI(generated: string): void {
   if (readFileSync(outputPath, "utf8") !== generated) {
     throw new Error(
@@ -335,13 +319,8 @@ if (import.meta.main) {
     throw new Error("Expected --check, --all-targets and/or --audit")
   const abi = compileHeader({ allTargets: args.includes("--all-targets") })
   const generated = await generateNativeABI(abi)
-  if (args.includes("--check")) {
-    verifyNativeABI(generated)
-    verifyRustConstants(abi)
-  } else if (!args.includes("--audit")) {
-    writeFileSync(outputPath, generated)
-    for (const [path, contents] of generateRustConstants(abi)) writeFileSync(path, contents)
-  }
+  if (args.includes("--check")) verifyNativeABI(generated)
+  else if (!args.includes("--audit")) writeFileSync(outputPath, generated)
   if (args.includes("--audit")) process.stdout.write(serializeNativeABIAudit(abi))
   else
     console.log(`Checked ABI: ${Object.keys(abi.symbols).length} symbols, ${Object.keys(abi.layouts).length} records`)

@@ -4424,87 +4424,104 @@ test "Session exit pump ABI validates ownership and preserves rejected outputs" 
     try std.testing.expectEqual(@as(u32, 99), result);
 }
 
-// The library opts into exports; layout-only cross-target checks do not link
-// Context or platform backends. The C header is the source of ABI record types.
+const abi_modules = .{
+    @This(),
+    editor_transport,
+    text_transport,
+    unicode_transport,
+    terminal_transport,
+    output_transport,
+    image_transport,
+    clipboard_transport,
+};
+
+// The library opts into exports. Each export must match its opentui.h prototype.
+// The C header is the source of ABI record types.
 pub fn export_symbols() void {
-    @setEvalBranchQuota(100_000);
+    @setEvalBranchQuota(200_000);
     for (@typeInfo(c).@"struct".decls) |declaration| {
         if (!std.mem.startsWith(u8, declaration.name, "ot_")) continue;
-        if (@typeInfo(@TypeOf(@field(c, declaration.name))) != .@"fn") continue;
+        const Prototype = @TypeOf(@field(c, declaration.name));
+        if (@typeInfo(Prototype) != .@"fn") continue;
         const implementation = find: {
-            for (.{
-                @This(),
-                editor_transport,
-                text_transport,
-                unicode_transport,
-                terminal_transport,
-                output_transport,
-                image_transport,
-                clipboard_transport,
-            }) |module| {
+            for (abi_modules) |module| {
                 if (@hasDecl(module, declaration.name)) break :find &@field(module, declaration.name);
             }
             @compileError("Missing checked ABI implementation: " ++ declaration.name);
         };
+        checkPrototype(declaration.name, Prototype, @TypeOf(implementation.*));
         @export(implementation, .{ .name = declaration.name });
+    }
+    for (abi_modules) |module| {
+        for (@typeInfo(module).@"struct".decls) |declaration| {
+            if (std.mem.startsWith(u8, declaration.name, "ot_") and !@hasDecl(c, declaration.name))
+                @compileError("ABI implementation is not declared in opentui.h: " ++ declaration.name);
+        }
     }
 }
 
+// Scalars must match exactly. A pointer or callback must stay nullable, because C
+// callers may pass NULL, must not drop the header's const, and must name the same record.
+fn checkPrototype(comptime name: []const u8, comptime Prototype: type, comptime Implementation: type) void {
+    const prototype = @typeInfo(Prototype).@"fn";
+    const implementation = @typeInfo(Implementation).@"fn";
+    if (!std.meta.eql(implementation.calling_convention, std.builtin.CallingConvention.c) or
+        implementation.params.len != prototype.params.len or
+        implementation.return_type.? != prototype.return_type.?)
+    {
+        @compileError("ABI implementation differs from opentui.h: " ++ name);
+    }
+    for (prototype.params, implementation.params, 0..) |expected, actual, index| {
+        const expected_pointer = nullablePointer(expected.type.?) orelse {
+            if (actual.type.? != expected.type.?) prototypeError("scalar differs from opentui.h", name, index);
+            continue;
+        };
+        const actual_pointer = nullablePointer(actual.type.?) orelse
+            prototypeError("pointer must accept NULL", name, index);
+        if (expected_pointer.is_const and !actual_pointer.is_const)
+            prototypeError("pointer drops const", name, index);
+        if (@typeInfo(expected_pointer.child) == .@"struct" and actual_pointer.child != expected_pointer.child)
+            prototypeError("record pointer differs from opentui.h", name, index);
+        if (@typeInfo(expected_pointer.child) == .@"fn" and actual.type.? != expected.type.?)
+            prototypeError("callback differs from opentui.h", name, index);
+    }
+}
+
+fn prototypeError(comptime reason: []const u8, comptime name: []const u8, comptime index: usize) noreturn {
+    @compileError(std.fmt.comptimePrint("ABI {s}: {s} argument {d}", .{ reason, name, index }));
+}
+
+fn nullablePointer(comptime T: type) ?std.builtin.Type.Pointer {
+    return switch (@typeInfo(T)) {
+        .pointer => |info| if (info.size == .c) info else null,
+        .optional => |info| switch (@typeInfo(info.child)) {
+            .pointer => |pointer| pointer,
+            else => null,
+        },
+        else => null,
+    };
+}
+
+// Record layouts, constants, and prototypes are checked by the ABI generator and by
+// export_symbols. These checks tie the header to Zig declarations that it does not define.
 comptime {
     @setEvalBranchQuota(10_000);
+    if (@sizeOf(usize) != 8) @compileError("The OpenTUI C ABI requires a 64-bit target");
     const MousePointerStyle = @import("terminal.zig").MousePointerStyle;
     for (std.meta.tags(MousePointerStyle)) |style| {
         var name: [@tagName(style).len]u8 = undefined;
         _ = std.ascii.upperString(&name, @tagName(style));
-        std.debug.assert(@field(c, "OT_MOUSE_POINTER_" ++ name) == @intFromEnum(style));
+        if (@field(c, "OT_MOUSE_POINTER_" ++ name) != @intFromEnum(style))
+            @compileError("OT_MOUSE_POINTER_" ++ name ++ " differs from terminal.MousePointerStyle");
     }
-    std.debug.assert(c.OT_MOUSE_POINTER_MAX == std.meta.tags(MousePointerStyle).len - 1);
-    std.debug.assert(c.OT_IMAGE_FIT == @intFromEnum(@import("image.zig").Fit.fit));
-    std.debug.assert(c.OT_IMAGE_COVER == @intFromEnum(@import("image.zig").Fit.cover));
-    std.debug.assert(c.OT_IMAGE_FILL == @intFromEnum(@import("image.zig").Fit.fill));
-    std.debug.assert(c.OT_IMAGE_PROTOCOL_AUTO == @intFromEnum(@import("image.zig").RenderProtocol.auto));
-    std.debug.assert(c.OT_IMAGE_PROTOCOL_KITTY == @intFromEnum(@import("image.zig").RenderProtocol.kitty));
-    std.debug.assert(c.OT_IMAGE_PROTOCOL_SIXEL == @intFromEnum(@import("image.zig").RenderProtocol.sixel));
-    std.debug.assert(c.OT_IMAGE_PROTOCOL_BLOCKS == @intFromEnum(@import("image.zig").RenderProtocol.blocks));
-    std.debug.assert(@offsetOf(c.ot_edit_buffer_options, "struct_size") == 0);
-    std.debug.assert(@offsetOf(c.ot_edit_buffer_options, "abi_version") == 4);
-    std.debug.assert(@offsetOf(c.ot_edit_buffer_info, "struct_size") == 0);
-    std.debug.assert(@offsetOf(c.ot_edit_buffer_info, "abi_version") == 4);
-    std.debug.assert(@offsetOf(c.ot_edit_buffer_info, "line_count") == 20);
-    std.debug.assert(@offsetOf(c.ot_edit_buffer_info, "cursor_col") == 28);
-    std.debug.assert(@offsetOf(c.ot_edit_buffer_info, "cursor_offset") == 32);
-    std.debug.assert(@offsetOf(c.ot_edit_buffer_info, "can_undo") == 36);
-    std.debug.assert(@offsetOf(c.ot_edit_buffer_info, "can_redo") == 40);
-    std.debug.assert(@offsetOf(c.ot_scene_editor_options, "struct_size") == 0);
-    std.debug.assert(@offsetOf(c.ot_scene_editor_options, "abi_version") == 4);
-    std.debug.assert(@offsetOf(c.ot_scene_editor_options, "style") == 12);
-    std.debug.assert(@offsetOf(c.ot_scene_editor_options, "blinking") == 16);
-    std.debug.assert(@offsetOf(c.ot_scene_editor_options, "reserved") == 20);
-    std.debug.assert(c.OT_EDIT_CURSOR_CHANGED == @intFromEnum(@import("context.zig").EditEvent.cursor_changed));
-    std.debug.assert(c.OT_EDIT_CONTENT_CHANGED == @intFromEnum(@import("context.zig").EditEvent.content_changed));
-    std.debug.assert(c.OT_EDIT_HISTORY_CURSOR_CHANGED == @intFromEnum(@import("context.zig").EditEvent.history_cursor_changed));
-    std.debug.assert(@sizeOf(c.ot_styled_text_chunk) == 48);
-    std.debug.assert(@sizeOf(c.ot_scene_text_options) == 80);
-    std.debug.assert(@alignOf(c.ot_scene_text_options) == 8);
-    std.debug.assert(@offsetOf(c.ot_scene_text_options, "foreground") == 8);
-    std.debug.assert(@offsetOf(c.ot_scene_text_options, "background") == 16);
-    std.debug.assert(@offsetOf(c.ot_scene_text_options, "attributes") == 24);
-    std.debug.assert(@offsetOf(c.ot_scene_text_options, "wrap_mode") == 28);
-    std.debug.assert(@offsetOf(c.ot_scene_text_options, "truncate") == 32);
-    std.debug.assert(@offsetOf(c.ot_scene_text_options, "first_line_offset") == 36);
-    std.debug.assert(@offsetOf(c.ot_scene_text_options, "scroll_x") == 40);
-    std.debug.assert(@offsetOf(c.ot_scene_text_options, "scroll_y") == 48);
-    std.debug.assert(@offsetOf(c.ot_scene_text_options, "tab_indicator") == 56);
-    std.debug.assert(@offsetOf(c.ot_scene_text_options, "tab_color") == 64);
-    std.debug.assert(@offsetOf(c.ot_scene_text_options, "text_align") == 72);
-    std.debug.assert(@sizeOf(c.ot_scene_text_info) == 32);
-    std.debug.assert(@sizeOf(c.ot_scene_text_line) == @sizeOf(@import("scene.zig").TextLine));
-    std.debug.assert(@alignOf(c.ot_scene_text_line) == @alignOf(@import("scene.zig").TextLine));
-    for (std.meta.fields(@import("scene.zig").TextLine)) |field| {
-        std.debug.assert(@offsetOf(c.ot_scene_text_line, field.name) == @offsetOf(@import("scene.zig").TextLine, field.name));
+    if (c.OT_MOUSE_POINTER_MAX != std.meta.tags(MousePointerStyle).len - 1)
+        @compileError("OT_MOUSE_POINTER_MAX differs from terminal.MousePointerStyle");
+    const TextLine = @import("scene.zig").TextLine;
+    if (@sizeOf(c.ot_scene_text_line) != @sizeOf(TextLine) or @alignOf(c.ot_scene_text_line) != @alignOf(TextLine))
+        @compileError("ot_scene_text_line differs from scene.TextLine");
+    for (std.meta.fields(TextLine)) |field| {
+        if (@offsetOf(c.ot_scene_text_line, field.name) != @offsetOf(TextLine, field.name))
+            @compileError("ot_scene_text_line differs from scene.TextLine: " ++ field.name);
     }
-    std.debug.assert(@alignOf(c.ot_scene_style_value) == 4);
-    std.debug.assert(@sizeOf(usize) == 8);
-    std.debug.assert(c.OT_BUFFER_TEXT_BYTES_MAX == @import("buffer.zig").text_bytes_max);
-    std.debug.assert(@import("link.zig").MAX_URL_LENGTH == 512);
+    if (@import("link.zig").MAX_URL_LENGTH != 512) @compileError("opentui.h documents 512-byte URLs");
 }
