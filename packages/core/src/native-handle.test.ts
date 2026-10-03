@@ -7,7 +7,6 @@ import { TextBuffer } from "./text-buffer.js"
 import { TextBufferView } from "./text-buffer-view.js"
 import { EditBuffer } from "./edit-buffer.js"
 import { EditorView } from "./editor-view.js"
-import { SyntaxStyle } from "./syntax-style.js"
 import { Config, Node } from "./yoga.js"
 import { nativeLayouts } from "./native-abi.generated.js"
 import {
@@ -17,77 +16,151 @@ import {
   NativeStatus,
   resolveRenderLib,
   setRenderLibPath,
+  type ContextTextBufferHandle,
+  type NativeContextHandle,
   type NativeSceneFrameRequest,
 } from "./zig.js"
 
+type Lib = ReturnType<typeof resolveRenderLib>
+// Rows mix handle kinds on purpose: each test passes one kind's handle to another kind's calls.
+type Handle = any
+
+// Each row creates a live handle of one resource kind, reads it, and destroys it.
+const resourceKinds: [
+  name: string,
+  create: (lib: Lib, context: NativeContextHandle) => Handle,
+  read: (lib: Lib, context: NativeContextHandle, handle: Handle) => unknown,
+  destroy: (lib: Lib, context: NativeContextHandle, handle: Handle) => void,
+][] = [
+  [
+    "text buffer",
+    (lib, context) => lib.createContextTextBuffer(context),
+    (lib, context, handle) => lib.contextTextBufferGetText(context, handle),
+    (lib, context, handle) => lib.destroyContextTextBuffer(context, handle),
+  ],
+  [
+    "edit buffer",
+    (lib, context) => lib.createContextEditBuffer(context),
+    (lib, context, handle) => lib.contextEditBufferGetText(context, handle),
+    (lib, context, handle) => lib.destroyContextEditBuffer(context, handle),
+  ],
+  [
+    "text view",
+    (lib, context) => lib.createContextTextBufferView(context, lib.createContextTextBuffer(context)),
+    (lib, context, handle) => lib.contextTextBufferViewGetInfo(context, handle),
+    (lib, context, handle) => lib.destroyContextTextBufferView(context, handle),
+  ],
+  [
+    "editor view",
+    (lib, context) => lib.createContextEditorView(context, lib.createContextEditBuffer(context), 4, 2),
+    (lib, context, handle) => lib.contextEditorViewGetInfo(context, handle),
+    (lib, context, handle) => lib.destroyContextEditorView(context, handle),
+  ],
+  [
+    "syntax style",
+    (lib, context) => lib.createContextSyntaxStyle(context),
+    (lib, context, handle) => lib.contextSyntaxStyleGetStyleCount(context, handle),
+    (lib, context, handle) => lib.destroyContextSyntaxStyle(context, handle),
+  ],
+  [
+    "buffer",
+    (lib, context) => lib.createContextBuffer(context, { width: 2, height: 1 }),
+    (lib, context, handle) =>
+      lib.contextReleaseBufferLease(context, lib.contextAcquireBufferLease(context, handle).handle),
+    (lib, context, handle) => lib.destroyContextBuffer(context, handle),
+  ],
+  [
+    "unicode",
+    (lib, context) => lib.createContextUnicode(context, "a", "unicode"),
+    (lib, context, handle) => lib.getContextUnicode(context, handle),
+    (lib, context, handle) => lib.destroyContextUnicode(context, handle),
+  ],
+  [
+    "embedded terminal",
+    (lib, context) => lib.createContextEmbeddedTerminal(context, { cols: 4, rows: 1 }),
+    (lib, context, handle) => lib.contextEmbeddedTerminalWrite(context, handle, "x"),
+    (lib, context, handle) => lib.destroyContextEmbeddedTerminal(context, handle),
+  ],
+]
+
 describe("native handles", () => {
-  test("Context embedded terminal rejects stale and wrong-kind handles", () => {
+  test.each(resourceKinds.map((kind, index) => [kind[0], kind, resourceKinds[(index + 1) % resourceKinds.length]!]))(
+    "%s handles reject wrong kinds, stale access, and double destroy",
+    (_, [, create, read, destroy], [, createOther, readOther]) => {
+      const lib = resolveRenderLib()
+      const context = lib.createContext({ objectCapacity: 8, renderCellsMax: 32 })
+      try {
+        const handle = create(lib, context)
+        const other = createOther(lib, context)
+        read(lib, context, handle)
+        expect(() => read(lib, context, other)).toThrow("WrongKind")
+        expect(() => destroy(lib, context, other)).toThrow("WrongKind")
+        readOther(lib, context, other)
+        destroy(lib, context, handle)
+        expect(() => read(lib, context, handle)).toThrow("StaleHandle")
+        expect(() => destroy(lib, context, handle)).toThrow("StaleHandle")
+      } finally {
+        lib.destroyContext(context)
+      }
+    },
+  )
+
+  test.each([
+    ["a copy", () => ({}), null],
+    ["the next generation", (text) => ({ generation: text.generation + 1 }), "StaleHandle"],
+    ["the largest slot", () => ({ slot: 0xffff_ffff }), "StaleHandle"],
+    ["a low contextId bit flipped", (text) => ({ contextId: text.contextId ^ 1n }), "WrongContext"],
+    ["a high contextId bit flipped", (text) => ({ contextId: text.contextId ^ (1n << 40n) }), "WrongContext"],
+    ["an all-zero handle", () => ({ contextId: 0n, slot: 0, generation: 0 }), "WrongContext"],
+    ["a negative slot", () => ({ slot: -1 }), RangeError],
+    ["a fractional generation", () => ({ generation: 0.5 }), RangeError],
+    ["a negative contextId", () => ({ contextId: -1n }), RangeError],
+    ["a contextId above u64", () => ({ contextId: 1n << 64n }), RangeError],
+    ["a number contextId", (text) => ({ contextId: Number(text.contextId) }), RangeError],
+  ] as const satisfies readonly [string, (text: ContextTextBufferHandle) => object, unknown][])(
+    "a handle object with %s is encoded from its own fields",
+    (_, fields, expected) => {
+      const lib = resolveRenderLib()
+      const context = lib.createContext({ objectCapacity: 1, renderCellsMax: 1 })
+      try {
+        const text = lib.createContextTextBuffer(context)
+        lib.contextTextBufferSetText(context, text, lib.encoder.encode("live"))
+        const read = () => lib.contextTextBufferGetText(context, { ...text, ...fields(text) } as never)
+        if (expected === null) expect(read()).toBe("live")
+        else expect(read).toThrow(expected)
+      } finally {
+        lib.destroyContext(context)
+      }
+    },
+  )
+
+  test("a handle from another Context is rejected before native access", () => {
     const lib = resolveRenderLib()
-    const context = lib.createContext({ objectCapacity: 2, renderCellsMax: 20 })
+    const context = lib.createContext({ objectCapacity: 1, renderCellsMax: 1 })
+    const other = lib.createContext({ objectCapacity: 1, renderCellsMax: 1 })
     try {
-      const terminal = lib.createContextEmbeddedTerminal(context, { cols: 10, rows: 2 })
-      lib.destroyContextEmbeddedTerminal(context, terminal)
-      expect(() => lib.destroyContextEmbeddedTerminal(context, terminal)).toThrow("StaleHandle")
-      expect(() => lib.contextEmbeddedTerminalWrite(context, terminal, "stale")).toThrow("StaleHandle")
       const text = lib.createContextTextBuffer(context)
-      lib.contextTextBufferSetText(context, text, lib.encoder.encode("preserved"))
-      expect(() => lib.contextEmbeddedTerminalWrite(context, text as never, "wrong kind")).toThrow("WrongKind")
-      expect(() => lib.destroyContextEmbeddedTerminal(context, text as never)).toThrow("WrongKind")
-      expect(lib.contextTextBufferGetText(context, text)).toBe("preserved")
+      expect(() => lib.contextTextBufferGetText(other, text)).toThrow("Context handle failed: WrongContext")
     } finally {
+      lib.destroyContext(other)
       lib.destroyContext(context)
     }
   })
 
-  test("a copied handle is encoded from its own fields", () => {
-    const lib = resolveRenderLib()
-    const context = lib.createContext({ objectCapacity: 2, renderCellsMax: 20 })
-    try {
-      const text = lib.createContextTextBuffer(context)
-      lib.contextTextBufferSetText(context, text, lib.encoder.encode("live"))
-      expect(lib.contextTextBufferGetText(context, text)).toBe("live")
-      const stale = { ...text, generation: text.generation + 1 }
-      expect(() => lib.contextTextBufferGetText(context, stale)).toThrow("StaleHandle")
-      expect(() => lib.contextTextBufferGetText(context, { ...text, slot: 0x7fff_ffff })).toThrow()
-      expect(lib.contextTextBufferGetText(context, text)).toBe("live")
-    } finally {
-      lib.destroyContext(context)
-    }
-  })
-
-  test("checked resource handles reject stale and wrong-kind access", () => {
-    const owner = new ResourceContext({ objectCapacity: 12, renderCellsMax: 32 })
+  test("destroying a buffer invalidates its views", () => {
+    const owner = new ResourceContext({ objectCapacity: 4, renderCellsMax: 1 })
     const { renderLib: lib, context } = owner
     try {
       const text = TextBuffer.create("unicode", owner)
       const edit = EditBuffer.create("unicode", owner)
       const view = TextBufferView.create(text)
       const editor = EditorView.create(edit, 8, 2)
-      const style = SyntaxStyle.create(owner)
-      const buffer = OptimizedBuffer.create(4, 3, "unicode", { owner })
-      const textHandle = text._getSceneHandle(owner)
-      const editHandle = edit._getSceneHandle(owner)
       const viewHandle = view._getSceneHandle(owner)
       const editorHandle = editor._getSceneHandle(owner)
-      const styleHandle = style._getSceneHandle(owner)
-      const bufferHandle = buffer._getSceneHandle(owner)
-      const bytes = lib.encoder.encode("replacement")
-      expect(() => lib.contextTextBufferSetText(context, editHandle as never, bytes)).toThrow("WrongKind")
-      expect(() => lib.contextEditBufferSetText(context, textHandle as never, bytes)).toThrow("WrongKind")
-      expect(() => lib.contextAcquireBufferLease(context, textHandle as never)).toThrow("WrongKind")
       text.destroy()
       edit.destroy()
-      style.destroy()
-      buffer.destroy()
-      for (const access of [
-        () => lib.contextTextBufferSetText(context, textHandle, bytes),
-        () => lib.contextEditBufferSetText(context, editHandle, bytes),
-        () => lib.contextTextBufferViewGetInfo(context, viewHandle),
-        () => lib.contextEditorViewGetInfo(context, editorHandle),
-        () => lib.contextSyntaxStyleGetStyleCount(context, styleHandle),
-        () => lib.contextAcquireBufferLease(context, bufferHandle),
-      ])
-        expect(access).toThrow("StaleHandle")
+      expect(() => lib.contextTextBufferViewGetInfo(context, viewHandle)).toThrow("StaleHandle")
+      expect(() => lib.contextEditorViewGetInfo(context, editorHandle)).toThrow("StaleHandle")
       expect(() => view.getPlainText()).toThrow("destroyed")
       expect(() => editor.getVirtualLineCount()).toThrow("destroyed")
       view.destroy()
