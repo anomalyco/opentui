@@ -241,6 +241,9 @@ Updates and resize notifications run during preparation, before painting.
 Native code calculates Yoga layout and prepares node geometry, clipping, and paint order.
 If a preparation hook changes the scene, native code repeats the necessary preparation.
 An update hook runs at most once per node per attempt.
+Native code sorts a parent's children by `zIndex` once per frame, when preparation reaches that parent.
+With layout hooks or viewports, a later `zIndex` change or reparent in the same attempt, at a yield or in a hook acknowledgement, does not sort them again: the frame keeps the earlier order, and a node moved into that parent paints after its siblings.
+The next frame sorts again.
 
 The host sets positive `max_layout_rounds` and `max_host_requests` limits and keeps them fixed throughout the attempt.
 Exhausted preparation rounds fail before painting. A `RECORD` request counts as one host request.
