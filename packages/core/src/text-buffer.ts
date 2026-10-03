@@ -127,13 +127,7 @@ export class TextBuffer {
       if (Array.isArray(chunks) && chunks.length === 0) {
         this.lib.contextTextBufferClear(this.native.handle.context, this.native.handle)
       } else {
-        const beforeNative = () => this._syntaxStyle?._getSceneHandle(this.native.owner)
-        this.lib.contextTextBufferSetStyledText(
-          this.native.handle.context,
-          this.native.handle,
-          new StyledText(chunks),
-          beforeNative,
-        )
+        this.lib.contextTextBufferSetStyledText(this.native.handle.context, this.native.handle, new StyledText(chunks))
       }
       this.updateLengths()
     })

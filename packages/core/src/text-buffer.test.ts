@@ -74,6 +74,14 @@ describe("TextBuffer", () => {
 
       expect(buffer.length).toBe(18) // 6 + 6 + 6 chars (newlines not counted)
     })
+
+    it("accepts styled text after the attached style is destroyed", () => {
+      const style = SyntaxStyle.create(resourceContext)
+      buffer.setSyntaxStyle(style)
+      style.destroy()
+      buffer.setStyledText(stringToStyledText("after"))
+      expect(buffer.getPlainText()).toBe("after")
+    })
   })
 
   describe("getPlainText", () => {

@@ -4200,9 +4200,8 @@ export class FFIRenderLib {
     context: NativeContextHandle,
     text: ContextTextBufferHandle,
     content: StyledText,
-    beforeNative?: () => void,
   ): void {
-    this.contextTextBufferSetEncodedStyledText(context, text, this.encodeTextBufferStyledText(content), beforeNative)
+    this.contextTextBufferSetEncodedStyledText(context, text, this.encodeTextBufferStyledText(content))
   }
 
   public encodeTextBufferStyledText(content: StyledText): NativeEncodedStyledText {
@@ -4213,12 +4212,10 @@ export class FFIRenderLib {
     context: NativeContextHandle,
     text: ContextTextBufferHandle,
     encoded: NativeEncodedStyledText,
-    beforeNative?: () => void,
   ): void {
     const handle = encodeContextHandle(context, text)
     const { bytes, records, count, urlBytes } = encoded
     this.getYogaHost().runMutation(() => {
-      beforeNative?.()
       const pointer = this.nativeContextPointer(context, "ot_text_buffer_set_styled_text")
       nativeResult(
         "ot_text_buffer_set_styled_text",
