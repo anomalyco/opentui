@@ -199,26 +199,13 @@ pub fn ot_edit_buffer_create(context: ?*ContextHandle, options_ptr: ?*const c.ot
     const out = out_ptr orelse return sessionError(owner, error.InvalidOptions);
     if (options.struct_size != @sizeOf(c.ot_edit_buffer_options) or options.reserved != 0) return sessionError(owner, error.InvalidOptions);
     if (options.abi_version != c.OT_CONTEXT_ABI_VERSION) return sessionError(owner, error.UnsupportedVersion);
-    const width_method: @import("utf8.zig").WidthMethod = switch (options.width_method) {
-        c.OT_WIDTH_METHOD_WCWIDTH => .wcwidth,
-        c.OT_WIDTH_METHOD_UNICODE => .unicode,
-        c.OT_WIDTH_METHOD_NO_ZWJ => .no_zwj,
-        c.OT_WIDTH_METHOD_UNICODE_WIDE => .unicode_wide,
-        else => return sessionError(owner, error.InvalidOptions),
-    };
+    const width_method = widthMethodFromC(options.width_method) catch |err| return sessionError(owner, err);
     out.* = handleToC(owner.core.createEditBuffer(width_method) catch |err| return sessionError(owner, err));
     return c.OT_OK;
 }
 
 pub fn ot_edit_buffer_destroy(context: ?*ContextHandle, edit_ptr: ?*const c.ot_handle) callconv(.c) c.ot_status {
-    const status = sessionContextStatus(context);
-    if (status != c.OT_OK) return status;
-    const owner = context.?;
-    const id = edit_ptr orelse return sessionError(owner, error.InvalidOptions);
-    const handle = handleFromC(id.*);
-    _ = owner.core.raw().getEditBuffer(handle) catch |err| return sessionError(owner, err);
-    owner.core.destroy(handle) catch |err| return sessionError(owner, err);
-    return c.OT_OK;
+    return destroyKind(context, edit_ptr, .edit_buffer);
 }
 
 pub fn ot_editor_view_create(context: ?*ContextHandle, edit_ptr: ?*const c.ot_handle, width: u32, height: u32, out_ptr: ?*c.ot_handle) callconv(.c) c.ot_status {
@@ -233,14 +220,7 @@ pub fn ot_editor_view_create(context: ?*ContextHandle, edit_ptr: ?*const c.ot_ha
 }
 
 pub fn ot_editor_view_destroy(context: ?*ContextHandle, view_ptr: ?*const c.ot_handle) callconv(.c) c.ot_status {
-    const status = sessionContextStatus(context);
-    if (status != c.OT_OK) return status;
-    const owner = context.?;
-    const id = view_ptr orelse return sessionError(owner, error.InvalidOptions);
-    const handle = handleFromC(id.*);
-    _ = owner.core.raw().getEditorView(handle) catch |err| return sessionError(owner, err);
-    owner.core.destroy(handle) catch |err| return sessionError(owner, err);
-    return c.OT_OK;
+    return destroyKind(context, view_ptr, .editor_view);
 }
 
 pub fn ot_syntax_style_create(context: ?*ContextHandle, out_ptr: ?*c.ot_handle) callconv(.c) c.ot_status {
@@ -253,14 +233,7 @@ pub fn ot_syntax_style_create(context: ?*ContextHandle, out_ptr: ?*c.ot_handle) 
 }
 
 pub fn ot_syntax_style_destroy(context: ?*ContextHandle, style_ptr: ?*const c.ot_handle) callconv(.c) c.ot_status {
-    const status = sessionContextStatus(context);
-    if (status != c.OT_OK) return status;
-    const owner = context.?;
-    const id = style_ptr orelse return sessionError(owner, error.InvalidOptions);
-    const handle = handleFromC(id.*);
-    _ = owner.core.raw().getSyntaxStyle(handle) catch |err| return sessionError(owner, err);
-    owner.core.destroy(handle) catch |err| return sessionError(owner, err);
-    return c.OT_OK;
+    return destroyKind(context, style_ptr, .syntax_style);
 }
 
 pub fn ot_edit_buffer_set_syntax_style(context: ?*ContextHandle, edit_ptr: ?*const c.ot_handle, style_ptr: ?*const c.ot_handle) callconv(.c) c.ot_status {

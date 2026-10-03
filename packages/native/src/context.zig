@@ -3238,10 +3238,8 @@ pub const Context = struct {
         defer self.mutating = false;
         const edit = try self.getEditBuffer(handle);
         try edit.checkMutable();
-        const tab_width: u32 = @min(254, @max(2, @as(u32, width) + width % 2));
-        const bytes_max = (std.math.maxInt(u32) - 1) / tab_width;
-        if (edit.buffer.tb.getByteSize() > bytes_max) return error.TextLimit;
-        edit.buffer.setTabWidth(@intCast(tab_width));
+        try edit.buffer.tb.checkTabWidth(width);
+        edit.buffer.setTabWidth(width);
         edit.invalidate();
     }
 
