@@ -1776,7 +1776,7 @@ test("multiple DECRPM responses in sequence", async () => {
   expect(keypresses).toHaveLength(0)
 })
 
-test("OSC 10/11 fallback sets initial theme mode once both colors arrive", () => {
+test("OSC 10/11 fallback sets initial theme mode once the background color arrives", () => {
   const themeModes: string[] = []
   currentRenderer.on("theme_mode", (mode) => {
     themeModes.push(mode)
@@ -1789,6 +1789,33 @@ test("OSC 10/11 fallback sets initial theme mode once both colors arrive", () =>
   expect(themeModes).toEqual([])
 
   currentRenderer.stdin.emit("data", Buffer.from("\x1b]11;#000000\x07"))
+  advanceCurrentClock()
+
+  expect(currentRenderer.themeMode).toBe("dark")
+  expect(themeModes).toEqual(["dark"])
+})
+
+test("OSC 11 reply alone sets initial theme mode when the terminal never answers OSC 10", () => {
+  const themeModes: string[] = []
+  currentRenderer.on("theme_mode", (mode) => {
+    themeModes.push(mode)
+  })
+
+  currentRenderer.stdin.emit("data", Buffer.from("\x1b]11;rgb:f7f7/f7f7/f5f5\x07"))
+  advanceCurrentClock()
+
+  expect(currentRenderer.themeMode).toBe("light")
+  expect(themeModes).toEqual(["light"])
+})
+
+test("OSC 10 reply arriving after the OSC 11 reply does not emit theme mode again", () => {
+  const themeModes: string[] = []
+  currentRenderer.on("theme_mode", (mode) => {
+    themeModes.push(mode)
+  })
+
+  currentRenderer.stdin.emit("data", Buffer.from("\x1b]11;#000000\x07"))
+  currentRenderer.stdin.emit("data", Buffer.from("\x1b]10;#ffffff\x07"))
   advanceCurrentClock()
 
   expect(currentRenderer.themeMode).toBe("dark")
@@ -1871,6 +1898,32 @@ test("CSI 997 refreshes theme mode only after fresh OSC 10 and 11 replies arrive
 
   expect(renderer.themeMode).toBe("dark")
   expect(themeModes).toEqual(["dark"])
+
+  renderer.stdin.emit("data", Buffer.from("\x1b]11;#ffffff\x07"))
+  advanceClock(clock)
+
+  expect(renderer.themeMode).toBe("light")
+  expect(themeModes).toEqual(["dark", "light"])
+
+  renderer.destroy()
+})
+
+test("CSI 997 refresh settles theme mode from the OSC 11 reply alone", async () => {
+  const { renderer, queryThemeColorsCalls, clock } = await createThemeQueryRenderer()
+  const themeModes: string[] = []
+  renderer.on("theme_mode", (mode) => {
+    themeModes.push(mode)
+  })
+
+  renderer.stdin.emit("data", Buffer.from("\x1b]11;#000000\x07"))
+  advanceClock(clock)
+
+  expect(renderer.themeMode).toBe("dark")
+
+  renderer.stdin.emit("data", Buffer.from("\x1b[?997;2n"))
+  advanceClock(clock)
+
+  expect(queryThemeColorsCalls.count).toBe(1)
 
   renderer.stdin.emit("data", Buffer.from("\x1b]11;#ffffff\x07"))
   advanceClock(clock)
