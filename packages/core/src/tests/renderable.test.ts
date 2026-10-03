@@ -1315,6 +1315,21 @@ describe("Renderable - Lifecycle", () => {
     expect(renderable.isDestroyed).toBe(true)
   })
 
+  test("layout reads during destroy return the live layout", async () => {
+    const parent = new TestRenderable(testRenderer, { width: 12, height: 4, position: "absolute", left: 3, top: 1 })
+    const child = new TestRenderable(testRenderer, { marginLeft: 2, height: 2 })
+    parent.add(child)
+    testRenderer.root.add(parent)
+    await renderOnce()
+    const layout = () => [child.x, child.y, child.screenX, child.screenY, child.width, child.height]
+    const live = layout()
+    let destroying: number[] = []
+    child.on(RenderableEvents.DESTROYED, () => (destroying = layout()))
+    child.destroy()
+    expect(live).toEqual([5, 1, 5, 1, 10, 2])
+    expect(destroying).toEqual(live)
+  })
+
   test("handles recursive destroy", () => {
     const parent = new TestRenderable(testRenderer, { id: "parent-destroy" })
     const child = new TestRenderable(testRenderer, { id: "child-destroy" })

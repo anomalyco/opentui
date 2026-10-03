@@ -742,11 +742,11 @@ export abstract class Renderable extends BaseRenderable {
   }
 
   public get screenX(): number {
-    return this._isDestroyed ? (this._destroyedLayout?.screenX ?? 0) : this.getNativeSceneLayout().screenX
+    return this.isFreed() ? (this._destroyedLayout?.screenX ?? 0) : this.getNativeSceneLayout().screenX
   }
 
   public get screenY(): number {
-    return this._isDestroyed ? (this._destroyedLayout?.screenY ?? 0) : this.getNativeSceneLayout().screenY
+    return this.isFreed() ? (this._destroyedLayout?.screenY ?? 0) : this.getNativeSceneLayout().screenY
   }
 
   // Host paint uses the prepared snapshot even after same-frame reparenting.
@@ -772,7 +772,7 @@ export abstract class Renderable extends BaseRenderable {
   }
 
   public get x(): number {
-    if (!this._isDestroyed) return this.getNativeSceneLayout().screenX
+    if (!this.isFreed()) return this.getNativeSceneLayout().screenX
     const left = this._destroyedLayout?.x ?? 0
     if (this.parent) {
       return this.parent.x + left + this._translateX
@@ -825,7 +825,7 @@ export abstract class Renderable extends BaseRenderable {
   }
 
   public get y(): number {
-    if (!this._isDestroyed) return this.getNativeSceneLayout().screenY
+    if (!this.isFreed()) return this.getNativeSceneLayout().screenY
     const top = this._destroyedLayout?.y ?? 0
     if (this.parent) {
       return this.parent.y + top + this._translateY
@@ -838,7 +838,7 @@ export abstract class Renderable extends BaseRenderable {
   }
 
   public get width(): number {
-    if (!this._isDestroyed) {
+    if (!this.isFreed()) {
       const layout = this.getNativeSceneLayout()
       // Native snapshots use zero before layout; completed dimensions are at least one cell.
       return layout.width === 0 ? this.styledDimension("width") : layout.width
@@ -855,7 +855,7 @@ export abstract class Renderable extends BaseRenderable {
   }
 
   public get height(): number {
-    if (!this._isDestroyed) {
+    if (!this.isFreed()) {
       const layout = this.getNativeSceneLayout()
       return layout.height === 0 ? this.styledDimension("height") : layout.height
     }
