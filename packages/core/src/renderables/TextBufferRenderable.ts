@@ -1,4 +1,3 @@
-import { runRenderableMutation } from "../lib/renderable-layout.js"
 import { Renderable, type RenderableOptions } from "../Renderable.js"
 import { convertGlobalToLocalSelection, Selection, type LocalSelectionBounds } from "../lib/selection.js"
 import { TextBuffer, type TextChunk } from "../text-buffer.js"
@@ -210,7 +209,7 @@ export abstract class TextBufferRenderable extends Renderable implements LineInf
     const maxScrollY = Math.max(0, this.scrollHeight - this.height)
     const clamped = Math.max(0, Math.min(value ?? 0, maxScrollY))
     if (this._scrollY !== clamped) {
-      runRenderableMutation(this, () => {
+      this.runMutation(() => {
         this.setNativeSceneTextOptions({ scrollY: clamped })
         if (!this.nativeTextScene) this.updateViewportOffset(this._scrollX, clamped)
         this._scrollY = clamped
@@ -227,7 +226,7 @@ export abstract class TextBufferRenderable extends Renderable implements LineInf
     const maxScrollX = Math.max(0, this.scrollWidth - this.width)
     const clamped = Math.max(0, Math.min(value ?? 0, maxScrollX))
     if (this._scrollX !== clamped) {
-      runRenderableMutation(this, () => {
+      this.runMutation(() => {
         this.setNativeSceneTextOptions({ scrollX: clamped })
         if (!this.nativeTextScene) this.updateViewportOffset(clamped, this._scrollY)
         this._scrollX = clamped
@@ -278,7 +277,7 @@ export abstract class TextBufferRenderable extends Renderable implements LineInf
 
   set fg(value: RGBA | string | undefined) {
     const newColor = RGBA.clone(parseColor(value ?? this._defaultOptions.fg))
-    runRenderableMutation(this, () => {
+    this.runMutation(() => {
       this.setNativeSceneTextOptions({ fg: newColor })
       if (!this.nativeTextScene) this.textBuffer.setDefaultFg(newColor)
       this._defaultFg = newColor
@@ -294,7 +293,7 @@ export abstract class TextBufferRenderable extends Renderable implements LineInf
   set selectionBg(value: RGBA | string | undefined) {
     const newColor = value ? RGBA.clone(parseColor(value)) : undefined
     if (this._selectionBg !== newColor) {
-      runRenderableMutation(this, () => {
+      this.runMutation(() => {
         if (this.nativeTextScene || this.lastLocalSelection) {
           this.updateLocalSelection(this.lastLocalSelection, true, { bg: newColor, fg: this._selectionFg })
         }
@@ -311,7 +310,7 @@ export abstract class TextBufferRenderable extends Renderable implements LineInf
   set selectionFg(value: RGBA | string | undefined) {
     const newColor = value ? RGBA.clone(parseColor(value)) : undefined
     if (this._selectionFg !== newColor) {
-      runRenderableMutation(this, () => {
+      this.runMutation(() => {
         if (this.nativeTextScene || this.lastLocalSelection) {
           this.updateLocalSelection(this.lastLocalSelection, true, { bg: this._selectionBg, fg: newColor })
         }
@@ -327,7 +326,7 @@ export abstract class TextBufferRenderable extends Renderable implements LineInf
 
   set bg(value: RGBA | string | undefined) {
     const newColor = RGBA.clone(parseColor(value ?? this._defaultOptions.bg))
-    runRenderableMutation(this, () => {
+    this.runMutation(() => {
       this.setNativeSceneTextOptions({ bg: newColor })
       if (!this.nativeTextScene) this.textBuffer.setDefaultBg(newColor)
       this._defaultBg = newColor
@@ -343,7 +342,7 @@ export abstract class TextBufferRenderable extends Renderable implements LineInf
   set attributes(value: number | undefined) {
     const attributes = value ?? this._defaultOptions.attributes
     if (this._defaultAttributes !== attributes) {
-      runRenderableMutation(this, () => {
+      this.runMutation(() => {
         this.setNativeSceneTextOptions({ attributes })
         if (!this.nativeTextScene) this.textBuffer.setDefaultAttributes(attributes)
         this._defaultAttributes = attributes
@@ -360,7 +359,7 @@ export abstract class TextBufferRenderable extends Renderable implements LineInf
   set wrapMode(value: "none" | "char" | "word") {
     value ??= this._defaultOptions.wrapMode
     if (this._wrapMode !== value) {
-      runRenderableMutation(this, () => {
+      this.runMutation(() => {
         this.setNativeSceneTextOptions({ wrapMode: value })
         if (!this.nativeTextScene) this.textBufferView.setWrapMode(value)
         this._wrapMode = value
@@ -380,7 +379,7 @@ export abstract class TextBufferRenderable extends Renderable implements LineInf
   set textAlign(value: "left" | "center" | "right") {
     value ??= this._defaultOptions.textAlign
     if (this._textAlign !== value) {
-      runRenderableMutation(this, () => {
+      this.runMutation(() => {
         this.setNativeSceneTextOptions({ textAlign: value })
         if (!this.nativeTextScene) this.textBufferView.setTextAlign(value)
         this._textAlign = value
@@ -395,7 +394,7 @@ export abstract class TextBufferRenderable extends Renderable implements LineInf
 
   set tabIndicator(value: string | number | undefined) {
     if (this._tabIndicator !== value) {
-      runRenderableMutation(this, () => {
+      this.runMutation(() => {
         this.setNativeSceneTextOptions({ tabIndicator: value })
         if (!this.nativeTextScene) this.textBufferView.setTabIndicator(value ?? 0)
         this._tabIndicator = value
@@ -411,7 +410,7 @@ export abstract class TextBufferRenderable extends Renderable implements LineInf
   set tabIndicatorColor(value: RGBA | string | undefined) {
     const newColor = value ? RGBA.clone(parseColor(value)) : undefined
     if (this._tabIndicatorColor !== newColor) {
-      runRenderableMutation(this, () => {
+      this.runMutation(() => {
         this.setNativeSceneTextOptions({ tabIndicatorColor: newColor })
         if (!this.nativeTextScene && newColor !== undefined) this.textBufferView.setTabIndicatorColor(newColor)
         this._tabIndicatorColor = newColor
@@ -427,7 +426,7 @@ export abstract class TextBufferRenderable extends Renderable implements LineInf
   set truncate(value: boolean) {
     value ??= this._defaultOptions.truncate
     if (this._truncate !== value) {
-      runRenderableMutation(this, () => {
+      this.runMutation(() => {
         this.setNativeSceneTextOptions({ truncate: value })
         if (!this.nativeTextScene) this.textBufferView.setTruncate(value)
         this._truncate = value
