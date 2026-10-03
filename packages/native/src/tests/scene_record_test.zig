@@ -40,7 +40,7 @@ pub fn drawHeader(comptime T: type, operation: u32) c.ot_buffer_draw_header {
 
 /// Builds an 8-byte aligned paint recording.
 pub const Recording = struct {
-    bytes: [1024]u8 align(8) = undefined,
+    bytes: [2048]u8 align(8) = undefined,
     len: usize = 0,
 
     pub fn slot(self: *Recording, index: u32, phase: u32) void {
@@ -722,4 +722,49 @@ fn allocationFailures(allocator: std.mem.Allocator) !void {
 
 test "Scene record releases requests and slots on allocation failure" {
     try testing.checkAllAllocationFailures(testing.allocator, allocationFailures, .{});
+}
+
+test "Scene record fails corrupted recordings cleanly and keeps the Session paintable" {
+    const f = try Fixture.init(testing.allocator, 12, 4, .{ .output = transport });
+    defer f.deinit();
+    const surface = try placed(f, c.OT_SCENE_CUSTOM, 2, 0, 0, 12);
+    try f.owner.sceneSetHooks(surface, c.OT_SCENE_HOOK_RENDER_BEFORE | self_after, 1, 12, 1);
+    try f.owner.sceneSetHooks(try placed(f, c.OT_SCENE_BOX, 3, 4, 1, 6), c.OT_SCENE_HOOK_RENDER_AFTER, 1, 6, 3);
+    const resources = try Resources.init(f);
+    // A valid stream with every command in all three phases of one slot, then a second slot.
+    var valid: Recording = .{};
+    for (std.enums.values(Command), 0..) |command, index| {
+        if (index % 4 == 0) valid.slot(0, @intCast(index / 4));
+        try issue(command, f, resources, .{ .recording = &valid });
+    }
+    valid.stack(c.OT_BUFFER_STACK_PUSH_SCISSOR, 1, 3, 1);
+    valid.slot(1, c.OT_SCENE_RECORD_PHASE_AFTER);
+    valid.text("ok", 5, 2);
+    try f.owner.sceneFrameCancel(f.id, (try submit(f, try f.step(null, options, c.OT_SCENE_FRAME_RECORD, null), &valid)).frame_id);
+    for (0..512) |seed| {
+        var prng = std.Random.DefaultPrng.init(seed);
+        const random = prng.random();
+        var recording = valid;
+        for (0..1 + random.uintLessThan(usize, 3)) |_| {
+            const offset = random.uintLessThan(usize, recording.len / 4) * 4;
+            const word = std.mem.bytesAsValue(u32, recording.bytes[offset..][0..4]);
+            switch (random.uintLessThan(u8, 4)) {
+                0 => recording.bytes[offset + random.uintLessThan(usize, 4)] ^= @as(u8, 1) << random.int(u3),
+                1 => word.* = random.int(u32),
+                2 => word.* = ([_]u32{ 0, 1, 8, 255, std.math.maxInt(u32) })[random.uintLessThan(usize, 5)],
+                else => recording.len = random.uintLessThan(usize, recording.len / 8) * 8,
+            }
+        }
+        const request = try f.step(null, options, c.OT_SCENE_FRAME_RECORD, null);
+        if (submit(f, request, &recording)) |done| {
+            try testing.expectEqual(@as(u32, c.OT_SCENE_FRAME_DONE), done.kind);
+            try f.owner.sceneFrameCancel(f.id, done.frame_id);
+        } else |_| {
+            try testing.expect(f.state.attempt == null and f.state.painted == null);
+            try testing.expectEqual(@as(usize, 0), f.state.paint_members.items.len);
+            for (f.cli.nextHitGrid) |hit| try testing.expectEqual(@as(u32, 0), hit);
+        }
+        try testing.expectEqual(@as(usize, 0), f.cli.getNextBuffer().scissor_stack.items.len);
+        try testing.expectEqual(@as(usize, 0), f.cli.getNextBuffer().opacity_stack.items.len);
+    }
 }
