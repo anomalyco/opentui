@@ -2435,9 +2435,11 @@ ot_status ot_session_render(
     uint32_t force,
     uint32_t *out_result);
 
-/* Pending output prevents resize. Rejection preserves accepted dimensions.
- * Scene preparation returns OT_FRAME_BUSY. A painted draft allows resize under
- * the storage requalification rules of ot_scene_frame_acquire_buffer_lease. */
+/* A frame whose presentation is pending returns OT_OUTPUT_BUSY. Queued raw and
+ * control output does not prevent resize and stays ahead of the next frame.
+ * Rejection preserves accepted dimensions. Scene preparation returns
+ * OT_FRAME_BUSY. A painted draft allows resize under the storage
+ * requalification rules of ot_scene_frame_acquire_buffer_lease. */
 ot_status ot_session_resize_renderer(
     ot_context *context,
     const ot_handle *session,
