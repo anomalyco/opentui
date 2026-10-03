@@ -712,7 +712,7 @@ Other:
   const applyTheme = (theme: (typeof themes)[ThemeKey]) => {
     rendererInstance.setBackgroundColor(theme.bg)
     // Keep the four themes alive until teardown, including during pending highlights.
-    syntaxStyle = syntaxStyles.get(theme) ?? SyntaxStyle.fromStyles(theme.styles, renderer.nativeScene!)
+    syntaxStyle = syntaxStyles.get(theme) ?? SyntaxStyle.fromStyles(theme.styles, rendererInstance.nativeScene)
     syntaxStyles.set(theme, syntaxStyle)
 
     titleBox.backgroundColor = theme.bg
