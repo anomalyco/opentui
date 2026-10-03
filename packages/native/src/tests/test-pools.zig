@@ -217,7 +217,7 @@ pub fn checkPoolModel(comptime Spec: type, seed: u64, step_count: u32) !void {
                 tracked += @intFromBool(entry.cells > 0);
                 try std.testing.expectEqual(refcount(entry), try self.pool.getRefcount(id));
                 try std.testing.expectEqualSlices(u8, bytes(index, &scratch), try self.pool.get(id));
-                try std.testing.expectEqual(entry.cells > 0, self.tracker.used_ids.contains(id));
+                try std.testing.expectEqual(entry.cells, self.tracker.used_ids.get(id) orelse 0);
             }
             try std.testing.expectEqual(live, self.pool.interned_live_ids.count());
             try std.testing.expectEqual(@as(u64, live), Spec.liveSlots(self.pool));

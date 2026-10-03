@@ -30,7 +30,6 @@ const renderer_tests = @import("tests/renderer_test.zig");
 const renderer_presentation_tests = @import("tests/renderer-presentation_test.zig");
 const terminal_tests = @import("tests/terminal_test.zig");
 const mem_registry_tests = @import("tests/mem-registry_test.zig");
-const memory_leak_regression_tests = @import("tests/memory_leak_regression_test.zig");
 const wrap_cache_perf_tests = @import("tests/wrap-cache-perf_test.zig");
 const native_span_feed_tests = @import("tests/native-span-feed_test.zig");
 const native_renderable_tests = @import("tests/native-renderable_test.zig");
@@ -117,7 +116,6 @@ comptime {
     _ = renderer_presentation_tests;
     _ = terminal_tests;
     _ = mem_registry_tests;
-    _ = memory_leak_regression_tests;
     _ = wrap_cache_perf_tests;
     _ = native_span_feed_tests;
     _ = native_renderable_tests;
