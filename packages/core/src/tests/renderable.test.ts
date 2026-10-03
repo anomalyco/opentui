@@ -1321,12 +1321,20 @@ describe("Renderable - Lifecycle", () => {
     parent.add(child)
     testRenderer.root.add(parent)
     await renderOnce()
-    const layout = () => [child.x, child.y, child.screenX, child.screenY, child.width, child.height]
+    const layout = () => [
+      child.x,
+      child.y,
+      child.screenX,
+      child.screenY,
+      child.width,
+      child.height,
+      child.getLayout().width,
+    ]
     const live = layout()
     let destroying: number[] = []
     child.on(RenderableEvents.DESTROYED, () => (destroying = layout()))
     child.destroy()
-    expect(live).toEqual([5, 1, 5, 1, 10, 2])
+    expect(live).toEqual([5, 1, 5, 1, 10, 2, 10])
     expect(destroying).toEqual(live)
   })
 

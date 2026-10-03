@@ -1496,7 +1496,7 @@ export abstract class Renderable extends BaseRenderable {
   }
 
   public getLayout(): Readonly<Layout> {
-    if (this._isDestroyed) throw new Error("Renderable is destroyed")
+    if (this.isFreed()) throw new Error("Renderable is destroyed")
     return this.getComputedLayout()
   }
 
