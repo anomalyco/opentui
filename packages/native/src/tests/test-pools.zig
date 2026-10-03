@@ -243,7 +243,8 @@ pub fn checkPoolModel(comptime Spec: type, seed: u64, step_count: u32) !void {
     defer tracker.deinit();
     var model: Model = .{ .pool = &pool, .tracker = &tracker, .failing = &failing };
     var prng = std.Random.DefaultPrng.init(seed);
-    for (0..step_count) |_| {
+    for (0..step_count) |step| {
+        errdefer std.debug.print("{s} model failed: seed {d}, step {d}\n", .{ @typeName(Spec), seed, step });
         try model.step(prng.random());
         try model.check();
     }

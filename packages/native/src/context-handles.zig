@@ -219,6 +219,16 @@ const Model = struct {
         }
     }
 
+    fn releaseAll(self: *Model) void {
+        if (self.pending) |token| self.table.finishDestroy(token);
+        self.pending = null;
+        for (self.table.slots, 0..) |slot, index| {
+            if (slot.state != .alive) continue;
+            const handle: Handle = .{ .context_id = self.table.context_id, .slot = @intCast(index), .generation = slot.generation };
+            self.table.finishDestroy(self.table.beginDestroy(handle) catch unreachable);
+        }
+    }
+
     fn step(self: *Model, random: std.Random) !void {
         const kind = kinds[random.uintLessThan(usize, kinds.len)];
         switch (random.uintLessThan(u8, 4)) {
@@ -282,22 +292,17 @@ test "Table matches a reference model under seeded random operations" {
         var table = try Table.init(std.testing.allocator, Model.capacity);
         defer table.deinit();
         var model: Model = .{ .table = &table };
+        // Runs before table.deinit, so a failed expectation does not trip its live_count assertion.
+        defer model.releaseAll();
         for ([_]u32{ 0, 1 }) |slot| {
             table.slots[slot].generation = std.math.maxInt(u32) - slot;
             model.generation[slot] = std.math.maxInt(u32) - slot;
         }
         var prng = std.Random.DefaultPrng.init(seed);
-        for (0..256) |_| {
+        for (0..256) |step| {
+            errdefer std.debug.print("handle table model failed: seed {d}, step {d}\n", .{ seed, step });
             try model.step(prng.random());
             try model.checkInvariants();
-        }
-        if (model.pending) |token| table.finishDestroy(token);
-        for (table.slots, 0..) |slot, index| {
-            if (slot.state == .alive) table.finishDestroy(try table.beginDestroy(.{
-                .context_id = table.context_id,
-                .slot = @intCast(index),
-                .generation = slot.generation,
-            }));
         }
     }
 }

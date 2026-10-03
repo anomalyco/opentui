@@ -104,7 +104,8 @@ test "MemRegistry matches a reference model under seeded random operations" {
         var model: Model = .{};
         var prng = std.Random.DefaultPrng.init(seed);
         const random = prng.random();
-        for (0..2000) |_| {
+        for (0..2000) |step| {
+            errdefer std.debug.print("MemRegistry model failed: seed {d}, step {d}\n", .{ seed, step });
             const id = random.uintLessThan(u8, 8) +% if (model.len == 0) 0 else random.uintLessThan(u8, @intCast(model.len));
             const owned = random.boolean();
             switch (random.uintLessThan(u8, 16)) {
