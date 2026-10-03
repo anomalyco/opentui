@@ -53,4 +53,15 @@ pub const Fixture = struct {
         if (node) |expected| try std.testing.expectEqual(expected, request.node);
         return request;
     }
+
+    /// Acknowledges every request unchanged until the attempt paints, and returns DONE.
+    pub fn drive(self: Fixture, previous: ?scene.FrameRequest, options: scene.FrameOptions, budget: u32) !scene.FrameRequest {
+        var request = previous;
+        for (0..1024) |_| {
+            const next = try self.owner.sceneFrameStepWorkBudgeted(self.id, request, options, budget);
+            if (next.kind == 0) return next;
+            request = next;
+        }
+        return error.TestUnexpectedResult;
+    }
 };
