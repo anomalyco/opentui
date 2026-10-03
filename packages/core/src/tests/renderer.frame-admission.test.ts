@@ -1,10 +1,13 @@
 import { afterEach, expect, test } from "bun:test"
 import { NativeSession } from "../NativeSession.js"
 import { RGBA } from "../lib/RGBA.js"
+import { BoxRenderable } from "../renderables/Box.js"
+import { TextRenderable } from "../renderables/Text.js"
 import { CliRenderer, CliRenderEvents, createCliRenderer, type CliRendererConfig } from "../renderer.js"
 import { settle, settleUntil } from "../testing/harness.js"
 import { ManualClock } from "../testing/manual-clock.js"
 import { createTestStdin, RecordingWriteStream } from "../testing/test-streams.js"
+import { NativeSceneFrame } from "../zig.js"
 
 const cleanups: Array<() => Promise<void>> = []
 afterEach(async () => {
@@ -157,3 +160,66 @@ test("same-turn stop and request renders once without asynchronous frame callbac
 
   expect({ frames, postProcesses }).toEqual({ frames: 1, postProcesses: 1 })
 })
+
+const busyResizes = {
+  "a pending frame presentation": async () => {
+    const target = createAdmissionRenderer(80, 24)
+    target.renderer.requestRender()
+    target.clock.advance(100)
+    await settleUntil(() => target.stdout.pendingWrite)
+    return { ...target, resize: [100, 30] as const }
+  },
+  "a parked split-footer paint": async () => {
+    const target = createAdmissionRenderer(30, 12, {
+      screenMode: "split-footer",
+      externalOutputMode: "passthrough",
+      footerHeight: 6,
+      nativeSceneWorkBudget: 1,
+    })
+    target.stdout.release()
+    await target.renderer.setupTerminal()
+    const column = new BoxRenderable(target.renderer, { flexDirection: "column" })
+    target.renderer.root.add(column)
+    for (let line = 0; line < 4; line++) column.add(new TextRenderable(target.renderer, { content: `line ${line}` }))
+    const lib = target.driver.renderLib
+    const step = lib.sceneFrameStep
+    const parked = Promise.withResolvers<void>()
+    lib.sceneFrameStep = (...args) => {
+      const result = step.apply(lib, args)
+      if (result.kind === NativeSceneFrame.Yield) parked.resolve()
+      return result
+    }
+    cleanups.unshift(async () => {
+      lib.sceneFrameStep = step
+    })
+    target.renderer.requestRender()
+    target.clock.advance(100)
+    await parked.promise
+    expect(target.renderer.getSchedulerState().isRendering).toBe(true)
+    return { ...target, resize: [20, 12] as const }
+  },
+}
+
+for (const [state, enter] of Object.entries(busyResizes)) {
+  test(`resize() during ${state} applies once the Session is ready`, async () => {
+    const { renderer, stdout, clock, resize } = await enter()
+    const resizes: number[][] = []
+    const errors: unknown[] = []
+    renderer.on(CliRenderEvents.RESIZE, (width: number, height: number) => resizes.push([width, height]))
+    renderer.on(CliRenderEvents.RENDER_ERROR, ({ error }) => errors.push(error))
+
+    expect(() => renderer.resize(...resize)).not.toThrow()
+    stdout.release()
+    for (let turn = 0; turn < 8; turn++) {
+      clock.advance(100)
+      await settle()
+    }
+    await renderer.idle()
+
+    expect({ size: [renderer.terminalWidth, renderer.terminalHeight], resizes, errors }).toEqual({
+      size: [...resize],
+      resizes: [[renderer.width, renderer.height]],
+      errors: [],
+    })
+  })
+}

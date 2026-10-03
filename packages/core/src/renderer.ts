@@ -4126,11 +4126,26 @@ export class CliRenderer extends EventEmitter implements RenderContext {
    * `window-change` signal or a test harness simulating a terminal resize.
    * When the renderer is attached to `process.stdout`, `SIGWINCH` is handled
    * automatically and callers do not need this method.
+   *
+   * While the Session presents or paints a frame, the resize waits for that frame like `requestResize`.
    */
   public resize(width: number, height: number): void {
     if (this._isDestroyed) return
     const pending = this.pendingNativeResize
-    this.processResize(width, height)
+    try {
+      this.processResize(width, height)
+    } catch (error) {
+      if (
+        !(error instanceof NativeError) ||
+        (error.status !== NativeStatus.OutputBusy && error.status !== NativeStatus.FrameBusy)
+      ) {
+        throw error
+      }
+      this.pendingNativeResize = { width, height }
+      this.pendingResizeSawDifferentSize = true
+      this.applyPendingNativeResize()
+      return
+    }
     if (this.pendingNativeResize === pending) {
       this.pendingNativeResize = null
       this.resolveIdleIfNeeded()

@@ -358,10 +358,7 @@ export async function createTestRenderer(options: TestRendererOptions): Promise<
         lines,
       }
     },
-    resize: (width: number, height: number) => {
-      //@ts-expect-error - this is a test renderer
-      renderer.processResize(width, height)
-    },
+    resize: (width: number, height: number) => renderer.resize(width, height),
     dispose,
     [Symbol.asyncDispose]: dispose,
   }
