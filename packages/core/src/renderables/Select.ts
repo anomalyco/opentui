@@ -69,7 +69,7 @@ export class SelectRenderable extends Renderable {
   private _options: SelectOption[] = []
   private _selectedIndex: number = 0
   private scrollOffset: number = 0
-  private maxVisibleItems: number
+  private maxVisibleItems!: number
 
   private _backgroundColor: RGBA
   private _textColor: RGBA
@@ -85,7 +85,7 @@ export class SelectRenderable extends Renderable {
   private _showSelectionIndicator: boolean
   private _font?: keyof typeof fonts
   private _itemSpacing: number
-  private linesPerItem: number
+  private linesPerItem!: number
   private fontHeight: number
   private _fastScrollStep: number
   private _keyBindingsMap: Map<string, SelectAction>
@@ -131,16 +131,7 @@ export class SelectRenderable extends Renderable {
       this._itemSpacing = options.itemSpacing || this._defaultOptions.itemSpacing
 
       this.fontHeight = this._font ? measureText({ text: "A", font: this._font }).height : 1
-      this.linesPerItem = this._showDescription
-        ? this._font
-          ? this.fontHeight + 1
-          : 2
-        : this._font
-          ? this.fontHeight
-          : 1
-      this.linesPerItem += this._itemSpacing
-
-      this.maxVisibleItems = Math.max(1, Math.floor(this.height / this.linesPerItem))
+      this.updateItemLayout()
 
       this._selectedBackgroundColor = RGBA.clone(
         parseColor(options.selectedBackgroundColor || this._defaultOptions.selectedBackgroundColor),
@@ -320,9 +311,13 @@ export class SelectRenderable extends Renderable {
     }
   }
 
-  private updateScrollOffset(): void {
-    if (!this._options) return
+  private updateItemLayout(): void {
+    const nameLines = this._font ? this.fontHeight : 1
+    this.linesPerItem = nameLines + (this._showDescription ? 1 : 0) + this._itemSpacing
+    this.maxVisibleItems = Math.max(1, Math.floor(this.height / this.linesPerItem))
+  }
 
+  private updateScrollOffset(): void {
     const halfVisible = Math.floor(this.maxVisibleItems / 2)
     const newScrollOffset = Math.max(
       0,
@@ -383,16 +378,7 @@ export class SelectRenderable extends Renderable {
   public set showDescription(show: boolean) {
     if (this._showDescription !== show) {
       this._showDescription = show
-      this.linesPerItem = this._showDescription
-        ? this._font
-          ? this.fontHeight + 1
-          : 2
-        : this._font
-          ? this.fontHeight
-          : 1
-      this.linesPerItem += this._itemSpacing
-
-      this.maxVisibleItems = Math.max(1, Math.floor(this.height / this.linesPerItem))
+      this.updateItemLayout()
       this.updateScrollOffset()
       this.requestRender()
     }
@@ -461,30 +447,14 @@ export class SelectRenderable extends Renderable {
   public set font(font: keyof typeof fonts) {
     this._font = font
     this.fontHeight = measureText({ text: "A", font: this._font }).height
-    this.linesPerItem = this._showDescription
-      ? this._font
-        ? this.fontHeight + 1
-        : 2
-      : this._font
-        ? this.fontHeight
-        : 1
-    this.linesPerItem += this._itemSpacing
-    this.maxVisibleItems = Math.max(1, Math.floor(this.height / this.linesPerItem))
+    this.updateItemLayout()
     this.updateScrollOffset()
     this.requestRender()
   }
 
   public set itemSpacing(spacing: number) {
     this._itemSpacing = spacing
-    this.linesPerItem = this._showDescription
-      ? this._font
-        ? this.fontHeight + 1
-        : 2
-      : this._font
-        ? this.fontHeight
-        : 1
-    this.linesPerItem += this._itemSpacing
-    this.maxVisibleItems = Math.max(1, Math.floor(this.height / this.linesPerItem))
+    this.updateItemLayout()
     this.updateScrollOffset()
     this.requestRender()
   }

@@ -1,4 +1,3 @@
-import { assertRenderableMutable } from "../lib/renderable-layout.js"
 import { type KeyEvent } from "../lib/index.js"
 import { LinearScrollAccel, MacOSScrollAccel, type ScrollAcceleration } from "../lib/scroll-acceleration.js"
 import type { BaseRenderable, Renderable, RenderableOptions } from "../Renderable.js"
@@ -34,6 +33,7 @@ export class ContentRenderable extends BoxRenderable {
   }
 
   set viewportCulling(value: boolean) {
+    if (this.isFreed()) return
     this._ctx.nativeScene.setViewport(this, value ? this.viewport : null)
     this._viewportCulling = value
   }
@@ -133,7 +133,6 @@ export class ScrollBoxRenderable extends BoxRenderable {
   }
 
   set stickyScroll(value: boolean) {
-    assertRenderableMutable(this)
     this._stickyScroll = value
     this.updateStickyState()
   }
@@ -143,7 +142,6 @@ export class ScrollBoxRenderable extends BoxRenderable {
   }
 
   set stickyStart(value: "bottom" | "top" | "left" | "right" | undefined) {
-    assertRenderableMutable(this)
     this._stickyStart = value
     this.updateStickyState()
   }
@@ -628,14 +626,10 @@ export class ScrollBoxRenderable extends BoxRenderable {
     this.autoScrollMouseY = mouseY
     this.cachedAutoScrollSpeed = this.getAutoScrollSpeed(mouseX, mouseY)
     this.isAutoScrolling = true
-
-    if (!this.live) {
-      this.live = true
-    }
+    this.live = true
   }
 
   public updateAutoScroll(mouseX: number, mouseY: number): void {
-    assertRenderableMutable(this)
     this.autoScrollMouseX = mouseX
     this.autoScrollMouseY = mouseY
 
@@ -653,23 +647,12 @@ export class ScrollBoxRenderable extends BoxRenderable {
   }
 
   public stopAutoScroll(): void {
-    assertRenderableMutable(this)
     const wasAutoScrolling = this.isAutoScrolling
     this.isAutoScrolling = false
     this.autoScrollAccumulatorX = 0
     this.autoScrollAccumulatorY = 0
-
-    // Only turn off live if no other features need it
-    // For now, auto-scroll is the only feature using live, but this could be extended
-    if (wasAutoScrolling && !this.hasOtherLiveReasons()) {
-      this.live = false
-    }
-  }
-
-  private hasOtherLiveReasons(): boolean {
-    // Placeholder for future features that might need live mode
-    // For now, always return false since auto-scroll is the only user
-    return false
+    // Auto-scroll is the only reason a ScrollBox goes live.
+    if (wasAutoScrolling) this.live = false
   }
 
   private handleAutoScroll(deltaTime: number): void {
@@ -888,7 +871,6 @@ export class ScrollBoxRenderable extends BoxRenderable {
   }
 
   public set scrollAcceleration(value: ScrollAcceleration) {
-    assertRenderableMutable(this)
     this.scrollAccel = value
   }
 

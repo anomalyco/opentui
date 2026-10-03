@@ -1,4 +1,3 @@
-import { runRenderableMutation } from "../lib/renderable-layout.js"
 import { Gutter } from "../yoga.js"
 import { type RenderableOptions, Renderable } from "../Renderable.js"
 import type { OptimizedBuffer } from "../buffer.js"
@@ -165,6 +164,7 @@ export class BoxRenderable extends Renderable {
   }
 
   public set backgroundColor(value: RGBA | string | undefined) {
+    if (this.isFreed()) return
     const newColor = RGBA.clone(parseColor(value ?? this._defaultOptions.backgroundColor))
     this._ctx.nativeScene.setBackground(this, newColor)
     this._backgroundColor = newColor
@@ -193,7 +193,7 @@ export class BoxRenderable extends Renderable {
   public set borderStyle(value: BorderStyle) {
     const _value = parseBorderStyle(value, this._defaultOptions.borderStyle)
     if (this._borderStyle !== _value || !this._border) {
-      runRenderableMutation(this, () => {
+      this.runMutation(() => {
         this._ctx.nativeScene.setBoxBorderStyle(
           this,
           _value,
@@ -302,6 +302,7 @@ export class BoxRenderable extends Renderable {
   }
 
   private setNativeBoxDetails(details: Partial<NativeSceneBoxDetails> = {}): void {
+    if (this.isFreed()) return
     this._ctx.nativeScene.setBoxDetails(this, {
       title: this._title,
       bottomTitle: this._bottomTitle,

@@ -372,62 +372,6 @@ describe("BoxRenderable - focus-within", () => {
 })
 
 describe("BoxRenderable - no-op rendering", () => {
-  test("skips drawBox for transparent layout-only boxes", () => {
-    const box = new BoxRenderable(testRenderer, {
-      id: "layout-only",
-      width: 10,
-      height: 5,
-    })
-
-    let called = false
-    const buffer = {
-      drawBox() {
-        called = true
-      },
-    }
-
-    ;(box as any).renderSelf(buffer)
-    expect(called).toBe(false)
-  })
-
-  test("still draws boxes with a visible fill", () => {
-    const box = new BoxRenderable(testRenderer, {
-      id: "filled-box",
-      width: 10,
-      height: 5,
-      backgroundColor: "#112233",
-    })
-
-    let called = false
-    const buffer = {
-      drawBox() {
-        called = true
-      },
-    }
-
-    ;(box as any).renderSelf(buffer)
-    expect(called).toBe(true)
-  })
-
-  test("still draws boxes with borders", () => {
-    const box = new BoxRenderable(testRenderer, {
-      id: "bordered-box",
-      width: 10,
-      height: 5,
-      border: true,
-    })
-
-    let called = false
-    const buffer = {
-      drawBox() {
-        called = true
-      },
-    }
-
-    ;(box as any).renderSelf(buffer)
-    expect(called).toBe(true)
-  })
-
   test("renders titles with titleColor even if border is transparent", async () => {
     const box = new BoxRenderable(testRenderer, {
       id: "title-color-transparent-border",

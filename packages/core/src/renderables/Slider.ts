@@ -45,12 +45,8 @@ export class SliderRenderable extends Renderable {
       this._value = options.value ?? this._min
       this._viewPortSize = options.viewPortSize ?? this.defaultViewPortSize()
       this._onChange = options.onChange
-      this._backgroundColor = options.backgroundColor
-        ? RGBA.clone(parseColor(options.backgroundColor))
-        : RGBA.clone(defaultTrackBackgroundColor)
-      this._foregroundColor = options.foregroundColor
-        ? RGBA.clone(parseColor(options.foregroundColor))
-        : RGBA.clone(defaultThumbBackgroundColor)
+      this._backgroundColor = RGBA.clone(parseColor(options.backgroundColor || defaultTrackBackgroundColor))
+      this._foregroundColor = RGBA.clone(parseColor(options.foregroundColor || defaultThumbBackgroundColor))
       this.setNativeSceneSlider()
       this.setNativeScenePaint()
       this.setupMouseHandling()
@@ -76,9 +72,6 @@ export class SliderRenderable extends Renderable {
 
   set value(newValue: number) {
     newValue ??= this._min
-    if (!Number.isFinite(newValue)) {
-      throw new RangeError("Scene slider values must be finite numbers")
-    }
     const clamped = Math.max(this._min, Math.min(this._max, newValue))
     if (clamped !== this._value) {
       this.setNativeSceneSlider({ value: clamped })
@@ -130,9 +123,6 @@ export class SliderRenderable extends Renderable {
 
   set viewPortSize(size: number) {
     size ??= this.defaultViewPortSize()
-    if (!Number.isFinite(size)) {
-      throw new RangeError("Scene slider values must be finite numbers")
-    }
     const clampedSize = Math.max(0.01, Math.min(size, this._max - this._min))
     if (clampedSize !== this._viewPortSize) {
       this.setNativeSceneSlider({ viewPortSize: clampedSize })
@@ -172,6 +162,7 @@ export class SliderRenderable extends Renderable {
   }
 
   private setNativeSceneSlider(options: Partial<NativeSceneSliderOptions> = {}): void {
+    if (this.isFreed()) return
     this._ctx.nativeScene.setSlider(this, {
       orientation: this.orientation,
       min: this._min,

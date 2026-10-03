@@ -45,7 +45,6 @@ export class FrameBufferRenderable extends Renderable {
       get: () => surface,
       set: (value: OptimizedBuffer | null) => {
         if (this.isDestroyed) {
-          if (value !== null) throw new Error(`FrameBufferRenderable ${this.id} is destroyed`)
           surface = null
           return
         }

@@ -1,4 +1,3 @@
-import { assertRenderableMutable } from "../lib/renderable-layout.js"
 import type { OptimizedBuffer } from "../buffer.js"
 import { parseColor, RGBA, type ColorInput } from "../lib/index.js"
 import type { KeyEvent } from "../lib/KeyHandler.js"
@@ -48,13 +47,11 @@ export class ScrollBarRenderable extends Renderable {
   }
 
   set visible(value: boolean) {
-    assertRenderableMutable(this)
     this._manualVisibility = true
     super.visible = value
   }
 
   public resetVisibilityControl(): void {
-    assertRenderableMutable(this)
     this._manualVisibility = false
     this.recalculateVisibility()
   }
@@ -73,7 +70,7 @@ export class ScrollBarRenderable extends Renderable {
 
   set scrollSize(value: number) {
     if (this.isDestroyed) return
-    assertRenderableMutable(this)
+    this.assertMutable()
     value ??= 0
     if (!Number.isFinite(value) || !Number.isFinite(value - this._viewportSize)) {
       throw new RangeError("Scene scroll sizes and ranges must be finite numbers")
@@ -89,7 +86,7 @@ export class ScrollBarRenderable extends Renderable {
 
   set scrollPosition(value: number) {
     if (this.isDestroyed) return
-    assertRenderableMutable(this)
+    this.assertMutable()
     const newPosition = Math.round(Math.min(Math.max(0, value ?? 0), this.scrollSize - this.viewportSize))
     if (!Number.isFinite(newPosition)) {
       throw new RangeError("Scene scroll positions must be finite numbers")
@@ -105,7 +102,7 @@ export class ScrollBarRenderable extends Renderable {
 
   set viewportSize(value: number) {
     if (this.isDestroyed) return
-    assertRenderableMutable(this)
+    this.assertMutable()
     value ??= 0
     if (!Number.isFinite(value) || !Number.isFinite(this._scrollSize - value)) {
       throw new RangeError("Scene viewport sizes and ranges must be finite numbers")
@@ -126,7 +123,7 @@ export class ScrollBarRenderable extends Renderable {
 
   set showArrows(value: boolean) {
     if (this.isDestroyed || value === this._showArrows) return
-    assertRenderableMutable(this)
+    this.assertMutable()
     this._showArrows = value
     this.startArrow.visible = value
     if (this.isDestroyed || this.endArrow.isDestroyed) return
@@ -200,7 +197,7 @@ export class ScrollBarRenderable extends Renderable {
         alignSelf: "center",
         visible: this.showArrows,
         direction: this.orientation === "vertical" ? "up" : "left",
-        height: this.orientation === "vertical" ? 1 : 1,
+        height: 1,
         ...arrowOpts,
       })
       children.push(this.startArrow)
@@ -209,7 +206,7 @@ export class ScrollBarRenderable extends Renderable {
         alignSelf: "center",
         visible: this.showArrows,
         direction: this.orientation === "vertical" ? "down" : "right",
-        height: this.orientation === "vertical" ? 1 : 1,
+        height: 1,
         ...arrowOpts,
       })
       children.push(this.endArrow)
@@ -444,12 +441,10 @@ export class ArrowRenderable extends Renderable {
   }
 
   set foregroundColor(value: ColorInput) {
-    if (this._foregroundColor !== value) {
-      const color = RGBA.clone(parseColor(value ?? defaultArrowForeground))
-      this.setNativeSceneArrow({ foregroundColor: color })
-      this._foregroundColor = color
-      this.requestRender()
-    }
+    const color = RGBA.clone(parseColor(value ?? defaultArrowForeground))
+    this.setNativeSceneArrow({ foregroundColor: color })
+    this._foregroundColor = color
+    this.requestRender()
   }
 
   get backgroundColor(): RGBA {
@@ -457,12 +452,10 @@ export class ArrowRenderable extends Renderable {
   }
 
   set backgroundColor(value: ColorInput) {
-    if (this._backgroundColor !== value) {
-      const color = RGBA.clone(parseColor(value ?? defaultArrowBackground))
-      this.setNativeSceneArrow({ backgroundColor: color })
-      this._backgroundColor = color
-      this.requestRender()
-    }
+    const color = RGBA.clone(parseColor(value ?? defaultArrowBackground))
+    this.setNativeSceneArrow({ backgroundColor: color })
+    this._backgroundColor = color
+    this.requestRender()
   }
 
   get attributes(): number {
@@ -489,6 +482,7 @@ export class ArrowRenderable extends Renderable {
   }
 
   private setNativeSceneArrow(options: Partial<NativeSceneArrowOptions> = {}): void {
+    if (this.isFreed()) return
     this._ctx.nativeScene.setArrow(this, {
       direction: this._direction,
       attributes: this._attributes,
@@ -505,17 +499,6 @@ export class ArrowRenderable extends Renderable {
   }
 
   private getArrowChar(): string {
-    switch (this._direction) {
-      case "up":
-        return this._arrowChars.up
-      case "down":
-        return this._arrowChars.down
-      case "left":
-        return this._arrowChars.left
-      case "right":
-        return this._arrowChars.right
-      default:
-        return "?"
-    }
+    return this._arrowChars[this._direction]
   }
 }

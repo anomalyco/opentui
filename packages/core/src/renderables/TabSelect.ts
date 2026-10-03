@@ -191,9 +191,13 @@ export class TabSelectRenderable extends Renderable {
       this.frameBuffer.drawText(nameContent, tabX + 1, contentY, nameColor)
 
       if (isSelected && this._showUnderline && contentHeight >= 2) {
-        const underlineY = contentY + 1
-        const underlineBg = isSelected ? this._selectedBackgroundColor : bgColor
-        this.frameBuffer.drawText("▬".repeat(actualTabWidth), tabX, underlineY, nameColor, underlineBg)
+        this.frameBuffer.drawText(
+          "▬".repeat(actualTabWidth),
+          tabX,
+          contentY + 1,
+          nameColor,
+          this._selectedBackgroundColor,
+        )
       }
     }
 
@@ -354,10 +358,7 @@ export class TabSelectRenderable extends Renderable {
   }
 
   public set options(options: TabSelectOption[]) {
-    this._options = options
-    this.selectedIndex = Math.min(this.selectedIndex, Math.max(0, options.length - 1))
-    this.updateScrollOffset()
-    this.requestRender()
+    this.setOptions(options)
   }
 
   public set backgroundColor(color: ColorInput) {
@@ -448,13 +449,7 @@ export class TabSelectRenderable extends Renderable {
   }
 
   public set tabWidth(tabWidth: number) {
-    if (this._tabWidth === tabWidth) return
-
-    this._tabWidth = tabWidth
-    this.maxVisibleTabs = Math.max(1, Math.floor(this.width / this._tabWidth))
-
-    this.updateScrollOffset()
-    this.requestRender()
+    this.setTabWidth(tabWidth)
   }
 
   public set keyBindings(bindings: TabSelectKeyBinding[]) {
