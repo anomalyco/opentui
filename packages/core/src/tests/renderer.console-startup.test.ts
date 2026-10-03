@@ -1417,7 +1417,7 @@ test("CliRenderer split-footer starts in settling phase and then pins as output 
   expect((renderer as any).renderOffset).toBe(6)
 })
 
-test("CliRenderer split-footer footerHeight changes defer settling cleanup to the next native frame", async () => {
+test("CliRenderer split-footer footerHeight changes coalesce and defer settling cleanup to the next native frame", async () => {
   const result = await createTestRenderer({
     width: 40,
     height: 10,
@@ -1443,32 +1443,6 @@ test("CliRenderer split-footer footerHeight changes defer settling cleanup to th
 
   expect(result.output()).toContain("settling-footer")
   expect(renderer.getNativeStats().nativeFrameCount).toBe(2)
-  expect((renderer as any).pendingSplitFooterTransition).toBeNull()
-})
-
-test("CliRenderer split-footer footerHeight changes coalesce while settling before the next frame", async () => {
-  const result = await createTestRenderer({
-    width: 40,
-    height: 10,
-    screenMode: "split-footer",
-    footerHeight: 4,
-    externalOutputMode: "capture-stdout",
-    consoleMode: "disabled",
-  })
-
-  renderer = result.renderer
-
-  renderer.root.add(new TextRenderable(renderer, { content: "coalesced-footer" }))
-  await result.renderOnce()
-  result.writes.length = 0
-
-  renderer.footerHeight = 8
-  renderer.footerHeight = 3
-
-  await result.renderOnce()
-
-  expect(renderer.getNativeStats().nativeFrameCount).toBe(2)
-  expect(result.output()).toContain("coalesced-footer")
   expect((renderer as any).pendingSplitFooterTransition).toBeNull()
   expect(renderer.height).toBe(3)
 })
@@ -1617,161 +1591,44 @@ test("CliRenderer split-footer passthrough footerHeight shrink clears stale rows
   expect(result.output()).toBe(`${ANSI.moveCursor(7, 1)}\x1b[2K`)
 })
 
-test("CliRenderer split-footer resize cleanup uses the visible footer surface while a deferred footer transition is pending", async () => {
-  const result = await createTestRenderer({
-    width: 40,
-    height: 10,
-    screenMode: "split-footer",
-    footerHeight: 4,
-    externalOutputMode: "capture-stdout",
-    consoleMode: "disabled",
-  })
+// The scrub clears from the visible footer top: the settling origin, a deferred transition's source, or, after a
+// width shrink, a band that covers rows the terminal may have reflowed.
+test.each([
+  ["a width shrink while settling", [80, 24, 6], 0, null, [44, 22], 2],
+  ["a width shrink from a mid-settling origin", [80, 24, 6], 4, null, [44, 24], 6],
+  ["a width shrink when pinned", [80, 24, 6], 20, null, [44, 24], 12],
+  ["a width shrink with a deferred footer shrink", [40, 10, 4], 0, 3, [20, 10], 2],
+  ["a width and height change with a deferred footer shrink", [40, 10, 4], 0, 3, [20, 12], 2],
+  ["a height change with a deferred footer shrink", [40, 10, 4], 0, 3, [40, 12], 2],
+] as const)(
+  "CliRenderer split-footer resize scrub after %s",
+  async (_name, [width, height, footerHeight], rows, nextFooterHeight, [nextWidth, nextHeight], clearStart) => {
+    const result = await createTestRenderer({
+      width,
+      height,
+      screenMode: "split-footer",
+      footerHeight,
+      externalOutputMode: "capture-stdout",
+      consoleMode: "disabled",
+    })
+    renderer = result.renderer
+    for (let row = 0; row < rows; row++) {
+      ;(renderer as any).stdout.write(`line-${row}\n`)
+      await result.renderOnce()
+    }
+    if (nextFooterHeight !== null) {
+      renderer.footerHeight = nextFooterHeight
+      expect((renderer as any).pendingSplitFooterTransition).toMatchObject({ sourceTopLine: 2, sourceHeight: 4 })
+    }
+    result.writes.length = 0
 
-  renderer = result.renderer
+    result.resize(nextWidth, nextHeight)
+    await renderer.nativeScene!.driver.idle()
 
-  renderer.footerHeight = 3
-
-  expect((renderer as any).pendingSplitFooterTransition).toEqual({
-    mode: "clear-stale-rows",
-    sourceTopLine: 2,
-    sourceHeight: 4,
-    targetTopLine: 2,
-    targetHeight: 3,
-    scrollLines: 0,
-  })
-
-  result.resize(20, 10)
-  await renderer.nativeScene!.driver.idle()
-  expect(result.output()).toBe(ANSI.moveCursorAndClear(2, 1))
-  expect((renderer as any).pendingSplitFooterTransition).toBeNull()
-})
-
-test("CliRenderer split-footer width shrink clears from the visible settling footer origin", async () => {
-  const result = await createTestRenderer({
-    width: 80,
-    height: 24,
-    screenMode: "split-footer",
-    footerHeight: 6,
-    externalOutputMode: "capture-stdout",
-    consoleMode: "disabled",
-  })
-
-  renderer = result.renderer
-
-  expect((renderer as any).renderOffset).toBe(1)
-
-  result.writes.length = 0
-
-  result.resize(44, 22)
-
-  await renderer.nativeScene!.driver.idle()
-  expect(result.output()).toBe(ANSI.moveCursorAndClear(2, 1))
-})
-
-test("CliRenderer split-footer width shrink clears from a mid-settling footer origin above the bottom-anchored band", async () => {
-  const result = await createTestRenderer({
-    width: 80,
-    height: 24,
-    screenMode: "split-footer",
-    footerHeight: 6,
-    externalOutputMode: "capture-stdout",
-    consoleMode: "disabled",
-  })
-
-  renderer = result.renderer
-
-  ;(renderer as any).stdout.write("a\n")
-  await result.renderOnce()
-  ;(renderer as any).stdout.write("b\n")
-  await result.renderOnce()
-  ;(renderer as any).stdout.write("c\n")
-  await result.renderOnce()
-  ;(renderer as any).stdout.write("d\n")
-  await result.renderOnce()
-
-  expect((renderer as any).renderOffset).toBe(5)
-
-  result.writes.length = 0
-
-  result.resize(44, 24)
-
-  await renderer.nativeScene!.driver.idle()
-  expect(result.output()).toBe(ANSI.moveCursorAndClear(6, 1))
-})
-
-test("CliRenderer split-footer width shrink retains the broader scrub band when pinned", async () => {
-  const result = await createTestRenderer({
-    width: 80,
-    height: 24,
-    screenMode: "split-footer",
-    footerHeight: 6,
-    externalOutputMode: "capture-stdout",
-    consoleMode: "disabled",
-  })
-
-  renderer = result.renderer
-
-  for (let i = 0; i < 20; i++) {
-    ;(renderer as any).stdout.write(`line-${i}\n`)
-    await result.renderOnce()
-  }
-
-  expect((renderer as any).renderOffset).toBe(18)
-
-  result.writes.length = 0
-
-  result.resize(44, 24)
-
-  await renderer.nativeScene!.driver.idle()
-  expect(result.output()).toBe(ANSI.moveCursorAndClear(12, 1))
-})
-
-test("CliRenderer split-footer resize cleanup uses the visible source top line across width and height resize while a deferred footer transition is pending", async () => {
-  const result = await createTestRenderer({
-    width: 40,
-    height: 10,
-    screenMode: "split-footer",
-    footerHeight: 4,
-    externalOutputMode: "capture-stdout",
-    consoleMode: "disabled",
-  })
-
-  renderer = result.renderer
-
-  renderer.footerHeight = 3
-
-  expect((renderer as any).pendingSplitFooterTransition).toEqual({
-    mode: "clear-stale-rows",
-    sourceTopLine: 2,
-    sourceHeight: 4,
-    targetTopLine: 2,
-    targetHeight: 3,
-    scrollLines: 0,
-  })
-
-  result.resize(20, 12)
-  await renderer.nativeScene!.driver.idle()
-  expect(result.output()).toBe(ANSI.moveCursorAndClear(2, 1))
-})
-
-test("CliRenderer split-footer resize cleanup still clears the visible source surface when only height changes while a deferred footer transition is pending", async () => {
-  const result = await createTestRenderer({
-    width: 40,
-    height: 10,
-    screenMode: "split-footer",
-    footerHeight: 4,
-    externalOutputMode: "capture-stdout",
-    consoleMode: "disabled",
-  })
-
-  renderer = result.renderer
-
-  renderer.footerHeight = 3
-
-  result.resize(40, 12)
-  await renderer.nativeScene!.driver.idle()
-  expect(result.output()).toBe(ANSI.moveCursorAndClear(2, 1))
-})
+    expect(result.output()).toBe(ANSI.moveCursorAndClear(clearStart, 1))
+    expect((renderer as any).pendingSplitFooterTransition).toBeNull()
+  },
+)
 
 test("CliRenderer split-footer footerHeight changes do not queue deferred transitions while startup cursor seeding blocks the first frame", async () => {
   const result = await createTestRenderer({
