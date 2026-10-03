@@ -189,6 +189,7 @@
     "src/tests/renderer.handler-error.test.ts",
     "src/tests/renderer.lifecycle.test.ts",
     "src/tests/renderer.render-error.test.ts",
-    "src/tests/renderer.render-stats.test.ts"
+    "src/tests/renderer.render-stats.test.ts",
+    "src/tests/scene-observation-cache.test.ts"
   ]
 }

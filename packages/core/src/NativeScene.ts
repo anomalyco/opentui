@@ -8,7 +8,8 @@ import { RendererControlState, type CliRenderer } from "./renderer.js"
 import type { StyledText } from "./lib/styled-text.js"
 import type { RGBA } from "./lib/RGBA.js"
 import type { LocalSelectionBounds } from "./lib/selection.js"
-import { Edge, YogaValueKind, type Value, type MeasureFunction, type YogaHost } from "./yoga.js"
+import { Edge, type Value, type MeasureFunction } from "./yoga.js"
+import { YogaValueKind, type YogaHost } from "./yoga.internal.js"
 import {
   NativePaintRecorder,
   NativeSceneFrame,
@@ -173,7 +174,10 @@ export class NativeScene {
 
   /** @internal Apply staged style/paint writes. Runs before every native scene call
    * except node creation, moves, and hit tests, which observe no style or paint.
-   * Failed flushes retain their unaccepted suffix for retry. */
+   * Failed flushes retain their unaccepted suffix for retry, except a record that native
+   * rejects for its node (InvalidArgument, WrongKind, StaleHandle). That record is dropped,
+   * including other paint fields the node staged since the last flush, and the error is
+   * thrown once by whichever call flushes, which may belong to another node. */
   flushStaged(): void {
     if (this.destroyed || this.driver.disposed) {
       this.staging.clear()

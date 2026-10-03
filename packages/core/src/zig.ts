@@ -36,7 +36,8 @@ export type {
 
 import { RGBA } from "./lib/RGBA.js"
 import { isStyledText, type StyledText } from "./lib/styled-text.js"
-import { YogaError, YogaHost, YogaStatus, rejectAsyncCallback, type MeasureFunction } from "./yoga.js"
+import { YogaError, YogaStatus, type MeasureFunction } from "./yoga.js"
+import { YogaHost, rejectAsyncCallback } from "./yoga.internal.js"
 import { env, registerEnvVar } from "./lib/env.js"
 import {
   NativeSpanFeedOptionsStruct,
@@ -360,9 +361,6 @@ export enum NativeStyleFlags {
 
 /** ENUM/FLOAT/DIMENSION writes occupy this unused-edge slot. */
 export const NATIVE_EDGE_NONE = nativeConstants.OT_EDGE_NONE
-
-/** Scene border style reads use this width kind. */
-export const NATIVE_STYLE_BORDER_WIDTH = nativeConstants.OT_STYLE_BORDER_WIDTH
 
 export enum NativeBorder {
   None = nativeConstants.OT_BORDER_NONE,
@@ -1718,7 +1716,6 @@ if (Math.max(propertyStyleWords, propertyWordLength((1 << scenePropertyWords.len
 export class SceneStaging {
   static readonly limit = nativeConstants.OT_SCENE_MUTATIONS_MAX
   private words: Uint32Array
-  private floats: Float32Array
   private readonly paintBySlot = new Map<number, number>()
   private readonly packScratch = new Uint32Array(16)
   private readonly styleValue = new Float32Array(1)
@@ -1739,7 +1736,6 @@ export class SceneStaging {
       throw new RangeError("Scene staging capacity must be within the native mutation limit")
     }
     this.words = new Uint32Array(propertySlotWords * initialCapacity)
-    this.floats = new Float32Array(this.words.buffer)
   }
 
   get pending(): boolean {
@@ -1756,7 +1752,9 @@ export class SceneStaging {
   }
 
   static checkStyleValue(group: number, value: number): number {
-    return group === 0 ? toSafeFFIU32Length(value, "Scene enum value") : toFFIF32(value, "Scene style value", true)
+    return group === nativeConstants.OT_STYLE_ENUM
+      ? toSafeFFIU32Length(value, "Scene enum value")
+      : toFFIF32(value, "Scene style value", true)
   }
 
   private assertWritable(): void {
@@ -1794,7 +1792,6 @@ export class SceneStaging {
     )
     next.set(this.words.subarray(0, this.encodedWords))
     this.words = next
-    this.floats = new Float32Array(next.buffer)
   }
 
   /** Callers write every field word; only the trailing alignment word needs clearing. */
@@ -1836,8 +1833,8 @@ export class SceneStaging {
     value = SceneStaging.checkStyleValue(group, value)
     flags = toSafeFFIU32Length(flags, "Scene style flags")
     validateSceneStyle(group, kind, edge, unit, value, flags)
-    // Yoga ignores edges for dimensions; do not let unused u32 bits spill into the unit byte.
-    if (group === 2 && kind < 7) edge = 0
+    // Size kinds (width through flex basis) have no edge; keep unused bits out of the packed record.
+    if (group === nativeConstants.OT_STYLE_VALUE && kind < nativeConstants.OT_STYLE_VALUE_MARGIN) edge = 0
     const handle = encodedContextHandle(context, node)
     this.checkHandle(context, handle)
     const target = group | (kind << 8) | (edge << 16)
@@ -2076,12 +2073,13 @@ export class SceneStaging {
     this.context = undefined
   }
 
-  /** Never replay the accepted prefix. Remaining records stay in wire layout. */
+  /** Never replay the accepted prefix. Remaining records stay in wire layout. An invalid
+   * acknowledgement still ends the borrow, so staging stays writable. */
   consume(applied: number): void {
-    if (!Number.isInteger(applied) || applied < 0 || applied > this.entryCount)
-      throw new Error("Invalid scene flush prefix")
     if (!this.borrowed) throw new Error("Scene flush inputs were not borrowed")
     this.borrowed = false
+    if (!Number.isInteger(applied) || applied < 0 || applied > this.entryCount)
+      throw new Error("Invalid scene flush prefix")
     if (applied === this.entryCount) return this.clear()
     // An unchanged stream keeps its indexes, including the open style run.
     if (applied === 0) return
@@ -2129,6 +2127,9 @@ export class SceneStaging {
     this.runBase = -1
   }
 }
+
+// Flush statuses that describe the rejected record itself rather than the moment of the flush.
+const sceneRecordRejections = new Set([NativeStatus.InvalidArgument, NativeStatus.WrongKind, NativeStatus.StaleHandle])
 
 const recordHeader = nativeLayouts.ot_scene_record_header.fields
 const recordBytesMax = nativeConstants.OT_SCENE_RECORD_BYTES_MAX
@@ -2788,8 +2789,6 @@ const yogaSymbols = {
   yogaNodeStyleSetBorderChecked: { args: ["ptr", "u32", "f32"], returns: "u32" },
   yogaNodeStyleGetBorderChecked: { args: ["ptr", "u32", "buffer"], returns: "u32" },
   yogaNodeStyleSetValueChecked: { args: ["ptr", "u32", "u32", "u32", "f32"], returns: "u32" },
-  yogaNodeStyleSetDimensionChecked: { args: ["ptr", "u32", "u32", "f32", "u32"], returns: "u32" },
-  yogaNodeStyleSetPositionsChecked: { args: ["ptr", "u32", "buffer", "buffer"], returns: "u32" },
   yogaNodeStyleGetValueChecked: { args: ["ptr", "u32", "u32", "buffer"], returns: "u32" },
   yogaNodeSetMeasureFuncChecked: { args: ["ptr", "u32"], returns: "u32" },
   yogaNodeUnsetMeasureFuncChecked: { args: ["ptr"], returns: "u32" },
@@ -7075,25 +7074,6 @@ export class FFIRenderLib {
     })
   }
 
-  public sceneSetBoxBorderStyle(
-    context: NativeContextHandle,
-    node: SceneNodeHandle,
-    style: NativeScenePaint["borderStyle"],
-    sides: number,
-  ): void {
-    const handle = encodeContextHandle(context, node)
-    const kind = SCENE_BORDER_STYLES.indexOf(style)
-    if (kind < 0) throw new TypeError("Unknown native scene border style")
-    const mask = toSafeFFIU32Length(sides, "Box border sides")
-    this.getYogaHost().runMutation(() => {
-      const pointer = this.nativeContextPointer(context, "ot_scene_set_box_border_style")
-      nativeResult(
-        "ot_scene_set_box_border_style",
-        this.opentui.symbols.ot_scene_set_box_border_style(pointer, handle, kind, mask),
-      )
-    })
-  }
-
   public sceneSetSurface(
     context: NativeContextHandle,
     node: SceneNodeHandle,
@@ -7107,7 +7087,9 @@ export class FFIRenderLib {
   }
 
   /** Consume only native's accepted prefix. Allocation or admission failures leave
-   * the suffix staged so a retry cannot lose writes or replay accepted entries. */
+   * the suffix staged so a retry cannot lose writes or replay accepted entries. A record
+   * that native rejects for its node can never apply, so it is dropped and reported once;
+   * paint fields the node staged since the last flush share that record and are dropped too. */
   public sceneFlush(context: NativeContextHandle, staging: SceneStaging): void {
     const operation = "ot_scene_flush"
     const count = staging.count
@@ -7119,12 +7101,14 @@ export class FFIRenderLib {
       this.sceneFlushApplied = undefined
       applied[0] = 0
       let status: NativeStatus
+      let rejected = 0
       try {
         const pointer = this.nativeContextPointer(context, operation)
         status = this.opentui.symbols.ot_scene_flush(pointer, views, staging.byteLength, applied)
+        if (sceneRecordRejections.has(status) && applied[0] < count) rejected = 1
       } finally {
         this.sceneFlushApplied ??= applied
-        staging.consume(applied[0])
+        staging.consume(applied[0] + rejected)
       }
       if (status !== NativeStatus.Ok) {
         const error = new NativeError(operation, status)
@@ -8457,23 +8441,6 @@ export class FFIRenderLib {
 
   public yogaNodeStyleSetValue(node: Pointer, kind: number, edgeOrGutter: number, unit: number, value: number): void {
     this.yogaChecked("yogaNodeStyleSetValueChecked", true, node, kind, edgeOrGutter, unit, value)
-  }
-
-  public yogaNodeStyleSetDimension(
-    node: Pointer,
-    kind: number,
-    unit: number,
-    value: number,
-    disableFlexShrink: boolean,
-  ): void {
-    this.yogaChecked("yogaNodeStyleSetDimensionChecked", true, node, kind, unit, value, ffiBool(disableFlexShrink))
-  }
-
-  public yogaNodeStyleSetPositions(node: Pointer, edgeMask: number, units: Uint32Array, values: Float32Array): void {
-    if (units.length !== 4 || values.length !== 4) {
-      throw new YogaError("yogaNodeStyleSetPositionsChecked", YogaStatus.InvalidArgument)
-    }
-    this.yogaChecked("yogaNodeStyleSetPositionsChecked", true, node, edgeMask, units, values)
   }
 
   public yogaNodeStyleGetValue(node: Pointer, kind: number, edgeOrGutter: number): number | bigint {
