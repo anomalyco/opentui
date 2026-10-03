@@ -123,8 +123,11 @@ class ReadySessions {
 
   private arm(): void {
     if (this.failure || this.cancelTurn || this.ready.size === 0) return
+    let arming = true
     try {
       this.cancelTurn = this.host.schedule(() => {
+        // An inline turn would leave cancelTurn set after the turn ends and stall all ready work.
+        if (arming) throw new Error("NativeSessionScheduler.schedule ran a callback inline")
         this.cancelTurn = null
         // One ready callback per host turn; rotate owners before calling user code.
         const tasks = this.ready.values().next().value
@@ -147,6 +150,8 @@ class ReadySessions {
       })
     } catch (error) {
       this.fail(error)
+    } finally {
+      arming = false
     }
   }
 
@@ -220,8 +225,6 @@ export class NativeSession {
   readonly maxWriteBytes: bigint
   /** Maximum raw write in an empty queue, excluding reserved control storage and span slots. */
   readonly maxAtomicWriteBytes: bigint
-  /** @internal Snapshot count shares the Session's configured bounded admission scale. */
-  readonly maxSnapshotCount: number
   private readonly closeTimeoutNs: bigint
   private readonly closeWait = completion()
   private idleWait: ReturnType<typeof completion> | null = null
@@ -276,7 +279,6 @@ export class NativeSession {
       } else this.finish(error)
     })
     this.maxWriteBytes = output.maxBytes
-    this.maxSnapshotCount = output.spanCapacity
     this.closeTimeoutNs = BigInt(timeout) * 1_000_000n
     owner?.checkOpen()
     this.resourceContext =
@@ -383,12 +385,10 @@ export class NativeSession {
     return this.changeTerminal("resume")
   }
 
-  /** A frame is consumed on every returned status. Without one, Pending may describe earlier output. */
-  render(force = false, frame: NativeSceneFrameRequest | null = null): NativeSessionRenderStatus {
+  /** The painted frame is consumed on every returned status. */
+  render(force: boolean, frame: NativeSceneFrameRequest): NativeSessionRenderStatus {
     this.checkOpen()
-    const result = frame
-      ? this.lib.sceneFrameCommit(this.context, this.session, frame, force)
-      : this.lib.sessionRender(this.context, this.session, force)
+    const result = this.lib.sceneFrameCommit(this.context, this.session, frame, force)
     if (result === NativeSessionRenderStatus.Pending) this.schedule()
     return result
   }
@@ -686,16 +686,18 @@ export class NativeSession {
     try {
       if (this._error) throw this._error
       const now = this.scheduler.now()
-      if (this.closeDeadlineNs !== null && now >= this.closeDeadlineNs) {
-        throw new Error("NativeSession graceful close timed out; output cancelled without restoration")
-      }
+      // A late turn still counts output acknowledged before the deadline and one bounded pump step.
+      const expired = this.closeDeadlineNs !== null && now >= this.closeDeadlineNs
       if (this.output?.completed) {
         if (this.output.ticket) this.lib.sessionCompleteOutput(this.context, this.session, this.output.ticket, true)
         this.output = null
         this.completePresentation()
       }
-      if (this.output) return
-      const result = this.lib.sessionPump(this.context, this.session, now, 1)
+      const result = this.output ? null : this.lib.sessionPump(this.context, this.session, now, 1)
+      if (expired && result?.status !== NativeSessionPumpStatus.Closed) {
+        throw new Error("NativeSession graceful close timed out; output cancelled without restoration")
+      }
+      if (!result) return
       switch (result.status) {
         case NativeSessionPumpStatus.Idle:
           if (this.transition) {
@@ -756,10 +758,12 @@ export class NativeSession {
     }
     const ticket = this.lib.sessionReadOutput(this.context, this.session, this.buffer)
     if (!ticket) throw new Error("NativeSession output pending without bytes")
+    if (ticket.byteCount > this.buffer.length) throw new Error("NativeSession output ticket exceeds its buffer")
     this.writeSink(this.buffer.subarray(0, ticket.byteCount), ticket)
   }
 
   private writeSink(bytes: Uint8Array, ticket: NativeOutputTicket | null): void {
+    if (this.output) throw new Error("NativeSession output is already in flight")
     const output = { ticket, completed: false, failed: false }
     this.output = output
     // Set the gate before calling user code so even an inline drain is not lost.

@@ -6107,28 +6107,26 @@ export class FFIRenderLib {
     record[layout.fields.width.offset / 4] = toSafeFFIU32Length(options.width, "Session renderer width")
     record[layout.fields.height.offset / 4] = toSafeFFIU32Length(options.height, "Session renderer height")
     record[layout.fields.remote_mode.offset / 4] =
-      remote === undefined ? 0 : toFFIBool(remote, "Session renderer remote") + 1
+      remote === undefined
+        ? nativeConstants.OT_SESSION_REMOTE_AUTO
+        : toFFIBool(remote, "Session renderer remote")
+          ? nativeConstants.OT_SESSION_REMOTE_REMOTE
+          : nativeConstants.OT_SESSION_REMOTE_LOCAL
     const environment = options.environment ?? {}
-    const bytes = new Uint8Array(65_536)
+    const bytes = new Uint8Array(nativeConstants.OT_SESSION_ENV_BYTES_MAX)
     const lengths = new DataView(bytes.buffer)
     let offset = 0
     for (const key of Object.keys(environment)) {
-      if (record[layout.fields.entry_count.offset / 4] === 256)
-        throw new RangeError("Session environment exceeds 256 entries")
       const value = environment[key]
       if (typeof value !== "string") throw new TypeError("Session environment values must be strings")
+      // UTF-8 never has fewer bytes than UTF-16 code units, so this bounds the encoding work.
       if (key.length + value.length + 8 > bytes.length - offset) {
-        throw new RangeError("Session environment exceeds 65536 bytes")
-      }
-      if (!key || key.includes("=") || key.includes("\0") || value.includes("\0")) {
-        throw new TypeError(
-          "Session environment requires nonempty NUL-free keys without '=' and NUL-free string values",
-        )
+        throw new RangeError(`Session environment exceeds ${bytes.length} bytes`)
       }
       const keyBytes = this.encoder.encode(key)
       const valueBytes = this.encoder.encode(value)
       if (keyBytes.length + valueBytes.length + 8 > bytes.length - offset) {
-        throw new RangeError("Session environment exceeds 65536 bytes")
+        throw new RangeError(`Session environment exceeds ${bytes.length} bytes`)
       }
       lengths.setUint32(offset, keyBytes.length, true)
       lengths.setUint32(offset + 4, valueBytes.length, true)
@@ -6144,19 +6142,6 @@ export class FFIRenderLib {
       "ot_session_attach_renderer_with_env",
       this.opentui.symbols.ot_session_attach_renderer_with_env(pointer, handle, record, input),
     )
-  }
-
-  public sessionRender(
-    context: NativeContextHandle,
-    session: SessionHandle,
-    force: boolean,
-  ): NativeSessionRenderStatus {
-    const forceRender = toFFIBool(force, "Session render force")
-    const handle = encodeContextHandle(context, session)
-    const output = new Uint32Array(1)
-    const pointer = this.nativeContextPointer(context, "ot_session_render")
-    nativeResult("ot_session_render", this.opentui.symbols.ot_session_render(pointer, handle, forceRender, output))
-    return output[0]
   }
 
   public sessionResizeRenderer(
@@ -6390,11 +6375,13 @@ export class FFIRenderLib {
   ): void {
     const layout = nativeLayouts.ot_session_terminal_options
     const handle = encodeContextHandle(context, session)
+    const flag = (value: boolean | undefined, label: string, bit: number) =>
+      toFFIBool(value ?? true, `Session ${label}`) ? bit : 0
     const flags =
-      toFFIBool(options.useAlternateScreen ?? true, "Session useAlternateScreen") |
-      (toFFIBool(options.mouse ?? true, "Session mouse") << 1) |
-      (toFFIBool(options.mouseMovement ?? true, "Session mouseMovement") << 2) |
-      (toFFIBool(options.clearOnClose ?? true, "Session clearOnClose") << 3)
+      flag(options.useAlternateScreen, "useAlternateScreen", nativeConstants.OT_TERMINAL_ALTERNATE_SCREEN) |
+      flag(options.mouse, "mouse", nativeConstants.OT_TERMINAL_MOUSE) |
+      flag(options.mouseMovement, "mouseMovement", nativeConstants.OT_TERMINAL_MOUSE_MOVEMENT) |
+      flag(options.clearOnClose, "clearOnClose", nativeConstants.OT_TERMINAL_CLEAR_ON_CLOSE)
     const record = createContextRecord(layout)
     record[layout.fields.flags.offset / 4] = flags
     record[layout.fields.kitty_keyboard_flags.offset / 4] = toSafeFFIU32Length(
@@ -6468,26 +6455,30 @@ export class FFIRenderLib {
     const layout = nativeLayouts.ot_session_control_options
     const handle = encodeContextHandle(context, session)
     const record = createContextRecord(layout)
+    const kind = layout.fields.kind.offset / 4
     let bytes: Uint8Array | null = null
     switch (command.kind) {
       case "capability-response":
-        record[layout.fields.kind.offset / 4] = 1
+        record[kind] = nativeConstants.OT_CONTROL_CAPABILITY_RESPONSE
         bytes = sessionBytes(command.bytes, "Session capability response length")
         break
       case "palette-query":
-        record[layout.fields.kind.offset / 4] = 10
+        record[kind] = nativeConstants.OT_CONTROL_PALETTE_QUERY
         bytes = sessionBytes(command.bytes, "Session palette query length")
         break
       case "title": {
-        record[layout.fields.kind.offset / 4] = 2
+        record[kind] = nativeConstants.OT_CONTROL_TITLE
         const title = command.title
         if (typeof title !== "string") throw new TypeError("Session title must be a string")
-        if (title.length > 4091) throw new NativeError("ot_session_control", NativeStatus.InvalidArgument)
+        // The title and its OSC 0 framing fit one control packet. UTF-8 is never shorter than UTF-16.
+        if (title.length > NATIVE_SESSION_CONTROL_PACKET_BYTES - "\x1b]0;\x07".length) {
+          throw new NativeError("ot_session_control", NativeStatus.InvalidArgument)
+        }
         bytes = this.encoder.encode(title)
         break
       }
       case "mouse": {
-        record[layout.fields.kind.offset / 4] = 3
+        record[kind] = nativeConstants.OT_CONTROL_MOUSE
         const mode = command.mode
         if (mode !== "disabled" && mode !== "drag" && mode !== "motion") {
           throw new TypeError("Session mouse mode must be disabled, drag, or motion")
@@ -6496,20 +6487,20 @@ export class FFIRenderLib {
         break
       }
       case "kitty-keyboard-flags":
-        record[layout.fields.kind.offset / 4] = 4
+        record[kind] = nativeConstants.OT_CONTROL_KITTY_KEYBOARD_FLAGS
         record[layout.fields.argument.offset / 4] = toSafeFFIU32Length(command.flags, "Session Kitty keyboard flags")
         break
       case "restore-modes":
-        record[layout.fields.kind.offset / 4] = 5
+        record[kind] = nativeConstants.OT_CONTROL_RESTORE_MODES
         break
       case "query-pixel-resolution":
-        record[layout.fields.kind.offset / 4] = 6
+        record[kind] = nativeConstants.OT_CONTROL_QUERY_PIXEL_RESOLUTION
         break
       case "query-theme-colors":
-        record[layout.fields.kind.offset / 4] = 7
+        record[kind] = nativeConstants.OT_CONTROL_QUERY_THEME_COLORS
         break
       case "reset-background":
-        record[layout.fields.kind.offset / 4] = 9
+        record[kind] = nativeConstants.OT_CONTROL_RESET_BACKGROUND
         break
       default:
         throw new TypeError("Unknown Session control kind")
@@ -6612,7 +6603,7 @@ export class FFIRenderLib {
           throw new RangeError("Session cursor coordinates must fit signed 32-bit cells")
         }
       }
-      words[layout.fields.fields.offset / 4] |= 1
+      words[layout.fields.fields.offset / 4] |= nativeConstants.OT_CURSOR_POSITION
       words[layout.fields.x.offset / 4] = x
       words[layout.fields.y.offset / 4] = y
       bytes[layout.fields.visible.offset] = toFFIBool(visible, "Session cursor visibility")
@@ -6620,23 +6611,23 @@ export class FFIRenderLib {
     if (style != null) {
       const id = CURSOR_STYLE_TO_ID[style]
       if (typeof id !== "number") throw new TypeError("Unknown cursor style")
-      words[layout.fields.fields.offset / 4] |= 2
+      words[layout.fields.fields.offset / 4] |= nativeConstants.OT_CURSOR_STYLE
       bytes[layout.fields.style.offset] = id
     }
     if (blinking != null) {
-      words[layout.fields.fields.offset / 4] |= 4
+      words[layout.fields.fields.offset / 4] |= nativeConstants.OT_CURSOR_BLINKING
       bytes[layout.fields.blinking.offset] = toFFIBool(blinking, "Session cursor blinking")
     }
     if (color != null) {
       const source = rgbaBuffer(color)
       if (source.length !== 4) throw new RangeError("Session cursor color must have four packed RGBA lanes")
-      words[layout.fields.fields.offset / 4] |= 8
+      words[layout.fields.fields.offset / 4] |= nativeConstants.OT_CURSOR_COLOR
       new Uint16Array(bytes.buffer, layout.fields.color.offset, layout.fields.color.size / 2).set(source)
     }
     if (cursor != null) {
       const id = MOUSE_STYLE_TO_ID[cursor]
       if (typeof id !== "number") throw new TypeError("Unknown mouse pointer style")
-      words[layout.fields.fields.offset / 4] |= 16
+      words[layout.fields.fields.offset / 4] |= nativeConstants.OT_CURSOR_MOUSE_POINTER
       bytes[layout.fields.mouse_pointer.offset] = id
     }
     const record = new Uint32Array(nativeLayouts.ot_session_control_options.size / 4)
@@ -6644,7 +6635,7 @@ export class FFIRenderLib {
       nativeLayouts.ot_session_control_options.size
     record[nativeLayouts.ot_session_control_options.fields.abi_version.offset / 4] =
       nativeConstants.OT_CONTEXT_ABI_VERSION
-    record[nativeLayouts.ot_session_control_options.fields.kind.offset / 4] = 8
+    record[nativeLayouts.ot_session_control_options.fields.kind.offset / 4] = nativeConstants.OT_CONTROL_CURSOR
     const pointer = this.nativeContextPointer(context, "ot_session_control")
     nativeResult(
       "ot_session_control",
@@ -6662,25 +6653,26 @@ export class FFIRenderLib {
       this.opentui.symbols.ot_session_get_capabilities(pointer, handle, output),
     )
     const flags = output[layout.fields.flags.offset / 4]
+    const flag = (bit: number) => (flags & bit) !== 0
     const bytes = new Uint8Array(output.buffer)
     return {
-      kitty_keyboard: (flags & 1) !== 0,
-      kitty_graphics: (flags & 2) !== 0,
-      rgb: (flags & 4) !== 0,
-      ansi256: (flags & 8) !== 0,
-      sgr_pixels: (flags & 16) !== 0,
-      color_scheme_updates: (flags & 32) !== 0,
-      explicit_width: (flags & 64) !== 0,
-      scaled_text: (flags & 128) !== 0,
-      sixel: (flags & 256) !== 0,
-      focus_tracking: (flags & 512) !== 0,
-      sync: (flags & 1024) !== 0,
-      bracketed_paste: (flags & 2048) !== 0,
-      hyperlinks: (flags & 4096) !== 0,
-      osc52: (flags & 8192) !== 0,
-      notifications: (flags & 16384) !== 0,
-      explicit_cursor_positioning: (flags & 32768) !== 0,
-      remote: (flags & 65536) !== 0,
+      kitty_keyboard: flag(nativeConstants.OT_CAP_KITTY_KEYBOARD),
+      kitty_graphics: flag(nativeConstants.OT_CAP_KITTY_GRAPHICS),
+      rgb: flag(nativeConstants.OT_CAP_RGB),
+      ansi256: flag(nativeConstants.OT_CAP_ANSI256),
+      sgr_pixels: flag(nativeConstants.OT_CAP_SGR_PIXELS),
+      color_scheme_updates: flag(nativeConstants.OT_CAP_COLOR_SCHEME_UPDATES),
+      explicit_width: flag(nativeConstants.OT_CAP_EXPLICIT_WIDTH),
+      scaled_text: flag(nativeConstants.OT_CAP_SCALED_TEXT),
+      sixel: flag(nativeConstants.OT_CAP_SIXEL),
+      focus_tracking: flag(nativeConstants.OT_CAP_FOCUS_TRACKING),
+      sync: flag(nativeConstants.OT_CAP_SYNC),
+      bracketed_paste: flag(nativeConstants.OT_CAP_BRACKETED_PASTE),
+      hyperlinks: flag(nativeConstants.OT_CAP_HYPERLINKS),
+      osc52: flag(nativeConstants.OT_CAP_OSC52),
+      notifications: flag(nativeConstants.OT_CAP_NOTIFICATIONS),
+      explicit_cursor_positioning: flag(nativeConstants.OT_CAP_EXPLICIT_CURSOR_POSITIONING),
+      remote: flag(nativeConstants.OT_CAP_REMOTE),
       unicode: widthMethodFromCode(output[layout.fields.width_method.offset / 4]),
       multiplexer: (["none", "tmux", "zellij", "screen", "unknown"] as const)[
         output[layout.fields.multiplexer.offset / 4]

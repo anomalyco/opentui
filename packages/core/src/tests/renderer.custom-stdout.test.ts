@@ -7,10 +7,15 @@ import {
   CliRenderEvents,
   type CliRendererConfig,
 } from "../renderer.js"
+import { NativeSession } from "../NativeSession.js"
 import { BoxRenderable } from "../renderables/Box.js"
 import { ImageRenderable } from "../renderables/Image.js"
+import { MarkdownRenderable } from "../renderables/Markdown.js"
+import { TextRenderable } from "../renderables/Text.js"
+import { SyntaxStyle } from "../syntax-style.js"
+import { forceRenderStatus, holdOutputIdle, settle, settleUntil } from "../testing/harness.js"
 import { ManualClock } from "../testing/manual-clock.js"
-import { createTestStdin, TestWriteStream } from "../testing/test-streams.js"
+import { createTestStdin, RecordingWriteStream } from "../testing/test-streams.js"
 import { NativeSessionRenderStatus } from "../zig.js"
 
 const PNG_1X1 = Uint8Array.from(
@@ -20,43 +25,10 @@ const PNG_1X1 = Uint8Array.from(
   ),
 )
 
-// Copy published bytes so assertions remain valid after native output is released.
-class CollectingWriteStream extends TestWriteStream {
-  public readonly writes: Buffer[] = []
-  public holdWrites = false
-  public pendingWrite: (() => void) | undefined
-
-  override _write(chunk: any, _encoding: BufferEncoding, callback: (error?: Error | null) => void): void {
-    // The Session reuses its output storage after acknowledgement.
-    const buf = Buffer.isBuffer(chunk) ? Buffer.from(chunk) : Buffer.from(chunk.slice())
-    this.writes.push(buf)
-    if (this.holdWrites) {
-      this.pendingWrite = callback
-    } else {
-      callback()
-    }
-  }
-
-  getWrittenBytes(): Buffer {
-    return Buffer.concat(this.writes)
-  }
-
-  clearWrites(): void {
-    this.writes.length = 0
-  }
-
-  releaseWrites(): void {
-    this.holdWrites = false
-    const callback = this.pendingWrite
-    this.pendingWrite = undefined
-    callback?.()
-  }
-}
-
-type CollectingStdout = CollectingWriteStream & NodeJS.WriteStream
+type CollectingStdout = RecordingWriteStream & NodeJS.WriteStream
 
 function createCollectingStdout(columns = 80, rows = 24): CollectingStdout {
-  return new CollectingWriteStream(columns, rows) as CollectingStdout
+  return new RecordingWriteStream(columns, rows) as CollectingStdout
 }
 
 const outputRenderers = new WeakMap<NodeJS.WritableStream, CliRenderer>()
@@ -80,7 +52,7 @@ async function flushWritable(stdout: NodeJS.WritableStream): Promise<void> {
 function countPixelResolutionQueries(stdout: CollectingStdout): number {
   return (
     stdout
-      .getWrittenBytes()
+      .bytes()
       .toString("binary")
       .match(/\x1b\[14t/g)?.length ?? 0
   )
@@ -113,65 +85,22 @@ function createRetryRenderer(stdoutBacked = false): { renderer: CliRenderer; clo
   return { renderer, clock }
 }
 
-function mockNativeRender(renderer: CliRenderer, render: () => NativeSessionRenderStatus): void {
+/** The next native split commit returns `status` without output; later commits run normally. Returns batch sizes. */
+function rejectNextSplit(renderer: CliRenderer, status: NativeSessionRenderStatus): number[] {
   const driver = renderer.nativeScene.driver
-  const originalRender = driver.render.bind(driver)
-  driver.render = (...args) => {
-    const status = render()
-    if (status === NativeSessionRenderStatus.Presented) return originalRender(...args)
+  const renderSplit = driver.renderSplit
+  const batches: number[] = []
+  driver.renderSplit = (...args) => {
+    batches.push(args[1].length)
+    if (batches.length > 1) return renderSplit.apply(driver, args)
+    // A returned status consumes the native draft even when the test bypasses encoding.
     renderer.nativeScene.cancelFrame()
-    return status
+    return { status }
   }
   destroyFns.unshift(() => {
-    driver.render = originalRender
+    driver.renderSplit = renderSplit
   })
-}
-
-function deferOutputIdle(renderer: CliRenderer): {
-  resolve: () => Promise<void>
-  hold: () => void
-  calls: () => number
-} {
-  const driver = renderer.nativeScene.driver
-  const originalIdle = driver.idle.bind(driver)
-  let pending: ReturnType<typeof Promise.withResolvers<void>> | undefined
-  let released = false
-  let calls = 0
-  driver.idle = () => {
-    calls++
-    if (released) return originalIdle()
-    pending ??= Promise.withResolvers<void>()
-    return pending.promise
-  }
-  destroyFns.unshift(() => {
-    driver.idle = originalIdle
-  })
-  return {
-    resolve: async () => {
-      released = true
-      pending?.resolve()
-      pending = undefined
-      await Promise.resolve()
-      await Promise.resolve()
-    },
-    hold: () => {
-      released = false
-    },
-    calls: () => calls,
-  }
-}
-
-function forceNativeSplitSkip(renderer: CliRenderer): () => void {
-  const render = spyOn(renderer.nativeScene.driver, "renderSplit").mockImplementation(() =>
-    consumeNativeSplit(renderer, NativeSessionRenderStatus.Skipped),
-  )
-  return () => render.mockRestore()
-}
-
-function consumeNativeSplit(renderer: CliRenderer, status: NativeSessionRenderStatus) {
-  // Returned statuses consume native drafts even when the test bypasses encoding.
-  renderer.nativeScene.cancelFrame()
-  return { renderOffset: 0, status }
+  return batches
 }
 
 async function finishRender(renderer: CliRenderer): Promise<void> {
@@ -181,13 +110,6 @@ async function finishRender(renderer: CliRenderer): Promise<void> {
     if (!(renderer as any).cancelReadyFrame) return
   }
   throw new Error("Renderer did not finish ready work within 64 host turns")
-}
-
-async function waitForHeldOutput(stdout: CollectingStdout): Promise<void> {
-  for (let turn = 0; turn < 64 && !stdout.pendingWrite; turn++) {
-    await setImmediate()
-  }
-  expect(stdout.pendingWrite).toBeDefined()
 }
 
 let destroyFns: Array<() => void | Promise<void>> = []
@@ -222,10 +144,93 @@ test("non-process stdout: rendered bytes flow to the custom Writable", async () 
 
   await flushWritable(stdout)
 
-  const received = stdout.getWrittenBytes()
+  const received = stdout.bytes()
   expect(received.length).toBeGreaterThan(0)
   // ANSI escape sequences contain ESC (0x1b).
   expect(received.includes(0x1b)).toBe(true)
+})
+
+test("late Ghostty capability detection emits OSC 8 for compact Markdown links", async () => {
+  const stdin = createTestStdin()
+  const stdout = createCollectingStdout(100, 8)
+  const renderer = await createCliRenderer({ stdin, stdout, useMouse: true })
+  destroyFns.push(() => renderer.destroy())
+
+  const syntaxStyle = SyntaxStyle.fromStyles({ default: { fg: "#ffffff" } }, renderer.nativeScene)
+  destroyFns.push(() => syntaxStyle.destroy())
+
+  renderer.root.add(
+    new MarkdownRenderable(renderer, {
+      content: "| Link |\n| --- |\n| [OpenTUI](https://github.com/anomalyco/opentui) |\n| https://example.com/path |",
+      syntaxStyle,
+      tableOptions: { style: "columns", widthMode: "content" },
+    }),
+  )
+  await renderer.idle()
+  await flushWritable(stdout)
+
+  const initialFrame = new TextDecoder().decode(renderer.currentRenderBuffer.getRealCharBytes(true))
+  expect(initialFrame).toContain("OpenTUI (https://github.com/anomalyco/opentui)")
+  expect(initialFrame.match(/https:\/\/example\.com\/path/g)).toHaveLength(1)
+  expect(stdout.bytes().toString("binary")).not.toContain("\x1b]8;id=")
+
+  stdout.clear()
+  stdin.emit("data", Buffer.from("\x1bP>|ghostty 1.1.3\x1b\\"))
+  await renderer.idle()
+  await flushWritable(stdout)
+
+  const finalFrame = new TextDecoder().decode(renderer.currentRenderBuffer.getRealCharBytes(true))
+  const output = stdout.bytes().toString("binary")
+  expect(renderer.capabilities?.hyperlinks).toBe(true)
+  expect(finalFrame).toContain("OpenTUI")
+  expect(finalFrame).not.toContain("github.com/anomalyco/opentui")
+  expect(finalFrame.match(/https:\/\/example\.com\/path/g)).toHaveLength(1)
+  expect(output).toContain(";https://github.com/anomalyco/opentui\x1b\\")
+  expect(output).toContain(";https://example.com/path\x1b\\")
+  expect(output).toContain("\x1b]8;;\x1b\\")
+})
+
+test("unidentified truecolor terminals preserve the visible Markdown link fallback", async () => {
+  const previousTerm = process.env.TERM
+  const previousColorTerm = process.env.COLORTERM
+  process.env.TERM = "xterm-256color"
+  process.env.COLORTERM = "truecolor"
+
+  try {
+    const stdout = createCollectingStdout(80, 6)
+    const renderer = await createCliRenderer({
+      stdin: createTestStdin(),
+      stdout,
+      remote: false,
+      forwardEnvKeys: ["TERM", "COLORTERM"],
+    })
+    destroyFns.push(() => renderer.destroy())
+
+    const syntaxStyle = SyntaxStyle.fromStyles({ default: { fg: "#ffffff" } }, renderer.nativeScene)
+    destroyFns.push(() => syntaxStyle.destroy())
+    renderer.root.add(
+      new MarkdownRenderable(renderer, {
+        content: "| Link |\n|---|\n| [OpenTUI](https://example.com/docs) |",
+        syntaxStyle,
+        tableOptions: { style: "columns", widthMode: "content" },
+      }),
+    )
+
+    await renderer.idle()
+    await flushWritable(stdout)
+
+    expect(renderer.capabilities?.rgb).toBe(true)
+    expect(renderer.capabilities?.hyperlinks).toBe(false)
+    expect(new TextDecoder().decode(renderer.currentRenderBuffer.getRealCharBytes(true))).toContain(
+      "OpenTUI (https://example.com/docs)",
+    )
+    expect(stdout.bytes().toString("binary")).not.toContain("\x1b]8;id=")
+  } finally {
+    if (previousTerm === undefined) delete process.env.TERM
+    else process.env.TERM = previousTerm
+    if (previousColorTerm === undefined) delete process.env.COLORTERM
+    else process.env.COLORTERM = previousColorTerm
+  }
 })
 
 test("auto images use detected Kitty graphics and delete cleared placements", async () => {
@@ -234,7 +239,7 @@ test("auto images use detected Kitty graphics and delete cleared placements", as
   const renderer = await createCliRenderer({ stdin, stdout })
   destroyFns.push(() => renderer.destroy())
   await flushWritable(stdout)
-  stdout.clearWrites()
+  stdout.clear()
 
   stdin.emit("data", Buffer.from("\x1b_Gi=31337;OK\x1b\\"))
   const image = new ImageRenderable(renderer, {
@@ -251,13 +256,13 @@ test("auto images use detected Kitty graphics and delete cleared placements", as
   await flushWritable(stdout)
 
   expect(renderer.capabilities?.kitty_graphics).toBe(true)
-  expect(stdout.getWrittenBytes().toString("binary")).toContain("\x1b_G")
+  expect(stdout.bytes().toString("binary")).toContain("\x1b_G")
 
-  stdout.clearWrites()
+  stdout.clear()
   image.source = undefined
   await renderer.idle()
   await flushWritable(stdout)
-  expect(stdout.getWrittenBytes().toString("binary")).toContain("a=d")
+  expect(stdout.bytes().toString("binary")).toContain("a=d")
 })
 
 test("auto images use detected Sixel when pixel resolution is available", async () => {
@@ -266,7 +271,7 @@ test("auto images use detected Sixel when pixel resolution is available", async 
   const renderer = await createCliRenderer({ stdin, stdout })
   destroyFns.push(() => renderer.destroy())
   await flushWritable(stdout)
-  stdout.clearWrites()
+  stdout.clear()
 
   stdin.emit("data", Buffer.from("\x1b[?1;4c\x1b[4;80;80t"))
   const image = new ImageRenderable(renderer, {
@@ -284,7 +289,7 @@ test("auto images use detected Sixel when pixel resolution is available", async 
 
   expect(renderer.capabilities?.sixel).toBe(true)
   expect(renderer.resolution).toEqual({ width: 80, height: 80 })
-  expect(stdout.getWrittenBytes().toString("binary")).toContain("\x1bP0;1;0q")
+  expect(stdout.bytes().toString("binary")).toContain("\x1bP0;1;0q")
 })
 
 test("oversized pixel resolution replies leave images on block fallback", async () => {
@@ -309,7 +314,7 @@ test("oversized pixel resolution replies leave images on block fallback", async 
 
   expect(renderer.resolution).toBeNull()
   expect(image.effectiveProtocol).toBe("blocks")
-  expect(stdout.getWrittenBytes().toString("utf8")).toContain("█")
+  expect(stdout.bytes().toString("utf8")).toContain("█")
 })
 
 test("Sixel placements beyond native image limits use block fallback", async () => {
@@ -333,8 +338,8 @@ test("Sixel placements beyond native image limits use block fallback", async () 
   await flushWritable(stdout)
 
   expect(renderer.resolution).toEqual({ width: 20000, height: 20000 })
-  expect(stdout.getWrittenBytes().toString("binary")).not.toContain("\x1bP0;1;0q")
-  expect(stdout.getWrittenBytes().toString("utf8")).toContain("█")
+  expect(stdout.bytes().toString("binary")).not.toContain("\x1bP0;1;0q")
+  expect(stdout.bytes().toString("utf8")).toContain("█")
 })
 
 test("resized images wait for the new pixel resolution before using Sixel", async () => {
@@ -358,29 +363,29 @@ test("resized images wait for the new pixel resolution before using Sixel", asyn
   await renderer.idle()
   await flushWritable(stdout)
   expect(image.effectiveProtocol).toBe("sixel")
-  expect(stdout.getWrittenBytes().toString("binary")).toContain('0;1;0q"1;1;20;20')
+  expect(stdout.bytes().toString("binary")).toContain('0;1;0q"1;1;20;20')
 
-  stdout.clearWrites()
+  stdout.clear()
   renderer.resize(16, 4)
   await renderer.idle()
   await flushWritable(stdout)
 
-  const pendingOutput = stdout.getWrittenBytes().toString("binary")
+  const pendingOutput = stdout.bytes().toString("binary")
   expect(pendingOutput).toContain("\x1b[14t")
   expect(pendingOutput).not.toContain('0;1;0q"1;1;10;20')
   expect(renderer.resolution).toBeNull()
   expect(image.effectiveProtocol).toBe("blocks")
   expect(pendingOutput).not.toContain("\x1bP0;1;0q")
-  expect(stdout.getWrittenBytes().toString("utf8")).toContain("█")
+  expect(stdout.bytes().toString("utf8")).toContain("█")
 
-  stdout.clearWrites()
+  stdout.clear()
   stdin.emit("data", Buffer.from("\x1b[4;80;160t"))
   await renderer.idle()
   await flushWritable(stdout)
 
   expect(renderer.resolution).toEqual({ width: 160, height: 80 })
   expect(image.effectiveProtocol).toBe("sixel")
-  expect(stdout.getWrittenBytes().toString("binary")).toContain('0;1;0q"1;1;20;20')
+  expect(stdout.bytes().toString("binary")).toContain('0;1;0q"1;1;20;20')
 })
 
 test("split-footer Kitty scrollback does not rasterize images to terminal pixel dimensions", async () => {
@@ -399,7 +404,7 @@ test("split-footer Kitty scrollback does not rasterize images to terminal pixel 
   stdin.emit("data", Buffer.from("\x1b[4;4320;7680t\x1b_Gi=31337;OK\x1b\\\x1b[48;1R"))
   await renderer.idle()
   await flushWritable(stdout)
-  stdout.clearWrites()
+  stdout.clear()
 
   const surface = renderer.createScrollbackSurface({ startOnNewLine: true })
   const image = new ImageRenderable(surface.renderContext, {
@@ -419,7 +424,7 @@ test("split-footer Kitty scrollback does not rasterize images to terminal pixel 
   await renderer.idle()
   await flushWritable(stdout)
 
-  const output = stdout.getWrittenBytes().toString("binary")
+  const output = stdout.bytes().toString("binary")
   expect(output).toContain("\x1b_Ga=t")
   expect(output).toContain("a=t,f=100")
   expect(output).toContain("c=80,r=48")
@@ -452,7 +457,7 @@ test.each([
       await renderer.idle()
     }
     await flushWritable(stdout)
-    stdout.clearWrites()
+    stdout.clear()
 
     const surface = renderer.createScrollbackSurface({ startOnNewLine: true })
     try {
@@ -472,7 +477,7 @@ test.each([
     await renderer.idle()
     await flushWritable(stdout)
 
-    const output = stdout.getWrittenBytes().toString("utf8")
+    const output = stdout.bytes().toString("utf8")
     expect(output).toContain(placement)
     expect(output).toContain("\x1b[4A\r")
     expect(output).not.toContain("\u2588")
@@ -492,7 +497,7 @@ test("split-footer queues native image scrollback until the startup cursor reply
   })
   destroyFns.push(() => renderer.destroy())
   await flushWritable(stdout)
-  stdout.clearWrites()
+  stdout.clear()
 
   const surface = renderer.createScrollbackSurface({ startOnNewLine: true })
   const image = new ImageRenderable(surface.renderContext, {
@@ -509,14 +514,14 @@ test("split-footer queues native image scrollback until the startup cursor reply
   await renderer.idle()
   await flushWritable(stdout)
 
-  expect(stdout.getWrittenBytes()).toHaveLength(0)
+  expect(stdout.bytes()).toHaveLength(0)
 
   stdin.emit("data", Buffer.from("\x1b[3;1R"))
   await renderer.idle()
   await flushWritable(stdout)
 
-  expect(stdout.getWrittenBytes().toString("binary")).toContain("\x1b_Ga=t")
-  expect(stdout.getWrittenBytes().toString("utf8")).not.toContain("█")
+  expect(stdout.bytes().toString("binary")).toContain("\x1b_Ga=t")
+  expect(stdout.bytes().toString("utf8")).not.toContain("█")
 })
 
 test("split-footer scrollback uses blocks for mixed protocols and overlapping images", async () => {
@@ -535,7 +540,7 @@ test("split-footer scrollback uses blocks for mixed protocols and overlapping im
   stdin.emit("data", Buffer.from("\x1b[?1;4c\x1b[4;6;8t\x1b_Gi=31337;OK\x1b\\\x1b[3;1R"))
   await renderer.idle()
   await flushWritable(stdout)
-  stdout.clearWrites()
+  stdout.clear()
 
   const commitImages = async (images: Array<{ protocol: "kitty" | "sixel"; left?: number }>) => {
     const surface = renderer.createScrollbackSurface({ startOnNewLine: true })
@@ -564,18 +569,18 @@ test("split-footer scrollback uses blocks for mixed protocols and overlapping im
     { protocol: "sixel", left: 1 },
   ])
 
-  let output = stdout.getWrittenBytes().toString("binary")
+  let output = stdout.bytes().toString("binary")
   expect(output).not.toContain("\x1b_G")
   expect(output).not.toContain("\x1bP0;1;0q")
-  expect(stdout.getWrittenBytes().toString("utf8")).toContain("█")
+  expect(stdout.bytes().toString("utf8")).toContain("█")
 
-  stdout.clearWrites()
+  stdout.clear()
   await commitImages([{ protocol: "kitty" }, { protocol: "kitty" }])
 
-  output = stdout.getWrittenBytes().toString("binary")
+  output = stdout.bytes().toString("binary")
   expect(output).not.toContain("\x1b_G")
   expect(output).not.toContain("\x1bP0;1;0q")
-  expect(stdout.getWrittenBytes().toString("utf8")).toContain("█")
+  expect(stdout.bytes().toString("utf8")).toContain("█")
 })
 
 test("ScrollbackSurface rejects stale image geometry after a height-only resize", async () => {
@@ -618,7 +623,7 @@ test("ScrollbackSurface rejects stale image geometry after a height-only resize"
   await renderer.idle()
   await flushWritable(stdout)
 
-  expect(stdout.getWrittenBytes().toString("binary")).toContain('0;1;0q"1;1;10;13')
+  expect(stdout.bytes().toString("binary")).toContain('0;1;0q"1;1;10;13')
 })
 
 test("ScrollbackSurface rejects stale image geometry after pixel resolution arrives", async () => {
@@ -660,7 +665,7 @@ test("ScrollbackSurface rejects stale image geometry after pixel resolution arri
   await renderer.idle()
   await flushWritable(stdout)
 
-  expect(stdout.getWrittenBytes().toString("binary")).toContain('0;1;0q"1;1;10;13')
+  expect(stdout.bytes().toString("binary")).toContain('0;1;0q"1;1;10;13')
 })
 
 test("tall scrollback surfaces composite translucent Sixel images over snapshot backgrounds", async () => {
@@ -679,7 +684,7 @@ test("tall scrollback surfaces composite translucent Sixel images over snapshot 
   stdin.emit("data", Buffer.from("\x1b[?1;4c\x1b[4;6;8t\x1b[3;1R"))
   await renderer.idle()
   await flushWritable(stdout)
-  stdout.clearWrites()
+  stdout.clear()
 
   const surface = renderer.createScrollbackSurface({ startOnNewLine: true })
   const background = new BoxRenderable(surface.renderContext, {
@@ -707,7 +712,7 @@ test("tall scrollback surfaces composite translucent Sixel images over snapshot 
   await renderer.idle()
   await flushWritable(stdout)
 
-  expect(stdout.getWrittenBytes().toString("binary")).toContain("#0;2;50;0;50")
+  expect(stdout.bytes().toString("binary")).toContain("#0;2;50;0;50")
 })
 
 for (const testCase of [
@@ -751,7 +756,7 @@ for (const testCase of [
     renderer.requestRender()
     await renderer.idle()
     await flushWritable(stdout)
-    stdout.clearWrites()
+    stdout.clear()
 
     const appended = `pin${testCase.name[0]}`
     stdout.write(`${appended}\n`)
@@ -759,7 +764,7 @@ for (const testCase of [
     await renderer.idle()
     await flushWritable(stdout)
 
-    const output = stdout.getWrittenBytes().toString("binary")
+    const output = stdout.bytes().toString("binary")
     const appendIndex = output.indexOf(appended)
     const placementIndex = output.indexOf(testCase.placement)
     expect(output).toContain(appended)
@@ -779,7 +784,7 @@ test("split-footer custom stdout: native bytes bypass stdout capture", async () 
   })
   destroyFns.push(() => renderer.destroy())
 
-  stdout.clearWrites()
+  stdout.clear()
 
   renderer.setTerminalTitle("split-footer custom stdout")
 
@@ -789,7 +794,7 @@ test("split-footer custom stdout: native bytes bypass stdout capture", async () 
 
   await flushWritable(stdout)
 
-  expect(stdout.getWrittenBytes().toString("binary")).toContain("\x1b]0;split-footer custom stdout\x07")
+  expect(stdout.bytes().toString("binary")).toContain("\x1b]0;split-footer custom stdout\x07")
 })
 
 test("custom stdout resetTerminalBgColor routes through configured stdout", async () => {
@@ -803,12 +808,12 @@ test("custom stdout resetTerminalBgColor routes through configured stdout", asyn
   })
   destroyFns.push(() => renderer.destroy())
 
-  stdout.clearWrites()
+  stdout.clear()
   renderer.resetTerminalBgColor()
 
   await flushWritable(stdout)
 
-  expect(stdout.getWrittenBytes().toString("binary")).toContain("\x1b]111\x07")
+  expect(stdout.bytes().toString("binary")).toContain("\x1b]111\x07")
 })
 
 test("resize ignores an outstanding pixel resolution reply", async () => {
@@ -818,24 +823,24 @@ test("resize ignores an outstanding pixel resolution reply", async () => {
   destroyFns.push(() => renderer.destroy())
   await flushWritable(stdout)
   expect(countPixelResolutionQueries(stdout)).toBe(1)
-  stdout.clearWrites()
+  stdout.clear()
 
   renderer.resize(16, 4)
   renderer.resize(24, 4)
   await flushWritable(stdout)
-  expect(stdout.getWrittenBytes().toString("binary")).not.toContain("\x1b[14t")
+  expect(stdout.bytes().toString("binary")).not.toContain("\x1b[14t")
 
   stdin.emit("data", Buffer.from("\x1b[4;80;80t"))
   expect(renderer.resolution).toBeNull()
   await flushWritable(stdout)
   expect(countPixelResolutionQueries(stdout)).toBe(1)
 
-  stdout.clearWrites()
+  stdout.clear()
   stdin.emit("data", Buffer.from("\x1b[4;80;240t"))
   await renderer.idle()
 
   expect(renderer.resolution).toEqual({ width: 240, height: 80 })
-  expect(stdout.getWrittenBytes().toString("binary")).not.toContain("\x1b[14t")
+  expect(stdout.bytes().toString("binary")).not.toContain("\x1b[14t")
 })
 
 test("resize while suspended refreshes pixel resolution after resume", async () => {
@@ -845,18 +850,18 @@ test("resize while suspended refreshes pixel resolution after resume", async () 
   destroyFns.push(() => renderer.destroy())
   await flushWritable(stdout)
   expect(countPixelResolutionQueries(stdout)).toBe(1)
-  stdout.clearWrites()
+  stdout.clear()
   stdin.emit("data", Buffer.from("\x1b[4;80;80t"))
   await renderer.idle()
   expect(renderer.resolution).toEqual({ width: 80, height: 80 })
 
   await renderer.suspend()
-  stdout.clearWrites()
+  stdout.clear()
   renderer.resize(16, 4)
   renderer.resize(24, 4)
   await flushWritable(stdout)
-  expect(stdout.getWrittenBytes().toString("binary")).not.toContain("\x1b[14t")
-  stdout.clearWrites()
+  expect(stdout.bytes().toString("binary")).not.toContain("\x1b[14t")
+  stdout.clear()
 
   await renderer.resume()
   await flushWritable(stdout)
@@ -875,26 +880,26 @@ test("resume rejects a delayed pre-suspend pixel resolution reply", async () => 
   destroyFns.push(() => renderer.destroy())
   await flushWritable(stdout)
   expect(countPixelResolutionQueries(stdout)).toBe(1)
-  stdout.clearWrites()
+  stdout.clear()
 
   await renderer.suspend()
   renderer.resize(16, 4)
   await renderer.resume()
   await flushWritable(stdout)
-  expect(stdout.getWrittenBytes().toString("binary")).not.toContain("\x1b[14t")
+  expect(stdout.bytes().toString("binary")).not.toContain("\x1b[14t")
 
-  stdout.clearWrites()
+  stdout.clear()
   stdin.emit("data", Buffer.from("\x1b[4;80;80t"))
   expect(renderer.resolution).toBeNull()
   await flushWritable(stdout)
   expect(countPixelResolutionQueries(stdout)).toBe(1)
 
-  stdout.clearWrites()
+  stdout.clear()
   stdin.emit("data", Buffer.from("\x1b[4;80;160t"))
   await renderer.idle()
 
   expect(renderer.resolution).toEqual({ width: 160, height: 80 })
-  expect(stdout.getWrittenBytes().toString("binary")).not.toContain("\x1b[14t")
+  expect(stdout.bytes().toString("binary")).not.toContain("\x1b[14t")
 })
 
 test("resume preserves an outstanding pixel resolution query without requerying", async () => {
@@ -904,12 +909,12 @@ test("resume preserves an outstanding pixel resolution query without requerying"
   destroyFns.push(() => renderer.destroy())
   await flushWritable(stdout)
   expect(countPixelResolutionQueries(stdout)).toBe(1)
-  stdout.clearWrites()
+  stdout.clear()
 
   await renderer.suspend()
   await renderer.resume()
   await flushWritable(stdout)
-  expect(stdout.getWrittenBytes().toString("binary")).not.toContain("\x1b[14t")
+  expect(stdout.bytes().toString("binary")).not.toContain("\x1b[14t")
 
   stdin.emit("data", Buffer.from("\x1b[4;80;80t"))
   await renderer.idle()
@@ -925,7 +930,7 @@ test("resume preserves an incomplete pixel resolution response buffered while su
   destroyFns.push(() => renderer.destroy())
   await flushWritable(stdout)
   expect(countPixelResolutionQueries(stdout)).toBe(1)
-  stdout.clearWrites()
+  stdout.clear()
 
   await renderer.suspend()
   renderer.resize(16, 4)
@@ -957,7 +962,7 @@ test("resume does not join a pre-suspend escape to post-resume input", async () 
 
   await flushWritable(stdout)
   expect(countPixelResolutionQueries(stdout)).toBe(1)
-  stdout.clearWrites()
+  stdout.clear()
 
   stdin.emit("data", Buffer.from("\x1b"))
   await renderer.suspend()
@@ -990,7 +995,7 @@ test("resume does not join a partial pixel response to post-resume input", async
     try {
       await flushWritable(stdout)
       expect(countPixelResolutionQueries(stdout)).toBe(1)
-      stdout.clearWrites()
+      stdout.clear()
 
       stdin.emit("data", response.subarray(0, split))
       await renderer.suspend()
@@ -1059,7 +1064,7 @@ test("resume separates suspended escape input from a pixel resolution response",
     try {
       await flushWritable(stdout)
       expect(countPixelResolutionQueries(stdout)).toBe(1)
-      stdout.clearWrites()
+      stdout.clear()
 
       stdin.emit("data", Buffer.from("\x1b"))
       await renderer.suspend()
@@ -1104,7 +1109,7 @@ test("resume preserves every pixel resolution response split across suspension",
     try {
       await flushWritable(stdout)
       expect(countPixelResolutionQueries(stdout)).toBe(1)
-      stdout.clearWrites()
+      stdout.clear()
 
       stdin.emit("data", staleResponse.subarray(0, split))
       await renderer.suspend()
@@ -1121,11 +1126,11 @@ test("resume preserves every pixel resolution response split across suspension",
         queryCount: countPixelResolutionQueries(stdout),
       }).toEqual({ split, queryCount: 1 })
 
-      stdout.clearWrites()
+      stdout.clear()
       stdin.emit("data", Buffer.from("\x1b[4;80;160t"))
       await renderer.idle()
       expect(renderer.resolution).toEqual({ width: 160, height: 80 })
-      expect(stdout.getWrittenBytes().toString("binary")).not.toContain("\x1b[14t")
+      expect(stdout.bytes().toString("binary")).not.toContain("\x1b[14t")
     } finally {
       renderer.destroy()
       await renderer.closed
@@ -1133,277 +1138,181 @@ test("resume preserves every pixel resolution response split across suspension",
   }
 })
 
-test("Session-backed renderer retries one skipped frame after Session idle", async () => {
-  const { renderer, clock } = createRetryRenderer(true)
-  const idle = deferOutputIdle(renderer)
-  let calls = 0
-  let frames = 0
-  mockNativeRender(renderer, () =>
-    calls++ === 0 ? NativeSessionRenderStatus.Skipped : NativeSessionRenderStatus.Presented,
-  )
-  renderer.on(CliRenderEvents.FRAME, () => frames++)
+type RetryCheck = Partial<
+  Record<"calls" | "frames" | "idleCalls" | "errors", number> & Record<"scheduled" | "running", boolean>
+>
+type RetryStep =
+  | "loop"
+  | "start"
+  | "pause"
+  | "stop"
+  | "suspend"
+  | "destroy"
+  | "request"
+  | "intermediate"
+  | "release"
+  | "hold"
+  | "finish"
+  | number
+  | RetryCheck
 
-  await (renderer as any).loop()
-  expect(calls).toBe(1)
-  expect(frames).toBe(0)
-  expect(idle.calls()).toBe(1)
-
-  await idle.resolve()
-  expect(renderer.getSchedulerState().hasScheduledRender).toBe(true)
-  clock.advance(17)
-  await finishRender(renderer)
-
-  expect(calls).toBe(2)
-  expect(frames).toBe(1)
-  expect(renderer.getSchedulerState().hasScheduledRender).toBe(false)
-})
-
-test("Session-backed renderer retries immediately when output pressure outlasts the frame interval", async () => {
-  const { renderer, clock } = createRetryRenderer(true)
-  const idle = deferOutputIdle(renderer)
-  let calls = 0
-  mockNativeRender(renderer, () =>
-    calls++ === 0 ? NativeSessionRenderStatus.Skipped : NativeSessionRenderStatus.Presented,
-  )
-
-  await (renderer as any).loop()
-  clock.advance(100)
-  await idle.resolve()
-  clock.advance(0)
-
-  await finishRender(renderer)
-  expect(calls).toBe(2)
-})
-
-test("Session-backed renderer coalesces requests while waiting for Session idle", async () => {
-  const { renderer, clock } = createRetryRenderer(true)
-  const idle = deferOutputIdle(renderer)
-  const observed: number[] = []
-  let state = 1
-  let calls = 0
-  renderer.setFrameCallback(async () => {
-    observed.push(state)
-  })
-  mockNativeRender(renderer, () =>
-    calls++ === 0 ? NativeSessionRenderStatus.Skipped : NativeSessionRenderStatus.Presented,
-  )
-
-  await (renderer as any).loop()
-  state = 2
-  renderer.requestRender()
-  renderer.requestRender()
-  renderer.requestRender()
-  expect(calls).toBe(1)
-
-  await idle.resolve()
-  clock.advance(17)
-  await finishRender(renderer)
-
-  expect(calls).toBe(2)
-  expect(observed).toEqual([1, 2])
-})
-
-test("starting a Session-backed renderer waits for a skipped frame's Session idle", async () => {
-  const { renderer, clock } = createRetryRenderer(true)
-  const idle = deferOutputIdle(renderer)
-  let calls = 0
-  mockNativeRender(renderer, () =>
-    calls++ === 0 ? NativeSessionRenderStatus.Skipped : NativeSessionRenderStatus.Presented,
-  )
-
-  await (renderer as any).loop()
-  renderer.start()
-
-  expect(renderer.isRunning).toBe(true)
-  clock.advance(100)
-  expect(calls).toBe(1)
-
-  await idle.resolve()
-  clock.advance(0)
-
-  await finishRender(renderer)
-  expect(calls).toBe(2)
-  expect(renderer.isRunning).toBe(true)
-  renderer.pause()
-})
-
-test("Session-backed renderer waits for each repeated skip", async () => {
-  const { renderer, clock } = createRetryRenderer(true)
-  const firstIdle = deferOutputIdle(renderer)
-  let calls = 0
-  mockNativeRender(renderer, () =>
-    calls++ < 2 ? NativeSessionRenderStatus.Skipped : NativeSessionRenderStatus.Presented,
-  )
-
-  await (renderer as any).loop()
-  await firstIdle.resolve()
-  firstIdle.hold()
-  clock.advance(17)
-  await finishRender(renderer)
-  expect(calls).toBe(2)
-  expect(firstIdle.calls()).toBe(2)
-
-  await firstIdle.resolve()
-  clock.advance(17)
-  await finishRender(renderer)
-  expect(calls).toBe(3)
-})
-
-test("native failure does not retry and recovers on a later render request", async () => {
-  const { renderer, clock } = createRetryRenderer()
-  const originalError = console.error
-  const errors: unknown[][] = []
-  console.error = (...args: unknown[]) => errors.push(args)
-  destroyFns.unshift(() => {
-    console.error = originalError
-  })
-  let calls = 0
-  let frames = 0
-  mockNativeRender(renderer, () =>
-    calls++ === 0 ? NativeSessionRenderStatus.Failed : NativeSessionRenderStatus.Presented,
-  )
-  renderer.on(CliRenderEvents.FRAME, () => frames++)
-
-  await (renderer as any).loop()
-  clock.advance(1000)
-  expect(calls).toBe(1)
-  expect(frames).toBe(0)
-  expect(errors).toHaveLength(1)
-  expect(renderer.getSchedulerState().hasScheduledRender).toBe(false)
-
-  renderer.intermediateRender()
-  await finishRender(renderer)
-
-  expect(calls).toBe(2)
-  expect(frames).toBe(1)
-})
-
-test("running renderer recovers from native failure on a later render request", async () => {
-  const { renderer, clock } = createRetryRenderer()
-  const originalError = console.error
-  console.error = () => {}
-  destroyFns.unshift(() => {
-    console.error = originalError
-  })
-  let calls = 0
-  mockNativeRender(renderer, () =>
-    calls++ === 0 ? NativeSessionRenderStatus.Failed : NativeSessionRenderStatus.Presented,
-  )
-
-  renderer.start()
-  await finishRender(renderer)
-  expect(calls).toBe(1)
-  expect(renderer.isRunning).toBe(true)
-
-  renderer.requestRender()
-  clock.advance(17)
-
-  await finishRender(renderer)
-  expect(calls).toBe(2)
-})
-
-test("Session-backed native failure does not wait for Session idle or retry", async () => {
-  const { renderer, clock } = createRetryRenderer(true)
-  const idle = deferOutputIdle(renderer)
-  const originalError = console.error
-  console.error = () => {}
-  destroyFns.unshift(() => {
-    console.error = originalError
-  })
-  let calls = 0
-  mockNativeRender(renderer, () => {
-    calls++
-    return NativeSessionRenderStatus.Failed
-  })
-
-  await (renderer as any).loop()
-  clock.advance(1000)
-
-  expect(calls).toBe(1)
-  expect(idle.calls()).toBe(0)
-  expect(renderer.getSchedulerState().hasScheduledRender).toBe(false)
-})
-
-for (const control of ["pause", "stop", "suspend", "destroy"] as const) {
-  test(`${control} cancels an output-idle retry`, async () => {
-    const { renderer, clock } = createRetryRenderer(true)
-    if (control === "suspend") await renderer.setupTerminal()
-    const idle = deferOutputIdle(renderer)
-    let calls = 0
-    mockNativeRender(renderer, () => {
-      calls++
-      return NativeSessionRenderStatus.Skipped
-    })
-
-    await (renderer as any).loop()
-    await renderer[control]()
-    await idle.resolve()
-    clock.advance(17)
-
-    await finishRender(renderer)
-    expect(calls).toBe(1)
-  })
+interface RetryCase {
+  name: string
+  statuses: string
+  memory?: boolean
+  steps: readonly RetryStep[]
+  end: RetryCheck
 }
 
-for (const [control, state] of [
-  ["pause", "paused"],
-  ["stop", "stopped"],
-] as const) {
-  test(`one-shot render requested while ${state} retries after Session idle`, async () => {
-    const { renderer, clock } = createRetryRenderer(true)
-    const idle = deferOutputIdle(renderer)
-    let calls = 0
-    mockNativeRender(renderer, () =>
-      calls++ === 0 ? NativeSessionRenderStatus.Skipped : NativeSessionRenderStatus.Presented,
-    )
+const RENDER_STATUS = {
+  S: NativeSessionRenderStatus.Skipped,
+  P: NativeSessionRenderStatus.Presented,
+  F: NativeSessionRenderStatus.Failed,
+} as const
 
-    renderer[control]()
-    renderer.requestRender()
-    clock.advance(17)
-    await finishRender(renderer)
-    expect(calls).toBe(1)
-
-    await idle.resolve()
-    clock.advance(17)
-
-    await finishRender(renderer)
-    expect(calls).toBe(2)
+/**
+ * Drives a renderer whose native commits return `statuses` in order (the last one repeats) while every Session
+ * `idle()` wait is held until "release". A number advances the clock; an object checks the observed state.
+ */
+async function runRetryScenario({ statuses, memory = false, steps, end }: RetryCase): Promise<void> {
+  const { renderer, clock } = createRetryRenderer(!memory)
+  if (steps.includes("suspend")) await renderer.setupTerminal()
+  const idle = holdOutputIdle(renderer)
+  const errors = spyOn(console, "error").mockImplementation(() => {})
+  let calls = 0
+  let failures = 0
+  let frames = 0
+  const restore = forceRenderStatus(renderer, () => {
+    const status = RENDER_STATUS[statuses[Math.min(calls++, statuses.length - 1)] as keyof typeof RENDER_STATUS]
+    if (status === NativeSessionRenderStatus.Failed) failures++
+    return status
   })
+  destroyFns.unshift(() => {
+    restore()
+    idle.restore()
+    errors.mockRestore()
+  })
+  renderer.on(CliRenderEvents.FRAME, () => frames++)
+
+  for (const step of [...steps, end]) {
+    if (typeof step === "number") clock.advance(step)
+    else if (typeof step === "object") {
+      const observed: Required<RetryCheck> = {
+        calls,
+        frames,
+        idleCalls: idle.calls(),
+        errors: errors.mock.calls.length,
+        scheduled: renderer.getSchedulerState().hasScheduledRender,
+        running: renderer.isRunning,
+      }
+      const keys = Object.keys(step) as (keyof RetryCheck)[]
+      expect(Object.fromEntries(keys.map((key) => [key, observed[key]]))).toEqual(step)
+    } else if (step === "loop") await (renderer as any).loop()
+    else if (step === "start") renderer.start()
+    else if (step === "request") renderer.requestRender()
+    else if (step === "intermediate") renderer.intermediateRender()
+    else if (step === "release") await idle.release()
+    else if (step === "hold") idle.hold()
+    else if (step === "finish") await finishRender(renderer)
+    else await renderer[step]()
+  }
+  // Each native failure logs once; skips and retries log nothing.
+  expect(errors.mock.calls.length).toBe(failures)
 }
 
-test.each(["pause", "stop"] as const)(
-  "a fresh request after %s() replaces a cancelled output-idle retry",
-  async (control) => {
-    const { renderer, clock } = createRetryRenderer(true)
-    const idle = deferOutputIdle(renderer)
-    let calls = 0
-    mockNativeRender(renderer, () =>
-      calls++ === 0 ? NativeSessionRenderStatus.Skipped : NativeSessionRenderStatus.Presented,
-    )
-    renderer.start()
-    await finishRender(renderer)
-    expect(calls).toBe(1)
-    renderer[control]()
-    renderer.requestRender()
-    await idle.resolve()
-    clock.advance(17)
-    await finishRender(renderer)
-    expect(calls).toBe(2)
-    expect(renderer.isRunning).toBe(false)
+test.each<RetryCase>([
+  {
+    name: "retries one skipped frame after Session idle",
+    statuses: "SP",
+    steps: ["loop", { calls: 1, frames: 0, idleCalls: 1 }, "release", { scheduled: true }, 17, "finish"],
+    end: { calls: 2, frames: 1, scheduled: false },
   },
-)
+  {
+    name: "retries immediately when output pressure outlasts the frame interval",
+    statuses: "SP",
+    steps: ["loop", 100, "release", 0, "finish"],
+    end: { calls: 2 },
+  },
+  {
+    name: "coalesces requests while waiting for Session idle",
+    statuses: "SP",
+    steps: ["loop", "request", "request", "request", { calls: 1 }, "release", 17, "finish"],
+    end: { calls: 2, frames: 1 },
+  },
+  {
+    name: "starts running while a skipped frame waits for Session idle",
+    statuses: "SP",
+    steps: ["loop", "start", { running: true }, 100, { calls: 1 }, "release", 0, "finish"],
+    end: { calls: 2, running: true },
+  },
+  {
+    name: "waits for each repeated skip",
+    statuses: "SSP",
+    steps: ["loop", "release", "hold", 17, "finish", { calls: 2, idleCalls: 2 }, "release", 17, "finish"],
+    end: { calls: 3 },
+  },
+  {
+    name: "does not wait for Session idle or retry after a native failure",
+    statuses: "F",
+    steps: ["loop", 1000],
+    end: { calls: 1, idleCalls: 0, scheduled: false },
+  },
+  {
+    name: "recovers from native failure on a later render request",
+    statuses: "FP",
+    memory: true,
+    steps: ["loop", 1000, { calls: 1, frames: 0, errors: 1, scheduled: false }, "intermediate", "finish"],
+    end: { calls: 2, frames: 1 },
+  },
+  {
+    name: "keeps running after a native failure and renders a later request",
+    statuses: "FP",
+    memory: true,
+    steps: ["start", "finish", { calls: 1, running: true }, "request", 17, "finish"],
+    end: { calls: 2 },
+  },
+  {
+    name: "resumes running after Session idle",
+    statuses: "SP",
+    steps: ["start", "finish", { calls: 1 }, "release", 17, "finish"],
+    end: { calls: 2, running: true },
+  },
+  ...(["pause", "stop", "suspend", "destroy"] as const).map(
+    (control): RetryCase => ({
+      name: `${control}() cancels an output-idle retry`,
+      statuses: "S",
+      steps: ["loop", control, "release", 17, "finish"],
+      end: { calls: 1 },
+    }),
+  ),
+  ...(["pause", "stop"] as const).flatMap((control): RetryCase[] => [
+    {
+      name: `retries a one-shot request after ${control}() once Session idle resolves`,
+      statuses: "SP",
+      steps: [control, "request", 17, "finish", { calls: 1 }, "release", 17, "finish"],
+      end: { calls: 2 },
+    },
+    {
+      name: `replaces a cancelled output-idle retry with a fresh request after ${control}()`,
+      statuses: "SP",
+      steps: ["start", "finish", { calls: 1 }, control, "request", "release", 17, "finish"],
+      end: { calls: 2, running: false },
+    },
+  ]),
+])("Session-backed renderer $name", runRetryScenario)
 
 test.each(["pause", "stop"] as const)(
   "an older output-idle wait cannot cancel a newer %s() one-shot",
   async (control) => {
     const { renderer, clock } = createRetryRenderer(true)
-    const idle = deferOutputIdle(renderer)
+    const idle = holdOutputIdle(renderer)
     const callback = Promise.withResolvers<void>()
     let calls = 0
     let callbacks = 0
-    mockNativeRender(renderer, () =>
+    const restore = forceRenderStatus(renderer, () =>
       calls++ < 2 ? NativeSessionRenderStatus.Skipped : NativeSessionRenderStatus.Presented,
     )
+    destroyFns.unshift(restore, idle.restore)
     renderer[control]()
     renderer.setFrameCallback(async () => {
       if (++callbacks === 2) await callback.promise
@@ -1413,13 +1322,13 @@ test.each(["pause", "stop"] as const)(
     expect(calls).toBe(1)
     renderer.intermediateRender()
     expect(callbacks).toBe(2)
-    await idle.resolve()
+    await idle.release()
     clock.advance(17)
     idle.hold()
     callback.resolve()
     await finishRender(renderer)
     expect(calls).toBe(2)
-    await idle.resolve()
+    await idle.release()
     clock.advance(17)
     await finishRender(renderer)
     expect(calls).toBe(3)
@@ -1429,39 +1338,22 @@ test.each(["pause", "stop"] as const)(
 
 test("cancelling a skipped frame with an immediate rerender request resolves idle", async () => {
   const { renderer } = createRetryRenderer(true)
-  const idle = deferOutputIdle(renderer)
+  const idle = holdOutputIdle(renderer)
   renderer.setFrameCallback(async () => {
     renderer.requestRender()
   })
-  mockNativeRender(renderer, () => NativeSessionRenderStatus.Skipped)
+  destroyFns.unshift(
+    forceRenderStatus(renderer, () => NativeSessionRenderStatus.Skipped),
+    idle.restore,
+  )
 
   await (renderer as any).loop()
   renderer.pause()
   const idlePromise = renderer.idle()
 
-  await idle.resolve()
+  await idle.release()
   await idlePromise
   expect(renderer.getSchedulerState().hasScheduledRender).toBe(false)
-})
-
-test("running renderer resumes after Session idle", async () => {
-  const { renderer, clock } = createRetryRenderer(true)
-  const idle = deferOutputIdle(renderer)
-  let calls = 0
-  mockNativeRender(renderer, () =>
-    calls++ === 0 ? NativeSessionRenderStatus.Skipped : NativeSessionRenderStatus.Presented,
-  )
-
-  renderer.start()
-  await finishRender(renderer)
-  expect(calls).toBe(1)
-  await idle.resolve()
-  clock.advance(17)
-
-  await finishRender(renderer)
-  expect(calls).toBe(2)
-  expect(renderer.isRunning).toBe(true)
-  renderer.pause()
 })
 
 test("omitting stdin/stdout uses process streams", async () => {
@@ -1552,13 +1444,13 @@ test("destroy emits shutdown ANSI sequence through the custom Writable", async (
   })
 
   await flushWritable(stdout)
-  stdout.clearWrites()
+  stdout.clear()
 
   renderer.destroy()
 
   await renderer.closed
 
-  const shutdownBytes = stdout.getWrittenBytes().toString("binary")
+  const shutdownBytes = stdout.bytes().toString("binary")
 
   // Shutdown must reach the custom sink before the Session releases output.
   expect(shutdownBytes.length).toBeGreaterThan(0)
@@ -1569,19 +1461,19 @@ test("destroy preserves accepted controls before terminal shutdown while a write
   const stdin = createTestStdin()
   const stdout = createCollectingStdout(80, 24)
   const renderer = await createCliRenderer({ stdin, stdout })
-  destroyFns.push(() => stdout.releaseWrites())
-  stdout.clearWrites()
+  destroyFns.push(() => stdout.release())
+  stdout.clear()
 
-  stdout.holdWrites = true
+  stdout.hold()
   renderer.setTerminalTitle("held-control-1")
   renderer.setTerminalTitle("held-control-2")
-  await waitForHeldOutput(stdout)
+  await settleUntil(() => stdout.pendingWrite)
   renderer.destroy()
 
   expect(renderer.nativeScene.driver.disposed).toBe(false)
-  stdout.releaseWrites()
+  stdout.release()
   await renderer.closed
-  const output = stdout.getWrittenBytes().toString("binary")
+  const output = stdout.bytes().toString("binary")
   expect(output).toContain("\x1b]0;held-control-1\x07")
   expect(output.indexOf("held-control-2")).toBeGreaterThan(output.indexOf("held-control-1"))
   expect(output).toContain("\x1b[?25h")
@@ -1599,23 +1491,68 @@ test("Session idle waits until the Writable callback settles", async () => {
     stdout,
   })
   destroyFns.push(() => {
-    stdout.releaseWrites()
+    stdout.release()
     renderer.destroy()
     return renderer.closed
   })
 
   const driver = renderer.nativeScene.driver
-  stdout.holdWrites = true
+  stdout.hold()
   renderer.setTerminalTitle("slow-write")
   let settled = false
   const idle = driver.idle().then(() => {
     settled = true
   })
-  await waitForHeldOutput(stdout)
+  await settleUntil(() => stdout.pendingWrite)
   expect(settled).toBe(false)
-  stdout.releaseWrites()
+  stdout.release()
   await idle
   expect(settled).toBe(true)
+})
+
+test("raw output pressure delays a running renderer until the Session drains", async () => {
+  const stdout = new RecordingWriteStream(40, 4)
+  const clock = new ManualClock()
+  const driver = new NativeSession(stdout, {
+    output: { chunkSize: 64, spanCapacity: 8, maxBytes: 512n, controlCapacity: 0 },
+  })
+  const renderer = new CliRenderer(createTestStdin(), stdout as unknown as NodeJS.WriteStream, 40, 4, {
+    nativeSession: driver,
+    clock,
+    remote: true,
+    screenMode: "main-screen",
+    consoleMode: "disabled",
+    exitSignals: [],
+  })
+  renderers.add(renderer)
+  const errors = spyOn(console, "error").mockImplementation(() => {})
+  destroyFns.push(() => {
+    errors.mockRestore()
+    stdout.release()
+  })
+  let frames = 0
+  renderer.on(CliRenderEvents.FRAME, () => frames++)
+
+  // Raw output leaves less free capacity than the frame needs, but the frame fits an empty queue.
+  stdout.hold()
+  expect(driver.write(new Uint8Array(400).fill(0x41))).toBe(true)
+  await settleUntil(() => stdout.pendingWrite)
+  renderer.root.add(new TextRenderable(renderer, { content: `${"x".repeat(40)}\n${"y".repeat(40)}` }))
+  renderer.start()
+  clock.advance(40)
+  await settle(16)
+  expect(frames).toBe(0)
+
+  stdout.release()
+  for (let frame = 0; frame < 4; frame++) {
+    await settle(16)
+    clock.advance(40)
+  }
+  await settle(16)
+  expect(frames).toBeGreaterThanOrEqual(3)
+  expect(renderer.isRunning).toBe(true)
+  expect(renderer.getSchedulerState().hasScheduledRender).toBe(true)
+  expect(errors).not.toHaveBeenCalled()
 })
 
 test("split-footer custom stdout publishes captured commits after in-flight controls", async () => {
@@ -1627,7 +1564,7 @@ test("split-footer custom stdout publishes captured commits after in-flight cont
     consoleMode: "disabled",
   })
   destroyFns.push(() => {
-    stdout.releaseWrites()
+    stdout.release()
     renderer.destroy()
     return renderer.closed
   })
@@ -1636,48 +1573,23 @@ test("split-footer custom stdout publishes captured commits after in-flight cont
   await renderer.setupTerminal()
   renderer.stdin.emit("data", Buffer.from("\x1b[1;1R"))
   await renderer.idle()
-  stdout.clearWrites()
-  stdout.holdWrites = true
+  stdout.clear()
+  stdout.hold()
   renderer.setTerminalTitle("held-control")
-  await waitForHeldOutput(stdout)
+  await settleUntil(() => stdout.pendingWrite)
 
   stdout.write("captured\n")
   const rendering = (renderer as any).loop()
   expect((renderer as any).externalOutputQueue.size).toBe(1)
 
-  stdout.releaseWrites()
+  stdout.release()
   await rendering
   await renderer.idle()
   await driver.idle()
   expect((renderer as any).externalOutputQueue.size).toBe(0)
-  const output = stdout.getWrittenBytes().toString("binary")
+  const output = stdout.bytes().toString("binary")
   expect(output).toContain("held-control")
   expect(output.indexOf("captured")).toBeGreaterThan(output.indexOf("held-control"))
-})
-
-test("split-footer custom stdout retains captured commits when native skips", async () => {
-  const stdin = createTestStdin()
-  const stdout = createCollectingStdout(80, 24)
-
-  const renderer = new CliRenderer(stdin, stdout, 80, 24, {
-    screenMode: "split-footer",
-    consoleMode: "disabled",
-  })
-  destroyFns.push(() => renderer.destroy())
-  renderers.add(renderer)
-
-  const restoreNative = forceNativeSplitSkip(renderer)
-
-  stdout.write("captured-while-native-skipped\n")
-  const rendererAny = renderer as any
-  expect(rendererAny.externalOutputQueue.size).toBeGreaterThan(0)
-
-  try {
-    await rendererAny.loop()
-    expect(rendererAny.externalOutputQueue.size).toBeGreaterThan(0)
-  } finally {
-    restoreNative()
-  }
 })
 
 test("split-footer coalesces render requests while waiting for Session idle", async () => {
@@ -1692,150 +1604,87 @@ test("split-footer coalesces render requests while waiting for Session idle", as
   destroyFns.push(() => renderer.destroy())
   renderers.add(renderer)
 
-  const idle = deferOutputIdle(renderer)
+  const idle = holdOutputIdle(renderer)
+  destroyFns.unshift(idle.restore)
   const rendererAny = renderer as any
-  const driver = renderer.nativeScene.driver
-  const originalCommit = driver.renderSplit.bind(driver)
-  let calls = 0
-  driver.renderSplit = (...args) => {
-    calls++
-    return calls === 1 ? consumeNativeSplit(renderer, NativeSessionRenderStatus.Skipped) : originalCommit(...args)
-  }
-  destroyFns.unshift(() => {
-    driver.renderSplit = originalCommit
-  })
+  const batches = rejectNextSplit(renderer, NativeSessionRenderStatus.Skipped)
 
   stdout.write("first\n")
   clock.advance(17)
   await finishRender(renderer)
-  expect(calls).toBe(1)
+  expect(batches).toHaveLength(1)
 
   stdout.write("second\n")
   renderer.requestRender()
   clock.advance(100)
   await finishRender(renderer)
 
-  expect(calls).toBe(1)
+  expect(batches).toHaveLength(1)
   expect(idle.calls()).toBe(1)
   expect(rendererAny.externalOutputQueue.size).toBe(2)
 
-  await idle.resolve()
+  await idle.release()
   clock.advance(0)
   await finishRender(renderer)
 
-  expect(calls).toBe(2)
+  expect(batches).toHaveLength(2)
   expect(rendererAny.externalOutputQueue.size).toBe(0)
   expect(
     stdout
-      .getWrittenBytes()
+      .bytes()
       .toString()
       .match(/first|second/g),
   ).toEqual(["first", "second"])
 })
 
-test("split-footer custom stdout retains captured commits when native fails and retries", async () => {
-  const stdin = createTestStdin()
-  const stdout = createCollectingStdout(80, 24)
+test.each(
+  (["Skipped", "Failed"] as const).flatMap((status) =>
+    [1, 2].flatMap((lines) => [false, true].map((memory) => ({ status, lines, memory }))),
+  ),
+)(
+  "split-footer retains captured commits when native returns $status ($lines lines, memory $memory)",
+  async ({ status, lines, memory }) => {
+    const clock = new ManualClock()
+    const stdout = memory ? createPlainStdout() : createCollectingStdout(80, 24)
+    const renderer = new CliRenderer(createTestStdin(), stdout, 80, 24, {
+      screenMode: "split-footer",
+      consoleMode: "disabled",
+      bufferedOutput: memory ? "memory" : undefined,
+      clock,
+    })
+    clock.runAll()
+    renderers.add(renderer)
+    const errors = spyOn(console, "error").mockImplementation(() => {})
+    destroyFns.unshift(() => errors.mockRestore())
+    const batches = rejectNextSplit(renderer, NativeSessionRenderStatus[status])
+    const queue = (renderer as any).externalOutputQueue
+    const captured = Array.from({ length: lines }, (_, line) => `captured-${line}`)
 
-  const renderer = new CliRenderer(stdin, stdout, 80, 24, {
-    screenMode: "split-footer",
-    consoleMode: "disabled",
-  })
-  destroyFns.push(() => renderer.destroy())
-  renderers.add(renderer)
+    stdout.write(captured.map((line) => `${line}\n`).join(""))
+    expect(queue.size).toBe(lines)
+    await (renderer as any).loop()
+    // The whole batch stays queued, and nothing reaches the terminal.
+    expect(batches).toEqual([lines])
+    expect(queue.size).toBe(lines)
+    if (!memory) expect((stdout as CollectingStdout).bytes()).toHaveLength(0)
 
-  const rendererAny = renderer as any
-  const commit = spyOn(renderer.nativeScene.driver, "renderSplit").mockImplementation(() =>
-    consumeNativeSplit(renderer, NativeSessionRenderStatus.Failed),
-  )
-
-  stdout.write("captured-while-native-failed\n")
-  expect(rendererAny.externalOutputQueue.size).toBeGreaterThan(0)
-
-  try {
-    await rendererAny.loop()
-    expect(commit).toHaveBeenCalledTimes(1)
-    expect(rendererAny.externalOutputQueue.size).toBeGreaterThan(0)
-  } finally {
-    commit.mockRestore()
-  }
-
-  await rendererAny.loop()
-  await renderer.nativeScene.driver.idle()
-
-  expect(rendererAny.externalOutputQueue.size).toBe(0)
-  expect(stdout.getWrittenBytes().toString("binary")).toContain("captured-while-native-failed")
-})
-
-test("split-footer retains the whole batch when native publication fails", async () => {
-  const clock = new ManualClock()
-  const stdout = createCollectingStdout(80, 24)
-  const renderer = new CliRenderer(createTestStdin(), stdout, 80, 24, {
-    screenMode: "split-footer",
-    consoleMode: "disabled",
-    clock,
-  })
-  clock.runAll()
-  destroyFns.push(() => renderer.destroy())
-  renderers.add(renderer)
-
-  const rendererAny = renderer as any
-  const commit = spyOn(renderer.nativeScene.driver, "renderSplit").mockImplementation(() =>
-    consumeNativeSplit(renderer, NativeSessionRenderStatus.Failed),
-  )
-
-  stdout.write("first\nsecond\n")
-  expect(rendererAny.externalOutputQueue.size).toBe(2)
-
-  try {
-    await rendererAny.loop()
-    expect(commit).toHaveBeenCalledTimes(1)
-    expect(commit.mock.calls[0][1]).toHaveLength(2)
-    expect(rendererAny.externalOutputQueue.size).toBe(2)
-    expect(stdout.getWrittenBytes()).toHaveLength(0)
-  } finally {
-    commit.mockRestore()
-  }
-
-  await rendererAny.loop()
-  await renderer.nativeScene.driver.idle()
-  const output = stdout.getWrittenBytes().toString("binary")
-  expect(output.match(/first|second/g)).toEqual(["first", "second"])
-})
-
-test("split-footer native failure in memory output does not schedule automatic retries", async () => {
-  const clock = new ManualClock()
-  const stdout = createPlainStdout()
-  const renderer = new CliRenderer(createTestStdin(), stdout, 80, 24, {
-    screenMode: "split-footer",
-    consoleMode: "disabled",
-    bufferedOutput: "memory",
-    clock,
-  })
-  clock.runAll()
-  destroyFns.push(() => renderer.destroy())
-  renderers.add(renderer)
-
-  const rendererAny = renderer as any
-  const originalError = console.error
-  const commit = spyOn(renderer.nativeScene.driver, "renderSplit").mockImplementation(() =>
-    consumeNativeSplit(renderer, NativeSessionRenderStatus.Failed),
-  )
-  console.error = () => {}
-  destroyFns.unshift(() => {
-    commit.mockRestore()
-    console.error = originalError
-  })
-
-  stdout.write("captured-while-native-failed\n")
-  await rendererAny.loop()
-  expect(commit).toHaveBeenCalledTimes(1)
-
-  clock.advance(1000)
-
-  expect(commit).toHaveBeenCalledTimes(1)
-  expect(renderer.getSchedulerState().hasScheduledRender).toBe(false)
-})
+    // A skip retries after Session idle; a failure waits for a later render request.
+    await renderer.nativeScene.driver.idle()
+    await settle()
+    clock.advance(1000)
+    await finishRender(renderer)
+    if (status === "Failed") {
+      expect(batches).toEqual([lines])
+      expect(renderer.getSchedulerState().hasScheduledRender).toBe(false)
+      await (renderer as any).loop()
+    }
+    await renderer.nativeScene.driver.idle()
+    expect(batches).toEqual([lines, lines])
+    expect(queue.size).toBe(0)
+    if (!memory) expect((stdout as CollectingStdout).text().match(/captured-\d/g)).toEqual(captured)
+    expect(errors).toHaveBeenCalledTimes(status === "Failed" ? 1 : 0)
+  },
+)
 
 test("capture-to-passthrough flushes queued split-footer commits after held Session output", async () => {
   const stdin = createTestStdin()
@@ -1846,7 +1695,7 @@ test("capture-to-passthrough flushes queued split-footer commits after held Sess
     consoleMode: "disabled",
   })
   destroyFns.push(() => {
-    stdout.releaseWrites()
+    stdout.release()
     renderer.destroy()
     return renderer.closed
   })
@@ -1854,19 +1703,19 @@ test("capture-to-passthrough flushes queued split-footer commits after held Sess
   await renderer.setupTerminal()
   renderer.stdin.emit("data", Buffer.from("\x1b[1;1R"))
   await renderer.idle()
-  stdout.holdWrites = true
+  stdout.hold()
   renderer.setTerminalTitle("held-before-mode-switch")
-  await waitForHeldOutput(stdout)
+  await settleUntil(() => stdout.pendingWrite)
 
   stdout.write("captured-before-mode-switch\n")
   expect((renderer as any).externalOutputQueue.size).toBeGreaterThan(0)
 
   renderer.externalOutputMode = "passthrough"
-  stdout.releaseWrites()
+  stdout.release()
   await renderer.idle()
   await renderer.nativeScene.driver.idle()
 
-  expect(stdout.getWrittenBytes().toString("binary")).toContain("captured-before-mode-switch")
+  expect(stdout.bytes().toString("binary")).toContain("captured-before-mode-switch")
   expect((renderer as any).externalOutputQueue.size).toBe(0)
   expect(renderer.externalOutputMode).toBe("passthrough")
 })
@@ -1880,7 +1729,7 @@ test("destroy resolves idle waiters when an output-idle render was scheduled", a
     consoleMode: "disabled",
   })
   destroyFns.push(() => {
-    stdout.releaseWrites()
+    stdout.release()
     renderer.destroy()
     return renderer.closed
   })
@@ -1888,18 +1737,14 @@ test("destroy resolves idle waiters when an output-idle render was scheduled", a
   await renderer.setupTerminal()
   renderer.stdin.emit("data", Buffer.from("\x1b[1;1R"))
   await renderer.idle()
-  stdout.holdWrites = true
+  stdout.hold()
   renderer.setTerminalTitle("held-before-idle")
-  await waitForHeldOutput(stdout)
+  await settleUntil(() => stdout.pendingWrite)
 
-  const restoreNative = forceNativeSplitSkip(renderer)
+  rejectNextSplit(renderer, NativeSessionRenderStatus.Skipped)
   stdout.write("captured-before-idle-destroy\n")
-  try {
-    await (renderer as any).loop()
-    expect((renderer as any).outputIdleRenderScheduled).toBe(true)
-  } finally {
-    restoreNative()
-  }
+  await (renderer as any).loop()
+  expect((renderer as any).outputIdleRenderScheduled).toBe(true)
 
   let idleResolved = false
   const idlePromise = renderer.idle().then(() => {
@@ -1907,12 +1752,12 @@ test("destroy resolves idle waiters when an output-idle render was scheduled", a
   })
 
   renderer.destroy()
-  stdout.releaseWrites()
+  stdout.release()
   await idlePromise
   expect(idleResolved).toBe(true)
 
   await renderer.closed
-  expect(stdout.getWrittenBytes().toString("binary")).toContain("captured-before-idle-destroy")
+  expect(stdout.bytes().toString("binary")).toContain("captured-before-idle-destroy")
   expect((renderer as any).externalOutputQueue.size).toBe(0)
 })
 
@@ -1925,7 +1770,7 @@ test("suspend resolves idle waiters when an output-idle render was scheduled", a
     consoleMode: "disabled",
   })
   destroyFns.push(() => {
-    stdout.releaseWrites()
+    stdout.release()
     renderer.destroy()
     return renderer.closed
   })
@@ -1934,18 +1779,14 @@ test("suspend resolves idle waiters when an output-idle render was scheduled", a
   renderer.stdin.emit("data", Buffer.from("\x1b[1;1R"))
   await renderer.idle()
   await renderer.nativeScene.driver.idle()
-  stdout.holdWrites = true
+  stdout.hold()
   renderer.setTerminalTitle("held-before-suspend")
-  await waitForHeldOutput(stdout)
+  await settleUntil(() => stdout.pendingWrite)
 
-  const restoreNative = forceNativeSplitSkip(renderer)
+  rejectNextSplit(renderer, NativeSessionRenderStatus.Skipped)
   stdout.write("captured-before-suspend\n")
-  try {
-    await (renderer as any).loop()
-    expect((renderer as any).outputIdleRenderScheduled).toBe(true)
-  } finally {
-    restoreNative()
-  }
+  await (renderer as any).loop()
+  expect((renderer as any).outputIdleRenderScheduled).toBe(true)
 
   let idleResolved = false
   const idlePromise = renderer.idle().then(() => {
@@ -1953,95 +1794,41 @@ test("suspend resolves idle waiters when an output-idle render was scheduled", a
   })
 
   const suspension = renderer.suspend()
-  stdout.releaseWrites()
+  stdout.release()
   await suspension
   await idlePromise
   expect(idleResolved).toBe(true)
-  const output = stdout.getWrittenBytes().toString("binary")
+  const output = stdout.bytes().toString("binary")
   expect(output.lastIndexOf("\x1b[?25h")).toBeGreaterThan(output.indexOf("captured-before-suspend"))
 })
 
 // ---- Dimension fallback ----
 
-test("dimensions: stdout.columns wins over config.width", async () => {
-  const stdin = createTestStdin()
-  const stdout = createCollectingStdout(120, 30)
-
+test.each([
+  { name: "stdout.columns wins over config.width", columns: [120, 30], config: [40, 10], expected: [120, 30] },
+  { name: "config.width used when stdout lacks columns", columns: null, config: [100, 50], expected: [100, 50] },
+  {
+    name: "config.width used when stdout reports zero columns",
+    columns: [0, 0],
+    config: [100, 50],
+    expected: [100, 50],
+  },
+  { name: "defaults 80x24 when no stdout columns and no config", columns: null, config: null, expected: [80, 24] },
+  {
+    name: "defaults 80x24 when stdout reports zero columns and no config",
+    columns: [0, 0],
+    config: null,
+    expected: [80, 24],
+  },
+])("dimensions: $name", async ({ columns, config, expected }) => {
   const renderer = await createCliRenderer({
-    stdin,
-    stdout,
-    width: 40,
-    height: 10,
+    stdin: createTestStdin(),
+    stdout: columns ? createCollectingStdout(columns[0], columns[1]) : createPlainStdout(),
+    ...(config && { width: config[0], height: config[1] }),
     bufferedOutput: "memory",
   })
   destroyFns.push(() => renderer.destroy())
-
-  expect(renderer.width).toBe(120)
-  expect(renderer.height).toBe(30)
-})
-
-test("dimensions: config.width used when stdout lacks columns", async () => {
-  const stdin = createTestStdin()
-  const stdout = createPlainStdout()
-
-  const renderer = await createCliRenderer({
-    stdin,
-    stdout,
-    width: 100,
-    height: 50,
-    bufferedOutput: "memory",
-  })
-  destroyFns.push(() => renderer.destroy())
-
-  expect(renderer.width).toBe(100)
-  expect(renderer.height).toBe(50)
-})
-
-test("dimensions: config.width used when stdout reports zero columns", async () => {
-  const stdin = createTestStdin()
-  const stdout = createCollectingStdout(0, 0)
-
-  const renderer = await createCliRenderer({
-    stdin,
-    stdout,
-    width: 100,
-    height: 50,
-    bufferedOutput: "memory",
-  })
-  destroyFns.push(() => renderer.destroy())
-
-  expect(renderer.width).toBe(100)
-  expect(renderer.height).toBe(50)
-})
-
-test("dimensions: defaults 80x24 when no stdout columns and no config", async () => {
-  const stdin = createTestStdin()
-  const stdout = createPlainStdout()
-
-  const renderer = await createCliRenderer({
-    stdin,
-    stdout,
-    bufferedOutput: "memory",
-  })
-  destroyFns.push(() => renderer.destroy())
-
-  expect(renderer.width).toBe(80)
-  expect(renderer.height).toBe(24)
-})
-
-test("dimensions: defaults 80x24 when stdout reports zero columns and no config", async () => {
-  const stdin = createTestStdin()
-  const stdout = createCollectingStdout(0, 0)
-
-  const renderer = await createCliRenderer({
-    stdin,
-    stdout,
-    bufferedOutput: "memory",
-  })
-  destroyFns.push(() => renderer.destroy())
-
-  expect(renderer.width).toBe(80)
-  expect(renderer.height).toBe(24)
+  expect([renderer.width, renderer.height]).toEqual(expected)
 })
 
 // ---- Duck-typed stream capabilities ----
