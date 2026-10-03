@@ -116,203 +116,85 @@ describe("native Yoga API coverage", () => {
     config.free()
   })
 
-  test("covers enum, float, value, and edge style round trips", () => {
+  test("style setters round-trip through their getters and reset with undefined like Yoga JS", () => {
     const node = Yoga.Node.create()
-
-    node.setDirection(Direction.RTL)
-    expect(node.getDirection()).toBe(Direction.RTL)
-
-    node.setFlexDirection(FlexDirection.RowReverse)
-    expect(node.getFlexDirection()).toBe(FlexDirection.RowReverse)
-
-    node.setJustifyContent(Justify.SpaceEvenly)
-    expect(node.getJustifyContent()).toBe(Justify.SpaceEvenly)
-
-    node.setAlignContent(Align.SpaceAround)
-    expect(node.getAlignContent()).toBe(Align.SpaceAround)
-
-    node.setAlignItems(Align.Center)
-    expect(node.getAlignItems()).toBe(Align.Center)
-
-    node.setAlignSelf(Align.FlexEnd)
-    expect(node.getAlignSelf()).toBe(Align.FlexEnd)
-
-    node.setPositionType(PositionType.Absolute)
-    expect(node.getPositionType()).toBe(PositionType.Absolute)
-
-    node.setFlexWrap(Wrap.WrapReverse)
-    expect(node.getFlexWrap()).toBe(Wrap.WrapReverse)
-
-    node.setOverflow(Overflow.Scroll)
-    expect(node.getOverflow()).toBe(Overflow.Scroll)
-
-    node.setDisplay(Display.None)
-    expect(node.getDisplay()).toBe(Display.None)
-    node.setDisplay(Display.Contents)
-    expect(node.getDisplay()).toBe(Display.Contents)
-
-    node.setBoxSizing(BoxSizing.ContentBox)
-    expect(node.getBoxSizing()).toBe(BoxSizing.ContentBox)
-
-    node.setFlex(2)
-    expect(node.getFlex()).toBe(2)
-
-    node.setFlexGrow(3)
-    expect(node.getFlexGrow()).toBe(3)
-
-    node.setFlexShrink(4)
-    expect(node.getFlexShrink()).toBe(4)
-
-    node.setAspectRatio(1.5)
-    expect(node.getAspectRatio()).toBe(1.5)
-
-    node.setFlexBasis(10)
-    expectYogaValue(node.getFlexBasis(), Unit.Point, 10)
-    node.setFlexBasisPercent(25)
-    expectYogaValue(node.getFlexBasis(), Unit.Percent, 25)
-    node.setFlexBasisAuto()
-    expectYogaValue(node.getFlexBasis(), Unit.Auto)
-
-    node.setWidth(100)
-    expectYogaValue(node.getWidth(), Unit.Point, 100)
-    node.setWidthPercent(50)
-    expectYogaValue(node.getWidth(), Unit.Percent, 50)
-    node.setWidthAuto()
-    expectYogaValue(node.getWidth(), Unit.Auto)
-
-    node.setHeight({ unit: Unit.Point, value: 80 })
-    expectYogaValue(node.getHeight(), Unit.Point, 80)
-    node.setHeightPercent(40)
-    expectYogaValue(node.getHeight(), Unit.Percent, 40)
-    node.setHeightAuto()
-    expectYogaValue(node.getHeight(), Unit.Auto)
-
-    node.setMinWidth(11)
-    expectYogaValue(node.getMinWidth(), Unit.Point, 11)
-    node.setMinWidthPercent(12)
-    expectYogaValue(node.getMinWidth(), Unit.Percent, 12)
-
-    node.setMinHeight(13)
-    expectYogaValue(node.getMinHeight(), Unit.Point, 13)
-    node.setMinHeightPercent(14)
-    expectYogaValue(node.getMinHeight(), Unit.Percent, 14)
-
-    node.setMaxWidth(15)
-    expectYogaValue(node.getMaxWidth(), Unit.Point, 15)
-    node.setMaxWidthPercent(16)
-    expectYogaValue(node.getMaxWidth(), Unit.Percent, 16)
-
-    node.setMaxHeight(17)
-    expectYogaValue(node.getMaxHeight(), Unit.Point, 17)
-    node.setMaxHeightPercent(18)
-    expectYogaValue(node.getMaxHeight(), Unit.Percent, 18)
-
-    node.setMargin(Edge.Left, 19)
-    expectYogaValue(node.getMargin(Edge.Left), Unit.Point, 19)
-    node.setMarginPercent(Edge.Left, 20)
-    expectYogaValue(node.getMargin(Edge.Left), Unit.Percent, 20)
-    node.setMarginAuto(Edge.Left)
-    expectYogaValue(node.getMargin(Edge.Left), Unit.Auto)
-
-    node.setPadding(Edge.Top, 21)
-    expectYogaValue(node.getPadding(Edge.Top), Unit.Point, 21)
-    node.setPaddingPercent(Edge.Top, 22)
-    expectYogaValue(node.getPadding(Edge.Top), Unit.Percent, 22)
-
-    node.setPosition(Edge.Right, 23)
-    expectYogaValue(node.getPosition(Edge.Right), Unit.Point, 23)
-    node.setPositionPercent(Edge.Right, 24)
-    expectYogaValue(node.getPosition(Edge.Right), Unit.Percent, 24)
-    node.setPositionAuto(Edge.Right)
-    expectYogaValue(node.getPosition(Edge.Right), Unit.Auto)
-
-    node.setGap(Gutter.Column, 25)
-    expectYogaValue(node.getGap(Gutter.Column), Unit.Point, 25)
-    node.setGapPercent(Gutter.Column, 26)
-    expect(node.getGap(Gutter.Column).value).toBe(26)
-
-    node.setBorder(Edge.Bottom, 27)
-    expect(node.getBorder(Edge.Bottom)).toBe(27)
-
-    node.setIsReferenceBaseline(true)
-    expect(node.isReferenceBaseline()).toBe(true)
-
-    node.setAlwaysFormsContainingBlock(true)
-    expect(node.getAlwaysFormsContainingBlock()).toBe(true)
-    node.setAlwaysFormsContainingBlock(false)
-    expect(node.getAlwaysFormsContainingBlock()).toBe(false)
-
-    node.free()
-  })
-
-  test("resets optional style values with undefined like Yoga JS", () => {
-    const node = Yoga.Node.create()
-    const expectUndefinedValue = (value: Value): void => expectYogaValue(value, Unit.Undefined, NaN)
-
-    node.setFlex(2)
-    node.setFlex(undefined)
-    expect(Number.isNaN(node.getFlex())).toBe(true)
-
-    node.setFlexGrow(3)
-    node.setFlexGrow(undefined)
-    expect(node.getFlexGrow()).toBe(0)
-
-    node.setFlexShrink(4)
-    node.setFlexShrink(undefined)
-    expect(node.getFlexShrink()).toBe(0)
-
-    node.setAspectRatio(1.5)
-    node.setAspectRatio(undefined)
-    expect(Number.isNaN(node.getAspectRatio())).toBe(true)
-
-    node.setFlexBasis(10)
-    node.setFlexBasis(undefined)
-    expectUndefinedValue(node.getFlexBasis())
-
-    node.setWidth(100)
-    node.setWidth(undefined)
-    expectUndefinedValue(node.getWidth())
-
-    node.setHeightPercent(40)
-    node.setHeightPercent(undefined)
-    expectUndefinedValue(node.getHeight())
-
-    node.setMinWidth(11)
-    node.setMinWidth(undefined)
-    expectUndefinedValue(node.getMinWidth())
-
-    node.setMinHeightPercent(14)
-    node.setMinHeightPercent(undefined)
-    expectUndefinedValue(node.getMinHeight())
-
-    node.setMaxWidth(15)
-    node.setMaxWidth(undefined)
-    expectUndefinedValue(node.getMaxWidth())
-
-    node.setMaxHeightPercent(18)
-    node.setMaxHeightPercent(undefined)
-    expectUndefinedValue(node.getMaxHeight())
-
-    node.setMargin(Edge.Left, 19)
-    node.setMargin(Edge.Left, undefined)
-    expectUndefinedValue(node.getMargin(Edge.Left))
-
-    node.setPaddingPercent(Edge.Top, 22)
-    node.setPaddingPercent(Edge.Top, undefined)
-    expectUndefinedValue(node.getPadding(Edge.Top))
-
-    node.setPosition(Edge.Right, 23)
-    node.setPosition(Edge.Right, undefined)
-    expectUndefinedValue(node.getPosition(Edge.Right))
-
-    node.setGap(Gutter.Column, 25)
-    node.setGap(Gutter.Column, undefined)
-    expectUndefinedValue(node.getGap(Gutter.Column))
-
-    node.setBorder(Edge.Bottom, 27)
-    node.setBorder(Edge.Bottom, undefined)
-    expect(Number.isNaN(node.getBorder(Edge.Bottom))).toBe(true)
-
+    const point = (value: number) => ({ unit: Unit.Point, value })
+    const percent = (value: number) => ({ unit: Unit.Percent, value })
+    const auto = { unit: Unit.Auto, value: NaN }
+    const unset = { unit: Unit.Undefined, value: NaN }
+    // Rows run in order on one node; a row that writes undefined resets the value set by the row above it.
+    const rows: [set: () => void, get: () => unknown, expected: unknown][] = [
+      [() => node.setDirection(Direction.RTL), () => node.getDirection(), Direction.RTL],
+      [() => node.setFlexDirection(FlexDirection.RowReverse), () => node.getFlexDirection(), FlexDirection.RowReverse],
+      [() => node.setJustifyContent(Justify.SpaceEvenly), () => node.getJustifyContent(), Justify.SpaceEvenly],
+      [() => node.setAlignContent(Align.SpaceAround), () => node.getAlignContent(), Align.SpaceAround],
+      [() => node.setAlignItems(Align.Center), () => node.getAlignItems(), Align.Center],
+      [() => node.setAlignSelf(Align.FlexEnd), () => node.getAlignSelf(), Align.FlexEnd],
+      [() => node.setPositionType(PositionType.Absolute), () => node.getPositionType(), PositionType.Absolute],
+      [() => node.setFlexWrap(Wrap.WrapReverse), () => node.getFlexWrap(), Wrap.WrapReverse],
+      [() => node.setOverflow(Overflow.Scroll), () => node.getOverflow(), Overflow.Scroll],
+      [() => node.setDisplay(Display.None), () => node.getDisplay(), Display.None],
+      [() => node.setDisplay(Display.Contents), () => node.getDisplay(), Display.Contents],
+      [() => node.setBoxSizing(BoxSizing.ContentBox), () => node.getBoxSizing(), BoxSizing.ContentBox],
+      [() => node.setFlex(2), () => node.getFlex(), 2],
+      [() => node.setFlex(undefined), () => node.getFlex(), NaN],
+      [() => node.setFlexGrow(3), () => node.getFlexGrow(), 3],
+      [() => node.setFlexGrow(undefined), () => node.getFlexGrow(), 0],
+      [() => node.setFlexShrink(4), () => node.getFlexShrink(), 4],
+      [() => node.setFlexShrink(undefined), () => node.getFlexShrink(), 0],
+      [() => node.setAspectRatio(1.5), () => node.getAspectRatio(), 1.5],
+      [() => node.setAspectRatio(undefined), () => node.getAspectRatio(), NaN],
+      [() => node.setFlexBasis(10), () => node.getFlexBasis(), point(10)],
+      [() => node.setFlexBasis(undefined), () => node.getFlexBasis(), unset],
+      [() => node.setFlexBasisPercent(25), () => node.getFlexBasis(), percent(25)],
+      [() => node.setFlexBasisAuto(), () => node.getFlexBasis(), auto],
+      [() => node.setWidth(100), () => node.getWidth(), point(100)],
+      [() => node.setWidth(undefined), () => node.getWidth(), unset],
+      [() => node.setWidthPercent(50), () => node.getWidth(), percent(50)],
+      [() => node.setWidthAuto(), () => node.getWidth(), auto],
+      [() => node.setHeight({ unit: Unit.Point, value: 80 }), () => node.getHeight(), point(80)],
+      [() => node.setHeightPercent(40), () => node.getHeight(), percent(40)],
+      [() => node.setHeightPercent(undefined), () => node.getHeight(), unset],
+      [() => node.setHeightAuto(), () => node.getHeight(), auto],
+      [() => node.setMinWidth(11), () => node.getMinWidth(), point(11)],
+      [() => node.setMinWidth(undefined), () => node.getMinWidth(), unset],
+      [() => node.setMinWidthPercent(12), () => node.getMinWidth(), percent(12)],
+      [() => node.setMinHeight(13), () => node.getMinHeight(), point(13)],
+      [() => node.setMinHeightPercent(14), () => node.getMinHeight(), percent(14)],
+      [() => node.setMinHeightPercent(undefined), () => node.getMinHeight(), unset],
+      [() => node.setMaxWidth(15), () => node.getMaxWidth(), point(15)],
+      [() => node.setMaxWidth(undefined), () => node.getMaxWidth(), unset],
+      [() => node.setMaxWidthPercent(16), () => node.getMaxWidth(), percent(16)],
+      [() => node.setMaxHeight(17), () => node.getMaxHeight(), point(17)],
+      [() => node.setMaxHeightPercent(18), () => node.getMaxHeight(), percent(18)],
+      [() => node.setMaxHeightPercent(undefined), () => node.getMaxHeight(), unset],
+      [() => node.setMargin(Edge.Left, 19), () => node.getMargin(Edge.Left), point(19)],
+      [() => node.setMargin(Edge.Left, undefined), () => node.getMargin(Edge.Left), unset],
+      [() => node.setMarginPercent(Edge.Left, 20), () => node.getMargin(Edge.Left), percent(20)],
+      [() => node.setMarginAuto(Edge.Left), () => node.getMargin(Edge.Left), auto],
+      [() => node.setPadding(Edge.Top, 21), () => node.getPadding(Edge.Top), point(21)],
+      [() => node.setPaddingPercent(Edge.Top, 22), () => node.getPadding(Edge.Top), percent(22)],
+      [() => node.setPaddingPercent(Edge.Top, undefined), () => node.getPadding(Edge.Top), unset],
+      [() => node.setPosition(Edge.Right, 23), () => node.getPosition(Edge.Right), point(23)],
+      [() => node.setPosition(Edge.Right, undefined), () => node.getPosition(Edge.Right), unset],
+      [() => node.setPositionPercent(Edge.Right, 24), () => node.getPosition(Edge.Right), percent(24)],
+      [() => node.setPositionAuto(Edge.Right), () => node.getPosition(Edge.Right), auto],
+      [() => node.setGap(Gutter.Column, 25), () => node.getGap(Gutter.Column), point(25)],
+      [() => node.setGap(Gutter.Column, undefined), () => node.getGap(Gutter.Column), unset],
+      // YGNodeStyleGetGap returns a float, so a percent gap reads back as points (as on main).
+      [() => node.setGapPercent(Gutter.Column, 26), () => node.getGap(Gutter.Column), point(26)],
+      [() => node.setBorder(Edge.Bottom, 27), () => node.getBorder(Edge.Bottom), 27],
+      [() => node.setBorder(Edge.Bottom, undefined), () => node.getBorder(Edge.Bottom), NaN],
+      [() => node.setIsReferenceBaseline(true), () => node.isReferenceBaseline(), true],
+      [() => node.setAlwaysFormsContainingBlock(true), () => node.getAlwaysFormsContainingBlock(), true],
+      [() => node.setAlwaysFormsContainingBlock(false), () => node.getAlwaysFormsContainingBlock(), false],
+    ]
+    const show = (value: unknown) => JSON.stringify(value, (_, item) => (Number.isNaN(item) ? "NaN" : item))
+    const results = rows.map(([set, get]) => {
+      set()
+      return [String(set), show(get())]
+    })
+    expect(results).toEqual(rows.map(([set, , expected]) => [String(set), show(expected)]))
     node.free()
   })
 
