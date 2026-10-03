@@ -1,10 +1,11 @@
 import { afterAll, beforeAll, expect, test } from "bun:test"
 import { KeyEvent } from "../lib/KeyHandler.js"
+import { CliRenderEvents } from "../renderer.js"
 import { ManualClock } from "../testing/manual-clock.js"
 import { createTestRenderer, type TestRendererSetup } from "../testing/test-renderer.js"
 import { BoxRenderable } from "./Box.js"
 import { FrameBufferRenderable } from "./FrameBuffer.js"
-import { ScrollBarRenderable } from "./ScrollBar.js"
+import { ArrowRenderable, ScrollBarRenderable } from "./ScrollBar.js"
 import { ScrollBoxRenderable } from "./ScrollBox.js"
 import { SelectRenderable } from "./Select.js"
 import { TabSelectRenderable } from "./TabSelect.js"
@@ -187,6 +188,23 @@ test.each(scrolling)("ScrollBox %s", async (_, options, steps, expected) => {
   }
   expect(trace.join(" ")).toBe(expected)
   scroll.destroyRecursively()
+})
+
+// As on `main`, controls and graphemes longer than a cell holds are accepted when set and skipped when drawn.
+test("box titles and arrow characters accept any text", async () => {
+  const text = `x\ny\x1b\te${"\u0301".repeat(64)}`
+  const errors: unknown[] = []
+  renderer.on(CliRenderEvents.RENDER_ERROR, ({ error }) => errors.push(error))
+  const box = new BoxRenderable(renderer, { border: true, width: 12, height: 3, bottomTitle: text })
+  const arrow = new ArrowRenderable(renderer, { direction: "up", arrowChars: { up: text } })
+  renderer.root.add(box)
+  renderer.root.add(arrow)
+  box.title = text
+  arrow.arrowChars = { up: text.slice(1) }
+  await setup.renderOnce()
+  expect(errors).toEqual([])
+  box.destroy()
+  arrow.destroy()
 })
 
 // The setters are covered by renderable-nullish-props.test.ts; these are the methods and the instance accessor.
