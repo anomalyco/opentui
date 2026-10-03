@@ -56,51 +56,29 @@ test "Session controls gate inactive phases and reject malformed or over-limit i
         .{ .title = "\xc2\x9b" },
         .{ .title = "\xff" },
         .{ .title = &long_title },
-        .{ .capability_response = &long_response },
-        .{ .capability_response = "" },
-        .{ .capability_response = "tmux" },
-        .{ .capability_response = "\x1bP>|tmux 3.5a" },
-        .{ .capability_response = "\x1bP>|kitty\x00\x1b\\" },
-        .{ .capability_response = "\x1bP1+r4d73=zz\x1b\\" },
-        .{ .capability_response = "\x1bP1+rtmux\x1b\\" },
-        .{ .capability_response = "\x1b]1337;Capabilities=No" },
-        .{ .capability_response = "\x1b_Gi=31337;OK\x07" },
-        .{ .capability_response = "\x1b_Gtmux;OK\x1b\\" },
-        .{ .capability_response = "\x1b_Gi=31337oops;OK\x1b\\" },
-        .{ .capability_response = "\x1b[?0u\x1b[?2004;2" },
-        .{ .capability_response = "\x1b[?0uX" },
-        .{ .capability_response = "\x1b[?32u" },
-        .{ .capability_response = "\x1b[?1004;5$y" },
-        .{ .capability_response = "\x1b[?11016;2$y" },
-        .{ .capability_response = "\x1b[0;1R" },
-        .{ .capability_response = "\x1b[65536;1R" },
-        // One row per reply rule: introducer, DCS, OSC, APC, then CSI forms.
-        .{ .capability_response = "\x1bOP" },
-        .{ .capability_response = "\x1bP>|\x1b\\" },
-        .{ .capability_response = "\x1bP>|term\xc3\xa9\x1b\\" },
-        .{ .capability_response = "\x1bP2+r4d73\x1b\\" },
-        .{ .capability_response = "\x1bP1+r4d73=78=78\x1b\\" },
-        .{ .capability_response = "\x1bP1+r4d7=78\x1b\\" },
-        .{ .capability_response = "\x1bP1+r=78\x1b\\" },
-        .{ .capability_response = "\x1b]11;rgb:0/0/0\x07" },
-        .{ .capability_response = "\x1b_Gi=1\x1b\\" },
-        .{ .capability_response = "\x1b_G;OK\x1b\\" },
-        .{ .capability_response = "\x1b_Gi=1;\x1b\\" },
-        .{ .capability_response = "\x1b_Gi=4294967296;OK\x1b\\" },
-        .{ .capability_response = "\x1b[1016;2$y" },
-        .{ .capability_response = "\x1b[?1016;2y" },
-        .{ .capability_response = "\x1b[?1016;2;1$y" },
-        .{ .capability_response = "\x1b[?1049;2$y" },
-        .{ .capability_response = "\x1b[1u" },
-        .{ .capability_response = "\x1b[?1;2u" },
-        .{ .capability_response = "\x1b[62c" },
-        .{ .capability_response = "\x1b[5n" },
         .{ .kitty_keyboard_flags = 32 },
         .{ .kitty_keyboard_flags = 255 },
+    };
+    // One reply per rule: framing, DCS, OSC, APC, then each CSI form.
+    const replies = [_][]const u8{
+        &long_response,          "",                       "tmux",                        "\x1bOP",
+        "\x1bP>|tmux 3.5a",      "\x1bP>|kitty\x00\x1b\\", "\x1bP>|\x1b\\",               "\x1bP>|term\xc3\xa9\x1b\\",
+        "\x1bP1+r4d73=zz\x1b\\", "\x1bP1+rtmux\x1b\\",     "\x1bP2+r4d73\x1b\\",          "\x1bP1+r4d73=78=78\x1b\\",
+        "\x1bP1+r4d7=78\x1b\\",  "\x1bP1+r=78\x1b\\",      "\x1b]1337;Capabilities=No",   "\x1b]11;rgb:0/0/0\x07",
+        "\x1b_Gi=31337;OK\x07",  "\x1b_Gtmux;OK\x1b\\",    "\x1b_Gi=31337oops;OK\x1b\\",  "\x1b_Gi=1\x1b\\",
+        "\x1b_G;OK\x1b\\",       "\x1b_Gi=1;\x1b\\",       "\x1b_Gi=4294967296;OK\x1b\\", "\x1b[?0u\x1b[?2004;2",
+        "\x1b[?0uX",             "\x1b[5n",                "\x1b[?1004;5$y",              "\x1b[?11016;2$y",
+        "\x1b[1016;2$y",         "\x1b[?1016;2y",          "\x1b[?1016;2;1$y",            "\x1b[?1049;2$y",
+        "\x1b[?32u",             "\x1b[1u",                "\x1b[?1;2u",                  "\x1b[0;1R",
+        "\x1b[65536;1R",         "\x1b[62c",
     };
     const before = f.snapshot();
     for (invalid) |command| {
         try testing.expectError(error.InvalidOptions, f.value.control(command));
+        try testing.expectEqualDeep(before, f.snapshot());
+    }
+    for (replies) |reply| {
+        try testing.expectError(error.InvalidOptions, f.value.control(.{ .capability_response = reply }));
         try testing.expectEqualDeep(before, f.snapshot());
     }
     try f.value.control(commands[0]);
