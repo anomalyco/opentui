@@ -214,10 +214,14 @@ test "Scene flush partial masks preserve omitted values and reject invalid paylo
     expected.opacity = opacity;
     expected.translateX = translation;
     try testing.expectEqualDeep(expected, try fixture.paint());
-    for ([_]u32{ c.OT_SCENE_PROPERTY_SHOULD_FILL, c.OT_SCENE_PROPERTY_FOCUSABLE, c.OT_SCENE_PROPERTY_BORDER_STYLE }) |field| {
+    // The high bits make a negative opacity, out-of-range scalars, and invalid color channels.
+    for ([_]u32{
+        c.OT_SCENE_PROPERTY_OPACITY,      c.OT_SCENE_PROPERTY_BORDER,       c.OT_SCENE_PROPERTY_SHOULD_FILL, c.OT_SCENE_PROPERTY_BACKGROUND,
+        c.OT_SCENE_PROPERTY_BORDER_COLOR, c.OT_SCENE_PROPERTY_BORDER_STYLE, c.OT_SCENE_PROPERTY_FOCUSABLE,   c.OT_SCENE_PROPERTY_FOCUSED_BORDER_COLOR,
+    }) |field| {
         var invalid: std.Io.Writer.Allocating = .init(testing.allocator);
         defer invalid.deinit();
-        const value: u32 = 99;
+        const value: u32 = 0x8000_8000;
         try append(&invalid, fixture.node, field, std.mem.asBytes(&value));
         try testing.expectEqual(c.OT_INVALID_ARGUMENT, fixture.flush(invalid.written(), &applied));
         try testing.expectEqual(@as(u32, 0), applied);
