@@ -3351,7 +3351,7 @@ test "Context ABI Session environment attachment decodes interleaved entries and
 }
 
 test "Context ABI Session setup and capability records validate before changing state" {
-    const context = try createTestContext(.{ .object_capacity = 2, .render_cells_max = 16 });
+    const context = try createTestContext(.{ .object_capacity = 3, .render_cells_max = 16 });
     defer std.testing.expectEqual(c.OT_OK, ot_context_destroy(context)) catch unreachable;
     const unattached = handleToC(try context.core.createSession(.{}));
     const session = try context.core.createSession(.{ .chunk_size = 4096, .chunk_count = 3, .span_capacity = 3, .control_capacity = 4096 });
@@ -3391,6 +3391,13 @@ test "Context ABI Session setup and capability records validate before changing 
     try std.testing.expectEqual(@as(u32, 1), capabilities.term_from_xtversion);
     try std.testing.expect(std.mem.allEqual(u8, capabilities.term_name[capabilities.term_name_len..], 0));
 
+    const source = try context.core.createBuffer(2, 1, .{});
+    try (try context.core.raw().getBuffer(source)).drawTextChecked("ok", 0, 0, .{ 255, 255, 255, 255 }, null, 0);
+    const source_id = handleToC(source);
+    try std.testing.expectEqual(c.OT_INVALID_ARGUMENT, ot_session_draw_buffer(context, &id, null, 0, 0));
+    try std.testing.expectEqual(c.OT_OK, ot_session_draw_buffer(context, &id, &source_id, 2, 1));
+    try std.testing.expectEqual(@as(u32, 'o'), cli.getNextBuffer().get(2, 1).?.char);
+
     const valid: c.ot_session_terminal_options = .{
         .struct_size = @sizeOf(c.ot_session_terminal_options),
         .abi_version = c.OT_CONTEXT_ABI_VERSION,
@@ -3412,6 +3419,7 @@ test "Context ABI Session setup and capability records validate before changing 
     try std.testing.expect(cli.useAlternateScreen and cli.clearOnShutdown);
     try std.testing.expect(value.lifecycle.mouse and !value.lifecycle.mouse_movement);
     try std.testing.expectEqual(@as(u8, 31), cli.terminal.opts.kitty_keyboard_flags);
+    try std.testing.expectEqual(c.OT_INVALID_PHASE, ot_session_draw_buffer(context, &id, &source_id, 0, 0));
     value.cancel();
 }
 
