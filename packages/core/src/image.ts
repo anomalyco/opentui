@@ -590,15 +590,11 @@ export class NativeImage {
       if (!current) this.contextImages.delete(owner)
       else if (current === context) return { ...identity, context }
     }
-    const handle = lib.importContextImage(context, source)
-    try {
-      const { context: _, ...identity } = handle
-      this.contextImages.set(new WeakRef(context), identity)
-      return handle
-    } catch (error) {
-      lib.destroyContextImage(context, handle)
-      throw error
-    }
+    const result = lib.imageClone(source, context)
+    checkStatus(result.status)
+    const { context: _, ...identity } = result.handle!
+    this.contextImages.set(new WeakRef(context), identity)
+    return result.handle!
   }
 
   private releaseContextImages(): void {

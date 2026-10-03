@@ -5574,12 +5574,6 @@ export class FFIRenderLib {
     )
   }
 
-  public importContextImage(context: NativeContextHandle, source: ImageHandle): ContextImageHandle {
-    const result = this.imageClone(source, context)
-    if (!result.handle) throw new Error(`Image clone failed: ${result.status}`)
-    return result.handle
-  }
-
   public destroyContextImage(context: NativeContextHandle, image: ContextImageHandle): void {
     this.destroyContextObject(context, image, "ot_image_destroy")
   }
@@ -8103,7 +8097,6 @@ export class FFIRenderLib {
     output: Uint8Array,
   ): NativeClipboardCopyStatus {
     const capacity = toSafeFFIU32Length(output.byteLength, "clipboard MIME output")
-    void output.buffer
     return this.opentui.symbols.ot_clipboard_operation_result_mime_copy(
       ...this.clipboardOperationArgs(operation),
       output,
@@ -8123,7 +8116,6 @@ export class FFIRenderLib {
     output: Uint8Array,
   ): NativeClipboardCopyStatus {
     const capacity = toSafeFFIU32Length(output.byteLength, "clipboard data output")
-    void output.buffer
     return this.opentui.symbols.ot_clipboard_operation_result_data_copy(
       ...this.clipboardOperationArgs(operation),
       output,
@@ -8155,7 +8147,6 @@ export class FFIRenderLib {
     output: Uint8Array,
   ): NativeClipboardCopyStatus {
     const capacity = toSafeFFIU32Length(output.byteLength, "clipboard diagnostic output")
-    void output.buffer
     return this.opentui.symbols.ot_clipboard_operation_result_diagnostic_copy(
       ...this.clipboardOperationArgs(operation),
       output,
@@ -8688,7 +8679,6 @@ export class FFIRenderLib {
 
   public audioWriteStream(engine: AudioEngineHandle, streamId: number, data: Uint8Array): number {
     const dataLength = toSafeFFIU32Length(data.byteLength, "Audio stream data length")
-    void data.buffer
     return this.opentui.symbols.audioWriteStream(this.audioContext(engine), streamId, data, dataLength)
   }
 
