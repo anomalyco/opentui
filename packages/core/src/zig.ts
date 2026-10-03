@@ -6678,12 +6678,6 @@ export class FFIRenderLib {
     )
     const flags = output[layout.fields.flags.offset / 4]
     const flag = (bit: number) => (flags & bit) !== 0
-    // An out-of-range code means the native ABI does not match this decoder.
-    const decode = <T extends string>(names: Readonly<Record<number, T>>, field: keyof typeof layout.fields): T => {
-      const name = names[output[layout.fields[field].offset / 4]]
-      if (name === undefined) throw new Error(`Unknown native Session capability ${field}`)
-      return name
-    }
     const bytes = new Uint8Array(output.buffer)
     return {
       kitty_keyboard: flag(nativeConstants.OT_CAP_KITTY_KEYBOARD),
@@ -6704,17 +6698,11 @@ export class FFIRenderLib {
       explicit_cursor_positioning: flag(nativeConstants.OT_CAP_EXPLICIT_CURSOR_POSITIONING),
       remote: flag(nativeConstants.OT_CAP_REMOTE),
       unicode: widthMethodFromCode(output[layout.fields.width_method.offset / 4]),
-      multiplexer: decode(["none", "tmux", "zellij", "screen", "unknown"] as const, "multiplexer"),
-      image_protocol: decode(
-        {
-          [nativeConstants.OT_IMAGE_PROTOCOL_AUTO]: "auto",
-          [nativeConstants.OT_IMAGE_PROTOCOL_KITTY]: "kitty",
-          [nativeConstants.OT_IMAGE_PROTOCOL_SIXEL]: "sixel",
-          [nativeConstants.OT_IMAGE_PROTOCOL_BLOCKS]: "blocks",
-        } as const,
-        "image_protocol",
-      ),
-      osc52_support: decode(["unknown", "supported", "unsupported"] as const, "osc52_support"),
+      multiplexer: (["none", "tmux", "zellij", "screen", "unknown"] as const)[
+        output[layout.fields.multiplexer.offset / 4]
+      ],
+      image_protocol: (["auto", "kitty", "sixel", "blocks"] as const)[output[layout.fields.image_protocol.offset / 4]],
+      osc52_support: (["unknown", "supported", "unsupported"] as const)[output[layout.fields.osc52_support.offset / 4]],
       kittyKeyboardFlags: output[layout.fields.kitty_keyboard_flags.offset / 4],
       terminal: {
         name: this.decoder.decode(
