@@ -201,7 +201,7 @@ const throwsAfterDestroy: Record<string, string[]> = {
     "viewportCulling",
   ], // U22
   SliderRenderable: ["backgroundColor", "foregroundColor", "max", "min", "value", "viewPortSize"], // U22
-  CodeRenderable: ["scrollX", "scrollY"], // U23
+  CodeRenderable: ["scrollX", "scrollY"], // U20 (TextBufferRenderable setters)
   MarkdownRenderable: ["internalBlockMode", "renderNode"], // U23
   TextBufferRenderable: ["scrollX", "scrollY"], // U20
   TextRenderable: ["content", "scrollX", "scrollY"], // U20
