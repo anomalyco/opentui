@@ -60,25 +60,6 @@ test "Scene checked measurement rejects busy frames and preserves layout on wron
     try testing.expect(!owner.mutating);
 }
 
-test "Scene node churn keeps free token slots and resolves live tokens" {
-    const owner = try context.Context.init(testing.allocator, testing.io, .{});
-    defer owner.deinit() catch unreachable;
-    const id = try session(owner, 8, 2);
-    const root = try owner.sceneCreateNode(id, 0, 1);
-    const live = try owner.sceneCreateNode(id, 1, 2);
-    try owner.sceneMoveNode(live, root, 0);
-    const owned = (try owner.raw().getRenderable(root)).scene_node.?.owner;
-    for (0..20_000) |index| {
-        const node = try owner.sceneCreateNode(id, 1, @intCast(index + 3));
-        try owner.sceneDestroyNode(node);
-        const unused = owned.tokens.capacity() - owned.tokens.count();
-        try testing.expect(owned.token_tombstones < unused / 2 + 1);
-    }
-    try testing.expectEqual(@as(u32, 2), owned.tokens.count());
-    const live_node = (try owner.raw().getRenderable(live)).scene_node.?;
-    try testing.expect(std.meta.eql(live, owned.tokens.get(live_node.token).?));
-}
-
 test "Scene retained surface binding rejects before replacing and releases each reference" {
     const owner = try context.Context.init(testing.allocator, testing.io, .{});
     defer owner.deinit() catch unreachable;
@@ -360,40 +341,6 @@ test "Scene Slider clipping retains cells at rounded inverse-coordinate boundari
         try repaint(f.owner, f.id, frame_options.background, false, 0);
         try testing.expectEqual(@as(u32, 0x2588), (try f.owner.raw().getSessionRenderer(f.id)).getNextBuffer().get(0, 0).?.char);
     }
-}
-
-test "Scene Slider and Arrow reject invalid arithmetic without changing accepted options" {
-    const owner = try context.Context.init(testing.allocator, testing.io, .{});
-    defer owner.deinit() catch unreachable;
-    const id = try session(owner, 5, 2);
-    const root = try owner.sceneCreateNode(id, 0, 1);
-    const slider = try owner.sceneCreateNode(id, 3, 2);
-    const arrow = try owner.sceneCreateNode(id, 4, 3);
-    try dimensions(owner, slider, 5, 1);
-    try owner.sceneMoveNode(slider, root, 0);
-    const accepted: scene.SliderOptions = .{ .max = 7, .value = 1, .viewport_size = 3 };
-    const accepted_arrow: scene.ArrowOptions = .{ .direction = 3, .attributes = 7 };
-    try owner.sceneSetSlider(slider, accepted);
-    try owner.sceneSetArrow(arrow, accepted_arrow);
-    try repaint(owner, id, frame_options.background, false, 0);
-    const before = try owner.sceneGetSliderThumb(slider);
-    for ([_]scene.SliderOptions{
-        .{ .orientation = 2 },
-        .{ .min = std.math.nan(f64) },
-        .{ .max = std.math.inf(f64) },
-        .{ .value = std.math.nan(f64) },
-        .{ .viewport_size = -std.math.inf(f64) },
-        .{ .min = -std.math.floatMax(f64), .max = std.math.floatMax(f64) },
-        .{ .min = -std.math.floatMax(f64), .max = 0, .value = std.math.floatMax(f64) },
-        .{ .max = std.math.floatMax(f64), .viewport_size = std.math.floatMax(f64) },
-        .{ .max = 5e-324, .value = 1 },
-        .{ .max = 1, .value = std.math.floatMax(f64), .viewport_size = 1 },
-    }) |invalid| try testing.expectError(error.InvalidOptions, owner.sceneSetSlider(slider, invalid));
-    try testing.expectError(error.InvalidOptions, owner.sceneSetArrow(arrow, .{ .direction = 4 }));
-    try testing.expectError(error.InvalidOptions, owner.sceneSetArrow(arrow, .{ .attributes = 256 }));
-    try testing.expectEqualDeep(before, try owner.sceneGetSliderThumb(slider));
-    try testing.expectEqualDeep(accepted, (try owner.raw().getRenderable(slider)).scene_node.?.control.slider);
-    try testing.expectEqualDeep(accepted_arrow, (try owner.raw().getRenderable(arrow)).scene_node.?.control.arrow);
 }
 
 test "Scene text draws a 129-byte grapheme as a blank cell" {

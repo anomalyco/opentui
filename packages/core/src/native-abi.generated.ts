@@ -1,7 +1,7 @@
 // Generated from packages/native/include/opentui.h and scripts/native-abi-pointers.ts.
 // Run `bun run generate:abi` in packages/core. Do not edit.
 // Inspect audit input: bun scripts/native-abi.ts --audit
-// ABI audit SHA-256: 9b5f6ab950095d8f1f822a429002f47498f54556e242177b2c380d46461c8a4f
+// ABI audit SHA-256: b9090afb9e7bb3f237579ed8cc68ab98e6120f3598b4db16baa6eda7542dc54c
 
 export const nativeSymbols = {
   ot_scene_set_hooks: { args: ["ptr", "buffer", "buffer"], returns: "i32" },
@@ -23,7 +23,6 @@ export const nativeSymbols = {
   ot_scene_flush: { args: ["ptr", "ptr", "u32", "buffer"], returns: "i32" },
   ot_scene_set_surface: { args: ["ptr", "buffer", "ptr"], returns: "i32" },
   ot_scene_set_box_details: { args: ["ptr", "buffer", "buffer", "ptr", "u32", "ptr", "u32"], returns: "i32" },
-  ot_scene_set_box_border_style: { args: ["ptr", "buffer", "u32", "u32"], returns: "i32" },
   ot_scene_set_viewport: { args: ["ptr", "buffer", "ptr"], returns: "i32" },
   ot_scene_set_focus: { args: ["ptr", "buffer", "u32"], returns: "i32" },
   ot_scene_set_slider: { args: ["ptr", "buffer", "buffer"], returns: "i32" },

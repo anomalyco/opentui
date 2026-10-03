@@ -13,6 +13,7 @@ const options: scene.FrameOptions = .{
     .max_host_requests = 64,
 };
 const custom = [11]u32{ 'A', 'B', 'C', 'D', '-', '|', '+', '+', '+', '+', '+' };
+const indexed = @import("../ansi.zig").indexedColor(42, 0, 200, 0);
 
 const Fixture = struct { session: context.Handle, root: context.Handle, box: context.Handle };
 
@@ -59,33 +60,24 @@ test "Scene box details rejects invalid replacement before publication" {
     try expectRow((try owner.raw().getSessionRenderer(fixture.session)).getNextBuffer(), 0, "A-old------B");
 }
 
-test "Scene box details allocation failure preserves old titles and releases replacements" {
-    var failures: usize = 0;
-    for (0..8) |offset| {
-        var failing = testing.FailingAllocator.init(testing.allocator, .{});
-        const owner = try context.Context.init(failing.allocator(), testing.io, .{});
-        defer owner.deinit() catch unreachable;
-        const fixture = try setup(owner);
-        try owner.sceneSetBoxDetails(fixture.box, .{ .title = "old", .bottom_title = "old", .custom_border_chars = custom });
-        failing.fail_index = failing.alloc_index + offset;
-        const result = owner.sceneSetBoxDetails(fixture.box, .{ .title = "new", .bottom_title = "new", .custom_border_chars = custom });
-        failing.fail_index = std.math.maxInt(usize);
-        if (result) |_| break else |err| {
-            try testing.expectEqual(error.OutOfMemory, err);
-            failures += 1;
-            try repaint(owner, fixture.session, options.background, true, 0);
-            const target = (try owner.raw().getSessionRenderer(fixture.session)).getNextBuffer();
-            try expectRow(target, 0, "A-old------B");
-            try expectRow(target, 2, "C-old------D");
-        }
-        failing.fail_index = failing.alloc_index;
-        try owner.sceneSetBoxDetails(fixture.box, .{});
-        try owner.sceneDestroyNode(fixture.box);
-    }
-    try testing.expect(failures > 0 and failures < 8);
+fn replaceTitles(allocator: std.mem.Allocator) !void {
+    const owner = try context.Context.init(allocator, testing.io, .{});
+    defer owner.deinit() catch unreachable;
+    const fixture = try setup(owner);
+    try owner.sceneSetBoxDetails(fixture.box, .{ .title = "old", .bottom_title = "old", .custom_border_chars = custom });
+    const details = (try owner.raw().getRenderable(fixture.box)).scene_node.?.control.box.?;
+    owner.sceneSetBoxDetails(fixture.box, .{ .title = "new", .bottom_title = "new", .custom_border_chars = custom }) catch |err| {
+        try testing.expectEqualStrings("old", details.title);
+        try testing.expectEqualStrings("old", details.bottom_title);
+        return err;
+    };
 }
 
-test "Scene box details replaced during a record batch paint live and destroyed boxes own nothing" {
+test "Scene box details allocation failure preserves old titles and releases replacements" {
+    try testing.checkAllAllocationFailures(testing.allocator, replaceTitles, .{});
+}
+
+test "Scene box details and paint replaced during a record batch paint live and destroyed boxes own nothing" {
     for (0..4) |exit| {
         const owner = try context.Context.init(testing.allocator, testing.io, .{});
         defer owner.deinit() catch unreachable;
@@ -97,6 +89,7 @@ test "Scene box details replaced during a record batch paint live and destroyed 
         var top = "new".*;
         var bottom = "end".*;
         try owner.sceneSetBoxDetails(fixture.box, .{ .title = &top, .bottom_title = &bottom, .custom_border_chars = custom });
+        try owner.scenePatchPaint(fixture.box, @import("context_abi_c").OT_SCENE_PROPERTY_BACKGROUND, .{ .background = indexed });
         @memset(&top, 'x');
         @memset(&bottom, 'x');
         if (exit != 3) try owner.sceneDestroyNode(fixture.box);
@@ -115,6 +108,7 @@ test "Scene box details replaced during a record batch paint live and destroyed 
         const target = (try owner.raw().getSessionRenderer(fixture.session)).getNextBuffer();
         try expectRow(target, 0, "A-new------B");
         try expectRow(target, 2, "C-end------D");
+        try testing.expectEqual(indexed, target.get(1, 1).?.bg);
     }
 }
 

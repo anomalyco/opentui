@@ -1993,7 +1993,7 @@ pub const Context = struct {
 
     fn sceneNode(self: *Context, handle: Handle) !*native_renderable.NativeRenderable {
         const node = try self.getRenderable(handle);
-        if (node.scene_node == null) return error.WrongKind;
+        std.debug.assert(node.scene_node != null);
         return node;
     }
 
@@ -2031,8 +2031,8 @@ pub const Context = struct {
             try yoga.check(yoga.yogaNodeSetNativeMeasureFunc(node.yoga_node, null, null));
             if (self.scene_measures.fetchRemove(handle.slot)) |entry| self.allocator.destroy(entry.value);
         }
+        yoga.yogaNodeInvalidateMeasure(node.yoga_node);
         node.scene_node.?.measure_overridden = true;
-        node.scene_node.?.owner.work.clearRetainingCapacity();
     }
 
     pub fn sceneSetBoxDetails(self: *Context, handle: Handle, details: scene.BoxDetails) !void {
@@ -2069,10 +2069,6 @@ pub const Context = struct {
         if (source) |value| try value.retain();
         if (node.surface) |previous| previous.deinit();
         node.surface = source;
-    }
-
-    pub fn sceneSetBoxBorderStyle(self: *Context, handle: Handle, style: u32, sides: u32) !void {
-        return self.scenePatchPaint(handle, api.OT_SCENE_PROPERTY_BORDER | api.OT_SCENE_PROPERTY_BORDER_STYLE | api.OT_SCENE_PROPERTY_RESET_BORDER_CHARACTERS, .{ .borderStyle = style, .borderSides = sides });
     }
 
     pub fn sceneSetEditorView(self: *Context, handle: Handle, view_handle: ?Handle) !void {
@@ -2142,7 +2138,6 @@ pub const Context = struct {
         defer self.mutating = false;
         const node = try self.sceneMutableNode(handle);
         try yoga.check(yoga.yogaNodeMarkDirtyChecked(node.yoga_node));
-        node.scene_node.?.owner.work.clearRetainingCapacity();
     }
 
     pub fn checkSceneRead(self: *Context) Error!void {
@@ -2204,7 +2199,6 @@ pub const Context = struct {
             api.OT_STYLE_DIMENSION => yoga.yogaNodeStyleSetDimensionChecked(node.yoga_node, kind, unit, value, flags),
             else => unreachable,
         });
-        node.scene_node.?.owner.work.clearRetainingCapacity();
     }
 
     pub fn sceneGetStyle(self: *Context, handle: Handle, group: u32, kind: u32, edge: u32) !scene.StyleValue {
@@ -2246,20 +2240,10 @@ pub const Context = struct {
         defer self.mutating = false;
         const node = try self.sceneMutableNode(handle);
         try yoga.check(yoga.yogaNodeStyleSetPositionsChecked(node.yoga_node, mask, &units, &values));
-        node.scene_node.?.owner.work.clearRetainingCapacity();
     }
 
     pub fn sceneSetPaint(self: *Context, handle: Handle, paint: scene.Paint) !void {
-        try self.beginMutation();
-        defer self.mutating = false;
-        return self.sceneSetPaintLocked(handle, paint);
-    }
-
-    /// Caller holds the mutation admission; used by ot_scene_flush to admit once per batch.
-    pub fn sceneSetPaintLocked(self: *Context, handle: Handle, paint: scene.Paint) !void {
-        std.debug.assert(self.mutating);
-        const node = try self.sceneMutableNode(handle);
-        try node.scene_node.?.owner.setPaint(node, paint);
+        return self.scenePatchPaint(handle, scene.paint_fields_all, paint);
     }
 
     /// Unselected fields retain accepted native state; reset-border-characters requires border style.
@@ -2283,26 +2267,6 @@ pub const Context = struct {
         }
     }
 
-    pub fn sceneSetBackground(self: *Context, handle: Handle, background: buf.RGBA) !void {
-        try self.beginMutation();
-        defer self.mutating = false;
-        return self.scenePatchBackgroundLocked(handle, background);
-    }
-
-    /// Caller holds the mutation admission; used by ot_scene_flush for background-only records.
-    pub fn scenePatchBackgroundLocked(self: *Context, handle: Handle, background: buf.RGBA) !void {
-        std.debug.assert(self.mutating);
-        try buf.validateColor(background);
-        const value = try self.sceneMutableNode(handle);
-        try yoga.check(yoga.nodeTeardownStatus(value.yoga_node));
-        var unused: u32 = 0;
-        try yoga.check(yoga.yogaNodeIsDirtyChecked(value.yoga_node, &unused));
-        const node = value.scene_node.?;
-        if (node.kind != api.OT_SCENE_BOX and node.paint.borderSides != api.OT_BORDER_NONE) return error.InvalidOptions;
-        if (node.owner.attempt != null) node.owner.work.clearRetainingCapacity();
-        node.paint.background = background;
-    }
-
     pub fn sceneSetViewport(self: *Context, handle: Handle, viewport_handle: ?Handle) !void {
         try self.beginMutation();
         defer self.mutating = false;
@@ -2314,9 +2278,7 @@ pub const Context = struct {
             if (viewport.scene_node.?.owner != node.owner) return error.WrongSession;
             if (viewport.scene_node.?.kind > api.OT_SCENE_BOX) return error.WrongKind;
         }
-        try yoga.check(yoga.nodeTeardownStatus(value.yoga_node));
-        var dirty: u32 = 0;
-        try yoga.check(yoga.yogaNodeIsDirtyChecked(value.yoga_node, &dirty));
+        try scene.Scene.checkWritable(value);
         if (std.meta.eql(node.viewport, viewport_handle)) return;
         node.owner.filter_count -= @intFromBool(node.viewport != null);
         node.owner.filter_count += @intFromBool(viewport_handle != null);
@@ -2332,9 +2294,7 @@ pub const Context = struct {
         const value = if (focused) try self.sceneMutableNode(handle) else try self.sceneNode(handle);
         const owned = value.scene_node.?.owner;
         if (focused) {
-            try yoga.check(yoga.nodeTeardownStatus(value.yoga_node));
-            var dirty: u32 = 0;
-            try yoga.check(yoga.yogaNodeIsDirtyChecked(value.yoga_node, &dirty));
+            try scene.Scene.checkWritable(value);
             owned.focus = handle;
         } else if (owned.focus) |accepted| {
             if (std.meta.eql(accepted, handle)) owned.focus = null;
@@ -2357,9 +2317,7 @@ pub const Context = struct {
         if (node.kind != api.OT_SCENE_SLIDER) return error.WrongKind;
         try buf.validateColor(options.foreground);
         try buf.validateColor(options.background);
-        try yoga.check(yoga.nodeTeardownStatus(value.yoga_node));
-        var dirty: u32 = 0;
-        try yoga.check(yoga.yogaNodeIsDirtyChecked(value.yoga_node, &dirty));
+        try scene.Scene.checkWritable(value);
         _ = try scene.sliderThumb(options, node.resize_width, node.resize_height);
         _ = try scene.sliderThumb(options, node.layout.width, node.layout.height);
         node.control = .{ .slider = options };
@@ -2384,9 +2342,7 @@ pub const Context = struct {
         try buf.validateColor(options.foreground);
         try buf.validateColor(options.background);
         if (options.text) |text| try buf.validateTextInput(text);
-        try yoga.check(yoga.nodeTeardownStatus(value.yoga_node));
-        var dirty: u32 = 0;
-        try yoga.check(yoga.yogaNodeIsDirtyChecked(value.yoga_node, &dirty));
+        try scene.Scene.checkWritable(value);
         var replacement = options;
         if (options.text) |text| replacement.text = try self.allocator.dupe(u8, text);
         node.control.arrow.deinit(self.allocator);

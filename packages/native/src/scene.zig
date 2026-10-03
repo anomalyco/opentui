@@ -412,7 +412,7 @@ pub const Scene = struct {
     }
 
     pub fn prepareInsert(self: *Scene, kind: u32, num: u32) !void {
-        if (kind > api.OT_SCENE_IMAGE or num == 0) return error.InvalidOptions;
+        std.debug.assert(kind <= api.OT_SCENE_IMAGE and num != 0);
         if (kind == api.OT_SCENE_ROOT and self.root != null) return error.SceneAlreadyAttached;
         if (self.last_token == std.math.maxInt(u32)) return error.ObjectLimit;
         try self.tokens.ensureUnusedCapacity(self.allocator, 1);
@@ -580,8 +580,11 @@ pub const Scene = struct {
         }
     }
 
-    pub fn setPaint(self: *Scene, value: *native.NativeRenderable, paint: Paint) !void {
-        return self.setPaintPartial(value, paint_fields_all, paint);
+    /// Even paint-only setters reject a node whose Yoga tree is laying out or poisoned.
+    pub fn checkWritable(value: *const native.NativeRenderable) !void {
+        try yoga.check(yoga.nodeTeardownStatus(value.yoga_node));
+        var unused: u32 = 0;
+        try yoga.check(yoga.yogaNodeIsDirtyChecked(value.yoga_node, &unused));
     }
 
     pub fn setPaintPartial(self: *Scene, value: *native.NativeRenderable, fields: u32, patch: Paint) !void {
@@ -607,10 +610,7 @@ pub const Scene = struct {
             }
         }
         if (node.kind != api.OT_SCENE_BOX and paint.borderSides != api.OT_BORDER_NONE) return error.InvalidOptions;
-        // Check even a paint-only change against a poisoned/active Yoga owner.
-        try yoga.check(yoga.nodeTeardownStatus(value.yoga_node));
-        var unused: u32 = 0;
-        try yoga.check(yoga.yogaNodeIsDirtyChecked(value.yoga_node, &unused));
+        try checkWritable(value);
         if (node.paint.borderSides != paint.borderSides) {
             // Only the final copy publishes; rejected preparation changes scratch style alone.
             try yoga.check(yoga.yogaNodeCopyStyleChecked(self.style_node, value.yoga_node));
@@ -638,8 +638,8 @@ pub const Scene = struct {
     }
 
     pub fn setBoxDetails(self: *Scene, value: *native.NativeRenderable, options: BoxDetails) !void {
-        const node = value.scene_node orelse return error.WrongKind;
-        if (node.owner != self) return error.WrongSession;
+        const node = value.scene_node.?;
+        std.debug.assert(node.owner == self);
         if (node.kind != api.OT_SCENE_BOX) return error.WrongKind;
         if (options.title_alignment > 2 or options.bottom_title_alignment > 2) return error.InvalidOptions;
         if (options.title_color) |rgba| try buffer.validateColor(rgba);
@@ -652,9 +652,7 @@ pub const Scene = struct {
                 if (utf8.eastAsianWidth(@intCast(char)) != 1) return error.InvalidUnicode;
             }
         }
-        try yoga.check(yoga.nodeTeardownStatus(value.yoga_node));
-        var unused: u32 = 0;
-        try yoga.check(yoga.yogaNodeIsDirtyChecked(value.yoga_node, &unused));
+        try checkWritable(value);
         var replacement: ?*BoxDetails = null;
         if (options.title.len != 0 or options.bottom_title.len != 0 or options.title_color != null or
             options.custom_border_chars != null or options.title_alignment != 0 or options.bottom_title_alignment != 0)

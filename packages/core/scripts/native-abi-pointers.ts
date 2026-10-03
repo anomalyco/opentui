@@ -256,7 +256,6 @@ export const nativePointerPolicies = {
   ot_scene_set_paint: { 0: context, 1: buffer, 2: buffer },
   ot_scene_set_surface: { 0: context, 1: buffer, 2: optional },
   ot_scene_set_box_details: { 0: context, 1: buffer, 2: buffer, 3: empty, 5: empty },
-  ot_scene_set_box_border_style: { 0: context, 1: buffer },
   ot_scene_set_slider: { 0: context, 1: buffer, 2: buffer },
   ot_scene_get_slider_thumb: { 0: context, 1: buffer, 2: buffer },
   ot_scene_set_arrow: { 0: context, 1: buffer, 2: buffer, 3: optional },
