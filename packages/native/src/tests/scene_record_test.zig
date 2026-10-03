@@ -125,6 +125,15 @@ fn submit(f: Fixture, request: scene.FrameRequest, recording: *const Recording) 
     return f.owner.sceneFrameStepWithRecording(f.id, request, options, unlimited, recording.view());
 }
 
+/// Submits a recording. A rejected one must leave no attempt, draft, snapshot, or hits; both leave no stack entries.
+fn submitChecked(f: Fixture, request: scene.FrameRequest, recording: *const Recording) !?scene.FrameRequest {
+    const result = submit(f, request, recording) catch null;
+    try testing.expect(f.cli.getNextBuffer().scissor_stack.items.len == 0 and f.cli.getNextBuffer().opacity_stack.items.len == 0);
+    if (result == null) try testing.expect(f.state.attempt == null and f.state.painted == null and f.state.paint_members.items.len == 0);
+    if (result == null) try testing.expect(std.mem.allEqual(u32, f.cli.nextHitGrid, 0));
+    return result;
+}
+
 fn token(f: Fixture, handle: context.Handle) !u32 {
     return (try f.owner.raw().getRenderable(handle)).scene_node.?.token;
 }
@@ -500,11 +509,7 @@ test "Scene record rejects malformed streams before presenting cells" {
     for (&cases, 0..) |*recording, index| {
         const request = try f.step(null, options, c.OT_SCENE_FRAME_RECORD, null);
         if (index == 6) @memset(recording.bytes[recording.len - 4 .. recording.len], 0);
-        try testing.expect(std.meta.isError(submit(f, request, recording)));
-        try testing.expect(f.state.attempt == null and f.state.painted == null);
-        try testing.expectEqual(@as(usize, 0), f.state.paint_members.items.len);
-        try testing.expectEqual(@as(usize, 0), f.cli.getNextBuffer().scissor_stack.items.len);
-        for (f.cli.nextHitGrid) |hit| try testing.expectEqual(@as(u32, 0), hit);
+        try testing.expect(try submitChecked(f, request, recording) == null);
         try testing.expectError(error.StaleFrame, f.owner.sceneFramePaintSlots(f.id, request));
     }
     const request = try f.step(null, options, c.OT_SCENE_FRAME_RECORD, null);
@@ -607,15 +612,9 @@ test "Scene record fails corrupted recordings cleanly and keeps the Session pain
             }
         }
         const request = try f.step(null, options, c.OT_SCENE_FRAME_RECORD, null);
-        if (submit(f, request, &recording)) |done| {
+        if (try submitChecked(f, request, &recording)) |done| {
             try testing.expectEqual(@as(u32, c.OT_SCENE_FRAME_DONE), done.kind);
             try f.owner.sceneFrameCancel(f.id, done.frame_id);
-        } else |_| {
-            try testing.expect(f.state.attempt == null and f.state.painted == null);
-            try testing.expectEqual(@as(usize, 0), f.state.paint_members.items.len);
-            for (f.cli.nextHitGrid) |hit| try testing.expectEqual(@as(u32, 0), hit);
         }
-        try testing.expectEqual(@as(usize, 0), f.cli.getNextBuffer().scissor_stack.items.len);
-        try testing.expectEqual(@as(usize, 0), f.cli.getNextBuffer().opacity_stack.items.len);
     }
 }

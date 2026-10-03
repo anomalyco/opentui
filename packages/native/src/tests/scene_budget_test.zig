@@ -113,8 +113,8 @@ test "Scene work budget hook replies cannot replenish feedback quota or consume 
 const Model = struct {
     const node_max = 16;
     nodes: [node_max]context.Handle = undefined,
-    boxes: [node_max]bool = undefined,
-    alive: [node_max]bool = undefined,
+    // Null once destroyed.
+    kinds: [node_max]?u32 = undefined,
     count: usize = 0,
 
     fn build(self: *Model, f: Fixture, random: std.Random) !void {
@@ -131,8 +131,7 @@ const Model = struct {
         };
         const handle = try f.owner.sceneCreateNode(f.id, kind, @intCast(index + 2));
         self.nodes[index] = handle;
-        self.boxes[index] = kind == c.OT_SCENE_BOX;
-        self.alive[index] = true;
+        self.kinds[index] = kind;
         self.count += 1;
         // Custom nodes take half their parent's width, so resizing the parent resizes them.
         const width: f32 = if (kind == c.OT_SCENE_CUSTOM) 50 else @floatFromInt(1 + random.uintLessThan(u32, 6));
@@ -153,21 +152,14 @@ const Model = struct {
             .borderSides = if (kind == c.OT_SCENE_BOX and random.boolean()) c.OT_BORDER_ALL else 0,
             .background = .{ @intCast(index * 15 + 10), @intCast(250 - index * 15), 0, 255 },
         });
-        var parents: [node_max + 1]context.Handle = undefined;
-        parents[0] = f.root;
-        var parent_count: usize = 1;
-        for (0..index) |candidate| {
-            if (!self.alive[candidate] or !self.boxes[candidate]) continue;
-            parents[parent_count] = self.nodes[candidate];
-            parent_count += 1;
-        }
-        try f.owner.sceneMoveNode(handle, parents[random.uintLessThan(usize, parent_count)], 0);
+        const parent = random.uintLessThan(usize, index + 1);
+        try f.owner.sceneMoveNode(handle, if (parent < index and self.kinds[parent] == c.OT_SCENE_BOX) self.nodes[parent] else f.root, 0);
     }
 
     fn mutate(self: *Model, f: Fixture, random: std.Random) !void {
         const index = random.uintLessThan(usize, self.count);
         const handle = self.nodes[index];
-        if (!self.alive[index]) return;
+        if (self.kinds[index] == null) return;
         switch (random.uintLessThan(u8, 7)) {
             0 => try f.owner.sceneSetStyle(handle, 4, 0, 0, 1, @floatFromInt(1 + random.uintLessThan(u32, 6)), 1),
             1 => try f.owner.scenePatchPaint(handle, c.OT_SCENE_PROPERTY_TRANSLATE_X, .{ .translateX = @floatFromInt(random.uintLessThan(u32, 8)) }),
@@ -176,7 +168,7 @@ const Model = struct {
             4 => try f.owner.sceneMoveNode(handle, if (random.boolean()) f.root else null, 0),
             5 => {
                 try f.owner.sceneDestroyNode(handle);
-                self.alive[index] = false;
+                self.kinds[index] = null;
             },
             else => if (self.count < node_max) try self.add(f, random),
         }
@@ -222,8 +214,8 @@ fn expectBoundedMatchesSynchronous(seed: u64) !void {
     for (0..applied) |_| try models[1].mutate(fixtures[1], mutations[1].random());
     const synchronous = try fixtures[1].drive(null, limits, std.math.maxInt(u32));
     try fixtures[1].expectSameCells(bounded);
-    for (models[0].nodes[0..models[0].count], models[1].nodes[0..models[0].count], models[0].alive[0..models[0].count]) |handle, twin, alive| {
-        if (!alive) continue;
+    for (models[0].nodes[0..models[0].count], models[1].nodes[0..models[0].count], models[0].kinds[0..models[0].count]) |handle, twin, kind| {
+        if (kind == null) continue;
         // Hidden and detached nodes keep stale prepared geometry; only painted members must agree.
         const token = (try bounded.owner.raw().getRenderable(handle)).scene_node.?.token;
         if (std.mem.indexOfScalar(u32, bounded.cli.nextHitGrid, token) == null) continue;
