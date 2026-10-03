@@ -16,7 +16,6 @@ const terminal_transport = @import("context-terminal-abi.zig");
 const output_transport = @import("context-output-abi.zig");
 const image_transport = @import("context-image-abi.zig");
 const clipboard_transport = @import("clipboard-abi.zig");
-pub const ot_edit_buffer_command = editor_transport.ot_edit_buffer_command;
 
 /// Each C Context owns a private allocator. Process allocator stats do not
 /// include Context memory. Test builds back it with std.testing.allocator and
@@ -2876,14 +2875,14 @@ test "Context editor transport commands preserve provider unset and reject reent
     try core.sceneSetEditorView(node, view);
     try core.sceneSetMeasure(node, null);
     try std.testing.expectEqual(c.OT_OK, ot_edit_buffer_set_text(handle, &edit, "ab", 2, 0));
-    try std.testing.expectEqual(c.OT_OK, ot_edit_buffer_command(handle, &edit, c.OT_EDIT_MOVE_RIGHT, 0));
+    try std.testing.expectEqual(c.OT_OK, editor_transport.ot_edit_buffer_command(handle, &edit, c.OT_EDIT_MOVE_RIGHT, 0));
     try std.testing.expectEqual(1, (try core.raw().getEditBuffer(handleFromC(edit))).buffer.getPrimaryCursor().col);
     try std.testing.expect(!try core.sceneHasMeasure(node));
-    try std.testing.expectEqual(c.OT_INVALID_ARGUMENT, ot_edit_buffer_command(handle, &edit, c.OT_EDIT_MOVE_RIGHT, 1));
+    try std.testing.expectEqual(c.OT_INVALID_ARGUMENT, editor_transport.ot_edit_buffer_command(handle, &edit, c.OT_EDIT_MOVE_RIGHT, 1));
     core.mutating = true;
-    try std.testing.expectEqual(c.OT_CONTEXT_BUSY, ot_edit_buffer_command(handle, &edit, c.OT_EDIT_DELETE_FORWARD, 0));
+    try std.testing.expectEqual(c.OT_CONTEXT_BUSY, editor_transport.ot_edit_buffer_command(handle, &edit, c.OT_EDIT_DELETE_FORWARD, 0));
     core.mutating = false;
-    try std.testing.expectEqual(c.OT_OK, ot_edit_buffer_command(handle, &edit, c.OT_EDIT_DELETE_FORWARD, 0));
+    try std.testing.expectEqual(c.OT_OK, editor_transport.ot_edit_buffer_command(handle, &edit, c.OT_EDIT_DELETE_FORWARD, 0));
     var bytes: [8]u8 = undefined;
     var count: u32 = 0;
     try std.testing.expectEqual(c.OT_OK, ot_edit_buffer_get_text(handle, &edit, &bytes, bytes.len, &count));
