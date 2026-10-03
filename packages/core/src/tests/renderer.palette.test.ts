@@ -235,7 +235,10 @@ describe("Palette caching behavior", () => {
       const { renderer, clock, writes } = await createPaletteRenderer()
       const palette = await detectPaletteAndAdvanceClock(renderer, clock, first)
       const state = { writes: writes.length, time: clock.now() }
-      expect({ size: palette.palette.length, status: renderer.paletteDetectionStatus }).toEqual({ size, status: "cached" })
+      expect({ size: palette.palette.length, status: renderer.paletteDetectionStatus }).toEqual({
+        size,
+        status: "cached",
+      })
 
       for (const options of repeats) {
         expect(await detectPaletteAndAdvanceClock(renderer, clock, options)).toBe(palette)
@@ -1135,5 +1138,4 @@ describe("Palette cache with different sizes", () => {
 
     renderer.destroy()
   })
-
 })

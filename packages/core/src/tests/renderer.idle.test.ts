@@ -31,9 +31,17 @@ const scheduledWork: Record<string, { run: (target: TestRenderer) => void; frame
   "no work": { run: () => {}, frames: 0, callbacks: 0 },
   "a cancelled start": { run: (target) => (target.start(), target.pause()), frames: 0, callbacks: 0 },
   "one render request": { run: (target) => target.requestRender(), frames: 1, callbacks: 0 },
-  "coalesced render requests": { run: (target) => (target.requestRender(), target.requestRender()), frames: 1, callbacks: 0 },
+  "coalesced render requests": {
+    run: (target) => (target.requestRender(), target.requestRender()),
+    frames: 1,
+    callbacks: 0,
+  },
   "a paused render request": { run: (target) => (target.pause(), target.requestRender()), frames: 1, callbacks: 0 },
-  "an animation frame": { run: (target) => void target.requestAnimationFrame(() => callbacks++), frames: 1, callbacks: 1 },
+  "an animation frame": {
+    run: (target) => void target.requestAnimationFrame(() => callbacks++),
+    frames: 1,
+    callbacks: 1,
+  },
   "a nested animation frame": {
     run: (target) =>
       void target.requestAnimationFrame(() => {

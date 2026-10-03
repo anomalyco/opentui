@@ -50,7 +50,8 @@ const phases: Record<string, (renderer: CliRenderer, destroy: () => void) => Ren
   "frame callback": (renderer, destroy) => renderer.setFrameCallback(async () => destroy()),
   "post-process": (renderer, destroy) => renderer.addPostProcessFn(destroy),
   requestAnimationFrame: (renderer, destroy) => void renderer.requestAnimationFrame(destroy),
-  renderBefore: (renderer, destroy) => new DestroyingRenderable(renderer, { width: 10, height: 1, renderBefore: destroy }),
+  renderBefore: (renderer, destroy) =>
+    new DestroyingRenderable(renderer, { width: 10, height: 1, renderBefore: destroy }),
   renderAfter: (renderer, destroy) => new BoxRenderable(renderer, { width: 10, height: 1, renderAfter: destroy }),
 }
 
@@ -128,7 +129,12 @@ test("a Session closed by its owner during setup does not report the interruptio
     await closing
     renderer.destroy()
     await renderer.closed
-    expect(logged.mock.calls.flat().map(String).filter((line) => line.includes("interrupted by close"))).toEqual([])
+    expect(
+      logged.mock.calls
+        .flat()
+        .map(String)
+        .filter((line) => line.includes("interrupted by close")),
+    ).toEqual([])
   } finally {
     logged.mockRestore()
   }

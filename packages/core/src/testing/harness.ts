@@ -22,7 +22,11 @@ export async function settleUntil(predicate: () => boolean, maxTurns = 64): Prom
  * frames are not run; advance the clock first. Reads scheduler internals that `getSchedulerState()` merges.
  */
 export async function serviceReadyFrames(renderer: CliRenderer, maxTurns = 64): Promise<void> {
-  const state = renderer as unknown as { rendering: boolean; cancelReadyFrame: unknown; outputIdleRenderScheduled: boolean }
+  const state = renderer as unknown as {
+    rendering: boolean
+    cancelReadyFrame: unknown
+    outputIdleRenderScheduled: boolean
+  }
   await settleUntil(() => !state.rendering && !state.cancelReadyFrame && !state.outputIdleRenderScheduled, maxTurns)
 }
 

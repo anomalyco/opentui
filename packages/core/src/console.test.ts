@@ -702,7 +702,12 @@ describe("TerminalConsole", () => {
           const prefix = `[${terminalConsole["formatTimestamp"](date)}] [LOG] `
           const sources = terminalConsole["formatArguments"](args).split("\n")
           sources[0] = prefix + sources[0]
-          const lines: { text: string; indent: boolean }[] = terminalConsole["_processLogEntry"]([date, "LOG" as any, args, null])
+          const lines: { text: string; indent: boolean }[] = terminalConsole["_processLogEntry"]([
+            date,
+            "LOG" as any,
+            args,
+            null,
+          ])
 
           expect(lines.map((line) => line.text).join("")).toBe(sources.join(""))
           expect(lines.map((line) => line.indent)).toEqual(lines.map((_, index) => index > 0))

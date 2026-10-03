@@ -97,7 +97,12 @@ test("each frame end drains native warnings outside the frame", async () => {
   const lib = renderer.nativeScene.driver.renderLib
   const drains: unknown[] = []
   const drain = spyOn(lib, "logContextDiagnostics").mockImplementation((context, level) => {
-    drains.push({ context, level, frame: renderer.nativeScene.frame, rendering: renderer.getSchedulerState().isRendering })
+    drains.push({
+      context,
+      level,
+      frame: renderer.nativeScene.frame,
+      rendering: renderer.getSchedulerState().isRendering,
+    })
   })
   try {
     await setup.renderOnce()
