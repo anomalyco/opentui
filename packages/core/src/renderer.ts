@@ -1597,13 +1597,27 @@ export class CliRenderer extends EventEmitter implements RenderContext {
     )
       return
 
+    this.scheduleFrame(this.nextFrameDelay())
+  }
+
+  private nextFrameDelay(): number {
     const now = this.normalizeClockTime(this.clock.now(), this.lastTime)
-    const elapsed = this.getElapsedMs(now, this.lastTime)
-    const delay = Math.max(this.minTargetFrameTime - elapsed, 0)
+    return Math.max(this.minTargetFrameTime - this.getElapsedMs(now, this.lastTime), 0)
+  }
+
+  // The only place that arms the frame timer, so a live handle is never overwritten or dropped.
+  private scheduleFrame(delayMs: number): void {
+    this.clearFrameTimer()
     this.renderTimeout = this.clock.setTimeout(() => {
       this.renderTimeout = null
       this.queueFrame()
-    }, delay)
+    }, delayMs)
+  }
+
+  private clearFrameTimer(): void {
+    if (this.renderTimeout === null) return
+    this.clock.clearTimeout(this.renderTimeout)
+    this.renderTimeout = null
   }
 
   public requestRender() {
@@ -1633,19 +1647,9 @@ export class CliRenderer extends EventEmitter implements RenderContext {
     }
 
     if (!this.cancelReadyFrame && !this.renderTimeout) {
-      const now = this.normalizeClockTime(this.clock.now(), this.lastTime)
-      const elapsed = this.getElapsedMs(now, this.lastTime)
-      const delay = Math.max(this.minTargetFrameTime - elapsed, 0)
-
-      if (delay === 0) {
-        this.queueFrame()
-        return
-      }
-
-      this.renderTimeout = this.clock.setTimeout(() => {
-        this.renderTimeout = null
-        this.queueFrame()
-      }, delay)
+      const delay = this.nextFrameDelay()
+      if (delay === 0) this.queueFrame()
+      else this.scheduleFrame(delay)
     }
   }
 
@@ -4389,10 +4393,7 @@ export class CliRenderer extends EventEmitter implements RenderContext {
       this._isRunning = true
       this.cancelReadyFrame?.()
       this.cancelReadyFrame = null
-      if (this.renderTimeout) {
-        this.clock.clearTimeout(this.renderTimeout)
-        this.renderTimeout = null
-      }
+      this.clearFrameTimer()
 
       if (this.memorySnapshotInterval > 0) {
         this.startMemorySnapshotTimer()
@@ -4546,10 +4547,7 @@ export class CliRenderer extends EventEmitter implements RenderContext {
     this.cancelReadyFrame?.()
     this.cancelReadyFrame = null
 
-    if (this.renderTimeout) {
-      this.clock.clearTimeout(this.renderTimeout)
-      this.renderTimeout = null
-    }
+    this.clearFrameTimer()
 
     if (!this.rendering) {
       this.resolveIdleIfNeeded()
@@ -4566,10 +4564,7 @@ export class CliRenderer extends EventEmitter implements RenderContext {
   private internalStop(): void {
     this.cancelReadyFrame?.()
     this.cancelReadyFrame = null
-    if (this.renderTimeout) {
-      this.clock.clearTimeout(this.renderTimeout)
-      this.renderTimeout = null
-    }
+    this.clearFrameTimer()
     if (this.isRunning && !this._isDestroyed) {
       this._isRunning = false
 
@@ -4654,10 +4649,7 @@ export class CliRenderer extends EventEmitter implements RenderContext {
       this.memorySnapshotTimer = null
     }
 
-    if (this.renderTimeout) {
-      this.clock.clearTimeout(this.renderTimeout)
-      this.renderTimeout = null
-    }
+    this.clearFrameTimer()
 
     this.themeModeState?.cancelRefresh()
 
@@ -4833,10 +4825,7 @@ export class CliRenderer extends EventEmitter implements RenderContext {
     if (this._isDestroyed) return
     this.cancelReadyFrame?.()
     this.cancelReadyFrame = null
-    if (this.renderTimeout) {
-      this.clock.clearTimeout(this.renderTimeout)
-      this.renderTimeout = null
-    }
+    this.clearFrameTimer()
     this.rendering = true
     this.ordinaryFrameWaitControlState = this._controlState
     let renderFailed = false
@@ -4979,22 +4968,15 @@ export class CliRenderer extends EventEmitter implements RenderContext {
               // scheduler runs it on the next host turn instead of waiting for a timer.
               this.queueFrame()
             } else {
-              this.renderTimeout = this.clock.setTimeout(
-                () => {
-                  this.renderTimeout = null
-                  this.queueFrame()
-                },
-                Math.max(1, remaining),
-              )
+              this.scheduleFrame(Math.max(1, remaining))
             }
           } else {
-            this.clock.clearTimeout(this.renderTimeout!)
-            this.renderTimeout = null
+            this.clearFrameTimer()
           }
         } else {
           // Blocked frames resume on a cursor reply/timeout; skipped frames wait for output idle.
           this.immediateRerenderRequested = false
-          this.renderTimeout = null
+          this.clearFrameTimer()
         }
       }
     } catch (error) {
