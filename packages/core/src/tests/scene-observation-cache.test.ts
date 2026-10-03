@@ -39,37 +39,6 @@ describe("scene layout observations", () => {
     box.destroy()
     expect(() => box.getComputedLayout()).toThrow()
   })
-
-  test("a style set and restored before a frame still runs layout", async () => {
-    const setup = await createTestRenderer({ width: 20, height: 5 })
-    renderer = setup.renderer
-    const box = new BoxRenderable(renderer, { width: 5, height: 1 })
-    renderer.root.add(box)
-    await setup.renderOnce()
-    let changes = 0
-    renderer.root.on(LayoutEvents.LAYOUT_CHANGED, () => changes++)
-    await setup.renderOnce()
-    expect(changes).toBe(0)
-
-    box.width = 10
-    box.width = 5
-    await setup.renderOnce()
-    expect(changes).toBe(1)
-    expect(box.width).toBe(5)
-
-    // Values Yoga compares as equal although their bits differ still leave the run dirty.
-    for (const writes of [
-      [0, 10, -0],
-      [-0, 10, 0],
-      [{ unit: 0, value: 1 }, 10, { unit: 0, value: 2 }],
-      [undefined, 10, { unit: 1, value: NaN }],
-    ]) {
-      changes = 0
-      for (const value of writes) box.setMinWidth(value as never)
-      await setup.renderOnce()
-      expect(changes).toBe(1)
-    }
-  })
 })
 
 describe("scene staging", () => {
@@ -399,6 +368,56 @@ describe("scene staging", () => {
           }
         }
       }
+    }
+  })
+
+  test("native Yoga runs layout after staged writes exactly when the model marks the node dirty", async () => {
+    const setup = await createTestRenderer({ width: 40, height: 10 })
+    renderer = setup.renderer
+    const box = new BoxRenderable(renderer, { width: 5, height: 1 })
+    renderer.root.add(box)
+    await setup.renderOnce()
+    let layouts = 0
+    renderer.root.on(LayoutEvents.LAYOUT_CHANGED, () => layouts++)
+    const [width, widthDisablingShrink, minWidth, , aspectRatio] = props
+    const { OT_UNIT_UNDEFINED: none, OT_UNIT_POINT: point, OT_UNIT_PERCENT: percent, OT_UNIT_AUTO: auto } = c
+    const flexShrink = { group: c.OT_STYLE_FLOAT, kind: c.OT_STYLE_FLOAT_FLEX_SHRINK, edge: c.OT_EDGE_NONE, flags: 0 }
+    type Write = [unit: number, value: number]
+    // Each row writes the property's initial value and flex shrink, runs a frame, then stages the writes.
+    const cases: [prop: StyleProp, shrink: number, dirty: boolean, initial: Write, ...writes: Write[]][] = [
+      [aspectRatio, 1, true, [none, NaN], [none, 0]],
+      [aspectRatio, 1, true, [none, 0], [none, 0]],
+      [aspectRatio, 1, true, [none, 0], [none, -0]],
+      [aspectRatio, 1, true, [none, 2], [none, NaN]],
+      [widthDisablingShrink, 1, true, [point, 5], [point, 5]],
+      [widthDisablingShrink, 0, false, [point, 5], [point, 5]],
+      [width, 1, true, [point, 5], [point, 10], [point, 5]],
+      [width, 1, true, [auto, NaN], [point, 5], [auto, 3]],
+      [minWidth, 1, false, [point, 0], [point, -0]],
+      [minWidth, 1, true, [point, 0], [point, 10], [point, -0]],
+      [minWidth, 1, false, [none, 3], [point, NaN]],
+      [minWidth, 1, true, [none, 1], [point, 10], [none, 2]],
+      [minWidth, 1, true, [percent, 0], [point, 0]],
+      [minWidth, 1, true, [point, 1e-45], [point, 0]],
+    ]
+    const stage = (prop: StyleProp, [unit, value]: Write) =>
+      renderer!.nativeScene.setStyle(box, prop.group, prop.kind, prop.edge, unit, value, prop.flags)
+    for (const [prop, shrink, dirty, initial, ...writes] of cases) {
+      const setupProp = { ...prop, flags: 0 }
+      stage(flexShrink, [none, shrink])
+      stage(setupProp, initial)
+      await setup.renderOnce()
+      const state: StyleState = { value: "undefined", flexShrink: { unit: -1, value: shrink }, dirty: false }
+      applyYogaWrite(state, setupProp, ...initial)
+      state.dirty = false
+      layouts = 0
+      for (const write of writes) {
+        stage(prop, write)
+        applyYogaWrite(state, prop, write[0], Math.fround(write[1]))
+      }
+      await setup.renderOnce()
+      const row = show([prop, initial, writes])
+      expect([row, layouts === 1, state.dirty]).toEqual([row, dirty, dirty])
     }
   })
 
