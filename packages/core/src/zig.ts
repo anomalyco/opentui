@@ -1495,6 +1495,9 @@ function viewOrNull<T extends ArrayBufferView>(value: T): T | null {
   return value.byteLength === 0 ? null : value
 }
 
+// opentui.h limits each embedded terminal write and the retained replies to 1 MiB.
+const EMBEDDED_TERMINAL_IO_BYTES_MAX = 1024 * 1024
+
 function embeddedTerminalDimension(value: number, name: string) {
   if (!Number.isInteger(value) || value < 1 || value > 0xffff) {
     throw new RangeError(`Embedded terminal ${name} must be an integer between 1 and 65535`)
@@ -3781,19 +3784,11 @@ export class FFIRenderLib {
       "ot_embedded_terminal_create",
       this.opentui.symbols.ot_embedded_terminal_create(pointer, record, output),
     )
-    try {
-      return decodeContextHandle(context, output) as ContextEmbeddedTerminalHandle
-    } catch (error) {
-      this.opentui.symbols.ot_embedded_terminal_destroy(pointer, output)
-      throw error
-    }
+    return decodeContextHandle(context, output) as ContextEmbeddedTerminalHandle
   }
 
   public destroyContextEmbeddedTerminal(context: NativeContextHandle, terminal: ContextEmbeddedTerminalHandle): void {
-    this.getYogaHost().assertMutable()
-    const handle = encodeContextHandle(context, terminal)
-    const pointer = this.nativeContextPointer(context, "ot_embedded_terminal_destroy")
-    nativeResult("ot_embedded_terminal_destroy", this.opentui.symbols.ot_embedded_terminal_destroy(pointer, handle))
+    this.destroyContextObject(context, terminal, "ot_embedded_terminal_destroy")
   }
 
   public contextEmbeddedTerminalWrite(
@@ -3808,10 +3803,14 @@ export class FFIRenderLib {
       "Embedded terminal write bytes",
     )
     const pointer = this.nativeContextPointer(context, "ot_embedded_terminal_write")
-    nativeResult(
-      "ot_embedded_terminal_write",
-      this.opentui.symbols.ot_embedded_terminal_write(pointer, handle, viewOrNull(bytes), bytes.byteLength),
-    )
+    // The parser keeps partial sequences across writes, so input above the native limit can be split anywhere.
+    for (let offset = 0; offset === 0 || offset < bytes.byteLength; offset += EMBEDDED_TERMINAL_IO_BYTES_MAX) {
+      const chunk = bytes.subarray(offset, offset + EMBEDDED_TERMINAL_IO_BYTES_MAX)
+      nativeResult(
+        "ot_embedded_terminal_write",
+        this.opentui.symbols.ot_embedded_terminal_write(pointer, handle, viewOrNull(chunk), chunk.byteLength),
+      )
+    }
   }
 
   public contextEmbeddedTerminalResize(
@@ -4097,13 +4096,16 @@ export class FFIRenderLib {
     )
   }
 
+  // The native drain never calls back into JavaScript, so every drain can reuse one buffer.
+  private embeddedTerminalResponses: Uint8Array | undefined
+
   public contextEmbeddedTerminalDrainResponses(
     context: NativeContextHandle,
     terminal: ContextEmbeddedTerminalHandle,
   ): Uint8Array {
     this.getYogaHost().assertMutable()
     const handle = encodeContextHandle(context, terminal)
-    const output = new Uint8Array(1024 * 1024)
+    const output = (this.embeddedTerminalResponses ??= new Uint8Array(EMBEDDED_TERMINAL_IO_BYTES_MAX))
     const count = new Uint32Array(1)
     const pointer = this.nativeContextPointer(context, "ot_embedded_terminal_drain_responses")
     let status = this.opentui.symbols.ot_embedded_terminal_drain_responses(
@@ -5566,18 +5568,8 @@ export class FFIRenderLib {
     )
   }
 
-  public importContextImage(context: NativeContextHandle, source: ImageHandle): ContextImageHandle {
-    const result = this.imageClone(source, context)
-    if (!result.handle) throw new Error(`Image clone failed: ${result.status}`)
-    return result.handle
-  }
-
   public destroyContextImage(context: NativeContextHandle, image: ContextImageHandle): void {
-    const handle = encodeContextHandle(context, image)
-    this.getYogaHost().runMutation(() => {
-      const pointer = this.nativeContextPointer(context, "ot_image_destroy")
-      nativeResult("ot_image_destroy", this.opentui.symbols.ot_image_destroy(pointer, handle))
-    })
+    this.destroyContextObject(context, image, "ot_image_destroy")
   }
 
   public sceneSetImage(
@@ -8099,7 +8091,6 @@ export class FFIRenderLib {
     output: Uint8Array,
   ): NativeClipboardCopyStatus {
     const capacity = toSafeFFIU32Length(output.byteLength, "clipboard MIME output")
-    void output.buffer
     return this.opentui.symbols.ot_clipboard_operation_result_mime_copy(
       ...this.clipboardOperationArgs(operation),
       output,
@@ -8119,7 +8110,6 @@ export class FFIRenderLib {
     output: Uint8Array,
   ): NativeClipboardCopyStatus {
     const capacity = toSafeFFIU32Length(output.byteLength, "clipboard data output")
-    void output.buffer
     return this.opentui.symbols.ot_clipboard_operation_result_data_copy(
       ...this.clipboardOperationArgs(operation),
       output,
@@ -8151,7 +8141,6 @@ export class FFIRenderLib {
     output: Uint8Array,
   ): NativeClipboardCopyStatus {
     const capacity = toSafeFFIU32Length(output.byteLength, "clipboard diagnostic output")
-    void output.buffer
     return this.opentui.symbols.ot_clipboard_operation_result_diagnostic_copy(
       ...this.clipboardOperationArgs(operation),
       output,
@@ -8684,7 +8673,6 @@ export class FFIRenderLib {
 
   public audioWriteStream(engine: AudioEngineHandle, streamId: number, data: Uint8Array): number {
     const dataLength = toSafeFFIU32Length(data.byteLength, "Audio stream data length")
-    void data.buffer
     return this.opentui.symbols.audioWriteStream(this.audioContext(engine), streamId, data, dataLength)
   }
 
@@ -8946,12 +8934,7 @@ export class FFIRenderLib {
     const output = new Uint32Array(handleWords)
     const status = this.imageCall(context, operation, (pointer) => call(pointer, output))
     if (status !== 0) return { status, handle: null }
-    try {
-      return { status, handle: decodeContextHandle(context, output) as ImageHandle }
-    } catch (error) {
-      this.opentui.symbols.ot_image_destroy(this.nativeContextPointer(context, operation), output)
-      throw error
-    }
+    return { status, handle: decodeContextHandle(context, output) as ImageHandle }
   }
 
   private imageInfoOutput(

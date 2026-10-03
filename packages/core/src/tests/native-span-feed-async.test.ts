@@ -123,55 +123,23 @@ test("mixed sync and async handlers on same stream", async () => {
   stream.close()
 })
 
-test("async handler rejection still decrements refcount", async () => {
+test.each([
+  ["a synchronous handler", () => {}],
+  ["a rejected handler promise", () => Promise.reject(new Error("async failure"))],
+])("%s releases its span", async (_name, handler) => {
   const stream = NativeSpanFeed.create({ chunkSize: 64, initialChunks: 1 })
-
-  stream.onData(async () => {
-    throw new Error("async failure")
-  })
-
-  const data = new Uint8Array(64).fill(0xaa)
-  writeAndCommit(stream, data)
-  stream.drainAll()
-
-  await new Promise((r) => setTimeout(r, 10))
-  const received: Uint8Array[] = []
-  stream.onData((d) => {
-    received.push(new Uint8Array(d))
-  })
-
-  const data2 = new Uint8Array(64).fill(0xbb)
-  writeAndCommit(stream, data2)
-  stream.drainAll()
-
-  expect(received.length).toBe(1)
-  expect(received[0][0]).toBe(0xbb)
-
+  const received: number[] = []
+  stream.onData(handler)
+  stream.onData((data) => void received.push(data[0]!))
+  writeAndCommit(stream, new Uint8Array(64).fill(0xaa))
+  await stream.idle()
+  expect(lib.streamGetStats(stream.streamPtr)?.outstandingSpans).toBe(0)
+  writeAndCommit(stream, new Uint8Array(64).fill(0xbb))
+  expect(received).toEqual([0xaa, 0xbb])
   stream.close()
 })
 
-test("sync-only handlers decrement refcount immediately (no regression)", () => {
-  const stream = NativeSpanFeed.create({ chunkSize: 64, initialChunks: 1 })
-
-  const received: string[] = []
-  stream.onData((data) => {
-    received.push(new TextDecoder().decode(data))
-  })
-
-  const msg1 = new TextEncoder().encode("A".repeat(64))
-  writeAndCommit(stream, msg1)
-  stream.drainAll()
-  const msg2 = new TextEncoder().encode("B".repeat(64))
-  writeAndCommit(stream, msg2)
-  stream.drainAll()
-
-  expect(received.length).toBe(2)
-  expect(received[1]).toBe("B".repeat(64))
-
-  stream.close()
-})
-
-test("multiple async handlers all settle before refcount decrement", async () => {
+test("multiple async handlers all settle before the span is released", async () => {
   const stream = NativeSpanFeed.create({ chunkSize: 64, initialChunks: 1, maxBytes: 64n, spanQueueCapacity: 1 })
 
   let resolve1!: () => void

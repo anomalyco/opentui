@@ -249,7 +249,8 @@ Each successful publication copies the pixels into a free slot and returns an im
 ```typescript
 import { ImageRenderable, NativeImagePool } from "@opentui/core"
 
-const pool = new NativeImagePool({ width: 640, height: 480, capacity: 3 })
+// The renderer's Context lets the view bind each frame without a copy.
+const pool = new NativeImagePool({ width: 640, height: 480, capacity: 3, owner: renderer.nativeScene.resourceContext })
 const view = new ImageRenderable(renderer, { width: 80, height: 24 })
 renderer.root.add(view)
 

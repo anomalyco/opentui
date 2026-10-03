@@ -380,7 +380,7 @@ jobs:
         working-directory: packages/core
         run: |
           test "$(bun --version)" = "1.3.14"
-          bun test src/tests/ffi-borrowed-pointer-callsites.test.ts
+          bun test src/tests/audio.test.ts src/tests/clipboard-native-lifecycle.test.ts src/tests/image.test.ts
 
   # Gate job for branch protection
   build-complete:

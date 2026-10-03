@@ -107,7 +107,10 @@ export class ImageRenderable extends Renderable {
         imagePromise = Promise.reject(error)
       }
     } else {
-      imagePromise = NativeImage.load(source, { signal: controller.signal })
+      imagePromise = NativeImage.load(source, {
+        signal: controller.signal,
+        owner: this._ctx.nativeScene.resourceContext,
+      })
     }
     this.loadPromise = this.load(imagePromise, controller)
   }

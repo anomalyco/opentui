@@ -42,7 +42,7 @@ renderer.root.add(image)
 await image.loadPromise
 ```
 
-`source` accepts every `ImageSource` form: a path, `file:`/HTTP(S)/`blob:`/`data:` URL, `URL`, `Blob`, `Response`, `Uint8Array`, or `ArrayBuffer`. It also accepts `NativeImage`. Format detection uses encoded bytes when the source needs decoding. `ImageRenderable` retains an existing `NativeImage`. You still own and must dispose the source reference.
+`source` accepts every `ImageSource` form: a path, `file:`/HTTP(S)/`blob:`/`data:` URL, `URL`, `Blob`, `Response`, `Uint8Array`, or `ArrayBuffer`. It also accepts `NativeImage`. Format detection uses encoded bytes when the source needs decoding. Encoded sources decode into the renderer's Context, so displaying them needs no copy between Contexts. `ImageRenderable` retains an existing `NativeImage`. You still own and must dispose the source reference.
 
 ## React
 
@@ -174,7 +174,7 @@ Timeouts, terminal or output errors, `cancelKittyImageTransport()`, suspend, and
 | `cellAspectRatio`    | `number`                                                    | Physical or fallback cell aspect ratio                          |
 | `getFittedSize(...)` | `(width, height, cellAspect?, sourceWidth?, sourceHeight?)` | Resolve destination cells. Omitted overrides use current values |
 
-The renderable owns `image` and the `NativeImage` passed to `onLoad`. Do not dispose or transfer them. Current-source failures set `loadError`, call `onError`, and resolve `loadPromise`. Superseded, cleared, or destroyed loads resolve without callbacks. Exceptions from either callback reject after state settles. Successful replacement, clearing, and destruction release owned images. A failed replacement keeps the current image.
+The renderable owns `image` and the `NativeImage` passed to `onLoad`. Do not dispose or transfer them. Images loaded from an encoded source, and images retained or derived from them, belong to the renderer's Context and stop working when the renderer is destroyed. To keep an image beyond the renderer, create it yourself (for example with `NativeImage.load()`) and pass it as `source`. Current-source failures set `loadError`, call `onError`, and resolve `loadPromise`. Superseded, cleared, or destroyed loads resolve without callbacks. Exceptions from either callback reject after state settles. Successful replacement, clearing, and destruction release owned images. A failed replacement keeps the current image.
 
 ## Related components
 
