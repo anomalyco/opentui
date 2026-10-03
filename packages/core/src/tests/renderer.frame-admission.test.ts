@@ -183,7 +183,13 @@ const busyResizes = {
     target.renderer.requestRender()
     target.clock.advance(100)
     await settleUntil(() => target.stdout.pendingWrite)
-    return { ...target, sizes: [[100, 30], [80, 24]] }
+    return {
+      ...target,
+      sizes: [
+        [100, 30],
+        [80, 24],
+      ],
+    }
   },
   "a parked split-footer paint": async () => {
     const target = createAdmissionRenderer(30, 12, {
