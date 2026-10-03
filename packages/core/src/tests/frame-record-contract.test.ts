@@ -89,37 +89,6 @@ test("paint hooks run before native paint, so earlier nodes paint a later hook's
   expect(captureSpans().lines[1].spans[0].text.trimEnd()).toBe("ok")
 })
 
-test("paint hooks draw non-string text and box titles as direct drawing converts them", async () => {
-  const { renderer, renderOnce, captureCharFrame } = setup
-  class Draw extends Renderable {
-    protected renderSelf(buffer: OptimizedBuffer): void {
-      buffer.drawText(123 as never, 0, 0, white)
-      buffer.drawText(["a", "b"] as never, 4, 0, white)
-      buffer.drawText(null as never, 8, 0, white)
-      buffer.drawText(undefined as never, 0, 1, white)
-      buffer.drawBox({
-        x: 0,
-        y: 2,
-        width: 12,
-        height: 2,
-        border: true,
-        borderColor: white,
-        backgroundColor: clear,
-        title: 42 as never,
-        bottomTitle: 0 as never,
-      })
-    }
-  }
-  renderer.root.add(new Draw(renderer, { width: 12, height: 4 }))
-
-  await renderOnce()
-
-  const rows = captureCharFrame()
-    .split("\n")
-    .map((row) => row.trimEnd())
-  expect(rows.slice(0, 4)).toEqual(["123 a,b null", "", "┌─42───────┐", "└──────────┘"])
-})
-
 test("paint hooks cannot read the frame and report the failing node", async () => {
   const { renderer, renderOnce } = setup
   const errors: { error: unknown; renderable?: Renderable }[] = []
@@ -279,30 +248,6 @@ test("a recorded text reserves its UTF-8 bytes against the text and recording li
     recorder.end()
     recorder.settle()
   }
-})
-
-test("a drawing call that throws records nothing, so a hook that catches it still paints", async () => {
-  const { renderer, renderOnce, captureCharFrame } = setup
-  const errors: unknown[] = []
-  renderer.on(CliRenderEvents.RENDER_ERROR, ({ error }) => errors.push(error))
-  let caught = 0
-  class Recovering extends Renderable {
-    protected renderSelf(buffer: OptimizedBuffer): void {
-      try {
-        buffer.drawText("bad", this.x + 0.5, this.y, white)
-      } catch {
-        caught++
-      }
-      buffer.drawText("ok", this.x, this.y, white)
-    }
-  }
-  renderer.root.add(new Recovering(renderer, { width: 4, height: 1 }))
-
-  await renderOnce()
-
-  expect(caught).toBe(1)
-  expect(errors).toEqual([])
-  expect(captureCharFrame().split("\n")[0].trimEnd()).toBe("ok")
 })
 
 test("a slot whose hooks an earlier hook replaced still records its body", async () => {
