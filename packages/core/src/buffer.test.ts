@@ -40,18 +40,7 @@ describe("OptimizedBuffer", () => {
     expect([copy.width, copy.height, copy.char.length]).toEqual([20, 5, 100])
   })
 
-  it("draws text given as a non-string and enforces the text byte limit", () => {
-    const fg = RGBA.fromInts(255, 255, 255)
-    buffer.drawText(123 as never, 0, 0, fg)
-    buffer.drawText(["a", "b"] as never, 0, 1, fg)
-    expect(
-      buffer.withBuffers(({ char }) => String.fromCodePoint(...char.subarray(0, 3), ...char.subarray(20, 23))),
-    ).toBe("123a,b")
-    expect(() => buffer.drawText("a".repeat(65_537), 0, 0, fg)).toThrow("Buffer text exceeds the native byte limit")
-    buffer.drawText("a".repeat(65_536), 0, 0, fg)
-  })
-
-  it("converts both box titles before a title's toString can draw", () => {
+  it("converts both box titles before a title's toString can draw and skips title controls", () => {
     const other = OptimizedBuffer.create(12, 1, "unicode", { owner: resourceContext })
     const white = RGBA.fromInts(255, 255, 255)
     try {
@@ -68,7 +57,7 @@ describe("OptimizedBuffer", () => {
         height: 3,
         border: true,
         borderColor: white,
-        title: "TOP",
+        title: "T\nO\x1bP",
         bottomTitle,
       } as never)
       const rows = buffer.withBuffers(({ char }) =>
@@ -76,6 +65,7 @@ describe("OptimizedBuffer", () => {
       )
       expect(rows[0]).toContain("TOP")
       expect(rows[1]).toContain("BOT")
+      expect(other.withBuffers(({ char }) => String.fromCodePoint(...char.subarray(0, 3)))).toBe("XYZ")
     } finally {
       other.destroy()
     }
@@ -109,17 +99,22 @@ describe("OptimizedBuffer", () => {
     buffer.withBuffers((cells) => expect(cells.char[11]).toBe(89))
   })
 
-  it("preserves literal attributes and rejects foreign pooled IDs across per-cell calls", () => {
+  it("preserves literal attributes and passes all u32 attribute bits across per-cell calls", () => {
     const fg = RGBA.fromInts(255, 255, 255)
     const bg = RGBA.fromInts(0, 0, 0)
-    const attributes = [0xff, 0xfe, 0xfd]
-
-    buffer.setCell(0, 0, "S", fg, bg, attributes[0])
-    buffer.setCellWithAlphaBlending(1, 0, "A", fg, bg, attributes[1])
-    buffer.drawChar("D".codePointAt(0)!, 2, 0, fg, bg, attributes[2])
-
-    expect(() => buffer.setCell(0, 0, "X", fg, bg, 0x8000_00ff)).toThrow("InvalidArgument")
-    buffer.withBuffers((cells) => expect([...cells.attributes.slice(0, attributes.length)]).toEqual(attributes))
+    const token = buffer.encodeUnicode("e\u0301").data[0].char
+    const draws = [
+      (attributes: number) => buffer.setCell(0, 0, "S", fg, bg, attributes),
+      (attributes: number) => buffer.setCellWithAlphaBlending(1, 0, "A", fg, bg, attributes),
+      (attributes: number) => buffer.drawChar("D".codePointAt(0)!, 2, 0, fg, bg, attributes),
+      (attributes: number) => buffer.drawChar(token, 3, 0, fg, bg, attributes),
+    ]
+    // Native rejects a foreign link ID in bits 8..31; a truncated value would draw instead.
+    draws.forEach((draw, index) => {
+      draw(0xff - index)
+      expect(() => draw(0x8000_00ff)).toThrow("InvalidArgument")
+    })
+    buffer.withBuffers((cells) => expect([...cells.attributes.slice(0, 4)]).toEqual([0xff, 0xfe, 0xfd, 0xfc]))
   })
 
   it("clips draws at negative positions", () => {
@@ -140,25 +135,6 @@ describe("OptimizedBuffer", () => {
 
       expect(new TextDecoder().decode(target.getRealCharBytes(true))).toBe("   \nCD \n")
       expect(target.withBuffers(({ bg }) => [0, 1, 3].map((cell) => bg[cell * 4] & 0xff))).toEqual([255, 0, 0])
-    } finally {
-      target.destroy()
-    }
-  })
-
-  it("fills nothing for a non-positive extent", () => {
-    // Native extents are unsigned, so the wrapper must return before a negative extent reaches native code.
-    const target = OptimizedBuffer.create(3, 2, "unicode", { owner: resourceContext, id: "empty-extents" })
-    try {
-      const red = RGBA.fromInts(255, 0, 0)
-      target.clear(RGBA.fromInts(0, 0, 0))
-
-      target.fillRect(1, 0, -1, 1, red)
-      target.fillRect(1, 0, 1, -1, red)
-      target.fillRect(1, 0, 0, 1, red)
-
-      expect(target.withBuffers(({ bg }) => [0, 1, 2, 3, 4, 5].map((cell) => bg[cell * 4] & 0xff))).toEqual([
-        0, 0, 0, 0, 0, 0,
-      ])
     } finally {
       target.destroy()
     }
@@ -197,17 +173,20 @@ describe("OptimizedBuffer", () => {
     }
   })
 
-  it("releases drawn images when cleared", () => {
-    const image = NativeImage.fromRgba(Uint8Array.of(1, 2, 3, 255), 1, 1)
-    let raw: ReturnType<NativeImage["takeRaw"]> | undefined
-    try {
-      expect(buffer.drawImage(image, 0, 0, 1, 1)).toBe(true)
-      buffer.clear()
-      raw = image.takeRaw()
-      expect([...raw.data]).toEqual([1, 2, 3, 255])
-    } finally {
-      raw?.dispose()
-      image.dispose()
+  it("retains a drawn same-Context image until the buffer is cleared or destroyed", () => {
+    for (const release of [() => buffer.clear(), () => buffer.destroy()]) {
+      const image = NativeImage.fromRgba(Uint8Array.of(1, 2, 3, 255), 1, 1, 4, { owner: resourceContext })
+      let raw: ReturnType<NativeImage["takeRaw"]> | undefined
+      try {
+        expect(buffer.drawImage(image, 0, 0, 1, 1)).toBe(true)
+        expect(() => image.takeRaw()).toThrow("native buffers retain the image")
+        release()
+        raw = image.takeRaw()
+        expect([...raw.data]).toEqual([1, 2, 3, 255])
+      } finally {
+        raw?.dispose()
+        image.dispose()
+      }
     }
   })
 
@@ -224,286 +203,65 @@ describe("OptimizedBuffer", () => {
     }
   })
 
-  describe("non-positive extents", () => {
-    // Native extents are unsigned, so these must not reach native code as negative values.
-    const white = RGBA.fromInts(255, 255, 255)
-    const black = RGBA.fromInts(0, 0, 0)
+  it("draws nothing for a non-positive extent", () => {
+    // Native extents are unsigned, so the wrappers must not pass a negative extent to native code.
     const red = RGBA.fromInts(255, 0, 0)
-    const snapshot = () =>
-      buffer.withBuffers((cells) => ({ char: [...cells.char], fg: [...cells.fg], bg: [...cells.bg] }))
-
-    it("clips everything inside a scissor rect with a non-positive extent", () => {
-      buffer.clear(black)
-      const blank = snapshot()
-
-      buffer.pushScissorRect(0, 0, -1, 5)
-      buffer.fillRect(0, 0, 20, 5, red)
-      buffer.popScissorRect()
-
-      buffer.pushScissorRect(0, 0, 20, 5)
-      buffer.pushScissorRect(0, 0, 20, -1)
-      buffer.drawText("hidden", 0, 0, white, black)
-      buffer.popScissorRect()
-      buffer.popScissorRect()
-
-      expect(snapshot()).toEqual(blank)
-    })
-
-    it("skips drawBox with a non-positive extent", () => {
-      buffer.clear(black)
-      const blank = snapshot()
-
-      for (const [width, height] of [
-        [-1, 3],
-        [3, -1],
-      ]) {
-        buffer.drawBox({
-          x: 0,
-          y: 0,
-          width,
-          height,
-          border: true,
-          borderColor: white,
-          backgroundColor: red,
-          shouldFill: true,
-          title: "title",
-        })
+    const packed = new Uint8Array(20 * 5 * 48)
+    for (let cell = 0; cell < 20 * 5; cell++) new Float32Array(packed.buffer).set([1, 0, 0, 1, 1, 1, 1, 1], cell * 12)
+    const draws: Record<string, (width: number, height: number) => void> = {
+      fillRect: (width, height) => buffer.fillRect(0, 0, width, height, red),
+      drawBox: (width, height) =>
+        buffer.drawBox({ x: 0, y: 0, width, height, border: true, borderColor: red, backgroundColor: red, title: "t" }),
+      drawPackedBuffer: (width, height) => {
+        buffer.drawPackedBuffer(packed, -48, 0, 0, 20, 5)
+        buffer.drawPackedBuffer(packed, packed.byteLength, 0, 0, width, height)
+      },
+      pushScissorRect: (width, height) => {
+        buffer.pushScissorRect(0, 0, 20, 5)
+        buffer.pushScissorRect(0, 0, width, height)
+        buffer.fillRect(0, 0, 20, 5, red)
+        buffer.popScissorRect()
+        buffer.popScissorRect()
+      },
+    }
+    const cells = () => buffer.withBuffers(({ char, fg, bg }) => JSON.stringify([...char, ...fg, ...bg]))
+    const results = Object.entries(draws).map(([name, draw]) => {
+      buffer.clear(RGBA.fromInts(0, 0, 0))
+      const blank = cells()
+      for (const extent of [-1, 0]) {
+        draw(extent, 3)
+        draw(3, extent)
       }
-
-      expect(snapshot()).toEqual(blank)
+      const empty = cells() === blank
+      draw(3, 3)
+      return [name, empty, cells() !== blank]
     })
-
-    it("skips drawPackedBuffer with a non-positive length or cell count", () => {
-      const cellCount = 20 * 5
-      const packed = new Uint8Array(cellCount * 48)
-      const floats = new Float32Array(packed.buffer)
-      const words = new Uint32Array(packed.buffer)
-      for (let cell = 0; cell < cellCount; cell++) {
-        floats.set([1, 0, 0, 1, 1, 1, 1, 1], cell * 12)
-        words[cell * 12 + 8] = "X".codePointAt(0)!
-      }
-      buffer.clear(black)
-      const blank = snapshot()
-
-      buffer.drawPackedBuffer(packed, -48, 0, 0, 20, 5)
-      buffer.drawPackedBuffer(packed, packed.byteLength, 0, 0, 0, 5)
-      buffer.drawPackedBuffer(packed, packed.byteLength, 0, 0, -1, 5)
-      buffer.drawPackedBuffer(packed, packed.byteLength, 0, 0, 20, -1)
-      expect(snapshot()).toEqual(blank)
-
-      buffer.drawPackedBuffer(packed, packed.byteLength, 0, 0, 20, 5)
-      expect(snapshot()).not.toEqual(blank)
-    })
+    expect(results).toEqual(Object.keys(draws).map((name) => [name, true, true]))
   })
 
-  describe("encodeUnicode", () => {
-    it("should encode simple ASCII text", () => {
-      const encoded = buffer.encodeUnicode("Hello")
-      expect(encoded).not.toBeNull()
-      expect(encoded!.data.length).toBe(5)
-      expect(encoded!.data.map((entry) => entry.width)).toEqual([1, 1, 1, 1, 1])
-      for (const [x, entry] of encoded!.data.entries())
-        buffer.drawChar(entry.char, x, 0, RGBA.fromInts(255, 255, 255), RGBA.fromInts(0, 0, 0))
-      expect(new TextDecoder().decode(buffer.getRealCharBytes()).startsWith("Hello")).toBe(true)
-
-      buffer.freeUnicode(encoded!)
-    })
-
-    it("should encode emoji with correct width", () => {
-      const encoded = buffer.encodeUnicode("👋")
-      expect(encoded).not.toBeNull()
-      expect(encoded!.data.length).toBe(1)
-      expect(encoded!.data[0].width).toBe(2)
-
-      buffer.freeUnicode(encoded!)
-    })
-
-    it("should encode mixed ASCII and emoji", () => {
-      const encoded = buffer.encodeUnicode("Hi 👋 World")
-      expect(encoded).not.toBeNull()
-      expect(encoded!.data.length).toBe(10) // H, i, space, emoji, space, W, o, r, l, d
-
-      // Check ASCII chars
-      expect(encoded!.data[0].width).toBe(1)
-
-      // Check emoji
-      expect(encoded!.data[3].width).toBe(2)
-
-      buffer.freeUnicode(encoded!)
-    })
-
-    it("should handle empty string", () => {
-      const encoded = buffer.encodeUnicode("")
-      expect(encoded).not.toBeNull()
-      expect(encoded!.data.length).toBe(0)
-
-      buffer.freeUnicode(encoded!)
-    })
-
-    it("should encode monkey emoji frames and draw in a line", () => {
-      const frames = ["🙈 ", "🙈 ", "🙉 ", "🙊 "]
-      const fg = RGBA.fromValues(1, 1, 1, 1)
-      const bg = RGBA.fromValues(0, 0, 0, 1)
-
-      buffer.clear(bg)
-
-      let x = 0
-      for (const frame of frames) {
-        const encoded = buffer.encodeUnicode(frame)
-        expect(encoded).not.toBeNull()
-
-        for (const encodedChar of encoded!.data) {
-          buffer.drawChar(encodedChar.char, x, 0, fg, bg)
-          x += encodedChar.width
-        }
-
-        buffer.freeUnicode(encoded!)
-      }
-
-      const frameBytes = buffer.getRealCharBytes(false)
-      const frameText = new TextDecoder().decode(frameBytes)
-      expect(frameText).toContain("🙈")
-      expect(frameText).toContain("🙉")
-      expect(frameText).toContain("🙊")
-    })
-  })
-
-  describe("drawChar", () => {
-    it("should draw a simple ASCII character", () => {
-      const fg = RGBA.fromValues(1, 1, 1, 1)
-      const bg = RGBA.fromValues(0, 0, 0, 1)
-
-      buffer.drawChar(72, 0, 0, fg, bg) // 'H'
-
-      const chars = buffer.withBuffers((cells) => cells.char.slice())
-      expect(chars[0]).toBe(72)
-    })
-
-    it("should draw encoded characters from encodeUnicode", () => {
-      const encoded = buffer.encodeUnicode("Hello")
-      expect(encoded).not.toBeNull()
-
-      const fg = RGBA.fromValues(1, 1, 1, 1)
-      const bg = RGBA.fromValues(0, 0, 0, 1)
-
-      // Draw each character
-      for (let i = 0; i < encoded!.data.length; i++) {
-        buffer.drawChar(encoded!.data[i].char, i, 0, fg, bg)
-      }
-
-      // Verify buffer content
-      const frameBytes = buffer.getRealCharBytes(false)
-      const frameText = new TextDecoder().decode(frameBytes)
-      expect(frameText).toContain("Hello")
-
-      buffer.freeUnicode(encoded!)
-    })
-
-    it("should draw emoji using encoded char", () => {
-      const encoded = buffer.encodeUnicode("👋")
-      expect(encoded).not.toBeNull()
-
-      const fg = RGBA.fromValues(1, 1, 1, 1)
-      const bg = RGBA.fromValues(0, 0, 0, 1)
-
-      buffer.drawChar(encoded!.data[0].char, 0, 0, fg, bg)
-
-      const frameBytes = buffer.getRealCharBytes(false)
-      const frameText = new TextDecoder().decode(frameBytes)
-      expect(frameText).toContain("👋")
-
-      buffer.freeUnicode(encoded!)
-    })
-  })
-
-  describe("snapshot tests with unicode encoding", () => {
-    it("should render ASCII text correctly", () => {
-      buffer.clear(RGBA.fromValues(0, 0, 0, 1))
-
-      const encoded = buffer.encodeUnicode("Hello")
-      expect(encoded).not.toBeNull()
-
-      const fg = RGBA.fromValues(1, 1, 1, 1)
-      const bg = RGBA.fromValues(0, 0, 0, 1)
-
-      let x = 0
-      for (const encodedChar of encoded!.data) {
-        buffer.drawChar(encodedChar.char, x, 0, fg, bg)
-        x += encodedChar.width
-      }
-
-      const frameBytes = buffer.getRealCharBytes(true)
-      const frameText = new TextDecoder().decode(frameBytes)
-      expect(frameText).toMatchSnapshot("ASCII text rendering")
-
-      buffer.freeUnicode(encoded!)
-    })
-
-    it("should render emoji text correctly", () => {
-      buffer.clear(RGBA.fromValues(0, 0, 0, 1))
-
-      const encoded = buffer.encodeUnicode("Hi 👋 🌍")
-      expect(encoded).not.toBeNull()
-
-      const fg = RGBA.fromValues(1, 1, 1, 1)
-      const bg = RGBA.fromValues(0, 0, 0, 1)
-
-      let x = 0
-      for (const encodedChar of encoded!.data) {
-        buffer.drawChar(encodedChar.char, x, 0, fg, bg)
-        x += encodedChar.width
-      }
-
-      const frameBytes = buffer.getRealCharBytes(true)
-      const frameText = new TextDecoder().decode(frameBytes)
-      expect(frameText).toMatchSnapshot("Emoji text rendering")
-
-      buffer.freeUnicode(encoded!)
-    })
-
-    it("should handle multiline text with unicode", () => {
-      buffer.clear(RGBA.fromValues(0, 0, 0, 1))
-
-      const lines = ["Hi 世界", "🌟 Star"]
-      const fg = RGBA.fromValues(1, 1, 1, 1)
-      const bg = RGBA.fromValues(0, 0, 0, 1)
-
-      for (let y = 0; y < lines.length; y++) {
-        const encoded = buffer.encodeUnicode(lines[y])
-        expect(encoded).not.toBeNull()
-
+  it("draws encodeUnicode glyphs like drawText and rejects freed tokens", () => {
+    const fg = RGBA.fromValues(1, 1, 1, 1)
+    const bg = RGBA.fromValues(0, 0, 0, 1)
+    const expected = OptimizedBuffer.create(20, 5, "unicode", { owner: resourceContext })
+    try {
+      for (const text of ["Hello", "", "Hi 👋 🌍", "🙈🙉🙊", "Hi 世界", "e\u0301👩\u200d💻Z", "a\tb\nc"]) {
+        buffer.clear(bg)
+        expected.clear(bg)
+        expected.drawText(text, 0, 1, fg, bg)
+        const encoded = buffer.encodeUnicode(text)
         let x = 0
-        for (const encodedChar of encoded!.data) {
-          buffer.drawChar(encodedChar.char, x, y, fg, bg)
-          x += encodedChar.width
+        for (const glyph of encoded.data) {
+          buffer.drawChar(glyph.char, x, 1, fg, bg)
+          x += glyph.width
         }
-
-        buffer.freeUnicode(encoded!)
+        buffer.freeUnicode(encoded)
+        expect(buffer.getSpanLines()).toEqual(expected.getSpanLines())
+        const token = encoded.data.find((glyph) => glyph.char > 0xffffffff)?.char
+        if (token !== undefined) expect(() => buffer.drawChar(token, 0, 0, fg, bg)).toThrow("must be live")
       }
-
-      const frameBytes = buffer.getRealCharBytes(true)
-      const frameText = new TextDecoder().decode(frameBytes)
-      expect(frameText).toMatchSnapshot("Multiline unicode rendering")
-    })
-
-    it("should respect character widths in positioning", () => {
-      const encoded = buffer.encodeUnicode("A👋B")
-      expect(encoded).not.toBeNull()
-
-      const fg = RGBA.fromValues(1, 1, 1, 1)
-      const bg = RGBA.fromValues(0, 0, 0, 1)
-
-      // 'A' at x=0, emoji at x=1 (width 2), 'B' at x=3
-      buffer.drawChar(encoded!.data[0].char, 0, 0, fg, bg) // 'A'
-      buffer.drawChar(encoded!.data[1].char, 1, 0, fg, bg) // emoji
-      buffer.drawChar(encoded!.data[2].char, 3, 0, fg, bg) // 'B'
-
-      const frameBytes = buffer.getRealCharBytes(false)
-      const frameText = new TextDecoder().decode(frameBytes)
-      expect(frameText).toContain("A👋B")
-
-      buffer.freeUnicode(encoded!)
-    })
+    } finally {
+      expected.destroy()
+    }
   })
 
   describe("drawChar with alpha blending", () => {
@@ -581,13 +339,19 @@ describe("OptimizedBuffer", () => {
         .split("\n")
         .map((row) => row.trimEnd())
 
-    it("draws non-string text as TextEncoder converts it", () => {
+    it("draws non-string text as TextEncoder converts it, skips controls, and enforces the byte limit", () => {
       buffer.clear(black)
       buffer.drawText(123 as never, 0, 0, white)
       buffer.drawText(["a", "b"] as never, 0, 1, white)
       buffer.drawText(undefined as never, 0, 2, white)
       buffer.drawText(null as never, 0, 3, white)
-      expect(rows(buffer).slice(0, 4)).toEqual(["123", "a,b", "", "null"])
+      // Controls take no cells. A tab and a grapheme too long for a cell draw as spaces of their width.
+      buffer.drawText("a\r\nb\x1b\x7f\u0085c\td" + "e" + "\u0301".repeat(64) + "f", 0, 4, white)
+      expect(rows(buffer).slice(0, 5)).toEqual(["123", "a,b", "", "null", "abc  d f"])
+      expect(() => buffer.drawText("a".repeat(65_537), 0, 0, white)).toThrow(
+        "Buffer text exceeds the native byte limit",
+      )
+      buffer.drawText("a".repeat(65_536), 0, 0, white)
     })
 
     it("draws only the latest text after longer and multi-byte text", () => {

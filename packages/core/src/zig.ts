@@ -2165,7 +2165,6 @@ export class NativePaintRecorder {
   private pendingPhase = 0
   private readonly opacity: number[] = [1]
   private scissors = 0
-  private readonly encoder = new TextEncoder()
   private textBytes?: Uint8Array
   private bottomBytes?: Uint8Array
   private readonly handleRecord = createContextHandleRecord()
@@ -2230,8 +2229,8 @@ export class NativePaintRecorder {
       // Encode before reserving so the record grows by the UTF-8 bytes, not by an upper bound.
       const textBytes = (this.textBytes ??= new Uint8Array(NATIVE_BUFFER_TEXT_BYTES_MAX))
       const bottomBytes = (this.bottomBytes ??= new Uint8Array(NATIVE_BUFFER_TEXT_BYTES_MAX))
-      const textLength = this.encodeText(text, textBytes)
-      const bottomLength = this.encodeText(bottom, bottomBytes)
+      const textLength = encodeDrawText(text, textBytes)
+      const bottomLength = encodeDrawText(bottom, bottomBytes)
       const layout = nativeLayouts.ot_scene_record_draw
       const record = layout.size + nativeLayouts.ot_buffer_draw_box.size
       const base = this.reserve(nativeConstants.OT_SCENE_RECORD_DRAW, record + textLength + bottomLength)
@@ -2507,14 +2506,6 @@ export class NativePaintRecorder {
     this.bytes.set(new Uint8Array(record.buffer, record.byteOffset, record.byteLength), offset)
   }
 
-  /** Encodes into a buffer sized to the native limit; text that does not fit exceeds that limit. */
-  private encodeText(text: string, output: Uint8Array): number {
-    if (text === "") return 0
-    const { read, written } = this.encoder.encodeInto(text, output)
-    if (read !== text.length) throw new RangeError("Buffer text exceeds the native byte limit")
-    return written
-  }
-
   /** Append one zeroed record of at most size bytes and return its offset. */
   private reserve(operation: number, size: number): number {
     this.activeContext()
@@ -2611,6 +2602,16 @@ function drawRecordText(options: NativeBufferDraw): string {
 
 function drawRecordBottomTitle(options: NativeBufferDraw): string {
   return options.operation === "box" && options.bottomTitle ? drawTextString(options.bottomTitle) : ""
+}
+
+const drawTextEncoder = new TextEncoder()
+
+/** Encodes into a buffer sized to the native limit; text that does not fit exceeds that limit. */
+function encodeDrawText(text: string, output: Uint8Array): number {
+  if (text === "") return 0
+  const { read, written } = drawTextEncoder.encodeInto(text, output)
+  if (read !== text.length) throw new RangeError("Buffer text exceeds the native byte limit")
+  return written
 }
 
 function createEditorSelectionRecord() {
@@ -3519,12 +3520,7 @@ export class FFIRenderLib {
       "ot_unicode_create",
       this.opentui.symbols.ot_unicode_create(pointer, viewOrNull(bytes), count, method, output),
     )
-    try {
-      return decodeContextHandle(context, output) as ContextUnicodeHandle
-    } catch (error) {
-      this.opentui.symbols.ot_unicode_destroy(pointer, output)
-      throw error
-    }
+    return decodeContextHandle(context, output) as ContextUnicodeHandle
   }
 
   public sceneMeasureLayout(context: NativeContextHandle, session: SessionHandle, root: SceneNodeHandle): void {
@@ -3736,10 +3732,7 @@ export class FFIRenderLib {
   }
 
   public destroyContextUnicode(context: NativeContextHandle, unicode: ContextUnicodeHandle): void {
-    this.getYogaHost().assertMutable()
-    const handle = encodeContextHandle(context, unicode)
-    const pointer = this.nativeContextPointer(context, "ot_unicode_destroy")
-    nativeResult("ot_unicode_destroy", this.opentui.symbols.ot_unicode_destroy(pointer, handle))
+    this.destroyContextObject(context, unicode, "ot_unicode_destroy")
   }
 
   public contextBufferDrawUnicode(
@@ -3761,13 +3754,12 @@ export class FFIRenderLib {
     const fg = contextBufferColor(foreground)
     const bg = contextBufferColor(background)
     const attrs = toSafeFFIU32Length(attributes, "Unicode attributes")
-    this.getYogaHost().runMutation(() => {
-      const pointer = this.nativeContextPointer(context, "ot_buffer_draw_unicode")
-      nativeResult(
-        "ot_buffer_draw_unicode",
-        this.opentui.symbols.ot_buffer_draw_unicode(pointer, handle, ticket, source, item, column, row, fg, bg, attrs),
-      )
-    })
+    this.getYogaHost().assertMutable()
+    const pointer = this.nativeContextPointer(context, "ot_buffer_draw_unicode")
+    nativeResult(
+      "ot_buffer_draw_unicode",
+      this.opentui.symbols.ot_buffer_draw_unicode(pointer, handle, ticket, source, item, column, row, fg, bg, attrs),
+    )
   }
 
   public createContextEmbeddedTerminal(
@@ -5757,13 +5749,7 @@ export class FFIRenderLib {
     const output = new Uint32Array(handleWords)
     const pointer = this.nativeContextPointer(context, "ot_buffer_create")
     nativeResult("ot_buffer_create", this.opentui.symbols.ot_buffer_create(pointer, record, output))
-    try {
-      return decodeContextHandle(context, output) as ContextBufferHandle
-    } catch (error) {
-      const live = this.nativeContexts.get(context)
-      if (live !== undefined) this.opentui.symbols.ot_buffer_destroy(live, output)
-      throw error
-    }
+    return decodeContextHandle(context, output) as ContextBufferHandle
   }
 
   public destroyContextBuffer(context: NativeContextHandle, buffer: ContextBufferHandle): void {
@@ -5803,8 +5789,8 @@ export class FFIRenderLib {
       // No JavaScript runs between these encodes and the call, so the text buffers can be shared.
       const textBytes = (this.drawTextBytes ??= new Uint8Array(NATIVE_BUFFER_TEXT_BYTES_MAX))
       const bottomBytes = (this.drawBottomBytes ??= new Uint8Array(NATIVE_BUFFER_TEXT_BYTES_MAX))
-      const textLength = this.encodeDrawText(text, textBytes)
-      const bottomLength = this.encodeDrawText(bottom, bottomBytes)
+      const textLength = encodeDrawText(text, textBytes)
+      const bottomLength = encodeDrawText(bottom, bottomBytes)
       const pointer = this.nativeContextPointer(context, "ot_buffer_draw")
       nativeResult(
         "ot_buffer_draw",
@@ -5823,14 +5809,6 @@ export class FFIRenderLib {
     } finally {
       this.bufferDrawRecord ??= scratch
     }
-  }
-
-  /** Encodes into a buffer sized to the native limit; text that does not fit exceeds that limit. */
-  private encodeDrawText(text: string, output: Uint8Array): number {
-    if (text === "") return 0
-    const { read, written } = this.encoder.encodeInto(text, output)
-    if (read !== text.length) throw new RangeError("Buffer text exceeds the native byte limit")
-    return written
   }
 
   public contextBufferStack({ context, target, frame }: NativeDrawingTarget, options: NativeBufferStack): number {
