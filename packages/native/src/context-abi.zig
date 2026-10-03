@@ -5,6 +5,7 @@ const c = @import("context_abi_c");
 const Context = @import("context.zig").Context;
 const BufferDraw = @import("context.zig").BufferDraw;
 const ObjectHandle = @import("context-handles.zig").Handle;
+const ObjectKind = @import("context-handles.zig").Kind;
 const scene = @import("scene.zig");
 const scene_record = @import("scene-record.zig");
 
@@ -2470,6 +2471,19 @@ pub fn sessionError(owner: *ContextHandle, err: anyerror) c.ot_status {
     return status;
 }
 
+/// Shared body of the typed ot_*_destroy exports. The kind check keeps one
+/// export from destroying an object of another kind.
+pub fn destroyKind(context: ?*ContextHandle, id: ?*const c.ot_handle, kind: ObjectKind) c.ot_status {
+    const status = sessionContextStatus(context);
+    if (status != c.OT_OK) return status;
+    const owner = context.?;
+    const handle = handleFromC((id orelse return sessionError(owner, error.InvalidOptions)).*);
+    const actual = owner.core.objects.getKind(handle) catch |err| return sessionError(owner, err);
+    if (actual != kind) return sessionError(owner, error.WrongKind);
+    owner.core.destroy(handle) catch |err| return sessionError(owner, err);
+    return c.OT_OK;
+}
+
 pub fn createTestContext(options: struct { object_capacity: u32, render_cells_max: u32 }) !*ContextHandle {
     var config = std.mem.zeroes(c.ot_context_options);
     config.struct_size = @sizeOf(c.ot_context_options);
@@ -4354,6 +4368,85 @@ test "Context ABI diagnostics copy bounded records and preserve failed drains" {
     try std.testing.expectEqualSlices(u8, "1", batch[0].message[0..batch[0].message_len]);
     try std.testing.expectEqualSlices(u8, "62", batch[61].message[0..batch[61].message_len]);
     try std.testing.expectEqual(99, batch[62].reserved);
+}
+
+test "Context typed destroy helper matches every typed destroy export" {
+    const Create = struct {
+        fn editBuffer(core: *Context) !ObjectHandle {
+            return core.createEditBuffer(.unicode);
+        }
+        fn editorView(core: *Context) !ObjectHandle {
+            return core.createEditorView(try core.createEditBuffer(.unicode), 2, 1);
+        }
+        fn syntaxStyle(core: *Context) !ObjectHandle {
+            return core.createSyntaxStyle();
+        }
+        fn image(core: *Context) !ObjectHandle {
+            return core.createImagePixels(&.{ 1, 2, 3, 4 }, 1, 1, .{ .stride = 4 });
+        }
+        fn buffer(core: *Context) !ObjectHandle {
+            return core.createBuffer(1, 1, .{});
+        }
+        fn session(core: *Context) !ObjectHandle {
+            return core.createSession(.{});
+        }
+        fn textBuffer(core: *Context) !ObjectHandle {
+            return core.createTextBuffer(.unicode);
+        }
+        fn textBufferView(core: *Context) !ObjectHandle {
+            return core.createTextBufferView(try core.createTextBuffer(.unicode));
+        }
+        fn unicode(core: *Context) !ObjectHandle {
+            return core.createUnicode("a", .unicode);
+        }
+        fn embeddedTerminal(core: *Context) !ObjectHandle {
+            return core.createEmbeddedTerminal(2, 1, 0);
+        }
+    };
+    const Destroy = *const fn (?*ContextHandle, ?*const c.ot_handle) callconv(.c) c.ot_status;
+    const cases = .{
+        .{ ObjectKind.edit_buffer, &ot_edit_buffer_destroy, Create.editBuffer },
+        .{ ObjectKind.editor_view, &ot_editor_view_destroy, Create.editorView },
+        .{ ObjectKind.syntax_style, &ot_syntax_style_destroy, Create.syntaxStyle },
+        .{ ObjectKind.image, &ot_image_destroy, Create.image },
+        .{ ObjectKind.buffer, &ot_buffer_destroy, Create.buffer },
+        .{ ObjectKind.session, &ot_session_destroy, Create.session },
+        .{ ObjectKind.text_buffer, &text_transport.ot_text_buffer_destroy, Create.textBuffer },
+        .{ ObjectKind.text_buffer_view, &text_transport.ot_text_buffer_view_destroy, Create.textBufferView },
+        .{ ObjectKind.encoded_unicode, &unicode_transport.ot_unicode_destroy, Create.unicode },
+        .{ ObjectKind.embedded_terminal, &terminal_transport.ot_embedded_terminal_destroy, Create.embeddedTerminal },
+    };
+    const handle = try createTestContext(.{ .object_capacity = 64, .render_cells_max = 16 });
+    defer std.testing.expectEqual(c.OT_OK, ot_context_destroy(handle)) catch unreachable;
+    const core = handle.core;
+    inline for (cases) |case| {
+        const kind: ObjectKind, const destroy: Destroy, const create = case;
+        const wrong = handleToC(try if (kind == .buffer) core.createSyntaxStyle() else core.createBuffer(1, 1, .{}));
+        // The export and the helper each destroy their own object of the same kind.
+        const targets = [2]c.ot_handle{ handleToC(try create(core)), handleToC(try create(core)) };
+        const expected = [_]c.ot_status{ c.OT_CONTEXT_BUSY, c.OT_INVALID_ARGUMENT, c.OT_WRONG_KIND, c.OT_WRONG_CONTEXT, c.OT_OK, c.OT_STALE_HANDLE };
+        for (expected, 0..) |status, step| {
+            var inputs: [2]?*const c.ot_handle = undefined;
+            var foreign = targets;
+            for (&inputs, &targets, &foreign) |*input, *target, *other| {
+                other.context_id += 1;
+                input.* = switch (step) {
+                    1 => null,
+                    2 => &wrong,
+                    3 => other,
+                    else => target,
+                };
+            }
+            core.mutating = step == 0;
+            const export_status = destroy(handle, inputs[0]);
+            const export_error = handle.last_error;
+            const helper_status = destroyKind(handle, inputs[1], kind);
+            core.mutating = false;
+            try std.testing.expectEqual(status, export_status);
+            try std.testing.expectEqual(status, helper_status);
+            try std.testing.expectEqual(export_error, handle.last_error);
+        }
+    }
 }
 
 test "Session native output ABI validates admission before writing and rejects callback reentry" {
