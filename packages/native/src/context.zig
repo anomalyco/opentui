@@ -472,7 +472,13 @@ const SceneMeasure = struct {
         // call. Unlike native measurement failures, they do not poison the tree.
         var result: yoga.ExternalYogaSize = .{ .width = std.math.nan(f32), .height = std.math.nan(f32) };
         self.callback(self.handle.context_id, self.handle.slot, self.handle.generation, width, width_mode, height, height_mode, &result);
-        return result;
+        // Yoga warns about NaN and measures zero. A size beyond the i32 cell range
+        // would instead fail the whole frame in layout validation.
+        return .{ .width = cellRangeOrNan(result.width), .height = cellRangeOrNan(result.height) };
+    }
+
+    fn cellRangeOrNan(value: f32) f32 {
+        return if (@as(f64, value) <= std.math.maxInt(i32)) value else std.math.nan(f32);
     }
 };
 

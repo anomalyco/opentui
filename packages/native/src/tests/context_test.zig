@@ -372,6 +372,37 @@ test "Context handles tombstone before cleanup and retire exhausted generations"
     try std.testing.expectEqual(@as(u32, 0), table.live_count);
 }
 
+test "Context scene measure maps unrepresentable host sizes to Yoga's invalid size" {
+    const Host = struct {
+        var width: f32 = 0;
+
+        fn measure(_: u64, _: u32, _: u32, _: f32, _: u32, _: f32, _: u32, result: *yoga.ExternalYogaSize) callconv(.c) void {
+            result.* = .{ .width = width, .height = 1 };
+        }
+    };
+    const owner = try context.Context.init(std.testing.allocator, std.testing.io, .{});
+    defer owner.deinit() catch unreachable;
+    const session = try owner.createSession(.{});
+    try owner.attachSessionRenderer(session, 12, 4, .{ .remote_mode = .remote });
+    const root = try owner.sceneCreateNode(session, 0, 1);
+    try owner.sceneSetStyle(root, 0, 4, 0, 0, 1, 0);
+    const node = try owner.sceneCreateNode(session, 1, 2);
+    try owner.sceneMoveNode(node, root, 0);
+    try owner.sceneSetMeasure(node, &Host.measure);
+    // Like NaN, a size outside the i32 cell range warns and measures as zero instead of failing the frame.
+    for ([_]f32{ std.math.inf(f32), 4e9, std.math.nan(f32), 3 }) |width| {
+        Host.width = width;
+        try owner.sceneMarkDirty(node);
+        const measured = try layout(owner, node);
+        try std.testing.expectEqual(@as(f32, if (width == 3) 3 else 0), measured.width);
+        try std.testing.expectEqual(@as(f32, 1), measured.height);
+        var records: [1]@import("../logger.zig").Diagnostic = undefined;
+        const drained = owner.diagnostics.drain(&records);
+        try std.testing.expectEqual(@as(u32, if (width == 3) 0 else 1), drained.count);
+        try std.testing.expectEqual(@as(u32, 0), drained.remaining);
+    }
+}
+
 test "Context rejects mutation reentry from Yoga dirtied callbacks" {
     const Reentry = struct {
         owner: *context.Context = undefined,
