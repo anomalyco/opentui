@@ -182,6 +182,7 @@
     "src/text-buffer.test.ts",
     "src/text-buffer-view.test.ts",
     "src/lib/tree-sitter/parser.worker.ts",
-    "src/testing/bun-test-node.ts"
+    "src/testing/bun-test-node.ts",
+    "src/tests/scene-observation-cache.test.ts"
   ]
 }
