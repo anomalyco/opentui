@@ -460,6 +460,7 @@ const transitionsDuringFrame = {
     await target.suspend()
     await target.resume()
   },
+  setupTerminal: (target: TestRenderer) => target.setupTerminal(),
 }
 
 for (const [transition, run] of Object.entries(transitionsDuringFrame)) {

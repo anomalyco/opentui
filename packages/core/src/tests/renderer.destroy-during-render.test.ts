@@ -1,10 +1,10 @@
-import { test, expect } from "bun:test"
+import { test, expect, spyOn } from "bun:test"
 import { Readable } from "node:stream"
 import { Renderable } from "../Renderable.js"
 import type { OptimizedBuffer } from "../buffer.js"
 import { BoxRenderable } from "../renderables/Box.js"
-import type { CliRenderer } from "../renderer.js"
-import { assertRendererReleased, processListenerCounts } from "../testing/harness.js"
+import { CliRenderEvents, type CliRenderer } from "../renderer.js"
+import { assertRendererReleased, processListenerCounts, settle } from "../testing/harness.js"
 import { createTestRenderer } from "../testing/test-renderer.js"
 import { RecordingWriteStream } from "../testing/test-streams.js"
 
@@ -72,4 +72,48 @@ for (const [phase, install] of Object.entries(phases)) {
     expect(renderable?.isDestroyed ?? true).toBe(true)
     await assertRendererReleased(renderer, listeners)
   })
+}
+
+// Teardown abandons a frame that waits for the terminal. That is not a render failure.
+const frameWaits: Record<string, (stdout: RecordingWriteStream, renderer: CliRenderer) => Promise<void> | void> = {
+  "terminal setup": (_stdout, renderer) => void renderer.setupTerminal().catch(() => {}),
+  "frame presentation": async (stdout, renderer) => {
+    await renderer.setupTerminal()
+    stdout.hold()
+    renderer.setBackgroundColor("#202020")
+  },
+}
+
+for (const [wait, enter] of Object.entries(frameWaits)) {
+  for (const teardown of ["destroy"] as const) {
+    test(`${teardown} while a frame waits for ${wait} reports no render error`, async () => {
+      const listeners = processListenerCounts()
+      const stdout = new RecordingWriteStream()
+      const { renderer, renderOnce } = await createTestRenderer({
+        stdout: stdout as unknown as NodeJS.WriteStream,
+        bufferedOutput: "stdout",
+        consoleMode: "disabled",
+      })
+      const renderErrors: unknown[] = []
+      renderer.on(CliRenderEvents.RENDER_ERROR, ({ error }) => renderErrors.push(error))
+      const logged = spyOn(console, "error").mockImplementation(() => {})
+      try {
+        await enter(stdout, renderer)
+        const frame = renderOnce()
+        await settle()
+        expect(renderer.getSchedulerState().isRendering).toBe(true)
+        if (teardown === "destroy") renderer.destroy()
+        else stdout.destroy(new Error("ECONNRESET"))
+        stdout.release()
+        await frame
+        await assertRendererReleased(renderer, listeners)
+
+        expect(renderErrors).toEqual([])
+        // Only a running renderer reports a Session failure; a pending setup rejects its caller instead.
+        expect(logged.mock.calls.length).toBe(teardown === "Session failure" && wait !== "terminal setup" ? 1 : 0)
+      } finally {
+        logged.mockRestore()
+      }
+    })
+  }
 }

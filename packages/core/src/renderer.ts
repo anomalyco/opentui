@@ -4849,7 +4849,7 @@ export class CliRenderer extends EventEmitter implements RenderContext {
     let renderFailed = false
     try {
       if (!this.canRender) return
-      if (this.nativeTerminalTransition) await this.nativeTerminalTransition
+      if (this.nativeTerminalTransition && !(await this.waitForTerminalTransition())) return
       if (
         !this.canRender ||
         this.currentControlState === RendererControlState.EXPLICIT_SUSPENDED ||
@@ -4901,6 +4901,8 @@ export class CliRenderer extends EventEmitter implements RenderContext {
       const end = performance.now()
       this.renderStats.frameCallbackTime = end - start
 
+      // Callbacks can start terminal setup; a frame step is invalid until it settles.
+      if (this.nativeTerminalTransition && !(await this.waitForTerminalTransition())) return
       if (!this.canRender || this.currentControlState === RendererControlState.EXPLICIT_SUSPENDED) return
       const sceneStart = performance.now()
       const requestedBeforeScene = this.immediateRerenderRequested
@@ -5031,6 +5033,19 @@ export class CliRenderer extends EventEmitter implements RenderContext {
         completion?.resolve()
       }
     }
+  }
+
+  /** Waits for pending terminal transitions. False when one failed; its tracker already reported it. Callers check
+   * `nativeTerminalTransition` first, so a frame without a transition does not yield. */
+  private async waitForTerminalTransition(): Promise<boolean> {
+    while (this.nativeTerminalTransition) {
+      try {
+        await this.nativeTerminalTransition
+      } catch {
+        return false
+      }
+    }
+    return true
   }
 
   public intermediateRender(): void {
