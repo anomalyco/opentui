@@ -15,8 +15,12 @@ import Yoga, {
   PositionType,
   Unit,
   Wrap,
+  YogaEnumKind,
+  YogaError,
+  YogaStatus,
   type Value,
 } from "../yoga.js"
+import { FFIRenderLib } from "../zig.js"
 
 function expectYogaValue(actual: Value, unit: Unit, value?: number): void {
   expect(actual.unit).toBe(unit)
@@ -414,5 +418,51 @@ describe("native Yoga API coverage", () => {
     expect(root.hasNewLayout()).toBe(true)
 
     root.free()
+  })
+
+  test("YogaError reports the native status of a rejected operation", () => {
+    const other = new FFIRenderLib()
+    const config = Yoga.Config.create()
+    const nodes = Array.from({ length: 257 }, () => Yoga.Node.create(config))
+    // Native Yoga trees hold at most 256 levels.
+    for (let depth = 1; depth < 256; depth++) nodes[depth - 1].insertChild(nodes[depth], 0)
+    const leaf = nodes[256]
+    // Another library passes its own callback guard, so native refuses the mutation during layout.
+    leaf.setMeasureFunc(() => {
+      other.yogaNodeStyleSetEnum(leaf.ptr, YogaEnumKind.Display, Display.None)
+      return { width: 1, height: 1 }
+    })
+    const statusOf = (call: () => void) => {
+      try {
+        call()
+      } catch (error) {
+        return error instanceof YogaError ? YogaStatus[error.status] : error
+      }
+      return "no error"
+    }
+    const rows: [string, () => void, keyof typeof YogaStatus][] = [
+      ["a child that already has an owner", () => nodes[2].insertChild(nodes[1], 0), "InvalidArgument"],
+      ["a negative child index", () => leaf.insertChild(nodes[0], -1), "InvalidArgument"],
+      ["a 257th level", () => nodes[255].insertChild(leaf, 0), "DepthLimit"],
+      ["a mutation during layout", () => leaf.calculateLayout(), "Busy"],
+    ]
+    try {
+      expect(rows.map(([name, call]) => [name, statusOf(call)])).toEqual(rows.map(([name, , status]) => [name, status]))
+      expect(new YogaError("yogaNodeFreeChecked", 99 as YogaStatus).message).toBe(
+        "yogaNodeFreeChecked failed: Unknown (status 99)",
+      )
+    } finally {
+      nodes[0].freeRecursive()
+      leaf.free()
+      config.free()
+    }
+
+    // Disposal frees idle configs, including a default config that is recreated after a free.
+    const freedDefault = other.getYogaHost().getDefaultConfig()
+    freedDefault.free()
+    const idle = other.getYogaHost().getDefaultConfig()
+    expect(idle).not.toBe(freedDefault)
+    other.dispose()
+    expect(() => idle.assertAlive()).toThrow("Yoga config is freed")
   })
 })
