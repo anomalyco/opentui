@@ -3136,8 +3136,9 @@ export class CliRenderer extends EventEmitter implements RenderContext {
     }
   }
 
+  // The native Session refuses mode changes during a terminal transition; the transition's settlement applies it.
   private applyPendingNativeMode(): void {
-    if (this._isDestroyed || this.rendering || this.nativeSplitFlush) return
+    if (this._isDestroyed || this.rendering || this.nativeSplitFlush || this.nativeTerminalTransition) return
     try {
       if (this.pendingNativeReplay?.remaining === 0) this.applySplitFooterReplayReset(this.pendingNativeReplay.options)
       if (this.pendingExternalOutputMode === "capture-stdout" && this._screenMode === "split-footer") {
@@ -3155,6 +3156,15 @@ export class CliRenderer extends EventEmitter implements RenderContext {
       ) {
         this.scheduleRenderAfterOutputIdle()
       } else throw error
+    }
+  }
+
+  // Frame and transition completion must finish their bookkeeping, so a failed mode change is reported, not thrown.
+  private applyPendingNativeModeReported(): void {
+    try {
+      this.applyPendingNativeMode()
+    } catch (error) {
+      this.handleError(error instanceof Error ? error : new Error(String(error)))
     }
   }
 
@@ -3293,6 +3303,7 @@ export class CliRenderer extends EventEmitter implements RenderContext {
       .then(() => complete?.())
       .finally(() => {
         if (this.nativeTerminalTransition === tracked) this.nativeTerminalTransition = null
+        this.applyPendingNativeModeReported()
         this.applyPendingNativeResize()
         this.resolveIdleIfNeeded()
       })
@@ -5013,7 +5024,7 @@ export class CliRenderer extends EventEmitter implements RenderContext {
         }
         // Keep the old dimensions through FRAME publication, even if the output
         // driver completed its presentation and drain in the same turn.
-        this.applyPendingNativeMode()
+        this.applyPendingNativeModeReported()
         this.applyPendingNativeResize()
         this.resolveIdleIfNeeded()
       } finally {

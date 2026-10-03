@@ -1,10 +1,10 @@
 import { test, expect, beforeEach, afterEach } from "bun:test"
 import { createTestRenderer, type TestRenderer, type MockInput, type MockMouse } from "../testing/test-renderer.js"
 import { ManualClock } from "../testing/manual-clock.js"
-import { RendererControlState } from "../renderer.js"
+import { CliRenderEvents, RendererControlState } from "../renderer.js"
 import { Renderable } from "../Renderable.js"
 import { TextRenderable } from "../renderables/Text.js"
-import { createTestStdout } from "../testing/test-streams.js"
+import { createTestStdout, RecordingWriteStream } from "../testing/test-streams.js"
 
 class TestRenderable extends Renderable {
   constructor(renderer: TestRenderer, options: any) {
@@ -454,3 +454,45 @@ test("suspend/resume does not leak stdin listeners", async () => {
 
   expect(renderer.stdin.listenerCount("data")).toBe(baseline)
 })
+
+const transitionsDuringFrame = {
+  suspend: async (target: TestRenderer) => {
+    await target.suspend()
+    await target.resume()
+  },
+}
+
+for (const [transition, run] of Object.entries(transitionsDuringFrame)) {
+  test(`a screen mode set during a frame waits for a ${transition} that starts before the frame ends`, async () => {
+    renderer.destroy()
+    await renderer.closed
+    const stdout = new RecordingWriteStream()
+    ;({ renderer, renderOnce } = await createTestRenderer({
+      screenMode: "main-screen",
+      stdout: stdout as unknown as NodeJS.WriteStream,
+      bufferedOutput: "stdout",
+    }))
+    if (transition !== "setupTerminal") await renderer.setupTerminal()
+    const errors: unknown[] = []
+    renderer.on(CliRenderEvents.RENDER_ERROR, ({ error }) => errors.push(error))
+    const gate = Promise.withResolvers<void>()
+    const entered = Promise.withResolvers<void>()
+    renderer.setFrameCallback(async () => {
+      entered.resolve()
+      await gate.promise
+    })
+    const frame = renderOnce()
+    await entered.promise
+    renderer.screenMode = "alternate-screen"
+    stdout.clear()
+    const transitioned = run(renderer)
+    gate.resolve()
+
+    await frame
+    await transitioned
+    await renderOnce()
+
+    expect({ mode: renderer.screenMode, errors }).toEqual({ mode: "alternate-screen", errors: [] })
+    expect(stdout.text()).toContain("\x1b[?1049h")
+  })
+}
