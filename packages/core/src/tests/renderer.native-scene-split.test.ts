@@ -1,5 +1,6 @@
 import { afterEach, expect, test } from "bun:test"
 import { NativeSession } from "../NativeSession.js"
+import { CliRenderEvents } from "../renderer.js"
 import { Renderable, RenderableEvents } from "../Renderable.js"
 import { BoxRenderable } from "../renderables/Box.js"
 import { CodeRenderable } from "../renderables/Code.js"
@@ -117,6 +118,52 @@ test.each(["stdout", "writer"] as const)(
       ...lines(20).map((row) => `a ${row}`),
       ...lines(6).map((row) => `b ${row}`),
     ])
+  },
+)
+
+test.each([
+  ["writer", "NaN rowColumns", { rowColumns: Number.NaN }, null],
+  ["surface", "NaN rowColumns", { rowColumns: Number.NaN }, null],
+  [
+    "writer",
+    "non-boolean flags",
+    { startOnNewLine: 0, trailingNewline: "yes" },
+    { startOnNewLine: false, trailingNewline: true },
+  ],
+  ["surface", "non-boolean flags", { trailingNewline: 0 }, { startOnNewLine: true, trailingNewline: false }],
+] as const)(
+  "a %s commit with %s fails at the call or is coerced; frames keep presenting",
+  async (source, _name, fields, flags) => {
+    const { renderer, renderOnce, externalOutput } = await setup()
+    const errors: unknown[] = []
+    renderer.on(CliRenderEvents.RENDER_ERROR, (event) => errors.push(event))
+    const commit = () => {
+      if (source === "writer") {
+        renderer.writeToScrollback(({ renderContext }) => ({
+          root: new TextRenderable(renderContext, { content: "x", width: 1, height: 1 }),
+          ...(fields as object),
+        }))
+        return
+      }
+      const surface = renderer.createScrollbackSurface()
+      try {
+        surface.root.add(new TextRenderable(surface.renderContext, { content: "x", width: 1, height: 1 }))
+        surface.render()
+        surface.commitRows(0, 1, fields as object)
+      } finally {
+        surface.destroy()
+      }
+    }
+    if (flags === null) {
+      expect(commit).toThrow(RangeError)
+      expect(externalOutput.take()).toEqual([])
+    } else {
+      commit()
+      expect(externalOutput.take()).toMatchObject([{ text: "x", ...flags }])
+    }
+    await renderOnce()
+    await renderOnce()
+    expect(errors).toEqual([])
   },
 )
 

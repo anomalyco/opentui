@@ -431,6 +431,12 @@ class ExternalOutputQueue {
   }
 
   writeSnapshots(commits: readonly ExternalOutputCommit[]): void {
+    // Every frame renders the queue head, so one invalid entry would fail every later frame and the close flush.
+    for (const { rowColumns, snapshot } of commits) {
+      if (!Number.isInteger(rowColumns) || rowColumns < 0 || rowColumns > snapshot.width) {
+        throw new RangeError("Scrollback commit rowColumns must be an integer from 0 to the snapshot width")
+      }
+    }
     const entries = commits.map((commit) => ({ ...commit, cells: commit.snapshot.width * commit.snapshot.height }))
     const cells = entries.reduce((total, commit) => total + commit.cells, 0)
     this.checkCapacity(cells)
@@ -2632,8 +2638,8 @@ export class CliRenderer extends EventEmitter implements RenderContext {
       {
         snapshot: options.snapshot,
         rowColumns,
-        startOnNewLine: options.startOnNewLine ?? true,
-        trailingNewline: options.trailingNewline ?? true,
+        startOnNewLine: Boolean(options.startOnNewLine ?? true),
+        trailingNewline: Boolean(options.trailingNewline ?? true),
       },
     ])
   }
