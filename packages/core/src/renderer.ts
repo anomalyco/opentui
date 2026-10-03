@@ -52,6 +52,7 @@ import {
   type GetPaletteOptions,
 } from "./lib/terminal-palette.js"
 import { calculateRenderGeometry } from "./lib/render-geometry.js"
+import { stringWidth } from "./platform/runtime.js"
 import {
   isCapabilityResponse,
   isPixelResolutionResponse,
@@ -399,6 +400,9 @@ type ExternalOutputCommit = {
 
 // One captured stdout row of `cells` terminal cells.
 type StdoutRow = { line: string; cells: number; trailingNewline: boolean }
+
+const STDOUT_TAB_WIDTH = 8
+const graphemeSegmenter = new Intl.Segmenter(undefined, { granularity: "grapheme" })
 
 type PendingSplitFooterTransition = {
   mode: "viewport-scroll" | "clear-stale-rows"
@@ -2705,35 +2709,57 @@ export class CliRenderer extends EventEmitter implements RenderContext {
     }
   }
 
-  private splitStdoutRows(text: string): Array<{ line: string; trailingNewline: boolean }> {
+  private splitStdoutRows(text: string): StdoutRow[] {
     // Captured stdout arrives as an arbitrary byte stream, but split append commits
     // are row-based (line text + whether that row ended with '\n'). We normalize
     // here because native split append expects already-decoded row intent, not raw
     // control characters.
     //
     // '\r' must restart the in-progress row so in-place status updates (progress
-    // bars/spinners) do not accumulate stale prefixes in scrollback. '\n' commits
-    // the row and marks newline intent for the final chunk of that logical row.
-    const rows: Array<{ line: string; trailingNewline: boolean }> = []
-    let current = ""
+    // bars/spinners) do not accumulate stale prefixes in scrollback. '\n' and '\r\n'
+    // commit the row and mark newline intent for the final chunk of that logical row.
+    //
+    // Chunk rows at the renderer width in display cells, never inside a grapheme, so
+    // each commit maps to one terminal row append and keeps every cell.
+    const width = Math.max(1, this.width)
+    const rows: StdoutRow[] = []
+    // Wrapped chunks of the current logical row start at this index; '\r' drops them.
+    let rowStart = 0
+    let line = ""
+    let cells = 0
 
-    for (const char of text) {
-      if (char === "\r") {
-        current = ""
+    for (const { segment } of graphemeSegmenter.segment(text)) {
+      if (segment === "\r") {
+        rows.length = rowStart
+        line = ""
+        cells = 0
         continue
       }
 
-      if (char === "\n") {
-        rows.push({ line: current, trailingNewline: true })
-        current = ""
+      if (segment === "\n" || segment === "\r\n") {
+        // Newline-only rows still need a commit so native split scrollback advances.
+        rows.push({ line, cells, trailingNewline: true })
+        rowStart = rows.length
+        line = ""
+        cells = 0
         continue
       }
 
-      current += char
+      // A tab advances to the next stop, as in a terminal, and never wraps.
+      const tabCells = Math.min(STDOUT_TAB_WIDTH - (cells % STDOUT_TAB_WIDTH), Math.max(0, width - cells))
+      const grapheme = segment === "\t" ? " ".repeat(tabCells) : segment
+      const graphemeCells = stringWidth(grapheme)
+      if (cells > 0 && cells + graphemeCells > width) {
+        rows.push({ line, cells, trailingNewline: false })
+        line = ""
+        cells = 0
+      }
+      line += grapheme
+      cells += graphemeCells
     }
 
-    if (current.length > 0) {
-      rows.push({ line: current, trailingNewline: false })
+    if (line.length > 0) {
+      rows.push({ line, cells, trailingNewline: false })
     }
 
     return rows
@@ -2747,31 +2773,12 @@ export class CliRenderer extends EventEmitter implements RenderContext {
       throw new Error("Captured stdout exceeds the Session output capacity")
     }
 
-    // Chunk captured stdout into width-bounded row commits so each commit is a
-    // small, deterministic append step. This keeps bursty output smooth while
-    // preserving newline ownership on the final chunk of each logical row.
-    // Split commits are row-oriented snapshots. We chunk by renderer width so each
-    // commit maps to a single logical terminal row append operation.
-    const chunkWidth = Math.max(1, this.width)
-    const chunks: StdoutRow[] = []
-    for (const row of this.splitStdoutRows(text)) {
-      const rowCells = [...row.line]
-      // Preserve empty-line writes: newline-only chunks still need a commit so
-      // split scrollback state advances correctly in native code.
-      if (rowCells.length === 0) chunks.push({ line: "", cells: 0, trailingNewline: row.trailingNewline })
-      for (let offset = 0; offset < rowCells.length; offset += chunkWidth) {
-        const chunk = rowCells.slice(offset, offset + chunkWidth)
-        // Only the final wrapped chunk carries newline intent.
-        const isLastChunk = offset + chunkWidth >= rowCells.length
-        chunks.push({ line: chunk.join(""), cells: chunk.length, trailingNewline: isLastChunk && row.trailingNewline })
-      }
-    }
-
+    const rows = this.splitStdoutRows(text)
     // A write is queued whole or not at all; check the budget before allocating snapshots of at least one cell each.
-    this.externalOutputQueue.checkCapacity(chunks.reduce((total, chunk) => total + Math.max(1, chunk.cells), 0))
+    this.externalOutputQueue.checkCapacity(rows.reduce((total, row) => total + Math.max(1, row.cells), 0))
     const commits: ExternalOutputCommit[] = []
     try {
-      for (const chunk of chunks) commits.push(this.createStdoutSnapshotCommit(chunk))
+      for (const row of rows) commits.push(this.createStdoutSnapshotCommit(row))
       return commits
     } catch (error) {
       for (const commit of commits) commit.snapshot.destroy()

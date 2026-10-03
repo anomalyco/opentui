@@ -13,7 +13,7 @@ import {
   type TestRenderer,
   type TestRendererOptions,
 } from "../testing.js"
-import { RecordingWriteStream } from "../testing/test-streams.js"
+import { createTestStdout, RecordingWriteStream } from "../testing/test-streams.js"
 
 const renderers: TestRenderer[] = []
 afterEach(async () => {
@@ -74,6 +74,7 @@ async function setupTerminal(options: { maxBytes?: bigint } = {}) {
   return { ...result, stdout, frame, drainUntil, printed }
 }
 
+const decoder = new TextDecoder()
 const lines = (count: number) => Array.from({ length: count }, (_, index) => `line ${index}`)
 
 type Terminal = Awaited<ReturnType<typeof setupTerminal>>
@@ -120,6 +121,27 @@ test.each(["stdout", "writer"] as const)(
     ])
   },
 )
+
+// Each commit is "text:rowColumns", plus "\n" when it ends its line.
+test.each([
+  ["wraps ASCII at the width", "abcdefghijk\n", ["abcdefghi:9", "jk:2\n"]],
+  ["wraps wide characters by display cells", "一二三四五\n", ["一二三四:8", "五:2\n"]],
+  ["keeps emoji and grapheme clusters", "ok👍🏽 👩‍🚀 e\u0301\n", ["ok👍🏽 👩‍🚀 e\u0301:9\n"]],
+  ["expands tabs to 8-cell stops within the row", "a\tb\tc\n", ["a       b:9", "c:1\n"]],
+  ["ends a line at CRLF", "one\r\ntwo\r\n", ["one:3\n", "two:3\n"]],
+  ["restarts a wrapped line at CR", "0123456789%\r60%\n\n", ["60%:3\n", ":0\n"]],
+])("captured stdout %s", async (_name, text, commits) => {
+  const stdout = createTestStdout(9, 10)
+  const { renderer } = await setup({ width: 9, stdout })
+  const written: string[] = []
+  renderer.on(CliRenderEvents.EXTERNAL_OUTPUT, ({ snapshot, rowColumns, trailingNewline }) => {
+    expect(snapshot.width).toBe(Math.max(1, rowColumns))
+    const row = decoder.decode(snapshot.getRealCharBytes(true)).trimEnd()
+    written.push(`${row}:${rowColumns}${trailingNewline ? "\n" : ""}`)
+  })
+  stdout.write(text)
+  expect(written).toEqual(commits)
+})
 
 test.each([
   ["writer", "NaN rowColumns", { rowColumns: Number.NaN }, null],
