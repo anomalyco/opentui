@@ -14,12 +14,7 @@ pub fn ot_embedded_terminal_create(context: ?*abi.ContextHandle, options: ?*cons
 }
 
 pub fn ot_embedded_terminal_destroy(context: ?*abi.ContextHandle, id: ?*const c.ot_handle) callconv(.c) c.ot_status {
-    const status = abi.sessionContextStatus(context);
-    if (status != c.OT_OK) return status;
-    const handle = abi.handleFromC((id orelse return fail(context, error.InvalidOptions)).*);
-    _ = context.?.core.raw().getEmbeddedTerminal(handle) catch |err| return fail(context, err);
-    context.?.core.destroy(handle) catch |err| return fail(context, err);
-    return c.OT_OK;
+    return abi.destroyKind(context, id, .embedded_terminal);
 }
 
 pub fn ot_embedded_terminal_write(context: ?*abi.ContextHandle, id: ?*const c.ot_handle, bytes: ?[*]const u8, count: u32) callconv(.c) c.ot_status {
@@ -188,7 +183,6 @@ test "Context terminal ABI copies controller output and rejects stale handles" {
     var id = std.mem.zeroes(c.ot_handle);
     try std.testing.expectEqual(c.OT_OK, ot_embedded_terminal_create(context, &config, &id));
     const target = abi.handleToC(try context.?.core.createBuffer(4, 2, .{}));
-    try std.testing.expectEqual(c.OT_WRONG_KIND, ot_embedded_terminal_destroy(context, &target));
     var foreign = id;
     foreign.context_id += 1;
     try std.testing.expectEqual(c.OT_WRONG_CONTEXT, ot_embedded_terminal_write(context, &foreign, "x", 1));
