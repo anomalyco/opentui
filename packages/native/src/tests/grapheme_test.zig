@@ -130,6 +130,23 @@ test "GraphemePool - acquire copies borrowed same-pool bytes before growth" {
     try std.testing.expectEqualSlices(u8, "aaaaaaaa", try pool.get(id));
 }
 
+test "GraphemePool - reused slot rejects the released ID" {
+    var pool = GraphemePool.init(std.testing.allocator);
+    defer pool.deinit();
+    const old = try pool.acquire("a");
+    try pool.decref(old);
+    try std.testing.expectError(error.InvalidId, pool.get(old));
+    const new = try pool.acquire("b");
+    defer pool.decref(new) catch unreachable;
+    try std.testing.expect(new != old);
+    try std.testing.expectError(error.WrongGeneration, pool.get(old));
+    try std.testing.expectError(error.WrongGeneration, pool.incref(old));
+    try std.testing.expectError(error.WrongGeneration, pool.decref(old));
+    for ([_]u32{ gp.SLOT_MASK, 5 << (gp.GENERATION_BITS + gp.SLOT_BITS) }) |invalid| {
+        try std.testing.expectError(error.InvalidId, pool.get(invalid));
+    }
+}
+
 test "GraphemePool - failed first-use acquire leaves no live reference" {
     var fail_offset: usize = 0;
     while (fail_offset < 16) : (fail_offset += 1) {
