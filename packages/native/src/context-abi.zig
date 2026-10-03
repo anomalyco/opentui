@@ -4424,30 +4424,80 @@ test "Session exit pump ABI validates ownership and preserves rejected outputs" 
     try std.testing.expectEqual(@as(u32, 99), result);
 }
 
+const abi_modules = .{
+    @This(),
+    editor_transport,
+    text_transport,
+    unicode_transport,
+    terminal_transport,
+    output_transport,
+    image_transport,
+    clipboard_transport,
+};
+
 // The library opts into exports; layout-only cross-target checks do not link
 // Context or platform backends. The C header is the source of ABI record types.
 pub fn export_symbols() void {
-    @setEvalBranchQuota(100_000);
+    @setEvalBranchQuota(200_000);
     for (@typeInfo(c).@"struct".decls) |declaration| {
         if (!std.mem.startsWith(u8, declaration.name, "ot_")) continue;
-        if (@typeInfo(@TypeOf(@field(c, declaration.name))) != .@"fn") continue;
+        const Prototype = @TypeOf(@field(c, declaration.name));
+        if (@typeInfo(Prototype) != .@"fn") continue;
         const implementation = find: {
-            for (.{
-                @This(),
-                editor_transport,
-                text_transport,
-                unicode_transport,
-                terminal_transport,
-                output_transport,
-                image_transport,
-                clipboard_transport,
-            }) |module| {
+            for (abi_modules) |module| {
                 if (@hasDecl(module, declaration.name)) break :find &@field(module, declaration.name);
             }
             @compileError("Missing checked ABI implementation: " ++ declaration.name);
         };
+        checkPrototype(declaration.name, Prototype, @TypeOf(implementation.*));
         @export(implementation, .{ .name = declaration.name });
     }
+    for (abi_modules) |module| {
+        for (@typeInfo(module).@"struct".decls) |declaration| {
+            if (std.mem.startsWith(u8, declaration.name, "ot_") and !@hasDecl(c, declaration.name))
+                @compileError("ABI implementation is not declared in opentui.h: " ++ declaration.name);
+        }
+    }
+}
+
+// Scalars must match exactly. A pointer or callback must stay nullable, because C
+// callers may pass NULL, and must not drop the header's const.
+fn checkPrototype(comptime name: []const u8, comptime Prototype: type, comptime Implementation: type) void {
+    const prototype = @typeInfo(Prototype).@"fn";
+    const implementation = @typeInfo(Implementation).@"fn";
+    if (!std.meta.eql(implementation.calling_convention, std.builtin.CallingConvention.c) or
+        implementation.params.len != prototype.params.len or
+        implementation.return_type.? != prototype.return_type.?)
+    {
+        @compileError("ABI implementation differs from opentui.h: " ++ name);
+    }
+    for (prototype.params, implementation.params, 0..) |expected, actual, index| {
+        const expected_pointer = nullablePointer(expected.type.?) orelse {
+            if (actual.type.? != expected.type.?) prototypeError("scalar differs from opentui.h", name, index);
+            continue;
+        };
+        const actual_pointer = nullablePointer(actual.type.?) orelse
+            prototypeError("pointer must accept NULL", name, index);
+        if (expected_pointer.is_const and !actual_pointer.is_const)
+            prototypeError("pointer drops const", name, index);
+        if (@typeInfo(expected_pointer.child) == .@"fn" and actual.type.? != expected.type.?)
+            prototypeError("callback differs from opentui.h", name, index);
+    }
+}
+
+fn prototypeError(comptime reason: []const u8, comptime name: []const u8, comptime index: usize) noreturn {
+    @compileError(std.fmt.comptimePrint("ABI {s}: {s} argument {d}", .{ reason, name, index }));
+}
+
+fn nullablePointer(comptime T: type) ?std.builtin.Type.Pointer {
+    return switch (@typeInfo(T)) {
+        .pointer => |info| if (info.size == .c) info else null,
+        .optional => |info| switch (@typeInfo(info.child)) {
+            .pointer => |pointer| pointer,
+            else => null,
+        },
+        else => null,
+    };
 }
 
 comptime {
