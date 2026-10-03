@@ -17,9 +17,8 @@ const output_transport = @import("context-output-abi.zig");
 const image_transport = @import("context-image-abi.zig");
 const clipboard_transport = @import("clipboard-abi.zig");
 
-/// Each C Context owns a private allocator. Process allocator stats do not
-/// include Context memory. Test builds back it with std.testing.allocator and
-/// enable safety, so a test that leaks Context memory fails.
+/// Each C Context owns a private allocator. Test builds back it with
+/// std.testing.allocator and enable safety, so a test that leaks Context memory fails.
 pub const ContextHandle = struct {
     gpa: std.heap.DebugAllocator(.{
         .enable_memory_limit = build_options.gpa_safe_stats,
