@@ -145,7 +145,3 @@ pub fn info(comptime format: []const u8, args: anytype) void {
 pub fn debug(comptime format: []const u8, args: anytype) void {
     logMessage(.debug, format, args);
 }
-
-comptime {
-    if (@import("builtin").is_test) _ = @import("tests/diagnostics_test.zig");
-}

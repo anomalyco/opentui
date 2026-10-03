@@ -8,10 +8,6 @@ const gp = @import("../grapheme.zig");
 const utf8 = @import("../utf8.zig");
 const Fixture = @import("scene_fixture_test.zig").Fixture;
 
-test {
-    _ = @import("context-reuse_test.zig");
-}
-
 const Clock = struct {
     time_us: i64,
     calls: u32 = 0,

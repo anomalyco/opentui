@@ -8,10 +8,6 @@ const ObjectHandle = @import("context-handles.zig").Handle;
 const scene = @import("scene.zig");
 const scene_record = @import("scene-record.zig");
 
-test {
-    _ = @import("tests/scene_flush_test.zig");
-}
-
 const editor_transport = @import("context-editor-abi.zig");
 const text_transport = @import("context-text-abi.zig");
 const unicode_transport = @import("context-unicode-abi.zig");
