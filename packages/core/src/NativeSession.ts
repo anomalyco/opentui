@@ -686,16 +686,18 @@ export class NativeSession {
     try {
       if (this._error) throw this._error
       const now = this.scheduler.now()
-      if (this.closeDeadlineNs !== null && now >= this.closeDeadlineNs) {
-        throw new Error("NativeSession graceful close timed out; output cancelled without restoration")
-      }
+      // A late turn still counts output acknowledged before the deadline and one bounded pump step.
+      const expired = this.closeDeadlineNs !== null && now >= this.closeDeadlineNs
       if (this.output?.completed) {
         if (this.output.ticket) this.lib.sessionCompleteOutput(this.context, this.session, this.output.ticket, true)
         this.output = null
         this.completePresentation()
       }
-      if (this.output) return
-      const result = this.lib.sessionPump(this.context, this.session, now, 1)
+      const result = this.output ? null : this.lib.sessionPump(this.context, this.session, now, 1)
+      if (expired && result?.status !== NativeSessionPumpStatus.Closed) {
+        throw new Error("NativeSession graceful close timed out; output cancelled without restoration")
+      }
+      if (!result) return
       switch (result.status) {
         case NativeSessionPumpStatus.Idle:
           if (this.transition) {
