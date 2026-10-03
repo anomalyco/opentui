@@ -168,6 +168,19 @@ describe("renderer getLinkAt", () => {
       expect(renderer.getLinkIdAt(x, y)).toBe(linkId)
       expect(renderer.getLinkAt(x, y)).toBe(url)
     }
+    // Coordinates outside the i32 cell range, fractions, and NaN never reach native lookup.
+    for (const [x, y] of [
+      [text.x + 0.5, text.y],
+      [-1, text.y],
+      [text.x, -1],
+      [2 ** 31, text.y],
+      [NaN, text.y],
+    ]) {
+      expect(renderer.getLinkIdAt(x, y)).toBe(0)
+      expect(renderer.getLinkAt(x, y)).toBeNull()
+    }
+    renderer.destroy()
+    expect(renderer.getLinkIdAt(text.x, text.y)).toBe(0)
   })
 })
 

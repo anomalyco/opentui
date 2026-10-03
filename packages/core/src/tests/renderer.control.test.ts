@@ -345,3 +345,37 @@ for (const [transition, run] of Object.entries(transitionsDuringFrame)) {
     expect(stdout.text()).toContain("\x1b[?1049h")
   })
 }
+
+// Terminal mode changes and transitions are refused while another transition or a suspension owns the terminal.
+const refusedDuringTransitions: Array<[name: string, act: (target: TestRenderer) => Promise<unknown>, error: string]> = [
+  [
+    "suspend() before setup",
+    async () => {
+      const fresh = await createTestRenderer({})
+      try {
+        return fresh.renderer.suspend()
+      } finally {
+        await fresh.dispose()
+      }
+    },
+    "requires completed terminal setup",
+  ],
+  ["resume() while running", async (target) => target.resume(), "requires completed suspension"],
+  ["a second suspend()", async (target) => (void target.suspend(), target.suspend()), "no pending transition"],
+  ["useMouse while suspended", async (target) => (await target.suspend(), (target.useMouse = false)), "mouse modes"],
+  ["Kitty flags while suspended", async (target) => (await target.suspend(), target.enableKittyKeyboard(1)), "Kitty modes"],
+  ["disabling Kitty while suspended", async (target) => (await target.suspend(), target.disableKittyKeyboard()), "Kitty modes"],
+  ["Kitty flags out of range", async (target) => target.enableKittyKeyboard(32), "0..31"],
+  [
+    "a screen mode during suspend()",
+    async (target) => (void target.suspend(), (target.screenMode = "alternate-screen")),
+    "during a terminal transition",
+  ],
+]
+
+for (const [name, act, error] of refusedDuringTransitions) {
+  test(`${name} throws`, async () => {
+    await expect(act(renderer)).rejects.toThrow(error)
+    await renderer.idle()
+  })
+}
