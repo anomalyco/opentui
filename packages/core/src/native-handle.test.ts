@@ -15,10 +15,12 @@ import {
   NativeEditCommand,
   NativeStatus,
   resolveRenderLib,
+  SceneStaging,
   setRenderLibPath,
   type ContextTextBufferHandle,
   type NativeContextHandle,
   type NativeSceneFrameRequest,
+  type NativeScenePaintUpdate,
 } from "./zig.js"
 
 type Lib = ReturnType<typeof resolveRenderLib>
@@ -388,6 +390,52 @@ describe("context diagnostics", () => {
     } finally {
       symbols.ot_context_drain_diagnostics = original
       for (const method of consoles) method.mockRestore()
+    }
+  })
+})
+
+describe("scene paint encoding", () => {
+  const color = (intent: number) => new RGBA(Uint16Array.of(0, intent << 8, 0, 255))
+  test.each([
+    ["the smallest zIndex", { zIndex: -0x8000_0000 }, null],
+    ["the largest zIndex", { zIndex: 0x7fff_ffff }, null],
+    ["opacity 0 and all border sides", { opacity: 0, border: 15 }, null],
+    ["opacity 1 and finite translations", { opacity: 1, translateX: -1e300, translateY: 1e300 }, null],
+    ["a border reset with a style", { borderStyle: "heavy", resetBorderCharacters: true }, null],
+    ["a zIndex above i32", { zIndex: 0x8000_0000 }, RangeError],
+    ["a fractional zIndex", { zIndex: 0.5 }, RangeError],
+    ["opacity above 1", { opacity: 1.01 }, RangeError],
+    ["opacity below 0", { opacity: -0.01 }, RangeError],
+    ["NaN opacity", { opacity: NaN }, RangeError],
+    ["an infinite translation", { translateX: Infinity }, RangeError],
+    ["a NaN translation", { translateY: NaN }, RangeError],
+    ["a fifth border side", { border: 16 }, RangeError],
+    ["a numeric shouldFill", { shouldFill: 1 }, TypeError],
+    ["a string focusable", { focusable: "yes" }, TypeError],
+    ["an unknown border style", { borderStyle: "dotted" }, TypeError],
+    ["a border reset without a style", { resetBorderCharacters: true }, TypeError],
+    ["an unknown color intent", { backgroundColor: color(3) }, RangeError],
+    ["an indexed color intent in a focused border", { focusedBorderColor: color(1) }, null],
+  ] as const)("paint with %s", (_, paint, expected) => {
+    const lib = resolveRenderLib()
+    const context = lib.createContext({ objectCapacity: 4, renderCellsMax: 32 })
+    try {
+      const session = lib.createSession(context, { chunkSize: 1024, spanCapacity: 2, maxBytes: 2048n })
+      lib.sessionAttachRenderer(context, session, { width: 4, height: 3, remote: true })
+      lib.sceneCreateNode(context, session, "root", 1)
+      const box = lib.sceneCreateNode(context, session, "box", 2)
+      const staging = new SceneStaging()
+      const stage = () => staging.stagePaint(context, box, paint as NativeScenePaintUpdate)
+      if (expected === null) {
+        // Values the encoder accepts must also pass native flush validation.
+        stage()
+        lib.sceneFlush(context, staging)
+      } else {
+        expect(stage).toThrow(expected)
+        expect(staging.count).toBe(0)
+      }
+    } finally {
+      lib.destroyContext(context)
     }
   })
 })
