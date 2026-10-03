@@ -545,6 +545,21 @@ pub fn ot_session_start_kitty_file_probe(
     return c.OT_OK;
 }
 
+const WidthMethod = @import("utf8.zig").WidthMethod;
+
+/// Decodes an OT_WIDTH_METHOD_* value for every C entry point that takes one.
+pub fn widthMethodFromC(value: u32) error{InvalidOptions}!WidthMethod {
+    return std.enums.fromInt(WidthMethod, value) orelse error.InvalidOptions;
+}
+
+comptime {
+    std.debug.assert(@intFromEnum(WidthMethod.wcwidth) == c.OT_WIDTH_METHOD_WCWIDTH);
+    std.debug.assert(@intFromEnum(WidthMethod.unicode) == c.OT_WIDTH_METHOD_UNICODE);
+    std.debug.assert(@intFromEnum(WidthMethod.no_zwj) == c.OT_WIDTH_METHOD_NO_ZWJ);
+    std.debug.assert(@intFromEnum(WidthMethod.unicode_wide) == c.OT_WIDTH_METHOD_UNICODE_WIDE);
+    std.debug.assert(std.enums.values(WidthMethod).len == 4);
+}
+
 pub fn ot_buffer_create(
     context: ?*ContextHandle,
     options_ptr: ?*const c.ot_buffer_options,
@@ -558,13 +573,7 @@ pub fn ot_buffer_create(
     if (options.struct_size != @sizeOf(c.ot_buffer_options)) return sessionError(owner, error.InvalidOptions);
     if (options.abi_version != c.OT_CONTEXT_ABI_VERSION) return sessionError(owner, error.UnsupportedVersion);
     if (options.flags & ~@as(u32, c.OT_BUFFER_RESPECT_ALPHA) != 0) return sessionError(owner, error.InvalidOptions);
-    const width_method: @import("utf8.zig").WidthMethod = switch (options.width_method) {
-        c.OT_WIDTH_METHOD_WCWIDTH => .wcwidth,
-        c.OT_WIDTH_METHOD_UNICODE => .unicode,
-        c.OT_WIDTH_METHOD_NO_ZWJ => .no_zwj,
-        c.OT_WIDTH_METHOD_UNICODE_WIDE => .unicode_wide,
-        else => return sessionError(owner, error.InvalidOptions),
-    };
+    const width_method = widthMethodFromC(options.width_method) catch |err| return sessionError(owner, err);
     const buffer = owner.core.createBuffer(options.width, options.height, .{
         .width_method = width_method,
         .respect_alpha = options.flags & c.OT_BUFFER_RESPECT_ALPHA != 0,
@@ -574,14 +583,7 @@ pub fn ot_buffer_create(
 }
 
 pub fn ot_buffer_destroy(context: ?*ContextHandle, buffer_ptr: ?*const c.ot_handle) callconv(.c) c.ot_status {
-    const status = sessionContextStatus(context);
-    if (status != c.OT_OK) return status;
-    const owner = context.?;
-    const id = buffer_ptr orelse return sessionError(owner, error.InvalidOptions);
-    const buffer = handleFromC(id.*);
-    _ = owner.core.raw().getBuffer(buffer) catch |err| return sessionError(owner, err);
-    owner.core.destroy(buffer) catch |err| return sessionError(owner, err);
-    return c.OT_OK;
+    return destroyKind(context, buffer_ptr, .buffer);
 }
 
 pub fn ot_buffer_resize(
@@ -2784,6 +2786,108 @@ test "Context focused draw records validate exact size before payload access" {
         try std.testing.expectEqual(c.OT_UNSUPPORTED_VERSION, ot_buffer_draw(context, &buffer, null, &header, null, null, 0, null, 0));
         try std.testing.expectEqual([4]u16{ 255, 0, 0, 255 }, target.buffer.bg[0]);
     }
+}
+
+test "Context buffer ABI rejects invalid arguments without writing outputs" {
+    const context: ?*ContextHandle = try createTestContext(.{ .object_capacity = 8, .render_cells_max = 8 });
+    defer std.testing.expectEqual(c.OT_OK, ot_context_destroy(context)) catch unreachable;
+    const core = context.?.core;
+    const kept: c.ot_handle = .{ .context_id = 77, .slot = 77, .generation = 77 };
+
+    const valid: c.ot_buffer_options = .{
+        .struct_size = @sizeOf(c.ot_buffer_options),
+        .abi_version = c.OT_CONTEXT_ABI_VERSION,
+        .width = 2,
+        .height = 1,
+        .width_method = c.OT_WIDTH_METHOD_UNICODE,
+        .flags = c.OT_BUFFER_RESPECT_ALPHA,
+    };
+    var options: [6]c.ot_buffer_options = @splat(valid);
+    options[0].struct_size += 1;
+    options[1].abi_version += 1;
+    options[2].flags = 2;
+    options[3].width_method = c.OT_WIDTH_METHOD_UNICODE_WIDE + 1;
+    options[4].width = 0;
+    options[5].height = 9;
+    for (options, 0..) |invalid, index| {
+        var out = kept;
+        const expected = if (index == 1) c.OT_UNSUPPORTED_VERSION else c.OT_INVALID_ARGUMENT;
+        try std.testing.expectEqual(expected, ot_buffer_create(context, &invalid, &out));
+        try std.testing.expectEqual(kept, out);
+    }
+    var out = kept;
+    try std.testing.expectEqual(c.OT_INVALID_ARGUMENT, ot_buffer_create(null, &valid, &out));
+    try std.testing.expectEqual(c.OT_INVALID_ARGUMENT, ot_buffer_create(context, null, &out));
+    try std.testing.expectEqual(c.OT_INVALID_ARGUMENT, ot_buffer_create(context, &valid, null));
+    try std.testing.expectEqual(kept, out);
+    var unicode = kept;
+    try std.testing.expectEqual(c.OT_INVALID_ARGUMENT, unicode_transport.ot_unicode_create(context, "a", 1, c.OT_WIDTH_METHOD_UNICODE_WIDE + 1, &unicode));
+    try std.testing.expectEqual(kept, unicode);
+    for (std.enums.values(WidthMethod)) |method| {
+        var width_options = valid;
+        width_options.width_method = @intFromEnum(method);
+        try std.testing.expectEqual(c.OT_OK, ot_buffer_create(context, &width_options, &out));
+        const value = try core.raw().getBuffer(handleFromC(out));
+        try std.testing.expectEqual(method, value.width_method);
+        try std.testing.expect(value.respectAlpha);
+        try std.testing.expectEqual(c.OT_OK, ot_buffer_destroy(context, &out));
+    }
+
+    const target = handleToC(try core.createBuffer(2, 1, .{}));
+    const bytes = [_]u8{0} ** 48;
+    const samples = [_]f32{0};
+    const color = [_]u16{ 255, 255, 255, 255 };
+    var opacity: f32 = 1;
+    var result: f32 = 77;
+    var lease = std.mem.zeroes(c.ot_buffer_lease_snapshot);
+    lease.struct_size = @sizeOf(c.ot_buffer_lease_snapshot);
+    lease.abi_version = c.OT_CONTEXT_ABI_VERSION;
+    const statuses = [_]c.ot_status{
+        ot_buffer_destroy(context, null),
+        ot_buffer_resize(context, null, 2, 1),
+        ot_buffer_resize(context, &target, 0, 1),
+        ot_buffer_resize(context, &target, 3, 3),
+        ot_buffer_stack(context, null, null, c.OT_BUFFER_STACK_GET_OPACITY, 0, 0, 0, 0, &opacity, &result),
+        ot_buffer_stack(context, &target, null, c.OT_BUFFER_STACK_GET_OPACITY, 0, 0, 0, 0, null, &result),
+        ot_buffer_stack(context, &target, null, c.OT_BUFFER_STACK_GET_OPACITY, 0, 0, 0, 0, &opacity, null),
+        ot_buffer_stack(context, &target, null, c.OT_BUFFER_STACK_CLEAR_OPACITY + 1, 0, 0, 0, 0, &opacity, &result),
+        ot_buffer_draw_grid(context, null, null, null, null, 0, null, 0),
+        ot_buffer_draw_packed(context, null, null, &bytes, bytes.len, 0, 0, 1, 1),
+        ot_buffer_draw_packed(context, &target, null, null, 1, 0, 0, 1, 1),
+        ot_buffer_draw_supersample(context, null, null, &bytes, 16, 0, 0, 1, 16),
+        ot_buffer_draw_supersample(context, &target, null, null, 1, 0, 0, 1, 16),
+        ot_buffer_draw_supersample(context, &target, null, &bytes, 16, 0, 0, 2, 16),
+        ot_buffer_draw_grayscale(context, null, null, &samples, 1, 0, 0, 1, 1, null, null, 0),
+        ot_buffer_draw_grayscale(context, &target, null, null, 1, 0, 0, 1, 1, null, null, 0),
+        ot_buffer_draw_grayscale(context, &target, null, &samples, 1, 0, 0, 1, 1, null, null, 2),
+        ot_buffer_acquire_lease(context, null, &lease),
+        ot_buffer_acquire_lease(context, &target, null),
+        unicode_transport.ot_buffer_draw_unicode(context, null, null, &kept, 0, 0, 0, &color, &color, 0),
+        unicode_transport.ot_buffer_draw_unicode(context, &target, null, null, 0, 0, 0, &color, &color, 0),
+        unicode_transport.ot_buffer_draw_unicode(context, &target, null, &kept, 0, 0, 0, null, &color, 0),
+        unicode_transport.ot_buffer_draw_unicode(context, &target, null, &kept, 0, 0, 0, &color, null, 0),
+    };
+    for (statuses, 0..) |status, index| {
+        errdefer std.debug.print("row {d}\n", .{index});
+        try std.testing.expectEqual(c.OT_INVALID_ARGUMENT, status);
+    }
+    try std.testing.expectEqual(@as(f32, 77), result);
+    for ([_]struct { u32, u32, u32, c.ot_status }{
+        .{ @sizeOf(c.ot_buffer_lease_snapshot) + 1, c.OT_CONTEXT_ABI_VERSION, 0, c.OT_INVALID_ARGUMENT },
+        .{ @sizeOf(c.ot_buffer_lease_snapshot), c.OT_CONTEXT_ABI_VERSION + 1, 0, c.OT_UNSUPPORTED_VERSION },
+        .{ @sizeOf(c.ot_buffer_lease_snapshot), c.OT_CONTEXT_ABI_VERSION, 1, c.OT_INVALID_ARGUMENT },
+    }) |row| {
+        var snapshot = std.mem.zeroes(c.ot_buffer_lease_snapshot);
+        snapshot.struct_size = row[0];
+        snapshot.abi_version = row[1];
+        snapshot.reserved = row[2];
+        try std.testing.expectEqual(row[3], ot_buffer_acquire_lease(context, &target, &snapshot));
+        try std.testing.expectEqual(@as(u64, 0), snapshot.char_ptr);
+    }
+    const value = try core.raw().getBuffer(handleFromC(target));
+    try std.testing.expectEqual(@as(u32, 2), value.width);
+    try std.testing.expectEqual(@as(usize, 0), value.scissor_stack.items.len);
+    try std.testing.expectEqual(@as(u32, 0), core.lease_count);
 }
 
 test "Context console ABI validates rectangle frame and diagnostic arguments" {
