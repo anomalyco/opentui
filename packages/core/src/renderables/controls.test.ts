@@ -133,6 +133,20 @@ test.each(navigation)("%s", (_, Control, options, steps, expected) => {
   node.destroy()
 })
 
+test("TabSelect paints the visible tabs, the underline, the description, and scroll arrows", async () => {
+  const tabs = new TabSelectRenderable(renderer, { width: "100%", tabWidth: 10, options: [...items, ...items] })
+  renderer.root.add(tabs)
+  tabs.setSelectedIndex(5)
+  await setup.renderOnce()
+  const lines = setup.captureCharFrame().split("\n")
+  expect(lines.slice(0, 3).map((line) => line.trimEnd())).toEqual([
+    "‹four      five      one       two     ›",
+    "                    ▬▬▬▬▬▬▬▬▬▬",
+    " one item",
+  ])
+  tabs.destroy()
+})
+
 // Steps: a key, `#n` for scrollTo(n, n), `[shift+]wheel:direction`, `arrow:start|end` (click), or `auto:x,y`
 // (updateAutoScroll, then a 100 ms frame). Each step records scrollTop,scrollLeft and a "!" prefix when a key is not
 // handled; an auto step adds "-" when auto-scroll stopped. Edge distances 1, 2, 3 pick the fast, medium, slow speeds.
