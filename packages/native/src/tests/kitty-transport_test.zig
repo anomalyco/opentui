@@ -173,12 +173,13 @@ test "Session Kitty files of a frame skipped for output pressure are released an
     f.cli.kittyTransport.file_state = .ready;
     const value = try image.createFromRgba(std.testing.allocator, &.{ 1, 2, 3, 255 }, 1, 1, 4);
     defer value.deinit();
-    try f.owner.writeSession(f.id, &([_]u8{'x'} ** 448));
     var bytes: [512]u8 = undefined;
-    for ([_]@import("../session.zig").RenderStatus{ .skipped, .pending }) |status| {
+    // The last skipped frame keeps the file that the published frame references.
+    for ([_]@import("../session.zig").RenderStatus{ .skipped, .pending, .skipped }, [_]u32{ 0, 1, 1 }) |status, pending| {
+        if (status == .skipped) try f.owner.writeSession(f.id, &([_]u8{'x'} ** 448));
         try std.testing.expect(try f.cli.getNextBuffer().drawImage(value, 1, 0, 0, 1, 1, 0, 0, 0, 0, 1, 1, .kitty));
         try std.testing.expectEqual(status, try f.owner.renderSession(f.id, true));
-        try std.testing.expectEqual(@intFromBool(status == .pending), f.cli.kittyTransport.pendingCount());
+        try std.testing.expectEqual(pending, f.cli.kittyTransport.pendingCount());
         try std.testing.expectEqual(.ready, f.cli.kittyTransport.file_state);
         _ = try f.drain(&bytes);
     }
