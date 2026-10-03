@@ -220,18 +220,11 @@ export class SyntaxStyle {
   public getStyle(name: string): StyleDefinition | undefined {
     this.guard()
 
-    if (Object.prototype.hasOwnProperty.call(this.styleDefs, name)) {
-      return undefined
-    }
-
     const style = this.styleDefs.get(name)
     if (style) return cloneStyle(style)
 
     if (name.includes(".")) {
       const baseName = name.split(".")[0]
-      if (Object.prototype.hasOwnProperty.call(this.styleDefs, baseName)) {
-        return undefined
-      }
       const base = this.styleDefs.get(baseName)
       return base ? cloneStyle(base) : undefined
     }

@@ -1009,7 +1009,8 @@ describe("TextTableRenderable", () => {
     expect(table.getSelectedText()).toBe("colB\tcolC\na1\tb1\tc1\na2\tb2\tc2\na3\tb3\tc3")
   })
 
-  test("selection colors reset when drag retracts back to the anchor", async () => {
+  // An opaque table background redraws the selection rows directly into the table's buffer.
+  test.each([undefined, "#000000"])("selection colors reset when drag retracts (table background %s)", async (bg) => {
     const defaultFg = RGBA.fromHex("#111111")
     const defaultBg = RGBA.fromValues(0, 0, 0, 1)
     const selectionFg = RGBA.fromHex("#fefefe")
@@ -1018,6 +1019,7 @@ describe("TextTableRenderable", () => {
     const table = new TextTableRenderable(renderer, {
       left: 0,
       top: 0,
+      backgroundColor: bg,
       fg: defaultFg,
       bg: defaultBg,
       selectionFg,
