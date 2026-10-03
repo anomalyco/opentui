@@ -2,51 +2,19 @@ import { afterEach, expect, test } from "bun:test"
 import { NativeSession } from "../NativeSession.js"
 import { RGBA } from "../lib/RGBA.js"
 import { CliRenderer, CliRenderEvents, createCliRenderer, type CliRendererConfig } from "../renderer.js"
+import { settle, settleUntil } from "../testing/harness.js"
 import { ManualClock } from "../testing/manual-clock.js"
-import { createTestStdin, TestWriteStream } from "../testing/test-streams.js"
-
-class HeldWriteStream extends TestWriteStream {
-  held = true
-  releaseWrite: (() => void) | undefined
-  writes: Buffer[] = []
-
-  constructor(columns = 80, rows = 24) {
-    super(columns, rows)
-    ;(this as unknown as { _writableState: { highWaterMark: number } })._writableState.highWaterMark = 1
-  }
-
-  override _write(chunk: Uint8Array, _encoding: BufferEncoding, callback: () => void): void {
-    const finish = () => {
-      this.writes.push(Buffer.from(chunk))
-      callback()
-    }
-    if (this.held) this.releaseWrite = finish
-    else finish()
-  }
-
-  releaseAll(): void {
-    this.held = false
-    const release = this.releaseWrite
-    this.releaseWrite = undefined
-    release?.()
-  }
-}
+import { createTestStdin, RecordingWriteStream } from "../testing/test-streams.js"
 
 const cleanups: Array<() => Promise<void>> = []
 afterEach(async () => {
   for (const cleanup of cleanups.splice(0)) await cleanup()
 })
 
-const settle = () => new Promise<void>((resolve) => setImmediate(resolve))
-
-async function waitForHold(stdout: HeldWriteStream, turns = 32): Promise<void> {
-  for (let turn = 0; turn < turns && stdout.releaseWrite === undefined; turn++) await settle()
-  expect(stdout.releaseWrite).toBeDefined()
-}
-
 function createAdmissionRenderer(width = 80, height = 24, config: CliRendererConfig = {}) {
   const clock = new ManualClock()
-  const stdout = new HeldWriteStream(width, height)
+  const stdout = new RecordingWriteStream(width, height, { highWaterMark: 1 })
+  stdout.hold()
   const driver = new NativeSession(stdout, {
     output: { chunkSize: 4096, spanCapacity: 8, maxBytes: 32_768n, controlCapacity: 4096 },
   })
@@ -59,7 +27,7 @@ function createAdmissionRenderer(width = 80, height = 24, config: CliRendererCon
     ...config,
   })
   cleanups.push(async () => {
-    stdout.releaseAll()
+    stdout.release()
     renderer.destroy()
     await renderer.closed.catch(() => {})
   })
@@ -84,7 +52,7 @@ test("frame admission bounds delayed output to one frame and coalesces callback 
   })
 
   renderer.start()
-  await waitForHold(stdout)
+  await settleUntil(() => stdout.pendingWrite)
   expect(observed).toEqual(["A"])
 
   state = "B"
@@ -96,7 +64,7 @@ test("frame admission bounds delayed output to one frame and coalesces callback 
   expect(observed).toEqual(["A"])
 
   state = "C"
-  stdout.releaseAll()
+  stdout.release()
   await driver.idle()
   for (let turn = 0; turn < 32 && observed.length < 2; turn++) {
     clock.advance(100)
@@ -107,7 +75,7 @@ test("frame admission bounds delayed output to one frame and coalesces callback 
 
   expect(observed).toEqual(["A", "C"])
   expect(frames).toBeGreaterThanOrEqual(2)
-  const output = Buffer.concat(stdout.writes).toString()
+  const output = stdout.text()
   expect(output).toContain("A".repeat(8))
   expect(output).toContain("C".repeat(8))
   expect(output).not.toContain("B".repeat(8))
@@ -125,7 +93,7 @@ test("animation requests wait for output credit and remain cancellable", async (
   await settle()
   expect(observed).toEqual([])
 
-  stdout.releaseAll()
+  stdout.release()
   await driver.idle()
   clock.advance(0)
   await settle()
@@ -147,7 +115,7 @@ for (const queuedWork of ["one-shot", "next-tick"] as const) {
     renderer.setFrameCallback(async () => {
       callbacks++
     })
-    stdout.held = false
+    stdout.release()
     if (queuedWork === "next-tick") clock.advance(100)
     renderer.requestRender()
     expect(renderer.getSchedulerState().hasScheduledRender).toBe(true)
@@ -165,8 +133,7 @@ for (const queuedWork of ["one-shot", "next-tick"] as const) {
 }
 
 test("same-turn stop and request renders once without asynchronous frame callbacks", async () => {
-  const stdout = new HeldWriteStream()
-  stdout.held = false
+  const stdout = new RecordingWriteStream()
   const renderer = await createCliRenderer({
     stdin: createTestStdin(),
     stdout: stdout as unknown as NodeJS.WriteStream,
