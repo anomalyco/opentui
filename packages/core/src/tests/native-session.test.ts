@@ -84,16 +84,35 @@ test.each([
   }
 })
 
-test("invalid environment rejects before attachment", () => {
-  const sink = new Writable({ write: (_bytes, _encoding, done) => done() })
-  const driver = new NativeSession(sink)
-  try {
-    const invalid: Record<string, string>[] = [{ "": "1" }, { "a=b": "1" }, { "a\0": "1" }, { a: "\0" }]
-    for (const environment of invalid) {
-      assert.throws(() => driver.attachRenderer({ width: 4, height: 2, environment }))
+test("environment limits reject before attachment and accept the boundary", () => {
+  const entries = (count: number) => Object.fromEntries(Array.from({ length: count }, (_, index) => [`K${index}`, ""]))
+  // Each entry takes 8 length bytes; 65,536 bytes is the whole budget.
+  const invalid: [Record<string, unknown>, ErrorConstructor][] = [
+    [{ "": "1" }, TypeError],
+    [{ "a=b": "1" }, TypeError],
+    [{ "a\0": "1" }, TypeError],
+    [{ a: "\0" }, TypeError],
+    [{ a: 1 }, TypeError],
+    [entries(257), RangeError],
+    [{ a: "x".repeat(65_528) }, RangeError],
+    [{ a: "\u00e9".repeat(32_764) }, RangeError],
+  ]
+  const valid = [entries(256), { a: "x".repeat(65_527) }, { a: "\u00e9".repeat(32_763) }]
+  for (const [environment, error] of invalid) {
+    const driver = new NativeSession(new Writable({ write: (_bytes, _encoding, done) => done() }), { output })
+    try {
+      assert.throws(() => driver.attachRenderer({ width: 4, height: 2, environment: environment as never }), error)
+      driver.attachRenderer({ width: 4, height: 2 })
+    } finally {
+      driver.dispose()
     }
-    driver.attachRenderer({ width: 4, height: 2, environment: { TERM: "xterm" } })
-  } finally {
-    driver.dispose()
+  }
+  for (const environment of valid) {
+    const driver = new NativeSession(new Writable({ write: (_bytes, _encoding, done) => done() }), { output })
+    try {
+      driver.attachRenderer({ width: 4, height: 2, environment })
+    } finally {
+      driver.dispose()
+    }
   }
 })
