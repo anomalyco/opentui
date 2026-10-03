@@ -25,64 +25,21 @@ import { stringToStyledText } from "../lib/styled-text.js"
  * linear complexity with noise (ratio ~2-3.5).
  */
 describe("Word wrap algorithmic complexity", () => {
-  function measureBatch(fn: (width: number) => void, widths: number[], roundsPerSample: number): number {
+  function measureBatch(fn: (width: number) => void, widths: number[]): number {
     const start = performance.now()
-
-    for (let round = 0; round < roundsPerSample; round++) {
-      for (const width of widths) {
-        fn(width)
-      }
-    }
-
+    for (const width of widths) fn(width)
     return performance.now() - start
   }
 
-  function calibrateRoundsPerSample(
-    fn: (width: number) => void,
-    widths: number[],
-    minBatchMs = 5,
-    initialRounds = 4,
-    maxRounds = 512,
-  ): number {
-    let roundsPerSample = initialRounds
-
-    while (roundsPerSample < maxRounds) {
-      const elapsed = measureBatch(fn, widths, roundsPerSample)
-      if (elapsed >= minBatchMs) {
-        return roundsPerSample
-      }
-      roundsPerSample *= 2
+  // Load can only add time to a batch, so the fastest of many short batches is its unpreempted cost.
+  function measureMinRatio(smallFn: (width: number) => void, largeFn: (width: number) => void, widths: number[]) {
+    let small = Infinity
+    let large = Infinity
+    for (let i = 0; i < 101; i++) {
+      small = Math.min(small, measureBatch(smallFn, widths))
+      large = Math.min(large, measureBatch(largeFn, widths))
     }
-
-    return roundsPerSample
-  }
-
-  function measureMedianRatio(
-    smallFn: (width: number) => void,
-    largeFn: (width: number) => void,
-    widths: number[],
-    roundsPerSample: number,
-    iterations = 9,
-  ): number {
-    const ratios: number[] = []
-
-    for (let i = 0; i < iterations; i++) {
-      let smallTime: number
-      let largeTime: number
-
-      if (i % 2 === 0) {
-        smallTime = measureBatch(smallFn, widths, roundsPerSample)
-        largeTime = measureBatch(largeFn, widths, roundsPerSample)
-      } else {
-        largeTime = measureBatch(largeFn, widths, roundsPerSample)
-        smallTime = measureBatch(smallFn, widths, roundsPerSample)
-      }
-
-      ratios.push(largeTime / smallTime)
-    }
-
-    ratios.sort((a, b) => a - b)
-    return ratios[Math.floor(ratios.length / 2)]
+    return large / small
   }
 
   const COMPLEXITY_THRESHOLD = 1.75
@@ -108,14 +65,12 @@ describe("Word wrap algorithmic complexity", () => {
       const controlMeasure = (width: number) => {
         controlView.measureForDimensions(width, 100)
       }
-      const rounds = calibrateRoundsPerSample(controlMeasure, MEASURE_WIDTHS)
-      const ratio = measureMedianRatio(
+      const ratio = measureMinRatio(
         controlMeasure,
         (width) => {
           splitView.measureForDimensions(width, 100)
         },
         MEASURE_WIDTHS,
-        rounds,
       )
       // The shared ASCII suffix must not inherit the prefix's scalar Unicode scan.
       expect(ratio).toBeLessThan(5)
@@ -153,11 +108,7 @@ describe("Word wrap algorithmic complexity", () => {
       largeView.measureForDimensions(width, 100)
     }
 
-    const roundsPerSample = calibrateRoundsPerSample((width) => {
-      smallView.measureForDimensions(width, 100)
-    }, MEASURE_WIDTHS)
-
-    const ratio = measureMedianRatio(
+    const ratio = measureMinRatio(
       (width) => {
         smallView.measureForDimensions(width, 100)
       },
@@ -165,7 +116,6 @@ describe("Word wrap algorithmic complexity", () => {
         largeView.measureForDimensions(width, 100)
       },
       MEASURE_WIDTHS,
-      roundsPerSample,
     )
 
     smallView.destroy()
@@ -210,11 +160,7 @@ describe("Word wrap algorithmic complexity", () => {
       largeView.measureForDimensions(width, 100)
     }
 
-    const roundsPerSample = calibrateRoundsPerSample((width) => {
-      smallView.measureForDimensions(width, 100)
-    }, MEASURE_WIDTHS)
-
-    const ratio = measureMedianRatio(
+    const ratio = measureMinRatio(
       (width) => {
         smallView.measureForDimensions(width, 100)
       },
@@ -222,7 +168,6 @@ describe("Word wrap algorithmic complexity", () => {
         largeView.measureForDimensions(width, 100)
       },
       MEASURE_WIDTHS,
-      roundsPerSample,
     )
 
     smallView.destroy()
@@ -261,11 +206,7 @@ describe("Word wrap algorithmic complexity", () => {
       largeView.measureForDimensions(width, 100)
     }
 
-    const roundsPerSample = calibrateRoundsPerSample((width) => {
-      smallView.measureForDimensions(width, 100)
-    }, MEASURE_WIDTHS)
-
-    const ratio = measureMedianRatio(
+    const ratio = measureMinRatio(
       (width) => {
         smallView.measureForDimensions(width, 100)
       },
@@ -273,7 +214,6 @@ describe("Word wrap algorithmic complexity", () => {
         largeView.measureForDimensions(width, 100)
       },
       MEASURE_WIDTHS,
-      roundsPerSample,
     )
 
     smallView.destroy()
