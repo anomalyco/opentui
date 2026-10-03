@@ -269,7 +269,7 @@ export const nativePointerPolicies = {
   ot_scene_get_selected_text: { 0: context, 1: buffer, 2: empty, 4: buffer },
   ot_scene_get_text: { 0: context, 1: buffer, 2: empty, 4: buffer },
   ot_scene_get_text_info: { 0: context, 1: buffer, 2: buffer },
-  ot_scene_get_text_lines: { 0: context, 1: buffer, 2: empty, 4: buffer },
+  ot_scene_get_text_lines: { 0: context, 1: buffer, 3: empty, 5: buffer },
   ot_scene_get_layout: { 0: context, 1: buffer, 3: buffer },
   ot_scene_paint: { 0: context, 1: buffer, 2: buffer, 5: buffer },
   ot_scene_set_hooks: { 0: context, 1: buffer, 2: buffer },

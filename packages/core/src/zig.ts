@@ -3263,6 +3263,7 @@ type ContextObjectDestroySymbol =
   | "ot_editor_view_destroy"
   | "ot_embedded_terminal_destroy"
   | "ot_image_destroy"
+  | "ot_session_destroy"
   | "ot_syntax_style_destroy"
   | "ot_text_buffer_destroy"
   | "ot_text_buffer_view_destroy"
@@ -6737,12 +6738,7 @@ export class FFIRenderLib {
   }
 
   public destroySession(context: NativeContextHandle, session: SessionHandle): void {
-    this.getYogaHost().assertMutable()
-    const handle = encodeContextHandle(context, session)
-    nativeResult(
-      "ot_session_destroy",
-      this.opentui.symbols.ot_session_destroy(this.nativeContextPointer(context, "ot_session_destroy"), handle),
-    )
+    this.destroyContextObject(context, session, "ot_session_destroy")
     // Session teardown also invalidates detached nodes. Ask native ownership only
     // for the sparse custom-provider set, never mirror every scene node in JS.
     const registrations = this.sceneMeasures.get(context)?.nodes
@@ -7345,18 +7341,30 @@ export class FFIRenderLib {
     )
   }
 
-  public sceneGetTextLineInfo(context: NativeContextHandle, node: SceneNodeHandle): LineInfo {
+  public sceneGetTextLineInfo(
+    context: NativeContextHandle,
+    node: SceneNodeHandle,
+    firstLine = 0,
+    lineCount = MAX_FFI_U32,
+  ): LineInfo {
     const handle = encodeContextHandle(context, node)
     const metrics = this.sceneTextMetrics(context, handle)
-    const lines = new Uint32Array(metrics.virtualLineCount * (nativeLayouts.ot_scene_text_line.size / 4))
+    const first = toSafeFFIU32Length(firstLine, "Text first line")
+    // Copy only the requested window, so a viewport read does not scale with the document (main #1462).
+    const capacity = Math.min(
+      toSafeFFIU32Length(lineCount, "Text line count"),
+      Math.max(0, metrics.virtualLineCount - first),
+    )
+    const lines = new Uint32Array(capacity * (nativeLayouts.ot_scene_text_line.size / 4))
     const count = new Uint32Array(1)
     nativeResult(
       "ot_scene_get_text_lines",
       this.opentui.symbols.ot_scene_get_text_lines(
         this.nativeContextPointer(context, "ot_scene_get_text_lines"),
         handle,
-        lines.length === 0 ? null : lines,
-        metrics.virtualLineCount,
+        first,
+        capacity === 0 ? null : lines,
+        capacity,
         count,
       ),
     )

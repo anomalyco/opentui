@@ -17,9 +17,8 @@ const output_transport = @import("context-output-abi.zig");
 const image_transport = @import("context-image-abi.zig");
 const clipboard_transport = @import("clipboard-abi.zig");
 
-/// Each C Context owns a private allocator. Process allocator stats do not
-/// include Context memory. Test builds back it with std.testing.allocator and
-/// enable safety, so a test that leaks Context memory fails.
+/// Each C Context owns a private allocator. Test builds back it with
+/// std.testing.allocator and enable safety, so a test that leaks Context memory fails.
 pub const ContextHandle = struct {
     gpa: std.heap.DebugAllocator(.{
         .enable_memory_limit = build_options.gpa_safe_stats,
@@ -1493,14 +1492,7 @@ pub fn ot_session_get_state(
 }
 
 pub fn ot_session_destroy(context: ?*ContextHandle, session_ptr: ?*const c.ot_handle) callconv(.c) c.ot_status {
-    const status = sessionContextStatus(context);
-    if (status != c.OT_OK) return status;
-    const owner = context.?;
-    const id = session_ptr orelse return sessionError(owner, error.InvalidOptions);
-    const session = handleFromC(id.*);
-    _ = owner.core.raw().getSession(session) catch |err| return sessionError(owner, err);
-    owner.core.destroy(session) catch |err| return sessionError(owner, err);
-    return c.OT_OK;
+    return destroyKind(context, session_ptr, .session);
 }
 
 pub fn ot_scene_create_node(context: ?*ContextHandle, session_ptr: ?*const c.ot_handle, kind: u32, num: u32, out_node_ptr: ?*c.ot_handle) callconv(.c) c.ot_status {
@@ -2084,7 +2076,7 @@ pub fn ot_scene_get_text_info(context: ?*ContextHandle, node_ptr: ?*const c.ot_h
     return c.OT_OK;
 }
 
-pub fn ot_scene_get_text_lines(context: ?*ContextHandle, node_ptr: ?*const c.ot_handle, lines_ptr: ?[*]c.ot_scene_text_line, capacity: u32, out_count_ptr: ?*u32) callconv(.c) c.ot_status {
+pub fn ot_scene_get_text_lines(context: ?*ContextHandle, node_ptr: ?*const c.ot_handle, first_line: u32, lines_ptr: ?[*]c.ot_scene_text_line, capacity: u32, out_count_ptr: ?*u32) callconv(.c) c.ot_status {
     const status = sceneReadStatus(context);
     if (status != c.OT_OK) return status;
     const owner = context.?;
@@ -2092,7 +2084,7 @@ pub fn ot_scene_get_text_lines(context: ?*ContextHandle, node_ptr: ?*const c.ot_
     const out = out_count_ptr orelse return sessionError(owner, error.InvalidOptions);
     if (capacity != 0 and lines_ptr == null) return sessionError(owner, error.InvalidOptions);
     const lines: []@import("scene.zig").TextLine = if (lines_ptr) |ptr| @as([*]@import("scene.zig").TextLine, @ptrCast(ptr))[0..capacity] else &.{};
-    const count = owner.core.sceneGetTextLines(handleFromC(node.*), lines) catch |err| return sessionError(owner, err);
+    const count = owner.core.sceneGetTextLines(handleFromC(node.*), first_line, lines) catch |err| return sessionError(owner, err);
     out.* = count;
     return c.OT_OK;
 }
@@ -4238,14 +4230,14 @@ test "Scene text ABI validates options and copies bounded text queries" {
     try std.testing.expectEqual(c.OT_OK, ot_scene_get_text(handle, &text, &bytes, count, &count));
     try std.testing.expectEqualStrings("one two\nlast", bytes[0..count]);
     var lines: [2]c.ot_scene_text_line = @splat(.{ .start_cols = 999, .width_cols = 999, .source_line = 999, .wrap_index = 999 });
-    count = 999;
-    try std.testing.expectEqual(c.OT_INVALID_ARGUMENT, ot_scene_get_text_lines(handle, &text, &lines, 1, &count));
-    try std.testing.expectEqual(@as(u32, 999), count);
-    try std.testing.expectEqual(@as(u32, 999), lines[0].start_cols);
-    try std.testing.expectEqual(c.OT_OK, ot_scene_get_text_lines(handle, &text, &lines, 2, &count));
+    // A window copies [first_line, first_line + capacity) clipped to the count; other lines stay untouched.
+    try std.testing.expectEqual(c.OT_OK, ot_scene_get_text_lines(handle, &text, 2, &lines, 2, &count));
     try std.testing.expectEqual(@as(u32, 2), count);
-    try std.testing.expectEqual(@as(u32, 4), lines[1].width_cols);
-    try std.testing.expectEqual(@as(u32, 1), lines[1].source_line);
+    try std.testing.expectEqual(@as(u32, 999), lines[0].start_cols);
+    try std.testing.expectEqual(c.OT_OK, ot_scene_get_text_lines(handle, &text, 1, &lines, 2, &count));
+    try std.testing.expectEqual(@as(u32, 4), lines[0].width_cols);
+    try std.testing.expectEqual(@as(u32, 1), lines[0].source_line);
+    try std.testing.expectEqual(@as(u32, 999), lines[1].start_cols);
     text_options.scroll_x = 0.5;
     try std.testing.expectEqual(c.OT_OK, ot_scene_set_text_options(handle, &text, &text_options));
     for ([_]f64{ -0.5, std.math.inf(f64), std.math.nan(f64), 2147483648 }) |invalid| {
@@ -4624,81 +4616,38 @@ test "Context error mapping gives every Context error a specific status" {
     }
 }
 
-test "Context typed destroy helper matches every typed destroy export" {
-    const Create = struct {
-        fn editBuffer(core: *Context) !ObjectHandle {
-            return core.createEditBuffer(.unicode);
-        }
-        fn editorView(core: *Context) !ObjectHandle {
-            return core.createEditorView(try core.createEditBuffer(.unicode), 2, 1);
-        }
-        fn syntaxStyle(core: *Context) !ObjectHandle {
-            return core.createSyntaxStyle();
-        }
-        fn image(core: *Context) !ObjectHandle {
-            return core.createImagePixels(&.{ 1, 2, 3, 4 }, 1, 1, .{ .stride = 4 });
-        }
-        fn buffer(core: *Context) !ObjectHandle {
-            return core.createBuffer(1, 1, .{});
-        }
-        fn session(core: *Context) !ObjectHandle {
-            return core.createSession(.{});
-        }
-        fn textBuffer(core: *Context) !ObjectHandle {
-            return core.createTextBuffer(.unicode);
-        }
-        fn textBufferView(core: *Context) !ObjectHandle {
-            return core.createTextBufferView(try core.createTextBuffer(.unicode));
-        }
-        fn unicode(core: *Context) !ObjectHandle {
-            return core.createUnicode("a", .unicode);
-        }
-        fn embeddedTerminal(core: *Context) !ObjectHandle {
-            return core.createEmbeddedTerminal(2, 1, 0);
-        }
-    };
-    const Destroy = *const fn (?*ContextHandle, ?*const c.ot_handle) callconv(.c) c.ot_status;
-    const cases = .{
-        .{ ObjectKind.edit_buffer, &ot_edit_buffer_destroy, Create.editBuffer },
-        .{ ObjectKind.editor_view, &ot_editor_view_destroy, Create.editorView },
-        .{ ObjectKind.syntax_style, &ot_syntax_style_destroy, Create.syntaxStyle },
-        .{ ObjectKind.image, &ot_image_destroy, Create.image },
-        .{ ObjectKind.buffer, &ot_buffer_destroy, Create.buffer },
-        .{ ObjectKind.session, &ot_session_destroy, Create.session },
-        .{ ObjectKind.text_buffer, &text_transport.ot_text_buffer_destroy, Create.textBuffer },
-        .{ ObjectKind.text_buffer_view, &text_transport.ot_text_buffer_view_destroy, Create.textBufferView },
-        .{ ObjectKind.encoded_unicode, &unicode_transport.ot_unicode_destroy, Create.unicode },
-        .{ ObjectKind.embedded_terminal, &terminal_transport.ot_embedded_terminal_destroy, Create.embeddedTerminal },
-    };
+test "Context typed destroy exports reject other kinds and destroy their own once" {
     const handle = try createTestContext(.{ .object_capacity = 64, .render_cells_max = 16 });
     defer std.testing.expectEqual(c.OT_OK, ot_context_destroy(handle)) catch unreachable;
     const core = handle.core;
+    const edit = try core.createEditBuffer(.unicode);
+    const text = try core.createTextBuffer(.unicode);
+    const style = handleToC(try core.createSyntaxStyle());
+    const buffer = handleToC(try core.createBuffer(1, 1, .{}));
+    // Views come before the buffers they borrow. style and buffer stay alive as wrong kinds.
+    const cases = .{
+        .{ &ot_editor_view_destroy, try core.createEditorView(edit, 2, 1) },
+        .{ &ot_edit_buffer_destroy, edit },
+        .{ &text_transport.ot_text_buffer_view_destroy, try core.createTextBufferView(text) },
+        .{ &text_transport.ot_text_buffer_destroy, text },
+        .{ &ot_syntax_style_destroy, try core.createSyntaxStyle() },
+        .{ &ot_image_destroy, try core.createImagePixels(&.{ 1, 2, 3, 4 }, 1, 1, .{ .stride = 4 }) },
+        .{ &ot_buffer_destroy, try core.createBuffer(1, 1, .{}) },
+        .{ &ot_session_destroy, try core.createSession(.{}) },
+        .{ &unicode_transport.ot_unicode_destroy, try core.createUnicode("a", .unicode) },
+        .{ &terminal_transport.ot_embedded_terminal_destroy, try core.createEmbeddedTerminal(2, 1, 0) },
+    };
+    const expected = [_]c.ot_status{ c.OT_CONTEXT_BUSY, c.OT_INVALID_ARGUMENT, c.OT_WRONG_KIND, c.OT_WRONG_CONTEXT, c.OT_OK, c.OT_STALE_HANDLE };
     inline for (cases) |case| {
-        const kind: ObjectKind, const destroy: Destroy, const create = case;
-        const wrong = handleToC(try if (kind == .buffer) core.createSyntaxStyle() else core.createBuffer(1, 1, .{}));
-        // The export and the helper each destroy their own object of the same kind.
-        const targets = [2]c.ot_handle{ handleToC(try create(core)), handleToC(try create(core)) };
-        const expected = [_]c.ot_status{ c.OT_CONTEXT_BUSY, c.OT_INVALID_ARGUMENT, c.OT_WRONG_KIND, c.OT_WRONG_CONTEXT, c.OT_OK, c.OT_STALE_HANDLE };
-        for (expected, 0..) |status, step| {
-            var inputs: [2]?*const c.ot_handle = undefined;
-            var foreign = targets;
-            for (&inputs, &targets, &foreign) |*input, *target, *other| {
-                other.context_id += 1;
-                input.* = switch (step) {
-                    1 => null,
-                    2 => &wrong,
-                    3 => other,
-                    else => target,
-                };
-            }
+        const destroy, const object = case;
+        const target = handleToC(object);
+        var foreign = target;
+        foreign.context_id += 1;
+        const wrong = if (destroy == &ot_buffer_destroy) &style else &buffer;
+        for ([_]?*const c.ot_handle{ &target, null, wrong, &foreign, &target, &target }, expected, 0..) |input, status, step| {
             core.mutating = step == 0;
-            const export_status = destroy(handle, inputs[0]);
-            const export_error = handle.last_error;
-            const helper_status = destroyKind(handle, inputs[1], kind);
-            core.mutating = false;
-            try std.testing.expectEqual(status, export_status);
-            try std.testing.expectEqual(status, helper_status);
-            try std.testing.expectEqual(export_error, handle.last_error);
+            defer core.mutating = false;
+            try std.testing.expectEqual(status, destroy(handle, input));
         }
     }
 }

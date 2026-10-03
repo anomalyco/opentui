@@ -632,13 +632,19 @@ ot_status ot_scene_frame_cancel(ot_context *, const ot_handle *session, uint64_t
 ot_status ot_scene_create_node(ot_context *, const ot_handle *session, uint32_t kind,
     uint32_t num, ot_handle *out_node);
 /* Individual destruction detaches surviving children. Session destruction frees
- * all associated nodes, including detached nodes. NULL parent means detach. */
+ * all associated nodes, including detached nodes. NULL parent means detach.
+ * A failed layout solve, such as Yoga running out of memory, leaves the tree failed:
+ * frames, Yoga layout queries, and style, paint, and text setters return
+ * OT_INTERNAL_ERROR until its nodes are destroyed. Destroy, detach, blur, clearing a measure provider, and selection
+ * RESET still succeed. */
 ot_status ot_scene_destroy_node(ot_context *, const ot_handle *node);
 ot_status ot_scene_move_node(ot_context *, const ot_handle *node, const ot_handle *parent, uint32_t index);
 /* Synchronous owner-thread measurement on leaves. The callback is borrowed until
  * replacement, unset, node destruction, or Context destruction. NULL clears the
- * single provider slot; it does not restore built-in measurement. The result is
- * two floats (width, height), initialized to NaN, valid only during the callback.
+ * single provider slot; it does not restore built-in measurement. Each set or clear
+ * invalidates the cached measurement. The result is two floats (width, height),
+ * initialized to NaN, valid only during the callback. A NaN, negative, or larger
+ * than INT32_MAX dimension measures as 0 and queues a Yoga warning diagnostic.
  * Only scene style/layout/text/provider queries may reenter; mutations may not. */
 typedef void (*ot_scene_measure_callback)(uint64_t context_id, uint32_t slot, uint32_t generation,
     float width, uint32_t width_mode, float height, uint32_t height_mode, float *out_size);
@@ -747,8 +753,9 @@ ot_status ot_scene_get_slider_thumb(ot_context *, const ot_handle *node, ot_scen
 /* Text nodes own their buffer/view and native measure target. Replacements copy
  * UTF-8 and preserve content on rejection. Length is bounded by u32 line/column
  * counts, accounting for tab expansion, not the offscreen drawing call budget.
- * C0/C1/DEL controls are rejected except tab, CR, and LF. Line endings normalize
- * to LF in queries. bytes may be NULL only for zero length. Options require exact
+ * C0/C1/DEL controls other than tab, CR, and LF are accepted and returned by
+ * queries; painting gives them no cells and never writes them to the terminal.
+ * Line endings normalize to LF in queries. bytes may be NULL only for zero length. Options require exact
  * size/version; borders and child nodes are not supported on text. */
 ot_status ot_scene_set_text(ot_context *, const ot_handle *node, const uint8_t *bytes, uint32_t byte_count);
 /* Copies a complete styled replacement. Every chunk requires exact size/version,
@@ -791,13 +798,15 @@ ot_status ot_scene_get_text_selection(ot_context *, const ot_handle *node, uint6
 ot_status ot_scene_get_selected_text(ot_context *, const ot_handle *node,
     uint8_t *bytes, uint32_t capacity, uint32_t *out_count);
 /* Copied queries retain no native memory. Zero capacity reports the exact count;
- * otherwise insufficient capacity rejects without writing either output. bytes
- * and lines may be NULL only for zero capacity. Text has no terminating NUL;
- * lines includes all virtual lines, not only the visible viewport. Info requires
- * exact size/version. Queries never perform Yoga layout or resize the viewport. */
+ * otherwise insufficient text capacity rejects without writing either output. bytes
+ * and lines may be NULL only for zero capacity. Text has no terminating NUL.
+ * Lines copies virtual lines [first_line, first_line + capacity), clipped to the
+ * count of all virtual lines, not only visible ones, which out_count reports. Info
+ * requires exact size/version. Queries never perform Yoga layout or resize the viewport. */
 ot_status ot_scene_get_text(ot_context *, const ot_handle *node, uint8_t *bytes, uint32_t capacity, uint32_t *out_count);
 ot_status ot_scene_get_text_info(ot_context *, const ot_handle *node, ot_scene_text_info *out_info);
-ot_status ot_scene_get_text_lines(ot_context *, const ot_handle *node, ot_scene_text_line *lines, uint32_t capacity, uint32_t *out_count);
+ot_status ot_scene_get_text_lines(ot_context *, const ot_handle *node, uint32_t first_line,
+    ot_scene_text_line *lines, uint32_t capacity, uint32_t *out_count);
 /* OT_LAYOUT_PUBLIC copies local cell geometry from the node's latest preparation refresh.
  * During host phases, mounted nodes retain their preceding projection until that
  * refresh; newly placed children refresh before their own update. screen_x/y
@@ -1905,8 +1914,9 @@ ot_status ot_scene_frame_acquire_buffer_lease(ot_context *, const ot_handle *ses
  * resolved. OT_OK consumes the draft for EVERY out_status:
  * PRESENTED: output accepted and presentation complete, including no-byte frames.
  * PENDING: this draft accepted; output completion is still pending.
- * SKIPPED: no output accepted; paint a new draft after output capacity returns.
- * FAILED: encoding/admission failed with no output accepted; paint a new draft.
+ * SKIPPED: output pressure; paint a new draft after queued output drains.
+ * FAILED: the frame is larger than the empty output queue, or encoding or
+ * allocation failed; no output was accepted.
  * In particular, OT_OK with OT_RENDER_FAILED is not an ot_status error.
  * A consumed, cancelled, foreign, or altered frame cannot submit again. */
 ot_status ot_scene_frame_commit(ot_context *, const ot_handle *session,
@@ -2688,8 +2698,9 @@ ot_status ot_session_drain_output(
  * console writes preserve the code page and may span queue chunk boundaries.
  * An overlapped or unrecognized Windows byte handle returns OT_UNSUPPORTED_RESOURCE
  * before consuming output; use the host writer for that handle. An incomplete
- * console scalar with no room for more input, or while new writes are disabled, returns
- * OT_INVALID_ARGUMENT with its bytes retained for another delivery method.
+ * console scalar followed by a byte that cannot continue it, with no room for more
+ * input, or while new writes are disabled, returns OT_INVALID_ARGUMENT with its
+ * bytes retained for another delivery method.
  * Nonblocking stdout pressure returns zero; retry on a later turn. A blocking
  * stdout can block this call. This operation neither closes nor reconfigures stdout. */
 ot_status ot_session_drain_stdout(
@@ -2733,8 +2744,10 @@ ot_status ot_session_destroy(ot_context *context, const ot_handle *session);
 /* Host clipboard service owned by a Context. Distinct from ot_session_clipboard,
  * which writes terminal OSC selection bytes. These calls return domain-specific
  * uint8 codes, not ot_status. Create returns 0 or -1. The service is the Context's
- * sole clipboard_service object. wayland_seat may be NULL only when its length is
- * zero. Request, text, and result bytes are borrowed for the call. */
+ * sole clipboard_service object: a second create returns -1 while one exists, even
+ * one shutting down. ot_context_destroy begins the service's shutdown and returns
+ * OT_CONTEXT_BUSY until it is ready. wayland_seat may be NULL only when its length
+ * is zero. Request, text, and result bytes are borrowed for the call. */
 #define OT_CLIPBOARD_OPERATION_PENDING UINT32_C(0)
 #define OT_CLIPBOARD_OPERATION_READ UINT32_C(1)
 #define OT_CLIPBOARD_OPERATION_EMPTY UINT32_C(2)

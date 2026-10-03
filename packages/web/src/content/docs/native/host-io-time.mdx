@@ -36,7 +36,7 @@ Partial writes leave the suffix queued. Retry nonblocking output on a later turn
 A blocking writer can block the call; the byte limit bounds work, not elapsed time.
 Windows console output uses UTF-16 without changing the console code page.
 Overlapped Windows stdout returns `OT_UNSUPPORTED_RESOURCE` before consuming bytes; Core uses its `Writable` instead.
-If an incomplete console character fills the queue or remains when new writes are disabled, native delivery returns `OT_INVALID_ARGUMENT`.
+If an incomplete console character is followed by a byte that cannot continue it, fills the queue, or remains when new writes are disabled, native delivery returns `OT_INVALID_ARGUMENT`.
 Those bytes remain available through the other delivery methods.
 
 Both delivery paths publish frames only after their output completes. A write failure stops delivery without replay.

@@ -2,9 +2,7 @@ const std = @import("std");
 const build_options = @import("build_options");
 
 /// Process-wide allocator and I/O for standalone native resources, such as
-/// NativeSpanFeed streams created outside a Context. These live until process
-/// exit. Each Context owns a private allocator, so getAllocatorStats, which
-/// reads this allocator, does not count Context memory.
+/// NativeSpanFeed streams created outside a Context. These live until process exit.
 pub var gpa: std.heap.DebugAllocator(.{
     .enable_memory_limit = build_options.gpa_safe_stats,
     .safety = build_options.gpa_safe_stats,

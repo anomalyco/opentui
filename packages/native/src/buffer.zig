@@ -223,7 +223,6 @@ pub const BufferStorage = struct {
     link_tracker: link.LinkTracker,
     image_placements: std.ArrayListUnmanaged(OptimizedBuffer.ImagePlacement) = .empty,
 
-    /// Bytes of the four cell arrays per cell.
     const cell_bytes = 2 * @sizeOf(u32) + 2 * @sizeOf(RGBA);
 
     fn init(
@@ -481,7 +480,6 @@ const MarkBase = struct { x: u32, char: u32 };
 /// One glyph of a text row with at least one cell to draw.
 const TextGlyph = struct {
     bytes: []const u8,
-    /// First column to draw.
     x: u32,
     /// Display cells of the whole glyph.
     width: u32,
@@ -1802,9 +1800,8 @@ pub const OptimizedBuffer = struct {
     }
 
     /// Draw one row of UTF-8 with base style bits and packed color intent.
-    /// Tabs retain drawText's two-cell expansion. A signed position draws only the cells inside
-    /// the buffer, with the same clipping as drawTextClipped. Controls draw nothing, and a
-    /// cluster over grapheme_bytes_max draws as spaces of its width (see isPrintableGlyph).
+    /// Tabs retain drawText's two-cell expansion, and glyphs place as in TextRow. A signed
+    /// position draws only the cells inside the buffer, with the same clipping as drawTextClipped.
     /// Reject oversized input, invalid UTF-8, and unqualified image resources.
     /// Rejection preserves cells and live references; prepared capacity may remain.
     pub fn drawTextChecked(
@@ -1930,7 +1927,6 @@ pub const OptimizedBuffer = struct {
         }
         if (!std.unicode.utf8ValidateSlice(grapheme_bytes)) return error.InvalidUnicode;
         if (!isPrintableGlyph(grapheme_bytes)) {
-            // Blank cells keep the authoritative width, so the following cells keep their columns.
             for (0..cell_width) |offset| {
                 self.set(x + @as(u32, @intCast(offset)), y, makeCell(DEFAULT_SPACE_CHAR, fg, bg, attributes));
             }
@@ -2475,7 +2471,6 @@ pub const OptimizedBuffer = struct {
                     }
 
                     const is_tab = grapheme_bytes.len == 1 and grapheme_bytes[0] == '\t';
-                    // A tab or a cluster that a cell cannot hold draws as spaces, which clip one by one.
                     const is_blank = !isPrintableGlyph(grapheme_bytes);
                     if (!is_blank and !self.isPointInScissor(currentX, currentY)) {
                         document_cell_offset += cluster_width_cols;

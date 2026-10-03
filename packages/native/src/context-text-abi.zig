@@ -21,8 +21,9 @@ pub fn ot_text_buffer_create(context: ?*Owner, options: ?*const c.ot_edit_buffer
     if (status != c.OT_OK) return status;
     const owner = context.?;
     const value = record(c.ot_edit_buffer_options, options) catch |err| return fail(owner, err);
-    if (out == null or value.reserved != 0 or value.width_method > c.OT_WIDTH_METHOD_UNICODE_WIDE) return fail(owner, error.InvalidOptions);
-    out.?.* = abi.handleToC(owner.core.createTextBuffer(@enumFromInt(value.width_method)) catch |err| return fail(owner, err));
+    if (out == null or value.reserved != 0) return fail(owner, error.InvalidOptions);
+    const width_method = abi.widthMethodFromC(value.width_method) catch |err| return fail(owner, err);
+    out.?.* = abi.handleToC(owner.core.createTextBuffer(width_method) catch |err| return fail(owner, err));
     return c.OT_OK;
 }
 

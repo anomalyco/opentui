@@ -44,7 +44,6 @@ pub const EncodedUnicode = struct {
             const width = utf8.getWidthAt(bytes, 0, tab_width, width_method);
             if (width == 0) continue;
             if (!buffer.isPrintableGlyph(bytes)) {
-                // As in checked text draws, a tab or a cluster that a cell cannot hold is spaces.
                 result.appendNTimesAssumeCapacity(.{ .width = 1, .char = buffer.DEFAULT_SPACE_CHAR }, width);
                 continue;
             }

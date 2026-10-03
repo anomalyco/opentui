@@ -1663,7 +1663,6 @@ pub const Context = struct {
             .fill => target.fillRectClipped(options.x, options.y, options.width, options.height, background),
             .cell, .cell_blend, .char => {
                 if (options.char > 0x10ffff or (options.char >= 0xd800 and options.char <= 0xdfff)) return error.InvalidOptions;
-                // A cell never holds a control; it draws as a space, as in checked text.
                 const char = if (buf.isControlCodepoint(options.char)) buf.DEFAULT_SPACE_CHAR else options.char;
                 if (options.x < 0 or options.y < 0) return;
                 const x: u32 = @intCast(options.x);
@@ -2707,7 +2706,7 @@ pub const Context = struct {
         };
     }
 
-    pub fn sceneGetTextLines(self: *Context, handle: Handle, out: []scene.TextLine) !u32 {
+    pub fn sceneGetTextLines(self: *Context, handle: Handle, first_line: u32, out: []scene.TextLine) !u32 {
         try self.checkSceneRead();
         const was_mutating = self.mutating;
         self.mutating = true;
@@ -2717,9 +2716,9 @@ pub const Context = struct {
         try text.prepareView();
         const lines = text.view.getLogicalLineInfo();
         const count: u32 = @intCast(lines.line_start_cols.len);
-        if (out.len == 0) return count;
-        if (out.len < count) return error.InvalidOptions;
-        for (out[0..count], 0..) |*line, index| {
+        // Copy only the requested window, so a viewport read does not scale with the document.
+        const start = @min(first_line, count);
+        for (out[0..@min(out.len, count - start)], start..) |*line, index| {
             line.* = .{
                 .start_cols = lines.line_start_cols[index],
                 .width_cols = lines.line_width_cols[index],
@@ -2801,7 +2800,6 @@ pub const Context = struct {
         return self.sceneFrameStepWithRecording(session_handle, previous, options, max_work_items, null);
     }
 
-    /// recording acknowledges a RECORD request and must be null for every other step.
     pub fn sceneFrameStepWithRecording(self: *Context, session_handle: Handle, previous: ?scene.FrameRequest, options: scene.FrameOptions, max_work_items: u32, recording: ?[]const u8) !scene.FrameRequest {
         try self.beginMutation();
         defer self.mutating = false;
@@ -3133,8 +3131,7 @@ pub const Context = struct {
         try validateTextBytes(text.buffer, bytes, text.buffer.getByteSize());
         if (bytes.len == 0) return;
         // Each append takes a registry slot. When none is left, one owned copy of the whole
-        // document replaces them all. Every 254th append copies the document, so a long append
-        // stream costs O(n^2) bytes copied in total; see U04 R3 for the amortized follow-up.
+        // document replaces them all, so a long append stream copies O(n^2) bytes in total.
         if (text.buffer.mem_registry.getFreeSlots() == 0) try text.buffer.flattenMemRegistry();
         const copy = try self.allocator.dupe(u8, bytes);
         errdefer self.allocator.free(copy);

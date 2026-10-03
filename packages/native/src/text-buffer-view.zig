@@ -1904,7 +1904,6 @@ pub const UnifiedTextBufferView = struct {
                 const vline_width_cols_before = wctx.current_vline_width_cols;
                 var remaining_width_cols = max_width_cols;
                 var consumed_count: usize = 0;
-                // Zero-width pieces always fit, so they stay with the text before them.
                 while (consumed_count < wctx.pending_word_pieces.items.len) {
                     const piece = wctx.pending_word_pieces.items[consumed_count];
                     if (piece.width_cols <= remaining_width_cols) {
@@ -1952,7 +1951,6 @@ pub const UnifiedTextBufferView = struct {
                     }
                     appendPendingWordToLine(wctx);
                 }
-                // Zero-width pieces, such as an appended combining mark, stay with the preceding text.
                 if (wctx.pending_word_pieces.items.len > 0 and !wctx.failed) appendPendingWordToLine(wctx);
             }
 

@@ -595,9 +595,10 @@ export class NativeScene {
   }
 
   /** @internal Line arrays are copied only for explicit line-info queries. */
-  getTextLineInfo(renderable: Renderable) {
+  getTextLineInfo(renderable: Renderable, firstLine?: number, lineCount?: number) {
     this.flushStaged()
-    return this.driver.renderLib.sceneGetTextLineInfo(this.driver.context, renderable._getSceneHandle(this))
+    const handle = renderable._getSceneHandle(this)
+    return this.driver.renderLib.sceneGetTextLineInfo(this.driver.context, handle, firstLine, lineCount)
   }
 
   /** @internal Scalar metrics do not copy the document or its line arrays. */

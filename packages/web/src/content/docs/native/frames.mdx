@@ -134,12 +134,12 @@ This lets native code check that the submitted cells belong to that exact finish
 
 Check both the call's `ot_status` and the separate render outcome:
 
-| Render outcome        | Meaning                                                                                      |
-| --------------------- | -------------------------------------------------------------------------------------------- |
-| `OT_RENDER_PRESENTED` | Output was accepted and presentation is complete, including no-byte frames                   |
-| `OT_RENDER_PENDING`   | This draft was accepted. Its output completion remains pending                               |
-| `OT_RENDER_SKIPPED`   | No output was accepted. Paint a new draft after output capacity returns                      |
-| `OT_RENDER_FAILED`    | Encoding or admission failed without accepting output. Paint a new draft for another attempt |
+| Render outcome        | Meaning                                                                                                   |
+| --------------------- | --------------------------------------------------------------------------------------------------------- |
+| `OT_RENDER_PRESENTED` | Output was accepted and presentation is complete, including no-byte frames                                |
+| `OT_RENDER_PENDING`   | This draft was accepted. Its output completion remains pending                                            |
+| `OT_RENDER_SKIPPED`   | Output pressure. Paint a new draft after queued output drains                                             |
+| `OT_RENDER_FAILED`    | The frame is larger than the empty output queue, or encoding or allocation failed. No output was accepted |
 
 An `OT_OK` commit consumes the draft even for skipped or failed render outcomes.
 Do not submit its ticket again. Pumping output does not repaint or retry it.
