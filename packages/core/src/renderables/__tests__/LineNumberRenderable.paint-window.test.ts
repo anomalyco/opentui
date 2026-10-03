@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, test } from "bun:test"
+import { afterEach, describe, expect, spyOn, test } from "bun:test"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { OptimizedBuffer } from "../../buffer.js"
@@ -328,10 +328,18 @@ describe("LineNumber paint window", () => {
     doc.scroll.scrollTo(5000)
     doc.text.lineInfoReads = 0
     doc.text.sourceRows = 0
+    const getLines = spyOn(
+      (setup.renderer.nativeScene.driver.renderLib as any).opentui.symbols,
+      "ot_scene_get_text_lines",
+    )
     await setup.renderOnce()
+    // Native copies only the requested rows (argument 4 is the row capacity), not the whole table (main #1462).
+    const copied = getLines.mock.calls.reduce((sum, args: unknown[]) => sum + (args[4] as number), 0)
+    getLines.mockRestore()
     expect(doc.text.scrollHeight).toBe(10000)
     expect(doc.text.lineInfoReads).toBe(0)
     expect(doc.text.sourceRows).toBe(13) // Six backgrounds, six gutter rows and their preceding source.
+    expect(copied).toBe(13)
   })
 
   test("outer scroll starts on wrapped continuations without repeating numbers or signs", async () => {

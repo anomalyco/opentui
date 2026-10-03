@@ -2707,7 +2707,7 @@ pub const Context = struct {
         };
     }
 
-    pub fn sceneGetTextLines(self: *Context, handle: Handle, out: []scene.TextLine) !u32 {
+    pub fn sceneGetTextLines(self: *Context, handle: Handle, first_line: u32, out: []scene.TextLine) !u32 {
         try self.checkSceneRead();
         const was_mutating = self.mutating;
         self.mutating = true;
@@ -2717,9 +2717,9 @@ pub const Context = struct {
         try text.prepareView();
         const lines = text.view.getLogicalLineInfo();
         const count: u32 = @intCast(lines.line_start_cols.len);
-        if (out.len == 0) return count;
-        if (out.len < count) return error.InvalidOptions;
-        for (out[0..count], 0..) |*line, index| {
+        // Copy only the requested window, so a viewport read does not scale with the document.
+        const start = @min(first_line, count);
+        for (out[0..@min(out.len, count - start)], start..) |*line, index| {
             line.* = .{
                 .start_cols = lines.line_start_cols[index],
                 .width_cols = lines.line_width_cols[index],

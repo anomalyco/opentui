@@ -2084,7 +2084,7 @@ pub fn ot_scene_get_text_info(context: ?*ContextHandle, node_ptr: ?*const c.ot_h
     return c.OT_OK;
 }
 
-pub fn ot_scene_get_text_lines(context: ?*ContextHandle, node_ptr: ?*const c.ot_handle, lines_ptr: ?[*]c.ot_scene_text_line, capacity: u32, out_count_ptr: ?*u32) callconv(.c) c.ot_status {
+pub fn ot_scene_get_text_lines(context: ?*ContextHandle, node_ptr: ?*const c.ot_handle, first_line: u32, lines_ptr: ?[*]c.ot_scene_text_line, capacity: u32, out_count_ptr: ?*u32) callconv(.c) c.ot_status {
     const status = sceneReadStatus(context);
     if (status != c.OT_OK) return status;
     const owner = context.?;
@@ -2092,7 +2092,7 @@ pub fn ot_scene_get_text_lines(context: ?*ContextHandle, node_ptr: ?*const c.ot_
     const out = out_count_ptr orelse return sessionError(owner, error.InvalidOptions);
     if (capacity != 0 and lines_ptr == null) return sessionError(owner, error.InvalidOptions);
     const lines: []@import("scene.zig").TextLine = if (lines_ptr) |ptr| @as([*]@import("scene.zig").TextLine, @ptrCast(ptr))[0..capacity] else &.{};
-    const count = owner.core.sceneGetTextLines(handleFromC(node.*), lines) catch |err| return sessionError(owner, err);
+    const count = owner.core.sceneGetTextLines(handleFromC(node.*), first_line, lines) catch |err| return sessionError(owner, err);
     out.* = count;
     return c.OT_OK;
 }
@@ -4238,14 +4238,14 @@ test "Scene text ABI validates options and copies bounded text queries" {
     try std.testing.expectEqual(c.OT_OK, ot_scene_get_text(handle, &text, &bytes, count, &count));
     try std.testing.expectEqualStrings("one two\nlast", bytes[0..count]);
     var lines: [2]c.ot_scene_text_line = @splat(.{ .start_cols = 999, .width_cols = 999, .source_line = 999, .wrap_index = 999 });
-    count = 999;
-    try std.testing.expectEqual(c.OT_INVALID_ARGUMENT, ot_scene_get_text_lines(handle, &text, &lines, 1, &count));
-    try std.testing.expectEqual(@as(u32, 999), count);
-    try std.testing.expectEqual(@as(u32, 999), lines[0].start_cols);
-    try std.testing.expectEqual(c.OT_OK, ot_scene_get_text_lines(handle, &text, &lines, 2, &count));
+    // A window copies [first_line, first_line + capacity) clipped to the count; other lines stay untouched.
+    try std.testing.expectEqual(c.OT_OK, ot_scene_get_text_lines(handle, &text, 2, &lines, 2, &count));
     try std.testing.expectEqual(@as(u32, 2), count);
-    try std.testing.expectEqual(@as(u32, 4), lines[1].width_cols);
-    try std.testing.expectEqual(@as(u32, 1), lines[1].source_line);
+    try std.testing.expectEqual(@as(u32, 999), lines[0].start_cols);
+    try std.testing.expectEqual(c.OT_OK, ot_scene_get_text_lines(handle, &text, 1, &lines, 2, &count));
+    try std.testing.expectEqual(@as(u32, 4), lines[0].width_cols);
+    try std.testing.expectEqual(@as(u32, 1), lines[0].source_line);
+    try std.testing.expectEqual(@as(u32, 999), lines[1].start_cols);
     text_options.scroll_x = 0.5;
     try std.testing.expectEqual(c.OT_OK, ot_scene_set_text_options(handle, &text, &text_options));
     for ([_]f64{ -0.5, std.math.inf(f64), std.math.nan(f64), 2147483648 }) |invalid| {

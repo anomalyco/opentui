@@ -175,7 +175,7 @@ export abstract class TextBufferRenderable extends Renderable implements LineInf
       return this.lineInfo.lineSources.slice(startLine, startLine + lineCount)
     }
     if (this.nativeTextScene) {
-      return this.nativeTextScene.getTextLineInfo(this).lineSources.slice(startLine, startLine + lineCount)
+      return this.nativeTextScene.getTextLineInfo(this, startLine, lineCount).lineSources
     }
     return this.textBufferView.getLineSources(startLine, lineCount)
   }

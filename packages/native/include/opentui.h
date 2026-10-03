@@ -798,13 +798,15 @@ ot_status ot_scene_get_text_selection(ot_context *, const ot_handle *node, uint6
 ot_status ot_scene_get_selected_text(ot_context *, const ot_handle *node,
     uint8_t *bytes, uint32_t capacity, uint32_t *out_count);
 /* Copied queries retain no native memory. Zero capacity reports the exact count;
- * otherwise insufficient capacity rejects without writing either output. bytes
- * and lines may be NULL only for zero capacity. Text has no terminating NUL;
- * lines includes all virtual lines, not only the visible viewport. Info requires
- * exact size/version. Queries never perform Yoga layout or resize the viewport. */
+ * otherwise insufficient text capacity rejects without writing either output. bytes
+ * and lines may be NULL only for zero capacity. Text has no terminating NUL.
+ * Lines copies virtual lines [first_line, first_line + capacity), clipped to the
+ * count of all virtual lines, not only visible ones, which out_count reports. Info
+ * requires exact size/version. Queries never perform Yoga layout or resize the viewport. */
 ot_status ot_scene_get_text(ot_context *, const ot_handle *node, uint8_t *bytes, uint32_t capacity, uint32_t *out_count);
 ot_status ot_scene_get_text_info(ot_context *, const ot_handle *node, ot_scene_text_info *out_info);
-ot_status ot_scene_get_text_lines(ot_context *, const ot_handle *node, ot_scene_text_line *lines, uint32_t capacity, uint32_t *out_count);
+ot_status ot_scene_get_text_lines(ot_context *, const ot_handle *node, uint32_t first_line,
+    ot_scene_text_line *lines, uint32_t capacity, uint32_t *out_count);
 /* OT_LAYOUT_PUBLIC copies local cell geometry from the node's latest preparation refresh.
  * During host phases, mounted nodes retain their preceding projection until that
  * refresh; newly placed children refresh before their own update. screen_x/y
