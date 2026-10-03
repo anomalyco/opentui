@@ -134,7 +134,9 @@ const Model = struct {
         self.boxes[index] = kind == c.OT_SCENE_BOX;
         self.alive[index] = true;
         self.count += 1;
-        try f.owner.sceneSetStyle(handle, 4, 0, 0, 1, @floatFromInt(1 + random.uintLessThan(u32, 6)), 1);
+        // Custom nodes take half their parent's width, so resizing the parent resizes them.
+        const width: f32 = if (kind == c.OT_SCENE_CUSTOM) 50 else @floatFromInt(1 + random.uintLessThan(u32, 6));
+        try f.owner.sceneSetStyle(handle, 4, 0, 0, if (kind == c.OT_SCENE_CUSTOM) 2 else 1, width, 1);
         try f.owner.sceneSetStyle(handle, 4, 1, 0, 1, @floatFromInt(1 + random.uintLessThan(u32, 3)), 1);
         if (random.boolean()) try f.owner.sceneSetStyle(handle, 0, 6, 0, 0, 2, 0);
         if (random.uintLessThan(u8, 5) == 0) try f.owner.sceneSetStyle(handle, 0, 9, 0, 0, 1, 0);
@@ -210,7 +212,12 @@ fn expectBoundedMatchesSynchronous(seed: u64) !void {
         try Fixture.init(testing.allocator, 12, 4, .{ .output = transport }),
     };
     defer for (fixtures) |f| f.deinit();
-    for (fixtures, &models, &mutations) |f, *model, *random| try model.build(f, random.random());
+    for (fixtures, &models, &mutations) |f, *model, *random| {
+        try model.build(f, random.random());
+        // After a first frame, preparation refreshes moved and resized nodes, not only new placements.
+        try f.owner.sceneFrameCancel(f.id, (try f.drive(null, options, std.math.maxInt(u32))).frame_id);
+        for (0..seed % 4) |_| try model.mutate(f, random.random());
+    }
     const bounded = fixtures[0];
     // Unchanged yields consume no layout round; a yielded mutation restarts preparation once.
     const mutating = drive.random().boolean();
