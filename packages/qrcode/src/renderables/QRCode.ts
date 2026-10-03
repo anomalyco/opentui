@@ -71,7 +71,7 @@ abstract class BaseQRCodeRenderable<
   protected constructor(
     ctx: RenderContext,
     options: QRCodeSharedOptions<any, TEcl>,
-    defaults: QRCodeRenderableDefaults<TEcl>,
+    private readonly defaults: QRCodeRenderableDefaults<TEcl>,
     private readonly minimumQuietZone: number,
     private readonly encodeContent: (content: string, errorCorrectionLevel: TEcl) => TEncoded,
   ) {
@@ -176,7 +176,7 @@ abstract class BaseQRCodeRenderable<
   }
 
   public set foregroundColor(value: ColorInput) {
-    this._foregroundColor = RGBA.clone(parseColor(value))
+    this._foregroundColor = RGBA.clone(parseColor(value ?? this.defaults.foregroundColor))
     this.invalidateRenderBuffer()
     this.requestRender()
   }
@@ -186,7 +186,7 @@ abstract class BaseQRCodeRenderable<
   }
 
   public set backgroundColor(value: ColorInput) {
-    this._backgroundColor = RGBA.clone(parseColor(value))
+    this._backgroundColor = RGBA.clone(parseColor(value ?? this.defaults.backgroundColor))
     this.invalidateRenderBuffer()
     this.requestRender()
   }
@@ -209,7 +209,7 @@ abstract class BaseQRCodeRenderable<
   }
 
   public set fallbackColor(value: ColorInput) {
-    this._fallbackColor = RGBA.clone(parseColor(value))
+    this._fallbackColor = RGBA.clone(parseColor(value ?? this.defaults.fallbackColor))
     this.invalidateRenderBuffer()
     this.requestRender()
   }
