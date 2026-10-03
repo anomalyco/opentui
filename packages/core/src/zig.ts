@@ -113,6 +113,14 @@ export type NativeContextHandle = { readonly [nativeContextBrand]: true }
 /** Native hyperlink URL slot bound. Longer URLs fail allocation. */
 export const MAX_LINK_URL_BYTES = 512
 
+// Struct outputs use `buffer` instead of `ptr`: the call is cheaper, and `buffer` rejects a non-view with a TypeError
+// where `ptr` would accept a number as a raw address. Bun 1.3 rejects ArrayBuffer and DataView for `buffer`, so keep one
+// Uint8Array view per reusable struct.
+function allocFFIStruct(structDefinition: Parameters<typeof allocStruct>[0]) {
+  const storage = allocStruct(structDefinition)
+  return { ...storage, ffiView: new Uint8Array(storage.buffer) }
+}
+
 export interface NativeContextOptions {
   objectCapacity: number
   renderCellsMax: number
@@ -2885,7 +2893,7 @@ function getOpenTUILib(libPath?: string) {
       returns: "i32",
     },
     audioCreateStream: {
-      args: ["ptr", "ptr", "ptr"],
+      args: ["ptr", "buffer", "buffer"],
       returns: "i32",
     },
     audioWriteStream: {
@@ -2913,11 +2921,11 @@ function getOpenTUILib(libPath?: string) {
       returns: "i32",
     },
     audioGetStreamStats: {
-      args: ["ptr", "u32", "ptr"],
+      args: ["ptr", "u32", "buffer"],
       returns: "i32",
     },
     audioCloseStream: {
-      args: ["ptr", "u32", "u32", "ptr"],
+      args: ["ptr", "u32", "u32", "buffer"],
       returns: "i32",
     },
     audioLoad: {
@@ -3338,7 +3346,7 @@ export class FFIRenderLib {
   private yogaHost?: YogaHost
   private readonly ffiStructStorage = {
     audioStreamStats: {
-      ...allocStruct(AudioStreamStatsStruct),
+      ...allocFFIStruct(AudioStreamStatsStruct),
       result: {
         bytesReceived: 0n,
         framesDecoded: 0n,
@@ -8704,11 +8712,11 @@ export class FFIRenderLib {
     ) {
       return { status: -1, streamId: null }
     }
-    const optionsBuffer = AudioStreamCreateOptionsStruct.pack(options)
-    const outBuffer = new ArrayBuffer(4)
+    const optionsBuffer = new Uint8Array(AudioStreamCreateOptionsStruct.pack(options))
+    const outBuffer = new Uint32Array(1)
     const status = this.opentui.symbols.audioCreateStream(this.audioContext(engine), optionsBuffer, outBuffer)
     if (status !== 0) return { status, streamId: null }
-    return { status, streamId: new Uint32Array(outBuffer)[0] ?? null }
+    return { status, streamId: outBuffer[0] ?? null }
   }
 
   public audioWriteStream(engine: AudioEngineHandle, streamId: number, data: Uint8Array): number {
@@ -8740,7 +8748,7 @@ export class FFIRenderLib {
 
   public audioGetStreamStats(engine: AudioEngineHandle, streamId: number): NativeAudioStreamStats | null {
     const storage = this.ffiStructStorage.audioStreamStats
-    const status = this.opentui.symbols.audioGetStreamStats(this.audioContext(engine), streamId, storage.buffer)
+    const status = this.opentui.symbols.audioGetStreamStats(this.audioContext(engine), streamId, storage.ffiView)
     if (status !== 0) return null
     const stats = AudioStreamStatsStruct.unpackInto(storage.view, storage.result) as NativeAudioStreamStats
     return { ...stats }
@@ -8752,7 +8760,7 @@ export class FFIRenderLib {
     reason: NativeAudioStreamCloseReason,
   ): { status: number; stats: NativeAudioStreamStats | null } {
     const storage = this.ffiStructStorage.audioStreamStats
-    const status = this.opentui.symbols.audioCloseStream(this.audioContext(engine), streamId, reason, storage.buffer)
+    const status = this.opentui.symbols.audioCloseStream(this.audioContext(engine), streamId, reason, storage.ffiView)
     if (status !== 0) return { status, stats: null }
     const stats = AudioStreamStatsStruct.unpackInto(storage.view, storage.result) as NativeAudioStreamStats
     return { status, stats: { ...stats } }
