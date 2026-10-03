@@ -1028,6 +1028,13 @@ function isFFIU32(value: number): boolean {
   return Number.isInteger(value) && value >= 0 && value <= MAX_FFI_U32
 }
 
+function toFFII32(value: number, label: string): number {
+  if (!Number.isInteger(value) || value < -0x8000_0000 || value > 0x7fff_ffff) {
+    throw new RangeError(`${label} must be a signed 32-bit integer`)
+  }
+  return value
+}
+
 function toFFIU64(value: bigint, label: string): bigint {
   if (typeof value !== "bigint" || value < 0n || value > 0xffff_ffff_ffff_ffffn) {
     throw new RangeError(`${label} must be an unsigned 64-bit bigint`)
@@ -1228,8 +1235,8 @@ function encodeDrawPosition(
   options: BufferDrawPosition,
   base = 0,
 ): void {
-  signed[(base + fields.x.offset) / 4] = embeddedTerminalI32(options.x ?? 0, "Buffer x")
-  signed[(base + fields.y.offset) / 4] = embeddedTerminalI32(options.y ?? 0, "Buffer y")
+  signed[(base + fields.x.offset) / 4] = toFFII32(options.x ?? 0, "Buffer x")
+  signed[(base + fields.y.offset) / 4] = toFFII32(options.y ?? 0, "Buffer y")
 }
 
 function encodeDrawColors(
@@ -1451,15 +1458,8 @@ function encodeImageDrawOptions(options: NativeContextImageDraw, words: Uint32Ar
   const protocolId = IMAGE_PROTOCOL_TO_ID[options.protocol ?? "auto"]
   if (!Number.isInteger(protocolId)) throw new TypeError("Unknown image protocol")
   words[word + fields.protocol.offset / 4] = protocolId
-  for (const [field, coordinate] of [
-    ["x", options.x ?? 0],
-    ["y", options.y ?? 0],
-  ] as const) {
-    if (!Number.isInteger(coordinate) || coordinate < -0x80000000 || coordinate > 0x7fffffff) {
-      throw new RangeError("Image coordinates must be signed 32-bit integers")
-    }
-    signed[word + fields[field].offset / 4] = coordinate
-  }
+  signed[word + fields.x.offset / 4] = toFFII32(options.x ?? 0, "Image x")
+  signed[word + fields.y.offset / 4] = toFFII32(options.y ?? 0, "Image y")
   const sourceWidth = options.sourceWidth
   const sourceHeight = options.sourceHeight
   words[word + fields.flags.offset / 4] = (sourceWidth === undefined ? 0 : 1) | (sourceHeight === undefined ? 0 : 2)
@@ -1484,13 +1484,6 @@ function viewOrNull<T extends ArrayBufferView>(value: T): T | null {
 function embeddedTerminalDimension(value: number, name: string) {
   if (!Number.isInteger(value) || value < 1 || value > 0xffff) {
     throw new RangeError(`Embedded terminal ${name} must be an integer between 1 and 65535`)
-  }
-  return value
-}
-
-function embeddedTerminalI32(value: number, name: string) {
-  if (!Number.isInteger(value) || value < -0x8000_0000 || value > 0x7fff_ffff) {
-    throw new RangeError(`Embedded terminal ${name} must be a signed 32-bit integer`)
   }
   return value
 }
@@ -1533,10 +1526,7 @@ function encodeScenePaint(paint: NativeScenePaintUpdate, scratch: ReturnType<typ
   const zIndex = paint.zIndex
   let fields = 0
   if (zIndex !== undefined) {
-    if (!Number.isInteger(zIndex) || zIndex < -0x8000_0000 || zIndex > 0x7fff_ffff) {
-      throw new RangeError("Scene zIndex must be a signed 32-bit integer")
-    }
-    record[layout.fields.z_index.offset / 4] = zIndex
+    record[layout.fields.z_index.offset / 4] = toFFII32(zIndex, "Scene zIndex")
     fields |= nativeConstants.OT_SCENE_PROPERTY_Z_INDEX
   }
   // Mirror scene.zig setPaint's range rules so staged paint cannot fail only at flush time.
@@ -2236,13 +2226,8 @@ export class NativePaintRecorder {
   stack(options: NativeBufferStack): number {
     const operation = BUFFER_STACK_OPERATIONS.indexOf(options.operation)
     if (operation < 0) throw new TypeError("Invalid checked buffer stack operation")
-    const x = options.x ?? 0
-    const y = options.y ?? 0
-    for (const coordinate of [x, y]) {
-      if (!Number.isInteger(coordinate) || coordinate < -0x80000000 || coordinate > 0x7fffffff) {
-        throw new RangeError("Buffer scissor coordinates must be signed 32-bit integers")
-      }
-    }
+    const x = toFFII32(options.x ?? 0, "Buffer scissor x")
+    const y = toFFII32(options.y ?? 0, "Buffer scissor y")
     const width = toSafeFFIU32Length(options.width ?? 0, "Buffer scissor width")
     const height = toSafeFFIU32Length(options.height ?? 0, "Buffer scissor height")
     const opacity = options.opacity ?? 1
@@ -2332,8 +2317,8 @@ export class NativePaintRecorder {
       const input = recordedPixels(data, byteLength)
       const base = this.reserve(nativeConstants.OT_SCENE_RECORD_PACKED, layout.size + input.byteLength)
       const fields = layout.fields
-      this.signed[(base + fields.x.offset) / 4] = embeddedTerminalI32(x, "Packed buffer x")
-      this.signed[(base + fields.y.offset) / 4] = embeddedTerminalI32(y, "Packed buffer y")
+      this.signed[(base + fields.x.offset) / 4] = toFFII32(x, "Packed buffer x")
+      this.signed[(base + fields.y.offset) / 4] = toFFII32(y, "Packed buffer y")
       this.words[(base + fields.width.offset) / 4] = toSafeFFIU32Length(width, "Packed buffer dimension")
       this.words[(base + fields.height.offset) / 4] = toSafeFFIU32Length(height, "Packed buffer dimension")
       this.words[(base + fields.byte_count.offset) / 4] = input.byteLength
@@ -2360,8 +2345,8 @@ export class NativePaintRecorder {
       const input = recordedPixels(data, byteLength)
       const base = this.reserve(nativeConstants.OT_SCENE_RECORD_SUPERSAMPLE, layout.size + input.byteLength)
       const fields = layout.fields
-      this.signed[(base + fields.x.offset) / 4] = embeddedTerminalI32(x, "Supersample buffer x")
-      this.signed[(base + fields.y.offset) / 4] = embeddedTerminalI32(y, "Supersample buffer y")
+      this.signed[(base + fields.x.offset) / 4] = toFFII32(x, "Supersample buffer x")
+      this.signed[(base + fields.y.offset) / 4] = toFFII32(y, "Supersample buffer y")
       this.words[(base + fields.format.offset) / 4] = format === "bgra8unorm" ? 0 : 1
       this.words[(base + fields.stride.offset) / 4] = toSafeFFIU32Length(stride, "Supersample buffer dimension")
       this.words[(base + fields.byte_count.offset) / 4] = input.byteLength
@@ -2390,8 +2375,8 @@ export class NativePaintRecorder {
       const layout = nativeLayouts.ot_scene_record_grayscale
       const fields = layout.fields
       const base = this.reserve(nativeConstants.OT_SCENE_RECORD_GRAYSCALE, layout.size + samples.length * 4)
-      this.signed[(base + fields.x.offset) / 4] = embeddedTerminalI32(x, "Grayscale x")
-      this.signed[(base + fields.y.offset) / 4] = embeddedTerminalI32(y, "Grayscale y")
+      this.signed[(base + fields.x.offset) / 4] = toFFII32(x, "Grayscale x")
+      this.signed[(base + fields.y.offset) / 4] = toFFII32(y, "Grayscale y")
       this.words[(base + fields.width.offset) / 4] = toSafeFFIU32Length(width, "Grayscale source width")
       this.words[(base + fields.height.offset) / 4] = toSafeFFIU32Length(height, "Grayscale source height")
       this.words[(base + fields.flags.offset) / 4] =
@@ -2451,8 +2436,8 @@ export class NativePaintRecorder {
         layout.size,
       )
       this.encodeHandle(source, base + layout.fields.source.offset)
-      this.signed[(base + layout.fields.x.offset) / 4] = embeddedTerminalI32(x, "View x") || 0
-      this.signed[(base + layout.fields.y.offset) / 4] = embeddedTerminalI32(y, "View y") || 0
+      this.signed[(base + layout.fields.x.offset) / 4] = toFFII32(x, "View x") || 0
+      this.signed[(base + layout.fields.y.offset) / 4] = toFFII32(y, "View y") || 0
     } catch (error) {
       this.rollback(length, slot)
       throw error
@@ -2490,8 +2475,8 @@ export class NativePaintRecorder {
       const base = this.reserve(nativeConstants.OT_SCENE_RECORD_UNICODE, layout.size)
       this.encodeHandle(source, base + fields.unicode.offset)
       this.words[(base + fields.index.offset) / 4] = toSafeFFIU32Length(index, "Unicode character index")
-      this.signed[(base + fields.x.offset) / 4] = embeddedTerminalI32(x, "Unicode x")
-      this.signed[(base + fields.y.offset) / 4] = embeddedTerminalI32(y, "Unicode y")
+      this.signed[(base + fields.x.offset) / 4] = toFFII32(x, "Unicode x")
+      this.signed[(base + fields.y.offset) / 4] = toFFII32(y, "Unicode y")
       this.words[(base + fields.attributes.offset) / 4] = toSafeFFIU32Length(attributes, "Unicode attributes")
       contextBufferColor(foreground, this.colors, (base + fields.foreground.offset) / 2)
       contextBufferColor(background, this.colors, (base + fields.background.offset) / 2)
@@ -2621,19 +2606,6 @@ function drawRecordBottomTitle(options: NativeBufferDraw): string {
   return options.operation === "box" && options.bottomTitle ? drawTextString(options.bottomTitle) : ""
 }
 
-function bufferStackCoordinate(coordinate: number): number {
-  if (!Number.isInteger(coordinate) || coordinate < -0x80000000 || coordinate > 0x7fffffff) {
-    throw new RangeError("Buffer scissor coordinates must be signed 32-bit integers")
-  }
-  return coordinate
-}
-
-function sceneHitCoordinate(coordinate: number): void {
-  if (!Number.isInteger(coordinate) || coordinate < -0x8000_0000 || coordinate > 0x7fff_ffff) {
-    throw new RangeError("Scene hit coordinates must be signed 32-bit integers")
-  }
-}
-
 function createEditorSelectionRecord() {
   const record = createContextRecord(nativeLayouts.ot_editor_selection)
   return {
@@ -2642,13 +2614,6 @@ function createEditorSelectionRecord() {
     colors: new Uint16Array(record.buffer),
     changed: new Uint32Array(1),
   }
-}
-
-function editorSelectionCoordinate(value: number): number {
-  if (!Number.isInteger(value) || value < -0x80000000 || value > 0x7fffffff) {
-    throw new RangeError("Editor selection coordinates must fit signed 32-bit cells")
-  }
-  return value
 }
 
 function encodeEditorSelection(
@@ -2662,10 +2627,10 @@ function encodeEditorSelection(
   record[layout.fields.behavior.offset / 4] = toSafeFFIU32Length(selection.behavior ?? 0, "Editor selection behavior")
   record[layout.fields.start.offset / 4] = toSafeFFIU32Length(selection.start ?? 0, "Editor selection start")
   record[layout.fields.end.offset / 4] = toSafeFFIU32Length(selection.end ?? 0, "Editor selection end")
-  coordinates[layout.fields.anchor_x.offset / 4] = editorSelectionCoordinate(selection.anchorX ?? 0)
-  coordinates[layout.fields.anchor_y.offset / 4] = editorSelectionCoordinate(selection.anchorY ?? 0)
-  coordinates[layout.fields.focus_x.offset / 4] = editorSelectionCoordinate(selection.focusX ?? 0)
-  coordinates[layout.fields.focus_y.offset / 4] = editorSelectionCoordinate(selection.focusY ?? 0)
+  coordinates[layout.fields.anchor_x.offset / 4] = toFFII32(selection.anchorX ?? 0, "Editor selection anchorX")
+  coordinates[layout.fields.anchor_y.offset / 4] = toFFII32(selection.anchorY ?? 0, "Editor selection anchorY")
+  coordinates[layout.fields.focus_x.offset / 4] = toFFII32(selection.focusX ?? 0, "Editor selection focusX")
+  coordinates[layout.fields.focus_y.offset / 4] = toFFII32(selection.focusY ?? 0, "Editor selection focusY")
   record[layout.fields.update_cursor.offset / 4] = toFFIBool(
     selection.updateCursor ?? false,
     "Editor selection updateCursor",
@@ -3762,8 +3727,8 @@ export class FFIRenderLib {
     const source = encodeContextHandle(context, unicode)
     const ticket = frame ? encodeSceneFrameRequest(context, frame) : null
     const item = toSafeFFIU32Length(index, "Unicode character index")
-    const column = embeddedTerminalI32(x, "Unicode x")
-    const row = embeddedTerminalI32(y, "Unicode y")
+    const column = toFFII32(x, "Unicode x")
+    const row = toFFII32(y, "Unicode y")
     const fg = contextBufferColor(foreground)
     const bg = contextBufferColor(background)
     const attrs = toSafeFFIU32Length(attributes, "Unicode attributes")
@@ -3853,7 +3818,7 @@ export class FFIRenderLib {
   ): void {
     this.getYogaHost().assertMutable()
     const handle = encodeContextHandle(context, terminal)
-    const value = embeddedTerminalI32(argument, "Embedded terminal command argument")
+    const value = toFFII32(argument, "Embedded terminal command argument")
     const pointer = this.nativeContextPointer(context, "ot_embedded_terminal_command")
     nativeResult(
       "ot_embedded_terminal_command",
@@ -3946,8 +3911,8 @@ export class FFIRenderLib {
     const handle = encodeContextHandle(context, terminal)
     const destination = encodeContextHandle(context, target)
     const ticket = frame ? encodeSceneFrameRequest(context, frame) : null
-    const column = embeddedTerminalI32(x, "Terminal composition x")
-    const row = embeddedTerminalI32(y, "Terminal composition y")
+    const column = toFFII32(x, "Terminal composition x")
+    const row = toFFII32(y, "Terminal composition y")
     this.getYogaHost().runMutation(() => {
       const pointer = this.nativeContextPointer(context, "ot_embedded_terminal_compose")
       nativeResult(
@@ -4701,8 +4666,8 @@ export class FFIRenderLib {
     const request = frame === null ? null : encodeSceneFrameRequest(context, frame)
     const source = encodeContextHandle(context, view)
     // Node FFI rejects negative zero for integer arguments.
-    const column = embeddedTerminalI32(x, "text view x") || 0
-    const row = embeddedTerminalI32(y, "text view y") || 0
+    const column = toFFII32(x, "Text view x") || 0
+    const row = toFFII32(y, "Text view y") || 0
     const pointer = this.nativeContextPointer(context, "ot_buffer_draw_text_view")
     nativeResult(
       "ot_buffer_draw_text_view",
@@ -4720,8 +4685,8 @@ export class FFIRenderLib {
     const destination = encodeContextHandle(context, target)
     const request = frame === null ? null : encodeSceneFrameRequest(context, frame)
     const source = encodeContextHandle(context, view)
-    const column = embeddedTerminalI32(x, "editor view x") || 0
-    const row = embeddedTerminalI32(y, "editor view y") || 0
+    const column = toFFII32(x, "Editor view x") || 0
+    const row = toFFII32(y, "Editor view y") || 0
     const pointer = this.nativeContextPointer(context, "ot_buffer_draw_editor_view")
     nativeResult(
       "ot_buffer_draw_editor_view",
@@ -4739,8 +4704,8 @@ export class FFIRenderLib {
     const destination = encodeContextHandle(context, target)
     const request = frame === null ? null : encodeSceneFrameRequest(context, frame)
     const source = encodeContextHandle(context, node)
-    const column = embeddedTerminalI32(x, "scene text x") || 0
-    const row = embeddedTerminalI32(y, "scene text y") || 0
+    const column = toFFII32(x, "Scene text x") || 0
+    const row = toFFII32(y, "Scene text y") || 0
     const pointer = this.nativeContextPointer(context, "ot_buffer_draw_scene_text")
     nativeResult(
       "ot_buffer_draw_scene_text",
@@ -5861,8 +5826,8 @@ export class FFIRenderLib {
     const ticket = frame === null ? null : encodeSceneFrameRequest(context, frame)
     const operation = BUFFER_STACK_OPERATIONS.indexOf(options.operation)
     if (operation < 0) throw new TypeError("Invalid checked buffer stack operation")
-    const x = bufferStackCoordinate(options.x ?? 0)
-    const y = bufferStackCoordinate(options.y ?? 0)
+    const x = toFFII32(options.x ?? 0, "Buffer scissor x")
+    const y = toFFII32(options.y ?? 0, "Buffer scissor y")
     const width = toSafeFFIU32Length(options.width ?? 0, "Buffer scissor width")
     const height = toSafeFFIU32Length(options.height ?? 0, "Buffer scissor height")
     const opacity = options.opacity ?? 1
@@ -5925,8 +5890,8 @@ export class FFIRenderLib {
     const ticket = frame === null ? null : encodeSceneFrameRequest(context, frame)
     const length = toSafeFFIU32Length(byteLength, "Packed buffer byte count")
     const input = pixelInput(data, length)
-    const cellX = embeddedTerminalI32(x, "Packed buffer x")
-    const cellY = embeddedTerminalI32(y, "Packed buffer y")
+    const cellX = toFFII32(x, "Packed buffer x")
+    const cellY = toFFII32(y, "Packed buffer y")
     const cellWidth = toSafeFFIU32Length(width, "Packed buffer dimension")
     const cellHeight = toSafeFFIU32Length(height, "Packed buffer dimension")
     const pointer = this.nativeContextPointer(context, "ot_buffer_draw_packed")
@@ -5961,8 +5926,8 @@ export class FFIRenderLib {
     if (format !== "rgba8unorm" && format !== "bgra8unorm") throw new TypeError("Unknown pixel format")
     const length = toSafeFFIU32Length(byteLength, "Supersample buffer byte count")
     const input = pixelInput(data, length)
-    const cellX = embeddedTerminalI32(x, "Supersample buffer x")
-    const cellY = embeddedTerminalI32(y, "Supersample buffer y")
+    const cellX = toFFII32(x, "Supersample buffer x")
+    const cellY = toFFII32(y, "Supersample buffer y")
     const pixelFormat = format === "bgra8unorm" ? 0 : 1
     const rowBytes = toSafeFFIU32Length(stride, "Supersample buffer dimension")
     const pointer = this.nativeContextPointer(context, "ot_buffer_draw_supersample")
@@ -6003,11 +5968,8 @@ export class FFIRenderLib {
       typedArrayAccessors.length.get!.call(data),
     )
     const count = toSafeFFIU32Length(input.length, "Grayscale sample count")
-    for (const coordinate of [x, y]) {
-      if (!Number.isInteger(coordinate) || coordinate < -0x80000000 || coordinate > 0x7fffffff) {
-        throw new RangeError("Grayscale coordinates must be signed 32-bit integers")
-      }
-    }
+    toFFII32(x, "Grayscale x")
+    toFFII32(y, "Grayscale y")
     const sourceWidth = toSafeFFIU32Length(width, "Grayscale source width")
     const sourceHeight = toSafeFFIU32Length(height, "Grayscale source height")
     const fg = foreground === null ? null : contextBufferColor(foreground)
@@ -6291,11 +6253,8 @@ export class FFIRenderLib {
 
   public sessionGetLinkId(context: NativeContextHandle, session: SessionHandle, x: number, y: number): number {
     const handle = encodeContextHandle(context, session)
-    for (const coordinate of [x, y]) {
-      if (!Number.isInteger(coordinate) || coordinate < -0x8000_0000 || coordinate > 0x7fff_ffff) {
-        throw new RangeError("Link coordinates must be signed 32-bit integers")
-      }
-    }
+    toFFII32(x, "Link x")
+    toFFII32(y, "Link y")
     const output = new Uint32Array(1)
     const pointer = this.nativeContextPointer(context, "ot_session_get_link_id")
     nativeResult("ot_session_get_link_id", this.opentui.symbols.ot_session_get_link_id(pointer, handle, x, y, output))
@@ -7782,8 +7741,8 @@ export class FFIRenderLib {
 
   public sceneHitTest(context: NativeContextHandle, session: SessionHandle, x: number, y: number): number {
     const handle = encodeContextHandle(context, session)
-    sceneHitCoordinate(x)
-    sceneHitCoordinate(y)
+    toFFII32(x, "Scene hit x")
+    toFFII32(y, "Scene hit y")
     // Hit tests never call back into JavaScript, so one output word serves every test.
     const output = this.hitTestOutput
     const pointer = this.nativeContextPointer(context, "ot_scene_hit_test")
@@ -9306,16 +9265,8 @@ export class FFIRenderLib {
     const context = base.context
     const baseHandle = encodeContextHandle(context, base)
     const overlayHandle = encodeContextHandle(context, overlay)
-    if (
-      !Number.isInteger(left) ||
-      left < -0x8000_0000 ||
-      left > 0x7fff_ffff ||
-      !Number.isInteger(top) ||
-      top < -0x8000_0000 ||
-      top > 0x7fff_ffff
-    ) {
-      throw new RangeError("Image composite coordinates must fit signed 32-bit integers")
-    }
+    toFFII32(left, "Image composite left")
+    toFFII32(top, "Image composite top")
     toSafeFFIU32Length(blend, "Image blend mode")
     if (!isFFIU32(opacity) || opacity > 255) throw new RangeError("Image opacity must be an integer from 0 to 255")
     return this.imageOutput(context, "ot_image_composite", (pointer, output) =>
