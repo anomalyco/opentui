@@ -220,8 +220,6 @@ export class NativeSession {
   readonly maxWriteBytes: bigint
   /** Maximum raw write in an empty queue, excluding reserved control storage and span slots. */
   readonly maxAtomicWriteBytes: bigint
-  /** @internal Snapshot count shares the Session's configured bounded admission scale. */
-  readonly maxSnapshotCount: number
   private readonly closeTimeoutNs: bigint
   private readonly closeWait = completion()
   private idleWait: ReturnType<typeof completion> | null = null
@@ -276,7 +274,6 @@ export class NativeSession {
       } else this.finish(error)
     })
     this.maxWriteBytes = output.maxBytes
-    this.maxSnapshotCount = output.spanCapacity
     this.closeTimeoutNs = BigInt(timeout) * 1_000_000n
     owner?.checkOpen()
     this.resourceContext =
@@ -383,12 +380,10 @@ export class NativeSession {
     return this.changeTerminal("resume")
   }
 
-  /** A frame is consumed on every returned status. Without one, Pending may describe earlier output. */
-  render(force = false, frame: NativeSceneFrameRequest | null = null): NativeSessionRenderStatus {
+  /** The painted frame is consumed on every returned status. */
+  render(force: boolean, frame: NativeSceneFrameRequest): NativeSessionRenderStatus {
     this.checkOpen()
-    const result = frame
-      ? this.lib.sceneFrameCommit(this.context, this.session, frame, force)
-      : this.lib.sessionRender(this.context, this.session, force)
+    const result = this.lib.sceneFrameCommit(this.context, this.session, frame, force)
     if (result === NativeSessionRenderStatus.Pending) this.schedule()
     return result
   }

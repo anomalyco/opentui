@@ -6177,19 +6177,6 @@ export class FFIRenderLib {
     )
   }
 
-  public sessionRender(
-    context: NativeContextHandle,
-    session: SessionHandle,
-    force: boolean,
-  ): NativeSessionRenderStatus {
-    const forceRender = toFFIBool(force, "Session render force")
-    const handle = encodeContextHandle(context, session)
-    const output = new Uint32Array(1)
-    const pointer = this.nativeContextPointer(context, "ot_session_render")
-    nativeResult("ot_session_render", this.opentui.symbols.ot_session_render(pointer, handle, forceRender, output))
-    return output[0]
-  }
-
   public sessionResizeRenderer(
     context: NativeContextHandle,
     session: SessionHandle,
