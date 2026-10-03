@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test"
 import { nativeConstants } from "../native-abi.generated.js"
-import { LayoutEvents } from "../Renderable.js"
+import { LayoutEvents, Renderable } from "../Renderable.js"
 import { BoxRenderable } from "../renderables/Box.js"
 import { createTestRenderer, type TestRenderer } from "../testing.js"
 import { SceneStaging, type NativeContextHandle, type SceneNodeHandle } from "../zig.js"
@@ -108,5 +108,30 @@ describe("scene staging", () => {
     width(60, OT_STYLE_DISABLE_FLEX_SHRINK)
     staging.stageStyle(context, { ...node, slot: 4 }, OT_STYLE_DIMENSION, OT_DIMENSION_WIDTH, 0, OT_UNIT_POINT, 1, 0)
     expect(values()).toEqual([30, 10, 5, 40, 50, 60, 1])
+  })
+
+  test("a flush reports a record native rejects once and then applies later records", async () => {
+    const setup = await createTestRenderer({ width: 20, height: 5 })
+    renderer = setup.renderer
+    // Only Box paints border sides; the encoder cannot see the node kind, so native rejects this record.
+    class BorderedText extends Renderable {
+      stageBorder(): void {
+        this.setNativeScenePaint({ border: 15 })
+      }
+    }
+    const custom = new BorderedText(renderer, { width: 3, height: 1 })
+    const box = new BoxRenderable(renderer, { width: 3, height: 1 })
+    renderer.root.add(custom)
+    renderer.root.add(box)
+    await setup.renderOnce()
+
+    custom.stageBorder()
+    box.width = 9
+    expect(() => renderer!.nativeScene.flushStaged()).toThrow("InvalidArgument after 0 of 2 staged entries")
+    expect(renderer.nativeScene.hasStagedMutations).toBe(true)
+    await setup.renderOnce()
+    expect(renderer.nativeScene.hasStagedMutations).toBe(false)
+    expect(box.width).toBe(9)
+    custom.destroy()
   })
 })

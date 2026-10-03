@@ -2130,6 +2130,9 @@ export class SceneStaging {
   }
 }
 
+// Flush statuses that describe the rejected record itself rather than the moment of the flush.
+const sceneRecordRejections = new Set([NativeStatus.InvalidArgument, NativeStatus.WrongKind, NativeStatus.StaleHandle])
+
 const recordHeader = nativeLayouts.ot_scene_record_header.fields
 const recordBytesMax = nativeConstants.OT_SCENE_RECORD_BYTES_MAX
 const stackDepthMax = nativeConstants.OT_BUFFER_STACK_DEPTH_MAX
@@ -7103,7 +7106,8 @@ export class FFIRenderLib {
   }
 
   /** Consume only native's accepted prefix. Allocation or admission failures leave
-   * the suffix staged so a retry cannot lose writes or replay accepted entries. */
+   * the suffix staged so a retry cannot lose writes or replay accepted entries. A record
+   * that native rejects for its node can never apply, so it is dropped and reported once. */
   public sceneFlush(context: NativeContextHandle, staging: SceneStaging): void {
     const operation = "ot_scene_flush"
     const count = staging.count
@@ -7115,12 +7119,14 @@ export class FFIRenderLib {
       this.sceneFlushApplied = undefined
       applied[0] = 0
       let status: NativeStatus
+      let rejected = 0
       try {
         const pointer = this.nativeContextPointer(context, operation)
         status = this.opentui.symbols.ot_scene_flush(pointer, views, staging.byteLength, applied)
+        if (sceneRecordRejections.has(status) && applied[0] < count) rejected = 1
       } finally {
         this.sceneFlushApplied ??= applied
-        staging.consume(applied[0])
+        staging.consume(applied[0] + rejected)
       }
       if (status !== NativeStatus.Ok) {
         const error = new NativeError(operation, status)
