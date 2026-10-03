@@ -361,6 +361,9 @@ pub const UnifiedTextBuffer = struct {
 
     pub fn reinitStorage(self: *Self, width_method: utf8.WidthMethod) TextBufferError!void {
         std.debug.assert(self.next_view_id == 0 and self.syntax_style == null and self.link_tracker == null);
+        // retireStorage left only capacity behind.
+        std.debug.assert(self.mem_registry.buffers.items.len == 0 and self.view_dirty_flags.items.len == 0);
+        std.debug.assert(self.line_highlights.items.len == 0 and self.line_spans.items.len == 0);
         const registry = self.mem_registry;
         const view_dirty_flags = self.view_dirty_flags;
         const free_view_ids = self.free_view_ids;
