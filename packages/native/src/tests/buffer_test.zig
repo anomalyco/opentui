@@ -1416,6 +1416,53 @@ test "OptimizedBuffer - checked text at signed positions clips like drawTextClip
     for (expected.buffer.bg, checked.buffer.bg) |want, got| try std.testing.expect(buffer_mod.rgbaEqual(want, got));
 }
 
+test "OptimizedBuffer - a scissor never moves the text glyphs it leaves visible" {
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
+    const black = ansi.rgbColor(0, 0, 0, 255);
+    const white = ansi.rgbColor(255, 255, 255, 255);
+    const texts = [_][]const u8{
+        "\u{1f468}\u{200d}\u{1f469}\u{200d}\u{1f467}XY",
+        "\u{1f1fa}\u{1f1f8}XY",
+        "a\u{4e2d}b\tc",
+        "e\u{301}\u{4e2d}XY",
+        "\u{200b}A\u{200d}\u{4e2d}Z",
+    };
+    for (std.enums.values(@import("../utf8.zig").WidthMethod)) |width_method| {
+        const whole = try OptimizedBuffer.init(std.testing.allocator, 8, 1, .{ .pool = &pools.graphemes, .link_pool = &pools.links, .width_method = width_method });
+        defer whole.deinit();
+        const clipped = try OptimizedBuffer.init(std.testing.allocator, 8, 1, .{ .pool = &pools.graphemes, .link_pool = &pools.links, .width_method = width_method });
+        defer clipped.deinit();
+        for (texts) |text| {
+            for ([_]bool{ false, true }) |checked| {
+                for (0..8) |clip_start| {
+                    for (clip_start + 1..9) |clip_end| {
+                        errdefer std.debug.print("width_method={t} text={s} checked={} clip=[{d},{d})\n", .{ width_method, text, checked, clip_start, clip_end });
+                        whole.clear(black, null);
+                        clipped.clear(black, null);
+                        try clipped.pushScissorRect(@intCast(clip_start), 0, @intCast(clip_end - clip_start), 1);
+                        defer clipped.popScissorRect();
+                        for ([_]*OptimizedBuffer{ whole, clipped }) |target| {
+                            if (checked) try target.drawTextChecked(text, 0, 0, white, black, 0) else try target.drawTextClipped(text, 0, 0, white, black, 0);
+                        }
+                        // A cell inside the scissor shows the unclipped glyph if the whole glyph is inside it.
+                        var x: u32 = 0;
+                        while (x < 8) {
+                            const width = gp.encodedCharWidth(whole.buffer.char[x]);
+                            const inside = x >= clip_start and x + width <= clip_end;
+                            for (x..@min(x + width, 8)) |column| {
+                                const expected: u32 = if (inside) whole.buffer.char[column] else ' ';
+                                try std.testing.expectEqual(expected, clipped.buffer.char[column]);
+                            }
+                            x += width;
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
 test "OptimizedBuffer - transparent framebuffer cell background stays transparent over backdrop" {
     var pools = TestPools.init(std.testing.allocator);
     defer pools.deinit();

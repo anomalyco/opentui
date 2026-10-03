@@ -1788,7 +1788,6 @@ pub const OptimizedBuffer = struct {
             else
                 utf8.getWidthAt(bytes, 0, tab_width, self.width_method);
             if (cell_width == 0) continue;
-            const cluster_width = if (cluster) |entry| entry.width_cols else cell_width;
             const char_x_wide = @as(i64, x) + advance_cells;
             // A tab or a cluster that a cell cannot hold draws as spaces, which clip one by one.
             const blank = !isPrintableGlyph(bytes);
@@ -1817,7 +1816,7 @@ pub const OptimizedBuffer = struct {
                 }
             }
             if (!visible) {
-                advance_cells += cluster_width;
+                advance_cells += cell_width;
                 continue;
             }
 
@@ -2011,15 +2010,16 @@ pub const OptimizedBuffer = struct {
 
             const is_tab = grapheme_bytes.len == 1 and grapheme_bytes[0] == '\t';
             const cluster_byte_start = if (at_special) render_clusters[special_idx - 1].byte_start else byte_offset - 1;
+            // A clipped glyph advances as a drawn glyph does, so the visible glyphs keep their columns.
+            const cell_width = utf8.getWidthAt(text, cluster_byte_start, tab_width, self.width_method);
             if (!is_tab and char_x < 0) {
                 // Clip a glyph that starts left of column 0, even a wide glyph that reaches column 0.
-                // Advance as a drawn glyph does, so the visible glyphs keep their columns.
-                advance_cells += utf8.getWidthAt(text, cluster_byte_start, tab_width, self.width_method);
+                advance_cells += cell_width;
                 col += cluster_width_cols;
                 continue;
             }
             if (!is_tab and !self.isPointInScissor(char_x, @intCast(y))) {
-                advance_cells += cluster_width_cols;
+                advance_cells += cell_width;
                 col += cluster_width_cols;
                 continue;
             }
@@ -2033,20 +2033,19 @@ pub const OptimizedBuffer = struct {
                 bgColor = ansi.rgbColor(0, 0, 0, 255);
             }
 
-            const cell_width = utf8.getWidthAt(text, cluster_byte_start, tab_width, self.width_method);
             if (cell_width == 0) {
                 col += cluster_width_cols;
                 continue;
             }
             if (cell_width > 1 and !is_tab) {
                 if (cell_x + cell_width > self.width) {
-                    advance_cells += cluster_width_cols;
+                    advance_cells += cell_width;
                     col += cluster_width_cols;
                     continue;
                 }
                 for (1..cell_width) |span_offset| {
                     if (!self.isPointInScissor(char_x + @as(i32, @intCast(span_offset)), @intCast(y))) {
-                        advance_cells += cluster_width_cols;
+                        advance_cells += cell_width;
                         col += cluster_width_cols;
                         continue :text_loop;
                     }
