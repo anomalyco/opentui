@@ -32,6 +32,7 @@ import {
   type ContextEditorViewHandle,
   type ContextTextBufferViewHandle,
   type SceneNodeHandle,
+  type SessionHandle,
 } from "./zig.js"
 
 // Nonconvergent feedback fails before painting instead of retrying indefinitely.
@@ -41,9 +42,14 @@ const maxHostRequests = 65_536
 type PaintContinuation = {
   request: NativeSceneFrameRequest
   wait: Promise<void>
-  cancelled: boolean
-  restart?: boolean
+  // Cancel ends the frame and wins over restart, which begins a new attempt (for example after a resize).
+  interrupted?: "cancel" | "restart"
 }
+
+type PaintOptions = () => Pick<
+  NativeSceneFrameOptions,
+  "background" | "useMouse" | "excludedHitNum" | "preserveUnwritten"
+>
 
 // Dormant built-ins retain their registration position without entering the frame iterator.
 class NativeLifecyclePasses extends Set<Renderable> {
@@ -161,6 +167,11 @@ export class NativeScene {
     return this.layoutRevision
   }
 
+  /** The scene does no more hook or frame work once it, its Session, or its renderer is gone or going. */
+  private get stopped(): boolean {
+    return this.destroyed || this.destroying || this.driver.disposed || this.renderer.isDestroyed
+  }
+
   private changeGeometry(): void {
     this.geometryRevision = this.geometryRevision === Number.MAX_SAFE_INTEGER ? 0 : this.geometryRevision + 1
     this.changeLayout()
@@ -202,7 +213,7 @@ export class NativeScene {
 
   /** @internal Keep construction pending until a boundary after derived class fields have run. */
   scheduleHookScan(renderable: Renderable): void {
-    if (this.destroyed || this.destroying || this.driver.disposed) return
+    if (this.stopped) return
     this.hookScans.add(renderable)
   }
 
@@ -232,13 +243,13 @@ export class NativeScene {
         this.hookScans = new Set()
         try {
           for (const renderable of pending) {
-            if (this.destroyed || this.destroying || this.driver.disposed) return
+            if (this.stopped) return
             if (++visits > maxHostRequests) throw new Error("Native scene hook discovery work limit exceeded")
             renderable._scanNativeSceneHooks()
             pending.delete(renderable)
           }
         } catch (error) {
-          if (!this.destroyed && !this.destroying && !this.driver.disposed) {
+          if (!this.stopped) {
             for (const renderable of this.hookScans) pending.add(renderable)
             this.hookScans = pending
           }
@@ -262,7 +273,7 @@ export class NativeScene {
 
   /** @internal Scene nodes retain native ownership even when their body is a host hook. */
   createNode(renderable: Renderable, options: RenderableOptions): void {
-    this.driver.renderLib.getYogaHost().assertMutable()
+    this.yogaHost.assertMutable()
     this.assertAlive()
     if (this.destroying) throw new Error("Native scene is being destroyed")
     const kind = renderable.nativeIntegration.kind
@@ -608,7 +619,7 @@ export class NativeScene {
 
   /** @internal Measure a snapshot using its existing scene root, without preparing a frame. */
   measureSnapshot(root: Renderable): number {
-    this.driver.renderLib.getYogaHost().assertMutable()
+    this.yogaHost.assertMutable()
     this.assertAlive()
     if (this.frame) throw new Error("Cannot measure a snapshot during a native scene frame")
     const owner = this.renderer.root
@@ -633,15 +644,11 @@ export class NativeScene {
     }
   }
 
-  paint(
-    deltaTime: number,
-    getPaintOptions: () => Pick<
-      NativeSceneFrameOptions,
-      "background" | "useMouse" | "excludedHitNum" | "preserveUnwritten"
-    >,
-  ): void | Promise<void> {
-    this.driver.renderLib.getYogaHost().assertMutable()
+  paint(deltaTime: number, getPaintOptions: PaintOptions): void | Promise<void> {
+    this.yogaHost.assertMutable()
     this.assertAlive()
+    // Native code admits one attempt per Session; a second one would fail with FrameBusy.
+    if (this.cancelPaintYield || this.paintedFrame) throw new Error("Native scene is already painting a frame")
     this.renderer.root._setCurrentRenderable(undefined)
     this.drainHookScans()
     this.runLifecyclePasses()
@@ -654,8 +661,7 @@ export class NativeScene {
     if (this.renderer.root.visible) {
       let visits = 0
       for (const renderable of this.lifecyclePasses.iteratePending()) {
-        if (this.destroyed || this.destroying || this.driver.disposed || this.renderer.isDestroyed) return
-        if (this.renderer.controlState === RendererControlState.EXPLICIT_SUSPENDED) return
+        if (this.stopped || this.renderer.controlState === RendererControlState.EXPLICIT_SUSPENDED) return
         if (++visits > maxHostRequests) throw new Error("Native scene lifecycle work limit exceeded")
         if (!renderable.isDestroyed) {
           renderable.onLifecyclePass?.call(renderable)
@@ -667,16 +673,14 @@ export class NativeScene {
 
   private async resumePaint(
     deltaTime: number,
-    getPaintOptions: () => Pick<
-      NativeSceneFrameOptions,
-      "background" | "useMouse" | "excludedHitNum" | "preserveUnwritten"
-    >,
+    getPaintOptions: PaintOptions,
     continuation: PaintContinuation | undefined,
   ): Promise<void> {
     while (continuation) {
       await continuation.wait
       this.cancelPaintYield = null
-      if (continuation.restart) {
+      if (continuation.interrupted === "restart") {
+        this.cancelAttempt(continuation.request)
         this.drainHookScans()
         this.runLifecyclePasses()
         continuation = undefined
@@ -687,28 +691,17 @@ export class NativeScene {
 
   private advancePaint(
     deltaTime: number,
-    getPaintOptions: () => Pick<
-      NativeSceneFrameOptions,
-      "background" | "useMouse" | "excludedHitNum" | "preserveUnwritten"
-    >,
+    getPaintOptions: PaintOptions,
     continuation?: PaintContinuation,
   ): PaintContinuation | undefined {
     let request: NativeSceneFrameRequest | null = continuation?.request ?? null
     let recording: Uint8Array | null = null
     let yielded = false
     try {
-      while (
-        !continuation?.cancelled &&
-        !this.destroyed &&
-        !this.destroying &&
-        !this.driver.disposed &&
-        !this.renderer.isDestroyed
-      ) {
+      while (continuation?.interrupted !== "cancel" && !this.stopped) {
         this.drainHookScans()
-        if (this.destroyed || this.destroying || this.driver.disposed || this.renderer.isDestroyed) return
-        if (this.renderer.controlState === RendererControlState.EXPLICIT_SUSPENDED) return
         const options = { ...getPaintOptions(), maxLayoutRounds, maxHostRequests }
-        if (this.destroyed || this.destroying || this.driver.disposed || this.renderer.isDestroyed) return
+        if (this.stopped || this.renderer.controlState === RendererControlState.EXPLICIT_SUSPENDED) return
         // Lifecycle passes and hooks stage writes; native must accept them before it continues.
         this.flushStaged()
         const geometryRevision = this.geometryRevision
@@ -734,14 +727,14 @@ export class NativeScene {
         }
         if (request.kind === NativeSceneFrame.Yield) {
           const wait = Promise.withResolvers<void>()
-          const state: PaintContinuation = continuation ?? { request, wait: wait.promise, cancelled: false }
+          const state: PaintContinuation = continuation ?? { request, wait: wait.promise }
           state.request = request
           state.wait = wait.promise
           const cancel = this.driver.scheduler.schedule(wait.resolve)
           this.cancelPaintYield = (restart = false) => {
-            state.restart = restart
-            if (state.cancelled) return
-            state.cancelled = true
+            const first = state.interrupted === undefined
+            state.interrupted = restart && state.interrupted !== "cancel" ? "restart" : "cancel"
+            if (!first) return
             try {
               cancel()
             } finally {
@@ -751,15 +744,9 @@ export class NativeScene {
           yielded = true
           return state
         }
-        const root = this.renderer.root._getSceneHandle(this)
-        const session = this.driver.session
         if (
-          request.session.contextId !== session.contextId ||
-          request.session.slot !== session.slot ||
-          request.session.generation !== session.generation ||
-          request.root.contextId !== root.contextId ||
-          request.root.slot !== root.slot ||
-          request.root.generation !== root.generation
+          !sameHandle(request.session, this.driver.session) ||
+          !sameHandle(request.root, this.renderer.root._getSceneHandle(this))
         ) {
           throw new Error("Native scene returned a stale host request")
         }
@@ -776,14 +763,18 @@ export class NativeScene {
       }
     } finally {
       this.paintRecording?.recorder.settle()
-      if (!yielded && request && request !== this.paintedFrame && !this.driver.disposed) {
-        this.changeLayout()
-        try {
-          this.driver.renderLib.sceneFrameCancel(this.driver.context, this.driver.session, request.frameId)
-        } catch {
-          // Destruction may have cancelled the attempt already. Preserve the original hook failure.
-        }
-      }
+      if (!yielded && request && request !== this.paintedFrame) this.cancelAttempt(request)
+    }
+  }
+
+  /** Destruction, Session shutdown, or a resize may have cancelled the attempt already; keep the caller's failure. */
+  private cancelAttempt(request: NativeSceneFrameRequest): void {
+    if (this.driver.disposed) return
+    this.changeLayout()
+    try {
+      this.driver.renderLib.sceneFrameCancel(this.driver.context, this.driver.session, request.frameId)
+    } catch {
+      // The attempt is gone either way.
     }
   }
 
@@ -795,7 +786,7 @@ export class NativeScene {
     paint.recorder.begin(context)
     try {
       for (let index = 0; index < slots.length; index++) {
-        if (this.destroyed || this.destroying || this.driver.disposed || this.renderer.isDestroyed) return null
+        if (this.stopped) return null
         const slot = slots[index]
         const renderable = this.nodes.get(slot.num)
         if (!renderable || renderable.isDestroyed) continue
@@ -852,13 +843,7 @@ export class NativeScene {
     this.cancelPaintYield?.()
     const frame = this.paintedFrame
     this.paintedFrame = null
-    if (!frame || this.driver.disposed) return
-    this.changeLayout()
-    try {
-      this.driver.renderLib.sceneFrameCancel(this.driver.context, this.driver.session, frame.frameId)
-    } catch {
-      // Session shutdown may have cancelled the draft already. Preserve the original failure.
-    }
+    if (frame) this.cancelAttempt(frame)
   }
 
   /** @internal Wake a parked turn without revoking active synchronous framebuffer scopes. */
@@ -880,7 +865,7 @@ export class NativeScene {
 
   destroy(): void {
     if (this.destroyed || this.destroying) return
-    this.driver.renderLib.getYogaHost().assertMutable()
+    this.yogaHost.assertMutable()
     this.destroying = true
     // Nothing staged can matter to a scene whose every node is about to be released.
     this.staging.clear()
@@ -911,6 +896,6 @@ export class NativeScene {
   }
 }
 
-function sameHandle(left: SceneNodeHandle, right: SceneNodeHandle): boolean {
+function sameHandle(left: SessionHandle | SceneNodeHandle, right: SessionHandle | SceneNodeHandle): boolean {
   return left.contextId === right.contextId && left.slot === right.slot && left.generation === right.generation
 }

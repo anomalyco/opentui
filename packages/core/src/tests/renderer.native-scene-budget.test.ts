@@ -1,6 +1,6 @@
 import { test } from "bun:test"
 import assert from "node:assert/strict"
-import { setImmediate } from "node:timers/promises"
+import { setImmediate, setTimeout as sleep } from "node:timers/promises"
 import { BoxRenderable } from "../renderables/Box.js"
 import { TextRenderable } from "../renderables/Text.js"
 import { CliRenderEvents, type CliRenderer } from "../renderer.js"
@@ -108,10 +108,18 @@ const parkedInterruptions: Record<string, (renderer: CliRenderer, change: () => 
     change()
   },
   destroy: (renderer) => renderer.destroy(),
+  // A cancel wins over a later restart, which would start a second native attempt beside the parked one.
+  "cancel, then restart": (renderer, change) => {
+    renderer.nativeScene.cancelFrame()
+    renderer.nativeScene.restartPaint()
+    change()
+  },
 }
 
 for (const [interruption, interrupt] of Object.entries(parkedInterruptions)) {
   for (const mode of ["on demand", "running"] as const) {
+    // A bare cancel schedules no follow-up frame, so a running loop stops; production cancels only by suspend or destroy.
+    if (interruption === "cancel, then restart" && mode === "running") continue
     test(`${interruption} at a parked paint (${mode}) presents the latest scene`, async () => {
       const { renderer, renderOnce, captureCharFrame, lines, errors, frames } = await budgetRenderer(20)
       try {
@@ -129,7 +137,7 @@ for (const [interruption, interrupt] of Object.entries(parkedInterruptions)) {
         } else {
           // A running loop presents the next frame by itself; an on-demand renderer needs a request.
           if (mode === "on demand") await renderOnce()
-          for (let turn = 0; turn < 64 && frames() === presented; turn++) await setImmediate()
+          for (let turn = 0; turn < 500 && frames() === presented; turn++) await sleep(1)
           renderer.stop()
           await renderer.idle()
           assert.equal(renderer.getSchedulerState().isRendering, false)
