@@ -397,6 +397,9 @@ type ExternalOutputCommit = {
   nativeSnapshot?: ContextBufferHandle
 }
 
+// One captured stdout row of `cells` terminal cells.
+type StdoutRow = { line: string; cells: number; trailingNewline: boolean }
+
 type PendingSplitFooterTransition = {
   mode: "viewport-scroll" | "clear-stale-rows"
   sourceTopLine: number
@@ -406,14 +409,13 @@ type PendingSplitFooterTransition = {
   scrollLines?: number
 }
 
+// Bounded by queued snapshot cells, not by commit count: any batch of queued commits then fits one native split
+// render, which admits at most the Session's output capacity at 24 bytes per snapshot cell.
 class ExternalOutputQueue {
   private commits: Array<ExternalOutputCommit & { cells: number }> = []
   private cells = 0
 
-  constructor(
-    private readonly maxCells: number,
-    private readonly maxCommits: number,
-  ) {}
+  constructor(private readonly maxCells: number) {}
 
   owns(snapshot: OptimizedBuffer): boolean {
     return this.commits.some((commit) => commit.snapshot === snapshot)
@@ -423,12 +425,15 @@ class ExternalOutputQueue {
     return this.commits.length
   }
 
+  /** Throws when `cells` more would not fit, so producers can check before they allocate snapshots. */
+  checkCapacity(cells: number): void {
+    if (cells > this.maxCells - this.cells) throw new Error("Scrollback snapshot queue capacity exceeded")
+  }
+
   writeSnapshots(commits: readonly ExternalOutputCommit[]): void {
     const entries = commits.map((commit) => ({ ...commit, cells: commit.snapshot.width * commit.snapshot.height }))
     const cells = entries.reduce((total, commit) => total + commit.cells, 0)
-    if (commits.length > this.maxCommits - this.commits.length || cells > this.maxCells - this.cells) {
-      throw new Error("Scrollback snapshot queue capacity exceeded")
-    }
+    this.checkCapacity(cells)
     for (const entry of entries) this.commits.push(entry)
     this.cells += cells
   }
@@ -1220,7 +1225,7 @@ export class CliRenderer extends EventEmitter implements RenderContext {
         },
       )
       this.nativeSession = driver
-      this.externalOutputQueue = new ExternalOutputQueue(Number(driver.maxWriteBytes / 24n), driver.maxSnapshotCount)
+      this.externalOutputQueue = new ExternalOutputQueue(Number(driver.maxWriteBytes / 24n))
       this.nativeDestroyWait = Promise.withResolvers<void>()
       this.nativeClosed = this.nativeSession.closed
         .finally(() => this.nativeDestroyWait!.promise)
@@ -2634,7 +2639,7 @@ export class CliRenderer extends EventEmitter implements RenderContext {
     }
   }
 
-  private createStdoutSnapshotCommit(line: string, trailingNewline: boolean): ExternalOutputCommit {
+  private createStdoutSnapshotCommit({ line, cells, trailingNewline }: StdoutRow): ExternalOutputCommit {
     // Convert captured stdout into the same commit shape used by writeToScrollback.
     // One commit format keeps split append behavior consistent across both sources.
     const snapshotContext = new ScrollbackSnapshotRenderContext(
@@ -2647,11 +2652,8 @@ export class CliRenderer extends EventEmitter implements RenderContext {
       this.capabilities,
       this.nativeSession,
     )
-    const maxWidth = Math.max(1, this.width)
-    const lineCells = [...line]
-    const rowColumns = Math.min(lineCells.length, maxWidth)
-    const renderedLine = lineCells.slice(0, maxWidth).join("")
-    snapshotContext.width = Math.max(1, rowColumns)
+    const snapshotWidth = Math.max(1, cells)
+    snapshotContext.width = snapshotWidth
     let snapshotRoot: RootRenderable | undefined
     let snapshotBuffer: OptimizedBuffer | undefined
     try {
@@ -2661,11 +2663,11 @@ export class CliRenderer extends EventEmitter implements RenderContext {
         position: "absolute",
         left: 0,
         top: 0,
-        width: Math.max(1, rowColumns),
+        width: snapshotWidth,
         height: 1,
-        content: renderedLine,
+        content: line,
       })
-      snapshotBuffer = OptimizedBuffer.create(Math.max(1, rowColumns), 1, this.widthMethod, {
+      snapshotBuffer = OptimizedBuffer.create(snapshotWidth, 1, this.widthMethod, {
         id: "captured-stdout-snapshot",
         owner: this.nativeScene,
       })
@@ -2673,7 +2675,7 @@ export class CliRenderer extends EventEmitter implements RenderContext {
       snapshotContext.renderSnapshot(snapshotRoot, snapshotBuffer)
       return {
         snapshot: snapshotBuffer,
-        rowColumns,
+        rowColumns: cells,
         startOnNewLine: false,
         trailingNewline,
       }
@@ -2734,36 +2736,28 @@ export class CliRenderer extends EventEmitter implements RenderContext {
     // Chunk captured stdout into width-bounded row commits so each commit is a
     // small, deterministic append step. This keeps bursty output smooth while
     // preserving newline ownership on the final chunk of each logical row.
-    const commits: ExternalOutputCommit[] = []
     // Split commits are row-oriented snapshots. We chunk by renderer width so each
     // commit maps to a single logical terminal row append operation.
     const chunkWidth = Math.max(1, this.width)
-    const append = (line: string, trailingNewline: boolean): void => {
-      if (commits.length >= this.nativeSession.maxSnapshotCount - this.externalOutputQueue.size) {
-        throw new Error("Scrollback snapshot queue capacity exceeded")
+    const chunks: StdoutRow[] = []
+    for (const row of this.splitStdoutRows(text)) {
+      const rowCells = [...row.line]
+      // Preserve empty-line writes: newline-only chunks still need a commit so
+      // split scrollback state advances correctly in native code.
+      if (rowCells.length === 0) chunks.push({ line: "", cells: 0, trailingNewline: row.trailingNewline })
+      for (let offset = 0; offset < rowCells.length; offset += chunkWidth) {
+        const chunk = rowCells.slice(offset, offset + chunkWidth)
+        // Only the final wrapped chunk carries newline intent.
+        const isLastChunk = offset + chunkWidth >= rowCells.length
+        chunks.push({ line: chunk.join(""), cells: chunk.length, trailingNewline: isLastChunk && row.trailingNewline })
       }
-      commits.push(this.createStdoutSnapshotCommit(line, trailingNewline))
     }
+
+    // A write is queued whole or not at all; check the budget before allocating snapshots of at least one cell each.
+    this.externalOutputQueue.checkCapacity(chunks.reduce((total, chunk) => total + Math.max(1, chunk.cells), 0))
+    const commits: ExternalOutputCommit[] = []
     try {
-      for (const row of this.splitStdoutRows(text)) {
-        const rowCells = [...row.line]
-        if (rowCells.length === 0) {
-          // Preserve empty-line writes: newline-only chunks still need a commit so
-          // split scrollback state advances correctly in native code.
-          append("", row.trailingNewline)
-          continue
-        }
-
-        let offset = 0
-        while (offset < rowCells.length) {
-          const chunk = rowCells.slice(offset, offset + chunkWidth).join("")
-          offset += chunkWidth
-          const isLastChunk = offset >= rowCells.length
-          // Only the final wrapped chunk carries newline intent.
-          append(chunk, isLastChunk ? row.trailingNewline : false)
-        }
-      }
-
+      for (const chunk of chunks) commits.push(this.createStdoutSnapshotCommit(chunk))
       return commits
     } catch (error) {
       for (const commit of commits) commit.snapshot.destroy()
