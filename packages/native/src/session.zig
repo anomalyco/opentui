@@ -144,7 +144,8 @@ pub const TerminalOptions = struct {
     mouse: bool = true,
     mouse_movement: bool = true,
     kitty_keyboard_flags: u8 = (terminal.Options{}).kitty_keyboard_flags,
-    /// Applies to both suspension and close, as in renderer restoration.
+    /// Applies to both suspension and close, as in renderer restoration, once
+    /// setup or resume has claimed the main-screen surface.
     clear_on_close: bool = true,
 };
 
@@ -239,6 +240,9 @@ const Lifecycle = struct {
     /// Main-screen rows that enable moves back up. Fixed when setup or resume is
     /// accepted, because split controls and snapshots can change renderOffset later.
     rows_return: u32 = 0,
+    /// Enable has published, so restoration may clear the rendered main-screen
+    /// area. Before that, the visible screen still holds shell output.
+    screen_claimed: bool = false,
     image_index: usize = 0,
     deadline_ns: ?u64 = null,
 };
@@ -887,6 +891,7 @@ pub const Session = struct {
                         value.invalidateTerminalState();
                         self.lifecycle.deadline_ns = null;
                         self.lifecycle.step = .idle;
+                        self.lifecycle.screen_claimed = false;
                         self.lifecycle.phase = if (self.state == .closing) .restored else .suspended;
                         if (self.state == .closing) {
                             try self.output.close();
@@ -1043,6 +1048,7 @@ pub const Session = struct {
                 try writer.writeAll(ansi.ANSI.hideCursor);
                 try candidate.enableDetectedFeatures(writer, candidate.opts.kitty_keyboard_flags != 0);
                 try candidate.setMouseMode(writer, progress.mouse, progress.mouse_movement);
+                progress.screen_claimed = true;
                 progress.step = .activate;
             },
             .delete_images => {
@@ -1057,8 +1063,8 @@ pub const Session = struct {
                 progress.step = .reset_output;
                 if (candidate.state.alt_screen) {
                     try candidate.exitAltScreen(writer);
-                } else if (builtin.os.tag == .windows and !value.useAlternateScreen and
-                    value.clearOnShutdown and value.renderOffset == 0)
+                } else if (builtin.os.tag == .windows and progress.screen_claimed and
+                    !value.useAlternateScreen and value.clearOnShutdown and value.renderOffset == 0)
                 {
                     try writer.writeByte('\r');
                     progress.rows_remaining = candidate.state.cursor.row;
@@ -1077,7 +1083,7 @@ pub const Session = struct {
             },
             .reset_output => {
                 try candidate.resetOutputModes(writer);
-                if (!value.useAlternateScreen and value.clearOnShutdown) {
+                if (progress.screen_claimed and !value.useAlternateScreen and value.clearOnShutdown) {
                     if (value.renderOffset == 0) {
                         try writer.writeAll("\x1b[H\x1b[J");
                     } else {

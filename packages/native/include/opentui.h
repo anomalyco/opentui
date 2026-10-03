@@ -1918,7 +1918,9 @@ ot_status ot_scene_frame_commit(ot_context *, const ot_handle *session,
 
 /* flags is a combination of the four OT_TERMINAL_* option bits above. Other bits
  * must be zero. kitty_keyboard_flags accepts bits 0 through 4, or zero to disable
- * Kitty keyboard. clear-on-close also controls surface clearing on suspend. */
+ * Kitty keyboard. clear-on-close also controls surface clearing on suspend. It
+ * clears only a surface that setup or resume claimed: a close before their mode
+ * packet leaves visible shell output in place. */
 typedef struct ot_session_terminal_options {
     uint32_t struct_size;
     uint32_t abi_version;

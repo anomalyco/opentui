@@ -394,6 +394,44 @@ test "Session terminal close interrupts setup frames and suspension without clos
     }
 }
 
+test "Session terminal close clears the main screen only after setup or resume claimed it" {
+    // Setup publishes query, screen, rows, then enable; resume starts at the screen packet.
+    const cases = [_]struct { packets: ?u32, resumed: bool = false, render_offset: u32 = 0, clears: bool }{
+        .{ .packets = 0, .clears = false },
+        .{ .packets = 1, .clears = false },
+        .{ .packets = 3, .clears = false },
+        .{ .packets = 3, .render_offset = 2, .clears = false },
+        .{ .packets = 1, .resumed = true, .clears = false },
+        .{ .packets = null, .clears = true },
+        .{ .packets = null, .render_offset = 2, .clears = true },
+        .{ .packets = null, .resumed = true, .clears = true },
+    };
+    for (cases) |case| {
+        const f = try Fixture.init(testing.allocator, testing.io, 4, 3);
+        defer f.deinit();
+        var now_ns: u64 = 0;
+        var bytes: [16 * 1024]u8 = undefined;
+        _ = try f.value.splitControl(.{ .render_offset = case.render_offset });
+        try f.owner.setupSessionTerminal(f.id, .{ .use_alternate_screen = false });
+        if (case.resumed) {
+            try f.drive(&now_ns, .active);
+            try f.owner.suspendSession(f.id);
+            try f.drive(&now_ns, .suspended);
+            try f.owner.resumeSession(f.id);
+        }
+        if (case.packets) |packets| {
+            for (0..packets) |_| {
+                try testing.expectEqual(.output_pending, (try f.owner.pumpSession(f.id, now_ns, 1)).status);
+                _ = try f.drain(&bytes);
+            }
+        } else try f.drive(&now_ns, .active);
+        try f.owner.beginSessionClose(f.id);
+        const restoration = try f.driveOutput(&now_ns, .restored, &bytes, 32);
+        try testing.expectEqual(case.clears, std.mem.find(u8, restoration, ansi.ANSI.eraseBelowCursor) != null);
+        try testing.expect(std.mem.endsWith(u8, restoration, ansi.ANSI.showCursor));
+    }
+}
+
 test "Session terminal failed cleanup retains committed images and hit grid until explicit cancel" {
     const f = try Fixture.init(testing.allocator, testing.io, 4, 2);
     defer f.deinit();
