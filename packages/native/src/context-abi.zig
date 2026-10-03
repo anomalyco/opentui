@@ -3401,48 +3401,6 @@ test "Context ABI Session setup and capability records validate before changing 
     value.cancel();
 }
 
-const TestBackgroundProperty = extern struct {
-    node: c.ot_handle,
-    fields: u32 = c.OT_SCENE_PROPERTY_BACKGROUND,
-    size_bytes: u32 = 32,
-    background: [4]u16,
-};
-
-test "Scene flush ABI paints a background copied during the record batch" {
-    const ansi = @import("ansi.zig");
-    var owner: ContextHandle = .{ .gpa = .init, .io_threaded = .init_single_threaded, .core = undefined, .owner_thread = std.Thread.getCurrentId() };
-    defer owner.io_threaded.deinit();
-    owner.core = try Context.init(std.testing.allocator, owner.io_threaded.io(), .{});
-    defer owner.core.deinit() catch unreachable;
-    const core = owner.core;
-    const session = try core.createSession(.{});
-    try core.attachSessionRenderer(session, 8, 3, .{ .remote_mode = .remote });
-    const root = try core.sceneCreateNode(session, c.OT_SCENE_ROOT, 1);
-    const box = try core.sceneCreateNode(session, c.OT_SCENE_BOX, 2);
-    try core.sceneSetStyle(box, 4, 0, 0, 1, 4, 1);
-    try core.sceneSetStyle(box, 4, 1, 0, 1, 1, 1);
-    try core.sceneSetPaint(box, .{ .translateX = 1, .translateY = 1, .background = .{ 200, 0, 0, 255 } });
-    try core.sceneMoveNode(box, root, 0);
-    try core.sceneSetHooks(box, c.OT_SCENE_HOOK_RENDER_BEFORE, 1, 4, 1);
-    const options: scene.FrameOptions = .{ .background = .{ 0, 0, 0, 255 }, .use_mouse = false, .excluded_hit_num = 0, .max_layout_rounds = 8, .max_host_requests = 64 };
-    const before = try core.sceneFrameStep(session, null, options);
-    try std.testing.expectEqual(c.OT_SCENE_FRAME_RECORD, before.kind);
-    try std.testing.expectEqual(root, before.node);
-    const id = handleToC(box);
-    const color = ansi.indexedColor(42, 0, 200, 0);
-    var input: [1]TestBackgroundProperty = .{.{ .node = id, .background = color }};
-    var applied: u32 = 0;
-    try std.testing.expectEqual(c.OT_OK, ot_scene_flush(&owner, std.mem.asBytes(&input), @sizeOf(@TypeOf(input)), &applied));
-    try std.testing.expectEqual(@as(u32, 1), applied);
-    @memset(&input[0].background, 0);
-    const done = try core.sceneFrameStepWithRecording(session, before, options, std.math.maxInt(u32), &.{});
-    try std.testing.expectEqual(c.OT_SCENE_FRAME_DONE, done.kind);
-    const target = (try core.raw().getSessionRenderer(session)).getNextBuffer();
-    try std.testing.expectEqual(color, target.get(1, 1).?.bg);
-    try std.testing.expectEqual(options.background, target.get(0, 0).?.bg);
-    try core.sceneFrameCancel(session, done.frame_id);
-}
-
 /// Pointee of a scene wrapper's record or output argument. Borrowed handles, arrays, and
 /// callbacks have none and stay NULL.
 fn ScenePointee(comptime P: type) ?type {

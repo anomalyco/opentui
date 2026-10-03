@@ -13,6 +13,7 @@ const options: scene.FrameOptions = .{
     .max_host_requests = 64,
 };
 const custom = [11]u32{ 'A', 'B', 'C', 'D', '-', '|', '+', '+', '+', '+', '+' };
+const indexed = @import("../ansi.zig").indexedColor(42, 0, 200, 0);
 
 const Fixture = struct { session: context.Handle, root: context.Handle, box: context.Handle };
 
@@ -76,7 +77,7 @@ test "Scene box details allocation failure preserves old titles and releases rep
     try testing.checkAllAllocationFailures(testing.allocator, replaceTitles, .{});
 }
 
-test "Scene box details replaced during a record batch paint live and destroyed boxes own nothing" {
+test "Scene box details and paint replaced during a record batch paint live and destroyed boxes own nothing" {
     for (0..4) |exit| {
         const owner = try context.Context.init(testing.allocator, testing.io, .{});
         defer owner.deinit() catch unreachable;
@@ -88,6 +89,7 @@ test "Scene box details replaced during a record batch paint live and destroyed 
         var top = "new".*;
         var bottom = "end".*;
         try owner.sceneSetBoxDetails(fixture.box, .{ .title = &top, .bottom_title = &bottom, .custom_border_chars = custom });
+        try owner.scenePatchPaint(fixture.box, @import("context_abi_c").OT_SCENE_PROPERTY_BACKGROUND, .{ .background = indexed });
         @memset(&top, 'x');
         @memset(&bottom, 'x');
         if (exit != 3) try owner.sceneDestroyNode(fixture.box);
@@ -106,6 +108,7 @@ test "Scene box details replaced during a record batch paint live and destroyed 
         const target = (try owner.raw().getSessionRenderer(fixture.session)).getNextBuffer();
         try expectRow(target, 0, "A-new------B");
         try expectRow(target, 2, "C-end------D");
+        try testing.expectEqual(indexed, target.get(1, 1).?.bg);
     }
 }
 
