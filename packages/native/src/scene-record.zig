@@ -136,9 +136,8 @@ fn zeroHandle(value: c.ot_handle) bool {
     return value.context_id == 0 and value.slot == 0 and value.generation == 0;
 }
 
-// Record sizes add up to four u32 lengths in usize arithmetic.
 comptime {
-    std.debug.assert(@sizeOf(usize) >= 8);
+    std.debug.assert(@sizeOf(usize) >= 8); // commandSize adds up to four u32 lengths.
 }
 
 /// Unpadded byte count of a command record, after checking its fixed fields.
@@ -225,8 +224,7 @@ pub fn play(owner: *Context, target: *buffer.OptimizedBuffer, floor: usize, byte
     while (offset < segment.end) {
         const header = try fixed(c.ot_scene_record_header, bytes[offset..]);
         // index validated the framing that playback walks again.
-        std.debug.assert(header.size >= @sizeOf(c.ot_scene_record_header) and header.size % 8 == 0);
-        std.debug.assert(header.size <= segment.end - offset);
+        std.debug.assert(header.size >= @sizeOf(c.ot_scene_record_header) and header.size % 8 == 0 and header.size <= segment.end - offset);
         const body = bytes[offset..][0..header.size];
         run(owner, target, floor, header.operation, body) catch |err| switch (err) {
             error.StaleHandle => {},

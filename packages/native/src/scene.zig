@@ -797,8 +797,6 @@ pub const Scene = struct {
         if (yielded and (self.preparation_dirty or try self.needsSolve(cli, root))) {
             // A mutation accepted at a yield restarts preparation once. The restarted work
             // runs without further yields, so steady mutations cannot starve the frame.
-            // This holds even when the reply already chose UINT32_MAX: a later bounded
-            // hook reply must not make the attempt yield again.
             active.bounded_work = false;
             active.remaining_work = std.math.maxInt(u32);
             active.restarted = true;
@@ -985,7 +983,6 @@ pub const Scene = struct {
         const active = &self.attempt.?;
         std.debug.assert(active.pending == null);
         std.debug.assert(kind >= api.OT_SCENE_FRAME_UPDATE and kind <= api.OT_SCENE_FRAME_YIELD);
-        // A restart ends the work budget, so the attempt never yields again.
         std.debug.assert(kind != api.OT_SCENE_FRAME_YIELD or !active.restarted);
         // YIELD and RECORD name the root without describing it.
         const whole_frame = kind == api.OT_SCENE_FRAME_YIELD or kind == api.OT_SCENE_FRAME_RECORD;
@@ -1275,7 +1272,6 @@ pub const Scene = struct {
         return self.finishPaint(cli, false);
     }
 
-    /// The recorded phases of one member. A member without a slot has none.
     const Phases = struct {
         recording: []const u8 = &.{},
         segments: scene_record.Segments = .{ .{}, .{}, .{} },
@@ -1314,8 +1310,6 @@ pub const Scene = struct {
         }
     }
 
-    /// Paint the before phase, the self phase or native body, editor cursor maintenance, and
-    /// the after phase of one member, then add its hit.
     fn paintMember(self: *Scene, owner: *Context, cli: *renderer.CliRenderer, entry: Work, options: FrameOptions, phases: Phases) !void {
         const node = entry.node.scene_node.?;
         if (phases.hooks != 0 or node.kind != api.OT_SCENE_BOX or hasBoxPaint(&node.paint)) {
