@@ -123,10 +123,10 @@ class TestExternalOutputRecorder implements TestExternalOutput {
   }
 
   private record = (event: CliRendererExternalOutputEvent): void => {
-    const raw = decoder.decode(event.snapshot.getRealCharBytes(false))
-    const rows = Array.from({ length: event.snapshot.height }, (_, index) =>
-      raw.slice(index * event.snapshot.width, (index + 1) * event.snapshot.width).trimEnd(),
-    )
+    const rows = decoder
+      .decode(event.snapshot.getRealCharBytes(true))
+      .split("\n", event.snapshot.height)
+      .map((row) => row.trimEnd())
 
     this.commits.push({
       text: rows.join("\n"),
