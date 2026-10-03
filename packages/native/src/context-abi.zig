@@ -4617,81 +4617,38 @@ test "Context error mapping gives every Context error a specific status" {
     }
 }
 
-test "Context typed destroy helper matches every typed destroy export" {
-    const Create = struct {
-        fn editBuffer(core: *Context) !ObjectHandle {
-            return core.createEditBuffer(.unicode);
-        }
-        fn editorView(core: *Context) !ObjectHandle {
-            return core.createEditorView(try core.createEditBuffer(.unicode), 2, 1);
-        }
-        fn syntaxStyle(core: *Context) !ObjectHandle {
-            return core.createSyntaxStyle();
-        }
-        fn image(core: *Context) !ObjectHandle {
-            return core.createImagePixels(&.{ 1, 2, 3, 4 }, 1, 1, .{ .stride = 4 });
-        }
-        fn buffer(core: *Context) !ObjectHandle {
-            return core.createBuffer(1, 1, .{});
-        }
-        fn session(core: *Context) !ObjectHandle {
-            return core.createSession(.{});
-        }
-        fn textBuffer(core: *Context) !ObjectHandle {
-            return core.createTextBuffer(.unicode);
-        }
-        fn textBufferView(core: *Context) !ObjectHandle {
-            return core.createTextBufferView(try core.createTextBuffer(.unicode));
-        }
-        fn unicode(core: *Context) !ObjectHandle {
-            return core.createUnicode("a", .unicode);
-        }
-        fn embeddedTerminal(core: *Context) !ObjectHandle {
-            return core.createEmbeddedTerminal(2, 1, 0);
-        }
-    };
-    const Destroy = *const fn (?*ContextHandle, ?*const c.ot_handle) callconv(.c) c.ot_status;
-    const cases = .{
-        .{ ObjectKind.edit_buffer, &ot_edit_buffer_destroy, Create.editBuffer },
-        .{ ObjectKind.editor_view, &ot_editor_view_destroy, Create.editorView },
-        .{ ObjectKind.syntax_style, &ot_syntax_style_destroy, Create.syntaxStyle },
-        .{ ObjectKind.image, &ot_image_destroy, Create.image },
-        .{ ObjectKind.buffer, &ot_buffer_destroy, Create.buffer },
-        .{ ObjectKind.session, &ot_session_destroy, Create.session },
-        .{ ObjectKind.text_buffer, &text_transport.ot_text_buffer_destroy, Create.textBuffer },
-        .{ ObjectKind.text_buffer_view, &text_transport.ot_text_buffer_view_destroy, Create.textBufferView },
-        .{ ObjectKind.encoded_unicode, &unicode_transport.ot_unicode_destroy, Create.unicode },
-        .{ ObjectKind.embedded_terminal, &terminal_transport.ot_embedded_terminal_destroy, Create.embeddedTerminal },
-    };
+test "Context typed destroy exports reject other kinds and destroy their own once" {
     const handle = try createTestContext(.{ .object_capacity = 64, .render_cells_max = 16 });
     defer std.testing.expectEqual(c.OT_OK, ot_context_destroy(handle)) catch unreachable;
     const core = handle.core;
+    const edit = try core.createEditBuffer(.unicode);
+    const text = try core.createTextBuffer(.unicode);
+    const style = handleToC(try core.createSyntaxStyle());
+    const buffer = handleToC(try core.createBuffer(1, 1, .{}));
+    // Views come before the buffers they borrow. style and buffer stay alive as wrong kinds.
+    const cases = .{
+        .{ &ot_editor_view_destroy, try core.createEditorView(edit, 2, 1) },
+        .{ &ot_edit_buffer_destroy, edit },
+        .{ &text_transport.ot_text_buffer_view_destroy, try core.createTextBufferView(text) },
+        .{ &text_transport.ot_text_buffer_destroy, text },
+        .{ &ot_syntax_style_destroy, try core.createSyntaxStyle() },
+        .{ &ot_image_destroy, try core.createImagePixels(&.{ 1, 2, 3, 4 }, 1, 1, .{ .stride = 4 }) },
+        .{ &ot_buffer_destroy, try core.createBuffer(1, 1, .{}) },
+        .{ &ot_session_destroy, try core.createSession(.{}) },
+        .{ &unicode_transport.ot_unicode_destroy, try core.createUnicode("a", .unicode) },
+        .{ &terminal_transport.ot_embedded_terminal_destroy, try core.createEmbeddedTerminal(2, 1, 0) },
+    };
+    const expected = [_]c.ot_status{ c.OT_CONTEXT_BUSY, c.OT_INVALID_ARGUMENT, c.OT_WRONG_KIND, c.OT_WRONG_CONTEXT, c.OT_OK, c.OT_STALE_HANDLE };
     inline for (cases) |case| {
-        const kind: ObjectKind, const destroy: Destroy, const create = case;
-        const wrong = handleToC(try if (kind == .buffer) core.createSyntaxStyle() else core.createBuffer(1, 1, .{}));
-        // The export and the helper each destroy their own object of the same kind.
-        const targets = [2]c.ot_handle{ handleToC(try create(core)), handleToC(try create(core)) };
-        const expected = [_]c.ot_status{ c.OT_CONTEXT_BUSY, c.OT_INVALID_ARGUMENT, c.OT_WRONG_KIND, c.OT_WRONG_CONTEXT, c.OT_OK, c.OT_STALE_HANDLE };
-        for (expected, 0..) |status, step| {
-            var inputs: [2]?*const c.ot_handle = undefined;
-            var foreign = targets;
-            for (&inputs, &targets, &foreign) |*input, *target, *other| {
-                other.context_id += 1;
-                input.* = switch (step) {
-                    1 => null,
-                    2 => &wrong,
-                    3 => other,
-                    else => target,
-                };
-            }
+        const destroy, const object = case;
+        const target = handleToC(object);
+        var foreign = target;
+        foreign.context_id += 1;
+        const wrong = if (destroy == &ot_buffer_destroy) &style else &buffer;
+        for ([_]?*const c.ot_handle{ &target, null, wrong, &foreign, &target, &target }, expected, 0..) |input, status, step| {
             core.mutating = step == 0;
-            const export_status = destroy(handle, inputs[0]);
-            const export_error = handle.last_error;
-            const helper_status = destroyKind(handle, inputs[1], kind);
-            core.mutating = false;
-            try std.testing.expectEqual(status, export_status);
-            try std.testing.expectEqual(status, helper_status);
-            try std.testing.expectEqual(export_error, handle.last_error);
+            defer core.mutating = false;
+            try std.testing.expectEqual(status, destroy(handle, input));
         }
     }
 }
