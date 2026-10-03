@@ -422,6 +422,9 @@ describe("FFI input views", () => {
       }
       // Move the bytes into a stable ArrayBuffer before taking their address.
       void pixels.buffer
+      const [chars] = cells(pixels)
+      // The draw covers only the first cell, so it must differ from the untouched second cell.
+      expect(chars[0]).not.toBe(chars[1])
       expect(cells(Number(ptr(pixels)))).toEqual(cells(pixels))
       expect(() => draw(OptimizedBuffer.create(2, 1, "unicode", { owner }), pixels.subarray(0, 8))).toThrow(
         "Pixel byte count exceeds the supplied view",
