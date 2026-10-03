@@ -258,6 +258,10 @@ C Contexts also limit checked leases to 4,096 and distinct leased storage to 64 
 That storage includes retired allocations and tracker capacity, but not shared Context pools.
 These limits are not a total memory or frame-time budget. Sessions have their own output limits.
 
+Each C Context allocates from its own allocator.
+Core's `getAllocatorStats()` reports only the process allocator, which holds resources outside a Context such as standalone span feeds.
+Its counts do not include Context memory.
+
 Call a C Context only from its creating operating-system thread, including for error queries and destruction.
 Separate Contexts can run on separate threads.
 Direct Zig Contexts permit ownership transfer only while idle and require serialized access.

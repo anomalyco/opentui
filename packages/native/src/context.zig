@@ -472,7 +472,13 @@ const SceneMeasure = struct {
         // call. Unlike native measurement failures, they do not poison the tree.
         var result: yoga.ExternalYogaSize = .{ .width = std.math.nan(f32), .height = std.math.nan(f32) };
         self.callback(self.handle.context_id, self.handle.slot, self.handle.generation, width, width_mode, height, height_mode, &result);
-        return result;
+        // Yoga warns about NaN and measures zero. A size beyond the i32 cell range
+        // would instead fail the whole frame in layout validation.
+        return .{ .width = cellRangeOrNan(result.width), .height = cellRangeOrNan(result.height) };
+    }
+
+    fn cellRangeOrNan(value: f32) f32 {
+        return if (@as(f64, value) <= std.math.maxInt(i32)) value else std.math.nan(f32);
     }
 };
 
@@ -619,23 +625,29 @@ pub const Context = struct {
         return self;
     }
 
+    const teardown_order = [_]handles.Kind{ .native_renderable, .text_buffer_view, .text_buffer, .editor_view, .edit_buffer, .syntax_style, .buffer, .session, .image, .encoded_unicode, .embedded_terminal, .audio_engine, .clipboard_service };
+
+    // A kind missing from teardown_order would trip Table.deinit's live_count assertion.
+    // Leases cannot be live (deinit requires lease_count == 0), and services own their operations.
+    comptime {
+        for (std.enums.values(handles.Kind)) |kind| {
+            const released_by_owner = switch (kind) {
+                .buffer_lease, .frame_buffer_lease, .image_pixels_lease, .clipboard_operation => true,
+                else => false,
+            };
+            std.debug.assert(released_by_owner == (std.mem.findScalar(handles.Kind, &teardown_order, kind) == null));
+        }
+    }
+
     pub fn deinit(self: *Context) error{ContextBusy}!void {
         if (self.closing or self.mutating or self.lease_count != 0) return error.ContextBusy;
         std.debug.assert(self.lease_bytes == 0);
+        // Views only borrow scene nodes, and every scene node is in some Session's
+        // node list, so this check also covers editor and text views.
         var session_cursor: usize = 0;
         while (self.objects.next(.session, &session_cursor)) |handle| {
             const value = self.objects.get(handle, .session, session.Session) catch unreachable;
             checkSessionTeardown(value) catch return error.ContextBusy;
-        }
-        var view_cursor: usize = 0;
-        while (self.objects.next(.editor_view, &view_cursor)) |handle| {
-            const view = self.objects.get(handle, .editor_view, Editor) catch unreachable;
-            view.checkMutable() catch return error.ContextBusy;
-        }
-        view_cursor = 0;
-        while (self.objects.next(.text_buffer_view, &view_cursor)) |handle| {
-            const view = self.objects.get(handle, .text_buffer_view, TextView) catch unreachable;
-            view.checkMutable() catch return error.ContextBusy;
         }
         var clipboard_cursor: usize = 0;
         var clipboard_ready = true;
@@ -652,7 +664,7 @@ pub const Context = struct {
             if (value.scene) |owned| owned.detachAll();
         }
         // Walk the registry once per kind; borrowers release before their resources.
-        for ([_]handles.Kind{ .native_renderable, .text_buffer_view, .text_buffer, .editor_view, .edit_buffer, .syntax_style, .buffer, .session, .image, .encoded_unicode, .embedded_terminal, .audio_engine, .clipboard_service }) |kind| {
+        for (teardown_order) |kind| {
             var cursor: usize = 0;
             while (self.objects.next(kind, &cursor)) |handle| {
                 self.destroyToken(self.objects.beginDestroy(handle) catch unreachable);
@@ -683,8 +695,12 @@ pub const Context = struct {
     /// A size query returns the interned URL byte count. Copies require that
     /// bound. Link id 0 and unknown IDs fail. URLs fit in MAX_URL_LENGTH bytes.
     pub fn getLinkUrl(self: *Context, id: u32, out: []u8) Error!u32 {
-        if (id == 0) return error.InvalidOptions;
-        const url = self.links.get(id) catch return error.InvalidOptions;
+        // The pool masks IDs to 24 bits and keeps released bytes until slot reuse.
+        const id_max = (link.GEN_MASK << link.SLOT_BITS) | link.SLOT_MASK;
+        if (id == 0 or id > id_max) return error.InvalidOptions;
+        const refcount = self.links.getRefcount(id) catch return error.InvalidOptions;
+        if (refcount == 0) return error.InvalidOptions;
+        const url = self.links.get(id) catch unreachable;
         std.debug.assert(url.len <= link.MAX_URL_LENGTH);
         const count: u32 = @intCast(url.len);
         if (out.len == 0) return count;
@@ -3779,15 +3795,12 @@ pub const Context = struct {
     pub fn destroy(self: *Context, handle: Handle) Error!void {
         try self.beginMutation();
         defer self.mutating = false;
-        const value: ?*session.Session = self.getSession(handle) catch |err| switch (err) {
-            error.WrongKind => null,
-            else => return err,
-        };
-        if (value) |owned| try checkSessionTeardown(owned);
-        if (self.objects.get(handle, .native_renderable, native_renderable.NativeRenderable)) |node| {
-            if (node.scene_node != null) try yoga.check(yoga.nodeTeardownStatus(node.yoga_node));
-        } else |_| {}
         switch (try self.objects.getKind(handle)) {
+            .session => try checkSessionTeardown(try self.getSession(handle)),
+            .native_renderable => {
+                const node = try self.getRenderable(handle);
+                if (node.scene_node != null) try yoga.check(yoga.nodeTeardownStatus(node.yoga_node));
+            },
             .edit_buffer => try (try self.getEditBuffer(handle)).checkMutable(),
             .clipboard_service => {
                 const service = try self.objects.get(handle, .clipboard_service, clipboard.Service);

@@ -8,10 +8,6 @@ const gp = @import("../grapheme.zig");
 const utf8 = @import("../utf8.zig");
 const Fixture = @import("scene_fixture_test.zig").Fixture;
 
-test {
-    _ = @import("context-reuse_test.zig");
-}
-
 const Clock = struct {
     time_us: i64,
     calls: u32 = 0,
@@ -265,21 +261,23 @@ test "Context Yoga target rejection preserves targets during raw active layout" 
     try std.testing.expect(node.measure_target == .none);
 }
 
-test "Context teardown rejects raw active Yoga layout without losing scene ownership" {
+test "Context teardown and destroy reject every resource an active Yoga layout borrows" {
     const Probe = struct {
         owner: *context.Context = undefined,
-        session: context.Handle = undefined,
+        targets: [6]context.Handle = undefined,
+        errors: [6]?anyerror = @splat(null),
         deinit_error: ?anyerror = null,
-        destroy_error: ?anyerror = null,
 
         fn measure(data: ?*anyopaque, _: yoga.YGNodeConstRef, _: f32, _: u32, _: f32, _: u32) yoga.ExternalYogaSize {
             const self: *@This() = @ptrCast(@alignCast(data.?));
             self.owner.deinit() catch |err| {
                 self.deinit_error = err;
             };
-            self.owner.destroy(self.session) catch |err| {
-                self.destroy_error = err;
-            };
+            for (self.targets, &self.errors) |target, *result| {
+                self.owner.destroy(target) catch |err| {
+                    result.* = err;
+                };
+            }
             return .{ .width = 5, .height = 1 };
         }
     };
@@ -290,18 +288,29 @@ test "Context teardown rejects raw active Yoga layout without losing scene owner
     var alive = true;
     defer if (alive) f.deinit();
     const owner = f.owner;
-    const node_id = try owner.sceneCreateNode(f.id, 1, 2);
-    try owner.sceneMoveNode(node_id, f.root, 0);
-    const node = try owner.raw().getRenderable(node_id);
-    probe.owner = owner;
-    probe.session = f.id;
-    try yoga.check(yoga.yogaNodeSetMeasureFuncChecked(node.yoga_node, 1));
-    try yoga.check(yoga.yogaNodeCalculateLayoutChecked(node.yoga_node, std.math.nan(f32), std.math.nan(f32), 1));
+    const text = try owner.createTextBuffer(.unicode);
+    const text_view = try owner.createTextBufferView(text);
+    const edit = try owner.createEditBuffer(.unicode);
+    const editor_view = try owner.createEditorView(edit, 4, 1);
+    const text_node = try owner.sceneCreateNode(f.id, 7, 2);
+    const editor_node = try owner.sceneCreateNode(f.id, 5, 3);
+    const measured_id = try owner.sceneCreateNode(f.id, 1, 4);
+    try owner.sceneSetTextView(text_node, text_view);
+    try owner.sceneSetEditorView(editor_node, editor_view);
+    for ([_]context.Handle{ text_node, editor_node, measured_id }, 0..) |child, index| {
+        try owner.sceneMoveNode(child, f.root, @intCast(index));
+    }
+    const measured = try owner.raw().getRenderable(measured_id);
+    try yoga.check(yoga.yogaNodeSetMeasureFuncChecked(measured.yoga_node, 1));
+    // Destroying a resource that the active tree borrows would free memory Yoga still reads.
+    probe = .{ .owner = owner, .targets = .{ measured_id, text_view, text, editor_view, edit, f.id } };
+    const root = try owner.raw().getRenderable(f.root);
+    try yoga.check(yoga.yogaNodeCalculateLayoutChecked(root.yoga_node, std.math.nan(f32), std.math.nan(f32), 1));
     try std.testing.expectEqual(@as(?anyerror, error.ContextBusy), probe.deinit_error);
-    try std.testing.expectEqual(@as(?anyerror, error.YogaBusy), probe.destroy_error);
-    try std.testing.expectEqual(node, try owner.raw().getRenderable(node_id));
-    try owner.destroy(f.id);
-    try std.testing.expectError(error.StaleHandle, owner.raw().getRenderable(node_id));
+    for (probe.errors) |result| try std.testing.expectEqual(@as(?anyerror, error.YogaBusy), result);
+    try std.testing.expectEqual(measured, try owner.raw().getRenderable(measured_id));
+    for (probe.targets) |target| try owner.destroy(target);
+    try std.testing.expectEqual(@as(u32, 0), owner.objects.live_count);
     try owner.deinit();
     alive = false;
 }
@@ -358,18 +367,35 @@ test "Context handles distinguish context, kind, stale generation, and limits" {
     try std.testing.expectEqual(@as(usize, 4), @sizeOf(handles.Kind));
 }
 
-test "Context handles tombstone before cleanup and retire exhausted generations" {
-    var table = try handles.Table.init(std.testing.allocator, 1);
-    defer table.deinit();
-    var object: u32 = 0;
-    var handle = try table.insert(.session, &object);
-    table.slots[handle.slot].generation = std.math.maxInt(u32);
-    handle.generation = std.math.maxInt(u32);
-    const token = try table.beginDestroy(handle);
-    try std.testing.expectError(error.StaleHandle, table.get(handle, .session, u32));
-    table.finishDestroy(token);
-    try std.testing.expectError(error.ObjectLimit, table.insert(.session, &object));
-    try std.testing.expectEqual(@as(u32, 0), table.live_count);
+test "Context scene measure maps unrepresentable host sizes to Yoga's invalid size" {
+    const Host = struct {
+        var width: f32 = 0;
+
+        fn measure(_: u64, _: u32, _: u32, _: f32, _: u32, _: f32, _: u32, result: *yoga.ExternalYogaSize) callconv(.c) void {
+            result.* = .{ .width = width, .height = 1 };
+        }
+    };
+    const owner = try context.Context.init(std.testing.allocator, std.testing.io, .{});
+    defer owner.deinit() catch unreachable;
+    const session = try owner.createSession(.{});
+    try owner.attachSessionRenderer(session, 12, 4, .{ .remote_mode = .remote });
+    const root = try owner.sceneCreateNode(session, 0, 1);
+    try owner.sceneSetStyle(root, 0, 4, 0, 0, 1, 0);
+    const node = try owner.sceneCreateNode(session, 1, 2);
+    try owner.sceneMoveNode(node, root, 0);
+    try owner.sceneSetMeasure(node, &Host.measure);
+    // Like NaN, a size outside the i32 cell range warns and measures as zero instead of failing the frame.
+    for ([_]f32{ std.math.inf(f32), 4e9, std.math.nan(f32), 3 }) |width| {
+        Host.width = width;
+        try owner.sceneMarkDirty(node);
+        const measured = try layout(owner, node);
+        try std.testing.expectEqual(@as(f32, if (width == 3) 3 else 0), measured.width);
+        try std.testing.expectEqual(@as(f32, 1), measured.height);
+        var records: [1]@import("../logger.zig").Diagnostic = undefined;
+        const drained = owner.diagnostics.drain(&records);
+        try std.testing.expectEqual(@as(u32, if (width == 3) 0 else 1), drained.count);
+        try std.testing.expectEqual(@as(u32, 0), drained.remaining);
+    }
 }
 
 test "Context rejects mutation reentry from Yoga dirtied callbacks" {

@@ -48,14 +48,24 @@ pub const Diagnostics = struct {
     /// Copies the oldest records into caller storage. An empty output only
     /// snapshots pressure. Copied records survive queue reuse and owner teardown.
     pub fn drain(self: *Diagnostics, out: []Diagnostic) Drain {
-        std.debug.assert(self.count <= self.events.len);
-        const count: u32 = @intCast(@min(out.len, self.count));
-        for (out[0..count]) |*event| {
-            event.* = self.events[self.head];
-            self.head = @intCast((@as(u64, self.head) + 1) % self.events.len);
+        var count: u32 = 0;
+        for (out) |*event| {
+            event.* = (self.pop() orelse break).*;
+            count += 1;
         }
-        self.count -= count;
         return .{ .count = count, .remaining = self.count, .dropped = self.dropped_count };
+    }
+
+    /// Removes the oldest record. The record stays readable until the next log call.
+    pub fn pop(self: *Diagnostics) ?*const Diagnostic {
+        std.debug.assert(self.count <= self.events.len);
+        if (self.count == 0) return null;
+        std.debug.assert(self.head < self.events.len);
+        const event = &self.events[self.head];
+        std.debug.assert(event.message_len <= Diagnostic.message_bytes_max);
+        self.head = @intCast((@as(u64, self.head) + 1) % self.events.len);
+        self.count -= 1;
+        return event;
     }
 
     fn logMessage(self: *Diagnostics, level: LogLevel, comptime format: []const u8, args: anytype) void {
@@ -144,8 +154,4 @@ pub fn info(comptime format: []const u8, args: anytype) void {
 
 pub fn debug(comptime format: []const u8, args: anytype) void {
     logMessage(.debug, format, args);
-}
-
-comptime {
-    if (@import("builtin").is_test) _ = @import("tests/diagnostics_test.zig");
 }

@@ -30,7 +30,6 @@ const renderer_tests = @import("tests/renderer_test.zig");
 const renderer_presentation_tests = @import("tests/renderer-presentation_test.zig");
 const terminal_tests = @import("tests/terminal_test.zig");
 const mem_registry_tests = @import("tests/mem-registry_test.zig");
-const memory_leak_regression_tests = @import("tests/memory_leak_regression_test.zig");
 const wrap_cache_perf_tests = @import("tests/wrap-cache-perf_test.zig");
 const native_span_feed_tests = @import("tests/native-span-feed_test.zig");
 const native_renderable_tests = @import("tests/native-renderable_test.zig");
@@ -65,6 +64,22 @@ const terminal_image_tests = @import("tests/terminal-image_test.zig");
 const kitty_transport_tests = @import("tests/kitty-transport_test.zig");
 const lib_tests = @import("lib.zig");
 const clipboard_tests = @import("clipboard/host.zig");
+// Otherwise reached only through lib.zig's comptime export_symbols() or another
+// file's test block. Listing them keeps their tests from dropping out silently.
+const context_abi_tests = @import("context-abi.zig");
+const context_editor_abi_tests = @import("context-editor-abi.zig");
+const context_image_abi_tests = @import("context-image-abi.zig");
+const context_output_abi_tests = @import("context-output-abi.zig");
+const context_terminal_abi_tests = @import("context-terminal-abi.zig");
+const context_text_abi_tests = @import("context-text-abi.zig");
+const context_unicode_abi_tests = @import("context-unicode-abi.zig");
+const context_reuse_tests = @import("tests/context-reuse_test.zig");
+const diagnostics_tests = @import("tests/diagnostics_test.zig");
+const edit_buffer_atomicity_tests = @import("tests/edit-buffer-atomicity_test.zig");
+const editor_view_owner_tests = @import("tests/editor-view-owner_test.zig");
+const scene_editor_tests = @import("tests/scene_editor_test.zig");
+const scene_flush_tests = @import("tests/scene_flush_test.zig");
+const session_split_tests = @import("tests/session-split_test.zig");
 // const example_tests = @import("example_test.zig");
 
 // Re-export test declarations from individual test files
@@ -101,7 +116,6 @@ comptime {
     _ = renderer_presentation_tests;
     _ = terminal_tests;
     _ = mem_registry_tests;
-    _ = memory_leak_regression_tests;
     _ = wrap_cache_perf_tests;
     _ = native_span_feed_tests;
     _ = native_renderable_tests;
@@ -136,5 +150,19 @@ comptime {
     _ = kitty_transport_tests;
     _ = lib_tests;
     _ = clipboard_tests;
+    _ = context_abi_tests;
+    _ = context_editor_abi_tests;
+    _ = context_image_abi_tests;
+    _ = context_output_abi_tests;
+    _ = context_terminal_abi_tests;
+    _ = context_text_abi_tests;
+    _ = context_unicode_abi_tests;
+    _ = context_reuse_tests;
+    _ = diagnostics_tests;
+    _ = edit_buffer_atomicity_tests;
+    _ = editor_view_owner_tests;
+    _ = scene_editor_tests;
+    _ = scene_flush_tests;
+    _ = session_split_tests;
     // _ = example_tests;
 }

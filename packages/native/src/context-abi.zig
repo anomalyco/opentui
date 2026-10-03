@@ -1,15 +1,13 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const build_options = @import("build_options");
 const c = @import("context_abi_c");
 const Context = @import("context.zig").Context;
 const BufferDraw = @import("context.zig").BufferDraw;
 const ObjectHandle = @import("context-handles.zig").Handle;
+const ObjectKind = @import("context-handles.zig").Kind;
 const scene = @import("scene.zig");
 const scene_record = @import("scene-record.zig");
-
-test {
-    _ = @import("tests/scene_flush_test.zig");
-}
 
 const editor_transport = @import("context-editor-abi.zig");
 const text_transport = @import("context-text-abi.zig");
@@ -18,12 +16,15 @@ const terminal_transport = @import("context-terminal-abi.zig");
 const output_transport = @import("context-output-abi.zig");
 const image_transport = @import("context-image-abi.zig");
 const clipboard_transport = @import("clipboard-abi.zig");
-pub const ot_edit_buffer_command = editor_transport.ot_edit_buffer_command;
 
+/// Each C Context owns a private allocator. Process allocator stats do not
+/// include Context memory. Test builds back it with std.testing.allocator and
+/// enable safety, so a test that leaks Context memory fails.
 pub const ContextHandle = struct {
     gpa: std.heap.DebugAllocator(.{
         .enable_memory_limit = build_options.gpa_safe_stats,
-        .safety = build_options.gpa_safe_stats,
+        .safety = build_options.gpa_safe_stats or builtin.is_test,
+        .backing_allocator_zeroes = !builtin.is_test,
     }),
     io_threaded: std.Io.Threaded,
     core: *Context,
@@ -40,7 +41,8 @@ pub fn ot_context_create(
     options_ptr: ?*const c.ot_context_options,
     out_context_ptr: ?*?*ContextHandle,
 ) callconv(.c) c.ot_status {
-    return createContext(options_ptr, out_context_ptr, std.heap.page_allocator);
+    const backing = if (builtin.is_test) std.testing.allocator else std.heap.page_allocator;
+    return createContext(options_ptr, out_context_ptr, backing);
 }
 
 fn createContext(
@@ -93,6 +95,7 @@ pub fn ot_context_destroy(context: ?*ContextHandle) callconv(.c) c.ot_status {
         return handle.last_error;
     };
     handle.io_threaded.deinit();
+    // Safety builds log each leak, which fails the test that leaked.
     _ = handle.gpa.deinit();
     std.heap.c_allocator.destroy(handle);
     return c.OT_OK;
@@ -146,17 +149,17 @@ pub fn ot_context_drain_diagnostics(
         return status;
     }
 
+    // Copy straight from queue slots; a caller can loop with one buffer until remaining is 0.
     const queue = &handle.core.diagnostics;
     const count = @min(capacity, queue.count);
-    var record: [1]@import("context.zig").Diagnostic = undefined;
     for (0..count) |index| {
-        _ = queue.drain(&record);
+        const record = queue.pop().?;
         records.?[index] = .{
-            .level = @intFromEnum(record[0].level),
-            .message_len = record[0].message_len,
-            .flags = if (record[0].truncated) c.OT_DIAGNOSTIC_TRUNCATED else 0,
+            .level = @intFromEnum(record.level),
+            .message_len = record.message_len,
+            .flags = if (record.truncated) c.OT_DIAGNOSTIC_TRUNCATED else 0,
             .reserved = 0,
-            .message = record[0].message,
+            .message = record.message,
         };
     }
     out_drain_ptr.?.* = .{
@@ -2438,7 +2441,7 @@ pub fn sessionError(owner: *ContextHandle, err: anyerror) c.ot_status {
         error.YogaBusy => c.OT_CONTEXT_BUSY,
         error.UnsupportedVersion => c.OT_UNSUPPORTED_VERSION,
         error.OutOfMemory => c.OT_OUT_OF_MEMORY,
-        error.ContextBusy => c.OT_CONTEXT_BUSY,
+        error.ContextBusy, error.ContextClosed => c.OT_CONTEXT_BUSY,
         error.WrongContext => c.OT_WRONG_CONTEXT,
         error.WrongKind => c.OT_WRONG_KIND,
         error.StaleHandle => c.OT_STALE_HANDLE,
@@ -2465,6 +2468,19 @@ pub fn sessionError(owner: *ContextHandle, err: anyerror) c.ot_status {
     };
     owner.last_error = status;
     return status;
+}
+
+/// Shared body of the typed ot_*_destroy exports. The kind check keeps one
+/// export from destroying an object of another kind.
+pub fn destroyKind(context: ?*ContextHandle, id: ?*const c.ot_handle, kind: ObjectKind) c.ot_status {
+    const status = sessionContextStatus(context);
+    if (status != c.OT_OK) return status;
+    const owner = context.?;
+    const handle = handleFromC((id orelse return sessionError(owner, error.InvalidOptions)).*);
+    const actual = owner.core.objects.getKind(handle) catch |err| return sessionError(owner, err);
+    if (actual != kind) return sessionError(owner, error.WrongKind);
+    owner.core.destroy(handle) catch |err| return sessionError(owner, err);
+    return c.OT_OK;
 }
 
 pub fn createTestContext(options: struct { object_capacity: u32, render_cells_max: u32 }) !*ContextHandle {
@@ -2502,10 +2518,16 @@ test "Context link URL ABI copies interned URLs and rejects unknown ids" {
     try std.testing.expectEqual(c.OT_OK, ot_context_get_link_url(context, id, &output, output.len, &count));
     try std.testing.expectEqual(@as(u32, url.len), count);
     try std.testing.expectEqualStrings(url, output[0..url.len]);
-    try std.testing.expectEqual(
-        c.OT_INVALID_ARGUMENT,
-        ot_context_get_link_url(context, 0, &output, output.len, &count),
-    );
+    const released = try context.?.core.links.acquire("https://released.invalid");
+    try context.?.core.links.decref(released);
+    count = 99;
+    for ([_]u32{ 0, released, id | 1 << 24 }) |invalid_id| {
+        try std.testing.expectEqual(
+            c.OT_INVALID_ARGUMENT,
+            ot_context_get_link_url(context, invalid_id, &output, output.len, &count),
+        );
+        try std.testing.expectEqual(@as(u32, 99), count);
+    }
     context.?.core.mutating = true;
     defer context.?.core.mutating = false;
     try std.testing.expectEqual(
@@ -2853,14 +2875,14 @@ test "Context editor transport commands preserve provider unset and reject reent
     try core.sceneSetEditorView(node, view);
     try core.sceneSetMeasure(node, null);
     try std.testing.expectEqual(c.OT_OK, ot_edit_buffer_set_text(handle, &edit, "ab", 2, 0));
-    try std.testing.expectEqual(c.OT_OK, ot_edit_buffer_command(handle, &edit, c.OT_EDIT_MOVE_RIGHT, 0));
+    try std.testing.expectEqual(c.OT_OK, editor_transport.ot_edit_buffer_command(handle, &edit, c.OT_EDIT_MOVE_RIGHT, 0));
     try std.testing.expectEqual(1, (try core.raw().getEditBuffer(handleFromC(edit))).buffer.getPrimaryCursor().col);
     try std.testing.expect(!try core.sceneHasMeasure(node));
-    try std.testing.expectEqual(c.OT_INVALID_ARGUMENT, ot_edit_buffer_command(handle, &edit, c.OT_EDIT_MOVE_RIGHT, 1));
+    try std.testing.expectEqual(c.OT_INVALID_ARGUMENT, editor_transport.ot_edit_buffer_command(handle, &edit, c.OT_EDIT_MOVE_RIGHT, 1));
     core.mutating = true;
-    try std.testing.expectEqual(c.OT_CONTEXT_BUSY, ot_edit_buffer_command(handle, &edit, c.OT_EDIT_DELETE_FORWARD, 0));
+    try std.testing.expectEqual(c.OT_CONTEXT_BUSY, editor_transport.ot_edit_buffer_command(handle, &edit, c.OT_EDIT_DELETE_FORWARD, 0));
     core.mutating = false;
-    try std.testing.expectEqual(c.OT_OK, ot_edit_buffer_command(handle, &edit, c.OT_EDIT_DELETE_FORWARD, 0));
+    try std.testing.expectEqual(c.OT_OK, editor_transport.ot_edit_buffer_command(handle, &edit, c.OT_EDIT_DELETE_FORWARD, 0));
     var bytes: [8]u8 = undefined;
     var count: u32 = 0;
     try std.testing.expectEqual(c.OT_OK, ot_edit_buffer_get_text(handle, &edit, &bytes, bytes.len, &count));
@@ -4178,6 +4200,89 @@ test "Context ABI Session leases preserve rejected outputs and map storage limit
     try std.testing.expectEqual(c.OT_CONTEXT_BUSY, ot_context_destroy(owner));
 }
 
+test "Context ABI rejects invalid arguments before writing outputs" {
+    const valid: c.ot_context_options = .{
+        .struct_size = @sizeOf(c.ot_context_options),
+        .abi_version = c.OT_CONTEXT_ABI_VERSION,
+        .flags = 0,
+        .object_capacity = 1,
+        .render_cells_max = 1,
+        .reserved = .{ 0, 0, 0 },
+    };
+    var options: [8]c.ot_context_options = @splat(valid);
+    options[0].struct_size += 1;
+    options[1].abi_version += 1;
+    options[2].flags = 1;
+    options[3].object_capacity = 0;
+    options[4].render_cells_max = 0;
+    for (0..3) |index| options[5 + index].reserved[index] = 1;
+    for (options, 0..) |invalid, index| {
+        var out: ?*ContextHandle = @ptrFromInt(@alignOf(ContextHandle));
+        const expected = if (index == 1) c.OT_UNSUPPORTED_VERSION else c.OT_INVALID_ARGUMENT;
+        try std.testing.expectEqual(expected, ot_context_create(&invalid, &out));
+        try std.testing.expect(out == null);
+    }
+    try std.testing.expectEqual(c.OT_INVALID_ARGUMENT, ot_context_create(&valid, null));
+    try std.testing.expectEqual(c.OT_INVALID_ARGUMENT, ot_context_destroy(null));
+
+    const handle = try createTestContext(.{ .object_capacity = 1, .render_cells_max = 1 });
+    defer std.testing.expectEqual(c.OT_OK, ot_context_destroy(handle)) catch unreachable;
+    handle.core.logger.warn("kept", .{});
+    const error_valid: c.ot_context_error = .{ .struct_size = @sizeOf(c.ot_context_error), .abi_version = c.OT_CONTEXT_ABI_VERSION, .status = 77, .reserved = 77 };
+    const drain_valid: c.ot_diagnostic_drain = .{ .struct_size = @sizeOf(c.ot_diagnostic_drain), .abi_version = c.OT_CONTEXT_ABI_VERSION, .count = 77, .remaining = 77, .dropped = 77 };
+    var record: c.ot_diagnostic = std.mem.zeroes(c.ot_diagnostic);
+    record.reserved = 77;
+    const Case = struct {
+        status: c.ot_status,
+        context: ?*ContextHandle,
+        other_thread: bool = false,
+        error_size: u32 = 0,
+        error_version: u32 = 0,
+        drain_size: u32 = 0,
+        drain_version: u32 = 0,
+        out: bool = true,
+    };
+    const cases = [_]Case{
+        .{ .status = c.OT_INVALID_ARGUMENT, .context = null },
+        .{ .status = c.OT_WRONG_THREAD, .context = handle, .other_thread = true },
+        .{ .status = c.OT_INVALID_ARGUMENT, .context = handle, .out = false },
+        .{ .status = c.OT_INVALID_ARGUMENT, .context = handle, .error_size = 1, .drain_size = 1 },
+        .{ .status = c.OT_UNSUPPORTED_VERSION, .context = handle, .error_version = 1, .drain_version = 1 },
+    };
+    for (cases) |case| {
+        var details = error_valid;
+        details.struct_size += case.error_size;
+        details.abi_version += case.error_version;
+        var drain = drain_valid;
+        drain.struct_size += case.drain_size;
+        drain.abi_version += case.drain_version;
+        var count: u32 = 77;
+        if (case.other_thread) handle.owner_thread += 1;
+        defer if (case.other_thread) {
+            handle.owner_thread -= 1;
+        };
+        try std.testing.expectEqual(case.status, ot_context_get_last_error(case.context, if (case.out) &details else null));
+        try std.testing.expectEqual(case.status, ot_context_drain_diagnostics(case.context, @ptrCast(&record), 1, if (case.out) &drain else null));
+        if (case.error_size == 0 and case.error_version == 0) {
+            try std.testing.expectEqual(case.status, ot_context_get_link_url(case.context, 1, null, 0, if (case.out) &count else null));
+        }
+        try std.testing.expectEqual(@as(c.ot_status, 77), details.status);
+        try std.testing.expectEqual(@as(u64, 77), drain.dropped);
+        try std.testing.expectEqual(@as(u32, 77), record.reserved);
+        try std.testing.expectEqual(@as(u32, 77), count);
+    }
+    var drain = drain_valid;
+    handle.core.closing = true;
+    const closing_status = ot_context_drain_diagnostics(handle, @ptrCast(&record), 1, &drain);
+    handle.core.closing = false;
+    try std.testing.expectEqual(c.OT_CONTEXT_BUSY, closing_status);
+    try std.testing.expectEqual(c.OT_INVALID_ARGUMENT, ot_context_drain_diagnostics(handle, null, 1, &drain));
+    try std.testing.expectEqual(@as(u64, 77), drain.dropped);
+    try std.testing.expectEqual(@as(u32, 77), record.reserved);
+    try std.testing.expectEqual(c.OT_OK, ot_context_drain_diagnostics(handle, @ptrCast(&record), 1, &drain));
+    try std.testing.expectEqualStrings("kept", record.message[0..record.message_len]);
+}
+
 test "Context ABI creation clears failed Yoga output and retries without retaining backing storage" {
     const yoga = @import("yoga.zig");
     const options: c.ot_context_options = .{
@@ -4188,7 +4293,7 @@ test "Context ABI creation clears failed Yoga output and retries without retaini
         .render_cells_max = 2,
         .reserved = .{ 0, 0, 0 },
     };
-    var backing = std.testing.FailingAllocator.init(std.heap.page_allocator, .{});
+    var backing = std.testing.FailingAllocator.init(std.testing.allocator, .{});
     var handle: ?*ContextHandle = @ptrFromInt(@alignOf(ContextHandle));
     yoga.testFailAfter(0);
     defer yoga.testFailAfter(-1);
@@ -4212,8 +4317,7 @@ test "Context ABI creation releases backing storage at every allocation failure"
         .render_cells_max = 2,
         .reserved = .{ 0, 0, 0 },
     };
-    // Page backing preserves the DebugAllocator's zero-filled allocation contract.
-    var baseline = std.testing.FailingAllocator.init(std.heap.page_allocator, .{});
+    var baseline = std.testing.FailingAllocator.init(std.testing.allocator, .{});
     var handle: ?*ContextHandle = null;
     try std.testing.expectEqual(c.OT_OK, createContext(&options, &handle, baseline.allocator()));
     try std.testing.expectEqual(c.OT_OK, ot_context_destroy(handle));
@@ -4221,7 +4325,7 @@ test "Context ABI creation releases backing storage at every allocation failure"
     try std.testing.expectEqual(baseline.allocated_bytes, baseline.freed_bytes);
 
     for (0..baseline.allocations) |fail_index| {
-        var failing = std.testing.FailingAllocator.init(std.heap.page_allocator, .{ .fail_index = fail_index });
+        var failing = std.testing.FailingAllocator.init(std.testing.allocator, .{ .fail_index = fail_index });
         handle = @ptrFromInt(@alignOf(ContextHandle));
         const status = createContext(&options, &handle, failing.allocator());
         defer if (status == c.OT_OK) std.testing.expectEqual(c.OT_OK, ot_context_destroy(handle)) catch unreachable;
@@ -4241,8 +4345,8 @@ test "Context ABI preserves its allocator and I/O through busy destruction and p
         .render_cells_max = 2,
         .reserved = .{ 0, 0, 0 },
     };
-    var backing = std.testing.FailingAllocator.init(std.heap.page_allocator, .{});
-    var peer_backing = std.testing.FailingAllocator.init(std.heap.page_allocator, .{});
+    var backing = std.testing.FailingAllocator.init(std.testing.allocator, .{});
+    var peer_backing = std.testing.FailingAllocator.init(std.testing.allocator, .{});
     var handle: ?*ContextHandle = null;
     var peer: ?*ContextHandle = null;
     try std.testing.expectEqual(c.OT_OK, createContext(&options, &handle, backing.allocator()));
@@ -4336,16 +4440,112 @@ test "Context ABI diagnostics copy bounded records and preserve failed drains" {
     try std.testing.expectEqualSlices(u8, "0", record.message[0..record.message_len]);
     try std.testing.expectEqual(62, out.remaining);
 
-    const batch = try std.testing.allocator.alloc(c.ot_diagnostic, 64);
-    defer std.testing.allocator.free(batch);
-    batch[62] = std.mem.zeroes(c.ot_diagnostic);
-    batch[62].reserved = 99;
-    try std.testing.expectEqual(c.OT_OK, ot_context_drain_diagnostics(first, batch.ptr, @intCast(batch.len), &out));
-    try std.testing.expectEqual(62, out.count);
-    try std.testing.expectEqual(0, out.remaining);
-    try std.testing.expectEqualSlices(u8, "1", batch[0].message[0..batch[0].message_len]);
-    try std.testing.expectEqualSlices(u8, "62", batch[61].message[0..batch[61].message_len]);
-    try std.testing.expectEqual(99, batch[62].reserved);
+    // One small caller buffer drains the rest in order; slots past count stay untouched.
+    var batch: [5]c.ot_diagnostic = @splat(std.mem.zeroes(c.ot_diagnostic));
+    var next: usize = 1;
+    while (out.remaining != 0) {
+        batch[batch.len - 1].reserved = 99;
+        try std.testing.expectEqual(c.OT_OK, ot_context_drain_diagnostics(first, &batch, batch.len, &out));
+        try std.testing.expectEqual(out.count == batch.len, batch[batch.len - 1].reserved == 0);
+        for (batch[0..out.count]) |copied| {
+            var expected: [2]u8 = undefined;
+            try std.testing.expectEqualStrings(try std.fmt.bufPrint(&expected, "{}", .{next}), copied.message[0..copied.message_len]);
+            next += 1;
+        }
+    }
+    try std.testing.expectEqual(63, next);
+}
+
+test "Context error mapping gives every Context error a specific status" {
+    const handle = try createTestContext(.{ .object_capacity = 1, .render_cells_max = 1 });
+    defer std.testing.expectEqual(c.OT_OK, ot_context_destroy(handle)) catch unreachable;
+    // These report a broken native invariant rather than a caller error.
+    const internal = [_]anyerror{ error.ContextLimit, error.YogaException, error.YogaPoisoned };
+    inline for (@typeInfo(@import("context.zig").Error).error_set.?) |info| {
+        const err = @field(anyerror, info.name);
+        const status = sessionError(handle, err);
+        try std.testing.expectEqual(status, handle.last_error);
+        try std.testing.expectEqual(std.mem.findScalar(anyerror, &internal, err) != null, status == c.OT_INTERNAL_ERROR);
+    }
+}
+
+test "Context typed destroy helper matches every typed destroy export" {
+    const Create = struct {
+        fn editBuffer(core: *Context) !ObjectHandle {
+            return core.createEditBuffer(.unicode);
+        }
+        fn editorView(core: *Context) !ObjectHandle {
+            return core.createEditorView(try core.createEditBuffer(.unicode), 2, 1);
+        }
+        fn syntaxStyle(core: *Context) !ObjectHandle {
+            return core.createSyntaxStyle();
+        }
+        fn image(core: *Context) !ObjectHandle {
+            return core.createImagePixels(&.{ 1, 2, 3, 4 }, 1, 1, .{ .stride = 4 });
+        }
+        fn buffer(core: *Context) !ObjectHandle {
+            return core.createBuffer(1, 1, .{});
+        }
+        fn session(core: *Context) !ObjectHandle {
+            return core.createSession(.{});
+        }
+        fn textBuffer(core: *Context) !ObjectHandle {
+            return core.createTextBuffer(.unicode);
+        }
+        fn textBufferView(core: *Context) !ObjectHandle {
+            return core.createTextBufferView(try core.createTextBuffer(.unicode));
+        }
+        fn unicode(core: *Context) !ObjectHandle {
+            return core.createUnicode("a", .unicode);
+        }
+        fn embeddedTerminal(core: *Context) !ObjectHandle {
+            return core.createEmbeddedTerminal(2, 1, 0);
+        }
+    };
+    const Destroy = *const fn (?*ContextHandle, ?*const c.ot_handle) callconv(.c) c.ot_status;
+    const cases = .{
+        .{ ObjectKind.edit_buffer, &ot_edit_buffer_destroy, Create.editBuffer },
+        .{ ObjectKind.editor_view, &ot_editor_view_destroy, Create.editorView },
+        .{ ObjectKind.syntax_style, &ot_syntax_style_destroy, Create.syntaxStyle },
+        .{ ObjectKind.image, &ot_image_destroy, Create.image },
+        .{ ObjectKind.buffer, &ot_buffer_destroy, Create.buffer },
+        .{ ObjectKind.session, &ot_session_destroy, Create.session },
+        .{ ObjectKind.text_buffer, &text_transport.ot_text_buffer_destroy, Create.textBuffer },
+        .{ ObjectKind.text_buffer_view, &text_transport.ot_text_buffer_view_destroy, Create.textBufferView },
+        .{ ObjectKind.encoded_unicode, &unicode_transport.ot_unicode_destroy, Create.unicode },
+        .{ ObjectKind.embedded_terminal, &terminal_transport.ot_embedded_terminal_destroy, Create.embeddedTerminal },
+    };
+    const handle = try createTestContext(.{ .object_capacity = 64, .render_cells_max = 16 });
+    defer std.testing.expectEqual(c.OT_OK, ot_context_destroy(handle)) catch unreachable;
+    const core = handle.core;
+    inline for (cases) |case| {
+        const kind: ObjectKind, const destroy: Destroy, const create = case;
+        const wrong = handleToC(try if (kind == .buffer) core.createSyntaxStyle() else core.createBuffer(1, 1, .{}));
+        // The export and the helper each destroy their own object of the same kind.
+        const targets = [2]c.ot_handle{ handleToC(try create(core)), handleToC(try create(core)) };
+        const expected = [_]c.ot_status{ c.OT_CONTEXT_BUSY, c.OT_INVALID_ARGUMENT, c.OT_WRONG_KIND, c.OT_WRONG_CONTEXT, c.OT_OK, c.OT_STALE_HANDLE };
+        for (expected, 0..) |status, step| {
+            var inputs: [2]?*const c.ot_handle = undefined;
+            var foreign = targets;
+            for (&inputs, &targets, &foreign) |*input, *target, *other| {
+                other.context_id += 1;
+                input.* = switch (step) {
+                    1 => null,
+                    2 => &wrong,
+                    3 => other,
+                    else => target,
+                };
+            }
+            core.mutating = step == 0;
+            const export_status = destroy(handle, inputs[0]);
+            const export_error = handle.last_error;
+            const helper_status = destroyKind(handle, inputs[1], kind);
+            core.mutating = false;
+            try std.testing.expectEqual(status, export_status);
+            try std.testing.expectEqual(status, helper_status);
+            try std.testing.expectEqual(export_error, handle.last_error);
+        }
+    }
 }
 
 test "Session native output ABI validates admission before writing and rejects callback reentry" {
