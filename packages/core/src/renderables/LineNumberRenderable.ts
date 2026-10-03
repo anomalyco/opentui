@@ -1,4 +1,3 @@
-import { assertRenderableMutable } from "../lib/renderable-layout.js"
 import { Renderable, type BaseRenderable, type RenderableOptions } from "../Renderable.js"
 import { OptimizedBuffer } from "../buffer.js"
 import type { RenderContext, LineInfoProvider } from "../types.js"
@@ -544,7 +543,7 @@ export class LineNumberRenderable extends Renderable {
 
   public override destroy(): void {
     if (this.isDestroyed) return
-    assertRenderableMutable(this)
+    this.assertMutable()
     this._isDestroying = true
     super.destroy()
   }
@@ -552,7 +551,7 @@ export class LineNumberRenderable extends Renderable {
   // Internal children must be removable before recursive teardown starts.
   public override destroyRecursively(): void {
     if (this.isDestroyed) return
-    assertRenderableMutable(this)
+    this.assertMutable()
     this._isDestroying = true
     super.destroyRecursively()
   }
@@ -571,7 +570,7 @@ export class LineNumberRenderable extends Renderable {
     const target = this.target
     const gutter = this.gutter
     if (!target && !gutter) return
-    assertRenderableMutable(this)
+    this.assertMutable()
 
     this.runCleanup((run) => {
       if (target) {

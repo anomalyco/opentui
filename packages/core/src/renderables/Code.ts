@@ -1,4 +1,3 @@
-import { runRenderableMutation } from "../lib/renderable-layout.js"
 import { type LineInfo, type RenderContext } from "../types.js"
 import { StyledText } from "../lib/styled-text.js"
 import { SyntaxStyle } from "../syntax-style.js"
@@ -151,7 +150,7 @@ export class CodeRenderable extends TextBufferRenderable {
 
   set content(value: string) {
     if (this._content === value) return
-    runRenderableMutation(this, () => {
+    this.runMutation(() => {
       if (this._streaming && this._filetype && !this._drawUnstyledText) {
         this._content = value
         this.invalidateHighlights()
