@@ -193,9 +193,7 @@ pub const Edit = struct {
     fn receive(data: *anyopaque, notification: edit_buffer.NativeEvent) void {
         const self: *Edit = @ptrCast(@alignCast(data));
         const event: EditEvent = switch (notification) {
-            .cursor_changed => .cursor_changed,
-            .content_changed => .content_changed,
-            .history_cursor_changed => .history_cursor_changed,
+            inline else => |tag| @field(EditEvent, @tagName(tag)),
         };
         const owner = self.owner;
         const epoch = self.buffer.tb.getContentEpoch();
@@ -3191,10 +3189,8 @@ pub const Context = struct {
         defer self.mutating = false;
         const edit = try self.getEditBuffer(handle);
         try edit.checkMutable();
-        const tab_width: u32 = @min(254, @max(2, @as(u32, width) + width % 2));
-        const bytes_max = (std.math.maxInt(u32) - 1) / tab_width;
-        if (edit.buffer.tb.getByteSize() > bytes_max) return error.TextLimit;
-        edit.buffer.setTabWidth(@intCast(tab_width));
+        try edit.buffer.tb.checkTabWidth(width);
+        edit.buffer.setTabWidth(width);
         edit.invalidate();
     }
 
@@ -3353,7 +3349,6 @@ pub const Context = struct {
         const style = try self.getSyntaxStyle(handle);
         try self.checkStyleDependents(style);
         const id = try style.registerStyleDefinition(name, definition);
-        style.clearCache();
         self.invalidateStyleDependents(style);
         return id;
     }

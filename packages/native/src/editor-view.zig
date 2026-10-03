@@ -188,15 +188,13 @@ pub const EditorView = struct {
                 const line_width = iter_mod.lineWidthAt(self.edit_buffer.tb.rope(), target_logical_row);
                 const target_col = @min(cursor.col, line_width);
 
-                if (self.edit_buffer.cursors.items.len > 0) {
-                    const offset = iter_mod.coordsToOffset(self.edit_buffer.tb.rope(), target_logical_row, target_col) orelse return;
-                    self.edit_buffer.cursors.items[0] = .{
-                        .row = target_logical_row,
-                        .col = target_col,
-                        .desired_col = target_col,
-                        .offset = offset,
-                    };
-                }
+                const offset = iter_mod.coordsToOffset(self.edit_buffer.tb.rope(), target_logical_row, target_col) orelse return;
+                self.edit_buffer.cursor = .{
+                    .row = target_logical_row,
+                    .col = target_col,
+                    .desired_col = target_col,
+                    .offset = offset,
+                };
             }
         }
     }
@@ -458,15 +456,12 @@ pub const EditorView = struct {
         const line_width = iter_mod.lineWidthAt(self.edit_buffer.tb.rope(), focus_coords.row);
         if (focus_coords.col > line_width) return;
 
-        // Update cursor to focus position
-        if (self.edit_buffer.cursors.items.len > 0) {
-            self.edit_buffer.cursors.items[0] = .{
-                .row = focus_coords.row,
-                .col = focus_coords.col,
-                .desired_col = focus_coords.col,
-                .offset = focus_offset,
-            };
-        }
+        self.edit_buffer.cursor = .{
+            .row = focus_coords.row,
+            .col = focus_coords.col,
+            .desired_col = focus_coords.col,
+            .offset = focus_offset,
+        };
     }
 
     pub fn getSelectedTextIntoBuffer(self: *EditorView, out_buffer: []u8) usize {
@@ -517,10 +512,6 @@ pub const EditorView = struct {
 
     pub fn getPrimaryCursor(self: *const EditorView) eb.Cursor {
         return self.edit_buffer.getPrimaryCursor();
-    }
-
-    pub fn getCursor(self: *const EditorView, idx: usize) ?eb.Cursor {
-        return self.edit_buffer.getCursor(idx);
     }
 
     pub fn getText(self: *EditorView, out_buffer: []u8) usize {
@@ -710,84 +701,37 @@ pub const EditorView = struct {
 
     pub fn moveUpVisual(self: *EditorView) void {
         const vcursor = self.getPrimaryVisualCursorAbsolute();
-
-        if (vcursor.visual_row == 0) {
-            return;
-        }
-
-        const target_visual_row = vcursor.visual_row - 1;
-
-        // This persists across empty/narrow lines to restore column when possible
-        if (self.desired_visual_col == null) {
-            self.desired_visual_col = vcursor.visual_col;
-        }
-        const desired_visual_col = self.desired_visual_col.?;
-
-        const vlines = self.text_buffer_view.virtual_lines.items;
-        const target_visual_col = if (self.text_buffer_view.getSelectionOccupancy() == .boundary)
-            @min(desired_visual_col, vlines[target_visual_row].width_cols)
-        else
-            clampVisualColToStayOnVisualRow(vlines, target_visual_row, desired_visual_col);
-
-        if (self.visualToLogicalCursor(target_visual_row, target_visual_col)) |new_vcursor| {
-            if (self.edit_buffer.cursors.items.len > 0) {
-                self.edit_buffer.cursors.items[0] = .{
-                    .row = new_vcursor.logical_row,
-                    .col = new_vcursor.logical_col,
-                    .desired_col = new_vcursor.logical_col,
-                    .offset = new_vcursor.offset,
-                };
-                self.cursor_visual_affinity = null;
-                if (self.text_buffer_view.getSelectionOccupancy() == .boundary) {
-                    self.setCursorAffinityForAbsoluteRow(target_visual_row);
-                }
-                self.ensureCursorVisible(new_vcursor.visual_row);
-
-                // Restore desired_visual_col after the cursor change event resets it
-                self.desired_visual_col = desired_visual_col;
-            }
-        }
+        if (vcursor.visual_row == 0) return;
+        self.moveToVisualRow(vcursor, vcursor.visual_row - 1);
     }
 
     pub fn moveDownVisual(self: *EditorView) void {
         const vcursor = self.getPrimaryVisualCursorAbsolute();
+        if (vcursor.visual_row + 1 >= self.text_buffer_view.virtual_lines.items.len) return;
+        self.moveToVisualRow(vcursor, vcursor.visual_row + 1);
+    }
 
-        const vlines = self.text_buffer_view.virtual_lines.items;
-
-        if (vcursor.visual_row + 1 >= vlines.len) {
-            return;
-        }
-
-        const target_visual_row = vcursor.visual_row + 1;
-
+    fn moveToVisualRow(self: *EditorView, vcursor: VisualCursor, target_visual_row: u32) void {
         // This persists across empty/narrow lines to restore column when possible
-        if (self.desired_visual_col == null) {
-            self.desired_visual_col = vcursor.visual_col;
-        }
-        const desired_visual_col = self.desired_visual_col.?;
-        const target_visual_col = if (self.text_buffer_view.getSelectionOccupancy() == .boundary)
+        const desired_visual_col = self.desired_visual_col orelse vcursor.visual_col;
+        self.desired_visual_col = desired_visual_col;
+        const vlines = self.text_buffer_view.virtual_lines.items;
+        const boundary = self.text_buffer_view.getSelectionOccupancy() == .boundary;
+        const target_visual_col = if (boundary)
             @min(desired_visual_col, vlines[target_visual_row].width_cols)
         else
             clampVisualColToStayOnVisualRow(vlines, target_visual_row, desired_visual_col);
 
-        if (self.visualToLogicalCursor(target_visual_row, target_visual_col)) |new_vcursor| {
-            if (self.edit_buffer.cursors.items.len > 0) {
-                self.edit_buffer.cursors.items[0] = .{
-                    .row = new_vcursor.logical_row,
-                    .col = new_vcursor.logical_col,
-                    .desired_col = new_vcursor.logical_col,
-                    .offset = new_vcursor.offset,
-                };
-                self.cursor_visual_affinity = null;
-                if (self.text_buffer_view.getSelectionOccupancy() == .boundary) {
-                    self.setCursorAffinityForAbsoluteRow(target_visual_row);
-                }
-                self.ensureCursorVisible(new_vcursor.visual_row);
-
-                // Restore desired_visual_col after the cursor change event resets it
-                self.desired_visual_col = desired_visual_col;
-            }
-        }
+        const new_vcursor = self.visualToLogicalCursor(target_visual_row, target_visual_col) orelse return;
+        self.edit_buffer.cursor = .{
+            .row = new_vcursor.logical_row,
+            .col = new_vcursor.logical_col,
+            .desired_col = new_vcursor.logical_col,
+            .offset = new_vcursor.offset,
+        };
+        self.cursor_visual_affinity = null;
+        if (boundary) self.setCursorAffinityForAbsoluteRow(target_visual_row);
+        self.ensureCursorVisible(new_vcursor.visual_row);
     }
 
     pub fn deleteSelectedText(self: *EditorView) !void {

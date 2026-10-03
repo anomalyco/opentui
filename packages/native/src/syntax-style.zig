@@ -32,8 +32,6 @@ pub const SyntaxStyle = struct {
     id_to_style: std.AutoHashMapUnmanaged(u32, StyleDefinition),
     next_id: u32,
 
-    merged_cache: std.StringHashMapUnmanaged(StyleDefinition),
-
     emitter: events.EventEmitter(Event),
     link_tracker: ?link.LinkTracker = null,
 
@@ -54,7 +52,6 @@ pub const SyntaxStyle = struct {
             .name_to_id = .empty,
             .id_to_style = .empty,
             .next_id = 1, // Start from 1, 0 can be used as "invalid"
-            .merged_cache = .empty,
             // Subscriptions survive replacement of the definition arena.
             .emitter = events.EventEmitter(Event).init(global_allocator),
         };
@@ -113,7 +110,7 @@ pub const SyntaxStyle = struct {
         std.mem.swap(events.EventEmitter(Event), &self.emitter, &prepared.emitter);
     }
 
-    fn putStyle(self: *SyntaxStyle, name: []const u8, definition: StyleDefinition) SyntaxStyleError!u32 {
+    pub fn registerStyleDefinition(self: *SyntaxStyle, name: []const u8, definition: StyleDefinition) SyntaxStyleError!u32 {
         if (self.name_to_id.get(name)) |existing_id| {
             self.id_to_style.getPtr(existing_id).?.* = definition;
             return existing_id;
@@ -142,10 +139,6 @@ pub const SyntaxStyle = struct {
         });
     }
 
-    pub fn registerStyleDefinition(self: *SyntaxStyle, name: []const u8, definition: StyleDefinition) SyntaxStyleError!u32 {
-        return self.putStyle(name, definition);
-    }
-
     pub fn resolveById(self: *const SyntaxStyle, id: u32) ?StyleDefinition {
         return self.id_to_style.get(id);
     }
@@ -157,54 +150,6 @@ pub const SyntaxStyle = struct {
     pub fn getStyleByName(self: *const SyntaxStyle, name: []const u8) ?StyleDefinition {
         const id = self.resolveByName(name) orelse return null;
         return self.resolveById(id);
-    }
-
-    pub fn mergeStyles(self: *SyntaxStyle, ids: []const u32) SyntaxStyleError!StyleDefinition {
-        var cache_key_buffer: [512]u8 = undefined;
-        var writer: std.Io.Writer = .fixed(&cache_key_buffer);
-
-        for (ids, 0..) |id, i| {
-            if (i > 0) writer.writeByte(':') catch return SyntaxStyleError.OutOfMemory;
-            writer.print("{d}", .{id}) catch return SyntaxStyleError.OutOfMemory;
-        }
-
-        const cache_key = writer.buffered();
-
-        if (self.merged_cache.get(cache_key)) |cached| {
-            return cached;
-        }
-
-        var merged: StyleDefinition = .{
-            .fg = null,
-            .bg = null,
-            .attributes = 0,
-        };
-
-        for (ids) |id| {
-            if (self.resolveById(id)) |style| {
-                if (style.fg) |fg| {
-                    merged.fg = fg;
-                }
-                if (style.bg) |bg| {
-                    merged.bg = bg;
-                }
-                // Attributes are OR'd together
-                merged.attributes |= style.attributes;
-            }
-        }
-
-        const owned_cache_key = self.allocator.dupe(u8, cache_key) catch return SyntaxStyleError.OutOfMemory;
-        self.merged_cache.put(self.allocator, owned_cache_key, merged) catch return SyntaxStyleError.OutOfMemory;
-
-        return merged;
-    }
-
-    pub fn clearCache(self: *SyntaxStyle) void {
-        self.merged_cache.clearRetainingCapacity();
-    }
-
-    pub fn getCacheSize(self: *const SyntaxStyle) usize {
-        return self.merged_cache.count();
     }
 
     pub fn getStyleCount(self: *const SyntaxStyle) usize {

@@ -28,7 +28,7 @@ fn appendResult(allocator: std.mem.Allocator, results: *std.ArrayList(BenchResul
 }
 
 fn resetPrimaryCursor(eb: *EditBuffer, row: u32, col: u32, offset: u32) void {
-    eb.cursors.items[0] = .{
+    eb.cursor = .{
         .row = row,
         .col = col,
         .desired_col = col,
