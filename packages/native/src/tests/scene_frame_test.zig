@@ -215,6 +215,26 @@ test "Scene frame paint layout reports where a hook-free frame painted a node mo
     try f.owner.sceneFrameCancel(f.id, done.frame_id);
 }
 
+test "Scene frame reuses committed preparation until a mutation invalidates it" {
+    const f = try Fixture.init(testing.allocator, 8, 1, .{ .output = transport });
+    defer f.deinit();
+    const child = try f.owner.sceneCreateNode(f.id, 1, 2);
+    try f.owner.sceneSetStyle(child, 4, 0, 0, 1, 2, 1);
+    try f.owner.sceneMoveNode(child, f.root, 0);
+    for (0..3) |frame| {
+        if (frame == 2) try f.owner.scenePatchPaint(child, c.OT_SCENE_PROPERTY_TRANSLATE_X, .{ .translateX = 3 });
+        try f.owner.scenePatchPaint(child, c.OT_SCENE_PROPERTY_BACKGROUND, .{ .background = .{ @intCast(frame + 2), 0, 0, 255 } });
+        const steps = f.state.test_prepare_steps;
+        const done = try f.step(null, options, c.OT_SCENE_FRAME_DONE, null);
+        // A background change keeps the retained paint list; a translation rebuilds it.
+        try testing.expectEqual(frame != 1, f.state.test_prepare_steps != steps);
+        try testing.expectEqual(@as(u16, @intCast(frame + 2)), f.cli.getNextBuffer().get(if (frame == 2) 3 else 0, 0).?.bg[0]);
+        _ = try f.owner.sceneFrameCommit(f.id, done, true);
+        try drain(f.owner, f.id);
+        try testing.expectEqual(@as(u32, 2), try f.owner.sceneHitTest(f.id, if (frame == 2) 4 else 1, 0));
+    }
+}
+
 test "Scene painted node and root destruction retains graphemes but never resurrects hit identities" {
     const f = try Fixture.init(testing.allocator, 4, 1, .{ .output = transport });
     defer f.deinit();
