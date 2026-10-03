@@ -160,7 +160,12 @@ test("a snapshot larger than the Session output capacity throws at the call and 
 
 // Each drain ends with `last` on the terminal. A transition that changes the split footer waits for queued rows.
 const drains = {
-  frames: (terminal: Terminal, last: string) => terminal.drainUntil(last),
+  frames: async (terminal: Terminal, last: string) => {
+    await terminal.frame()
+    // One frame carries at most 8 commits.
+    expect(terminal.printed(/line \d+/g)).toHaveLength(8)
+    await terminal.drainUntil(last)
+  },
   passthrough: async (terminal: Terminal, last: string) => {
     terminal.renderer.externalOutputMode = "passthrough"
     // The switch waits for the queue, so this write is still captured behind it.
@@ -245,6 +250,8 @@ test.each(["frames", "suspend", "destroy"] as const)(
       replay,
       "after",
     ])
+    // Scrollback published before the clear no longer counts: the footer follows the one row after it.
+    if (drain !== "destroy") expect((terminal.renderer as unknown as { renderOffset: number }).renderOffset).toBe(2)
   },
 )
 
