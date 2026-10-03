@@ -238,9 +238,6 @@ test "Session terminal rejects invalid setup and preserves a rejected control dr
     defer f.deinit();
     const original = f.cli.terminal;
     try testing.expectError(error.InvalidOptions, f.owner.setupSessionTerminal(f.id, .{ .kitty_keyboard_flags = 32 }));
-    f.cli.terminalSetup = true;
-    try testing.expectError(error.IncompatibleOutput, f.owner.setupSessionTerminal(f.id, .{}));
-    f.cli.terminalSetup = false;
     try testing.expectEqualDeep(original, f.cli.terminal);
     try testing.expectEqual(.uninitialized, f.value.getTerminalState().phase);
     try f.owner.setupSessionTerminal(f.id, .{ .kitty_keyboard_flags = 31 });

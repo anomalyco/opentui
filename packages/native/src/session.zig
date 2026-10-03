@@ -217,23 +217,27 @@ pub const SplitControl = union(enum) {
     clear_transition,
 };
 
+/// Steps run in declaration order: setup from query, resume from setup_screen,
+/// and restoration from delete_images. Settled phases have no step.
+const Step = enum {
+    idle,
+    query,
+    setup_screen,
+    reserve_rows,
+    enable,
+    activate,
+    delete_images,
+    reset_input,
+    restore_rows,
+    reset_output,
+    settle_first,
+    show_cursor,
+    settle_second,
+};
+
 const Lifecycle = struct {
     phase: TerminalPhase = .uninitialized,
-    step: enum {
-        idle,
-        query,
-        setup_screen,
-        reserve_rows,
-        enable,
-        activate,
-        delete_images,
-        reset_input,
-        restore_rows,
-        reset_output,
-        settle_first,
-        show_cursor,
-        settle_second,
-    } = .idle,
+    step: Step = .idle,
     mouse: bool = false,
     mouse_movement: bool = true,
     rows_remaining: u32 = 0,
@@ -245,6 +249,21 @@ const Lifecycle = struct {
     screen_claimed: bool = false,
     image_index: usize = 0,
     deadline_ns: ?u64 = null,
+
+    fn assertValid(self: Lifecycle, state: State) void {
+        const first: Step, const last: Step = switch (self.phase) {
+            .uninitialized, .active, .suspended, .restored, .failed, .cancelled => .{ .idle, .idle },
+            .setting_up => .{ .query, .activate },
+            .resuming => .{ .setup_screen, .activate },
+            .suspending, .closing => .{ .delete_images, .settle_second },
+        };
+        std.debug.assert(@intFromEnum(self.step) >= @intFromEnum(first));
+        std.debug.assert(@intFromEnum(self.step) <= @intFromEnum(last));
+        std.debug.assert((state == .failed) == (self.phase == .failed));
+        std.debug.assert((state == .cancelled) == (self.phase == .cancelled));
+        if (self.phase == .closing) std.debug.assert(state == .closing);
+        if (state == .open) std.debug.assert(self.phase != .restored);
+    }
 };
 
 pub const State = enum { open, closing, closed, failed, cancelled };
@@ -594,6 +613,7 @@ pub const Session = struct {
             .rows_remaining = rows,
             .rows_return = if (value.renderOffset == 0) rows else 0,
         };
+        self.lifecycle.assertValid(self.state);
     }
 
     pub fn suspendTerminal(self: *Session) Error!void {
@@ -612,6 +632,7 @@ pub const Session = struct {
         self.lifecycle.phase = .suspending;
         self.lifecycle.step = .delete_images;
         self.lifecycle.image_index = 0;
+        self.lifecycle.assertValid(self.state);
     }
 
     pub fn resumeTerminal(self: *Session) Error!void {
@@ -628,6 +649,7 @@ pub const Session = struct {
         self.lifecycle.step = .setup_screen;
         self.lifecycle.rows_remaining = rows;
         self.lifecycle.rows_return = rows;
+        self.lifecycle.assertValid(self.state);
     }
 
     pub fn getTerminalState(self: *const Session) TerminalState {
@@ -666,7 +688,7 @@ pub const Session = struct {
             },
             else => return error.TerminalInactive,
         }
-        try self.checkTerminalOutput();
+        self.assertTerminalOutput();
         switch (command) {
             .title => |title| {
                 if (title.len > title_bytes_max) return error.InvalidOptions;
@@ -700,7 +722,7 @@ pub const Session = struct {
         try self.checkOpen();
         const value = self.renderer orelse return error.RendererNotAttached;
         if (self.lifecycle.phase != .active) return error.TerminalInactive;
-        try self.checkTerminalOutput();
+        self.assertTerminalOutput();
         const title_len = if (title) |text| text.len else 0;
         if (message.len > control_packet_bytes_max or title_len > control_packet_bytes_max - message.len) return false;
         var candidate = value.terminal;
@@ -800,8 +822,9 @@ pub const Session = struct {
         try self.checkOpen();
         const value = self.renderer orelse return error.RendererNotAttached;
         if (self.lifecycle.phase != .active) return error.TerminalInactive;
-        try self.checkTerminalOutput();
-        if (self.output.staged_bytes != 0) return error.Busy;
+        self.assertTerminalOutput();
+        // Only this call stages bytes, and it clears them before returning.
+        std.debug.assert(self.output.staged_bytes == 0);
         const output_len = value.terminal.clipboardSequenceSize(bytes.len) catch return false;
         // Charge ordinary capacity before allocating or encoding large payloads.
         // Clipboard writes cannot borrow restoration storage or counter headroom.
@@ -856,6 +879,7 @@ pub const Session = struct {
     }
 
     fn pumpWork(self: *Session, now_ns: ?u64, work_budget: u32) Error!PumpResult {
+        defer self.lifecycle.assertValid(self.state);
         var remaining = work_budget;
         while (remaining > 0) : (remaining -= 1) {
             if (!self.isDrained()) return .{ .status = .output_pending };
@@ -886,7 +910,8 @@ pub const Session = struct {
                         self.lifecycle.step = .show_cursor;
                         self.lifecycle.deadline_ns = null;
                     } else {
-                        try self.output.setControlSequenceReservation(.{});
+                        // A drained queue holds no control spans, staged, or reserved bytes.
+                        self.output.setControlSequenceReservation(.{}) catch unreachable;
                         const value = self.renderer.?;
                         value.currentImages.clearRetainingCapacity();
                         value.invalidateTerminalState();
@@ -895,7 +920,7 @@ pub const Session = struct {
                         self.lifecycle.screen_claimed = false;
                         self.lifecycle.phase = if (self.state == .closing) .restored else .suspended;
                         if (self.state == .closing) {
-                            try self.output.close();
+                            self.output.close() catch unreachable;
                             self.state = .closed;
                             return .{ .status = .closed };
                         }
@@ -915,26 +940,24 @@ pub const Session = struct {
         return .{ .status = if (self.isDrained()) .again else .output_pending };
     }
 
-    fn checkTerminalOutput(self: *const Session) Error!void {
+    /// Sessions attach the renderer to their own feed and never expose it, run
+    /// legacy setup, or batch split frames, so terminal packets always own the output.
+    fn assertTerminalOutput(self: *const Session) void {
         const value = self.renderer.?;
-        if (value.terminalSetup or value.backend != .feed or value.backend.feed.feed != self.output or
-            self.output.callback != null or self.output.in_callback or value.backend.feed.frameActive)
-        {
-            return error.IncompatibleOutput;
-        }
-        if (value.splitBatchActive) return error.SplitRenderPending;
+        std.debug.assert(!value.terminalSetup and !value.splitBatchActive);
+        std.debug.assert(value.backend == .feed and value.backend.feed.feed == self.output);
+        std.debug.assert(!value.backend.feed.frameActive);
+        std.debug.assert(self.output.callback == null and !self.output.in_callback);
     }
 
     fn checkTerminalStart(self: *Session, kitty_keyboard_flags: u8) Error!void {
-        try self.checkTerminalOutput();
+        self.assertTerminalOutput();
         const value = self.renderer.?;
+        // Attachment, resize, and screen changes reject zero rows; reset_output adds one row.
+        std.debug.assert(value.height > 0 and value.renderOffset < std.math.maxInt(u32));
         // Reserved rows follow the current footer geometry, which a transition replaces.
         if (value.pendingSplitFooterTransition.mode != .none) return error.SplitRenderPending;
-        if (value.height == 0 or value.renderOffset == std.math.maxInt(u32) or
-            kitty_keyboard_flags & ~@as(u8, 0b11111) != 0)
-        {
-            return error.InvalidOptions;
-        }
+        if (kitty_keyboard_flags & ~@as(u8, 0b11111) != 0) return error.InvalidOptions;
         if (@as(u64, self.output.control_chunks) * self.output.options.chunk_size < control_packet_bytes_max) {
             return error.NoSpace;
         }
@@ -1252,8 +1275,10 @@ pub const Session = struct {
         self.cancelSceneFrame();
         self.state = .failed;
         self.lifecycle.phase = .failed;
+        self.lifecycle.step = .idle;
         self.lifecycle.deadline_ns = null;
         self.finishPresentation(.failed);
+        self.lifecycle.assertValid(self.state);
     }
 
     fn completeOutputBytes(self: *Session, count: u32) void {
@@ -1284,9 +1309,10 @@ pub const Session = struct {
             .failed => return error.SessionFailed,
             .cancelled => return error.SessionCancelled,
         }
+        defer self.lifecycle.assertValid(self.state);
         self.cancelSceneFrame();
         switch (self.lifecycle.phase) {
-            .uninitialized, .suspended, .restored => {
+            .uninitialized, .suspended => {
                 try self.output.close();
                 self.state = if (self.isDrained()) .closed else .closing;
                 if (self.lifecycle.phase == .suspended) self.lifecycle.phase = .restored;
@@ -1299,7 +1325,7 @@ pub const Session = struct {
                 self.lifecycle.phase = .closing;
                 self.state = .closing;
             },
-            .closing, .failed, .cancelled => unreachable,
+            .restored, .closing, .failed, .cancelled => unreachable,
         }
     }
 
@@ -1321,8 +1347,10 @@ pub const Session = struct {
         self.pending = null;
         self.state = .cancelled;
         self.lifecycle.phase = .cancelled;
+        self.lifecycle.step = .idle;
         self.lifecycle.deadline_ns = null;
         std.debug.assert(self.isDrained());
+        self.lifecycle.assertValid(self.state);
     }
 
     pub fn canDestroy(self: *Session) bool {
@@ -1378,6 +1406,7 @@ fn applyCapabilityResponses(candidate: *terminal.Terminal, response: []const u8)
             },
             else => return error.InvalidOptions,
         }
+        std.debug.assert(end >= 3 and end <= bytes.len);
         // The legacy parser searches within one reply; batching must retain wire order.
         candidate.processCapabilityResponse(bytes[0..end]);
         offset += end;
