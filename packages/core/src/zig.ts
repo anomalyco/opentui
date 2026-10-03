@@ -3263,6 +3263,7 @@ type ContextObjectDestroySymbol =
   | "ot_editor_view_destroy"
   | "ot_embedded_terminal_destroy"
   | "ot_image_destroy"
+  | "ot_session_destroy"
   | "ot_syntax_style_destroy"
   | "ot_text_buffer_destroy"
   | "ot_text_buffer_view_destroy"
@@ -6737,12 +6738,7 @@ export class FFIRenderLib {
   }
 
   public destroySession(context: NativeContextHandle, session: SessionHandle): void {
-    this.getYogaHost().assertMutable()
-    const handle = encodeContextHandle(context, session)
-    nativeResult(
-      "ot_session_destroy",
-      this.opentui.symbols.ot_session_destroy(this.nativeContextPointer(context, "ot_session_destroy"), handle),
-    )
+    this.destroyContextObject(context, session, "ot_session_destroy")
     // Session teardown also invalidates detached nodes. Ask native ownership only
     // for the sparse custom-provider set, never mirror every scene node in JS.
     const registrations = this.sceneMeasures.get(context)?.nodes

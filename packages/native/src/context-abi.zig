@@ -1493,14 +1493,7 @@ pub fn ot_session_get_state(
 }
 
 pub fn ot_session_destroy(context: ?*ContextHandle, session_ptr: ?*const c.ot_handle) callconv(.c) c.ot_status {
-    const status = sessionContextStatus(context);
-    if (status != c.OT_OK) return status;
-    const owner = context.?;
-    const id = session_ptr orelse return sessionError(owner, error.InvalidOptions);
-    const session = handleFromC(id.*);
-    _ = owner.core.raw().getSession(session) catch |err| return sessionError(owner, err);
-    owner.core.destroy(session) catch |err| return sessionError(owner, err);
-    return c.OT_OK;
+    return destroyKind(context, session_ptr, .session);
 }
 
 pub fn ot_scene_create_node(context: ?*ContextHandle, session_ptr: ?*const c.ot_handle, kind: u32, num: u32, out_node_ptr: ?*c.ot_handle) callconv(.c) c.ot_status {
