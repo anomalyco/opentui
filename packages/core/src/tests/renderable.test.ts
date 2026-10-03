@@ -1041,6 +1041,13 @@ describe("Renderable - Lifecycle", () => {
     await renderOnce()
   })
 
+  test("destroy() removes listeners", () => {
+    const node = new TestRenderable(testRenderer, {})
+    node.on("custom", () => {})
+    node.destroy()
+    expect(node.listenerCount("custom")).toBe(0)
+  })
+
   test("layout reads during destroy return the live layout", async () => {
     const parent = new TestRenderable(testRenderer, { width: 12, height: 4, position: "absolute", left: 3, top: 1 })
     const child = new TestRenderable(testRenderer, { marginLeft: 2, height: 2 })
