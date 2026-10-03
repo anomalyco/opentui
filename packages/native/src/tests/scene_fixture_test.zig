@@ -53,4 +53,26 @@ pub const Fixture = struct {
         if (node) |expected| try std.testing.expectEqual(expected, request.node);
         return request;
     }
+
+    /// Both Sessions' next frames hold the same cells and hits.
+    pub fn expectSameCells(self: Fixture, actual: Fixture) !void {
+        const expected = self.cli.getNextBuffer().buffer;
+        const cells = actual.cli.getNextBuffer().buffer;
+        try std.testing.expectEqualSlices(u32, expected.char, cells.char);
+        try std.testing.expectEqualSlices([4]u16, expected.fg, cells.fg);
+        try std.testing.expectEqualSlices([4]u16, expected.bg, cells.bg);
+        try std.testing.expectEqualSlices(u32, expected.attributes, cells.attributes);
+        try std.testing.expectEqualSlices(u32, self.cli.nextHitGrid, actual.cli.nextHitGrid);
+    }
+
+    /// Acknowledges every request unchanged until the attempt paints, and returns DONE.
+    pub fn drive(self: Fixture, previous: ?scene.FrameRequest, options: scene.FrameOptions, budget: u32) !scene.FrameRequest {
+        var request = previous;
+        for (0..1024) |_| {
+            const next = try self.owner.sceneFrameStepWorkBudgeted(self.id, request, options, budget);
+            if (next.kind == 0) return next;
+            request = next;
+        }
+        return error.TestUnexpectedResult;
+    }
 };

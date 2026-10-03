@@ -42,66 +42,6 @@ test "Scene warmed preparation cannot bypass the work budget" {
     }
 }
 
-test "Scene work budget restarts once after a yielded mutation and completes without further yields" {
-    const f = try Fixture.init(testing.allocator, 12, 3, .{ .output = transport });
-    defer f.deinit();
-    const child = try box(f.owner, f.id, f.root, 2, 0);
-    var limited = options;
-    limited.max_layout_rounds = 2;
-    var request = try f.owner.sceneFrameStepWorkBudgeted(f.id, null, limited, 1);
-    try testing.expectEqual(@as(u32, c.OT_SCENE_FRAME_YIELD), request.kind);
-    try f.owner.sceneSetStyle(child, 4, 0, 0, 1, 2, 1);
-    request = try f.owner.sceneFrameStepWorkBudgeted(f.id, request, limited, 1);
-    try testing.expectEqual(@as(u32, 0), request.kind);
-    try testing.expectEqual(@as(f32, 2), (try f.owner.sceneGetLayout(child, false)).width);
-    const painted = f.cli.getNextBuffer();
-    try testing.expectEqual(ansi.rgbColor(2, 0, 0, 255), painted.get(1, 0).?.bg);
-    try testing.expectEqual(ansi.rgbColor(0, 0, 0, 255), painted.get(2, 0).?.bg);
-    try f.owner.sceneFrameCancel(f.id, request.frame_id);
-}
-
-test "Scene work budget stays unbounded after a restart even when hook replies follow" {
-    const f = try Fixture.init(testing.allocator, 12, 3, .{ .output = transport });
-    defer f.deinit();
-    const child = try box(f.owner, f.id, f.root, 2, 0);
-    try f.owner.sceneSetHooks(child, c.OT_SCENE_HOOK_RESIZE, 1, 1, 1);
-    var limited = options;
-    limited.max_layout_rounds = 3;
-    var previous: ?scene.FrameRequest = null;
-    var width: f32 = 1;
-    const done = for (0..64) |_| {
-        const request = try f.owner.sceneFrameStepWorkBudgeted(f.id, previous, limited, 1);
-        if (request.kind == c.OT_SCENE_FRAME_DONE) break request;
-        if (request.kind == c.OT_SCENE_FRAME_YIELD) {
-            // Every yield accepts a mutation that resizes the hooked node.
-            width += 1;
-            try f.owner.sceneSetStyle(child, 4, 0, 0, 1, width, 1);
-        } else try testing.expectEqual(@as(u32, c.OT_SCENE_FRAME_RESIZE), request.kind);
-        previous = request;
-    } else return error.TestUnexpectedResult;
-    try testing.expectEqual(width, (try f.owner.sceneGetLayout(child, false)).width);
-    try f.owner.sceneFrameCancel(f.id, done.frame_id);
-}
-
-test "Scene work budget unchanged yields keep the quota and exhaust no layout rounds" {
-    const f = try Fixture.init(testing.allocator, 12, 3, .{ .output = transport });
-    defer f.deinit();
-    for (0..3) |index| _ = try box(f.owner, f.id, f.root, @intCast(index + 2), @intCast(index));
-    var limited = options;
-    limited.max_layout_rounds = 1;
-    var previous: ?scene.FrameRequest = null;
-    var yields: u32 = 0;
-    const done = for (0..64) |_| {
-        const request = try f.owner.sceneFrameStepWorkBudgeted(f.id, previous, limited, 1);
-        if (request.kind == 0) break request;
-        try testing.expectEqual(@as(u32, c.OT_SCENE_FRAME_YIELD), request.kind);
-        yields += 1;
-        previous = request;
-    } else return error.TestUnexpectedResult;
-    try testing.expect(yields > 1);
-    try f.owner.sceneFrameCancel(f.id, done.frame_id);
-}
-
 test "Scene work budget rejects late invalid transforms before publishing prepared geometry" {
     const f = try Fixture.init(testing.allocator, 12, 3, .{ .output = transport });
     defer f.deinit();
@@ -127,16 +67,7 @@ fn workAllocationFailures(allocator: std.mem.Allocator) !void {
     try f.owner.sceneSetText(text, "e\xcc\x81 wide");
     try f.owner.sceneMoveNode(text, f.root, 1);
     try f.owner.sceneSetHooks(f.root, 5, 1, 0, 0);
-    var previous: ?scene.FrameRequest = null;
-    for (0..64) |_| {
-        const request = try f.owner.sceneFrameStepWorkBudgeted(f.id, previous, options, 1);
-        if (request.kind == 0) {
-            try f.owner.sceneFrameCancel(f.id, request.frame_id);
-            return;
-        }
-        previous = request;
-    }
-    return error.TestUnexpectedResult;
+    try f.owner.sceneFrameCancel(f.id, (try f.drive(null, options, 1)).frame_id);
 }
 
 test "Scene work budget releases failed preparation ownership and reuses warmed cursor storage" {
@@ -149,15 +80,7 @@ test "Scene work budget releases failed preparation ownership and reuses warmed 
     defer f.state.allocator = testing.allocator;
     for (0..2) |pass| {
         if (pass == 1) f.state.allocator = failing.allocator();
-        var previous: ?scene.FrameRequest = null;
-        for (0..64) |_| {
-            const request = try f.owner.sceneFrameStepWorkBudgeted(f.id, previous, options, 1);
-            if (request.kind == 0) {
-                try f.owner.sceneFrameCancel(f.id, request.frame_id);
-                break;
-            }
-            previous = request;
-        } else return error.TestUnexpectedResult;
+        try f.owner.sceneFrameCancel(f.id, (try f.drive(null, options, 1)).frame_id);
         try testing.expectEqual(@as(usize, 0), f.state.prepared.items.len);
         try testing.expectEqual(@as(usize, 0), f.state.preparation_stack.items.len);
     }
@@ -186,6 +109,132 @@ test "Scene work budget hook replies cannot replenish feedback quota or consume 
     try f.owner.sceneFrameCancel(f.id, done.frame_id);
 }
 
+/// A random scene that two fixtures build identically from one seed.
+const Model = struct {
+    const node_max = 16;
+    nodes: [node_max]context.Handle = undefined,
+    // Null once destroyed.
+    kinds: [node_max]?u32 = undefined,
+    count: usize = 0,
+
+    fn build(self: *Model, f: Fixture, random: std.Random) !void {
+        if (random.boolean()) try f.owner.sceneSetHooks(f.root, c.OT_SCENE_HOOK_UPDATE | c.OT_SCENE_HOOK_LAYOUT_CHANGED * @as(u32, @intFromBool(random.boolean())), 1, 12, 4);
+        for (0..3 + random.uintLessThan(usize, 9)) |_| try self.add(f, random);
+    }
+
+    fn add(self: *Model, f: Fixture, random: std.Random) !void {
+        const index = self.count;
+        const kind: u32 = switch (random.uintLessThan(u8, 6)) {
+            0 => c.OT_SCENE_TEXT,
+            1 => c.OT_SCENE_CUSTOM,
+            else => c.OT_SCENE_BOX,
+        };
+        const handle = try f.owner.sceneCreateNode(f.id, kind, @intCast(index + 2));
+        self.nodes[index] = handle;
+        self.kinds[index] = kind;
+        self.count += 1;
+        // Custom nodes take half their parent's width, so resizing the parent resizes them.
+        const width: f32 = if (kind == c.OT_SCENE_CUSTOM) 50 else @floatFromInt(1 + random.uintLessThan(u32, 6));
+        try f.owner.sceneSetStyle(handle, 4, 0, 0, if (kind == c.OT_SCENE_CUSTOM) 2 else 1, width, 1);
+        try f.owner.sceneSetStyle(handle, 4, 1, 0, 1, @floatFromInt(1 + random.uintLessThan(u32, 3)), 1);
+        if (random.boolean()) try f.owner.sceneSetStyle(handle, 0, 6, 0, 0, 2, 0);
+        if (random.uintLessThan(u8, 5) == 0) try f.owner.sceneSetStyle(handle, 0, 9, 0, 0, 1, 0);
+        if (kind == c.OT_SCENE_TEXT) try f.owner.sceneSetText(handle, "ab cd ef");
+        if (kind == c.OT_SCENE_CUSTOM) try f.owner.sceneSetHooks(handle, c.OT_SCENE_HOOK_RESIZE, 1, 0, 0);
+        if (kind == c.OT_SCENE_BOX) {
+            if (random.uintLessThan(u8, 3) == 0) try f.owner.sceneSetStyle(handle, 0, 8, 0, 0, 1, 0);
+            if (random.uintLessThan(u8, 6) == 0) try f.owner.sceneSetViewport(handle, handle);
+        }
+        // Equal z-indices keep insertion order; a frame never re-sorts siblings it already ordered.
+        try f.owner.sceneSetPaint(handle, .{
+            .translateX = @floatFromInt(random.uintLessThan(u32, 8)),
+            .translateY = @floatFromInt(random.uintLessThan(u32, 3)),
+            .borderSides = if (kind == c.OT_SCENE_BOX and random.boolean()) c.OT_BORDER_ALL else 0,
+            .background = .{ @intCast(index * 15 + 10), @intCast(250 - index * 15), 0, 255 },
+        });
+        const parent = random.uintLessThan(usize, index + 1);
+        try f.owner.sceneMoveNode(handle, if (parent < index and self.kinds[parent] == c.OT_SCENE_BOX) self.nodes[parent] else f.root, 0);
+    }
+
+    fn mutate(self: *Model, f: Fixture, random: std.Random) !void {
+        const index = random.uintLessThan(usize, self.count);
+        const handle = self.nodes[index];
+        if (self.kinds[index] == null) return;
+        switch (random.uintLessThan(u8, 7)) {
+            0 => try f.owner.sceneSetStyle(handle, 4, 0, 0, 1, @floatFromInt(1 + random.uintLessThan(u32, 6)), 1),
+            1 => try f.owner.scenePatchPaint(handle, c.OT_SCENE_PROPERTY_TRANSLATE_X, .{ .translateX = @floatFromInt(random.uintLessThan(u32, 8)) }),
+            2 => try f.owner.sceneSetStyle(handle, 0, 9, 0, 0, @floatFromInt(random.uintLessThan(u32, 2)), 0),
+            3 => try f.owner.scenePatchPaint(handle, c.OT_SCENE_PROPERTY_BACKGROUND, .{ .background = .{ 0, 0, 200, 255 } }),
+            4 => try f.owner.sceneMoveNode(handle, if (random.boolean()) f.root else null, 0),
+            5 => {
+                try f.owner.sceneDestroyNode(handle);
+                self.kinds[index] = null;
+            },
+            else => if (self.count < node_max) try self.add(f, random),
+        }
+    }
+};
+
+/// Paints one random scene with a work budget, mutating it at yields, and compares the
+/// result with a synchronous frame of a twin scene that received the same mutations first.
+fn expectBoundedMatchesSynchronous(seed: u64) !void {
+    var drive = std.Random.DefaultPrng.init(seed ^ 0x9e3779b97f4a7c15);
+    var mutations: [2]std.Random.DefaultPrng = .{ .init(seed), .init(seed) };
+    var models: [2]Model = .{ .{}, .{} };
+    const fixtures = [2]Fixture{
+        try Fixture.init(testing.allocator, 12, 4, .{ .output = transport }),
+        try Fixture.init(testing.allocator, 12, 4, .{ .output = transport }),
+    };
+    defer for (fixtures) |f| f.deinit();
+    for (fixtures, &models, &mutations) |f, *model, *random| {
+        try model.build(f, random.random());
+        // After a first frame, preparation refreshes moved and resized nodes, not only new placements.
+        try f.owner.sceneFrameCancel(f.id, (try f.drive(null, options, std.math.maxInt(u32))).frame_id);
+        for (0..seed % 4) |_| try model.mutate(f, random.random());
+    }
+    const bounded = fixtures[0];
+    // Unchanged yields consume no layout round; a yielded mutation restarts preparation once.
+    const mutating = drive.random().boolean();
+    var limits = options;
+    limits.max_layout_rounds = if (mutating) 2 else 1;
+    limits.max_host_requests = 256;
+    var applied: u32 = 0;
+    var previous: ?scene.FrameRequest = null;
+    const budgets = [_]u32{ 1, 2, 3, 7, std.math.maxInt(u32) };
+    const done = for (0..4096) |_| {
+        const budget = budgets[drive.random().uintLessThan(usize, budgets.len)];
+        const request = try bounded.owner.sceneFrameStepWorkBudgeted(bounded.id, previous, limits, budget);
+        if (request.kind == c.OT_SCENE_FRAME_DONE) break request;
+        if (mutating and request.kind == c.OT_SCENE_FRAME_YIELD and applied < 8 and drive.random().boolean()) {
+            try models[0].mutate(bounded, mutations[0].random());
+            applied += 1;
+        }
+        previous = request;
+    } else return error.TestUnexpectedResult;
+    for (0..applied) |_| try models[1].mutate(fixtures[1], mutations[1].random());
+    const synchronous = try fixtures[1].drive(null, limits, std.math.maxInt(u32));
+    try fixtures[1].expectSameCells(bounded);
+    for (models[0].nodes[0..models[0].count], models[1].nodes[0..models[0].count], models[0].kinds[0..models[0].count]) |handle, twin, kind| {
+        if (kind == null) continue;
+        // Hidden and detached nodes keep stale prepared geometry; only painted members must agree.
+        const token = (try bounded.owner.raw().getRenderable(handle)).scene_node.?.token;
+        if (std.mem.indexOfScalar(u32, bounded.cli.nextHitGrid, token) == null) continue;
+        try testing.expectEqualDeep(try fixtures[1].owner.sceneGetPaintLayout(twin), try bounded.owner.sceneGetPaintLayout(handle));
+        try testing.expectEqualDeep(try fixtures[1].owner.sceneGetLayout(twin, false), try bounded.owner.sceneGetLayout(handle, false));
+    }
+    try bounded.owner.sceneFrameCancel(bounded.id, done.frame_id);
+    try fixtures[1].owner.sceneFrameCancel(fixtures[1].id, synchronous.frame_id);
+}
+
+test "Scene work budget paints the same frame as synchronous preparation after yielded mutations" {
+    for (0..96) |seed| {
+        expectBoundedMatchesSynchronous(seed) catch |err| {
+            std.debug.print("bounded preparation differs from synchronous preparation for seed {d}\n", .{seed});
+            return err;
+        };
+    }
+}
+
 test "Scene work budget changed transforms never mix saved parents with live children" {
     for ([_]bool{ false, true }) |change_during_preparation| {
         const f = try Fixture.init(testing.allocator, 12, 3, .{ .output = transport });
@@ -199,14 +248,9 @@ test "Scene work budget changed transforms never mix saved parents with live chi
         }
         try f.owner.sceneSetPaint(f.root, .{});
         try f.owner.sceneSetPaint(child, .{ .translateX = -2147483647, .background = .{ 2, 0, 0, 255 } });
-        const done = for (0..32) |_| {
-            const request = try f.owner.sceneFrameStepWorkBudgeted(f.id, previous, options, 1);
-            if (request.kind == 0) break request;
-            try testing.expectEqual(@as(u32, c.OT_SCENE_FRAME_YIELD), request.kind);
-            previous = request;
-        } else return error.TestUnexpectedResult;
+        const done = try f.drive(previous, options, 1);
         try testing.expectEqual(@as(f64, -2147483647), (try f.owner.sceneGetPaintLayout(child)).screenX);
-        try testing.expectEqual(ansi.rgbColor(0, 0, 0, 255), (try f.owner.raw().getSessionRenderer(f.id)).getNextBuffer().get(0, 0).?.bg);
+        try testing.expectEqual(ansi.rgbColor(0, 0, 0, 255), f.cli.getNextBuffer().get(0, 0).?.bg);
         try f.owner.sceneFrameCancel(f.id, done.frame_id);
     }
 }

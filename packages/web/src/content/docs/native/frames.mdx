@@ -116,6 +116,9 @@ Native code plays each node's phases around its own drawing, before its children
 An after hook on the box would therefore draw before the label, not after the whole subtree.
 Sibling `zIndex` determines local paint order. It is not a global sort of all nodes.
 Each phase starts with only the slot's clip and opacity. Stack commands apply above that entry.
+Two commands ignore the clip and opacity and act on the whole frame, like their `ot_buffer_*` forms.
+A `DRAW` with `OT_BUFFER_DRAW_CLEAR` overwrites every cell, including cells that earlier nodes painted, and removes their image placements.
+`COLOR_MATRIX` transforms every cell that it selects, inside or outside the clip.
 An `IMAGE` node with a backing buffer from `ot_scene_set_image` is the exception: its phases draw into that buffer, in buffer coordinates, before native code composes it.
 
 Commands read the resources they name when native code plays them, not when the host records them.
@@ -238,6 +241,9 @@ Updates and resize notifications run during preparation, before painting.
 Native code calculates Yoga layout and prepares node geometry, clipping, and paint order.
 If a preparation hook changes the scene, native code repeats the necessary preparation.
 An update hook runs at most once per node per attempt.
+Native code sorts a parent's children by `zIndex` once per frame, when preparation reaches that parent.
+With layout hooks or viewports, a later `zIndex` change or reparent in the same attempt, at a yield or in a hook acknowledgement, does not sort them again: the frame keeps the earlier order, and a node moved into that parent paints after its siblings.
+The next frame sorts again.
 
 The host sets positive `max_layout_rounds` and `max_host_requests` limits and keeps them fixed throughout the attempt.
 Exhausted preparation rounds fail before painting. A `RECORD` request counts as one host request.
@@ -250,6 +256,7 @@ Paint hooks run after preparation and before painting. The prepared membership s
 | Change any node's background         | Its drawing uses the new color, even for a node earlier in paint order |
 | Insert a node                        | It waits for the next prepared frame                                   |
 | Destroy a node, including itself     | Native code skips it with its recording and hit identity               |
+| Hide a node with `display: none`     | It still paints this frame; the next prepared frame drops it           |
 | Reparent or move a scheduled node    | It paints at its prepared position; the change waits a frame           |
 | Change clipping or inherited opacity | Prepared clipping and opacity stay fixed                               |
 

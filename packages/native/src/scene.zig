@@ -178,7 +178,6 @@ pub const BufferIdentity = struct {
 
 const Painted = struct {
     ticket: FrameRequest,
-    membership_epoch: u64,
     destination: BufferIdentity,
 };
 
@@ -195,7 +194,6 @@ const Attempt = struct {
     bounded_work: bool,
     // After a yielded mutation restarts preparation, the attempt never yields again.
     restarted: bool = false,
-    feedback_work_remaining: usize = 0,
     preparing: enum { none, traversal, views } = .none,
     prepare_depth: usize = 0,
     prepare_cursor: usize = 0,
@@ -372,7 +370,6 @@ pub const Scene = struct {
     attempt: ?Attempt = null,
     painted: ?Painted = null,
     cancelled_paint: bool = false,
-    membership_epoch: u64 = 0,
     last_frame_id: u64 = 0,
     layout_epoch: u64 = 0,
     solve_frame: u64 = 0,
@@ -757,8 +754,8 @@ pub const Scene = struct {
             if (reply.session.context_id != self.session.context_id) return error.WrongContext;
             if (!std.meta.eql(reply.session, self.session)) return error.WrongSession;
             const active = self.attempt orelse return error.StaleFrame;
-            const pending = active.pending orelse return error.StaleFrame;
-            if (!std.meta.eql(reply, pending)) return error.StaleFrame;
+            // Every step that leaves an attempt returns its pending request.
+            if (!std.meta.eql(reply, active.pending.?)) return error.StaleFrame;
             if (options.max_layout_rounds != active.options.max_layout_rounds or
                 options.max_host_requests != active.options.max_host_requests or
                 (reply.kind == api.OT_SCENE_FRAME_RECORD) != (recording != null)) return error.InvalidOptions;
@@ -768,6 +765,9 @@ pub const Scene = struct {
             self.attempt.?.pending = null;
         } else {
             if (self.attempt != null or self.painted != null) return error.FrameBusy;
+            // Every attempt ends in cancelFrame, so no attempt state survives into the next one.
+            std.debug.assert(self.feedback.items.len == 0 and self.prepared.items.len == 0 and self.preparation_stack.items.len == 0);
+            std.debug.assert(self.paint_members.items.len == 0 and self.paint_slots.items.len == 0 and self.segments.items.len == 0);
             if (options.max_layout_rounds == 0 or options.max_host_requests == 0 or recording != null) return error.InvalidOptions;
             const frame_id = std.math.add(u64, self.last_frame_id, 1) catch return error.RequestLimit;
             self.attempt = .{
@@ -794,16 +794,15 @@ pub const Scene = struct {
         } else null;
         if (recording) |bytes| return self.paintRecorded(owner, cli, root, bytes);
         const yielded = previous != null and previous.?.kind == api.OT_SCENE_FRAME_YIELD;
-        if (yielded and active.bounded_work and (self.preparation_dirty or try self.needsSolve(cli, root))) {
+        if (yielded and (self.preparation_dirty or try self.needsSolve(cli, root))) {
             // A mutation accepted at a yield restarts preparation once. The restarted work
             // runs without further yields, so steady mutations cannot starve the frame.
             active.bounded_work = false;
             active.remaining_work = std.math.maxInt(u32);
             active.restarted = true;
         }
-        const restart_feedback = yielded and active.preparing == .none and active.feedback_work_remaining == 0 and
-            (self.preparation_dirty or try self.needsSolve(cli, root));
-        if (active.rounds == 0 or active.preparing != .none or restart_feedback) {
+        // A restart during feedback finishes the queued feedback, then the dirty check below starts the round.
+        if (active.rounds == 0 or active.preparing != .none) {
             if (!try self.prepareRound(objects, cli, root, reusable_work)) return self.request(root.?.scene_node.?, api.OT_SCENE_FRAME_YIELD);
         }
         while (true) {
@@ -822,7 +821,6 @@ pub const Scene = struct {
             while (self.feedback.items.len != 0) {
                 if (active.remaining_work == 0) return self.request(root.?.scene_node.?, api.OT_SCENE_FRAME_YIELD);
                 active.remaining_work -= 1;
-                active.feedback_work_remaining -|= 1;
                 const operation = self.feedback.pop().?;
                 if (builtin.is_test and operation.kind == .filtered_refresh) self.test_filtered_refresh_steps += 1;
                 const value = objects.get(operation.node, .native_renderable, native.NativeRenderable) catch continue;
@@ -933,22 +931,27 @@ pub const Scene = struct {
                 self.work.clearRetainingCapacity();
                 try self.work.ensureTotalCapacity(self.allocator, self.count);
                 if (root) |value| _ = try self.prepare(objects, value, cli.width, cli.height, .paint, false);
+                // Paint layout reports where this frame paints, including transforms accepted after preparation.
+                for (self.work.items) |entry| {
+                    entry.node.scene_node.?.layout.screenX = entry.layout.screenX;
+                    entry.node.scene_node.?.layout.screenY = entry.layout.screenY;
+                }
             }
             if (self.hook_count != 0) {
                 for (self.work.items) |entry| {
-                    if (entry.visible and entry.node.scene_node.?.kind != api.OT_SCENE_ROOT and
+                    if (entry.node.scene_node.?.kind != api.OT_SCENE_ROOT and
                         entry.node.scene_node.?.hook_flags & scene_paint_hook_flags != 0) return self.requestRecord(cli, root.?);
                 }
             }
             try self.markFocus(objects);
-            const membership_epoch = std.math.add(u64, self.membership_epoch, 1) catch return error.RequestLimit;
-            try self.paintPrepared(cli, active.options);
-            return self.finishPaint(cli, membership_epoch, reusable_work);
+            try self.paintFrame(owner, cli, active.options, null, false);
+            return self.finishPaint(cli, reusable_work);
         }
     }
 
-    fn finishPaint(self: *Scene, cli: *renderer.CliRenderer, membership_epoch: u64, retain_work: bool) FrameRequest {
+    fn finishPaint(self: *Scene, cli: *renderer.CliRenderer, retain_work: bool) FrameRequest {
         const active = self.attempt.?;
+        std.debug.assert(self.painted == null);
         std.debug.assert(!retain_work or active.request_id == 0);
         const done: FrameRequest = .{
             .session = self.session,
@@ -969,10 +972,8 @@ pub const Scene = struct {
         self.cancelFrame();
         self.work.items = work;
         self.cancelled_paint = false;
-        self.membership_epoch = membership_epoch;
         self.painted = .{
             .ticket = done,
-            .membership_epoch = membership_epoch,
             .destination = BufferIdentity.init(cli.getNextBuffer()),
         };
         return done;
@@ -980,6 +981,9 @@ pub const Scene = struct {
 
     fn request(self: *Scene, node: *Node, kind: u32) !FrameRequest {
         const active = &self.attempt.?;
+        std.debug.assert(active.pending == null);
+        std.debug.assert(kind >= api.OT_SCENE_FRAME_UPDATE and kind <= api.OT_SCENE_FRAME_YIELD);
+        std.debug.assert(kind != api.OT_SCENE_FRAME_YIELD or !active.restarted);
         // YIELD and RECORD name the root without describing it.
         const whole_frame = kind == api.OT_SCENE_FRAME_YIELD or kind == api.OT_SCENE_FRAME_RECORD;
         if (kind != api.OT_SCENE_FRAME_YIELD) {
@@ -1053,7 +1057,8 @@ pub const Scene = struct {
     }
 
     pub fn measureLayout(self: *Scene, objects: *const handles.Table, cli: *renderer.CliRenderer, root_handle: handles.Handle) !void {
-        if (self.attempt != null or self.painted != null) return error.FrameBusy;
+        // Session.checkFrameIdle admits measurement only without an attempt or draft.
+        std.debug.assert(self.attempt == null and self.painted == null);
         const root = try objects.get(root_handle, .native_renderable, native.NativeRenderable);
         const node = root.scene_node orelse return error.WrongKind;
         if (node.owner != self) return error.WrongSession;
@@ -1140,9 +1145,6 @@ pub const Scene = struct {
             }
         }
         if (phases) {
-            // Seven node phases plus a repeated parent prepass per placement bound a stable round.
-            // Dirty retries get a new round at the next scheduling boundary, not inside host hooks.
-            active.feedback_work_remaining = std.math.mul(usize, self.work.items.len, 8) catch return error.ObjectLimit;
             // Prepass, filtered refresh, and selected updates never hold simultaneous batches for one parent.
             const capacity = std.math.mul(usize, self.work.items.len, 4) catch return error.ObjectLimit;
             try self.feedback.ensureTotalCapacity(self.allocator, capacity);
@@ -1199,33 +1201,6 @@ pub const Scene = struct {
         @import("utils.zig").fillU32(cli.nextHitGrid, 0);
     }
 
-    fn paintPrepared(self: *Scene, cli: *renderer.CliRenderer, options: FrameOptions) !void {
-        const target = cli.getNextBuffer();
-        errdefer {
-            target.clear(cli.backgroundColor, null);
-            @memset(cli.nextHitGrid, 0);
-        }
-        defer target.clearScissorRects();
-        defer target.clearOpacity();
-        try self.beginPaint(cli, options);
-        for (self.work.items) |entry| {
-            const node = entry.node.scene_node.?;
-            if (node.kind == api.OT_SCENE_ROOT or !entry.visible) continue;
-            if (node.kind != api.OT_SCENE_BOX or hasBoxPaint(&node.paint)) {
-                if (builtin.is_test) self.test_paint_setups += 1;
-                try target.pushScissorRect(entry.clip.x, entry.clip.y, entry.clip.width, entry.clip.height);
-                try target.pushOpacity(entry.opacity);
-                if (node.kind == api.OT_SCENE_IMAGE) try beginImagePaint(node.control.image, entry.layout);
-                try self.paintNode(cli, entry);
-                if (node.kind == api.OT_SCENE_IMAGE) try finishImagePaint(target, node.control.image, entry.layout);
-                if (node.kind == api.OT_SCENE_EDITOR) try self.paintEditorCursor(cli, node, entry.layout);
-                target.popOpacity();
-                target.popScissorRect();
-            }
-            addHit(cli, entry.layout, entry.clip, node.num, node.token, options);
-        }
-    }
-
     fn markFocus(self: *Scene, objects: *const handles.Table) !void {
         const frame_id = self.attempt.?.frame_id;
         var focused = if (self.focus) |handle| try objects.get(handle, .native_renderable, native.NativeRenderable) else null;
@@ -1239,22 +1214,24 @@ pub const Scene = struct {
 
     /// Snapshot prepared membership and return one request for every paint hook.
     fn requestRecord(self: *Scene, cli: *renderer.CliRenderer, root: *native.NativeRenderable) !FrameRequest {
+        std.debug.assert(self.paint_members.items.len == 0 and self.paint_slots.items.len == 0);
         var member_count: usize = 0;
         var slot_count: usize = 0;
         for (self.work.items) |entry| {
             const node = entry.node.scene_node.?;
-            if (!entry.visible or node.kind == api.OT_SCENE_ROOT) continue;
+            // Paint-mode preparation never appends hidden members.
+            std.debug.assert(entry.visible);
+            if (node.kind == api.OT_SCENE_ROOT) continue;
             member_count += 1;
             slot_count += @intFromBool(node.hook_flags & scene_paint_hook_flags != 0);
         }
+        std.debug.assert(slot_count != 0);
         try self.paint_members.ensureTotalCapacityPrecise(self.allocator, member_count);
         try self.paint_slots.ensureTotalCapacityPrecise(self.allocator, slot_count);
         try self.segments.ensureTotalCapacityPrecise(self.allocator, slot_count);
         for (self.work.items) |entry| {
             const node = entry.node.scene_node.?;
-            node.layout.screenX = entry.layout.screenX;
-            node.layout.screenY = entry.layout.screenY;
-            if (!entry.visible or node.kind == api.OT_SCENE_ROOT) continue;
+            if (node.kind == api.OT_SCENE_ROOT) continue;
             const hooks = node.hook_flags & scene_paint_hook_flags;
             var slot: u32 = no_slot;
             if (hooks != 0) {
@@ -1286,14 +1263,24 @@ pub const Scene = struct {
 
     /// Paint the RECORD snapshot in one pass, playing each slot's recording in place.
     fn paintRecorded(self: *Scene, owner: *Context, cli: *renderer.CliRenderer, root: ?*native.NativeRenderable, recording: []const u8) !FrameRequest {
-        const objects = &owner.objects;
-        const options = self.attempt.?.options;
         self.segments.items.len = self.paint_slots.items.len;
         try scene_record.index(recording, self.paint_slots.items, self.segments.items);
-        try self.markFocus(objects);
+        try self.markFocus(&owner.objects);
         // Hooks may change text or views after preparation; refresh them before drawing.
         const refresh_views = self.preparation_dirty or try self.needsSolve(cli, root);
-        const membership_epoch = std.math.add(u64, self.membership_epoch, 1) catch return error.RequestLimit;
+        try self.paintFrame(owner, cli, self.attempt.?.options, recording, refresh_views);
+        return self.finishPaint(cli, false);
+    }
+
+    const Phases = struct {
+        recording: []const u8 = &.{},
+        segments: scene_record.Segments = .{ .{}, .{}, .{} },
+        hooks: u32 = 0,
+    };
+
+    /// Paint prepared membership in one pass: the RECORD snapshot with its recording, or
+    /// the visible paint list with native bodies only.
+    fn paintFrame(self: *Scene, owner: *Context, cli: *renderer.CliRenderer, options: FrameOptions, recording: ?[]const u8, refresh_views: bool) !void {
         const target = cli.getNextBuffer();
         errdefer {
             target.clear(cli.backgroundColor, null);
@@ -1302,55 +1289,68 @@ pub const Scene = struct {
         defer target.clearScissorRects();
         defer target.clearOpacity();
         try self.beginPaint(cli, options);
+        const bytes = recording orelse {
+            for (self.work.items) |entry| {
+                if (entry.node.scene_node.?.kind == api.OT_SCENE_ROOT or !entry.visible) continue;
+                try self.paintMember(owner, cli, entry, options, .{});
+            }
+            return;
+        };
         for (self.paint_members.items) |member| {
-            const value = objects.get(member.node, .native_renderable, native.NativeRenderable) catch continue;
-            const node = value.scene_node.?;
-            std.debug.assert(node.owner == self);
+            const value = owner.objects.get(member.node, .native_renderable, native.NativeRenderable) catch continue;
+            std.debug.assert(value.scene_node.?.owner == self);
             try validateLayout(member.layout);
             const entry: Work = .{ .node = value, .layout = member.layout, .clip = member.clip, .opacity = member.opacity, .visible = true, .filtered = member.filtered or refresh_views };
-            const segments: scene_record.Segments = if (member.slot != no_slot) self.segments.items[member.slot] else .{ .{}, .{}, .{} };
-            const hooks = if (member.slot != no_slot) self.paint_slots.items[member.slot].hooks else 0;
-            if (hooks == 0 and node.kind == api.OT_SCENE_BOX and !hasBoxPaint(&node.paint)) {
-                addHit(cli, member.layout, member.clip, node.num, node.token, options);
-                continue;
-            }
+            const phases: Phases = if (member.slot == no_slot) .{} else .{
+                .recording = bytes,
+                .segments = self.segments.items[member.slot],
+                .hooks = self.paint_slots.items[member.slot].hooks,
+            };
+            try self.paintMember(owner, cli, entry, options, phases);
+        }
+    }
+
+    fn paintMember(self: *Scene, owner: *Context, cli: *renderer.CliRenderer, entry: Work, options: FrameOptions, phases: Phases) !void {
+        const node = entry.node.scene_node.?;
+        if (phases.hooks != 0 or node.kind != api.OT_SCENE_BOX or hasBoxPaint(&node.paint)) {
             if (builtin.is_test) self.test_paint_setups += 1;
+            const target = cli.getNextBuffer();
             // A natively composed image buffer receives its node's hook drawing, like its body.
             const surface = if (node.kind == api.OT_SCENE_IMAGE) node.control.image.buffer else null;
-            try enterMember(target, member);
-            if (node.kind == api.OT_SCENE_IMAGE) try beginImagePaint(node.control.image, member.layout);
-            try playPhase(owner, target, surface, member, recording, segments[0]);
-            if (hooks & api.OT_SCENE_HOOK_RENDER_SELF != 0) {
-                try playPhase(owner, target, surface, member, recording, segments[1]);
+            try enterMember(target, entry);
+            if (node.kind == api.OT_SCENE_IMAGE) try beginImagePaint(node.control.image, entry.layout);
+            try playPhase(owner, target, surface, entry, phases, api.OT_SCENE_RECORD_PHASE_BEFORE);
+            if (phases.hooks & api.OT_SCENE_HOOK_RENDER_SELF != 0) {
+                try playPhase(owner, target, surface, entry, phases, api.OT_SCENE_RECORD_PHASE_SELF);
             } else try self.paintNode(cli, entry);
-            if (node.kind == api.OT_SCENE_EDITOR) try self.paintEditorCursor(cli, node, member.layout);
-            try playPhase(owner, target, surface, member, recording, segments[2]);
-            if (node.kind == api.OT_SCENE_IMAGE) try finishImagePaint(target, node.control.image, member.layout);
-            addHit(cli, member.layout, member.clip, node.num, node.token, options);
+            if (node.kind == api.OT_SCENE_EDITOR) try self.paintEditorCursor(cli, node, entry.layout);
+            try playPhase(owner, target, surface, entry, phases, api.OT_SCENE_RECORD_PHASE_AFTER);
+            if (node.kind == api.OT_SCENE_IMAGE) try finishImagePaint(target, node.control.image, entry.layout);
         }
-        return self.finishPaint(cli, membership_epoch, false);
+        addHit(cli, entry.layout, entry.clip, node.num, node.token, options);
     }
 
     /// Each phase starts with only the member's inherited clip and opacity.
-    fn enterMember(target: *buffer.OptimizedBuffer, member: PaintMember) !void {
+    fn enterMember(target: *buffer.OptimizedBuffer, entry: Work) !void {
         target.clearScissorRects();
         target.clearOpacity();
-        try target.pushScissorRect(member.clip.x, member.clip.y, member.clip.width, member.clip.height);
-        try target.pushOpacity(member.opacity);
+        try target.pushScissorRect(entry.clip.x, entry.clip.y, entry.clip.width, entry.clip.height);
+        try target.pushOpacity(entry.opacity);
     }
 
     /// Play one phase into the frame, or into the node's own buffer with empty stacks.
-    fn playPhase(owner: *Context, target: *buffer.OptimizedBuffer, surface: ?*buffer.OptimizedBuffer, member: PaintMember, recording: []const u8, segment: scene_record.Segment) !void {
+    fn playPhase(owner: *Context, target: *buffer.OptimizedBuffer, surface: ?*buffer.OptimizedBuffer, entry: Work, phases: Phases, phase: u32) !void {
+        const segment = phases.segments[phase];
         if (segment.start == segment.end) return;
         const local = surface orelse {
-            try scene_record.play(owner, target, 1, recording, segment);
-            return enterMember(target, member);
+            try scene_record.play(owner, target, 1, phases.recording, segment);
+            return enterMember(target, entry);
         };
         defer local.clearScissorRects();
         defer local.clearOpacity();
         local.clearScissorRects();
         local.clearOpacity();
-        try scene_record.play(owner, local, 0, recording, segment);
+        try scene_record.play(owner, local, 0, phases.recording, segment);
     }
 
     fn paintNode(self: *Scene, cli: *renderer.CliRenderer, entry: Work) !void {
@@ -1378,9 +1378,7 @@ pub const Scene = struct {
         } else if (node.kind == api.OT_SCENE_IMAGE) {
             try paintImage(cli, node.control.image, entry.layout);
         } else if (entry.node.surface) |source| {
-            var display: u32 = 0;
-            try yoga.check(yoga.yogaNodeStyleGetEnumChecked(entry.node.yoga_node, api.OT_STYLE_ENUM_DISPLAY, &display));
-            if (display != api.OT_DISPLAY_NONE) try Context.drawContextBuffer(target, source, x, y, .{});
+            try Context.drawContextBuffer(target, source, x, y, .{});
         } else {
             try paintControl(target, node.kind, node.control, node.paint, entry.layout, entry.clip, node.focus_frame == self.attempt.?.frame_id);
         }
@@ -1388,21 +1386,17 @@ pub const Scene = struct {
 
     fn beginImagePaint(state: ImageState, layout: Layout) !void {
         const target = state.buffer orelse return;
-        const width: u32 = @intFromFloat(@max(1, layout.width));
-        const height: u32 = @intFromFloat(@max(1, layout.height));
-        try target.resize(width, height);
+        try target.resize(@intFromFloat(layout.width), @intFromFloat(layout.height));
         target.clear(ansi.rgbColor(0, 0, 0, 0), null);
     }
 
     fn finishImagePaint(target: *buffer.OptimizedBuffer, state: ImageState, layout: Layout) !void {
         const source = state.buffer orelse return;
-        if (layout.width == 0 or layout.height == 0) return;
         try Context.drawContextBuffer(target, source, @intFromFloat(layout.screenX), @intFromFloat(layout.screenY), .{});
     }
 
     fn paintImage(cli: *renderer.CliRenderer, state: ImageState, layout: Layout) !void {
         const source = state.source orelse return;
-        if (layout.width <= 0 or layout.height <= 0) return;
         const resolution = cli.image_resolution;
         const has_resolution = resolution.pixel_width != 0 and resolution.pixel_height != 0 and
             resolution.terminal_width != 0 and resolution.terminal_height != 0;
@@ -1587,6 +1581,8 @@ pub const Scene = struct {
                     std.debug.assert(node.prepared_frame == self.attempt.?.frame_id);
                     std.debug.assert(node.prepared_round == self.attempt.?.rounds);
                 }
+                // Image paint and hit geometry rely on at least one cell per dimension.
+                std.debug.assert(layout.width >= 1 and layout.height >= 1);
                 layout.screenX = frame.parent.screenX + @as(f64, layout.left) + node.paint.translateX;
                 layout.screenY = frame.parent.screenY + @as(f64, layout.top) + node.paint.translateY;
                 try validateLayout(layout);

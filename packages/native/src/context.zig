@@ -87,7 +87,6 @@ const scene_style_enum_maxima = blk: {
 
 const FrameBufferLease = struct {
     frame: scene.FrameRequest,
-    membership_epoch: u64,
     which: RendererBuffer,
     destination: scene.BufferIdentity,
     lease: buf.BufferLease,
@@ -1875,8 +1874,7 @@ pub const Context = struct {
                 const owned = value.scene orelse return error.StaleLease;
                 const painted = owned.checkPainted(access.frame) catch return error.StaleLease;
                 const attached = value.renderer orelse return error.StaleLease;
-                if (painted.membership_epoch != access.membership_epoch or
-                    !painted.destination.matches(attached.getNextBuffer())) return error.StaleLease;
+                if (!painted.destination.matches(attached.getNextBuffer())) return error.StaleLease;
                 const target = switch (access.which) {
                     .current => attached.getCurrentBuffer(),
                     .next => attached.getNextBuffer(),
@@ -2890,7 +2888,6 @@ pub const Context = struct {
         };
         access.* = .{
             .frame = frame,
-            .membership_epoch = painted.membership_epoch,
             .which = which,
             .destination = scene.BufferIdentity.init(target),
             .lease = try buf.BufferLease.acquireChecked(target, &self.lease_count, self.lease_count_max, &self.lease_bytes, &self.lease_bytes_max),
