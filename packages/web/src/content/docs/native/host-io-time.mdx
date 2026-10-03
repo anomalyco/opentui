@@ -80,7 +80,7 @@ Files use exclusive creation, mode `0600`, and the renderer's explicit `TMPDIR` 
 Without that hint, supported systems use `/tmp`.
 
 Preparation and output failures close open files and attempt to unlink leases.
-Matching acknowledgements, cancellation, suspension, output failure, and renderer teardown also attempt release.
+Matching acknowledgements, frames skipped for output pressure, cancellation, suspension, output failure, and renderer teardown also attempt release.
 Expiry cancels file transport. It never claims that the terminal consumed the file.
 
 A failed unlink keeps the path and byte charge while the renderer lives.

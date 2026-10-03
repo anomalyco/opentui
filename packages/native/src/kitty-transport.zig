@@ -18,6 +18,7 @@ const Lease = struct {
     path_len: usize = 0,
     size: usize = 0,
     deadline_ns: ?u64 = null,
+    unpublished: bool = false,
 
     fn release(self: *Lease, io: std.Io) void {
         if (self.path_len == 0) return;
@@ -58,6 +59,14 @@ pub const Transport = struct {
         self.retry_images = self.retry_images or self.file_state == .ready;
         for (&self.leases) |*lease| lease.release(self.io);
         if (self.mode == .file or self.file_state != .disabled) self.file_state = if (self.pendingCount() == 0) reason else .io_error;
+    }
+
+    /// Release new leases of a skipped frame; a published frame keeps them until ACK or expiry.
+    pub fn finishFrame(self: *Transport, published: bool) void {
+        for (&self.leases) |*lease| {
+            if (lease.unpublished and !published) lease.release(self.io);
+            lease.unpublished = false;
+        }
     }
 
     /// Arm new leases without releasing files referenced by an encoded frame.
@@ -205,10 +214,8 @@ pub const Transport = struct {
                 if (self.fallback == .preparation) self.cancel(.io_error);
                 break :file;
             };
-            writeReference(writer, lease, image, id, 't') catch |err| {
-                self.cancel(.io_error);
-                return err;
-            };
+            lease.unpublished = true;
+            try writeReference(writer, lease, image, id, 't');
             self.effective = .file;
             return;
         }

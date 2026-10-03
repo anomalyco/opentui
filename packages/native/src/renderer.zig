@@ -1015,6 +1015,7 @@ pub const CliRenderer = struct {
     }
 
     fn finishSkippedFrame(self: *CliRenderer) RenderStatus {
+        self.kittyTransport.finishFrame(false);
         self.pendingImages.clearRetainingCapacity();
         self.clearSkippedFrameState();
         return .skipped;
@@ -2375,6 +2376,7 @@ pub const CliRenderer = struct {
     }
 
     fn commitPendingImageState(self: *CliRenderer) void {
+        self.kittyTransport.finishFrame(true);
         self.imageScreenInvalidated = false;
         if (self.imageRenderFailed) {
             self.pendingImages.clearRetainingCapacity();

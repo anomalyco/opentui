@@ -177,6 +177,28 @@ test "raw Kitty expiry starts at native file creation" {
     try std.testing.expectEqual(@as(u32, 0), f.cli.kittyTransport.pendingCount());
 }
 
+test "Session Kitty files of a frame skipped for output pressure are released and the retry uploads a file" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+    const f = try @import("session-terminal_test.zig").Fixture.initWithOptions(std.testing.allocator, std.testing.io, 4, 1, .{ .chunk_size = 64, .chunk_count = 8, .span_capacity = 8 }, .{});
+    defer f.deinit();
+    f.cli.terminal.graphics_enabled = true;
+    f.cli.terminal.caps.kitty_graphics = true;
+    f.cli.kittyTransport.mode = .file;
+    f.cli.kittyTransport.file_state = .ready;
+    const value = try image.createFromRgba(std.testing.allocator, &.{ 1, 2, 3, 255 }, 1, 1, 4);
+    defer value.deinit();
+    try f.owner.writeSession(f.id, &([_]u8{'x'} ** 448));
+    var bytes: [512]u8 = undefined;
+    for ([_]@import("../session.zig").RenderStatus{ .skipped, .pending }) |status| {
+        try std.testing.expect(try f.cli.getNextBuffer().drawImage(value, 1, 0, 0, 1, 1, 0, 0, 0, 0, 1, 1, .kitty));
+        try std.testing.expectEqual(status, try f.owner.renderSession(f.id, true));
+        try std.testing.expectEqual(@intFromBool(status == .pending), f.cli.kittyTransport.pendingCount());
+        try std.testing.expectEqual(.ready, f.cli.kittyTransport.file_state);
+        _ = try f.drain(&bytes);
+    }
+    try std.testing.expectEqual(.file, f.cli.kittyTransport.effective);
+}
+
 const FileReferenceOutput = struct {
     references: u32 = 0,
     missing: u32 = 0,
@@ -490,6 +512,15 @@ test "kitty file output failures do not leak resources" {
     defer f.deinit();
     var failed: std.Io.Writer = .failing;
     try std.testing.expectError(error.WriteFailed, f.transport.startProbe(&failed, 7, f.directory[0..f.directory_len]));
+    try std.testing.expectEqual(@as(u32, 0), f.transport.pendingCount());
+    try f.expectNoFiles();
+    // A frame write error leaves the medium to the frame outcome; a skipped frame releases its files.
+    f.transport.file_state = .ready;
+    const value = try image.createFromRgba(std.testing.allocator, &.{ 1, 2, 3, 4 }, 1, 1, 4);
+    defer value.deinit();
+    try std.testing.expectError(error.WriteFailed, f.transport.transmit(std.testing.allocator, &failed, value, 19, false, f.directory[0..f.directory_len]));
+    try std.testing.expectEqual(.ready, f.transport.file_state);
+    f.transport.finishFrame(false);
     try std.testing.expectEqual(@as(u32, 0), f.transport.pendingCount());
     try f.expectNoFiles();
 }
