@@ -1,5 +1,3 @@
-import type { EventEmitter } from "node:events"
-import { Duplex } from "node:stream"
 import { expect, spyOn, test } from "bun:test"
 import { CliRenderEvents, TextRenderable } from "@opentui/core"
 import type { ServerChannel } from "ssh2"
@@ -18,61 +16,16 @@ import { sleep, TestChannel, waitFor } from "../support.js"
  * drive the real bridge deterministically.
  */
 
-/**
- * Writable channel stub with controllable write acknowledgements and disconnect counts.
- */
-function fakeChannel(): EventEmitter & {
-  exitCalls: number
-  closeCalls: number
-  pauseCalls: number
-  resumeCalls: number
-  writes: Buffer[]
-} {
-  const ch = Object.assign(
-    new Duplex({
-      read() {},
-    }),
-    {
-      exitCalls: 0,
-      closeCalls: 0,
-      pauseCalls: 0,
-      resumeCalls: 0,
-      writes: [] as Buffer[],
-    },
-  )
-  return Object.assign(ch, {
-    _write: (data: Buffer, _encoding: BufferEncoding, callback: () => void) => {
-      ch.writes.push(Buffer.from(data))
-      callback()
-    },
-    pause: () => {
-      ch.pauseCalls++
-      return ch
-    },
-    resume: () => {
-      ch.resumeCalls++
-      return ch
-    },
-    exit: () => {
-      ch.exitCalls++
-      return true
-    },
-    close: () => {
-      ch.closeCalls++
-    },
-  })
-}
-
 function testBridge(
   options: {
-    channel?: ReturnType<typeof fakeChannel>
+    channel?: TestChannel
     pty?: Parameters<typeof createSessionBridge>[1]["pty"]
     username?: string
     safe?: ReturnType<typeof createSafeInvoke>
     createRenderer?: RendererFactory
   } = {},
 ) {
-  const channel = options.channel ?? fakeChannel()
+  const channel = options.channel ?? new TestChannel()
   const bridge = createSessionBridge(channel as unknown as ServerChannel, {
     pty: options.pty ?? DEFAULT_PTY,
     identity: { method: "none", username: options.username ?? "t" },
@@ -105,14 +58,14 @@ test("destroy is idempotent — a second call tells the peer only once", async (
   await flush()
 
   expect(closes).toBe(1)
-  expect(channel.exitCalls).toBe(1) // peer disconnected once, not twice
+  expect(channel.exits).toEqual([0]) // peer disconnected once, not twice
   expect(channel.closeCalls).toBe(1)
 })
 
 test("destroy is per-session — closing one bridge leaves another untouched", async () => {
   const safe = createSafeInvoke(() => {}) // one server-wide sink, shared by both
-  const chA = fakeChannel()
-  const chB = fakeChannel()
+  const chA = new TestChannel()
+  const chB = new TestChannel()
   const { bridge: a } = testBridge({ channel: chA, username: "a", safe })
   const { bridge: b } = testBridge({ channel: chB, username: "b", safe })
   let aClosed = false
@@ -130,13 +83,13 @@ test("destroy is per-session — closing one bridge leaves another untouched", a
   expect(aClosed).toBe(true)
   expect(b.closed).toBe(false) // the other session is untouched
   expect(bClosed).toBe(false)
-  expect(chB.exitCalls).toBe(0)
+  expect(chB.exits).toEqual([])
   expect(chB.closeCalls).toBe(0)
   await Promise.all([a.destroy(), b.destroy()])
 })
 
 test("stdin applies backpressure before renderer creation and resumes when read", async () => {
-  const channel = fakeChannel()
+  const channel = new TestChannel()
   let stdin: NodeJS.ReadStream | undefined
   const { bridge } = testBridge({
     channel,
@@ -172,20 +125,7 @@ test("stdin applies backpressure before renderer creation and resumes when read"
 })
 
 test("renderer shutdown output waits for acknowledgement before the SSH channel closes", async () => {
-  const channel = fakeChannel()
-  const order: string[] = []
-  let complete: (() => void) | undefined
-  Object.assign(channel, {
-    _write(data: Buffer, _encoding: BufferEncoding, callback: () => void) {
-      channel.writes.push(Buffer.from(data))
-      order.push(`write:${data.toString()}`)
-      complete = callback
-    },
-    close() {
-      channel.closeCalls++
-      order.push("close")
-    },
-  })
+  const channel = new TestChannel()
   const { bridge } = testBridge({
     channel,
     createRenderer: (async (options: Parameters<RendererFactory>[0]) => {
@@ -199,28 +139,22 @@ test("renderer shutdown output waits for acknowledgement before the SSH channel 
 
   const entered = bridge.enterApp(() => {})
   await flush()
+  channel.hold()
   const closing = bridge.destroy()
-  await waitFor(() => complete !== undefined)
+  await waitFor(() => channel.pendingWrite)
 
-  expect(order).toEqual(["write:SHUTDOWN"])
-  expect(channel.closeCalls).toBe(0)
-
+  expect(channel.text()).toBe("SHUTDOWN")
   channel.emit("drain")
   await flush()
   expect(channel.closeCalls).toBe(0)
-  complete?.()
+  channel.release()
   await closing
   await entered
-  expect(order).toEqual(["write:SHUTDOWN", "close"])
+  expect([channel.exits, channel.closeCalls]).toEqual([[0], 1])
 })
 
 test("session teardown force-closes a client that never drains", async () => {
-  const channel = fakeChannel()
-  Object.assign(channel, {
-    _write(data: Buffer) {
-      channel.writes.push(Buffer.from(data))
-    },
-  })
+  const channel = new TestChannel()
   const { bridge } = testBridge({
     channel,
     createRenderer: (async (options: Parameters<RendererFactory>[0]) => {
@@ -234,20 +168,22 @@ test("session teardown force-closes a client that never drains", async () => {
 
   const entered = bridge.enterApp(() => {})
   await flush()
+  channel.hold()
   const closed = await Promise.race([
     bridge.destroy().then(() => true),
     new Promise<false>((resolve) => setTimeout(() => resolve(false), 1_500)),
   ])
 
   expect(closed).toBe(true)
-  expect(channel.closeCalls).toBe(1)
+  // The close deadline cancelled restoration, so the client learns that it failed.
+  expect([channel.exits, channel.closeCalls]).toEqual([[1], 1])
   await entered
 })
 
 test("a channel error tears down without waiting for close", async () => {
   let rendererDestroyCalls = 0
   let closeCalls = 0
-  const channel = fakeChannel()
+  const channel = new TestChannel()
   const reported: unknown[] = []
   const error = new Error("transport failed")
   const { bridge } = testBridge({
@@ -270,7 +206,7 @@ test("a channel error tears down without waiting for close", async () => {
   expect(bridge.closed).toBe(true)
   expect(rendererDestroyCalls).toBe(1)
   expect(closeCalls).toBe(1)
-  expect(channel.exitCalls).toBe(0)
+  expect(channel.exits).toEqual([])
   expect(channel.closeCalls).toBe(0)
   expect(reported).toEqual([error])
 })
@@ -362,7 +298,7 @@ function controllableRenderer() {
 test("a disconnect during renderer setup is teardown, not a reported error", async () => {
   const errors: unknown[] = []
   let handlerRan = false
-  const channel = fakeChannel()
+  const channel = new TestChannel()
   const safe = createSafeInvoke((e) => errors.push(e))
   const rc = controllableRenderer()
   const { bridge } = testBridge({ channel, safe, createRenderer: rc.factory })
@@ -523,6 +459,41 @@ test("pty dimensions are clamped before renderer creation and resize", async () 
   expect(bridge.session.cols).toBe(MAX_PTY.cols)
   expect(bridge.session.rows).toBe(MAX_PTY.rows)
   expect(resized).toEqual([MAX_PTY.cols, MAX_PTY.rows])
+})
+
+test("before the renderer exists, resize sets its creation size and an empty term uses the default", async () => {
+  let created: { width?: number; height?: number } | undefined
+  const { bridge } = testBridge({
+    pty: { term: "", cols: 80, rows: 24, hasPty: true },
+    createRenderer: ((options: Parameters<RendererFactory>[0]) => {
+      created = { width: options!.width, height: options!.height }
+      return rendererStub({ width: options!.width, height: options!.height })
+    }) as unknown as RendererFactory,
+  })
+  expect(bridge.session.term).toBe(DEFAULT_PTY.term)
+  bridge.resize(100, 30)
+  expect([bridge.session.cols, bridge.session.rows]).toEqual([100, 30])
+  const entered = bridge.enterApp(() => {})
+  await flush()
+  expect(created).toEqual({ width: 100, height: 30 })
+  bridge.destroy()
+  await entered
+})
+
+test("entering the app after close creates no renderer and runs no handler", async () => {
+  let created = false
+  let handled = false
+  const { bridge } = testBridge({
+    createRenderer: (() => {
+      created = true
+      return rendererStub()
+    }) as unknown as RendererFactory,
+  })
+  void bridge.destroy()
+  await bridge.enterApp(() => {
+    handled = true
+  })
+  expect([created, handled]).toEqual([false, false])
 })
 
 test("fuzz: arbitrary PTY dimensions remain finite, positive, and bounded", async () => {
