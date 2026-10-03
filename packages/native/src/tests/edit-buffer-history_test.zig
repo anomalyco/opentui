@@ -184,57 +184,6 @@ test "EditBuffer - owned replacement registration rejection frees the copy" {
     }
 }
 
-test "EditBuffer - basic undo/redo with insertText" {
-    var pools = TestPools.init(std.testing.allocator);
-    defer pools.deinit();
-
-    var eb = try EditBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth, null);
-    defer eb.deinit();
-
-    try eb.insertText("Hello");
-
-    try eb.insertText(" World");
-    var out_buffer: [100]u8 = undefined;
-    var written = eb.getText(&out_buffer);
-    try std.testing.expectEqualStrings("Hello World", out_buffer[0..written]);
-
-    const meta = try eb.undo();
-    try std.testing.expectEqualStrings("cursor:0:5:5", meta);
-    written = eb.getText(&out_buffer);
-    try std.testing.expectEqualStrings("Hello", out_buffer[0..written]);
-
-    const meta2 = try eb.redo();
-    try std.testing.expectEqualStrings("cursor:0:11:11", meta2);
-    written = eb.getText(&out_buffer);
-    try std.testing.expectEqualStrings("Hello World", out_buffer[0..written]);
-}
-
-test "EditBuffer - undo and redo restore cursor for mid-line edits" {
-    var pools = TestPools.init(std.testing.allocator);
-    defer pools.deinit();
-
-    var eb = try EditBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth, null);
-    defer eb.deinit();
-
-    try eb.setText("hello world");
-    try eb.setCursor(0, 8);
-
-    try eb.insertText("X");
-    var cursor = eb.getPrimaryCursor();
-    try std.testing.expectEqual(@as(u32, 0), cursor.row);
-    try std.testing.expectEqual(@as(u32, 9), cursor.col);
-
-    _ = try eb.undo();
-    cursor = eb.getPrimaryCursor();
-    try std.testing.expectEqual(@as(u32, 0), cursor.row);
-    try std.testing.expectEqual(@as(u32, 8), cursor.col);
-
-    _ = try eb.redo();
-    cursor = eb.getPrimaryCursor();
-    try std.testing.expectEqual(@as(u32, 0), cursor.row);
-    try std.testing.expectEqual(@as(u32, 9), cursor.col);
-}
-
 test "EditBuffer - unchanged normalized tab width preserves cursor" {
     var pools = TestPools.init(std.testing.allocator);
     defer pools.deinit();
@@ -320,222 +269,119 @@ test "EditBuffer - tab width changes preserve live and undo cursor text boundari
     try std.testing.expectEqualStrings("a\tby", out_buffer[0..written]);
 }
 
-test "EditBuffer - canUndo/canRedo" {
+test "EditBuffer - random edit sequences match an undo history model" {
     var pools = TestPools.init(std.testing.allocator);
     defer pools.deinit();
-
-    var eb = try EditBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth, null);
-    defer eb.deinit();
-
-    try std.testing.expect(!eb.canUndo());
-    try std.testing.expect(!eb.canRedo());
-
-    try eb.insertText("Test");
-
-    try std.testing.expect(eb.canUndo());
-    try std.testing.expect(!eb.canRedo());
-
-    _ = try eb.undo();
-
-    try std.testing.expect(!eb.canUndo());
-    try std.testing.expect(eb.canRedo());
-
-    _ = try eb.redo();
-
-    try std.testing.expect(eb.canUndo());
-    try std.testing.expect(!eb.canRedo());
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var prng = std.Random.DefaultPrng.init(0x0505);
+    const random = prng.random();
+    const pieces = [_][]const u8{ "a", "Hello", " ", "\t", "\n", "x\ny", "\u{754c}", "e\u{301}", "\u{1f44d}\u{1f3fd}", "\u{1f1fa}\u{1f1f8}" };
+    // Mirrors the rope: undo restores `undo.pop()` and pushes `current` (or the live state) for redo.
+    const Entry = struct { text: []const u8, cursor: edit_buffer.Cursor };
+    for ([_]@import("../utf8.zig").WidthMethod{ .unicode, .wcwidth }) |method| {
+        const eb = try EditBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, method, null);
+        defer eb.deinit();
+        var undo: std.ArrayListUnmanaged(Entry) = .empty;
+        var redo: std.ArrayListUnmanaged(Entry) = .empty;
+        var current: ?Entry = null;
+        var text: []const u8 = "";
+        var scratch: [4096]u8 = undefined;
+        for (0..400) |_| {
+            const before: Entry = .{ .text = text, .cursor = eb.getPrimaryCursor() };
+            const piece = pieces[random.uintLessThan(usize, pieces.len)];
+            const Change = enum { none, if_changed, stored, reset, restored };
+            var change: Change = .if_changed;
+            switch (random.uintLessThan(u8, 13)) {
+                0, 1, 2 => {
+                    const prefix = scratch[0..try eb.getTextRange(0, before.cursor.offset, &scratch)];
+                    try std.testing.expectEqualStrings(prefix, text[0..prefix.len]);
+                    text = try std.mem.concat(allocator, u8, &.{ prefix, piece, text[prefix.len..] });
+                    try eb.insertText(piece);
+                    change = .stored;
+                },
+                3 => try eb.backspace(),
+                4 => try eb.deleteForward(),
+                5 => try eb.deleteLine(),
+                6 => try eb.deleteRange(.{ .row = before.cursor.row, .col = 0 }, before.cursor),
+                7 => {
+                    if (random.boolean()) eb.moveLeft() else eb.moveRight();
+                    change = .none;
+                },
+                8 => {
+                    try eb.gotoLine(random.uintLessThan(u32, eb.tb.lineCount() + 1));
+                    change = .none;
+                },
+                9 => {
+                    change = .restored;
+                    const entry = undo.pop() orelse {
+                        try std.testing.expectError(error.Stop, eb.undo());
+                        continue;
+                    };
+                    try redo.append(allocator, current orelse before);
+                    current = entry;
+                    try expectMeta(entry.cursor, try eb.undo());
+                },
+                10 => {
+                    change = .restored;
+                    const entry = redo.pop() orelse {
+                        try std.testing.expectError(error.Stop, eb.redo());
+                        continue;
+                    };
+                    try undo.append(allocator, current.?);
+                    current = entry;
+                    try expectMeta(entry.cursor, try eb.redo());
+                },
+                11 => {
+                    try eb.replaceText(piece);
+                    text = piece;
+                    change = .stored;
+                },
+                12 => {
+                    if (random.boolean()) try eb.setText(piece) else eb.clearHistory();
+                    text = scratch[0..eb.getText(&scratch)];
+                    change = .reset;
+                },
+                else => unreachable,
+            }
+            const actual = scratch[0..eb.getText(&scratch)];
+            switch (change) {
+                .none => {},
+                .if_changed => if (!std.mem.eql(u8, text, actual)) {
+                    text = try allocator.dupe(u8, actual);
+                    change = .stored;
+                },
+                .stored => {},
+                .reset => {
+                    text = try allocator.dupe(u8, text);
+                    undo.clearRetainingCapacity();
+                    redo.clearRetainingCapacity();
+                    current = null;
+                },
+                .restored => {
+                    text = current.?.text;
+                    try std.testing.expectEqualDeep(current.?.cursor, eb.getPrimaryCursor());
+                },
+            }
+            if (change == .stored) {
+                try undo.append(allocator, before);
+                redo.clearRetainingCapacity();
+                current = null;
+            }
+            try std.testing.expectEqualStrings(text, actual);
+            try std.testing.expectEqual(undo.items.len > 0, eb.canUndo());
+            try std.testing.expectEqual(redo.items.len > 0, eb.canRedo());
+            try std.testing.expectEqual(std.mem.count(u8, text, "\n") + 1, eb.tb.lineCount());
+            const cursor = eb.getPrimaryCursor();
+            try std.testing.expect(cursor.col <= eb.tb.lineWidthAt(cursor.row));
+            try std.testing.expectEqual(@import("../text-buffer-iterators.zig").coordsToOffset(eb.tb.rope(), cursor.row, cursor.col).?, cursor.offset);
+            if (eb.tb.cursorUnitBoundsAtOffset(cursor.offset)) |bounds| try std.testing.expectEqual(cursor.offset, bounds.start);
+        }
+    }
 }
 
-test "EditBuffer - undo/redo with deleteRange" {
-    var pools = TestPools.init(std.testing.allocator);
-    defer pools.deinit();
-
-    var eb = try EditBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth, null);
-    defer eb.deinit();
-
-    try eb.insertText("Hello World");
-
-    try eb.deleteRange(.{ .row = 0, .col = 5 }, .{ .row = 0, .col = 11 });
-    var out_buffer: [100]u8 = undefined;
-    var written = eb.getText(&out_buffer);
-    try std.testing.expectEqualStrings("Hello", out_buffer[0..written]);
-
-    _ = try eb.undo();
-    written = eb.getText(&out_buffer);
-    try std.testing.expectEqualStrings("Hello World", out_buffer[0..written]);
-
-    _ = try eb.redo();
-    written = eb.getText(&out_buffer);
-    try std.testing.expectEqualStrings("Hello", out_buffer[0..written]);
-}
-
-test "EditBuffer - undo/redo with backspace" {
-    var pools = TestPools.init(std.testing.allocator);
-    defer pools.deinit();
-
-    var eb = try EditBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth, null);
-    defer eb.deinit();
-
-    try eb.insertText("Hello");
-
-    try eb.backspace();
-    var out_buffer: [100]u8 = undefined;
-    var written = eb.getText(&out_buffer);
-    try std.testing.expectEqualStrings("Hell", out_buffer[0..written]);
-
-    _ = try eb.undo();
-    written = eb.getText(&out_buffer);
-    try std.testing.expectEqualStrings("Hello", out_buffer[0..written]);
-}
-
-test "EditBuffer - undo/redo with deleteForward" {
-    var pools = TestPools.init(std.testing.allocator);
-    defer pools.deinit();
-
-    var eb = try EditBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth, null);
-    defer eb.deinit();
-
-    try eb.insertText("Hello");
-    try eb.setCursor(0, 0);
-
-    try eb.deleteForward();
-    var out_buffer: [100]u8 = undefined;
-    var written = eb.getText(&out_buffer);
-    try std.testing.expectEqualStrings("ello", out_buffer[0..written]);
-
-    _ = try eb.undo();
-    written = eb.getText(&out_buffer);
-    try std.testing.expectEqualStrings("Hello", out_buffer[0..written]);
-}
-
-test "EditBuffer - cursor position after undo" {
-    var pools = TestPools.init(std.testing.allocator);
-    defer pools.deinit();
-
-    var eb = try EditBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth, null);
-    defer eb.deinit();
-
-    try eb.insertText("Line 1\nLine 2");
-    var cursor = eb.getPrimaryCursor();
-    try std.testing.expectEqual(@as(u32, 1), cursor.row);
-    try std.testing.expectEqual(@as(u32, 6), cursor.col);
-
-    try eb.insertText("\nLine 3");
-    cursor = eb.getPrimaryCursor();
-    try std.testing.expectEqual(@as(u32, 2), cursor.row);
-
-    // Undo - cursor should be clamped to valid position
-    _ = try eb.undo();
-    cursor = eb.getPrimaryCursor();
-    // Cursor should be clamped to end of line 1
-    try std.testing.expectEqual(@as(u32, 1), cursor.row);
-    try std.testing.expectEqual(@as(u32, 6), cursor.col);
-}
-
-test "EditBuffer - lineCount after undo/redo" {
-    var pools = TestPools.init(std.testing.allocator);
-    defer pools.deinit();
-
-    var eb = try EditBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth, null);
-    defer eb.deinit();
-
-    try eb.insertText("Line 1");
-    try std.testing.expectEqual(@as(u32, 1), eb.getTextBuffer().lineCount());
-
-    try eb.insertText("\nLine 2\nLine 3");
-    try std.testing.expectEqual(@as(u32, 3), eb.getTextBuffer().lineCount());
-
-    _ = try eb.undo();
-    try std.testing.expectEqual(@as(u32, 1), eb.getTextBuffer().lineCount());
-
-    _ = try eb.redo();
-    try std.testing.expectEqual(@as(u32, 3), eb.getTextBuffer().lineCount());
-}
-
-test "EditBuffer - clearHistory" {
-    var pools = TestPools.init(std.testing.allocator);
-    defer pools.deinit();
-
-    var eb = try EditBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth, null);
-    defer eb.deinit();
-
-    try eb.insertText("Hello");
-    try eb.insertText(" World");
-
-    try std.testing.expect(eb.canUndo());
-
-    eb.clearHistory();
-
-    try std.testing.expect(!eb.canUndo());
-    try std.testing.expect(!eb.canRedo());
-}
-
-test "EditBuffer - undo history branching" {
-    var pools = TestPools.init(std.testing.allocator);
-    defer pools.deinit();
-
-    var eb = try EditBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth, null);
-    defer eb.deinit();
-
-    try eb.insertText("State A");
-
-    try eb.insertText(" -> B");
-
-    var out_buffer: [100]u8 = undefined;
-    var written = eb.getText(&out_buffer);
-    try std.testing.expectEqualStrings("State A -> B", out_buffer[0..written]);
-
-    _ = try eb.undo();
-    written = eb.getText(&out_buffer);
-    try std.testing.expectEqualStrings("State A", out_buffer[0..written]);
-
-    // Create new branch by editing after undo
-    try eb.insertText(" -> C");
-
-    written = eb.getText(&out_buffer);
-    try std.testing.expectEqualStrings("State A -> C", out_buffer[0..written]);
-
-    _ = try eb.undo();
-    written = eb.getText(&out_buffer);
-    try std.testing.expectEqualStrings("State A", out_buffer[0..written]);
-
-    // Redo should go to state C (the new branch)
-    _ = try eb.redo();
-    written = eb.getText(&out_buffer);
-    try std.testing.expectEqualStrings("State A -> C", out_buffer[0..written]);
-}
-
-test "EditBuffer - multiple undo/redo operations" {
-    var pools = TestPools.init(std.testing.allocator);
-    defer pools.deinit();
-
-    var eb = try EditBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth, null);
-    defer eb.deinit();
-
-    var out_buffer: [100]u8 = undefined;
-
-    try eb.insertText("A");
-
-    try eb.insertText("B");
-
-    try eb.insertText("C");
-
-    var written = eb.getText(&out_buffer);
-    try std.testing.expectEqualStrings("ABC", out_buffer[0..written]);
-
-    _ = try eb.undo();
-    written = eb.getText(&out_buffer);
-    try std.testing.expectEqualStrings("AB", out_buffer[0..written]);
-
-    _ = try eb.undo();
-    written = eb.getText(&out_buffer);
-    try std.testing.expectEqualStrings("A", out_buffer[0..written]);
-
-    _ = try eb.redo();
-    written = eb.getText(&out_buffer);
-    try std.testing.expectEqualStrings("AB", out_buffer[0..written]);
-
-    _ = try eb.redo();
-    written = eb.getText(&out_buffer);
-    try std.testing.expectEqualStrings("ABC", out_buffer[0..written]);
+fn expectMeta(cursor: edit_buffer.Cursor, meta: []const u8) !void {
+    var expected: [64]u8 = undefined;
+    try std.testing.expectEqualStrings(try std.fmt.bufPrint(&expected, "cursor:{d}:{d}:{d}", .{ cursor.row, cursor.col, cursor.desired_col }), meta);
 }
