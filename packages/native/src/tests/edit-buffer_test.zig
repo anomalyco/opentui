@@ -45,10 +45,7 @@ test "EditBuffer - init and deinit" {
     defer eb.deinit();
 
     try std.testing.expectEqual(@as(u32, 0), eb.getTextBuffer().getLength());
-    const cursor = eb.getCursor(0);
-    try std.testing.expect(cursor != null);
-    try std.testing.expectEqual(@as(u32, 0), cursor.?.row);
-    try std.testing.expectEqual(@as(u32, 0), cursor.?.col);
+    try std.testing.expectEqualDeep(edit_buffer.Cursor{ .row = 0, .col = 0 }, eb.getPrimaryCursor());
 }
 
 test "EditBuffer - add buffer registration failure releases initialization storage" {
@@ -710,11 +707,11 @@ test "EditBuffer - moveRight past tab at start of line" {
     try eb.setCursor(0, 0);
 
     eb.moveRight();
-    const cursor = eb.getCursor(0).?;
+    const cursor = eb.getPrimaryCursor();
     try std.testing.expect(cursor.col > 0);
 
     eb.moveRight();
-    const cursor2 = eb.getCursor(0).?;
+    const cursor2 = eb.getPrimaryCursor();
     try std.testing.expect(cursor2.col > cursor.col);
 }
 
@@ -729,19 +726,19 @@ test "EditBuffer - moveRight after typing before tab" {
     try eb.setCursor(0, 0);
     try eb.insertText("Hi");
 
-    const cursor_after_insert = eb.getCursor(0).?;
+    const cursor_after_insert = eb.getPrimaryCursor();
     try std.testing.expectEqual(@as(u32, 0), cursor_after_insert.row);
 
     eb.moveRight();
-    const cursor_after_move1 = eb.getCursor(0).?;
+    const cursor_after_move1 = eb.getPrimaryCursor();
     try std.testing.expect(cursor_after_move1.col > cursor_after_insert.col);
 
     eb.moveRight();
-    const cursor_after_move2 = eb.getCursor(0).?;
+    const cursor_after_move2 = eb.getPrimaryCursor();
     try std.testing.expect(cursor_after_move2.col > cursor_after_move1.col);
 
     eb.moveRight();
-    const cursor_after_move3 = eb.getCursor(0).?;
+    const cursor_after_move3 = eb.getPrimaryCursor();
     try std.testing.expect(cursor_after_move3.col > cursor_after_move2.col);
 }
 
@@ -759,7 +756,7 @@ test "EditBuffer - moveRight between two tabs" {
     var i: u32 = 0;
     while (i < 10) : (i += 1) {
         eb.moveRight();
-        const cursor = eb.getCursor(0).?;
+        const cursor = eb.getPrimaryCursor();
         try std.testing.expect(cursor.col >= prev_col);
         prev_col = cursor.col;
     }
@@ -779,14 +776,14 @@ test "EditBuffer - type and move around single tab" {
     var buffer: [100]u8 = undefined;
     _ = eb.getText(&buffer);
 
-    const cursor1 = eb.getCursor(0).?;
+    const cursor1 = eb.getPrimaryCursor();
     try std.testing.expectEqual(@as(u32, 0), cursor1.row);
     _ = iter_mod.lineWidthAt(eb.tb.rope(), 0);
 
     _ = eb.tb.getGraphemeWidthAt(0, cursor1.col);
 
     eb.moveRight();
-    const cursor2 = eb.getCursor(0).?;
+    const cursor2 = eb.getPrimaryCursor();
     const line_width2 = iter_mod.lineWidthAt(eb.tb.rope(), 0);
     const gw2 = eb.tb.getGraphemeWidthAt(0, cursor2.col);
     try std.testing.expect(cursor2.col > cursor1.col);
@@ -808,21 +805,21 @@ test "EditBuffer - insert text between tabs and move right" {
     try eb.setCursor(0, 0);
 
     eb.moveRight();
-    _ = eb.getCursor(0).?;
+    _ = eb.getPrimaryCursor();
 
     try eb.insertText("A");
-    const after_insert = eb.getCursor(0).?;
+    const after_insert = eb.getPrimaryCursor();
 
     eb.moveRight();
-    const after_move1 = eb.getCursor(0).?;
+    const after_move1 = eb.getPrimaryCursor();
     try std.testing.expect(after_move1.col > after_insert.col);
 
     eb.moveRight();
-    const after_move2 = eb.getCursor(0).?;
+    const after_move2 = eb.getPrimaryCursor();
     try std.testing.expect(after_move2.col > after_move1.col);
 
     eb.moveRight();
-    const after_move3 = eb.getCursor(0).?;
+    const after_move3 = eb.getPrimaryCursor();
     // Should reach append position (line_width) and stay there
     try std.testing.expectEqual(after_move2.col, after_move3.col);
 }
@@ -835,22 +832,22 @@ test "EditBuffer - insert after tab and move around" {
     defer eb.deinit();
 
     try eb.insertText("\t");
-    const tab_width = eb.getCursor(0).?.col;
+    const tab_width = eb.getPrimaryCursor().col;
 
     try eb.insertText("x");
-    const after_x = eb.getCursor(0).?;
+    const after_x = eb.getPrimaryCursor();
 
     eb.moveLeft();
-    const before_x = eb.getCursor(0).?;
+    const before_x = eb.getPrimaryCursor();
     try std.testing.expectEqual(tab_width, before_x.col);
 
     eb.moveRight();
-    const back_at_x = eb.getCursor(0).?;
+    const back_at_x = eb.getPrimaryCursor();
     try std.testing.expectEqual(after_x.col, back_at_x.col);
 
     // Already at append position (after 'x'), can't move further on single line
     eb.moveRight();
-    const still_at_x = eb.getCursor(0).?;
+    const still_at_x = eb.getPrimaryCursor();
     try std.testing.expectEqual(back_at_x.col, still_at_x.col);
 }
 
@@ -865,10 +862,10 @@ test "EditBuffer - cursor stuck after typing around tab" {
     try eb.setCursor(0, 5);
 
     eb.moveRight();
-    const pos1 = eb.getCursor(0).?;
+    const pos1 = eb.getPrimaryCursor();
 
     eb.moveRight();
-    const pos2 = eb.getCursor(0).?;
+    const pos2 = eb.getPrimaryCursor();
     try std.testing.expect(pos2.col > pos1.col);
 }
 
@@ -885,24 +882,24 @@ test "EditBuffer - complex tab scenario" {
     const line_width = iter_mod.lineWidthAt(eb.tb.rope(), 0);
 
     eb.moveRight();
-    const p1 = eb.getCursor(0).?;
+    const p1 = eb.getPrimaryCursor();
 
     eb.moveRight();
-    const p2 = eb.getCursor(0).?;
+    const p2 = eb.getPrimaryCursor();
     try std.testing.expect(p2.col > p1.col);
 
     eb.moveRight();
-    const p3 = eb.getCursor(0).?;
+    const p3 = eb.getPrimaryCursor();
     try std.testing.expect(p3.col > p2.col);
 
     eb.moveRight();
-    const p4 = eb.getCursor(0).?;
+    const p4 = eb.getPrimaryCursor();
     try std.testing.expect(p4.col > p3.col);
     try std.testing.expectEqual(line_width, p4.col);
 
     // Already at append position, can't move further
     eb.moveRight();
-    const p5 = eb.getCursor(0).?;
+    const p5 = eb.getPrimaryCursor();
     try std.testing.expectEqual(p4.col, p5.col);
 }
 
@@ -920,10 +917,10 @@ test "EditBuffer - cursor stuck at tab in middle of line" {
     _ = eb.getText(&buffer);
 
     eb.moveRight();
-    const p1 = eb.getCursor(0).?;
+    const p1 = eb.getPrimaryCursor();
 
     eb.moveRight();
-    const p2 = eb.getCursor(0).?;
+    const p2 = eb.getPrimaryCursor();
     try std.testing.expect(p2.col > p1.col);
 }
 
@@ -939,16 +936,16 @@ test "EditBuffer - type between tabs then move right" {
     try eb.insertText("x");
 
     const line_width = iter_mod.lineWidthAt(eb.tb.rope(), 0);
-    const after_insert = eb.getCursor(0).?;
+    const after_insert = eb.getPrimaryCursor();
 
     eb.moveRight();
-    const p1 = eb.getCursor(0).?;
+    const p1 = eb.getPrimaryCursor();
     try std.testing.expect(p1.col > after_insert.col);
     try std.testing.expectEqual(line_width, p1.col);
 
     // Already at append position, can't move further
     eb.moveRight();
-    const p2 = eb.getCursor(0).?;
+    const p2 = eb.getPrimaryCursor();
     try std.testing.expectEqual(p1.col, p2.col);
 }
 
@@ -968,7 +965,7 @@ test "EditBuffer - tabs only with cursor movement" {
         _ = iter_mod.lineWidthAt(eb.tb.rope(), 0);
         _ = eb.tb.getGraphemeWidthAt(0, prev_col);
         eb.moveRight();
-        const cursor = eb.getCursor(0).?;
+        const cursor = eb.getPrimaryCursor();
         try std.testing.expect(cursor.col >= prev_col);
         prev_col = cursor.col;
     }
@@ -1238,7 +1235,7 @@ test "EditBuffer - getTextRange before cursor" {
     try eb.insertText("Hello World");
     try eb.setCursor(0, 5);
 
-    const cursor = eb.getCursor(0).?;
+    const cursor = eb.getPrimaryCursor();
     var buffer: [100]u8 = undefined;
 
     // Get text before cursor
@@ -1256,7 +1253,7 @@ test "EditBuffer - getTextRange char before cursor" {
     try eb.insertText("Hello World");
     try eb.setCursor(0, 5);
 
-    const cursor = eb.getCursor(0).?;
+    const cursor = eb.getPrimaryCursor();
     var buffer: [100]u8 = undefined;
 
     // Get last char before cursor (if cursor > 0)
@@ -1277,7 +1274,7 @@ test "EditBuffer - getTextRange emoji before cursor" {
     try eb.insertText("Hi 👋");
     try eb.setCursor(0, 5); // After emoji
 
-    const cursor = eb.getCursor(0).?;
+    const cursor = eb.getPrimaryCursor();
     var buffer: [100]u8 = undefined;
 
     // Get emoji before cursor
