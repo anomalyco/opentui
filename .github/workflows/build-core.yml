@@ -148,6 +148,7 @@ jobs:
         run: |
           if [ "$(uname -s)" = Linux ]; then ulimit -c unlimited; fi
           bun run test:native
+          bun run test:native:lifetime
           echo "${{ github.sha }}" > ../../.native-tests-passed
 
       - name: Save native test result
