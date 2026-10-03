@@ -4755,3 +4755,115 @@ test "TextBufferView word wrapping - does not split 'uses' across lines" {
 
     try std.testing.expect(!split_found);
 }
+
+/// Whether a chunk boundary falls inside a grapheme cluster, as an edit that types a
+/// combining mark after its base character leaves it. Character wrapping handles a
+/// split before a combining mark (`allow_combining`); see U04 X1 for the other splits.
+fn splitsGrapheme(tb: *TextBuffer, allow_combining: bool) bool {
+    const utf8 = @import("../utf8.zig");
+    var previous: ?[]const u8 = null;
+    var index: u32 = 0;
+    while (index < tb.rope().count()) : (index += 1) {
+        const chunk = tb.rope().get(index).?.asText() orelse {
+            previous = null;
+            continue;
+        };
+        const bytes = chunk.getBytes(tb.memRegistry());
+        if (previous) |left| if (left.len > 0 and bytes.len > 0) {
+            // Replay the left chunk's last grapheme so the break state knows its context.
+            var state: @import("uucode").grapheme.BreakState = .default;
+            var last: ?u21 = null;
+            var pos = utf8.getPrevGraphemeStart(left, left.len, tb.tabWidth(), .unicode).?.start_offset;
+            while (pos < left.len) : (pos += utf8.decodeUtf8Unchecked(left, pos).len) {
+                const cp = utf8.decodeUtf8Unchecked(left, pos).cp;
+                _ = utf8.isGraphemeBreak(last, cp, &state, .unicode);
+                last = cp;
+            }
+            const first = utf8.decodeUtf8Unchecked(bytes, 0).cp;
+            const combining = first != 0x200D and utf8.zeroWidthPrefixLen(bytes, tb.tabWidth(), .unicode) > 0;
+            if (!(allow_combining and combining) and !utf8.isGraphemeBreak(last, first, &state, .unicode)) return true;
+        };
+        previous = bytes;
+    }
+    return false;
+}
+
+fn lineBytes(line: text_buffer_view.VirtualLine, tb: *TextBuffer, out: []u8) []const u8 {
+    var len: usize = 0;
+    for (line.chunks.items) |chunk| {
+        const piece = chunk.chunk.getBytes(tb.memRegistry())[chunk.byte_start_in_chunk..][0..chunk.byte_len];
+        @memcpy(out[len..][0..piece.len], piece);
+        len += piece.len;
+    }
+    return out[0..len];
+}
+
+fn expectSameWrap(edited: *TextBuffer, width: u32, mode: text_buffer_view.WrapMode) !void {
+    var bytes: [1024]u8 = undefined;
+    const len = edited.getPlainTextIntoBuffer(&bytes);
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
+    const fresh = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, edited.widthMethod());
+    defer fresh.deinit();
+    fresh.setTabWidth(edited.tabWidth());
+    try fresh.setText(bytes[0..len]);
+    const views = [_]*TextBufferView{
+        try TextBufferView.init(std.testing.allocator, edited),
+        try TextBufferView.init(std.testing.allocator, fresh),
+    };
+    defer for (views) |view| view.deinit();
+    for (views) |view| {
+        view.setWrapMode(mode);
+        view.setWrapWidth(width);
+    }
+    const expected = views[1].getVirtualLines();
+    const actual = views[0].getVirtualLines();
+    errdefer std.debug.print("text \"{f}\" width {d} mode {s} method {s}\n", .{ std.zig.fmtString(bytes[0..len]), width, @tagName(mode), @tagName(edited.widthMethod()) });
+    try std.testing.expectEqual(expected.len, actual.len);
+    for (expected, actual) |want, got| {
+        try std.testing.expectEqual(want.width_cols, got.width_cols);
+        try std.testing.expectEqual(want.source_line, got.source_line);
+        try std.testing.expectEqual(want.source_col_start, got.source_col_start);
+        var want_bytes: [256]u8 = undefined;
+        var got_bytes: [256]u8 = undefined;
+        try std.testing.expectEqualStrings(lineBytes(want, fresh, &want_bytes), lineBytes(got, edited, &got_bytes));
+    }
+}
+
+test "TextBufferView edited text wraps like freshly loaded text" {
+    const EditBuffer = @import("../edit-buffer.zig").EditBuffer;
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
+    const tokens = [_][]const u8{
+        "a", "b",        " ",                  "\t", "\n",       "\u{65e5}", "e\u{301}", "\u{1f44d}\u{1f3fd}", "\u{1f468}\u{200d}\u{1f469}",
+        "-", "\u{200b}", "\u{1f1fa}\u{1f1f8}", "x",  "\u{ac00}", "\u{301}",  "\u{304b}", "\r\n",
+    };
+    const methods = std.enums.values(@import("../utf8.zig").WidthMethod);
+    var prng = std.Random.DefaultPrng.init(0x0508);
+    const random = prng.random();
+    for (0..300) |iteration| {
+        const edit = try EditBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, methods[iteration % methods.len], null);
+        defer edit.deinit();
+        for (0..12) |_| {
+            const total = edit.tb.rope().totalWeight();
+            if (total > 0 and random.uintLessThan(u8, 4) == 0) {
+                var start = random.uintAtMost(u32, total);
+                var end = @min(total, start + random.uintAtMost(u32, 3));
+                if (edit.tb.cursorUnitBoundsAtOffset(start)) |bounds| start = bounds.start;
+                if (edit.tb.cursorUnitBoundsAtOffset(end)) |bounds| end = if (bounds.start == end) end else bounds.end;
+                const start_coords = iter_mod.offsetToCoords(edit.tb.rope(), start).?;
+                const end_coords = iter_mod.offsetToCoords(edit.tb.rope(), end).?;
+                try edit.deleteRange(.{ .row = start_coords.row, .col = start_coords.col }, .{ .row = end_coords.row, .col = end_coords.col });
+            } else {
+                var offset = random.uintAtMost(u32, total);
+                if (edit.tb.cursorUnitBoundsAtOffset(offset)) |bounds| offset = bounds.start;
+                try edit.setCursorByOffset(offset);
+                for (0..random.intRangeAtMost(usize, 1, 3)) |_| try edit.insertText(tokens[random.uintLessThan(usize, tokens.len)]);
+            }
+            for ([_]text_buffer_view.WrapMode{ .char, .word }) |mode| {
+                if (splitsGrapheme(edit.tb, mode == .char)) continue;
+                for ([_]u32{ 1, 2, 3, 4, 5, 7 }) |width| try expectSameWrap(edit.tb, width, mode);
+            }
+        }
+    }
+}
