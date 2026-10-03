@@ -1089,7 +1089,7 @@ pub const Context = struct {
         try self.beginMutation();
         defer self.mutating = false;
         try self.checkImageCapacity();
-        return self.insertImage(try source.cloneOwned(self.allocator, self.io));
+        return self.insertImage(try source.cloneOwned(self.allocator));
     }
 
     fn checkImageCapacity(self: *Context) !void {
@@ -1103,21 +1103,20 @@ pub const Context = struct {
         self.last_image_id += 1;
         value.render_id = self.last_image_id;
         value.owner_context_id = self.objects.context_id;
-        value.io = self.io;
         return handle;
     }
 
     pub fn inspectImage(self: *Context, bytes: []const u8) !image.Info {
         try self.beginMutation();
         defer self.mutating = false;
-        return image.inspectOwned(self.allocator, self.io, bytes, .{});
+        return image.inspectOwned(self.allocator, bytes, .{});
     }
 
     pub fn decodeImage(self: *Context, bytes: []const u8) !Handle {
         try self.beginMutation();
         defer self.mutating = false;
         try self.checkImageCapacity();
-        return self.insertImage(try image.decodeOwned(self.allocator, self.io, bytes, .{}));
+        return self.insertImage(try image.decode(self.allocator, bytes, .{}));
     }
 
     pub fn createImagePixels(self: *Context, pixels: []const u8, width: u32, height: u32, options: image.PixelImportOptions) !Handle {
@@ -1138,7 +1137,7 @@ pub const Context = struct {
         };
         const source = try source_owner.getImage(handle);
         try self.checkImageCapacity();
-        return self.insertImage(try source.cloneOwned(self.allocator, self.io));
+        return self.insertImage(try source.cloneOwned(self.allocator));
     }
 
     pub fn retainImage(self: *Context, handle: Handle) !Handle {
@@ -1434,8 +1433,7 @@ pub const Context = struct {
         defer self.mutating = false;
         const value = try self.getEmbeddedTerminal(handle);
         if (comptime !@import("ghostty_vt_options").available) return error.Unsupported;
-        if (options.action > 2 or options.button < -1 or options.button > 7 or options.mods & ~@as(u32, 0x3f) != 0 or
-            !std.math.isFinite(options.x) or !std.math.isFinite(options.y)) return error.InvalidOptions;
+        if (options.action > 2 or options.button < -1 or options.button > 7 or options.mods & ~@as(u32, 0x3f) != 0) return error.InvalidOptions;
         const previous = value.mouse_last_cell;
         errdefer value.mouse_last_cell = previous;
         const encoded = try value.encodeMouse(.{

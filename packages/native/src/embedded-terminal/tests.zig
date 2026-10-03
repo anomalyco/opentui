@@ -533,7 +533,7 @@ test "embedded terminal composes a transparent default background as the termina
 
     const terminal = try EmbeddedTerminal.init(std.testing.io, std.testing.allocator, .{ .cols = 4, .rows = 1 });
     defer terminal.deinit();
-    try terminal.write("ab");
+    try terminal.write("a\x1b[41mX");
 
     try terminal.compose(target, 0, 0);
     try std.testing.expectEqual(ansi.ColorIntent.rgb, ansi.intent(target.get(0, 0).?.bg));
@@ -543,23 +543,9 @@ test "embedded terminal composes a transparent default background as the termina
     // Text without an explicit background and the row tail cleared by clearRow both keep the intent.
     try std.testing.expectEqual(ansi.ColorIntent.default, ansi.intent(target.get(0, 0).?.bg));
     try std.testing.expectEqual(ansi.ColorIntent.default, ansi.intent(target.get(3, 0).?.bg));
-}
-
-test "embedded terminal keeps explicit backgrounds opaque when transparent" {
-    var pools = TestPools.init(std.testing.allocator);
-    defer pools.deinit();
-    const target = try buffer.OptimizedBuffer.init(std.testing.allocator, 4, 1, .{ .link_pool = &pools.links, .pool = &pools.graphemes });
-    defer target.deinit();
-
-    const terminal = try EmbeddedTerminal.init(std.testing.io, std.testing.allocator, .{ .cols = 4, .rows = 1 });
-    defer terminal.deinit();
-    terminal.setTransparentBackground(true);
-    try terminal.write("\x1b[41mX");
-
-    try terminal.compose(target, 0, 0);
-
-    try std.testing.expectEqual(@as(u32, 'X'), target.get(0, 0).?.char);
-    try std.testing.expect(ansi.intent(target.get(0, 0).?.bg) != ansi.ColorIntent.default);
+    // An explicit background stays opaque.
+    try std.testing.expectEqual(@as(u32, 'X'), target.get(1, 0).?.char);
+    try std.testing.expect(ansi.intent(target.get(1, 0).?.bg) != ansi.ColorIntent.default);
 }
 
 comptime {

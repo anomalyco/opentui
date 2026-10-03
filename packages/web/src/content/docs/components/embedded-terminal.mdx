@@ -135,7 +135,7 @@ The renderable is focusable. A left-button press inside it calls `focus()`. Whil
 
 `handleKeyPress()` encodes the key with the child's current keyboard mode. It sends nonempty bytes as `"input"` and returns `true` when it produces bytes. The renderable forwards Kitty releases only while it has focus. `meta` encodes as Super, not Alt.
 
-`handlePaste()` encodes the paste with the current paste mode. Bracketed paste wraps the payload when the child enabled it. Encoding replaces certain control bytes with spaces. Without bracketed paste, newlines become carriage returns.
+`handlePaste()` encodes the paste with the current paste mode. Bracketed paste wraps the payload when the child enabled it. Encoding replaces certain control bytes with spaces. Without bracketed paste, newlines become carriage returns. `encodePaste()` accepts at most 1 MiB. A larger paste throws, and `handlePaste()` sends nothing to the child.
 
 If the child enabled focus events, `focus()` and `blur()` send the matching sequences as `"input"`. If `onData` throws during `focus()`, the renderable leaves focus. `blur()` still finishes cleanup if `onData` throws.
 

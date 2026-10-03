@@ -80,7 +80,7 @@ Files use exclusive creation, mode `0600`, and the renderer's explicit `TMPDIR` 
 Without that hint, supported systems use `/tmp`.
 
 Preparation and output failures close open files and attempt to unlink leases.
-Matching acknowledgements, cancellation, suspension, output failure, and renderer teardown also attempt release.
+Matching acknowledgements, frames skipped for output pressure, cancellation, suspension, output failure, and renderer teardown also attempt release.
 Expiry cancels file transport. It never claims that the terminal consumed the file.
 
 A failed unlink keeps the path and byte charge while the renderer lives.
@@ -103,7 +103,7 @@ It never gets root I/O or samples a clock itself.
 
 The C Context constructor uses the library's I/O implementation.
 Direct Zig `Context.init(allocator, io, options)` supports injection.
-Compatibility audio, local clipboard, and other non-Context services retain their own runtime boundary.
+Audio engines and host clipboard services are Context objects, but they use their own threads and clocks, not Context I/O.
 
 Read [Frames and output](/docs/native/frames#pump-terminal-work-and-close) for the pump loop and output tickets.
 [Resources and ownership](/docs/native/resources#finish-work-before-destroying-owners) defines Context and lease cleanup.

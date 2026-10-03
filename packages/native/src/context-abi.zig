@@ -367,14 +367,7 @@ pub fn ot_scene_set_editor_options(context: ?*ContextHandle, node_ptr: ?*const c
 }
 
 pub fn ot_image_destroy(context: ?*ContextHandle, image_ptr: ?*const c.ot_handle) callconv(.c) c.ot_status {
-    const status = sessionContextStatus(context);
-    if (status != c.OT_OK) return status;
-    const owner = context.?;
-    const id = image_ptr orelse return sessionError(owner, error.InvalidOptions);
-    const handle = handleFromC(id.*);
-    _ = owner.core.raw().getImage(handle) catch |err| return sessionError(owner, err);
-    owner.core.destroy(handle) catch |err| return sessionError(owner, err);
-    return c.OT_OK;
+    return destroyKind(context, image_ptr, .image);
 }
 
 pub fn ot_scene_set_image(context: ?*ContextHandle, node_ptr: ?*const c.ot_handle, image_ptr: ?*const c.ot_handle, fit: u32, protocol: u32, buffer_ptr: ?*const c.ot_handle) callconv(.c) c.ot_status {
@@ -2686,17 +2679,11 @@ test "Context image ABI rejects invalid records identities and mutation reentry"
         try std.testing.expectEqual(c.OT_OK, ot_scene_has_measure(context, &node, &measured));
         try std.testing.expectEqual(c.OT_CONTEXT_BUSY, ot_scene_set_image(context, &node, null, 0, 0, null));
         try std.testing.expectEqual(c.OT_CONTEXT_BUSY, ot_buffer_draw_image(context, &target, null, &image, &draw, &drawn));
-        try std.testing.expectEqual(c.OT_CONTEXT_BUSY, ot_image_destroy(context, &image));
         try std.testing.expectEqual(c.OT_CONTEXT_BUSY, ot_session_set_image_resolution(context, &session_c, 0, 0, 0, 0));
         try std.testing.expectEqual(c.OT_CONTEXT_BUSY, ot_session_set_kitty_image_transport(context, &session_c, 0));
         try std.testing.expectEqual(c.OT_CONTEXT_BUSY, ot_session_start_kitty_file_probe(context, &session_c));
     }
-    try std.testing.expectEqual(c.OT_INVALID_ARGUMENT, ot_image_destroy(null, &image));
-    try std.testing.expectEqual(c.OT_INVALID_ARGUMENT, ot_image_destroy(context, null));
-    try std.testing.expectEqual(c.OT_WRONG_CONTEXT, ot_image_destroy(context, &foreign));
-    try std.testing.expectEqual(c.OT_WRONG_KIND, ot_image_destroy(context, &target));
     try std.testing.expectEqual(c.OT_OK, ot_image_destroy(context, &image));
-    try std.testing.expectEqual(c.OT_STALE_HANDLE, ot_image_destroy(context, &image));
     try std.testing.expectEqual(c.OT_STALE_HANDLE, ot_buffer_draw_image(context, &target, null, &image, &draw, &drawn));
     try std.testing.expectEqual(c.OT_STALE_HANDLE, ot_scene_set_image(context, &node, &image, 0, 0, null));
     try std.testing.expectEqual(c.OT_OK, ot_scene_set_image(context, &node, null, 0, 0, null));

@@ -7,10 +7,7 @@ fn acquireAudioEngine(context: ?*ContextHandle) ?*native_audio.Engine {
     if (abi.sessionContextStatus(context) != c.OT_OK) return null;
     var cursor: usize = 0;
     const handle = context.?.core.objects.next(.audio_engine, &cursor) orelse return null;
-    return context.?.core.raw().getAudioEngine(handle) catch |err| {
-        _ = abi.sessionError(context.?, err);
-        return null;
-    };
+    return context.?.core.raw().getAudioEngine(handle) catch unreachable;
 }
 
 export fn createAudioEngine(context: ?*ContextHandle, options_ptr: ?*const native_audio.CreateOptions) i32 {
