@@ -4435,8 +4435,8 @@ const abi_modules = .{
     clipboard_transport,
 };
 
-// The library opts into exports; layout-only cross-target checks do not link
-// Context or platform backends. The C header is the source of ABI record types.
+// The library opts into exports. Each export must match its opentui.h prototype.
+// The C header is the source of ABI record types.
 pub fn export_symbols() void {
     @setEvalBranchQuota(200_000);
     for (@typeInfo(c).@"struct".decls) |declaration| {
