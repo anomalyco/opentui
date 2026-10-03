@@ -185,9 +185,13 @@ test "TextBuffer tab width changes preserve large tab-free Unicode and update on
     try tb.setText(tab_free);
     try std.testing.expect(!tb.rope().root.metrics().custom.has_tabs);
     const tab_free_width = tb.lineWidthAt(0);
+    const tab_free_version = tb.rope().version;
     for (0..40) |i| {
         tb.setTabWidth(if (i % 2 == 0) 4 else 2);
         try std.testing.expectEqual(tab_free_width, tb.lineWidthAt(0));
+        // A tab-free root keeps its widths: no chunk walk, no remeasure, no marker cache rebuild.
+        try std.testing.expectEqual(tab_free_version, tb.rope().version);
+        try std.testing.expectEqual(tb.tab_metrics_generation, tb.rope().metricsGeneration());
     }
 
     const one_tab = try std.testing.allocator.dupe(u8, tab_free);
@@ -196,8 +200,10 @@ test "TextBuffer tab width changes preserve large tab-free Unicode and update on
     try tb.setText(one_tab);
     try std.testing.expect(tb.rope().root.metrics().custom.has_tabs);
     for (0..40) |i| {
+        const version = tb.rope().version;
         tb.setTabWidth(if (i % 2 == 0) 4 else 2);
         try std.testing.expectEqual(tb.measureText(one_tab), tb.lineWidthAt(0));
+        try std.testing.expect(tb.rope().version != version);
     }
 }
 
