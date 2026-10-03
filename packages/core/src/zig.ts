@@ -3519,12 +3519,7 @@ export class FFIRenderLib {
       "ot_unicode_create",
       this.opentui.symbols.ot_unicode_create(pointer, viewOrNull(bytes), count, method, output),
     )
-    try {
-      return decodeContextHandle(context, output) as ContextUnicodeHandle
-    } catch (error) {
-      this.opentui.symbols.ot_unicode_destroy(pointer, output)
-      throw error
-    }
+    return decodeContextHandle(context, output) as ContextUnicodeHandle
   }
 
   public sceneMeasureLayout(context: NativeContextHandle, session: SessionHandle, root: SceneNodeHandle): void {
@@ -3736,10 +3731,7 @@ export class FFIRenderLib {
   }
 
   public destroyContextUnicode(context: NativeContextHandle, unicode: ContextUnicodeHandle): void {
-    this.getYogaHost().assertMutable()
-    const handle = encodeContextHandle(context, unicode)
-    const pointer = this.nativeContextPointer(context, "ot_unicode_destroy")
-    nativeResult("ot_unicode_destroy", this.opentui.symbols.ot_unicode_destroy(pointer, handle))
+    this.destroyContextObject(context, unicode, "ot_unicode_destroy")
   }
 
   public contextBufferDrawUnicode(
@@ -5757,13 +5749,7 @@ export class FFIRenderLib {
     const output = new Uint32Array(handleWords)
     const pointer = this.nativeContextPointer(context, "ot_buffer_create")
     nativeResult("ot_buffer_create", this.opentui.symbols.ot_buffer_create(pointer, record, output))
-    try {
-      return decodeContextHandle(context, output) as ContextBufferHandle
-    } catch (error) {
-      const live = this.nativeContexts.get(context)
-      if (live !== undefined) this.opentui.symbols.ot_buffer_destroy(live, output)
-      throw error
-    }
+    return decodeContextHandle(context, output) as ContextBufferHandle
   }
 
   public destroyContextBuffer(context: NativeContextHandle, buffer: ContextBufferHandle): void {
