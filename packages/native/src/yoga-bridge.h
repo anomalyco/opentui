@@ -73,8 +73,10 @@ typedef struct {
   uint32_t mode, last_mode;
   float available, last_available, computed, margin;
 } OTYogaCacheAxis;
+// Returns the patched cache decision. Bits 0 and 1 of axis_references are the
+// eager upstream width and height predicates.
 uint32_t otYogaTestCacheMeasurement(const OTYogaCacheAxis* width, const OTYogaCacheAxis* height,
-                                    float point_scale, uint32_t* reference,
+                                    float point_scale, uint32_t* axis_references,
                                     uint32_t* rounding_count) OT_YOGA_NOEXCEPT;
 
 #ifdef __cplusplus

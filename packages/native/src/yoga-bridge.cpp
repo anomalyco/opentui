@@ -482,7 +482,7 @@ static bool cacheAxisReference(const OTYogaCacheAxis& axis, float point_scale) {
 }
 
 uint32_t otYogaTestCacheMeasurement(const OTYogaCacheAxis* width, const OTYogaCacheAxis* height,
-                                    float point_scale, uint32_t* reference,
+                                    float point_scale, uint32_t* axis_references,
                                     uint32_t* rounding_count) noexcept {
   using namespace facebook::yoga;
   Config config(nullptr);
@@ -495,11 +495,8 @@ uint32_t otYogaTestCacheMeasurement(const OTYogaCacheAxis* width, const OTYogaCa
       static_cast<SizingMode>(height->last_mode), height->last_available,
       width->computed, height->computed, width->margin, height->margin, &config);
   *rounding_count = testPixelGridRoundCount;
-  const bool width_matches = cacheAxisReference(*width, point_scale);
-  const bool height_matches = cacheAxisReference(*height, point_scale);
-  *reference = !((isDefined(height->computed) && height->computed < 0) ||
-                 (isDefined(width->computed) && width->computed < 0)) &&
-      width_matches && height_matches;
+  *axis_references = cacheAxisReference(*width, point_scale) |
+      cacheAxisReference(*height, point_scale) << 1;
   return actual;
 }
 #endif

@@ -913,6 +913,47 @@ test "Yoga wrapper packs style values" {
     try std.testing.expectApproxEqAbs(@as(f32, 10), value, 0.001);
 }
 
+test "Yoga cache-rounding patch keeps upstream cache decisions and rounds only comparable axes" {
+    const values = [_]f32{ std.math.nan(f32), -1, 0, 9.6, 10, 10.4, 11 };
+    const scales = [_]f32{ 0, 1, 2, 0.5 };
+    var prng = std.Random.DefaultPrng.init(0x0707);
+    const random = prng.random();
+    var cached: u32 = 0;
+    for (0..10_000) |_| {
+        var axes: [2]yoga.TestCacheAxis = undefined;
+        for (&axes) |*axis| {
+            // Repeat the previous mode or size half the time, as relayout does.
+            const mode = random.uintLessThan(u32, 3);
+            const available = values[random.uintLessThan(usize, values.len)];
+            axis.* = .{
+                .mode = mode,
+                .last_mode = if (random.boolean()) mode else random.uintLessThan(u32, 3),
+                .available = available,
+                .last_available = if (random.boolean()) available else values[random.uintLessThan(usize, values.len)],
+                .computed = values[random.uintLessThan(usize, values.len)],
+                .margin = @floatFromInt(random.uintLessThan(u32, 2)),
+            };
+        }
+        const point_scale = scales[random.uintLessThan(usize, scales.len)];
+        var references: u32 = 0;
+        var rounding_count: u32 = 0;
+        const actual = yoga.testCacheMeasurement(&axes[0], &axes[1], point_scale, &references, &rounding_count);
+        // Upstream rejects a negative cached size before it compares either axis.
+        const negative = axes[0].computed < 0 or axes[1].computed < 0;
+        try std.testing.expectEqual(@intFromBool(!negative and references == 3), actual);
+        // An axis rounds only when its sizing modes match. An incompatible
+        // width skips the height axis.
+        var expected: u32 = 0;
+        if (!negative and point_scale != 0) {
+            if (axes[0].mode == axes[0].last_mode) expected += 2;
+            if (references & 1 != 0 and axes[1].mode == axes[1].last_mode) expected += 2;
+        }
+        try std.testing.expectEqual(expected, rounding_count);
+        cached += actual;
+    }
+    try std.testing.expect(cached > 500 and cached < 9500);
+}
+
 test "Yoga host callback owners use config context and cannot clear another owner" {
     const Host = struct {
         var first_dirtied: u32 = 0;

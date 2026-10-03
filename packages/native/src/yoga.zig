@@ -1087,3 +1087,5 @@ pub const testFailAfter = c.otYogaTestFailAfter;
 pub const testAllocationCount = c.otYogaTestAllocationCount;
 pub const testContentsChildCount = c.otYogaTestContentsChildCount;
 pub const testLogMessage = c.otYogaTestLogMessage;
+pub const testCacheMeasurement = c.otYogaTestCacheMeasurement;
+pub const TestCacheAxis = c.OTYogaCacheAxis;
