@@ -290,21 +290,27 @@ describe("native handles", () => {
     expect(() => lib.createContext({ objectCapacity: 1, renderCellsMax: 1 })).toThrow("disposed")
   })
 
-  test("the process log callback survives Worker exit and disposal of other libraries", () => {
-    const extension = import.meta.url.endsWith(".ts") ? "ts" : "js"
-    const runtimeArgs = "bun" in process.versions ? [] : process.execArgv.filter((arg) => !arg.startsWith("--test"))
-    const child = spawnSync(
-      process.execPath,
-      [...runtimeArgs, fileURLToPath(new URL(`tests/native-log-worker-child.${extension}`, import.meta.url))],
-      { encoding: "utf8", timeout: 10_000, env: { ...process.env, OTUI_GHOSTTY_LOG_LEVEL: "warn" } },
-    )
-    expect({ status: child.status, signal: child.signal, stdout: child.stdout.trim() }).toEqual({
-      status: 0,
-      signal: null,
-      stdout: "native log survived",
-    })
-    expect(child.stderr).toContain("(stream) unimplemented CSI action")
-  })
+  // The test outlives the child's timeout, so a hung child fails with its signal instead of a test timeout.
+  const childTimeoutMs = 10_000
+  test(
+    "the process log callback survives Worker exit and disposal of other libraries",
+    () => {
+      const extension = import.meta.url.endsWith(".ts") ? "ts" : "js"
+      const runtimeArgs = "bun" in process.versions ? [] : process.execArgv.filter((arg) => !arg.startsWith("--test"))
+      const child = spawnSync(
+        process.execPath,
+        [...runtimeArgs, fileURLToPath(new URL(`tests/native-log-worker-child.${extension}`, import.meta.url))],
+        { encoding: "utf8", timeout: childTimeoutMs, env: { ...process.env, OTUI_GHOSTTY_LOG_LEVEL: "warn" } },
+      )
+      expect({ status: child.status, signal: child.signal, stdout: child.stdout.trim() }).toEqual({
+        status: 0,
+        signal: null,
+        stdout: "native log survived",
+      })
+      expect(child.stderr).toContain("(stream) unimplemented CSI action")
+    },
+    childTimeoutMs + 5_000,
+  )
 
   test("render library path cannot change after native use", () => {
     resolveRenderLib()
