@@ -4,297 +4,6 @@ const mem_registry = @import("../mem-registry.zig");
 const MemRegistry = mem_registry.MemRegistry;
 const MemRegistryError = mem_registry.MemRegistryError;
 
-test "MemRegistry - init and deinit" {
-    var registry = MemRegistry.init(std.testing.allocator);
-    defer registry.deinit();
-
-    try std.testing.expectEqual(@as(usize, 0), registry.getUsedSlots());
-    try std.testing.expectEqual(@as(usize, 255), registry.getFreeSlots());
-}
-
-test "MemRegistry - register owned memory" {
-    var registry = MemRegistry.init(std.testing.allocator);
-    defer registry.deinit();
-
-    const text = try std.testing.allocator.dupe(u8, "Hello, World!");
-    const id = try registry.register(text, true);
-
-    try std.testing.expectEqual(@as(u8, 0), id);
-    try std.testing.expectEqual(@as(usize, 1), registry.getUsedSlots());
-    try std.testing.expectEqual(@as(usize, 254), registry.getFreeSlots());
-
-    const retrieved = registry.get(id);
-    try std.testing.expect(retrieved != null);
-    try std.testing.expectEqualStrings("Hello, World!", retrieved.?);
-}
-
-test "MemRegistry - register non-owned memory" {
-    var registry = MemRegistry.init(std.testing.allocator);
-    defer registry.deinit();
-
-    const text = "Hello, World!";
-    const id = try registry.register(text, false);
-
-    try std.testing.expectEqual(@as(u8, 0), id);
-    try std.testing.expectEqual(@as(usize, 1), registry.getUsedSlots());
-
-    const retrieved = registry.get(id);
-    try std.testing.expect(retrieved != null);
-    try std.testing.expectEqualStrings("Hello, World!", retrieved.?);
-}
-
-test "MemRegistry - register multiple buffers" {
-    var registry = MemRegistry.init(std.testing.allocator);
-    defer registry.deinit();
-
-    const text1 = "First";
-    const text2 = "Second";
-    const text3 = "Third";
-
-    const id1 = try registry.register(text1, false);
-    const id2 = try registry.register(text2, false);
-    const id3 = try registry.register(text3, false);
-
-    try std.testing.expectEqual(@as(u8, 0), id1);
-    try std.testing.expectEqual(@as(u8, 1), id2);
-    try std.testing.expectEqual(@as(u8, 2), id3);
-    try std.testing.expectEqual(@as(usize, 3), registry.getUsedSlots());
-    try std.testing.expectEqual(@as(usize, 252), registry.getFreeSlots());
-
-    try std.testing.expectEqualStrings("First", registry.get(id1).?);
-    try std.testing.expectEqualStrings("Second", registry.get(id2).?);
-    try std.testing.expectEqualStrings("Third", registry.get(id3).?);
-}
-
-test "MemRegistry - get invalid ID returns null" {
-    var registry = MemRegistry.init(std.testing.allocator);
-    defer registry.deinit();
-
-    const text = "Test";
-    _ = try registry.register(text, false);
-
-    try std.testing.expect(registry.get(1) == null);
-    try std.testing.expect(registry.get(5) == null);
-    try std.testing.expect(registry.get(255) == null);
-}
-
-test "MemRegistry - replace owned buffer" {
-    var registry = MemRegistry.init(std.testing.allocator);
-    defer registry.deinit();
-
-    const text1 = try std.testing.allocator.dupe(u8, "Original");
-    const id = try registry.register(text1, true);
-
-    const text2 = try std.testing.allocator.dupe(u8, "Replaced");
-    try registry.replace(id, text2, true);
-
-    const retrieved = registry.get(id);
-    try std.testing.expect(retrieved != null);
-    try std.testing.expectEqualStrings("Replaced", retrieved.?);
-    try std.testing.expectEqual(@as(usize, 1), registry.getUsedSlots());
-}
-
-test "MemRegistry - replace non-owned buffer with owned" {
-    var registry = MemRegistry.init(std.testing.allocator);
-    defer registry.deinit();
-
-    const text1 = "Original";
-    const id = try registry.register(text1, false);
-
-    const text2 = try std.testing.allocator.dupe(u8, "Replaced");
-    try registry.replace(id, text2, true);
-
-    const retrieved = registry.get(id);
-    try std.testing.expect(retrieved != null);
-    try std.testing.expectEqualStrings("Replaced", retrieved.?);
-}
-
-test "MemRegistry - replace with invalid ID" {
-    var registry = MemRegistry.init(std.testing.allocator);
-    defer registry.deinit();
-
-    const text = "Test";
-    const result = registry.replace(5, text, false);
-    try std.testing.expectError(MemRegistryError.InvalidMemId, result);
-}
-
-test "MemRegistry - clear owned buffers" {
-    var registry = MemRegistry.init(std.testing.allocator);
-    defer registry.deinit();
-
-    const text1 = try std.testing.allocator.dupe(u8, "First");
-    const text2 = try std.testing.allocator.dupe(u8, "Second");
-    _ = try registry.register(text1, true);
-    _ = try registry.register(text2, true);
-
-    try std.testing.expectEqual(@as(usize, 2), registry.getUsedSlots());
-
-    registry.clear();
-
-    try std.testing.expectEqual(@as(usize, 0), registry.getUsedSlots());
-    try std.testing.expectEqual(@as(usize, 255), registry.getFreeSlots());
-}
-
-test "MemRegistry - clear non-owned buffers" {
-    var registry = MemRegistry.init(std.testing.allocator);
-    defer registry.deinit();
-
-    const text1 = "First";
-    const text2 = "Second";
-    _ = try registry.register(text1, false);
-    _ = try registry.register(text2, false);
-
-    try std.testing.expectEqual(@as(usize, 2), registry.getUsedSlots());
-
-    registry.clear();
-
-    try std.testing.expectEqual(@as(usize, 0), registry.getUsedSlots());
-}
-
-test "MemRegistry - max capacity" {
-    var registry = MemRegistry.init(std.testing.allocator);
-    defer registry.deinit();
-
-    var i: usize = 0;
-    while (i < 255) : (i += 1) {
-        const text = "test";
-        _ = try registry.register(text, false);
-    }
-
-    try std.testing.expectEqual(@as(usize, 255), registry.getUsedSlots());
-    try std.testing.expectEqual(@as(usize, 0), registry.getFreeSlots());
-
-    const text = "overflow";
-    const result = registry.register(text, false);
-    try std.testing.expectError(MemRegistryError.OutOfMemory, result);
-}
-
-test "MemRegistry - clear and reuse" {
-    var registry = MemRegistry.init(std.testing.allocator);
-    defer registry.deinit();
-
-    const text1 = "First";
-    const id1 = try registry.register(text1, false);
-    try std.testing.expectEqual(@as(u8, 0), id1);
-
-    registry.clear();
-
-    const text2 = "Second";
-    const id2 = try registry.register(text2, false);
-    try std.testing.expectEqual(@as(u8, 0), id2);
-    try std.testing.expectEqualStrings("Second", registry.get(id2).?);
-}
-
-test "MemRegistry - mixed owned and non-owned buffers" {
-    var registry = MemRegistry.init(std.testing.allocator);
-    defer registry.deinit();
-
-    const owned = try std.testing.allocator.dupe(u8, "Owned");
-    const non_owned = "Not Owned";
-
-    const id1 = try registry.register(owned, true);
-    const id2 = try registry.register(non_owned, false);
-
-    try std.testing.expectEqual(@as(usize, 2), registry.getUsedSlots());
-
-    try std.testing.expectEqualStrings("Owned", registry.get(id1).?);
-    try std.testing.expectEqualStrings("Not Owned", registry.get(id2).?);
-
-    registry.clear();
-    try std.testing.expectEqual(@as(usize, 0), registry.getUsedSlots());
-}
-
-test "MemRegistry - large buffer registration" {
-    var registry = MemRegistry.init(std.testing.allocator);
-    defer registry.deinit();
-
-    const large_text = [_]u8{'A'} ** 10000;
-    const id = try registry.register(&large_text, false);
-
-    const retrieved = registry.get(id);
-    try std.testing.expect(retrieved != null);
-    try std.testing.expectEqual(@as(usize, 10000), retrieved.?.len);
-}
-
-test "MemRegistry - empty buffer registration" {
-    var registry = MemRegistry.init(std.testing.allocator);
-    defer registry.deinit();
-
-    const empty = "";
-    const id = try registry.register(empty, false);
-
-    const retrieved = registry.get(id);
-    try std.testing.expect(retrieved != null);
-    try std.testing.expectEqual(@as(usize, 0), retrieved.?.len);
-}
-
-test "MemRegistry - sequential replace operations" {
-    var registry = MemRegistry.init(std.testing.allocator);
-    defer registry.deinit();
-
-    const text1 = "First";
-    const id = try registry.register(text1, false);
-
-    const text2 = "Second";
-    try registry.replace(id, text2, false);
-    try std.testing.expectEqualStrings("Second", registry.get(id).?);
-
-    const text3 = "Third";
-    try registry.replace(id, text3, false);
-    try std.testing.expectEqualStrings("Third", registry.get(id).?);
-
-    try std.testing.expectEqual(@as(usize, 1), registry.getUsedSlots());
-}
-
-test "MemRegistry - replace owned with non-owned" {
-    var registry = MemRegistry.init(std.testing.allocator);
-    defer registry.deinit();
-
-    const text1 = try std.testing.allocator.dupe(u8, "Owned");
-    const id = try registry.register(text1, true);
-
-    const text2 = "Not Owned";
-    try registry.replace(id, text2, false);
-
-    const retrieved = registry.get(id);
-    try std.testing.expect(retrieved != null);
-    try std.testing.expectEqualStrings("Not Owned", retrieved.?);
-    try std.testing.expectEqual(@as(usize, 1), registry.getUsedSlots());
-}
-
-test "MemRegistry - stress test with many registrations and clears" {
-    var registry = MemRegistry.init(std.testing.allocator);
-    defer registry.deinit();
-
-    var round: usize = 0;
-    while (round < 10) : (round += 1) {
-        var i: usize = 0;
-        while (i < 50) : (i += 1) {
-            const text = "test";
-            _ = try registry.register(text, false);
-        }
-        try std.testing.expectEqual(@as(usize, 50), registry.getUsedSlots());
-        registry.clear();
-        try std.testing.expectEqual(@as(usize, 0), registry.getUsedSlots());
-    }
-}
-
-test "MemRegistry - unregister basic" {
-    var registry = MemRegistry.init(std.testing.allocator);
-    defer registry.deinit();
-
-    const text = "Hello";
-    const id = try registry.register(text, false);
-
-    try std.testing.expectEqual(@as(usize, 1), registry.getUsedSlots());
-    try std.testing.expectEqualStrings("Hello", registry.get(id).?);
-
-    try registry.unregister(id);
-
-    try std.testing.expectEqual(@as(usize, 0), registry.getUsedSlots());
-    try std.testing.expect(registry.get(id) == null);
-}
-
 test "MemRegistry - cancel latest registration without allocation" {
     for ([_]?u8{ null, 1, 3 }) |reuse_id| {
         for ([_]bool{ false, true }) |owned| {
@@ -334,111 +43,6 @@ test "MemRegistry - cancel latest registration without allocation" {
     }
 }
 
-test "MemRegistry - unregister owned buffer frees memory" {
-    var registry = MemRegistry.init(std.testing.allocator);
-    defer registry.deinit();
-
-    const text = try std.testing.allocator.dupe(u8, "Owned Buffer");
-    const id = try registry.register(text, true);
-
-    try std.testing.expectEqual(@as(usize, 1), registry.getUsedSlots());
-
-    // Should free the memory when unregistered
-    try registry.unregister(id);
-
-    try std.testing.expectEqual(@as(usize, 0), registry.getUsedSlots());
-    try std.testing.expect(registry.get(id) == null);
-}
-
-test "MemRegistry - unregister invalid ID" {
-    var registry = MemRegistry.init(std.testing.allocator);
-    defer registry.deinit();
-
-    const result = registry.unregister(5);
-    try std.testing.expectError(MemRegistryError.InvalidMemId, result);
-}
-
-test "MemRegistry - unregister twice fails" {
-    var registry = MemRegistry.init(std.testing.allocator);
-    defer registry.deinit();
-
-    const text = "Test";
-    const id = try registry.register(text, false);
-
-    try registry.unregister(id);
-
-    // Second unregister should fail
-    const result = registry.unregister(id);
-    try std.testing.expectError(MemRegistryError.InvalidMemId, result);
-}
-
-test "MemRegistry - slot reuse after unregister" {
-    var registry = MemRegistry.init(std.testing.allocator);
-    defer registry.deinit();
-
-    const text1 = "First";
-    const text2 = "Second";
-    const text3 = "Third";
-
-    const id1 = try registry.register(text1, false);
-    const id2 = try registry.register(text2, false);
-    const id3 = try registry.register(text3, false);
-
-    try std.testing.expectEqual(@as(u8, 0), id1);
-    try std.testing.expectEqual(@as(u8, 1), id2);
-    try std.testing.expectEqual(@as(u8, 2), id3);
-    try std.testing.expectEqual(@as(usize, 3), registry.getUsedSlots());
-
-    // Unregister middle slot
-    try registry.unregister(id2);
-    try std.testing.expectEqual(@as(usize, 2), registry.getUsedSlots());
-
-    // Register new buffer - should reuse slot 1
-    const text4 = "Fourth";
-    const id4 = try registry.register(text4, false);
-    try std.testing.expectEqual(@as(u8, 1), id4);
-    try std.testing.expectEqual(@as(usize, 3), registry.getUsedSlots());
-
-    // Verify contents
-    try std.testing.expectEqualStrings("First", registry.get(id1).?);
-    try std.testing.expectEqualStrings("Fourth", registry.get(id4).?);
-    try std.testing.expectEqualStrings("Third", registry.get(id3).?);
-}
-
-test "MemRegistry - thousands of register/unregister cycles" {
-    var registry = MemRegistry.init(std.testing.allocator);
-    defer registry.deinit();
-
-    // Simulate thousands of register/unregister operations
-    // This ensures slot reuse works over long periods
-    var cycle: usize = 0;
-    while (cycle < 1000) : (cycle += 1) {
-        var ids: [10]u8 = undefined;
-
-        // Register 10 buffers
-        var i: usize = 0;
-        while (i < 10) : (i += 1) {
-            const text = "test";
-            ids[i] = try registry.register(text, false);
-        }
-
-        try std.testing.expectEqual(@as(usize, 10), registry.getUsedSlots());
-
-        // Unregister all
-        i = 0;
-        while (i < 10) : (i += 1) {
-            try registry.unregister(ids[i]);
-        }
-
-        try std.testing.expectEqual(@as(usize, 0), registry.getUsedSlots());
-    }
-
-    // Verify we can still register after all those cycles
-    const text = "final";
-    const id = try registry.register(text, false);
-    try std.testing.expectEqualStrings("final", registry.get(id).?);
-}
-
 test "MemRegistry - max capacity 255 with slot reuse" {
     var registry = MemRegistry.init(std.testing.allocator);
     defer registry.deinit();
@@ -476,37 +80,83 @@ test "MemRegistry - max capacity 255 with slot reuse" {
     try std.testing.expectEqualStrings("reused", registry.get(new_id).?);
 }
 
-test "MemRegistry - replace inactive slot fails" {
-    var registry = MemRegistry.init(std.testing.allocator);
-    defer registry.deinit();
+test "MemRegistry matches a reference model under seeded random operations" {
+    const capacity = 255;
+    const Slot = struct { data: []const u8 = &.{}, active: bool = false };
+    const Model = struct {
+        slots: [capacity]Slot = @splat(.{}),
+        len: usize = 0,
+        free: [capacity]u8 = undefined,
+        free_count: usize = 0,
 
-    const text1 = "Original";
-    const id = try registry.register(text1, false);
+        fn data(random: std.Random, owned: bool) ![]const u8 {
+            const text: []const u8 = ([_][]const u8{ "", "a", "owned bytes", "x" ** 64 })[random.uintLessThan(usize, 4)];
+            return if (owned) try std.testing.allocator.dupe(u8, text) else text;
+        }
 
-    try registry.unregister(id);
-
-    // Try to replace inactive slot
-    const text2 = "Replacement";
-    const result = registry.replace(id, text2, false);
-    try std.testing.expectError(MemRegistryError.InvalidMemId, result);
-}
-
-test "MemRegistry - getFreeSlots accounts for unregistered slots" {
-    var registry = MemRegistry.init(std.testing.allocator);
-    defer registry.deinit();
-
-    try std.testing.expectEqual(@as(usize, 255), registry.getFreeSlots());
-
-    const id1 = try registry.register("test1", false);
-    const id2 = try registry.register("test2", false);
-    const id3 = try registry.register("test3", false);
-
-    try std.testing.expectEqual(@as(usize, 252), registry.getFreeSlots());
-
-    try registry.unregister(id2);
-    try std.testing.expectEqual(@as(usize, 253), registry.getFreeSlots());
-
-    try registry.unregister(id1);
-    try registry.unregister(id3);
-    try std.testing.expectEqual(@as(usize, 255), registry.getFreeSlots());
+        fn active(self: *const @This(), id: u8) bool {
+            return id < self.len and self.slots[id].active;
+        }
+    };
+    for (0..8) |seed| {
+        var registry = MemRegistry.init(std.testing.allocator);
+        defer registry.deinit();
+        var model: Model = .{};
+        var prng = std.Random.DefaultPrng.init(seed);
+        const random = prng.random();
+        for (0..2000) |_| {
+            const id = random.uintLessThan(u8, 8) +% if (model.len == 0) 0 else random.uintLessThan(u8, @intCast(model.len));
+            const owned = random.boolean();
+            switch (random.uintLessThan(u8, 16)) {
+                // Registrations outnumber removals so the walk reaches the 255-slot limit.
+                0...7 => {
+                    const text = try Model.data(random, owned);
+                    const result = registry.register(text, owned);
+                    if (model.free_count == 0 and model.len == capacity) {
+                        try std.testing.expectError(MemRegistryError.OutOfMemory, result);
+                        if (owned) std.testing.allocator.free(text);
+                        continue;
+                    }
+                    const expected: u8 = if (model.free_count > 0) model.free[model.free_count - 1] else @intCast(model.len);
+                    try std.testing.expectEqual(expected, try result);
+                    if (model.free_count > 0) model.free_count -= 1 else model.len += 1;
+                    model.slots[expected] = .{ .data = text, .active = true };
+                },
+                8...10 => {
+                    const text = try Model.data(random, owned);
+                    if (model.active(id)) {
+                        try registry.replace(id, text, owned);
+                        model.slots[id].data = text;
+                    } else {
+                        try std.testing.expectError(MemRegistryError.InvalidMemId, registry.replace(id, text, owned));
+                        if (owned) std.testing.allocator.free(text);
+                    }
+                },
+                11...13 => if (model.active(id)) {
+                    try registry.unregister(id);
+                    model.slots[id] = .{};
+                    model.free[model.free_count] = id;
+                    model.free_count += 1;
+                } else {
+                    try std.testing.expectError(MemRegistryError.InvalidMemId, registry.unregister(id));
+                },
+                else => if (random.uintLessThan(u8, 64) == 0) {
+                    registry.clear();
+                    model = .{};
+                },
+            }
+            var used: usize = 0;
+            for (0..capacity) |index| {
+                const slot_id: u8 = @intCast(index);
+                if (model.active(slot_id)) {
+                    used += 1;
+                    try std.testing.expectEqual(model.slots[index].data.ptr, registry.get(slot_id).?.ptr);
+                } else {
+                    try std.testing.expect(registry.get(slot_id) == null);
+                }
+            }
+            try std.testing.expectEqual(used, registry.getUsedSlots());
+            try std.testing.expectEqual(capacity - model.len + model.free_count, registry.getFreeSlots());
+        }
+    }
 }
