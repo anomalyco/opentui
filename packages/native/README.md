@@ -51,9 +51,9 @@ types cannot prove lifetimes. Review that metadata when ownership contracts chan
 Do not edit generated bindings. `check:abi` detects stale output; use
 `bun run check:abi --all-targets` to compare supported target layouts too.
 Unsupported record shapes and calling conventions reject instead of producing
-partial metadata. C compiler type assertions also verify complete function and
-callback prototypes, because Translate-C can discard callback calling-convention
-attributes.
+partial metadata. C compiler assertions also verify complete function and callback
+prototypes, record layouts, field types, and constant values, because Translate-C can
+discard callback calling-convention attributes and ignore `#pragma pack`.
 
 From `packages/native`, `bun run build` installs headers and libraries under
 `lib/<target>/`. Linux and macOS produce `libopentui.a` beside the shared library.

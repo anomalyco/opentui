@@ -65,6 +65,8 @@ function cType(type: string, callbacks: Map<string, string>): string {
   if (callbacks.has(type)) return callbacks.get(type)!
   if (type.startsWith("*const ")) return `${cType(type.slice(7), callbacks)} const *`
   if (type.startsWith("*")) return `${cType(type.slice(1), callbacks)} *`
+  const array = /^\[(\d+)\]([^[*].*)$/.exec(type)
+  if (array) return `${cType(array[2]!, callbacks)}[${array[1]}]`
   if (/^[ui](8|16|32|64)$/.test(type)) return `${type[0] === "u" ? "u" : ""}int${type.slice(1)}_t`
   if (type === "f32") return "float"
   if (type === "f64") return "double"
@@ -100,7 +102,7 @@ export function compileHeader(options: { header?: string; allTargets?: boolean }
     const abi: HeaderABI = JSON.parse(json)
     // Translate-C 0.16 drops some callback conventions, including inline parameter types.
     const callbacks = new Map<string, string>()
-    const declarations = ['#include "opentui.h"']
+    const declarations = ['#include "opentui.h"', "#include <stddef.h>"]
     const prototype = (signature: Signature, name = "") => {
       const args = signature.args.map((type) => cType(type, callbacks)).join(", ") || "void"
       return `${cType(signature.returns, callbacks)} (*${name})(${args})`
@@ -117,6 +119,21 @@ export function compileHeader(options: { header?: string; allTargets?: boolean }
       declarations.push(
         `_Static_assert(__builtin_types_compatible_p(__typeof__(&${name}), ${prototype(signature)}), "Unsupported ABI calling convention or function translation: ${name}");`,
       )
+    }
+    // Translate-C can disagree with the C compiler, for example by ignoring #pragma pack.
+    for (const [name, record] of Object.entries(abi.layouts)) {
+      declarations.push(
+        `_Static_assert(sizeof(${name}) == ${record.size} && _Alignof(${name}) == ${record.alignment}, "C layout differs from Translate-C: ${name}");`,
+      )
+      for (const [field, info] of Object.entries(record.fields)) {
+        const member = `((${name} *)0)->${field}`
+        declarations.push(
+          `_Static_assert(offsetof(${name}, ${field}) == ${info.offset} && sizeof(${member}) == ${info.size} && __alignof__(${member}) == ${info.alignment} && __builtin_types_compatible_p(__typeof__(${member}), ${cType(info.type, callbacks)}), "C layout differs from Translate-C: ${name}.${field}");`,
+        )
+      }
+    }
+    for (const [name, value] of Object.entries(abi.constants)) {
+      declarations.push(`_Static_assert(${name} == ${value}, "C value differs from Translate-C: ${name}");`)
     }
     const callbacksPath = join(temporary, "prototypes.c")
     writeFileSync(callbacksPath, declarations.join("\n"))
