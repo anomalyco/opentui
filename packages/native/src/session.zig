@@ -417,6 +417,8 @@ pub const Session = struct {
         if (lifecycle_active) {
             const count = @max(value.currentImages.items.len, value.nextRenderBuffer.image_placements.items.len);
             try self.reserveControlSequence(try cleanupPackets(count));
+            // A frame publishes no control spans, so restoring the reservation cannot fail.
+            std.debug.assert(self.output.control_spans == 0);
         }
         var accepted = false;
         defer if (lifecycle_active and !accepted) {
@@ -426,6 +428,8 @@ pub const Session = struct {
             try value.renderSplitDeferred(options, force)
         else
             try value.renderDeferred(force);
+        // The Session endpoint and the renderer's pending presentation are one state.
+        std.debug.assert((result == .rendered) == (value.pendingPresentation != null));
         switch (result) {
             .skipped => return .skipped,
             .failed => return .failed,
@@ -1190,6 +1194,8 @@ pub const Session = struct {
 
     fn nextOutput(self: *Session) ?[]const u8 {
         std.debug.assert(self.pending == null);
+        // A fully completed span is released at once, so a held span has bytes left.
+        std.debug.assert(self.span == null or self.span_offset < self.span.?.len);
         if (self.span == null and !self.output.hasPendingSpans()) return null;
         if (self.span == null) {
             var spans: [1]feed.SpanInfo = undefined;
@@ -1227,6 +1233,7 @@ pub const Session = struct {
     }
 
     fn completeOutputBytes(self: *Session, count: u32) void {
+        std.debug.assert(self.pending == null);
         const span = self.span.?;
         std.debug.assert(count > 0 and count <= span.len - self.span_offset);
         const published_bytes = self.output.getStats().bytes_written;
