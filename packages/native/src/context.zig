@@ -1662,9 +1662,10 @@ pub const Context = struct {
             .text, .fill, .cell, .cell_blend, .char => {
                 if (options.operation == .text) try buf.validateTextInput(text);
                 if (options.operation == .cell or options.operation == .cell_blend or options.operation == .char) {
-                    if (options.char > 0x10ffff or (options.char >= 0xd800 and options.char <= 0xdfff) or
-                        options.char < 32 or (options.char >= 127 and options.char <= 159)) return error.InvalidOptions;
+                    if (options.char > 0x10ffff or (options.char >= 0xd800 and options.char <= 0xdfff)) return error.InvalidOptions;
                 }
+                // A cell never holds a control; it draws as a space, as in checked text.
+                const char = if (buf.isControlCodepoint(options.char)) buf.DEFAULT_SPACE_CHAR else options.char;
                 // Text and fills draw their part inside the target. A cell outside it draws nothing.
                 switch (options.operation) {
                     .text => return target.drawTextChecked(text, options.x, options.y, options.foreground, options.background, options.attributes),
@@ -1676,9 +1677,9 @@ pub const Context = struct {
                 const y: u32 = @intCast(options.y);
                 if (x >= target.width or y >= target.height) return;
                 switch (options.operation) {
-                    .cell => target.set(x, y, .{ .char = options.char, .fg = options.foreground, .bg = background, .attributes = options.attributes }),
-                    .cell_blend => target.setCellWithAlphaBlending(x, y, options.char, options.foreground, background, options.attributes),
-                    .char => target.drawChar(options.char, x, y, options.foreground, background, options.attributes),
+                    .cell => target.set(x, y, .{ .char = char, .fg = options.foreground, .bg = background, .attributes = options.attributes }),
+                    .cell_blend => target.setCellWithAlphaBlending(x, y, char, options.foreground, background, options.attributes),
+                    .char => target.drawChar(char, x, y, options.foreground, background, options.attributes),
                     else => unreachable,
                 }
             },

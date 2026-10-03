@@ -8,6 +8,8 @@ const link = @import("../link.zig");
 const ansi = @import("../ansi.zig");
 const test_renderer_mod = @import("test-renderer.zig");
 const image = @import("../image.zig");
+const edit_buffer = @import("../edit-buffer.zig");
+const editor_view = @import("../editor-view.zig");
 
 const OptimizedBuffer = buffer_mod.OptimizedBuffer;
 const TextBuffer = text_buffer.UnifiedTextBuffer;
@@ -840,12 +842,6 @@ test "OptimizedBuffer drawTextChecked validates all input before drawing and enf
         try std.testing.expectError(error.InvalidUnicode, target.drawTextChecked(text, 0, 0, fg, bg, 0));
         try std.testing.expectError(error.InvalidUnicode, target.drawTextChecked(text, std.math.maxInt(i32), 0, fg, bg, 0));
     }
-    for (0..0xa0) |codepoint| {
-        if (codepoint == '\t' or (codepoint >= 0x20 and codepoint < 0x7f)) continue;
-        var encoded: [4]u8 = undefined;
-        const len = try std.unicode.utf8Encode(@intCast(codepoint), &encoded);
-        try std.testing.expectError(error.InvalidUnicode, target.drawTextChecked(encoded[0..len], 0, 0, fg, bg, 0));
-    }
     for ([_]u32{ 0x100, 0x8000_0000, std.math.maxInt(u32) }) |style| {
         try std.testing.expectError(error.InvalidOptions, target.drawTextChecked("bad", 0, 0, fg, bg, style));
     }
@@ -866,8 +862,6 @@ test "OptimizedBuffer drawTextChecked validates all input before drawing and enf
     const over_limit = "x" ** (buffer_mod.text_bytes_max + 1);
     try std.testing.expectError(error.TextLimit, target.drawTextChecked(over_limit, 0, 0, fg, bg, 0));
     try std.testing.expectError(error.InvalidUnicode, target.drawTextChecked("x" ** (buffer_mod.text_bytes_max - 1) ++ "\xff", 0, 0, fg, bg, 0));
-    const long_cluster = "a" ++ "\u{301}" ** 64;
-    try std.testing.expectError(error.TextLimit, target.drawTextChecked("\u{e9}" ++ long_cluster, 0, 0, fg, bg, 0));
     try std.testing.expectEqualSlices(u32, &chars, target.buffer.char);
     try std.testing.expectEqualSlices(RGBA, &foreground, target.buffer.fg);
     try std.testing.expectEqualSlices(RGBA, &background, target.buffer.bg);
@@ -948,6 +942,171 @@ test "OptimizedBuffer drawTextChecked skips complete zero width UTF-8 codepoints
     try std.testing.expectEqualStrings("\u{4e2d}", try pool.get(gp.graphemeIdFromChar(target.buffer.char[3])));
     try std.testing.expect(gp.isContinuationChar(target.buffer.char[4]));
     try std.testing.expectEqual(@as(u32, 'Z'), target.buffer.char[5]);
+}
+
+/// A cluster that a cell cannot hold and the text that every checked draw must render in its place.
+const UnprintableText = struct { bytes: []const u8, blank: []const u8, line_break: bool = false };
+const unprintable_texts = [_]UnprintableText{
+    .{ .bytes = "\x00", .blank = "" },
+    .{ .bytes = "\x07", .blank = "" },
+    .{ .bytes = "\x1b", .blank = "" },
+    .{ .bytes = "\x7f", .blank = "" },
+    .{ .bytes = "\u{85}", .blank = "" },
+    .{ .bytes = "\u{9b}", .blank = "" },
+    .{ .bytes = "\n", .blank = "", .line_break = true },
+    .{ .bytes = "\r", .blank = "", .line_break = true },
+    .{ .bytes = "\r\n", .blank = "", .line_break = true },
+    // The grapheme pool stores at most 128 bytes; a longer cluster keeps its cell width.
+    .{ .bytes = "e" ++ "\u{301}" ** 64, .blank = " " },
+    .{ .bytes = "e" ++ "\u{301}" ** 100, .blank = " " },
+    .{ .bytes = "\u{4e2d}" ++ "\u{301}" ** 63, .blank = "  " },
+};
+
+const CheckedTextPath = enum { text, box_title, text_view, editor_view };
+
+fn drawCheckedText(path: CheckedTextPath, target: *OptimizedBuffer, pools: *TestPools, text: []const u8) !void {
+    const fg = ansi.rgbColor(250, 240, 230, 255);
+    const bg = ansi.rgbColor(10, 20, 30, 255);
+    switch (path) {
+        .text => try target.drawTextChecked(text, 0, 0, fg, bg, 0),
+        .box_title => {
+            const border_chars = [_]u32{ 0x250c, 0x2510, 0x2514, 0x2518, 0x2500, 0x2502, 0, 0, 0, 0, 0 };
+            const sides: buffer_mod.BorderSides = .{ .top = true, .right = true, .bottom = true, .left = true };
+            try target.drawBoxChecked(0, 0, target.width, 3, &border_chars, sides, fg, bg, fg, false, text, 0, null, 0);
+        },
+        .text_view => {
+            const content = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .unicode);
+            defer content.deinit();
+            const view = try TextBufferView.init(std.testing.allocator, content);
+            defer view.deinit();
+            try content.setText(text);
+            content.setDefaultFg(fg);
+            content.setDefaultBg(bg);
+            try target.drawTextBufferChecked(view, 0, 0);
+        },
+        .editor_view => {
+            const content = try edit_buffer.EditBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .unicode, null);
+            defer content.deinit();
+            const view = try editor_view.EditorView.init(std.testing.allocator, content, target.width, 1);
+            defer view.deinit();
+            try content.setText(text);
+            content.getTextBuffer().setDefaultFg(fg);
+            content.getTextBuffer().setDefaultBg(bg);
+            try target.drawEditorViewChecked(view, 0, 0);
+        },
+    }
+}
+
+/// No checked draw may store a code point that moves the terminal cursor when the renderer prints it.
+fn expectNoControlCells(target: *OptimizedBuffer) !void {
+    for (target.buffer.char) |char| {
+        if (gp.isContinuationChar(char) or gp.isImageChar(char)) continue;
+        if (gp.isGraphemeChar(char)) {
+            const bytes = try target.pool.get(gp.graphemeIdFromChar(char));
+            var codepoints = (try std.unicode.Utf8View.init(bytes)).iterator();
+            while (codepoints.nextCodepoint()) |codepoint| {
+                try std.testing.expect(codepoint >= 0x20 and (codepoint < 0x7f or codepoint > 0x9f));
+            }
+        } else {
+            try std.testing.expect(char >= 0x20 and (char < 0x7f or char > 0x9f));
+        }
+    }
+}
+
+test "OptimizedBuffer checked text draws skip controls and blank clusters a cell cannot hold" {
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
+    // The blank rule starts where the pool stops storing a cluster.
+    const longest = try pools.graphemes.acquire("\u{e9}" ++ "\u{301}" ** 63);
+    try pools.graphemes.decref(longest);
+    try std.testing.expectError(error.GraphemeTooLong, pools.graphemes.acquire(unprintable_texts[9].bytes));
+
+    const actual = try OptimizedBuffer.init(std.testing.allocator, 12, 3, .{ .pool = &pools.graphemes, .link_pool = &pools.links });
+    defer actual.deinit();
+    const expected = try OptimizedBuffer.init(std.testing.allocator, 12, 3, .{ .pool = &pools.graphemes, .link_pool = &pools.links });
+    defer expected.deinit();
+    const Position = enum { start, middle, end };
+    // The second clip cuts the wide blank in the middle row of the text and box paths.
+    const clips = [_]?buffer_mod.ClipRect{ null, .{ .x = 3, .y = 0, .width = 2, .height = 3 } };
+    var with_buffer: [256]u8 = undefined;
+    var blank_buffer: [256]u8 = undefined;
+    for (std.enums.values(CheckedTextPath)) |path| {
+        for (unprintable_texts) |unprintable| {
+            // Text resources split lines at line breaks; they are not glyphs there.
+            if (unprintable.line_break and (path == .text_view or path == .editor_view)) continue;
+            for (std.enums.values(Position)) |position| {
+                const prefix, const suffix = switch (position) {
+                    .start => .{ "", "abcd" },
+                    .middle => .{ "ab", "cd" },
+                    .end => .{ "abcd", "" },
+                };
+                const with = try std.fmt.bufPrint(&with_buffer, "{s}{s}{s}", .{ prefix, unprintable.bytes, suffix });
+                const blank = try std.fmt.bufPrint(&blank_buffer, "{s}{s}{s}", .{ prefix, unprintable.blank, suffix });
+                for (clips) |clip| {
+                    errdefer std.debug.print("path={t} text={any} position={t} clip={any}\n", .{ path, unprintable.bytes, position, clip });
+                    for ([_]*OptimizedBuffer{ actual, expected }) |target| {
+                        target.clear(ansi.rgbColor(0, 0, 0, 255), null);
+                        if (clip) |rect| try target.pushScissorRect(rect.x, rect.y, rect.width, rect.height);
+                    }
+                    defer for ([_]*OptimizedBuffer{ actual, expected }) |target| target.clearScissorRects();
+                    try drawCheckedText(path, actual, &pools, with);
+                    try drawCheckedText(path, expected, &pools, blank);
+                    try std.testing.expectEqualSlices(u32, expected.buffer.char, actual.buffer.char);
+                    try std.testing.expectEqualSlices(u32, expected.buffer.attributes, actual.buffer.attributes);
+                    for (expected.buffer.fg, actual.buffer.fg) |want, got| try std.testing.expect(buffer_mod.rgbaEqual(want, got));
+                    for (expected.buffer.bg, actual.buffer.bg) |want, got| try std.testing.expect(buffer_mod.rgbaEqual(want, got));
+                    try expectNoControlCells(actual);
+                }
+            }
+        }
+    }
+}
+
+test "OptimizedBuffer checked grapheme draws write blank cells for clusters a cell cannot hold" {
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
+    const actual = try OptimizedBuffer.init(std.testing.allocator, 6, 1, .{ .pool = &pools.graphemes, .link_pool = &pools.links });
+    defer actual.deinit();
+    const expected = try OptimizedBuffer.init(std.testing.allocator, 6, 1, .{ .pool = &pools.graphemes, .link_pool = &pools.links });
+    defer expected.deinit();
+    const fg = ansi.rgbColor(250, 240, 230, 255);
+    const bg = ansi.rgbColor(10, 20, 30, 255);
+    const attributes = ansi.TextAttributes.BOLD;
+    const Glyph = struct { bytes: []const u8, width: u8 };
+    const glyphs = [_]Glyph{
+        .{ .bytes = "\x7f", .width = 1 },
+        .{ .bytes = "\x1b", .width = 1 },
+        .{ .bytes = "\t", .width = 1 },
+        .{ .bytes = "\u{85}", .width = 1 },
+        .{ .bytes = "\u{9b}", .width = 2 },
+        .{ .bytes = "e" ++ "\u{301}" ** 64, .width = 1 },
+        .{ .bytes = "\u{4e2d}" ++ "\u{301}" ** 63, .width = 2 },
+    };
+    for (glyphs) |glyph| {
+        for ([_]u32{ 0, 2, 6 - glyph.width }) |x| {
+            // The authoritative width draws all cells of a glyph or none of them.
+            const clips = [_]?buffer_mod.ClipRect{ null, .{ .x = 0, .y = 0, .width = 6, .height = 1 }, .{ .x = @intCast(x + 1), .y = 0, .width = 6, .height = 1 } };
+            for (clips, 0..) |clip, clip_index| {
+                errdefer std.debug.print("glyph={any} x={d} clip={any}\n", .{ glyph.bytes, x, clip });
+                for ([_]*OptimizedBuffer{ actual, expected }) |target| {
+                    target.clear(ansi.rgbColor(0, 0, 0, 255), null);
+                    target.set(5, 0, .{ .char = 'Z', .fg = fg, .bg = bg, .attributes = 0 });
+                    if (clip) |rect| try target.pushScissorRect(rect.x, rect.y, rect.width, rect.height);
+                }
+                defer for ([_]*OptimizedBuffer{ actual, expected }) |target| target.clearScissorRects();
+                try actual.drawGraphemeChecked(glyph.bytes, glyph.width, x, 0, fg, bg, attributes);
+                if (clip_index != 2) {
+                    for (0..glyph.width) |offset| try expected.drawGraphemeChecked(" ", 1, x + @as(u32, @intCast(offset)), 0, fg, bg, attributes);
+                }
+                try std.testing.expectEqualSlices(u32, expected.buffer.char, actual.buffer.char);
+                try std.testing.expectEqualSlices(u32, expected.buffer.attributes, actual.buffer.attributes);
+                for (expected.buffer.fg, actual.buffer.fg) |want, got| try std.testing.expect(buffer_mod.rgbaEqual(want, got));
+                for (expected.buffer.bg, actual.buffer.bg) |want, got| try std.testing.expect(buffer_mod.rgbaEqual(want, got));
+                try expectNoControlCells(actual);
+            }
+        }
+    }
+    try std.testing.expectEqual(0, pools.graphemes.interned_live_ids.count());
 }
 
 test "OptimizedBuffer - drawGrapheme preserves authoritative width" {

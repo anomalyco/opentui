@@ -396,7 +396,7 @@ test "Scene Slider and Arrow reject invalid arithmetic without changing accepted
     try testing.expectEqualDeep(accepted_arrow, (try owner.raw().getRenderable(arrow)).scene_node.?.control.arrow);
 }
 
-test "Scene text reports a checked error for a 129-byte grapheme" {
+test "Scene text draws a 129-byte grapheme as a blank cell" {
     const f = try Fixture.init(testing.allocator, 4, 2, .{});
     defer f.deinit();
     const node = try f.owner.sceneCreateNode(f.id, 2, 2);
@@ -410,13 +410,12 @@ test "Scene text reports a checked error for a 129-byte grapheme" {
     try testing.expect(gp.isGraphemeChar(char));
     try testing.expectEqualStrings(accepted, try f.owner.graphemes.get(gp.graphemeIdFromChar(char)));
 
-    const rejected = "e" ++ "\u{301}" ** 64;
-    try testing.expectEqual(@as(usize, 129), rejected.len);
-    const result: anyerror!void = if (f.owner.sceneSetText(node, rejected)) |_|
-        repaint(f.owner, f.id, .{ 0, 0, 0, 255 }, false, 0)
-    else |err|
-        err;
-    try testing.expectError(error.TextLimit, result);
+    // The grapheme pool cannot hold this cluster, so it draws as a space instead of failing the frame.
+    const blank = "e" ++ "\u{301}" ** 64;
+    try testing.expectEqual(@as(usize, 129), blank.len);
+    try f.owner.sceneSetText(node, blank);
+    try repaint(f.owner, f.id, .{ 0, 0, 0, 255 }, false, 0);
+    try testing.expectEqual(@as(u32, ' '), next.get(0, 0).?.char);
 }
 
 test "Scene text bounds document counters before allocating a replacement" {

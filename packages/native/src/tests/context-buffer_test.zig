@@ -53,6 +53,25 @@ test "Context checked character drawing rejects colliding encoded IDs from disti
     try testing.expectEqualStrings("\u{8a9e}", try foreign.graphemes.get(grapheme.graphemeIdFromChar(char)));
 }
 
+test "Context cell draws write a space for a control code point" {
+    const owner = try context.Context.init(testing.allocator, testing.io, .{});
+    defer owner.deinit() catch unreachable;
+    const id = try owner.createBuffer(1, 1, .{});
+    const target = try owner.raw().getBuffer(id);
+    const fg = ansi.rgbColor(250, 240, 230, 255);
+    const bg = ansi.rgbColor(10, 20, 30, 255);
+    for ([_]context.BufferDraw.Operation{ .cell, .cell_blend, .char }) |operation| {
+        for ([_]u32{ 0, '\t', '\n', 0x1b, 0x1f, 0x7f, 0x85, 0x9f }) |char| {
+            errdefer std.debug.print("operation={t} char={x}\n", .{ operation, char });
+            try owner.clearBuffer(id, ansi.rgbColor(0, 0, 0, 255));
+            target.set(0, 0, .{ .char = 'Z', .fg = fg, .bg = bg, .attributes = 0 });
+            try owner.drawBuffer(id, null, &.{ .operation = operation, .char = char, .foreground = fg, .background = bg }, "", "");
+            try testing.expectEqual(@as(u32, ' '), target.buffer.char[0]);
+            try testing.expect(@import("../buffer.zig").rgbaEqual(bg, target.buffer.bg[0]));
+        }
+    }
+}
+
 test "Context fill rectangle clips unsigned extents and keeps leases current" {
     const owner = try context.Context.init(testing.allocator, testing.io, .{});
     defer owner.deinit() catch unreachable;

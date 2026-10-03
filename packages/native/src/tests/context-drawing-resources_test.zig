@@ -11,13 +11,12 @@ test "Context encoded Unicode owns display cells until explicit destruction" {
     defer owner.deinit() catch unreachable;
     const peer = try context.Context.init(testing.allocator, testing.io, .{});
     defer peer.deinit() catch unreachable;
-    const encoded = try owner.createUnicode("A\u{4e2d}e\u{301}\t", .unicode);
+    const encoded = try owner.createUnicode("A\u{4e2d}e\u{301}", .unicode);
     const data = (try owner.raw().getUnicode(encoded)).chars;
-    try testing.expectEqual(@as(usize, 4), data.len);
+    try testing.expectEqual(@as(usize, 3), data.len);
     try testing.expectEqual(@as(u32, 'A'), data[0].char);
     try testing.expectEqual(@as(u8, 2), data[1].width);
     try testing.expectEqual(@as(u8, 1), data[2].width);
-    try testing.expectEqual(@as(u8, 2), data[3].width);
     const id = gp.graphemeIdFromChar(data[1].char);
     try testing.expectEqualStrings("\u{4e2d}", try owner.graphemes.get(id));
     try testing.expectEqual(@as(u32, 1), try owner.graphemes.getRefcount(id));
@@ -27,7 +26,7 @@ test "Context encoded Unicode owns display cells until explicit destruction" {
     try testing.expectError(error.WrongKind, owner.raw().getUnicode(target));
     try testing.expectError(error.WrongContext, peer.drawBufferUnicode(target, null, encoded, 1, 0, 0, foreground, background, 0));
     try testing.expectError(error.WrongContext, owner.drawBufferUnicode(target, null, foreign, 0, 0, 0, foreground, background, 0));
-    try testing.expectError(error.InvalidOptions, owner.drawBufferUnicode(target, null, encoded, 4, 0, 0, foreground, background, 0));
+    try testing.expectError(error.InvalidOptions, owner.drawBufferUnicode(target, null, encoded, 3, 0, 0, foreground, background, 0));
     try testing.expectError(error.InvalidOptions, owner.drawBufferUnicode(target, null, encoded, 1, 0, 0, foreground, background, 0x100));
     try owner.drawBufferUnicode(target, null, encoded, 1, 0, 0, foreground, background, 0);
     try testing.expect(gp.isContinuationChar((try owner.raw().getBuffer(target)).get(1, 0).?.char));
@@ -40,6 +39,37 @@ test "Context encoded Unicode owns display cells until explicit destruction" {
     const empty = try owner.createUnicode("", .unicode);
     try testing.expectEqual(@as(usize, 0), (try owner.raw().getUnicode(empty)).chars.len);
     try testing.expect(encoded.generation != empty.generation or encoded.slot != empty.slot);
+}
+
+test "Context encoded Unicode encodes tabs, controls, and clusters a cell cannot hold as spaces" {
+    const owner = try context.Context.init(testing.allocator, testing.io, .{});
+    defer owner.deinit() catch unreachable;
+    const Case = struct { text: []const u8, chars: []const u32 };
+    const cases = [_]Case{
+        .{ .text = "a\tb", .chars = &.{ 'a', ' ', ' ', 'b' } },
+        .{ .text = "a\x00b", .chars = &.{ 'a', 'b' } },
+        .{ .text = "a\nb", .chars = &.{ 'a', 'b' } },
+        .{ .text = "a\r\nb", .chars = &.{ 'a', 'b' } },
+        .{ .text = "a\x1b[1mb", .chars = &.{ 'a', '[', '1', 'm', 'b' } },
+        .{ .text = "a\x7fb", .chars = &.{ 'a', 'b' } },
+        .{ .text = "a\u{85}b", .chars = &.{ 'a', 'b' } },
+        .{ .text = "a" ++ "e" ++ "\u{301}" ** 64 ++ "b", .chars = &.{ 'a', ' ', 'b' } },
+        .{ .text = "a" ++ "\u{4e2d}" ++ "\u{301}" ** 63 ++ "b", .chars = &.{ 'a', ' ', ' ', 'b' } },
+    };
+    for ([_]@import("../utf8.zig").WidthMethod{ .unicode, .wcwidth }) |width_method| {
+        for (cases) |case| {
+            errdefer std.debug.print("text={any} width_method={t}\n", .{ case.text, width_method });
+            const encoded = try owner.createUnicode(case.text, width_method);
+            defer owner.destroy(encoded) catch unreachable;
+            const data = (try owner.raw().getUnicode(encoded)).chars;
+            try testing.expectEqual(case.chars.len, data.len);
+            for (case.chars, data) |char, cell| {
+                try testing.expectEqual(char, cell.char);
+                try testing.expectEqual(@as(u8, 1), cell.width);
+            }
+        }
+    }
+    try testing.expectEqual(0, owner.graphemes.interned_live_ids.count());
 }
 
 test "Context encoded Unicode releases every provisional allocation" {

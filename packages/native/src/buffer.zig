@@ -42,15 +42,32 @@ fn mapGraphemeAcquire(err: gp.GraphemePoolError) error{ OutOfMemory, TextLimit, 
     };
 }
 
+/// Checked text accepts controls: layout gives them zero width, and cells never hold them.
 pub fn validateTextInput(text: []const u8) error{ TextLimit, InvalidUnicode }!void {
     if (text.len > text_bytes_max) return error.TextLimit;
-    const view = std.unicode.Utf8View.init(text) catch return error.InvalidUnicode;
-    var codepoints = view.iterator();
-    while (codepoints.nextCodepoint()) |codepoint| {
-        if ((codepoint < 0x20 and codepoint != '\t') or (codepoint >= 0x7f and codepoint <= 0x9f)) {
-            return error.InvalidUnicode;
-        }
+    if (!std.unicode.utf8ValidateSlice(text)) return error.InvalidUnicode;
+}
+
+/// The grapheme pool stores at most this many bytes per cluster.
+pub const grapheme_bytes_max = 128;
+
+/// Reports whether one cell may hold a cluster. The renderer prints cell text as is, so a
+/// control code point (C0, DEL, or C1) would move the terminal cursor, and the grapheme pool
+/// stores at most grapheme_bytes_max bytes. Checked draws write any other cluster as blank
+/// cells of its width instead of failing. Text layout gives a lone control zero width.
+pub fn isPrintableGlyph(bytes: []const u8) bool {
+    if (bytes.len > grapheme_bytes_max) return false;
+    for (bytes, 0..) |byte, index| {
+        if (byte < 0x20 or byte == 0x7f) return false;
+        // U+0080..U+009F encode as C2 80..C2 9F.
+        if (byte == 0xc2 and index + 1 < bytes.len and bytes[index + 1] < 0xa0) return false;
     }
+    return true;
+}
+
+/// The code point form of the control rule in isPrintableGlyph.
+pub fn isControlCodepoint(codepoint: u32) bool {
+    return codepoint < 0x20 or (codepoint >= 0x7f and codepoint <= 0x9f);
 }
 
 const MAX_UNICODE_CODEPOINT: u32 = 0x10FFFF;
@@ -1697,8 +1714,9 @@ pub const OptimizedBuffer = struct {
 
     /// Draw one row of UTF-8 with base style bits and packed color intent.
     /// Tabs retain drawText's two-cell expansion. A signed position draws only the cells inside
-    /// the buffer, with the same clipping as drawTextClipped.
-    /// Reject controls, oversized input/visible graphemes, and unqualified image resources.
+    /// the buffer, with the same clipping as drawTextClipped. Controls draw nothing, and a
+    /// cluster over grapheme_bytes_max draws as spaces of its width (see isPrintableGlyph).
+    /// Reject oversized input, invalid UTF-8, and unqualified image resources.
     /// Rejection preserves cells and live references; prepared capacity may remain.
     pub fn drawTextChecked(
         self: *OptimizedBuffer,
@@ -1769,19 +1787,20 @@ pub const OptimizedBuffer = struct {
             if (cell_width == 0) continue;
             const cluster_width = if (cluster) |entry| entry.width_cols else cell_width;
             const char_x_wide = @as(i64, x) + advance_cells;
-            const is_tab = bytes.len == 1 and bytes[0] == '\t';
-            if (!is_tab and char_x_wide < 0) {
+            // A tab or a cluster that a cell cannot hold draws as spaces, which clip one by one.
+            const blank = !isPrintableGlyph(bytes);
+            if (!blank and char_x_wide < 0) {
                 // Clip a glyph that starts left of column 0, even a wide glyph that reaches column 0.
                 // Advance as a drawn glyph does, so the visible glyphs keep their columns.
                 advance_cells += cell_width;
                 continue;
             }
-            // Only a tab is drawn from a column left of 0; it clips each of its cells.
+            // Only blank cells are drawn from a column left of 0.
             const char_x: u32 = @intCast(@max(char_x_wide, 0));
-            const tab_end = @min(char_x_wide + cluster_width, self.width);
-            const count: u32 = if (!is_tab) 1 else if (tab_end > char_x) @intCast(tab_end - char_x) else 0;
+            const blank_end = @min(char_x_wide + cell_width, self.width);
+            const count: u32 = if (!blank) 1 else if (blank_end > char_x) @intCast(blank_end - char_x) else 0;
             var visible = false;
-            if (is_tab) {
+            if (blank) {
                 for (0..count) |offset| {
                     visible = visible or self.isPointInScissor(@intCast(char_x + offset), y);
                 }
@@ -1800,7 +1819,7 @@ pub const OptimizedBuffer = struct {
             }
 
             try runs.ensureUnusedCapacity(scratch_allocator, 1);
-            const encoded: u32 = if (is_tab) DEFAULT_SPACE_CHAR else if (bytes.len == 1) bytes[0] else encoded: {
+            const encoded: u32 = if (blank) DEFAULT_SPACE_CHAR else if (bytes.len == 1) bytes[0] else encoded: {
                 const id = self.pool.acquire(bytes) catch |err| return mapGraphemeAcquire(err);
                 // Leave one reference for the destination tracker's first use.
                 if ((self.pool.getRefcount(id) catch unreachable) == math.maxInt(u32)) {
@@ -1811,7 +1830,7 @@ pub const OptimizedBuffer = struct {
                 break :encoded gp.packGraphemeStart(id, cell_width);
             };
             runs.appendAssumeCapacity(.{ .x = char_x, .char = encoded, .count = count });
-            advance_cells += if (is_tab) cluster_width else cell_width;
+            advance_cells += cell_width;
         }
         if (runs.items.len == 0) return;
         try self.storage.ensureTrackerCapacity(
@@ -1859,6 +1878,7 @@ pub const OptimizedBuffer = struct {
     }
 
     /// Preserve the supplied cell width and raw-cell semantics after preparing pool ownership.
+    /// A cluster that a cell cannot hold (see isPrintableGlyph) draws as spaces of that width.
     /// The caller validates retained image resources once before drawing its cells.
     pub fn drawGraphemeChecked(
         self: *OptimizedBuffer,
@@ -1884,9 +1904,15 @@ pub const OptimizedBuffer = struct {
         for (0..cell_width) |offset| {
             if (!self.isPointInScissor(@intCast(x + offset), @intCast(y))) return;
         }
-        if (grapheme_bytes.len > 128) return error.TextLimit;
         if (!std.unicode.utf8ValidateSlice(grapheme_bytes)) return error.InvalidUnicode;
-        if (grapheme_bytes.len == 1 and cell_width == 1 and grapheme_bytes[0] >= 32) {
+        if (!isPrintableGlyph(grapheme_bytes)) {
+            // Blank cells keep the authoritative width, so the following cells keep their columns.
+            for (0..cell_width) |offset| {
+                self.set(x + @as(u32, @intCast(offset)), y, makeCell(DEFAULT_SPACE_CHAR, fg, bg, attributes));
+            }
+            return;
+        }
+        if (grapheme_bytes.len == 1 and cell_width == 1) {
             self.set(x, y, makeCell(grapheme_bytes[0], fg, bg, attributes));
             return;
         }
@@ -2531,7 +2557,9 @@ pub const OptimizedBuffer = struct {
                     }
 
                     const is_tab = grapheme_bytes.len == 1 and grapheme_bytes[0] == '\t';
-                    if (!is_tab and !self.isPointInScissor(currentX, currentY)) {
+                    // A tab or a cluster that a cell cannot hold draws as spaces, which clip one by one.
+                    const is_blank = !isPrintableGlyph(grapheme_bytes);
+                    if (!is_blank and !self.isPointInScissor(currentX, currentY)) {
                         document_cell_offset += cluster_width_cols;
                         currentX += @as(i32, @intCast(cluster_width_cols));
                         rendered_col_in_vline += cluster_width_cols;
@@ -2539,7 +2567,7 @@ pub const OptimizedBuffer = struct {
                         continue;
                     }
 
-                    if (cluster_width_cols > 1 and !is_tab) {
+                    if (cluster_width_cols > 1 and !is_blank) {
                         if (rendered_col_in_vline + cluster_width_cols > horizontal_offset + viewport_width or
                             currentX < 0 or currentX + @as(i32, @intCast(cluster_width_cols)) > @as(i32, @intCast(self.width)))
                         {
@@ -2720,7 +2748,7 @@ pub const OptimizedBuffer = struct {
                     }
                     defer if (link_id != 0) self.link_pool.decref(link_id) catch unreachable;
 
-                    if (is_tab) {
+                    if (is_blank) {
                         const useTransparentTextFastPath = opacity == 1.0 and ansi.alpha(drawBg) == 0;
                         var tab_col: u32 = 0;
                         while (tab_col < cluster_width_cols) : (tab_col += 1) {
@@ -2732,7 +2760,7 @@ pub const OptimizedBuffer = struct {
 
                             var char = DEFAULT_SPACE_CHAR;
                             var fg = drawFg;
-                            if (tab_col == 0 and indicator_width > 0 and indicator_width <= cluster_width_cols and
+                            if (is_tab and tab_col == 0 and indicator_width > 0 and indicator_width <= cluster_width_cols and
                                 @as(u64, rendered_col_in_vline) + indicator_width <= @as(u64, horizontal_offset) + viewport_width)
                             {
                                 if (indicator_width == 1) {

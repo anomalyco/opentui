@@ -27,7 +27,8 @@ pub const EncodedUnicode = struct {
             release(pool, result.items);
             result.deinit(allocator);
         }
-        try result.ensureTotalCapacity(allocator, input.len);
+        // A cluster of at least one byte becomes at most two cells (a tab or a blank wide cluster).
+        try result.ensureTotalCapacity(allocator, input.len * 2);
         var byte_offset: usize = 0;
         var cluster_index: usize = 0;
         while (byte_offset < input.len) {
@@ -42,12 +43,16 @@ pub const EncodedUnicode = struct {
             const bytes = input[start..byte_offset];
             const width = utf8.getWidthAt(bytes, 0, tab_width, width_method);
             if (width == 0) continue;
-            const char: u32 = if (bytes.len == 1 and width == 1 and bytes[0] >= 32) bytes[0] else char: {
+            if (!buffer.isPrintableGlyph(bytes)) {
+                // As in checked text draws, a tab or a cluster that a cell cannot hold is spaces.
+                result.appendNTimesAssumeCapacity(.{ .width = 1, .char = buffer.DEFAULT_SPACE_CHAR }, width);
+                continue;
+            }
+            const char: u32 = if (bytes.len == 1 and width == 1) bytes[0] else char: {
                 const id = pool.acquire(bytes) catch |err| return switch (err) {
-                    error.GraphemeTooLong => error.TextLimit,
                     error.RefcountOverflow => error.TrackerLimit,
                     error.OutOfMemory => error.OutOfMemory,
-                    error.InvalidId, error.WrongGeneration => unreachable,
+                    error.GraphemeTooLong, error.InvalidId, error.WrongGeneration => unreachable,
                 };
                 break :char grapheme.packGraphemeStart(id, width);
             };
