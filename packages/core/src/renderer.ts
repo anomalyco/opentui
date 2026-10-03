@@ -4139,6 +4139,11 @@ export class CliRenderer extends EventEmitter implements RenderContext {
    */
   public resize(width: number, height: number): void {
     if (this._isDestroyed) return
+    // An explicit size replaces a debounced requestResize at once.
+    if (this.resizeTimeoutId !== null) {
+      this.clock.clearTimeout(this.resizeTimeoutId)
+      this.resizeTimeoutId = null
+    }
     if (this.pendingNativeResize !== null) {
       this.deferResize(width, height)
       return

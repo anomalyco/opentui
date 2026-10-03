@@ -249,3 +249,29 @@ for (const [state, enter] of Object.entries(busyResizes)) {
     if (reverted) expect(renderer.getNativeStats().cellsUpdated).toBe(renderer.width * renderer.height)
   })
 }
+
+// resize() is immediate: it replaces a debounced requestResize instead of waiting for its timer.
+for (const size of [
+  [90, 28],
+  [80, 24],
+]) {
+  test(`resize(${size}) after a debounced requestResize applies at once`, async () => {
+    const { renderer, stdout, clock } = createAdmissionRenderer(80, 24)
+    stdout.release()
+    renderer.requestRender()
+    clock.advance(100)
+    await renderer.idle()
+    const resizes: number[][] = []
+    renderer.on(CliRenderEvents.RESIZE, (width: number, height: number) => resizes.push([width, height]))
+
+    renderer.requestResize(100, 30)
+    renderer.resize(size[0], size[1])
+    const applied = [renderer.terminalWidth, renderer.terminalHeight]
+    clock.advance(100)
+    await renderer.idle()
+
+    const reverted = size[0] === 80 && size[1] === 24
+    expect({ applied, resizes }).toEqual({ applied: size, resizes: reverted ? [] : [size] })
+    if (reverted) expect(renderer.getNativeStats().cellsUpdated).toBe(renderer.width * renderer.height)
+  })
+}
