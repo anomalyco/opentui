@@ -324,7 +324,7 @@ test "EditorView - setText resets viewport to top" {
     try std.testing.expectEqual(@as(u32, 0), vp.y);
 }
 
-test "EditorView - borrowed replacement preserves selection and viewport on rejection" {
+test "EditorView - rejected text replacement preserves selection and viewport" {
     var pool = gp.GraphemePool.init(std.testing.allocator);
     defer pool.deinit();
     var links = link.LinkPool.init(std.testing.allocator);
@@ -335,7 +335,7 @@ test "EditorView - borrowed replacement preserves selection and viewport on reje
         const ev = try EditorView.init(std.testing.allocator, eb, 10, 2);
         defer ev.deinit();
         const initial = "zero\none\ntwo\nthree\nfour\nfive";
-        const mem_id = try eb.setTextBorrowed(initial, null);
+        const mem_id = try eb.setTextOwned(initial, null);
         try eb.setCursor(5, 4);
         try eb.insertText("X");
         try eb.insertText("Y");
@@ -355,10 +355,7 @@ test "EditorView - borrowed replacement preserves selection and viewport on reje
         const allocator = eb.tb.global_allocator;
         var failing = std.testing.FailingAllocator.init(allocator, .{ .fail_index = 0 });
         eb.tb.global_allocator = failing.allocator();
-        const result = if (clean)
-            eb.setTextBorrowed("new", mem_id)
-        else
-            eb.replaceTextBorrowed("new");
+        const result = if (clean) eb.setTextOwned("new", mem_id) else if (eb.replaceText("new")) |_| mem_id else |err| err;
         eb.tb.global_allocator = allocator;
         try std.testing.expectError(error.OutOfMemory, result);
         try std.testing.expect(failing.has_induced_failure);
@@ -383,7 +380,7 @@ test "EditorView - borrowed replacement preserves selection and viewport on reje
         _ = try eb.redo();
         try std.testing.expectEqualStrings(initial ++ "XY", actual[0..eb.getText(&actual)]);
         ev.resetSelection();
-        const accepted = if (clean) try eb.setTextBorrowed("new", mem_id) else try eb.replaceTextBorrowed("new");
+        const accepted = try if (clean) eb.setTextOwned("new", mem_id) else if (eb.replaceText("new")) |_| mem_id else |err| err;
         try std.testing.expectEqual(@as(u32, 0), ev.getViewport().?.y);
         try std.testing.expectEqualDeep(Cursor{ .row = 0, .col = 0 }, ev.getPrimaryCursor());
         try std.testing.expectEqual(@as(?u32, null), ev.desired_visual_col);

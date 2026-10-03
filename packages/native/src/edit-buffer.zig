@@ -763,33 +763,19 @@ pub const EditBuffer = struct {
 
     /// Set text and completely reset the buffer state (clears history, resets add_buffer)
     pub fn setText(self: *EditBuffer, text: []const u8) !void {
-        const owned_text = try self.allocator.dupe(u8, text);
-        const previous_buffer_count = self.tb.mem_registry.buffers.items.len;
-        const mem_id = self.tb.registerMemBuffer(owned_text, true) catch |err| {
-            self.allocator.free(owned_text);
-            return err;
-        };
-        errdefer self.tb.mem_registry.cancelLastRegistration(mem_id, previous_buffer_count);
-        try self.setTextFromMemId(mem_id);
+        _ = try self.setTextOwned(text, null);
     }
 
-    pub fn setTextBorrowed(self: *EditBuffer, text: []const u8, preferred_id: ?u8) !u8 {
-        return self.resetText(text, preferred_id, false);
-    }
-
+    /// Like setText, but reuses the live slot `preferred_id` for the copy when there is one.
     pub fn setTextOwned(self: *EditBuffer, text: []const u8, preferred_id: ?u8) !u8 {
-        const owned_text = try self.allocator.dupe(u8, text);
-        errdefer self.allocator.free(owned_text);
-        return self.resetText(owned_text, preferred_id, true);
-    }
-
-    fn resetText(self: *EditBuffer, text: []const u8, preferred_id: ?u8, owned: bool) !u8 {
         if (preferred_id) |id| {
             // The live add buffer must remain owned and writable after replacement.
             if (id == self.add_buffer.mem_id or id == 255) return error.InvalidMemId;
         }
         try self.cursors.ensureTotalCapacity(self.allocator, 1);
-        const mem_id = try self.tb.replaceText(text, preferred_id, owned);
+        const owned_text = try self.allocator.dupe(u8, text);
+        errdefer self.allocator.free(owned_text);
+        const mem_id = try self.tb.replaceText(owned_text, preferred_id, true);
         self.add_buffer.len = 0;
         self.finishTextReplacement();
         return mem_id;
@@ -797,13 +783,6 @@ pub const EditBuffer = struct {
 
     /// Set text from memory ID and completely reset the buffer state (clears history, resets add_buffer)
     pub fn setTextFromMemId(self: *EditBuffer, mem_id: u8) !void {
-        // This call or its caller may have cleared the text before an allocation failed.
-        errdefer if (self.tb.rope().totalWeight() == 0 and self.cursors.items.len > 0) {
-            const cursor = &self.cursors.items[0];
-            if (cursor.row != 0 or cursor.col != 0 or cursor.offset != 0) {
-                cursor.* = .{ .row = 0, .col = 0 };
-            }
-        };
         try self.cursors.ensureTotalCapacity(self.allocator, 1);
         try self.tb.resetTextFromMemId(mem_id);
         self.add_buffer.len = 0;
@@ -821,33 +800,6 @@ pub const EditBuffer = struct {
         try self.add_buffer.ensureCapacity(self.tb, text.len);
         const added = self.add_buffer.append(text);
         try self.tb.setTextFromMemRangeWithUndo(added.mem_id, added.start, added.end, meta);
-        self.finishTextReplacement();
-    }
-
-    pub fn replaceTextBorrowed(self: *EditBuffer, text: []const u8) !u8 {
-        var meta_buffer: [64]u8 = undefined;
-        const meta = try self.encodeCurrentCursorMeta(&meta_buffer);
-        try self.cursors.ensureTotalCapacity(self.allocator, 1);
-        const previous_buffer_count = self.tb.mem_registry.buffers.items.len;
-        const mem_id = try self.tb.registerMemBuffer(text, false);
-        errdefer self.tb.mem_registry.cancelLastRegistration(mem_id, previous_buffer_count);
-        try self.tb.setTextFromMemIdWithUndo(mem_id, meta);
-        self.finishTextReplacement();
-        return mem_id;
-    }
-
-    /// Replace text from memory ID while preserving undo history (creates an undo point)
-    pub fn replaceTextFromMemId(self: *EditBuffer, mem_id: u8) !void {
-        errdefer if (self.tb.rope().totalWeight() == 0 and self.cursors.items.len > 0) {
-            const cursor = &self.cursors.items[0];
-            if (cursor.row != 0 or cursor.col != 0 or cursor.offset != 0) {
-                cursor.* = .{ .row = 0, .col = 0 };
-            }
-        };
-        var meta_buffer: [64]u8 = undefined;
-        const meta = try self.encodeCurrentCursorMeta(&meta_buffer);
-        try self.cursors.ensureTotalCapacity(self.allocator, 1);
-        try self.tb.setTextFromMemIdWithUndo(mem_id, meta);
         self.finishTextReplacement();
     }
 
@@ -938,26 +890,6 @@ pub const EditBuffer = struct {
         return CursorMeta.fromCursor(cursor, self.tb.tabWidth()).encode(out_buffer);
     }
 
-    fn restoreCursorFromMeta(self: *EditBuffer, meta: []const u8) !bool {
-        const decodedMeta = CursorMeta.decode(meta) orelse return false;
-
-        const width_changed = if (decodedMeta.tab_width) |width| width != self.tb.tabWidth() else false;
-        const col = if (width_changed)
-            self.remapCol(decodedMeta.row, decodedMeta.col, decodedMeta.tab_width.?) orelse decodedMeta.col
-        else
-            decodedMeta.col;
-        try self.setCursor(decodedMeta.row, col);
-
-        if (self.cursors.items.len > 0) {
-            self.cursors.items[0].desired_col = if (width_changed and decodedMeta.desired_col == decodedMeta.col)
-                col
-            else
-                decodedMeta.desired_col;
-        }
-
-        return true;
-    }
-
     fn autoStoreUndo(self: *EditBuffer) !void {
         var meta_buffer: [64]u8 = undefined;
         const meta = try self.encodeCurrentCursorMeta(meta_buffer[0..]);
@@ -965,39 +897,36 @@ pub const EditBuffer = struct {
     }
 
     pub fn undo(self: *EditBuffer) ![]const u8 {
-        var current_meta_buffer: [64]u8 = undefined;
-        const current_meta = try self.encodeCurrentCursorMeta(current_meta_buffer[0..]);
-        const prev_meta = try self.tb.undo(current_meta);
-
-        const restored = try self.restoreCursorFromMeta(prev_meta);
-
-        if (!restored) {
-            const cursor = self.getPrimaryCursor();
-            try self.setCursor(cursor.row, cursor.col);
-        }
-
-        self.tb.markViewsDirty();
-        self.events.emit(.cursorChanged);
-        self.emitNativeEvent(.history_cursor_changed);
-
-        return CursorMeta.publicBytes(prev_meta);
+        var meta_buffer: [64]u8 = undefined;
+        const meta = try self.encodeCurrentCursorMeta(&meta_buffer);
+        return self.restoreHistoryStep(try self.tb.undo(meta));
     }
 
     pub fn redo(self: *EditBuffer) ![]const u8 {
-        const next_meta = try self.tb.redo();
+        return self.restoreHistoryStep(try self.tb.redo());
+    }
 
-        const restored = try self.restoreCursorFromMeta(next_meta);
-
-        if (!restored) {
-            const cursor = self.getPrimaryCursor();
-            try self.setCursor(cursor.row, cursor.col);
-        }
+    /// Moves the cursor to a restored step's metadata and returns its public part.
+    fn restoreHistoryStep(self: *EditBuffer, meta: []const u8) ![]const u8 {
+        const current = self.getPrimaryCursor();
+        // Unknown metadata keeps the cursor, clamped to the restored text.
+        const decoded = CursorMeta.decode(meta) orelse
+            CursorMeta{ .row = current.row, .col = current.col, .desired_col = current.col };
+        const width_changed = if (decoded.tab_width) |width| width != self.tb.tabWidth() else false;
+        const col = if (width_changed)
+            self.remapCol(decoded.row, decoded.col, decoded.tab_width.?) orelse decoded.col
+        else
+            decoded.col;
+        try self.setCursor(decoded.row, col);
+        self.cursors.items[0].desired_col = if (width_changed and decoded.desired_col == decoded.col)
+            col
+        else
+            decoded.desired_col;
 
         self.tb.markViewsDirty();
         self.events.emit(.cursorChanged);
         self.emitNativeEvent(.history_cursor_changed);
-
-        return CursorMeta.publicBytes(next_meta);
+        return CursorMeta.publicBytes(meta);
     }
 
     pub fn canUndo(self: *const EditBuffer) bool {
