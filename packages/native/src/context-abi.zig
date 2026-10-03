@@ -1489,6 +1489,15 @@ pub fn ot_session_close(context: ?*ContextHandle, session_ptr: ?*const c.ot_hand
     return c.OT_OK;
 }
 
+pub fn ot_terminal_flush_input() callconv(.c) c.ot_status {
+    @import("terminal.zig").flushInput();
+    return c.OT_OK;
+}
+
+test "ot_terminal_flush_input is best effort and returns OK" {
+    try std.testing.expectEqual(c.OT_OK, ot_terminal_flush_input());
+}
+
 pub fn ot_session_cancel(context: ?*ContextHandle, session_ptr: ?*const c.ot_handle) callconv(.c) c.ot_status {
     const status = sessionContextStatus(context);
     if (status != c.OT_OK) return status;

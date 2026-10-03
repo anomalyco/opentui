@@ -885,6 +885,7 @@ export class CliRenderer extends EventEmitter implements RenderContext {
   private _destroyFinalized: boolean = false
   private _destroyCleanupPrepared: boolean = false
   private _streamLeaseAcquired: boolean = false
+  private flushTerminalInputOnClose = false
   public nextRenderBuffer: OptimizedBuffer
   public currentRenderBuffer: OptimizedBuffer
   private _isRunning: boolean = false
@@ -1103,6 +1104,7 @@ export class CliRenderer extends EventEmitter implements RenderContext {
     const restored = this.nativeSession.restoreOnExit()
     try {
       this.destroy()
+      if (this.flushTerminalInputOnClose) this.lib.terminalFlushInput()
     } finally {
       this.nativeSession.dispose()
       if (!restored && this._terminalIsSetup) {
@@ -1224,6 +1226,7 @@ export class CliRenderer extends EventEmitter implements RenderContext {
         .finally(() => this.nativeDestroyWait!.promise)
         .finally(() => {
           if (this.nativeSession.error && !this.nativeSession.disposed) this.nativeSession.dispose()
+          if (this.flushTerminalInputOnClose) this.lib.terminalFlushInput()
           this.releaseStreamLease()
         })
       void this.nativeClosed.catch(() => {})
@@ -4787,6 +4790,8 @@ export class CliRenderer extends EventEmitter implements RenderContext {
       const bufferedInput = this.stdin.readableLength
       if (bufferedInput > 0) this.stdin.read(bufferedInput)
     }
+    // The kernel queue is flushed after the Session writes restoration, which stops mouse reports.
+    this.flushTerminalInputOnClose = discardInput && this.stdin === process.stdin
     rendererTracker.renderers.delete(this)
     if (rendererTracker.renderers.size === 0) {
       void destroyTreeSitterClient().catch((error) => {

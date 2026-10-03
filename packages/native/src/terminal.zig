@@ -1854,3 +1854,26 @@ pub fn refusesForcedSixel(self: *Terminal) bool {
 pub fn getTerminalVersion(self: *Terminal) []const u8 {
     return self.term_info.version[0..self.term_info.version_len];
 }
+
+/// Discard input that the terminal queued on process stdin and the host has not read, such as mouse reports sent
+/// before mouse tracking was disabled. Best effort: a no-op when stdin is not a terminal.
+pub fn flushInput() void {
+    if (builtin.os.tag == .windows) {
+        const WindowsConsole = struct {
+            extern "kernel32" fn GetStdHandle(handle: std.os.windows.DWORD) callconv(.winapi) std.os.windows.HANDLE;
+            extern "kernel32" fn FlushConsoleInputBuffer(handle: std.os.windows.HANDLE) callconv(.winapi) std.os.windows.BOOL;
+        };
+        const stdin_handle = WindowsConsole.GetStdHandle(@bitCast(@as(i32, -10)));
+        _ = WindowsConsole.FlushConsoleInputBuffer(stdin_handle);
+        return;
+    }
+    const tciflush: c_int = switch (builtin.os.tag) {
+        .linux => 0,
+        .macos => 1,
+        else => return,
+    };
+    const PosixTerminal = struct {
+        extern "c" fn tcflush(fd: c_int, queue_selector: c_int) c_int;
+    };
+    _ = PosixTerminal.tcflush(0, tciflush);
+}

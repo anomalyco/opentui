@@ -1,4 +1,4 @@
-import { test, expect, beforeEach, afterEach } from "bun:test"
+import { test, expect, beforeEach, afterEach, spyOn } from "bun:test"
 import { createCliRenderer, type CliRenderer } from "../renderer.js"
 import { createTestStdin, createTestStdout } from "../testing/test-streams.js"
 
@@ -237,3 +237,30 @@ test("destroying final custom renderer does not pause process stdin again", asyn
 
   expect(pauseCalled).toBe(false)
 })
+
+// The terminal can queue mouse reports until restoration disables them. They must not reach the next program.
+const inputFlushCases = [
+  { stdin: "process", suspended: false, flushes: 1 },
+  { stdin: "process", suspended: true, flushes: 0 },
+  { stdin: "custom", suspended: false, flushes: 0 },
+] as const
+
+for (const { stdin, suspended, flushes } of inputFlushCases) {
+  test(`closing a ${suspended ? "suspended " : ""}renderer on ${stdin} stdin flushes terminal input ${flushes} times`, async () => {
+    const renderer = await createCliRenderer({
+      stdin: stdin === "process" ? process.stdin : createTestStdin(),
+      stdout: createTestStdout(),
+      bufferedOutput: "memory",
+    })
+    const flush = spyOn(renderer.nativeScene.driver.renderLib, "terminalFlushInput").mockImplementation(() => {})
+    try {
+      if (suspended) await renderer.suspend()
+      renderer.destroy()
+      expect(flush).toHaveBeenCalledTimes(0)
+      await renderer.closed
+      expect(flush).toHaveBeenCalledTimes(flushes)
+    } finally {
+      flush.mockRestore()
+    }
+  })
+}
