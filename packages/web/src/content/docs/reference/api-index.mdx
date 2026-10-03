@@ -424,10 +424,8 @@ The build generates eight platform packages:
 
 Each package has one default export that resolves the native library path. These packages are internal distribution surfaces, not application APIs. Let `@opentui/core` select the correct package. See [Runtime and platform support](/docs/getting-started/runtime-support).
 
-## Source-defined native ABI
+## Native ABI
 
-The npm API and the source-defined native application binary interface (ABI) are separate surfaces. `lib.zig` defines 335 exported functions. The Yoga module defines 50 more, and `NativeSpanFeed` defines 11 more.
+The npm API and the native application binary interface (ABI) are separate surfaces. `opentui.h` declares the experimental C ABI. See [C](/docs/native/c).
 
-OpenTUI's TypeScript packages call these functions through an internal ABI. The project does not publish a first-party C header or a supported standalone C contract. Do not treat the 396 source names as supported npm symbols or as an API for other language bindings.
-
-The native binding can change with its TypeScript callers. Use the TypeScript exports indexed above for application code.
+OpenTUI's TypeScript packages call the native library through internal bindings that can change with them. Use the TypeScript exports indexed above for application code.
