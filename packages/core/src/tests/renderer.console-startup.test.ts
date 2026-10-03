@@ -834,7 +834,7 @@ for (const [name, screenMode, change, dimensions, output] of [
     const current = renderer.currentRenderBuffer
     const next = renderer.nextRenderBuffer
     const lib = renderer.nativeScene.driver.renderLib
-    const method = name.endsWith("resize") ? "sessionResizeRenderer" : "sessionSetScreen"
+    const method = name === "alternate-screen resize" ? "sessionResizeRenderer" : "sessionSetScreen"
     const failure = new NativeError("injected resize", NativeStatus.InvalidArgument)
     const resizeSpy = spyOn(lib, method).mockImplementation(() => {
       throw failure

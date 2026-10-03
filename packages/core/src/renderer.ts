@@ -4021,8 +4021,6 @@ export class CliRenderer extends EventEmitter implements RenderContext {
     }
     if (clearStart === null) this.nativeSession.resize(nextGeometry.renderWidth, nextGeometry.renderHeight)
     else {
-      // Preserve the drain gate without publishing the target size before scrub admission.
-      this.nativeSession.resize(this.width, this.height)
       this.nativeSession.setScreen(
         this._screenMode === "alternate-screen",
         nextGeometry.renderWidth,
