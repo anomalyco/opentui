@@ -207,13 +207,11 @@ export interface NativeRenderableIntegration {
     | "host"
     | { readonly native: (buffer: OptimizedBuffer, deltaTime: number) => void; readonly buffered?: boolean }
   readonly lifecycle?: {
-    readonly resize?: "host" | { readonly native: (width: number, height: number) => void }
-    readonly update?:
-      | "host"
-      | {
-          readonly idle: (deltaTime: number) => void
-          readonly active: (renderable: Renderable) => boolean
-        }
+    readonly resize?: { readonly native: (width: number, height: number) => void }
+    readonly update?: {
+      readonly idle: (deltaTime: number) => void
+      readonly active: (renderable: Renderable) => boolean
+    }
   }
   readonly beforeAfter?: boolean
   readonly paintBuffer?: "destination"
@@ -1972,13 +1970,11 @@ export abstract class Renderable extends BaseRenderable {
 
   private needsHostResize(onResize: unknown): boolean {
     const resize = this.nativeIntegration.lifecycle?.resize
-    if (resize === "host") return true
     return onResize !== nativeSceneMethodDefaults.onResize && onResize !== resize?.native
   }
 
   private hostUpdateFlags(onUpdate: unknown): number {
     const update = this.nativeIntegration.lifecycle?.update
-    if (update === "host") return NativeSceneHook.Update
     if (update && onUpdate === update.idle) {
       return update.active(this) ? NativeSceneHook.Update : NativeSceneHook.IdleUpdate
     }
@@ -2082,7 +2078,7 @@ export abstract class Renderable extends BaseRenderable {
         nativeFlags &= ~nativeSceneHookBeforeAfter
       }
       const nativeResize = this.nativeIntegration.lifecycle?.resize
-      if (!resize && nativeResize && nativeResize !== "host") {
+      if (!resize && nativeResize) {
         nativeFlags =
           (nativeFlags & ~NativeSceneHook.Resize) |
           (lineInfo && this.nativeIntegration.lineInfo ? NativeSceneHook.Resize : 0)
@@ -2117,7 +2113,7 @@ export abstract class Renderable extends BaseRenderable {
             this.onLayoutResize(request.width, request.height)
           } else {
             const resize = this.nativeIntegration.lifecycle?.resize
-            if (!resize || resize === "host") {
+            if (!resize) {
               this.onSizeChange?.call(this)
               if (!this._isDestroyed) this.emit("resize")
             }
