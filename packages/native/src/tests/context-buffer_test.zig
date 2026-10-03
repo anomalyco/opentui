@@ -53,6 +53,45 @@ test "Context checked character drawing rejects colliding encoded IDs from disti
     try testing.expectEqualStrings("\u{8a9e}", try foreign.graphemes.get(grapheme.graphemeIdFromChar(char)));
 }
 
+test "Context cell draws write a space for a control code point" {
+    const owner = try context.Context.init(testing.allocator, testing.io, .{});
+    defer owner.deinit() catch unreachable;
+    const id = try owner.createBuffer(1, 1, .{});
+    const target = try owner.raw().getBuffer(id);
+    const fg = ansi.rgbColor(250, 240, 230, 255);
+    const bg = ansi.rgbColor(10, 20, 30, 255);
+    for ([_]context.BufferDraw.Operation{ .cell, .cell_blend, .char }) |operation| {
+        for ([_]u32{ 0, '\t', '\n', 0x1b, 0x1f, 0x7f, 0x85, 0x9f }) |char| {
+            errdefer std.debug.print("operation={t} char={x}\n", .{ operation, char });
+            try owner.clearBuffer(id, ansi.rgbColor(0, 0, 0, 255));
+            target.set(0, 0, .{ .char = 'Z', .fg = fg, .bg = bg, .attributes = 0 });
+            try owner.drawBuffer(id, null, &.{ .operation = operation, .char = char, .foreground = fg, .background = bg }, "", "");
+            try testing.expectEqual(@as(u32, ' '), target.buffer.char[0]);
+            try testing.expect(@import("../buffer.zig").rgbaEqual(bg, target.buffer.bg[0]));
+        }
+    }
+}
+
+test "Context box draws reject edges past i32 before drawing" {
+    const owner = try context.Context.init(testing.allocator, testing.io, .{});
+    defer owner.deinit() catch unreachable;
+    const id = try owner.createBuffer(3, 2, .{});
+    const target = try owner.raw().getBuffer(id);
+    try owner.clearBuffer(id, ansi.rgbColor(0, 0, 0, 255));
+    const box: context.BufferDraw = .{ .operation = .box, .x = -1, .width = 3, .height = 2, .packed_options = 15, .foreground = ansi.rgbColor(255, 255, 255, 255), .border_chars = .{ '+', '+', '+', '+', '-', '|', 0, 0, 0, 0, 0 } };
+    for ([_][4]i64{ .{ std.math.maxInt(i32), 0, 1, 1 }, .{ 0, std.math.maxInt(i32), 1, 1 }, .{ 0, 0, std.math.maxInt(u32), 1 }, .{ 0, 0, 1, @as(i64, std.math.maxInt(i32)) + 1 } }) |edges| {
+        var invalid = box;
+        invalid.x = @intCast(edges[0]);
+        invalid.y = @intCast(edges[1]);
+        invalid.width = @intCast(edges[2]);
+        invalid.height = @intCast(edges[3]);
+        try testing.expectError(error.InvalidDimensions, owner.drawBuffer(id, null, &invalid, "", ""));
+    }
+    try testing.expectEqualSlices(u32, &.{ ' ', ' ', ' ', ' ', ' ', ' ' }, target.buffer.char);
+    try owner.drawBuffer(id, null, &box, "", "");
+    try testing.expectEqualSlices(u32, &.{ '-', '+', ' ', '-', '+', ' ' }, target.buffer.char);
+}
+
 test "Context fill rectangle clips unsigned extents and keeps leases current" {
     const owner = try context.Context.init(testing.allocator, testing.io, .{});
     defer owner.deinit() catch unreachable;

@@ -6,18 +6,14 @@ const fail = @import("context-editor-abi.zig").fail;
 pub fn ot_unicode_create(context: ?*abi.ContextHandle, bytes: ?[*]const u8, count: u32, width_method: u32, out: ?*c.ot_handle) callconv(.c) c.ot_status {
     const status = abi.sessionContextStatus(context);
     if (status != c.OT_OK) return status;
-    if (out == null or width_method > c.OT_WIDTH_METHOD_UNICODE_WIDE or (count != 0 and bytes == null)) return fail(context, error.InvalidOptions);
-    out.?.* = abi.handleToC(context.?.core.createUnicode(if (bytes) |p| p[0..count] else &.{}, @enumFromInt(width_method)) catch |err| return fail(context, err));
+    if (out == null or (count != 0 and bytes == null)) return fail(context, error.InvalidOptions);
+    const method = abi.widthMethodFromC(width_method) catch |err| return fail(context, err);
+    out.?.* = abi.handleToC(context.?.core.createUnicode(if (bytes) |p| p[0..count] else &.{}, method) catch |err| return fail(context, err));
     return c.OT_OK;
 }
 
 pub fn ot_unicode_destroy(context: ?*abi.ContextHandle, id: ?*const c.ot_handle) callconv(.c) c.ot_status {
-    const status = abi.sessionContextStatus(context);
-    if (status != c.OT_OK) return status;
-    const handle = abi.handleFromC((id orelse return fail(context, error.InvalidOptions)).*);
-    _ = context.?.core.raw().getUnicode(handle) catch |err| return fail(context, err);
-    context.?.core.destroy(handle) catch |err| return fail(context, err);
-    return c.OT_OK;
+    return abi.destroyKind(context, id, .encoded_unicode);
 }
 
 pub fn ot_unicode_get(context: ?*abi.ContextHandle, id: ?*const c.ot_handle, characters: ?[*]c.ot_unicode_char, capacity: u32, out: ?*u32) callconv(.c) c.ot_status {

@@ -305,7 +305,7 @@ test "Scene record rejects malformed streams before presenting cells" {
     cases[6].len += 4;
     // An invalid command body fails during playback.
     cases[7].slot(0, c.OT_SCENE_RECORD_PHASE_AFTER);
-    cases[7].text("\x07", 0, 0);
+    cases[7].text("\xff", 0, 0);
     for (&cases, 0..) |*recording, index| {
         const request = try f.step(null, options, c.OT_SCENE_FRAME_RECORD, null);
         if (index == 6) @memset(recording.bytes[recording.len - 4 .. recording.len], 0);

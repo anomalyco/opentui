@@ -86,6 +86,77 @@ test "GPU primitive packed offsets describe a source rectangle not destination b
     try testing.expectEqualSlices(u32, &.{ ' ', ' ', ' ', ' ', ' ', 'A', 'B', ' ', ' ', 'C', 'D', ' ' }, target.buffer.char);
 }
 
+test "Context checked grid and pixel draws reject invalid input before any write" {
+    const owner = try context.Context.init(testing.allocator, testing.io, .{ .render_cells_max = 12 });
+    defer owner.deinit() catch unreachable;
+    const id = try owner.createBuffer(4, 3, .{});
+    const target = try owner.raw().getBuffer(id);
+    const nan = std.math.nan(f32);
+    // The second cell is invalid, so a single-pass draw would already have written the first.
+    const packed_cells = [_]PackedCell{ .{ .char = 'A' }, .{ .char = 'B', .fg = .{ nan, 0, 0, 1 } } };
+    const packed_bytes = std.mem.asBytes(&packed_cells);
+    const pixels = [_]u8{255} ** 32;
+    const grid: context.BufferGrid = .{ .border_chars = border, .foreground = red, .background = black, .draw_inner = true, .draw_outer = true };
+    var invalid_chars: [3]context.BufferGrid = @splat(grid);
+    for (&invalid_chars, [_]u32{ 0xd800, 0x110000, 0x4e2d }) |*options, char| options.border_chars[4] = char;
+    const long_offsets = [_]i32{ 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13 };
+    try owner.clearBuffer(id, black);
+    const Result = anyerror!void;
+    const results = [_]Result{
+        owner.drawGrid(id, null, invalid_chars[0], &columns, &rows),
+        owner.drawGrid(id, null, invalid_chars[1], &columns, &rows),
+        owner.drawGrid(id, null, invalid_chars[2], &columns, &rows),
+        owner.drawGrid(id, null, grid, &.{ 0, 0 }, &rows),
+        owner.drawGrid(id, null, grid, &columns, &.{ 2, 1 }),
+        owner.drawGrid(id, null, grid, &long_offsets, &rows),
+        owner.drawPackedBuffer(id, null, packed_bytes[0 .. packed_bytes.len - 1], 0, 0, 2, 1),
+        owner.drawPackedBuffer(id, null, packed_bytes, 0, 0, 2, 1),
+        owner.drawSuperSampleBuffer(id, null, &pixels, 0, 0, 2, 16),
+        owner.drawSuperSampleBuffer(id, null, &pixels, 0, 0, 1, 0),
+        owner.drawSuperSampleBuffer(id, null, &pixels, 0, 0, 1, 6),
+        owner.drawSuperSampleBuffer(id, null, pixels[0..24], 0, 0, 1, 16),
+        owner.drawGrayscaleBuffer(id, null, &.{ 1, 1, 1 }, 0, 0, 2, 2, null, null, false),
+        owner.drawGrayscaleBuffer(id, null, &.{ 1, nan }, 0, 0, 2, 1, null, null, false),
+        owner.drawGrayscaleBuffer(id, null, &.{ 1, 1 }, 0, 0, 2, 1, ansi.withMeta(red, 0x300), null, false),
+    };
+    for (results, 0..) |result, index| {
+        errdefer std.debug.print("row {d}\n", .{index});
+        try testing.expect(std.meta.isError(result));
+    }
+    for (target.buffer.char) |char| try testing.expectEqual(@as(u32, ' '), char);
+
+    // Fewer than two offsets, or offsets wholly left of the buffer, draw nothing; leading
+    // offsets left of column 0 do not shift the visible columns.
+    try owner.drawGrid(id, null, grid, &.{0}, &rows);
+    try owner.drawGrid(id, null, grid, &.{ -9, -5 }, &rows);
+    for (target.buffer.char) |char| try testing.expectEqual(@as(u32, ' '), char);
+    try owner.drawGrid(id, null, grid, &.{ -3, 0, 3 }, &rows);
+    const shifted = target.buffer.char[0..12].*;
+    try testing.expectEqual(@as(u32, '+'), shifted[0]);
+    target.clear(black, null);
+    try owner.drawGrid(id, null, grid, &.{ 0, 3 }, &rows);
+    try testing.expectEqualSlices(u32, target.buffer.char, &shifted);
+}
+
+test "GPU primitive supersampling reads BGRA as RGBA with red and blue swapped" {
+    const owner = try context.Context.init(testing.allocator, testing.io, .{});
+    defer owner.deinit() catch unreachable;
+    const rgba = try owner.createBuffer(2, 1, .{});
+    const bgra = try owner.createBuffer(2, 1, .{});
+    // Two cells of 2x2 pixels, one row of them short: missing neighbors are transparent.
+    const rgba_pixels = [_]u8{ 250, 10, 30, 255, 20, 200, 40, 255, 5, 6, 220, 255, 90, 80, 70, 128 };
+    var bgra_pixels = rgba_pixels;
+    for (0..4) |pixel| std.mem.swap(u8, &bgra_pixels[pixel * 4], &bgra_pixels[pixel * 4 + 2]);
+    try owner.drawSuperSampleBuffer(rgba, null, &rgba_pixels, 0, 0, 1, 16);
+    try owner.drawSuperSampleBuffer(bgra, null, &bgra_pixels, 0, 0, 0, 16);
+    const expected = try owner.raw().getBuffer(rgba);
+    const actual = try owner.raw().getBuffer(bgra);
+    try testing.expectEqualSlices(u32, expected.buffer.char, actual.buffer.char);
+    try testing.expectEqualDeep(expected.buffer.fg, actual.buffer.fg);
+    try testing.expectEqualDeep(expected.buffer.bg, actual.buffer.bg);
+    try testing.expect(expected.buffer.char[0] != ' ');
+}
+
 test "GPU primitive supersampling never samples the next row as a right neighbor" {
     const owner = try context.Context.init(testing.allocator, testing.io, .{});
     defer owner.deinit() catch unreachable;

@@ -275,10 +275,14 @@ test "Context diagnostics capture renderer and buffer failures without invoking 
     failing.fail_index = std.math.maxInt(usize);
 
     const text_id = try owner.createTextBuffer(.unicode);
-    try owner.textBufferSetText(text_id, "a" ++ "\xcc\x81" ** 64);
+    try owner.textBufferSetText(text_id, "\u{4e2d}");
     const view = (try owner.raw().getTextBufferView(try owner.createTextBufferView(text_id))).view;
     view.setViewportSize(2, 1);
+    // The warm draw leaves only the target's grapheme tracker growth to allocate.
+    value.getCurrentBuffer().drawTextBuffer(view, 0, 0);
+    failing.fail_index = failing.alloc_index;
     value.getNextBuffer().drawTextBuffer(view, 0, 0);
+    failing.fail_index = std.math.maxInt(usize);
     try std.testing.expectError(error.InvalidDimensions, buffer.OptimizedBuffer.init(std.testing.allocator, 0, 1, .{
         .link_pool = &owner.links,
         .pool = &owner.graphemes,
@@ -290,7 +294,7 @@ test "Context diagnostics capture renderer and buffer failures without invoking 
     try std.testing.expectEqual(@as(u64, 0), result.dropped);
     for (events) |event| try std.testing.expectEqual(.warn, event.level);
     try std.testing.expectEqualStrings("Failed to push hit-grid scissor rect: error.OutOfMemory", events[0].message[0..events[0].message_len]);
-    try std.testing.expect(std.mem.find(u8, events[1].message[0..events[1].message_len], "error.GraphemeTooLong") != null);
+    try std.testing.expectEqualStrings("drawTextBuffer failed: error.OutOfMemory", events[1].message[0..events[1].message_len]);
     try std.testing.expectEqualStrings("OptimizedBuffer.init: Invalid dimensions 0x1", events[2].message[0..events[2].message_len]);
     try std.testing.expectEqual(@as(u32, 0), LegacyProbe.calls.load(.monotonic));
     try std.testing.expectError(error.InvalidDimensions, buffer.OptimizedBuffer.init(std.testing.allocator, 0, 1, .{

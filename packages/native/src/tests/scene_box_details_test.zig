@@ -38,7 +38,7 @@ test "Scene box details rejects invalid replacement before publication" {
     const fixture = try setup(owner);
     try owner.sceneSetBoxDetails(fixture.box, .{ .title = "old", .custom_border_chars = custom });
     try testing.expectError(error.WrongKind, owner.sceneSetBoxDetails(fixture.root, .{ .title = "bad" }));
-    for ([_][]const u8{ "\xff", "a\n", "\x1b", "\xc2\x80" }) |invalid| {
+    for ([_][]const u8{ "\xff", "a\xc0\xaf", "\xc2" }) |invalid| {
         try testing.expectError(error.InvalidUnicode, owner.sceneSetBoxDetails(fixture.box, .{ .title = invalid }));
         try testing.expectError(error.InvalidUnicode, owner.sceneSetBoxDetails(fixture.box, .{ .bottom_title = invalid }));
     }
@@ -51,6 +51,10 @@ test "Scene box details rejects invalid replacement before publication" {
     }
     const oversized = "a" ** (buffer.text_bytes_max + 1);
     try testing.expectError(error.TextLimit, owner.sceneSetBoxDetails(fixture.box, .{ .title = oversized }));
+    try repaint(owner, fixture.session, options.background, true, 0);
+    try expectRow((try owner.raw().getSessionRenderer(fixture.session)).getNextBuffer(), 0, "A-old------B");
+    // Titles keep controls; checked text gives them zero width when it draws the title.
+    try owner.sceneSetBoxDetails(fixture.box, .{ .title = "o\nl\x1b\u{85}d", .custom_border_chars = custom });
     try repaint(owner, fixture.session, options.background, true, 0);
     try expectRow((try owner.raw().getSessionRenderer(fixture.session)).getNextBuffer(), 0, "A-old------B");
 }

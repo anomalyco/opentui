@@ -33,24 +33,32 @@ pub fn validateColor(color: RGBA) error{InvalidOptions}!void {
     if (ansi.getMeta(color) != ansi.packMeta(intent, if (intent == .indexed) ansi.slot(color) else 0)) return error.InvalidOptions;
 }
 
-fn mapGraphemeAcquire(err: gp.GraphemePoolError) error{ OutOfMemory, TextLimit, TrackerLimit } {
-    return switch (err) {
-        error.OutOfMemory => error.OutOfMemory,
-        error.GraphemeTooLong => error.TextLimit,
-        error.RefcountOverflow => error.TrackerLimit,
-        error.InvalidId, error.WrongGeneration => unreachable,
-    };
-}
-
+/// Checked text accepts controls: layout gives them zero width, and cells never hold them.
 pub fn validateTextInput(text: []const u8) error{ TextLimit, InvalidUnicode }!void {
     if (text.len > text_bytes_max) return error.TextLimit;
-    const view = std.unicode.Utf8View.init(text) catch return error.InvalidUnicode;
-    var codepoints = view.iterator();
-    while (codepoints.nextCodepoint()) |codepoint| {
-        if ((codepoint < 0x20 and codepoint != '\t') or (codepoint >= 0x7f and codepoint <= 0x9f)) {
-            return error.InvalidUnicode;
-        }
+    if (!std.unicode.utf8ValidateSlice(text)) return error.InvalidUnicode;
+}
+
+/// The grapheme pool stores at most this many bytes per cluster.
+pub const grapheme_bytes_max = 128;
+
+/// Reports whether one cell may hold a cluster. The renderer prints cell text as is, so a
+/// control code point (C0, DEL, or C1) would move the terminal cursor, and the grapheme pool
+/// stores at most grapheme_bytes_max bytes. Checked draws write any other cluster as blank
+/// cells of its width instead of failing. Text layout gives a lone control zero width.
+pub fn isPrintableGlyph(bytes: []const u8) bool {
+    if (bytes.len > grapheme_bytes_max) return false;
+    for (bytes, 0..) |byte, index| {
+        if (byte < 0x20 or byte == 0x7f) return false;
+        // U+0080..U+009F encode as C2 80..C2 9F.
+        if (byte == 0xc2 and index + 1 < bytes.len and bytes[index + 1] < 0xa0) return false;
     }
+    return true;
+}
+
+/// The code point form of the control rule in isPrintableGlyph.
+pub fn isControlCodepoint(codepoint: u32) bool {
+    return codepoint < 0x20 or (codepoint >= 0x7f and codepoint <= 0x9f);
 }
 
 const MAX_UNICODE_CODEPOINT: u32 = 0x10FFFF;
@@ -215,6 +223,9 @@ pub const BufferStorage = struct {
     link_tracker: link.LinkTracker,
     image_placements: std.ArrayListUnmanaged(OptimizedBuffer.ImagePlacement) = .empty,
 
+    /// Bytes of the four cell arrays per cell.
+    const cell_bytes = 2 * @sizeOf(u32) + 2 * @sizeOf(RGBA);
+
     fn init(
         allocator: Allocator,
         width: u32,
@@ -225,7 +236,6 @@ pub const BufferStorage = struct {
     ) BufferError!*BufferStorage {
         if (width == 0 or height == 0) return error.InvalidDimensions;
         const size = math.mul(u32, width, height) catch return error.InvalidDimensions;
-        const cell_bytes = 2 * @sizeOf(u32) + 2 * @sizeOf(RGBA);
         const array_bytes = math.mul(usize, size, cell_bytes) catch return error.InvalidDimensions;
         const self = try allocator.create(BufferStorage);
         errdefer allocator.destroy(self);
@@ -294,6 +304,8 @@ pub const BufferStorage = struct {
     fn resizeExclusive(self: *BufferStorage, width: u32, height: u32, cells_max: u32) BufferError!void {
         assert(self.ref_count == 1 and self.lease_budget == null and !self.retired);
         const size = math.mul(u32, width, height) catch return error.InvalidDimensions;
+        // The caller bounds the cells, so growth never caps capacity below them.
+        assert(size <= cells_max);
         const generation = math.add(u64, self.generation, 1) catch return error.GenerationExhausted;
         if (size > self.capacity or self.capacity > size +| size / 2) {
             // Growing past the old capacity reserves half of it again, so a buffer that grows a row
@@ -307,12 +319,12 @@ pub const BufferStorage = struct {
             const bg = try self.allocator.alloc(RGBA, capacity);
             errdefer self.allocator.free(bg);
             const attributes = try self.allocator.alloc(u32, capacity);
-            const cell_bytes = 2 * @sizeOf(u32) + 2 * @sizeOf(RGBA);
             self.retained_bytes = self.retained_bytes - @as(u64, self.capacity) * cell_bytes + @as(u64, capacity) * cell_bytes;
             self.freeArrays();
             self.buffer = .{ .char = chars, .fg = fg, .bg = bg, .attributes = attributes };
             self.capacity = capacity;
         }
+        assert(size <= self.capacity and self.capacity <= size +| size / 2);
         self.buffer = .{
             .char = self.buffer.char.ptr[0..size],
             .fg = self.buffer.fg.ptr[0..size],
@@ -384,7 +396,7 @@ pub const BufferLease = struct {
         count_max: u32,
         bytes: *u64,
         bytes_max: *const u64,
-    ) error{ LeaseLimit, LeaseBytesLimit, OutOfMemory, StaleLease }!BufferLease {
+    ) error{ LeaseLimit, LeaseBytesLimit, OutOfMemory }!BufferLease {
         if (count.* >= count_max) return error.LeaseLimit;
         const storage = target.storage;
         const already_leased = storage.lease_budget != null;
@@ -392,6 +404,7 @@ pub const BufferLease = struct {
         if (!already_leased and storage.retained_bytes > bytes_max.* - bytes.*) {
             return error.LeaseBytesLimit;
         }
+        // A buffer's current storage is never retired, so the lease starts current.
         var lease = target.acquireLease() catch return error.LeaseLimit;
         errdefer lease.release();
         if (!already_leased) {
@@ -403,7 +416,6 @@ pub const BufferLease = struct {
             };
             if (storage.retained_bytes > bytes_max.* - bytes.*) return error.LeaseBytesLimit;
         }
-        if (storage.retired) return error.StaleLease;
         if (storage.lease_budget) |*budget| {
             assert(budget.bytes == bytes);
             assert(budget.bytes_max == bytes_max);
@@ -419,6 +431,9 @@ pub const BufferLease = struct {
             bytes.* += storage.retained_bytes;
         }
         count.* += 1;
+        // The first checked lease reserved an entry per cell, so tracked writes cannot fail.
+        assert(storage.grapheme_tracker.used_ids.capacity() > storage.buffer.char.len);
+        assert(storage.link_tracker.used_ids.capacity() > storage.buffer.char.len);
         return lease;
     }
 
@@ -457,6 +472,90 @@ pub const BufferLease = struct {
         const storage = self.storage orelse return;
         self.storage = null;
         storage.release();
+    }
+};
+
+/// A glyph that a text view draw wrote at column x of its current row.
+const MarkBase = struct { x: u32, char: u32 };
+
+/// One glyph of a text row with at least one cell to draw.
+const TextGlyph = struct {
+    bytes: []const u8,
+    /// First column to draw.
+    x: u32,
+    /// Display cells of the whole glyph.
+    width: u32,
+    /// A blank glyph draws `count` spaces from x. Any other glyph is one cell character.
+    blank: bool,
+    count: u32,
+};
+
+/// Places the glyphs of one text row for drawText and drawTextChecked. Controls and other
+/// zero-width clusters take no cells. A tab or a cluster that a cell cannot hold is blank
+/// (see isPrintableGlyph): its spaces clip one by one, also left of column 0. Any other glyph
+/// draws only when all of its cells are inside the target and its scissor. Every glyph
+/// advances by the width it is drawn with, so clipping never moves the visible glyphs.
+const TextRow = struct {
+    target: *const OptimizedBuffer,
+    text: []const u8,
+    /// Sparse metadata from utf8.findRenderClusterInfo for text.
+    clusters: []const utf8.RenderClusterInfo,
+    x: i32,
+    y: i32,
+    byte_offset: usize = 0,
+    cluster_index: usize = 0,
+    advance_cells: u64 = 0,
+
+    const tab_width: u8 = 2;
+
+    fn next(self: *TextRow) ?TextGlyph {
+        const target = self.target;
+        // A glyph is at most two cells per byte, so the columns fit in i64.
+        while (self.byte_offset < self.text.len and self.x + @as(i64, @intCast(self.advance_cells)) < target.width) {
+            const start = self.byte_offset;
+            // Unchecked text can be invalid UTF-8, which ends a cluster at another byte.
+            while (self.cluster_index < self.clusters.len and self.clusters[self.cluster_index].byte_start < start) {
+                self.cluster_index += 1;
+            }
+            const cluster: ?utf8.RenderClusterInfo = if (self.cluster_index < self.clusters.len and
+                self.clusters[self.cluster_index].byte_start == start) self.clusters[self.cluster_index] else null;
+            if (cluster) |entry| {
+                self.byte_offset += entry.byte_len;
+                self.cluster_index += 1;
+            } else {
+                // Sparse metadata omits zero-width clusters, not their UTF-8 bytes.
+                const length = std.unicode.utf8ByteSequenceLength(self.text[start]) catch 1;
+                self.byte_offset = @min(start + length, self.text.len);
+            }
+            const bytes = self.text[start..self.byte_offset];
+            const width = if (cluster != null and target.width_method != .wcwidth)
+                cluster.?.width_cols
+            else
+                utf8.getWidthAt(bytes, 0, tab_width, target.width_method);
+            if (width == 0) continue;
+            const glyph_x = self.x + @as(i64, @intCast(self.advance_cells));
+            self.advance_cells += width;
+            const blank = !isPrintableGlyph(bytes);
+            // A glyph that starts left of column 0 is clipped, even a wide glyph that reaches column 0.
+            if (!blank and glyph_x < 0) continue;
+            const first: u32 = @intCast(@max(glyph_x, 0));
+            const end = @min(glyph_x + width, target.width);
+            const count: u32 = if (!blank) 1 else if (end > first) @intCast(end - first) else 0;
+            if (!self.isVisible(first, if (blank) count else width, blank)) continue;
+            return .{ .bytes = bytes, .x = first, .width = width, .blank = blank, .count = count };
+        }
+        return null;
+    }
+
+    /// Blank cells need one cell in the scissor; a glyph needs all of its cells in the target and scissor.
+    fn isVisible(self: *const TextRow, first: u32, cells: u32, blank: bool) bool {
+        if (cells > self.target.width - first) return false;
+        for (0..cells) |offset| {
+            const inside = self.target.isPointInScissor(@intCast(first + offset), self.y);
+            if (blank and inside) return true;
+            if (!blank and !inside) return false;
+        }
+        return !blank;
     }
 };
 
@@ -831,23 +930,34 @@ pub const OptimizedBuffer = struct {
             const previous = target.storage;
             assert(storage.generation - 1 == previous.generation);
             self.storage = null;
-            target.storage = storage;
-            target.buffer = storage.buffer;
-            target.grapheme_tracker = &storage.grapheme_tracker;
-            target.link_tracker = &storage.link_tracker;
-            target.image_placements = &storage.image_placements;
-            target.width = storage.width;
-            target.height = storage.height;
+            target.adoptStorage(storage);
             target.clear(ansi.rgbColor(0, 0, 0, 255), null);
             previous.retire();
         }
     };
 
-    pub fn prepareResize(self: *OptimizedBuffer, width: u32, height: u32) BufferError!PreparedResize {
-        if (self.width == width and self.height == height) return .{ .target = self };
+    /// The buffer mirrors its storage's arrays, size, and trackers for direct field access.
+    fn adoptStorage(self: *OptimizedBuffer, storage: *BufferStorage) void {
+        self.storage = storage;
+        self.buffer = storage.buffer;
+        self.width = storage.width;
+        self.height = storage.height;
+        self.grapheme_tracker = &storage.grapheme_tracker;
+        self.link_tracker = &storage.link_tracker;
+        self.image_placements = &storage.image_placements;
+    }
+
+    /// Returns whether the size differs from the current one. The same size is a no-op.
+    fn checkResize(self: *const OptimizedBuffer, width: u32, height: u32) BufferError!bool {
+        if (self.width == width and self.height == height) return false;
         if (width == 0 or height == 0) return BufferError.InvalidDimensions;
         const cells = math.mul(u32, width, height) catch return error.InvalidDimensions;
         if (cells > self.cells_max) return error.InvalidDimensions;
+        return true;
+    }
+
+    pub fn prepareResize(self: *OptimizedBuffer, width: u32, height: u32) BufferError!PreparedResize {
+        if (!try self.checkResize(width, height)) return .{ .target = self };
         const generation = math.add(u64, self.storage.generation, 1) catch return error.GenerationExhausted;
         return .{
             .target = self,
@@ -862,20 +972,16 @@ pub const OptimizedBuffer = struct {
             prepared.commit();
             return;
         }
-        if (self.width == width and self.height == height) return;
-        if (width == 0 or height == 0) return BufferError.InvalidDimensions;
-        const cells = math.mul(u32, width, height) catch return error.InvalidDimensions;
-        if (cells > self.cells_max) return error.InvalidDimensions;
+        if (!try self.checkResize(width, height)) return;
         // Replacing unleased storage would only trade the arrays for fresh pages of the same size.
         try storage.resizeExclusive(width, height, self.cells_max);
-        self.buffer = storage.buffer;
-        self.width = width;
-        self.height = height;
+        self.adoptStorage(storage);
         self.clear(ansi.rgbColor(0, 0, 0, 255), null);
         // A replacement generation starts without tracker or placement capacity, which leases charge.
         storage.grapheme_tracker.used_ids.clearAndFree();
         storage.link_tracker.used_ids.clearAndFree();
         storage.image_placements.clearAndFree(storage.resourceAllocator());
+        assert(storage.retained_bytes == @sizeOf(BufferStorage) + @as(u64, storage.capacity) * BufferStorage.cell_bytes);
     }
 
     fn coordsToIndex(self: *const OptimizedBuffer, x: u32, y: u32) u32 {
@@ -1697,8 +1803,9 @@ pub const OptimizedBuffer = struct {
 
     /// Draw one row of UTF-8 with base style bits and packed color intent.
     /// Tabs retain drawText's two-cell expansion. A signed position draws only the cells inside
-    /// the buffer, with the same clipping as drawTextClipped.
-    /// Reject controls, oversized input/visible graphemes, and unqualified image resources.
+    /// the buffer, with the same clipping as drawTextClipped. Controls draw nothing, and a
+    /// cluster over grapheme_bytes_max draws as spaces of its width (see isPrintableGlyph).
+    /// Reject oversized input, invalid UTF-8, and unqualified image resources.
     /// Rejection preserves cells and live references; prepared capacity may remain.
     pub fn drawTextChecked(
         self: *OptimizedBuffer,
@@ -1717,14 +1824,8 @@ pub const OptimizedBuffer = struct {
         try validateTextInput(text);
         if (y < 0 or x >= self.width or y >= self.height or text.len == 0) return;
         const row: u32 = @intCast(y);
-        if (self.width > math.maxInt(i32) or self.height > math.maxInt(i32)) return error.InvalidOptions;
-        if (self.getCurrentScissorRect()) |clip| {
-            if (clip.width > math.maxInt(i32) or clip.height > math.maxInt(i32) or
-                @as(i64, clip.x) + clip.width > math.maxInt(i32) or
-                @as(i64, clip.y) + clip.height > math.maxInt(i32)) return error.InvalidOptions;
-        }
+        try self.checkDrawState();
         const opacity = self.getCurrentOpacity();
-        if (!math.isFinite(opacity) or opacity < 0 or opacity > 1) return error.InvalidOptions;
         if (self.skipTransparentCellDraw(opacity, isFullyTransparent(opacity, fg, bg orelse ansi.rgbColor(0, 0, 0, 0)))) return;
 
         var scratch = std.heap.stackFallback(4096, self.allocator);
@@ -1734,8 +1835,7 @@ pub const OptimizedBuffer = struct {
         defer scratch_allocator.free(input);
         var clusters: std.ArrayListUnmanaged(utf8.RenderClusterInfo) = .empty;
         defer clusters.deinit(scratch_allocator);
-        const tab_width: u8 = 2;
-        try utf8.findRenderClusterInfo(scratch_allocator, input, tab_width, utf8.isAsciiOnly(input), self.width_method, &clusters);
+        try utf8.findRenderClusterInfo(scratch_allocator, input, TextRow.tab_width, utf8.isAsciiOnly(input), self.width_method, &clusters);
 
         const PreparedRun = struct { x: u32, char: u32, count: u32 };
         var runs: std.ArrayListUnmanaged(PreparedRun) = .empty;
@@ -1745,75 +1845,23 @@ pub const OptimizedBuffer = struct {
             }
             runs.deinit(scratch_allocator);
         }
-        var byte_offset: usize = 0;
-        var cluster_index: usize = 0;
-        var advance_cells: u32 = 0;
         var grapheme_count: u32 = 0;
-        // advance_cells is at most two cells per input byte, so the sum fits in i64.
-        while (byte_offset < input.len and @as(i64, x) + advance_cells < self.width) {
-            const start = byte_offset;
-            const cluster: ?utf8.RenderClusterInfo = if (cluster_index < clusters.items.len and
-                clusters.items[cluster_index].byte_start == start) clusters.items[cluster_index] else null;
-            if (cluster) |entry| {
-                byte_offset += entry.byte_len;
-                cluster_index += 1;
-            } else {
-                // Sparse metadata omits zero-width clusters, not their UTF-8 bytes.
-                byte_offset += std.unicode.utf8ByteSequenceLength(input[start]) catch unreachable;
-            }
-            const bytes = input[start..byte_offset];
-            const cell_width = if (cluster != null and self.width_method != .wcwidth)
-                cluster.?.width_cols
-            else
-                utf8.getWidthAt(bytes, 0, tab_width, self.width_method);
-            if (cell_width == 0) continue;
-            const cluster_width = if (cluster) |entry| entry.width_cols else cell_width;
-            const char_x_wide = @as(i64, x) + advance_cells;
-            const is_tab = bytes.len == 1 and bytes[0] == '\t';
-            if (!is_tab and char_x_wide < 0) {
-                // Clip a glyph that starts left of column 0, even a wide glyph that reaches column 0.
-                // Advance as a drawn glyph does, so the visible glyphs keep their columns.
-                advance_cells += cell_width;
-                continue;
-            }
-            // Only a tab is drawn from a column left of 0; it clips each of its cells.
-            const char_x: u32 = @intCast(@max(char_x_wide, 0));
-            const tab_end = @min(char_x_wide + cluster_width, self.width);
-            const count: u32 = if (!is_tab) 1 else if (tab_end > char_x) @intCast(tab_end - char_x) else 0;
-            var visible = false;
-            if (is_tab) {
-                for (0..count) |offset| {
-                    visible = visible or self.isPointInScissor(@intCast(char_x + offset), y);
-                }
-            } else if (cell_width <= self.width - char_x) {
-                visible = true;
-                for (0..cell_width) |offset| {
-                    if (!self.isPointInScissor(@intCast(char_x + offset), y)) {
-                        visible = false;
-                        break;
-                    }
-                }
-            }
-            if (!visible) {
-                advance_cells += cluster_width;
-                continue;
-            }
-
+        var layout: TextRow = .{ .target = self, .text = input, .clusters = clusters.items, .x = x, .y = y };
+        while (layout.next()) |glyph| {
             try runs.ensureUnusedCapacity(scratch_allocator, 1);
-            const encoded: u32 = if (is_tab) DEFAULT_SPACE_CHAR else if (bytes.len == 1) bytes[0] else encoded: {
-                const id = self.pool.acquire(bytes) catch |err| return mapGraphemeAcquire(err);
-                // Leave one reference for the destination tracker's first use.
-                if ((self.pool.getRefcount(id) catch unreachable) == math.maxInt(u32)) {
-                    self.pool.decref(id) catch unreachable;
-                    return error.TrackerLimit;
-                }
+            const encoded: u32 = if (glyph.blank) DEFAULT_SPACE_CHAR else if (glyph.bytes.len == 1) glyph.bytes[0] else encoded: {
+                const id = try self.acquireGlyph(glyph.bytes);
                 grapheme_count += 1;
-                break :encoded gp.packGraphemeStart(id, cell_width);
+                break :encoded gp.packGraphemeStart(id, glyph.width);
             };
-            runs.appendAssumeCapacity(.{ .x = char_x, .char = encoded, .count = count });
-            advance_cells += if (is_tab) cluster_width else cell_width;
+            runs.appendAssumeCapacity(.{ .x = glyph.x, .char = encoded, .count = glyph.count });
         }
         if (runs.items.len == 0) return;
+        // Runs go left to right without overlap, so each cell is written at most once.
+        for (runs.items[0 .. runs.items.len - 1], runs.items[1..]) |previous, run| {
+            const cells = if (gp.isGraphemeChar(previous.char)) gp.encodedCharWidth(previous.char) else previous.count;
+            assert(previous.x + cells <= run.x);
+        }
         try self.storage.ensureTrackerCapacity(
             @min(@as(u64, self.grapheme_tracker.getGraphemeCount()) + grapheme_count, @as(u64, self.buffer.char.len) + 1),
             self.link_tracker.getLinkCount(),
@@ -1859,6 +1907,7 @@ pub const OptimizedBuffer = struct {
     }
 
     /// Preserve the supplied cell width and raw-cell semantics after preparing pool ownership.
+    /// A cluster that a cell cannot hold (see isPrintableGlyph) draws as spaces of that width.
     /// The caller validates retained image resources once before drawing its cells.
     pub fn drawGraphemeChecked(
         self: *OptimizedBuffer,
@@ -1869,33 +1918,30 @@ pub const OptimizedBuffer = struct {
         fg: RGBA,
         bg: RGBA,
         attributes: u32,
-    ) error{ InvalidUnicode, InvalidOptions, TextLimit, UnsupportedResource, OutOfMemory, TrackerLimit }!void {
+    ) error{ InvalidUnicode, InvalidOptions, OutOfMemory, TrackerLimit }!void {
         if (attributes & ~ansi.TextAttributes.ATTRIBUTE_BASE_MASK != 0) return error.InvalidOptions;
         try validateColor(fg);
         try validateColor(bg);
         if (grapheme_bytes.len == 0 or cell_width == 0 or x >= self.width or y >= self.height) return;
         if (cell_width > self.width - x) return;
-        if (self.width > math.maxInt(i32) or self.height > math.maxInt(i32)) return error.InvalidOptions;
-        if (self.getCurrentScissorRect()) |clip| {
-            if (clip.width > math.maxInt(i32) or clip.height > math.maxInt(i32) or
-                @as(i64, clip.x) + clip.width > math.maxInt(i32) or
-                @as(i64, clip.y) + clip.height > math.maxInt(i32)) return error.InvalidOptions;
-        }
+        try self.checkDrawState();
         for (0..cell_width) |offset| {
             if (!self.isPointInScissor(@intCast(x + offset), @intCast(y))) return;
         }
-        if (grapheme_bytes.len > 128) return error.TextLimit;
         if (!std.unicode.utf8ValidateSlice(grapheme_bytes)) return error.InvalidUnicode;
-        if (grapheme_bytes.len == 1 and cell_width == 1 and grapheme_bytes[0] >= 32) {
+        if (!isPrintableGlyph(grapheme_bytes)) {
+            // Blank cells keep the authoritative width, so the following cells keep their columns.
+            for (0..cell_width) |offset| {
+                self.set(x + @as(u32, @intCast(offset)), y, makeCell(DEFAULT_SPACE_CHAR, fg, bg, attributes));
+            }
+            return;
+        }
+        if (grapheme_bytes.len == 1 and cell_width == 1) {
             self.set(x, y, makeCell(grapheme_bytes[0], fg, bg, attributes));
             return;
         }
 
-        const id = self.pool.acquire(grapheme_bytes) catch |err| return mapGraphemeAcquire(err);
-        if ((self.pool.getRefcount(id) catch unreachable) == math.maxInt(u32)) {
-            self.pool.decref(id) catch unreachable;
-            return error.TrackerLimit;
-        }
+        const id = try self.acquireGlyph(grapheme_bytes);
         defer self.pool.decref(id) catch unreachable;
         try self.storage.ensureTrackerCapacity(
             @as(u64, self.grapheme_tracker.getGraphemeCount()) + 1,
@@ -1922,141 +1968,37 @@ pub const OptimizedBuffer = struct {
 
         const is_ascii_only = utf8.isAsciiOnly(text);
         if (explicit_colors_opaque and is_ascii_only) {
-            var printable = true;
-            for (text) |byte| {
-                if (byte < 32 or byte > 126) {
-                    printable = false;
-                    break;
-                }
+            const background = bg.?;
+            // Each printable ASCII byte is one cell, so the bytes left of column 0 are clipped.
+            const clipped_byte_count: usize = if (x < 0) @min(text.len, @abs(x)) else 0;
+            var char_x: u32 = @intCast(@max(x, 0));
+            for (text[clipped_byte_count..]) |byte| {
+                if (char_x >= self.width) break;
+                self.set(char_x, y, makeCell(byte, fg, background, attributes));
+                char_x += 1;
             }
-            if (printable) {
-                const background = bg.?;
-                // Each printable ASCII byte is one cell, so the bytes left of column 0 are clipped.
-                const clipped_byte_count: usize = if (x < 0) @min(text.len, @abs(x)) else 0;
-                var char_x: u32 = @intCast(@max(x, 0));
-                for (text[clipped_byte_count..]) |byte| {
-                    if (char_x >= self.width) break;
-                    self.set(char_x, y, makeCell(byte, fg, background, attributes));
-                    char_x += 1;
-                }
-                return;
-            }
+            return;
         }
 
-        var render_cluster_list: std.ArrayListUnmanaged(utf8.RenderClusterInfo) = .empty;
-        defer render_cluster_list.deinit(self.allocator);
+        var clusters: std.ArrayListUnmanaged(utf8.RenderClusterInfo) = .empty;
+        defer clusters.deinit(self.allocator);
+        try utf8.findRenderClusterInfo(self.allocator, text, TextRow.tab_width, is_ascii_only, self.width_method, &clusters);
 
-        const tab_width: u8 = 2;
-        try utf8.findRenderClusterInfo(self.allocator, text, tab_width, is_ascii_only, self.width_method, &render_cluster_list);
-        const render_clusters = render_cluster_list.items;
-
-        var advance_cells: u32 = 0;
-        var byte_offset: u32 = 0;
-        var col: u32 = 0;
-        var special_idx: usize = 0;
-
-        text_loop: while (byte_offset < text.len) {
-            const char_x_wide = @as(i64, x) + advance_cells;
-            if (char_x_wide >= self.width) break;
-            const char_x: i32 = @intCast(char_x_wide);
-            // Only a tab is drawn from a column left of 0; it clips each of its cells.
-            const cell_x: u32 = @intCast(@max(char_x, 0));
-
-            const at_special = special_idx < render_clusters.len and render_clusters[special_idx].col_start == col;
-
-            var grapheme_bytes: []const u8 = undefined;
-            var cluster_width_cols: u32 = undefined;
-
-            if (at_special) {
-                const g = render_clusters[special_idx];
-                grapheme_bytes = text[g.byte_start .. g.byte_start + g.byte_len];
-                cluster_width_cols = g.width_cols;
-                byte_offset = g.byte_start + g.byte_len;
-                special_idx += 1;
-            } else {
-                if (byte_offset >= text.len) break;
-                grapheme_bytes = text[byte_offset .. byte_offset + 1];
-                cluster_width_cols = 1;
-                byte_offset += 1;
+        var layout: TextRow = .{ .target = self, .text = text, .clusters = clusters.items, .x = x, .y = @intCast(y) };
+        while (layout.next()) |glyph| {
+            const background = bg orelse self.get(glyph.x, y).?.bg;
+            var retained_id: ?u32 = null;
+            defer if (retained_id) |id| self.pool.decref(id) catch unreachable;
+            const char: u32 = if (glyph.blank) DEFAULT_SPACE_CHAR else if (glyph.bytes.len == 1) glyph.bytes[0] else char: {
+                const id = self.pool.acquire(glyph.bytes) catch return BufferError.OutOfMemory;
+                retained_id = id;
+                break :char gp.packGraphemeStart(id, glyph.width);
+            };
+            const cell = makeCell(char, fg, background, attributes);
+            for (0..glyph.count) |offset| {
+                const column = glyph.x + @as(u32, @intCast(offset));
+                if (explicit_colors_opaque) self.set(column, y, cell) else self.setTextCell(column, y, cell);
             }
-
-            const is_tab = grapheme_bytes.len == 1 and grapheme_bytes[0] == '\t';
-            const cluster_byte_start = if (at_special) render_clusters[special_idx - 1].byte_start else byte_offset - 1;
-            if (!is_tab and char_x < 0) {
-                // Clip a glyph that starts left of column 0, even a wide glyph that reaches column 0.
-                // Advance as a drawn glyph does, so the visible glyphs keep their columns.
-                advance_cells += utf8.getWidthAt(text, cluster_byte_start, tab_width, self.width_method);
-                col += cluster_width_cols;
-                continue;
-            }
-            if (!is_tab and !self.isPointInScissor(char_x, @intCast(y))) {
-                advance_cells += cluster_width_cols;
-                col += cluster_width_cols;
-                continue;
-            }
-
-            var bgColor: RGBA = undefined;
-            if (bg) |b| {
-                bgColor = b;
-            } else if (self.get(cell_x, y)) |existingCell| {
-                bgColor = existingCell.bg;
-            } else {
-                bgColor = ansi.rgbColor(0, 0, 0, 255);
-            }
-
-            const cell_width = utf8.getWidthAt(text, cluster_byte_start, tab_width, self.width_method);
-            if (cell_width == 0) {
-                col += cluster_width_cols;
-                continue;
-            }
-            if (cell_width > 1 and !is_tab) {
-                if (cell_x + cell_width > self.width) {
-                    advance_cells += cluster_width_cols;
-                    col += cluster_width_cols;
-                    continue;
-                }
-                for (1..cell_width) |span_offset| {
-                    if (!self.isPointInScissor(char_x + @as(i32, @intCast(span_offset)), @intCast(y))) {
-                        advance_cells += cluster_width_cols;
-                        col += cluster_width_cols;
-                        continue :text_loop;
-                    }
-                }
-            }
-
-            if (is_tab) {
-                var tab_col: u32 = 0;
-                while (tab_col < cluster_width_cols) : (tab_col += 1) {
-                    const tab_x = @as(i64, char_x) + tab_col;
-                    if (tab_x < 0) continue;
-                    if (tab_x >= self.width) break;
-                    if (!self.isPointInScissor(@intCast(tab_x), @intCast(y))) continue;
-
-                    const tab_cell_x: u32 = @intCast(tab_x);
-                    const cell = makeCell(DEFAULT_SPACE_CHAR, fg, bgColor, attributes);
-                    if (explicit_colors_opaque) self.set(tab_cell_x, y, cell) else self.setTextCell(tab_cell_x, y, cell);
-                }
-                advance_cells += cluster_width_cols;
-                col += cluster_width_cols;
-                continue;
-            }
-
-            var encoded_char: u32 = 0;
-            var retained_gid: ?u32 = null;
-            defer if (retained_gid) |gid| self.pool.decref(gid) catch unreachable;
-            if (grapheme_bytes.len == 1 and cell_width == 1 and grapheme_bytes[0] >= 32) {
-                encoded_char = @as(u32, grapheme_bytes[0]);
-            } else {
-                const gid = self.pool.acquire(grapheme_bytes) catch return BufferError.OutOfMemory;
-                retained_gid = gid;
-                encoded_char = gp.packGraphemeStart(gid & gp.GRAPHEME_ID_MASK, cell_width);
-            }
-
-            const cell = makeCell(encoded_char, fg, bgColor, attributes);
-            if (explicit_colors_opaque) self.set(cell_x, y, cell) else self.setTextCell(cell_x, y, cell);
-
-            advance_cells += cell_width;
-            col += cluster_width_cols;
         }
     }
 
@@ -2317,10 +2259,7 @@ pub const OptimizedBuffer = struct {
         x: i32,
         y: i32,
     ) !void {
-        self.drawTextBufferInternal(TextBufferView, true, text_buffer_view, x, y) catch |err| return switch (err) {
-            error.GraphemeTooLong => error.TextLimit,
-            else => err,
-        };
+        return self.drawTextBufferInternal(TextBufferView, true, text_buffer_view, x, y);
     }
 
     /// Internal implementation that accepts either TextBufferView or EditorView
@@ -2411,6 +2350,8 @@ pub const OptimizedBuffer = struct {
             currentX = x + align_pad;
             var rendered_col_in_vline: u32 = 0;
             document_cell_offset = vline.document_cell_offset;
+            // The glyph that this draw wrote just before the current cluster, if any.
+            var mark_base: ?MarkBase = null;
 
             const vline_span_info = view.getVirtualLineSpans(vline_idx);
             const spans = vline_span_info.spans;
@@ -2499,6 +2440,9 @@ pub const OptimizedBuffer = struct {
                             utf8.getWidthAt(grapheme_bytes, 0, text_buffer.tabWidth(), text_buffer.widthMethod());
                         byte_offset = next_byte_offset;
                     }
+                    // Only a glyph that this iteration draws, or a zero-width cluster, sets it again.
+                    const previous_glyph = mark_base;
+                    mark_base = null;
 
                     if (rendered_col_in_vline < horizontal_offset) {
                         document_cell_offset += cluster_width_cols;
@@ -2531,7 +2475,9 @@ pub const OptimizedBuffer = struct {
                     }
 
                     const is_tab = grapheme_bytes.len == 1 and grapheme_bytes[0] == '\t';
-                    if (!is_tab and !self.isPointInScissor(currentX, currentY)) {
+                    // A tab or a cluster that a cell cannot hold draws as spaces, which clip one by one.
+                    const is_blank = !isPrintableGlyph(grapheme_bytes);
+                    if (!is_blank and !self.isPointInScissor(currentX, currentY)) {
                         document_cell_offset += cluster_width_cols;
                         currentX += @as(i32, @intCast(cluster_width_cols));
                         rendered_col_in_vline += cluster_width_cols;
@@ -2539,7 +2485,7 @@ pub const OptimizedBuffer = struct {
                         continue;
                     }
 
-                    if (cluster_width_cols > 1 and !is_tab) {
+                    if (cluster_width_cols > 1 and !is_blank) {
                         if (rendered_col_in_vline + cluster_width_cols > horizontal_offset + viewport_width or
                             currentX < 0 or currentX + @as(i32, @intCast(cluster_width_cols)) > @as(i32, @intCast(self.width)))
                         {
@@ -2680,8 +2626,12 @@ pub const OptimizedBuffer = struct {
                     }
 
                     if (cluster_width_cols == 0) {
-                        if (utf8.isCombiningMark(grapheme_bytes)) {
-                            try self.attachCombiningMark(checked, grapheme_bytes, currentX, currentY);
+                        // A combining mark joins the glyph before it; other zero-width clusters keep it.
+                        if (previous_glyph) |glyph| {
+                            mark_base = if (utf8.isCombiningMark(grapheme_bytes))
+                                try self.attachCombiningMark(checked, grapheme_bytes, glyph, @intCast(currentY))
+                            else
+                                glyph;
                         }
                         continue;
                     }
@@ -2720,7 +2670,7 @@ pub const OptimizedBuffer = struct {
                     }
                     defer if (link_id != 0) self.link_pool.decref(link_id) catch unreachable;
 
-                    if (is_tab) {
+                    if (is_blank) {
                         const useTransparentTextFastPath = opacity == 1.0 and ansi.alpha(drawBg) == 0;
                         var tab_col: u32 = 0;
                         while (tab_col < cluster_width_cols) : (tab_col += 1) {
@@ -2732,7 +2682,7 @@ pub const OptimizedBuffer = struct {
 
                             var char = DEFAULT_SPACE_CHAR;
                             var fg = drawFg;
-                            if (tab_col == 0 and indicator_width > 0 and indicator_width <= cluster_width_cols and
+                            if (is_tab and tab_col == 0 and indicator_width > 0 and indicator_width <= cluster_width_cols and
                                 @as(u64, rendered_col_in_vline) + indicator_width <= @as(u64, horizontal_offset) + viewport_width)
                             {
                                 if (indicator_width == 1) {
@@ -2744,7 +2694,7 @@ pub const OptimizedBuffer = struct {
                                         if (!self.isPointInScissor(tab_x + @as(i32, @intCast(offset)), currentY)) visible = false;
                                     }
                                     if (visible) {
-                                        try self.drawTextBufferGrapheme(checked, indicator_bytes[0..indicator_length], indicator_width, @intCast(tab_x), @intCast(currentY), tab_indicator_color orelse drawFg, drawBg, drawAttributes);
+                                        _ = try self.drawTextBufferGrapheme(checked, indicator_bytes[0..indicator_length], indicator_width, @intCast(tab_x), @intCast(currentY), tab_indicator_color orelse drawFg, drawBg, drawAttributes);
                                         tab_col += indicator_width - 1;
                                         continue;
                                     }
@@ -2774,8 +2724,9 @@ pub const OptimizedBuffer = struct {
                         ))
                     {
                         // Opaque ASCII over a transparent background needs no pool or blending work.
-                    } else {
-                        try self.drawTextBufferGrapheme(checked, grapheme_bytes, cluster_width_cols, @intCast(currentX), @intCast(currentY), drawFg, drawBg, drawAttributes);
+                        mark_base = .{ .x = @intCast(currentX), .char = grapheme_bytes[0] };
+                    } else if (try self.drawTextBufferGrapheme(checked, grapheme_bytes, cluster_width_cols, @intCast(currentX), @intCast(currentY), drawFg, drawBg, drawAttributes)) |char| {
+                        mark_base = .{ .x = @intCast(currentX), .char = char };
                     }
 
                     document_cell_offset += cluster_width_cols;
@@ -2799,62 +2750,58 @@ pub const OptimizedBuffer = struct {
         }
     }
 
-    fn attachCombiningMark(self: *OptimizedBuffer, comptime checked: bool, mark: []const u8, current_x: i32, current_y: i32) !void {
-        if (current_x <= 0 or current_y < 0) return;
-        const prev_x: u32 = @intCast(current_x - 1);
-        const y: u32 = @intCast(current_y);
-        if (prev_x >= self.width or y >= self.height) return;
-        const prev = self.buffer.char[self.coordsToIndex(prev_x, y)];
-        const start_x: u32 = if (gp.isContinuationChar(prev)) blk: {
-            const left = gp.charLeftExtent(prev);
-            if (left > prev_x) return;
-            break :blk prev_x - left;
-        } else prev_x;
-        const start = self.coordsToIndex(start_x, y);
-        const char_code = self.buffer.char[start];
-        if (char_code == 0 or gp.isContinuationChar(char_code) or gp.isImageChar(char_code)) return;
-        var encoded: [4]u8 = undefined;
-        const base: []const u8 = if (gp.isGraphemeChar(char_code))
-            self.pool.get(gp.graphemeIdFromChar(char_code)) catch return
-        else blk: {
-            const codepoint = math.cast(u21, char_code) orelse return;
-            const length = std.unicode.utf8Encode(codepoint, &encoded) catch return;
-            break :blk encoded[0..length];
+    /// Combines a zero-width mark with the glyph that this draw wrote just before it, as if both
+    /// were one cluster. The cell keeps its colors, which already have opacity applied.
+    /// Returns the combined glyph, or null when the cell does not hold that glyph or cannot
+    /// hold the combination.
+    fn attachCombiningMark(self: *OptimizedBuffer, comptime checked: bool, mark: []const u8, base: MarkBase, y: u32) !?MarkBase {
+        const index = self.coordsToIndex(base.x, y);
+        // A blended space keeps the glyph under it, which this draw did not write.
+        if (self.buffer.char[index] != base.char) return null;
+        var ascii: [1]u8 = undefined;
+        const base_bytes: []const u8 = if (gp.isGraphemeChar(base.char))
+            // The cell holds a tracker reference, so the pool entry is live.
+            self.pool.get(gp.graphemeIdFromChar(base.char)) catch unreachable
+        else bytes: {
+            // Text views write only printable ASCII as a scalar cell.
+            assert(base.char >= 0x20 and base.char < 0x7f);
+            ascii[0] = @intCast(base.char);
+            break :bytes &ascii;
         };
-        var combined: [128]u8 = undefined;
-        if (base.len + mark.len > combined.len) return;
-        @memcpy(combined[0..base.len], base);
-        @memcpy(combined[base.len..][0..mark.len], mark);
-        try self.drawTextBufferGrapheme(
-            checked,
-            combined[0 .. base.len + mark.len],
-            gp.encodedCharWidth(char_code),
-            start_x,
-            y,
-            self.buffer.fg[start],
-            self.buffer.bg[start],
-            self.buffer.attributes[start],
+        var combined: [grapheme_bytes_max]u8 = undefined;
+        if (base_bytes.len + mark.len > combined.len) return null;
+        @memcpy(combined[0..base_bytes.len], base_bytes);
+        @memcpy(combined[base_bytes.len..][0..mark.len], mark);
+        const id = self.acquireGlyph(combined[0 .. base_bytes.len + mark.len]) catch |err| {
+            if (checked) return err;
+            self.logger.warn("Failed to allocate grapheme: {}", .{err});
+            return null;
+        };
+        defer self.pool.decref(id) catch unreachable;
+        try self.storage.ensureTrackerCapacity(
+            @as(u64, self.grapheme_tracker.getGraphemeCount()) + 1,
+            self.link_tracker.getLinkCount(),
         );
+        const char = gp.packGraphemeStart(id, gp.encodedCharWidth(base.char));
+        self.set(base.x, y, makeCell(char, self.buffer.fg[index], self.buffer.bg[index], self.buffer.attributes[index]));
+        return .{ .x = base.x, .char = char };
     }
 
-    fn drawTextBufferGrapheme(self: *OptimizedBuffer, comptime checked: bool, bytes: []const u8, width: u32, x: u32, y: u32, fg: RGBA, bg: RGBA, attributes: u32) !void {
+    /// Returns the cell character it drew, or null when it drew nothing.
+    fn drawTextBufferGrapheme(self: *OptimizedBuffer, comptime checked: bool, bytes: []const u8, width: u32, x: u32, y: u32, fg: RGBA, bg: RGBA, attributes: u32) !?u32 {
         const opacity = self.getCurrentOpacity();
-        if (self.skipTransparentCellDraw(opacity, isFullyTransparent(opacity, fg, bg))) return;
+        if (self.skipTransparentCellDraw(opacity, isFullyTransparent(opacity, fg, bg))) return null;
         var encoded_char: u32 = 0;
         var retained_gid: ?u32 = null;
         defer if (retained_gid) |gid| self.pool.decref(gid) catch unreachable;
         if (bytes.len == 1 and width == 1 and bytes[0] >= 32) {
             encoded_char = @as(u32, bytes[0]);
         } else {
-            const gid = self.pool.acquire(bytes) catch |err| {
-                if (checked) return mapGraphemeAcquire(err);
+            const gid = self.acquireGlyph(bytes) catch |err| {
+                if (checked) return err;
                 self.logger.warn("Failed to allocate grapheme: {}", .{err});
-                return;
+                return null;
             };
-            if ((try self.pool.getRefcount(gid)) == math.maxInt(u32)) {
-                self.pool.decref(gid) catch unreachable;
-                return error.TrackerLimit;
-            }
             // Temporary reference reclaims glyphs discarded by blending.
             retained_gid = gid;
             try self.storage.ensureTrackerCapacity(
@@ -2866,9 +2813,10 @@ pub const OptimizedBuffer = struct {
         // Opaque text on transparent backgrounds avoids generic per-cell blending.
         if (opacity == 1.0 and ansi.alpha(bg) == 0) {
             const index = self.coordsToIndex(x, y);
-            if (self.trySetTransparentTextCellFast(index, encoded_char, fg, attributes)) return;
+            if (self.trySetTransparentTextCellFast(index, encoded_char, fg, attributes)) return encoded_char;
         }
         self.setCellWithAlphaBlendingCell(x, y, makeCell(encoded_char, fg, bg, attributes));
+        return encoded_char;
     }
 
     /// Draw an EditorView to this OptimizedBuffer
@@ -2891,10 +2839,7 @@ pub const OptimizedBuffer = struct {
         x: i32,
         y: i32,
     ) !void {
-        self.drawTextBufferInternal(EditorView, true, editor_view, x, y) catch |err| return switch (err) {
-            error.GraphemeTooLong => error.TextLimit,
-            else => err,
-        };
+        return self.drawTextBufferInternal(EditorView, true, editor_view, x, y);
     }
 
     /// Draw a complete border grid in a single call.
@@ -3117,6 +3062,9 @@ pub const OptimizedBuffer = struct {
         bottomTitle: ?[]const u8,
         bottomTitleAlignment: u8,
     ) !void {
+        // Box geometry uses i32 cell arithmetic, so the far edges must fit i32.
+        if (width > math.maxInt(i32) or height > math.maxInt(i32) or
+            @as(i64, x) + width > math.maxInt(i32) or @as(i64, y) + height > math.maxInt(i32)) return error.InvalidDimensions;
         return self.drawBoxInternal(true, x, y, width, height, borderChars, borderSides, borderColor, backgroundColor, titleColor, shouldFill, title, titleAlignment, bottomTitle, bottomTitleAlignment);
     }
 
@@ -3586,7 +3534,12 @@ pub const OptimizedBuffer = struct {
 
     fn checkPixelDraw(self: *const OptimizedBuffer) !void {
         try self.checkImageResources();
-        if (self.width > math.maxInt(i32) or self.height > math.maxInt(i32)) return error.InvalidDimensions;
+        try self.checkDrawState();
+    }
+
+    /// Checked draws use i32 cell arithmetic, so the target and its scissor end must fit i32.
+    fn checkDrawState(self: *const OptimizedBuffer) error{InvalidOptions}!void {
+        if (self.width > math.maxInt(i32) or self.height > math.maxInt(i32)) return error.InvalidOptions;
         if (self.getCurrentScissorRect()) |clip| {
             if (clip.width > math.maxInt(i32) or clip.height > math.maxInt(i32) or
                 @as(i64, clip.x) + clip.width > math.maxInt(i32) or
@@ -3594,6 +3547,23 @@ pub const OptimizedBuffer = struct {
         }
         const opacity = self.getCurrentOpacity();
         if (!math.isFinite(opacity) or opacity < 0 or opacity > 1) return error.InvalidOptions;
+    }
+
+    /// Takes a temporary pool reference for a glyph that a cell will hold. The caller releases
+    /// it after the cell write, so the destination tracker can still take its first reference.
+    fn acquireGlyph(self: *OptimizedBuffer, bytes: []const u8) error{ OutOfMemory, TrackerLimit }!u32 {
+        // Callers draw a cluster over grapheme_bytes_max as blank cells instead.
+        assert(bytes.len <= grapheme_bytes_max);
+        const id = self.pool.acquire(bytes) catch |err| return switch (err) {
+            error.OutOfMemory => error.OutOfMemory,
+            error.RefcountOverflow => error.TrackerLimit,
+            error.GraphemeTooLong, error.InvalidId, error.WrongGeneration => unreachable,
+        };
+        if ((self.pool.getRefcount(id) catch unreachable) == math.maxInt(u32)) {
+            self.pool.decref(id) catch unreachable;
+            return error.TrackerLimit;
+        }
+        return id;
     }
 
     pub fn drawSuperSampleBufferChecked(self: *OptimizedBuffer, x: i32, y: i32, pixels: []const u8, format: u8, stride: u32) !void {

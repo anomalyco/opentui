@@ -133,6 +133,12 @@ pub const BufferDraw = struct {
         box = api.OT_BUFFER_DRAW_BOX,
         compose = api.OT_BUFFER_DRAW_COMPOSE,
         respect_alpha = api.OT_BUFFER_DRAW_RESPECT_ALPHA,
+
+        comptime {
+            // Record decoders range-check the C value, then cast it with @enumFromInt.
+            for (0..api.OT_BUFFER_DRAW_RESPECT_ALPHA + 1) |value| std.debug.assert(std.enums.fromInt(Operation, value) != null);
+            std.debug.assert(std.enums.values(Operation).len == api.OT_BUFFER_DRAW_RESPECT_ALPHA + 1);
+        }
     };
     operation: Operation,
     x: i32 = 0,
@@ -1643,9 +1649,6 @@ pub const Context = struct {
                 if (options.packed_options & ~@as(u32, 0x1ff) != 0 or
                     (options.packed_options >> 5) & 3 > 2 or (options.packed_options >> 7) & 3 > 2) return error.InvalidOptions;
                 if (options.width == 0 or options.height == 0) return;
-                if (options.width > std.math.maxInt(i32) or options.height > std.math.maxInt(i32) or
-                    @as(i64, options.x) + options.width > std.math.maxInt(i32) or
-                    @as(i64, options.y) + options.height > std.math.maxInt(i32)) return error.InvalidDimensions;
                 for (options.border_chars) |char| {
                     if (char > 0x10ffff or (char >= 0xd800 and char <= 0xdfff) or
                         (char != 0 and (char < 32 or (char >= 127 and char <= 159)))) return error.InvalidOptions;
@@ -1659,26 +1662,21 @@ pub const Context = struct {
                     .left = options.packed_options & api.OT_BORDER_LEFT != 0,
                 }, options.foreground, background, options.title_color, options.packed_options & 16 != 0, if (text.len == 0) null else text, @intCast((options.packed_options >> 5) & 3), if (bottom_title.len == 0) null else bottom_title, @intCast((options.packed_options >> 7) & 3));
             },
-            .text, .fill, .cell, .cell_blend, .char => {
-                if (options.operation == .text) try buf.validateTextInput(text);
-                if (options.operation == .cell or options.operation == .cell_blend or options.operation == .char) {
-                    if (options.char > 0x10ffff or (options.char >= 0xd800 and options.char <= 0xdfff) or
-                        options.char < 32 or (options.char >= 127 and options.char <= 159)) return error.InvalidOptions;
-                }
-                // Text and fills draw their part inside the target. A cell outside it draws nothing.
-                switch (options.operation) {
-                    .text => return target.drawTextChecked(text, options.x, options.y, options.foreground, options.background, options.attributes),
-                    .fill => return target.fillRectClipped(options.x, options.y, options.width, options.height, background),
-                    else => {},
-                }
+            // Text and fills draw their part inside the target. A cell outside it draws nothing.
+            .text => try target.drawTextChecked(text, options.x, options.y, options.foreground, options.background, options.attributes),
+            .fill => target.fillRectClipped(options.x, options.y, options.width, options.height, background),
+            .cell, .cell_blend, .char => {
+                if (options.char > 0x10ffff or (options.char >= 0xd800 and options.char <= 0xdfff)) return error.InvalidOptions;
+                // A cell never holds a control; it draws as a space, as in checked text.
+                const char = if (buf.isControlCodepoint(options.char)) buf.DEFAULT_SPACE_CHAR else options.char;
                 if (options.x < 0 or options.y < 0) return;
                 const x: u32 = @intCast(options.x);
                 const y: u32 = @intCast(options.y);
                 if (x >= target.width or y >= target.height) return;
                 switch (options.operation) {
-                    .cell => target.set(x, y, .{ .char = options.char, .fg = options.foreground, .bg = background, .attributes = options.attributes }),
-                    .cell_blend => target.setCellWithAlphaBlending(x, y, options.char, options.foreground, background, options.attributes),
-                    .char => target.drawChar(options.char, x, y, options.foreground, background, options.attributes),
+                    .cell => target.set(x, y, .{ .char = char, .fg = options.foreground, .bg = background, .attributes = options.attributes }),
+                    .cell_blend => target.setCellWithAlphaBlending(x, y, char, options.foreground, background, options.attributes),
+                    .char => target.drawChar(char, x, y, options.foreground, background, options.attributes),
                     else => unreachable,
                 }
             },
