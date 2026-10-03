@@ -9,7 +9,16 @@ import { EditBuffer } from "./edit-buffer.js"
 import { EditorView } from "./editor-view.js"
 import { SyntaxStyle } from "./syntax-style.js"
 import { Config, Node } from "./yoga.js"
-import { FFIRenderLib, resolveRenderLib, setRenderLibPath, type NativeSceneFrameRequest } from "./zig.js"
+import { nativeLayouts } from "./native-abi.generated.js"
+import {
+  FFIRenderLib,
+  LogLevel,
+  NativeEditCommand,
+  NativeStatus,
+  resolveRenderLib,
+  setRenderLibPath,
+  type NativeSceneFrameRequest,
+} from "./zig.js"
 
 describe("native handles", () => {
   test("Context embedded terminal rejects stale and wrong-kind handles", () => {
@@ -226,6 +235,87 @@ describe("native handles", () => {
     expect(() => setRenderLibPath("/tmp/opentui-unused-native-library.so")).toThrow(
       "setRenderLibPath() must be called before resolveRenderLib()",
     )
+  })
+})
+
+describe("context diagnostics", () => {
+  test("debugLogRope drains every queued record in order, and a level filter drains without logging", () => {
+    const owner = new ResourceContext({ objectCapacity: 2, renderCellsMax: 1 })
+    const { renderLib: lib, context } = owner
+    const edit = EditBuffer.create("unicode", owner)
+    const debug = spyOn(console, "debug").mockImplementation(() => {})
+    try {
+      edit.setText("ab")
+      const handle = edit._getSceneHandle(owner)
+      // Two rope dumps queue 12 records, more than one drain batch.
+      lib.contextEditBufferCommand(context, handle, NativeEditCommand.DebugRope)
+      edit.debugLogRope()
+      const messages = debug.mock.calls.map(([message]) => message)
+      expect(messages).toHaveLength(12)
+      expect(messages.slice(6)).toEqual(messages.slice(0, 6))
+      expect([messages[0], messages[1], messages[5]]).toEqual([
+        "=== TextBuffer Rope Debug ===",
+        "Line count: 1",
+        "=== End Rope Debug ===",
+      ])
+      debug.mockClear()
+      lib.contextEditBufferCommand(context, handle, NativeEditCommand.DebugRope)
+      lib.logContextDiagnostics(context, LogLevel.Warn)
+      lib.logContextDiagnostics(context)
+      expect(debug).not.toHaveBeenCalled()
+    } finally {
+      debug.mockRestore()
+      edit.destroy()
+      owner.destroy()
+    }
+  })
+
+  test("errors and warnings reach their console methods until a console handler destroys the Context", () => {
+    const lib = resolveRenderLib()
+    const symbols = (lib as unknown as { opentui: { symbols: Record<string, unknown> } }).opentui.symbols
+    const context = lib.createContext({ objectCapacity: 1, renderCellsMax: 1 })
+    const record = nativeLayouts.ot_diagnostic
+    const fields = nativeLayouts.ot_diagnostic_drain.fields
+    // Levels cycle error, warning, info, debug; 9 records need two drain batches.
+    const queued = Array.from({ length: 9 }, (_, index) => ({ level: index % 4, message: `record ${index}` }))
+    const original = symbols.ot_context_drain_diagnostics
+    symbols.ot_context_drain_diagnostics = (
+      _: unknown,
+      records: Uint32Array,
+      capacity: number,
+      out: BigUint64Array,
+    ) => {
+      const batch = queued.splice(0, capacity)
+      batch.forEach(({ level, message }, index) => {
+        const base = index * record.size
+        const bytes = new TextEncoder().encode(message)
+        records[(base + record.fields.level.offset) / 4] = level
+        records[(base + record.fields.message_len.offset) / 4] = bytes.length
+        new Uint8Array(records.buffer, records.byteOffset + base + record.fields.message.offset).set(bytes)
+      })
+      const words = new Uint32Array(out.buffer, out.byteOffset)
+      words[fields.count.offset / 4] = batch.length
+      words[fields.remaining.offset / 4] = queued.length
+      return NativeStatus.Ok
+    }
+    const consoles = (["error", "warn", "info", "debug"] as const).map((name) => spyOn(console, name))
+    consoles[1]!.mockImplementation((message) => {
+      if (message === "record 5") lib.destroyContext(context)
+    })
+    for (const method of [consoles[0]!, ...consoles.slice(2)]) method.mockImplementation(() => {})
+    try {
+      lib.logContextDiagnostics(context, LogLevel.Warn)
+      expect(consoles.map((method) => method.mock.calls.map(([message]) => message))).toEqual([
+        ["record 0", "record 4"],
+        ["record 1", "record 5"],
+        [],
+        [],
+      ])
+      expect(queued).toHaveLength(1)
+    } finally {
+      symbols.ot_context_drain_diagnostics = original
+      for (const method of consoles) method.mockRestore()
+    }
   })
 })
 

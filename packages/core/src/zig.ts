@@ -1254,6 +1254,19 @@ function encodeDrawColors(
   return background !== undefined
 }
 
+const DIAGNOSTIC_QUEUE_MAX = 64 // Version 1 C Contexts hold at most 64 diagnostic records.
+const DIAGNOSTIC_BATCH = 8 // Eight 4 KiB records keep the cached drain storage near 33 KB.
+
+function createDiagnosticDrainRecord() {
+  const layout = nativeLayouts.ot_diagnostic_drain
+  const output = new BigUint64Array(layout.size / 8)
+  const words = new Uint32Array(output.buffer)
+  // Native code rewrites these on success and leaves them unchanged on failure, so the record stays reusable.
+  words[layout.fields.struct_size.offset / 4] = layout.size
+  words[layout.fields.abi_version.offset / 4] = nativeConstants.OT_CONTEXT_ABI_VERSION
+  return { records: new Uint32Array((DIAGNOSTIC_BATCH * nativeLayouts.ot_diagnostic.size) / 4), output, words }
+}
+
 function createSceneLayoutRecord() {
   const output = createContextRecord(nativeLayouts.ot_scene_layout)
   return {
@@ -3392,6 +3405,7 @@ export class FFIRenderLib {
   private readonly emptyBytes = new Uint8Array(0)
   public readonly decoder: TextDecoder = new TextDecoder()
   private logCallbackWrapper: FFICallbackInstance | null = null
+  private diagnosticDrain?: ReturnType<typeof createDiagnosticDrainRecord>
   private nativeSpanFeedCallbackWrapper: FFICallbackInstance | null = null
   private nativeSpanFeedHandlers = new Map<Pointer, NativeSpanFeedEventHandler>()
 
@@ -7803,30 +7817,36 @@ export class FFIRenderLib {
     }
   }
 
-  public logContextDiagnostics(context: NativeContextHandle): void {
-    const pointer = this.nativeContextPointer(context, "ot_context_drain_diagnostics")
+  /** Drains queued Context diagnostics and logs the records at `maxLevel` or more severe; it drops the rest. One call
+   * drains at most one full queue. Records that console handlers add meanwhile wait for the next call. */
+  public logContextDiagnostics(context: NativeContextHandle, maxLevel: LogLevel = LogLevel.Debug): void {
     const layout = nativeLayouts.ot_diagnostic
-    const drainLayout = nativeLayouts.ot_diagnostic_drain
-    const capacity = 64 // Version 1 C Contexts hold at most 64 diagnostic records.
-    // Own each drain's storage: console hooks can reenter or destroy the Context.
-    const records = new Uint32Array((capacity * layout.size) / 4)
-    const output = new BigUint64Array(drainLayout.size / 8)
-    const words = new Uint32Array(output.buffer)
-    words[drainLayout.fields.struct_size.offset / 4] = drainLayout.size
-    words[drainLayout.fields.abi_version.offset / 4] = nativeConstants.OT_CONTEXT_ABI_VERSION
-    nativeResult(
-      "ot_context_drain_diagnostics",
-      this.opentui.symbols.ot_context_drain_diagnostics(pointer, records, capacity, output),
-    )
-    const count = words[drainLayout.fields.count.offset / 4]
-    if (count > capacity) throw new RangeError("Invalid diagnostic count")
-    for (let index = 0; index < count; index++) {
-      const offset = index * layout.size
-      const level = records[(offset + layout.fields.level.offset) / 4]
-      const length = records[(offset + layout.fields.message_len.offset) / 4]
-      if (length > layout.fields.message.size) throw new RangeError("Invalid diagnostic message length")
-      const bytes = new Uint8Array(records.buffer, offset + layout.fields.message.offset, length)
-      this.logMessage(level, this.decoder.decode(bytes))
+    const fields = nativeLayouts.ot_diagnostic_drain.fields
+    const { records, output, words } = (this.diagnosticDrain ??= createDiagnosticDrainRecord())
+    let pointer: Pointer | undefined = this.nativeContextPointer(context, "ot_context_drain_diagnostics")
+    for (let batch = 0; pointer !== undefined && batch < DIAGNOSTIC_QUEUE_MAX / DIAGNOSTIC_BATCH; batch++) {
+      nativeResult(
+        "ot_context_drain_diagnostics",
+        this.opentui.symbols.ot_context_drain_diagnostics(pointer, records, DIAGNOSTIC_BATCH, output),
+      )
+      const count = words[fields.count.offset / 4]
+      if (count > DIAGNOSTIC_BATCH) throw new RangeError("Invalid diagnostic count")
+      if (count === 0) return
+      // Decode before logging: console handlers can reenter and reuse the shared records.
+      const messages: [LogLevel, string][] = []
+      for (let index = 0; index < count; index++) {
+        const offset = index * layout.size
+        const level = records[(offset + layout.fields.level.offset) / 4]
+        const length = records[(offset + layout.fields.message_len.offset) / 4]
+        if (length > layout.fields.message.size) throw new RangeError("Invalid diagnostic message length")
+        if (level > maxLevel) continue
+        const bytes = new Uint8Array(records.buffer, offset + layout.fields.message.offset, length)
+        messages.push([level, this.decoder.decode(bytes)])
+      }
+      const remaining = words[fields.remaining.offset / 4]
+      for (const [level, message] of messages) this.logMessage(level, message)
+      // Console handlers can destroy the Context.
+      pointer = remaining === 0 ? undefined : this.nativeContexts.get(context)
     }
   }
 
