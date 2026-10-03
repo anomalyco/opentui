@@ -1,5 +1,6 @@
 const std = @import("std");
 const link = @import("../link.zig");
+const test_pools = @import("test-pools.zig");
 
 const LinkPool = link.LinkPool;
 const LinkPoolError = link.LinkPoolError;
@@ -421,4 +422,8 @@ test "LinkPool - alloc reuses live ID for same URL" {
     defer pool.decref(id4) catch {};
     try std.testing.expectEqual(id3, id4);
     try std.testing.expectEqual(@as(u32, 2), try pool.getRefcount(id3));
+}
+
+test "LinkPool and LinkTracker match a reference model" {
+    for (0..8) |seed| try test_pools.checkPoolModel(test_pools.LinkSpec, seed, 400);
 }

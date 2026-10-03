@@ -1,5 +1,6 @@
 const std = @import("std");
 const gp = @import("../grapheme.zig");
+const test_pools = @import("test-pools.zig");
 
 const GraphemePool = gp.GraphemePool;
 const GraphemeTracker = gp.GraphemeTracker;
@@ -1046,4 +1047,8 @@ test "GraphemePool - incref of a released ID fails" {
     const id = try pool.acquire("gone");
     try pool.decref(id);
     try std.testing.expectError(gp.GraphemePoolError.InvalidId, pool.incref(id));
+}
+
+test "GraphemePool and GraphemeTracker match a reference model" {
+    for (0..8) |seed| try test_pools.checkPoolModel(test_pools.GraphemeSpec, seed, 400);
 }
