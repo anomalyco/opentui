@@ -3811,10 +3811,14 @@ export class FFIRenderLib {
       "Embedded terminal write bytes",
     )
     const pointer = this.nativeContextPointer(context, "ot_embedded_terminal_write")
-    nativeResult(
-      "ot_embedded_terminal_write",
-      this.opentui.symbols.ot_embedded_terminal_write(pointer, handle, viewOrNull(bytes), bytes.byteLength),
-    )
+    // The parser keeps partial sequences across writes, so input above the native limit can be split anywhere.
+    for (let offset = 0; offset === 0 || offset < bytes.byteLength; offset += EMBEDDED_TERMINAL_IO_BYTES_MAX) {
+      const chunk = bytes.subarray(offset, offset + EMBEDDED_TERMINAL_IO_BYTES_MAX)
+      nativeResult(
+        "ot_embedded_terminal_write",
+        this.opentui.symbols.ot_embedded_terminal_write(pointer, handle, viewOrNull(chunk), chunk.byteLength),
+      )
+    }
   }
 
   public contextEmbeddedTerminalResize(

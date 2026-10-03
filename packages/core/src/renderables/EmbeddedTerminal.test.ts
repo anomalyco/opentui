@@ -228,7 +228,8 @@ describe("EmbeddedTerminalRenderable", () => {
     })
     setup.renderer.root.add(terminal)
 
-    terminal.write("\x1b[5n")
+    // The 1 MiB native write limit falls inside the status query, as on main this must still answer.
+    terminal.write(" ".repeat(1024 * 1024 - 2) + "\x1b[5n")
     terminal.handleKeyPress(keyEvent({ name: "enter", sequence: "\r" }))
 
     expect(output).toEqual([
