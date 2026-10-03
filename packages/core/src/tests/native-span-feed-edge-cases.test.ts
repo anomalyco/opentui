@@ -40,22 +40,12 @@ for (const thrown of [undefined, null, false, 0]) {
   })
 }
 
-function writeData(stream: NativeSpanFeed, text: string): void {
-  const data = new TextEncoder().encode(text)
-  lib.streamWrite(stream.streamPtr, data)
-}
-
-function commitData(stream: NativeSpanFeed): void {
+function produceData(stream: NativeSpanFeed, text: string): void {
+  lib.streamWrite(stream.streamPtr, text)
   lib.streamCommit(stream.streamPtr)
 }
 
-function produceData(stream: NativeSpanFeed, text: string): void {
-  writeData(stream, text)
-  commitData(stream)
-}
-
-test("throwing handler does not prevent state buffer decrements", () => {
-  // Decrement must happen even if a handler throws.
+test("throwing handler still releases its spans", () => {
   const stream = NativeSpanFeed.create({ chunkSize: 256, initialChunks: 1 })
 
   const received: string[] = []
@@ -193,63 +183,20 @@ test("toArrayBuffer aliases Zig-owned chunk memory", () => {
   stream.close()
 })
 
-test("state buffer view stays current across chunk growth", () => {
-  // StateBuffer events must keep the TS view in sync after growth.
-  const stream = NativeSpanFeed.create({
-    chunkSize: 32,
-    initialChunks: 1,
-  })
-
-  const allData: string[] = []
-  stream.onData((data) => {
-    allData.push(new TextDecoder().decode(data))
-  })
-
-  for (let i = 0; i < 20; i++) {
-    const msg = new TextEncoder().encode(`msg${i.toString().padStart(2, "0")}`)
-    lib.streamWrite(stream.streamPtr, msg)
+test.each([
+  ["twenty commits grow the chunk pool", Array.from({ length: 20 }, (_, i) => new TextEncoder().encode(`msg${i}`))],
+  ["one write spans eight chunks", [Uint8Array.from({ length: 256 }, (_, i) => i)]],
+])("delivers every byte in order and releases every span when %s", (_name, writes) => {
+  const stream = NativeSpanFeed.create({ chunkSize: 32, initialChunks: 1 })
+  const received: number[] = []
+  stream.onData((data) => void received.push(...data))
+  for (const data of writes) {
+    lib.streamWrite(stream.streamPtr, data)
     lib.streamCommit(stream.streamPtr)
   }
-
   stream.drainAll()
-
-  const allContent = allData.join("")
-  for (let i = 0; i < 20; i++) {
-    const expected = `msg${i.toString().padStart(2, "0")}`
-    expect(allContent).toContain(expected)
-  }
-  expect(allContent.length).toBe(20 * 5)
-
-  stream.close()
-})
-
-test("state buffer view stays current when writes span multiple chunks", () => {
-  const chunkSize = 32
-  const stream = NativeSpanFeed.create({ chunkSize, initialChunks: 1 })
-
-  const allData: Uint8Array[] = []
-  stream.onData((data) => {
-    allData.push(new Uint8Array(data)) // copy to avoid aliasing
-  })
-
-  const bigWrite = new Uint8Array(256)
-  for (let i = 0; i < 256; i++) bigWrite[i] = i & 0xff
-  lib.streamWrite(stream.streamPtr, bigWrite)
-
-  lib.streamCommit(stream.streamPtr)
-  stream.drainAll()
-  const received = new Uint8Array(allData.reduce((sum, d) => sum + d.length, 0))
-  let offset = 0
-  for (const chunk of allData) {
-    received.set(chunk, offset)
-    offset += chunk.length
-  }
-
-  expect(received.length).toBe(256)
-  for (let i = 0; i < 256; i++) {
-    expect(received[i]).toBe(i & 0xff)
-  }
-
+  expect(received).toEqual(writes.flatMap((data) => [...data]))
+  expect(lib.streamGetStats(stream.streamPtr)?.outstandingSpans).toBe(0)
   stream.close()
 })
 
