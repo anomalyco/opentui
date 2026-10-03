@@ -465,4 +465,46 @@ describe("native Yoga API coverage", () => {
     other.dispose()
     expect(() => idle.assertAlive()).toThrow("Yoga config is freed")
   })
+
+  test("freed nodes and configs answer every call without native access", () => {
+    const lib = new FFIRenderLib()
+    const config = Yoga.Config.create(lib)
+    const node = Yoga.Node.create(config)
+    node.free()
+    config.free()
+    const native = Object.getOwnPropertyNames(FFIRenderLib.prototype).filter((name) => name.startsWith("yoga"))
+    for (const name of native) {
+      Object.defineProperty(lib, name, {
+        configurable: true,
+        value: () => {
+          throw new Error(`${name} reached native code`)
+        },
+      })
+    }
+    // These throw by design or need real arguments; every other method returns before native access.
+    const exempt = [
+      "constructor",
+      "assertAlive",
+      "ensureCallbacks",
+      "runMutation",
+      "assertSameLibrary",
+      "collectSubtree",
+    ]
+    try {
+      for (const target of [node, config]) {
+        const prototype = Object.getPrototypeOf(target)
+        for (const name of Object.getOwnPropertyNames(prototype)) {
+          const method = Object.getOwnPropertyDescriptor(prototype, name)!.value
+          if (typeof method !== "function" || exempt.includes(name)) continue
+          expect(() => method.call(target, 0, 0, 0)).not.toThrow()
+        }
+      }
+      expect(node.getChild(0)).toBeNull()
+      expect(node.isDirty()).toBe(true)
+      expect(Number.isNaN(node.getWidth().value)).toBe(true)
+    } finally {
+      for (const name of native) delete (lib as unknown as Record<string, unknown>)[name]
+      lib.dispose()
+    }
+  })
 })
