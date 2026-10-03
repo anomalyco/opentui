@@ -3250,11 +3250,8 @@ pub const Context = struct {
         defer self.mutating = false;
         const text = try self.getTextBuffer(handle);
         try text.checkMutable();
-        const tab_width: u32 = @min(254, @max(2, @as(u32, width) + width % 2));
-        // Apply validateTextBytes' conservative cell bound before remeasuring.
-        const bytes_max = (std.math.maxInt(u32) - 1) / tab_width;
-        if (text.buffer.getByteSize() > bytes_max) return error.TextLimit;
-        text.buffer.setTabWidth(@intCast(tab_width));
+        try text.buffer.checkTabWidth(width);
+        text.buffer.setTabWidth(width);
         text.invalidate();
     }
 

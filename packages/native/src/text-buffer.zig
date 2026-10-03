@@ -1718,14 +1718,24 @@ pub const UnifiedTextBuffer = struct {
     /// Marks all views dirty if the width actually changes, since tab width
     /// affects measured line widths and virtual line calculations.
     pub fn setTabWidth(self: *Self, width: u8) void {
-        const clamped_width = @min(@as(u8, 254), @max(2, width));
-        const new_width = if (clamped_width % 2 == 0) clamped_width else clamped_width + 1;
+        const new_width = effectiveTabWidth(width);
         if (self.tab_width == new_width) return;
         self.tab_width = new_width;
         self.tab_metrics_generation +%= 1;
 
         self.refreshTabWidthMetrics();
         self.markAllViewsDirty();
+    }
+
+    fn effectiveTabWidth(width: u8) u8 {
+        const clamped_width = @min(@as(u8, 254), @max(2, width));
+        return clamped_width + clamped_width % 2;
+    }
+
+    /// Reject a tab width under which the text could exceed the u32 cell bound that
+    /// Context text validation applies (every byte as one tab).
+    pub fn checkTabWidth(self: *const Self, width: u8) error{TextLimit}!void {
+        if (self.getByteSize() > (std.math.maxInt(u32) - 1) / @as(u32, effectiveTabWidth(width))) return error.TextLimit;
     }
 
     /// Bring the active persistent root to the current tab-width generation.
