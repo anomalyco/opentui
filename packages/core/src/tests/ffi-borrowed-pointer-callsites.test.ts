@@ -8,6 +8,7 @@ import {
   NativeAudioStreamFormat,
   NativeAudioStreamState,
 } from "../zig-structs.js"
+import { nativeSymbols as symbols, withStubbedSymbols } from "./native-symbol-stubs.js"
 
 // Borrowed-pointer contract for styled text, styled placeholders, and cursor
 // options: packed struct buffers must reach the FFI symbol as object values so
@@ -15,28 +16,6 @@ import {
 // address instead reintroduces the Node use-after-free from issue #1212.
 
 const lib = resolveRenderLib()
-const symbols = (lib as any).opentui.symbols as Record<string, (...args: any[]) => any>
-
-function withStubbedSymbols(
-  replacements: Record<string, (...args: any[]) => any>,
-  fn: (calls: Record<string, any[][]>) => void,
-): void {
-  const originals: Record<string, (...args: any[]) => any> = {}
-  const calls: Record<string, any[][]> = {}
-  for (const [name, replacement] of Object.entries(replacements)) {
-    originals[name] = symbols[name]!
-    calls[name] = []
-    symbols[name] = (...args: any[]) => {
-      calls[name]!.push(args)
-      return replacement(...args)
-    }
-  }
-  try {
-    fn(calls)
-  } finally {
-    for (const [name, original] of Object.entries(originals)) symbols[name] = original
-  }
-}
 
 function withStubbedSymbol(name: string, fn: (calls: any[][]) => void): void {
   withStubbedSymbols({ [name]: () => undefined }, (calls) => fn(calls[name]!))

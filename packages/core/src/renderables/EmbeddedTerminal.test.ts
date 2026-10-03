@@ -4,6 +4,7 @@ import { KeyEvent } from "../lib/KeyHandler.js"
 import { parseKeypress } from "../lib/parse.keypress.js"
 import { RGBA } from "../lib/RGBA.js"
 import { resolveRenderLib } from "../zig.js"
+import { nativeSymbols, withStubbedSymbols } from "../tests/native-symbol-stubs.js"
 import { EmbeddedTerminalRenderable } from "./EmbeddedTerminal.js"
 
 class MissingFramebufferTerminal extends EmbeddedTerminalRenderable {
@@ -234,6 +235,17 @@ describe("EmbeddedTerminalRenderable", () => {
       { data: "\x1b[0n", source: "response" },
       { data: "\r", source: "input" },
     ])
+  })
+
+  test("drains replies of every write into one reused buffer", () => {
+    const terminal = new EmbeddedTerminalRenderable(setup.renderer, { width: 20, height: 4 })
+    const drain = nativeSymbols.ot_embedded_terminal_drain_responses!
+    withStubbedSymbols({ ot_embedded_terminal_drain_responses: drain }, (calls) => {
+      terminal.write("a")
+      terminal.write("b")
+      const [first, second] = calls.ot_embedded_terminal_drain_responses!
+      expect(second![2]).toBe(first![2])
+    })
   })
 
   test("encodes no-button motion and suppresses unavailable pixel coordinates", () => {

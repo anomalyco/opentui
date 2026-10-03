@@ -1495,6 +1495,9 @@ function viewOrNull<T extends ArrayBufferView>(value: T): T | null {
   return value.byteLength === 0 ? null : value
 }
 
+// opentui.h limits each embedded terminal write and the retained replies to 1 MiB.
+const EMBEDDED_TERMINAL_IO_BYTES_MAX = 1024 * 1024
+
 function embeddedTerminalDimension(value: number, name: string) {
   if (!Number.isInteger(value) || value < 1 || value > 0xffff) {
     throw new RangeError(`Embedded terminal ${name} must be an integer between 1 and 65535`)
@@ -4097,13 +4100,16 @@ export class FFIRenderLib {
     )
   }
 
+  // The native drain never calls back into JavaScript, so every drain can reuse one buffer.
+  private embeddedTerminalResponses: Uint8Array | undefined
+
   public contextEmbeddedTerminalDrainResponses(
     context: NativeContextHandle,
     terminal: ContextEmbeddedTerminalHandle,
   ): Uint8Array {
     this.getYogaHost().assertMutable()
     const handle = encodeContextHandle(context, terminal)
-    const output = new Uint8Array(1024 * 1024)
+    const output = (this.embeddedTerminalResponses ??= new Uint8Array(EMBEDDED_TERMINAL_IO_BYTES_MAX))
     const count = new Uint32Array(1)
     const pointer = this.nativeContextPointer(context, "ot_embedded_terminal_drain_responses")
     let status = this.opentui.symbols.ot_embedded_terminal_drain_responses(
