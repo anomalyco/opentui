@@ -1,4 +1,3 @@
-import { runRenderableMutation } from "../lib/renderable-layout.js"
 import { Renderable, type RenderableOptions } from "../Renderable.js"
 import { convertGlobalToLocalSelection, Selection, type LocalSelectionBounds } from "../lib/selection.js"
 import { EditBuffer, type LogicalCursor } from "../edit-buffer.js"
@@ -361,7 +360,7 @@ export abstract class EditBufferRenderable extends Renderable implements LineInf
   set attributes(value: number | undefined) {
     const attributes = value ?? this._defaultOptions.attributes
     if (this._defaultAttributes !== attributes) {
-      runRenderableMutation(this, () => {
+      this.runMutation(() => {
         this.editBuffer.setDefaultAttributes(attributes)
         this._defaultAttributes = attributes
         this.requestRender()
@@ -375,7 +374,7 @@ export abstract class EditBufferRenderable extends Renderable implements LineInf
 
   set wrapMode(value: "none" | "char" | "word") {
     if (this._wrapMode !== value) {
-      runRenderableMutation(this, () => {
+      this.runMutation(() => {
         this.editorView.setWrapMode(value)
         this._wrapMode = value
         this.requestRender()
@@ -725,26 +724,21 @@ export abstract class EditBufferRenderable extends Renderable implements LineInf
   }
 
   public insertChar(char: string): void {
-    const hasSelection = this.hasSelection()
-    this.editBuffer.runMutation(() => {
-      if (hasSelection) {
-        this.editorView._replaceSelectedText(char)
-        this._ctx.clearSelection()
-      } else {
-        this.editBuffer.insertChar(char)
-      }
-      this.requestRender()
-    })
+    this.insertOrReplaceSelection(char, () => this.editBuffer.insertChar(char))
   }
 
   public insertText(text: string): void {
+    this.insertOrReplaceSelection(text, () => this.editBuffer.insertText(text))
+  }
+
+  private insertOrReplaceSelection(text: string, insert: () => void): void {
     const hasSelection = this.hasSelection()
     this.editBuffer.runMutation(() => {
       if (hasSelection) {
         this.editorView._replaceSelectedText(text)
         this._ctx.clearSelection()
       } else {
-        this.editBuffer.insertText(text)
+        insert()
       }
       this.requestRender()
     })
@@ -1120,7 +1114,7 @@ export abstract class EditBufferRenderable extends Renderable implements LineInf
    * Use this for initial text setting or when you want a clean slate.
    */
   public setText(text: string): void {
-    runRenderableMutation(this, () => {
+    this.runMutation(() => {
       this.editBuffer.setText(text)
       this.requestRender()
     })
@@ -1131,7 +1125,7 @@ export abstract class EditBufferRenderable extends Renderable implements LineInf
    * Use this when you want the setText operation to be undoable.
    */
   public replaceText(text: string): void {
-    runRenderableMutation(this, () => {
+    this.runMutation(() => {
       this.editBuffer.replaceText(text)
       this.requestRender()
     })
@@ -1157,6 +1151,7 @@ export abstract class EditBufferRenderable extends Renderable implements LineInf
   }
 
   private setNativeEditorOptions(options: Partial<NativeSceneEditorOptions> = {}): void {
+    if (this.isDestroyed) return
     this._ctx.nativeScene.setEditorOptions(this, {
       showCursor: this._showCursor,
       style: this._cursorStyle.style ?? "block",

@@ -703,7 +703,14 @@ export class ExtmarksController {
       this.metadata.set(id, options.metadata)
     }
 
-    this.updateHighlights()
+    try {
+      this.updateHighlights()
+    } catch (error) {
+      // Native rejects some highlights (priority above 255); keep the controller as it was.
+      this.deleteExtmarkById(id)
+      this.updateHighlights()
+      throw error
+    }
 
     return id
   }

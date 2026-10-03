@@ -4745,23 +4745,14 @@ export class FFIRenderLib {
     const output = new Uint32Array(handleWords)
     const pointer = this.nativeContextPointer(context, "ot_edit_buffer_create")
     nativeResult("ot_edit_buffer_create", this.opentui.symbols.ot_edit_buffer_create(pointer, record, output))
-    try {
-      return decodeContextHandle(context, output) as ContextEditBufferHandle
-    } catch (error) {
-      this.opentui.symbols.ot_edit_buffer_destroy(pointer, output)
-      throw error
-    }
+    return decodeContextHandle(context, output) as ContextEditBufferHandle
   }
 
   public destroyContextEditBuffer(context: NativeContextHandle, editBuffer: ContextEditBufferHandle): void {
-    this.getYogaHost().assertMutable()
-    const handle = encodeContextHandle(context, editBuffer)
-    const slot = new Uint32Array(handle.buffer)[nativeLayouts.ot_handle.fields.slot.offset / 4]
-    const pointer = this.nativeContextPointer(context, "ot_edit_buffer_destroy")
-    nativeResult("ot_edit_buffer_destroy", this.opentui.symbols.ot_edit_buffer_destroy(pointer, handle))
+    this.destroyContextObject(context, editBuffer, "ot_edit_buffer_destroy")
     const buffers = this.contextEditEvents.get(context)?.buffers
-    buffers?.get(slot)?.listeners.clear()
-    buffers?.delete(slot)
+    buffers?.get(editBuffer.slot)?.listeners.clear()
+    buffers?.delete(editBuffer.slot)
   }
 
   public createContextEditorView(
@@ -4780,19 +4771,11 @@ export class FFIRenderLib {
       "ot_editor_view_create",
       this.opentui.symbols.ot_editor_view_create(pointer, handle, columns, rows, output),
     )
-    try {
-      return decodeContextHandle(context, output) as ContextEditorViewHandle
-    } catch (error) {
-      this.opentui.symbols.ot_editor_view_destroy(pointer, output)
-      throw error
-    }
+    return decodeContextHandle(context, output) as ContextEditorViewHandle
   }
 
   public destroyContextEditorView(context: NativeContextHandle, view: ContextEditorViewHandle): void {
-    this.getYogaHost().assertMutable()
-    const handle = encodeContextHandle(context, view)
-    const pointer = this.nativeContextPointer(context, "ot_editor_view_destroy")
-    nativeResult("ot_editor_view_destroy", this.opentui.symbols.ot_editor_view_destroy(pointer, handle))
+    this.destroyContextObject(context, view, "ot_editor_view_destroy")
   }
 
   public createContextSyntaxStyle(context: NativeContextHandle): ContextSyntaxStyleHandle {
@@ -5467,24 +5450,18 @@ export class FFIRenderLib {
         number,
         { handle: ContextEditBufferHandle; listeners: Set<{ handler: (event: NativeEditEventName) => void }> }
       >()
+      const names: Partial<Record<number, NativeEditEventName>> = {
+        [NativeEditEvent.CursorChanged]: "cursor-changed",
+        [NativeEditEvent.ContentChanged]: "content-changed",
+        [NativeEditEvent.HistoryCursorChanged]: "cursorChanged",
+      }
       const callback = this.opentui.createCallback(
         (contextId: bigint, slot: number, generation: number, event: number) => {
           this.getYogaHost().invokeCallback(() => {
             const entry = buffers.get(slot)
             if (!entry || entry.handle.contextId !== contextId || entry.handle.generation !== generation) return
-            const name: NativeEditEventName =
-              event === NativeEditEvent.CursorChanged
-                ? "cursor-changed"
-                : event === NativeEditEvent.ContentChanged
-                  ? "content-changed"
-                  : "cursorChanged"
-            if (
-              event !== NativeEditEvent.CursorChanged &&
-              event !== NativeEditEvent.ContentChanged &&
-              event !== NativeEditEvent.HistoryCursorChanged
-            ) {
-              throw new Error("Native editor returned an unknown event")
-            }
+            const name = names[event]
+            if (name === undefined) throw new Error("Native editor returned an unknown event")
             const listeners = [...entry.listeners]
             // Do not batch events: application microtasks can occur between native edits.
             queueMicrotask(() => {

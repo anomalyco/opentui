@@ -208,6 +208,25 @@ describe("EditBufferRenderable", () => {
     expect(textarea.getSelectedText()).toBe("cd")
   })
 
+  // The destroy guards on these writes must not skip a live editor.
+  test("applies color and cursor writes to live editors", async () => {
+    const unfocused = new TextareaRenderable(renderer, { width: 10, height: 1, initialValue: "ab" })
+    const focused = new TextareaRenderable(renderer, { top: 2, width: 10, height: 1, initialValue: "cd" })
+    renderer.root.add(unfocused)
+    renderer.root.add(focused)
+    focused.focus()
+    const color = RGBA.fromHex("#ff0000")
+    unfocused.textColor = color
+    focused.cursorStyle = { style: "line", blinking: false }
+    focused.cursorColor = color
+    await renderOnce()
+    expect(renderer.currentRenderBuffer.getSpanLines()[0].spans[0]).toMatchObject({ text: "ab", fg: color })
+    expect(renderer.getCursorState()).toMatchObject({ visible: true, style: "line", blinking: false, color })
+    focused.showCursor = false
+    await renderOnce()
+    expect(renderer.getCursorState().visible).toBe(false)
+  })
+
   test("inherits movement selection behavior from edit buffer renderable", async () => {
     const textarea = new TextareaRenderable(renderer, {
       width: 20,

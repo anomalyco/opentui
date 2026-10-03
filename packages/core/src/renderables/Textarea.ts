@@ -1,4 +1,3 @@
-import { runRenderableMutation } from "../lib/renderable-layout.js"
 import type { KeyEvent, PasteEvent } from "../lib/KeyHandler.js"
 import { decodePasteBytes, stripAnsiSequences } from "../lib/paste.js"
 import { RGBA, parseColor, type ColorInput } from "../lib/RGBA.js"
@@ -14,6 +13,10 @@ import {
 } from "../lib/keybinding.internal.js"
 import { StyledText, fg } from "../lib/styled-text.js"
 import type { ExtmarksController } from "../lib/extmarks.js"
+
+// Native editing rejects these, so typed and pasted text drops them. Paste keeps tab, CR, and LF.
+const unsupportedKeyCharacters = /[\x00-\x1f\x7f-\x9f]/
+const unsupportedPasteCharacters = /[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]/g
 
 function clonePlaceholder(value: StyledText | string | null): StyledText | string | null {
   if (value === null || typeof value === "string") return value
@@ -210,7 +213,7 @@ export class TextareaRenderable extends EditBufferRenderable {
 
       const initialValue = options.initialValue
       if (initialValue) {
-        runRenderableMutation(this, () => {
+        this.runMutation(() => {
           this.setText(initialValue)
           this._initialValueSet = true
         })
@@ -280,7 +283,7 @@ export class TextareaRenderable extends EditBufferRenderable {
   }
 
   public handlePaste(event: PasteEvent): void {
-    this.insertText(stripAnsiSequences(decodePasteBytes(event.bytes)))
+    this.insertText(stripAnsiSequences(decodePasteBytes(event.bytes)).replace(unsupportedPasteCharacters, ""))
   }
 
   public handleKeyPress(key: KeyEvent): boolean {
@@ -301,17 +304,7 @@ export class TextareaRenderable extends EditBufferRenderable {
         return true
       }
 
-      if (key.sequence) {
-        const firstCharCode = key.sequence.charCodeAt(0)
-
-        if (firstCharCode < 32) {
-          return false
-        }
-
-        if (firstCharCode === 127) {
-          return false
-        }
-
+      if (key.sequence && !unsupportedKeyCharacters.test(key.sequence)) {
         this.insertText(key.sequence)
         return true
       }
@@ -321,6 +314,7 @@ export class TextareaRenderable extends EditBufferRenderable {
   }
 
   private updateColors(): void {
+    if (this.isDestroyed) return
     const effectiveBg = this._focused ? this._focusedBackgroundColor : this._unfocusedBackgroundColor
     const effectiveFg = this._focused ? this._focusedTextColor : this._unfocusedTextColor
 
@@ -335,9 +329,7 @@ export class TextareaRenderable extends EditBufferRenderable {
 
   public blur(): void {
     super.blur()
-    if (!this.isDestroyed) {
-      this.updateColors()
-    }
+    this.updateColors()
   }
 
   get placeholder(): StyledText | string | null {
@@ -347,7 +339,7 @@ export class TextareaRenderable extends EditBufferRenderable {
   set placeholder(value: StyledText | string | null | undefined) {
     const normalizedValue = clonePlaceholder(value ?? null)
     if (this._placeholder !== normalizedValue) {
-      runRenderableMutation(this, () => {
+      this.runMutation(() => {
         this.applyPlaceholder(normalizedValue)
         this._placeholder = normalizedValue
         this.requestRender()
@@ -361,7 +353,7 @@ export class TextareaRenderable extends EditBufferRenderable {
 
   set placeholderColor(value: ColorInput) {
     const color = RGBA.clone(parseColor(value ?? TextareaRenderable.defaults.placeholderColor))
-    runRenderableMutation(this, () => {
+    this.runMutation(() => {
       this.applyPlaceholder(this._placeholder, color)
       this._placeholderColor = color
       this.requestRender()
@@ -398,7 +390,7 @@ export class TextareaRenderable extends EditBufferRenderable {
 
   set initialValue(value: string) {
     if (!this._initialValueSet) {
-      runRenderableMutation(this, () => {
+      this.runMutation(() => {
         this.setText(value)
         this._initialValueSet = true
       })

@@ -143,6 +143,12 @@ click maps to the painted character. Reset the matching form when the selection 
 `setText()` resets history and the native add buffer. `replaceText()` creates an undo point. All replacement methods
 copy text into native-owned memory. The `Owned` variants retain the same public behavior without a borrowed-memory path.
 
+Text that you replace or insert must not contain control characters other than tab, carriage return, and line feed.
+The replacement and insertion methods throw `NativeError` with status `InvalidArgument` for C0 controls, DEL, and C1
+controls, and the edit buffer does not change. The same rule applies to editor placeholders, `Textarea.initialValue`,
+and `Input.value`. `Textarea` and `Input` remove these characters from pasted text and ignore key sequences that
+contain them.
+
 The edit buffer emits native `"cursor-changed"` and `"content-changed"` events through its `EventEmitter` interface.
 Events are scoped to its Context and resource generation. Destroying the buffer or Context suppresses queued delivery.
 
@@ -199,7 +205,7 @@ Read the native [copy rules](/docs/native/resources#read-text-and-geometry) for 
 name. Its offsets are global display-width units with line breaks excluded. Both forms use half-open `start` and `end`.
 
 `Highlight` also carries `styleId`, optional `priority`, and optional `hlRef`. Native transport stores priority as `u8`
-and the reference as `u16`. Use `removeHighlightsByRef()`, line clearing, or full clearing to release highlight state.
+and the reference as `u16`, and it rejects larger values with `InvalidArgument`. Use `removeHighlightsByRef()`, line clearing, or full clearing to release highlight state.
 
 The public highlight methods are `addHighlight()`, `addHighlightByCharRange()`, `removeHighlightsByRef()`,
 `clearLineHighlights()`, `clearAllHighlights()`, and `getLineHighlights()`. `TextBuffer` also exposes
@@ -301,12 +307,7 @@ as stable native markers.
 
 The lazy `EditorView.extmarks` property creates an `ExtmarksController`. The controller monkey-patches cursor, edit,
 selection-delete, undo, and redo methods on its specific `EditBuffer` and `EditorView`. `destroy()` restores those
-methods and clears marker state.
-
-The simulated controller currently leaves its anonymous `content-changed` listener on the `EditBuffer` after
-`destroy()`. The listener becomes a no-op, but a live buffer retains the destroyed controller and view. Repeated direct
-controller lifecycles on one buffer accumulate listeners. Keep one controller per view, and release the buffer after
-controller destruction.
+methods, removes its `content-changed` listener, and clears marker state.
 
 An extmark stores a half-open global display-offset range, `virtual`, optional style and priority values, arbitrary
 data, a numeric type, and optional metadata. Public operations are:
@@ -316,10 +317,11 @@ data, a numeric type, and optional metadata. Public operations are:
 - `getMetadataFor`, `adjustExtmarksAfterDeletion`, `clear`, and `destroy`
 
 Virtual extmarks make wrapped cursor methods skip the marked range. Styled extmarks rebuild all buffer highlights after
-changes. The simulation scans JavaScript text and adjusts offsets in JavaScript, so it inherits the offset limitations
+changes. A styled extmark's priority must be in the highlight range `0..255`; otherwise `create` throws and keeps no
+extmark. The simulation scans JavaScript text and adjusts offsets in JavaScript, so it inherits the offset limitations
 on this page.
 
-`EditorView.destroy()` destroys a lazy controller before the native view. If you call `createExtmarksController()`
+`EditorView.destroy()` destroys a lazy controller after the native view. If you call `createExtmarksController()`
 directly, destroy the controller before the view and edit buffer.
 
 ## Next

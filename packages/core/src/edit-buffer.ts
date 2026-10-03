@@ -6,6 +6,7 @@ import {
   type LogicalCursor,
   type RenderLib,
   type ContextEditBufferHandle,
+  type NativeEditorStyle,
 } from "./zig.js"
 import { type WidthMethod, type Highlight } from "./types.js"
 import { RGBA } from "./lib/RGBA.js"
@@ -80,6 +81,26 @@ export class EditBuffer extends EventEmitter {
     return this.lib.getYogaHost().runMutation(operation)
   }
 
+  private command(command: NativeEditCommand, argument?: number): void {
+    this.guard()
+    this.lib.contextEditBufferCommand(this.native.handle.context, this.native.handle, command, argument)
+  }
+
+  private position(query: NativeEditPositionQuery, a?: number, b?: number): LogicalCursor | null {
+    this.guard()
+    return this.lib.contextEditBufferGetPosition(this.native.handle.context, this.native.handle, query, a, b)
+  }
+
+  private highlight(operation: NativeEditHighlightOperation, argument?: number, highlight?: Highlight): void {
+    this.guard()
+    this.lib.contextEditBufferHighlight(this.native.handle.context, this.native.handle, operation, argument, highlight)
+  }
+
+  private setDefaults(mask: NativeEditorStyleMask, style: NativeEditorStyle): void {
+    this.guard()
+    this.lib.contextEditBufferSetDefaults(this.native.handle.context, this.native.handle, mask, style)
+  }
+
   private setNativeText(text: string, preserveHistory = false): void {
     const textBytes = this.lib.encoder.encode(text)
     this.lib.contextEditBufferSetText(this.native.handle.context, this.native.handle, textBytes, preserveHistory)
@@ -119,7 +140,6 @@ export class EditBuffer extends EventEmitter {
   }
 
   public setTabWidth(width: number): void {
-    this.guard()
     this.runMutation(() => {
       this.lib.contextEditBufferSetTabWidth(this.native.handle.context, this.native.handle, width)
     })
@@ -154,21 +174,11 @@ export class EditBuffer extends EventEmitter {
   }
 
   public deleteChar(): void {
-    this.guard()
-    return this.lib.contextEditBufferCommand(
-      this.native.handle.context,
-      this.native.handle,
-      NativeEditCommand.DeleteForward,
-    )
+    this.command(NativeEditCommand.DeleteForward)
   }
 
   public deleteCharBackward(): void {
-    this.guard()
-    return this.lib.contextEditBufferCommand(
-      this.native.handle.context,
-      this.native.handle,
-      NativeEditCommand.Backspace,
-    )
+    this.command(NativeEditCommand.Backspace)
   }
 
   public deleteRange(startLine: number, startCol: number, endLine: number, endCol: number): void {
@@ -184,51 +194,31 @@ export class EditBuffer extends EventEmitter {
   }
 
   public newLine(): void {
-    this.guard()
-    return this.lib.contextEditBufferCommand(this.native.handle.context, this.native.handle, NativeEditCommand.NewLine)
+    this.command(NativeEditCommand.NewLine)
   }
 
   public deleteLine(): void {
-    this.guard()
-    return this.lib.contextEditBufferCommand(
-      this.native.handle.context,
-      this.native.handle,
-      NativeEditCommand.DeleteLine,
-    )
+    this.command(NativeEditCommand.DeleteLine)
   }
 
   public moveCursorLeft(): void {
-    this.guard()
-    return this.lib.contextEditBufferCommand(this.native.handle.context, this.native.handle, NativeEditCommand.MoveLeft)
+    this.command(NativeEditCommand.MoveLeft)
   }
 
   public moveCursorRight(): void {
-    this.guard()
-    return this.lib.contextEditBufferCommand(
-      this.native.handle.context,
-      this.native.handle,
-      NativeEditCommand.MoveRight,
-    )
+    this.command(NativeEditCommand.MoveRight)
   }
 
   public moveCursorUp(): void {
-    this.guard()
-    return this.lib.contextEditBufferCommand(this.native.handle.context, this.native.handle, NativeEditCommand.MoveUp)
+    this.command(NativeEditCommand.MoveUp)
   }
 
   public moveCursorDown(): void {
-    this.guard()
-    return this.lib.contextEditBufferCommand(this.native.handle.context, this.native.handle, NativeEditCommand.MoveDown)
+    this.command(NativeEditCommand.MoveDown)
   }
 
   public gotoLine(line: number): void {
-    this.guard()
-    return this.lib.contextEditBufferCommand(
-      this.native.handle.context,
-      this.native.handle,
-      NativeEditCommand.GotoLine,
-      line,
-    )
+    this.command(NativeEditCommand.GotoLine, line)
   }
 
   public setCursor(line: number, col: number): void {
@@ -242,13 +232,7 @@ export class EditBuffer extends EventEmitter {
   }
 
   public setCursorByOffset(offset: number): void {
-    this.guard()
-    return this.lib.contextEditBufferCommand(
-      this.native.handle.context,
-      this.native.handle,
-      NativeEditCommand.CursorOffset,
-      offset,
-    )
+    this.command(NativeEditCommand.CursorOffset, offset)
   }
 
   public getCursorPosition(): LogicalCursor {
@@ -257,67 +241,28 @@ export class EditBuffer extends EventEmitter {
   }
 
   public getNextWordBoundary(): LogicalCursor {
-    this.guard()
-    return this.lib.contextEditBufferGetPosition(
-      this.native.handle.context,
-      this.native.handle,
-      NativeEditPositionQuery.NextWord,
-    )!
+    return this.position(NativeEditPositionQuery.NextWord)!
   }
 
   public getPrevWordBoundary(): LogicalCursor {
-    this.guard()
-    return this.lib.contextEditBufferGetPosition(
-      this.native.handle.context,
-      this.native.handle,
-      NativeEditPositionQuery.PrevWord,
-    )!
+    return this.position(NativeEditPositionQuery.PrevWord)!
   }
 
   public getEOL(): LogicalCursor {
-    this.guard()
-    return this.lib.contextEditBufferGetPosition(
-      this.native.handle.context,
-      this.native.handle,
-      NativeEditPositionQuery.Eol,
-    )!
+    return this.position(NativeEditPositionQuery.Eol)!
   }
 
   public offsetToPosition(offset: number): { row: number; col: number } | null {
-    this.guard()
-    const result = this.lib.contextEditBufferGetPosition(
-      this.native.handle.context,
-      this.native.handle,
-      NativeEditPositionQuery.Offset,
-      offset,
-    )
-    if (!result) return null
-    return { row: result.row, col: result.col }
+    const result = this.position(NativeEditPositionQuery.Offset, offset)
+    return result && { row: result.row, col: result.col }
   }
 
   public positionToOffset(row: number, col: number): number {
-    this.guard()
-    return (
-      this.lib.contextEditBufferGetPosition(
-        this.native.handle.context,
-        this.native.handle,
-        NativeEditPositionQuery.Coords,
-        row,
-        col,
-      )?.offset ?? 0
-    )
+    return this.position(NativeEditPositionQuery.Coords, row, col)?.offset ?? 0
   }
 
   public getLineStartOffset(row: number): number {
-    this.guard()
-    return (
-      this.lib.contextEditBufferGetPosition(
-        this.native.handle.context,
-        this.native.handle,
-        NativeEditPositionQuery.LineStart,
-        row,
-      )?.offset ?? 0
-    )
+    return this.position(NativeEditPositionQuery.LineStart, row)?.offset ?? 0
   }
 
   public getTextRange(startOffset: number, endOffset: number): string {
@@ -348,8 +293,7 @@ export class EditBuffer extends EventEmitter {
   }
 
   public debugLogRope(): void {
-    this.guard()
-    this.lib.contextEditBufferCommand(this.native.handle.context, this.native.handle, NativeEditCommand.DebugRope)
+    this.command(NativeEditCommand.DebugRope)
     this.lib.logContextDiagnostics(this.native.handle.context)
   }
 
@@ -374,52 +318,23 @@ export class EditBuffer extends EventEmitter {
   }
 
   public clearHistory(): void {
-    this.guard()
-    return this.lib.contextEditBufferCommand(
-      this.native.handle.context,
-      this.native.handle,
-      NativeEditCommand.ClearHistory,
-    )
+    this.command(NativeEditCommand.ClearHistory)
   }
 
   public setDefaultFg(fg: RGBA | null): void {
-    this.guard()
-    return this.lib.contextEditBufferSetDefaults(
-      this.native.handle.context,
-      this.native.handle,
-      NativeEditorStyleMask.Foreground,
-      { fg },
-    )
+    this.setDefaults(NativeEditorStyleMask.Foreground, { fg })
   }
 
   public setDefaultBg(bg: RGBA | null): void {
-    this.guard()
-    return this.lib.contextEditBufferSetDefaults(
-      this.native.handle.context,
-      this.native.handle,
-      NativeEditorStyleMask.Background,
-      { bg },
-    )
+    this.setDefaults(NativeEditorStyleMask.Background, { bg })
   }
 
   public setDefaultAttributes(attributes: number | null): void {
-    this.guard()
-    return this.lib.contextEditBufferSetDefaults(
-      this.native.handle.context,
-      this.native.handle,
-      NativeEditorStyleMask.Attributes,
-      { attributes },
-    )
+    this.setDefaults(NativeEditorStyleMask.Attributes, { attributes })
   }
 
   public resetDefaults(): void {
-    this.guard()
-    return this.lib.contextEditBufferSetDefaults(
-      this.native.handle.context,
-      this.native.handle,
-      NativeEditorStyleMask.All,
-      {},
-    )
+    this.setDefaults(NativeEditorStyleMask.All, {})
   }
 
   public setSyntaxStyle(style: SyntaxStyle | null): void {
@@ -439,54 +354,23 @@ export class EditBuffer extends EventEmitter {
   }
 
   public addHighlight(lineIdx: number, highlight: Highlight): void {
-    this.guard()
-    return this.lib.contextEditBufferHighlight(
-      this.native.handle.context,
-      this.native.handle,
-      NativeEditHighlightOperation.AddLine,
-      lineIdx,
-      highlight,
-    )
+    this.highlight(NativeEditHighlightOperation.AddLine, lineIdx, highlight)
   }
 
   public addHighlightByCharRange(highlight: Highlight): void {
-    this.guard()
-    return this.lib.contextEditBufferHighlight(
-      this.native.handle.context,
-      this.native.handle,
-      NativeEditHighlightOperation.AddRange,
-      0,
-      highlight,
-    )
+    this.highlight(NativeEditHighlightOperation.AddRange, 0, highlight)
   }
 
   public removeHighlightsByRef(hlRef: number): void {
-    this.guard()
-    return this.lib.contextEditBufferHighlight(
-      this.native.handle.context,
-      this.native.handle,
-      NativeEditHighlightOperation.RemoveRef,
-      hlRef,
-    )
+    this.highlight(NativeEditHighlightOperation.RemoveRef, hlRef)
   }
 
   public clearLineHighlights(lineIdx: number): void {
-    this.guard()
-    return this.lib.contextEditBufferHighlight(
-      this.native.handle.context,
-      this.native.handle,
-      NativeEditHighlightOperation.ClearLine,
-      lineIdx,
-    )
+    this.highlight(NativeEditHighlightOperation.ClearLine, lineIdx)
   }
 
   public clearAllHighlights(): void {
-    this.guard()
-    return this.lib.contextEditBufferHighlight(
-      this.native.handle.context,
-      this.native.handle,
-      NativeEditHighlightOperation.ClearAll,
-    )
+    this.highlight(NativeEditHighlightOperation.ClearAll)
   }
 
   public getLineHighlights(lineIdx: number): Array<Highlight> {
@@ -495,8 +379,7 @@ export class EditBuffer extends EventEmitter {
   }
 
   public clear(): void {
-    this.guard()
-    return this.lib.contextEditBufferCommand(this.native.handle.context, this.native.handle, NativeEditCommand.Clear)
+    this.command(NativeEditCommand.Clear)
   }
 
   public destroy(): void {

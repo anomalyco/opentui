@@ -54,6 +54,7 @@ const enumSamples: Record<string, unknown> = {
   wrapMode: "none",
   orientation: "vertical",
   direction: "left",
+  cursorStyle: { style: "line", blinking: false },
 }
 
 let renderer: TestRenderer
@@ -170,22 +171,14 @@ test.each(renderableClasses)("%s setters accept null and undefined", async (name
 // Frameworks write props while they unmount, also after the renderer is destroyed. As on `main`, a destroyed
 // renderable ignores them. Listed: subclass setters and methods that call the scene or a native resource directly and
 // still need their own guard (owner unit in the comment).
-const editorSetters = [
-  "backgroundColor",
-  "cursorColor",
-  "cursorOffset",
-  "selectionOccupancy",
-  "showCursor",
-  "syntaxStyle",
-  "textColor",
-]
+const editorSetters = ["cursorOffset", "selectionOccupancy", "syntaxStyle"] // U21: threw on `main` too
 const throwsAfterDestroy: Record<string, string[]> = {
   CodeRenderable: ["scrollX", "scrollY"], // threw on `main` too (U20 Also-on-main)
   TextBufferRenderable: ["scrollX", "scrollY"], // threw on `main` too (U20 Also-on-main)
   TextRenderable: ["content", "scrollX", "scrollY"], // threw on `main` too (U20 Also-on-main)
-  EditBufferRenderable: editorSetters, // U21
-  InputRenderable: [...editorSetters, "focusedBackgroundColor", "focusedTextColor", "maxLength", "value", "focus()"], // U21
-  TextareaRenderable: [...editorSetters, "focusedBackgroundColor", "focusedTextColor", "focus()"], // U21
+  EditBufferRenderable: [...editorSetters, "backgroundColor", "textColor"], // threw on `main` too (U21 Also-on-main)
+  InputRenderable: [...editorSetters, "maxLength", "value", "focus()"], // threw on `main` too (U21 Also-on-main)
+  TextareaRenderable: editorSetters, // threw on `main` too (U21 Also-on-main)
 }
 
 function writeAfterDestroy(node: Renderable, writes: [string, unknown[]][], skipped: string[] = []): string[] {

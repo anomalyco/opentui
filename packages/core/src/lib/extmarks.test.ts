@@ -1,4 +1,4 @@
-import { describe, expect, it, afterEach } from "bun:test"
+import { describe, expect, it, afterEach, spyOn } from "bun:test"
 import { TextareaRenderable } from "../renderables/Textarea.js"
 import { createTestRenderer, type TestRenderer, type MockInput } from "../testing/test-renderer.js"
 import { type ExtmarksController } from "./extmarks.js"
@@ -766,6 +766,26 @@ describe("ExtmarksController", () => {
 
       const highlightsAfter = textarea.getLineHighlights(0)
       expect(highlightsAfter.length).toBe(0)
+    })
+
+    it("should not keep an extmark whose highlight native rejects", async () => {
+      await setup("Hello World")
+      const style = SyntaxStyle.create(currentRenderer.nativeScene)
+      const styleId = style.registerStyle("link", { fg: RGBA.fromValues(0, 0, 1, 1) })
+      textarea.syntaxStyle = style
+      const kept = extmarks.create({ start: 0, end: 5, styleId, priority: 255 })
+      const errors = spyOn(console, "error")
+      try {
+        expect(() => extmarks.create({ start: 6, end: 11, styleId, priority: 256 })).toThrow()
+        expect(extmarks.getAll().map((extmark) => extmark.id)).toEqual([kept])
+        textarea.focus()
+        currentMockInput.pressKey("X")
+        await renderOnce()
+        expect(errors).not.toHaveBeenCalled()
+        expect(textarea.getLineHighlights(0)).toMatchObject([{ start: 1, end: 6, styleId, priority: 255 }])
+      } finally {
+        errors.mockRestore()
+      }
     })
   })
 

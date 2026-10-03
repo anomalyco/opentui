@@ -10,6 +10,7 @@ import {
   type VisualCursor,
   type LineInfo,
   type NativeEditorReplacement,
+  type NativeEditorSelection,
 } from "./zig.js"
 import type { EditBuffer } from "./edit-buffer.js"
 import type { NativeResourceOwner, ResourceContext } from "./buffer.js"
@@ -86,6 +87,21 @@ export class EditorView {
     return this.native.handle
   }
 
+  private command(command: NativeEditorCommand, argument?: number): void {
+    this.guard()
+    this.lib.contextEditorViewCommand(this.native.handle.context, this.native.handle, command, argument)
+  }
+
+  private position(query: NativeEditorPositionQuery): VisualCursor {
+    this.guard()
+    return this.lib.contextEditorViewGetPosition(this.native.handle.context, this.native.handle, query)
+  }
+
+  private select(selection: NativeEditorSelection): boolean {
+    this.guard()
+    return this.lib.contextEditorViewSelect(this.native.handle.context, this.native.handle, selection)
+  }
+
   public setViewportSize(width: number, height: number): void {
     this.guard()
     return this.lib.contextEditorViewSetViewport(
@@ -122,13 +138,7 @@ export class EditorView {
   }
 
   public setWrapMode(mode: "none" | "char" | "word"): void {
-    this.guard()
-    return this.lib.contextEditorViewCommand(
-      this.native.handle.context,
-      this.native.handle,
-      NativeEditorCommand.WrapMode,
-      mode === "none" ? 0 : mode === "char" ? 1 : 2,
-    )
+    this.command(NativeEditorCommand.WrapMode, mode === "none" ? 0 : mode === "char" ? 1 : 2)
   }
 
   public getVirtualLineCount(): number {
@@ -142,31 +152,15 @@ export class EditorView {
   }
 
   public setSelection(start: number, end: number, bgColor?: RGBA, fgColor?: RGBA): void {
-    this.guard()
-    this.lib.contextEditorViewSelect(this.native.handle.context, this.native.handle, {
-      operation: NativeEditorSelectionOperation.Set,
-      start,
-      end,
-      bg: bgColor,
-      fg: fgColor,
-    })
+    this.select({ operation: NativeEditorSelectionOperation.Set, start, end, bg: bgColor, fg: fgColor })
   }
 
   public updateSelection(end: number, bgColor?: RGBA, fgColor?: RGBA): void {
-    this.guard()
-    this.lib.contextEditorViewSelect(this.native.handle.context, this.native.handle, {
-      operation: NativeEditorSelectionOperation.Update,
-      end,
-      bg: bgColor,
-      fg: fgColor,
-    })
+    this.select({ operation: NativeEditorSelectionOperation.Update, end, bg: bgColor, fg: fgColor })
   }
 
   public resetSelection(): void {
-    this.guard()
-    this.lib.contextEditorViewSelect(this.native.handle.context, this.native.handle, {
-      operation: NativeEditorSelectionOperation.Reset,
-    })
+    this.select({ operation: NativeEditorSelectionOperation.Reset })
   }
 
   public getSelection(): { start: number; end: number } | null {
@@ -175,7 +169,6 @@ export class EditorView {
   }
 
   public hasSelection(): boolean {
-    this.guard()
     return this.getSelection() !== null
   }
 
@@ -190,8 +183,7 @@ export class EditorView {
     followCursor?: boolean,
     behavior: SelectionBehavior = "cell",
   ): boolean {
-    this.guard()
-    return this.lib.contextEditorViewSelect(this.native.handle.context, this.native.handle, {
+    return this.select({
       operation: NativeEditorSelectionOperation.Local,
       anchorX,
       anchorY,
@@ -216,8 +208,7 @@ export class EditorView {
     followCursor?: boolean,
     behavior: SelectionBehavior = "cell",
   ): boolean {
-    this.guard()
-    return this.lib.contextEditorViewSelect(this.native.handle.context, this.native.handle, {
+    return this.select({
       operation: NativeEditorSelectionOperation.LocalUpdate,
       anchorX,
       anchorY,
@@ -232,22 +223,15 @@ export class EditorView {
   }
 
   public resetLocalSelection(): void {
-    this.guard()
-    this.lib.contextEditorViewSelect(this.native.handle.context, this.native.handle, {
-      operation: NativeEditorSelectionOperation.LocalReset,
-    })
+    this.select({ operation: NativeEditorSelectionOperation.LocalReset })
   }
 
   public convertSelectionToCell(): boolean {
-    this.guard()
-    return this.lib.contextEditorViewSelect(this.native.handle.context, this.native.handle, {
-      operation: NativeEditorSelectionOperation.Cell,
-    })
+    return this.select({ operation: NativeEditorSelectionOperation.Cell })
   }
 
   public setSelectionOccupancy(occupancy: SelectionOccupancy): void {
-    this.guard()
-    this.lib.contextEditorViewSelect(this.native.handle.context, this.native.handle, {
+    this.select({
       operation: NativeEditorSelectionOperation.Occupancy,
       behavior: occupancy === "boundary" ? 1 : 0,
     })
@@ -259,23 +243,11 @@ export class EditorView {
   }
 
   public setSelectionInclusive(start: number, end: number, bgColor?: RGBA, fgColor?: RGBA): void {
-    this.guard()
-    this.lib.contextEditorViewSelect(this.native.handle.context, this.native.handle, {
-      operation: NativeEditorSelectionOperation.Inclusive,
-      start,
-      end,
-      bg: bgColor,
-      fg: fgColor,
-    })
+    this.select({ operation: NativeEditorSelectionOperation.Inclusive, start, end, bg: bgColor, fg: fgColor })
   }
 
   public setSelectionColors(bgColor?: RGBA, fgColor?: RGBA): void {
-    this.guard()
-    this.lib.contextEditorViewSelect(this.native.handle.context, this.native.handle, {
-      operation: NativeEditorSelectionOperation.Colors,
-      bg: bgColor,
-      fg: fgColor,
-    })
+    this.select({ operation: NativeEditorSelectionOperation.Colors, bg: bgColor, fg: fgColor })
   }
 
   public getSelectedText(): string {
@@ -295,35 +267,19 @@ export class EditorView {
   }
 
   public getVisualCursor(): VisualCursor {
-    this.guard()
-    return this.lib.contextEditorViewGetPosition(
-      this.native.handle.context,
-      this.native.handle,
-      NativeEditorPositionQuery.Cursor,
-    )
+    return this.position(NativeEditorPositionQuery.Cursor)
   }
 
   public moveUpVisual(): void {
-    this.guard()
-    return this.lib.contextEditorViewCommand(this.native.handle.context, this.native.handle, NativeEditorCommand.MoveUp)
+    this.command(NativeEditorCommand.MoveUp)
   }
 
   public moveDownVisual(): void {
-    this.guard()
-    return this.lib.contextEditorViewCommand(
-      this.native.handle.context,
-      this.native.handle,
-      NativeEditorCommand.MoveDown,
-    )
+    this.command(NativeEditorCommand.MoveDown)
   }
 
   public deleteSelectedText(): void {
-    this.guard()
-    return this.lib.contextEditorViewCommand(
-      this.native.handle.context,
-      this.native.handle,
-      NativeEditorCommand.DeleteSelection,
-    )
+    this.command(NativeEditorCommand.DeleteSelection)
   }
 
   /** @internal The native controller replaces a selection in one checked operation. */
@@ -337,67 +293,31 @@ export class EditorView {
   }
 
   public setCursorByOffset(offset: number): void {
-    this.guard()
-    return this.lib.contextEditorViewCommand(
-      this.native.handle.context,
-      this.native.handle,
-      NativeEditorCommand.CursorOffset,
-      offset,
-    )
+    this.command(NativeEditorCommand.CursorOffset, offset)
   }
 
   public getNextWordBoundary(): VisualCursor {
-    this.guard()
-    return this.lib.contextEditorViewGetPosition(
-      this.native.handle.context,
-      this.native.handle,
-      NativeEditorPositionQuery.NextWord,
-    )
+    return this.position(NativeEditorPositionQuery.NextWord)
   }
 
   public getPrevWordBoundary(): VisualCursor {
-    this.guard()
-    return this.lib.contextEditorViewGetPosition(
-      this.native.handle.context,
-      this.native.handle,
-      NativeEditorPositionQuery.PrevWord,
-    )
+    return this.position(NativeEditorPositionQuery.PrevWord)
   }
 
   public getEOL(): VisualCursor {
-    this.guard()
-    return this.lib.contextEditorViewGetPosition(
-      this.native.handle.context,
-      this.native.handle,
-      NativeEditorPositionQuery.Eol,
-    )
+    return this.position(NativeEditorPositionQuery.Eol)
   }
 
   public getVisualSOL(): VisualCursor {
-    this.guard()
-    return this.lib.contextEditorViewGetPosition(
-      this.native.handle.context,
-      this.native.handle,
-      NativeEditorPositionQuery.VisualSol,
-    )
+    return this.position(NativeEditorPositionQuery.VisualSol)
   }
 
   public getVisualEOL(): VisualCursor {
-    this.guard()
-    return this.lib.contextEditorViewGetPosition(
-      this.native.handle.context,
-      this.native.handle,
-      NativeEditorPositionQuery.VisualEol,
-    )
+    return this.position(NativeEditorPositionQuery.VisualEol)
   }
 
   public gotoVisualLineEnd(): void {
-    this.guard()
-    return this.lib.contextEditorViewCommand(
-      this.native.handle.context,
-      this.native.handle,
-      NativeEditorCommand.GotoLineEnd,
-    )
+    this.command(NativeEditorCommand.GotoLineEnd)
   }
 
   public getLineInfo(): LineInfo {
@@ -428,14 +348,8 @@ export class EditorView {
   }
 
   public setTabIndicator(indicator: string | number): void {
-    this.guard()
     const codePoint = typeof indicator === "string" ? (indicator.codePointAt(0) ?? 0) : indicator
-    return this.lib.contextEditorViewCommand(
-      this.native.handle.context,
-      this.native.handle,
-      NativeEditorCommand.TabIndicator,
-      codePoint,
-    )
+    this.command(NativeEditorCommand.TabIndicator, codePoint)
   }
 
   public setTabIndicatorColor(color: RGBA): void {
