@@ -2284,9 +2284,7 @@ pub const Context = struct {
             if (viewport.scene_node.?.owner != node.owner) return error.WrongSession;
             if (viewport.scene_node.?.kind > api.OT_SCENE_BOX) return error.WrongKind;
         }
-        try yoga.check(yoga.nodeTeardownStatus(value.yoga_node));
-        var dirty: u32 = 0;
-        try yoga.check(yoga.yogaNodeIsDirtyChecked(value.yoga_node, &dirty));
+        try scene.Scene.checkWritable(value);
         if (std.meta.eql(node.viewport, viewport_handle)) return;
         node.owner.filter_count -= @intFromBool(node.viewport != null);
         node.owner.filter_count += @intFromBool(viewport_handle != null);
@@ -2302,9 +2300,7 @@ pub const Context = struct {
         const value = if (focused) try self.sceneMutableNode(handle) else try self.sceneNode(handle);
         const owned = value.scene_node.?.owner;
         if (focused) {
-            try yoga.check(yoga.nodeTeardownStatus(value.yoga_node));
-            var dirty: u32 = 0;
-            try yoga.check(yoga.yogaNodeIsDirtyChecked(value.yoga_node, &dirty));
+            try scene.Scene.checkWritable(value);
             owned.focus = handle;
         } else if (owned.focus) |accepted| {
             if (std.meta.eql(accepted, handle)) owned.focus = null;
@@ -2327,9 +2323,7 @@ pub const Context = struct {
         if (node.kind != api.OT_SCENE_SLIDER) return error.WrongKind;
         try buf.validateColor(options.foreground);
         try buf.validateColor(options.background);
-        try yoga.check(yoga.nodeTeardownStatus(value.yoga_node));
-        var dirty: u32 = 0;
-        try yoga.check(yoga.yogaNodeIsDirtyChecked(value.yoga_node, &dirty));
+        try scene.Scene.checkWritable(value);
         _ = try scene.sliderThumb(options, node.resize_width, node.resize_height);
         _ = try scene.sliderThumb(options, node.layout.width, node.layout.height);
         node.control = .{ .slider = options };
@@ -2354,9 +2348,7 @@ pub const Context = struct {
         try buf.validateColor(options.foreground);
         try buf.validateColor(options.background);
         if (options.text) |text| try buf.validateTextInput(text);
-        try yoga.check(yoga.nodeTeardownStatus(value.yoga_node));
-        var dirty: u32 = 0;
-        try yoga.check(yoga.yogaNodeIsDirtyChecked(value.yoga_node, &dirty));
+        try scene.Scene.checkWritable(value);
         var replacement = options;
         if (options.text) |text| replacement.text = try self.allocator.dupe(u8, text);
         node.control.arrow.deinit(self.allocator);
