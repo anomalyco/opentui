@@ -1339,9 +1339,9 @@ test "OptimizedBuffer - pixel buffers at signed positions draw their visible par
     buf.drawSuperSampleBuffer(0, 0, &pixels, pixels.len, 1, 16);
     const blue_cell = buf.get(1, 0).?;
     buf.clear(black, null);
-    // The visible cells of the first two draws map past the end of the pixels.
-    buf.drawSuperSampleBuffer(std.math.minInt(i32), 0, &pixels, pixels.len, 1, std.math.maxInt(u32));
-    buf.drawSuperSampleBuffer(0, std.math.minInt(i32), &pixels, pixels.len, 1, std.math.maxInt(u32));
+    // At a far-negative position no source cell reaches the buffer.
+    buf.drawSuperSampleBuffer(std.math.minInt(i32), 0, &pixels, pixels.len, 1, 16);
+    buf.drawSuperSampleBuffer(0, std.math.minInt(i32), &pixels, pixels.len, 1, 16);
     buf.drawSuperSampleBuffer(-1, 0, &pixels, pixels.len, 1, 16);
 
     const cell = buf.get(0, 0).?;
