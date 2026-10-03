@@ -3,6 +3,7 @@ import { spawnSync } from "node:child_process"
 import { fileURLToPath } from "node:url"
 import { OptimizedBuffer, ResourceContext } from "./buffer.js"
 import { RGBA } from "./lib/RGBA.js"
+import { ptr } from "./platform/ffi.js"
 import { TextBuffer } from "./text-buffer.js"
 import { TextBufferView } from "./text-buffer-view.js"
 import { EditBuffer } from "./edit-buffer.js"
@@ -390,6 +391,51 @@ describe("context diagnostics", () => {
     } finally {
       symbols.ot_context_drain_diagnostics = original
       for (const method of consoles) method.mockRestore()
+    }
+  })
+})
+
+describe("FFI input views", () => {
+  test.each([
+    ["packed", (target: OptimizedBuffer, data: Uint8Array | number) => target.drawPackedBuffer(data, 48, 0, 0, 1, 1)],
+    [
+      "supersample",
+      (target: OptimizedBuffer, data: Uint8Array | number) =>
+        target.drawSuperSampleBuffer(0, 0, data, 16, "rgba8unorm", 8),
+    ],
+  ] as const)("%s pixels draw the same from a native address as from a view", (_, draw) => {
+    const owner = new ResourceContext({ objectCapacity: 8, renderCellsMax: 8 })
+    try {
+      const pixels = new Uint8Array(48)
+      new Float32Array(pixels.buffer, 0, 8).set([0.5, 0, 0, 1, 1, 1, 1, 1])
+      new Uint32Array(pixels.buffer)[8] = "X".codePointAt(0)!
+      const cells = (data: Uint8Array | number) => {
+        const target = OptimizedBuffer.create(2, 1, "unicode", { owner })
+        draw(target, data)
+        return target.withBuffers(({ char, fg, bg }) => [Array.from(char), Array.from(fg), Array.from(bg)])
+      }
+      // Move the bytes into a stable ArrayBuffer before taking their address.
+      void pixels.buffer
+      expect(cells(Number(ptr(pixels)))).toEqual(cells(pixels))
+      expect(() => draw(OptimizedBuffer.create(2, 1, "unicode", { owner }), pixels.subarray(0, 8))).toThrow(
+        "Pixel byte count exceeds the supplied view",
+      )
+    } finally {
+      owner.destroy()
+    }
+  })
+
+  test("a view whose byteLength getter lies is rejected", () => {
+    const lib = resolveRenderLib()
+    const context = lib.createContext({ objectCapacity: 1, renderCellsMax: 1 })
+    try {
+      const text = lib.createContextTextBuffer(context)
+      const bytes = Object.defineProperty(lib.encoder.encode("abc"), "byteLength", { get: () => 1 })
+      expect(() => lib.contextTextBufferSetText(context, text, bytes)).toThrow(
+        "does not match the supplied typed-array view",
+      )
+    } finally {
+      lib.destroyContext(context)
     }
   })
 })
