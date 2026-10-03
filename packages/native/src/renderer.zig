@@ -989,7 +989,7 @@ pub const CliRenderer = struct {
     }
 
     pub fn setRenderOffset(self: *CliRenderer, offset: u32) void {
-        if (self.pendingPresentation != null) return;
+        std.debug.assert(self.pendingPresentation == null);
         if (self.terminalSetup and !self.useAlternateScreen and self.renderOffset > 0 and offset == 0) {
             var clearBuf: [256]u8 = undefined;
             var fixed_writer: std.Io.Writer = .fixed(&clearBuf);
@@ -1099,10 +1099,10 @@ pub const CliRenderer = struct {
 
     /// Accept an ordinary frame into a callback-free feed without publishing its
     /// hit grid, images, or statistics. The owner must finish or discard the frame's
-    /// bytes before calling completePresentation. Failed output stops presentation
+    /// bytes before calling completePresentation, and must not change hit grids,
+    /// split state, or the terminal until then. Failed output stops presentation
     /// permanently; this helper cannot repair partially delivered terminal commands.
-    /// The owner also controls terminal lifecycle. Legacy setup and split prefixes
-    /// remain on the legacy render path until their Session adapters are available.
+    /// The owner also controls terminal lifecycle; legacy terminal setup is rejected.
     pub fn renderDeferred(self: *CliRenderer, force: bool) error{
         PresentationPending,
         PresentationFailed,
@@ -1266,14 +1266,14 @@ pub const CliRenderer = struct {
     }
 
     pub fn resetSplitScrollback(self: *CliRenderer, seed_rows: u32, pinned_render_offset: u32) u32 {
-        if (self.pendingPresentation != null) return self.renderOffset;
+        std.debug.assert(self.pendingPresentation == null);
         self.splitScrollback.reset(seed_rows);
         self.renderOffset = self.splitScrollback.renderOffset(pinned_render_offset);
         return self.renderOffset;
     }
 
     pub fn syncSplitScrollback(self: *CliRenderer, pinned_render_offset: u32) u32 {
-        if (self.pendingPresentation != null) return self.renderOffset;
+        std.debug.assert(self.pendingPresentation == null);
         self.renderOffset = self.clampSplitSurfaceOffset(self.renderOffset, pinned_render_offset);
         return self.renderOffset;
     }
@@ -1291,7 +1291,7 @@ pub const CliRenderer = struct {
         target_height: u32,
         scroll_lines: u32,
     ) void {
-        if (self.pendingPresentation != null) return;
+        std.debug.assert(self.pendingPresentation == null);
         self.pendingSplitFooterTransition = .{
             .mode = mode,
             .source_top_line = source_top_line,
@@ -1303,7 +1303,7 @@ pub const CliRenderer = struct {
     }
 
     pub fn clearPendingSplitFooterTransition(self: *CliRenderer) void {
-        if (self.pendingPresentation != null) return;
+        std.debug.assert(self.pendingPresentation == null);
         self.pendingSplitFooterTransition.clear();
     }
 
@@ -3333,7 +3333,7 @@ pub const CliRenderer = struct {
     }
 
     pub fn clearTerminal(self: *CliRenderer) void {
-        if (self.pendingPresentation != null) return;
+        std.debug.assert(self.pendingPresentation == null);
         if (self.hasCommittedProtocol(.kitty)) {
             for (self.currentImages.items) |current| {
                 if (current.protocol != .kitty) continue;
@@ -3369,7 +3369,7 @@ pub const CliRenderer = struct {
     /// only register hits within the visible region. Later renderables overwrite
     /// earlier ones. Z-order is determined by render order.
     pub fn addToHitGrid(self: *CliRenderer, x: i32, y: i32, width: u32, height: u32, id: u32) void {
-        if (self.pendingPresentation != null) return;
+        std.debug.assert(self.pendingPresentation == null);
         const clipped = self.clipRectToHitScissor(x, y, width, height) orelse return;
         const startX = @max(0, clipped.x);
         const startY = @max(0, clipped.y);
@@ -3400,7 +3400,7 @@ pub const CliRenderer = struct {
 
     /// Clear currentHitGrid before an immediate rebuild with addToCurrentHitGridClipped.
     pub fn clearCurrentHitGrid(self: *CliRenderer) void {
-        if (self.pendingPresentation != null) return;
+        std.debug.assert(self.pendingPresentation == null);
         @memset(self.currentHitGrid, 0);
     }
 
@@ -3501,7 +3501,7 @@ pub const CliRenderer = struct {
     /// Unlike addToHitGrid (which writes to nextHitGrid for the upcoming frame),
     /// this updates the grid that checkHit reads right now.
     pub fn addToCurrentHitGridClipped(self: *CliRenderer, x: i32, y: i32, width: u32, height: u32, id: u32) void {
-        if (self.pendingPresentation != null) return;
+        std.debug.assert(self.pendingPresentation == null);
         const clipped = self.clipRectToHitScissor(x, y, width, height) orelse return;
 
         const startX = @max(0, clipped.x);
