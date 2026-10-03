@@ -1525,11 +1525,17 @@ function contextBufferColor(value: RGBA, color: Uint16Array = new Uint16Array(4)
 }
 
 function createScenePaintRecord() {
+  const { fields } = nativeLayouts.ot_scene_paint_options
   const record = createContextRecord(nativeLayouts.ot_scene_paint_options)
   return {
     record,
-    payload: new Uint32Array(record.buffer, 8, 16),
-    background: new Uint16Array(record.buffer, nativeLayouts.ot_scene_paint_options.fields.background.offset, 4),
+    // Property fields run from z_index up to the reserved tail word.
+    payload: new Uint32Array(
+      record.buffer,
+      fields.z_index.offset,
+      (fields.reserved.offset - fields.z_index.offset) / 4,
+    ),
+    background: new Uint16Array(record.buffer, fields.background.offset, 4),
     floats: new Float32Array(record.buffer),
     doubles: new Float64Array(record.buffer),
     colors: new Uint16Array(record.buffer),
@@ -1660,34 +1666,43 @@ function validateSceneStyle(group: number, kind: number, edge: number, unit: num
   if (!valid) throw new NativeError("ot_scene_set_style", NativeStatus.InvalidArgument)
 }
 
-const scenePropertyFields = [
-  "z_index",
-  "opacity",
-  "translate_x",
-  "translate_y",
-  "border_sides",
-  "should_fill",
-  "background",
-  "border_color",
-  "border_style",
-  "focusable",
-  "focused_border_color",
-] as const
-const scenePropertyWords = scenePropertyFields.map((name) => {
+// Packed paint records hold fields in header bit order, and SceneStaging indexes these entries by bit position.
+const scenePropertyWords = (
+  [
+    ["z_index", nativeConstants.OT_SCENE_PROPERTY_Z_INDEX],
+    ["opacity", nativeConstants.OT_SCENE_PROPERTY_OPACITY],
+    ["translate_x", nativeConstants.OT_SCENE_PROPERTY_TRANSLATE_X],
+    ["translate_y", nativeConstants.OT_SCENE_PROPERTY_TRANSLATE_Y],
+    ["border_sides", nativeConstants.OT_SCENE_PROPERTY_BORDER],
+    ["should_fill", nativeConstants.OT_SCENE_PROPERTY_SHOULD_FILL],
+    ["background", nativeConstants.OT_SCENE_PROPERTY_BACKGROUND],
+    ["border_color", nativeConstants.OT_SCENE_PROPERTY_BORDER_COLOR],
+    ["border_style", nativeConstants.OT_SCENE_PROPERTY_BORDER_STYLE],
+    ["focusable", nativeConstants.OT_SCENE_PROPERTY_FOCUSABLE],
+    ["focused_border_color", nativeConstants.OT_SCENE_PROPERTY_FOCUSED_BORDER_COLOR],
+  ] as const
+).map(([name, bit], index) => {
+  if (bit !== 1 << index) throw new Error(`Scene property ${name} is out of header bit order`)
   const field = nativeLayouts.ot_scene_paint_options.fields[name]
   return { offset: field.offset / 4, length: field.size / 4 }
 })
 const propertyHeaderWords = nativeLayouts.ot_scene_property_update.size / 4
 const propertySlotWords = nativeConstants.OT_SCENE_PROPERTY_RECORD_MAX / 4
 const propertyStyle = nativeConstants.OT_SCENE_PROPERTY_STYLE
+const propertyStyleWords = propertyHeaderWords + nativeLayouts.ot_scene_style_property.size / 4
 
 function propertyWordLength(fields: number): number {
-  if (fields === propertyStyle) return 10
+  if (fields === propertyStyle) return propertyStyleWords
   let words = propertyHeaderWords
   for (let index = 0; index < scenePropertyWords.length; index++) {
     if (fields & (1 << index)) words += scenePropertyWords[index].length
   }
   return (words + 1) & ~1
+}
+
+// SceneStaging sizes its buffer in records of OT_SCENE_PROPERTY_RECORD_MAX bytes.
+if (Math.max(propertyStyleWords, propertyWordLength((1 << scenePropertyWords.length) - 1)) > propertySlotWords) {
+  throw new Error("Scene property records exceed OT_SCENE_PROPERTY_RECORD_MAX")
 }
 
 /** One ordered property stream, stored in native wire layout. Visual writes coalesce
