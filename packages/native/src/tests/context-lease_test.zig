@@ -217,6 +217,114 @@ test "Context lease accounts for future tracker growth before admitting storage"
     try std.testing.expectEqual(gp.packGraphemeStart(ids[32], 1), snapshot.buffer.char[0]);
 }
 
+test "Context leases charge each leased storage once through seeded resize, draw, and destroy" {
+    const Handle = @import("../context-handles.zig").Handle;
+    const glyphs = [_][]const u8{ "a", "\u{4e2d}", "e\u{301}", "\u{1f31f}", "\u{1f1fa}\u{1f1f8}" };
+    const cell_bytes = 2 * @sizeOf(u32) + 2 * @sizeOf(buffer.RGBA);
+    for ([_]u64{ 1, 2, 3, 4, 5, 6 }) |seed| {
+        errdefer std.debug.print("seed={d}\n", .{seed});
+        var prng = std.Random.DefaultPrng.init(seed);
+        const random = prng.random();
+        const owner = try context.Context.init(std.testing.allocator, std.testing.io, .{
+            .object_capacity = 16,
+            .render_cells_max = 48,
+            .lease_count_max = 5,
+        });
+        defer owner.deinit() catch unreachable;
+        var buffers: [3]?Handle = @splat(null);
+        const Lease = struct { handle: Handle, storage: *buffer.BufferStorage, buffer: usize };
+        var leases: [5]Lease = undefined;
+        var lease_count: usize = 0;
+        defer for (leases[0..lease_count]) |lease| owner.releaseBufferLease(lease.handle) catch unreachable;
+        var text: [64]u8 = undefined;
+
+        for (0..300) |_| {
+            const slot = random.uintLessThan(usize, buffers.len);
+            const width = random.intRangeAtMost(u32, 1, 8);
+            const height = random.intRangeAtMost(u32, 1, 8);
+            switch (random.uintLessThan(u8, 7)) {
+                0 => if (buffers[slot] == null) {
+                    buffers[slot] = owner.createBuffer(width, height, .{}) catch |err| blk: {
+                        try std.testing.expectEqual(error.InvalidDimensions, err);
+                        try std.testing.expect(width * height > 48);
+                        break :blk null;
+                    };
+                },
+                1 => if (buffers[slot]) |handle| {
+                    try owner.destroy(handle);
+                    buffers[slot] = null;
+                },
+                2 => if (buffers[slot]) |handle| {
+                    owner.resizeBuffer(handle, width, height) catch |err| {
+                        try std.testing.expectEqual(error.InvalidDimensions, err);
+                        try std.testing.expect(width * height > 48);
+                    };
+                },
+                3 => if (buffers[slot]) |handle| {
+                    if (owner.acquireOwnedBufferLease(handle)) |lease| {
+                        leases[lease_count] = .{ .handle = lease, .storage = try owner.objects.get(lease, .buffer_lease, buffer.BufferStorage), .buffer = slot };
+                        lease_count += 1;
+                    } else |err| {
+                        try std.testing.expectEqual(error.LeaseLimit, err);
+                        try std.testing.expectEqual(leases.len, lease_count);
+                    }
+                },
+                4 => if (lease_count != 0) {
+                    const index = random.uintLessThan(usize, lease_count);
+                    try owner.releaseBufferLease(leases[index].handle);
+                    lease_count -= 1;
+                    leases[index] = leases[lease_count];
+                },
+                5 => if (buffers[slot]) |handle| {
+                    var length: usize = 0;
+                    for (0..random.uintLessThan(usize, 8)) |_| {
+                        const glyph = glyphs[random.uintLessThan(usize, glyphs.len)];
+                        @memcpy(text[length..][0..glyph.len], glyph);
+                        length += glyph.len;
+                    }
+                    const fg = ansi.rgbColor(255, 255, 255, 255);
+                    try owner.drawBufferText(handle, text[0..length], random.intRangeAtMost(i32, -2, 8), random.intRangeAtMost(i32, 0, 8), fg, null, 0);
+                },
+                6 => if (buffers[slot]) |handle| try owner.clearBuffer(handle, ansi.rgbColor(0, 0, 0, 255)),
+                else => unreachable,
+            }
+
+            // The Context charges every distinct leased storage once, current or retired.
+            var expected_bytes: u64 = 0;
+            for (leases[0..lease_count], 0..) |lease, index| {
+                const first = for (leases[0..index]) |earlier| {
+                    if (earlier.storage == lease.storage) break false;
+                } else true;
+                if (first) expected_bytes += lease.storage.retained_bytes;
+                const current = if (buffers[lease.buffer]) |handle| (try owner.raw().getBuffer(handle)).storage == lease.storage else false;
+                if (current) {
+                    _ = try owner.bufferLeaseSnapshot(lease.handle);
+                } else {
+                    try std.testing.expectError(error.StaleLease, owner.bufferLeaseSnapshot(lease.handle));
+                }
+            }
+            try std.testing.expectEqual(@as(u32, @intCast(lease_count)), owner.lease_count);
+            try std.testing.expectEqual(expected_bytes, owner.lease_bytes);
+            // Storage keeps at most half again its cells, and an unleased resize retains only its arrays.
+            for (buffers) |maybe| {
+                const target = try owner.raw().getBuffer(maybe orelse continue);
+                const cells = target.width * target.height;
+                try std.testing.expectEqual(cells, @as(u32, @intCast(target.buffer.char.len)));
+                try std.testing.expect(cells <= target.storage.capacity and target.storage.capacity <= cells + cells / 2);
+                if (target.storage.lease_budget == null and target.grapheme_tracker.used_ids.capacity() == 0 and
+                    target.link_tracker.used_ids.capacity() == 0 and target.image_placements.capacity == 0)
+                {
+                    try std.testing.expectEqual(@sizeOf(buffer.BufferStorage) + @as(u64, target.storage.capacity) * cell_bytes, target.storage.retained_bytes);
+                }
+            }
+        }
+        for (leases[0..lease_count]) |lease| try owner.releaseBufferLease(lease.handle);
+        lease_count = 0;
+        try std.testing.expectEqual(@as(u64, 0), owner.lease_bytes);
+        try std.testing.expectEqual(@as(u32, 0), owner.lease_count);
+    }
+}
+
 fn leaseWithAllocationFailures(allocator: std.mem.Allocator) !void {
     const owner = try context.Context.init(allocator, std.testing.io, .{ .object_capacity = 4 });
     defer owner.deinit() catch unreachable;
