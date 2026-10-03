@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, expect, test } from "bun:test"
+import type { OptimizedBuffer } from "../buffer.js"
 import { KeyEvent } from "../lib/KeyHandler.js"
 import { CliRenderEvents } from "../renderer.js"
 import { ManualClock } from "../testing/manual-clock.js"
@@ -8,6 +9,7 @@ import { FrameBufferRenderable } from "./FrameBuffer.js"
 import { ArrowRenderable, ScrollBarRenderable } from "./ScrollBar.js"
 import { ScrollBoxRenderable } from "./ScrollBox.js"
 import { SelectRenderable } from "./Select.js"
+import { SliderRenderable } from "./Slider.js"
 import { TabSelectRenderable } from "./TabSelect.js"
 
 const clock = new ManualClock()
@@ -188,6 +190,52 @@ test.each(scrolling)("ScrollBox %s", async (_, options, steps, expected) => {
   }
   expect(trace.join(" ")).toBe(expected)
   scroll.destroyRecursively()
+})
+
+// A subclass that overrides renderSelf paints through the JS fallback, which must match the native paint, also at
+// fractional and negative translations.
+const paintCases: [string, typeof BoxRenderable, object][] = [
+  ["Slider x", SliderRenderable as never, { orientation: "horizontal", value: 13, viewPortSize: 17, width: 11 }],
+  ["Slider y", SliderRenderable as never, { orientation: "vertical", value: 87, viewPortSize: 17, width: 2 }],
+  ["Arrow", ArrowRenderable as never, { direction: "left", foregroundColor: "#ff0000", backgroundColor: "#0000ff" }],
+  ["Box titles", BoxRenderable, { border: true, titleColor: "red", bottomTitle: "B", bottomTitleAlignment: "right" }],
+  [
+    "Box sides",
+    BoxRenderable,
+    { border: ["top", "left"], borderStyle: "double", title: "x", backgroundColor: "#203040" },
+  ],
+  ["Box focused", BoxRenderable, { border: true, shouldFill: false, backgroundColor: "#ff0000", focusable: true }],
+  ["Box layout-only", BoxRenderable, {}],
+]
+
+test.each(paintCases)("%s JS fallback paint matches native paint", async (_, Native, options) => {
+  let jsPaints = 0
+  const Js = class extends Native {
+    protected override renderSelf(buffer: OptimizedBuffer): void {
+      jsPaints++
+      super.renderSelf(buffer)
+    }
+  }
+  for (const [translateX, translateY] of [
+    [0, 0],
+    [0.5, 0.5],
+    [-1.5, -0.5],
+  ]) {
+    const frames: unknown[] = []
+    for (const Control of [Native, Js]) {
+      const parent = new BoxRenderable(renderer, { position: "absolute", left: 2, top: 1 })
+      Object.assign(parent, { translateX, translateY })
+      const node = new Control(renderer, { width: 9, height: 4, ...options })
+      parent.add(node)
+      renderer.root.add(parent)
+      if (node.focusable) node.focus()
+      await setup.renderOnce()
+      frames.push(setup.captureSpans())
+      parent.destroyRecursively()
+    }
+    expect(frames[1]).toEqual(frames[0])
+  }
+  expect(jsPaints).toBe(3)
 })
 
 // As on `main`, controls and graphemes longer than a cell holds are accepted when set and skipped when drawn.
