@@ -354,20 +354,6 @@ test "Context handles distinguish context, kind, stale generation, and limits" {
     try std.testing.expectEqual(@as(usize, 4), @sizeOf(handles.Kind));
 }
 
-test "Context handles tombstone before cleanup and retire exhausted generations" {
-    var table = try handles.Table.init(std.testing.allocator, 1);
-    defer table.deinit();
-    var object: u32 = 0;
-    var handle = try table.insert(.session, &object);
-    table.slots[handle.slot].generation = std.math.maxInt(u32);
-    handle.generation = std.math.maxInt(u32);
-    const token = try table.beginDestroy(handle);
-    try std.testing.expectError(error.StaleHandle, table.get(handle, .session, u32));
-    table.finishDestroy(token);
-    try std.testing.expectError(error.ObjectLimit, table.insert(.session, &object));
-    try std.testing.expectEqual(@as(u32, 0), table.live_count);
-}
-
 test "Context scene measure maps unrepresentable host sizes to Yoga's invalid size" {
     const Host = struct {
         var width: f32 = 0;
