@@ -1157,6 +1157,7 @@ export abstract class EditBufferRenderable extends Renderable implements LineInf
   }
 
   private setNativeEditorOptions(options: Partial<NativeSceneEditorOptions> = {}): void {
+    if (this.isDestroyed) return
     this._ctx.nativeScene.setEditorOptions(this, {
       showCursor: this._showCursor,
       style: this._cursorStyle.style ?? "block",

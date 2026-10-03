@@ -315,6 +315,7 @@ export class TextareaRenderable extends EditBufferRenderable {
   }
 
   private updateColors(): void {
+    if (this.isDestroyed) return
     const effectiveBg = this._focused ? this._focusedBackgroundColor : this._unfocusedBackgroundColor
     const effectiveFg = this._focused ? this._focusedTextColor : this._unfocusedTextColor
 
@@ -329,9 +330,7 @@ export class TextareaRenderable extends EditBufferRenderable {
 
   public blur(): void {
     super.blur()
-    if (!this.isDestroyed) {
-      this.updateColors()
-    }
+    this.updateColors()
   }
 
   get placeholder(): StyledText | string | null {
