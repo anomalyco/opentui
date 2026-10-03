@@ -42,7 +42,7 @@ renderer.root.add(image)
 await image.loadPromise
 ```
 
-`source` accepts every `ImageSource` form: a path, `file:`/HTTP(S)/`blob:`/`data:` URL, `URL`, `Blob`, `Response`, `Uint8Array`, or `ArrayBuffer`. It also accepts `NativeImage`. Format detection uses encoded bytes when the source needs decoding. `ImageRenderable` retains an existing `NativeImage`. You still own and must dispose the source reference.
+`source` accepts every `ImageSource` form: a path, `file:`/HTTP(S)/`blob:`/`data:` URL, `URL`, `Blob`, `Response`, `Uint8Array`, or `ArrayBuffer`. It also accepts `NativeImage`. Format detection uses encoded bytes when the source needs decoding. Encoded sources decode into the renderer's Context, so displaying them needs no copy between Contexts. `ImageRenderable` retains an existing `NativeImage`. You still own and must dispose the source reference.
 
 ## React
 

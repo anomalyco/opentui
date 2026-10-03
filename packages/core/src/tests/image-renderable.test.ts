@@ -110,6 +110,9 @@ describe("ImageRenderable image loading", () => {
     await renderable.loadPromise
     const image = renderable.image!
     try {
+      // The scene binds the decoded handle itself: no second native copy in the renderer's Context.
+      const { renderLib, context } = renderer.nativeScene.resourceContext
+      expect(image._getContextHandle(renderLib, context)).toBe(image.ptr)
       expect(renderable.loading).toBe(false)
       expect(renderable.loadError).toBeNull()
       expect(image.info().format).toBe("png")
