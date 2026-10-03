@@ -1049,7 +1049,7 @@ export class CliRenderer extends EventEmitter implements RenderContext {
   private _debugModeEnabled: boolean = env.OTUI_DEBUG
   private readonly stdinLogPath: string = env.OTUI_STDIN_LOG
 
-  private handleError: (error: Error) => void = ((error: Error) => {
+  private handleError: (error: unknown) => void = ((error: unknown) => {
     console.error(error)
 
     if (this._openConsoleOnError && !this._isDestroyed && !this.nativeSession?.error && !this.nativeSession?.disposed) {
@@ -1391,7 +1391,7 @@ export class CliRenderer extends EventEmitter implements RenderContext {
         try {
           // A pending setup rejects with this failure; its caller reports it.
           const setupPending = !this._terminalIsSetup && this.nativeTerminalTransition !== null
-          if (!setupPending) this.handleError(error instanceof Error ? error : new Error(String(error)))
+          if (!setupPending) this.handleError(error)
         } catch {
           // The original Session failure remains available through closed.
         } finally {
@@ -1583,7 +1583,7 @@ export class CliRenderer extends EventEmitter implements RenderContext {
         this.outputIdleRenderScheduled = false
         this.ordinaryFrameWaitingForOutput = false
         this.ordinaryFrameWaitControlState = null
-        if (!this._isDestroyed) this.handleError(error instanceof Error ? error : new Error(String(error)))
+        if (!this._isDestroyed) this.handleError(error)
         this.resolveIdleIfNeeded()
       })
   }
@@ -3156,7 +3156,7 @@ export class CliRenderer extends EventEmitter implements RenderContext {
     try {
       this.applyPendingNativeMode()
     } catch (error) {
-      this.handleError(error instanceof Error ? error : new Error(String(error)))
+      this.handleError(error)
     }
   }
 
@@ -3303,7 +3303,7 @@ export class CliRenderer extends EventEmitter implements RenderContext {
     // Teardown interrupts transitions, and `closed` reports a Session failure.
     void tracked.catch((error) => {
       if (this.canRender && !this.nativeSession.isCloseInterruption(error)) {
-        this.handleError(error instanceof Error ? error : new Error(String(error)))
+        this.handleError(error)
       }
     })
     return tracked
@@ -3970,7 +3970,7 @@ export class CliRenderer extends EventEmitter implements RenderContext {
           (error) => {
             this.nativeResizeWait = null
             this.pendingNativeResize = null
-            if (!this._isDestroyed) this.handleError(error instanceof Error ? error : new Error(String(error)))
+            if (!this._isDestroyed) this.handleError(error)
             this.resolveIdleIfNeeded()
           },
         )
@@ -3980,7 +3980,7 @@ export class CliRenderer extends EventEmitter implements RenderContext {
         this.pendingNativeResize = null
         this.pendingResizeSawDifferentSize = false
       }
-      this.handleError(error instanceof Error ? error : new Error(String(error)))
+      this.handleError(error)
     }
     this.resolveIdleIfNeeded()
   }
@@ -4020,13 +4020,13 @@ export class CliRenderer extends EventEmitter implements RenderContext {
             try {
               this.queryPixelResolution(false)
             } catch (error) {
-              this.handleError(error instanceof Error ? error : new Error(String(error)))
+              this.handleError(error)
             }
           }
         },
         (error) => {
           this.pixelResolutionRetry = null
-          if (!this._isDestroyed) this.handleError(error instanceof Error ? error : new Error(String(error)))
+          if (!this._isDestroyed) this.handleError(error)
         },
       )
     }
@@ -5002,7 +5002,7 @@ export class CliRenderer extends EventEmitter implements RenderContext {
     } catch (error) {
       // A frame that ends inside a native call drains on the next frame.
       if (!(error instanceof NativeError) || error.status !== NativeStatus.ContextBusy) {
-        this.handleError(error instanceof Error ? error : new Error(String(error)))
+        this.handleError(error)
       }
     }
   }
