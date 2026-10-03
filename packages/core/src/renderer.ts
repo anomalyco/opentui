@@ -431,6 +431,19 @@ function snapshotRowWidths(snapshot: OptimizedBuffer, rowColumns: number): numbe
 
 type QueuedCommit = ExternalOutputCommit & { cells: number; rowWidths: readonly number[] }
 
+/** Runs every cleanup, then rethrows the first failure. */
+function runCleanups(cleanups: readonly (() => void)[]): void {
+  let failure: { error: unknown } | undefined
+  for (const cleanup of cleanups) {
+    try {
+      cleanup()
+    } catch (error) {
+      failure ??= { error }
+    }
+  }
+  if (failure) throw failure.error
+}
+
 // Bounded by queued snapshot cells, not by commit count: any batch of queued commits then fits one native split
 // render, which admits at most the Session's output capacity at 24 bytes per snapshot cell.
 class ExternalOutputQueue {
@@ -587,16 +600,12 @@ class ScrollbackSnapshotRenderContext extends EventEmitter implements RenderCont
   public destroy(): void {
     if (this.isDestroyed) return
     this.isDestroyed = true
-    let failure: { error: unknown } | undefined
-    for (const emitter of [this, this.keyInput, this._internalKeyInput]) {
-      try {
-        emitter.removeAllListeners()
-      } catch (error) {
-        failure ??= { error }
-      }
-    }
-    this.disposeSession()
-    if (failure) throw failure.error
+    runCleanups([
+      () => this.removeAllListeners(),
+      () => this.keyInput.removeAllListeners(),
+      () => this._internalKeyInput.removeAllListeners(),
+      () => this.disposeSession(),
+    ])
   }
 
   private disposeSession(): void {
@@ -2096,21 +2105,23 @@ export class CliRenderer extends EventEmitter implements RenderContext {
         owner: renderer.nativeScene,
       })
     } catch (error) {
-      try {
-        internalRoot?.destroyRecursively()
-      } finally {
-        snapshotContext.destroy()
-      }
+      runCleanups([() => internalRoot?.destroyRecursively(), () => snapshotContext.destroy()])
       throw error
     }
 
+    // Renderer geometry that a render depends on; rows rendered at another geometry cannot be committed.
+    const readGeometry = (): string =>
+      [
+        renderer.width,
+        renderer.widthMethod,
+        renderer._terminalWidth,
+        renderer._terminalHeight,
+        renderer.resolution?.width,
+        renderer.resolution?.height,
+      ].join()
+    let renderedGeometry = readGeometry()
     let surfaceWidth = renderer.width
     let surfaceHeight = 1
-    let surfaceWidthMethod = renderer.widthMethod
-    let surfaceTerminalWidth = renderer._terminalWidth
-    let surfaceTerminalHeight = renderer._terminalHeight
-    let surfaceResolutionWidth = renderer.resolution?.width ?? null
-    let surfaceResolutionHeight = renderer.resolution?.height ?? null
     let surfaceDestroyed = false
     let hasRendered = false
     let nextCommitStartOnNewLine = startOnNewLine
@@ -2135,14 +2146,7 @@ export class CliRenderer extends EventEmitter implements RenderContext {
     }
 
     const assertGeometryStillCurrent = (): void => {
-      if (
-        renderer.width !== surfaceWidth ||
-        renderer.widthMethod !== surfaceWidthMethod ||
-        renderer._terminalWidth !== surfaceTerminalWidth ||
-        renderer._terminalHeight !== surfaceTerminalHeight ||
-        (renderer.resolution?.width ?? null) !== surfaceResolutionWidth ||
-        (renderer.resolution?.height ?? null) !== surfaceResolutionHeight
-      ) {
+      if (readGeometry() !== renderedGeometry) {
         throw new Error("ScrollbackSurface.commitRows requires render() after renderer geometry changes")
       }
     }
@@ -2208,6 +2212,7 @@ export class CliRenderer extends EventEmitter implements RenderContext {
       assertNotDestroyed()
       hasRendered = false
 
+      const geometry = readGeometry()
       const width = renderer.width
       const widthMethod = renderer.widthMethod
 
@@ -2219,56 +2224,34 @@ export class CliRenderer extends EventEmitter implements RenderContext {
       snapshotContext.capabilities = renderer.capabilities
       publicRoot.width = width
 
-      const renderPass = (height: number): void => {
-        snapshotContext.height = height
-        internalRoot!.resize(width, height)
-        backingBuffer.resize(width, height)
-        backingBuffer.clear(TRANSPARENT_RGBA)
-        snapshotContext.frameId += 1
-        snapshotContext.renderSnapshot(internalRoot!, backingBuffer)
-      }
-
       let targetHeight = Math.max(1, surfaceHeight)
 
-      if (surfaceWidthMethod !== widthMethod) {
+      if (backingBuffer.widthMethod !== widthMethod) {
         const replacement = OptimizedBuffer.create(width, targetHeight, widthMethod, {
           id: `scrollback-surface-buffer-${surfaceId}`,
           owner: renderer.nativeScene,
         })
         backingBuffer.destroy()
         backingBuffer = replacement
-      } else {
-        backingBuffer.resize(width, targetHeight)
       }
 
-      for (let pass = 0; pass < MAX_SCROLLBACK_SURFACE_HEIGHT_PASSES; pass += 1) {
-        renderPass(targetHeight)
+      // Render until the content height settles; after the pass limit, keep the last measured height.
+      for (let pass = 0; ; pass += 1) {
+        snapshotContext.height = targetHeight
+        internalRoot!.resize(width, targetHeight)
+        backingBuffer.resize(width, targetHeight)
+        backingBuffer.clear(TRANSPARENT_RGBA)
+        snapshotContext.frameId += 1
+        snapshotContext.renderSnapshot(internalRoot!, backingBuffer)
 
         const measuredHeight = Math.max(1, publicRoot.height)
-        if (measuredHeight === targetHeight) {
-          surfaceWidth = width
-          surfaceHeight = measuredHeight
-          surfaceWidthMethod = widthMethod
-          surfaceTerminalWidth = renderer._terminalWidth
-          surfaceTerminalHeight = renderer._terminalHeight
-          surfaceResolutionWidth = renderer.resolution?.width ?? null
-          surfaceResolutionHeight = renderer.resolution?.height ?? null
-          hasRendered = true
-          return
-        }
-
+        if (pass === MAX_SCROLLBACK_SURFACE_HEIGHT_PASSES || measuredHeight === targetHeight) break
         targetHeight = measuredHeight
       }
 
-      renderPass(targetHeight)
-
+      renderedGeometry = geometry
       surfaceWidth = width
       surfaceHeight = targetHeight
-      surfaceWidthMethod = widthMethod
-      surfaceTerminalWidth = renderer._terminalWidth
-      surfaceTerminalHeight = renderer._terminalHeight
-      surfaceResolutionWidth = renderer.resolution?.width ?? null
-      surfaceResolutionHeight = renderer.resolution?.height ?? null
       hasRendered = true
     }
 
@@ -2314,7 +2297,7 @@ export class CliRenderer extends EventEmitter implements RenderContext {
       }
 
       const rowCount = endRowExclusive - startRow
-      const commitBuffer = OptimizedBuffer.create(surfaceWidth, rowCount, surfaceWidthMethod, {
+      const commitBuffer = OptimizedBuffer.create(surfaceWidth, rowCount, backingBuffer.widthMethod, {
         id: `scrollback-surface-commit-${surfaceId}`,
         owner: renderer.nativeScene,
       })
@@ -2346,20 +2329,12 @@ export class CliRenderer extends EventEmitter implements RenderContext {
       renderer.off(CliRenderEvents.CAPABILITIES, capabilitiesListener)
       for (const cancel of pendingWaits) cancel()
 
-      let failure: { error: unknown } | undefined
-      for (const cleanup of [
+      runCleanups([
         () => internalRoot!.destroyRecursively(),
         () => backingBuffer.destroy(),
         () => renderContext.removeAllListeners(),
         () => snapshotContext.destroy(),
-      ]) {
-        try {
-          cleanup()
-        } catch (error) {
-          failure ??= { error }
-        }
-      }
-      if (failure) throw failure.error
+      ])
     }
 
     renderer.detachedSurfaces.add(destroySurface)
@@ -2444,8 +2419,8 @@ export class CliRenderer extends EventEmitter implements RenderContext {
       })
       if (!snapshot || !snapshot.root) throw new Error("writeToScrollback must return a snapshot root renderable")
       const rootRenderable = snapshot.root
-      const snapshotWidth = this.getSnapshotWidth(snapshot.width, rootRenderable.width)
-      const snapshotHeight = this.getSnapshotHeight(snapshot.height, rootRenderable.height)
+      const snapshotWidth = this.getSnapshotDimension("width", snapshot.width, rootRenderable.width, this.width)
+      const snapshotHeight = this.getSnapshotDimension("height", snapshot.height, rootRenderable.height, Infinity)
 
       snapshotContext.width = snapshotWidth
       snapshotContext.height = snapshotHeight
@@ -2472,30 +2447,15 @@ export class CliRenderer extends EventEmitter implements RenderContext {
       if (snapshotBuffer && !this.externalOutputQueue.owns(snapshotBuffer)) snapshotBuffer.destroy()
       throw error
     } finally {
-      let cleanupError: unknown | null = null
-
       try {
-        snapshotRoot?.destroyRecursively()
+        runCleanups([
+          () => snapshotRoot?.destroyRecursively(),
+          () => snapshot?.teardown?.(),
+          () => snapshotContext.destroy(),
+        ])
       } catch (error) {
-        cleanupError = error
-      }
-
-      try {
-        snapshot?.teardown?.()
-      } catch (error) {
-        if (cleanupError === null) {
-          cleanupError = error
-        }
-      }
-
-      try {
-        snapshotContext.destroy()
-      } catch (error) {
-        cleanupError ??= error
-      }
-
-      if (!renderFailed && cleanupError) {
-        throw cleanupError
+        // A render failure is already propagating; it explains more than a cleanup failure.
+        if (!renderFailed) throw error
       }
     }
   }
@@ -2538,24 +2498,19 @@ export class CliRenderer extends EventEmitter implements RenderContext {
     this.requestRender()
   }
 
-  private getSnapshotWidth(value: number | undefined, fallback: number): number {
+  private getSnapshotDimension(
+    axis: "width" | "height",
+    value: number | undefined,
+    fallback: number,
+    max: number,
+  ): number {
     const rawValue = value ?? fallback
 
     if (!Number.isFinite(rawValue)) {
-      throw new Error("writeToScrollback produced a non-finite width")
+      throw new Error(`writeToScrollback produced a non-finite ${axis}`)
     }
 
-    return Math.min(Math.max(Math.trunc(rawValue), 1), Math.max(this.width, 1))
-  }
-
-  private getSnapshotHeight(value: number | undefined, fallback: number): number {
-    const rawValue = value ?? fallback
-
-    if (!Number.isFinite(rawValue)) {
-      throw new Error("writeToScrollback produced a non-finite height")
-    }
-
-    return Math.max(Math.trunc(rawValue), 1)
+    return Math.min(Math.max(Math.trunc(rawValue), 1), Math.max(max, 1))
   }
 
   private advanceSplitTailColumn(tailColumn: number, columns: number, width: number): number {
@@ -2764,11 +2719,7 @@ export class CliRenderer extends EventEmitter implements RenderContext {
       for (const commit of commits) commit.snapshot.destroy()
       throw error
     } finally {
-      try {
-        snapshotRoot?.destroyRecursively()
-      } finally {
-        snapshotContext.destroy()
-      }
+      runCleanups([() => snapshotRoot?.destroyRecursively(), () => snapshotContext.destroy()])
     }
   }
 
@@ -2891,7 +2842,6 @@ export class CliRenderer extends EventEmitter implements RenderContext {
 
     if (!splitActive) {
       this.clearPendingSplitFooterTransition()
-      this.splitTailColumn = 0
       this.resetSplitScrollback()
       this.setRenderOffset(0)
       return
@@ -2901,7 +2851,6 @@ export class CliRenderer extends EventEmitter implements RenderContext {
       this.syncSplitScrollback()
     } else {
       this.clearPendingSplitFooterTransition()
-      this.splitTailColumn = 0
       this.resetSplitScrollback()
       this.setRenderOffset(this.getSplitPinnedRenderOffset())
     }
