@@ -1112,7 +1112,7 @@ function createYogaLayoutReadScenario(nodeCount: number): ScenarioDefinition {
         runIteration: async () => {
           let checksum = 0
           for (let index = 0; index < nodes.length; index++) {
-            const layout = nodes[index]!.getComputedLayout()
+            const layout = nodes[index]!.getLayout()
             checksum += layout.left + layout.top + layout.width + layout.height + index
           }
           benchmarkChecksum = (benchmarkChecksum + checksum) >>> 0

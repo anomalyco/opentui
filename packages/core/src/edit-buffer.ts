@@ -502,7 +502,10 @@ export class EditBuffer extends EventEmitter {
   public destroy(): void {
     if (this._destroyed) return
     this.lib.getYogaHost().runMutation(() => {
-      if (!this.native.owner.disposed) this.lib.destroyContextEditBuffer(this.native.handle.context, this.native.handle)
+      if (!this.native.owner.disposed)
+        this.lib.releaseAfterPaint(this.native.handle.context, () =>
+          this.lib.destroyContextEditBuffer(this.native.handle.context, this.native.handle),
+        )
       this._destroyed = true
       this.unsubscribe?.()
       this.unsubscribe = undefined

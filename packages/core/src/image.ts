@@ -606,7 +606,8 @@ export class NativeImage {
     for (const [owner, identity] of this.contextImages) {
       const context = owner.deref()
       try {
-        if (context) this.lib.destroyContextImage(context, { ...identity, context })
+        if (context)
+          this.lib.releaseAfterPaint(context, () => this.lib.destroyContextImage(context, { ...identity, context }))
         this.contextImages.delete(owner)
       } catch (error) {
         // The Context can close while the standalone image remains alive.
@@ -774,7 +775,9 @@ export class NativeImage {
       this.releaseContextImages()
     } finally {
       if (this.handle) {
-        if (!this.owner.resources.disposed) this.lib.imageDestroy(this.handle)
+        const handle = this.handle
+        if (!this.owner.resources.disposed)
+          this.lib.releaseAfterPaint(handle.context, () => this.lib.imageDestroy(handle))
         this.handle = null
         this.owner.release()
       }

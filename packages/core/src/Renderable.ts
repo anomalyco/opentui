@@ -290,10 +290,6 @@ export abstract class BaseRenderable extends EventEmitter {
   }
 }
 
-interface CleanupContext extends RenderContext {
-  __otuiActiveCleanupOwners?: Set<Renderable>
-}
-
 export abstract class Renderable extends BaseRenderable {
   /** Focusable state of new nodes; a nullish `focusable` write restores it. */
   protected static readonly defaultFocusable: boolean = false
@@ -2250,7 +2246,7 @@ export abstract class Renderable extends BaseRenderable {
     const children = [...this._childrenInLayoutOrder]
     let index = 0
     this._childCleanupInProgress = true
-    const cleanupOwners = ((this._ctx as CleanupContext).__otuiActiveCleanupOwners ??= new Set<Renderable>())
+    const cleanupOwners = this._ctx.nativeScene.cleanupOwners
     const ownsCompletion = !cleanupOwners.has(this)
     cleanupOwners.add(this)
     const resume = () =>
@@ -2284,7 +2280,7 @@ export abstract class Renderable extends BaseRenderable {
       for (const child of node._childrenInLayoutOrder) pending.push(child)
     }
     // Cleanup can continue after its owner leaves the layout tree.
-    for (const node of (this._ctx as CleanupContext).__otuiActiveCleanupOwners ?? []) {
+    for (const node of this._ctx.nativeScene.cleanupOwners) {
       ;(node._deferredCleanup ??= []).push(resume)
       return true
     }
@@ -2302,7 +2298,7 @@ export abstract class Renderable extends BaseRenderable {
     const scene = this._ctx.nativeScene
     const hasHandle = !!this._sceneHandle && !this._yogaFreed
     this._cleanupInProgress = true
-    const cleanupOwners = ((this._ctx as CleanupContext).__otuiActiveCleanupOwners ??= new Set<Renderable>())
+    const cleanupOwners = scene.cleanupOwners
     const ownsCompletion = !cleanupOwners.has(this)
     cleanupOwners.add(this)
     this.runCleanup((run) => {
@@ -2329,7 +2325,7 @@ export abstract class Renderable extends BaseRenderable {
   }
 
   private completeCleanup(run: (step: () => void) => void): void {
-    ;(this._ctx as CleanupContext).__otuiActiveCleanupOwners!.delete(this)
+    this._ctx.nativeScene.cleanupOwners.delete(this)
     const deferred = this._deferredCleanup
     this._deferredCleanup = undefined
     if (deferred) for (const resume of deferred) run(resume)

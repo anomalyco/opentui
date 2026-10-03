@@ -2143,6 +2143,9 @@ function viewOf<T extends Int32Array | Float32Array | Uint32Array>(value: T, Typ
   )
 }
 
+// Releases that wait for the frame step painting each Context's open recording (FFIRenderLib.releaseAfterPaint).
+const releaseWindows = new WeakMap<NativeContextHandle, (() => void)[]>()
+
 /** Encodes paint hooks into the ot_scene_record stream that acknowledges one RECORD request.
  * Recorded commands draw when native code paints the frame, not when a hook calls them. */
 export class NativePaintRecorder {
@@ -2153,20 +2156,28 @@ export class NativePaintRecorder {
   private floats = new Float32Array(this.buffer)
   private colors = new Uint16Array(this.buffer)
   private length = 0
+  // Set from begin() to end(): drawing records.
   private context: NativeContextHandle | null = null
-  private open = false
+  // Set from begin() to settle(): native releases in this Context wait for the frame step.
+  private window: NativeContextHandle | null = null
   private readonly releases: (() => void)[] = []
   private pendingSlot = -1
   private pendingPhase = 0
   private readonly opacity: number[] = [1]
   private scissors = 0
   private readonly encoder = new TextEncoder()
+  private textBytes?: Uint8Array
+  private bottomBytes?: Uint8Array
   private readonly handleRecord = createContextHandleRecord()
 
   begin(context: NativeContextHandle): void {
     this.settle()
     this.context = context
-    this.open = true
+    // A recording nested inside another one on the same Context shares the outer window, which closes later.
+    if (!releaseWindows.has(context)) {
+      releaseWindows.set(context, this.releases)
+      this.window = context
+    }
     this.length = 0
     this.pendingSlot = -1
   }
@@ -2177,16 +2188,11 @@ export class NativePaintRecorder {
     this.pendingSlot = -1
   }
 
-  /** Keep a resource that a recording names alive until native code has painted it. */
-  deferRelease(release: () => void): boolean {
-    if (!this.open) return false
-    this.releases.push(release)
-    return true
-  }
-
   /** Run deferred releases after the frame step that consumed the recording. */
   settle(): void {
-    this.open = false
+    if (this.window === null) return
+    releaseWindows.delete(this.window)
+    this.window = null
     for (const release of this.releases.splice(0)) {
       try {
         release()
@@ -2219,13 +2225,16 @@ export class NativePaintRecorder {
     // Convert first: a caller's toString can draw, and its records must survive this draw's rollback.
     const text = drawRecordText(options)
     const bottom = drawRecordBottomTitle(options)
-    const length = this.length
-    const slot = this.pendingSlot
-    try {
+    this.transaction(() => {
       if (options.operation === "respectAlpha") throw new Error("Paint hooks cannot change the frame alpha mode")
+      // Encode before reserving so the record grows by the UTF-8 bytes, not by an upper bound.
+      const textBytes = (this.textBytes ??= new Uint8Array(NATIVE_BUFFER_TEXT_BYTES_MAX))
+      const bottomBytes = (this.bottomBytes ??= new Uint8Array(NATIVE_BUFFER_TEXT_BYTES_MAX))
+      const textLength = this.encodeText(text, textBytes)
+      const bottomLength = this.encodeText(bottom, bottomBytes)
       const layout = nativeLayouts.ot_scene_record_draw
       const record = layout.size + nativeLayouts.ot_buffer_draw_box.size
-      const base = this.reserve(nativeConstants.OT_SCENE_RECORD_DRAW, record + (text.length + bottom.length) * 3)
+      const base = this.reserve(nativeConstants.OT_SCENE_RECORD_DRAW, record + textLength + bottomLength)
       const encoded = encodeBufferDrawRecord(
         this.activeContext(),
         options,
@@ -2241,18 +2250,13 @@ export class NativePaintRecorder {
           base + layout.fields.source.offset,
         )
       }
-      let end = base + layout.size + encoded.size
-      const textLength = this.encodeText(text, end)
-      end += textLength
-      const bottomLength = this.encodeText(bottom, end)
-      end += bottomLength
+      const end = base + layout.size + encoded.size
+      this.bytes.set(textBytes.subarray(0, textLength), end)
+      this.bytes.set(bottomBytes.subarray(0, bottomLength), end + textLength)
       this.words[(base + layout.fields.text_length.offset) / 4] = textLength
       this.words[(base + layout.fields.bottom_length.offset) / 4] = bottomLength
-      this.finish(base, end)
-    } catch (error) {
-      this.rollback(length, slot)
-      throw error
-    }
+      this.finish(base, end + textLength + bottomLength)
+    })
   }
 
   stack(options: NativeBufferStack): number {
@@ -2279,15 +2283,17 @@ export class NativePaintRecorder {
         if (this.opacity.length - 1 >= stackDepthMax) throw new NativeError("ot_buffer_stack", NativeStatus.ObjectLimit)
         break
     }
-    const layout = nativeLayouts.ot_scene_record_stack
-    const base = this.reserve(nativeConstants.OT_SCENE_RECORD_STACK, layout.size)
-    const fields = layout.fields
-    this.words[(base + fields.operation.offset) / 4] = operation
-    this.signed[(base + fields.x.offset) / 4] = x
-    this.signed[(base + fields.y.offset) / 4] = y
-    this.words[(base + fields.width.offset) / 4] = width
-    this.words[(base + fields.height.offset) / 4] = height
-    this.floats[(base + fields.opacity.offset) / 4] = clamped
+    this.transaction(() => {
+      const layout = nativeLayouts.ot_scene_record_stack
+      const base = this.reserve(nativeConstants.OT_SCENE_RECORD_STACK, layout.size)
+      const fields = layout.fields
+      this.words[(base + fields.operation.offset) / 4] = operation
+      this.signed[(base + fields.x.offset) / 4] = x
+      this.signed[(base + fields.y.offset) / 4] = y
+      this.words[(base + fields.width.offset) / 4] = width
+      this.words[(base + fields.height.offset) / 4] = height
+      this.floats[(base + fields.opacity.offset) / 4] = clamped
+    })
     switch (options.operation) {
       case "pushScissor":
         this.scissors++
@@ -2312,9 +2318,7 @@ export class NativePaintRecorder {
   }
 
   grid(options: NativeBufferGrid): void {
-    const length = this.length
-    const slot = this.pendingSlot
-    try {
+    this.transaction(() => {
       const layout = nativeLayouts.ot_scene_record_grid
       const optionsLayout = nativeLayouts.ot_buffer_grid_options
       const { borderChars, borderFg, borderBg, columnOffsets, rowOffsets, drawInner, drawOuter } = options
@@ -2335,16 +2339,11 @@ export class NativePaintRecorder {
       this.words[(base + layout.fields.row_count.offset) / 4] = rows.length
       this.signed.set(columns, (base + layout.size) / 4)
       this.signed.set(rows, (base + layout.size) / 4 + columns.length)
-    } catch (error) {
-      this.rollback(length, slot)
-      throw error
-    }
+    })
   }
 
   packed(data: Uint8Array | PointerInput, byteLength: number, x: number, y: number, width: number, height: number) {
-    const length = this.length
-    const slot = this.pendingSlot
-    try {
+    this.transaction(() => {
       const layout = nativeLayouts.ot_scene_record_packed
       const input = recordedPixels(data, byteLength)
       const base = this.reserve(nativeConstants.OT_SCENE_RECORD_PACKED, layout.size + input.byteLength)
@@ -2355,10 +2354,7 @@ export class NativePaintRecorder {
       this.words[(base + fields.height.offset) / 4] = toSafeFFIU32Length(height, "Packed buffer dimension")
       this.words[(base + fields.byte_count.offset) / 4] = input.byteLength
       this.bytes.set(input, base + layout.size)
-    } catch (error) {
-      this.rollback(length, slot)
-      throw error
-    }
+    })
   }
 
   supersample(
@@ -2369,9 +2365,7 @@ export class NativePaintRecorder {
     format: "rgba8unorm" | "bgra8unorm",
     stride: number,
   ): void {
-    const length = this.length
-    const slot = this.pendingSlot
-    try {
+    this.transaction(() => {
       if (format !== "rgba8unorm" && format !== "bgra8unorm") throw new TypeError("Unknown pixel format")
       const layout = nativeLayouts.ot_scene_record_supersample
       const input = recordedPixels(data, byteLength)
@@ -2383,10 +2377,7 @@ export class NativePaintRecorder {
       this.words[(base + fields.stride.offset) / 4] = toSafeFFIU32Length(stride, "Supersample buffer dimension")
       this.words[(base + fields.byte_count.offset) / 4] = input.byteLength
       this.bytes.set(input, base + layout.size)
-    } catch (error) {
-      this.rollback(length, slot)
-      throw error
-    }
+    })
   }
 
   grayscale(
@@ -2399,9 +2390,7 @@ export class NativePaintRecorder {
     background: RGBA | null,
     supersampled: boolean,
   ): void {
-    const length = this.length
-    const slot = this.pendingSlot
-    try {
+    this.transaction(() => {
       if (!(data instanceof Float32Array)) throw new TypeError("Grayscale input must be a Float32Array")
       const samples = viewOf(data, Float32Array)
       const layout = nativeLayouts.ot_scene_record_grayscale
@@ -2421,16 +2410,11 @@ export class NativePaintRecorder {
       if (foreground !== null) contextBufferColor(foreground, this.colors, (base + fields.foreground.offset) / 2)
       if (background !== null) contextBufferColor(background, this.colors, (base + fields.background.offset) / 2)
       this.floats.set(samples, (base + layout.size) / 4)
-    } catch (error) {
-      this.rollback(length, slot)
-      throw error
-    }
+    })
   }
 
   colorMatrix(matrix: Float32Array, mask: Float32Array | null, strength: number, channel: number): void {
-    const length = this.length
-    const slot = this.pendingSlot
-    try {
+    this.transaction(() => {
       for (const value of [matrix, mask]) {
         if (value !== null && !(value instanceof Float32Array))
           throw new TypeError("Color matrix input must be a Float32Array")
@@ -2447,17 +2431,12 @@ export class NativePaintRecorder {
       this.words[(base + fields.has_mask.offset) / 4] = cells === null ? 0 : 1
       this.words[(base + fields.mask_count.offset) / 4] = cells?.length ?? 0
       if (cells) this.floats.set(cells, (base + layout.size) / 4)
-    } catch (error) {
-      this.rollback(length, slot)
-      throw error
-    }
+    })
   }
 
   /** Draw a text-buffer view, editor view, or scene text node. */
   view(operation: "text" | "editor" | "scene", source: ContextObjectHandle, x: number, y: number): void {
-    const length = this.length
-    const slot = this.pendingSlot
-    try {
+    this.transaction(() => {
       const layout = nativeLayouts.ot_scene_record_view
       const base = this.reserve(
         operation === "text"
@@ -2468,26 +2447,18 @@ export class NativePaintRecorder {
         layout.size,
       )
       this.encodeHandle(source, base + layout.fields.source.offset)
-      this.signed[(base + layout.fields.x.offset) / 4] = toFFII32(x, "View x") || 0
-      this.signed[(base + layout.fields.y.offset) / 4] = toFFII32(y, "View y") || 0
-    } catch (error) {
-      this.rollback(length, slot)
-      throw error
-    }
+      this.signed[(base + layout.fields.x.offset) / 4] = toFFII32(x, "View x")
+      this.signed[(base + layout.fields.y.offset) / 4] = toFFII32(y, "View y")
+    })
   }
 
   image(source: ContextImageHandle, options: NativeContextImageDraw): void {
-    const length = this.length
-    const slot = this.pendingSlot
-    try {
+    this.transaction(() => {
       const layout = nativeLayouts.ot_scene_record_image
       const base = this.reserve(nativeConstants.OT_SCENE_RECORD_IMAGE, layout.size)
       this.encodeHandle(source, base + layout.fields.image.offset)
       encodeImageDrawOptions(options, this.words, this.signed, base + layout.fields.options.offset)
-    } catch (error) {
-      this.rollback(length, slot)
-      throw error
-    }
+    })
   }
 
   unicode(
@@ -2499,9 +2470,7 @@ export class NativePaintRecorder {
     background: RGBA,
     attributes: number,
   ): void {
-    const length = this.length
-    const slot = this.pendingSlot
-    try {
+    this.transaction(() => {
       const layout = nativeLayouts.ot_scene_record_unicode
       const fields = layout.fields
       const base = this.reserve(nativeConstants.OT_SCENE_RECORD_UNICODE, layout.size)
@@ -2512,16 +2481,20 @@ export class NativePaintRecorder {
       this.words[(base + fields.attributes.offset) / 4] = toSafeFFIU32Length(attributes, "Unicode attributes")
       contextBufferColor(foreground, this.colors, (base + fields.foreground.offset) / 2)
       contextBufferColor(background, this.colors, (base + fields.background.offset) / 2)
-    } catch (error) {
-      this.rollback(length, slot)
-      throw error
-    }
+    })
   }
 
-  /** A call that throws leaves no partial record, so the hook can recover. */
-  private rollback(length: number, slot: number): void {
-    this.length = length
-    this.pendingSlot = slot
+  /** Runs one encoder. A call that throws leaves no partial record or slot header, so the hook can recover. */
+  private transaction(encode: () => void): void {
+    const length = this.length
+    const slot = this.pendingSlot
+    try {
+      encode()
+    } catch (error) {
+      this.length = length
+      this.pendingSlot = slot
+      throw error
+    }
   }
 
   private activeContext(): NativeContextHandle {
@@ -2534,12 +2507,11 @@ export class NativePaintRecorder {
     this.bytes.set(new Uint8Array(record.buffer, record.byteOffset, record.byteLength), offset)
   }
 
-  private encodeText(text: string, offset: number): number {
+  /** Encodes into a buffer sized to the native limit; text that does not fit exceeds that limit. */
+  private encodeText(text: string, output: Uint8Array): number {
     if (text === "") return 0
-    const { read, written } = this.encoder.encodeInto(text, this.bytes.subarray(offset))
-    if (read !== text.length || written > NATIVE_BUFFER_TEXT_BYTES_MAX) {
-      throw new RangeError("Buffer text exceeds the native byte limit")
-    }
+    const { read, written } = this.encoder.encodeInto(text, output)
+    if (read !== text.length) throw new RangeError("Buffer text exceeds the native byte limit")
     return written
   }
 
@@ -2570,6 +2542,10 @@ export class NativePaintRecorder {
 
   /** Shrink a record reserved with an upper bound to its encoded end. */
   private finish(base: number, end: number): void {
+    // A call that reentered the recorder while this record was encoding would be truncated here.
+    if (this.length !== base + this.words[(base + recordHeader.size.offset) / 4] || end > this.length) {
+      throw new Error("Paint recording changed while a record was encoding")
+    }
     const total = (end - base + 7) & ~7
     this.bytes.fill(0, end, base + total)
     this.words[(base + recordHeader.size.offset) / 4] = total
@@ -7674,6 +7650,15 @@ export class FFIRenderLib {
         )
       throw error
     }
+  }
+
+  /** Run a native release now, or after the frame step that paints the Context's open paint recording.
+   * A recording names resources that native code reads only when it paints, so every resource that a
+   * paint hook can draw is released through here. */
+  public releaseAfterPaint(context: NativeContextHandle, release: () => void): void {
+    const releases = releaseWindows.get(context)
+    if (releases) releases.push(release)
+    else release()
   }
 
   /** Slots of the exact pending RECORD request, in paint order. */

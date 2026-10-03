@@ -64,39 +64,15 @@ async function setupScroll() {
   return { target, scroll, child }
 }
 
-test.each(["wheel", "key"] as const)(
-  "native sticky ScrollBox %s input stops after a change listener destroys its controller",
-  async (input) => {
-    const { target, scroll } = await setupScroll()
-    const bar = input === "wheel" ? scroll.verticalScrollBar : scroll.horizontalScrollBar
-    const expected = input === "wheel" ? 1 : Math.round(scroll.viewport.width / 5)
-    const changes: number[] = []
-    bar.on("change", ({ position }: { position: number }) => {
-      changes.push(position)
-      scroll.destroyRecursively()
-    })
-    const logged = spyOn(console, "error").mockImplementation(() => {})
-    try {
-      scroll.focus()
-      if (input === "wheel") await target.mockMouse.scroll(scroll.viewport.x, scroll.viewport.y, "down")
-      else target.mockInput.pressKey("ARROW_RIGHT")
-      assert.deepEqual(changes, [expected])
-      assert.equal(bar.scrollPosition, expected)
-      assert.equal(bar.slider.value, expected)
-      assert.equal(scroll.isDestroyed, true)
-      assert.deepEqual(logged.mock.calls, [])
-    } finally {
-      logged.mockRestore()
-    }
-  },
-)
-
-test.each(["height", "width"] as const)(
-  "native sticky ScrollBox content %s shrink stops after a clamp listener destroys its controller",
-  async (dimension) => {
+test.each(["wheel input", "key input", "content height shrink", "content width shrink"])(
+  "native sticky ScrollBox %s stops after a change listener destroys its controller",
+  async (name) => {
     const { target, scroll, child } = await setupScroll()
-    const bar = dimension === "height" ? scroll.verticalScrollBar : scroll.horizontalScrollBar
-    bar.scrollPosition = 20
+    const vertical = /wheel|height/.test(name)
+    const shrink = name.includes("shrink")
+    const bar = vertical ? scroll.verticalScrollBar : scroll.horizontalScrollBar
+    if (shrink) bar.scrollPosition = 20
+    const inputStep = vertical ? 1 : Math.round(scroll.viewport.width / 5)
     const changes: number[] = []
     const errors: Error[] = []
     target.renderer.on(CliRenderEvents.RENDER_ERROR, ({ error }: CliRendererErrorEvent) => errors.push(error))
@@ -104,14 +80,20 @@ test.each(["height", "width"] as const)(
       changes.push(position)
       scroll.destroyRecursively()
     })
-    child[dimension] = 15
-    await target.renderOnce()
-    const expected = 15 - bar.viewportSize
-    assert.deepEqual(changes, [expected])
-    assert.equal(bar.scrollPosition, expected)
-    assert.equal(bar.slider.value, expected)
-    assert.equal(scroll.isDestroyed, true)
-    assert.deepEqual(errors, [])
+    const logged = spyOn(console, "error").mockImplementation(() => {})
+    try {
+      scroll.focus()
+      if (shrink) {
+        child[vertical ? "height" : "width"] = 15
+        await target.renderOnce()
+      } else if (vertical) await target.mockMouse.scroll(scroll.viewport.x, scroll.viewport.y, "down")
+      else target.mockInput.pressKey("ARROW_RIGHT")
+      const expected = shrink ? 15 - bar.viewportSize : inputStep
+      assert.deepEqual([changes, bar.scrollPosition, bar.slider.value], [[expected], expected, expected])
+      assert.deepEqual([scroll.isDestroyed, errors, logged.mock.calls], [true, [], []])
+    } finally {
+      logged.mockRestore()
+    }
   },
 )
 
@@ -142,30 +124,22 @@ test("a retained native slider does not call its destroyed scrollbar controller"
   await target.renderOnce()
 })
 
-test("hiding native arrows stops when the first arrow's blur removes the scrollbar", async () => {
-  const { bar } = await setupBar()
-  bar.startArrow.focusable = true
-  bar.startArrow.focus()
-  bar.startArrow.once(RenderableEvents.BLURRED, () => bar.destroyRecursively())
-  assert.doesNotThrow(() => {
-    bar.showArrows = false
-  })
-  assert.equal(bar.isDestroyed, true)
-  assert.equal(bar.endArrow.isDestroyed, true)
-})
+const barWrites: Record<string, (bar: ScrollBarRenderable) => void> = {
+  "hiding arrows": (bar) => (bar.showArrows = false),
+  "arrow options": (bar) => (bar.arrowOptions = { visible: false }),
+  "track options": (bar) => (bar.trackOptions = { value: 3, backgroundColor: "red" }),
+}
 
-test.each(["arrows", "track"])("native %s options stop when a callback removes the owner", async (part) => {
+test.each(Object.keys(barWrites))("native ScrollBar %s stop when a callback removes the owner", async (name) => {
   const { bar } = await setupBar()
-  if (part === "arrows") {
+  if (name === "track options") bar.once("change", () => bar.destroyRecursively())
+  else {
     bar.startArrow.focusable = true
     bar.startArrow.focus()
     bar.startArrow.once(RenderableEvents.BLURRED, () => bar.destroyRecursively())
-  } else bar.once("change", () => bar.destroyRecursively())
-  assert.doesNotThrow(() => {
-    if (part === "arrows") bar.arrowOptions = { visible: false }
-    else bar.trackOptions = { value: 3, backgroundColor: "red" }
-  })
-  assert.equal(bar.isDestroyed, true)
+  }
+  assert.doesNotThrow(() => barWrites[name](bar))
+  assert.deepEqual([bar.isDestroyed, bar.endArrow.isDestroyed], [true, true])
 })
 
 test("native ScrollBox root options stop after a blur callback removes the owner", async () => {

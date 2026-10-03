@@ -3,7 +3,7 @@ import assert from "node:assert/strict"
 import { BoxRenderable } from "../renderables/Box.js"
 import { ManualClock } from "../testing/manual-clock.js"
 import { createTestRenderer, type TestRendererSetup } from "../testing/test-renderer.js"
-import { TestWriteStream } from "../testing/test-streams.js"
+import { RecordingWriteStream, TestWriteStream } from "../testing/test-streams.js"
 
 const targets: TestRendererSetup[] = []
 afterEach(async () => {
@@ -51,6 +51,33 @@ test("frame callback can destroy and await renderer.closed including finalizatio
     clearTimeout(timeout)
     renderer.nativeScene.driver.dispose()
     await frame
+  }
+})
+
+test("destroying nodes while their Session closes drops staged writes without reporting them", async () => {
+  const stdout = new RecordingWriteStream()
+  const target = await createTestRenderer({ stdout: stdout as unknown as NodeJS.WriteStream, bufferedOutput: "stdout" })
+  const { renderer } = target
+  targets.push(target)
+  const logged = spyOn(console, "error").mockImplementation(() => {})
+  try {
+    stdout.hold()
+    const setupTerminal = renderer.setupTerminal().catch(() => {})
+    const box = new BoxRenderable(renderer, { width: 2, height: 1 })
+    renderer.root.add(box)
+    const closing = renderer.nativeScene.driver.close()
+    assert.equal(renderer.nativeScene.hasStagedMutations, true)
+
+    renderer.destroy()
+    stdout.release()
+    await setupTerminal
+    await closing
+    await renderer.closed
+
+    assert.equal(box.isDestroyed, true)
+    assert.deepEqual(logged.mock.calls, [])
+  } finally {
+    logged.mockRestore()
   }
 })
 

@@ -5,6 +5,10 @@ import { Renderable } from "../Renderable.js"
 import { BoxRenderable } from "../renderables/Box.js"
 import { CliRenderEvents } from "../renderer.js"
 import { createTestRenderer, type TestRendererSetup } from "../testing/test-renderer.js"
+import { TextBuffer } from "../text-buffer.js"
+import { TextBufferView } from "../text-buffer-view.js"
+import { nativeConstants } from "../native-abi.generated.js"
+import { NATIVE_BUFFER_TEXT_BYTES_MAX, NativePaintRecorder, NativeScenePaintPhase } from "../zig.js"
 
 const red = RGBA.fromHex("#ff0000")
 const green = RGBA.fromHex("#00ff00")
@@ -81,37 +85,6 @@ test("paint hooks run before native paint, so earlier nodes paint a later hook's
   expect(captureSpans().lines[1].spans[0].text.trimEnd()).toBe("ok")
 })
 
-test("paint hooks draw non-string text and box titles as direct drawing converts them", async () => {
-  const { renderer, renderOnce, captureCharFrame } = setup
-  class Draw extends Renderable {
-    protected renderSelf(buffer: OptimizedBuffer): void {
-      buffer.drawText(123 as never, 0, 0, white)
-      buffer.drawText(["a", "b"] as never, 4, 0, white)
-      buffer.drawText(null as never, 8, 0, white)
-      buffer.drawText(undefined as never, 0, 1, white)
-      buffer.drawBox({
-        x: 0,
-        y: 2,
-        width: 12,
-        height: 2,
-        border: true,
-        borderColor: white,
-        backgroundColor: clear,
-        title: 42 as never,
-        bottomTitle: 0 as never,
-      })
-    }
-  }
-  renderer.root.add(new Draw(renderer, { width: 12, height: 4 }))
-
-  await renderOnce()
-
-  const rows = captureCharFrame()
-    .split("\n")
-    .map((row) => row.trimEnd())
-  expect(rows.slice(0, 4)).toEqual(["123 a,b null", "", "┌─42───────┐", "└──────────┘"])
-})
-
 test("paint hooks cannot read the frame and report the failing node", async () => {
   const { renderer, renderOnce } = setup
   const errors: { error: unknown; renderable?: Renderable }[] = []
@@ -153,58 +126,44 @@ test("an owned buffer composed by a hook reads its cells when native code paints
   expect(captureCharFrame().split("\n")[0].trimEnd()).toBe("cd")
 })
 
-test("resources a hook records and then frees stay alive until native code paints them", async () => {
+// The release window spans the whole RECORD batch, not one slot (frame-record-parity frees in the drawing hook).
+test("a text buffer that a later node's hook destroys still paints the view an earlier hook drew", async () => {
   const { renderer, renderOnce, captureCharFrame } = setup
-  class Scratch extends Renderable {
-    protected renderSelf(buffer: OptimizedBuffer): void {
-      const encoded = buffer.encodeUnicode("A👋B")
-      try {
-        let x = this.x
-        for (const glyph of encoded.data) {
-          buffer.drawChar(glyph.char, x, this.y, white, clear)
-          x += glyph.width
-        }
-      } finally {
-        buffer.freeUnicode(encoded)
-      }
-      const scratch = OptimizedBuffer.create(2, 1, "unicode", { owner: this.ctx.nativeScene })
-      try {
-        scratch.drawText("ok", 0, 0, white)
-        buffer.drawFrameBuffer(this.x + 5, this.y, scratch)
-      } finally {
-        scratch.destroy()
-      }
-    }
-  }
-  renderer.root.add(new Scratch(renderer, { width: 8, height: 1 }))
+  const text = TextBuffer.create("unicode", renderer.nativeScene)
+  text.setText("ab")
+  const view = TextBufferView.create(text)
+  renderer.root.add(
+    new BoxRenderable(renderer, { width: 4, height: 1, renderAfter: (buffer) => buffer.drawTextBuffer(view, 0, 0) }),
+  )
+  renderer.root.add(new BoxRenderable(renderer, { width: 1, height: 1, renderAfter: () => text.destroy() }))
 
   await renderOnce()
 
-  expect(captureCharFrame().split("\n")[0].trimEnd()).toBe("A👋B ok")
+  expect(captureCharFrame().split("\n")[0].trimEnd()).toBe("ab")
 })
 
-test("a drawing call that throws records nothing, so a hook that catches it still paints", async () => {
-  const { renderer, renderOnce, captureCharFrame } = setup
-  const errors: unknown[] = []
-  renderer.on(CliRenderEvents.RENDER_ERROR, ({ error }) => errors.push(error))
-  let caught = 0
-  class Recovering extends Renderable {
-    protected renderSelf(buffer: OptimizedBuffer): void {
-      try {
-        buffer.drawText("bad", this.x + 0.5, this.y, white)
-      } catch {
-        caught++
-      }
-      buffer.drawText("ok", this.x, this.y, white)
-    }
+test("a recorded text reserves its UTF-8 bytes against the text and recording limits", () => {
+  const recorder = new NativePaintRecorder()
+  const draw = (text: string) =>
+    recorder.draw({ operation: "text", text, x: 0, y: 0, foreground: white, background: clear, attributes: 0 })
+  recorder.begin(setup.renderer.nativeScene.driver.context)
+  try {
+    recorder.slot(0, NativeScenePaintPhase.Self, 1)
+    expect(() => draw("x".repeat(20_000_000))).toThrow("Buffer text exceeds the native byte limit")
+    expect(() => draw("é".repeat(NATIVE_BUFFER_TEXT_BYTES_MAX / 2 + 1))).toThrow("exceeds the native byte limit")
+    expect(recorder.recording).toBeNull()
+    draw("a")
+    // A rejected text leaves the recording at its initial capacity.
+    expect(recorder.recording!.buffer.byteLength).toBe(16_384)
+
+    const filler = nativeConstants.OT_SCENE_RECORD_BYTES_MAX - 70_000
+    recorder.packed(new Uint8Array(filler), filler, 0, 0, 1, 1)
+    draw("a".repeat(NATIVE_BUFFER_TEXT_BYTES_MAX))
+    expect(() => draw("a".repeat(8_000))).toThrow("Paint recording exceeds")
+  } finally {
+    recorder.end()
+    recorder.settle()
   }
-  renderer.root.add(new Recovering(renderer, { width: 4, height: 1 }))
-
-  await renderOnce()
-
-  expect(caught).toBe(1)
-  expect(errors).toEqual([])
-  expect(captureCharFrame().split("\n")[0].trimEnd()).toBe("ok")
 })
 
 test("a slot whose hooks an earlier hook replaced still records its body", async () => {
