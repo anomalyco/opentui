@@ -7890,15 +7890,18 @@ export class FFIRenderLib {
 
   public dispose(): void {
     if (this.disposed) return
-    for (const context of this.audioEngines.values()) this.releaseContext(context)
-    this.audioEngines.clear()
+    // Refuse before any release so a refused dispose leaves the library unchanged.
     if (this.clipboardServices.size > 0) {
       throw new Error("Cannot dispose OpenTUI native library while clipboard services are active")
     }
-    if (this.nativeContexts.size) {
+    if (this.nativeContexts.size !== this.audioEngines.size) {
       throw new NativeError("dispose", NativeStatus.ContextBusy)
     }
     this.yogaHost?.dispose()
+    for (const [engine, context] of this.audioEngines) {
+      this.releaseContext(context)
+      this.audioEngines.delete(engine)
+    }
     this.disposed = true
     try {
       this.releaseProcessLog()

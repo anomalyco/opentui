@@ -8,6 +8,7 @@ import { TextBufferView } from "./text-buffer-view.js"
 import { EditBuffer } from "./edit-buffer.js"
 import { EditorView } from "./editor-view.js"
 import { SyntaxStyle } from "./syntax-style.js"
+import { Config, Node } from "./yoga.js"
 import { FFIRenderLib, resolveRenderLib, setRenderLibPath, type NativeSceneFrameRequest } from "./zig.js"
 
 describe("native handles", () => {
@@ -170,6 +171,38 @@ describe("native handles", () => {
     } finally {
       lib.destroyContext(context)
     }
+  })
+
+  test.each([
+    [
+      "a live Context",
+      "ContextBusy",
+      (lib: FFIRenderLib) => {
+        const context = lib.createContext({ objectCapacity: 1, renderCellsMax: 1 })
+        return () => lib.destroyContext(context)
+      },
+    ],
+    [
+      "an active Yoga node",
+      "Yoga nodes are active",
+      (lib: FFIRenderLib) => {
+        const config = Config.create(lib)
+        const node = Node.create(config)
+        return () => {
+          node.free()
+          config.free()
+        }
+      },
+    ],
+  ] as const)("a dispose refused by %s keeps audio engines", (_, reason, hold) => {
+    const lib = new FFIRenderLib()
+    const engine = lib.createAudioEngine()!
+    const release = hold(lib)
+    expect(() => lib.dispose()).toThrow(reason)
+    expect(lib.audioGetStats(engine)).not.toBeNull()
+    release()
+    lib.dispose()
+    expect(() => lib.createContext({ objectCapacity: 1, renderCellsMax: 1 })).toThrow("disposed")
   })
 
   test("the process log callback survives Worker exit and disposal of other libraries", () => {
