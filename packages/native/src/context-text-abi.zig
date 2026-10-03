@@ -27,11 +27,7 @@ pub fn ot_text_buffer_create(context: ?*Owner, options: ?*const c.ot_edit_buffer
 }
 
 pub fn ot_text_buffer_destroy(context: ?*Owner, id: ?*const c.ot_handle) callconv(.c) c.ot_status {
-    const status = abi.sessionContextStatus(context);
-    if (status != c.OT_OK) return status;
-    const value = text(context.?, id) catch |err| return fail(context, err);
-    context.?.core.destroy(value.handle) catch |err| return fail(context, err);
-    return c.OT_OK;
+    return abi.destroyKind(context, id, .text_buffer);
 }
 
 pub fn ot_text_buffer_view_create(context: ?*Owner, id: ?*const c.ot_handle, out: ?*c.ot_handle) callconv(.c) c.ot_status {
@@ -43,11 +39,7 @@ pub fn ot_text_buffer_view_create(context: ?*Owner, id: ?*const c.ot_handle, out
 }
 
 pub fn ot_text_buffer_view_destroy(context: ?*Owner, id: ?*const c.ot_handle) callconv(.c) c.ot_status {
-    const status = abi.sessionContextStatus(context);
-    if (status != c.OT_OK) return status;
-    const value = view(context.?, id) catch |err| return fail(context, err);
-    context.?.core.destroy(value.handle) catch |err| return fail(context, err);
-    return c.OT_OK;
+    return abi.destroyKind(context, id, .text_buffer_view);
 }
 
 pub fn ot_text_buffer_set_text(context: ?*Owner, id: ?*const c.ot_handle, bytes: ?[*]const u8, count: u32) callconv(.c) c.ot_status {
