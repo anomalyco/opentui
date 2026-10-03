@@ -19,8 +19,9 @@
 #endif
 
 namespace {
-// Only C++ work belongs inside this guard. A Zig thunk would let an exception
-// unwind through a Zig frame before arriving here.
+// Yoga calls Zig thunks (measure, dirtied, logger) inside this guard. They
+// re-enter C++ only through noexcept bridge functions or Yoga calls that cannot
+// throw, so no exception unwinds through a Zig frame.
 template <typename F>
 uint32_t checked(F&& operation) noexcept {
   try {

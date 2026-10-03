@@ -568,7 +568,8 @@ pub export fn yogaNodeFreeRecursiveChecked(node: YGNodeRef) Status {
     while (cursor) |ctx| {
         // Keep Yoga's first-child teardown order and shared-child skip. Managed
         // insertion excludes shared/unmanaged children; raw Yoga graphs are not
-        // part of this wrapper's ownership contract.
+        // part of this wrapper's ownership contract. Here `depth` is the index
+        // of the next child to visit.
         if (c.YGNodeGetChildCount(ctx.node) > ctx.depth) {
             const child = c.YGNodeGetChild(ctx.node, ctx.depth);
             if (c.YGNodeGetOwner(child) != ctx.node) {

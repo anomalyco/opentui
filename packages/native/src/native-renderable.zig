@@ -6,15 +6,9 @@ const text_buffer_view = @import("text-buffer-view.zig");
 const scene = @import("scene.zig");
 const buffer = @import("buffer.zig");
 
-pub const MeasureTargetKind = enum(u32) {
-    none = 0,
-    text_buffer_view = 1,
-    editor_view = 2,
-};
-
 // Generic measure targets keep Yoga independent of concrete renderable types.
 // Add target kinds here instead of adding type-specific Yoga APIs.
-pub const MeasureTarget = union(MeasureTargetKind) {
+pub const MeasureTarget = union(enum) {
     none,
     text_buffer_view: *text_buffer_view.UnifiedTextBufferView,
     editor_view: *editor_view.EditorView,
