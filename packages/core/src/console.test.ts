@@ -676,6 +676,14 @@ describe("TerminalConsole", () => {
       }
     })
 
+    test("escapes control characters except newlines and tabs", () => {
+      terminalConsole = new TerminalConsole(mockRenderer as any, { position: ConsolePosition.BOTTOM })
+      // util.inspect already escapes strings; Error messages and stacks are written raw.
+      const error = new Error("a\x1b[31mb\r\nc\td\x00\x7f\x9b")
+      error.stack = undefined
+      expect(terminalConsole["formatArguments"]([error])).toBe("Error: a\\x1b[31mb\nc\td\\x00\\x7f\\x9b\n")
+    })
+
     test("wraps by display cells at grapheme boundaries without dropping text", () => {
       const graphemes = (text: string) => [...new Intl.Segmenter(undefined, { granularity: "grapheme" }).segment(text)]
       const samples: unknown[][] = [

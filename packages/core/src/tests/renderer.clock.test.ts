@@ -362,3 +362,28 @@ test("start() does not double-schedule frames when a render was already queued",
   expect(renderer.getStats().nativeFrameCount).toBeGreaterThanOrEqual(25)
   expect(renderer.getStats().nativeFrameCount).toBeLessThanOrEqual(40)
 })
+
+test("memory snapshots and the debug overlay use the renderer clock and stop on destroy", async () => {
+  const snapshots: unknown[] = []
+  const toggles: boolean[] = []
+  renderer.on(CliRenderEvents.MEMORY_SNAPSHOT, (snapshot) => snapshots.push(snapshot))
+  renderer.on(CliRenderEvents.DEBUG_OVERLAY_TOGGLE, (enabled: boolean) => toggles.push(enabled))
+  const timers = clock.pendingTimerCount
+
+  renderer.toggleDebugOverlay()
+  expect(clock.pendingTimerCount).toBe(timers + 2)
+  clock.advance(3000)
+  expect(snapshots).toHaveLength(1)
+  expect(snapshots[0]).toMatchObject({ heapUsed: expect.any(Number), arrayBuffers: expect.any(Number) })
+  renderer.toggleDebugOverlay()
+  expect(toggles).toEqual([true, false])
+  await renderer.idle()
+
+  renderer.setMemorySnapshotInterval(50)
+  renderer.start()
+  clock.advance(50)
+  expect(snapshots).toHaveLength(2)
+  renderer.destroy()
+  await renderer.closed
+  expect(clock.pendingTimerCount).toBe(0)
+})
