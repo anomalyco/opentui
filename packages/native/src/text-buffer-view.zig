@@ -1920,8 +1920,9 @@ pub const UnifiedTextBufferView = struct {
                     wctx.pending_word_pieces.items[consumed_count].col_start_in_chunk += fit.width_cols;
                     wctx.pending_word_pieces.items[consumed_count].width_cols -= fit.width_cols;
                     wctx.pending_word_pieces.items[consumed_count].byte_start += fit.bytes_used;
-                    if (wctx.pending_word_pieces.items[consumed_count].width_cols == 0) consumed_count += 1;
-                    break;
+                    // The line is full now; only zero-width pieces may still join it.
+                    if (wctx.pending_word_pieces.items[consumed_count].width_cols > 0) break;
+                    remaining_width_cols = 0;
                 }
 
                 dropPendingWordPrefix(wctx, consumed_count);

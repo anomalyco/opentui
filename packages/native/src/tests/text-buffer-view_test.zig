@@ -4759,3 +4759,37 @@ test "TextBufferView edited text wraps like freshly loaded text" {
         }
     }
 }
+
+test "TextBufferView word wrap keeps zero-width pieces with the text before them" {
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
+    // Each piece is appended as its own chunk, as edits and streams leave it, and the
+    // result must wrap like the same text loaded as one chunk.
+    const rows = [_]struct { pieces: []const []const u8, width: u32 }{
+        // A word after a lone zero-width piece is queued behind it, not placed before it.
+        .{ .pieces = &.{ "\u{2060}", "-" }, .width = 1 },
+        // Zero-width text after a forced wide grapheme stays on its line.
+        .{ .pieces = &.{ "\u{1f44d}", "\u{2060}", "x" }, .width = 1 },
+        // A combining mark at the start of the next word piece joins the full line.
+        .{ .pieces = &.{ "x", "\u{301}cd" }, .width = 1 },
+        // A zero-width piece after a full line joins it.
+        .{ .pieces = &.{ "abc", "\u{301}", "-" }, .width = 1 },
+    };
+    for (rows) |row| {
+        const tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .unicode);
+        defer tb.deinit();
+        for (row.pieces) |piece| try tb.append(piece);
+        try expectSameWrap(tb, row.width, .word);
+    }
+
+    // A line of only zero-width text keeps its bytes, as it does without wrapping.
+    const tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .unicode);
+    defer tb.deinit();
+    try tb.setText("a\n\u{301}");
+    const view = try TextBufferView.init(std.testing.allocator, tb);
+    defer view.deinit();
+    view.setWrapMode(.word);
+    view.setWrapWidth(5);
+    var bytes: [8]u8 = undefined;
+    try std.testing.expectEqualStrings("\u{301}", lineBytes(view.getVirtualLines()[1], tb, &bytes));
+}
