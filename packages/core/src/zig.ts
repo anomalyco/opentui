@@ -5454,24 +5454,18 @@ export class FFIRenderLib {
         number,
         { handle: ContextEditBufferHandle; listeners: Set<{ handler: (event: NativeEditEventName) => void }> }
       >()
+      const names: Partial<Record<number, NativeEditEventName>> = {
+        [NativeEditEvent.CursorChanged]: "cursor-changed",
+        [NativeEditEvent.ContentChanged]: "content-changed",
+        [NativeEditEvent.HistoryCursorChanged]: "cursorChanged",
+      }
       const callback = this.opentui.createCallback(
         (contextId: bigint, slot: number, generation: number, event: number) => {
           this.getYogaHost().invokeCallback(() => {
             const entry = buffers.get(slot)
             if (!entry || entry.handle.contextId !== contextId || entry.handle.generation !== generation) return
-            const name: NativeEditEventName =
-              event === NativeEditEvent.CursorChanged
-                ? "cursor-changed"
-                : event === NativeEditEvent.ContentChanged
-                  ? "content-changed"
-                  : "cursorChanged"
-            if (
-              event !== NativeEditEvent.CursorChanged &&
-              event !== NativeEditEvent.ContentChanged &&
-              event !== NativeEditEvent.HistoryCursorChanged
-            ) {
-              throw new Error("Native editor returned an unknown event")
-            }
+            const name = names[event]
+            if (name === undefined) throw new Error("Native editor returned an unknown event")
             const listeners = [...entry.listeners]
             // Do not batch events: application microtasks can occur between native edits.
             queueMicrotask(() => {
