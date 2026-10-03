@@ -28,6 +28,10 @@ pub fn node(owner: *context.Context, id: context.Handle, parent: context.Handle,
     return child;
 }
 
+pub fn drawHeader(comptime T: type, operation: u32) c.ot_buffer_draw_header {
+    return .{ .struct_size = @sizeOf(T), .abi_version = c.OT_CONTEXT_ABI_VERSION, .operation = operation, .flags = 0 };
+}
+
 /// Builds an 8-byte aligned paint recording.
 pub const Recording = struct {
     bytes: [1024]u8 align(8) = undefined,
@@ -38,58 +42,52 @@ pub const Recording = struct {
     }
 
     pub fn text(self: *Recording, value: []const u8, x: i32, y: i32) void {
-        const draw: c.ot_buffer_draw_text_record = .{
-            .header = .{ .struct_size = @sizeOf(c.ot_buffer_draw_text_record), .abi_version = c.OT_CONTEXT_ABI_VERSION, .operation = c.OT_BUFFER_DRAW_TEXT, .flags = 0 },
+        self.draw(c.ot_buffer_draw_text_record{
+            .header = drawHeader(c.ot_buffer_draw_text_record, c.OT_BUFFER_DRAW_TEXT),
             .x = x,
             .y = y,
             .attributes = 0,
             .foreground = .{ 255, 255, 255, 255 },
             .background = .{ 0, 0, 0, 0 },
-        };
-        var payload: [64]u8 = undefined;
-        @memcpy(payload[0..@sizeOf(@TypeOf(draw))], std.mem.asBytes(&draw));
-        @memcpy(payload[@sizeOf(@TypeOf(draw))..][0..value.len], value);
-        self.append(c.ot_scene_record_draw{
-            .header = .{ .size = 0, .operation = c.OT_SCENE_RECORD_DRAW },
-            .source = std.mem.zeroes(c.ot_handle),
-            .text_length = @intCast(value.len),
-            .bottom_length = 0,
-        }, payload[0 .. @sizeOf(@TypeOf(draw)) + value.len]);
+        }, null, value, "");
     }
 
     pub fn fill(self: *Recording, x: i32, y: i32, width: u32, background: [4]u16) void {
-        const draw: c.ot_buffer_draw_fill = .{
-            .header = .{ .struct_size = @sizeOf(c.ot_buffer_draw_fill), .abi_version = c.OT_CONTEXT_ABI_VERSION, .operation = c.OT_BUFFER_DRAW_FILL, .flags = 0 },
+        self.draw(c.ot_buffer_draw_fill{
+            .header = drawHeader(c.ot_buffer_draw_fill, c.OT_BUFFER_DRAW_FILL),
             .x = x,
             .y = y,
             .width = width,
             .height = 1,
             .background = background,
-        };
-        self.append(c.ot_scene_record_draw{
-            .header = .{ .size = 0, .operation = c.OT_SCENE_RECORD_DRAW },
-            .source = std.mem.zeroes(c.ot_handle),
-            .text_length = 0,
-            .bottom_length = 0,
-        }, std.mem.asBytes(&draw));
+        }, null, "", "");
     }
 
     pub fn compose(self: *Recording, source: context.Handle, x: i32) void {
-        const draw: c.ot_buffer_draw_compose = .{
-            .header = .{ .struct_size = @sizeOf(c.ot_buffer_draw_compose), .abi_version = c.OT_CONTEXT_ABI_VERSION, .operation = c.OT_BUFFER_DRAW_COMPOSE, .flags = 0 },
+        self.draw(c.ot_buffer_draw_compose{
+            .header = drawHeader(c.ot_buffer_draw_compose, c.OT_BUFFER_DRAW_COMPOSE),
             .x = x,
             .y = 0,
             .source_x = 0,
             .source_y = 0,
             .source_width = 0,
             .source_height = 0,
-        };
+        }, source, "", "");
+    }
+
+    /// Appends one DRAW record: a complete ot_buffer_draw_* record, then its title bytes.
+    pub fn draw(self: *Recording, record: anytype, source: ?context.Handle, title: []const u8, bottom: []const u8) void {
+        var payload: [256]u8 = undefined;
+        const size = @sizeOf(@TypeOf(record));
+        @memcpy(payload[0..size], std.mem.asBytes(&record));
+        @memcpy(payload[size..][0..title.len], title);
+        @memcpy(payload[size + title.len ..][0..bottom.len], bottom);
         self.append(c.ot_scene_record_draw{
             .header = .{ .size = 0, .operation = c.OT_SCENE_RECORD_DRAW },
-            .source = .{ .context_id = source.context_id, .slot = source.slot, .generation = source.generation },
-            .text_length = 0,
-            .bottom_length = 0,
-        }, std.mem.asBytes(&draw));
+            .source = if (source) |value| .{ .context_id = value.context_id, .slot = value.slot, .generation = value.generation } else std.mem.zeroes(c.ot_handle),
+            .text_length = @intCast(title.len),
+            .bottom_length = @intCast(bottom.len),
+        }, payload[0 .. size + title.len + bottom.len]);
     }
 
     pub fn stack(self: *Recording, operation: u32, x: i32, width: u32, opacity: f32) void {
@@ -253,6 +251,44 @@ test "Scene record stacks start from the slot clip and reset between phases" {
     try testing.expectEqual(@as(u32, ' '), cells.get(1, 0).?.char);
     try testing.expectEqual(@as(u32, 'x'), cells.get(2, 0).?.char);
     try f.owner.sceneFrameCancel(f.id, done.frame_id);
+}
+
+test "Scene record CLEAR and COLOR_MATRIX act on the whole frame, outside the slot clip and opacity" {
+    for ([_]bool{ true, false }) |clear| {
+        const f = try Fixture.init(testing.allocator, 8, 1, .{ .output = transport });
+        defer f.deinit();
+        const earlier = try node(f.owner, f.id, f.root, 1, 2, 0);
+        try f.owner.sceneSetPaint(earlier, .{ .translateX = 6, .background = .{ 200, 0, 0, 255 } });
+        const parent = try node(f.owner, f.id, f.root, 1, 3, 1);
+        try f.owner.sceneSetStyle(parent, 4, 0, 0, 1, 4, 1);
+        try f.owner.sceneSetStyle(parent, 0, 8, 0, 0, 1, 0);
+        try f.owner.sceneSetPaint(parent, .{ .shouldFill = 0 });
+        const child = try node(f.owner, f.id, parent, 6, 4, 0);
+        try f.owner.sceneSetPaint(child, .{ .opacity = 0.5 });
+        try f.owner.sceneSetHooks(child, c.OT_SCENE_HOOK_RENDER_AFTER, 1, 2, 1);
+        const request = try f.step(null, options, c.OT_SCENE_FRAME_RECORD, null);
+        try testing.expectEqual(@as(u32, 4), (try f.owner.sceneFramePaintSlots(f.id, request))[0].clip.width);
+        var recording: Recording = .{};
+        recording.slot(0, c.OT_SCENE_RECORD_PHASE_AFTER);
+        if (clear) {
+            recording.draw(c.ot_buffer_draw_clear{ .header = drawHeader(c.ot_buffer_draw_clear, c.OT_BUFFER_DRAW_CLEAR), .background = .{ 0, 0, 255, 255 } }, null, "", "");
+        } else {
+            // Uniform background matrix that moves red into green.
+            recording.append(c.ot_scene_record_color_matrix{
+                .header = .{ .size = 0, .operation = c.OT_SCENE_RECORD_COLOR_MATRIX },
+                .matrix = .{ 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1 },
+                .strength = 1,
+                .channel = 2,
+                .has_mask = 0,
+                .mask_count = 0,
+            }, &.{});
+        }
+        const done = try submit(f, request, &recording);
+        // The earlier sibling's cell lies outside the 4-cell slot clip and keeps no slot opacity.
+        const expected = if (clear) ansi.rgbColor(0, 0, 255, 255) else ansi.rgbColor(0, 200, 0, 255);
+        try testing.expectEqual(expected, f.cli.getNextBuffer().get(6, 0).?.bg);
+        try f.owner.sceneFrameCancel(f.id, done.frame_id);
+    }
 }
 
 test "Scene record reads referenced resources at playback and skips destroyed ones" {
