@@ -2648,7 +2648,9 @@ export class CliRenderer extends EventEmitter implements RenderContext {
       const grapheme = segment === "\t" ? " ".repeat(tabCells) : segment
       const graphemeCells = stringWidth(grapheme)
       if (cells > 0 && cells + graphemeCells > width) {
-        rows.push({ line, cells, trailingNewline: false })
+        // A wide grapheme that does not fit starts a terminal row; pad to the full width so native counts that row.
+        const padding = Math.max(0, width - cells)
+        rows.push({ line: line + " ".repeat(padding), cells: cells + padding, trailingNewline: false })
         line = ""
         cells = 0
       }

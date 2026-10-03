@@ -248,10 +248,27 @@ test.each(["frames", "suspend", "destroy"] as const)(
   },
 )
 
+// A wide grapheme that does not fit the row starts the next one; native must count the rows the terminal uses.
+test.each([
+  ["ASCII", "abcdefghijklmnopqrs", 3],
+  ["wide characters", "一二三四五六七八九", 3],
+  ["a wide character at the last column", "abcdefgh一", 2],
+] as const)(
+  "a captured %s line that wraps advances the split footer by its terminal rows",
+  async (_name, line, rows) => {
+    const terminal = await setupTerminal({ columns: 9 })
+    const renderOffset = () => (terminal.renderer as unknown as { renderOffset: number }).renderOffset
+    const before = renderOffset()
+    terminal.stdout.write(line + "\n")
+    await terminal.frame()
+    expect(renderOffset() - before).toBe(rows)
+  },
+)
+
 // Each commit is "text:rowColumns", plus "\n" when it ends its line.
 test.each([
   ["wraps ASCII at the width", "abcdefghijk\n", ["abcdefghi:9", "jk:2\n"]],
-  ["wraps wide characters by display cells", "一二三四五\n", ["一二三四:8", "五:2\n"]],
+  ["wraps wide characters by display cells", "一二三四五\n", ["一二三四:9", "五:2\n"]],
   ["keeps emoji and grapheme clusters", "ok👍🏽 👩‍🚀 e\u0301\n", ["ok👍🏽 👩‍🚀 e\u0301:9\n"]],
   ["expands tabs to 8-cell stops within the row", "a\tb\tc\n", ["a       b:9", "c:1\n"]],
   ["ends a line at CRLF", "one\r\ntwo\r\n", ["one:3\n", "two:3\n"]],
