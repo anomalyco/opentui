@@ -634,20 +634,8 @@ pub const UnifiedTextBuffer = struct {
         chunks: []const OwnedStyledChunk,
         prepared_links: ?*link.LinkTracker,
     ) TextBufferError!u8 {
-        return self.replaceOwnedStyledTextPrepared(text, mem_id, style, chunks, prepared_links, null);
-    }
-
-    pub fn replaceOwnedStyledTextPrepared(
-        self: *Self,
-        text: []const u8,
-        mem_id: ?u8,
-        style: *SyntaxStyle,
-        chunks: []const OwnedStyledChunk,
-        prepared_links: ?*link.LinkTracker,
-        retained_style: ?*SyntaxStyle,
-    ) TextBufferError!u8 {
         var prepared: PreparedOwnedStyledText = undefined;
-        try self.prepareOwnedStyledText(&prepared, text, mem_id, style, chunks, prepared_links, retained_style);
+        try self.prepareOwnedStyledText(&prepared, text, mem_id, style, chunks, prepared_links, null);
         defer prepared.deinit();
         return prepared.commit();
     }
