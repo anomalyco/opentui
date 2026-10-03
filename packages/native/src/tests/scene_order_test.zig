@@ -52,13 +52,13 @@ fn expectTop(f: Fixture, child: context.Handle) !void {
     for (0..2) |x| try testing.expectEqual(node.num, try f.owner.sceneHitTest(f.id, @intCast(x), 0));
 }
 
-fn orderedAppend(z_step: i32) !void {
+test "Scene ordered equal-z append skips settled sibling rank and sort work" {
     for ([_]bool{ false, true }) |hooks| {
         const f = try Fixture.init(testing.allocator, 2, 1, .{});
         defer f.deinit();
         var children: [68]context.Handle = undefined;
         for (children[0..64], 0..) |*child, index| {
-            child.* = try box(f.owner, f.id, @intCast(index + 2), z_step * @as(i32, @intCast(index)));
+            child.* = try box(f.owner, f.id, @intCast(index + 2), 0);
             try f.owner.sceneMoveNode(child.*, f.root, @intCast(index));
             if (hooks) try f.owner.sceneSetHooks(child.*, 1, 1, 2, 1);
         }
@@ -66,7 +66,7 @@ fn orderedAppend(z_step: i32) !void {
         try expectTop(f, children[63]);
         for (64..children.len) |index| {
             f.state.test_sort_steps = 0;
-            children[index] = try box(f.owner, f.id, @intCast(index + 2), z_step * @as(i32, @intCast(index)));
+            children[index] = try box(f.owner, f.id, @intCast(index + 2), 0);
             try f.owner.sceneMoveNode(children[index], f.root, @intCast(index));
             if (hooks) try f.owner.sceneSetHooks(children[index], 1, 1, 2, 1);
             try frame(f, if (hooks) children[0 .. index + 1] else &.{});
@@ -74,10 +74,6 @@ fn orderedAppend(z_step: i32) !void {
             try testing.expectEqual(@as(u64, 0), f.state.test_sort_steps);
         }
     }
-}
-
-test "Scene ordered equal-z append skips settled sibling rank and sort work" {
-    try orderedAppend(0);
 }
 
 const node_count_max = 16;
@@ -203,12 +199,7 @@ fn runModel(seed: u64) !u32 {
     for (0..256) |step| {
         const index = random.uintLessThan(usize, node_count_max);
         const handle = model.handles[index] orelse {
-            const node = try f.owner.sceneCreateNode(f.id, c.OT_SCENE_BOX, @intCast(step + 2));
-            try f.owner.sceneSetStyle(node, 0, 6, 0, 0, 2, 0);
-            try f.owner.sceneSetStyle(node, 4, 0, 0, 1, @floatFromInt(random.intRangeAtMost(u32, 1, 4)), 1);
-            try f.owner.sceneSetStyle(node, 4, 1, 0, 1, @floatFromInt(random.intRangeAtMost(u32, 1, 3)), 1);
-            try f.owner.sceneSetPaint(node, .{ .background = .{ @intCast(step % 256), 100, 0, 255 } });
-            model.handles[index] = node;
+            model.handles[index] = try box(f.owner, f.id, @intCast(2 + step % 254), 0);
             model.z[index] = 0;
             model.hidden[index] = false;
             continue;
@@ -276,7 +267,7 @@ fn runModel(seed: u64) !u32 {
 
 test "Scene tree and paint order follow a reference model and reused frames match fresh frames" {
     var reused: u32 = 0;
-    for (0..32) |seed| {
+    for (0..64) |seed| {
         errdefer std.debug.print("seed {d}\n", .{seed});
         reused += try runModel(seed);
     }
