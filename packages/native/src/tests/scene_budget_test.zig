@@ -183,24 +183,6 @@ const Model = struct {
     }
 };
 
-fn expectSameFrame(bounded: Fixture, synchronous: Fixture, models: *const [2]Model) !void {
-    const expected = synchronous.cli.getNextBuffer().buffer;
-    const actual = bounded.cli.getNextBuffer().buffer;
-    try testing.expectEqualSlices(u32, expected.char, actual.char);
-    try testing.expectEqualSlices(ansi.RGBA, expected.fg, actual.fg);
-    try testing.expectEqualSlices(ansi.RGBA, expected.bg, actual.bg);
-    try testing.expectEqualSlices(u32, expected.attributes, actual.attributes);
-    try testing.expectEqualSlices(u32, synchronous.cli.nextHitGrid, bounded.cli.nextHitGrid);
-    for (models[0].nodes[0..models[0].count], models[1].nodes[0..models[0].count], models[0].alive[0..models[0].count]) |handle, twin, alive| {
-        if (!alive) continue;
-        // Hidden and detached nodes keep stale prepared geometry; only painted members must agree.
-        const token = (try bounded.owner.raw().getRenderable(handle)).scene_node.?.token;
-        if (std.mem.indexOfScalar(u32, bounded.cli.nextHitGrid, token) == null) continue;
-        try testing.expectEqualDeep(try synchronous.owner.sceneGetPaintLayout(twin), try bounded.owner.sceneGetPaintLayout(handle));
-        try testing.expectEqualDeep(try synchronous.owner.sceneGetLayout(twin, false), try bounded.owner.sceneGetLayout(handle, false));
-    }
-}
-
 /// Paints one random scene with a work budget, mutating it at yields, and compares the
 /// result with a synchronous frame of a twin scene that received the same mutations first.
 fn expectBoundedMatchesSynchronous(seed: u64) !void {
@@ -239,7 +221,15 @@ fn expectBoundedMatchesSynchronous(seed: u64) !void {
     } else return error.TestUnexpectedResult;
     for (0..applied) |_| try models[1].mutate(fixtures[1], mutations[1].random());
     const synchronous = try fixtures[1].drive(null, limits, std.math.maxInt(u32));
-    try expectSameFrame(bounded, fixtures[1], &models);
+    try fixtures[1].expectSameCells(bounded);
+    for (models[0].nodes[0..models[0].count], models[1].nodes[0..models[0].count], models[0].alive[0..models[0].count]) |handle, twin, alive| {
+        if (!alive) continue;
+        // Hidden and detached nodes keep stale prepared geometry; only painted members must agree.
+        const token = (try bounded.owner.raw().getRenderable(handle)).scene_node.?.token;
+        if (std.mem.indexOfScalar(u32, bounded.cli.nextHitGrid, token) == null) continue;
+        try testing.expectEqualDeep(try fixtures[1].owner.sceneGetPaintLayout(twin), try bounded.owner.sceneGetPaintLayout(handle));
+        try testing.expectEqualDeep(try fixtures[1].owner.sceneGetLayout(twin, false), try bounded.owner.sceneGetLayout(handle, false));
+    }
     try bounded.owner.sceneFrameCancel(bounded.id, done.frame_id);
     try fixtures[1].owner.sceneFrameCancel(fixtures[1].id, synchronous.frame_id);
 }

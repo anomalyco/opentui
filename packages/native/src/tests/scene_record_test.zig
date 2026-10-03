@@ -5,7 +5,6 @@ const Fixture = @import("scene_fixture_test.zig").Fixture;
 const context = @import("../context.zig");
 const scene = @import("../scene.zig");
 const ansi = @import("../ansi.zig");
-const grapheme = @import("../grapheme.zig");
 const transport: @import("../session.zig").Options = .{ .chunk_size = 4096, .control_capacity = 4096 };
 
 const options: scene.FrameOptions = .{
@@ -411,44 +410,6 @@ fn appendCommand(recording: *Recording, command: Command, resources: Resources) 
     }
 }
 
-/// Cell planes of a frame. Grapheme pool IDs differ between frames, so graphemes compare by text.
-const Cells = struct {
-    char: []u32,
-    fg: []ansi.RGBA,
-    bg: []ansi.RGBA,
-    attributes: []u32,
-    text: []u8,
-    placements: usize,
-
-    fn copy(target: *const @import("../buffer.zig").OptimizedBuffer) !Cells {
-        const cells = target.buffer;
-        const char = try testing.allocator.dupe(u32, cells.char);
-        for (char) |*value| {
-            if (value.* & grapheme.CHAR_FLAG_GRAPHEME != 0) value.* &= grapheme.CHAR_FLAG_CONTINUATION;
-        }
-        var text: [1024]u8 = undefined;
-        return .{
-            .char = char,
-            .fg = try testing.allocator.dupe(ansi.RGBA, cells.fg),
-            .bg = try testing.allocator.dupe(ansi.RGBA, cells.bg),
-            .attributes = try testing.allocator.dupe(u32, cells.attributes),
-            .text = try testing.allocator.dupe(u8, text[0..try target.writeResolvedChars(&text, false)]),
-            .placements = target.image_placements.items.len,
-        };
-    }
-
-    fn deinit(self: Cells) void {
-        inline for (.{ self.char, self.fg, self.bg, self.attributes, self.text }) |plane| testing.allocator.free(plane);
-    }
-
-    fn eql(self: Cells, other: Cells) bool {
-        return std.mem.eql(u32, self.char, other.char) and std.mem.eql(u32, self.attributes, other.attributes) and
-            std.mem.eql(u8, std.mem.sliceAsBytes(self.fg), std.mem.sliceAsBytes(other.fg)) and
-            std.mem.eql(u8, std.mem.sliceAsBytes(self.bg), std.mem.sliceAsBytes(other.bg)) and
-            std.mem.eql(u8, self.text, other.text) and self.placements == other.placements;
-    }
-};
-
 fn placed(f: Fixture, kind: u32, num: u32, x: f64, y: f64, width: f32) !context.Handle {
     const child = try f.owner.sceneCreateNode(f.id, kind, num);
     try f.owner.sceneSetStyle(child, 4, 0, 0, 1, width, 1);
@@ -459,9 +420,8 @@ fn placed(f: Fixture, kind: u32, num: u32, x: f64, y: f64, width: f32) !context.
     return child;
 }
 
-test "Scene record paints an empty recording like a hook-free frame and plays image phases into the backing buffer" {
-    const f = try Fixture.init(testing.allocator, 12, 4, .{ .output = transport });
-    defer f.deinit();
+/// Paints every node kind; returns the image node that owns a backing buffer.
+fn paintScene(f: Fixture) !context.Handle {
     try f.owner.sceneSetBoxDetails(try placed(f, c.OT_SCENE_BOX, 2, 0, 0, 6), .{ .title = "ti" });
     try f.owner.sceneSetText(try placed(f, c.OT_SCENE_TEXT, 3, 6, 0, 5), "hello");
     try f.owner.sceneSetSlider(try placed(f, c.OT_SCENE_SLIDER, 4, 6, 1, 4), .{ .value = 40 });
@@ -481,20 +441,20 @@ test "Scene record paints an empty recording like a hook-free frame and plays im
     const edit = try f.owner.createEditBuffer(.unicode);
     try f.owner.editSetText(edit, "ed", false);
     try f.owner.sceneSetEditorView(try placed(f, c.OT_SCENE_EDITOR, 10, 8, 2, 4), try f.owner.createEditorView(edit, 4, 1));
-    const done = try f.step(null, options, c.OT_SCENE_FRAME_DONE, null);
-    const hook_free = try Cells.copy(f.cli.getNextBuffer());
-    defer hook_free.deinit();
-    const hits = try testing.allocator.dupe(u32, f.cli.nextHitGrid);
-    defer testing.allocator.free(hits);
-    try f.owner.sceneFrameCancel(f.id, done.frame_id);
+    return backed;
+}
+
+test "Scene record paints an empty recording like a hook-free frame and plays image phases into the backing buffer" {
+    const twins = [2]Fixture{ try Fixture.init(testing.allocator, 12, 4, .{ .output = transport }), try Fixture.init(testing.allocator, 12, 4, .{ .output = transport }) };
+    defer for (twins) |twin| twin.deinit();
+    _ = try paintScene(twins[0]);
+    const f = twins[1];
     // One paint hook moves the frame to the recorded path; recording nothing must not change it.
-    try f.owner.sceneSetHooks(backed, c.OT_SCENE_HOOK_RENDER_AFTER, 1, 2, 1);
+    try f.owner.sceneSetHooks(try paintScene(f), c.OT_SCENE_HOOK_RENDER_AFTER, 1, 2, 1);
+    const hook_free = try twins[0].step(null, options, c.OT_SCENE_FRAME_DONE, null);
     const empty: Recording = .{};
     const recorded = try submit(f, try f.step(null, options, c.OT_SCENE_FRAME_RECORD, null), &empty);
-    const actual = try Cells.copy(f.cli.getNextBuffer());
-    defer actual.deinit();
-    try testing.expect(actual.eql(hook_free));
-    try testing.expectEqualSlices(u32, hits, f.cli.nextHitGrid);
+    try twins[0].expectSameCells(f);
     try f.owner.sceneFrameCancel(f.id, recorded.frame_id);
     // Image phases draw in buffer coordinates into the cleared backing buffer before it is composed.
     var recording: Recording = .{};
@@ -504,8 +464,9 @@ test "Scene record paints an empty recording like a hook-free frame and plays im
     const frame = f.cli.getNextBuffer();
     try testing.expectEqual(@as(u32, 'h'), frame.get(2, 3).?.char);
     try testing.expectEqual(@as(u32, 'i'), frame.get(3, 3).?.char);
-    try testing.expectEqual(hook_free.char[0], frame.get(0, 0).?.char);
+    try testing.expectEqual(twins[0].cli.getNextBuffer().get(0, 0).?.char, frame.get(0, 0).?.char);
     try f.owner.sceneFrameCancel(f.id, played.frame_id);
+    try twins[0].owner.sceneFrameCancel(twins[0].id, hook_free.frame_id);
 }
 
 test "Scene record rejects malformed streams before presenting cells" {
