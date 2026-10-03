@@ -2696,8 +2696,17 @@ function decodeContextTextLines(lines: Uint32Array, widthColsMax: number): LineI
   return info
 }
 
-function widthMethodCode(widthMethod: WidthMethod): number {
-  return widthMethod === "wcwidth" ? 0 : widthMethod === "unicode-wide" ? 3 : 1
+const WIDTH_METHOD_IDS = new Map<string, number>([
+  ["wcwidth", nativeConstants.OT_WIDTH_METHOD_WCWIDTH],
+  ["unicode", nativeConstants.OT_WIDTH_METHOD_UNICODE],
+  ["no-zwj", nativeConstants.OT_WIDTH_METHOD_NO_ZWJ],
+  ["unicode-wide", nativeConstants.OT_WIDTH_METHOD_UNICODE_WIDE],
+])
+
+function widthMethodId(widthMethod: WidthMethod | "no-zwj", label: string): number {
+  const id = WIDTH_METHOD_IDS.get(widthMethod)
+  if (id === undefined) throw new TypeError(`Unknown Context ${label} width method`)
+  return id
 }
 
 function widthMethodFromCode(code: number): WidthMethod {
@@ -3454,12 +3463,9 @@ export class FFIRenderLib {
   ): ContextTextBufferHandle {
     const layout = nativeLayouts.ot_edit_buffer_options
     this.getYogaHost().assertMutable()
-    const widthMethod = options.widthMethod ?? "unicode"
-    if (!["wcwidth", "unicode", "no-zwj", "unicode-wide"].includes(widthMethod)) {
-      throw new TypeError("Unknown Context text width method")
-    }
+    const widthMethod = widthMethodId(options.widthMethod ?? "unicode", "text")
     const record = createContextRecord(layout)
-    record[layout.fields.width_method.offset / 4] = widthMethod === "no-zwj" ? 2 : widthMethodCode(widthMethod)
+    record[layout.fields.width_method.offset / 4] = widthMethod
     const output = new Uint32Array(handleWords)
     const pointer = this.nativeContextPointer(context, "ot_text_buffer_create")
     nativeResult("ot_text_buffer_create", this.opentui.symbols.ot_text_buffer_create(pointer, record, output))
@@ -3477,12 +3483,9 @@ export class FFIRenderLib {
     widthMethod: WidthMethod | "no-zwj",
   ): ContextUnicodeHandle {
     this.getYogaHost().assertMutable()
-    if (!["wcwidth", "unicode", "no-zwj", "unicode-wide"].includes(widthMethod)) {
-      throw new TypeError("Unknown Context Unicode width method")
-    }
+    const method = widthMethodId(widthMethod, "Unicode")
     const bytes = this.encoder.encode(text)
     const count = toSafeFFIU32Length(bytes.byteLength, "Unicode input bytes")
-    const method = widthMethod === "no-zwj" ? 2 : widthMethodCode(widthMethod)
     const output = new Uint32Array(handleWords)
     const pointer = this.nativeContextPointer(context, "ot_unicode_create")
     nativeResult(
@@ -4719,17 +4722,9 @@ export class FFIRenderLib {
   ): ContextEditBufferHandle {
     const layout = nativeLayouts.ot_edit_buffer_options
     this.getYogaHost().assertMutable()
-    const widthMethod = options.widthMethod ?? "unicode"
-    if (
-      widthMethod !== "wcwidth" &&
-      widthMethod !== "unicode" &&
-      widthMethod !== "no-zwj" &&
-      widthMethod !== "unicode-wide"
-    ) {
-      throw new TypeError("Unknown Context editor width method")
-    }
+    const widthMethod = widthMethodId(options.widthMethod ?? "unicode", "editor")
     const record = createContextRecord(layout)
-    record[layout.fields.width_method.offset / 4] = widthMethod === "no-zwj" ? 2 : widthMethodCode(widthMethod)
+    record[layout.fields.width_method.offset / 4] = widthMethod
     const output = new Uint32Array(handleWords)
     const pointer = this.nativeContextPointer(context, "ot_edit_buffer_create")
     nativeResult("ot_edit_buffer_create", this.opentui.symbols.ot_edit_buffer_create(pointer, record, output))
@@ -5727,19 +5722,11 @@ export class FFIRenderLib {
 
   public createContextBuffer(context: NativeContextHandle, options: NativeContextBufferOptions): ContextBufferHandle {
     const layout = nativeLayouts.ot_buffer_options
-    const widthMethod = options.widthMethod ?? "unicode"
-    if (
-      widthMethod !== "wcwidth" &&
-      widthMethod !== "unicode" &&
-      widthMethod !== "no-zwj" &&
-      widthMethod !== "unicode-wide"
-    ) {
-      throw new TypeError("Unknown Context buffer width method")
-    }
+    const widthMethod = widthMethodId(options.widthMethod ?? "unicode", "buffer")
     const record = createContextRecord(layout)
     record[layout.fields.width.offset / 4] = toSafeFFIU32Length(options.width, "Context buffer width")
     record[layout.fields.height.offset / 4] = toSafeFFIU32Length(options.height, "Context buffer height")
-    record[layout.fields.width_method.offset / 4] = widthMethod === "no-zwj" ? 2 : widthMethodCode(widthMethod)
+    record[layout.fields.width_method.offset / 4] = widthMethod
     record[layout.fields.flags.offset / 4] = toFFIBool(options.respectAlpha ?? false, "Context buffer respectAlpha")
     const output = new Uint32Array(handleWords)
     const pointer = this.nativeContextPointer(context, "ot_buffer_create")
