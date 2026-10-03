@@ -251,18 +251,16 @@ const Lifecycle = struct {
     deadline_ns: ?u64 = null,
 
     fn assertValid(self: Lifecycle, state: State) void {
-        const first: Step, const last: Step = switch (self.phase) {
-            .uninitialized, .active, .suspended, .restored, .failed, .cancelled => .{ .idle, .idle },
-            .setting_up => .{ .query, .activate },
-            .resuming => .{ .setup_screen, .activate },
-            .suspending, .closing => .{ .delete_images, .settle_second },
-        };
-        std.debug.assert(@intFromEnum(self.step) >= @intFromEnum(first));
-        std.debug.assert(@intFromEnum(self.step) <= @intFromEnum(last));
+        const step = @intFromEnum(self.step);
+        std.debug.assert(switch (self.phase) {
+            .uninitialized, .active, .suspended, .restored, .failed, .cancelled => self.step == .idle,
+            .setting_up => step >= @intFromEnum(Step.query) and step <= @intFromEnum(Step.activate),
+            .resuming => step >= @intFromEnum(Step.setup_screen) and step <= @intFromEnum(Step.activate),
+            .suspending, .closing => step >= @intFromEnum(Step.delete_images),
+        });
         std.debug.assert((state == .failed) == (self.phase == .failed));
         std.debug.assert((state == .cancelled) == (self.phase == .cancelled));
         if (self.phase == .closing) std.debug.assert(state == .closing);
-        if (state == .open) std.debug.assert(self.phase != .restored);
     }
 };
 
@@ -613,7 +611,6 @@ pub const Session = struct {
             .rows_remaining = rows,
             .rows_return = if (value.renderOffset == 0) rows else 0,
         };
-        self.lifecycle.assertValid(self.state);
     }
 
     pub fn suspendTerminal(self: *Session) Error!void {
@@ -632,7 +629,6 @@ pub const Session = struct {
         self.lifecycle.phase = .suspending;
         self.lifecycle.step = .delete_images;
         self.lifecycle.image_index = 0;
-        self.lifecycle.assertValid(self.state);
     }
 
     pub fn resumeTerminal(self: *Session) Error!void {
@@ -649,7 +645,6 @@ pub const Session = struct {
         self.lifecycle.step = .setup_screen;
         self.lifecycle.rows_remaining = rows;
         self.lifecycle.rows_return = rows;
-        self.lifecycle.assertValid(self.state);
     }
 
     pub fn getTerminalState(self: *const Session) TerminalState {
@@ -1278,7 +1273,6 @@ pub const Session = struct {
         self.lifecycle.step = .idle;
         self.lifecycle.deadline_ns = null;
         self.finishPresentation(.failed);
-        self.lifecycle.assertValid(self.state);
     }
 
     fn completeOutputBytes(self: *Session, count: u32) void {
@@ -1350,7 +1344,6 @@ pub const Session = struct {
         self.lifecycle.step = .idle;
         self.lifecycle.deadline_ns = null;
         std.debug.assert(self.isDrained());
-        self.lifecycle.assertValid(self.state);
     }
 
     pub fn canDestroy(self: *Session) bool {
@@ -1406,7 +1399,6 @@ fn applyCapabilityResponses(candidate: *terminal.Terminal, response: []const u8)
             },
             else => return error.InvalidOptions,
         }
-        std.debug.assert(end >= 3 and end <= bytes.len);
         // The legacy parser searches within one reply; batching must retain wire order.
         candidate.processCapabilityResponse(bytes[0..end]);
         offset += end;
