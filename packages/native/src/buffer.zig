@@ -1857,6 +1857,11 @@ pub const OptimizedBuffer = struct {
             runs.appendAssumeCapacity(.{ .x = glyph.x, .char = encoded, .count = glyph.count });
         }
         if (runs.items.len == 0) return;
+        // Runs go left to right without overlap, so each cell is written at most once.
+        for (runs.items[0 .. runs.items.len - 1], runs.items[1..]) |previous, run| {
+            const cells = if (gp.isGraphemeChar(previous.char)) gp.encodedCharWidth(previous.char) else previous.count;
+            assert(previous.x + cells <= run.x);
+        }
         try self.storage.ensureTrackerCapacity(
             @min(@as(u64, self.grapheme_tracker.getGraphemeCount()) + grapheme_count, @as(u64, self.buffer.char.len) + 1),
             self.link_tracker.getLinkCount(),
