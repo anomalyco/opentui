@@ -21,6 +21,7 @@ import {
 import { RGBA, parseColor, type ColorInput } from "./lib/RGBA.js"
 import { OptimizedBuffer } from "./buffer.js"
 import {
+  LogLevel,
   NativeError,
   NativeSessionRenderStatus,
   NativeStatus,
@@ -5025,6 +5026,7 @@ export class CliRenderer extends EventEmitter implements RenderContext {
       try {
         this.nativeScene.cancelFrame()
         this.rendering = false
+        this.logNativeDiagnostics()
         if (!this.canRender && !this._isDestroyed) this.destroy()
         if (this._destroyPending) {
           this.finalizeDestroy()
@@ -5040,6 +5042,19 @@ export class CliRenderer extends EventEmitter implements RenderContext {
         this.resolveIdleIfNeeded()
       } finally {
         completion?.resolve()
+      }
+    }
+  }
+
+  // Native code queues warnings in its Context. Drain them once per frame, outside frame and buffer lease scopes.
+  private logNativeDiagnostics(): void {
+    if (!this.canRender) return
+    try {
+      this.lib.logContextDiagnostics(this.nativeSession.context, LogLevel.Warn)
+    } catch (error) {
+      // A frame that ends inside a native call drains on the next frame.
+      if (!(error instanceof NativeError) || error.status !== NativeStatus.ContextBusy) {
+        this.handleError(error instanceof Error ? error : new Error(String(error)))
       }
     }
   }
