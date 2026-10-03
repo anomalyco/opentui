@@ -546,6 +546,7 @@ const teardownCases = [
   { name: "the server closes the session during renderer setup", during: "setup", end: "destroy", todo: "U14" },
   { name: "the client disconnects during renderer setup", during: "setup", end: "disconnect" },
   { name: "the channel closes during renderer setup", during: "setup", end: "close" },
+  { name: "the channel fails during renderer setup", during: "setup", end: "error" },
   { name: "the client disconnects while a frame is pending", during: "frame", end: "disconnect" },
   { name: "the channel closes while a frame is pending", during: "frame", end: "close" },
   { name: "the channel fails while a frame is pending", during: "frame", end: "error" },

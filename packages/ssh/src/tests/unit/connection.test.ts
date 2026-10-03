@@ -137,7 +137,9 @@ test("native closeAll force-closes a client that never drains", async () => {
   await handler.closeAll()
   expect(calls.destroy).toBe(1)
   expect(channel.exits).toEqual([1])
-  expect(errors.some((error) => error instanceof Error && /without restoration/.test(error.message))).toBe(true)
+  expect(errors.map((error) => (error as Error).message)).toEqual([
+    "NativeSession graceful close timed out; output cancelled without restoration",
+  ])
 })
 
 test("closeAll rejects late shells while waiting for a logically closed bridge's write acknowledgement", async () => {

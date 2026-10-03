@@ -140,12 +140,6 @@ export function createSessionBridge(channel: ServerChannel, options: SessionBrid
 
   let closed = false
   let channelClosed = false // set when the client hung up — don't poke a dead channel
-  let reportedNativeError: unknown
-  const reportTransportError = (error: unknown) => {
-    if (error === reportedNativeError) return
-    reportedNativeError = error
-    safe.report(error)
-  }
   let resolveTransportClosed!: () => void
   const transportClosed = new Promise<void>((resolve) => {
     resolveTransportClosed = resolve
@@ -296,26 +290,16 @@ export function createSessionBridge(channel: ServerChannel, options: SessionBrid
   }
   const onChannelError = (error: Error) => {
     channelClosed = true
-    reportTransportError(error)
+    safe.report(error)
     void destroy()
   }
   channel.on("close", onChannelClose)
   channel.on("error", onChannelError)
 
+  // A Session failure is reported here once; a closed channel already reported its own error.
   void nativeSession.closed.catch((error) => {
     void destroy()
-    if (creatingRenderer) {
-      // Creation reports real failures. An interrupted setup or late success must
-      // still report a failed close, unless the channel already reported it.
-      void creatingRenderer.then(
-        () => {
-          if (!channelClosed) reportTransportError(error)
-        },
-        (creationError) => {
-          if (!channelClosed && nativeSession.isCloseInterruption(creationError)) reportTransportError(error)
-        },
-      )
-    } else if (!channelClosed) reportTransportError(error)
+    if (!channelClosed) safe.report(error)
   })
 
   // Use current dimensions so resizes during middleware are honored.
@@ -368,10 +352,8 @@ export function createSessionBridge(channel: ServerChannel, options: SessionBrid
       attachedRenderer = await attachRenderer()
     } catch (err) {
       destroy()
-      if (nativeSession.isCloseInterruption(err)) return ended
-      if (err === nativeSession.error && (channelClosed || err === reportedNativeError)) return ended
-      // runSession reports the factory rejection; a later channel error must not repeat it.
-      reportedNativeError = err
+      // `closed` reports Session failures; runSession reports any other creation failure.
+      if (nativeSession.isCloseInterruption(err) || err === nativeSession.error) return ended
       throw err
     }
     if (!attachedRenderer) return ended
