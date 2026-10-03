@@ -72,6 +72,11 @@ test("SliderRenderable > Value-based API", async () => {
   slider.max = 80
   slider.value = 90
   expect(slider.value).toBe(80) // Should clamp to new max
+
+  slider.value = Infinity
+  expect(slider.value).toBe(80)
+  slider.value = -Infinity
+  expect(slider.value).toBe(20)
 })
 
 test("SliderRenderable > Automatic thumb size calculation", async () => {
@@ -112,6 +117,9 @@ test("SliderRenderable > Custom step size", async () => {
   expect(slider.viewPortSize).toBe(20)
 
   slider.viewPortSize = 150 // Should be clamped to max range (100)
+  expect(slider.viewPortSize).toBe(100)
+  slider.viewPortSize = 0
+  slider.viewPortSize = Infinity
   expect(slider.viewPortSize).toBe(100)
 
   slider.viewPortSize = 0 // Should be clamped to minimum (0.01)
@@ -404,4 +412,21 @@ test("SliderRenderable > Mouse interaction - click outside slider bounds", async
   currentMockMouse.click(30, 5)
 
   expect(slider.value).toBe(50)
+})
+
+test("SliderRenderable > Mouse interaction - precision dragging with small viewport", async () => {
+  const { slider } = await createSliderRenderable(currentRenderer, {
+    orientation: "horizontal",
+    max: 1000,
+    width: 50,
+    height: 1,
+    viewPortSize: 10,
+  })
+  expect(await paintedThumbSize(slider)).toBe(1)
+
+  await currentMockMouse.pressDown(5, 0)
+  expect(slider.value).toBeCloseTo(100, 10)
+  // A one-half-cell thumb travels 99 of the 100 half cells.
+  await currentMockMouse.moveTo(7, 0)
+  expect(slider.value).toBeCloseTo((14 / 99) * 1000, 10)
 })

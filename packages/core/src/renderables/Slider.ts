@@ -76,9 +76,6 @@ export class SliderRenderable extends Renderable {
 
   set value(newValue: number) {
     newValue ??= this._min
-    if (!Number.isFinite(newValue)) {
-      throw new RangeError("Scene slider values must be finite numbers")
-    }
     const clamped = Math.max(this._min, Math.min(this._max, newValue))
     if (clamped !== this._value) {
       this.setNativeSceneSlider({ value: clamped })
@@ -130,9 +127,6 @@ export class SliderRenderable extends Renderable {
 
   set viewPortSize(size: number) {
     size ??= this.defaultViewPortSize()
-    if (!Number.isFinite(size)) {
-      throw new RangeError("Scene slider values must be finite numbers")
-    }
     const clampedSize = Math.max(0.01, Math.min(size, this._max - this._min))
     if (clampedSize !== this._viewPortSize) {
       this.setNativeSceneSlider({ viewPortSize: clampedSize })
