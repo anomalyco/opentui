@@ -79,23 +79,6 @@ test("SliderRenderable > Value-based API", async () => {
   expect(slider.value).toBe(20)
 })
 
-test("SliderRenderable > Automatic thumb size calculation", async () => {
-  const { slider } = await createSliderRenderable(currentRenderer, {
-    orientation: "horizontal",
-    min: 0,
-    max: 100,
-    value: 50,
-    width: 20,
-    height: 1,
-  })
-
-  expect(slider.width).toBe(20)
-  expect(slider.height).toBe(1)
-  expect(slider.min).toBe(0)
-  expect(slider.max).toBe(100)
-  expect(slider.value).toBe(50)
-})
-
 test("SliderRenderable > Custom step size", async () => {
   const { slider } = await createSliderRenderable(currentRenderer, {
     orientation: "horizontal",
@@ -126,22 +109,6 @@ test("SliderRenderable > Custom step size", async () => {
   expect(slider.viewPortSize).toBe(0.01)
 })
 
-test("SliderRenderable > Minimum thumb size", async () => {
-  const { slider } = await createSliderRenderable(currentRenderer, {
-    orientation: "vertical",
-    min: 0,
-    max: 10000,
-    value: 0,
-    width: 2,
-    height: 100,
-    viewPortSize: 1,
-  })
-
-  expect(slider.viewPortSize).toBe(1)
-  expect(slider.min).toBe(0)
-  expect(slider.max).toBe(10000)
-})
-
 test("SliderRenderable > onChange callback", async () => {
   let changedValue: number | undefined
 
@@ -159,144 +126,32 @@ test("SliderRenderable > onChange callback", async () => {
   expect(changedValue).toBe(42)
 })
 
-test("SliderRenderable > Vertical thumb size calculation", async () => {
-  const { slider } = await createSliderRenderable(currentRenderer, {
-    orientation: "vertical",
-    min: 0,
-    max: 100,
-    value: 0,
-    width: 3,
-    height: 50,
-    viewPortSize: 10,
-  })
-
-  const thumbSize = await paintedThumbSize(slider)
-  expect(thumbSize).toBe(9)
-
-  slider.viewPortSize = 1
-  expect(await paintedThumbSize(slider)).toBe(1)
-
-  slider.viewPortSize = 150
-  expect(await paintedThumbSize(slider)).toBe(50)
-})
-
-test("SliderRenderable > Horizontal thumb size calculation", async () => {
-  const { slider } = await createSliderRenderable(currentRenderer, {
-    orientation: "horizontal",
-    min: 0,
-    max: 200,
-    value: 0,
-    width: 80,
-    height: 2,
-    viewPortSize: 20,
-  })
-
-  const thumbSize = await paintedThumbSize(slider)
-  expect(thumbSize).toBe(14)
-
-  slider.viewPortSize = 40
-  expect(await paintedThumbSize(slider)).toBe(26)
-
-  slider.viewPortSize = 0.1
-  expect(await paintedThumbSize(slider)).toBe(1)
-})
-
-test("SliderRenderable > Edge cases in thumb size calculation", async () => {
-  const { slider } = await createSliderRenderable(currentRenderer, {
-    orientation: "vertical",
-    min: 50,
-    max: 50,
-    value: 50,
-    width: 2,
-    height: 30,
-    viewPortSize: 10,
-  })
-
-  expect(await paintedThumbSize(slider)).toBe(60)
-
-  slider.min = 0
-  slider.max = 100000
-  slider.viewPortSize = 1
-
-  expect(await paintedThumbSize(slider)).toBe(1)
-
-  slider.max = 30
-  slider.viewPortSize = 30
-
-  expect(await paintedThumbSize(slider)).toBe(30)
-})
-
-test("SliderRenderable > Thumb size minimum clamping", async () => {
-  const { slider } = await createSliderRenderable(currentRenderer, {
-    orientation: "horizontal",
-    min: 0,
-    max: 1000,
-    value: 0,
-    width: 10,
-    height: 1,
-    viewPortSize: 1,
-  })
-
-  const thumbSize = await paintedThumbSize(slider)
-  expect(thumbSize).toBe(1)
-
-  const { slider: extremeSlider } = await createSliderRenderable(currentRenderer, {
-    orientation: "vertical",
-    min: 0,
-    max: 10000,
-    value: 0,
-    width: 1,
-    height: 2,
-    viewPortSize: 0.01,
-  })
-
-  expect(await paintedThumbSize(extremeSlider)).toBe(1)
-
-  expect(thumbSize).toBeGreaterThanOrEqual(1)
-  expect(await paintedThumbSize(extremeSlider)).toBeGreaterThanOrEqual(1)
-})
-
-test("SliderRenderable > Thumb size can be less than 2", async () => {
-  const { slider } = await createSliderRenderable(currentRenderer, {
-    orientation: "horizontal",
-    min: 0,
-    max: 200,
-    value: 0,
-    width: 20,
-    height: 1,
-    viewPortSize: 2,
-  })
-
-  const thumbSize = await paintedThumbSize(slider)
-  expect(thumbSize).toBe(1)
-
-  const { slider: largerRatioSlider } = await createSliderRenderable(currentRenderer, {
-    orientation: "vertical",
-    min: 0,
-    max: 100,
-    value: 0,
-    width: 1,
-    height: 10,
-    viewPortSize: 1,
-  })
-
-  expect(await paintedThumbSize(largerRatioSlider)).toBe(1)
-
-  const { slider: exactSlider } = await createSliderRenderable(currentRenderer, {
-    orientation: "horizontal",
-    min: 0,
-    max: 40,
-    value: 0,
-    width: 20,
-    height: 1,
-    viewPortSize: 1,
-  })
-
-  expect(await paintedThumbSize(exactSlider)).toBe(1)
-})
+// Setters apply min, max, then viewPortSize (clamped to the range) to a slider at value 0.
+test.each([
+  ["vertical", 3, 50, 0, 100, 10, 9],
+  ["vertical", 3, 50, 0, 100, 1, 1],
+  ["vertical", 3, 50, 0, 100, 150, 50],
+  ["horizontal", 80, 2, 0, 200, 20, 14],
+  ["horizontal", 80, 2, 0, 200, 40, 26],
+  ["horizontal", 80, 2, 0, 200, 0.1, 1],
+  ["vertical", 2, 30, 50, 50, 10, 60],
+  ["vertical", 2, 30, 0, 100000, 1, 1],
+  ["vertical", 2, 30, 0, 30, 30, 30],
+  ["horizontal", 10, 1, 0, 1000, 1, 1],
+  ["vertical", 1, 2, 0, 10000, 0.01, 1],
+  ["horizontal", 20, 1, 0, 200, 2, 1],
+  ["vertical", 1, 10, 0, 100, 1, 1],
+  ["horizontal", 20, 1, 0, 40, 1, 1],
+] as const)(
+  "SliderRenderable > %s %ix%i, range %d..%d, viewport %d paints %i half cells",
+  async (orientation, width, height, min, max, viewPortSize, halfCells) => {
+    const { slider } = await createSliderRenderable(currentRenderer, { orientation, width, height })
+    Object.assign(slider, { min, max, viewPortSize })
+    expect(await paintedThumbSize(slider)).toBe(halfCells)
+  },
+)
 
 test("SliderRenderable > Mouse interaction - horizontal click on thumb", async () => {
-  process.stdout.write("SliderRenderable > Mouse interaction - horizontal click on thumb 1\n")
   const { slider } = await createSliderRenderable(currentRenderer, {
     orientation: "horizontal",
     min: 0,
@@ -305,9 +160,7 @@ test("SliderRenderable > Mouse interaction - horizontal click on thumb", async (
     width: 20,
     height: 1,
   })
-  process.stdout.write("SliderRenderable > Mouse interaction - horizontal click on thumb 2\n")
   await currentMockMouse.click(10, 0)
-  process.stdout.write("SliderRenderable > Mouse interaction - horizontal click on thumb 3\n")
   expect(slider.value).toBeCloseTo(51, 0)
 })
 
