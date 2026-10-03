@@ -962,28 +962,17 @@ const SCENE_TEXT_ALIGNS = ["left", "center", "right"] as const
 const SCENE_NODE_KINDS = ["root", "box", "text", "slider", "arrow", "editor", "custom", "text_view", "image"] as const
 const IMAGE_PROTOCOL_TO_ID = { auto: 0, kitty: 1, sixel: 2, blocks: 3 } as const
 const IMAGE_FITS = ["fit", "cover", "fill"] as const
-const BUFFER_DRAW_OPERATIONS = [
-  "clear",
-  "fill",
-  "text",
-  "cell",
-  "cellBlend",
-  "char",
-  "box",
-  "compose",
-  "respectAlpha",
-] as const
-const BUFFER_DRAW_LAYOUTS = [
-  nativeLayouts.ot_buffer_draw_clear,
-  nativeLayouts.ot_buffer_draw_fill,
-  nativeLayouts.ot_buffer_draw_text_record,
-  nativeLayouts.ot_buffer_draw_cell,
-  nativeLayouts.ot_buffer_draw_cell,
-  nativeLayouts.ot_buffer_draw_cell,
-  nativeLayouts.ot_buffer_draw_box,
-  nativeLayouts.ot_buffer_draw_compose,
-  nativeLayouts.ot_buffer_draw_alpha,
-] as const
+const BUFFER_DRAW_OPERATIONS = new Map<string, { id: number; size: number }>([
+  ["clear", { id: nativeConstants.OT_BUFFER_DRAW_CLEAR, size: nativeLayouts.ot_buffer_draw_clear.size }],
+  ["fill", { id: nativeConstants.OT_BUFFER_DRAW_FILL, size: nativeLayouts.ot_buffer_draw_fill.size }],
+  ["text", { id: nativeConstants.OT_BUFFER_DRAW_TEXT, size: nativeLayouts.ot_buffer_draw_text_record.size }],
+  ["cell", { id: nativeConstants.OT_BUFFER_DRAW_CELL, size: nativeLayouts.ot_buffer_draw_cell.size }],
+  ["cellBlend", { id: nativeConstants.OT_BUFFER_DRAW_CELL_BLEND, size: nativeLayouts.ot_buffer_draw_cell.size }],
+  ["char", { id: nativeConstants.OT_BUFFER_DRAW_CHAR, size: nativeLayouts.ot_buffer_draw_cell.size }],
+  ["box", { id: nativeConstants.OT_BUFFER_DRAW_BOX, size: nativeLayouts.ot_buffer_draw_box.size }],
+  ["compose", { id: nativeConstants.OT_BUFFER_DRAW_COMPOSE, size: nativeLayouts.ot_buffer_draw_compose.size }],
+  ["respectAlpha", { id: nativeConstants.OT_BUFFER_DRAW_RESPECT_ALPHA, size: nativeLayouts.ot_buffer_draw_alpha.size }],
+])
 const BUFFER_STACK_OPERATIONS = [
   "getOpacity",
   "pushScissor",
@@ -1220,9 +1209,11 @@ function createSceneFrameRecord() {
 
 function createBufferDrawRecord() {
   const buffer = new ArrayBuffer(nativeLayouts.ot_buffer_draw_box.size)
+  const records: Uint32Array[] = []
+  for (const { id, size } of BUFFER_DRAW_OPERATIONS.values()) records[id] = new Uint32Array(buffer, 0, size / 4)
   return {
     words: new Uint32Array(buffer),
-    records: BUFFER_DRAW_LAYOUTS.map((layout) => new Uint32Array(buffer, 0, layout.size / 4)),
+    records,
     signed: new Int32Array(buffer),
     colors: new Uint16Array(buffer),
     source: createContextHandleRecord(),
@@ -1362,9 +1353,9 @@ function encodeBufferDrawRecord(
   sourceRecord: ReturnType<typeof createContextHandleRecord> = createContextHandleRecord(),
 ): EncodedBufferDraw {
   const { operation } = options
-  const operationId = BUFFER_DRAW_OPERATIONS.indexOf(operation)
-  if (operationId < 0) throw new TypeError("Invalid checked buffer drawing operation")
-  const size = BUFFER_DRAW_LAYOUTS[operationId].size
+  const encoding = BUFFER_DRAW_OPERATIONS.get(operation)
+  if (encoding === undefined) throw new TypeError("Invalid checked buffer drawing operation")
+  const { id: operationId, size } = encoding
   const word = base / 4
   const half = base / 2
   const header = nativeLayouts.ot_buffer_draw_header.fields
