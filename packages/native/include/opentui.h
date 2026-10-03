@@ -2708,6 +2708,11 @@ ot_status ot_session_close(ot_context *context, const ot_handle *session);
  * Never acknowledges or replays pending copies, and rejects failed transports.
  * Normal asynchronous shutdown must use close and pump instead. */
 ot_status ot_session_pump_exit(ot_context *context, const ot_handle *session, uint32_t *out_status);
+/* Process-wide and best effort: discard input that the terminal queued on process stdin
+ * and the host has not read (tcflush TCIFLUSH, or FlushConsoleInputBuffer on Windows).
+ * Call it after restoration disables mouse reporting, so the shell does not receive
+ * stale reports. A no-op when stdin is not a terminal. Always returns OT_OK. */
+ot_status ot_terminal_flush_input(void);
 ot_status ot_session_cancel(ot_context *context, const ot_handle *session);
 ot_status ot_session_get_state(ot_context *context, const ot_handle *session, uint32_t *out_state);
 

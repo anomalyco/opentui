@@ -4,7 +4,8 @@ import { Renderable, type RenderableOptions } from "../Renderable.js"
 import { link, t } from "../lib/styled-text.js"
 import { TextRenderable } from "../renderables/Text.js"
 import type { MouseEvent } from "../renderer.js"
-import { TestWriteStream } from "../testing/test-streams.js"
+import { settleUntil } from "../testing/harness.js"
+import { RecordingWriteStream } from "../testing/test-streams.js"
 import { TextAttributes, type RenderContext } from "../types.js"
 import type { Selection } from "../lib/selection.js"
 import { getLinkId } from "../utils.js"
@@ -167,32 +168,25 @@ describe("renderer getLinkAt", () => {
       expect(renderer.getLinkIdAt(x, y)).toBe(linkId)
       expect(renderer.getLinkAt(x, y)).toBe(url)
     }
+    // Coordinates outside the i32 cell range, fractions, and NaN never reach native lookup.
+    for (const [x, y] of [
+      [text.x + 0.5, text.y],
+      [-1, text.y],
+      [text.x, -1],
+      [2 ** 31, text.y],
+      [NaN, text.y],
+    ]) {
+      expect(renderer.getLinkIdAt(x, y)).toBe(0)
+      expect(renderer.getLinkAt(x, y)).toBeNull()
+    }
+    renderer.destroy()
+    expect(renderer.getLinkIdAt(text.x, text.y)).toBe(0)
   })
 })
 
-class HeldWriteStream extends TestWriteStream {
-  held = false
-  releaseWrite: (() => void) | undefined
-
-  override _write(chunk: Uint8Array, encoding: BufferEncoding, callback: () => void): void {
-    const finish = () => {
-      super._write(chunk, encoding, callback)
-    }
-    if (this.held) this.releaseWrite = finish
-    else finish()
-  }
-
-  releaseAll(): void {
-    this.held = false
-    const release = this.releaseWrite
-    this.releaseWrite = undefined
-    release?.()
-  }
-}
-
 describe("renderer getLinkAt during presentation", () => {
   test("resolves a link click while frame output is still pending", async () => {
-    const stdout = new HeldWriteStream(12, 5)
+    const stdout = new RecordingWriteStream(12, 5)
     const { renderer, mockMouse, renderOnce } = await createTestRenderer({
       width: 12,
       height: 5,
@@ -219,13 +213,10 @@ describe("renderer getLinkAt during presentation", () => {
       renderer.root.add(text)
       await renderOnce()
 
-      stdout.held = true
+      stdout.hold()
       renderer.setBackgroundColor("#111111")
       pendingFrame = renderOnce()
-      for (let turn = 0; turn < 32 && stdout.releaseWrite === undefined; turn++) {
-        await new Promise<void>((resolve) => setImmediate(resolve))
-      }
-      expect(stdout.releaseWrite).toBeDefined()
+      await settleUntil(() => stdout.pendingWrite)
 
       let linkX = -1
       let linkY = -1
@@ -244,7 +235,7 @@ describe("renderer getLinkAt during presentation", () => {
       await mockMouse.pressDown(linkX, linkY)
       expect(clicked.url).toBe(url)
     } finally {
-      stdout.releaseAll()
+      stdout.release()
       await pendingFrame?.catch(() => {})
       renderer.destroy()
       await renderer.closed.catch(() => {})

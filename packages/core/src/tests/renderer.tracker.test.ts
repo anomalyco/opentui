@@ -1,5 +1,7 @@
-import { test, expect, beforeEach, afterEach } from "bun:test"
-import { createCliRenderer, type CliRenderer } from "../renderer.js"
+import { test, expect, beforeEach, afterEach, spyOn } from "bun:test"
+import { NativeSession } from "../NativeSession.js"
+import { CliRenderer, createCliRenderer, type CliRendererConfig } from "../renderer.js"
+import { processListenerCounts } from "../testing/harness.js"
 import { createTestStdin, createTestStdout } from "../testing/test-streams.js"
 
 let originalStdinPaused: boolean
@@ -237,3 +239,63 @@ test("destroying final custom renderer does not pause process stdin again", asyn
 
   expect(pauseCalled).toBe(false)
 })
+
+// The terminal can queue mouse reports until restoration disables them. They must not reach the next program.
+const inputFlushCases = [
+  { stdin: "process", suspended: false, flushes: 1 },
+  { stdin: "process", suspended: true, flushes: 0 },
+  { stdin: "custom", suspended: false, flushes: 0 },
+] as const
+
+for (const { stdin, suspended, flushes } of inputFlushCases) {
+  test(`closing a ${suspended ? "suspended " : ""}renderer on ${stdin} stdin flushes terminal input ${flushes} times`, async () => {
+    const renderer = await createCliRenderer({
+      stdin: stdin === "process" ? process.stdin : createTestStdin(),
+      stdout: createTestStdout(),
+      bufferedOutput: "memory",
+    })
+    const flush = spyOn(renderer.nativeScene.driver.renderLib, "terminalFlushInput").mockImplementation(() => {})
+    try {
+      if (suspended) await renderer.suspend()
+      renderer.destroy()
+      expect(flush).toHaveBeenCalledTimes(0)
+      await renderer.closed
+      expect(flush).toHaveBeenCalledTimes(flushes)
+    } finally {
+      flush.mockRestore()
+    }
+  })
+}
+
+// Invalid configuration fails before the renderer takes streams, listeners, or a supplied Session.
+const invalidConfigs: Array<[name: string, config: CliRendererConfig, error: string]> = [
+  ["a zero work budget", { nativeSceneWorkBudget: 0 }, "nativeSceneWorkBudget must be a positive u32"],
+  ["a fractional work budget", { nativeSceneWorkBudget: 1.5 }, "nativeSceneWorkBudget must be a positive u32"],
+  ["a work budget above u32", { nativeSceneWorkBudget: 2 ** 32 }, "nativeSceneWorkBudget must be a positive u32"],
+  ["an unknown Kitty transport", { kittyImageTransport: "ftp" as never }, "Invalid kittyImageTransport"],
+  ["a non-finite footer", { screenMode: "split-footer", footerHeight: NaN }, "footerHeight must be a finite number"],
+  ["an empty footer", { screenMode: "split-footer", footerHeight: 0 }, "footerHeight must be greater than 0"],
+  ["captured stdout outside split footer", { externalOutputMode: "capture-stdout" }, "requires screenMode"],
+  ["a Session with memory output", { session: "own", bufferedOutput: "memory" } as never, "memory buffered output"],
+  ["a Session on another stdout", { session: "other" } as never, "must use the renderer stdout"],
+]
+
+for (const [name, config, error] of invalidConfigs) {
+  test(`construction with ${name} fails without taking resources`, async () => {
+    const listeners = processListenerCounts()
+    const stdin = createTestStdin()
+    const stdout = createTestStdout()
+    const { session, ...rest } = config as CliRendererConfig & { session?: "own" | "other" }
+    const nativeSession = session && new NativeSession(session === "own" ? stdout : createTestStdout())
+    try {
+      const output = session ? {} : { bufferedOutput: "memory" as const }
+      expect(() => new CliRenderer(stdin, stdout, 80, 24, { ...output, ...rest, nativeSession })).toThrow(error)
+      expect(processListenerCounts()).toEqual(listeners)
+      expect(nativeSession?.disposed ?? false).toBe(false)
+      const renderer = await createCliRenderer({ stdin, stdout, bufferedOutput: "memory" })
+      renderers.push(renderer)
+    } finally {
+      nativeSession?.dispose()
+    }
+  })
+}

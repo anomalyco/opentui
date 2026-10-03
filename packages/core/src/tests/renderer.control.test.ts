@@ -1,10 +1,10 @@
 import { test, expect, beforeEach, afterEach } from "bun:test"
 import { createTestRenderer, type TestRenderer, type MockInput, type MockMouse } from "../testing/test-renderer.js"
 import { ManualClock } from "../testing/manual-clock.js"
-import { RendererControlState } from "../renderer.js"
+import { CliRenderEvents, RendererControlState } from "../renderer.js"
 import { Renderable } from "../Renderable.js"
 import { TextRenderable } from "../renderables/Text.js"
-import { createTestStdout } from "../testing/test-streams.js"
+import { RecordingWriteStream } from "../testing/test-streams.js"
 
 class TestRenderable extends Renderable {
   constructor(renderer: TestRenderer, options: any) {
@@ -16,9 +16,10 @@ let renderer: TestRenderer
 let mockInput: MockInput
 let mockMouse: MockMouse
 let renderOnce: () => Promise<void>
+let captureCharFrame: () => string
 
 beforeEach(async () => {
-  ;({ renderer, mockInput, mockMouse, renderOnce } = await createTestRenderer({}))
+  ;({ renderer, mockInput, mockMouse, renderOnce, captureCharFrame } = await createTestRenderer({}))
   await renderer.setupTerminal()
 })
 
@@ -27,149 +28,105 @@ afterEach(async () => {
   await renderer.closed
 })
 
-async function expectStartedResumeForcesNextRender(screenMode: "main-screen" | "alternate-screen"): Promise<void> {
-  renderer.destroy()
-  await renderer.closed
-  let output = ""
-  const stdout = createTestStdout()
-  stdout._write = (chunk, _encoding, callback) => {
-    output += chunk.toString()
-    callback()
-  }
-  ;({ renderer, mockInput, mockMouse, renderOnce } = await createTestRenderer({
-    screenMode,
-    stdout,
-    bufferedOutput: "stdout",
-  }))
-  await renderer.setupTerminal()
-  renderer.root.add(new TextRenderable(renderer, { content: "resume repaint" }))
-  await renderOnce()
+type ControlStep = "start" | "pause" | "stop" | "auto" | "live" | "drop" | "raf" | "cancelRaf" | "suspend" | "resume"
 
-  renderer.start()
-  await renderer.suspend()
-  output = ""
+const IDLE = RendererControlState.IDLE
+const AUTO = RendererControlState.AUTO_STARTED
+const STARTED = RendererControlState.EXPLICIT_STARTED
+const PAUSED = RendererControlState.EXPLICIT_PAUSED
+const STOPPED = RendererControlState.EXPLICIT_STOPPED
+const SUSPENDED = RendererControlState.EXPLICIT_SUSPENDED
 
-  await renderer.resume()
-  await renderOnce()
-  renderer.pause()
-  await renderer.idle()
+// Each row runs its steps from a set-up IDLE renderer and checks the final control state.
+const controlCases: Array<[steps: ControlStep[], state: RendererControlState, running: boolean, live?: number]> = [
+  [[], IDLE, false],
+  [["start"], STARTED, true],
+  [["start", "pause"], PAUSED, false],
+  [["start", "stop"], STOPPED, false],
+  [["start", "auto"], AUTO, true],
+  [["auto"], IDLE, false],
+  [["live"], AUTO, true, 1],
+  [["live", "drop"], IDLE, false],
+  [["start", "live", "drop"], STARTED, true],
+  [["start", "suspend"], SUSPENDED, false],
+  [["suspend", "resume"], IDLE, false],
+  [["start", "suspend", "resume"], STARTED, true],
+  [["start", "pause", "suspend", "resume"], PAUSED, false],
+  [["live", "suspend", "resume"], AUTO, true, 1],
+  [["start", "pause", "start"], STARTED, true],
+  [["start", "suspend", "resume", "auto"], AUTO, true],
+  [["start", "pause", "start", "suspend", "resume", "auto", "stop"], STOPPED, false],
+  [["start", "suspend", "resume", "suspend", "resume", "pause", "suspend", "resume"], PAUSED, false],
+  // Live owners added or removed while suspended decide whether resume restarts automatic rendering.
+  [["raf", "suspend", "cancelRaf", "resume"], IDLE, false],
+  [["start", "raf", "suspend", "cancelRaf", "resume"], STARTED, true],
+  [["start", "auto", "suspend", "resume"], AUTO, true],
+  [["raf", "suspend", "cancelRaf", "live", "resume"], AUTO, true, 1],
+  [["suspend", "live", "resume"], AUTO, true, 1],
+  [["suspend", "live", "drop", "resume"], IDLE, false],
+]
 
-  expect(output).toContain("resume repaint")
-  output = ""
-  await renderOnce()
-  expect(output).not.toContain("resume repaint")
+for (const [steps, state, running, live = 0] of controlCases) {
+  test(`control steps [${steps.join(", ")}] end ${state}`, async () => {
+    let frame = -1
+    for (const step of steps) {
+      if (step === "raf") frame = renderer.requestAnimationFrame(() => {})
+      else if (step === "cancelRaf") renderer.cancelAnimationFrame(frame)
+      else if (step === "live") renderer.requestLive()
+      else if (step === "drop") renderer.dropLive()
+      else await renderer[step]()
+    }
+    const suspended = state === SUSPENDED
+    expect({
+      state: renderer.controlState,
+      running: renderer.isRunning,
+      live: renderer.liveRequestCount,
+      mouse: renderer.useMouse,
+    }).toEqual({ state, running, live, mouse: !suspended })
+  })
 }
 
-test("initial renderer state is IDLE", () => {
-  expect(renderer.controlState).toBe(RendererControlState.IDLE)
-  expect(renderer.isRunning).toBe(false)
-})
-
-test("start() transitions to EXPLICIT_STARTED and starts rendering", () => {
-  renderer.start()
-  expect(renderer.controlState).toBe(RendererControlState.EXPLICIT_STARTED)
-  expect(renderer.isRunning).toBe(true)
-})
-
-test("pause() transitions to EXPLICIT_PAUSED and stops rendering", () => {
-  renderer.start()
-  expect(renderer.isRunning).toBe(true)
-
-  renderer.pause()
-  expect(renderer.controlState).toBe(RendererControlState.EXPLICIT_PAUSED)
-  expect(renderer.isRunning).toBe(false)
-})
-
-test("suspend() transitions to EXPLICIT_SUSPENDED and stops rendering", async () => {
-  renderer.start()
-  expect(renderer.isRunning).toBe(true)
-
-  await renderer.suspend()
-  expect(renderer.controlState).toBe(RendererControlState.EXPLICIT_SUSPENDED)
-  expect(renderer.isRunning).toBe(false)
-})
-
-test("suspend() disables mouse and keyboard input", async () => {
-  renderer.start()
-  expect(renderer.useMouse).toBe(true)
-
-  await renderer.suspend()
-  expect(renderer.useMouse).toBe(false)
-  expect(renderer.controlState).toBe(RendererControlState.EXPLICIT_SUSPENDED)
-})
-
-test("resume() restores previous EXPLICIT_STARTED state and restarts rendering", async () => {
-  renderer.start()
-  expect(renderer.controlState).toBe(RendererControlState.EXPLICIT_STARTED)
-  expect(renderer.isRunning).toBe(true)
-
-  await renderer.suspend()
-  expect(renderer.controlState).toBe(RendererControlState.EXPLICIT_SUSPENDED)
-  expect(renderer.isRunning).toBe(false)
-
-  await renderer.resume()
-  expect(renderer.controlState).toBe(RendererControlState.EXPLICIT_STARTED)
-  expect(renderer.isRunning).toBe(true)
-})
-
-test("resume() restores previous IDLE state without starting rendering", async () => {
-  expect(renderer.controlState).toBe(RendererControlState.IDLE)
-  expect(renderer.isRunning).toBe(false)
-
-  await renderer.suspend()
-  expect(renderer.controlState).toBe(RendererControlState.EXPLICIT_SUSPENDED)
-  expect(renderer.isRunning).toBe(false)
-
-  await renderer.resume()
-  expect(renderer.controlState).toBe(RendererControlState.IDLE)
-  expect(renderer.isRunning).toBe(false)
-})
-
-test("resume() restores previous EXPLICIT_PAUSED state without starting rendering", async () => {
-  renderer.start()
-  renderer.pause()
-  expect(renderer.controlState).toBe(RendererControlState.EXPLICIT_PAUSED)
-  expect(renderer.isRunning).toBe(false)
-
-  await renderer.suspend()
-  expect(renderer.controlState).toBe(RendererControlState.EXPLICIT_SUSPENDED)
-  expect(renderer.isRunning).toBe(false)
-
-  await renderer.resume()
-  expect(renderer.controlState).toBe(RendererControlState.EXPLICIT_PAUSED)
-  expect(renderer.isRunning).toBe(false)
-})
-
-test("resume() restores previous AUTO_STARTED state and restarts rendering", async () => {
+test("dropping the last live owner keeps a pending render", async () => {
+  const text = new TextRenderable(renderer, { content: "before" })
+  renderer.root.add(text)
+  await renderOnce()
   renderer.requestLive()
-  expect(renderer.controlState).toBe(RendererControlState.AUTO_STARTED)
-  expect(renderer.isRunning).toBe(true)
-
-  await renderer.suspend()
-  expect(renderer.controlState).toBe(RendererControlState.EXPLICIT_SUSPENDED)
+  text.content = "after"
+  renderer.dropLive()
   expect(renderer.isRunning).toBe(false)
-
-  await renderer.resume()
-  expect(renderer.controlState).toBe(RendererControlState.AUTO_STARTED)
-  expect(renderer.isRunning).toBe(true)
+  await renderer.idle()
+  expect(captureCharFrame()).toContain("after")
 })
 
-test("resume() forces the next main-screen render to fully repaint", async () => {
-  await expectStartedResumeForcesNextRender("main-screen")
-})
+for (const screenMode of ["main-screen", "alternate-screen"] as const) {
+  test(`resume() forces the next ${screenMode} render to fully repaint`, async () => {
+    renderer.destroy()
+    await renderer.closed
+    const stdout = new RecordingWriteStream()
+    ;({ renderer, mockInput, mockMouse, renderOnce } = await createTestRenderer({
+      screenMode,
+      stdout: stdout as unknown as NodeJS.WriteStream,
+      bufferedOutput: "stdout",
+    }))
+    await renderer.setupTerminal()
+    renderer.root.add(new TextRenderable(renderer, { content: "resume repaint" }))
+    await renderOnce()
 
-test("resume() forces the next alternate-screen render to fully repaint", async () => {
-  await expectStartedResumeForcesNextRender("alternate-screen")
-})
+    renderer.start()
+    await renderer.suspend()
+    stdout.clear()
 
-test("stop() transitions to EXPLICIT_STOPPED and stops rendering", () => {
-  renderer.start()
-  expect(renderer.isRunning).toBe(true)
+    await renderer.resume()
+    await renderOnce()
+    renderer.pause()
+    await renderer.idle()
 
-  renderer.stop()
-  expect(renderer.controlState).toBe(RendererControlState.EXPLICIT_STOPPED)
-  expect(renderer.isRunning).toBe(false)
-})
+    expect(stdout.text()).toContain("resume repaint")
+    stdout.clear()
+    await renderOnce()
+    expect(stdout.text()).not.toContain("resume repaint")
+  })
+}
 
 test("requestRender() does not trigger when renderer is suspended", async () => {
   renderer.start()
@@ -198,113 +155,6 @@ test("requestRender() does trigger when renderer is paused", async () => {
   await renderer.idle()
 
   expect(renderer.getStats().nativeFrameCount).toBe(frames + 1)
-})
-
-test("auto() transitions running renderer to AUTO_STARTED state", () => {
-  renderer.start()
-  expect(renderer.controlState).toBe(RendererControlState.EXPLICIT_STARTED)
-
-  renderer.auto()
-  expect(renderer.controlState).toBe(RendererControlState.AUTO_STARTED)
-  expect(renderer.isRunning).toBe(true)
-})
-
-test("requestLive() auto-starts idle renderer", () => {
-  expect(renderer.controlState).toBe(RendererControlState.IDLE)
-  expect(renderer.isRunning).toBe(false)
-
-  renderer.requestLive()
-  expect(renderer.controlState).toBe(RendererControlState.AUTO_STARTED)
-  expect(renderer.isRunning).toBe(true)
-})
-
-test("dropLive() stops auto-started renderer when no live requests remain", () => {
-  renderer.requestLive()
-  expect(renderer.controlState).toBe(RendererControlState.AUTO_STARTED)
-  expect(renderer.isRunning).toBe(true)
-
-  renderer.dropLive()
-  expect(renderer.controlState).toBe(RendererControlState.IDLE)
-  expect(renderer.isRunning).toBe(false)
-})
-
-test("dropLive() does not stop explicitly started renderer", () => {
-  renderer.start()
-  expect(renderer.controlState).toBe(RendererControlState.EXPLICIT_STARTED)
-  expect(renderer.isRunning).toBe(true)
-
-  renderer.requestLive()
-  expect(renderer.controlState).toBe(RendererControlState.EXPLICIT_STARTED)
-
-  renderer.dropLive()
-  expect(renderer.controlState).toBe(RendererControlState.EXPLICIT_STARTED)
-  expect(renderer.isRunning).toBe(true)
-})
-
-test("suspend() preserves live request state for resume", async () => {
-  renderer.requestLive()
-  expect(renderer.controlState).toBe(RendererControlState.AUTO_STARTED)
-  expect(renderer.isRunning).toBe(true)
-
-  await renderer.suspend()
-  expect(renderer.controlState).toBe(RendererControlState.EXPLICIT_SUSPENDED)
-  expect(renderer.isRunning).toBe(false)
-
-  await renderer.resume()
-  expect(renderer.controlState).toBe(RendererControlState.AUTO_STARTED)
-  expect(renderer.isRunning).toBe(true)
-})
-
-test("control state transitions maintain consistency", async () => {
-  renderer.start()
-  expect(renderer.controlState).toBe(RendererControlState.EXPLICIT_STARTED)
-  expect(renderer.isRunning).toBe(true)
-
-  renderer.pause()
-  expect(renderer.controlState).toBe(RendererControlState.EXPLICIT_PAUSED)
-  expect(renderer.isRunning).toBe(false)
-
-  renderer.start()
-  expect(renderer.controlState).toBe(RendererControlState.EXPLICIT_STARTED)
-  expect(renderer.isRunning).toBe(true)
-
-  await renderer.suspend()
-  expect(renderer.controlState).toBe(RendererControlState.EXPLICIT_SUSPENDED)
-  expect(renderer.isRunning).toBe(false)
-
-  await renderer.resume()
-  expect(renderer.controlState).toBe(RendererControlState.EXPLICIT_STARTED)
-  expect(renderer.isRunning).toBe(true)
-
-  renderer.auto()
-  expect(renderer.controlState).toBe(RendererControlState.AUTO_STARTED)
-  expect(renderer.isRunning).toBe(true)
-
-  renderer.stop()
-  expect(renderer.controlState).toBe(RendererControlState.EXPLICIT_STOPPED)
-  expect(renderer.isRunning).toBe(false)
-})
-
-test("multiple suspend/resume cycles work correctly", async () => {
-  renderer.start()
-  expect(renderer.controlState).toBe(RendererControlState.EXPLICIT_STARTED)
-
-  await renderer.suspend()
-  expect(renderer.controlState).toBe(RendererControlState.EXPLICIT_SUSPENDED)
-  await renderer.resume()
-  expect(renderer.controlState).toBe(RendererControlState.EXPLICIT_STARTED)
-
-  await renderer.suspend()
-  expect(renderer.controlState).toBe(RendererControlState.EXPLICIT_SUSPENDED)
-  await renderer.resume()
-  expect(renderer.controlState).toBe(RendererControlState.EXPLICIT_STARTED)
-
-  renderer.pause()
-  expect(renderer.controlState).toBe(RendererControlState.EXPLICIT_PAUSED)
-  await renderer.suspend()
-  expect(renderer.controlState).toBe(RendererControlState.EXPLICIT_SUSPENDED)
-  await renderer.resume()
-  expect(renderer.controlState).toBe(RendererControlState.EXPLICIT_PAUSED)
 })
 
 test("keyboard input is suspended when renderer is suspended", async () => {
@@ -454,3 +304,89 @@ test("suspend/resume does not leak stdin listeners", async () => {
 
   expect(renderer.stdin.listenerCount("data")).toBe(baseline)
 })
+
+const transitionsDuringFrame = {
+  suspend: async (target: TestRenderer) => {
+    await target.suspend()
+    await target.resume()
+  },
+  setupTerminal: (target: TestRenderer) => target.setupTerminal(),
+}
+
+for (const [transition, run] of Object.entries(transitionsDuringFrame)) {
+  test(`a screen mode set during a frame waits for a ${transition} that starts before the frame ends`, async () => {
+    renderer.destroy()
+    await renderer.closed
+    const stdout = new RecordingWriteStream()
+    ;({ renderer, renderOnce } = await createTestRenderer({
+      screenMode: "main-screen",
+      stdout: stdout as unknown as NodeJS.WriteStream,
+      bufferedOutput: "stdout",
+    }))
+    if (transition !== "setupTerminal") await renderer.setupTerminal()
+    const errors: unknown[] = []
+    renderer.on(CliRenderEvents.RENDER_ERROR, ({ error }) => errors.push(error))
+    const gate = Promise.withResolvers<void>()
+    const entered = Promise.withResolvers<void>()
+    renderer.setFrameCallback(async () => {
+      entered.resolve()
+      await gate.promise
+    })
+    const frame = renderOnce()
+    await entered.promise
+    renderer.screenMode = "alternate-screen"
+    stdout.clear()
+    const transitioned = run(renderer)
+    gate.resolve()
+
+    await frame
+    await transitioned
+    await renderOnce()
+
+    expect({ mode: renderer.screenMode, errors }).toEqual({ mode: "alternate-screen", errors: [] })
+    expect(stdout.text()).toContain("\x1b[?1049h")
+  })
+}
+
+// Terminal mode changes and transitions are refused while another transition or a suspension owns the terminal.
+const refusedDuringTransitions: Array<[name: string, act: (target: TestRenderer) => Promise<unknown>, error: string]> =
+  [
+    [
+      "suspend() before setup",
+      async () => {
+        const fresh = await createTestRenderer({})
+        try {
+          return fresh.renderer.suspend()
+        } finally {
+          await fresh.dispose()
+        }
+      },
+      "requires completed terminal setup",
+    ],
+    ["resume() while running", async (target) => target.resume(), "requires completed suspension"],
+    ["a second suspend()", async (target) => (void target.suspend(), target.suspend()), "no pending transition"],
+    ["useMouse while suspended", async (target) => (await target.suspend(), (target.useMouse = false)), "mouse modes"],
+    [
+      "Kitty flags while suspended",
+      async (target) => (await target.suspend(), target.enableKittyKeyboard(1)),
+      "Kitty modes",
+    ],
+    [
+      "disabling Kitty while suspended",
+      async (target) => (await target.suspend(), target.disableKittyKeyboard()),
+      "Kitty modes",
+    ],
+    ["Kitty flags out of range", async (target) => target.enableKittyKeyboard(32), "0..31"],
+    [
+      "a screen mode during suspend()",
+      async (target) => (void target.suspend(), (target.screenMode = "alternate-screen")),
+      "during a terminal transition",
+    ],
+  ]
+
+for (const [name, act, error] of refusedDuringTransitions) {
+  test(`${name} throws`, async () => {
+    await expect(act(renderer)).rejects.toThrow(error)
+    await renderer.idle()
+  })
+}

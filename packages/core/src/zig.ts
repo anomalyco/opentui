@@ -6485,6 +6485,11 @@ export class FFIRenderLib {
     return output[0]
   }
 
+  /** Discards terminal input queued on process stdin. Best effort; see `ot_terminal_flush_input`. */
+  public terminalFlushInput(): void {
+    nativeResult("ot_terminal_flush_input", this.opentui.symbols.ot_terminal_flush_input())
+  }
+
   public sessionControl(context: NativeContextHandle, session: SessionHandle, command: NativeSessionControl): void {
     const layout = nativeLayouts.ot_session_control_options
     const handle = encodeContextHandle(context, session)

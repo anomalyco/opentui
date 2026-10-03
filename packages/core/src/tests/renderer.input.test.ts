@@ -5,7 +5,7 @@ import { type KeyEvent } from "../lib/KeyHandler.js"
 import { Buffer } from "node:buffer"
 import { Renderable, type RenderableOptions } from "../Renderable.js"
 import { createTestRenderer, type TestRenderer, type TestRendererOptions } from "../testing/test-renderer.js"
-import { TestWriteStream } from "../testing/test-streams.js"
+import { RecordingWriteStream } from "../testing/test-streams.js"
 import { ManualClock } from "../testing/manual-clock.js"
 import type { RenderContext } from "../types.js"
 
@@ -108,16 +108,11 @@ async function createThemeQueryRenderer(): Promise<{
   clock: ManualClock
 }> {
   const clock = new ManualClock()
-  const writes: string[] = []
-  const stdout = new TestWriteStream(80, 24)
-  stdout._write = (bytes, _encoding, callback) => {
-    writes.push(bytes.toString())
-    callback()
-  }
+  const stdout = new RecordingWriteStream(80, 24)
 
   const { renderer } = await createTestRenderer({
     clock,
-    stdout: stdout as NodeJS.WriteStream,
+    stdout: stdout as unknown as NodeJS.WriteStream,
     bufferedOutput: "stdout",
     remote: true,
     forwardEnvKeys: [],
@@ -125,11 +120,11 @@ async function createThemeQueryRenderer(): Promise<{
   themeQueryRenderer = renderer
   await renderer.setupTerminal()
   await renderer.nativeScene!.driver.idle()
-  writes.length = 0
+  stdout.clear()
 
   const captureQueries = async () => {
     await renderer.nativeScene!.driver.idle()
-    return writes.join("").match(/\x1b\]1[01];\?\x07/g) ?? []
+    return stdout.text().match(/\x1b\]1[01];\?\x07/g) ?? []
   }
 
   return { renderer, captureQueries, clock }
@@ -2582,3 +2577,15 @@ describe("stdin routing", () => {
     }
   })
 })
+
+// Native control rejects some reply forms; the rest of the input chunk must still reach key handlers.
+for (const reply of ["\x1b[?1049;2$y", "\x1b[?1;2u", "\x1b_Gi=7\x1b\\"]) {
+  test(`keys after a rejected capability reply ${JSON.stringify(reply)} in the same chunk are delivered`, () => {
+    const keys: string[] = []
+    currentRenderer.keyInput.on("keypress", (key) => keys.push(key.name))
+
+    currentRenderer.stdin.emit("data", Buffer.from(`${reply}ab`))
+
+    expect(keys).toEqual(["a", "b"])
+  })
+}

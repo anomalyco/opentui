@@ -1,52 +1,23 @@
 import { afterEach, expect, test } from "bun:test"
 import { NativeSession } from "../NativeSession.js"
 import { RGBA } from "../lib/RGBA.js"
+import { BoxRenderable } from "../renderables/Box.js"
+import { TextRenderable } from "../renderables/Text.js"
 import { CliRenderer, CliRenderEvents, createCliRenderer, type CliRendererConfig } from "../renderer.js"
+import { settle, settleUntil } from "../testing/harness.js"
 import { ManualClock } from "../testing/manual-clock.js"
-import { createTestStdin, TestWriteStream } from "../testing/test-streams.js"
-
-class HeldWriteStream extends TestWriteStream {
-  held = true
-  releaseWrite: (() => void) | undefined
-  writes: Buffer[] = []
-
-  constructor(columns = 80, rows = 24) {
-    super(columns, rows)
-    ;(this as unknown as { _writableState: { highWaterMark: number } })._writableState.highWaterMark = 1
-  }
-
-  override _write(chunk: Uint8Array, _encoding: BufferEncoding, callback: () => void): void {
-    const finish = () => {
-      this.writes.push(Buffer.from(chunk))
-      callback()
-    }
-    if (this.held) this.releaseWrite = finish
-    else finish()
-  }
-
-  releaseAll(): void {
-    this.held = false
-    const release = this.releaseWrite
-    this.releaseWrite = undefined
-    release?.()
-  }
-}
+import { createTestStdin, RecordingWriteStream } from "../testing/test-streams.js"
+import { NativeSceneFrame } from "../zig.js"
 
 const cleanups: Array<() => Promise<void>> = []
 afterEach(async () => {
   for (const cleanup of cleanups.splice(0)) await cleanup()
 })
 
-const settle = () => new Promise<void>((resolve) => setImmediate(resolve))
-
-async function waitForHold(stdout: HeldWriteStream, turns = 32): Promise<void> {
-  for (let turn = 0; turn < turns && stdout.releaseWrite === undefined; turn++) await settle()
-  expect(stdout.releaseWrite).toBeDefined()
-}
-
 function createAdmissionRenderer(width = 80, height = 24, config: CliRendererConfig = {}) {
   const clock = new ManualClock()
-  const stdout = new HeldWriteStream(width, height)
+  const stdout = new RecordingWriteStream(width, height, { highWaterMark: 1 })
+  stdout.hold()
   const driver = new NativeSession(stdout, {
     output: { chunkSize: 4096, spanCapacity: 8, maxBytes: 32_768n, controlCapacity: 4096 },
   })
@@ -59,7 +30,7 @@ function createAdmissionRenderer(width = 80, height = 24, config: CliRendererCon
     ...config,
   })
   cleanups.push(async () => {
-    stdout.releaseAll()
+    stdout.release()
     renderer.destroy()
     await renderer.closed.catch(() => {})
   })
@@ -84,7 +55,7 @@ test("frame admission bounds delayed output to one frame and coalesces callback 
   })
 
   renderer.start()
-  await waitForHold(stdout)
+  await settleUntil(() => stdout.pendingWrite)
   expect(observed).toEqual(["A"])
 
   state = "B"
@@ -96,7 +67,7 @@ test("frame admission bounds delayed output to one frame and coalesces callback 
   expect(observed).toEqual(["A"])
 
   state = "C"
-  stdout.releaseAll()
+  stdout.release()
   await driver.idle()
   for (let turn = 0; turn < 32 && observed.length < 2; turn++) {
     clock.advance(100)
@@ -107,7 +78,7 @@ test("frame admission bounds delayed output to one frame and coalesces callback 
 
   expect(observed).toEqual(["A", "C"])
   expect(frames).toBeGreaterThanOrEqual(2)
-  const output = Buffer.concat(stdout.writes).toString()
+  const output = stdout.text()
   expect(output).toContain("A".repeat(8))
   expect(output).toContain("C".repeat(8))
   expect(output).not.toContain("B".repeat(8))
@@ -125,7 +96,7 @@ test("animation requests wait for output credit and remain cancellable", async (
   await settle()
   expect(observed).toEqual([])
 
-  stdout.releaseAll()
+  stdout.release()
   await driver.idle()
   clock.advance(0)
   await settle()
@@ -147,7 +118,7 @@ for (const queuedWork of ["one-shot", "next-tick"] as const) {
     renderer.setFrameCallback(async () => {
       callbacks++
     })
-    stdout.held = false
+    stdout.release()
     if (queuedWork === "next-tick") clock.advance(100)
     renderer.requestRender()
     expect(renderer.getSchedulerState().hasScheduledRender).toBe(true)
@@ -165,8 +136,7 @@ for (const queuedWork of ["one-shot", "next-tick"] as const) {
 }
 
 test("same-turn stop and request renders once without asynchronous frame callbacks", async () => {
-  const stdout = new HeldWriteStream()
-  stdout.held = false
+  const stdout = new RecordingWriteStream()
   const renderer = await createCliRenderer({
     stdin: createTestStdin(),
     stdout: stdout as unknown as NodeJS.WriteStream,
@@ -190,3 +160,118 @@ test("same-turn stop and request renders once without asynchronous frame callbac
 
   expect({ frames, postProcesses }).toEqual({ frames: 1, postProcesses: 1 })
 })
+
+const busyResizes = {
+  "a pending frame presentation": async () => {
+    const target = createAdmissionRenderer(80, 24)
+    target.renderer.requestRender()
+    target.clock.advance(100)
+    await settleUntil(() => target.stdout.pendingWrite)
+    return { ...target, sizes: [[100, 30]] }
+  },
+  // The terminal may reflow cells at the skipped size, so returning to the current size repaints everything.
+  "a pending frame presentation, then back to the current size": async () => {
+    const target = createAdmissionRenderer(80, 24)
+    let text = "A"
+    target.renderer.addPostProcessFn((buffer) => buffer.drawText(text, 0, 0, RGBA.fromInts(255, 255, 255)))
+    target.stdout.release()
+    target.renderer.requestRender()
+    target.clock.advance(100)
+    await target.renderer.idle()
+    target.stdout.hold()
+    text = "B"
+    target.renderer.requestRender()
+    target.clock.advance(100)
+    await settleUntil(() => target.stdout.pendingWrite)
+    return {
+      ...target,
+      sizes: [
+        [100, 30],
+        [80, 24],
+      ],
+    }
+  },
+  "a parked split-footer paint": async () => {
+    const target = createAdmissionRenderer(30, 12, {
+      screenMode: "split-footer",
+      externalOutputMode: "passthrough",
+      footerHeight: 6,
+      nativeSceneWorkBudget: 1,
+    })
+    target.stdout.release()
+    await target.renderer.setupTerminal()
+    const column = new BoxRenderable(target.renderer, { flexDirection: "column" })
+    target.renderer.root.add(column)
+    for (let line = 0; line < 4; line++) column.add(new TextRenderable(target.renderer, { content: `line ${line}` }))
+    const lib = target.driver.renderLib
+    const step = lib.sceneFrameStep
+    const parked = Promise.withResolvers<void>()
+    lib.sceneFrameStep = (...args) => {
+      const result = step.apply(lib, args)
+      if (result.kind === NativeSceneFrame.Yield) parked.resolve()
+      return result
+    }
+    cleanups.unshift(async () => {
+      lib.sceneFrameStep = step
+    })
+    target.renderer.requestRender()
+    target.clock.advance(100)
+    await parked.promise
+    expect(target.renderer.getSchedulerState().isRendering).toBe(true)
+    return { ...target, sizes: [[20, 12]] }
+  },
+}
+
+for (const [state, enter] of Object.entries(busyResizes)) {
+  test(`resize() during ${state} applies once the Session is ready`, async () => {
+    const { renderer, stdout, clock, sizes } = await enter()
+    const initial = [renderer.terminalWidth, renderer.terminalHeight]
+    const resizes: number[][] = []
+    const errors: unknown[] = []
+    renderer.on(CliRenderEvents.RESIZE, (width: number, height: number) => resizes.push([width, height]))
+    renderer.on(CliRenderEvents.RENDER_ERROR, ({ error }) => errors.push(error))
+
+    for (const [width, height] of sizes) expect(() => renderer.resize(width, height)).not.toThrow()
+    stdout.release()
+    for (let turn = 0; turn < 8; turn++) {
+      clock.advance(100)
+      await settle()
+    }
+    await renderer.idle()
+
+    const size = sizes.at(-1)!
+    const reverted = size[0] === initial[0] && size[1] === initial[1]
+    expect({ size: [renderer.terminalWidth, renderer.terminalHeight], resizes, errors }).toEqual({
+      size,
+      resizes: reverted ? [] : [[renderer.width, renderer.height]],
+      errors: [],
+    })
+    if (reverted) expect(renderer.getNativeStats().cellsUpdated).toBe(renderer.width * renderer.height)
+  })
+}
+
+// resize() is immediate: it replaces a debounced requestResize instead of waiting for its timer.
+for (const size of [
+  [90, 28],
+  [80, 24],
+]) {
+  test(`resize(${size}) after a debounced requestResize applies at once`, async () => {
+    const { renderer, stdout, clock } = createAdmissionRenderer(80, 24)
+    stdout.release()
+    renderer.requestRender()
+    clock.advance(100)
+    await renderer.idle()
+    const resizes: number[][] = []
+    renderer.on(CliRenderEvents.RESIZE, (width: number, height: number) => resizes.push([width, height]))
+
+    renderer.requestResize(100, 30)
+    renderer.resize(size[0], size[1])
+    const applied = [renderer.terminalWidth, renderer.terminalHeight]
+    clock.advance(100)
+    await renderer.idle()
+
+    const reverted = size[0] === 80 && size[1] === 24
+    expect({ applied, resizes }).toEqual({ applied: size, resizes: reverted ? [] : [size] })
+    if (reverted) expect(renderer.getNativeStats().cellsUpdated).toBe(renderer.width * renderer.height)
+  })
+}

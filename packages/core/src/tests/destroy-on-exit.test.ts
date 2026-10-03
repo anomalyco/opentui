@@ -11,25 +11,22 @@ const packageRoot = testFilePath.includes(`${sep}.node-test${sep}`)
   : resolve(testDir, "..", "..")
 const workspaceRoot = resolve(packageRoot, "..", "..")
 
-const runFixture = (
-  code: number,
-  mode:
-    | "idle"
-    | "during-render"
-    | "destroy-first"
-    | "on-destroy-exit"
-    | "destroy-listener-exit"
-    | "root-destroyed-exit" = "idle",
-) => {
+type ExitMode =
+  | "idle"
+  | "during-render"
+  | "destroy-first"
+  | "on-destroy-exit"
+  | "destroy-listener-exit"
+  | "root-destroyed-exit"
+
+const runFixture = (code: number, mode: ExitMode) => {
   const result = spawnSync(process.execPath, [...getFixtureRuntimeArgs(), fixturePath, code.toString(), mode], {
     cwd: packageRoot,
     env: process.env,
     timeout: 5000,
   })
 
-  const stdout = result.stdout?.toString() ?? ""
-
-  return { result, stdout }
+  return { result, stdout: result.stdout?.toString() ?? "" }
 }
 
 function getFixtureRuntimeArgs(): string[] {
@@ -47,53 +44,30 @@ function getFixtureRuntimeArgs(): string[] {
   ]
 }
 
+// Every exit path restores raw mode, the alternate screen, and bracketed paste before the process ends; a cleanup
+// callback that terminates the process runs only after restoration.
+const exitCases: Array<[mode: ExitMode, code: number, cleanupExits: boolean]> = [
+  ["idle", 0, false],
+  ["idle", 1, false],
+  ["during-render", 0, false],
+  ["destroy-first", 0, false],
+  ["on-destroy-exit", 0, true],
+  ["destroy-listener-exit", 0, true],
+  ["root-destroyed-exit", 0, true],
+]
+
 describe("destroy on process exit", () => {
-  it("it should let applications restore terminal state in an exit handler", () => {
-    const { result, stdout } = runFixture(0)
+  for (const [mode, code, cleanupExits] of exitCases) {
+    it(`restores the terminal for ${mode} exit with code ${code}`, () => {
+      const { result, stdout } = runFixture(code, mode)
 
-    expect(result.status).toBe(0)
-    expect(stdout).toContain("raw mode disabled")
-    expect(stdout).toContain("\x1b[?1049l")
-  })
-
-  it("it should restore terminal state for non-zero exit codes", () => {
-    const { result, stdout } = runFixture(1)
-
-    expect(result.status).toBe(1)
-    expect(stdout).toContain("raw mode disabled")
-    expect(stdout).toContain("\x1b[?1049l")
-  })
-
-  it("it should restore terminal modes when destroy happens during an active frame in an exit handler", () => {
-    const { result, stdout } = runFixture(0, "during-render")
-
-    expect(result.status).toBe(0)
-    expect(stdout).toContain("raw mode disabled")
-    expect(stdout).toContain("\x1b[?1049l")
-    expect(stdout).toContain("\x1b[?2004l")
-  })
-
-  it("restores terminal modes when destroy is immediately followed by process.exit", () => {
-    const { result, stdout } = runFixture(0, "destroy-first")
-
-    expect(result.status).toBe(0)
-    expect(stdout).toContain("raw mode disabled")
-    expect(stdout).toContain("\x1b[?1049l")
-    expect(stdout).toContain("\x1b[?2004l")
-  })
-
-  it.each(["on-destroy-exit", "destroy-listener-exit", "root-destroyed-exit"] as const)(
-    "restores before a cleanup callback terminates the process: %s",
-    (mode) => {
-      const { result, stdout } = runFixture(0, mode)
-
-      expect(result.status).toBe(0)
+      expect(result.status).toBe(code)
       expect(stdout).toContain("raw mode disabled")
-      expect(stdout).toContain("cleanup terminating")
-      expect(stdout).toContain("\x1b[?1049l")
-      expect(stdout).toContain("\x1b[?2004l")
-      expect(stdout.indexOf("\x1b[?1049l")).toBeLessThan(stdout.indexOf("cleanup terminating"))
-      expect(stdout.indexOf("\x1b[?2004l")).toBeLessThan(stdout.indexOf("cleanup terminating"))
-    },
-  )
+      for (const sequence of ["\x1b[?1049l", "\x1b[?2004l"]) {
+        expect(stdout).toContain(sequence)
+        if (cleanupExits) expect(stdout.indexOf(sequence)).toBeLessThan(stdout.indexOf("cleanup terminating"))
+      }
+      expect(stdout.includes("cleanup terminating")).toBe(cleanupExits)
+    })
+  }
 })

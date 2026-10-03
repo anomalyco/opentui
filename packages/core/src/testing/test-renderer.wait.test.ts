@@ -288,3 +288,11 @@ test("externalOutput records captured stdout in FIFO order", async () => {
   expect(setup.externalOutput.takeText()).toBe("again")
   expect(setup.externalOutput.take()).toEqual([])
 })
+
+test("wait diagnostics describe a destroyed renderer", async () => {
+  setup = await createTestRenderer({ width: 10, height: 4 })
+  await setup.dispose()
+
+  await expect(setup.waitFor(() => false, { maxPasses: 1 })).rejects.toThrow("destroyed: true")
+  await expect(setup.waitForFrame(() => false, { maxPasses: 1 })).rejects.toThrow("destroyed: true")
+})

@@ -21,6 +21,7 @@ import {
 import { RGBA, parseColor, type ColorInput } from "./lib/RGBA.js"
 import { OptimizedBuffer } from "./buffer.js"
 import {
+  LogLevel,
   NativeError,
   NativeSessionRenderStatus,
   NativeStatus,
@@ -884,6 +885,7 @@ export class CliRenderer extends EventEmitter implements RenderContext {
   private _destroyFinalized: boolean = false
   private _destroyCleanupPrepared: boolean = false
   private _streamLeaseAcquired: boolean = false
+  private flushTerminalInputOnClose = false
   public nextRenderBuffer: OptimizedBuffer
   public currentRenderBuffer: OptimizedBuffer
   private _isRunning: boolean = false
@@ -1047,7 +1049,7 @@ export class CliRenderer extends EventEmitter implements RenderContext {
   private _debugModeEnabled: boolean = env.OTUI_DEBUG
   private readonly stdinLogPath: string = env.OTUI_STDIN_LOG
 
-  private handleError: (error: Error) => void = ((error: Error) => {
+  private handleError: (error: unknown) => void = ((error: unknown) => {
     console.error(error)
 
     if (this._openConsoleOnError && !this._isDestroyed && !this.nativeSession?.error && !this.nativeSession?.disposed) {
@@ -1102,6 +1104,7 @@ export class CliRenderer extends EventEmitter implements RenderContext {
     const restored = this.nativeSession.restoreOnExit()
     try {
       this.destroy()
+      if (this.flushTerminalInputOnClose) this.lib.terminalFlushInput()
     } finally {
       this.nativeSession.dispose()
       if (!restored && this._terminalIsSetup) {
@@ -1223,6 +1226,7 @@ export class CliRenderer extends EventEmitter implements RenderContext {
         .finally(() => this.nativeDestroyWait!.promise)
         .finally(() => {
           if (this.nativeSession.error && !this.nativeSession.disposed) this.nativeSession.dispose()
+          if (this.flushTerminalInputOnClose) this.lib.terminalFlushInput()
           this.releaseStreamLease()
         })
       void this.nativeClosed.catch(() => {})
@@ -1385,7 +1389,9 @@ export class CliRenderer extends EventEmitter implements RenderContext {
       void this.nativeSession.closed.catch((error) => {
         if (this._isDestroyed) return
         try {
-          this.handleError(error instanceof Error ? error : new Error(String(error)))
+          // A pending setup rejects with this failure; its caller reports it.
+          const setupPending = !this._terminalIsSetup && this.nativeTerminalTransition !== null
+          if (!setupPending) this.handleError(error)
         } catch {
           // The original Session failure remains available through closed.
         } finally {
@@ -1577,7 +1583,7 @@ export class CliRenderer extends EventEmitter implements RenderContext {
         this.outputIdleRenderScheduled = false
         this.ordinaryFrameWaitingForOutput = false
         this.ordinaryFrameWaitControlState = null
-        if (!this._isDestroyed) this.handleError(error instanceof Error ? error : new Error(String(error)))
+        if (!this._isDestroyed) this.handleError(error)
         this.resolveIdleIfNeeded()
       })
   }
@@ -1591,13 +1597,27 @@ export class CliRenderer extends EventEmitter implements RenderContext {
     )
       return
 
+    this.scheduleFrame(this.nextFrameDelay())
+  }
+
+  private nextFrameDelay(): number {
     const now = this.normalizeClockTime(this.clock.now(), this.lastTime)
-    const elapsed = this.getElapsedMs(now, this.lastTime)
-    const delay = Math.max(this.minTargetFrameTime - elapsed, 0)
+    return Math.max(this.minTargetFrameTime - this.getElapsedMs(now, this.lastTime), 0)
+  }
+
+  // The only place that arms the frame timer, so a live handle is never overwritten or dropped.
+  private scheduleFrame(delayMs: number): void {
+    this.clearFrameTimer()
     this.renderTimeout = this.clock.setTimeout(() => {
       this.renderTimeout = null
       this.queueFrame()
-    }, delay)
+    }, delayMs)
+  }
+
+  private clearFrameTimer(): void {
+    if (this.renderTimeout === null) return
+    this.clock.clearTimeout(this.renderTimeout)
+    this.renderTimeout = null
   }
 
   public requestRender() {
@@ -1612,14 +1632,9 @@ export class CliRenderer extends EventEmitter implements RenderContext {
       return
     }
 
+    // A frame waiting for output always owns the output-idle wait handled above.
     if (this._isRunning) {
-      if (!this.rendering && !this.renderTimeout && !this.cancelReadyFrame && !this.ordinaryFrameWaitingForOutput) {
-        this.scheduleRenderTimer()
-      }
-      return
-    }
-
-    if (this.ordinaryFrameWaitingForOutput) {
+      if (!this.rendering) this.scheduleRenderTimer()
       return
     }
 
@@ -1632,19 +1647,9 @@ export class CliRenderer extends EventEmitter implements RenderContext {
     }
 
     if (!this.cancelReadyFrame && !this.renderTimeout) {
-      const now = this.normalizeClockTime(this.clock.now(), this.lastTime)
-      const elapsed = this.getElapsedMs(now, this.lastTime)
-      const delay = Math.max(this.minTargetFrameTime - elapsed, 0)
-
-      if (delay === 0) {
-        this.queueFrame()
-        return
-      }
-
-      this.renderTimeout = this.clock.setTimeout(() => {
-        this.renderTimeout = null
-        this.queueFrame()
-      }, delay)
+      const delay = this.nextFrameDelay()
+      if (delay === 0) this.queueFrame()
+      else this.scheduleFrame(delay)
     }
   }
 
@@ -1665,20 +1670,21 @@ export class CliRenderer extends EventEmitter implements RenderContext {
     return this._isRunning
   }
 
-  private isIdleNow(): boolean {
-    if (this._isDestroyed) return true
-
-    return (
-      !this._isRunning &&
-      !this.rendering &&
-      !this.nativeTerminalTransition &&
-      !this.nativeResizeWait &&
-      (!this.pendingNativeResize || this._controlState === RendererControlState.EXPLICIT_SUSPENDED) &&
-      !this.renderTimeout &&
-      !this.cancelReadyFrame &&
-      !this.outputIdleRenderScheduled &&
-      !this.immediateRerenderRequested
+  // Work that runs a frame or applies deferred terminal state without another request.
+  private hasScheduledWork(): boolean {
+    return Boolean(
+      this.renderTimeout ||
+      this.cancelReadyFrame ||
+      this.outputIdleRenderScheduled ||
+      this.immediateRerenderRequested ||
+      this.nativeTerminalTransition ||
+      this.nativeResizeWait ||
+      (this.pendingNativeResize && this._controlState !== RendererControlState.EXPLICIT_SUSPENDED),
     )
+  }
+
+  private isIdleNow(): boolean {
+    return this._isDestroyed || (!this._isRunning && !this.rendering && !this.hasScheduledWork())
   }
 
   private resolveIdleIfNeeded(): void {
@@ -1703,15 +1709,7 @@ export class CliRenderer extends EventEmitter implements RenderContext {
     return {
       isRunning: this._isRunning,
       isRendering: this.rendering,
-      hasScheduledRender: Boolean(
-        this.renderTimeout ||
-        this.cancelReadyFrame ||
-        this.outputIdleRenderScheduled ||
-        this.immediateRerenderRequested ||
-        this.nativeTerminalTransition ||
-        this.nativeResizeWait ||
-        (this.pendingNativeResize && this._controlState !== RendererControlState.EXPLICIT_SUSPENDED),
-      ),
+      hasScheduledRender: this.hasScheduledWork(),
     }
   }
 
@@ -1936,8 +1934,7 @@ export class CliRenderer extends EventEmitter implements RenderContext {
 
   private startKittyTransportPolling(): void {
     if (!this._terminalIsSetup || this.kittyTransportMode !== "file" || this.kittyTransportTimer !== null) return
-    // Old file transfers still need ACKs, expiry, and error cleanup after selecting an inline mode.
-    this.stdout.on("error", this.kittyOutputErrorHandler)
+    // Old file transfers still need ACKs and expiry after selecting an inline mode.
     this.kittyTransportTimer = this.clock.setInterval(() => {
       if (!this._isDestroyed && this.nativeSession.pollKittyImageTransport()) this.requestRender()
     }, 1000)
@@ -1963,11 +1960,6 @@ export class CliRenderer extends EventEmitter implements RenderContext {
     if (this._isDestroyed) return
     this.nativeSession.cancelKittyImageTransport(false)
     this.requestRender()
-  }
-
-  private kittyOutputErrorHandler = (): void => {
-    if (this._isDestroyed || this.nativeSession.disposed || this.nativeSession.error) return
-    this.nativeSession.cancelKittyImageTransport(true)
   }
 
   public triggerNotification(message: string, title?: string): boolean {
@@ -3136,8 +3128,9 @@ export class CliRenderer extends EventEmitter implements RenderContext {
     }
   }
 
+  // The native Session refuses mode changes during a terminal transition; the transition's settlement applies it.
   private applyPendingNativeMode(): void {
-    if (this._isDestroyed || this.rendering || this.nativeSplitFlush) return
+    if (this._isDestroyed || this.rendering || this.nativeSplitFlush || this.nativeTerminalTransition) return
     try {
       if (this.pendingNativeReplay?.remaining === 0) this.applySplitFooterReplayReset(this.pendingNativeReplay.options)
       if (this.pendingExternalOutputMode === "capture-stdout" && this._screenMode === "split-footer") {
@@ -3155,6 +3148,15 @@ export class CliRenderer extends EventEmitter implements RenderContext {
       ) {
         this.scheduleRenderAfterOutputIdle()
       } else throw error
+    }
+  }
+
+  // Frame and transition completion must finish their bookkeeping, so a failed mode change is reported, not thrown.
+  private applyPendingNativeModeReported(): void {
+    try {
+      this.applyPendingNativeMode()
+    } catch (error) {
+      this.handleError(error)
     }
   }
 
@@ -3293,12 +3295,16 @@ export class CliRenderer extends EventEmitter implements RenderContext {
       .then(() => complete?.())
       .finally(() => {
         if (this.nativeTerminalTransition === tracked) this.nativeTerminalTransition = null
+        this.applyPendingNativeModeReported()
         this.applyPendingNativeResize()
         this.resolveIdleIfNeeded()
       })
     this.nativeTerminalTransition = tracked
+    // Teardown interrupts transitions, and `closed` reports a Session failure.
     void tracked.catch((error) => {
-      if (!this._isDestroyed) this.handleError(error instanceof Error ? error : new Error(String(error)))
+      if (this.canRender && !this.nativeSession.isCloseInterruption(error)) {
+        this.handleError(error)
+      }
     })
     return tracked
   }
@@ -3360,8 +3366,9 @@ export class CliRenderer extends EventEmitter implements RenderContext {
     try {
       this.nativeSession.control({ kind: "capability-response", bytes: Buffer.from(sequence) })
     } catch (error) {
-      if (error instanceof NativeError && error.status === NativeStatus.InvalidPhase) return false
-      throw error
+      if (!(error instanceof NativeError)) throw error
+      // A rejected reply is consumed without being applied. Throwing would reset the parser and drop later input.
+      return error.status !== NativeStatus.InvalidPhase
     } finally {
       if (transition) this.setPendingSplitFooterTransition(transition)
     }
@@ -3963,7 +3970,7 @@ export class CliRenderer extends EventEmitter implements RenderContext {
           (error) => {
             this.nativeResizeWait = null
             this.pendingNativeResize = null
-            if (!this._isDestroyed) this.handleError(error instanceof Error ? error : new Error(String(error)))
+            if (!this._isDestroyed) this.handleError(error)
             this.resolveIdleIfNeeded()
           },
         )
@@ -3973,7 +3980,7 @@ export class CliRenderer extends EventEmitter implements RenderContext {
         this.pendingNativeResize = null
         this.pendingResizeSawDifferentSize = false
       }
-      this.handleError(error instanceof Error ? error : new Error(String(error)))
+      this.handleError(error)
     }
     this.resolveIdleIfNeeded()
   }
@@ -4013,13 +4020,13 @@ export class CliRenderer extends EventEmitter implements RenderContext {
             try {
               this.queryPixelResolution(false)
             } catch (error) {
-              this.handleError(error instanceof Error ? error : new Error(String(error)))
+              this.handleError(error)
             }
           }
         },
         (error) => {
           this.pixelResolutionRetry = null
-          if (!this._isDestroyed) this.handleError(error instanceof Error ? error : new Error(String(error)))
+          if (!this._isDestroyed) this.handleError(error)
         },
       )
     }
@@ -4126,15 +4133,39 @@ export class CliRenderer extends EventEmitter implements RenderContext {
    * `window-change` signal or a test harness simulating a terminal resize.
    * When the renderer is attached to `process.stdout`, `SIGWINCH` is handled
    * automatically and callers do not need this method.
+   *
+   * While the Session presents or paints a frame, the resize waits for that frame like `requestResize`. Later calls
+   * join a waiting resize, so sizes apply in order and a return to the current size still repaints everything.
    */
   public resize(width: number, height: number): void {
     if (this._isDestroyed) return
-    const pending = this.pendingNativeResize
-    this.processResize(width, height)
-    if (this.pendingNativeResize === pending) {
-      this.pendingNativeResize = null
-      this.resolveIdleIfNeeded()
+    // An explicit size replaces a debounced requestResize at once.
+    if (this.resizeTimeoutId !== null) {
+      this.clock.clearTimeout(this.resizeTimeoutId)
+      this.resizeTimeoutId = null
     }
+    if (this.pendingNativeResize !== null) {
+      this.deferResize(width, height)
+      return
+    }
+    try {
+      this.processResize(width, height)
+    } catch (error) {
+      if (
+        !(error instanceof NativeError) ||
+        (error.status !== NativeStatus.OutputBusy && error.status !== NativeStatus.FrameBusy)
+      ) {
+        throw error
+      }
+      this.deferResize(width, height)
+    }
+  }
+
+  // Frame end, output idle, or the debounce timer applies the latest deferred size.
+  private deferResize(width: number, height: number): void {
+    if (width !== this._terminalWidth || height !== this._terminalHeight) this.pendingResizeSawDifferentSize = true
+    this.pendingNativeResize = { width, height }
+    this.applyPendingNativeResize()
   }
 
   public setBackgroundColor(color: ColorInput): void {
@@ -4371,10 +4402,7 @@ export class CliRenderer extends EventEmitter implements RenderContext {
       this._isRunning = true
       this.cancelReadyFrame?.()
       this.cancelReadyFrame = null
-      if (this.renderTimeout) {
-        this.clock.clearTimeout(this.renderTimeout)
-        this.renderTimeout = null
-      }
+      this.clearFrameTimer()
 
       if (this.memorySnapshotInterval > 0) {
         this.startMemorySnapshotTimer()
@@ -4386,9 +4414,8 @@ export class CliRenderer extends EventEmitter implements RenderContext {
 
   public pause(): void {
     this._controlState = RendererControlState.EXPLICIT_PAUSED
-    this.immediateRerenderRequested = false
     this.ordinaryFrameWaitControlState = null
-    this.internalPause()
+    this.halt(false)
   }
 
   public suspend(): Promise<void> {
@@ -4426,8 +4453,7 @@ export class CliRenderer extends EventEmitter implements RenderContext {
     this._cancelPaletteDetection?.(new Error("Cannot detect palette while renderer is suspended"))
     this.resolveXtVersionWaiters()
     this.nativeScene.interruptPaint()
-    this.immediateRerenderRequested = false
-    this.internalPause()
+    this.halt(false)
 
     this.clearSplitStartupCursorSeed()
 
@@ -4523,43 +4549,20 @@ export class CliRenderer extends EventEmitter implements RenderContext {
     }
   }
 
-  private internalPause(): void {
-    this._isRunning = false
-    this.cancelReadyFrame?.()
-    this.cancelReadyFrame = null
-
-    if (this.renderTimeout) {
-      this.clock.clearTimeout(this.renderTimeout)
-      this.renderTimeout = null
-    }
-
-    if (!this.rendering) {
-      this.resolveIdleIfNeeded()
-    }
-  }
-
   public stop(): void {
     this._controlState = RendererControlState.EXPLICIT_STOPPED
-    this.immediateRerenderRequested = false
     this.ordinaryFrameWaitControlState = null
-    this.internalStop()
+    this.halt(true)
   }
 
-  private internalStop(): void {
+  // Pause, stop, and suspend drop queued frames; stopping a running loop also ends its memory snapshots.
+  private halt(stopSnapshots: boolean): void {
+    if (stopSnapshots && this._isRunning) this.stopMemorySnapshotTimer()
+    this._isRunning = false
+    this.immediateRerenderRequested = false
     this.cancelReadyFrame?.()
     this.cancelReadyFrame = null
-    if (this.renderTimeout) {
-      this.clock.clearTimeout(this.renderTimeout)
-      this.renderTimeout = null
-    }
-    if (this.isRunning && !this._isDestroyed) {
-      this._isRunning = false
-
-      if (this.memorySnapshotTimer) {
-        this.clock.clearInterval(this.memorySnapshotTimer)
-        this.memorySnapshotTimer = null
-      }
-    }
+    this.clearFrameTimer()
     if (!this.rendering) this.resolveIdleIfNeeded()
   }
 
@@ -4600,7 +4603,6 @@ export class CliRenderer extends EventEmitter implements RenderContext {
     if (this.kittyTransportTimer !== null) {
       this.clock.clearInterval(this.kittyTransportTimer)
       this.kittyTransportTimer = null
-      this.stdout.off("error", this.kittyOutputErrorHandler)
       if (!this.nativeSession.disposed && !this.nativeSession.error) this.nativeSession.cancelKittyImageTransport(false)
     }
     this.pendingNativeResize = null
@@ -4637,10 +4639,7 @@ export class CliRenderer extends EventEmitter implements RenderContext {
       this.memorySnapshotTimer = null
     }
 
-    if (this.renderTimeout) {
-      this.clock.clearTimeout(this.renderTimeout)
-      this.renderTimeout = null
-    }
+    this.clearFrameTimer()
 
     this.themeModeState?.cancelRefresh()
 
@@ -4662,7 +4661,6 @@ export class CliRenderer extends EventEmitter implements RenderContext {
       // not let that failure strand the remaining teardown or its completion.
       this.handleStdinParserFailure(error)
     }
-    if (this.stdin === process.stdin && this._usesProcessStdout) this.disableMouse()
     this._useMouse = false
     this.setCapturedRenderable(undefined)
 
@@ -4761,6 +4759,8 @@ export class CliRenderer extends EventEmitter implements RenderContext {
       const bufferedInput = this.stdin.readableLength
       if (bufferedInput > 0) this.stdin.read(bufferedInput)
     }
+    // The kernel queue is flushed after the Session writes restoration, which stops mouse reports.
+    this.flushTerminalInputOnClose = discardInput && this.stdin === process.stdin
     rendererTracker.renderers.delete(this)
     if (rendererTracker.renderers.size === 0) {
       void destroyTreeSitterClient().catch((error) => {
@@ -4814,16 +4814,13 @@ export class CliRenderer extends EventEmitter implements RenderContext {
     if (this._isDestroyed) return
     this.cancelReadyFrame?.()
     this.cancelReadyFrame = null
-    if (this.renderTimeout) {
-      this.clock.clearTimeout(this.renderTimeout)
-      this.renderTimeout = null
-    }
+    this.clearFrameTimer()
     this.rendering = true
     this.ordinaryFrameWaitControlState = this._controlState
     let renderFailed = false
     try {
       if (!this.canRender) return
-      if (this.nativeTerminalTransition) await this.nativeTerminalTransition
+      if (this.nativeTerminalTransition && !(await this.waitForTerminalTransition())) return
       if (
         !this.canRender ||
         this.currentControlState === RendererControlState.EXPLICIT_SUSPENDED ||
@@ -4875,6 +4872,8 @@ export class CliRenderer extends EventEmitter implements RenderContext {
       const end = performance.now()
       this.renderStats.frameCallbackTime = end - start
 
+      // Callbacks can start terminal setup; a frame step is invalid until it settles.
+      if (this.nativeTerminalTransition && !(await this.waitForTerminalTransition())) return
       if (!this.canRender || this.currentControlState === RendererControlState.EXPLICIT_SUSPENDED) return
       const sceneStart = performance.now()
       const requestedBeforeScene = this.immediateRerenderRequested
@@ -4958,36 +4957,33 @@ export class CliRenderer extends EventEmitter implements RenderContext {
               // scheduler runs it on the next host turn instead of waiting for a timer.
               this.queueFrame()
             } else {
-              this.renderTimeout = this.clock.setTimeout(
-                () => {
-                  this.renderTimeout = null
-                  this.queueFrame()
-                },
-                Math.max(1, remaining),
-              )
+              this.scheduleFrame(Math.max(1, remaining))
             }
           } else {
-            this.clock.clearTimeout(this.renderTimeout!)
-            this.renderTimeout = null
+            this.clearFrameTimer()
           }
         } else {
           // Blocked frames resume on a cursor reply/timeout; skipped frames wait for output idle.
           this.immediateRerenderRequested = false
-          this.renderTimeout = null
+          this.clearFrameTimer()
         }
       }
     } catch (error) {
       renderFailed = true
-      const renderError = error instanceof Error ? error : new Error(String(error))
-      const event: CliRendererErrorEvent = { error: renderError, renderable: this.root.takeCurrentRenderable() }
-      const handled = this.emit(CliRenderEvents.RENDER_ERROR, event)
-      if (!handled) this.handleError(renderError)
+      // Teardown abandons in-flight frames, and `closed` reports a Session failure once.
+      if (this.canRender) {
+        const renderError = error instanceof Error ? error : new Error(String(error))
+        const event: CliRendererErrorEvent = { error: renderError, renderable: this.root.takeCurrentRenderable() }
+        const handled = this.emit(CliRenderEvents.RENDER_ERROR, event)
+        if (!handled) this.handleError(renderError)
+      }
     } finally {
       const completion = this.renderingCompletion
       this.renderingCompletion = null
       try {
         this.nativeScene.cancelFrame()
         this.rendering = false
+        this.logNativeDiagnostics()
         if (!this.canRender && !this._isDestroyed) this.destroy()
         if (this._destroyPending) {
           this.finalizeDestroy()
@@ -4998,13 +4994,39 @@ export class CliRenderer extends EventEmitter implements RenderContext {
         }
         // Keep the old dimensions through FRAME publication, even if the output
         // driver completed its presentation and drain in the same turn.
-        this.applyPendingNativeMode()
+        this.applyPendingNativeModeReported()
         this.applyPendingNativeResize()
         this.resolveIdleIfNeeded()
       } finally {
         completion?.resolve()
       }
     }
+  }
+
+  // Native code queues warnings in its Context. Drain them once per frame, outside frame and buffer lease scopes.
+  private logNativeDiagnostics(): void {
+    if (!this.canRender) return
+    try {
+      this.lib.logContextDiagnostics(this.nativeSession.context, LogLevel.Warn)
+    } catch (error) {
+      // A frame that ends inside a native call drains on the next frame.
+      if (!(error instanceof NativeError) || error.status !== NativeStatus.ContextBusy) {
+        this.handleError(error)
+      }
+    }
+  }
+
+  /** Waits for pending terminal transitions. False when one failed; its tracker already reported it. Callers check
+   * `nativeTerminalTransition` first, so a frame without a transition does not yield. */
+  private async waitForTerminalTransition(): Promise<boolean> {
+    while (this.nativeTerminalTransition) {
+      try {
+        await this.nativeTerminalTransition
+      } catch {
+        return false
+      }
+    }
+    return true
   }
 
   public intermediateRender(): void {

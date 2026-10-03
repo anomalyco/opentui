@@ -4,7 +4,7 @@ import { StyledText } from "../lib/styled-text.js"
 import { TextRenderable } from "../renderables/Text.js"
 import { ManualClock } from "../testing/manual-clock.js"
 import { createTestRenderer, type TestRendererSetup } from "../testing/test-renderer.js"
-import { TestWriteStream } from "../testing/test-streams.js"
+import { RecordingWriteStream } from "../testing/test-streams.js"
 import { getLinkId } from "../utils.js"
 
 const setups: TestRendererSetup[] = []
@@ -18,12 +18,7 @@ afterEach(async () => {
 })
 
 async function setup(width = 8, height = 2) {
-  const writes: string[] = []
-  const stdout = new TestWriteStream(width, height)
-  stdout._write = (chunk, _encoding, callback) => {
-    writes.push(Buffer.from(chunk).toString("utf8"))
-    callback()
-  }
+  const stdout = new RecordingWriteStream(width, height)
   const target = await createTestRenderer({
     width,
     height,
@@ -34,8 +29,13 @@ async function setup(width = 8, height = 2) {
   })
   setups.push(target)
   await target.renderer.setupTerminal()
-  writes.length = 0
-  return { ...target, take: () => writes.splice(0).join("") }
+  stdout.clear()
+  const take = () => {
+    const text = stdout.text()
+    stdout.clear()
+    return text
+  }
+  return { ...target, take }
 }
 
 function openings(output: string) {

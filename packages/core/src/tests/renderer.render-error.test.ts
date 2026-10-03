@@ -4,6 +4,7 @@ import type { OptimizedBuffer } from "../buffer.js"
 import { CliRenderEvents, type CliRendererErrorEvent } from "../renderer.js"
 import { createTestRenderer } from "../testing.js"
 import type { RenderContext } from "../types.js"
+import { LogLevel } from "../zig.js"
 
 class ThrowingRenderable extends Renderable {
   public shouldThrow = true
@@ -88,4 +89,28 @@ test("reports an unobserved render error", async () => {
     consoleError.mockRestore()
     renderer.destroy()
   }
+})
+
+test("each frame end drains native warnings outside the frame", async () => {
+  const setup = await createTestRenderer({})
+  const { renderer } = setup
+  const lib = renderer.nativeScene.driver.renderLib
+  const drains: unknown[] = []
+  const drain = spyOn(lib, "logContextDiagnostics").mockImplementation((context, level) => {
+    drains.push({
+      context,
+      level,
+      frame: renderer.nativeScene.frame,
+      rendering: renderer.getSchedulerState().isRendering,
+    })
+  })
+  try {
+    await setup.renderOnce()
+    await setup.renderOnce()
+  } finally {
+    drain.mockRestore()
+    await setup.dispose()
+  }
+  const frameEnd = { context: renderer.nativeScene.driver.context, level: LogLevel.Warn, frame: null, rendering: false }
+  expect(drains).toEqual([frameEnd, frameEnd])
 })
