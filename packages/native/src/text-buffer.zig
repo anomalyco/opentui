@@ -591,13 +591,6 @@ pub const UnifiedTextBuffer = struct {
         try self.setTextFromMemIdWithUndo(mem_id, null);
     }
 
-    pub fn resetTextFromMemId(self: *Self, mem_id: u8) TextBufferError!void {
-        const text = self.mem_registry.get(mem_id) orelse return TextBufferError.InvalidMemId;
-        var replacement_arena = std.heap.ArenaAllocator.init(self.global_allocator);
-        defer replacement_arena.deinit();
-        try self.setPlainText(mem_id, text, 0, null, null, &replacement_arena);
-    }
-
     pub fn setTextFromMemIdWithUndo(self: *Self, mem_id: u8, meta: ?[]const u8) TextBufferError!void {
         const text = self.mem_registry.get(mem_id) orelse return TextBufferError.InvalidMemId;
         try self.setPlainText(mem_id, text, 0, meta, null, null);

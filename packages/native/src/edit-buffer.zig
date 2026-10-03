@@ -745,13 +745,6 @@ pub const EditBuffer = struct {
         return mem_id;
     }
 
-    /// Set text from memory ID and completely reset the buffer state (clears history, resets add_buffer)
-    pub fn setTextFromMemId(self: *EditBuffer, mem_id: u8) !void {
-        try self.tb.resetTextFromMemId(mem_id);
-        self.add_buffer.len = 0;
-        self.finishTextReplacement();
-    }
-
     /// Replace text while preserving undo history (creates an undo point). The bytes go to
     /// the add buffer, so a replacement takes no registry slot of its own.
     pub fn replaceText(self: *EditBuffer, text: []const u8) !void {

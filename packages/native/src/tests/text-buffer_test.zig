@@ -1525,7 +1525,7 @@ test "TextBuffer setTextFromMemId - replacing content does not retain previous r
     try std.testing.expect(tracking.allocated_bytes - tracking.freed_bytes <= 2 * one_document);
 }
 
-test "EditBuffer setTextFromMemId - replacing content without history does not retain previous ropes" {
+test "EditBuffer setTextOwned - replacing content without history does not retain previous ropes" {
     var pools = TestPools.init(std.testing.allocator);
     defer pools.deinit();
 
@@ -1535,16 +1535,15 @@ test "EditBuffer setTextFromMemId - replacing content without history does not r
     defer eb.deinit();
 
     const text = "prompt line\n" ** 256;
-    const mem_id = try eb.getTextBuffer().registerMemBuffer(text, false);
-    try eb.setTextFromMemId(mem_id);
+    const mem_id = try eb.setTextOwned(text, null);
     try eb.insertText("x");
     try std.testing.expect(eb.canUndo());
-    try eb.setTextFromMemId(mem_id);
+    try std.testing.expectEqual(mem_id, try eb.setTextOwned(text, mem_id));
     const one_document = tracking.allocated_bytes - tracking.freed_bytes;
 
     for (0..64) |_| {
         try eb.insertText("x");
-        try eb.setTextFromMemId(mem_id);
+        try std.testing.expectEqual(mem_id, try eb.setTextOwned(text, mem_id));
         try std.testing.expect(!eb.canUndo());
     }
 
