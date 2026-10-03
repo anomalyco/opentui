@@ -523,8 +523,7 @@ class TimelineEngine {
     if (this.renderer) {
       throw new Error("Timeline engine is already attached; use getTimelineEngine(renderer) for another renderer")
     }
-    const existing = rendererEngines.get(renderer)
-    if (existing && existing !== this)
+    if (rendererEngines.has(renderer))
       throw new Error("Renderer already has a timeline engine; use getTimelineEngine(renderer)")
     this.renderer = renderer
     rendererEngines.set(renderer, this)
@@ -617,12 +616,8 @@ export function getTimelineEngine(renderer: CliRenderer): TimelineEngine {
 /** @internal Renderer finalization releases ownership even when a destroy listener throws. */
 export function destroyTimelineEngine(renderer: CliRenderer): void {
   const owner = rendererEngines.get(renderer)
-  if (!owner) return
-  try {
-    owner.clear()
-  } finally {
-    owner.detach()
-  }
+  owner?.clear()
+  owner?.detach()
 }
 
 /** Creates and registers a timeline, playing unless autoplay is false.
