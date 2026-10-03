@@ -8,6 +8,7 @@ import {
   NativeStatus,
   type RenderLib,
   type ContextTextBufferHandle,
+  type NativeEditorStyle,
   type NativeEncodedStyledText,
 } from "./zig.js"
 import { type WidthMethod, type Highlight } from "./types.js"
@@ -169,55 +170,30 @@ export class TextBuffer {
     })
   }
 
+  private setDefaults(mask: NativeEditorStyleMask, style: NativeEditorStyle): void {
+    this.guard()
+    this.lib.contextTextBufferSetDefaults(this.native.handle.context, this.native.handle, mask, style)
+  }
+
   /** @internal Apply a complete default style through one checked native mutation. */
   public _setDefaults(fg: RGBA | null, bg: RGBA | null, attributes: number | null): void {
-    this.guard()
-    return this.lib.contextTextBufferSetDefaults(
-      this.native.handle.context,
-      this.native.handle,
-      NativeEditorStyleMask.All,
-      { fg, bg, attributes },
-    )
+    this.setDefaults(NativeEditorStyleMask.All, { fg, bg, attributes })
   }
 
   public setDefaultFg(fg: RGBA | null): void {
-    this.guard()
-    return this.lib.contextTextBufferSetDefaults(
-      this.native.handle.context,
-      this.native.handle,
-      NativeEditorStyleMask.Foreground,
-      { fg },
-    )
+    this.setDefaults(NativeEditorStyleMask.Foreground, { fg })
   }
 
   public setDefaultBg(bg: RGBA | null): void {
-    this.guard()
-    return this.lib.contextTextBufferSetDefaults(
-      this.native.handle.context,
-      this.native.handle,
-      NativeEditorStyleMask.Background,
-      { bg },
-    )
+    this.setDefaults(NativeEditorStyleMask.Background, { bg })
   }
 
   public setDefaultAttributes(attributes: number | null): void {
-    this.guard()
-    return this.lib.contextTextBufferSetDefaults(
-      this.native.handle.context,
-      this.native.handle,
-      NativeEditorStyleMask.Attributes,
-      { attributes },
-    )
+    this.setDefaults(NativeEditorStyleMask.Attributes, { attributes })
   }
 
   public resetDefaults(): void {
-    this.guard()
-    return this.lib.contextTextBufferSetDefaults(
-      this.native.handle.context,
-      this.native.handle,
-      NativeEditorStyleMask.All,
-      {},
-    )
+    this.setDefaults(NativeEditorStyleMask.All, {})
   }
 
   public getLineCount(): number {
@@ -246,19 +222,17 @@ export class TextBuffer {
     return this.lib.contextTextBufferGetRange(this.native.handle.context, this.native.handle, startOffset, endOffset)
   }
 
+  private highlight(operation: NativeEditHighlightOperation, argument?: number, highlight?: Highlight): void {
+    this.guard()
+    this.lib.contextTextBufferHighlight(this.native.handle.context, this.native.handle, operation, argument, highlight)
+  }
+
   /**
    * Add a highlight using character offsets into the full text.
    * start/end in highlight represent absolute character positions.
    */
   public addHighlightByCharRange(highlight: Highlight): void {
-    this.guard()
-    return this.lib.contextTextBufferHighlight(
-      this.native.handle.context,
-      this.native.handle,
-      NativeEditHighlightOperation.AddRange,
-      0,
-      highlight,
-    )
+    this.highlight(NativeEditHighlightOperation.AddRange, 0, highlight)
   }
 
   /**
@@ -266,43 +240,19 @@ export class TextBuffer {
    * start/end in highlight represent column offsets.
    */
   public addHighlight(lineIdx: number, highlight: Highlight): void {
-    this.guard()
-    return this.lib.contextTextBufferHighlight(
-      this.native.handle.context,
-      this.native.handle,
-      NativeEditHighlightOperation.AddLine,
-      lineIdx,
-      highlight,
-    )
+    this.highlight(NativeEditHighlightOperation.AddLine, lineIdx, highlight)
   }
 
   public removeHighlightsByRef(hlRef: number): void {
-    this.guard()
-    return this.lib.contextTextBufferHighlight(
-      this.native.handle.context,
-      this.native.handle,
-      NativeEditHighlightOperation.RemoveRef,
-      hlRef,
-    )
+    this.highlight(NativeEditHighlightOperation.RemoveRef, hlRef)
   }
 
   public clearLineHighlights(lineIdx: number): void {
-    this.guard()
-    return this.lib.contextTextBufferHighlight(
-      this.native.handle.context,
-      this.native.handle,
-      NativeEditHighlightOperation.ClearLine,
-      lineIdx,
-    )
+    this.highlight(NativeEditHighlightOperation.ClearLine, lineIdx)
   }
 
   public clearAllHighlights(): void {
-    this.guard()
-    return this.lib.contextTextBufferHighlight(
-      this.native.handle.context,
-      this.native.handle,
-      NativeEditHighlightOperation.ClearAll,
-    )
+    this.highlight(NativeEditHighlightOperation.ClearAll)
   }
 
   public getLineHighlights(lineIdx: number): Array<Highlight> {
