@@ -315,6 +315,7 @@ test "EditBuffer - horizontal moves and backspace step over one cursor unit" {
         },
         // Unicode keeps each emoji sequence one cursor unit.
         .{ .method = .unicode, .pieces = &.{.{ .bytes = "\u{1f469}\u{1f3fd}\u{200d}\u{1f4bb}a\u{1f1fa}\u{1f1f8}" }}, .stops = &.{ 0, 2, 3, 5 } },
+        .{ .method = .unicode, .pieces = &.{.{ .bytes = "\u{1f44b}\u{1f3ff}" }}, .stops = &.{ 0, 2 } },
     };
     for (cases) |case| {
         const eb = try insertPieces(&pools, case.method, case.pieces);
