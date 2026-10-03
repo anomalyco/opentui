@@ -59,30 +59,21 @@ test "Scene box details rejects invalid replacement before publication" {
     try expectRow((try owner.raw().getSessionRenderer(fixture.session)).getNextBuffer(), 0, "A-old------B");
 }
 
+fn replaceTitles(allocator: std.mem.Allocator) !void {
+    const owner = try context.Context.init(allocator, testing.io, .{});
+    defer owner.deinit() catch unreachable;
+    const fixture = try setup(owner);
+    try owner.sceneSetBoxDetails(fixture.box, .{ .title = "old", .bottom_title = "old", .custom_border_chars = custom });
+    const details = (try owner.raw().getRenderable(fixture.box)).scene_node.?.control.box.?;
+    owner.sceneSetBoxDetails(fixture.box, .{ .title = "new", .bottom_title = "new", .custom_border_chars = custom }) catch |err| {
+        try testing.expectEqualStrings("old", details.title);
+        try testing.expectEqualStrings("old", details.bottom_title);
+        return err;
+    };
+}
+
 test "Scene box details allocation failure preserves old titles and releases replacements" {
-    var failures: usize = 0;
-    for (0..8) |offset| {
-        var failing = testing.FailingAllocator.init(testing.allocator, .{});
-        const owner = try context.Context.init(failing.allocator(), testing.io, .{});
-        defer owner.deinit() catch unreachable;
-        const fixture = try setup(owner);
-        try owner.sceneSetBoxDetails(fixture.box, .{ .title = "old", .bottom_title = "old", .custom_border_chars = custom });
-        failing.fail_index = failing.alloc_index + offset;
-        const result = owner.sceneSetBoxDetails(fixture.box, .{ .title = "new", .bottom_title = "new", .custom_border_chars = custom });
-        failing.fail_index = std.math.maxInt(usize);
-        if (result) |_| break else |err| {
-            try testing.expectEqual(error.OutOfMemory, err);
-            failures += 1;
-            try repaint(owner, fixture.session, options.background, true, 0);
-            const target = (try owner.raw().getSessionRenderer(fixture.session)).getNextBuffer();
-            try expectRow(target, 0, "A-old------B");
-            try expectRow(target, 2, "C-old------D");
-        }
-        failing.fail_index = failing.alloc_index;
-        try owner.sceneSetBoxDetails(fixture.box, .{});
-        try owner.sceneDestroyNode(fixture.box);
-    }
-    try testing.expect(failures > 0 and failures < 8);
+    try testing.checkAllAllocationFailures(testing.allocator, replaceTitles, .{});
 }
 
 test "Scene box details replaced during a record batch paint live and destroyed boxes own nothing" {
