@@ -3,6 +3,12 @@ const logger = @import("../logger.zig");
 const context = @import("../context.zig");
 const buffer = @import("../buffer.zig");
 
+/// Copies the oldest records as ot_context_drain_diagnostics does and returns the count.
+fn drain(queue: *logger.Diagnostics, out: []logger.Diagnostic) u32 {
+    for (out, 0..) |*event, count| event.* = (queue.pop() orelse return @intCast(count)).*;
+    return @intCast(out.len);
+}
+
 test "Context Yoga warnings use only their owning diagnostic queues with bounded formatting" {
     const yoga = @import("../yoga.zig");
     const InvalidMeasure = struct {
@@ -45,7 +51,7 @@ test "Context Yoga warnings use only their owning diagnostic queues with bounded
         try std.testing.expectEqual(heights[index], (try owner.sceneGetLayout(nodes[index], true)).height);
     }
     for ([_]*context.Context{ first, second }, 0..) |owner, index| {
-        try std.testing.expectEqual(@as(u32, 1), owner.diagnostics.drain(&events).count);
+        try std.testing.expectEqual(@as(u32, 1), drain(&owner.diagnostics, &events));
         const event = &events[0];
         try std.testing.expectEqual(.warn, event.level);
         try std.testing.expect(!event.truncated);
@@ -60,7 +66,7 @@ test "Context Yoga warnings use only their owning diagnostic queues with bounded
     try yoga.check(yoga.yogaNodeCalculateLayoutChecked(remaining.yoga_node, std.math.nan(f32), std.math.nan(f32), 1));
     const long_message = [_:0]u8{'x'} ** (logger.Diagnostic.message_bytes_max + 1);
     yoga.testLogMessage(second.yoga_config.ref, &long_message);
-    try std.testing.expectEqual(@as(u32, 2), second.diagnostics.drain(&events).count);
+    try std.testing.expectEqual(@as(u32, 2), drain(&second.diagnostics, &events));
     try std.testing.expect(events[1].truncated);
     try std.testing.expectEqual(@as(u32, logger.Diagnostic.message_bytes_max), events[1].message_len);
     try std.testing.expectEqualStrings("Yoga: ", events[1].message[0..6]);
@@ -78,30 +84,26 @@ test "diagnostics copy messages and drain FIFO with drop-newest overflow" {
     defer queue.deinit();
     const log: logger.Logger = .{ .diagnostics = &queue };
     var events: [2]logger.Diagnostic = undefined;
-    try std.testing.expectEqual(@as(u32, 0), queue.drain(&events).count);
+    try std.testing.expect(queue.pop() == null);
 
     var source = "first".*;
     log.err("{s}", .{&source});
     @memset(&source, '!');
     log.info("", .{});
     log.warn("dropped", .{});
-    const snapshot = queue.drain(&.{});
-    try std.testing.expectEqual(@as(u32, 0), snapshot.count);
-    try std.testing.expectEqual(@as(u32, 2), snapshot.remaining);
-    try std.testing.expectEqual(@as(u64, 1), snapshot.dropped);
+    try std.testing.expectEqual(@as(u32, 2), queue.count);
+    try std.testing.expectEqual(@as(u64, 1), queue.dropped_count);
 
-    const first = queue.drain(events[0..1]);
-    try std.testing.expectEqual(@as(u32, 1), first.count);
-    try std.testing.expectEqual(@as(u32, 1), first.remaining);
+    try std.testing.expectEqual(@as(u32, 1), drain(&queue, events[0..1]));
+    try std.testing.expectEqual(@as(u32, 1), queue.count);
     try std.testing.expectEqual(.err, events[0].level);
     try std.testing.expectEqualStrings("first", events[0].message[0..events[0].message_len]);
     try std.testing.expect(!events[0].truncated);
     try std.testing.expect(std.mem.allEqual(u8, events[0].message[events[0].message_len..], 0));
     log.debug("wrapped", .{});
-    const rest = queue.drain(&events);
-    try std.testing.expectEqual(@as(u32, 2), rest.count);
-    try std.testing.expectEqual(@as(u32, 0), rest.remaining);
-    try std.testing.expectEqual(@as(u64, 1), rest.dropped);
+    try std.testing.expectEqual(@as(u32, 2), drain(&queue, &events));
+    try std.testing.expectEqual(@as(u32, 0), queue.count);
+    try std.testing.expectEqual(@as(u64, 1), queue.dropped_count);
     try std.testing.expectEqual(.info, events[0].level);
     try std.testing.expectEqual(@as(u32, 0), events[0].message_len);
     try std.testing.expectEqual(.debug, events[1].level);
@@ -119,7 +121,7 @@ test "diagnostics truncate only over-limit messages and do not allocate while lo
         log.warn("{s}", .{source[0..length]});
     }
     var events: [3]logger.Diagnostic = undefined;
-    try std.testing.expectEqual(@as(u32, 3), queue.drain(&events).count);
+    try std.testing.expectEqual(@as(u32, 3), drain(&queue, &events));
     for (&events, 0..) |*event, index| {
         try std.testing.expectEqual(.warn, event.level);
         try std.testing.expectEqual(index == 2, event.truncated);
@@ -135,13 +137,12 @@ test "diagnostics zero capacity drops messages and drop counts saturate" {
     defer queue.deinit();
     const log: logger.Logger = .{ .diagnostics = &queue };
     log.info("disabled", .{});
-    try std.testing.expectEqual(@as(u64, 1), queue.drain(&.{}).dropped);
+    try std.testing.expectEqual(@as(u64, 1), queue.dropped_count);
     queue.dropped_count = std.math.maxInt(u64) - 1;
     log.err("last counted", .{});
     log.err("saturated", .{});
-    const result = queue.drain(&.{});
-    try std.testing.expectEqual(@as(u64, std.math.maxInt(u64)), result.dropped);
-    try std.testing.expectEqual(@as(u32, 0), result.remaining);
+    try std.testing.expectEqual(@as(u64, std.math.maxInt(u64)), queue.dropped_count);
+    try std.testing.expect(queue.pop() == null);
 }
 
 const LegacyProbe = struct {
@@ -236,9 +237,8 @@ test "Context diagnostics stay isolated across threads and teardown with a legac
 
     var events: [8]logger.Diagnostic = undefined;
     for (tasks, 0..) |task, index| {
-        const result = task.owner.diagnostics.drain(&events);
-        try std.testing.expectEqual(@as(u32, 8), result.count);
-        try std.testing.expectEqual(@as(u64, 0), result.dropped);
+        try std.testing.expectEqual(@as(u32, 8), drain(&task.owner.diagnostics, &events));
+        try std.testing.expectEqual(@as(u64, 0), task.owner.diagnostics.dropped_count);
         try std.testing.expectEqual(.err, events[0].level);
         try std.testing.expectEqualStrings(task.text, events[0].message[8..events[0].message_len]);
         try std.testing.expectEqual(.debug, events[3].level);
@@ -249,7 +249,7 @@ test "Context diagnostics stay isolated across threads and teardown with a legac
     try first.deinit();
     first_alive = false;
     try tasks[1].render();
-    try std.testing.expectEqual(@as(u32, 8), second.diagnostics.drain(&events).count);
+    try std.testing.expectEqual(@as(u32, 8), drain(&second.diagnostics, &events));
     try std.testing.expectEqualStrings("context bravo-two", events[0].message[0..events[0].message_len]);
     try std.testing.expectEqual(@as(u32, 0), LegacyProbe.calls.load(.monotonic));
     logger.warn("legacy still registered", .{});
@@ -289,9 +289,8 @@ test "Context diagnostics capture renderer and buffer failures without invoking 
         .logger = &owner.logger,
     }));
     var events: [3]logger.Diagnostic = undefined;
-    const result = owner.diagnostics.drain(&events);
-    try std.testing.expectEqual(@as(u32, 3), result.count);
-    try std.testing.expectEqual(@as(u64, 0), result.dropped);
+    try std.testing.expectEqual(@as(u32, 3), drain(&owner.diagnostics, &events));
+    try std.testing.expectEqual(@as(u64, 0), owner.diagnostics.dropped_count);
     for (events) |event| try std.testing.expectEqual(.warn, event.level);
     try std.testing.expectEqualStrings("Failed to push hit-grid scissor rect: error.OutOfMemory", events[0].message[0..events[0].message_len]);
     try std.testing.expectEqualStrings("drawTextBuffer failed: error.OutOfMemory", events[1].message[0..events[1].message_len]);

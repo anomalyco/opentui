@@ -28,13 +28,6 @@ pub const Diagnostics = struct {
     count: u32 = 0,
     dropped_count: u64 = 0,
 
-    pub const Drain = struct {
-        count: u32,
-        remaining: u32,
-        /// Saturating lifetime total, not reset by draining.
-        dropped: u64,
-    };
-
     /// Zero capacity disables storage but still counts dropped messages.
     pub fn init(allocator: std.mem.Allocator, capacity: u32) std.mem.Allocator.Error!Diagnostics {
         return .{ .allocator = allocator, .events = try allocator.alloc(Diagnostic, capacity) };
@@ -43,17 +36,6 @@ pub const Diagnostics = struct {
     pub fn deinit(self: *Diagnostics) void {
         self.allocator.free(self.events);
         self.* = undefined;
-    }
-
-    /// Copies the oldest records into caller storage. An empty output only
-    /// snapshots pressure. Copied records survive queue reuse and owner teardown.
-    pub fn drain(self: *Diagnostics, out: []Diagnostic) Drain {
-        var count: u32 = 0;
-        for (out) |*event| {
-            event.* = (self.pop() orelse break).*;
-            count += 1;
-        }
-        return .{ .count = count, .remaining = self.count, .dropped = self.dropped_count };
     }
 
     /// Removes the oldest record. The record stays readable until the next log call.

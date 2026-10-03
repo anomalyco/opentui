@@ -391,10 +391,8 @@ test "Context scene measure maps unrepresentable host sizes to Yoga's invalid si
         const measured = try layout(owner, node);
         try std.testing.expectEqual(@as(f32, if (width == 3) 3 else 0), measured.width);
         try std.testing.expectEqual(@as(f32, 1), measured.height);
-        var records: [1]@import("../logger.zig").Diagnostic = undefined;
-        const drained = owner.diagnostics.drain(&records);
-        try std.testing.expectEqual(@as(u32, if (width == 3) 0 else 1), drained.count);
-        try std.testing.expectEqual(@as(u32, 0), drained.remaining);
+        try std.testing.expectEqual(width != 3, owner.diagnostics.pop() != null);
+        try std.testing.expect(owner.diagnostics.pop() == null);
     }
 }
 
