@@ -236,6 +236,9 @@ const Lifecycle = struct {
     mouse: bool = false,
     mouse_movement: bool = true,
     rows_remaining: u32 = 0,
+    /// Main-screen rows that enable moves back up. Fixed when setup or resume is
+    /// accepted, because split controls and snapshots can change renderOffset later.
+    rows_return: u32 = 0,
     image_index: usize = 0,
     deadline_ns: ?u64 = null,
 };
@@ -584,6 +587,7 @@ pub const Session = struct {
             .mouse = options.mouse,
             .mouse_movement = options.mouse_movement,
             .rows_remaining = rows,
+            .rows_return = if (value.renderOffset == 0) rows else 0,
         };
     }
 
@@ -618,6 +622,7 @@ pub const Session = struct {
         self.lifecycle.phase = .resuming;
         self.lifecycle.step = .setup_screen;
         self.lifecycle.rows_remaining = rows;
+        self.lifecycle.rows_return = rows;
     }
 
     pub fn getTerminalState(self: *const Session) TerminalState {
@@ -1034,9 +1039,7 @@ pub const Session = struct {
                 if (progress.rows_remaining == 0) progress.step = .enable;
             },
             .enable => {
-                if (!value.useAlternateScreen and value.renderOffset == 0 and value.height > 1) {
-                    try writer.print("\x1b[{d}A", .{value.height - 1});
-                }
+                if (progress.rows_return != 0) try writer.print("\x1b[{d}A", .{progress.rows_return});
                 try writer.writeAll(ansi.ANSI.hideCursor);
                 try candidate.enableDetectedFeatures(writer, candidate.opts.kitty_keyboard_flags != 0);
                 try candidate.setMouseMode(writer, progress.mouse, progress.mouse_movement);
