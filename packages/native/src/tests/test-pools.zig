@@ -28,6 +28,7 @@ pub const GraphemeSpec = struct {
     pub const lengths = [_]usize{ 0, 1, 7, 8, 9, 16, 17, 33, 64, 65, 128 };
     // Class 5 does not exist; slot 0xffff is never allocated by the model.
     pub const invalid_ids = [_]u32{ gp.SLOT_MASK, 5 << (gp.GENERATION_BITS + gp.SLOT_BITS) };
+    pub const get_rejects_released = true;
 
     /// One slot per page makes nearly every first use grow the pool.
     pub fn init(allocator: std.mem.Allocator) Pool {
@@ -60,6 +61,8 @@ pub const LinkSpec = struct {
     pub const too_long = error.UrlTooLong;
     pub const lengths = [_]usize{ 1, 20, 100, 511, 512 };
     pub const invalid_ids = [_]u32{link.SLOT_MASK};
+    // LinkPool.get still resolves a released ID; Context.getLinkUrl rejects it.
+    pub const get_rejects_released = false;
 
     pub fn init(allocator: std.mem.Allocator) Pool {
         return Pool.init(allocator);
@@ -142,6 +145,11 @@ pub fn checkPoolModel(comptime Spec: type, seed: u64, step_count: u32) !void {
                 return;
             };
             if (entry.id) |live| try std.testing.expectEqual(live, id);
+            // Each slot reuse needs a release, and the ring holds the last 8, so a
+            // 7-bit grapheme generation cannot wrap back to a ringed ID.
+            if (entry.id == null) {
+                for (self.released[0..@min(self.released_count, self.released.len)]) |old| try std.testing.expect(old != id);
+            }
             for (self.entries, 0..) |other, other_index| {
                 if (other_index != index and other.id != null) try std.testing.expect(other.id.? != id);
             }
@@ -194,11 +202,14 @@ pub fn checkPoolModel(comptime Spec: type, seed: u64, step_count: u32) !void {
                 try std.testing.expectError(error.InvalidId, self.pool.incref(id));
                 try std.testing.expectError(error.InvalidId, self.pool.decref(id));
                 try std.testing.expectError(error.InvalidId, self.pool.getRefcount(id));
+                try std.testing.expectError(error.InvalidId, self.pool.get(id));
             }
             if (self.released_count == 0) return;
             const id = self.released[random.uintLessThan(usize, @min(self.released_count, self.released.len))];
-            // A grapheme slot reused 128 times reissues the same ID.
-            for (self.entries) |entry| if (entry.id == id) return;
+            if (Spec.get_rejects_released) {
+                const result = self.pool.get(id);
+                try std.testing.expect(result == error.InvalidId or result == error.WrongGeneration);
+            }
             for ([_]anyerror!void{ self.pool.incref(id), self.pool.decref(id) }) |result| {
                 if (result) |_| return error.TestUnexpectedResult else |err| {
                     try std.testing.expect(err == error.InvalidId or err == error.WrongGeneration);
