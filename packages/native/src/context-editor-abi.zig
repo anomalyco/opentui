@@ -586,6 +586,23 @@ test "Context checked history matches ABI metadata cursor and observer order" {
     try std.testing.expectEqual(0, written);
 }
 
+test "Context history-preserving set_text needs no registry slot per call" {
+    const core = try ctx.Context.init(std.testing.allocator, std.testing.io, .{});
+    defer core.deinit() catch unreachable;
+    const id = try core.createEditBuffer(.unicode);
+    const buffer = (try core.raw().getEditBuffer(id)).buffer;
+    const slots = buffer.tb.memRegistry().getUsedSlots();
+    var expected: [8]u8 = undefined;
+    var actual: [8]u8 = undefined;
+    for (0..1000) |index| try core.editSetText(id, try std.fmt.bufPrint(&expected, "v{d}", .{index}), true);
+    try std.testing.expectEqual(slots, buffer.tb.memRegistry().getUsedSlots());
+    var index: usize = 999;
+    while (index > 0) : (index -= 1) {
+        _ = try core.editHistory(id, false);
+        try std.testing.expectEqualStrings(try std.fmt.bufPrint(&expected, "v{d}", .{index - 1}), actual[0..buffer.getText(&actual)]);
+    }
+}
+
 test "Context editor accepted deletion does not return a later layout allocation failure" {
     var owner: Owner = .{ .gpa = .init, .io_threaded = .init_single_threaded, .core = undefined, .owner_thread = std.Thread.getCurrentId() };
     defer owner.io_threaded.deinit();

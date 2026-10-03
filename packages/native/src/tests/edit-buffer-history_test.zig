@@ -186,8 +186,12 @@ test "EditBuffer - owned replacement registration rejection frees the copy" {
                 .fail_index = 0,
                 .resize_fail_index = 0,
             });
+            // A history replacement registers a slot only when the add buffer must grow.
+            const grows = try std.testing.allocator.alloc(u8, eb.add_buffer.cap);
+            defer std.testing.allocator.free(grows);
+            @memset(grows, 'x');
             registry.allocator = failing.allocator();
-            const result = if (operation == .set) eb.setText("replacement") else eb.replaceText("replacement");
+            const result = if (operation == .set) eb.setText("replacement") else eb.replaceText(grows);
             registry.allocator = allocator;
             try std.testing.expectError(error.OutOfMemory, result);
             try std.testing.expectEqual(admission == .allocation, failing.has_induced_failure);
@@ -209,7 +213,7 @@ test "EditBuffer - owned replacement registration rejection frees the copy" {
                 try std.testing.expectEqual(@as(usize, 0), eb.add_buffer.len);
             } else {
                 try eb.replaceText("replacement");
-                try std.testing.expectEqual(add_len, eb.add_buffer.len);
+                try std.testing.expectEqual(add_len + "replacement".len, eb.add_buffer.len);
                 _ = try eb.undo();
                 try std.testing.expectEqualStrings("old", actual[0..eb.getText(&actual)]);
                 _ = try eb.redo();

@@ -128,8 +128,8 @@ const AddBuffer = struct {
     fn ensureCapacity(self: *AddBuffer, text_buffer: *UnifiedTextBuffer, need: usize) !void {
         if (self.len + need <= self.cap) return;
 
-        // TODO: Create a new buffer, register the new buffer and use the new mem_id for subsequent inserts
-        const new_cap = @max(self.cap * 2, self.len + need);
+        // Earlier bytes stay in the old slot; the new slot starts empty.
+        const new_cap = @max(self.cap * 2, need);
         const new_mem = try self.allocator.alloc(u8, new_cap);
         errdefer self.allocator.free(new_mem);
         const new_mem_id = try text_buffer.registerMemBuffer(new_mem, true);
@@ -150,6 +150,19 @@ const AddBuffer = struct {
         const end: u32 = @intCast(self.len);
         return .{ .mem_id = self.mem_id, .start = start, .end = end };
     }
+
+    /// Restores the add buffer after a failed edit and releases a slot that growth registered.
+    const Checkpoint = struct {
+        add_buffer: AddBuffer,
+        buffer_count: usize,
+
+        fn restore(checkpoint: Checkpoint, text_buffer: *UnifiedTextBuffer, add_buffer: *AddBuffer) void {
+            if (add_buffer.mem_id != checkpoint.add_buffer.mem_id) {
+                text_buffer.mem_registry.cancelLastRegistration(add_buffer.mem_id, checkpoint.buffer_count);
+            }
+            add_buffer.* = checkpoint.add_buffer;
+        }
+    };
 };
 
 pub const EditBuffer = struct {
@@ -311,8 +324,8 @@ pub const EditBuffer = struct {
         self.emitNativeEvent(.cursor_changed);
     }
 
-    fn ensureAddCapacity(self: *EditBuffer, need: usize) !void {
-        try self.add_buffer.ensureCapacity(self.tb, need);
+    fn addCheckpoint(self: *const EditBuffer) AddBuffer.Checkpoint {
+        return .{ .add_buffer = self.add_buffer, .buffer_count = self.tb.mem_registry.buffers.items.len };
     }
 
     /// TODO: This method should live in text-buffer-segment.zig and the Rope should take it as comptime param
@@ -386,15 +399,9 @@ pub const EditBuffer = struct {
         const cursor = self.cursors.items[0];
         const insert_offset = iter_mod.coordsToOffset(self.tb.rope(), cursor.row, cursor.col) orelse return EditBufferError.InvalidCursor;
 
-        const previous_add_buffer = self.add_buffer;
-        const previous_buffer_count = self.tb.mem_registry.buffers.items.len;
-        errdefer {
-            if (self.add_buffer.mem_id != previous_add_buffer.mem_id) {
-                self.tb.mem_registry.cancelLastRegistration(self.add_buffer.mem_id, previous_buffer_count);
-            }
-            self.add_buffer = previous_add_buffer;
-        }
-        try self.ensureAddCapacity(bytes.len);
+        const checkpoint = self.addCheckpoint();
+        errdefer checkpoint.restore(self.tb, &self.add_buffer);
+        try self.add_buffer.ensureCapacity(self.tb, bytes.len);
 
         const chunk_ref = self.add_buffer.append(bytes);
         const base_mem_id = chunk_ref.mem_id;
@@ -504,15 +511,9 @@ pub const EditBuffer = struct {
         if (self.cursors.items.len == 0) return EditBufferError.InvalidCursor;
         const has_deletion = start_offset != end_offset;
 
-        const previous_add_buffer = self.add_buffer;
-        const previous_buffer_count = self.tb.mem_registry.buffers.items.len;
-        errdefer {
-            if (self.add_buffer.mem_id != previous_add_buffer.mem_id) {
-                self.tb.mem_registry.cancelLastRegistration(self.add_buffer.mem_id, previous_buffer_count);
-            }
-            self.add_buffer = previous_add_buffer;
-        }
-        try self.ensureAddCapacity(bytes.len);
+        const checkpoint = self.addCheckpoint();
+        errdefer checkpoint.restore(self.tb, &self.add_buffer);
+        try self.add_buffer.ensureCapacity(self.tb, bytes.len);
         const chunk_ref = self.add_buffer.append(bytes);
         var segments = try self.tb.textToSegments(self.allocator, bytes, chunk_ref.mem_id, chunk_ref.start, false);
         defer segments.segments.deinit(segments.allocator);
@@ -809,16 +810,18 @@ pub const EditBuffer = struct {
         self.finishTextReplacement();
     }
 
-    /// Replace text while preserving undo history (creates an undo point)
+    /// Replace text while preserving undo history (creates an undo point). The bytes go to
+    /// the add buffer, so a replacement takes no registry slot of its own.
     pub fn replaceText(self: *EditBuffer, text: []const u8) !void {
-        const owned_text = try self.allocator.dupe(u8, text);
-        const previous_buffer_count = self.tb.mem_registry.buffers.items.len;
-        const mem_id = self.tb.registerMemBuffer(owned_text, true) catch |err| {
-            self.allocator.free(owned_text);
-            return err;
-        };
-        errdefer self.tb.mem_registry.cancelLastRegistration(mem_id, previous_buffer_count);
-        try self.replaceTextFromMemId(mem_id);
+        var meta_buffer: [64]u8 = undefined;
+        const meta = try self.encodeCurrentCursorMeta(&meta_buffer);
+        try self.cursors.ensureTotalCapacity(self.allocator, 1);
+        const checkpoint = self.addCheckpoint();
+        errdefer checkpoint.restore(self.tb, &self.add_buffer);
+        try self.add_buffer.ensureCapacity(self.tb, text.len);
+        const added = self.add_buffer.append(text);
+        try self.tb.setTextFromMemRangeWithUndo(added.mem_id, added.start, added.end, meta);
+        self.finishTextReplacement();
     }
 
     pub fn replaceTextBorrowed(self: *EditBuffer, text: []const u8) !u8 {
