@@ -139,8 +139,15 @@ view churn, and do not destroy a direct engine until its `init()` promise settle
 Use `ThreeCliRenderer` directly when you need to choose the destination `OptimizedBuffer` on every frame:
 
 ```typescript
-import { RGBA } from "@opentui/core"
+import { FrameBufferRenderable, RGBA } from "@opentui/core"
 import { THREE, ThreeCliRenderer } from "@opentui/three"
+
+const target = new FrameBufferRenderable(renderer, {
+  id: "three-target",
+  width: renderer.terminalWidth,
+  height: renderer.terminalHeight,
+})
+renderer.root.add(target)
 
 const engine = new ThreeCliRenderer(renderer, {
   width: renderer.terminalWidth,
@@ -153,9 +160,12 @@ await engine.init()
 engine.setActiveCamera(camera)
 
 renderer.setFrameCallback(async (deltaMs) => {
-  await engine.drawScene(scene, renderer.nextRenderBuffer, deltaMs / 1000)
+  await engine.drawScene(scene, target.frameBuffer, deltaMs / 1000)
 })
 ```
+
+The frame callback draws into the `FrameBufferRenderable` buffer because renderer buffers accept drawing only in
+post-process functions.
 
 Unlike `ThreeRenderable`, direct use requires `await engine.init()` before canvas-dependent methods. These methods
 include screenshots, supersampling configuration, and scene rendering. The engine registers for `CliRenderer`

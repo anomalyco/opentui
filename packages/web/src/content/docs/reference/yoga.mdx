@@ -169,11 +169,11 @@ Use `setMeasureFunc(callback)` to register it. Use `unsetMeasureFunc()` or pass 
 
 An undefined size constraint reaches the callback as `NaN` with `MeasureMode.Undefined`. The callback returns `{ width, height }`.
 
-A Yoga node has one measure slot. A JavaScript measure function replaces native-backed measurement on that node. Native-backed measurement can also replace the JavaScript function.
+A node has one measure function, and a new one replaces the old one. Standalone nodes measure only through JavaScript measure functions.
 
 `setDirtiedFunc(callback)` registers a `DirtiedFunction`. Yoga calls it with the matching `Node` when clean state changes to dirty state. Use `unsetDirtiedFunc()` or pass `null` to remove it.
 
-The facade shares one native trampoline for all measure callbacks and one for all dirtied callbacks. It routes each call through the node pointer. Release and reset operations remove the per-node registrations.
+Each `Config` creates one native measure trampoline and one dirtied trampoline when the first of its nodes registers a callback, and closes them in `free()`. A trampoline routes each call through the node pointer. Release and reset operations remove the per-node registrations.
 
 ## Types
 

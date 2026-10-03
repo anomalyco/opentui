@@ -424,10 +424,89 @@ The build generates eight platform packages:
 
 Each package has one default export that resolves the native library path. These packages are internal distribution surfaces, not application APIs. Let `@opentui/core` select the correct package. See [Runtime and platform support](/docs/getting-started/runtime-support).
 
-## Source-defined native ABI
+## Native ABI
 
-The npm API and the source-defined native application binary interface (ABI) are separate surfaces. `lib.zig` defines 335 exported functions. The Yoga module defines 50 more, and `NativeSpanFeed` defines 11 more.
+The npm API and the native application binary interface (ABI) are separate surfaces. `opentui.h` declares the experimental C ABI. See [C](/docs/native/c).
 
-OpenTUI's TypeScript packages call these functions through an internal ABI. The project does not publish a first-party C header or a supported standalone C contract. Do not treat the 396 source names as supported npm symbols or as an API for other language bindings.
+OpenTUI's TypeScript packages call the native library through internal bindings that can change with them. Use the TypeScript exports indexed above for application code.
 
-The native binding can change with its TypeScript callers. Use the TypeScript exports indexed above for application code.
+## Changes since 0.5.14
+
+Layout, hit testing, and painting now run in a native scene, and native resources belong to an owner Context. This section lists each 0.5.14 API and behavior that was removed or changed, with its replacement. New APIs are in the tables above.
+
+### Renderer
+
+- `addToHitGrid()`, `pushHitGridScissorRect()`, `popHitGridScissorRect()`, and `clearHitGridScissorRects()` were removed from the renderer and `RenderContext`. The native scene registers a hit area for each visible node and clips it to `overflow` ancestors. Use `renderer.hitTest(x, y)` to query it.
+- `dumpBuffers()` and `dumpOutputBuffer()` were removed. Use test frame capture, `renderer.currentRenderBuffer.withBuffers()`, or a custom `stdout`. `dumpHitGrid()` remains.
+- `renderer.useThread` and the `useThread` option of `createCliRenderer()` and `createTestRenderer()` were removed. Core writes output on the JavaScript thread. Remove the option.
+- `renderer.rendererPtr` was removed. It has no replacement.
+- The `OTUI_NO_NATIVE_RENDER` environment variable was removed. Use `createTestRenderer()`.
+- `suspend()` and `resume()` return a `Promise<void>`. Await them. They throw when the terminal is not set up (also after `destroy()`) or a transition is pending. `resume()` also throws when the renderer is not suspended.
+- `useMouse`, `enableKittyKeyboard()`, and `disableKittyKeyboard()` throw during terminal setup, suspend, or resume, and while the renderer is suspended. `screenMode` throws during setup, suspend, or resume. Change them after the transition settles.
+- `enableKittyKeyboard(flags)` throws `RangeError` for flags outside 0 to 31.
+- An `error` event on the output stream closes the renderer and rejects `renderer.closed`. In 0.5.14, the renderer handled the event only while Kitty file transport was active: it cancelled file transport and kept running. A failed Kitty temporary-file write still falls back to inline transport. Handle the rejection of `closed`.
+- After `destroy()`, `setTerminalTitle()`, `resetTerminalBgColor()`, `copyToClipboardOSC52()`, `clearClipboardOSC52()`, `isOsc52Supported()`, `setCursorPosition()`, `setCursorStyle()`, `setCursorColor()`, `setMousePointer()`, `getCursorState()`, `getStats()`, `getNativeStats()`, `configureDebugOverlay()`, `toggleDebugOverlay()`, `dumpHitGrid()`, `hitTest()`, and `console.show()` (also through `console.toggle()`) throw, and `getPalette()` rejects. `requestRender()`, `resize()`, `triggerNotification()`, and `getLinkAt()` do nothing. Check `renderer.isDestroyed` first.
+- `getPalette()` rejects before the terminal is set up, for example on a `createTestRenderer()` renderer, and while a setup, suspend, or resume is pending. Its `size` must be an integer from 1 to 256.
+- A renderable constructor and `engine.attach()` throw for a destroyed renderer. Create renderables before you destroy the renderer.
+- `destroy()` restores the terminal and releases the streams asynchronously. Await `renderer.closed` before you reuse the streams.
+- One scrollback snapshot or commit larger than the output capacity divided by 24 bytes (about 349,000 cells by default) throws. A `rowColumns` value that is not an integer from 0 to the snapshot width throws `RangeError`. In 0.5.14, it was truncated and clamped.
+
+### Renderables and layout
+
+- `RootRenderable.calculateLayout()` was removed. Layout runs in the native frame. Read `getLayout()` after `renderOnce()` or `await renderer.idle()`.
+- `Renderable.getLayoutNode()` and the protected `yogaNode` were removed. Use layout properties, `setMeasureProvider()`, `invalidateIntrinsicSize()`, and `getLayout()`. Renderables cannot use `Display.Contents`. The standalone `Yoga` API remains.
+- `render()`, `updateLayout()`, `updateFromLayout()`, `canReuseRenderCommandList()`, and the `RenderCommand` type were removed. Override `renderSelf(buffer, deltaTime)`, or use the `renderBefore` and `renderAfter` hooks.
+- The protected `_x`, `_y`, `_widthValue`, `_heightValue`, `_childrenInZIndexOrder`, `_getVisibleChildren()`, `_hasVisibleChildFilter()`, and `getScissorRect()` were removed. Use `x`, `y`, `width`, `height`, `screenX`, and `screenY`. For child culling, use the `viewportCulling` option of `ScrollBox`.
+- The protected `renderCursor()` of edit buffer renderables was removed. Use the cursor options. `TextRenderable` no longer calls the protected `updateViewportOffset()` when it scrolls or resizes. Native code applies the viewport. The protected color fields of `ASCIIFontRenderable` hold `RGBA` values.
+- A custom `RenderContext` must provide `nativeScene`, `requestAnimationFrame()`, and `cancelAnimationFrame()`.
+- Paint hooks receive a recording buffer. `buffers`, `withBuffers()`, `getRealCharBytes()`, and `getSpanLines()` throw in a hook. Draw into a buffer that you own and compose it, or use a post-process function.
+- A layout, position, visibility, child, or `zIndex` change in a paint hook takes effect in the next frame. Color and text changes paint in the same frame.
+- `on("resized")` and `on("layout-changed")` throw on a renderable that is not the root. These listeners never ran in 0.5.14. Use `onSizeChange`.
+- After `destroy()`, `x`, `y`, `screenX`, `screenY`, `width`, and `height` of a renderable that is not `selectable` return 0 or the styled size, not the last layout. Read them before you destroy the renderable.
+- `RenderContext.getLifecyclePasses()` contains only renderables whose lifecycle pass is active.
+- Box `customBorderChars` with wide, combining, or control characters throws.
+
+### Buffers
+
+- `OptimizedBuffer.create(width, height, widthMethod, options)` requires `options.owner`. Pass `renderer.nativeScene` or a `ResourceContext`.
+- `buffer.buffers` works only in a post-process function. Use `buffer.withBuffers(callback)` elsewhere.
+- Drawing into `renderer.nextRenderBuffer` works only in a post-process function, and `renderer.currentRenderBuffer` does not accept drawing. In 0.5.14, frame callbacks could draw into `nextRenderBuffer`, for example with `ThreeCliRenderer.drawScene()`. Draw into a `FrameBufferRenderable` instead.
+- `encodeUnicode(text)` returns `{ data }` and never `null`. Its `char` values are opaque tokens for `drawChar()` on a buffer with the same owner. A tab encodes as two one-cell spaces.
+- `buffer.ptr` and `getNativeId()` were removed. Keep the buffer object. `buffer.id` is only a label.
+- Drawing methods throw `RangeError` for fractional, `NaN`, or infinite coordinates and sizes. Round them first.
+- `drawText()` and box titles throw `RangeError` for text larger than 64 KiB of UTF-8.
+- A non-finite `pushOpacity()` value or color-matrix strength throws.
+- Composing a buffer into itself throws. `setRespectAlpha()` on a renderer buffer throws.
+- `setCell()`, `setCellWithAlphaBlending()`, `drawChar()`, and `drawText()` reject attribute bits 8 to 31. Pass only text attributes. Use the styled-text `link()` helper for hyperlinks.
+
+### Text and editing
+
+- `SyntaxStyle.create()`, `fromStyles(styles)`, and `fromTheme(theme)` are now `create(owner)`, `fromStyles(styles, owner)`, and `fromTheme(theme, owner)`. Pass `renderer.nativeScene`, or a `ResourceContext` for standalone use.
+- `TextBuffer.create(widthMethod)` and `EditBuffer.create(widthMethod)` are now `create(widthMethod, owner)`.
+- `.ptr` was removed from `TextBuffer`, `TextBufferView`, `EditBuffer`, `EditorView`, and `SyntaxStyle`. Their constructors take Context handles. Use the `create()` factories.
+- `EditBuffer.setText()`, `insertText()`, and `replaceText()`, the same Textarea and Input methods, Textarea `initialValue`, `Input.value`, and the `placeholder` of both throw for control characters other than tab, carriage return, and line feed. Remove them first. Paste handlers remove them.
+- `TextBuffer.loadFile()` rejects invalid UTF-8.
+- Text buffer and text view offsets must be integers. Other values throw `RangeError`.
+- A highlight `priority` above 255 or `hlRef` above 65535 throws. In 0.5.14, the value wrapped.
+- Color getters of text, text table, ASCII font, Markdown, Diff, line number, and QR code renderables, and the `SyntaxStyle` style getters, return copies. Change a color through its setter. `ASCIIFont.color` returns an `RGBA`.
+
+### Resources and native bindings
+
+- The `Clipboard` class was removed. Use `renderer.copyToClipboardOSC52()` and `clearClipboardOSC52()`, or `createClipboard()` with `createHostClipboard()` and `createRendererClipboardAdapter(renderer)`.
+- Native resources belong to one owner Context. Resources from different owners cannot be used together. Drawing a `NativeImage` into a renderer copies it into the renderer's Context.
+- An image that `ImageRenderable` loads belongs to the renderer's Context and throws after `renderer.destroy()`. To keep it, load it yourself, for example with `NativeImage.load()`, and pass it as `source`.
+- `getAllocatorStats()` does not count Context memory. `getArenaAllocatedBytes()` always returns 0. Use `process.memoryUsage().rss` for total memory.
+- The handle types `RendererHandle`, `OptimizedBufferHandle`, `TextBufferHandle`, `TextBufferViewHandle`, `EditBufferHandle`, `EditorViewHandle`, `SyntaxStyleHandle`, `EventSinkHandle`, `NativeRenderableHandle`, `EmbeddedTerminalHandle`, `NativeMeasureTargetHandle`, `NativeMeasureTargetKind`, `NativeRenderOperationResult`, and `NativeRendererCreateOptions` were removed. Use the `Context*Handle` types, `SessionHandle`, and `SceneNodeHandle`. `ImageHandle` is now `ContextImageHandle`.
+- The pointer-based `RenderLib` methods, such as `createRenderer`, `createOptimizedBuffer`, `bufferDrawText`, `setUseThread`, and `nativeRenderableSetMeasureTarget`, were removed. Use the public classes. Standalone `Yoga` nodes measure only with JavaScript measure functions.
+
+### SSH
+
+- `@opentui/ssh`: `session.write()` can throw `OutputPressureError` or `RangeError`. `cols` and `rows` hold the requested size until the renderer attaches. `onClose` runs at logical close, before the renderer finishes closing.
+
+### Native libraries
+
+- The legacy native exports, such as `createRenderer` and `bufferDrawText`, were removed. Use the `ot_*` C ABI in `opentui.h`. See [C](/docs/native/c).
+- Zig: `GraphemePool.alloc()`, `GraphemePool.allocUnowned()`, and `LinkPool.alloc()` were replaced by `acquire()`, which copies the bytes and returns an ID that holds one reference. Call `decref()` to release it. `alloc()` returned an ID with no references, and `allocUnowned()` did not copy.
+- Zig: `GraphemePool.freeUnreferenced()` and the global pools (`initGlobalPool()`, `initGlobalPoolWithOptions()`, `deinitGlobalPool()`, `initGlobalLinkPool()`, and `deinitGlobalLinkPool()`) were removed. Use explicit pools or `opentui.Context`. See [Zig](/docs/native/zig).
+- Zig: `UnifiedTextBuffer.setStyledText()` and `StyledChunk` were removed. Use `replaceOwnedStyledText()` with `OwnedStyledChunk`. `clear()` and `reset()` can return errors.
+- Zig: `CliRenderer.dumpBuffers()` and `dumpOutputBuffer()` were removed.
