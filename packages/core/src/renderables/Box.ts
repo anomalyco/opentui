@@ -268,6 +268,7 @@ export class BoxRenderable extends Renderable {
   }
 
   public set titleAlignment(value: "left" | "center" | "right") {
+    value ??= this._defaultOptions.titleAlignment
     if (this._titleAlignment !== value) {
       this.setNativeBoxDetails({ titleAlignment: value })
       this._titleAlignment = value
@@ -292,6 +293,7 @@ export class BoxRenderable extends Renderable {
   }
 
   public set bottomTitleAlignment(value: "left" | "center" | "right") {
+    value ??= this._defaultOptions.bottomTitleAlignment
     if (this._bottomTitleAlignment !== value) {
       this.setNativeBoxDetails({ bottomTitleAlignment: value })
       this._bottomTitleAlignment = value
@@ -349,7 +351,7 @@ export class BoxRenderable extends Renderable {
   }
 
   public set shouldFill(value: boolean) {
-    if (value === undefined) throw new TypeError("Scene shouldFill must be a boolean")
+    value ??= this._defaultOptions.shouldFill
     if (this._shouldFill === value) return
     this.setNativeScenePaint({ shouldFill: value })
     this._shouldFill = value

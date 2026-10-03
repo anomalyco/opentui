@@ -123,6 +123,7 @@ export class ASCIIFontRenderable extends FrameBufferRenderable {
   }
 
   set color(value: ColorInput | ColorInput[]) {
+    value ??= ASCIIFontRenderable._defaultOptions.color
     this._color = Array.isArray(value)
       ? value.map((color) => RGBA.clone(parseColor(color)))
       : RGBA.clone(parseColor(value))
@@ -135,7 +136,7 @@ export class ASCIIFontRenderable extends FrameBufferRenderable {
   }
 
   set backgroundColor(value: ColorInput) {
-    this._backgroundColor = RGBA.clone(parseColor(value))
+    this._backgroundColor = RGBA.clone(parseColor(value ?? ASCIIFontRenderable._defaultOptions.backgroundColor))
     this.renderFontToBuffer()
     this.requestRender()
   }

@@ -30,7 +30,7 @@ export class ScrollBarRenderable extends Renderable {
   public readonly endArrow: ArrowRenderable
   public readonly orientation: "vertical" | "horizontal"
 
-  protected _focusable: boolean = true
+  protected static override readonly defaultFocusable = true
 
   private _scrollSize = 0
   private _scrollPosition = 0
@@ -74,6 +74,7 @@ export class ScrollBarRenderable extends Renderable {
   set scrollSize(value: number) {
     if (this.isDestroyed) return
     assertRenderableMutable(this)
+    value ??= 0
     if (!Number.isFinite(value) || !Number.isFinite(value - this._viewportSize)) {
       throw new RangeError("Scene scroll sizes and ranges must be finite numbers")
     }
@@ -89,7 +90,7 @@ export class ScrollBarRenderable extends Renderable {
   set scrollPosition(value: number) {
     if (this.isDestroyed) return
     assertRenderableMutable(this)
-    const newPosition = Math.round(Math.min(Math.max(0, value), this.scrollSize - this.viewportSize))
+    const newPosition = Math.round(Math.min(Math.max(0, value ?? 0), this.scrollSize - this.viewportSize))
     if (!Number.isFinite(newPosition)) {
       throw new RangeError("Scene scroll positions must be finite numbers")
     }
@@ -105,6 +106,7 @@ export class ScrollBarRenderable extends Renderable {
   set viewportSize(value: number) {
     if (this.isDestroyed) return
     assertRenderableMutable(this)
+    value ??= 0
     if (!Number.isFinite(value) || !Number.isFinite(this._scrollSize - value)) {
       throw new RangeError("Scene viewport sizes and ranges must be finite numbers")
     }
@@ -372,6 +374,9 @@ export interface ArrowOptions extends RenderableOptions<ArrowRenderable> {
   }
 }
 
+const defaultArrowForeground = RGBA.fromValues(1, 1, 1, 1)
+const defaultArrowBackground = RGBA.fromValues(0, 0, 0, 0)
+
 export class ArrowRenderable extends Renderable {
   static override readonly nativeIntegration = this.defineNativeIntegration({
     kind: "arrow",
@@ -394,12 +399,8 @@ export class ArrowRenderable extends Renderable {
     super(ctx, options)
     try {
       this._direction = options.direction
-      this._foregroundColor = options.foregroundColor
-        ? RGBA.clone(parseColor(options.foregroundColor))
-        : RGBA.fromValues(1, 1, 1, 1)
-      this._backgroundColor = options.backgroundColor
-        ? RGBA.clone(parseColor(options.backgroundColor))
-        : RGBA.fromValues(0, 0, 0, 0)
+      this._foregroundColor = RGBA.clone(parseColor(options.foregroundColor || defaultArrowForeground))
+      this._backgroundColor = RGBA.clone(parseColor(options.backgroundColor || defaultArrowBackground))
       this._attributes = options.attributes ?? 0
 
       this._arrowChars = {
@@ -444,7 +445,7 @@ export class ArrowRenderable extends Renderable {
 
   set foregroundColor(value: ColorInput) {
     if (this._foregroundColor !== value) {
-      const color = RGBA.clone(parseColor(value))
+      const color = RGBA.clone(parseColor(value ?? defaultArrowForeground))
       this.setNativeSceneArrow({ foregroundColor: color })
       this._foregroundColor = color
       this.requestRender()
@@ -457,7 +458,7 @@ export class ArrowRenderable extends Renderable {
 
   set backgroundColor(value: ColorInput) {
     if (this._backgroundColor !== value) {
-      const color = RGBA.clone(parseColor(value))
+      const color = RGBA.clone(parseColor(value ?? defaultArrowBackground))
       this.setNativeSceneArrow({ backgroundColor: color })
       this._backgroundColor = color
       this.requestRender()
@@ -469,6 +470,7 @@ export class ArrowRenderable extends Renderable {
   }
 
   set attributes(value: number) {
+    value ??= 0
     if (this._attributes !== value) {
       this.setNativeSceneArrow({ attributes: value })
       this._attributes = value

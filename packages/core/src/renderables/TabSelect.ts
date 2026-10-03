@@ -71,8 +71,18 @@ function calculateDynamicHeight(showUnderline: boolean, showDescription: boolean
   return height
 }
 
+const defaultColors = {
+  backgroundColor: "transparent",
+  textColor: "#FFFFFF",
+  focusedBackgroundColor: "#1a1a1a",
+  focusedTextColor: "#FFFFFF",
+  selectedBackgroundColor: "#334455",
+  selectedTextColor: "#FFFF00",
+  selectedDescriptionColor: "#CCCCCC",
+}
+
 export class TabSelectRenderable extends Renderable {
-  protected _focusable: boolean = true
+  protected static override readonly defaultFocusable = true
 
   private _options: TabSelectOption[] = []
   private selectedIndex: number = 0
@@ -101,12 +111,14 @@ export class TabSelectRenderable extends Renderable {
     super(ctx, { ...options, height: calculatedHeight, buffered: true })
 
     try {
-      this._backgroundColor = RGBA.clone(parseColor(options.backgroundColor || "transparent"))
-      this._textColor = RGBA.clone(parseColor(options.textColor || "#FFFFFF"))
+      this._backgroundColor = RGBA.clone(parseColor(options.backgroundColor || defaultColors.backgroundColor))
+      this._textColor = RGBA.clone(parseColor(options.textColor || defaultColors.textColor))
       this._focusedBackgroundColor = RGBA.clone(
-        parseColor(options.focusedBackgroundColor || options.backgroundColor || "#1a1a1a"),
+        parseColor(options.focusedBackgroundColor || options.backgroundColor || defaultColors.focusedBackgroundColor),
       )
-      this._focusedTextColor = RGBA.clone(parseColor(options.focusedTextColor || options.textColor || "#FFFFFF"))
+      this._focusedTextColor = RGBA.clone(
+        parseColor(options.focusedTextColor || options.textColor || defaultColors.focusedTextColor),
+      )
       this._options = options.options || []
       this._tabWidth = options.tabWidth || 20
       this._showDescription = options.showDescription ?? true
@@ -116,9 +128,13 @@ export class TabSelectRenderable extends Renderable {
 
       this.maxVisibleTabs = Math.max(1, Math.floor(this.width / this._tabWidth))
 
-      this._selectedBackgroundColor = RGBA.clone(parseColor(options.selectedBackgroundColor || "#334455"))
-      this._selectedTextColor = RGBA.clone(parseColor(options.selectedTextColor || "#FFFF00"))
-      this._selectedDescriptionColor = RGBA.clone(parseColor(options.selectedDescriptionColor || "#CCCCCC"))
+      this._selectedBackgroundColor = RGBA.clone(
+        parseColor(options.selectedBackgroundColor || defaultColors.selectedBackgroundColor),
+      )
+      this._selectedTextColor = RGBA.clone(parseColor(options.selectedTextColor || defaultColors.selectedTextColor))
+      this._selectedDescriptionColor = RGBA.clone(
+        parseColor(options.selectedDescriptionColor || defaultColors.selectedDescriptionColor),
+      )
 
       this._keyAliasMap = mergeKeyAliases(defaultKeyAliases, options.keyAliasMap || {})
       this._keyBindings = options.keyBindings || []
@@ -346,37 +362,37 @@ export class TabSelectRenderable extends Renderable {
   }
 
   public set backgroundColor(color: ColorInput) {
-    this._backgroundColor = RGBA.clone(parseColor(color))
+    this._backgroundColor = RGBA.clone(parseColor(color ?? defaultColors.backgroundColor))
     this.requestRender()
   }
 
   public set textColor(color: ColorInput) {
-    this._textColor = RGBA.clone(parseColor(color))
+    this._textColor = RGBA.clone(parseColor(color ?? defaultColors.textColor))
     this.requestRender()
   }
 
   public set focusedBackgroundColor(color: ColorInput) {
-    this._focusedBackgroundColor = RGBA.clone(parseColor(color))
+    this._focusedBackgroundColor = RGBA.clone(parseColor(color ?? defaultColors.focusedBackgroundColor))
     this.requestRender()
   }
 
   public set focusedTextColor(color: ColorInput) {
-    this._focusedTextColor = RGBA.clone(parseColor(color))
+    this._focusedTextColor = RGBA.clone(parseColor(color ?? defaultColors.focusedTextColor))
     this.requestRender()
   }
 
   public set selectedBackgroundColor(color: ColorInput) {
-    this._selectedBackgroundColor = RGBA.clone(parseColor(color))
+    this._selectedBackgroundColor = RGBA.clone(parseColor(color ?? defaultColors.selectedBackgroundColor))
     this.requestRender()
   }
 
   public set selectedTextColor(color: ColorInput) {
-    this._selectedTextColor = RGBA.clone(parseColor(color))
+    this._selectedTextColor = RGBA.clone(parseColor(color ?? defaultColors.selectedTextColor))
     this.requestRender()
   }
 
   public set selectedDescriptionColor(color: ColorInput) {
-    this._selectedDescriptionColor = RGBA.clone(parseColor(color))
+    this._selectedDescriptionColor = RGBA.clone(parseColor(color ?? defaultColors.selectedDescriptionColor))
     this.requestRender()
   }
 

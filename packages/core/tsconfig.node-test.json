@@ -143,6 +143,7 @@
     "src/tests/native-span-feed-use-after-free.test.ts",
     "src/tests/opacity.test.ts",
     "src/tests/renderable.test.ts",
+    "src/tests/renderable-nullish-props.test.ts",
     "src/tests/renderer.clock.test.ts",
     "src/tests/renderer.console-startup.test.ts",
     "src/tests/renderer.control.test.ts",

@@ -6,6 +6,8 @@ import type { NativeSceneSliderOptions } from "../zig.js"
 
 const defaultThumbBackgroundColor = RGBA.fromHex("#9a9ea3")
 const defaultTrackBackgroundColor = RGBA.fromHex("#252527")
+const defaultMin = 0
+const defaultMax = 100
 
 export interface SliderOptions extends RenderableOptions<SliderRenderable> {
   orientation: "vertical" | "horizontal"
@@ -38,10 +40,10 @@ export class SliderRenderable extends Renderable {
     super(ctx, { flexShrink: 0, ...options })
     try {
       this._orientation = options.orientation
-      this._min = options.min ?? 0
-      this._max = options.max ?? 100
+      this._min = options.min ?? defaultMin
+      this._max = options.max ?? defaultMax
       this._value = options.value ?? this._min
-      this._viewPortSize = options.viewPortSize ?? Math.max(1, (this._max - this._min) * 0.1)
+      this._viewPortSize = options.viewPortSize ?? this.defaultViewPortSize()
       this._onChange = options.onChange
       this._backgroundColor = options.backgroundColor
         ? RGBA.clone(parseColor(options.backgroundColor))
@@ -73,6 +75,7 @@ export class SliderRenderable extends Renderable {
   }
 
   set value(newValue: number) {
+    newValue ??= this._min
     if (!Number.isFinite(newValue)) {
       throw new RangeError("Scene slider values must be finite numbers")
     }
@@ -96,6 +99,7 @@ export class SliderRenderable extends Renderable {
   }
 
   set min(newMin: number) {
+    newMin ??= defaultMin
     if (newMin !== this._min) {
       const value = this._value < newMin ? newMin : this._value
       this.setNativeSceneSlider({ min: newMin, value })
@@ -112,6 +116,7 @@ export class SliderRenderable extends Renderable {
   }
 
   set max(newMax: number) {
+    newMax ??= defaultMax
     if (newMax !== this._max) {
       const value = this._value > newMax ? Math.max(this._min, newMax) : this._value
       this.setNativeSceneSlider({ max: newMax, value })
@@ -124,6 +129,7 @@ export class SliderRenderable extends Renderable {
   }
 
   set viewPortSize(size: number) {
+    size ??= this.defaultViewPortSize()
     if (!Number.isFinite(size)) {
       throw new RangeError("Scene slider values must be finite numbers")
     }
@@ -139,12 +145,16 @@ export class SliderRenderable extends Renderable {
     return this._viewPortSize
   }
 
+  private defaultViewPortSize(): number {
+    return Math.max(1, (this._max - this._min) * 0.1)
+  }
+
   get backgroundColor(): RGBA {
     return RGBA.clone(this._backgroundColor)
   }
 
   set backgroundColor(value: ColorInput) {
-    const color = RGBA.clone(parseColor(value))
+    const color = RGBA.clone(parseColor(value ?? defaultTrackBackgroundColor))
     this.setNativeSceneSlider({ backgroundColor: color })
     this._backgroundColor = color
     this.requestRender()
@@ -155,7 +165,7 @@ export class SliderRenderable extends Renderable {
   }
 
   set foregroundColor(value: ColorInput) {
-    const color = RGBA.clone(parseColor(value))
+    const color = RGBA.clone(parseColor(value ?? defaultThumbBackgroundColor))
     this.setNativeSceneSlider({ foregroundColor: color })
     this._foregroundColor = color
     this.requestRender()

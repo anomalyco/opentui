@@ -100,6 +100,11 @@ function isRowFlexDirection(direction: FlexDirection): boolean {
   return direction === FlexDirection.Row || direction === FlexDirection.RowReverse
 }
 
+// `undefined` restores the default; `null` clamps to 0, as on `main`.
+function clampOpacity(value: number | undefined): number {
+  return value === undefined ? 1 : Math.max(0, Math.min(1, value))
+}
+
 export enum LayoutEvents {
   LAYOUT_CHANGED = "layout-changed",
   RESIZED = "resized",
@@ -292,6 +297,8 @@ interface CleanupContext extends RenderContext {
 }
 
 export abstract class Renderable extends BaseRenderable {
+  /** Focusable state of new nodes; a nullish `focusable` write restores it. */
+  protected static readonly defaultFocusable: boolean = false
   static renderablesByNumber: Map<number, Renderable> = new Map()
   static readonly nativeIntegration: NativeRenderableIntegration = {
     kind: "custom",
@@ -326,7 +333,7 @@ export abstract class Renderable extends BaseRenderable {
   protected buffered: boolean
   protected frameBuffer: OptimizedBuffer | null = null
 
-  protected _focusable: boolean = false
+  protected _focusable: boolean = (this.constructor as typeof Renderable).defaultFocusable
   protected _focused: boolean = false
   protected _hasFocusedDescendant: boolean = false
   protected keypressHandler: ((key: KeyEvent) => void) | null = null
@@ -391,7 +398,7 @@ export abstract class Renderable extends BaseRenderable {
       this.buffered = options.buffered ?? false
       this._live = options.live ?? false
       this._liveCount = this._live && this._visible ? 1 : 0
-      this._opacity = options.opacity !== undefined ? Math.max(0, Math.min(1, options.opacity)) : 1.0
+      this._opacity = clampOpacity(options.opacity)
 
       ctx.nativeScene.createNode(this, options)
       if (options.renderBefore !== undefined) this.renderBefore = options.renderBefore
@@ -495,7 +502,7 @@ export abstract class Renderable extends BaseRenderable {
   }
 
   public set focusable(value: boolean) {
-    if (value === undefined) throw new TypeError("Scene focusable must be a boolean")
+    value ??= (this.constructor as typeof Renderable).defaultFocusable
     if (this._focusable === value) return
     this.setNativeScenePaint({ focusable: value })
     this._focusable = value
@@ -545,7 +552,7 @@ export abstract class Renderable extends BaseRenderable {
   }
 
   public set opacity(value: number) {
-    const clamped = Math.max(0, Math.min(1, value))
+    const clamped = clampOpacity(value)
     if (this._opacity !== clamped) {
       this.setNativeScenePaint({ opacity: clamped })
       this._opacity = clamped
@@ -711,7 +718,7 @@ export abstract class Renderable extends BaseRenderable {
 
   // Translation during a paint hook also moves this node's buffered composition.
   public set translateX(value: number) {
-    if (value === undefined) throw new RangeError("Scene translations must be finite numbers")
+    value ??= 0
     if (this._translateX === value) return
     this.setNativeScenePaint({ translateX: value })
     this._translateX = value
@@ -723,7 +730,7 @@ export abstract class Renderable extends BaseRenderable {
   }
 
   public set translateY(value: number) {
-    if (value === undefined) throw new RangeError("Scene translations must be finite numbers")
+    value ??= 0
     if (this._translateY === value) return
     this.setNativeScenePaint({ translateY: value })
     this._translateY = value

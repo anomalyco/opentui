@@ -217,7 +217,7 @@ export abstract class TextBufferRenderable extends Renderable implements LineInf
 
   public set scrollY(value: number) {
     const maxScrollY = Math.max(0, this.scrollHeight - this.height)
-    const clamped = Math.max(0, Math.min(value, maxScrollY))
+    const clamped = Math.max(0, Math.min(value ?? 0, maxScrollY))
     if (this._scrollY !== clamped) {
       runRenderableMutation(this, () => {
         this.setNativeSceneTextOptions({ scrollY: clamped })
@@ -234,7 +234,7 @@ export abstract class TextBufferRenderable extends Renderable implements LineInf
 
   public set scrollX(value: number) {
     const maxScrollX = Math.max(0, this.scrollWidth - this.width)
-    const clamped = Math.max(0, Math.min(value, maxScrollX))
+    const clamped = Math.max(0, Math.min(value ?? 0, maxScrollX))
     if (this._scrollX !== clamped) {
       runRenderableMutation(this, () => {
         this.setNativeSceneTextOptions({ scrollX: clamped })
@@ -367,6 +367,7 @@ export abstract class TextBufferRenderable extends Renderable implements LineInf
   }
 
   set wrapMode(value: "none" | "char" | "word") {
+    value ??= this._defaultOptions.wrapMode
     if (this._wrapMode !== value) {
       runRenderableMutation(this, () => {
         this.setNativeSceneTextOptions({ wrapMode: value })
@@ -386,6 +387,7 @@ export abstract class TextBufferRenderable extends Renderable implements LineInf
   }
 
   set textAlign(value: "left" | "center" | "right") {
+    value ??= this._defaultOptions.textAlign
     if (this._textAlign !== value) {
       runRenderableMutation(this, () => {
         this.setNativeSceneTextOptions({ textAlign: value })
@@ -432,6 +434,7 @@ export abstract class TextBufferRenderable extends Renderable implements LineInf
   }
 
   set truncate(value: boolean) {
+    value ??= this._defaultOptions.truncate
     if (this._truncate !== value) {
       runRenderableMutation(this, () => {
         this.setNativeSceneTextOptions({ truncate: value })
