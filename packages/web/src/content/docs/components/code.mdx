@@ -33,7 +33,7 @@ const syntaxStyle = SyntaxStyle.fromStyles(
     string: { fg: RGBA.fromIndex(247) },
     comment: { fg: RGBA.fromIndex(244), italic: true },
   },
-  renderer.nativeScene!,
+  renderer.nativeScene,
 )
 
 const code = new CodeRenderable(renderer, {
@@ -108,7 +108,7 @@ const syntaxStyle = SyntaxStyle.fromStyles(
     // Default fallback
     default: { fg: RGBA.fromHex("#E6EDF3") },
   },
-  renderer.nativeScene!,
+  renderer.nativeScene,
 )
 ```
 
@@ -217,7 +217,7 @@ const syntaxStyle = SyntaxStyle.fromStyles(
   {
     default: { fg: RGBA.fromHex("#E6EDF3") },
   },
-  renderer.nativeScene!,
+  renderer.nativeScene,
 )
 
 const code = new CodeRenderable(renderer, {
@@ -306,7 +306,7 @@ const markdownStyle = SyntaxStyle.fromStyles(
     "markup.link.url": { fg: RGBA.fromHex("#58A6FF"), underline: true },
     default: { fg: RGBA.fromHex("#E6EDF3") },
   },
-  renderer.nativeScene!,
+  renderer.nativeScene,
 )
 ```
 
