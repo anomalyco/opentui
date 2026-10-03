@@ -5,6 +5,9 @@ import { RGBA } from "../lib/RGBA.js"
 import { stringToStyledText, StyledText } from "../lib/styled-text.js"
 import { createTestRenderer, type MockMouse, type TestRenderer } from "../testing/test-renderer.js"
 import { BoxRenderable } from "./Box.js"
+import { CodeRenderable } from "./Code.js"
+import { SyntaxStyle } from "../syntax-style.js"
+import { MockTreeSitterClient } from "../testing/mock-tree-sitter-client.js"
 
 let currentRenderer: TestRenderer
 let renderOnce: () => Promise<void>
@@ -2726,6 +2729,28 @@ describe("TextRenderable Selection", () => {
         await renderOnce()
         expect(text.scrollX).toBe(2)
       }
+    })
+
+    it("truncates a fractional scroll offset when a shared text view resizes", async () => {
+      const syntaxStyle = SyntaxStyle.create(currentRenderer.nativeScene)
+      const treeSitterClient = new MockTreeSitterClient()
+      const code = new CodeRenderable(currentRenderer, {
+        content: "a\nb\nc\nd",
+        syntaxStyle,
+        treeSitterClient,
+        height: 2,
+      })
+      currentRenderer.root.add(code)
+      await renderOnce()
+      code.scrollY = 1.5
+      code.height = 3
+      await renderOnce()
+      expect(
+        captureFrame()
+          .split("\n")
+          .slice(0, 4)
+          .map((line) => line.trim()),
+      ).toEqual(["b", "c", "d", ""])
     })
   })
 })

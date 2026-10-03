@@ -123,17 +123,8 @@ export abstract class TextBufferRenderable extends Renderable implements LineInf
       }
 
       const width = this.width
-      const height = this.height
-      if (width > 0 && height > 0) {
-        this.textBufferView.setViewport(
-          Math.trunc(this._scrollX),
-          Math.trunc(this._scrollY),
-          Math.trunc(width),
-          Math.trunc(height),
-        )
-      } else if (this._wrapMode !== "none" && width > 0) {
-        this.textBufferView.setWrapWidth(Math.trunc(width))
-      }
+      if (width > 0 && this.height > 0) this.updateViewportOffset()
+      else if (this._wrapMode !== "none" && width > 0) this.textBufferView.setWrapWidth(Math.trunc(width))
 
       this.textBufferView.setTruncate(this._truncate)
 
@@ -446,7 +437,9 @@ export abstract class TextBufferRenderable extends Renderable implements LineInf
   }
 
   protected onResize(width: number, height: number): void {
-    if (!this.nativeTextScene) this.textBufferView.setViewport(this._scrollX, this._scrollY, width, height)
+    if (!this.nativeTextScene) {
+      this.textBufferView.setViewport(Math.trunc(this._scrollX), Math.trunc(this._scrollY), width, height)
+    }
     this.requestRender()
     this.emit("line-info-change")
   }
