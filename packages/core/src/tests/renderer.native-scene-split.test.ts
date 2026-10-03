@@ -14,6 +14,7 @@ import {
   type TestRenderer,
   type TestRendererOptions,
 } from "../testing.js"
+import { settle } from "../testing/harness.js"
 import { createTestStdout, RecordingWriteStream } from "../testing/test-streams.js"
 
 const renderers: TestRenderer[] = []
@@ -47,13 +48,14 @@ async function setupTerminal(options: { maxBytes?: bigint } = {}) {
       : new NativeSession(stdout, {
           output: { chunkSize: 4096, spanCapacity: 128, maxBytes: options.maxBytes, controlCapacity: 4096 },
         })
+  const clock = new ManualClock()
   const result = await setup({
     width: 40,
     stdout,
     nativeSession,
     bufferedOutput: "stdout",
     remote: true,
-    clock: new ManualClock(),
+    clock,
   })
   const driver = result.renderer.nativeScene.driver
   await result.renderer.setupTerminal()
@@ -72,7 +74,7 @@ async function setupTerminal(options: { maxBytes?: bigint } = {}) {
   }
   /** The terminal text that matches `pattern`, in output order. */
   const printed = (pattern: RegExp) => Array.from(stdout.text().match(pattern) ?? [])
-  return { ...result, stdout, frame, drainUntil, printed }
+  return { ...result, stdout, clock, frame, drainUntil, printed }
 }
 
 const decoder = new TextDecoder()
@@ -173,6 +175,20 @@ test.each(
   else for (const row of rows) writeRow(terminal, row)
   await drains[drain](terminal, "line 11")
   expect(terminal.printed(/line \d+/g)).toEqual(rows)
+})
+
+test("cancelling the last animation frame keeps the render that captured stdout requested", async () => {
+  const { renderer, stdout, clock } = await setupTerminal()
+  let callbacks = 0
+  const handle = renderer.requestAnimationFrame(() => callbacks++)
+  stdout.write("captured\n")
+  renderer.cancelAnimationFrame(handle)
+  clock.advance(100)
+  await settle()
+  await renderer.idle()
+  expect(stdout.text()).toContain("captured")
+  expect(callbacks).toBe(0)
+  expect(renderer.isRunning).toBe(false)
 })
 
 test.each(["frames", "suspend", "destroy"] as const)(
