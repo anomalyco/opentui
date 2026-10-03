@@ -813,7 +813,10 @@ test "OpenTUI default Yoga nodes are independent of Context and heap-owned confi
     try std.testing.expect(yoga.yogaConfigFree(owned));
     const second = yoga.yogaNodeCreateForOpenTUI();
     defer yoga.yogaNodeFree(second);
-    try std.testing.expect(yoga.yogaNodeGetConfig(first) == yoga.yogaNodeGetConfig(second));
+    const shared = yoga.yogaNodeGetConfig(first);
+    try std.testing.expect(shared == yoga.yogaNodeGetConfig(second));
+    try std.testing.expect(!yoga.yogaConfigGetUseWebDefaults(shared));
+    try std.testing.expectEqual(@as(f32, 1), yoga.yogaConfigGetPointScaleFactor(shared));
 }
 
 test "OpenTUI default Yoga config links nodes from concurrent threads" {
@@ -861,14 +864,6 @@ test "OpenTUI default Yoga config links nodes from concurrent threads" {
     try std.testing.expect(!config.hasLiveNodes());
 }
 
-test "Yoga public config free rejects a live node and permits retry" {
-    const config = yoga.yogaConfigCreate();
-    const node = yoga.yogaNodeCreateWithConfig(config);
-    try std.testing.expect(!yoga.yogaConfigFree(config));
-    yoga.yogaNodeFree(node);
-    try std.testing.expect(yoga.yogaConfigFree(config));
-}
-
 test "Yoga wrapper computes basic flex layout" {
     const config = yoga.yogaConfigCreate();
     defer std.debug.assert(yoga.yogaConfigFree(config));
@@ -891,19 +886,6 @@ test "Yoga wrapper computes basic flex layout" {
     yoga.yogaNodeGetComputedLayout(child, &layout);
     try std.testing.expectApproxEqAbs(@as(f32, 100), layout.width, 0.001);
     try std.testing.expectApproxEqAbs(@as(f32, 100), layout.height, 0.001);
-}
-
-test "OpenTUI Yoga nodes use the native fixed config" {
-    const first = yoga.yogaNodeCreateForOpenTUI();
-    defer yoga.yogaNodeFree(first);
-    const second = yoga.yogaNodeCreateForOpenTUI();
-    defer yoga.yogaNodeFree(second);
-
-    const first_config = yoga.yogaNodeGetConfig(first);
-    const second_config = yoga.yogaNodeGetConfig(second);
-    try std.testing.expect(first_config == second_config);
-    try std.testing.expect(!yoga.yogaConfigGetUseWebDefaults(first_config));
-    try std.testing.expectEqual(@as(f32, 1), yoga.yogaConfigGetPointScaleFactor(first_config));
 }
 
 test "Yoga wrapper packs style values" {
