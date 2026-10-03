@@ -10,6 +10,7 @@ const TextBufferView = text_buffer_view.TextBufferView;
 const Viewport = text_buffer_view.Viewport;
 
 // ===== Viewport-Aware Selection Tests =====
+// Local selections use cell occupancy by default, so the focus cell is selected too.
 
 test "Selection - vertical viewport selection without wrapping" {
     var pools = TestPools.init(std.testing.allocator);
@@ -57,7 +58,7 @@ test "Selection - horizontal viewport selection without wrapping" {
     const len = view.getSelectedTextIntoBuffer(&buffer);
     const text = buffer[0..len];
 
-    try std.testing.expectEqualStrings("KLMNO", text);
+    try std.testing.expectEqualStrings("KLMNOP", text);
 }
 
 test "Selection - wrapping mode ignores horizontal viewport offset" {
@@ -83,7 +84,7 @@ test "Selection - wrapping mode ignores horizontal viewport offset" {
     const len = view.getSelectedTextIntoBuffer(&buffer);
     const text = buffer[0..len];
 
-    try std.testing.expectEqualStrings("ABCDE", text);
+    try std.testing.expectEqualStrings("ABCDEF", text);
 }
 
 test "Selection - vertical viewport with wrapping" {
@@ -112,7 +113,7 @@ test "Selection - vertical viewport with wrapping" {
     const len = view.getSelectedTextIntoBuffer(&buffer);
     const text = buffer[0..len];
 
-    try std.testing.expectEqualStrings("KLMNOPQRSTUVWXY", text);
+    try std.testing.expectEqualStrings("KLMNOPQRSTUVWXYZ", text);
 }
 
 test "Selection - across empty line with viewport offset" {
@@ -181,7 +182,7 @@ test "Selection - combined horizontal and vertical viewport offsets" {
     const len = view.getSelectedTextIntoBuffer(&buffer);
     const text = buffer[0..len];
 
-    try std.testing.expectEqualStrings("56789", text);
+    try std.testing.expectEqualStrings("56789A", text);
 }
 
 test "Selection - viewport without offsets behaves as before" {
@@ -204,7 +205,7 @@ test "Selection - viewport without offsets behaves as before" {
     const len = view.getSelectedTextIntoBuffer(&buffer);
     const text = buffer[0..len];
 
-    try std.testing.expectEqualStrings("llo W", text);
+    try std.testing.expectEqualStrings("llo Wo", text);
 }
 
 test "Selection - no viewport behaves as before" {
@@ -225,7 +226,7 @@ test "Selection - no viewport behaves as before" {
     const len = view.getSelectedTextIntoBuffer(&buffer);
     const text = buffer[0..len];
 
-    try std.testing.expectEqualStrings("llo W", text);
+    try std.testing.expectEqualStrings("llo Wo", text);
 }
 
 test "Selection - VALIDATION: verify selection range matches extracted text with viewport" {
@@ -330,5 +331,5 @@ test "Selection - RENDER TEST: selection highlights correct cells with viewport 
     const cell_3 = render_buffer.get(3, 0);
     try std.testing.expect(cell_3 != null);
     const bg_3 = cell_3.?.bg;
-    try std.testing.expect(bg_3[0] < 0.5); // Not red
+    try std.testing.expect(ansi.red(bg_3) < 128); // Not red
 }
