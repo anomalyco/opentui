@@ -339,14 +339,12 @@ pub const CliRenderer = struct {
     // render completes, the buffers swap. This keeps hit testing consistent during
     // a frame. Queries see the previous frame's state, not a half-built grid.
     //
-    // On-demand sync: When scroll/translate changes between renders, the TypeScript
-    // layer can rebuild currentHitGrid directly via addToCurrentHitGridClipped. This
-    // updates hover states immediately rather than waiting for the next render.
+    // On-demand sync: addToCurrentHitGridClipped writes currentHitGrid directly, so
+    // a Zig caller can update hit targets between renders.
     //
-    // Scissor clipping: The hitScissorStack mirrors overflow:hidden regions. Elements
-    // outside their parent's visible area are excluded from hit testing. The stack
-    // uses screen coordinates. Buffered renderables need getHitGridScissorRect() to
-    // convert from buffer-local (0,0) to their actual screen position.
+    // Scissor clipping: addToHitGrid and addToCurrentHitGridClipped clip to the top
+    // of hitScissorStack (screen coordinates). Scene frames clip hits themselves;
+    // they push no rects and only clear the stack.
     currentHitGrid: []u32,
     nextHitGrid: []u32,
     hitGridWidth: u32,
@@ -3400,10 +3398,7 @@ pub const CliRenderer = struct {
         }
     }
 
-    /// Clear currentHitGrid before an immediate rebuild.
-    ///
-    /// Used by syncHitGridIfNeeded in TypeScript when scroll/translate changes
-    /// require updating hit targets without waiting for the next render.
+    /// Clear currentHitGrid before an immediate rebuild with addToCurrentHitGridClipped.
     pub fn clearCurrentHitGrid(self: *CliRenderer) void {
         if (self.pendingPresentation != null) return;
         @memset(self.currentHitGrid, 0);
@@ -3411,7 +3406,6 @@ pub const CliRenderer = struct {
 
     /// Return whether the hit grid changed during the last completed presentation.
     /// Pending presentation queries do not consume resize invalidation.
-    /// TypeScript can use this to decide if hover state needs rechecking.
     pub fn getHitGridDirty(self: *CliRenderer) bool {
         const dirty = self.hitGridDirty;
         if (self.pendingPresentation == null) self.hitGridResizeInvalidated = false;
@@ -3497,17 +3491,15 @@ pub const CliRenderer = struct {
         }
     }
 
-    /// Clear all hit grid scissors. Called at start of render to reset state.
+    /// Clear all hit grid scissors. Scene frames call this before painting.
     pub fn hitGridClearScissorRects(self: *CliRenderer) void {
         self.hitScissorStack.clearRetainingCapacity();
     }
 
     /// Write directly to currentHitGrid with scissor clipping.
     ///
-    /// Used for immediate hit grid sync when scroll/translate changes. Unlike
-    /// addToHitGrid (which writes to nextHitGrid for the upcoming frame), this
-    /// updates the grid that checkHit reads right now. Lets hover states update
-    /// without waiting for the next render.
+    /// Unlike addToHitGrid (which writes to nextHitGrid for the upcoming frame),
+    /// this updates the grid that checkHit reads right now.
     pub fn addToCurrentHitGridClipped(self: *CliRenderer, x: i32, y: i32, width: u32, height: u32, id: u32) void {
         if (self.pendingPresentation != null) return;
         const clipped = self.clipRectToHitScissor(x, y, width, height) orelse return;
