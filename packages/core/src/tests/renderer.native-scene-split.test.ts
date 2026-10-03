@@ -220,6 +220,18 @@ test.each([
   expect(written).toEqual(commits)
 })
 
+test("the predicted tail column counts every cell of a trailing wide character", async () => {
+  const stdout = createTestStdout(24, 10)
+  const { renderer } = await setup({ stdout })
+  stdout.write("ab二")
+  let tailColumn = -1
+  renderer.writeToScrollback(({ renderContext, tailColumn: tail }) => {
+    tailColumn = tail
+    return { root: new TextRenderable(renderContext, { content: "x", width: 1, height: 1 }) }
+  })
+  expect(tailColumn).toBe(4)
+})
+
 test("captured stdout that fails mid-write queues and leaks none of its rows", async () => {
   const stdout = createTestStdout(24, 10)
   const { externalOutput } = await setup({ stdout })

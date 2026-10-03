@@ -413,10 +413,28 @@ type PendingSplitFooterTransition = {
   scrollLines?: number
 }
 
+/**
+ * Columns of each snapshot row up to `rowColumns`, without trailing empty cells. The continuation cells of a trailing
+ * wide grapheme stay: they occupy terminal columns.
+ */
+function snapshotRowWidths(snapshot: OptimizedBuffer, rowColumns: number): number[] {
+  return snapshot.withBuffers(({ width, height, char }) => {
+    const widths: number[] = []
+    for (let y = 0; y < height; y += 1) {
+      let x = rowColumns
+      while (x > 0 && char[y * width + x - 1] === 0) x -= 1
+      widths.push(x)
+    }
+    return widths
+  })
+}
+
+type QueuedCommit = ExternalOutputCommit & { cells: number; rowWidths: readonly number[] }
+
 // Bounded by queued snapshot cells, not by commit count: any batch of queued commits then fits one native split
 // render, which admits at most the Session's output capacity at 24 bytes per snapshot cell.
 class ExternalOutputQueue {
-  private commits: Array<ExternalOutputCommit & { cells: number }> = []
+  private commits: QueuedCommit[] = []
   private cells = 0
 
   constructor(private readonly maxCells: number) {}
@@ -441,16 +459,22 @@ class ExternalOutputQueue {
         throw new RangeError("Scrollback commit rowColumns must be an integer from 0 to the snapshot width")
       }
     }
-    const entries = commits.map((commit) => ({ ...commit, cells: commit.snapshot.width * commit.snapshot.height }))
-    const cells = entries.reduce((total, commit) => total + commit.cells, 0)
+    const cells = commits.reduce((total, { snapshot }) => total + snapshot.width * snapshot.height, 0)
     this.checkCapacity(cells)
+    // Queued snapshots never change, so tail-column predictions read each one once, here.
+    const entries = commits.map((commit) => ({
+      ...commit,
+      cells: commit.snapshot.width * commit.snapshot.height,
+      rowWidths: snapshotRowWidths(commit.snapshot, commit.rowColumns),
+    }))
     for (const entry of entries) this.commits.push(entry)
     this.cells += cells
   }
 
-  peek(limit: number = Number.POSITIVE_INFINITY): readonly ExternalOutputCommit[] {
-    const clampedLimit = Number.isFinite(limit) ? Math.max(1, Math.trunc(limit)) : this.commits.length
-    return this.commits.slice(0, clampedLimit)
+  peek(limit: number = Number.POSITIVE_INFINITY): readonly QueuedCommit[] {
+    // An empty batch would never drain the queue.
+    if (!(limit >= 1)) throw new RangeError("ExternalOutputQueue.peek requires a limit of at least 1")
+    return this.commits.slice(0, limit)
   }
 
   claim(): ExternalOutputCommit[] {
@@ -471,9 +495,6 @@ class ExternalOutputQueue {
     this.drop(this.commits.length)
   }
 }
-
-const CHAR_FLAG_CONTINUATION = 0xc0000000 >>> 0
-const CHAR_FLAG_MASK = 0xc0000000 >>> 0
 
 class ScrollbackSnapshotRenderContext extends EventEmitter implements RenderContext {
   public width: number
@@ -2537,31 +2558,6 @@ export class CliRenderer extends EventEmitter implements RenderContext {
     return Math.max(Math.trunc(rawValue), 1)
   }
 
-  private getSnapshotRowWidths(snapshot: OptimizedBuffer, rowColumns: number): number[] {
-    return snapshot.withBuffers(({ width, height, char }) => {
-      const widths: number[] = []
-      const limit = Math.min(Math.max(Math.trunc(rowColumns), 0), width)
-
-      for (let y = 0; y < height; y += 1) {
-        let x = limit
-
-        while (x > 0) {
-          const cp = char[y * width + x - 1]
-          if (cp === 0 || (cp & CHAR_FLAG_MASK) === CHAR_FLAG_CONTINUATION) {
-            x -= 1
-            continue
-          }
-
-          break
-        }
-
-        widths.push(x)
-      }
-
-      return widths
-    })
-  }
-
   private advanceSplitTailColumn(tailColumn: number, columns: number, width: number): number {
     if (columns <= 0) {
       return tailColumn
@@ -2587,18 +2583,14 @@ export class CliRenderer extends EventEmitter implements RenderContext {
     return tail
   }
 
-  private getSplitTailColumnAfterCommit(
-    commit: ExternalOutputCommit,
-    initialTailColumn: number,
-    width: number,
-  ): number {
+  private getSplitTailColumnAfterCommit(commit: QueuedCommit, initialTailColumn: number, width: number): number {
     let tailColumn = initialTailColumn
 
     if (commit.startOnNewLine && tailColumn > 0) {
       tailColumn = 0
     }
 
-    const rowWidths = this.getSnapshotRowWidths(commit.snapshot, commit.rowColumns)
+    const rowWidths = commit.rowWidths
     for (const [index, rowWidth] of rowWidths.entries()) {
       tailColumn = this.advanceSplitTailColumn(tailColumn, rowWidth, width)
       if (index < rowWidths.length - 1 || commit.trailingNewline) {
@@ -2609,7 +2601,7 @@ export class CliRenderer extends EventEmitter implements RenderContext {
     return tailColumn
   }
 
-  private recordSplitCommit(commit: ExternalOutputCommit): void {
+  private recordSplitCommit(commit: QueuedCommit): void {
     this.splitTailColumn = this.getSplitTailColumnAfterCommit(commit, this.splitTailColumn, Math.max(this.width, 1))
   }
 
@@ -5092,7 +5084,7 @@ export class CliRenderer extends EventEmitter implements RenderContext {
     return "rendered"
   }
 
-  private completeNativeSplitCommits(commits: readonly ExternalOutputCommit[]): void {
+  private completeNativeSplitCommits(commits: readonly QueuedCommit[]): void {
     if (!this._isDestroyed) {
       this.syncSplitScrollback()
       for (const commit of commits) this.recordSplitCommit(commit)
@@ -5125,6 +5117,10 @@ export class CliRenderer extends EventEmitter implements RenderContext {
       const commits = this.externalOutputQueue.peek(
         Math.min(remaining, this.maxSplitCommitsPerFrame, this.pendingNativeReplay?.remaining ?? Infinity),
       )
+      // A null-frame render also reports PENDING for an earlier frame, which would complete unsent commits.
+      if (this.lib.sessionGetRendererState(driver.context, driver.session).framePending) {
+        throw new Error("Native split output flush requires no pending frame presentation")
+      }
       const result = driver.renderSplit(
         null,
         commits.map((commit) => ({ ...commit, snapshot: commit.nativeSnapshot! })),
