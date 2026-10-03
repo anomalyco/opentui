@@ -188,7 +188,7 @@ const frameCases: Array<
 
 test.each(frameCases)("DiffRenderable - %s", async (_name, diff, view, hint, texts, rows = []) => {
   const diffRenderable = new DiffRenderable(currentRenderer, { diff, view, syntaxStyle, width: "100%", height: "100%" })
-  expect([diffRenderable.diff, diffRenderable.view]).toEqual([diff, view ?? "unified"])
+  expect([diffRenderable.diff, diffRenderable.view, diffRenderable.fg]).toEqual([diff, view ?? "unified", undefined])
   currentRenderer.root.add(diffRenderable)
   await renderOnce()
 
@@ -1990,7 +1990,7 @@ test.each(["unified", "split"] as const)(
     if (view === "unified") panes.pop()
 
     for (const colors of [initial, { fg: "#333333", selectionBg: RGBA.fromHex("#444444"), selectionFg: "#555555" }]) {
-      Object.assign(diffRenderable, colors)
+      if (colors !== initial) Object.assign(diffRenderable, colors)
       await renderOnce()
       for (const name of names) {
         expect(diffRenderable[name]).toEqual(parseColor(colors[name]))
