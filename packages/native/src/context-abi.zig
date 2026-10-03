@@ -3198,9 +3198,8 @@ test "Context ABI Session control decodes kinds arguments and cursor records bef
     const id = handleToC(session);
     const terminal = &(try context.core.raw().getSession(session)).renderer.?.terminal;
     const Cursor = c.ot_session_cursor_update;
-    const cursor = c.OT_CONTROL_CURSOR;
     const Case = struct {
-        kind: u32,
+        kind: u32 = c.OT_CONTROL_CURSOR,
         argument: u32 = 0,
         bytes: []const u8 = "",
         cursor: ?Cursor = null,
@@ -3219,40 +3218,23 @@ test "Context ABI Session control decodes kinds arguments and cursor records bef
         .{ .kind = c.OT_CONTROL_TITLE, .null_bytes = true },
         .{ .kind = 0 },
         .{ .kind = c.OT_CONTROL_PALETTE_QUERY + 1 },
-        // Payload kinds take no argument; argument kinds take no payload.
-        .{ .kind = c.OT_CONTROL_TITLE, .bytes = "t", .argument = 1 },
         .{ .kind = c.OT_CONTROL_RESTORE_MODES, .bytes = "x" },
-        .{ .kind = c.OT_CONTROL_MOUSE, .argument = 3 },
-        .{ .kind = c.OT_CONTROL_KITTY_KEYBOARD_FLAGS, .argument = 32 },
-        .{ .kind = c.OT_CONTROL_RESTORE_MODES, .argument = 1 },
-        .{ .kind = c.OT_CONTROL_QUERY_PIXEL_RESOLUTION, .argument = 1 },
-        .{ .kind = c.OT_CONTROL_QUERY_THEME_COLORS, .argument = 1 },
-        .{ .kind = c.OT_CONTROL_RESET_BACKGROUND, .argument = 1 },
-        .{ .kind = c.OT_CONTROL_CAPABILITY_RESPONSE, .bytes = "\x1b[?0u", .status = c.OT_INVALID_PHASE },
-        .{ .kind = c.OT_CONTROL_TITLE, .bytes = "t", .status = c.OT_INVALID_PHASE },
-        .{ .kind = c.OT_CONTROL_MOUSE, .argument = 2, .status = c.OT_INVALID_PHASE },
-        .{ .kind = c.OT_CONTROL_KITTY_KEYBOARD_FLAGS, .argument = 31, .status = c.OT_INVALID_PHASE },
-        .{ .kind = c.OT_CONTROL_RESTORE_MODES, .status = c.OT_INVALID_PHASE },
-        .{ .kind = c.OT_CONTROL_QUERY_PIXEL_RESOLUTION, .status = c.OT_INVALID_PHASE },
-        .{ .kind = c.OT_CONTROL_QUERY_THEME_COLORS, .status = c.OT_INVALID_PHASE },
-        .{ .kind = c.OT_CONTROL_RESET_BACKGROUND, .status = c.OT_INVALID_PHASE },
-        .{ .kind = c.OT_CONTROL_PALETTE_QUERY, .bytes = "\x1b]10;?\x07", .status = c.OT_INVALID_PHASE },
         // Cursor records have an exact size, known fields, bounded values, and zero unselected values.
-        .{ .kind = cursor, .cursor = cursorUpdate(0, .{}), .argument = 1 },
-        .{ .kind = cursor, .cursor = cursorUpdate(0, .{}), .cursor_size = @sizeOf(Cursor) - 1 },
-        .{ .kind = cursor, .cursor = cursorUpdate(32, .{}) },
-        .{ .kind = cursor, .cursor = cursorUpdate(c.OT_CURSOR_POSITION, .{ .visible = 2 }) },
-        .{ .kind = cursor, .cursor = cursorUpdate(c.OT_CURSOR_STYLE, .{ .style = 4 }) },
-        .{ .kind = cursor, .cursor = cursorUpdate(c.OT_CURSOR_BLINKING, .{ .blinking = 2 }) },
-        .{ .kind = cursor, .cursor = cursorUpdate(c.OT_CURSOR_MOUSE_POINTER, .{ .mouse_pointer = c.OT_MOUSE_POINTER_MAX + 1 }) },
-        .{ .kind = cursor, .cursor = cursorUpdate(0, .{ .y = 1 }) },
-        .{ .kind = cursor, .cursor = cursorUpdate(0, .{ .visible = 1 }) },
-        .{ .kind = cursor, .cursor = cursorUpdate(0, .{ .style = 1 }) },
-        .{ .kind = cursor, .cursor = cursorUpdate(0, .{ .blinking = 1 }) },
-        .{ .kind = cursor, .cursor = cursorUpdate(0, .{ .mouse_pointer = 1 }) },
-        .{ .kind = cursor, .cursor = cursorUpdate(0, .{ .color = .{ 0, 0, 0, 1 } }) },
-        .{ .kind = cursor, .cursor = cursorUpdate(c.OT_CURSOR_MOUSE_POINTER, .{ .mouse_pointer = c.OT_MOUSE_POINTER_TEXT }), .status = c.OT_OK },
-        .{ .kind = cursor, .cursor = cursorUpdate(0x1f, .{
+        .{ .cursor = cursorUpdate(0, .{}), .argument = 1 },
+        .{ .cursor = cursorUpdate(0, .{}), .cursor_size = @sizeOf(Cursor) - 1 },
+        .{ .cursor = cursorUpdate(32, .{}) },
+        .{ .cursor = cursorUpdate(c.OT_CURSOR_POSITION, .{ .visible = 2 }) },
+        .{ .cursor = cursorUpdate(c.OT_CURSOR_STYLE, .{ .style = 4 }) },
+        .{ .cursor = cursorUpdate(c.OT_CURSOR_BLINKING, .{ .blinking = 2 }) },
+        .{ .cursor = cursorUpdate(c.OT_CURSOR_MOUSE_POINTER, .{ .mouse_pointer = c.OT_MOUSE_POINTER_MAX + 1 }) },
+        .{ .cursor = cursorUpdate(0, .{ .y = 1 }) },
+        .{ .cursor = cursorUpdate(0, .{ .visible = 1 }) },
+        .{ .cursor = cursorUpdate(0, .{ .style = 1 }) },
+        .{ .cursor = cursorUpdate(0, .{ .blinking = 1 }) },
+        .{ .cursor = cursorUpdate(0, .{ .mouse_pointer = 1 }) },
+        .{ .cursor = cursorUpdate(0, .{ .color = .{ 0, 0, 0, 1 } }) },
+        .{ .cursor = cursorUpdate(c.OT_CURSOR_MOUSE_POINTER, .{ .mouse_pointer = c.OT_MOUSE_POINTER_TEXT }), .status = c.OT_OK },
+        .{ .cursor = cursorUpdate(0x1f, .{
             .x = 3,
             .y = 2,
             .visible = 1,
@@ -3261,6 +3243,21 @@ test "Context ABI Session control decodes kinds arguments and cursor records bef
             .mouse_pointer = c.OT_MOUSE_POINTER_MAX,
             .color = .{ 1, 2, 3, 4 },
         }), .status = c.OT_OK },
+    } ++ comptime kinds: {
+        // Each terminal kind rejects an argument above its limit; at the limit it reaches admission.
+        const kinds = .{
+            .{ c.OT_CONTROL_CAPABILITY_RESPONSE, 0, "\x1b[?0u" }, .{ c.OT_CONTROL_TITLE, 0, "t" },
+            .{ c.OT_CONTROL_MOUSE, 2, "" },                       .{ c.OT_CONTROL_KITTY_KEYBOARD_FLAGS, 31, "" },
+            .{ c.OT_CONTROL_RESTORE_MODES, 0, "" },               .{ c.OT_CONTROL_QUERY_PIXEL_RESOLUTION, 0, "" },
+            .{ c.OT_CONTROL_QUERY_THEME_COLORS, 0, "" },          .{ c.OT_CONTROL_RESET_BACKGROUND, 0, "" },
+            .{ c.OT_CONTROL_PALETTE_QUERY, 0, "\x1b]10;?\x07" },
+        };
+        var rows: [2 * kinds.len]Case = undefined;
+        for (kinds, 0..) |kind, index| rows[2 * index ..][0..2].* = .{
+            .{ .kind = kind[0], .argument = kind[1] + 1, .bytes = kind[2] },
+            .{ .kind = kind[0], .argument = kind[1], .bytes = kind[2], .status = c.OT_INVALID_PHASE },
+        };
+        break :kinds rows;
     };
     for (cases) |case| {
         const options: c.ot_session_control_options = .{
@@ -3391,12 +3388,10 @@ test "Context ABI Session setup and capability records validate before changing 
     try std.testing.expectEqual(@as(u32, 1), capabilities.term_from_xtversion);
     try std.testing.expect(std.mem.allEqual(u8, capabilities.term_name[capabilities.term_name_len..], 0));
 
-    const source = try context.core.createBuffer(2, 1, .{});
-    try (try context.core.raw().getBuffer(source)).drawTextChecked("ok", 0, 0, .{ 255, 255, 255, 255 }, null, 0);
-    const source_id = handleToC(source);
+    // Drawing semantics are tested on Context; these rows cover the C wrapper.
+    const source = handleToC(try context.core.createBuffer(2, 1, .{}));
     try std.testing.expectEqual(c.OT_INVALID_ARGUMENT, ot_session_draw_buffer(context, &id, null, 0, 0));
-    try std.testing.expectEqual(c.OT_OK, ot_session_draw_buffer(context, &id, &source_id, 2, 1));
-    try std.testing.expectEqual(@as(u32, 'o'), cli.getNextBuffer().get(2, 1).?.char);
+    try std.testing.expectEqual(c.OT_OK, ot_session_draw_buffer(context, &id, &source, 2, 1));
 
     const valid: c.ot_session_terminal_options = .{
         .struct_size = @sizeOf(c.ot_session_terminal_options),
@@ -3419,7 +3414,6 @@ test "Context ABI Session setup and capability records validate before changing 
     try std.testing.expect(cli.useAlternateScreen and cli.clearOnShutdown);
     try std.testing.expect(value.lifecycle.mouse and !value.lifecycle.mouse_movement);
     try std.testing.expectEqual(@as(u8, 31), cli.terminal.opts.kitty_keyboard_flags);
-    try std.testing.expectEqual(c.OT_INVALID_PHASE, ot_session_draw_buffer(context, &id, &source_id, 0, 0));
     value.cancel();
 }
 
