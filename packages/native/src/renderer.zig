@@ -134,6 +134,8 @@ const SplitFrameState = struct {
     scrollback: split_scrollback.SplitScrollback,
     render_offset: u32,
     transition: SplitFooterTransition,
+    /// Only `rollbackSplitFrame` restores this: queued bytes own their image IDs
+    /// while their presentation is pending.
     kitty_history_next_image_id: ?u32 = null,
 };
 
@@ -1078,11 +1080,16 @@ pub const CliRenderer = struct {
         self.splitScrollback = state.scrollback;
         self.renderOffset = state.render_offset;
         self.pendingSplitFooterTransition = state.transition;
+    }
+
+    /// Undo an unpublished frame, including the Kitty history image IDs it reserved.
+    fn rollbackSplitFrame(self: *CliRenderer, state: SplitFrameState) void {
+        self.restoreSplitFrameState(state);
         self.kittyHistoryNextImageId = state.kitty_history_next_image_id;
     }
 
     fn finishSplitBatch(self: *CliRenderer, published: bool) void {
-        if (!published) self.restoreSplitFrameState(self.splitBatchStartState);
+        if (!published) self.rollbackSplitFrame(self.splitBatchStartState);
         self.splitBatchActive = false;
         self.splitBatchRedrawFooter = false;
         self.splitBatchDeltaTime = 0;
@@ -1229,7 +1236,7 @@ pub const CliRenderer = struct {
         std.debug.assert(status != .rendered or !self.imageRenderFailed);
         if (status != .rendered) {
             self.renderStats = previous_stats;
-            self.restoreSplitFrameState(start_split_state);
+            self.rollbackSplitFrame(start_split_state);
             return self.finishUnpublishedFrame(status);
         }
         if (deferred) {
@@ -1370,7 +1377,7 @@ pub const CliRenderer = struct {
         const status = self.prepareSplitFooterRepaintFrame(pinned_render_offset, force);
         if (status != .rendered) {
             self.renderStats = previous_stats;
-            self.restoreSplitFrameState(start_split_state);
+            self.rollbackSplitFrame(start_split_state);
         } else {
             self.collectFrameStats(deltaTime);
         }

@@ -82,6 +82,48 @@ test "Session split output rejects pressure without mutating image snapshots" {
     try testing.expect(value.renderer.?.splitScrollback.published_rows > 0);
 }
 
+test "Session pending split frame keeps its Kitty history image IDs from a file probe" {
+    const owner = try context.Context.init(testing.allocator, testing.io, .{});
+    defer owner.deinit() catch unreachable;
+    const handle = try owner.createSession(.{ .chunk_size = 4096, .chunk_count = 4, .span_capacity = 4 });
+    defer owner.cancelSession(handle) catch unreachable;
+    try owner.attachSessionRenderer(handle, 4, 3, .{ .forwarded_env = &.{} });
+    const value = try owner.raw().getSession(handle);
+    const cli = value.renderer.?;
+    cli.terminal.processCapabilityResponse("\x1b_Gi=31337;OK\x1b\\");
+    const snapshot = try owner.raw().getBuffer(try owner.createBuffer(2, 1, .{}));
+    const decoded = try image.createFromRgba(testing.allocator, &.{ 255, 0, 0, 255 }, 1, 1, 4);
+    defer decoded.deinit();
+    const pixels = try owner.raw().getImage(try owner.importImage(decoded));
+    for (0..2) |x| try testing.expect(try snapshot.drawImage(pixels, 1, @intCast(x), 0, 1, 1, 0, 0, 0, 0, 1, 1, .auto));
+    _ = try value.splitControl(.{ .reset = .{ .seed_rows = 2, .pinned_render_offset = 2 } });
+    const commits = [_]renderer.SplitSnapshot{.{ .snapshot = snapshot, .row_columns = 2 }};
+    try testing.expectEqual(session.RenderStatus.pending, try value.renderSplit(null, &commits, 2, true));
+    const frame_end = value.frame_end_offset.?;
+
+    cli.kittyTransport.mode = .file;
+    cli.startKittyFileProbeFromSession();
+    try testing.expectEqual(.probing, cli.kittyTransport.file_state);
+    const probe_ids = [_]u32{ cli.kittyTransport.query_id, cli.kittyTransport.upload_probe_id };
+    var out: [16384]u8 = undefined;
+    var len: usize = 0;
+    while (try owner.readOutput(handle, out[len..])) |ticket| {
+        len += ticket.len;
+        try owner.completeOutput(handle, ticket, .written);
+    }
+    var frame = out[0..frame_end];
+    var frame_ids: usize = 0;
+    while (std.mem.find(u8, frame, ",i=")) |at| : (frame_ids += 1) {
+        frame = frame[at + 3 ..];
+        const end = std.mem.indexOfAny(u8, frame, ",;\x1b").?;
+        const id = try std.fmt.parseInt(u32, frame[0..end], 10);
+        for (probe_ids) |probe_id| try testing.expect(id != probe_id);
+    }
+    try testing.expect(frame_ids >= 2);
+    // Completion publishes the frame without returning the probe's IDs.
+    try testing.expect(cli.kittyHistoryNextImageId.? > probe_ids[1]);
+}
+
 test "Session snapshot-only output preserves footer cells and invalidates the next repaint" {
     const owner = try context.Context.init(testing.allocator, testing.io, .{});
     defer owner.deinit() catch unreachable;
