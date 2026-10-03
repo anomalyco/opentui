@@ -2074,10 +2074,6 @@ pub const Context = struct {
         node.surface = source;
     }
 
-    pub fn sceneSetBoxBorderStyle(self: *Context, handle: Handle, style: u32, sides: u32) !void {
-        return self.scenePatchPaint(handle, api.OT_SCENE_PROPERTY_BORDER | api.OT_SCENE_PROPERTY_BORDER_STYLE | api.OT_SCENE_PROPERTY_RESET_BORDER_CHARACTERS, .{ .borderStyle = style, .borderSides = sides });
-    }
-
     pub fn sceneSetEditorView(self: *Context, handle: Handle, view_handle: ?Handle) !void {
         try self.beginMutation();
         defer self.mutating = false;

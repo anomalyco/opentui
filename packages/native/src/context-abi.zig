@@ -1769,15 +1769,6 @@ pub fn ot_scene_set_box_details(context: ?*ContextHandle, node_ptr: ?*const c.ot
     return c.OT_OK;
 }
 
-pub fn ot_scene_set_box_border_style(context: ?*ContextHandle, node_ptr: ?*const c.ot_handle, style: u32, sides: u32) callconv(.c) c.ot_status {
-    const status = sessionContextStatus(context);
-    if (status != c.OT_OK) return status;
-    const owner = context.?;
-    const id = node_ptr orelse return sessionError(owner, error.InvalidOptions);
-    owner.core.sceneSetBoxBorderStyle(handleFromC(id.*), style, sides) catch |err| return sessionError(owner, err);
-    return c.OT_OK;
-}
-
 test "Context Box details ABI validates records before publishing titles and styles" {
     var owner: ContextHandle = .{ .gpa = .init, .io_threaded = .init_single_threaded, .core = undefined, .owner_thread = std.Thread.getCurrentId() };
     defer owner.io_threaded.deinit();
@@ -1816,9 +1807,10 @@ test "Context Box details ABI validates records before publishing titles and sty
         try std.testing.expectEqualStrings("owned", node.control.box.?.title);
     }
     try std.testing.expectEqual(c.OT_INVALID_ARGUMENT, ot_scene_set_box_details(&owner, &id, &details, null, 1, null, 0));
-    try std.testing.expectEqual(c.OT_INVALID_ARGUMENT, ot_scene_set_box_border_style(&owner, &id, 4, 15));
+    const reset = c.OT_SCENE_PROPERTY_BORDER | c.OT_SCENE_PROPERTY_BORDER_STYLE | c.OT_SCENE_PROPERTY_RESET_BORDER_CHARACTERS;
+    try std.testing.expectError(error.InvalidOptions, owner.core.scenePatchPaint(box, reset, .{ .borderStyle = 4, .borderSides = 15 }));
     try std.testing.expect(node.control.box.?.custom_border_chars != null);
-    try std.testing.expectEqual(c.OT_OK, ot_scene_set_box_border_style(&owner, &id, 2, 15));
+    try owner.core.scenePatchPaint(box, reset, .{ .borderStyle = 2, .borderSides = 15 });
     try std.testing.expect(node.control.box.?.custom_border_chars == null);
     try std.testing.expectEqualStrings("owned", node.control.box.?.title);
     owner.core.mutating = true;

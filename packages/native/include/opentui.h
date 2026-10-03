@@ -720,8 +720,6 @@ ot_status ot_scene_flush(ot_context *,
 ot_status ot_scene_set_surface(ot_context *, const ot_handle *node, const ot_handle *buffer);
 ot_status ot_scene_set_box_details(ot_context *, const ot_handle *node, const ot_scene_box_details *,
     const uint8_t *title, uint32_t title_bytes, const uint8_t *bottom_title, uint32_t bottom_title_bytes);
-/* Accepts border style/sides together and clears custom border characters. */
-ot_status ot_scene_set_box_border_style(ot_context *, const ot_handle *node, uint32_t style, uint32_t sides);
 /* A box may filter its direct children against a root/box in the same Session.
  * The viewport handle is copied, not pinned. NULL disables filtering. A destroyed
  * viewport fails frame preparation until rebound or disabled. All direct children
