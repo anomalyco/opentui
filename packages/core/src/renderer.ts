@@ -3300,17 +3300,12 @@ export class CliRenderer extends EventEmitter implements RenderContext {
       return false
     }
 
-    const transition = hasCursorReport && this.pendingSplitStartupCursorSeed ? this.pendingSplitFooterTransition : null
-    // Native controls require idle split state; a rejected reply must retain the transition.
-    if (transition) this.clearPendingSplitFooterTransition()
     try {
       this.nativeSession.control({ kind: "capability-response", bytes: Buffer.from(sequence) })
     } catch (error) {
       if (!(error instanceof NativeError)) throw error
       // A rejected reply is consumed without being applied. Throwing would reset the parser and drop later input.
       return error.status !== NativeStatus.InvalidPhase
-    } finally {
-      if (transition) this.setPendingSplitFooterTransition(transition)
     }
     this._capabilities = this.nativeSession.getCapabilities()
     if (this._capabilities?.terminal?.from_xtversion) {
