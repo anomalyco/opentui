@@ -371,12 +371,16 @@ describe("TextTableRenderable", () => {
     expect(table.wrapMode).toBe("char")
   })
 
-  test("fills available width by default in full mode", async () => {
+  test.each([
+    ["fills available width by default in full mode", undefined, [0, 17, 33]],
+    ["keeps intrinsic width in content mode when extra space is available", "content" as const, [0, 2, 4]],
+  ])("%s", async (_name, columnWidthMode, expected) => {
     const table = new TextTableRenderable(renderer, {
       left: 0,
       top: 0,
       width: 34,
       wrapMode: "word",
+      columnWidthMode,
       content: [
         [cell("A"), cell("B")],
         [cell("1"), cell("2")],
@@ -393,7 +397,7 @@ describe("TextTableRenderable", () => {
     const buffer = renderer.currentRenderBuffer
     const borderXs = findVerticalBorderXs(buffer, headerY)
 
-    expect(borderXs).toEqual([0, 17, 33])
+    expect(borderXs).toEqual(expected)
   })
 
   test("fills available width in no-wrap mode when columnWidthMode is full", async () => {
