@@ -181,7 +181,7 @@ test "Session suspension rejection preserves yielded and synchronous preparation
     try testing.expectEqualDeep(synchronous, f.value.scene.?.attempt.?.pending.?);
 }
 
-test "Session suspended resize requires drained output and preserves rendering gates" {
+test "Session suspended resize accepts queued output and preserves rendering gates" {
     const f = try Fixture.init(testing.allocator, testing.io, 4, 2);
     defer f.deinit();
     _ = try f.owner.sceneCreateNode(f.id, 0, 1);
@@ -194,19 +194,17 @@ test "Session suspended resize requires drained output and preserves rendering g
     try f.drive(&now_ns, .suspended);
 
     try f.owner.writeSession(f.id, "shell");
-    try testing.expectError(error.Busy, f.owner.resizeSessionRenderer(f.id, 2, 4));
-    const ticket = (try f.owner.readOutput(f.id, bytes[0..2])).?;
-    try testing.expectError(error.Busy, f.owner.resizeSessionRenderer(f.id, 2, 4));
-    try f.owner.completeOutput(f.id, ticket, .written);
-    _ = try f.drain(&bytes);
     const written = f.value.getStats().bytes_written;
-
+    try f.owner.resizeSessionRenderer(f.id, 3, 3);
+    const ticket = (try f.owner.readOutput(f.id, bytes[0..2])).?;
     try f.owner.resizeSessionRenderer(f.id, 2, 4);
     try testing.expectEqual(@as(u32, 2), f.cli.width);
     try testing.expectEqual(@as(u32, 4), f.cli.height);
     try testing.expectEqual(@as(u32, 2), f.cli.getCurrentBuffer().width);
     try testing.expectEqual(@as(u32, 4), f.cli.getNextBuffer().height);
     try testing.expectEqual(written, f.value.getStats().bytes_written);
+    try f.owner.completeOutput(f.id, ticket, .written);
+    try testing.expectEqualStrings("ell", try f.drain(&bytes));
     try testing.expectEqual(.suspended, f.value.getTerminalState().phase);
     try testing.expectError(error.TerminalInactive, f.owner.renderSession(f.id, true));
     try testing.expectError(error.TerminalInactive, f.owner.scenePaint(f.id, .{ 0, 0, 0, 255 }, false, 0));
