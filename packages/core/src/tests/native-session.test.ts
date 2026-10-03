@@ -6,7 +6,7 @@ import { CliRenderer } from "../renderer.js"
 import { settle } from "../testing/harness.js"
 import { ManualClock } from "../testing/manual-clock.js"
 import { createTestStdin, RecordingWriteStream } from "../testing/test-streams.js"
-import { NativeStatus, resolveRenderLib, type NativeContextHandle } from "../zig.js"
+import { NativeError, NativeStatus, resolveRenderLib, type NativeContextHandle } from "../zig.js"
 
 const lib = resolveRenderLib()
 const MS = 1_000_000n
@@ -361,13 +361,13 @@ test("host limits reject invalid options", () => {
 test("environment limits reject before attachment and accept the boundary", () => {
   const entries = (count: number) => Object.fromEntries(Array.from({ length: count }, (_, index) => [`K${index}`, ""]))
   // Each entry takes 8 length bytes; 65,536 bytes is the whole budget.
-  const invalid: [Record<string, unknown>, ErrorConstructor][] = [
-    [{ "": "1" }, TypeError],
-    [{ "a=b": "1" }, TypeError],
-    [{ "a\0": "1" }, TypeError],
-    [{ a: "\0" }, TypeError],
+  const invalid: [Record<string, unknown>, new (...args: never[]) => Error][] = [
+    [{ "": "1" }, NativeError],
+    [{ "a=b": "1" }, NativeError],
+    [{ "a\0": "1" }, NativeError],
+    [{ a: "\0" }, NativeError],
     [{ a: 1 }, TypeError],
-    [entries(257), RangeError],
+    [entries(257), NativeError],
     [{ a: "x".repeat(65_528) }, RangeError],
     [{ a: "\u00e9".repeat(32_764) }, RangeError],
   ]

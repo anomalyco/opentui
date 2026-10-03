@@ -6137,24 +6137,15 @@ export class FFIRenderLib {
           ? nativeConstants.OT_SESSION_REMOTE_REMOTE
           : nativeConstants.OT_SESSION_REMOTE_LOCAL
     const environment = options.environment ?? {}
-    const entriesMax = nativeConstants.OT_SESSION_ENV_ENTRIES_MAX
     const bytes = new Uint8Array(nativeConstants.OT_SESSION_ENV_BYTES_MAX)
     const lengths = new DataView(bytes.buffer)
     let offset = 0
     for (const key of Object.keys(environment)) {
-      if (record[layout.fields.entry_count.offset / 4] === entriesMax) {
-        throw new RangeError(`Session environment exceeds ${entriesMax} entries`)
-      }
       const value = environment[key]
       if (typeof value !== "string") throw new TypeError("Session environment values must be strings")
       // UTF-8 never has fewer bytes than UTF-16 code units, so this bounds the encoding work.
       if (key.length + value.length + 8 > bytes.length - offset) {
         throw new RangeError(`Session environment exceeds ${bytes.length} bytes`)
-      }
-      if (!key || key.includes("=") || key.includes("\0") || value.includes("\0")) {
-        throw new TypeError(
-          "Session environment requires nonempty NUL-free keys without '=' and NUL-free string values",
-        )
       }
       const keyBytes = this.encoder.encode(key)
       const valueBytes = this.encoder.encode(value)
