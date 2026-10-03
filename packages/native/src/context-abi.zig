@@ -3416,7 +3416,7 @@ fn isSceneRecord(comptime T: type) bool {
 }
 
 /// Calls `wrapper` with otherwise valid empty arguments (zeroed records with size and version,
-/// zeroed outputs, NULL arrays, and scalar `fill`). Rows 0-7 break admission or the primary
+/// 0xa5-filled outputs, NULL arrays, and scalar `fill`). Rows 0-7 break admission or the primary
 /// handle; the rest break one pointer argument each (NULL, size, version, reserved). Reads stay
 /// admitted while a measure callback runs. A rejection leaves every record and output unchanged.
 fn expectSceneWrapperRules(comptime wrapper: anytype, comptime read: bool, context: *ContextHandle, handles: *const [4]c.ot_handle, fill: u32) !void {
@@ -3440,6 +3440,7 @@ fn expectSceneWrapperRules(comptime wrapper: anytype, comptime read: bool, conte
             if (comptime ScenePointee(param.type.?)) |T| {
                 comptime std.debug.assert(@sizeOf(T) <= 128);
                 const record: *T = @ptrCast(@alignCast(&storage[index]));
+                if (!@typeInfo(@typeInfo(param.type.?).optional.child).pointer.is_const) @memset(&storage[index], 0xa5);
                 const is_record = comptime isSceneRecord(T);
                 if (is_record) record.struct_size = @sizeOf(T);
                 if (is_record) record.abi_version = c.OT_CONTEXT_ABI_VERSION;

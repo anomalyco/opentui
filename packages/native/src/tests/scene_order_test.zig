@@ -67,6 +67,7 @@ test "Scene ordered equal-z append skips settled sibling rank and sort work" {
         for (64..children.len) |index| {
             f.state.test_sort_steps = 0;
             children[index] = try box(f.owner, f.id, @intCast(index + 2), 0);
+            try f.owner.sceneMoveNode(children[index], children[0], 0);
             try f.owner.sceneMoveNode(children[index], f.root, @intCast(index));
             if (hooks) try f.owner.sceneSetHooks(children[index], 1, 1, 2, 1);
             try frame(f, if (hooks) children[0 .. index + 1] else &.{});
