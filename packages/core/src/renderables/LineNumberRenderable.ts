@@ -279,7 +279,7 @@ class GutterRenderable extends Renderable {
     // and source mappings can change without changing the number of visual rows.
     this.refreshFrameBuffer(this.frameBuffer, Math.trunc(this.target.scrollY) + start)
     this.markClean()
-    if (buffer !== this.frameBuffer) buffer.drawFrameBuffer(x, y + start, this.frameBuffer)
+    buffer.drawFrameBuffer(x, y + start, this.frameBuffer)
   }
 
   private refreshFrameBuffer(buffer: OptimizedBuffer, startLine: number): void {
@@ -463,11 +463,9 @@ export class LineNumberRenderable extends Renderable {
     }
   }
 
+  // Callers attach a target only when none is set; clearTarget() and destroySelf() clear target and gutter together.
   private setTarget(target: Renderable & LineInfoProvider): boolean {
-    if (this.target === target) return true
     if (this.isDestroyed || target.isDestroyed) return false
-
-    if (this.target || this.gutter) this.clearTarget()
 
     this.target = target
     try {
