@@ -654,4 +654,25 @@ describe("TerminalConsole", () => {
       expect(() => terminalConsole["triggerCopy"]()).not.toThrow()
     })
   })
+
+  describe("log wrapping", () => {
+    const entries: unknown[][] = [["hello world"], ["a\nbcdef"], [new Error("boom")]]
+
+    test("terminates with one or more cells per display line at every console width", () => {
+      for (let width = 1; width <= 6; width++) {
+        terminalConsole = new TerminalConsole({ ...mockRenderer, width, terminalWidth: width } as any, {
+          position: ConsolePosition.BOTTOM,
+        })
+        expect(terminalConsole["consoleWidth"]).toBe(width)
+        for (const args of entries) {
+          const text = terminalConsole["formatArguments"](args)
+          const lines = terminalConsole["_processLogEntry"]([new Date(0), "LOG" as any, args, null])
+          const lineCount = text.split("\n").length
+          // The first line also carries the "[time] [LOG] " prefix.
+          expect(lines.length).toBeLessThanOrEqual(text.length + lineCount + 32)
+          expect(lines.every((line: { text: string }) => line.text.length > 0)).toBe(true)
+        }
+      }
+    })
+  })
 })

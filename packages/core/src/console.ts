@@ -941,7 +941,8 @@ export class TerminalConsole extends EventEmitter {
     for (let i = 0; i < initialLines.length; i++) {
       const lineText = initialLines[i]
       const isFirstLineOfEntry = i === 0
-      const availableWidth = this.consoleWidth - 1 - (isFirstLineOfEntry ? 0 : INDENT_WIDTH)
+      // At least one column per segment, so narrow consoles still make progress.
+      const availableWidth = Math.max(1, this.consoleWidth - 1 - (isFirstLineOfEntry ? 0 : INDENT_WIDTH))
       const linePrefix = isFirstLineOfEntry ? prefix : " ".repeat(INDENT_WIDTH)
       const textToWrap = isFirstLineOfEntry ? linePrefix + lineText : lineText
 
