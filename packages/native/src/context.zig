@@ -2035,7 +2035,6 @@ pub const Context = struct {
         }
         yoga.yogaNodeInvalidateMeasure(node.yoga_node);
         node.scene_node.?.measure_overridden = true;
-        node.scene_node.?.owner.work.clearRetainingCapacity();
     }
 
     pub fn sceneSetBoxDetails(self: *Context, handle: Handle, details: scene.BoxDetails) !void {
@@ -2141,7 +2140,6 @@ pub const Context = struct {
         defer self.mutating = false;
         const node = try self.sceneMutableNode(handle);
         try yoga.check(yoga.yogaNodeMarkDirtyChecked(node.yoga_node));
-        node.scene_node.?.owner.work.clearRetainingCapacity();
     }
 
     pub fn checkSceneRead(self: *Context) Error!void {
@@ -2203,7 +2201,6 @@ pub const Context = struct {
             api.OT_STYLE_DIMENSION => yoga.yogaNodeStyleSetDimensionChecked(node.yoga_node, kind, unit, value, flags),
             else => unreachable,
         });
-        node.scene_node.?.owner.work.clearRetainingCapacity();
     }
 
     pub fn sceneGetStyle(self: *Context, handle: Handle, group: u32, kind: u32, edge: u32) !scene.StyleValue {
@@ -2245,7 +2242,6 @@ pub const Context = struct {
         defer self.mutating = false;
         const node = try self.sceneMutableNode(handle);
         try yoga.check(yoga.yogaNodeStyleSetPositionsChecked(node.yoga_node, mask, &units, &values));
-        node.scene_node.?.owner.work.clearRetainingCapacity();
     }
 
     pub fn sceneSetPaint(self: *Context, handle: Handle, paint: scene.Paint) !void {
