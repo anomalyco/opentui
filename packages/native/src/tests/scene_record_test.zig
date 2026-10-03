@@ -5,7 +5,6 @@ const Fixture = @import("scene_fixture_test.zig").Fixture;
 const context = @import("../context.zig");
 const scene = @import("../scene.zig");
 const ansi = @import("../ansi.zig");
-const scene_record = @import("../scene-record.zig");
 const grapheme = @import("../grapheme.zig");
 const transport: @import("../session.zig").Options = .{ .chunk_size = 4096, .control_capacity = 4096 };
 
@@ -347,9 +346,6 @@ test "Scene record reads referenced resources at playback and skips destroyed on
 
 const Command = enum { box, grid, packed_cells, supersample, grayscale, color_matrix, text_view, editor_view, scene_text, image, unicode };
 
-/// A command goes into a recording, or straight to the painted frame through its direct operation.
-const Sink = union(enum) { recording: *Recording, frame: scene.FrameRequest };
-
 const Resources = struct {
     text_view: context.Handle,
     editor_view: context.Handle,
@@ -379,112 +375,39 @@ fn recordHeader(operation: u32) c.ot_scene_record_header {
     return .{ .size = 0, .operation = operation };
 }
 
-fn issue(command: Command, f: Fixture, resources: Resources, sink: Sink) !void {
+/// Appends a valid record of one command kind. Core's frame-record-parity test compares each
+/// command's playback with its direct operation; native tests corrupt these records.
+fn appendCommand(recording: *Recording, command: Command, resources: Resources) void {
     const white: [4]u16 = .{ 255, 255, 255, 255 };
     const blue: [4]u16 = .{ 0, 0, 200, 255 };
     const borders: [11]u32 = .{ '+', '+', '+', '+', '-', '|', '+', '+', '+', '+', '+' };
     switch (command) {
-        .box => {
-            const record: c.ot_buffer_draw_box = .{
-                .header = drawHeader(c.ot_buffer_draw_box, c.OT_BUFFER_DRAW_BOX),
-                .x = 0,
-                .y = 0,
-                .width = 6,
-                .height = 3,
-                // All sides, fill, a centered title, and a right-aligned bottom title.
-                .packed_options = c.OT_BORDER_ALL | 16 | (1 << 5) | (2 << 7),
-                .foreground = white,
-                .background = blue,
-                .title_color = white,
-                .border_chars = borders,
-            };
-            switch (sink) {
-                .recording => |recording| recording.draw(record, null, "ab", "cd"),
-                .frame => |frame| {
-                    var draw: context.BufferDraw = undefined;
-                    try scene_record.bufferDrawFromC(&record.header, &draw);
-                    try f.owner.drawBuffer(f.id, frame, &draw, "ab", "cd");
-                },
-            }
-        },
+        // All sides, fill, a centered title, and a right-aligned bottom title.
+        .box => recording.draw(c.ot_buffer_draw_box{ .header = drawHeader(c.ot_buffer_draw_box, c.OT_BUFFER_DRAW_BOX), .x = 0, .y = 0, .width = 6, .height = 3, .packed_options = c.OT_BORDER_ALL | 16 | (1 << 5) | (2 << 7), .foreground = white, .background = blue, .title_color = white, .border_chars = borders }, null, "ab", "cd"),
         .grid => {
             const grid: c.ot_buffer_grid_options = .{ .struct_size = @sizeOf(c.ot_buffer_grid_options), .abi_version = c.OT_CONTEXT_ABI_VERSION, .flags = c.OT_BUFFER_GRID_INNER | c.OT_BUFFER_GRID_OUTER, .reserved = 0, .foreground = white, .background = blue, .border_chars = borders };
-            const offsets = [_]i32{ 0, 4, 9, 0, 2, 3 };
-            switch (sink) {
-                .recording => |recording| recording.append(c.ot_scene_record_grid{ .header = recordHeader(c.OT_SCENE_RECORD_GRID), .options = grid, .column_count = 3, .row_count = 3 }, std.mem.sliceAsBytes(&offsets)),
-                .frame => |frame| try f.owner.drawGrid(f.id, frame, try scene_record.gridFromC(&grid), offsets[0..3], offsets[3..]),
-            }
+            recording.append(c.ot_scene_record_grid{ .header = recordHeader(c.OT_SCENE_RECORD_GRID), .options = grid, .column_count = 3, .row_count = 3 }, std.mem.sliceAsBytes(&[_]i32{ 0, 4, 9, 0, 2, 3 }));
         },
         .packed_cells => {
             const Cell = extern struct { background: [4]f32, foreground: [4]f32, char: u32, padding: [3]u32 = .{ 0, 0, 0 } };
             const cells = [_]Cell{ .{ .background = .{ 1, 0, 0, 1 }, .foreground = .{ 1, 1, 1, 1 }, .char = 'P' }, .{ .background = .{ 0, 1, 0, 0.5 }, .foreground = .{ 0, 0, 0, 1 }, .char = 0x2588 } };
-            const data = std.mem.sliceAsBytes(&cells);
-            switch (sink) {
-                .recording => |recording| recording.append(c.ot_scene_record_packed{ .header = recordHeader(c.OT_SCENE_RECORD_PACKED), .x = 3, .y = 1, .width = 2, .height = 1, .byte_count = @intCast(data.len), .reserved = 0 }, data),
-                .frame => |frame| try f.owner.drawPackedBuffer(f.id, frame, data, 3, 1, 2, 1),
-            }
+            recording.append(c.ot_scene_record_packed{ .header = recordHeader(c.OT_SCENE_RECORD_PACKED), .x = 3, .y = 1, .width = 2, .height = 1, .byte_count = @sizeOf(@TypeOf(cells)), .reserved = 0 }, std.mem.sliceAsBytes(&cells));
         },
         .supersample => {
             const pixels = [_]u8{ 255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255, 255, 255, 255, 255 } ** 2;
-            switch (sink) {
-                .recording => |recording| recording.append(c.ot_scene_record_supersample{ .header = recordHeader(c.OT_SCENE_RECORD_SUPERSAMPLE), .x = 6, .y = 2, .format = 1, .stride = 16, .byte_count = pixels.len, .reserved = 0 }, &pixels),
-                .frame => |frame| try f.owner.drawSuperSampleBuffer(f.id, frame, &pixels, 6, 2, 1, 16),
-            }
+            recording.append(c.ot_scene_record_supersample{ .header = recordHeader(c.OT_SCENE_RECORD_SUPERSAMPLE), .x = 6, .y = 2, .format = 1, .stride = 16, .byte_count = pixels.len, .reserved = 0 }, &pixels);
         },
-        .grayscale => {
-            const samples = [_]f32{ 0.2, 0.6, 1.0 };
-            const flags = c.OT_SCENE_RECORD_GRAYSCALE_FOREGROUND | c.OT_SCENE_RECORD_GRAYSCALE_BACKGROUND;
-            switch (sink) {
-                .recording => |recording| recording.append(c.ot_scene_record_grayscale{ .header = recordHeader(c.OT_SCENE_RECORD_GRAYSCALE), .x = 1, .y = 3, .width = 3, .height = 1, .flags = flags, .sample_count = samples.len, .foreground = white, .background = blue }, std.mem.sliceAsBytes(&samples)),
-                .frame => |frame| try f.owner.drawGrayscaleBuffer(f.id, frame, &samples, 1, 3, 3, 1, white, blue, false),
-            }
-        },
+        .grayscale => recording.append(c.ot_scene_record_grayscale{ .header = recordHeader(c.OT_SCENE_RECORD_GRAYSCALE), .x = 1, .y = 3, .width = 3, .height = 1, .flags = c.OT_SCENE_RECORD_GRAYSCALE_FOREGROUND | c.OT_SCENE_RECORD_GRAYSCALE_BACKGROUND, .sample_count = 3, .foreground = white, .background = blue }, std.mem.sliceAsBytes(&[_]f32{ 0.2, 0.6, 1.0 })),
         .color_matrix => {
-            // Adds half of alpha to red, uniformly on backgrounds and through a mask on both planes.
             const matrix = [16]f32{ 1, 0, 0, 0.5, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1 };
-            const mask = [_]f32{ 1, 1, 1, 5, 2, 0.5 };
-            switch (sink) {
-                .recording => |recording| {
-                    recording.append(c.ot_scene_record_color_matrix{ .header = recordHeader(c.OT_SCENE_RECORD_COLOR_MATRIX), .matrix = matrix, .strength = 0.5, .channel = 2, .has_mask = 0, .mask_count = 0 }, &.{});
-                    recording.append(c.ot_scene_record_color_matrix{ .header = recordHeader(c.OT_SCENE_RECORD_COLOR_MATRIX), .matrix = matrix, .strength = 1, .channel = 3, .has_mask = 1, .mask_count = mask.len }, std.mem.sliceAsBytes(&mask));
-                },
-                .frame => |frame| {
-                    try f.owner.colorMatrixBuffer(f.id, frame, &matrix, null, 0.5, 2);
-                    try f.owner.colorMatrixBuffer(f.id, frame, &matrix, &mask, 1, 3);
-                },
-            }
+            recording.append(c.ot_scene_record_color_matrix{ .header = recordHeader(c.OT_SCENE_RECORD_COLOR_MATRIX), .matrix = matrix, .strength = 0.5, .channel = 2, .has_mask = 0, .mask_count = 0 }, &.{});
+            recording.append(c.ot_scene_record_color_matrix{ .header = recordHeader(c.OT_SCENE_RECORD_COLOR_MATRIX), .matrix = matrix, .strength = 1, .channel = 3, .has_mask = 1, .mask_count = 6 }, std.mem.sliceAsBytes(&[_]f32{ 1, 1, 1, 5, 2, 0.5 }));
         },
-        .text_view, .editor_view, .scene_text => {
-            const source = switch (command) {
-                .text_view => resources.text_view,
-                .editor_view => resources.editor_view,
-                else => resources.scene_text,
-            };
-            const operation: u32 = switch (command) {
-                .text_view => c.OT_SCENE_RECORD_TEXT_VIEW,
-                .editor_view => c.OT_SCENE_RECORD_EDITOR_VIEW,
-                else => c.OT_SCENE_RECORD_SCENE_TEXT,
-            };
-            switch (sink) {
-                .recording => |recording| recording.append(c.ot_scene_record_view{ .header = recordHeader(operation), .source = cHandle(source), .x = 2, .y = 1 }, &.{}),
-                .frame => |frame| switch (command) {
-                    .text_view => try f.owner.drawTextBufferView(f.id, frame, source, 2, 1),
-                    .editor_view => try f.owner.drawEditorView(f.id, frame, source, 2, 1),
-                    else => try f.owner.drawSceneText(f.id, frame, source, 2, 1),
-                },
-            }
-        },
-        .image => {
-            const draw: c.ot_image_draw_options = .{ .struct_size = @sizeOf(c.ot_image_draw_options), .abi_version = c.OT_CONTEXT_ABI_VERSION, .flags = 0, .protocol = c.OT_IMAGE_PROTOCOL_BLOCKS, .x = 8, .y = 2, .width = 2, .height = 1, .pixel_width = 0, .pixel_height = 0, .source_x = 0, .source_y = 0, .source_width = 0, .source_height = 0, .reserved = .{ 0, 0 } };
-            switch (sink) {
-                .recording => |recording| recording.append(c.ot_scene_record_image{ .header = recordHeader(c.OT_SCENE_RECORD_IMAGE), .image = cHandle(resources.image), .options = draw }, &.{}),
-                .frame => |frame| _ = try f.owner.drawBufferImage(f.id, frame, resources.image, try scene_record.imageDrawFromC(&draw)),
-            }
-        },
-        .unicode => switch (sink) {
-            .recording => |recording| recording.append(c.ot_scene_record_unicode{ .header = recordHeader(c.OT_SCENE_RECORD_UNICODE), .unicode = cHandle(resources.unicode), .index = 1, .x = 11, .y = 3, .attributes = 1, .foreground = white, .background = blue }, &.{}),
-            .frame => |frame| try f.owner.drawBufferUnicode(f.id, frame, resources.unicode, 1, 11, 3, white, blue, 1),
-        },
+        .text_view => recording.append(c.ot_scene_record_view{ .header = recordHeader(c.OT_SCENE_RECORD_TEXT_VIEW), .source = cHandle(resources.text_view), .x = 2, .y = 1 }, &.{}),
+        .editor_view => recording.append(c.ot_scene_record_view{ .header = recordHeader(c.OT_SCENE_RECORD_EDITOR_VIEW), .source = cHandle(resources.editor_view), .x = 2, .y = 1 }, &.{}),
+        .scene_text => recording.append(c.ot_scene_record_view{ .header = recordHeader(c.OT_SCENE_RECORD_SCENE_TEXT), .source = cHandle(resources.scene_text), .x = 2, .y = 1 }, &.{}),
+        .image => recording.append(c.ot_scene_record_image{ .header = recordHeader(c.OT_SCENE_RECORD_IMAGE), .image = cHandle(resources.image), .options = .{ .struct_size = @sizeOf(c.ot_image_draw_options), .abi_version = c.OT_CONTEXT_ABI_VERSION, .flags = 0, .protocol = c.OT_IMAGE_PROTOCOL_BLOCKS, .x = 8, .y = 2, .width = 2, .height = 1, .pixel_width = 0, .pixel_height = 0, .source_x = 0, .source_y = 0, .source_width = 0, .source_height = 0, .reserved = .{ 0, 0 } } }, &.{}),
+        .unicode => recording.append(c.ot_scene_record_unicode{ .header = recordHeader(c.OT_SCENE_RECORD_UNICODE), .unicode = cHandle(resources.unicode), .index = 1, .x = 11, .y = 3, .attributes = 1, .foreground = white, .background = blue }, &.{}),
     }
 }
 
@@ -525,40 +448,6 @@ const Cells = struct {
             std.mem.eql(u8, self.text, other.text) and self.placements == other.placements;
     }
 };
-
-test "Scene record plays every command like its direct frame operation" {
-    const f = try Fixture.init(testing.allocator, 12, 4, .{ .output = transport });
-    defer f.deinit();
-    // A full-frame slot has the whole frame as clip and opacity 1, like a direct frame draw.
-    const surface = try f.owner.sceneCreateNode(f.id, c.OT_SCENE_CUSTOM, 2);
-    try f.owner.sceneSetStyle(surface, 4, 0, 0, 1, 12, 1);
-    try f.owner.sceneSetStyle(surface, 4, 1, 0, 1, 4, 1);
-    try f.owner.sceneMoveNode(surface, f.root, 0);
-    try f.owner.sceneSetHooks(surface, c.OT_SCENE_HOOK_RENDER_SELF, 1, 12, 4);
-    const resources = try Resources.init(f);
-    const empty: Recording = .{};
-    const blank_frame = try submit(f, try f.step(null, options, c.OT_SCENE_FRAME_RECORD, null), &empty);
-    const blank = try Cells.copy(f.cli.getNextBuffer());
-    defer blank.deinit();
-    try f.owner.sceneFrameCancel(f.id, blank_frame.frame_id);
-    for (std.enums.values(Command)) |command| {
-        errdefer std.debug.print("recorded and direct {s} differ\n", .{@tagName(command)});
-        var recording: Recording = .{};
-        recording.slot(0, c.OT_SCENE_RECORD_PHASE_SELF);
-        try issue(command, f, resources, .{ .recording = &recording });
-        const recorded = try submit(f, try f.step(null, options, c.OT_SCENE_FRAME_RECORD, null), &recording);
-        const expected = try Cells.copy(f.cli.getNextBuffer());
-        defer expected.deinit();
-        try testing.expect(!expected.eql(blank));
-        try f.owner.sceneFrameCancel(f.id, recorded.frame_id);
-        const direct = try submit(f, try f.step(null, options, c.OT_SCENE_FRAME_RECORD, null), &empty);
-        try issue(command, f, resources, .{ .frame = direct });
-        const actual = try Cells.copy(f.cli.getNextBuffer());
-        defer actual.deinit();
-        try testing.expect(expected.eql(actual));
-        try f.owner.sceneFrameCancel(f.id, direct.frame_id);
-    }
-}
 
 fn placed(f: Fixture, kind: u32, num: u32, x: f64, y: f64, width: f32) !context.Handle {
     const child = try f.owner.sceneCreateNode(f.id, kind, num);
@@ -736,7 +625,7 @@ test "Scene record fails corrupted recordings cleanly and keeps the Session pain
     var valid: Recording = .{};
     for (std.enums.values(Command), 0..) |command, index| {
         if (index % 4 == 0) valid.slot(0, @intCast(index / 4));
-        try issue(command, f, resources, .{ .recording = &valid });
+        appendCommand(&valid, command, resources);
     }
     valid.stack(c.OT_BUFFER_STACK_PUSH_SCISSOR, 1, 3, 1);
     valid.slot(1, c.OT_SCENE_RECORD_PHASE_AFTER);
