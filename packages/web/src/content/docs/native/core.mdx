@@ -97,8 +97,10 @@ It cannot read the frame. Draw into an owned buffer and compose it instead.
 
 A recording holds at most 64 MiB (`OT_SCENE_RECORD_BYTES_MAX`). Each text or box title holds at most 64 KiB of UTF-8
 (`OT_BUFFER_TEXT_BYTES_MAX`), the same limit as direct drawing. A call over either limit throws in the hook and records
-nothing. A recording names buffers, encoded Unicode, views, and images that native code reads when it paints. If a hook
-destroys one of them after drawing it, Core releases it after that frame step returns.
+nothing. A recording names buffers, encoded Unicode, text buffer views, editor views, and images that native code reads
+when it paints. If a hook destroys one of them after drawing it, Core releases it after that frame step returns. Scene
+text drawn with `NativeScene.drawText()` also reads its node at paint, so it draws nothing if a hook destroys that node
+in the same frame.
 
 A text change in a hook paints in the same frame. A layout change, such as a new width or a new child, waits for the next frame.
 Use paint hooks for drawing effects, not as the default place to update application state.
