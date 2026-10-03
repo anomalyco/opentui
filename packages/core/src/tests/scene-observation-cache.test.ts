@@ -4,7 +4,7 @@ import { RGBA } from "../lib/RGBA.js"
 import { LayoutEvents, Renderable } from "../Renderable.js"
 import { BoxRenderable } from "../renderables/Box.js"
 import { createTestRenderer, type TestRenderer } from "../testing.js"
-import { SceneStaging, type NativeContextHandle, type SceneNodeHandle } from "../zig.js"
+import { SceneStaging, resolveRenderLib, type NativeContextHandle, type SceneNodeHandle } from "../zig.js"
 
 let renderer: TestRenderer | undefined
 
@@ -450,6 +450,86 @@ describe("scene staging", () => {
       }
       expect(staging.count).toBeLessThanOrEqual(2)
     }
+  })
+
+  const otherContext = Object.freeze({}) as NativeContextHandle
+  const rejectingOwner = {
+    assertMutable() {
+      throw new Error("owner is destroyed")
+    },
+  }
+  const stageWidth = (staging: SceneStaging, node = nodeAt(1, 1), value = 1, target = context) =>
+    staging.stageStyle(target, node, c.OT_STYLE_DIMENSION, c.OT_DIMENSION_WIDTH, 0, c.OT_UNIT_POINT, value, 0)
+  test.each<[string, (staging: SceneStaging) => unknown, string]>([
+    [
+      "an unknown style group",
+      (staging) => staging.stageStyle(context, nodeAt(1, 1), 9, 0, 0, 0, 0, 0),
+      "InvalidArgument",
+    ],
+    ["an infinite style value", (staging) => stageWidth(staging, nodeAt(1, 1), Infinity), "Scene style value"],
+    [
+      "a fractional enum value",
+      (staging) => staging.stageStyle(context, nodeAt(1, 1), 0, 9, 0, 0, 0.5, 0),
+      "enum value",
+    ],
+    ["another Context object", (staging) => stageWidth(staging, nodeAt(1, 1), 1, otherContext), "WrongContext"],
+    ["another Context id", (staging) => stageWidth(staging, { ...nodeAt(1, 1), contextId: 8n }), "WrongContext"],
+    ["a destroyed node's paint", (staging) => staging.stagePaint(context, nodeAt(1, 2), { zIndex: 2 }), "StaleHandle"],
+    ["an invalid paint", (staging) => staging.stagePaint(context, nodeAt(1, 1), { opacity: 2 }), "opacity"],
+    ["a destroyed paint owner", (staging) => staging.stagePaint(context, nodeAt(2, 1), {}, rejectingOwner), "owner"],
+    [
+      "a destroyed background owner",
+      (staging) => staging.stageBackground(context, nodeAt(2, 1), color(1), rejectingOwner),
+      "owner",
+    ],
+    ["a borrow for another Context", (staging) => staging._views(otherContext), "WrongContext"],
+    ["a consume without a borrow", (staging) => staging.consume(0), "not borrowed"],
+    ["a flush for an unknown Context", (staging) => resolveRenderLib().sceneFlush(context, staging), "WrongContext"],
+    [
+      "a write during a native flush",
+      (staging) => {
+        staging._views(context)
+        try {
+          stageWidth(staging, nodeAt(2, 1))
+        } finally {
+          staging.consume(0)
+        }
+      },
+      "during a native flush",
+    ],
+  ])("%s leaves staged records unchanged", (_, call, error) => {
+    const staging = new SceneStaging(1)
+    stageWidth(staging)
+    staging.stagePaint(context, nodeAt(1, 1), { zIndex: 1 })
+    const before = readStream(staging)
+    expect(() => call(staging)).toThrow(error)
+    expect(readStream(staging)).toEqual(before)
+    stageWidth(staging, nodeAt(1, 1), 2)
+    expect(staging.count).toBe(3)
+  })
+
+  test("staging bounds its capacity, ignores other Contexts' nodes, and snapshots reentrant paint", () => {
+    for (const capacity of [0, 1.5, SceneStaging.limit + 1])
+      expect(() => new SceneStaging(capacity)).toThrow(RangeError)
+    const staging = new SceneStaging(1)
+    for (let slot = 1; slot <= SceneStaging.limit; slot++) stageWidth(staging, nodeAt(slot, 1))
+    expect(staging.full).toBe(true)
+    expect(() => stageWidth(staging, nodeAt(0, 1))).toThrow("ObjectLimit")
+    staging.discard({ ...nodeAt(1, 1), contextId: 8n })
+    expect(staging.count).toBe(SceneStaging.limit)
+    staging.clear()
+
+    // A getter that stages another node's paint while this paint encodes uses its own scratch record.
+    staging.stagePaint(context, nodeAt(1, 1), {
+      get zIndex() {
+        staging.stagePaint(context, nodeAt(2, 1), { zIndex: 2 })
+        return 1
+      },
+    })
+    expect(readStream(staging).map(({ slot, paint }) => [slot, paint!.get(0)])).toEqual([
+      [2, [2]],
+      [1, [1]],
+    ])
   })
 
   test("a flush reports a record native rejects once and then applies later records", async () => {
