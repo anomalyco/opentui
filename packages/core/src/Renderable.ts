@@ -454,14 +454,10 @@ export abstract class Renderable extends BaseRenderable {
     throw error
   }
 
-  /** Completed base layers need full cleanup despite pending errors or uninitialized subclass destroy overrides. */
+  /** Completed base layers need full cleanup even before a subclass destroy override can run. */
   protected rollbackConstruction(error: unknown): never {
     try {
-      const lib = this._ctx.nativeScene.driver.renderLib
-      this.runCleanup((run) => {
-        run(() => lib.getYogaHost().throwCallbackError())
-        run(() => Renderable.prototype.destroy.call(this))
-      })
+      Renderable.prototype.destroy.call(this)
     } catch {
       // Preserve the construction failure.
     }
@@ -491,9 +487,7 @@ export abstract class Renderable extends BaseRenderable {
     this.assertMutable()
     // Preserve Object.assign's getter/setter order, but stop when a callback removes either owner.
     for (const key of Reflect.ownKeys(options)) {
-      if (this._isDestroyed || target._isDestroyed) return
       if (!Object.getOwnPropertyDescriptor(options, key)?.enumerable) continue
-      if (this._isDestroyed || target._isDestroyed) return
       const value = Reflect.get(options, key)
       if (this._isDestroyed || target._isDestroyed) return
       ;(target as unknown as Record<PropertyKey, unknown>)[key] = value
@@ -2007,7 +2001,6 @@ export abstract class Renderable extends BaseRenderable {
 
   private nativeSceneNeedsHookPublish(): boolean {
     if (this.buffered) return true
-    if (this._sizeChangeListener) return true
     if (!this.usesNativeDrawing(this.renderSelf)) return true
     if (this.hostUpdateFlags(this.onUpdate) !== 0) return true
     const onResize = this.onResize
@@ -2271,7 +2264,6 @@ export abstract class Renderable extends BaseRenderable {
     }
 
     this.assertMutable()
-    this._ctx.nativeScene.driver.renderLib.getYogaHost().throwCallbackError()
     this.destroyLayoutBacking((run) => {
       run(() => this.destroyOwnedResources())
       this._isDestroyed = true
@@ -2377,8 +2369,6 @@ export abstract class Renderable extends BaseRenderable {
     const ownsCompletion = !cleanupOwners.has(this)
     cleanupOwners.add(this)
     this.runCleanup((run) => {
-      // Constructor rollback must release ownership even when a previous callback failed.
-      run(() => scene.driver.renderLib.getYogaHost().throwCallbackError())
       if (hasHandle && this.selectable) {
         run(() => {
           // Selection anchors retain local coordinates after detachment and release.
@@ -2675,7 +2665,6 @@ export class RootRenderable extends Renderable {
     })
 
     try {
-      this.setFlexDirection(FlexDirection.Column)
       this.setNativeScenePaint()
     } catch (error) {
       this.abortConstruction(error)
