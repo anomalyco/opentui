@@ -48,23 +48,43 @@ test "Session console output rejects an incomplete scalar when its queue cannot 
     }
 }
 
-test "Session console output rejects incomplete input once terminal setup stops raw admission" {
-    const owner = try Context.init(std.testing.allocator, std.testing.io, .{});
-    defer owner.deinit() catch unreachable;
-    const id = try owner.createSession(.{ .chunk_size = 4096, .chunk_count = 4, .span_capacity = 4, .control_capacity = 4096 });
-    defer owner.cancelSession(id) catch unreachable;
-    try owner.attachSessionRenderer(id, 2, 1, .{ .forwarded_env = &.{} });
-    try owner.writeSession(id, "\xf0\x9f");
-    try owner.setupSessionTerminal(id, .{});
-    try std.testing.expectError(error.Busy, owner.writeSession(id, "\x98\x80"));
+test "Session console output retains an incomplete scalar that cannot complete" {
     const Writer = struct {
         pub fn write(_: @This(), _: []const u8) error{WriteFailed}!usize {
             return error.WriteFailed;
         }
     };
-    const value = try owner.raw().getSession(id);
-    try std.testing.expectError(error.IncompatibleOutput, value.drainConsoleOutput(Writer{}, 4));
-    try std.testing.expectEqual(@as(u64, 0), value.completed_bytes);
+    const cases = [_]struct { writes: []const []const u8, setup: bool = false }{
+        // Terminal setup stops raw admission before the scalar completes.
+        .{ .writes = &.{"\xf0\x9f"}, .setup = true },
+        // A byte that cannot continue the scalar, in its span or the next one.
+        .{ .writes = &.{ "\xf0\x9f", "\x1b[0m" } },
+        .{ .writes = &.{ "\xf0\x41", "\x80\x80" } },
+    };
+    for (cases) |case| {
+        const owner = try Context.init(std.testing.allocator, std.testing.io, .{});
+        defer owner.deinit() catch unreachable;
+        const id = try owner.createSession(.{ .chunk_size = 4096, .chunk_count = 4, .span_capacity = 4, .control_capacity = 4096 });
+        defer owner.cancelSession(id) catch unreachable;
+        try owner.attachSessionRenderer(id, 2, 1, .{ .forwarded_env = &.{} });
+        for (case.writes) |bytes| try owner.writeSession(id, bytes);
+        if (case.setup) {
+            try owner.setupSessionTerminal(id, .{});
+            try std.testing.expectError(error.Busy, owner.writeSession(id, "\x98\x80"));
+        }
+        const value = try owner.raw().getSession(id);
+        try std.testing.expectError(error.IncompatibleOutput, value.drainConsoleOutput(Writer{}, 4));
+        try std.testing.expectEqual(@as(u64, 0), value.completed_bytes);
+        if (case.setup) continue;
+        var out: [16]u8 = undefined;
+        var len: usize = 0;
+        while (try owner.readOutput(id, out[len..])) |ticket| {
+            len += ticket.len;
+            try owner.completeOutput(id, ticket, .written);
+        }
+        try std.testing.expectEqualStrings(case.writes[0], out[0..case.writes[0].len]);
+        try std.testing.expectEqualStrings(case.writes[1], out[case.writes[0].len..len]);
+    }
 }
 
 pub const Error = feed.StreamError || error{
@@ -1140,6 +1160,10 @@ pub const Session = struct {
         var scalar: [4]u8 = undefined;
         @memcpy(scalar[0..bytes.len], bytes);
         const copied = self.output.copyQueuedPrefix(scalar[bytes.len..sequence_len]);
+        // Bytes that cannot continue the scalar belong to later output; never join them.
+        for (scalar[1 .. bytes.len + copied]) |byte| {
+            if (byte & 0xc0 != 0x80) return error.IncompatibleOutput;
+        }
         if (copied != sequence_len - bytes.len) {
             self.checkWriting() catch return error.IncompatibleOutput;
             if (!self.output.hasAtomicCapacity()) return error.IncompatibleOutput;
