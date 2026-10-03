@@ -54,7 +54,7 @@ export class CodeRenderable extends TextBufferRenderable {
       ...TextBufferRenderable.nativeIntegration.lifecycle,
       update: {
         idle: this.prototype.onUpdate,
-        active: (renderable) => (renderable as CodeRenderable)._needsHighlightUpdate,
+        active: (renderable) => (renderable as CodeRenderable)._highlightsDirty,
       },
     },
   })
@@ -129,11 +129,6 @@ export class CodeRenderable extends TextBufferRenderable {
   private invalidateHighlights(): void {
     this.setHighlightsDirty(true)
     this._highlightSnapshotId++
-  }
-
-  /** @internal Visible nodes schedule highlighting in their update hook, before layout and paint. */
-  get _needsHighlightUpdate(): boolean {
-    return this._highlightsDirty
   }
 
   private setHighlightsDirty(value: boolean): void {
@@ -352,15 +347,7 @@ export class CodeRenderable extends TextBufferRenderable {
   }
 
   private ensureVisibleTextBeforeHighlight(): void {
-    if (this.isDestroyed) return
-
     const content = this._content
-
-    if (!this._filetype) {
-      this.setShouldRenderTextBuffer(true)
-      return
-    }
-
     const isInitialContent = this._streaming && !this._hadInitialContent
     const shouldDrawUnstyledNow = this._streaming ? isInitialContent && this._drawUnstyledText : this._drawUnstyledText
 
@@ -645,25 +632,10 @@ export class CodeRenderable extends TextBufferRenderable {
       return
     }
 
-    const { promise: highlightingPromise, resolve, reject } = Promise.withResolvers<void>()
+    // A rerun joins the active loop, so its promise is read only while the loop is active.
     this._highlightLoopActive = true
-    this._highlightPromise = highlightingPromise
-    this._highlightingPromise = highlightingPromise
-    const clearHighlight = () => {
-      if (this._highlightPromise === highlightingPromise) {
-        this._highlightPromise = undefined
-      }
-    }
-    void this.runHighlights().then(
-      () => {
-        clearHighlight()
-        resolve()
-      },
-      (error) => {
-        clearHighlight()
-        reject(error)
-      },
-    )
+    this._highlightPromise = this.runHighlights()
+    this._highlightingPromise = this._highlightPromise
   }
 
   protected renderSelf(buffer: OptimizedBuffer): void {
