@@ -8496,6 +8496,7 @@ export class FFIRenderLib {
     )
   }
 
+  /** Always 0: native resources no longer allocate from a process arena. */
   public getArenaAllocatedBytes(): number {
     const result = this.opentui.symbols.getArenaAllocatedBytes()
     return toSafeByteCount(result, "Arena allocated bytes")
@@ -8512,6 +8513,8 @@ export class FFIRenderLib {
     }
   }
 
+  /** Stats of the process allocator, which backs native span feeds. Each Context has its own allocator, so Context
+   * resources such as text, buffers, scenes, images, and audio engines are not counted. */
   public getAllocatorStats(): AllocatorStats {
     const statsBuffer = new ArrayBuffer(AllocatorStatsStruct.size)
     this.opentui.symbols.getAllocatorStats(statsBuffer)

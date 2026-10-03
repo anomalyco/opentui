@@ -1,60 +1,34 @@
-import { test, expect, beforeEach, afterEach } from "bun:test"
+import { test, expect } from "bun:test"
 import { resolveRenderLib } from "../zig.js"
 import { ResourceContext } from "../buffer.js"
 import { TextBuffer } from "../text-buffer.js"
 
 const lib = resolveRenderLib()
-let owner: ResourceContext
-beforeEach(() => {
-  owner = new ResourceContext({ objectCapacity: 1, renderCellsMax: 1 })
-})
-afterEach(() => owner.destroy())
-
-function expectValidAllocatorStats(stats: ReturnType<typeof lib.getAllocatorStats>): void {
-  expect(Number.isFinite(stats.totalRequestedBytes)).toBe(true)
-  expect(Number.isFinite(stats.activeAllocations)).toBe(true)
-  expect(Number.isFinite(stats.smallAllocations)).toBe(true)
-  expect(Number.isFinite(stats.largeAllocations)).toBe(true)
-  expect(typeof stats.requestedBytesValid).toBe("boolean")
-
-  expect(stats.totalRequestedBytes).toBeGreaterThanOrEqual(0)
-  expect(stats.activeAllocations).toBeGreaterThanOrEqual(0)
-  expect(stats.smallAllocations).toBeGreaterThanOrEqual(0)
-  expect(stats.largeAllocations).toBeGreaterThanOrEqual(0)
-  expect(stats.activeAllocations).toBe(stats.smallAllocations + stats.largeAllocations)
-}
 
 test("getBuildOptions exposes native build flags", () => {
   const buildOptions = lib.getBuildOptions()
   expect(typeof buildOptions.gpaSafeStats).toBe("boolean")
-  expect(typeof buildOptions.gpaMemoryLimitTracking).toBe("boolean")
   expect(buildOptions.gpaMemoryLimitTracking).toBe(buildOptions.gpaSafeStats)
 })
 
-test("getAllocatorStats returns allocator stats", () => {
+test("process allocator stats count span feeds and exclude Context memory", () => {
   const before = lib.getAllocatorStats()
-  expectValidAllocatorStats(before)
+  const owner = new ResourceContext({ objectCapacity: 1, renderCellsMax: 1 })
+  try {
+    TextBuffer.create("unicode", owner).append("x".repeat(256 * 1024))
+    expect(lib.getAllocatorStats()).toEqual(before)
+  } finally {
+    owner.destroy()
+  }
 
-  const textBuffer = TextBuffer.create("unicode", owner)
-  textBuffer.append("allocator stats smoke test")
-
-  const after = lib.getAllocatorStats()
-  expectValidAllocatorStats(after)
-
-  textBuffer.destroy()
-})
-
-test("getArenaAllocatedBytes returns a finite byte count", () => {
-  const before = lib.getArenaAllocatedBytes()
-  expect(Number.isFinite(before)).toBe(true)
-  expect(before).toBeGreaterThanOrEqual(0)
-
-  const textBuffer = TextBuffer.create("unicode", owner)
-  textBuffer.append("x".repeat(256 * 1024))
-
-  const after = lib.getArenaAllocatedBytes()
-  expect(Number.isFinite(after)).toBe(true)
-  expect(after).toBeGreaterThanOrEqual(before)
-
-  textBuffer.destroy()
+  const stream = lib.createNativeSpanFeed(null)
+  try {
+    const during = lib.getAllocatorStats()
+    expect(during.activeAllocations).toBeGreaterThan(before.activeAllocations)
+    expect(during.activeAllocations).toBe(during.smallAllocations + during.largeAllocations)
+  } finally {
+    lib.destroyNativeSpanFeed(stream)
+  }
+  expect(lib.getAllocatorStats()).toEqual(before)
+  expect(lib.getArenaAllocatedBytes()).toBe(0)
 })
