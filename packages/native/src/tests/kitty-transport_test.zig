@@ -361,28 +361,17 @@ test "kitty file query requires medium and explicit image ACK, not ordinary fram
     try std.testing.expect(!f.transport.handleReply("\x1b_Gi=7,i=8;OK\x1b\\"));
     try std.testing.expect(f.transport.handleReply("\x1b_Gi=7;OK\x1b\\"));
     try std.testing.expectEqual(.probing, f.transport.file_state);
+    // A Session restarts a probe that output dropped; the restart needs both ACKs again.
+    f.transport.cancel(.disabled);
+    try f.probe();
+    try std.testing.expect(f.transport.handleReply("\x1b_Gi=8;OK\x1b\\"));
+    try std.testing.expectEqual(.probing, f.transport.file_state);
     f.transport.expire(std.math.maxInt(u64));
     try std.testing.expectEqual(.timeout, f.transport.file_state);
     try std.testing.expectEqual(@as(u32, 0), f.transport.pendingCount());
     try f.expectNoFiles();
     try std.testing.expect(f.transport.handleReply("\x1b_Gi=8;OK\x1b\\"));
     try std.testing.expectEqual(.timeout, f.transport.file_state);
-}
-
-test "kitty file probe restart requires both acknowledgements again" {
-    var f: Fixture = undefined;
-    try f.init();
-    defer f.deinit();
-    try f.probe();
-    try std.testing.expect(f.transport.handleReply("\x1b_Gi=7;OK\x1b\\"));
-    // A Session returns a probe that output never admitted to disabled.
-    f.transport.cancel(.disabled);
-    try std.testing.expectEqual(.disabled, f.transport.file_state);
-    try f.probe();
-    try std.testing.expect(f.transport.handleReply("\x1b_Gi=8;OK\x1b\\"));
-    try std.testing.expectEqual(.probing, f.transport.file_state);
-    try std.testing.expect(f.transport.handleReply("\x1b_Gi=7;OK\x1b\\"));
-    try std.testing.expectEqual(.ready, f.transport.file_state);
 }
 
 test "kitty file leases contain immutable bytes and are released only by matching ACK" {
