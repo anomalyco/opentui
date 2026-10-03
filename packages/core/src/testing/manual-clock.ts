@@ -27,6 +27,11 @@ export class ManualClock implements Clock {
     return this.time
   }
 
+  /** Scheduled timeouts and intervals that have not fired or been cleared. */
+  public get pendingTimerCount(): number {
+    return this.timers.size
+  }
+
   public setTime(time: number): void {
     const targetTime = Math.floor(time)
 

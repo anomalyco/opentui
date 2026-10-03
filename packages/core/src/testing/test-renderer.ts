@@ -67,6 +67,9 @@ export interface TestRendererSetup {
   captureCharFrame: () => string
   captureSpans: () => CapturedFrame
   resize: (width: number, height: number) => void
+  /** Destroys the renderer and waits for `closed`; rejects with a Session failure. */
+  dispose: () => Promise<void>
+  [Symbol.asyncDispose]: () => Promise<void>
 }
 
 const decoder = new TextDecoder()
@@ -327,6 +330,11 @@ export async function createTestRenderer(options: TestRendererOptions): Promise<
     throw createWaitError(renderer, `Timed out waiting for frame predicate after ${maxPasses} passes`, frame)
   }
 
+  const dispose = () => {
+    renderer.destroy()
+    return renderer.closed
+  }
+
   return {
     renderer,
     mockInput,
@@ -354,6 +362,8 @@ export async function createTestRenderer(options: TestRendererOptions): Promise<
       //@ts-expect-error - this is a test renderer
       renderer.processResize(width, height)
     },
+    dispose,
+    [Symbol.asyncDispose]: dispose,
   }
 }
 
