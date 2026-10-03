@@ -415,7 +415,7 @@ pub const Scene = struct {
     }
 
     pub fn prepareInsert(self: *Scene, kind: u32, num: u32) !void {
-        if (kind > api.OT_SCENE_IMAGE or num == 0) return error.InvalidOptions;
+        std.debug.assert(kind <= api.OT_SCENE_IMAGE and num != 0);
         if (kind == api.OT_SCENE_ROOT and self.root != null) return error.SceneAlreadyAttached;
         if (self.last_token == std.math.maxInt(u32)) return error.ObjectLimit;
         try self.tokens.ensureUnusedCapacity(self.allocator, 1);
@@ -641,8 +641,8 @@ pub const Scene = struct {
     }
 
     pub fn setBoxDetails(self: *Scene, value: *native.NativeRenderable, options: BoxDetails) !void {
-        const node = value.scene_node orelse return error.WrongKind;
-        if (node.owner != self) return error.WrongSession;
+        const node = value.scene_node.?;
+        std.debug.assert(node.owner == self);
         if (node.kind != api.OT_SCENE_BOX) return error.WrongKind;
         if (options.title_alignment > 2 or options.bottom_title_alignment > 2) return error.InvalidOptions;
         if (options.title_color) |rgba| try buffer.validateColor(rgba);

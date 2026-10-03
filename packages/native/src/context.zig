@@ -1995,7 +1995,7 @@ pub const Context = struct {
 
     fn sceneNode(self: *Context, handle: Handle) !*native_renderable.NativeRenderable {
         const node = try self.getRenderable(handle);
-        if (node.scene_node == null) return error.WrongKind;
+        std.debug.assert(node.scene_node != null);
         return node;
     }
 

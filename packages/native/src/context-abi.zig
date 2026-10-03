@@ -1664,7 +1664,7 @@ pub fn ot_scene_flush(
     if (byte_count != 0 and updates_ptr == null) return sessionError(owner, error.InvalidOptions);
     if (byte_count == 0) return c.OT_OK;
     // One admission covers the whole batch; the Locked setters do not call user code.
-    owner.core.beginMutation() catch |err| return sessionError(owner, err);
+    owner.core.beginMutation() catch unreachable;
     defer owner.core.mutating = false;
     const updates = updates_ptr.?[0..byte_count];
     var offset: u32 = 0;
