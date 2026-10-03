@@ -946,7 +946,7 @@ pub const Scene = struct {
                 }
             }
             try self.markFocus(objects);
-            try self.paintPrepared(cli, active.options);
+            try self.paintFrame(owner, cli, active.options, null, false);
             return self.finishPaint(cli, reusable_work);
         }
     }
@@ -1204,33 +1204,6 @@ pub const Scene = struct {
         @import("utils.zig").fillU32(cli.nextHitGrid, 0);
     }
 
-    fn paintPrepared(self: *Scene, cli: *renderer.CliRenderer, options: FrameOptions) !void {
-        const target = cli.getNextBuffer();
-        errdefer {
-            target.clear(cli.backgroundColor, null);
-            @memset(cli.nextHitGrid, 0);
-        }
-        defer target.clearScissorRects();
-        defer target.clearOpacity();
-        try self.beginPaint(cli, options);
-        for (self.work.items) |entry| {
-            const node = entry.node.scene_node.?;
-            if (node.kind == api.OT_SCENE_ROOT or !entry.visible) continue;
-            if (node.kind != api.OT_SCENE_BOX or hasBoxPaint(&node.paint)) {
-                if (builtin.is_test) self.test_paint_setups += 1;
-                try target.pushScissorRect(entry.clip.x, entry.clip.y, entry.clip.width, entry.clip.height);
-                try target.pushOpacity(entry.opacity);
-                if (node.kind == api.OT_SCENE_IMAGE) try beginImagePaint(node.control.image, entry.layout);
-                try self.paintNode(cli, entry);
-                if (node.kind == api.OT_SCENE_IMAGE) try finishImagePaint(target, node.control.image, entry.layout);
-                if (node.kind == api.OT_SCENE_EDITOR) try self.paintEditorCursor(cli, node, entry.layout);
-                target.popOpacity();
-                target.popScissorRect();
-            }
-            addHit(cli, entry.layout, entry.clip, node.num, node.token, options);
-        }
-    }
-
     fn markFocus(self: *Scene, objects: *const handles.Table) !void {
         const frame_id = self.attempt.?.frame_id;
         var focused = if (self.focus) |handle| try objects.get(handle, .native_renderable, native.NativeRenderable) else null;
@@ -1293,13 +1266,25 @@ pub const Scene = struct {
 
     /// Paint the RECORD snapshot in one pass, playing each slot's recording in place.
     fn paintRecorded(self: *Scene, owner: *Context, cli: *renderer.CliRenderer, root: ?*native.NativeRenderable, recording: []const u8) !FrameRequest {
-        const objects = &owner.objects;
-        const options = self.attempt.?.options;
         self.segments.items.len = self.paint_slots.items.len;
         try scene_record.index(recording, self.paint_slots.items, self.segments.items);
-        try self.markFocus(objects);
+        try self.markFocus(&owner.objects);
         // Hooks may change text or views after preparation; refresh them before drawing.
         const refresh_views = self.preparation_dirty or try self.needsSolve(cli, root);
+        try self.paintFrame(owner, cli, self.attempt.?.options, recording, refresh_views);
+        return self.finishPaint(cli, false);
+    }
+
+    /// The recorded phases of one member. A member without a slot has none.
+    const Phases = struct {
+        recording: []const u8 = &.{},
+        segments: scene_record.Segments = .{ .{}, .{}, .{} },
+        hooks: u32 = 0,
+    };
+
+    /// Paint prepared membership in one pass: the RECORD snapshot with its recording, or
+    /// the visible paint list with native bodies only.
+    fn paintFrame(self: *Scene, owner: *Context, cli: *renderer.CliRenderer, options: FrameOptions, recording: ?[]const u8, refresh_views: bool) !void {
         const target = cli.getNextBuffer();
         errdefer {
             target.clear(cli.backgroundColor, null);
@@ -1308,55 +1293,70 @@ pub const Scene = struct {
         defer target.clearScissorRects();
         defer target.clearOpacity();
         try self.beginPaint(cli, options);
+        const bytes = recording orelse {
+            for (self.work.items) |entry| {
+                if (entry.node.scene_node.?.kind == api.OT_SCENE_ROOT or !entry.visible) continue;
+                try self.paintMember(owner, cli, entry, options, .{});
+            }
+            return;
+        };
         for (self.paint_members.items) |member| {
-            const value = objects.get(member.node, .native_renderable, native.NativeRenderable) catch continue;
-            const node = value.scene_node.?;
-            std.debug.assert(node.owner == self);
+            const value = owner.objects.get(member.node, .native_renderable, native.NativeRenderable) catch continue;
+            std.debug.assert(value.scene_node.?.owner == self);
             try validateLayout(member.layout);
             const entry: Work = .{ .node = value, .layout = member.layout, .clip = member.clip, .opacity = member.opacity, .visible = true, .filtered = member.filtered or refresh_views };
-            const segments: scene_record.Segments = if (member.slot != no_slot) self.segments.items[member.slot] else .{ .{}, .{}, .{} };
-            const hooks = if (member.slot != no_slot) self.paint_slots.items[member.slot].hooks else 0;
-            if (hooks == 0 and node.kind == api.OT_SCENE_BOX and !hasBoxPaint(&node.paint)) {
-                addHit(cli, member.layout, member.clip, node.num, node.token, options);
-                continue;
-            }
+            const phases: Phases = if (member.slot == no_slot) .{} else .{
+                .recording = bytes,
+                .segments = self.segments.items[member.slot],
+                .hooks = self.paint_slots.items[member.slot].hooks,
+            };
+            try self.paintMember(owner, cli, entry, options, phases);
+        }
+    }
+
+    /// Paint the before phase, the self phase or native body, editor cursor maintenance, and
+    /// the after phase of one member, then add its hit.
+    fn paintMember(self: *Scene, owner: *Context, cli: *renderer.CliRenderer, entry: Work, options: FrameOptions, phases: Phases) !void {
+        const node = entry.node.scene_node.?;
+        if (phases.hooks != 0 or node.kind != api.OT_SCENE_BOX or hasBoxPaint(&node.paint)) {
             if (builtin.is_test) self.test_paint_setups += 1;
+            const target = cli.getNextBuffer();
             // A natively composed image buffer receives its node's hook drawing, like its body.
             const surface = if (node.kind == api.OT_SCENE_IMAGE) node.control.image.buffer else null;
-            try enterMember(target, member);
-            if (node.kind == api.OT_SCENE_IMAGE) try beginImagePaint(node.control.image, member.layout);
-            try playPhase(owner, target, surface, member, recording, segments[0]);
-            if (hooks & api.OT_SCENE_HOOK_RENDER_SELF != 0) {
-                try playPhase(owner, target, surface, member, recording, segments[1]);
+            try enterMember(target, entry);
+            if (node.kind == api.OT_SCENE_IMAGE) try beginImagePaint(node.control.image, entry.layout);
+            try playPhase(owner, target, surface, entry, phases, api.OT_SCENE_RECORD_PHASE_BEFORE);
+            if (phases.hooks & api.OT_SCENE_HOOK_RENDER_SELF != 0) {
+                try playPhase(owner, target, surface, entry, phases, api.OT_SCENE_RECORD_PHASE_SELF);
             } else try self.paintNode(cli, entry);
-            if (node.kind == api.OT_SCENE_EDITOR) try self.paintEditorCursor(cli, node, member.layout);
-            try playPhase(owner, target, surface, member, recording, segments[2]);
-            if (node.kind == api.OT_SCENE_IMAGE) try finishImagePaint(target, node.control.image, member.layout);
-            addHit(cli, member.layout, member.clip, node.num, node.token, options);
+            if (node.kind == api.OT_SCENE_EDITOR) try self.paintEditorCursor(cli, node, entry.layout);
+            try playPhase(owner, target, surface, entry, phases, api.OT_SCENE_RECORD_PHASE_AFTER);
+            if (node.kind == api.OT_SCENE_IMAGE) try finishImagePaint(target, node.control.image, entry.layout);
         }
-        return self.finishPaint(cli, false);
+        addHit(cli, entry.layout, entry.clip, node.num, node.token, options);
     }
 
     /// Each phase starts with only the member's inherited clip and opacity.
-    fn enterMember(target: *buffer.OptimizedBuffer, member: PaintMember) !void {
+    fn enterMember(target: *buffer.OptimizedBuffer, entry: Work) !void {
         target.clearScissorRects();
         target.clearOpacity();
-        try target.pushScissorRect(member.clip.x, member.clip.y, member.clip.width, member.clip.height);
-        try target.pushOpacity(member.opacity);
+        try target.pushScissorRect(entry.clip.x, entry.clip.y, entry.clip.width, entry.clip.height);
+        try target.pushOpacity(entry.opacity);
     }
 
     /// Play one phase into the frame, or into the node's own buffer with empty stacks.
-    fn playPhase(owner: *Context, target: *buffer.OptimizedBuffer, surface: ?*buffer.OptimizedBuffer, member: PaintMember, recording: []const u8, segment: scene_record.Segment) !void {
+    fn playPhase(owner: *Context, target: *buffer.OptimizedBuffer, surface: ?*buffer.OptimizedBuffer, entry: Work, phases: Phases, phase: u32) !void {
+        const segment = phases.segments[phase];
         if (segment.start == segment.end) return;
         const local = surface orelse {
-            try scene_record.play(owner, target, 1, recording, segment);
-            return enterMember(target, member);
+            try scene_record.play(owner, target, 1, phases.recording, segment);
+            return enterMember(target, entry);
         };
         defer local.clearScissorRects();
         defer local.clearOpacity();
         local.clearScissorRects();
         local.clearOpacity();
-        try scene_record.play(owner, local, 0, recording, segment);
+        try scene_record.play(owner, local, 0, phases.recording, segment);
     }
 
     fn paintNode(self: *Scene, cli: *renderer.CliRenderer, entry: Work) !void {
