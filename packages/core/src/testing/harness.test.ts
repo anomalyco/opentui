@@ -1,6 +1,13 @@
 import { expect, test } from "bun:test"
 import { NativeSessionRenderStatus } from "../zig.js"
-import { assertRendererReleased, forceRenderStatus, processListenerCounts, serviceReadyFrames } from "./harness.js"
+import {
+  assertRendererReleased,
+  forceRenderStatus,
+  holdOutputIdle,
+  processListenerCounts,
+  serviceReadyFrames,
+  settle,
+} from "./harness.js"
 import { ManualClock } from "./manual-clock.js"
 import { createTestRenderer } from "./test-renderer.js"
 import { RecordingWriteStream } from "./test-streams.js"
@@ -53,4 +60,25 @@ test("dispose releases the renderer and assertRendererReleased detects a leaked 
   await expect(assertRendererReleased(setup.renderer, listeners)).rejects.toThrow("stdin data listener leaked")
   setup.renderer.stdin.removeAllListeners("data")
   await assertRendererReleased(setup.renderer, listeners)
+})
+
+test("holdOutputIdle parks Session idle waits until release and restores the driver", async () => {
+  const setup = await createTestRenderer({ clock: new ManualClock() })
+  const driver = setup.renderer.nativeScene.driver
+  const idle = driver.idle
+  const held = holdOutputIdle(setup.renderer)
+  try {
+    let resolved = 0
+    void driver.idle().then(() => resolved++)
+    void driver.idle().then(() => resolved++)
+    await settle(2)
+    expect({ resolved, calls: held.calls() }).toEqual({ resolved: 0, calls: 2 })
+    await held.release()
+    expect(resolved).toBe(2)
+    held.restore()
+    expect(driver.idle).toBe(idle)
+  } finally {
+    held.restore()
+    await setup.dispose()
+  }
 })
