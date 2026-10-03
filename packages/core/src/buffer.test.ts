@@ -237,214 +237,29 @@ describe("OptimizedBuffer", () => {
     expect(results).toEqual(Object.keys(draws).map((name) => [name, true, true]))
   })
 
-  describe("encodeUnicode", () => {
-    it("should encode simple ASCII text", () => {
-      const encoded = buffer.encodeUnicode("Hello")
-      expect(encoded).not.toBeNull()
-      expect(encoded!.data.length).toBe(5)
-      expect(encoded!.data.map((entry) => entry.width)).toEqual([1, 1, 1, 1, 1])
-      for (const [x, entry] of encoded!.data.entries())
-        buffer.drawChar(entry.char, x, 0, RGBA.fromInts(255, 255, 255), RGBA.fromInts(0, 0, 0))
-      expect(new TextDecoder().decode(buffer.getRealCharBytes()).startsWith("Hello")).toBe(true)
-
-      buffer.freeUnicode(encoded!)
-    })
-
-    it("should encode emoji with correct width", () => {
-      const encoded = buffer.encodeUnicode("👋")
-      expect(encoded).not.toBeNull()
-      expect(encoded!.data.length).toBe(1)
-      expect(encoded!.data[0].width).toBe(2)
-
-      buffer.freeUnicode(encoded!)
-    })
-
-    it("should encode mixed ASCII and emoji", () => {
-      const encoded = buffer.encodeUnicode("Hi 👋 World")
-      expect(encoded).not.toBeNull()
-      expect(encoded!.data.length).toBe(10) // H, i, space, emoji, space, W, o, r, l, d
-
-      // Check ASCII chars
-      expect(encoded!.data[0].width).toBe(1)
-
-      // Check emoji
-      expect(encoded!.data[3].width).toBe(2)
-
-      buffer.freeUnicode(encoded!)
-    })
-
-    it("should handle empty string", () => {
-      const encoded = buffer.encodeUnicode("")
-      expect(encoded).not.toBeNull()
-      expect(encoded!.data.length).toBe(0)
-
-      buffer.freeUnicode(encoded!)
-    })
-
-    it("should encode monkey emoji frames and draw in a line", () => {
-      const frames = ["🙈 ", "🙈 ", "🙉 ", "🙊 "]
-      const fg = RGBA.fromValues(1, 1, 1, 1)
-      const bg = RGBA.fromValues(0, 0, 0, 1)
-
-      buffer.clear(bg)
-
-      let x = 0
-      for (const frame of frames) {
-        const encoded = buffer.encodeUnicode(frame)
-        expect(encoded).not.toBeNull()
-
-        for (const encodedChar of encoded!.data) {
-          buffer.drawChar(encodedChar.char, x, 0, fg, bg)
-          x += encodedChar.width
-        }
-
-        buffer.freeUnicode(encoded!)
-      }
-
-      const frameBytes = buffer.getRealCharBytes(false)
-      const frameText = new TextDecoder().decode(frameBytes)
-      expect(frameText).toContain("🙈")
-      expect(frameText).toContain("🙉")
-      expect(frameText).toContain("🙊")
-    })
-  })
-
-  describe("drawChar", () => {
-    it("should draw a simple ASCII character", () => {
-      const fg = RGBA.fromValues(1, 1, 1, 1)
-      const bg = RGBA.fromValues(0, 0, 0, 1)
-
-      buffer.drawChar(72, 0, 0, fg, bg) // 'H'
-
-      const chars = buffer.withBuffers((cells) => cells.char.slice())
-      expect(chars[0]).toBe(72)
-    })
-
-    it("should draw encoded characters from encodeUnicode", () => {
-      const encoded = buffer.encodeUnicode("Hello")
-      expect(encoded).not.toBeNull()
-
-      const fg = RGBA.fromValues(1, 1, 1, 1)
-      const bg = RGBA.fromValues(0, 0, 0, 1)
-
-      // Draw each character
-      for (let i = 0; i < encoded!.data.length; i++) {
-        buffer.drawChar(encoded!.data[i].char, i, 0, fg, bg)
-      }
-
-      // Verify buffer content
-      const frameBytes = buffer.getRealCharBytes(false)
-      const frameText = new TextDecoder().decode(frameBytes)
-      expect(frameText).toContain("Hello")
-
-      buffer.freeUnicode(encoded!)
-    })
-
-    it("should draw emoji using encoded char", () => {
-      const encoded = buffer.encodeUnicode("👋")
-      expect(encoded).not.toBeNull()
-
-      const fg = RGBA.fromValues(1, 1, 1, 1)
-      const bg = RGBA.fromValues(0, 0, 0, 1)
-
-      buffer.drawChar(encoded!.data[0].char, 0, 0, fg, bg)
-
-      const frameBytes = buffer.getRealCharBytes(false)
-      const frameText = new TextDecoder().decode(frameBytes)
-      expect(frameText).toContain("👋")
-
-      buffer.freeUnicode(encoded!)
-    })
-  })
-
-  describe("snapshot tests with unicode encoding", () => {
-    it("should render ASCII text correctly", () => {
-      buffer.clear(RGBA.fromValues(0, 0, 0, 1))
-
-      const encoded = buffer.encodeUnicode("Hello")
-      expect(encoded).not.toBeNull()
-
-      const fg = RGBA.fromValues(1, 1, 1, 1)
-      const bg = RGBA.fromValues(0, 0, 0, 1)
-
-      let x = 0
-      for (const encodedChar of encoded!.data) {
-        buffer.drawChar(encodedChar.char, x, 0, fg, bg)
-        x += encodedChar.width
-      }
-
-      const frameBytes = buffer.getRealCharBytes(true)
-      const frameText = new TextDecoder().decode(frameBytes)
-      expect(frameText).toMatchSnapshot("ASCII text rendering")
-
-      buffer.freeUnicode(encoded!)
-    })
-
-    it("should render emoji text correctly", () => {
-      buffer.clear(RGBA.fromValues(0, 0, 0, 1))
-
-      const encoded = buffer.encodeUnicode("Hi 👋 🌍")
-      expect(encoded).not.toBeNull()
-
-      const fg = RGBA.fromValues(1, 1, 1, 1)
-      const bg = RGBA.fromValues(0, 0, 0, 1)
-
-      let x = 0
-      for (const encodedChar of encoded!.data) {
-        buffer.drawChar(encodedChar.char, x, 0, fg, bg)
-        x += encodedChar.width
-      }
-
-      const frameBytes = buffer.getRealCharBytes(true)
-      const frameText = new TextDecoder().decode(frameBytes)
-      expect(frameText).toMatchSnapshot("Emoji text rendering")
-
-      buffer.freeUnicode(encoded!)
-    })
-
-    it("should handle multiline text with unicode", () => {
-      buffer.clear(RGBA.fromValues(0, 0, 0, 1))
-
-      const lines = ["Hi 世界", "🌟 Star"]
-      const fg = RGBA.fromValues(1, 1, 1, 1)
-      const bg = RGBA.fromValues(0, 0, 0, 1)
-
-      for (let y = 0; y < lines.length; y++) {
-        const encoded = buffer.encodeUnicode(lines[y])
-        expect(encoded).not.toBeNull()
-
+  it("draws encodeUnicode glyphs like drawText and rejects freed tokens", () => {
+    const fg = RGBA.fromValues(1, 1, 1, 1)
+    const bg = RGBA.fromValues(0, 0, 0, 1)
+    const expected = OptimizedBuffer.create(20, 5, "unicode", { owner: resourceContext })
+    try {
+      for (const text of ["Hello", "", "Hi 👋 🌍", "🙈🙉🙊", "Hi 世界", "e\u0301👩\u200d💻Z", "a\tb\nc"]) {
+        buffer.clear(bg)
+        expected.clear(bg)
+        expected.drawText(text, 0, 0, fg, bg)
+        const encoded = buffer.encodeUnicode(text)
         let x = 0
-        for (const encodedChar of encoded!.data) {
-          buffer.drawChar(encodedChar.char, x, y, fg, bg)
-          x += encodedChar.width
+        for (const glyph of encoded.data) {
+          buffer.drawChar(glyph.char, x, 0, fg, bg)
+          x += glyph.width
         }
-
-        buffer.freeUnicode(encoded!)
+        buffer.freeUnicode(encoded)
+        expect(buffer.getSpanLines()).toEqual(expected.getSpanLines())
+        const token = encoded.data.find((glyph) => glyph.char > 0xffffffff)?.char
+        if (token !== undefined) expect(() => buffer.drawChar(token, 0, 0, fg, bg)).toThrow("must be live")
       }
-
-      const frameBytes = buffer.getRealCharBytes(true)
-      const frameText = new TextDecoder().decode(frameBytes)
-      expect(frameText).toMatchSnapshot("Multiline unicode rendering")
-    })
-
-    it("should respect character widths in positioning", () => {
-      const encoded = buffer.encodeUnicode("A👋B")
-      expect(encoded).not.toBeNull()
-
-      const fg = RGBA.fromValues(1, 1, 1, 1)
-      const bg = RGBA.fromValues(0, 0, 0, 1)
-
-      // 'A' at x=0, emoji at x=1 (width 2), 'B' at x=3
-      buffer.drawChar(encoded!.data[0].char, 0, 0, fg, bg) // 'A'
-      buffer.drawChar(encoded!.data[1].char, 1, 0, fg, bg) // emoji
-      buffer.drawChar(encoded!.data[2].char, 3, 0, fg, bg) // 'B'
-
-      const frameBytes = buffer.getRealCharBytes(false)
-      const frameText = new TextDecoder().decode(frameBytes)
-      expect(frameText).toContain("A👋B")
-
-      buffer.freeUnicode(encoded!)
-    })
+    } finally {
+      expected.destroy()
+    }
   })
 
   describe("drawChar with alpha blending", () => {
