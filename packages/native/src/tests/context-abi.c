@@ -1,12 +1,9 @@
 #include "opentui.h"
-#include <stddef.h>
+#include <assert.h>
+#include <string.h>
 
 /* The ABI generator checks every record layout with the C compiler. */
 _Static_assert(sizeof(uintptr_t) == 8, "framebuffer addresses require 64-bit targets");
-
-#ifndef OT_ABI_LAYOUT_ONLY
-#include <assert.h>
-#include <string.h>
 
 #ifdef _WIN32
 #include <windows.h>
@@ -222,4 +219,3 @@ int main(void) {
     assert(ot_context_destroy(second) == OT_OK);
     return 0;
 }
-#endif

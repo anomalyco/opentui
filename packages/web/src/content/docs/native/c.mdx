@@ -362,12 +362,13 @@ The native workspace's `build.zig` defines the names accepted by `-Dlibrary-targ
 
 Static consumers also need the platform and C++ runtime libraries.
 
-To check C layouts and host shared/static execution, run from the native workspace:
+To check host shared/static execution, run from the native workspace:
 
 ```sh
 zig build test-abi --summary all
 ```
 
+To check C layouts on every supported target, run `bun run check:abi --all-targets` from `packages/core`.
 Cross-target layout checks do not establish runtime or terminal behavior on those targets.
 
 You now have a program that changes a native scene and completes its output.

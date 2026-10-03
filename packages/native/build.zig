@@ -593,31 +593,8 @@ pub fn build(b: *std.Build) void {
     const run_test = b.addRunArtifact(test_artifact);
     test_step.dependOn(&run_test.step);
 
-    const abi_step = b.step("test-abi", "Run C context acceptance against static/shared libraries and check ABI layouts");
-    const abi_layout_step = b.step("test-abi-layout", "Check C/Zig context ABI layouts on every supported target");
-    abi_step.dependOn(abi_layout_step);
-    for (SUPPORTED_TARGETS) |supported_target| {
-        const target = b.resolveTargetQuery(std.Target.Query.parse(.{
-            .arch_os_abi = supported_target.zig_target,
-        }) catch unreachable);
-        const layout_module = b.createModule(.{
-            .root_source_file = b.path("src/context-abi.zig"),
-            .target = target,
-            .optimize = .Debug,
-        });
-        addContextABIHeader(b, layout_module, .Debug, target);
-        layout_module.addIncludePath(b.path("include"));
-        layout_module.addCSourceFile(.{
-            .file = b.path("src/tests/context-abi.c"),
-            .flags = &.{ "-std=c11", "-Werror", "-ffreestanding", "-DOT_ABI_LAYOUT_ONLY" },
-        });
-        const layout = b.addObject(.{
-            .name = b.fmt("context-abi-layout-{s}", .{supported_target.output_name}),
-            .root_module = layout_module,
-        });
-        abi_layout_step.dependOn(&layout.step);
-    }
-
+    // `bun scripts/native-abi.ts --check --all-targets` checks C layouts on every supported target.
+    const abi_step = b.step("test-abi", "Run C context acceptance against static/shared libraries");
     // Shared-library acceptance needs the host's dynamic loader. Pin glibc to
     // avoid the startup-object issue described in nativeExecutableTarget.
     const abi_target = if (builtin.os.tag == .linux and !builtin.abi.isMusl())

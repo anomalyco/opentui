@@ -65,10 +65,9 @@ Static linkage still requires the relevant platform and C++ runtime libraries.
 zig build test-abi --summary all
 ```
 
-This checks C/Zig layouts for all eight supported targets and runs the C fixture with
-static and dynamic linking on the host. Linux acceptance targets glibc 2.17.
-`zig build test-abi-layout --summary all` runs only layout checks. Cross-target layout
-checks do not establish macOS/Windows runtime linkage or terminal behavior.
+This runs the C fixture with static and dynamic linking on the host. Linux acceptance
+targets glibc 2.17. `check:abi --all-targets` checks layouts for all eight supported
+targets, but does not establish macOS/Windows runtime linkage or terminal behavior.
 
 The external [`examples/hello`](examples/hello) package imports the public Zig module
 without JavaScript.
