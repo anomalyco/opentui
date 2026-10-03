@@ -724,26 +724,21 @@ export abstract class EditBufferRenderable extends Renderable implements LineInf
   }
 
   public insertChar(char: string): void {
-    const hasSelection = this.hasSelection()
-    this.editBuffer.runMutation(() => {
-      if (hasSelection) {
-        this.editorView._replaceSelectedText(char)
-        this._ctx.clearSelection()
-      } else {
-        this.editBuffer.insertChar(char)
-      }
-      this.requestRender()
-    })
+    this.insertOrReplaceSelection(char, () => this.editBuffer.insertChar(char))
   }
 
   public insertText(text: string): void {
+    this.insertOrReplaceSelection(text, () => this.editBuffer.insertText(text))
+  }
+
+  private insertOrReplaceSelection(text: string, insert: () => void): void {
     const hasSelection = this.hasSelection()
     this.editBuffer.runMutation(() => {
       if (hasSelection) {
         this.editorView._replaceSelectedText(text)
         this._ctx.clearSelection()
       } else {
-        this.editBuffer.insertText(text)
+        insert()
       }
       this.requestRender()
     })
