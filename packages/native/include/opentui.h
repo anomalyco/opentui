@@ -56,7 +56,10 @@ typedef int32_t ot_status;
  * thread may call its functions, including error queries and destruction.
  * Separate contexts may run on separate threads. Do not race a call with
  * destruction. A successful destroy invalidates every copy of the pointer;
- * stale, forged, and already-destroyed pointers are caller errors. */
+ * stale, forged, and already-destroyed pointers are caller errors.
+ * Callbacks run synchronously on the owner thread and must return normally.
+ * A C++ exception, longjmp, or thread exit through native frames skips native
+ * cleanup and is undefined behavior. */
 typedef struct ot_context ot_context;
 
 /* Context-qualified identity. A destroyed slot cannot identify its replacement.
