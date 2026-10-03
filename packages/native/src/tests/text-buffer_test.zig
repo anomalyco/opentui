@@ -2280,6 +2280,37 @@ test "TextBuffer flattenMemRegistry keeps the document and is atomic under alloc
     return error.MissingSuccessfulFlatten;
 }
 
+test "TextBuffer history-preserving replacements from one slot do not fill the registry" {
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
+    const tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .unicode);
+    defer tb.deinit();
+
+    // Like an editor's append slot: every replacement is copied after the previous one.
+    const count = 1000;
+    const storage = try std.testing.allocator.alloc(u8, count * 16);
+    defer std.testing.allocator.free(storage);
+    const mem_id = try tb.registerMemBuffer(storage, false);
+    var ends: [count + 1]u32 = undefined;
+    ends[0] = 0;
+    for (0..count) |index| {
+        const text = try std.fmt.bufPrint(storage[ends[index]..], "v{d}\n\u{754c}", .{index});
+        ends[index + 1] = ends[index] + @as(u32, @intCast(text.len));
+        try tb.setTextFromMemRangeWithUndo(mem_id, ends[index], ends[index + 1], "meta");
+    }
+    try std.testing.expectEqual(1, tb.memRegistry().getUsedSlots());
+    try std.testing.expectError(error.InvalidIndex, tb.setTextFromMemRangeWithUndo(mem_id, 2, 1, null));
+    try std.testing.expectError(error.InvalidIndex, tb.setTextFromMemRangeWithUndo(mem_id, 0, @intCast(storage.len + 1), null));
+
+    var actual: [32]u8 = undefined;
+    var index: usize = count;
+    while (index > 0) : (index -= 1) {
+        try std.testing.expectEqualStrings(storage[ends[index - 1]..ends[index]], actual[0..tb.getPlainTextIntoBuffer(&actual)]);
+        _ = try tb.undo("meta");
+    }
+    try std.testing.expectEqual(0, tb.getPlainTextIntoBuffer(&actual));
+}
+
 test "addHighlightByCharRange - single line highlight should not extend to EOL" {
     var pools = TestPools.init(std.testing.allocator);
     defer pools.deinit();

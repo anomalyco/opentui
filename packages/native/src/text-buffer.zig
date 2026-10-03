@@ -580,7 +580,7 @@ pub const UnifiedTextBuffer = struct {
         const previous_buffer_count = self.mem_registry.buffers.items.len;
         const mem_id = try self.mem_registry.register(text, false);
         errdefer self.mem_registry.cancelLastRegistration(mem_id, previous_buffer_count);
-        try self.setPlainText(mem_id, text, null, null, null);
+        try self.setPlainText(mem_id, text, 0, null, null, null);
     }
 
     /// Set text from a pre-registered memory ID
@@ -592,12 +592,20 @@ pub const UnifiedTextBuffer = struct {
         const text = self.mem_registry.get(mem_id) orelse return TextBufferError.InvalidMemId;
         var replacement_arena = std.heap.ArenaAllocator.init(self.global_allocator);
         defer replacement_arena.deinit();
-        try self.setPlainText(mem_id, text, null, null, &replacement_arena);
+        try self.setPlainText(mem_id, text, 0, null, null, &replacement_arena);
     }
 
     pub fn setTextFromMemIdWithUndo(self: *Self, mem_id: u8, meta: ?[]const u8) TextBufferError!void {
         const text = self.mem_registry.get(mem_id) orelse return TextBufferError.InvalidMemId;
-        try self.setPlainText(mem_id, text, meta, null, null);
+        try self.setPlainText(mem_id, text, 0, meta, null, null);
+    }
+
+    /// Replace the text with `byte_start..byte_end` of a live slot. An editor can copy each
+    /// history-preserving replacement into its append slot instead of taking one slot per call.
+    pub fn setTextFromMemRangeWithUndo(self: *Self, mem_id: u8, byte_start: u32, byte_end: u32, meta: ?[]const u8) TextBufferError!void {
+        const bytes = self.mem_registry.get(mem_id) orelse return TextBufferError.InvalidMemId;
+        if (byte_start > byte_end or byte_end > bytes.len) return TextBufferError.InvalidIndex;
+        try self.setPlainText(mem_id, bytes[byte_start..byte_end], byte_start, meta, null, null);
     }
 
     /// Replace a live preferred slot, or register a new slot if it is absent.
@@ -800,7 +808,7 @@ pub const UnifiedTextBuffer = struct {
         // A provisional registration must not free caller-owned bytes on rejection.
         const id = if (reuse) mem_id.? else try self.mem_registry.register(text, false);
         errdefer if (!reuse) self.mem_registry.cancelLastRegistration(id, previous_buffer_count);
-        try self.setPlainText(id, text, null, owned, replacement_arena);
+        try self.setPlainText(id, text, 0, null, owned, replacement_arena);
         return id;
     }
 
@@ -893,19 +901,23 @@ pub const UnifiedTextBuffer = struct {
         }
     }
 
+    /// `text` starts at `byte_offset` in slot `mem_id`. A replacement publishes `text` as the
+    /// whole slot, so it starts at offset zero.
     fn setPlainText(
         self: *Self,
         mem_id: u8,
         text: []const u8,
+        byte_offset: u32,
         meta: ?[]const u8,
         replacement_owned: ?bool,
         provided_arena: ?*std.heap.ArenaAllocator,
     ) TextBufferError!void {
+        std.debug.assert(replacement_owned == null or byte_offset == 0);
         var retired_arena = std.heap.ArenaAllocator.init(self.global_allocator);
         defer retired_arena.deinit();
         const replacement_arena = provided_arena orelse
             if (meta == null and (replacement_owned != null or !self._rope.hasHistory())) &retired_arena else null;
-        var result = try self.textToSegments(self.global_allocator, text, mem_id, 0, true);
+        var result = try self.textToSegments(self.global_allocator, text, mem_id, byte_offset, true);
         defer result.segments.deinit(result.allocator);
         // The segments are the document. Do not build an empty rope just to replace it.
         // Candidate copies must not query this rope's shared marker cache.
