@@ -24,10 +24,10 @@ pub fn ot_scene_frame_copy_buffer(context: ?*abi.ContextHandle, id: ?*const c.ot
     return c.OT_OK;
 }
 
-pub fn ot_session_render_split(context: ?*abi.ContextHandle, id: ?*const c.ot_handle, frame_ptr: ?*const c.ot_scene_frame_request, snapshots_ptr: ?[*]const c.ot_split_snapshot, count: u32, pinned_render_offset: u32, force: u32, out_status: ?*u32, out_offset: ?*u32) callconv(.c) c.ot_status {
+pub fn ot_session_render_split(context: ?*abi.ContextHandle, id: ?*const c.ot_handle, frame_ptr: ?*const c.ot_scene_frame_request, snapshots_ptr: ?[*]const c.ot_split_snapshot, count: u32, pinned_render_offset: u32, force: u32, out_status: ?*u32) callconv(.c) c.ot_status {
     const owner = transport.beginMutation(context) catch |err| return fail(context, err);
     defer owner.core.mutating = false;
-    if (id == null or out_status == null or out_offset == null or force > 1 or count > session.split_snapshots_max or (count != 0 and snapshots_ptr == null)) return fail(context, error.InvalidOptions);
+    if (id == null or out_status == null or force > 1 or count > session.split_snapshots_max or (count != 0 and snapshots_ptr == null)) return fail(context, error.InvalidOptions);
     const value = owner.core.raw().getSession(abi.handleFromC(id.?.*)) catch |err| return fail(context, err);
     const frame = if (frame_ptr) |record| abi.frameRequestFromC(record.*) catch |err| return fail(context, err) else null;
     var snapshots: [session.split_snapshots_max]renderer.SplitSnapshot = undefined;
@@ -43,7 +43,6 @@ pub fn ot_session_render_split(context: ?*abi.ContextHandle, id: ?*const c.ot_ha
     }
     const result = value.renderSplit(frame, snapshots[0..count], pinned_render_offset, force == 1) catch |err| return fail(context, err);
     out_status.?.* = abi.renderStatusToC(result);
-    out_offset.?.* = value.renderer.?.renderOffset;
     return c.OT_OK;
 }
 
@@ -171,7 +170,7 @@ test "Context output ABI preserves outer mutation ownership on every rejection" 
             const status = switch (operation) {
                 0 => ot_scene_measure_layout(&owner, null, null),
                 1 => ot_scene_frame_copy_buffer(&owner, null, null, null),
-                2 => ot_session_render_split(&owner, null, null, null, 0, 0, 0, null, null),
+                2 => ot_session_render_split(&owner, null, null, null, 0, 0, 0, null),
                 3 => ot_session_split_control(&owner, null, null, null),
                 4 => ot_session_set_screen(&owner, null, 0, 0, 0, null, 0),
                 5 => ot_session_sync_detached(&owner, null, null),
@@ -190,10 +189,9 @@ test "Context output ABI rejects malformed snapshot tables and controls without 
     try context.?.core.attachSessionRenderer(abi.handleFromC(id), 4, 2, .{ .remote_mode = .remote });
     var status: u32 = 99;
     var offset: u32 = 99;
-    try std.testing.expectEqual(c.OT_INVALID_ARGUMENT, ot_session_render_split(context, &id, null, null, 1, 0, 0, &status, &offset));
-    try std.testing.expectEqual(c.OT_INVALID_ARGUMENT, ot_session_render_split(context, &id, null, null, 0, 0, 2, &status, &offset));
+    try std.testing.expectEqual(c.OT_INVALID_ARGUMENT, ot_session_render_split(context, &id, null, null, 1, 0, 0, &status));
+    try std.testing.expectEqual(c.OT_INVALID_ARGUMENT, ot_session_render_split(context, &id, null, null, 0, 0, 2, &status));
     try std.testing.expectEqual(99, status);
-    try std.testing.expectEqual(99, offset);
     var control = std.mem.zeroes(c.ot_split_control);
     control.struct_size = @sizeOf(c.ot_split_control);
     control.abi_version = c.OT_CONTEXT_ABI_VERSION;

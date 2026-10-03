@@ -931,13 +931,13 @@ ot_status ot_scene_measure_layout(ot_context *, const ot_handle *session, const 
  * After suspension completes, null-frame snapshots remain permitted without reactivating
  * terminal modes; their output packet leaves the cursor restored. Non-null frames and
  * submissions during terminal transitions retain the ordinary rendering restrictions.
- * force is 0/1. OT_OK writes the output records, including SKIPPED and FAILED.
+ * force is 0/1. OT_OK writes out_status, including SKIPPED and FAILED.
  * With a frame, all statuses consume the draft under ot_scene_frame_commit's rules.
  * Without a frame, PENDING may describe an earlier submission; no new snapshots
  * were accepted in that case. Admission errors preserve a live draft for retry. */
 ot_status ot_session_render_split(ot_context *, const ot_handle *session, const ot_scene_frame_request *,
     const ot_split_snapshot *, uint32_t count, uint32_t pinned_render_offset, uint32_t force,
-    uint32_t *out_status, uint32_t *out_render_offset);
+    uint32_t *out_status);
 ot_status ot_session_split_control(ot_context *, const ot_handle *session, const ot_split_control *, uint32_t *out_offset);
 /* Screen mode, dimensions, and copied trailing output are admitted together.
  * The screen packet plus trailing output must fit within 4096 bytes. */

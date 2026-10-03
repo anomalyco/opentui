@@ -3592,7 +3592,7 @@ export class FFIRenderLib {
     snapshots: readonly NativeSplitSnapshot[],
     pinnedRenderOffset: number,
     force: boolean,
-  ): { status: NativeSessionRenderStatus; renderOffset: number } {
+  ): { status: NativeSessionRenderStatus } {
     const layout = nativeLayouts.ot_split_snapshot
     this.getYogaHost().assertMutable()
     const handle = encodeContextHandle(context, session)
@@ -3619,7 +3619,7 @@ export class FFIRenderLib {
     }
     const offset = toSafeFFIU32Length(pinnedRenderOffset, "Split pinned render offset")
     const forced = toFFIBool(force, "Split force render")
-    const output = new Uint32Array(2)
+    const output = new Uint32Array(1)
     const pointer = this.nativeContextPointer(context, "ot_session_render_split")
     nativeResult(
       "ot_session_render_split",
@@ -3631,11 +3631,10 @@ export class FFIRenderLib {
         count,
         offset,
         forced,
-        output.subarray(0, 1),
-        output.subarray(1),
+        output,
       ),
     )
-    return { status: output[0], renderOffset: output[1] }
+    return { status: output[0] }
   }
 
   public sessionSplitControl(
