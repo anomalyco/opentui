@@ -276,11 +276,11 @@ test("externalOutput records captured stdout in FIFO order", async () => {
       height: 1,
     }
   })
-  ;(setup.renderer as any).stdout.write("out-1\n\nout-2")
+  ;(setup.renderer as any).stdout.write("ok👍🏽 👩‍🚀\n\nout-2")
 
   const commits = setup.externalOutput.take()
 
-  expect(commits.map((commit) => commit.text)).toEqual(["api", "out-1", "", "out-2"])
+  expect(commits.map((commit) => commit.text)).toEqual(["api", "ok👍🏽 👩‍🚀", "", "out-2"])
   expect(commits.map((commit) => commit.startOnNewLine)).toEqual([true, false, false, false])
   expect(commits.map((commit) => commit.trailingNewline)).toEqual([true, true, true, false])
 
