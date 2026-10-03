@@ -13,6 +13,7 @@ import type { RenderContext } from "../types.js"
 import { TextNodeRenderable } from "../renderables/TextNode.js"
 import { TextRenderable } from "../renderables/Text.js"
 import { ScrollBoxRenderable } from "../renderables/ScrollBox.js"
+import { BoxRenderable } from "../renderables/Box.js"
 import type { OptimizedBuffer } from "../buffer.js"
 import { RGBA } from "../lib/RGBA.js"
 
@@ -1401,6 +1402,56 @@ describe("Renderable - tree model", () => {
       layout(host, 0, actual, expected)
       expect({ history, layout: actual }).toEqual({ history, layout: expected })
     }
+  })
+})
+
+describe("Renderable - hook installation", () => {
+  // Each way to provide a hook, on a plain subclass and on built-ins with a native body, runs the hook in frames.
+  // Clearing an optional hook stops it. Construction publishes prototype hooks; a scan before the frame finds fields.
+  // Text skips the generic paint decorations (`beforeAfter: false`, documented), and its constructor assigns its own
+  // lifecycle pass over a subclass method, as on `main`.
+  const skipped = (base: string, install: string, hook: string) =>
+    base === "Text" &&
+    (hook === "renderBefore" || hook === "renderAfter" || (install === "prototype" && hook === "onLifecyclePass"))
+  const hooks = ["renderSelf", "onUpdate", "renderBefore", "renderAfter", "onLifecyclePass"] as const
+  const bases = { Renderable: TestRenderable, Box: BoxRenderable, Text: TextRenderable } as const
+  const installs = ["prototype", "field", "option", "assignment", "defineProperty"] as const
+  const cases = (Object.keys(bases) as (keyof typeof bases)[]).flatMap((base) =>
+    installs.flatMap((install) =>
+      hooks
+        .filter((hook) => install !== "option" || hook === "renderBefore" || hook === "renderAfter")
+        .map((hook) => [base, install, hook] as const),
+    ),
+  )
+
+  test.each(cases)("%s %s %s", async (base, install, hook) => {
+    let calls = 0
+    const handler = () => void calls++
+    const descriptor = { value: handler, writable: true, enumerable: true, configurable: true }
+    const Base = bases[base] as typeof TestRenderable
+    class Probe extends Base {
+      constructor(ctx: RenderContext, options: RenderableOptions) {
+        super(ctx, options)
+        if (install === "field") Object.defineProperty(this, hook, descriptor)
+      }
+    }
+    if (install === "prototype") Object.defineProperty(Probe.prototype, hook, { ...descriptor, enumerable: false })
+    const node = new Probe(testRenderer, { width: 4, height: 1, ...(install === "option" && { [hook]: handler }) })
+    testRenderer.root.add(node)
+    if (install === "assignment") Reflect.set(node, hook, handler)
+    if (install === "defineProperty") {
+      Object.defineProperty(node, hook, descriptor)
+      node.refreshHooks()
+    }
+
+    await renderOnce()
+    if (skipped(base, install, hook)) return expect(calls).toBe(0)
+    expect(calls).toBeGreaterThan(0)
+    if (hook === "renderSelf" || hook === "onUpdate") return
+    Reflect.set(node, hook, null)
+    calls = 0
+    await renderOnce()
+    expect(calls).toBe(0)
   })
 })
 
