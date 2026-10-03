@@ -70,12 +70,12 @@ afterAll(() => {
   renderer.destroy()
 })
 
-function classOptions(name: string): object {
+function classOptions(name: string, style = syntaxStyle): object {
   const options: Record<string, object> = {
     ArrowRenderable: { direction: "right" },
-    CodeRenderable: { content: "let a = 1", syntaxStyle },
+    CodeRenderable: { content: "let a = 1", syntaxStyle: style },
     DiffRenderable: { diff: "--- a/x\n+++ b/x\n@@ -1,2 +1,2 @@\n-old\n+new\n same\n" },
-    MarkdownRenderable: { content: "# hi", syntaxStyle },
+    MarkdownRenderable: { content: "# hi", syntaxStyle: style },
     ScrollBarRenderable: { orientation: "vertical" },
     SelectRenderable: { options: [{ name: "a", description: "b" }] },
     SliderRenderable: { orientation: "horizontal" },
@@ -90,6 +90,10 @@ const renderableClasses = Object.entries(core).filter(
   (entry): entry is [string, new (ctx: TestRenderer, options: object) => Renderable] =>
     typeof entry[1] === "function" && entry[1].prototype instanceof Renderable && !(entry[0] in excludedClasses),
 )
+
+function nullishExcluded(name: string, prop: string): boolean {
+  return prop in excludedProps || `${name}.${prop}` in excludedProps
+}
 
 function publicSetters(node: object): string[] {
   const names = new Set<string>()
@@ -120,7 +124,7 @@ test.each(renderableClasses)("%s setters accept null and undefined", async (name
   const failures: string[] = []
   const options = classOptions(name)
   const fresh = new RenderableClass(renderer, classOptions(name))
-  const props = publicSetters(fresh).filter((prop) => !(prop in excludedProps) && !(`${name}.${prop}` in excludedProps))
+  const props = publicSetters(fresh).filter((prop) => !nullishExcluded(name, prop))
   expect(props.length).toBeGreaterThan(0)
   for (const prop of props) {
     const fallback = read(fresh, prop)
@@ -158,6 +162,106 @@ test.each(renderableClasses)("%s setters accept null and undefined", async (name
     }
   }
   fresh.destroyRecursively()
+  expect(failures).toEqual([])
+})
+
+// Frameworks write props while they unmount, also after the renderer is destroyed. As on `main`, a destroyed
+// renderable ignores them. Listed: subclass setters and methods that call the scene or a native resource directly and
+// still need their own guard (owner unit in the comment).
+const editorSetters = [
+  "backgroundColor",
+  "cursorColor",
+  "cursorOffset",
+  "selectionOccupancy",
+  "showCursor",
+  "syntaxStyle",
+  "textColor",
+]
+const throwsAfterDestroy: Record<string, string[]> = {
+  ArrowRenderable: ["arrowChars", "attributes", "backgroundColor", "foregroundColor"], // U22
+  BoxRenderable: [
+    "backgroundColor",
+    "bottomTitle",
+    "bottomTitleAlignment",
+    "customBorderChars",
+    "title",
+    "titleAlignment",
+  ], // U22
+  ScrollBarRenderable: ["visible"], // U22
+  ScrollBoxRenderable: [
+    "backgroundColor",
+    "bottomTitle",
+    "bottomTitleAlignment",
+    "customBorderChars",
+    "scrollAcceleration",
+    "stickyScroll",
+    "stickyStart",
+    "title",
+    "titleAlignment",
+    "viewportCulling",
+  ], // U22
+  SliderRenderable: ["backgroundColor", "foregroundColor", "max", "min", "value", "viewPortSize"], // U22
+  CodeRenderable: ["scrollX", "scrollY"], // U23
+  MarkdownRenderable: ["internalBlockMode", "renderNode"], // U23
+  TextBufferRenderable: ["scrollX", "scrollY"], // U20
+  TextRenderable: ["content", "scrollX", "scrollY"], // U20
+  TextTableRenderable: ["wrapMode"], // U20
+  EditBufferRenderable: editorSetters, // U21
+  InputRenderable: [...editorSetters, "focusedBackgroundColor", "focusedTextColor", "maxLength", "value", "focus()"], // U21
+  TextareaRenderable: [...editorSetters, "focusedBackgroundColor", "focusedTextColor", "focus()"], // U21
+}
+
+function writeAfterDestroy(node: Renderable, writes: [string, unknown[]][], skipped: string[] = []): string[] {
+  const failures: string[] = []
+  const attempt = (label: string, action: () => unknown) => {
+    if (skipped.includes(label)) return
+    try {
+      action()
+    } catch (error) {
+      failures.push(`${label}: ${error}`)
+    }
+  }
+  for (const [prop, values] of writes) {
+    for (const value of values) attempt(`${prop} = ${value}`, () => Reflect.set(node, prop, value))
+  }
+  attempt("focus()", () => node.focus())
+  attempt("blur()", () => node.blur())
+  attempt("requestRender()", () => node.requestRender())
+  attempt("setPosition()", () => node.setPosition({ left: 1 }))
+  attempt("setMeasureProvider()", () => node.setMeasureProvider(null))
+  attempt("invalidateIntrinsicSize()", () => node.invalidateIntrinsicSize())
+  attempt("primaryAxis", () => node.primaryAxis)
+  attempt("marginTop", () => node.marginTop)
+  attempt("getChildrenSortedByPrimaryAxis()", () => node.getChildrenSortedByPrimaryAxis())
+  return failures
+}
+
+test.each(renderableClasses)("%s ignores writes after destroy", async (name, RenderableClass) => {
+  const skipped = throwsAfterDestroy[name] ?? []
+  const fresh = new RenderableClass(renderer, classOptions(name))
+  const writes = publicSetters(fresh)
+    .filter((prop) => !skipped.includes(prop))
+    .map((prop): [string, unknown[]] => {
+      const value = sample(prop, read(fresh, prop))
+      // Without a default, only a value read from the node is known to be valid.
+      return [prop, !nullishExcluded(name, prop) ? [value, null] : value == null ? [] : [value]]
+    })
+  fresh.destroyRecursively()
+
+  const node = new RenderableClass(renderer, classOptions(name))
+  renderer.root.add(node)
+  node.focus()
+  await renderOnce()
+  node.destroyRecursively()
+  const failures = writeAfterDestroy(node, writes, skipped).map((failure) => `destroyed: ${failure}`)
+  await renderOnce()
+  expect(frameErrors.splice(0)).toEqual([])
+
+  const other = (await createTestRenderer({ width: 24, height: 8 })).renderer
+  const orphan = new RenderableClass(other, classOptions(name, SyntaxStyle.create(other.nativeScene)))
+  other.root.add(orphan)
+  other.destroy()
+  failures.push(...writeAfterDestroy(orphan, writes, skipped).map((failure) => `renderer destroyed: ${failure}`))
   expect(failures).toEqual([])
 })
 

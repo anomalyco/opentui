@@ -23,6 +23,7 @@ import {
   sceneSetEnum,
   sceneSetFloat,
   sceneSetValue,
+  UNDEFINED_VALUE,
 } from "./yoga.internal.js"
 import type { NativeScene } from "./NativeScene.js"
 import { OptimizedBuffer } from "./buffer.js"
@@ -956,20 +957,24 @@ export abstract class Renderable extends BaseRenderable {
     this._getSceneHandle(this._ctx.nativeScene)
   }
 
+  /** A destroyed renderable skips the operation: writes to it are no-ops, as on `main`. */
   runMutation<T>(operation: () => T): T {
+    if (this.isFreed()) return undefined as T
     this.assertMutable()
     return this._ctx.nativeScene.driver.renderLib.getYogaHost().runMutation(operation)
   }
 
   private yogaSetEnum(kind: (typeof YogaEnumKind)[keyof typeof YogaEnumKind], value: number): void {
+    if (this.isFreed()) return
     sceneSetEnum(this._ctx.nativeScene, this, kind, value)
   }
 
   private yogaGetEnum(kind: (typeof YogaEnumKind)[keyof typeof YogaEnumKind], fallback: number): number {
-    return sceneGetEnum(this._ctx.nativeScene, this, kind, fallback)
+    return this.isFreed() ? fallback : sceneGetEnum(this._ctx.nativeScene, this, kind)
   }
 
   private yogaSetFloat(kind: (typeof YogaFloatKind)[keyof typeof YogaFloatKind], value: number | undefined): void {
+    if (this.isFreed()) return
     sceneSetFloat(this._ctx.nativeScene, this, kind, value)
   }
 
@@ -982,11 +987,12 @@ export abstract class Renderable extends BaseRenderable {
     edge: number,
     valueInput: number | "auto" | `${number}%` | Value | undefined,
   ): void {
+    if (this.isFreed()) return
     sceneSetValue(this._ctx.nativeScene, this, kind, edge, valueInput)
   }
 
   private yogaGetValue(kind: (typeof YogaValueKind)[keyof typeof YogaValueKind], edge: number): Value {
-    return sceneGetValue(this._ctx.nativeScene, this, kind, edge)
+    return this.isFreed() ? UNDEFINED_VALUE : sceneGetValue(this._ctx.nativeScene, this, kind, edge)
   }
 
   setDisplay(display: Display): void {
@@ -1533,7 +1539,7 @@ export abstract class Renderable extends BaseRenderable {
   }
 
   public setMeasureProvider(provider: MeasureFunction | null): void {
-    if (this._isDestroyed) throw new Error("Renderable is destroyed")
+    if (this.isFreed()) return
     const node = this
     node.runMutation(() => {
       if (provider === null && node.hasMeasureFunc()) this._ctx.nativeScene.markDirty(this)
@@ -1544,7 +1550,7 @@ export abstract class Renderable extends BaseRenderable {
   }
 
   public invalidateIntrinsicSize(): void {
-    if (this._isDestroyed) throw new Error("Renderable is destroyed")
+    if (this.isFreed()) return
     const node = this
     node.assertMutable()
     if (node.hasMeasureFunc()) this._ctx.nativeScene.markDirty(this)
@@ -1864,6 +1870,7 @@ export abstract class Renderable extends BaseRenderable {
   }
 
   protected setNativeScenePaint(paint: Partial<NativeScenePaint> = this.getNativeScenePaint()): void {
+    if (this.isFreed()) return
     this._ctx.nativeScene.setPaint(this, paint)
   }
 
@@ -1893,6 +1900,7 @@ export abstract class Renderable extends BaseRenderable {
         },
         set(this: Renderable, value: unknown) {
           if (name === "selectable") {
+            if (this.isFreed()) return
             this.assertMutable()
             this.ensureNativeSceneMethods()[name] = value
             return
@@ -2084,6 +2092,7 @@ export abstract class Renderable extends BaseRenderable {
     > = {},
     lineInfo?: boolean,
   ): void {
+    if (this.isFreed()) return
     const scene = this._ctx.nativeScene
     const previousFlags = this._nativeSceneHookFlags
     const previousGeneration = this._nativeSceneHookGeneration
