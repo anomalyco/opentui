@@ -1,4 +1,3 @@
-import { assertRenderableMutable } from "../lib/renderable-layout.js"
 import { type KeyEvent } from "../lib/index.js"
 import { LinearScrollAccel, MacOSScrollAccel, type ScrollAcceleration } from "../lib/scroll-acceleration.js"
 import type { BaseRenderable, Renderable, RenderableOptions } from "../Renderable.js"
@@ -34,6 +33,7 @@ export class ContentRenderable extends BoxRenderable {
   }
 
   set viewportCulling(value: boolean) {
+    if (this.isFreed()) return
     this._ctx.nativeScene.setViewport(this, value ? this.viewport : null)
     this._viewportCulling = value
   }
@@ -133,7 +133,6 @@ export class ScrollBoxRenderable extends BoxRenderable {
   }
 
   set stickyScroll(value: boolean) {
-    assertRenderableMutable(this)
     this._stickyScroll = value
     this.updateStickyState()
   }
@@ -143,7 +142,6 @@ export class ScrollBoxRenderable extends BoxRenderable {
   }
 
   set stickyStart(value: "bottom" | "top" | "left" | "right" | undefined) {
-    assertRenderableMutable(this)
     this._stickyStart = value
     this.updateStickyState()
   }
@@ -635,7 +633,6 @@ export class ScrollBoxRenderable extends BoxRenderable {
   }
 
   public updateAutoScroll(mouseX: number, mouseY: number): void {
-    assertRenderableMutable(this)
     this.autoScrollMouseX = mouseX
     this.autoScrollMouseY = mouseY
 
@@ -653,7 +650,6 @@ export class ScrollBoxRenderable extends BoxRenderable {
   }
 
   public stopAutoScroll(): void {
-    assertRenderableMutable(this)
     const wasAutoScrolling = this.isAutoScrolling
     this.isAutoScrolling = false
     this.autoScrollAccumulatorX = 0
@@ -888,7 +884,6 @@ export class ScrollBoxRenderable extends BoxRenderable {
   }
 
   public set scrollAcceleration(value: ScrollAcceleration) {
-    assertRenderableMutable(this)
     this.scrollAccel = value
   }
 

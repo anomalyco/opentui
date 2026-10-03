@@ -48,13 +48,11 @@ export class ScrollBarRenderable extends Renderable {
   }
 
   set visible(value: boolean) {
-    assertRenderableMutable(this)
     this._manualVisibility = true
     super.visible = value
   }
 
   public resetVisibilityControl(): void {
-    assertRenderableMutable(this)
     this._manualVisibility = false
     this.recalculateVisibility()
   }
@@ -489,6 +487,7 @@ export class ArrowRenderable extends Renderable {
   }
 
   private setNativeSceneArrow(options: Partial<NativeSceneArrowOptions> = {}): void {
+    if (this.isFreed()) return
     this._ctx.nativeScene.setArrow(this, {
       direction: this._direction,
       attributes: this._attributes,

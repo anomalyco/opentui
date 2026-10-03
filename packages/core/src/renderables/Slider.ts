@@ -172,6 +172,7 @@ export class SliderRenderable extends Renderable {
   }
 
   private setNativeSceneSlider(options: Partial<NativeSceneSliderOptions> = {}): void {
+    if (this.isFreed()) return
     this._ctx.nativeScene.setSlider(this, {
       orientation: this.orientation,
       min: this._min,

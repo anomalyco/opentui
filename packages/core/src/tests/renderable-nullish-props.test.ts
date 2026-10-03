@@ -52,6 +52,8 @@ const enumSamples: Record<string, unknown> = {
   bottomTitleAlignment: "right",
   textAlign: "center",
   wrapMode: "none",
+  orientation: "vertical",
+  direction: "left",
 }
 
 let renderer: TestRenderer
@@ -178,29 +180,6 @@ const editorSetters = [
   "textColor",
 ]
 const throwsAfterDestroy: Record<string, string[]> = {
-  ArrowRenderable: ["arrowChars", "attributes", "backgroundColor", "foregroundColor"], // U22
-  BoxRenderable: [
-    "backgroundColor",
-    "bottomTitle",
-    "bottomTitleAlignment",
-    "customBorderChars",
-    "title",
-    "titleAlignment",
-  ], // U22
-  ScrollBarRenderable: ["visible"], // U22
-  ScrollBoxRenderable: [
-    "backgroundColor",
-    "bottomTitle",
-    "bottomTitleAlignment",
-    "customBorderChars",
-    "scrollAcceleration",
-    "stickyScroll",
-    "stickyStart",
-    "title",
-    "titleAlignment",
-    "viewportCulling",
-  ], // U22
-  SliderRenderable: ["backgroundColor", "foregroundColor", "max", "min", "value", "viewPortSize"], // U22
   CodeRenderable: ["scrollX", "scrollY"], // U20 (TextBufferRenderable setters)
   MarkdownRenderable: ["internalBlockMode", "renderNode"], // U23
   TextBufferRenderable: ["scrollX", "scrollY"], // U20
