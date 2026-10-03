@@ -4461,7 +4461,7 @@ pub fn export_symbols() void {
 }
 
 // Scalars must match exactly. A pointer or callback must stay nullable, because C
-// callers may pass NULL, and must not drop the header's const.
+// callers may pass NULL, must not drop the header's const, and must name the same record.
 fn checkPrototype(comptime name: []const u8, comptime Prototype: type, comptime Implementation: type) void {
     const prototype = @typeInfo(Prototype).@"fn";
     const implementation = @typeInfo(Implementation).@"fn";
@@ -4480,6 +4480,8 @@ fn checkPrototype(comptime name: []const u8, comptime Prototype: type, comptime 
             prototypeError("pointer must accept NULL", name, index);
         if (expected_pointer.is_const and !actual_pointer.is_const)
             prototypeError("pointer drops const", name, index);
+        if (@typeInfo(expected_pointer.child) == .@"struct" and actual_pointer.child != expected_pointer.child)
+            prototypeError("record pointer differs from opentui.h", name, index);
         if (@typeInfo(expected_pointer.child) == .@"fn" and actual.type.? != expected.type.?)
             prototypeError("callback differs from opentui.h", name, index);
     }
