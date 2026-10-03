@@ -117,7 +117,7 @@ export const nativePointerPolicies = {
   ot_text_buffer_view_select: { 0: context, 1: buffer, 2: buffer, 3: buffer },
   ot_text_buffer_view_get_info: { 0: context, 1: buffer, 2: buffer },
   ot_text_buffer_view_get_selected_text: { 0: context, 1: buffer, 2: empty, 4: buffer },
-  ot_text_buffer_view_get_lines: { 0: context, 1: buffer, 3: empty, 5: buffer },
+  ot_text_buffer_view_get_lines: { 0: context, 1: buffer, 4: empty, 6: buffer },
   ot_text_buffer_view_measure: { 0: context, 1: buffer, 4: buffer },
   ot_scene_set_text_view: { 0: context, 1: buffer, 2: optional },
   ot_scene_set_text_view_paint: { 0: context, 1: buffer },

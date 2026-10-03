@@ -267,7 +267,7 @@ pub fn ot_text_buffer_view_get_selected_text(context: ?*Owner, id: ?*const c.ot_
     return c.OT_OK;
 }
 
-pub fn ot_text_buffer_view_get_lines(context: ?*Owner, id: ?*const c.ot_handle, logical: u32, lines: ?[*]c.ot_scene_text_line, capacity: u32, out: ?*c.ot_editor_measure) callconv(.c) c.ot_status {
+pub fn ot_text_buffer_view_get_lines(context: ?*Owner, id: ?*const c.ot_handle, logical: u32, first_line: u32, lines: ?[*]c.ot_scene_text_line, capacity: u32, out: ?*c.ot_editor_measure) callconv(.c) c.ot_status {
     const owner = admit(context, true) catch |err| return fail(context, err);
     _ = record(c.ot_editor_measure, out) catch |err| return fail(owner, err);
     if (logical > 1 or (capacity != 0 and lines == null)) return fail(owner, error.InvalidOptions);
@@ -275,10 +275,11 @@ pub fn ot_text_buffer_view_get_lines(context: ?*Owner, id: ?*const c.ot_handle, 
     value.prepareView() catch |err| return fail(owner, err);
     const info = if (logical == 1) value.view.getLogicalLineInfo() else value.view.getCachedLineInfo();
     const count = info.line_start_cols.len;
-    if (capacity != 0 and capacity < count) return fail(owner, error.BufferTooSmall);
-    if (capacity != 0) for (0..count) |index| {
-        lines.?[index] = .{ .start_cols = info.line_start_cols[index], .width_cols = info.line_width_cols[index], .source_line = info.line_sources[index], .wrap_index = info.line_wraps[index] };
-    };
+    // Copy only the requested window, so a viewport read does not scale with the document.
+    const start = @min(first_line, count);
+    for (0..@min(capacity, count - start), start..) |index, line| {
+        lines.?[index] = .{ .start_cols = info.line_start_cols[line], .width_cols = info.line_width_cols[line], .source_line = info.line_sources[line], .wrap_index = info.line_wraps[line] };
+    }
     out.?.* = .{ .struct_size = @sizeOf(c.ot_editor_measure), .abi_version = c.OT_CONTEXT_ABI_VERSION, .line_count = @intCast(count), .width_cols_max = info.line_width_cols_max };
     return c.OT_OK;
 }
@@ -389,6 +390,45 @@ test "Context exact text ranges retain grapheme and newline boundaries" {
         var output: [document.len]u8 = undefined;
         const count = try core.textBufferGetRange(id, case.start, case.end, &output);
         try std.testing.expectEqualStrings(case.bytes, output[0..count]);
+    }
+}
+
+test "Context text view lines copy only the requested window" {
+    var owner: Owner = .{ .gpa = .init, .io_threaded = .init_single_threaded, .core = undefined, .owner_thread = std.Thread.getCurrentId() };
+    defer owner.io_threaded.deinit();
+    owner.core = try ctx.Context.init(std.testing.allocator, owner.io_threaded.io(), .{});
+    defer owner.core.deinit() catch unreachable;
+    const text_handle = try owner.core.createTextBuffer(.unicode);
+    const view_id = abi.handleToC(try owner.core.createTextBufferView(text_handle));
+    const line_count = 100_000;
+    const document = try std.testing.allocator.alloc(u8, line_count * 2 - 1);
+    defer std.testing.allocator.free(document);
+    @memset(document, '\n');
+    for (0..line_count) |row| document[row * 2] = 'a' + @as(u8, @intCast(row % 26));
+    try owner.core.textBufferSetText(text_handle, document);
+
+    var measure = std.mem.zeroes(c.ot_editor_measure);
+    measure.struct_size = @sizeOf(c.ot_editor_measure);
+    measure.abi_version = c.OT_CONTEXT_ABI_VERSION;
+    const sentinel: c.ot_scene_text_line = .{ .start_cols = 7, .width_cols = 7, .source_line = 7, .wrap_index = 7 };
+    for ([_]u32{ 0, 1 }) |logical| {
+        for ([_]struct { first: u32, copied: u32 }{
+            .{ .first = 0, .copied = 5 },
+            .{ .first = 99_990, .copied = 5 },
+            .{ .first = 99_998, .copied = 2 },
+            .{ .first = line_count, .copied = 0 },
+            .{ .first = std.math.maxInt(u32), .copied = 0 },
+        }) |case| {
+            var lines: [6]c.ot_scene_text_line = @splat(sentinel);
+            try std.testing.expectEqual(c.OT_OK, ot_text_buffer_view_get_lines(&owner, &view_id, logical, case.first, &lines, 5, &measure));
+            try std.testing.expectEqual(line_count, measure.line_count);
+            for (lines[0..case.copied], case.first..) |line, row| {
+                try std.testing.expectEqual(row, line.source_line);
+                try std.testing.expectEqual(row * 2, line.start_cols);
+                try std.testing.expectEqual(1, line.width_cols);
+            }
+            for (lines[case.copied..]) |line| try std.testing.expectEqualDeep(sentinel, line);
+        }
     }
 }
 
