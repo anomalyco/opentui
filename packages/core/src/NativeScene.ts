@@ -174,7 +174,10 @@ export class NativeScene {
 
   /** @internal Apply staged style/paint writes. Runs before every native scene call
    * except node creation, moves, and hit tests, which observe no style or paint.
-   * Failed flushes retain their unaccepted suffix for retry. */
+   * Failed flushes retain their unaccepted suffix for retry, except a record that native
+   * rejects for its node (InvalidArgument, WrongKind, StaleHandle). That record is dropped,
+   * including other paint fields the node staged since the last flush, and the error is
+   * thrown once by whichever call flushes, which may belong to another node. */
   flushStaged(): void {
     if (this.destroyed || this.driver.disposed) {
       this.staging.clear()

@@ -7084,7 +7084,8 @@ export class FFIRenderLib {
 
   /** Consume only native's accepted prefix. Allocation or admission failures leave
    * the suffix staged so a retry cannot lose writes or replay accepted entries. A record
-   * that native rejects for its node can never apply, so it is dropped and reported once. */
+   * that native rejects for its node can never apply, so it is dropped and reported once;
+   * paint fields the node staged since the last flush share that record and are dropped too. */
   public sceneFlush(context: NativeContextHandle, staging: SceneStaging): void {
     const operation = "ot_scene_flush"
     const count = staging.count
