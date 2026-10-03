@@ -62,14 +62,18 @@ describe("checked native ABI generation", () => {
     await expect(generateNativeABI(input.abi, input.policies, input.addresses)).rejects.toThrow(message)
   })
 
-  test("C compiler record layouts must match the translated records", () => {
+  test.each([
     // Translate-C ignores #pragma pack, so only the C compiler sees this 12-byte layout.
-    const header = [
-      "#include <stdint.h>",
-      "#pragma pack(push, 2)",
-      "typedef struct ot_z { uint32_t a; uint64_t b; } ot_z;",
-      "#pragma pack(pop)",
-    ].join("\n")
-    expect(() => compileHeader({ header })).toThrow("C layout differs from Translate-C: ot_z")
-  }, 120_000)
+    [
+      "C layout differs from Translate-C: ot_z",
+      "#include <stdint.h>\n#pragma pack(push, 2)\ntypedef struct ot_z { uint32_t a; uint64_t b; } ot_z;\n#pragma pack(pop)",
+    ],
+    ["-Werror,-Wcomment", "/* match a/*.txt */"],
+  ])(
+    "header compilation rejects %s",
+    (message, header) => {
+      expect(() => compileHeader({ header })).toThrow(message)
+    },
+    120_000,
+  )
 })
