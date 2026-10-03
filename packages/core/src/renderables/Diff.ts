@@ -169,12 +169,8 @@ export class DiffRenderable extends Renderable {
         this.buildView()
       }
     } catch (error) {
-      try {
-        super.destroyRecursively()
-      } catch {
-        // Preserve the construction failure.
-      }
-      throw error
+      // destroySelf destroys every pane, attached or not.
+      this.rollbackConstruction(error)
     }
   }
 

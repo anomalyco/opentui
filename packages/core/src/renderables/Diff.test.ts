@@ -7,7 +7,7 @@ import { createMockMouse, createTestRenderer, type TestRenderer } from "../testi
 import { MockTreeSitterClient } from "../testing/mock-tree-sitter-client.js"
 import type { SimpleHighlight } from "../lib/tree-sitter/types.js"
 import { settleDiffHighlighting } from "./__tests__/renderable-test-utils.js"
-import type { CodeRenderable } from "./Code.js"
+import { CodeRenderable } from "./Code.js"
 
 let currentRenderer: TestRenderer
 let syntaxStyle: SyntaxStyle
@@ -2250,6 +2250,26 @@ test("DiffRenderable - gutter remains in correct position after updates", async 
     expect(updatedContentLine).toBeDefined()
     expect(updatedContentLine).toMatch(/^\s*\d+/)
   }
+})
+
+test("DiffRenderable - construction failure releases the panes it built", () => {
+  const live = Renderable.renderablesByNumber.size
+  const updateTextInfo = CodeRenderable.prototype["updateTextInfo"]
+  let calls = 0
+  const failSecondPane = spyOn(CodeRenderable.prototype as any, "updateTextInfo").mockImplementation(function (
+    this: CodeRenderable,
+  ) {
+    if (++calls === 2) throw new Error("second pane failed")
+    updateTextInfo.call(this)
+  })
+  try {
+    expect(() => new DiffRenderable(currentRenderer, { diff: simpleDiff, view: "split", syntaxStyle })).toThrow(
+      "second pane failed",
+    )
+  } finally {
+    failSecondPane.mockRestore()
+  }
+  expect(Renderable.renderablesByNumber.size).toBe(live)
 })
 
 test("DiffRenderable - releases default syntax styles after replacing them with a borrowed style", () => {
