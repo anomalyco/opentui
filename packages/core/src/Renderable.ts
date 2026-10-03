@@ -1398,11 +1398,7 @@ export abstract class Renderable extends BaseRenderable {
   }
 
   public get marginTop(): number | "auto" | `${number}%` {
-    const margin = this.getMargin(Edge.Top) as unknown
-    if (typeof margin === "number") return margin
-    if (typeof margin === "object" && margin && "value" in margin && typeof margin.value === "number")
-      return margin.value
-    return 0
+    return this.getMargin(Edge.Top).value
   }
 
   public set marginRight(margin: number | "auto" | `${number}%` | null | undefined) {
