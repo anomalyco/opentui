@@ -116,8 +116,8 @@ interface NativeSpanFeedOptions {
 | `autoCommitOnFull`  | `true`      | Commits a full chunk while a copy write continues.                                |
 | `spanQueueCapacity` | `0`         | Zero selects the native default of 4096 span entries.                             |
 
-`maxBytes` limits chunk allocation only. It does not cap the span-ring allocation. Under `"grow"`, the ring doubles
-when it fills and has no separate byte limit.
+A nonzero `maxBytes` or the `"block"` policy also fixes the span ring at `spanQueueCapacity` entries. A commit that
+needs another entry in a full ring returns `-1`. Only a `"grow"` feed without `maxBytes` doubles the ring when it fills.
 
 These independent feed defaults do not apply to checked Session output.
 Sessions use bounded output storage and reserve control capacity separately.
@@ -134,8 +134,8 @@ Each `onData` argument aliases native chunk memory. It is not an owned copy.
 
 Handlers receive the same mutable view. A handler can change bytes seen by later handlers. Treat the view as readonly.
 
-The native state buffer uses one `u8` reference count per chunk. At 255 pending spans for one chunk, the producer moves
-to another chunk instead of increasing that count further.
+The wrapper releases each delivered span by its ring slot and release ID. Native code counts unreleased spans per chunk
+in a `u8`. At 255 for one chunk, the producer moves to another chunk instead of increasing that count further.
 
 ## Drain and backpressure
 
@@ -149,13 +149,14 @@ sets a pending flag. Adding the first handler then drains it.
 
 - An asynchronous data handler is pending.
 - Committed data waits for a data handler.
-- A native chunk still has a nonzero reference count.
+- Native stats report an outstanding span: one that is queued or delivered but not yet released.
 
 This JavaScript state does not force the native producer to block under the default `"grow"` policy. The producer can
 allocate more chunks until `maxBytes`, allocation failure, or another native limit stops it.
 
 `idle()` resolves when no callback or drain is active, no asynchronous handler or pending-data flag remains, and no
-chunk is pinned. If data waits without a handler, `idle()` does not resolve until a handler drains it or the feed closes.
+span is outstanding. If data waits without a handler, `idle()` does not resolve until a handler drains it or the feed
+closes.
 
 ## Handler errors
 
@@ -179,7 +180,7 @@ The native feed maps producer failures to integer statuses:
 | Status | Meaning                                                   |
 | ------ | --------------------------------------------------------- |
 | `0`    | Success                                                   |
-| `-1`   | No space under block policy or an unavailable reservation |
+| `-1`   | No space in a bounded feed, or an unavailable reservation |
 | `-2`   | The next chunk would exceed `maxBytes`                    |
 | `-3`   | Invalid pointer, state, or argument                       |
 | `-4`   | Allocation failed                                         |
@@ -199,7 +200,7 @@ succeeds.
 If a callback, drain, or asynchronous handler is active, `close()` defers final destruction. It queues a microtask and
 retries after active asynchronous handlers settle.
 
-If native close returns a nonzero status, the wrapper currently leaves the feed alive and returns without throwing.
+If native close or destruction returns a nonzero status, the wrapper leaves the feed alive and returns without throwing.
 This can occur while a native reservation is active. Commit the reservation, including with zero bytes when needed.
 Then call `close()` again. The wrapper has no method that completes a native reservation.
 
@@ -221,6 +222,8 @@ interface NativeSpanFeedStats {
   spansCommitted: bigint
   chunks: number
   pendingSpans: number
+  outstandingSpans: number
+  outstandingBytes: bigint
 }
 ```
 
