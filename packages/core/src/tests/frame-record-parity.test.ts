@@ -35,6 +35,7 @@ const grid = {
 }
 
 let setup: TestRendererSetup
+const errors: unknown[] = []
 let sceneText: TextRenderable
 let pixel: NativeImage
 const scene = () => setup.renderer.nativeScene
@@ -42,6 +43,7 @@ const pixels = new Uint8Array(4 * 4 * 4).map((_, index) => (index * 37) & 0xff)
 
 beforeAll(async () => {
   setup = await createTestRenderer({ width, height })
+  setup.renderer.on(CliRenderEvents.RENDER_ERROR, ({ error }) => errors.push(error))
   // Hidden scene text keeps its layout without painting itself.
   sceneText = new TextRenderable(setup.renderer, { content: "scene", width: 5, height: 1, opacity: 0 })
   setup.renderer.root.add(sceneText)
@@ -213,9 +215,6 @@ function rows(buffer: OptimizedBuffer): string[] {
 
 test.each(Object.keys(operations))("recorded %s paints the cells that direct drawing does", async (name) => {
   const { renderer, renderOnce } = setup
-  const errors: unknown[] = []
-  const report = ({ error }: { error: unknown }) => errors.push(error)
-  renderer.on(CliRenderEvents.RENDER_ERROR, report)
   let paint: (buffer: OptimizedBuffer) => void
   const node = new BoxRenderable(renderer, {
     position: "absolute",
@@ -245,11 +244,10 @@ test.each(Object.keys(operations))("recorded %s paints the cells that direct dra
       await renderOnce()
     }
 
-    expect(errors).toEqual([])
+    expect(errors.splice(0)).toEqual([])
     expect(rejected).toEqual([rejectedCalls.length * 2, rejectedCalls.length * 2])
     expect(recorded).toEqual(name === "images" ? rows(renderer.currentRenderBuffer) : rows(direct))
   } finally {
-    renderer.off(CliRenderEvents.RENDER_ERROR, report)
     node.destroy()
     direct.destroy()
   }

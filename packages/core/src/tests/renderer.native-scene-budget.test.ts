@@ -31,32 +31,20 @@ async function budgetRenderer(width: number, clock?: ManualClock) {
 }
 
 // Each turn changes the scene before the yielded continuation runs.
-const turnMutations: Record<string, (target: Awaited<ReturnType<typeof budgetRenderer>>) => (turn: number) => void> = {
-  "every turn edits text":
-    ({ lines }) =>
-    (turn) => {
-      lines[turn % lines.length].content = `edit ${turn}`
-    },
-  "every turn resizes a node with a resize hook": ({ renderer, column }) => {
-    const resized = new BoxRenderable(renderer, { width: 1, height: 1 })
-    resized.on("resize", () => {})
-    column.add(resized)
-    return (turn) => {
-      resized.width = (turn % 30) + 1
-    }
-  },
-}
-
-for (const [name, install] of Object.entries(turnMutations)) {
-  test(`native work budget presents frames while ${name}`, async () => {
+test.each(["edits text", "resizes a node with a resize hook"])(
+  "native work budget presents frames while every turn %s",
+  async (change) => {
     const target = await budgetRenderer(40, new ManualClock())
-    const mutate = install(target)
+    const resized = new BoxRenderable(target.renderer, { width: 1, height: 1 })
+    resized.on("resize", () => {})
+    target.column.add(resized)
     let running = true
     let turns = 0
     const mutating = (async () => {
-      while (running) {
+      for (; running; turns++) {
         await setImmediate()
-        mutate(++turns)
+        if (change === "edits text") target.lines[turns % target.lines.length].content = `edit ${turns}`
+        else resized.width = (turns % 30) + 1
       }
     })()
     try {
@@ -73,8 +61,8 @@ for (const [name, install] of Object.entries(turnMutations)) {
       target.renderer.destroy()
       await target.renderer.closed
     }
-  })
-}
+  },
+)
 
 /** Runs interrupt in a microtask after this renderer's next frame step that yields, while that frame is parked. */
 function atNextYield(renderer: CliRenderer, interrupt: () => Promise<void> | void): Promise<void> {
