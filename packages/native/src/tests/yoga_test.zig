@@ -462,12 +462,18 @@ test "Yoga checked malformed valid-pointer calls reject before upstream assertio
     try std.testing.expectEqual(invalid, yoga.yogaNodeStyleSetValueChecked(node, 10, 3, 1, 1));
     try std.testing.expectEqual(invalid, yoga.yogaNodeStyleSetValueChecked(node, 8, 0, 3, 1));
     try std.testing.expectEqual(invalid, yoga.yogaNodeStyleSetValueChecked(node, 0, 0, 4, 1));
+    const inf = std.math.inf(f32);
+    try std.testing.expectEqual(invalid, yoga.yogaNodeStyleSetValueChecked(node, 0, 0, 1, inf));
+    try std.testing.expectEqual(invalid, yoga.yogaNodeStyleSetDimensionChecked(node, 0, 1, inf, 0));
+    try std.testing.expectEqual(invalid, yoga.yogaNodeStyleSetPositionsChecked(node, 1, &.{ 1, 1, 1, 1 }, &.{ -inf, 0, 0, 0 }));
     var edge: f32 = 123;
     try std.testing.expectEqual(invalid, yoga.yogaNodeLayoutGetEdgeChecked(node, 0, 6, &edge));
     try std.testing.expectEqual(invalid, yoga.yogaNodeLayoutGetEdgeChecked(node, 3, 0, &edge));
     try std.testing.expectEqual(@as(f32, 123), edge);
     try std.testing.expectEqual(invalid, yoga.yogaNodeMarkDirtyChecked(node));
     try std.testing.expectEqual(invalid, yoga.yogaNodeCalculateLayoutChecked(node, 1, 1, 3));
+    try std.testing.expectEqual(invalid, yoga.yogaNodeCalculateLayoutChecked(node, inf, 1, 1));
+    try std.testing.expectEqual(invalid, yoga.yogaNodeCalculateLayoutChecked(node, 1, -1, 1));
     try std.testing.expectEqual(invalid, yoga.yogaNodeInsertChildChecked(node, child, 1));
     try std.testing.expectEqual(yoga.Status.ok, yoga.yogaNodeSetMeasureFuncChecked(node, 1));
     try std.testing.expectEqual(invalid, yoga.yogaNodeInsertChildChecked(node, child, 0));
