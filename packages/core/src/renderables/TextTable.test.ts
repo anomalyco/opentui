@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, test } from "bun:test"
+import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test"
 import { OptimizedBuffer } from "../buffer.js"
 import { RGBA } from "../lib/RGBA.js"
 import { bold, green, red, yellow } from "../lib/styled-text.js"
@@ -743,6 +743,36 @@ describe("TextTableRenderable", () => {
     const after = captureFrame()
     expect(before).not.toBe(after)
     expect(after).toMatchSnapshot("content setter update")
+  })
+
+  test("replaces same-shape content in one batch and falls back to new cells beyond the batch limit", async () => {
+    // 300 changed cells exceed OT_TEXT_REPLACEMENT_COUNT_MAX (256).
+    const grid = (tag: string, rows: number) =>
+      Array.from({ length: rows }, (_, row) => [cell(`${tag}${row}`), row === 1 ? null : cell(tag)])
+    const table = new TextTableRenderable(renderer, { left: 0, top: 0, wrapMode: "none", content: grid("a", 3) })
+    renderer.root.add(table)
+    const create = spyOn(renderer.nativeScene.driver.renderLib, "createContextTextBuffer")
+    const rows = async () => {
+      await renderOnce()
+      return captureFrame()
+        .split("\n")
+        .filter((line) => /[a-z]\d/.test(line))
+        .slice(0, 3)
+        .map((line) => line.replace(/[│ ]+/g, " ").trim())
+    }
+    try {
+      table.content = grid("b", 3)
+      expect(await rows()).toEqual(["b0 b", "b1", "b2 b"])
+      expect(create).toHaveBeenCalledTimes(0)
+      // A sparse row renders empty cells.
+      table.content = [...grid("c", 150), undefined as never]
+      create.mockClear()
+      table.content = grid("d", 151)
+      expect(await rows()).toEqual(["d0 d", "d1", "d2 d"])
+      expect(create).toHaveBeenCalledTimes(301)
+    } finally {
+      create.mockRestore()
+    }
   })
 
   test("renders a final bottom border", async () => {
