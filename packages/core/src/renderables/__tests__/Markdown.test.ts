@@ -1348,6 +1348,92 @@ test("headings with conceal=false show markers", async () => {
 
 // List tests
 
+for (const internalBlockMode of ["top-level", "coalesced"] as const) {
+  test.each(["fg", "bg", "syntaxStyle"] as const)(
+    `${internalBlockMode} lists refresh unchanged item colors after %s changes`,
+    async (property) => {
+      resizeRenderer(32, 30)
+      const fg1 = RGBA.fromHex("#e0e0e0")
+      const fg2 = RGBA.fromHex("#202020")
+      const bg1 = RGBA.fromHex("#102030")
+      const bg2 = RGBA.fromHex("#f8f8f8")
+      const accent1 = RGBA.fromHex("#ff5050")
+      const accent2 = RGBA.fromHex("#2050ff")
+      const theme1 = SyntaxStyle.fromStyles({
+        "markup.strong": { fg: accent1, bold: true },
+        "markup.list": { fg: accent1 },
+      })
+      const theme2 = SyntaxStyle.fromStyles({
+        "markup.strong": { fg: accent2, bold: true },
+        "markup.list": { fg: accent2 },
+      })
+      const md = createMarkdownRenderable({
+        content: [
+          "# Heading",
+          "",
+          "Paragraph",
+          "",
+          `- Unordered ${"word ".repeat(10)}tail-unordered`,
+          "  - Nested **emphasis**",
+          "",
+          `1. Ordered ${"word ".repeat(10)}tail-ordered`,
+          "2. **second-emphasis**",
+        ].join("\n"),
+        syntaxStyle: theme1,
+        fg: fg1,
+        bg: bg1,
+        streaming: true,
+        conceal: true,
+        internalBlockMode,
+      })
+
+      renderer.root.add(md)
+      await renderMarkdownRenderable(md)
+      const blocks = md.getChildren()
+
+      const expectColors = (fg: RGBA, bg: RGBA, accent: RGBA) => {
+        const frame = captureSpans()
+        for (const text of ["Paragraph", "Unordered", "tail-unordered", "Nested", "Ordered", "tail-ordered"]) {
+          const span = findSpanContaining(frame, text)
+          expect(span).toBeDefined()
+          expect(span!.fg.toInts()).toEqual(fg.toInts())
+          expect(span!.bg.toInts()).toEqual(bg.toInts())
+        }
+        for (const text of ["emphasis", "second-emphasis"]) {
+          const span = findSpanContaining(frame, text)
+          expect(span).toBeDefined()
+          expect(span!.fg.toInts()).toEqual(accent.toInts())
+          expect(span!.bg.toInts()).toEqual(bg.toInts())
+        }
+        const markers = frame.lines
+          .flatMap((line) => line.spans)
+          .filter((span) => ["-", "1.", "2."].includes(span.text.trim()))
+        expect(markers).toHaveLength(4)
+        for (const marker of markers) {
+          expect(marker.fg.toInts()).toEqual(accent.toInts())
+        }
+      }
+
+      expectColors(fg1, bg1, accent1)
+      if (property === "fg") md.fg = fg2
+      else if (property === "bg") md.bg = bg2
+      else md.syntaxStyle = theme2
+      await renderMarkdownRenderable(md)
+
+      expectColors(
+        property === "fg" ? fg2 : fg1,
+        property === "bg" ? bg2 : bg1,
+        property === "syntaxStyle" ? accent2 : accent1,
+      )
+      const updatedBlocks = md.getChildren()
+      expect(updatedBlocks).toHaveLength(blocks.length)
+      for (let i = 0; i < blocks.length; i++) {
+        expect(updatedBlocks[i]).toBe(blocks[i])
+      }
+    },
+  )
+}
+
 test("unordered list", async () => {
   const markdown = `- Item one
 - Item two
