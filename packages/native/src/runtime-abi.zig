@@ -75,103 +75,6 @@ pub const ExternalAllocatorStats = extern struct {
     requested_bytes_valid: bool,
 };
 
-fn toNonNegativeU64(value: anytype) u64 {
-    const ValueType = @TypeOf(value);
-
-    return switch (@typeInfo(ValueType)) {
-        .int => |int_info| if (int_info.signedness == .signed) blk: {
-            const signed_value: i64 = @intCast(value);
-            if (signed_value <= 0) break :blk 0;
-            break :blk @intCast(signed_value);
-        } else @intCast(value),
-        .comptime_int => blk: {
-            if (value <= 0) break :blk 0;
-            break :blk @intCast(value);
-        },
-        else => 0,
-    };
-}
-
-const RequestedBytesInfo = struct {
-    bytes: u64,
-    valid: bool,
-};
-
-fn sanitizeRequestedBytes(value: u64) RequestedBytesInfo {
-    const signed_value: i64 = @bitCast(value);
-    if (signed_value < 0) {
-        return .{ .bytes = 0, .valid = false };
-    }
-
-    return .{ .bytes = @intCast(signed_value), .valid = true };
-}
-
-fn queryStatsField(comptime field_names: []const []const u8) ?u64 {
-    if (!@hasDecl(@TypeOf(runtime.gpa), "queryStats")) {
-        return null;
-    }
-
-    const stats = runtime.gpa.queryStats();
-    const StatsType = @TypeOf(stats);
-
-    inline for (field_names) |field_name| {
-        if (@hasField(StatsType, field_name)) {
-            return toNonNegativeU64(@field(stats, field_name));
-        }
-    }
-
-    return null;
-}
-
-fn getTotalRequestedBytesInfo() RequestedBytesInfo {
-    if (!build_options.gpa_safe_stats) {
-        return .{ .bytes = 0, .valid = false };
-    }
-
-    if (queryStatsField(&.{"total_requested_bytes"})) |value| {
-        return sanitizeRequestedBytes(value);
-    }
-
-    if (@hasField(@TypeOf(runtime.gpa), "total_requested_bytes")) {
-        if (@TypeOf(runtime.gpa.total_requested_bytes) == void) {
-            return .{ .bytes = 0, .valid = false };
-        }
-
-        return sanitizeRequestedBytes(toNonNegativeU64(runtime.gpa.total_requested_bytes));
-    }
-
-    return .{ .bytes = 0, .valid = false };
-}
-
-fn getSmallAllocationCount() u64 {
-    if (queryStatsField(&.{ "small_allocations", "small_allocation_count" })) |value| {
-        return value;
-    }
-
-    var total: u64 = 0;
-    for (runtime.gpa.buckets) |bucket_head| {
-        var current = bucket_head;
-        while (current) |bucket| {
-            const allocated: u64 = @intCast(bucket.allocated_count);
-            const freed: u64 = @intCast(bucket.freed_count);
-            if (allocated >= freed) {
-                total += allocated - freed;
-            }
-            current = bucket.next;
-        }
-    }
-
-    return total;
-}
-
-fn getLargeAllocationCount() u64 {
-    if (queryStatsField(&.{ "large_allocations", "large_allocation_count" })) |value| {
-        return value;
-    }
-
-    return @intCast(runtime.gpa.large_allocations.count());
-}
-
 export fn getArenaAllocatedBytes() u64 {
     // Standalone resources allocate from the process GPA or c_allocator, not an arena.
     return 0;
@@ -184,17 +87,43 @@ export fn getBuildOptions(out_ptr: *ExternalBuildOptions) void {
     };
 }
 
+/// Reports only the process allocator. Each Context owns a private allocator, so
+/// Context memory, including the objects of a Core renderer, is not included.
 export fn getAllocatorStats(out_ptr: *ExternalAllocatorStats) void {
-    const small_allocations = getSmallAllocationCount();
-    const large_allocations = getLargeAllocationCount();
-    const active_allocations = small_allocations + large_allocations;
-    const requested_bytes = getTotalRequestedBytesInfo();
-
+    var small_allocations: u64 = 0;
+    for (runtime.gpa.buckets) |newest| {
+        var bucket = newest;
+        while (bucket) |current| : (bucket = current.prev) {
+            small_allocations += current.allocated_count - current.freed_count;
+        }
+    }
+    const large_allocations: u64 = runtime.gpa.large_allocations.count();
     out_ptr.* = .{
-        .total_requested_bytes = requested_bytes.bytes,
-        .active_allocations = active_allocations,
+        .total_requested_bytes = if (build_options.gpa_safe_stats) runtime.gpa.total_requested_bytes else 0,
+        .active_allocations = small_allocations + large_allocations,
         .small_allocations = small_allocations,
         .large_allocations = large_allocations,
-        .requested_bytes_valid = requested_bytes.valid,
+        .requested_bytes_valid = build_options.gpa_safe_stats,
     };
+}
+
+test "getAllocatorStats counts live small allocations in every bucket" {
+    var before: ExternalAllocatorStats = undefined;
+    getAllocatorStats(&before);
+    // 16 KiB slots fill a 128 KiB bucket after a few allocations, so these span several buckets.
+    var slices: [24][]u8 = undefined;
+    for (&slices, 0..) |*slice, index| {
+        slice.* = runtime.allocator().alloc(u8, 16 * 1024) catch |err| {
+            for (slices[0..index]) |allocated| runtime.allocator().free(allocated);
+            return err;
+        };
+    }
+    var during: ExternalAllocatorStats = undefined;
+    getAllocatorStats(&during);
+    for (slices) |slice| runtime.allocator().free(slice);
+    var after: ExternalAllocatorStats = undefined;
+    getAllocatorStats(&after);
+    try std.testing.expectEqual(before.small_allocations + slices.len, during.small_allocations);
+    try std.testing.expectEqual(during.small_allocations + during.large_allocations, during.active_allocations);
+    try std.testing.expectEqualDeep(before, after);
 }
