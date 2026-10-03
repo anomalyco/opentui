@@ -922,12 +922,14 @@ pub const Session = struct {
         {
             return error.IncompatibleOutput;
         }
-        if (value.splitBatchActive or value.pendingSplitFooterTransition.mode != .none) return error.SplitRenderPending;
+        if (value.splitBatchActive) return error.SplitRenderPending;
     }
 
     fn checkTerminalStart(self: *Session, kitty_keyboard_flags: u8) Error!void {
         try self.checkTerminalOutput();
         const value = self.renderer.?;
+        // Reserved rows follow the current footer geometry, which a transition replaces.
+        if (value.pendingSplitFooterTransition.mode != .none) return error.SplitRenderPending;
         if (value.height == 0 or value.renderOffset == std.math.maxInt(u32) or
             kitty_keyboard_flags & ~@as(u8, 0b11111) != 0)
         {

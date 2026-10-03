@@ -913,7 +913,10 @@ typedef struct ot_split_snapshot {
 /* command: reset=0, sync=1, output-offset=2, render-offset=3, transition=4,
  * clear-transition=5. Reset uses seed rows/pinned offset; sync and offset commands
  * use argument 0. Transition uses mode (viewport-scroll=1, clear=2), source top,
- * source height, target top, target height, scroll rows. Unused arguments are zero. */
+ * source height, target top, target height, scroll rows. Unused arguments are zero.
+ * Until a split frame applies it or clear-transition drops it, a pending transition
+ * makes ordinary frames, setup, and resume return OT_OUTPUT_BUSY. Controls, clipboard
+ * writes, and notifications do not move the cursor and do not wait for it. */
 typedef struct ot_split_control {
     uint32_t struct_size;
     uint32_t abi_version;

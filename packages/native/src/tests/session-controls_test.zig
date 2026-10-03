@@ -1,6 +1,7 @@
 const std = @import("std");
 const testing = std.testing;
 const session = @import("../session.zig");
+const renderer = @import("../renderer.zig");
 const ansi = @import("../ansi.zig");
 const builtin = @import("builtin");
 
@@ -255,6 +256,28 @@ test "Session clipboard rejects inactive phases and unsupported capability witho
     try testing.expectError(error.SessionCancelled, f.value.writeClipboard(.clipboard, "cancelled"));
     try testing.expect(f.value.canDestroy());
     try testing.expectEqual(@as(usize, 0), f.value.output.staged_bytes);
+}
+
+test "Session side channels ignore a pending split transition that terminal starts wait for" {
+    const f = try Fixture.initWithOptions(testing.allocator, testing.io, 4, 2, transport, .{ .object_capacity = 2 });
+    defer f.deinit();
+    var now_ns: u64 = 0;
+    var bytes: [8192]u8 = undefined;
+    try f.owner.setupSessionTerminal(f.id, .{});
+    _ = try f.driveOutput(&now_ns, .active, &bytes, 32);
+    // The next split frame applies the transition atomically; side channels never move the cursor.
+    const transition: renderer.SplitFooterTransition = .{ .mode = .clear_stale_rows, .source_height = 1, .target_height = 1 };
+    _ = try f.value.splitControl(.{ .transition = transition });
+    try f.value.control(.{ .capability_response = "\x1b[?1016;2$y" });
+    try testing.expect(try f.value.writeClipboard(.clipboard, "copied"));
+    _ = try f.value.triggerNotification("done", null);
+    try testing.expectEqualDeep(transition, f.cli.pendingSplitFooterTransition);
+    _ = try f.drain(&bytes);
+    try f.owner.suspendSession(f.id);
+    _ = try f.driveOutput(&now_ns, .suspended, &bytes, 32);
+    try testing.expectError(error.SplitRenderPending, f.owner.resumeSession(f.id));
+    _ = try f.value.splitControl(.clear_transition);
+    try f.owner.resumeSession(f.id);
 }
 
 test "Session enables focus tracking after late tmux detection without passthrough probes" {
