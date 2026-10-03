@@ -291,6 +291,31 @@ test "Scene record CLEAR and COLOR_MATRIX act on the whole frame, outside the sl
     }
 }
 
+test "Scene record paints nodes that a hook hides from the prepared membership until the next frame" {
+    const f = try Fixture.init(testing.allocator, 8, 1, .{ .output = transport });
+    defer f.deinit();
+    const hidden_box = try node(f.owner, f.id, f.root, 1, 2, 0);
+    const surface = try node(f.owner, f.id, f.root, 6, 3, 1);
+    const hooked = try node(f.owner, f.id, f.root, 1, 4, 2);
+    const cells = try f.owner.createBuffer(2, 1, .{});
+    try f.owner.drawBufferText(cells, "ss", 0, 0, .{ 255, 255, 255, 255 }, null, 0);
+    try f.owner.sceneSetSurface(surface, cells);
+    try f.owner.sceneSetHooks(hooked, c.OT_SCENE_HOOK_RENDER_BEFORE, 1, 2, 1);
+    const empty: Recording = .{};
+    for ([_]bool{ true, false }) |painted| {
+        const request = try f.step(null, options, c.OT_SCENE_FRAME_RECORD, null);
+        if (painted) {
+            for ([_]context.Handle{ hidden_box, surface }) |hidden| try f.owner.sceneSetStyle(hidden, 0, 9, 0, 0, 1, 0);
+        }
+        const done = try submit(f, request, &empty);
+        const next = f.cli.getNextBuffer();
+        try testing.expectEqual(if (painted) ansi.rgbColor(2, 0, 0, 255) else options.background, next.get(0, 0).?.bg);
+        try testing.expectEqual(@as(u32, if (painted) 's' else ' '), next.get(2, 0).?.char);
+        try testing.expectEqual(if (painted) try token(f, surface) else 0, f.cli.nextHitGrid[2]);
+        try f.owner.sceneFrameCancel(f.id, done.frame_id);
+    }
+}
+
 test "Scene record reads referenced resources at playback and skips destroyed ones" {
     const f = try Fixture.init(testing.allocator, 8, 1, .{ .output = transport });
     defer f.deinit();

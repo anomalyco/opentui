@@ -1378,9 +1378,7 @@ pub const Scene = struct {
         } else if (node.kind == api.OT_SCENE_IMAGE) {
             try paintImage(cli, node.control.image, entry.layout);
         } else if (entry.node.surface) |source| {
-            var display: u32 = 0;
-            try yoga.check(yoga.yogaNodeStyleGetEnumChecked(entry.node.yoga_node, api.OT_STYLE_ENUM_DISPLAY, &display));
-            if (display != api.OT_DISPLAY_NONE) try Context.drawContextBuffer(target, source, x, y, .{});
+            try Context.drawContextBuffer(target, source, x, y, .{});
         } else {
             try paintControl(target, node.kind, node.control, node.paint, entry.layout, entry.clip, node.focus_frame == self.attempt.?.frame_id);
         }

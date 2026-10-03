@@ -253,6 +253,7 @@ Paint hooks run after preparation and before painting. The prepared membership s
 | Change any node's background         | Its drawing uses the new color, even for a node earlier in paint order |
 | Insert a node                        | It waits for the next prepared frame                                   |
 | Destroy a node, including itself     | Native code skips it with its recording and hit identity               |
+| Hide a node with `display: none`     | It still paints this frame; the next prepared frame drops it           |
 | Reparent or move a scheduled node    | It paints at its prepared position; the change waits a frame           |
 | Change clipping or inherited opacity | Prepared clipping and opacity stay fixed                               |
 
