@@ -178,7 +178,6 @@ pub const BufferIdentity = struct {
 
 const Painted = struct {
     ticket: FrameRequest,
-    membership_epoch: u64,
     destination: BufferIdentity,
 };
 
@@ -371,7 +370,6 @@ pub const Scene = struct {
     attempt: ?Attempt = null,
     painted: ?Painted = null,
     cancelled_paint: bool = false,
-    membership_epoch: u64 = 0,
     last_frame_id: u64 = 0,
     layout_epoch: u64 = 0,
     solve_frame: u64 = 0,
@@ -948,13 +946,12 @@ pub const Scene = struct {
                 }
             }
             try self.markFocus(objects);
-            const membership_epoch = std.math.add(u64, self.membership_epoch, 1) catch return error.RequestLimit;
             try self.paintPrepared(cli, active.options);
-            return self.finishPaint(cli, membership_epoch, reusable_work);
+            return self.finishPaint(cli, reusable_work);
         }
     }
 
-    fn finishPaint(self: *Scene, cli: *renderer.CliRenderer, membership_epoch: u64, retain_work: bool) FrameRequest {
+    fn finishPaint(self: *Scene, cli: *renderer.CliRenderer, retain_work: bool) FrameRequest {
         const active = self.attempt.?;
         std.debug.assert(self.painted == null);
         std.debug.assert(!retain_work or active.request_id == 0);
@@ -977,10 +974,8 @@ pub const Scene = struct {
         self.cancelFrame();
         self.work.items = work;
         self.cancelled_paint = false;
-        self.membership_epoch = membership_epoch;
         self.painted = .{
             .ticket = done,
-            .membership_epoch = membership_epoch,
             .destination = BufferIdentity.init(cli.getNextBuffer()),
         };
         return done;
@@ -1305,7 +1300,6 @@ pub const Scene = struct {
         try self.markFocus(objects);
         // Hooks may change text or views after preparation; refresh them before drawing.
         const refresh_views = self.preparation_dirty or try self.needsSolve(cli, root);
-        const membership_epoch = std.math.add(u64, self.membership_epoch, 1) catch return error.RequestLimit;
         const target = cli.getNextBuffer();
         errdefer {
             target.clear(cli.backgroundColor, null);
@@ -1340,7 +1334,7 @@ pub const Scene = struct {
             if (node.kind == api.OT_SCENE_IMAGE) try finishImagePaint(target, node.control.image, member.layout);
             addHit(cli, member.layout, member.clip, node.num, node.token, options);
         }
-        return self.finishPaint(cli, membership_epoch, false);
+        return self.finishPaint(cli, false);
     }
 
     /// Each phase starts with only the member's inherited clip and opacity.
