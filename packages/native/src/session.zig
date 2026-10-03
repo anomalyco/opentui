@@ -217,8 +217,7 @@ pub const SplitControl = union(enum) {
     clear_transition,
 };
 
-/// Steps run in declaration order: setup from query, resume from setup_screen,
-/// and restoration from delete_images. Settled phases have no step.
+/// Declaration order is step order; Lifecycle.assertValid relies on it.
 const Step = enum {
     idle,
     query,
@@ -596,7 +595,6 @@ pub const Session = struct {
         if (self.lifecycle.phase != .uninitialized) return error.InvalidTerminalState;
         if (self.frame_end_offset != null or value.renderStats.frameCount != 0) return error.InvalidTerminalState;
         try self.checkTerminalStart(options.kitty_keyboard_flags);
-        // Scroll shell output above the renderer, including a split footer.
         const rows = if (options.use_alternate_screen) 0 else value.height - 1;
         const packets = try setupPackets(try cleanupPackets(0), rows, true);
         try self.reserveControlSequence(packets);
@@ -736,16 +734,13 @@ pub const Session = struct {
         if (self.lifecycle.phase == .active) self.startKittyProbe(value);
     }
 
-    /// The renderer drops a probe packet that ordinary output cannot admit. The
-    /// terminal never sees it, so return to disabled and let a later start retry.
+    /// A probe that output dropped never reaches the terminal; a later start retries it.
     fn startKittyProbe(self: *Session, value: *renderer.CliRenderer) void {
-        const transport = &value.kittyTransport;
-        const idle = transport.file_state == .disabled;
+        const idle = value.kittyTransport.file_state == .disabled;
         const published = self.output.getStats().bytes_written;
         value.startKittyFileProbeFromSession();
-        if (idle and transport.file_state == .probing and self.output.getStats().bytes_written == published) {
-            transport.cancel(.disabled);
-        }
+        const dropped = self.output.getStats().bytes_written == published;
+        if (idle and dropped and value.kittyTransport.file_state == .probing) value.kittyTransport.cancel(.disabled);
     }
 
     pub fn kittyImageTransportStatus(self: *Session) Error![6]u32 {
@@ -935,8 +930,7 @@ pub const Session = struct {
         return .{ .status = if (self.isDrained()) .again else .output_pending };
     }
 
-    /// Sessions attach the renderer to their own feed and never expose it, run
-    /// legacy setup, or batch split frames, so terminal packets always own the output.
+    /// Session renderers own their feed and never run legacy setup or batch split frames.
     fn assertTerminalOutput(self: *const Session) void {
         const value = self.renderer.?;
         std.debug.assert(!value.terminalSetup and !value.splitBatchActive);
