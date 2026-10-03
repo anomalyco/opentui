@@ -794,9 +794,11 @@ pub const Scene = struct {
         } else null;
         if (recording) |bytes| return self.paintRecorded(owner, cli, root, bytes);
         const yielded = previous != null and previous.?.kind == api.OT_SCENE_FRAME_YIELD;
-        if (yielded and active.bounded_work and (self.preparation_dirty or try self.needsSolve(cli, root))) {
+        if (yielded and (self.preparation_dirty or try self.needsSolve(cli, root))) {
             // A mutation accepted at a yield restarts preparation once. The restarted work
             // runs without further yields, so steady mutations cannot starve the frame.
+            // This holds even when the reply already chose UINT32_MAX: a later bounded
+            // hook reply must not make the attempt yield again.
             active.bounded_work = false;
             active.remaining_work = std.math.maxInt(u32);
             active.restarted = true;
