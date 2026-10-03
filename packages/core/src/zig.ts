@@ -2606,7 +2606,6 @@ function encodeEditorStyle(style: NativeEditorStyle): Uint32Array {
   return record
 }
 
-/** TextEncoder.encode converted any value to a string; draws keep that for callers that pass non-strings. */
 /** Converts drawing text as TextEncoder.encode did: undefined draws nothing and other values use ToString. */
 function drawTextString(text: unknown): string {
   return typeof text === "string" ? text : text === undefined ? "" : `${text}`
@@ -3439,14 +3438,8 @@ export class FFIRenderLib {
     const context = Object.freeze({}) as NativeContextHandle
     if (this.disposed) throw new Error("OpenTUI native library is disposed")
     nativeResult("ot_context_create", this.opentui.symbols.ot_context_create(record, output))
-    const pointer = toPointer(output[0])
-    try {
-      this.nativeContexts.set(context, pointer)
-      return context
-    } catch (error) {
-      this.opentui.symbols.ot_context_destroy(pointer)
-      throw error
-    }
+    this.nativeContexts.set(context, toPointer(output[0]))
+    return context
   }
 
   private nativeContextPointer(context: NativeContextHandle, operation: string): Pointer {
