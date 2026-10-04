@@ -371,6 +371,51 @@ describe("Renderable - layout read caching invariants", () => {
       readSpy.mockRestore()
     }
   })
+
+  test("NaN layout read is retried next frame", async () => {
+    class AttachOnUpdateRenderable extends Renderable {
+      public pendingChild: Renderable | null = null
+
+      protected onUpdate(): void {
+        if (!this.pendingChild) return
+        this.add(this.pendingChild)
+        this.pendingChild = null
+      }
+    }
+
+    const parent = new AttachOnUpdateRenderable(testRenderer, { id: "nan-read-parent", width: 30, height: 10 })
+    const child = new TestRenderable(testRenderer, { id: "nan-read-child", width: "50%", height: "30%" })
+    testRenderer.root.add(parent)
+    await renderOnce()
+
+    const readSpy = spyOn(child.getLayoutNode(), "getComputedLayout")
+    try {
+      parent.pendingChild = child
+      await renderOnce()
+
+      // A non-NaN read is clamped to at least 1, so a size of 0 means the read was NaN.
+      expect(readSpy).toHaveBeenCalledTimes(1)
+      expect(child.width).toBe(0)
+      expect(child.height).toBe(0)
+
+      // Lay the tree out without bumping the layout generation, so only the
+      // child's own retry can pick up its real size.
+      const rootNode = testRenderer.root.getLayoutNode()
+      rootNode.calculateLayout(testRenderer.root.width, testRenderer.root.height)
+      rootNode.markLayoutSeen()
+
+      const ctx = testRenderer as unknown as { __otuiLayoutGeneration?: number }
+      const generationBefore = ctx.__otuiLayoutGeneration
+      await renderOnce()
+
+      expect(ctx.__otuiLayoutGeneration).toBe(generationBefore)
+      expect(readSpy).toHaveBeenCalledTimes(2)
+      expect(child.width).toBe(15)
+      expect(child.height).toBe(3)
+    } finally {
+      readSpy.mockRestore()
+    }
+  })
 })
 
 describe("Renderable - Child Management", () => {

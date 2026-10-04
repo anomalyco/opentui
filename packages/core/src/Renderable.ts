@@ -1129,7 +1129,9 @@ export abstract class Renderable extends BaseRenderable {
       if (this.parent) this.parent.childrenPrimarySortDirty = true
     }
 
-    this._lastLayoutGeneration = layoutGeneration
+    if (!Number.isNaN(layout.width) && !Number.isNaN(layout.height)) {
+      this._lastLayoutGeneration = layoutGeneration
+    }
   }
 
   private updateScreenPosition(): void {
