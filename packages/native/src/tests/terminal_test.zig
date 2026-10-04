@@ -28,6 +28,17 @@ test "parseXtversion - ghostty format" {
     try testing.expect(term.caps.hyperlinks);
 }
 
+test "parseXtversion - terminology format enables hyperlinks" {
+    var term = Terminal.init(.{});
+    const response = "\x1bP>|terminology 1.14.0\x1b\\";
+    term.processCapabilityResponse(response);
+
+    try testing.expectEqualStrings("terminology", term.getTerminalName());
+    try testing.expectEqualStrings("1.14.0", term.getTerminalVersion());
+    try testing.expect(term.term_info.from_xtversion);
+    try testing.expect(term.caps.hyperlinks);
+}
+
 test "parseXtversion - tmux format" {
     var term = Terminal.init(.{});
     const response = "\x1bP>|tmux 3.5a\x1b\\";
