@@ -33,7 +33,7 @@ test "TextBuffer CJK layout cache does not retain replaced dense metadata" {
     }
     const final_bytes = tracking.allocated_bytes - tracking.freed_bytes;
     // Persistent rope nodes may grow, but obsolete per-character layouts must not.
-    try std.testing.expect(final_bytes - initial_bytes < 1024 * 1024);
+    try std.testing.expect(final_bytes < initial_bytes + 1024 * 1024);
 
     const original_chunk = tb.rope().get(1).?.asText().?;
     const cached_ptr = original_chunk.getCachedLayoutInfo(2, .unicode).?.cjk_breaks.ptr;

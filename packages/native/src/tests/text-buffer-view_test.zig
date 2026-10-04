@@ -11,15 +11,17 @@ const TextBuffer = text_buffer.UnifiedTextBuffer;
 const TextBufferView = text_buffer_view.UnifiedTextBufferView;
 const RGBA = text_buffer.RGBA;
 
-test "TextBufferView first layout retains reusable word metadata" {
+test "TextBufferView reuses word metadata across widths and layout capacity across edits" {
     var pools = TestPools.init(std.testing.allocator);
     defer pools.deinit();
 
+    const text = "alpha \u{754c}abc e\u{301} words\n" ** 100;
     const tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .unicode);
     defer tb.deinit();
-    const view = try TextBufferView.init(std.testing.allocator, tb);
+    var tracking = std.testing.FailingAllocator.init(std.testing.allocator, .{});
+    const view = try TextBufferView.init(tracking.allocator(), tb);
     defer view.deinit();
-    try tb.setText("alpha \u{754c}abc e\u{301} words\n" ** 100);
+    try tb.setText(text);
     view.setWrapMode(.word);
     view.setWrapWidth(80);
     _ = view.getVirtualLines();
@@ -30,6 +32,12 @@ test "TextBufferView first layout retains reusable word metadata" {
     _ = view.getVirtualLines();
     try std.testing.expectEqual(ptr, view.word_layout.layouts.items.ptr);
     try std.testing.expectEqual(capacity, view.word_layout.arena.queryCapacity());
+    try tb.setText(text); // the first edit merges each grown arena into one block
+    _ = view.getVirtualLines();
+    tracking.fail_index = tracking.alloc_index;
+    try tb.setText(text);
+    try std.testing.expectEqual(@as(u32, 101), view.getVirtualLineCount());
+    try std.testing.expectEqual(@as(usize, 100), view.word_layout.layouts.items.len);
 }
 
 test "TextBufferView fragmented ASCII measurement streams complete words without scratch allocation" {

@@ -2329,6 +2329,7 @@ pub const OptimizedBuffer = struct {
         const total_line_count = text_buffer.lineCount();
 
         const line_info = view.getCachedLineInfo();
+        const selection = view.getSelection();
         var document_cell_offset: u32 = if (firstVisibleLine < line_info.line_start_cols.len)
             line_info.line_start_cols[firstVisibleLine]
         else
@@ -2415,6 +2416,7 @@ pub const OptimizedBuffer = struct {
 
                     var grapheme_bytes: []const u8 = undefined;
                     var cluster_width_cols: u32 = undefined;
+                    var ascii = false;
 
                     if (at_special) {
                         const g = render_clusters[special_idx];
@@ -2428,12 +2430,10 @@ pub const OptimizedBuffer = struct {
                         const cp_len = std.unicode.utf8ByteSequenceLength(chunk_bytes[byte_offset]) catch 1;
                         const next_byte_offset = @min(byte_offset + cp_len, byte_end);
                         grapheme_bytes = chunk_bytes[byte_offset..next_byte_offset];
-                        // Sparse metadata also omits zero-width control characters.
+                        // Sparse metadata omits printable ASCII and zero-width control characters.
                         // Printable ASCII is one cell under every width method.
-                        cluster_width_cols = if (isPrintableAscii(grapheme_bytes))
-                            1
-                        else
-                            utf8.getWidthAt(grapheme_bytes, 0, text_buffer.tabWidth(), text_buffer.widthMethod());
+                        ascii = isPrintableAscii(grapheme_bytes);
+                        cluster_width_cols = if (ascii) 1 else utf8.getWidthAt(grapheme_bytes, 0, text_buffer.tabWidth(), text_buffer.widthMethod());
                         byte_offset = next_byte_offset;
                     }
                     // Only a glyph that this iteration draws, or a zero-width cluster, sets it again.
@@ -2471,7 +2471,7 @@ pub const OptimizedBuffer = struct {
                     }
 
                     const is_tab = grapheme_bytes.len == 1 and grapheme_bytes[0] == '\t';
-                    const is_blank = !isPrintableGlyph(grapheme_bytes);
+                    const is_blank = !ascii and !isPrintableGlyph(grapheme_bytes);
                     if (!is_blank and !self.isPointInScissor(currentX, currentY)) {
                         document_cell_offset += cluster_width_cols;
                         currentX += @as(i32, @intCast(cluster_width_cols));
@@ -2602,7 +2602,7 @@ pub const OptimizedBuffer = struct {
 
                     var cell_idx: u32 = 0;
                     while (cell_idx < cluster_width_cols) : (cell_idx += 1) {
-                        if (view.getSelection()) |sel| {
+                        if (selection) |sel| {
                             const isSelected = selection_offset + cell_idx >= sel.start and selection_offset + cell_idx < sel.end;
                             if (isSelected) {
                                 if (sel.bgColor) |selBg| {
@@ -2709,8 +2709,7 @@ pub const OptimizedBuffer = struct {
                                 makeCell(char, fg, drawBg, drawAttributes),
                             );
                         }
-                    } else if (cluster_width_cols == 1 and isPrintableAscii(grapheme_bytes) and
-                        opacity == 1.0 and ansi.alpha(drawBg) == 0 and
+                    } else if (ascii and opacity == 1.0 and ansi.alpha(drawBg) == 0 and
                         self.trySetTransparentTextCellFast(
                             self.coordsToIndex(@intCast(currentX), @intCast(currentY)),
                             grapheme_bytes[0],
