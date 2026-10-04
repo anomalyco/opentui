@@ -269,6 +269,7 @@ export abstract class Renderable extends BaseRenderable {
   protected _childrenInLayoutOrder: Renderable[] = []
   protected _childrenInZIndexOrder: Renderable[] = []
   private needsZIndexSort: boolean = false
+  private _zOrderRank: number = 0
   public parent: Renderable | null = null
 
   private childrenPrimarySortDirty: boolean = true
@@ -678,6 +679,9 @@ export abstract class Renderable extends BaseRenderable {
   private ensureZIndexSorted(): void {
     if (this.needsZIndexSort) {
       this._childrenInZIndexOrder.sort((a, b) => (a.zIndex > b.zIndex ? 1 : a.zIndex < b.zIndex ? -1 : 0))
+      for (let i = 0; i < this._childrenInZIndexOrder.length; i++) {
+        this._childrenInZIndexOrder[i]._zOrderRank = i
+      }
       this.needsZIndexSort = false
     }
   }
@@ -1450,10 +1454,17 @@ export abstract class Renderable extends BaseRenderable {
         if (child.isDestroyed) continue
         child.updateFromLayout()
       }
-      const visibleChildren = this._getVisibleChildren()
-      const visibleChildSet = new Set(visibleChildren)
-      for (const child of this._childrenInZIndexOrder) {
-        if (!visibleChildSet.has(child.num)) continue
+      const visibleChildren: Renderable[] = []
+      for (const num of this._getVisibleChildren()) {
+        const child = Renderable.renderablesByNumber.get(num)
+        if (!child || child.isDestroyed || child.parent !== this) continue
+        visibleChildren.push(child)
+      }
+      visibleChildren.sort((a, b) => a._zOrderRank - b._zOrderRank)
+      let previousRank = -1
+      for (const child of visibleChildren) {
+        if (child._zOrderRank === previousRank) continue
+        previousRank = child._zOrderRank
         child.updateLayout(deltaTime, renderList)
       }
     }
