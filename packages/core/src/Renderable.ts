@@ -277,6 +277,7 @@ export abstract class Renderable extends BaseRenderable {
 
   // Frame id of the last updateFromLayout(); -1 ensures the first call runs.
   private _lastLayoutFrame: number = -1
+  private _lastLayoutGeneration: number = -1
 
   public onLifecyclePass: (() => void) | null = null
 
@@ -1093,6 +1094,12 @@ export abstract class Renderable extends BaseRenderable {
     if (this._lastLayoutFrame === frameId) return
     this._lastLayoutFrame = frameId
 
+    const layoutGeneration = getLayoutGeneration(this._ctx)
+    if (this._lastLayoutGeneration === layoutGeneration) {
+      this.updateScreenPosition()
+      return
+    }
+
     const layout = this.yogaNode.getComputedLayout()
 
     const oldX = this._x
@@ -1102,12 +1109,7 @@ export abstract class Renderable extends BaseRenderable {
 
     this._x = layout.left
     this._y = layout.top
-    // Layout is updated top-down, so the parent cache is already current here.
-    // Recomputing once per layout pass keeps render-time coordinate reads cheap.
-    const parentScreenX = this.parent ? this.parent._screenX : 0
-    const parentScreenY = this.parent ? this.parent._screenY : 0
-    this._screenX = parentScreenX + this._x + this._translateX
-    this._screenY = parentScreenY + this._y + this._translateY
+    this.updateScreenPosition()
 
     // Yoga reports NaN for a node attached after this frame's layout pass.
     // Keep the last size until the next pass lays the node out.
@@ -1126,6 +1128,17 @@ export abstract class Renderable extends BaseRenderable {
     if (positionChanged) {
       if (this.parent) this.parent.childrenPrimarySortDirty = true
     }
+
+    this._lastLayoutGeneration = layoutGeneration
+  }
+
+  private updateScreenPosition(): void {
+    // Layout is updated top-down, so the parent cache is already current here.
+    // Recomputing once per layout pass keeps render-time coordinate reads cheap.
+    const parentScreenX = this.parent ? this.parent._screenX : 0
+    const parentScreenY = this.parent ? this.parent._screenY : 0
+    this._screenX = parentScreenX + this._x + this._translateX
+    this._screenY = parentScreenY + this._y + this._translateY
   }
 
   protected onLayoutResize(width: number, height: number): void {

@@ -171,6 +171,41 @@ describe("ScrollBoxRenderable - culled content layout freshness", () => {
     expect(lines[3]).toContain("row-2")
     expect(lines[4]).toContain("row-3")
   })
+
+  test("scrolling a culled ScrollBox does not read row layout", async () => {
+    const scrollbox = new ScrollBoxRenderable(testRenderer, {
+      id: "scroll-read-scrollbox",
+      width: 30,
+      height: 6,
+      viewportCulling: true,
+    })
+    testRenderer.root.add(scrollbox)
+
+    const rows: BoxRenderable[] = []
+    for (let i = 0; i < 40; i++) {
+      const row = new BoxRenderable(testRenderer, { id: `scroll-read-row-${i}`, height: 1, flexShrink: 0 })
+      row.add(new TextRenderable(testRenderer, { content: `row-${i}` }))
+      scrollbox.add(row)
+      rows.push(row)
+    }
+    await renderOnce()
+
+    const watchedRows = [rows[0], rows[1], rows[3], rows[20], rows[39]]
+    const readSpies = watchedRows.map((row) => spyOn(row.getLayoutNode(), "getComputedLayout"))
+    try {
+      scrollbox.scrollBy(1)
+      await renderOnce()
+
+      for (const readSpy of readSpies) {
+        expect(readSpy).toHaveBeenCalledTimes(0)
+      }
+      const lines = captureCharFrame().split("\n")
+      expect(lines[0]).toContain("row-1")
+      expect(lines[1]).toContain("row-2")
+    } finally {
+      for (const readSpy of readSpies) readSpy.mockRestore()
+    }
+  })
 })
 
 describe("ScrollBoxRenderable - clipping", () => {

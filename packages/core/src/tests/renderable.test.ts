@@ -327,6 +327,50 @@ describe("Renderable - layout read caching invariants", () => {
     expect(grandchild.screenX).toBe(beforeX + 7)
     expect(grandchild.screenY).toBe(beforeY + 5)
   })
+
+  test("translate-only frame skips the layout read", async () => {
+    const parent = new TestRenderable(testRenderer, { id: "skip-read-parent", width: 30, height: 10 })
+    const child = new TestRenderable(testRenderer, { id: "skip-read-child", width: 10, height: 2 })
+    parent.add(child)
+    testRenderer.root.add(parent)
+    await renderOnce()
+
+    const beforeY = child.screenY
+    const readSpy = spyOn(child.getLayoutNode(), "getComputedLayout")
+    try {
+      parent.translateY = 3
+      await renderOnce()
+
+      expect(readSpy).toHaveBeenCalledTimes(0)
+      expect(child.screenY).toBe(beforeY + 3)
+    } finally {
+      readSpy.mockRestore()
+    }
+  })
+
+  test("real layout change is still read once", async () => {
+    const parent = new TestRenderable(testRenderer, { id: "read-once-parent", width: 30, height: 10 })
+    const child = new TestRenderable(testRenderer, { id: "read-once-child", width: 10, height: 2 })
+    parent.add(child)
+    testRenderer.root.add(parent)
+    await renderOnce()
+
+    const untranslatedY = child.screenY
+    parent.translateY = 3
+    await renderOnce()
+
+    const readSpy = spyOn(child.getLayoutNode(), "getComputedLayout")
+    try {
+      child.height = 4
+      await renderOnce()
+
+      expect(readSpy).toHaveBeenCalledTimes(1)
+      expect(child.height).toBe(4)
+      expect(child.screenY).toBe(untranslatedY + 3)
+    } finally {
+      readSpy.mockRestore()
+    }
+  })
 })
 
 describe("Renderable - Child Management", () => {
