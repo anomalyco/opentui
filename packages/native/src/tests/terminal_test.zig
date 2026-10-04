@@ -28,7 +28,7 @@ test "parseXtversion - ghostty format" {
     try testing.expect(term.caps.hyperlinks);
 }
 
-test "parseXtversion - terminology format enables hyperlinks" {
+test "parseXtversion - terminology format enables hyperlinks and osc777 notifications" {
     var term = Terminal.init(.{});
     const response = "\x1bP>|terminology 1.14.0\x1b\\";
     term.processCapabilityResponse(response);
@@ -37,6 +37,7 @@ test "parseXtversion - terminology format enables hyperlinks" {
     try testing.expectEqualStrings("1.14.0", term.getTerminalVersion());
     try testing.expect(term.term_info.from_xtversion);
     try testing.expect(term.caps.hyperlinks);
+    try testing.expectEqual(Terminal.NotificationProtocol.osc777, term.notification_protocol);
 }
 
 test "parseXtversion - tmux format" {
