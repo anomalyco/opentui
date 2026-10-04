@@ -275,6 +275,7 @@ export abstract class Renderable extends BaseRenderable {
   private childrenPrimarySortDirty: boolean = true
   private childrenSortedByPrimaryAxis: Renderable[] = []
   private _shouldUpdateBefore: Set<Renderable> = new Set()
+  private _childLayoutWalkGeneration: number = -1
 
   // Frame id of the last updateFromLayout(); -1 ensures the first call runs.
   private _lastLayoutFrame: number = -1
@@ -1446,13 +1447,15 @@ export abstract class Renderable extends BaseRenderable {
         child.updateLayout(deltaTime, renderList)
       }
     } else {
-      // Refresh every child's layout before culling reads their screen
-      // coordinates; otherwise culling runs against last frame's positions
-      // and drops content that shifted this frame. The per-frame guard in
-      // updateFromLayout keeps this at one FFI call per child per frame.
-      for (const child of this._childrenInZIndexOrder) {
-        if (child.isDestroyed) continue
-        child.updateFromLayout()
+      // When layout changed, refresh every child before culling reads their
+      // screen coordinates; otherwise culling uses last frame's positions.
+      const layoutGeneration = getLayoutGeneration(this._ctx)
+      if (layoutGeneration !== this._childLayoutWalkGeneration) {
+        for (const child of this._childrenInZIndexOrder) {
+          if (child.isDestroyed) continue
+          child.updateFromLayout()
+        }
+        this._childLayoutWalkGeneration = layoutGeneration
       }
       const visibleChildren: Renderable[] = []
       for (const num of this._getVisibleChildren()) {
