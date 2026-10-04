@@ -20,6 +20,7 @@ class ConstantScrollAccel implements ScrollAcceleration {
 let testRenderer: TestRenderer
 let mockMouse: MockMouse
 let renderOnce: () => Promise<void>
+let flush: () => Promise<void>
 let captureCharFrame: () => string
 let mockTreeSitterClient: MockTreeSitterClient
 let mockTreeSitterClients: MockTreeSitterClient[]
@@ -29,6 +30,7 @@ beforeEach(async () => {
     renderer: testRenderer,
     mockMouse,
     renderOnce,
+    flush,
     captureCharFrame,
   } = await createTestRenderer({ width: 80, height: 24 }))
   mockTreeSitterClients = []
@@ -189,6 +191,7 @@ describe("ScrollBoxRenderable - culled content layout freshness", () => {
       rows.push(row)
     }
     await renderOnce()
+    await flush()
 
     const watchedRows = [rows[0], rows[1], rows[3], rows[20], rows[39]]
     const readSpies = watchedRows.map((row) => spyOn(row.getLayoutNode(), "getComputedLayout"))
