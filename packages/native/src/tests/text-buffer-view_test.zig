@@ -32,9 +32,12 @@ test "TextBufferView reuses word metadata across widths and layout capacity acro
     _ = view.getVirtualLines();
     try std.testing.expectEqual(ptr, view.word_layout.layouts.items.ptr);
     try std.testing.expectEqual(capacity, view.word_layout.arena.queryCapacity());
+    try tb.setText(text); // the first edit merges each grown arena into one block
+    _ = view.getVirtualLines();
     tracking.fail_index = tracking.alloc_index;
     try tb.setText(text);
     try std.testing.expectEqual(@as(u32, 101), view.getVirtualLineCount());
+    try std.testing.expectEqual(@as(usize, 100), view.word_layout.layouts.items.len);
 }
 
 test "TextBufferView fragmented ASCII measurement streams complete words without scratch allocation" {
