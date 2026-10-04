@@ -377,6 +377,7 @@ pub const UnifiedTextBufferView = struct {
         while (self.measure_dependents) |dependent| dependent.setMeasureTarget(.none) catch unreachable;
         self.original_text_buffer.unregisterView(self.view_id);
         self.view_id = std.math.maxInt(u32);
+        // The retired-text pool counts arena capacity, so pooled views keep none.
         _ = self.virtual_lines_arena.reset(.free_all);
         self.word_layout.reset(.free_all);
     }
@@ -499,8 +500,8 @@ pub const UnifiedTextBufferView = struct {
         const buffer_dirty = self.text_buffer.isViewDirty(self.view_id);
         if (!self.virtual_lines_dirty and !buffer_dirty) return;
 
-        // Every edit lays out the whole text again: reuse capacity, bounded by the text, not fresh pages.
-        const keep: std.heap.ArenaAllocator.ResetMode = if (!buffer_dirty) .retain_capacity else .{ .retain_with_limit = 1024 *| @as(usize, self.text_buffer.getLineCount()) +| 16 *| @as(usize, self.text_buffer.getByteSize()) };
+        // Word rewraps keep everything, as on main; other relayouts reuse capacity bounded by the text.
+        const keep: std.heap.ArenaAllocator.ResetMode = if (!buffer_dirty and self.wrap_mode == .word) .retain_capacity else .{ .retain_with_limit = 1024 *| @as(usize, self.text_buffer.getLineCount()) +| 16 *| @as(usize, self.text_buffer.getByteSize()) };
         if (buffer_dirty or self.wrap_mode != .word or self.wrap_width == null) self.word_layout.reset(if (self.wrap_mode == .word) keep else .free_all);
         self.resetVirtualLineStorage(keep);
         const virtual_allocator = self.virtual_lines_arena.allocator();
