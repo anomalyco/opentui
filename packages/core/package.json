@@ -81,6 +81,8 @@
     "@opentui/core-linux-arm64": "0.5.14",
     "@opentui/core-win32-x64": "0.5.14",
     "@opentui/core-win32-arm64": "0.5.14",
+    "@opentui/core-freebsd-x64": "0.5.14",
+    "@opentui/core-freebsd-arm64": "0.5.14",
     "@opentui/core-linux-x64-musl": "0.5.14",
     "@opentui/core-linux-arm64-musl": "0.5.14"
   },

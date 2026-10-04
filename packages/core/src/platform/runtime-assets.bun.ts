@@ -77,5 +77,14 @@ export async function resolveNativeLibraryPath(): Promise<string> {
     }
   }
 
+  if (process.platform === "freebsd") {
+    if (process.arch === "x64") {
+      return ((await import("@opentui/core-freebsd-x64" as string)) as NativePackageModule).default
+    }
+    if (process.arch === "arm64") {
+      return ((await import("@opentui/core-freebsd-arm64" as string)) as NativePackageModule).default
+    }
+  }
+
   throw new Error(`OpenTUI is not supported on the current platform: ${asset.packageName}`)
 }
