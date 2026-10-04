@@ -206,8 +206,8 @@ const WordLayoutStorage = struct {
     arena: std.heap.ArenaAllocator,
     layouts: std.ArrayListUnmanaged(utf8.ChunkLayoutInfo) = .empty,
 
-    fn reset(self: *WordLayoutStorage) void {
-        _ = self.arena.reset(.free_all);
+    fn reset(self: *WordLayoutStorage, mode: std.heap.ArenaAllocator.ResetMode) void {
+        _ = self.arena.reset(mode);
         self.layouts = .empty;
     }
 };
@@ -377,10 +377,8 @@ pub const UnifiedTextBufferView = struct {
         while (self.measure_dependents) |dependent| dependent.setMeasureTarget(.none) catch unreachable;
         self.original_text_buffer.unregisterView(self.view_id);
         self.view_id = std.math.maxInt(u32);
-        // Virtual lines are rebuilt with free_all; retaining their old bytes would
-        // consume the idle budget without avoiding an allocation on the next paint.
         _ = self.virtual_lines_arena.reset(.free_all);
-        self.word_layout.reset();
+        self.word_layout.reset(.free_all);
     }
 
     pub fn reinitStorage(self: *Self) TextBufferViewError!void {
@@ -501,8 +499,10 @@ pub const UnifiedTextBufferView = struct {
         const buffer_dirty = self.text_buffer.isViewDirty(self.view_id);
         if (!self.virtual_lines_dirty and !buffer_dirty) return;
 
-        if (buffer_dirty or self.wrap_mode != .word or self.wrap_width == null) self.word_layout.reset();
-        self.resetVirtualLineStorage(if (!buffer_dirty and self.wrap_mode == .word) .retain_capacity else .free_all);
+        // Every edit lays out the whole text again: reuse capacity, bounded by the text, not fresh pages.
+        const keep: std.heap.ArenaAllocator.ResetMode = if (!buffer_dirty) .retain_capacity else .{ .retain_with_limit = 1024 *| @as(usize, self.text_buffer.getLineCount()) +| 16 *| @as(usize, self.text_buffer.getByteSize()) };
+        if (buffer_dirty or self.wrap_mode != .word or self.wrap_width == null) self.word_layout.reset(if (self.wrap_mode == .word) keep else .free_all);
+        self.resetVirtualLineStorage(keep);
         const virtual_allocator = self.virtual_lines_arena.allocator();
 
         // Create output structure for the generic function
@@ -527,7 +527,7 @@ pub const UnifiedTextBufferView = struct {
             // Builders append to parallel arrays; discard partial output as a unit
             // and remain dirty so the next access can retry cleanly.
             self.resetVirtualLineStorage(.free_all);
-            self.word_layout.reset();
+            self.word_layout.reset(.free_all);
             self.virtual_lines_dirty = true;
             return;
         }
@@ -772,7 +772,7 @@ pub const UnifiedTextBufferView = struct {
 
     pub fn switchToBuffer(self: *Self, buffer: *UnifiedTextBuffer) void {
         if (self.text_buffer != buffer) self.cached_measure_count = 0;
-        self.word_layout.reset();
+        self.word_layout.reset(.free_all);
         self.text_buffer = buffer;
         self.virtual_lines_dirty = true;
     }
@@ -2132,7 +2132,7 @@ pub const UnifiedTextBufferView = struct {
                         };
                         if (!saved) {
                             // Optional reuse must not prevent a streaming layout on OOM.
-                            storage.reset();
+                            storage.reset(.free_all);
                             wctx.word_layout = null;
                             layout = null;
                         }
