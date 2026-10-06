@@ -19,16 +19,17 @@
  *   only files that actually need runtime rewriting get exact-path loaders.
  *
  * Behavior:
- * - non-`node_modules` source files that import runtime modules or unpreserved
- *   bare specifiers get a dedicated rewrite loader.
+ * - non-`node_modules` source files get a dedicated rewrite loader immediately.
  * - `node_modules` files are rewritten only if they are ESM (`.mjs`, `.mts`,
  *   `.ts`, `.tsx`, `.jsx`, or `.js` under `package.json#type="module"`) and
  *   directly or transitively need runtime-module rewriting; unrelated CJS stays
  *   untouched.
  * - optional bare-specifier rewriting is preserved for sibling files in
  *   packages already marked for runtime rewriting.
- * - bare specifiers matched by `preserve` are left untouched so host
+ * - bare specifiers matched by `preserve` are never rewritten, so host
  *   `build.module` registrations resolve them directly.
+ * - prescanning does not follow runtime-module or preserved specifiers into
+ *   their on-disk copies, because those copies are never loaded.
  *
  * Notes:
  * - import scanning is regex-based, not a full parser. A match that starts
@@ -48,13 +49,11 @@ import * as coreRuntime from "@opentui/core"
 export type RuntimeModuleExports = Record<string, unknown>
 export type RuntimeModuleLoader = () => RuntimeModuleExports | Promise<RuntimeModuleExports>
 export type RuntimeModuleEntry = RuntimeModuleExports | RuntimeModuleLoader
-export type RuntimeSpecifierPreserve = Iterable<string> | ((specifier: string) => boolean)
-export type NormalizedRuntimeSpecifierPreserve = ((specifier: string) => boolean) | ReadonlySet<string> | undefined
+export type RuntimeSpecifierPreserve = readonly string[] | ReadonlySet<string> | ((specifier: string) => boolean)
 
 interface SourceAnalysis {
   importSpecifiers: string[]
   needsRuntimeSpecifierRewrite: boolean
-  needsBareSpecifierRewrite: boolean
 }
 
 export interface RuntimePluginRewriteOptions {
@@ -407,67 +406,26 @@ const resolveSourcePathFromSpecifier = (specifier: string, importer: string): st
   return null
 }
 
-export const normalizeRuntimePluginPreserve = (
-  preserve: RuntimeSpecifierPreserve | undefined,
-): NormalizedRuntimeSpecifierPreserve => {
-  if (!preserve || typeof preserve === "function") {
-    return preserve
+const createPreservePredicate = (preserve: RuntimeSpecifierPreserve | undefined): ((specifier: string) => boolean) => {
+  if (typeof preserve === "function") {
+    return (specifier) => isBareSpecifier(specifier) && preserve(specifier)
   }
 
-  const preservedSpecifiers = preserve instanceof Set ? preserve : new Set(preserve)
-  return preservedSpecifiers.size > 0 ? preservedSpecifiers : undefined
-}
-
-export const isCompatibleRuntimePluginPreserve = (
-  installed: NormalizedRuntimeSpecifierPreserve,
-  requested: NormalizedRuntimeSpecifierPreserve,
-): boolean => {
-  if (installed === requested) {
-    return true
-  }
-
-  if (
-    !installed ||
-    !requested ||
-    typeof installed === "function" ||
-    typeof requested === "function" ||
-    installed.size !== requested.size
-  ) {
-    return false
-  }
-
-  return [...requested].every((specifier) => installed.has(specifier))
-}
-
-const createPreserveSpecifierPredicate = (
-  preserve: RuntimeSpecifierPreserve | undefined,
-  runtimeModuleIdsBySpecifier: ReadonlyMap<string, string>,
-): ((specifier: string) => boolean) => {
-  const normalizedPreserve = normalizeRuntimePluginPreserve(preserve)
-  if (!normalizedPreserve) {
-    return () => false
-  }
-
-  if (typeof normalizedPreserve === "function") {
-    return (specifier: string) =>
-      !runtimeModuleIdsBySpecifier.has(specifier) && isBareSpecifier(specifier) && normalizedPreserve(specifier)
-  }
-
-  return (specifier: string) =>
-    !runtimeModuleIdsBySpecifier.has(specifier) && isBareSpecifier(specifier) && normalizedPreserve.has(specifier)
+  const specifiers = new Set(preserve)
+  return (specifier) => isBareSpecifier(specifier) && specifiers.has(specifier)
 }
 
 const rewriteImportsFromResolveParents = (
   code: string,
   resolveParentsByRecency: string[],
-  shouldPreserveBareSpecifier: (specifier: string) => boolean,
+  isPreservedSpecifier: (specifier: string) => boolean,
 ): string => {
   if (resolveParentsByRecency.length === 0) {
     return code
   }
 
   const resolveFromParents = (specifier: string): string | null => {
-    if (!isBareSpecifier(specifier) || shouldPreserveBareSpecifier(specifier)) {
+    if (!isBareSpecifier(specifier) || isPreservedSpecifier(specifier)) {
       return null
     }
 
@@ -507,7 +465,7 @@ export function createRuntimePlugin(input: CreateRuntimePluginOptions = {}): Bun
     runtimeModuleIdsBySpecifier.set(specifier, runtimeModuleIdForSpecifier(specifier))
   }
 
-  const shouldPreserveBareSpecifier = createPreserveSpecifierPredicate(input.preserve, runtimeModuleIdsBySpecifier)
+  const isPreservedSpecifier = createPreservePredicate(input.preserve)
 
   return {
     name: "bun-plugin-opentui-runtime-modules",
@@ -556,11 +514,7 @@ export function createRuntimePlugin(input: CreateRuntimePluginOptions = {}): Bun
           }
 
           const transformedContents = shouldRewriteBareSpecifiers
-            ? rewriteImportsFromResolveParents(
-                runtimeRewrittenContents,
-                resolveParentsByRecency,
-                shouldPreserveBareSpecifier,
-              )
+            ? rewriteImportsFromResolveParents(runtimeRewrittenContents, resolveParentsByRecency, isPreservedSpecifier)
             : runtimeRewrittenContents
 
           return {
@@ -570,41 +524,34 @@ export function createRuntimePlugin(input: CreateRuntimePluginOptions = {}): Bun
         })
       }
 
-      const analyzeSourcePath = (path: string, cache = true): SourceAnalysis => {
+      const analyzeSourcePath = (path: string): SourceAnalysis => {
         const normalizedPath = normalizeSourcePath(path)
-        if (cache) {
-          const cachedAnalysis = sourceAnalysisByPath.get(normalizedPath)
-          if (cachedAnalysis) {
-            return cachedAnalysis
-          }
+        const cachedAnalysis = sourceAnalysisByPath.get(normalizedPath)
+        if (cachedAnalysis) {
+          return cachedAnalysis
         }
 
-        let contents = ""
+        let contents: string
         try {
           contents = readFileSync(normalizedPath, "utf8")
         } catch (error) {
-          if (!error || typeof error !== "object" || !("code" in error) || error.code !== "ENOENT") {
-            throw error
+          if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") {
+            const analysis = { importSpecifiers: [], needsRuntimeSpecifierRewrite: false }
+            sourceAnalysisByPath.set(normalizedPath, analysis)
+            return analysis
           }
+          throw error
         }
 
-        const importSpecifiers = contents ? collectImportSpecifiers(contents) : []
+        const importSpecifiers = collectImportSpecifiers(contents)
         const analysis = {
           importSpecifiers,
           needsRuntimeSpecifierRewrite: importSpecifiers.some((specifier) =>
             runtimeModuleIdsBySpecifier.has(specifier),
           ),
-          needsBareSpecifierRewrite: importSpecifiers.some(
-            (specifier) =>
-              !runtimeModuleIdsBySpecifier.has(specifier) &&
-              isBareSpecifier(specifier) &&
-              !shouldPreserveBareSpecifier(specifier),
-          ),
         }
 
-        if (cache) {
-          sourceAnalysisByPath.set(normalizedPath, analysis)
-        }
+        sourceAnalysisByPath.set(normalizedPath, analysis)
         return analysis
       }
 
@@ -634,7 +581,7 @@ export function createRuntimePlugin(input: CreateRuntimePluginOptions = {}): Bun
         }
 
         for (const specifier of analysis.importSpecifiers) {
-          if (runtimeModuleIdsBySpecifier.has(specifier) || shouldPreserveBareSpecifier(specifier)) {
+          if (runtimeModuleIdsBySpecifier.has(specifier) || isPreservedSpecifier(specifier)) {
             continue
           }
 
@@ -671,11 +618,7 @@ export function createRuntimePlugin(input: CreateRuntimePluginOptions = {}): Bun
       }
 
       build.onResolve({ filter: /.*/ }, (args) => {
-        if (
-          runtimeModuleIdsBySpecifier.has(args.path) ||
-          args.path.startsWith(RUNTIME_MODULE_PREFIX) ||
-          shouldPreserveBareSpecifier(args.path)
-        ) {
+        if (runtimeModuleIdsBySpecifier.has(args.path) || args.path.startsWith(RUNTIME_MODULE_PREFIX)) {
           return undefined
         }
 
@@ -687,15 +630,7 @@ export function createRuntimePlugin(input: CreateRuntimePluginOptions = {}): Bun
         const nodeModulesPath = isNodeModulesPath(path)
 
         if (!nodeModulesPath) {
-          const canonicalTargetPath = normalizeSourcePath(path)
-          if (installedRewriteLoaders.has(canonicalTargetPath)) {
-            return undefined
-          }
-
-          const analysis = analyzeSourcePath(path, false)
-          if (analysis.needsRuntimeSpecifierRewrite || analysis.needsBareSpecifierRewrite) {
-            installRewriteLoader(path)
-          }
+          installRewriteLoader(path)
           return undefined
         }
 
@@ -708,18 +643,16 @@ export function createRuntimePlugin(input: CreateRuntimePluginOptions = {}): Bun
         }
 
         const packageRoot = nodeModulesPackageRootForPath(path)
-        const analysis = analyzeSourcePath(path)
         if (
           rewriteOptions.nodeModulesBareSpecifiers &&
           packageRoot &&
-          nodeModulesBareRewritePackageRoots.has(packageRoot) &&
-          (analysis.needsRuntimeSpecifierRewrite || analysis.needsBareSpecifierRewrite)
+          nodeModulesBareRewritePackageRoots.has(packageRoot)
         ) {
           installRewriteLoader(path)
           return undefined
         }
 
-        if (!rewriteOptions.nodeModulesRuntimeSpecifiers || !analysis.needsRuntimeSpecifierRewrite) {
+        if (!rewriteOptions.nodeModulesRuntimeSpecifiers || !analyzeSourcePath(path).needsRuntimeSpecifierRewrite) {
           return undefined
         }
 

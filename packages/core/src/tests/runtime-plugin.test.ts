@@ -15,11 +15,6 @@ type ResolveHandler = {
   callback: ResolveCallback
 }
 
-type LoadHandler = {
-  filter: RegExp
-  callback: LoadCallback
-}
-
 type MockBuild = {
   onResolve: (args: { filter: RegExp }, callback: ResolveCallback) => void
   onLoad: (args: { filter: RegExp }, callback: LoadCallback) => void
@@ -29,26 +24,26 @@ type MockBuild = {
 const createMockBuild = (): {
   build: MockBuild
   resolveHandlers: ResolveHandler[]
-  loadHandlers: LoadHandler[]
+  loadFilters: RegExp[]
   modules: Map<string, ModuleCallback>
 } => {
   const resolveHandlers: ResolveHandler[] = []
-  const loadHandlers: LoadHandler[] = []
+  const loadFilters: RegExp[] = []
   const modules = new Map<string, ModuleCallback>()
 
   const build: MockBuild = {
     onResolve(args, callback) {
       resolveHandlers.push({ filter: args.filter, callback })
     },
-    onLoad(args, callback) {
-      loadHandlers.push({ filter: args.filter, callback })
+    onLoad(args) {
+      loadFilters.push(args.filter)
     },
     module(path, callback) {
       modules.set(path, callback)
     },
   }
 
-  return { build, resolveHandlers, loadHandlers, modules }
+  return { build, resolveHandlers, loadFilters, modules }
 }
 
 const resolveSpecifier = async (handlers: ResolveHandler[], specifier: string): Promise<ResolveResult> => {
@@ -376,7 +371,44 @@ describe("runtime plugin", () => {
     expect(stdout).toContain("marker=resolved-from-windows-file-url")
   })
 
-  it("preserves configured bare specifiers so build.module wins over plugin node_modules while keeping non-preserved bare rewrites", () => {
+  it("does not prescan on-disk copies of runtime-module or preserved specifiers", async () => {
+    const tempRoot = mkdtempSync(join(tmpdir(), "core-runtime-plugin-prescan-host-specifiers-"))
+    const nodeModulesDir = join(tempRoot, "node_modules")
+    const consumerPath = join(nodeModulesDir, "consumer", "index.js")
+    const writePackage = (name: string, source: string) => {
+      mkdirSync(join(nodeModulesDir, name), { recursive: true })
+      writeFileSync(
+        join(nodeModulesDir, name, "package.json"),
+        JSON.stringify({ name, type: "module", exports: "./index.js" }),
+      )
+      writeFileSync(join(nodeModulesDir, name, "index.js"), source)
+    }
+
+    // Scanning either on-disk copy would install a rewrite loader for its @opentui/core import.
+    writePackage("host-runtime", 'import { marker } from "@opentui/core"\nexport const value = marker\n')
+    writePackage("host-preserved", 'import { marker } from "@opentui/core"\nexport const value = marker\n')
+    writePackage(
+      "consumer",
+      'import { value } from "host-runtime"\nimport { value as preserved } from "host-preserved"\nexport const out = [value, preserved]\n',
+    )
+
+    try {
+      const { build, resolveHandlers, loadFilters } = createMockBuild()
+      createRuntimePlugin({
+        additional: { "host-runtime": { value: "host" } },
+        preserve: ["host-preserved"],
+      }).setup(build as any)
+
+      await resolveSpecifier(resolveHandlers, consumerPath)
+
+      expect(loadFilters).toHaveLength(1)
+      expect(loadFilters[0]!.test(consumerPath)).toBe(true)
+    } finally {
+      rmSync(tempRoot, { recursive: true, force: true })
+    }
+  })
+
+  it("leaves preserved bare specifiers to host build.module registrations", () => {
     const fixturePath = join(import.meta.dir, "runtime-plugin-preserve-specifiers.fixture.ts")
     const result = Bun.spawnSync([process.execPath, fixturePath], {
       cwd: join(import.meta.dir, "..", ".."),
@@ -389,139 +421,7 @@ describe("runtime plugin", () => {
 
     expect(result.exitCode).toBe(0)
     expect(stdout).toContain(
-      [
-        "core=host-core",
-        "effect=host-effect",
-        "option=host-option",
-        "reexportedOption=host-option",
-        "dynamicEffect=host-effect",
-        "requiredOption=host-option",
-        "hostDep=resolved-from-plugin-node-modules",
-        "helper=host-effect:resolved-from-plugin-node-modules",
-        "scoped=host-core:host-effect:resolved-from-plugin-node-modules",
-      ].join(";"),
+      "core=host-core;effect=host-effect;option=host-option;hostDep=resolved-from-plugin-node-modules",
     )
-  })
-
-  it("does not install rewrite loaders or prescan node_modules for files whose only bare imports are preserved", async () => {
-    const tempRoot = mkdtempSync(join(tmpdir(), "core-runtime-plugin-preserve-skip-"))
-    const onlyPreservedPath = join(tempRoot, "only-preserved.ts")
-    const mixedPath = join(tempRoot, "mixed.ts")
-    const foreignEffectDir = join(tempRoot, "node_modules", "effect")
-    const foreignHostPluginDir = join(tempRoot, "node_modules", "@opencode", "plugin")
-    const esmConsumerDir = join(tempRoot, "node_modules", "esm-consumer")
-    const esmConsumerPath = join(esmConsumerDir, "index.js")
-    const esmRuntimeConsumerDir = join(tempRoot, "node_modules", "esm-runtime-consumer")
-    const esmRuntimeConsumerPath = join(esmRuntimeConsumerDir, "index.js")
-
-    mkdirSync(foreignEffectDir, { recursive: true })
-    mkdirSync(foreignHostPluginDir, { recursive: true })
-    mkdirSync(esmConsumerDir, { recursive: true })
-    mkdirSync(esmRuntimeConsumerDir, { recursive: true })
-
-    writeFileSync(
-      onlyPreservedPath,
-      [
-        'import { Effect } from "effect"',
-        'import { some } from "effect/Option"',
-        'import { readFileSync } from "node:fs"',
-        'import { helper } from "./relative.ts"',
-        "export const out = [Effect, some, readFileSync, helper]",
-      ].join("\n"),
-    )
-
-    writeFileSync(
-      mixedPath,
-      [
-        'import { marker } from "@opentui/core"',
-        'import { Effect } from "effect"',
-        "export const out = [marker, Effect]",
-      ].join("\n"),
-    )
-
-    writeFileSync(
-      join(foreignEffectDir, "package.json"),
-      JSON.stringify({
-        name: "effect",
-        type: "module",
-        exports: "./index.js",
-      }),
-    )
-    // If foreign effect were prescanned, this import of @opentui/core would cause a loader to be installed for it.
-    writeFileSync(
-      join(foreignEffectDir, "index.js"),
-      ['import { marker } from "@opentui/core"', "export const Effect = marker"].join("\n"),
-    )
-
-    writeFileSync(
-      join(esmConsumerDir, "package.json"),
-      JSON.stringify({
-        name: "esm-consumer",
-        type: "module",
-        exports: "./index.js",
-      }),
-    )
-    writeFileSync(esmConsumerPath, ['import { Effect } from "effect"', "export const out = Effect"].join("\n"))
-
-    writeFileSync(
-      join(foreignHostPluginDir, "package.json"),
-      JSON.stringify({
-        name: "@opencode/plugin",
-        type: "module",
-        exports: { "./tui": "./tui.js" },
-      }),
-    )
-    // Foreign copy of an additional runtime module should also never be prescanned on disk.
-    writeFileSync(
-      join(foreignHostPluginDir, "tui.js"),
-      ['import { marker } from "@opentui/core"', "export const Plugin = marker"].join("\n"),
-    )
-
-    writeFileSync(
-      join(esmRuntimeConsumerDir, "package.json"),
-      JSON.stringify({
-        name: "esm-runtime-consumer",
-        type: "module",
-        exports: "./index.js",
-      }),
-    )
-    writeFileSync(
-      esmRuntimeConsumerPath,
-      [
-        'import { Plugin } from "@opencode/plugin/tui"',
-        'import { Effect } from "effect"',
-        "export const out = [Plugin, Effect]",
-      ].join("\n"),
-    )
-
-    try {
-      const { build, resolveHandlers, loadHandlers } = createMockBuild()
-      createRuntimePlugin({
-        additional: {
-          "@opencode/plugin/tui": { Plugin: "host-tui" },
-        },
-        preserve: ["effect", "effect/Option", "@opencode/plugin/tui"],
-      }).setup(build as any)
-
-      await resolveSpecifier(resolveHandlers, onlyPreservedPath)
-      await resolveSpecifier(resolveHandlers, esmConsumerPath)
-
-      expect(loadHandlers).toHaveLength(0)
-
-      await resolveSpecifier(resolveHandlers, esmRuntimeConsumerPath)
-      expect(loadHandlers).toHaveLength(1)
-
-      await resolveSpecifier(resolveHandlers, mixedPath)
-      expect(loadHandlers).toHaveLength(2)
-
-      const loaded = (await loadHandlers[1]!.callback({ path: mixedPath })) as {
-        contents: string
-        loader: string
-      }
-      expect(loaded.contents).toContain(`from "${runtimeModuleIdForSpecifier("@opentui/core")}"`)
-      expect(loaded.contents).toContain('from "effect"')
-    } finally {
-      rmSync(tempRoot, { recursive: true, force: true })
-    }
   })
 })
