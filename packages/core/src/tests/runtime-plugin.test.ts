@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test"
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import * as coreRuntime from "../index.js"
@@ -372,7 +372,7 @@ describe("runtime plugin", () => {
   })
 
   it("does not prescan on-disk copies of runtime-module or preserved specifiers", async () => {
-    const tempRoot = mkdtempSync(join(tmpdir(), "core-runtime-plugin-prescan-host-specifiers-"))
+    const tempRoot = realpathSync(mkdtempSync(join(tmpdir(), "core-runtime-plugin-prescan-host-specifiers-")))
     const nodeModulesDir = join(tempRoot, "node_modules")
     const consumerPath = join(nodeModulesDir, "consumer", "index.js")
     const writePackage = (name: string, source: string) => {
