@@ -1,4 +1,6 @@
 import { describe, expect, it } from "bun:test"
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import { tmpdir } from "node:os"
 import { join } from "node:path"
 import * as coreRuntime from "../index.js"
 import { createRuntimePlugin, runtimeModuleIdForSpecifier } from "../runtime-plugin.js"
@@ -13,6 +15,11 @@ type ResolveHandler = {
   callback: ResolveCallback
 }
 
+type LoadHandler = {
+  filter: RegExp
+  callback: LoadCallback
+}
+
 type MockBuild = {
   onResolve: (args: { filter: RegExp }, callback: ResolveCallback) => void
   onLoad: (args: { filter: RegExp }, callback: LoadCallback) => void
@@ -22,24 +29,26 @@ type MockBuild = {
 const createMockBuild = (): {
   build: MockBuild
   resolveHandlers: ResolveHandler[]
+  loadHandlers: LoadHandler[]
   modules: Map<string, ModuleCallback>
 } => {
   const resolveHandlers: ResolveHandler[] = []
+  const loadHandlers: LoadHandler[] = []
   const modules = new Map<string, ModuleCallback>()
 
   const build: MockBuild = {
     onResolve(args, callback) {
       resolveHandlers.push({ filter: args.filter, callback })
     },
-    onLoad() {
-      return
+    onLoad(args, callback) {
+      loadHandlers.push({ filter: args.filter, callback })
     },
     module(path, callback) {
       modules.set(path, callback)
     },
   }
 
-  return { build, resolveHandlers, modules }
+  return { build, resolveHandlers, loadHandlers, modules }
 }
 
 const resolveSpecifier = async (handlers: ResolveHandler[], specifier: string): Promise<ResolveResult> => {
@@ -365,5 +374,111 @@ describe("runtime plugin", () => {
 
     expect(result.exitCode).toBe(0)
     expect(stdout).toContain("marker=resolved-from-windows-file-url")
+  })
+
+  it("preserves configured bare specifiers so build.module wins over plugin node_modules while keeping non-preserved bare rewrites", () => {
+    const fixturePath = join(import.meta.dir, "runtime-plugin-preserve-specifiers.fixture.ts")
+    const result = Bun.spawnSync([process.execPath, fixturePath], {
+      cwd: join(import.meta.dir, "..", ".."),
+      stdout: "pipe",
+      stderr: "pipe",
+      env: process.env,
+    })
+
+    const stdout = result.stdout.toString().trim()
+
+    expect(result.exitCode).toBe(0)
+    expect(stdout).toContain(
+      [
+        "core=host-core",
+        "effect=host-effect",
+        "option=host-option",
+        "dynamicEffect=host-effect",
+        "requiredOption=host-option",
+        "hostDep=resolved-from-plugin-node-modules",
+        "helper=host-effect:resolved-from-plugin-node-modules",
+        "scoped=host-core:host-effect:resolved-from-plugin-node-modules",
+      ].join(";"),
+    )
+  })
+
+  it("does not install rewrite loaders or prescan node_modules for files whose only bare imports are preserved", async () => {
+    const tempRoot = mkdtempSync(join(tmpdir(), "core-runtime-plugin-preserve-skip-"))
+    const onlyPreservedPath = join(tempRoot, "only-preserved.ts")
+    const mixedPath = join(tempRoot, "mixed.ts")
+    const foreignEffectDir = join(tempRoot, "node_modules", "effect")
+    const esmConsumerDir = join(tempRoot, "node_modules", "esm-consumer")
+    const esmConsumerPath = join(esmConsumerDir, "index.js")
+
+    mkdirSync(foreignEffectDir, { recursive: true })
+    mkdirSync(esmConsumerDir, { recursive: true })
+
+    writeFileSync(
+      onlyPreservedPath,
+      [
+        'import { Effect } from "effect"',
+        'import { some } from "effect/Option"',
+        'import { readFileSync } from "node:fs"',
+        'import { helper } from "./relative.ts"',
+        "export const out = [Effect, some, readFileSync, helper]",
+      ].join("\n"),
+    )
+
+    writeFileSync(
+      mixedPath,
+      [
+        'import { marker } from "@opentui/core"',
+        'import { Effect } from "effect"',
+        "export const out = [marker, Effect]",
+      ].join("\n"),
+    )
+
+    writeFileSync(
+      join(foreignEffectDir, "package.json"),
+      JSON.stringify({
+        name: "effect",
+        type: "module",
+        exports: "./index.js",
+      }),
+    )
+    // If foreign effect were prescanned, this import of @opentui/core would cause a loader to be installed for it.
+    writeFileSync(
+      join(foreignEffectDir, "index.js"),
+      ['import { marker } from "@opentui/core"', "export const Effect = marker"].join("\n"),
+    )
+
+    writeFileSync(
+      join(esmConsumerDir, "package.json"),
+      JSON.stringify({
+        name: "esm-consumer",
+        type: "module",
+        exports: "./index.js",
+      }),
+    )
+    writeFileSync(esmConsumerPath, ['import { Effect } from "effect"', "export const out = Effect"].join("\n"))
+
+    try {
+      const { build, resolveHandlers, loadHandlers } = createMockBuild()
+      createRuntimePlugin({
+        preserve: ["effect", "effect/Option"],
+      }).setup(build as any)
+
+      await resolveSpecifier(resolveHandlers, onlyPreservedPath)
+      await resolveSpecifier(resolveHandlers, esmConsumerPath)
+
+      expect(loadHandlers).toHaveLength(0)
+
+      await resolveSpecifier(resolveHandlers, mixedPath)
+      expect(loadHandlers).toHaveLength(1)
+
+      const loaded = (await loadHandlers[0]!.callback({ path: mixedPath })) as {
+        contents: string
+        loader: string
+      }
+      expect(loaded.contents).toContain(`from "${runtimeModuleIdForSpecifier("@opentui/core")}"`)
+      expect(loaded.contents).toContain('from "effect"')
+    } finally {
+      rmSync(tempRoot, { recursive: true, force: true })
+    }
   })
 })

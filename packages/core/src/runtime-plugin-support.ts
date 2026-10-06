@@ -8,6 +8,8 @@ export {
   type RuntimeModuleEntry,
   type RuntimeModuleExports,
   type RuntimeModuleLoader,
+  type RuntimePluginRewriteOptions,
+  type RuntimeSpecifierPreserve,
 } from "./runtime-plugin-support-configure.js"
 
 ensureRuntimePluginSupport()
