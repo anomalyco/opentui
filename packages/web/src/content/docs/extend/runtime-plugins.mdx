@@ -196,6 +196,7 @@ After installation, these changes throw:
 
 The installer records additional keys, not replacement values. A later call with an existing key and a different
 entry returns `false`. It does not replace the installed entry. Build the complete map before the first call.
+`preserve` iterables are compared by specifier set, while predicate functions are compared by reference.
 
 Core, React, and Solid use separate installation guards. Their guards do not prevent you from stacking different host
 installers. Choose one installer to avoid competing maps for the same singleton specifiers.

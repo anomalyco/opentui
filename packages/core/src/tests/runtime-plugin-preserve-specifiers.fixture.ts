@@ -95,6 +95,7 @@ writeFileSync(
   [
     'import { Effect } from "effect"',
     'import { marker } from "plugin-local-dependency"',
+    'export { some as reexportedOption } from "effect/Option"',
     "export const helperMarker = `${Effect}:${marker}`",
   ].join("\n"),
 )
@@ -107,13 +108,14 @@ writeFileSync(
     'import { Effect } from "effect"',
     'import { some } from "effect/Option"',
     'import { scopedMarker } from "@runtime-plugin/scoped-preserve-fixture"',
-    'import { helperMarker } from "./helper.ts"',
+    'import { helperMarker, reexportedOption } from "./helper.ts"',
     'const dynamicEffect = await import("effect")',
     'const requiredOption = require("effect/Option")',
     "console.log([",
     "  `core=${coreMarker}`,",
     "  `effect=${Effect}`,",
     "  `option=${some}`,",
+    "  `reexportedOption=${reexportedOption}`,",
     "  `dynamicEffect=${dynamicEffect.Effect}`,",
     "  `requiredOption=${requiredOption.some}`,",
     "  `hostDep=${hostRuntimeMarker}`,",
@@ -148,7 +150,11 @@ registerPlugin(
     additional: {
       "fixture-host-runtime": async () => (await import(hostModulePath)) as Record<string, unknown>,
     },
-    preserve: (specifier: string) => specifier === "effect" || specifier.startsWith("effect/"),
+    preserve: (specifier: string) =>
+      specifier === "@opentui/core" ||
+      specifier === "fixture-host-runtime" ||
+      specifier === "effect" ||
+      specifier.startsWith("effect/"),
     rewrite: {
       nodeModulesBareSpecifiers: true,
     },

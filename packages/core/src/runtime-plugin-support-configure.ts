@@ -1,7 +1,10 @@
 import { plugin as registerBunPlugin } from "bun"
 import {
   createRuntimePlugin,
+  isCompatibleRuntimePluginPreserve,
+  normalizeRuntimePluginPreserve,
   type CreateRuntimePluginOptions,
+  type NormalizedRuntimeSpecifierPreserve,
   type RuntimeModuleEntry,
   type RuntimePluginRewriteOptions,
   type RuntimeSpecifierPreserve,
@@ -9,12 +12,10 @@ import {
 
 const runtimePluginSupportInstalledKey = "__opentuiCoreRuntimePluginSupportInstalled__"
 
-type NormalizedPreserve = ((specifier: string) => boolean) | ReadonlySet<string> | undefined
-
 interface RuntimePluginSupportInstall {
   additionalSpecifiers: ReadonlySet<string>
   core?: RuntimeModuleEntry
-  preserve?: NormalizedPreserve
+  preserve?: NormalizedRuntimeSpecifierPreserve
   rewriteKey: string
 }
 
@@ -26,48 +27,10 @@ function normalizeRewriteKey(rewrite: CreateRuntimePluginOptions["rewrite"] | un
   return `${rewrite?.nodeModulesRuntimeSpecifiers ?? true}:${rewrite?.nodeModulesBareSpecifiers ?? false}`
 }
 
-function normalizePreserve(preserve: RuntimeSpecifierPreserve | undefined): NormalizedPreserve {
-  if (!preserve) {
-    return undefined
-  }
-
-  if (typeof preserve === "function") {
-    return preserve
-  }
-
-  return new Set(preserve)
-}
-
-function isCompatiblePreserve(installed: NormalizedPreserve, requested: NormalizedPreserve): boolean {
-  if (!requested) {
-    return true
-  }
-
-  if (!installed) {
-    return false
-  }
-
-  if (typeof installed === "function" || typeof requested === "function") {
-    return installed === requested
-  }
-
-  if (installed.size !== requested.size) {
-    return false
-  }
-
-  for (const specifier of requested) {
-    if (!installed.has(specifier)) {
-      return false
-    }
-  }
-
-  return true
-}
-
 function assertCompatibleInstall(
   install: RuntimePluginSupportInstall,
   options: CreateRuntimePluginOptions,
-  requestedPreserve: NormalizedPreserve,
+  requestedPreserve: NormalizedRuntimeSpecifierPreserve,
 ): void {
   for (const specifier of Object.keys(options.additional ?? {})) {
     if (!install.additionalSpecifiers.has(specifier)) {
@@ -81,7 +44,7 @@ function assertCompatibleInstall(
     throw new Error("OpenTUI Core runtime plugin support is already installed with a different core runtime module.")
   }
 
-  if (!isCompatiblePreserve(install.preserve, requestedPreserve)) {
+  if (options.preserve !== undefined && !isCompatibleRuntimePluginPreserve(install.preserve, requestedPreserve)) {
     throw new Error("OpenTUI Core runtime plugin support is already installed with different preserve options.")
   }
 
@@ -92,7 +55,7 @@ function assertCompatibleInstall(
 
 export function ensureRuntimePluginSupport(options: CreateRuntimePluginOptions = {}): boolean {
   const state = globalThis as RuntimePluginSupportState
-  const preserve = normalizePreserve(options.preserve)
+  const preserve = normalizeRuntimePluginPreserve(options.preserve)
   const install = state[runtimePluginSupportInstalledKey]
 
   if (install) {

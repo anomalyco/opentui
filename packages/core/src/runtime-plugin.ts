@@ -49,6 +49,7 @@ export type RuntimeModuleExports = Record<string, unknown>
 export type RuntimeModuleLoader = () => RuntimeModuleExports | Promise<RuntimeModuleExports>
 export type RuntimeModuleEntry = RuntimeModuleExports | RuntimeModuleLoader
 export type RuntimeSpecifierPreserve = Iterable<string> | ((specifier: string) => boolean)
+export type NormalizedRuntimeSpecifierPreserve = ((specifier: string) => boolean) | ReadonlySet<string> | undefined
 
 interface SourceAnalysis {
   importSpecifiers: string[]
@@ -406,22 +407,54 @@ const resolveSourcePathFromSpecifier = (specifier: string, importer: string): st
   return null
 }
 
+export const normalizeRuntimePluginPreserve = (
+  preserve: RuntimeSpecifierPreserve | undefined,
+): NormalizedRuntimeSpecifierPreserve => {
+  if (!preserve || typeof preserve === "function") {
+    return preserve
+  }
+
+  const preservedSpecifiers = preserve instanceof Set ? preserve : new Set(preserve)
+  return preservedSpecifiers.size > 0 ? preservedSpecifiers : undefined
+}
+
+export const isCompatibleRuntimePluginPreserve = (
+  installed: NormalizedRuntimeSpecifierPreserve,
+  requested: NormalizedRuntimeSpecifierPreserve,
+): boolean => {
+  if (installed === requested) {
+    return true
+  }
+
+  if (
+    !installed ||
+    !requested ||
+    typeof installed === "function" ||
+    typeof requested === "function" ||
+    installed.size !== requested.size
+  ) {
+    return false
+  }
+
+  return [...requested].every((specifier) => installed.has(specifier))
+}
+
 const createPreserveSpecifierPredicate = (
   preserve: RuntimeSpecifierPreserve | undefined,
   runtimeModuleIdsBySpecifier: ReadonlyMap<string, string>,
 ): ((specifier: string) => boolean) => {
-  if (!preserve) {
+  const normalizedPreserve = normalizeRuntimePluginPreserve(preserve)
+  if (!normalizedPreserve) {
     return () => false
   }
 
-  if (typeof preserve === "function") {
+  if (typeof normalizedPreserve === "function") {
     return (specifier: string) =>
-      !runtimeModuleIdsBySpecifier.has(specifier) && isBareSpecifier(specifier) && preserve(specifier)
+      !runtimeModuleIdsBySpecifier.has(specifier) && isBareSpecifier(specifier) && normalizedPreserve(specifier)
   }
 
-  const preservedSpecifiers = preserve instanceof Set ? preserve : new Set(preserve)
   return (specifier: string) =>
-    !runtimeModuleIdsBySpecifier.has(specifier) && isBareSpecifier(specifier) && preservedSpecifiers.has(specifier)
+    !runtimeModuleIdsBySpecifier.has(specifier) && isBareSpecifier(specifier) && normalizedPreserve.has(specifier)
 }
 
 const rewriteImportsFromResolveParents = (
@@ -546,25 +579,16 @@ export function createRuntimePlugin(input: CreateRuntimePluginOptions = {}): Bun
           }
         }
 
-        let contents: string
+        let contents = ""
         try {
           contents = readFileSync(normalizedPath, "utf8")
         } catch (error) {
-          if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") {
-            const analysis = {
-              importSpecifiers: [],
-              needsRuntimeSpecifierRewrite: false,
-              needsBareSpecifierRewrite: false,
-            }
-            if (cache) {
-              sourceAnalysisByPath.set(normalizedPath, analysis)
-            }
-            return analysis
+          if (!error || typeof error !== "object" || !("code" in error) || error.code !== "ENOENT") {
+            throw error
           }
-          throw error
         }
 
-        const importSpecifiers = collectImportSpecifiers(contents)
+        const importSpecifiers = contents ? collectImportSpecifiers(contents) : []
         const analysis = {
           importSpecifiers,
           needsRuntimeSpecifierRewrite: importSpecifiers.some((specifier) =>
@@ -610,7 +634,7 @@ export function createRuntimePlugin(input: CreateRuntimePluginOptions = {}): Bun
         }
 
         for (const specifier of analysis.importSpecifiers) {
-          if (shouldPreserveBareSpecifier(specifier)) {
+          if (runtimeModuleIdsBySpecifier.has(specifier) || shouldPreserveBareSpecifier(specifier)) {
             continue
           }
 

@@ -393,6 +393,7 @@ describe("runtime plugin", () => {
         "core=host-core",
         "effect=host-effect",
         "option=host-option",
+        "reexportedOption=host-option",
         "dynamicEffect=host-effect",
         "requiredOption=host-option",
         "hostDep=resolved-from-plugin-node-modules",
@@ -407,11 +408,16 @@ describe("runtime plugin", () => {
     const onlyPreservedPath = join(tempRoot, "only-preserved.ts")
     const mixedPath = join(tempRoot, "mixed.ts")
     const foreignEffectDir = join(tempRoot, "node_modules", "effect")
+    const foreignHostPluginDir = join(tempRoot, "node_modules", "@opencode", "plugin")
     const esmConsumerDir = join(tempRoot, "node_modules", "esm-consumer")
     const esmConsumerPath = join(esmConsumerDir, "index.js")
+    const esmRuntimeConsumerDir = join(tempRoot, "node_modules", "esm-runtime-consumer")
+    const esmRuntimeConsumerPath = join(esmRuntimeConsumerDir, "index.js")
 
     mkdirSync(foreignEffectDir, { recursive: true })
+    mkdirSync(foreignHostPluginDir, { recursive: true })
     mkdirSync(esmConsumerDir, { recursive: true })
+    mkdirSync(esmRuntimeConsumerDir, { recursive: true })
 
     writeFileSync(
       onlyPreservedPath,
@@ -457,10 +463,44 @@ describe("runtime plugin", () => {
     )
     writeFileSync(esmConsumerPath, ['import { Effect } from "effect"', "export const out = Effect"].join("\n"))
 
+    writeFileSync(
+      join(foreignHostPluginDir, "package.json"),
+      JSON.stringify({
+        name: "@opencode/plugin",
+        type: "module",
+        exports: { "./tui": "./tui.js" },
+      }),
+    )
+    // Foreign copy of an additional runtime module should also never be prescanned on disk.
+    writeFileSync(
+      join(foreignHostPluginDir, "tui.js"),
+      ['import { marker } from "@opentui/core"', "export const Plugin = marker"].join("\n"),
+    )
+
+    writeFileSync(
+      join(esmRuntimeConsumerDir, "package.json"),
+      JSON.stringify({
+        name: "esm-runtime-consumer",
+        type: "module",
+        exports: "./index.js",
+      }),
+    )
+    writeFileSync(
+      esmRuntimeConsumerPath,
+      [
+        'import { Plugin } from "@opencode/plugin/tui"',
+        'import { Effect } from "effect"',
+        "export const out = [Plugin, Effect]",
+      ].join("\n"),
+    )
+
     try {
       const { build, resolveHandlers, loadHandlers } = createMockBuild()
       createRuntimePlugin({
-        preserve: ["effect", "effect/Option"],
+        additional: {
+          "@opencode/plugin/tui": { Plugin: "host-tui" },
+        },
+        preserve: ["effect", "effect/Option", "@opencode/plugin/tui"],
       }).setup(build as any)
 
       await resolveSpecifier(resolveHandlers, onlyPreservedPath)
@@ -468,10 +508,13 @@ describe("runtime plugin", () => {
 
       expect(loadHandlers).toHaveLength(0)
 
-      await resolveSpecifier(resolveHandlers, mixedPath)
+      await resolveSpecifier(resolveHandlers, esmRuntimeConsumerPath)
       expect(loadHandlers).toHaveLength(1)
 
-      const loaded = (await loadHandlers[0]!.callback({ path: mixedPath })) as {
+      await resolveSpecifier(resolveHandlers, mixedPath)
+      expect(loadHandlers).toHaveLength(2)
+
+      const loaded = (await loadHandlers[1]!.callback({ path: mixedPath })) as {
         contents: string
         loader: string
       }

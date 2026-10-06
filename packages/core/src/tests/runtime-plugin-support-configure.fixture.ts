@@ -45,14 +45,24 @@ try {
     "runtime-plugin-support-extra": { marker: "ok" },
   }
   const first = ensureRuntimePluginSupport({ additional, preserve: ["preserved-host-pkg"] })
-  const second = ensureRuntimePluginSupport({ additional, preserve: new Set(["preserved-host-pkg"]) })
+  const second =
+    ensureRuntimePluginSupport({ additional, preserve: new Set(["preserved-host-pkg"]) }) ||
+    ensureRuntimePluginSupport({ additional })
   let mismatchError = ""
+  let emptyMismatchError = ""
   try {
     ensureRuntimePluginSupport({ additional, preserve: ["other-pkg"] })
   } catch (error) {
     mismatchError = error instanceof Error ? error.message : String(error)
   }
-  console.log(`first=${first};second=${second};mismatch=${mismatchError}`)
+  try {
+    ensureRuntimePluginSupport({ additional, preserve: [] })
+  } catch (error) {
+    emptyMismatchError = error instanceof Error ? error.message : String(error)
+  }
+  console.log(
+    `first=${first};second=${second};mismatch=${mismatchError === emptyMismatchError ? mismatchError : "unexpected"}`,
+  )
   await import(entryPath)
 } finally {
   registerPlugin.clearAll()

@@ -489,7 +489,9 @@ if (buildLib) {
 
   writeBunOnlyStub("runtime-plugin.node.js", `${packageJson.name}/runtime-plugin`, [
     "createRuntimePlugin",
+    "isCompatibleRuntimePluginPreserve",
     "isCoreRuntimeModuleSpecifier",
+    "normalizeRuntimePluginPreserve",
     "runtimeModuleIdForSpecifier",
   ])
   writeBunOnlyStub("runtime-plugin-support.node.js", `${packageJson.name}/runtime-plugin-support`, [
