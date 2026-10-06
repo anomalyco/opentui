@@ -1,4 +1,5 @@
 import { plugin as registerBunPlugin, type BunPlugin } from "bun"
+import { readFile } from "node:fs/promises"
 import { stripQueryAndHash, transformSolidSource, type ResolveImportPath } from "./solid-transform.js"
 
 const solidTransformStateKey = Symbol.for("opentui.solid.transform")
@@ -71,8 +72,7 @@ export function createSolidTransformPlugin(input: CreateSolidTransformPluginOpti
     setup: (build) => {
       build.onLoad({ filter: /[/\\]node_modules[/\\]solid-js[/\\]dist[/\\]server\.js(?:[?#].*)?$/ }, async (args) => {
         const path = stripQueryAndHash(args.path).replace("server.js", "solid.js")
-        const file = Bun.file(path)
-        const code = await file.text()
+        const code = await readFile(path, "utf8")
         return { contents: code, loader: "js" }
       })
 
@@ -80,17 +80,14 @@ export function createSolidTransformPlugin(input: CreateSolidTransformPluginOpti
         { filter: /[/\\]node_modules[/\\]solid-js[/\\]store[/\\]dist[/\\]server\.js(?:[?#].*)?$/ },
         async (args) => {
           const path = stripQueryAndHash(args.path).replace("server.js", "store.js")
-          const file = Bun.file(path)
-          const code = await file.text()
+          const code = await readFile(path, "utf8")
           return { contents: code, loader: "js" }
         },
       )
 
       build.onLoad({ filter: sourceFilter }, async (args) => {
         const path = stripQueryAndHash(args.path)
-
-        const file = Bun.file(path)
-        const code = await file.text()
+        const code = await readFile(path, "utf8")
         const runtime = getSolidTransformRuntime()
         const moduleName = input.moduleName ?? runtime.moduleName ?? "@opentui/solid"
         const resolvePath = input.resolvePath ?? runtime.resolvePath

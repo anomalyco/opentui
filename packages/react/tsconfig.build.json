@@ -27,13 +27,5 @@
     "scripts/runtime-plugin-support.ts",
     "scripts/runtime-plugin-support-configure.ts"
   ],
-  "exclude": [
-    "**/*.test.ts",
-    "**/*.spec.ts",
-    "examples/**/*",
-    "node_modules/**/*",
-    "../core/**/*",
-    "scripts/build.ts",
-    "scripts/publish.ts"
-  ]
+  "exclude": ["**/*.test.ts", "**/*.spec.ts", "examples/**/*", "node_modules/**/*", "../core/**/*", "scripts/build.ts"]
 }

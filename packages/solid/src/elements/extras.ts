@@ -36,7 +36,16 @@ export function Portal(props: { mount?: DomNode; ref?: (el: {}) => void; childre
       insert(renderRoot, content)
       el.add(container)
       props.ref && (props as any).ref(container)
-      onCleanup(() => el.remove(container))
+      onCleanup(() => {
+        //Since the portal never goes through the reconciler's normal removal process,
+        // we need to manually remove and destroy its container to avoid memory leaks.
+        el.remove(container)
+        process.nextTick(() => {
+          if (!container.parent) {
+            container.destroyRecursively()
+          }
+        })
+      })
     },
     undefined,
     { render: true },

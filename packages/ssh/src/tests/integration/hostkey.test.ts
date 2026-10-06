@@ -5,12 +5,13 @@ import { expect, spyOn, test } from "bun:test"
 import { utils } from "ssh2"
 import { createServer } from "../../index.js"
 import { parseOneKey, sha256Fingerprint } from "../../keys.js"
-import { createHarness, HOST_KEY } from "../support.js"
+import { createHarness, generateParseableKey, HOST_KEY } from "../support.js"
 
 const { track, tmpDir } = createHarness()
 
 test("listen reports every configured host-key fingerprint", async () => {
-  const ed25519 = utils.generateKeyPairSync("ed25519").private
+  // ssh2's ed25519 keygen can emit a key its own parser rejects; retry past it.
+  const ed25519 = generateParseableKey().private
   const rsa = utils.generateKeyPairSync("rsa", { bits: 2048 }).private
   const expected = [ed25519, rsa].map((pem) => {
     const key = parseOneKey(pem)

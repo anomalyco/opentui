@@ -117,6 +117,14 @@ B
 
 At two columns, `界` cannot fit beside `A`, so it moves intact to the next row. The shaded area marks each view's cell bounds.
 
+## Align lines
+
+`textAlign` pads each rendered line by display-cell width, not string length. After wrapping, each rendered line gets its own pad.
+
+A 10-column `textAlign: "center"` view of `hi` then `world` draws `hi` with four cells of pad on each side. `world` gets two cells on the left and three on the right.
+
+See [Text](/docs/components/text) for the component option.
+
 ## Use buffer text operations
 
 `OptimizedBuffer.setCell()` calls `codePointAt(0)` and writes one cell. It cannot represent a multi-code-point grapheme or create wide continuation cells.

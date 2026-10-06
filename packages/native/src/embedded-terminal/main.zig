@@ -39,6 +39,7 @@ pub const EmbeddedTerminal = struct {
     response_error: ?Error = null,
     mouse_last_cell: ?ghostty.Coordinate = null,
     force_redraw: bool = true,
+    transparent_background: bool = false,
 
     pub fn init(io: std.Io, allocator: std.mem.Allocator, options: Options) Error!*EmbeddedTerminal {
         if (options.cols == 0 or options.rows == 0) return error.InvalidValue;
@@ -120,6 +121,11 @@ pub const EmbeddedTerminal = struct {
         self.force_redraw = true;
     }
 
+    pub fn setTransparentBackground(self: *EmbeddedTerminal, transparent: bool) void {
+        self.transparent_background = transparent;
+        self.force_redraw = true;
+    }
+
     pub fn compose(self: *EmbeddedTerminal, target: *buffer.OptimizedBuffer, x: i32, y: i32) Error!void {
         self.render_state.update(self.allocator, &self.terminal) catch |err| {
             self.render_state.deinit(self.allocator);
@@ -131,7 +137,7 @@ pub const EmbeddedTerminal = struct {
             self.render_state.dirty = .full;
             self.force_redraw = false;
         }
-        try compositor.compose(self.allocator, &self.render_state, target, x, y);
+        try compositor.compose(self.allocator, &self.render_state, target, x, y, self.transparent_background);
     }
 
     pub fn cursor(self: *EmbeddedTerminal) Cursor {

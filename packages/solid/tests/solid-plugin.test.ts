@@ -1,9 +1,8 @@
-import { describe, expect, it } from "bun:test"
+import { afterEach, beforeEach, describe, expect, it } from "bun:test"
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs"
-import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { runtimeModuleIdForSpecifier } from "@opentui/core/runtime-plugin"
-import { createSolidTransformPlugin } from "../scripts/solid-plugin.js"
+import { createSolidTransformPlugin, resetSolidTransformPluginState } from "../scripts/solid-plugin.js"
 
 type ResolveCallback = (args: { path: string; importer: string }) => unknown | Promise<unknown>
 type LoadResult = { contents: string; loader: string } | void
@@ -61,7 +60,7 @@ const runLoad = async (handlers: LoadHandler[], path: string): Promise<LoadResul
 }
 
 const createTempTsxFile = (source: string): { path: string; dispose: () => void } => {
-  const tempRoot = mkdtempSync(join(tmpdir(), "solid-plugin-test-"))
+  const tempRoot = mkdtempSync(join(import.meta.dir, "solid-plugin-test-"))
   const path = join(tempRoot, "fixture.tsx")
   writeFileSync(path, source)
 
@@ -74,6 +73,14 @@ const createTempTsxFile = (source: string): { path: string; dispose: () => void 
 }
 
 describe("solid transform plugin", () => {
+  beforeEach(() => {
+    resetSolidTransformPluginState()
+  })
+
+  afterEach(() => {
+    resetSolidTransformPluginState()
+  })
+
   it("does not register runtime module resolvers by default", () => {
     const { build, resolveFilters, modules } = createMockBuild()
     createSolidTransformPlugin().setup(build as any)
@@ -196,7 +203,7 @@ describe("solid transform plugin", () => {
   })
 
   it("ignores host project babel config when transforming plugins", async () => {
-    const hostile = mkdtempSync(join(tmpdir(), "solid-plugin-hostile-config-"))
+    const hostile = mkdtempSync(join(import.meta.dir, "solid-plugin-hostile-config-"))
     const tsxPath = join(hostile, "fixture.tsx")
     writeFileSync(tsxPath, "const node = <text>ok</text>\nexport { node }")
     writeFileSync(

@@ -83,6 +83,21 @@ test("documentation visual preserves native terminal geometry and color intent",
     "children: 2  children: 2  children: 1",
   )
 
+  const aligned = generated["text-align-lines"]
+  expect([aligned.cols, aligned.rows]).toEqual([34, 4])
+  expect(
+    aligned.lines[2]
+      .map((span) => span.text)
+      .join("")
+      .slice(12, 22),
+  ).toBe("    hi    ")
+  expect(
+    aligned.lines[3]
+      .map((span) => span.text)
+      .join("")
+      .slice(12, 22),
+  ).toBe("  world   ")
+
   const chunks = generated["text-styled-chunks"].lines.flat()
   expect(chunks.find((span) => span.text === "Status")?.attributes).toBe(1)
   expect(chunks.find((span) => span.text === "Note")?.attributes).toBe(4)

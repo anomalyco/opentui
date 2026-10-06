@@ -109,6 +109,8 @@ const { title, description, wide = false, robots } = Astro.props
     /* Keep the centered layout stable between pages with and without a
      * scrollbar. */
     scrollbar-gutter: stable;
+    /* Show only the thumb; the track blends into the page. */
+    scrollbar-color: var(--muted-color) transparent;
   }
 
   body {

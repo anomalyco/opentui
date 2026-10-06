@@ -1,6 +1,7 @@
 import { test, expect, beforeEach, beforeAll, afterAll, describe } from "bun:test"
 import { TreeSitterClient, addDefaultParsers } from "./client.js"
 import { createServer, type Server } from "node:http"
+import type { AddressInfo } from "node:net"
 import { tmpdir } from "node:os"
 import { dirname, join, resolve } from "node:path"
 import { mkdir, readdir, stat, writeFile } from "node:fs/promises"
@@ -11,27 +12,28 @@ import type { FiletypeParserOptions } from "./types.js"
 describe("TreeSitterClient Caching", () => {
   let dataPath: string
   let testServer: Server | undefined
-  const TEST_PORT = 55231
   const TEST_HOST = "127.0.0.1"
-  const BASE_URL = `http://${TEST_HOST}:${TEST_PORT}`
+  let BASE_URL = ""
   const DATA_ROOT = join(tmpdir(), "tree-sitter-cache-test")
 
   beforeAll(async () => {
     const assetsDir = resolve(dirname(fileURLToPath(import.meta.url)), "assets")
 
     testServer = createServer((req, res) => {
-      const url = new URL(req.url ?? "/", BASE_URL)
+      const url = new URL(req.url ?? "/", `http://${TEST_HOST}`)
       const filePath = join(assetsDir, url.pathname)
       res.end(readFileSync(filePath))
     })
 
+    // The Bun and Node test lanes can run this file at the same time, so let the OS pick the port.
     await new Promise<void>((resolve, reject) => {
       testServer!.once("error", reject)
-      testServer!.listen(TEST_PORT, TEST_HOST, () => {
+      testServer!.listen(0, TEST_HOST, () => {
         testServer!.off("error", reject)
         resolve()
       })
     })
+    BASE_URL = `http://${TEST_HOST}:${(testServer.address() as AddressInfo).port}`
 
     await mkdir(DATA_ROOT, { recursive: true })
   })

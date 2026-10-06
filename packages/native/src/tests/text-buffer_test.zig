@@ -1728,6 +1728,71 @@ test "TextBuffer setText - then deleteRange via EditBuffer - validate markers" {
     try std.testing.expectEqual(@as(u32, 0), eb.getTextBuffer().lineWidthAt(2));
 }
 
+test "TextBuffer setTextFromMemId - replacing content does not retain previous ropes" {
+    const pool = gp.initGlobalPool(std.testing.allocator);
+    defer gp.deinitGlobalPool();
+    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
+    defer link.deinitGlobalLinkPool();
+
+    var tracking = std.testing.FailingAllocator.init(std.testing.allocator, .{});
+    const tb = try TextBuffer.init(tracking.allocator(), pool, link_pool, .unicode);
+    defer tb.deinit();
+    const view = try @import("../text-buffer-view.zig").TextBufferView.init(tracking.allocator(), tb);
+    defer view.deinit();
+    view.setWrapMode(.word);
+    view.setWrapWidth(40);
+
+    const text = "tool output line \u{65e5}\u{672c}\n" ** 256;
+    const mem_id = try tb.registerMemBuffer(text, false);
+    try tb.setTextFromMemId(mem_id);
+    try std.testing.expectEqual(@as(u32, 257), view.getVirtualLineCount());
+    const one_document = tracking.allocated_bytes - tracking.freed_bytes;
+
+    for (0..64) |_| {
+        try tb.setTextFromMemId(mem_id);
+        try std.testing.expectEqual(@as(u32, 257), view.getVirtualLineCount());
+    }
+
+    const line = view.getVirtualLines()[255];
+    const chunk = line.chunks.items[0];
+    const bytes = chunk.chunk.getBytes(tb.memRegistry());
+    try std.testing.expectEqualStrings(
+        "tool output line \u{65e5}\u{672c}",
+        bytes[chunk.byte_start_in_chunk..][0..chunk.byte_len],
+    );
+    try std.testing.expect(tracking.allocated_bytes - tracking.freed_bytes <= 2 * one_document);
+}
+
+test "EditBuffer setTextFromMemId - replacing content without history does not retain previous ropes" {
+    const pool = gp.initGlobalPool(std.testing.allocator);
+    defer gp.deinitGlobalPool();
+    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
+    defer link.deinitGlobalLinkPool();
+
+    const edit_buffer = @import("../edit-buffer.zig");
+    var tracking = std.testing.FailingAllocator.init(std.testing.allocator, .{});
+    var eb = try edit_buffer.EditBuffer.init(tracking.allocator(), pool, link_pool, .unicode, null);
+    defer eb.deinit();
+
+    const text = "prompt line\n" ** 256;
+    const mem_id = try eb.getTextBuffer().registerMemBuffer(text, false);
+    try eb.setTextFromMemId(mem_id);
+    try eb.insertText("x");
+    try std.testing.expect(eb.canUndo());
+    try eb.setTextFromMemId(mem_id);
+    const one_document = tracking.allocated_bytes - tracking.freed_bytes;
+
+    for (0..64) |_| {
+        try eb.insertText("x");
+        try eb.setTextFromMemId(mem_id);
+        try std.testing.expect(!eb.canUndo());
+    }
+
+    var output: [text.len]u8 = undefined;
+    try std.testing.expectEqualStrings(text, output[0..eb.getText(&output)]);
+    try std.testing.expect(tracking.allocated_bytes - tracking.freed_bytes <= 2 * one_document);
+}
+
 test "TextBuffer setStyledText - repeated calls with SyntaxStyle (crash reproduction)" {
     const pool = gp.initGlobalPool(std.testing.allocator);
     defer gp.deinitGlobalPool();

@@ -20,6 +20,8 @@ const stream_input_capacity: u32 = 256 * 1024;
 // Bounds endless invalid input during decoder setup; StreamOptions can raise it for valid metadata.
 pub const default_stream_probe_bytes: u32 = 1024 * 1024;
 const stream_decoder_chunk_frames: u32 = 2_048;
+pub const min_pcm_sample_rate: u32 = 8_000;
+pub const max_pcm_sample_rate: u32 = 192_000;
 // Coalesce tiny transport fragments without waiting for miniaudio's full decoder read request.
 const stream_decoder_read_granularity: usize = 2 * 1024;
 const max_stream_generation: u32 = 0x00ffffff;
@@ -69,11 +71,14 @@ pub const StreamOptions = extern struct {
     // Append fields so newer bindings preserve the previous native prefix during local rebuilds.
     max_probe_bytes: u32 = default_stream_probe_bytes,
     format: u32 = StreamFormat.mp3,
+    sample_rate: u32 = 0,
+    channels: u32 = 0,
 };
 
 pub const StreamFormat = struct {
     pub const mp3: u32 = 1;
     pub const flac: u32 = 2;
+    pub const pcm: u32 = 3;
 };
 
 pub const StreamState = struct {
@@ -317,6 +322,8 @@ const Stream = struct {
     error_code: i32 = 0,
     ready_generation: u32 = 0,
     has_started_playback: bool = false,
+    input_sample_rate: u32 = 0,
+    input_channels: u32 = 0,
 };
 
 const SoundGroup = struct {
@@ -762,6 +769,11 @@ fn streamDecoderRead(
 ) callconv(.c) c.ma_result {
     if (bytes_read_out != null) bytes_read_out[0] = 0;
     const stream = streamFromDecoder(decoder) orelse return c.MA_INVALID_ARGS;
+    return readStreamInput(stream, buffer_out, bytes_to_read, bytes_read_out);
+}
+
+fn readStreamInput(stream: *Stream, buffer_out: ?*anyopaque, bytes_to_read: usize, bytes_read_out: [*c]usize) c.ma_result {
+    if (bytes_read_out != null) bytes_read_out[0] = 0;
     if (bytes_to_read == 0) return c.MA_SUCCESS;
     const output_ptr = buffer_out orelse return c.MA_INVALID_ARGS;
 
@@ -769,7 +781,8 @@ fn streamDecoderRead(
     defer stream.input_lock.unlock(io);
 
     const output = @as([*]u8, @ptrCast(output_ptr))[0..bytes_to_read];
-    const target_read = @min(bytes_to_read, stream_decoder_read_granularity);
+    // Raw PCM must not wait for an encoded decoder's minimum read size.
+    const target_read = if (stream.format == StreamFormat.pcm) 1 else @min(bytes_to_read, stream_decoder_read_granularity);
     var total_read: usize = 0;
     while (total_read < target_read) {
         while (stream.input_count == 0 and
@@ -834,21 +847,34 @@ fn streamDecoderSeek(decoder: ?*c.ma_decoder, byte_offset: c.ma_int64, origin: c
 }
 
 fn streamDecoderWorker(stream: *Stream) void {
-    var config = c.ma_decoder_config_init(c.ma_format_f32, 2, stream.sample_rate);
-    config.encodingFormat = switch (stream.format) {
-        StreamFormat.mp3 => c.ma_encoding_format_mp3,
-        StreamFormat.flac => c.ma_encoding_format_flac,
-        else => unreachable,
-    };
-    config.seekPointCount = 0;
-
+    const is_pcm = stream.format == StreamFormat.pcm;
     var decoder: c.ma_decoder = undefined;
-    const init_result = c.ma_decoder_init(streamDecoderRead, streamDecoderSeek, stream, &config, &decoder);
+    var converter: c.ma_data_converter = undefined;
+    const init_result = if (is_pcm) blk: {
+        const config = c.ma_data_converter_config_init(c.ma_format_f32, c.ma_format_f32, stream.input_channels, stream_channels, stream.input_sample_rate, stream.sample_rate);
+        break :blk c.ma_data_converter_init(&config, null, &converter);
+    } else blk: {
+        var config = c.ma_decoder_config_init(c.ma_format_f32, 2, stream.sample_rate);
+        config.encodingFormat = switch (stream.format) {
+            StreamFormat.mp3 => c.ma_encoding_format_mp3,
+            StreamFormat.flac => c.ma_encoding_format_flac,
+            else => unreachable,
+        };
+        config.seekPointCount = 0;
+        break :blk c.ma_decoder_init(streamDecoderRead, streamDecoderSeek, stream, &config, &decoder);
+    };
     if (init_result != c.MA_SUCCESS) {
         failDecoderWorker(stream);
         return;
     }
-    defer _ = c.ma_decoder_uninit(&decoder);
+    defer if (is_pcm) c.ma_data_converter_uninit(&converter, null) else {
+        _ = c.ma_decoder_uninit(&decoder);
+    };
+
+    // PCM conversion history and partial input belong only to this producer.
+    var samples: [stream_decoder_chunk_frames * stream_channels]f32 = undefined;
+    var input_offset: usize = 0;
+    var input_len: usize = 0;
 
     stream.input_lock.lockUncancelable(io);
     stream.probe_active = false;
@@ -882,7 +908,47 @@ fn streamDecoderWorker(stream: *Stream) void {
         }
 
         var frames_read: c.ma_uint64 = 0;
-        const result = c.ma_decoder_read_pcm_frames(&decoder, pcm_ptr, contiguous_frames, &frames_read);
+        const result = if (is_pcm) blk: {
+            const frame_bytes = stream.input_channels * @sizeOf(f32);
+            if (input_len - input_offset < frame_bytes) {
+                const bytes = std.mem.sliceAsBytes(samples[0 .. stream_decoder_chunk_frames * stream.input_channels]);
+                const pending = input_len - input_offset;
+                std.mem.copyForwards(u8, bytes[0..pending], bytes[input_offset..input_len]);
+                var read: usize = 0;
+                const status = readStreamInput(stream, bytes[pending..].ptr, bytes.len - pending, &read);
+                if (status != c.MA_SUCCESS and status != c.MA_AT_END) break :blk status;
+                input_offset = 0;
+                input_len = pending + read;
+                if (input_len < frame_bytes and input_len != 0) {
+                    if (status == c.MA_AT_END) break :blk c.MA_INVALID_ARGS;
+                    continue;
+                }
+                for (samples[0 .. input_len / frame_bytes * stream.input_channels], 0..) |*sample, index| {
+                    sample.* = @bitCast(std.mem.readInt(u32, bytes[index * 4 ..][0..4], .little));
+                    if (!std.math.isFinite(sample.*)) break :blk c.MA_INVALID_ARGS;
+                }
+            }
+
+            frames_read = contiguous_frames;
+            var input_frames: u64 = (input_len - input_offset) / frame_bytes;
+            const input = if (input_frames != 0) samples[input_offset / @sizeOf(f32) ..].ptr else null;
+            if (input == null) {
+                const input_rate = stream.input_sample_rate;
+                const received_frames = @atomicLoad(u64, &stream.bytes_received, .monotonic) / frame_bytes;
+                // Round input latency separately to preserve sub-frame downsampling tails.
+                const tail = (@as(u128, c.ma_data_converter_get_input_latency(&converter)) * stream.sample_rate + input_rate - 1) / input_rate;
+                const target: u64 = if (received_frames == 0) 0 else @intCast((@as(u128, received_frames) * stream.sample_rate + input_rate - 1) / input_rate + tail);
+                const produced = @atomicLoad(u64, &stream.frames_decoded, .monotonic);
+                frames_read = @min(frames_read, target -| produced);
+                if (frames_read == 0) break :blk c.MA_AT_END;
+                input_frames = stream_decoder_chunk_frames;
+            }
+            const status = c.ma_data_converter_process_pcm_frames(&converter, input, &input_frames, pcm_ptr, &frames_read);
+            if (input != null) input_offset += @intCast(input_frames * frame_bytes);
+            // Downsampling may consume a batch before it can produce the next frame.
+            if (status == c.MA_SUCCESS and frames_read == 0 and input != null and input_frames != 0) continue;
+            break :blk status;
+        } else c.ma_decoder_read_pcm_frames(&decoder, pcm_ptr, contiguous_frames, &frames_read);
         const decoded_frames = std.math.cast(u32, frames_read) orelse {
             failDecoderWorker(stream);
             return;
@@ -909,6 +975,7 @@ fn streamDecoderWorker(stream: *Stream) void {
             }
             if (@atomicLoad(u32, &stream.input_ended, .acquire) != 0) {
                 @atomicStore(u32, &stream.decoder_finished, 1, .release);
+                if (is_pcm and @atomicLoad(u64, &stream.frames_decoded, .monotonic) == 0) endStreamPlayback(stream);
                 stream.input_lock.unlock(io);
                 return;
             }
@@ -1687,8 +1754,15 @@ fn retireStreamSlotLocked(engine: *Engine, slot_index: usize) void {
 pub fn createStream(engine: *Engine, options_ptr: ?*const StreamOptions, out_stream_id: ?*u32) i32 {
     if (options_ptr == null or out_stream_id == null) return Status.err_invalid;
     const options = options_ptr.?.*;
-    if (options.max_probe_bytes == 0 or
-        (options.format != StreamFormat.mp3 and options.format != StreamFormat.flac)) return Status.err_invalid;
+    switch (options.format) {
+        StreamFormat.mp3, StreamFormat.flac => if (options.max_probe_bytes == 0) return Status.err_invalid,
+        StreamFormat.pcm => {
+            if (options.channels < 1 or options.channels > 2 or
+                options.sample_rate < min_pcm_sample_rate or options.sample_rate > max_pcm_sample_rate or
+                engine.sample_rate < min_pcm_sample_rate or engine.sample_rate > max_pcm_sample_rate) return Status.err_invalid;
+        },
+        else => return Status.err_invalid,
+    }
     const frame_options = resolveStreamFrameOptions(options, engine.sample_rate) orelse return Status.err_invalid;
 
     const e = engine;
@@ -1733,6 +1807,8 @@ pub fn createStream(engine: *Engine, options_ptr: ?*const StreamOptions, out_str
         .resume_frames = frame_options.resume_frames,
         .max_probe_bytes = options.max_probe_bytes,
         .format = options.format,
+        .input_sample_rate = options.sample_rate,
+        .input_channels = options.channels,
         .sample_rate = e.sample_rate,
         .capacity_frames = frame_options.capacity_frames,
     };
@@ -1870,6 +1946,7 @@ pub fn restartStream(engine: *Engine, stream_id: u32) i32 {
     const state = loadStreamState(stream);
     if (state == StreamState.failed or
         state == StreamState.cancelled or
+        stream.format == StreamFormat.pcm or
         @atomicLoad(u32, &stream.cancel_requested, .acquire) != 0 or
         stream.worker == null)
     {

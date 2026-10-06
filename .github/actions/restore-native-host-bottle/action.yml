@@ -1,0 +1,44 @@
+name: Restore native host bottle
+description: Restore this runner's linked native library when native inputs and the Zig version are unchanged.
+inputs:
+  zig-version:
+    description: Zig version that must have produced the library
+    required: true
+outputs:
+  cache-hit:
+    description: true only when the restored library matches the current native inputs
+    value: ${{ steps.decide.outputs.hit }}
+runs:
+  using: composite
+  steps:
+    - id: hash
+      shell: bash
+      working-directory: ${{ github.workspace }}
+      run: |
+        set -euo pipefail
+        key="$(bun scripts/native-bottle.ts host-key --zig "${{ inputs.zig-version }}")"
+        echo "key=$key" >> "$GITHUB_OUTPUT"
+        echo "Native host bottle key: $key"
+
+    - id: restore
+      uses: actions/cache/restore@v5
+      continue-on-error: true
+      with:
+        path: packages/native/lib
+        key: ${{ steps.hash.outputs.key }}
+
+    - id: decide
+      shell: bash
+      working-directory: ${{ github.workspace }}
+      run: |
+        set -euo pipefail
+        hit=false
+        if [ "${{ steps.restore.outputs.cache-hit }}" = "true" ] &&
+          bun scripts/native-bottle.ts host-verify --zig "${{ inputs.zig-version }}"; then
+          hit=true
+        else
+          echo "Native host bottle miss; the native library will be built"
+          rm -rf packages/native/lib
+        fi
+        echo "hit=$hit" >> "$GITHUB_OUTPUT"
+        echo "Native host bottle hit: $hit"

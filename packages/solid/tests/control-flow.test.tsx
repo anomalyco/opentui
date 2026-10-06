@@ -1,5 +1,5 @@
 import { describe, expect, it, beforeEach, afterEach, test } from "bun:test"
-import { testRender } from "../index.js"
+import { LayoutSlotRenderable, testRender } from "../index.js"
 import { createSignal, createEffect, createMemo, For, Show, Switch, Match, Index, ErrorBoundary } from "solid-js"
 
 let testSetup: Awaited<ReturnType<typeof testRender>>
@@ -215,7 +215,7 @@ describe("SolidJS Renderer - Control Flow Components", () => {
       expect(frame).not.toContain("Count is high")
     })
 
-    it("should handle <Show> without fallback", async () => {
+    it.each(["replacement", "renderer destruction"])("should handle <Show> without fallback (%s)", async (cleanup) => {
       const [visible, setVisible] = createSignal(true)
 
       testSetup = await testRender(
@@ -247,6 +247,25 @@ describe("SolidJS Renderer - Control Flow Components", () => {
       frame = testSetup.captureCharFrame()
       expect(frame).not.toContain("Visible content")
       expect(frame).toContain("Always visible")
+
+      const placeholder = children.find((child) => child instanceof LayoutSlotRenderable)!
+      try {
+        expect(placeholder).toBeInstanceOf(LayoutSlotRenderable)
+        expect(placeholder.getLayoutNode().isFreed()).toBe(false)
+
+        if (cleanup === "replacement") {
+          setVisible(true)
+        } else {
+          testSetup.renderer.destroy()
+        }
+        await new Promise<void>((resolve) => process.nextTick(resolve))
+
+        expect(placeholder.parent).toBeNull()
+        expect(placeholder.getLayoutNode().isFreed()).toBe(true)
+      } finally {
+        testSetup.renderer.destroy()
+        placeholder?.destroy()
+      }
     })
 
     it("should conditionally render content with <Show> in the correct order", async () => {

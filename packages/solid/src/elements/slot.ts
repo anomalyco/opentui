@@ -83,8 +83,8 @@ export class TextSlotRenderable extends TextNodeRenderable {
     const slotParent = this.slotParent
     this.slotParent = undefined
 
-    slotParent?.destroy()
-    super.destroy()
+    this.parent?.remove(this)
+    slotParent?.didDestroySlotChild(this)
   }
 }
 
@@ -145,6 +145,11 @@ export class LayoutSlotRenderable extends SlotBaseRenderable {
     this.freeYogaNode()
   }
 
+  // Parents and the reconciler release children through destroyRecursively().
+  public override destroyRecursively(): void {
+    this.destroy()
+  }
+
   public override destroy(): void {
     if (this.destroyed) {
       return
@@ -154,8 +159,9 @@ export class LayoutSlotRenderable extends SlotBaseRenderable {
     const slotParent = this.slotParent
     this.slotParent = undefined
 
+    this.parent?.remove(this)
     this.freeYogaNode()
-    slotParent?.destroy()
+    slotParent?.didDestroySlotChild(this)
   }
 }
 
@@ -372,11 +378,22 @@ export class SlotRenderable extends SlotBaseRenderable {
     }
   }
 
+  didDestroySlotChild(child: LayoutSlotRenderable | TextSlotRenderable): void {
+    const nodesByParent: Map<BaseRenderable, BaseRenderable> =
+      child instanceof LayoutSlotRenderable ? this.layoutNodesByParent : this.textNodesByParent
+    for (const [parent, node] of nodesByParent) {
+      if (node !== child) continue
+      nodesByParent.delete(parent)
+      if (this.parent === parent) this.parent = this.getAttachedSlotParent()
+    }
+  }
+
   public override destroy(): void {
     if (this.destroyed) {
       return
     }
     this.destroyed = true
+    this.parent = null
 
     const layoutNodes = new Set(this.layoutNodesByParent.values())
     this.layoutNodesByParent.clear()

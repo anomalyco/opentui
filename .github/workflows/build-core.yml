@@ -31,33 +31,41 @@ jobs:
         with:
           bun-version: 1.4.1
 
+      - name: Install dependencies
+        run: bun install
+
+      - name: Restore native bottle
+        id: bottle
+        uses: ./.github/actions/restore-native-bottle
+        with:
+          zig-version: ${{ env.ZIG_VERSION }}
+
       - name: Setup Zig
+        if: steps.bottle.outputs.cache-hit != 'true'
         uses: mlugg/setup-zig@v2
         with:
           version: ${{ env.ZIG_VERSION }}
           use-cache: false
 
-      - name: Restore Zig cache
-        uses: actions/cache@v5
-        with:
-          path: packages/native/.zig-cache
-          key: zig-v1-${{ runner.os }}-${{ env.ZIG_VERSION }}-${{ github.run_id }}-${{ github.job }}
-          restore-keys: zig-v1-${{ runner.os }}-${{ env.ZIG_VERSION }}-
-
-      - name: Install dependencies
-        run: bun install
-
       - name: Setup cross-platform symbol tools
+        if: steps.bottle.outputs.cache-hit != 'true'
         uses: ./.github/actions/setup-native-symbol-tools
 
-      - name: Build native libraries (cross-compile all platforms)
-        run: |
-          cd packages/core
-          bun run build:native --all
+      - name: Build or package native libraries
+        run: bun scripts/native-bottle.ts package --hit "${{ steps.bottle.outputs.cache-hit }}" --zig "${{ env.ZIG_VERSION }}" --all
 
+      # A saved bottle already passed this compile check for the same inputs.
       - name: Build custom target without Ghostty VT
+        if: steps.bottle.outputs.cache-hit != 'true'
         working-directory: packages/native
         run: zig build -Dlibrary-target=x86_64-freebsd -Doptimize=ReleaseFast
+
+      - name: Save native bottle
+        if: steps.bottle.outputs.cache-hit != 'true'
+        uses: ./.github/actions/save-native-bottle
+        with:
+          key: ${{ steps.bottle.outputs.key }}
+          zig-version: ${{ env.ZIG_VERSION }}
 
       - name: Verify release symbol archives
         run: bun packages/core/scripts/package-native-symbols.ts
@@ -80,7 +88,9 @@ jobs:
 
   test:
     name: Test (${{ matrix.os }})
-    needs: build
+    permissions:
+      contents: read
+      actions: read
     strategy:
       fail-fast: false
       matrix:
@@ -99,6 +109,14 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v6
 
+      # Hash native files before install and test steps write into packages/native.
+      - name: Restore native test result
+        id: native-tested
+        uses: actions/cache/restore@v5
+        with:
+          path: .native-tests-passed
+          key: native-tests-v1-${{ matrix.os }}-${{ env.ZIG_VERSION }}-${{ hashFiles('packages/native/**', '.github/workflows/build-core.yml') }}
+
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
         with:
@@ -110,27 +128,66 @@ jobs:
           node-version: ${{ env.NODE_VERSION }}
 
       - name: Setup Zig
+        if: steps.native-tested.outputs.cache-hit != 'true'
         uses: mlugg/setup-zig@v2
         with:
           version: ${{ env.ZIG_VERSION }}
           use-cache: false
 
-      - name: Restore Zig cache
-        if: runner.os != 'Windows'
-        uses: actions/cache@v5
-        with:
-          path: packages/native/.zig-cache
-          key: zig-v1-${{ runner.os }}-${{ env.ZIG_VERSION }}-${{ github.run_id }}-${{ github.job }}
-          restore-keys: zig-v1-${{ runner.os }}-${{ env.ZIG_VERSION }}-
-
       - name: Install dependencies
         run: bun install
 
+      - name: Enable Linux core dumps
+        if: runner.os == 'Linux'
+        uses: ./.github/actions/enable-linux-coredumps
+
+      # Native tests build from source, so they run before this job gets the cross-compiled library.
+      - name: Run native tests
+        if: steps.native-tested.outputs.cache-hit != 'true'
+        working-directory: packages/core
+        run: |
+          if [ "$(uname -s)" = Linux ]; then ulimit -c unlimited; fi
+          bun run test:native
+          echo "${{ github.sha }}" > ../../.native-tests-passed
+
+      - name: Save native test result
+        if: steps.native-tested.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v5
+        with:
+          path: .native-tests-passed
+          key: ${{ steps.native-tested.outputs.cache-primary-key }}
+
+      # This job does not need the build job. Without a cached library for this runner, it waits for
+      # this run's cross-compile only now, so its setup and native tests overlap the build.
+      - name: Restore native host bottle
+        id: bottle
+        uses: ./.github/actions/restore-native-host-bottle
+        with:
+          zig-version: ${{ env.ZIG_VERSION }}
+
+      - name: Install native host bottle
+        if: steps.bottle.outputs.cache-hit == 'true'
+        run: bun scripts/native-bottle.ts package --hit true --zig "${{ env.ZIG_VERSION }}" --skip-symbols
+
+      - name: Wait for native libraries
+        if: steps.bottle.outputs.cache-hit != 'true'
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: bun scripts/wait-for-job.ts --name "Build Native Libraries"
+
       - name: Download native artifacts
+        if: steps.bottle.outputs.cache-hit != 'true'
         uses: actions/download-artifact@v8
         with:
           name: native-libraries
           path: packages/core/node_modules/@opentui/
+
+      # Package workflows restore this runner's library instead of building it.
+      - name: Save native host bottle
+        if: steps.bottle.outputs.cache-hit != 'true'
+        uses: ./.github/actions/save-native-host-bottle
+        with:
+          zig-version: ${{ env.ZIG_VERSION }}
 
       - name: Verify native library
         run: |
@@ -138,33 +195,43 @@ jobs:
           ls -la packages/core/node_modules/@opentui/
           ls -la packages/core/node_modules/@opentui/core-${{ matrix.platform }}/
 
-      - name: Enable Linux core dumps
-        if: runner.os == 'Linux'
-        uses: ./.github/actions/enable-linux-coredumps
-
-      - name: Run native tests
-        working-directory: packages/core
-        run: |
-          if [ "$(uname -s)" = Linux ]; then ulimit -c unlimited; fi
-          bun run test:native
-
       - name: Build TypeScript library
         run: |
           cd packages/core
           bun run build:lib
 
-      - name: Run TypeScript tests
-        run: |
-          if [ "$(uname -s)" = Linux ]; then ulimit -c unlimited; fi
-          cd packages/core
-          export OTUI_TREE_SITTER_WORKER_PATH="$(bun -e 'import { resolve } from "node:path"; console.log(resolve("dist/parser.worker.js"))')"
-          bun run test:js
-
-      - name: Run Node TypeScript tests
+      # Both lanes run the same tests on fixed paths under the temp directory, so the Node lane gets its own.
+      - name: Run Bun and Node TypeScript tests
         working-directory: packages/core
         run: |
           if [ "$(uname -s)" = Linux ]; then ulimit -c unlimited; fi
-          bun run test:js:node
+          node_tmp="$RUNNER_TEMP/node-tests"
+          node_log="$RUNNER_TEMP/test-js-node.log"
+          mkdir -p "$node_tmp"
+          (
+            start=$SECONDS
+            status=0
+            TMPDIR="$node_tmp" TEMP="$node_tmp" TMP="$node_tmp" bun run test:js:node || status=$?
+            echo "Node TypeScript tests took $((SECONDS - start))s"
+            exit "$status"
+          ) > "$node_log" 2>&1 &
+          node_pid=$!
+
+          # test:js leaves the pipe it writes to non-blocking. Without cat in between, printing the Node log
+          # to the step output fails with EAGAIN.
+          start=$SECONDS
+          bun_status=0
+          OTUI_TREE_SITTER_WORKER_PATH="$(bun -e 'import { resolve } from "node:path"; console.log(resolve("dist/parser.worker.js"))')" \
+            bun run test:js 2>&1 | cat || bun_status=$?
+          echo "Bun TypeScript tests took $((SECONDS - start))s"
+
+          node_status=0
+          wait "$node_pid" || node_status=$?
+          if [ "$node_status" = 0 ]; then echo "::group::Node TypeScript tests"; fi
+          cat "$node_log"
+          if [ "$node_status" = 0 ]; then echo "::endgroup::"; fi
+          echo "Bun tests exited with $bun_status, Node tests with $node_status"
+          [ "$bun_status" = 0 ] && [ "$node_status" = 0 ]
 
       - name: Test packed distribution
         if: runner.os == 'Linux'
@@ -189,6 +256,90 @@ jobs:
         uses: ./.github/actions/upload-linux-coredumps
         with:
           name: crash-dumps-core-${{ matrix.os }}-${{ github.run_attempt }}
+
+  # Each package's Windows tests take seconds, and a Windows runner takes about a minute to set up, so
+  # the packages share this job. Their own workflows test them on Linux and macOS.
+  packages-windows:
+    name: Test packages (Windows)
+    permissions:
+      contents: read
+      actions: read
+    runs-on: blacksmith-8vcpu-windows-2025
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.1
+
+      - name: Install dependencies
+        run: bun install
+
+      - name: Restore native host bottle
+        id: bottle
+        uses: ./.github/actions/restore-native-host-bottle
+        with:
+          zig-version: ${{ env.ZIG_VERSION }}
+
+      - name: Install native host bottle
+        if: steps.bottle.outputs.cache-hit == 'true'
+        run: bun scripts/native-bottle.ts package --hit true --zig "${{ env.ZIG_VERSION }}" --skip-symbols
+
+      - name: Wait for native libraries
+        if: steps.bottle.outputs.cache-hit != 'true'
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: bun scripts/wait-for-job.ts --name "Build Native Libraries"
+
+      - name: Download native artifacts
+        if: steps.bottle.outputs.cache-hit != 'true'
+        uses: actions/download-artifact@v8
+        with:
+          name: native-libraries
+          path: packages/core/node_modules/@opentui/
+
+      - name: Build packages
+        id: build
+        run: |
+          (cd packages/core && bun run build:lib)
+          for package in react solid keymap; do (cd "packages/$package" && bun run build --ci); done
+          for package in qrcode ssh; do (cd "packages/$package" && bun run build); done
+
+      # Run every package's tests even when an earlier package fails.
+      - name: Typecheck SSH
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        working-directory: packages/ssh
+        run: bun run typecheck
+
+      - name: Test React
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        working-directory: packages/react
+        run: bun run test
+
+      - name: Test Solid
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        working-directory: packages/solid
+        run: bun run test
+
+      - name: Test Keymap
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        working-directory: packages/keymap
+        run: bun run test
+
+      - name: Test QRCode
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        working-directory: packages/qrcode
+        run: bun run test
+
+      - name: Test SSH
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        working-directory: packages/ssh
+        run: bun run test
 
   bun-1-compat:
     name: Bun 1.3 compatibility
@@ -226,13 +377,13 @@ jobs:
   # Gate job for branch protection
   build-complete:
     name: Core - Build and Test
-    needs: [test, bun-1-compat]
+    needs: [build, test, packages-windows, bun-1-compat]
     runs-on: blacksmith-4vcpu-ubuntu-2404
     if: always()
     steps:
       - name: Check test results
         run: |
-          if [ "${{ needs.test.result }}" != "success" ] || [ "${{ needs['bun-1-compat'].result }}" != "success" ]; then
+          if [ "${{ needs.build.result }}" != "success" ] || [ "${{ needs.test.result }}" != "success" ] || [ "${{ needs['packages-windows'].result }}" != "success" ] || [ "${{ needs['bun-1-compat'].result }}" != "success" ]; then
             echo "Tests failed"
             exit 1
           fi

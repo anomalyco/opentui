@@ -1,0 +1,89 @@
+---
+import type { MousePointerStyle } from "@opentui/core"
+
+const groups = [
+  { label: "General", styles: ["auto", "default", "none"] },
+  { label: "Links and status", styles: ["context-menu", "help", "pointer", "progress", "wait"] },
+  { label: "Selection", styles: ["cell", "crosshair", "text", "vertical-text"] },
+  {
+    label: "Drag and drop",
+    styles: ["alias", "copy", "move", "no-drop", "not-allowed", "grab", "grabbing", "all-scroll"],
+  },
+  {
+    label: "Resize",
+    styles: [
+      "col-resize",
+      "row-resize",
+      "n-resize",
+      "e-resize",
+      "s-resize",
+      "w-resize",
+      "ne-resize",
+      "nw-resize",
+      "se-resize",
+      "sw-resize",
+      "ew-resize",
+      "ns-resize",
+      "nesw-resize",
+      "nwse-resize",
+    ],
+  },
+  { label: "Zoom", styles: ["zoom-in", "zoom-out"] },
+] satisfies Array<{ label: string; styles: MousePointerStyle[] }>
+---
+
+<dl class="pointer-groups">
+  {
+    groups.map((group) => (
+      <div class="pointer-group">
+        <dt>{group.label}</dt>
+        <dd>
+          {group.styles.map((style) => (
+            <span class="pointer-style" style={`cursor: ${style}`}><code>{style}</code></span>
+          ))}
+        </dd>
+      </div>
+    ))
+  }
+</dl>
+
+<style>
+  .pointer-groups {
+    margin-block: 0 1.5rem;
+  }
+
+  .pointer-group {
+    display: grid;
+    grid-template-columns: 8rem minmax(0, 1fr);
+    gap: 0.75rem;
+    padding-block: 0.375rem;
+    border-block-end: 1px solid GrayText;
+  }
+
+  .pointer-group:first-child {
+    border-block-start: 1px solid GrayText;
+  }
+
+  dt {
+    font-weight: 700;
+  }
+
+  dd {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.375rem 0.75rem;
+    margin: 0;
+  }
+
+  .pointer-style {
+    display: inline-block;
+    white-space: nowrap;
+  }
+
+  @media (max-width: 30rem) {
+    .pointer-group {
+      grid-template-columns: 1fr;
+      gap: 0.375rem;
+    }
+  }
+</style>

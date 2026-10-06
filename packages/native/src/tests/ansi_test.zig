@@ -16,3 +16,16 @@ test "packed RGBA stores metadata" {
     try std.testing.expectEqual(@as(u8, 9), ansi.slot(color));
     try std.testing.expectEqual(ansi.ColorIntent.indexed, ansi.intent(color));
 }
+
+test "OSC 22 mouse pointer uses ST terminator" {
+    var buffer: [64]u8 = undefined;
+    var writer: std.Io.Writer = .fixed(&buffer);
+
+    try ansi.ANSI.setMousePointerOutput(&writer, "pointer");
+
+    try std.testing.expectEqualStrings("\x1b]22;pointer\x1b\\", writer.buffered());
+}
+
+test "OSC 22 mouse pointer reset uses ST terminator" {
+    try std.testing.expectEqualStrings("\x1b]22;\x1b\\", ansi.ANSI.resetMousePointer);
+}

@@ -19,7 +19,7 @@ prepareCorePackage()
 buildNodeExamples()
 copyCoreDistPackage()
 
-const result = spawnSync(nodePath, ["--experimental-ffi", "--no-warnings", bundleEntry], {
+const result = spawnSync(nodePath, ["--experimental-ffi", "--no-warnings", bundleEntry, ...process.argv.slice(2)], {
   cwd: packageRoot,
   stdio: "inherit",
   env: {

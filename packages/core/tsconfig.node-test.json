@@ -103,6 +103,7 @@
     "src/tests/renderable.snapshot.test.ts",
     "src/tests/allocator-stats.test.ts",
     "src/tests/audio-stream.test.ts",
+    "src/tests/audio-pcm-stream.test.ts",
     "src/tests/clipboard-native-lifecycle.test.ts",
     "src/tests/audio.test.ts",
     "src/tests/image-icc-allocation-child.ts",

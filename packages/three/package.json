@@ -1,6 +1,6 @@
 {
   "name": "@opentui/three",
-  "version": "0.5.10",
+  "version": "0.5.14",
   "description": "Three.js WebGPU renderer for OpenTUI",
   "license": "MIT",
   "repository": {
@@ -14,7 +14,7 @@
   "type": "module",
   "scripts": {
     "build": "bun scripts/build.ts",
-    "publish": "bun scripts/publish.ts"
+    "publish": "bun ../../scripts/npm-publish.ts publish @opentui/three"
   },
   "exports": {
     ".": {

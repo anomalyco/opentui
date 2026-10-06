@@ -145,6 +145,7 @@ const emittedAllowlist = [
   ".node-test/src/tests/renderable.snapshot.test.js",
   ".node-test/src/tests/allocator-stats.test.js",
   ".node-test/src/tests/audio-stream.test.js",
+  ".node-test/src/tests/audio-pcm-stream.test.js",
   ".node-test/src/tests/clipboard-native-lifecycle.test.js",
   ".node-test/src/tests/audio.test.js",
   ".node-test/src/tests/image-renderable.test.js",

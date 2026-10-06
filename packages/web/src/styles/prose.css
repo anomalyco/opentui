@@ -164,17 +164,19 @@
   width: max-content;
   min-width: 0;
   margin: 0;
-  padding: 0;
+  /* Leave room for glyph bounds beyond the tight diagram line boxes. */
+  padding: 0.1em 0;
   border: 0;
-  overflow: visible;
+  /* Override Shiki's inline overflow-x. Only the outer figure may scroll. */
+  overflow: visible !important;
   font-size: inherit;
   line-height: 1.2;
   font-variant-ligatures: none;
+  /* Keep diagram symbols in one cell, including arrows with wide font variants. */
+  font-feature-settings: "NWID";
 }
 
 .prose .terminal-frame {
-  /* Keep ambiguous-width symbols in the same single cells as the terminal. */
-  font-feature-settings: "NWID";
   --terminal-color-235: color-mix(in srgb, var(--page-color) 7%, var(--page-background));
   --terminal-color-238: color-mix(in srgb, var(--page-color) 16%, var(--page-background));
   --terminal-color-243: var(--terminal-color-238);

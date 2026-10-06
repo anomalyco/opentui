@@ -337,6 +337,22 @@ export class TextTableRenderable extends Renderable {
     this.invalidateRasterOnly()
   }
 
+  public get fg(): RGBA {
+    return this._defaultFg
+  }
+
+  public set fg(value: ColorInput | undefined) {
+    const next = parseColor(value ?? this._defaultOptions.fg)
+    if (this._defaultFg.equals(next)) return
+    this._defaultFg = next
+    for (const row of this._cells) {
+      for (const cell of row) {
+        cell.textBuffer.setDefaultFg(next)
+      }
+    }
+    this.invalidateRasterOnly()
+  }
+
   public shouldStartSelection(x: number, y: number): boolean {
     if (!this.selectable) return false
 

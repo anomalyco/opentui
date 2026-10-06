@@ -1501,6 +1501,26 @@ describe("TextRenderable Selection", () => {
       expect(frame).toMatchSnapshot()
     })
 
+    it("should align each line and update alignment at runtime", async () => {
+      const { text } = await createTextRenderable(currentRenderer, {
+        content: "hi\nworld",
+        width: 10,
+        height: 2,
+        textAlign: "center",
+      })
+
+      const rows = () =>
+        captureFrame()
+          .split("\n", 2)
+          .map((row) => row.slice(0, 10))
+      expect(rows()).toEqual(["    hi    ", "  world   "])
+
+      text.textAlign = "right"
+      await renderOnce()
+
+      expect(rows()).toEqual(["        hi", "     world"])
+    })
+
     it("should render text with tab indicator correctly", async () => {
       await createTextRenderable(currentRenderer, {
         content: "Line 1\tTabbed\nLine 2\t\tDouble tab",

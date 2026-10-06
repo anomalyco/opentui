@@ -37,13 +37,6 @@ jobs:
           version: ${{ env.ZIG_VERSION }}
           use-cache: false
 
-      - name: Restore Zig cache
-        uses: actions/cache@v5
-        with:
-          path: packages/native/.zig-cache
-          key: zig-v1-${{ runner.os }}-${{ env.ZIG_VERSION }}-${{ github.run_id }}-${{ github.job }}
-          restore-keys: zig-v1-${{ runner.os }}-${{ env.ZIG_VERSION }}-
-
       - name: Install dependencies
         run: bun install
 

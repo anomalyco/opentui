@@ -189,7 +189,8 @@ jobs:
           echo "PRODUCTION MODE - Publishing to npm"
           echo "=========================================="
 
-          # The publish script runs pre-publish validation before publishing.
+          # Validates, publishes dependencies first, skips versions an earlier attempt already published,
+          # and waits until npm serves every package.
           bun run publish
 
           echo ""

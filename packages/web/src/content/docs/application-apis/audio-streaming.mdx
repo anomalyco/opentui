@@ -1,16 +1,106 @@
 ---
 title: Streaming audio
-description: Play bounded MP3 or FLAC streams from byte sources, URLs, and custom transports
+description: Play bounded PCM, MP3, or FLAC streams through the native audio mixer
 skill:
   entry: true
-  intents: [audio-streaming, audio-stream, radio, mp3, flac, icy, backpressure, reconnect]
+  intents: [audio-streaming, audio-stream, pcm, f32le, radio, mp3, flac, icy, backpressure, reconnect]
 ---
 
 # Streaming audio
 
-OpenTUI streams encoded MP3 or FLAC data into the native audio mixer. Streaming starts before the complete source arrives.
+OpenTUI streams PCM, MP3, or FLAC bytes into the native audio mixer. Streaming starts before the complete source arrives.
 
-Use streaming for long media, internet radio, or a transport that supplies encoded chunks over time. Use [loaded sounds](/docs/core-concepts/audio#load-sounds) for short, reusable audio.
+Use streaming for generated audio, external decoders, long media, or internet radio. Use [loaded sounds](/docs/core-concepts/audio#load-sounds) for short, reusable audio.
+
+## Play decoded PCM
+
+Pass `format: "pcm"`, `sampleFormat: "f32le"`, `sampleRate`, and `channels` to `audio.playStream()`. The source is a `ReadableStream<Uint8Array>` or `AsyncIterable<Uint8Array>`, just like encoded audio. Playback returns the same `AudioStream` with the same controls, metadata, statistics, and lifecycle.
+
+```typescript
+import { Audio, type AudioStream } from "@opentui/core"
+
+const audio = Audio.create({ autoStart: false })
+audio.on("error", (error) => console.error(error))
+let stream: AudioStream | undefined
+
+async function* tone(): AsyncGenerator<Uint8Array> {
+  const framesPerChunk = 441
+  const chunk = new Uint8Array(framesPerChunk * 4)
+  const view = new DataView(chunk.buffer)
+  for (let offset = 0; offset < 44100; offset += framesPerChunk) {
+    for (let frame = 0; frame < framesPerChunk; frame++) {
+      const sample = Math.sin((2 * Math.PI * 440 * (offset + frame)) / 44100) * 0.15
+      view.setFloat32(frame * 4, sample, true)
+    }
+    yield chunk
+    // Reuse the buffer only after the generator resumes.
+  }
+}
+
+try {
+  if (!audio.start()) throw new Error("No playback device is available")
+  stream = await audio.playStream(tone(), {
+    format: "pcm",
+    sampleFormat: "f32le",
+    sampleRate: 44100,
+    channels: 1,
+    buffer: { capacityMs: 500, startupMs: 20, resumeMs: 20 },
+  })
+  stream.on("error", (error) => console.error(error))
+  await stream.closed
+} finally {
+  try {
+    stream?.dispose()
+    await stream?.closed
+  } finally {
+    audio.dispose()
+  }
+}
+```
+
+### PCM format and ownership
+
+- Each sample is a finite 32-bit float encoded in little-endian byte order, nominally in `[-1, 1]`. Input is interleaved: mono is one sample per frame; stereo is left, right, left, right.
+- `channels` is `1` or `2`. `sampleRate` is an integer from `8000` through `192000` Hz. The engine rate must be in that range too. Native conversion duplicates mono into stereo and resamples to the engine rate, preserving conversion history between chunks.
+- Byte chunks may split samples or frames at any boundary. OpenTUI carries incomplete input between reads. EOF with a partial final frame is an error. Empty chunks are accepted.
+- Do not mutate, transfer, or detach a chunk while OpenTUI consumes it. An async generator may reuse its yielded buffer when the generator resumes. A `ReadableStream` producer must not reuse a queued buffer before it is consumed. Shared backing memory is rejected.
+
+For generated or captured `Float32Array` samples, encode bytes explicitly rather than relying on the machine's native byte order:
+
+```typescript
+async function* pcmBytes(source: AsyncIterable<Float32Array>): AsyncGenerator<Uint8Array> {
+  for await (const samples of source) {
+    const bytes = new Uint8Array(samples.length * 4)
+    const view = new DataView(bytes.buffer)
+    for (let i = 0; i < samples.length; i++) {
+      view.setFloat32(i * 4, samples[i], true)
+    }
+    yield bytes
+  }
+}
+```
+
+Pass `pcmBytes(source)` to `playStream()` with the source's sample rate and channel count. For direct capture reads, encode only the first `framesRead * channels` samples.
+
+An external decoder's `f32le` byte pipe can be passed directly as the source. Applications own decoder processes and must stop them on cancellation. OpenTUI cancels the reader or returns the iterator; the source must release its resources in `cancel()`, iterator cleanup, or a connector's `close()` callback. Make pending external reads respond to cancellation too.
+
+### PCM buffering and completion
+
+PCM uses the shared buffer defaults: `capacityMs: 2000`, `startupMs: 1000`, and `resumeMs: 1000`. The example explicitly lowers them to `500`, `20`, and `20` milliseconds for low latency.
+
+PCM uses the same native worker and 256 KiB input queue as MP3 and FLAC. The worker converts input in batches of at most 2048 frames into the output ring. A full output ring pauses the worker; a full input queue backpressures the source. Accepted bytes need not already be converted. Native code retains no JavaScript pointers.
+
+Source EOF automatically flushes the demuxer and signals the worker to finish conversion, including its tail, then drains queued audio. Await `stream.closed` for terminal cleanup; there is no separate write or end call. `closed` never rejects, so attach an `error` listener to observe playback failures. It resolves after cancellation and errors too.
+
+Start the audio device first, or call `audio.startMixer()` and consume `audio.mixFrames()` regularly. A stopped mixer cannot drain queued audio. Completion means the mixer consumed the stream, not that the device physically presented the final sample.
+
+Use the existing `setVolume()`, `setPan()`, `setGroup()`, and `dispose()` methods. Input format stays fixed for the stream's lifetime. For a track switch or rate change, dispose the old stream and open another source. Streaming has no public pause, resume, clear, write, or end methods.
+
+The same PCM options work with `playStreamUrl()` and `playStreamSource()`, including custom demuxers where supported. PCM reconnect is not supported: passing `reconnect` rejects before the source opens.
+
+PCM uses the shared [statistics](#members-state-and-statistics): `bytesReceived` counts accepted input bytes, including a pending partial frame; `framesDecoded` counts converted engine-rate output, including the conversion tail. There is no separate input-frame counter.
+
+Run the [generated-tone example](https://github.com/anomalyco/opentui/blob/main/packages/examples/src/pcm-playback.ts) from the examples package with `bun src/pcm-playback.ts`. Add `--headless` to exercise conversion and mixing without an output device.
 
 ## Play a URL
 
@@ -86,39 +176,44 @@ The three entry methods own different source policies.
 
 `playStreamSource()` accepts an `AudioStreamConnector<I>`. Its `demuxer(info)` callback can create transport-specific framing for each connection.
 
-All methods support only `format: "mp3"` and `format: "flac"`. The default is `"mp3"`.
+All methods support `format: "pcm"`, `format: "mp3"`, and `format: "flac"`. The default is `"mp3"`.
 
-The promise resolves after the native decoder becomes ready. The stream is usually still in `buffering` state at that time.
+The promise resolves after native playback setup is ready. Encoded streams must probe their decoder first; PCM already has an explicit input format. The stream is usually still in `buffering` state at that time.
 
 ## Shared options
 
 | Option              | Default   | Constraint or effect                                           |
 | ------------------- | --------- | -------------------------------------------------------------- |
-| `format`            | `"mp3"`   | `"mp3"` or `"flac"`                                            |
+| `format`            | `"mp3"`   | `"pcm"`, `"mp3"`, or `"flac"`                                  |
+| `sampleFormat`      | None      | Required for PCM; only `"f32le"`                               |
+| `sampleRate`        | None      | Required for PCM; integer from `8000` through `192000` Hz      |
+| `channels`          | None      | Required for PCM; `1` or `2`                                   |
 | `volume`            | `1`       | Native playback clamps it to `0..4`                            |
 | `pan`               | `0`       | Native playback clamps it to `-1..1`                           |
 | `groupId`           | `0`       | Must be an unsigned 32-bit ID for a group in the owning engine |
 | `buffer.capacityMs` | `2000`    | Decoded PCM capacity                                           |
 | `buffer.startupMs`  | `1000`    | Initial playback threshold                                     |
 | `buffer.resumeMs`   | `1000`    | Resume threshold after an underrun                             |
-| `maxProbeBytes`     | `1048576` | Maximum encoded bytes inspected while the decoder starts       |
+| `maxProbeBytes`     | `1048576` | Maximum encoded bytes inspected during startup; unused for PCM |
 | `signal`            | None      | Cancels setup, source work, reconnect delays, and playback     |
 
 The three buffer durations and `maxProbeBytes` must be positive unsigned 32-bit integers. Startup and resume durations cannot exceed capacity.
 
-The decoder produces stereo interleaved Float32 PCM at `audio.sampleRate`. The maximum decoded capacity is `268,435,452` stereo frames.
+`sampleFormat`, `sampleRate`, and `channels` are PCM-only options. Supplying them for an encoded format rejects setup.
 
-An encoded stream uses one of the engine's 32 combined loaded-voice and stream slots.
+All formats produce stereo interleaved Float32 PCM at `audio.sampleRate`. PCM conversion requires an engine rate from `8000` through `192000` Hz. The maximum output capacity is `268,435,452` stereo frames.
+
+Each stream uses one of the engine's 32 combined loaded-voice and stream slots.
 
 ## Start, underrun, and EOF behavior
 
-The decoder fills the PCM ring before playback crosses `startupMs`. Calls to `mixFrames()` return silence for that stream below the initial threshold.
+Decoding or conversion fills the PCM ring before playback crosses `startupMs`. Calls to `mixFrames()` return silence for that stream below the initial threshold.
 
 After playback starts, starvation changes the stream to `buffering` and increments `underruns` once. Playback resumes when PCM reaches `resumeMs`.
 
-If the decoder reaches EOF with some PCM, playback can start or resume below either threshold. It drains the final frames before the stream ends.
+If input reaches EOF with some PCM, playback can start or resume below either threshold. It drains the final frames before the stream ends.
 
-Clean source EOF first flushes the demuxer. OpenTUI then marks encoded input complete and waits for decoded PCM to drain.
+Clean source EOF first flushes the demuxer. OpenTUI then finishes decoding or flushes the PCM converter and waits for output to drain.
 
 `ended` and `closed` can remain pending when no output consumes the decoded ring. Call `start()`, or call `startMixer()` and `mixFrames()` at a regular cadence.
 
@@ -130,11 +225,12 @@ OpenTUI bounds these internal layers:
 
 | Layer                    | Bound                                                  |
 | ------------------------ | ------------------------------------------------------ |
-| Native encoded input     | `256 KiB` per stream                                   |
-| Native decoded PCM       | `buffer.capacityMs`, up to `268,435,452` stereo frames |
+| Native input bytes       | `256 KiB` per stream                                   |
+| Native output PCM        | `buffer.capacityMs`, up to `268,435,452` stereo frames |
+| Native PCM conversion    | `2048` input frames per batch plus one partial frame   |
 | JavaScript source demand | One active `read()` or iterator `next()`               |
 
-OpenTUI finishes the current source chunk before it requests the next chunk. A full native encoded ring applies backpressure to that chunk.
+OpenTUI copies the current source chunk into the native input queue before it requests the next chunk. A full input queue applies backpressure to that chunk. `buffer.capacityMs` bounds the output ring, not audio also waiting in the input queue or worker batch.
 
 A blocked native write retries at 5 ms intervals. This polling exists only while that write has no space.
 
@@ -154,10 +250,11 @@ Readiness and EOF use short-lived polling. The stream does not keep a persistent
 | ------ | ------------------------------------------------------------------------------------ |
 | MP3    | `audio/mpeg`, `audio/mp3`, `application/mp3`, `application/octet-stream`, or missing |
 | FLAC   | `audio/flac`, `audio/x-flac`, `application/octet-stream`, or missing                 |
+| PCM    | `audio/pcm`, `application/octet-stream`, or missing                                  |
 
 Validation ignores case and parameters such as `charset=binary`. It evaluates every initial and replacement response before native stream allocation or byte ingestion.
 
-Use `contentTypePolicy: "ignore"` when the server has an incorrect label. The decoder still validates the encoded data.
+Use `contentTypePolicy: "ignore"` when the server has an incorrect label. Audio input validation still applies. For PCM, headers do not replace the required sample format, rate, and channel options.
 
 A callback policy receives `{ format, contentType, status, url }` and must return a boolean. The `url` is the effective response URL after redirects.
 
@@ -197,7 +294,7 @@ A replacement response without ICY headers sets metadata to `null` and emits `me
 
 ## Reconnect URL streams
 
-Reconnect is opt-in. Pass a `reconnect` object to enable it.
+Reconnect is opt-in for MP3 and FLAC. Pass a `reconnect` object to enable it. PCM rejects this option before opening a URL or custom source.
 
 | Option           | Default    | Constraint or effect                    |
 | ---------------- | ---------- | --------------------------------------- |
@@ -280,7 +377,7 @@ interface AudioStreamDemuxer<M> {
 }
 ```
 
-OpenTUI consumes outputs in iterable order. It sends audio outputs to the native decoder and publishes metadata outputs.
+OpenTUI consumes outputs in iterable order. It sends audio outputs to the decoder or PCM converter and publishes metadata outputs. For `format: "pcm"`, demuxer audio outputs contain `f32le` bytes and may split samples or frames.
 
 Clean EOF calls `flush()` and consumes all flush outputs before native EOF. An interruption calls `abort()` instead of `flush()`.
 
@@ -312,7 +409,7 @@ OpenTUI calls `close()` at most once for each returned connection. It ignores ex
 
 | `AudioStream` member | Behavior                                                       |
 | -------------------- | -------------------------------------------------------------- |
-| `format`             | Resolved `"mp3"` or `"flac"` value                             |
+| `format`             | Resolved `"pcm"`, `"mp3"`, or `"flac"` value                   |
 | `state`              | Latest cached lifecycle snapshot                               |
 | `getStats()`         | Refreshes native state and returns current or final statistics |
 | `getMetadata()`      | Returns the latest metadata snapshot or `null`                 |
@@ -328,18 +425,20 @@ Controls remain active across reconnects. They return `false` after terminal cle
 
 `getStats()` returns these fields:
 
-| Field                              | Meaning                                           |
-| ---------------------------------- | ------------------------------------------------- |
-| `state`                            | Refreshed lifecycle state                         |
-| `sampleRate`, `channels`           | Decoded PCM format                                |
-| `bufferedFrames`, `capacityFrames` | Current decoded ring use and capacity             |
-| `bufferedDurationMs`               | Current decoded duration                          |
-| `bytesReceived`                    | Encoded audio bytes accepted from demuxer outputs |
-| `framesDecoded`, `framesPlayed`    | Cumulative decoded and consumed frames            |
-| `underruns`                        | Starvation transitions after playback starts      |
-| `reconnectAttempts`                | Cumulative reconnect attempts                     |
+| Field                              | Meaning                                        |
+| ---------------------------------- | ---------------------------------------------- |
+| `state`                            | Refreshed lifecycle state                      |
+| `sampleRate`, `channels`           | Output format: engine sample rate and stereo   |
+| `bufferedFrames`, `capacityFrames` | Current output ring use and capacity           |
+| `bufferedDurationMs`               | Current buffered output duration               |
+| `bytesReceived`                    | Audio bytes accepted from demuxer outputs      |
+| `framesDecoded`, `framesPlayed`    | Cumulative produced and consumed output frames |
+| `underruns`                        | Starvation transitions after playback starts   |
+| `reconnectAttempts`                | Cumulative reconnect attempts                  |
 
-`bytesReceived` excludes framing and metadata bytes. Final statistics and metadata remain readable after natural completion.
+`bytesReceived` excludes framing and metadata bytes. For PCM it includes bytes held in a pending partial frame. Integer-divide by `channels * 4` using the input channel count to recover the number of complete input frames received.
+
+`framesDecoded` means decoded frames for encoded formats and converted output frames for PCM. PCM output includes conversion delay and the flushed filter tail. `framesPlayed` excludes underrun silence. Frame counters are `bigint` and use the engine rate; buffered duration excludes device buffers. Final statistics and metadata remain readable after natural completion.
 
 ## Events and errors
 
@@ -376,11 +475,13 @@ Transport, response, demuxer, native creation, and decoder setup failures reject
 
 Invalid source chunks reject or emit a `TypeError`. Cancellation uses an `AbortError` and becomes `disposed` after setup.
 
+The worker detects non-finite PCM samples and EOF with a partial input frame; either terminates playback with `AudioStreamError`. Accepting input bytes does not mean they have passed conversion. PCM follows the same setup rejection and asynchronous terminal-event rules as encoded streams.
+
 Starting a stream after its owning `Audio` was disposed rejects with `Error`. Disposing the owner also disposes pending and active streams.
 
 ## Unsupported operations
 
-Streaming does not support WAV, AAC, Ogg, Opus, HLS playlists, seeking, pause, or a public restart operation.
+Built-in streaming decoders do not support WAV, AAC, Ogg, Opus, or HLS playlists. Applications can decode externally and supply PCM bytes instead. Streaming has no seeking, pause, resume, clear, or public restart operation.
 
 The `restart` error action belongs to internal reconnect work. It is not an `AudioStream` method.
 

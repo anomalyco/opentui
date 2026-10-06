@@ -66,6 +66,7 @@ export class DiffRenderable extends Renderable {
   private _fg?: RGBA
   private _filetype?: string
   private _syntaxStyle?: SyntaxStyle
+  private _defaultSyntaxStyle?: SyntaxStyle
   private _wrapMode?: "word" | "char" | "none"
   private _conceal: boolean
   private _selectionBg?: RGBA
@@ -299,12 +300,27 @@ export class DiffRenderable extends Renderable {
     this._lineInfoChangeHandler = null
   }
 
-  public override destroyRecursively(): void {
+  protected override destroySelf(): void {
     this.detachLineInfoListeners()
     this.pendingRebuild = false
     this.leftSideAdded = false
     this.rightSideAdded = false
-    super.destroyRecursively()
+    for (const node of [this.leftSide, this.rightSide, this.errorTextRenderable, this.errorCodeRenderable]) {
+      node?.destroyRecursively()
+    }
+    this.leftSide = null
+    this.rightSide = null
+    this.leftCodeRenderable = null
+    this.rightCodeRenderable = null
+    this.errorTextRenderable = null
+    this.errorCodeRenderable = null
+    this._defaultSyntaxStyle?.destroy()
+    this._defaultSyntaxStyle = undefined
+    super.destroySelf()
+  }
+
+  private getCodeSyntaxStyle(): SyntaxStyle {
+    return this._syntaxStyle ?? (this._defaultSyntaxStyle ??= SyntaxStyle.create())
   }
 
   private buildErrorView(): void {
@@ -342,7 +358,7 @@ export class DiffRenderable extends Renderable {
         id: this.id ? `${this.id}-error-code` : undefined,
         content: this._diff,
         filetype: "diff",
-        syntaxStyle: this._syntaxStyle ?? SyntaxStyle.create(),
+        syntaxStyle: this.getCodeSyntaxStyle(),
         wrapMode: this._wrapMode,
         conceal: this._conceal,
         width: "100%",
@@ -379,7 +395,7 @@ export class DiffRenderable extends Renderable {
         filetype: this._filetype,
         wrapMode,
         conceal: this._conceal,
-        syntaxStyle: this._syntaxStyle ?? SyntaxStyle.create(),
+        syntaxStyle: this.getCodeSyntaxStyle(),
         width: "100%",
         height: "100%",
         ...(this._fg !== undefined && { fg: this._fg }),

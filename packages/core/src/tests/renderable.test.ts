@@ -890,6 +890,18 @@ describe("Renderable - Child Management", () => {
     expect(grandchild.height).toBeGreaterThan(0)
   })
 
+  test("child added during the layout pass is sized by the next pass", async () => {
+    const sizes: number[][] = []
+    const child = new TestRenderable(testRenderer, { flexGrow: 1, onSizeChange: () => sizes.push([child.width]) })
+    const parent = new TestRenderable(testRenderer, { width: "100%", onSizeChange: () => parent.add(child) })
+    testRenderer.root.add(parent)
+
+    await renderOnce()
+    await renderOnce()
+
+    expect(sizes).toEqual([[testRenderer.width]])
+  })
+
   test("children added via insertBefore receive correct layout on first render", async () => {
     const parent = new TestRenderable(testRenderer, {
       id: "parent",
