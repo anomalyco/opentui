@@ -1,16 +1,21 @@
 name: Release
 
-# A push to main, or to a maintenance branch of an older line such as 0.5.x, releases when it raises the
-# version in packages/core/package.json: a "Release vX.Y.Z" commit, pushed by `bun run release` or
-# merged from the pull request that the release button opens. A vX.Y.Z-dry.N tag is a dry run. A tag
-# that contains "snapshot" publishes a snapshot.
+# A push of a vX.Y.Z tag releases that version: `bun run release` pushes the tag with its "Release
+# vX.Y.Z" commit. The Windows signing in Azure trusts only runs on a tag.
+#
+# A push to main, or to a maintenance branch of an older line such as 0.5.x, that raises the version
+# in packages/core/package.json releases it when the version has no tag yet: a release commit merged
+# from the pull request that the release button opens. That run tags the commit itself, and needs Azure
+# to trust main and the maintenance branches.
+#
+# A vX.Y.Z-dry.N tag is a dry run. A tag that contains "snapshot" publishes a snapshot.
 on:
   push:
     branches: [main, "[0-9]+.[0-9]+.x"]
     # Path filters do not apply to tag pushes.
     paths: [packages/core/package.json]
     tags:
-      - "v*-dry.*"
+      - "v*"
       - "*snapshot*"
 
 permissions:
@@ -74,12 +79,18 @@ jobs:
         run: |
           set -euo pipefail
           if [[ "$GITHUB_REF" == refs/tags/* ]]; then
-            # Only vX.Y.Z-dry.N tags reach this job.
             TAG=${GITHUB_REF#refs/tags/v}
-            IS_DRY_RUN=true
-            VERSION=$(echo "$TAG" | sed -E 's/-dry\.[0-9]+$//')
-            RELEASE_TITLE="Release v$TAG (DRY RUN)"
-            echo "This is a DRY RUN release"
+            if [[ "$TAG" =~ -dry\. ]]; then
+              IS_DRY_RUN=true
+              VERSION=$(echo "$TAG" | sed -E 's/-dry\.[0-9]+$//')
+              RELEASE_TITLE="Release v$TAG (DRY RUN)"
+              echo "This is a DRY RUN release"
+            else
+              IS_DRY_RUN=false
+              VERSION="$TAG"
+              RELEASE_TITLE="Release v$TAG"
+              echo "This is a PRODUCTION release"
+            fi
           else
             # A version that does not go up, such as a reverted release commit, is not a release. A
             # failure of the comparison fails the job.
@@ -96,6 +107,13 @@ jobs:
             if [[ "$GITHUB_REF_NAME" =~ ^([0-9]+)\.([0-9]+)\.x$ && "$CURRENT" != "${BASH_REMATCH[1]}.${BASH_REMATCH[2]}."* ]]; then
               echo "::error::$CURRENT is not a version of $GITHUB_REF_NAME"
               exit 1
+            fi
+            # `bun run release` pushes the tag with the commit, and the run of the tag push releases it.
+            # This also skips a rerun of all jobs after the tag step below; rerun the failed jobs instead.
+            if git ls-remote --exit-code --tags origin "refs/tags/v$CURRENT" > /dev/null; then
+              echo "v$CURRENT is already tagged, so the run of its tag push releases it"
+              echo "release=false" >> "$GITHUB_OUTPUT"
+              exit 0
             fi
             TAG="$CURRENT"
             IS_DRY_RUN=false
@@ -115,11 +133,11 @@ jobs:
           echo "Is Dry Run: $IS_DRY_RUN"
           echo "Release Title: $RELEASE_TITLE"
 
-      # Before the build, so a release stops early when the tag cannot be created. Needs the "Main tags"
-      # ruleset to allow creating v* tags. A tag already at this commit, from a rerun or pushed by hand,
-      # is kept. A tag pushed with GITHUB_TOKEN starts no workflow.
+      # A release from a branch push tags its commit before the build, so it stops early when the tag
+      # cannot be created. Needs the "Main tags" ruleset to let GITHUB_TOKEN create v* tags. A tag pushed
+      # with GITHUB_TOKEN starts no workflow.
       - name: Tag the release commit
-        if: steps.extract.outputs.isDryRun == 'false'
+        if: github.ref_type == 'branch' && steps.extract.outputs.isDryRun == 'false'
         env:
           TAG: v${{ steps.extract.outputs.fullTag }}
         run: |

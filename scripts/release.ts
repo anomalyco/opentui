@@ -15,9 +15,10 @@ import { compareVersions, registryIntegrity } from "./npm-publish"
 //   bun run release <patch|minor|major|version> [--pr | --dry-run] [--no-watch]
 //
 // 1. Checks that the branch has no uncommitted changes and matches its origin branch.
-// 2. Runs prepare-release, commits "Release vX.Y.Z", and pushes the commit to the branch. That needs
-//    the right to bypass the branch rules. A maintenance branch takes only versions of its line.
-// 3. Follows the release.yml run of the commit. Its publish job ends when npm serves every package,
+// 2. Runs prepare-release, commits "Release vX.Y.Z", tags it vX.Y.Z, and pushes the commit to the
+//    branch together with the tag. That needs the right to bypass the branch and tag rules. A
+//    maintenance branch takes only versions of its line.
+// 3. Follows the release.yml run of the tag push. Its publish job ends when npm serves every package,
 //    and this script reports that time.
 //
 // --pr pushes the commit to a release/vX.Y.Z branch and opens a pull request instead. Merging it
@@ -40,7 +41,8 @@ interface Release {
   // The branch that releases it: main or a maintenance branch.
   branch: string
   sha: string
-  // The ref that was pushed, without refs/heads/ or refs/tags/.
+  // The tag whose push starts the release run, or the pull request branch. Without refs/tags/ or
+  // refs/heads/.
   ref: string
   pushedAt: number
 }
@@ -215,12 +217,14 @@ function remoteTagCommit(tag: string): string | undefined {
   return peeled?.split(/\s+/)[0] || undefined
 }
 
-function push(ref: string, sha: string): void {
+// Pushes the refs together. The last one is the ref whose push starts the release run.
+function push(refspecs: readonly string[], sha: string): void {
   try {
-    run("git", ["push", "origin", ref], { inherit: true })
+    run("git", ["push", "--atomic", "origin", ...refspecs], { inherit: true })
   } catch (error) {
     // The push can reach origin and still fail here, for example when the connection drops.
-    const target = ref.slice(ref.indexOf(":") + 1)
+    const last = refspecs.at(-1)!
+    const target = last.slice(last.indexOf(":") + 1)
     const landed = target.startsWith("refs/tags/")
       ? remoteTagCommit(target.slice("refs/tags/".length))
       : remoteSha(target)
@@ -283,16 +287,23 @@ async function pushRelease(options: Options, branch: string, base: string): Prom
 
     console.log(`Prepared ${previous} -> ${version}. Committing...`)
     run("git", ["commit", "--quiet", "--all", "--message", `Release v${version}`], { inherit: true })
-    if (options.mode === "dry-run") {
-      const name = nextDryRunTag(version)
+    if (options.mode !== "pr") {
+      const name = options.mode === "dry-run" ? nextDryRunTag(version) : `v${version}`
       run("git", ["tag", "--annotate", name, "--message", `Release ${name}`], { inherit: true })
       tag = name
     }
     const sha = git("rev-parse", "HEAD")
     stopIfInterrupted()
 
-    const ref = tag ?? prBranch ?? branch
-    push(tag ? `refs/tags/${tag}` : `HEAD:refs/heads/${ref}`, sha)
+    // A release pushes the commit with its tag. The run of the tag push releases it, with the tag as
+    // its ref, which is the ref that the Windows signing in Azure trusts.
+    const ref = tag ?? prBranch!
+    const refspecs = {
+      push: [`HEAD:refs/heads/${branch}`, `refs/tags/${ref}`],
+      "dry-run": [`refs/tags/${ref}`],
+      pr: [`HEAD:refs/heads/${ref}`],
+    }[options.mode]
+    push(refspecs, sha)
     const release = { version, branch, sha, ref, pushedAt: Date.now() }
     if (options.mode !== "push") git("switch", "--quiet", branch)
     if (prBranch) git("branch", "--quiet", "--delete", "--force", prBranch)
@@ -382,14 +393,15 @@ async function main(): Promise<void> {
   console.log(`Releasing ${repo} ${branch} at ${short(base)}: ${options.target}, ${options.mode}`)
 
   const release = await pushRelease(options, branch, base)
-  console.log(`Pushed Release v${release.version} (${short(release.sha)}) to ${release.ref}`)
+  const pushedTo = options.mode === "push" ? `${release.branch} and ${release.ref}` : release.ref
+  console.log(`Pushed Release v${release.version} (${short(release.sha)}) to ${pushedTo}`)
   if (options.mode === "pr") {
     const url = openPullRequest(repo, release)
     report([`Opened ${url}`, `- Merge it to release v${release.version}.`])
     return
   }
 
-  const tag = options.mode === "dry-run" ? release.ref : `v${release.version}`
+  const tag = release.ref
   const releaseRun = await findReleaseRun(repo, release)
   console.log(`Release run: ${releaseRun.html_url}`)
   if (!options.watch) {
