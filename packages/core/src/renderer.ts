@@ -1122,10 +1122,10 @@ export class CliRenderer extends EventEmitter implements RenderContext {
     }
     lib.setKittyImageTransport(rendererPtr, transportCode)
 
-    // Threading defaults (on everywhere except linux, where it currently
-    // crashes — likely a missing build dep).
+    // Threading defaults (on everywhere except linux and freebsd, where it
+    // is unreliable — crashes on linux, deadlocks on freebsd).
     if (config.useThread === undefined) config.useThread = true
-    if (process.platform === "linux") config.useThread = false
+    if (process.platform === "linux" || process.platform === "freebsd") config.useThread = false
     lib.setUseThread(rendererPtr, config.useThread)
 
     const kittyConfig = config.useKittyKeyboard ?? {}
