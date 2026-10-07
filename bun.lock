@@ -11,7 +11,7 @@
     },
     "packages/core": {
       "name": "@opentui/core",
-      "version": "0.5.14",
+      "version": "0.5.15",
       "dependencies": {
         "bun-ffi-structs": "0.3.1",
         "diff": "9.0.0",
@@ -28,14 +28,14 @@
         "web-tree-sitter": "0.25.10",
       },
       "optionalDependencies": {
-        "@opentui/core-darwin-arm64": "0.5.14",
-        "@opentui/core-darwin-x64": "0.5.14",
-        "@opentui/core-linux-arm64": "0.5.14",
-        "@opentui/core-linux-arm64-musl": "0.5.14",
-        "@opentui/core-linux-x64": "0.5.14",
-        "@opentui/core-linux-x64-musl": "0.5.14",
-        "@opentui/core-win32-arm64": "0.5.14",
-        "@opentui/core-win32-x64": "0.5.14",
+        "@opentui/core-darwin-arm64": "0.5.15",
+        "@opentui/core-darwin-x64": "0.5.15",
+        "@opentui/core-linux-arm64": "0.5.15",
+        "@opentui/core-linux-arm64-musl": "0.5.15",
+        "@opentui/core-linux-x64": "0.5.15",
+        "@opentui/core-linux-x64-musl": "0.5.15",
+        "@opentui/core-win32-arm64": "0.5.15",
+        "@opentui/core-win32-x64": "0.5.15",
       },
       "peerDependencies": {
         "web-tree-sitter": "0.25.10",
@@ -43,7 +43,7 @@
     },
     "packages/examples": {
       "name": "@opentui/examples",
-      "version": "0.5.14",
+      "version": "0.5.15",
       "dependencies": {
         "@dimforge/rapier2d-simd-compat": "^0.17.3",
         "@opentui/core": "workspace:*",
@@ -65,7 +65,7 @@
     },
     "packages/keymap": {
       "name": "@opentui/keymap",
-      "version": "0.5.14",
+      "version": "0.5.15",
       "dependencies": {
         "@opentui/core": "workspace:*",
       },
@@ -94,11 +94,11 @@
     },
     "packages/native": {
       "name": "@opentui/native",
-      "version": "0.5.14",
+      "version": "0.5.15",
     },
     "packages/qrcode": {
       "name": "@opentui/qrcode",
-      "version": "0.5.14",
+      "version": "0.5.15",
       "dependencies": {
         "@opentui/core": "workspace:*",
       },
@@ -120,7 +120,7 @@
     },
     "packages/react": {
       "name": "@opentui/react",
-      "version": "0.5.14",
+      "version": "0.5.15",
       "dependencies": {
         "@opentui/core": "workspace:*",
         "react-reconciler": "^0.33.0",
@@ -149,7 +149,7 @@
     },
     "packages/solid": {
       "name": "@opentui/solid",
-      "version": "0.5.14",
+      "version": "0.5.15",
       "dependencies": {
         "@babel/core": "7.28.0",
         "@babel/preset-typescript": "7.27.1",
@@ -182,7 +182,7 @@
     },
     "packages/ssh": {
       "name": "@opentui/ssh",
-      "version": "0.5.14",
+      "version": "0.5.15",
       "dependencies": {
         "ssh2": "^1.16.0",
       },
@@ -204,7 +204,7 @@
     },
     "packages/three": {
       "name": "@opentui/three",
-      "version": "0.5.14",
+      "version": "0.5.15",
       "dependencies": {
         "@opentui/core": "workspace:*",
         "jimp": "1.6.1",
@@ -225,7 +225,7 @@
     },
     "packages/web": {
       "name": "@opentui/web",
-      "version": "0.5.14",
+      "version": "0.5.15",
       "dependencies": {
         "@astrojs/mdx": "^7.0.5",
         "@astrojs/sitemap": "^3.7.3",

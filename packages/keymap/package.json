@@ -1,6 +1,6 @@
 {
   "name": "@opentui/keymap",
-  "version": "0.5.14",
+  "version": "0.5.15",
   "description": "Standalone keymap package for OpenTUI",
   "license": "MIT",
   "repository": {
