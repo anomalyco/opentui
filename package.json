@@ -17,7 +17,7 @@
     "lint:ci": "oxlint . --deny-warnings",
     "lint:fix": "oxlint --fix .",
     "pre-publish": "bun scripts/pre-publish.ts",
-    "publish": "bun run pre-publish && bun scripts/npm-publish.ts publish && bun scripts/npm-publish.ts wait",
+    "publish": "bun run pre-publish && bun scripts/npm-publish.ts publish",
     "publish:core": "cd packages/core && bun run publish",
     "publish:qrcode": "cd packages/qrcode && bun run publish",
     "publish:three": "cd packages/three && bun run publish",

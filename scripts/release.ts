@@ -18,8 +18,8 @@ import { compareVersions, registryIntegrity } from "./npm-publish"
 // 2. Runs prepare-release, commits "Release vX.Y.Z", tags it vX.Y.Z, and pushes the commit to the
 //    branch together with the tag. That needs the right to bypass the branch and tag rules. A
 //    maintenance branch takes only versions of its line.
-// 3. Follows the release.yml run of the tag push. Its publish job ends when npm serves every package,
-//    and this script reports that time.
+// 3. Follows the release.yml run of the tag push, and reports when every package is published and
+//    when npm serves them all.
 //
 // --pr pushes the commit to a release/vX.Y.Z branch and opens a pull request instead. Merging it
 // releases. The "Prepare Release" workflow, the release button, runs this mode.
@@ -66,6 +66,7 @@ const MAIN = "main"
 const MAINTENANCE_BRANCH = /^(\d+)\.(\d+)\.x$/
 const RELEASE_WORKFLOW = "release.yml"
 const NPM_PUBLISH_JOB = "NPM Publish / publish"
+const NPM_SERVED_JOB = "Wait for npm"
 const RELEASE_TYPES = ["patch", "minor", "major"]
 const VERSION_PATTERN = /^\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?$/
 const POLL_MS = 10_000
@@ -349,15 +350,16 @@ function openPullRequest(repo: string, release: Release): string {
   }
 }
 
-// Prints each job as it starts and ends. Returns the finished run and when the publish job succeeded.
+// Prints each job as it starts and ends. Returns the finished run, the last state of each job, and when
+// each job succeeded.
 async function watchRelease(
   repo: string,
   releaseRun: WorkflowRun,
   release: Release,
   dryRun: boolean,
-): Promise<{ finished: WorkflowRun; npmDoneAt?: number }> {
+): Promise<{ finished: WorkflowRun; states: Map<string, string>; succeededAt: Map<string, number> }> {
   const states = new Map<string, string>()
-  let npmDoneAt: number | undefined
+  const succeededAt = new Map<string, number>()
   const finished = await poll(releaseRun.html_url, RUN_TIMEOUT_MS, () => {
     for (const job of ghList<Job>(`repos/${repo}/actions/runs/${releaseRun.id}/jobs?per_page=100`, ".jobs[]")) {
       const state =
@@ -365,19 +367,22 @@ async function watchRelease(
       if (!state || state === "skipped" || states.get(job.name) === state) continue
       states.set(job.name, state)
       console.log(`${formatDuration(Date.now() - release.pushedAt).padStart(7)}  ${job.name}: ${state}`)
-      if (job.name === NPM_PUBLISH_JOB && state === "success" && npmDoneAt === undefined) {
-        npmDoneAt = Date.now()
+      if (state !== "success") continue
+      succeededAt.set(job.name, Date.now())
+      if (job.name === NPM_PUBLISH_JOB) {
         console.log(
           dryRun
             ? "Dry run: every package packed, nothing published"
-            : `npm serves every package of ${release.version}`,
+            : `Every package of ${release.version} is published. Waiting until npm serves them.`,
         )
+      } else if (job.name === NPM_SERVED_JOB) {
+        console.log(`npm serves every package of ${release.version}`)
       }
     }
     const current = gh<WorkflowRun>(`repos/${repo}/actions/runs/${releaseRun.id}`)
     return current.status === "completed" ? current : undefined
   })
-  return { finished, npmDoneAt }
+  return { finished, states, succeededAt }
 }
 
 function report(lines: readonly string[]): void {
@@ -410,26 +415,32 @@ async function main(): Promise<void> {
   }
 
   const dryRun = options.mode === "dry-run"
-  const { finished, npmDoneAt } = await watchRelease(repo, releaseRun, release, dryRun)
+  const { finished, states, succeededAt } = await watchRelease(repo, releaseRun, release, dryRun)
   const elapsed = (time: number) => formatDuration(time - release.pushedAt)
+  const publishedAt = succeededAt.get(NPM_PUBLISH_JOB)
+  const servedAt = succeededAt.get(NPM_SERVED_JOB)
   if (finished.conclusion !== "success") {
+    const servedFailed = publishedAt !== undefined && servedAt === undefined && states.has(NPM_SERVED_JOB)
     report([
       `Release ${tag} failed: ${finished.conclusion}`,
       `- Release run: ${finished.html_url}`,
-      "- Publishing resumes where it stopped: re-run the failed jobs, then follow them with `gh run watch`.",
+      servedFailed
+        ? "- Every package is published, but npm did not serve all of them in time. Re-run the failed job once it does."
+        : "- Publishing resumes where it stopped: re-run the failed jobs, then follow them with `gh run watch`.",
     ])
     throw new ReleaseError(`The release run of ${tag} ended with ${finished.conclusion}`)
   }
   // A run whose prepare job saw no release skips every other job and still succeeds.
-  if (npmDoneAt === undefined) {
+  if (publishedAt === undefined) {
     report([`Release ${tag} did not run`, `- Release run: ${finished.html_url}`])
     throw new ReleaseError(`The release run of ${tag} skipped the publish job`)
   }
   report([
     dryRun ? `Dry run ${tag} passed` : `Released ${tag}`,
     dryRun
-      ? `- Packages packed ${elapsed(npmDoneAt)} after the push`
-      : `- npm serves every package ${elapsed(npmDoneAt)} after the push`,
+      ? `- Packages packed ${elapsed(publishedAt)} after the push`
+      : `- Published to npm ${elapsed(publishedAt)} after the push`,
+    ...(servedAt === undefined ? [] : [`- npm serves every package ${elapsed(servedAt)} after the push`]),
     `- Release run finished ${elapsed(Date.now())} after the push: ${finished.html_url}`,
     `- GitHub release: https://github.com/${repo}/releases/tag/${tag}`,
   ])

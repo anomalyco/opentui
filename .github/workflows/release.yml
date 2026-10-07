@@ -489,6 +489,39 @@ jobs:
       prepareVersion: ${{ needs.snapshot-prepare.outputs.version }}
       isDryRun: false
 
+  # Waits until npm serves every package that npm-publish published. npm can take many minutes after
+  # `npm publish` succeeds: 25 for @opentui/three@0.5.15. The GitHub release does not wait for it. A step
+  # that installs the release, such as an opencode bump, has to start after it.
+  npm-served:
+    name: Wait for npm
+    if: ${{ needs.prepare.outputs.release == 'true' && needs.prepare.outputs.isDryRun == 'false' }}
+    needs: [prepare, sign-windows-artifacts, npm-publish]
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    timeout-minutes: 40
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Setup Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.1
+
+      # The packages that npm-publish published, to compare npm's contents with.
+      - name: Extract npm packages
+        uses: ./.github/actions/extract-npm-packages
+        with:
+          artifact: ${{ needs.sign-windows-artifacts.outputs.npmPackagesArtifact }}
+
+      - name: Wait until npm serves every package
+        run: bun scripts/npm-publish.ts wait
+
   # Create GitHub release with assets
   github-release:
     name: Create GitHub Release

@@ -129,8 +129,8 @@ jobs:
           echo "PRODUCTION MODE - Publishing to npm"
           echo "=========================================="
 
-          # Validates, publishes dependencies first, skips versions an earlier attempt already published,
-          # and waits until npm serves every package.
+          # Validates, publishes dependencies first, and skips versions an earlier attempt already
+          # published. The release workflow then waits in its own job until npm serves every package.
           bun run publish
 
           echo ""
