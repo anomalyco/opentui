@@ -27,7 +27,8 @@ interface PackageJson {
 
 export type PublishedState = "missing" | "identical" | "different"
 
-const SERVED_TIMEOUT_MS = 10 * 60_000
+// npm served @opentui/three@0.5.15 25 minutes after `npm publish` succeeded.
+const SERVED_TIMEOUT_MS = 30 * 60_000
 const SERVED_POLL_MS = 10_000
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..")
