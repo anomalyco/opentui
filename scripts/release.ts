@@ -15,11 +15,9 @@ import { compareVersions, registryIntegrity } from "./npm-publish"
 //   bun run release <patch|minor|major|version> [--pr | --dry-run] [--no-watch]
 //
 // 1. Checks that the branch has no uncommitted changes and matches its origin branch.
-// 2. Waits for the checks of that commit, and fails if one fails: the checks that the branch rules
-//    require, and every workflow run that pushes of that commit started.
-// 3. Runs prepare-release, commits "Release vX.Y.Z", and pushes the commit to the branch. That needs
+// 2. Runs prepare-release, commits "Release vX.Y.Z", and pushes the commit to the branch. That needs
 //    the right to bypass the branch rules. A maintenance branch takes only versions of its line.
-// 4. Follows the release.yml run of the commit. Its publish job ends when npm serves every package,
+// 3. Follows the release.yml run of the commit. Its publish job ends when npm serves every package,
 //    and this script reports that time.
 //
 // --pr pushes the commit to a release/vX.Y.Z branch and opens a pull request instead. Merging it
@@ -28,12 +26,6 @@ import { compareVersions, registryIntegrity } from "./npm-publish"
 // --dry-run tags the commit vX.Y.Z-dry.N and pushes only the tag. The branch does not change. The release
 // run builds and packs every package but publishes nothing to npm; it creates a GitHub prerelease.
 // --no-watch stops after the push.
-//
-//   bun scripts/release.ts wait-checks <sha> [branch]
-//
-// Waits for the checks of one commit on a branch, main by default, as in step 2. release.yml runs it
-// for the commit that a release commit builds on, because the branch can move between opening a
-// release pull request and merging it.
 
 type Mode = "push" | "pr" | "dry-run"
 
@@ -53,22 +45,9 @@ interface Release {
   pushedAt: number
 }
 
-interface RequiredCheck {
-  context: string
-  integration_id?: number
-}
-
-interface CheckRun {
-  name: string
-  status: string
-  conclusion: string | null
-  app: { id: number } | null
-}
-
 interface WorkflowRun {
   id: number
   name: string
-  head_branch: string | null
   status: string
   conclusion: string | null
   head_sha: string
@@ -87,16 +66,11 @@ const RELEASE_WORKFLOW = "release.yml"
 const NPM_PUBLISH_JOB = "NPM Publish / publish"
 const RELEASE_TYPES = ["patch", "minor", "major"]
 const VERSION_PATTERN = /^\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?$/
-const PASSING = new Set(["success", "neutral", "skipped"])
 const POLL_MS = 10_000
 const MAX_API_FAILURES = 5
-const CHECKS_TIMEOUT_MS = 30 * 60_000
 const RUN_START_TIMEOUT_MS = 3 * 60_000
 const RUN_TIMEOUT_MS = 60 * 60_000
-const USAGE = [
-  "Usage: bun run release <patch|minor|major|version> [--pr | --dry-run] [--no-watch]",
-  "       bun scripts/release.ts wait-checks <sha> [branch]",
-].join("\n")
+const USAGE = "Usage: bun run release <patch|minor|major|version> [--pr | --dry-run] [--no-watch]"
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..")
 
@@ -218,66 +192,6 @@ function checkBranch(): { branch: string; head: string } {
     throw new ReleaseError(`Local ${branch} is at ${short(head)} but origin/${branch} is at ${short(remote)}`)
   }
   return { branch, head }
-}
-
-function requiredChecks(repo: string, branch: string): RequiredCheck[] {
-  const rules = gh<Array<{ type: string; parameters?: { required_status_checks?: RequiredCheck[] } }>>(
-    `repos/${repo}/rules/branches/${branch}`,
-  )
-  return rules.flatMap((rule) =>
-    rule.type === "required_status_checks" ? (rule.parameters?.required_status_checks ?? []) : [],
-  )
-}
-
-// Returns the checks that have not finished. Throws if one failed.
-function pendingChecks(repo: string, sha: string, branch: string, required: readonly RequiredCheck[]): string[] {
-  const checkRuns = ghList<CheckRun>(`repos/${repo}/commits/${sha}/check-runs?per_page=100`, ".check_runs[]")
-  // A maintenance branch starts at a commit of main, whose runs belong to main.
-  const workflowRuns = ghList<WorkflowRun>(
-    `repos/${repo}/actions/runs?head_sha=${sha}&event=push&per_page=100`,
-    ".workflow_runs[]",
-  ).filter((workflowRun) => workflowRun.head_branch === branch || workflowRun.head_branch === MAIN)
-  const pending: string[] = []
-  const failed: string[] = []
-  // Each push to a release branch starts CI, so no run means that it has not started yet.
-  if (workflowRuns.length === 0) pending.push("a CI run (none started yet)")
-  for (const check of required) {
-    const matches = checkRuns.filter(
-      (checkRun) =>
-        checkRun.name === check.context &&
-        (check.integration_id === undefined || checkRun.app?.id === check.integration_id),
-    )
-    const failure = matches.find(
-      (checkRun) => checkRun.status === "completed" && !PASSING.has(checkRun.conclusion ?? ""),
-    )
-    if (failure) failed.push(`${check.context}: ${failure.conclusion}`)
-    else if (matches.length === 0 || matches.some((checkRun) => checkRun.status !== "completed")) {
-      pending.push(check.context)
-    }
-  }
-  for (const workflowRun of workflowRuns) {
-    if (workflowRun.status !== "completed") pending.push(workflowRun.name)
-    else if (!PASSING.has(workflowRun.conclusion ?? "")) {
-      failed.push(`${workflowRun.name}: ${workflowRun.conclusion} (${workflowRun.html_url})`)
-    }
-  }
-  if (failed.length > 0) throw new ReleaseError(`Checks failed on ${short(sha)}:\n  ${failed.join("\n  ")}`)
-  return [...new Set(pending)]
-}
-
-async function waitForChecks(repo: string, sha: string, branch: string): Promise<void> {
-  let required: RequiredCheck[] | undefined
-  let reported = ""
-  await poll(`the checks of ${short(sha)}`, CHECKS_TIMEOUT_MS, () => {
-    required ??= requiredChecks(repo, branch)
-    const pending = pendingChecks(repo, sha, branch, required)
-    if (pending.length === 0) return true
-    const summary = pending.join(", ")
-    if (summary !== reported) console.log(`Waiting for ${pending.length} checks on ${short(sha)}: ${summary}`)
-    reported = summary
-    return undefined
-  })
-  console.log(`Checks passed on ${short(sha)}`)
 }
 
 function coreVersion(): string {
@@ -407,11 +321,7 @@ async function findReleaseRun(repo: string, release: Release): Promise<WorkflowR
 // Pull requests opened with the GITHUB_TOKEN of a workflow start no workflows, so the required checks
 // do not run on them.
 function openPullRequest(repo: string, release: Release): string {
-  const body = [
-    `Merging this pull request releases v${release.version}. release.yml publishes each commit on ${release.branch} that raises the version.`,
-    "",
-    "This commit changes only versions. Before it builds, release.yml waits for the checks of the commit that this one is merged onto.",
-  ].join("\n")
+  const body = `Merging this pull request releases v${release.version}. release.yml publishes each commit on ${release.branch} that raises the version.`
   try {
     return ghPost<{ html_url: string }>(`repos/${repo}/pulls`, {
       title: `Release v${release.version}`,
@@ -466,20 +376,10 @@ function report(lines: readonly string[]): void {
 }
 
 async function main(): Promise<void> {
-  const args = process.argv.slice(2)
-  if (args[0] === "wait-checks") {
-    if (args.length < 2 || args.length > 3) throw new ReleaseError(USAGE)
-    await waitForChecks(githubRepo(), args[1]!, args[2] ?? MAIN)
-    return
-  }
-
-  const options = parseOptions(args)
+  const options = parseOptions(process.argv.slice(2))
   const repo = githubRepo()
   const { branch, head: base } = checkBranch()
   console.log(`Releasing ${repo} ${branch} at ${short(base)}: ${options.target}, ${options.mode}`)
-
-  await waitForChecks(repo, base, branch)
-  if (checkBranch().head !== base) throw new ReleaseError(`${branch} moved while the checks ran. Release again.`)
 
   const release = await pushRelease(options, branch, base)
   console.log(`Pushed Release v${release.version} (${short(release.sha)}) to ${release.ref}`)

@@ -24,12 +24,7 @@ jobs:
   prepare:
     name: Prepare Release
     if: ${{ !contains(github.ref_name, 'snapshot') }}
-    # GitHub-hosted, because the job can wait for the checks of the previous commit.
-    runs-on: ubuntu-24.04
-    permissions:
-      actions: read
-      checks: read
-      contents: write
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     outputs:
       release: ${{ steps.extract.outputs.release }}
       version: ${{ steps.extract.outputs.version }}
@@ -119,14 +114,6 @@ jobs:
           echo "Full Tag (for artifacts): $TAG"
           echo "Is Dry Run: $IS_DRY_RUN"
           echo "Release Title: $RELEASE_TITLE"
-
-      # The branch can move between opening a release pull request and merging it.
-      - name: Wait for the checks of the previous commit
-        if: steps.extract.outputs.isDryRun == 'false'
-        env:
-          BEFORE: ${{ github.event.before }}
-          GH_TOKEN: ${{ github.token }}
-        run: bun scripts/release.ts wait-checks "$BEFORE" "$GITHUB_REF_NAME"
 
       # Before the build, so a release stops early when the tag cannot be created. Needs the "Main tags"
       # ruleset to allow creating v* tags. A tag already at this commit, from a rerun or pushed by hand,

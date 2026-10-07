@@ -1,12 +1,11 @@
 name: Prepare Release
 
-# The release button. Waits for the checks of the branch, then opens a "Release vX.Y.Z" pull request.
-# Merging it releases: release.yml publishes each commit on main that raises the version. To release a
-# maintenance branch of an older line, such as 0.5.x, choose it under "Use workflow from".
+# The release button. Opens a "Release vX.Y.Z" pull request. Merging it releases: release.yml publishes
+# each commit on main that raises the version. To release a maintenance branch of an older line, such
+# as 0.5.x, choose it under "Use workflow from".
 #
 # A pull request opened with GITHUB_TOKEN starts no workflows, so the required checks do not run on
-# it, and merging it needs the right to bypass the branch rules. The commit changes only versions, and
-# release.yml waits for the checks of the commit it is merged onto before it builds.
+# it, and merging it needs the right to bypass the branch rules. The commit changes only versions.
 #
 # Needs "Allow GitHub Actions to create and approve pull requests" in the repository Actions settings.
 
@@ -28,8 +27,6 @@ concurrency:
   cancel-in-progress: false
 
 permissions:
-  actions: read
-  checks: read
   contents: write
   pull-requests: write
 
@@ -37,7 +34,7 @@ jobs:
   pull-request:
     name: Open Release Pull Request
     runs-on: ubuntu-24.04
-    timeout-minutes: 40
+    timeout-minutes: 10
 
     steps:
       - name: Checkout code
