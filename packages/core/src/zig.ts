@@ -899,7 +899,7 @@ registerEnvVar({
 })
 registerEnvVar({
   name: "OPENTUI_FORCE_UNICODE",
-  description: "Force Mode 2026 Unicode support when the variable is present",
+  description: "Use the Unicode width method (mode 2027) when the variable is present",
   type: "string",
   required: false,
 })

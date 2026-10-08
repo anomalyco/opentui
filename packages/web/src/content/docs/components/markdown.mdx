@@ -48,14 +48,14 @@ renderer.root.add(markdown)
 
 ## Fenced language normalization
 
-Code fence info strings are normalized before Tree-sitter highlighting.
+Markdown normalizes each code fence info string to a file type before Tree-sitter highlighting:
 
 - `tsx` -> `typescriptreact`
 - `.jsx` -> `javascriptreact`
 - `TSX title=Button.tsx` -> `typescriptreact`
 - `Dockerfile` -> `dockerfile`
 
-Normalization uses `infoStringToFiletype()`. You can extend or override mappings at runtime:
+Markdown uses `infoStringToFiletype()` for this step. To add or change mappings at runtime, edit the maps that it reads:
 
 ```typescript
 import { extensionToFiletype, basenameToFiletype } from "@opentui/core"
@@ -66,7 +66,7 @@ basenameToFiletype.set("mytoolrc", "yaml")
 
 ## Concealment
 
-Hide markdown markers (backticks, emphasis markers, etc.) when `conceal` is true:
+Set `conceal: true` to hide Markdown markers, such as backticks and emphasis markers:
 
 ```typescript
 const markdown = new MarkdownRenderable(renderer, {
@@ -76,11 +76,13 @@ const markdown = new MarkdownRenderable(renderer, {
 })
 ```
 
-Use `concealCode` to control concealment inside fenced code blocks independently (`false` by default).
+`concealCode` controls concealment inside fenced code blocks separately. Its default is `false`.
 
 ## Streaming updates
 
-Enable streaming mode for incremental updates. Keep it `true` while appending chunks, then set `markdown.streaming = false` when complete to finalize trailing block parsing. Tables include trailing partial rows, with missing cells rendered empty.
+Use streaming mode when content arrives in chunks. Keep `streaming: true` while you append chunks.
+When the content is complete, set `markdown.streaming = false` to finish parsing the trailing block.
+Tables show trailing partial rows, with missing cells shown empty.
 
 ```typescript
 const markdown = new MarkdownRenderable(renderer, {
@@ -98,7 +100,7 @@ markdown.streaming = false
 
 `parseMarkdownIncremental` reports how many parsed tokens at the head of the stream are unlikely to change after an append. The renderable exposes this value as a count of **top-level render blocks**. You can commit those blocks while the unstable tail changes.
 
-To use it, render with `internalBlockMode: "top-level"`. The renderable keeps each top-level markdown block as a separate child renderable. These blocks include headings, paragraphs, lists, tables, and fenced code. `markdown._stableBlockCount` gives the current stable prefix length. This matches the shape that [`ScrollbackSurface`](/docs/core-concepts/renderer#writing-to-scrollback) expects for row-by-row commits.
+To use it, set `internalBlockMode: "top-level"`. The renderable then keeps each top-level Markdown block as a separate child renderable. These blocks include headings, paragraphs, lists, tables, and fenced code. `markdown._stableBlockCount` gives the current stable prefix length. In the default mode, it is always `0`. This matches the shape that [`ScrollbackSurface`](/docs/core-concepts/renderer#writing-to-scrollback) expects for row-by-row commits.
 
 ```typescript
 import { MarkdownRenderable, RGBA, SyntaxStyle } from "@opentui/core"
@@ -118,17 +120,20 @@ const md = new MarkdownRenderable(renderer, {
 })
 
 md.content = "# Title\n\nPara 1"
-// md._stableBlockCount might be 1 here. "# Title" is settled, but "Para 1" could still grow.
+// md._stableBlockCount is 0. While streaming, the newest parsed tokens stay unstable.
 
 md.content = "# Title\n\nPara 1\n\nPara 2"
-// md._stableBlockCount rises as earlier blocks are sealed by a blank line
+// Still 0.
+
+md.content = "# Title\n\nPara 1\n\nPara 2\n\nPara 3"
+// md._stableBlockCount is 2: "# Title" and "Para 1" are stable.
 ```
 
-`internalBlockMode` is an internal, experimental flag that powers the built-in scrollback streaming demo. This status does not apply to Markdown or its other public options. For normal rendering, keep the default value of `"coalesced"`. This value folds sibling blocks together and preserves the existing layout.
+`internalBlockMode` is an internal, experimental flag for the built-in scrollback streaming demo. This status does not apply to Markdown or to its other options. For normal rendering, keep the default value, `"coalesced"`. This value combines sibling blocks into larger render blocks and keeps the existing layout.
 
 ## Markdown tables
 
-Markdown tables support `tableOptions` for style, sizing, wrapping, borders, and selection.
+Use `tableOptions` to set the style, sizing, wrapping, borders, and selection of Markdown tables.
 
 ```typescript
 const markdown = new MarkdownRenderable(renderer, {
@@ -170,12 +175,12 @@ const markdown = new MarkdownRenderable(renderer, {
 
 ### Table styles
 
-`tableOptions.style` picks a preset that tunes the defaults for `borders`, `outerBorder`, and `widthMode` together:
+`tableOptions.style` picks a preset. The preset sets the defaults for `borders`, `outerBorder`, and `widthMode`:
 
-- **`"grid"`**: boxed table with visible borders. Defaults to `borders: true`, `widthMode: "full"`. This is the normal markdown-in-a-box rendering.
-- **`"columns"`**: borderless columns with a 2-column gap, defaults to `widthMode: "content"`. Useful for append-only output where a full-width grid feels heavy.
+- **`"grid"`**: a boxed table with visible borders. Defaults to `borders: true` and `widthMode: "full"`. This is the normal table rendering.
+- **`"columns"`**: borderless columns with a 2-column gap. Defaults to `borders: false` and `widthMode: "content"`. Use it for append-only output where a full-width grid is too heavy.
 
-A separate Name/Status sample compares both presets:
+This Name/Status sample shows both presets:
 
 Grid:
 
@@ -197,11 +202,11 @@ api     ready
 worker  paused
 ```
 
-If you do not pass `style`, it defaults to `"columns"` when `internalBlockMode` is `"top-level"`, and `"grid"` otherwise. You can still override individual fields (for example, `borders: true`) to pull toward a different look.
+If you do not pass `style`, it is `"columns"` when `internalBlockMode` is `"top-level"`, and `"grid"` otherwise. Individual fields, such as `borders: true`, override the preset defaults.
 
 ## Custom node rendering
 
-Override rendering for a token and fall back to default rendering:
+Use `renderNode` to replace the renderable for a block. Return `undefined` or `null` to use the default renderable. Call `context.defaultRender()` to create the default renderable yourself:
 
 ```typescript
 const markdown = new MarkdownRenderable(renderer, {
@@ -218,7 +223,7 @@ const markdown = new MarkdownRenderable(renderer, {
 
 ### Custom fenced-code languages
 
-Use `createMarkdownCodeBlockRenderer` when you only want to replace specific fenced-code languages. The language key is matched against the normalized fence info string, so a `tsx` fence maps to `typescriptreact`, and custom DSL names like `taskflow` can be matched directly.
+Use `createMarkdownCodeBlockRenderer` to replace only specific fenced-code languages. It matches each key against the normalized info string. A `tsx` fence matches the key `typescriptreact`. A custom name such as `taskflow` matches itself.
 
 ````typescript
 import {
@@ -272,17 +277,23 @@ const markdown = new MarkdownRenderable(renderer, {
 | ------------------- | ------------------------------------------------------------------------------- | ------------- | ------------------------------------------------------------- |
 | `content`           | `string`                                                                        | `""`          | Markdown source                                               |
 | `syntaxStyle`       | `SyntaxStyle`                                                                   | required      | Style definitions for tokens                                  |
-| `fg`                | `ColorInput`                                                                    | -             | Base foreground color (flows into inner code blocks)          |
-| `bg`                | `ColorInput`                                                                    | -             | Base background color (flows into inner code blocks)          |
+| `fg`                | `ColorInput`                                                                    | -             | Base foreground color, also used by inner code blocks         |
+| `bg`                | `ColorInput`                                                                    | -             | Base background color, also used by inner code blocks         |
 | `conceal`           | `boolean`                                                                       | `true`        | Hide markdown markers in markdown text                        |
 | `concealCode`       | `boolean`                                                                       | `false`       | Hide markers inside fenced code blocks                        |
 | `streaming`         | `boolean`                                                                       | `false`       | Incremental mode. Set `false` to finalize                     |
 | `tableOptions`      | `MarkdownTableOptions`                                                          | -             | Options for markdown table rendering                          |
 | `internalBlockMode` | `"coalesced" \| "top-level"`                                                    | `"coalesced"` | Experimental: expose top-level blocks as separate renderables |
 | `treeSitterClient`  | `TreeSitterClient`                                                              | -             | Custom Tree-sitter client for code blocks                     |
-| `renderNode`        | `(token: Token, context: RenderNodeContext) => Renderable \| null \| undefined` | -             | Custom render hook per markdown block                         |
+| `renderNode`        | `(token: Token, context: RenderNodeContext) => Renderable \| null \| undefined` | -             | Custom renderer for each Markdown block                       |
 
-Markdown applies `syntaxStyle`, `fg`, `bg`, `conceal`, and `concealCode` changes in its own `onLifecyclePass` hook. If you assign `onLifecyclePass` on a Markdown renderable, even to `null`, call `refreshStyles()` after each of these changes.
+Markdown rebuilds its blocks at once when you set `content`.
+It applies `syntaxStyle`, `fg`, `bg`, `conceal`, and `concealCode` changes later, in its lifecycle pass (`onLifecyclePass`).
+Core runs lifecycle passes after the frame callbacks and before layout, so the new styles appear in that frame.
+These five setters do not request a frame. If nothing else requests one, call `markdown.requestRender()`.
+
+If you assign `onLifecyclePass` on a Markdown renderable, even to `null`, Markdown no longer applies these changes by itself.
+Call `refreshStyles()` after each change. `refreshStyles()` rebuilds the blocks at once and requests a frame.
 
 OpenTUI bundles a limited parser set. See the [Tree-sitter reference](/docs/reference/tree-sitter) before you highlight other fenced-code languages.
 

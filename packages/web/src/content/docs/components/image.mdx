@@ -111,7 +111,7 @@ Kitty preserves image alpha, Sixel treats alpha below 128 as transparent, and bl
 
 Use `OPENTUI_IMAGE_PROTOCOL=auto|kitty|sixel|blocks` to set the global default. `OPENTUI_GRAPHICS=false` disables Kitty and Sixel detection. See [Environment variables](/docs/reference/env-vars).
 
-Split-footer scrollback snapshots use the same protocol resolution as live images. They use Kitty placement, Sixel with detected pixel geometry, or Unicode quadrant blocks. Snapshots with mixed effective protocols, overlapping images, or covered Sixel or Kitty cells use blocks. Native scrollback images can render before the footer is pinned. Each image must fit within the output width and the height available above the pinned footer, and its snapshot must start at the beginning of a line. Await `loadPromise` before rendering an image into a `ScrollbackSurface`. See [Writing to scrollback](/docs/core-concepts/renderer#writing-to-scrollback).
+Split-footer scrollback snapshots use the same protocol resolution as live images. They use Kitty placement, Sixel with detected pixel geometry, or Unicode quadrant blocks. Snapshots with mixed effective protocols, overlapping images, or covered Sixel or Kitty cells use blocks. Native scrollback images can render before the footer is pinned. Each image must fit within the output width and the height available above the pinned footer. Its snapshot must start at the beginning of a line. Await `loadPromise` before rendering an image into a `ScrollbackSurface`. See [Writing to scrollback](/docs/core-concepts/renderer#writing-to-scrollback).
 
 `resolveImageRenderProtocol(requested, capabilities, hasResolution)` exposes the same protocol-resolution policy for code that needs it without constructing a renderable.
 
@@ -130,10 +130,7 @@ const status = renderer.kittyImageTransportStatus
 - `"zlib"` tries native level-1 compression. It uses raw if compression expands the stream, exceeds the 64 MiB preparation limit, or cannot allocate buffers. Encoded PNG data stays unchanged.
 - `"file"` writes a temporary file and sends its path for the local terminal to read. It still copies pixels, without shared memory or GPU sharing.
 
-Changing transport retransmits visible Kitty images without replacing their sources. File
-negotiation remains asynchronous. Selecting an inline mode keeps outstanding files alive
-until their acknowledgments or deadlines, so queued output can still use them. Switching
-back to file reuses the session's probe result; it does not reset a failed or cancelled session.
+A transport change retransmits visible Kitty images without replacing their sources. File negotiation remains asynchronous. When you select an inline mode, outstanding files stay alive until their acknowledgments or deadlines, so queued output can still use them. When you switch back to file, the renderer reuses the session's probe result. It does not reset a failed or cancelled session.
 
 Scrollback snapshots never use file transport because the renderer does not retain their sources for retries. They use self-contained raw or PNG output, or zlib when requested.
 
@@ -145,7 +142,7 @@ File transport requires both a successful `t=f` query with a real file and an up
 
 Each file has a unique name, permissions `0600`, and contents that do not change. The renderer uses the `TMPDIR` value forwarded at creation, or `/tmp` when absent. If you override `forwardEnvKeys`, include `TMPDIR`.
 
-Each renderer allows at most eight pending files and 64 MiB of pending data. If an image ID is busy or either limit is reached, the renderer uses raw/PNG without replacing pending files.
+Each renderer allows at most eight pending files and 64 MiB of pending data. If an image ID is busy or the renderer reaches either limit, it uses raw/PNG without replacing pending files.
 
 A matching Kitty reply lets the renderer remove the file. Frame events, stdout drain, and cursor reports do not confirm that the terminal read or displayed an image.
 

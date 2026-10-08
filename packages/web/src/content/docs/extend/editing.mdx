@@ -150,7 +150,9 @@ and `Input.value`. `Textarea` and `Input` remove these characters from pasted te
 contain them.
 
 The edit buffer emits native `"cursor-changed"` and `"content-changed"` events through its `EventEmitter` interface.
-Events are scoped to its Context and resource generation. Destroying the buffer or Context suppresses queued delivery.
+`undo()` and `redo()` also emit `"cursorChanged"`. Native code reports each event during the edit call. Core then
+delivers it to listeners in a microtask, so listeners run after the edit call returns. Events are scoped to the
+buffer's Context and resource generation. Destroying the buffer or Context suppresses queued delivery.
 
 ## `EditorView`
 
@@ -297,8 +299,8 @@ The [integration description](/docs/extend/custom-renderables#declare-native-int
 selection, scrolling, edit commands, highlights, and content-change events. Subclasses add input policy and component
 options.
 
-Do not destroy an owned buffer or view separately. Destroy the renderable. Read [Custom renderables](/docs/extend/custom-renderables)
-for render traversal and final cleanup.
+Do not destroy an owned buffer or view separately. Destroy the renderable. Read
+[Custom renderables](/docs/extend/custom-renderables#clean-up-ownership) for final cleanup.
 
 ## Experimental extmarks
 

@@ -36,9 +36,10 @@ try {
 `create(width, height, widthMethod, options)` requires positive cell dimensions and an explicit `owner`.
 For renderer-owned resources, pass `renderer.nativeScene`. For standalone work, create a `ResourceContext`.
 
-`ResourceContext` uses checked native resources without creating a renderer or terminal Session. Its limits bound
-native object slots and drawing-buffer cells. Cell leases also consume object slots. Destroying the Context releases
-its remaining resources; active cell leases must be released first.
+`ResourceContext` creates a native Context without a renderer or terminal Session. `objectCapacity` limits the number
+of native objects, including the cell leases that `withBuffers()` holds. `renderCellsMax` limits the cell count
+(`width * height`) of each drawing buffer. Destroy the Context only after every `withBuffers()` callback returns.
+Destroying the Context releases its remaining resources.
 
 Read [How Core uses native](/docs/native/core#resources-through-core) for Core resource factories and their native owners.
 
@@ -54,22 +55,37 @@ The public lifecycle method is named `destroy()`, not `dispose()`.
 
 `CliRenderer` exposes `nextRenderBuffer` and `currentRenderBuffer`. The renderer owns both.
 
-- Native scene painting and post-process callbacks draw into `nextRenderBuffer`.
-- Paint hooks receive a separate recording buffer. Its drawing calls record commands that native code plays when it paints `nextRenderBuffer`. It cannot read cells.
+- Native code paints each frame into `nextRenderBuffer`. Then [post-process functions](/docs/extend/post-processing) draw into it.
+- Drawing calls on `nextRenderBuffer` work only inside a post-process function. At other times, they throw.
 - Native rendering compares the next buffer with `currentRenderBuffer`.
 - The native encoder can change the current buffer before output admission or presentation. It is not a last-presented snapshot.
 - The native encoder clears the next buffer after encoding.
+- Drawing calls on `currentRenderBuffer` always throw.
+- `withBuffers()` reads either buffer between frames and inside post-process functions. It throws while a frame is in progress, while its output is pending, and while the renderer is suspended.
 
-Do not destroy either renderer buffer. Do not mutate `currentRenderBuffer`. A current-buffer mutation can hide a real
-change from the terminal diff.
+Do not destroy either renderer buffer. Do not write to the cell arrays of `currentRenderBuffer`. Such a write can hide
+a real change from the terminal diff.
 
 The wrappers keep their identity during renderer resize, but their native storage changes.
 Use a new cell scope after resize. Do not reuse raw views from an earlier scope.
 
+Paint hooks receive a separate recording buffer. Its drawing calls record commands. Native code plays the commands
+when it paints `nextRenderBuffer`. A recording buffer has these limits:
+
+- `buffers`, `withBuffers()`, `getRealCharBytes()`, and `getSpanLines()` throw because a hook cannot read the frame.
+- `setRespectAlpha()` throws.
+- `drawSuperSampleBuffer()` and `drawPackedBuffer()` accept a `Uint8Array`, not a native address.
+- `drawImage()` returns `true` because native code places the image later.
+- The recording for one frame can use at most 64 MiB. A call that goes past this limit throws `RangeError`.
+- The buffer records only while its frame runs hooks. A saved hook buffer throws if it draws later.
+
+A renderable with `buffered: true` gives its paint hooks its own buffer instead. Read
+[Custom renderables](/docs/extend/custom-renderables#use-paint-hooks) for hook timing and errors.
+
 ## Cell model
 
-Use `withBuffers()` to borrow cell arrays for a synchronous callback. Checked Context buffers do not expose the
-unleased compatibility `buffers` getter. The callback receives these planes, plus the dimensions and storage generation:
+Use `withBuffers()` to borrow the cell arrays for a synchronous callback. The callback receives these arrays, plus the
+dimensions and storage generation:
 
 ```typescript
 {
@@ -79,6 +95,11 @@ unleased compatibility `buffers` getter. The callback receives these planes, plu
   attributes: Uint32Array
 }
 ```
+
+The callback must be synchronous. A callback that returns a promise throws `TypeError`, and its arrays stop working.
+
+The `buffers` getter returns the same arrays without a callback. It works only on the buffer that a post-process
+function receives, during the synchronous part of that function. On every other buffer, it throws.
 
 `char` has one entry per cell. `attributes` also has one entry per cell. `fg` and `bg` have four `Uint16` entries per
 cell. The low byte stores each RGBA8 channel. Higher bits store color intent metadata.
@@ -123,23 +144,31 @@ with the same owner. Do not inspect their bits or retain them after `freeUnicode
 
 ### Basic drawing
 
-| Method                     | Signature and behavior                                                                                                 |
-| -------------------------- | ---------------------------------------------------------------------------------------------------------------------- |
-| `clear`                    | `clear(bg = opaque black)` clears cells, links, graphemes, attributes, image placements, and stack-independent content |
-| `setCell`                  | `setCell(x, y, char, fg, bg, attributes = 0)` replaces one cell without alpha blending                                 |
-| `setCellWithAlphaBlending` | Same arguments, with foreground and background alpha composition                                                       |
-| `drawChar`                 | `drawChar(encodedChar, x, y, fg, bg, attributes = 0)` accepts a scalar or same-Context token from `encodeUnicode()`    |
-| `drawText`                 | `drawText(text, x, y, fg, bg?, attributes = 0, selection?)` segments and clips Unicode text                            |
-| `fillRect`                 | `fillRect(x, y, width, height, bg)` paints the rectangle through tracker-aware cell paths                              |
+| Method                     | Signature and behavior                                                                                              |
+| -------------------------- | ------------------------------------------------------------------------------------------------------------------- |
+| `clear`                    | `clear(bg = opaque black)` resets every cell, link, grapheme, attribute, and image placement                        |
+| `setCell`                  | `setCell(x, y, char, fg, bg, attributes = 0)` replaces one cell without alpha blending                              |
+| `setCellWithAlphaBlending` | Same arguments, with foreground and background alpha composition                                                    |
+| `drawChar`                 | `drawChar(encodedChar, x, y, fg, bg, attributes = 0)` accepts a scalar or same-Context token from `encodeUnicode()` |
+| `drawText`                 | `drawText(text, x, y, fg, bg?, attributes = 0, selection?)` segments and clips Unicode text                         |
+| `fillRect`                 | `fillRect(x, y, width, height, bg)` paints the rectangle through tracker-aware cell paths                           |
 
 Positions are integer cells from `-2^31` to `2^31 - 1`, so they can be negative. These methods draw only the cells
 inside the buffer. `drawText()` skips a wide grapheme that starts left of column 0. `fillRect()` draws nothing when
 `width` or `height` is 0 or less.
 
+`clear()` ignores the scissor and opacity stacks. In a paint hook, it clears the whole frame.
+
 Control characters (C0 except tab, DEL, and C1) take no cells in `drawText()`, box titles, and `encodeUnicode()`. A tab
 draws as two spaces. A grapheme longer than the 128 UTF-8 bytes that a cell can hold draws as spaces of its width.
 `setCell()`, `setCellWithAlphaBlending()`, and `drawChar()` write a space for a control character. None of these inputs
 throws.
+
+`drawText()` text and each `drawBox()` title can use at most `NATIVE_BUFFER_TEXT_BYTES_MAX` (65,536) UTF-8 bytes.
+Longer text throws `RangeError`.
+
+The `attributes` argument accepts only the eight base attribute bits. A higher bit makes a direct draw call throw
+`NativeError`. In a paint hook, the frame fails when native code plays the recording.
 
 The optional `drawText()` selection object has `{ start, end, bgColor?, fgColor? }`. Its implementation slices the
 JavaScript string with UTF-16 indexes and adds the same values to the cell x-coordinate. It is reliable only for
@@ -170,8 +199,12 @@ The default border style is `"single"`. `titleColor` defaults to `borderColor`.
 | `drawTextBuffer(view, x, y)`                                                             | Draws a `TextBufferView`                     |
 | `drawEditorView(view, x, y)`                                                             | Draws an `EditorView`                        |
 
-`drawFrameBuffer()` defaults to the complete source buffer. It preserves grapheme, continuation, link, image, and
-color-intent state through tracker-aware paths. A fast path copies plain opaque cells directly.
+`drawFrameBuffer()` defaults to the complete source buffer. The source must be an owned buffer in the same Context, or
+the call throws. Composition clips to the scissor rectangle and keeps grapheme, continuation, link, image, and
+color-intent state.
+
+Composition copies cells directly when the current opacity is 1, the source's `respectAlpha` is false, and neither
+buffer holds graphemes, links, or images. Otherwise, it alpha-blends each source cell.
 
 ### Images and numeric buffers
 
@@ -216,23 +249,20 @@ The opacity stack stores a cumulative value:
 
 Normal alpha-aware drawing reads the current opacity. Raw writes and matrix methods do not.
 
-Context-owned buffers and native frame targets check stack operations. Each stack
-allows at most 256 custom entries. Scissor coordinates and dimensions must be
-integers with nonnegative dimensions and signed 32-bit endpoints. Opacity must
-be finite; finite values still clamp to `0..1`. Rejected operations leave the
-accepted stack unchanged.
+Every buffer checks stack operations. Each stack allows at most 256 custom entries. Scissor coordinates and dimensions
+must be integers, and each rectangle edge must fit in a signed 32-bit integer. A negative width or height pushes an
+empty rectangle. Opacity must be finite. Finite values clamp to `0..1`. A rejected operation leaves the stack
+unchanged.
 
-A paint hook's buffer starts each hook with the node's clipping and opacity. Its pop
-and clear calls affect only its own entries, not inherited state. Custom entries reset
-between hooks. The buffer records drawing only while its frame runs hooks, so a saved
-hook buffer cannot draw later.
+A paint hook's buffer starts each hook with the node's clipping and opacity. Its pop and clear calls remove only the
+entries that the hook pushed, not that inherited state. Custom entries reset between hooks.
 
-Retained offscreen buffers keep their stacks until you pop, clear, or destroy them.
-Use `try`/`finally` to balance scopes when your drawing code can throw. Use
-`setCellWithAlphaBlending()` for opacity-aware cell drawing; `drawText()` with an
-opaque background retains its direct-write behavior.
+Owned buffers keep their stacks until you pop, clear, or destroy them. Use `try`/`finally` to balance scopes when your
+drawing code can throw. Use `setCellWithAlphaBlending()` for opacity-aware cell drawing. `drawText()` with an opaque
+background keeps its direct-write behavior.
 
-`setRespectAlpha(boolean)` changes frame-buffer composition policy. It does not convert existing cells.
+`setRespectAlpha(true)` makes `drawFrameBuffer()` always blend this buffer's cells when this buffer is the source. It
+does not convert existing cells. It throws on renderer buffers and paint hook buffers.
 
 ## Color transforms
 
@@ -262,15 +292,17 @@ Use capture spans for tests that compare ordinary text and style. Do not use the
 ## Resize and raw views
 
 When the dimensions change, `resize(width, height)` reallocates the arrays and clears all cells. It keeps the native
-buffer object. A call with the current dimensions does nothing. Dimensions must stay positive.
-After a dimension-changing resize, get a new cell scope.
+buffer object. A call with the current dimensions does nothing. Dimensions must stay positive, and `width * height`
+must not exceed the Context's `renderCellsMax`. Only owned buffers support `resize()`. Renderer buffers and paint hook
+buffers throw. After a dimension-changing resize, get a new cell scope.
 
 Never mutate the scoped `char` or `attributes` arrays for arbitrary text. Direct writes bypass grapheme, continuation,
 link, and image-placement bookkeeping. Direct color writes can discard palette and default-color intent in the high
 bits.
 
-The raw views remain public for specialized controlled effects. Restrict those effects to known one-cell text and
-explicit RGB colors. Prefer drawing methods for all general content.
+The raw views remain public for specialized controlled effects. Restrict those effects to known printable ASCII text
+and explicit RGB colors. Text drawing stores every other character as a tagged grapheme entry. Prefer drawing methods
+for all general content.
 
 ## Next
 

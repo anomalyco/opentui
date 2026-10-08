@@ -295,6 +295,8 @@ The exact `AudioAction` values are:
 
 An `Audio` engine owns loaded sounds, groups, voices, streams, capture streams, recorders, devices, and tap memory.
 
+Each engine owns a separate native Context. Renderer destruction does not dispose an `Audio` engine.
+
 Dispose child streams or recorders when their work ends. The parent also tries to dispose every active child during `audio.dispose()`.
 
 `audio.dispose()` can throw when a child cannot close or native destruction fails. It preserves the engine when cleanup needs a later retry.

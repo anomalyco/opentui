@@ -107,9 +107,10 @@ The nested renderer background defaults to opaque black. `ThreeRenderable` force
 
 ### Lifecycle and API
 
-`ThreeRenderable` requires a real `CliRenderer` context. It registers a CLI frame callback at construction. It does not
-initialize WebGPU until it has a scene, a frame buffer, and a draw to perform. Initialization failure is logged once,
-and later frames do not retry it. Concurrent draws for the same renderable are skipped.
+`ThreeRenderable` requires a real `CliRenderer` context. It registers a CLI frame callback at construction. The
+callback skips the draw while the renderable is destroyed, has `visible: false`, or is detached, or while it has no scene or frame
+buffer. The first draw initializes WebGPU. The renderable logs an initialization failure once, and later frames do not
+retry it. The renderable skips a draw while its previous draw is still running.
 
 On resize, positive dimensions update the engine. With `autoAspect: true`, perspective cameras receive the
 renderable's display-aware aspect ratio and `updateProjectionMatrix()`. Orthographic camera bounds do not change
@@ -128,11 +129,9 @@ Public members:
 Base renderable cleanup runs first. `destroySelf()` then removes the frame callback and calls
 `ThreeCliRenderer.destroy()`.
 
-Early destruction has two current limits. `ThreeCliRenderer.destroy()` does not remove its listener from the host
-renderer's `destroy` event, so repeatedly creating and destroying views on one live host retains engine listeners until
-the host is destroyed. Also, a pending asynchronous `init()` does not recheck destroyed state after device creation.
-Destroying a view during its first initialization can therefore allocate renderer resources after cleanup. Avoid rapid
-view churn, and do not destroy a direct engine until its `init()` promise settles.
+Early destruction has one current limit. A pending `init()` does not check for destruction after it creates the
+device. If you destroy a view during its first initialization, the engine can allocate renderer resources after
+cleanup. Avoid rapid view churn, and do not destroy a direct engine until its `init()` promise settles.
 
 ## `ThreeCliRenderer`
 
@@ -167,10 +166,11 @@ renderer.setFrameCallback(async (deltaMs) => {
 The frame callback draws into the `FrameBufferRenderable` buffer because renderer buffers accept drawing only in
 post-process functions.
 
-Unlike `ThreeRenderable`, direct use requires `await engine.init()` before canvas-dependent methods. These methods
-include screenshots, supersampling configuration, and scene rendering. The engine registers for `CliRenderer`
-destruction and destroys itself with the host renderer. Call `destroy()` when you end its lifetime earlier, subject to
-the listener and in-flight initialization limits above.
+Unlike `ThreeRenderable`, direct use requires `await engine.init()` before methods that use the canvas or the Three
+renderer. These methods include screenshots, supersampling configuration, background color changes, and scene
+rendering. Before `init()` completes, `drawScene()` draws nothing. If debug stats are on, it throws. The engine listens for `CliRenderer` destruction
+and destroys itself with the host renderer. Call `destroy()` to end its lifetime earlier, subject to the
+initialization limit above.
 
 ### Options and defaults
 
@@ -208,19 +208,19 @@ After initialization, the Three renderer uses `NoToneMapping` and `LinearSRGBCol
 
 ### Methods
 
-| Method                                                         | Description                                                             |
-| -------------------------------------------------------------- | ----------------------------------------------------------------------- |
-| `init()`                                                       | Create the WebGPU device, CLI canvas, and Three WebGPU renderer         |
-| `drawScene(scene, buffer, deltaTime)`                          | Render the active camera into an `OptimizedBuffer`                      |
-| `setActiveCamera(camera)` / `getActiveCamera()`                | Manage the active camera                                                |
-| `setBackgroundColor(color)`                                    | Change the Three clear color                                            |
-| `setSize(width, height, forceUpdate = false)`                  | Resize output, canvas, viewport, and camera projection                  |
-| `toggleSuperSampling()`                                        | Cycle none -> CPU -> GPU -> none                                        |
-| `getSuperSampleAlgorithm()` / `setSuperSampleAlgorithm(value)` | Read or change the supersampling algorithm                              |
-| `saveToFile(path)`                                             | Save the current canvas texture through Jimp                            |
-| `toggleDebugStats()`                                           | Toggle renderer timing text                                             |
-| `renderStats(buffer)`                                          | Draw current timing values into a buffer                                |
-| `destroy()`                                                    | Remove resize/debug listeners and dispose the canvas and Three renderer |
+| Method                                                         | Description                                                              |
+| -------------------------------------------------------------- | ------------------------------------------------------------------------ |
+| `init()`                                                       | Create the WebGPU device, CLI canvas, and Three WebGPU renderer          |
+| `drawScene(scene, buffer, deltaTime)`                          | Render the active camera into an `OptimizedBuffer`                       |
+| `setActiveCamera(camera)` / `getActiveCamera()`                | Manage the active camera                                                 |
+| `setBackgroundColor(color)`                                    | Change the Three clear color                                             |
+| `setSize(width, height, forceUpdate = false)`                  | Resize output, canvas, viewport, and camera projection                   |
+| `toggleSuperSampling()`                                        | Cycle none -> CPU -> GPU -> none                                         |
+| `getSuperSampleAlgorithm()` / `setSuperSampleAlgorithm(value)` | Read or change the supersampling algorithm                               |
+| `saveToFile(path)`                                             | Save the current canvas texture through Jimp                             |
+| `toggleDebugStats()`                                           | Toggle renderer timing text                                              |
+| `renderStats(buffer)`                                          | Draw current timing values into a buffer                                 |
+| `destroy()`                                                    | Remove host renderer listeners and dispose the canvas and Three renderer |
 
 Concurrent `drawScene()` calls are not supported. The implementation warns and skips the overlapping draw. The host
 renderer debug-overlay toggle also controls Three timing stats.

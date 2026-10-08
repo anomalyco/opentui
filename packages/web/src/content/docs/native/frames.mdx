@@ -18,11 +18,14 @@ Start with a frame that needs only native drawing:
 
 1. `ot_scene_paint` calculates layout, paints cells in memory, and returns a retained `DONE` draft.
 2. `ot_scene_frame_commit` consumes that draft, encodes its cells, and queues output.
-3. `ot_session_drain_stdout` writes queued bytes directly and records delivery. For a host-owned stream, read output, write it, and report delivery with `ot_session_complete_output`.
+3. `ot_session_drain_stdout` writes queued bytes directly and records delivery. For a host-owned stream, copy bytes with `ot_session_read_output`, write them, and report delivery with `ot_session_complete_output`.
 
 A finished cell grid is not yet a presented frame. Native code publishes the frame only after delivery completes.
+Before commit, `ot_scene_paint` and `ot_scene_frame_step_with_geometry` return `OT_FRAME_BUSY`.
+After commit queues the frame's output, they return `OT_OUTPUT_BUSY` until delivery completes.
 
 `ot_scene_paint` completes that painting in one call.
+It returns `OT_UNSUPPORTED_RESOURCE` if any node registered an update, resize, layout-changed, or paint hook.
 To draw part of a frame yourself, use the step path below. It uses the same scene and drawing engine.
 
 ## Draw after the label
@@ -65,72 +68,94 @@ The finished cells form a _draft_: they still need to be committed and delivered
 └─────────────────────────────────────┘
 ```
 
-The first step uses a `NULL` previous request. Later steps pass back the returned record without reconstructing it.
+The first step uses a `NULL` previous request and starts an _attempt_. Later steps pass back the returned record without reconstructing it.
+The attempt ends when a step returns `DONE`, when an accepted step fails, or when the host cancels it.
+A rejected reply, such as a stale request, leaves the attempt unchanged.
 No worker or asynchronous paint callback is involved: every host hook runs before native code paints any cell.
 
 The [C guide](/docs/native/c#add-host-drawing) implements this sequence in a complete program.
 
 ## Read and acknowledge requests
 
+A node registers hooks with `ot_scene_set_hooks`.
 On `OT_OK`, the returned request kind tells the host what to do:
 
-| Request kind                          | Host action                                             |
-| ------------------------------------- | ------------------------------------------------------- |
-| `OT_SCENE_FRAME_DONE` (`0`)           | Use the finished cells, then commit or cancel the draft |
-| `OT_SCENE_FRAME_UPDATE` (`1`)         | Run the node's update work                              |
-| `OT_SCENE_FRAME_RESIZE` (`2`)         | Process the node's resize or related view notification  |
-| `OT_SCENE_FRAME_LAYOUT_CHANGED` (`3`) | Process the root's layout notification                  |
-| `OT_SCENE_FRAME_RECORD` (`4`)         | Record every slot's paint hooks and submit them         |
-| `OT_SCENE_FRAME_YIELD` (`5`)          | Schedule a later turn before continuing                 |
+| Request kind                          | Host action                                                                     |
+| ------------------------------------- | ------------------------------------------------------------------------------- |
+| `OT_SCENE_FRAME_DONE` (`0`)           | Use the finished cells, then commit or cancel the draft                         |
+| `OT_SCENE_FRAME_UPDATE` (`1`)         | Run update work for a node with `OT_SCENE_HOOK_UPDATE`                          |
+| `OT_SCENE_FRAME_RESIZE` (`2`)         | Handle the new `width` and `height` of a node with `OT_SCENE_HOOK_RESIZE`       |
+| `OT_SCENE_FRAME_LAYOUT_CHANGED` (`3`) | Handle a new Yoga layout for the root, which has `OT_SCENE_HOOK_LAYOUT_CHANGED` |
+| `OT_SCENE_FRAME_RECORD` (`4`)         | Record every slot's paint hooks and submit them                                 |
+| `OT_SCENE_FRAME_YIELD` (`5`)          | Schedule a later turn before continuing                                         |
 
 The entire `ot_scene_frame_request` is a _frame ticket_.
-It identifies the Session, root, node, frame, request, and generations, along with the kind, public number, dimensions, and reserved fields.
+It identifies the Session, root, node, frame, request, layout epoch, and hook generation.
+It also holds the kind, public node number, dimensions, and reserved fields.
 Preserve the whole record. A frame ID alone cannot acknowledge a request.
-Native code allows one outstanding ordered request and rejects altered or stale replies.
+Native code allows one outstanding request at a time. It rejects altered or stale replies without consuming them.
 
 `ot_scene_frame_geometry` is a separate observation, not part of the ticket.
-Its flags identify valid paint and public-layout snapshots. Accepted mutations can invalidate them before the next step.
+Its flags identify valid paint and public-layout snapshots. `RECORD`, `DONE`, and `YIELD` carry no snapshots.
+Accepted mutations can invalidate the snapshots before the next step.
 Do not copy geometry fields into an acknowledgement.
 
 ## Record paint hooks
 
-A node registers paint hooks with `OT_SCENE_HOOK_RENDER_BEFORE`, `OT_SCENE_HOOK_RENDER_SELF`, and `OT_SCENE_HOOK_RENDER_AFTER`.
-Hook generations start above zero and must increase when the registration changes.
+To register paint hooks, pass `OT_SCENE_HOOK_RENDER_BEFORE`, `OT_SCENE_HOOK_RENDER_SELF`, or `OT_SCENE_HOOK_RENDER_AFTER` to `ot_scene_set_hooks`.
+The root cannot register paint hooks.
+Each `ot_scene_set_hooks` call needs a nonzero `generation` that is greater than the node's previous generation.
 
-For a `RECORD` request, `ot_scene_frame_get_paint_slots` copies one `ot_scene_paint_slot` for each hooked node.
+For a `RECORD` request, `ot_scene_frame_get_paint_slots` copies one `ot_scene_paint_slot` for each visible node with paint hooks, in paint order.
+Call it with zero capacity to get the slot count.
 A slot names the node, its hooks, and the geometry, clip, and opacity that native code paints it with.
 Run the hooks of every slot in slot order, then acknowledge the request with one recording.
 
-A recording is a byte stream of records. Each record starts with `ot_scene_record_header`, and its size is a multiple of 8.
-A `SLOT` record starts the commands for one phase of one slot. The other records are drawing commands, such as `DRAW` for text, fills, boxes, and buffer composition.
-They use the same fields and checks as the matching `ot_buffer_draw_*` and `ot_buffer_*` operations.
-A phase that draws nothing needs no `SLOT` record.
+While the `RECORD` request is pending, render, resize, terminal setup, and suspend return `OT_FRAME_BUSY`.
+The `RECORD` ticket gives no access to the framebuffer.
 
-Native code plays each node's phases around its own drawing, before its children:
+A recording is a byte stream of records. It must start at an 8-byte aligned address and be at most `OT_SCENE_RECORD_BYTES_MAX` (64 MiB).
+Each record starts with `ot_scene_record_header`. Its `size` counts the whole record, padded to a multiple of 8.
 
-1. The before phase.
-2. The self phase, which replaces the node's native body. Without `RENDER_SELF`, the native body draws.
-3. Native editor cursor maintenance.
-4. The after phase.
+A `SLOT` record starts the commands for one phase of one slot.
+Slots and phases must appear in increasing order, at most once each, and only for phases set in the slot's `hooks`.
+A phase that draws nothing needs no `SLOT` record, and an empty recording is valid.
+
+The other records are drawing commands, such as `DRAW` for text, fills, boxes, and buffer composition. Each command belongs to the latest `SLOT` record.
+Commands use the same fields and checks as the matching `ot_buffer_draw_*` and `ot_buffer_*` operations.
+
+For each node, native code takes these steps before it paints the node's children:
+
+1. It plays the before phase.
+2. It plays the self phase, which replaces the node's native body. Without `RENDER_SELF`, the native body draws.
+3. For a focused editor node, it updates the terminal cursor and mouse pointer.
+4. It plays the after phase.
+5. When `use_mouse` is set, it adds the node to the _hit grid_. `ot_scene_hit_test` reads that grid after the frame is presented.
 
 An after hook on the box would therefore draw before the label, not after the whole subtree.
-Sibling `zIndex` determines local paint order. It is not a global sort of all nodes.
-Each phase starts with only the slot's clip and opacity. Stack commands apply above that entry.
-Two commands ignore the clip and opacity and act on the whole frame, like their `ot_buffer_*` forms.
-A `DRAW` with `OT_BUFFER_DRAW_CLEAR` overwrites every cell, including cells that earlier nodes painted, and removes their image placements.
-`COLOR_MATRIX` transforms every cell that it selects, inside or outside the clip.
-An `IMAGE` node with a backing buffer from `ot_scene_set_image` is the exception: its phases draw into that buffer, in buffer coordinates, before native code composes it.
+Native code sorts siblings by `z_index` within each parent. It does not sort all nodes globally.
 
-Commands read the resources they name when native code plays them, not when the host records them.
+Each phase starts with only the slot's clip and opacity on the drawing stacks.
+`STACK` commands push and pop above that entry but cannot remove it. Native code resets the stacks between phases.
+Two commands ignore the clip and opacity and act on the whole frame, like their `ot_buffer_*` forms:
+
+- A `DRAW` with `OT_BUFFER_DRAW_CLEAR` overwrites every cell, including cells that earlier nodes painted, and removes their image placements.
+- `COLOR_MATRIX` transforms every cell that it selects, inside or outside the clip.
+
+An `IMAGE` node with a backing buffer from `ot_scene_set_image` is an exception to these rules.
+Native code clears that buffer, plays the node's phases into it in buffer coordinates with empty stacks, and then composes it into the frame.
+
+Native code reads each resource that a command names when it plays the command, not when the host records it.
 A command whose buffer, view, image, node, or Unicode handle was destroyed before playback draws nothing.
-A malformed stream or an invalid command fails the step and cancels the attempt without presenting cells.
+Native code checks the stream's framing and slot order before painting. It checks each command's contents when it plays the command.
+Any other invalid stream or command fails the step and cancels the attempt without presenting cells.
 The [checked header](https://github.com/anomalyco/opentui/blob/main/packages/native/include/opentui.h) defines every record layout.
 
 ## Commit the draft, then complete output
 
 `DONE` means painting finished. The host must now commit or cancel the draft.
-Commit with `ot_scene_frame_commit`, not `ot_session_render`.
-This lets native code check that the submitted cells belong to that exact finished frame.
+Commit with `ot_scene_frame_commit`. While a draft is live, `ot_session_render` returns `OT_FRAME_BUSY`.
+The commit lets native code check that the submitted cells belong to that exact finished frame.
 
 Check both the call's `ot_status` and the separate render outcome:
 
@@ -141,16 +166,16 @@ Check both the call's `ot_status` and the separate render outcome:
 | `OT_RENDER_SKIPPED`   | Output pressure. Paint a new draft after queued output drains                                             |
 | `OT_RENDER_FAILED`    | The frame is larger than the empty output queue, or encoding or allocation failed. No output was accepted |
 
-An `OT_OK` commit consumes the draft even for skipped or failed render outcomes.
-Do not submit its ticket again. Pumping output does not repaint or retry it.
+An `OT_OK` commit consumes the draft for every render outcome, including `OT_RENDER_SKIPPED` and `OT_RENDER_FAILED`.
+`OT_RENDER_FAILED` is a render outcome, not an `ot_status` error.
+Do not submit the ticket again. Pumping output does not repaint or retry the frame.
 
-An admission error preserves a live draft for retry and leaves the render-outcome output unchanged.
-For example, a frame-qualified lease can block commit with `OT_FRAME_BUSY` until you release the lease.
-An `OT_OK` call with `OT_RENDER_FAILED` consumes the draft. It is not an `ot_status` error.
+If commit returns an error status, the draft stays live for a retry, and native code does not write the render outcome.
+For example, a frame-qualified lease makes commit return `OT_FRAME_BUSY` until you release the lease.
 
-Frame-qualified `ot_session_render_split` calls use the same consumption rules.
+`ot_session_render_split` with a `DONE` ticket uses the same consumption rules.
 A consumed draft is stale even while earlier output remains pending.
-A ticketless submission can report earlier pending output without accepting new work.
+A call without a frame ticket, such as `ot_session_render`, can return `OT_RENDER_PENDING` for earlier output without accepting new work.
 Draft consumption and transport completion are separate events.
 
 Choose how to deliver the Session queue:
@@ -197,8 +222,8 @@ After `DONE`, checked drawing operations can change the finished draft before co
 The Session handle and the `DONE` ticket identify the destination.
 Drawing to an independent offscreen buffer instead uses that buffer's handle and a `NULL` frame argument.
 
-For an effect that reads existing cells, acquire a storage lease with `ot_scene_frame_acquire_buffer_lease`.
-It accepts only the `DONE` ticket.
+For an effect that reads existing cells, acquire a _frame-qualified lease_ with `ot_scene_frame_acquire_buffer_lease`.
+It is a storage lease that also checks the `DONE` ticket. It accepts no other ticket.
 Release every frame-qualified lease before commit or another frame, including leases that became stale.
 
 These values answer different questions:
@@ -210,7 +235,7 @@ These values answer different questions:
 | Output ticket | Which copied bytes did the transport deliver?         |
 
 `DONE` does not acquire a lease automatically.
-An ordinary storage lease cannot bypass an active draft's frame checks.
+While a draft is live, `ot_session_acquire_buffer_lease` returns `OT_FRAME_BUSY`, so an ordinary storage lease cannot bypass the frame checks.
 [Resources and ownership](/docs/native/resources#borrow-cells-for-one-synchronous-operation) explains array lifetime and text-reference restrictions.
 
 The next buffer is drawing storage, which encoding clears after use.
@@ -218,18 +243,20 @@ The current buffer is encoding comparison state, not a guaranteed copy of the la
 
 ## Submit property updates
 
-`ot_scene_flush` accepts one bounded byte stream under one mutation admission.
-Each record selects a node and the properties to change. Unselected visual fields keep their accepted native values.
-Layout records contain one style operation. Visual records contain only the fields selected by their mask.
+`ot_scene_flush` applies one bounded byte stream of property records in one call.
+One Context admission covers the whole call. Records still apply one at a time, as described below.
+Each record selects a node and the properties to change.
+A style record (`OT_SCENE_PROPERTY_STYLE`) contains one layout style operation.
+A visual record contains only the paint fields selected by its mask. Unselected fields keep their accepted native values.
 
 Records apply in stream order without host callbacks between them.
 Each record publishes atomically, including border appearance, Yoga border widths, and a requested custom-character reset.
 The first rejected record stops the flush. `out_applied` counts complete accepted records, not bytes.
-The rejected record and its suffix remain unapplied. Accepted records do not roll back.
+The rejected record and the records after it remain unapplied. Accepted records do not roll back.
 
-Admission, null-input, and byte-limit failures consume zero records.
-The record limit stops before record 4,097 and preserves the accepted prefix.
-The stream limits are `OT_SCENE_MUTATIONS_MAX` records and `OT_SCENE_PROPERTY_BYTES_MAX` bytes.
+No record applies if the Context rejects the call, the input is `NULL` with a nonzero byte count, or the stream exceeds the byte limit.
+The stream limits are `OT_SCENE_MUTATIONS_MAX` (4,096) records and `OT_SCENE_PROPERTY_BYTES_MAX` bytes.
+At the record limit, the flush stops before record 4,097 and keeps the accepted records.
 Style records use 40 bytes. Visual records use 32 to 88 bytes.
 
 Use the [checked header](https://github.com/anomalyco/opentui/blob/main/packages/native/include/opentui.h) for masks, exact sizes, padding, and field encodings.
@@ -241,29 +268,40 @@ Updates and resize notifications run during preparation, before painting.
 Native code calculates Yoga layout and prepares node geometry, clipping, and paint order.
 If a preparation hook changes the scene, native code repeats the necessary preparation.
 An update hook runs at most once per node per attempt.
-Native code sorts a parent's children by `zIndex` once per frame, when preparation reaches that parent.
-With layout hooks or viewports, a later `zIndex` change or reparent in the same attempt, at a yield or in a hook acknowledgement, does not sort them again: the frame keeps the earlier order, and a node moved into that parent paints after its siblings.
+
+Native code sorts a parent's children by `z_index` once per frame, when preparation reaches that parent.
+With update, resize, or layout-changed hooks, or with a Box viewport (`ot_scene_set_viewport`), the host can change the scene after that sort.
+It can do so in a hook acknowledgement or at a yield.
+A later `z_index` change or reparent in the same attempt does not sort the children again.
+The frame keeps the earlier order, and a node moved into that parent paints after its siblings.
 The next frame sorts again.
 
-The host sets positive `max_layout_rounds` and `max_host_requests` limits and keeps them fixed throughout the attempt.
-Exhausted preparation rounds fail before painting. A `RECORD` request counts as one host request.
-Failure does not present partial cells or undo accepted application changes.
+The host sets positive `max_layout_rounds` and `max_host_requests` limits in `ot_scene_frame_options`. They must stay the same for the whole attempt.
+If preparation needs more than `max_layout_rounds` rounds, the step returns `OT_LAYOUT_LIMIT`.
+If the attempt needs more than `max_host_requests` host requests, the step returns `OT_FRAME_REQUEST_LIMIT`.
+Update, resize, layout-changed, and `RECORD` requests each count as one host request.
+Both failures happen before painting and cancel the attempt. They do not present partial cells or undo accepted changes.
 
 Paint hooks run after preparation and before painting. The prepared membership stays fixed, but node properties stay live:
 
-| Change in a paint hook               | Effect on this frame                                                   |
-| ------------------------------------ | ---------------------------------------------------------------------- |
-| Change any node's background         | Its drawing uses the new color, even for a node earlier in paint order |
-| Insert a node                        | It waits for the next prepared frame                                   |
-| Destroy a node, including itself     | Native code skips it with its recording and hit identity               |
-| Hide a node with `display: none`     | It still paints this frame; the next prepared frame drops it           |
-| Reparent or move a scheduled node    | It paints at its prepared position; the change waits a frame           |
-| Change clipping or inherited opacity | Prepared clipping and opacity stay fixed                               |
+| Change in a paint hook                                      | Effect on this frame                                                   |
+| ----------------------------------------------------------- | ---------------------------------------------------------------------- |
+| Change a color, such as a background, border, or text color | Its drawing uses the new color, even for a node earlier in paint order |
+| Change opacity, translation, or `z_index`                   | It paints with its prepared values. The next frame uses the new values |
+| Change a layout property, such as a width                   | It paints with its prepared layout. The next frame uses the new layout |
+| Insert a node                                               | It waits for the next prepared frame                                   |
+| Destroy a node, including itself                            | Native code skips it, its recording, and its hit-grid entry            |
+| Hide a node with `display: none`                            | It still paints this frame. The next prepared frame drops it           |
+| Reparent or move a prepared node                            | It paints at its prepared position. The change waits a frame           |
+| Change clipping or inherited opacity                        | Prepared clipping and opacity stay fixed                               |
 
-Prefer changing application state before painting. These rules preserve ordered drawing effects, not an atomic application transaction.
+Make application changes before painting when you can.
+These rules keep drawing effects in paint order. They do not make the changes in a paint hook atomic.
 
 To abandon an attempt or draft while keeping the Session, call `ot_scene_frame_cancel` with its frame ID.
-Cancellation revokes that frame's access and submission. It does not undo mutations, callback effects, or promise to clear scratch cells.
+A stale frame ID returns `OT_STALE_FRAME` and does not cancel the active frame.
+Cancellation removes that frame's framebuffer access and its right to commit.
+It does not undo mutations or hook effects, and it does not guarantee cleared cells.
 Outstanding leases still need release.
 
 ## Yield between pieces of work
@@ -272,15 +310,16 @@ A host may need time for input or timers before a large frame finishes.
 The `max_work_items` argument to `ot_scene_frame_step_with_geometry` lets native code return `OT_SCENE_FRAME_YIELD` during preparation.
 It counts preparation visits, candidate-view preparation, and feedback records.
 
-The quota is a positive unsigned 32-bit value.
-Passing `UINT32_MAX` from the start selects synchronous preparation without scheduling yields.
+The quota is a positive unsigned 32-bit value. Zero returns `OT_INVALID_ARGUMENT`.
+Pass `UINT32_MAX` when you start the attempt or acknowledge a `YIELD` to select synchronous preparation without yields.
+A hook acknowledgement cannot switch a bounded attempt to synchronous preparation.
 
 On `YIELD`, schedule another host turn and then acknowledge the exact request.
-A yield replenishes the quota. A hook acknowledgement does not.
-Yield requests do not consume `max_host_requests` and grant no drawing or commit permission.
+A yield acknowledgement starts a new quota. A hook acknowledgement does not.
+Yield requests do not count against `max_host_requests`. They give no drawing or commit permission.
 
 A host can change the scene while an attempt waits at a yield.
-If that change needs new layout, preparation restarts once, and the rest of the attempt runs without yields.
+If that change requires preparation to run again, preparation restarts once, and the rest of the attempt runs without yields.
 Steady changes at every turn therefore cannot exhaust `max_layout_rounds`.
 
 Painting never yields. Once preparation finishes, the frame paints in one pass.
@@ -289,9 +328,9 @@ Quotas count work items, not milliseconds or cells.
 Yoga, allocation, sorting, final paint-list preparation, painting, and output encoding still contain synchronous work.
 A quota cannot interrupt a slow host hook.
 
-An accepted size-changing resize at a scheduling yield cancels the old attempt.
-Start another attempt with the accepted mutations intact.
-During a `RECORD` request, resize rejects with `OT_FRAME_BUSY` until the host submits the recording.
+If the host resizes the renderer at a `YIELD` and native code accepts the new size, native code cancels the attempt.
+Start another attempt. The accepted mutations stay in place.
+During a `RECORD` request, resize returns `OT_FRAME_BUSY` until the host submits the recording.
 
 ## Measure custom content
 
@@ -300,7 +339,7 @@ This function receives size constraints and returns width and height in terminal
 
 Measurement differs from paint hooks: Yoga calls the function before the native layout call returns.
 It needs the result immediately, so measurement is synchronous on the Context's thread.
-Permitted read-only style, layout, text, and provider queries can reenter. Conflicting mutations or destruction cannot.
+The callback can call scene style, layout, text, and measurement-provider queries. It cannot change or destroy objects.
 
 Keep the callback alive until replacement, removal, node destruction, or Context destruction.
 Setting it to `NULL` clears the provider. It does not restore a replaced built-in provider.
@@ -319,15 +358,15 @@ Before the first accepted frame:
 The pump never sleeps or reads a clock. Supply monotonic nanoseconds and a positive work budget on each call.
 Act on its result:
 
-| Pump result              | Host action                            |
-| ------------------------ | -------------------------------------- |
-| `OT_PUMP_IDLE`           | Wait for application or terminal work  |
-| `OT_PUMP_AGAIN`          | Schedule another pump turn             |
-| `OT_PUMP_OUTPUT_PENDING` | Deliver output and complete its ticket |
-| `OT_PUMP_WAIT_UNTIL`     | Schedule a pump at `deadline_ns`       |
-| `OT_PUMP_CLOSED`         | Finish graceful Session cleanup        |
+| Pump result              | Host action                              |
+| ------------------------ | ---------------------------------------- |
+| `OT_PUMP_IDLE`           | Wait for application or terminal work    |
+| `OT_PUMP_AGAIN`          | Schedule another pump turn               |
+| `OT_PUMP_OUTPUT_PENDING` | Deliver queued output until it completes |
+| `OT_PUMP_WAIT_UNTIL`     | Schedule a pump at `deadline_ns`         |
+| `OT_PUMP_CLOSED`         | Finish graceful Session cleanup          |
 
-Setup does not wait for terminal capability replies. Your host must still read input and forward complete replies through the native control API.
+Setup does not wait for terminal capability replies. Your host must still read input and forward complete replies with `ot_session_control` and `OT_CONTROL_CAPABILITY_RESPONSE`.
 The native Session does not own your transport or restore host-side input settings.
 
 On graceful shutdown, call `ot_session_close` and continue pumping and delivering restoration output until closed.

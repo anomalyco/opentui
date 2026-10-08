@@ -95,12 +95,14 @@ The parent owns tree placement. Your code still owns resources that the instance
 
 ## Choose the base class
 
-| Base class       | Use it for                                                          | Contract                                                                                               |
-| ---------------- | ------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------ |
-| `Renderable`     | Visual nodes, layout containers, controls, and drawing surfaces     | Supplies Yoga layout, traversal, buffering, hit registration, events, and destruction                  |
-| `BaseRenderable` | Text-node-like or framework-only tree nodes without terminal layout | Requires implementations of `add`, `remove`, `insertBefore`, child access, lookup, and `requestRender` |
+| Base class       | Use it for                                                          | Contract                                                                                                        |
+| ---------------- | ------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------- |
+| `Renderable`     | Visual nodes, layout containers, controls, and drawing surfaces     | Creates a scene node for Yoga layout, paint order, and hit testing. Supplies buffering, events, and destruction |
+| `BaseRenderable` | Text-node-like or framework-only tree nodes without terminal layout | Requires implementations of `add`, `remove`, `insertBefore`, child access, lookup, and `requestRender`          |
 
-`BaseRenderable` does not allocate a Yoga node or draw into an `OptimizedBuffer`. Most extensions must use
+A scene node is the native node that represents a `Renderable` in the native scene. Native code walks the scene to lay
+out and paint the tree. While it paints, it fills the hit grid, the native grid used for mouse hit testing.
+`BaseRenderable` does not create a scene node, so it has no Yoga layout and does not draw. Most extensions must use
 `Renderable`.
 
 ## Measure intrinsic size
@@ -110,30 +112,31 @@ width, a width mode, a height, and a height mode. Return the measured `width` an
 
 The modes have these meanings:
 
-| Mode                    | Required result                  |
+| Mode                    | Meaning                          |
 | ----------------------- | -------------------------------- |
 | `MeasureMode.Undefined` | No finite constraint is supplied |
 | `MeasureMode.AtMost`    | An available size is supplied    |
 | `MeasureMode.Exactly`   | Yoga fixes this layout dimension |
 
-Return intrinsic measurements; Yoga applies the layout constraints. A provider
+Return intrinsic measurements. Yoga applies the layout constraints. A provider
 can return an intrinsic dimension larger than an `AtMost` constraint, or different
-from an `Exactly` constraint. Do not pre-clamp results just to satisfy the mode.
+from an `Exactly` constraint. Do not clamp results to the mode.
 
 A renderable has one measure provider. A measured node cannot also act as a layout container with children.
 Setting a provider replaces the previous provider, including built-in text or editor measurement. Call
 `setMeasureProvider(null)` to clear it. Clearing does not restore a replaced built-in provider. Destruction releases
 the registered callback.
 
-Measurement callbacks must return synchronously. You can read completed layout and content, but cannot mutate layout,
-replace a provider, invalidate measurement, change children, or destroy renderables during measurement.
+Native code calls the provider synchronously while Yoga runs, so the provider must return synchronously. During
+measurement, you can read completed layout and content. You cannot mutate layout, replace a provider, invalidate
+measurement, change children, or destroy renderables.
 
-When intrinsic content changes, call `invalidateIntrinsicSize()` to invalidate cached measurement, then
+When intrinsic content changes, call `invalidateIntrinsicSize()` to invalidate cached measurement. Then call
 `requestRender()` to schedule a renderer pass. Invalidation does nothing when no provider is registered.
 `requestRender()` alone does not invalidate measurement. Setting, replacing, or clearing a provider schedules a pass.
 
 Use `getLayout()` for a read-only snapshot of raw local layout: `left`, `top`, `right`, `bottom`, `width`, and `height`.
-It preserves zero dimensions and excludes screen translations. It does not calculate layout; after a property change,
+It preserves zero dimensions and excludes screen translations. It does not calculate layout. After a property change,
 it reports the previous completed layout until the next layout pass. Before the first layout pass, dimensions can be
 `NaN`. Use `screenX`, `screenY`, `width`, and `height` for drawing in terminal cells.
 
@@ -143,42 +146,50 @@ layout trees. Read [Layout](/docs/core-concepts/layout) for sizing, rounding, an
 
 ## Use paint hooks
 
-The native scene owns layout, traversal, visibility, clipping, hit registration, and built-in drawing. JavaScript
-measurement, lifecycle, and custom paint hooks run on the owner thread.
+The native scene handles layout, traversal, visibility, clipping, hit testing, and built-in drawing. Your measure
+providers, update hooks, lifecycle passes, and paint hooks run in JavaScript on the renderer's thread.
 
-Paint hooks record drawing. After layout, OpenTUI runs every visible node's hooks in paint order. Native code then paints
-the frame in one pass and plays each node's recorded drawing at that node's position. Measurement instead uses a
-synchronous native-to-JavaScript callback. [How Core uses native](/docs/native/core) explains both paths.
+The paint hooks are `renderBefore`, `renderSelf()`, and `renderAfter`. A paint hook records its drawing and does not
+draw immediately, unless its renderable is buffered, as described in
+[Handle coordinates, clipping, and buffering](#handle-coordinates-clipping-and-buffering). After layout, Core runs the paint hooks of every visible node in paint order. Native code then paints
+the frame in one pass. It plays each node's recording at that node's place in paint order. A measure provider works
+differently: native code calls it synchronously while Yoga runs. [How Core uses native](/docs/native/core) explains both
+paths.
 
-For an ordinary custom renderable, painting draws `renderBefore`, `renderSelf()`, and then `renderAfter`. The after hook
-draws after that node's own drawing, not after its descendants. Override `renderSelf()` on a custom `Renderable` for
-custom drawing. For built-in boxes, use `renderBefore` or `renderAfter` around native drawing.
+For a custom renderable, the recordings play in this order: `renderBefore`, `renderSelf()`, and then `renderAfter`.
+`renderAfter` draws after the node's own drawing, but before its descendants. Override `renderSelf()` on a custom
+`Renderable` for custom drawing. For built-in boxes, use `renderBefore` or `renderAfter` around native drawing.
 
-Text and editor components skip the generic `renderBefore` and `renderAfter` hooks. To extend their drawing, override
-`renderSelf(buffer, deltaTime)` and call `super.renderSelf(buffer, deltaTime)` before drawing an overlay.
+Text and editor components skip the generic `renderBefore` and `renderAfter` hooks. These are subclasses of
+`TextBufferRenderable` and `EditBufferRenderable`, such as Text, Code, Textarea, and Input. To extend their drawing,
+override `renderSelf(buffer)` and call `super.renderSelf(buffer)` before you draw an overlay.
 
-The buffer a paint hook receives records drawing calls, so a hook cannot read the frame. `buffers`, `withBuffers()`,
-`getRealCharBytes()`, and `getSpanLines()` throw. To apply an effect to existing cells, draw into a buffer the renderable
-owns, for example with `drawToBuffer()`, read or change that buffer, and compose it with `drawFrameBuffer()`. Native
-code reads a drawn resource (a composed buffer, encoded Unicode, a text buffer view, an editor view, or an image) when it
-paints the frame, so do not change it again during the same frame. A resource that a hook destroys or frees after drawing
-it stays alive until then. For whole-frame effects, use a post-process function.
+A paint hook of an unbuffered renderable receives a recording buffer. A recording buffer stores drawing calls and cannot read the frame. `buffers`,
+`withBuffers()`, `getRealCharBytes()`, and `getSpanLines()` throw. To apply an effect to existing cells, draw into a
+buffer that the renderable owns, for example with `drawToBuffer()`. Read or change that buffer, then compose it with
+`drawFrameBuffer()`. For whole-frame effects, use a post-process function.
 
-A drawing call in a hook checks ranges and types immediately and records nothing when it throws. Native code checks the
-remaining input, such as attribute bits 8 to 31, when it paints the frame. Such an error fails that frame and emits
-`render:error`; it does not throw inside the hook. Control characters in text take no cells, and tabs and over-long
-graphemes draw as spaces, as in [direct drawing](/docs/reference/buffer-api).
+Native code reads a drawn resource when it paints the frame, not when the hook draws it. A drawn resource is a composed
+buffer, encoded Unicode, a text buffer view, an editor view, or an image. If a later paint hook changes the resource before
+native code paints, the frame shows the changed resource. If a paint hook destroys the resource after it is drawn, the resource
+stays alive until native code paints the frame.
 
-Do not implement traversal, manual hit insertion, or frame orchestration through `render()` overrides.
-Use cursor options instead of `renderCursor()` overrides.
+A drawing call in a hook checks ranges and types immediately. If a check fails, the call throws and records nothing.
+Native code checks the remaining input when it paints the frame. For example, it rejects attribute bits 8 to 31. Such an
+error does not throw inside the hook. It fails that frame, and `render:error` reports it with no renderable. Control
+characters in text take no cells. Tabs and over-long graphemes draw as spaces, as in
+[direct drawing](/docs/reference/buffer-api).
 
-Paint hooks run after layout and before painting. Prefer update or lifecycle hooks for state changes.
-A paint hook's color or text change paints in the same frame, even for a node earlier in paint order. Layout changes,
+`Renderable` has no `render()` method, and Core does not call one. Native code handles traversal, hit testing, and frame
+order. Edit buffer renderables have no `renderCursor()` method. Use their cursor options.
+
+Paint hooks run after layout and before painting. Prefer update hooks or lifecycle passes for state changes.
+A color or text change in a paint hook paints in the same frame, even for a node earlier in paint order. Layout changes,
 such as a new size, position, or child, wait for the next frame. The native scene skips nodes destroyed during hooks,
 including a node that destroys itself.
 
-In demand mode, repeated render requests coalesce.
-But an unconditional request on every draw still creates a continuous rerender loop.
+In demand mode, Core combines repeated render requests into one frame.
+But a request on every draw still creates a continuous rerender loop.
 
 ### Update hooks
 
@@ -187,22 +198,23 @@ Assign callbacks directly, such as `box.renderAfter = callback`. OpenTUI also su
 If you replace or delete a hook descriptor through reflection, call `box.refreshHooks()` afterward.
 Paint and style changes do not rediscover hook descriptors automatically.
 
-OpenTUI discovers class-field hooks at attachment and before frame or lifecycle work.
+OpenTUI discovers class-field hooks when the node is attached and before frame or lifecycle work.
 An intermediate constructor can attach the node before derived fields initialize.
-If you need those hooks before the next discovery boundary, call `refreshHooks()` after construction.
+If you need those hooks before the next discovery, call `refreshHooks()` after construction.
 
 ### Declare native integration
 
 `nativeIntegration` describes how a class uses the native scene.
-Built-ins declare the node kind, native or host body, lifecycle work, decorations, and buffering.
-Core uses this description for hook registration and dispatch.
+Built-ins declare the node kind, a native or host body, lifecycle work, the generic paint hooks, and buffering.
+Core uses this description to register and dispatch hooks.
 
-Declare the description with `defineNativeIntegration()` before creating instances.
+Declare the description with `defineNativeIntegration()` before you create instances.
 The `RuleRenderable` example declares kind `"custom"` and body `"host"` because its JavaScript method draws the cells.
 
 Use `construction: "prototype"` only when the class adds no hook fields during construction.
-Use `"fields"` when it does. Subclasses without their own description retain bounded discovery for derived fields and intermediate-constructor attachment.
-An ordinary custom `Renderable` can use that default discovery path without a declaration.
+Use `"fields"` when it does. A subclass without its own description still gets hook-field discovery after construction,
+also when an intermediate constructor attaches the node early.
+An ordinary custom `Renderable` can use that default discovery without a declaration.
 
 The `body` field has two forms:
 
@@ -215,8 +227,9 @@ A native-body description does not compile a JavaScript method into native code.
 Use that form only when the native node already supplies the method's drawing behavior.
 For a built-in subclass, inherit its description and change only the capabilities your subclass needs.
 
-`lifecycle` describes resize and update work. `beforeAfter` enables or disables the generic decorations.
-The description also supports destination-buffer selection and native buffer composition.
+`lifecycle` describes resize and update work. `beforeAfter: false` disables the generic `renderBefore` and
+`renderAfter` hooks. `paintBuffer: "destination"` gives paint hooks the frame's recording buffer, also when the node is
+buffered. `bufferComposition: "native"` declares that native code composes the node's buffer, so Core does not.
 For intrinsic size, use a measure provider, as in [Measure intrinsic size](#measure-intrinsic-size).
 The shared-text [subclass example](/docs/extend/editing#renderable-base-classes) shows how to select a resource-backed text node.
 
@@ -225,12 +238,17 @@ Reflection still requires `refreshHooks()`, as described above.
 
 ## Handle coordinates, clipping, and buffering
 
-An unbuffered renderable draws into the renderer's next buffer. Use `screenX` and `screenY` for absolute cell
-coordinates.
+An unbuffered renderable's paint hooks draw in frame coordinates. Native code plays the recording into the renderer's next
+buffer. Use `screenX` and `screenY` for absolute cell coordinates.
 
-With `buffered: true`, OpenTUI creates a private `OptimizedBuffer` for the renderable's own drawing. Use coordinates
-relative to `(0, 0)` in that buffer. OpenTUI resizes and composites it after `renderSelf()`. Buffering does not turn the
-whole child subtree into one offscreen surface.
+With `buffered: true`, OpenTUI creates a private `OptimizedBuffer` for the renderable's own drawing. `renderBefore`,
+`renderSelf()`, and `renderAfter` draw into that buffer. Use coordinates relative to `(0, 0)` in that buffer. These draws
+happen at once, so the hooks can also read the buffer's cells. OpenTUI resizes the buffer when the size changes. After
+`renderAfter`, Core records one draw that composes the buffer into the frame. Buffering does not turn the whole child
+subtree into one offscreen surface.
+
+Text, editor, and image renderables are the exception. Their hooks receive a recording buffer even with
+`buffered: true`, because their classes declare `paintBuffer: "destination"` or `bufferComposition: "native"`.
 
 An ancestor with `overflow: "hidden"` or `overflow: "scroll"` clips descendant drawing and hit testing. Keep custom
 drawing inside the renderable's computed rectangle. See [Buffer API](/docs/reference/buffer-api) for cell operations.
@@ -246,22 +264,27 @@ Use the buffer's checked clipping and opacity operations for local drawing limit
 Use `requestRender()` for a one-shot repaint. Property setters that affect drawing must call it.
 
 Set `live: true` only when the node needs a continuous frame loop. A visible live descendant increments the root's live
-count. Hiding, detaching, destroying, or setting `live` to `false` removes that request. `onUpdate(deltaTime)` receives
-elapsed milliseconds before drawing.
+count. Hiding, detaching, destroying, or setting `live` to `false` removes that request.
+
+Core calls the update hook `onUpdate(deltaTime)` on each frame, after layout and before painting. `deltaTime` is the time
+since the previous frame, in milliseconds. Core does not call it for a hidden node or a node with a hidden ancestor.
+A ScrollBox that culls its children also skips `onUpdate` for children outside its viewport. See
+[ScrollBox viewport culling](/docs/components/scrollbox#viewport-culling).
 
 Use [Animation and Timeline](/docs/application-apis/animation) when a timeline owns the changing values.
 
 ## Handle resize
 
-OpenTUI calls `onResize(width, height)` when computed dimensions change. It can run during a render pass. Resize native
-or local buffers there, but do not depend on a same-pass render request.
+OpenTUI calls the resize hook `onResize(width, height)` when computed dimensions change. It can run during a frame.
+Resize native or local buffers there. A render request from this hook schedules another frame. Do not depend on it for
+the current frame.
 
 Call `super.onResize(width, height)` from an override. The base method calls `onSizeChange` and emits `"resize"`.
 
 ## Reuse interaction behavior
 
-`Renderable` supplies focus, keyboard subscription, mouse bubbling, selection hooks, and hit-grid registration. Do not
-create a second interaction system in a subclass.
+`Renderable` supplies focus, keyboard subscription, mouse bubbling, and selection hooks. Native code adds each visible
+scene node to the hit grid. Do not create a second interaction system in a subclass.
 
 When every instance can own focus, override `protected static readonly defaultFocusable = true`. Assigning `null` or
 `undefined` to `focusable` restores that default. Override `handleKeyPress`, `handlePaste`, `onMouseEvent`, or the
@@ -277,10 +300,11 @@ The base `destroy()` method is idempotent and performs these actions before `des
 2. Detaches it from its parent.
 3. Destroys its private buffer.
 4. Detaches, but does not destroy, its children.
-5. Removes focus and listeners.
-6. Removes the node from the global renderable map.
+5. Removes the node from the global renderable map.
+6. Removes focus and listeners.
 
-It calls `destroySelf()` and then frees the Yoga node. Call `super.destroySelf()` from an override.
+It then calls `destroySelf()`. After `destroySelf()` returns, it destroys the scene node, which owns the Yoga node and the
+measure provider. Call `super.destroySelf()` from an override.
 
 `onRemove()` is not final cleanup. It runs whenever a parent detaches the node. Reparenting calls `remove()` on the old
 parent, so `onRemove()` also runs during reparenting. Use it only for reversible detach behavior.
@@ -293,9 +317,10 @@ before a custom class owns native resources.
 Validate custom options before allocating dependent resources where possible. If setup fails after an allocation,
 release every completed allocation before you rethrow.
 
-An exception from `onUpdate()`, a draw hook, or `renderSelf()` aborts that frame. `CliRenderer` emits `render:error` with
-the error and current renderable. A listener can correct state and request another frame. Without a listener, the
-renderer reports the error through its normal error path.
+An exception from `onUpdate()`, `onResize()`, or a paint hook aborts that frame. `CliRenderer` emits `render:error` with
+the error. When a paint hook throws, `event.renderable` is that renderable. For other frame errors, such as an
+`onUpdate()` exception or a native paint error, `event.renderable` is `undefined`. A listener can correct state and
+request another frame. Without a listener, the renderer reports the error through its normal error path.
 
 ## Register framework elements
 

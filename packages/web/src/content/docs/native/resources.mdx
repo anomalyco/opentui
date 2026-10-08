@@ -16,9 +16,9 @@ It also determines which resources can work together and what happens when you d
 
 ## Group resources in a Context
 
-A **Context** is the native resource owner. Create it before creating buffers, images, or scene nodes.
+A **Context** is the native resource owner. Create it with `ot_context_create` before you create buffers, images, or scene nodes.
 It keeps related resources together and gives each one an identity that native calls can check.
-When you successfully destroy the Context, it releases its remaining resources.
+When `ot_context_destroy` succeeds, the Context releases its remaining resources.
 
 A Context does not require a terminal connection. For an offscreen drawing tool, a Context and a cell buffer can be enough.
 Keep the Context alive until all work that uses its resources finishes.
@@ -28,12 +28,14 @@ Keep the Context alive until all work that uses its resources finishes.
 A **Session** owns an ordered output queue and terminal state within a Context.
 Use separate Sessions for independent output streams. They can share a Context's resources without sharing frame or output state.
 
-Creating a Session does not create a renderer or set terminal modes.
-Attach a renderer when the Session needs a drawing area, cell buffers, and encoding state.
-Terminal setup is a separate operation.
+`ot_session_create` does not create a renderer or set terminal modes.
+Call `ot_session_attach_renderer` when the Session needs a drawing area, cell buffers, and encoding state.
+Terminal setup is a separate operation, `ot_session_setup_terminal`.
 
 A **scene** is the node tree used for layout and painting in that Session.
-Creating the first root node creates the scene.
+Creating a scene node requires an attached renderer.
+Create the root node first. That creates the scene. Before then, other node kinds return `OT_INVALID_PHASE`.
+A scene has at most one root at a time.
 
 The ownership structure is:
 
@@ -85,7 +87,9 @@ typedef struct ot_handle {
 The Context uses the slot to find an object and the generation to distinguish it from an object that later reuses that slot.
 After you destroy the label, a copied label handle is stale. Creating another label does not make that old handle valid again.
 
-Copying a handle does not keep its object alive. Checked calls report a wrong Context, wrong resource kind, or stale handle.
+Copying a handle does not keep its object alive.
+Checked calls detect misuse. A handle from another Context returns `OT_WRONG_CONTEXT`.
+A handle of the wrong kind returns `OT_WRONG_KIND`. A handle to a destroyed object returns `OT_STALE_HANDLE`.
 Handles also belong to one loaded native library instance. Do not transfer them between Contexts or library loads.
 
 The `ot_context *` pointer is not a checked resource handle.
@@ -112,15 +116,16 @@ These are native creation entry points. Each C call takes the destination Contex
 | Editor view  | `ot_editor_view_create`      | `createEditorView`     |
 | Syntax style | `ot_syntax_style_create`     | `createSyntaxStyle`    |
 
-Bindings have different retention and destruction rules:
+A _document_ is a text buffer or an edit buffer.
+Bindings between resources have different retention and destruction rules:
 
-| Binding                       | Retention and destruction                                                                                                                                                     | Sharing and layout                                                                  |
-| ----------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------- |
-| Document → text/editor views  | Document destruction destroys every dependent view. View destruction leaves the document alive.                                                                               | One document can supply separate views in several Sessions within its Context.      |
-| Node → text/editor view       | The binding does not transfer ownership. Destroying either side removes the binding. View destruction invalidates the node's measurement and preparation state.               | One view binds to at most one node. The node supplies the view's layout dimensions. |
-| Node → image/offscreen buffer | The binding retains storage independently of the public handle. Replacement retains the new resource before releasing the old binding. Node destruction releases the binding. | Compatible nodes can share the resource across Sessions within its Context.         |
-| Document → syntax style       | The document does not own the public style handle. Style destruction clears the document's binding.                                                                           | Documents in one Context can share a style. Style IDs belong to that style.         |
-| Box → viewport node           | The Box copies the handle without retaining the node. Viewport destruction makes later preparation fail until you replace or disable the binding.                             | The viewport must satisfy the checked Box topology rules within the same scene.     |
+| Binding                       | Retention and destruction                                                                                                                                              | Sharing and layout                                                                  |
+| ----------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------- |
+| Document → text/editor views  | Document destruction destroys every dependent view. View destruction leaves the document alive.                                                                        | One document can supply separate views in several Sessions within its Context.      |
+| Node → text/editor view       | The binding does not transfer ownership. Destroying either side removes the binding. View destruction invalidates the node's measurement and preparation state.        | One view binds to at most one node. The node supplies the view's layout dimensions. |
+| Node → image/offscreen buffer | The node keeps the storage alive after you destroy the public handle. Replacement retains the new resource before releasing the old one. Node destruction releases it. | Compatible nodes can share the resource across Sessions within its Context.         |
+| Document → syntax style       | The document does not own the public style handle. Style destruction clears the document's binding.                                                                    | Documents in one Context can share a style. Style IDs belong to that style.         |
+| Box → viewport node           | The Box copies the handle without retaining the node. Viewport destruction makes later preparation fail until you replace or disable the binding.                      | The viewport must be a root or Box node in the same scene.                          |
 
 Use separate views for placements with independent dimensions.
 Tree membership, resource ownership, and resource retention are separate relationships.
@@ -140,7 +145,7 @@ Text, range, and selected-text copies use UTF-8 byte counts:
 1. Call the query with zero capacity to get the exact count, without a terminating NUL.
 2. Supply a destination with at least that capacity to copy the bytes.
 
-A short nonzero destination rejects before changing its bytes or the output count.
+If a nonzero destination is too short, the call returns an error and changes neither the bytes nor the output count.
 Empty, reversed, and out-of-document ranges return zero.
 Record queries count records. Output and diagnostic queues have separate rules for drains.
 
@@ -160,13 +165,14 @@ Placeholders reject links, including a link flag with an empty URL span. Plain-t
 
 `ot_scene_get_layout` uses named observation modes:
 
-| Mode               | Observation                                                                                                                                               |
-| ------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `OT_LAYOUT_PUBLIC` | Local cell geometry from the latest preparation refresh. Screen coordinates use current accepted ancestors and translations.                              |
-| `OT_LAYOUT_YOGA`   | The six computed Yoga values, including zero dimensions. Screen coordinates are zero.                                                                     |
-| `OT_LAYOUT_PAINT`  | Cached paint geometry. During painting, reparenting and ancestor translations leave these coordinates fixed. The node's own translation can refresh them. |
+| Mode               | Observation                                                                                                                  |
+| ------------------ | ---------------------------------------------------------------------------------------------------------------------------- |
+| `OT_LAYOUT_PUBLIC` | Local cell geometry from the latest preparation refresh. Screen coordinates use current accepted ancestors and translations. |
+| `OT_LAYOUT_YOGA`   | The six computed Yoga values, including zero dimensions. Screen coordinates are zero.                                        |
+| `OT_LAYOUT_PAINT`  | Prepared paint geometry, including screen coordinates. During a `RECORD` request, mutations do not change these values.      |
 
-These queries do not run Yoga. Observations do not grant frame authority.
+These queries do not run Yoga. Other mode values return `OT_INVALID_ARGUMENT` and leave the output unchanged.
+A layout result is an observation only. It cannot replace a [frame ticket](/docs/native/frames#read-and-acknowledge-requests).
 The [checked header](https://github.com/anomalyco/opentui/blob/main/packages/native/include/opentui.h) defines record layouts, named selectors, color construction, bounds, and failure results.
 Use the header and native library from the same revision.
 
@@ -191,7 +197,9 @@ You can draw into it, keep the result, and later compose those cells into a fram
 
 To display an owned buffer in a scene, bind it to an `OT_SCENE_CUSTOM` node with `ot_scene_set_surface`.
 That binding retains the buffer for composition. The C interface has no separate general-purpose `Surface` handle.
-For a direct copy into a Session outside an active scene draft, use `ot_session_draw_buffer`.
+
+To copy a buffer directly into a Session's next framebuffer, use `ot_session_draw_buffer` while no scene frame is in progress, waiting for commit, or waiting for output delivery.
+After a frame step returns `DONE`, use `ot_scene_frame_draw_buffer` with that `DONE` ticket instead.
 
 The [Zig guide](/docs/native/zig#draw-into-an-owned-buffer) includes a complete offscreen-buffer test.
 
@@ -200,7 +208,7 @@ The [Zig guide](/docs/native/zig#draw-into-an-owned-buffer) includes a complete 
 To read native cell arrays without copying them, acquire a _storage lease_.
 The lease keeps the allocation alive until you release it.
 Keep the access in one synchronous scope and release the lease on every exit path.
-In C, use `ot_buffer_acquire_lease` and `ot_buffer_lease_release` for the same operation.
+In C, `ot_buffer_acquire_lease` acquires a lease on an owned buffer, and `ot_buffer_lease_release` releases it.
 
 A lease is not a frozen copy of the cells. Drawing can change them.
 Resize or destruction can make the allocation stale even while a lease keeps it allocated.
@@ -227,35 +235,42 @@ To copy resolved UTF-8, use `ot_buffer_lease_get_real_char_size` and `ot_buffer_
 Color entries use the low byte for a channel. Higher bits can preserve indexed-color or terminal-default intent.
 Do not discard that metadata when applying a raw color effect.
 
-During a scene draft, framebuffer access also requires the draft's `DONE` ticket.
+While a painted scene frame waits for commit, framebuffer access also requires its `DONE` ticket.
 The ticket identifies the finished frame. The lease keeps storage alive. Neither reports output delivery.
 [Frames and output](/docs/native/frames#access-the-framebuffer) shows how those roles fit together.
 
 ## Finish work before destroying owners
 
-An owner cannot disappear while a native operation, a checked lease, or pending output still needs it.
-`OT_CONTEXT_BUSY` leaves the Context alive. Release leases and finish the Session's work, then retry destruction.
+An owner cannot disappear while work still needs it:
+
+- `ot_session_destroy` returns `OT_CONTEXT_BUSY` while the Session has pending output, an unrestored terminal, or a lease from `ot_scene_frame_acquire_buffer_lease`.
+- `ot_context_destroy` returns `OT_CONTEXT_BUSY` for any of those Session conditions, during an active native operation, and while any checked lease remains.
+
+`OT_CONTEXT_BUSY` leaves the owner alive. Release leases and finish the Session's work, then retry destruction.
 
 For a terminal-managed Session, request `ot_session_close` and deliver restoration output before destruction.
 For a lost transport, use `ot_session_cancel` to discard pending output.
 Cancellation does not restore a terminal that no longer receives bytes, and it does not release your outstanding leases.
 
-The first destruction attempt of a Context starts the shutdown of its host clipboard service.
-Pending clipboard operations are cancelled, and new ones return `OT_CLIPBOARD_START_SHUTTING_DOWN`.
-Destruction returns `OT_CONTEXT_BUSY` until the clipboard worker threads finish. The Context stays usable; retry destruction.
+When no lease or Session blocks destruction, `ot_context_destroy` starts the shutdown of the Context's host clipboard service.
+Native code cancels pending clipboard operations, and new ones return `OT_CLIPBOARD_START_SHUTTING_DOWN`.
+Destruction returns `OT_CONTEXT_BUSY` until the clipboard worker threads finish. The Context stays usable. Retry destruction.
 
 In direct Zig code, pointers from `Context.raw()` getters are borrowed.
-The getters check handles but do not retain objects, pin storage, or grant checked mutation or frame authority.
+The getters check handles, but they do not retain objects or pin storage.
+Raw access is outside the Context's mutation and frame checks, so those checks do not protect it.
 Destroy the resource through the Context, not through the raw object's destructor.
 Keep the allocator, `std.Io`, callback data, and borrowed environment state alive until the Context no longer needs them.
 [Host I/O and time](/docs/native/host-io-time) defines the native file and clock dependencies.
 
 ## Set limits and keep calls on the owning thread
 
-The Context's two basic limits are explicit and positive:
+`ot_context_options` sets two required limits:
 
 - `object_capacity` counts native resource slots, including checked leases.
 - `render_cells_max` limits each drawing buffer or renderer size, not the sum of cells across the Context.
+
+Both limits must be positive. Zero does not select a default.
 
 C Contexts also limit checked leases to 4,096 and distinct leased storage to 64 MiB.
 That storage includes retired allocations and tracker capacity, but not shared Context pools.

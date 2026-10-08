@@ -8,8 +8,10 @@ skill:
 
 # SSH
 
-`@opentui/ssh` turns each accepted SSH shell into a `CliRenderer` whose input and output use the SSH channel and whose dimensions track the client's PTY. Users connect with a standard SSH client and use the application without a local
-installation. The package depends on `@opentui/core`, not React or Solid, so the same server can hand its renderer to any of the three APIs.
+`@opentui/ssh` gives each accepted SSH shell its own `CliRenderer`. The renderer reads input from the SSH channel,
+writes output to it, and tracks the size of the client's PTY. Users connect with a standard SSH client and use the
+application without a local installation. The package depends on `@opentui/core`, not React or Solid. The same
+server can hand its renderer to the Core, React, or Solid API.
 
 SSH is an access transport. It is not an application packaging format. See
 [Deploy an OpenTUI application](/docs/ship/deploy) to choose a delivery model and
@@ -22,8 +24,8 @@ bun add @opentui/ssh @opentui/core
 ```
 
 `@opentui/core` is a peer dependency. The SSH package declares Bun >=1.3.14 and Node.js >=26.4.0. Use Bun >=1.4.0 on
-native Windows arm64. The SSH Node CI lane
-runs on Linux x64. Its packed Node consumer test uses a Core stub, so that test does not start the native renderer. See
+native Windows arm64. The SSH Node CI lane runs on Linux x64. Its packed consumer test installs the packed Core and
+native packages and runs a real renderer session with Node.js and Bun. See
 [Runtime and platform support](/docs/getting-started/runtime-support) before you run the native renderer with Node.js.
 
 ## Basic server
@@ -63,8 +65,8 @@ Connect from another terminal:
 ssh -p 2222 localhost
 ```
 
-The server owns the renderers that it creates. It destroys them when their sessions disconnect. Call `server.close()`
-to stop accepting connections and close all live sessions.
+The server owns the renderers that it creates. It destroys each renderer when its session closes. Call `server.close()`
+to close all live sessions and stop the listener.
 
 ## Builder lifecycle
 
@@ -101,18 +103,19 @@ still listens. The loopback names are `localhost`, `127.0.0.1`, and `::1`.
 | Configuration                  | Default               | Behavior                                                           |
 | ------------------------------ | --------------------- | ------------------------------------------------------------------ |
 | `auth`                         | `"open"`              | Accept SSH `none` authentication                                   |
-| `hostKey`                      | ephemeral ed25519 key | Regenerated each server construction                               |
+| `hostKey`                      | ephemeral ed25519 key | Generated again by each `.serve()` call                            |
 | `idleTimeout`                  | disabled              | No inactivity timeout                                              |
 | `maxTimeout`                   | disabled              | No absolute session timeout                                        |
-| `limits.session.perConnection` | `1`                   | Maximum live renderer-backed shells per SSH connection             |
-| `limits.session.global`        | `100`                 | Maximum live renderer-backed shells across the server              |
+| `limits.session.perConnection` | `1`                   | Maximum live shell sessions per SSH connection                     |
+| `limits.session.global`        | `100`                 | Maximum live shell sessions across the server                      |
 | `startupBanner`                | `true`                | Print listener, host-key, and authentication details after binding |
 | `onError`                      | `console.error`       | Report contained runtime errors                                    |
 | listen port                    | `2222`                | Default SSH port for this server                                   |
 | listen host                    | `"127.0.0.1"`         | Loopback-only default                                              |
 
-Session limits must be positive safe integers. The server rejects excess shell requests without closing the SSH
-connection or reporting a runtime error. Capacity remains occupied until that shell's transport teardown completes.
+Session limits must be positive safe integers. A shell counts toward the limits from the time the server accepts it,
+before middleware runs. The server rejects excess shell requests without closing the SSH connection or reporting a
+runtime error. A shell keeps its slot until the server closes its SSH channel.
 
 `idleTimeout` and `maxTimeout` accept integer milliseconds or strings with `ms`, `s`, `m`, or `h`. Examples include
 `"500ms"`, `"30s"`, and `"1h"`. Values must resolve to a positive safe integer from 1 millisecond through 24 hours.
@@ -134,7 +137,7 @@ createServer() // ephemeral ed25519 key
 - `pem`: accept one PEM/Buffer or an array. Every configured key produces a SHA256 fingerprint in `ListenInfo.fingerprints`, preserving input order.
 - omitted: generate an ephemeral key that is not persisted.
 
-Invalid or empty key configuration throws `ConfigError` while the server is being constructed.
+`.serve()` builds the server. It throws `ConfigError` for an invalid or empty key configuration.
 
 ## Authentication
 
@@ -151,9 +154,12 @@ Invalid or empty key configuration throws `ConfigError` while the server is bein
 | `keyboardInteractive`                  | Run `(ctx: { username, prompt }) => boolean \| Promise<boolean>`   |
 
 An empty object configures no usable methods and throws `ConfigError`. Use `"open"` deliberately for no authentication.
-Authorized-key files allow blank lines and comments, but they do not interpret OpenSSH options.
+Authorized-key files allow blank lines and `#` comments. They do not support OpenSSH options. A line with options
+throws `ConfigError`.
 
-Public-key authentication verifies the client's signature before setting its fingerprint or invoking `allow`. The username is still supplied by the client and is not bound to that key. Authorize public-key users by the verified `fingerprint`, or explicitly enforce a username-to-key relationship in `allow`.
+Public-key authentication verifies the client's signature before it sets the fingerprint or calls `allow`.
+The client still supplies the username, and the username is not bound to the key.
+Authorize public-key users by the verified `fingerprint`, or enforce a username-to-key pairing in `allow`.
 
 ```typescript
 const server = createServer({
@@ -216,27 +222,31 @@ createServer({ auth: { publicKey: "any", password: checkPassword } }).serve((ses
 
 The handler passed to `.serve()` receives:
 
-| Member               | Description                                                                     |
-| -------------------- | ------------------------------------------------------------------------------- |
-| `renderer`           | Live `CliRenderer` connected to this SSH channel. Available only to handlers.   |
-| `identity`           | Authentication identity narrowed from the server config                         |
-| `context`            | Per-session object accumulated by middleware. It is `{}` without middleware.    |
-| `term`               | Client terminal name, with `"xterm-256color"` as the no-PTY fallback            |
-| `cols`, `rows`       | Current PTY dimensions. The no-PTY fallback is `80x24`.                         |
-| `hasPty`             | Whether the client requested a PTY                                              |
-| `remoteAddress`      | Client `{ address, port? }`                                                     |
-| `onResize(callback)` | Subscribe after renderer resize handling. Returns an unsubscribe function.      |
-| `onClose(callback)`  | Subscribe to disconnect cleanup. Returns an unsubscribe function.               |
-| `write(data)`        | Send raw `Buffer` or string bytes without frame diffing. No effect after close. |
-| `end()`              | Close this session                                                              |
+| Member               | Description                                                                            |
+| -------------------- | -------------------------------------------------------------------------------------- |
+| `renderer`           | Live `CliRenderer` connected to this SSH channel. Available only to handlers.          |
+| `identity`           | Authentication identity narrowed from the server config                                |
+| `context`            | Per-session object accumulated by middleware. It is `{}` without middleware.           |
+| `term`               | Client terminal name, with `"xterm-256color"` as the no-PTY fallback                   |
+| `cols`, `rows`       | Requested PTY size until the renderer exists, then its accepted size. No-PTY: `80x24`. |
+| `hasPty`             | Whether the client requested a PTY                                                     |
+| `remoteAddress`      | Client `{ address, port? }`                                                            |
+| `onResize(callback)` | Runs after the renderer accepts a new size. Returns an unsubscribe function.           |
+| `onClose(callback)`  | Runs once when the session closes for any reason. Returns an unsubscribe function.     |
+| `write(data)`        | Send raw `Buffer` or string bytes without frame diffing. No effect after close.        |
+| `end()`              | Close this session                                                                     |
 
-PTY dimensions are bounded by the implementation to 500 columns and 200 rows. Use `write()` only for terminal control that the renderer does not model, such as a bell or an OSC sequence.
+The server limits PTY dimensions to 500 columns and 200 rows. Use `write()` only for terminal control that the renderer does not model, such as a bell or an OSC sequence.
 
-Middleware receives `MiddlewareSession`, which has the common fields, `context`, and `deny()`, but no renderer. The renderer is created only after the middleware chain reaches the handler, so a denied session does not create one or enter the alternate screen.
+`write()` accepts all bytes or none. It throws `OutputPressureError` with code `"OUTPUT_PRESSURE"` when the session
+output is temporarily full. It throws `RangeError` when one write is larger than the session output limit. The server
+does not queue or replay a rejected write.
+
+Middleware receives `MiddlewareSession`, which has the common fields, `context`, and `deny()`, but no renderer. The server creates the renderer only after the middleware chain reaches the handler. A denied session does not create a renderer or enter the alternate screen.
 
 ## Middleware
 
-Middleware executes in registration order, with the first registered function as the outermost layer. It supports three source-backed patterns:
+Middleware runs in registration order. The first registered function is the outermost layer. Use middleware for three patterns:
 
 ```typescript
 import { createServer, type Middleware } from "@opentui/ssh"
@@ -263,7 +273,7 @@ const server = createServer({ auth: { publicKey: "any" } })
 ```
 
 - Setup/teardown: `await next()` resolves when the session ends, so `finally` performs teardown.
-- Gate: `session.deny(reason)` writes the reason on the main screen, closes the session, and unwinds through `DenyError` without reporting a failure.
+- Gate: `session.deny(reason)` writes the reason on the main screen, closes the session, and throws `DenyError` to unwind the chain. The server does not report `DenyError` as a failure. If the reason cannot be written, that error goes to `onError`, and the session still closes.
 - Enrich: `next({ ... })` adds typed fields to downstream `session.context`. Return the resulting `Handoff`.
 
 Reusable middleware can use `Middleware`. Use `MiddlewareFunction` when it requires a known upstream context type.
@@ -321,13 +331,19 @@ createServer().serve(async (session) => {
 })
 ```
 
-Solid's `render(node, renderer)` adopts the existing renderer. The Solid root is disposed when that renderer is destroyed, so this handoff does not add a separate `onClose` disposer.
+Solid's `render(node, renderer)` adopts the existing renderer. Solid disposes its root when that renderer is destroyed, so this handoff does not add a separate `onClose` disposer.
 
 ## Cleanup, errors, and shutdown
 
-- Session disconnect destroys the renderer before `onClose` callbacks run. Use those callbacks for app-owned roots, timers, counters, and listeners, not renderer destruction.
-- `server.close()` stops accepting connections, destroys live renderers, performs bounded session-transport teardown,
-  and closes the SSH listener. A stalled transport is force-closed after the internal one-second drain limit.
+- When a renderer exists, every close path calls `renderer.destroy()` before `onClose` callbacks run. Use those callbacks for app-owned roots, timers, counters, and listeners, not renderer destruction.
+- If your code calls `renderer.destroy()`, the session also closes.
+- `onClose` marks the logical close, not completed terminal restoration. Await `session.renderer.closed` to see when
+  output finishes. It rejects if output fails.
+- The server closes the SSH channel after the session output finishes. If output does not finish within one second
+  of the close, Core cancels it without terminal restoration. The server reports that error to `onError` and closes
+  the channel. If the connection drops, the server cancels the output at once.
+- `server.close()` rejects new shell requests and closes every live session as above. Then it ends every client
+  connection and closes the SSH listener.
 - The server invokes `onClose` callbacks but does not await promises returned by them. It also does not track
   asynchronous middleware work after `await next()` resolves. Await application-owned asynchronous cleanup separately
   before process exit.
@@ -335,7 +351,8 @@ Solid's `render(node, renderer)` adopts the existing renderer. The Solid root is
 - A bind failure rejects `listen()` instead of going to `onError`.
 - `logging()` observes connection lifecycle only. It is not an error sink.
 - `SshError` carries a stable `code`. `ConfigError` uses `"CONFIG"` for invalid startup configuration.
-- `DenyError` is intentional middleware control flow and is swallowed by session handling after delivering the reason.
+  `OutputPressureError` uses `"OUTPUT_PRESSURE"` for a rejected `write()`.
+- `DenyError` is intentional middleware control flow. Session handling swallows it after it tries to write the reason.
 
 ## Public exports
 
@@ -345,6 +362,7 @@ Runtime exports from `@opentui/ssh`:
 - `logging`
 - `SshError`
 - `ConfigError`
+- `OutputPressureError`
 - `DenyError`
 
 Type exports:

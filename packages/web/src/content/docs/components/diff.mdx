@@ -79,11 +79,11 @@ Split view:
  3   ready(a)     3   ready(a)
 ```
 
-For multi-file input, Diff currently displays only `patches[0]`. Create one `DiffRenderable` for each file patch that you need to show.
+For multi-file input, Diff shows only the first file patch (`patches[0]`). Create one `DiffRenderable` for each file patch that you need to show.
 
 ## Split view scroll sync
 
-When `view: "split"` is active, you can link `scrollX` and `scrollY` for both panes. Scrolling one pane then moves the other:
+In split view, set `syncScroll: true` to link the two panes. A mouse-wheel scroll in one pane then copies its `scrollX` and `scrollY` to the other pane:
 
 ```typescript
 const diff = new DiffRenderable(renderer, {
@@ -98,11 +98,11 @@ const diff = new DiffRenderable(renderer, {
 diff.syncScroll = false
 ```
 
-Scroll sync is a no-op in the unified view.
+Scroll sync has no effect in the unified view.
 
-If you omit `syntaxStyle`, Diff owns a fallback theme and releases it when you
-destroy the component, including its inactive panes. A theme you supply remains
-caller-owned; destroy it only after its consumers no longer need it.
+If you omit `syntaxStyle`, Diff creates an empty fallback style and destroys it when you destroy the Diff.
+Destroying a Diff also destroys its inactive panes.
+Diff does not destroy a `syntaxStyle` you pass. Destroy it after no renderable uses it.
 
 ## Properties
 
@@ -122,8 +122,8 @@ caller-owned; destroy it only after its consumers no longer need it.
 | `showLineNumbers`     | `boolean`                       | `true`      | Show line numbers                                 |
 | `lineNumberFg`        | `string` or `RGBA`              | `#888888`   | Line number text color                            |
 | `lineNumberBg`        | `string` or `RGBA`              | transparent | Line number background                            |
-| `addedLineNumberBg`   | `string` or `RGBA`              | transparent | Line number background for added                  |
-| `removedLineNumberBg` | `string` or `RGBA`              | transparent | Line number background for removed                |
+| `addedLineNumberBg`   | `string` or `RGBA`              | transparent | Line number background for added lines            |
+| `removedLineNumberBg` | `string` or `RGBA`              | transparent | Line number background for removed lines          |
 | `addedBg`             | `string` or `RGBA`              | `#1a4d1a`   | Background for added lines                        |
 | `removedBg`           | `string` or `RGBA`              | `#4d1a1a`   | Background for removed lines                      |
 | `contextBg`           | `string` or `RGBA`              | transparent | Background for context lines                      |

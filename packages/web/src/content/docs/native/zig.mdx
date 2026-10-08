@@ -14,7 +14,8 @@ The program writes the two frames to files without changing your terminal's stat
 
 ## Set up a Zig project
 
-Use Zig `0.16.0` and a matching source checkout. Bun runs the repository's dependency preparation script, not your finished program.
+Use Zig `0.16.0` and a source checkout of the repository.
+Bun runs the script that prepares the Zig dependencies. Your finished program does not need Bun.
 From the repository root:
 
 ```sh
@@ -35,13 +36,14 @@ cp packages/native/examples/hello/src/*.zig native-zig-demo/src/
 ```
 
 In the copied `build.zig.zon`, change the `opentui` dependency's path from `../..` to `../packages/native`.
-If you choose a different project location, use the path from that directory to your native workspace.
+If your project is in a different location, use the relative path from your project directory to the native workspace.
 The copied build adds `opentui.module("opentui")` to your imports and builds an executable named `opentui-hello`.
-You do not need to build a shared library separately.
+It compiles the module from source, so you do not build a shared library first.
 
 ## Create the scene and render two frames
 
-`src/main.zig` contains this program:
+This is the program in `src/main.zig`.
+The package file also has one more `errdefer` line in `write_frame`. If `sceneFrameCommit` returns an error, that line cancels the painted draft.
 
 ```zig example=scene
 const std = @import("std");
@@ -102,23 +104,26 @@ fn write_frame(context: *opentui.Context, session: opentui.context.Handle, path:
 }
 ```
 
-`Context.init` creates the resource owner. The Session holds the output queue, and `attachSessionRenderer` gives it a 12-by-3 cell area.
+`Context.init` creates the **Context**, which owns all native objects. The **Session** holds the output queue.
+`attachSessionRenderer` gives the Session a 12-by-3 cell area.
 Remote mode and an empty forwarded environment keep the program independent of your terminal's settings.
 
-In `sceneCreateNode`, the kind values are root `0`, box `1`, and text `2`. The final argument is the public node number.
+In `sceneCreateNode`, the kind values are root `0`, box `1`, and text `2`. Create the root first.
+The final argument is the public node number. It must not be zero.
 The box uses all four border sides. Paint defaults supply opacity `1` and a white single-line border.
 `sceneMoveNode` attaches each child at index zero in its parent.
 
-`scenePaint` lays out and paints the retained scene and returns its retained `DONE` draft.
-`sceneFrameCommit` consumes that draft, encodes its cells, and queues output.
-The helper delivers every output ticket before returning, so the next call can render another frame.
-Changing the label reuses the same nodes rather than rebuilding the tree.
+`scenePaint` lays out and paints the scene. It returns a `DONE` request that names the painted draft.
+If any node has an update, resize, layout-changed, or paint hook, `scenePaint` returns `error.UnsupportedResource`.
+`sceneFrameCommit` consumes the draft, encodes its cells, and queues the output.
+The helper completes every output ticket before it returns, so the next call can render another frame.
+The second frame uses the same nodes. The program does not rebuild the tree.
 
-The allocator and `std.Io` must remain valid until Context destruction.
-The current module also needs `root.io` for compatibility image helpers, so the program exposes the same I/O implementation there.
+The allocator and `std.Io` must stay valid until Context destruction completes.
+The module's audio, clipboard, and image code also reads `root.io`, so the program exposes the same I/O implementation there.
 
 `errdefer` cancels the Session if rendering or writing fails. Then `defer` releases the Context.
-The `catch unreachable` clauses assert this program's cleanup conditions: cancellation leaves no pending output, and the program acquires no leases.
+The `catch unreachable` clauses state this program's cleanup conditions: cancellation leaves no pending output, and the program holds no leases.
 
 ## Run and inspect the frames
 
@@ -129,7 +134,7 @@ zig build run
 ```
 
 The program creates or replaces `hello.ansi` and `ready.ansi` in that directory.
-They contain terminal instructions. The second file updates the first frame rather than describing a complete independent screen.
+They contain terminal instructions. The second file updates the first frame. It is not a standalone screen.
 Use [View both frames](/docs/native/frames#view-both-frames) to display them in a temporary terminal screen.
 
 The copied build defaults to the native CPU and operating system, with musl on Linux.
@@ -137,8 +142,9 @@ It accepts the standard `-Dtarget` and `-Doptimize` Zig build options.
 
 ## Draw into an owned buffer
 
-For offscreen drawing, a Context and a cell buffer are enough. No Session or terminal is necessary.
-The hello package includes this test. It draws `Hello` directly into five cells, borrows the cell storage, and releases it before destroying the buffer.
+For offscreen drawing, you need only a Context and a cell buffer. You do not need a Session or a terminal.
+This test draws `Hello` directly into five cells, borrows the cell storage, and releases it before it destroys the buffer.
+Save it as `src/acceptance_test.zig`, which is the test root of the copied build. This replaces the copied acceptance tests.
 
 ```zig example=buffer
 const std = @import("std");
@@ -170,8 +176,8 @@ Run from the project directory:
 zig build test --summary all
 ```
 
-The character comparison works for this ASCII text. General text can use pooled graphemes and continuation cells.
-Use drawing methods to change it rather than writing raw character entries.
+The character comparison works for this ASCII text. Other text can use pooled graphemes and continuation cells.
+Use drawing methods to change cells. Do not write raw character entries.
 [Resources and ownership](/docs/native/resources#borrow-cells-for-one-synchronous-operation) explains storage leases and their limits.
 
 ## Stay within the checked Context API
@@ -180,8 +186,10 @@ Pointers from `Context.raw()` getters are borrowed. Destroy the resource through
 Keep callback data and borrowed environment state alive until the Context no longer needs them.
 
 The public module also exports raw primitives such as `CliRenderer` and `OptimizedBuffer`.
-Those have separate lifetime contracts. Importing the module does not give raw objects the Context's checks.
+Each raw primitive has its own lifetime contract. Importing the module does not give raw objects the Context's checks.
 
-For host drawing and scheduling yields, use `sceneFrameStepWithRecording` to produce the draft, then submit it with the same `sceneFrameCommit` operation.
-It takes the work quota and, for a `RECORD` request, the paint recording that `sceneFramePaintSlots` describes.
+For host drawing and scheduling yields, call `sceneFrameStepWithRecording` until it returns a `DONE` draft.
+Then commit the draft with `sceneFrameCommit`, as above.
+Each call takes a work quota (`max_work_items`).
+To answer a `RECORD` request, pass a recording for the slots that `sceneFramePaintSlots` returns. Pass `null` for every other request.
 The [frame protocol](/docs/native/frames) explains when to resume, commit, cancel, and complete output.

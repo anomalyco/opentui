@@ -101,15 +101,15 @@ import { useTimeline } from "@opentui/solid"
 
 Construction and registration are separate behaviors.
 
-| API                                    | Initial state                               | Registration                                         |
-| -------------------------------------- | ------------------------------------------- | ---------------------------------------------------- |
-| `new Timeline(options?)`               | Always paused, including `autoplay: true`   | Not registered                                       |
-| `createTimeline(options?, renderer?)`  | Plays unless `autoplay` is `false`          | Uses the renderer's engine, or `engine` when omitted |
-| React or Solid `useTimeline(options?)` | Plays on mount unless `autoplay` is `false` | Uses the component's renderer on mount               |
+| API                                    | Initial state                               | Registration                                            |
+| -------------------------------------- | ------------------------------------------- | ------------------------------------------------------- |
+| `new Timeline(options?)`               | Always paused, including `autoplay: true`   | Not registered                                          |
+| `createTimeline(options?, renderer?)`  | Plays unless `autoplay` is `false`          | Uses the renderer's engine, or `engine` when omitted    |
+| React or Solid `useTimeline(options?)` | Plays on mount unless `autoplay` is `false` | Registers with the component's renderer engine on mount |
 
-`new Timeline()` stores the `autoplay` option but does not act on it. Call `play()` and register it with `getTimelineEngine(renderer)` when you use the class directly.
+`new Timeline()` stores the `autoplay` option but does not act on it. When you use the class directly, call `play()` and `getTimelineEngine(renderer).register(timeline)`.
 
-`createTimeline()` calls `play()` before it registers the timeline. Registration then updates renderer liveness.
+`createTimeline()` calls `play()` before it registers the timeline. Registration then updates the renderer's live state.
 
 The framework hooks create the timeline during framework setup. Their mount handlers play and register it.
 
@@ -133,7 +133,7 @@ A longer timeline stays active after all its items finish. Its `onComplete` runs
 
 `add(target, properties, startTime?)` accepts one target or an array of targets. It returns the same timeline.
 
-Additional numeric keys in `properties` are animation end values. Non-numeric end values are ignored.
+Additional numeric keys in `properties` are animation end values. The timeline ignores non-numeric end values.
 
 When the item first becomes active, OpenTUI reads each matching top-level target property. It captures only existing numeric values.
 
@@ -141,7 +141,7 @@ The target properties must remain writable numbers. A missing or non-numeric ini
 
 Initial values stay captured across timeline loops and `restart()`. The timeline does not recapture them on each run.
 
-Nested property paths, arrays of component values, and object traversal are not supported. Animate a top-level numeric property instead.
+The timeline does not support nested property paths, arrays of component values, or object traversal. Animate a top-level numeric property instead.
 
 ### `AnimationOptions`
 
@@ -174,9 +174,11 @@ Use a positive integer for numeric `loop`. `false`, `undefined`, and `1` all run
 | `progress`    | Eased forward progress before `alternate` reverses assignment |
 | `currentTime` | Current time of this timeline                                 |
 
-Back and elastic easing can make `progress` less than `0` or greater than `1`. The easing input itself is clamped to `0..1`.
+Back and elastic easing can make `progress` less than `0` or greater than `1`. OpenTUI clamps the easing input itself to `0..1`.
 
-Callbacks run synchronously inside `update()`. A thrown callback error propagates to the caller or renderer frame callback.
+Callbacks run synchronously inside `update()`. A thrown error propagates to the caller of `update()`.
+
+In an engine update, the error stops that update. Later items and timelines do not update in that frame. The renderer catches the error from the engine's frame callback, logs it, and continues the frame.
 
 ## Easing names
 
@@ -276,7 +278,7 @@ Later parent updates pass their full delta to the child. Parent loops reset and 
 
 A parent pause pauses children that already started. A later parent play resumes those started children.
 
-One timeline can be synced only once. A second claim throws exactly `Error("Timeline already synced")`.
+You can sync a timeline only once. A second claim throws exactly `Error("Timeline already synced")`.
 
 Sync has no inverse operation. The child's `synced` flag remains `true`, even after engine unregistration.
 
@@ -288,20 +290,24 @@ Do not depend on a pending child staying idle after its parent pauses. Unregiste
 
 ## Engine ownership
 
-`getTimelineEngine(renderer)` returns the engine for that renderer. It also restores the engine's frame callback if application code cleared renderer callbacks. Renderer destruction unregisters its timelines and detaches the engine.
+`getTimelineEngine(renderer)` returns the engine for that renderer. It throws when the renderer is destroyed. It also restores the engine's frame callback if application code cleared renderer callbacks. Renderer destruction unregisters its timelines and detaches the engine.
 
-The exported `engine` is the default engine, which `createTimeline()` uses when you omit the renderer. It is separate from renderer-owned engines. `engine.attach(renderer)` moves it to that renderer. React `createRoot(renderer).render()` and Solid `render()` and `testRender()` call it, so the last call drives timelines without a renderer. Renderer destruction detaches the default engine but keeps its timelines. Detach a renderer-owned engine before you attach it to a different renderer. A timeline can belong to only one engine at a time.
+The exported `engine` is the default engine. `createTimeline()` uses it when you omit the renderer. It is separate from renderer-owned engines.
+
+`engine.attach(renderer)` moves the default engine to that renderer. React `createRoot(renderer).render()`, Solid `render()`, and Solid `testRender()` call it. The renderer from the most recent call drives timelines that you create without a renderer. While the default engine is not attached, nothing updates its timelines. Renderer destruction detaches the default engine but keeps its timelines.
+
+Detach a renderer-owned engine before you attach it to a different renderer. A timeline can belong to only one engine at a time.
 
 | Method                 | Behavior                                                     |
 | ---------------------- | ------------------------------------------------------------ |
-| `attach(renderer)`     | Installs a frame callback; `engine` moves, others reject     |
+| `attach(renderer)`     | Installs a frame callback. Only `engine` can move renderers  |
 | `detach()`             | Removes the frame callback and drops engine-owned live state |
 | `register(timeline)`   | Adds one timeline and watches its state                      |
 | `unregister(timeline)` | Removes one timeline and its state listener                  |
 | `clear()`              | Unregisters all timelines from this engine                   |
 | `update(deltaTime)`    | Updates every registered timeline that is not synced         |
 
-`attach()` checks already-playing timelines and updates the renderer's live state. You do not need an explicit attach call when using `getTimelineEngine(renderer)` or `createTimeline(options, renderer)`.
+`attach()` checks already-playing timelines and updates the renderer's live state. You do not need an explicit attach call when you use `getTimelineEngine(renderer)` or `createTimeline(options, renderer)`.
 
 The engine requests live rendering when any registered, unsynced timeline is playing and incomplete. It drops live rendering after the last such timeline stops.
 
@@ -351,15 +357,23 @@ The React package has a regression test that checks timeline identity across a s
 
 The Solid hook creates one timeline during component setup. Its options are not reactive after setup.
 
-Both framework packages test independent renderer ownership and hook cleanup.
+Both framework packages test that hook timelines on different renderers stay independent.
 
 ## Animation callbacks
 
 Use `renderer.requestAnimationFrame(callback)` and `renderer.cancelAnimationFrame(handle)` for one-shot animation work. Requests and cancellation belong to that renderer. Renderer destruction cancels its pending requests.
 
-OpenTUI no longer installs or replaces process-global `requestAnimationFrame`, `cancelAnimationFrame`, or `window` properties. Migrate terminal applications to the renderer methods; browser animation APIs are unchanged.
+Each pending request holds one [live request](/docs/core-concepts/renderer#live-rendering) until its callback runs or you cancel it. `requestAnimationFrame()` returns `-1` and stores nothing when the renderer cannot render, for example after destruction.
 
-The shared Session scheduler services ready work between callbacks and parks Sessions awaiting output or host replies. It cannot preempt a synchronous JavaScript callback. Timeline item counts and callback execution time still affect service delay.
+The callback receives the elapsed milliseconds since the previous frame, not a timestamp. A request made during a frame runs in the next frame.
+
+Each frame runs animation-frame callbacks first. It then runs callbacks from `renderer.setFrameCallback()`, which include timeline engines. Both run before Core sends staged property changes to native code and runs the [native frame step](/docs/core-concepts/rendering-pipeline). Changes that these callbacks make appear in the same frame.
+
+A thrown animation-frame callback error stops that frame. The renderer emits `render:error`, or logs the error when the event has no listener.
+
+OpenTUI no longer installs or replaces process-global `requestAnimationFrame`, `cancelAnimationFrame`, or `window` properties. Migrate terminal applications to the renderer methods. OpenTUI does not change browser animation APIs.
+
+After each animation-frame callback and each `setFrameCallback()` callback, the renderer yields to the shared Session scheduler. Between callbacks, that scheduler runs ready work for every Session that shares it. It parks Sessions that wait for output or host replies. It cannot interrupt a synchronous JavaScript callback. Long callbacks and large timelines still delay that work.
 
 ## Limits and unsupported features
 
@@ -373,7 +387,7 @@ Timeline supports top-level numeric interpolation only. It does not interpolate 
 
 The API has no spring or physics solver. It also has no seek, item removal, unsync, per-item pause, or public reverse method.
 
-Use `alternate` for per-cycle reversal. Use application state and a new timeline when unsupported scheduling changes are required.
+Use `alternate` for per-cycle reversal. Use application state and a new timeline when you need a scheduling change that the API does not support.
 
 ## Next
 

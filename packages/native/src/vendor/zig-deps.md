@@ -10,7 +10,7 @@ The script requires `curl`, `git`, GNU `tar`, `gzip`, and either `sha256sum` or 
 
 The pin and checksum variables in `update-zig-deps.sh` are the source of truth for dependency versions.
 
-The Ghostty archive contains only source that `ghostty-vt` needs.
+The Ghostty archive keeps `include`, `src` without `src/font/res`, and the `pkg/android-ndk` and `pkg/apple-sdk` packages.
 It excludes large font fixtures, tests, examples, applications, and unrelated C libraries.
 Its manifest omits unrelated application dependencies.
 Its build file exports only the Zig VT modules.

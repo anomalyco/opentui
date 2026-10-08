@@ -37,7 +37,7 @@ Its properties update that node, while its JavaScript object keeps listeners, ho
 
 Core still handles input routing, focus, selection, child lookup, and cleanup through JavaScript objects.
 Markdown parsing and Code highlighting also remain host work.
-JavaScript does not visit every object to dispatch every built-in draw on each frame.
+JavaScript does not visit every renderable to draw it on each frame. Native code draws built-in renderables.
 
 `NativeScene` and `NativeSession` are Core's integration machinery, not the application-level equivalents of the C and Zig APIs.
 Build applications through [Renderer](/docs/core-concepts/renderer) and [Renderables](/docs/core-concepts/renderables).
@@ -81,19 +81,21 @@ The [test renderer](/docs/core-concepts/testing) captures this first frame witho
 └──────────┘
 ```
 
-Paint hooks run after layout and before native code paints any cell. Thus, the label draws `Ready` in that same frame.
-Native code does not invoke the JavaScript function from inside painting:
+Paint hooks (`renderBefore`, `renderSelf`, and `renderAfter`) run after layout and before native code paints any cell. So the label draws `Ready` in that same frame.
+Native code does not call the JavaScript function while it paints:
 
 1. `CliRenderer.loop()` calls `NativeScene.paint()`.
 2. `NativeScene.advancePaint()` calls `RenderLib.sceneFrameStep()`, which reaches `ot_scene_frame_step_with_geometry`.
-3. Native code prepares the frame and returns one record request, kind `4`, instead of painting.
-4. Core reads the request's paint slots and calls `Renderable._recordNativeScenePaint()` for each hooked node, in paint order.
+3. Native code prepares the frame. It sees a paint hook, so it returns one record request, kind `4`, instead of painting.
+4. Core reads the request's paint slots with one `sceneFrameGetPaintSlots()` call. It calls `Renderable._recordNativeScenePaint()` for each hooked node, in paint order.
 5. The box's `renderAfter` function receives a recording buffer and changes the label.
-6. Core calls the native frame step again with the exact request and the recording. Native code paints the frame in one pass.
+6. Core flushes staged changes and calls the native frame step again with the exact request and the recording. Native code paints the frame in one pass.
 
 These are synchronous calls on the JavaScript thread. The hook stays on the JavaScript object.
-The buffer a hook receives records drawing, so a frame with many hooks costs two native steps, not one per hook.
-It cannot read the frame. Draw into an owned buffer and compose it instead.
+The buffer that a hook receives records drawing and makes no native call.
+So a frame with any number of paint hooks costs two frame steps and one paint-slot query, not native calls for each hook.
+A recording buffer cannot read the frame. Draw into an owned buffer and compose it instead.
+A buffered custom renderable is different: its hooks draw into its own frame buffer, and Core records one draw of that buffer.
 
 A recording holds at most 64 MiB (`OT_SCENE_RECORD_BYTES_MAX`). Each text or box title holds at most 64 KiB of UTF-8
 (`OT_BUFFER_TEXT_BYTES_MAX`), the same limit as direct drawing. A call over either limit throws in the hook and records
@@ -109,77 +111,79 @@ Their custom drawing contract is in [Custom renderables](/docs/extend/custom-ren
 
 ## Send changes before native work continues
 
-Core's ordinary style and paint setters validate values and stage native updates.
-The driver sends one bounded property stream. Visual records contain only the selected fields, so small edits need no complete paint projection.
+Core's ordinary style and paint setters validate each value and then stage it.
+Staged changes wait in one bounded stream of records. A flush sends the whole stream to native code in one call.
+A paint record holds only the fields that you set, so a small edit sends a small record.
 
-Application state passes through these stages:
+A value that you set passes through these stages:
 
 ```text
-┌─ Requested host values
-│  ↓ staged mutations
-│  ↓ accepted native state
-│  ↓ completed layout
-│  ↓ prepared paint membership
-│  ↓ painted draft
-│  ↓ admitted output
-└─ Transport-completed presentation
+┌─ Value set in JavaScript
+│  ↓ staged record
+│  ↓ accepted by native code at a flush
+│  ↓ used by a completed layout
+│  ↓ part of the prepared paint list
+│  ↓ painted into a frame
+│  ↓ queued as Session output
+└─ Output complete at the transport
 ```
 
-Property getters can report requested values before native acceptance. Geometry getters report completed observations.
-For example, `box.opacity = 0.5` changes its getter immediately. A width setter does not immediately change the computed `box.width`.
-A native style read flushes pending staging without running Yoga. It accepts the requested width without completing layout.
+A property getter, such as `opacity`, returns the value that you set at once, before any flush.
+A geometry getter, such as `width` or `x`, returns the result of the last completed layout.
+For example, `box.opacity = 0.5` changes `box.opacity` at once. After the first layout, a width setter does not change `box.width` until the next layout.
+A native style read flushes staged changes but does not run Yoga. Native code then holds the new width, but the computed layout stays the same.
 
-Layout writes keep their order because Yoga edge, shorthand, and dimension operations can overlap.
-Other visual writes coalesce at the node's latest visual record. The last write wins for each selected field.
-Unselected fields keep their accepted native values.
+Core keeps the stream in order and merges some records:
 
-New or changed translations can merge only into the last stream record.
-Their prepared coordinates depend on the ancestor translations accepted so far.
-Translations identical to the node's latest staged values can coalesce at that node's record. They cause no second native coordinate update.
-A successful flush ends the coalescing window.
+- Layout writes stay in their order, because Yoga edge, shorthand, and dimension values can overlap.
+- Other paint writes to a node merge into that node's latest paint record. The last write wins for each field. Fields that you did not set keep their current native values.
+- A new or changed translation merges into the node's record only if that record is the last one in the stream. Otherwise, Core adds a new record. Native code computes positions from the ancestor translations that it accepted before that record.
+- A translation equal to the node's latest staged value merges into that node's record. It causes no second position update in native code.
 
-Validation and caller getters finish before a staged record becomes visible, including during reentry.
+After a successful flush, later writes start new records.
+
+Core validates and reads each value completely before it adds the record to the stream. A getter that sets another property during that read cannot leave a partial record.
 Assigning `null` or `undefined` to a property such as `shouldFill`, `focusable`, `translateX`, or `translateY` restores
 the value the constructor uses when that option is omitted. Omitted fields remain valid in a partial update.
 
-Node creation, tree changes, and immediate text or resource replacements use their own checked calls.
-Their host projections publish after native acceptance.
+Node creation, tree changes, and text or resource replacement use their own checked native calls.
+The JavaScript object changes only after native code accepts the call.
 
-Before each frame step, `NativeScene.advancePaint()` calls `flushStaged()`.
-Native reads and other operations that need those values also flush them.
-This is why a hook's pending color changes reach native code before it paints the frame.
-Before synchronous measurement callbacks, the driver also flushes other scenes so read-only queries can observe their writes.
-React and Solid use these same driver boundaries.
+`NativeScene.advancePaint()` calls `flushStaged()` before each frame step.
+Native reads and other native calls that need current values also flush first.
+So a color that a paint hook sets reaches native code before native code paints the frame.
+If a frame step can call a custom measurement provider, Core first flushes staged changes in every scene that uses the same library. Read-only queries in the provider then see those changes.
+React and Solid use the same flush points.
 
-Staging is not an atomic application transaction.
-The native [property flush](/docs/native/frames#submit-property-updates) reports an accepted prefix if a later record fails.
-Core removes that prefix and retains the rejected record and suffix for retry.
-If native code rejects the record itself (`OT_INVALID_ARGUMENT`, `OT_WRONG_KIND`, or `OT_STALE_HANDLE`), Core drops that
-record instead, including other paint fields that the node staged since the last flush. Whichever call flushes reports
-the error once; that call can belong to another node.
+A flush is not an all-or-nothing transaction.
+If one record fails, the native [property flush](/docs/native/frames#submit-property-updates) keeps the records before it and reports how many it accepted.
+Core removes the accepted records. It keeps the failed record and the records after it for a retry.
+Some errors mean that the record itself can never apply: `OT_INVALID_ARGUMENT`, `OT_WRONG_KIND`, and `OT_STALE_HANDLE`.
+Core drops that record instead. The dropped record also holds the other paint fields that the node staged since the last flush.
+The call that runs the flush throws the error once. That call can belong to another node.
 After the Session starts closing, it paints no more frames, so Core drops staged changes without reporting them.
-Cancelling a frame does not roll back accepted changes or hook side effects.
-Deferred callback errors can surface after native acceptance and host publication. A thrown host error alone does not prove native rejection.
+Canceling a frame does not roll back accepted changes or hook side effects.
+A callback error, such as one from a measurement provider, can throw after native code accepted a change and Core updated the JavaScript object. So a thrown error alone does not prove that native code rejected the change.
 
 `getLayout()` reads completed local layout. It does not run Yoga or promise to include a recent setter's change.
 [Layout](/docs/core-concepts/layout) and [custom measurement](/docs/extend/custom-renderables#measure-intrinsic-size) cover the public layout API.
 
 ## Distinguish hooks from scheduling waits
 
-Core runs node paint hooks synchronously and does not await their returned promises.
-A record request returns control once per frame, before painting. It is not an event-loop scheduling break.
+Core runs node hooks synchronously and does not await their returned promises.
+A record request returns control to JavaScript once per frame, before painting. It does not give the event loop a turn.
 
-Scheduling yields use `OT_SCENE_FRAME_YIELD` instead.
-Core can request them during preparation through the positive unsigned 32-bit `nativeSceneWorkBudget` option.
-The Session scheduler's default continuation uses `setImmediate()` to allow a later event-loop turn.
-`NativeScene.paint()` returns a promise only when that continuation is necessary.
-Omit the option for no quota-based yields.
+A scheduling yield is a different request, `OT_SCENE_FRAME_YIELD`.
+Native code returns it only during preparation, and only when you set the renderer option `nativeSceneWorkBudget` to a positive unsigned 32-bit integer.
+Without that option, preparation does not yield.
+By default, the Session scheduler continues the frame in a later event-loop turn with `setImmediate()`.
+`NativeScene.paint()` returns a promise only when the frame yields.
 While a frame waits at a yield, `suspend()` and `destroy()` cancel it without presenting a frame. After `resume()`, the
-next frame paints every change, including changes made while suspended. A resize at a yield starts a new attempt at the
-new size.
+next frame paints every change, including changes made while suspended. A resize that changes the size at a yield
+starts a new attempt at the new size.
 
 Core's internal driver sets `max_layout_rounds` to `8` and `max_host_requests` to `65_536`.
-The quota and request limits do not interrupt Yoga or a slow JavaScript hook.
+The work budget and the request limit do not interrupt Yoga or a slow JavaScript hook.
 See the native [yield contract](/docs/native/frames#yield-between-pieces-of-work) for counted work and resize behavior.
 
 Two other waits occur outside node hooks:
@@ -257,7 +261,8 @@ These factories use a `ResourceContext` or the destination `renderer.nativeScene
 Views inherit their buffer's owner. `RenderLib` calls the loaded library but is not a resource owner.
 These factories have no ownerless alternatives or public resource pointers.
 [Buffer API](/docs/reference/buffer-api) and [Editing buffers and views](/docs/extend/editing) describe the drawing and text operations.
-The [image factories](/docs/reference/native-image#choose-a-context-owner) also accept a `ResourceContext`, with a shared automatic Context as their default.
+The [image factories](/docs/reference/native-image#choose-a-context-owner) accept only a `ResourceContext` as `owner`, with a shared automatic Context as their default.
+To create an image in the renderer's Context, pass `renderer.nativeScene.resourceContext`, not `renderer.nativeScene`.
 
 Session, buffer, and scene-node handles have distinct TypeScript brands. Native calls also check Context, kind, Session, and generation as applicable.
 
@@ -266,22 +271,23 @@ They share resource ownership, not scene or frame state.
 
 ## Complete output and release resources
 
-After scene painting, Core runs whole-frame post-processing and draws the console overlay.
-It commits the draft and queues Session output.
-Core treats issued frame-authority fields as readonly. Geometry remains a separate observation.
-The driver clears a consumed draft for `PRESENTED`, `PENDING`, `SKIPPED`, and `FAILED` results.
+After native painting, Core runs post-process functions and draws the console overlay.
+Then it commits the painted frame (the draft), and the Session queues its output.
+Core passes each frame request back to native code unchanged. Native code compares every request field, including `width`, `height`, and `layoutEpoch`, and rejects a reply that differs.
+Only the geometry attached to a request (`paintLayout` and `publicLayout`) is an observation.
+Each commit result, `PRESENTED`, `PENDING`, `SKIPPED`, or `FAILED`, consumes the draft.
 
-For ordinary main-process `process.stdout`, Core calls `sessionDrainStdout()` to deliver bytes and record completion in native code.
-Earlier queued or corked JavaScript writes delay native delivery through an empty, ticketless `Writable` write.
+For ordinary main-process `process.stdout`, Core calls `sessionDrainStdout()`. Native code writes the bytes and records their completion.
+If earlier JavaScript writes are still queued or corked on the stream, Core first writes an empty chunk with no output ticket. Native delivery waits for that write to finish.
 
 Custom streams and Node worker stdout use copied output tickets.
 Core also uses this path when native stdout reports `OT_UNSUPPORTED_RESOURCE`.
 The `Writable` callback acknowledges each copied ticket. The `write()` return value and `drain` event control backpressure, not ticket completion.
 Read [Host I/O and time](/docs/native/host-io-time#output-without-a-host-copy) for native delivery limits and writer rules.
 
-Both paths use the same presentation endpoint.
+Both paths use the same presentation endpoint: the end of the frame's bytes in the output queue.
 `NativeSession.whenPresented()` waits for that endpoint, not later output or a later drain event.
-Core then reconciles hover and emits `frame`.
+Core then rechecks hover if mouse input is on, and emits `frame`.
 Core does not use the TypeScript `NativeSpanFeed` wrapper for this output path.
 
 During resize, renderer buffer wrappers keep their identity while their native storage changes.

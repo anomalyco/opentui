@@ -26,7 +26,7 @@ The direct entry point also has a default export named `Yoga`:
 import Yoga, { Config, Direction, Node, type Layout } from "@opentui/core/yoga"
 ```
 
-The default object contains `Config`, `Node`, every enum, and every uppercase constant on this page. Type-only exports such as `Layout` are not properties of the runtime object.
+The default object contains `Config`, `Node`, every enum except `YogaStatus`, and every uppercase constant on this page. `YogaError`, `YogaStatus`, and type-only exports such as `Layout` are not properties of the default object.
 
 ## Minimal layout
 
@@ -54,12 +54,14 @@ try {
 - Call `config.free()` or `Config.destroy(config)` for each owned config.
 - Call `node.free()` or `Node.destroy(node)` for one node.
 - Call `node.freeRecursive()` to release a node and its current descendants.
-- Release a node tree before you release the config that created it.
+- Release a node tree before you release the config that created it. `config.free()` throws while nodes from that config remain.
 - `removeChild()` and `removeAllChildren()` detach nodes. They do not free them.
 - `free()`, `freeRecursive()`, and both static `destroy()` methods ignore repeated release calls.
-- `Node.isFreed()` reports whether the wrapper released its native node.
+- `node.isFreed()` reports whether the wrapper released its native node.
 
-`Node.reset()` removes its measure and dirtied callbacks before it resets the native node. Node release also removes callback registrations. Methods guard a released wrapper, but application code should not keep using one.
+`node.reset()` resets the native node and removes its measure and dirtied callbacks. It throws `YogaError` while the node has a parent or children. Node release also removes callback registrations. Most methods of a released wrapper do nothing or return a default value. Do not keep using a released wrapper.
+
+Native Yoga calls throw `YogaError` for invalid arguments, such as an out-of-range child index or an unknown enum value. Its `operation` property names the call, and its `status` property holds a `YogaStatus` value.
 
 `Config.ptr` and `Node.ptr` expose binding pointers. They are implementation-looking public properties. Do not use them as a standalone native API.
 
@@ -85,7 +87,7 @@ try {
 
 | Methods                                                                  | Purpose                                                                                  |
 | ------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------- |
-| `Node.create(config?)`, `Node.createDefault()`                           | Allocate a node with an optional config.                                                 |
+| `Node.create(config?)`, `Node.createDefault()`                           | Allocate a node. Without a config, the node uses a shared default config.                |
 | `Node.createWithConfig(config)`                                          | Allocate a node with the given config.                                                   |
 | `Node.createForOpenTUI()`                                                | Allocate a node with OpenTUI's native defaults. This factory is implementation-specific. |
 | `Node.destroy(node)`, `free()`, `freeRecursive()`, `isFreed()`           | Release one node or a complete subtree, and read release state.                          |
@@ -129,7 +131,9 @@ A numeric value uses Yoga points. A percentage string such as `"50%"` uses `Unit
 
 The Accepted values column describes setter arguments. Getters do not return `undefined`. Numeric getters return
 numbers. After you clear a numeric style, `getFlexGrow()` and `getFlexShrink()` return Yoga's default of `0`. The other
-numeric getters return `NaN`. Value getters return a `Value` with `Unit.Undefined` and `value: NaN` for an unset value.
+numeric getters return `NaN`. After you clear a value style, its getter returns a `Value` with `Unit.Undefined` and
+`value: NaN`. On a new node, `getWidth()`, `getHeight()`, and `getFlexBasis()` return `Unit.Auto`. The other value
+getters return `Unit.Undefined`.
 
 | Methods                                                                           | Accepted values                                               |
 | --------------------------------------------------------------------------------- | ------------------------------------------------------------- |
@@ -173,17 +177,21 @@ A node has one measure function, and a new one replaces the old one. Standalone 
 
 `setDirtiedFunc(callback)` registers a `DirtiedFunction`. Yoga calls it with the matching `Node` when clean state changes to dirty state. Use `unsetDirtiedFunc()` or pass `null` to remove it.
 
-Each `Config` creates one native measure trampoline and one dirtied trampoline when the first of its nodes registers a callback, and closes them in `free()`. A trampoline routes each call through the node pointer. Release and reset operations remove the per-node registrations.
+Yoga calls both callbacks synchronously on the JavaScript thread. A callback must not return a `Promise`. A `Promise` result throws `TypeError`. A callback must not change any Yoga node. A change throws. If a callback throws, the Yoga call that ran it, such as `calculateLayout()`, throws the same error after Yoga returns.
+
+Each `Config` creates one native measure trampoline and one dirtied trampoline when the first of its nodes registers a callback. `config.free()` closes them. A trampoline routes each call through the node pointer. Release and reset operations remove the per-node registrations.
 
 ## Types
 
-| Type              | Shape or purpose                                          |
-| ----------------- | --------------------------------------------------------- |
-| `Layout`          | `{ left, right, top, bottom, width, height }`             |
-| `Size`            | `{ width, height }`                                       |
-| `Value`           | `{ unit: Unit, value: number }`                           |
-| `MeasureFunction` | Receives width and height constraints and returns `Size`. |
-| `DirtiedFunction` | Receives the `Node` that became dirty.                    |
+| Type              | Shape or purpose                                                                                                              |
+| ----------------- | ----------------------------------------------------------------------------------------------------------------------------- |
+| `Layout`          | `{ left, right, top, bottom, width, height }`                                                                                 |
+| `Size`            | `{ width, height }`                                                                                                           |
+| `Value`           | `{ unit: Unit, value: number }`                                                                                               |
+| `MeasureFunction` | Receives width and height constraints and returns `Size`.                                                                     |
+| `DirtiedFunction` | Receives the `Node` that became dirty.                                                                                        |
+| `YogaError`       | Error class with `operation` and `status` properties.                                                                         |
+| `YogaStatus`      | Enum of `YogaError.status` values: `Ok`, `InvalidArgument`, `OutOfMemory`, `Exception`, `Poisoned`, `Busy`, and `DepthLimit`. |
 
 ## Enums and constants
 

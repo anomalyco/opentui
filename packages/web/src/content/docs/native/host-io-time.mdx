@@ -7,8 +7,8 @@ description: Drive Session clocks, deliver terminal output, and control native f
 
 OpenTUI uses the host event loop for scheduling and terminal input.
 Native code can write terminal output directly, or the host can deliver it through its own stream.
-Native code retains rendering state and uses the Context's `std.Io` for supported resource operations and stdout writes.
-Supplying Context I/O does not install a terminal transport or an event loop.
+Native code keeps the rendering state. It uses the Context's `std.Io` (the **Context I/O**) for supported file operations and stdout writes.
+Context I/O does not install a terminal transport or an event loop.
 
 | Owner           | Contract                                                                                                                                       |
 | --------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -23,86 +23,98 @@ Supplying Context I/O does not install a terminal transport or an event loop.
 Call `ot_session_drain_stdout` to write queued bytes directly to process stdout.
 Native code records successful writes itself. You need no host byte buffer or completion ticket.
 Core uses this path for the main process's ordinary `process.stdout` on Bun and Node.js.
-It waits for earlier queued or corked JavaScript writes before native delivery.
+Before native delivery, Core waits for earlier queued or corked JavaScript writes.
 Custom `Writable` streams and Node worker stdout use copied output tickets.
 
 For another native destination, call `ot_session_drain_output` with a synchronous writer callback.
-The callback borrows bytes for that call and returns the number delivered, zero for backpressure, or `-1` for failure.
-It must not retain the bytes or report bytes still held in a writer's buffer as delivered.
-Direct Zig provides `Context.drainOutput(session, writer, max_bytes)` and `Context.drainStdout(session, max_bytes)`.
+The callback borrows the bytes for that call only.
+It returns the number of bytes delivered, zero for backpressure, or `-1` for failure.
+The callback must not keep the bytes. It must not count bytes that are still in a writer's buffer as delivered.
+It must not call Context functions that change state. Those calls return `OT_CONTEXT_BUSY`.
+Direct Zig has `Context.drainOutput(session, writer, max_bytes)` and `Context.drainStdout(session, max_bytes)`.
 
-Each call attempts at most `max_bytes`. Stdout requires a limit of at least four bytes for a complete UTF-8 scalar.
-Partial writes leave the suffix queued. Retry nonblocking output on a later turn when it can make progress.
-A blocking writer can block the call; the byte limit bounds work, not elapsed time.
-Windows console output uses UTF-16 without changing the console code page.
-Overlapped Windows stdout returns `OT_UNSUPPORTED_RESOURCE` before consuming bytes; Core uses its `Writable` instead.
-If an incomplete console character is followed by a byte that cannot continue it, fills the queue, or remains when new writes are disabled, native delivery returns `OT_INVALID_ARGUMENT`.
-Those bytes remain available through the other delivery methods.
+Each call writes at most `max_bytes`, which must be above zero.
+For stdout, the limit must be at least four bytes, the size of the longest UTF-8 scalar. A smaller limit returns `OT_INVALID_ARGUMENT`.
+After a partial write, the rest stays queued. Retry nonblocking output on a later turn when it can make progress.
+A blocking writer can block the call. The byte limit bounds work, not elapsed time.
+Windows console output uses UTF-16 and does not change the console code page.
+An overlapped or unrecognized Windows stdout handle returns `OT_UNSUPPORTED_RESOURCE` before it consumes queued bytes. Core then uses its `Writable`.
+On a Windows console, native delivery returns `OT_INVALID_ARGUMENT` when the queue starts with an incomplete UTF-8 character and:
 
-Both delivery paths publish frames only after their output completes. A write failure stops delivery without replay.
-A live copy ticket blocks native delivery until you complete that ticket.
+- the next queued byte cannot continue that character,
+- the rest of the character is not queued and the queue has no room for it, or
+- the rest of the character is not queued and new writes are disabled.
+
+Those bytes stay available to the other delivery methods.
+
+Both native paths publish a frame only after its output completes.
+A write failure stops delivery with `OT_OUTPUT_FAILED`. Native code does not replay the bytes.
+While a copy ticket is live, native delivery returns `OT_OUTPUT_BUSY`. Complete the ticket first.
 The caller keeps one destination for the ordered stream and schedules delivery during setup, rendering, and close.
 
 ## One Session deadline clock
 
-`ot_session_pump` and `ot_session_poll_kitty_image_transport` take unsigned 64-bit nanoseconds from the same host clock.
+`ot_session_pump` and `ot_session_poll_kitty_image_transport` take a time sample: unsigned 64-bit nanoseconds from one monotonic host clock.
 Each Session records its last accepted sample. Equal samples are valid.
-A backwards sample returns `OT_INVALID_ARGUMENT` before expiry or Kitty retries. Direct Zig reports `error.InvalidClock`.
-Sessions have independent clocks.
+A sample earlier than the last one returns `OT_INVALID_ARGUMENT` before any Kitty expiry or retry. Direct Zig returns `error.InvalidClock`.
+Each Session has its own clock.
 
-Cursor waits start when a pump observes completed output. Insufficient clock range for the pending waits rejects the pump.
-If no valid later sample exists, cancel the Session.
-`ot_session_pump_exit` bypasses cursor waits without advancing the clock or skipping output completion.
+Cursor waits start at the first pump that sees the terminal restoration output completed.
+If the sample plus the pending cursor waits does not fit in 64 bits, the pump returns `OT_INVALID_ARGUMENT`.
+If you have no valid later sample, cancel the Session.
+`ot_session_pump_exit` is a fallback for process exit. It skips cursor waits.
+It does not advance the clock or skip output completion.
 
-Kitty file leases start their five-second deadline on the first accepted pump or poll after creation.
+A Kitty file lease starts its five-second deadline at the first accepted pump or poll after the file is created.
 An old sample never shortens a new lease. The deadline saturates at `UINT64_MAX`.
-A sample at the deadline expires the lease, including an initial sample at `UINT64_MAX`.
+A sample at the deadline expires the lease. This includes a first sample of `UINT64_MAX`.
 
-Each accepted pump or poll checks at most eight leases, including while output is pending.
-`OT_PUMP_WAIT_UNTIL` describes terminal lifecycle work. It does not schedule Kitty cleanup.
-Continue polling while files can remain pending, including after switching to an inline transport.
-Polling advances the shared clock and file expiry without advancing terminal lifecycle or delivering output.
-Without host calls, native time does not advance these leases.
+Each accepted pump or poll checks at most eight leases, also while output is pending.
+`OT_PUMP_WAIT_UNTIL` gives the deadline for terminal lifecycle work. It does not schedule Kitty cleanup.
+Continue to poll while files can remain pending, also after a switch to an inline transport.
+A poll advances the Session clock and file expiry. It does not advance the terminal lifecycle or deliver output.
+Native code does not sample a clock for these leases. Without host calls, they do not expire.
 
 Core passes `NativeSession.scheduler.now()` to both operations.
-The default uses `process.hrtime.bigint()` on Bun and Node.js.
-The renderer's `Clock` sets the one-second poll cadence. The Session scheduler supplies the time sample.
+The default scheduler uses `process.hrtime.bigint()` on Bun and Node.js.
+The renderer's `Clock` sets the one-second poll interval. The Session scheduler supplies the time sample.
 For deterministic scheduling, inject both clocks.
 
 ## Native files and cleanup
 
-The renderer receives the Context's I/O at attachment and supplies it to Kitty transport.
+The renderer gets the Context I/O when you attach it to a Session, and passes it to Kitty transport.
 Temporary-file creation, streaming writes, closes, entropy reads, and unlinks all use that I/O.
-The renderer also uses it for hit-grid dumps. Supported native text-resource file operations use the same dependency.
+The renderer also uses it for hit-grid dumps. Native text resources use it for their supported file operations.
 
-Kitty file transport retains at most eight files and 64 MiB per renderer.
-Files use exclusive creation, mode `0600`, and the renderer's explicit `TMPDIR` hint.
-Without that hint, supported systems use `/tmp`.
+Kitty file transport keeps at most eight files and 64 MiB per renderer.
+It creates each file exclusively, with mode `0600`.
+The file goes in the directory that `TMPDIR` names in the renderer's environment map. Without that entry, it goes in `/tmp`.
+Kitty file transport is not available on Windows.
 
-Preparation and output failures close open files and attempt to unlink leases.
-Matching acknowledgements, frames skipped for output pressure, cancellation, suspension, output failure, and renderer teardown also attempt release.
-Expiry cancels file transport. It never claims that the terminal consumed the file.
+Preparation and output failures close open files and try to unlink their leases.
+Native code also tries to release leases after a matching acknowledgement, a frame skipped for output pressure, cancellation, suspension, output failure, and renderer teardown.
+Expiry cancels file transport. It never reports that the terminal consumed the file.
 
-A failed unlink keeps the path and byte charge while the renderer lives.
-Expiry and teardown retry the unlink. Teardown makes a final best-effort attempt.
+A failed unlink keeps the path and its byte charge while the renderer lives.
+Expiry and teardown try the unlink again. Teardown makes a final best-effort attempt.
 If the filesystem continues to reject deletion, the file can remain after teardown.
-Context I/O calls can block or fail. The lease-count bound limits work items, not elapsed time.
+Context I/O calls can block or fail. The lease limit bounds work items, not elapsed time.
 
 ## Native clock samples
 
-Native renderer timing samples the Context I/O awake clock for render statistics and the optional debug overlay.
-Real-time samples name hit-grid dumps and salt renderer image IDs.
-These samples do not schedule host work or decide checked Session waits or Kitty expiry.
-Diagnostic values and image IDs can therefore differ between otherwise identical manually driven runs.
+The native renderer samples the Context I/O awake clock for render statistics and the optional debug overlay.
+Real-time clock samples name hit-grid dumps and salt renderer image IDs.
+These samples do not schedule host work. They do not decide checked Session waits or Kitty expiry.
+Diagnostic values and image IDs can therefore differ between two manually driven runs that are otherwise identical.
 
-Raw Zig `CliRenderer` use has a separate compatibility contract.
-By default, it samples its supplied I/O awake clock at file creation and during Kitty polling.
-It also retains synchronous terminal restoration. Context attachment selects host-driven deadlines.
-The standalone `Transport` primitive requires explicit I/O and explicit `expire` calls.
-It never gets root I/O or samples a clock itself.
+A raw Zig `CliRenderer` has a separate compatibility contract.
+By default, it samples the awake clock of its own I/O at file creation and during Kitty polling.
+It also keeps synchronous terminal restoration. Attachment to a Context Session selects host-driven deadlines.
+The standalone Kitty `Transport` primitive requires explicit I/O and explicit `expire` calls.
+It never uses root I/O and never samples a clock itself.
 
-The C Context constructor uses the library's I/O implementation.
-Direct Zig `Context.init(allocator, io, options)` supports injection.
+The C Context constructor gives each Context its own single-threaded `std.Io.Threaded` implementation. C callers cannot supply I/O.
+Direct Zig `Context.init(allocator, io, options)` takes the I/O implementation as an argument.
 Audio engines and host clipboard services are Context objects, but they use their own threads and clocks, not Context I/O.
 
 Read [Frames and output](/docs/native/frames#pump-terminal-work-and-close) for the pump loop and output tickets.

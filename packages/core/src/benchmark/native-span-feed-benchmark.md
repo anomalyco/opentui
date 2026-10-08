@@ -10,7 +10,7 @@ can miss dense-output regressions in the renderer's feed writer.
 Use the existing render-traversal scenario `grayscale_changed` for that path. It draws
 one full-screen `FrameBufferRenderable` with standard and 2x supersampled grayscale
 panels. Two precomputed phases alternate every iteration. Every panel cell changes,
-with many different foreground colors per row; fixture generation is outside timing.
+with many different foreground colors per row. Fixture generation is outside timing.
 This uses the same draw APIs as `grayscale-buffer-demo.ts`, without importing examples.
 
 Run from `packages/core` after building the native library:
@@ -23,7 +23,8 @@ bun run bench:render-compare baseline.json grayscale.json
 ```
 
 The default surface is 140x44 cells. Traversal runs also accept `--width` and `--height`.
-The renderer uses native scenes, no render thread, and host-independent terminal capabilities.
+`bench:render-runtimes` also needs Node.js 26.4 or later from `NODE26_PATH` or `node`.
+The renderer uses the native scene, no render thread, and host-independent terminal capabilities.
 With `bufferedOutput: "memory"`, output goes through the Session feed to a discarding `Writable`.
 Preflight checks frame completion, cell planes, geometry, hits, and changed-cell counts for initial,
 unchanged, changed, and restored frames. At 140x44 and 41x21, it compares those snapshots with
@@ -33,11 +34,11 @@ before timing. No second rendering implementation ships with the benchmark.
 
 Completed-frame wall time includes framebuffer clear/draw, scene work, native encoding,
 and output handling, but not terminal emulator processing.
-`scene` reports scene work; `nativeRender` reports native diff/ANSI-encode time, converted
+`scene` reports scene work. `nativeRender` reports native diff/ANSI-encode time, converted
 from microseconds to milliseconds. For before/after comparisons,
 keep the benchmark source, dimensions, iteration counts, runtime versions, and native
-build mode identical. Compare reports from frozen revisions for historical measurements;
-the backend selector and traversal-only microbenchmarks have been removed. Run timing
+build mode identical. Compare reports from frozen revisions for historical measurements.
+The backend selector and traversal-only microbenchmarks no longer exist. Run timing
 benchmarks without concurrent builds or test suites.
 
 The five retained scene workloads are `boxes_steady_10000`, `boxes_changed_10000`,
@@ -56,14 +57,14 @@ capture accepted only because the current implementation produced it.
 Unprepared `width`/`height` getters follow numeric styles (zero for `auto` and
 percent) until layout publishes geometry. The log goldens therefore use width 1
 for the hidden scrollbar arrows at `geometry[10][2]` and `geometry[12][2]`.
-`render-traversal-geometry.test.ts` covers that boundary.
+The frozen log goldens record that geometry. No separate test covers the getter behavior.
 
 ### Other retained workloads
 
 `bench:layout` retains the full-render mutation workloads and validates changed geometry or text line info.
-It now settles requested frames with `TestRenderer.flush()` instead of reading Yoga dirty flags or collecting
-JavaScript render commands. Its `settle-frames` results are not the old layout-only measurements.
-The synchronous JS `leaf-width-calculate` case uses standalone Yoga and has workload version 3.
+It now settles requested frames with the `flush()` function from `createTestRenderer()` instead of reading Yoga dirty
+flags or collecting JavaScript render commands. Its `settle-frames` results are not the old layout-only measurements.
+The synchronous `bench:js` case `leaf-width-calculate` uses standalone Yoga and has workload version 3.
 Direct box and text-buffer workloads draw into owned scratch buffers, not inactive renderer frame buffers.
 
 ## Benchmark
@@ -81,7 +82,7 @@ bun run bench:native:ffi
 This installs `packages/native/zig-out/lib/libnative_span_feed_bench.*`, which
 `src/benchmark/native-span-feed-benchmark.ts` loads by default.
 
-Run `bun run bench:native` to build the benchmark runner and install the FFI benchmark library.
+`bun run bench:native` builds and runs the native benchmark runner. It also installs the FFI benchmark library.
 
 ### Run
 

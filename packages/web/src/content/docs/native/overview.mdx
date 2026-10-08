@@ -81,8 +81,11 @@ A terminal accepts bytes, not a node tree or a framebuffer.
 The native renderer encodes the cells as text, cursor movement, colors, and other control sequences.
 It compares cells with its existing encoding state, so an update need not send the entire screen again.
 
-The bytes wait in an output queue until your program copies them out and writes them to a destination.
-Your delivery code is the _transport_. You can write to a file, a local terminal, or a connection.
+The bytes wait in an output queue until your program delivers them.
+Your program can copy them out and write them itself.
+It can also let the native library write them to standard output or pass them to a writer function that your program supplies.
+The delivery path is the _transport_. You can write to a file, a local terminal, or a connection.
+The diagram shows the copy path:
 
 ```text
 ┌─ Native library ────────────────┐

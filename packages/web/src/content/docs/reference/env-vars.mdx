@@ -13,7 +13,7 @@ environment-file support.
 
 OpenTUI parses most registered values on first use and caches the result. Set each value before the read time in the
 tables below. Registered boolean values treat `true`, `1`, `on`, and `yes` as true without case sensitivity. Other
-explicit values are false.
+explicit values are false. A registered number value that is not a number throws when OpenTUI reads it.
 
 The tables list explicit OpenTUI settings. Terminal and clipboard detection also read host variables such as `TERM`,
 `TMUX`, `ZELLIJ`, SSH variables, `DISPLAY`, and `WAYLAND_DISPLAY`. Those values describe the host environment. They are
@@ -27,7 +27,7 @@ not OpenTUI configuration keys. Read [Terminal capabilities](/docs/reference/ter
 | `XDG_DATA_HOME`                 | `string`  | `""`             | First data lookup           | Base directory for user-specific data files          |
 | `OTUI_PALETTE_IDLE_TIMEOUT_MS`  | `number`  | `300`            | First palette query         | Silence in milliseconds before palette fallback      |
 | `OPENTUI_FORCE_WCWIDTH`         | presence  | unset            | Renderer creation           | Use wcwidth for character width calculations         |
-| `OPENTUI_FORCE_UNICODE`         | presence  | unset            | Renderer creation           | Force Mode 2026 Unicode support                      |
+| `OPENTUI_FORCE_UNICODE`         | presence  | unset            | Renderer creation           | Use the Unicode width method (mode 2027)             |
 | `OPENTUI_FORCE_NOZWJ`           | presence  | unset            | Renderer creation           | Use the no_zwj width method                          |
 | `OPENTUI_GRAPHICS`              | `string`  | unset, automatic | Renderer creation           | Control Kitty and Sixel detection                    |
 | `OPENTUI_IMAGE_PROTOCOL`        | `string`  | `"auto"`         | Renderer creation           | Select `auto`, `kitty`, `sixel`, or `blocks`         |
@@ -46,8 +46,8 @@ including `0` or `false`, enables the override. Leave the variable unset to disa
 keeps automatic detection. Other values do not change automatic behavior. `OPENTUI_IMAGE_PROTOCOL` is
 case-insensitive. Invalid values keep `auto`. Forcing an unsupported protocol can produce incorrect output.
 
-`OPENTUI_FORCE_EXPLICIT_WIDTH=true` or `1` forces explicit-width support. `false` or `0` disables it and skips OSC 66
-queries on older terminals.
+`OPENTUI_FORCE_EXPLICIT_WIDTH=true` or `1` forces explicit-width support. `false` or `0` disables it and skips the OSC
+66 query, for example on older terminals. Other values keep automatic detection.
 
 `OPENTUI_NOTIFICATION_PROTOCOL` accepts `osc9`, `osc777`, `osc99`, and `none` without case sensitivity. `0`, `false`,
 and `off` also disable notifications. `1`, `true`, and `on` keep automatic detection. Use an override only when terminal
@@ -66,10 +66,10 @@ captures stdout only in `"split-footer"`. Any other explicit value forces passth
 
 | Variable             | Type      | Default | Read time             | Purpose                                                   |
 | -------------------- | --------- | ------- | --------------------- | --------------------------------------------------------- |
-| `OTUI_TS_STYLE_WARN` | `string`  | `false` | First style lookup    | Warn about missing Tree-sitter syntax styles              |
+| `OTUI_TS_STYLE_WARN` | `string`  | `false` | First missing style   | Warn about missing Tree-sitter syntax styles              |
 | `OTUI_DEBUG_FFI`     | `boolean` | `false` | First FFI use         | Enable FFI debug logging                                  |
 | `OTUI_TRACE_FFI`     | `boolean` | `false` | First FFI use         | Enable FFI tracing                                        |
-| `OTUI_SHOW_STATS`    | `boolean` | `false` | Renderer creation     | Show the renderer stats overlay at startup                |
+| `OTUI_SHOW_STATS`    | `boolean` | `false` | Renderer creation     | Show the debug overlay at startup                         |
 | `SHOW_CONSOLE`       | `boolean` | `false` | Renderer creation     | Open the built-in console overlay at startup              |
 | `OTUI_DUMP_CAPTURES` | `boolean` | `false` | Renderer exit handler | Dump captured stdout and console caches from that handler |
 
@@ -110,25 +110,27 @@ Tree-sitter worker started. An explicit client `workerPath` option takes precede
 
 ## Security-sensitive diagnostics
 
-| Variable                 | Type      | Default | Read time             | Purpose                                                       |
-| ------------------------ | --------- | ------- | --------------------- | ------------------------------------------------------------- |
-| `OTUI_DEBUG`             | `boolean` | `false` | Renderer creation     | Retain raw input sequences for debugging                      |
-| `OTUI_STDIN_LOG`         | `string`  | `""`    | Renderer creation     | Write the raw stdin byte stream to a file                     |
-| `OTUI_GHOSTTY_LOG_LEVEL` | `string`  | `""`    | Native initialization | Forward scoped Ghostty logs through the normal OpenTUI logger |
+| Variable                 | Type      | Default | Read time                | Purpose                                                       |
+| ------------------------ | --------- | ------- | ------------------------ | ------------------------------------------------------------- |
+| `OTUI_DEBUG`             | `boolean` | `false` | Renderer creation        | Retain raw input sequences for debugging                      |
+| `OTUI_STDIN_LOG`         | `string`  | `""`    | Renderer creation        | Write the raw stdin byte stream to a file                     |
+| `OTUI_GHOSTTY_LOG_LEVEL` | `string`  | `""`    | Each Ghostty log message | Forward scoped Ghostty logs through the normal OpenTUI logger |
 
-`OTUI_STDIN_LOG=/tmp/opentui-stdin.bin` records stdin before parsing. The renderer truncates the file when it starts
-and writes to it synchronously. The binary data can contain passwords and other sensitive input. Use this option only
-for short debugging sessions, and protect the recorded file. Treat `OTUI_DEBUG` input captures and
-`OTUI_DUMP_CAPTURES` output as sensitive data too.
+`OTUI_STDIN_LOG=/tmp/opentui-stdin.bin` records stdin before parsing. The renderer truncates the file when it sets up
+input, then appends to it synchronously. A new file gets mode `0600`.
 
-`OTUI_GHOSTTY_LOG_LEVEL` accepts `error`, `warn`, `info`, or `debug` (`err` and `warning` are aliases). The selected level
-includes all more severe messages. Unset or invalid values disable Ghostty logs. Standard-library logs outside the
-recognized Ghostty scopes are always discarded.
+The binary data can contain passwords and other sensitive input. Use this option only for short debugging sessions, and
+protect the recorded file. Treat `OTUI_DEBUG` input captures and `OTUI_DUMP_CAPTURES` output as sensitive data too.
+
+`OTUI_GHOSTTY_LOG_LEVEL` accepts `error`, `warn`, `info`, or `debug` without case sensitivity. `err` and `warning` are
+aliases. The selected level includes all more severe messages. Unset or invalid values disable Ghostty logs.
+Standard-library logs outside the recognized Ghostty scopes are always discarded.
 
 ## Remote sessions
 
-A renderer with `remote: true` forwards no local environment keys to native terminal detection by default. Add only
-the required names to `forwardEnvKeys`. This rule prevents local terminal overrides from changing an unrelated remote
+A renderer with `remote: true` forwards no local environment keys to native terminal detection by default. If you omit
+`remote`, a renderer with a custom `stdout` uses `remote: true`, unless `bufferedOutput` is `"memory"`. Add only the
+required names to `forwardEnvKeys`. This rule prevents local terminal overrides from changing an unrelated remote
 terminal.
 
 See [Troubleshooting](/docs/test-and-debug/troubleshooting) for errors related to native loading, runtime assets,

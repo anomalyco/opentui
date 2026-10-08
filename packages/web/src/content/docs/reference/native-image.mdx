@@ -102,7 +102,9 @@ before it reads the body.
 
 ## Choose a Context owner
 
-Images use checked Context handles. `ImageCreateOptions` selects an explicit owner:
+Each image belongs to one native Context. The Context owns the image storage and enforces object and lease limits.
+JavaScript holds a checked handle to the image, not a raw pointer.
+Set `owner` in `ImageCreateOptions` to choose the Context:
 
 ```typescript
 interface ImageCreateOptions {
@@ -112,11 +114,11 @@ interface ImageCreateOptions {
 
 `decode()`, `fromRgba()`, and `imageInfo()` accept these options.
 `ImageLoadOptions`, `PixelImportOptions`, and `NativeImagePoolOptions` also include `owner`.
-Use `renderer.nativeScene.resourceContext` to create an image in the renderer's Context.
+Pass `renderer.nativeScene.resourceContext` to create an image in the renderer's Context.
 
-Without an explicit owner, constructors share an automatic Context with 4,096 object slots.
+Without `owner`, these methods share one automatic Context with 4,096 object slots.
 Derived images, retained handles, and raw-pixel leases keep that Context alive.
-The last release destroys it. An explicit `ResourceContext` keeps its application-controlled lifetime.
+The last release destroys it. You control the lifetime of an explicit `ResourceContext`.
 
 This example releases the raw lease before destroying its Context:
 
@@ -147,8 +149,8 @@ Output:
 255,0,0,255
 ```
 
-Destroying an explicit Context invalidates its remaining image wrappers. Their `dispose()` calls still complete wrapper cleanup.
-A live raw-pixel lease blocks Context destruction. Release the lease before retrying destruction.
+After you destroy an explicit Context, its remaining image wrappers throw on use. Their `dispose()` calls still complete wrapper cleanup.
+While a raw-pixel lease is live, `owner.destroy()` throws `NativeError` with `ContextBusy`. Release the lease, then call `destroy()` again.
 Read [Resources and ownership](/docs/native/resources#create-images-in-a-context) for checked image limits and transfer rules.
 
 ## Format behavior
@@ -216,14 +218,15 @@ try {
 }
 ```
 
-`takeRaw()` consumes the `NativeImage`. Later image access throws, while `image.dispose()` remains a safe no-op.
+`takeRaw()` consumes the `NativeImage`. Later image access throws. `image.dispose()` is still safe and does nothing.
 
-`OwnedRawImage.data` aliases native memory. Keep the owner alive while any consumer uses the view.
-`OwnedRawImage.dispose()` is idempotent and required. It releases the checked lease and invalidates `data` and all saved aliases.
-The lease uses the Context's lease-count and byte limits. It keeps an automatic Context alive and blocks explicit Context destruction.
+`OwnedRawImage.data` aliases native memory. Do not dispose the `OwnedRawImage` while any code still uses `data`.
+You must call `OwnedRawImage.dispose()`. Repeated calls are safe. It releases the lease and invalidates `data` and all saved aliases.
+The lease counts against the Context's lease-count and lease-byte limits. It keeps an automatic Context alive and blocks destruction of an explicit Context.
 
-`takeRaw()` requires one exclusive native reference to the original storage.
-Another retained handle or a same-Context buffer placement can block transfer. Release those references before transferring the pixels.
+`takeRaw()` needs the only native reference to the image storage.
+If another retained handle or a same-Context buffer placement also holds the storage, `takeRaw()` throws an `Error`.
+Release those references before you transfer the pixels.
 
 ## Share or copy a handle
 
@@ -237,9 +240,10 @@ Dispose every retained, cloned, decoded, and transformed handle separately. Disp
 invalidate another retained handle.
 
 Drawing within the same Context retains immutable storage without copying it.
-A cross-Context binding caches a checked clone in the destination Context. Wrapper cleanup releases those imported handles.
+Using an image in another Context clones it once into that Context, and the wrapper caches the clone.
+`dispose()` and `takeRaw()` release the cached clones.
 A destination buffer that retains a clone does not pin the original pixels.
-`ImageRenderable.source` also retains the source wrapper's storage, so that reference can still block `takeRaw()`.
+`ImageRenderable.source` also retains the source image's storage, so that reference can block `takeRaw()`.
 
 ## Reuse pixel storage
 
@@ -295,7 +299,7 @@ terminal-protocol caches from hiding a new frame.
   calling them.
 - `dispose()` releases the pool's references and rejects future publications. Repeated calls are safe.
   Published frames remain valid and still need disposal.
-  If native admission rejects cleanup, the pool remains available for a cleanup retry.
+  If a native release fails, `dispose()` throws before it marks the pool disposed. Call `dispose()` again to retry.
 - Pools cannot resize. Create a new pool for new dimensions. Then dispose the old pool.
 - `takeRaw()` cannot transfer a frame while the pool owns its slot. Use `raw()` or `copyTo()`, or dispose the pool first.
 
@@ -371,8 +375,8 @@ runs.
 JavaScript option and geometry validation uses `TypeError` and `RangeError`. All image methods except `dispose()` throw
 after disposal or transfer.
 
-Context admission and capacity failures can throw `NativeError`, with a `NativeStatus` value.
-These errors include Context object or lease limits. They are separate from the image codec's `ImageError` codes.
+Context failures throw `NativeError` with a `NativeStatus` value, such as `ObjectLimit`, `LeaseLimit`, or `LeaseBytesLimit`.
+These errors are separate from the image codec's `ImageError` codes.
 
 | Limit                    | Value           |
 | ------------------------ | --------------- |

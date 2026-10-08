@@ -30,7 +30,7 @@ Hex strings can use `#RGB`, `#RGBA`, `#RRGGBB`, or `#RRGGBBAA`. Alpha is last an
 
 `"transparent"` produces `[0, 0, 0, 0]`.
 
-The named-color set is limited to these values:
+Besides `"transparent"`, `parseColor()` accepts only these color names:
 
 - `black`, `white`, `red`, `green`, `blue`, `yellow`, `cyan`, and `magenta`
 - `silver`, `gray`, `grey`, `maroon`, `olive`, `lime`, `aqua`, `teal`, `navy`, `fuchsia`, `purple`, and `orange`
@@ -60,11 +60,11 @@ Both constructors convert a non-finite channel to `0`. Channel setters apply the
 
 ## Update retained colors
 
-Built-in renderables copy colors when you assign them. Color getters return detached values.
-Changes to an input `RGBA`, a getter result, or its `buffer` do not update the retained scene.
-This remains true even when another property causes a redraw.
+Built-in renderables copy a color when you assign it. Color getters return copies.
+Changes to an input `RGBA`, a getter result, or its `buffer` do not change what the native scene draws.
+This remains true when another property change causes a redraw.
 
-Assign the property again to publish a new value:
+Assign the property again to send a new value:
 
 ```typescript
 const accent = RGBA.fromHex("#22c55e")
@@ -73,9 +73,9 @@ accent.r = 1
 box.backgroundColor = accent
 ```
 
-The second assignment takes a new snapshot, even though it receives the same object.
+The second assignment copies the color again, even though it receives the same object.
 The same rule applies to retained text styles, selections, placeholders, and gutter colors.
-For immediate drawing, you can still reuse and mutate an `RGBA` between calls.
+Buffer draw calls also copy the color at each call. You can reuse and change one `RGBA` between draw calls.
 
 ## Use alpha
 
@@ -165,7 +165,7 @@ a terminal cursor-color reset.
 
 The four high bytes store 32 bits of metadata. Indexed intent includes its palette slot in that metadata.
 
-This packed form crosses the native boundary and participates in exact frame comparisons. Two colors with equal RGBA channels can still differ by intent.
+Core sends this packed form to native code. Native code compares all of it when it compares frame cells. Two colors with equal RGBA channels can still differ by intent.
 
 Use this representation only for low-level transport. Everyday component code should use `ColorInput`, `parseColor()`, and the constructors.
 

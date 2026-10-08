@@ -7,8 +7,8 @@ skill:
 
 # NativeSpanFeed
 
-`NativeSpanFeed` is an advanced borrowed-memory bridge from a native Zig byte feed to JavaScript callbacks. It is not
-a Node.js stream and has no `read()`, `write()`, or `pipe()` method.
+`NativeSpanFeed` is an advanced wrapper that passes bytes from a native Zig byte feed to JavaScript callbacks as
+borrowed views. It is not a Node.js stream and has no `read()`, `write()`, or `pipe()` method.
 
 Most applications must not create one. Pass streams to `createCliRenderer()` as described in
 [Renderer custom output](/docs/core-concepts/renderer#custom-streams). The renderer uses checked Session output,
@@ -29,11 +29,13 @@ const renderer = await createCliRenderer({
 })
 ```
 
-`CliRenderer` uses `NativeSession` to copy output tickets into host-owned storage.
+For a custom `stdout`, the renderer's `NativeSession` driver copies each output ticket into a host-owned buffer.
 The driver calls the original `stdout.write()` and acknowledges each ticket after its write callback succeeds.
 It also handles output pressure and terminal restoration.
+For `process.stdout` in the main process, native code writes the bytes directly.
 
-The native Session uses a feed internally. That does not make its output a borrowed `NativeSpanFeed.onData()` view.
+The native Session stores its output in a native feed internally. Its output never reaches you as a borrowed
+`NativeSpanFeed.onData()` view.
 Read [How Core uses native](/docs/native/core#complete-output-and-release-resources) for the renderer's contract.
 
 ## Public wrapper API
@@ -119,8 +121,8 @@ interface NativeSpanFeedOptions {
 A nonzero `maxBytes` or the `"block"` policy also fixes the span ring at `spanQueueCapacity` entries. A commit that
 needs another entry in a full ring returns `-1`. Only a `"grow"` feed without `maxBytes` doubles the ring when it fills.
 
-These independent feed defaults do not apply to checked Session output.
-Sessions use bounded output storage and reserve control capacity separately.
+These defaults apply only to feeds that you create. A Session feed uses fixed, bounded output storage and reserves
+separate capacity for terminal control bytes.
 
 ## Borrowed callback memory
 
@@ -194,8 +196,8 @@ its failure paths, before close can succeed.
 
 ## Close and destruction
 
-`close()` is idempotent after destruction. It unregisters the callback and destroys the native feed after native close
-succeeds.
+`close()` closes the native feed, then destroys it. After destruction succeeds, the wrapper drops its native event handler,
+data handlers, and error handlers. Later `close()` calls do nothing.
 
 If a callback, drain, or asynchronous handler is active, `close()` defers final destruction. It queues a microtask and
 retries after active asynchronous handlers settle.
@@ -207,8 +209,8 @@ Then call `close()` again. The wrapper has no method that completes a native res
 Calling `close()` from a data handler stops after the current span and can drop queued spans when final destruction
 runs. Drain required data before closing.
 
-For a renderer, await `renderer.closed` after `renderer.destroy()` and before releasing its transport.
-Renderer shutdown follows the Session contract, not this independent feed's `close()` method.
+For a renderer, call `renderer.destroy()`, then await `renderer.closed` before you release its transport.
+Renderer shutdown does not use `NativeSpanFeed.close()`.
 
 Read [Lifecycle and cleanup](/docs/core-concepts/lifecycle) for renderer shutdown ordering.
 
