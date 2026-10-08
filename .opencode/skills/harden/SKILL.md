@@ -1,107 +1,92 @@
 ---
 name: harden
 description: >-
-  Hardening pass for OpenTUI changes: trace every changed code path, list every branch arm no test
-  reaches (native Zig and TypeScript, with the repo's branch-coverage tools), find defects that
-  survive an attempt to refute them, then fix, simplify, and replace example tests with table, model,
-  differential, and reflection tests while keeping source and test line counts flat or negative.
+  Hardening pass for OpenTUI changes. Trace every changed code path. List every Zig and TypeScript
+  branch arm that no test reaches, with the repo's branch-coverage tools. Find defects that survive
+  an attempt to refute them. Fix them, simplify the code, and replace example tests with table,
+  model, differential, and reflection tests. Keep source and test line counts flat or negative.
   Use for "harden", "find bugs in this change", "are all branches tested", "review this branch for
-  defects", "improve test coverage without adding tests", "check what the rebase lost", "zero bug
-  pass", or before merging a large or risky branch in this repository.
+  defects", "improve test coverage without adding tests", "zero bug pass", or before you merge a
+  large or risky branch in this repository.
 ---
 
 # Harden a change
 
-This is the method from `hardening/` (the 26-unit pass over the native render tree branch), cut down
-to what one agent, or a small orchestrated set, runs on a change of any size. It found ~110 defects
-in a branch whose 8,300 tests were all green, because the defects lived where example tests do not
-look: cross-layer seams, state-machine interleavings, hard limits and unit boundaries, and work
-silently dropped in a rebase. The method is: measure the untested branches mechanically, trace them
-against the contract, refute each candidate before you call it a defect, fix with a regression test
-first, and leave the code smaller than you found it.
+A green test suite does not prove that a change is correct. Defects hide where example tests do not
+look: cross-layer seams, state-machine interleavings, hard limits, and unit boundaries.
 
 Read `AGENTS.md` first. Load the `tigerstyle`, `code-simplification`, and `adversarial-code-review`
-skills; they are the engineering rules this skill applies.
+skills. This skill applies their rules.
 
-## Scope and setup
+## Setup
 
-- Default scope is `git diff main...HEAD`. The user can narrow it to files or a package.
-- Work in a fresh worktree for edits (`git worktree add -b harden/<topic> ../ot-harden-<topic> HEAD`),
-  never with `git stash` (the stash is shared and holds the user's work).
-- Baseline first: run the affected suites once and record pass/fail counts, so a later failure is
-  known to be new. Commands: `references/coverage-tools.md`.
-- Run checks in the foreground. Never end a turn while a background job is running; nobody is told
-  when it finishes.
+- The default scope is `git diff main...HEAD`. The user can narrow it.
+- Edit in a new worktree (`git worktree add -b harden/<topic> ../ot-harden-<topic> HEAD`). Do not
+  use `git stash`. All worktrees share the stash, and it holds the user's work.
+- Before you edit, run the affected suites and record the pass and fail counts. Then you know which
+  later failures are new. The commands are in `references/coverage-tools.md`.
+- Run checks in the foreground. Do not end a turn while a background job runs.
 
 ## Step 1: measure what no test reaches
 
-Run the branch-coverage tools on the files in scope. Both use the engine's own coverage data, no
-source rewriting:
+Run the branch-coverage tools on the files in scope:
 
 ```sh
-# Native (Zig + vendored C/C++): LLVM SanitizerCoverage edge counters per basic block.
-cd packages/native && bun run test:branch-cov            # files in main...HEAD
-bun scripts/branch-cov.ts --files src/scene.zig          # explicit files
-bun scripts/branch-cov.ts --all --filter "Scene"         # everything, only tests matching "Scene"
-
-# Core TypeScript: JavaScriptCore block coverage through node:inspector.
-cd packages/core && bun run test:branch-cov              # files in main...HEAD, whole core suite
-bun scripts/branch-cov.ts --files src/NativeScene.ts --tests src/tests/renderer.native-scene*.test.ts
+cd packages/native && bun run test:branch-cov   # Zig files changed in main...HEAD
+cd packages/core && bun run test:branch-cov     # TypeScript files changed in main...HEAD
 ```
 
-Each prints `UNCOVERED file:line:col` for every branch arm, error return, switch case, or function
-that no test executed, plus `reached/total`. `if (x) return error.X;` on one line reports its untaken
-arm. Details and limits are in `references/coverage-tools.md`.
+Each tool prints `UNCOVERED file:line:col` for each branch arm, error return, switch case, or
+function that no test ran. Options and limits are in `references/coverage-tools.md`.
 
 ## Step 2: trace and refute
 
-For each changed function, build a branch inventory: the uncovered arms from step 1, plus the
-covered ones you read. For every arm ask what the contract says (`opentui.h`, the docs, `main`'s
-behavior) and whether the code does that. The recurring fault lines are in `references/fault-lines.md`;
-read it before tracing, it is short.
+For each changed function, list its branch arms: the uncovered arms from step 1 and the covered arms
+that you read. Compare each arm with the contract: `opentui.h`, the docs, and the behavior on
+`main`. Before you trace, read `references/fault-lines.md`.
 
-A candidate becomes a defect only after you tried to refute it and failed. Write the refutation
-attempt down ("same on `main`?", "unreachable from the public API?", "pathological input the caller
-already rejects?"). Then reproduce it with a throwaway probe outside the repo (a scratch test, a
-`main` worktree comparison, a bench). Report: location, trigger, expected vs actual, severity,
-evidence, and the regression test that would prove it. Defects that also exist on `main` are
-recorded, not fixed, unless they block a branch fix (user scope rule from the original pass; confirm
-with the user if unclear).
+A candidate is a defect only after you try to refute it and fail. Write down the attempt: is it the
+same on `main`, can the public API reach it, and does the caller already reject the input? Then
+reproduce the defect with a temporary probe outside the repo.
+
+Report each defect with its location, trigger, expected and actual behavior, severity, evidence,
+and regression test. Record defects that also exist on `main`, but do not fix them unless they block
+a branch fix. If the scope is not clear, ask the user.
 
 ## Step 3: fix and simplify under a line budget
 
-Order of work for each defect: regression test first, confirm it fails, fix, confirm it passes, one
-commit (`core: ...` / `native: ...`). Then, for each remaining uncovered arm, do exactly one of:
+For each defect:
 
-1. **Delete it.** Collapse the state or branch so it no longer exists (the paint-budget removal in
-   `refactor-plan.md` is the model: an entire pause state machine gone). This is the preferred move.
-2. **Assert it.** If an invariant makes the arm unreachable, say so with an `assert`, not a test.
-3. **Cover it.** Extend a table, model, differential, or reflection test. Do not add a scenario test.
+1. Write the regression test, and make sure that it fails.
+2. Fix the defect, and make sure that the test passes.
+3. Commit the test and the fix together (`core: ...` or `native: ...`).
 
-The budget: source lines net zero or negative, test lines net negative, per unit of work. Every
-source addition needs a one-line reason in its commit. The four test shapes that earned their place
-in the original pass, with examples from the repo, are in `references/test-shapes.md`.
+Then do one of these for each arm that no test reaches, in order of preference:
 
-Re-run step 1 after editing. An arm that your new table covers should disappear; an arm you deleted
-should be gone from the source.
+1. **Delete it.** Change the code so that the state or branch does not exist.
+2. **Assert it.** If an invariant makes the arm unreachable, write an `assert`.
+3. **Cover it.** Extend a test of a shape in `references/test-shapes.md`. Do not add a scenario
+   test.
+
+For each unit of work, the net change in source lines must be zero or negative, and the net change
+in test lines must be negative. Give a one-line reason for each source addition in its commit
+message. After you edit, run step 1 again to make sure that the arms are gone from the report.
 
 ## Step 4: independent review
 
-Hand the diff to a separate session (a subagent, or a colleague) that did not write it. It must:
+Give the diff to a session that did not write it. The reviewer must:
 
-- check out the parent of each fix commit and confirm the regression test fails there;
-- break the code under each new or consolidated test in two or three plausible ways on a temporary
-  copy and confirm a test fails each time (mutation check);
-- list any assertion the consolidation dropped, and any `main` API whose behavior changed.
+- Make sure that each regression test fails at the parent of its fix commit.
+- Break the code under each new or consolidated test in two or three plausible ways, and make sure
+  that a test fails each time.
+- List each assertion that a consolidation removed, and each `main` API whose behavior changed.
 
-In the original pass this step caught a crash that had moved threads instead of disappearing, a
-consolidation that lost a stale-ID check, a resize fix that added a debounce wait, and a dropped
-`-Werror`. Treat "merge after fixes" as the normal verdict.
+"Merge after fixes" is the normal verdict.
 
-## Orchestrating a large change
+## Large changes
 
-For a branch too big for one session, split it into units by subsystem with explicit file
-ownership, run step 1–2 for all units read-only in parallel, then steps 3–4 per unit in its own
-worktree, merging each into an integration branch as it passes review. Keep one tracker file the
-orchestrator owns; agents write only their own unit file. The templates, policy, and the full record
-of the first run are in `hardening/` (`TRACKER.md`, `templates.md`, `OVERVIEW.md`, `units/`).
+Split a large branch into units by subsystem, with explicit file ownership. Do steps 1 and 2 for all
+units in parallel, without edits. Then do steps 3 and 4 for each unit in its own worktree, and merge
+each unit into an integration branch after review. The orchestrator owns one tracker file. Each
+agent writes only its own unit file: scope, branch inventory, defects, planned commits, and the line
+change of each commit.
