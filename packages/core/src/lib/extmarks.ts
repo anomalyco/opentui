@@ -353,8 +353,25 @@ export class ExtmarksController {
 
       this.saveSnapshot()
 
-      const startOffset = this.positionToOffset(startLine, startCol)
-      const endOffset = this.positionToOffset(endLine, endCol)
+      let startOffset = this.positionToOffset(startLine, startCol)
+      let endOffset = this.positionToOffset(endLine, endCol)
+
+      let overlapping = this.findOverlappingVirtualExtmarks(startOffset, endOffset)
+      if (overlapping.length > 0) {
+        for (const extmark of overlapping) {
+          startOffset = Math.min(startOffset, extmark.start)
+          endOffset = Math.max(endOffset, extmark.end)
+          this.deleteExtmarkById(extmark.id)
+        }
+
+        const startPos = this.offsetToPosition(startOffset)
+        const endPos = this.offsetToPosition(endOffset)
+        this.originalDeleteRange(startPos.row, startPos.col, endPos.row, endPos.col)
+        this.adjustExtmarksAfterDeletion(startOffset, endOffset - startOffset)
+        this.updateHighlights()
+        return
+      }
+
       const length = endOffset - startOffset
 
       this.originalDeleteRange(startLine, startCol, endLine, endCol)
@@ -524,6 +541,16 @@ export class ExtmarksController {
       }
     }
     return null
+  }
+
+  private findOverlappingVirtualExtmarks(startOffset: number, endOffset: number): Extmark[] {
+    const overlapping: Extmark[] = []
+    for (const extmark of this.extmarks.values()) {
+      if (extmark.virtual && Math.max(startOffset, extmark.start) < Math.min(endOffset, extmark.end)) {
+        overlapping.push(extmark)
+      }
+    }
+    return overlapping
   }
 
   private adjustExtmarksAfterInsertion(insertOffset: number, length: number): void {
