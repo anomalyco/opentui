@@ -161,7 +161,6 @@ pub const EditorView = struct {
     pub fn makeCursorVisible(self: *EditorView) void {
         const vp = self.text_buffer_view.getViewport() orelse return;
         if (vp.height == 0 or vp.width == 0) return;
-        const cursor = self.edit_buffer.getPrimaryCursor();
         const vcursor = self.getPrimaryVisualCursorAbsolute();
 
         const viewport_height = vp.height;
@@ -186,7 +185,7 @@ pub const EditorView = struct {
                 const target_logical_row = @as(u32, @intCast(target_vline.source_line));
 
                 const line_width = iter_mod.lineWidthAt(self.edit_buffer.tb.rope(), target_logical_row);
-                const desired_col = @min(cursor.col, line_width);
+                const desired_col = @min(self.edit_buffer.unsnappedColumn(), line_width);
                 const target_col = self.edit_buffer.snapColumn(target_logical_row, desired_col);
 
                 const offset = iter_mod.coordsToOffset(self.edit_buffer.tb.rope(), target_logical_row, target_col) orelse return;
@@ -714,7 +713,9 @@ pub const EditorView = struct {
 
     fn moveToVisualRow(self: *EditorView, vcursor: VisualCursor, target_visual_row: u32) void {
         // This persists across empty/narrow lines to restore column when possible
-        const desired_visual_col = self.desired_visual_col orelse vcursor.visual_col;
+        // The unsnapped column is on the cursor's virtual line: a unit never spans two of them.
+        const desired_visual_col = self.desired_visual_col orelse
+            vcursor.visual_col + (self.edit_buffer.unsnappedColumn() - vcursor.logical_col);
         self.desired_visual_col = desired_visual_col;
         const vlines = self.text_buffer_view.virtual_lines.items;
         const boundary = self.text_buffer_view.getSelectionOccupancy() == .boundary;

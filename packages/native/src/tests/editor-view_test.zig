@@ -246,9 +246,9 @@ test "EditorView - vertical moves keep the desired column and land on cursor-uni
     const long = "This is a very long line that will definitely wrap multiple times at twenty characters";
     const empty_line = "Line with some text\n\nAnother line with text";
     // From (0, 1) into the width-2 unit at the start of line 1, and back to column 1 on ASCII lines.
-    const wide = [_][2]u32{ .{ 1, 0 }, .{ 2, 1 }, .{ 1, 0 }, .{ 0, 1 }, .{ 1, 0 }, .{ 2, 1 }, .{ 1, 0 }, .{ 0, 1 } };
+    const wide = [_][2]u32{ .{ 1, 0 }, .{ 0, 1 }, .{ 1, 0 }, .{ 2, 1 }, .{ 1, 0 }, .{ 0, 1 }, .{ 1, 0 }, .{ 2, 1 }, .{ 1, 0 }, .{ 0, 1 } };
     const Case = struct { text: []const u8, wrap: text_buffer.WrapMode = .none, width: u32 = 20, start: [2]u32, moves: []const u8, ends: []const [2]u32 };
-    // u/d move the EditBuffer, U/D move the EditorView, V scrolls a one-row viewport to the last
+    // u/d move the EditBuffer, U/D move the EditorView, a digit scrolls a one-row viewport to that
     // line with moveCursor. Each end is the logical (row, col) after the move.
     const cases = [_]Case{
         .{ .text = long, .wrap = .char, .start = .{ 0, 50 }, .moves = "UD", .ends = &.{ .{ 0, 30 }, .{ 0, 50 } } },
@@ -257,13 +257,13 @@ test "EditorView - vertical moves keep the desired column and land on cursor-uni
         .{ .text = "Short line\nSecond line", .wrap = .char, .start = .{ 1, 0 }, .moves = "Dd", .ends = &.{ .{ 1, 0 }, .{ 1, 0 } } },
         .{ .text = "1234567890" ** 5, .wrap = .char, .start = .{ 0, 15 }, .moves = "DDU", .ends = &.{ .{ 0, 35 }, .{ 0, 50 }, .{ 0, 35 } } },
         .{ .text = empty_line, .start = .{ 0, 10 }, .moves = "DDUU", .ends = &.{ .{ 1, 0 }, .{ 2, 10 }, .{ 1, 0 }, .{ 0, 10 } } },
-        .{ .text = empty_line, .start = .{ 0, 10 }, .moves = "dduu", .ends = &.{ .{ 1, 0 }, .{ 2, 10 }, .{ 1, 0 }, .{ 0, 10 } } },
+        .{ .text = empty_line, .start = .{ 0, 10 }, .moves = "dduudU", .ends = &.{ .{ 1, 0 }, .{ 2, 10 }, .{ 1, 0 }, .{ 0, 10 }, .{ 1, 0 }, .{ 0, 0 } } },
         // 001: a move into a width-2 unit lands on its start; the desired column stays.
-        .{ .text = "abc\n日本\nabc", .start = .{ 0, 1 }, .moves = "ddUUDduu", .ends = &wide },
-        .{ .text = "abc\n\tx\nabc", .start = .{ 0, 1 }, .moves = "ddUUDduu", .ends = &wide },
-        .{ .text = "abc\n👍🏽x\nabc", .start = .{ 0, 1 }, .moves = "ddUUDduu", .ends = &wide },
-        .{ .text = "abc\n👨‍👩‍👧x\nabc", .start = .{ 0, 1 }, .moves = "ddUUDduu", .ends = &wide },
-        .{ .text = "abc\n日本", .start = .{ 0, 1 }, .moves = "Vu", .ends = &.{ .{ 1, 0 }, .{ 0, 1 } } },
+        .{ .text = "abc\n日本\nabc", .start = .{ 0, 1 }, .moves = "dUddUUDduu", .ends = &wide },
+        .{ .text = "abc\n\tx\nabc", .start = .{ 0, 1 }, .moves = "dUddUUDduu", .ends = &wide },
+        .{ .text = "abcd\n👍🏽👍🏽\nabcd", .start = .{ 0, 3 }, .moves = "ddUU", .ends = &.{ .{ 1, 2 }, .{ 2, 3 }, .{ 1, 2 }, .{ 0, 3 } } },
+        .{ .text = "abc\n👨‍👩‍👧x\nabc", .start = .{ 0, 1 }, .moves = "dUddUUDduu", .ends = &wide },
+        .{ .text = "abc\n日本\nabc", .start = .{ 0, 1 }, .moves = "1u1U1D12", .ends = &.{ .{ 1, 0 }, .{ 0, 1 }, .{ 1, 0 }, .{ 0, 1 }, .{ 1, 0 }, .{ 2, 1 }, .{ 1, 0 }, .{ 2, 1 } } },
         // #1289: cell boundaries 0, 2, 3, 5, ... above 0, 2, 4, ...
         .{ .text = "的[代码签名政策](\n因此签名批准者角色", .width = 40, .start = .{ 0, 5 }, .moves = "DUdu", .ends = &.{ .{ 1, 4 }, .{ 0, 5 }, .{ 1, 4 }, .{ 0, 5 } } },
         .{ .text = "的[代码因此签名政策", .wrap = .char, .width = 8, .start = .{ 0, 5 }, .moves = "DU", .ends = &.{ .{ 0, 11 }, .{ 0, 5 } } },
@@ -285,11 +285,12 @@ test "EditorView - vertical moves keep the desired column and land on cursor-uni
                     'd' => eb.moveDown(),
                     'U' => ev.moveUpVisual(),
                     'D' => ev.moveDownVisual(),
-                    'V' => ev.setViewport(.{ .x = 0, .y = eb.tb.lineCount() - 1, .width = case.width, .height = 1 }, true),
+                    '0'...'9' => ev.setViewport(.{ .x = 0, .y = move - '0', .width = case.width, .height = 1 }, true),
                     else => unreachable,
                 }
                 const cursor = ev.getPrimaryCursor();
                 try std.testing.expectEqual(end, [2]u32{ cursor.row, cursor.col });
+                try std.testing.expectEqual(ev.logicalToVisualCursor(cursor.row, cursor.col).offset, cursor.offset);
             }
         }
     }

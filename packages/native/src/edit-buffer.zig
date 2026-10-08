@@ -714,6 +714,13 @@ pub const EditBuffer = struct {
         return if (bounds) |unit| unit.start else col;
     }
 
+    /// Returns the column that the last vertical move asked for: the unsnapped desired column
+    /// when the cursor sits on its snapped start, else the cursor column.
+    pub fn unsnappedColumn(self: *EditBuffer) u32 {
+        const cursor = self.cursor;
+        return if (self.snapColumn(cursor.row, cursor.desired_col) == cursor.col) cursor.desired_col else cursor.col;
+    }
+
     /// Set text and completely reset the buffer state (clears history, resets add_buffer)
     pub fn setText(self: *EditBuffer, text: []const u8) !void {
         _ = try self.setTextOwned(text, null);
