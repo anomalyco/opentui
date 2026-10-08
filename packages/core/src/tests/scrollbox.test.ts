@@ -50,6 +50,62 @@ function createMockTreeSitterClient(): MockTreeSitterClient {
   return client
 }
 
+describe("ScrollBoxRenderable - scrollbar callbacks", () => {
+  for (const direction of ["vertical", "horizontal"] as const) {
+    test(`${direction} callbacks observe scrolling and can be replaced or cleared`, async () => {
+      const initial: number[] = []
+      const updated: number[] = []
+      const shared: number[] = []
+      const optionsKey = direction === "vertical" ? "verticalScrollbarOptions" : "horizontalScrollbarOptions"
+      const scrollbox = new ScrollBoxRenderable(testRenderer, {
+        width: 20,
+        height: 8,
+        scrollX: true,
+        scrollY: true,
+        contentOptions: { width: 80, height: 40 },
+        scrollbarOptions: { onChange: (position) => shared.push(position) },
+        [optionsKey]: { onChange: (position: number) => initial.push(position) },
+      })
+      testRenderer.root.add(scrollbox)
+      await renderOnce()
+      const bar = direction === "vertical" ? scrollbox.verticalScrollBar : scrollbox.horizontalScrollBar
+      const otherBar = direction === "vertical" ? scrollbox.horizontalScrollBar : scrollbox.verticalScrollBar
+      const translation = direction === "vertical" ? "translateY" : "translateX"
+
+      bar.scrollBy(2)
+      expect(initial).toEqual([2])
+      expect(shared).toEqual([])
+      expect(scrollbox.content[translation]).toBe(-2)
+      otherBar.scrollBy(1)
+      expect(shared).toEqual([1])
+
+      scrollbox[optionsKey] = { onChange: (position) => updated.push(position) }
+      bar.scrollBy(2)
+      expect(initial).toEqual([2])
+      expect(updated).toEqual([4])
+      expect(scrollbox.content[translation]).toBe(-4)
+
+      scrollbox[optionsKey] = { showArrows: true }
+      bar.scrollBy(1)
+      expect(updated).toEqual([4, 5])
+
+      scrollbox[optionsKey] = { onChange: undefined }
+      bar.scrollBy(1)
+      expect(updated).toEqual([4, 5])
+      expect(scrollbox.content[translation]).toBe(-6)
+
+      scrollbox.scrollbarOptions = { onChange: (position) => shared.push(position) }
+      scrollbox.scrollBy({ x: 1, y: 1 })
+      expect(shared.toSorted()).toEqual([1, 2, 7])
+      scrollbox.scrollbarOptions = undefined
+      scrollbox.scrollBy({ x: 1, y: 1 })
+      expect(shared.toSorted()).toEqual([1, 2, 7])
+      expect(scrollbox.content.translateX).toBe(-scrollbox.scrollLeft)
+      expect(scrollbox.content.translateY).toBe(-scrollbox.scrollTop)
+    })
+  }
+})
+
 describe("ScrollBoxRenderable - child delegation", () => {
   test("delegates add to content wrapper", () => {
     const scrollbox = new ScrollBoxRenderable(testRenderer, { id: "scrollbox" })
