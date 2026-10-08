@@ -1,7 +1,7 @@
 import { test, expect, describe, beforeEach, afterEach, spyOn } from "bun:test"
 import { BoxRenderable, type BoxOptions } from "./Box.js"
 import { createTestRenderer, type TestRenderer } from "../testing/test-renderer.js"
-import type { BorderStyle } from "../lib/border.js"
+import { BorderChars, type BorderStyle } from "../lib/border.js"
 import { RGBA } from "../lib/RGBA.js"
 
 let testRenderer: TestRenderer
@@ -470,5 +470,187 @@ describe("BoxRenderable - no-op rendering", () => {
     expect(captureFrame().split("\n")[0].slice(0, 10)).toBe("┌─Test───┐")
     expect(getCellForeground(0, 0)).toEqual([0, 0, 255, 255])
     expect(getCellForeground(2, 0)).toEqual([0, 0, 255, 255])
+  })
+})
+
+describe("BoxRenderable - default fallbacks when props are removed", () => {
+  function topLine(width: number): string {
+    return captureFrame().split("\n")[0].slice(0, width)
+  }
+
+  test("border-related setter implies a border on a borderless box", async () => {
+    const box = new BoxRenderable(testRenderer, {
+      id: "implied-border",
+      width: 10,
+      height: 4,
+    })
+    testRenderer.root.add(box)
+
+    box.borderStyle = "double"
+    await renderOnce()
+
+    expect(box.border).toBe(true)
+    expect(topLine(10)).toBe("╔════════╗")
+  })
+
+  test("removing the border-implying prop turns the border back off", async () => {
+    const box = new BoxRenderable(testRenderer, {
+      id: "removable-border",
+      width: 10,
+      height: 4,
+      borderStyle: "double",
+    })
+    testRenderer.root.add(box)
+    await renderOnce()
+    expect(topLine(10)).toBe("╔════════╗")
+
+    box.borderStyle = undefined
+    await renderOnce()
+
+    expect(box.border).toBe(false)
+    expect(topLine(10)).toBe("          ")
+  })
+
+  test("explicit border: false wins over border-implying props", async () => {
+    const box = new BoxRenderable(testRenderer, {
+      id: "explicit-border-off",
+      width: 10,
+      height: 4,
+      border: false,
+      borderStyle: "double",
+    })
+    testRenderer.root.add(box)
+    await renderOnce()
+
+    expect(box.border).toBe(false)
+    expect(topLine(10)).toBe("          ")
+  })
+
+  test("removing border keeps the border implied by borderStyle", async () => {
+    const box = new BoxRenderable(testRenderer, {
+      id: "border-removed-style-kept",
+      width: 10,
+      height: 4,
+      border: true,
+      borderStyle: "double",
+    })
+    testRenderer.root.add(box)
+
+    box.border = undefined
+    await renderOnce()
+
+    expect(box.border).toBe(true)
+    expect(topLine(10)).toBe("╔════════╗")
+  })
+
+  test("removing borderColor falls back to the default color but keeps an explicit border", () => {
+    const box = new BoxRenderable(testRenderer, {
+      id: "border-color-reset",
+      width: 10,
+      height: 4,
+      border: true,
+      borderColor: "#ff0000",
+    })
+
+    expect(box.borderColor.toInts()).toEqual([255, 0, 0, 255])
+
+    box.borderColor = undefined
+
+    expect(box.borderColor.toInts()).toEqual([255, 255, 255, 255])
+    expect(box.border).toBe(true)
+  })
+
+  test("removing borderColor removes the border it implied", async () => {
+    const box = new BoxRenderable(testRenderer, {
+      id: "implied-border-color",
+      width: 10,
+      height: 4,
+      borderColor: "#ff0000",
+    })
+    testRenderer.root.add(box)
+    await renderOnce()
+    expect(topLine(10)).toBe("┌────────┐")
+
+    box.borderColor = undefined
+    await renderOnce()
+
+    expect(box.border).toBe(false)
+    expect(topLine(10)).toBe("          ")
+  })
+
+  test("custom border chars imply a border and removal reverts", async () => {
+    const box = new BoxRenderable(testRenderer, {
+      id: "implied-custom-chars",
+      width: 10,
+      height: 4,
+    })
+    testRenderer.root.add(box)
+
+    box.customBorderChars = BorderChars.double
+    await renderOnce()
+    expect(box.border).toBe(true)
+    expect(topLine(10)).toBe("╔════════╗")
+
+    box.customBorderChars = undefined
+    await renderOnce()
+    expect(box.border).toBe(false)
+    expect(topLine(10)).toBe("          ")
+  })
+
+  test("removing backgroundColor falls back to transparent", () => {
+    const box = new BoxRenderable(testRenderer, {
+      id: "bg-reset",
+      width: 4,
+      height: 2,
+      backgroundColor: "#123456",
+    })
+
+    expect(box.backgroundColor.toInts()).toEqual([18, 52, 86, 255])
+
+    box.backgroundColor = undefined
+
+    expect(box.backgroundColor.a).toBe(0)
+  })
+
+  test("removing focusedBorderColor falls back to the default", () => {
+    const box = new BoxRenderable(testRenderer, {
+      id: "focused-color-reset",
+      focusable: true,
+      border: true,
+      focusedBorderColor: "#ff0000",
+    })
+
+    expect(box.focusedBorderColor.toInts()).toEqual([255, 0, 0, 255])
+
+    box.focusedBorderColor = undefined
+
+    expect(box.focusedBorderColor.toInts()).toEqual([0, 170, 255, 255])
+  })
+
+  test("removing title alignments falls back to left", async () => {
+    const box = new BoxRenderable(testRenderer, {
+      id: "alignment-reset",
+      width: 18,
+      height: 5,
+      border: true,
+      title: "Top",
+      titleAlignment: "right",
+      bottomTitle: "Bot",
+      bottomTitleAlignment: "right",
+    })
+    testRenderer.root.add(box)
+    await renderOnce()
+
+    let lines = captureFrame().split("\n")
+    expect(lines[0].slice(0, 18)).toBe("┌────────────Top─┐")
+    expect(lines[4].slice(0, 18)).toBe("└────────────Bot─┘")
+
+    box.titleAlignment = undefined
+    box.bottomTitleAlignment = undefined
+    await renderOnce()
+
+    lines = captureFrame().split("\n")
+    expect(lines[0].slice(0, 18)).toBe("┌─Top────────────┐")
+    expect(lines[4].slice(0, 18)).toBe("└─Bot────────────┘")
   })
 })
