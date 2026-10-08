@@ -5,6 +5,7 @@ import { CliRenderEvents } from "../renderer.js"
 import { Renderable, RenderableEvents } from "../Renderable.js"
 import { BoxRenderable } from "../renderables/Box.js"
 import { CodeRenderable } from "../renderables/Code.js"
+import { EmbeddedTerminalRenderable } from "../renderables/EmbeddedTerminal.js"
 import { TextRenderable } from "../renderables/Text.js"
 import { SyntaxStyle } from "../syntax-style.js"
 import {
@@ -256,21 +257,26 @@ test.each(["frames", "suspend", "destroy"] as const)(
 )
 
 // A wide grapheme that does not fit the row starts the next one; native must count the rows the terminal uses.
+// A row that fills the width keeps its last cell (#1580). The footer starts below the empty row after the newline.
 test.each([
-  ["ASCII", "abcdefghijklmnopqrs", 3],
-  ["wide characters", "一二三四五六七八九", 3],
-  ["a wide character at the last column", "abcdefgh一", 2],
-] as const)(
-  "a captured %s line that wraps advances the split footer by its terminal rows",
-  async (_name, line, rows) => {
-    const terminal = await setupTerminal({ columns: 9 })
-    const renderOffset = () => (terminal.renderer as unknown as { renderOffset: number }).renderOffset
-    const before = renderOffset()
-    terminal.stdout.write(line + "\n")
-    await terminal.frame()
-    expect(renderOffset() - before).toBe(rows)
-  },
-)
+  ["ASCII", "abcdefghijklmnopqrs", ["abcdefghi", "jklmnopqr", "s"]],
+  ["wide characters", "一二三四五六七八九", ["一二三四", "五六七八", "九"]],
+  ["a wide character at the last column", "abcdefgh一", ["abcdefgh", "一"]],
+  ["full-width ASCII", "012345678", ["012345678"]],
+  ["full-width wide characters", "a一二三四", ["a一二三四"]],
+] as const)("a captured %s line shows its terminal rows above the split footer", async (_name, line, rows) => {
+  const terminal = await setupTerminal({ columns: 9 })
+  terminal.renderer.root.add(new TextRenderable(terminal.renderer, { content: "F" }))
+  terminal.stdout.write(line + "\n")
+  await terminal.frame()
+  const view = await createTestRenderer({ width: 9, height: 10 })
+  renderers.push(view.renderer)
+  const vt = new EmbeddedTerminalRenderable(view.renderer, { cols: 9, rows: 10 })
+  view.renderer.root.add(vt)
+  vt.write(terminal.stdout.bytes())
+  await view.renderOnce()
+  expect(vt.screen().lines).toEqual([...rows, "", "F"])
+})
 
 // Each commit is "text:rowColumns", plus "\n" when it ends its line.
 test.each([

@@ -1866,6 +1866,9 @@ pub const CliRenderer = struct {
         const hyperlinksEnabled = self.terminal.getCapabilities().hyperlinks;
         const render_columns = @min(row_columns, snapshot.width);
 
+        // Erase before each row, not after it: a row that fills the width leaves the cursor on
+        // the last column with a wrap pending, and an erase there removes that cell.
+        writer.writeAll(ansi.ANSI.reset ++ ansi.ANSI.eraseToEndOfLine) catch {};
         for (0..snapshot.height) |uy| {
             const y = @as(u32, @intCast(uy));
             const row_end = snapshotRowEnd(snapshot, y, render_columns);
@@ -1959,8 +1962,6 @@ pub const CliRenderer = struct {
             }
 
             writer.writeAll(ansi.ANSI.reset) catch {};
-            // Guarantee short rows do not leave stale content from prior frame data.
-            writer.writeAll(ansi.ANSI.eraseToEndOfLine) catch {};
             if (image_state.protocol == .sixel or image_state.protocol == .kitty) {
                 try self.writeSnapshotNativeImagesForRow(writer, snapshot, y, image_state);
             }
@@ -1970,14 +1971,9 @@ pub const CliRenderer = struct {
 
             const is_last_row = @as(u32, @intCast(uy + 1)) >= snapshot.height;
             if (!is_last_row or trailing_newline) {
-                writer.writeAll("\r\n") catch {};
-            }
-
-            if (is_last_row and trailing_newline) {
-                // After a trailing newline, clear the destination row that becomes
-                // current so old footer text cannot flash through.
-                writer.writeAll(ansi.ANSI.reset) catch {};
-                writer.writeAll(ansi.ANSI.eraseToEndOfLine) catch {};
+                // The erase also clears the row that a trailing newline makes current, so old
+                // footer text cannot flash through.
+                writer.writeAll("\r\n" ++ ansi.ANSI.eraseToEndOfLine) catch {};
             }
         }
     }

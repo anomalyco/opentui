@@ -3591,8 +3591,7 @@ test "renderer - commitSplitFooterSnapshot does not emit NUL padding for short r
 
     const output = test_cli_renderer.lastOutput();
     try std.testing.expect(std.mem.findScalar(u8, output, 0) == null);
-    try std.testing.expect(std.mem.find(u8, output, ansi.ANSI.eraseToEndOfLine) != null);
-    try std.testing.expect(std.mem.find(u8, output, "\r\n\x1b[0m\x1b[K") != null);
+    try std.testing.expect(std.mem.find(u8, output, "\x1b[0m\r\n\x1b[K") != null);
 }
 
 test "renderer - batched split commits share single sync frame" {
