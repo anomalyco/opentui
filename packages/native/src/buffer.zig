@@ -1751,7 +1751,7 @@ pub const OptimizedBuffer = struct {
             // slice_idx is relative to the slice (0, 1, 2...), we need to add viewport offset + firstVisibleLine
             const viewport_offset: u32 = if (viewport) |vp| vp.y else 0;
             const vline_idx = viewport_offset + firstVisibleLine + slice_idx;
-            const align_pad: i32 = @intCast(view.getLineAlignmentPad(vline_idx, vline.width_cols));
+            const align_pad: i32 = @intCast(view.getLineAlignmentPad(vline_idx, vline.pad_cols + vline.width_cols));
             currentX = x + align_pad;
             var rendered_col_in_vline: u32 = 0;
             document_cell_offset = vline.document_cell_offset;
@@ -1766,6 +1766,23 @@ pub const OptimizedBuffer = struct {
             const defaultFg = lineFg;
             const defaultBg = lineBg;
             const defaultAttributes = lineAttributes;
+
+            // Soft-wrap continuation indent: fill pad cells with line background, then offset content.
+            if (vline.pad_cols > 0) {
+                var pad_bg = defaultBg;
+                if (prefilledViewportBg) |prefilledBg| {
+                    if (rgbaEqual(pad_bg, prefilledBg.bg)) {
+                        pad_bg[3] = pad_bg[3] & 0xff00;
+                    }
+                }
+                const pad_cell = makeCell(DEFAULT_SPACE_CHAR, defaultFg, pad_bg, 0);
+                const pad_end = currentX + @as(i32, @intCast(vline.pad_cols));
+                var pad_x = @max(currentX, 0);
+                while (pad_x < pad_end) : (pad_x += 1) {
+                    self.setCellWithAlphaBlendingCell(@intCast(pad_x), @intCast(currentY), pad_cell);
+                }
+                currentX = pad_end;
+            }
 
             // Find the span that contains the starting render position (col_offset + horizontal_offset)
             const start_col = col_offset + horizontal_offset;

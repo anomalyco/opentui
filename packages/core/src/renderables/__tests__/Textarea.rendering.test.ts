@@ -228,6 +228,55 @@ describe("Textarea - Rendering Tests", () => {
       expect(editor.wrapMode).toBe("word")
     })
 
+    it("should handle wrapIndent property", async () => {
+      const { textarea: editor } = await createTextareaRenderable(currentRenderer, renderOnce, {
+        initialValue: "    " + "a".repeat(80),
+        width: 20,
+        height: 10,
+        wrapMode: "char",
+        wrapIndent: "none",
+      })
+
+      expect(editor.wrapIndent).toBe("none")
+      editor.wrapIndent = "same"
+      expect(editor.wrapIndent).toBe("same")
+      expect(editor.editorView.getVirtualLineCount()).toBeGreaterThan(1)
+    })
+
+    it.each(["char", "word"] as const)("keeps the cursor aligned with wrapIndent in %s mode", async (wrapMode) => {
+      const { textarea: editor } = await createTextareaRenderable(currentRenderer, renderOnce, {
+        initialValue: "    " + "aaa ".repeat(20),
+        width: 20,
+        height: 10,
+        wrapMode,
+        wrapIndent: "same",
+      })
+      editor.focus()
+      editor.editBuffer.setCursor(0, 4)
+      await renderOnce()
+
+      const lines = captureFrame().split("\n")
+      for (const line of lines.slice(0, 3)) {
+        expect(line.slice(0, 20)).toBe("    " + "aaa ".repeat(4))
+      }
+
+      for (const row of [1, 2]) {
+        currentMockInput.pressArrow("down")
+        await renderOnce()
+        expect(editor.visualCursor.visualRow).toBe(row)
+        expect(editor.visualCursor.visualCol).toBe(4)
+        expect(editor.logicalCursor.col).toBe(20 + (row - 1) * 16)
+      }
+
+      for (const row of [1, 0]) {
+        currentMockInput.pressArrow("up")
+        await renderOnce()
+        expect(editor.visualCursor.visualRow).toBe(row)
+        expect(editor.visualCursor.visualCol).toBe(4)
+      }
+      expect(editor.logicalCursor.col).toBe(4)
+    })
+
     it("should render with tab indicator correctly", async () => {
       const { textarea: editor } = await createTextareaRenderable(currentRenderer, renderOnce, {
         initialValue: "Line 1\tTabbed\nLine 2\t\tDouble tab",
