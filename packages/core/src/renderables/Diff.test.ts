@@ -938,6 +938,69 @@ test("DiffRenderable - line numbers are correct in split view", async () => {
   expect(splitLine).toMatch(/2 \+.*console\.log\("Hello, World!"\)/)
 })
 
+// Some tools (GNU diff --suppress-blank-empty, editors that trim trailing whitespace) write a
+// blank context line as an empty line instead of a single space. jsdiff and git apply both
+// read it as context.
+const blankContextDiff = `--- a/test.js
++++ b/test.js
+@@ -1,4 +1,4 @@
+ const one = 1;
+
+-const two = 2;
++const two = "two";
+ const three = 3;`
+
+test("DiffRenderable - unified view keeps blank context lines without a leading space", async () => {
+  const syntaxStyle = SyntaxStyle.fromStyles({
+    default: { fg: RGBA.fromValues(1, 1, 1, 1) },
+  })
+
+  const diffRenderable = new DiffRenderable(currentRenderer, {
+    id: "test-diff",
+    diff: blankContextDiff,
+    view: "unified",
+    syntaxStyle,
+    showLineNumbers: true,
+    width: "100%",
+    height: "100%",
+  })
+
+  currentRenderer.root.add(diffRenderable)
+  await renderOnce()
+
+  const frameLines = captureFrame().split("\n")
+
+  expect(frameLines[1]).toMatch(/^ *2 *$/)
+  expect(frameLines.find((l) => l.includes("const two = 2;"))).toMatch(/^ *3 -/)
+  expect(frameLines.find((l) => l.includes('const two = "two";'))).toMatch(/^ *3 \+/)
+  expect(frameLines.find((l) => l.includes("const three = 3;"))).toMatch(/^ *4 /)
+})
+
+test("DiffRenderable - split view keeps blank context lines without a leading space", async () => {
+  const syntaxStyle = SyntaxStyle.fromStyles({
+    default: { fg: RGBA.fromValues(1, 1, 1, 1) },
+  })
+
+  const diffRenderable = new DiffRenderable(currentRenderer, {
+    id: "test-diff",
+    diff: blankContextDiff,
+    view: "split",
+    syntaxStyle,
+    showLineNumbers: true,
+    width: "100%",
+    height: "100%",
+  })
+
+  currentRenderer.root.add(diffRenderable)
+  await renderOnce()
+
+  const frameLines = captureFrame().split("\n")
+
+  expect(frameLines[1]).toMatch(/^ *2 +2 *$/)
+  expect(frameLines.find((l) => l.includes("const two = 2;"))).toMatch(/^ *3 -.*3 \+/)
+  expect(frameLines.find((l) => l.includes("const three = 3;"))).toMatch(/^ *4 .*4 /)
+})
+
 test("DiffRenderable - split view should not wrap lines prematurely", async () => {
   const syntaxStyle = SyntaxStyle.fromStyles({
     default: { fg: RGBA.fromValues(1, 1, 1, 1) },
