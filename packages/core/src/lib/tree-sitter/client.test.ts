@@ -744,6 +744,7 @@ Some text here.`
 
       expect(tokens).toContain("const=keyword")
       expect(tokens).toContain("title=tag.attribute")
+      expect(tokens).toContain("Element=type")
       expect(tokens.filter((token) => token.endsWith("=string.regexp"))).toEqual([])
     } finally {
       await client.destroy()
