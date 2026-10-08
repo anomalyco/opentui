@@ -649,26 +649,11 @@ export class TerminalConsole extends EventEmitter {
   }
 
   private formatArguments(args: any[]): string {
-    return args
-      .map((arg) => {
-        if (arg instanceof Error) {
-          const errorProps = arg
-          return `Error: ${errorProps.message}\n` + (errorProps.stack ? `${errorProps.stack}\n` : "")
-        }
-        if (typeof arg === "object" && arg !== null) {
-          try {
-            return util.inspect(arg, { depth: 2 })
-          } catch (e) {
-            return String(arg)
-          }
-        }
-        try {
-          return util.inspect(arg, { depth: 2 })
-        } catch (e) {
-          return String(arg)
-        }
-      })
-      .join(" ")
+    // util.format gives the overlay the same semantics as the console.log it captures: top-level
+    // strings stay raw (escapes interpreted, no quotes), format specifiers are substituted, and
+    // other values are inspected at depth 2. Inspecting every argument individually would quote
+    // strings and render "\n" literally instead of starting a new display line.
+    return util.format(...args)
   }
 
   public resize(width: number, height: number): void {

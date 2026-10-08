@@ -654,4 +654,56 @@ describe("TerminalConsole", () => {
       expect(() => terminalConsole["triggerCopy"]()).not.toThrow()
     })
   })
+
+  describe("Log formatting", () => {
+    const format = (args: any[]) => terminalConsole["formatArguments"](args)
+
+    beforeEach(() => {
+      terminalConsole = new TerminalConsole(mockRenderer as any, {
+        position: ConsolePosition.BOTTOM,
+        sizePercent: 30,
+      })
+    })
+
+    test("should print top-level strings without quotes", () => {
+      expect(format(["hello"])).toBe("hello")
+      expect(format(["a", "b"])).toBe("a b")
+    })
+
+    test("should interpret escapes in a string instead of re-escaping them", () => {
+      // A string literal in source already contains a real newline/tab by the time it is logged.
+      expect(format(["a\nb"])).toBe("a\nb")
+      expect(format(["a\tb"])).toBe("a\tb")
+      // A literal backslash must survive as a literal backslash.
+      expect(format(["a\\nb"])).toBe("a\\nb")
+    })
+
+    test("should wrap a multi-line string onto separate display lines", () => {
+      const lines = terminalConsole["_processLogEntry"]([new Date(), "LOG" as any, ["line1\nline2"], null])
+
+      expect(lines).toHaveLength(2)
+      expect(lines[0].text.endsWith("line1")).toBe(true)
+      expect(lines[0].indent).toBe(false)
+      expect(lines[1].text.endsWith("line2")).toBe(true)
+      expect(lines[1].indent).toBe(true)
+      expect(lines[0].text).not.toContain("\\n")
+    })
+
+    test("should substitute format specifiers like console.log", () => {
+      expect(format(["x=%d", 5])).toBe("x=5")
+      expect(format(["%s and %s", "a", "b"])).toBe("a and b")
+      expect(format(["%j", { a: 1 }])).toBe('{"a":1}')
+    })
+
+    test("should still inspect objects at depth 2", () => {
+      expect(format([{ a: { b: { c: 1 } } }])).toBe("{ a: { b: { c: 1 } } }")
+      expect(format([{ a: { b: { c: { d: 1 } } } }])).toBe("{ a: { b: { c: [Object] } } }")
+    })
+
+    test("should not repeat the message when formatting an Error", () => {
+      const output = format([new Error("boom")])
+      expect(output).toStartWith("Error: boom")
+      expect(output.split("Error: boom")).toHaveLength(2)
+    })
+  })
 })
