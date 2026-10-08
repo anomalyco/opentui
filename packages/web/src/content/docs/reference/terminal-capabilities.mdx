@@ -106,9 +106,9 @@ Read [Image](/docs/components/image) for protocol selection. Do not choose a pro
 The renderer emits OSC 8 sequences only when `hyperlinks` is true. Text still renders when it is false. Without OSC 8,
 the terminal detects URLs one row at a time, so a wrapped URL opens only the part on the clicked row.
 
-OpenTUI enables `hyperlinks` for Ghostty, Kitty, WezTerm, Alacritty, foot, iTerm2, xterm.js, VS Code, Zed, mintty,
-VTE 0.52.2 or newer, and Windows Terminal. `TERM_PROGRAM` and `VTE_VERSION` count only outside tmux, Zellij, and GNU
-Screen. Set `FORCE_HYPERLINK` to override detection.
+OpenTUI enables `hyperlinks` for Ghostty, Kitty, WezTerm, Alacritty, foot, iTerm2, Terminology, xterm.js, VS Code,
+Zed, mintty, VTE 0.52.2 or newer, and Windows Terminal. `TERM_PROGRAM` and `VTE_VERSION` count only outside tmux,
+Zellij, and GNU Screen. Set `FORCE_HYPERLINK` to override detection.
 
 Hyperlink URLs use a native slot with a maximum of 512 UTF-8 bytes. A longer URL fails link allocation and the text
 loses its hyperlink metadata.
