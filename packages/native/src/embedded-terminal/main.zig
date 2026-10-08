@@ -82,6 +82,7 @@ pub const EmbeddedTerminal = struct {
 
         var handler = self.terminal.vtHandler();
         handler.effects.write_pty = &writePty;
+        handler.effects.device_attributes = &deviceAttributes;
         self.stream = .init(.{ .allocator = allocator, .handler = .{ .base = handler } });
         return self;
     }
@@ -294,5 +295,9 @@ pub const EmbeddedTerminal = struct {
         self.responses.appendSlice(self.allocator, data) catch {
             self.response_error = error.OutOfMemory;
         };
+    }
+
+    fn deviceAttributes(_: *ghostty.TerminalStream.Handler) ghostty.DeviceAttributes {
+        return .{};
     }
 };

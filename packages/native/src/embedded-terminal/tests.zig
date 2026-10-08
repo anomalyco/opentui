@@ -465,16 +465,19 @@ test "embedded terminal drains generated PTY responses incrementally" {
     const terminal = try EmbeddedTerminal.init(std.testing.io, std.testing.allocator, .{ .cols = 20, .rows = 4 });
     defer terminal.deinit();
 
-    try terminal.write("\x1b[5n");
-    var first: [2]u8 = undefined;
-    var rest: [16]u8 = undefined;
-    const first_len = try terminal.drainResponses(&first);
-    const rest_len = try terminal.drainResponses(&rest);
-
-    var combined: [18]u8 = undefined;
-    @memcpy(combined[0..first_len], first[0..first_len]);
-    @memcpy(combined[first_len .. first_len + rest_len], rest[0..rest_len]);
-    try std.testing.expectEqualStrings("\x1b[0n", combined[0 .. first_len + rest_len]);
+    const cases = [_]struct { query: []const u8, reply: []const u8 }{
+        .{ .query = "\x1b[5n", .reply = "\x1b[0n" },
+        .{ .query = "\x1b[c", .reply = "\x1b[?62;22c" },
+        .{ .query = "\x1b[>c", .reply = "\x1b[>1;0;0c" },
+        .{ .query = "\x1b[=c", .reply = "\x1bP!|00000000\x1b\\" },
+    };
+    for (cases) |case| {
+        try terminal.write(case.query);
+        var output: [64]u8 = undefined;
+        const first_len = try terminal.drainResponses(output[0..2]);
+        const rest_len = try terminal.drainResponses(output[first_len..]);
+        try std.testing.expectEqualStrings(case.reply, output[0 .. first_len + rest_len]);
+    }
 }
 
 test "embedded terminal preserves queued responses when the bound is reached" {
