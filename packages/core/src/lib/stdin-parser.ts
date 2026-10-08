@@ -56,6 +56,7 @@ export interface StdinParserOptions {
   useKittyKeyboard?: boolean
   protocolContext?: Partial<StdinParserProtocolContext>
   clock?: Clock
+  jediTermScrollWorkaround?: boolean
 }
 
 // State machine tags for the byte scanner. Each tag represents which protocol
@@ -608,6 +609,12 @@ export class StdinParser {
   // True only immediately after a timeout flush emits a lone ESC key. The next
   // `[` may begin a delayed `[<...M/m` mouse continuation recovery path.
   private justFlushedEsc = false
+  // JetBrains JediTerm sends spurious cursor keys (^[[A / ^[[B) immediately
+  // after SGR scroll events, sometimes split across stdin writes. Track the
+  // expiry time (20ms window) so cursor keys arriving in subsequent push()
+  // calls are still swallowed.
+  private jediTermScrollWorkaround: boolean
+  private jediTermScrollExpiry = 0
   private state: ParserState = { tag: "ground" }
   // Scan position within pending.view() during scanPending().
   private cursor = 0
@@ -624,6 +631,7 @@ export class StdinParser {
     this.armTimeouts = options.armTimeouts ?? true
     this.onTimeoutFlush = options.onTimeoutFlush ?? null
     this.useKittyKeyboard = options.useKittyKeyboard ?? true
+    this.jediTermScrollWorkaround = options.jediTermScrollWorkaround ?? false
     this.clock = options.clock ?? SYSTEM_CLOCK
     this.protocolContext = {
       ...DEFAULT_PROTOCOL_CONTEXT,
@@ -1240,6 +1248,26 @@ export class StdinParser {
               continue
             }
 
+            // JetBrains JediTerm workaround: JediTerm sends spurious ^[[A / ^[[B
+            // cursor keys after every SGR scroll event. Swallow them so they
+            // don't reach the keymap as ArrowUp/Down. The real SGR scroll
+            // events already carry correct scroll information.
+            if (
+              this.jediTermScrollWorkaround &&
+              this.clock.now() < this.jediTermScrollExpiry &&
+              (byte === 0x41 || byte === 0x42)
+            ) {
+              // JediTerm sends cursor keys alongside every SGR scroll
+              // event. The real SGR events already carry correct scroll
+              // information — just swallow the redundant cursor keys
+              // so they don't reach the keymap as ArrowUp/Down.
+              this.state = { tag: "ground" }
+              this.consumePrefix(end)
+              continue
+            }
+
+            this.jediTermScrollExpiry = 0
+
             this.emitKeyOrResponse("csi", decodeUtf8(rawBytes))
             this.state = { tag: "ground" }
             this.consumePrefix(end)
@@ -1288,6 +1316,7 @@ export class StdinParser {
             if (isMouseSgrSequence(rawBytes)) {
               this.emitMouse(rawBytes, "sgr")
             } else {
+    this.jediTermScrollExpiry = 0
               this.emitKeyOrResponse("csi", decodeUtf8(rawBytes))
             }
             this.state = { tag: "ground" }
@@ -1855,12 +1884,29 @@ export class StdinParser {
       return
     }
 
-    this.events.push({
-      type: "mouse",
-      raw: decodeLatin1(rawBytes),
-      encoding,
-      event,
-    })
+    this.jediTermScrollExpiry = 0
+
+    if (this.jediTermScrollWorkaround && event.type === "scroll") {
+      // JediTerm uses non-standard scroll button codes (68=up, 69=down)
+      // that have the shift bit (4) spuriously set. Clear it so ScrollBox
+      // doesn't convert vertical scroll into horizontal scroll.
+      const modifiers = { ...event.modifiers, shift: false }
+      this.jediTermScrollExpiry = this.clock.now() + 20
+
+      this.events.push({
+        type: "mouse",
+        raw: decodeLatin1(rawBytes),
+        encoding,
+        event: { ...event, modifiers },
+      })
+    } else {
+      this.events.push({
+        type: "mouse",
+        raw: decodeLatin1(rawBytes),
+        encoding,
+        event,
+      })
+    }
   }
 
   // Handles single bytes in the 0x80–0xFF range that aren't valid UTF-8
@@ -2065,6 +2111,7 @@ export class StdinParser {
     this.suspendedPixelResolutionPrefixLength = 0
     this.forceFlush = false
     this.justFlushedEsc = false
+    this.jediTermScrollExpiry = 0
     this.state = { tag: "ground" }
     this.cursor = 0
     this.unitStart = 0
