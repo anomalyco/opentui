@@ -173,6 +173,142 @@ describe("ScrollBoxRenderable - culled content layout freshness", () => {
   })
 })
 
+describe("ScrollBoxRenderable - culled layout changes within a frame", () => {
+  function createCulledRows(rowCount: number): { scrollbox: ScrollBoxRenderable; rows: BoxRenderable[] } {
+    const scrollbox = new ScrollBoxRenderable(testRenderer, {
+      width: 30,
+      height: 6,
+      viewportCulling: true,
+    })
+    testRenderer.root.add(scrollbox)
+
+    const rows: BoxRenderable[] = []
+    for (let i = 0; i < rowCount; i++) {
+      const row = new BoxRenderable(testRenderer, { id: `row-${i}`, height: 1, flexShrink: 0 })
+      row.add(new TextRenderable(testRenderer, { content: `row-${i}` }))
+      scrollbox.add(row)
+      rows.push(row)
+    }
+    return { scrollbox, rows }
+  }
+
+  test("culls against fresh positions when a row grows in the same frame as a scroll", async () => {
+    const { scrollbox, rows } = createCulledRows(40)
+    await renderOnce()
+
+    const growth = 6
+    const scrollTarget = 20
+    rows[0].height = 1 + growth
+    scrollbox.scrollTo(scrollTarget)
+    await renderOnce()
+
+    const lines = captureCharFrame().split("\n")
+    for (let line = 0; line < scrollbox.viewport.height; line++) {
+      expect(lines[line]).toContain(`row-${scrollTarget - growth + line} `)
+    }
+  })
+
+  test("off-screen rows that resize receive onSizeChange in that frame", async () => {
+    const { rows } = createCulledRows(40)
+    await renderOnce()
+
+    const offscreenRow = rows[30]
+    let sizeChanges = 0
+    offscreenRow.onSizeChange = () => {
+      sizeChanges++
+    }
+
+    offscreenRow.height = 3
+    await renderOnce()
+
+    expect(sizeChanges).toBe(1)
+    expect(captureCharFrame()).not.toContain("row-30")
+  })
+
+  test("rows relaid out while culled render at their new position once scrolled into view", async () => {
+    const { scrollbox, rows } = createCulledRows(40)
+    await renderOnce()
+
+    rows[10].height = 3
+    await renderOnce()
+
+    scrollbox.scrollTo(rows[10].y - scrollbox.content.y)
+    await renderOnce()
+
+    const lines = captureCharFrame().split("\n")
+    expect(lines[0]).toContain("row-10 ")
+    expect(lines[1]).not.toContain("row-")
+    expect(lines[2]).not.toContain("row-")
+    expect(lines[3]).toContain("row-11 ")
+  })
+})
+
+describe("ScrollBoxRenderable - culled overlap draw order", () => {
+  function createOverlappingLabel(label: string, zIndex = 0): TextRenderable {
+    return new TextRenderable(testRenderer, {
+      id: label,
+      content: label.repeat(4),
+      position: "absolute",
+      top: 0,
+      left: 0,
+      zIndex,
+    })
+  }
+
+  function createCulledScrollBox(): ScrollBoxRenderable {
+    const scrollbox = new ScrollBoxRenderable(testRenderer, {
+      width: 30,
+      height: 6,
+      viewportCulling: true,
+    })
+    testRenderer.root.add(scrollbox)
+    return scrollbox
+  }
+
+  function topLine(): string {
+    return captureCharFrame().split("\n")[0]
+  }
+
+  test("a child inserted before a same-zIndex sibling draws on top of it", async () => {
+    const scrollbox = createCulledScrollBox()
+    const existing = createOverlappingLabel("A")
+    scrollbox.add(existing)
+    scrollbox.insertBefore(createOverlappingLabel("B"), existing)
+    await renderOnce()
+
+    expect(topLine()).toContain("BBBB")
+    expect(topLine()).not.toContain("A")
+  })
+
+  test("a child whose zIndex changes into a tie before the first frame keeps its add position", async () => {
+    const scrollbox = createCulledScrollBox()
+    const a = createOverlappingLabel("A", 1)
+    scrollbox.add(a)
+    scrollbox.add(createOverlappingLabel("B"))
+    scrollbox.add(createOverlappingLabel("C"))
+
+    a.zIndex = 0
+    await renderOnce()
+
+    expect(topLine()).toContain("CCCC")
+  })
+
+  test("a child whose zIndex changes into a tie after rendering keeps its sorted position", async () => {
+    const scrollbox = createCulledScrollBox()
+    const a = createOverlappingLabel("A", 1)
+    scrollbox.add(a)
+    scrollbox.add(createOverlappingLabel("B"))
+    scrollbox.add(createOverlappingLabel("C"))
+    await renderOnce()
+    expect(topLine()).toContain("AAAA")
+
+    a.zIndex = 0
+    await renderOnce()
+
+    expect(topLine()).toContain("AAAA")
+  })
+})
+
 describe("ScrollBoxRenderable - clipping", () => {
   test("clips nested scrollbox content to inner viewport (see issue #388)", async () => {
     const root = new BoxRenderable(testRenderer, {

@@ -1549,6 +1549,59 @@ describe("Renderable - Layout with Viewport Filtering", () => {
     expect(child2.y).toBe(35)
     expect(child3.y).toBe(55)
   })
+
+  test("renders only live own children once each when the visible-children hook returns stray nums", async () => {
+    class StrayNumsRenderable extends Renderable {
+      public strayNums: number[] = []
+
+      constructor(ctx: RenderContext, options: RenderableOptions) {
+        super(ctx, options)
+      }
+
+      protected _getVisibleChildren(): number[] {
+        const ownNums = this._childrenInZIndexOrder.map((child) => child.num)
+        return [...ownNums, ...ownNums, ...this.strayNums]
+      }
+    }
+
+    const parent = new StrayNumsRenderable(testRenderer, {
+      id: "parent",
+      width: 100,
+      height: 100,
+      flexDirection: "column",
+    })
+    const child1 = new CountingRenderable(testRenderer, { id: "child1", height: 20, flexGrow: 0 })
+    const child2 = new CountingRenderable(testRenderer, { id: "child2", height: 20, flexGrow: 0 })
+    const destroyedChild = new CountingRenderable(testRenderer, { id: "destroyed-child", height: 20, flexGrow: 0 })
+    parent.add(child1)
+    parent.add(child2)
+    parent.add(destroyedChild)
+
+    const foreignParent = new TestRenderable(testRenderer, { id: "foreign-parent", width: 10, height: 10 })
+    const foreignChild = new CountingRenderable(testRenderer, { id: "foreign-child", height: 5 })
+    foreignParent.add(foreignChild)
+
+    const referenceParent = new TestRenderable(testRenderer, { id: "reference-parent", width: 10, height: 10 })
+    const referenceChild = new CountingRenderable(testRenderer, { id: "reference-child", height: 5 })
+    referenceParent.add(referenceChild)
+
+    testRenderer.root.add(parent)
+    testRenderer.root.add(referenceParent)
+    await renderOnce()
+
+    destroyedChild.destroy()
+    parent.strayNums = [foreignChild.num, destroyedChild.num, child1.num]
+    for (const child of [child1, child2, destroyedChild, referenceChild]) {
+      child.renderCount = 0
+    }
+    await renderOnce()
+
+    expect(referenceChild.renderCount).toBeGreaterThan(0)
+    expect(child1.renderCount).toBe(referenceChild.renderCount)
+    expect(child2.renderCount).toBe(referenceChild.renderCount)
+    expect(destroyedChild.renderCount).toBe(0)
+    expect(foreignChild.renderCount).toBe(0)
+  })
 })
 
 describe("Renderable - Nested Children Layout", () => {
