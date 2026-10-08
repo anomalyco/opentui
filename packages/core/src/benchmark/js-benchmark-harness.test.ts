@@ -67,11 +67,12 @@ describe("statistics and manifest", () => {
       "JS Render/yoga-layout-reads-100",
       "JS Mouse/direct-bubble-depth-8",
       "JS Mouse/stdin-sgr-bubble-depth-8",
+      "JS Input/bracketed-paste-256k",
       "JS Text Table/proportional-column-widths",
       "JS Text/text-buffer-word-wrap-measure",
       "JS Buffer/draw-box-titled-scissored",
     ])
-    expect(manifestHash(manifest)).toBe("sha256:eadd082d755c58b7e8a865bd5873802974881967a4edab1c79d0fb1cba482aa0")
+    expect(manifestHash(manifest)).toBe("sha256:0d08de48c847ca0a65dd932bfb50f6456bb5acf0e689502e04ac395a1cefff04")
     expect(manifestHash({ ...manifest, protocol_version: 2 })).not.toBe(manifestHash(manifest))
   })
 
