@@ -197,23 +197,24 @@ pub fn Rope(comptime T: type) type {
                 return self == empty_leaf;
             }
 
-            pub fn new_branch(allocator: Allocator, left: *const Node, right: *const Node) !*const Node {
-                const node = try allocator.create(Node);
-                errdefer allocator.destroy(node);
-
+            pub fn init_branch(left: *const Node, right: *const Node) Node {
                 const left_metrics = left.metrics();
                 var total_metrics = Metrics{};
                 total_metrics.add(left_metrics);
                 total_metrics.add(right.metrics());
                 total_metrics.depth += 1;
 
-                node.* = .{ .branch = .{
+                return .{ .branch = .{
                     .left = left,
                     .right = right,
                     .left_metrics = left_metrics,
                     .total_metrics = total_metrics,
                 } };
+            }
 
+            pub fn new_branch(allocator: Allocator, left: *const Node, right: *const Node) !*const Node {
+                const node = try allocator.create(Node);
+                node.* = init_branch(left, right);
                 return node;
             }
 
@@ -330,14 +331,10 @@ pub fn Rope(comptime T: type) type {
 
             /// Structural split at index - returns (left, right) without flattening
             pub fn split_at(node: *const Node, index: u32, allocator: Allocator, empty_leaf: *const Node) error{OutOfMemory}!struct { left: *const Node, right: *const Node } {
+                if (index == 0) return .{ .left = empty_leaf, .right = node };
+                if (index >= node.count()) return .{ .left = node, .right = empty_leaf };
                 return switch (node.*) {
-                    .leaf => {
-                        if (index == 0) {
-                            return .{ .left = empty_leaf, .right = node };
-                        } else {
-                            return .{ .left = node, .right = empty_leaf };
-                        }
-                    },
+                    .leaf => unreachable,
                     .branch => |*b| {
                         const left_count = b.left_metrics.count;
                         if (index < left_count) {
@@ -362,8 +359,8 @@ pub fn Rope(comptime T: type) type {
                 if (left_count == 0) return right;
                 if (right_count == 0) return left;
 
-                const left_weight = left.metrics().weight();
-                const right_weight = right.metrics().weight();
+                const left_weight: u64 = left.metrics().weight();
+                const right_weight: u64 = right.metrics().weight();
                 const total_weight = left_weight + right_weight;
 
                 if (total_weight > 0) {
@@ -378,6 +375,15 @@ pub fn Rope(comptime T: type) type {
                         .leaf => try new_branch(allocator, left, right),
                         .branch => |*b| {
                             const new_right = try join_balanced(b.right, right, allocator);
+                            if (@as(u64, new_right.metrics().weight()) > @as(u64, b.left_metrics.weight()) * 3) {
+                                switch (new_right.*) {
+                                    .branch => |*nr| {
+                                        const new_left = try join_balanced(b.left, nr.left, allocator);
+                                        return try new_branch(allocator, new_left, nr.right);
+                                    },
+                                    .leaf => {},
+                                }
+                            }
                             return try new_branch(allocator, b.left, new_right);
                         },
                     };
@@ -387,6 +393,15 @@ pub fn Rope(comptime T: type) type {
                     .leaf => try new_branch(allocator, left, right),
                     .branch => |*b| {
                         const new_left = try join_balanced(left, b.left, allocator);
+                        if (@as(u64, new_left.metrics().weight()) > @as(u64, b.right.metrics().weight()) * 3) {
+                            switch (new_left.*) {
+                                .branch => |*nl| {
+                                    const new_right = try join_balanced(nl.right, b.right, allocator);
+                                    return try new_branch(allocator, nl.left, new_right);
+                                },
+                                .leaf => {},
+                            }
+                        }
                         return try new_branch(allocator, new_left, b.right);
                     },
                 };
@@ -549,14 +564,25 @@ pub fn Rope(comptime T: type) type {
 
         fn rootFromSlice(allocator: Allocator, items: []const T) error{OutOfMemory}!*const Node {
             std.debug.assert(items.len > 0);
-            if (items.len == 1) return Node.new_leaf(allocator, items[0]);
+            const node_count = std.math.mul(usize, items.len, 2) catch return error.OutOfMemory;
+            const nodes = try allocator.alloc(Node, node_count - 1);
+            return rootFromSliceInto(nodes, items);
+        }
+
+        fn rootFromSliceInto(nodes: []Node, items: []const T) *const Node {
+            std.debug.assert(items.len > 0);
+            std.debug.assert(nodes.len == 2 * items.len - 1);
+            if (items.len == 1) {
+                nodes[0] = .{ .leaf = .{ .data = items[0] } };
+                return &nodes[0];
+            }
 
             const mid = items.len / 2;
-            return Node.new_branch(
-                allocator,
-                try rootFromSlice(allocator, items[0..mid]),
-                try rootFromSlice(allocator, items[mid..]),
-            );
+            const left_nodes = 2 * mid - 1;
+            const left = rootFromSliceInto(nodes[1 .. 1 + left_nodes], items[0..mid]);
+            const right = rootFromSliceInto(nodes[1 + left_nodes ..], items[mid..]);
+            nodes[0] = Node.init_branch(left, right);
+            return &nodes[0];
         }
 
         pub fn count(self: *const Self) u32 {

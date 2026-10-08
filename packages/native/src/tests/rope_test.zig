@@ -2499,3 +2499,53 @@ test "Rope - integration all features working together" {
     try rope.walk(&ctx, Context.walker);
     try std.testing.expectEqual(@as(u32, 3), ctx.count);
 }
+
+test "Rope - from_slice lays out nodes in contiguous pre-order and boundary splits do not allocate" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const RopeType = rope_mod.Rope(SimpleItem);
+    var items: [16]SimpleItem = undefined;
+    for (&items, 0..) |*item, index| item.* = .{ .value = @intCast(index) };
+
+    var counting = std.testing.FailingAllocator.init(arena.allocator(), .{});
+    const rope = try RopeType.from_slice(counting.allocator(), &items);
+    // One contiguous slice for the 2N - 1 tree nodes plus one sentinel node.
+    try std.testing.expectEqual(@as(usize, 2), counting.alloc_index);
+
+    const Check = struct {
+        fn verifyPreOrder(node: *const RopeType.Node, cursor: *[*]const RopeType.Node) !void {
+            try std.testing.expectEqual(@as(*const RopeType.Node, &cursor.*[0]), node);
+            cursor.* += 1;
+            switch (node.*) {
+                .branch => |*b| {
+                    try verifyPreOrder(b.left, cursor);
+                    try verifyPreOrder(b.right, cursor);
+                },
+                .leaf => {},
+            }
+        }
+    };
+    var cursor: [*]const RopeType.Node = @ptrCast(rope.root);
+    try Check.verifyPreOrder(rope.root, &cursor);
+
+    const allocs_before = counting.alloc_index;
+    const split_start = try RopeType.Node.split_at(rope.root, 0, counting.allocator(), rope.empty_leaf);
+    try std.testing.expectEqual(rope.empty_leaf, split_start.left);
+    try std.testing.expectEqual(rope.root, split_start.right);
+    const split_end = try RopeType.Node.split_at(rope.root, rope.count(), counting.allocator(), rope.empty_leaf);
+    try std.testing.expectEqual(rope.root, split_end.left);
+    try std.testing.expectEqual(rope.empty_leaf, split_end.right);
+    try std.testing.expectEqual(allocs_before, counting.alloc_index);
+
+    var appended = try WeightedRope.init(arena.allocator());
+    var prepended = try WeightedRope.init(arena.allocator());
+    for (0..64) |i| {
+        try appended.append(.{ .value = @intCast(i), .weight = 6 });
+        try prepended.prepend(.{ .value = @intCast(i), .weight = 6 });
+        try std.testing.expect(appended.root.is_balanced());
+        try std.testing.expect(prepended.root.is_balanced());
+    }
+    try std.testing.expect(appended.root.depth() <= 10);
+    try std.testing.expect(prepended.root.depth() <= 10);
+}
