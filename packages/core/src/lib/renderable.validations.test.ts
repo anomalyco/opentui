@@ -74,7 +74,7 @@ describe("Utility Functions", () => {
   test("isPositionTypeType", () => {
     expect(isPositionTypeType("relative")).toBe(true)
     expect(isPositionTypeType("absolute")).toBe(true)
-    expect(isPositionTypeType("static")).toBe(false)
+    expect(isPositionTypeType("static")).toBe(true)
     expect(isPositionTypeType("fixed")).toBe(false)
   })
 

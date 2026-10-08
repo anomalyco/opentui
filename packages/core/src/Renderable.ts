@@ -754,7 +754,7 @@ export abstract class Renderable extends BaseRenderable {
       this.yogaNode.setHeight(options.height)
     }
 
-    this._positionType = options.position === "absolute" ? "absolute" : "relative"
+    this._positionType = isPositionTypeType(options.position) ? options.position : "relative"
     if (this._positionType !== "relative") {
       node.setPositionType(parsePositionType(this._positionType))
     }
