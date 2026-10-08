@@ -852,6 +852,76 @@ test "environment overrides - rgb does not imply hyperlinks after recheck for in
     try testing.expect(!term.caps.hyperlinks);
 }
 
+test "environment overrides - TERM_PROGRAM and VTE_VERSION enable hyperlinks for OSC 8 terminals" {
+    const cases = [_]struct { key: []const u8, value: []const u8, hyperlinks: bool }{
+        .{ .key = "TERM_PROGRAM", .value = "vscode", .hyperlinks = true },
+        .{ .key = "TERM_PROGRAM", .value = "zed", .hyperlinks = true },
+        .{ .key = "TERM_PROGRAM", .value = "mintty", .hyperlinks = true },
+        .{ .key = "TERM_PROGRAM", .value = "Apple_Terminal", .hyperlinks = false },
+        .{ .key = "VTE_VERSION", .value = "5202", .hyperlinks = true },
+        .{ .key = "VTE_VERSION", .value = "5201", .hyperlinks = false },
+        .{ .key = "VTE_VERSION", .value = "invalid", .hyperlinks = false },
+    };
+    for (cases) |case| {
+        var env = std.process.Environ.Map.init(testing.allocator);
+        defer env.deinit();
+        try env.put("TERM", "xterm-256color");
+        try env.put(case.key, case.value);
+
+        const term = Terminal.init(.{ .env_map = &env });
+        try testing.expectEqual(case.hyperlinks, term.caps.hyperlinks);
+    }
+}
+
+test "environment overrides - TERM_PROGRAM hyperlinks require a direct terminal" {
+    const multiplexers = [_]struct {
+        key: []const u8,
+        value: []const u8,
+        kind: Terminal.Multiplexer,
+    }{
+        .{ .key = "STY", .value = "1234.session", .kind = .screen },
+        .{ .key = "TMUX", .value = "/tmp/tmux-1000/default,1,0", .kind = .tmux },
+        .{ .key = "ZELLIJ", .value = "0", .kind = .zellij },
+    };
+
+    for (multiplexers) |multiplexer| {
+        var term = Terminal.init(.{});
+        defer term.deinit();
+
+        try term.setHostEnvVar(testing.allocator, "TERM_PROGRAM", "vscode");
+        try testing.expect(term.caps.hyperlinks);
+
+        try term.setHostEnvVar(testing.allocator, multiplexer.key, multiplexer.value);
+        try testing.expectEqual(multiplexer.kind, term.multiplexer);
+        try testing.expect(!term.caps.hyperlinks);
+    }
+}
+
+test "environment overrides - FORCE_HYPERLINK forces hyperlink support" {
+    const enabled_values = [_][]const u8{ "1", "" };
+    for (enabled_values) |value| {
+        var env = std.process.Environ.Map.init(testing.allocator);
+        defer env.deinit();
+        try env.put("TERM", "xterm-256color");
+        try env.put("ZELLIJ", "0");
+        try env.put("FORCE_HYPERLINK", value);
+
+        const term = Terminal.init(.{ .env_map = &env });
+        try testing.expect(term.caps.hyperlinks);
+    }
+
+    var env = std.process.Environ.Map.init(testing.allocator);
+    defer env.deinit();
+    try env.put("TERM", "xterm-kitty");
+    try env.put("FORCE_HYPERLINK", "0");
+
+    var term = Terminal.init(.{ .env_map = &env });
+    try testing.expect(!term.caps.hyperlinks);
+
+    term.processCapabilityResponse("\x1bP>|kitty(0.40.1)\x1b\\");
+    try testing.expect(!term.caps.hyperlinks);
+}
+
 test "setHostEnvVar detects ansi256 separately from rgb" {
     var env = std.process.Environ.Map.init(testing.allocator);
     defer env.deinit();
@@ -1104,6 +1174,14 @@ test "processCapabilityResponse - wezterm applies osc52 and hyperlink heuristics
     try testing.expect(!term.caps.rgb);
     try testing.expect(!term.caps.ansi256);
     try testing.expect(term.caps.osc52);
+    try testing.expect(term.caps.hyperlinks);
+}
+
+test "processCapabilityResponse - xterm.js enables hyperlinks" {
+    var term: Terminal = .{};
+
+    term.processCapabilityResponse("\x1bP>|xterm.js(6.0.0)\x1b\\");
+
     try testing.expect(term.caps.hyperlinks);
 }
 

@@ -254,6 +254,46 @@ test("unidentified truecolor terminals preserve the visible Markdown link fallba
   }
 })
 
+test("VS Code receives a wrapped Markdown URL as an OSC 8 hyperlink", async () => {
+  const previousTerm = process.env.TERM
+  const previousTermProgram = process.env.TERM_PROGRAM
+  process.env.TERM = "xterm-256color"
+  process.env.TERM_PROGRAM = "vscode"
+  const url = "https://example.com/catalog/moparts,2004,dodge,ram+1500,4.7l+v8,1432463,brake+pad"
+
+  try {
+    const stdout = createCollectingStdout(32, 8)
+    const renderer = await createCliRenderer({
+      stdin: createTestStdin(),
+      stdout,
+      remote: false,
+      forwardEnvKeys: ["TERM", "TERM_PROGRAM"],
+    })
+    destroyFns.push(() => renderer.destroy())
+
+    const syntaxStyle = SyntaxStyle.fromStyles({ default: { fg: "#ffffff" } })
+    destroyFns.push(() => syntaxStyle.destroy())
+    renderer.root.add(new MarkdownRenderable(renderer, { content: `See ${url} now.`, syntaxStyle }))
+
+    const frame = () => new TextDecoder().decode(renderer.currentRenderBuffer.getRealCharBytes(true))
+    for (let attempt = 0; attempt < 100 && !frame().replace(/\s/g, "").includes(url); attempt++) {
+      await new Promise((resolve) => setTimeout(resolve, 10))
+      await renderer.idle()
+    }
+    await flushWritable(stdout)
+
+    expect(renderer.capabilities?.hyperlinks).toBe(true)
+    expect(frame().replace(/\s/g, "")).toContain(url)
+    expect(frame()).not.toContain(url)
+    expect(stdout.getWrittenBytes().toString("binary")).toContain(`;${url}\x1b\\`)
+  } finally {
+    if (previousTerm === undefined) delete process.env.TERM
+    else process.env.TERM = previousTerm
+    if (previousTermProgram === undefined) delete process.env.TERM_PROGRAM
+    else process.env.TERM_PROGRAM = previousTermProgram
+  }
+})
+
 test("auto images use detected Kitty graphics and delete cleared placements", async () => {
   const stdin = createTestStdin()
   const stdout = createCollectingStdout(8, 4)

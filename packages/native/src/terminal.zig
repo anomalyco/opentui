@@ -217,6 +217,8 @@ startup_cursor_query_pending: bool = false,
 startup_cursor_query_captured: bool = false,
 explicit_width_probe_reports_pending: u8 = 0,
 unicode_wide_locked: ?bool = null,
+host_env_hyperlinks: bool = false,
+hyperlinks_override: ?bool = null,
 
 state: struct {
     alt_screen: bool = false,
@@ -668,6 +670,7 @@ fn checkEnvironmentOverrides(self: *Terminal) void {
     self.graphics_enabled = true;
     self.image_protocol = .auto;
     self.skip_explicit_width_query = false;
+    self.hyperlinks_override = null;
 
     // Always just try to enable bracketed paste, even if it was reported as not supported
     self.caps.bracketed_paste = true;
@@ -879,8 +882,10 @@ fn checkEnvironmentOverrides(self: *Terminal) void {
         }
     }
 
-    if (self.is_foot and self.multiplexer != .none) {
+    // Multiplexed panes inherit TERM, TERM_PROGRAM, and VTE_VERSION from the outer terminal.
+    if ((self.is_foot or self.host_env_hyperlinks) and self.multiplexer != .none) {
         self.caps.hyperlinks = false;
+        self.host_env_hyperlinks = false;
     }
 
     if (!self.caps.hyperlinks and self.term_info.from_xtversion) {
@@ -907,6 +912,20 @@ fn checkEnvironmentOverrides(self: *Terminal) void {
                 }
             }
         }
+    }
+
+    if (!self.caps.hyperlinks and !self.term_info.from_xtversion and self.multiplexer == .none) {
+        if (isHyperlinkHostEnv(env_map)) {
+            self.caps.hyperlinks = true;
+            self.host_env_hyperlinks = true;
+        }
+    }
+
+    if (env_map.get("FORCE_HYPERLINK")) |value| {
+        self.hyperlinks_override = !(std.mem.eql(u8, value, "0") or std.ascii.eqlIgnoreCase(value, "false") or std.ascii.eqlIgnoreCase(value, "off"));
+    }
+    if (self.hyperlinks_override) |enabled| {
+        self.caps.hyperlinks = enabled;
     }
 
     if (!self.caps.osc52 and !self.term_info.from_xtversion) {
@@ -1378,6 +1397,9 @@ pub fn processCapabilityResponse(self: *Terminal, response: []const u8) void {
     if (!self.caps.hyperlinks and isHyperlinkTerm(response)) {
         self.caps.hyperlinks = true;
     }
+    if (self.hyperlinks_override) |enabled| {
+        self.caps.hyperlinks = enabled;
+    }
 
     if (self.isInTmux()) {
         // tmux has reported pane focus changes since 1.8 but answers DECRQM
@@ -1440,7 +1462,22 @@ fn isHyperlinkTerm(value: []const u8) bool {
         std.ascii.findIgnoreCase(value, "wezterm") != null or
         std.ascii.findIgnoreCase(value, "alacritty") != null or
         std.ascii.findIgnoreCase(value, "foot") != null or
-        std.ascii.findIgnoreCase(value, "iterm") != null;
+        std.ascii.findIgnoreCase(value, "iterm") != null or
+        std.ascii.findIgnoreCase(value, "xterm.js") != null;
+}
+
+fn isHyperlinkHostEnv(env_map: *const std.process.Environ.Map) bool {
+    if (env_map.get("TERM_PROGRAM")) |program| {
+        if (std.mem.eql(u8, program, "vscode") or
+            std.mem.eql(u8, program, "zed") or
+            std.mem.eql(u8, program, "mintty")) return true;
+    }
+    // VTE releases before 0.52.2 include OSC 8 versions that can crash.
+    if (env_map.get("VTE_VERSION")) |version| {
+        const parsed = std.fmt.parseInt(u32, version, 10) catch return false;
+        return parsed >= 5202;
+    }
+    return false;
 }
 
 pub fn getCapabilities(self: *Terminal) Capabilities {
