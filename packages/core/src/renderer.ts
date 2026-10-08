@@ -920,9 +920,7 @@ export class CliRenderer extends EventEmitter implements RenderContext {
 
   private _useConsole: boolean = true
   private sigwinchHandler: () => void = (() => {
-    const width = this.stdout.columns
-    const height = this.stdout.rows
-    if (width > 0 && height > 0) this.handleResize(width, height)
+    this.handleResize()
   }).bind(this)
   private _capabilities: TerminalCapabilities | null = null
   private _latestPointer: { x: number; y: number } = { x: 0, y: 0 }
@@ -3933,23 +3931,52 @@ export class CliRenderer extends EventEmitter implements RenderContext {
     }
   }
 
-  private handleResize(width: number, height: number): void {
+  private handleResize(): void {
     if (this._isDestroyed) return
-    if (width !== this._terminalWidth || height !== this._terminalHeight) this.pendingResizeSawDifferentSize = true
-
+    const readDimensions = () => {
+      const stdout = this.stdout as NodeJS.WriteStream & { _refreshSize?: () => void }
+      const stdin = this.stdin as NodeJS.ReadStream & {
+        columns?: number
+        rows?: number
+        isTTY?: boolean
+        _refreshSize?: () => void
+      }
+      const sizeSource = !stdout.isTTY && stdin.isTTY ? stdin : stdout
+      // PTY bridges can deliver SIGWINCH before the stream's cached dimensions reflect the new window size.
+      sizeSource._refreshSize?.()
+      return { width: sizeSource.columns, height: sizeSource.rows }
+    }
+    const resize = () => {
+      const { width, height } = readDimensions()
+      if (width && width > 0 && height && height > 0) {
+        if (width !== this._terminalWidth || height !== this._terminalHeight) {
+          this.pendingResizeSawDifferentSize = true
+        }
+        this.applyPendingResize(width, height)
+      }
+    }
+    if (this._splitHeight > 0) {
+      resize()
+      return
+    }
+    const initialSize = readDimensions()
+    if (
+      initialSize.width &&
+      initialSize.width > 0 &&
+      initialSize.height &&
+      initialSize.height > 0 &&
+      (initialSize.width !== this._terminalWidth || initialSize.height !== this._terminalHeight)
+    ) {
+      this.pendingResizeSawDifferentSize = true
+    }
     if (this.resizeTimeoutId !== null) {
       this.clock.clearTimeout(this.resizeTimeoutId)
       this.resizeTimeoutId = null
     }
 
-    if (this._splitHeight > 0) {
-      this.applyPendingResize(width, height)
-      return
-    }
-
     this.resizeTimeoutId = this.clock.setTimeout(() => {
       this.resizeTimeoutId = null
-      this.applyPendingResize(width, height)
+      resize()
     }, this.resizeDebounceDelay)
   }
 
