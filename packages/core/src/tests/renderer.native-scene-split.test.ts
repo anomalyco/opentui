@@ -258,7 +258,8 @@ test.each(["frames", "suspend", "destroy"] as const)(
 
 // A wide grapheme that does not fit the row starts the next one; native must count the rows the terminal uses.
 // A row that fills the width keeps its last cell (#1580). The footer starts below the empty row after the newline.
-// Old text on the start row (`~`) gives way to the right of a row, and only there.
+// Old text on the start row (`~`) gives way to the right of a row, and only there. `{ red }` is a 9-cell writer row on a
+// red background that continues the last row, and "\n" ends its line; runs on a red background show in brackets.
 test.each([
   ["a captured ASCII line", ["abcdefghijklmnopqrs\n"], ["abcdefghi", "jklmnopqr", "s"]],
   ["a captured line of wide characters", ["一二三四五六七八九\n"], ["一二三四", "五六七八", "九"]],
@@ -267,11 +268,22 @@ test.each([
   ["a captured full-width line of wide characters", ["a一二三四\n"], ["a一二三四"]],
   ["a captured short line", ["abc\n"], ["abc"]],
   ["a captured line continued mid-row", ["ab", "cdefghijk\n"], ["abcdefghi", "jk"]],
+  [
+    "rows continued at the pinned bottom",
+    ["1\n2\n3\n4\n5\n6\n7\n8\n", "abcde", { red: "XXXXXX\n" }, "abcd", { red: "YY" }, "efg", "z\n"],
+    ["7", "8", "abcde[XXXX]", "[XX]", "abcd[YY]efg", "z"],
+  ],
 ] as const)("%s shows its terminal rows above the split footer", async (_name, writes, rows) => {
   const terminal = await setupTerminal({ columns: 9 })
   terminal.renderer.root.add(new TextRenderable(terminal.renderer, { content: "F" }))
   for (const write of writes) {
-    terminal.stdout.write(write)
+    if (typeof write === "string") terminal.stdout.write(write)
+    else
+      terminal.renderer.writeToScrollback(({ renderContext }) => ({
+        root: new TextRenderable(renderContext, { content: write.red.trimEnd(), width: 9, height: 1, bg: "#ff0000" }),
+        startOnNewLine: false,
+        trailingNewline: write.red.endsWith("\n"),
+      }))
     await terminal.frame()
   }
   const view = await createTestRenderer({ width: 9, height: 10 })
@@ -280,7 +292,10 @@ test.each([
   view.renderer.root.add(vt)
   vt.write("~".repeat(9) + "\r" + terminal.stdout.text())
   await view.renderOnce()
-  expect(vt.screen().lines).toEqual([...rows, "", "F"])
+  const screen = view
+    .captureSpans()
+    .lines.map(({ spans }) => spans.map((s) => (s.bg.r ? `[${s.text}]` : s.text)).join(""))
+  expect(screen.join("\n").replace(/ +$/gm, "").trimEnd()).toBe([...rows, "", "F"].join("\n"))
 })
 
 // Each commit is "text:rowColumns", plus "\n" when it ends its line.

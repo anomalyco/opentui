@@ -2073,6 +2073,10 @@ pub const CliRenderer = struct {
                     // Emit CRLF before payload to preserve logical row boundaries
                     // across commit chunks.
                     writer.writeAll("\r\n") catch {};
+                } else if (previousOutputColumn + snapshotRowEnd(snapshot, 0, normalized_row_columns) > self.width) {
+                    // A first row that wraps would scroll its next line in with the background of the
+                    // cell that wraps (BCE). Scroll that line in first, with default attributes.
+                    writer.writeAll(ansi.ANSI.reset ++ "\x1bD\x1b[A") catch {};
                 }
 
                 // Serialize payload rows at current output cursor.
