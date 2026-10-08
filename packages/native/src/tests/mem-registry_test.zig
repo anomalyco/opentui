@@ -1,5 +1,6 @@
 const std = @import("std");
 const mem_registry = @import("../mem-registry.zig");
+const utils = @import("../utils.zig");
 
 const MemRegistry = mem_registry.MemRegistry;
 const MemRegistryError = mem_registry.MemRegistryError;
@@ -90,7 +91,7 @@ test "MemRegistry matches a reference model under seeded random operations" {
         free_count: usize = 0,
 
         fn data(random: std.Random, owned: bool) ![]const u8 {
-            const text: []const u8 = ([_][]const u8{ "", "a", "owned bytes", "x" ** 64 })[random.uintLessThan(usize, 4)];
+            const text: []const u8 = ([_][]const u8{ "", "a", "owned bytes", utils.repeat(u8, "x", 64) })[random.uintLessThan(usize, 4)];
             return if (owned) try std.testing.allocator.dupe(u8, text) else text;
         }
 

@@ -8,6 +8,7 @@ const yoga = @import("../yoga.zig");
 const ansi = @import("../ansi.zig");
 const gp = @import("../grapheme.zig");
 const scene = @import("../scene.zig");
+const utils = @import("../utils.zig");
 
 test {
     _ = @import("scene_editor_test.zig");
@@ -349,7 +350,7 @@ test "Scene text draws a 129-byte grapheme as a blank cell" {
     const node = try f.owner.sceneCreateNode(f.id, 2, 2);
     try dimensions(f.owner, node, 1, 1);
     try f.owner.sceneMoveNode(node, f.root, 0);
-    const accepted = "e" ++ "\u{301}" ** 63;
+    const accepted = "e" ++ utils.repeat(u8, "\u{301}", 63);
     try f.owner.sceneSetText(node, accepted);
     try repaint(f.owner, f.id, .{ 0, 0, 0, 255 }, false, 0);
     const next = (try f.owner.raw().getSessionRenderer(f.id)).getNextBuffer();
@@ -358,7 +359,7 @@ test "Scene text draws a 129-byte grapheme as a blank cell" {
     try testing.expectEqualStrings(accepted, try f.owner.graphemes.get(gp.graphemeIdFromChar(char)));
 
     // The grapheme pool cannot hold this cluster, so it draws as a space instead of failing the frame.
-    const blank = "e" ++ "\u{301}" ** 64;
+    const blank = "e" ++ utils.repeat(u8, "\u{301}", 64);
     try testing.expectEqual(@as(usize, 129), blank.len);
     try f.owner.sceneSetText(node, blank);
     try repaint(f.owner, f.id, .{ 0, 0, 0, 255 }, false, 0);
@@ -392,7 +393,7 @@ test "Scene selected text copies exact bytes without allocating" {
     const node = try f.owner.sceneCreateNode(f.id, 2, 2);
     try dimensions(f.owner, node, 8, 2);
     try f.owner.sceneSetTextOptions(node, .{ .wrap_mode = .none });
-    try f.owner.sceneSetText(node, "\xe4\xb8\xad tail\n" ++ "x" ** 65536);
+    try f.owner.sceneSetText(node, "\xe4\xb8\xad tail\n" ++ utils.repeat(u8, "x", 65536));
     _ = try f.owner.sceneSetTextSelection(node, .{ .operation = 1, .focus_x = 1 });
     failing.fail_index = failing.alloc_index;
     failing.resize_fail_index = failing.resize_index;

@@ -8,10 +8,10 @@ const grapheme = @import("../grapheme.zig");
 const link = @import("../link.zig");
 
 test "NativeRenderable measure width normalization matches previous TypeScript rules" {
-    try std.testing.expectEqual(@as(f32, 0), native_renderable.normalizeYogaMeasureWidthInput(42, @intFromEnum(yoga.YogaMeasureMode.undefined)));
-    try std.testing.expectEqual(@as(f32, 0), native_renderable.normalizeYogaMeasureWidthInput(std.math.nan(f32), @intFromEnum(yoga.YogaMeasureMode.exactly)));
-    try std.testing.expectEqual(@as(f32, 42), native_renderable.normalizeYogaMeasureWidthInput(42, @intFromEnum(yoga.YogaMeasureMode.exactly)));
-    try std.testing.expectEqual(@as(f32, 42), native_renderable.normalizeYogaMeasureWidthInput(42, @intFromEnum(yoga.YogaMeasureMode.at_most)));
+    try std.testing.expectEqual(@as(f32, 0), native_renderable.normalizeYogaMeasureWidthInput(42, @backingInt(yoga.YogaMeasureMode.undefined)));
+    try std.testing.expectEqual(@as(f32, 0), native_renderable.normalizeYogaMeasureWidthInput(std.math.nan(f32), @backingInt(yoga.YogaMeasureMode.exactly)));
+    try std.testing.expectEqual(@as(f32, 42), native_renderable.normalizeYogaMeasureWidthInput(42, @backingInt(yoga.YogaMeasureMode.exactly)));
+    try std.testing.expectEqual(@as(f32, 42), native_renderable.normalizeYogaMeasureWidthInput(42, @backingInt(yoga.YogaMeasureMode.at_most)));
 }
 
 test "NativeRenderable measure height normalization matches previous TypeScript rules" {

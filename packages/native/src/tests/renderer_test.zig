@@ -13,6 +13,7 @@ const ghostty_vt = @import("../ghostty-vt.zig");
 const test_renderer_mod = @import("test-renderer.zig");
 const terminal_image_test = @import("terminal-image_test.zig");
 const owned_styled = @import("owned-styled-text.zig");
+const utils = @import("../utils.zig");
 
 const CliRenderer = renderer.CliRenderer;
 const TextBuffer = text_buffer.TextBuffer;
@@ -154,8 +155,8 @@ const CountingOutput = struct {
 const SlowThreadSafeOutput = struct {
     delay_ns: u64,
     writes: std.atomic.Value(u32) = std.atomic.Value(u32).init(0),
-    payloads: [2][64]u8 = [_][64]u8{[_]u8{0} ** 64} ** 2,
-    lengths: [2]usize = [_]usize{0} ** 2,
+    payloads: [2][64]u8 = @splat(@splat(0)),
+    lengths: [2]usize = @splat(0),
 
     fn bufferedOutput(self: *SlowThreadSafeOutput) @import("../renderer-output.zig").BufferedOutput {
         return .{ .ctx = self, .write_fn = write, .thread_safe = true };
@@ -246,7 +247,7 @@ test "renderer separates translucent Sixel cache entries by cell geometry" {
     defer cached_renderer.deinit();
     var fresh_renderer = try TestRenderer.create(std.testing.allocator, 2, 4, &pools.graphemes, &pools.links);
     defer fresh_renderer.deinit();
-    const pixels = [_]u8{ 255, 255, 255, 255 } ** 16;
+    const pixels: [64]u8 = @splat(255);
     const value = try image.createFromRgba(std.testing.allocator, &pixels, 4, 4, 16);
     defer value.deinit();
     const image_handle: u32 = 1;
@@ -1117,8 +1118,8 @@ fn paintedSixelColors(output: []const u8, colors: *[8]PaintedSixelColor) !usize 
     const end = std.mem.findPos(u8, output, start, "\x1b\\") orelse return error.NoSixelPayload;
     const payload = output[start + 8 .. end];
 
-    var palette = [_][3]u8{.{ 0, 0, 0 }} ** 256;
-    var painted = [_]bool{false} ** 256;
+    var palette: [256][3]u8 = @splat(.{ 0, 0, 0 });
+    var painted: [256]bool = @splat(false);
     var selected: usize = 0;
     var position: usize = 0;
     if (position < payload.len and payload[position] == '"') {
@@ -1368,7 +1369,7 @@ test "renderer - clipboard allocates one exact encoded sequence" {
     var test_renderer = try TestRenderer.create(std.testing.allocator, 80, 24, &pools.graphemes, &pools.links);
     defer test_renderer.deinit();
 
-    const payload = [_]u8{'A'} ** 2048;
+    const payload: [2048]u8 = @splat('A');
     try std.testing.expect(test_renderer.renderer.copyToClipboardOSC52(.clipboard, &payload));
 
     const output = test_renderer.lastOutput();
@@ -1386,7 +1387,7 @@ test "renderer - clipboard wraps OSC 52 in tmux DCS passthrough" {
     });
     defer test_renderer.deinit();
 
-    const payload = [_]u8{'A'} ** 2048;
+    const payload: [2048]u8 = @splat('A');
     try std.testing.expect(test_renderer.renderer.copyToClipboardOSC52(.clipboard, &payload));
 
     // Envelope: "\x1bPtmux;" (7) + bare sequence (base64 + 9) with both inner
@@ -1406,7 +1407,7 @@ test "renderer - clipboard chunks OSC 52 in screen DCS passthrough" {
     });
     defer test_renderer.deinit();
 
-    const payload = [_]u8{'A'} ** 2048;
+    const payload: [2048]u8 = @splat('A');
     try std.testing.expect(test_renderer.renderer.copyToClipboardOSC52(.clipboard, &payload));
 
     // Sequence: base64 (2732) + OSC 52 framing with BEL (8) = 2740 bytes,
@@ -2475,7 +2476,7 @@ test "renderer - rgb fallback uses published palette state" {
     cli_renderer.terminal.caps.ansi256 = true;
 
     const target = ansi.rgbaFromFloats(0.3, 0.6, 0.9, 1.0);
-    var palette = [_]RGBA{ansi.rgbaFromFloats(0.0, 0.0, 0.0, 1.0)} ** 256;
+    var palette: [256]RGBA = @splat(ansi.rgbaFromFloats(0.0, 0.0, 0.0, 1.0));
     palette[42] = target;
     cli_renderer.setPaletteState(palette[0..], ansi.rgbaFromFloats(1.0, 1.0, 1.0, 1.0), ansi.rgbaFromFloats(0.0, 0.0, 0.0, 1.0), 1);
 
@@ -2508,7 +2509,7 @@ test "renderer - palette epoch changes force repaint and use new palette mapping
     const target = ansi.rgbaFromFloats(0.3, 0.6, 0.9, 1.0);
     const bg = ansi.rgbaFromFloats(0.0, 0.0, 0.0, 1.0);
 
-    var palette_a = [_]RGBA{ansi.rgbaFromFloats(0.0, 0.0, 0.0, 1.0)} ** 256;
+    var palette_a: [256]RGBA = @splat(ansi.rgbaFromFloats(0.0, 0.0, 0.0, 1.0));
     palette_a[42] = target;
     cli_renderer.setPaletteState(palette_a[0..], ansi.rgbaFromFloats(1.0, 1.0, 1.0, 1.0), bg, 1);
 
@@ -2525,7 +2526,7 @@ test "renderer - palette epoch changes force repaint and use new palette mapping
     const second_output = test_cli_renderer.lastOutput();
     try std.testing.expect(std.mem.find(u8, second_output, "A") == null);
 
-    var palette_b = [_]RGBA{ansi.rgbaFromFloats(0.0, 0.0, 0.0, 1.0)} ** 256;
+    var palette_b: [256]RGBA = @splat(ansi.rgbaFromFloats(0.0, 0.0, 0.0, 1.0));
     palette_b[77] = target;
     cli_renderer.setPaletteState(palette_b[0..], ansi.rgbaFromFloats(1.0, 1.0, 1.0, 1.0), bg, 2);
 
@@ -3733,7 +3734,7 @@ test "FeedBackend - suspend from a published frame callback delivers mode exits"
     const Callback = struct {
         var target: ?*CliRenderer = null;
         fn notify(_: usize, event: u32, _: usize, _: u64) callconv(.c) void {
-            if (event != @intFromEnum(native_span_feed.EventId.DataAvailable)) return;
+            if (event != @backingInt(native_span_feed.EventId.DataAvailable)) return;
             const cli = target orelse return;
             target = null;
             cli.suspendRenderer();
@@ -3779,7 +3780,7 @@ test "FeedBackend - suspend from a published split batch callback preserves stat
     const Callback = struct {
         var target: ?*CliRenderer = null;
         fn notify(_: usize, event: u32, _: usize, _: u64) callconv(.c) void {
-            if (event != @intFromEnum(native_span_feed.EventId.DataAvailable)) return;
+            if (event != @backingInt(native_span_feed.EventId.DataAvailable)) return;
             const cli = target orelse return;
             target = null;
             cli.suspendRenderer();
@@ -3883,7 +3884,7 @@ test "FeedBackend - shutdown cancels an unfinished split batch and retries rejec
     cli.terminal.state.alt_screen = true;
     cli.terminal.state.kitty_keyboard = true;
     cli.terminal.state.kitty_keyboard_flags = 5;
-    try feed.writeAtomic(&([_]u8{'x'} ** 4096));
+    try feed.writeAtomic(&@as([4096]u8, @splat('x')));
     cli.suspendRenderer();
     try std.testing.expect(cli.terminal.state.alt_screen);
     try std.testing.expect(cli.terminal.state.kitty_keyboard);
@@ -4111,7 +4112,7 @@ test "FeedBackend - failed frame publishes no partial bytes" {
     opts.chunk_size = 32;
     opts.initial_chunks = 1;
     opts.max_bytes = 32;
-    opts.growth_policy = @intFromEnum(native_span_feed.GrowthPolicy.block);
+    opts.growth_policy = @backingInt(native_span_feed.GrowthPolicy.block);
     opts.auto_commit_on_full = 0;
 
     const feed = try native_span_feed.Stream.create(std.testing.allocator, opts);
@@ -4139,7 +4140,7 @@ test "FeedBackend - failed split batch restores unpublished scrollback state" {
     opts.chunk_size = 64;
     opts.initial_chunks = 1;
     opts.max_bytes = 64;
-    opts.growth_policy = @intFromEnum(native_span_feed.GrowthPolicy.block);
+    opts.growth_policy = @backingInt(native_span_feed.GrowthPolicy.block);
     opts.auto_commit_on_full = 0;
     const feed = try native_span_feed.Stream.create(std.testing.allocator, opts);
     var cli_renderer = try CliRenderer.createWithOptions(std.testing.allocator, 40, 4, &pools.graphemes, .{
@@ -4182,7 +4183,7 @@ test "FeedBackend - skipped split repaint restores unpublished transition state"
     opts.chunk_size = 32;
     opts.initial_chunks = 4;
     opts.max_bytes = 128;
-    opts.growth_policy = @intFromEnum(native_span_feed.GrowthPolicy.block);
+    opts.growth_policy = @backingInt(native_span_feed.GrowthPolicy.block);
     opts.auto_commit_on_full = 0;
     const feed = try native_span_feed.Stream.create(std.testing.allocator, opts);
     var cli_renderer = try CliRenderer.createWithOptions(std.testing.allocator, 4, 2, &pools.graphemes, .{
@@ -4200,7 +4201,7 @@ test "FeedBackend - skipped split repaint restores unpublished transition state"
     const before_offset = cli_renderer.renderOffset;
     const before_transition = cli_renderer.pendingSplitFooterTransition;
 
-    const blocker = [_]u8{'x'} ** 65;
+    const blocker: [65]u8 = @splat('x');
     try feed.writeAtomic(&blocker);
     const result = cli_renderer.repaintSplitFooter(2, true);
     try std.testing.expectEqual(renderer.RenderStatus.skipped, result.status);
@@ -4217,7 +4218,7 @@ test "FeedBackend - skipped ordinary render retries split transition" {
     opts.chunk_size = 32;
     opts.initial_chunks = 8;
     opts.max_bytes = 256;
-    opts.growth_policy = @intFromEnum(native_span_feed.GrowthPolicy.block);
+    opts.growth_policy = @backingInt(native_span_feed.GrowthPolicy.block);
     opts.auto_commit_on_full = 0;
     const feed = try native_span_feed.Stream.create(std.testing.allocator, opts);
     var cli_renderer = try CliRenderer.createWithOptions(std.testing.allocator, 4, 2, &pools.graphemes, .{
@@ -4235,7 +4236,7 @@ test "FeedBackend - skipped ordinary render retries split transition" {
     const before_offset = cli_renderer.renderOffset;
     const before_transition = cli_renderer.pendingSplitFooterTransition;
 
-    const blocker = [_]u8{'x'} ** 193;
+    const blocker: [193]u8 = @splat('x');
     try feed.writeAtomic(&blocker);
     try std.testing.expectEqual(renderer.RenderStatus.skipped, cli_renderer.render(true));
     try std.testing.expectEqual(before_scrollback, cli_renderer.splitScrollback);
@@ -4267,7 +4268,7 @@ test "FeedBackend - skipped frame keeps the published hit grid and clears its pa
     opts.chunk_size = 32;
     opts.initial_chunks = 8;
     opts.max_bytes = 256;
-    opts.growth_policy = @intFromEnum(native_span_feed.GrowthPolicy.block);
+    opts.growth_policy = @backingInt(native_span_feed.GrowthPolicy.block);
     opts.auto_commit_on_full = 0;
     const feed = try native_span_feed.Stream.create(std.testing.allocator, opts);
     var cli_renderer = try CliRenderer.createWithOptions(std.testing.allocator, 1, 1, &pools.graphemes, .{
@@ -4289,7 +4290,7 @@ test "FeedBackend - skipped frame keeps the published hit grid and clears its pa
 
     cli_renderer.addToHitGrid(0, 0, 1, 1, 22);
     try cli_renderer.getNextBuffer().drawText("X", 0, 0, ansi.rgbColor(255, 255, 255, 255), null, 0);
-    const blocker = [_]u8{'x'} ** 193;
+    const blocker: [193]u8 = @splat('x');
     try feed.writeAtomic(&blocker);
     try std.testing.expectEqual(renderer.RenderStatus.skipped, cli_renderer.render(true));
     try std.testing.expectEqual(@as(u32, 11), cli_renderer.checkHit(0, 0));
@@ -4310,7 +4311,7 @@ test "FeedBackend - skipped frame retries unsent terminal controls" {
     opts.chunk_size = 32;
     opts.initial_chunks = 4;
     opts.max_bytes = 128;
-    opts.growth_policy = @intFromEnum(native_span_feed.GrowthPolicy.block);
+    opts.growth_policy = @backingInt(native_span_feed.GrowthPolicy.block);
     opts.auto_commit_on_full = 0;
     const feed = try native_span_feed.Stream.create(std.testing.allocator, opts);
     var cli_renderer = try CliRenderer.createWithOptions(std.testing.allocator, 1, 1, &pools.graphemes, .{
@@ -4332,7 +4333,7 @@ test "FeedBackend - skipped frame retries unsent terminal controls" {
     cli_renderer.terminal.setCursorStyle(.line, false);
     cli_renderer.terminal.setMousePointerStyle(.pointer);
 
-    const blocker = [_]u8{'x'} ** 65;
+    const blocker: [65]u8 = @splat('x');
     try feed.writeAtomic(&blocker);
     try std.testing.expectEqual(renderer.RenderStatus.skipped, cli_renderer.render(false));
 
@@ -4363,7 +4364,7 @@ test "FeedBackend - failed Sixel frame does not publish an unterminated DCS" {
     opts.chunk_size = 256;
     opts.initial_chunks = 1;
     opts.max_bytes = 256;
-    opts.growth_policy = @intFromEnum(native_span_feed.GrowthPolicy.block);
+    opts.growth_policy = @backingInt(native_span_feed.GrowthPolicy.block);
     opts.auto_commit_on_full = 0;
     const feed = try native_span_feed.Stream.create(std.testing.allocator, opts);
     var cli_renderer = try CliRenderer.createWithOptions(std.testing.allocator, 8, 4, &pools.graphemes, .{
@@ -4415,7 +4416,7 @@ test "FeedBackend - writeOut publishes nothing when the queue is blocked" {
     opts.initial_chunks = 2;
     opts.span_queue_capacity = 1;
     opts.auto_commit_on_full = 0;
-    opts.growth_policy = @intFromEnum(native_span_feed.GrowthPolicy.block);
+    opts.growth_policy = @backingInt(native_span_feed.GrowthPolicy.block);
 
     const feed = try native_span_feed.Stream.create(std.testing.allocator, opts);
     defer feed.destroy();
@@ -4444,7 +4445,7 @@ test "FeedBackend - writeOutMultiple publishes no partial batch" {
     opts.chunk_size = 32;
     opts.initial_chunks = 1;
     opts.max_bytes = 32;
-    opts.growth_policy = @intFromEnum(native_span_feed.GrowthPolicy.block);
+    opts.growth_policy = @backingInt(native_span_feed.GrowthPolicy.block);
     opts.auto_commit_on_full = 0;
 
     const feed = try native_span_feed.Stream.create(std.testing.allocator, opts);
@@ -4591,7 +4592,7 @@ test "buffered backend reports a failed frame when growth allocation fails" {
 
     backend.beginFrame();
     var w = backend.writer();
-    const chunk = [_]u8{'x'} ** 4096;
+    const chunk: [4096]u8 = @splat('x');
     var write_failed = false;
     var written: usize = 0;
     while (written <= renderer.OUTPUT_BUFFER_SIZE) : (written += chunk.len) {
@@ -4627,7 +4628,7 @@ test "buffered backend releases oversized frame buffers after the spike passes" 
     // One pathological frame that grows the active buffer to ~4x the default.
     backend.beginFrame();
     var w = backend.writer();
-    const chunk = [_]u8{'x'} ** 4096;
+    const chunk: [4096]u8 = @splat('x');
     var written: usize = 0;
     while (written < 4 * renderer.OUTPUT_BUFFER_SIZE) : (written += chunk.len) {
         try w.writeAll(&chunk);
@@ -4658,7 +4659,7 @@ test "buffered backend frees grown buffers cleanly on deinit" {
 
     backend.beginFrame();
     var w = backend.writer();
-    const chunk = [_]u8{'x'} ** 4096;
+    const chunk: [4096]u8 = @splat('x');
     var written: usize = 0;
     while (written < 2 * renderer.OUTPUT_BUFFER_SIZE) : (written += chunk.len) {
         try w.writeAll(&chunk);
@@ -4919,7 +4920,7 @@ test "renderer transmits small kitty images at native size" {
 
     var test_renderer = try TestRenderer.create(std.testing.allocator, 8, 4, &pools.graphemes, &pools.links);
     defer test_renderer.deinit();
-    const value = try image.createFromRgba(std.testing.allocator, &([_]u8{ 9, 8, 7, 255 } ** 64), 8, 8, 32);
+    const value = try image.createFromRgba(std.testing.allocator, utils.repeat(u8, &.{ 9, 8, 7, 255 }, 64), 8, 8, 32);
     defer value.deinit();
     const value_handle: u32 = 1;
     test_renderer.renderer.terminal.caps.kitty_graphics = true;

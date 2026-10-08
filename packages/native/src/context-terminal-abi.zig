@@ -189,7 +189,7 @@ test "Context terminal ABI copies controller output and rejects stale handles" {
     const input = "abc\x1b[?1004h\x1b[?2004h\x1b[?1003h\x1b[?1006h";
     try std.testing.expectEqual(c.OT_OK, ot_embedded_terminal_write(context, &id, input, input.len));
     try std.testing.expectEqual(c.OT_OK, ot_embedded_terminal_set_selection(context, &id, 0, 0, 1, 0));
-    var bytes = [_]u8{0xaa} ** 128;
+    var bytes: [128]u8 = @splat(0xaa);
     var count: u32 = 99;
     try std.testing.expectEqual(c.OT_OK, ot_embedded_terminal_get_selected_text(context, &id, null, 0, &count));
     try std.testing.expectEqual(2, count);

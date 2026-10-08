@@ -26,6 +26,12 @@ fn span(comptime Slice: type, pointer: anytype, length: u64) !Slice {
     return if (length == 0) &.{} else pointer.?[0..@intCast(length)];
 }
 
+/// image.Info has the layout of the C record.
+fn infoToC(info: image.Info) c.ot_image_info {
+    comptime std.debug.assert(@sizeOf(image.Info) == @sizeOf(c.ot_image_info));
+    return @as(*const c.ot_image_info, @ptrCast(&info)).*;
+}
+
 fn pixelOptions(stride: u32, format: u32, alpha: u32) !image.PixelImportOptions {
     return .{
         .stride = stride,
@@ -41,7 +47,7 @@ pub fn ot_image_inspect(context: ?*ContextHandle, bytes: ?[*]const u8, count: u6
     const out = out_ptr orelse return failure(owner, error.InvalidArgument);
     const data = span([]const u8, bytes, count) catch |err| return failure(owner, err);
     const info = owner.core.inspectImage(data) catch |err| return failure(owner, err);
-    out.* = @bitCast(info);
+    out.* = infoToC(info);
     return c.OT_OK;
 }
 
@@ -105,7 +111,7 @@ pub fn ot_image_get_info(context: ?*ContextHandle, image_ptr: ?*const c.ot_handl
     const owner = context.?;
     const id = image_ptr orelse return failure(owner, error.InvalidArgument);
     const out = out_ptr orelse return failure(owner, error.InvalidArgument);
-    out.* = @bitCast(owner.core.imageInfo(abi.handleFromC(id.*)) catch |err| return failure(owner, err));
+    out.* = infoToC(owner.core.imageInfo(abi.handleFromC(id.*)) catch |err| return failure(owner, err));
     return c.OT_OK;
 }
 

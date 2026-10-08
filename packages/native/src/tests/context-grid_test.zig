@@ -95,7 +95,7 @@ test "Context checked grid and pixel draws reject invalid input before any write
     // The second cell is invalid, so a single-pass draw would already have written the first.
     const packed_cells = [_]PackedCell{ .{ .char = 'A' }, .{ .char = 'B', .fg = .{ nan, 0, 0, 1 } } };
     const packed_bytes = std.mem.asBytes(&packed_cells);
-    const pixels = [_]u8{255} ** 32;
+    const pixels: [32]u8 = @splat(255);
     const grid: context.BufferGrid = .{ .border_chars = border, .foreground = red, .background = black, .draw_inner = true, .draw_outer = true };
     var invalid_chars: [3]context.BufferGrid = @splat(grid);
     for (&invalid_chars, [_]u32{ 0xd800, 0x110000, 0x4e2d }) |*options, char| options.border_chars[4] = char;

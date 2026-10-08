@@ -176,7 +176,7 @@ test "Session Kitty files of a frame skipped for output pressure are released an
     var bytes: [512]u8 = undefined;
     // The last skipped frame keeps the file that the published frame references.
     for ([_]@import("../session.zig").RenderStatus{ .skipped, .pending, .skipped }, [_]u32{ 0, 1, 1 }) |status, pending| {
-        if (status == .skipped) try f.owner.writeSession(f.id, &([_]u8{'x'} ** 448));
+        if (status == .skipped) try f.owner.writeSession(f.id, &@as([448]u8, @splat('x')));
         try std.testing.expect(try f.cli.getNextBuffer().drawImage(value, 1, 0, 0, 1, 1, 0, 0, 0, 0, 1, 1, .kitty));
         try std.testing.expectEqual(status, try f.owner.renderSession(f.id, true));
         try std.testing.expectEqual(pending, f.cli.kittyTransport.pendingCount());

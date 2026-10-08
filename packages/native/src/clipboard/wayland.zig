@@ -139,7 +139,7 @@ pub const Connection = struct {
     primary_offer: ?*WlProxy = null,
     primary_supported: bool = false,
     bound_seat_global: ?u32 = null,
-    providers: [MAX_PROVIDERS]?*Provider = .{null} ** MAX_PROVIDERS,
+    providers: [MAX_PROVIDERS]?*Provider = @splat(null),
     clipboard_provider: ?*Provider = null,
     primary_provider: ?*Provider = null,
     provider_cursor: u8 = 0,
@@ -1725,7 +1725,7 @@ fn testProxyVersion(_: *WlProxy) callconv(.c) u32 {
 
 test "Wayland MIME retention ignores irrelevant metadata without consuming the bounded set" {
     try std.testing.expect(!isRelevantMime("application/x-irrelevant"));
-    try std.testing.expect(!isRelevantMime(&([_]u8{'x'} ** (MAX_MIME_BYTES + 1))));
+    try std.testing.expect(!isRelevantMime(&@as([MAX_MIME_BYTES + 1]u8, @splat('x'))));
 
     const proxy: *WlProxy = @ptrFromInt(1);
     var connection = testOfferConnection(proxy);

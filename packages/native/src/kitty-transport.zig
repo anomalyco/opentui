@@ -2,6 +2,7 @@ const std = @import("std");
 const builtin = @import("builtin");
 const terminal_image = @import("terminal-image.zig");
 const native_image = @import("image.zig");
+const base64Encode = @import("utils.zig").base64Encode;
 
 pub const Mode = enum(u32) { raw, zlib, file };
 pub const FileState = enum(u32) { disabled, probing, ready, unsupported, timeout, io_error, cancelled };
@@ -131,7 +132,7 @@ pub const Transport = struct {
 
     fn writeReference(writer: anytype, lease: *const Lease, image: *native_image.Image, id: u32, action: u8) !void {
         var encoded: [1024]u8 = undefined;
-        const payload = std.base64.standard.Encoder.encode(&encoded, lease.path[0..lease.path_len]);
+        const payload = base64Encode(&encoded, lease.path[0..lease.path_len]);
         const format: u32 = if (image.encoded_png != null) 100 else if (image.metadata.has_alpha == 0) 24 else 32;
         try writer.print("\x1b_Ga={c},t=f,f={d},s={d},v={d},i={d},q=0;{s}\x1b\\", .{
             action, format, image.width(), image.height(), id, payload,

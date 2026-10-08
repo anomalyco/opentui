@@ -624,7 +624,7 @@ test "Context concurrently renders with independent pools, Yoga callbacks, clock
     try std.testing.expectEqualStrings("https://second.invalid", try second.links.get(second_link));
     try std.testing.expectError(error.WrongContext, second.raw().getRenderable(first_identity));
     const custom = try second.raw().getRenderable(tasks[1].custom_id);
-    yoga.yogaNodeStyleSetValue(custom.yoga_node, @intFromEnum(yoga.YogaValueKind.min_width), 0, @intFromEnum(yoga.YogaUnit.point), 1);
+    yoga.yogaNodeStyleSetValue(custom.yoga_node, @backingInt(yoga.YogaValueKind.min_width), 0, @backingInt(yoga.YogaUnit.point), 1);
     second_clock.time_us += 1000;
     try tasks[1].render();
     try std.testing.expect(second_callbacks.dirtied > 0);

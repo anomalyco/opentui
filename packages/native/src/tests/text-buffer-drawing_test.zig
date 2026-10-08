@@ -14,6 +14,7 @@ const OptimizedBuffer = buffer.OptimizedBuffer;
 const RGBA = text_buffer.RGBA;
 const WrapMode = text_buffer.WrapMode;
 const owned_styled = @import("owned-styled-text.zig");
+const utils = @import("../utils.zig");
 
 fn resolvedRow(allocator: std.mem.Allocator, opt_buffer: *const OptimizedBuffer, pool: *gp.GraphemePool, y: u32) ![]u8 {
     var row: std.ArrayListUnmanaged(u8) = .empty;
@@ -1663,7 +1664,7 @@ test "loadFile - registered file content survives text replacement" {
     defer std.testing.allocator.free(file_path);
 
     // Two replacements settle the rope arena into one block that later resets reuse.
-    const other_mem_id = try tb.registerMemBuffer("other line\n" ** 64, false);
+    const other_mem_id = try tb.registerMemBuffer(utils.repeat(u8, "other line\n", 64), false);
     try tb.setTextFromMemId(other_mem_id);
     try tb.setTextFromMemId(other_mem_id);
 

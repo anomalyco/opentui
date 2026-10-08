@@ -6,6 +6,7 @@ const link = @import("../link.zig");
 const iter_mod = @import("../text-buffer-iterators.zig");
 const TextAttributes = @import("../ansi.zig").TextAttributes;
 const owned_styled = @import("owned-styled-text.zig");
+const utils = @import("../utils.zig");
 
 const TextBuffer = text_buffer.UnifiedTextBuffer;
 
@@ -21,7 +22,7 @@ test "TextBuffer CJK layout cache does not retain replaced dense metadata" {
     view.setWrapMode(.word);
     view.setWrapWidth(80);
 
-    var text = ("\u{65e5}" ** 4096).*;
+    var text = utils.repeat(u8, "\u{65e5}", 4096).*;
     const mem_id = try tb.registerMemBuffer(&text, false);
     try tb.setTextFromMemId(mem_id);
     try std.testing.expectEqual(@as(u32, 103), view.getVirtualLineCount());
@@ -67,8 +68,8 @@ test "TextBuffer CJK layout cache survives history and multiple views" {
     second.setWrapMode(.word);
     second.setWrapWidth(100);
 
-    const original = "\u{65e5}" ** 512;
-    const replacement = "\u{672c}" ** 400;
+    const original = utils.repeat(u8, "\u{65e5}", 512);
+    const replacement = utils.repeat(u8, "\u{672c}", 400);
     try tb.setText(original);
     try std.testing.expectEqual(@as(u32, 13), first.getVirtualLineCount());
     const original_chunk = tb.rope().get(1).?.asText().?;
@@ -362,7 +363,7 @@ test "TextBuffer line info - very long lines" {
     defer tb.deinit();
 
     // Create a long text with 1000 'A' characters
-    const longText = [_]u8{'A'} ** 1000;
+    const longText: [1000]u8 = @splat('A');
     try tb.setText(&longText);
 
     try std.testing.expectEqual(@as(u32, 1), tb.getLineCount());
@@ -617,7 +618,7 @@ test "TextBuffer line info - extremely long single line" {
     defer tb.deinit();
 
     // Create extremely long text with 10000 'A' characters
-    const extremelyLongText = [_]u8{'A'} ** 10000;
+    const extremelyLongText: [10000]u8 = @splat('A');
     try tb.setText(&extremelyLongText);
 
     try std.testing.expectEqual(@as(u32, 1), tb.getLineCount());
@@ -1504,7 +1505,7 @@ test "TextBuffer setTextFromMemId - replacing content does not retain previous r
     view.setWrapMode(.word);
     view.setWrapWidth(40);
 
-    const text = "tool output line \u{65e5}\u{672c}\n" ** 256;
+    const text = utils.repeat(u8, "tool output line \u{65e5}\u{672c}\n", 256);
     const mem_id = try tb.registerMemBuffer(text, false);
     try tb.setTextFromMemId(mem_id);
     try std.testing.expectEqual(@as(u32, 257), view.getVirtualLineCount());
@@ -1534,7 +1535,7 @@ test "EditBuffer setTextOwned - replacing content without history does not retai
     var eb = try edit_buffer.EditBuffer.init(tracking.allocator(), &pools.graphemes, &pools.links, .unicode, null);
     defer eb.deinit();
 
-    const text = "prompt line\n" ** 256;
+    const text = utils.repeat(u8, "prompt line\n", 256);
     const mem_id = try eb.setTextOwned(text, null);
     try eb.insertText("x");
     try std.testing.expect(eb.canUndo());
@@ -1651,7 +1652,7 @@ fn checkPlainTextAllocationFailures() !void {
     defer links.deinit();
     const style = try text_buffer.SyntaxStyle.init(std.testing.allocator);
     defer style.deinit();
-    for ([_][]const u8{ "replacement\t\u{754c}\n" ** 8, "" }) |input| {
+    for ([_][]const u8{ utils.repeat(u8, "replacement\t\u{754c}\n", 8), "" }) |input| {
         for ([_]bool{ false, true }) |fail_rope| {
             var succeeded = false;
             for (0..128) |offset| {
@@ -1895,7 +1896,7 @@ test "TextBuffer owned styled replacement reclaims styled plain and empty transi
     var retained: [5]usize = undefined;
     for (0..8) |iteration| {
         for ([_]struct { text: []const u8, styled: bool }{
-            .{ .text = "word\t\u{754c}e\u{301}\n" ** 32, .styled = true },
+            .{ .text = utils.repeat(u8, "word\t\u{754c}e\u{301}\n", 32), .styled = true },
             .{ .text = "x", .styled = true },
             .{ .text = "", .styled = false },
             .{ .text = "plain", .styled = false },

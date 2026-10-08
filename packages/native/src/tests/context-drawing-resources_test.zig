@@ -3,6 +3,7 @@ const testing = std.testing;
 const context = @import("../context.zig");
 const gp = @import("../grapheme.zig");
 const ansi = @import("../ansi.zig");
+const utils = @import("../utils.zig");
 const foreground = ansi.rgbColor(255, 255, 255, 255);
 const background = ansi.rgbColor(0, 0, 0, 255);
 
@@ -53,8 +54,8 @@ test "Context encoded Unicode encodes tabs, controls, and clusters a cell cannot
         .{ .text = "a\x1b[1mb", .chars = &.{ 'a', '[', '1', 'm', 'b' } },
         .{ .text = "a\x7fb", .chars = &.{ 'a', 'b' } },
         .{ .text = "a\u{85}b", .chars = &.{ 'a', 'b' } },
-        .{ .text = "a" ++ "e" ++ "\u{301}" ** 64 ++ "b", .chars = &.{ 'a', ' ', 'b' } },
-        .{ .text = "a" ++ "\u{4e2d}" ++ "\u{301}" ** 63 ++ "b", .chars = &.{ 'a', ' ', ' ', 'b' } },
+        .{ .text = "a" ++ "e" ++ utils.repeat(u8, "\u{301}", 64) ++ "b", .chars = &.{ 'a', ' ', 'b' } },
+        .{ .text = "a" ++ "\u{4e2d}" ++ utils.repeat(u8, "\u{301}", 63) ++ "b", .chars = &.{ 'a', ' ', ' ', 'b' } },
     };
     for ([_]@import("../utf8.zig").WidthMethod{ .unicode, .wcwidth }) |width_method| {
         for (cases) |case| {

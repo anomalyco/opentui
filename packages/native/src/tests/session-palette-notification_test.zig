@@ -30,7 +30,7 @@ test "Session palette queries admit only bounded read-only packets in output ord
     try writer.writeAll(ansi.ANSI.tmuxDcsEnd);
     try f.value.control(.{ .palette_query = writer.buffered() });
     try testing.expectEqualStrings(writer.buffered(), try f.drain(&bytes));
-    const oversized = [_]u8{'x'} ** (session.control_packet_bytes_max + 1);
+    const oversized: [session.control_packet_bytes_max + 1]u8 = @splat('x');
     for ([_][]const u8{
         "",                              &oversized,                          "\x1b]4;256;?\x07", "\x1b]4;0;#ffffff\x07",
         "\x1b]10;?\x07\x1b]0;title\x07", "\x1b]18;?\x07",                     "\x1b]10;?",        "\x1bPtmux;\x1b\x1b]4;0;?\x07",
@@ -55,14 +55,14 @@ test "Session notification and palette rejection retain restoration reserves and
     _ = try f.drain(&bytes);
     const before = f.value.renderer.?.terminal;
     const reservation = f.value.output.control_sequence;
-    const oversized = [_]u8{'x'} ** (session.control_packet_bytes_max + 1);
+    const oversized: [session.control_packet_bytes_max + 1]u8 = @splat('x');
     try testing.expect(!try f.value.triggerNotification(&oversized, null));
-    const too_large_encoded = [_]u8{'x'} ** session.control_packet_bytes_max;
+    const too_large_encoded: [session.control_packet_bytes_max]u8 = @splat('x');
     try testing.expect(!try f.value.triggerNotification(&too_large_encoded, null));
     failing.fail_index = failing.alloc_index;
     try testing.expect(!try f.value.triggerNotification("allocation failure", null));
     failing.fail_index = std.math.maxInt(usize);
-    const blocker = [_]u8{'x'} ** (3 * 4096);
+    const blocker: [3 * 4096]u8 = @splat('x');
     try f.value.write(&blocker);
     const ticket = (try f.owner.readOutput(f.id, bytes[0..1])).?;
     const stats = f.value.getStats();

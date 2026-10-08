@@ -88,6 +88,8 @@ test "EditBuffer - native notifications do not allocate" {
         .{ .userdata = &capture, .callback = Capture.callback },
     );
     defer eb.deinit();
+    // The first line lookup fills the rope's marker cache from its arena.
+    _ = eb.tb.rope().markerCount(.linestart);
     failing.fail_index = failing.alloc_index;
     failing.resize_fail_index = failing.resize_index;
     try eb.setCursor(0, 0);

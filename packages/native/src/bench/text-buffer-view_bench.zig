@@ -5,6 +5,7 @@ const text_buffer = @import("../text-buffer.zig");
 const text_buffer_view = @import("../text-buffer-view.zig");
 const gp = @import("../grapheme.zig");
 const link = @import("../link.zig");
+const utils = @import("../utils.zig");
 
 const UnifiedTextBuffer = text_buffer.UnifiedTextBuffer;
 const UnifiedTextBufferView = text_buffer_view.UnifiedTextBufferView;
@@ -26,7 +27,7 @@ const large_text_patterns = [_][]const u8{
     "Tab\tseparated\tvalues\there\tfor\ttesting\twrapping. ",
 };
 
-const matched_single_chunk_text = "word-" ** 12_800;
+const matched_single_chunk_text = utils.repeat(u8, "word-", 12_800);
 const matched_single_chunk_width: u32 = 64_000;
 
 pub fn generateLargeText(allocator: std.mem.Allocator, lines: u32, target_bytes: usize) ![]u8 {

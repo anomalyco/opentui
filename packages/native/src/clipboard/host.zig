@@ -107,7 +107,7 @@ fn tryJoinThread(thread: std.Thread) bool {
     return switch (builtin.os.tag) {
         .linux => switch (pthread_tryjoin_np(thread.getHandle(), null)) {
             0 => true,
-            @intFromEnum(std.posix.E.BUSY) => false,
+            @backingInt(std.posix.E.BUSY) => false,
             else => false,
         },
         .freebsd => switch (pthread_peekjoin_np(thread.getHandle(), null)) {
@@ -115,7 +115,7 @@ fn tryJoinThread(thread: std.Thread) bool {
                 thread.join();
                 return true;
             },
-            @intFromEnum(std.posix.E.BUSY) => false,
+            @backingInt(std.posix.E.BUSY) => false,
             else => false,
         },
         .windows => blk: {
@@ -447,7 +447,7 @@ pub const Operation = struct {
 
     fn rememberFailure(operation: *Operation, code: ErrorCode, diagnostic: []const u8) void {
         if (operation.error_code != 0) return;
-        operation.error_code = @intFromEnum(code);
+        operation.error_code = @backingInt(code);
         operation.diagnostic = diagnostic;
     }
 
@@ -739,7 +739,7 @@ pub const Service = struct {
         }
         if (status == .failed) {
             if (operation.error_code == 0) {
-                operation.error_code = if (error_code != 0) error_code else @intFromEnum(ErrorCode.internal);
+                operation.error_code = if (error_code != 0) error_code else @backingInt(ErrorCode.internal);
             }
             if (operation.diagnostic.len == 0) operation.diagnostic = "Native platform clipboard operation failed";
         }
@@ -1246,7 +1246,7 @@ pub const Service = struct {
             },
             .out_of_memory => {
                 x11.cleanupRead(&operation.x11_read);
-                operation.error_code = @intFromEnum(ErrorCode.out_of_memory);
+                operation.error_code = @backingInt(ErrorCode.out_of_memory);
                 operation.diagnostic = "Failed to allocate X11 clipboard result";
                 return service.finishOperation(operation, .failed);
             },
@@ -1821,11 +1821,11 @@ fn destroyTestService(objects: *handles.Table, service: Handle) void {
 }
 
 test "clipboard status values are stable" {
-    try std.testing.expectEqual(@as(u8, 0), @intFromEnum(OperationStatus.pending));
-    try std.testing.expectEqual(@as(u8, 1), @intFromEnum(OperationStatus.read));
-    try std.testing.expectEqual(@as(u8, 10), @intFromEnum(OperationStatus.invalid_handle));
-    try std.testing.expectEqual(@as(u8, 1), @intFromEnum(CopyStatus.buffer_too_small));
-    try std.testing.expectEqual(@as(u8, 2), @intFromEnum(DestroyStatus.invalid_handle));
+    try std.testing.expectEqual(@as(u8, 0), @backingInt(OperationStatus.pending));
+    try std.testing.expectEqual(@as(u8, 1), @backingInt(OperationStatus.read));
+    try std.testing.expectEqual(@as(u8, 10), @backingInt(OperationStatus.invalid_handle));
+    try std.testing.expectEqual(@as(u8, 1), @backingInt(CopyStatus.buffer_too_small));
+    try std.testing.expectEqual(@as(u8, 2), @backingInt(DestroyStatus.invalid_handle));
 }
 
 test "clipboard service preserves a configured native operation limit" {
@@ -2102,9 +2102,9 @@ test "clipboard Wayland BMP transfer converts to PNG and releases source bytes" 
     var length: u32 = 0;
     try std.testing.expectEqual(CopyStatus.ok, resultDataLength(&objects, operation_handle, &length));
     try std.testing.expectEqual(@as(u32, @intCast(operation.result.len)), length);
-    var too_small = [_]u8{0xaa} ** 7;
+    var too_small: [7]u8 = @splat(0xaa);
     try std.testing.expectEqual(CopyStatus.buffer_too_small, resultDataCopy(&objects, operation_handle, &too_small, too_small.len));
-    try std.testing.expectEqualSlices(u8, &([_]u8{0xaa} ** 7), &too_small);
+    try std.testing.expectEqualSlices(u8, &@as([7]u8, @splat(0xaa)), &too_small);
     var output: [1024]u8 = undefined;
     try std.testing.expectEqual(CopyStatus.ok, resultDataCopy(&objects, operation_handle, &output, @intCast(operation.result.len)));
     try std.testing.expectEqualStrings("\x89PNG\r\n\x1a\n", output[0..8]);
@@ -2145,7 +2145,7 @@ test "clipboard queued platform terminal requests complete before worker executi
         .kind = .read,
     };
     var queue_storage: [2]*Operation = undefined;
-    service.platform_queue = .{ .items = queue_storage[0..0], .capacity = queue_storage.len };
+    service.platform_queue = .initBuffer(&queue_storage);
     service.platform_queue.appendAssumeCapacity(&first);
     service.platform_queue.appendAssumeCapacity(&second);
 
@@ -2205,7 +2205,7 @@ test "clipboard platform result preserves out of memory after data allocation fa
     service.publishPlatformResultAt(&operation, .read, "text/plain", "data", 999, 0);
 
     try std.testing.expectEqual(OperationStatus.failed, operation.status);
-    try std.testing.expectEqual(@intFromEnum(ErrorCode.out_of_memory), operation.error_code);
+    try std.testing.expectEqual(@backingInt(ErrorCode.out_of_memory), operation.error_code);
 }
 
 test "clipboard cancellation recorded before a platform mutation wins over late success" {
@@ -2313,7 +2313,7 @@ test "clipboard mutation ordering is selection-scoped when operation storage is 
         .mutation_sequence = 3,
     };
     var storage = [_]*Operation{ &later, &earlier };
-    service.operations = .{ .items = &storage, .capacity = storage.len };
+    service.operations = .{ .items = &storage, .capacity = storage.len, .pointer_stability = .{} };
 
     try std.testing.expect(!service.hasEarlierSelectionMutation(&later));
     try std.testing.expect(!service.hasEarlierSelectionMutation(&earlier));
@@ -2361,7 +2361,7 @@ test "clipboard expired X11 mutation cannot commit while draining timestamp even
         },
     };
     var storage = [_]*Operation{&operation};
-    service.operations = .{ .items = &storage, .capacity = storage.len };
+    service.operations = .{ .items = &storage, .capacity = storage.len, .pointer_stability = .{} };
     test_x11_set_owner_count = 0;
 
     service.driveX11EventUnit();
@@ -2556,7 +2556,7 @@ test "clipboard shutdown cancels unconfirmed X11 mutations before releasing prov
         },
     };
     var storage = [_]*Operation{&operation};
-    service.operations = .{ .items = &storage, .capacity = storage.len };
+    service.operations = .{ .items = &storage, .capacity = storage.len, .pointer_stability = .{} };
 
     service.beginShutdown();
 
@@ -2580,7 +2580,7 @@ fn testX11PollTimestampEvent(_: *clipboard_linux.XcbConnection) callconv(.c) ?*c
         .atom = 110,
         .time = 7,
         .state = 0,
-        .pad1 = .{0} ** 3,
+        .pad1 = @splat(0),
     };
     return @ptrCast(event);
 }

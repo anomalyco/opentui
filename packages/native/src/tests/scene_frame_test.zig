@@ -48,7 +48,7 @@ test "Scene frame authority checks every field in layout update record paint and
         try owner.sceneMoveNode(child, root, @intCast(index));
         if (index == 0) try owner.sceneSetHooks(child, 59, 1, 0, 0);
     }
-    var seen = [_]bool{false} ** 6;
+    var seen: [6]bool = @splat(false);
     var work_yield = false;
     var previous: ?scene.FrameRequest = null;
     for (0..128) |_| {
@@ -59,14 +59,15 @@ test "Scene frame authority checks every field in layout update record paint and
         try testing.expectError(error.WrongSession, owner.sceneFrameAcquireBufferLease(other, request, .next));
         try testing.expectError(error.WrongContext, peer.sceneFrameAcquireBufferLease(foreign, request, .next));
         try testing.expectError(error.WrongContext, peer.sceneFrameCommit(foreign, request, true));
-        inline for (std.meta.fields(scene.FrameRequest)) |field| {
+        const request_info = @typeInfo(scene.FrameRequest).@"struct";
+        inline for (request_info.field_names, request_info.field_types) |name, Field| {
             var forged = request;
-            if (field.type == context.Handle) {
-                @field(forged, field.name).generation += 1;
+            if (Field == context.Handle) {
+                @field(forged, name).generation += 1;
             } else {
-                @field(forged, field.name) += 1;
+                @field(forged, name) += 1;
             }
-            const expected = if (comptime std.mem.eql(u8, field.name, "session")) error.WrongSession else error.StaleFrame;
+            const expected = if (comptime std.mem.eql(u8, name, "session")) error.WrongSession else error.StaleFrame;
             try testing.expectError(expected, owner.sceneFrameAcquireBufferLease(id, forged, .next));
             try testing.expectError(expected, owner.sceneFrameCommit(id, forged, true));
             try testing.expectError(expected, owner.sceneFrameStepWorkBudgeted(id, forged, options, 1));

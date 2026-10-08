@@ -10,6 +10,7 @@ const test_renderer_mod = @import("test-renderer.zig");
 const image = @import("../image.zig");
 const edit_buffer = @import("../edit-buffer.zig");
 const editor_view = @import("../editor-view.zig");
+const utils = @import("../utils.zig");
 
 const OptimizedBuffer = buffer_mod.OptimizedBuffer;
 const TextBuffer = text_buffer.UnifiedTextBuffer;
@@ -123,7 +124,7 @@ test "OptimizedBuffer clips image placements and source crop to scissor" {
     defer link_pool.deinit();
     const target = try OptimizedBuffer.init(std.testing.allocator, 4, 2, .{ .pool = &pool, .link_pool = &link_pool });
     defer target.deinit();
-    const source = try image.createFromRgba(std.testing.allocator, &([_]u8{ 255, 0, 0, 255 } ** 16), 4, 4, 16);
+    const source = try image.createFromRgba(std.testing.allocator, utils.repeat(u8, &.{ 255, 0, 0, 255 }, 16), 4, 4, 16);
     defer source.deinit();
     try target.pushScissorRect(1, 0, 2, 2);
     try std.testing.expect(try target.drawImage(source, 1, -1, 0, 4, 2, 40, 20, 0, 0, 4, 4, .auto));
@@ -859,9 +860,9 @@ test "OptimizedBuffer drawTextChecked validates all input before drawing and enf
         try std.testing.expectError(error.InvalidOptions, target.drawTextChecked("bad", 0, 0, fg, bg, 0));
         target.clearScissorRects();
     }
-    const over_limit = "x" ** (buffer_mod.text_bytes_max + 1);
+    const over_limit = utils.repeat(u8, "x", buffer_mod.text_bytes_max + 1);
     try std.testing.expectError(error.TextLimit, target.drawTextChecked(over_limit, 0, 0, fg, bg, 0));
-    try std.testing.expectError(error.InvalidUnicode, target.drawTextChecked("x" ** (buffer_mod.text_bytes_max - 1) ++ "\xff", 0, 0, fg, bg, 0));
+    try std.testing.expectError(error.InvalidUnicode, target.drawTextChecked(utils.repeat(u8, "x", buffer_mod.text_bytes_max - 1) ++ "\xff", 0, 0, fg, bg, 0));
     try std.testing.expectEqualSlices(u32, &chars, target.buffer.char);
     try std.testing.expectEqualSlices(RGBA, &foreground, target.buffer.fg);
     try std.testing.expectEqualSlices(RGBA, &background, target.buffer.bg);
@@ -870,10 +871,10 @@ test "OptimizedBuffer drawTextChecked validates all input before drawing and enf
     try std.testing.expectEqual(1, try pool.getRefcount(old_id));
     try std.testing.expectEqual(1, try links.getRefcount(link_id));
 
-    try target.drawTextChecked("x" ** buffer_mod.text_bytes_max, 0, 0, fg, bg, 0xff);
+    try target.drawTextChecked(utils.repeat(u8, "x", buffer_mod.text_bytes_max), 0, 0, fg, bg, 0xff);
     try std.testing.expectEqualSlices(u32, &.{ 'x', 'x', 'x', 'x' }, target.buffer.char);
     try std.testing.expectEqualSlices(u32, &.{ 0xff, 0xff, 0xff, 0xff }, target.buffer.attributes);
-    try target.drawTextChecked("\u{e9}" ++ "\u{301}" ** 63, 0, 0, fg, bg, 0);
+    try target.drawTextChecked("\u{e9}" ++ utils.repeat(u8, "\u{301}", 63), 0, 0, fg, bg, 0);
     try std.testing.expectEqual(128, (try pool.get(gp.graphemeIdFromChar(target.buffer.char[0]))).len);
 }
 
@@ -883,7 +884,7 @@ test "OptimizedBuffer drawTextChecked copies input before its supplied pool grow
     defer pool.deinit();
     var links = link.LinkPool.init(std.testing.allocator);
     defer links.deinit();
-    const text = "e" ++ "\u{301}" ** 4 ++ "X";
+    const text = "e" ++ utils.repeat(u8, "\u{301}", 4) ++ "X";
     // The source and its first drawn cluster share the 16-byte class.
     try pool.classes[1].slots.ensureTotalCapacityPrecise(moving.allocator(), pool.classes[1].slot_size_bytes);
     const source = try pool.acquire(text);
@@ -932,8 +933,8 @@ test "OptimizedBuffer drawTextChecked skips complete zero width UTF-8 codepoints
     const fg = ansi.rgbColor(255, 255, 255, 255);
     const bg = ansi.rgbColor(0, 0, 0, 255);
     target.clear(bg, null);
-    try target.drawTextChecked("\u{200b}\u{200d}" ++ "\u{301}" ** 1024, 0, 0, fg, bg, 0);
-    try std.testing.expectEqualSlices(u32, &([_]u32{' '} ** 8), target.buffer.char);
+    try target.drawTextChecked("\u{200b}\u{200d}" ++ utils.repeat(u8, "\u{301}", 1024), 0, 0, fg, bg, 0);
+    try std.testing.expectEqualSlices(u32, &@as([8]u32, @splat(' ')), target.buffer.char);
     try std.testing.expectEqual(0, pool.interned_live_ids.count());
     try target.drawTextChecked("\u{200b}A\u{200b}\t\u{200d}\u{4e2d}\u{200b}Z", 0, 0, fg, bg, 0);
     try std.testing.expectEqual(@as(u32, 'A'), target.buffer.char[0]);
@@ -957,9 +958,9 @@ const unprintable_texts = [_]UnprintableText{
     .{ .bytes = "\r", .blank = "", .line_break = true },
     .{ .bytes = "\r\n", .blank = "", .line_break = true },
     // The grapheme pool stores at most 128 bytes; a longer cluster keeps its cell width.
-    .{ .bytes = "e" ++ "\u{301}" ** 64, .blank = " " },
-    .{ .bytes = "e" ++ "\u{301}" ** 100, .blank = " " },
-    .{ .bytes = "\u{4e2d}" ++ "\u{301}" ** 63, .blank = "  " },
+    .{ .bytes = "e" ++ utils.repeat(u8, "\u{301}", 64), .blank = " " },
+    .{ .bytes = "e" ++ utils.repeat(u8, "\u{301}", 100), .blank = " " },
+    .{ .bytes = "\u{4e2d}" ++ utils.repeat(u8, "\u{301}", 63), .blank = "  " },
 };
 
 const CheckedTextPath = enum { text, box_title, text_view, editor_view };
@@ -1017,7 +1018,7 @@ test "OptimizedBuffer checked text draws skip controls and blank clusters a cell
     var pools = TestPools.init(std.testing.allocator);
     defer pools.deinit();
     // The blank rule starts where the pool stops storing a cluster.
-    const longest = try pools.graphemes.acquire("\u{e9}" ++ "\u{301}" ** 63);
+    const longest = try pools.graphemes.acquire("\u{e9}" ++ utils.repeat(u8, "\u{301}", 63));
     try pools.graphemes.decref(longest);
     try std.testing.expectError(error.GraphemeTooLong, pools.graphemes.acquire(unprintable_texts[9].bytes));
 
@@ -1079,8 +1080,8 @@ test "OptimizedBuffer checked grapheme draws write blank cells for clusters a ce
         .{ .bytes = "\t", .width = 1 },
         .{ .bytes = "\u{85}", .width = 1 },
         .{ .bytes = "\u{9b}", .width = 2 },
-        .{ .bytes = "e" ++ "\u{301}" ** 64, .width = 1 },
-        .{ .bytes = "\u{4e2d}" ++ "\u{301}" ** 63, .width = 2 },
+        .{ .bytes = "e" ++ utils.repeat(u8, "\u{301}", 64), .width = 1 },
+        .{ .bytes = "\u{4e2d}" ++ utils.repeat(u8, "\u{301}", 63), .width = 2 },
     };
     for (glyphs) |glyph| {
         for ([_]u32{ 0, 2, 6 - glyph.width }) |x| {
@@ -1364,6 +1365,52 @@ test "OptimizedBuffer - pixel buffers at signed positions draw their visible par
     try expectRowChars(buf, 0, "B ");
 }
 
+// Zig 0.17.0 casts a signed value to a narrower unsigned type, and narrows
+// `@max(value, 0)`, so that a value in the top half of that type is undefined
+// (ziglang/zig#37127). These positions reach the top half.
+test "OptimizedBuffer - draws at far positions leave every cell unchanged" {
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
+    const expected = try OptimizedBuffer.init(std.testing.allocator, 4, 2, .{ .link_pool = &pools.links, .pool = &pools.graphemes });
+    defer expected.deinit();
+    const target = try OptimizedBuffer.init(std.testing.allocator, 4, 2, .{ .link_pool = &pools.links, .pool = &pools.graphemes });
+    defer target.deinit();
+    const source = try OptimizedBuffer.init(std.testing.allocator, 2, 2, .{ .link_pool = &pools.links, .pool = &pools.graphemes });
+    defer source.deinit();
+    var text = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .unicode);
+    defer text.deinit();
+    try text.setText("AB\nCD");
+    var view = try TextBufferView.init(std.testing.allocator, text);
+    defer view.deinit();
+
+    const black = ansi.rgbColor(0, 0, 0, 255);
+    const white = ansi.rgbColor(255, 255, 255, 255);
+    expected.clear(black, null);
+    target.clear(black, null);
+    source.clear(white, 'S');
+    const far = 1 << 30;
+    const min = std.math.minInt(i32);
+    const border_chars = [_]u32{ 0x250c, 0x2510, 0x2514, 0x2518, 0x2500, 0x2502, 0, 0, 0, 0, 0 };
+    const sides: buffer_mod.BorderSides = .{ .top = true, .right = true, .bottom = true, .left = true };
+    const pixels = utils.repeat(u8, &.{ 255, 0, 0, 255 }, 8);
+    const packed_cells = [_][12]f32{.{ 0, 0, 0, 1, 1, 1, 1, 1, @bitCast(@as(u32, 'P')), 0, 0, 0 }};
+    const packed_bytes = std.mem.sliceAsBytes(&packed_cells);
+    const intensities: [4]f32 = @splat(1);
+
+    for ([2][2]i32{ .{ far, 0 }, .{ 0, far } }) |position| {
+        const x, const y = position;
+        target.drawFrameBuffer(x, y, source, null, null, null, null);
+        try target.drawBox(x, y, 2, 2, &border_chars, sides, white, white, white, true, null, 0, null, 0);
+        target.drawSuperSampleBuffer(x, y, pixels, pixels.len, 1, 8);
+        target.drawPackedBuffer(packed_bytes.ptr, packed_bytes.len, x, y, 1, 1);
+    }
+    target.drawGrayscaleBuffer(min, 0, &intensities, 2, 2, white, white);
+    target.drawGrayscaleBuffer(0, min, &intensities, 2, 2, white, white);
+    target.drawTextBuffer(view, 0, min);
+
+    try expectSameCells(expected, target);
+}
+
 test "OptimizedBuffer - checked text at signed positions clips like drawTextClipped" {
     const black = ansi.rgbaFromFloats(0.0, 0.0, 0.0, 1.0);
     const white = ansi.rgbaFromFloats(1.0, 1.0, 1.0, 1.0);
@@ -1384,7 +1431,7 @@ test "OptimizedBuffer - checked text at signed positions clips like drawTextClip
         // Sparse cluster metadata omits zero-width code points and controls.
         .{ .text = "\u{200b}A\u{200d}\u{4e2d}Z", .x = 0, .y = 6, .bg = black },
         .{ .text = "a\x1b\u{4e2d}\u{85}b", .x = 0, .y = 7, .bg = null },
-        .{ .text = "x" ++ "e" ++ "\u{301}" ** 64 ++ "y\tz", .x = -1, .y = 8, .bg = black },
+        .{ .text = "x" ++ "e" ++ utils.repeat(u8, "\u{301}", 64) ++ "y\tz", .x = -1, .y = 8, .bg = black },
     };
 
     for (std.enums.values(@import("../utf8.zig").WidthMethod)) |width_method| {
@@ -1631,7 +1678,7 @@ fn appendRandomGlyph(random: std.Random, text: *std.ArrayListUnmanaged(u8)) !voi
         "a",                                           "Z",                  "  ",       "\t",
         "\u{4e2d}",                                    "\u{1f31f}",          "\u{2022}", "e\u{301}",
         "\u{1f468}\u{200d}\u{1f469}\u{200d}\u{1f467}", "\u{1f1fa}\u{1f1f8}", "\u{200b}", "\u{301}",
-        "\x1b",                                        "\u{85}",             "\n",       "e" ++ "\u{301}" ** 64,
+        "\x1b",                                        "\u{85}",             "\n",       "e" ++ utils.repeat(u8, "\u{301}", 64),
     };
     const choice = random.uintLessThan(usize, glyphs.len + 1);
     if (choice < glyphs.len) return text.appendSlice(std.testing.allocator, glyphs[choice]);
@@ -2720,7 +2767,7 @@ test "OptimizedBuffer merges frame buffer placements with clipping scissor and o
     const target = try OptimizedBuffer.init(std.testing.allocator, 4, 4, .{ .pool = &pool, .link_pool = &link_pool });
     defer target.deinit();
 
-    const wide = try image.createFromRgba(std.testing.allocator, &([_]u8{ 10, 20, 30, 255 } ** 32), 8, 4, 32);
+    const wide = try image.createFromRgba(std.testing.allocator, utils.repeat(u8, &.{ 10, 20, 30, 255 }, 32), 8, 4, 32);
     defer wide.deinit();
     const dot = try image.createFromRgba(std.testing.allocator, &[_]u8{ 1, 2, 3, 255 }, 1, 1, 4);
     defer dot.deinit();
@@ -2870,9 +2917,9 @@ test "OptimizedBuffer drawTextChecked preserves cells and references at every al
     // Exercise pool/tracker growth and each independent heap fallback.
     for ([_]struct { text: []const u8, visible_columns: u32, width: u32 = 512 }{
         .{ .text = "\u{e9}\u{4e2d}e\u{301}\tZ\u{3b1}\u{3b2}\u{3b3}\u{3b4}\u{3f5}", .visible_columns = 12, .width = 12 },
-        .{ .text = "x" ** 4097, .visible_columns = 4 },
-        .{ .text = "\u{e9}" ** 512, .visible_columns = 4 },
-        .{ .text = "x" ** 512, .visible_columns = 512 },
+        .{ .text = utils.repeat(u8, "x", 4097), .visible_columns = 4 },
+        .{ .text = utils.repeat(u8, "\u{e9}", 512), .visible_columns = 4 },
+        .{ .text = utils.repeat(u8, "x", 512), .visible_columns = 512 },
     }) |case| {
         const text = case.text;
         var failures: usize = 0;

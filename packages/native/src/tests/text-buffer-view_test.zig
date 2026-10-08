@@ -6,6 +6,7 @@ const text_buffer_view = @import("../text-buffer-view.zig");
 const seg_mod = @import("../text-buffer-segment.zig");
 const ansi = @import("../ansi.zig");
 const link = @import("../link.zig");
+const utils = @import("../utils.zig");
 
 const TextBuffer = text_buffer.UnifiedTextBuffer;
 const TextBufferView = text_buffer_view.UnifiedTextBufferView;
@@ -15,7 +16,7 @@ test "TextBufferView reuses word metadata across widths and layout capacity acro
     var pools = TestPools.init(std.testing.allocator);
     defer pools.deinit();
 
-    const text = "alpha \u{754c}abc e\u{301} words\n" ** 100;
+    const text = utils.repeat(u8, "alpha \u{754c}abc e\u{301} words\n", 100);
     const tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .unicode);
     defer tb.deinit();
     var tracking = std.testing.FailingAllocator.init(std.testing.allocator, .{});
@@ -74,7 +75,7 @@ test "TextBufferView CJK cache survives a failed sibling layout" {
 
     const tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .unicode);
     defer tb.deinit();
-    try tb.setText("x\n" ++ ("\u{65e5}" ** 512));
+    try tb.setText("x\n" ++ utils.repeat(u8, "\u{65e5}", 512));
     const healthy = try TextBufferView.init(std.testing.allocator, tb);
     defer healthy.deinit();
     healthy.setWrapMode(.word);
@@ -113,7 +114,7 @@ test "TextBufferView optional metadata failure preserves every streamed piece" {
 
     const tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .unicode);
     defer tb.deinit();
-    try tb.setText(("a\u{754c}e\u{301} \u{0600} xy\tend-" ** 5000) ++ "\n" ++ ("\u{754c}abc e\u{301}\n" ** 100));
+    try tb.setText(utils.repeat(u8, "a\u{754c}e\u{301} \u{0600} xy\tend-", 5000) ++ "\n" ++ utils.repeat(u8, "\u{754c}abc e\u{301}\n", 100));
     const expected = try TextBufferView.init(std.testing.allocator, tb);
     defer expected.deinit();
     expected.setWrapMode(.word);
@@ -163,9 +164,9 @@ test "TextBufferView width reuse does not leave metadata in old buffer roots" {
         const mem_id = try tb.registerMemBuffer("", false);
         for (0..20) |edit| {
             const text = if (edit % 2 == 0)
-                "OpenTUI text metrics: \u{754c} e\u{301} abcdefghijklmnop \n" ** 100
+                utils.repeat(u8, "OpenTUI text metrics: \u{754c} e\u{301} abcdefghijklmnop \n", 100)
             else
-                "Changed text metrics: \u{754c} e\u{301} abcdefghijklmnop \n" ** 100;
+                utils.repeat(u8, "Changed text metrics: \u{754c} e\u{301} abcdefghijklmnop \n", 100);
             try tb.replaceMemBuffer(mem_id, text, false);
             try tb.setTextFromMemId(mem_id);
             _ = view.getVirtualLines();
@@ -193,7 +194,7 @@ test "TextBufferView live word metadata follows views history and buffer switche
     const other = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .unicode);
     defer other.deinit();
     try other.setText("unrelated\t\u{754c} text");
-    try edit.setText("alpha \u{754c} e\u{301} abcdefghijklmnopqrstuvwxyz\n" ** 10);
+    try edit.setText(utils.repeat(u8, "alpha \u{754c} e\u{301} abcdefghijklmnopqrstuvwxyz\n", 10));
     view.setWrapMode(.word);
     second.setWrapMode(.word);
     view.setWrapWidth(16);
@@ -213,7 +214,7 @@ test "TextBufferView live word metadata follows views history and buffer switche
         try std.testing.expectEqual(ptr, view.word_layout.layouts.items.ptr);
         try std.testing.expectEqual(capacity, view.word_layout.arena.queryCapacity());
     }
-    try edit.replaceText("changed\ttext \u{0600} \u{301} \u{754c} words\n" ** 10);
+    try edit.replaceText(utils.repeat(u8, "changed\ttext \u{0600} \u{301} \u{754c} words\n", 10));
     for (0..3) |step| {
         if (step == 1) _ = try edit.undo();
         if (step == 2) _ = try edit.redo();
@@ -277,7 +278,7 @@ test "TextBufferView live word metadata discards partial allocation on failure" 
         defer tb.deinit();
         const view = try TextBufferView.init(tracking.allocator(), tb);
         defer view.deinit();
-        try tb.setText("alpha \u{754c} e\u{301} word word word word\n" ** 100);
+        try tb.setText(utils.repeat(u8, "alpha \u{754c} e\u{301} word word word word\n", 100));
         view.setWrapMode(.word);
         view.setWrapWidth(16);
         tracking.fail_index = tracking.alloc_index + failure;
@@ -302,7 +303,7 @@ test "TextBufferView rewrap reuses virtual line allocation without retaining cle
     defer tb.deinit();
     const view = try TextBufferView.init(tracking.allocator(), tb);
     defer view.deinit();
-    try tb.setText("OpenTUI text metrics: \u{754c} e\u{301} abcdefghijklmnop " ** 100);
+    try tb.setText(utils.repeat(u8, "OpenTUI text metrics: \u{754c} e\u{301} abcdefghijklmnop ", 100));
     view.setWrapMode(.word);
     view.setWrapWidth(80);
     _ = view.getVirtualLines();
@@ -328,8 +329,8 @@ test "TextBufferView rewrap matches fresh layout after text and tab changes" {
 
     const texts = [_][]const u8{
         "",                                                             "one",                                                              "one two three\n\nshort\n",
-        "\talpha \u{754c}abc e\u{301} \u{1f469}\u{200d}\u{1f4bb}\tend", "abcdefg \u{301} hi\n\u{0600} 0123456789abcdef\nword\u{200b}word ", "\u{754c} " ** 600,
-        "\u{754c}abc " ** 10000,
+        "\talpha \u{754c}abc e\u{301} \u{1f469}\u{200d}\u{1f4bb}\tend", "abcdefg \u{301} hi\n\u{0600} 0123456789abcdef\nword\u{200b}word ", utils.repeat(u8, "\u{754c} ", 600),
+        utils.repeat(u8, "\u{754c}abc ", 10000),
     };
     inline for (std.meta.tags(@import("../utf8.zig").WidthMethod)) |method| {
         const tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, method);
@@ -1556,7 +1557,7 @@ test "TextBufferView word wrapping - CJK policy retains bytes and uses legacy fi
     const cases = [_]struct { parts: []const []const u8, width: u32, widths: []const u32 }{
         .{ .parts = &.{ "\u{65e5}\u{672c}\u{1f1fa}", "\u{1f1f8}\u{1f1fa}\u{1f1f8}\u{8a9e}\u{6587}" }, .width = 4, .widths = &.{ 4, 4, 4 } },
         .{ .parts = &.{ "\u{65e5}\u{672c}\u{1f44b}", "\u{1f3fb}\u{8a9e}\u{6587}" }, .width = 4, .widths = &.{ 4, 4, 4 } },
-        .{ .parts = &.{ "\u{65e5}\u{672c}\u{1f44b}", "\u{1f3fb}" ++ ("\u{8a9e}\u{6587}" ** 256) ++ "\u{65e5}", "abc" }, .width = 4, .widths = &(([_]u32{4} ** 258) ++ [_]u32{ 2, 3 }) },
+        .{ .parts = &.{ "\u{65e5}\u{672c}\u{1f44b}", "\u{1f3fb}" ++ utils.repeat(u8, "\u{8a9e}\u{6587}", 256) ++ "\u{65e5}", "abc" }, .width = 4, .widths = &(@as([258]u32, @splat(4)) ++ [_]u32{ 2, 3 }) },
         .{ .parts = &.{ "\u{304b}", "\u{3099}\u{304f}" }, .width = 8, .widths = &.{4} },
         .{ .parts = &.{ "\u{306f}", "\u{309a}\u{3072}" }, .width = 8, .widths = &.{4} },
         .{ .parts = &.{"\u{304b}\u{200d}\u{3099}"}, .width = 8, .widths = &.{2} },
@@ -1746,7 +1747,7 @@ test "TextBufferView word wrapping - layout cache OOM falls back to complete str
     var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .unicode);
     defer tb.deinit();
 
-    const text = "a," ** 1023 ++ "\xC3\xA9";
+    const text = utils.repeat(u8, "a,", 1023) ++ "\xC3\xA9";
     try tb.setText(text);
 
     var view = try TextBufferView.init(std.testing.allocator, tb);
@@ -2228,7 +2229,7 @@ test "TextBufferView line info - very long lines" {
     var view = try TextBufferView.init(std.testing.allocator, tb);
     defer view.deinit();
 
-    const longText = [_]u8{'A'} ** 1000;
+    const longText: [1000]u8 = @splat('A');
     try tb.setText(&longText);
 
     const line_count = view.getVirtualLineCount();
@@ -2311,7 +2312,7 @@ test "TextBufferView line info - extremely long single line" {
     var view = try TextBufferView.init(std.testing.allocator, tb);
     defer view.deinit();
 
-    const extremelyLongText = [_]u8{'A'} ** 10000;
+    const extremelyLongText: [10000]u8 = @splat('A');
     try tb.setText(&extremelyLongText);
 
     const line_count = view.getVirtualLineCount();
@@ -2332,7 +2333,7 @@ test "TextBufferView line info - extremely long line with wrapping" {
     defer view.deinit();
 
     // Create extremely long text with 10000 'A' characters
-    const extremelyLongText = [_]u8{'A'} ** 10000;
+    const extremelyLongText: [10000]u8 = @splat('A');
     try tb.setText(&extremelyLongText);
 
     view.setWrapMode(.char);

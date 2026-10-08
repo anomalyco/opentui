@@ -78,7 +78,7 @@ pub fn Rope(comptime T: type) type {
             depth: u32 = 1,
             custom: if (@hasDecl(T, "Metrics")) T.Metrics else void = if (@hasDecl(T, "Metrics")) .{} else {},
 
-            marker_counts: if (marker_enabled) [MarkerTagCount]u32 else void = if (marker_enabled) [_]u32{0} ** MarkerTagCount else {},
+            marker_counts: if (marker_enabled) [MarkerTagCount]u32 else void = if (marker_enabled) @splat(0) else {},
 
             pub fn add(self: *Metrics, other: Metrics) void {
                 self.count += other.count;

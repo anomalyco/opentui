@@ -250,12 +250,12 @@ const Lifecycle = struct {
     deadline_ns: ?u64 = null,
 
     fn assertValid(self: Lifecycle, state: State) void {
-        const step = @intFromEnum(self.step);
+        const step = @backingInt(self.step);
         std.debug.assert(switch (self.phase) {
             .uninitialized, .active, .suspended, .restored, .failed, .cancelled => self.step == .idle,
-            .setting_up => step >= @intFromEnum(Step.query) and step <= @intFromEnum(Step.activate),
-            .resuming => step >= @intFromEnum(Step.setup_screen) and step <= @intFromEnum(Step.activate),
-            .suspending, .closing => step >= @intFromEnum(Step.delete_images),
+            .setting_up => step >= @backingInt(Step.query) and step <= @backingInt(Step.activate),
+            .resuming => step >= @backingInt(Step.setup_screen) and step <= @backingInt(Step.activate),
+            .suspending, .closing => step >= @backingInt(Step.delete_images),
         });
         std.debug.assert((state == .failed) == (self.phase == .failed));
         std.debug.assert((state == .cancelled) == (self.phase == .cancelled));

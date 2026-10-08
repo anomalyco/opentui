@@ -6,6 +6,7 @@ const gp = @import("../grapheme.zig");
 const link = @import("../link.zig");
 const EmbeddedTerminal = @import("main.zig").EmbeddedTerminal;
 const ghostty = @import("ghostty.zig");
+const utils = @import("../utils.zig");
 
 test "embedded terminal retries every row after composition allocation failure" {
     var link_pool_storage = link.LinkPool.init(std.testing.allocator);
@@ -72,7 +73,7 @@ test "embedded terminal checked composition skips oversized clipped graphemes" {
     defer target.deinit();
     const terminal = try EmbeddedTerminal.init(std.testing.io, std.testing.allocator, .{ .cols = 4, .rows = 1 });
     defer terminal.deinit();
-    try terminal.write("e" ++ ("\u{301}" ** 64) ++ "B");
+    try terminal.write("e" ++ utils.repeat(u8, "\u{301}", 64) ++ "B");
     try target.pushScissorRect(1, 0, 3, 1);
     try terminal.composeChecked(target, 0, 0, 4);
     try std.testing.expectEqual(@as(u32, 'B'), target.get(1, 0).?.char);
@@ -444,7 +445,7 @@ test "embedded terminal encodes long Kitty associated text" {
     try terminal.write("\x1b[>19u");
     try std.testing.expectEqual(@as(u5, 19), terminal.terminal.screens.active.kitty_keyboard.current().int());
 
-    const text = "x" ** 2048;
+    const text = utils.repeat(u8, "x", 2048);
     const encoded = try terminal.encodeKey(.{ .key = .unidentified, .utf8 = text });
     defer terminal.freeEncoded(encoded);
     try std.testing.expectEqualStrings(text, encoded);

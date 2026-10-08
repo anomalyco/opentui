@@ -339,11 +339,12 @@ fn loadCachedLibrary(
 
 fn loadSymbols(comptime Symbols: type, library: *std.DynLib) ?Symbols {
     var symbols: Symbols = undefined;
-    inline for (@typeInfo(Symbols).@"struct".fields) |field| {
-        switch (@typeInfo(field.type)) {
+    const info = @typeInfo(Symbols).@"struct";
+    inline for (info.field_names, info.field_types) |name, Field| {
+        switch (@typeInfo(Field)) {
             // Optional fields name symbols missing from older library versions.
-            .optional => |optional| @field(symbols, field.name) = library.lookup(optional.child, field.name),
-            else => @field(symbols, field.name) = library.lookup(field.type, field.name) orelse return null,
+            .optional => |optional| @field(symbols, name) = library.lookup(optional.child, name),
+            else => @field(symbols, name) = library.lookup(Field, name) orelse return null,
         }
     }
     return symbols;
@@ -360,8 +361,8 @@ fn hasNonEmptyProcessValue(name: [*:0]const u8) bool {
 }
 
 fn isWslKernelRelease(release: []const u8) bool {
-    return std.ascii.indexOfIgnoreCase(release, "microsoft") != null or
-        std.ascii.indexOfIgnoreCase(release, "wsl") != null;
+    return std.ascii.findIgnoreCase(release, "microsoft") != null or
+        std.ascii.findIgnoreCase(release, "wsl") != null;
 }
 
 const FakeLoader = struct {

@@ -100,7 +100,7 @@ pub inline fn u8ToComponent(component: u8) f32 {
 /// Pack a ColorIntent and palette slot into a 32-bit metadata word.
 /// Layout: bits 0-7 = slot, bits 8-9 = intent.
 pub fn packMeta(intent_value: ColorIntent, slot_value: u8) u32 {
-    return @as(u32, slot_value) | (@as(u32, @intFromEnum(intent_value)) << 8);
+    return @as(u32, slot_value) | (@as(u32, @backingInt(intent_value)) << 8);
 }
 
 /// Build an RGBA value from 8-bit channels and a metadata word.

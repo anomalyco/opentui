@@ -31,7 +31,7 @@ pub fn bufferDrawFromC(header: *const c.ot_buffer_draw_header, draw: *context.Bu
     if (header.struct_size < @sizeOf(c.ot_buffer_draw_header)) return error.InvalidOptions;
     if (header.abi_version != c.OT_CONTEXT_ABI_VERSION) return error.UnsupportedVersion;
     if (header.operation > c.OT_BUFFER_DRAW_RESPECT_ALPHA) return error.InvalidOptions;
-    draw.* = .{ .operation = @enumFromInt(header.operation) };
+    draw.* = .{ .operation = @fromBackingInt(@intCast(header.operation)) };
     switch (draw.operation) {
         .clear => {
             const record = try bufferDrawRecord(c.ot_buffer_draw_clear, header, 0);
@@ -123,7 +123,7 @@ pub fn imageDrawFromC(options: *const c.ot_image_draw_options) !context.ImageDra
         .source_y = options.source_y,
         .source_width = if (options.flags & c.OT_IMAGE_DRAW_SOURCE_WIDTH != 0) options.source_width else null,
         .source_height = if (options.flags & c.OT_IMAGE_DRAW_SOURCE_HEIGHT != 0) options.source_height else null,
-        .protocol = @enumFromInt(options.protocol),
+        .protocol = @fromBackingInt(@intCast(options.protocol)),
     };
 }
 
@@ -253,7 +253,7 @@ fn run(owner: *Context, target: *buffer.OptimizedBuffer, floor: usize, operation
             const value = try fixed(c.ot_scene_record_stack, body);
             if (value.operation > c.OT_BUFFER_STACK_CLEAR_OPACITY) return error.InvalidOptions;
             _ = try Context.bufferStackOn(target, floor, .{
-                .operation = @enumFromInt(value.operation),
+                .operation = @fromBackingInt(@intCast(value.operation)),
                 .x = value.x,
                 .y = value.y,
                 .width = value.width,

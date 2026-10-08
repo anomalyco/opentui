@@ -5,6 +5,7 @@ const link = @import("../link.zig");
 
 const EditBuffer = edit_buffer.EditBuffer;
 const EditorView = @import("../editor-view.zig").EditorView;
+const utils = @import("../utils.zig");
 
 const Events = struct {
     var order: [3]u8 = undefined;
@@ -81,7 +82,7 @@ test "EditBuffer atomicity - rejected mutations preserve history content cursor 
                 const fault = if (fail_rope) &rope_failing else &failing;
                 fault.fail_index = fault.alloc_index + offset;
                 fault.resize_fail_index = fault.resize_index;
-                const input = "replacement" ** 512 ++ "\n";
+                const input = utils.repeat(u8, "replacement", 512) ++ "\n";
                 const result = switch (operation) {
                     .insert => eb.insertText(input),
                     .selected => ev.replaceSelectedText(input),

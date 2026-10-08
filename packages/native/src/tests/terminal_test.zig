@@ -1566,7 +1566,7 @@ test "writeClipboard - handles base64 padding and encoding chunk boundaries" {
         try testing.expect(std.mem.endsWith(u8, writer.getWritten(), "\x1b\\"));
     }
 
-    const payload = [_]u8{'A'} ** (3 * 1024 + 1);
+    const payload: [3 * 1024 + 1]u8 = @splat('A');
     const encoded_len = std.base64.standard.Encoder.calcSize(payload.len);
     const expected = try testing.allocator.alloc(u8, encoded_len);
     defer testing.allocator.free(expected);
@@ -1619,7 +1619,7 @@ test "writeClipboard - Screen framing crosses the 252-byte boundary" {
     try env.put("STY", "12345.pts-0.hostname");
     var term = Terminal.init(.{ .env_map = &env });
 
-    const payload_one_chunk = [_]u8{'A'} ** 183;
+    const payload_one_chunk: [183]u8 = @splat('A');
     var writer = TestWriter.init(testing.allocator);
     defer writer.deinit();
     try term.writeClipboard(&writer, .clipboard, &payload_one_chunk);
@@ -1627,7 +1627,7 @@ test "writeClipboard - Screen framing crosses the 252-byte boundary" {
     try testing.expectEqual(try term.clipboardSequenceSize(payload_one_chunk.len), writer.getWritten().len);
 
     writer.reset();
-    const payload_two_chunks = [_]u8{'A'} ** 184;
+    const payload_two_chunks: [184]u8 = @splat('A');
     try term.writeClipboard(&writer, .clipboard, &payload_two_chunks);
     try testing.expectEqual(@as(usize, 2), countSubstring(writer.getWritten(), ansi.ANSI.screenDcsStart));
     try testing.expectEqual(try term.clipboardSequenceSize(payload_two_chunks.len), writer.getWritten().len);

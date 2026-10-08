@@ -63,10 +63,10 @@ describe("checked native ABI generation", () => {
   })
 
   test.each([
-    // Translate-C ignores #pragma pack, so only the C compiler sees this 12-byte layout.
+    // Translate-C aligns this packed field to 4 bytes. The C compiler aligns it to 1 byte.
     [
       "C layout differs from Translate-C: ot_z",
-      "#include <stdint.h>\n#pragma pack(push, 2)\ntypedef struct ot_z { uint32_t a; uint64_t b; } ot_z;\n#pragma pack(pop)",
+      "#include <stdint.h>\ntypedef struct ot_z { uint32_t a; uint64_t b __attribute__((packed)); } ot_z;",
     ],
     ["-Werror,-Wcomment", "/* match a/*.txt */"],
   ])(

@@ -1,6 +1,7 @@
 const std = @import("std");
 const testing = std.testing;
 const raw = @import("../native-span-feed.zig");
+const utils = @import("../utils.zig");
 
 fn testOptions(chunk_size: u32, initial_chunks: u32, auto_commit: bool) raw.Options {
     return testOptionsFull(chunk_size, initial_chunks, 0, auto_commit);
@@ -11,7 +12,7 @@ fn testOptionsFull(chunk_size: u32, initial_chunks: u32, max_bytes: u64, auto_co
         .chunk_size = chunk_size,
         .initial_chunks = initial_chunks,
         .max_bytes = max_bytes,
-        .growth_policy = @intFromEnum(raw.GrowthPolicy.grow),
+        .growth_policy = @backingInt(raw.GrowthPolicy.grow),
         .auto_commit_on_full = if (auto_commit) 1 else 0,
         .span_queue_capacity = 0,
     };
@@ -45,7 +46,7 @@ test "Stream - create and destroy with testing allocator" {
 test "Stream - atomic write spans chunks without changing bytes" {
     const stream = try raw.Stream.create(testing.allocator, testOptions(64, 1, true));
     defer stream.destroy();
-    const input = [_]u8{'x'} ** 150;
+    const input: [150]u8 = @splat('x');
 
     try stream.writeAtomic(&input);
 
@@ -64,10 +65,10 @@ test "Stream - atomic write spans chunks without changing bytes" {
 
 test "Stream - failed atomic write publishes nothing" {
     var options = testOptionsFull(32, 1, 32, true);
-    options.growth_policy = @intFromEnum(raw.GrowthPolicy.block);
+    options.growth_policy = @backingInt(raw.GrowthPolicy.block);
     const stream = try raw.Stream.create(testing.allocator, options);
     defer stream.destroy();
-    const input = [_]u8{'x'} ** 33;
+    const input: [33]u8 = @splat('x');
 
     try testing.expectError(error.NoSpace, stream.writeAtomic(&input));
 
@@ -224,7 +225,7 @@ test "Stream - chunk notification cannot change unfinished atomic admission" {
         var write_status: i32 = 0;
         var commit_status: i32 = 0;
         fn notify(ptr: usize, event: u32, _: usize, _: u64) callconv(.c) void {
-            if (!armed or event != @intFromEnum(raw.EventId.ChunkAdded)) return;
+            if (!armed or event != @backingInt(raw.EventId.ChunkAdded)) return;
             armed = false;
             const stream: *raw.Stream = @ptrFromInt(ptr);
             write_status = raw.streamWrite(stream, "c", 1);
@@ -327,7 +328,7 @@ test "Stream - destruction from a native notification reports Busy" {
     const Callback = struct {
         var status: i32 = raw.Status.ok;
         fn notify(ptr: usize, event: u32, _: usize, _: u64) callconv(.c) void {
-            if (event == @intFromEnum(raw.EventId.Closed)) {
+            if (event == @backingInt(raw.EventId.Closed)) {
                 status = raw.destroyNativeSpanFeed(@ptrFromInt(ptr));
             }
         }
@@ -414,7 +415,7 @@ test "FeedBackend - formatted frame bounds and retry preserve atomic output" {
 
     for ([_]usize{ 63, 64, 65, 1024 }) |size| {
         backend.beginFrame();
-        const text = "x" ** 1024;
+        const text = utils.repeat(u8, "x", 1024);
         if (size <= 64) {
             try backend.writer().print("{s}", .{text[0..size]});
             try testing.expectEqual(size, stream.staged_bytes);
@@ -522,7 +523,7 @@ test "FeedBackend - published frame notification can enqueue ordered controls" {
     const Callback = struct {
         var backend: ?*FeedBackend = null;
         fn notify(_: usize, event: u32, _: usize, _: u64) callconv(.c) void {
-            if (event != @intFromEnum(raw.EventId.DataAvailable)) return;
+            if (event != @backingInt(raw.EventId.DataAvailable)) return;
             const target = backend orelse return;
             backend = null;
             target.writeOut("shutdown");
@@ -556,7 +557,7 @@ const Borrow = struct { span: raw.SpanInfo, start: usize };
 fn expectRejection(options: raw.Options, err: raw.StreamError) !void {
     switch (err) {
         // Block storage reports exhaustion as NoSpace; only growth stops at max_bytes.
-        error.MaxBytes => try testing.expect(options.growth_policy == @intFromEnum(raw.GrowthPolicy.grow) and options.max_bytes != 0),
+        error.MaxBytes => try testing.expect(options.growth_policy == @backingInt(raw.GrowthPolicy.grow) and options.max_bytes != 0),
         error.NoSpace => {},
         else => return err,
     }
@@ -718,7 +719,7 @@ test "Stream - closed, reserved, and pending states reject conflicting operation
     try testing.expectError(error.Invalid, stream.commitReserved(0));
     try testing.expectError(error.NoSpace, stream.reserve(65));
     // Without auto-commit, a write larger than the free chunk space is rejected whole.
-    try testing.expectError(error.NoSpace, stream.write(&([_]u8{'x'} ** 65)));
+    try testing.expectError(error.NoSpace, stream.write(&@as([65]u8, @splat('x'))));
     try testing.expectEqual(@as(u64, 0), stream.getStats().bytes_written);
 
     const info = try stream.reserve(1);
@@ -813,7 +814,7 @@ test "Stream - auto_commit with max_bytes should handle write spanning chunk bou
     const stream = try raw.Stream.create(testing.allocator, testOptionsFull(32, 2, 64, true));
     defer stream.destroy();
 
-    const data = [_]u8{'X'} ** 64;
+    const data: [64]u8 = @splat('X');
     try stream.write(&data);
 
     try testing.expectEqual(@as(u64, 64), stream.getStats().bytes_written);
@@ -827,7 +828,7 @@ fn blockOptions(chunk_size: u32, initial_chunks: u32, auto_commit: bool) raw.Opt
         .chunk_size = chunk_size,
         .initial_chunks = initial_chunks,
         .max_bytes = 0,
-        .growth_policy = @intFromEnum(raw.GrowthPolicy.block),
+        .growth_policy = @backingInt(raw.GrowthPolicy.block),
         .auto_commit_on_full = if (auto_commit) 1 else 0,
         .span_queue_capacity = 0,
     };
@@ -884,7 +885,7 @@ test "Stream - destroy without close commits pending data" {
 var data_available_count: u32 = 0;
 
 fn countingCallback(_: usize, event_id: u32, _: usize, _: u64) callconv(.c) void {
-    if (event_id == @intFromEnum(raw.EventId.DataAvailable)) {
+    if (event_id == @backingInt(raw.EventId.DataAvailable)) {
         data_available_count += 1;
     }
 }
@@ -898,9 +899,9 @@ test "Stream - write returning NoSpace emits DataAvailable exactly once" {
     stream.setCallback(&countingCallback);
     try stream.attach();
     data_available_count = 0;
-    const first = [_]u8{'A'} ** 64;
+    const first: [64]u8 = @splat('A');
     try stream.write(&first);
-    const result = stream.write(&([_]u8{'B'} ** 65));
+    const result = stream.write(&@as([65]u8, @splat('B')));
     try testing.expectError(raw.StreamError.NoSpace, result);
     try testing.expectEqual(@as(u32, 1), data_available_count);
 }
@@ -909,7 +910,7 @@ var drain_during_write_stream: ?*raw.Stream = null;
 var drain_during_write_total: u64 = 0;
 
 fn drainingCallback(stream_ptr: usize, event_id: u32, _: usize, _: u64) callconv(.c) void {
-    if (event_id != @intFromEnum(raw.EventId.DataAvailable)) return;
+    if (event_id != @backingInt(raw.EventId.DataAvailable)) return;
     const s = drain_during_write_stream orelse return;
     if (@intFromPtr(s) != stream_ptr) return;
 
@@ -938,7 +939,7 @@ test "Stream - synchronous drain during write does not corrupt state" {
     drain_during_write_stream = stream;
     drain_during_write_total = 0;
 
-    const data = [_]u8{'D'} ** 256;
+    const data: [256]u8 = @splat('D');
     try stream.write(&data);
 
     try stream.commit();
@@ -1001,7 +1002,7 @@ test "Stream - chunk storage growth preserves active span refcounts" {
     const stream = try raw.Stream.create(testing.allocator, testOptions(chunk_size, 1, false));
     defer stream.destroy();
 
-    const first = [_]u8{'F'} ** 64;
+    const first: [64]u8 = @splat('F');
     try stream.write(&first);
     try stream.commit();
 
@@ -1011,7 +1012,7 @@ test "Stream - chunk storage growth preserves active span refcounts" {
 
     var i: usize = 0;
     while (i < initial_capacity) : (i += 1) {
-        const filler = [_]u8{@intCast(i + 0x10)} ** 64;
+        const filler: [64]u8 = @splat(@intCast(i + 0x10));
         try stream.write(&filler);
         try stream.commit();
     }
@@ -1097,7 +1098,7 @@ test "Stream - refcount saturation must not cause data corruption" {
     try testing.expectEqual(@as(u32, 255), drained);
 
     try testing.expectEqual(@as(u8, 0), stream.chunks.items[0].refcount);
-    const overwrite = [_]u8{'Z'} ** 128;
+    const overwrite: [128]u8 = @splat('Z');
     try stream.write(&overwrite);
     try stream.commit();
 
@@ -1173,7 +1174,7 @@ test "addChunkLocked failure preserves existing chunk ownership" {
         return error.TestUnexpectedResult;
     defer stream.destroy();
 
-    stream.write(&([_]u8{'A'} ** 64)) catch return error.TestUnexpectedResult;
+    stream.write(&@as([64]u8, @splat('A'))) catch return error.TestUnexpectedResult;
     stream.commit() catch return error.TestUnexpectedResult;
     failing.fail_index = failing.alloc_index;
     const result = stream.write("x");
