@@ -28,6 +28,18 @@ test "parseXtversion - ghostty format" {
     try testing.expect(term.caps.hyperlinks);
 }
 
+test "parseXtversion - terminology format enables hyperlinks and osc777 notifications" {
+    var term = Terminal.init(.{});
+    const response = "\x1bP>|terminology 1.14.0\x1b\\";
+    term.processCapabilityResponse(response);
+
+    try testing.expectEqualStrings("terminology", term.getTerminalName());
+    try testing.expectEqualStrings("1.14.0", term.getTerminalVersion());
+    try testing.expect(term.term_info.from_xtversion);
+    try testing.expect(term.caps.hyperlinks);
+    try testing.expectEqual(Terminal.NotificationProtocol.osc777, term.notification_protocol);
+}
+
 test "parseXtversion - tmux format" {
     var term = Terminal.init(.{});
     const response = "\x1bP>|tmux 3.5a\x1b\\";
@@ -192,6 +204,32 @@ test "graphics identity - multiplexers do not imply outer graphics" {
     try testing.expect(!zellij.caps.sixel);
 }
 
+test "graphics detection - tmux ignores unowned Kitty replies" {
+    var env = std.process.Environ.Map.init(testing.allocator);
+    defer env.deinit();
+    try env.put("TMUX", "/tmp/tmux-1000/default,12345,0");
+
+    var known_tmux = Terminal.init(.{ .env_map = &env });
+    known_tmux.processCapabilityResponse("\x1b_Gi=31337;OK\x1b\\");
+    try testing.expect(!known_tmux.kitty_graphics_queried);
+    try testing.expect(!known_tmux.caps.kitty_graphics);
+
+    var late_tmux = Terminal.init(.{});
+    late_tmux.processCapabilityResponse("\x1b_Gi=31337;OK\x1b\\\x1bP>|tmux 3.5a\x1b\\");
+    try testing.expect(!late_tmux.kitty_graphics_queried);
+    try testing.expect(!late_tmux.caps.kitty_graphics);
+}
+
+test "tmux reports focus tracking without DECRQM" {
+    var env = std.process.Environ.Map.init(testing.allocator);
+    defer env.deinit();
+    try env.put("TMUX", "/tmp/tmux-1000/default,12345,0");
+
+    var term = Terminal.init(.{ .env_map = &env });
+    term.processCapabilityResponse("\x1bP>|tmux 3.5a\x1b\\");
+    try testing.expect(term.caps.focus_tracking);
+}
+
 test "graphics identity - query response upgrades an unknown terminal" {
     var term = Terminal.init(.{});
     term.processCapabilityResponse("\x1bP>|unknown 1.0\x1b\\");
@@ -241,16 +279,55 @@ test "refusesForcedSixel - XTVERSION replaces leftover Apple Terminal env" {
     try testing.expect(!iterm.refusesForcedSixel());
 }
 
-test "refusesForcedSixel - tmux XTVERSION is not a Sixel endpoint" {
+test "tmux DA does not describe the passthrough Sixel endpoint" {
     var env = std.process.Environ.Map.init(testing.allocator);
     defer env.deinit();
     try env.put("TERM_PROGRAM", "Apple_Terminal");
     var term = Terminal.init(.{ .env_map = &env });
     term.processCapabilityResponse("\x1bP>|tmux 3.5a\x1b\\");
-    try testing.expect(term.refusesForcedSixel());
+    try testing.expect(!term.caps.sixel);
+    try testing.expect(!term.refusesForcedSixel());
 
     term.processCapabilityResponse("\x1b[?62;4c");
+    try testing.expect(!term.caps.sixel);
     try testing.expect(!term.refusesForcedSixel());
+}
+
+test "known tmux ignores its own Sixel DA response" {
+    var env = std.process.Environ.Map.init(testing.allocator);
+    defer env.deinit();
+    try env.put("TMUX", "/tmp/tmux-1000/default,12345,0");
+
+    var supported_tmux = Terminal.init(.{ .env_map = &env });
+    supported_tmux.processCapabilityResponse("\x1b[?1;2;4c");
+    try testing.expect(!supported_tmux.caps.sixel);
+    try testing.expect(!supported_tmux.refusesForcedSixel());
+
+    var unsupported_tmux = Terminal.init(.{ .env_map = &env });
+    unsupported_tmux.processCapabilityResponse("\x1b[?1;2c");
+    try testing.expect(!unsupported_tmux.caps.sixel);
+    try testing.expect(!unsupported_tmux.refusesForcedSixel());
+}
+
+test "late tmux detection clears its Sixel DA response" {
+    var term = Terminal.init(.{});
+    term.processCapabilityResponse("\x1b[?1;2;4c\x1bP>|tmux 3.7b\x1b\\");
+    try testing.expect(term.isInTmux());
+    try testing.expect(!term.caps.sixel);
+    try testing.expect(!term.sixel_queried);
+    try testing.expect(!term.refusesForcedSixel());
+
+    var da_first = Terminal.init(.{});
+    da_first.processCapabilityResponse("\x1b[?1;2;4c");
+    da_first.processCapabilityResponse("\x1bP>|tmux 3.7b\x1b\\");
+    try testing.expect(!da_first.caps.sixel);
+    try testing.expect(!da_first.sixel_queried);
+
+    var da_last = Terminal.init(.{});
+    da_last.processCapabilityResponse("\x1bP>|tmux 3.7b\x1b\\");
+    da_last.processCapabilityResponse("\x1b[?1;2;4c");
+    try testing.expect(!da_last.caps.sixel);
+    try testing.expect(!da_last.sixel_queried);
 }
 
 test "graphics identity - environment name alone is not authoritative" {
@@ -787,6 +864,76 @@ test "environment overrides - rgb does not imply hyperlinks after recheck for in
     try testing.expect(!term.caps.hyperlinks);
 }
 
+test "environment overrides - TERM_PROGRAM and VTE_VERSION enable hyperlinks for OSC 8 terminals" {
+    const cases = [_]struct { key: []const u8, value: []const u8, hyperlinks: bool }{
+        .{ .key = "TERM_PROGRAM", .value = "vscode", .hyperlinks = true },
+        .{ .key = "TERM_PROGRAM", .value = "zed", .hyperlinks = true },
+        .{ .key = "TERM_PROGRAM", .value = "mintty", .hyperlinks = true },
+        .{ .key = "TERM_PROGRAM", .value = "Apple_Terminal", .hyperlinks = false },
+        .{ .key = "VTE_VERSION", .value = "5202", .hyperlinks = true },
+        .{ .key = "VTE_VERSION", .value = "5201", .hyperlinks = false },
+        .{ .key = "VTE_VERSION", .value = "invalid", .hyperlinks = false },
+    };
+    for (cases) |case| {
+        var env = std.process.Environ.Map.init(testing.allocator);
+        defer env.deinit();
+        try env.put("TERM", "xterm-256color");
+        try env.put(case.key, case.value);
+
+        const term = Terminal.init(.{ .env_map = &env });
+        try testing.expectEqual(case.hyperlinks, term.caps.hyperlinks);
+    }
+}
+
+test "environment overrides - TERM_PROGRAM hyperlinks require a direct terminal" {
+    const multiplexers = [_]struct {
+        key: []const u8,
+        value: []const u8,
+        kind: Terminal.Multiplexer,
+    }{
+        .{ .key = "STY", .value = "1234.session", .kind = .screen },
+        .{ .key = "TMUX", .value = "/tmp/tmux-1000/default,1,0", .kind = .tmux },
+        .{ .key = "ZELLIJ", .value = "0", .kind = .zellij },
+    };
+
+    for (multiplexers) |multiplexer| {
+        var term = Terminal.init(.{});
+        defer term.deinit();
+
+        try term.setHostEnvVar(testing.allocator, "TERM_PROGRAM", "vscode");
+        try testing.expect(term.caps.hyperlinks);
+
+        try term.setHostEnvVar(testing.allocator, multiplexer.key, multiplexer.value);
+        try testing.expectEqual(multiplexer.kind, term.multiplexer);
+        try testing.expect(!term.caps.hyperlinks);
+    }
+}
+
+test "environment overrides - FORCE_HYPERLINK forces hyperlink support" {
+    const enabled_values = [_][]const u8{ "1", "" };
+    for (enabled_values) |value| {
+        var env = std.process.Environ.Map.init(testing.allocator);
+        defer env.deinit();
+        try env.put("TERM", "xterm-256color");
+        try env.put("ZELLIJ", "0");
+        try env.put("FORCE_HYPERLINK", value);
+
+        const term = Terminal.init(.{ .env_map = &env });
+        try testing.expect(term.caps.hyperlinks);
+    }
+
+    var env = std.process.Environ.Map.init(testing.allocator);
+    defer env.deinit();
+    try env.put("TERM", "xterm-kitty");
+    try env.put("FORCE_HYPERLINK", "0");
+
+    var term = Terminal.init(.{ .env_map = &env });
+    try testing.expect(!term.caps.hyperlinks);
+
+    term.processCapabilityResponse("\x1bP>|kitty(0.40.1)\x1b\\");
+    try testing.expect(!term.caps.hyperlinks);
+}
+
 test "setHostEnvVar detects ansi256 separately from rgb" {
     var env = std.process.Environ.Map.init(testing.allocator);
     defer env.deinit();
@@ -901,14 +1048,9 @@ test "queryTerminalSend - sends unwrapped queries when not in tmux" {
 
     // Should NOT contain tmux DCS wrapper
     try testing.expect(std.mem.find(u8, output, "\x1bPtmux;") == null);
-
-    // Should mark capability queries as pending
-    try testing.expect(term.capability_queries_pending);
-    try testing.expect(term.graphics_query_pending);
-    try testing.expect(term.sixel_query_pending);
 }
 
-test "queryTerminalSend - sends DCS wrapped queries when in tmux" {
+test "queryTerminalSend - keeps response-generating queries inside tmux" {
     var env = std.process.Environ.Map.init(testing.allocator);
     defer env.deinit();
     try env.put("TMUX", "/tmp/tmux-1000/default,12345,0");
@@ -930,13 +1072,16 @@ test "queryTerminalSend - sends DCS wrapped queries when in tmux" {
     try testing.expect(std.mem.find(u8, output, "\x1b[?996n") == null);
     try testing.expect(std.mem.find(u8, output, "\x1bPtmux;\x1b\x1b]10;?") == null);
 
-    // Should contain tmux DCS wrapper start and doubled ESC for queries
-    // wrapForTmux wraps all queries together with one DCS envelope
-    try testing.expect(std.mem.find(u8, output, "\x1bPtmux;\x1b\x1bP+q4d73\x1b\x1b\\") != null);
-    try testing.expect(std.mem.find(u8, output, "\x1b\x1b[?1016$p") != null);
+    // tmux answers the queries it implements through the originating pane's PTY.
+    try testing.expect(std.mem.find(u8, output, "\x1bP+q4d73\x1b\\") != null);
+    try testing.expect(std.mem.find(u8, output, "\x1b[?1016$p") != null);
 
-    // Should NOT mark capability queries as pending (already sent wrapped)
-    try testing.expect(!term.capability_queries_pending);
+    // Passthrough replies have no pane ownership and may reach another pane.
+    try testing.expect(std.mem.find(u8, output, "\x1bPtmux;") == null);
+
+    // tmux's graphics replies describe tmux, not the passthrough endpoint.
+    try testing.expect(std.mem.find(u8, output, ansi.ANSI.kittyGraphicsQuery) == null);
+    try testing.expect(std.mem.find(u8, output, ansi.ANSI.primaryDeviceAttrs) == null);
 }
 
 test "queryTerminalSend - sends plain theme queries when TMUX is set" {
@@ -959,112 +1104,6 @@ test "queryTerminalSend - sends plain theme queries when TMUX is set" {
     try testing.expect(std.mem.find(u8, output, ansi.ANSI.oscThemeQueries) != null);
     try testing.expect(std.mem.find(u8, output, "\x1bPtmux;\x1b\x1b]10;?") == null);
     try testing.expect(std.mem.find(u8, output, "\x1b[?996n") == null);
-}
-
-test "sendPendingQueries - sends wrapped queries after tmux detected via xtversion" {
-    var term = Terminal.init(.{});
-    term.multiplexer = .none;
-    term.capability_queries_pending = true;
-    term.graphics_query_pending = true;
-
-    // Simulate tmux detected via xtversion
-    term.processCapabilityResponse("\x1bP>|tmux 3.5a\x1b\\");
-
-    var writer = TestWriter.init(testing.allocator);
-    defer writer.deinit();
-
-    const did_send = try term.sendPendingQueries(&writer);
-
-    try testing.expect(did_send);
-
-    const output = writer.getWritten();
-
-    // Should send DCS wrapped capability queries (wrapForTmux wraps all queries together)
-    try testing.expect(std.mem.find(u8, output, "\x1bPtmux;\x1b\x1bP+q4d73\x1b\x1b\\") != null);
-    try testing.expect(std.mem.find(u8, output, "\x1b\x1b[?1016$p") != null);
-
-    // Should send DCS wrapped graphics query
-    try testing.expect(std.mem.find(u8, output, "\x1bPtmux;\x1b\x1b_G") != null);
-
-    // Should clear pending flags
-    try testing.expect(!term.capability_queries_pending);
-    try testing.expect(!term.graphics_query_pending);
-}
-
-test "sendPendingQueries - clears already-sent direct graphics probes after non-tmux xtversion" {
-    var term = Terminal.init(.{});
-    term.multiplexer = .none;
-    term.capability_queries_pending = true;
-    term.graphics_query_pending = true;
-
-    // Simulate non-tmux terminal detected via xtversion
-    term.term_info.from_xtversion = true;
-    term.term_info.name_len = 5;
-    @memcpy(term.term_info.name[0..5], "kitty");
-
-    var writer = TestWriter.init(testing.allocator);
-    defer writer.deinit();
-
-    const did_send = try term.sendPendingQueries(&writer);
-
-    try testing.expect(!did_send);
-
-    const output = writer.getWritten();
-
-    // Should NOT send DCS wrapped capability queries (not tmux)
-    try testing.expect(std.mem.find(u8, output, "\x1bPtmux;") == null);
-
-    // Initial startup already sent the direct graphics query.
-    try testing.expect(std.mem.find(u8, output, "\x1b_Gi=31337") == null);
-
-    // Should clear pending flags
-    try testing.expect(!term.capability_queries_pending);
-    try testing.expect(!term.graphics_query_pending);
-}
-
-test "sendPendingQueries - waits for xtversion before any passthrough retry" {
-    var term = Terminal.init(.{});
-    term.multiplexer = .none;
-    term.term_info.from_xtversion = false;
-    term.capability_queries_pending = true;
-    term.graphics_query_pending = true;
-
-    var writer = TestWriter.init(testing.allocator);
-    defer writer.deinit();
-
-    const did_send = try term.sendPendingQueries(&writer);
-
-    try testing.expect(!did_send);
-
-    const output = writer.getWritten();
-
-    // Initial startup already sent the direct graphics query.
-    try testing.expect(std.mem.find(u8, output, "\x1b_Gi=31337") == null);
-    try testing.expect(std.mem.find(u8, output, "\x1bPtmux;") == null);
-
-    try testing.expect(term.graphics_query_pending);
-
-    // Capability queries should NOT be re-sent (no xtversion means we don't know if tmux,
-    // but they were already sent unwrapped in queryTerminalSend)
-    try testing.expect(term.capability_queries_pending);
-}
-
-test "sendPendingQueries - skips graphics when skip_graphics_query is set" {
-    var term = Terminal.init(.{});
-    term.multiplexer = .tmux;
-    term.skip_graphics_query = true;
-    term.graphics_query_pending = true;
-    term.capability_queries_pending = false;
-
-    var writer = TestWriter.init(testing.allocator);
-    defer writer.deinit();
-
-    const did_send = try term.sendPendingQueries(&writer);
-
-    try testing.expect(!did_send);
-
-    const output = writer.getWritten();
-    try testing.expect(std.mem.find(u8, output, "Gi=31337") == null);
 }
 
 test "isXtversionTmux - detects tmux from xtversion" {
@@ -1147,6 +1186,14 @@ test "processCapabilityResponse - wezterm applies osc52 and hyperlink heuristics
     try testing.expect(!term.caps.rgb);
     try testing.expect(!term.caps.ansi256);
     try testing.expect(term.caps.osc52);
+    try testing.expect(term.caps.hyperlinks);
+}
+
+test "processCapabilityResponse - xterm.js enables hyperlinks" {
+    var term: Terminal = .{};
+
+    term.processCapabilityResponse("\x1bP>|xterm.js(6.0.0)\x1b\\");
+
     try testing.expect(term.caps.hyperlinks);
 }
 

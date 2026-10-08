@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 
 import { CliRenderer, createCliRenderer, BoxRenderable, TextRenderable, RGBA } from "@opentui/core"
-import { ASCIIFontRenderable } from "@opentui/core"
+import { ASCIIFontRenderable, type KeyEvent, type Selection } from "@opentui/core"
 import { setupCommonDemoKeys } from "./lib/standalone-keys.js"
 
 let mainContainer: BoxRenderable | null = null
@@ -162,7 +162,7 @@ export function run(renderer: CliRenderer): void {
   })
   statusBox.add(debugText)
 
-  renderer.on("selection", (selection) => {
+  const selectionHandler = (selection: Selection | null) => {
     if (selection && statusText && debugText && selectionStartText && selectionMiddleText && selectionEndText) {
       const selectedText = selection.getSelectedText()
 
@@ -198,9 +198,11 @@ export function run(renderer: CliRenderer): void {
         selectionEndText.content = ""
       }
     }
-  })
+  }
+  renderer.on("selection", selectionHandler)
+  mainContainer.once("destroyed", () => renderer.off("selection", selectionHandler))
 
-  renderer.keyInput.on("keypress", (event) => {
+  const keyHandler = (event: KeyEvent) => {
     const key = event.sequence
     if (key === "c" || key === "C") {
       renderer.clearSelection()
@@ -212,7 +214,9 @@ export function run(renderer: CliRenderer): void {
         debugText.content = ""
       }
     }
-  })
+  }
+  renderer.keyInput.on("keypress", keyHandler)
+  mainContainer.once("destroyed", () => renderer.keyInput.off("keypress", keyHandler))
 }
 
 export function destroy(renderer: CliRenderer): void {

@@ -1,0 +1,54 @@
+name: Extract npm packages
+description: Download the release npm packages and put each one where publishing expects it. Optionally run the packed Node smoke tests on them.
+inputs:
+  artifact:
+    description: Name of the npm packages artifact
+    required: true
+  smoke-test:
+    description: Install dependencies and run the packed Node smoke tests
+    required: false
+    default: "false"
+runs:
+  using: composite
+  steps:
+    # Before the extraction, which replaces the workspace links of the native packages.
+    - name: Install dependencies
+      if: inputs.smoke-test == 'true'
+      shell: bash
+      run: bun install
+
+    - name: Download npm packages artifact
+      uses: actions/download-artifact@v8
+      with:
+        name: ${{ inputs.artifact }}
+
+    - name: Extract npm packages
+      shell: bash
+      run: |
+        echo "Extracting npm packages..."
+        unzip -q npm-packages.zip
+
+        for package in core three qrcode react solid keymap ssh; do
+          if [ -d "npm-packages/$package-dist" ]; then
+            cp -r "npm-packages/$package-dist" "packages/$package/dist"
+            echo "Copied $package dist"
+          fi
+        done
+
+        # Replace Bun-managed symlinks with the packaged native directories.
+        if [ -d "npm-packages/core-native-packages" ]; then
+          mkdir -p packages/core/node_modules/@opentui
+          rm -rf packages/core/node_modules/@opentui/core-*
+          cp -r npm-packages/core-native-packages/* packages/core/node_modules/@opentui/
+          echo "Copied native packages"
+        fi
+
+        echo "Package extraction complete"
+
+    - name: Run packed Node smoke tests
+      if: inputs.smoke-test == 'true'
+      shell: bash
+      run: |
+        for package in core solid keymap ssh; do
+          (cd "packages/$package" && bun run test:dist --skip-build)
+        done

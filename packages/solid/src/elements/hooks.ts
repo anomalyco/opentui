@@ -1,5 +1,5 @@
 import {
-  engine,
+  getTimelineEngine,
   PasteEvent,
   Selection,
   Timeline,
@@ -142,6 +142,7 @@ export const useSelectionHandler = (callback: (selection: Selection) => void) =>
 }
 
 export const useTimeline = (options: TimelineOptions = {}): Timeline => {
+  const engine = getTimelineEngine(useRenderer())
   const timeline = new Timeline(options)
 
   onMount(() => {
@@ -152,8 +153,11 @@ export const useTimeline = (options: TimelineOptions = {}): Timeline => {
   })
 
   onCleanup(() => {
-    timeline.pause()
-    engine.unregister(timeline)
+    try {
+      timeline.pause()
+    } finally {
+      engine.unregister(timeline)
+    }
   })
 
   return timeline

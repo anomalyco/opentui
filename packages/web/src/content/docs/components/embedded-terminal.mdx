@@ -22,7 +22,7 @@ The renderable is not a process and not a PTY. You write child output into it. Y
 | Solid           | Unavailable                  |
 | Status          | Built-in Core renderable     |
 
-The native artifact includes Ghostty VT on `x86_64` and `aarch64` for macOS, Linux glibc, Linux musl, and Windows GNU. Other targets throw `Embedded terminal creation failed: embedded terminal support is unavailable`.
+The native artifact includes Ghostty VT on `x86_64` and `aarch64` for macOS, Linux glibc, Linux musl, and Windows GNU. On other targets, the constructor throws a `NativeError` with the message `ot_embedded_terminal_create failed: UnsupportedResource`.
 
 ## I/O model
 
@@ -84,7 +84,7 @@ $ bun test
 2 passed, 0 failed
 ```
 
-`screen()` reads the private cell buffer from the last paint. Call it after a render pass. It trims the end of each line and drops trailing empty rows. `columns` and `rows` are the renderable's current layout size. Cursor state also comes from the last compose, not from `write()` alone.
+`screen()` reads the private cell buffer from the last paint. Call it after a frame renders. It trims the end of each line and drops trailing empty rows. `columns` and `rows` are the renderable's current layout size. Cursor state also comes from the last compose, not from `write()` alone.
 
 ## Attach a process
 
@@ -109,7 +109,7 @@ function attachChild(
 }
 ```
 
-If `width` or `height` is a percentage or flex size, the native grid starts at `cols` and `rows`. Those values default to `80` and `24` when the layout size is not a number. Create the child at that starting grid.
+If `width` or `height` is a percentage or flex size, the native grid starts at `cols` and `rows`. Those values default to `80` and `24` when `width` or `height` is not a number. Create the child at that starting grid.
 
 A computed size change resizes the emulator only while the renderable is visible. That path also drains replies and calls `onTerminalResize`. A numeric `width` or `height` that already matches the first layout does not fire the callback.
 
@@ -127,7 +127,7 @@ Destroy the renderable and close the child together. `destroy()` releases the na
 | `height`        | `rows`                           | Layout height. A later size change resizes the emulator.                                          |
 | `maxScrollback` | `10000`                          | Scrollback budget in bytes, not lines. `0` stores no history. The value must fit in a native u32. |
 
-`maxScrollback` is constructor-only. A visible size change floors the computed width and height and caps the native grid at 65535. It then invalidates the next paint, drains replies, and calls `onTerminalResize`. The cap does not apply to layout size or `screen()` dimensions. The renderable ignores non-finite and non-positive sizes. Hidden size changes update layout only.
+`maxScrollback` is constructor-only. A visible size change floors the computed width and height and caps the native grid at 65535. It then forces a full redraw on the next compose, drains replies, and calls `onTerminalResize`. The cap does not apply to layout size or `screen()` dimensions. The renderable ignores non-finite and non-positive sizes. Hidden size changes update layout only.
 
 ## Focus and keyboard
 
@@ -135,7 +135,7 @@ The renderable is focusable. A left-button press inside it calls `focus()`. Whil
 
 `handleKeyPress()` encodes the key with the child's current keyboard mode. It sends nonempty bytes as `"input"` and returns `true` when it produces bytes. The renderable forwards Kitty releases only while it has focus. `meta` encodes as Super, not Alt.
 
-`handlePaste()` encodes the paste with the current paste mode. Bracketed paste wraps the payload when the child enabled it. Encoding replaces certain control bytes with spaces. Without bracketed paste, newlines become carriage returns.
+`handlePaste()` encodes the paste with the current paste mode. Bracketed paste wraps the payload when the child enabled it. Encoding replaces certain control bytes with spaces. Without bracketed paste, newlines become carriage returns. `encodePaste()` accepts at most 1 MiB. A larger paste throws, and `handlePaste()` sends nothing to the child.
 
 If the child enabled focus events, `focus()` and `blur()` send the matching sequences as `"input"`. If `onData` throws during `focus()`, the renderable leaves focus. `blur()` still finishes cleanup if `onData` throws.
 
@@ -163,9 +163,11 @@ While the renderable has focus, the host cursor follows the emulator cursor. It 
 
 `blur()` and `destroy()` hide the host cursor.
 
-`render()` runs `renderBefore`, then compose, then `renderAfter`. If either hook exists, or existed on the previous frame, compose redraws the full grid. That redraw replaces `renderBefore` output. Use `renderAfter` to draw over the terminal cells.
+Compose runs in the renderable's `renderSelf` [paint hook](/docs/extend/custom-renderables#use-paint-hooks). In each frame that paints the renderable, Core runs `renderBefore`, then compose, then `renderAfter`. All three draw into the private buffer, where `(0, 0)` is the top-left cell of the renderable. Native code then draws the private buffer into the frame at the renderable's position.
 
-`onScreenChange` runs after every successful compose while the renderable is visible. It is not a dirty-content signal. Do not use it to start work that must run only when the screen content changes.
+If `renderBefore` or `renderAfter` exists, or a hook changed since the last compose, compose redraws the full grid. That redraw replaces `renderBefore` output. Use `renderAfter` to draw over the terminal cells.
+
+`onScreenChange` runs after each successful compose, in every frame that paints the renderable. It is not a dirty-content signal. Do not use it to start work that must run only when the screen content changes.
 
 `invalidate()` forces a full redraw on the next compose.
 
@@ -173,7 +175,7 @@ While the renderable has focus, the host cursor follows the emulator cursor. It 
 
 The reply queue keeps at most 1 MiB and drops an overflowing reply. `write()` still delivers replies that were already queued and does not throw.
 
-Construction validates `cols`, `rows`, and `maxScrollback` before native allocation. A failed constructor destroys the renderable and rethrows. `destroy()` and a failed constructor hide the host cursor. If the renderable has focus, `destroy()` can send a focus-lost sequence to `onData` before it frees the handle. After that, methods return without writing. Encoders return empty bytes.
+Construction validates `cols`, `rows`, and `maxScrollback` before it creates the native emulator. A failed constructor destroys the renderable and rethrows. `destroy()` and a failed constructor hide the host cursor. If the renderable has focus, `destroy()` can send a focus-lost sequence to `onData` before it frees the handle. After that, methods return without writing. Encoders return empty bytes.
 
 If framebuffer allocation fails, the renderable does not compose into the parent. `write()` still updates native state.
 
@@ -202,27 +204,28 @@ Use `encodeKey()` and `encodePaste()` to assert mode-aware sequences without a c
 
 ## Options and state
 
-| Member                | Type                                                             | Description                                                               |
-| --------------------- | ---------------------------------------------------------------- | ------------------------------------------------------------------------- |
-| `cols`                | `number`                                                         | Constructor option. Initial emulator columns. Not an instance field.      |
-| `rows`                | `number`                                                         | Constructor option. Initial emulator rows. Not an instance field.         |
-| `maxScrollback`       | `number`                                                         | Constructor option. Scrollback budget in bytes. Default `10000`.          |
-| `selectable`          | `boolean`                                                        | Whether the renderable joins renderer selection. Default `true`.          |
-| `onData`              | `(data: Uint8Array, source: EmbeddedTerminalDataSource) => void` | Called with encoded input or drained replies.                             |
-| `onTerminalResize`    | `(cols: number, rows: number) => void`                           | Called after a visible layout size change resizes the emulator.           |
-| `onScreenChange`      | `() => void`                                                     | Called after a successful compose while the renderable is visible.        |
-| `write(data)`         | `(data: string \| Uint8Array) => void`                           | Parse VT bytes and request a render.                                      |
-| `encodeKey(key)`      | `(key: KeyEvent) => Uint8Array`                                  | Encode a key with the current keyboard mode.                              |
-| `encodePaste(bytes)`  | `(bytes: Uint8Array) => Uint8Array`                              | Encode a paste with the current paste mode.                               |
-| `handleKeyPress(key)` | `(key: KeyEvent) => boolean`                                     | Encode a key and send nonempty bytes as `"input"`.                        |
-| `handlePaste(event)`  | `(event: PasteEvent) => void`                                    | Encode a paste and send nonempty bytes as `"input"`.                      |
-| `focus()` / `blur()`  | `() => void`                                                     | Move focus and send focus sequences when the child enabled them.          |
-| `screen()`            | `() => EmbeddedTerminalScreen`                                   | Painted text and native cursor. `columns` and `rows` are the layout size. |
-| `hasSelection()`      | `() => boolean`                                                  | Whether this renderable currently has an active selection.                |
-| `getSelectedText()`   | `() => string`                                                   | Selected emulator text, or `""`.                                          |
-| `invalidate()`        | `() => void`                                                     | Force a full redraw on the next compose.                                  |
+| Member                  | Type                                                             | Description                                                                                     |
+| ----------------------- | ---------------------------------------------------------------- | ----------------------------------------------------------------------------------------------- |
+| `cols`                  | `number`                                                         | Constructor option. Initial emulator columns. Not an instance field.                            |
+| `rows`                  | `number`                                                         | Constructor option. Initial emulator rows. Not an instance field.                               |
+| `maxScrollback`         | `number`                                                         | Constructor option. Scrollback budget in bytes. Default `10000`.                                |
+| `selectable`            | `boolean`                                                        | Whether the renderable joins renderer selection. Default `true`.                                |
+| `transparentBackground` | `boolean`                                                        | Use the host terminal's default background for the child's default background. Default `false`. |
+| `onData`                | `(data: Uint8Array, source: EmbeddedTerminalDataSource) => void` | Called with encoded input or drained replies.                                                   |
+| `onTerminalResize`      | `(cols: number, rows: number) => void`                           | Called after a visible layout size change resizes the emulator.                                 |
+| `onScreenChange`        | `() => void`                                                     | Called after each successful compose.                                                           |
+| `write(data)`           | `(data: string \| Uint8Array) => void`                           | Parse VT bytes and request a render.                                                            |
+| `encodeKey(key)`        | `(key: KeyEvent) => Uint8Array`                                  | Encode a key with the current keyboard mode.                                                    |
+| `encodePaste(bytes)`    | `(bytes: Uint8Array) => Uint8Array`                              | Encode a paste with the current paste mode.                                                     |
+| `handleKeyPress(key)`   | `(key: KeyEvent) => boolean`                                     | Encode a key and send nonempty bytes as `"input"`.                                              |
+| `handlePaste(event)`    | `(event: PasteEvent) => void`                                    | Encode a paste and send nonempty bytes as `"input"`.                                            |
+| `focus()` / `blur()`    | `() => void`                                                     | Move focus and send focus sequences when the child enabled them.                                |
+| `screen()`              | `() => EmbeddedTerminalScreen`                                   | Painted text and native cursor. `columns` and `rows` are the layout size.                       |
+| `hasSelection()`        | `() => boolean`                                                  | Whether this renderable currently has an active selection.                                      |
+| `getSelectedText()`     | `() => string`                                                   | Selected emulator text, or `""`.                                                                |
+| `invalidate()`          | `() => void`                                                     | Force a full redraw on the next compose.                                                        |
 
-You can assign `onData`, `onTerminalResize`, and `onScreenChange` after construction.
+You can assign `onData`, `onTerminalResize`, `onScreenChange`, and `transparentBackground` after construction.
 
 ## React and Solid
 

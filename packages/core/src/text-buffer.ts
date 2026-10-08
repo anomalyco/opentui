@@ -1,8 +1,20 @@
-import type { StyledText } from "./lib/styled-text.js"
+import { readFileSync } from "node:fs"
+import { StyledText } from "./lib/styled-text.js"
 import { RGBA } from "./lib/RGBA.js"
-import { resolveRenderLib, type RenderLib, type TextBufferHandle } from "./zig.js"
+import {
+  NativeEditHighlightOperation,
+  NativeEditorStyleMask,
+  NativeError,
+  NativeStatus,
+  type RenderLib,
+  type ContextTextBufferHandle,
+  type NativeEditorStyle,
+  type NativeEncodedStyledText,
+} from "./zig.js"
 import { type WidthMethod, type Highlight } from "./types.js"
 import type { SyntaxStyle } from "./syntax-style.js"
+import type { NativeResourceOwner, ResourceContext } from "./buffer.js"
+import type { TextBufferView } from "./text-buffer-view.js"
 
 export interface TextChunk {
   __isChunk: true
@@ -15,23 +27,36 @@ export interface TextChunk {
 
 export class TextBuffer {
   private lib: RenderLib
-  private bufferPtr: TextBufferHandle
+  private native: { owner: ResourceContext; handle: ContextTextBufferHandle }
   private _length: number = 0
   private _byteSize: number = 0
   private _destroyed: boolean = false
   private _syntaxStyle?: SyntaxStyle
-  private _textBytes?: Uint8Array
-  private _memId?: number
-  private _appendedChunks: Uint8Array[] = []
 
-  constructor(lib: RenderLib, ptr: TextBufferHandle) {
+  constructor(lib: RenderLib, handle: ContextTextBufferHandle, source: NativeResourceOwner) {
+    const owner = source?.resourceContext
+    if (!owner) throw new Error("TextBuffer requires an explicit resource owner")
+    owner.assertAlive()
+    if (owner.renderLib !== lib || !handle || typeof handle !== "object" || handle.context !== owner.context) {
+      throw new Error("TextBuffer Context owner mismatch")
+    }
     this.lib = lib
-    this.bufferPtr = ptr
+    this.native = { owner, handle }
+    this.updateLengths()
   }
 
-  static create(widthMethod: WidthMethod): TextBuffer {
-    const lib = resolveRenderLib()
-    return lib.createTextBuffer(widthMethod)
+  static create(widthMethod: WidthMethod, source: NativeResourceOwner): TextBuffer {
+    const owner = source?.resourceContext
+    if (!owner) throw new Error("TextBuffer requires an explicit resource owner")
+    owner.assertAlive()
+    const lib = owner.renderLib
+    const handle = lib.createContextTextBuffer(owner.context, { widthMethod })
+    try {
+      return new TextBuffer(lib, handle, owner)
+    } catch (error) {
+      lib.destroyContextTextBuffer(owner.context, handle)
+      throw error
+    }
   }
 
   // Fail loud and clear
@@ -39,77 +64,141 @@ export class TextBuffer {
   // this at least will show a stack trace to know where the call to a destroyed TextBuffer was made
   private guard(): void {
     if (this._destroyed) throw new Error("TextBuffer is destroyed")
+    this.native.owner.assertAlive()
+  }
+
+  /** @internal Dependent views must use the buffer's library and Context. */
+  public _getOwner(): ResourceContext {
+    this.guard()
+    return this.native.owner
+  }
+
+  /** @internal Resources can be shared by scenes in the same Context. */
+  public _getSceneHandle(scene: NativeResourceOwner): ContextTextBufferHandle {
+    this.guard()
+    if (this.native.owner !== scene.resourceContext) throw new Error("TextBuffer Context owner mismatch")
+    return this.native.handle
+  }
+
+  private updateLengths(): void {
+    const info = this.lib.contextTextBufferGetInfo(this.native.handle.context, this.native.handle)
+    this._length = info.textLength
+    this._byteSize = info.byteLength
   }
 
   public setText(text: string): void {
     this.guard()
-    this._textBytes = this.lib.encoder.encode(text)
-
-    if (this._memId === undefined) {
-      this._memId = this.lib.textBufferRegisterMemBuffer(this.bufferPtr, this._textBytes, false)
-    } else if (!this.lib.textBufferReplaceMemBuffer(this.bufferPtr, this._memId, this._textBytes, false)) {
-      this._memId = this.lib.textBufferRegisterMemBuffer(this.bufferPtr, this._textBytes, false)
-    }
-
-    this.lib.textBufferSetTextFromMem(this.bufferPtr, this._memId)
-    this._length = this.lib.textBufferGetLength(this.bufferPtr)
-    this._byteSize = this.lib.textBufferGetByteSize(this.bufferPtr)
-    this._appendedChunks = [] // Clear any previously appended chunks
+    // Publish accepted state before this boundary reports deferred callback errors.
+    this.lib.getYogaHost().runMutation(() => {
+      const textBytes = this.lib.encoder.encode(text)
+      this.lib.contextTextBufferSetText(this.native.handle.context, this.native.handle, textBytes)
+      this.updateLengths()
+    })
   }
 
   public append(text: string): void {
     this.guard()
-    const textBytes = this.lib.encoder.encode(text)
-    // Keep the bytes alive to prevent garbage collection
-    this._appendedChunks.push(textBytes)
-    this.lib.textBufferAppend(this.bufferPtr, textBytes)
-    this._length = this.lib.textBufferGetLength(this.bufferPtr)
-    this._byteSize = this.lib.textBufferGetByteSize(this.bufferPtr)
+    // Publish accepted state before this boundary reports deferred callback errors.
+    this.lib.getYogaHost().runMutation(() => {
+      const textBytes = this.lib.encoder.encode(text)
+      this.lib.contextTextBufferAppend(this.native.handle.context, this.native.handle, textBytes)
+      this.updateLengths()
+    })
   }
 
   public loadFile(path: string): void {
     this.guard()
-    const success = this.lib.textBufferLoadFile(this.bufferPtr, path)
-    if (!success) {
-      throw new Error(`Failed to load file: ${path}`)
-    }
-    this._length = this.lib.textBufferGetLength(this.bufferPtr)
-    this._byteSize = this.lib.textBufferGetByteSize(this.bufferPtr)
-    this._textBytes = undefined
+    this.lib.getYogaHost().runMutation(() => {
+      let bytes: Uint8Array
+      try {
+        bytes = readFileSync(path)
+      } catch (cause) {
+        throw new Error(`Failed to load file: ${path}`, { cause })
+      }
+      this.lib.contextTextBufferSetText(this.native.handle.context, this.native.handle, bytes)
+      this.updateLengths()
+    })
   }
 
   public setStyledText(text: StyledText): void {
     this.guard()
 
-    this.lib.textBufferSetStyledText(this.bufferPtr, text.chunks)
+    this.lib.getYogaHost().runMutation(() => {
+      const chunks = text.chunks
+      if (Array.isArray(chunks) && chunks.length === 0) {
+        this.lib.contextTextBufferClear(this.native.handle.context, this.native.handle)
+      } else {
+        this.lib.contextTextBufferSetStyledText(this.native.handle.context, this.native.handle, new StyledText(chunks))
+      }
+      this.updateLengths()
+    })
+  }
 
-    this._length = this.lib.textBufferGetLength(this.bufferPtr)
-    this._byteSize = this.lib.textBufferGetByteSize(this.bufferPtr)
+  /** @internal Uses an input snapshot without invoking chunk getters again. */
+  public _setEncodedStyledText(text: NativeEncodedStyledText): void {
+    this.guard()
+    this.lib.getYogaHost().runMutation(() => {
+      this.lib.contextTextBufferSetEncodedStyledText(this.native.handle.context, this.native.handle, text)
+      this.updateLengths()
+    })
+  }
+
+  /** @internal Returns false for oversized batches without changing any resource. */
+  public static _replaceStyledTextBatch(
+    replacements: { textBuffer: TextBuffer; textBufferView: TextBufferView; text: NativeEncodedStyledText }[],
+    beforeNative: () => void,
+  ): boolean {
+    if (replacements.length === 0) {
+      beforeNative()
+      return true
+    }
+    const owner = replacements[0].textBuffer._getOwner()
+    const lib = owner.renderLib
+    const entries = replacements.map(({ textBuffer, textBufferView, text }) => ({
+      buffer: textBuffer._getSceneHandle(owner),
+      view: textBufferView._getSceneHandle(owner),
+      text,
+    }))
+    return lib.getYogaHost().runMutation(() => {
+      const info = lib.contextTextBufferReplaceStyledBatch(owner.context, entries, beforeNative)
+      if (info === null) return false
+      for (let index = 0; index < replacements.length; index++) {
+        replacements[index].textBuffer._length = info[index * 2]
+        replacements[index].textBuffer._byteSize = info[index * 2 + 1]
+      }
+      return true
+    })
+  }
+
+  private setDefaults(mask: NativeEditorStyleMask, style: NativeEditorStyle): void {
+    this.guard()
+    this.lib.contextTextBufferSetDefaults(this.native.handle.context, this.native.handle, mask, style)
+  }
+
+  /** @internal Apply a complete default style through one checked native mutation. */
+  public _setDefaults(fg: RGBA | null, bg: RGBA | null, attributes: number | null): void {
+    this.setDefaults(NativeEditorStyleMask.All, { fg, bg, attributes })
   }
 
   public setDefaultFg(fg: RGBA | null): void {
-    this.guard()
-    this.lib.textBufferSetDefaultFg(this.bufferPtr, fg)
+    this.setDefaults(NativeEditorStyleMask.Foreground, { fg })
   }
 
   public setDefaultBg(bg: RGBA | null): void {
-    this.guard()
-    this.lib.textBufferSetDefaultBg(this.bufferPtr, bg)
+    this.setDefaults(NativeEditorStyleMask.Background, { bg })
   }
 
   public setDefaultAttributes(attributes: number | null): void {
-    this.guard()
-    this.lib.textBufferSetDefaultAttributes(this.bufferPtr, attributes)
+    this.setDefaults(NativeEditorStyleMask.Attributes, { attributes })
   }
 
   public resetDefaults(): void {
-    this.guard()
-    this.lib.textBufferResetDefaults(this.bufferPtr)
+    this.setDefaults(NativeEditorStyleMask.All, {})
   }
 
   public getLineCount(): number {
     this.guard()
-    return this.lib.textBufferGetLineCount(this.bufferPtr)
+    return this.lib.contextTextBufferGetInfo(this.native.handle.context, this.native.handle).lineCount
   }
 
   public get length(): number {
@@ -122,32 +211,20 @@ export class TextBuffer {
     return this._byteSize
   }
 
-  public get ptr(): TextBufferHandle {
-    this.guard()
-    return this.bufferPtr
-  }
-
   public getPlainText(): string {
     this.guard()
-    if (this._byteSize === 0) return ""
-    // Use byteSize for accurate buffer allocation (includes newlines in byte count)
-    const plainBytes = this.lib.getPlainTextBytes(this.bufferPtr, this._byteSize)
-
-    if (!plainBytes) return ""
-
-    return this.lib.decoder.decode(plainBytes)
+    return this.lib.contextTextBufferGetText(this.native.handle.context, this.native.handle)
   }
 
   public getTextRange(startOffset: number, endOffset: number): string {
     this.guard()
     if (startOffset >= endOffset) return ""
-    if (this._byteSize === 0) return ""
+    return this.lib.contextTextBufferGetRange(this.native.handle.context, this.native.handle, startOffset, endOffset)
+  }
 
-    const rangeBytes = this.lib.textBufferGetTextRange(this.bufferPtr, startOffset, endOffset, this._byteSize)
-
-    if (!rangeBytes) return ""
-
-    return this.lib.decoder.decode(rangeBytes)
+  private highlight(operation: NativeEditHighlightOperation, argument?: number, highlight?: Highlight): void {
+    this.guard()
+    this.lib.contextTextBufferHighlight(this.native.handle.context, this.native.handle, operation, argument, highlight)
   }
 
   /**
@@ -155,8 +232,7 @@ export class TextBuffer {
    * start/end in highlight represent absolute character positions.
    */
   public addHighlightByCharRange(highlight: Highlight): void {
-    this.guard()
-    this.lib.textBufferAddHighlightByCharRange(this.bufferPtr, highlight)
+    this.highlight(NativeEditHighlightOperation.AddRange, 0, highlight)
   }
 
   /**
@@ -164,40 +240,41 @@ export class TextBuffer {
    * start/end in highlight represent column offsets.
    */
   public addHighlight(lineIdx: number, highlight: Highlight): void {
-    this.guard()
-    this.lib.textBufferAddHighlight(this.bufferPtr, lineIdx, highlight)
+    this.highlight(NativeEditHighlightOperation.AddLine, lineIdx, highlight)
   }
 
   public removeHighlightsByRef(hlRef: number): void {
-    this.guard()
-    this.lib.textBufferRemoveHighlightsByRef(this.bufferPtr, hlRef)
+    this.highlight(NativeEditHighlightOperation.RemoveRef, hlRef)
   }
 
   public clearLineHighlights(lineIdx: number): void {
-    this.guard()
-    this.lib.textBufferClearLineHighlights(this.bufferPtr, lineIdx)
+    this.highlight(NativeEditHighlightOperation.ClearLine, lineIdx)
   }
 
   public clearAllHighlights(): void {
-    this.guard()
-    this.lib.textBufferClearAllHighlights(this.bufferPtr)
+    this.highlight(NativeEditHighlightOperation.ClearAll)
   }
 
   public getLineHighlights(lineIdx: number): Array<Highlight> {
     this.guard()
-    return this.lib.textBufferGetLineHighlights(this.bufferPtr, lineIdx)
+    return this.lib.contextTextBufferGetHighlights(this.native.handle.context, this.native.handle, lineIdx)
   }
 
   public getHighlightCount(): number {
     this.guard()
-    return this.lib.textBufferGetHighlightCount(this.bufferPtr)
+    return this.lib.contextTextBufferGetInfo(this.native.handle.context, this.native.handle).highlightCount
   }
 
   public setSyntaxStyle(style: SyntaxStyle | null): void {
     this.guard()
-    if (this.lib.textBufferSetSyntaxStyle(this.bufferPtr, style?.ptr ?? null)) {
+    this.lib.getYogaHost().runMutation(() => {
+      this.lib.contextTextBufferSetSyntaxStyle(
+        this.native.handle.context,
+        this.native.handle,
+        style?._getSceneHandle(this.native.owner) ?? null,
+      )
       this._syntaxStyle = style ?? undefined
-    }
+    })
   }
 
   public getSyntaxStyle(): SyntaxStyle | null {
@@ -207,39 +284,49 @@ export class TextBuffer {
 
   public setTabWidth(width: number): void {
     this.guard()
-    this.lib.textBufferSetTabWidth(this.bufferPtr, width)
-    // Native length is display-cell width, so tab metrics can change it without changing bytes.
-    this._length = this.lib.textBufferGetLength(this.bufferPtr)
+    this.lib.getYogaHost().runMutation(() => {
+      this.lib.contextTextBufferSetTabWidth(this.native.handle.context, this.native.handle, width)
+      this.updateLengths()
+    })
   }
 
   public getTabWidth(): number {
     this.guard()
-    return this.lib.textBufferGetTabWidth(this.bufferPtr)
+    return this.lib.contextTextBufferGetInfo(this.native.handle.context, this.native.handle).tabWidth
   }
 
   public clear(): void {
     this.guard()
-    this.lib.textBufferClear(this.bufferPtr)
-    this._length = 0
-    this._byteSize = 0
-    this._textBytes = undefined
-    this._appendedChunks = []
-    // Note: _memId is NOT cleared - it can be reused for next setText
+    this.lib.getYogaHost().runMutation(() => {
+      this.lib.contextTextBufferClear(this.native.handle.context, this.native.handle)
+      this._length = 0
+      this._byteSize = 0
+    })
   }
 
   public reset(): void {
     this.guard()
-    this.lib.textBufferReset(this.bufferPtr)
-    this._length = 0
-    this._byteSize = 0
-    this._textBytes = undefined
-    this._memId = undefined // Reset clears the registry, so clear our ID
-    this._appendedChunks = []
+    this.lib.getYogaHost().runMutation(() => {
+      this.lib.contextTextBufferClear(this.native.handle.context, this.native.handle, true)
+      this._length = 0
+      this._byteSize = 0
+    })
   }
 
   public destroy(): void {
     if (this._destroyed) return
-    this._destroyed = true
-    this.lib.destroyTextBuffer(this.bufferPtr)
+    this.lib.getYogaHost().runMutation(() => {
+      if (!this.native.owner.disposed) {
+        try {
+          this.lib.releaseAfterPaint(this.native.handle.context, () =>
+            this.lib.destroyContextTextBuffer(this.native.handle.context, this.native.handle),
+          )
+        } catch (error) {
+          if (!(error instanceof NativeError) || error.status !== NativeStatus.StaleHandle) throw error
+        }
+      }
+      this._destroyed = true
+      this._syntaxStyle = undefined
+    })
   }
 }

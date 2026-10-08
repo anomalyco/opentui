@@ -1,14 +1,21 @@
+import { ResourceContext } from "./buffer.js"
 import { describe, expect, it, beforeEach, afterEach } from "bun:test"
 import { EditBuffer } from "./edit-buffer.js"
 import { EditorView } from "./editor-view.js"
 import { RGBA } from "./lib/RGBA.js"
+
+let resourceContext: ResourceContext
+beforeEach(() => {
+  resourceContext = new ResourceContext({ objectCapacity: 8, renderCellsMax: 1 })
+})
+afterEach(() => resourceContext.destroy())
 
 describe("EditorView", () => {
   let buffer: EditBuffer
   let view: EditorView
 
   beforeEach(() => {
-    buffer = EditBuffer.create("wcwidth")
+    buffer = EditBuffer.create("wcwidth", resourceContext)
     view = EditorView.create(buffer, 40, 10)
   })
 
@@ -296,26 +303,9 @@ describe("EditorView", () => {
       expect(changed).toBe(true)
       expect(view.getSelectedText()).toBe("beta")
     })
-
-    it("should return null bytes for zero-length selected-text output buffer", () => {
-      buffer.setText("Hello World")
-      view.setSelection(0, 5)
-
-      const selectedBytes = (view as any).lib.editorViewGetSelectedTextBytes(view.ptr, 0)
-
-      expect(selectedBytes).toBeNull()
-    })
   })
 
   describe("text getters", () => {
-    it("should return null bytes for zero-length text output buffer", () => {
-      buffer.setText("Hello World")
-
-      const textBytes = (view as any).lib.editorViewGetText(view.ptr, 0)
-
-      expect(textBytes).toBeNull()
-    })
-
     it("should accept an empty placeholder styled-text list", () => {
       expect(() => view.setPlaceholderStyledText([])).not.toThrow()
       expect(view.getVirtualLineCount()).toBeGreaterThanOrEqual(0)

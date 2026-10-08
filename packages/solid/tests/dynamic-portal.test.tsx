@@ -1,5 +1,5 @@
 import { describe, expect, it, beforeEach, afterEach } from "bun:test"
-import { testRender, Dynamic, Portal } from "../index.js"
+import { testRender, Dynamic, LayoutSlotRenderable, Portal } from "../index.js"
 import { createSignal, Show } from "solid-js"
 import { createSpy } from "@opentui/core/testing"
 import type { BoxRenderable } from "@opentui/core"
@@ -193,6 +193,40 @@ describe("SolidJS Renderer - Dynamic and Portal Components", () => {
       expect(frame).not.toContain("Portal content")
     })
 
+    it("should give a reinserted portal marker a live placeholder", async () => {
+      const [showPortal, setShowPortal] = createSignal(true)
+      const nextTick = () => new Promise<void>((resolve) => process.nextTick(resolve))
+      let host!: BoxRenderable
+
+      testSetup = await testRender(
+        () => {
+          const portal = (
+            <Portal>
+              <text>Portal content</text>
+            </Portal>
+          )
+          return (
+            <box ref={host}>
+              {showPortal() ? portal : null}
+              <text>After portal</text>
+            </box>
+          )
+        },
+        { width: 20, height: 5 },
+      )
+
+      for (let i = 0; i < 3; i++) {
+        setShowPortal(false)
+        await nextTick()
+        setShowPortal(true)
+        await nextTick()
+
+        const placeholder = host.getChildren()[0]
+        expect(placeholder).toBeInstanceOf(LayoutSlotRenderable)
+        expect(placeholder!.isFreed()).toBe(false)
+      }
+    })
+
     it("should handle multiple portals", async () => {
       testSetup = await testRender(
         () => (
@@ -213,6 +247,37 @@ describe("SolidJS Renderer - Dynamic and Portal Components", () => {
       expect(frame).toContain("First portal")
       expect(frame).toContain("Second portal")
       expect(testSetup.renderer.root.getChildren().length).toBe(3)
+    })
+
+    it("should release portal child listeners on unmount", async () => {
+      const [showPortal, setShowPortal] = createSignal(false)
+
+      testSetup = await testRender(
+        () => (
+          <box>
+            <Show when={showPortal()}>
+              <Portal>
+                <scrollbox>
+                  <text>Portal content</text>
+                </scrollbox>
+              </Portal>
+            </Show>
+          </box>
+        ),
+        { width: 20, height: 5 },
+      )
+
+      await testSetup.renderOnce()
+      const baseline = testSetup.renderer.listenerCount("selection")
+
+      setShowPortal(true)
+      await testSetup.renderOnce()
+      expect(testSetup.renderer.listenerCount("selection")).toBe(baseline + 1)
+
+      setShowPortal(false)
+      await testSetup.renderOnce()
+      await Bun.sleep(0)
+      expect(testSetup.renderer.listenerCount("selection")).toBe(baseline)
     })
   })
 

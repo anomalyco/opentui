@@ -1,6 +1,6 @@
 {
   "name": "@opentui/examples",
-  "version": "0.5.11",
+  "version": "0.5.17",
   "private": true,
   "description": "OpenTUI examples and standalone examples executable",
   "license": "MIT",
@@ -37,6 +37,6 @@
     "typescript": "^5"
   },
   "engines": {
-    "bun": ">=1.3.0"
+    "bun": ">=1.3.14"
   }
 }

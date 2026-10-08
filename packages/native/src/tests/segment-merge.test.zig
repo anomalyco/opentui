@@ -1,15 +1,13 @@
 const std = @import("std");
+const TestPools = @import("test-pools.zig").TestPools;
 const EditBuffer = @import("../edit-buffer.zig").EditBuffer;
-const gp = @import("../grapheme.zig");
 const link = @import("../link.zig");
 
 test "EditBuffer - sequential character insertion merges segments" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
-    var eb = try EditBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth, null);
+    var eb = try EditBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth, null);
     defer eb.deinit();
 
     try eb.insertText("h");
@@ -29,12 +27,10 @@ test "EditBuffer - sequential character insertion merges segments" {
 }
 
 test "EditBuffer - merging preserves text correctness" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
-    var eb = try EditBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth, null);
+    var eb = try EditBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth, null);
     defer eb.deinit();
 
     const text = "The quick brown fox jumps over the lazy dog";
@@ -49,12 +45,10 @@ test "EditBuffer - merging preserves text correctness" {
 }
 
 test "EditBuffer - non-contiguous segments do not merge" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
-    var eb = try EditBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth, null);
+    var eb = try EditBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth, null);
     defer eb.deinit();
 
     try eb.insertText("abc");
@@ -67,12 +61,10 @@ test "EditBuffer - non-contiguous segments do not merge" {
 }
 
 test "EditBuffer - merging works across newlines" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
-    var eb = try EditBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth, null);
+    var eb = try EditBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth, null);
     defer eb.deinit();
 
     try eb.insertText("a");
@@ -92,12 +84,10 @@ test "EditBuffer - merging works across newlines" {
 }
 
 test "EditBuffer - merging with unicode characters" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
-    var eb = try EditBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth, null);
+    var eb = try EditBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth, null);
     defer eb.deinit();
 
     try eb.insertText("你");
@@ -111,12 +101,10 @@ test "EditBuffer - merging with unicode characters" {
 }
 
 test "EditBuffer - merging after delete and re-insert" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
-    var eb = try EditBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth, null);
+    var eb = try EditBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth, null);
     defer eb.deinit();
 
     try eb.insertText("hello");
@@ -129,12 +117,10 @@ test "EditBuffer - merging after delete and re-insert" {
 }
 
 test "EditBuffer - empty buffer then type" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
-    var eb = try EditBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth, null);
+    var eb = try EditBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth, null);
     defer eb.deinit();
 
     try eb.insertText("t");

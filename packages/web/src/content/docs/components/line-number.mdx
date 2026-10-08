@@ -33,9 +33,12 @@ import {
 
 const renderer = await createCliRenderer()
 
-const syntaxStyle = SyntaxStyle.fromStyles({
-  default: { fg: RGBA.fromHex("#E6EDF3") },
-})
+const syntaxStyle = SyntaxStyle.fromStyles(
+  {
+    default: { fg: RGBA.fromHex("#E6EDF3") },
+  },
+  renderer.nativeScene,
+)
 
 const code = new CodeRenderable(renderer, {
   id: "code",
@@ -71,9 +74,13 @@ renderer.root.add(scrollbox)
   3 await ready()
 ```
 
+`LineNumberRenderable` adds the gutter and the target as its own children. Add the `LineNumberRenderable` to the tree, not the target.
+
 ## Line signs and colors
 
-Set a single background for a line, or split gutter and content colors separately with a `LineColorConfig` object:
+Line arguments and map keys are zero-based logical line indexes. With the default `lineNumberOffset`, line `0` shows the number `1`.
+
+Set one background color for a line, or set separate gutter and content colors with a `LineColorConfig` object:
 
 ```typescript
 // Shorthand: applies the color to the gutter and a 20%-darker color to the content
@@ -92,22 +99,22 @@ lineNumbers.clearLineColor(3)
 lineNumbers.clearLineSign(3)
 ```
 
-The shorthand color becomes the gutter background. The content background uses the same color darkened by 20%. A `LineColorConfig` with only `gutter` uses the same darkening rule.
+The shorthand color becomes the gutter background. The content background uses the same color, 20% darker. A `LineColorConfig` with only `gutter` uses the same rule for the content background.
 
 ## Theming the gutter
 
-Gutter text and background colors accept assignments after construction:
+You can change the gutter text and background colors after construction:
 
 ```typescript
 lineNumbers.fg = "#6b7280"
 lineNumbers.bg = "#161b22"
 ```
 
-Assign `undefined` to reset to the defaults (`#888888` foreground, transparent background).
+Assign `undefined` to restore the defaults: a `#888888` foreground and a transparent background.
 
 ### Initial visibility
 
-The constructor currently ignores the `showLineNumbers` option. Set the property after construction when the initial gutter must be hidden:
+The constructor ignores the `showLineNumbers` option. To hide the gutter at the start, set the property after construction:
 
 ```typescript
 const lineNumbers = new LineNumberRenderable(renderer, { target: code })

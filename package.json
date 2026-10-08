@@ -17,7 +17,7 @@
     "lint:ci": "oxlint . --deny-warnings",
     "lint:fix": "oxlint --fix .",
     "pre-publish": "bun scripts/pre-publish.ts",
-    "publish": "bun run pre-publish && bun run publish:core && bun run publish:qrcode && bun run publish:three && bun run publish:react && bun run publish:solid && bun run publish:keymap && bun run publish:ssh",
+    "publish": "bun run pre-publish && bun scripts/npm-publish.ts publish",
     "publish:core": "cd packages/core && bun run publish",
     "publish:qrcode": "cd packages/qrcode && bun run publish",
     "publish:three": "cd packages/three && bun run publish",
@@ -26,6 +26,7 @@
     "publish:keymap": "cd packages/keymap && bun run publish",
     "publish:ssh": "cd packages/ssh && bun run publish",
     "prepare-release": "bun scripts/prepare-release.ts",
+    "release": "bun scripts/release.ts",
     "test": "bun run --filter '@opentui/native' --filter '@opentui/core' --filter '@opentui/qrcode' --filter '@opentui/three' --filter '@opentui/solid' --filter '@opentui/react' --filter '@opentui/keymap' --filter '@opentui/ssh' --if-present test"
   },
   "devDependencies": {

@@ -1,5 +1,14 @@
+import { Renderable } from "@opentui/core"
 import { createEffect, createMemo, getOwner, onCleanup, runWithOwner, splitProps, untrack } from "solid-js"
-import { createSlotNode, createElement, insert, spread, type DomNode } from "../reconciler.js"
+import {
+  createSlotNode,
+  createElement,
+  insert,
+  removeNode,
+  spread,
+  RenderableContext,
+  type DomNode,
+} from "../reconciler.js"
 import type { JSX } from "../../jsx-runtime.js"
 import type { ValidComponent, ComponentProps } from "solid-js"
 import { useRenderer } from "./hooks.js"
@@ -9,34 +18,73 @@ import { useRenderer } from "./hooks.js"
  *
  * Useful for inserting modals and tooltips outside of an cropping layout. If no mount point is given, the portal is inserted on the root renderable; it is wrapped in a `<box>`
  *
+ * Native portals can switch scenes only while their container is empty. A rejected switch preserves
+ * the mounted tree and its subscriptions; existing nodes are never remounted implicitly.
+ *
  * @description https://docs.solidjs.com/reference/components/portal
  */
 export function Portal(props: { mount?: DomNode; ref?: (el: {}) => void; children: JSX.Element }): JSX.Element {
   const renderer = useRenderer()
 
   const marker = createSlotNode(),
-    mount = () => props.mount || renderer.root,
     owner = getOwner()
   let content: undefined | (() => JSX.Element)
+  let container: DomNode | undefined
 
   createEffect(
     () => {
-      // basically we backdoor into a sort of renderEffect here
-      content || (content = runWithOwner(owner, () => createMemo(() => props.children)))
-      const el = mount()
-      const container = createElement("box"),
-        renderRoot = container
-
-      Object.defineProperty(container, "_$host", {
-        get() {
-          return marker.parent
-        },
-        configurable: true,
+      // Wait for refs, then validate the next mount before the insertion effect cleans up the current one.
+      const mount = createMemo(() => {
+        const el = props.mount || renderer.root
+        const scene = el instanceof Renderable ? el.ctx.nativeScene : renderer.nativeScene
+        const currentScene = container instanceof Renderable ? container.ctx.nativeScene : renderer.nativeScene
+        if (container && scene !== currentScene && container.getChildrenCount() !== 0) {
+          throw new Error("Cannot retarget a Portal with existing nodes between native scenes")
+        }
+        return el
       })
-      insert(renderRoot, content)
-      el.add(container)
-      props.ref && (props as any).ref(container)
-      onCleanup(() => el.remove(container))
+      const context = () => {
+        // Read pending mounts synchronously without subscribing JSX creation to future target changes.
+        const el = untrack(mount)
+        return el instanceof Renderable && el.ctx.nativeScene !== renderer.nativeScene ? el.ctx : renderer
+      }
+      createEffect(
+        () => {
+          const el = mount()
+          content ||= runWithOwner(
+            owner,
+            () =>
+              RenderableContext.Provider({
+                value: context,
+                get children() {
+                  return props.children
+                },
+              }) as unknown as () => JSX.Element,
+          )
+          let nextContainer!: DomNode
+          RenderableContext.Provider({
+            value: context,
+            get children() {
+              nextContainer = createElement("box")
+              return undefined
+            },
+          })
+
+          Object.defineProperty(nextContainer, "_$host", {
+            get() {
+              return marker.parent
+            },
+            configurable: true,
+          })
+          insert(nextContainer, content)
+          el.add(nextContainer)
+          container = nextContainer
+          onCleanup(() => removeNode(el, nextContainer))
+          props.ref && (props as any).ref(nextContainer)
+        },
+        undefined,
+        { render: true },
+      )
     },
     undefined,
     { render: true },

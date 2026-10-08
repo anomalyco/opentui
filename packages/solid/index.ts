@@ -7,6 +7,7 @@ import { _render as renderInternal, createComponent } from "./src/reconciler.js"
 type DisposeFn = () => void
 
 const mountSolidRoot = (renderer: CliRenderer, node: () => JSX.Element) => {
+  if (!renderer.isDestroyed) engine.attach(renderer)
   let dispose: DisposeFn | undefined
   let disposeRequested = false
   let disposed = false
@@ -78,7 +79,6 @@ export const render = async (node: () => JSX.Element, rendererOrConfig: CliRende
           },
         })
 
-  engine.attach(renderer)
   mountSolidRoot(renderer, node)
 }
 
@@ -90,7 +90,6 @@ export const testRender = async (node: () => JSX.Element, renderConfig: TestRend
     },
   })
 
-  engine.attach(testSetup.renderer)
   mountSolidRoot(testSetup.renderer, node)
 
   return testSetup

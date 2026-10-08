@@ -1,8 +1,28 @@
 import { RGBA } from "./lib/index.js"
-import { resolveRenderLib, type OptimizedBufferHandle, type RenderLib } from "./zig.js"
-import { type Pointer, type PointerInput, toArrayBuffer, toPointer } from "./platform/ffi.js"
+import { withBufferAccess, withLazyBufferAccess } from "./lib/buffer-access.js"
+import {
+  resolveRenderLib,
+  type RenderLib,
+  type NativeContextHandle,
+  type NativeContextOptions,
+  type NativeSceneFrameRequest,
+  type SessionHandle,
+  type SessionBuffer,
+  type ContextBufferHandle,
+  type NativeBufferDraw,
+  type NativeDrawingTarget,
+  type NativeBufferStack,
+  type NativeBufferGrid,
+  type NativeContextBufferLease,
+  type ContextUnicodeHandle,
+  type NativePaintRecorder,
+  type SceneNodeHandle,
+} from "./zig.js"
+import { acquireSessionBufferLease } from "./session-buffer.js"
+import type { PointerInput } from "./platform/ffi.js"
 import type { NativeImage } from "./image.js"
 import type { ImageRenderProtocol } from "./types.js"
+import type { NativeScene } from "./NativeScene.js"
 
 function requireInteger(value: number, name: string, min: number, max: number): void {
   if (!Number.isSafeInteger(value) || value < min || value > max) {
@@ -51,53 +71,164 @@ function packDrawOptions(
   return packed
 }
 
+export interface BufferAccess {
+  readonly width: number
+  readonly height: number
+  readonly generation: bigint
+  readonly char: Uint32Array
+  readonly fg: Uint16Array
+  readonly bg: Uint16Array
+  readonly attributes: Uint32Array
+}
+
+type SessionBufferSource = {
+  context: NativeContextHandle
+  session: SessionHandle
+  which: SessionBuffer
+  getFrame?: () => NativeSceneFrameRequest | null
+}
+
+type ContextBufferSource = {
+  context: NativeContextHandle
+  buffer: ContextBufferHandle
+  owner: ResourceContext
+}
+
+type RecordingSource = {
+  context: NativeContextHandle
+  session: SessionHandle
+  recorder: NativePaintRecorder
+}
+
+const recordedFrameAccess =
+  "Paint hooks record drawing and cannot read the frame. Draw into an owned buffer and compose it instead."
+
+export interface NativeResourceOwner {
+  readonly resourceContext: ResourceContext
+}
+
+/** Owns checked resources independently of the Sessions and scenes that use them. */
+export class ResourceContext implements NativeResourceOwner {
+  readonly renderLib = resolveRenderLib()
+  readonly context: NativeContextHandle
+  private _disposed = false
+
+  constructor(options: NativeContextOptions) {
+    this.context = this.renderLib.createContext(options)
+  }
+
+  get disposed(): boolean {
+    return this._disposed
+  }
+
+  get resourceContext(): ResourceContext {
+    return this
+  }
+
+  assertAlive(): void {
+    if (this._disposed) throw new Error("Resource Context is destroyed")
+  }
+
+  destroy(): void {
+    if (this._disposed) return
+    this.renderLib.getYogaHost().runMutation(() => {
+      this.renderLib.destroyContext(this.context)
+      this._disposed = true
+    })
+  }
+}
+
+type ContextUnicode = {
+  lib: RenderLib
+  handle: ContextUnicodeHandle
+  tokens: number[]
+}
+const contextUnicode = new WeakMap<object, ContextUnicode>()
+const contextUnicodeChars = new WeakMap<NativeContextHandle, Map<number, { owner: ContextUnicode; index: number }>>()
+let nextUnicodeChar = 0x1_0000_0000
+
+export interface EncodedUnicode {
+  data: Array<{ width: number; char: number }>
+}
+
 export class OptimizedBuffer {
   private static fbIdCounter = 0
   public id: string
   public lib: RenderLib
-  private bufferPtr: OptimizedBufferHandle
+  private source: SessionBufferSource | ContextBufferSource | RecordingSource
   private _width: number
   private _height: number
   private _widthMethod: WidthMethod
   public respectAlpha: boolean = false
-  private _rawBuffers: {
-    char: Uint32Array
-    fg: Uint16Array
-    bg: Uint16Array
-    attributes: Uint32Array
-  } | null = null
   private _destroyed: boolean = false
-
-  get ptr(): OptimizedBufferHandle {
-    return this.bufferPtr
-  }
+  private _nativePaintAccess: (() => BufferAccess) | null = null
+  private _bufferTarget: NativeDrawingTarget | undefined
 
   // Fail loud and clear
   // Instead of trying to return values that could work or not,
   // this at least will show a stack trace to know where the call to a destroyed Buffer was made
   private guard(): void {
     if (this._destroyed) throw new Error(`Buffer ${this.id} is destroyed`)
+    if ("buffer" in this.source) this.source.owner.assertAlive()
   }
 
-  private ensureRawBufferViews(): void {
-    if (this._rawBuffers !== null) {
-      return
-    }
-
-    const size = this._width * this._height
-    const charPtr = this.lib.bufferGetCharPtr(this.bufferPtr)
-    const fgPtr = this.lib.bufferGetFgPtr(this.bufferPtr)
-    const bgPtr = this.lib.bufferGetBgPtr(this.bufferPtr)
-    const attributesPtr = this.lib.bufferGetAttributesPtr(this.bufferPtr)
-
-    this._rawBuffers = {
-      char: new Uint32Array(toArrayBuffer(charPtr, 0, size * 4)),
-      fg: new Uint16Array(toArrayBuffer(fgPtr, 0, size * 4 * 2)),
-      bg: new Uint16Array(toArrayBuffer(bgPtr, 0, size * 4 * 2)),
-      attributes: new Uint32Array(toArrayBuffer(attributesPtr, 0, size * 4)),
-    }
+  /** Recording buffers queue drawing for native paint; they have no drawing target. */
+  private get recorder(): NativePaintRecorder | null {
+    return "recorder" in this.source ? this.source.recorder : null
   }
 
+  private checkedTarget(): NativeDrawingTarget {
+    const source = this.source
+    if ("buffer" in source) {
+      // A Context buffer's target never changes, so every draw shares one frozen record.
+      return (this._bufferTarget ??= Object.freeze({ context: source.context, target: source.buffer, frame: null }))
+    }
+    if ("recorder" in source) throw new Error(recordedFrameAccess)
+    const frame = source.getFrame?.()
+    if (source.which !== "next" || !frame) throw new Error("Session scene drawing requires an active next frame")
+    return { context: source.context, target: source.session, frame }
+  }
+
+  /** @internal Native built-ins may retain only buffers belonging to their Context. */
+  public _getSceneHandle(scene: NativeResourceOwner): ContextBufferHandle {
+    this.guard()
+    const source = this.source
+    if (
+      !("buffer" in source) ||
+      source.owner !== scene.resourceContext ||
+      this.lib !== scene.resourceContext.renderLib
+    ) {
+      throw new Error("Scene binding requires a buffer owned by the same Context")
+    }
+    return source.buffer
+  }
+
+  /** @internal Resource controllers draw only within their owning Context. */
+  public _getSceneDrawTarget(scene: NativeScene) {
+    this.guard()
+    scene.assertAlive()
+    const target = this.checkedTarget()
+    if (target.context !== scene.driver.context || this.lib !== scene.driver.renderLib) {
+      throw new Error("Scene drawing requires a buffer owned by the same Context")
+    }
+    return target
+  }
+
+  private drawChecked(options: NativeBufferDraw): void {
+    const recorder = this.recorder
+    if (recorder) return recorder.draw(options)
+    this.lib.contextDrawBuffer(this.checkedTarget(), options)
+  }
+
+  /** @internal Scene text draws its native node without exposing its buffer. */
+  public _drawSceneText(scene: NativeScene, node: SceneNodeHandle, x: number, y: number): void {
+    this.guard()
+    const recorder = this.recorder
+    if (recorder) return recorder.view("scene", node, x, y)
+    this.lib.contextDrawSceneText(this._getSceneDrawTarget(scene), node, x, y)
+  }
+
+  /** Raw planes are available only during a synchronous post-process scope. Prefer withBuffers(). */
   get buffers(): {
     char: Uint32Array
     fg: Uint16Array
@@ -105,13 +236,71 @@ export class OptimizedBuffer {
     attributes: Uint32Array
   } {
     this.guard()
-    this.ensureRawBufferViews()
-    return this._rawBuffers!
+    if (this._nativePaintAccess !== null) return this._nativePaintAccess()
+    if (this.recorder) throw new Error(recordedFrameAccess)
+    throw new Error("Use withBuffers() for Context-owned framebuffer access")
   }
 
-  constructor(
+  /**
+   * Borrows one live storage generation for a synchronous callback. Copy data
+   * that must outlive the callback; saved arrays cannot be revoked after release.
+   * Resize/destruction retains the old storage to scope exit, then reports stale
+   * access. This is not a frozen frame or an atomic cell-edit transaction.
+   * Do not use saved arrays after exit or change pooled grapheme/link IDs through
+   * these planes. Use OptimizedBuffer drawing methods or contextDrawBuffer instead.
+   * Styled-text/editor resources, hyperlinks, and images need their checked APIs.
+   *
+   * Session access without a scene ticket is storage-only. Rendering can change cells
+   * without changing generation. `current` is the encoder's comparison buffer, not a
+   * guaranteed last-presented frame; `next` is drawing storage cleared after encoding.
+   * Finish drawing before submitting a frame. Acquisition rejects pending presentation
+   * and non-rendering phases. Checked Session drawing requires an active scene ticket;
+   * ticketless storage access does not grant drawing access.
+   */
+  public withBuffers<T>(callback: (cells: BufferAccess) => T): T {
+    this.guard()
+    const lib = this.lib
+    const source = this.source
+    if ("recorder" in source) throw new Error(recordedFrameAccess)
+    const lease =
+      "session" in source
+        ? acquireSessionBufferLease(lib, source.context, source.session, source.which, source.getFrame?.())
+        : lib.contextAcquireBufferLease(source.context, source.buffer)
+    return withBufferAccess(lib, source.context, lease, callback)
+  }
+
+  /** Internal post-process scope. Ignores the callback's result; native views never escape the synchronous part. */
+  public _withNativePaint(callback: () => void): void {
+    // Guard actual access, not callback dispatch.
+    const source = this.source
+    if ("recorder" in source) throw new Error(recordedFrameAccess)
+    const lib = this.lib
+    let lease: NativeContextBufferLease | undefined
+    const previous = this._nativePaintAccess
+    try {
+      withLazyBufferAccess(
+        () =>
+          (lease ??=
+            "session" in source
+              ? acquireSessionBufferLease(lib, source.context, source.session, source.which, source.getFrame?.())
+              : lib.contextAcquireBufferLease(source.context, source.buffer)),
+        (getCells) => {
+          this._nativePaintAccess = getCells
+          callback()
+        },
+        () => {
+          if (lease) lib.contextValidateBufferLease(source.context, lease.handle)
+        },
+      )
+    } finally {
+      this._nativePaintAccess = previous
+      if (lease) lib.contextReleaseBufferLease(source.context, lease.handle)
+    }
+  }
+
+  private constructor(
     lib: RenderLib,
-    ptr: OptimizedBufferHandle,
+    source: SessionBufferSource | ContextBufferSource | RecordingSource,
     width: number,
     height: number,
     options: { respectAlpha?: boolean; id?: string; widthMethod?: WidthMethod },
@@ -122,125 +311,191 @@ export class OptimizedBuffer {
     this._width = width
     this._height = height
     this._widthMethod = options.widthMethod || "unicode"
-    this.bufferPtr = ptr
+    this.source = source
+  }
+
+  /** @internal A frame buffer whose drawing records into a paint recording. */
+  static fromRecorder(
+    lib: RenderLib,
+    context: NativeContextHandle,
+    session: SessionHandle,
+    recorder: NativePaintRecorder,
+  ): OptimizedBuffer {
+    const { width, height } = lib.sessionGetRendererState(context, session)
+    return new OptimizedBuffer(lib, { context, session, recorder }, width, height, { id: "scene-recording" })
+  }
+
+  static fromSession(
+    lib: RenderLib,
+    context: NativeContextHandle,
+    session: SessionHandle,
+    which: SessionBuffer,
+    getFrame?: () => NativeSceneFrameRequest | null,
+  ): OptimizedBuffer {
+    const { width, height } = lib.sessionGetRendererState(context, session)
+    return new OptimizedBuffer(lib, { context, session, which, getFrame }, width, height, { id: `scene-${which}` })
   }
 
   static create(
     width: number,
     height: number,
     widthMethod: WidthMethod,
-    options: { respectAlpha?: boolean; id?: string } = {},
+    options: { respectAlpha?: boolean; id?: string; owner: NativeResourceOwner },
   ): OptimizedBuffer {
-    const lib = resolveRenderLib()
-    const respectAlpha = options.respectAlpha || false
-    const id = options.id && options.id.trim() !== "" ? options.id : "unnamed buffer"
-    const buffer = lib.createOptimizedBuffer(width, height, widthMethod, respectAlpha, id)
-    return buffer
+    const owner = options?.owner?.resourceContext
+    if (!owner) throw new Error("OptimizedBuffer requires an explicit resource owner")
+    owner.assertAlive()
+    const { renderLib: lib, context } = owner
+    const buffer = lib.createContextBuffer(context, {
+      width,
+      height,
+      widthMethod,
+      respectAlpha: options.respectAlpha,
+    })
+    try {
+      return new OptimizedBuffer(lib, { context, buffer, owner }, width, height, { ...options, widthMethod })
+    } catch (error) {
+      try {
+        lib.destroyContextBuffer(context, buffer)
+      } catch {
+        // Preserve the construction failure if option access disposed the owner.
+      }
+      throw error
+    }
   }
 
   public get widthMethod(): WidthMethod {
+    if ("session" in this.source) {
+      this.guard()
+      this._widthMethod = this.lib.sessionGetCapabilities(this.source.context, this.source.session).unicode
+    }
     return this._widthMethod
   }
 
   public get width(): number {
+    this.guard()
+    if ("session" in this.source)
+      return this.lib.sessionGetRendererState(this.source.context, this.source.session).width
     return this._width
   }
 
   public get height(): number {
+    this.guard()
+    if ("session" in this.source)
+      return this.lib.sessionGetRendererState(this.source.context, this.source.session).height
     return this._height
   }
 
   public setRespectAlpha(respectAlpha: boolean): void {
     this.guard()
-    this.lib.bufferSetRespectAlpha(this.bufferPtr, respectAlpha)
+    this.drawChecked({ operation: "respectAlpha", enabled: respectAlpha })
     this.respectAlpha = respectAlpha
   }
 
-  public getNativeId(): string {
-    this.guard()
-    return this.lib.bufferGetId(this.bufferPtr)
+  public getRealCharBytes(addLineBreaks: boolean = false): Uint8Array {
+    return this.withResolvedChars({ addLineBreaks }, (bytes) => bytes)
   }
 
-  public getRealCharBytes(addLineBreaks: boolean = false): Uint8Array {
+  private withResolvedChars<T>(
+    { addLineBreaks, cellLengths }: { addLineBreaks: boolean; cellLengths?: boolean },
+    callback: (bytes: Uint8Array, cells: BufferAccess, lengths?: Uint8Array) => T,
+  ): T {
     this.guard()
-    const realSize = this.lib.bufferGetRealCharSize(this.bufferPtr)
-    const outputBuffer = new Uint8Array(realSize)
-    const bytesWritten = this.lib.bufferWriteResolvedChars(this.bufferPtr, outputBuffer, addLineBreaks)
-    return outputBuffer.slice(0, bytesWritten)
+    const lib = this.lib
+    const source = this.source
+    if ("recorder" in source) throw new Error(recordedFrameAccess)
+    const lease =
+      "session" in source
+        ? acquireSessionBufferLease(lib, source.context, source.session, source.which, source.getFrame?.())
+        : lib.contextAcquireBufferLease(source.context, source.buffer)
+    return withBufferAccess(lib, source.context, lease, (cells) => {
+      const size = lib.contextBufferLeaseGetRealCharSize(source.context, lease.handle, addLineBreaks)
+      const output = new Uint8Array(size)
+      const lengths = cellLengths ? new Uint8Array(cells.width * cells.height) : undefined
+      const written = lib.contextBufferLeaseWriteResolvedChars(
+        source.context,
+        lease.handle,
+        output,
+        addLineBreaks,
+        lengths,
+      )
+      return callback(output.subarray(0, written), cells, lengths)
+    })
   }
 
   public getSpanLines(): CapturedLine[] {
-    this.guard()
-    const { char, fg, bg, attributes } = this.buffers
-    const lines: CapturedLine[] = []
+    return this.withResolvedChars({ addLineBreaks: false, cellLengths: true }, (bytes, cells, lengths) => {
+      const { fg, bg, attributes, width, height } = cells
+      const lines: CapturedLine[] = []
+      const decoder = new TextDecoder("utf-8", { ignoreBOM: true })
+      let offset = 0
 
-    const CHAR_FLAG_CONTINUATION = 0xc0000000 | 0
-    const CHAR_FLAG_MASK = 0xc0000000 | 0
+      for (let y = 0; y < height; y++) {
+        const spans: CapturedSpan[] = []
+        let currentSpan: CapturedSpan | null = null
 
-    const realTextBytes = this.getRealCharBytes(true)
-    const realTextLines = new TextDecoder().decode(realTextBytes).split("\n")
+        for (let x = 0; x < width; x++) {
+          const i = y * width + x
+          const cellFg = RGBA.fromArray(fg.subarray(i * 4, i * 4 + 4))
+          const cellBg = RGBA.fromArray(bg.subarray(i * 4, i * 4 + 4))
+          const cellAttrs = attributes[i] & 0xff
 
-    for (let y = 0; y < this._height; y++) {
-      const spans: CapturedSpan[] = []
-      let currentSpan: CapturedSpan | null = null
+          const end = offset + lengths![i]
+          const cellChar = decoder.decode(bytes.subarray(offset, end))
+          offset = end
 
-      const lineChars = [...(realTextLines[y] || "")]
-      let charIdx = 0
-
-      for (let x = 0; x < this._width; x++) {
-        const i = y * this._width + x
-        const cp = char[i]
-        const cellFg = RGBA.fromArray(fg.slice(i * 4, i * 4 + 4))
-        const cellBg = RGBA.fromArray(bg.slice(i * 4, i * 4 + 4))
-        const cellAttrs = attributes[i] & 0xff
-
-        // Continuation cells are placeholders for wide characters (emojis, CJK)
-        const isContinuation = (cp & CHAR_FLAG_MASK) === CHAR_FLAG_CONTINUATION
-        const cellChar = isContinuation ? "" : (lineChars[charIdx++] ?? " ")
-
-        // Check if this cell continues the current span
-        if (
-          currentSpan &&
-          currentSpan.fg.equals(cellFg) &&
-          currentSpan.bg.equals(cellBg) &&
-          currentSpan.attributes === cellAttrs
-        ) {
-          currentSpan.text += cellChar
-          currentSpan.width += 1
-        } else {
-          // Start a new span
-          if (currentSpan) {
-            spans.push(currentSpan)
-          }
-          currentSpan = {
-            text: cellChar,
-            fg: cellFg,
-            bg: cellBg,
-            attributes: cellAttrs,
-            width: 1,
+          // Check if this cell continues the current span
+          if (
+            currentSpan &&
+            currentSpan.fg.equals(cellFg) &&
+            currentSpan.bg.equals(cellBg) &&
+            currentSpan.attributes === cellAttrs
+          ) {
+            currentSpan.text += cellChar
+            currentSpan.width += 1
+          } else {
+            // Start a new span
+            if (currentSpan) {
+              spans.push(currentSpan)
+            }
+            currentSpan = {
+              text: cellChar,
+              fg: cellFg,
+              bg: cellBg,
+              attributes: cellAttrs,
+              width: 1,
+            }
           }
         }
+
+        // Push the last span
+        if (currentSpan) {
+          spans.push(currentSpan)
+        }
+
+        lines.push({ spans })
       }
 
-      // Push the last span
-      if (currentSpan) {
-        spans.push(currentSpan)
-      }
-
-      lines.push({ spans })
-    }
-
-    return lines
+      return lines
+    })
   }
 
   public clear(bg: RGBA = RGBA.fromValues(0, 0, 0, 1)): void {
     this.guard()
-    this.lib.bufferClear(this.bufferPtr, bg)
+    this.drawChecked({ operation: "clear", background: bg })
   }
 
   public setCell(x: number, y: number, char: string, fg: RGBA, bg: RGBA, attributes: number = 0): void {
     this.guard()
-    this.lib.bufferSetCell(this.bufferPtr, x, y, char, fg, bg, attributes)
+    this.drawChecked({
+      operation: "cell",
+      x,
+      y,
+      char: char.codePointAt(0) ?? 32,
+      foreground: fg,
+      background: bg,
+      attributes,
+    })
   }
 
   public setCellWithAlphaBlending(
@@ -252,7 +507,15 @@ export class OptimizedBuffer {
     attributes: number = 0,
   ): void {
     this.guard()
-    this.lib.bufferSetCellWithAlphaBlending(this.bufferPtr, x, y, char, fg, bg, attributes)
+    this.drawChecked({
+      operation: "cellBlend",
+      x,
+      y,
+      char: char.codePointAt(0) ?? 32,
+      foreground: fg,
+      background: bg,
+      attributes,
+    })
   }
 
   public drawText(
@@ -266,7 +529,7 @@ export class OptimizedBuffer {
   ): void {
     this.guard()
     if (!selection) {
-      this.lib.bufferDrawText(this.bufferPtr, text, x, y, fg, bg, attributes)
+      this.drawChecked({ operation: "text", text, x, y, foreground: fg, background: bg, attributes })
       return
     }
 
@@ -286,23 +549,25 @@ export class OptimizedBuffer {
 
     if (start > 0) {
       const beforeText = text.slice(0, start)
-      this.lib.bufferDrawText(this.bufferPtr, beforeText, x, y, fg, bg, attributes)
+      this.drawText(beforeText, x, y, fg, bg, attributes)
     }
 
     if (end > start) {
       const selectedText = text.slice(start, end)
-      this.lib.bufferDrawText(this.bufferPtr, selectedText, x + start, y, selectionFg, selectionBg, attributes)
+      this.drawText(selectedText, x + start, y, selectionFg, selectionBg, attributes)
     }
 
     if (end < text.length) {
       const afterText = text.slice(end)
-      this.lib.bufferDrawText(this.bufferPtr, afterText, x + end, y, fg, bg, attributes)
+      this.drawText(afterText, x + end, y, fg, bg, attributes)
     }
   }
 
   public fillRect(x: number, y: number, width: number, height: number, bg: RGBA): void {
     this.guard()
-    this.lib.bufferFillRect(this.bufferPtr, x, y, width, height, bg)
+    // An empty rectangle draws nothing. Native extents are unsigned, so a negative one would be rejected.
+    if (width <= 0 || height <= 0) return
+    this.drawChecked({ operation: "fill", x, y, width, height, background: bg })
   }
 
   public colorMatrix(
@@ -313,8 +578,10 @@ export class OptimizedBuffer {
   ): void {
     this.guard()
     if (matrix.length !== 16) throw new RangeError(`colorMatrix matrix must have length 16, got ${matrix.length}`)
-    const cellMaskCount = Math.floor(cellMask.length / 3)
-    this.lib.bufferColorMatrix(this.bufferPtr, matrix, cellMask, cellMaskCount, strength, target)
+    const recorder = this.recorder
+    if (recorder) return recorder.colorMatrix(matrix, cellMask, strength, target)
+    const destination = this.checkedTarget()
+    this.lib.contextColorMatrixBuffer(destination, matrix, cellMask, strength, target)
   }
 
   public colorMatrixUniform(
@@ -325,8 +592,10 @@ export class OptimizedBuffer {
     this.guard()
     if (matrix.length !== 16)
       throw new RangeError(`colorMatrixUniform matrix must have length 16, got ${matrix.length}`)
-    if (strength === 0.0) return
-    this.lib.bufferColorMatrixUniform(this.bufferPtr, matrix, strength, target)
+    const recorder = this.recorder
+    if (recorder) return recorder.colorMatrix(matrix, null, strength, target)
+    const destination = this.checkedTarget()
+    this.lib.contextColorMatrixBuffer(destination, matrix, null, strength, target)
   }
 
   public drawFrameBuffer(
@@ -339,25 +608,58 @@ export class OptimizedBuffer {
     sourceHeight?: number,
   ): void {
     this.guard()
-    this.lib.drawFrameBuffer(this.bufferPtr, destX, destY, frameBuffer.ptr, sourceX, sourceY, sourceWidth, sourceHeight)
+    frameBuffer.guard()
+    const destination = this.source
+    const source = frameBuffer.source
+    if (!("buffer" in source) || source.context !== destination.context || frameBuffer.lib !== this.lib) {
+      throw new Error("Scene composition requires a buffer owned by the same Context")
+    }
+    this.drawChecked({
+      operation: "compose",
+      source: source.buffer,
+      x: destX,
+      y: destY,
+      sourceX,
+      sourceY,
+      sourceWidth,
+      sourceHeight,
+    })
   }
 
   public destroy(): void {
     if (this._destroyed) return
+    const source = this.source
+    if ("buffer" in source && !source.owner.disposed) {
+      const release = () => {
+        if (!source.owner.disposed) this.lib.destroyContextBuffer(source.context, source.buffer)
+      }
+      this.lib.releaseAfterPaint(source.context, release)
+    }
     this._destroyed = true
-    // Cached typed arrays alias native memory and are invalid after destroy.
-    this._rawBuffers = null
-    this.lib.destroyOptimizedBuffer(this.bufferPtr)
   }
 
   public drawTextBuffer(textBufferView: TextBufferView, x: number, y: number): void {
     this.guard()
-    this.lib.bufferDrawTextBufferView(this.bufferPtr, textBufferView.ptr, x, y)
+    const owner = textBufferView._getOwner()
+    if (owner.renderLib !== this.lib || owner.context !== this.source.context) {
+      throw new Error("Text drawing requires a view owned by the same Context")
+    }
+    const view = textBufferView._getSceneHandle(owner)
+    const recorder = this.recorder
+    if (recorder) return recorder.view("text", view, x, y)
+    this.lib.contextDrawTextBufferView(this.checkedTarget(), view, x, y)
   }
 
   public drawEditorView(editorView: EditorView, x: number, y: number): void {
     this.guard()
-    this.lib.bufferDrawEditorView(this.bufferPtr, editorView.ptr, x, y)
+    const owner = editorView._getOwner()
+    if (owner.renderLib !== this.lib || owner.context !== this.source.context) {
+      throw new Error("Editor drawing requires a view owned by the same Context")
+    }
+    const view = editorView._getSceneHandle(owner)
+    const recorder = this.recorder
+    if (recorder) return recorder.view("editor", view, x, y)
+    this.lib.contextDrawEditorView(this.checkedTarget(), view, x, y)
   }
 
   public drawSuperSampleBuffer(
@@ -369,15 +671,10 @@ export class OptimizedBuffer {
     alignedBytesPerRow: number,
   ): void {
     this.guard()
-    this.lib.bufferDrawSuperSampleBuffer(
-      this.bufferPtr,
-      x,
-      y,
-      typeof pixelData === "number" || typeof pixelData === "bigint" ? toPointer(pixelData) : pixelData,
-      pixelDataLength,
-      format,
-      alignedBytesPerRow,
-    )
+    const recorder = this.recorder
+    if (recorder) return recorder.supersample(pixelData, pixelDataLength, x, y, format, alignedBytesPerRow)
+    const target = this.checkedTarget()
+    this.lib.contextDrawSuperSampleBuffer(target, pixelData, pixelDataLength, x, y, format, alignedBytesPerRow)
   }
 
   public drawImage(
@@ -408,9 +705,7 @@ export class OptimizedBuffer {
     if (x + width > 0x7fffffff || y + height > 0x7fffffff) {
       throw new RangeError("image destination coordinates and dimensions exceed i32 bounds")
     }
-    return this.lib.bufferDrawImage(
-      this.bufferPtr,
-      image.ptr,
+    const options = {
       x,
       y,
       width,
@@ -422,7 +717,14 @@ export class OptimizedBuffer {
       sourceWidth,
       sourceHeight,
       protocol,
-    )
+    }
+    const handle = image._getContextHandle(this.lib, this.source.context)
+    const recorder = this.recorder
+    if (recorder) {
+      recorder.image(handle, options)
+      return true
+    }
+    return this.lib.contextDrawImage(this.checkedTarget(), handle, options)
   }
 
   public drawPackedBuffer(
@@ -434,15 +736,11 @@ export class OptimizedBuffer {
     terminalHeightCells: number,
   ): void {
     this.guard()
-    this.lib.bufferDrawPackedBuffer(
-      this.bufferPtr,
-      typeof data === "number" || typeof data === "bigint" ? toPointer(data) : data,
-      dataLen,
-      posX,
-      posY,
-      terminalWidthCells,
-      terminalHeightCells,
-    )
+    if (dataLen <= 0 || terminalWidthCells <= 0 || terminalHeightCells <= 0) return
+    const recorder = this.recorder
+    if (recorder) return recorder.packed(data, dataLen, posX, posY, terminalWidthCells, terminalHeightCells)
+    const target = this.checkedTarget()
+    this.lib.contextDrawPackedBuffer(target, data, dataLen, posX, posY, terminalWidthCells, terminalHeightCells)
   }
 
   public drawGrayscaleBuffer(
@@ -455,7 +753,10 @@ export class OptimizedBuffer {
     bg: RGBA | null = null,
   ): void {
     this.guard()
-    this.lib.bufferDrawGrayscaleBuffer(this.bufferPtr, posX, posY, intensities, srcWidth, srcHeight, fg, bg)
+    const recorder = this.recorder
+    if (recorder) return recorder.grayscale(intensities, posX, posY, srcWidth, srcHeight, fg, bg, false)
+    const target = this.checkedTarget()
+    this.lib.contextDrawGrayscaleBuffer(target, intensities, posX, posY, srcWidth, srcHeight, fg, bg, false)
   }
 
   public drawGrayscaleBufferSupersampled(
@@ -468,18 +769,24 @@ export class OptimizedBuffer {
     bg: RGBA | null = null,
   ): void {
     this.guard()
-    this.lib.bufferDrawGrayscaleBufferSupersampled(this.bufferPtr, posX, posY, intensities, srcWidth, srcHeight, fg, bg)
+    const recorder = this.recorder
+    if (recorder) return recorder.grayscale(intensities, posX, posY, srcWidth, srcHeight, fg, bg, true)
+    const target = this.checkedTarget()
+    this.lib.contextDrawGrayscaleBuffer(target, intensities, posX, posY, srcWidth, srcHeight, fg, bg, true)
   }
 
   public resize(width: number, height: number): void {
     this.guard()
+    const source = this.source
+    if (!("buffer" in source)) {
+      throw new Error("Resizing a Session scene framebuffer is unsupported")
+    }
     if (this._width === width && this._height === height) return
+
+    this.lib.contextResizeBuffer(source.context, source.buffer, width, height)
 
     this._width = width
     this._height = height
-    this._rawBuffers = null
-
-    this.lib.bufferResize(this.bufferPtr, width, height)
   }
 
   public drawBox(options: {
@@ -500,6 +807,7 @@ export class OptimizedBuffer {
     bottomTitleAlignment?: "left" | "center" | "right"
   }): void {
     this.guard()
+    if (options.width <= 0 || options.height <= 0) return
     const style = parseBorderStyle(options.borderStyle, "single")
     const borderChars: Uint32Array = options.customBorderChars ?? BorderCharArrays[style]
 
@@ -510,99 +818,129 @@ export class OptimizedBuffer {
       options.bottomTitleAlignment || "left",
     )
 
-    this.lib.bufferDrawBox(
-      this.bufferPtr,
-      options.x,
-      options.y,
-      options.width,
-      options.height,
+    this.drawChecked({
+      operation: "box",
+      x: options.x,
+      y: options.y,
+      width: options.width,
+      height: options.height,
       borderChars,
       packedOptions,
-      options.borderColor,
-      options.backgroundColor,
-      options.titleColor ?? options.borderColor,
-      options.title ?? null,
-      options.bottomTitle ?? null,
-    )
+      foreground: options.borderColor,
+      background: options.backgroundColor,
+      titleColor: options.titleColor ?? options.borderColor,
+      text: options.title,
+      bottomTitle: options.bottomTitle,
+    })
   }
 
   public pushScissorRect(x: number, y: number, width: number, height: number): void {
     this.guard()
-    this.lib.bufferPushScissorRect(this.bufferPtr, x, y, width, height)
+    // A non-positive extent is an empty clip rect. Push it anyway so the matching pop stays balanced.
+    this.stackChecked({ operation: "pushScissor", x, y, width: Math.max(0, width), height: Math.max(0, height) })
   }
 
   public popScissorRect(): void {
     this.guard()
-    this.lib.bufferPopScissorRect(this.bufferPtr)
+    this.stackChecked({ operation: "popScissor" })
   }
 
   public clearScissorRects(): void {
     this.guard()
-    this.lib.bufferClearScissorRects(this.bufferPtr)
+    this.stackChecked({ operation: "clearScissors" })
   }
 
   public pushOpacity(opacity: number): void {
     this.guard()
-    this.lib.bufferPushOpacity(this.bufferPtr, Math.max(0, Math.min(1, opacity)))
+    this.stackChecked({ operation: "pushOpacity", opacity })
   }
 
   public popOpacity(): void {
     this.guard()
-    this.lib.bufferPopOpacity(this.bufferPtr)
+    this.stackChecked({ operation: "popOpacity" })
   }
 
   public getCurrentOpacity(): number {
     this.guard()
-    return this.lib.bufferGetCurrentOpacity(this.bufferPtr)
+    return this.stackChecked({ operation: "getOpacity" })
   }
 
   public clearOpacity(): void {
     this.guard()
-    this.lib.bufferClearOpacity(this.bufferPtr)
+    this.stackChecked({ operation: "clearOpacity" })
   }
 
-  public encodeUnicode(text: string): { ptr: Pointer; data: Array<{ width: number; char: number }> } | null {
-    this.guard()
-    return this.lib.encodeUnicode(text, this._widthMethod)
+  private stackChecked(options: NativeBufferStack): number {
+    const recorder = this.recorder
+    if (recorder) return recorder.stack(options)
+    return this.lib.contextBufferStack(this.checkedTarget(), options)
   }
 
-  public freeUnicode(encoded: { ptr: Pointer; data: Array<{ width: number; char: number }> }): void {
+  public encodeUnicode(text: string): EncodedUnicode {
     this.guard()
-    this.lib.freeUnicode(encoded)
+    const context = this.source.context
+    const handle = this.lib.createContextUnicode(context, text, this.widthMethod)
+    const owner: ContextUnicode = { lib: this.lib, handle, tokens: [] }
+    let chars = contextUnicodeChars.get(context)
+    if (!chars) contextUnicodeChars.set(context, (chars = new Map()))
+    try {
+      const data = this.lib.getContextUnicode(context, handle)
+      if (data.length > Number.MAX_SAFE_INTEGER - nextUnicodeChar) throw new RangeError("Unicode token limit reached")
+      data.forEach((glyph, index) => {
+        if (glyph.char <= 0x10ffff) return
+        // Public numbers are opaque tokens, never pool IDs or truncated native handles.
+        glyph.char = nextUnicodeChar++
+        owner.tokens.push(glyph.char)
+        chars.set(glyph.char, { owner, index })
+      })
+      const encoded = { data }
+      contextUnicode.set(encoded, owner)
+      return encoded
+    } catch (error) {
+      for (const token of owner.tokens) chars.delete(token)
+      try {
+        this.lib.destroyContextUnicode(context, handle)
+      } catch {
+        // Preserve the publication failure if the Context was disposed during copying.
+      }
+      throw error
+    }
   }
 
-  public drawGrid(options: {
-    borderChars: Uint32Array
-    borderFg: RGBA
-    borderBg: RGBA
-    columnOffsets: Int32Array
-    rowOffsets: Int32Array
-    drawInner: boolean
-    drawOuter: boolean
-  }): void {
+  public freeUnicode(encoded: EncodedUnicode): void {
     this.guard()
+    const native = contextUnicode.get(encoded)
+    if (!native || native.lib !== this.lib || native.handle.context !== this.source.context) {
+      throw new Error("Encoded Unicode must be live and owned by the same Context")
+    }
+    const context = this.source.context
+    const release = () => this.lib.destroyContextUnicode(context, native.handle)
+    this.lib.releaseAfterPaint(context, release)
+    const chars = contextUnicodeChars.get(this.source.context)!
+    for (const token of native.tokens) chars.delete(token)
+    contextUnicode.delete(encoded)
+  }
 
-    const columnCount = Math.max(0, options.columnOffsets.length - 1)
-    const rowCount = Math.max(0, options.rowOffsets.length - 1)
-
-    this.lib.bufferDrawGrid(
-      this.bufferPtr,
-      options.borderChars,
-      options.borderFg,
-      options.borderBg,
-      options.columnOffsets,
-      columnCount,
-      options.rowOffsets,
-      rowCount,
-      {
-        drawInner: options.drawInner,
-        drawOuter: options.drawOuter,
-      },
-    )
+  public drawGrid(options: NativeBufferGrid): void {
+    this.guard()
+    const recorder = this.recorder
+    if (recorder) return recorder.grid(options)
+    const target = this.checkedTarget()
+    this.lib.contextDrawGrid(target, options)
   }
 
   public drawChar(char: number, x: number, y: number, fg: RGBA, bg: RGBA, attributes: number = 0): void {
     this.guard()
-    this.lib.bufferDrawChar(this.bufferPtr, char, x, y, fg, bg, attributes)
+    if (char > 0xffffffff) {
+      const glyph = contextUnicodeChars.get(this.source.context)?.get(char)
+      if (!glyph || glyph.owner.lib !== this.lib) {
+        throw new Error("Encoded Unicode must be live and owned by the same Context")
+      }
+      const recorder = this.recorder
+      if (recorder) return recorder.unicode(glyph.owner.handle, glyph.index, x, y, fg, bg, attributes)
+      this.lib.contextBufferDrawUnicode(this.checkedTarget(), glyph.owner.handle, glyph.index, x, y, fg, bg, attributes)
+      return
+    }
+    this.drawChecked({ operation: "char", char, x, y, foreground: fg, background: bg, attributes })
   }
 }

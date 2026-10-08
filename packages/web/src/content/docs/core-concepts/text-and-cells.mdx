@@ -70,7 +70,7 @@ Neither method turns cell width into a character count. Read [Terminal capabilit
 
 ## Understand wide cells
 
-A simple one-cell scalar can live directly in a cell. A multi-code-point grapheme lives in a native grapheme pool.
+Text drawing stores a printable ASCII character directly in its cell. It stores every other grapheme in a native grapheme pool, even a single code point such as `é`.
 
 The first occupied cell stores the grapheme reference and its extent. Remaining occupied cells store continuation markers.
 
@@ -127,19 +127,20 @@ See [Text](/docs/components/text) for the component option.
 
 ## Use buffer text operations
 
-`OptimizedBuffer.setCell()` calls `codePointAt(0)` and writes one cell. It cannot represent a multi-code-point grapheme or create wide continuation cells.
+`OptimizedBuffer.setCell()` calls `codePointAt(0)` and stores that code point in one cell. It cannot represent a multi-code-point grapheme or create wide continuation cells. A control character becomes a space.
 
-Use `drawText()` for normal text, including combining marks, emoji sequences, tabs, and wide code points.
+Use `drawText()` for normal text, including combining marks, emoji sequences, tabs, and wide code points. A tab draws as two spaces. A control character other than tab takes no cells.
 
 ```typescript
-import { OptimizedBuffer, RGBA } from "@opentui/core"
+import { OptimizedBuffer, ResourceContext, RGBA } from "@opentui/core"
 
-const buffer = OptimizedBuffer.create(20, 2, "unicode")
-
+const owner = new ResourceContext({ objectCapacity: 4, renderCellsMax: 40 })
 try {
+  const buffer = OptimizedBuffer.create(20, 2, "unicode", { owner })
   buffer.drawText("A\u0301 and \u754c", 0, 0, RGBA.fromHex("#ffffff"))
-} finally {
   buffer.destroy()
+} finally {
+  owner.destroy()
 }
 ```
 

@@ -71,8 +71,17 @@ function calculateDynamicHeight(showUnderline: boolean, showDescription: boolean
   return height
 }
 
+const defaultColors = {
+  backgroundColor: "transparent",
+  textColor: "#FFFFFF",
+  focusedBackgroundColor: "#1a1a1a",
+  selectedBackgroundColor: "#334455",
+  selectedTextColor: "#FFFF00",
+  selectedDescriptionColor: "#CCCCCC",
+}
+
 export class TabSelectRenderable extends Renderable {
-  protected _focusable: boolean = true
+  protected static override readonly defaultFocusable = true
 
   private _options: TabSelectOption[] = []
   private selectedIndex: number = 0
@@ -81,6 +90,7 @@ export class TabSelectRenderable extends Renderable {
   private maxVisibleTabs: number
 
   private _backgroundColor: RGBA
+  private _hasBackgroundColor: boolean
   private _textColor: RGBA
   private _focusedBackgroundColor: RGBA
   private _focusedTextColor: RGBA
@@ -100,27 +110,38 @@ export class TabSelectRenderable extends Renderable {
 
     super(ctx, { ...options, height: calculatedHeight, buffered: true })
 
-    this._backgroundColor = parseColor(options.backgroundColor || "transparent")
-    this._textColor = parseColor(options.textColor || "#FFFFFF")
-    this._focusedBackgroundColor = parseColor(options.focusedBackgroundColor || options.backgroundColor || "#1a1a1a")
-    this._focusedTextColor = parseColor(options.focusedTextColor || options.textColor || "#FFFFFF")
-    this._options = options.options || []
-    this._tabWidth = options.tabWidth || 20
-    this._showDescription = options.showDescription ?? true
-    this._showUnderline = options.showUnderline ?? true
-    this._showScrollArrows = options.showScrollArrows ?? true
-    this._wrapSelection = options.wrapSelection ?? false
+    try {
+      this._backgroundColor = RGBA.clone(parseColor(options.backgroundColor || defaultColors.backgroundColor))
+      this._hasBackgroundColor = !!options.backgroundColor
+      this._textColor = RGBA.clone(parseColor(options.textColor || defaultColors.textColor))
+      this._focusedBackgroundColor = RGBA.clone(
+        parseColor(options.focusedBackgroundColor || options.backgroundColor || defaultColors.focusedBackgroundColor),
+      )
+      this._focusedTextColor = RGBA.clone(parseColor(options.focusedTextColor || this._textColor))
+      this._options = options.options || []
+      this._tabWidth = options.tabWidth || 20
+      this._showDescription = options.showDescription ?? true
+      this._showUnderline = options.showUnderline ?? true
+      this._showScrollArrows = options.showScrollArrows ?? true
+      this._wrapSelection = options.wrapSelection ?? false
 
-    this.maxVisibleTabs = Math.max(1, Math.floor(this.width / this._tabWidth))
+      this.maxVisibleTabs = Math.max(1, Math.floor(this.width / this._tabWidth))
 
-    this._selectedBackgroundColor = parseColor(options.selectedBackgroundColor || "#334455")
-    this._selectedTextColor = parseColor(options.selectedTextColor || "#FFFF00")
-    this._selectedDescriptionColor = parseColor(options.selectedDescriptionColor || "#CCCCCC")
+      this._selectedBackgroundColor = RGBA.clone(
+        parseColor(options.selectedBackgroundColor || defaultColors.selectedBackgroundColor),
+      )
+      this._selectedTextColor = RGBA.clone(parseColor(options.selectedTextColor || defaultColors.selectedTextColor))
+      this._selectedDescriptionColor = RGBA.clone(
+        parseColor(options.selectedDescriptionColor || defaultColors.selectedDescriptionColor),
+      )
 
-    this._keyAliasMap = mergeKeyAliases(defaultKeyAliases, options.keyAliasMap || {})
-    this._keyBindings = options.keyBindings || []
-    const mergedBindings = mergeKeyBindings(defaultTabSelectKeybindings, this._keyBindings)
-    this._keyBindingsMap = buildKeyBindingsMap(mergedBindings, this._keyAliasMap)
+      this._keyAliasMap = mergeKeyAliases(defaultKeyAliases, options.keyAliasMap || {})
+      this._keyBindings = options.keyBindings || []
+      const mergedBindings = mergeKeyBindings(defaultTabSelectKeybindings, this._keyBindings)
+      this._keyBindingsMap = buildKeyBindingsMap(mergedBindings, this._keyAliasMap)
+    } catch (error) {
+      this.abortConstruction(error)
+    }
   }
 
   private calculateDynamicHeight(): number {
@@ -170,9 +191,13 @@ export class TabSelectRenderable extends Renderable {
       this.frameBuffer.drawText(nameContent, tabX + 1, contentY, nameColor)
 
       if (isSelected && this._showUnderline && contentHeight >= 2) {
-        const underlineY = contentY + 1
-        const underlineBg = isSelected ? this._selectedBackgroundColor : bgColor
-        this.frameBuffer.drawText("▬".repeat(actualTabWidth), tabX, underlineY, nameColor, underlineBg)
+        this.frameBuffer.drawText(
+          "▬".repeat(actualTabWidth),
+          tabX,
+          contentY + 1,
+          nameColor,
+          this._selectedBackgroundColor,
+        )
       }
     }
 
@@ -333,44 +358,44 @@ export class TabSelectRenderable extends Renderable {
   }
 
   public set options(options: TabSelectOption[]) {
-    this._options = options
-    this.selectedIndex = Math.min(this.selectedIndex, Math.max(0, options.length - 1))
-    this.updateScrollOffset()
-    this.requestRender()
+    this.setOptions(options)
   }
 
   public set backgroundColor(color: ColorInput) {
-    this._backgroundColor = parseColor(color)
+    this._backgroundColor = RGBA.clone(parseColor(color ?? defaultColors.backgroundColor))
+    this._hasBackgroundColor = color != null
     this.requestRender()
   }
 
   public set textColor(color: ColorInput) {
-    this._textColor = parseColor(color)
+    this._textColor = RGBA.clone(parseColor(color ?? defaultColors.textColor))
     this.requestRender()
   }
 
   public set focusedBackgroundColor(color: ColorInput) {
-    this._focusedBackgroundColor = parseColor(color)
+    // Like the constructor: an unset focused background follows an explicit background color.
+    const fallback = this._hasBackgroundColor ? this._backgroundColor : defaultColors.focusedBackgroundColor
+    this._focusedBackgroundColor = RGBA.clone(parseColor(color ?? fallback))
     this.requestRender()
   }
 
   public set focusedTextColor(color: ColorInput) {
-    this._focusedTextColor = parseColor(color)
+    this._focusedTextColor = RGBA.clone(parseColor(color ?? this._textColor))
     this.requestRender()
   }
 
   public set selectedBackgroundColor(color: ColorInput) {
-    this._selectedBackgroundColor = parseColor(color)
+    this._selectedBackgroundColor = RGBA.clone(parseColor(color ?? defaultColors.selectedBackgroundColor))
     this.requestRender()
   }
 
   public set selectedTextColor(color: ColorInput) {
-    this._selectedTextColor = parseColor(color)
+    this._selectedTextColor = RGBA.clone(parseColor(color ?? defaultColors.selectedTextColor))
     this.requestRender()
   }
 
   public set selectedDescriptionColor(color: ColorInput) {
-    this._selectedDescriptionColor = parseColor(color)
+    this._selectedDescriptionColor = RGBA.clone(parseColor(color ?? defaultColors.selectedDescriptionColor))
     this.requestRender()
   }
 
@@ -424,13 +449,7 @@ export class TabSelectRenderable extends Renderable {
   }
 
   public set tabWidth(tabWidth: number) {
-    if (this._tabWidth === tabWidth) return
-
-    this._tabWidth = tabWidth
-    this.maxVisibleTabs = Math.max(1, Math.floor(this.width / this._tabWidth))
-
-    this.updateScrollOffset()
-    this.requestRender()
+    this.setTabWidth(tabWidth)
   }
 
   public set keyBindings(bindings: TabSelectKeyBinding[]) {

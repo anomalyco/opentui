@@ -19,10 +19,45 @@ import {
   AudioRecorderError,
   setupAudio,
 } from "../audio.js"
-import { NativeAudioStreamFormat, resolveRenderLib } from "../zig.js"
+import {
+  FFIRenderLib,
+  NativeAudioStreamFormat,
+  NativeAudioStreamState as ExportedAudioStreamState,
+  resolveRenderLib,
+} from "../zig.js"
+import {
+  AudioCaptureStatsStruct,
+  AudioStreamStatsStruct,
+  NativeAudioStreamCloseReason,
+  NativeAudioStreamState,
+} from "../zig-structs.js"
+import { withStubbedSymbols } from "./native-symbol-stubs.js"
 
 const SAMPLE_RATE = 48_000
 const audioRecorderTestRoot = process.env.OTUI_AUDIO_RECORDER_TEST_TMPDIR ?? tmpdir()
+
+test("audio numeric handles retain library ownership and never alias replacements", () => {
+  const first = new FFIRenderLib()
+  const second = new FFIRenderLib()
+  const engine = first.createAudioEngine()!
+  const other = second.createAudioEngine()!
+  try {
+    expect(second.audioStartMixer(engine)).toBe(-1)
+    expect(first.audioStartMixer(other)).toBe(-1)
+    first.destroyAudioEngine(engine)
+    const replacement = first.createAudioEngine()!
+    expect(replacement).not.toBe(engine)
+    expect(first.audioGetStats(engine)).toBeNull()
+    expect(first.audioStartMixer(replacement)).toBe(0)
+    first.destroyAudioEngine(replacement)
+    expect(first.createAudioEngine({ playbackChannels: 256 })).toBeNull()
+  } finally {
+    first.destroyAudioEngine(engine)
+    second.destroyAudioEngine(other)
+    first.dispose()
+    second.dispose()
+  }
+})
 
 function buildPcm16Wav(samples: number[], channels: number): Uint8Array {
   if (channels <= 0 || samples.length % channels !== 0) {
@@ -678,6 +713,189 @@ test("audioCreateGroup rejects oversized encoded name lengths before truncating 
     ;(lib.encoder as { encode: (input: string) => Uint8Array }).encode = originalEncode
     lib.destroyAudioEngine(engine)
   }
+})
+
+// The stream wrapper test below checks the create-options layout through its packed bytes.
+test.each([
+  [
+    AudioStreamStatsStruct,
+    56,
+    {
+      bytesReceived: 0,
+      framesDecoded: 8,
+      framesPlayed: 16,
+      state: 24,
+      sampleRate: 28,
+      channels: 32,
+      bufferedFrames: 36,
+      capacityFrames: 40,
+      underruns: 44,
+      errorCode: 48,
+      readyGeneration: 52,
+    },
+  ],
+  [
+    AudioCaptureStatsStruct,
+    40,
+    {
+      framesReceived: 0,
+      framesRead: 8,
+      framesDropped: 16,
+      sampleRate: 24,
+      channels: 28,
+      bufferedFrames: 32,
+      capacityFrames: 36,
+    },
+  ],
+] as const)("audio stats struct %# keeps the native size %i and field offsets", (struct, size, offsets) => {
+  expect(struct.size).toBe(size)
+  expect(Object.fromEntries([...struct.layoutByName].map(([name, field]) => [name, field.offset]))).toEqual(offsets)
+})
+
+test("audio stream wrappers validate before FFI, pass buffers directly, and unpack fresh stats", () => {
+  const lib = resolveRenderLib()
+  const stats = {
+    bytesReceived: 20n,
+    framesDecoded: 2n,
+    framesPlayed: 1n,
+    state: NativeAudioStreamState.Failed,
+    sampleRate: 44_100,
+    channels: 2,
+    bufferedFrames: 0,
+    capacityFrames: 44_100,
+    underruns: 3,
+    errorCode: -3,
+    readyGeneration: 7,
+  }
+  const packStats = (output: Uint8Array) => {
+    // Bun 1.3 rejects ArrayBuffer and DataView at `buffer` parameters, so struct outputs arrive as byte views.
+    expect(output).toBeInstanceOf(Uint8Array)
+    AudioStreamStatsStruct.packInto(stats, new DataView(output.buffer, output.byteOffset, output.byteLength), 0)
+    return 0
+  }
+  const writes = [3, 0, -4, 0]
+  const valid = {
+    capacityMs: 100,
+    startupMs: 10,
+    resumeMs: 10,
+    maxProbeBytes: 1 << 20,
+    volume: 0.75,
+    pan: -0.25,
+    groupId: 7,
+  }
+  withStubbedSymbols(
+    {
+      audioCreateStream: () => 0,
+      audioWriteStream: () => writes.shift(),
+      audioGetStreamStats: (_engine, _stream, output) => packStats(output),
+      audioCloseStream: (_engine, _stream, _reason, output) => packStats(output),
+    },
+    (calls) => {
+      expect(lib.audioSetStreamGroup(0 as never, 1, 1.5)).toBe(-1)
+      for (const invalid of [
+        { format: NativeAudioStreamFormat.Mp3, groupId: 1.5 },
+        { format: 1.5 },
+        { format: 4 },
+        { format: NativeAudioStreamFormat.Pcm, sampleRate: 44100.5, channels: 2 },
+        { format: NativeAudioStreamFormat.Pcm, sampleRate: 44100, channels: NaN },
+      ]) {
+        expect(lib.audioCreateStream(0 as never, { ...valid, ...invalid } as never)).toEqual({
+          status: -1,
+          streamId: null,
+        })
+      }
+      lib.audioCreateStream(0 as never, { ...valid, format: NativeAudioStreamFormat.Flac })
+      expect(calls.audioCreateStream).toHaveLength(1)
+      const [options, streamId] = calls.audioCreateStream![0]!.slice(1)
+      expect(streamId).toBeInstanceOf(Uint32Array)
+      expect(options).toBeInstanceOf(Uint8Array)
+      const packed = new DataView(options.buffer, options.byteOffset)
+      const words = [0, 4, 8, 20, 24, 28, 32, 36].map((offset) => packed.getUint32(offset, true))
+      expect(words).toEqual([100, 10, 10, 7, 1 << 20, NativeAudioStreamFormat.Flac, 0, 0])
+      expect([packed.getFloat32(12, true), packed.getFloat32(16, true)]).toEqual([0.75, -0.25])
+
+      const bytes = new Uint8Array([1, 2, 3])
+      expect([0, 1, 2].map(() => lib.audioWriteStream(0 as never, 1, bytes))).toEqual([3, 0, -4])
+      expect(lib.audioWriteStream(0 as never, 1, new Uint8Array())).toBe(0)
+      expect(calls.audioWriteStream![0]!.slice(2)).toEqual([bytes, 3])
+      expect(calls.audioWriteStream![0]![2]).toBe(bytes)
+      expect(calls.audioWriteStream![3]!.slice(2)).toEqual([new Uint8Array(), 0])
+
+      const first = lib.audioGetStreamStats(4 as never, 5)!
+      stats.bytesReceived++
+      const second = lib.audioGetStreamStats(4 as never, 5)!
+      expect([first.bytesReceived, second.bytesReceived]).toEqual([20n, 21n])
+      expect(calls.audioGetStreamStats![1]![2]).toBe(calls.audioGetStreamStats![0]![2])
+      const reason = NativeAudioStreamCloseReason.TransportError
+      expect(lib.audioCloseStream(11 as never, 22, reason)).toEqual({ status: 0, stats })
+      expect(calls.audioCloseStream![0]!.slice(1, 3)).toEqual([22, reason])
+      expect(ExportedAudioStreamState).toBe(NativeAudioStreamState)
+    },
+  )
+})
+
+test("audio capture wrappers pass transient buffers directly and normalize results", () => {
+  const lib = resolveRenderLib()
+  const stats = {
+    framesReceived: 5n,
+    framesRead: 2n,
+    framesDropped: 1n,
+    sampleRate: 48_000,
+    channels: 1,
+    bufferedFrames: 3,
+    capacityFrames: 48_000,
+  }
+  const reads = [0, -1]
+  withStubbedSymbols(
+    {
+      audioGetCaptureDeviceName: (_engine, _index, output: Uint8Array) => {
+        output.set(new TextEncoder().encode("Microphone"))
+        return 10
+      },
+      audioIsCaptureDeviceDefault: () => 1,
+      audioIsCaptureRunning: () => 1,
+      audioStartCapture: () => 0,
+      audioReadCapture: (_engine, _output, _capacity, _frames, framesRead: ArrayBuffer) => {
+        new Uint32Array(framesRead)[0] = 2
+        return reads.shift()
+      },
+      audioGetCaptureStats: (_engine, output: ArrayBuffer) => {
+        AudioCaptureStatsStruct.packInto(stats, new DataView(output), 0)
+        return 0
+      },
+    },
+    (calls) => {
+      expect(lib.audioGetCaptureDeviceName(1 as never, 2)).toBe("Microphone")
+      expect(lib.audioIsCaptureDeviceDefault(1 as never, 2)).toBe(true)
+      expect(lib.audioIsCaptureRunning(1 as never)).toBe(true)
+      const output = new Float32Array(4)
+      expect(lib.audioReadCapture(1 as never, output, 4)).toEqual({ status: 0, framesRead: 2 })
+      expect(lib.audioReadCapture(1 as never, output, 1)).toEqual({ status: -1, framesRead: 0 })
+      expect(lib.audioGetCaptureStats(1 as never)).toEqual({ status: 0, stats })
+      expect(calls.audioGetCaptureDeviceName![0]![2]).toBeInstanceOf(Uint8Array)
+      expect(calls.audioReadCapture![1]!.slice(1, 4)).toEqual([output, output.length, 1])
+      expect(calls.audioReadCapture![1]![1]).toBe(output)
+      expect(calls.audioReadCapture![1]![4]).toBeInstanceOf(ArrayBuffer)
+      expect(calls.audioGetCaptureStats![0]![1]).toBeInstanceOf(ArrayBuffer)
+
+      // Capture start defaults callback sizing and contains option getter failures.
+      expect(lib.audioStartCapture(1 as never, undefined, 1, 48_000)).toBe(0)
+      expect(calls.audioStartCapture![0]![1]).toBeInstanceOf(ArrayBuffer)
+      expect(new Uint8Array(calls.audioStartCapture![0]![1])[17]).toBe(1)
+      const options = Object.create({ periods: 3 }) as { periods?: number; noFixedSizedCallback?: boolean }
+      Object.defineProperty(options, "noFixedSizedCallback", { value: false, enumerable: false })
+      expect(lib.audioStartCapture(1 as never, options, 1, 48_000)).toBe(0)
+      const inherited = new DataView(calls.audioStartCapture![1]![1])
+      expect([inherited.getUint32(8, true), inherited.getUint8(17)]).toEqual([3, 0])
+      const throwing = {
+        get periods(): number {
+          throw new Error("getter failed")
+        },
+      }
+      expect(lib.audioStartCapture(1 as never, throwing, 1, 48_000)).toBe(-1)
+      expect(calls.audioStartCapture).toHaveLength(2)
+    },
+  )
 })
 
 test("Audio capture applies defaults, honors explicit options, and emits lifecycle events once", () => {

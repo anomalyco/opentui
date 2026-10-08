@@ -26,6 +26,10 @@
  *   untouched.
  * - optional bare-specifier rewriting is preserved for sibling files in
  *   packages already marked for runtime rewriting.
+ * - bare specifiers matched by `preserve` are never rewritten, so host
+ *   `build.module` registrations resolve them directly.
+ * - prescanning does not follow runtime-module or preserved specifiers into
+ *   their on-disk copies, because those copies are never loaded.
  *
  * Notes:
  * - import scanning is regex-based, not a full parser. A match that starts
@@ -45,6 +49,7 @@ import * as coreRuntime from "@opentui/core"
 export type RuntimeModuleExports = Record<string, unknown>
 export type RuntimeModuleLoader = () => RuntimeModuleExports | Promise<RuntimeModuleExports>
 export type RuntimeModuleEntry = RuntimeModuleExports | RuntimeModuleLoader
+export type RuntimeSpecifierPreserve = readonly string[] | ReadonlySet<string> | ((specifier: string) => boolean)
 
 interface SourceAnalysis {
   importSpecifiers: string[]
@@ -78,6 +83,7 @@ export interface RuntimePluginSourceTransform {
 export interface CreateRuntimePluginOptions {
   core?: RuntimeModuleEntry
   additional?: Record<string, RuntimeModuleEntry>
+  preserve?: RuntimeSpecifierPreserve
   rewrite?: RuntimePluginRewriteOptions
   sourceTransform?: RuntimePluginSourceTransform
 }
@@ -420,13 +426,26 @@ const resolveSourcePathFromSpecifier = (specifier: string, importer: string): st
   return null
 }
 
-const rewriteImportsFromResolveParents = (code: string, resolveParentsByRecency: string[]): string => {
+const createPreservePredicate = (preserve: RuntimeSpecifierPreserve | undefined): ((specifier: string) => boolean) => {
+  if (typeof preserve === "function") {
+    return (specifier) => isBareSpecifier(specifier) && preserve(specifier)
+  }
+
+  const specifiers = new Set(preserve)
+  return (specifier) => isBareSpecifier(specifier) && specifiers.has(specifier)
+}
+
+const rewriteImportsFromResolveParents = (
+  code: string,
+  resolveParentsByRecency: string[],
+  isPreservedSpecifier: (specifier: string) => boolean,
+): string => {
   if (resolveParentsByRecency.length === 0) {
     return code
   }
 
   const resolveFromParents = (specifier: string): string | null => {
-    if (!isBareSpecifier(specifier)) {
+    if (!isBareSpecifier(specifier) || isPreservedSpecifier(specifier)) {
       return null
     }
 
@@ -479,6 +498,8 @@ export function createRuntimePlugin(input: CreateRuntimePluginOptions = {}): Bun
     }
   }
 
+  const isPreservedSpecifier = createPreservePredicate(input.preserve)
+
   return {
     name: "bun-plugin-opentui-runtime-modules",
     setup: (build) => {
@@ -530,7 +551,7 @@ export function createRuntimePlugin(input: CreateRuntimePluginOptions = {}): Bun
           }
 
           const transformedContents = shouldRewriteBareSpecifiers
-            ? rewriteImportsFromResolveParents(runtimeRewrittenContents, resolveParentsByRecency)
+            ? rewriteImportsFromResolveParents(runtimeRewrittenContents, resolveParentsByRecency, isPreservedSpecifier)
             : runtimeRewrittenContents
 
           const source = sourceTransform?.matches(loadedPath)
@@ -603,6 +624,10 @@ export function createRuntimePlugin(input: CreateRuntimePluginOptions = {}): Bun
         }
 
         for (const specifier of analysis.importSpecifiers) {
+          if (runtimeModuleIdsBySpecifier.has(specifier) || isPreservedSpecifier(specifier)) {
+            continue
+          }
+
           const resolvedPath = resolveSourcePathFromSpecifier(specifier, normalizedPath)
           if (!resolvedPath || !isNodeModulesEsmPath(resolvedPath, packageTypeByPackageJsonPath)) {
             continue

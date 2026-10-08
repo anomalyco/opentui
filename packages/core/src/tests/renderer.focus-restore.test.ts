@@ -1,8 +1,9 @@
-import { test, expect, beforeEach, afterEach, describe, spyOn } from "bun:test"
+import { test, expect, beforeEach, afterEach, describe } from "bun:test"
 import { Buffer } from "node:buffer"
 import { createTestRenderer, type TestRenderer, type MockInput, type MockMouse } from "../testing/test-renderer.js"
 import { Renderable } from "../Renderable.js"
 import { ManualClock } from "../testing/manual-clock.js"
+import { createTestStdout } from "../testing/test-streams.js"
 
 class TestRenderable extends Renderable {
   constructor(renderer: TestRenderer, options: any) {
@@ -14,169 +15,86 @@ let renderer: TestRenderer
 let mockInput: MockInput
 let mockMouse: MockMouse
 let renderOnce: () => Promise<void>
-let restoreSpy: ReturnType<typeof spyOn>
+let output: string
 let clock: ManualClock
 
 beforeEach(async () => {
   clock = new ManualClock()
+  output = ""
+  const stdout = createTestStdout()
+  stdout._write = (chunk, _encoding, callback) => {
+    output += chunk.toString()
+    callback()
+  }
   ;({ renderer, mockInput, mockMouse, renderOnce } = await createTestRenderer({
     useMouse: true,
     clock,
+    stdout,
+    bufferedOutput: "stdout",
   }))
-
-  // @ts-expect-error - testing private renderer internals
-  restoreSpy = spyOn(renderer.lib, "restoreTerminalModes")
+  await renderer.setupTerminal()
+  await renderer.idle()
+  output = ""
 })
 
-afterEach(() => {
-  restoreSpy.mockRestore()
+afterEach(async () => {
   renderer.destroy()
+  await renderer.closed
 })
+
+function emitFocus(sequence: string): void {
+  for (const change of sequence) {
+    renderer.stdin.emit("data", Buffer.from(change === "O" ? "\x1b[O" : "\x1b[I"))
+    clock.advance(15)
+  }
+}
 
 describe("focus restore - terminal mode re-enable on focus-in", () => {
-  test("restoreTerminalModes is NOT called on focus-in without prior blur", async () => {
-    renderer.stdin.emit("data", Buffer.from("\x1b[I"))
-    clock.advance(15)
+  // O = focus out, I = focus in. Modes are restored on the first focus-in after each blur; events fire on changes.
+  const cases: Array<[sequence: string, restores: number, events: string[]]> = [
+    ["I", 0, ["focus"]],
+    ["O", 0, ["blur"]],
+    ["IO", 0, ["focus", "blur"]],
+    ["OI", 1, ["blur", "focus"]],
+    ["OIII", 1, ["blur", "focus"]],
+    ["OIOI", 2, ["blur", "focus", "blur", "focus"]],
+    ["OOIIOO", 1, ["blur", "focus", "blur"]],
+    ["OI".repeat(10), 10, Array.from({ length: 10 }, () => ["blur", "focus"]).flat()],
+  ]
 
-    expect(restoreSpy).toHaveBeenCalledTimes(0)
-  })
+  for (const [sequence, restores, events] of cases) {
+    test(`focus changes ${sequence} restore modes ${restores} times`, async () => {
+      const seen: string[] = []
+      renderer.on("focus", () => seen.push("focus"))
+      renderer.on("blur", () => seen.push("blur"))
+      let keypresses = 0
+      renderer.keyInput.on("keypress", () => keypresses++)
 
-  test("restoreTerminalModes is called once after blur then focus-in", async () => {
-    renderer.stdin.emit("data", Buffer.from("\x1b[O"))
-    clock.advance(15)
+      emitFocus(sequence)
+      await renderer.idle()
 
-    renderer.stdin.emit("data", Buffer.from("\x1b[I"))
-    clock.advance(15)
-
-    expect(restoreSpy).toHaveBeenCalledTimes(1)
-  })
-
-  test("restoreTerminalModes is NOT called on blur event", async () => {
-    renderer.stdin.emit("data", Buffer.from("\x1b[O"))
-    clock.advance(15)
-
-    expect(restoreSpy).toHaveBeenCalledTimes(0)
-  })
-
-  test("restoreTerminalModes is called before focus event is emitted after blur", async () => {
-    const callOrder: string[] = []
-
-    restoreSpy.mockImplementation(() => {
-      callOrder.push("restoreTerminalModes")
+      expect({ restores: output.split("\x1b[?2004h").length - 1, events: seen, keypresses }).toEqual({
+        restores,
+        events,
+        keypresses: 0,
+      })
     })
+  }
 
+  test("terminal modes are restored before output from the focus event after blur", async () => {
     renderer.on("focus", () => {
-      callOrder.push("focus-event")
+      renderer.setTerminalTitle("focus-event")
     })
 
-    renderer.stdin.emit("data", Buffer.from("\x1b[O"))
-    clock.advance(15)
+    emitFocus("OI")
 
-    renderer.stdin.emit("data", Buffer.from("\x1b[I"))
-    clock.advance(15)
-
-    expect(callOrder).toEqual(["restoreTerminalModes", "focus-event"])
+    await renderer.idle()
+    const restore = output.indexOf("\x1b[?2004h")
+    expect(restore).toBeGreaterThanOrEqual(0)
+    expect(output.indexOf("focus-event")).toBeGreaterThan(restore)
   })
 
-  test("repeated focus-in events only restore once per blur cycle", async () => {
-    renderer.stdin.emit("data", Buffer.from("\x1b[O"))
-    clock.advance(15)
-
-    renderer.stdin.emit("data", Buffer.from("\x1b[I"))
-    clock.advance(15)
-
-    renderer.stdin.emit("data", Buffer.from("\x1b[I"))
-    clock.advance(15)
-
-    renderer.stdin.emit("data", Buffer.from("\x1b[I"))
-    clock.advance(15)
-
-    expect(restoreSpy).toHaveBeenCalledTimes(1)
-  })
-
-  test("multiple blur/focus cycles each trigger one restore", async () => {
-    renderer.stdin.emit("data", Buffer.from("\x1b[O"))
-    clock.advance(15)
-
-    renderer.stdin.emit("data", Buffer.from("\x1b[I"))
-    clock.advance(15)
-
-    renderer.stdin.emit("data", Buffer.from("\x1b[O"))
-    clock.advance(15)
-
-    renderer.stdin.emit("data", Buffer.from("\x1b[I"))
-    clock.advance(15)
-
-    expect(restoreSpy).toHaveBeenCalledTimes(2)
-  })
-
-  test("focus-in emits focus event on the renderer", async () => {
-    const events: string[] = []
-
-    renderer.on("focus", () => {
-      events.push("focus")
-    })
-
-    renderer.on("blur", () => {
-      events.push("blur")
-    })
-
-    renderer.stdin.emit("data", Buffer.from("\x1b[I"))
-    clock.advance(15)
-
-    renderer.stdin.emit("data", Buffer.from("\x1b[O"))
-    clock.advance(15)
-
-    expect(events).toEqual(["focus", "blur"])
-  })
-
-  test("duplicate focus and blur sequences only emit transitions once", async () => {
-    const events: string[] = []
-
-    renderer.on("focus", () => {
-      events.push("focus")
-    })
-
-    renderer.on("blur", () => {
-      events.push("blur")
-    })
-
-    renderer.stdin.emit("data", Buffer.from("\x1b[O"))
-    clock.advance(15)
-    renderer.stdin.emit("data", Buffer.from("\x1b[O"))
-    clock.advance(15)
-
-    renderer.stdin.emit("data", Buffer.from("\x1b[I"))
-    clock.advance(15)
-    renderer.stdin.emit("data", Buffer.from("\x1b[I"))
-    clock.advance(15)
-
-    renderer.stdin.emit("data", Buffer.from("\x1b[O"))
-    clock.advance(15)
-    renderer.stdin.emit("data", Buffer.from("\x1b[O"))
-    clock.advance(15)
-
-    expect(events).toEqual(["blur", "focus", "blur"])
-  })
-
-  test("focus events do not trigger keypress events", async () => {
-    const keypresses: any[] = []
-
-    renderer.keyInput.on("keypress", (event) => {
-      keypresses.push(event)
-    })
-
-    renderer.stdin.emit("data", Buffer.from("\x1b[I"))
-    clock.advance(15)
-    renderer.stdin.emit("data", Buffer.from("\x1b[O"))
-    clock.advance(15)
-
-    expect(keypresses).toHaveLength(0)
-  })
-
-  test("mouse events work after focus restore cycle", async () => {
-    renderer.start()
-
+  test("mouse and keyboard input work after a focus restore cycle", async () => {
     const target = new TestRenderable(renderer, {
       position: "absolute",
       left: 0,
@@ -186,72 +104,21 @@ describe("focus restore - terminal mode re-enable on focus-in", () => {
     })
     renderer.root.add(target)
     await renderOnce()
+    let mouseEvents = 0
+    let keys = 0
+    target.onMouse = () => mouseEvents++
+    renderer.keyInput.on("keypress", () => keys++)
 
-    let mouseEventCount = 0
-    target.onMouse = () => {
-      mouseEventCount++
-    }
-
-    // Verify mouse works initially
+    emitFocus("OI")
+    await renderer.idle()
     await mockMouse.click(5, 5)
-    expect(mouseEventCount).toBeGreaterThan(0)
-
-    const countBefore = mouseEventCount
-
-    // Simulate focus loss and regain
-    renderer.stdin.emit("data", Buffer.from("\x1b[O"))
-    clock.advance(15)
-    renderer.stdin.emit("data", Buffer.from("\x1b[I"))
-    clock.advance(15)
-
-    // Verify restoreTerminalModes was called
-    expect(restoreSpy).toHaveBeenCalledTimes(1)
-
-    // Verify mouse still works after focus restore
-    await mockMouse.click(5, 5)
-    expect(mouseEventCount).toBeGreaterThan(countBefore)
-
-    renderer.root.remove(target)
-  })
-
-  test("keyboard input works after focus restore cycle", async () => {
-    renderer.start()
-
-    let keyEventCount = 0
-    const onKeypress = () => {
-      keyEventCount++
-    }
-    renderer.keyInput.on("keypress", onKeypress)
-
-    // Verify keyboard works initially
-    mockInput.pressKey("a")
-    clock.advance(15)
-    expect(keyEventCount).toBeGreaterThan(0)
-
-    const countBefore = keyEventCount
-
-    // Simulate focus loss and regain
-    renderer.stdin.emit("data", Buffer.from("\x1b[O"))
-    clock.advance(15)
-    renderer.stdin.emit("data", Buffer.from("\x1b[I"))
-    clock.advance(15)
-
-    // Verify keyboard still works after focus restore
     mockInput.pressKey("b")
     clock.advance(15)
-    expect(keyEventCount).toBeGreaterThan(countBefore)
 
-    renderer.keyInput.off("keypress", onKeypress)
-  })
-
-  test("rapid focus toggle does not cause issues", async () => {
-    // Simulate rapid alt-tab back and forth
-    for (let i = 0; i < 10; i++) {
-      renderer.stdin.emit("data", Buffer.from("\x1b[O"))
-      renderer.stdin.emit("data", Buffer.from("\x1b[I"))
-    }
-    clock.advance(15)
-
-    expect(restoreSpy).toHaveBeenCalledTimes(10)
+    expect({ restores: output.split("\x1b[?2004h").length - 1, mouse: mouseEvents > 0, keys }).toEqual({
+      restores: 1,
+      mouse: true,
+      keys: 1,
+    })
   })
 })

@@ -30,7 +30,7 @@ Hex strings can use `#RGB`, `#RGBA`, `#RRGGBB`, or `#RRGGBBAA`. Alpha is last an
 
 `"transparent"` produces `[0, 0, 0, 0]`.
 
-The named-color set is limited to these values:
+Besides `"transparent"`, `parseColor()` accepts only these color names:
 
 - `black`, `white`, `red`, `green`, `blue`, `yellow`, `cyan`, and `magenta`
 - `silver`, `gray`, `grey`, `maroon`, `olive`, `lime`, `aqua`, `teal`, `navy`, `fuchsia`, `purple`, and `orange`
@@ -57,6 +57,25 @@ const fromHex = RGBA.fromHex("#22c55e80")
 Both constructors convert a non-finite channel to `0`. Channel setters apply the same normalized float conversion as `fromValues()`.
 
 `RGBA.clone()` copies all channels and metadata. `equals()` compares the complete packed value, including color intent.
+
+## Update retained colors
+
+Built-in renderables copy a color when you assign it. Color getters return copies.
+Changes to an input `RGBA`, a getter result, or its `buffer` do not change what the native scene draws.
+This remains true when another property change causes a redraw.
+
+Assign the property again to send a new value:
+
+```typescript
+const accent = RGBA.fromHex("#22c55e")
+box.backgroundColor = accent
+accent.r = 1
+box.backgroundColor = accent
+```
+
+The second assignment copies the color again, even though it receives the same object.
+The same rule applies to retained text styles, selections, placeholders, and gutter colors.
+Buffer draw calls also copy the color at each call. You can reuse and change one `RGBA` between draw calls.
 
 ## Use alpha
 
@@ -137,13 +156,16 @@ An optional snapshot supplies RGBA data for blending and early frames. It does n
 
 Detected palette changes can alter terminal output for indexed and default intent. Read [Terminal capabilities](/docs/reference/terminal-capabilities) for detection timing.
 
+Cursor color controls use the RGB snapshot. Passing default foreground intent as a cursor color does not request
+a terminal cursor-color reset.
+
 ## Understand packed transport
 
 `RGBA.buffer` is a `Uint16Array(4)`. The low byte of each element stores one RGBA channel.
 
 The four high bytes store 32 bits of metadata. Indexed intent includes its palette slot in that metadata.
 
-This packed form crosses the native boundary and participates in exact frame comparisons. Two colors with equal RGBA channels can still differ by intent.
+Core sends this packed form to native code. Native code compares all of it when it compares frame cells. Two colors with equal RGBA channels can still differ by intent.
 
 Use this representation only for low-level transport. Everyday component code should use `ColorInput`, `parseColor()`, and the constructors.
 

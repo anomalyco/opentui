@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 
 import { performance } from "node:perf_hooks"
-import { OptimizedBuffer } from "../buffer.js"
+import { OptimizedBuffer, ResourceContext } from "../buffer.js"
 import { applyGain } from "../post/filters.js"
 
 type Scenario = { width: number; height: number }
@@ -46,32 +46,41 @@ function formatNs(value: number): number {
 }
 
 function runScenario({ width, height }: Scenario): ScenarioResult {
-  const buffer = OptimizedBuffer.create(width, height, "unicode", { id: `gain-bench-${width}x${height}` })
-  const { fg, bg } = buffer.buffers
-  fg.fill(1)
-  bg.fill(1)
+  const owner = new ResourceContext({ objectCapacity: 4, renderCellsMax: width * height })
+  try {
+    const buffer = OptimizedBuffer.create(width, height, "unicode", {
+      owner,
+      id: `gain-bench-${width}x${height}`,
+    })
+    buffer.withBuffers(({ fg, bg }) => {
+      fg.fill(1)
+      bg.fill(1)
+    })
 
-  for (let i = 0; i < WARMUP_ITERATIONS; i++) {
-    applyGain(buffer, GAIN_FACTOR)
-  }
+    for (let i = 0; i < WARMUP_ITERATIONS; i++) {
+      applyGain(buffer, GAIN_FACTOR)
+    }
 
-  const samples = new Array<number>(ITERATIONS)
-  for (let i = 0; i < ITERATIONS; i++) {
-    const start = performance.now()
-    applyGain(buffer, GAIN_FACTOR)
-    samples[i] = performance.now() - start
-  }
+    const samples = new Array<number>(ITERATIONS)
+    for (let i = 0; i < ITERATIONS; i++) {
+      const start = performance.now()
+      applyGain(buffer, GAIN_FACTOR)
+      samples[i] = performance.now() - start
+    }
 
-  buffer.destroy()
+    buffer.destroy()
 
-  const stats = calculateStats(samples)
-  return {
-    size: `${width}x${height}`,
-    cells: width * height,
-    avgMs: formatMs(stats.avgMs),
-    avgNsPerCell: formatNs((stats.avgMs * 1_000_000) / (width * height)),
-    medianMs: formatMs(stats.medianMs),
-    p95Ms: formatMs(stats.p95Ms),
+    const stats = calculateStats(samples)
+    return {
+      size: `${width}x${height}`,
+      cells: width * height,
+      avgMs: formatMs(stats.avgMs),
+      avgNsPerCell: formatNs((stats.avgMs * 1_000_000) / (width * height)),
+      medianMs: formatMs(stats.medianMs),
+      p95Ms: formatMs(stats.p95Ms),
+    }
+  } finally {
+    owner.destroy()
   }
 }
 

@@ -97,7 +97,7 @@ describe("QRCode", () => {
   })
 })
 
-describe("QRCodeRenderable", () => {
+describe("QRCodeRenderable (native)", () => {
   beforeEach(async () => {
     ;({
       renderer: testRenderer,
@@ -126,6 +126,21 @@ describe("QRCodeRenderable", () => {
     expect(qr.width).toBe(80)
     expect(qr.height).toBe(15)
   })
+
+  it.each(["foregroundColor", "backgroundColor", "fallbackColor"] as const)(
+    "restores the default %s after a null or undefined write",
+    async (prop) => {
+      const qr = new QRCodeRenderable(testRenderer, { content: "HELLO WORLD" })
+      const fallback = qr[prop]
+      testRenderer.root.add(qr)
+      for (const value of [null, undefined]) {
+        qr[prop] = "#123456"
+        qr[prop] = value as unknown as string
+        await renderOnce()
+        expect(qr[prop].equals(fallback)).toBe(true)
+      }
+    },
+  )
 
   it("rejects quiet zones smaller than the QR Code minimum", () => {
     expect(
@@ -196,7 +211,7 @@ describe("QRCodeRenderable", () => {
     testRenderer.root.add(container)
     await renderOnce()
 
-    expect(qr.getLayoutNode().getComputedLayout().height).toBe(0)
+    expect(qr.getLayout().height).toBe(0)
     expect(captureCharFrame()).not.toContain("█")
     expect(captureCharFrame()).not.toContain("▀")
     expect(captureCharFrame()).not.toContain("▄")
@@ -247,8 +262,8 @@ describe("QRCodeRenderable", () => {
     testRenderer.root.add(container)
     await renderOnce()
 
-    expect(qr.getLayoutNode().getComputedLayout().width).toBe(58)
-    expect(qr.getLayoutNode().getComputedLayout().height).toBe(29)
+    expect(qr.getLayout().width).toBe(58)
+    expect(qr.getLayout().height).toBe(29)
 
     resize(20, 8)
     await renderOnce()
@@ -258,8 +273,8 @@ describe("QRCodeRenderable", () => {
     resize(80, 40)
     await renderOnce()
 
-    expect(qr.getLayoutNode().getComputedLayout().width).toBe(58)
-    expect(qr.getLayoutNode().getComputedLayout().height).toBe(29)
+    expect(qr.getLayout().width).toBe(58)
+    expect(qr.getLayout().height).toBe(29)
     expect(captureCharFrame()).toContain("█")
   })
 

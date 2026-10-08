@@ -213,13 +213,12 @@ image_protocol: ImageProtocol = .auto,
 kitty_graphics_queried: bool = false,
 sixel_queried: bool = false,
 skip_explicit_width_query: bool = false,
-graphics_query_pending: bool = false,
-sixel_query_pending: bool = false,
-capability_queries_pending: bool = false,
 startup_cursor_query_pending: bool = false,
 startup_cursor_query_captured: bool = false,
 explicit_width_probe_reports_pending: u8 = 0,
 unicode_wide_locked: ?bool = null,
+host_env_hyperlinks: bool = false,
+hyperlinks_override: ?bool = null,
 
 state: struct {
     alt_screen: bool = false,
@@ -282,7 +281,36 @@ pub fn setHostEnvVar(self: *Terminal, allocator: std.mem.Allocator, key: []const
     self.checkEnvironmentOverrides();
 }
 
+pub fn adoptHostEnvironment(self: *Terminal, environment: std.process.Environ.Map) void {
+    std.debug.assert(self.host_env_map == null and self.opts.env_map == null);
+    self.host_env_map = environment;
+    self.opts.env_map = &self.host_env_map.?;
+    self.checkEnvironmentOverrides();
+}
+
 pub fn resetState(self: *Terminal, tty: anytype) !void {
+    try self.resetInputModes(tty);
+
+    if (self.state.alt_screen) {
+        try self.exitAltScreen(tty);
+    } else {
+        switch (builtin.os.tag) {
+            .windows => {
+                try tty.writeByte('\r');
+                var i: u16 = 0;
+                while (i < self.state.cursor.row) : (i += 1) {
+                    try tty.writeAll(ansi.ANSI.reverseIndex);
+                }
+                try tty.writeAll(ansi.ANSI.eraseBelowCursor);
+            },
+            else => {},
+        }
+    }
+
+    try self.resetOutputModes(tty);
+}
+
+pub fn resetInputModes(self: *Terminal, tty: anytype) !void {
     try tty.writeAll(ansi.ANSI.showCursor);
     try tty.writeAll(ansi.ANSI.reset);
     try tty.writeAll(ansi.ANSI.resetMousePointer);
@@ -307,28 +335,14 @@ pub fn resetState(self: *Terminal, tty: anytype) !void {
     if (self.state.focus_tracking) {
         try self.setFocusTracking(tty, false);
     }
+}
 
-    if (self.state.alt_screen) {
-        try self.exitAltScreen(tty);
-    } else {
-        switch (builtin.os.tag) {
-            .windows => {
-                try tty.writeByte('\r');
-                var i: u16 = 0;
-                while (i < self.state.cursor.row) : (i += 1) {
-                    try tty.writeAll(ansi.ANSI.reverseIndex);
-                }
-                try tty.writeAll(ansi.ANSI.eraseBelowCursor);
-            },
-            else => {},
-        }
-    }
-
+pub fn resetOutputModes(self: *Terminal, tty: anytype) !void {
     if (self.state.color_scheme_updates) {
         try self.setColorSchemeUpdates(tty, false);
     }
 
-    self.setTerminalTitle(tty, "");
+    try ansi.ANSI.setTerminalTitleOutput(tty, "");
 
     // OSC 111 is intentionally disabled for now. In Ghostty, sending the
     // reset alone is enough to poison later OSC 11 background reporting for
@@ -350,9 +364,6 @@ pub fn exitAltScreen(self: *Terminal, tty: anytype) !void {
 pub fn queryTerminalSend(self: *Terminal, tty: anytype) !void {
     self.checkEnvironmentOverrides();
     self.unicode_wide_locked = self.caps.unicode == .unicode_wide;
-    self.graphics_query_pending = !self.skip_graphics_query;
-    self.sixel_query_pending = !self.skip_graphics_query;
-    self.capability_queries_pending = false;
     self.startup_cursor_query_pending = true;
     self.startup_cursor_query_captured = false;
 
@@ -364,7 +375,7 @@ pub fn queryTerminalSend(self: *Terminal, tty: anytype) !void {
     try self.queryThemeColors(tty);
     self.state.theme_queries_sent = true;
 
-    // Send xtversion first (doesn't need DCS wrapping - used for tmux detection)
+    // Send xtversion first (used for tmux detection)
     try tty.writeAll(ansi.ANSI.xtversion ++
         ansi.ANSI.hideCursor ++
         ansi.ANSI.saveCursorState);
@@ -372,29 +383,19 @@ pub fn queryTerminalSend(self: *Terminal, tty: anytype) !void {
     // Capture the current cursor position before temporary home-position queries.
     try tty.writeAll(ansi.ANSI.cursorPositionRequest);
 
-    if (self.isInTmux()) {
-        if (self.is_foot) {
-            try tty.writeAll(ansi.ANSI.capabilityQueriesFootIsBrokenTmux);
-        } else {
-            try tty.writeAll(ansi.ANSI.capabilityQueriesTmux);
-        }
+    // Probes are never DCS wrapped. tmux answers the probes it implements and
+    // drops the rest; passthrough replies are not routed back to the pane that
+    // asked.
+    if (self.is_foot) {
+        try tty.writeAll(ansi.ANSI.capabilityQueriesFootIsBroken);
     } else {
-        if (self.is_foot) {
-            try tty.writeAll(ansi.ANSI.capabilityQueriesFootIsBroken);
-        } else {
-            try tty.writeAll(ansi.ANSI.capabilityQueries);
-        }
-        self.capability_queries_pending = true;
+        try tty.writeAll(ansi.ANSI.capabilityQueries);
     }
 
-    if (!self.skip_graphics_query) {
-        if (self.isInTmux()) {
-            try tty.writeAll(ansi.ANSI.kittyGraphicsQueryTmux);
-            try tty.writeAll(ansi.ANSI.primaryDeviceAttrsTmux);
-        } else {
-            try tty.writeAll(ansi.ANSI.kittyGraphicsQuery);
-            try tty.writeAll(ansi.ANSI.primaryDeviceAttrs);
-        }
+    // Inside tmux, graphics replies cannot describe the passthrough endpoint.
+    if (!self.skip_graphics_query and !self.isInTmux()) {
+        try tty.writeAll(ansi.ANSI.kittyGraphicsQuery);
+        try tty.writeAll(ansi.ANSI.primaryDeviceAttrs);
     }
 
     if (!self.skip_explicit_width_query) {
@@ -410,44 +411,6 @@ pub fn queryTerminalSend(self: *Terminal, tty: anytype) !void {
     }
 
     try tty.writeAll(ansi.ANSI.restoreCursorState);
-}
-
-pub fn sendPendingQueries(self: *Terminal, tty: anytype) !bool {
-    var sent = false;
-    const is_tmux = self.isInTmux();
-
-    // Initial probes were already sent using environment-derived multiplexer
-    // state. Only XTVERSION can justify a differently wrapped retry.
-    if (!self.term_info.from_xtversion) return false;
-
-    // Re-send capability queries DCS wrapped if tmux detected via xtversion
-    // Only needed if we got xtversion response indicating tmux
-    if (self.capability_queries_pending) {
-        if (self.term_info.from_xtversion and is_tmux) {
-            try tty.writeAll(ansi.ANSI.capabilityQueriesTmux);
-            sent = true;
-        }
-        // Clear pending flag regardless - non-tmux terminals already received unwrapped queries
-        self.capability_queries_pending = false;
-    }
-
-    if (self.graphics_query_pending and !self.skip_graphics_query) {
-        if (is_tmux) {
-            try tty.writeAll(ansi.ANSI.kittyGraphicsQueryTmux);
-            sent = true;
-        }
-        self.graphics_query_pending = false;
-    }
-
-    if (self.sixel_query_pending and !self.skip_graphics_query) {
-        if (is_tmux) {
-            try tty.writeAll(ansi.ANSI.primaryDeviceAttrsTmux);
-            sent = true;
-        }
-        self.sixel_query_pending = false;
-    }
-
-    return sent;
 }
 
 pub fn enableDetectedFeatures(self: *Terminal, tty: anytype, use_kitty_keyboard: bool) !void {
@@ -617,7 +580,8 @@ fn detectNotificationProtocol(value: []const u8) ?NotificationProtocol {
         std.ascii.findIgnoreCase(value, "urxvt") != null or
         std.ascii.findIgnoreCase(value, "rxvt") != null or
         std.ascii.findIgnoreCase(value, "windows terminal") != null or
-        std.ascii.findIgnoreCase(value, "windows_terminal") != null)
+        std.ascii.findIgnoreCase(value, "windows_terminal") != null or
+        std.ascii.findIgnoreCase(value, "terminology") != null)
     {
         return .osc777;
     }
@@ -707,7 +671,7 @@ fn parseOsc99NotificationQuery(self: *Terminal, response: []const u8) void {
     }
 }
 
-fn checkEnvironmentOverrides(self: *Terminal) void {
+pub fn checkEnvironmentOverrides(self: *Terminal) void {
     if (self.isXtversionTmux()) {
         self.multiplexer = .tmux;
     } else if (self.isXtversionZellij()) {
@@ -722,6 +686,7 @@ fn checkEnvironmentOverrides(self: *Terminal) void {
     self.graphics_enabled = true;
     self.image_protocol = .auto;
     self.skip_explicit_width_query = false;
+    self.hyperlinks_override = null;
 
     // Always just try to enable bracketed paste, even if it was reported as not supported
     self.caps.bracketed_paste = true;
@@ -933,8 +898,10 @@ fn checkEnvironmentOverrides(self: *Terminal) void {
         }
     }
 
-    if (self.is_foot and self.multiplexer != .none) {
+    // Multiplexed panes inherit TERM, TERM_PROGRAM, and VTE_VERSION from the outer terminal.
+    if ((self.is_foot or self.host_env_hyperlinks) and self.multiplexer != .none) {
         self.caps.hyperlinks = false;
+        self.host_env_hyperlinks = false;
     }
 
     if (!self.caps.hyperlinks and self.term_info.from_xtversion) {
@@ -961,6 +928,20 @@ fn checkEnvironmentOverrides(self: *Terminal) void {
                 }
             }
         }
+    }
+
+    if (!self.caps.hyperlinks and !self.term_info.from_xtversion and self.multiplexer == .none) {
+        if (isHyperlinkHostEnv(env_map)) {
+            self.caps.hyperlinks = true;
+            self.host_env_hyperlinks = true;
+        }
+    }
+
+    if (env_map.get("FORCE_HYPERLINK")) |value| {
+        self.hyperlinks_override = !(std.mem.eql(u8, value, "0") or std.ascii.eqlIgnoreCase(value, "false") or std.ascii.eqlIgnoreCase(value, "off"));
+    }
+    if (self.hyperlinks_override) |enabled| {
+        self.caps.hyperlinks = enabled;
     }
 
     if (!self.caps.osc52 and !self.term_info.from_xtversion) {
@@ -1432,6 +1413,23 @@ pub fn processCapabilityResponse(self: *Terminal, response: []const u8) void {
     if (!self.caps.hyperlinks and isHyperlinkTerm(response)) {
         self.caps.hyperlinks = true;
     }
+    if (self.hyperlinks_override) |enabled| {
+        self.caps.hyperlinks = enabled;
+    }
+
+    if (self.isInTmux()) {
+        // tmux has reported pane focus changes since 1.8 but answers DECRQM
+        // for mode 1004 only since 3.6.
+        self.caps.focus_tracking = true;
+
+        // Graphics replies inside tmux either have no pane ownership (Kitty
+        // passthrough) or describe tmux itself rather than the passthrough
+        // endpoint (DA/Sixel). Neither can select an outer image protocol.
+        self.kitty_graphics_queried = false;
+        self.caps.kitty_graphics = false;
+        self.sixel_queried = false;
+        self.caps.sixel = false;
+    }
 }
 
 fn parseXtgettcapMs(self: *Terminal, response: []const u8) void {
@@ -1480,7 +1478,23 @@ fn isHyperlinkTerm(value: []const u8) bool {
         std.ascii.findIgnoreCase(value, "wezterm") != null or
         std.ascii.findIgnoreCase(value, "alacritty") != null or
         std.ascii.findIgnoreCase(value, "foot") != null or
-        std.ascii.findIgnoreCase(value, "iterm") != null;
+        std.ascii.findIgnoreCase(value, "iterm") != null or
+        std.ascii.findIgnoreCase(value, "xterm.js") != null or
+        std.ascii.findIgnoreCase(value, "terminology") != null;
+}
+
+fn isHyperlinkHostEnv(env_map: *const std.process.Environ.Map) bool {
+    if (env_map.get("TERM_PROGRAM")) |program| {
+        if (std.mem.eql(u8, program, "vscode") or
+            std.mem.eql(u8, program, "zed") or
+            std.mem.eql(u8, program, "mintty")) return true;
+    }
+    // VTE releases before 0.52.2 include OSC 8 versions that can crash.
+    if (env_map.get("VTE_VERSION")) |version| {
+        const parsed = std.fmt.parseInt(u32, version, 10) catch return false;
+        return parsed >= 5202;
+    }
+    return false;
 }
 
 pub fn getCapabilities(self: *Terminal) Capabilities {
@@ -1862,11 +1876,12 @@ pub fn getTerminalName(self: *Terminal) []const u8 {
     return self.term_info.name[0..self.term_info.name_len];
 }
 
-/// Forced Sixel bypasses detection. Refuse it when identity cannot be a
-/// Sixel host. After XTVERSION, a multiplexer is not the host; DA still
-/// wins if the host reported Sixel through it. Apple Terminal has no
-/// XTVERSION, so TERM_PROGRAM is the only identity.
+/// Forced Sixel bypasses detection. Refuse it when the direct endpoint cannot
+/// be a Sixel host. Under tmux the passthrough endpoint is unknown, so the
+/// explicit override is authoritative. Apple Terminal has no XTVERSION, so
+/// TERM_PROGRAM is the only identity.
 pub fn refusesForcedSixel(self: *Terminal) bool {
+    if (self.isInTmux()) return false;
     if (self.caps.sixel) return false;
     if (self.term_info.from_xtversion) {
         if (self.multiplexer != .none) return true;
@@ -1877,4 +1892,27 @@ pub fn refusesForcedSixel(self: *Terminal) bool {
 
 pub fn getTerminalVersion(self: *Terminal) []const u8 {
     return self.term_info.version[0..self.term_info.version_len];
+}
+
+/// Discard input that the terminal queued on process stdin and the host has not read, such as mouse reports sent
+/// before mouse tracking was disabled. Best effort: a no-op when stdin is not a terminal.
+pub fn flushInput() void {
+    if (builtin.os.tag == .windows) {
+        const WindowsConsole = struct {
+            extern "kernel32" fn GetStdHandle(handle: std.os.windows.DWORD) callconv(.winapi) std.os.windows.HANDLE;
+            extern "kernel32" fn FlushConsoleInputBuffer(handle: std.os.windows.HANDLE) callconv(.winapi) std.os.windows.BOOL;
+        };
+        const stdin_handle = WindowsConsole.GetStdHandle(@bitCast(@as(i32, -10)));
+        _ = WindowsConsole.FlushConsoleInputBuffer(stdin_handle);
+        return;
+    }
+    const tciflush: c_int = switch (builtin.os.tag) {
+        .linux => 0,
+        .macos => 1,
+        else => return,
+    };
+    const PosixTerminal = struct {
+        extern "c" fn tcflush(fd: c_int, queue_selector: c_int) c_int;
+    };
+    _ = PosixTerminal.tcflush(0, tciflush);
 }

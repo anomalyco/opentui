@@ -35,12 +35,16 @@ describe("solid runtime plugin support", () => {
     expect(result.exitCode).toBe(0)
     expect(stdout).toContain("first=true")
     expect(stdout).toContain("second=false")
+    expect(stdout).toContain(
+      "mismatch=OpenTUI Solid runtime plugin support is already installed with different preserve options.",
+    )
     expect(stdout).toContain("keymap=true")
     expect(stdout).toContain("keymapAddons=true")
     expect(stdout).toContain("keymapExtras=true")
     expect(stdout).toContain("keymapSolid=true")
     expect(stdout).toContain("three=true")
     expect(stdout).toContain("jsx=true")
+    expect(stdout).toContain("preservedTs=true")
   }, 10_000)
 
   it("throws when modules are added after side-effect installation", () => {

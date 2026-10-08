@@ -1,0 +1,304 @@
+---
+title: How Core uses native
+description: Understand how Core maps renderables, hooks, resources, and output onto the native library
+---
+
+# How Core uses native
+
+A Core application creates `BoxRenderable` and `TextRenderable` objects, adds them to parents, and changes their properties.
+It does not create native frame tickets or deliver Session output itself.
+Core does that work as the host of the [native scene](/docs/native/overview).
+
+React and Solid use Core's renderables too. Their components, refs, and state stay in JavaScript.
+The native library handles scene layout and built-in drawing, not the framework's application logic.
+
+## Core supplies the host
+
+`CliRenderer` creates the native Context and Session, attaches a renderer, and drives frames.
+Each visual `Renderable` has a native scene node.
+Its properties update that node, while its JavaScript object keeps listeners, hooks, and application identity.
+
+```text
+┌─ Core application ───────────────────┐
+│ Construct and change Renderables     │
+└────────────────┬─────────────────────┘
+                 ↓
+┌─ CliRenderer ────────────────────────┐
+│ Schedule a frame                     │
+│ NativeScene drives native steps      │
+│ Run requested JavaScript hooks       │
+│ NativeSession delivers output        │
+└────────────────┬─────────────────────┘
+                 ↓
+┌─ Native library ─────────────────────┐
+│ Retained scene, cells, output queue  │
+└──────────────────────────────────────┘
+```
+
+Core still handles input routing, focus, selection, child lookup, and cleanup through JavaScript objects.
+Markdown parsing and Code highlighting also remain host work.
+JavaScript does not visit every renderable to draw it on each frame. Native code draws built-in renderables.
+
+`NativeScene` and `NativeSession` are Core's integration machinery, not the application-level equivalents of the C and Zig APIs.
+Build applications through [Renderer](/docs/core-concepts/renderer) and [Renderables](/docs/core-concepts/renderables).
+
+## Follow a paint hook
+
+Reuse the box and label from the native example.
+This time, the box's Core `renderAfter` hook changes the label from `Hello` to `Ready`:
+
+```typescript example=hook
+import { BoxRenderable, TextRenderable } from "@opentui/core"
+import { createTestRenderer } from "@opentui/core/testing"
+
+const { renderer, renderOnce, captureCharFrame } = await createTestRenderer({ width: 12, height: 3 })
+
+try {
+  const label = new TextRenderable(renderer, { content: "Hello" })
+  const box = new BoxRenderable(renderer, {
+    width: 12,
+    height: 3,
+    border: true,
+    renderAfter() {
+      label.content = "Ready"
+    },
+  })
+  box.add(label)
+  renderer.root.add(box)
+  await renderOnce()
+  console.log(captureCharFrame().trimEnd())
+} finally {
+  renderer.destroy()
+  await renderer.closed
+}
+```
+
+The [test renderer](/docs/core-concepts/testing) captures this first frame without writing it to your terminal:
+
+```text example=hook-output
+┌──────────┐
+│Ready     │
+└──────────┘
+```
+
+Paint hooks (`renderBefore`, `renderSelf`, and `renderAfter`) run after layout and before native code paints any cell. So the label draws `Ready` in that same frame.
+Native code does not call the JavaScript function while it paints:
+
+1. `CliRenderer.loop()` calls `NativeScene.paint()`.
+2. `NativeScene.advancePaint()` calls `RenderLib.sceneFrameStep()`, which reaches `ot_scene_frame_step_with_geometry`.
+3. Native code prepares the frame. It sees a paint hook, so it returns one record request, kind `4`, instead of painting.
+4. Core reads the request's paint slots with one `sceneFrameGetPaintSlots()` call. It calls `Renderable._recordNativeScenePaint()` for each hooked node, in paint order.
+5. The box's `renderAfter` function receives a recording buffer and changes the label.
+6. Core flushes staged changes and calls the native frame step again with the exact request and the recording. Native code paints the frame in one pass.
+
+These are synchronous calls on the JavaScript thread. The hook stays on the JavaScript object.
+The buffer that a hook receives records drawing and makes no native call.
+So a frame with any number of paint hooks costs two frame steps and one paint-slot query, not native calls for each hook.
+A recording buffer cannot read the frame. Draw into an owned buffer and compose it instead.
+A buffered custom renderable is different: its hooks draw into its own frame buffer, and Core records one draw of that buffer.
+
+A recording holds at most 64 MiB (`OT_SCENE_RECORD_BYTES_MAX`). Each text or box title holds at most 64 KiB of UTF-8
+(`OT_BUFFER_TEXT_BYTES_MAX`), the same limit as direct drawing. A call over either limit throws in the hook and records
+nothing. A recording names buffers, encoded Unicode, text buffer views, editor views, and images that native code reads
+when it paints. If a hook destroys one of them after drawing it, Core releases it after that frame step returns. Scene
+text drawn with `NativeScene.drawText()` also reads its node at paint, so it draws nothing if a hook destroys that node
+in the same frame.
+
+A text change in a hook paints in the same frame. A layout change, such as a new width or a new child, waits for the next frame.
+Use paint hooks for drawing effects, not as the default place to update application state.
+Core's text and editor components skip generic before/after hooks.
+Their custom drawing contract is in [Custom renderables](/docs/extend/custom-renderables#use-paint-hooks).
+
+## Send changes before native work continues
+
+Core's ordinary style and paint setters validate each value and then stage it.
+Staged changes wait in one bounded stream of records. A flush sends the whole stream to native code in one call.
+A paint record holds only the fields that you set, so a small edit sends a small record.
+
+A value that you set passes through these stages:
+
+```text
+┌─ Value set in JavaScript
+│  ↓ staged record
+│  ↓ accepted by native code at a flush
+│  ↓ used by a completed layout
+│  ↓ part of the prepared paint list
+│  ↓ painted into a frame
+│  ↓ queued as Session output
+└─ Output complete at the transport
+```
+
+A property getter, such as `opacity`, returns the value that you set at once, before any flush.
+A geometry getter, such as `width` or `x`, returns the result of the last completed layout.
+For example, `box.opacity = 0.5` changes `box.opacity` at once. After the first layout, a width setter does not change `box.width` until the next layout.
+A native style read flushes staged changes but does not run Yoga. Native code then holds the new width, but the computed layout stays the same.
+
+Core keeps the stream in order and merges some records:
+
+- Layout writes stay in their order, because Yoga edge, shorthand, and dimension values can overlap.
+- Other paint writes to a node merge into that node's latest paint record. The last write wins for each field. Fields that you did not set keep their current native values.
+- A new or changed translation merges into the node's record only if that record is the last one in the stream. Otherwise, Core adds a new record. Native code computes positions from the ancestor translations that it accepted before that record.
+- A translation equal to the node's latest staged value merges into that node's record. It causes no second position update in native code.
+
+After a successful flush, later writes start new records.
+
+Core validates and reads each value completely before it adds the record to the stream. A getter that sets another property during that read cannot leave a partial record.
+Assigning `null` or `undefined` to a property such as `shouldFill`, `focusable`, `translateX`, or `translateY` restores
+the value the constructor uses when that option is omitted. Omitted fields remain valid in a partial update.
+
+Node creation, tree changes, and text or resource replacement use their own checked native calls.
+The JavaScript object changes only after native code accepts the call.
+
+`NativeScene.advancePaint()` calls `flushStaged()` before each frame step.
+Native reads and other native calls that need current values also flush first.
+So a color that a paint hook sets reaches native code before native code paints the frame.
+If a frame step can call a custom measurement provider, Core first flushes staged changes in every scene that uses the same library. Read-only queries in the provider then see those changes.
+React and Solid use the same flush points.
+
+A flush is not an all-or-nothing transaction.
+If one record fails, the native [property flush](/docs/native/frames#submit-property-updates) keeps the records before it and reports how many it accepted.
+Core removes the accepted records. It keeps the failed record and the records after it for a retry.
+Some errors mean that the record itself can never apply: `OT_INVALID_ARGUMENT`, `OT_WRONG_KIND`, and `OT_STALE_HANDLE`.
+Core drops that record instead. The dropped record also holds the other paint fields that the node staged since the last flush.
+The call that runs the flush throws the error once. That call can belong to another node.
+After the Session starts closing, it paints no more frames, so Core drops staged changes without reporting them.
+Canceling a frame does not roll back accepted changes or hook side effects.
+A callback error, such as one from a measurement provider, can throw after native code accepted a change and Core updated the JavaScript object. So a thrown error alone does not prove that native code rejected the change.
+
+`getLayout()` reads completed local layout. It does not run Yoga or promise to include a recent setter's change.
+[Layout](/docs/core-concepts/layout) and [custom measurement](/docs/extend/custom-renderables#measure-intrinsic-size) cover the public layout API.
+
+## Distinguish hooks from scheduling waits
+
+Core runs node hooks synchronously and does not await their returned promises.
+A record request returns control to JavaScript once per frame, before painting. It does not give the event loop a turn.
+
+A scheduling yield is a different request, `OT_SCENE_FRAME_YIELD`.
+Native code returns it only during preparation, and only when you set the renderer option `nativeSceneWorkBudget` to a positive unsigned 32-bit integer.
+Without that option, preparation does not yield.
+By default, the Session scheduler continues the frame in a later event-loop turn with `setImmediate()`.
+`NativeScene.paint()` returns a promise only when the frame yields.
+While a frame waits at a yield, `suspend()` and `destroy()` cancel it without presenting a frame. After `resume()`, the
+next frame paints every change, including changes made while suspended. A resize that changes the size at a yield
+starts a new attempt at the new size.
+
+Core's internal driver sets `max_layout_rounds` to `8` and `max_host_requests` to `65_536`.
+The work budget and the request limit do not interrupt Yoga or a slow JavaScript hook.
+See the native [yield contract](/docs/native/frames#yield-between-pieces-of-work) for counted work and resize behavior.
+
+Two other waits occur outside node hooks:
+
+- Registered frame callbacks can return promises. Core awaits them before native painting starts.
+- Output delivery can finish later. Core waits for that frame's presentation endpoint after committing it.
+
+## Measurement calls back directly
+
+`setMeasureProvider()` uses a different path from paint hooks.
+Yoga calls the registered provider while the native layout call is still active, because it needs the size before continuing.
+This is a synchronous, same-thread callback, not a returned paint request.
+
+Built-in text and editor measurement stays native unless you replace it with an explicit provider.
+The TypeScript binding rejects thenable measurement results and reports captured callback errors after the native call returns.
+Permitted read-only queries can reenter native code. Conflicting mutations, provider changes, and destruction cannot.
+
+Editor events use another direct native callback, `ot_context_set_edit_event_callback`.
+Core queues the application listeners in microtasks. Those listeners are not paint hooks or delayed measurement results.
+
+## Resources through Core
+
+Core's drawing and text wrappers still need an explicit resource owner.
+For a resource used by a renderer, pass `renderer.nativeScene` to its factory.
+That selects the renderer's Context. It does not mean application code should drive `NativeScene.paint()`.
+
+Factories retain the owner's canonical `resourceContext`, not its originating scene.
+The root `NativeSession` owns that Context. Detached Sessions share it directly.
+Resources shared across detached Sessions remain usable after the originating Session closes, while the Context remains alive.
+Destroying a resource removes its event subscriptions. Destroying the Context releases all its resources.
+
+For standalone work, `ResourceContext` owns resources without a renderer or terminal Session:
+
+```typescript example=resource
+import { OptimizedBuffer, ResourceContext, RGBA } from "@opentui/core"
+
+const owner = new ResourceContext({ objectCapacity: 4, renderCellsMax: 5 })
+try {
+  const buffer = OptimizedBuffer.create(5, 1, "unicode", { owner })
+  buffer.drawText("Hello", 0, 0, RGBA.fromInts(255, 255, 255))
+  console.log(new TextDecoder().decode(buffer.getRealCharBytes()))
+
+  const foreground = buffer.withBuffers((cells) => cells.fg.slice())
+  buffer.destroy()
+  console.log(foreground.length)
+} finally {
+  owner.destroy()
+}
+```
+
+Output:
+
+```text example=resource-output
+Hello
+20
+```
+
+The copied foreground array has four channels for each of five cells. It belongs to JavaScript and survives buffer destruction.
+The live arrays passed to `withBuffers()` do not. Keep that callback synchronous and copy any data that must outlive it.
+Core releases the lease on return or exceptions. A stale scope rejects a normal return.
+A thenable result throws, but that error cannot cancel asynchronous code that already started.
+
+These factories use a `ResourceContext` or the destination `renderer.nativeScene` as `owner`:
+
+| Resource          | Core factory                                                                          |
+| ----------------- | ------------------------------------------------------------------------------------- |
+| Cell buffer       | `OptimizedBuffer.create(width, height, widthMethod, { owner })`                       |
+| Text buffer       | `TextBuffer.create(widthMethod, owner)`                                               |
+| Text view         | `TextBufferView.create(textBuffer)`                                                   |
+| Edit buffer       | `EditBuffer.create(widthMethod, owner)`                                               |
+| Editor view       | `EditorView.create(editBuffer, width, height)`                                        |
+| Syntax style      | `SyntaxStyle.create(owner)`                                                           |
+| Style definitions | `SyntaxStyle.fromStyles(definitions, owner)` or `SyntaxStyle.fromTheme(theme, owner)` |
+
+Views inherit their buffer's owner. `RenderLib` calls the loaded library but is not a resource owner.
+These factories have no ownerless alternatives or public resource pointers.
+[Buffer API](/docs/reference/buffer-api) and [Editing buffers and views](/docs/extend/editing) describe the drawing and text operations.
+The [image factories](/docs/reference/native-image#choose-a-context-owner) accept only a `ResourceContext` as `owner`, with a shared automatic Context as their default.
+To create an image in the renderer's Context, pass `renderer.nativeScene.resourceContext`, not `renderer.nativeScene`.
+
+Session, buffer, and scene-node handles have distinct TypeScript brands. Native calls also check Context, kind, Session, and generation as applicable.
+
+Core's detached scrollback surfaces use separate Sessions within the same Context, through `NativeSession.createDetached()`.
+They share resource ownership, not scene or frame state.
+
+## Complete output and release resources
+
+After native painting, Core runs post-process functions and draws the console overlay.
+Then it commits the painted frame (the draft), and the Session queues its output.
+Core passes each frame request back to native code unchanged. Native code compares every request field, including `width`, `height`, and `layoutEpoch`, and rejects a reply that differs.
+Only the geometry attached to a request (`paintLayout` and `publicLayout`) is an observation.
+Each commit result, `PRESENTED`, `PENDING`, `SKIPPED`, or `FAILED`, consumes the draft.
+
+For ordinary main-process `process.stdout`, Core calls `sessionDrainStdout()`. Native code writes the bytes and records their completion.
+If earlier JavaScript writes are still queued or corked on the stream, Core first writes an empty chunk with no output ticket. Native delivery waits for that write to finish.
+
+Custom streams and Node worker stdout use copied output tickets.
+Core also uses this path when native stdout reports `OT_UNSUPPORTED_RESOURCE`.
+The `Writable` callback acknowledges each copied ticket. The `write()` return value and `drain` event control backpressure, not ticket completion.
+Read [Host I/O and time](/docs/native/host-io-time#output-without-a-host-copy) for native delivery limits and writer rules.
+
+Both paths use the same presentation endpoint: the end of the frame's bytes in the output queue.
+`NativeSession.whenPresented()` waits for that endpoint, not later output or a later drain event.
+Core then rechecks hover if mouse input is on, and emits `frame`.
+Core does not use the TypeScript `NativeSpanFeed` wrapper for this output path.
+
+During resize, renderer buffer wrappers keep their identity while their native storage changes.
+A retained JavaScript wrapper does not make destroyed storage usable.
+
+Release custom-renderable resources synchronously in `destroySelf()`.
+For renderer shutdown, call `renderer.destroy()` and await `renderer.closed`.
+Read [Lifecycle and cleanup](/docs/core-concepts/lifecycle) for transport and failure handling.
+
+The [Rendering pipeline](/docs/core-concepts/rendering-pipeline) follows the full Core frame, including images, resizing, and diagnostic capture.
+There is one rendering implementation: native scene traversal. Earlier OpenTUI versions also used native Yoga, cell drawing, and encoding, but JavaScript directed traversal.
+That earlier traversal is not a selectable backend.
+
+To call the native library directly, choose the [C](/docs/native/c) or [Zig](/docs/native/zig) guide.

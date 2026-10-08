@@ -33,11 +33,11 @@ Read [Lifecycle and cleanup](/docs/core-concepts/lifecycle) before you add appli
 
 `screenMode` controls which terminal area OpenTUI owns.
 
-| Mode                 | Behavior                                                                                                                      |
-| -------------------- | ----------------------------------------------------------------------------------------------------------------------------- |
-| `"alternate-screen"` | Default. Uses the terminal's alternate screen and restores the main screen when the renderer exits.                           |
-| `"main-screen"`      | Uses a reserved region on the main screen. This is not an inline renderer.                                                    |
-| `"split-footer"`     | Uses a footer on the main screen. `footerHeight` defaults to `12`, and the effective footer is capped to the terminal height. |
+| Mode                 | Behavior                                                                                                                         |
+| -------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
+| `"alternate-screen"` | Default. Uses the terminal's alternate screen and restores the main screen when the renderer exits.                              |
+| `"main-screen"`      | Uses a reserved region on the main screen. This is not an inline renderer.                                                       |
+| `"split-footer"`     | Uses a footer on the main screen. `footerHeight` defaults to `12`, and OpenTUI caps the effective footer at the terminal height. |
 
 In split-footer mode, `renderer.width` and `renderer.height` describe the footer render region. `terminalWidth` and `terminalHeight` describe the complete terminal.
 
@@ -51,15 +51,20 @@ In split-footer mode, `renderer.width` and `renderer.height` describe the footer
 
 The renderer also supplies structured scrollback writers and surfaces. Use the canonical [custom renderables guide](/docs/extend/custom-renderables) for off-screen rendering and the [Buffer API](/docs/reference/buffer-api) for buffer ownership.
 
+Captured writes, writer snapshots, and surface commits wait in one queue until frames present them, in order. Captured stdout is never refused. One writer snapshot or surface commit larger than the Session output capacity divided by 24 bytes (about 349,000 cells by default) throws.
+
 ## Custom streams
 
 Set `stdin` and `stdout` for an SSH channel, pseudo-terminal, or another transport. Initial dimensions use `stdout.columns` and `stdout.rows`, then `width` and `height`, then `80` by `24`.
 
-Call `renderer.resize(width, height)` when a custom terminal changes size. OpenTUI listens for `SIGWINCH` only when it uses `process.stdout`.
+Call `renderer.requestResize(width, height)` when a custom terminal changes size. It debounces requests (100 ms by default, set with the `debounceDelay` option) and applies only the latest size. If frame output is pending, it waits for that output to finish. In split-footer mode, it skips the debounce.
+Call `renderer.resize(width, height)` to resize at once. It still waits while a frame paints, while frame output is pending, or while split-footer scrollback is pending.
+The `resize` event reports accepted size changes. OpenTUI listens for `SIGWINCH` only when it uses `process.stdout`.
 
-A feed-backed custom `stdout` defaults to `remote: true`. These remote custom streams do not forward local terminal environment values by default.
+Custom `stdout` uses Session-owned ordered output and defaults to `remote: true`. These remote custom streams do not forward local terminal environment values by default.
 
-Set `forwardEnvKeys` only for values that the remote terminal should inherit. Read [Terminal capabilities](/docs/reference/terminal-capabilities), [Environment variables](/docs/reference/env-vars), and [`NativeSpanFeed`](/docs/reference/native-span-feed) for the transport rules.
+Set `forwardEnvKeys` only for values that the remote terminal should inherit. Read [Terminal capabilities](/docs/reference/terminal-capabilities) and [Environment variables](/docs/reference/env-vars) for forwarding rules.
+Read [How Core uses native](/docs/native/core#complete-output-and-release-resources) for Session output ownership and completion.
 
 ## Choose a render schedule
 
@@ -91,13 +96,25 @@ A registered `Timeline` owns its live request when the timeline engine is attach
 
 Use `await renderer.idle()` to wait until demand-driven work settles. `getSchedulerState()` reports running, rendering, and scheduled-work state for diagnostics.
 
+### Cooperative frames
+
+Set `nativeSceneWorkBudget` to a positive unsigned 32-bit integer to let a frame yield to the event loop during preparation. The budget counts preparation visits, view-preparation entries, and feedback records between yields. Without this option, preparation does not yield.
+
+If a change made while the frame waits at a yield affects layout, preparation restarts once. The rest of that frame runs without yields.
+
+The budget does not limit elapsed time or cells. Yoga, sibling sorting, publication of the prepared tree, painting, and output encoding still run synchronously. Painting runs in one native call and never yields, so no event-loop work can change the scene while native code paints. The scheduler also cannot interrupt an application callback.
+
+A resize can change the renderer size while a frame waits at a yield. Core then cancels that frame attempt and starts a new one at the new size. The new attempt keeps all accepted changes and the side effects of callbacks that already ran. Cancellation does not roll anything back. Output that the Session already queued keeps its order and its completion tracking.
+
+Use the renderer-owned [animation APIs](/docs/application-apis/animation#animation-callbacks) rather than process-global animation callbacks when you host multiple sessions.
+
 ## Read capability state
 
 Capability detection continues after `createCliRenderer()` returns. The first snapshot includes environment heuristics, but terminal replies arrive asynchronously.
 
 Most capability fields are booleans. `false` can mean either unsupported or not detected yet. Treat the `capabilities` event as the source of updated snapshots.
 
-OpenTUI accepts startup capability replies for five seconds. Snapshots can change several times in that window and when another terminal response is processed later.
+OpenTUI accepts startup capability replies for five seconds. Snapshots can change several times in that window, and again when OpenTUI processes a later terminal response.
 
 ```typescript
 import { CliRenderEvents, type TerminalCapabilities } from "@opentui/core"
@@ -118,10 +135,10 @@ Use `renderer.on(event, listener)` and remove long-lived listeners with `off()`.
 | Event                 | Payload                          | Meaning                                                   |
 | --------------------- | -------------------------------- | --------------------------------------------------------- |
 | `resize`              | `(width, height)`                | The render region changed.                                |
-| `frame`               | `{ frameId }`                    | The native renderer published a frame.                    |
-| `render:error`        | `{ error, renderable }`          | A render pass threw.                                      |
+| `frame`               | `{ frameId }`                    | A frame's output completed.                               |
+| `render:error`        | `{ error, renderable }`          | An error stopped a frame. See below.                      |
 | `handler:error`       | `{ error, event }`               | A mouse handler threw.                                    |
-| `external_output`     | `CliRendererExternalOutputEvent` | A split-footer output snapshot was queued.                |
+| `external_output`     | `CliRendererExternalOutputEvent` | Core queued a split-footer output snapshot.               |
 | `focus`, `blur`       | none                             | The terminal reported window focus or blur.               |
 | `focused_renderable`  | `(current, previous)`            | Renderable keyboard focus changed.                        |
 | `focused_editor`      | `(current, previous)`            | Focus moved to or from an editor renderable.              |
@@ -130,10 +147,15 @@ Use `renderer.on(event, listener)` and remove long-lived listeners with `off()`.
 | `capabilities`        | `TerminalCapabilities`           | A capability response changed the snapshot.               |
 | `selection`           | `Selection`                      | A text selection drag finished.                           |
 | `debugOverlay:toggle` | `boolean`                        | Debug-overlay visibility changed.                         |
-| `memory:snapshot`     | memory totals                    | A configured memory sample was collected.                 |
+| `memory:snapshot`     | memory totals                    | Core collected a configured memory sample.                |
 | `destroy`             | none                             | Renderer destruction started its published cleanup stage. |
 
 The `focus` and `blur` events describe terminal-window focus. They do not focus or blur a renderable. See [Interaction, focus, and selection](/docs/core-concepts/interaction).
+
+`render:error` reports an error that stops a frame, such as an error from a hook, a post-process function, or native painting.
+`renderable` is the node whose paint hook threw. It is `undefined` for other errors, including errors from `onUpdate` and `onResize`.
+Without a `render:error` listener, the renderer reports the error through its normal error path.
+An error from a `setFrameCallback()` callback does not stop the frame. Core logs it and does not emit `render:error`.
 
 ## Use renderer-owned services
 
@@ -147,4 +169,5 @@ The renderer exposes several terminal and application services. Their canonical 
 
 ## Next
 
-Read [Renderables](/docs/core-concepts/renderables) to add UI nodes. Read [Rendering pipeline](/docs/core-concepts/rendering-pipeline) for maintained renderer internals.
+Read [Renderables](/docs/core-concepts/renderables) to add UI nodes.
+Read [Rendering pipeline](/docs/core-concepts/rendering-pipeline) for the complete frame order, or [How Core uses native](/docs/native/core) for the scene integration.

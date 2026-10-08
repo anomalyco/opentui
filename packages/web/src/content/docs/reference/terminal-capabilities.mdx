@@ -103,7 +103,12 @@ Read [Image](/docs/components/image) for protocol selection. Do not choose a pro
 | `osc52_support` | `TerminalCapabilityState` | Query result when OpenTUI can distinguish unknown, supported, and unsupported |
 | `notifications` | `boolean`                 | A notification protocol was selected                                          |
 
-The renderer emits OSC 8 sequences only when `hyperlinks` is true. Text still renders when it is false.
+The renderer emits OSC 8 sequences only when `hyperlinks` is true. Text still renders when it is false. Without OSC 8,
+the terminal detects URLs one row at a time, so a wrapped URL opens only the part on the clicked row.
+
+OpenTUI enables `hyperlinks` for Ghostty, Kitty, WezTerm, Alacritty, foot, iTerm2, Terminology, xterm.js, VS Code,
+Zed, mintty, VTE 0.52.2 or newer, and Windows Terminal. `TERM_PROGRAM` and `VTE_VERSION` count only outside tmux,
+Zellij, and GNU Screen. Set `FORCE_HYPERLINK` to override detection.
 
 Hyperlink URLs use a native slot with a maximum of 512 UTF-8 bytes. A longer URL fails link allocation and the text
 loses its hyperlink metadata.
@@ -143,7 +148,7 @@ session, OpenTUI does not apply the process host's forwarded terminal heuristics
 
 `forwardEnvKeys` selects process environment names that OpenTUI sends to native detection. Explicit remote mode
 defaults to an empty list. Other modes default to the documented terminal, SSH, tmux, Zellij, width, graphics,
-notification, WSL, and Windows Terminal keys.
+notification, hyperlink, WSL, and Windows Terminal keys.
 
 For a remote terminal, forward only values that describe the remote endpoint:
 
@@ -166,9 +171,11 @@ window change. Read [SSH](/docs/reference/ssh) for the full session setup.
 OpenTUI detects tmux from XTVERSION, `TMUX`, `TERM_PROGRAM=tmux`, or a `TERM` prefix. It detects Zellij from XTVERSION
 or Zellij environment keys. It detects GNU Screen from `STY` or a `TERM` prefix.
 
-Detection changes query wrapping and feature policy:
+Detection changes feature policy:
 
-- tmux can cause a second, DCS-wrapped query pass after XTVERSION identifies it.
+- tmux receives unwrapped probes and answers the ones it implements. OpenTUI does not probe the outer terminal through
+  tmux passthrough because tmux does not route those replies to the pane that asked.
+- tmux skips Kitty and Sixel detection and enables focus tracking.
 - GNU Screen disables graphics queries and selects conservative width behavior.
 - Zellij accepts notification support only from an OSC 99 query or an explicit override.
 - Multiplexer detection can set `explicit_cursor_positioning` and `unicode` conservatively.
@@ -190,6 +197,7 @@ Terminal detection reads these protocol controls:
 | `OPENTUI_FORCE_NOZWJ`           | Presence selects a native no-ZWJ width mode                                                                             |
 | `OPENTUI_NOTIFICATION_PROTOCOL` | Selects `osc9`, `osc777`, `osc99`, or a disabled value                                                                  |
 | `OPENTUI_NOTIFICATIONS`         | `0`, `false`, or `off` disables notifications                                                                           |
+| `FORCE_HYPERLINK`               | `0`, `false`, or `off` disables OSC 8 hyperlinks. Any other value, including an empty value, enables them.              |
 
 Read [Environment variables](/docs/reference/env-vars) for the complete value and timing rules.
 

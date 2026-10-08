@@ -26,12 +26,15 @@ import { CodeRenderable, createCliRenderer, SyntaxStyle, RGBA } from "@opentui/c
 
 const renderer = await createCliRenderer()
 
-const syntaxStyle = SyntaxStyle.fromStyles({
-  default: { fg: RGBA.defaultForeground() },
-  keyword: { fg: RGBA.defaultForeground(), bold: true },
-  string: { fg: RGBA.fromIndex(247) },
-  comment: { fg: RGBA.fromIndex(244), italic: true },
-})
+const syntaxStyle = SyntaxStyle.fromStyles(
+  {
+    default: { fg: RGBA.defaultForeground() },
+    keyword: { fg: RGBA.defaultForeground(), bold: true },
+    string: { fg: RGBA.fromIndex(247) },
+    comment: { fg: RGBA.fromIndex(244), italic: true },
+  },
+  renderer.nativeScene,
+)
 
 const code = new CodeRenderable(renderer, {
   id: "code",
@@ -59,45 +62,74 @@ function hello() {
 
 ## Creating syntax styles
 
-Use `SyntaxStyle.fromStyles()` to define colors and attributes for syntax tokens:
+`SyntaxStyle.fromStyles(definitions, owner)` maps syntax token names to colors and attributes.
+It creates a native style, so it needs an owner. Pass `renderer.nativeScene`.
+Without a renderer, pass a [`ResourceContext`](/docs/reference/buffer-api#create-and-destroy-a-buffer).
+
+`fromStyles()` and `registerStyle()` copy each definition, including its colors.
+`getStyle()`, `getAllStyles()`, and `mergeStyles()` return copies.
+Changes to an input object or a returned value do not change the registered style.
+To change a style, call `registerStyle()` again.
 
 ```typescript
 import { SyntaxStyle, RGBA, parseColor } from "@opentui/core"
 
-const syntaxStyle = SyntaxStyle.fromStyles({
-  // Basic tokens
-  keyword: { fg: RGBA.fromHex("#FF7B72"), bold: true },
-  "keyword.import": { fg: RGBA.fromHex("#FF7B72"), bold: true },
-  "keyword.operator": { fg: RGBA.fromHex("#FF7B72") },
+const syntaxStyle = SyntaxStyle.fromStyles(
+  {
+    // Basic tokens
+    keyword: { fg: RGBA.fromHex("#FF7B72"), bold: true },
+    "keyword.import": { fg: RGBA.fromHex("#FF7B72"), bold: true },
+    "keyword.operator": { fg: RGBA.fromHex("#FF7B72") },
 
-  string: { fg: RGBA.fromHex("#A5D6FF") },
-  comment: { fg: RGBA.fromHex("#8B949E"), italic: true },
-  number: { fg: RGBA.fromHex("#79C0FF") },
-  boolean: { fg: RGBA.fromHex("#79C0FF") },
-  constant: { fg: RGBA.fromHex("#79C0FF") },
+    string: { fg: RGBA.fromHex("#A5D6FF") },
+    comment: { fg: RGBA.fromHex("#8B949E"), italic: true },
+    number: { fg: RGBA.fromHex("#79C0FF") },
+    boolean: { fg: RGBA.fromHex("#79C0FF") },
+    constant: { fg: RGBA.fromHex("#79C0FF") },
 
-  // Functions and types
-  function: { fg: RGBA.fromHex("#D2A8FF") },
-  "function.call": { fg: RGBA.fromHex("#D2A8FF") },
-  "function.method.call": { fg: RGBA.fromHex("#D2A8FF") },
-  type: { fg: RGBA.fromHex("#FFA657") },
-  constructor: { fg: RGBA.fromHex("#FFA657") },
+    // Functions and types
+    function: { fg: RGBA.fromHex("#D2A8FF") },
+    "function.call": { fg: RGBA.fromHex("#D2A8FF") },
+    "function.method.call": { fg: RGBA.fromHex("#D2A8FF") },
+    type: { fg: RGBA.fromHex("#FFA657") },
+    constructor: { fg: RGBA.fromHex("#FFA657") },
 
-  // Variables and properties
-  variable: { fg: RGBA.fromHex("#E6EDF3") },
-  "variable.member": { fg: RGBA.fromHex("#79C0FF") },
-  property: { fg: RGBA.fromHex("#79C0FF") },
+    // Variables and properties
+    variable: { fg: RGBA.fromHex("#E6EDF3") },
+    "variable.member": { fg: RGBA.fromHex("#79C0FF") },
+    property: { fg: RGBA.fromHex("#79C0FF") },
 
-  // Operators and punctuation
-  operator: { fg: RGBA.fromHex("#FF7B72") },
-  punctuation: { fg: RGBA.fromHex("#F0F6FC") },
-  "punctuation.bracket": { fg: RGBA.fromHex("#F0F6FC") },
-  "punctuation.delimiter": { fg: RGBA.fromHex("#C9D1D9") },
+    // Operators and punctuation
+    operator: { fg: RGBA.fromHex("#FF7B72") },
+    punctuation: { fg: RGBA.fromHex("#F0F6FC") },
+    "punctuation.bracket": { fg: RGBA.fromHex("#F0F6FC") },
+    "punctuation.delimiter": { fg: RGBA.fromHex("#C9D1D9") },
 
-  // Default fallback
-  default: { fg: RGBA.fromHex("#E6EDF3") },
-})
+    // Default fallback
+    default: { fg: RGBA.fromHex("#E6EDF3") },
+  },
+  renderer.nativeScene,
+)
 ```
+
+A style belongs to one owner. To use the same definitions in another renderer, create a new style for that renderer.
+Destroy the new style when that renderer no longer needs it:
+
+```typescript
+const definitions = syntaxStyle.getAllStyles()
+const boundStyle = SyntaxStyle.fromStyles(definitions, destination.nativeScene)
+// Use boundStyle in the destination's Code or Markdown nodes.
+// After you destroy those nodes:
+boundStyle.destroy()
+```
+
+`CodeRenderable` does not destroy the `syntaxStyle` you pass. You destroy it.
+Text buffers and edit buffers accept only a style with the same owner.
+A style from another owner throws an owner-mismatch error. Core does not copy it.
+
+`getAllStyles()` returns only registered definitions. It does not return the styles that native code creates for text chunks.
+Pass its `Map` directly to `fromStyles()` to keep the registration order, including numeric names.
+An object lists numeric names first, which can change style IDs.
 
 ### Style properties
 
@@ -141,11 +173,18 @@ code.content += "const x = 1\n"
 code.content += "const y = 2\n"
 ```
 
-Streaming mode changes intermediate rendering behavior during repeated updates. In particular, when `drawUnstyledText` is `false`, later updates keep the previous rendered buffer visible while a new one-shot highlight completes. Each highlight still processes the complete current `content`.
+With `drawUnstyledText: false`, streaming mode changes what `Code` shows while a highlight runs:
+
+- Without streaming, `Code` shows nothing until each highlight completes.
+- With streaming, `Code` shows nothing until the first highlight completes. Later updates keep the previous highlighted text visible until the new highlight completes.
+
+With `drawUnstyledText: true`, a `content` change shows the new text unstyled while its highlight runs, with or without streaming.
+In streaming mode, after the first highlight, other changes that start a highlight, such as `filetype` or `conceal`, keep the previous highlighted text visible.
+Each highlight processes the complete current `content`.
 
 ## Text selection
 
-Text selection is enabled by default. Set `selectable: false` to disable it. Use `selectionBg` and `selectionFg` to customize selection colors:
+Text selection is on by default. Set `selectable: false` to turn it off. Use `selectionBg` and `selectionFg` to set selection colors:
 
 ```typescript
 const code = new CodeRenderable(renderer, {
@@ -161,7 +200,7 @@ const code = new CodeRenderable(renderer, {
 
 ## Concealment
 
-The `conceal` option controls whether certain syntax elements (like markdown formatting characters) are hidden:
+Set `conceal` to hide concealed syntax elements, such as Markdown formatting characters:
 
 ```typescript
 const code = new CodeRenderable(renderer, {
@@ -181,9 +220,12 @@ Use `LineNumberRenderable` to add line numbers:
 import { CodeRenderable, LineNumberRenderable, RGBA, ScrollBoxRenderable, SyntaxStyle } from "@opentui/core"
 
 const sourceCode = "const answer = 42\nconsole.log(answer)\n"
-const syntaxStyle = SyntaxStyle.fromStyles({
-  default: { fg: RGBA.fromHex("#E6EDF3") },
-})
+const syntaxStyle = SyntaxStyle.fromStyles(
+  {
+    default: { fg: RGBA.fromHex("#E6EDF3") },
+  },
+  renderer.nativeScene,
+)
 
 const code = new CodeRenderable(renderer, {
   id: "code",
@@ -215,28 +257,32 @@ renderer.root.add(scrollbox)
 
 ## Properties
 
-| Property           | Type               | Default  | Description                                                                           |
-| ------------------ | ------------------ | -------- | ------------------------------------------------------------------------------------- |
-| `content`          | `string`           | `""`     | Source code to display                                                                |
-| `filetype`         | `string`           | -        | Language for syntax highlighting                                                      |
-| `syntaxStyle`      | `SyntaxStyle`      | required | Syntax highlighting theme                                                             |
-| `streaming`        | `boolean`          | `false`  | Preserve suitable intermediate rendering during repeated updates                      |
-| `conceal`          | `boolean`          | `true`   | Hide concealed syntax elements                                                        |
-| `drawUnstyledText` | `boolean`          | `true`   | Show unstyled text while highlighting. Streaming limits this to the initial highlight |
-| `treeSitterClient` | `TreeSitterClient` | -        | Custom Tree-sitter client instance                                                    |
+| Property           | Type               | Default  | Description                                                                       |
+| ------------------ | ------------------ | -------- | --------------------------------------------------------------------------------- |
+| `content`          | `string`           | `""`     | Source code to display                                                            |
+| `filetype`         | `string`           | -        | Language for syntax highlighting                                                  |
+| `syntaxStyle`      | `SyntaxStyle`      | required | Syntax style for tokens                                                           |
+| `streaming`        | `boolean`          | `false`  | Change what shows while a highlight runs (see [Streaming mode](#streaming-mode))  |
+| `conceal`          | `boolean`          | `true`   | Hide concealed syntax elements                                                    |
+| `drawUnstyledText` | `boolean`          | `true`   | Show unstyled text while a highlight runs (see [Streaming mode](#streaming-mode)) |
+| `treeSitterClient` | `TreeSitterClient` | -        | Custom Tree-sitter client instance                                                |
+
+When the renderable has a `filetype`, a change to `content`, `filetype`, `syntaxStyle`, `conceal`, `drawUnstyledText`, `streaming`, or `treeSitterClient` starts a new highlight.
+`Code` starts each highlight in its [update hook](/docs/extend/custom-renderables#schedule-updates) (`onUpdate`) during the next frame.
+`Code` does not start a highlight while it or an ancestor has `visible: false`.
 
 ### Inherited from TextBufferRenderable
 
-| Property       | Type                            | Default  | Description                                 |
-| -------------- | ------------------------------- | -------- | ------------------------------------------- |
-| `fg`           | `string \| RGBA`                | -        | Default foreground color                    |
-| `bg`           | `string \| RGBA`                | -        | Background color                            |
-| `selectable`   | `boolean`                       | `true`   | Whether text selection is enabled           |
-| `selectionBg`  | `string \| RGBA`                | -        | Selection background color                  |
-| `selectionFg`  | `string \| RGBA`                | -        | Selection foreground color                  |
-| `wrapMode`     | `string`                        | `"word"` | Text wrapping: `"none"`, `"char"`, `"word"` |
-| `textAlign`    | `"left" \| "center" \| "right"` | `"left"` | Per-line alignment within the text width    |
-| `tabIndicator` | `string \| number`              | -        | Tab display character or width              |
+| Property       | Type                            | Default     | Description                                 |
+| -------------- | ------------------------------- | ----------- | ------------------------------------------- |
+| `fg`           | `string \| RGBA`                | `#FFFFFF`   | Default foreground color                    |
+| `bg`           | `string \| RGBA`                | transparent | Background color                            |
+| `selectable`   | `boolean`                       | `true`      | Whether text selection is on                |
+| `selectionBg`  | `string \| RGBA`                | -           | Selection background color                  |
+| `selectionFg`  | `string \| RGBA`                | -           | Selection foreground color                  |
+| `wrapMode`     | `string`                        | `"word"`    | Text wrapping: `"none"`, `"char"`, `"word"` |
+| `textAlign`    | `"left" \| "center" \| "right"` | `"left"`    | Per-line alignment within the text width    |
+| `tabIndicator` | `string \| number`              | -           | Tab display character or width              |
 
 ## Additional properties
 
@@ -255,21 +301,24 @@ renderer.root.add(scrollbox)
 For markdown highlighting, use markup-prefixed style names:
 
 ```typescript
-const markdownStyle = SyntaxStyle.fromStyles({
-  "markup.heading": { fg: RGBA.fromHex("#58A6FF"), bold: true },
-  "markup.heading.1": { fg: RGBA.fromHex("#00FF88"), bold: true, underline: true },
-  "markup.heading.2": { fg: RGBA.fromHex("#00D7FF"), bold: true },
-  "markup.bold": { fg: RGBA.fromHex("#F0F6FC"), bold: true },
-  "markup.strong": { fg: RGBA.fromHex("#F0F6FC"), bold: true },
-  "markup.italic": { fg: RGBA.fromHex("#F0F6FC"), italic: true },
-  "markup.list": { fg: RGBA.fromHex("#FF7B72") },
-  "markup.quote": { fg: RGBA.fromHex("#8B949E"), italic: true },
-  "markup.raw": { fg: RGBA.fromHex("#A5D6FF") },
-  "markup.raw.block": { fg: RGBA.fromHex("#A5D6FF") },
-  "markup.link": { fg: RGBA.fromHex("#58A6FF"), underline: true },
-  "markup.link.url": { fg: RGBA.fromHex("#58A6FF"), underline: true },
-  default: { fg: RGBA.fromHex("#E6EDF3") },
-})
+const markdownStyle = SyntaxStyle.fromStyles(
+  {
+    "markup.heading": { fg: RGBA.fromHex("#58A6FF"), bold: true },
+    "markup.heading.1": { fg: RGBA.fromHex("#00FF88"), bold: true, underline: true },
+    "markup.heading.2": { fg: RGBA.fromHex("#00D7FF"), bold: true },
+    "markup.bold": { fg: RGBA.fromHex("#F0F6FC"), bold: true },
+    "markup.strong": { fg: RGBA.fromHex("#F0F6FC"), bold: true },
+    "markup.italic": { fg: RGBA.fromHex("#F0F6FC"), italic: true },
+    "markup.list": { fg: RGBA.fromHex("#FF7B72") },
+    "markup.quote": { fg: RGBA.fromHex("#8B949E"), italic: true },
+    "markup.raw": { fg: RGBA.fromHex("#A5D6FF") },
+    "markup.raw.block": { fg: RGBA.fromHex("#A5D6FF") },
+    "markup.link": { fg: RGBA.fromHex("#58A6FF"), underline: true },
+    "markup.link.url": { fg: RGBA.fromHex("#58A6FF"), underline: true },
+    default: { fg: RGBA.fromHex("#E6EDF3") },
+  },
+  renderer.nativeScene,
+)
 ```
 
 ## Related components

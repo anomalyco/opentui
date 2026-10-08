@@ -1,6 +1,6 @@
-import { RGBA, SyntaxStyle } from "@opentui/core"
-import { useKeyboard } from "@opentui/solid"
-import { createSignal } from "solid-js"
+import { RGBA, SyntaxStyle, RenderableEvents, type DiffRenderable } from "@opentui/core"
+import { useKeyboard, useRenderer } from "@opentui/solid"
+import { createSignal, onCleanup } from "solid-js"
 
 interface DiffTheme {
   name: string
@@ -17,7 +17,7 @@ interface DiffTheme {
   removedLineNumberBg: string
   selectionBg: string
   selectionFg: string
-  syntaxStyle: SyntaxStyle
+  syntaxStyle: Parameters<typeof SyntaxStyle.fromStyles>[0]
 }
 
 const themes: DiffTheme[] = [
@@ -36,7 +36,7 @@ const themes: DiffTheme[] = [
     removedLineNumberBg: "#3a0d0d",
     selectionBg: "#264F78",
     selectionFg: "#FFFFFF",
-    syntaxStyle: SyntaxStyle.fromStyles({
+    syntaxStyle: {
       keyword: { fg: RGBA.fromHex("#FF7B72"), bold: true },
       "keyword.import": { fg: RGBA.fromHex("#FF7B72"), bold: true },
       string: { fg: RGBA.fromHex("#A5D6FF") },
@@ -54,7 +54,7 @@ const themes: DiffTheme[] = [
       bracket: { fg: RGBA.fromHex("#F0F6FC") },
       punctuation: { fg: RGBA.fromHex("#F0F6FC") },
       default: { fg: RGBA.fromHex("#E6EDF3") },
-    }),
+    },
   },
   {
     name: "Monokai",
@@ -71,7 +71,7 @@ const themes: DiffTheme[] = [
     removedLineNumberBg: "#3a1e1e",
     selectionBg: "#49483E",
     selectionFg: "#F8F8F2",
-    syntaxStyle: SyntaxStyle.fromStyles({
+    syntaxStyle: {
       keyword: { fg: RGBA.fromHex("#F92672"), bold: true },
       "keyword.import": { fg: RGBA.fromHex("#F92672"), bold: true },
       string: { fg: RGBA.fromHex("#E6DB74") },
@@ -89,7 +89,7 @@ const themes: DiffTheme[] = [
       bracket: { fg: RGBA.fromHex("#F8F8F2") },
       punctuation: { fg: RGBA.fromHex("#F8F8F2") },
       default: { fg: RGBA.fromHex("#F8F8F2") },
-    }),
+    },
   },
   {
     name: "Dracula",
@@ -106,7 +106,7 @@ const themes: DiffTheme[] = [
     removedLineNumberBg: "#3a2328",
     selectionBg: "#44475A",
     selectionFg: "#F8F8F2",
-    syntaxStyle: SyntaxStyle.fromStyles({
+    syntaxStyle: {
       keyword: { fg: RGBA.fromHex("#FF79C6"), bold: true },
       "keyword.import": { fg: RGBA.fromHex("#FF79C6"), bold: true },
       string: { fg: RGBA.fromHex("#F1FA8C") },
@@ -124,7 +124,7 @@ const themes: DiffTheme[] = [
       bracket: { fg: RGBA.fromHex("#F8F8F2") },
       punctuation: { fg: RGBA.fromHex("#F8F8F2") },
       default: { fg: RGBA.fromHex("#F8F8F2") },
-    }),
+    },
   },
   {
     name: "Solarized Dark",
@@ -141,7 +141,7 @@ const themes: DiffTheme[] = [
     removedLineNumberBg: "#3a2026",
     selectionBg: "#073642",
     selectionFg: "#93a1a1",
-    syntaxStyle: SyntaxStyle.fromStyles({
+    syntaxStyle: {
       keyword: { fg: RGBA.fromHex("#859900"), bold: true },
       "keyword.import": { fg: RGBA.fromHex("#859900"), bold: true },
       string: { fg: RGBA.fromHex("#2aa198") },
@@ -159,7 +159,7 @@ const themes: DiffTheme[] = [
       bracket: { fg: RGBA.fromHex("#839496") },
       punctuation: { fg: RGBA.fromHex("#839496") },
       default: { fg: RGBA.fromHex("#839496") },
-    }),
+    },
   },
   {
     name: "One Dark",
@@ -176,7 +176,7 @@ const themes: DiffTheme[] = [
     removedLineNumberBg: "#3a1e1e",
     selectionBg: "#3E4451",
     selectionFg: "#abb2bf",
-    syntaxStyle: SyntaxStyle.fromStyles({
+    syntaxStyle: {
       keyword: { fg: RGBA.fromHex("#c678dd"), bold: true },
       "keyword.import": { fg: RGBA.fromHex("#c678dd"), bold: true },
       string: { fg: RGBA.fromHex("#98c379") },
@@ -194,16 +194,27 @@ const themes: DiffTheme[] = [
       bracket: { fg: RGBA.fromHex("#abb2bf") },
       punctuation: { fg: RGBA.fromHex("#abb2bf") },
       default: { fg: RGBA.fromHex("#abb2bf") },
-    }),
+    },
   },
 ]
 
 export default function DiffDemo() {
+  const renderer = useRenderer()
+  const styles: SyntaxStyle[] = []
+  let diff: DiffRenderable | undefined
   const [currentView, setCurrentView] = createSignal<"unified" | "split">("unified")
   const [showLineNumbers, setShowLineNumbers] = createSignal(true)
   const [currentThemeIndex, setCurrentThemeIndex] = createSignal(0)
 
   const currentTheme = () => themes[currentThemeIndex()]
+  const currentStyle = () =>
+    (styles[currentThemeIndex()] ??= SyntaxStyle.fromStyles(currentTheme().syntaxStyle, renderer.nativeScene!))
+  onCleanup(() => {
+    const release = () => styles.forEach((style) => style.destroy())
+    if (diff && !diff.isDestroyed) {
+      diff.prependOnceListener(RenderableEvents.DESTROYED, () => queueMicrotask(release))
+    } else release()
+  })
 
   const exampleDiff = `--- a/calculator.ts
 +++ b/calculator.ts
@@ -283,10 +294,11 @@ export default function DiffDemo() {
         backgroundColor={currentTheme().backgroundColor}
       >
         <diff
+          ref={(node) => (diff = node)}
           diff={exampleDiff}
           view={currentView()}
           filetype="typescript"
-          syntaxStyle={currentTheme().syntaxStyle}
+          syntaxStyle={currentStyle()}
           showLineNumbers={showLineNumbers()}
           addedBg={currentTheme().addedBg}
           removedBg={currentTheme().removedBg}

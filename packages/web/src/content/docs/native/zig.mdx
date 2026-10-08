@@ -1,0 +1,195 @@
+---
+title: Zig
+description: Import the public Zig module, render a native scene, and own drawing buffers
+---
+
+# Zig
+
+The public `opentui` module gives a Zig program access to native resources, scenes, and output.
+You supply an allocator and an I/O implementation, then use `Context` methods to create and operate on native objects.
+No JavaScript runtime is involved.
+
+This guide builds a box with a text label, renders `Hello`, changes the label to `Ready`, and renders again.
+The program writes the two frames to files without changing your terminal's state.
+
+## Set up a Zig project
+
+Use Zig `0.16.0` and a source checkout of the repository.
+Bun runs the script that prepares the Zig dependencies. Your finished program does not need Bun.
+From the repository root:
+
+```sh
+bun install
+(cd packages/native && bun run prepare:zig)
+```
+
+The native workspace's `examples/hello` package is a complete program for the public module.
+From that package directory, `zig build run` writes `hello.ansi` and `ready.ansi`.
+
+To start a separate project, copy its build files and sources:
+
+```sh
+mkdir -p native-zig-demo/src
+cp packages/native/examples/hello/build.zig native-zig-demo/
+cp packages/native/examples/hello/build.zig.zon native-zig-demo/
+cp packages/native/examples/hello/src/*.zig native-zig-demo/src/
+```
+
+In the copied `build.zig.zon`, change the `opentui` dependency's path from `../..` to `../packages/native`.
+If your project is in a different location, use the relative path from your project directory to the native workspace.
+The copied build adds `opentui.module("opentui")` to your imports and builds an executable named `opentui-hello`.
+It compiles the module from source, so you do not build a shared library first.
+
+## Create the scene and render two frames
+
+This is the program in `src/main.zig`.
+The package file also has one more `errdefer` line in `write_frame`. If `sceneFrameCommit` returns an error, that line cancels the painted draft.
+
+```zig example=scene
+const std = @import("std");
+const opentui = @import("opentui");
+
+var io_threaded: std.Io.Threaded = .init_single_threaded;
+pub const io = io_threaded.io();
+
+pub fn main(init: std.process.Init) !void {
+    const context = try opentui.Context.init(init.gpa, io, .{
+        .object_capacity = 8,
+        .render_cells_max = 36,
+    });
+    defer context.deinit() catch unreachable;
+
+    const session = try context.createSession(.{
+        .chunk_size = 4096,
+        .chunk_count = 2,
+        .span_capacity = 2,
+    });
+    errdefer context.cancelSession(session) catch unreachable;
+    try context.attachSessionRenderer(session, 12, 3, .{
+        .remote_mode = .remote,
+        .forwarded_env = &.{},
+    });
+
+    const root = try context.sceneCreateNode(session, 0, 1);
+    const box = try context.sceneCreateNode(session, 1, 2);
+    const label = try context.sceneCreateNode(session, 2, 3);
+    try context.sceneSetPaint(box, .{ .borderSides = 15 });
+    try context.sceneSetText(label, "Hello");
+    try context.sceneMoveNode(box, root, 0);
+    try context.sceneMoveNode(label, box, 0);
+
+    try write_frame(context, session, "hello.ansi");
+    try context.sceneSetText(label, "Ready");
+    try write_frame(context, session, "ready.ansi");
+    try context.beginSessionClose(session);
+}
+
+fn write_frame(context: *opentui.Context, session: opentui.context.Handle, path: []const u8) !void {
+    const file = try std.Io.Dir.cwd().createFile(io, path, .{});
+    defer file.close(io);
+
+    const frame = try context.scenePaint(session, .{ 0, 0, 0, 255 }, false, 0);
+    switch (try context.sceneFrameCommit(session, frame, false)) {
+        .pending, .presented => {},
+        .skipped, .failed => return error.FrameNotAccepted,
+    }
+    var bytes: [512]u8 = undefined;
+    while (try context.readOutput(session, &bytes)) |ticket| {
+        file.writeStreamingAll(io, bytes[0..ticket.len]) catch |err| {
+            try context.completeOutput(session, ticket, .failed);
+            return err;
+        };
+        try context.completeOutput(session, ticket, .written);
+    }
+}
+```
+
+`Context.init` creates the **Context**, which owns all native objects. The **Session** holds the output queue.
+`attachSessionRenderer` gives the Session a 12-by-3 cell area.
+Remote mode and an empty forwarded environment keep the program independent of your terminal's settings.
+
+In `sceneCreateNode`, the kind values are root `0`, box `1`, and text `2`. Create the root first.
+The final argument is the public node number. It must not be zero.
+The box uses all four border sides. Paint defaults supply opacity `1` and a white single-line border.
+`sceneMoveNode` attaches each child at index zero in its parent.
+
+`scenePaint` lays out and paints the scene. It returns a `DONE` request that names the painted draft.
+If any node has an update, resize, layout-changed, or paint hook, `scenePaint` returns `error.UnsupportedResource`.
+`sceneFrameCommit` consumes the draft, encodes its cells, and queues the output.
+The helper completes every output ticket before it returns, so the next call can render another frame.
+The second frame uses the same nodes. The program does not rebuild the tree.
+
+The allocator and `std.Io` must stay valid until Context destruction completes.
+The module's audio, clipboard, and image code also reads `root.io`, so the program exposes the same I/O implementation there.
+
+`errdefer` cancels the Session if rendering or writing fails. Then `defer` releases the Context.
+The `catch unreachable` clauses state this program's cleanup conditions: cancellation leaves no pending output, and the program holds no leases.
+
+## Run and inspect the frames
+
+From the new project directory:
+
+```sh
+zig build run
+```
+
+The program creates or replaces `hello.ansi` and `ready.ansi` in that directory.
+They contain terminal instructions. The second file updates the first frame. It is not a standalone screen.
+Use [View both frames](/docs/native/frames#view-both-frames) to display them in a temporary terminal screen.
+
+The copied build defaults to the native CPU and operating system, with musl on Linux.
+It accepts the standard `-Dtarget` and `-Doptimize` Zig build options.
+
+## Draw into an owned buffer
+
+For offscreen drawing, you need only a Context and a cell buffer. You do not need a Session or a terminal.
+This test draws `Hello` directly into five cells, borrows the cell storage, and releases it before it destroys the buffer.
+Save it as `src/acceptance_test.zig`, which is the test root of the copied build. This replaces the copied acceptance tests.
+
+```zig example=buffer
+const std = @import("std");
+const opentui = @import("opentui");
+
+test "draw and inspect an owned buffer" {
+    const context = try opentui.Context.init(std.testing.allocator, std.testing.io, .{
+        .object_capacity = 2,
+        .render_cells_max = 5,
+    });
+    defer context.deinit() catch unreachable;
+
+    const buffer = try context.createBuffer(5, 1, .{});
+    try context.drawBufferText(buffer, "Hello", 0, 0, opentui.rgbColor(255, 255, 255, 255), null, 0);
+
+    {
+        const lease = try context.acquireOwnedBufferLease(buffer);
+        defer context.releaseBufferLease(lease) catch unreachable;
+        const cells = try context.bufferLeaseSnapshot(lease);
+        try std.testing.expectEqualSlices(u32, &.{ 'H', 'e', 'l', 'l', 'o' }, cells.buffer.char);
+    }
+    try context.destroy(buffer);
+}
+```
+
+Run from the project directory:
+
+```sh
+zig build test --summary all
+```
+
+The character comparison works for this ASCII text. Other text can use pooled graphemes and continuation cells.
+Use drawing methods to change cells. Do not write raw character entries.
+[Resources and ownership](/docs/native/resources#borrow-cells-for-one-synchronous-operation) explains storage leases and their limits.
+
+## Stay within the checked Context API
+
+Pointers from `Context.raw()` getters are borrowed. Destroy the resource through the Context, not through the raw object's destructor.
+Keep callback data and borrowed environment state alive until the Context no longer needs them.
+
+The public module also exports raw primitives such as `CliRenderer` and `OptimizedBuffer`.
+Each raw primitive has its own lifetime contract. Importing the module does not give raw objects the Context's checks.
+
+For host drawing and scheduling yields, call `sceneFrameStepWithRecording` until it returns a `DONE` draft.
+Then commit the draft with `sceneFrameCommit`, as above.
+Each call takes a work quota (`max_work_items`).
+To answer a `RECORD` request, pass a recording for the slots that `sceneFramePaintSlots` returns. Pass `null` for every other request.
+The [frame protocol](/docs/native/frames) explains when to resume, commit, cancel, and complete output.

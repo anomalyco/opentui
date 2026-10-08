@@ -20,6 +20,7 @@ type DemoSlotData = { label?: string; section?: string }
 
 const DEMO_STATUS_LABEL = "host-status"
 const DEMO_SIDEBAR_SECTION = "plugins"
+const DEMO_CONTEXT: DemoContext = { appName: "core-plugin-slots-demo", version: "1.0.0" }
 
 interface PluginStats {
   statusbarCreates: number
@@ -632,10 +633,7 @@ export function run(rendererInstance: CliRenderer): void {
 
   createLayout(rendererInstance)
 
-  slotRegistry = createCoreSlotRegistry<DemoSlot, DemoContext, DemoSlotData>(rendererInstance, {
-    appName: "core-plugin-slots-demo",
-    version: "1.0.0",
-  })
+  slotRegistry = createCoreSlotRegistry<DemoSlot, DemoContext, DemoSlotData>(rendererInstance, DEMO_CONTEXT)
 
   if (!slotRegistry || !rootContainer) {
     return

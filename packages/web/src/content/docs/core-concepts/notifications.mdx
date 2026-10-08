@@ -51,11 +51,11 @@ An OSC 99 reply must include the OpenTUI query identifier, `p=?`, and title supp
 
 Known terminal identities select these protocols:
 
-| Protocol | Detected terminal families                                                                                              |
-| -------- | ----------------------------------------------------------------------------------------------------------------------- |
-| OSC 99   | Kitty and foot                                                                                                          |
-| OSC 777  | Ghostty, WezTerm, Warp, hterm, Blink, Contour, VTE, GNOME Terminal, Tilix, Terminator, Xfce, rxvt, and Windows Terminal |
-| OSC 9    | iTerm, Apple Terminal, Terminal.app, and ConEmu                                                                         |
+| Protocol | Detected terminal families                                                                                                           |
+| -------- | ------------------------------------------------------------------------------------------------------------------------------------ |
+| OSC 99   | Kitty and foot                                                                                                                       |
+| OSC 777  | Ghostty, WezTerm, Warp, hterm, Blink, Contour, VTE, GNOME Terminal, Tilix, Terminator, Xfce, rxvt, Terminology, and Windows Terminal |
+| OSC 9    | iTerm, Apple Terminal, Terminal.app, and ConEmu                                                                                      |
 
 Environment hints can select the same protocols. `TERM_FEATURES` with `No` selects OSC 9. `WT_SESSION` selects OSC 777. Detection is terminal-mediated and does not call `notify-send`, AppleScript, PowerShell, or another platform notification command.
 

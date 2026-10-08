@@ -1,7 +1,19 @@
 name: Release
 
+# A push of a vX.Y.Z tag releases that version: `bun run release` pushes the tag with its "Release
+# vX.Y.Z" commit. The Windows signing in Azure trusts only runs on a tag.
+#
+# A push to main, or to a maintenance branch of an older line such as 0.5.x, that raises the version
+# in packages/core/package.json releases it when the version has no tag yet: a release commit merged
+# from the pull request that the release button opens. That run tags the commit itself, and needs Azure
+# to trust main and the maintenance branches.
+#
+# A vX.Y.Z-dry.N tag is a dry run. A tag that contains "snapshot" publishes a snapshot.
 on:
   push:
+    branches: [main, "[0-9]+.[0-9]+.x"]
+    # Path filters do not apply to tag pushes.
+    paths: [packages/core/package.json]
     tags:
       - "v*"
       - "*snapshot*"
@@ -13,52 +25,158 @@ env:
   NODE_VERSION: 26.7.0
 
 jobs:
-  # Extract version and check if it's a dry run
+  # Decides whether this push is a release, and extracts the version and the dry-run flag.
   prepare:
     name: Prepare Release
     if: ${{ !contains(github.ref_name, 'snapshot') }}
     runs-on: blacksmith-4vcpu-ubuntu-2404
     outputs:
+      release: ${{ steps.extract.outputs.release }}
       version: ${{ steps.extract.outputs.version }}
       fullTag: ${{ steps.extract.outputs.fullTag }}
       isDryRun: ${{ steps.extract.outputs.isDryRun }}
       releaseTitle: ${{ steps.extract.outputs.releaseTitle }}
+      distTag: ${{ steps.history.outputs.distTag }}
+      makeLatest: ${{ steps.history.outputs.makeLatest || 'false' }}
+      previousTag: ${{ steps.history.outputs.previousTag }}
 
     steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      # Every push of packages/core/package.json to a release branch runs this job. Only a version change
+      # needs Bun.
+      - name: Read versions
+        id: versions
+        if: github.ref_type == 'branch'
+        env:
+          BEFORE: ${{ github.event.before }}
+        run: |
+          set -euo pipefail
+          current=$(jq -r .version packages/core/package.json)
+          # A push that creates a branch, such as a new maintenance branch, has no previous commit.
+          if [[ "$BEFORE" =~ ^0+$ ]]; then
+            echo "A new branch is not a release"
+            previous=$current
+          else
+            git fetch --quiet --no-tags --depth=1 origin "$BEFORE"
+            previous=$(git show "$BEFORE:packages/core/package.json" | jq -r .version)
+          fi
+          echo "previous=$previous" >> "$GITHUB_OUTPUT"
+          echo "current=$current" >> "$GITHUB_OUTPUT"
+
+      - name: Setup Bun
+        if: steps.versions.outputs.current != steps.versions.outputs.previous
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.1
+
       - name: Extract version and dry-run flag
         id: extract
+        env:
+          CURRENT: ${{ steps.versions.outputs.current }}
+          PREVIOUS: ${{ steps.versions.outputs.previous }}
         run: |
-          TAG=${GITHUB_REF#refs/tags/v}
-          echo "Full tag: $TAG"
-
-          # Check if this is a dry run (contains -dry.)
-          if [[ "$TAG" =~ -dry\. ]]; then
-            IS_DRY_RUN=true
-            # Extract base version (remove -dry.X suffix for validation)
-            VERSION=$(echo "$TAG" | sed -E 's/-dry\.[0-9]+$//')
-            RELEASE_TITLE="Release v$TAG (DRY RUN)"
-            echo "This is a DRY RUN release"
+          set -euo pipefail
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            TAG=${GITHUB_REF#refs/tags/v}
+            if [[ "$TAG" =~ -dry\. ]]; then
+              IS_DRY_RUN=true
+              VERSION=$(echo "$TAG" | sed -E 's/-dry\.[0-9]+$//')
+              RELEASE_TITLE="Release v$TAG (DRY RUN)"
+              echo "This is a DRY RUN release"
+            else
+              IS_DRY_RUN=false
+              VERSION="$TAG"
+              RELEASE_TITLE="Release v$TAG"
+              echo "This is a PRODUCTION release"
+            fi
           else
+            # A version that does not go up, such as a reverted release commit, is not a release. A
+            # failure of the comparison fails the job.
+            NEWER=false
+            if [ "$CURRENT" != "$PREVIOUS" ]; then
+              NEWER=$(bun -e 'import { compareVersions } from "./scripts/npm-publish.ts"; console.log(compareVersions(process.env.CURRENT ?? "", process.env.PREVIOUS ?? "") > 0)')
+            fi
+            if [ "$NEWER" != true ]; then
+              echo "The version went from $PREVIOUS to $CURRENT, so this push is not a release"
+              echo "release=false" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            # A maintenance branch releases only its own line.
+            if [[ "$GITHUB_REF_NAME" =~ ^([0-9]+)\.([0-9]+)\.x$ && "$CURRENT" != "${BASH_REMATCH[1]}.${BASH_REMATCH[2]}."* ]]; then
+              echo "::error::$CURRENT is not a version of $GITHUB_REF_NAME"
+              exit 1
+            fi
+            # `bun run release` pushes the tag with the commit, and the run of the tag push releases it.
+            # This also skips a rerun of all jobs after the tag step below; rerun the failed jobs instead.
+            if git ls-remote --exit-code --tags origin "refs/tags/v$CURRENT" > /dev/null; then
+              echo "v$CURRENT is already tagged, so the run of its tag push releases it"
+              echo "release=false" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            TAG="$CURRENT"
             IS_DRY_RUN=false
             VERSION="$TAG"
             RELEASE_TITLE="Release v$TAG"
-            echo "This is a PRODUCTION release"
+            echo "The version went from $PREVIOUS to $TAG. This is a PRODUCTION release"
           fi
 
-          echo "version=$VERSION" >> $GITHUB_OUTPUT
-          echo "fullTag=$TAG" >> $GITHUB_OUTPUT
-          echo "isDryRun=$IS_DRY_RUN" >> $GITHUB_OUTPUT
-          echo "releaseTitle=$RELEASE_TITLE" >> $GITHUB_OUTPUT
+          echo "release=true" >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "fullTag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "isDryRun=$IS_DRY_RUN" >> "$GITHUB_OUTPUT"
+          echo "releaseTitle=$RELEASE_TITLE" >> "$GITHUB_OUTPUT"
 
           echo "Version (for validation): $VERSION"
           echo "Full Tag (for artifacts): $TAG"
           echo "Is Dry Run: $IS_DRY_RUN"
           echo "Release Title: $RELEASE_TITLE"
 
+      # A release from a branch push tags its commit before the build, so it stops early when the tag
+      # cannot be created. Needs the "Main tags" ruleset to let GITHUB_TOKEN create v* tags. A tag pushed
+      # with GITHUB_TOKEN starts no workflow.
+      - name: Tag the release commit
+        if: github.ref_type == 'branch' && steps.extract.outputs.isDryRun == 'false'
+        env:
+          TAG: v${{ steps.extract.outputs.fullTag }}
+        run: |
+          set -euo pipefail
+          # The commit of the tag: an annotated tag lists it as the peeled ^{} line, which sorts last.
+          existing=$(git ls-remote --tags origin "refs/tags/$TAG" "refs/tags/$TAG^{}" | sort -k2 | tail -n 1 | cut -f1)
+          if [ -z "$existing" ]; then
+            git push origin "$GITHUB_SHA:refs/tags/$TAG"
+          elif [ "$existing" != "$GITHUB_SHA" ]; then
+            echo "::error::$TAG already exists at $existing, not at $GITHUB_SHA"
+            exit 1
+          fi
+
+      # The newest release goes to npm's latest tag and is the latest GitHub release. A patch of an older
+      # line goes to latest-X.Y instead, and its release notes start at the release before it. Every
+      # release tags its commit before it builds, so concurrent releases see each other here.
+      - name: Find the previous release
+        id: history
+        if: steps.extract.outputs.isDryRun == 'false'
+        env:
+          VERSION: ${{ steps.extract.outputs.version }}
+        run: |
+          set -euo pipefail
+          tags=$(git ls-remote --tags --refs origin 'refs/tags/v*' | sed -n 's#.*refs/tags/\(v[0-9]*\.[0-9]*\.[0-9]*\)$#\1#p' | sort -V)
+          previous_tag=$(echo "$tags" | awk -v current="v$VERSION" '$0 == current { print previous } { previous = $0 }')
+          if [ "$(echo "$tags" | tail -n 1)" = "v$VERSION" ]; then
+            dist_tag=latest
+          else
+            dist_tag="latest-${VERSION%.*}"
+          fi
+          echo "npm dist-tag: $dist_tag. Previous release: ${previous_tag:-none}"
+          echo "distTag=$dist_tag" >> "$GITHUB_OUTPUT"
+          echo "makeLatest=$([ "$dist_tag" = latest ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+          echo "previousTag=$previous_tag" >> "$GITHUB_OUTPUT"
+
   # Version validation check
   validate-version:
     name: Validate Version
-    if: ${{ !contains(github.ref_name, 'snapshot') }}
+    if: ${{ needs.prepare.outputs.release == 'true' }}
     needs: prepare
     runs-on: blacksmith-4vcpu-ubuntu-2404
 
@@ -107,7 +225,7 @@ jobs:
   # Build native libraries and packages
   build-native:
     name: Build Native
-    if: ${{ !contains(github.ref_name, 'snapshot') }}
+    if: ${{ needs.prepare.outputs.release == 'true' }}
     needs: [prepare, validate-version]
     uses: ./.github/workflows/build-native.yml
     with:
@@ -116,17 +234,46 @@ jobs:
   # Build example executables
   build-examples:
     name: Build Examples
-    if: ${{ !contains(github.ref_name, 'snapshot') }}
+    if: ${{ needs.prepare.outputs.release == 'true' }}
     needs: [prepare, sign-windows-artifacts]
     uses: ./.github/workflows/build-examples.yml
     with:
       version: ${{ needs.prepare.outputs.fullTag }}
+      npmPackagesArtifact: ${{ needs.sign-windows-artifacts.outputs.npmPackagesArtifact }}
+
+  # Tests the packages before signing, so the tests run while signing runs. Signing replaces only the
+  # Windows DLLs, which the tests do not load, but it unzips and rezips every package on Windows.
+  smoke-test:
+    name: Smoke Test Packages
+    if: ${{ needs.prepare.outputs.release == 'true' }}
+    needs: [prepare, build-native]
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Setup Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.1
+
+      - name: Extract and test npm packages
+        uses: ./.github/actions/extract-npm-packages
+        with:
+          artifact: npm-packages-${{ needs.prepare.outputs.fullTag }}
+          smoke-test: "true"
 
   # Publish to npm
   npm-publish:
     name: NPM Publish
-    if: ${{ !contains(github.ref_name, 'snapshot') }}
-    needs: [prepare, sign-windows-artifacts]
+    if: ${{ needs.prepare.outputs.release == 'true' }}
+    needs: [prepare, sign-windows-artifacts, smoke-test]
     uses: ./.github/workflows/npm-latest-release.yml
     permissions:
       contents: read
@@ -134,15 +281,22 @@ jobs:
     with:
       version: ${{ needs.prepare.outputs.fullTag }}
       isDryRun: ${{ needs.prepare.outputs.isDryRun == 'true' }}
+      npmPackagesArtifact: ${{ needs.sign-windows-artifacts.outputs.npmPackagesArtifact }}
+      smokeTest: false
+      distTag: ${{ needs.prepare.outputs.distTag }}
 
   sign-windows-artifacts:
     name: Sign Windows DLL Artifacts
-    if: ${{ !contains(github.ref_name, 'snapshot') }}
+    if: ${{ needs.prepare.outputs.release == 'true' }}
     needs: [prepare, build-native]
     runs-on: blacksmith-8vcpu-windows-2025
     permissions:
       id-token: write
       contents: read
+    outputs:
+      # The signed packages go to a new artifact. upload-artifact deletes an artifact before it replaces
+      # it, and the smoke tests can be downloading the unsigned one then.
+      npmPackagesArtifact: ${{ needs.prepare.outputs.isDryRun == 'true' && format('npm-packages-{0}', needs.prepare.outputs.fullTag) || format('npm-packages-signed-{0}', needs.prepare.outputs.fullTag) }}
     env:
       AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
       AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
@@ -289,7 +443,7 @@ jobs:
         if: needs.prepare.outputs.isDryRun != 'true'
         uses: actions/upload-artifact@v7
         with:
-          name: npm-packages-${{ needs.prepare.outputs.fullTag }}
+          name: npm-packages-signed-${{ needs.prepare.outputs.fullTag }}
           path: artifacts/npm/npm-packages.zip
           if-no-files-found: error
           retention-days: 30
@@ -335,10 +489,43 @@ jobs:
       prepareVersion: ${{ needs.snapshot-prepare.outputs.version }}
       isDryRun: false
 
+  # Waits until npm serves every package that npm-publish published. npm can take many minutes after
+  # `npm publish` succeeds: 25 for @opentui/three@0.5.15. The GitHub release does not wait for it. A step
+  # that installs the release, such as an opencode bump, has to start after it.
+  npm-served:
+    name: Wait for npm
+    if: ${{ needs.prepare.outputs.release == 'true' && needs.prepare.outputs.isDryRun == 'false' }}
+    needs: [prepare, sign-windows-artifacts, npm-publish]
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    timeout-minutes: 40
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Setup Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.1
+
+      # The packages that npm-publish published, to compare npm's contents with.
+      - name: Extract npm packages
+        uses: ./.github/actions/extract-npm-packages
+        with:
+          artifact: ${{ needs.sign-windows-artifacts.outputs.npmPackagesArtifact }}
+
+      - name: Wait until npm serves every package
+        run: bun scripts/npm-publish.ts wait
+
   # Create GitHub release with assets
   github-release:
     name: Create GitHub Release
-    if: ${{ !contains(github.ref_name, 'snapshot') }}
+    if: ${{ needs.prepare.outputs.release == 'true' }}
     needs: [prepare, build-examples, npm-publish]
     runs-on: blacksmith-4vcpu-ubuntu-2404
 
@@ -449,7 +636,11 @@ jobs:
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v3
         with:
+          # A release from main is not a tag push, so name the tag. The prepare job created it.
+          tag_name: v${{ needs.prepare.outputs.fullTag }}
           name: ${{ needs.prepare.outputs.releaseTitle }}
+          make_latest: ${{ needs.prepare.outputs.makeLatest }}
+          previous_tag: ${{ needs.prepare.outputs.previousTag }}
           files: release-assets/*.zip
           generate_release_notes: true
           draft: false

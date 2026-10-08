@@ -1,4 +1,6 @@
 import { describe, expect, it } from "bun:test"
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs"
+import { tmpdir } from "node:os"
 import { join } from "node:path"
 import * as coreRuntime from "../index.js"
 import { createRuntimePlugin, runtimeModuleIdForSpecifier } from "../runtime-plugin.js"
@@ -22,24 +24,26 @@ type MockBuild = {
 const createMockBuild = (): {
   build: MockBuild
   resolveHandlers: ResolveHandler[]
+  loadFilters: RegExp[]
   modules: Map<string, ModuleCallback>
 } => {
   const resolveHandlers: ResolveHandler[] = []
+  const loadFilters: RegExp[] = []
   const modules = new Map<string, ModuleCallback>()
 
   const build: MockBuild = {
     onResolve(args, callback) {
       resolveHandlers.push({ filter: args.filter, callback })
     },
-    onLoad() {
-      return
+    onLoad(args) {
+      loadFilters.push(args.filter)
     },
     module(path, callback) {
       modules.set(path, callback)
     },
   }
 
-  return { build, resolveHandlers, modules }
+  return { build, resolveHandlers, loadFilters, modules }
 }
 
 const resolveSpecifier = async (handlers: ResolveHandler[], specifier: string): Promise<ResolveResult> => {
@@ -375,5 +379,59 @@ describe("runtime plugin", () => {
 
     expect(result.exitCode).toBe(0)
     expect(stdout).toContain("marker=resolved-from-windows-file-url")
+  })
+
+  it("does not prescan on-disk copies of runtime-module or preserved specifiers", async () => {
+    const tempRoot = realpathSync(mkdtempSync(join(tmpdir(), "core-runtime-plugin-prescan-host-specifiers-")))
+    const nodeModulesDir = join(tempRoot, "node_modules")
+    const consumerPath = join(nodeModulesDir, "consumer", "index.js")
+    const writePackage = (name: string, source: string) => {
+      mkdirSync(join(nodeModulesDir, name), { recursive: true })
+      writeFileSync(
+        join(nodeModulesDir, name, "package.json"),
+        JSON.stringify({ name, type: "module", exports: "./index.js" }),
+      )
+      writeFileSync(join(nodeModulesDir, name, "index.js"), source)
+    }
+
+    // Scanning either on-disk copy would install a rewrite loader for its @opentui/core import.
+    writePackage("host-runtime", 'import { marker } from "@opentui/core"\nexport const value = marker\n')
+    writePackage("host-preserved", 'import { marker } from "@opentui/core"\nexport const value = marker\n')
+    writePackage(
+      "consumer",
+      'import { value } from "host-runtime"\nimport { value as preserved } from "host-preserved"\nexport const out = [value, preserved]\n',
+    )
+
+    try {
+      const { build, resolveHandlers, loadFilters } = createMockBuild()
+      createRuntimePlugin({
+        additional: { "host-runtime": { value: "host" } },
+        preserve: ["host-preserved"],
+      }).setup(build as any)
+
+      await resolveSpecifier(resolveHandlers, consumerPath)
+
+      expect(loadFilters).toHaveLength(1)
+      expect(loadFilters[0]!.test(consumerPath)).toBe(true)
+    } finally {
+      rmSync(tempRoot, { recursive: true, force: true })
+    }
+  })
+
+  it("leaves preserved bare specifiers to host build.module registrations", () => {
+    const fixturePath = join(import.meta.dir, "runtime-plugin-preserve-specifiers.fixture.ts")
+    const result = Bun.spawnSync([process.execPath, fixturePath], {
+      cwd: join(import.meta.dir, "..", ".."),
+      stdout: "pipe",
+      stderr: "pipe",
+      env: process.env,
+    })
+
+    const stdout = result.stdout.toString().trim()
+
+    expect(result.exitCode).toBe(0)
+    expect(stdout).toContain(
+      "core=host-core;effect=host-effect;option=host-option;hostDep=resolved-from-plugin-node-modules",
+    )
   })
 })

@@ -66,16 +66,16 @@ renderer.root.add(box)
 
 ## Hit order and propagation
 
-Each rendered node writes its bounds to a native hit grid. Later writes replace earlier writes in overlapping cells.
+The hit grid is the native grid that maps each cell to a renderable for mouse hit testing. While native code paints a frame, it writes the bounds of each visible node to the hit grid. In overlapping cells, a later write replaces an earlier one.
 
-Children render after their parent. Siblings render in ascending `zIndex` order, so a higher `zIndex` receives an overlapping hit.
+Children paint after their parent. Siblings paint in ascending `zIndex` order, so the sibling with the higher `zIndex` gets the hit in overlapping cells.
 
-The hit grid obeys clipping from `overflow: "hidden"` and `"scroll"`. A layout change can emit `out` and `over` without physical pointer movement.
+The hit grid uses the same clipping as `overflow: "hidden"` and `"scroll"`. Native code fills the hit grid only when mouse input is on. During a drag capture, it leaves the captured renderable out of the grid. After each rendered frame, OpenTUI checks the hit target under the last pointer position again, unless a drag capture is active. Thus, a layout change can emit `out` and `over` without pointer movement.
 
 Mouse events start at the hit target and bubble through `parent` links. `event.stopPropagation()` prevents later ancestors from receiving that event.
 
-In this overlapping pair, the front box receives both mouse downs. The first bubbles to `parent`; the second calls
-`stopPropagation()` in the front box's handler.
+In this overlapping pair, the front box receives both mouse downs. The first bubbles to `parent`. For the second, the
+front box's handler calls `stopPropagation()`.
 
 ```text terminal=interaction-hit-bubbling
 ┌─parent─────────────────────────────┐

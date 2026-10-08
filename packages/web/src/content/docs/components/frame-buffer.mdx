@@ -39,6 +39,15 @@ canvas.frameBuffer.drawText("Hello!", 8, 6, RGBA.fromHex("#FFFFFF"))
 renderer.root.add(canvas)
 ```
 
+The renderable creates `frameBuffer` in the renderer's Context. Native code composes it into each frame at the
+renderable's position. Call `requestRender()` after you draw so that the renderer paints the change.
+
+When layout changes the renderable's size, the renderable resizes `frameBuffer`. A resize clears all cells, so draw
+again after it.
+
+Destroying the renderable also destroys its current `frameBuffer`. You can assign another buffer to `frameBuffer`.
+Create it with `owner: renderer.nativeScene`. The renderable does not destroy the buffer that you replace.
+
 ## Drawing methods
 
 ### setCell
@@ -117,7 +126,7 @@ canvas.frameBuffer.fillRect(10, 5, 20, 8, RGBA.fromHex("#FF0000"))
 
 ### drawFrameBuffer
 
-Copy another frame buffer onto this one:
+Composite another buffer onto this one. The source must be an owned buffer in the same Context:
 
 ```typescript
 canvas.frameBuffer.drawFrameBuffer(
@@ -152,7 +161,9 @@ const placed = canvas.frameBuffer.drawImage(
 )
 ```
 
-`x`, `y`, `width`, and `height` use terminal cells. `pixelWidth` and `pixelHeight` use terminal pixels and default to `0`. Source coordinates default to the full image, and `protocol` defaults to `"auto"`. Sixel requires nonzero pixel dimensions or falls back to blocks. `false` means the buffer recorded no visible valid placement. A successful placement retains the native image until the buffer is cleared, resized, or destroyed. Ownership does not transfer. The caller must still dispose its `NativeImage`.
+`x`, `y`, `width`, and `height` use terminal cells. `pixelWidth` and `pixelHeight` use terminal pixels and default to `0`. Source coordinates default to the full image, and `protocol` defaults to `"auto"`. Sixel requires nonzero pixel dimensions or falls back to blocks.
+
+`false` means the buffer recorded no visible valid placement. A successful placement retains the native image until the buffer is cleared, resized, or destroyed. Ownership does not transfer. The caller must still dispose its `NativeImage`.
 
 ### colorMatrix / colorMatrixUniform
 
@@ -174,13 +185,13 @@ See [Color matrix reference](/docs/reference/color-matrix) for matrix layout, ma
 
 ## Properties
 
-| Property                         | Type                                     | Default      | Description                               |
-| -------------------------------- | ---------------------------------------- | ------------ | ----------------------------------------- |
-| `width`                          | `number`                                 | -            | Buffer width in terminal cells (required) |
-| `height`                         | `number`                                 | -            | Buffer height in rows (required)          |
-| `respectAlpha`                   | `boolean`                                | `false`      | Enable alpha blending when drawing        |
-| `position`                       | `string`                                 | `"relative"` | Positioning mode                          |
-| `left`, `top`, `right`, `bottom` | `number`, `"auto"`, or percentage string | -            | Position offsets                          |
+| Property                         | Type                                     | Default      | Description                                         |
+| -------------------------------- | ---------------------------------------- | ------------ | --------------------------------------------------- |
+| `width`                          | `number`                                 | -            | Initial buffer and layout width in cells (required) |
+| `height`                         | `number`                                 | -            | Initial buffer and layout height in rows (required) |
+| `respectAlpha`                   | `boolean`                                | `false`      | Always blend the buffer's cells into the frame      |
+| `position`                       | `string`                                 | `"relative"` | Positioning mode                                    |
+| `left`, `top`, `right`, `bottom` | `number`, `"auto"`, or percentage string | -            | Position offsets                                    |
 
 ## Example: game canvas
 

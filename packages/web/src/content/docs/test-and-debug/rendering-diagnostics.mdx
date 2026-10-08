@@ -24,7 +24,7 @@ Do not compare these values as if they used one unit or represented one event.
 
 ## Timestamps and elapsed time
 
-`TimeToFirstDrawRenderable` stores one `performance.now()` reading during its first `renderSelf()` call. The reading uses the runtime performance time origin. It is a timestamp, not an elapsed startup duration.
+`TimeToFirstDrawRenderable` stores one `performance.now()` reading during its first `renderSelf()` call. Core runs `renderSelf()` as a paint hook, before native code paints and presents that frame. The reading uses the runtime performance time origin. It is a timestamp, not an elapsed startup duration.
 
 ```typescript
 import { TimeToFirstDrawRenderable, createCliRenderer } from "@opentui/core"
@@ -70,7 +70,7 @@ React and Solid export `TimeToFirstDraw` wrappers with the same component option
 
 `renderer.frameId` is a monotonic JavaScript loop identifier. OpenTUI increments it at the start of each renderer loop attempt.
 
-The renderer emits `frame` after a pass reaches the rendered state:
+The renderer emits `frame` after a pass renders and the frame's output completes:
 
 ```typescript
 renderer.on("frame", ({ frameId }) => {
@@ -90,13 +90,13 @@ console.log(state)
 await renderer.idle()
 ```
 
-| Field                | Meaning                                                         |
-| -------------------- | --------------------------------------------------------------- |
-| `isRunning`          | A continuous or live render loop is active                      |
-| `isRendering`        | A renderer loop pass is active                                  |
-| `hasScheduledRender` | A timer, one-shot update, or immediate rerender remains pending |
+| Field                | Meaning                                                                                        |
+| -------------------- | ---------------------------------------------------------------------------------------------- |
+| `isRunning`          | A continuous or live render loop is active                                                     |
+| `isRendering`        | A renderer loop pass is active                                                                 |
+| `hasScheduledRender` | A frame timer, queued frame, rerender, terminal transition, or deferred resize remains pending |
 
-`renderer.idle()` waits for these conditions and any renderer feed-idle retry to finish. It also resolves after renderer destruction. It does not require a zero-cell-update frame.
+`renderer.idle()` waits until all three fields are `false`. Then it waits for the Session's queued output and terminal work to settle. After `destroy()`, it waits for `renderer.closed`. It does not require a zero-cell-update frame.
 
 ## Native render statistics
 
@@ -107,15 +107,15 @@ const native = renderer.getNativeStats()
 console.log(native.nativeFrameCount, native.cellsUpdated)
 ```
 
-| Field                    | Meaning                                                     |
-| ------------------------ | ----------------------------------------------------------- |
-| `nativeFrameCount`       | Native frames that completed                                |
-| `cellsUpdated`           | Changed diff cells in the latest native frame               |
-| `averageCellsUpdated`    | Average changed cells across retained native samples        |
-| `nativeLastFrameTime`    | Time between the latest native frames, in microseconds      |
-| `nativeAverageFrameTime` | Average native frame interval, in microseconds              |
-| `nativeRenderTime`       | Latest native render work, in microseconds, when available  |
-| `nativeStdoutWriteTime`  | Latest native output write, in microseconds, when available |
+| Field                    | Meaning                                                             |
+| ------------------------ | ------------------------------------------------------------------- |
+| `nativeFrameCount`       | Native frames that completed                                        |
+| `cellsUpdated`           | Changed diff cells in the latest native frame                       |
+| `averageCellsUpdated`    | Average changed cells across retained native samples                |
+| `nativeLastFrameTime`    | Time between the latest native frames, in microseconds              |
+| `nativeAverageFrameTime` | Average native frame interval, in microseconds                      |
+| `nativeRenderTime`       | Latest native diff and encode time, in microseconds, when available |
+| `nativeStdoutWriteTime`  | Latest native output write, in microseconds, when available         |
 
 An unchanged native frame can increment `nativeFrameCount` while `cellsUpdated` is `0`. A forced repaint can count the full render surface. Cell updates are terminal cells, not bytes, code points, graphemes, or renderable nodes.
 
@@ -123,15 +123,15 @@ An unchanged native frame can increment `nativeFrameCount` while `cellsUpdated` 
 
 `renderer.getStats()` combines native statistics with JavaScript values:
 
-| Field               | Meaning                                                                    |
-| ------------------- | -------------------------------------------------------------------------- |
-| `frameCount`        | JavaScript renderer loop attempts                                          |
-| `fps`               | Native frames counted when the latest sampling interval reached one second |
-| `frameCallbackTime` | Latest JavaScript frame-callback duration in milliseconds                  |
-| `frameTimes`        | Collected JavaScript pass durations in milliseconds                        |
-| `averageFrameTime`  | Average of `frameTimes`                                                    |
-| `minFrameTime`      | Minimum of `frameTimes`                                                    |
-| `maxFrameTime`      | Maximum of `frameTimes`                                                    |
+| Field               | Meaning                                                                      |
+| ------------------- | ---------------------------------------------------------------------------- |
+| `frameCount`        | JavaScript renderer loop attempts                                            |
+| `fps`               | Rendered frames counted when the latest sampling interval reached one second |
+| `frameCallbackTime` | Latest JavaScript frame-callback duration in milliseconds                    |
+| `frameTimes`        | Durations of rendered passes in milliseconds, including the output wait      |
+| `averageFrameTime`  | Average of `frameTimes`                                                      |
+| `minFrameTime`      | Minimum of `frameTimes`                                                      |
+| `maxFrameTime`      | Maximum of `frameTimes`                                                      |
 
 Set `gatherStats: true` at renderer creation, or call `renderer.setGatherStats(true)`, to collect `frameTimes`. The default sample limit is `300`. Set `maxStatSamples` to change that limit.
 
@@ -159,7 +159,7 @@ try {
 }
 ```
 
-`captureCharFrame()` returns decoded character cells. `captureSpans()` preserves dimensions, cursor coordinates, colors, base attributes, and span widths. Span capture is lossy for full grapheme clustering and hyperlink IDs. Read [Rendering pipeline](/docs/core-concepts/rendering-pipeline#inspect-frames) for those limits.
+`captureCharFrame()` returns decoded character cells. `captureSpans()` preserves dimensions, cursor coordinates, colors, base attributes, graphemes, and span widths. Span capture loses hyperlink and image identity. Read [Rendering pipeline](/docs/core-concepts/rendering-pipeline#inspect-frames) for those limits.
 
 `waitForVisualIdle()` returns when the scheduler has no work. While work continues, it waits for a configured number of consecutive frames with `cellsUpdated === 0`. The defaults are one quiet frame and a maximum of 20 observed frames. Read [Testing](/docs/core-concepts/testing#waiting-for-observable-output) for bounds and timeout diagnostics.
 
@@ -182,22 +182,28 @@ Use `renderer.toggleDebugOverlay()` to change visibility. `OTUI_SHOW_STATS=true`
 
 ## Buffer and input diagnostics
 
-`renderer.dumpBuffers(timestamp?)` writes current, next, and output dumps under `buffer_dump/`. `renderer.dumpOutputBuffer(timestamp?)` writes only the latest output dump. Both use `Date.now()` when you omit the timestamp.
+Use test frame captures for decoded text and spans, or `renderer.currentRenderBuffer.withBuffers()` for scoped cell inspection. To inspect emitted ANSI bytes, supply a custom `stdout` stream.
 
 Use these environment diagnostics for a bounded investigation:
 
-| Variable                | Use                                                              |
-| ----------------------- | ---------------------------------------------------------------- |
-| `OTUI_SHOW_STATS`       | Show the native statistics overlay at renderer creation          |
-| `OTUI_DEBUG`            | Retain handler sequences for `renderer.getDebugInputs()`         |
-| `OTUI_STDIN_LOG`        | Write raw input bytes to one file                                |
-| `OTUI_DUMP_CAPTURES`    | Dump console and output capture from the renderer signal handler |
-| `OTUI_NO_NATIVE_RENDER` | Skip native frame rendering while the JavaScript loop still runs |
-| `OTUI_DEBUG_FFI`        | Enable foreign function interface debug logging                  |
+| Variable             | Use                                                              |
+| -------------------- | ---------------------------------------------------------------- |
+| `OTUI_SHOW_STATS`    | Show the debug overlay at renderer creation                      |
+| `OTUI_DEBUG`         | Retain handler sequences for `renderer.getDebugInputs()`         |
+| `OTUI_STDIN_LOG`     | Write raw input bytes to one file                                |
+| `OTUI_DUMP_CAPTURES` | Dump console and output capture from the renderer signal handler |
+| `OTUI_DEBUG_FFI`     | Enable foreign function interface debug logging                  |
 
-`OTUI_NO_NATIVE_RENDER` does not prevent all terminal output. Split-footer output handling can still write ANSI sequences. Input and output captures can contain application data. Remove these settings after the investigation.
+Input and output captures can contain application data. Remove these settings after the investigation.
 
 Read [Environment variables](/docs/reference/env-vars) for exact parsing and activation timing. Read the [rendering pipeline](/docs/core-concepts/rendering-pipeline) for layout, cells, diffing, and image protocol behavior.
+
+## Removed diagnostics
+
+- Replace `renderer.dumpBuffers()` and `renderer.dumpOutputBuffer()` with frame capture, scoped cell inspection, or a custom output stream.
+- Remove `useThread` from renderer configuration and property access. Core writes output on the JavaScript thread.
+- Remove `OTUI_NO_NATIVE_RENDER` from your environment. It no longer suppresses presentation. Use `createTestRenderer()` to render without a terminal.
+- `OptimizedBuffer.getNativeId()` is no longer available. Keep the buffer object for drawing and lifetime management. Use `buffer.id` only as a diagnostic label, not as a native handle.
 
 ## Next
 

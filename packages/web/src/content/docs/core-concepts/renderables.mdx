@@ -5,7 +5,7 @@ description: Create, mutate, reparent, and destroy imperative renderable tree no
 
 # Renderables
 
-A renderable is an imperative node in OpenTUI's retained tree. It stores layout, visual state, children, event handlers, and native resources.
+A renderable is an imperative node in OpenTUI's retained tree. It holds children, event handlers, and native resources. Each visual renderable also has a native scene node that holds its layout and paint state.
 
 Retained means the same objects stay in the tree between frames. Change their properties instead of rebuilding them for each update.
 
@@ -171,13 +171,13 @@ parent: yes  parent: yes  parent: no
 
 Neither operation destroys `detail`. Set `visible = true` to show a hidden child, or call `add(detail)` to reattach a detached child. Reattaching does not change its visibility.
 
-`visible = false` sets the Yoga node to `display: none`. The node does not receive layout or render work while hidden. Hiding a focused node also blurs it.
+`visible = false` sets the node's Yoga `display` to `none`. A hidden node and its descendants take no layout space. Native code does not paint them or run their update and paint hooks. A registered `onLifecyclePass` still runs. Hiding a focused node also blurs it.
 
 ## Layout properties
 
 Renderables participate in the [Yoga-based layout model](/docs/core-concepts/layout). Their computed `x`, `y`, `width`, and `height` can change after layout or terminal resize.
 
-`zIndex` changes sibling render and hit-test order without changing layout order. `translateX` and `translateY` move drawing and hit bounds without changing the Yoga result.
+`zIndex` changes sibling paint and hit-test order without changing layout order. A new child paints after its existing siblings that have the same `zIndex`. Siblings with the same `zIndex` keep their previous paint order, so restoring a changed `zIndex` does not restore the child's original paint position. Moving a child to a new index in the same parent changes its layout position, not its paint order. `translateX` and `translateY` move drawing and hit bounds without changing the Yoga result.
 
 `opacity` applies to the node and its descendants. `overflow: "hidden"` or `"scroll"` clips rendering and mouse hit bounds to the node.
 
@@ -185,7 +185,7 @@ Shared mouse, focus, and selection behavior belongs to [Interaction, focus, and 
 
 ## Destruction
 
-`destroy()` is idempotent. It detaches the node, releases its frame buffer and Yoga node, removes listeners, and calls `destroySelf()`.
+`destroy()` is idempotent. It detaches the node, destroys its frame buffer, removes listeners, and calls `destroySelf()`. Then it destroys the scene node, which owns the Yoga node.
 
 `destroy()` detaches direct children but does not destroy them. Use `destroyRecursively()` when this node owns the complete subtree.
 
@@ -198,7 +198,7 @@ The renderer destroys its root recursively during renderer cleanup. Destroy deta
 
 Do not add a destroyed renderable to another parent.
 
-Subclass render hooks, measurement, buffering, and resource examples belong to [Custom renderables](/docs/extend/custom-renderables).
+Subclass paint hooks, measurement, buffering, and resource examples belong to [Custom renderables](/docs/extend/custom-renderables).
 
 ## Next
 

@@ -87,7 +87,7 @@ OpenTUI Solid exposes intrinsic JSX elements that map to OpenTUI renderables:
 
 ### `render(node, rendererOrConfig?)`
 
-Render a Solid component tree into a CLI renderer. If `rendererOrConfig` is omitted, a renderer is created with default options.
+Render a Solid component tree into a CLI renderer. If you omit `rendererOrConfig`, `render()` creates a renderer with default options. `render()` returns a promise that resolves after the initial mount. Destroying the renderer disposes the Solid root.
 
 ```tsx
 import { render } from "@opentui/solid"
@@ -120,6 +120,9 @@ import { extend } from "@opentui/solid"
 extend({ customBox: CustomBoxRenderable })
 ```
 
+Solid calls the constructor with `{ id }` only. After construction, Solid applies each JSX prop to the instance. A class
+that reads a value only from its constructor options does not get that value from JSX.
+
 ### `getComponentCatalogue()`
 
 Returns the current component catalogue that powers JSX tag lookup.
@@ -138,7 +141,7 @@ Returns the current component catalogue that powers JSX tag lookup.
 
 ### `Portal`
 
-Render children into a different mount node, useful for overlays and tooltips.
+Render children into a different mount node. Use it for overlays and tooltips.
 
 ```tsx
 import { Portal } from "@opentui/solid"
@@ -165,7 +168,7 @@ import { Dynamic } from "@opentui/solid"
 - `scrollbox`: scrollable container
 - `ascii_font`: ASCII art text renderer
 
-QR code support is available from `@opentui/qrcode/solid` and must be registered explicitly with `registerQRCode()`.
+For QR codes, call `registerQRCode()` from `@opentui/qrcode/solid`. It registers the `qr_code` element.
 
 ### Input
 
@@ -182,7 +185,7 @@ QR code support is available from `@opentui/qrcode/solid` and must be registered
 
 ### Text Modifiers
 
-These must appear inside a `text` component:
+Use these only inside a `text` component:
 
 - `span`: inline styled text
 - `strong`/`b`: bold text

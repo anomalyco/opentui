@@ -47,7 +47,7 @@ row.add(growing)
 renderer.root.add(row)
 ```
 
-The shaded children occupy 8 and 20 columns. The border and padding consume four columns; the gap consumes two more.
+The shaded children occupy 8 and 20 columns. The border and padding use four columns. The gap uses two more.
 
 ```text terminal=layout-flex-columns
 ┌────────────────────────────────┐
@@ -139,9 +139,9 @@ Yoga alignment positions child boxes. It does not align characters inside a text
 
 ## Automatic and intrinsic size
 
-An `"auto"` dimension lets Yoga derive size from children or a renderable's measure function. Text and editor renderables supply native measure targets.
+An `"auto"` dimension lets Yoga derive size from children or from a renderable's measure function. Text and editor renderables measure their content in native code.
 
-Yoga calls a measure target with exact, at-most, or unconstrained dimensions. Text measurement uses display-cell width and the active wrap mode.
+Yoga calls a measure function with exact, at-most, or unconstrained dimensions. Text measurement uses display-cell width and the active wrap mode.
 
 `wrapMode: "word"` and `"char"` can increase measured height under a width constraint. `wrapMode: "none"` keeps the intrinsic line width.
 
@@ -242,11 +242,11 @@ The same children before and after narrowing the terminal:
 └────────────────────┘
 ```
 
-Computed `x`, `y`, `width`, and `height` can all change. Buffered renderables resize their frame buffers before `onResize(width, height)` runs.
+Computed `x`, `y`, `width`, and `height` can all change. When a visible renderable's size changes, OpenTUI first resizes its frame buffer if it is buffered. Then it calls `onResize(width, height)`.
 
 `FrameBufferRenderable` resizes its public `frameBuffer` in its `onResize()` override, then calls the base hook.
 
-The base `onResize()` calls `onSizeChange` and emits the renderable's `"resize"` event. The layout resize path then requests another render.
+The base `onResize()` calls `onSizeChange` and emits the renderable's `"resize"` event. After `onResize()` returns, OpenTUI requests another render.
 
 Renderer `resize` listeners receive the render-region width and height.
 

@@ -14,7 +14,7 @@ Check the runtime, native artifact, permission, asset, and package requirements 
 
 | Runtime | Project requirement | Native Core requirements                               |
 | ------- | ------------------- | ------------------------------------------------------ |
-| Bun     | 1.3.0 or later      | Bun loads the matching optional native package.        |
+| Bun     | 1.3.14 or later     | Bun loads the matching optional native package.        |
 | Node.js | 26.4.0 or later     | Use ECMAScript modules (ESM) and `--experimental-ffi`. |
 
 The Node.js acceptance scripts accept Node.js 26.4 or later.
@@ -68,9 +68,9 @@ Core publishes these optional native packages:
 | Windows x64            | `@opentui/core-win32-x64`        |
 | Windows arm64          | `@opentui/core-win32-arm64`      |
 
-The release build cross-compiles all eight artifacts. Current Bun Core tests run on macOS arm64, Linux x64, and
-Windows x64. Current Node.js native, packed-distribution, and single executable application (SEA) acceptance runs on
-Linux x64 only.
+The release build cross-compiles all eight artifacts. Current Bun and Node.js Core tests run on macOS arm64, Linux x64,
+and Windows x64. Current Node.js packed-distribution and single executable application (SEA) tests run on Linux x64
+only.
 
 An available artifact does not prove runtime parity on every published target. Test your release on its target
 operating system, architecture, and Linux libc.
@@ -87,7 +87,7 @@ const { createCliRenderer } = await import("@opentui/core")
 ```
 
 On Linux, an unset value, an empty value, or `glibc` selects the package without a suffix. The value `musl` selects
-the `-musl` package. Any other nonempty Linux value throws.
+the `-musl` package. With any other nonempty Linux value, the import succeeds and the first native operation throws.
 
 Static ESM dependencies run before the entry module body. Setting `process.env.OPENTUI_LIBC` in that body is too late
 when the entry also has a static Core import. Set the variable in the process environment or use a bootstrap module
@@ -126,22 +126,22 @@ Read [Environment variables](/docs/reference/env-vars#otui_asset_root) for the e
 
 ## Package requirements
 
-| Package           | Runtime dependency                                          | Current Node.js acceptance evidence                |
-| ----------------- | ----------------------------------------------------------- | -------------------------------------------------- |
-| `@opentui/core`   | `web-tree-sitter` 0.25.10                                   | Source, native, packed, and SEA lanes on Linux x64 |
-| `@opentui/react`  | React 19.2.0 or later                                       | No dedicated Node.js CI lane                       |
-| `@opentui/solid`  | Solid 1.9.12 exactly                                        | Source and packed lanes on Linux x64               |
-| `@opentui/keymap` | Core, with optional React or Solid peers for their adapters | Packed Node.js lane on Linux x64                   |
-| `@opentui/qrcode` | Core, with optional React or Solid peers for their adapters | No dedicated Node.js CI lane                       |
-| `@opentui/three`  | Three 0.177.0, `bun-webgpu` 0.1.7, Rapier, and Planck       | Bun-only                                           |
-| `@opentui/ssh`    | `ssh2` `^1.16.0`, plus its Core peer                        | Packed Node.js lane on Linux x64 with a Core stub  |
+| Package           | Runtime dependency                                          | Current Node.js acceptance evidence                                                       |
+| ----------------- | ----------------------------------------------------------- | ----------------------------------------------------------------------------------------- |
+| `@opentui/core`   | `web-tree-sitter` 0.25.10                                   | Source lane on macOS arm64, Linux x64, and Windows x64. Packed and SEA lanes on Linux x64 |
+| `@opentui/react`  | React 19.2.0 or later                                       | No dedicated Node.js CI lane                                                              |
+| `@opentui/solid`  | Solid 1.9.12 exactly                                        | Source and packed lanes on Linux x64                                                      |
+| `@opentui/keymap` | Core, with optional React or Solid peers for their adapters | Packed Node.js lane on Linux x64                                                          |
+| `@opentui/qrcode` | Core, with optional React or Solid peers for their adapters | No dedicated Node.js CI lane                                                              |
+| `@opentui/three`  | Three 0.177.0, `bun-webgpu` 0.1.7, Rapier, and Planck       | Bun-only                                                                                  |
+| `@opentui/ssh`    | `ssh2` `^1.16.0`, plus its Core peer                        | Packed Node.js lane on Linux x64 with packed Core and native packages                     |
 
 The Three package marks `bun-webgpu`, Rapier, and Planck as optional dependencies, but its root statically imports all
 three. Do not omit optional dependencies from a Three installation.
 
-The SSH packed Node.js test uses a Core stub. It checks package loading and SSH transport behavior. It does not create
-a native Core renderer. React has no Node.js CI lane, so the repository does not establish the same Node.js confidence
-for React that it establishes for Core and Solid.
+The SSH packed Node.js test installs the packed SSH, Core, and native packages. It renders a native Core frame to an SSH
+client, then checks resize, denial, and close. React has no Node.js CI lane, so the repository does not establish the
+same Node.js confidence for React that it establishes for Core and Solid.
 
 ## Advanced Node.js FFI note
 

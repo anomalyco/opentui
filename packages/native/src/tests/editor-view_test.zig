@@ -1,4 +1,5 @@
 const std = @import("std");
+const TestPools = @import("test-pools.zig").TestPools;
 const editor_view = @import("../editor-view.zig");
 const edit_buffer = @import("../edit-buffer.zig");
 const text_buffer = @import("../text-buffer.zig");
@@ -7,19 +8,22 @@ const opt_buffer_mod = @import("../buffer.zig");
 const ansi = @import("../ansi.zig");
 const gp = @import("../grapheme.zig");
 const link = @import("../link.zig");
+const owned_styled = @import("owned-styled-text.zig");
 
 const EditorView = editor_view.EditorView;
 const EditBuffer = edit_buffer.EditBuffer;
 const Cursor = edit_buffer.Cursor;
 const Viewport = text_buffer_view.Viewport;
 
-test "EditorView - init and deinit" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
+comptime {
+    _ = @import("editor-view-owner_test.zig");
+}
 
-    var eb = try EditBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth, null);
+test "EditorView - init and deinit" {
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
+
+    var eb = try EditBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth, null);
     defer eb.deinit();
 
     var ev = try EditorView.init(std.testing.allocator, eb, 80, 24);
@@ -32,431 +36,150 @@ test "EditorView - init and deinit" {
     try std.testing.expectEqual(@as(u32, 0), vp.?.y);
 }
 
-test "EditorView - ensureCursorVisible scrolls down when cursor moves below viewport" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
-
-    var eb = try EditBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth, null);
-    defer eb.deinit();
-
-    var ev = try EditorView.init(std.testing.allocator, eb, 80, 10);
-    defer ev.deinit();
-
-    try eb.insertText("Line 0\nLine 1\nLine 2\nLine 3\nLine 4\nLine 5\nLine 6\nLine 7\nLine 8\nLine 9\nLine 10\nLine 11\nLine 12\nLine 13\nLine 14\nLine 15\nLine 16\nLine 17\nLine 18\nLine 19");
-
-    const cursor = ev.getPrimaryCursor();
-    try std.testing.expectEqual(@as(u32, 19), cursor.row);
-
-    _ = ev.getVirtualLines();
-
-    const vp = ev.getViewport().?;
-    try std.testing.expect(vp.y > 0);
-    try std.testing.expect(cursor.row >= vp.y);
-    try std.testing.expect(cursor.row < vp.y + vp.height);
+/// The scroll margin in lines or columns that ensureCursorVisible keeps for a viewport size.
+fn marginCells(size: u32, margin: f32) u32 {
+    const raw = @max(1, @as(u32, @intFromFloat(@as(f32, @floatFromInt(size)) * margin)));
+    return @min(raw, if (size > 1) (size - 1) / 2 else 0);
 }
 
-test "EditorView - ensureCursorVisible scrolls up when cursor moves above viewport" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
-
-    var eb = try EditBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth, null);
-    defer eb.deinit();
-
-    var ev = try EditorView.init(std.testing.allocator, eb, 80, 10);
-    defer ev.deinit();
-
-    try eb.insertText("Line 0\nLine 1\nLine 2\nLine 3\nLine 4\nLine 5\nLine 6\nLine 7\nLine 8\nLine 9\nLine 10\nLine 11\nLine 12\nLine 13\nLine 14\nLine 15\nLine 16\nLine 17\nLine 18\nLine 19");
-
-    _ = ev.getVirtualLines();
-
-    var vp = ev.getViewport().?;
-    try std.testing.expect(vp.y > 0);
-
-    try eb.gotoLine(0);
-
-    _ = ev.getVirtualLines();
-
-    const cursor = ev.getPrimaryCursor();
-    try std.testing.expectEqual(@as(u32, 0), cursor.row);
-
-    vp = ev.getViewport().?;
-    try std.testing.expectEqual(@as(u32, 0), vp.y);
-}
-
-test "EditorView - moveDown scrolls viewport automatically" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
-
-    var eb = try EditBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth, null);
-    defer eb.deinit();
-
-    var ev = try EditorView.init(std.testing.allocator, eb, 80, 10);
-    defer ev.deinit();
-
-    try eb.insertText("Line 0\nLine 1\nLine 2\nLine 3\nLine 4\nLine 5\nLine 6\nLine 7\nLine 8\nLine 9\nLine 10\nLine 11\nLine 12\nLine 13\nLine 14\nLine 15\nLine 16\nLine 17\nLine 18\nLine 19");
-
-    try eb.setCursor(0, 0);
-    _ = ev.getVirtualLines();
-    var vp = ev.getViewport().?;
-    try std.testing.expectEqual(@as(u32, 0), vp.y);
-
-    var i: u32 = 0;
-    while (i < 15) : (i += 1) {
-        eb.moveDown();
+test "EditorView - random edits and moves keep the cursor inside the scroll margins" {
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
+    const seed = 0xed17;
+    var prng = std.Random.DefaultPrng.init(seed);
+    const random = prng.random();
+    const pieces = [_][]const u8{ "a", "word ", "\n", "x\ny\nz", "\t", "\u{754c}", "AAAAAAAAAABBBBBBBBBBCCCCCCCCCC", "\n\n\n\n\n\n" };
+    const margins = [_]f32{ 0, 0.15, 0.3, 0.5 };
+    for (0..80) |run| {
+        const eb = try EditBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth, null);
+        defer eb.deinit();
+        const ev = try EditorView.init(std.testing.allocator, eb, random.intRangeAtMost(u32, 1, 24), random.intRangeAtMost(u32, 1, 10));
+        defer ev.deinit();
+        ev.setWrapMode(random.enumValue(text_buffer.WrapMode));
+        const margin = margins[random.uintLessThan(usize, margins.len)];
+        ev.setScrollMargin(margin);
+        for (0..60) |step| {
+            errdefer std.debug.print("viewport property failed: seed 0x{x} run {d} step {d}\n", .{ seed, run, step });
+            const row_before = ev.getVisualCursor().visual_row + ev.getViewport().?.y;
+            const op = random.uintLessThan(u8, 12);
+            switch (op) {
+                0, 1 => try eb.insertText(pieces[random.uintLessThan(usize, pieces.len)]),
+                2 => try eb.backspace(),
+                3 => try eb.deleteForward(),
+                4 => try eb.deleteLine(),
+                5 => if (random.boolean()) eb.moveLeft() else eb.moveRight(),
+                6 => if (random.boolean()) eb.moveUp() else eb.moveDown(),
+                7 => ev.moveUpVisual(),
+                8 => ev.moveDownVisual(),
+                9 => try eb.setCursor(random.uintLessThan(u32, eb.tb.lineCount() + 1), random.uintLessThan(u32, 40)),
+                10 => ev.setViewportSize(random.intRangeAtMost(u32, 1, 24), random.intRangeAtMost(u32, 1, 10)),
+                11 => try eb.setText(pieces[random.uintLessThan(usize, pieces.len)]),
+                else => unreachable,
+            }
+            // getVisualCursor scrolls first, as rendering does.
+            const vcursor = ev.getVisualCursor();
+            const vp = ev.getViewport().?;
+            const cursor = eb.getPrimaryCursor();
+            try std.testing.expectEqual(cursor.row, vcursor.logical_row);
+            try std.testing.expectEqual(cursor.col, vcursor.logical_col);
+            const row = vcursor.visual_row + vp.y;
+            const total = ev.getTotalVirtualLineCount();
+            const lines = marginCells(vp.height, margin);
+            try std.testing.expect(row < total);
+            try std.testing.expect(row >= vp.y + @min(lines, row));
+            try std.testing.expect(row + lines < vp.y + vp.height or (row < vp.y + vp.height and vp.y + vp.height >= total));
+            if (op == 7) try std.testing.expectEqual(row_before -| 1, row);
+            if (op == 8) try std.testing.expectEqual(@min(row_before + 1, total - 1), row);
+            if (ev.text_buffer_view.wrap_mode == .none) {
+                const cols = marginCells(vp.width, margin);
+                try std.testing.expect(cursor.col >= vp.x + @min(cols, cursor.col));
+                try std.testing.expect(cursor.col + cols < vp.x + vp.width);
+            } else try std.testing.expectEqual(@as(u32, 0), vp.x);
+        }
     }
-
-    _ = ev.getVirtualLines();
-
-    const cursor = ev.getPrimaryCursor();
-    try std.testing.expectEqual(@as(u32, 15), cursor.row);
-
-    vp = ev.getViewport().?;
-    try std.testing.expect(cursor.row >= vp.y);
-    try std.testing.expect(cursor.row < vp.y + vp.height);
 }
 
-test "EditorView - moveUp scrolls viewport automatically" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
+test "EditorView - rejected text replacement preserves selection and viewport" {
+    var pool = gp.GraphemePool.init(std.testing.allocator);
+    defer pool.deinit();
+    var links = link.LinkPool.init(std.testing.allocator);
+    defer links.deinit();
+    inline for (.{ false, true }) |clean| {
+        const eb = try EditBuffer.init(std.testing.allocator, &pool, &links, .unicode, null);
+        defer eb.deinit();
+        const ev = try EditorView.init(std.testing.allocator, eb, 10, 2);
+        defer ev.deinit();
+        const initial = "zero\none\ntwo\nthree\nfour\nfive";
+        const mem_id = try eb.setTextOwned(initial, null);
+        try eb.setCursor(5, 4);
+        try eb.insertText("X");
+        try eb.insertText("Y");
+        _ = try eb.undo();
+        ev.setSelection(1, 3, null, null);
+        ev.desired_visual_col = 4;
+        const lines = ev.getVirtualLines();
+        const viewport = ev.getViewport();
+        const selection = ev.getSelection();
+        const cursor = ev.getPrimaryCursor();
+        try std.testing.expect(viewport.?.y > 0);
+        const view_id = try eb.tb.registerView();
+        eb.tb.clearViewDirty(view_id);
+        const before = eb.tb.rope().*;
+        const add = eb.add_buffer;
+        const epoch = eb.tb.getContentEpoch();
+        const allocator = eb.tb.global_allocator;
+        var failing = std.testing.FailingAllocator.init(allocator, .{ .fail_index = 0 });
+        eb.tb.global_allocator = failing.allocator();
+        const result = if (clean) eb.setTextOwned("new", mem_id) else if (eb.replaceText("new")) |_| mem_id else |err| err;
+        eb.tb.global_allocator = allocator;
+        try std.testing.expectError(error.OutOfMemory, result);
+        try std.testing.expect(failing.has_induced_failure);
+        try std.testing.expectEqual(before.root, eb.tb.rope().root);
+        try std.testing.expectEqual(before.version, eb.tb.rope().version);
+        try std.testing.expectEqual(before.undo_history, eb.tb.rope().undo_history);
+        try std.testing.expectEqual(before.redo_history, eb.tb.rope().redo_history);
+        try std.testing.expectEqual(before.curr_history, eb.tb.rope().curr_history);
+        try std.testing.expectEqualDeep(add, eb.add_buffer);
+        try std.testing.expectEqual(epoch, eb.tb.getContentEpoch());
+        try std.testing.expect(!eb.tb.isViewDirty(view_id));
+        try std.testing.expectEqualStrings(initial, eb.tb.getMemBuffer(mem_id).?);
+        var actual: [64]u8 = undefined;
+        try std.testing.expectEqualStrings(initial ++ "X", actual[0..eb.getText(&actual)]);
+        try std.testing.expectEqualDeep(viewport, ev.getViewport());
+        try std.testing.expectEqualDeep(selection, ev.getSelection());
+        try std.testing.expectEqualDeep(cursor, ev.getPrimaryCursor());
+        try std.testing.expectEqual(@as(?u32, 4), ev.desired_visual_col);
+        try std.testing.expectEqual(lines.ptr, ev.getVirtualLines().ptr);
+        try std.testing.expectEqual(lines.len, ev.getVirtualLines().len);
 
-    var eb = try EditBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth, null);
-    defer eb.deinit();
-
-    var ev = try EditorView.init(std.testing.allocator, eb, 80, 10);
-    defer ev.deinit();
-
-    try eb.insertText("Line 0\nLine 1\nLine 2\nLine 3\nLine 4\nLine 5\nLine 6\nLine 7\nLine 8\nLine 9\nLine 10\nLine 11\nLine 12\nLine 13\nLine 14\nLine 15\nLine 16\nLine 17\nLine 18\nLine 19");
-
-    _ = ev.getVirtualLines();
-
-    var vp = ev.getViewport().?;
-    const initial_y = vp.y;
-    try std.testing.expect(initial_y > 0);
-
-    var i: u32 = 0;
-    while (i < 10) : (i += 1) {
-        eb.moveUp();
+        _ = try eb.redo();
+        try std.testing.expectEqualStrings(initial ++ "XY", actual[0..eb.getText(&actual)]);
+        ev.resetSelection();
+        const accepted = try if (clean) eb.setTextOwned("new", mem_id) else if (eb.replaceText("new")) |_| mem_id else |err| err;
+        try std.testing.expectEqual(@as(u32, 0), ev.getViewport().?.y);
+        try std.testing.expectEqualDeep(Cursor{ .row = 0, .col = 0 }, ev.getPrimaryCursor());
+        try std.testing.expectEqual(@as(?u32, null), ev.desired_visual_col);
+        try std.testing.expectEqual(@as(usize, 1), ev.getVirtualLines().len);
+        if (clean) {
+            try std.testing.expectEqual(mem_id, accepted);
+            try std.testing.expect(!eb.canUndo());
+            try std.testing.expect(!eb.canRedo());
+            try std.testing.expectEqual(@as(usize, 0), eb.add_buffer.len);
+        }
+        try eb.insertText("!");
+        try std.testing.expectEqualStrings("!new", actual[0..eb.getText(&actual)]);
+        _ = try eb.undo();
+        try std.testing.expectEqualStrings("new", actual[0..eb.getText(&actual)]);
+        _ = try eb.redo();
+        try std.testing.expectEqualStrings("!new", actual[0..eb.getText(&actual)]);
     }
-
-    _ = ev.getVirtualLines();
-
-    const cursor = ev.getPrimaryCursor();
-    try std.testing.expectEqual(@as(u32, 9), cursor.row);
-
-    vp = ev.getViewport().?;
-    try std.testing.expect(vp.y < initial_y);
-    try std.testing.expect(cursor.row >= vp.y);
-    try std.testing.expect(cursor.row < vp.y + vp.height);
-}
-
-test "EditorView - scroll margin keeps cursor away from edges" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
-
-    var eb = try EditBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth, null);
-    defer eb.deinit();
-
-    var ev = try EditorView.init(std.testing.allocator, eb, 80, 10);
-    defer ev.deinit();
-
-    ev.setScrollMargin(0.2);
-
-    try eb.insertText("Line 0\nLine 1\nLine 2\nLine 3\nLine 4\nLine 5\nLine 6\nLine 7\nLine 8\nLine 9\nLine 10\nLine 11\nLine 12\nLine 13\nLine 14\nLine 15\nLine 16\nLine 17\nLine 18\nLine 19");
-
-    try eb.gotoLine(5);
-
-    const cursor = ev.getPrimaryCursor();
-    try std.testing.expectEqual(@as(u32, 5), cursor.row);
-
-    const vp = ev.getViewport().?;
-    const cursor_offset_in_viewport = cursor.row - vp.y;
-
-    try std.testing.expect(cursor_offset_in_viewport >= 2);
-    try std.testing.expect(cursor_offset_in_viewport < vp.height - 2);
-}
-
-test "EditorView - insertText with newlines maintains cursor visibility" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
-
-    var eb = try EditBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth, null);
-    defer eb.deinit();
-
-    var ev = try EditorView.init(std.testing.allocator, eb, 80, 5);
-    defer ev.deinit();
-
-    try eb.insertText("Line 0\nLine 1\nLine 2\nLine 3\nLine 4\nLine 5\nLine 6\nLine 7\nLine 8\nLine 9");
-
-    _ = ev.getVirtualLines();
-
-    const cursor = ev.getPrimaryCursor();
-    const vp = ev.getViewport().?;
-
-    try std.testing.expect(cursor.row >= vp.y);
-    try std.testing.expect(cursor.row < vp.y + vp.height);
-}
-
-test "EditorView - backspace at line start maintains visibility" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
-
-    var eb = try EditBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth, null);
-    defer eb.deinit();
-
-    var ev = try EditorView.init(std.testing.allocator, eb, 80, 5);
-    defer ev.deinit();
-
-    try eb.insertText("Line 0\nLine 1\nLine 2\nLine 3\nLine 4\nLine 5\nLine 6\nLine 7\nLine 8\nLine 9");
-
-    try eb.backspace();
-
-    _ = ev.getVirtualLines();
-
-    const cursor = ev.getPrimaryCursor();
-    const vp = ev.getViewport().?;
-
-    try std.testing.expect(cursor.row >= vp.y);
-    try std.testing.expect(cursor.row < vp.y + vp.height);
-}
-
-test "EditorView - deleteForward at line end maintains visibility" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
-
-    var eb = try EditBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth, null);
-    defer eb.deinit();
-
-    var ev = try EditorView.init(std.testing.allocator, eb, 80, 5);
-    defer ev.deinit();
-
-    try eb.insertText("Line 0\nLine 1\nLine 2\nLine 3\nLine 4\nLine 5\nLine 6\nLine 7\nLine 8\nLine 9");
-
-    try eb.setCursor(8, 6);
-
-    try eb.deleteForward();
-
-    _ = ev.getVirtualLines();
-
-    const cursor = ev.getPrimaryCursor();
-    const vp = ev.getViewport().?;
-
-    try std.testing.expect(cursor.row >= vp.y);
-    try std.testing.expect(cursor.row < vp.y + vp.height);
-}
-
-test "EditorView - deleteRange maintains cursor visibility" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
-
-    var eb = try EditBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth, null);
-    defer eb.deinit();
-
-    var ev = try EditorView.init(std.testing.allocator, eb, 80, 5);
-    defer ev.deinit();
-
-    try eb.insertText("Line 0\nLine 1\nLine 2\nLine 3\nLine 4\nLine 5\nLine 6\nLine 7\nLine 8\nLine 9");
-
-    try eb.deleteRange(.{ .row = 2, .col = 0 }, .{ .row = 7, .col = 6 });
-
-    _ = ev.getVirtualLines();
-
-    const cursor = ev.getPrimaryCursor();
-    const vp = ev.getViewport().?;
-
-    try std.testing.expect(cursor.row >= vp.y);
-    try std.testing.expect(cursor.row < vp.y + vp.height);
-}
-
-test "EditorView - deleteLine maintains cursor visibility" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
-
-    var eb = try EditBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth, null);
-    defer eb.deinit();
-
-    var ev = try EditorView.init(std.testing.allocator, eb, 80, 5);
-    defer ev.deinit();
-
-    try eb.insertText("Line 0\nLine 1\nLine 2\nLine 3\nLine 4\nLine 5\nLine 6\nLine 7\nLine 8\nLine 9");
-
-    try eb.gotoLine(7);
-
-    try eb.deleteLine();
-
-    _ = ev.getVirtualLines();
-
-    const cursor = ev.getPrimaryCursor();
-    const vp = ev.getViewport().?;
-
-    try std.testing.expect(cursor.row >= vp.y);
-    try std.testing.expect(cursor.row < vp.y + vp.height);
-}
-
-test "EditorView - setText resets viewport to top" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
-
-    var eb = try EditBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth, null);
-    defer eb.deinit();
-
-    var ev = try EditorView.init(std.testing.allocator, eb, 80, 5);
-    defer ev.deinit();
-
-    try eb.insertText("Line 0\nLine 1\nLine 2\nLine 3\nLine 4\nLine 5\nLine 6\nLine 7\nLine 8\nLine 9");
-
-    _ = ev.getVirtualLines();
-
-    var vp = ev.getViewport().?;
-    try std.testing.expect(vp.y > 0);
-
-    try eb.setText("New Line 0\nNew Line 1\nNew Line 2");
-
-    const cursor = ev.getPrimaryCursor();
-    try std.testing.expectEqual(@as(u32, 0), cursor.row);
-
-    _ = ev.getVirtualLines();
-
-    vp = ev.getViewport().?;
-    try std.testing.expectEqual(@as(u32, 0), vp.y);
-}
-
-test "EditorView - viewport respects total line count as max offset" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
-
-    var eb = try EditBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth, null);
-    defer eb.deinit();
-
-    var ev = try EditorView.init(std.testing.allocator, eb, 80, 10);
-    defer ev.deinit();
-
-    try eb.insertText("Line 0\nLine 1\nLine 2\nLine 3\nLine 4");
-
-    try eb.gotoLine(4);
-
-    const vp = ev.getViewport().?;
-    try std.testing.expectEqual(@as(u32, 0), vp.y);
-}
-
-test "EditorView - horizontal movement doesn't affect vertical scroll" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
-
-    var eb = try EditBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth, null);
-    defer eb.deinit();
-
-    var ev = try EditorView.init(std.testing.allocator, eb, 80, 10);
-    defer ev.deinit();
-
-    try eb.insertText("Line 0\nLine 1\nLine 2\nLine 3\nLine 4");
-
-    try eb.setCursor(2, 0);
-
-    const vp_before = ev.getViewport().?;
-
-    eb.moveRight();
-    eb.moveRight();
-    eb.moveRight();
-
-    const vp_after = ev.getViewport().?;
-    try std.testing.expectEqual(vp_before.y, vp_after.y);
-}
-
-test "EditorView - cursor at boundaries doesn't cause invalid viewport" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
-
-    var eb = try EditBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth, null);
-    defer eb.deinit();
-
-    var ev = try EditorView.init(std.testing.allocator, eb, 80, 10);
-    defer ev.deinit();
-
-    try eb.setCursor(0, 0);
-
-    var vp = ev.getViewport().?;
-    try std.testing.expectEqual(@as(u32, 0), vp.y);
-
-    try eb.insertText("First line");
-
-    try eb.setCursor(0, 0);
-
-    vp = ev.getViewport().?;
-    try std.testing.expectEqual(@as(u32, 0), vp.y);
-
-    eb.moveLeft();
-    vp = ev.getViewport().?;
-    try std.testing.expectEqual(@as(u32, 0), vp.y);
-
-    eb.moveUp();
-    vp = ev.getViewport().?;
-    try std.testing.expectEqual(@as(u32, 0), vp.y);
-}
-
-test "EditorView - rapid cursor movements maintain visibility" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
-
-    var eb = try EditBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth, null);
-    defer eb.deinit();
-
-    var ev = try EditorView.init(std.testing.allocator, eb, 80, 10);
-    defer ev.deinit();
-
-    try eb.insertText("Line 0\nLine 1\nLine 2\nLine 3\nLine 4\nLine 5\nLine 6\nLine 7\nLine 8\nLine 9\nLine 10\nLine 11\nLine 12\nLine 13\nLine 14\nLine 15\nLine 16\nLine 17\nLine 18\nLine 19\nLine 20\nLine 21\nLine 22\nLine 23\nLine 24\nLine 25\nLine 26\nLine 27\nLine 28\nLine 29");
-
-    try eb.gotoLine(0);
-    try eb.gotoLine(29);
-    try eb.gotoLine(15);
-    try eb.gotoLine(5);
-    try eb.gotoLine(25);
-
-    _ = ev.getVirtualLines();
-
-    const cursor = ev.getPrimaryCursor();
-    const vp = ev.getViewport().?;
-
-    try std.testing.expect(cursor.row >= vp.y);
-    try std.testing.expect(cursor.row < vp.y + vp.height);
 }
 
 test "EditorView - VisualCursor without wrapping" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
-    var eb = try EditBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth, null);
+    var eb = try EditBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth, null);
     defer eb.deinit();
 
     var ev = try EditorView.init(std.testing.allocator, eb, 80, 10);
@@ -474,12 +197,10 @@ test "EditorView - VisualCursor without wrapping" {
 }
 
 test "EditorView - VisualCursor with character wrapping" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
-    var eb = try EditBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth, null);
+    var eb = try EditBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth, null);
     defer eb.deinit();
 
     var ev = try EditorView.init(std.testing.allocator, eb, 20, 10);
@@ -499,12 +220,10 @@ test "EditorView - VisualCursor with character wrapping" {
 }
 
 test "EditorView - VisualCursor with word wrapping" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
-    var eb = try EditBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth, null);
+    var eb = try EditBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth, null);
     defer eb.deinit();
 
     var ev = try EditorView.init(std.testing.allocator, eb, 20, 10);
@@ -521,12 +240,10 @@ test "EditorView - VisualCursor with word wrapping" {
 }
 
 test "EditorView - moveUpVisual with wrapping" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
-    var eb = try EditBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth, null);
+    var eb = try EditBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth, null);
     defer eb.deinit();
 
     var ev = try EditorView.init(std.testing.allocator, eb, 20, 10);
@@ -551,12 +268,10 @@ test "EditorView - moveUpVisual with wrapping" {
 }
 
 test "EditorView - moveDownVisual with wrapping" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
-    var eb = try EditBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth, null);
+    var eb = try EditBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth, null);
     defer eb.deinit();
 
     var ev = try EditorView.init(std.testing.allocator, eb, 20, 10);
@@ -581,12 +296,10 @@ test "EditorView - moveDownVisual with wrapping" {
 }
 
 test "EditorView - visualToLogicalCursor conversion" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
-    var eb = try EditBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth, null);
+    var eb = try EditBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth, null);
     defer eb.deinit();
 
     var ev = try EditorView.init(std.testing.allocator, eb, 20, 10);
@@ -604,12 +317,10 @@ test "EditorView - visualToLogicalCursor conversion" {
 }
 
 test "EditorView - moveUpVisual resolves wrapped boundary with canonical conversion" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
-    var eb = try EditBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth, null);
+    var eb = try EditBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth, null);
     defer eb.deinit();
 
     var ev = try EditorView.init(std.testing.allocator, eb, 10, 10);
@@ -643,12 +354,10 @@ test "EditorView - moveUpVisual resolves wrapped boundary with canonical convers
 }
 
 test "EditorView - moveDownVisual resolves wrapped boundary with canonical conversion" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
-    var eb = try EditBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth, null);
+    var eb = try EditBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth, null);
     defer eb.deinit();
 
     var ev = try EditorView.init(std.testing.allocator, eb, 10, 10);
@@ -673,12 +382,10 @@ test "EditorView - moveDownVisual resolves wrapped boundary with canonical conve
 }
 
 test "EditorView - consumed whitespace cursor columns clamp to preceding row" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
-    var eb = try EditBuffer.init(std.testing.allocator, pool, link_pool, .unicode, null);
+    var eb = try EditBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .unicode, null);
     defer eb.deinit();
     var ev = try EditorView.init(std.testing.allocator, eb, 5, 2);
     defer ev.deinit();
@@ -716,7 +423,7 @@ test "EditorView - consumed whitespace cursor columns clamp to preceding row" {
         std.testing.allocator,
         5,
         2,
-        .{ .pool = pool, .width_method = .unicode },
+        .{ .link_pool = &pools.links, .pool = &pools.graphemes, .width_method = .unicode },
     );
     defer opt_buffer.deinit();
     opt_buffer.clear(ansi.rgbaFromFloats(0.0, 0.0, 0.0, 1.0), 32);
@@ -724,12 +431,10 @@ test "EditorView - consumed whitespace cursor columns clamp to preceding row" {
 }
 
 test "EditorView - moveUpVisual at top boundary" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
-    var eb = try EditBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth, null);
+    var eb = try EditBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth, null);
     defer eb.deinit();
 
     var ev = try EditorView.init(std.testing.allocator, eb, 20, 10);
@@ -749,12 +454,10 @@ test "EditorView - moveUpVisual at top boundary" {
 }
 
 test "EditorView - moveDownVisual at bottom boundary" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
-    var eb = try EditBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth, null);
+    var eb = try EditBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth, null);
     defer eb.deinit();
 
     var ev = try EditorView.init(std.testing.allocator, eb, 20, 10);
@@ -773,12 +476,10 @@ test "EditorView - moveDownVisual at bottom boundary" {
 }
 
 test "EditorView - VisualCursor preserves desired column across wrapped lines" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
-    var eb = try EditBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth, null);
+    var eb = try EditBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth, null);
     defer eb.deinit();
 
     var ev = try EditorView.init(std.testing.allocator, eb, 20, 10);
@@ -800,12 +501,10 @@ test "EditorView - VisualCursor preserves desired column across wrapped lines" {
 }
 
 test "EditorView - VisualCursor with multiple logical lines and wrapping" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
-    var eb = try EditBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth, null);
+    var eb = try EditBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth, null);
     defer eb.deinit();
 
     var ev = try EditorView.init(std.testing.allocator, eb, 20, 10);
@@ -824,12 +523,10 @@ test "EditorView - VisualCursor with multiple logical lines and wrapping" {
 }
 
 test "EditorView - logicalToVisualCursor handles cursor past line end" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
-    var eb = try EditBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth, null);
+    var eb = try EditBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth, null);
     defer eb.deinit();
 
     var ev = try EditorView.init(std.testing.allocator, eb, 80, 10);
@@ -843,12 +540,10 @@ test "EditorView - logicalToVisualCursor handles cursor past line end" {
 }
 
 test "EditorView - getTextBufferView returns correct view" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
-    var eb = try EditBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth, null);
+    var eb = try EditBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth, null);
     defer eb.deinit();
 
     var ev = try EditorView.init(std.testing.allocator, eb, 80, 10);
@@ -860,12 +555,10 @@ test "EditorView - getTextBufferView returns correct view" {
 }
 
 test "EditorView - getEditBuffer returns correct buffer" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
-    var eb = try EditBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth, null);
+    var eb = try EditBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth, null);
     defer eb.deinit();
 
     var ev = try EditorView.init(std.testing.allocator, eb, 80, 10);
@@ -875,36 +568,113 @@ test "EditorView - getEditBuffer returns correct buffer" {
     try std.testing.expect(returned_eb == eb);
 }
 
-test "EditorView - setViewportSize maintains cursor visibility" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
+test "EditorView - small viewport cursor movement preserves scrolling margins" {
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
-    var eb = try EditBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth, null);
+    const eb = try EditBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth, null);
     defer eb.deinit();
-
-    var ev = try EditorView.init(std.testing.allocator, eb, 80, 10);
+    const ev = try EditorView.init(std.testing.allocator, eb, 20, 1);
     defer ev.deinit();
+    try eb.setText("Line 0\nLine 1\nLine 2\nLine 3\nLine 4\nLine 5\nLine 6\nLine 7\nLine 8\nLine 9\nLine 10\nLine 11\nLine 12\nLine 13\nLine 14");
 
-    try eb.insertText("Line 0\nLine 1\nLine 2\nLine 3\nLine 4\nLine 5\nLine 6\nLine 7\nLine 8\nLine 9\nLine 10\nLine 11\nLine 12\nLine 13\nLine 14");
+    for ([_]f32{ 0, 0.2, 0.5 }) |margin| {
+        ev.setScrollMargin(margin);
+        for ([_]u32{ 1, 2, 3, 10 }) |height| {
+            const margin_lines = if (height == 1) 0 else @max(1, @as(u32, @intFromFloat(@as(f32, @floatFromInt(height)) * margin)));
+            try eb.setCursor(14, 3);
+            ev.setViewport(.{ .x = 0, .y = 0, .width = 20, .height = height }, true);
+            try std.testing.expectEqual(height - margin_lines - 1, ev.getPrimaryCursor().row);
+            try std.testing.expectEqual(@as(u32, 3), ev.getPrimaryCursor().col);
+            try std.testing.expectEqual(@as(u32, 0), ev.getViewport().?.y);
 
-    try eb.gotoLine(10);
+            try eb.setCursor(0, 3);
+            ev.setViewport(.{ .x = 0, .y = 3, .width = 20, .height = height }, true);
+            try std.testing.expectEqual(3 + margin_lines, ev.getPrimaryCursor().row);
+            try std.testing.expectEqual(@as(u32, 3), ev.getPrimaryCursor().col);
+            try std.testing.expectEqual(@as(u32, 3), ev.getViewport().?.y);
 
-    ev.setViewportSize(80, 5);
+            if (height == 1) {
+                ev.updateBeforeRender();
+                try std.testing.expectEqual(@as(u32, 3), ev.getViewport().?.y);
+                ev.moveDownVisual();
+                try std.testing.expectEqual(@as(u32, 4), ev.getPrimaryCursor().row);
+                try std.testing.expectEqual(@as(u32, 4), ev.getViewport().?.y);
+                ev.moveUpVisual();
+                try std.testing.expectEqual(@as(u32, 3), ev.getPrimaryCursor().row);
+                try std.testing.expectEqual(@as(u32, 3), ev.getViewport().?.y);
+            }
+        }
+    }
+}
 
-    const vp = ev.getViewport().?;
-    try std.testing.expectEqual(@as(u32, 80), vp.width);
-    try std.testing.expectEqual(@as(u32, 5), vp.height);
+test "EditorView - small viewport keeps a visible wrapped cursor in place" {
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
+
+    const eb = try EditBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth, null);
+    defer eb.deinit();
+    const ev = try EditorView.init(std.testing.allocator, eb, 5, 1);
+    defer ev.deinit();
+    ev.setScrollMargin(0.2);
+    try eb.setText("abcd efgh ijkl");
+
+    for ([_]text_buffer.WrapMode{ .char, .word }) |mode| {
+        ev.setWrapMode(mode);
+        try eb.setCursor(0, 1);
+        ev.moveDownVisual();
+        try std.testing.expectEqual(@as(u32, 1), ev.getViewport().?.y);
+        const cursor = ev.getPrimaryCursor();
+        ev.setViewport(ev.getViewport(), true);
+        try std.testing.expectEqualDeep(cursor, ev.getPrimaryCursor());
+        try std.testing.expectEqual(@as(u32, 0), ev.getVisualCursor().visual_row);
+        try std.testing.expectEqual(@as(u32, 1), ev.getViewport().?.y);
+        ev.moveUpVisual();
+        try std.testing.expectEqual(@as(u32, 1), ev.getPrimaryCursor().col);
+        try std.testing.expectEqual(@as(u32, 0), ev.getViewport().?.y);
+    }
+}
+
+test "EditorView - small viewport accepts empty buffers and zero dimensions" {
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
+
+    const eb = try EditBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth, null);
+    defer eb.deinit();
+    const ev = try EditorView.init(std.testing.allocator, eb, 20, 1);
+    defer ev.deinit();
+    ev.setScrollMargin(0.2);
+
+    ev.setViewport(ev.getViewport(), true);
+    ev.moveDownVisual();
+    ev.moveUpVisual();
+    try std.testing.expectEqual(@as(u32, 0), ev.getPrimaryCursor().offset);
+    try std.testing.expectEqual(@as(u32, 0), ev.getViewport().?.y);
+
+    for ([_][]const u8{ "", "abc\ndef" }) |text| {
+        try eb.setText(text);
+        if (text.len > 0) try eb.setCursor(1, 2);
+        const cursor = ev.getPrimaryCursor();
+        for ([_]Viewport{
+            .{ .x = 0, .y = 0, .width = 20, .height = 0 },
+            .{ .x = 0, .y = 0, .width = 0, .height = 1 },
+        }) |vp| {
+            ev.setViewport(vp, true);
+            ev.updateBeforeRender();
+            try std.testing.expectEqualDeep(cursor, ev.getPrimaryCursor());
+            try std.testing.expectEqualDeep(vp, ev.getViewport().?);
+        }
+        ev.setViewport(null, true);
+        try std.testing.expectEqualDeep(cursor, ev.getPrimaryCursor());
+        try std.testing.expectEqual(@as(?Viewport, null), ev.getViewport());
+    }
 }
 
 test "EditorView - moveDownVisual across empty line preserves desired column" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
-    var eb = try EditBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth, null);
+    var eb = try EditBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth, null);
     defer eb.deinit();
 
     var ev = try EditorView.init(std.testing.allocator, eb, 80, 10);
@@ -931,12 +701,10 @@ test "EditorView - moveDownVisual across empty line preserves desired column" {
 }
 
 test "EditorView - moveUpVisual across empty line preserves desired column" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
-    var eb = try EditBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth, null);
+    var eb = try EditBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth, null);
     defer eb.deinit();
 
     var ev = try EditorView.init(std.testing.allocator, eb, 80, 10);
@@ -963,12 +731,10 @@ test "EditorView - moveUpVisual across empty line preserves desired column" {
 }
 
 test "EditorView - horizontal movement resets desired visual column" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
-    var eb = try EditBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth, null);
+    var eb = try EditBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth, null);
     defer eb.deinit();
 
     var ev = try EditorView.init(std.testing.allocator, eb, 80, 10);
@@ -1002,12 +768,10 @@ test "EditorView - horizontal movement resets desired visual column" {
 }
 
 test "EditorView - inserting newlines maintains rope integrity" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
-    var eb = try EditBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth, null);
+    var eb = try EditBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth, null);
     defer eb.deinit();
 
     try eb.insertText("Line 0\nLine 1\nLine 2");
@@ -1039,95 +803,11 @@ test "EditorView - inserting newlines maintains rope integrity" {
     }
 }
 
-test "EditorView - visual cursor stays in sync after scrolling and moving up" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
-
-    var eb = try EditBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth, null);
-    defer eb.deinit();
-
-    var ev = try EditorView.init(std.testing.allocator, eb, 80, 10);
-    defer ev.deinit();
-
-    try eb.insertText("Line 0\nLine 1\nLine 2\nLine 3\nLine 4");
-
-    var cursor = ev.getPrimaryCursor();
-    try std.testing.expectEqual(@as(u32, 4), cursor.row);
-    try std.testing.expectEqual(@as(u32, 6), cursor.col);
-
-    _ = ev.getVirtualLines();
-
-    var vp = ev.getViewport().?;
-    try std.testing.expectEqual(@as(u32, 0), vp.y);
-
-    var i: u32 = 0;
-    while (i < 6) : (i += 1) {
-        try eb.insertText("\n");
-        _ = ev.getVirtualLines();
-    }
-
-    cursor = ev.getPrimaryCursor();
-    try std.testing.expectEqual(@as(u32, 10), cursor.row);
-    try std.testing.expectEqual(@as(u32, 0), cursor.col);
-
-    vp = ev.getViewport().?;
-    try std.testing.expect(vp.y > 0);
-
-    const vcursor_before = ev.getVisualCursor();
-    try std.testing.expectEqual(@as(u32, 10), vcursor_before.logical_row);
-
-    ev.moveUpVisual();
-    _ = ev.getVirtualLines();
-
-    const vcursor_after_up = ev.getVisualCursor();
-    const logical_cursor_after_up = ev.getPrimaryCursor();
-
-    try std.testing.expectEqual(@as(u32, 9), logical_cursor_after_up.row);
-    try std.testing.expectEqual(@as(u32, 9), vcursor_after_up.logical_row);
-
-    try std.testing.expect(vcursor_after_up.visual_row < vcursor_before.visual_row);
-
-    try eb.insertText("X");
-    _ = ev.getVirtualLines();
-
-    const cursor_after_insert = ev.getPrimaryCursor();
-    const vcursor_after_insert = ev.getVisualCursor();
-
-    try std.testing.expectEqual(@as(u32, 9), cursor_after_insert.row);
-    try std.testing.expectEqual(@as(u32, 1), cursor_after_insert.col);
-
-    try std.testing.expectEqual(@as(u32, 9), vcursor_after_insert.logical_row);
-    try std.testing.expectEqual(@as(u32, 1), vcursor_after_insert.logical_col);
-
-    var out_buffer: [200]u8 = undefined;
-    const written = eb.getText(&out_buffer);
-    const text = out_buffer[0..written];
-
-    var line_count: u32 = 0;
-    var line_start: usize = 0;
-    for (text, 0..) |c, idx| {
-        if (c == '\n') {
-            if (line_count == 9) {
-                const line_9 = text[line_start..idx];
-                try std.testing.expect(line_9.len >= 1);
-                try std.testing.expectEqual(@as(u8, 'X'), line_9[0]);
-                break;
-            }
-            line_count += 1;
-            line_start = idx + 1;
-        }
-    }
-}
-
 test "EditorView - cursor positioning after wide grapheme" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
-    var eb = try EditBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth, null);
+    var eb = try EditBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth, null);
     defer eb.deinit();
 
     var ev = try EditorView.init(std.testing.allocator, eb, 80, 10);
@@ -1150,12 +830,10 @@ test "EditorView - cursor positioning after wide grapheme" {
 }
 
 test "EditorView - backspace after wide grapheme updates cursor correctly" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
-    var eb = try EditBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth, null);
+    var eb = try EditBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth, null);
     defer eb.deinit();
 
     var ev = try EditorView.init(std.testing.allocator, eb, 80, 10);
@@ -1180,820 +858,11 @@ test "EditorView - backspace after wide grapheme updates cursor correctly" {
     try std.testing.expectEqualStrings("ABCD", out_buffer[0..written]);
 }
 
-test "EditorView - viewport scrolling with wrapped lines: down + edit + up" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
-
-    var eb = try EditBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth, null);
-    defer eb.deinit();
-
-    var ev = try EditorView.init(std.testing.allocator, eb, 20, 10);
-    defer ev.deinit();
-
-    const tbv = ev.getTextBufferView();
-    tbv.setWrapMode(.char);
-    ev.setViewport(.{ .x = 0, .y = 0, .width = 20, .height = 10 }, true);
-
-    try eb.setText("AAAAAAAAAABBBBBBBBBBCCCCCCCCCCDDDDDDDDDDEEEEEEEEEEFFFFFFFFFFFFGGGGGGGGGGHHHHHHHHHHIIIIIIIIIIJJJJJJJJJJKKKKKKKKKKLLLLLLLLLLMMMMMMMMMMNNNNNNNNNNOOOOOOOOOOPPPPPPPPPPQQQQQQQQQQRRRRRRRRRRSSSSSSSSSSTTTTTTTTTTUUUUUUUUUUVVVVVVVVVVWWWWWWWWWWXXXXXXXXXXYYYYYYYYYYZZZZZZZZZZ");
-
-    try eb.setCursor(0, 0);
-    _ = ev.getVirtualLines();
-
-    var vp = ev.getViewport().?;
-    const initial_vp_y = vp.y;
-    try std.testing.expectEqual(@as(u32, 0), initial_vp_y);
-
-    ev.moveDownVisual();
-    ev.moveDownVisual();
-    ev.moveDownVisual();
-    _ = ev.getVirtualLines();
-
-    vp = ev.getViewport().?;
-    _ = vp.y;
-
-    _ = ev.getVisualCursor();
-
-    try eb.insertText("X");
-    _ = ev.getVirtualLines();
-
-    vp = ev.getViewport().?;
-    _ = vp.y;
-
-    ev.moveUpVisual();
-    ev.moveUpVisual();
-    ev.moveUpVisual();
-    _ = ev.getVirtualLines();
-
-    vp = ev.getViewport().?;
-    const final_vp_y = vp.y;
-
-    const vcursor_final = ev.getVisualCursor();
-
-    try std.testing.expectEqual(@as(u32, 0), vcursor_final.visual_row);
-    try std.testing.expectEqual(@as(u32, 0), final_vp_y);
-}
-
-test "EditorView - viewport scrolling with wrapped lines: aggressive down + edit + up sequence" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
-
-    var eb = try EditBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth, null);
-    defer eb.deinit();
-
-    var ev = try EditorView.init(std.testing.allocator, eb, 20, 10);
-    defer ev.deinit();
-
-    const tbv = ev.getTextBufferView();
-    tbv.setWrapMode(.char);
-    ev.setViewport(.{ .x = 0, .y = 0, .width = 20, .height = 10 }, true);
-
-    try eb.setText("AAAAAAAAAABBBBBBBBBBCCCCCCCCCCDDDDDDDDDDEEEEEEEEEEFFFFFFFFFFFFGGGGGGGGGGHHHHHHHHHHIIIIIIIIIIJJJJJJJJJJKKKKKKKKKKLLLLLLLLLLMMMMMMMMMMNNNNNNNNNNOOOOOOOOOOPPPPPPPPPPQQQQQQQQQQRRRRRRRRRRSSSSSSSSSSTTTTTTTTTTUUUUUUUUUUVVVVVVVVVVWWWWWWWWWWXXXXXXXXXXYYYYYYYYYYZZZZZZZZZZ");
-
-    try eb.setCursor(0, 0);
-    _ = ev.getVirtualLines();
-
-    const total_vlines = ev.getTotalVirtualLineCount();
-    try std.testing.expect(total_vlines > 10);
-
-    var vp = ev.getViewport().?;
-    try std.testing.expectEqual(@as(u32, 0), vp.y);
-
-    var i: u32 = 0;
-    while (i < 12) : (i += 1) {
-        ev.moveDownVisual();
-    }
-    _ = ev.getVirtualLines();
-
-    vp = ev.getViewport().?;
-    try std.testing.expect(vp.y > 0);
-
-    try eb.insertText("TEST");
-    _ = ev.getVirtualLines();
-
-    i = 0;
-    while (i < 12) : (i += 1) {
-        ev.moveUpVisual();
-    }
-    _ = ev.getVirtualLines();
-
-    vp = ev.getViewport().?;
-    const vcursor = ev.getVisualCursor();
-
-    try std.testing.expectEqual(@as(u32, 0), vcursor.visual_row);
-    try std.testing.expectEqual(@as(u32, 0), vp.y);
-}
-
-test "EditorView - viewport scrolling with wrapped lines: multiple edits and movements" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
-
-    var eb = try EditBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth, null);
-    defer eb.deinit();
-
-    var ev = try EditorView.init(std.testing.allocator, eb, 15, 8);
-    defer ev.deinit();
-
-    const tbv = ev.getTextBufferView();
-    tbv.setWrapMode(.char);
-    ev.setViewport(.{ .x = 0, .y = 0, .width = 15, .height = 8 }, true);
-
-    try eb.setText("AAAAAAAAAABBBBBBBBBBCCCCCCCCCCDDDDDDDDDDEEEEEEEEEEFFFFFFFFFFFFGGGGGGGGGGHHHHHHHHHHIIIIIIIIIIJJJJJJJJJJKKKKKKKKKKLLLLLLLLLLMMMMMMMMMMNNNNNNNNNNOOOOOOOOOOPPPPPPPPPPQQQQQQQQQQRRRRRRRRRRSSSSSSSSSSTTTTTTTTTTUUUUUUUUUUVVVVVVVVVV");
-
-    try eb.setCursor(0, 0);
-    _ = ev.getVirtualLines();
-
-    ev.moveDownVisual();
-    ev.moveDownVisual();
-    _ = ev.getVirtualLines();
-
-    try eb.insertText("A");
-    _ = ev.getVirtualLines();
-
-    ev.moveDownVisual();
-    _ = ev.getVirtualLines();
-
-    try eb.insertText("B");
-    _ = ev.getVirtualLines();
-
-    ev.moveUpVisual();
-    ev.moveUpVisual();
-    ev.moveUpVisual();
-    _ = ev.getVirtualLines();
-
-    const vp = ev.getViewport().?;
-    const vcursor = ev.getVisualCursor();
-
-    try std.testing.expectEqual(@as(u32, 0), vcursor.visual_row);
-    try std.testing.expectEqual(@as(u32, 0), vp.y);
-}
-
-test "EditorView - viewport scrolling with wrapped lines: verify viewport consistency" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
-
-    var eb = try EditBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth, null);
-    defer eb.deinit();
-
-    var ev = try EditorView.init(std.testing.allocator, eb, 20, 10);
-    defer ev.deinit();
-
-    const tbv = ev.getTextBufferView();
-    tbv.setWrapMode(.char);
-    ev.setViewport(.{ .x = 0, .y = 0, .width = 20, .height = 10 }, true);
-
-    try eb.setText("AAAAAAAAAABBBBBBBBBBCCCCCCCCCCDDDDDDDDDDEEEEEEEEEEFFFFFFFFFFFFGGGGGGGGGGHHHHHHHHHHIIIIIIIIIIJJJJJJJJJJKKKKKKKKKKLLLLLLLLLLMMMMMMMMMMNNNNNNNNNNOOOOOOOOOOPPPPPPPPPPQQQQQQQQQQRRRRRRRRRRSSSSSSSSSSTTTTTTTTTTUUUUUUUUUUVVVVVVVVVVWWWWWWWWWWXXXXXXXXXXYYYYYYYYYYZZZZZZZZZZ");
-
-    try eb.setCursor(0, 0);
-    _ = ev.getVirtualLines();
-
-    const vline_count = ev.getTotalVirtualLineCount();
-    try std.testing.expect(vline_count >= 10);
-
-    var movements_down: u32 = 0;
-    var i: u32 = 0;
-    while (i < 5) : (i += 1) {
-        const vcursor_before = ev.getVisualCursor();
-        ev.moveDownVisual();
-        const vcursor_after = ev.getVisualCursor();
-        if (true) {
-            if (vcursor_after.visual_row > vcursor_before.visual_row) {
-                movements_down += 1;
-            }
-        }
-    }
-    _ = ev.getVirtualLines();
-
-    _ = ev.getViewport().?;
-    _ = ev.getVisualCursor();
-
-    try eb.insertText("EDITED");
-    _ = ev.getVirtualLines();
-
-    i = 0;
-    while (i < movements_down) : (i += 1) {
-        ev.moveUpVisual();
-    }
-    _ = ev.getVirtualLines();
-
-    const vp_final = ev.getViewport().?;
-    const vcursor_final = ev.getVisualCursor();
-
-    try std.testing.expectEqual(@as(u32, 0), vcursor_final.visual_row);
-    try std.testing.expectEqual(@as(u32, 0), vp_final.y);
-}
-
-test "EditorView - viewport scrolling with wrapped lines: backspace after scroll" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
-
-    var eb = try EditBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth, null);
-    defer eb.deinit();
-
-    var ev = try EditorView.init(std.testing.allocator, eb, 20, 10);
-    defer ev.deinit();
-
-    const tbv = ev.getTextBufferView();
-    tbv.setWrapMode(.char);
-    ev.setViewport(.{ .x = 0, .y = 0, .width = 20, .height = 10 }, true);
-
-    try eb.setText("AAAAAAAAAABBBBBBBBBBCCCCCCCCCCDDDDDDDDDDEEEEEEEEEEFFFFFFFFFFFFGGGGGGGGGGHHHHHHHHHHIIIIIIIIIIJJJJJJJJJJKKKKKKKKKKLLLLLLLLLLMMMMMMMMMMNNNNNNNNNNOOOOOOOOOOPPPPPPPPPPQQQQQQQQQQRRRRRRRRRRSSSSSSSSSSTTTTTTTTTTUUUUUUUUUUVVVVVVVVVVWWWWWWWWWWXXXXXXXXXXYYYYYYYYYYZZZZZZZZZZ");
-
-    try eb.setCursor(0, 0);
-    _ = ev.getVirtualLines();
-
-    ev.moveDownVisual();
-    ev.moveDownVisual();
-    _ = ev.getVirtualLines();
-
-    try eb.backspace();
-    _ = ev.getVirtualLines();
-
-    ev.moveUpVisual();
-    ev.moveUpVisual();
-    _ = ev.getVirtualLines();
-
-    const vp = ev.getViewport().?;
-    const vcursor = ev.getVisualCursor();
-
-    try std.testing.expectEqual(@as(u32, 0), vcursor.visual_row);
-    try std.testing.expectEqual(@as(u32, 0), vp.y);
-}
-
-test "EditorView - viewport scrolling with wrapped lines: viewport follows cursor precisely" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
-
-    var eb = try EditBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth, null);
-    defer eb.deinit();
-
-    var ev = try EditorView.init(std.testing.allocator, eb, 20, 5);
-    defer ev.deinit();
-
-    const tbv = ev.getTextBufferView();
-    tbv.setWrapMode(.char);
-    ev.setViewport(.{ .x = 0, .y = 0, .width = 20, .height = 5 }, true);
-
-    try eb.setText("AAAAAAAAAABBBBBBBBBBCCCCCCCCCCDDDDDDDDDDEEEEEEEEEEFFFFFFFFFFFFGGGGGGGGGGHHHHHHHHHHIIIIIIIIIIJJJJJJJJJJKKKKKKKKKKLLLLLLLLLLMMMMMMMMMMNNNNNNNNNNOOOOOOOOOOPPPPPPPPPPQQQQQQQQQQRRRRRRRRRRSSSSSSSSSSTTTTTTTTTTUUUUUUUUUUVVVVVVVVVVWWWWWWWWWWXXXXXXXXXXYYYYYYYYYYZZZZZZZZZZ");
-
-    try eb.setCursor(0, 0);
-    _ = ev.getVirtualLines();
-
-    var i: u32 = 0;
-    while (i < 10) : (i += 1) {
-        ev.moveDownVisual();
-        _ = ev.getVirtualLines();
-
-        const vp = ev.getViewport().?;
-        const vcursor = ev.getVisualCursor();
-
-        try std.testing.expect(vcursor.visual_row >= 0);
-        try std.testing.expect(vcursor.visual_row < vp.height);
-    }
-
-    try eb.insertText("MIDDLE");
-    _ = ev.getVirtualLines();
-
-    const vp_middle = ev.getViewport().?;
-    const vcursor_middle = ev.getVisualCursor();
-    try std.testing.expect(vcursor_middle.visual_row >= 0);
-    try std.testing.expect(vcursor_middle.visual_row < vp_middle.height);
-
-    i = 0;
-    while (i < 10) : (i += 1) {
-        ev.moveUpVisual();
-        _ = ev.getVirtualLines();
-
-        const vp = ev.getViewport().?;
-        const vcursor = ev.getVisualCursor();
-
-        try std.testing.expect(vcursor.visual_row >= 0);
-        try std.testing.expect(vcursor.visual_row < vp.height);
-    }
-
-    const vp_final = ev.getViewport().?;
-    const vcursor_final = ev.getVisualCursor();
-
-    try std.testing.expectEqual(@as(u32, 0), vcursor_final.visual_row);
-    try std.testing.expectEqual(@as(u32, 0), vp_final.y);
-}
-
-test "EditorView - wrapped lines: specific scenario with insert and deletions" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
-
-    var eb = try EditBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth, null);
-    defer eb.deinit();
-
-    var ev = try EditorView.init(std.testing.allocator, eb, 20, 10);
-    defer ev.deinit();
-
-    const tbv = ev.getTextBufferView();
-    tbv.setWrapMode(.char);
-    ev.setViewport(.{ .x = 0, .y = 0, .width = 20, .height = 10 }, true);
-
-    try eb.setText("AAAAAAAAAABBBBBBBBBBCCCCCCCCCCDDDDDDDDDDEEEEEEEEEEFFFFFFFFFFFFGGGGGGGGGGHHHHHHHHHHIIIIIIIIIIJJJJJJJJJJKKKKKKKKKKLLLLLLLLLLMMMMMMMMMMNNNNNNNNNNOOOOOOOOOOPPPPPPPPPPQQQQQQQQQQRRRRRRRRRRSSSSSSSSSSTTTTTTTTTTUUUUUUUUUUVVVVVVVVVVWWWWWWWWWWXXXXXXXXXXYYYYYYYYYYZZZZZZZZZZ");
-
-    try eb.setCursor(0, 0);
-    _ = ev.getVirtualLines();
-
-    var vp = ev.getViewport().?;
-    try std.testing.expectEqual(@as(u32, 0), vp.y);
-
-    ev.moveDownVisual();
-    ev.moveDownVisual();
-    ev.moveDownVisual();
-    ev.moveDownVisual();
-    ev.moveDownVisual();
-    _ = ev.getVirtualLines();
-
-    vp = ev.getViewport().?;
-    const vcursor_mid = ev.getVisualCursor();
-    try std.testing.expectEqual(@as(u32, 5), vcursor_mid.visual_row);
-
-    try eb.insertText("XXX");
-    _ = ev.getVirtualLines();
-
-    vp = ev.getViewport().?;
-    const vcursor_after_insert = ev.getVisualCursor();
-    try std.testing.expect(vcursor_after_insert.visual_row >= 0);
-    try std.testing.expect(vcursor_after_insert.visual_row < vp.height);
-
-    try eb.backspace();
-    try eb.backspace();
-    try eb.backspace();
-    _ = ev.getVirtualLines();
-
-    ev.moveUpVisual();
-    ev.moveUpVisual();
-    ev.moveUpVisual();
-    ev.moveUpVisual();
-    ev.moveUpVisual();
-    _ = ev.getVirtualLines();
-
-    vp = ev.getViewport().?;
-    const vcursor_final2 = ev.getVisualCursor();
-
-    try std.testing.expectEqual(@as(u32, 0), vcursor_final2.visual_row);
-    try std.testing.expectEqual(@as(u32, 0), vp.y);
-}
-
-test "EditorView - wrapped lines: many small edits with viewport scrolling" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
-
-    var eb = try EditBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth, null);
-    defer eb.deinit();
-
-    var ev = try EditorView.init(std.testing.allocator, eb, 15, 8);
-    defer ev.deinit();
-
-    const tbv = ev.getTextBufferView();
-    tbv.setWrapMode(.char);
-    ev.setViewport(.{ .x = 0, .y = 0, .width = 15, .height = 8 }, true);
-
-    try eb.setText("AAAAAAAAAABBBBBBBBBBCCCCCCCCCCDDDDDDDDDDEEEEEEEEEEFFFFFFFFFFFFGGGGGGGGGGHHHHHHHHHHIIIIIIIIIIJJJJJJJJJJKKKKKKKKKKLLLLLLLLLLMMMMMMMMMMNNNNNNNNNNOOOOOOOOOOPPPPPPPPPPQQQQQQQQQQRRRRRRRRRRSSSSSSSSSSTTTTTTTTTTUUUUUUUUUUVVVVVVVVVV");
-
-    try eb.setCursor(0, 0);
-    _ = ev.getVirtualLines();
-
-    ev.moveDownVisual();
-    ev.moveDownVisual();
-    _ = ev.getVirtualLines();
-
-    try eb.insertText("1");
-    _ = ev.getVirtualLines();
-
-    ev.moveDownVisual();
-    _ = ev.getVirtualLines();
-
-    try eb.insertText("2");
-    _ = ev.getVirtualLines();
-
-    ev.moveDownVisual();
-    _ = ev.getVirtualLines();
-
-    try eb.insertText("3");
-    _ = ev.getVirtualLines();
-
-    ev.moveUpVisual();
-    _ = ev.getVirtualLines();
-
-    try eb.insertText("4");
-    _ = ev.getVirtualLines();
-
-    ev.moveUpVisual();
-    ev.moveUpVisual();
-    ev.moveUpVisual();
-    _ = ev.getVirtualLines();
-
-    const vp2 = ev.getViewport().?;
-    const vcursor2 = ev.getVisualCursor();
-
-    try std.testing.expectEqual(@as(u32, 0), vcursor2.visual_row);
-    try std.testing.expectEqual(@as(u32, 0), vp2.y);
-}
-
-test "EditorView - horizontal scroll: cursor moves right beyond viewport" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
-
-    var eb = try EditBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth, null);
-    defer eb.deinit();
-
-    var ev = try EditorView.init(std.testing.allocator, eb, 20, 10);
-    defer ev.deinit();
-
-    try eb.setText("This is a very long line that exceeds the viewport width of 20 characters");
-
-    try eb.setCursor(0, 0);
-    _ = ev.getVirtualLines();
-
-    var vp = ev.getViewport().?;
-    try std.testing.expectEqual(@as(u32, 0), vp.x);
-
-    try eb.setCursor(0, 50);
-    _ = ev.getVirtualLines();
-
-    vp = ev.getViewport().?;
-    try std.testing.expect(vp.x > 0);
-
-    const cursor = ev.getPrimaryCursor();
-    try std.testing.expect(cursor.col >= vp.x);
-    try std.testing.expect(cursor.col < vp.x + vp.width);
-}
-
-test "EditorView - horizontal scroll: cursor moves left to beginning" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
-
-    var eb = try EditBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth, null);
-    defer eb.deinit();
-
-    var ev = try EditorView.init(std.testing.allocator, eb, 20, 10);
-    defer ev.deinit();
-
-    try eb.setText("This is a very long line that exceeds the viewport width of 20 characters");
-
-    try eb.setCursor(0, 50);
-    _ = ev.getVirtualLines();
-
-    var vp = ev.getViewport().?;
-    try std.testing.expect(vp.x > 0);
-
-    try eb.setCursor(0, 0);
-    _ = ev.getVirtualLines();
-
-    vp = ev.getViewport().?;
-    try std.testing.expectEqual(@as(u32, 0), vp.x);
-}
-
-test "EditorView - horizontal scroll: moveRight scrolls viewport" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
-
-    var eb = try EditBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth, null);
-    defer eb.deinit();
-
-    var ev = try EditorView.init(std.testing.allocator, eb, 20, 10);
-    defer ev.deinit();
-
-    try eb.setText("AAAAAAAAAABBBBBBBBBBCCCCCCCCCCDDDDDDDDDDEEEEEEEEEEFFFFFFFFFFFFGGGGGGGGGGHHHHHHHHHHIIIIIIIIIIJJJJJJJJJJKKKKKKKKKKLLLLLLLLLLMMMMMMMMMMNNNNNNNNNNOOOOOOOOOOPPPPPPPPPP");
-
-    try eb.setCursor(0, 0);
-    _ = ev.getVirtualLines();
-
-    var vp = ev.getViewport().?;
-    try std.testing.expectEqual(@as(u32, 0), vp.x);
-
-    var i: u32 = 0;
-    while (i < 50) : (i += 1) {
-        eb.moveRight();
-    }
-
-    _ = ev.getVirtualLines();
-
-    vp = ev.getViewport().?;
-    try std.testing.expect(vp.x > 0);
-
-    const cursor = ev.getPrimaryCursor();
-    try std.testing.expectEqual(@as(u32, 50), cursor.col);
-    try std.testing.expect(cursor.col >= vp.x);
-    try std.testing.expect(cursor.col < vp.x + vp.width);
-}
-
-test "EditorView - horizontal scroll: moveLeft scrolls viewport back" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
-
-    var eb = try EditBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth, null);
-    defer eb.deinit();
-
-    var ev = try EditorView.init(std.testing.allocator, eb, 20, 10);
-    defer ev.deinit();
-
-    try eb.setText("AAAAAAAAAABBBBBBBBBBCCCCCCCCCCDDDDDDDDDDEEEEEEEEEEFFFFFFFFFFFFGGGGGGGGGGHHHHHHHHHHIIIIIIIIIIJJJJJJJJJJKKKKKKKKKKLLLLLLLLLLMMMMMMMMMMNNNNNNNNNNOOOOOOOOOOPPPPPPPPPP");
-
-    try eb.setCursor(0, 50);
-    _ = ev.getVirtualLines();
-
-    var vp = ev.getViewport().?;
-    const initial_x = vp.x;
-    try std.testing.expect(initial_x > 0);
-
-    var i: u32 = 0;
-    while (i < 30) : (i += 1) {
-        eb.moveLeft();
-    }
-
-    _ = ev.getVirtualLines();
-
-    vp = ev.getViewport().?;
-    try std.testing.expect(vp.x < initial_x);
-
-    const cursor = ev.getPrimaryCursor();
-    try std.testing.expect(cursor.col >= vp.x);
-    try std.testing.expect(cursor.col < vp.x + vp.width);
-}
-
-test "EditorView - horizontal scroll: editing in scrolled view" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
-
-    var eb = try EditBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth, null);
-    defer eb.deinit();
-
-    var ev = try EditorView.init(std.testing.allocator, eb, 20, 10);
-    defer ev.deinit();
-
-    try eb.setText("AAAAAAAAAABBBBBBBBBBCCCCCCCCCCDDDDDDDDDDEEEEEEEEEEFFFFFFFFFFFFGGGGGGGGGGHHHHHHHHHHIIIIIIIIIIJJJJJJJJJJKKKKKKKKKKLLLLLLLLLLMMMMMMMMMMNNNNNNNNNNOOOOOOOOOOPPPPPPPPPP");
-
-    try eb.setCursor(0, 50);
-    _ = ev.getVirtualLines();
-
-    var vp = ev.getViewport().?;
-    try std.testing.expect(vp.x > 0);
-
-    try eb.insertText("XYZ");
-    _ = ev.getVirtualLines();
-
-    vp = ev.getViewport().?;
-    const cursor = ev.getPrimaryCursor();
-    try std.testing.expectEqual(@as(u32, 53), cursor.col);
-    try std.testing.expect(cursor.col >= vp.x);
-    try std.testing.expect(cursor.col < vp.x + vp.width);
-
-    var out_buffer: [200]u8 = undefined;
-    const written = eb.getText(&out_buffer);
-    const text = out_buffer[0..written];
-    try std.testing.expect(std.mem.find(u8, text, "XYZ") != null);
-}
-
-test "EditorView - horizontal scroll: backspace in scrolled view" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
-
-    var eb = try EditBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth, null);
-    defer eb.deinit();
-
-    var ev = try EditorView.init(std.testing.allocator, eb, 20, 10);
-    defer ev.deinit();
-
-    try eb.setText("AAAAAAAAAABBBBBBBBBBCCCCCCCCCCDDDDDDDDDDEEEEEEEEEEFFFFFFFFFFFFGGGGGGGGGGHHHHHHHHHHIIIIIIIIIIJJJJJJJJJJKKKKKKKKKKLLLLLLLLLLMMMMMMMMMMNNNNNNNNNNOOOOOOOOOOPPPPPPPPPP");
-
-    try eb.setCursor(0, 50);
-    _ = ev.getVirtualLines();
-
-    var vp = ev.getViewport().?;
-    try std.testing.expect(vp.x > 0);
-
-    try eb.backspace();
-    try eb.backspace();
-    try eb.backspace();
-    _ = ev.getVirtualLines();
-
-    vp = ev.getViewport().?;
-    const cursor = ev.getPrimaryCursor();
-    try std.testing.expectEqual(@as(u32, 47), cursor.col);
-    try std.testing.expect(cursor.col >= vp.x);
-    try std.testing.expect(cursor.col < vp.x + vp.width);
-}
-
-test "EditorView - horizontal scroll: short lines reset scroll" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
-
-    var eb = try EditBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth, null);
-    defer eb.deinit();
-
-    var ev = try EditorView.init(std.testing.allocator, eb, 20, 10);
-    defer ev.deinit();
-
-    try eb.setText("Short line\nAAAAAAAAABBBBBBBBBBCCCCCCCCCCDDDDDDDDDDEEEEEEEEEEFFFFFFFFFFGGGGGGGGGGHHHHHHHHHHIIIIIIIIIIJJJJJJJJJJ\nAnother short");
-
-    try eb.setCursor(1, 50);
-    _ = ev.getVirtualLines();
-
-    var vp = ev.getViewport().?;
-    try std.testing.expect(vp.x > 0);
-
-    try eb.setCursor(0, 5);
-    _ = ev.getVirtualLines();
-
-    vp = ev.getViewport().?;
-    try std.testing.expect(vp.x <= 5);
-
-    try eb.setCursor(1, 50);
-    _ = ev.getVirtualLines();
-
-    vp = ev.getViewport().?;
-    try std.testing.expect(vp.x > 0);
-}
-
-test "EditorView - horizontal scroll: scroll margin works" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
-
-    var eb = try EditBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth, null);
-    defer eb.deinit();
-
-    var ev = try EditorView.init(std.testing.allocator, eb, 20, 10);
-    defer ev.deinit();
-
-    ev.setScrollMargin(0.2);
-
-    try eb.setText("AAAAAAAAAABBBBBBBBBBCCCCCCCCCCDDDDDDDDDDEEEEEEEEEEFFFFFFFFFFFFGGGGGGGGGGHHHHHHHHHHIIIIIIIIIIJJJJJJJJJJKKKKKKKKKKLLLLLLLLLLMMMMMMMMMMNNNNNNNNNNOOOOOOOOOOPPPPPPPPPP");
-
-    try eb.setCursor(0, 0);
-    _ = ev.getVirtualLines();
-
-    var i: u32 = 0;
-    while (i < 25) : (i += 1) {
-        eb.moveRight();
-    }
-
-    _ = ev.getVirtualLines();
-
-    const vp = ev.getViewport().?;
-    const cursor = ev.getPrimaryCursor();
-
-    const cursor_offset_in_viewport = cursor.col - vp.x;
-    try std.testing.expect(cursor_offset_in_viewport >= 4);
-    try std.testing.expect(cursor_offset_in_viewport < vp.width - 4);
-}
-
-test "EditorView - horizontal scroll: no scrolling with wrapping enabled" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
-
-    var eb = try EditBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth, null);
-    defer eb.deinit();
-
-    var ev = try EditorView.init(std.testing.allocator, eb, 20, 10);
-    defer ev.deinit();
-
-    ev.setWrapMode(.char);
-
-    try eb.setText("AAAAAAAAAABBBBBBBBBBCCCCCCCCCCDDDDDDDDDDEEEEEEEEEEFFFFFFFFFFFFGGGGGGGGGGHHHHHHHHHHIIIIIIIIIIJJJJJJJJJJKKKKKKKKKKLLLLLLLLLLMMMMMMMMMMNNNNNNNNNNOOOOOOOOOOPPPPPPPPPP");
-
-    try eb.setCursor(0, 50);
-    _ = ev.getVirtualLines();
-
-    const vp = ev.getViewport().?;
-    try std.testing.expectEqual(@as(u32, 0), vp.x);
-}
-
-test "EditorView - horizontal scroll: cursor position correct after scrolling" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
-
-    var eb = try EditBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth, null);
-    defer eb.deinit();
-
-    var ev = try EditorView.init(std.testing.allocator, eb, 20, 10);
-    defer ev.deinit();
-
-    try eb.setText("AAAAAAAAAABBBBBBBBBBCCCCCCCCCCDDDDDDDDDDEEEEEEEEEEFFFFFFFFFFFFGGGGGGGGGGHHHHHHHHHHIIIIIIIIIIJJJJJJJJJJKKKKKKKKKKLLLLLLLLLLMMMMMMMMMMNNNNNNNNNNOOOOOOOOOOPPPPPPPPPP");
-
-    try eb.setCursor(0, 0);
-    _ = ev.getVirtualLines();
-
-    var i: u32 = 0;
-    while (i < 50) : (i += 1) {
-        eb.moveRight();
-        _ = ev.getVirtualLines();
-
-        const cursor = ev.getPrimaryCursor();
-        const vp = ev.getViewport().?;
-        const vcursor = ev.getVisualCursor();
-
-        try std.testing.expectEqual(cursor.col, vcursor.logical_col);
-        try std.testing.expect(cursor.col >= vp.x);
-        try std.testing.expect(cursor.col < vp.x + vp.width);
-    }
-}
-
-test "EditorView - horizontal scroll: rapid movements maintain visibility" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
-
-    var eb = try EditBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth, null);
-    defer eb.deinit();
-
-    var ev = try EditorView.init(std.testing.allocator, eb, 20, 10);
-    defer ev.deinit();
-
-    try eb.setText("AAAAAAAAAABBBBBBBBBBCCCCCCCCCCDDDDDDDDDDEEEEEEEEEEFFFFFFFFFFFFGGGGGGGGGGHHHHHHHHHHIIIIIIIIIIJJJJJJJJJJKKKKKKKKKKLLLLLLLLLLMMMMMMMMMMNNNNNNNNNNOOOOOOOOOOPPPPPPPPPP");
-
-    try eb.setCursor(0, 0);
-    try eb.setCursor(0, 80);
-    try eb.setCursor(0, 40);
-    try eb.setCursor(0, 10);
-    try eb.setCursor(0, 60);
-
-    _ = ev.getVirtualLines();
-
-    const vp = ev.getViewport().?;
-    const cursor = ev.getPrimaryCursor();
-
-    try std.testing.expectEqual(@as(u32, 60), cursor.col);
-    try std.testing.expect(cursor.col >= vp.x);
-    try std.testing.expect(cursor.col < vp.x + vp.width);
-}
-
-test "EditorView - horizontal scroll: goto end of long line" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
-
-    var eb = try EditBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth, null);
-    defer eb.deinit();
-
-    var ev = try EditorView.init(std.testing.allocator, eb, 20, 10);
-    defer ev.deinit();
-
-    const long_line = "AAAAAAAAAABBBBBBBBBBCCCCCCCCCCDDDDDDDDDDEEEEEEEEEEFFFFFFFFFFFFGGGGGGGGGGHHHHHHHHHHIIIIIIIIIIJJJJJJJJJJKKKKKKKKKKLLLLLLLLLLMMMMMMMMMMNNNNNNNNNNOOOOOOOOOOPPPPPPPPPP";
-    try eb.setText(long_line);
-
-    try eb.setCursor(0, 0);
-    _ = ev.getVirtualLines();
-
-    try eb.setCursor(0, @intCast(long_line.len));
-    _ = ev.getVirtualLines();
-
-    const vp = ev.getViewport().?;
-    const cursor = ev.getPrimaryCursor();
-
-    try std.testing.expect(vp.x > 0);
-    try std.testing.expect(cursor.col >= vp.x);
-    try std.testing.expect(cursor.col < vp.x + vp.width);
-}
-
 test "EditorView - cursor at second cell of width=2 grapheme moveLeft should jump to before grapheme" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
-    var eb = try EditBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth, null);
+    var eb = try EditBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth, null);
     defer eb.deinit();
 
     var ev = try EditorView.init(std.testing.allocator, eb, 80, 24);
@@ -2032,12 +901,10 @@ test "EditorView - cursor at second cell of width=2 grapheme moveLeft should jum
 }
 
 test "EditorView - cursor should be able to land after closing paren on line with wide graphemes" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
-    var eb = try EditBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth, null);
+    var eb = try EditBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth, null);
     defer eb.deinit();
 
     var ev = try EditorView.init(std.testing.allocator, eb, 80, 24);
@@ -2074,12 +941,10 @@ test "EditorView - cursor should be able to land after closing paren on line wit
 }
 
 test "EditorView - visual cursor should stay on same line when moving to line end with wide graphemes" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
-    var eb = try EditBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth, null);
+    var eb = try EditBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth, null);
     defer eb.deinit();
 
     var ev = try EditorView.init(std.testing.allocator, eb, 80, 24);
@@ -2111,12 +976,10 @@ test "EditorView - visual cursor should stay on same line when moving to line en
 }
 
 test "EditorView - placeholder with styled text renders with correct highlights" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
-    var eb = try EditBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth, null);
+    var eb = try EditBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth, null);
     defer eb.deinit();
 
     const ss = @import("../syntax-style.zig");
@@ -2127,38 +990,14 @@ test "EditorView - placeholder with styled text renders with correct highlights"
     var ev = try EditorView.init(std.testing.allocator, eb, 80, 24);
     defer ev.deinit();
 
-    const text_part1 = "Enter ";
-    const text_part2 = "something";
-    const text_part3 = " here";
-
     const fg_gray = ansi.rgbaFromFloats(0.5, 0.5, 0.5, 1.0);
     const fg_blue = ansi.rgbaFromFloats(0.3, 0.5, 0.9, 1.0);
 
-    const chunks = [_]text_buffer.StyledChunk{
-        .{
-            .text_ptr = text_part1.ptr,
-            .text_len = text_part1.len,
-            .fg_ptr = @ptrCast(&fg_gray),
-            .bg_ptr = null,
-            .attributes = 0,
-        },
-        .{
-            .text_ptr = text_part2.ptr,
-            .text_len = text_part2.len,
-            .fg_ptr = @ptrCast(&fg_blue),
-            .bg_ptr = null,
-            .attributes = 0,
-        },
-        .{
-            .text_ptr = text_part3.ptr,
-            .text_len = text_part3.len,
-            .fg_ptr = @ptrCast(&fg_gray),
-            .bg_ptr = null,
-            .attributes = 0,
-        },
-    };
-
-    try ev.setPlaceholderStyledText(&chunks);
+    try owned_styled.setPlaceholder(ev, &.{
+        .{ .text = "Enter ", .fg = fg_gray },
+        .{ .text = "something", .fg = fg_blue },
+        .{ .text = " here", .fg = fg_gray },
+    });
 
     var out_buffer: [100]u8 = undefined;
     const written = eb.getText(&out_buffer);
@@ -2172,7 +1011,7 @@ test "EditorView - placeholder with styled text renders with correct highlights"
         std.testing.allocator,
         80,
         24,
-        .{ .pool = pool, .width_method = .wcwidth },
+        .{ .link_pool = &pools.links, .pool = &pools.graphemes, .width_method = .wcwidth },
     );
     defer opt_buffer.deinit();
 
@@ -2207,12 +1046,10 @@ test "EditorView - placeholder with styled text renders with correct highlights"
 }
 
 test "EditorView - getNextWordBoundary returns VisualCursor" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
-    var eb = try EditBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth, null);
+    var eb = try EditBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth, null);
     defer eb.deinit();
 
     var ev = try EditorView.init(std.testing.allocator, eb, 80, 10);
@@ -2229,12 +1066,10 @@ test "EditorView - getNextWordBoundary returns VisualCursor" {
 }
 
 test "EditorView - getPrevWordBoundary returns VisualCursor" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
-    var eb = try EditBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth, null);
+    var eb = try EditBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth, null);
     defer eb.deinit();
 
     var ev = try EditorView.init(std.testing.allocator, eb, 80, 10);
@@ -2250,182 +1085,11 @@ test "EditorView - getPrevWordBoundary returns VisualCursor" {
     try std.testing.expectEqual(@as(u32, 6), prev_vcursor.visual_col);
 }
 
-test "EditorView - word boundary with wrapping" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
-
-    var eb = try EditBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth, null);
-    defer eb.deinit();
-
-    var ev = try EditorView.init(std.testing.allocator, eb, 20, 10);
-    defer ev.deinit();
-
-    ev.setWrapMode(.char);
-
-    try eb.setText("This is a very long line that will wrap and has multiple words");
-    try eb.setCursor(0, 0);
-
-    const next_vcursor = ev.getNextWordBoundary();
-    try std.testing.expectEqual(@as(u32, 0), next_vcursor.logical_row);
-    try std.testing.expectEqual(@as(u32, 5), next_vcursor.logical_col);
-
-    try std.testing.expect(next_vcursor.visual_col <= 20);
-}
-
-test "EditorView - word boundary across lines" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
-
-    var eb = try EditBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth, null);
-    defer eb.deinit();
-
-    var ev = try EditorView.init(std.testing.allocator, eb, 80, 10);
-    defer ev.deinit();
-
-    try eb.insertText("Hello\nWorld");
-    try eb.setCursor(0, 5);
-
-    const next_vcursor = ev.getNextWordBoundary();
-    try std.testing.expectEqual(@as(u32, 1), next_vcursor.logical_row);
-    try std.testing.expectEqual(@as(u32, 0), next_vcursor.logical_col);
-    try std.testing.expectEqual(@as(u32, 1), next_vcursor.visual_row);
-    try std.testing.expectEqual(@as(u32, 0), next_vcursor.visual_col);
-}
-
-test "EditorView - word boundary prev across lines" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
-
-    var eb = try EditBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth, null);
-    defer eb.deinit();
-
-    var ev = try EditorView.init(std.testing.allocator, eb, 80, 10);
-    defer ev.deinit();
-
-    try eb.insertText("Hello\nWorld");
-    try eb.setCursor(1, 0);
-
-    const prev_vcursor = ev.getPrevWordBoundary();
-    try std.testing.expectEqual(@as(u32, 0), prev_vcursor.logical_row);
-    try std.testing.expectEqual(@as(u32, 5), prev_vcursor.logical_col);
-    try std.testing.expectEqual(@as(u32, 0), prev_vcursor.visual_row);
-    try std.testing.expectEqual(@as(u32, 5), prev_vcursor.visual_col);
-}
-
-test "EditorView - word boundary with punctuation" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
-
-    var eb = try EditBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth, null);
-    defer eb.deinit();
-
-    var ev = try EditorView.init(std.testing.allocator, eb, 80, 10);
-    defer ev.deinit();
-
-    try eb.insertText("self-contained multi-word");
-    try eb.setCursor(0, 0);
-
-    const next_vcursor = ev.getNextWordBoundary();
-    try std.testing.expectEqual(@as(u32, 0), next_vcursor.logical_row);
-    try std.testing.expectEqual(@as(u32, 5), next_vcursor.logical_col);
-}
-
-test "EditorView - word boundary at end of buffer" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
-
-    var eb = try EditBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth, null);
-    defer eb.deinit();
-
-    var ev = try EditorView.init(std.testing.allocator, eb, 80, 10);
-    defer ev.deinit();
-
-    try eb.insertText("Hello World");
-    try eb.setCursor(0, 11);
-
-    const next_vcursor = ev.getNextWordBoundary();
-    try std.testing.expectEqual(@as(u32, 0), next_vcursor.logical_row);
-    try std.testing.expectEqual(@as(u32, 11), next_vcursor.logical_col);
-}
-
-test "EditorView - word boundary at start of buffer" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
-
-    var eb = try EditBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth, null);
-    defer eb.deinit();
-
-    var ev = try EditorView.init(std.testing.allocator, eb, 80, 10);
-    defer ev.deinit();
-
-    try eb.insertText("Hello World");
-    try eb.setCursor(0, 0);
-
-    const prev_vcursor = ev.getPrevWordBoundary();
-    try std.testing.expectEqual(@as(u32, 0), prev_vcursor.logical_row);
-    try std.testing.expectEqual(@as(u32, 0), prev_vcursor.logical_col);
-}
-
-test "EditorView - horizontal scroll: combined vertical and horizontal scrolling" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
-
-    var eb = try EditBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth, null);
-    defer eb.deinit();
-
-    var ev = try EditorView.init(std.testing.allocator, eb, 20, 10);
-    defer ev.deinit();
-
-    const line0 = "AAAAAAAAAABBBBBBBBBBCCCCCCCCCCDDDDDDDDDDEEEEEEEEEEFFFFFFFFFFFFGGGGGGGGGGHHHHHHHHHHIIIIIIIIIIJJJJJJJJJJ";
-    const repeated_line = "\nAAAAAAAABBBBBBBBBBCCCCCCCCCCDDDDDDDDDDEEEEEEEEEEFFFFFFFFFFGGGGGGGGGGHHHHHHHHHHIIIIIIIIIIJJJJJJJJJJ";
-
-    var buffer: [3000]u8 = undefined;
-    var writer: std.Io.Writer = .fixed(&buffer);
-    try writer.writeAll(line0);
-    var i: u32 = 1;
-    while (i < 20) : (i += 1) {
-        try writer.writeAll(repeated_line);
-    }
-
-    const text = writer.buffered();
-    try eb.setText(text);
-
-    try eb.setCursor(15, 60);
-    _ = ev.getVirtualLines();
-
-    const vp = ev.getViewport().?;
-    const cursor = ev.getPrimaryCursor();
-
-    try std.testing.expect(vp.y > 0);
-    try std.testing.expect(vp.x > 0);
-
-    try std.testing.expect(cursor.row >= vp.y);
-    try std.testing.expect(cursor.row < vp.y + vp.height);
-    try std.testing.expect(cursor.col >= vp.x);
-    try std.testing.expect(cursor.col < vp.x + vp.width);
-}
-
 test "EditorView - deleteSelectedText single line" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
-    var eb_inst = try EditBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth, null);
+    var eb_inst = try EditBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth, null);
     defer eb_inst.deinit();
 
     var ev = try EditorView.init(std.testing.allocator, eb_inst, 80, 24);
@@ -2455,12 +1119,10 @@ test "EditorView - deleteSelectedText single line" {
 }
 
 test "EditorView - deleteSelectedText multi-line" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
-    var eb_inst = try EditBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth, null);
+    var eb_inst = try EditBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth, null);
     defer eb_inst.deinit();
 
     var ev = try EditorView.init(std.testing.allocator, eb_inst, 80, 24);
@@ -2482,12 +1144,10 @@ test "EditorView - deleteSelectedText multi-line" {
 }
 
 test "EditorView - deleteSelectedText with wrapping" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
-    var eb_inst = try EditBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth, null);
+    var eb_inst = try EditBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth, null);
     defer eb_inst.deinit();
 
     var ev = try EditorView.init(std.testing.allocator, eb_inst, 20, 10);
@@ -2514,12 +1174,10 @@ test "EditorView - deleteSelectedText with wrapping" {
 }
 
 test "EditorView - deleteSelectedText with viewport scrolled" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
-    var eb_inst = try EditBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth, null);
+    var eb_inst = try EditBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth, null);
     defer eb_inst.deinit();
 
     var ev = try EditorView.init(std.testing.allocator, eb_inst, 40, 5);
@@ -2546,12 +1204,10 @@ test "EditorView - deleteSelectedText with viewport scrolled" {
 }
 
 test "EditorView - deleteSelectedText with no selection" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
-    var eb_inst = try EditBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth, null);
+    var eb_inst = try EditBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth, null);
     defer eb_inst.deinit();
 
     var ev = try EditorView.init(std.testing.allocator, eb_inst, 80, 24);
@@ -2567,12 +1223,10 @@ test "EditorView - deleteSelectedText with no selection" {
 }
 
 test "EditorView - deleteSelectedText entire line" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
-    var eb_inst = try EditBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth, null);
+    var eb_inst = try EditBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth, null);
     defer eb_inst.deinit();
 
     var ev = try EditorView.init(std.testing.allocator, eb_inst, 80, 24);
@@ -2594,12 +1248,10 @@ test "EditorView - deleteSelectedText entire line" {
 }
 
 test "EditorView - deleteSelectedText respects selection with empty lines" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
-    var eb_inst = try EditBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth, null);
+    var eb_inst = try EditBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth, null);
     defer eb_inst.deinit();
 
     var ev = try EditorView.init(std.testing.allocator, eb_inst, 40, 10);
@@ -2636,12 +1288,10 @@ test "EditorView - deleteSelectedText respects selection with empty lines" {
 }
 
 test "EditorView - word wrapping with space insertion maintains cursor sync" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
-    var eb = try EditBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth, null);
+    var eb = try EditBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth, null);
     defer eb.deinit();
 
     var ev = try EditorView.init(std.testing.allocator, eb, 15, 10);
@@ -2671,12 +1321,10 @@ test "EditorView - word wrapping with space insertion maintains cursor sync" {
 }
 
 test "EditorView - getVisualCursor always returns on empty buffer" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
-    var eb = try EditBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth, null);
+    var eb = try EditBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth, null);
     defer eb.deinit();
 
     var ev = try EditorView.init(std.testing.allocator, eb, 80, 24);
@@ -2690,12 +1338,10 @@ test "EditorView - getVisualCursor always returns on empty buffer" {
 }
 
 test "EditorView - logicalToVisualCursor clamps row beyond last line" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
-    var eb = try EditBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth, null);
+    var eb = try EditBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth, null);
     defer eb.deinit();
 
     var ev = try EditorView.init(std.testing.allocator, eb, 80, 24);
@@ -2709,12 +1355,10 @@ test "EditorView - logicalToVisualCursor clamps row beyond last line" {
 }
 
 test "EditorView - logicalToVisualCursor clamps col beyond line width" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
-    var eb = try EditBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth, null);
+    var eb = try EditBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth, null);
     defer eb.deinit();
 
     var ev = try EditorView.init(std.testing.allocator, eb, 80, 24);
@@ -2728,28 +1372,214 @@ test "EditorView - logicalToVisualCursor clamps col beyond line width" {
     try std.testing.expectEqual(@as(u32, 5), vcursor.visual_col);
 }
 
-test "EditorView - placeholder shows when empty" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
+test "EditorView - placeholder initialization rejection leaves no published ownership" {
+    var pool = gp.GraphemePool.init(std.testing.allocator);
+    defer pool.deinit();
+    var links = link.LinkPool.init(std.testing.allocator);
+    defer links.deinit();
+    var fail_offset: usize = 0;
+    while (fail_offset < 64) : (fail_offset += 1) {
+        var failing = std.testing.FailingAllocator.init(std.testing.allocator, .{});
+        const eb = try EditBuffer.init(failing.allocator(), &pool, &links, .unicode, null);
+        defer eb.deinit();
+        const ev = try EditorView.init(failing.allocator(), eb, 10, 2);
+        defer ev.deinit();
+        const view = ev.getTextBufferView();
+        const lines = ev.getVirtualLines();
+        failing.fail_index = failing.alloc_index + fail_offset;
+        const result = owned_styled.setPlaceholder(ev, &.{.{ .text = "hint", .attributes = 1 }});
+        failing.fail_index = std.math.maxInt(usize);
+        if (result) |_| {
+            return;
+        } else |err| {
+            try std.testing.expectEqual(error.OutOfMemory, err);
+            try std.testing.expect(ev.placeholder_buffer == null);
+            try std.testing.expect(ev.placeholder_syntax_style == null);
+            try std.testing.expect(!ev.placeholder_active);
+            try std.testing.expectEqual(view, ev.getTextBufferView());
+            try std.testing.expectEqual(eb.tb, ev.getTextBuffer());
+            try std.testing.expectEqual(lines.ptr, ev.getVirtualLines().ptr);
+        }
+    }
+    return error.TestUnexpectedResult;
+}
 
-    var eb = try EditBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth, null);
+fn setOwnedPlaceholderForTest(ev: *EditorView, bytes: []const u8, url: []const u8) !void {
+    const allocator = ev.global_allocator;
+    const style = try text_buffer.SyntaxStyle.init(allocator);
+    errdefer style.deinit();
+    var prepared_links = link.LinkTracker.init(allocator, ev.edit_buffer.tb.link_pool);
+    defer prepared_links.deinit();
+    const id = try prepared_links.trackUrl(url);
+    const style_id = try style.registerStyle("hint", ansi.rgbaFromFloats(0.5, 0.5, 0.5, 1), null, ansi.TextAttributes.setLinkId(1, id));
+    const copy = try allocator.dupe(u8, bytes);
+    errdefer allocator.free(copy);
+    try ev.setPlaceholderOwnedStyledText(copy, style, &.{.{
+        .byte_count = @intCast(bytes.len),
+        .style_id = style_id,
+    }}, &prepared_links);
+    std.debug.assert(prepared_links.getLinkCount() == 0);
+}
+
+test "EditorView - placeholder owned replacement preserves accepted state on allocation failure" {
+    var pool = gp.GraphemePool.init(std.testing.allocator);
+    defer pool.deinit();
+    for ([_]enum { absent, visible, hidden }{ .absent, .visible, .hidden }) |initial| {
+        var succeeded = false;
+        var fail_offset: usize = 0;
+        while (fail_offset < 128) : (fail_offset += 1) {
+            var failing = std.testing.FailingAllocator.init(std.testing.allocator, .{});
+            const allocator = failing.allocator();
+            var links = link.LinkPool.init(allocator);
+            defer links.deinit();
+            const eb = try EditBuffer.init(allocator, &pool, &links, .unicode, null);
+            defer eb.deinit();
+            const ev = try EditorView.init(allocator, eb, 10, 2);
+            defer ev.deinit();
+            if (initial != .absent) {
+                try setOwnedPlaceholderForTest(ev, "old\u{754c}", "https://example.com/old");
+            }
+            if (initial == .hidden) try eb.setText("document");
+            const view = ev.getTextBufferView();
+            ev.setSelection(0, 1, null, null);
+            const lines = ev.getVirtualLines();
+            const viewport = ev.getViewport();
+            const selection = ev.getSelection();
+            const measured = try view.measureForDimensions(10, 2);
+            const old_buffer = ev.placeholder_buffer;
+            const old_style = ev.placeholder_syntax_style;
+            const active_buffer = ev.getTextBuffer();
+            const epoch = active_buffer.getContentEpoch();
+            const old_link_count = links.getLiveSlotCount();
+            var dependent = try @import("../native-renderable.zig").NativeRenderable.init();
+            defer dependent.deinit();
+            try dependent.setMeasureTarget(.{ .editor_view = ev });
+
+            failing.fail_index = failing.alloc_index + fail_offset;
+            failing.resize_fail_index = failing.resize_index;
+            const result = setOwnedPlaceholderForTest(ev, "new\u{754c}\tline\nsecond", "https://example.com/new");
+            failing.fail_index = std.math.maxInt(usize);
+            failing.resize_fail_index = std.math.maxInt(usize);
+            if (result) |_| {
+                try std.testing.expect(!failing.has_induced_failure);
+                succeeded = true;
+            } else |err| {
+                try std.testing.expectEqual(error.OutOfMemory, err);
+                try std.testing.expect(failing.has_induced_failure);
+                try std.testing.expectEqual(old_buffer, ev.placeholder_buffer);
+                try std.testing.expectEqual(old_style, ev.placeholder_syntax_style);
+                try std.testing.expectEqual(initial == .visible, ev.placeholder_active);
+                try std.testing.expectEqual(active_buffer, ev.getTextBuffer());
+                try std.testing.expectEqual(epoch, active_buffer.getContentEpoch());
+                try std.testing.expectEqualDeep(viewport, ev.getViewport());
+                try std.testing.expectEqualDeep(selection, ev.getSelection());
+                try std.testing.expectEqual(lines.ptr, ev.getVirtualLines().ptr);
+                try std.testing.expectEqualDeep(measured, try view.measureForDimensions(10, 2));
+                try std.testing.expectEqual(old_link_count, links.getLiveSlotCount());
+                if (old_buffer) |buffer| {
+                    var actual: [64]u8 = undefined;
+                    try std.testing.expectEqualStrings("old\u{754c}", actual[0..buffer.getTextRange(0, std.math.maxInt(u32), &actual)]);
+                    const highlight = buffer.getLineHighlightsSlice(0)[0];
+                    const definition = old_style.?.resolveById(highlight.style_id).?;
+                    const id = ansi.TextAttributes.getLinkId(definition.attributes);
+                    try std.testing.expectEqual(@as(u32, 1), try links.getRefcount(id));
+                    try std.testing.expectEqual(@as(u32, 5), highlight.col_end);
+                }
+                try setOwnedPlaceholderForTest(ev, "new\u{754c}\tline\nsecond", "https://example.com/new");
+            }
+            try std.testing.expectEqual(view, ev.getTextBufferView());
+            try std.testing.expectEqual(ev, dependent.measure_target.editor_view);
+            try std.testing.expectEqual(&dependent, ev.measure_dependents.?);
+            try std.testing.expectEqual(@as(u64, 1), links.getLiveSlotCount());
+            try std.testing.expectEqual(@as(usize, 1), ev.placeholder_buffer.?.mem_registry.buffers.items.len);
+            ev.clearPlaceholder();
+            try std.testing.expectEqual(eb.tb, ev.getTextBuffer());
+            try std.testing.expectEqual(ev, dependent.measure_target.editor_view);
+            try std.testing.expectEqual(@as(u64, 0), links.getLiveSlotCount());
+            if (succeeded) break;
+        }
+        try std.testing.expect(succeeded);
+    }
+}
+
+test "EditorView - placeholder owned rejection retains caller inputs and legacy rendering" {
+    const allocator = std.testing.allocator;
+    var pool = gp.GraphemePool.init(allocator);
+    defer pool.deinit();
+    var links = link.LinkPool.init(allocator);
+    defer links.deinit();
+    const eb = try EditBuffer.init(allocator, &pool, &links, .unicode, null);
+    defer eb.deinit();
+    const ev = try EditorView.init(allocator, eb, 6, 2);
+    defer ev.deinit();
+    const background = ansi.indexedColor(254, 228, 228, 228);
+    eb.tb.setDefaultBg(background);
+    const style = try text_buffer.SyntaxStyle.init(allocator);
+    var transferred = false;
+    defer if (!transferred) style.deinit();
+    var prepared_links = link.LinkTracker.init(allocator, &links);
+    defer prepared_links.deinit();
+    const id = try prepared_links.trackUrl("https://example.com/hint");
+    const style_id = try style.registerStyle("hint", null, null, ansi.TextAttributes.setLinkId(1, id));
+    const copy = try allocator.dupe(u8, "H\u{754c}");
+    defer if (!transferred) allocator.free(copy);
+    for ([_]bool{ false, true }) |has_previous| {
+        if (has_previous) try owned_styled.setPlaceholder(ev, &.{.{ .text = "legacy", .attributes = 1 }});
+        const old_buffer = ev.placeholder_buffer;
+        const old_style = ev.placeholder_syntax_style;
+        const active = ev.getTextBuffer();
+        try std.testing.expectError(error.InvalidIndex, ev.setPlaceholderOwnedStyledText(copy, style, &.{.{
+            .byte_count = @intCast(copy.len + 1),
+            .style_id = style_id,
+        }}, &prepared_links));
+        try std.testing.expectEqual(old_buffer, ev.placeholder_buffer);
+        try std.testing.expectEqual(old_style, ev.placeholder_syntax_style);
+        try std.testing.expectEqual(active, ev.getTextBuffer());
+        try std.testing.expectEqualStrings("H\u{754c}", copy);
+        try std.testing.expectEqual(@as(u32, 1), prepared_links.getLinkCount());
+        try std.testing.expectEqual(@as(u32, 1), try links.getRefcount(id));
+    }
+    try ev.setPlaceholderOwnedStyledText(copy, style, &.{.{
+        .byte_count = @intCast(copy.len),
+        .style_id = style_id,
+    }}, &prepared_links);
+    transferred = true;
+    try std.testing.expectEqual(@as(u32, 0), prepared_links.getLinkCount());
+    try std.testing.expectEqual(@as(u32, 3), ev.placeholder_buffer.?.getLength());
+    var output = try opt_buffer_mod.OptimizedBuffer.init(allocator, 6, 2, .{ .pool = &pool, .link_pool = &links, .width_method = .unicode });
+    defer output.deinit();
+    output.clear(ansi.rgbaFromFloats(0, 0, 0, 1), 32);
+    output.drawEditorView(ev, 0, 0);
+    var actual: [64]u8 = undefined;
+    const count = try output.writeResolvedChars(&actual, false);
+    try std.testing.expect(std.mem.startsWith(u8, actual[0..count], "H\u{754c}"));
+    for (0..3) |x| {
+        const cell = output.get(@intCast(x), 0).?;
+        try std.testing.expectEqual(id, ansi.TextAttributes.getLinkId(cell.attributes));
+        try std.testing.expectEqual(background, cell.bg);
+    }
+    try std.testing.expectEqual(background, output.get(5, 0).?.bg);
+    try std.testing.expectEqual(background, output.get(0, 1).?.bg);
+    try owned_styled.setPlaceholder(ev, &.{.{ .text = "legacy", .attributes = 1 }});
+    try std.testing.expectEqualStrings("legacy", actual[0..ev.getTextBuffer().getTextRange(0, std.math.maxInt(u32), &actual)]);
+    ev.clearPlaceholder();
+    try std.testing.expectEqual(eb.tb, ev.getTextBuffer());
+}
+
+test "EditorView - placeholder shows when empty" {
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
+
+    var eb = try EditBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth, null);
     defer eb.deinit();
 
     var ev = try EditorView.init(std.testing.allocator, eb, 80, 10);
     defer ev.deinit();
 
-    const text = "Enter text here...";
-    const gray_color = ansi.rgbaFromFloats(0.4, 0.4, 0.4, 1.0);
-    const chunks = [_]text_buffer.StyledChunk{.{
-        .text_ptr = text.ptr,
-        .text_len = text.len,
-        .fg_ptr = @ptrCast(&gray_color),
-        .bg_ptr = null,
-        .attributes = 0,
-    }};
-    try ev.setPlaceholderStyledText(&chunks);
+    try owned_styled.setPlaceholder(ev, &.{.{
+        .text = "Enter text here...",
+        .fg = ansi.rgbaFromFloats(0.4, 0.4, 0.4, 1.0),
+    }});
 
     var out_buffer: [100]u8 = undefined;
     const text_len = eb.getText(&out_buffer);
@@ -2761,71 +1591,44 @@ test "EditorView - placeholder shows when empty" {
 }
 
 test "EditorView - placeholder cleared when set to empty" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
-    var eb = try EditBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth, null);
+    var eb = try EditBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth, null);
     defer eb.deinit();
 
     var ev = try EditorView.init(std.testing.allocator, eb, 80, 10);
     defer ev.deinit();
 
-    const text = "Placeholder";
-    const gray_color = ansi.rgbaFromFloats(0.4, 0.4, 0.4, 1.0);
-    const chunks = [_]text_buffer.StyledChunk{.{
-        .text_ptr = text.ptr,
-        .text_len = text.len,
-        .fg_ptr = @ptrCast(&gray_color),
-        .bg_ptr = null,
-        .attributes = 0,
-    }};
-    try ev.setPlaceholderStyledText(&chunks);
+    try owned_styled.setPlaceholder(ev, &.{.{
+        .text = "Placeholder",
+        .fg = ansi.rgbaFromFloats(0.4, 0.4, 0.4, 1.0),
+    }});
 
     try std.testing.expect(ev.placeholder_buffer != null);
 
-    const empty_chunks: [0]text_buffer.StyledChunk = .{};
-    try ev.setPlaceholderStyledText(&empty_chunks);
+    ev.clearPlaceholder();
 
     try std.testing.expect(ev.placeholder_buffer == null);
 }
 
 test "EditorView - placeholder with styled text" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
-    var eb = try EditBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth, null);
+    var eb = try EditBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth, null);
     defer eb.deinit();
 
     var ev = try EditorView.init(std.testing.allocator, eb, 80, 10);
     defer ev.deinit();
 
-    const text1 = "Hello ";
-    const text2 = "World";
     const red_color = ansi.rgbaFromFloats(1.0, 0.0, 0.0, 1.0);
     const blue_color = ansi.rgbaFromFloats(0.0, 0.0, 1.0, 1.0);
 
-    const chunks = [_]text_buffer.StyledChunk{
-        .{
-            .text_ptr = text1.ptr,
-            .text_len = text1.len,
-            .fg_ptr = @ptrCast(&red_color),
-            .bg_ptr = null,
-            .attributes = 0,
-        },
-        .{
-            .text_ptr = text2.ptr,
-            .text_len = text2.len,
-            .fg_ptr = @ptrCast(&blue_color),
-            .bg_ptr = null,
-            .attributes = 0,
-        },
-    };
-
-    try ev.setPlaceholderStyledText(&chunks);
+    try owned_styled.setPlaceholder(ev, &.{
+        .{ .text = "Hello ", .fg = red_color },
+        .{ .text = "World", .fg = blue_color },
+    });
 
     try std.testing.expect(ev.placeholder_buffer != null);
     const placeholder = ev.placeholder_buffer.?;
@@ -2833,27 +1636,19 @@ test "EditorView - placeholder with styled text" {
 }
 
 test "EditorView - placeholder renders to buffer when empty" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
-    var eb = try EditBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth, null);
+    var eb = try EditBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth, null);
     defer eb.deinit();
 
     var ev = try EditorView.init(std.testing.allocator, eb, 80, 10);
     defer ev.deinit();
 
-    const placeholder_text = "Type something...";
-    const gray_color = ansi.rgbaFromFloats(0.5, 0.5, 0.5, 1.0);
-    const placeholder_chunks = [_]text_buffer.StyledChunk{.{
-        .text_ptr = placeholder_text.ptr,
-        .text_len = placeholder_text.len,
-        .fg_ptr = @ptrCast(&gray_color),
-        .bg_ptr = null,
-        .attributes = 0,
-    }};
-    try ev.setPlaceholderStyledText(&placeholder_chunks);
+    try owned_styled.setPlaceholder(ev, &.{.{
+        .text = "Type something...",
+        .fg = ansi.rgbaFromFloats(0.5, 0.5, 0.5, 1.0),
+    }});
 
     try std.testing.expect(ev.placeholder_buffer != null);
     try std.testing.expect(ev.placeholder_active);
@@ -2862,7 +1657,7 @@ test "EditorView - placeholder renders to buffer when empty" {
         std.testing.allocator,
         80,
         10,
-        .{ .pool = pool, .width_method = .wcwidth },
+        .{ .link_pool = &pools.links, .pool = &pools.graphemes, .width_method = .wcwidth },
     );
     defer opt_buffer.deinit();
 
@@ -2889,12 +1684,10 @@ test "EditorView - placeholder renders to buffer when empty" {
 }
 
 test "EditorView - placeholder shrink clears tail and preserves background" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
-    var eb = try EditBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth, null);
+    var eb = try EditBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth, null);
     defer eb.deinit();
 
     var ev = try EditorView.init(std.testing.allocator, eb, 80, 10);
@@ -2905,26 +1698,11 @@ test "EditorView - placeholder shrink clears tail and preserves background" {
     const fg = ansi.rgbaFromFloats(0.6, 0.6, 0.6, 1.0);
     const panel_bg = ansi.rgbaFromFloats(0.14, 0.14, 0.16, 1.0);
 
-    const long_chunks = [_]text_buffer.StyledChunk{.{
-        .text_ptr = long_text.ptr,
-        .text_len = long_text.len,
-        .fg_ptr = @ptrCast(&fg),
-        .bg_ptr = null,
-        .attributes = 0,
-    }};
-    const short_chunks = [_]text_buffer.StyledChunk{.{
-        .text_ptr = short_text.ptr,
-        .text_len = short_text.len,
-        .fg_ptr = @ptrCast(&fg),
-        .bg_ptr = null,
-        .attributes = 0,
-    }};
-
     var opt_buffer = try opt_buffer_mod.OptimizedBuffer.init(
         std.testing.allocator,
         120,
         10,
-        .{ .pool = pool, .width_method = .wcwidth },
+        .{ .link_pool = &pools.links, .pool = &pools.graphemes, .width_method = .wcwidth },
     );
     defer opt_buffer.deinit();
 
@@ -2935,7 +1713,7 @@ test "EditorView - placeholder shrink clears tail and preserves background" {
         opt_buffer.set(x, 0, .{ .char = 32, .fg = fg, .bg = panel_bg, .attributes = 0 });
     }
 
-    try ev.setPlaceholderStyledText(&long_chunks);
+    try owned_styled.setPlaceholder(ev, &.{.{ .text = long_text, .fg = fg }});
     opt_buffer.drawEditorView(ev, 0, 0);
 
     x = 0;
@@ -2943,7 +1721,7 @@ test "EditorView - placeholder shrink clears tail and preserves background" {
         opt_buffer.set(x, 0, .{ .char = 32, .fg = fg, .bg = panel_bg, .attributes = 0 });
     }
 
-    try ev.setPlaceholderStyledText(&short_chunks);
+    try owned_styled.setPlaceholder(ev, &.{.{ .text = short_text, .fg = fg }});
     opt_buffer.drawEditorView(ev, 0, 0);
 
     var out_buffer: [1600]u8 = undefined;
@@ -2960,12 +1738,10 @@ test "EditorView - placeholder shrink clears tail and preserves background" {
 }
 
 test "EditorView - translucent default background fills viewport without double blending" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
-    var eb = try EditBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth, null);
+    var eb = try EditBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth, null);
     defer eb.deinit();
 
     var ev = try EditorView.init(std.testing.allocator, eb, 6, 2);
@@ -2978,7 +1754,7 @@ test "EditorView - translucent default background fills viewport without double 
         std.testing.allocator,
         6,
         2,
-        .{ .pool = pool, .width_method = .wcwidth },
+        .{ .link_pool = &pools.links, .pool = &pools.graphemes, .width_method = .wcwidth },
     );
     defer opt_buffer.deinit();
 
@@ -2997,35 +1773,26 @@ test "EditorView - translucent default background fills viewport without double 
 }
 
 test "EditorView - placeholder uses original default background fill" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
-    var eb = try EditBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth, null);
+    var eb = try EditBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth, null);
     defer eb.deinit();
 
     var ev = try EditorView.init(std.testing.allocator, eb, 6, 2);
     defer ev.deinit();
 
-    const placeholder_text = "hint";
-    const placeholder_fg = ansi.rgbaFromFloats(0.5, 0.5, 0.5, 1.0);
-    const placeholder_chunks = [_]text_buffer.StyledChunk{.{
-        .text_ptr = placeholder_text.ptr,
-        .text_len = placeholder_text.len,
-        .fg_ptr = @ptrCast(&placeholder_fg),
-        .bg_ptr = null,
-        .attributes = 0,
-    }};
-
     eb.tb.setDefaultBg(ansi.indexedColor(254, 228, 228, 228));
-    try ev.setPlaceholderStyledText(&placeholder_chunks);
+    try owned_styled.setPlaceholder(ev, &.{.{
+        .text = "hint",
+        .fg = ansi.rgbaFromFloats(0.5, 0.5, 0.5, 1.0),
+    }});
 
     var opt_buffer = try opt_buffer_mod.OptimizedBuffer.init(
         std.testing.allocator,
         6,
         2,
-        .{ .pool = pool, .width_method = .wcwidth },
+        .{ .link_pool = &pools.links, .pool = &pools.graphemes, .width_method = .wcwidth },
     );
     defer opt_buffer.deinit();
 
@@ -3048,12 +1815,10 @@ test "EditorView - placeholder uses original default background fill" {
 }
 
 test "EditorView - tab indicator set and get" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
-    var eb = try EditBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth, null);
+    var eb = try EditBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth, null);
     defer eb.deinit();
 
     var ev = try EditorView.init(std.testing.allocator, eb, 80, 24);
@@ -3070,12 +1835,10 @@ test "EditorView - tab indicator set and get" {
 }
 
 test "EditorView - tab indicator renders in buffer" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
-    var eb = try EditBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth, null);
+    var eb = try EditBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth, null);
     defer eb.deinit();
 
     var ev = try EditorView.init(std.testing.allocator, eb, 80, 24);
@@ -3091,7 +1854,7 @@ test "EditorView - tab indicator renders in buffer" {
         std.testing.allocator,
         20,
         10,
-        .{ .pool = pool, .width_method = .wcwidth },
+        .{ .link_pool = &pools.links, .pool = &pools.graphemes, .width_method = .wcwidth },
     );
     defer opt_buffer.deinit();
 
@@ -3125,12 +1888,10 @@ test "EditorView - tab indicator renders in buffer" {
 }
 
 test "EditorView - word wrapping during editing: typing with incremental wrapping" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
-    var eb = try EditBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth, null);
+    var eb = try EditBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth, null);
     defer eb.deinit();
 
     var ev = try EditorView.init(std.testing.allocator, eb, 17, 10);
@@ -3254,187 +2015,11 @@ test "EditorView - word wrapping during editing: typing with incremental wrappin
     try std.testing.expectEqualStrings("Hello world ddddddddd", out_buffer[0..written]);
 }
 
-test "EditorView - cursor movement with emoji skin tone modifier wcwidth" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
-
-    var eb = try EditBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth, null);
-    defer eb.deinit();
-
-    var ev = try EditorView.init(std.testing.allocator, eb, 80, 24);
-    defer ev.deinit();
-
-    // "👋🏿" is a waving hand emoji with dark skin tone modifier
-    // In wcwidth mode (tmux-style), each codepoint has width 2, total = 4 columns
-    // IMPORTANT: In wcwidth mode, each codepoint is treated as a separate char for cursor movement
-    try eb.setText("👋🏿");
-
-    // Start at position 0 (before the first codepoint)
-    try eb.setCursor(0, 0);
-    var cursor = eb.getPrimaryCursor();
-    try std.testing.expectEqual(@as(u32, 0), cursor.col);
-
-    // Move right once - should move past the FIRST codepoint (2 columns)
-    // In wcwidth mode, each codepoint is a separate char, so this moves to col 2
-    eb.moveRight();
-    cursor = eb.getPrimaryCursor();
-    try std.testing.expectEqual(@as(u32, 2), cursor.col);
-
-    // Move right again - should move past the SECOND codepoint (2 more columns)
-    eb.moveRight();
-    cursor = eb.getPrimaryCursor();
-    try std.testing.expectEqual(@as(u32, 4), cursor.col);
-
-    // Move left once - should move back to col 2 (before second codepoint)
-    eb.moveLeft();
-    cursor = eb.getPrimaryCursor();
-    try std.testing.expectEqual(@as(u32, 2), cursor.col);
-
-    // Move left again - should move back to the beginning
-    eb.moveLeft();
-    cursor = eb.getPrimaryCursor();
-    try std.testing.expectEqual(@as(u32, 0), cursor.col);
-}
-
-test "EditorView - cursor movement with emoji skin tone modifier unicode" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
-
-    var eb = try EditBuffer.init(std.testing.allocator, pool, link_pool, .unicode, null);
-    defer eb.deinit();
-
-    var ev = try EditorView.init(std.testing.allocator, eb, 80, 24);
-    defer ev.deinit();
-
-    // "👋🏿" is a waving hand emoji with dark skin tone modifier
-    // In unicode mode (modern terminals), skin tone is 0-width, total = 2 columns
-    try eb.setText("👋🏿");
-
-    // Start at position 0 (before the grapheme cluster)
-    try eb.setCursor(0, 0);
-    var cursor = eb.getPrimaryCursor();
-    try std.testing.expectEqual(@as(u32, 0), cursor.col);
-
-    // Move right once - should move past the entire grapheme cluster (2 columns in unicode)
-    eb.moveRight();
-    cursor = eb.getPrimaryCursor();
-    try std.testing.expectEqual(@as(u32, 2), cursor.col);
-
-    // Move left once - should move back to the beginning
-    eb.moveLeft();
-    cursor = eb.getPrimaryCursor();
-    try std.testing.expectEqual(@as(u32, 0), cursor.col);
-}
-
-test "EditorView - backspace emoji with skin tone modifier wcwidth" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
-
-    var eb = try EditBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth, null);
-    defer eb.deinit();
-
-    var ev = try EditorView.init(std.testing.allocator, eb, 80, 24);
-    defer ev.deinit();
-
-    // "👋🏿" is a waving hand emoji with dark skin tone modifier
-    // In wcwidth mode, this renders as 4 columns (2+2)
-    // In wcwidth mode, each codepoint is treated as a separate char
-    try eb.setText("👋🏿");
-
-    // Move cursor to col 2 (after first codepoint)
-    eb.moveRight();
-    var cursor = eb.getPrimaryCursor();
-    try std.testing.expectEqual(@as(u32, 2), cursor.col);
-
-    // Move cursor to col 4 (after second codepoint)
-    eb.moveRight();
-    cursor = eb.getPrimaryCursor();
-    try std.testing.expectEqual(@as(u32, 4), cursor.col);
-
-    // Get text before backspace to verify it contains the emoji
-    var buffer_before: [100]u8 = undefined;
-    const len_before = eb.getText(&buffer_before);
-    try std.testing.expectEqualStrings("👋🏿", buffer_before[0..len_before]);
-
-    // First backspace should delete just the skin tone modifier (second codepoint)
-    try eb.backspace();
-
-    // Cursor should now be at position 2 (after the first codepoint)
-    cursor = eb.getPrimaryCursor();
-    try std.testing.expectEqual(@as(u32, 2), cursor.col);
-
-    // Text buffer should contain just the hand emoji without skin tone
-    var buffer_middle: [100]u8 = undefined;
-    const len_middle = eb.getText(&buffer_middle);
-    try std.testing.expectEqualStrings("👋", buffer_middle[0..len_middle]);
-
-    // Second backspace should delete the hand emoji (first codepoint)
-    try eb.backspace();
-
-    // Cursor should now be at position 0
-    cursor = eb.getPrimaryCursor();
-    try std.testing.expectEqual(@as(u32, 0), cursor.col);
-
-    // Text buffer should be empty
-    var buffer_after: [100]u8 = undefined;
-    const len_after = eb.getText(&buffer_after);
-    try std.testing.expectEqual(@as(usize, 0), len_after);
-    try std.testing.expectEqualStrings("", buffer_after[0..len_after]);
-}
-
-test "EditorView - backspace emoji with skin tone modifier unicode" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
-
-    var eb = try EditBuffer.init(std.testing.allocator, pool, link_pool, .unicode, null);
-    defer eb.deinit();
-
-    var ev = try EditorView.init(std.testing.allocator, eb, 80, 24);
-    defer ev.deinit();
-
-    // "👋🏿" is a waving hand emoji with dark skin tone modifier
-    // In unicode mode, this renders as 2 columns (modifier is 0-width)
-    try eb.setText("👋🏿");
-
-    // Move cursor to AFTER the grapheme cluster (2 columns total in unicode mode)
-    eb.moveRight();
-    var cursor = eb.getPrimaryCursor();
-    try std.testing.expectEqual(@as(u32, 2), cursor.col);
-
-    // Get text before backspace to verify it contains the emoji
-    var buffer_before: [100]u8 = undefined;
-    const len_before = eb.getText(&buffer_before);
-    try std.testing.expectEqualStrings("👋🏿", buffer_before[0..len_before]);
-
-    // Backspace should delete the entire grapheme cluster (both codepoints)
-    try eb.backspace();
-
-    // Cursor should now be at position 0
-    cursor = eb.getPrimaryCursor();
-    try std.testing.expectEqual(@as(u32, 0), cursor.col);
-
-    // Text buffer should be empty
-    var buffer_after: [100]u8 = undefined;
-    const len_after = eb.getText(&buffer_after);
-    try std.testing.expectEqual(@as(usize, 0), len_after);
-    try std.testing.expectEqualStrings("", buffer_after[0..len_after]);
-}
-
 test "EditorView - mouse selection doesn't scroll when focus is within viewport" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
-    var eb = try EditBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth, null);
+    var eb = try EditBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth, null);
     defer eb.deinit();
 
     var ev = try EditorView.init(std.testing.allocator, eb, 40, 10);
@@ -3469,12 +2054,10 @@ test "EditorView - mouse selection doesn't scroll when focus is within viewport"
 }
 
 test "EditorView - mouse selection focus outside buffer bounds clamps correctly" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
-    var eb = try EditBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth, null);
+    var eb = try EditBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth, null);
     defer eb.deinit();
 
     var ev = try EditorView.init(std.testing.allocator, eb, 40, 10);
@@ -3504,12 +2087,10 @@ test "EditorView - mouse selection focus outside buffer bounds clamps correctly"
 }
 
 test "EditorView - cursor syncs to focus not selection end for inclusive forward selection" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
-    var eb = try EditBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth, null);
+    var eb = try EditBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth, null);
     defer eb.deinit();
 
     var ev = try EditorView.init(std.testing.allocator, eb, 80, 24);
@@ -3529,12 +2110,10 @@ test "EditorView - cursor syncs to focus not selection end for inclusive forward
 }
 
 test "EditorView - backward selection keeps anchor cell and cursor at focus" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
-    var eb = try EditBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth, null);
+    var eb = try EditBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth, null);
     defer eb.deinit();
 
     var ev = try EditorView.init(std.testing.allocator, eb, 80, 24);
@@ -3559,12 +2138,10 @@ test "EditorView - backward selection keeps anchor cell and cursor at focus" {
 }
 
 test "occupancy - EditorView forwards occupancy and replays stored endpoints" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
-    var eb = try EditBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth, null);
+    var eb = try EditBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth, null);
     defer eb.deinit();
 
     var ev = try EditorView.init(std.testing.allocator, eb, 80, 24);
@@ -3655,12 +2232,10 @@ test "occupancy - EditorView forwards occupancy and replays stored endpoints" {
 }
 
 test "EditorView - word press keeps cursor on the clicked grapheme" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
-    var eb = try EditBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth, null);
+    var eb = try EditBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth, null);
     defer eb.deinit();
 
     var ev = try EditorView.init(std.testing.allocator, eb, 80, 24);
@@ -3682,12 +2257,10 @@ test "EditorView - word press keeps cursor on the clicked grapheme" {
 }
 
 test "EditorView - line press keeps cursor on the clicked grapheme" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
-    var eb = try EditBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth, null);
+    var eb = try EditBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth, null);
     defer eb.deinit();
 
     var ev = try EditorView.init(std.testing.allocator, eb, 80, 24);
@@ -3709,12 +2282,10 @@ test "EditorView - line press keeps cursor on the clicked grapheme" {
 }
 
 test "EditorView - cell press still syncs cursor without selecting" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
-    var eb = try EditBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth, null);
+    var eb = try EditBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth, null);
     defer eb.deinit();
 
     var ev = try EditorView.init(std.testing.allocator, eb, 80, 24);
@@ -3736,12 +2307,10 @@ test "EditorView - cell press still syncs cursor without selecting" {
 }
 
 test "EditorView - convert word selection to cell keeps the range and moves focus to the last cell" {
-    const pool = gp.initGlobalPool(std.testing.allocator);
-    defer gp.deinitGlobalPool();
-    const link_pool = link.initGlobalLinkPool(std.testing.allocator);
-    defer link.deinitGlobalLinkPool();
+    var pools = TestPools.init(std.testing.allocator);
+    defer pools.deinit();
 
-    var eb = try EditBuffer.init(std.testing.allocator, pool, link_pool, .wcwidth, null);
+    var eb = try EditBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth, null);
     defer eb.deinit();
 
     var ev = try EditorView.init(std.testing.allocator, eb, 80, 24);

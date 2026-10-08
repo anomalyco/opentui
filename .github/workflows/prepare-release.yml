@@ -1,0 +1,57 @@
+name: Prepare Release
+
+# The release button. Opens a "Release vX.Y.Z" pull request. Merging it releases: release.yml publishes
+# each commit on main that raises the version. To release a maintenance branch of an older line, such
+# as 0.5.x, choose it under "Use workflow from".
+#
+# A pull request opened with GITHUB_TOKEN starts no workflows, so the required checks do not run on
+# it, and merging it needs the right to bypass the branch rules. The commit changes only versions.
+#
+# Needs "Allow GitHub Actions to create and approve pull requests" in the repository Actions settings.
+
+on:
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: Version bump
+        type: choice
+        options: [patch, minor, major]
+        default: patch
+      version:
+        description: Exact version, used instead of the bump (for example 0.6.0)
+        type: string
+        default: ""
+
+concurrency:
+  group: prepare-release
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  pull-request:
+    name: Open Release Pull Request
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Configure git author
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.1
+
+      - name: Open release pull request
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TARGET: ${{ inputs.version || inputs.bump }}
+        run: bun scripts/release.ts "$RELEASE_TARGET" --pr

@@ -77,7 +77,8 @@ trust boundaries.
 
 React JSX intrinsic elements map to Core renderables and use kebab-case names such as `<ascii-font>` and
 `<tab-select>`. See the [Components overview](/docs/components) for availability and
-registration requirements. React reconciles these elements into the renderer tree.
+registration requirements. React creates one Core renderable for each element and updates the renderable tree on each
+commit.
 
 ## API reference
 
@@ -444,6 +445,12 @@ function App() {
 const renderer = await createCliRenderer()
 createRoot(renderer).render(<App />)
 ```
+
+React calls the constructor with `{ id, ...props }`. After construction, React applies each prop to the instance again.
+For an ordinary prop, React assigns the value to the instance property of the same name. React assigns each entry of
+the `style` prop as a separate property. On each update, React applies the changed props and sets removed props to
+`null`. Read [Custom renderables](/docs/extend/custom-renderables) to draw custom content and to
+compare React and Solid construction.
 
 ## React DevTools
 

@@ -49,11 +49,14 @@ const client = getTreeSitterClient()
 try {
   await client.initialize()
 
-  const syntaxStyle = SyntaxStyle.fromStyles({
-    keyword: { bold: true },
-    string: { fg: RGBA.fromHex("#777777") },
-    default: { fg: RGBA.fromHex("#E6EDF3") },
-  })
+  const syntaxStyle = SyntaxStyle.fromStyles(
+    {
+      keyword: { bold: true },
+      string: { fg: RGBA.fromHex("#777777") },
+      default: { fg: RGBA.fromHex("#E6EDF3") },
+    },
+    renderer.nativeScene!,
+  )
 
   renderer.root.add(
     new CodeRenderable(renderer, {
@@ -125,8 +128,9 @@ try {
 }
 ```
 
-`destroyTreeSitterClient()` removes the singleton and awaits worker termination. The last renderer also requests
-singleton cleanup. Await `destroyTreeSitterClient()` directly when shutdown must wait for the worker.
+`destroyTreeSitterClient()` removes the singleton and awaits worker termination. When the last renderer is destroyed,
+Core also calls `destroyTreeSitterClient()`, but it does not wait for the worker. Await `destroyTreeSitterClient()`
+yourself when shutdown must wait for the worker.
 
 ### Per-client configuration
 
@@ -264,8 +268,8 @@ try {
 ```
 
 If `infoStringMap` has no matching label, OpenTUI uses the fence label as the target file type. Each target must have a
-registered parser or alias. Missing injection parsers produce worker warnings and leave that source without injected
-highlights.
+registered parser or alias. If a target has no parser, the client emits a `worker:log` event with type `"warn"`, and
+that source gets no injected highlights.
 
 ## Resolve file types
 
@@ -473,7 +477,9 @@ The renderables manage incremental buffers for normal display. These public meth
 | `destroy(): Promise<void>`                                       | Rejects pending work, clears local state, runs callbacks, and terminates the worker |
 
 `createBuffer()` defaults `version` to `1` and `autoInitialize` to `true`. Buffer IDs must be unique within a client.
-`updateBuffer()` and `resetBuffer()` do nothing when the client or target parser buffer is unavailable.
+`createBuffer()` rejects a duplicate ID. `updateBuffer()` does nothing when the client is not initialized or the buffer
+has no parser. `resetBuffer()` does nothing when the client is not initialized. When the buffer has no parser,
+`resetBuffer()` emits an `error` event.
 
 The direct result types are:
 

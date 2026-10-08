@@ -101,7 +101,7 @@ By default, `scrollY` is `true` and `scrollX` is `false`.
 
 ## Viewport culling
 
-Enable viewport culling to skip offscreen children in large content. When enabled, ScrollBox renders only visible children:
+Viewport culling skips children outside the viewport in large content. It is on by default:
 
 ```typescript
 const scrollbox = new ScrollBoxRenderable(renderer, {
@@ -112,7 +112,9 @@ const scrollbox = new ScrollBoxRenderable(renderer, {
 })
 ```
 
-Viewport culling skips render calls for offscreen children, so their `renderBefore` and `renderAfter` hooks do not run. Do not make layout or state depend on render hooks. Disable `viewportCulling` if every child must run a render hook.
+Culling applies when the content holds 16 or more direct children, including hidden ones, or when the viewport has zero width or height. Native code then skips each direct child that does not overlap the viewport, with its whole subtree. Otherwise, native code paints all children and clips them to the viewport.
+
+Skipped children and their descendants run no paint hooks (`renderBefore`, `renderSelf`, and `renderAfter`) and no update hook (`onUpdate`). Yoga still computes their layout. A skipped direct child still runs its resize hook (`onResize`), but its descendants do not. Do not make layout or state depend on paint or update hooks. Disable `viewportCulling` if every child must run these hooks.
 
 ## Customizing scrollbars
 
@@ -216,8 +218,7 @@ both edges of an axis. Otherwise, the method scrolls to reveal the nearest edge.
 scrollbox.scrollChildIntoView("table-row-42")
 ```
 
-Use it when you focus an offscreen element, such as a search result or a new form field. The method moves the scroll
-position only as much as necessary.
+Use it when you focus an offscreen element, such as a search result or a new form field.
 
 ## Keyboard navigation
 
@@ -235,7 +236,7 @@ When focused, ScrollBox responds to keyboard input:
 | `scrollY`                    | `boolean`                                | `true`  | Enable vertical scrolling              |
 | `stickyScroll`               | `boolean`                                | `false` | Keep scroll position pinned to an edge |
 | `stickyStart`                | `"top" \| "bottom" \| "left" \| "right"` | -       | Which edge to stick to                 |
-| `viewportCulling`            | `boolean`                                | `true`  | Only render visible children           |
+| `viewportCulling`            | `boolean`                                | `true`  | Skip children outside the viewport     |
 | `scrollAcceleration`         | `ScrollAcceleration`                     | -       | Custom scroll acceleration algorithm   |
 | `rootOptions`                | `BoxOptions`                             | -       | Style options for root container       |
 | `wrapperOptions`             | `BoxOptions`                             | -       | Style options for wrapper              |

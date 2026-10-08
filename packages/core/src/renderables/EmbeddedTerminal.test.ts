@@ -4,6 +4,7 @@ import { KeyEvent } from "../lib/KeyHandler.js"
 import { parseKeypress } from "../lib/parse.keypress.js"
 import { RGBA } from "../lib/RGBA.js"
 import { resolveRenderLib } from "../zig.js"
+import { nativeSymbols, withStubbedSymbols } from "../tests/native-symbol-stubs.js"
 import { EmbeddedTerminalRenderable } from "./EmbeddedTerminal.js"
 
 class MissingFramebufferTerminal extends EmbeddedTerminalRenderable {
@@ -23,9 +24,14 @@ describe("EmbeddedTerminalRenderable", () => {
 
   test("creates native state from the statically linked runtime", () => {
     const lib = resolveRenderLib()
-    const handle = lib.createEmbeddedTerminal({ cols: 10, rows: 2 })
-    expect(handle).toBeTruthy()
-    lib.destroyEmbeddedTerminal(handle)
+    const context = lib.createContext({ objectCapacity: 1, renderCellsMax: 20 })
+    try {
+      const handle = lib.createContextEmbeddedTerminal(context, { cols: 10, rows: 2 })
+      expect(handle).toBeTruthy()
+      lib.destroyContextEmbeddedTerminal(context, handle)
+    } finally {
+      lib.destroyContext(context)
+    }
   })
 
   test("does not compose into the parent buffer when framebuffer allocation fails", async () => {
@@ -222,7 +228,8 @@ describe("EmbeddedTerminalRenderable", () => {
     })
     setup.renderer.root.add(terminal)
 
-    terminal.write("\x1b[5n")
+    // The 1 MiB native write limit falls inside the status query, as on main this must still answer.
+    terminal.write(" ".repeat(1024 * 1024 - 2) + "\x1b[5n")
     terminal.handleKeyPress(keyEvent({ name: "enter", sequence: "\r" }))
 
     expect(output).toEqual([
@@ -231,28 +238,40 @@ describe("EmbeddedTerminalRenderable", () => {
     ])
   })
 
+  test("drains replies of every write into one reused buffer", () => {
+    const terminal = new EmbeddedTerminalRenderable(setup.renderer, { width: 20, height: 4 })
+    const drain = nativeSymbols.ot_embedded_terminal_drain_responses!
+    withStubbedSymbols({ ot_embedded_terminal_drain_responses: drain }, (calls) => {
+      terminal.write("a")
+      terminal.write("b")
+      const [first, second] = calls.ot_embedded_terminal_drain_responses!
+      expect(second![2]).toBe(first![2])
+    })
+  })
+
   test("encodes no-button motion and suppresses unavailable pixel coordinates", () => {
     const lib = resolveRenderLib()
-    const handle = lib.createEmbeddedTerminal({ cols: 20, rows: 4 })
+    const context = lib.createContext({ objectCapacity: 1, renderCellsMax: 80 })
     try {
-      lib.embeddedTerminalWrite(handle, "\x1b[?1003h\x1b[?1006h")
-      const motion = lib.embeddedTerminalEncodeMouse(handle, {
+      const handle = lib.createContextEmbeddedTerminal(context, { cols: 20, rows: 4 })
+      lib.contextEmbeddedTerminalWrite(context, handle, "\x1b[?1003h\x1b[?1006h")
+      const motion = lib.contextEmbeddedTerminalEncodeMouse(context, handle, {
         action: "motion",
         x: 1,
         y: 1,
       })
       expect(new TextDecoder().decode(motion)).toBe("\x1b[<35;2;2M")
 
-      lib.embeddedTerminalWrite(handle, "\x1b[?1016h")
+      lib.contextEmbeddedTerminalWrite(context, handle, "\x1b[?1016h")
       expect(
-        lib.embeddedTerminalEncodeMouse(handle, {
+        lib.contextEmbeddedTerminalEncodeMouse(context, handle, {
           action: "motion",
           x: 1,
           y: 1,
         }),
       ).toHaveLength(0)
     } finally {
-      lib.destroyEmbeddedTerminal(handle)
+      lib.destroyContext(context)
     }
   })
 
@@ -333,15 +352,18 @@ describe("EmbeddedTerminalRenderable", () => {
 
   test("drains the preserved response prefix after overflow", () => {
     const lib = resolveRenderLib()
-    const handle = lib.createEmbeddedTerminal({ cols: 20, rows: 4 })
+    const context = lib.createContext({ objectCapacity: 1, renderCellsMax: 80 })
     try {
+      const handle = lib.createContextEmbeddedTerminal(context, { cols: 20, rows: 4 })
       const query = "\x1b[5n"
-      lib.embeddedTerminalWrite(handle, query.repeat((1024 * 1024) / query.length + 1))
-      const responses = lib.embeddedTerminalDrainResponses(handle)
+      lib.contextEmbeddedTerminalWrite(context, handle, query.repeat((1024 * 1024) / query.length))
+      lib.contextEmbeddedTerminalWrite(context, handle, query)
+      const responses = lib.contextEmbeddedTerminalDrainResponses(context, handle)
       expect(responses.byteLength).toBe(1024 * 1024)
-      expect(new TextDecoder().decode(responses.subarray(0, 4))).toBe("\x1b[0n")
+      expect(new TextDecoder().decode(responses)).toBe("\x1b[0n".repeat((1024 * 1024) / 4))
+      expect(lib.contextEmbeddedTerminalDrainResponses(context, handle)).toHaveLength(0)
     } finally {
-      lib.destroyEmbeddedTerminal(handle)
+      lib.destroyContext(context)
     }
   })
 

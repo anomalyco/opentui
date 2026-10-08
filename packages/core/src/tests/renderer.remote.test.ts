@@ -45,8 +45,7 @@ async function getCapabilitiesFromChild(
     }
 
     try {
-      const internals = renderer
-      const caps = internals.lib.getTerminalCapabilities(renderer.rendererPtr)
+      const caps = renderer.capabilities
       process.stdout.write(JSON.stringify(caps) + "\\n")
     } finally {
       renderer.destroy()
@@ -175,6 +174,26 @@ describe("remote detection", () => {
     expect(caps.remote).toBe(true)
     expect(caps.ansi256).toBe(true)
     expect(caps.unicode).toBe("wcwidth")
+  })
+
+  test("explicit local mode forwards hyperlink detection keys by default", async () => {
+    const baseEnv = {
+      PATH: process.env.PATH ?? "",
+      HOME: process.env.HOME ?? "",
+      TMPDIR: process.env.TMPDIR ?? "/tmp",
+    }
+
+    const vte = await getCapabilitiesFromChild(
+      { remote: false },
+      { ...baseEnv, TERM: "xterm-256color", VTE_VERSION: "7600" },
+    )
+    const forcedOff = await getCapabilitiesFromChild(
+      { remote: false },
+      { ...baseEnv, TERM: "xterm-kitty", FORCE_HYPERLINK: "0" },
+    )
+
+    expect(vte.hyperlinks).toBe(true)
+    expect(forcedOff.hyperlinks).toBe(false)
   })
 
   test("process stdout with memory output preserves auto remote detection", async () => {

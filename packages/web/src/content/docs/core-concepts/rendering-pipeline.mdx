@@ -1,59 +1,124 @@
 ---
 title: Rendering pipeline
-description: Trace retained tree changes through layout, cell composition, native diffing, and terminal output
+description: Trace application changes through the native scene, host hooks, cell composition, and output completion
 ---
 
 # Rendering pipeline
 
-This maintained internals page traces one frame from a retained-tree change to terminal protocol bytes.
+Changing a renderable requests a frame. In each frame, `CliRenderer` runs your JavaScript callbacks and hooks.
+Native code lays out and paints the native scene. Then the Session sends the changed cells to the terminal.
+Core does not give application code a diff of the frame. Native code draws built-in renderables without a JavaScript call for each one.
 
-Application code does not receive a public diff object. It mutates renderables, and OpenTUI owns layout, composition, diffing, and output.
+This page follows the complete Core frame.
+[How Core uses native](/docs/native/core) explains the bridge from renderables to native nodes with a working paint-hook example.
+[Native rendering](/docs/native/overview) explains the native scene without the TypeScript integration.
 
 ## 1. Retained state becomes dirty
 
-A renderable instance stays in the tree across frames. Setters update that instance and call `requestRender()` when visual state changes.
+The native scene is the tree that native code keeps between frames. Each visual `Renderable` has one scene node in it.
+The scene node owns the Yoga node and the paint state. The JavaScript object keeps listeners, hooks, focus, and application identity.
 
-Tree operations also invalidate layout or traversal state. OpenTUI can reuse an unchanged render command list when no live node needs updates.
+Ordinary style and paint setters validate the value and then stage the change in a buffer.
+Core flushes staged changes, which sends all of them to native code in one call. It flushes before each frame step and before each native read that needs current values.
+Node creation, tree changes such as `add()` and `remove()`, and text or resource replacement use their own immediate native calls.
+A setter requests a render when it changes visual state.
 
-Demand-driven scheduling coalesces repeated requests into a later frame. Continuous scheduling runs the same pipeline at the configured frame rate.
+In demand-driven mode, Core combines repeated render requests into one later frame. In continuous mode, Core runs this pipeline at the configured frame rate.
 
 See [Renderer](/docs/core-concepts/renderer) for control states and scheduling.
 
-## 2. Yoga computes layout
+## 2. The host runs frame callbacks
 
-The root checks whether its Yoga tree is dirty. When needed, Yoga computes layout against the renderer's current columns and rows.
+`CliRenderer.loop()` starts the frame. It runs these JavaScript steps in order:
 
-OpenTUI then copies each computed position and size to the retained renderable. Those bounds drive drawing, clipping, wrapping, and hit testing.
+1. It runs renderer-owned animation-frame callbacks.
+2. It runs registered frame callbacks (`setFrameCallback`). It awaits each returned promise before it continues.
+3. It calls `NativeScene.paint()`. That method runs pending lifecycle passes (`onLifecyclePass`) in a plain JavaScript loop. Text, Markdown, and LineNumber use lifecycle passes.
 
-Yoga rounds layout to terminal cells with a point scale factor of `1`. Text and editor nodes use native measure targets for intrinsic size.
+`NativeScene.paint()` then flushes staged changes and calls the first frame step.
+A frame step is one call to the native frame-step function (`sceneFrameStep`).
 
-See [Layout](/docs/core-concepts/layout) for supported properties, measurement, rounding, and absolute flow.
+## 3. Native code prepares layout and painting
 
-## 3. Render traversal composes cells
+In a frame step, native code first prepares the frame:
 
-`CliRenderer` exposes `nextRenderBuffer` as the working cell buffer and `currentRenderBuffer` as native diff state from accepted cells.
+- It runs Yoga when layout is dirty or the renderer size changed. Yoga uses a point scale factor of `1`, so layout rounds to whole terminal cells.
+- It prepares the visible tree: screen geometry, sibling `zIndex` order, clipping, inherited opacity, and ScrollBox viewports.
 
-Before drawing, the root runs registered lifecycle passes. It then updates layout fields and builds a render command list.
+Some JavaScript hooks must run after layout. Native code does not call them directly.
+It returns one request for each hooked node. Core runs that hook and then calls the frame step again:
 
-The command list preserves tree traversal, sibling `zIndex`, clipping stacks, and inherited opacity. Renderables draw into the next buffer in that order.
+- An update hook (`onUpdate`) runs once per frame for each visible node that defines it. A ScrollBox that culls its children skips it for children outside the viewport.
+- A resize hook (`onResize` and `resize` listeners) runs when a visible node's size changes.
+- The root's `LAYOUT_CHANGED` event fires after Yoga computes a new layout.
 
-A buffered renderable first draws into its own `OptimizedBuffer`. OpenTUI then composites that frame buffer into the renderer's next buffer.
+If these hooks change layout, native code runs Yoga and prepares the tree again.
+Core allows at most `8` layout rounds and `65_536` host requests in one frame. A frame that goes over a limit fails before it paints.
+JavaScript does not walk the tree to collect computed layout.
+
+Built-in text and editor measurement runs natively. A custom measurement provider (`setMeasureProvider()`) is a synchronous callback. Native code calls it on the same thread while Yoga runs.
+
+Preparation can yield to the event loop only when you set the renderer option `nativeSceneWorkBudget`. See [cooperative frames](/docs/core-concepts/renderer#cooperative-frames).
+
+See [Layout](/docs/core-concepts/layout) and [custom measurement](/docs/extend/custom-renderables#measure-intrinsic-size) for sizing and completed-layout reads.
+
+## 4. The scene composes terminal cells
+
+A paint hook is a `renderBefore`, `renderSelf`, or `renderAfter` method. How native code paints depends on whether a visible node has a paint hook.
+
+If no visible node has a paint hook, native code paints the whole frame into `nextRenderBuffer`. It does this in the same frame step that finishes preparation, and returns `DONE`.
+
+If any visible node has a paint hook, native code does not paint yet. It returns one `RECORD` request for the whole frame. Then:
+
+1. Core reads the paint slots once (`sceneFrameGetPaintSlots`). Each slot is a visible node with paint hooks, in paint order.
+2. Core runs each node's paint hooks in paint order. Each hook receives a recording buffer, unless it belongs to a buffered custom renderable (see below). Draw calls on a recording buffer add bytes to a JavaScript recording and make no native call.
+3. Core flushes staged changes and calls the frame step again with the recording.
+4. Native code paints the whole frame in one pass. It plays each node's recording at that node's position in paint order, and returns `DONE`.
+
+A recording buffer cannot read cells. `buffers`, `withBuffers()`, `getRealCharBytes()`, and `getSpanLines()` throw on it.
+Color and text changes that a paint hook makes appear in the same frame. Layout changes appear in the next frame.
+A node that a hook destroys during the hook batch does not paint.
+
+Painting runs in one native call. It never yields and never pauses for JavaScript.
+While native code paints, it also fills the hit grid, which is the native grid for mouse hit testing. It does this only when mouse input is on.
+
+A buffered custom renderable's hooks draw into its private `OptimizedBuffer` with direct native calls. Core records one draw of that buffer, and native code composes it into the next buffer.
+Buffering does not combine the renderable's child subtree into one surface.
 
 The cell surface stores character or grapheme references, foreground, background, attributes, and image reservations. Read [Text and terminal cells](/docs/core-concepts/text-and-cells) for cell ownership.
 
-Use the [Buffer API](/docs/reference/buffer-api) for direct drawing and buffer lifetime.
+After native painting, `CliRenderer` runs post-process functions (`addPostProcessFn`) on `nextRenderBuffer`. Then it draws the console overlay.
+Use the [Buffer API](/docs/reference/buffer-api) for checked drawing and scoped cell access.
 
-## 4. Native code diffs and writes output
+## 5. Native code encodes and submits output
 
-The native renderer compares current and next rows. It skips equal rows and compares remaining cells by character, colors, and full attributes.
+Next, Core commits the frame to the Session. If the debug overlay is on, native code draws it into the next buffer first.
+
+The native renderer compares current and next rows. It skips equal rows and compares the remaining cells by character, colors, and full attributes.
 
 For changed cells, native code emits cursor movement, color state, attributes, hyperlinks, and encoded text. It also handles cursor and mouse-pointer state.
 
-Native code updates the current buffer as it accepts changed cells. It clears the next buffer after the pass for the next composition.
+`currentRenderBuffer` holds the cells that the encoder compares against. It can change before the Session queues or presents output, so it is not a copy of the last presented frame.
+The encoder clears the next buffer after encoding.
 
 An unchanged frame can emit no terminal bytes. A forced repaint, palette change, resize, or image transition can require broader output.
 
-The renderer does not expose the generated terminal update as a public object. Native code creates and writes that update through the configured output backend.
+The Session owns the ordered output queue. Core delivers the queued bytes in one of two ways:
+
+- For ordinary main-process `process.stdout`, native code writes the bytes. Before that, Core waits for earlier queued or corked JavaScript writes. It does this with an empty write that has no output ticket.
+- Custom streams, Node worker stdout, and stdout handles that native code does not support use copied output. Core copies each chunk out of the Session and writes it to the `Writable`.
+
+## 6. Output completion publishes the frame
+
+On the native stdout path, native code records completion directly. On the copied path, each `Writable` write callback acknowledges one output ticket.
+Both paths use the same presentation endpoint: the end of the frame's bytes in the output queue.
+When completed output reaches that endpoint, native code publishes the frame's hit grid, image metadata, and frame statistics.
+
+Core then rechecks hover if mouse input is on, and emits its `frame` event.
+This endpoint does not prove that a remote terminal visibly displayed the bytes.
+
+Output pressure, scheduling yields, and terminal transitions can delay completion.
+See [Frames and output](/docs/native/frames#commit-the-draft-then-complete-output) for admission, cancellation, and transport errors.
 
 ## Image protocol resolution
 
@@ -71,7 +136,10 @@ See [Image](/docs/components/image) for fitting, protocol requests, tmux constra
 
 A resize does not rebuild the retained tree. Existing renderable instances remain attached with their current application state.
 
-The renderer resizes its native buffers and replaces its public current and next buffer wrappers. It then resizes the root and runs Yoga again.
+Native code checks and accepts the new buffer size first. Then Core updates `renderer.width` and `renderer.height`.
+`currentRenderBuffer` and `nextRenderBuffer` stay the same objects and report the new size.
+The next layout pass uses the new size.
+An active buffer lease, such as a running `withBuffers()` callback, keeps the old storage allocated until it ends. That old storage is no longer current.
 
 Computed positions and sizes can change. Buffered renderables resize their frame buffers, then run resize hooks and listeners.
 
@@ -79,13 +147,17 @@ Image pixel geometry becomes unknown during resize. OpenTUI queries it again, so
 
 ## Inspect frames
 
-`currentRenderBuffer` and `nextRenderBuffer` are inspectable `OptimizedBuffer` values. Treat the next buffer as transient working state.
+`currentRenderBuffer` and `nextRenderBuffer` are renderer-owned `OptimizedBuffer` values.
 
-`getRealCharBytes()` resolves cell characters to text. `getSpanLines()` groups current cells by colors and base attributes for diagnostics.
+You can draw into `nextRenderBuffer` only while a painted frame waits for commit. Use a post-process function for this. A draw at other times throws.
+You can read both buffers in a post-process function or between frames.
+Outside a post-process function, a read throws while a frame attempt is active (for example, in `onUpdate`), while the previous frame's output is still pending, or while the terminal is not active.
+Each read borrows the storage only for the synchronous call.
 
-`getSpanLines()` is lossy. It walks resolved JavaScript text by code point instead of performing full grapheme clustering.
+`getRealCharBytes()` resolves cell characters to text. `getSpanLines()` groups a buffer's cells by colors and base attributes for diagnostics.
 
-It also masks attributes to the low eight bits. Hyperlink IDs occupy higher bits, so structured span capture drops link identity.
+`getSpanLines()` uses native per-cell byte lengths to preserve multi-code-point graphemes and continuation cells.
+It masks attributes to the low eight bits and exposes image fallback glyphs. Structured span capture therefore loses hyperlink and image identity.
 
 Use character frames for visual text assertions and span capture for basic style diagnostics. Do not use span capture as a lossless buffer serialization.
 
@@ -93,4 +165,5 @@ See [Testing](/docs/core-concepts/testing) and [Rendering diagnostics](/docs/tes
 
 ## Next
 
-Read [Renderer](/docs/core-concepts/renderer) for public scheduling and events. Read [`NativeSpanFeed`](/docs/reference/native-span-feed) for custom output ownership.
+Read [Renderer](/docs/core-concepts/renderer) for public scheduling and events.
+Read [How Core uses native](/docs/native/core) for the binding's hooks, resources, and scheduling waits.

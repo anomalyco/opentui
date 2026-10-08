@@ -48,6 +48,10 @@ await clipboard.dispose()
 connects the terminal path to a `CliRenderer` and its OSC 52 support. `createClipboard()` combines both into one
 service.
 
+OpenTUI no longer has the old `Clipboard(RenderLib, RendererHandle)` adapter. For terminal-only copying, use
+`renderer.copyToClipboardOSC52()` and `renderer.clearClipboardOSC52()`. For destination policies or host access,
+use `createClipboard()` with the services above.
+
 ## Public service API
 
 ```typescript
@@ -252,8 +256,12 @@ if (renderer.isOsc52Supported()) {
 
 Both methods accept an optional `ClipboardTarget` (`Clipboard`, `Primary`, `Select`, or `Secondary`) and return
 `true` only when OpenTUI generates and queues the sequence. They return `false` when policy blocks the operation or a
-local generation or output step fails. `isOsc52Supported()` returns `false` only when the terminal reported OSC 52 as
-unsupported. An `unknown` capability therefore returns `true` from this check.
+local generation or output step fails. They throw when the terminal is not active, for example in a
+`createTestRenderer()` renderer, which skips terminal setup. The renderer adapter does not catch that error, so a
+composed write or clear that tries the terminal rejects. `isOsc52Supported()` returns `false` only when the terminal
+reported OSC 52 as unsupported. An `unknown` capability therefore returns `true` from this check. Copy and clear throw
+after `renderer.destroy()`. `isOsc52Supported()` throws once the Session closes, which happens in a microtask after
+`destroy()`.
 
 ## Disposal
 
@@ -265,8 +273,8 @@ Dispose the service when your application exits:
 
 Keep the service alive while your application runs. On Linux, the OpenTUI process can own the clipboard after
 `writeText()` resolves. Other applications request the data from your process when they paste. `dispose()` is
-asynchronous. Await it before exit, so that the service releases the native resources. `renderer.destroy()` does
-not dispose a clipboard service that you created.
+asynchronous. Await it before exit, so that the service releases the native resources. Each host service owns a
+separate native Context, so `renderer.destroy()` does not dispose a clipboard service that you created.
 
 `dispose()` returns the same promise on repeated calls. If native cleanup rejects, later calls return that same rejected
 promise rather than starting a new cleanup attempt. Put renderer destruction in a `finally` block so a clipboard cleanup
