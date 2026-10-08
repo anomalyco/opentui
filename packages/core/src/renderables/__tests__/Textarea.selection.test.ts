@@ -684,41 +684,42 @@ describe("Textarea - Selection Tests", () => {
       expect(editor.getSelectedText()).toBe("World")
     })
 
-    it("should select with shift+down", async () => {
-      const { textarea: editor } = await createTextareaRenderable(currentRenderer, renderOnce, {
-        initialValue: "Line 1\nLine 2\nLine 3",
-        width: 40,
-        height: 10,
-        selectable: true,
-      })
-
-      editor.focus()
-
-      currentMockInput.pressArrow("down", { shift: true })
-
-      // Inclusive selection: the cell under the moved cursor (the 'L' of
-      // "Line 2") is selected too.
-      expect(editor.hasSelection()).toBe(true)
-      const selectedText = editor.getSelectedText()
-      expect(selectedText).toBe("Line 1\nL")
-    })
-
-    it("should select with shift+up", async () => {
-      const { textarea: editor } = await createTextareaRenderable(currentRenderer, renderOnce, {
-        initialValue: "Line 1\nLine 2\nLine 3",
-        width: 40,
-        height: 10,
-        selectable: true,
-      })
-
-      editor.focus()
-      editor.gotoLine(2)
-
-      currentMockInput.pressArrow("up", { shift: true })
-
-      expect(editor.hasSelection()).toBe(true)
-      const selectedText = editor.getSelectedText()
-      expect(selectedText.includes("Line 2")).toBe(true)
+    it("should move and select with up and down onto grapheme starts", async () => {
+      // Cell selection includes the cell under the moved cursor. In the #1289 text, column 5 of the
+      // first line is a boundary and column 6 is inside 码; column 5 of the second line is inside 签.
+      const lines = "Line 1\nLine 2\nLine 3"
+      const cjk = "的[代码签名政策](\n因此签名批准者角色"
+      const cases = [
+        [lines, "cell", 0, 0, "down", true, 1, 0, "Line 1\nL"],
+        [lines, "cell", 2, 0, "up", true, 1, 0, "Line 2\nL"],
+        [cjk, "cell", 0, 5, "down", false, 1, 4, ""],
+        [cjk, "cell", 1, 6, "up", false, 0, 5, ""],
+        [cjk, "cell", 0, 5, "down", true, 1, 4, "码签名政策](\n因此签"],
+        [cjk, "boundary", 0, 5, "down", true, 1, 4, "码签名政策](\n因此"],
+        [cjk, "cell", 1, 6, "up", true, 0, 5, "码签名政策](\n因此签名"],
+        [cjk, "boundary", 1, 6, "up", true, 0, 5, "码签名政策](\n因此签"],
+      ] as const
+      for (const [text, occupancy, row, col, key, shift, toRow, toCol, selected] of cases) {
+        const { textarea: editor } = await createTextareaRenderable(currentRenderer, renderOnce, {
+          initialValue: text,
+          width: 40,
+          height: 10,
+          selectable: true,
+          selectionOccupancy: occupancy,
+        })
+        editor.focus()
+        editor.editBuffer.setCursorToLineCol(row, col)
+        currentMockInput.pressArrow(key, { shift })
+        const where = `${JSON.stringify(text)} ${occupancy} (${row},${col}) ${shift ? "shift+" : ""}${key}`
+        const { visualRow, visualCol } = editor.editorView.getVisualCursor()
+        expect({ where, visualRow, visualCol, selected: editor.getSelectedText() }).toEqual({
+          where,
+          visualRow: toRow,
+          visualCol: toCol,
+          selected,
+        })
+        editor.destroy()
+      }
     })
 
     it("should select to line start with shift+home", async () => {

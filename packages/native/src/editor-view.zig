@@ -186,13 +186,14 @@ pub const EditorView = struct {
                 const target_logical_row = @as(u32, @intCast(target_vline.source_line));
 
                 const line_width = iter_mod.lineWidthAt(self.edit_buffer.tb.rope(), target_logical_row);
-                const target_col = @min(cursor.col, line_width);
+                const desired_col = @min(cursor.col, line_width);
+                const target_col = self.edit_buffer.snapColumn(target_logical_row, desired_col);
 
                 const offset = iter_mod.coordsToOffset(self.edit_buffer.tb.rope(), target_logical_row, target_col) orelse return;
                 self.edit_buffer.cursor = .{
                     .row = target_logical_row,
                     .col = target_col,
-                    .desired_col = target_col,
+                    .desired_col = desired_col,
                     .offset = offset,
                 };
             }
@@ -723,11 +724,13 @@ pub const EditorView = struct {
             clampVisualColToStayOnVisualRow(vlines, target_visual_row, desired_visual_col);
 
         const new_vcursor = self.visualToLogicalCursor(target_visual_row, target_visual_col) orelse return;
+        // A unit never spans two virtual lines, so its start stays on the target row.
+        const col = self.edit_buffer.snapColumn(new_vcursor.logical_row, new_vcursor.logical_col);
         self.edit_buffer.cursor = .{
             .row = new_vcursor.logical_row,
-            .col = new_vcursor.logical_col,
+            .col = col,
             .desired_col = new_vcursor.logical_col,
-            .offset = new_vcursor.offset,
+            .offset = iter_mod.coordsToOffset(self.edit_buffer.tb.rope(), new_vcursor.logical_row, col) orelse 0,
         };
         self.cursor_visual_affinity = null;
         if (boundary) self.setCursorAffinityForAbsoluteRow(target_visual_row);

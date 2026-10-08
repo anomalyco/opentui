@@ -9,6 +9,7 @@ const ansi = @import("../ansi.zig");
 const gp = @import("../grapheme.zig");
 const link = @import("../link.zig");
 const owned_styled = @import("owned-styled-text.zig");
+const utf8 = @import("../utf8.zig");
 
 const EditorView = editor_view.EditorView;
 const EditBuffer = edit_buffer.EditBuffer;
@@ -239,60 +240,59 @@ test "EditorView - VisualCursor with word wrapping" {
     _ = ev.getVisualCursor();
 }
 
-test "EditorView - moveUpVisual with wrapping" {
+test "EditorView - vertical moves keep the desired column and land on cursor-unit starts" {
     var pools = TestPools.init(std.testing.allocator);
     defer pools.deinit();
-
-    var eb = try EditBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth, null);
-    defer eb.deinit();
-
-    var ev = try EditorView.init(std.testing.allocator, eb, 20, 10);
-    defer ev.deinit();
-
-    ev.setWrapMode(.char);
-
-    try eb.setText("This is a very long line that will definitely wrap multiple times at twenty characters");
-
-    try eb.setCursor(0, 50);
-
-    const vcursor_before = ev.getVisualCursor();
-    const visual_row_before = vcursor_before.visual_row;
-
-    ev.moveUpVisual();
-
-    const vcursor_after = ev.getVisualCursor();
-
-    try std.testing.expectEqual(visual_row_before - 1, vcursor_after.visual_row);
-
-    try std.testing.expectEqual(@as(u32, 0), vcursor_after.logical_row);
-}
-
-test "EditorView - moveDownVisual with wrapping" {
-    var pools = TestPools.init(std.testing.allocator);
-    defer pools.deinit();
-
-    var eb = try EditBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth, null);
-    defer eb.deinit();
-
-    var ev = try EditorView.init(std.testing.allocator, eb, 20, 10);
-    defer ev.deinit();
-
-    ev.setWrapMode(.char);
-
-    try eb.setText("This is a very long line that will definitely wrap multiple times at twenty characters");
-
-    try eb.setCursor(0, 0);
-
-    const vcursor_before = ev.getVisualCursor();
-    try std.testing.expectEqual(@as(u32, 0), vcursor_before.visual_row);
-
-    ev.moveDownVisual();
-
-    const vcursor_after = ev.getVisualCursor();
-
-    try std.testing.expectEqual(@as(u32, 1), vcursor_after.visual_row);
-
-    try std.testing.expectEqual(@as(u32, 0), vcursor_after.logical_row);
+    const long = "This is a very long line that will definitely wrap multiple times at twenty characters";
+    const empty_line = "Line with some text\n\nAnother line with text";
+    // From (0, 1) into the width-2 unit at the start of line 1, and back to column 1 on ASCII lines.
+    const wide = [_][2]u32{ .{ 1, 0 }, .{ 2, 1 }, .{ 1, 0 }, .{ 0, 1 }, .{ 1, 0 }, .{ 2, 1 }, .{ 1, 0 }, .{ 0, 1 } };
+    const Case = struct { text: []const u8, wrap: text_buffer.WrapMode = .none, width: u32 = 20, start: [2]u32, moves: []const u8, ends: []const [2]u32 };
+    // u/d move the EditBuffer, U/D move the EditorView, V scrolls a one-row viewport to the last
+    // line with moveCursor. Each end is the logical (row, col) after the move.
+    const cases = [_]Case{
+        .{ .text = long, .wrap = .char, .start = .{ 0, 50 }, .moves = "UD", .ends = &.{ .{ 0, 30 }, .{ 0, 50 } } },
+        .{ .text = long, .wrap = .char, .start = .{ 0, 0 }, .moves = "D", .ends = &.{.{ 0, 20 }} },
+        .{ .text = "Short line", .wrap = .char, .start = .{ 0, 0 }, .moves = "Uu", .ends = &.{ .{ 0, 0 }, .{ 0, 0 } } },
+        .{ .text = "Short line\nSecond line", .wrap = .char, .start = .{ 1, 0 }, .moves = "Dd", .ends = &.{ .{ 1, 0 }, .{ 1, 0 } } },
+        .{ .text = "1234567890" ** 5, .wrap = .char, .start = .{ 0, 15 }, .moves = "DDU", .ends = &.{ .{ 0, 35 }, .{ 0, 50 }, .{ 0, 35 } } },
+        .{ .text = empty_line, .start = .{ 0, 10 }, .moves = "DDUU", .ends = &.{ .{ 1, 0 }, .{ 2, 10 }, .{ 1, 0 }, .{ 0, 10 } } },
+        .{ .text = empty_line, .start = .{ 0, 10 }, .moves = "dduu", .ends = &.{ .{ 1, 0 }, .{ 2, 10 }, .{ 1, 0 }, .{ 0, 10 } } },
+        // 001: a move into a width-2 unit lands on its start; the desired column stays.
+        .{ .text = "abc\n日本\nabc", .start = .{ 0, 1 }, .moves = "ddUUDduu", .ends = &wide },
+        .{ .text = "abc\n\tx\nabc", .start = .{ 0, 1 }, .moves = "ddUUDduu", .ends = &wide },
+        .{ .text = "abc\n👍🏽x\nabc", .start = .{ 0, 1 }, .moves = "ddUUDduu", .ends = &wide },
+        .{ .text = "abc\n👨‍👩‍👧x\nabc", .start = .{ 0, 1 }, .moves = "ddUUDduu", .ends = &wide },
+        .{ .text = "abc\n日本", .start = .{ 0, 1 }, .moves = "Vu", .ends = &.{ .{ 1, 0 }, .{ 0, 1 } } },
+        // #1289: cell boundaries 0, 2, 3, 5, ... above 0, 2, 4, ...
+        .{ .text = "的[代码签名政策](\n因此签名批准者角色", .width = 40, .start = .{ 0, 5 }, .moves = "DUdu", .ends = &.{ .{ 1, 4 }, .{ 0, 5 }, .{ 1, 4 }, .{ 0, 5 } } },
+        .{ .text = "的[代码因此签名政策", .wrap = .char, .width = 8, .start = .{ 0, 5 }, .moves = "DU", .ends = &.{ .{ 0, 11 }, .{ 0, 5 } } },
+    };
+    for ([_]utf8.WidthMethod{ .unicode, .wcwidth }) |method| {
+        const eb = try EditBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, method, null);
+        defer eb.deinit();
+        const ev = try EditorView.init(std.testing.allocator, eb, 20, 10);
+        defer ev.deinit();
+        for (cases) |case| {
+            ev.setViewport(.{ .x = 0, .y = 0, .width = case.width, .height = 10 }, false);
+            ev.setWrapMode(case.wrap);
+            try eb.setText(case.text);
+            try eb.setCursor(case.start[0], case.start[1]);
+            for (case.moves, case.ends) |move, end| {
+                errdefer std.debug.print("{t} {s}: {s}, move {c}\n", .{ method, case.text, case.moves, move });
+                switch (move) {
+                    'u' => eb.moveUp(),
+                    'd' => eb.moveDown(),
+                    'U' => ev.moveUpVisual(),
+                    'D' => ev.moveDownVisual(),
+                    'V' => ev.setViewport(.{ .x = 0, .y = eb.tb.lineCount() - 1, .width = case.width, .height = 1 }, true),
+                    else => unreachable,
+                }
+                const cursor = ev.getPrimaryCursor();
+                try std.testing.expectEqual(end, [2]u32{ cursor.row, cursor.col });
+            }
+        }
+    }
 }
 
 test "EditorView - visualToLogicalCursor conversion" {
@@ -428,76 +428,6 @@ test "EditorView - consumed whitespace cursor columns clamp to preceding row" {
     defer opt_buffer.deinit();
     opt_buffer.clear(ansi.rgbaFromFloats(0.0, 0.0, 0.0, 1.0), 32);
     opt_buffer.drawEditorView(ev, 0, 0);
-}
-
-test "EditorView - moveUpVisual at top boundary" {
-    var pools = TestPools.init(std.testing.allocator);
-    defer pools.deinit();
-
-    var eb = try EditBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth, null);
-    defer eb.deinit();
-
-    var ev = try EditorView.init(std.testing.allocator, eb, 20, 10);
-    defer ev.deinit();
-
-    ev.setWrapMode(.char);
-    try eb.setText("Short line");
-
-    try eb.setCursor(0, 0);
-
-    const before = ev.getPrimaryCursor();
-    ev.moveUpVisual();
-    const after = ev.getPrimaryCursor();
-
-    try std.testing.expectEqual(before.row, after.row);
-    try std.testing.expectEqual(before.col, after.col);
-}
-
-test "EditorView - moveDownVisual at bottom boundary" {
-    var pools = TestPools.init(std.testing.allocator);
-    defer pools.deinit();
-
-    var eb = try EditBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth, null);
-    defer eb.deinit();
-
-    var ev = try EditorView.init(std.testing.allocator, eb, 20, 10);
-    defer ev.deinit();
-
-    ev.setWrapMode(.char);
-    try eb.setText("Short line\nSecond line");
-
-    try eb.setCursor(1, 0);
-
-    const before = ev.getPrimaryCursor();
-    ev.moveDownVisual();
-    const after = ev.getPrimaryCursor();
-
-    try std.testing.expectEqual(before.row, after.row);
-}
-
-test "EditorView - VisualCursor preserves desired column across wrapped lines" {
-    var pools = TestPools.init(std.testing.allocator);
-    defer pools.deinit();
-
-    var eb = try EditBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth, null);
-    defer eb.deinit();
-
-    var ev = try EditorView.init(std.testing.allocator, eb, 20, 10);
-    defer ev.deinit();
-
-    ev.setWrapMode(.char);
-
-    try eb.setText("12345678901234567890123456789012345678901234567890");
-
-    try eb.setCursor(0, 15);
-
-    ev.moveDownVisual();
-    ev.moveDownVisual();
-    ev.moveUpVisual();
-
-    const vcursor = ev.getVisualCursor();
-
-    try std.testing.expect(vcursor.visual_col <= 20);
 }
 
 test "EditorView - VisualCursor with multiple logical lines and wrapping" {
@@ -668,66 +598,6 @@ test "EditorView - small viewport accepts empty buffers and zero dimensions" {
         try std.testing.expectEqualDeep(cursor, ev.getPrimaryCursor());
         try std.testing.expectEqual(@as(?Viewport, null), ev.getViewport());
     }
-}
-
-test "EditorView - moveDownVisual across empty line preserves desired column" {
-    var pools = TestPools.init(std.testing.allocator);
-    defer pools.deinit();
-
-    var eb = try EditBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth, null);
-    defer eb.deinit();
-
-    var ev = try EditorView.init(std.testing.allocator, eb, 80, 10);
-    defer ev.deinit();
-
-    try eb.setText("Line with some text\n\nAnother line with text");
-
-    try eb.setCursor(0, 10);
-
-    const vcursor_before = ev.getVisualCursor();
-    try std.testing.expectEqual(@as(u32, 10), vcursor_before.visual_col);
-
-    ev.moveDownVisual();
-
-    const vcursor_empty = ev.getVisualCursor();
-    try std.testing.expectEqual(@as(u32, 1), vcursor_empty.logical_row);
-    try std.testing.expectEqual(@as(u32, 0), vcursor_empty.visual_col);
-
-    ev.moveDownVisual();
-
-    const vcursor_after = ev.getVisualCursor();
-    try std.testing.expectEqual(@as(u32, 2), vcursor_after.logical_row);
-    try std.testing.expectEqual(@as(u32, 10), vcursor_after.visual_col);
-}
-
-test "EditorView - moveUpVisual across empty line preserves desired column" {
-    var pools = TestPools.init(std.testing.allocator);
-    defer pools.deinit();
-
-    var eb = try EditBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth, null);
-    defer eb.deinit();
-
-    var ev = try EditorView.init(std.testing.allocator, eb, 80, 10);
-    defer ev.deinit();
-
-    try eb.setText("Line with some text\n\nAnother line with text");
-
-    try eb.setCursor(2, 10);
-
-    const vcursor_before = ev.getVisualCursor();
-    try std.testing.expectEqual(@as(u32, 10), vcursor_before.visual_col);
-
-    ev.moveUpVisual();
-
-    const vcursor_empty = ev.getVisualCursor();
-    try std.testing.expectEqual(@as(u32, 1), vcursor_empty.logical_row);
-    try std.testing.expectEqual(@as(u32, 0), vcursor_empty.visual_col);
-
-    ev.moveUpVisual();
-
-    const vcursor_after = ev.getVisualCursor();
-    try std.testing.expectEqual(@as(u32, 0), vcursor_after.logical_row);
-    try std.testing.expectEqual(@as(u32, 10), vcursor_after.visual_col);
 }
 
 test "EditorView - horizontal movement resets desired visual column" {

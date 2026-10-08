@@ -688,42 +688,30 @@ pub const EditBuffer = struct {
     }
 
     pub fn moveUp(self: *EditBuffer) void {
-        const cursor = &self.cursor;
-
-        if (cursor.row > 0) {
-            if (cursor.desired_col == 0) {
-                cursor.desired_col = cursor.col;
-            }
-
-            cursor.row -= 1;
-
-            const line_width = iter_mod.lineWidthAt(self.tb.rope(), cursor.row);
-
-            cursor.col = @min(cursor.desired_col, line_width);
-            cursor.offset = iter_mod.coordsToOffset(self.tb.rope(), cursor.row, cursor.col) orelse 0;
-        }
-
+        if (self.cursor.row > 0) self.moveToRow(self.cursor.row - 1);
         self.publishCursor(false);
     }
 
     pub fn moveDown(self: *EditBuffer) void {
-        const cursor = &self.cursor;
-
-        const line_count = self.tb.getLineCount();
-        if (cursor.row + 1 < line_count) {
-            if (cursor.desired_col == 0) {
-                cursor.desired_col = cursor.col;
-            }
-
-            cursor.row += 1;
-
-            const line_width = iter_mod.lineWidthAt(self.tb.rope(), cursor.row);
-
-            cursor.col = @min(cursor.desired_col, line_width);
-            cursor.offset = iter_mod.coordsToOffset(self.tb.rope(), cursor.row, cursor.col) orelse 0;
-        }
-
+        if (self.cursor.row + 1 < self.tb.getLineCount()) self.moveToRow(self.cursor.row + 1);
         self.publishCursor(false);
+    }
+
+    /// Keeps the desired column, so a later move can return to it.
+    fn moveToRow(self: *EditBuffer, row: u32) void {
+        const cursor = &self.cursor;
+        if (cursor.desired_col == 0) cursor.desired_col = cursor.col;
+        cursor.row = row;
+        cursor.col = self.snapColumn(row, @min(cursor.desired_col, iter_mod.lineWidthAt(self.tb.rope(), row)));
+        cursor.offset = iter_mod.coordsToOffset(self.tb.rope(), row, cursor.col) orelse 0;
+    }
+
+    /// Returns the start of the cursor unit (grapheme, code point, or tab) that covers `col`, so a
+    /// cursor does not land on the second cell of a wide unit.
+    pub fn snapColumn(self: *EditBuffer, row: u32, col: u32) u32 {
+        const text = self.tb;
+        const bounds = iter_mod.getCursorUnitBoundsAt(text.rope(), text.memRegistry(), row, col, text.tabWidth(), text.widthMethod());
+        return if (bounds) |unit| unit.start else col;
     }
 
     /// Set text and completely reset the buffer state (clears history, resets add_buffer)

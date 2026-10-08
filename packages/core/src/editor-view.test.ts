@@ -513,7 +513,7 @@ describe("EditorView", () => {
       view.moveDownVisual()
       cursor = view.getVisualCursor()
       expect(cursor.visualRow).toBe(1)
-      expect(cursor.visualCol).toBe(8)
+      expect(cursor.visualCol).toBe(7)
 
       buffer.moveCursorLeft()
       cursor = view.getVisualCursor()
