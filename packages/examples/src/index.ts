@@ -63,6 +63,7 @@ import * as linkDemo from "./link-demo.js"
 import * as opacityExample from "./opacity-example.js"
 import * as scrollboxOverlayHitTest from "./scrollbox-overlay-hit-test.js"
 import * as scrollboxMouseTest from "./scrollbox-mouse-test.js"
+import * as scrollbarThumbDebug from "./scrollbar-thumb-debug.js"
 import * as textTruncationDemo from "./text-truncation-demo.js"
 import * as grayscaleBufferDemo from "./grayscale-buffer-demo.js"
 import * as focusRestoreDemo from "./focus-restore-demo.js"
@@ -437,6 +438,12 @@ const EXAMPLE_SECTIONS: ExampleSection[] = [
       description: "ScrollBox with sticky scroll behavior - maintains position at borders when content changes",
       run: stickyScrollExample.run,
       destroy: stickyScrollExample.destroy,
+    },
+    {
+      name: "Scrollbar Thumb Debug",
+      description: "Reproduce scrollbar thumb size clamping bug when viewport > content/2",
+      run: scrollbarThumbDebug.run,
+      destroy: scrollbarThumbDebug.destroy,
     },
   ]),
   section("Text & Documents", [
