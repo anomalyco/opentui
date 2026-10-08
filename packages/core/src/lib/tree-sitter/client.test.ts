@@ -470,27 +470,24 @@ describeClient("TreeSitterClient", () => {
     expect(client.getAllBuffers()).toHaveLength(0)
   })
 
-  test("should perform one-shot highlighting for react parser aliases", async () => {
+  test("should parse JSX only for react filetypes", async () => {
     await client.initialize()
 
-    const jsxCode = 'const view = <div className="card">hello</div>'
-    const tsxCode = 'const view: JSX.Element = <div className="card">hello</div>'
+    const jsx = 'const view = <Box title="x">hi</Box>'
+    const rows = [
+      { filetype: "javascriptreact", source: jsx, expected: ["18:title=property", "32:Box=constructor"] },
+      { filetype: "typescriptreact", source: jsx, expected: ["18:title=tag.attribute", "32:Box=tag"] },
+      { filetype: "typescript", source: "const n = <number>value", expected: ["11:number=type.builtin"] },
+    ]
 
-    const [jsxResult, tsxResult] = await Promise.all([
-      client.highlightOnce(jsxCode, "javascriptreact"),
-      client.highlightOnce(tsxCode, "typescriptreact"),
-    ])
+    for (const { filetype, source, expected } of rows) {
+      const { highlights = [] } = await client.highlightOnce(source, filetype)
+      const tokens = highlights.map(([start, end, group]) => `${start}:${source.slice(start, end)}=${group}`)
 
-    expect(jsxResult.highlights).toBeDefined()
-    expect(tsxResult.highlights).toBeDefined()
-    expect(jsxResult.highlights!.length).toBeGreaterThan(0)
-    expect(tsxResult.highlights!.length).toBeGreaterThan(0)
-
-    const jsxGroups = jsxResult.highlights!.map((hl) => hl[2])
-    const tsxGroups = tsxResult.highlights!.map((hl) => hl[2])
-
-    expect(jsxGroups).toContain("keyword")
-    expect(tsxGroups).toContain("keyword")
+      expect(tokens).toContain("0:const=keyword")
+      expect(tokens).toEqual(expect.arrayContaining(expected))
+      expect(tokens.filter((token) => token.endsWith("=string.regexp"))).toEqual([])
+    }
   })
 
   test("should handle Devanagari characters and highlight ranges after them correctly", async () => {
@@ -737,22 +734,17 @@ Some text here.`
       const markdownCode = `# Code Example
 
 \`\`\`tsx
-const view: JSX.Element = <div>Hello</div>;
+const view: JSX.Element = <Box title="x">hi</Box>;
 \`\`\`
 
 Some text here.`
 
-      const result = await client.highlightOnce(markdownCode, "markdown")
+      const { highlights = [] } = await client.highlightOnce(markdownCode, "markdown")
+      const tokens = highlights.map(([start, end, group]) => `${markdownCode.slice(start, end)}=${group}`)
 
-      expect(result.highlights).toBeDefined()
-      expect(result.highlights!.length).toBeGreaterThan(0)
-
-      const constHighlight = result.highlights!.find((hl) => {
-        const text = markdownCode.substring(hl[0], hl[1])
-        return text === "const" && hl[2] === "keyword"
-      })
-
-      expect(constHighlight).toBeDefined()
+      expect(tokens).toContain("const=keyword")
+      expect(tokens).toContain("title=tag.attribute")
+      expect(tokens.filter((token) => token.endsWith("=string.regexp"))).toEqual([])
     } finally {
       await client.destroy()
     }
