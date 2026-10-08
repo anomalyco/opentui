@@ -267,11 +267,11 @@ test.each([
   ["a captured full-width ASCII line", ["012345678\n"], ["012345678"]],
   ["a captured full-width line of wide characters", ["a一二三四\n"], ["a一二三四"]],
   ["a captured short line", ["abc\n"], ["abc"]],
-  ["a captured line continued mid-row", ["ab", "cdefghijk\n"], ["abcdefghi", "jk"]],
+  ["a captured line continued after wide characters", ["你好", "a世界", "x\n"], ["你好a世界", "x"]],
   [
     "rows continued at the pinned bottom",
-    ["1\n2\n3\n4\n5\n6\n7\n8\n", "abcde", { red: "XXXXXX\n" }, "abcd", { red: "YY" }, "efg", "z\n"],
-    ["7", "8", "abcde[XXXX]", "[XX]", "abcd[YY]efg", "z"],
+    ["\n".repeat(8), "abcde", { red: "XXXXXX\n" }, "abcd", { red: "YY" }, "efg", "z\n", "ab", { red: "一二三四\n" }],
+    ["abcde[XXXX]", "[XX]", "abcd[YY]efg", "z", "ab[一二三]", "[四]"],
   ],
 ] as const)("%s shows its terminal rows above the split footer", async (_name, writes, rows) => {
   const terminal = await setupTerminal({ columns: 9 })

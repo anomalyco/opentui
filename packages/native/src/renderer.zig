@@ -82,23 +82,11 @@ fn moveToSplitOutputCursor(writer: anytype, render_offset: u32, output_column: u
     ansi.ANSI.moveToOutput(writer, column, row) catch {};
 }
 
+/// Trims only empty cells: a continuation cell belongs to the wide character before it.
 fn snapshotRowEnd(snapshot: *const OptimizedBuffer, row: u32, limit: u32) u32 {
     var x = limit;
-    while (x > 0) {
-        const cell = snapshot.get(x - 1, row) orelse {
-            x -= 1;
-            continue;
-        };
-
-        if (cell.char == 0 or gp.isContinuationChar(cell.char)) {
-            x -= 1;
-            continue;
-        }
-
-        return x;
-    }
-
-    return 0;
+    while (x > 0 and snapshot.get(x - 1, row).?.char == 0) x -= 1;
+    return x;
 }
 
 pub const SplitFooterTransitionMode = enum(u8) {
