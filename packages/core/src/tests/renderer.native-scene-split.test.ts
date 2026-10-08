@@ -258,22 +258,27 @@ test.each(["frames", "suspend", "destroy"] as const)(
 
 // A wide grapheme that does not fit the row starts the next one; native must count the rows the terminal uses.
 // A row that fills the width keeps its last cell (#1580). The footer starts below the empty row after the newline.
+// Old text on the start row (`~`) gives way to the right of a row, and only there.
 test.each([
-  ["ASCII", "abcdefghijklmnopqrs", ["abcdefghi", "jklmnopqr", "s"]],
-  ["wide characters", "一二三四五六七八九", ["一二三四", "五六七八", "九"]],
-  ["a wide character at the last column", "abcdefgh一", ["abcdefgh", "一"]],
-  ["full-width ASCII", "012345678", ["012345678"]],
-  ["full-width wide characters", "a一二三四", ["a一二三四"]],
-] as const)("a captured %s line shows its terminal rows above the split footer", async (_name, line, rows) => {
+  ["a captured ASCII line", ["abcdefghijklmnopqrs\n"], ["abcdefghi", "jklmnopqr", "s"]],
+  ["a captured line of wide characters", ["一二三四五六七八九\n"], ["一二三四", "五六七八", "九"]],
+  ["a captured wide character at the last column", ["abcdefgh一\n"], ["abcdefgh", "一"]],
+  ["a captured full-width ASCII line", ["012345678\n"], ["012345678"]],
+  ["a captured full-width line of wide characters", ["a一二三四\n"], ["a一二三四"]],
+  ["a captured short line", ["abc\n"], ["abc"]],
+  ["a captured line continued mid-row", ["ab", "cdefghijk\n"], ["abcdefghi", "jk"]],
+] as const)("%s shows its terminal rows above the split footer", async (_name, writes, rows) => {
   const terminal = await setupTerminal({ columns: 9 })
   terminal.renderer.root.add(new TextRenderable(terminal.renderer, { content: "F" }))
-  terminal.stdout.write(line + "\n")
-  await terminal.frame()
+  for (const write of writes) {
+    terminal.stdout.write(write)
+    await terminal.frame()
+  }
   const view = await createTestRenderer({ width: 9, height: 10 })
   renderers.push(view.renderer)
   const vt = new EmbeddedTerminalRenderable(view.renderer, { cols: 9, rows: 10 })
   view.renderer.root.add(vt)
-  vt.write(terminal.stdout.bytes())
+  vt.write("~".repeat(9) + "\r" + terminal.stdout.text())
   await view.renderOnce()
   expect(vt.screen().lines).toEqual([...rows, "", "F"])
 })
