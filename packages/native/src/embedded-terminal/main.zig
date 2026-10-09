@@ -73,6 +73,13 @@ pub const EmbeddedTerminal = struct {
                 .cols = options.cols,
                 .rows = options.rows,
                 .max_scrollback_bytes = options.max_scrollback,
+                // Ghostty answers OSC 10/11 and renders one-sided changes only when both defaults are set.
+                .colors = .{
+                    .background = .init(ghostty.RenderState.empty.colors.background),
+                    .foreground = .init(ghostty.RenderState.empty.colors.foreground),
+                    .cursor = .unset,
+                    .palette = .default,
+                },
             }),
             .stream = undefined,
             .cols = options.cols,
