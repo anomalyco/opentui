@@ -1229,7 +1229,6 @@ numeric key code.
 | Unknown sequences become a key with an empty `name`.                | Reply events.                                                    | G2.                                                                            |
 | Alt+uppercase sets `shift`.                                         | Same (adapter), native reports the character as sent.            | Wire fidelity in native; Core naming in the adapter.                           |
 | CPR `CSI 1;N R` with N ≥ 2 is a capability signal in TS regexes.    | Native flags `CURSOR_POSITION`; TS keeps `isCapabilityResponse`. | No regex on the hot path; detection logic unchanged.                           |
-| Paste bytes exceed `maxPendingBytes` (64 MiB) → discard mode.       | Streamed; no limit; host accumulates.                            | G4.                                                                            |
 | A lone byte that cannot start UTF-8 (`0xFF`) waits for the timeout. | An eight-bit Alt key at once.                                    | Only a lead byte can continue; nothing else can change the result.             |
 | Only `explicitWidthCprActive` with first field 1 waits for a CPR.   | Any `row ; col` CPR waits while replies are expected.            | One `REPLIES` expectation (§11.3).                                             |
 | X10 releases report button 0; extra buttons report 0 to 2.          | X10 releases report the last pressed button; extra buttons 8+.   | X10 cannot say which button rose; extra buttons are not left clicks.           |
