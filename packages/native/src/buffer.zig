@@ -1092,67 +1092,70 @@ pub const OptimizedBuffer = struct {
     fn setInternal(self: *OptimizedBuffer, comptime span_cleanup: bool, x: u32, y: u32, cell: Cell) void {
         const index = self.validateAndIndex(x, y) orelse return;
         const prev_char = self.buffer.char[index];
+        if (!gp.isClusterChar(prev_char) and !gp.isGraphemeChar(cell.char)) {
+            self.writeCellAndLinks(index, cell);
+            return;
+        }
+        self.setClusterInternal(span_cleanup, x, y, index, prev_char, .{
+            .char = cell.char,
+            .fg = cell.fg,
+            .bg = cell.bg,
+            .attributes = cell.attributes,
+        });
+    }
+
+    noinline fn setClusterInternal(
+        self: *OptimizedBuffer,
+        comptime span_cleanup: bool,
+        x: u32,
+        y: u32,
+        index: u32,
+        prev_char: u32,
+        cell: Cell,
+    ) void {
+        @branchHint(.cold);
         const new_link_id = ansi.TextAttributes.getLinkId(cell.attributes);
         // Cleanup can remove the last old cell using the replacement's link.
         if (new_link_id != 0) self.link_tracker.addCellRef(new_link_id);
         defer if (new_link_id != 0) self.link_tracker.removeCellRef(new_link_id);
         var tracker_replaced = false;
 
+        const new_start_id: ?u32 = if (gp.isGraphemeChar(cell.char) and
+            x + gp.charRightExtent(cell.char) + 1 <= self.width)
+            gp.graphemeIdFromChar(cell.char)
+        else
+            null;
+
         if (!span_cleanup) {
             const old_start_id: ?u32 = if (gp.isGraphemeChar(prev_char)) gp.graphemeIdFromChar(prev_char) else null;
-            const new_start_id: ?u32 = blk: {
-                if (!gp.isGraphemeChar(cell.char)) break :blk null;
-                const new_width = gp.charRightExtent(cell.char) + 1;
-                if (x + new_width > self.width) break :blk null;
-                break :blk gp.graphemeIdFromChar(cell.char);
-            };
-
             if (old_start_id != null or new_start_id != null) {
                 self.grapheme_tracker.replace(old_start_id, new_start_id);
                 tracker_replaced = true;
             }
-        }
+        } else if (gp.isClusterChar(prev_char) and prev_char != cell.char) {
+            // If overwriting a grapheme span (start or continuation) with a different char, clear that span first
+            const row_start: u32 = y * self.width;
+            const row_end: u32 = row_start + self.width - 1;
+            const left = gp.charLeftExtent(prev_char);
+            const right = gp.charRightExtent(prev_char);
+            const id = gp.graphemeIdFromChar(prev_char);
 
-        // If overwriting a grapheme span (start or continuation) with a different char, clear that span first
-        if (span_cleanup) {
-            if ((gp.isGraphemeChar(prev_char) or gp.isContinuationChar(prev_char)) and prev_char != cell.char) {
-                const row_start: u32 = y * self.width;
-                const row_end: u32 = row_start + self.width - 1;
-                const left = gp.charLeftExtent(prev_char);
-                const right = gp.charRightExtent(prev_char);
-                const id = gp.graphemeIdFromChar(prev_char);
+            if (new_start_id) |new_id| self.grapheme_tracker.add(new_id);
+            tracker_replaced = true;
 
-                const new_grapheme_id: ?u32 = blk: {
-                    if (!gp.isGraphemeChar(cell.char)) break :blk null;
-                    const new_width = gp.charRightExtent(cell.char) + 1;
-                    if (x + new_width > self.width) break :blk null;
-                    break :blk gp.graphemeIdFromChar(cell.char);
-                };
-                if (new_grapheme_id) |new_id| self.grapheme_tracker.add(new_id);
-                tracker_replaced = true;
+            const span_start = index - @min(left, index - row_start);
+            const span_end = index + @min(right, row_end - index);
 
-                const span_start = index - @min(left, index - row_start);
-                const span_end = index + @min(right, row_end - index);
-
-                var span_i: u32 = span_start;
-                while (span_i <= span_end) : (span_i += 1) {
-                    const span_char = self.buffer.char[span_i];
-                    if (!(gp.isGraphemeChar(span_char) or gp.isContinuationChar(span_char))) continue;
-                    if (gp.graphemeIdFromChar(span_char) != id) continue;
-
-                    // Overlaps can leave continuations after their start was replaced.
-                    if (gp.isGraphemeChar(span_char)) {
-                        self.grapheme_tracker.remove(id);
-                    }
-
-                    const span_link_id = ansi.TextAttributes.getLinkId(self.buffer.attributes[span_i]);
-                    if (span_link_id != 0) {
-                        self.link_tracker.removeCellRef(span_link_id);
-                    }
-
-                    self.buffer.char[span_i] = @intCast(DEFAULT_SPACE_CHAR);
-                    self.buffer.attributes[span_i] = 0;
-                }
+            var span_i: u32 = span_start;
+            while (span_i <= span_end) : (span_i += 1) {
+                const span_char = self.buffer.char[span_i];
+                if (!gp.isClusterChar(span_char) or gp.graphemeIdFromChar(span_char) != id) continue;
+                // Overlaps can leave continuations after their start was replaced.
+                if (gp.isGraphemeChar(span_char)) self.grapheme_tracker.remove(id);
+                const span_link_id = ansi.TextAttributes.getLinkId(self.buffer.attributes[span_i]);
+                if (span_link_id != 0) self.link_tracker.removeCellRef(span_link_id);
+                self.buffer.char[span_i] = @intCast(DEFAULT_SPACE_CHAR);
+                self.buffer.attributes[span_i] = 0;
             }
         }
 
@@ -1170,20 +1173,14 @@ pub const OptimizedBuffer = struct {
                         self.grapheme_tracker.remove(gp.graphemeIdFromChar(eol_char));
                     }
                     const eol_link_id = ansi.TextAttributes.getLinkId(self.buffer.attributes[eol_i]);
-                    if (eol_link_id != 0) {
-                        self.link_tracker.removeCellRef(eol_link_id);
-                    }
+                    if (eol_link_id != 0) self.link_tracker.removeCellRef(eol_link_id);
                 }
                 @memset(self.buffer.char[index..end_of_line], @intCast(DEFAULT_SPACE_CHAR));
                 @memset(self.buffer.attributes[index..end_of_line], cell.attributes);
                 @memset(self.buffer.fg[index..end_of_line], cell.fg);
                 @memset(self.buffer.bg[index..end_of_line], cell.bg);
                 if (new_link_id != 0) {
-                    const cells_written = end_of_line - index;
-                    var link_i: u32 = 0;
-                    while (link_i < cells_written) : (link_i += 1) {
-                        self.link_tracker.addCellRef(new_link_id);
-                    }
+                    for (index..end_of_line) |_| self.link_tracker.addCellRef(new_link_id);
                 }
                 return;
             }
@@ -1196,52 +1193,44 @@ pub const OptimizedBuffer = struct {
                 self.grapheme_tracker.add(id);
             }
 
-            if (width > 1) {
+            if (right > 0) {
                 const row_end_index: u32 = (y * self.width) + self.width - 1;
-                const max_right = @min(right, row_end_index - index);
-                if (max_right > 0) {
-                    var cont_i: u32 = 1;
-                    while (cont_i <= max_right) : (cont_i += 1) {
-                        const cont_index = index + cont_i;
-                        const cont_char = self.buffer.char[cont_index];
-                        if (gp.isGraphemeChar(cont_char)) {
-                            const old_id = gp.graphemeIdFromChar(cont_char);
-                            self.grapheme_tracker.remove(old_id);
-                            if (span_cleanup) {
-                                // Ordinary writes must not leave a tail outside the new span.
-                                const tail_end = cont_index + @min(
-                                    gp.charRightExtent(cont_char),
-                                    row_end_index - cont_index,
-                                );
-                                var tail_i = index + width;
-                                while (tail_i <= tail_end) : (tail_i += 1) {
-                                    const tail_char = self.buffer.char[tail_i];
-                                    if (!gp.isContinuationChar(tail_char)) continue;
-                                    if (gp.graphemeIdFromChar(tail_char) != old_id) continue;
-                                    const tail_link_id = ansi.TextAttributes.getLinkId(self.buffer.attributes[tail_i]);
-                                    if (tail_link_id != 0) self.link_tracker.removeCellRef(tail_link_id);
-                                    self.buffer.char[tail_i] = DEFAULT_SPACE_CHAR;
-                                    self.buffer.attributes[tail_i] = 0;
-                                }
+                assert(right <= row_end_index - index);
+                var cont_i: u32 = 1;
+                while (cont_i <= right) : (cont_i += 1) {
+                    const cont_index = index + cont_i;
+                    const cont_char = self.buffer.char[cont_index];
+                    if (gp.isGraphemeChar(cont_char)) {
+                        const old_id = gp.graphemeIdFromChar(cont_char);
+                        self.grapheme_tracker.remove(old_id);
+                        if (span_cleanup) {
+                            // Ordinary writes must not leave a tail outside the new span.
+                            const tail_end = cont_index + @min(
+                                gp.charRightExtent(cont_char),
+                                row_end_index - cont_index,
+                            );
+                            var tail_i = index + width;
+                            while (tail_i <= tail_end) : (tail_i += 1) {
+                                const tail_char = self.buffer.char[tail_i];
+                                if (!gp.isContinuationChar(tail_char) or gp.graphemeIdFromChar(tail_char) != old_id) continue;
+                                const tail_link_id = ansi.TextAttributes.getLinkId(self.buffer.attributes[tail_i]);
+                                if (tail_link_id != 0) self.link_tracker.removeCellRef(tail_link_id);
+                                self.buffer.char[tail_i] = DEFAULT_SPACE_CHAR;
+                                self.buffer.attributes[tail_i] = 0;
                             }
                         }
-                        const cont_link_id = ansi.TextAttributes.getLinkId(self.buffer.attributes[cont_index]);
-                        if (cont_link_id != 0) {
-                            self.link_tracker.removeCellRef(cont_link_id);
-                        }
                     }
+                    const cont_link_id = ansi.TextAttributes.getLinkId(self.buffer.attributes[cont_index]);
+                    if (cont_link_id != 0) self.link_tracker.removeCellRef(cont_link_id);
+                }
 
-                    @memset(self.buffer.fg[index + 1 .. index + 1 + max_right], cell.fg);
-                    @memset(self.buffer.bg[index + 1 .. index + 1 + max_right], cell.bg);
-                    @memset(self.buffer.attributes[index + 1 .. index + 1 + max_right], cell.attributes);
-                    var k: u32 = 1;
-                    while (k <= max_right) : (k += 1) {
-                        const cont = gp.packContinuation(k, max_right - k, id);
-                        self.buffer.char[index + k] = cont;
-                        if (new_link_id != 0) {
-                            self.link_tracker.addCellRef(new_link_id);
-                        }
-                    }
+                @memset(self.buffer.fg[index + 1 .. index + 1 + right], cell.fg);
+                @memset(self.buffer.bg[index + 1 .. index + 1 + right], cell.bg);
+                @memset(self.buffer.attributes[index + 1 .. index + 1 + right], cell.attributes);
+                var k: u32 = 1;
+                while (k <= right) : (k += 1) {
+                    self.buffer.char[index + k] = gp.packContinuation(k, right - k, id);
+                    if (new_link_id != 0) self.link_tracker.addCellRef(new_link_id);
                 }
             }
         } else {
@@ -1968,8 +1957,18 @@ pub const OptimizedBuffer = struct {
             // Each printable ASCII byte is one cell, so the bytes left of column 0 are clipped.
             const clipped_byte_count: usize = if (x < 0) @min(text.len, @abs(x)) else 0;
             var char_x: u32 = @intCast(@max(x, 0));
-            for (text[clipped_byte_count..]) |byte| {
-                if (char_x >= self.width) break;
+            const visible = text[clipped_byte_count..][0..@min(text.len - clipped_byte_count, self.width - char_x)];
+            if (self.scissor_stack.items.len == 0 and !self.grapheme_tracker.hasAny() and
+                !self.link_tracker.hasAny() and ansi.TextAttributes.getLinkId(attributes) == 0)
+            {
+                const row_start = self.coordsToIndex(char_x, y);
+                for (self.buffer.char[row_start .. row_start + visible.len], visible) |*dest, byte| dest.* = byte;
+                @memset(self.buffer.fg[row_start .. row_start + visible.len], fg);
+                @memset(self.buffer.bg[row_start .. row_start + visible.len], background);
+                fillU32(self.buffer.attributes[row_start .. row_start + visible.len], attributes);
+                return;
+            }
+            for (visible) |byte| {
                 self.set(char_x, y, makeCell(byte, fg, background, attributes));
                 char_x += 1;
             }

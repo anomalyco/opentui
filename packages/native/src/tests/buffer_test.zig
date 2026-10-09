@@ -665,15 +665,8 @@ test "OptimizedBuffer - init frees allocations on OOM" {
 test "OptimizedBuffer - init and deinit" {
     var pools = TestPools.init(std.testing.allocator);
     defer pools.deinit();
-
-    var buf = try OptimizedBuffer.init(
-        std.testing.allocator,
-        10,
-        10,
-        .{ .link_pool = &pools.links, .pool = &pools.graphemes, .id = "test-buffer" },
-    );
+    var buf = try OptimizedBuffer.init(std.testing.allocator, 10, 10, .{ .link_pool = &pools.links, .pool = &pools.graphemes });
     defer buf.deinit();
-
     try std.testing.expectEqual(@as(u32, 10), buf.getWidth());
     try std.testing.expectEqual(@as(u32, 10), buf.getHeight());
 }
@@ -681,51 +674,37 @@ test "OptimizedBuffer - init and deinit" {
 test "OptimizedBuffer - clear fills with default char" {
     var pools = TestPools.init(std.testing.allocator);
     defer pools.deinit();
-
-    var buf = try OptimizedBuffer.init(
-        std.testing.allocator,
-        5,
-        5,
-        .{ .link_pool = &pools.links, .pool = &pools.graphemes, .id = "test-buffer" },
-    );
+    var buf = try OptimizedBuffer.init(std.testing.allocator, 5, 5, .{ .link_pool = &pools.links, .pool = &pools.graphemes });
     defer buf.deinit();
-
-    const bg = ansi.rgbaFromFloats(0.0, 0.0, 0.0, 1.0);
-    buf.clear(bg, null);
-
-    var y: u32 = 0;
-    while (y < 5) : (y += 1) {
-        var x: u32 = 0;
-        while (x < 5) : (x += 1) {
-            const cell = buf.get(x, y).?;
-            try std.testing.expectEqual(@as(u32, 32), cell.char);
-        }
+    buf.clear(ansi.rgbaFromFloats(0.0, 0.0, 0.0, 1.0), null);
+    for (0..5) |y| {
+        for (0..5) |x| try std.testing.expectEqual(@as(u32, 32), buf.get(@intCast(x), @intCast(y)).?.char);
     }
 }
 
 test "OptimizedBuffer - drawText with ASCII" {
     var pools = TestPools.init(std.testing.allocator);
     defer pools.deinit();
-
-    var buf = try OptimizedBuffer.init(
-        std.testing.allocator,
-        20,
-        5,
-        .{ .link_pool = &pools.links, .pool = &pools.graphemes, .id = "test-buffer" },
-    );
+    var buf = try OptimizedBuffer.init(std.testing.allocator, 6, 1, .{ .link_pool = &pools.links, .pool = &pools.graphemes });
     defer buf.deinit();
 
     const bg = ansi.rgbaFromFloats(0.0, 0.0, 0.0, 1.0);
-    buf.clear(bg, null);
-
     const fg = ansi.rgbaFromFloats(1.0, 1.0, 1.0, 1.0);
-    try buf.drawText("Hello", 0, 0, fg, bg, 0);
+    buf.clear(bg, null);
+    try buf.drawTextClipped("ABHello!", -2, 0, fg, bg, 3);
+    try expectRowChars(buf, 0, "Hello!");
+    try std.testing.expectEqual(@as(u32, 3), buf.get(0, 0).?.attributes);
+    try std.testing.expectEqual(fg, buf.get(0, 0).?.fg);
+    try std.testing.expectEqual(bg, buf.get(0, 0).?.bg);
 
-    const cell_h = buf.get(0, 0).?;
-    try std.testing.expectEqual(@as(u32, 'H'), cell_h.char);
-
-    const cell_e = buf.get(1, 0).?;
-    try std.testing.expectEqual(@as(u32, 'e'), cell_e.char);
+    const link_id = try pools.links.acquire("https://example.com");
+    try buf.drawText("\u{4e16}", 1, 0, fg, bg, ansi.TextAttributes.setLinkId(0, link_id));
+    try pools.links.decref(link_id);
+    try std.testing.expect(buf.grapheme_tracker.hasAny() and buf.link_tracker.hasAny());
+    try buf.drawText("Z", 2, 0, fg, bg, 0);
+    try expectRowChars(buf, 0, "H Zlo!");
+    try std.testing.expect(!buf.grapheme_tracker.hasAny() and !buf.link_tracker.hasAny());
+    try std.testing.expectEqual(@as(u32, 0), try pools.links.getRefcount(link_id));
 }
 
 test "OptimizedBuffer drawTextBufferChecked returns errors at every drawing allocation" {
