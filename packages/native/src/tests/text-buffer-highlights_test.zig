@@ -103,7 +103,7 @@ test "TextBuffer styled seek - display widths multiline chunks and links" {
                 .{ .text = first ++ "\n\n" ++ emoji, .fg = fg, .bg = bg, .attributes = 3, .url = url },
                 .{ .text = "", .fg = fg, .bg = bg, .attributes = 3, .url = url },
                 .{ .text = "\n" ++ combining ++ "\n\tX", .fg = fg, .bg = bg, .attributes = 3, .url = url },
-                .{ .text = "\n\n", .fg = fg, .bg = bg, .attributes = 3, .url = url },
+                .{ .text = "\n\u{301}\n", .fg = fg, .bg = bg, .attributes = 3, .url = url },
             });
             const style = current.?.style;
             try std.testing.expectEqual(9, tb.getLineCount());
@@ -122,9 +122,10 @@ test "TextBuffer styled seek - display widths multiline chunks and links" {
                 try std.testing.expectEqualStrings(url, try pools.links.get(link_id));
                 try std.testing.expectEqual(1, try pools.links.getRefcount(link_id));
             }
-            const text = "\n\n" ++ first ++ "\n\n" ++ emoji ++ "\n" ++ combining ++ "\n\tX\n\n";
+            const text = "\n\n" ++ first ++ "\n\n" ++ emoji ++ "\n" ++ combining ++ "\n\tX\n\u{301}\n";
             var output: [text.len]u8 = undefined;
             try std.testing.expectEqualStrings(text, output[0..tb.getPlainTextIntoBuffer(&output)]);
+            try std.testing.expectEqual(0, tb.getLineSpans(7).len);
             const offset = tb.measureText(first ++ emoji ++ combining);
             try tb.addHighlightByCharRange(offset, offset + tb.measureText("\tX"), 99, 9, 42);
             try std.testing.expectEqual(2, tb.getLineHighlights(6).len);
