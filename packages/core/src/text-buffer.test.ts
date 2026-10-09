@@ -4,6 +4,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { TextBuffer } from "./text-buffer.js"
+import { EditBuffer } from "./edit-buffer.js"
 import { resolveRenderLib } from "./zig.js"
 import { StyledText, stringToStyledText } from "./lib/styled-text.js"
 import { RGBA } from "./lib/RGBA.js"
@@ -193,36 +194,31 @@ describe("TextBuffer", () => {
       expect(buffer.getSyntaxStyle()).toBeNull()
     })
 
-    it("setText clears styled text chunk highlights", () => {
+    // Replacement drops styled chunk highlights (line -1: the old text is styled) and keeps user highlights
+    // only on lines that still exist. Expected: the hlRefs left on lines 0 and 1.
+    it.each<[string, string, number, string, number[]]>([
+      ["TextBuffer.setText", "Styled", -1, "Plain", []],
+      ["TextBuffer.setText", "Hello World", 0, "New Text", [65535]],
+      ["TextBuffer.setText", "first\nsecond", 1, "xyz", []],
+      ["EditBuffer.setText", "first\nsecond", 1, "xyz", []],
+      ["EditBuffer.replaceText", "first\nsecond", 1, "xyz", []],
+      ["EditBuffer.replaceText", "a\nb\nc", 1, "x\ny", [65535]],
+    ])("%s from %j with a highlight on line %d to %j keeps %j", (operation, before, line, after, expected) => {
       const syntaxStyle = SyntaxStyle.create(resourceContext)
-      buffer.setSyntaxStyle(syntaxStyle)
-      buffer.setStyledText(new StyledText([{ __isChunk: true, text: "Styled", fg: RGBA.fromValues(1, 0, 0, 1) }]))
+      const fg = RGBA.fromValues(0, 1, 0, 1)
+      const target = operation === "TextBuffer.setText" ? buffer : EditBuffer.create("wcwidth", resourceContext)
+      target.setSyntaxStyle(syntaxStyle)
+      if (line < 0) buffer.setStyledText(new StyledText([{ __isChunk: true, text: before, fg }]))
+      else target.setText(before)
+      const styleId = syntaxStyle.registerStyle("user-highlight", { fg })
+      if (line >= 0) target.addHighlight(line, { start: 0, end: 1, styleId, priority: 0, hlRef: 65535 })
+      expect([0, 1].flatMap((i) => target.getLineHighlights(i)).length).toBe(1)
 
-      expect(buffer.getHighlightCount()).toBe(1)
+      if (operation === "EditBuffer.replaceText") (target as EditBuffer).replaceText(after)
+      else target.setText(after)
 
-      buffer.setText("Plain")
-
-      expect(buffer.getPlainText()).toBe("Plain")
-      expect(buffer.getHighlightCount()).toBe(0)
-
-      syntaxStyle.destroy()
-    })
-
-    it("setText preserves user highlights including max hlRef", () => {
-      const syntaxStyle = SyntaxStyle.create(resourceContext)
-      const styleId = syntaxStyle.registerStyle("user-highlight", { fg: RGBA.fromValues(0, 1, 0, 1) })
-      buffer.setSyntaxStyle(syntaxStyle)
-      buffer.setText("Hello World")
-      buffer.addHighlight(0, { start: 0, end: 5, styleId, priority: 0, hlRef: 65535 })
-
-      expect(buffer.getHighlightCount()).toBe(1)
-
-      buffer.setText("New Text")
-
-      expect(buffer.getPlainText()).toBe("New Text")
-      expect(buffer.getHighlightCount()).toBe(1)
-      expect(buffer.getLineHighlights(0)[0]?.hlRef).toBe(65535)
-
+      expect([0, 1].flatMap((i) => target.getLineHighlights(i).map((hl) => hl.hlRef))).toEqual(expected)
+      if (target !== buffer) target.destroy()
       syntaxStyle.destroy()
     })
   })

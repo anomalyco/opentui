@@ -921,16 +921,19 @@ pub const UnifiedTextBuffer = struct {
         };
 
         var spans: @TypeOf(self.line_spans) = .empty;
+        var highlights: @TypeOf(self.line_highlights) = .empty;
         defer {
             for (spans.items) |*list| list.deinit(self.global_allocator);
             spans.deinit(self.global_allocator);
+            for (highlights.items) |*list| list.deinit(self.global_allocator);
+            highlights.deinit(self.global_allocator);
         }
-        var highlights: std.ArrayListUnmanaged(Highlight) = .empty;
-        defer highlights.deinit(self.global_allocator);
-        const span_count = if (self.getHighlightCount() == 0) 0 else self.line_highlights.items.len;
-        try spans.ensureTotalCapacity(self.global_allocator, span_count);
+        // User highlights stay only on lines that the new text still has.
+        const line_count = if (self.getHighlightCount() == 0) 0 else @min(self.line_highlights.items.len, candidate.root.metrics().custom.linestart_count);
+        try spans.ensureTotalCapacity(self.global_allocator, line_count);
+        try highlights.ensureTotalCapacity(self.global_allocator, line_count);
         var segment_index: usize = 0;
-        for (self.line_highlights.items[0..span_count], 0..) |list, line_idx| {
+        for (self.line_highlights.items[0..line_count], 0..) |list, line_idx| {
             var line_width: u32 = 0;
             while (segment_index < result.segments.items.len) {
                 const segment = result.segments.items[segment_index];
@@ -938,12 +941,12 @@ pub const UnifiedTextBuffer = struct {
                 if (segment.isBreak()) break;
                 if (segment.asText()) |chunk| line_width += chunk.width_cols;
             }
-            highlights.clearRetainingCapacity();
+            highlights.appendAssumeCapacity(.empty);
             for (list.items) |hl| {
-                if (!hl.internal) try highlights.append(self.global_allocator, hl);
+                if (!hl.internal) try highlights.items[line_idx].append(self.global_allocator, hl);
             }
             spans.appendAssumeCapacity(.empty);
-            try self.buildLineSpans(highlights.items, line_width, &spans.items[line_idx]);
+            try self.buildLineSpans(highlights.items[line_idx].items, line_width, &spans.items[line_idx]);
         }
 
         // History nodes are shared: publish undo on the live rope, after all preparation.
@@ -960,16 +963,8 @@ pub const UnifiedTextBuffer = struct {
             self._rope.root = candidate.root;
             self._rope.version = candidate.version;
         }
-        for (self.line_highlights.items) |*list| {
-            var kept: usize = 0;
-            for (list.items) |hl| {
-                if (hl.internal) continue;
-                list.items[kept] = hl;
-                kept += 1;
-            }
-            list.items.len = kept;
-        }
         self.internal_highlight_count = 0;
+        std.mem.swap(@TypeOf(self.line_highlights), &self.line_highlights, &highlights);
         std.mem.swap(@TypeOf(self.line_spans), &self.line_spans, &spans);
         // Replacement flushes pending spans even inside a highlight transaction.
         self.dirty_span_lines.clearRetainingCapacity();
