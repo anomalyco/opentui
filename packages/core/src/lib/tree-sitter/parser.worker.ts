@@ -54,6 +54,66 @@ interface ReusableParserState {
   }
 }
 
+// Lua character classes (C locale) as RegExp set bodies. The upper-case letter is the complement.
+const luaClasses: Record<string, string> = {
+  a: "A-Za-z",
+  c: "\\x00-\\x1f\\x7f",
+  d: "0-9",
+  g: "!-~",
+  l: "a-z",
+  p: "!-/:-@[-`{-~",
+  s: "\\t-\\r ",
+  u: "A-Z",
+  w: "0-9A-Za-z",
+  x: "0-9A-Fa-f",
+}
+
+// Returns undefined for Lua items that RegExp lacks: %b, %f, back-references, a complement class inside a set.
+function luaPatternToRegExp(pattern: string): string | undefined {
+  let source = ""
+  let inSet = false
+  for (let i = 0; i < pattern.length; i++) {
+    const char = pattern[i]
+    if (char === "%") {
+      const item = pattern[++i] ?? ""
+      const body = luaClasses[item.toLowerCase()]
+      const complement = body !== undefined && item !== item.toLowerCase()
+      if (body === undefined && /^[^0-9A-Za-z]$/.test(item)) source += "\\" + item
+      else if (body === undefined || (complement && inSet)) return undefined
+      else source += inSet ? body : complement ? `[^${body}]` : `[${body}]`
+    } else if (inSet) {
+      inSet = char !== "]"
+      source += char
+    } else if (char === "[") {
+      // A leading "^" negates the set; a "]" right after the opening is a literal.
+      const head = pattern.slice(i + 1).match(/^\^?\]?/)![0]
+      source += "[" + head.replace("]", "\\]")
+      i += head.length
+      inSet = true
+    } else if ((char === "^" && i === 0) || (char === "$" && i === pattern.length - 1)) {
+      source += char
+    } else if (char === "." || char === "-") {
+      // Lua "." also matches a newline, and "-" is the lazy "*".
+      source += char === "." ? "[^]" : "*?"
+    } else {
+      source += "^$|]{}".includes(char) ? "\\" + char : char
+    }
+  }
+  return source
+}
+
+// web-tree-sitter ignores the #lua-match? predicates of nvim-treesitter queries, so they would match every node.
+// Rewrites each one with a translatable pattern to #match?. Query strings unescape "\x" to "x", hence the doubling.
+function translateLuaMatch(query: string): string {
+  return query.replace(
+    /#(not-)?(any-)?lua-match\?(\s+@[\w.-]+\s+)"([^"\\]*)"/g,
+    (predicate, not = "", any = "", capture: string, pattern: string) => {
+      const source = luaPatternToRegExp(pattern)
+      return source === undefined ? predicate : `#${any}${not}match?${capture}"${source.replaceAll("\\", "\\\\")}"`
+    },
+  )
+}
+
 class ParserWorker {
   private bufferParsers: Map<number, ParserState> = new Map()
   private filetypeParserOptions: Map<string, FiletypeParserOptions> = new Map()
@@ -81,7 +141,7 @@ class ParserWorker {
     if (!this.tsDataPath) {
       return ""
     }
-    return DownloadUtils.fetchHighlightQueries(sources, this.tsDataPath, filetype)
+    return translateLuaMatch(await DownloadUtils.fetchHighlightQueries(sources, this.tsDataPath, filetype))
   }
 
   async initialize({ dataPath, treeSitterWasmPath }: { dataPath: string; treeSitterWasmPath?: string }) {

@@ -470,22 +470,40 @@ describeClient("TreeSitterClient", () => {
     expect(client.getAllBuffers()).toHaveLength(0)
   })
 
-  test("should parse JSX only for react filetypes", async () => {
+  test("should parse JSX only for react filetypes and evaluate #lua-match? predicates", async () => {
     await client.initialize()
 
     const jsx = 'const view = <Box title="x">hi</Box>'
-    const rows = [
+    const rows: { filetype: string; source: string; expected: string[]; absent?: string[] }[] = [
       { filetype: "javascriptreact", source: jsx, expected: ["18:title=property", "32:Box=constructor"] },
-      { filetype: "typescriptreact", source: jsx, expected: ["18:title=tag.attribute", "32:Box=tag"] },
+      {
+        filetype: "typescriptreact",
+        source: jsx,
+        expected: ["18:title=tag.attribute", "32:Box=tag"],
+        absent: ["6:view=type", "6:view=constant"],
+      },
       { filetype: "typescript", source: "const n = <number>value", expected: ["11:number=type.builtin"] },
+      {
+        filetype: "typescript",
+        source: "const n = /* c */ 1",
+        expected: ["6:n=variable", "10:/* c */=comment"],
+        absent: ["6:n=type", "6:n=constant", "10:/* c */=comment.documentation"],
+      },
+      {
+        filetype: "typescript",
+        source: "const N_1 = /** d\n */ 1",
+        expected: ["6:N_1=variable", "6:N_1=type", "6:N_1=constant", "12:/** d\n */=comment.documentation"],
+      },
+      { filetype: "zig", source: "const n = 1", expected: ["6:n=variable"], absent: ["6:n=type", "6:n=constant"] },
     ]
 
-    for (const { filetype, source, expected } of rows) {
+    for (const { filetype, source, expected, absent = [] } of rows) {
       const { highlights = [] } = await client.highlightOnce(source, filetype)
       const tokens = highlights.map(([start, end, group]) => `${start}:${source.slice(start, end)}=${group}`)
 
       expect(tokens).toContain("0:const=keyword")
       expect(expected.filter((token) => !tokens.includes(token))).toEqual([])
+      expect(absent.filter((token) => tokens.includes(token))).toEqual([])
       expect(tokens.filter((token) => token.endsWith("=string.regexp"))).toEqual([])
     }
   })
@@ -542,7 +560,26 @@ describeClient("TreeSitterClient", () => {
 
   test("should support local file paths for parser configuration", async () => {
     const testQueryPath = join(dataPath, `test-highlights-${Date.now()}.scm`)
-    const simpleQuery = "(identifier) @variable"
+    // Lua pattern predicate → names and strings of testCode that it captures. Untranslatable patterns stay
+    // #lua-match?, which web-tree-sitter ignores, so they capture everything.
+    const luaPredicates: [string, string][] = [
+      ['lua-match? "^%a%d$"', "a9"],
+      ['lua-match? "^%l+$"', "ab"],
+      ['lua-match? "^%u[%w_]*$"', "A_2"],
+      ['lua-match? "^[^%d%u]+$"', "ab _x $y ]^"],
+      ['lua-match? "%A"', "a9 A_2 _x $y ]^"],
+      ['lua-match? "^%$.$"', "$y"],
+      ['lua-match? "^$.$"', "$y"],
+      ['lua-match? "^a.-z$"', "aXz"],
+      ['lua-match? "^[]^]+$"', "]^"],
+      ['lua-match? "]^$"', "]^"],
+      ['not-lua-match? "^%l"', "A_2 _x $y ]^"],
+      ['lua-match? "%f[%a]"', "a9 ab A_2 _x $y aXz ]^"],
+      ['lua-match? "[%U]"', "a9 ab A_2 _x $y aXz ]^"],
+    ]
+    const simpleQuery = luaPredicates
+      .map(([predicate], i) => `([(identifier) (string_fragment)] @p${i} (#${predicate.replace(" ", ` @p${i} `)}))`)
+      .join("\n")
     const javascriptParser = (await getParsers()).find((parser) => parser.filetype === "javascript")
     if (!javascriptParser) {
       throw new Error("Expected the default JavaScript parser")
@@ -567,12 +604,16 @@ describeClient("TreeSitterClient", () => {
       const hasAliasParser = await client.preloadParser("test-lang-react")
       expect(hasAliasParser).toBe(true)
 
-      const testCode = "const myVariable = 42;"
+      const testCode = 'a9; ab; A_2; _x; $y; aXz; "]^"'
       const result = await client.highlightOnce(testCode, "test-lang")
       const aliasResult = await client.highlightOnce(testCode, "test-lang-react")
+      const captured = luaPredicates.map(([predicate], i) => {
+        const names = result.highlights!.filter(([, , group]) => group === `p${i}`)
+        return [predicate, names.map(([start, end]) => testCode.slice(start, end)).join(" ")]
+      })
 
-      expect(result.highlights).toBeDefined()
-      expect(aliasResult.highlights).toBeDefined()
+      expect(captured).toEqual(luaPredicates)
+      expect(aliasResult.highlights).toEqual(result.highlights)
       expect(result.error).toBeUndefined()
       expect(aliasResult.error).toBeUndefined()
       expect(result.warning).toBeUndefined()
