@@ -3,7 +3,7 @@ import { describe, expect, test } from "bun:test"
 type RendererFactory = "test" | "direct-process-memory" | "cli-custom-memory" | "cli-custom-feed"
 
 async function getCapabilitiesFromChild(
-  options: { remote?: boolean; forwardEnvKeys?: string[] },
+  options: { remote?: boolean; forwardEnvKeys?: string[]; environment?: Record<string, string> },
   env: Record<string, string>,
   factory: RendererFactory = "test",
 ): Promise<any> {
@@ -159,21 +159,26 @@ describe("remote detection", () => {
     expect(caps.terminal.name).toBe("")
   })
 
-  test("explicit remote mode applies explicitly forwarded terminal overrides", async () => {
+  test("explicit remote mode applies forwarded terminal overrides and explicit values over them", async () => {
     const caps = await getCapabilitiesFromChild(
-      { remote: true, forwardEnvKeys: ["TERM", "OPENTUI_FORCE_WCWIDTH"] },
+      {
+        remote: true,
+        forwardEnvKeys: ["TERM", "OPENTUI_FORCE_WCWIDTH", "COLORTERM"],
+        environment: { COLORTERM: "truecolor", TERM: "xterm-kitty" },
+      },
       {
         PATH: process.env.PATH ?? "",
         HOME: process.env.HOME ?? "",
         TMPDIR: process.env.TMPDIR ?? "/tmp",
         TERM: "xterm-256color",
         OPENTUI_FORCE_WCWIDTH: "1",
+        COLORTERM: "",
       },
     )
 
     expect(caps.remote).toBe(true)
-    expect(caps.ansi256).toBe(true)
     expect(caps.unicode).toBe("wcwidth")
+    expect([caps.rgb, caps.hyperlinks]).toEqual([true, true])
   })
 
   test("explicit local mode forwards hyperlink detection keys by default", async () => {
@@ -260,9 +265,9 @@ describe("remote detection", () => {
     expect(caps.terminal.name).toBe("")
   })
 
-  test("custom stdout feed output respects explicit local mode", async () => {
+  test("custom stdout feed output respects explicit local mode and explicit values", async () => {
     const caps = await getCapabilitiesFromChild(
-      { remote: false },
+      { remote: false, environment: { TERM_PROGRAM: "WezTerm" } },
       {
         PATH: process.env.PATH ?? "",
         HOME: process.env.HOME ?? "",
@@ -278,6 +283,6 @@ describe("remote detection", () => {
     expect(caps.remote).toBe(false)
     expect(caps.ansi256).toBe(true)
     expect(caps.notifications).toBe(true)
-    expect(caps.terminal.name).toBe("ghostty")
+    expect(caps.terminal.name).toBe("WezTerm")
   })
 })

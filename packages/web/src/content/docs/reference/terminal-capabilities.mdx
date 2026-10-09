@@ -163,6 +163,12 @@ const renderer = await createCliRenderer({
 })
 ```
 
+`forwardEnvKeys` reads the process environment, so it describes the remote endpoint only when the process runs
+inside that endpoint's session. A server with many clients passes each client's values in `environment` instead,
+for example `environment: { TERM: pty.term, COLORTERM: "truecolor" }`. These values replace forwarded values with
+the same name. When auto-detection finds an SSH login, it does not apply terminal values, explicit ones included; set
+`remote: true` for them to take effect, as `@opentui/ssh` does.
+
 Custom streams do not receive `SIGWINCH`. Call `renderer.resize(width, height)` when the remote transport reports a
 window change. Read [SSH](/docs/reference/ssh) for the full session setup.
 

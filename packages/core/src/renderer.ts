@@ -163,6 +163,10 @@ export interface CliRendererConfig {
   // Forward these env var names to native terminal detection.
   forwardEnvKeys?: string[]
 
+  // Send these values to native terminal detection, for example a remote
+  // client's TERM. They replace forwarded values with the same name.
+  environment?: Readonly<Record<string, string>>
+
   // Wait this long before handling resize events. Defaults to 100 ms.
   debounceDelay?: number
 
@@ -1253,12 +1257,15 @@ export class CliRenderer extends EventEmitter implements RenderContext {
           width: initialGeometry.renderWidth,
           height: initialGeometry.renderHeight,
           remote: remoteMode,
-          environment: Object.fromEntries(
-            forwardEnvKeys.flatMap((key) => {
-              const value = process.env[key]
-              return value === undefined ? [] : [[key, value]]
-            }),
-          ),
+          environment: {
+            ...Object.fromEntries(
+              forwardEnvKeys.flatMap((key) => {
+                const value = process.env[key]
+                return value === undefined ? [] : [[key, value]]
+              }),
+            ),
+            ...config.environment,
+          },
         },
         () => {
           try {
