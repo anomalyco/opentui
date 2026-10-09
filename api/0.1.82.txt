@@ -1,0 +1,53 @@
+base 0.1.81
++ @opentui/core: class TextTableRenderable extends Renderable
++ @opentui/core: constructor TextTableRenderable(ctx: RenderContext, options?: TextTableOptions)
++ @opentui/core: interface TextTableOptions extends RenderableOptions<TextTableRenderable>
++ @opentui/core: method MarkdownRenderable.refreshStyles(): void
++ @opentui/core: method OptimizedBuffer.drawGrid(options: { borderChars: Uint32Array; borderFg: RGBA; borderBg: RGBA; columnOffsets: Int32Array; rowOffsets: Int32Array; drawInner: boolean; drawOuter: boolean; }): void
++ @opentui/core: protected method TextTableRenderable.destroySelf(): void
++ @opentui/core: method TextTableRenderable.getSelectedText(): string
++ @opentui/core: method TextTableRenderable.getSelection(): { start: number; end: number; } | null
++ @opentui/core: method TextTableRenderable.hasSelection(): boolean
++ @opentui/core: protected method TextTableRenderable.onResize(width: number, height: number): void
++ @opentui/core: method TextTableRenderable.onSelectionChanged(selection: Selection | null): boolean
++ @opentui/core: protected method TextTableRenderable.renderSelf(buffer: OptimizedBuffer): void
++ @opentui/core: method TextTableRenderable.shouldStartSelection(x: number, y: number): boolean
++ @opentui/core: property BlockState.tableContentCache?: TableContentCache
++ @opentui/core: property CliRendererConfig.forwardEnvKeys?: string[]
++ @opentui/core: property CliRendererConfig.testing?: boolean
++ @opentui/core: property RenderLib.bufferDrawGrid: (buffer: Pointer, borderChars: Uint32Array, borderFg: RGBA, borderBg: RGBA, columnOffsets: Int32Array, columnCount: number, rowOffsets: Int32Array, rowCount: number, options: { drawInner: boolean; drawOuter: boolean; }) => void
++ @opentui/core: property RenderLib.getAllocatorStats: () => AllocatorStats
++ @opentui/core: property RenderLib.getBuildOptions: () => BuildOptions
++ @opentui/core: property RenderLib.setTerminalEnvVar: (renderer: Pointer, key: string, value: string) => boolean
++ @opentui/core: protected property TextBufferRenderable._textBufferSyntaxStyle: SyntaxStyle
++ @opentui/core: property TextTableOptions.attributes?: number
++ @opentui/core: property TextTableOptions.backgroundColor?: ColorInput
++ @opentui/core: property TextTableOptions.bg?: ColorInput
++ @opentui/core: property TextTableOptions.border?: boolean
++ @opentui/core: property TextTableOptions.borderBackgroundColor?: ColorInput
++ @opentui/core: property TextTableOptions.borderColor?: ColorInput
++ @opentui/core: property TextTableOptions.borderStyle?: BorderStyle
++ @opentui/core: property TextTableOptions.cellPadding?: number
++ @opentui/core: property TextTableOptions.columnWidthMode?: TextTableColumnWidthMode
++ @opentui/core: property TextTableOptions.content?: TextTableContent
++ @opentui/core: property TextTableOptions.fg?: ColorInput
++ @opentui/core: property TextTableOptions.outerBorder?: boolean
++ @opentui/core: property TextTableOptions.selectable?: boolean
++ @opentui/core: property TextTableOptions.selectionBg?: ColorInput
++ @opentui/core: property TextTableOptions.selectionFg?: ColorInput
++ @opentui/core: property TextTableOptions.showBorders?: boolean
++ @opentui/core: property TextTableOptions.wrapMode?: "none" | "char" | "word"
++ @opentui/core: property TextTableRenderable.border: boolean
++ @opentui/core: property TextTableRenderable.borderColor: RGBA
++ @opentui/core: property TextTableRenderable.borderStyle: BorderStyle
++ @opentui/core: property TextTableRenderable.cellPadding: number
++ @opentui/core: property TextTableRenderable.columnWidthMode: TextTableColumnWidthMode
++ @opentui/core: property TextTableRenderable.content: TextTableContent
++ @opentui/core: property TextTableRenderable.outerBorder: boolean
++ @opentui/core: property TextTableRenderable.showBorders: boolean
++ @opentui/core: property TextTableRenderable.wrapMode: "none" | "char" | "word"
++ @opentui/core: type AllocatorStats = { totalRequestedBytes: number; activeAllocations: number; smallAllocations: number; largeAllocations: number; requestedBytesValid: boolean; }
++ @opentui/core: type BuildOptions = { gpaSafeStats: boolean; gpaMemoryLimitTracking: boolean; }
++ @opentui/core: type TextTableCellContent = TextChunk[] | null | undefined
++ @opentui/core: type TextTableColumnWidthMode = "content" | "fill"
++ @opentui/core: type TextTableContent = TextTableCellContent[][]

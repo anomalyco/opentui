@@ -1,0 +1,4 @@
+base 0.1.9
++ @opentui/core: protected property BoxRenderable._defaultOptions: { backgroundColor: string; borderStyle: "single"; border: false; borderColor: string; shouldFill: true; titleAlignment: "left"; focusedBorderColor: string; }
++ @opentui/core: protected property InputRenderable._defaultOptions: { backgroundColor: string; textColor: string; focusedBackgroundColor: string; focusedTextColor: string; placeholder: string; placeholderColor: string; cursorColor: string; maxLength: number; value: string; }
++ @opentui/core: protected property SelectRenderable._defaultOptions: { backgroundColor: string; textColor: string; focusedBackgroundColor: string; focusedTextColor: string; selectedBackgroundColor: string; selectedTextColor: string; descriptionColor: string; selectedDescriptionColor: string; showScrollIndicator: false; wrapSelection: false; showDescription: true; itemSpacing: number; fastScrollStep: number; }

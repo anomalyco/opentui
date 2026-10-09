@@ -1,0 +1,3 @@
+base 0.1.4
+- @opentui/core: function fixPaths<T extends { [key: string]: string; }>(paths: T): T
+- @opentui/core: function loadTemplate(filePath: string, params: Record<string, string>): Promise<string>

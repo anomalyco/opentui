@@ -1,0 +1,5 @@
+base 0.5.0
++ @opentui/core: property RenderLib.imageMaterialize: (image: ImageHandle) => number
++ @opentui/core: property RenderLib.imageReleaseIccCache: () => void
++ @opentui/core: property RenderLib.imageRetainIccCache: () => void
++ @opentui/core: property RenderLib.imageTestFailIccProfileCopyAllocationOnce: () => void

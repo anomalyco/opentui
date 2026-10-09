@@ -1,0 +1,8 @@
+base 0.1.32
++ @opentui/core: method EditBuffer.getTextRange(startOffset: number, endOffset: number): string
++ @opentui/core: method EditBuffer.getTextRangeByCoords(startRow: number, startCol: number, endRow: number, endCol: number): string
++ @opentui/core: method TextBuffer.getTextRange(startOffset: number, endOffset: number): string
++ @opentui/core: property RenderLib.editBufferGetTextRange: (buffer: Pointer, startOffset: number, endOffset: number, maxLength: number) => Uint8Array | null
++ @opentui/core: property RenderLib.editBufferGetTextRangeByCoords: (buffer: Pointer, startRow: number, startCol: number, endRow: number, endCol: number, maxLength: number) => Uint8Array | null
++ @opentui/core: property RenderLib.textBufferGetTextRange: (buffer: Pointer, startOffset: number, endOffset: number, maxLength: number) => Uint8Array | null
++ @opentui/core: property RenderLib.textBufferGetTextRangeByCoords: (buffer: Pointer, startRow: number, startCol: number, endRow: number, endCol: number, maxLength: number) => Uint8Array | null

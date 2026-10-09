@@ -1,0 +1,18 @@
+base 0.2.4
++ @opentui/core: method StdinParser.abortPendingStartupCursorCpr(): void
++ @opentui/core: property RenderLib.getSplitOutputOffset: (renderer: Pointer, surfaceOffset: number) => number
+- @opentui/core: property RenderLib.setPendingSplitFooterTransition: (renderer: Pointer, mode: number, sourceTopLine: number, sourceHeight: number, targetTopLine: number, targetHeight: number) => void
++ @opentui/core: property RenderLib.setPendingSplitFooterTransition: (renderer: Pointer, mode: number, sourceTopLine: number, sourceHeight: number, targetTopLine: number, targetHeight: number, scrollLines: number) => void
+- @opentui/solid: constructor LayoutSlotRenderable(id: string, parent?: SlotRenderable)
++ @opentui/solid: constructor LayoutSlotRenderable(id: string, parent?: SlotRenderable, layoutParent?: BaseRenderable)
++ @opentui/solid: method LayoutSlotRenderable.detachFromSlot(): void
++ @opentui/solid: method LayoutSlotRenderable.disposeWithoutSlotCascade(): void
++ @opentui/solid: method LayoutSlotRenderable.isCompatibleWith(layoutParent?: BaseRenderable): boolean
++ @opentui/solid: method SlotRenderable.didRemoveSlotChild(parent: BaseRenderable, child: BaseRenderable): void
++ @opentui/solid: method SlotRenderable.getSlotChildForRemoval(parent: BaseRenderable): BaseRenderable | undefined
++ @opentui/solid: method TextSlotRenderable.detachFromSlot(): void
++ @opentui/solid: method TextSlotRenderable.disposeWithoutSlotCascade(): void
+- @opentui/solid: property SlotRenderable.layoutNode?: LayoutSlotRenderable
++ @opentui/solid: readonly property SlotRenderable.layoutNode: LayoutSlotRenderable | undefined
+- @opentui/solid: property SlotRenderable.textNode?: TextSlotRenderable
++ @opentui/solid: readonly property SlotRenderable.textNode: TextSlotRenderable | undefined

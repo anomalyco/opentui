@@ -1,0 +1,66 @@
+base 0.1.88
+- @opentui/core: class BlurEffect
+- @opentui/core: class BrightnessEffect
+- @opentui/core: class DistortionEffect
+- @opentui/core: class VignetteEffect
++ @opentui/core: const basenameToFiletype: Map<string, string>
++ @opentui/core: const extensionToFiletype: Map<string, string>
+- @opentui/core: constructor BlurEffect(radius?: number)
+- @opentui/core: constructor BrightnessEffect(brightness?: number)
+- @opentui/core: constructor DistortionEffect(options?: Partial<DistortionEffect>)
+- @opentui/core: constructor VignetteEffect(strength?: number)
++ @opentui/core: enum TargetChannel
++ @opentui/core: enum-member CliRenderEvents.BLUR = "blur"
++ @opentui/core: enum-member CliRenderEvents.CAPABILITIES = "capabilities"
++ @opentui/core: enum-member CliRenderEvents.FOCUS = "focus"
++ @opentui/core: enum-member CliRenderEvents.MEMORY_SNAPSHOT = "memory:snapshot"
++ @opentui/core: enum-member CliRenderEvents.RESIZE = "resize"
++ @opentui/core: enum-member CliRenderEvents.SELECTION = "selection"
++ @opentui/core: enum-member CliRenderEvents.THEME_MODE = "theme_mode"
++ @opentui/core: enum-member TargetChannel.BG = 2
++ @opentui/core: enum-member TargetChannel.Both = 3
++ @opentui/core: enum-member TargetChannel.FG = 1
+- @opentui/core: function applyAsciiArt(buffer: OptimizedBuffer, ramp?: string): void
++ @opentui/core: function applyAsciiArt(buffer: OptimizedBuffer, ramp?: string, fgColor?: { r: number; g: number; b: number; }, bgColor?: { r: number; g: number; b: number; }): void
++ @opentui/core: function applyBrightness(buffer: OptimizedBuffer, brightness?: number, cellMask?: Float32Array): void
++ @opentui/core: function applyGain(buffer: OptimizedBuffer, gain?: number, cellMask?: Float32Array): void
+- @opentui/core: function applyGrayscale(buffer: OptimizedBuffer): void
+- @opentui/core: function applyInvert(buffer: OptimizedBuffer): void
++ @opentui/core: function applyInvert(buffer: OptimizedBuffer, strength?: number): void
++ @opentui/core: function applySaturation(buffer: OptimizedBuffer, cellMask?: Float32Array, strength?: number): void
+- @opentui/core: function applySepia(buffer: OptimizedBuffer): void
++ @opentui/core: function infoStringToFiletype(infoString: string): string | undefined
++ @opentui/core: interface StdinParserProtocolContext
+- @opentui/core: method BlurEffect.apply(buffer: OptimizedBuffer): void
+- @opentui/core: method BrightnessEffect.apply(buffer: OptimizedBuffer): void
+- @opentui/core: method DistortionEffect.apply(buffer: OptimizedBuffer, deltaTime: number): void
++ @opentui/core: method OptimizedBuffer.colorMatrix(matrix: Float32Array, cellMask: Float32Array, strength?: number, target?: TargetChannel): void
++ @opentui/core: method OptimizedBuffer.colorMatrixUniform(matrix: Float32Array, strength?: number, target?: TargetChannel): void
++ @opentui/core: method StdinParser.updateProtocolContext(patch: Partial<StdinParserProtocolContext>): void
+- @opentui/core: method VignetteEffect.apply(buffer: OptimizedBuffer): void
+- @opentui/core: property BlurEffect.radius: number
+- @opentui/core: property BrightnessEffect.brightness: number
+- @opentui/core: property DistortionEffect.colorGlitchChance: number
+- @opentui/core: property DistortionEffect.glitchChancePerSecond: number
+- @opentui/core: property DistortionEffect.maxGlitchDuration: number
+- @opentui/core: property DistortionEffect.maxGlitchLines: number
+- @opentui/core: property DistortionEffect.maxShiftAmount: number
+- @opentui/core: property DistortionEffect.minGlitchDuration: number
+- @opentui/core: property DistortionEffect.shiftFlipRatio: number
++ @opentui/core: property FiletypeParserOptions.aliases?: string[]
++ @opentui/core: property MarkdownOptions.bg?: ColorInput
++ @opentui/core: property MarkdownOptions.fg?: ColorInput
++ @opentui/core: property MarkdownRenderable.bg: RGBA | undefined
++ @opentui/core: property MarkdownRenderable.fg: RGBA | undefined
++ @opentui/core: property RenderLib.bufferColorMatrix: (buffer: Pointer, matrixPtr: Pointer, cellMaskPtr: Pointer, cellMaskCount: number, strength: number, target: TargetChannel) => void
++ @opentui/core: property RenderLib.bufferColorMatrixUniform: (buffer: Pointer, matrixPtr: Pointer, strength: number, target: TargetChannel) => void
++ @opentui/core: property StdinParserOptions.protocolContext?: Partial<StdinParserProtocolContext>
++ @opentui/core: property StdinParserProtocolContext.explicitWidthCprActive: boolean
++ @opentui/core: property StdinParserProtocolContext.kittyKeyboardEnabled: boolean
++ @opentui/core: property StdinParserProtocolContext.pixelResolutionQueryActive: boolean
++ @opentui/core: property StdinParserProtocolContext.privateCapabilityRepliesActive: boolean
+- @opentui/core: property VignetteEffect.strength: number
++ @opentui/solid/bun-plugin: function ensureSolidTransformPlugin(input?: CreateSolidTransformPluginOptions): boolean
++ @opentui/solid/bun-plugin: function resetSolidTransformPluginState(): void
++ @opentui/solid: const onBlur: (callback: () => void) => void
++ @opentui/solid: const onFocus: (callback: () => void) => void

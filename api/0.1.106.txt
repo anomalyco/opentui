@@ -1,0 +1,1153 @@
+base 0.1.105
++ @opentui/core: const defaultTextareaKeyBindings: KeyBinding[]
++ @opentui/core: const terminalNamedSingleStrokeKeys: string[]
++ @opentui/core: enum-member CliRenderEvents.FOCUSED_RENDERABLE = "focused_renderable"
++ @opentui/core: enum-member RenderableEvents.DESTROYED = "destroyed"
++ @opentui/core: property RendererEvents.focused_renderable: (current: Renderable | null, previous: Renderable | null) => void
+- @opentui/core: property TextareaOptions.keyAliasMap?: KeyAliasMap
++ @opentui/core: property TextareaOptions.keyAliasMap?: TextareaKeyAliasMap
+- @opentui/core: property TextareaRenderable.keyAliasMap: KeyAliasMap
++ @opentui/core: property TextareaRenderable.keyAliasMap: TextareaKeyAliasMap
++ @opentui/core: type TextareaKeyAliasMap = Record<string, string>
++ @opentui/keymap/addons/opentui: const defaultBindingParser: BindingParser
++ @opentui/keymap/addons/opentui: const defaultEventMatchResolver: EventMatchResolver<KeymapEvent>
++ @opentui/keymap/addons/opentui: function createTextareaBindings(overrides?: readonly BindingInput[], options?: EditBufferCommandOptions): BindingInput[]
++ @opentui/keymap/addons/opentui: function registerAliasesField<TTarget extends object, TEvent extends KeymapEvent>(keymap: Keymap<TTarget, TEvent>): () => void
++ @opentui/keymap/addons/opentui: function registerBackspacePopsPendingSequence<TTarget extends object, TEvent extends KeymapEvent>(keymap: Keymap<TTarget, TEvent>, options?: BackspacePopsPendingSequenceOptions): () => void
++ @opentui/keymap/addons/opentui: function registerBaseLayoutFallback(keymap: Keymap<Renderable, KeyEvent>): () => void
++ @opentui/keymap/addons/opentui: function registerCommaBindings<TTarget extends object, TEvent extends KeymapEvent>(keymap: Keymap<TTarget, TEvent>): () => void
++ @opentui/keymap/addons/opentui: function registerDeadBindingWarnings<TTarget extends object, TEvent extends KeymapEvent>(keymap: Keymap<TTarget, TEvent>): () => void
++ @opentui/keymap/addons/opentui: function registerDefaultBindingParser<TTarget extends object, TEvent extends KeymapEvent>(keymap: Keymap<TTarget, TEvent>): () => void
++ @opentui/keymap/addons/opentui: function registerDefaultEventMatchResolver<TTarget extends object, TEvent extends KeymapEvent>(keymap: Keymap<TTarget, TEvent>): () => void
++ @opentui/keymap/addons/opentui: function registerDefaultKeys<TTarget extends object, TEvent extends KeymapEvent>(keymap: Keymap<TTarget, TEvent>): () => void
++ @opentui/keymap/addons/opentui: function registerEditBufferCommands(keymap: Keymap<Renderable, KeyEvent>, renderer: CliRenderer, options?: EditBufferCommandOptions): () => void
++ @opentui/keymap/addons/opentui: function registerEmacsBindings<TTarget extends object, TEvent extends KeymapEvent>(keymap: Keymap<TTarget, TEvent>): () => void
++ @opentui/keymap/addons/opentui: function registerEnabledFields<TTarget extends object, TEvent extends KeymapEvent>(keymap: Keymap<TTarget, TEvent>): () => void
++ @opentui/keymap/addons/opentui: function registerEscapeClearsPendingSequence<TTarget extends object, TEvent extends KeymapEvent>(keymap: Keymap<TTarget, TEvent>, options?: EscapeClearsPendingSequenceOptions): () => void
++ @opentui/keymap/addons/opentui: function registerExCommands<TTarget extends object, TEvent extends KeymapEvent>(keymap: Keymap<TTarget, TEvent>, commands: ExCommand<TTarget, TEvent>[]): () => void
++ @opentui/keymap/addons/opentui: function registerLeader<TTarget extends object, TEvent extends KeymapEvent>(keymap: Keymap<TTarget, TEvent>, options: LeaderOptions): () => void
++ @opentui/keymap/addons/opentui: function registerManagedTextareaLayer(keymap: Keymap<Renderable, KeyEvent>, renderer: CliRenderer, layer: ManagedTextareaLayer, options?: EditBufferCommandOptions): () => void
++ @opentui/keymap/addons/opentui: function registerMetadataFields<TTarget extends object, TEvent extends KeymapEvent>(keymap: Keymap<TTarget, TEvent>): () => void
++ @opentui/keymap/addons/opentui: function registerNeovimDisambiguation<TTarget extends object, TEvent extends KeymapEvent>(keymap: Keymap<TTarget, TEvent>, options?: NeovimDisambiguationOptions): () => void
++ @opentui/keymap/addons/opentui: function registerTextareaMappingSuspension(keymap: Keymap<Renderable, KeyEvent>, renderer: CliRenderer): () => void
++ @opentui/keymap/addons/opentui: function registerTimedLeader<TTarget extends object, TEvent extends KeymapEvent>(keymap: Keymap<TTarget, TEvent>, options: TimedLeaderOptions): () => void
++ @opentui/keymap/addons/opentui: function registerUnresolvedCommandWarnings<TTarget extends object, TEvent extends KeymapEvent>(keymap: Keymap<TTarget, TEvent>): () => void
++ @opentui/keymap/addons/opentui: index ExCommand[key: string]: unknown
++ @opentui/keymap/addons/opentui: interface BackspacePopsPendingSequenceOptions
++ @opentui/keymap/addons/opentui: interface EditBufferCommandOptions
++ @opentui/keymap/addons/opentui: interface EscapeClearsPendingSequenceOptions
++ @opentui/keymap/addons/opentui: interface ExCommand<TTarget extends object = object, TEvent extends KeymapEvent = KeymapEvent>
++ @opentui/keymap/addons/opentui: interface LeaderOptions
++ @opentui/keymap/addons/opentui: interface NeovimDisambiguationOptions
++ @opentui/keymap/addons/opentui: interface TimedLeaderOptions extends LeaderOptions
++ @opentui/keymap/addons/opentui: property BackspacePopsPendingSequenceOptions.preventDefault?: boolean
++ @opentui/keymap/addons/opentui: property BackspacePopsPendingSequenceOptions.priority?: number
++ @opentui/keymap/addons/opentui: property EditBufferCommandOptions.commandNames?: Partial<Record<EditBufferCommandName, string>>
++ @opentui/keymap/addons/opentui: property EditBufferCommandOptions.descriptions?: Partial<Record<EditBufferCommandName, string>>
++ @opentui/keymap/addons/opentui: property EscapeClearsPendingSequenceOptions.preventDefault?: boolean
++ @opentui/keymap/addons/opentui: property EscapeClearsPendingSequenceOptions.priority?: number
++ @opentui/keymap/addons/opentui: property ExCommand.aliases?: string[]
++ @opentui/keymap/addons/opentui: property ExCommand.name: string
++ @opentui/keymap/addons/opentui: property ExCommand.nargs?: "0" | "1" | "?" | "*" | "+"
++ @opentui/keymap/addons/opentui: property ExCommand.run: (ctx: CommandContext<TTarget, TEvent> & { raw: string; args: string[]; }) => void | Promise<void>
++ @opentui/keymap/addons/opentui: property LeaderOptions.name?: string
++ @opentui/keymap/addons/opentui: property LeaderOptions.trigger: KeyLike
++ @opentui/keymap/addons/opentui: property NeovimDisambiguationOptions.timeoutMs?: number
++ @opentui/keymap/addons/opentui: property TimedLeaderOptions.onArm?: () => void
++ @opentui/keymap/addons/opentui: property TimedLeaderOptions.onDisarm?: () => void
++ @opentui/keymap/addons/opentui: property TimedLeaderOptions.timeoutMs?: number
++ @opentui/keymap/addons/opentui: type Aliases = Record<string, string>
++ @opentui/keymap/addons/opentui: type EditBufferCommandName = (typeof editBufferActions)[number]
++ @opentui/keymap/addons/opentui: type Enabled = boolean | (() => boolean) | ReactiveMatcher
++ @opentui/keymap/addons: const defaultBindingParser: BindingParser
++ @opentui/keymap/addons: const defaultEventMatchResolver: EventMatchResolver<KeymapEvent>
++ @opentui/keymap/addons: function registerAliasesField<TTarget extends object, TEvent extends KeymapEvent>(keymap: Keymap<TTarget, TEvent>): () => void
++ @opentui/keymap/addons: function registerBackspacePopsPendingSequence<TTarget extends object, TEvent extends KeymapEvent>(keymap: Keymap<TTarget, TEvent>, options?: BackspacePopsPendingSequenceOptions): () => void
++ @opentui/keymap/addons: function registerCommaBindings<TTarget extends object, TEvent extends KeymapEvent>(keymap: Keymap<TTarget, TEvent>): () => void
++ @opentui/keymap/addons: function registerDeadBindingWarnings<TTarget extends object, TEvent extends KeymapEvent>(keymap: Keymap<TTarget, TEvent>): () => void
++ @opentui/keymap/addons: function registerDefaultBindingParser<TTarget extends object, TEvent extends KeymapEvent>(keymap: Keymap<TTarget, TEvent>): () => void
++ @opentui/keymap/addons: function registerDefaultEventMatchResolver<TTarget extends object, TEvent extends KeymapEvent>(keymap: Keymap<TTarget, TEvent>): () => void
++ @opentui/keymap/addons: function registerDefaultKeys<TTarget extends object, TEvent extends KeymapEvent>(keymap: Keymap<TTarget, TEvent>): () => void
++ @opentui/keymap/addons: function registerEmacsBindings<TTarget extends object, TEvent extends KeymapEvent>(keymap: Keymap<TTarget, TEvent>): () => void
++ @opentui/keymap/addons: function registerEnabledFields<TTarget extends object, TEvent extends KeymapEvent>(keymap: Keymap<TTarget, TEvent>): () => void
++ @opentui/keymap/addons: function registerEscapeClearsPendingSequence<TTarget extends object, TEvent extends KeymapEvent>(keymap: Keymap<TTarget, TEvent>, options?: EscapeClearsPendingSequenceOptions): () => void
++ @opentui/keymap/addons: function registerExCommands<TTarget extends object, TEvent extends KeymapEvent>(keymap: Keymap<TTarget, TEvent>, commands: ExCommand<TTarget, TEvent>[]): () => void
++ @opentui/keymap/addons: function registerLeader<TTarget extends object, TEvent extends KeymapEvent>(keymap: Keymap<TTarget, TEvent>, options: LeaderOptions): () => void
++ @opentui/keymap/addons: function registerMetadataFields<TTarget extends object, TEvent extends KeymapEvent>(keymap: Keymap<TTarget, TEvent>): () => void
++ @opentui/keymap/addons: function registerNeovimDisambiguation<TTarget extends object, TEvent extends KeymapEvent>(keymap: Keymap<TTarget, TEvent>, options?: NeovimDisambiguationOptions): () => void
++ @opentui/keymap/addons: function registerTimedLeader<TTarget extends object, TEvent extends KeymapEvent>(keymap: Keymap<TTarget, TEvent>, options: TimedLeaderOptions): () => void
++ @opentui/keymap/addons: function registerUnresolvedCommandWarnings<TTarget extends object, TEvent extends KeymapEvent>(keymap: Keymap<TTarget, TEvent>): () => void
++ @opentui/keymap/addons: index ExCommand[key: string]: unknown
++ @opentui/keymap/addons: interface BackspacePopsPendingSequenceOptions
++ @opentui/keymap/addons: interface EscapeClearsPendingSequenceOptions
++ @opentui/keymap/addons: interface ExCommand<TTarget extends object = object, TEvent extends KeymapEvent = KeymapEvent>
++ @opentui/keymap/addons: interface LeaderOptions
++ @opentui/keymap/addons: interface NeovimDisambiguationOptions
++ @opentui/keymap/addons: interface TimedLeaderOptions extends LeaderOptions
++ @opentui/keymap/addons: property BackspacePopsPendingSequenceOptions.preventDefault?: boolean
++ @opentui/keymap/addons: property BackspacePopsPendingSequenceOptions.priority?: number
++ @opentui/keymap/addons: property EscapeClearsPendingSequenceOptions.preventDefault?: boolean
++ @opentui/keymap/addons: property EscapeClearsPendingSequenceOptions.priority?: number
++ @opentui/keymap/addons: property ExCommand.aliases?: string[]
++ @opentui/keymap/addons: property ExCommand.name: string
++ @opentui/keymap/addons: property ExCommand.nargs?: "0" | "1" | "?" | "*" | "+"
++ @opentui/keymap/addons: property ExCommand.run: (ctx: CommandContext<TTarget, TEvent> & { raw: string; args: string[]; }) => void | Promise<void>
++ @opentui/keymap/addons: property LeaderOptions.name?: string
++ @opentui/keymap/addons: property LeaderOptions.trigger: KeyLike
++ @opentui/keymap/addons: property NeovimDisambiguationOptions.timeoutMs?: number
++ @opentui/keymap/addons: property TimedLeaderOptions.onArm?: () => void
++ @opentui/keymap/addons: property TimedLeaderOptions.onDisarm?: () => void
++ @opentui/keymap/addons: property TimedLeaderOptions.timeoutMs?: number
++ @opentui/keymap/addons: type Aliases = Record<string, string>
++ @opentui/keymap/addons: type Enabled = boolean | (() => boolean) | ReactiveMatcher
++ @opentui/keymap/html: class Keymap<TTarget extends object, TEvent extends KeymapEvent = KeymapEvent>
++ @opentui/keymap/html: const htmlEventMatchResolver: EventMatchResolver<HtmlKeymapEvent>
++ @opentui/keymap/html: constructor Keymap(host: KeymapHost<TTarget, TEvent>)
++ @opentui/keymap/html: function createDefaultHtmlKeymap(root: HTMLElement): Keymap<HTMLElement, HtmlKeymapEvent>
++ @opentui/keymap/html: function createHtmlKeymap(root: HTMLElement): Keymap<HTMLElement, HtmlKeymapEvent>
++ @opentui/keymap/html: function createHtmlKeymapEvent(event?: KeyboardEvent | HtmlKeyboardEventLike): HtmlKeymapEvent
++ @opentui/keymap/html: function createHtmlKeymapHost(root: HTMLElement): KeymapHost<HTMLElement, HtmlKeymapEvent>
++ @opentui/keymap/html: function normalizeHtmlKeyName(key: string): string
++ @opentui/keymap/html: function stringifyKeySequence(input: readonly KeyStringifyInput[], options?: StringifyOptions): string
++ @opentui/keymap/html: function stringifyKeyStroke(input: KeyStringifyInput, options?: StringifyOptions): string
++ @opentui/keymap/html: index BindingInput[key: string]: unknown
++ @opentui/keymap/html: index CommandDefinition[key: string]: unknown
++ @opentui/keymap/html: index LayerFields[key: string]: unknown
++ @opentui/keymap/html: index ParsedBindingInput[key: string]: unknown
++ @opentui/keymap/html: interface ActiveBinding<TTarget extends object = object, TEvent extends KeymapEvent = KeymapEvent>
++ @opentui/keymap/html: interface ActiveKey<TTarget extends object = object, TEvent extends KeymapEvent = KeymapEvent>
++ @opentui/keymap/html: interface ActiveKeyOptions
++ @opentui/keymap/html: interface BindingExpanderContext
++ @opentui/keymap/html: interface BindingFieldContext
++ @opentui/keymap/html: interface BindingInput<TTarget extends object = object, TEvent extends KeymapEvent = KeymapEvent>
++ @opentui/keymap/html: interface BindingParserContext
++ @opentui/keymap/html: interface BindingParserResult
++ @opentui/keymap/html: interface BindingTransformerContext<TTarget extends object = object, TEvent extends KeymapEvent = KeymapEvent>
++ @opentui/keymap/html: interface CommandContext<TTarget extends object = object, TEvent extends KeymapEvent = KeymapEvent>
++ @opentui/keymap/html: interface CommandDefinition<TTarget extends object = object, TEvent extends KeymapEvent = KeymapEvent>
++ @opentui/keymap/html: interface CommandEntry<TTarget extends object = object, TEvent extends KeymapEvent = KeymapEvent>
++ @opentui/keymap/html: interface CommandFieldContext
++ @opentui/keymap/html: interface CommandQuery<TTarget extends object = object>
++ @opentui/keymap/html: interface CommandRecord
++ @opentui/keymap/html: interface CommandResolverContext
++ @opentui/keymap/html: interface ErrorEvent
++ @opentui/keymap/html: interface EventMatchResolverContext
++ @opentui/keymap/html: interface FocusLayer<TTarget extends object = object, TEvent extends KeymapEvent = KeymapEvent> extends LayerFields<TTarget, TEvent>
++ @opentui/keymap/html: interface FocusWithinLayer<TTarget extends object = object, TEvent extends KeymapEvent = KeymapEvent> extends LayerFields<TTarget, TEvent>
++ @opentui/keymap/html: interface GlobalLayer<TTarget extends object = object, TEvent extends KeymapEvent = KeymapEvent> extends LayerFields<TTarget, TEvent>
++ @opentui/keymap/html: interface HtmlKeymapEvent extends KeymapEvent
++ @opentui/keymap/html: interface KeyDeferredDisambiguationContext<TTarget extends object = object, TEvent extends KeymapEvent = KeymapEvent>
++ @opentui/keymap/html: interface KeyDeferredDisambiguationDecision
++ @opentui/keymap/html: interface KeyDisambiguationContext<TTarget extends object = object, TEvent extends KeymapEvent = KeymapEvent>
++ @opentui/keymap/html: interface KeyDisambiguationDecision
++ @opentui/keymap/html: interface KeyInputContext<TEvent extends KeymapEvent = KeymapEvent>
++ @opentui/keymap/html: interface KeyInterceptOptions
++ @opentui/keymap/html: interface KeySequencePart
++ @opentui/keymap/html: interface KeyStrokeInput
++ @opentui/keymap/html: interface KeyToken
++ @opentui/keymap/html: interface KeymapEvent
++ @opentui/keymap/html: interface KeymapHost<TTarget extends object, TEvent extends KeymapEvent = KeymapEvent>
++ @opentui/keymap/html: interface Layer<TTarget extends object = object, TEvent extends KeymapEvent = KeymapEvent> extends LayerFields<TTarget, TEvent>
++ @opentui/keymap/html: interface LayerAnalysisContext<TTarget extends object = object, TEvent extends KeymapEvent = KeymapEvent>
++ @opentui/keymap/html: interface LayerBindingAnalysis<TTarget extends object = object, TEvent extends KeymapEvent = KeymapEvent>
++ @opentui/keymap/html: interface LayerFieldContext
++ @opentui/keymap/html: interface LayerFields<TTarget extends object = object, TEvent extends KeymapEvent = KeymapEvent>
++ @opentui/keymap/html: interface NormalizedKeyStroke extends KeyStrokeInput
++ @opentui/keymap/html: interface ParsedBindingInput<TTarget extends object = object, TEvent extends KeymapEvent = KeymapEvent>
++ @opentui/keymap/html: interface ParsedCommand
++ @opentui/keymap/html: interface RawInputContext
++ @opentui/keymap/html: interface RawInterceptOptions
++ @opentui/keymap/html: interface ReactiveMatcher
++ @opentui/keymap/html: interface ResolvedBindingCommand<TTarget extends object = object, TEvent extends KeymapEvent = KeymapEvent>
++ @opentui/keymap/html: interface ResolvedKeyToken
++ @opentui/keymap/html: interface RunCommandOptions<TTarget extends object = object, TEvent extends KeymapEvent = KeymapEvent>
++ @opentui/keymap/html: interface StringifyOptions
++ @opentui/keymap/html: interface WarningEvent
++ @opentui/keymap/html: method BindingFieldContext.activeWhen(matcher: (() => boolean) | ReactiveMatcher): void
++ @opentui/keymap/html: method BindingFieldContext.attr(name: string, value: unknown): void
++ @opentui/keymap/html: method BindingFieldContext.require(name: string, value: unknown): void
++ @opentui/keymap/html: method BindingParserContext.createMatch(id: string): KeyMatch
++ @opentui/keymap/html: method BindingParserContext.normalizeTokenName(token: string): string
++ @opentui/keymap/html: method BindingParserContext.parseObjectKey(key: KeyStrokeInput, options?: { display?: string; match?: KeyMatch; tokenName?: string; }): KeySequencePart
++ @opentui/keymap/html: method BindingTransformerContext.add(binding: ParsedBindingInput<TTarget, TEvent>): void
++ @opentui/keymap/html: method BindingTransformerContext.parseKey(key: KeyLike): KeySequencePart
++ @opentui/keymap/html: method BindingTransformerContext.skipOriginal(): void
++ @opentui/keymap/html: method CommandFieldContext.activeWhen(matcher: (() => boolean) | ReactiveMatcher): void
++ @opentui/keymap/html: method CommandFieldContext.attr(name: string, value: unknown): void
++ @opentui/keymap/html: method CommandFieldContext.require(name: string, value: unknown): void
++ @opentui/keymap/html: method CommandResolverContext.getCommandAttrs(name: string): Readonly<Attributes> | undefined
++ @opentui/keymap/html: method CommandResolverContext.getCommandRecord(name: string): CommandRecord | undefined
++ @opentui/keymap/html: method EventMatchResolverContext.resolveKey(key: KeyLike): KeyMatch
++ @opentui/keymap/html: method KeyDeferredDisambiguationContext.clear(): KeyDeferredDisambiguationDecision
++ @opentui/keymap/html: method KeyDeferredDisambiguationContext.continueSequence(): KeyDeferredDisambiguationDecision
++ @opentui/keymap/html: method KeyDeferredDisambiguationContext.runExact(): KeyDeferredDisambiguationDecision
++ @opentui/keymap/html: method KeyDeferredDisambiguationContext.sleep(ms: number): Promise<boolean>
++ @opentui/keymap/html: method KeyDisambiguationContext.clear(): KeyDisambiguationDecision
++ @opentui/keymap/html: method KeyDisambiguationContext.continueSequence(): KeyDisambiguationDecision
++ @opentui/keymap/html: method KeyDisambiguationContext.defer(run: KeyDeferredDisambiguationHandler<TTarget, TEvent>): KeyDisambiguationDecision
++ @opentui/keymap/html: method KeyDisambiguationContext.getData(name: string): unknown
++ @opentui/keymap/html: method KeyDisambiguationContext.runExact(): KeyDisambiguationDecision
++ @opentui/keymap/html: method KeyDisambiguationContext.setData(name: string, value: unknown): void
++ @opentui/keymap/html: method Keymap.acquireResource(key: symbol, setup: () => () => void): () => void
++ @opentui/keymap/html: method Keymap.appendBindingExpander(expander: BindingExpander): () => void
++ @opentui/keymap/html: method Keymap.appendBindingParser(parser: BindingParser): () => void
++ @opentui/keymap/html: method Keymap.appendBindingTransformer(transformer: BindingTransformer<TTarget, TEvent>): () => void
++ @opentui/keymap/html: method Keymap.appendCommandResolver(resolver: CommandResolver<TTarget, TEvent>): () => void
++ @opentui/keymap/html: method Keymap.appendDisambiguationResolver(resolver: KeyDisambiguationResolver<TTarget, TEvent>): () => void
++ @opentui/keymap/html: method Keymap.appendEventMatchResolver(resolver: EventMatchResolver<TEvent>): () => void
++ @opentui/keymap/html: method Keymap.appendLayerAnalyzer(analyzer: LayerAnalyzer<TTarget, TEvent>): () => void
++ @opentui/keymap/html: method Keymap.clearBindingExpanders(): void
++ @opentui/keymap/html: method Keymap.clearBindingParsers(): void
++ @opentui/keymap/html: method Keymap.clearBindingTransformers(): void
++ @opentui/keymap/html: method Keymap.clearCommandResolvers(): void
++ @opentui/keymap/html: method Keymap.clearDisambiguationResolvers(): void
++ @opentui/keymap/html: method Keymap.clearEventMatchResolvers(): void
++ @opentui/keymap/html: method Keymap.clearLayerAnalyzers(): void
++ @opentui/keymap/html: method Keymap.clearPendingSequence(): void
++ @opentui/keymap/html: method Keymap.createKeyMatcher(key: KeyLike): (input: KeyStringifyInput | null | undefined) => boolean
++ @opentui/keymap/html: method Keymap.dispatchCommand(cmd: string, options?: RunCommandOptions<TTarget, TEvent>): RunCommandResult
++ @opentui/keymap/html: method Keymap.getActiveKeys(options?: ActiveKeyOptions): readonly ActiveKey<TTarget, TEvent>[]
++ @opentui/keymap/html: method Keymap.getCommandEntries(query?: CommandQuery<TTarget>): readonly CommandEntry<TTarget, TEvent>[]
++ @opentui/keymap/html: method Keymap.getCommands(query?: CommandQuery<TTarget>): readonly CommandRecord[]
++ @opentui/keymap/html: method Keymap.getData(name: string): unknown
++ @opentui/keymap/html: method Keymap.getPendingSequence(): readonly KeySequencePart[]
++ @opentui/keymap/html: method Keymap.hasPendingSequence(): boolean
++ @opentui/keymap/html: method Keymap.intercept(name: "key", fn: (ctx: KeyInputContext<TEvent>) => void, options?: KeyInterceptOptions): () => void
++ @opentui/keymap/html: method Keymap.intercept(name: "raw", fn: (ctx: RawInputContext) => void, options?: RawInterceptOptions): () => void
++ @opentui/keymap/html: method Keymap.normalizeBindings(bindings: Bindings<TTarget, TEvent>): BindingInput<TTarget, TEvent>[]
++ @opentui/keymap/html: method Keymap.normalizeCommandName(name: string): string
++ @opentui/keymap/html: method Keymap.on(name: "error", fn: Listener<Events<TTarget, TEvent>["error"]>): () => void
++ @opentui/keymap/html: method Keymap.on(name: "pendingSequence", fn: Listener<Events<TTarget, TEvent>["pendingSequence"]>): () => void
++ @opentui/keymap/html: method Keymap.on(name: "state", fn: Listener<Events<TTarget, TEvent>["state"]>): () => void
++ @opentui/keymap/html: method Keymap.on(name: "warning", fn: Listener<Events<TTarget, TEvent>["warning"]>): () => void
++ @opentui/keymap/html: method Keymap.popPendingSequence(): boolean
++ @opentui/keymap/html: method Keymap.prependBindingExpander(expander: BindingExpander): () => void
++ @opentui/keymap/html: method Keymap.prependBindingParser(parser: BindingParser): () => void
++ @opentui/keymap/html: method Keymap.prependBindingTransformer(transformer: BindingTransformer<TTarget, TEvent>): () => void
++ @opentui/keymap/html: method Keymap.prependCommandResolver(resolver: CommandResolver<TTarget, TEvent>): () => void
++ @opentui/keymap/html: method Keymap.prependDisambiguationResolver(resolver: KeyDisambiguationResolver<TTarget, TEvent>): () => void
++ @opentui/keymap/html: method Keymap.prependEventMatchResolver(resolver: EventMatchResolver<TEvent>): () => void
++ @opentui/keymap/html: method Keymap.prependLayerAnalyzer(analyzer: LayerAnalyzer<TTarget, TEvent>): () => void
++ @opentui/keymap/html: method Keymap.registerBindingFields(fields: Record<string, BindingFieldCompiler>): () => void
++ @opentui/keymap/html: method Keymap.registerCommandFields(fields: Record<string, CommandFieldCompiler>): () => void
++ @opentui/keymap/html: method Keymap.registerLayer(layer: Layer<TTarget, TEvent>): () => void
++ @opentui/keymap/html: method Keymap.registerLayerFields(fields: Record<string, LayerFieldCompiler>): () => void
++ @opentui/keymap/html: method Keymap.registerToken(token: KeyToken): () => void
++ @opentui/keymap/html: method Keymap.runCommand(cmd: string, options?: RunCommandOptions<TTarget, TEvent>): RunCommandResult
++ @opentui/keymap/html: method Keymap.setData(name: string, value: unknown): void
++ @opentui/keymap/html: method KeymapEvent.preventDefault(): void
++ @opentui/keymap/html: method KeymapEvent.stopPropagation(): void
++ @opentui/keymap/html: method KeymapHost.createCommandEvent(): TEvent
++ @opentui/keymap/html: method KeymapHost.getFocusedTarget(): TTarget | null
++ @opentui/keymap/html: method KeymapHost.getParentTarget(target: TTarget): TTarget | null
++ @opentui/keymap/html: method KeymapHost.isTargetDestroyed(target: TTarget): boolean
++ @opentui/keymap/html: method KeymapHost.onDestroy?(listener: () => void): () => void
++ @opentui/keymap/html: method KeymapHost.onFocusChange(listener: (target: TTarget | null) => void): () => void
++ @opentui/keymap/html: method KeymapHost.onKeyPress(listener: (event: TEvent) => void): () => void
++ @opentui/keymap/html: method KeymapHost.onKeyRelease(listener: (event: TEvent) => void): () => void
++ @opentui/keymap/html: method KeymapHost.onRawInput?(listener: (sequence: string) => boolean): () => void
++ @opentui/keymap/html: method KeymapHost.onTargetDestroy(target: TTarget, listener: () => void): () => void
++ @opentui/keymap/html: method LayerAnalysisContext.checkCommandResolution(command: string): CommandResolutionStatus
++ @opentui/keymap/html: method LayerAnalysisContext.error(code: string, error: unknown, message: string): void
++ @opentui/keymap/html: method LayerAnalysisContext.warn(code: string, warning: unknown, message: string): void
++ @opentui/keymap/html: method LayerAnalysisContext.warnOnce(key: string, code: string, warning: unknown, message: string): void
++ @opentui/keymap/html: method LayerFieldContext.activeWhen(matcher: (() => boolean) | ReactiveMatcher): void
++ @opentui/keymap/html: method LayerFieldContext.require(name: string, value: unknown): void
++ @opentui/keymap/html: method ReactiveMatcher.get(): boolean
++ @opentui/keymap/html: method ReactiveMatcher.subscribe(onChange: () => void): () => void
++ @opentui/keymap/html: property ActiveBinding.attrs?: Readonly<Attributes>
++ @opentui/keymap/html: property ActiveBinding.command?: BindingCommand<TTarget, TEvent>
++ @opentui/keymap/html: property ActiveBinding.commandAttrs?: Readonly<Attributes>
++ @opentui/keymap/html: property ActiveBinding.event: BindingEvent
++ @opentui/keymap/html: property ActiveBinding.fallthrough: boolean
++ @opentui/keymap/html: property ActiveBinding.preventDefault: boolean
++ @opentui/keymap/html: property ActiveBinding.sequence: KeySequencePart[]
++ @opentui/keymap/html: property ActiveKey.bindingAttrs?: Readonly<Attributes>
++ @opentui/keymap/html: property ActiveKey.bindings?: ActiveBinding<TTarget, TEvent>[]
++ @opentui/keymap/html: property ActiveKey.command?: BindingCommand<TTarget, TEvent>
++ @opentui/keymap/html: property ActiveKey.commandAttrs?: Readonly<Attributes>
++ @opentui/keymap/html: property ActiveKey.continues: boolean
++ @opentui/keymap/html: property ActiveKey.display: string
++ @opentui/keymap/html: property ActiveKey.stroke: NormalizedKeyStroke
++ @opentui/keymap/html: property ActiveKey.tokenName?: string
++ @opentui/keymap/html: property ActiveKeyOptions.includeBindings?: boolean
++ @opentui/keymap/html: property ActiveKeyOptions.includeMetadata?: boolean
++ @opentui/keymap/html: property BindingExpanderContext.input: string
++ @opentui/keymap/html: property BindingExpanderContext.layer: Readonly<Record<string, unknown>>
++ @opentui/keymap/html: property BindingInput.cmd?: BindingCommand<TTarget, TEvent>
++ @opentui/keymap/html: property BindingInput.event?: BindingEvent
++ @opentui/keymap/html: property BindingInput.fallthrough?: boolean
++ @opentui/keymap/html: property BindingInput.key: KeyLike
++ @opentui/keymap/html: property BindingInput.preventDefault?: boolean
++ @opentui/keymap/html: property BindingParserContext.index: number
++ @opentui/keymap/html: property BindingParserContext.input: string
++ @opentui/keymap/html: property BindingParserContext.layer: Readonly<Record<string, unknown>>
++ @opentui/keymap/html: property BindingParserContext.tokens: ReadonlyMap<string, ResolvedKeyToken>
++ @opentui/keymap/html: property BindingParserResult.nextIndex: number
++ @opentui/keymap/html: property BindingParserResult.parts: KeySequencePart[]
++ @opentui/keymap/html: property BindingParserResult.unknownTokens?: readonly string[]
++ @opentui/keymap/html: property BindingParserResult.usedTokens?: readonly string[]
++ @opentui/keymap/html: property BindingTransformerContext.layer: Readonly<Record<string, unknown>>
++ @opentui/keymap/html: property CommandContext.command?: CommandRecord
++ @opentui/keymap/html: property CommandContext.data: Readonly<EventData>
++ @opentui/keymap/html: property CommandContext.event: TEvent
++ @opentui/keymap/html: property CommandContext.focused: TTarget | null
++ @opentui/keymap/html: property CommandContext.keymap: Keymap<TTarget, TEvent>
++ @opentui/keymap/html: property CommandContext.target: TTarget | null
++ @opentui/keymap/html: property CommandDefinition.name: string
++ @opentui/keymap/html: property CommandDefinition.run: CommandHandler<TTarget, TEvent>
++ @opentui/keymap/html: property CommandEntry.bindings: readonly ActiveBinding<TTarget, TEvent>[]
++ @opentui/keymap/html: property CommandEntry.command: CommandRecord
++ @opentui/keymap/html: property CommandQuery.filter?: CommandFilter
++ @opentui/keymap/html: property CommandQuery.focused?: TTarget | null
++ @opentui/keymap/html: property CommandQuery.namespace?: string | readonly string[]
++ @opentui/keymap/html: property CommandQuery.search?: string
++ @opentui/keymap/html: property CommandQuery.searchIn?: readonly string[]
++ @opentui/keymap/html: property CommandQuery.visibility?: "reachable" | "active" | "registered"
++ @opentui/keymap/html: property CommandRecord.attrs?: Readonly<Attributes>
++ @opentui/keymap/html: property CommandRecord.fields: Readonly<Record<string, unknown>>
++ @opentui/keymap/html: property CommandRecord.name: string
++ @opentui/keymap/html: property ErrorEvent.code: string
++ @opentui/keymap/html: property ErrorEvent.error: unknown
++ @opentui/keymap/html: property ErrorEvent.message: string
++ @opentui/keymap/html: property FocusLayer.target: TTarget
++ @opentui/keymap/html: property FocusLayer.targetMode?: TargetMode
++ @opentui/keymap/html: property FocusWithinLayer.target: TTarget
++ @opentui/keymap/html: property FocusWithinLayer.targetMode?: TargetMode
++ @opentui/keymap/html: property GlobalLayer.target?: undefined
++ @opentui/keymap/html: readonly property HtmlKeymapEvent.originalEvent?: KeyboardEvent
++ @opentui/keymap/html: readonly property KeyDeferredDisambiguationContext.focused: TTarget | null
++ @opentui/keymap/html: readonly property KeyDeferredDisambiguationContext.sequence: readonly KeySequencePart[]
++ @opentui/keymap/html: readonly property KeyDeferredDisambiguationContext.signal: AbortSignal
++ @opentui/keymap/html: readonly property KeyDeferredDisambiguationDecision.[KEY_DEFERRED_DISAMBIGUATION_DECISION]: true
++ @opentui/keymap/html: readonly property KeyDisambiguationContext.continuations: readonly ActiveKey<TTarget, TEvent>[]
++ @opentui/keymap/html: readonly property KeyDisambiguationContext.event: Readonly<Omit<TEvent, "preventDefault" | "stopPropagation">>
++ @opentui/keymap/html: readonly property KeyDisambiguationContext.exact: readonly ActiveBinding<TTarget, TEvent>[]
++ @opentui/keymap/html: readonly property KeyDisambiguationContext.focused: TTarget | null
++ @opentui/keymap/html: readonly property KeyDisambiguationContext.sequence: readonly KeySequencePart[]
++ @opentui/keymap/html: readonly property KeyDisambiguationContext.stroke: KeySequencePart
++ @opentui/keymap/html: readonly property KeyDisambiguationDecision.[KEY_DISAMBIGUATION_DECISION]: true
++ @opentui/keymap/html: property KeyInputContext.consume: (options?: { preventDefault?: boolean; stopPropagation?: boolean; }) => void
++ @opentui/keymap/html: property KeyInputContext.event: TEvent
++ @opentui/keymap/html: property KeyInputContext.getData: (name: string) => unknown
++ @opentui/keymap/html: property KeyInputContext.setData: (name: string, value: unknown) => void
++ @opentui/keymap/html: property KeyInterceptOptions.priority?: number
++ @opentui/keymap/html: property KeyInterceptOptions.release?: boolean
++ @opentui/keymap/html: property KeySequencePart.display: string
++ @opentui/keymap/html: property KeySequencePart.match: KeyMatch
++ @opentui/keymap/html: property KeySequencePart.stroke: NormalizedKeyStroke
++ @opentui/keymap/html: property KeySequencePart.tokenName?: string
++ @opentui/keymap/html: property KeyStrokeInput.ctrl?: boolean
++ @opentui/keymap/html: property KeyStrokeInput.hyper?: boolean
++ @opentui/keymap/html: property KeyStrokeInput.meta?: boolean
++ @opentui/keymap/html: property KeyStrokeInput.name: string
++ @opentui/keymap/html: property KeyStrokeInput.shift?: boolean
++ @opentui/keymap/html: property KeyStrokeInput.super?: boolean
++ @opentui/keymap/html: property KeyToken.key: KeyLike
++ @opentui/keymap/html: property KeyToken.name: string
++ @opentui/keymap/html: property KeymapEvent.ctrl: boolean
++ @opentui/keymap/html: property KeymapEvent.hyper?: boolean
++ @opentui/keymap/html: property KeymapEvent.meta: boolean
++ @opentui/keymap/html: property KeymapEvent.name: string
++ @opentui/keymap/html: readonly property KeymapEvent.propagationStopped: boolean
++ @opentui/keymap/html: property KeymapEvent.shift: boolean
++ @opentui/keymap/html: property KeymapEvent.super?: boolean
++ @opentui/keymap/html: readonly property KeymapHost.isDestroyed: boolean
++ @opentui/keymap/html: readonly property KeymapHost.rootTarget: TTarget
++ @opentui/keymap/html: property Layer.target?: TTarget
++ @opentui/keymap/html: property LayerAnalysisContext.bindingInputs: readonly BindingInput<TTarget, TEvent>[]
++ @opentui/keymap/html: property LayerAnalysisContext.bindings: readonly LayerBindingAnalysis<TTarget, TEvent>[]
++ @opentui/keymap/html: property LayerAnalysisContext.hasTokenBindings: boolean
++ @opentui/keymap/html: property LayerAnalysisContext.order: number
++ @opentui/keymap/html: property LayerAnalysisContext.target?: TTarget
++ @opentui/keymap/html: property LayerBindingAnalysis.attrs?: Readonly<Attributes>
++ @opentui/keymap/html: property LayerBindingAnalysis.command?: BindingCommand<TTarget, TEvent>
++ @opentui/keymap/html: property LayerBindingAnalysis.event: BindingEvent
++ @opentui/keymap/html: property LayerBindingAnalysis.fallthrough: boolean
++ @opentui/keymap/html: property LayerBindingAnalysis.hasCommandAtSequence: boolean
++ @opentui/keymap/html: property LayerBindingAnalysis.hasContinuations: boolean
++ @opentui/keymap/html: property LayerBindingAnalysis.preventDefault: boolean
++ @opentui/keymap/html: property LayerBindingAnalysis.sequence: KeySequencePart[]
++ @opentui/keymap/html: property LayerBindingAnalysis.sourceBinding: ParsedBindingInput<TTarget, TEvent>
++ @opentui/keymap/html: property LayerBindingAnalysis.sourceBindingIndex: number
++ @opentui/keymap/html: property LayerBindingAnalysis.sourceLayerOrder: number
++ @opentui/keymap/html: property LayerBindingAnalysis.sourceTarget?: TTarget
++ @opentui/keymap/html: property LayerFields.bindings?: Bindings<TTarget, TEvent>
++ @opentui/keymap/html: property LayerFields.commands?: readonly CommandDefinition<TTarget, TEvent>[]
++ @opentui/keymap/html: property LayerFields.priority?: number
++ @opentui/keymap/html: property LayerFields.targetMode?: TargetMode
++ @opentui/keymap/html: property NormalizedKeyStroke.ctrl: boolean
++ @opentui/keymap/html: property NormalizedKeyStroke.meta: boolean
++ @opentui/keymap/html: property NormalizedKeyStroke.shift: boolean
++ @opentui/keymap/html: property NormalizedKeyStroke.super: boolean
++ @opentui/keymap/html: property ParsedBindingInput.cmd?: BindingCommand<TTarget, TEvent>
++ @opentui/keymap/html: property ParsedBindingInput.event?: BindingEvent
++ @opentui/keymap/html: property ParsedBindingInput.fallthrough?: boolean
++ @opentui/keymap/html: property ParsedBindingInput.key: KeyLike
++ @opentui/keymap/html: property ParsedBindingInput.preventDefault?: boolean
++ @opentui/keymap/html: property ParsedBindingInput.sequence: KeySequencePart[]
++ @opentui/keymap/html: property ParsedCommand.args: string[]
++ @opentui/keymap/html: property ParsedCommand.input: string
++ @opentui/keymap/html: property ParsedCommand.name: string
++ @opentui/keymap/html: property RawInputContext.sequence: string
++ @opentui/keymap/html: property RawInputContext.stop: () => void
++ @opentui/keymap/html: property RawInterceptOptions.priority?: number
++ @opentui/keymap/html: property ResolvedBindingCommand.attrs?: Readonly<Attributes>
++ @opentui/keymap/html: property ResolvedBindingCommand.record?: CommandRecord
++ @opentui/keymap/html: property ResolvedBindingCommand.rejectedResult?: Extract<RunCommandResult, { ok: false; }>
++ @opentui/keymap/html: property ResolvedBindingCommand.run: CommandHandler<TTarget, TEvent>
++ @opentui/keymap/html: property ResolvedKeyToken.match: KeyMatch
++ @opentui/keymap/html: property ResolvedKeyToken.stroke: NormalizedKeyStroke
++ @opentui/keymap/html: property RunCommandOptions.event?: TEvent
++ @opentui/keymap/html: property RunCommandOptions.focused?: TTarget | null
++ @opentui/keymap/html: property RunCommandOptions.includeCommand?: boolean
++ @opentui/keymap/html: property RunCommandOptions.target?: TTarget | null
++ @opentui/keymap/html: property StringifyOptions.preferDisplay?: boolean
++ @opentui/keymap/html: property WarningEvent.code: string
++ @opentui/keymap/html: property WarningEvent.message: string
++ @opentui/keymap/html: property WarningEvent.warning: unknown
++ @opentui/keymap/html: type Attributes = Record<string, unknown>
++ @opentui/keymap/html: type BindingCommand<TTarget extends object = object, TEvent extends KeymapEvent = KeymapEvent> = string | CommandHandler<TTarget, TEvent>
++ @opentui/keymap/html: type BindingEvent = "press" | "release"
++ @opentui/keymap/html: type BindingExpander = (ctx: BindingExpanderContext) => readonly string[] | undefined
++ @opentui/keymap/html: type BindingFieldCompiler = (value: unknown, ctx: BindingFieldContext) => void
++ @opentui/keymap/html: type BindingParser = (ctx: BindingParserContext) => BindingParserResult | undefined
++ @opentui/keymap/html: type BindingShorthand<TTarget extends object = object, TEvent extends KeymapEvent = KeymapEvent> = Record<string, BindingCommand<TTarget, TEvent>>
++ @opentui/keymap/html: type BindingTransformer<TTarget extends object = object, TEvent extends KeymapEvent = KeymapEvent> = (binding: ParsedBindingInput<TTarget, TEvent>, ctx: BindingTransformerContext<TTarget, TEvent>) => void
++ @opentui/keymap/html: type Bindings<TTarget extends object = object, TEvent extends KeymapEvent = KeymapEvent> = BindingInput<TTarget, TEvent>[] | BindingShorthand<TTarget, TEvent>
++ @opentui/keymap/html: type CommandFieldCompiler = (value: unknown, ctx: CommandFieldContext) => void
++ @opentui/keymap/html: type CommandFilter = Readonly<Record<string, CommandQueryValue>> | ((command: CommandRecord) => boolean)
++ @opentui/keymap/html: type CommandHandler<TTarget extends object = object, TEvent extends KeymapEvent = KeymapEvent> = (ctx: CommandContext<TTarget, TEvent>) => CommandResult
++ @opentui/keymap/html: type CommandQueryValue = unknown | readonly unknown[] | ((value: unknown, command: CommandRecord) => boolean)
++ @opentui/keymap/html: type CommandResolver<TTarget extends object = object, TEvent extends KeymapEvent = KeymapEvent> = (command: string, ctx: CommandResolverContext) => ResolvedBindingCommand<TTarget, TEvent> | undefined
++ @opentui/keymap/html: type CommandResult = boolean | void | Promise<boolean | void>
++ @opentui/keymap/html: type EventData = Record<string, unknown>
++ @opentui/keymap/html: type EventMatchResolver<TEvent extends KeymapEvent = KeymapEvent> = (event: TEvent, ctx: EventMatchResolverContext) => readonly KeyMatch[] | undefined
++ @opentui/keymap/html: type EventName = keyof Events
++ @opentui/keymap/html: type Events<TTarget extends object = object, TEvent extends KeymapEvent = KeymapEvent> = Hooks<TTarget, TEvent> & { warning: WarningEvent; error: ErrorEvent; }
++ @opentui/keymap/html: type InterceptName = keyof Intercepts
++ @opentui/keymap/html: type Intercepts<TEvent extends KeymapEvent = KeymapEvent> = { key: KeyInputContext<TEvent>; raw: RawInputContext; }
++ @opentui/keymap/html: type KeyDeferredDisambiguationHandler<TTarget extends object = object, TEvent extends KeymapEvent = KeymapEvent> = (ctx: KeyDeferredDisambiguationContext<TTarget, TEvent>) => KeyDeferredDisambiguationDecision | void | Promise<KeyDeferredDisambiguationDecision | void>
++ @opentui/keymap/html: type KeyDisambiguationResolver<TTarget extends object = object, TEvent extends KeymapEvent = KeymapEvent> = (ctx: KeyDisambiguationContext<TTarget, TEvent>) => KeyDisambiguationDecision | undefined
++ @opentui/keymap/html: type KeyLike = string | KeyStrokeInput
++ @opentui/keymap/html: type KeyMatch = string
++ @opentui/keymap/html: type KeyStringifyInput = KeyStrokeInput | NormalizedKeyStroke | KeySequencePart | { stroke: NormalizedKeyStroke; display?: string; }
++ @opentui/keymap/html: type LayerAnalyzer<TTarget extends object = object, TEvent extends KeymapEvent = KeymapEvent> = (ctx: LayerAnalysisContext<TTarget, TEvent>) => void
++ @opentui/keymap/html: type LayerFieldCompiler = (value: unknown, ctx: LayerFieldContext) => void
++ @opentui/keymap/html: type Listener<TValue> = [ TValue ] extends [ void ] ? () => void : (value: TValue) => void
++ @opentui/keymap/html: type RunCommandResult = { ok: true; command?: CommandRecord; } | { ok: false; reason: "not-found"; } | { ok: false; reason: "inactive" | "disabled" | "invalid-args" | "rejected" | "error"; command?: CommandRecord; }
++ @opentui/keymap/html: type TargetLayer<TTarget extends object = object, TEvent extends KeymapEvent = KeymapEvent> = FocusWithinLayer<TTarget, TEvent> | FocusLayer<TTarget, TEvent>
++ @opentui/keymap/html: type TargetMode = "focus" | "focus-within"
++ @opentui/keymap/opentui: class Keymap<TTarget extends object, TEvent extends KeymapEvent = KeymapEvent>
++ @opentui/keymap/opentui: constructor Keymap(host: KeymapHost<TTarget, TEvent>)
++ @opentui/keymap/opentui: function createDefaultOpenTuiKeymap(renderer: CliRenderer): Keymap<Renderable, KeyEvent>
++ @opentui/keymap/opentui: function createOpenTuiKeymap(renderer: CliRenderer): Keymap<Renderable, KeyEvent>
++ @opentui/keymap/opentui: function createOpenTuiKeymapHost(renderer: CliRenderer): KeymapHost<Renderable, KeyEvent>
++ @opentui/keymap/opentui: function stringifyKeySequence(input: readonly KeyStringifyInput[], options?: StringifyOptions): string
++ @opentui/keymap/opentui: function stringifyKeyStroke(input: KeyStringifyInput, options?: StringifyOptions): string
++ @opentui/keymap/opentui: index BindingInput[key: string]: unknown
++ @opentui/keymap/opentui: index CommandDefinition[key: string]: unknown
++ @opentui/keymap/opentui: index LayerFields[key: string]: unknown
++ @opentui/keymap/opentui: index ParsedBindingInput[key: string]: unknown
++ @opentui/keymap/opentui: interface ActiveBinding<TTarget extends object = object, TEvent extends KeymapEvent = KeymapEvent>
++ @opentui/keymap/opentui: interface ActiveKey<TTarget extends object = object, TEvent extends KeymapEvent = KeymapEvent>
++ @opentui/keymap/opentui: interface ActiveKeyOptions
++ @opentui/keymap/opentui: interface BindingExpanderContext
++ @opentui/keymap/opentui: interface BindingFieldContext
++ @opentui/keymap/opentui: interface BindingInput<TTarget extends object = object, TEvent extends KeymapEvent = KeymapEvent>
++ @opentui/keymap/opentui: interface BindingParserContext
++ @opentui/keymap/opentui: interface BindingParserResult
++ @opentui/keymap/opentui: interface BindingTransformerContext<TTarget extends object = object, TEvent extends KeymapEvent = KeymapEvent>
++ @opentui/keymap/opentui: interface CommandContext<TTarget extends object = object, TEvent extends KeymapEvent = KeymapEvent>
++ @opentui/keymap/opentui: interface CommandDefinition<TTarget extends object = object, TEvent extends KeymapEvent = KeymapEvent>
++ @opentui/keymap/opentui: interface CommandEntry<TTarget extends object = object, TEvent extends KeymapEvent = KeymapEvent>
++ @opentui/keymap/opentui: interface CommandFieldContext
++ @opentui/keymap/opentui: interface CommandQuery<TTarget extends object = object>
++ @opentui/keymap/opentui: interface CommandRecord
++ @opentui/keymap/opentui: interface CommandResolverContext
++ @opentui/keymap/opentui: interface ErrorEvent
++ @opentui/keymap/opentui: interface EventMatchResolverContext
++ @opentui/keymap/opentui: interface FocusLayer<TTarget extends object = object, TEvent extends KeymapEvent = KeymapEvent> extends LayerFields<TTarget, TEvent>
++ @opentui/keymap/opentui: interface FocusWithinLayer<TTarget extends object = object, TEvent extends KeymapEvent = KeymapEvent> extends LayerFields<TTarget, TEvent>
++ @opentui/keymap/opentui: interface GlobalLayer<TTarget extends object = object, TEvent extends KeymapEvent = KeymapEvent> extends LayerFields<TTarget, TEvent>
++ @opentui/keymap/opentui: interface KeyDeferredDisambiguationContext<TTarget extends object = object, TEvent extends KeymapEvent = KeymapEvent>
++ @opentui/keymap/opentui: interface KeyDeferredDisambiguationDecision
++ @opentui/keymap/opentui: interface KeyDisambiguationContext<TTarget extends object = object, TEvent extends KeymapEvent = KeymapEvent>
++ @opentui/keymap/opentui: interface KeyDisambiguationDecision
++ @opentui/keymap/opentui: interface KeyInputContext<TEvent extends KeymapEvent = KeymapEvent>
++ @opentui/keymap/opentui: interface KeyInterceptOptions
++ @opentui/keymap/opentui: interface KeySequencePart
++ @opentui/keymap/opentui: interface KeyStrokeInput
++ @opentui/keymap/opentui: interface KeyToken
++ @opentui/keymap/opentui: interface KeymapEvent
++ @opentui/keymap/opentui: interface KeymapHost<TTarget extends object, TEvent extends KeymapEvent = KeymapEvent>
++ @opentui/keymap/opentui: interface Layer<TTarget extends object = object, TEvent extends KeymapEvent = KeymapEvent> extends LayerFields<TTarget, TEvent>
++ @opentui/keymap/opentui: interface LayerAnalysisContext<TTarget extends object = object, TEvent extends KeymapEvent = KeymapEvent>
++ @opentui/keymap/opentui: interface LayerBindingAnalysis<TTarget extends object = object, TEvent extends KeymapEvent = KeymapEvent>
++ @opentui/keymap/opentui: interface LayerFieldContext
++ @opentui/keymap/opentui: interface LayerFields<TTarget extends object = object, TEvent extends KeymapEvent = KeymapEvent>
++ @opentui/keymap/opentui: interface NormalizedKeyStroke extends KeyStrokeInput
++ @opentui/keymap/opentui: interface ParsedBindingInput<TTarget extends object = object, TEvent extends KeymapEvent = KeymapEvent>
++ @opentui/keymap/opentui: interface ParsedCommand
++ @opentui/keymap/opentui: interface RawInputContext
++ @opentui/keymap/opentui: interface RawInterceptOptions
++ @opentui/keymap/opentui: interface ReactiveMatcher
++ @opentui/keymap/opentui: interface ResolvedBindingCommand<TTarget extends object = object, TEvent extends KeymapEvent = KeymapEvent>
++ @opentui/keymap/opentui: interface ResolvedKeyToken
++ @opentui/keymap/opentui: interface RunCommandOptions<TTarget extends object = object, TEvent extends KeymapEvent = KeymapEvent>
++ @opentui/keymap/opentui: interface StringifyOptions
++ @opentui/keymap/opentui: interface WarningEvent
++ @opentui/keymap/opentui: method BindingFieldContext.activeWhen(matcher: (() => boolean) | ReactiveMatcher): void
++ @opentui/keymap/opentui: method BindingFieldContext.attr(name: string, value: unknown): void
++ @opentui/keymap/opentui: method BindingFieldContext.require(name: string, value: unknown): void
++ @opentui/keymap/opentui: method BindingParserContext.createMatch(id: string): KeyMatch
++ @opentui/keymap/opentui: method BindingParserContext.normalizeTokenName(token: string): string
++ @opentui/keymap/opentui: method BindingParserContext.parseObjectKey(key: KeyStrokeInput, options?: { display?: string; match?: KeyMatch; tokenName?: string; }): KeySequencePart
++ @opentui/keymap/opentui: method BindingTransformerContext.add(binding: ParsedBindingInput<TTarget, TEvent>): void
++ @opentui/keymap/opentui: method BindingTransformerContext.parseKey(key: KeyLike): KeySequencePart
++ @opentui/keymap/opentui: method BindingTransformerContext.skipOriginal(): void
++ @opentui/keymap/opentui: method CommandFieldContext.activeWhen(matcher: (() => boolean) | ReactiveMatcher): void
++ @opentui/keymap/opentui: method CommandFieldContext.attr(name: string, value: unknown): void
++ @opentui/keymap/opentui: method CommandFieldContext.require(name: string, value: unknown): void
++ @opentui/keymap/opentui: method CommandResolverContext.getCommandAttrs(name: string): Readonly<Attributes> | undefined
++ @opentui/keymap/opentui: method CommandResolverContext.getCommandRecord(name: string): CommandRecord | undefined
++ @opentui/keymap/opentui: method EventMatchResolverContext.resolveKey(key: KeyLike): KeyMatch
++ @opentui/keymap/opentui: method KeyDeferredDisambiguationContext.clear(): KeyDeferredDisambiguationDecision
++ @opentui/keymap/opentui: method KeyDeferredDisambiguationContext.continueSequence(): KeyDeferredDisambiguationDecision
++ @opentui/keymap/opentui: method KeyDeferredDisambiguationContext.runExact(): KeyDeferredDisambiguationDecision
++ @opentui/keymap/opentui: method KeyDeferredDisambiguationContext.sleep(ms: number): Promise<boolean>
++ @opentui/keymap/opentui: method KeyDisambiguationContext.clear(): KeyDisambiguationDecision
++ @opentui/keymap/opentui: method KeyDisambiguationContext.continueSequence(): KeyDisambiguationDecision
++ @opentui/keymap/opentui: method KeyDisambiguationContext.defer(run: KeyDeferredDisambiguationHandler<TTarget, TEvent>): KeyDisambiguationDecision
++ @opentui/keymap/opentui: method KeyDisambiguationContext.getData(name: string): unknown
++ @opentui/keymap/opentui: method KeyDisambiguationContext.runExact(): KeyDisambiguationDecision
++ @opentui/keymap/opentui: method KeyDisambiguationContext.setData(name: string, value: unknown): void
++ @opentui/keymap/opentui: method Keymap.acquireResource(key: symbol, setup: () => () => void): () => void
++ @opentui/keymap/opentui: method Keymap.appendBindingExpander(expander: BindingExpander): () => void
++ @opentui/keymap/opentui: method Keymap.appendBindingParser(parser: BindingParser): () => void
++ @opentui/keymap/opentui: method Keymap.appendBindingTransformer(transformer: BindingTransformer<TTarget, TEvent>): () => void
++ @opentui/keymap/opentui: method Keymap.appendCommandResolver(resolver: CommandResolver<TTarget, TEvent>): () => void
++ @opentui/keymap/opentui: method Keymap.appendDisambiguationResolver(resolver: KeyDisambiguationResolver<TTarget, TEvent>): () => void
++ @opentui/keymap/opentui: method Keymap.appendEventMatchResolver(resolver: EventMatchResolver<TEvent>): () => void
++ @opentui/keymap/opentui: method Keymap.appendLayerAnalyzer(analyzer: LayerAnalyzer<TTarget, TEvent>): () => void
++ @opentui/keymap/opentui: method Keymap.clearBindingExpanders(): void
++ @opentui/keymap/opentui: method Keymap.clearBindingParsers(): void
++ @opentui/keymap/opentui: method Keymap.clearBindingTransformers(): void
++ @opentui/keymap/opentui: method Keymap.clearCommandResolvers(): void
++ @opentui/keymap/opentui: method Keymap.clearDisambiguationResolvers(): void
++ @opentui/keymap/opentui: method Keymap.clearEventMatchResolvers(): void
++ @opentui/keymap/opentui: method Keymap.clearLayerAnalyzers(): void
++ @opentui/keymap/opentui: method Keymap.clearPendingSequence(): void
++ @opentui/keymap/opentui: method Keymap.createKeyMatcher(key: KeyLike): (input: KeyStringifyInput | null | undefined) => boolean
++ @opentui/keymap/opentui: method Keymap.dispatchCommand(cmd: string, options?: RunCommandOptions<TTarget, TEvent>): RunCommandResult
++ @opentui/keymap/opentui: method Keymap.getActiveKeys(options?: ActiveKeyOptions): readonly ActiveKey<TTarget, TEvent>[]
++ @opentui/keymap/opentui: method Keymap.getCommandEntries(query?: CommandQuery<TTarget>): readonly CommandEntry<TTarget, TEvent>[]
++ @opentui/keymap/opentui: method Keymap.getCommands(query?: CommandQuery<TTarget>): readonly CommandRecord[]
++ @opentui/keymap/opentui: method Keymap.getData(name: string): unknown
++ @opentui/keymap/opentui: method Keymap.getPendingSequence(): readonly KeySequencePart[]
++ @opentui/keymap/opentui: method Keymap.hasPendingSequence(): boolean
++ @opentui/keymap/opentui: method Keymap.intercept(name: "key", fn: (ctx: KeyInputContext<TEvent>) => void, options?: KeyInterceptOptions): () => void
++ @opentui/keymap/opentui: method Keymap.intercept(name: "raw", fn: (ctx: RawInputContext) => void, options?: RawInterceptOptions): () => void
++ @opentui/keymap/opentui: method Keymap.normalizeBindings(bindings: Bindings<TTarget, TEvent>): BindingInput<TTarget, TEvent>[]
++ @opentui/keymap/opentui: method Keymap.normalizeCommandName(name: string): string
++ @opentui/keymap/opentui: method Keymap.on(name: "error", fn: Listener<Events<TTarget, TEvent>["error"]>): () => void
++ @opentui/keymap/opentui: method Keymap.on(name: "pendingSequence", fn: Listener<Events<TTarget, TEvent>["pendingSequence"]>): () => void
++ @opentui/keymap/opentui: method Keymap.on(name: "state", fn: Listener<Events<TTarget, TEvent>["state"]>): () => void
++ @opentui/keymap/opentui: method Keymap.on(name: "warning", fn: Listener<Events<TTarget, TEvent>["warning"]>): () => void
++ @opentui/keymap/opentui: method Keymap.popPendingSequence(): boolean
++ @opentui/keymap/opentui: method Keymap.prependBindingExpander(expander: BindingExpander): () => void
++ @opentui/keymap/opentui: method Keymap.prependBindingParser(parser: BindingParser): () => void
++ @opentui/keymap/opentui: method Keymap.prependBindingTransformer(transformer: BindingTransformer<TTarget, TEvent>): () => void
++ @opentui/keymap/opentui: method Keymap.prependCommandResolver(resolver: CommandResolver<TTarget, TEvent>): () => void
++ @opentui/keymap/opentui: method Keymap.prependDisambiguationResolver(resolver: KeyDisambiguationResolver<TTarget, TEvent>): () => void
++ @opentui/keymap/opentui: method Keymap.prependEventMatchResolver(resolver: EventMatchResolver<TEvent>): () => void
++ @opentui/keymap/opentui: method Keymap.prependLayerAnalyzer(analyzer: LayerAnalyzer<TTarget, TEvent>): () => void
++ @opentui/keymap/opentui: method Keymap.registerBindingFields(fields: Record<string, BindingFieldCompiler>): () => void
++ @opentui/keymap/opentui: method Keymap.registerCommandFields(fields: Record<string, CommandFieldCompiler>): () => void
++ @opentui/keymap/opentui: method Keymap.registerLayer(layer: Layer<TTarget, TEvent>): () => void
++ @opentui/keymap/opentui: method Keymap.registerLayerFields(fields: Record<string, LayerFieldCompiler>): () => void
++ @opentui/keymap/opentui: method Keymap.registerToken(token: KeyToken): () => void
++ @opentui/keymap/opentui: method Keymap.runCommand(cmd: string, options?: RunCommandOptions<TTarget, TEvent>): RunCommandResult
++ @opentui/keymap/opentui: method Keymap.setData(name: string, value: unknown): void
++ @opentui/keymap/opentui: method KeymapEvent.preventDefault(): void
++ @opentui/keymap/opentui: method KeymapEvent.stopPropagation(): void
++ @opentui/keymap/opentui: method KeymapHost.createCommandEvent(): TEvent
++ @opentui/keymap/opentui: method KeymapHost.getFocusedTarget(): TTarget | null
++ @opentui/keymap/opentui: method KeymapHost.getParentTarget(target: TTarget): TTarget | null
++ @opentui/keymap/opentui: method KeymapHost.isTargetDestroyed(target: TTarget): boolean
++ @opentui/keymap/opentui: method KeymapHost.onDestroy?(listener: () => void): () => void
++ @opentui/keymap/opentui: method KeymapHost.onFocusChange(listener: (target: TTarget | null) => void): () => void
++ @opentui/keymap/opentui: method KeymapHost.onKeyPress(listener: (event: TEvent) => void): () => void
++ @opentui/keymap/opentui: method KeymapHost.onKeyRelease(listener: (event: TEvent) => void): () => void
++ @opentui/keymap/opentui: method KeymapHost.onRawInput?(listener: (sequence: string) => boolean): () => void
++ @opentui/keymap/opentui: method KeymapHost.onTargetDestroy(target: TTarget, listener: () => void): () => void
++ @opentui/keymap/opentui: method LayerAnalysisContext.checkCommandResolution(command: string): CommandResolutionStatus
++ @opentui/keymap/opentui: method LayerAnalysisContext.error(code: string, error: unknown, message: string): void
++ @opentui/keymap/opentui: method LayerAnalysisContext.warn(code: string, warning: unknown, message: string): void
++ @opentui/keymap/opentui: method LayerAnalysisContext.warnOnce(key: string, code: string, warning: unknown, message: string): void
++ @opentui/keymap/opentui: method LayerFieldContext.activeWhen(matcher: (() => boolean) | ReactiveMatcher): void
++ @opentui/keymap/opentui: method LayerFieldContext.require(name: string, value: unknown): void
++ @opentui/keymap/opentui: method ReactiveMatcher.get(): boolean
++ @opentui/keymap/opentui: method ReactiveMatcher.subscribe(onChange: () => void): () => void
++ @opentui/keymap/opentui: property ActiveBinding.attrs?: Readonly<Attributes>
++ @opentui/keymap/opentui: property ActiveBinding.command?: BindingCommand<TTarget, TEvent>
++ @opentui/keymap/opentui: property ActiveBinding.commandAttrs?: Readonly<Attributes>
++ @opentui/keymap/opentui: property ActiveBinding.event: BindingEvent
++ @opentui/keymap/opentui: property ActiveBinding.fallthrough: boolean
++ @opentui/keymap/opentui: property ActiveBinding.preventDefault: boolean
++ @opentui/keymap/opentui: property ActiveBinding.sequence: KeySequencePart[]
++ @opentui/keymap/opentui: property ActiveKey.bindingAttrs?: Readonly<Attributes>
++ @opentui/keymap/opentui: property ActiveKey.bindings?: ActiveBinding<TTarget, TEvent>[]
++ @opentui/keymap/opentui: property ActiveKey.command?: BindingCommand<TTarget, TEvent>
++ @opentui/keymap/opentui: property ActiveKey.commandAttrs?: Readonly<Attributes>
++ @opentui/keymap/opentui: property ActiveKey.continues: boolean
++ @opentui/keymap/opentui: property ActiveKey.display: string
++ @opentui/keymap/opentui: property ActiveKey.stroke: NormalizedKeyStroke
++ @opentui/keymap/opentui: property ActiveKey.tokenName?: string
++ @opentui/keymap/opentui: property ActiveKeyOptions.includeBindings?: boolean
++ @opentui/keymap/opentui: property ActiveKeyOptions.includeMetadata?: boolean
++ @opentui/keymap/opentui: property BindingExpanderContext.input: string
++ @opentui/keymap/opentui: property BindingExpanderContext.layer: Readonly<Record<string, unknown>>
++ @opentui/keymap/opentui: property BindingInput.cmd?: BindingCommand<TTarget, TEvent>
++ @opentui/keymap/opentui: property BindingInput.event?: BindingEvent
++ @opentui/keymap/opentui: property BindingInput.fallthrough?: boolean
++ @opentui/keymap/opentui: property BindingInput.key: KeyLike
++ @opentui/keymap/opentui: property BindingInput.preventDefault?: boolean
++ @opentui/keymap/opentui: property BindingParserContext.index: number
++ @opentui/keymap/opentui: property BindingParserContext.input: string
++ @opentui/keymap/opentui: property BindingParserContext.layer: Readonly<Record<string, unknown>>
++ @opentui/keymap/opentui: property BindingParserContext.tokens: ReadonlyMap<string, ResolvedKeyToken>
++ @opentui/keymap/opentui: property BindingParserResult.nextIndex: number
++ @opentui/keymap/opentui: property BindingParserResult.parts: KeySequencePart[]
++ @opentui/keymap/opentui: property BindingParserResult.unknownTokens?: readonly string[]
++ @opentui/keymap/opentui: property BindingParserResult.usedTokens?: readonly string[]
++ @opentui/keymap/opentui: property BindingTransformerContext.layer: Readonly<Record<string, unknown>>
++ @opentui/keymap/opentui: property CommandContext.command?: CommandRecord
++ @opentui/keymap/opentui: property CommandContext.data: Readonly<EventData>
++ @opentui/keymap/opentui: property CommandContext.event: TEvent
++ @opentui/keymap/opentui: property CommandContext.focused: TTarget | null
++ @opentui/keymap/opentui: property CommandContext.keymap: Keymap<TTarget, TEvent>
++ @opentui/keymap/opentui: property CommandContext.target: TTarget | null
++ @opentui/keymap/opentui: property CommandDefinition.name: string
++ @opentui/keymap/opentui: property CommandDefinition.run: CommandHandler<TTarget, TEvent>
++ @opentui/keymap/opentui: property CommandEntry.bindings: readonly ActiveBinding<TTarget, TEvent>[]
++ @opentui/keymap/opentui: property CommandEntry.command: CommandRecord
++ @opentui/keymap/opentui: property CommandQuery.filter?: CommandFilter
++ @opentui/keymap/opentui: property CommandQuery.focused?: TTarget | null
++ @opentui/keymap/opentui: property CommandQuery.namespace?: string | readonly string[]
++ @opentui/keymap/opentui: property CommandQuery.search?: string
++ @opentui/keymap/opentui: property CommandQuery.searchIn?: readonly string[]
++ @opentui/keymap/opentui: property CommandQuery.visibility?: "reachable" | "active" | "registered"
++ @opentui/keymap/opentui: property CommandRecord.attrs?: Readonly<Attributes>
++ @opentui/keymap/opentui: property CommandRecord.fields: Readonly<Record<string, unknown>>
++ @opentui/keymap/opentui: property CommandRecord.name: string
++ @opentui/keymap/opentui: property ErrorEvent.code: string
++ @opentui/keymap/opentui: property ErrorEvent.error: unknown
++ @opentui/keymap/opentui: property ErrorEvent.message: string
++ @opentui/keymap/opentui: property FocusLayer.target: TTarget
++ @opentui/keymap/opentui: property FocusLayer.targetMode?: TargetMode
++ @opentui/keymap/opentui: property FocusWithinLayer.target: TTarget
++ @opentui/keymap/opentui: property FocusWithinLayer.targetMode?: TargetMode
++ @opentui/keymap/opentui: property GlobalLayer.target?: undefined
++ @opentui/keymap/opentui: readonly property KeyDeferredDisambiguationContext.focused: TTarget | null
++ @opentui/keymap/opentui: readonly property KeyDeferredDisambiguationContext.sequence: readonly KeySequencePart[]
++ @opentui/keymap/opentui: readonly property KeyDeferredDisambiguationContext.signal: AbortSignal
++ @opentui/keymap/opentui: readonly property KeyDeferredDisambiguationDecision.[KEY_DEFERRED_DISAMBIGUATION_DECISION]: true
++ @opentui/keymap/opentui: readonly property KeyDisambiguationContext.continuations: readonly ActiveKey<TTarget, TEvent>[]
++ @opentui/keymap/opentui: readonly property KeyDisambiguationContext.event: Readonly<Omit<TEvent, "preventDefault" | "stopPropagation">>
++ @opentui/keymap/opentui: readonly property KeyDisambiguationContext.exact: readonly ActiveBinding<TTarget, TEvent>[]
++ @opentui/keymap/opentui: readonly property KeyDisambiguationContext.focused: TTarget | null
++ @opentui/keymap/opentui: readonly property KeyDisambiguationContext.sequence: readonly KeySequencePart[]
++ @opentui/keymap/opentui: readonly property KeyDisambiguationContext.stroke: KeySequencePart
++ @opentui/keymap/opentui: readonly property KeyDisambiguationDecision.[KEY_DISAMBIGUATION_DECISION]: true
++ @opentui/keymap/opentui: property KeyInputContext.consume: (options?: { preventDefault?: boolean; stopPropagation?: boolean; }) => void
++ @opentui/keymap/opentui: property KeyInputContext.event: TEvent
++ @opentui/keymap/opentui: property KeyInputContext.getData: (name: string) => unknown
++ @opentui/keymap/opentui: property KeyInputContext.setData: (name: string, value: unknown) => void
++ @opentui/keymap/opentui: property KeyInterceptOptions.priority?: number
++ @opentui/keymap/opentui: property KeyInterceptOptions.release?: boolean
++ @opentui/keymap/opentui: property KeySequencePart.display: string
++ @opentui/keymap/opentui: property KeySequencePart.match: KeyMatch
++ @opentui/keymap/opentui: property KeySequencePart.stroke: NormalizedKeyStroke
++ @opentui/keymap/opentui: property KeySequencePart.tokenName?: string
++ @opentui/keymap/opentui: property KeyStrokeInput.ctrl?: boolean
++ @opentui/keymap/opentui: property KeyStrokeInput.hyper?: boolean
++ @opentui/keymap/opentui: property KeyStrokeInput.meta?: boolean
++ @opentui/keymap/opentui: property KeyStrokeInput.name: string
++ @opentui/keymap/opentui: property KeyStrokeInput.shift?: boolean
++ @opentui/keymap/opentui: property KeyStrokeInput.super?: boolean
++ @opentui/keymap/opentui: property KeyToken.key: KeyLike
++ @opentui/keymap/opentui: property KeyToken.name: string
++ @opentui/keymap/opentui: property KeymapEvent.ctrl: boolean
++ @opentui/keymap/opentui: property KeymapEvent.hyper?: boolean
++ @opentui/keymap/opentui: property KeymapEvent.meta: boolean
++ @opentui/keymap/opentui: property KeymapEvent.name: string
++ @opentui/keymap/opentui: readonly property KeymapEvent.propagationStopped: boolean
++ @opentui/keymap/opentui: property KeymapEvent.shift: boolean
++ @opentui/keymap/opentui: property KeymapEvent.super?: boolean
++ @opentui/keymap/opentui: readonly property KeymapHost.isDestroyed: boolean
++ @opentui/keymap/opentui: readonly property KeymapHost.rootTarget: TTarget
++ @opentui/keymap/opentui: property Layer.target?: TTarget
++ @opentui/keymap/opentui: property LayerAnalysisContext.bindingInputs: readonly BindingInput<TTarget, TEvent>[]
++ @opentui/keymap/opentui: property LayerAnalysisContext.bindings: readonly LayerBindingAnalysis<TTarget, TEvent>[]
++ @opentui/keymap/opentui: property LayerAnalysisContext.hasTokenBindings: boolean
++ @opentui/keymap/opentui: property LayerAnalysisContext.order: number
++ @opentui/keymap/opentui: property LayerAnalysisContext.target?: TTarget
++ @opentui/keymap/opentui: property LayerBindingAnalysis.attrs?: Readonly<Attributes>
++ @opentui/keymap/opentui: property LayerBindingAnalysis.command?: BindingCommand<TTarget, TEvent>
++ @opentui/keymap/opentui: property LayerBindingAnalysis.event: BindingEvent
++ @opentui/keymap/opentui: property LayerBindingAnalysis.fallthrough: boolean
++ @opentui/keymap/opentui: property LayerBindingAnalysis.hasCommandAtSequence: boolean
++ @opentui/keymap/opentui: property LayerBindingAnalysis.hasContinuations: boolean
++ @opentui/keymap/opentui: property LayerBindingAnalysis.preventDefault: boolean
++ @opentui/keymap/opentui: property LayerBindingAnalysis.sequence: KeySequencePart[]
++ @opentui/keymap/opentui: property LayerBindingAnalysis.sourceBinding: ParsedBindingInput<TTarget, TEvent>
++ @opentui/keymap/opentui: property LayerBindingAnalysis.sourceBindingIndex: number
++ @opentui/keymap/opentui: property LayerBindingAnalysis.sourceLayerOrder: number
++ @opentui/keymap/opentui: property LayerBindingAnalysis.sourceTarget?: TTarget
++ @opentui/keymap/opentui: property LayerFields.bindings?: Bindings<TTarget, TEvent>
++ @opentui/keymap/opentui: property LayerFields.commands?: readonly CommandDefinition<TTarget, TEvent>[]
++ @opentui/keymap/opentui: property LayerFields.priority?: number
++ @opentui/keymap/opentui: property LayerFields.targetMode?: TargetMode
++ @opentui/keymap/opentui: property NormalizedKeyStroke.ctrl: boolean
++ @opentui/keymap/opentui: property NormalizedKeyStroke.meta: boolean
++ @opentui/keymap/opentui: property NormalizedKeyStroke.shift: boolean
++ @opentui/keymap/opentui: property NormalizedKeyStroke.super: boolean
++ @opentui/keymap/opentui: property ParsedBindingInput.cmd?: BindingCommand<TTarget, TEvent>
++ @opentui/keymap/opentui: property ParsedBindingInput.event?: BindingEvent
++ @opentui/keymap/opentui: property ParsedBindingInput.fallthrough?: boolean
++ @opentui/keymap/opentui: property ParsedBindingInput.key: KeyLike
++ @opentui/keymap/opentui: property ParsedBindingInput.preventDefault?: boolean
++ @opentui/keymap/opentui: property ParsedBindingInput.sequence: KeySequencePart[]
++ @opentui/keymap/opentui: property ParsedCommand.args: string[]
++ @opentui/keymap/opentui: property ParsedCommand.input: string
++ @opentui/keymap/opentui: property ParsedCommand.name: string
++ @opentui/keymap/opentui: property RawInputContext.sequence: string
++ @opentui/keymap/opentui: property RawInputContext.stop: () => void
++ @opentui/keymap/opentui: property RawInterceptOptions.priority?: number
++ @opentui/keymap/opentui: property ResolvedBindingCommand.attrs?: Readonly<Attributes>
++ @opentui/keymap/opentui: property ResolvedBindingCommand.record?: CommandRecord
++ @opentui/keymap/opentui: property ResolvedBindingCommand.rejectedResult?: Extract<RunCommandResult, { ok: false; }>
++ @opentui/keymap/opentui: property ResolvedBindingCommand.run: CommandHandler<TTarget, TEvent>
++ @opentui/keymap/opentui: property ResolvedKeyToken.match: KeyMatch
++ @opentui/keymap/opentui: property ResolvedKeyToken.stroke: NormalizedKeyStroke
++ @opentui/keymap/opentui: property RunCommandOptions.event?: TEvent
++ @opentui/keymap/opentui: property RunCommandOptions.focused?: TTarget | null
++ @opentui/keymap/opentui: property RunCommandOptions.includeCommand?: boolean
++ @opentui/keymap/opentui: property RunCommandOptions.target?: TTarget | null
++ @opentui/keymap/opentui: property StringifyOptions.preferDisplay?: boolean
++ @opentui/keymap/opentui: property WarningEvent.code: string
++ @opentui/keymap/opentui: property WarningEvent.message: string
++ @opentui/keymap/opentui: property WarningEvent.warning: unknown
++ @opentui/keymap/opentui: type Attributes = Record<string, unknown>
++ @opentui/keymap/opentui: type BindingCommand<TTarget extends object = object, TEvent extends KeymapEvent = KeymapEvent> = string | CommandHandler<TTarget, TEvent>
++ @opentui/keymap/opentui: type BindingEvent = "press" | "release"
++ @opentui/keymap/opentui: type BindingExpander = (ctx: BindingExpanderContext) => readonly string[] | undefined
++ @opentui/keymap/opentui: type BindingFieldCompiler = (value: unknown, ctx: BindingFieldContext) => void
++ @opentui/keymap/opentui: type BindingParser = (ctx: BindingParserContext) => BindingParserResult | undefined
++ @opentui/keymap/opentui: type BindingShorthand<TTarget extends object = object, TEvent extends KeymapEvent = KeymapEvent> = Record<string, BindingCommand<TTarget, TEvent>>
++ @opentui/keymap/opentui: type BindingTransformer<TTarget extends object = object, TEvent extends KeymapEvent = KeymapEvent> = (binding: ParsedBindingInput<TTarget, TEvent>, ctx: BindingTransformerContext<TTarget, TEvent>) => void
++ @opentui/keymap/opentui: type Bindings<TTarget extends object = object, TEvent extends KeymapEvent = KeymapEvent> = BindingInput<TTarget, TEvent>[] | BindingShorthand<TTarget, TEvent>
++ @opentui/keymap/opentui: type CommandFieldCompiler = (value: unknown, ctx: CommandFieldContext) => void
++ @opentui/keymap/opentui: type CommandFilter = Readonly<Record<string, CommandQueryValue>> | ((command: CommandRecord) => boolean)
++ @opentui/keymap/opentui: type CommandHandler<TTarget extends object = object, TEvent extends KeymapEvent = KeymapEvent> = (ctx: CommandContext<TTarget, TEvent>) => CommandResult
++ @opentui/keymap/opentui: type CommandQueryValue = unknown | readonly unknown[] | ((value: unknown, command: CommandRecord) => boolean)
++ @opentui/keymap/opentui: type CommandResolver<TTarget extends object = object, TEvent extends KeymapEvent = KeymapEvent> = (command: string, ctx: CommandResolverContext) => ResolvedBindingCommand<TTarget, TEvent> | undefined
++ @opentui/keymap/opentui: type CommandResult = boolean | void | Promise<boolean | void>
++ @opentui/keymap/opentui: type EventData = Record<string, unknown>
++ @opentui/keymap/opentui: type EventMatchResolver<TEvent extends KeymapEvent = KeymapEvent> = (event: TEvent, ctx: EventMatchResolverContext) => readonly KeyMatch[] | undefined
++ @opentui/keymap/opentui: type EventName = keyof Events
++ @opentui/keymap/opentui: type Events<TTarget extends object = object, TEvent extends KeymapEvent = KeymapEvent> = Hooks<TTarget, TEvent> & { warning: WarningEvent; error: ErrorEvent; }
++ @opentui/keymap/opentui: type InterceptName = keyof Intercepts
++ @opentui/keymap/opentui: type Intercepts<TEvent extends KeymapEvent = KeymapEvent> = { key: KeyInputContext<TEvent>; raw: RawInputContext; }
++ @opentui/keymap/opentui: type KeyDeferredDisambiguationHandler<TTarget extends object = object, TEvent extends KeymapEvent = KeymapEvent> = (ctx: KeyDeferredDisambiguationContext<TTarget, TEvent>) => KeyDeferredDisambiguationDecision | void | Promise<KeyDeferredDisambiguationDecision | void>
++ @opentui/keymap/opentui: type KeyDisambiguationResolver<TTarget extends object = object, TEvent extends KeymapEvent = KeymapEvent> = (ctx: KeyDisambiguationContext<TTarget, TEvent>) => KeyDisambiguationDecision | undefined
++ @opentui/keymap/opentui: type KeyLike = string | KeyStrokeInput
++ @opentui/keymap/opentui: type KeyMatch = string
++ @opentui/keymap/opentui: type KeyStringifyInput = KeyStrokeInput | NormalizedKeyStroke | KeySequencePart | { stroke: NormalizedKeyStroke; display?: string; }
++ @opentui/keymap/opentui: type LayerAnalyzer<TTarget extends object = object, TEvent extends KeymapEvent = KeymapEvent> = (ctx: LayerAnalysisContext<TTarget, TEvent>) => void
++ @opentui/keymap/opentui: type LayerFieldCompiler = (value: unknown, ctx: LayerFieldContext) => void
++ @opentui/keymap/opentui: type Listener<TValue> = [ TValue ] extends [ void ] ? () => void : (value: TValue) => void
++ @opentui/keymap/opentui: type RunCommandResult = { ok: true; command?: CommandRecord; } | { ok: false; reason: "not-found"; } | { ok: false; reason: "inactive" | "disabled" | "invalid-args" | "rejected" | "error"; command?: CommandRecord; }
++ @opentui/keymap/opentui: type TargetLayer<TTarget extends object = object, TEvent extends KeymapEvent = KeymapEvent> = FocusWithinLayer<TTarget, TEvent> | FocusLayer<TTarget, TEvent>
++ @opentui/keymap/opentui: type TargetMode = "focus" | "focus-within"
++ @opentui/keymap/react: const useActiveKeys: (options?: ActiveKeyOptions) => readonly ActiveKey[]
++ @opentui/keymap/react: const useKeymap: () => OpenTuiKeymap
++ @opentui/keymap/react: const usePendingSequence: () => readonly KeySequencePart[]
++ @opentui/keymap/react: function KeymapProvider({ keymap, children }: KeymapProviderProps): FunctionComponentElement<ProviderProps<OpenTuiKeymap | null>>
++ @opentui/keymap/react: function reactiveMatcherFromStore<T>(subscribe: (onStoreChange: () => void) => () => void, getSnapshot: () => T, predicate?: (value: T) => boolean): ReactiveMatcher
++ @opentui/keymap/react: function useBindings<TRenderable extends Renderable = Renderable>(createLayer: () => UseGlobalBindingsLayer, deps?: DependencyList): void
++ @opentui/keymap/react: function useBindings<TRenderable extends Renderable = Renderable>(createLayer: () => UseTargetBindingsLayer<TRenderable>, deps?: DependencyList): void
++ @opentui/keymap/react: interface KeymapProviderProps
++ @opentui/keymap/react: interface UseBindingsTargetRef<TRenderable extends Renderable = Renderable>
++ @opentui/keymap/react: interface UseFocusBindingsLayer<TRenderable extends Renderable = Renderable> extends UseBindingsLayerBase
++ @opentui/keymap/react: interface UseFocusWithinBindingsLayer<TRenderable extends Renderable = Renderable> extends UseBindingsLayerBase
++ @opentui/keymap/react: interface UseGlobalBindingsLayer extends UseBindingsLayerBase
++ @opentui/keymap/react: interface UseInferredFocusWithinBindingsLayer<TRenderable extends Renderable = Renderable> extends UseBindingsLayerBase
++ @opentui/keymap/react: property KeymapProviderProps.children?: ReactNode
++ @opentui/keymap/react: property KeymapProviderProps.keymap: OpenTuiKeymap
++ @opentui/keymap/react: property UseBindingsTargetRef.current: TRenderable | null
++ @opentui/keymap/react: property UseFocusBindingsLayer.targetMode: "focus"
++ @opentui/keymap/react: property UseFocusBindingsLayer.targetRef: UseBindingsTargetRef<TRenderable>
++ @opentui/keymap/react: property UseFocusWithinBindingsLayer.targetMode?: "focus-within"
++ @opentui/keymap/react: property UseFocusWithinBindingsLayer.targetRef: UseBindingsTargetRef<TRenderable>
++ @opentui/keymap/react: property UseGlobalBindingsLayer.targetRef?: undefined
++ @opentui/keymap/react: property UseInferredFocusWithinBindingsLayer.targetRef: UseBindingsTargetRef<TRenderable>
++ @opentui/keymap/react: type UseBindingsLayer<TRenderable extends Renderable = Renderable> = UseGlobalBindingsLayer | UseTargetBindingsLayer<TRenderable>
++ @opentui/keymap/react: type UseTargetBindingsLayer<TRenderable extends Renderable = Renderable> = UseFocusBindingsLayer<TRenderable> | UseFocusWithinBindingsLayer<TRenderable> | UseInferredFocusWithinBindingsLayer<TRenderable>
++ @opentui/keymap/solid: const useKeymap: () => OpenTuiKeymap
++ @opentui/keymap/solid: const useKeymapSelector: <T>(selector: (keymap: OpenTuiKeymap) => T) => Accessor<T>
++ @opentui/keymap/solid: function KeymapProvider(props: KeymapProviderProps): JSX.Element
++ @opentui/keymap/solid: function reactiveMatcherFromSignal<T>(accessor: Accessor<T>, predicate?: (value: T) => boolean): ReactiveMatcher
++ @opentui/keymap/solid: function useBindings<TRenderable extends Renderable = Renderable>(createLayer: () => UseGlobalBindingsLayer): void
++ @opentui/keymap/solid: function useBindings<TRenderable extends Renderable = Renderable>(createLayer: () => UseTargetBindingsLayer<TRenderable>): void
++ @opentui/keymap/solid: interface KeymapProviderProps
++ @opentui/keymap/solid: interface UseFocusBindingsLayer<TRenderable extends Renderable = Renderable> extends UseBindingsLayerBase
++ @opentui/keymap/solid: interface UseFocusWithinBindingsLayer<TRenderable extends Renderable = Renderable> extends UseBindingsLayerBase
++ @opentui/keymap/solid: interface UseGlobalBindingsLayer extends UseBindingsLayerBase
++ @opentui/keymap/solid: interface UseInferredFocusWithinBindingsLayer<TRenderable extends Renderable = Renderable> extends UseBindingsLayerBase
++ @opentui/keymap/solid: property KeymapProviderProps.children: JSX.Element
++ @opentui/keymap/solid: property KeymapProviderProps.keymap: OpenTuiKeymap
++ @opentui/keymap/solid: property UseFocusBindingsLayer.target: UseBindingsTarget<TRenderable>
++ @opentui/keymap/solid: property UseFocusBindingsLayer.targetMode: "focus"
++ @opentui/keymap/solid: property UseFocusWithinBindingsLayer.target: UseBindingsTarget<TRenderable>
++ @opentui/keymap/solid: property UseFocusWithinBindingsLayer.targetMode?: "focus-within"
++ @opentui/keymap/solid: property UseGlobalBindingsLayer.target?: undefined
++ @opentui/keymap/solid: property UseInferredFocusWithinBindingsLayer.target: UseBindingsTarget<TRenderable>
++ @opentui/keymap/solid: type UseBindingsLayer<TRenderable extends Renderable = Renderable> = UseGlobalBindingsLayer | UseTargetBindingsLayer<TRenderable>
++ @opentui/keymap/solid: type UseBindingsTarget<TRenderable extends Renderable = Renderable> = () => TRenderable | null | undefined
++ @opentui/keymap/solid: type UseTargetBindingsLayer<TRenderable extends Renderable = Renderable> = UseFocusBindingsLayer<TRenderable> | UseFocusWithinBindingsLayer<TRenderable> | UseInferredFocusWithinBindingsLayer<TRenderable>
++ @opentui/keymap: class Keymap<TTarget extends object, TEvent extends KeymapEvent = KeymapEvent>
++ @opentui/keymap: constructor Keymap(host: KeymapHost<TTarget, TEvent>)
++ @opentui/keymap: function stringifyKeySequence(input: readonly KeyStringifyInput[], options?: StringifyOptions): string
++ @opentui/keymap: function stringifyKeyStroke(input: KeyStringifyInput, options?: StringifyOptions): string
++ @opentui/keymap: index BindingInput[key: string]: unknown
++ @opentui/keymap: index CommandDefinition[key: string]: unknown
++ @opentui/keymap: index LayerFields[key: string]: unknown
++ @opentui/keymap: index ParsedBindingInput[key: string]: unknown
++ @opentui/keymap: interface ActiveBinding<TTarget extends object = object, TEvent extends KeymapEvent = KeymapEvent>
++ @opentui/keymap: interface ActiveKey<TTarget extends object = object, TEvent extends KeymapEvent = KeymapEvent>
++ @opentui/keymap: interface ActiveKeyOptions
++ @opentui/keymap: interface BindingExpanderContext
++ @opentui/keymap: interface BindingFieldContext
++ @opentui/keymap: interface BindingInput<TTarget extends object = object, TEvent extends KeymapEvent = KeymapEvent>
++ @opentui/keymap: interface BindingParserContext
++ @opentui/keymap: interface BindingParserResult
++ @opentui/keymap: interface BindingTransformerContext<TTarget extends object = object, TEvent extends KeymapEvent = KeymapEvent>
++ @opentui/keymap: interface CommandContext<TTarget extends object = object, TEvent extends KeymapEvent = KeymapEvent>
++ @opentui/keymap: interface CommandDefinition<TTarget extends object = object, TEvent extends KeymapEvent = KeymapEvent>
++ @opentui/keymap: interface CommandEntry<TTarget extends object = object, TEvent extends KeymapEvent = KeymapEvent>
++ @opentui/keymap: interface CommandFieldContext
++ @opentui/keymap: interface CommandQuery<TTarget extends object = object>
++ @opentui/keymap: interface CommandRecord
++ @opentui/keymap: interface CommandResolverContext
++ @opentui/keymap: interface ErrorEvent
++ @opentui/keymap: interface EventMatchResolverContext
++ @opentui/keymap: interface FocusLayer<TTarget extends object = object, TEvent extends KeymapEvent = KeymapEvent> extends LayerFields<TTarget, TEvent>
++ @opentui/keymap: interface FocusWithinLayer<TTarget extends object = object, TEvent extends KeymapEvent = KeymapEvent> extends LayerFields<TTarget, TEvent>
++ @opentui/keymap: interface GlobalLayer<TTarget extends object = object, TEvent extends KeymapEvent = KeymapEvent> extends LayerFields<TTarget, TEvent>
++ @opentui/keymap: interface KeyDeferredDisambiguationContext<TTarget extends object = object, TEvent extends KeymapEvent = KeymapEvent>
++ @opentui/keymap: interface KeyDeferredDisambiguationDecision
++ @opentui/keymap: interface KeyDisambiguationContext<TTarget extends object = object, TEvent extends KeymapEvent = KeymapEvent>
++ @opentui/keymap: interface KeyDisambiguationDecision
++ @opentui/keymap: interface KeyInputContext<TEvent extends KeymapEvent = KeymapEvent>
++ @opentui/keymap: interface KeyInterceptOptions
++ @opentui/keymap: interface KeySequencePart
++ @opentui/keymap: interface KeyStrokeInput
++ @opentui/keymap: interface KeyToken
++ @opentui/keymap: interface KeymapEvent
++ @opentui/keymap: interface KeymapHost<TTarget extends object, TEvent extends KeymapEvent = KeymapEvent>
++ @opentui/keymap: interface Layer<TTarget extends object = object, TEvent extends KeymapEvent = KeymapEvent> extends LayerFields<TTarget, TEvent>
++ @opentui/keymap: interface LayerAnalysisContext<TTarget extends object = object, TEvent extends KeymapEvent = KeymapEvent>
++ @opentui/keymap: interface LayerBindingAnalysis<TTarget extends object = object, TEvent extends KeymapEvent = KeymapEvent>
++ @opentui/keymap: interface LayerFieldContext
++ @opentui/keymap: interface LayerFields<TTarget extends object = object, TEvent extends KeymapEvent = KeymapEvent>
++ @opentui/keymap: interface NormalizedKeyStroke extends KeyStrokeInput
++ @opentui/keymap: interface ParsedBindingInput<TTarget extends object = object, TEvent extends KeymapEvent = KeymapEvent>
++ @opentui/keymap: interface ParsedCommand
++ @opentui/keymap: interface RawInputContext
++ @opentui/keymap: interface RawInterceptOptions
++ @opentui/keymap: interface ReactiveMatcher
++ @opentui/keymap: interface ResolvedBindingCommand<TTarget extends object = object, TEvent extends KeymapEvent = KeymapEvent>
++ @opentui/keymap: interface ResolvedKeyToken
++ @opentui/keymap: interface RunCommandOptions<TTarget extends object = object, TEvent extends KeymapEvent = KeymapEvent>
++ @opentui/keymap: interface StringifyOptions
++ @opentui/keymap: interface WarningEvent
++ @opentui/keymap: method BindingFieldContext.activeWhen(matcher: (() => boolean) | ReactiveMatcher): void
++ @opentui/keymap: method BindingFieldContext.attr(name: string, value: unknown): void
++ @opentui/keymap: method BindingFieldContext.require(name: string, value: unknown): void
++ @opentui/keymap: method BindingParserContext.createMatch(id: string): KeyMatch
++ @opentui/keymap: method BindingParserContext.normalizeTokenName(token: string): string
++ @opentui/keymap: method BindingParserContext.parseObjectKey(key: KeyStrokeInput, options?: { display?: string; match?: KeyMatch; tokenName?: string; }): KeySequencePart
++ @opentui/keymap: method BindingTransformerContext.add(binding: ParsedBindingInput<TTarget, TEvent>): void
++ @opentui/keymap: method BindingTransformerContext.parseKey(key: KeyLike): KeySequencePart
++ @opentui/keymap: method BindingTransformerContext.skipOriginal(): void
++ @opentui/keymap: method CommandFieldContext.activeWhen(matcher: (() => boolean) | ReactiveMatcher): void
++ @opentui/keymap: method CommandFieldContext.attr(name: string, value: unknown): void
++ @opentui/keymap: method CommandFieldContext.require(name: string, value: unknown): void
++ @opentui/keymap: method CommandResolverContext.getCommandAttrs(name: string): Readonly<Attributes> | undefined
++ @opentui/keymap: method CommandResolverContext.getCommandRecord(name: string): CommandRecord | undefined
++ @opentui/keymap: method EventMatchResolverContext.resolveKey(key: KeyLike): KeyMatch
++ @opentui/keymap: method KeyDeferredDisambiguationContext.clear(): KeyDeferredDisambiguationDecision
++ @opentui/keymap: method KeyDeferredDisambiguationContext.continueSequence(): KeyDeferredDisambiguationDecision
++ @opentui/keymap: method KeyDeferredDisambiguationContext.runExact(): KeyDeferredDisambiguationDecision
++ @opentui/keymap: method KeyDeferredDisambiguationContext.sleep(ms: number): Promise<boolean>
++ @opentui/keymap: method KeyDisambiguationContext.clear(): KeyDisambiguationDecision
++ @opentui/keymap: method KeyDisambiguationContext.continueSequence(): KeyDisambiguationDecision
++ @opentui/keymap: method KeyDisambiguationContext.defer(run: KeyDeferredDisambiguationHandler<TTarget, TEvent>): KeyDisambiguationDecision
++ @opentui/keymap: method KeyDisambiguationContext.getData(name: string): unknown
++ @opentui/keymap: method KeyDisambiguationContext.runExact(): KeyDisambiguationDecision
++ @opentui/keymap: method KeyDisambiguationContext.setData(name: string, value: unknown): void
++ @opentui/keymap: method Keymap.acquireResource(key: symbol, setup: () => () => void): () => void
++ @opentui/keymap: method Keymap.appendBindingExpander(expander: BindingExpander): () => void
++ @opentui/keymap: method Keymap.appendBindingParser(parser: BindingParser): () => void
++ @opentui/keymap: method Keymap.appendBindingTransformer(transformer: BindingTransformer<TTarget, TEvent>): () => void
++ @opentui/keymap: method Keymap.appendCommandResolver(resolver: CommandResolver<TTarget, TEvent>): () => void
++ @opentui/keymap: method Keymap.appendDisambiguationResolver(resolver: KeyDisambiguationResolver<TTarget, TEvent>): () => void
++ @opentui/keymap: method Keymap.appendEventMatchResolver(resolver: EventMatchResolver<TEvent>): () => void
++ @opentui/keymap: method Keymap.appendLayerAnalyzer(analyzer: LayerAnalyzer<TTarget, TEvent>): () => void
++ @opentui/keymap: method Keymap.clearBindingExpanders(): void
++ @opentui/keymap: method Keymap.clearBindingParsers(): void
++ @opentui/keymap: method Keymap.clearBindingTransformers(): void
++ @opentui/keymap: method Keymap.clearCommandResolvers(): void
++ @opentui/keymap: method Keymap.clearDisambiguationResolvers(): void
++ @opentui/keymap: method Keymap.clearEventMatchResolvers(): void
++ @opentui/keymap: method Keymap.clearLayerAnalyzers(): void
++ @opentui/keymap: method Keymap.clearPendingSequence(): void
++ @opentui/keymap: method Keymap.createKeyMatcher(key: KeyLike): (input: KeyStringifyInput | null | undefined) => boolean
++ @opentui/keymap: method Keymap.dispatchCommand(cmd: string, options?: RunCommandOptions<TTarget, TEvent>): RunCommandResult
++ @opentui/keymap: method Keymap.getActiveKeys(options?: ActiveKeyOptions): readonly ActiveKey<TTarget, TEvent>[]
++ @opentui/keymap: method Keymap.getCommandEntries(query?: CommandQuery<TTarget>): readonly CommandEntry<TTarget, TEvent>[]
++ @opentui/keymap: method Keymap.getCommands(query?: CommandQuery<TTarget>): readonly CommandRecord[]
++ @opentui/keymap: method Keymap.getData(name: string): unknown
++ @opentui/keymap: method Keymap.getPendingSequence(): readonly KeySequencePart[]
++ @opentui/keymap: method Keymap.hasPendingSequence(): boolean
++ @opentui/keymap: method Keymap.intercept(name: "key", fn: (ctx: KeyInputContext<TEvent>) => void, options?: KeyInterceptOptions): () => void
++ @opentui/keymap: method Keymap.intercept(name: "raw", fn: (ctx: RawInputContext) => void, options?: RawInterceptOptions): () => void
++ @opentui/keymap: method Keymap.normalizeBindings(bindings: Bindings<TTarget, TEvent>): BindingInput<TTarget, TEvent>[]
++ @opentui/keymap: method Keymap.normalizeCommandName(name: string): string
++ @opentui/keymap: method Keymap.on(name: "error", fn: Listener<Events<TTarget, TEvent>["error"]>): () => void
++ @opentui/keymap: method Keymap.on(name: "pendingSequence", fn: Listener<Events<TTarget, TEvent>["pendingSequence"]>): () => void
++ @opentui/keymap: method Keymap.on(name: "state", fn: Listener<Events<TTarget, TEvent>["state"]>): () => void
++ @opentui/keymap: method Keymap.on(name: "warning", fn: Listener<Events<TTarget, TEvent>["warning"]>): () => void
++ @opentui/keymap: method Keymap.popPendingSequence(): boolean
++ @opentui/keymap: method Keymap.prependBindingExpander(expander: BindingExpander): () => void
++ @opentui/keymap: method Keymap.prependBindingParser(parser: BindingParser): () => void
++ @opentui/keymap: method Keymap.prependBindingTransformer(transformer: BindingTransformer<TTarget, TEvent>): () => void
++ @opentui/keymap: method Keymap.prependCommandResolver(resolver: CommandResolver<TTarget, TEvent>): () => void
++ @opentui/keymap: method Keymap.prependDisambiguationResolver(resolver: KeyDisambiguationResolver<TTarget, TEvent>): () => void
++ @opentui/keymap: method Keymap.prependEventMatchResolver(resolver: EventMatchResolver<TEvent>): () => void
++ @opentui/keymap: method Keymap.prependLayerAnalyzer(analyzer: LayerAnalyzer<TTarget, TEvent>): () => void
++ @opentui/keymap: method Keymap.registerBindingFields(fields: Record<string, BindingFieldCompiler>): () => void
++ @opentui/keymap: method Keymap.registerCommandFields(fields: Record<string, CommandFieldCompiler>): () => void
++ @opentui/keymap: method Keymap.registerLayer(layer: Layer<TTarget, TEvent>): () => void
++ @opentui/keymap: method Keymap.registerLayerFields(fields: Record<string, LayerFieldCompiler>): () => void
++ @opentui/keymap: method Keymap.registerToken(token: KeyToken): () => void
++ @opentui/keymap: method Keymap.runCommand(cmd: string, options?: RunCommandOptions<TTarget, TEvent>): RunCommandResult
++ @opentui/keymap: method Keymap.setData(name: string, value: unknown): void
++ @opentui/keymap: method KeymapEvent.preventDefault(): void
++ @opentui/keymap: method KeymapEvent.stopPropagation(): void
++ @opentui/keymap: method KeymapHost.createCommandEvent(): TEvent
++ @opentui/keymap: method KeymapHost.getFocusedTarget(): TTarget | null
++ @opentui/keymap: method KeymapHost.getParentTarget(target: TTarget): TTarget | null
++ @opentui/keymap: method KeymapHost.isTargetDestroyed(target: TTarget): boolean
++ @opentui/keymap: method KeymapHost.onDestroy?(listener: () => void): () => void
++ @opentui/keymap: method KeymapHost.onFocusChange(listener: (target: TTarget | null) => void): () => void
++ @opentui/keymap: method KeymapHost.onKeyPress(listener: (event: TEvent) => void): () => void
++ @opentui/keymap: method KeymapHost.onKeyRelease(listener: (event: TEvent) => void): () => void
++ @opentui/keymap: method KeymapHost.onRawInput?(listener: (sequence: string) => boolean): () => void
++ @opentui/keymap: method KeymapHost.onTargetDestroy(target: TTarget, listener: () => void): () => void
++ @opentui/keymap: method LayerAnalysisContext.checkCommandResolution(command: string): CommandResolutionStatus
++ @opentui/keymap: method LayerAnalysisContext.error(code: string, error: unknown, message: string): void
++ @opentui/keymap: method LayerAnalysisContext.warn(code: string, warning: unknown, message: string): void
++ @opentui/keymap: method LayerAnalysisContext.warnOnce(key: string, code: string, warning: unknown, message: string): void
++ @opentui/keymap: method LayerFieldContext.activeWhen(matcher: (() => boolean) | ReactiveMatcher): void
++ @opentui/keymap: method LayerFieldContext.require(name: string, value: unknown): void
++ @opentui/keymap: method ReactiveMatcher.get(): boolean
++ @opentui/keymap: method ReactiveMatcher.subscribe(onChange: () => void): () => void
++ @opentui/keymap: property ActiveBinding.attrs?: Readonly<Attributes>
++ @opentui/keymap: property ActiveBinding.command?: BindingCommand<TTarget, TEvent>
++ @opentui/keymap: property ActiveBinding.commandAttrs?: Readonly<Attributes>
++ @opentui/keymap: property ActiveBinding.event: BindingEvent
++ @opentui/keymap: property ActiveBinding.fallthrough: boolean
++ @opentui/keymap: property ActiveBinding.preventDefault: boolean
++ @opentui/keymap: property ActiveBinding.sequence: KeySequencePart[]
++ @opentui/keymap: property ActiveKey.bindingAttrs?: Readonly<Attributes>
++ @opentui/keymap: property ActiveKey.bindings?: ActiveBinding<TTarget, TEvent>[]
++ @opentui/keymap: property ActiveKey.command?: BindingCommand<TTarget, TEvent>
++ @opentui/keymap: property ActiveKey.commandAttrs?: Readonly<Attributes>
++ @opentui/keymap: property ActiveKey.continues: boolean
++ @opentui/keymap: property ActiveKey.display: string
++ @opentui/keymap: property ActiveKey.stroke: NormalizedKeyStroke
++ @opentui/keymap: property ActiveKey.tokenName?: string
++ @opentui/keymap: property ActiveKeyOptions.includeBindings?: boolean
++ @opentui/keymap: property ActiveKeyOptions.includeMetadata?: boolean
++ @opentui/keymap: property BindingExpanderContext.input: string
++ @opentui/keymap: property BindingExpanderContext.layer: Readonly<Record<string, unknown>>
++ @opentui/keymap: property BindingInput.cmd?: BindingCommand<TTarget, TEvent>
++ @opentui/keymap: property BindingInput.event?: BindingEvent
++ @opentui/keymap: property BindingInput.fallthrough?: boolean
++ @opentui/keymap: property BindingInput.key: KeyLike
++ @opentui/keymap: property BindingInput.preventDefault?: boolean
++ @opentui/keymap: property BindingParserContext.index: number
++ @opentui/keymap: property BindingParserContext.input: string
++ @opentui/keymap: property BindingParserContext.layer: Readonly<Record<string, unknown>>
++ @opentui/keymap: property BindingParserContext.tokens: ReadonlyMap<string, ResolvedKeyToken>
++ @opentui/keymap: property BindingParserResult.nextIndex: number
++ @opentui/keymap: property BindingParserResult.parts: KeySequencePart[]
++ @opentui/keymap: property BindingParserResult.unknownTokens?: readonly string[]
++ @opentui/keymap: property BindingParserResult.usedTokens?: readonly string[]
++ @opentui/keymap: property BindingTransformerContext.layer: Readonly<Record<string, unknown>>
++ @opentui/keymap: property CommandContext.command?: CommandRecord
++ @opentui/keymap: property CommandContext.data: Readonly<EventData>
++ @opentui/keymap: property CommandContext.event: TEvent
++ @opentui/keymap: property CommandContext.focused: TTarget | null
++ @opentui/keymap: property CommandContext.keymap: Keymap<TTarget, TEvent>
++ @opentui/keymap: property CommandContext.target: TTarget | null
++ @opentui/keymap: property CommandDefinition.name: string
++ @opentui/keymap: property CommandDefinition.run: CommandHandler<TTarget, TEvent>
++ @opentui/keymap: property CommandEntry.bindings: readonly ActiveBinding<TTarget, TEvent>[]
++ @opentui/keymap: property CommandEntry.command: CommandRecord
++ @opentui/keymap: property CommandQuery.filter?: CommandFilter
++ @opentui/keymap: property CommandQuery.focused?: TTarget | null
++ @opentui/keymap: property CommandQuery.namespace?: string | readonly string[]
++ @opentui/keymap: property CommandQuery.search?: string
++ @opentui/keymap: property CommandQuery.searchIn?: readonly string[]
++ @opentui/keymap: property CommandQuery.visibility?: "reachable" | "active" | "registered"
++ @opentui/keymap: property CommandRecord.attrs?: Readonly<Attributes>
++ @opentui/keymap: property CommandRecord.fields: Readonly<Record<string, unknown>>
++ @opentui/keymap: property CommandRecord.name: string
++ @opentui/keymap: property ErrorEvent.code: string
++ @opentui/keymap: property ErrorEvent.error: unknown
++ @opentui/keymap: property ErrorEvent.message: string
++ @opentui/keymap: property FocusLayer.target: TTarget
++ @opentui/keymap: property FocusLayer.targetMode?: TargetMode
++ @opentui/keymap: property FocusWithinLayer.target: TTarget
++ @opentui/keymap: property FocusWithinLayer.targetMode?: TargetMode
++ @opentui/keymap: property GlobalLayer.target?: undefined
++ @opentui/keymap: readonly property KeyDeferredDisambiguationContext.focused: TTarget | null
++ @opentui/keymap: readonly property KeyDeferredDisambiguationContext.sequence: readonly KeySequencePart[]
++ @opentui/keymap: readonly property KeyDeferredDisambiguationContext.signal: AbortSignal
++ @opentui/keymap: readonly property KeyDeferredDisambiguationDecision.[KEY_DEFERRED_DISAMBIGUATION_DECISION]: true
++ @opentui/keymap: readonly property KeyDisambiguationContext.continuations: readonly ActiveKey<TTarget, TEvent>[]
++ @opentui/keymap: readonly property KeyDisambiguationContext.event: Readonly<Omit<TEvent, "preventDefault" | "stopPropagation">>
++ @opentui/keymap: readonly property KeyDisambiguationContext.exact: readonly ActiveBinding<TTarget, TEvent>[]
++ @opentui/keymap: readonly property KeyDisambiguationContext.focused: TTarget | null
++ @opentui/keymap: readonly property KeyDisambiguationContext.sequence: readonly KeySequencePart[]
++ @opentui/keymap: readonly property KeyDisambiguationContext.stroke: KeySequencePart
++ @opentui/keymap: readonly property KeyDisambiguationDecision.[KEY_DISAMBIGUATION_DECISION]: true
++ @opentui/keymap: property KeyInputContext.consume: (options?: { preventDefault?: boolean; stopPropagation?: boolean; }) => void
++ @opentui/keymap: property KeyInputContext.event: TEvent
++ @opentui/keymap: property KeyInputContext.getData: (name: string) => unknown
++ @opentui/keymap: property KeyInputContext.setData: (name: string, value: unknown) => void
++ @opentui/keymap: property KeyInterceptOptions.priority?: number
++ @opentui/keymap: property KeyInterceptOptions.release?: boolean
++ @opentui/keymap: property KeySequencePart.display: string
++ @opentui/keymap: property KeySequencePart.match: KeyMatch
++ @opentui/keymap: property KeySequencePart.stroke: NormalizedKeyStroke
++ @opentui/keymap: property KeySequencePart.tokenName?: string
++ @opentui/keymap: property KeyStrokeInput.ctrl?: boolean
++ @opentui/keymap: property KeyStrokeInput.hyper?: boolean
++ @opentui/keymap: property KeyStrokeInput.meta?: boolean
++ @opentui/keymap: property KeyStrokeInput.name: string
++ @opentui/keymap: property KeyStrokeInput.shift?: boolean
++ @opentui/keymap: property KeyStrokeInput.super?: boolean
++ @opentui/keymap: property KeyToken.key: KeyLike
++ @opentui/keymap: property KeyToken.name: string
++ @opentui/keymap: property KeymapEvent.ctrl: boolean
++ @opentui/keymap: property KeymapEvent.hyper?: boolean
++ @opentui/keymap: property KeymapEvent.meta: boolean
++ @opentui/keymap: property KeymapEvent.name: string
++ @opentui/keymap: readonly property KeymapEvent.propagationStopped: boolean
++ @opentui/keymap: property KeymapEvent.shift: boolean
++ @opentui/keymap: property KeymapEvent.super?: boolean
++ @opentui/keymap: readonly property KeymapHost.isDestroyed: boolean
++ @opentui/keymap: readonly property KeymapHost.rootTarget: TTarget
++ @opentui/keymap: property Layer.target?: TTarget
++ @opentui/keymap: property LayerAnalysisContext.bindingInputs: readonly BindingInput<TTarget, TEvent>[]
++ @opentui/keymap: property LayerAnalysisContext.bindings: readonly LayerBindingAnalysis<TTarget, TEvent>[]
++ @opentui/keymap: property LayerAnalysisContext.hasTokenBindings: boolean
++ @opentui/keymap: property LayerAnalysisContext.order: number
++ @opentui/keymap: property LayerAnalysisContext.target?: TTarget
++ @opentui/keymap: property LayerBindingAnalysis.attrs?: Readonly<Attributes>
++ @opentui/keymap: property LayerBindingAnalysis.command?: BindingCommand<TTarget, TEvent>
++ @opentui/keymap: property LayerBindingAnalysis.event: BindingEvent
++ @opentui/keymap: property LayerBindingAnalysis.fallthrough: boolean
++ @opentui/keymap: property LayerBindingAnalysis.hasCommandAtSequence: boolean
++ @opentui/keymap: property LayerBindingAnalysis.hasContinuations: boolean
++ @opentui/keymap: property LayerBindingAnalysis.preventDefault: boolean
++ @opentui/keymap: property LayerBindingAnalysis.sequence: KeySequencePart[]
++ @opentui/keymap: property LayerBindingAnalysis.sourceBinding: ParsedBindingInput<TTarget, TEvent>
++ @opentui/keymap: property LayerBindingAnalysis.sourceBindingIndex: number
++ @opentui/keymap: property LayerBindingAnalysis.sourceLayerOrder: number
++ @opentui/keymap: property LayerBindingAnalysis.sourceTarget?: TTarget
++ @opentui/keymap: property LayerFields.bindings?: Bindings<TTarget, TEvent>
++ @opentui/keymap: property LayerFields.commands?: readonly CommandDefinition<TTarget, TEvent>[]
++ @opentui/keymap: property LayerFields.priority?: number
++ @opentui/keymap: property LayerFields.targetMode?: TargetMode
++ @opentui/keymap: property NormalizedKeyStroke.ctrl: boolean
++ @opentui/keymap: property NormalizedKeyStroke.meta: boolean
++ @opentui/keymap: property NormalizedKeyStroke.shift: boolean
++ @opentui/keymap: property NormalizedKeyStroke.super: boolean
++ @opentui/keymap: property ParsedBindingInput.cmd?: BindingCommand<TTarget, TEvent>
++ @opentui/keymap: property ParsedBindingInput.event?: BindingEvent
++ @opentui/keymap: property ParsedBindingInput.fallthrough?: boolean
++ @opentui/keymap: property ParsedBindingInput.key: KeyLike
++ @opentui/keymap: property ParsedBindingInput.preventDefault?: boolean
++ @opentui/keymap: property ParsedBindingInput.sequence: KeySequencePart[]
++ @opentui/keymap: property ParsedCommand.args: string[]
++ @opentui/keymap: property ParsedCommand.input: string
++ @opentui/keymap: property ParsedCommand.name: string
++ @opentui/keymap: property RawInputContext.sequence: string
++ @opentui/keymap: property RawInputContext.stop: () => void
++ @opentui/keymap: property RawInterceptOptions.priority?: number
++ @opentui/keymap: property ResolvedBindingCommand.attrs?: Readonly<Attributes>
++ @opentui/keymap: property ResolvedBindingCommand.record?: CommandRecord
++ @opentui/keymap: property ResolvedBindingCommand.rejectedResult?: Extract<RunCommandResult, { ok: false; }>
++ @opentui/keymap: property ResolvedBindingCommand.run: CommandHandler<TTarget, TEvent>
++ @opentui/keymap: property ResolvedKeyToken.match: KeyMatch
++ @opentui/keymap: property ResolvedKeyToken.stroke: NormalizedKeyStroke
++ @opentui/keymap: property RunCommandOptions.event?: TEvent
++ @opentui/keymap: property RunCommandOptions.focused?: TTarget | null
++ @opentui/keymap: property RunCommandOptions.includeCommand?: boolean
++ @opentui/keymap: property RunCommandOptions.target?: TTarget | null
++ @opentui/keymap: property StringifyOptions.preferDisplay?: boolean
++ @opentui/keymap: property WarningEvent.code: string
++ @opentui/keymap: property WarningEvent.message: string
++ @opentui/keymap: property WarningEvent.warning: unknown
++ @opentui/keymap: type Attributes = Record<string, unknown>
++ @opentui/keymap: type BindingCommand<TTarget extends object = object, TEvent extends KeymapEvent = KeymapEvent> = string | CommandHandler<TTarget, TEvent>
++ @opentui/keymap: type BindingEvent = "press" | "release"
++ @opentui/keymap: type BindingExpander = (ctx: BindingExpanderContext) => readonly string[] | undefined
++ @opentui/keymap: type BindingFieldCompiler = (value: unknown, ctx: BindingFieldContext) => void
++ @opentui/keymap: type BindingParser = (ctx: BindingParserContext) => BindingParserResult | undefined
++ @opentui/keymap: type BindingShorthand<TTarget extends object = object, TEvent extends KeymapEvent = KeymapEvent> = Record<string, BindingCommand<TTarget, TEvent>>
++ @opentui/keymap: type BindingTransformer<TTarget extends object = object, TEvent extends KeymapEvent = KeymapEvent> = (binding: ParsedBindingInput<TTarget, TEvent>, ctx: BindingTransformerContext<TTarget, TEvent>) => void
++ @opentui/keymap: type Bindings<TTarget extends object = object, TEvent extends KeymapEvent = KeymapEvent> = BindingInput<TTarget, TEvent>[] | BindingShorthand<TTarget, TEvent>
++ @opentui/keymap: type CommandFieldCompiler = (value: unknown, ctx: CommandFieldContext) => void
++ @opentui/keymap: type CommandFilter = Readonly<Record<string, CommandQueryValue>> | ((command: CommandRecord) => boolean)
++ @opentui/keymap: type CommandHandler<TTarget extends object = object, TEvent extends KeymapEvent = KeymapEvent> = (ctx: CommandContext<TTarget, TEvent>) => CommandResult
++ @opentui/keymap: type CommandQueryValue = unknown | readonly unknown[] | ((value: unknown, command: CommandRecord) => boolean)
++ @opentui/keymap: type CommandResolver<TTarget extends object = object, TEvent extends KeymapEvent = KeymapEvent> = (command: string, ctx: CommandResolverContext) => ResolvedBindingCommand<TTarget, TEvent> | undefined
++ @opentui/keymap: type CommandResult = boolean | void | Promise<boolean | void>
++ @opentui/keymap: type EventData = Record<string, unknown>
++ @opentui/keymap: type EventMatchResolver<TEvent extends KeymapEvent = KeymapEvent> = (event: TEvent, ctx: EventMatchResolverContext) => readonly KeyMatch[] | undefined
++ @opentui/keymap: type EventName = keyof Events
++ @opentui/keymap: type Events<TTarget extends object = object, TEvent extends KeymapEvent = KeymapEvent> = Hooks<TTarget, TEvent> & { warning: WarningEvent; error: ErrorEvent; }
++ @opentui/keymap: type InterceptName = keyof Intercepts
++ @opentui/keymap: type Intercepts<TEvent extends KeymapEvent = KeymapEvent> = { key: KeyInputContext<TEvent>; raw: RawInputContext; }
++ @opentui/keymap: type KeyDeferredDisambiguationHandler<TTarget extends object = object, TEvent extends KeymapEvent = KeymapEvent> = (ctx: KeyDeferredDisambiguationContext<TTarget, TEvent>) => KeyDeferredDisambiguationDecision | void | Promise<KeyDeferredDisambiguationDecision | void>
++ @opentui/keymap: type KeyDisambiguationResolver<TTarget extends object = object, TEvent extends KeymapEvent = KeymapEvent> = (ctx: KeyDisambiguationContext<TTarget, TEvent>) => KeyDisambiguationDecision | undefined
++ @opentui/keymap: type KeyLike = string | KeyStrokeInput
++ @opentui/keymap: type KeyMatch = string
++ @opentui/keymap: type KeyStringifyInput = KeyStrokeInput | NormalizedKeyStroke | KeySequencePart | { stroke: NormalizedKeyStroke; display?: string; }
++ @opentui/keymap: type LayerAnalyzer<TTarget extends object = object, TEvent extends KeymapEvent = KeymapEvent> = (ctx: LayerAnalysisContext<TTarget, TEvent>) => void
++ @opentui/keymap: type LayerFieldCompiler = (value: unknown, ctx: LayerFieldContext) => void
++ @opentui/keymap: type Listener<TValue> = [ TValue ] extends [ void ] ? () => void : (value: TValue) => void
++ @opentui/keymap: type RunCommandResult = { ok: true; command?: CommandRecord; } | { ok: false; reason: "not-found"; } | { ok: false; reason: "inactive" | "disabled" | "invalid-args" | "rejected" | "error"; command?: CommandRecord; }
++ @opentui/keymap: type TargetLayer<TTarget extends object = object, TEvent extends KeymapEvent = KeymapEvent> = FocusWithinLayer<TTarget, TEvent> | FocusLayer<TTarget, TEvent>
++ @opentui/keymap: type TargetMode = "focus" | "focus-within"
+- @opentui/react: type TextareaProps = ComponentProps<TextareaOptions, TextareaRenderable> & { focused?: boolean; }
++ @opentui/react: type TextareaProps = ComponentProps<TextareaOptions, TextareaRenderable> & { focused?: boolean; onSubmit?: () => void; onContentChange?: (event: ContentChangeEvent) => void; onCursorChange?: (event: CursorChangeEvent) => void; onKeyDown?: (event: KeyEvent) => void; }
+- @opentui/solid: type ElementProps<TRenderable = unknown> = { ref?: Ref<TRenderable>; }
++ @opentui/solid: type ElementProps<TRenderable = unknown> = { ref?: Ref<TRenderable>; [eventName: `on:${string}`]: ((...args: any[]) => void) | undefined; }

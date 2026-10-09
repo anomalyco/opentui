@@ -1,0 +1,35 @@
+base 0.1.8
++ @opentui/core: protected method InputRenderable.onResize(width: number, height: number): void
++ @opentui/core: method InputRenderable.updateFromLayout(): void
+- @opentui/core: protected method Renderable.requestLayout(): void
+- @opentui/core: method RootRenderable.requestLayout(): void
+- @opentui/core: method TabSelectRenderable.getShowDescription(): boolean
+- @opentui/core: method TabSelectRenderable.getShowScrollArrows(): boolean
+- @opentui/core: method TabSelectRenderable.getShowUnderline(): boolean
+- @opentui/core: method TabSelectRenderable.getWrapSelection(): boolean
+- @opentui/core: method TabSelectRenderable.setShowDescription(show: boolean): void
+- @opentui/core: method TabSelectRenderable.setShowScrollArrows(show: boolean): void
+- @opentui/core: method TabSelectRenderable.setShowUnderline(show: boolean): void
+- @opentui/core: method TabSelectRenderable.setWrapSelection(wrap: boolean): void
++ @opentui/core: protected property BoxRenderable._customBorderChars?: Uint32Array
+- @opentui/core: protected property BoxRenderable.customBorderChars?: Uint32Array
++ @opentui/core: property BoxRenderable.customBorderChars: BorderCharacters | undefined
++ @opentui/core: property TabSelectRenderable.backgroundColor: ColorInput
++ @opentui/core: property TabSelectRenderable.focusedBackgroundColor: ColorInput
++ @opentui/core: property TabSelectRenderable.focusedTextColor: ColorInput
++ @opentui/core: property TabSelectRenderable.options: TabSelectOption[]
++ @opentui/core: property TabSelectRenderable.selectedBackgroundColor: ColorInput
++ @opentui/core: property TabSelectRenderable.selectedDescriptionColor: ColorInput
++ @opentui/core: property TabSelectRenderable.selectedTextColor: ColorInput
++ @opentui/core: property TabSelectRenderable.showDescription: boolean
++ @opentui/core: property TabSelectRenderable.showScrollArrows: boolean
++ @opentui/core: property TabSelectRenderable.showUnderline: boolean
++ @opentui/core: property TabSelectRenderable.tabWidth: number
++ @opentui/core: property TabSelectRenderable.textColor: ColorInput
++ @opentui/core: property TabSelectRenderable.wrapSelection: boolean
++ @opentui/react: const useTerminalDimensions: () => { width: number; height: number; }
++ @opentui/solid/reconciler: type DomNode = Renderable | TextNode
+- @opentui/solid: type BoxElementProps = ElementProps<BoxOptions, BoxRenderable, "title"> & ContianerProps
++ @opentui/solid: type BoxElementProps = ElementProps<BoxOptions, BoxRenderable, "title"> & ContainerProps
+- @opentui/solid: type GroupElementProps = ElementProps<RenderableOptions, GroupRenderable> & ContianerProps
++ @opentui/solid: type GroupElementProps = ElementProps<RenderableOptions, GroupRenderable> & ContainerProps

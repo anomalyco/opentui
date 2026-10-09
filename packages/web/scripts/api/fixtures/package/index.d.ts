@@ -1,0 +1,7 @@
+export * from "./shapes.js"
+export { Widget as RenamedWidget } from "./widget.js"
+export * as Inner from "./inner.js"
+export * as External from "external-namespace"
+export { externalThing, original as renamedThing } from "external-named"
+export * from "external-star"
+export { default } from "./default.js"

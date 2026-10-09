@@ -1,0 +1,22 @@
+base 0.1.92
+- @opentui/core: method CliRenderer.disableStdoutInterception(): void
++ @opentui/core: property CliRenderer.consoleMode: ConsoleMode
+- @opentui/core: property CliRenderer.experimental_splitHeight: number
++ @opentui/core: property CliRenderer.externalOutputMode: ExternalOutputMode
++ @opentui/core: property CliRenderer.footerHeight: number
++ @opentui/core: property CliRenderer.maxFps: number
++ @opentui/core: property CliRenderer.screenMode: ScreenMode
++ @opentui/core: property CliRenderer.targetFps: number
+- @opentui/core: property CliRenderer.useConsole: boolean
++ @opentui/core: property CliRendererConfig.consoleMode?: ConsoleMode
+- @opentui/core: property CliRendererConfig.experimental_splitHeight?: number
++ @opentui/core: property CliRendererConfig.externalOutputMode?: ExternalOutputMode
++ @opentui/core: property CliRendererConfig.footerHeight?: number
++ @opentui/core: property CliRendererConfig.screenMode?: ScreenMode
+- @opentui/core: property CliRendererConfig.useAlternateScreen?: boolean
+- @opentui/core: property CliRendererConfig.useConsole?: boolean
++ @opentui/core: property LineNumberRenderable.bg: RGBA
++ @opentui/core: property LineNumberRenderable.fg: RGBA
++ @opentui/core: type ConsoleMode = "console-overlay" | "disabled"
++ @opentui/core: type ExternalOutputMode = "capture-stdout" | "passthrough"
++ @opentui/core: type ScreenMode = "alternate-screen" | "main-screen" | "split-footer"

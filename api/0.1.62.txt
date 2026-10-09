@@ -1,0 +1,19 @@
+base 0.1.61
+- @opentui/core/testing: constructor TestRecorder(renderer: TestRenderer)
++ @opentui/core/testing: constructor TestRecorder(renderer: TestRenderer, options?: TestRecorderOptions)
++ @opentui/core/testing: property RecordedFrame.buffers?: RecordedBuffers
+- @opentui/core: method EditorView.setLocalSelection(anchorX: number, anchorY: number, focusX: number, focusY: number, bgColor?: RGBA, fgColor?: RGBA): boolean
++ @opentui/core: method EditorView.setLocalSelection(anchorX: number, anchorY: number, focusX: number, focusY: number, bgColor?: RGBA, fgColor?: RGBA, updateCursor?: boolean): boolean
++ @opentui/core: method EditorView.setViewport(x: number, y: number, width: number, height: number, moveCursor?: boolean): void
++ @opentui/core: method EditorView.updateLocalSelection(anchorX: number, anchorY: number, focusX: number, focusY: number, bgColor?: RGBA, fgColor?: RGBA, updateCursor?: boolean): boolean
++ @opentui/core: method EditorView.updateSelection(end: number, bgColor?: RGBA, fgColor?: RGBA): void
++ @opentui/core: method TextBufferView.updateLocalSelection(anchorX: number, anchorY: number, focusX: number, focusY: number, bgColor?: RGBA, fgColor?: RGBA): boolean
++ @opentui/core: method TextBufferView.updateSelection(end: number, bgColor?: RGBA, fgColor?: RGBA): void
+- @opentui/core: property RenderLib.editorViewSetLocalSelection: (view: Pointer, anchorX: number, anchorY: number, focusX: number, focusY: number, bgColor: RGBA | null, fgColor: RGBA | null) => boolean
++ @opentui/core: property RenderLib.editorViewSetLocalSelection: (view: Pointer, anchorX: number, anchorY: number, focusX: number, focusY: number, bgColor: RGBA | null, fgColor: RGBA | null, updateCursor: boolean) => boolean
++ @opentui/core: property RenderLib.editorViewSetViewport: (view: Pointer, x: number, y: number, width: number, height: number, moveCursor: boolean) => void
++ @opentui/core: property RenderLib.editorViewUpdateLocalSelection: (view: Pointer, anchorX: number, anchorY: number, focusX: number, focusY: number, bgColor: RGBA | null, fgColor: RGBA | null, updateCursor: boolean) => boolean
++ @opentui/core: property RenderLib.editorViewUpdateSelection: (view: Pointer, end: number, bgColor: RGBA | null, fgColor: RGBA | null) => void
++ @opentui/core: property RenderLib.textBufferViewUpdateLocalSelection: (view: Pointer, anchorX: number, anchorY: number, focusX: number, focusY: number, bgColor: RGBA | null, fgColor: RGBA | null) => boolean
++ @opentui/core: property RenderLib.textBufferViewUpdateSelection: (view: Pointer, end: number, bgColor: RGBA | null, fgColor: RGBA | null) => void
++ @opentui/core: property Selection.isStart: boolean

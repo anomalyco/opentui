@@ -1,0 +1,202 @@
+base 0.1.5
++ @opentui/core: class SyntaxStyle
++ @opentui/core: class TerminalConsole extends EventEmitter
++ @opentui/core: const capture: Capture
+- @opentui/core: constructor StyledText(chunks: TextChunk[], length: number, plainText: string)
++ @opentui/core: constructor StyledText(chunks: TextChunk[])
++ @opentui/core: constructor SyntaxStyle(styles: Record<string, StyleDefinition>)
++ @opentui/core: constructor TerminalConsole(renderer: CliRenderer, options?: ConsoleOptions)
++ @opentui/core: enum ConsolePosition
++ @opentui/core: enum-member ConsolePosition.BOTTOM = "bottom"
++ @opentui/core: enum-member ConsolePosition.LEFT = "left"
++ @opentui/core: enum-member ConsolePosition.RIGHT = "right"
++ @opentui/core: enum-member ConsolePosition.TOP = "top"
++ @opentui/core: function hastToStyledText(hast: HASTNode, syntaxStyle: SyntaxStyle): StyledText
++ @opentui/core: interface ConsoleOptions
++ @opentui/core: interface HASTElement
++ @opentui/core: interface HASTText
++ @opentui/core: interface StyleDefinition
++ @opentui/core: method StyledText.insert(chunk: TextChunk, index?: number): void
++ @opentui/core: method StyledText.remove(chunk: TextChunk): void
++ @opentui/core: method StyledText.replace(chunk: TextChunk, oldChunk: TextChunk): void
++ @opentui/core: method SyntaxStyle.clearCache(): void
++ @opentui/core: method SyntaxStyle.getCacheSize(): number
++ @opentui/core: method SyntaxStyle.mergeStyles(...styleNames: string[]): MergedStyle
++ @opentui/core: method TerminalConsole.activate(): void
++ @opentui/core: method TerminalConsole.blur(): void
++ @opentui/core: method TerminalConsole.clear(): void
++ @opentui/core: method TerminalConsole.deactivate(): void
++ @opentui/core: method TerminalConsole.focus(): void
++ @opentui/core: method TerminalConsole.getCachedLogs(): string
++ @opentui/core: method TerminalConsole.hide(): void
++ @opentui/core: method TerminalConsole.renderToBuffer(buffer: OptimizedBuffer): void
++ @opentui/core: method TerminalConsole.resize(width: number, height: number): void
++ @opentui/core: method TerminalConsole.setDebugMode(enabled: boolean): void
++ @opentui/core: method TerminalConsole.show(): void
++ @opentui/core: method TerminalConsole.toggle(): void
++ @opentui/core: method TerminalConsole.toggleDebugMode(): void
++ @opentui/core: property ConsoleOptions.backgroundColor?: ColorInput
++ @opentui/core: property ConsoleOptions.colorDebug?: ColorInput
++ @opentui/core: property ConsoleOptions.colorDefault?: ColorInput
++ @opentui/core: property ConsoleOptions.colorError?: ColorInput
++ @opentui/core: property ConsoleOptions.colorInfo?: ColorInput
++ @opentui/core: property ConsoleOptions.colorWarn?: ColorInput
++ @opentui/core: property ConsoleOptions.cursorColor?: ColorInput
++ @opentui/core: property ConsoleOptions.maxDisplayLines?: number
++ @opentui/core: property ConsoleOptions.maxStoredLogs?: number
++ @opentui/core: property ConsoleOptions.position?: ConsolePosition
++ @opentui/core: property ConsoleOptions.sizePercent?: number
++ @opentui/core: property ConsoleOptions.startInDebugMode?: boolean
++ @opentui/core: property ConsoleOptions.title?: string
++ @opentui/core: property ConsoleOptions.titleBarColor?: ColorInput
++ @opentui/core: property ConsoleOptions.titleBarTextColor?: ColorInput
++ @opentui/core: property ConsoleOptions.zIndex?: number
++ @opentui/core: property HASTElement.children: HASTNode[]
++ @opentui/core: property HASTElement.properties?: { className?: string; }
++ @opentui/core: property HASTElement.tagName: string
++ @opentui/core: property HASTElement.type: "element"
++ @opentui/core: property HASTText.type: "text"
++ @opentui/core: property HASTText.value: string
++ @opentui/core: property Renderable.position: PositionTypeString
++ @opentui/core: property StyleDefinition.bg?: RGBA
++ @opentui/core: property StyleDefinition.bold?: boolean
++ @opentui/core: property StyleDefinition.dim?: boolean
++ @opentui/core: property StyleDefinition.fg?: RGBA
++ @opentui/core: property StyleDefinition.italic?: boolean
++ @opentui/core: property StyleDefinition.underline?: boolean
+- @opentui/core: readonly property StyledText.length: number
++ @opentui/core: type HASTNode = HASTText | HASTElement
++ @opentui/react/jsx-dev-runtime: interface JSX.Element extends React.ReactElement<any, any>
++ @opentui/react/jsx-dev-runtime: interface JSX.ElementAttributesProperty
++ @opentui/react/jsx-dev-runtime: interface JSX.ElementChildrenAttribute
++ @opentui/react/jsx-dev-runtime: interface JSX.ElementClass
++ @opentui/react/jsx-dev-runtime: interface JSX.IntrinsicElements extends ExtendedIntrinsicElements<OpenTUIComponents>
++ @opentui/react/jsx-dev-runtime: namespace JSX
++ @opentui/react/jsx-dev-runtime: property JSX.ElementAttributesProperty.props: {}
++ @opentui/react/jsx-dev-runtime: property JSX.ElementChildrenAttribute.children: {}
++ @opentui/react/jsx-dev-runtime: property JSX.ElementClass.render: any
++ @opentui/react/jsx-dev-runtime: property JSX.IntrinsicElements."tab-select": TabSelectProps
++ @opentui/react/jsx-dev-runtime: property JSX.IntrinsicElements.box: BoxProps
++ @opentui/react/jsx-dev-runtime: property JSX.IntrinsicElements.group: GroupProps
++ @opentui/react/jsx-dev-runtime: property JSX.IntrinsicElements.input: InputProps
++ @opentui/react/jsx-dev-runtime: property JSX.IntrinsicElements.select: SelectProps
++ @opentui/react/jsx-dev-runtime: property JSX.IntrinsicElements.text: TextProps
++ @opentui/react/jsx-dev-runtime: reexport Fragment from "react/jsx-dev-runtime"
++ @opentui/react/jsx-dev-runtime: reexport jsxDEV from "react/jsx-dev-runtime"
++ @opentui/react/jsx-runtime: interface JSX.Element extends React.ReactElement<any, any>
++ @opentui/react/jsx-runtime: interface JSX.ElementAttributesProperty
++ @opentui/react/jsx-runtime: interface JSX.ElementChildrenAttribute
++ @opentui/react/jsx-runtime: interface JSX.ElementClass
++ @opentui/react/jsx-runtime: interface JSX.IntrinsicElements extends ExtendedIntrinsicElements<OpenTUIComponents>
++ @opentui/react/jsx-runtime: namespace JSX
++ @opentui/react/jsx-runtime: property JSX.ElementAttributesProperty.props: {}
++ @opentui/react/jsx-runtime: property JSX.ElementChildrenAttribute.children: {}
++ @opentui/react/jsx-runtime: property JSX.ElementClass.render: any
++ @opentui/react/jsx-runtime: property JSX.IntrinsicElements."tab-select": TabSelectProps
++ @opentui/react/jsx-runtime: property JSX.IntrinsicElements.box: BoxProps
++ @opentui/react/jsx-runtime: property JSX.IntrinsicElements.group: GroupProps
++ @opentui/react/jsx-runtime: property JSX.IntrinsicElements.input: InputProps
++ @opentui/react/jsx-runtime: property JSX.IntrinsicElements.select: SelectProps
++ @opentui/react/jsx-runtime: property JSX.IntrinsicElements.text: TextProps
++ @opentui/react/jsx-runtime: reexport Fragment from "react/jsx-runtime"
++ @opentui/react/jsx-runtime: reexport jsx from "react/jsx-runtime"
++ @opentui/react/jsx-runtime: reexport jsxs from "react/jsx-runtime"
++ @opentui/react/renderer: function render(node: ReactNode, rendererConfig?: CliRendererConfig): Promise<void>
++ @opentui/react: const AppContext: Context<AppContext>
++ @opentui/react: const baseComponents: { box: typeof BoxRenderable; text: typeof TextRenderable; group: typeof GroupRenderable; input: typeof InputRenderable; select: typeof SelectRenderable; "tab-select": typeof TabSelectRenderable; }
++ @opentui/react: const componentCatalogue: ComponentCatalogue
++ @opentui/react: const useAppContext: () => AppContext
++ @opentui/react: const useKeyboard: (handler: (key: ParsedKey) => void) => void
++ @opentui/react: const useOnResize: (callback: (width: number, height: number) => void) => CliRenderer
++ @opentui/react: const useRenderer: () => CliRenderer
++ @opentui/react: function extend<T extends ComponentCatalogue>(objects: T): void
++ @opentui/react: function getComponentCatalogue(): ComponentCatalogue
++ @opentui/react: function render(node: ReactNode, rendererConfig?: CliRendererConfig): Promise<void>
++ @opentui/react: index OpenTUIComponents[key: string]: RenderableConstructor
++ @opentui/react: interface OpenTUIComponents
++ @opentui/react: type BoxProps = ComponentProps<ContainerProps<BoxOptions>, "title">
++ @opentui/react: type ExtendedComponentProps<T extends RenderableConstructor> = ExtractRenderableOptions<T> & { children?: React.ReactNode; style?: Partial<ExtractRenderableOptions<T>>; }
++ @opentui/react: type ExtendedIntrinsicElements<T extends Record<string, RenderableConstructor>> = { [K in keyof T]: ExtendedComponentProps<T[K]>; }
++ @opentui/react: type GroupProps = ComponentProps<ContainerProps<RenderableOptions>>
++ @opentui/react: type InputProps = ComponentProps<InputRenderableOptions> & { focused?: boolean; onInput?: (value: string) => void; onChange?: (value: string) => void; onSubmit?: (value: string) => void; }
++ @opentui/react: type RenderableConstructor<T extends Renderable = Renderable> = new (id: string, options: any) => T
++ @opentui/react: type SelectProps = ComponentProps<SelectRenderableOptions> & { focused?: boolean; onChange?: (index: number, option: SelectOption | null) => void; onSelect?: (index: number, option: SelectOption | null) => void; }
++ @opentui/react: type TabSelectProps = ComponentProps<TabSelectRenderableOptions> & { focused?: boolean; onChange?: (index: number, option: TabSelectOption | null) => void; onSelect?: (index: number, option: TabSelectOption | null) => void; }
++ @opentui/react: type TextProps = ComponentProps<TextOptions, "content"> & { children?: TextChildren | StyledText | TextChunk | Array<TextChildren | StyledText | TextChunk>; }
++ @opentui/solid/jsx-dev-runtime: interface JSX.ArrayElement extends Array<Element>
++ @opentui/solid/jsx-dev-runtime: interface JSX.ElementChildrenAttribute
++ @opentui/solid/jsx-dev-runtime: interface JSX.IntrinsicElements
++ @opentui/solid/jsx-dev-runtime: namespace JSX
++ @opentui/solid/jsx-dev-runtime: property JSX.ElementChildrenAttribute.children: {}
++ @opentui/solid/jsx-dev-runtime: property JSX.IntrinsicElements.ascii_font: ASCIIFontElementProps
++ @opentui/solid/jsx-dev-runtime: property JSX.IntrinsicElements.box: BoxElementProps
++ @opentui/solid/jsx-dev-runtime: property JSX.IntrinsicElements.group: GroupElementProps
++ @opentui/solid/jsx-dev-runtime: property JSX.IntrinsicElements.input: InputElementProps
++ @opentui/solid/jsx-dev-runtime: property JSX.IntrinsicElements.select: SelectElementProps
++ @opentui/solid/jsx-dev-runtime: property JSX.IntrinsicElements.tab_select: TabSelectElementProps
++ @opentui/solid/jsx-dev-runtime: property JSX.IntrinsicElements.text: TextElementProps
++ @opentui/solid/jsx-dev-runtime: type JSX.Element = Renderable | ArrayElement | (string & {}) | number | boolean | null | undefined
++ @opentui/solid/jsx-runtime: interface JSX.ArrayElement extends Array<Element>
++ @opentui/solid/jsx-runtime: interface JSX.ElementChildrenAttribute
++ @opentui/solid/jsx-runtime: interface JSX.IntrinsicElements
++ @opentui/solid/jsx-runtime: namespace JSX
++ @opentui/solid/jsx-runtime: property JSX.ElementChildrenAttribute.children: {}
++ @opentui/solid/jsx-runtime: property JSX.IntrinsicElements.ascii_font: ASCIIFontElementProps
++ @opentui/solid/jsx-runtime: property JSX.IntrinsicElements.box: BoxElementProps
++ @opentui/solid/jsx-runtime: property JSX.IntrinsicElements.group: GroupElementProps
++ @opentui/solid/jsx-runtime: property JSX.IntrinsicElements.input: InputElementProps
++ @opentui/solid/jsx-runtime: property JSX.IntrinsicElements.select: SelectElementProps
++ @opentui/solid/jsx-runtime: property JSX.IntrinsicElements.tab_select: TabSelectElementProps
++ @opentui/solid/jsx-runtime: property JSX.IntrinsicElements.text: TextElementProps
++ @opentui/solid/jsx-runtime: type JSX.Element = Renderable | ArrayElement | (string & {}) | number | boolean | null | undefined
++ @opentui/solid/reconciler: const _render: (code: () => DomNode, node: DomNode) => () => void
++ @opentui/solid/reconciler: const createComponent: <T>(Comp: (props: T) => DomNode, props: T) => DomNode
++ @opentui/solid/reconciler: const createElement: (tag: string) => DomNode
++ @opentui/solid/reconciler: const createTextNode: (value: string) => DomNode
++ @opentui/solid/reconciler: const effect: <T>(fn: (prev?: T) => T, init?: T) => void
++ @opentui/solid/reconciler: const insert: typeof solidUniversalInsert
++ @opentui/solid/reconciler: const insertNode: (parent: DomNode, node: DomNode, anchor?: DomNode | undefined) => void
++ @opentui/solid/reconciler: const memo: <T>(fn: () => T, equal: boolean) => () => T
++ @opentui/solid/reconciler: const mergeProps: (...sources: unknown[]) => unknown
++ @opentui/solid/reconciler: const setProp: <T>(node: DomNode, name: string, value: T, prev?: T | undefined) => T
++ @opentui/solid/reconciler: const solidUniversalInsert: <T>(parent: any, accessor: T | (() => T), marker?: any | null, initial?: any) => DomNode
++ @opentui/solid/reconciler: const spread: <T>(node: any, accessor: (() => T) | T, skipChildren?: boolean) => void
++ @opentui/solid/reconciler: const use: <A, T>(fn: (element: DomNode, arg: A) => T, element: DomNode, arg: A) => T
++ @opentui/solid: const RendererContext: Context<CliRenderer | undefined>
++ @opentui/solid: const createComponentTimeline: (options?: TimelineOptions) => Timeline
++ @opentui/solid: const elements: { ascii_font: typeof ASCIIFontRenderable; box: typeof BoxRenderable; group: typeof GroupRenderable; input: typeof InputRenderable; select: typeof SelectRenderable; tab_select: typeof TabSelectRenderable; text: typeof TextRenderable; }
++ @opentui/solid: const onResize: (callback: (width: number, height: number) => void) => void
++ @opentui/solid: const render: (node: () => JSX.Element, renderConfig?: CliRendererConfig) => Promise<void>
++ @opentui/solid: const useKeyHandler: (callback: (key: ParsedKey) => void) => void
++ @opentui/solid: const useRenderer: () => CliRenderer
++ @opentui/solid: const useSelectionHandler: (callback: (selection: Selection) => void) => void
++ @opentui/solid: const useTerminalDimensions: () => Accessor<{ width: number; height: number; }>
++ @opentui/solid: const useTimeline: <T extends Record<string, number>>(timeline: Timeline, initialValue: T, targetValue: T, options: AnimationOptions & { onUpdate?: (values: JSAnimation & { targets: T[]; }) => void; }, startTime?: number | string) => Accessor<T>
++ @opentui/solid: interface JSX.ArrayElement extends Array<Element>
++ @opentui/solid: interface JSX.ElementChildrenAttribute
++ @opentui/solid: interface JSX.IntrinsicElements
++ @opentui/solid: namespace JSX
++ @opentui/solid: property JSX.ElementChildrenAttribute.children: {}
++ @opentui/solid: property JSX.IntrinsicElements.ascii_font: ASCIIFontElementProps
++ @opentui/solid: property JSX.IntrinsicElements.box: BoxElementProps
++ @opentui/solid: property JSX.IntrinsicElements.group: GroupElementProps
++ @opentui/solid: property JSX.IntrinsicElements.input: InputElementProps
++ @opentui/solid: property JSX.IntrinsicElements.select: SelectElementProps
++ @opentui/solid: property JSX.IntrinsicElements.tab_select: TabSelectElementProps
++ @opentui/solid: property JSX.IntrinsicElements.text: TextElementProps
++ @opentui/solid: type ASCIIFontElementProps = ElementProps<ASCIIFontOptions, ASCIIFontRenderable, "text" | "selectable"> & {}
++ @opentui/solid: type ASCIIFontStyle = ASCIIFontElementProps["style"]
++ @opentui/solid: type BoxElementProps = ElementProps<BoxOptions, BoxRenderable, "title"> & ContianerProps
++ @opentui/solid: type BoxStyle = BoxElementProps["style"]
++ @opentui/solid: type Element = keyof typeof elements
++ @opentui/solid: type GroupElementProps = ElementProps<RenderableOptions, GroupRenderable> & ContianerProps
++ @opentui/solid: type GroupStyle = GroupElementProps["style"]
++ @opentui/solid: type InputElementProps = ElementProps<InputRenderableOptions, InputRenderable, "value" | "maxLength" | "placeholder"> & { onInput?: (value: string) => void; onSubmit?: (value: string) => void; onChange?: (value: string) => void; focused?: boolean; }
++ @opentui/solid: type InputStyle = InputElementProps["style"]
++ @opentui/solid: type JSX.Element = Renderable | ArrayElement | (string & {}) | number | boolean | null | undefined
++ @opentui/solid: type SelectElementProps = ElementProps<SelectRenderableOptions, SelectRenderable, "options" | "showScrollIndicator" | "wrapSelection" | "fastScrollStep"> & { onSelect?: SelectEventCallback; onChange?: SelectEventCallback; focused?: boolean; }
++ @opentui/solid: type SelectStyle = SelectElementProps["style"]
++ @opentui/solid: type TabSelectElementProps = ElementProps<TabSelectRenderableOptions, TabSelectRenderable, "options" | "showScrollArrows" | "showDescription" | "wrapSelection"> & { onSelect?: TabSelectEventCallback; onChange?: TabSelectEventCallback; focused?: boolean; }
++ @opentui/solid: type TabSelectStyle = TabSelectElementProps["style"]
++ @opentui/solid: type TextElementProps = ElementProps<TextOptions, TextRenderable, "content" | "selectable"> & TextProps
++ @opentui/solid: type TextStyle = TextElementProps["style"]

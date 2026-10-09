@@ -1,0 +1,36 @@
+base 0.2.16
+- @opentui/core/testing: interface TestRenderer extends CliRenderer
++ @opentui/core/testing: type TestRenderer = CliRenderer
+- @opentui/core: constructor CliRenderer(lib: RenderLib, rendererPtr: Pointer, stdin: NodeJS.ReadStream, stdout: NodeJS.WriteStream, width: number, height: number, config?: CliRendererConfig)
++ @opentui/core: constructor CliRenderer(stdin: NodeJS.ReadStream, stdout: NodeJS.WriteStream, width: number, height: number, config?: CliRendererConfig)
++ @opentui/core: interface NativeRenderOperationResult
++ @opentui/core: interface NativeRendererCreateOptions
++ @opentui/core: method CliRenderer.dumpOutputBuffer(timestamp?: number): void
+- @opentui/core: method CliRenderer.dumpStdoutBuffer(timestamp?: number): void
++ @opentui/core: method CliRenderer.resize(width: number, height: number): void
++ @opentui/core: method NativeSpanFeed.idle(): Promise<void>
++ @opentui/core: method NativeSpanFeed.isBackpressured(): boolean
++ @opentui/core: property CliRendererConfig.bufferedOutput?: NativeBufferedOutput
++ @opentui/core: property CliRendererConfig.height?: number
+- @opentui/core: property CliRendererConfig.testing?: boolean
++ @opentui/core: property CliRendererConfig.width?: number
++ @opentui/core: property NativeRenderOperationResult.renderOffset: number
++ @opentui/core: property NativeRenderOperationResult.status: number
++ @opentui/core: property NativeRendererCreateOptions.bufferedOutput?: NativeBufferedOutput
++ @opentui/core: property NativeRendererCreateOptions.feedPtr?: Pointer | null
++ @opentui/core: property NativeRendererCreateOptions.remote?: boolean
+- @opentui/core: property RenderLib.commitSplitFooterSnapshot: (renderer: Pointer, snapshot: OptimizedBuffer, rowColumns: number, startOnNewLine: boolean, trailingNewline: boolean, pinnedRenderOffset: number, force: boolean, beginFrame?: boolean, finalizeFrame?: boolean) => number
++ @opentui/core: property RenderLib.commitSplitFooterSnapshot: (renderer: Pointer, snapshot: OptimizedBuffer, rowColumns: number, startOnNewLine: boolean, trailingNewline: boolean, pinnedRenderOffset: number, force: boolean, beginFrame?: boolean, finalizeFrame?: boolean) => NativeRenderOperationResult
+- @opentui/core: property RenderLib.createRenderer: (width: number, height: number, options?: { testing?: boolean; remote?: boolean; }) => Pointer | null
++ @opentui/core: property RenderLib.createRenderer: (width: number, height: number, options?: NativeRendererCreateOptions) => Pointer | null
++ @opentui/core: property RenderLib.dumpOutputBuffer: (renderer: Pointer, timestamp?: number) => void
+- @opentui/core: property RenderLib.dumpStdoutBuffer: (renderer: Pointer, timestamp?: number) => void
+- @opentui/core: property RenderLib.render: (renderer: Pointer, force: boolean) => void
++ @opentui/core: property RenderLib.render: (renderer: Pointer, force: boolean) => number
+- @opentui/core: property RenderLib.repaintSplitFooter: (renderer: Pointer, pinnedRenderOffset: number, force: boolean) => number
++ @opentui/core: property RenderLib.repaintSplitFooter: (renderer: Pointer, pinnedRenderOffset: number, force: boolean) => NativeRenderOperationResult
+- @opentui/core: property TerminalCapabilities.in_tmux: boolean
++ @opentui/core: property TerminalCapabilities.multiplexer: TerminalMultiplexer
++ @opentui/core: property TerminalCapabilities.remote: boolean
++ @opentui/core: type NativeBufferedOutput = "stdout" | "memory"
++ @opentui/core: type TerminalMultiplexer = "none" | "tmux" | "zellij" | "screen" | "unknown"

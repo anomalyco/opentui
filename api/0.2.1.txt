@@ -1,0 +1,645 @@
+base 0.2.0
+- @opentui/core/3d: class CLICanvas
+- @opentui/core/3d: class ExplodingSpriteEffect
+- @opentui/core/3d: class ExplosionManager
+- @opentui/core/3d: class InstanceManager
+- @opentui/core/3d: class MeshPool
+- @opentui/core/3d: class PhysicsExplodingSpriteEffect
+- @opentui/core/3d: class PhysicsExplosionManager
+- @opentui/core/3d: class PlanckPhysicsWorld implements PhysicsWorld
+- @opentui/core/3d: class PlanckRigidBody implements PhysicsRigidBody
+- @opentui/core/3d: class RapierPhysicsWorld implements PhysicsWorld
+- @opentui/core/3d: class RapierRigidBody implements PhysicsRigidBody
+- @opentui/core/3d: class SheetSprite extends Sprite
+- @opentui/core/3d: class SpriteAnimator
+- @opentui/core/3d: class SpriteParticleGenerator
+- @opentui/core/3d: class SpriteResource
+- @opentui/core/3d: class SpriteResourceManager
+- @opentui/core/3d: class SpriteUtils
+- @opentui/core/3d: class TextureUtils
+- @opentui/core/3d: class ThreeCliRenderer
+- @opentui/core/3d: class ThreeRenderable extends Renderable
+- @opentui/core/3d: class TiledSprite
+- @opentui/core/3d: const DEFAULT_EXPLOSION_PARAMETERS: ExplosionEffectParameters
+- @opentui/core/3d: const DEFAULT_PHYSICS_EXPLOSION_PARAMETERS: PhysicsExplosionEffectParameters
+- @opentui/core/3d: constructor CLICanvas(device: GPUDevice, width: number, height: number, superSample: SuperSampleType, sampleAlgo?: SuperSampleAlgorithm)
+- @opentui/core/3d: constructor ExplodingSpriteEffect(scene: THREE.Scene, resource: SpriteResource, frameUvOffset: THREE.Vector2, frameUvSize: THREE.Vector2, spriteWorldTransform: THREE.Matrix4, userParams?: Partial<ExplosionEffectParameters>)
+- @opentui/core/3d: constructor ExplosionManager(scene: THREE.Scene)
+- @opentui/core/3d: constructor InstanceManager(scene: Scene, geometry: THREE.BufferGeometry, material: THREE.Material, options: InstanceManagerOptions)
+- @opentui/core/3d: constructor PhysicsExplodingSpriteEffect(scene: THREE.Scene, physicsWorld: PhysicsWorld, resource: SpriteResource, frameUvOffset: THREE.Vector2, frameUvSize: THREE.Vector2, spriteWorldTransform: THREE.Matrix4, userParams?: Partial<PhysicsExplosionEffectParameters>)
+- @opentui/core/3d: constructor PhysicsExplosionManager(scene: THREE.Scene, physicsWorld: PhysicsWorld)
+- @opentui/core/3d: constructor PlanckPhysicsWorld(planckWorld: planck.World)
+- @opentui/core/3d: constructor PlanckRigidBody(planckBody: planck.Body)
+- @opentui/core/3d: constructor RapierPhysicsWorld(rapierWorld: RAPIER.World)
+- @opentui/core/3d: constructor RapierRigidBody(rapierBody: RAPIER.RigidBody)
+- @opentui/core/3d: constructor SheetSprite(material: SpriteMaterial, numFrames: number)
+- @opentui/core/3d: constructor SpriteAnimator(scene: Scene)
+- @opentui/core/3d: constructor SpriteParticleGenerator(scene: THREE.Scene, initialBaseConfig: ParticleEffectParameters)
+- @opentui/core/3d: constructor SpriteResource(texture: THREE.DataTexture, sheetProperties: SheetProperties, scene: Scene)
+- @opentui/core/3d: constructor SpriteResourceManager(scene: Scene)
+- @opentui/core/3d: constructor ThreeCliRenderer(cliRenderer: CliRenderer, options: ThreeCliRendererOptions)
+- @opentui/core/3d: constructor ThreeRenderable(ctx: RenderContext, options: ThreeRenderableOptions)
+- @opentui/core/3d: constructor TiledSprite(id: string, userSpriteDefinition: SpriteDefinition, animator: SpriteAnimator, animationInstanceParams: Array<{ name: string; state: ResolvedAnimationState; resource: SpriteResource; index: number; instanceManager: InstanceManager; frameAttribute: THREE.InstancedBufferAttribute; flipAttribute: THREE.InstancedBufferAttribute; }>)
+- @opentui/core/3d: enum SuperSampleAlgorithm
+- @opentui/core/3d: enum SuperSampleType
+- @opentui/core/3d: enum-member SuperSampleAlgorithm.PRE_SQUEEZED = 1
+- @opentui/core/3d: enum-member SuperSampleAlgorithm.STANDARD = 0
+- @opentui/core/3d: enum-member SuperSampleType.CPU = "cpu"
+- @opentui/core/3d: enum-member SuperSampleType.GPU = "gpu"
+- @opentui/core/3d: enum-member SuperSampleType.NONE = "none"
+- @opentui/core/3d: interface AnimationDefinition
+- @opentui/core/3d: interface AnimationStateConfig
+- @opentui/core/3d: interface ExplosionCreationData
+- @opentui/core/3d: interface ExplosionEffectParameters
+- @opentui/core/3d: interface ExplosionHandle
+- @opentui/core/3d: interface InstanceManagerOptions
+- @opentui/core/3d: interface MeshPoolOptions
+- @opentui/core/3d: interface ParticleEffectParameters
+- @opentui/core/3d: interface PhysicsExplosionCreationData
+- @opentui/core/3d: interface PhysicsExplosionEffectParameters
+- @opentui/core/3d: interface PhysicsExplosionHandle
+- @opentui/core/3d: interface PhysicsSpriteRecreationData
+- @opentui/core/3d: interface ResourceConfig
+- @opentui/core/3d: interface SheetProperties
+- @opentui/core/3d: interface SpriteDefinition
+- @opentui/core/3d: interface SpriteRecreationData
+- @opentui/core/3d: interface ThreeCliRendererOptions
+- @opentui/core/3d: interface ThreeRenderableOptions extends RenderableOptions<ThreeRenderable>
+- @opentui/core/3d: method CLICanvas.addEventListener(event: string, listener: any, options?: any): void
+- @opentui/core/3d: method CLICanvas.destroy(): void
+- @opentui/core/3d: method CLICanvas.dispatchEvent(event: Event): void
+- @opentui/core/3d: method CLICanvas.getContext(type: string, attrs?: WebGLContextAttributes): GPUCanvasContextMock
+- @opentui/core/3d: method CLICanvas.getSuperSampleAlgorithm(): SuperSampleAlgorithm
+- @opentui/core/3d: method CLICanvas.readPixelsIntoBuffer(buffer: OptimizedBuffer): Promise<void>
+- @opentui/core/3d: method CLICanvas.removeEventListener(event: string, listener: any, options?: any): void
+- @opentui/core/3d: method CLICanvas.saveToFile(filePath: string): Promise<void>
+- @opentui/core/3d: method CLICanvas.setSize(width: number, height: number): void
+- @opentui/core/3d: method CLICanvas.setSuperSample(superSample: SuperSampleType): void
+- @opentui/core/3d: method CLICanvas.setSuperSampleAlgorithm(superSampleAlgorithm: SuperSampleAlgorithm): void
+- @opentui/core/3d: method ExplodingSpriteEffect.dispose(): void
+- @opentui/core/3d: method ExplodingSpriteEffect.update(deltaTimeMs: number): void
+- @opentui/core/3d: method ExplosionManager.createExplosionForSprite(spriteToExplode: TiledSprite, userParams?: Partial<ExplosionEffectParameters>): ExplosionHandle | null
+- @opentui/core/3d: method ExplosionManager.disposeAll(): void
+- @opentui/core/3d: method ExplosionManager.fillPool(resource: SpriteResource, count: number, params?: Partial<ExplosionEffectParameters>): void
+- @opentui/core/3d: method ExplosionManager.update(deltaTimeMs: number): void
+- @opentui/core/3d: method InstanceManager.acquireInstanceSlot(): number
+- @opentui/core/3d: method InstanceManager.dispose(): void
+- @opentui/core/3d: method InstanceManager.getInstanceCount(): number
+- @opentui/core/3d: method InstanceManager.getMaxInstances(): number
+- @opentui/core/3d: method InstanceManager.releaseInstanceSlot(instanceIndex: number): void
+- @opentui/core/3d: method MeshPool.acquireMesh(poolId: string, options: MeshPoolOptions): THREE.InstancedMesh
+- @opentui/core/3d: method MeshPool.clearAllPools(): void
+- @opentui/core/3d: method MeshPool.clearPool(poolId: string): void
+- @opentui/core/3d: method MeshPool.fill(poolId: string, options: MeshPoolOptions, count: number): void
+- @opentui/core/3d: method MeshPool.releaseMesh(poolId: string, mesh: THREE.InstancedMesh): void
+- @opentui/core/3d: method PhysicsExplodingSpriteEffect.dispose(): void
+- @opentui/core/3d: static method PhysicsExplodingSpriteEffect.getSharedMaterial(texture: THREE.DataTexture, materialFactory: () => NodeMaterial): NodeMaterial
+- @opentui/core/3d: method PhysicsExplodingSpriteEffect.update(deltaTimeMs: number): void
+- @opentui/core/3d: method PhysicsExplosionManager.createExplosionForSprite(spriteToExplode: TiledSprite, userParams?: Partial<PhysicsExplosionEffectParameters>): Promise<PhysicsExplosionHandle | null>
+- @opentui/core/3d: method PhysicsExplosionManager.disposeAll(): void
+- @opentui/core/3d: method PhysicsExplosionManager.fillPool(resource: SpriteResource, count: number, params?: Partial<PhysicsExplosionEffectParameters>): void
+- @opentui/core/3d: method PhysicsExplosionManager.update(deltaTimeMs: number): void
+- @opentui/core/3d: method PlanckPhysicsWorld.createCollider(colliderDesc: PhysicsColliderDesc, rigidBody: PhysicsRigidBody): void
+- @opentui/core/3d: static method PlanckPhysicsWorld.createFromPlanckWorld(planckWorld: planck.World): PlanckPhysicsWorld
+- @opentui/core/3d: method PlanckPhysicsWorld.createRigidBody(desc: PhysicsRigidBodyDesc): PhysicsRigidBody
+- @opentui/core/3d: method PlanckPhysicsWorld.removeRigidBody(rigidBody: PhysicsRigidBody): void
+- @opentui/core/3d: method PlanckRigidBody.applyImpulse(force: PhysicsVector2): void
+- @opentui/core/3d: method PlanckRigidBody.applyTorqueImpulse(torque: number): void
+- @opentui/core/3d: method PlanckRigidBody.getRotation(): number
+- @opentui/core/3d: method PlanckRigidBody.getTranslation(): PhysicsVector2
+- @opentui/core/3d: method RapierPhysicsWorld.createCollider(colliderDesc: PhysicsColliderDesc, rigidBody: PhysicsRigidBody): void
+- @opentui/core/3d: static method RapierPhysicsWorld.createFromRapierWorld(rapierWorld: RAPIER.World): RapierPhysicsWorld
+- @opentui/core/3d: method RapierPhysicsWorld.createRigidBody(desc: PhysicsRigidBodyDesc): PhysicsRigidBody
+- @opentui/core/3d: method RapierPhysicsWorld.removeRigidBody(rigidBody: PhysicsRigidBody): void
+- @opentui/core/3d: method RapierRigidBody.applyImpulse(force: PhysicsVector2): void
+- @opentui/core/3d: method RapierRigidBody.applyTorqueImpulse(torque: number): void
+- @opentui/core/3d: method RapierRigidBody.getRotation(): number
+- @opentui/core/3d: method RapierRigidBody.getTranslation(): PhysicsVector2
+- @opentui/core/3d: method SpriteAnimator.createSprite(userSpriteDefinition: SpriteDefinition, materialFactory?: () => NodeMaterial): Promise<TiledSprite>
+- @opentui/core/3d: method SpriteAnimator.removeAllSprites(): void
+- @opentui/core/3d: method SpriteAnimator.removeSprite(id: string): void
+- @opentui/core/3d: method SpriteAnimator.update(deltaTime: number): void
+- @opentui/core/3d: method SpriteParticleGenerator.dispose(): void
+- @opentui/core/3d: method SpriteParticleGenerator.getActiveParticleCount(): number
+- @opentui/core/3d: method SpriteParticleGenerator.hasAutoSpawn(): boolean
+- @opentui/core/3d: method SpriteParticleGenerator.setAutoSpawn(ratePerSecond: number, autoSpawnParamOverrides?: Partial<ParticleEffectParameters>): void
+- @opentui/core/3d: method SpriteParticleGenerator.spawnParticles(count: number, overrides?: Partial<ParticleEffectParameters>): Promise<void>
+- @opentui/core/3d: method SpriteParticleGenerator.stopAutoSpawn(): void
+- @opentui/core/3d: method SpriteParticleGenerator.update(deltaTimeMs: number): Promise<void>
+- @opentui/core/3d: method SpriteResource.createInstanceManager(geometry: THREE.BufferGeometry, material: THREE.Material, options: InstanceManagerOptions): InstanceManager
+- @opentui/core/3d: method SpriteResource.dispose(): void
+- @opentui/core/3d: method SpriteResourceManager.clearCache(): void
+- @opentui/core/3d: method SpriteResourceManager.createResource(config: ResourceConfig): Promise<SpriteResource>
+- @opentui/core/3d: method SpriteResourceManager.getOrCreateResource(texture: THREE.DataTexture, sheetProps: SheetProperties): Promise<SpriteResource>
+- @opentui/core/3d: static method SpriteUtils.fromFile(path: string, { materialParameters, }?: { materialParameters?: Omit<SpriteMaterialParameters, "map">; }): Promise<Sprite>
+- @opentui/core/3d: static method SpriteUtils.sheetFromFile(path: string, numFrames: number): Promise<SheetSprite>
+- @opentui/core/3d: static method TextureUtils.createCheckerboard(size?: number, color1?: Color, color2?: Color, checkSize?: number): Texture
+- @opentui/core/3d: static method TextureUtils.createGradient(size?: number, startColor?: Color, endColor?: Color, direction?: "horizontal" | "vertical" | "radial"): Texture
+- @opentui/core/3d: static method TextureUtils.createNoise(size?: number, scale?: number, octaves?: number, color1?: Color, color2?: Color): Texture
+- @opentui/core/3d: static method TextureUtils.fromFile(path: string): Promise<DataTexture | null>
+- @opentui/core/3d: static method TextureUtils.loadTextureFromFile(path: string): Promise<DataTexture | null>
+- @opentui/core/3d: method ThreeCliRenderer.destroy(): void
+- @opentui/core/3d: method ThreeCliRenderer.doDrawScene(root: Scene, camera: PerspectiveCamera | OrthographicCamera, buffer: OptimizedBuffer, deltaTime: number): Promise<void>
+- @opentui/core/3d: method ThreeCliRenderer.drawScene(root: Scene, buffer: OptimizedBuffer, deltaTime: number): Promise<void>
+- @opentui/core/3d: method ThreeCliRenderer.getActiveCamera(): PerspectiveCamera | OrthographicCamera
+- @opentui/core/3d: method ThreeCliRenderer.getSuperSampleAlgorithm(): SuperSampleAlgorithm
+- @opentui/core/3d: method ThreeCliRenderer.init(): Promise<void>
+- @opentui/core/3d: method ThreeCliRenderer.renderStats(buffer: OptimizedBuffer): void
+- @opentui/core/3d: method ThreeCliRenderer.saveToFile(filePath: string): Promise<void>
+- @opentui/core/3d: method ThreeCliRenderer.setActiveCamera(camera: PerspectiveCamera | OrthographicCamera): void
+- @opentui/core/3d: method ThreeCliRenderer.setBackgroundColor(color: RGBA): void
+- @opentui/core/3d: method ThreeCliRenderer.setSize(width: number, height: number, forceUpdate?: boolean): void
+- @opentui/core/3d: method ThreeCliRenderer.setSuperSampleAlgorithm(superSampleAlgorithm: SuperSampleAlgorithm): void
+- @opentui/core/3d: method ThreeCliRenderer.toggleDebugStats(): void
+- @opentui/core/3d: method ThreeCliRenderer.toggleSuperSampling(): void
+- @opentui/core/3d: protected method ThreeRenderable.destroySelf(): void
+- @opentui/core/3d: method ThreeRenderable.getActiveCamera(): PerspectiveCamera | OrthographicCamera
+- @opentui/core/3d: method ThreeRenderable.getScene(): Scene | null
+- @opentui/core/3d: protected method ThreeRenderable.onResize(width: number, height: number): void
+- @opentui/core/3d: protected method ThreeRenderable.renderSelf(buffer: OptimizedBuffer, deltaTime: number): void
+- @opentui/core/3d: method ThreeRenderable.setActiveCamera(camera: PerspectiveCamera | OrthographicCamera): void
+- @opentui/core/3d: method ThreeRenderable.setAutoAspect(autoAspect: boolean): void
+- @opentui/core/3d: method ThreeRenderable.setScene(scene: Scene | null): void
+- @opentui/core/3d: method TiledSprite.destroy(): void
+- @opentui/core/3d: method TiledSprite.getCurrentAnimationName(): string
+- @opentui/core/3d: method TiledSprite.getScale(): THREE.Vector3
+- @opentui/core/3d: method TiledSprite.getWorldPlaneSize(): THREE.Vector2
+- @opentui/core/3d: method TiledSprite.getWorldTransform(): THREE.Matrix4
+- @opentui/core/3d: method TiledSprite.goToFrame(frame: number): void
+- @opentui/core/3d: method TiledSprite.isPlaying(): boolean
+- @opentui/core/3d: method TiledSprite.play(): void
+- @opentui/core/3d: method TiledSprite.setAnimation(animationName: string): Promise<void>
+- @opentui/core/3d: method TiledSprite.setFrameDuration(newFrameDuration: number): void
+- @opentui/core/3d: method TiledSprite.setPosition(position: THREE.Vector3): void
+- @opentui/core/3d: method TiledSprite.setRotation(rotation: THREE.Quaternion): void
+- @opentui/core/3d: method TiledSprite.setScale(scale: THREE.Vector3): void
+- @opentui/core/3d: method TiledSprite.setTransform(position: THREE.Vector3, rotation: THREE.Quaternion, newScale: THREE.Vector3): void
+- @opentui/core/3d: method TiledSprite.stop(): void
+- @opentui/core/3d: method TiledSprite.update(deltaTime: number): void
+- @opentui/core/3d: namespace THREE from "three"
+- @opentui/core/3d: property AnimationDefinition.animFrameOffset?: number
+- @opentui/core/3d: property AnimationDefinition.animNumFrames?: number
+- @opentui/core/3d: property AnimationDefinition.flipX?: boolean
+- @opentui/core/3d: property AnimationDefinition.flipY?: boolean
+- @opentui/core/3d: property AnimationDefinition.frameDuration?: number
+- @opentui/core/3d: property AnimationDefinition.initialFrame?: number
+- @opentui/core/3d: property AnimationDefinition.loop?: boolean
+- @opentui/core/3d: property AnimationDefinition.resource: SpriteResource
+- @opentui/core/3d: property AnimationStateConfig.animFrameOffset: number
+- @opentui/core/3d: property AnimationStateConfig.animNumFrames: number
+- @opentui/core/3d: property AnimationStateConfig.flipX?: boolean
+- @opentui/core/3d: property AnimationStateConfig.flipY?: boolean
+- @opentui/core/3d: property AnimationStateConfig.frameDuration?: number
+- @opentui/core/3d: property AnimationStateConfig.imagePath: string
+- @opentui/core/3d: property AnimationStateConfig.initialFrame?: number
+- @opentui/core/3d: property AnimationStateConfig.loop?: boolean
+- @opentui/core/3d: property AnimationStateConfig.sheetNumFrames: number
+- @opentui/core/3d: property CLICanvas.mapAsyncTimeMs: number
+- @opentui/core/3d: property CLICanvas.superSample: SuperSampleType
+- @opentui/core/3d: property CLICanvas.superSampleDrawTimeMs: number
+- @opentui/core/3d: property ExplodingSpriteEffect.isActive: boolean
+- @opentui/core/3d: property ExplosionCreationData.frameUvOffset: THREE.Vector2
+- @opentui/core/3d: property ExplosionCreationData.frameUvSize: THREE.Vector2
+- @opentui/core/3d: property ExplosionCreationData.resource: SpriteResource
+- @opentui/core/3d: property ExplosionCreationData.spriteWorldTransform: THREE.Matrix4
+- @opentui/core/3d: property ExplosionEffectParameters.angularVelocityMax: THREE.Vector3
+- @opentui/core/3d: property ExplosionEffectParameters.angularVelocityMin: THREE.Vector3
+- @opentui/core/3d: property ExplosionEffectParameters.durationMs: number
+- @opentui/core/3d: property ExplosionEffectParameters.fadeOut: boolean
+- @opentui/core/3d: property ExplosionEffectParameters.gravity: number
+- @opentui/core/3d: property ExplosionEffectParameters.gravityScale: number
+- @opentui/core/3d: property ExplosionEffectParameters.initialVelocityYBoost: number
+- @opentui/core/3d: property ExplosionEffectParameters.materialFactory: () => NodeMaterial
+- @opentui/core/3d: property ExplosionEffectParameters.numCols: number
+- @opentui/core/3d: property ExplosionEffectParameters.numRows: number
+- @opentui/core/3d: property ExplosionEffectParameters.strength: number
+- @opentui/core/3d: property ExplosionEffectParameters.strengthVariation: number
+- @opentui/core/3d: property ExplosionEffectParameters.zVariationStrength: number
+- @opentui/core/3d: readonly property ExplosionHandle.effect: ExplodingSpriteEffect
+- @opentui/core/3d: property ExplosionHandle.hasBeenRestored: boolean
+- @opentui/core/3d: readonly property ExplosionHandle.recreationData: SpriteRecreationData
+- @opentui/core/3d: property ExplosionHandle.restoreSprite: (spriteAnimator: SpriteAnimator) => Promise<TiledSprite | null>
+- @opentui/core/3d: readonly property InstanceManager.hasFreeIndices: boolean
+- @opentui/core/3d: readonly property InstanceManager.mesh: THREE.InstancedMesh
+- @opentui/core/3d: property InstanceManagerOptions.depthWrite?: boolean
+- @opentui/core/3d: property InstanceManagerOptions.frustumCulled?: boolean
+- @opentui/core/3d: property InstanceManagerOptions.matrix?: THREE.Matrix4
+- @opentui/core/3d: property InstanceManagerOptions.maxInstances: number
+- @opentui/core/3d: property InstanceManagerOptions.name?: string
+- @opentui/core/3d: property InstanceManagerOptions.renderOrder?: number
+- @opentui/core/3d: property MeshPoolOptions.geometry: () => THREE.BufferGeometry
+- @opentui/core/3d: property MeshPoolOptions.material: THREE.Material
+- @opentui/core/3d: property MeshPoolOptions.maxInstances: number
+- @opentui/core/3d: property MeshPoolOptions.name?: string
+- @opentui/core/3d: property ParticleEffectParameters.angularVelocityMax: THREE.Vector3
+- @opentui/core/3d: property ParticleEffectParameters.angularVelocityMin: THREE.Vector3
+- @opentui/core/3d: property ParticleEffectParameters.animFrameOffset?: number
+- @opentui/core/3d: property ParticleEffectParameters.animNumFrames?: number
+- @opentui/core/3d: property ParticleEffectParameters.depthWrite?: boolean
+- @opentui/core/3d: property ParticleEffectParameters.fadeOut?: boolean
+- @opentui/core/3d: property ParticleEffectParameters.frameDuration?: number
+- @opentui/core/3d: property ParticleEffectParameters.gravity?: THREE.Vector3
+- @opentui/core/3d: property ParticleEffectParameters.initialVelocityMax: THREE.Vector3
+- @opentui/core/3d: property ParticleEffectParameters.initialVelocityMin: THREE.Vector3
+- @opentui/core/3d: property ParticleEffectParameters.lifetimeMsMax: number
+- @opentui/core/3d: property ParticleEffectParameters.lifetimeMsMin: number
+- @opentui/core/3d: property ParticleEffectParameters.loop?: boolean
+- @opentui/core/3d: property ParticleEffectParameters.materialFactory?: () => NodeMaterial
+- @opentui/core/3d: property ParticleEffectParameters.maxParticles: number
+- @opentui/core/3d: property ParticleEffectParameters.origins: THREE.Vector3[]
+- @opentui/core/3d: property ParticleEffectParameters.randomGravityFactorMinMax?: THREE.Vector2
+- @opentui/core/3d: property ParticleEffectParameters.renderOrder?: number
+- @opentui/core/3d: property ParticleEffectParameters.resource: SpriteResource
+- @opentui/core/3d: property ParticleEffectParameters.scale?: number
+- @opentui/core/3d: property ParticleEffectParameters.scaleOverLifeMinMax?: THREE.Vector2
+- @opentui/core/3d: property ParticleEffectParameters.spawnRadius: number | THREE.Vector3
+- @opentui/core/3d: property PhysicsExplodingSpriteEffect.isActive: boolean
+- @opentui/core/3d: property PhysicsExplosionCreationData.frameUvOffset: THREE.Vector2
+- @opentui/core/3d: property PhysicsExplosionCreationData.frameUvSize: THREE.Vector2
+- @opentui/core/3d: property PhysicsExplosionCreationData.resource: SpriteResource
+- @opentui/core/3d: property PhysicsExplosionCreationData.spriteWorldTransform: THREE.Matrix4
+- @opentui/core/3d: property PhysicsExplosionEffectParameters.angularDamping: number
+- @opentui/core/3d: property PhysicsExplosionEffectParameters.density: number
+- @opentui/core/3d: property PhysicsExplosionEffectParameters.durationMs: number
+- @opentui/core/3d: property PhysicsExplosionEffectParameters.explosionForce: number
+- @opentui/core/3d: property PhysicsExplosionEffectParameters.fadeOut: boolean
+- @opentui/core/3d: property PhysicsExplosionEffectParameters.forceVariation: number
+- @opentui/core/3d: property PhysicsExplosionEffectParameters.friction: number
+- @opentui/core/3d: property PhysicsExplosionEffectParameters.gravityScale: number
+- @opentui/core/3d: property PhysicsExplosionEffectParameters.linearDamping: number
+- @opentui/core/3d: property PhysicsExplosionEffectParameters.materialFactory: () => NodeMaterial
+- @opentui/core/3d: property PhysicsExplosionEffectParameters.numCols: number
+- @opentui/core/3d: property PhysicsExplosionEffectParameters.numRows: number
+- @opentui/core/3d: property PhysicsExplosionEffectParameters.restitution: number
+- @opentui/core/3d: property PhysicsExplosionEffectParameters.torqueStrength: number
+- @opentui/core/3d: readonly property PhysicsExplosionHandle.effect: PhysicsExplodingSpriteEffect
+- @opentui/core/3d: property PhysicsExplosionHandle.hasBeenRestored: boolean
+- @opentui/core/3d: readonly property PhysicsExplosionHandle.recreationData: PhysicsSpriteRecreationData
+- @opentui/core/3d: property PhysicsExplosionHandle.restoreSprite: (spriteAnimator: SpriteAnimator) => Promise<TiledSprite | null>
+- @opentui/core/3d: property PhysicsSpriteRecreationData.currentTransform: { position: THREE.Vector3; quaternion: THREE.Quaternion; scale: THREE.Vector3; }
+- @opentui/core/3d: property PhysicsSpriteRecreationData.definition: SpriteDefinition
+- @opentui/core/3d: readonly property PlanckRigidBody.nativeBody: planck.Body
+- @opentui/core/3d: readonly property RapierRigidBody.nativeBody: RAPIER.RigidBody
+- @opentui/core/3d: property ResourceConfig.imagePath: string
+- @opentui/core/3d: property ResourceConfig.sheetNumFrames: number
+- @opentui/core/3d: property SheetProperties.imagePath: string
+- @opentui/core/3d: property SheetProperties.sheetNumFrames: number
+- @opentui/core/3d: property SheetProperties.sheetTilesetHeight: number
+- @opentui/core/3d: property SheetProperties.sheetTilesetWidth: number
+- @opentui/core/3d: property SheetSprite.setIndex: (index: number) => void
+- @opentui/core/3d: property SpriteDefinition.animations: Record<string, AnimationDefinition>
+- @opentui/core/3d: property SpriteDefinition.depthWrite?: boolean
+- @opentui/core/3d: property SpriteDefinition.id?: string
+- @opentui/core/3d: property SpriteDefinition.initialAnimation: string
+- @opentui/core/3d: property SpriteDefinition.maxInstances?: number
+- @opentui/core/3d: property SpriteDefinition.renderOrder?: number
+- @opentui/core/3d: property SpriteDefinition.scale?: number
+- @opentui/core/3d: property SpriteRecreationData.currentTransform: { position: THREE.Vector3; quaternion: THREE.Quaternion; scale: THREE.Vector3; }
+- @opentui/core/3d: property SpriteRecreationData.definition: SpriteDefinition
+- @opentui/core/3d: readonly property SpriteResource.meshPool: MeshPool
+- @opentui/core/3d: readonly property SpriteResource.sheetProperties: SheetProperties
+- @opentui/core/3d: readonly property SpriteResource.texture: THREE.DataTexture
+- @opentui/core/3d: readonly property SpriteResource.uvTileSize: THREE.Vector2
+- @opentui/core/3d: readonly property ThreeCliRenderer.aspectRatio: number
+- @opentui/core/3d: property ThreeCliRendererOptions.alpha?: boolean
+- @opentui/core/3d: property ThreeCliRendererOptions.autoResize?: boolean
+- @opentui/core/3d: property ThreeCliRendererOptions.backgroundColor?: RGBA
+- @opentui/core/3d: property ThreeCliRendererOptions.focalLength?: number
+- @opentui/core/3d: property ThreeCliRendererOptions.height: number
+- @opentui/core/3d: property ThreeCliRendererOptions.libPath?: string
+- @opentui/core/3d: property ThreeCliRendererOptions.superSample?: SuperSampleType
+- @opentui/core/3d: property ThreeCliRendererOptions.width: number
+- @opentui/core/3d: readonly property ThreeRenderable.aspectRatio: number
+- @opentui/core/3d: readonly property ThreeRenderable.renderer: ThreeCliRenderer
+- @opentui/core/3d: property ThreeRenderableOptions.autoAspect?: boolean
+- @opentui/core/3d: property ThreeRenderableOptions.camera?: PerspectiveCamera | OrthographicCamera
+- @opentui/core/3d: property ThreeRenderableOptions.renderer?: Omit<ThreeCliRendererOptions, "width" | "height" | "autoResize">
+- @opentui/core/3d: property ThreeRenderableOptions.scene?: Scene | null
+- @opentui/core/3d: readonly property TiledSprite.currentAnimation: Animation
+- @opentui/core/3d: readonly property TiledSprite.currentTransform: { position: THREE.Vector3; quaternion: THREE.Quaternion; scale: THREE.Vector3; }
+- @opentui/core/3d: readonly property TiledSprite.definition: SpriteDefinition
+- @opentui/core/3d: readonly property TiledSprite.id: string
+- @opentui/core/3d: property TiledSprite.visible: boolean
+- @opentui/core/3d: type ResolvedAnimationState = Required<AnimationStateConfig> & { sheetTilesetWidth: number; sheetTilesetHeight: number; texture: THREE.DataTexture; }
++ @opentui/three: class CLICanvas
++ @opentui/three: class ExplodingSpriteEffect
++ @opentui/three: class ExplosionManager
++ @opentui/three: class InstanceManager
++ @opentui/three: class MeshPool
++ @opentui/three: class PhysicsExplodingSpriteEffect
++ @opentui/three: class PhysicsExplosionManager
++ @opentui/three: class PlanckPhysicsWorld implements PhysicsWorld
++ @opentui/three: class PlanckRigidBody implements PhysicsRigidBody
++ @opentui/three: class RapierPhysicsWorld implements PhysicsWorld
++ @opentui/three: class RapierRigidBody implements PhysicsRigidBody
++ @opentui/three: class SheetSprite extends Sprite
++ @opentui/three: class SpriteAnimator
++ @opentui/three: class SpriteParticleGenerator
++ @opentui/three: class SpriteResource
++ @opentui/three: class SpriteResourceManager
++ @opentui/three: class SpriteUtils
++ @opentui/three: class TextureUtils
++ @opentui/three: class ThreeCliRenderer
++ @opentui/three: class ThreeRenderable extends Renderable
++ @opentui/three: class TiledSprite
++ @opentui/three: const DEFAULT_EXPLOSION_PARAMETERS: ExplosionEffectParameters
++ @opentui/three: const DEFAULT_PHYSICS_EXPLOSION_PARAMETERS: PhysicsExplosionEffectParameters
++ @opentui/three: constructor CLICanvas(device: GPUDevice, width: number, height: number, superSample: SuperSampleType, sampleAlgo?: SuperSampleAlgorithm)
++ @opentui/three: constructor ExplodingSpriteEffect(scene: THREE.Scene, resource: SpriteResource, frameUvOffset: THREE.Vector2, frameUvSize: THREE.Vector2, spriteWorldTransform: THREE.Matrix4, userParams?: Partial<ExplosionEffectParameters>)
++ @opentui/three: constructor ExplosionManager(scene: THREE.Scene)
++ @opentui/three: constructor InstanceManager(scene: Scene, geometry: THREE.BufferGeometry, material: THREE.Material, options: InstanceManagerOptions)
++ @opentui/three: constructor PhysicsExplodingSpriteEffect(scene: THREE.Scene, physicsWorld: PhysicsWorld, resource: SpriteResource, frameUvOffset: THREE.Vector2, frameUvSize: THREE.Vector2, spriteWorldTransform: THREE.Matrix4, userParams?: Partial<PhysicsExplosionEffectParameters>)
++ @opentui/three: constructor PhysicsExplosionManager(scene: THREE.Scene, physicsWorld: PhysicsWorld)
++ @opentui/three: constructor PlanckPhysicsWorld(planckWorld: planck.World)
++ @opentui/three: constructor PlanckRigidBody(planckBody: planck.Body)
++ @opentui/three: constructor RapierPhysicsWorld(rapierWorld: RAPIER.World)
++ @opentui/three: constructor RapierRigidBody(rapierBody: RAPIER.RigidBody)
++ @opentui/three: constructor SheetSprite(material: SpriteMaterial, numFrames: number)
++ @opentui/three: constructor SpriteAnimator(scene: Scene)
++ @opentui/three: constructor SpriteParticleGenerator(scene: THREE.Scene, initialBaseConfig: ParticleEffectParameters)
++ @opentui/three: constructor SpriteResource(texture: THREE.DataTexture, sheetProperties: SheetProperties, scene: Scene)
++ @opentui/three: constructor SpriteResourceManager(scene: Scene)
++ @opentui/three: constructor ThreeCliRenderer(cliRenderer: CliRenderer, options: ThreeCliRendererOptions)
++ @opentui/three: constructor ThreeRenderable(ctx: RenderContext, options: ThreeRenderableOptions)
++ @opentui/three: constructor TiledSprite(id: string, userSpriteDefinition: SpriteDefinition, animator: SpriteAnimator, animationInstanceParams: Array<{ name: string; state: ResolvedAnimationState; resource: SpriteResource; index: number; instanceManager: InstanceManager; frameAttribute: THREE.InstancedBufferAttribute; flipAttribute: THREE.InstancedBufferAttribute; }>)
++ @opentui/three: enum SuperSampleAlgorithm
++ @opentui/three: enum SuperSampleType
++ @opentui/three: enum-member SuperSampleAlgorithm.PRE_SQUEEZED = 1
++ @opentui/three: enum-member SuperSampleAlgorithm.STANDARD = 0
++ @opentui/three: enum-member SuperSampleType.CPU = "cpu"
++ @opentui/three: enum-member SuperSampleType.GPU = "gpu"
++ @opentui/three: enum-member SuperSampleType.NONE = "none"
++ @opentui/three: interface AnimationDefinition
++ @opentui/three: interface AnimationStateConfig
++ @opentui/three: interface ExplosionCreationData
++ @opentui/three: interface ExplosionEffectParameters
++ @opentui/three: interface ExplosionHandle
++ @opentui/three: interface InstanceManagerOptions
++ @opentui/three: interface MeshPoolOptions
++ @opentui/three: interface ParticleEffectParameters
++ @opentui/three: interface PhysicsExplosionCreationData
++ @opentui/three: interface PhysicsExplosionEffectParameters
++ @opentui/three: interface PhysicsExplosionHandle
++ @opentui/three: interface PhysicsSpriteRecreationData
++ @opentui/three: interface ResourceConfig
++ @opentui/three: interface SheetProperties
++ @opentui/three: interface SpriteDefinition
++ @opentui/three: interface SpriteRecreationData
++ @opentui/three: interface ThreeCliRendererOptions
++ @opentui/three: interface ThreeRenderableOptions extends RenderableOptions<ThreeRenderable>
++ @opentui/three: method CLICanvas.addEventListener(event: string, listener: any, options?: any): void
++ @opentui/three: method CLICanvas.destroy(): void
++ @opentui/three: method CLICanvas.dispatchEvent(event: Event): void
++ @opentui/three: method CLICanvas.getContext(type: string, attrs?: WebGLContextAttributes): GPUCanvasContextMock
++ @opentui/three: method CLICanvas.getSuperSampleAlgorithm(): SuperSampleAlgorithm
++ @opentui/three: method CLICanvas.readPixelsIntoBuffer(buffer: OptimizedBuffer): Promise<void>
++ @opentui/three: method CLICanvas.removeEventListener(event: string, listener: any, options?: any): void
++ @opentui/three: method CLICanvas.saveToFile(filePath: string): Promise<void>
++ @opentui/three: method CLICanvas.setSize(width: number, height: number): void
++ @opentui/three: method CLICanvas.setSuperSample(superSample: SuperSampleType): void
++ @opentui/three: method CLICanvas.setSuperSampleAlgorithm(superSampleAlgorithm: SuperSampleAlgorithm): void
++ @opentui/three: method ExplodingSpriteEffect.dispose(): void
++ @opentui/three: method ExplodingSpriteEffect.update(deltaTimeMs: number): void
++ @opentui/three: method ExplosionManager.createExplosionForSprite(spriteToExplode: TiledSprite, userParams?: Partial<ExplosionEffectParameters>): ExplosionHandle | null
++ @opentui/three: method ExplosionManager.disposeAll(): void
++ @opentui/three: method ExplosionManager.fillPool(resource: SpriteResource, count: number, params?: Partial<ExplosionEffectParameters>): void
++ @opentui/three: method ExplosionManager.update(deltaTimeMs: number): void
++ @opentui/three: method InstanceManager.acquireInstanceSlot(): number
++ @opentui/three: method InstanceManager.dispose(): void
++ @opentui/three: method InstanceManager.getInstanceCount(): number
++ @opentui/three: method InstanceManager.getMaxInstances(): number
++ @opentui/three: method InstanceManager.releaseInstanceSlot(instanceIndex: number): void
++ @opentui/three: method MeshPool.acquireMesh(poolId: string, options: MeshPoolOptions): THREE.InstancedMesh
++ @opentui/three: method MeshPool.clearAllPools(): void
++ @opentui/three: method MeshPool.clearPool(poolId: string): void
++ @opentui/three: method MeshPool.fill(poolId: string, options: MeshPoolOptions, count: number): void
++ @opentui/three: method MeshPool.releaseMesh(poolId: string, mesh: THREE.InstancedMesh): void
++ @opentui/three: method PhysicsExplodingSpriteEffect.dispose(): void
++ @opentui/three: static method PhysicsExplodingSpriteEffect.getSharedMaterial(texture: THREE.DataTexture, materialFactory: () => NodeMaterial): NodeMaterial
++ @opentui/three: method PhysicsExplodingSpriteEffect.update(deltaTimeMs: number): void
++ @opentui/three: method PhysicsExplosionManager.createExplosionForSprite(spriteToExplode: TiledSprite, userParams?: Partial<PhysicsExplosionEffectParameters>): Promise<PhysicsExplosionHandle | null>
++ @opentui/three: method PhysicsExplosionManager.disposeAll(): void
++ @opentui/three: method PhysicsExplosionManager.fillPool(resource: SpriteResource, count: number, params?: Partial<PhysicsExplosionEffectParameters>): void
++ @opentui/three: method PhysicsExplosionManager.update(deltaTimeMs: number): void
++ @opentui/three: method PlanckPhysicsWorld.createCollider(colliderDesc: PhysicsColliderDesc, rigidBody: PhysicsRigidBody): void
++ @opentui/three: static method PlanckPhysicsWorld.createFromPlanckWorld(planckWorld: planck.World): PlanckPhysicsWorld
++ @opentui/three: method PlanckPhysicsWorld.createRigidBody(desc: PhysicsRigidBodyDesc): PhysicsRigidBody
++ @opentui/three: method PlanckPhysicsWorld.removeRigidBody(rigidBody: PhysicsRigidBody): void
++ @opentui/three: method PlanckRigidBody.applyImpulse(force: PhysicsVector2): void
++ @opentui/three: method PlanckRigidBody.applyTorqueImpulse(torque: number): void
++ @opentui/three: method PlanckRigidBody.getRotation(): number
++ @opentui/three: method PlanckRigidBody.getTranslation(): PhysicsVector2
++ @opentui/three: method RapierPhysicsWorld.createCollider(colliderDesc: PhysicsColliderDesc, rigidBody: PhysicsRigidBody): void
++ @opentui/three: static method RapierPhysicsWorld.createFromRapierWorld(rapierWorld: RAPIER.World): RapierPhysicsWorld
++ @opentui/three: method RapierPhysicsWorld.createRigidBody(desc: PhysicsRigidBodyDesc): PhysicsRigidBody
++ @opentui/three: method RapierPhysicsWorld.removeRigidBody(rigidBody: PhysicsRigidBody): void
++ @opentui/three: method RapierRigidBody.applyImpulse(force: PhysicsVector2): void
++ @opentui/three: method RapierRigidBody.applyTorqueImpulse(torque: number): void
++ @opentui/three: method RapierRigidBody.getRotation(): number
++ @opentui/three: method RapierRigidBody.getTranslation(): PhysicsVector2
++ @opentui/three: method SpriteAnimator.createSprite(userSpriteDefinition: SpriteDefinition, materialFactory?: () => NodeMaterial): Promise<TiledSprite>
++ @opentui/three: method SpriteAnimator.removeAllSprites(): void
++ @opentui/three: method SpriteAnimator.removeSprite(id: string): void
++ @opentui/three: method SpriteAnimator.update(deltaTime: number): void
++ @opentui/three: method SpriteParticleGenerator.dispose(): void
++ @opentui/three: method SpriteParticleGenerator.getActiveParticleCount(): number
++ @opentui/three: method SpriteParticleGenerator.hasAutoSpawn(): boolean
++ @opentui/three: method SpriteParticleGenerator.setAutoSpawn(ratePerSecond: number, autoSpawnParamOverrides?: Partial<ParticleEffectParameters>): void
++ @opentui/three: method SpriteParticleGenerator.spawnParticles(count: number, overrides?: Partial<ParticleEffectParameters>): Promise<void>
++ @opentui/three: method SpriteParticleGenerator.stopAutoSpawn(): void
++ @opentui/three: method SpriteParticleGenerator.update(deltaTimeMs: number): Promise<void>
++ @opentui/three: method SpriteResource.createInstanceManager(geometry: THREE.BufferGeometry, material: THREE.Material, options: InstanceManagerOptions): InstanceManager
++ @opentui/three: method SpriteResource.dispose(): void
++ @opentui/three: method SpriteResourceManager.clearCache(): void
++ @opentui/three: method SpriteResourceManager.createResource(config: ResourceConfig): Promise<SpriteResource>
++ @opentui/three: method SpriteResourceManager.getOrCreateResource(texture: THREE.DataTexture, sheetProps: SheetProperties): Promise<SpriteResource>
++ @opentui/three: static method SpriteUtils.fromFile(path: string, { materialParameters, }?: { materialParameters?: Omit<SpriteMaterialParameters, "map">; }): Promise<Sprite>
++ @opentui/three: static method SpriteUtils.sheetFromFile(path: string, numFrames: number): Promise<SheetSprite>
++ @opentui/three: static method TextureUtils.createCheckerboard(size?: number, color1?: Color, color2?: Color, checkSize?: number): Texture
++ @opentui/three: static method TextureUtils.createGradient(size?: number, startColor?: Color, endColor?: Color, direction?: "horizontal" | "vertical" | "radial"): Texture
++ @opentui/three: static method TextureUtils.createNoise(size?: number, scale?: number, octaves?: number, color1?: Color, color2?: Color): Texture
++ @opentui/three: static method TextureUtils.fromFile(path: string): Promise<DataTexture | null>
++ @opentui/three: static method TextureUtils.loadTextureFromFile(path: string): Promise<DataTexture | null>
++ @opentui/three: method ThreeCliRenderer.destroy(): void
++ @opentui/three: method ThreeCliRenderer.doDrawScene(root: Scene, camera: PerspectiveCamera | OrthographicCamera, buffer: OptimizedBuffer, deltaTime: number): Promise<void>
++ @opentui/three: method ThreeCliRenderer.drawScene(root: Scene, buffer: OptimizedBuffer, deltaTime: number): Promise<void>
++ @opentui/three: method ThreeCliRenderer.getActiveCamera(): PerspectiveCamera | OrthographicCamera
++ @opentui/three: method ThreeCliRenderer.getSuperSampleAlgorithm(): SuperSampleAlgorithm
++ @opentui/three: method ThreeCliRenderer.init(): Promise<void>
++ @opentui/three: method ThreeCliRenderer.renderStats(buffer: OptimizedBuffer): void
++ @opentui/three: method ThreeCliRenderer.saveToFile(filePath: string): Promise<void>
++ @opentui/three: method ThreeCliRenderer.setActiveCamera(camera: PerspectiveCamera | OrthographicCamera): void
++ @opentui/three: method ThreeCliRenderer.setBackgroundColor(color: RGBA): void
++ @opentui/three: method ThreeCliRenderer.setSize(width: number, height: number, forceUpdate?: boolean): void
++ @opentui/three: method ThreeCliRenderer.setSuperSampleAlgorithm(superSampleAlgorithm: SuperSampleAlgorithm): void
++ @opentui/three: method ThreeCliRenderer.toggleDebugStats(): void
++ @opentui/three: method ThreeCliRenderer.toggleSuperSampling(): void
++ @opentui/three: protected method ThreeRenderable.destroySelf(): void
++ @opentui/three: method ThreeRenderable.getActiveCamera(): PerspectiveCamera | OrthographicCamera
++ @opentui/three: method ThreeRenderable.getScene(): Scene | null
++ @opentui/three: protected method ThreeRenderable.onResize(width: number, height: number): void
++ @opentui/three: protected method ThreeRenderable.renderSelf(buffer: OptimizedBuffer, deltaTime: number): void
++ @opentui/three: method ThreeRenderable.setActiveCamera(camera: PerspectiveCamera | OrthographicCamera): void
++ @opentui/three: method ThreeRenderable.setAutoAspect(autoAspect: boolean): void
++ @opentui/three: method ThreeRenderable.setScene(scene: Scene | null): void
++ @opentui/three: method TiledSprite.destroy(): void
++ @opentui/three: method TiledSprite.getCurrentAnimationName(): string
++ @opentui/three: method TiledSprite.getScale(): THREE.Vector3
++ @opentui/three: method TiledSprite.getWorldPlaneSize(): THREE.Vector2
++ @opentui/three: method TiledSprite.getWorldTransform(): THREE.Matrix4
++ @opentui/three: method TiledSprite.goToFrame(frame: number): void
++ @opentui/three: method TiledSprite.isPlaying(): boolean
++ @opentui/three: method TiledSprite.play(): void
++ @opentui/three: method TiledSprite.setAnimation(animationName: string): Promise<void>
++ @opentui/three: method TiledSprite.setFrameDuration(newFrameDuration: number): void
++ @opentui/three: method TiledSprite.setPosition(position: THREE.Vector3): void
++ @opentui/three: method TiledSprite.setRotation(rotation: THREE.Quaternion): void
++ @opentui/three: method TiledSprite.setScale(scale: THREE.Vector3): void
++ @opentui/three: method TiledSprite.setTransform(position: THREE.Vector3, rotation: THREE.Quaternion, newScale: THREE.Vector3): void
++ @opentui/three: method TiledSprite.stop(): void
++ @opentui/three: method TiledSprite.update(deltaTime: number): void
++ @opentui/three: namespace THREE from "three"
++ @opentui/three: property AnimationDefinition.animFrameOffset?: number
++ @opentui/three: property AnimationDefinition.animNumFrames?: number
++ @opentui/three: property AnimationDefinition.flipX?: boolean
++ @opentui/three: property AnimationDefinition.flipY?: boolean
++ @opentui/three: property AnimationDefinition.frameDuration?: number
++ @opentui/three: property AnimationDefinition.initialFrame?: number
++ @opentui/three: property AnimationDefinition.loop?: boolean
++ @opentui/three: property AnimationDefinition.resource: SpriteResource
++ @opentui/three: property AnimationStateConfig.animFrameOffset: number
++ @opentui/three: property AnimationStateConfig.animNumFrames: number
++ @opentui/three: property AnimationStateConfig.flipX?: boolean
++ @opentui/three: property AnimationStateConfig.flipY?: boolean
++ @opentui/three: property AnimationStateConfig.frameDuration?: number
++ @opentui/three: property AnimationStateConfig.imagePath: string
++ @opentui/three: property AnimationStateConfig.initialFrame?: number
++ @opentui/three: property AnimationStateConfig.loop?: boolean
++ @opentui/three: property AnimationStateConfig.sheetNumFrames: number
++ @opentui/three: property CLICanvas.mapAsyncTimeMs: number
++ @opentui/three: property CLICanvas.superSample: SuperSampleType
++ @opentui/three: property CLICanvas.superSampleDrawTimeMs: number
++ @opentui/three: property ExplodingSpriteEffect.isActive: boolean
++ @opentui/three: property ExplosionCreationData.frameUvOffset: THREE.Vector2
++ @opentui/three: property ExplosionCreationData.frameUvSize: THREE.Vector2
++ @opentui/three: property ExplosionCreationData.resource: SpriteResource
++ @opentui/three: property ExplosionCreationData.spriteWorldTransform: THREE.Matrix4
++ @opentui/three: property ExplosionEffectParameters.angularVelocityMax: THREE.Vector3
++ @opentui/three: property ExplosionEffectParameters.angularVelocityMin: THREE.Vector3
++ @opentui/three: property ExplosionEffectParameters.durationMs: number
++ @opentui/three: property ExplosionEffectParameters.fadeOut: boolean
++ @opentui/three: property ExplosionEffectParameters.gravity: number
++ @opentui/three: property ExplosionEffectParameters.gravityScale: number
++ @opentui/three: property ExplosionEffectParameters.initialVelocityYBoost: number
++ @opentui/three: property ExplosionEffectParameters.materialFactory: () => NodeMaterial
++ @opentui/three: property ExplosionEffectParameters.numCols: number
++ @opentui/three: property ExplosionEffectParameters.numRows: number
++ @opentui/three: property ExplosionEffectParameters.strength: number
++ @opentui/three: property ExplosionEffectParameters.strengthVariation: number
++ @opentui/three: property ExplosionEffectParameters.zVariationStrength: number
++ @opentui/three: readonly property ExplosionHandle.effect: ExplodingSpriteEffect
++ @opentui/three: property ExplosionHandle.hasBeenRestored: boolean
++ @opentui/three: readonly property ExplosionHandle.recreationData: SpriteRecreationData
++ @opentui/three: property ExplosionHandle.restoreSprite: (spriteAnimator: SpriteAnimator) => Promise<TiledSprite | null>
++ @opentui/three: readonly property InstanceManager.hasFreeIndices: boolean
++ @opentui/three: readonly property InstanceManager.mesh: THREE.InstancedMesh
++ @opentui/three: property InstanceManagerOptions.depthWrite?: boolean
++ @opentui/three: property InstanceManagerOptions.frustumCulled?: boolean
++ @opentui/three: property InstanceManagerOptions.matrix?: THREE.Matrix4
++ @opentui/three: property InstanceManagerOptions.maxInstances: number
++ @opentui/three: property InstanceManagerOptions.name?: string
++ @opentui/three: property InstanceManagerOptions.renderOrder?: number
++ @opentui/three: property MeshPoolOptions.geometry: () => THREE.BufferGeometry
++ @opentui/three: property MeshPoolOptions.material: THREE.Material
++ @opentui/three: property MeshPoolOptions.maxInstances: number
++ @opentui/three: property MeshPoolOptions.name?: string
++ @opentui/three: property ParticleEffectParameters.angularVelocityMax: THREE.Vector3
++ @opentui/three: property ParticleEffectParameters.angularVelocityMin: THREE.Vector3
++ @opentui/three: property ParticleEffectParameters.animFrameOffset?: number
++ @opentui/three: property ParticleEffectParameters.animNumFrames?: number
++ @opentui/three: property ParticleEffectParameters.depthWrite?: boolean
++ @opentui/three: property ParticleEffectParameters.fadeOut?: boolean
++ @opentui/three: property ParticleEffectParameters.frameDuration?: number
++ @opentui/three: property ParticleEffectParameters.gravity?: THREE.Vector3
++ @opentui/three: property ParticleEffectParameters.initialVelocityMax: THREE.Vector3
++ @opentui/three: property ParticleEffectParameters.initialVelocityMin: THREE.Vector3
++ @opentui/three: property ParticleEffectParameters.lifetimeMsMax: number
++ @opentui/three: property ParticleEffectParameters.lifetimeMsMin: number
++ @opentui/three: property ParticleEffectParameters.loop?: boolean
++ @opentui/three: property ParticleEffectParameters.materialFactory?: () => NodeMaterial
++ @opentui/three: property ParticleEffectParameters.maxParticles: number
++ @opentui/three: property ParticleEffectParameters.origins: THREE.Vector3[]
++ @opentui/three: property ParticleEffectParameters.randomGravityFactorMinMax?: THREE.Vector2
++ @opentui/three: property ParticleEffectParameters.renderOrder?: number
++ @opentui/three: property ParticleEffectParameters.resource: SpriteResource
++ @opentui/three: property ParticleEffectParameters.scale?: number
++ @opentui/three: property ParticleEffectParameters.scaleOverLifeMinMax?: THREE.Vector2
++ @opentui/three: property ParticleEffectParameters.spawnRadius: number | THREE.Vector3
++ @opentui/three: property PhysicsExplodingSpriteEffect.isActive: boolean
++ @opentui/three: property PhysicsExplosionCreationData.frameUvOffset: THREE.Vector2
++ @opentui/three: property PhysicsExplosionCreationData.frameUvSize: THREE.Vector2
++ @opentui/three: property PhysicsExplosionCreationData.resource: SpriteResource
++ @opentui/three: property PhysicsExplosionCreationData.spriteWorldTransform: THREE.Matrix4
++ @opentui/three: property PhysicsExplosionEffectParameters.angularDamping: number
++ @opentui/three: property PhysicsExplosionEffectParameters.density: number
++ @opentui/three: property PhysicsExplosionEffectParameters.durationMs: number
++ @opentui/three: property PhysicsExplosionEffectParameters.explosionForce: number
++ @opentui/three: property PhysicsExplosionEffectParameters.fadeOut: boolean
++ @opentui/three: property PhysicsExplosionEffectParameters.forceVariation: number
++ @opentui/three: property PhysicsExplosionEffectParameters.friction: number
++ @opentui/three: property PhysicsExplosionEffectParameters.gravityScale: number
++ @opentui/three: property PhysicsExplosionEffectParameters.linearDamping: number
++ @opentui/three: property PhysicsExplosionEffectParameters.materialFactory: () => NodeMaterial
++ @opentui/three: property PhysicsExplosionEffectParameters.numCols: number
++ @opentui/three: property PhysicsExplosionEffectParameters.numRows: number
++ @opentui/three: property PhysicsExplosionEffectParameters.restitution: number
++ @opentui/three: property PhysicsExplosionEffectParameters.torqueStrength: number
++ @opentui/three: readonly property PhysicsExplosionHandle.effect: PhysicsExplodingSpriteEffect
++ @opentui/three: property PhysicsExplosionHandle.hasBeenRestored: boolean
++ @opentui/three: readonly property PhysicsExplosionHandle.recreationData: PhysicsSpriteRecreationData
++ @opentui/three: property PhysicsExplosionHandle.restoreSprite: (spriteAnimator: SpriteAnimator) => Promise<TiledSprite | null>
++ @opentui/three: property PhysicsSpriteRecreationData.currentTransform: { position: THREE.Vector3; quaternion: THREE.Quaternion; scale: THREE.Vector3; }
++ @opentui/three: property PhysicsSpriteRecreationData.definition: SpriteDefinition
++ @opentui/three: readonly property PlanckRigidBody.nativeBody: planck.Body
++ @opentui/three: readonly property RapierRigidBody.nativeBody: RAPIER.RigidBody
++ @opentui/three: property ResourceConfig.imagePath: string
++ @opentui/three: property ResourceConfig.sheetNumFrames: number
++ @opentui/three: property SheetProperties.imagePath: string
++ @opentui/three: property SheetProperties.sheetNumFrames: number
++ @opentui/three: property SheetProperties.sheetTilesetHeight: number
++ @opentui/three: property SheetProperties.sheetTilesetWidth: number
++ @opentui/three: property SheetSprite.setIndex: (index: number) => void
++ @opentui/three: property SpriteDefinition.animations: Record<string, AnimationDefinition>
++ @opentui/three: property SpriteDefinition.depthWrite?: boolean
++ @opentui/three: property SpriteDefinition.id?: string
++ @opentui/three: property SpriteDefinition.initialAnimation: string
++ @opentui/three: property SpriteDefinition.maxInstances?: number
++ @opentui/three: property SpriteDefinition.renderOrder?: number
++ @opentui/three: property SpriteDefinition.scale?: number
++ @opentui/three: property SpriteRecreationData.currentTransform: { position: THREE.Vector3; quaternion: THREE.Quaternion; scale: THREE.Vector3; }
++ @opentui/three: property SpriteRecreationData.definition: SpriteDefinition
++ @opentui/three: readonly property SpriteResource.meshPool: MeshPool
++ @opentui/three: readonly property SpriteResource.sheetProperties: SheetProperties
++ @opentui/three: readonly property SpriteResource.texture: THREE.DataTexture
++ @opentui/three: readonly property SpriteResource.uvTileSize: THREE.Vector2
++ @opentui/three: readonly property ThreeCliRenderer.aspectRatio: number
++ @opentui/three: property ThreeCliRendererOptions.alpha?: boolean
++ @opentui/three: property ThreeCliRendererOptions.autoResize?: boolean
++ @opentui/three: property ThreeCliRendererOptions.backgroundColor?: RGBA
++ @opentui/three: property ThreeCliRendererOptions.focalLength?: number
++ @opentui/three: property ThreeCliRendererOptions.height: number
++ @opentui/three: property ThreeCliRendererOptions.libPath?: string
++ @opentui/three: property ThreeCliRendererOptions.superSample?: SuperSampleType
++ @opentui/three: property ThreeCliRendererOptions.width: number
++ @opentui/three: readonly property ThreeRenderable.aspectRatio: number
++ @opentui/three: readonly property ThreeRenderable.renderer: ThreeCliRenderer
++ @opentui/three: property ThreeRenderableOptions.autoAspect?: boolean
++ @opentui/three: property ThreeRenderableOptions.camera?: PerspectiveCamera | OrthographicCamera
++ @opentui/three: property ThreeRenderableOptions.renderer?: Omit<ThreeCliRendererOptions, "width" | "height" | "autoResize">
++ @opentui/three: property ThreeRenderableOptions.scene?: Scene | null
++ @opentui/three: readonly property TiledSprite.currentAnimation: Animation
++ @opentui/three: readonly property TiledSprite.currentTransform: { position: THREE.Vector3; quaternion: THREE.Quaternion; scale: THREE.Vector3; }
++ @opentui/three: readonly property TiledSprite.definition: SpriteDefinition
++ @opentui/three: readonly property TiledSprite.id: string
++ @opentui/three: property TiledSprite.visible: boolean
++ @opentui/three: type ResolvedAnimationState = Required<AnimationStateConfig> & { sheetTilesetWidth: number; sheetTilesetHeight: number; texture: THREE.DataTexture; }

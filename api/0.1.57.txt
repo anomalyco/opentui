@@ -1,0 +1,23 @@
+base 0.1.56
++ @opentui/core: method CliRenderer.getDebugInputs(): Array<{ timestamp: string; sequence: string; }>
++ @opentui/core: property CliRendererConfig.exitSignals?: NodeJS.Signals[]
++ @opentui/core: property InputRenderable.keyAliasMap: KeyAliasMap
++ @opentui/core: property InputRenderable.keyBindings: InputKeyBinding[]
++ @opentui/core: property InputRenderableOptions.keyAliasMap?: KeyAliasMap
++ @opentui/core: property InputRenderableOptions.keyBindings?: InputKeyBinding[]
++ @opentui/core: property SelectRenderable.keyAliasMap: KeyAliasMap
++ @opentui/core: property SelectRenderable.keyBindings: SelectKeyBinding[]
++ @opentui/core: property SelectRenderableOptions.keyAliasMap?: KeyAliasMap
++ @opentui/core: property SelectRenderableOptions.keyBindings?: SelectKeyBinding[]
++ @opentui/core: property TabSelectRenderable.keyAliasMap: KeyAliasMap
++ @opentui/core: property TabSelectRenderable.keyBindings: TabSelectKeyBinding[]
++ @opentui/core: property TabSelectRenderableOptions.keyAliasMap?: KeyAliasMap
++ @opentui/core: property TabSelectRenderableOptions.keyBindings?: TabSelectKeyBinding[]
++ @opentui/core: property TextareaOptions.keyAliasMap?: KeyAliasMap
++ @opentui/core: property TextareaRenderable.keyAliasMap: KeyAliasMap
++ @opentui/core: type InputAction = "move-left" | "move-right" | "move-home" | "move-end" | "delete-backward" | "delete-forward" | "submit"
++ @opentui/core: type InputKeyBinding = BaseKeyBinding<InputAction>
++ @opentui/core: type SelectAction = "move-up" | "move-down" | "move-up-fast" | "move-down-fast" | "select-current"
++ @opentui/core: type SelectKeyBinding = BaseKeyBinding<SelectAction>
++ @opentui/core: type TabSelectAction = "move-left" | "move-right" | "select-current"
++ @opentui/core: type TabSelectKeyBinding = BaseKeyBinding<TabSelectAction>

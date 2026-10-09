@@ -1,0 +1,3 @@
+base 0.1.40
++ @opentui/core/testing: property MockKeysOptions.otherModifiersMode?: boolean
++ @opentui/core/testing: property TestRendererOptions.otherModifiersMode?: boolean

@@ -1,0 +1,11 @@
+base 0.1.42
++ @opentui/core: method TerminalConsole.destroy(): void
+- @opentui/react/renderer: function createRoot(renderer: CliRenderer): { render: (node: ReactNode) => void; }
++ @opentui/react/renderer: function createRoot(renderer: CliRenderer): Root
+- @opentui/react/renderer: deprecated function render(node: ReactNode, rendererConfig?: CliRendererConfig): Promise<void>
++ @opentui/react/renderer: type Root = { render: (node: ReactNode) => void; unmount: () => void; }
++ @opentui/react/test-utils: function testRender(node: ReactNode, testRendererOptions: TestRendererOptions): Promise<{ renderer: TestRenderer; mockInput: MockInput; mockMouse: MockMouse; renderOnce: () => Promise<void>; captureCharFrame: () => string; resize: (width: number, height: number) => void; }>
+- @opentui/react: function createRoot(renderer: CliRenderer): { render: (node: ReactNode) => void; }
++ @opentui/react: function createRoot(renderer: CliRenderer): Root
+- @opentui/react: deprecated function render(node: ReactNode, rendererConfig?: CliRendererConfig): Promise<void>
++ @opentui/react: type Root = { render: (node: ReactNode) => void; unmount: () => void; }

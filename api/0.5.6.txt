@@ -1,0 +1,71 @@
+base 0.5.4
++ @opentui/core: class EmbeddedTerminalRenderable extends Renderable
++ @opentui/core: constructor EmbeddedTerminalRenderable(ctx: RenderContext, options: EmbeddedTerminalOptions)
++ @opentui/core: interface EmbeddedTerminalOptions extends RenderableOptions<EmbeddedTerminalRenderable>
++ @opentui/core: method EmbeddedTerminalRenderable.blur(): void
++ @opentui/core: protected method EmbeddedTerminalRenderable.destroySelf(): void
++ @opentui/core: method EmbeddedTerminalRenderable.encodeKey(key: KeyEvent): Uint8Array
++ @opentui/core: method EmbeddedTerminalRenderable.encodePaste(bytes: Uint8Array): Uint8Array
++ @opentui/core: method EmbeddedTerminalRenderable.focus(): void
++ @opentui/core: method EmbeddedTerminalRenderable.getSelectedText(): string
++ @opentui/core: method EmbeddedTerminalRenderable.handleKeyPress(key: KeyEvent): boolean
++ @opentui/core: method EmbeddedTerminalRenderable.handlePaste(event: PasteEvent): void
++ @opentui/core: method EmbeddedTerminalRenderable.hasSelection(): boolean
++ @opentui/core: method EmbeddedTerminalRenderable.invalidate(): void
++ @opentui/core: protected method EmbeddedTerminalRenderable.onRemove(): void
++ @opentui/core: protected method EmbeddedTerminalRenderable.onResize(width: number, height: number): void
++ @opentui/core: method EmbeddedTerminalRenderable.onSelectionChanged(selection: Selection | null): boolean
++ @opentui/core: method EmbeddedTerminalRenderable.render(buffer: OptimizedBuffer, deltaTime: number): void
++ @opentui/core: protected method EmbeddedTerminalRenderable.renderSelf(buffer: OptimizedBuffer): void
++ @opentui/core: method EmbeddedTerminalRenderable.screen(): EmbeddedTerminalScreen
++ @opentui/core: method EmbeddedTerminalRenderable.shouldStartSelection(x: number, y: number): boolean
++ @opentui/core: method EmbeddedTerminalRenderable.write(data: string | Uint8Array): void
+- @opentui/core: method OptimizedBuffer.drawPackedBuffer(dataPtr: PointerInput, dataLen: number, posX: number, posY: number, terminalWidthCells: number, terminalHeightCells: number): void
++ @opentui/core: method OptimizedBuffer.drawPackedBuffer(data: PointerInput | Uint8Array, dataLen: number, posX: number, posY: number, terminalWidthCells: number, terminalHeightCells: number): void
+- @opentui/core: method OptimizedBuffer.drawSuperSampleBuffer(x: number, y: number, pixelDataPtr: PointerInput, pixelDataLength: number, format: "bgra8unorm" | "rgba8unorm", alignedBytesPerRow: number): void
++ @opentui/core: method OptimizedBuffer.drawSuperSampleBuffer(x: number, y: number, pixelData: PointerInput | Uint8Array, pixelDataLength: number, format: "bgra8unorm" | "rgba8unorm", alignedBytesPerRow: number): void
++ @opentui/core: property EmbeddedTerminalOptions.cols?: number
++ @opentui/core: property EmbeddedTerminalOptions.maxScrollback?: number
++ @opentui/core: property EmbeddedTerminalOptions.onData?: (data: Uint8Array, source: EmbeddedTerminalDataSource) => void
++ @opentui/core: property EmbeddedTerminalOptions.onScreenChange?: () => void
++ @opentui/core: property EmbeddedTerminalOptions.onTerminalResize?: (cols: number, rows: number) => void
++ @opentui/core: property EmbeddedTerminalOptions.rows?: number
++ @opentui/core: property EmbeddedTerminalOptions.selectable?: boolean
++ @opentui/core: property EmbeddedTerminalRenderable.onData: ((data: Uint8Array, source: EmbeddedTerminalDataSource) => void) | undefined
++ @opentui/core: property EmbeddedTerminalRenderable.onScreenChange: (() => void) | undefined
++ @opentui/core: property EmbeddedTerminalRenderable.onTerminalResize: ((cols: number, rows: number) => void) | undefined
++ @opentui/core: property EmbeddedTerminalRenderable.selectable: boolean
+- @opentui/core: property RenderLib.bufferColorMatrix: (buffer: OptimizedBufferHandle, matrixPtr: Pointer, cellMaskPtr: Pointer, cellMaskCount: number, strength: number, target: TargetChannel) => void
++ @opentui/core: property RenderLib.bufferColorMatrix: (buffer: OptimizedBufferHandle, matrix: Pointer | Float32Array, cellMask: Pointer | Float32Array, cellMaskCount: number, strength: number, target: TargetChannel) => void
+- @opentui/core: property RenderLib.bufferColorMatrixUniform: (buffer: OptimizedBufferHandle, matrixPtr: Pointer, strength: number, target: TargetChannel) => void
++ @opentui/core: property RenderLib.bufferColorMatrixUniform: (buffer: OptimizedBufferHandle, matrix: Pointer | Float32Array, strength: number, target: TargetChannel) => void
+- @opentui/core: property RenderLib.bufferDrawGrayscaleBuffer: (buffer: OptimizedBufferHandle, posX: number, posY: number, intensitiesPtr: Pointer, srcWidth: number, srcHeight: number, fg: RGBA | null, bg: RGBA | null) => void
++ @opentui/core: property RenderLib.bufferDrawGrayscaleBuffer: (buffer: OptimizedBufferHandle, posX: number, posY: number, intensities: Pointer | Float32Array, srcWidth: number, srcHeight: number, fg: RGBA | null, bg: RGBA | null) => void
+- @opentui/core: property RenderLib.bufferDrawGrayscaleBufferSupersampled: (buffer: OptimizedBufferHandle, posX: number, posY: number, intensitiesPtr: Pointer, srcWidth: number, srcHeight: number, fg: RGBA | null, bg: RGBA | null) => void
++ @opentui/core: property RenderLib.bufferDrawGrayscaleBufferSupersampled: (buffer: OptimizedBufferHandle, posX: number, posY: number, intensities: Pointer | Float32Array, srcWidth: number, srcHeight: number, fg: RGBA | null, bg: RGBA | null) => void
+- @opentui/core: property RenderLib.bufferDrawPackedBuffer: (buffer: OptimizedBufferHandle, dataPtr: Pointer, dataLen: number, posX: number, posY: number, terminalWidthCells: number, terminalHeightCells: number) => void
++ @opentui/core: property RenderLib.bufferDrawPackedBuffer: (buffer: OptimizedBufferHandle, data: Pointer | Uint8Array, dataLen: number, posX: number, posY: number, terminalWidthCells: number, terminalHeightCells: number) => void
+- @opentui/core: property RenderLib.bufferDrawSuperSampleBuffer: (buffer: OptimizedBufferHandle, x: number, y: number, pixelDataPtr: Pointer, pixelDataLength: number, format: "bgra8unorm" | "rgba8unorm", alignedBytesPerRow: number) => void
++ @opentui/core: property RenderLib.bufferDrawSuperSampleBuffer: (buffer: OptimizedBufferHandle, x: number, y: number, pixelData: Pointer | Uint8Array, pixelDataLength: number, format: "bgra8unorm" | "rgba8unorm", alignedBytesPerRow: number) => void
++ @opentui/core: property RenderLib.createEmbeddedTerminal: (options: { cols: number; rows: number; maxScrollback?: number; }) => EmbeddedTerminalHandle
++ @opentui/core: property RenderLib.destroyEmbeddedTerminal: (handle: EmbeddedTerminalHandle) => void
++ @opentui/core: property RenderLib.embeddedTerminalClearSelection: (handle: EmbeddedTerminalHandle) => void
++ @opentui/core: property RenderLib.embeddedTerminalCompose: (handle: EmbeddedTerminalHandle, target: OptimizedBufferHandle, x: number, y: number) => void
++ @opentui/core: property RenderLib.embeddedTerminalCursor: (handle: EmbeddedTerminalHandle) => EmbeddedTerminalCursor
++ @opentui/core: property RenderLib.embeddedTerminalDrainResponses: (handle: EmbeddedTerminalHandle) => Uint8Array
++ @opentui/core: property RenderLib.embeddedTerminalEncodeFocus: (handle: EmbeddedTerminalHandle, focused: boolean) => Uint8Array
++ @opentui/core: property RenderLib.embeddedTerminalEncodeKey: (handle: EmbeddedTerminalHandle, key: EmbeddedTerminalKey) => Uint8Array
++ @opentui/core: property RenderLib.embeddedTerminalEncodeMouse: (handle: EmbeddedTerminalHandle, mouse: EmbeddedTerminalMouse) => Uint8Array
++ @opentui/core: property RenderLib.embeddedTerminalEncodePaste: (handle: EmbeddedTerminalHandle, input: Uint8Array) => Uint8Array
++ @opentui/core: property RenderLib.embeddedTerminalGetSelectedText: (handle: EmbeddedTerminalHandle) => Uint8Array
++ @opentui/core: property RenderLib.embeddedTerminalInvalidate: (handle: EmbeddedTerminalHandle) => void
++ @opentui/core: property RenderLib.embeddedTerminalResize: (handle: EmbeddedTerminalHandle, cols: number, rows: number) => void
++ @opentui/core: property RenderLib.embeddedTerminalScroll: (handle: EmbeddedTerminalHandle, delta: number) => void
++ @opentui/core: property RenderLib.embeddedTerminalSetSelection: (handle: EmbeddedTerminalHandle, start: { x: number; y: number; }, end: { x: number; y: number; }) => void
++ @opentui/core: property RenderLib.embeddedTerminalWrite: (handle: EmbeddedTerminalHandle, data: string | Uint8Array) => void
++ @opentui/core: type EmbeddedTerminalCursor = { x: number; y: number; hasValue: boolean; visible: boolean; blinking: boolean; wideTail: boolean; style: "bar" | "block" | "underline" | "block-hollow"; color?: { r: number; g: number; b: number; }; }
++ @opentui/core: type EmbeddedTerminalDataSource = "input" | "response"
++ @opentui/core: type EmbeddedTerminalHandle = NativeHandle<"embedded_terminal">
++ @opentui/core: type EmbeddedTerminalKey = { action?: "release" | "press" | "repeat"; key?: string; mods?: number; consumedMods?: number; composing?: boolean; text?: string; unshiftedCodepoint?: number; }
++ @opentui/core: type EmbeddedTerminalMouse = { action: "press" | "release" | "motion"; button?: "unknown" | "left" | "right" | "middle" | "four" | "five" | "six" | "seven"; mods?: number; x: number; y: number; anyButtonPressed?: boolean; }
++ @opentui/core: type EmbeddedTerminalScreen = { text: string; lines: string[]; columns: number; rows: number; cursor: { x: number; y: number; visible: boolean; }; }

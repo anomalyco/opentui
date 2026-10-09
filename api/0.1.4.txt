@@ -1,0 +1,3 @@
+base 0.1.3
++ @opentui/core: property LayoutOptions.position?: PositionTypeString
+- @opentui/core: property LayoutOptions.positionType?: PositionTypeString

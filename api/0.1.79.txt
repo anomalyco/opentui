@@ -1,0 +1,8 @@
+base 0.1.78
++ @opentui/core: method InputRenderable.deleteLine(): boolean
++ @opentui/core: method InputRenderable.deleteToLineEnd(): boolean
++ @opentui/core: method InputRenderable.deleteToLineStart(): boolean
++ @opentui/core: method InputRenderable.deleteWordBackward(): boolean
++ @opentui/core: method InputRenderable.deleteWordForward(): boolean
++ @opentui/core: method InputRenderable.redo(): boolean
++ @opentui/core: method InputRenderable.undo(): boolean

@@ -1,0 +1,34 @@
+base 0.1.102
++ @opentui/core: const COLOR_TAG_DEFAULT = 257
++ @opentui/core: const COLOR_TAG_RGB = 256
++ @opentui/core: const DEFAULT_BACKGROUND_RGB: RGBTriplet
++ @opentui/core: const DEFAULT_FOREGROUND_RGB: RGBTriplet
++ @opentui/core: function ansi256IndexToRgb(index: number): RGBTriplet
++ @opentui/core: function buildTerminalPaletteSignature(colors?: TerminalColors | null): string
++ @opentui/core: function decodeColorTag(tag: number): { kind: ColorKind; index?: number; }
++ @opentui/core: function normalizeColorValue(value: ColorInput | null | undefined): NormalizedColorValue | null
++ @opentui/core: function normalizeIndexedColorIndex(index: number): number
++ @opentui/core: function normalizeTerminalPalette(colors?: TerminalColors | null): NormalizedTerminalPalette
++ @opentui/core: interface NormalizedColorValue
++ @opentui/core: interface NormalizedTerminalPalette
++ @opentui/core: static method RGBA.clone(rgba: RGBA): RGBA
++ @opentui/core: static method RGBA.defaultBackground(snapshot?: ColorInput): RGBA
++ @opentui/core: static method RGBA.defaultForeground(snapshot?: ColorInput): RGBA
++ @opentui/core: static method RGBA.fromIndex(index: number, snapshot?: ColorInput): RGBA
+- @opentui/core: static method RGBA.fromInts(r: number, g: number, b: number, a?: number): RGBA
++ @opentui/core: static method RGBA.fromInts(r: number, g: number, b: number, a?: number, tag?: number): RGBA
+- @opentui/core: static method RGBA.fromValues(r: number, g: number, b: number, a?: number): RGBA
++ @opentui/core: static method RGBA.fromValues(r: number, g: number, b: number, a?: number, tag?: number): RGBA
++ @opentui/core: static method RGBA.getIntentTag(rgba: RGBA): number
++ @opentui/core: property NormalizedColorValue.rgba: RGBA
++ @opentui/core: property NormalizedColorValue.tag: number
++ @opentui/core: property NormalizedTerminalPalette.defaultBackground: RGBA
++ @opentui/core: property NormalizedTerminalPalette.defaultForeground: RGBA
++ @opentui/core: property NormalizedTerminalPalette.palette: RGBA[]
++ @opentui/core: property RGBA.tag: number
++ @opentui/core: property RenderLib.bufferGetBgTagPtr: (buffer: Pointer) => Pointer
++ @opentui/core: property RenderLib.bufferGetFgTagPtr: (buffer: Pointer) => Pointer
++ @opentui/core: property RenderLib.queryThemeColors: (renderer: Pointer) => void
++ @opentui/core: property RenderLib.rendererSetPaletteState: (renderer: Pointer, palette: readonly RGBA[], defaultForeground: RGBA, defaultBackground: RGBA, paletteEpoch: number) => void
++ @opentui/core: type ColorKind = "rgb" | "indexed" | "default"
++ @opentui/core: type RGBTriplet = readonly [ number, number, number ]

@@ -1,0 +1,315 @@
+base 0.1.25
++ @opentui/core/testing: function createSpy(): { (...args: any[]): void; calls: any[][]; callCount(): number; calledWith(...expected: any[]): boolean; reset(): number; }
++ @opentui/core: class CodeRenderable extends TextBufferRenderable
++ @opentui/core: class DataPathsManager extends EventEmitter<DataPathsEvents>
++ @opentui/core: class InternalKeyHandler extends KeyHandler
++ @opentui/core: class KeyEvent implements ParsedKey
++ @opentui/core: class LinearScrollAccel implements ScrollAcceleration
++ @opentui/core: class MacOSScrollAccel implements ScrollAcceleration
++ @opentui/core: class PasteEvent
++ @opentui/core: abstract class TextBufferRenderable extends Renderable
+- @opentui/core: class TextRenderable extends Renderable
++ @opentui/core: class TextRenderable extends TextBufferRenderable
++ @opentui/core: class TreeSitterClient extends EventEmitter<TreeSitterClientEvents>
+- @opentui/core: const env: Record<string, string | number | boolean>
++ @opentui/core: const env: Record<string, any>
++ @opentui/core: constructor CodeRenderable(ctx: RenderContext, options: CodeOptions)
++ @opentui/core: constructor DataPathsManager()
++ @opentui/core: constructor InternalKeyHandler(stdin?: NodeJS.ReadStream, useKittyKeyboard?: boolean)
++ @opentui/core: constructor KeyEvent(key: ParsedKey)
++ @opentui/core: constructor MacOSScrollAccel(opts?: { A?: number; tau?: number; maxMultiplier?: number; })
++ @opentui/core: constructor PasteEvent(text: string)
+- @opentui/core: constructor ScrollBoxRenderable(ctx: RenderContext, { wrapperOptions, viewportOptions, contentOptions, rootOptions, scrollbarOptions, verticalScrollbarOptions, horizontalScrollbarOptions, stickyScroll, stickyStart, scrollX, scrollY, ...options }: ScrollBoxOptions)
++ @opentui/core: constructor ScrollBoxRenderable(ctx: RenderContext, { wrapperOptions, viewportOptions, contentOptions, rootOptions, scrollbarOptions, verticalScrollbarOptions, horizontalScrollbarOptions, stickyScroll, stickyStart, scrollX, scrollY, scrollAcceleration, ...options }: ScrollBoxOptions)
++ @opentui/core: constructor TextBufferRenderable(ctx: RenderContext, options: TextBufferOptions)
++ @opentui/core: constructor TreeSitterClient(options: TreeSitterClientOptions)
++ @opentui/core: function addDefaultParsers(parsers: FiletypeParserOptions[]): void
++ @opentui/core: function clearEnvCache(): void
++ @opentui/core: function convertThemeToStyles(theme: ThemeTokenStyle[]): Record<string, StyleDefinition>
++ @opentui/core: function extToFiletype(extension: string): string | undefined
++ @opentui/core: function getDataPaths(): DataPathsManager
++ @opentui/core: function getTreeSitterClient(): TreeSitterClient
++ @opentui/core: function pathToFiletype(path: string): string | undefined
++ @opentui/core: function treeSitterToStyledText(content: string, filetype: string, syntaxStyle: SyntaxStyle, client: TreeSitterClient): Promise<StyledText>
++ @opentui/core: function treeSitterToTextChunks(content: string, highlights: SimpleHighlight[], syntaxStyle: SyntaxStyle): TextChunk[]
++ @opentui/core: function updateAssets(options?: Partial<UpdateOptions>): Promise<void>
++ @opentui/core: interface BufferState
++ @opentui/core: interface CodeOptions extends TextBufferOptions
++ @opentui/core: interface DataPaths
++ @opentui/core: interface DataPathsEvents
++ @opentui/core: interface Edit
++ @opentui/core: interface FiletypeParserOptions
++ @opentui/core: interface HighlightRange
++ @opentui/core: interface HighlightResponse
++ @opentui/core: interface MergedStyle
++ @opentui/core: interface ParsedBuffer extends BufferState
++ @opentui/core: interface ParsedKey
++ @opentui/core: interface PerformanceStats
++ @opentui/core: interface ScrollAcceleration
++ @opentui/core: interface TextBufferOptions extends RenderableOptions<TextBufferRenderable>
+- @opentui/core: interface TextOptions extends RenderableOptions<TextRenderable>
++ @opentui/core: interface TextOptions extends TextBufferOptions
++ @opentui/core: interface ThemeTokenStyle
++ @opentui/core: interface TreeSitterClientEvents
++ @opentui/core: interface TreeSitterClientOptions
++ @opentui/core: interface UpdateOptions
++ @opentui/core: abstract method BaseRenderable.findDescendantById(id: string): BaseRenderable | undefined
++ @opentui/core: method DataPathsManager.toObject(): DataPaths
+- @opentui/core: method InputRenderable.handleKeyPress(key: ParsedKey | string): boolean
++ @opentui/core: method InputRenderable.handleKeyPress(key: KeyEvent | string): boolean
++ @opentui/core: method InternalKeyHandler.emit<K extends keyof KeyHandlerEventMap>(event: K, ...args: KeyHandlerEventMap[K]): boolean
++ @opentui/core: method InternalKeyHandler.offInternal<K extends keyof KeyHandlerEventMap>(event: K, handler: (...args: KeyHandlerEventMap[K]) => void): void
++ @opentui/core: method InternalKeyHandler.onInternal<K extends keyof KeyHandlerEventMap>(event: K, handler: (...args: KeyHandlerEventMap[K]) => void): void
++ @opentui/core: method KeyEvent.preventDefault(): void
++ @opentui/core: method LinearScrollAccel.reset(): void
++ @opentui/core: method LinearScrollAccel.tick(_now?: number): number
++ @opentui/core: method MacOSScrollAccel.reset(): void
++ @opentui/core: method MacOSScrollAccel.tick(now?: number): number
++ @opentui/core: method PasteEvent.preventDefault(): void
+- @opentui/core: method Renderable.handleKeyPress?(key: ParsedKey | string): boolean
++ @opentui/core: method Renderable.handleKeyPress?(key: KeyEvent | string): boolean
++ @opentui/core: method ScrollAcceleration.reset(): void
++ @opentui/core: method ScrollAcceleration.tick(now?: number): number
+- @opentui/core: method ScrollBarRenderable.handleKeyPress(key: ParsedKey | string): boolean
++ @opentui/core: method ScrollBarRenderable.handleKeyPress(key: KeyEvent | string): boolean
+- @opentui/core: method ScrollBoxRenderable.handleKeyPress(key: ParsedKey | string): boolean
++ @opentui/core: method ScrollBoxRenderable.handleKeyPress(key: KeyEvent | string): boolean
++ @opentui/core: method ScrollBoxRenderable.insertBefore(obj: Renderable | VNode<any, any[]> | unknown, anchor?: Renderable | unknown): number
+- @opentui/core: method SelectRenderable.handleKeyPress(key: ParsedKey | string): boolean
++ @opentui/core: method SelectRenderable.handleKeyPress(key: KeyEvent | string): boolean
+- @opentui/core: deprecated method StyledText.insert(chunk: TextChunk, index?: number): StyledText
+- @opentui/core: method StyledText.mount(textRenderable: TextRenderable): void
+- @opentui/core: deprecated method StyledText.remove(chunk: TextChunk): StyledText
+- @opentui/core: deprecated method StyledText.replace(chunk: TextChunk, oldChunk: TextChunk): StyledText
++ @opentui/core: static method SyntaxStyle.fromTheme(theme: ThemeTokenStyle[]): SyntaxStyle
++ @opentui/core: method SyntaxStyle.getStyle(name: string): StyleDefinition | undefined
+- @opentui/core: method TabSelectRenderable.handleKeyPress(key: ParsedKey | string): boolean
++ @opentui/core: method TabSelectRenderable.handleKeyPress(key: KeyEvent | string): boolean
++ @opentui/core: method TextBufferRenderable.destroy(): void
++ @opentui/core: method TextBufferRenderable.getSelectedText(): string
++ @opentui/core: method TextBufferRenderable.getSelection(): { start: number; end: number; } | null
++ @opentui/core: method TextBufferRenderable.hasSelection(): boolean
++ @opentui/core: method TextBufferRenderable.insertChunk(chunk: TextChunk, index?: number): void
++ @opentui/core: protected method TextBufferRenderable.onAttributesChanged(newAttributes: number): void
++ @opentui/core: protected method TextBufferRenderable.onBgChanged(newColor: RGBA): void
++ @opentui/core: protected method TextBufferRenderable.onFgChanged(newColor: RGBA): void
++ @opentui/core: protected method TextBufferRenderable.onResize(width: number, height: number): void
++ @opentui/core: method TextBufferRenderable.onSelectionChanged(selection: Selection | null): boolean
++ @opentui/core: protected method TextBufferRenderable.refreshLocalSelection(): boolean
++ @opentui/core: method TextBufferRenderable.removeChunk(index: number): void
++ @opentui/core: method TextBufferRenderable.render(buffer: OptimizedBuffer, deltaTime: number): void
++ @opentui/core: protected method TextBufferRenderable.renderSelf(buffer: OptimizedBuffer): void
++ @opentui/core: method TextBufferRenderable.replaceChunk(index: number, chunk: TextChunk): void
++ @opentui/core: method TextBufferRenderable.shouldStartSelection(x: number, y: number): boolean
++ @opentui/core: protected method TextBufferRenderable.updateTextInfo(): void
++ @opentui/core: method TextNodeRenderable.findDescendantById(id: string): BaseRenderable | undefined
+- @opentui/core: method TextRenderable.getSelectedText(): string
+- @opentui/core: method TextRenderable.getSelection(): { start: number; end: number; } | null
+- @opentui/core: method TextRenderable.hasSelection(): boolean
++ @opentui/core: protected method TextRenderable.onAttributesChanged(newAttributes: number): void
++ @opentui/core: protected method TextRenderable.onBgChanged(newColor: RGBA): void
++ @opentui/core: protected method TextRenderable.onFgChanged(newColor: RGBA): void
+- @opentui/core: protected method TextRenderable.onResize(width: number, height: number): void
+- @opentui/core: method TextRenderable.onSelectionChanged(selection: Selection | null): boolean
+- @opentui/core: method TextRenderable.removeChunk(chunk: TextChunk): void
++ @opentui/core: method TextRenderable.removeChunkByObject(chunk: TextChunk): void
+- @opentui/core: method TextRenderable.render(buffer: OptimizedBuffer, deltaTime: number): void
+- @opentui/core: protected method TextRenderable.renderSelf(buffer: OptimizedBuffer): void
+- @opentui/core: method TextRenderable.replaceChunk(chunk: TextChunk, oldChunk: TextChunk): void
++ @opentui/core: method TextRenderable.replaceChunkByObject(chunk: TextChunk, oldChunk: TextChunk): void
+- @opentui/core: method TextRenderable.shouldStartSelection(x: number, y: number): boolean
++ @opentui/core: method TreeSitterClient.addFiletypeParser(filetypeParser: FiletypeParserOptions): void
++ @opentui/core: method TreeSitterClient.createBuffer(id: number, content: string, filetype: string, version?: number, autoInitialize?: boolean): Promise<boolean>
++ @opentui/core: method TreeSitterClient.destroy(): Promise<void>
++ @opentui/core: method TreeSitterClient.getAllBuffers(): BufferState[]
++ @opentui/core: method TreeSitterClient.getBuffer(bufferId: number): BufferState | undefined
++ @opentui/core: method TreeSitterClient.getPerformance(): Promise<PerformanceStats>
++ @opentui/core: method TreeSitterClient.highlightOnce(content: string, filetype: string): Promise<{ highlights?: SimpleHighlight[]; warning?: string; error?: string; }>
++ @opentui/core: method TreeSitterClient.initialize(): Promise<void>
++ @opentui/core: method TreeSitterClient.isInitialized(): boolean
++ @opentui/core: method TreeSitterClient.preloadParser(filetype: string): Promise<boolean>
++ @opentui/core: method TreeSitterClient.removeBuffer(bufferId: number): Promise<void>
++ @opentui/core: method TreeSitterClient.resetBuffer(bufferId: number, version: number, content: string): Promise<void>
++ @opentui/core: method TreeSitterClient.setDataPath(dataPath: string): Promise<void>
++ @opentui/core: method TreeSitterClient.updateBuffer(id: number, edits: Edit[], newContent: string, version: number): Promise<void>
++ @opentui/core: property BufferState.content: string
++ @opentui/core: property BufferState.filetype: string
++ @opentui/core: property BufferState.hasParser: boolean
++ @opentui/core: property BufferState.id: number
++ @opentui/core: property BufferState.version: number
++ @opentui/core: readonly property CliRenderer.isDestroyed: boolean
++ @opentui/core: property CodeOptions.content?: string
++ @opentui/core: property CodeOptions.filetype?: string
++ @opentui/core: property CodeOptions.syntaxStyle: SyntaxStyle
++ @opentui/core: property CodeOptions.treeSitterClient?: TreeSitterClient
++ @opentui/core: protected property CodeRenderable._contentDefaultOptions: { content: string; }
++ @opentui/core: property CodeRenderable.content: string
++ @opentui/core: property CodeRenderable.filetype: string | undefined
++ @opentui/core: property CodeRenderable.syntaxStyle: SyntaxStyle
++ @opentui/core: property DataPaths.globalConfigFile: string
++ @opentui/core: property DataPaths.globalConfigPath: string
++ @opentui/core: property DataPaths.globalDataPath: string
++ @opentui/core: property DataPaths.localConfigFile: string
++ @opentui/core: property DataPathsEvents."paths:changed": [ paths: DataPaths ]
++ @opentui/core: property DataPathsManager.appName: string
++ @opentui/core: readonly property DataPathsManager.globalConfigFile: string
++ @opentui/core: readonly property DataPathsManager.globalConfigPath: string
++ @opentui/core: readonly property DataPathsManager.globalDataPath: string
++ @opentui/core: readonly property DataPathsManager.localConfigFile: string
++ @opentui/core: property Edit.newEndIndex: number
++ @opentui/core: property Edit.newEndPosition: { row: number; column: number; }
++ @opentui/core: property Edit.oldEndIndex: number
++ @opentui/core: property Edit.oldEndPosition: { row: number; column: number; }
++ @opentui/core: property Edit.startIndex: number
++ @opentui/core: property Edit.startPosition: { row: number; column: number; }
++ @opentui/core: property FiletypeParserOptions.filetype: string
++ @opentui/core: property FiletypeParserOptions.queries: { highlights: string[]; }
++ @opentui/core: property FiletypeParserOptions.wasm: string
++ @opentui/core: property HighlightRange.endCol: number
++ @opentui/core: property HighlightRange.group: string
++ @opentui/core: property HighlightRange.startCol: number
++ @opentui/core: property HighlightResponse.droppedHighlights: HighlightRange[]
++ @opentui/core: property HighlightResponse.highlights: HighlightRange[]
++ @opentui/core: property HighlightResponse.line: number
++ @opentui/core: property KeyEvent.baseCode?: number
++ @opentui/core: property KeyEvent.capsLock?: boolean
++ @opentui/core: property KeyEvent.code?: string
++ @opentui/core: property KeyEvent.ctrl: boolean
++ @opentui/core: readonly property KeyEvent.defaultPrevented: boolean
++ @opentui/core: property KeyEvent.eventType: KeyEventType
++ @opentui/core: property KeyEvent.hyper?: boolean
++ @opentui/core: property KeyEvent.meta: boolean
++ @opentui/core: property KeyEvent.name: string
++ @opentui/core: property KeyEvent.numLock?: boolean
++ @opentui/core: property KeyEvent.number: boolean
++ @opentui/core: property KeyEvent.option: boolean
++ @opentui/core: property KeyEvent.raw: string
++ @opentui/core: property KeyEvent.sequence: string
++ @opentui/core: property KeyEvent.shift: boolean
++ @opentui/core: property KeyEvent.super?: boolean
++ @opentui/core: protected property KeyHandler.listener: (key: Buffer) => void
++ @opentui/core: protected property KeyHandler.pasteBuffer: string[]
++ @opentui/core: protected property KeyHandler.pasteMode: boolean
++ @opentui/core: protected property KeyHandler.stdin: NodeJS.ReadStream
++ @opentui/core: protected property KeyHandler.useKittyKeyboard: boolean
++ @opentui/core: property MergedStyle.attributes: number
++ @opentui/core: property MergedStyle.bg?: RGBA
++ @opentui/core: property MergedStyle.fg?: RGBA
++ @opentui/core: property ParsedBuffer.hasParser: true
++ @opentui/core: property ParsedKey.baseCode?: number
++ @opentui/core: property ParsedKey.capsLock?: boolean
++ @opentui/core: property ParsedKey.code?: string
++ @opentui/core: property ParsedKey.ctrl: boolean
++ @opentui/core: property ParsedKey.eventType: KeyEventType
++ @opentui/core: property ParsedKey.hyper?: boolean
++ @opentui/core: property ParsedKey.meta: boolean
++ @opentui/core: property ParsedKey.name: string
++ @opentui/core: property ParsedKey.numLock?: boolean
++ @opentui/core: property ParsedKey.number: boolean
++ @opentui/core: property ParsedKey.option: boolean
++ @opentui/core: property ParsedKey.raw: string
++ @opentui/core: property ParsedKey.sequence: string
++ @opentui/core: property ParsedKey.shift: boolean
++ @opentui/core: property ParsedKey.super?: boolean
++ @opentui/core: readonly property PasteEvent.defaultPrevented: boolean
++ @opentui/core: property PasteEvent.text: string
++ @opentui/core: property PerformanceStats.averageParseTime: number
++ @opentui/core: property PerformanceStats.averageQueryTime: number
++ @opentui/core: property PerformanceStats.parseTimes: number[]
++ @opentui/core: property PerformanceStats.queryTimes: number[]
+- @opentui/core: protected property Renderable.keypressHandler: ((key: ParsedKey) => void) | null
++ @opentui/core: protected property Renderable.keypressHandler: ((key: KeyEvent) => void) | null
+- @opentui/core: property Renderable.onKeyDown: ((key: ParsedKey) => void) | undefined
++ @opentui/core: property Renderable.onKeyDown: ((key: KeyEvent) => void) | undefined
+- @opentui/core: protected property Renderable.pasteHandler: ((text: string) => void) | null
++ @opentui/core: protected property Renderable.pasteHandler: ((event: PasteEvent) => void) | null
+- @opentui/core: property RenderableOptions.onKeyDown?: (key: ParsedKey) => void
++ @opentui/core: property RenderableOptions.onKeyDown?: (key: KeyEvent) => void
++ @opentui/core: property ScrollBoxOptions.scrollAcceleration?: ScrollAcceleration
+- @opentui/core: property StyledText.textRenderable?: TextRenderable
++ @opentui/core: property TextBufferOptions.attributes?: number
++ @opentui/core: property TextBufferOptions.bg?: string | RGBA
++ @opentui/core: property TextBufferOptions.fg?: string | RGBA
++ @opentui/core: property TextBufferOptions.selectable?: boolean
++ @opentui/core: property TextBufferOptions.selectionBg?: string | RGBA
++ @opentui/core: property TextBufferOptions.selectionFg?: string | RGBA
++ @opentui/core: property TextBufferOptions.wrap?: boolean
++ @opentui/core: property TextBufferOptions.wrapMode?: "char" | "word"
++ @opentui/core: protected property TextBufferRenderable._defaultAttributes: number
++ @opentui/core: protected property TextBufferRenderable._defaultBg: RGBA
++ @opentui/core: protected property TextBufferRenderable._defaultFg: RGBA
++ @opentui/core: protected property TextBufferRenderable._defaultOptions: { fg: RGBA; bg: RGBA; selectionBg: undefined; selectionFg: undefined; selectable: true; attributes: number; wrap: true; wrapMode: "char" | "word"; }
++ @opentui/core: protected property TextBufferRenderable._lineInfo: LineInfo
++ @opentui/core: protected property TextBufferRenderable._selectionBg: RGBA | undefined
++ @opentui/core: protected property TextBufferRenderable._selectionFg: RGBA | undefined
++ @opentui/core: protected property TextBufferRenderable._wrap: boolean
++ @opentui/core: protected property TextBufferRenderable._wrapMode: "char" | "word"
++ @opentui/core: property TextBufferRenderable.attributes: number
++ @opentui/core: property TextBufferRenderable.bg: RGBA
++ @opentui/core: property TextBufferRenderable.fg: RGBA
++ @opentui/core: protected property TextBufferRenderable.lastLocalSelection: LocalSelectionBounds | null
++ @opentui/core: readonly property TextBufferRenderable.plainText: string
++ @opentui/core: property TextBufferRenderable.selectable: boolean
++ @opentui/core: property TextBufferRenderable.selectionBg: RGBA | undefined
++ @opentui/core: property TextBufferRenderable.selectionFg: RGBA | undefined
++ @opentui/core: protected property TextBufferRenderable.textBuffer: TextBuffer
++ @opentui/core: readonly property TextBufferRenderable.textLength: number
++ @opentui/core: property TextBufferRenderable.wrap: boolean
++ @opentui/core: property TextBufferRenderable.wrapMode: "char" | "word"
+- @opentui/core: property TextOptions.attributes?: number
+- @opentui/core: property TextOptions.bg?: string | RGBA
+- @opentui/core: property TextOptions.fg?: string | RGBA
+- @opentui/core: property TextOptions.selectable?: boolean
+- @opentui/core: property TextOptions.selectionBg?: string | RGBA
+- @opentui/core: property TextOptions.selectionFg?: string | RGBA
+- @opentui/core: property TextOptions.wrap?: boolean
+- @opentui/core: property TextOptions.wrapMode?: "char" | "word"
++ @opentui/core: protected property TextRenderable._contentDefaultOptions: { content: string; }
+- @opentui/core: protected property TextRenderable._defaultOptions: { content: string; fg: RGBA; bg: RGBA; selectionBg: undefined; selectionFg: undefined; selectable: true; attributes: number; wrap: true; wrapMode: "char" | "word"; }
+- @opentui/core: property TextRenderable.attributes: number
+- @opentui/core: property TextRenderable.bg: RGBA
+- @opentui/core: property TextRenderable.fg: RGBA
+- @opentui/core: readonly property TextRenderable.plainText: string
+- @opentui/core: property TextRenderable.selectable: boolean
+- @opentui/core: property TextRenderable.selectionBg: RGBA | undefined
+- @opentui/core: property TextRenderable.selectionFg: RGBA | undefined
+- @opentui/core: readonly property TextRenderable.textLength: number
+- @opentui/core: property TextRenderable.wrap: boolean
+- @opentui/core: property TextRenderable.wrapMode: "char" | "word"
++ @opentui/core: property ThemeTokenStyle.scope: string[]
++ @opentui/core: property ThemeTokenStyle.style: { foreground?: ColorInput; background?: ColorInput; bold?: boolean; italic?: boolean; underline?: boolean; dim?: boolean; }
++ @opentui/core: property TreeSitterClientEvents."buffer:disposed": [ bufferId: number ]
++ @opentui/core: property TreeSitterClientEvents."buffer:initialized": [ bufferId: number, hasParser: boolean ]
++ @opentui/core: property TreeSitterClientEvents."highlights:response": [ bufferId: number, version: number, highlights: HighlightResponse[] ]
++ @opentui/core: property TreeSitterClientEvents."worker:log": [ logType: "log" | "error", message: string ]
++ @opentui/core: property TreeSitterClientEvents.error: [ error: string, bufferId?: number ]
++ @opentui/core: property TreeSitterClientEvents.warning: [ warning: string, bufferId?: number ]
++ @opentui/core: property TreeSitterClientOptions.dataPath: string
++ @opentui/core: property TreeSitterClientOptions.initTimeout?: number
++ @opentui/core: property TreeSitterClientOptions.workerPath?: string | URL
++ @opentui/core: property UpdateOptions.assetsDir: string
++ @opentui/core: property UpdateOptions.configPath: string
++ @opentui/core: property UpdateOptions.outputPath: string
++ @opentui/core: type KeyHandlerEventMap = { keypress: [ KeyEvent ]; keyrepeat: [ KeyEvent ]; keyrelease: [ KeyEvent ]; paste: [ PasteEvent ]; }
+- @opentui/core: type ParsedKey = { name: string; ctrl: boolean; meta: boolean; shift: boolean; option: boolean; sequence: string; number: boolean; raw: string; eventType: KeyEventType; code?: string; super?: boolean; hyper?: boolean; capsLock?: boolean; numLock?: boolean; baseCode?: number; }
++ @opentui/core: type SimpleHighlight = [ number, number, string ]
+- @opentui/react: const useKeyboard: (handler: (key: ParsedKey) => void) => void
++ @opentui/react: const useKeyboard: (handler: (key: KeyEvent) => void) => void
++ @opentui/react: const useTimeline: (options?: TimelineOptions) => Timeline
++ @opentui/solid/jsx-dev-runtime: property JSX.IntrinsicElements.code: CodeProps
++ @opentui/solid/jsx-runtime: property JSX.IntrinsicElements.code: CodeProps
+- @opentui/solid: const baseComponents: { box: typeof BoxRenderable; text: typeof TextRenderable; input: typeof InputRenderable; select: typeof SelectRenderable; ascii_font: typeof ASCIIFontRenderable; tab_select: typeof TabSelectRenderable; scrollbox: typeof ScrollBoxRenderable; span: typeof SpanRenderable; strong: typeof BoldSpanRenderable; b: typeof BoldSpanRenderable; em: typeof ItalicSpanRenderable; i: typeof ItalicSpanRenderable; u: typeof UnderlineSpanRenderable; br: typeof LineBreakRenderable; }
++ @opentui/solid: const baseComponents: { box: typeof BoxRenderable; text: typeof TextRenderable; input: typeof InputRenderable; select: typeof SelectRenderable; ascii_font: typeof ASCIIFontRenderable; tab_select: typeof TabSelectRenderable; scrollbox: typeof ScrollBoxRenderable; code: typeof CodeRenderable; span: typeof SpanRenderable; strong: typeof BoldSpanRenderable; b: typeof BoldSpanRenderable; em: typeof ItalicSpanRenderable; i: typeof ItalicSpanRenderable; u: typeof UnderlineSpanRenderable; br: typeof LineBreakRenderable; }
+- @opentui/solid: const createComponentTimeline: (options?: TimelineOptions) => Timeline
+- @opentui/solid: deprecated const useKeyHandler: (callback: (key: ParsedKey) => void) => void
++ @opentui/solid: deprecated const useKeyHandler: (callback: (key: KeyEvent) => void) => void
+- @opentui/solid: const useKeyboard: (callback: (key: ParsedKey) => void) => void
++ @opentui/solid: const useKeyboard: (callback: (key: KeyEvent) => void) => void
+- @opentui/solid: const usePaste: (callback: (text: string) => void) => void
++ @opentui/solid: const usePaste: (callback: (event: PasteEvent) => void) => void
+- @opentui/solid: const useTimeline: <T extends Record<string, number>>(timeline: Timeline, initialValue: T, targetValue: T, options: AnimationOptions & { onUpdate?: (values: JSAnimation & { targets: T[]; }) => void; }, startTime?: number | string) => Accessor<T>
++ @opentui/solid: const useTimeline: (options?: TimelineOptions) => Timeline
++ @opentui/solid: property JSX.IntrinsicElements.code: CodeProps
++ @opentui/solid: type CodeProps = ComponentProps<CodeOptions, CodeRenderable>
+- @opentui/solid: type GetNonStyledProperties<TConstructor> = TConstructor extends RenderableConstructor<TextRenderable> ? NonStyledProps | "content" : TConstructor extends RenderableConstructor<BoxRenderable> ? NonStyledProps | "title" : TConstructor extends RenderableConstructor<ASCIIFontRenderable> ? NonStyledProps | "text" | "selectable" : TConstructor extends RenderableConstructor<InputRenderable> ? NonStyledProps | "placeholder" | "value" : NonStyledProps
++ @opentui/solid: type GetNonStyledProperties<TConstructor> = TConstructor extends RenderableConstructor<TextRenderable> ? NonStyledProps | "content" : TConstructor extends RenderableConstructor<BoxRenderable> ? NonStyledProps | "title" : TConstructor extends RenderableConstructor<ASCIIFontRenderable> ? NonStyledProps | "text" | "selectable" : TConstructor extends RenderableConstructor<InputRenderable> ? NonStyledProps | "placeholder" | "value" : TConstructor extends RenderableConstructor<CodeRenderable> ? NonStyledProps | "content" | "filetype" | "syntaxStyle" | "treeSitterClient" : NonStyledProps

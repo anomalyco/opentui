@@ -1,0 +1,3 @@
+base 0.1.35
+- @opentui/solid: type TextareaProps = ComponentProps<TextareaOptions, TextareaRenderable> & { focused?: boolean; onSubmit?: () => void; onContentChange?: (value: string) => void; onCursorChange?: (value: { line: number; visualColumn: number; }) => void; onKeyDown?: (event: KeyboardEvent) => void; onKeyPress?: (event: KeyboardEvent) => void; }
++ @opentui/solid: type TextareaProps = ComponentProps<TextareaOptions, TextareaRenderable> & { focused?: boolean; onSubmit?: () => void; onContentChange?: (value: string) => void; onCursorChange?: (value: { line: number; visualColumn: number; }) => void; onKeyDown?: (event: KeyEvent) => void; onKeyPress?: (event: KeyEvent) => void; }

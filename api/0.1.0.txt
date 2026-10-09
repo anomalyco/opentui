@@ -1,0 +1,1050 @@
+base none
++ @opentui/core/3d: class CLICanvas
++ @opentui/core/3d: class ExplodingSpriteEffect
++ @opentui/core/3d: class ExplosionManager
++ @opentui/core/3d: class InstanceManager
++ @opentui/core/3d: class MeshPool
++ @opentui/core/3d: class PhysicsExplodingSpriteEffect
++ @opentui/core/3d: class PhysicsExplosionManager
++ @opentui/core/3d: class PlanckPhysicsWorld implements PhysicsWorld
++ @opentui/core/3d: class PlanckRigidBody implements PhysicsRigidBody
++ @opentui/core/3d: class RapierPhysicsWorld implements PhysicsWorld
++ @opentui/core/3d: class RapierRigidBody implements PhysicsRigidBody
++ @opentui/core/3d: class SheetSprite extends Sprite
++ @opentui/core/3d: class SpriteAnimator
++ @opentui/core/3d: class SpriteParticleGenerator
++ @opentui/core/3d: class SpriteResource
++ @opentui/core/3d: class SpriteResourceManager
++ @opentui/core/3d: class SpriteUtils
++ @opentui/core/3d: class TextureUtils
++ @opentui/core/3d: class ThreeCliRenderer
++ @opentui/core/3d: class TiledSprite
++ @opentui/core/3d: const DEFAULT_EXPLOSION_PARAMETERS: ExplosionEffectParameters
++ @opentui/core/3d: const DEFAULT_PHYSICS_EXPLOSION_PARAMETERS: PhysicsExplosionEffectParameters
++ @opentui/core/3d: constructor CLICanvas(device: GPUDevice, width: number, height: number, superSample: SuperSampleType, sampleAlgo?: SuperSampleAlgorithm)
++ @opentui/core/3d: constructor ExplodingSpriteEffect(scene: THREE.Scene, resource: SpriteResource, frameUvOffset: THREE.Vector2, frameUvSize: THREE.Vector2, spriteWorldTransform: THREE.Matrix4, userParams?: Partial<ExplosionEffectParameters>)
++ @opentui/core/3d: constructor ExplosionManager(scene: THREE.Scene)
++ @opentui/core/3d: constructor InstanceManager(scene: Scene, geometry: THREE.BufferGeometry, material: THREE.Material, options: InstanceManagerOptions)
++ @opentui/core/3d: constructor PhysicsExplodingSpriteEffect(scene: THREE.Scene, physicsWorld: PhysicsWorld, resource: SpriteResource, frameUvOffset: THREE.Vector2, frameUvSize: THREE.Vector2, spriteWorldTransform: THREE.Matrix4, userParams?: Partial<PhysicsExplosionEffectParameters>)
++ @opentui/core/3d: constructor PhysicsExplosionManager(scene: THREE.Scene, physicsWorld: PhysicsWorld)
++ @opentui/core/3d: constructor PlanckPhysicsWorld(planckWorld: planck.World)
++ @opentui/core/3d: constructor PlanckRigidBody(planckBody: planck.Body)
++ @opentui/core/3d: constructor RapierPhysicsWorld(rapierWorld: RAPIER.World)
++ @opentui/core/3d: constructor RapierRigidBody(rapierBody: RAPIER.RigidBody)
++ @opentui/core/3d: constructor SheetSprite(material: SpriteMaterial, numFrames: number)
++ @opentui/core/3d: constructor SpriteAnimator(scene: Scene)
++ @opentui/core/3d: constructor SpriteParticleGenerator(scene: THREE.Scene, initialBaseConfig: ParticleEffectParameters)
++ @opentui/core/3d: constructor SpriteResource(texture: THREE.DataTexture, sheetProperties: SheetProperties, scene: Scene)
++ @opentui/core/3d: constructor SpriteResourceManager(scene: Scene)
++ @opentui/core/3d: constructor ThreeCliRenderer(cliRenderer: CliRenderer, options: ThreeCliRendererOptions)
++ @opentui/core/3d: constructor TiledSprite(id: string, userSpriteDefinition: SpriteDefinition, animator: SpriteAnimator, animationInstanceParams: Array<{ name: string; state: ResolvedAnimationState; resource: SpriteResource; index: number; instanceManager: InstanceManager; frameAttribute: THREE.InstancedBufferAttribute; flipAttribute: THREE.InstancedBufferAttribute; }>)
++ @opentui/core/3d: enum SuperSampleAlgorithm
++ @opentui/core/3d: enum SuperSampleType
++ @opentui/core/3d: enum-member SuperSampleAlgorithm.PRE_SQUEEZED = 1
++ @opentui/core/3d: enum-member SuperSampleAlgorithm.STANDARD = 0
++ @opentui/core/3d: enum-member SuperSampleType.CPU = "cpu"
++ @opentui/core/3d: enum-member SuperSampleType.GPU = "gpu"
++ @opentui/core/3d: enum-member SuperSampleType.NONE = "none"
++ @opentui/core/3d: interface AnimationDefinition
++ @opentui/core/3d: interface AnimationStateConfig
++ @opentui/core/3d: interface ExplosionCreationData
++ @opentui/core/3d: interface ExplosionEffectParameters
++ @opentui/core/3d: interface ExplosionHandle
++ @opentui/core/3d: interface InstanceManagerOptions
++ @opentui/core/3d: interface MeshPoolOptions
++ @opentui/core/3d: interface ParticleEffectParameters
++ @opentui/core/3d: interface PhysicsExplosionCreationData
++ @opentui/core/3d: interface PhysicsExplosionEffectParameters
++ @opentui/core/3d: interface PhysicsExplosionHandle
++ @opentui/core/3d: interface PhysicsSpriteRecreationData
++ @opentui/core/3d: interface ResourceConfig
++ @opentui/core/3d: interface SheetProperties
++ @opentui/core/3d: interface SpriteDefinition
++ @opentui/core/3d: interface SpriteRecreationData
++ @opentui/core/3d: interface ThreeCliRendererOptions
++ @opentui/core/3d: method CLICanvas.addEventListener(event: string, listener: any, options?: any): void
++ @opentui/core/3d: method CLICanvas.dispatchEvent(event: Event): void
++ @opentui/core/3d: method CLICanvas.getContext(type: string, attrs?: WebGLContextAttributes): GPUCanvasContextMock
++ @opentui/core/3d: method CLICanvas.getSuperSampleAlgorithm(): SuperSampleAlgorithm
++ @opentui/core/3d: method CLICanvas.readPixelsIntoBuffer(buffer: OptimizedBuffer): Promise<void>
++ @opentui/core/3d: method CLICanvas.removeEventListener(event: string, listener: any, options?: any): void
++ @opentui/core/3d: method CLICanvas.saveToFile(filePath: string): Promise<void>
++ @opentui/core/3d: method CLICanvas.setSize(width: number, height: number): void
++ @opentui/core/3d: method CLICanvas.setSuperSample(superSample: SuperSampleType): void
++ @opentui/core/3d: method CLICanvas.setSuperSampleAlgorithm(superSampleAlgorithm: SuperSampleAlgorithm): void
++ @opentui/core/3d: method ExplodingSpriteEffect.dispose(): void
++ @opentui/core/3d: method ExplodingSpriteEffect.update(deltaTimeMs: number): void
++ @opentui/core/3d: method ExplosionManager.createExplosionForSprite(spriteToExplode: TiledSprite, userParams?: Partial<ExplosionEffectParameters>): ExplosionHandle | null
++ @opentui/core/3d: method ExplosionManager.disposeAll(): void
++ @opentui/core/3d: method ExplosionManager.fillPool(resource: SpriteResource, count: number, params?: Partial<ExplosionEffectParameters>): void
++ @opentui/core/3d: method ExplosionManager.update(deltaTimeMs: number): void
++ @opentui/core/3d: method InstanceManager.acquireInstanceSlot(): number
++ @opentui/core/3d: method InstanceManager.dispose(): void
++ @opentui/core/3d: method InstanceManager.getInstanceCount(): number
++ @opentui/core/3d: method InstanceManager.getMaxInstances(): number
++ @opentui/core/3d: method InstanceManager.releaseInstanceSlot(instanceIndex: number): void
++ @opentui/core/3d: method MeshPool.acquireMesh(poolId: string, options: MeshPoolOptions): THREE.InstancedMesh
++ @opentui/core/3d: method MeshPool.clearAllPools(): void
++ @opentui/core/3d: method MeshPool.clearPool(poolId: string): void
++ @opentui/core/3d: method MeshPool.fill(poolId: string, options: MeshPoolOptions, count: number): void
++ @opentui/core/3d: method MeshPool.releaseMesh(poolId: string, mesh: THREE.InstancedMesh): void
++ @opentui/core/3d: method PhysicsExplodingSpriteEffect.dispose(): void
++ @opentui/core/3d: static method PhysicsExplodingSpriteEffect.getSharedMaterial(texture: THREE.DataTexture, materialFactory: () => NodeMaterial): NodeMaterial
++ @opentui/core/3d: method PhysicsExplodingSpriteEffect.update(deltaTimeMs: number): void
++ @opentui/core/3d: method PhysicsExplosionManager.createExplosionForSprite(spriteToExplode: TiledSprite, userParams?: Partial<PhysicsExplosionEffectParameters>): Promise<PhysicsExplosionHandle | null>
++ @opentui/core/3d: method PhysicsExplosionManager.disposeAll(): void
++ @opentui/core/3d: method PhysicsExplosionManager.fillPool(resource: SpriteResource, count: number, params?: Partial<PhysicsExplosionEffectParameters>): void
++ @opentui/core/3d: method PhysicsExplosionManager.update(deltaTimeMs: number): void
++ @opentui/core/3d: method PlanckPhysicsWorld.createCollider(colliderDesc: PhysicsColliderDesc, rigidBody: PhysicsRigidBody): void
++ @opentui/core/3d: static method PlanckPhysicsWorld.createFromPlanckWorld(planckWorld: planck.World): PlanckPhysicsWorld
++ @opentui/core/3d: method PlanckPhysicsWorld.createRigidBody(desc: PhysicsRigidBodyDesc): PhysicsRigidBody
++ @opentui/core/3d: method PlanckPhysicsWorld.removeRigidBody(rigidBody: PhysicsRigidBody): void
++ @opentui/core/3d: method PlanckRigidBody.applyImpulse(force: PhysicsVector2): void
++ @opentui/core/3d: method PlanckRigidBody.applyTorqueImpulse(torque: number): void
++ @opentui/core/3d: method PlanckRigidBody.getRotation(): number
++ @opentui/core/3d: method PlanckRigidBody.getTranslation(): PhysicsVector2
++ @opentui/core/3d: method RapierPhysicsWorld.createCollider(colliderDesc: PhysicsColliderDesc, rigidBody: PhysicsRigidBody): void
++ @opentui/core/3d: static method RapierPhysicsWorld.createFromRapierWorld(rapierWorld: RAPIER.World): RapierPhysicsWorld
++ @opentui/core/3d: method RapierPhysicsWorld.createRigidBody(desc: PhysicsRigidBodyDesc): PhysicsRigidBody
++ @opentui/core/3d: method RapierPhysicsWorld.removeRigidBody(rigidBody: PhysicsRigidBody): void
++ @opentui/core/3d: method RapierRigidBody.applyImpulse(force: PhysicsVector2): void
++ @opentui/core/3d: method RapierRigidBody.applyTorqueImpulse(torque: number): void
++ @opentui/core/3d: method RapierRigidBody.getRotation(): number
++ @opentui/core/3d: method RapierRigidBody.getTranslation(): PhysicsVector2
++ @opentui/core/3d: method SpriteAnimator.createSprite(userSpriteDefinition: SpriteDefinition, materialFactory?: () => NodeMaterial): Promise<TiledSprite>
++ @opentui/core/3d: method SpriteAnimator.removeAllSprites(): void
++ @opentui/core/3d: method SpriteAnimator.removeSprite(id: string): void
++ @opentui/core/3d: method SpriteAnimator.update(deltaTime: number): void
++ @opentui/core/3d: method SpriteParticleGenerator.dispose(): void
++ @opentui/core/3d: method SpriteParticleGenerator.getActiveParticleCount(): number
++ @opentui/core/3d: method SpriteParticleGenerator.hasAutoSpawn(): boolean
++ @opentui/core/3d: method SpriteParticleGenerator.setAutoSpawn(ratePerSecond: number, autoSpawnParamOverrides?: Partial<ParticleEffectParameters>): void
++ @opentui/core/3d: method SpriteParticleGenerator.spawnParticles(count: number, overrides?: Partial<ParticleEffectParameters>): Promise<void>
++ @opentui/core/3d: method SpriteParticleGenerator.stopAutoSpawn(): void
++ @opentui/core/3d: method SpriteParticleGenerator.update(deltaTimeMs: number): Promise<void>
++ @opentui/core/3d: method SpriteResource.createInstanceManager(geometry: THREE.BufferGeometry, material: THREE.Material, options: InstanceManagerOptions): InstanceManager
++ @opentui/core/3d: method SpriteResource.dispose(): void
++ @opentui/core/3d: method SpriteResourceManager.clearCache(): void
++ @opentui/core/3d: method SpriteResourceManager.createResource(config: ResourceConfig): Promise<SpriteResource>
++ @opentui/core/3d: method SpriteResourceManager.getOrCreateResource(texture: THREE.DataTexture, sheetProps: SheetProperties): Promise<SpriteResource>
++ @opentui/core/3d: static method SpriteUtils.fromFile(path: string, { materialParameters, }?: { materialParameters?: Omit<SpriteMaterialParameters, "map">; }): Promise<Sprite>
++ @opentui/core/3d: static method SpriteUtils.sheetFromFile(path: string, numFrames: number): Promise<SheetSprite>
++ @opentui/core/3d: static method TextureUtils.createCheckerboard(size?: number, color1?: Color, color2?: Color, checkSize?: number): Texture
++ @opentui/core/3d: static method TextureUtils.createGradient(size?: number, startColor?: Color, endColor?: Color, direction?: "horizontal" | "vertical" | "radial"): Texture
++ @opentui/core/3d: static method TextureUtils.createNoise(size?: number, scale?: number, octaves?: number, color1?: Color, color2?: Color): Texture
++ @opentui/core/3d: static method TextureUtils.fromFile(path: string): Promise<DataTexture | null>
++ @opentui/core/3d: static method TextureUtils.loadTextureFromFile(path: string): Promise<DataTexture | null>
++ @opentui/core/3d: method ThreeCliRenderer.destroy(): void
++ @opentui/core/3d: method ThreeCliRenderer.doDrawScene(root: Scene, camera: PerspectiveCamera | OrthographicCamera, buffer: OptimizedBuffer, deltaTime: number): Promise<void>
++ @opentui/core/3d: method ThreeCliRenderer.drawScene(root: Scene, buffer: OptimizedBuffer, deltaTime: number): Promise<void>
++ @opentui/core/3d: method ThreeCliRenderer.getActiveCamera(): PerspectiveCamera | OrthographicCamera
++ @opentui/core/3d: method ThreeCliRenderer.getSuperSampleAlgorithm(): SuperSampleAlgorithm
++ @opentui/core/3d: method ThreeCliRenderer.init(): Promise<void>
++ @opentui/core/3d: method ThreeCliRenderer.renderStats(buffer: OptimizedBuffer): void
++ @opentui/core/3d: method ThreeCliRenderer.saveToFile(filePath: string): Promise<void>
++ @opentui/core/3d: method ThreeCliRenderer.setActiveCamera(camera: PerspectiveCamera | OrthographicCamera): void
++ @opentui/core/3d: method ThreeCliRenderer.setBackgroundColor(color: RGBA): void
++ @opentui/core/3d: method ThreeCliRenderer.setSize(width: number, height: number, forceUpdate?: boolean): void
++ @opentui/core/3d: method ThreeCliRenderer.setSuperSampleAlgorithm(superSampleAlgorithm: SuperSampleAlgorithm): void
++ @opentui/core/3d: method ThreeCliRenderer.toggleDebugStats(): void
++ @opentui/core/3d: method ThreeCliRenderer.toggleSuperSampling(): void
++ @opentui/core/3d: method TiledSprite.destroy(): void
++ @opentui/core/3d: method TiledSprite.getCurrentAnimationName(): string
++ @opentui/core/3d: method TiledSprite.getScale(): THREE.Vector3
++ @opentui/core/3d: method TiledSprite.getWorldPlaneSize(): THREE.Vector2
++ @opentui/core/3d: method TiledSprite.getWorldTransform(): THREE.Matrix4
++ @opentui/core/3d: method TiledSprite.goToFrame(frame: number): void
++ @opentui/core/3d: method TiledSprite.isPlaying(): boolean
++ @opentui/core/3d: method TiledSprite.play(): void
++ @opentui/core/3d: method TiledSprite.setAnimation(animationName: string): Promise<void>
++ @opentui/core/3d: method TiledSprite.setFrameDuration(newFrameDuration: number): void
++ @opentui/core/3d: method TiledSprite.setPosition(position: THREE.Vector3): void
++ @opentui/core/3d: method TiledSprite.setRotation(rotation: THREE.Quaternion): void
++ @opentui/core/3d: method TiledSprite.setScale(scale: THREE.Vector3): void
++ @opentui/core/3d: method TiledSprite.setTransform(position: THREE.Vector3, rotation: THREE.Quaternion, newScale: THREE.Vector3): void
++ @opentui/core/3d: method TiledSprite.stop(): void
++ @opentui/core/3d: method TiledSprite.update(deltaTime: number): void
++ @opentui/core/3d: namespace THREE from "three"
++ @opentui/core/3d: property AnimationDefinition.animFrameOffset?: number
++ @opentui/core/3d: property AnimationDefinition.animNumFrames?: number
++ @opentui/core/3d: property AnimationDefinition.flipX?: boolean
++ @opentui/core/3d: property AnimationDefinition.flipY?: boolean
++ @opentui/core/3d: property AnimationDefinition.frameDuration?: number
++ @opentui/core/3d: property AnimationDefinition.initialFrame?: number
++ @opentui/core/3d: property AnimationDefinition.loop?: boolean
++ @opentui/core/3d: property AnimationDefinition.resource: SpriteResource
++ @opentui/core/3d: property AnimationStateConfig.animFrameOffset: number
++ @opentui/core/3d: property AnimationStateConfig.animNumFrames: number
++ @opentui/core/3d: property AnimationStateConfig.flipX?: boolean
++ @opentui/core/3d: property AnimationStateConfig.flipY?: boolean
++ @opentui/core/3d: property AnimationStateConfig.frameDuration?: number
++ @opentui/core/3d: property AnimationStateConfig.imagePath: string
++ @opentui/core/3d: property AnimationStateConfig.initialFrame?: number
++ @opentui/core/3d: property AnimationStateConfig.loop?: boolean
++ @opentui/core/3d: property AnimationStateConfig.sheetNumFrames: number
++ @opentui/core/3d: property CLICanvas.mapAsyncTimeMs: number
++ @opentui/core/3d: property CLICanvas.superSample: SuperSampleType
++ @opentui/core/3d: property CLICanvas.superSampleDrawTimeMs: number
++ @opentui/core/3d: property ExplodingSpriteEffect.isActive: boolean
++ @opentui/core/3d: property ExplosionCreationData.frameUvOffset: THREE.Vector2
++ @opentui/core/3d: property ExplosionCreationData.frameUvSize: THREE.Vector2
++ @opentui/core/3d: property ExplosionCreationData.resource: SpriteResource
++ @opentui/core/3d: property ExplosionCreationData.spriteWorldTransform: THREE.Matrix4
++ @opentui/core/3d: property ExplosionEffectParameters.angularVelocityMax: THREE.Vector3
++ @opentui/core/3d: property ExplosionEffectParameters.angularVelocityMin: THREE.Vector3
++ @opentui/core/3d: property ExplosionEffectParameters.durationMs: number
++ @opentui/core/3d: property ExplosionEffectParameters.fadeOut: boolean
++ @opentui/core/3d: property ExplosionEffectParameters.gravity: number
++ @opentui/core/3d: property ExplosionEffectParameters.gravityScale: number
++ @opentui/core/3d: property ExplosionEffectParameters.initialVelocityYBoost: number
++ @opentui/core/3d: property ExplosionEffectParameters.materialFactory: () => NodeMaterial
++ @opentui/core/3d: property ExplosionEffectParameters.numCols: number
++ @opentui/core/3d: property ExplosionEffectParameters.numRows: number
++ @opentui/core/3d: property ExplosionEffectParameters.strength: number
++ @opentui/core/3d: property ExplosionEffectParameters.strengthVariation: number
++ @opentui/core/3d: property ExplosionEffectParameters.zVariationStrength: number
++ @opentui/core/3d: readonly property ExplosionHandle.effect: ExplodingSpriteEffect
++ @opentui/core/3d: property ExplosionHandle.hasBeenRestored: boolean
++ @opentui/core/3d: readonly property ExplosionHandle.recreationData: SpriteRecreationData
++ @opentui/core/3d: property ExplosionHandle.restoreSprite: (spriteAnimator: SpriteAnimator) => Promise<TiledSprite | null>
++ @opentui/core/3d: readonly property InstanceManager.hasFreeIndices: boolean
++ @opentui/core/3d: readonly property InstanceManager.mesh: THREE.InstancedMesh
++ @opentui/core/3d: property InstanceManagerOptions.depthWrite?: boolean
++ @opentui/core/3d: property InstanceManagerOptions.frustumCulled?: boolean
++ @opentui/core/3d: property InstanceManagerOptions.matrix?: THREE.Matrix4
++ @opentui/core/3d: property InstanceManagerOptions.maxInstances: number
++ @opentui/core/3d: property InstanceManagerOptions.name?: string
++ @opentui/core/3d: property InstanceManagerOptions.renderOrder?: number
++ @opentui/core/3d: property MeshPoolOptions.geometry: () => THREE.BufferGeometry
++ @opentui/core/3d: property MeshPoolOptions.material: THREE.Material
++ @opentui/core/3d: property MeshPoolOptions.maxInstances: number
++ @opentui/core/3d: property MeshPoolOptions.name?: string
++ @opentui/core/3d: property ParticleEffectParameters.angularVelocityMax: THREE.Vector3
++ @opentui/core/3d: property ParticleEffectParameters.angularVelocityMin: THREE.Vector3
++ @opentui/core/3d: property ParticleEffectParameters.animFrameOffset?: number
++ @opentui/core/3d: property ParticleEffectParameters.animNumFrames?: number
++ @opentui/core/3d: property ParticleEffectParameters.depthWrite?: boolean
++ @opentui/core/3d: property ParticleEffectParameters.fadeOut?: boolean
++ @opentui/core/3d: property ParticleEffectParameters.frameDuration?: number
++ @opentui/core/3d: property ParticleEffectParameters.gravity?: THREE.Vector3
++ @opentui/core/3d: property ParticleEffectParameters.initialVelocityMax: THREE.Vector3
++ @opentui/core/3d: property ParticleEffectParameters.initialVelocityMin: THREE.Vector3
++ @opentui/core/3d: property ParticleEffectParameters.lifetimeMsMax: number
++ @opentui/core/3d: property ParticleEffectParameters.lifetimeMsMin: number
++ @opentui/core/3d: property ParticleEffectParameters.loop?: boolean
++ @opentui/core/3d: property ParticleEffectParameters.materialFactory?: () => NodeMaterial
++ @opentui/core/3d: property ParticleEffectParameters.maxParticles: number
++ @opentui/core/3d: property ParticleEffectParameters.origins: THREE.Vector3[]
++ @opentui/core/3d: property ParticleEffectParameters.randomGravityFactorMinMax?: THREE.Vector2
++ @opentui/core/3d: property ParticleEffectParameters.renderOrder?: number
++ @opentui/core/3d: property ParticleEffectParameters.resource: SpriteResource
++ @opentui/core/3d: property ParticleEffectParameters.scale?: number
++ @opentui/core/3d: property ParticleEffectParameters.scaleOverLifeMinMax?: THREE.Vector2
++ @opentui/core/3d: property ParticleEffectParameters.spawnRadius: number | THREE.Vector3
++ @opentui/core/3d: property PhysicsExplodingSpriteEffect.isActive: boolean
++ @opentui/core/3d: property PhysicsExplosionCreationData.frameUvOffset: THREE.Vector2
++ @opentui/core/3d: property PhysicsExplosionCreationData.frameUvSize: THREE.Vector2
++ @opentui/core/3d: property PhysicsExplosionCreationData.resource: SpriteResource
++ @opentui/core/3d: property PhysicsExplosionCreationData.spriteWorldTransform: THREE.Matrix4
++ @opentui/core/3d: property PhysicsExplosionEffectParameters.angularDamping: number
++ @opentui/core/3d: property PhysicsExplosionEffectParameters.density: number
++ @opentui/core/3d: property PhysicsExplosionEffectParameters.durationMs: number
++ @opentui/core/3d: property PhysicsExplosionEffectParameters.explosionForce: number
++ @opentui/core/3d: property PhysicsExplosionEffectParameters.fadeOut: boolean
++ @opentui/core/3d: property PhysicsExplosionEffectParameters.forceVariation: number
++ @opentui/core/3d: property PhysicsExplosionEffectParameters.friction: number
++ @opentui/core/3d: property PhysicsExplosionEffectParameters.gravityScale: number
++ @opentui/core/3d: property PhysicsExplosionEffectParameters.linearDamping: number
++ @opentui/core/3d: property PhysicsExplosionEffectParameters.materialFactory: () => NodeMaterial
++ @opentui/core/3d: property PhysicsExplosionEffectParameters.numCols: number
++ @opentui/core/3d: property PhysicsExplosionEffectParameters.numRows: number
++ @opentui/core/3d: property PhysicsExplosionEffectParameters.restitution: number
++ @opentui/core/3d: property PhysicsExplosionEffectParameters.torqueStrength: number
++ @opentui/core/3d: readonly property PhysicsExplosionHandle.effect: PhysicsExplodingSpriteEffect
++ @opentui/core/3d: property PhysicsExplosionHandle.hasBeenRestored: boolean
++ @opentui/core/3d: readonly property PhysicsExplosionHandle.recreationData: PhysicsSpriteRecreationData
++ @opentui/core/3d: property PhysicsExplosionHandle.restoreSprite: (spriteAnimator: SpriteAnimator) => Promise<TiledSprite | null>
++ @opentui/core/3d: property PhysicsSpriteRecreationData.currentTransform: { position: THREE.Vector3; quaternion: THREE.Quaternion; scale: THREE.Vector3; }
++ @opentui/core/3d: property PhysicsSpriteRecreationData.definition: SpriteDefinition
++ @opentui/core/3d: readonly property PlanckRigidBody.nativeBody: planck.Body
++ @opentui/core/3d: readonly property RapierRigidBody.nativeBody: RAPIER.RigidBody
++ @opentui/core/3d: property ResourceConfig.imagePath: string
++ @opentui/core/3d: property ResourceConfig.sheetNumFrames: number
++ @opentui/core/3d: property SheetProperties.imagePath: string
++ @opentui/core/3d: property SheetProperties.sheetNumFrames: number
++ @opentui/core/3d: property SheetProperties.sheetTilesetHeight: number
++ @opentui/core/3d: property SheetProperties.sheetTilesetWidth: number
++ @opentui/core/3d: property SheetSprite.setIndex: (index: number) => void
++ @opentui/core/3d: property SpriteDefinition.animations: Record<string, AnimationDefinition>
++ @opentui/core/3d: property SpriteDefinition.depthWrite?: boolean
++ @opentui/core/3d: property SpriteDefinition.id?: string
++ @opentui/core/3d: property SpriteDefinition.initialAnimation: string
++ @opentui/core/3d: property SpriteDefinition.maxInstances?: number
++ @opentui/core/3d: property SpriteDefinition.renderOrder?: number
++ @opentui/core/3d: property SpriteDefinition.scale?: number
++ @opentui/core/3d: property SpriteRecreationData.currentTransform: { position: THREE.Vector3; quaternion: THREE.Quaternion; scale: THREE.Vector3; }
++ @opentui/core/3d: property SpriteRecreationData.definition: SpriteDefinition
++ @opentui/core/3d: readonly property SpriteResource.meshPool: MeshPool
++ @opentui/core/3d: readonly property SpriteResource.sheetProperties: SheetProperties
++ @opentui/core/3d: readonly property SpriteResource.texture: THREE.DataTexture
++ @opentui/core/3d: readonly property SpriteResource.uvTileSize: THREE.Vector2
++ @opentui/core/3d: readonly property ThreeCliRenderer.aspectRatio: number
++ @opentui/core/3d: property ThreeCliRendererOptions.alpha?: boolean
++ @opentui/core/3d: property ThreeCliRendererOptions.autoResize?: boolean
++ @opentui/core/3d: property ThreeCliRendererOptions.backgroundColor?: RGBA
++ @opentui/core/3d: property ThreeCliRendererOptions.focalLength?: number
++ @opentui/core/3d: property ThreeCliRendererOptions.height: number
++ @opentui/core/3d: property ThreeCliRendererOptions.libPath?: string
++ @opentui/core/3d: property ThreeCliRendererOptions.superSample?: SuperSampleType
++ @opentui/core/3d: property ThreeCliRendererOptions.width: number
++ @opentui/core/3d: readonly property TiledSprite.currentAnimation: Animation
++ @opentui/core/3d: readonly property TiledSprite.currentTransform: { position: THREE.Vector3; quaternion: THREE.Quaternion; scale: THREE.Vector3; }
++ @opentui/core/3d: readonly property TiledSprite.definition: SpriteDefinition
++ @opentui/core/3d: readonly property TiledSprite.id: string
++ @opentui/core/3d: property TiledSprite.visible: boolean
++ @opentui/core/3d: type ResolvedAnimationState = Required<AnimationStateConfig> & { sheetTilesetWidth: number; sheetTilesetHeight: number; texture: THREE.DataTexture; }
++ @opentui/core: class ASCIIFontRenderable extends FrameBufferRenderable
++ @opentui/core: class ASCIIFontSelectionHelper
++ @opentui/core: class BloomEffect
++ @opentui/core: class BlurEffect
++ @opentui/core: class BoxRenderable extends Renderable
++ @opentui/core: class BrightnessEffect
++ @opentui/core: class CliRenderer extends EventEmitter
++ @opentui/core: class DistortionEffect
++ @opentui/core: class FrameBufferRenderable extends Renderable
++ @opentui/core: class GroupRenderable extends Renderable
++ @opentui/core: class InputRenderable extends Renderable
++ @opentui/core: class KeyHandler extends EventEmitter
++ @opentui/core: class MouseEvent
++ @opentui/core: class OptimizedBuffer
++ @opentui/core: class RGBA
++ @opentui/core: abstract class Renderable extends EventEmitter
++ @opentui/core: class RootRenderable extends Renderable
++ @opentui/core: class SelectRenderable extends Renderable
++ @opentui/core: class Selection
++ @opentui/core: class StyledText
++ @opentui/core: class TabSelectRenderable extends Renderable
++ @opentui/core: class TextBuffer
++ @opentui/core: class TextRenderable extends Renderable
++ @opentui/core: class TextSelectionHelper
++ @opentui/core: class Timeline
++ @opentui/core: class TrackedNode<T extends NodeMetadata = NodeMetadata> extends EventEmitter
++ @opentui/core: class VignetteEffect
++ @opentui/core: const BorderCharArrays: Record<BorderStyle, Uint32Array>
++ @opentui/core: const BorderChars: Record<BorderStyle, BorderCharacters>
++ @opentui/core: const TextAttributes: { NONE: number; BOLD: number; DIM: number; ITALIC: number; UNDERLINE: number; BLINK: number; INVERSE: number; HIDDEN: number; STRIKETHROUGH: number; }
++ @opentui/core: const bg: (color: Color) => (input: StylableInput) => TextChunk
++ @opentui/core: const bgBlack: (input: StylableInput) => TextChunk
++ @opentui/core: const bgBlue: (input: StylableInput) => TextChunk
++ @opentui/core: const bgCyan: (input: StylableInput) => TextChunk
++ @opentui/core: const bgGreen: (input: StylableInput) => TextChunk
++ @opentui/core: const bgMagenta: (input: StylableInput) => TextChunk
++ @opentui/core: const bgRed: (input: StylableInput) => TextChunk
++ @opentui/core: const bgWhite: (input: StylableInput) => TextChunk
++ @opentui/core: const bgYellow: (input: StylableInput) => TextChunk
++ @opentui/core: const black: (input: StylableInput) => TextChunk
++ @opentui/core: const blink: (input: StylableInput) => TextChunk
++ @opentui/core: const blue: (input: StylableInput) => TextChunk
++ @opentui/core: const bold: (input: StylableInput) => TextChunk
++ @opentui/core: const brightBlack: (input: StylableInput) => TextChunk
++ @opentui/core: const brightBlue: (input: StylableInput) => TextChunk
++ @opentui/core: const brightCyan: (input: StylableInput) => TextChunk
++ @opentui/core: const brightGreen: (input: StylableInput) => TextChunk
++ @opentui/core: const brightMagenta: (input: StylableInput) => TextChunk
++ @opentui/core: const brightRed: (input: StylableInput) => TextChunk
++ @opentui/core: const brightWhite: (input: StylableInput) => TextChunk
++ @opentui/core: const brightYellow: (input: StylableInput) => TextChunk
++ @opentui/core: const cyan: (input: StylableInput) => TextChunk
++ @opentui/core: const dim: (input: StylableInput) => TextChunk
++ @opentui/core: const engine: TimelineEngine
++ @opentui/core: const fg: (color: Color) => (input: StylableInput) => TextChunk
++ @opentui/core: const fonts: { tiny: { name: string; version: string; homepage: string; colors: number; lines: number; buffer: string[]; letterspace: string[]; letterspace_size: number; chars: { A: string[]; B: string[]; C: string[]; D: string[]; E: string[]; F: string[]; G: string[]; H: string[]; I: string[]; J: string[]; K: string[]; L: string[]; M: string[]; N: string[]; O: string[]; P: string[]; Q: string[]; R: string[]; S: string[]; T: string[]; U: string[]; V: string[]; W: string[]; X: string[]; Y: string[]; Z: string[]; "0": string[]; "1": string[]; "2": string[]; "3": string[]; "4": string[]; "5": string[]; "6": string[]; "7": string[]; "8": string[]; "9": string[]; "!": string[]; "?": string[]; ".": string[]; "+": string[]; "-": string[]; _: string[]; "=": string[]; "@": string[]; "#": string[]; $: string[]; "%": string[]; "&": string[]; "(": string[]; ")": string[]; "/": string[]; ":": string[]; ";": string[]; ",": string[]; "'": string[]; "\"": string[]; " ": string[]; }; }; block: { name: string; version: string; homepage: string; colors: number; lines: number; buffer: string[]; letterspace: string[]; letterspace_size: number; chars: { A: string[]; B: string[]; C: string[]; D: string[]; E: string[]; F: string[]; G: string[]; H: string[]; I: string[]; J: string[]; K: string[]; L: string[]; M: string[]; N: string[]; O: string[]; P: string[]; Q: string[]; R: string[]; S: string[]; T: string[]; U: string[]; V: string[]; W: string[]; X: string[]; Y: string[]; Z: string[]; "0": string[]; "1": string[]; "2": string[]; "3": string[]; "4": string[]; "5": string[]; "6": string[]; "7": string[]; "8": string[]; "9": string[]; "!": string[]; "?": string[]; ".": string[]; "+": string[]; "-": string[]; _: string[]; "=": string[]; "@": string[]; "#": string[]; $: string[]; "%": string[]; "&": string[]; "(": string[]; ")": string[]; "/": string[]; ":": string[]; ";": string[]; ",": string[]; "'": string[]; "\"": string[]; " ": string[]; }; }; shade: { name: string; version: string; homepage: string; colors: number; lines: number; buffer: string[]; letterspace: string[]; letterspace_size: number; chars: { A: string[]; B: string[]; C: string[]; D: string[]; E: string[]; F: string[]; G: string[]; H: string[]; I: string[]; J: string[]; K: string[]; L: string[]; M: string[]; N: string[]; O: string[]; P: string[]; Q: string[]; R: string[]; S: string[]; T: string[]; U: string[]; V: string[]; W: string[]; X: string[]; Y: string[]; Z: string[]; "0": string[]; "1": string[]; "2": string[]; "3": string[]; "4": string[]; "5": string[]; "6": string[]; "7": string[]; "8": string[]; "9": string[]; "!": string[]; "?": string[]; ".": string[]; "+": string[]; "-": string[]; _: string[]; "=": string[]; "@": string[]; "#": string[]; $: string[]; "%": string[]; "&": string[]; "(": string[]; ")": string[]; "/": string[]; ":": string[]; ";": string[]; ",": string[]; "'": string[]; "\"": string[]; " ": string[]; }; }; slick: { name: string; version: string; homepage: string; colors: number; lines: number; buffer: string[]; letterspace: string[]; letterspace_size: number; chars: { A: string[]; B: string[]; C: string[]; D: string[]; E: string[]; F: string[]; G: string[]; H: string[]; I: string[]; J: string[]; K: string[]; L: string[]; M: string[]; N: string[]; O: string[]; P: string[]; Q: string[]; R: string[]; S: string[]; T: string[]; U: string[]; V: string[]; W: string[]; X: string[]; Y: string[]; Z: string[]; "0": string[]; "1": string[]; "2": string[]; "3": string[]; "4": string[]; "5": string[]; "6": string[]; "7": string[]; "8": string[]; "9": string[]; "!": string[]; "?": string[]; ".": string[]; "+": string[]; "-": string[]; _: string[]; "=": string[]; "@": string[]; "#": string[]; $: string[]; "%": string[]; "&": string[]; "(": string[]; ")": string[]; "/": string[]; ":": string[]; ";": string[]; ",": string[]; "'": string[]; "\"": string[]; " ": string[]; }; }; }
++ @opentui/core: const green: (input: StylableInput) => TextChunk
++ @opentui/core: const italic: (input: StylableInput) => TextChunk
++ @opentui/core: const magenta: (input: StylableInput) => TextChunk
++ @opentui/core: const nonAlphanumericKeys: string[]
++ @opentui/core: const parseKeypress: (s?: Buffer | string) => ParsedKey
++ @opentui/core: const red: (input: StylableInput) => TextChunk
++ @opentui/core: const reverse: (input: StylableInput) => TextChunk
++ @opentui/core: const strikethrough: (input: StylableInput) => TextChunk
++ @opentui/core: const underline: (input: StylableInput) => TextChunk
++ @opentui/core: const white: (input: StylableInput) => TextChunk
++ @opentui/core: const yellow: (input: StylableInput) => TextChunk
++ @opentui/core: constructor ASCIIFontRenderable(id: string, options: ASCIIFontOptions)
++ @opentui/core: constructor ASCIIFontSelectionHelper(getX: () => number, getY: () => number, getText: () => string, getFont: () => keyof typeof fonts)
++ @opentui/core: constructor BloomEffect(threshold?: number, strength?: number, radius?: number)
++ @opentui/core: constructor BlurEffect(radius?: number)
++ @opentui/core: constructor BoxRenderable(id: string, options: BoxOptions)
++ @opentui/core: constructor BrightnessEffect(brightness?: number)
++ @opentui/core: constructor CliRenderer(lib: RenderLib, rendererPtr: Pointer, stdin: NodeJS.ReadStream, stdout: NodeJS.WriteStream, width: number, height: number, config?: CliRendererConfig)
++ @opentui/core: constructor DistortionEffect(options?: Partial<DistortionEffect>)
++ @opentui/core: constructor FrameBufferRenderable(id: string, options: FrameBufferOptions)
++ @opentui/core: constructor GroupRenderable(id: string, options: RenderableOptions)
++ @opentui/core: constructor InputRenderable(id: string, options: InputRenderableOptions)
++ @opentui/core: constructor KeyHandler()
++ @opentui/core: constructor MouseEvent(target: Renderable | null, attributes: RawMouseEvent & { source?: Renderable; })
++ @opentui/core: constructor OptimizedBuffer(lib: RenderLib, ptr: Pointer, buffer: { char: Uint32Array; fg: Float32Array; bg: Float32Array; attributes: Uint8Array; }, width: number, height: number, options: { respectAlpha?: boolean; })
++ @opentui/core: constructor RGBA(buffer: Float32Array)
++ @opentui/core: constructor Renderable(id: string, options: RenderableOptions)
++ @opentui/core: constructor RootRenderable(width: number, height: number, ctx: RenderContext)
++ @opentui/core: constructor SelectRenderable(id: string, options: SelectRenderableOptions)
++ @opentui/core: constructor Selection(anchor: { x: number; y: number; }, focus: { x: number; y: number; })
++ @opentui/core: constructor StyledText(chunks: TextChunk[], length: number, plainText: string)
++ @opentui/core: constructor TabSelectRenderable(id: string, options: TabSelectRenderableOptions)
++ @opentui/core: constructor TextBuffer(lib: RenderLib, ptr: Pointer, buffer: { char: Uint32Array; fg: Float32Array; bg: Float32Array; attributes: Uint16Array; }, capacity: number)
++ @opentui/core: constructor TextRenderable(id: string, options: TextOptions)
++ @opentui/core: constructor TextSelectionHelper(getX: () => number, getY: () => number, getTextLength: () => number, getLineInfo?: (() => { lineStarts: number[]; lineWidths: number[]; }) | undefined)
++ @opentui/core: constructor Timeline(options?: TimelineOptions)
++ @opentui/core: constructor TrackedNode(yogaNode: YogaNode, metadata?: T)
++ @opentui/core: constructor VignetteEffect(strength?: number)
++ @opentui/core: enum CliRenderEvents
++ @opentui/core: enum DebugOverlayCorner
++ @opentui/core: enum InputRenderableEvents
++ @opentui/core: enum LayoutEvents
++ @opentui/core: enum MouseButton
++ @opentui/core: enum RenderableEvents
++ @opentui/core: enum SelectRenderableEvents
++ @opentui/core: enum TabSelectRenderableEvents
++ @opentui/core: enum-member CliRenderEvents.DEBUG_OVERLAY_TOGGLE = "debugOverlay:toggle"
++ @opentui/core: enum-member DebugOverlayCorner.bottomLeft = 2
++ @opentui/core: enum-member DebugOverlayCorner.bottomRight = 3
++ @opentui/core: enum-member DebugOverlayCorner.topLeft = 0
++ @opentui/core: enum-member DebugOverlayCorner.topRight = 1
++ @opentui/core: enum-member InputRenderableEvents.CHANGE = "change"
++ @opentui/core: enum-member InputRenderableEvents.ENTER = "enter"
++ @opentui/core: enum-member InputRenderableEvents.INPUT = "input"
++ @opentui/core: enum-member LayoutEvents.ADDED = "added"
++ @opentui/core: enum-member LayoutEvents.LAYOUT_CHANGED = "layout-changed"
++ @opentui/core: enum-member LayoutEvents.REMOVED = "removed"
++ @opentui/core: enum-member LayoutEvents.RESIZED = "resized"
++ @opentui/core: enum-member MouseButton.LEFT = 0
++ @opentui/core: enum-member MouseButton.MIDDLE = 1
++ @opentui/core: enum-member MouseButton.RIGHT = 2
++ @opentui/core: enum-member MouseButton.WHEEL_DOWN = 5
++ @opentui/core: enum-member MouseButton.WHEEL_UP = 4
++ @opentui/core: enum-member RenderableEvents.BLURRED = "blurred"
++ @opentui/core: enum-member RenderableEvents.FOCUSED = "focused"
++ @opentui/core: enum-member SelectRenderableEvents.ITEM_SELECTED = "itemSelected"
++ @opentui/core: enum-member SelectRenderableEvents.SELECTION_CHANGED = "selectionChanged"
++ @opentui/core: enum-member TabSelectRenderableEvents.ITEM_SELECTED = "itemSelected"
++ @opentui/core: enum-member TabSelectRenderableEvents.SELECTION_CHANGED = "selectionChanged"
++ @opentui/core: function applyAsciiArt(buffer: OptimizedBuffer, ramp?: string): void
++ @opentui/core: function applyChromaticAberration(buffer: OptimizedBuffer, strength?: number): void
++ @opentui/core: function applyGrayscale(buffer: OptimizedBuffer): void
++ @opentui/core: function applyInvert(buffer: OptimizedBuffer): void
++ @opentui/core: function applyNoise(buffer: OptimizedBuffer, strength?: number): void
++ @opentui/core: function applyScanlines(buffer: OptimizedBuffer, strength?: number, step?: number): void
++ @opentui/core: function applySepia(buffer: OptimizedBuffer): void
++ @opentui/core: function borderCharsToArray(chars: BorderCharacters): Uint32Array
++ @opentui/core: function coordinateToCharacterIndex(x: number, text: string, font?: keyof typeof fonts): number
++ @opentui/core: function createCliRenderer(config?: CliRendererConfig): Promise<CliRenderer>
++ @opentui/core: function createTextAttributes({ bold, italic, underline, dim, blink, inverse, hidden, strikethrough, }?: { bold?: boolean; italic?: boolean; underline?: boolean; dim?: boolean; blink?: boolean; inverse?: boolean; hidden?: boolean; strikethrough?: boolean; }): number
++ @opentui/core: function createTimeline(options?: TimelineOptions): Timeline
++ @opentui/core: function createTrackedNode<T extends NodeMetadata>(metadata?: T, yogaConfig?: Config): TrackedNode<T>
++ @opentui/core: function fixPaths<T extends { [key: string]: string; }>(paths: T): T
++ @opentui/core: function getBorderFromSides(sides: BorderSidesConfig): boolean | BorderSides[]
++ @opentui/core: function getBorderSides(border: boolean | BorderSides[]): BorderSidesConfig
++ @opentui/core: function getCharacterPositions(text: string, font?: keyof typeof fonts): number[]
++ @opentui/core: function getKeyHandler(): KeyHandler
++ @opentui/core: function hexToRgb(hex: string): RGBA
++ @opentui/core: function hsvToRgb(h: number, s: number, v: number): RGBA
++ @opentui/core: function loadTemplate(filePath: string, params: Record<string, string>): Promise<string>
++ @opentui/core: function measureText({ text, font }: { text: string; font?: keyof typeof fonts; }): { width: number; height: number; }
++ @opentui/core: function parseColor(color: ColorInput): RGBA
++ @opentui/core: function renderFontToFrameBuffer(buffer: OptimizedBuffer, { text, x, y, fg, bg, font, }: { text: string; x?: number; y?: number; fg?: RGBA | RGBA[]; bg?: RGBA; font?: keyof typeof fonts; }): { width: number; height: number; }
++ @opentui/core: function rgbToHex(rgb: RGBA): string
++ @opentui/core: function stringToStyledText(content: string): StyledText
++ @opentui/core: function t(strings: TemplateStringsArray, ...values: StylableInput[]): StyledText
++ @opentui/core: function tn(strings: TemplateStringsArray, ...values: StylableInput[]): StyledText
++ @opentui/core: index AnimationOptions[key: string]: any
++ @opentui/core: interface ASCIIFontOptions extends RenderableOptions
++ @opentui/core: interface AnimationOptions
++ @opentui/core: interface BorderCharacters
++ @opentui/core: interface BorderConfig
++ @opentui/core: interface BorderSidesConfig
++ @opentui/core: interface BoxDrawOptions
++ @opentui/core: interface BoxOptions extends RenderableOptions
++ @opentui/core: interface CliRendererConfig
++ @opentui/core: interface FrameBufferOptions extends RenderableOptions
++ @opentui/core: interface InputRenderableOptions extends RenderableOptions
++ @opentui/core: interface JSAnimation
++ @opentui/core: interface LayoutOptions
++ @opentui/core: interface Position
++ @opentui/core: interface RenderContext
++ @opentui/core: interface RenderableOptions extends Partial<LayoutOptions>
++ @opentui/core: interface SelectOption
++ @opentui/core: interface SelectRenderableOptions extends RenderableOptions
++ @opentui/core: interface SelectionState
++ @opentui/core: interface StyleAttrs
++ @opentui/core: interface TabSelectOption
++ @opentui/core: interface TabSelectRenderableOptions extends Omit<RenderableOptions, "height">
++ @opentui/core: interface TextChunk
++ @opentui/core: interface TextOptions extends RenderableOptions
++ @opentui/core: interface TimelineOptions
++ @opentui/core: method ASCIIFontRenderable.getSelectedText(): string
++ @opentui/core: method ASCIIFontRenderable.hasSelection(): boolean
++ @opentui/core: protected method ASCIIFontRenderable.onResize(width: number, height: number): void
++ @opentui/core: method ASCIIFontRenderable.onSelectionChanged(selection: SelectionState | null): boolean
++ @opentui/core: method ASCIIFontRenderable.shouldStartSelection(x: number, y: number): boolean
++ @opentui/core: method ASCIIFontSelectionHelper.getSelection(): { start: number; end: number; } | null
++ @opentui/core: method ASCIIFontSelectionHelper.hasSelection(): boolean
++ @opentui/core: method ASCIIFontSelectionHelper.onSelectionChanged(selection: SelectionState | null, width: number, height: number): boolean
++ @opentui/core: method ASCIIFontSelectionHelper.reevaluateSelection(width: number, height: number): boolean
++ @opentui/core: method ASCIIFontSelectionHelper.shouldStartSelection(x: number, y: number, width: number, height: number): boolean
++ @opentui/core: method BloomEffect.apply(buffer: OptimizedBuffer): void
++ @opentui/core: method BlurEffect.apply(buffer: OptimizedBuffer): void
++ @opentui/core: protected method BoxRenderable.renderSelf(buffer: OptimizedBuffer): void
++ @opentui/core: method BrightnessEffect.apply(buffer: OptimizedBuffer): void
++ @opentui/core: method CliRenderer.addPostProcessFn(processFn: (buffer: OptimizedBuffer, deltaTime: number) => void): void
++ @opentui/core: method CliRenderer.clearFrameCallbacks(): void
++ @opentui/core: method CliRenderer.clearPostProcessFns(): void
++ @opentui/core: method CliRenderer.clearSelection(): void
++ @opentui/core: method CliRenderer.clearTerminal(): void
++ @opentui/core: method CliRenderer.configureDebugOverlay(options: { enabled?: boolean; corner?: DebugOverlayCorner; }): void
++ @opentui/core: method CliRenderer.destroy(): void
++ @opentui/core: method CliRenderer.dumpBuffers(timestamp?: number): void
++ @opentui/core: method CliRenderer.dumpHitGrid(): void
++ @opentui/core: method CliRenderer.dumpStdoutBuffer(timestamp?: number): void
++ @opentui/core: method CliRenderer.getSelection(): Selection | null
++ @opentui/core: method CliRenderer.getSelectionContainer(): Renderable | null
++ @opentui/core: method CliRenderer.getStats(): { fps: number; frameCount: number; frameTimes: number[]; averageFrameTime: number; minFrameTime: number; maxFrameTime: number; }
++ @opentui/core: method CliRenderer.hasSelection(): boolean
++ @opentui/core: method CliRenderer.intermediateRender(): void
++ @opentui/core: method CliRenderer.needsUpdate(): void
++ @opentui/core: method CliRenderer.pause(): void
++ @opentui/core: method CliRenderer.removeFrameCallback(callback: (deltaTime: number) => Promise<void>): void
++ @opentui/core: method CliRenderer.removePostProcessFn(processFn: (buffer: OptimizedBuffer, deltaTime: number) => void): void
++ @opentui/core: method CliRenderer.resetStats(): void
++ @opentui/core: method CliRenderer.setBackgroundColor(color: ColorInput): void
++ @opentui/core: method CliRenderer.setCursorColor(color: RGBA): void
++ @opentui/core: static method CliRenderer.setCursorColor(color: RGBA): void
++ @opentui/core: method CliRenderer.setCursorPosition(x: number, y: number, visible?: boolean): void
++ @opentui/core: static method CliRenderer.setCursorPosition(x: number, y: number, visible?: boolean): void
++ @opentui/core: method CliRenderer.setCursorStyle(style: CursorStyle, blinking?: boolean, color?: RGBA): void
++ @opentui/core: static method CliRenderer.setCursorStyle(style: CursorStyle, blinking?: boolean, color?: RGBA): void
++ @opentui/core: method CliRenderer.setFrameCallback(callback: (deltaTime: number) => Promise<void>): void
++ @opentui/core: method CliRenderer.setGatherStats(enabled: boolean): void
++ @opentui/core: method CliRenderer.setMemorySnapshotInterval(interval: number): void
++ @opentui/core: method CliRenderer.setTerminalSize(width: number, height: number): void
++ @opentui/core: method CliRenderer.start(): void
++ @opentui/core: method CliRenderer.stop(): void
++ @opentui/core: method CliRenderer.toggleDebugOverlay(): void
++ @opentui/core: method DistortionEffect.apply(buffer: OptimizedBuffer, deltaTime: number): void
++ @opentui/core: protected method FrameBufferRenderable.destroySelf(): void
++ @opentui/core: protected method FrameBufferRenderable.onResize(width: number, height: number): void
++ @opentui/core: protected method FrameBufferRenderable.renderSelf(buffer: OptimizedBuffer): void
++ @opentui/core: method InputRenderable.blur(): void
++ @opentui/core: protected method InputRenderable.destroySelf(): void
++ @opentui/core: method InputRenderable.focus(): void
++ @opentui/core: method InputRenderable.getCursorPosition(): number
++ @opentui/core: method InputRenderable.getMaxLength(): number
++ @opentui/core: method InputRenderable.getPlaceholder(): string
++ @opentui/core: method InputRenderable.getValue(): string
++ @opentui/core: method InputRenderable.handleKeyPress(key: ParsedKey | string): boolean
++ @opentui/core: protected method InputRenderable.renderSelf(buffer: OptimizedBuffer, deltaTime: number): void
++ @opentui/core: method InputRenderable.setCursorPosition(position: number): void
++ @opentui/core: method InputRenderable.setMaxLength(maxLength: number): void
++ @opentui/core: method InputRenderable.setPlaceholder(placeholder: string): void
++ @opentui/core: method InputRenderable.setValue(value: string): void
++ @opentui/core: method KeyHandler.destroy(): void
++ @opentui/core: method MouseEvent.preventDefault(): void
++ @opentui/core: method OptimizedBuffer.clear(bg?: RGBA, clearChar?: string): void
++ @opentui/core: method OptimizedBuffer.clearFFI(bg?: RGBA): void
++ @opentui/core: method OptimizedBuffer.clearLocal(bg?: RGBA, clearChar?: string): void
++ @opentui/core: static method OptimizedBuffer.create(width: number, height: number, options?: { respectAlpha?: boolean; }): OptimizedBuffer
++ @opentui/core: method OptimizedBuffer.destroy(): void
++ @opentui/core: method OptimizedBuffer.drawBox(options: { x: number; y: number; width: number; height: number; borderStyle?: BorderStyle; customBorderChars?: Uint32Array; border: boolean | BorderSides[]; borderColor: RGBA; backgroundColor: RGBA; shouldFill?: boolean; title?: string; titleAlignment?: "left" | "center" | "right"; }): void
++ @opentui/core: method OptimizedBuffer.drawFrameBuffer(destX: number, destY: number, frameBuffer: OptimizedBuffer, sourceX?: number, sourceY?: number, sourceWidth?: number, sourceHeight?: number): void
++ @opentui/core: method OptimizedBuffer.drawFrameBufferFFI(destX: number, destY: number, frameBuffer: OptimizedBuffer, sourceX?: number, sourceY?: number, sourceWidth?: number, sourceHeight?: number): void
++ @opentui/core: method OptimizedBuffer.drawFrameBufferLocal(destX: number, destY: number, frameBuffer: OptimizedBuffer, sourceX?: number, sourceY?: number, sourceWidth?: number, sourceHeight?: number): void
++ @opentui/core: method OptimizedBuffer.drawPackedBuffer(dataPtr: Pointer, dataLen: number, posX: number, posY: number, terminalWidthCells: number, terminalHeightCells: number): void
++ @opentui/core: method OptimizedBuffer.drawSuperSampleBuffer(x: number, y: number, pixelDataPtr: Pointer, pixelDataLength: number, format: "bgra8unorm" | "rgba8unorm", alignedBytesPerRow: number): void
++ @opentui/core: method OptimizedBuffer.drawSuperSampleBufferFFI(x: number, y: number, pixelDataPtr: Pointer, pixelDataLength: number, format: "bgra8unorm" | "rgba8unorm", alignedBytesPerRow: number): void
++ @opentui/core: method OptimizedBuffer.drawText(text: string, x: number, y: number, fg: RGBA, bg?: RGBA, attributes?: number, selection?: { start: number; end: number; bgColor?: RGBA; fgColor?: RGBA; } | null): void
++ @opentui/core: method OptimizedBuffer.drawTextBuffer(textBuffer: TextBuffer, x: number, y: number, clipRect?: { x: number; y: number; width: number; height: number; }): void
++ @opentui/core: method OptimizedBuffer.drawTextFFI(text: string, x: number, y: number, fg?: RGBA, bg?: RGBA, attributes?: number): void
++ @opentui/core: method OptimizedBuffer.fillRect(x: number, y: number, width: number, height: number, bg: RGBA): void
++ @opentui/core: method OptimizedBuffer.fillRectFFI(x: number, y: number, width: number, height: number, bg: RGBA): void
++ @opentui/core: method OptimizedBuffer.fillRectLocal(x: number, y: number, width: number, height: number, bg: RGBA): void
++ @opentui/core: method OptimizedBuffer.get(x: number, y: number): { char: number; fg: RGBA; bg: RGBA; attributes: number; } | null
++ @opentui/core: method OptimizedBuffer.getHeight(): number
++ @opentui/core: method OptimizedBuffer.getWidth(): number
++ @opentui/core: method OptimizedBuffer.resize(width: number, height: number): void
++ @opentui/core: method OptimizedBuffer.setCell(x: number, y: number, char: string, fg: RGBA, bg: RGBA, attributes?: number): void
++ @opentui/core: method OptimizedBuffer.setCellWithAlphaBlending(x: number, y: number, char: string, fg: RGBA, bg: RGBA, attributes?: number): void
++ @opentui/core: method OptimizedBuffer.setCellWithAlphaBlendingFFI(x: number, y: number, char: string, fg: RGBA, bg: RGBA, attributes?: number): void
++ @opentui/core: method OptimizedBuffer.setCellWithAlphaBlendingLocal(x: number, y: number, char: string, fg: RGBA, bg: RGBA, attributes?: number): void
++ @opentui/core: method OptimizedBuffer.setRespectAlpha(respectAlpha: boolean): void
++ @opentui/core: static method RGBA.fromArray(array: Float32Array): RGBA
++ @opentui/core: static method RGBA.fromHex(hex: string): RGBA
++ @opentui/core: static method RGBA.fromInts(r: number, g: number, b: number, a?: number): RGBA
++ @opentui/core: static method RGBA.fromValues(r: number, g: number, b: number, a?: number): RGBA
++ @opentui/core: method RGBA.map<R>(fn: (value: number) => R): R[]
++ @opentui/core: method RGBA.toInts(): [ number, number, number, number ]
++ @opentui/core: method RGBA.toString(): string
++ @opentui/core: method Renderable.add(obj: Renderable): void
++ @opentui/core: protected method Renderable.beforeRender(): void
++ @opentui/core: method Renderable.blur(): void
++ @opentui/core: protected method Renderable.createFrameBuffer(): void
++ @opentui/core: method Renderable.destroy(): void
++ @opentui/core: protected method Renderable.destroySelf(): void
++ @opentui/core: method Renderable.focus(): void
++ @opentui/core: method Renderable.getChildren(): Renderable[]
++ @opentui/core: method Renderable.getLayoutNode(): TrackedNode
++ @opentui/core: method Renderable.getRenderable(id: string): Renderable | undefined
++ @opentui/core: method Renderable.getSelectedText(): string
++ @opentui/core: protected method Renderable.handleFrameBufferResize(width: number, height: number): void
++ @opentui/core: method Renderable.handleKeyPress?(key: ParsedKey | string): boolean
++ @opentui/core: method Renderable.hasSelection(): boolean
++ @opentui/core: method Renderable.needsUpdate(): void
++ @opentui/core: protected method Renderable.onLayoutResize(width: number, height: number): void
++ @opentui/core: protected method Renderable.onMouseEvent(event: MouseEvent): void
++ @opentui/core: protected method Renderable.onResize(width: number, height: number): void
++ @opentui/core: method Renderable.onSelectionChanged(selection: SelectionState | null): boolean
++ @opentui/core: method Renderable.processMouseEvent(event: MouseEvent): void
++ @opentui/core: method Renderable.propagateContext(ctx: RenderContext | null): void
++ @opentui/core: method Renderable.remove(id: string): void
++ @opentui/core: method Renderable.render(buffer: OptimizedBuffer, deltaTime: number): void
++ @opentui/core: protected method Renderable.renderSelf(buffer: OptimizedBuffer, deltaTime: number): void
++ @opentui/core: protected method Renderable.requestLayout(): void
++ @opentui/core: method Renderable.requestZIndexSort(): void
++ @opentui/core: method Renderable.setPosition(position: Position): void
++ @opentui/core: method Renderable.shouldStartSelection(x: number, y: number): boolean
++ @opentui/core: method Renderable.updateFromLayout(): void
++ @opentui/core: method RootRenderable.add(obj: Renderable): void
++ @opentui/core: protected method RootRenderable.beforeRender(): void
++ @opentui/core: method RootRenderable.calculateLayout(): void
++ @opentui/core: protected method RootRenderable.destroySelf(): void
++ @opentui/core: method RootRenderable.remove(id: string): void
++ @opentui/core: method RootRenderable.requestLayout(): void
++ @opentui/core: method RootRenderable.resize(width: number, height: number): void
++ @opentui/core: method SelectRenderable.getSelectedIndex(): number
++ @opentui/core: method SelectRenderable.getSelectedOption(): SelectOption | null
++ @opentui/core: method SelectRenderable.getShowDescription(): boolean
++ @opentui/core: method SelectRenderable.getShowScrollIndicator(): boolean
++ @opentui/core: method SelectRenderable.getWrapSelection(): boolean
++ @opentui/core: method SelectRenderable.handleKeyPress(key: ParsedKey | string): boolean
++ @opentui/core: method SelectRenderable.moveDown(steps?: number): void
++ @opentui/core: method SelectRenderable.moveUp(steps?: number): void
++ @opentui/core: protected method SelectRenderable.onResize(width: number, height: number): void
++ @opentui/core: protected method SelectRenderable.renderSelf(buffer: OptimizedBuffer, deltaTime: number): void
++ @opentui/core: method SelectRenderable.selectCurrent(): void
++ @opentui/core: method SelectRenderable.setOptions(options: SelectOption[]): void
++ @opentui/core: method SelectRenderable.setSelectedIndex(index: number): void
++ @opentui/core: method SelectRenderable.setShowDescription(show: boolean): void
++ @opentui/core: method SelectRenderable.setShowScrollIndicator(show: boolean): void
++ @opentui/core: method SelectRenderable.setWrapSelection(wrap: boolean): void
++ @opentui/core: method Selection.getSelectedText(): string
++ @opentui/core: method Selection.updateSelectedRenderables(selectedRenderables: Renderable[]): void
++ @opentui/core: method StyledText.toString(): string
++ @opentui/core: method TabSelectRenderable.getSelectedIndex(): number
++ @opentui/core: method TabSelectRenderable.getSelectedOption(): TabSelectOption | null
++ @opentui/core: method TabSelectRenderable.getShowDescription(): boolean
++ @opentui/core: method TabSelectRenderable.getShowScrollArrows(): boolean
++ @opentui/core: method TabSelectRenderable.getShowUnderline(): boolean
++ @opentui/core: method TabSelectRenderable.getTabWidth(): number
++ @opentui/core: method TabSelectRenderable.getWrapSelection(): boolean
++ @opentui/core: method TabSelectRenderable.handleKeyPress(key: ParsedKey | string): boolean
++ @opentui/core: method TabSelectRenderable.moveLeft(): void
++ @opentui/core: method TabSelectRenderable.moveRight(): void
++ @opentui/core: protected method TabSelectRenderable.onResize(width: number, height: number): void
++ @opentui/core: protected method TabSelectRenderable.renderSelf(buffer: OptimizedBuffer, deltaTime: number): void
++ @opentui/core: method TabSelectRenderable.selectCurrent(): void
++ @opentui/core: method TabSelectRenderable.setOptions(options: TabSelectOption[]): void
++ @opentui/core: method TabSelectRenderable.setSelectedIndex(index: number): void
++ @opentui/core: method TabSelectRenderable.setShowDescription(show: boolean): void
++ @opentui/core: method TabSelectRenderable.setShowScrollArrows(show: boolean): void
++ @opentui/core: method TabSelectRenderable.setShowUnderline(show: boolean): void
++ @opentui/core: method TabSelectRenderable.setTabWidth(tabWidth: number): void
++ @opentui/core: method TabSelectRenderable.setWrapSelection(wrap: boolean): void
++ @opentui/core: method TextBuffer.concat(other: TextBuffer): TextBuffer
++ @opentui/core: static method TextBuffer.create(capacity?: number): TextBuffer
++ @opentui/core: method TextBuffer.destroy(): void
++ @opentui/core: method TextBuffer.resetDefaults(): void
++ @opentui/core: method TextBuffer.resetSelection(): void
++ @opentui/core: method TextBuffer.setDefaultAttributes(attributes: number | null): void
++ @opentui/core: method TextBuffer.setDefaultBg(bg: RGBA | null): void
++ @opentui/core: method TextBuffer.setDefaultFg(fg: RGBA | null): void
++ @opentui/core: method TextBuffer.setSelection(start: number, end: number, bgColor?: RGBA, fgColor?: RGBA): void
++ @opentui/core: method TextBuffer.setStyledText(text: StyledText): void
++ @opentui/core: method TextBuffer.toString(): string
++ @opentui/core: method TextRenderable.destroy(): void
++ @opentui/core: method TextRenderable.getSelectedText(): string
++ @opentui/core: method TextRenderable.hasSelection(): boolean
++ @opentui/core: protected method TextRenderable.onResize(width: number, height: number): void
++ @opentui/core: method TextRenderable.onSelectionChanged(selection: SelectionState | null): boolean
++ @opentui/core: protected method TextRenderable.renderSelf(buffer: OptimizedBuffer): void
++ @opentui/core: method TextRenderable.shouldStartSelection(x: number, y: number): boolean
++ @opentui/core: method TextSelectionHelper.getSelection(): { start: number; end: number; } | null
++ @opentui/core: method TextSelectionHelper.hasSelection(): boolean
++ @opentui/core: method TextSelectionHelper.onSelectionChanged(selection: SelectionState | null, width: number, height?: number): boolean
++ @opentui/core: method TextSelectionHelper.reevaluateSelection(width: number, height?: number): boolean
++ @opentui/core: method TextSelectionHelper.shouldStartSelection(x: number, y: number, width: number, height: number): boolean
++ @opentui/core: method Timeline.add(target: any, properties: AnimationOptions, startTime?: number | string): this
++ @opentui/core: method Timeline.call(callback: () => void, startTime?: number | string): this
++ @opentui/core: method Timeline.once(target: any, properties: AnimationOptions): this
++ @opentui/core: method Timeline.pause(): this
++ @opentui/core: method Timeline.play(): this
++ @opentui/core: method Timeline.resetItems(): void
++ @opentui/core: method Timeline.restart(): this
++ @opentui/core: method Timeline.sync(timeline: Timeline, startTime?: number): this
++ @opentui/core: method Timeline.update(deltaTime: number): void
++ @opentui/core: method TrackedNode.addChild<U extends NodeMetadata>(childNode: TrackedNode<U>): number
++ @opentui/core: method TrackedNode.destroy(): void
++ @opentui/core: method TrackedNode.getChildAtIndex(index: number): TrackedNode<any> | null
++ @opentui/core: method TrackedNode.getChildCount(): number
++ @opentui/core: method TrackedNode.getChildIndex<U extends NodeMetadata>(childNode: TrackedNode<U>): number
++ @opentui/core: method TrackedNode.getMetadata<K extends keyof T>(key: K): T[K]
++ @opentui/core: method TrackedNode.hasChild<U extends NodeMetadata>(childNode: TrackedNode<U>): boolean
++ @opentui/core: method TrackedNode.insertChild<U extends NodeMetadata>(childNode: TrackedNode<U>, index: number): number
++ @opentui/core: method TrackedNode.moveChild<U extends NodeMetadata>(childNode: TrackedNode<U>, newIndex: number): number
++ @opentui/core: method TrackedNode.parseHeight(height: number | "auto" | `${number}%`): number | "auto"
++ @opentui/core: method TrackedNode.parseWidth(width: number | "auto" | `${number}%`): number | "auto"
++ @opentui/core: method TrackedNode.removeChild<U extends NodeMetadata>(childNode: TrackedNode<U>): boolean
++ @opentui/core: method TrackedNode.removeChildAtIndex(index: number): TrackedNode<any> | null
++ @opentui/core: method TrackedNode.removeMetadata<K extends keyof T>(key: K): void
++ @opentui/core: method TrackedNode.setHeight(height: number | "auto" | `${number}%`): void
++ @opentui/core: method TrackedNode.setMetadata(key: keyof T, value: T[keyof T]): void
++ @opentui/core: method TrackedNode.setWidth(width: number | "auto" | `${number}%`): void
++ @opentui/core: method VignetteEffect.apply(buffer: OptimizedBuffer): void
++ @opentui/core: property ASCIIFontOptions.bg?: RGBA
++ @opentui/core: property ASCIIFontOptions.fg?: RGBA | RGBA[]
++ @opentui/core: property ASCIIFontOptions.font?: "tiny" | "block" | "shade" | "slick"
++ @opentui/core: property ASCIIFontOptions.selectable?: boolean
++ @opentui/core: property ASCIIFontOptions.selectionBg?: string | RGBA
++ @opentui/core: property ASCIIFontOptions.selectionFg?: string | RGBA
++ @opentui/core: property ASCIIFontOptions.text: string
++ @opentui/core: property ASCIIFontRenderable.bg: RGBA
++ @opentui/core: property ASCIIFontRenderable.fg: RGBA[]
++ @opentui/core: property ASCIIFontRenderable.font: keyof typeof fonts
++ @opentui/core: property ASCIIFontRenderable.selectable: boolean
++ @opentui/core: property ASCIIFontRenderable.text: string
++ @opentui/core: property AnimationOptions.alternate?: boolean
++ @opentui/core: property AnimationOptions.duration: number
++ @opentui/core: property AnimationOptions.ease?: EasingFunctions
++ @opentui/core: property AnimationOptions.loop?: boolean | number
++ @opentui/core: property AnimationOptions.loopDelay?: number
++ @opentui/core: property AnimationOptions.onComplete?: () => void
++ @opentui/core: property AnimationOptions.onLoop?: () => void
++ @opentui/core: property AnimationOptions.onStart?: () => void
++ @opentui/core: property AnimationOptions.onUpdate?: (animation: JSAnimation) => void
++ @opentui/core: property AnimationOptions.once?: boolean
++ @opentui/core: property BloomEffect.radius: number
++ @opentui/core: property BloomEffect.strength: number
++ @opentui/core: property BloomEffect.threshold: number
++ @opentui/core: property BlurEffect.radius: number
++ @opentui/core: property BorderCharacters.bottomLeft: string
++ @opentui/core: property BorderCharacters.bottomRight: string
++ @opentui/core: property BorderCharacters.bottomT: string
++ @opentui/core: property BorderCharacters.cross: string
++ @opentui/core: property BorderCharacters.horizontal: string
++ @opentui/core: property BorderCharacters.leftT: string
++ @opentui/core: property BorderCharacters.rightT: string
++ @opentui/core: property BorderCharacters.topLeft: string
++ @opentui/core: property BorderCharacters.topRight: string
++ @opentui/core: property BorderCharacters.topT: string
++ @opentui/core: property BorderCharacters.vertical: string
++ @opentui/core: property BorderConfig.border: boolean | BorderSides[]
++ @opentui/core: property BorderConfig.borderColor?: ColorInput
++ @opentui/core: property BorderConfig.borderStyle: BorderStyle
++ @opentui/core: property BorderConfig.customBorderChars?: BorderCharacters
++ @opentui/core: property BorderSidesConfig.bottom: boolean
++ @opentui/core: property BorderSidesConfig.left: boolean
++ @opentui/core: property BorderSidesConfig.right: boolean
++ @opentui/core: property BorderSidesConfig.top: boolean
++ @opentui/core: property BoxDrawOptions.backgroundColor: ColorInput
++ @opentui/core: property BoxDrawOptions.border: boolean | BorderSides[]
++ @opentui/core: property BoxDrawOptions.borderColor: ColorInput
++ @opentui/core: property BoxDrawOptions.borderStyle: BorderStyle
++ @opentui/core: property BoxDrawOptions.customBorderChars?: BorderCharacters
++ @opentui/core: property BoxDrawOptions.height: number
++ @opentui/core: property BoxDrawOptions.shouldFill?: boolean
++ @opentui/core: property BoxDrawOptions.title?: string
++ @opentui/core: property BoxDrawOptions.titleAlignment?: "left" | "center" | "right"
++ @opentui/core: property BoxDrawOptions.width: number
++ @opentui/core: property BoxDrawOptions.x: number
++ @opentui/core: property BoxDrawOptions.y: number
++ @opentui/core: property BoxOptions.bg?: string | RGBA
++ @opentui/core: property BoxOptions.border?: boolean | BorderSides[]
++ @opentui/core: property BoxOptions.borderColor?: string | RGBA
++ @opentui/core: property BoxOptions.borderStyle?: BorderStyle
++ @opentui/core: property BoxOptions.customBorderChars?: BorderCharacters
++ @opentui/core: property BoxOptions.focusedBorderColor?: ColorInput
++ @opentui/core: property BoxOptions.shouldFill?: boolean
++ @opentui/core: property BoxOptions.title?: string
++ @opentui/core: property BoxOptions.titleAlignment?: "left" | "center" | "right"
++ @opentui/core: protected property BoxRenderable._bg: RGBA
++ @opentui/core: protected property BoxRenderable._border: boolean | BorderSides[]
++ @opentui/core: protected property BoxRenderable._borderColor: RGBA
++ @opentui/core: protected property BoxRenderable._borderStyle: BorderStyle
++ @opentui/core: protected property BoxRenderable._focusedBorderColor: RGBA
++ @opentui/core: protected property BoxRenderable._title?: string
++ @opentui/core: protected property BoxRenderable._titleAlignment: "left" | "center" | "right"
++ @opentui/core: property BoxRenderable.bg: RGBA
++ @opentui/core: property BoxRenderable.border: boolean | BorderSides[]
++ @opentui/core: property BoxRenderable.borderColor: RGBA
++ @opentui/core: protected property BoxRenderable.borderSides: BorderSidesConfig
++ @opentui/core: property BoxRenderable.borderStyle: BorderStyle
++ @opentui/core: protected property BoxRenderable.customBorderChars?: Uint32Array
++ @opentui/core: property BoxRenderable.focusedBorderColor: RGBA
++ @opentui/core: property BoxRenderable.shouldFill: boolean
++ @opentui/core: property BoxRenderable.title: string | undefined
++ @opentui/core: property BoxRenderable.titleAlignment: "left" | "center" | "right"
++ @opentui/core: property BrightnessEffect.brightness: number
++ @opentui/core: readonly property CliRenderer.console: TerminalConsole
++ @opentui/core: property CliRenderer.currentRenderBuffer: OptimizedBuffer
++ @opentui/core: property CliRenderer.debugOverlay: { enabled: boolean; corner: DebugOverlayCorner; }
++ @opentui/core: property CliRenderer.experimental_splitHeight: number
++ @opentui/core: property CliRenderer.height: number
++ @opentui/core: readonly property CliRenderer.isRunning: boolean
++ @opentui/core: property CliRenderer.nextRenderBuffer: OptimizedBuffer
++ @opentui/core: property CliRenderer.rendererPtr: Pointer
++ @opentui/core: readonly property CliRenderer.resolution: PixelResolution | null
++ @opentui/core: readonly property CliRenderer.root: RootRenderable
++ @opentui/core: readonly property CliRenderer.terminalHeight: number
++ @opentui/core: readonly property CliRenderer.terminalWidth: number
++ @opentui/core: property CliRenderer.useConsole: boolean
++ @opentui/core: property CliRenderer.useMouse: boolean
++ @opentui/core: property CliRenderer.useThread: boolean
++ @opentui/core: property CliRenderer.width: number
++ @opentui/core: property CliRendererConfig.consoleOptions?: ConsoleOptions
++ @opentui/core: property CliRendererConfig.debounceDelay?: number
++ @opentui/core: property CliRendererConfig.enableMouseMovement?: boolean
++ @opentui/core: property CliRendererConfig.exitOnCtrlC?: boolean
++ @opentui/core: property CliRendererConfig.experimental_splitHeight?: number
++ @opentui/core: property CliRendererConfig.gatherStats?: boolean
++ @opentui/core: property CliRendererConfig.maxStatSamples?: number
++ @opentui/core: property CliRendererConfig.memorySnapshotInterval?: number
++ @opentui/core: property CliRendererConfig.postProcessFns?: ((buffer: OptimizedBuffer, deltaTime: number) => void)[]
++ @opentui/core: property CliRendererConfig.stdin?: NodeJS.ReadStream
++ @opentui/core: property CliRendererConfig.stdout?: NodeJS.WriteStream
++ @opentui/core: property CliRendererConfig.targetFps?: number
++ @opentui/core: property CliRendererConfig.useAlternateScreen?: boolean
++ @opentui/core: property CliRendererConfig.useConsole?: boolean
++ @opentui/core: property CliRendererConfig.useMouse?: boolean
++ @opentui/core: property CliRendererConfig.useThread?: boolean
++ @opentui/core: property DistortionEffect.colorGlitchChance: number
++ @opentui/core: property DistortionEffect.glitchChancePerSecond: number
++ @opentui/core: property DistortionEffect.maxGlitchDuration: number
++ @opentui/core: property DistortionEffect.maxGlitchLines: number
++ @opentui/core: property DistortionEffect.maxShiftAmount: number
++ @opentui/core: property DistortionEffect.minGlitchDuration: number
++ @opentui/core: property DistortionEffect.shiftFlipRatio: number
++ @opentui/core: property FrameBufferOptions.height: number
++ @opentui/core: property FrameBufferOptions.respectAlpha?: boolean
++ @opentui/core: property FrameBufferOptions.width: number
++ @opentui/core: property FrameBufferRenderable.frameBuffer: OptimizedBuffer
++ @opentui/core: protected property FrameBufferRenderable.respectAlpha: boolean
++ @opentui/core: protected property InputRenderable.focusable: boolean
++ @opentui/core: property InputRenderableOptions.backgroundColor?: ColorInput
++ @opentui/core: property InputRenderableOptions.cursorColor?: ColorInput
++ @opentui/core: property InputRenderableOptions.focusedBackgroundColor?: ColorInput
++ @opentui/core: property InputRenderableOptions.focusedTextColor?: ColorInput
++ @opentui/core: property InputRenderableOptions.maxLength?: number
++ @opentui/core: property InputRenderableOptions.placeholder?: string
++ @opentui/core: property InputRenderableOptions.placeholderColor?: ColorInput
++ @opentui/core: property InputRenderableOptions.textColor?: ColorInput
++ @opentui/core: property InputRenderableOptions.value?: string
++ @opentui/core: property JSAnimation.currentTime: number
++ @opentui/core: property JSAnimation.deltaTime: number
++ @opentui/core: property JSAnimation.progress: number
++ @opentui/core: property JSAnimation.targets: any[]
++ @opentui/core: property LayoutOptions.alignItems?: Align
++ @opentui/core: property LayoutOptions.enableLayout?: boolean
++ @opentui/core: property LayoutOptions.flexBasis?: number | "auto" | undefined
++ @opentui/core: property LayoutOptions.flexDirection?: FlexDirection
++ @opentui/core: property LayoutOptions.flexGrow?: number
++ @opentui/core: property LayoutOptions.flexShrink?: number
++ @opentui/core: property LayoutOptions.justifyContent?: Justify
++ @opentui/core: property LayoutOptions.margin?: { top?: number; right?: number; bottom?: number; left?: number; } | number | "auto" | `${number}%`
++ @opentui/core: property LayoutOptions.maxHeight?: number
++ @opentui/core: property LayoutOptions.maxWidth?: number
++ @opentui/core: property LayoutOptions.minHeight?: number
++ @opentui/core: property LayoutOptions.minWidth?: number
++ @opentui/core: property LayoutOptions.padding?: { top?: number; right?: number; bottom?: number; left?: number; } | number | `${number}%`
++ @opentui/core: property LayoutOptions.position?: Position
++ @opentui/core: property LayoutOptions.positionType?: "absolute" | "relative"
++ @opentui/core: readonly property MouseEvent.button: number
++ @opentui/core: readonly property MouseEvent.defaultPrevented: boolean
++ @opentui/core: readonly property MouseEvent.modifiers: { shift: boolean; alt: boolean; ctrl: boolean; }
++ @opentui/core: readonly property MouseEvent.scroll?: ScrollInfo
++ @opentui/core: readonly property MouseEvent.source?: Renderable
++ @opentui/core: readonly property MouseEvent.target: Renderable | null
++ @opentui/core: readonly property MouseEvent.type: MouseEventType
++ @opentui/core: readonly property MouseEvent.x: number
++ @opentui/core: readonly property MouseEvent.y: number
++ @opentui/core: readonly property OptimizedBuffer.buffers: { char: Uint32Array; fg: Float32Array; bg: Float32Array; attributes: Uint8Array; }
++ @opentui/core: property OptimizedBuffer.id: string
++ @opentui/core: property OptimizedBuffer.lib: RenderLib
++ @opentui/core: readonly property OptimizedBuffer.ptr: Pointer
++ @opentui/core: property OptimizedBuffer.respectAlpha: boolean
++ @opentui/core: property Position.bottom?: number | "auto" | `${number}%`
++ @opentui/core: property Position.left?: number | "auto" | `${number}%`
++ @opentui/core: property Position.right?: number | "auto" | `${number}%`
++ @opentui/core: property Position.top?: number | "auto" | `${number}%`
++ @opentui/core: property RGBA.a: number
++ @opentui/core: property RGBA.b: number
++ @opentui/core: property RGBA.buffer: Float32Array
++ @opentui/core: property RGBA.g: number
++ @opentui/core: property RGBA.r: number
++ @opentui/core: property RenderContext.addToHitGrid: (x: number, y: number, width: number, height: number, id: number) => void
++ @opentui/core: property RenderContext.height: () => number
++ @opentui/core: property RenderContext.needsUpdate: () => void
++ @opentui/core: property RenderContext.width: () => number
++ @opentui/core: protected property Renderable._focused: boolean
++ @opentui/core: protected property Renderable._height: number | "auto" | `${number}%`
++ @opentui/core: protected property Renderable._position: Position
++ @opentui/core: protected property Renderable._positionType: "absolute" | "relative"
++ @opentui/core: protected property Renderable._visible: boolean
++ @opentui/core: protected property Renderable._width: number | "auto" | `${number}%`
++ @opentui/core: property Renderable.alignItems: Align
++ @opentui/core: protected property Renderable.buffered: boolean
++ @opentui/core: protected property Renderable.ctx: RenderContext | null
++ @opentui/core: property Renderable.flexBasis: number | "auto" | undefined
++ @opentui/core: property Renderable.flexDirection: FlexDirection
++ @opentui/core: property Renderable.flexGrow: number
++ @opentui/core: property Renderable.flexShrink: number
++ @opentui/core: protected property Renderable.focusable: boolean
++ @opentui/core: readonly property Renderable.focused: boolean
++ @opentui/core: protected property Renderable.frameBuffer: OptimizedBuffer | null
++ @opentui/core: property Renderable.height: number
++ @opentui/core: readonly property Renderable.id: string
++ @opentui/core: protected readonly property Renderable.isDirty: boolean
++ @opentui/core: property Renderable.justifyContent: Justify
++ @opentui/core: protected property Renderable.keyHandler: KeyHandler
++ @opentui/core: protected property Renderable.keypressHandler: ((key: ParsedKey) => void) | null
++ @opentui/core: protected property Renderable.layoutNode: TrackedNode
++ @opentui/core: property Renderable.left: number
++ @opentui/core: property Renderable.maxHeight: number | `${number}%` | undefined
++ @opentui/core: property Renderable.maxWidth: number | `${number}%` | undefined
++ @opentui/core: property Renderable.minHeight: number | `${number}%` | undefined
++ @opentui/core: property Renderable.minWidth: number | `${number}%` | undefined
++ @opentui/core: readonly property Renderable.num: number
++ @opentui/core: property Renderable.parent: Renderable | null
++ @opentui/core: static property Renderable.renderablesByNumber: Map<number, Renderable>
++ @opentui/core: property Renderable.selectable: boolean
++ @opentui/core: property Renderable.top: number
++ @opentui/core: property Renderable.visible: boolean
++ @opentui/core: property Renderable.width: number
++ @opentui/core: property Renderable.x: number
++ @opentui/core: property Renderable.y: number
++ @opentui/core: property Renderable.zIndex: number
++ @opentui/core: property RenderableOptions.buffered?: boolean
++ @opentui/core: property RenderableOptions.height?: number | "auto" | `${number}%`
++ @opentui/core: property RenderableOptions.visible?: boolean
++ @opentui/core: property RenderableOptions.width?: number | "auto" | `${number}%`
++ @opentui/core: property RenderableOptions.zIndex?: number
++ @opentui/core: property SelectOption.description: string
++ @opentui/core: property SelectOption.name: string
++ @opentui/core: property SelectOption.value?: any
++ @opentui/core: protected property SelectRenderable.focusable: boolean
++ @opentui/core: property SelectRenderableOptions.backgroundColor?: ColorInput
++ @opentui/core: property SelectRenderableOptions.descriptionColor?: ColorInput
++ @opentui/core: property SelectRenderableOptions.fastScrollStep?: number
++ @opentui/core: property SelectRenderableOptions.focusedBackgroundColor?: ColorInput
++ @opentui/core: property SelectRenderableOptions.focusedTextColor?: ColorInput
++ @opentui/core: property SelectRenderableOptions.font?: keyof typeof fonts
++ @opentui/core: property SelectRenderableOptions.itemSpacing?: number
++ @opentui/core: property SelectRenderableOptions.options: SelectOption[]
++ @opentui/core: property SelectRenderableOptions.selectedBackgroundColor?: ColorInput
++ @opentui/core: property SelectRenderableOptions.selectedDescriptionColor?: ColorInput
++ @opentui/core: property SelectRenderableOptions.selectedTextColor?: ColorInput
++ @opentui/core: property SelectRenderableOptions.showDescription?: boolean
++ @opentui/core: property SelectRenderableOptions.showScrollIndicator?: boolean
++ @opentui/core: property SelectRenderableOptions.textColor?: ColorInput
++ @opentui/core: property SelectRenderableOptions.wrapSelection?: boolean
++ @opentui/core: readonly property Selection.anchor: { x: number; y: number; }
++ @opentui/core: readonly property Selection.bounds: { startX: number; startY: number; endX: number; endY: number; }
++ @opentui/core: readonly property Selection.focus: { x: number; y: number; }
++ @opentui/core: property SelectionState.anchor: { x: number; y: number; }
++ @opentui/core: property SelectionState.focus: { x: number; y: number; }
++ @opentui/core: property SelectionState.isActive: boolean
++ @opentui/core: property SelectionState.isSelecting: boolean
++ @opentui/core: property StyleAttrs.bg?: Color
++ @opentui/core: property StyleAttrs.blink?: boolean
++ @opentui/core: property StyleAttrs.bold?: boolean
++ @opentui/core: property StyleAttrs.dim?: boolean
++ @opentui/core: property StyleAttrs.fg?: Color
++ @opentui/core: property StyleAttrs.italic?: boolean
++ @opentui/core: property StyleAttrs.reverse?: boolean
++ @opentui/core: property StyleAttrs.strikethrough?: boolean
++ @opentui/core: property StyleAttrs.underline?: boolean
++ @opentui/core: readonly property StyledText.chunks: TextChunk[]
++ @opentui/core: readonly property StyledText.length: number
++ @opentui/core: property TabSelectOption.description: string
++ @opentui/core: property TabSelectOption.name: string
++ @opentui/core: property TabSelectOption.value?: any
++ @opentui/core: protected property TabSelectRenderable.focusable: boolean
++ @opentui/core: property TabSelectRenderableOptions.backgroundColor?: ColorInput
++ @opentui/core: property TabSelectRenderableOptions.focusedBackgroundColor?: ColorInput
++ @opentui/core: property TabSelectRenderableOptions.focusedTextColor?: ColorInput
++ @opentui/core: property TabSelectRenderableOptions.height?: number
++ @opentui/core: property TabSelectRenderableOptions.options: TabSelectOption[]
++ @opentui/core: property TabSelectRenderableOptions.selectedBackgroundColor?: ColorInput
++ @opentui/core: property TabSelectRenderableOptions.selectedDescriptionColor?: ColorInput
++ @opentui/core: property TabSelectRenderableOptions.selectedTextColor?: ColorInput
++ @opentui/core: property TabSelectRenderableOptions.showDescription?: boolean
++ @opentui/core: property TabSelectRenderableOptions.showScrollArrows?: boolean
++ @opentui/core: property TabSelectRenderableOptions.showUnderline?: boolean
++ @opentui/core: property TabSelectRenderableOptions.tabWidth?: number
++ @opentui/core: property TabSelectRenderableOptions.textColor?: ColorInput
++ @opentui/core: property TabSelectRenderableOptions.wrapSelection?: boolean
++ @opentui/core: readonly property TextBuffer.capacity: number
++ @opentui/core: readonly property TextBuffer.length: number
++ @opentui/core: readonly property TextBuffer.lineInfo: { lineStarts: number[]; lineWidths: number[]; }
++ @opentui/core: readonly property TextBuffer.ptr: Pointer
++ @opentui/core: property TextChunk.attributes?: number
++ @opentui/core: property TextChunk.bg?: RGBA
++ @opentui/core: property TextChunk.fg?: RGBA
++ @opentui/core: property TextChunk.plainText: string
++ @opentui/core: property TextChunk.text: Uint8Array
++ @opentui/core: property TextOptions.attributes?: number
++ @opentui/core: property TextOptions.bg?: string | RGBA
++ @opentui/core: property TextOptions.content: StyledText | string
++ @opentui/core: property TextOptions.fg?: string | RGBA
++ @opentui/core: property TextOptions.selectable?: boolean
++ @opentui/core: property TextOptions.selectionBg?: string | RGBA
++ @opentui/core: property TextOptions.selectionFg?: string | RGBA
++ @opentui/core: property TextRenderable.attributes: number
++ @opentui/core: property TextRenderable.bg: RGBA
++ @opentui/core: property TextRenderable.content: StyledText
++ @opentui/core: property TextRenderable.fg: RGBA
++ @opentui/core: property TextRenderable.selectable: boolean
++ @opentui/core: property Timeline.currentTime: number
++ @opentui/core: property Timeline.duration: number
++ @opentui/core: property Timeline.isComplete: boolean
++ @opentui/core: property Timeline.isPlaying: boolean
++ @opentui/core: property Timeline.items: (TimelineAnimationItem | TimelineCallbackItem)[]
++ @opentui/core: property Timeline.loop: boolean
++ @opentui/core: property Timeline.subTimelines: TimelineTimelineItem[]
++ @opentui/core: property Timeline.synced: boolean
++ @opentui/core: property TimelineOptions.autoplay?: boolean
++ @opentui/core: property TimelineOptions.duration?: number
++ @opentui/core: property TimelineOptions.loop?: boolean
++ @opentui/core: property TimelineOptions.onComplete?: () => void
++ @opentui/core: property TimelineOptions.onPause?: () => void
++ @opentui/core: protected property TrackedNode._destroyed: boolean
++ @opentui/core: protected property TrackedNode._height: number | "auto" | `${number}%`
++ @opentui/core: protected property TrackedNode._width: number | "auto" | `${number}%`
++ @opentui/core: property TrackedNode.children: TrackedNode<any>[]
++ @opentui/core: property TrackedNode.id: number
++ @opentui/core: property TrackedNode.metadata: T
++ @opentui/core: property TrackedNode.parent: TrackedNode<any> | null
++ @opentui/core: property TrackedNode.yogaNode: YogaNode
++ @opentui/core: property TrackedNode.zIndex: number
++ @opentui/core: property VignetteEffect.strength: number
++ @opentui/core: reexport Align from "yoga-layout"
++ @opentui/core: reexport Direction from "yoga-layout"
++ @opentui/core: reexport Edge from "yoga-layout"
++ @opentui/core: reexport FlexDirection from "yoga-layout"
++ @opentui/core: reexport Justify from "yoga-layout"
++ @opentui/core: reexport PositionType from "yoga-layout"
++ @opentui/core: type BorderSides = "top" | "right" | "bottom" | "left"
++ @opentui/core: type BorderStyle = "single" | "double" | "rounded" | "heavy"
++ @opentui/core: type Color = ColorInput
++ @opentui/core: type ColorInput = string | RGBA
++ @opentui/core: type CursorStyle = "block" | "line" | "underline"
++ @opentui/core: type EasingFunctions = keyof typeof easingFunctions
++ @opentui/core: type ParsedKey = { name: string; ctrl: boolean; meta: boolean; shift: boolean; option: boolean; sequence: string; number: boolean; raw: string; code?: string; }
++ @opentui/core: type PixelResolution = { width: number; height: number; }
++ @opentui/core: type StylableInput = string | number | boolean | TextChunk

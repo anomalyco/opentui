@@ -1,0 +1,40 @@
+base 0.1.63
++ @opentui/core: const ATTRIBUTE_BASE_BITS = 8
++ @opentui/core: const ATTRIBUTE_BASE_MASK = 255
++ @opentui/core: const link: (url: string) => (input: StylableInput) => TextChunk
++ @opentui/core: function attributesWithLink(baseAttributes: number, linkId: number): number
++ @opentui/core: function getBaseAttributes(attr: number): number
++ @opentui/core: function getLinkId(attributes: number): number
++ @opentui/core: function parseAlignItems(value: string | null | undefined): Align
+- @opentui/core: method TextNodeRenderable.gatherWithInheritedStyle(parentStyle?: { fg?: RGBA; bg?: RGBA; attributes: number; }): TextChunk[]
++ @opentui/core: method TextNodeRenderable.gatherWithInheritedStyle(parentStyle?: { fg?: RGBA; bg?: RGBA; attributes: number; link?: { url: string; }; }): TextChunk[]
+- @opentui/core: method TextNodeRenderable.mergeStyles(parentStyle: { fg?: RGBA; bg?: RGBA; attributes: number; }): { fg?: RGBA; bg?: RGBA; attributes: number; }
++ @opentui/core: method TextNodeRenderable.mergeStyles(parentStyle: { fg?: RGBA; bg?: RGBA; attributes: number; link?: { url: string; }; }): { fg?: RGBA; bg?: RGBA; attributes: number; link?: { url: string; }; }
+- @opentui/core: method TextNodeRenderable.toChunks(parentStyle?: { fg?: RGBA; bg?: RGBA; attributes: number; }): TextChunk[]
++ @opentui/core: method TextNodeRenderable.toChunks(parentStyle?: { fg?: RGBA; bg?: RGBA; attributes: number; link?: { url: string; }; }): TextChunk[]
+- @opentui/core: readonly property OptimizedBuffer.buffers: { char: Uint32Array; fg: Float32Array; bg: Float32Array; attributes: Uint8Array; }
++ @opentui/core: readonly property OptimizedBuffer.buffers: { char: Uint32Array; fg: Float32Array; bg: Float32Array; attributes: Uint32Array; }
+- @opentui/core: property RenderLib.textBufferSetStyledText: (buffer: Pointer, chunks: Array<{ text: string; fg?: RGBA | null; bg?: RGBA | null; attributes?: number; }>) => void
++ @opentui/core: property RenderLib.textBufferSetStyledText: (buffer: Pointer, chunks: Array<{ text: string; fg?: RGBA | null; bg?: RGBA | null; attributes?: number; link?: { url: string; }; }>) => void
++ @opentui/core: property TextChunk.link?: { url: string; }
++ @opentui/core: property TextNodeOptions.link?: { url: string; }
++ @opentui/core: property TextNodeRenderable.link: { url: string; } | undefined
++ @opentui/react/jsx-dev-runtime: property JSX.IntrinsicElements.a: LinkProps
++ @opentui/react/jsx-runtime: property JSX.IntrinsicElements.a: LinkProps
++ @opentui/react/renderer: const createPortal: (children: ReactNode, containerInfo: any, implementation: any, key?: string | null) => ReactPortal
+- @opentui/react: const baseComponents: { box: typeof BoxRenderable; text: typeof TextRenderable; code: typeof CodeRenderable; diff: typeof DiffRenderable; input: typeof InputRenderable; select: typeof SelectRenderable; textarea: typeof TextareaRenderable; scrollbox: typeof ScrollBoxRenderable; "ascii-font": typeof ASCIIFontRenderable; "tab-select": typeof TabSelectRenderable; "line-number": typeof LineNumberRenderable; span: typeof SpanRenderable; br: typeof LineBreakRenderable; b: typeof BoldSpanRenderable; strong: typeof BoldSpanRenderable; i: typeof ItalicSpanRenderable; em: typeof ItalicSpanRenderable; u: typeof UnderlineSpanRenderable; }
++ @opentui/react: const baseComponents: { box: typeof BoxRenderable; text: typeof TextRenderable; code: typeof CodeRenderable; diff: typeof DiffRenderable; input: typeof InputRenderable; select: typeof SelectRenderable; textarea: typeof TextareaRenderable; scrollbox: typeof ScrollBoxRenderable; "ascii-font": typeof ASCIIFontRenderable; "tab-select": typeof TabSelectRenderable; "line-number": typeof LineNumberRenderable; span: typeof SpanRenderable; br: typeof LineBreakRenderable; b: typeof BoldSpanRenderable; strong: typeof BoldSpanRenderable; i: typeof ItalicSpanRenderable; em: typeof ItalicSpanRenderable; u: typeof UnderlineSpanRenderable; a: typeof LinkRenderable; }
++ @opentui/react: const createPortal: (children: ReactNode, containerInfo: any, implementation: any, key?: string | null) => ReactPortal
++ @opentui/react: type LinkProps = SpanProps & { href: string; }
++ @opentui/solid/jsx-dev-runtime: property JSX.IntrinsicElements.a: LinkProps
++ @opentui/solid/jsx-runtime: property JSX.IntrinsicElements.a: LinkProps
++ @opentui/solid: class LinkRenderable extends SpanRenderable
+- @opentui/solid: const baseComponents: { box: typeof BoxRenderable; text: typeof TextRenderable; input: typeof InputRenderable; select: typeof SelectRenderable; textarea: typeof TextareaRenderable; ascii_font: typeof ASCIIFontRenderable; tab_select: typeof TabSelectRenderable; scrollbox: typeof ScrollBoxRenderable; code: typeof CodeRenderable; diff: typeof DiffRenderable; line_number: typeof LineNumberRenderable; span: typeof SpanRenderable; strong: typeof BoldSpanRenderable; b: typeof BoldSpanRenderable; em: typeof ItalicSpanRenderable; i: typeof ItalicSpanRenderable; u: typeof UnderlineSpanRenderable; br: typeof LineBreakRenderable; }
++ @opentui/solid: const baseComponents: { box: typeof BoxRenderable; text: typeof TextRenderable; input: typeof InputRenderable; select: typeof SelectRenderable; textarea: typeof TextareaRenderable; ascii_font: typeof ASCIIFontRenderable; tab_select: typeof TabSelectRenderable; scrollbox: typeof ScrollBoxRenderable; code: typeof CodeRenderable; diff: typeof DiffRenderable; line_number: typeof LineNumberRenderable; span: typeof SpanRenderable; strong: typeof BoldSpanRenderable; b: typeof BoldSpanRenderable; em: typeof ItalicSpanRenderable; i: typeof ItalicSpanRenderable; u: typeof UnderlineSpanRenderable; br: typeof LineBreakRenderable; a: typeof LinkRenderable; }
+- @opentui/solid: const textNodeKeys: readonly [ "span", "b", "strong", "i", "em", "u" ]
++ @opentui/solid: const textNodeKeys: readonly [ "span", "b", "strong", "i", "em", "u", "a" ]
++ @opentui/solid: constructor LinkRenderable(_ctx: RenderContext | null, options: LinkOptions)
++ @opentui/solid: interface LinkOptions extends TextNodeOptions
++ @opentui/solid: property JSX.IntrinsicElements.a: LinkProps
++ @opentui/solid: property LinkOptions.href: string
++ @opentui/solid: type LinkProps = SpanProps & { href: string; }

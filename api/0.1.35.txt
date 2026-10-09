@@ -1,0 +1,40 @@
+base 0.1.34
+- @opentui/core: constructor ScrollBoxRenderable(ctx: RenderContext, { wrapperOptions, viewportOptions, contentOptions, rootOptions, scrollbarOptions, verticalScrollbarOptions, horizontalScrollbarOptions, stickyScroll, stickyStart, scrollX, scrollY, scrollAcceleration, ...options }: ScrollBoxOptions)
++ @opentui/core: constructor ScrollBoxRenderable(ctx: RenderContext, { wrapperOptions, viewportOptions, contentOptions, rootOptions, scrollbarOptions, verticalScrollbarOptions, horizontalScrollbarOptions, stickyScroll, stickyStart, scrollX, scrollY, scrollAcceleration, viewportCulling, ...options }: ScrollBoxOptions)
++ @opentui/core: interface CursorStyleOptions
++ @opentui/core: property CliRendererConfig.openConsoleOnError?: boolean
++ @opentui/core: property CodeOptions.streaming?: boolean
+- @opentui/core: protected property CodeRenderable._contentDefaultOptions: { content: string; conceal: true; drawUnstyledText: true; }
++ @opentui/core: protected property CodeRenderable._contentDefaultOptions: { content: string; conceal: true; drawUnstyledText: true; streaming: false; }
++ @opentui/core: property CodeRenderable.streaming: boolean
++ @opentui/core: property CursorStyleOptions.blinking: boolean
++ @opentui/core: property CursorStyleOptions.style: CursorStyle
+- @opentui/core: protected property InputRenderable._defaultOptions: { backgroundColor: string; textColor: string; focusedBackgroundColor: string; focusedTextColor: string; placeholder: string; placeholderColor: string; cursorColor: string; maxLength: number; value: string; }
++ @opentui/core: protected property InputRenderable._defaultOptions: { backgroundColor: string; textColor: string; focusedBackgroundColor: string; focusedTextColor: string; placeholder: string; placeholderColor: string; cursorColor: string; cursorStyle: { style: "block"; blinking: true; }; maxLength: number; value: string; }
++ @opentui/core: property InputRenderable.cursorStyle: CursorStyleOptions
++ @opentui/core: property InputRenderableOptions.cursorStyle?: CursorStyleOptions
++ @opentui/core: property ScrollBoxOptions.viewportCulling?: boolean
++ @opentui/core: property ScrollBoxRenderable.viewportCulling: boolean
+- @opentui/core: protected property SelectRenderable._defaultOptions: { backgroundColor: string; textColor: string; focusedBackgroundColor: string; focusedTextColor: string; selectedBackgroundColor: string; selectedTextColor: string; descriptionColor: string; selectedDescriptionColor: string; showScrollIndicator: false; wrapSelection: false; showDescription: true; itemSpacing: number; fastScrollStep: number; }
++ @opentui/core: protected property SelectRenderable._defaultOptions: { backgroundColor: string; textColor: string; focusedBackgroundColor: string; focusedTextColor: string; selectedBackgroundColor: string; selectedTextColor: string; selectedIndex: number; descriptionColor: string; selectedDescriptionColor: string; showScrollIndicator: false; wrapSelection: false; showDescription: true; itemSpacing: number; fastScrollStep: number; }
++ @opentui/core: property SelectRenderable.selectedIndex: number
++ @opentui/core: property SelectRenderableOptions.selectedIndex?: number
++ @opentui/react/jsx-dev-runtime: property JSX.IntrinsicElements.code: CodeProps
++ @opentui/react/jsx-dev-runtime: property JSX.IntrinsicElements.textarea: TextareaProps
++ @opentui/react/jsx-runtime: property JSX.IntrinsicElements.code: CodeProps
++ @opentui/react/jsx-runtime: property JSX.IntrinsicElements.textarea: TextareaProps
++ @opentui/react/renderer: function createRoot(renderer: CliRenderer): { render: (node: ReactNode) => void; }
+- @opentui/react/renderer: function render(node: ReactNode, rendererConfig?: CliRendererConfig): Promise<void>
++ @opentui/react/renderer: deprecated function render(node: ReactNode, rendererConfig?: CliRendererConfig): Promise<void>
+- @opentui/react: const baseComponents: { box: typeof BoxRenderable; text: typeof TextRenderable; input: typeof InputRenderable; select: typeof SelectRenderable; scrollbox: typeof ScrollBoxRenderable; "ascii-font": typeof ASCIIFontRenderable; "tab-select": typeof TabSelectRenderable; span: typeof SpanRenderable; br: typeof LineBreakRenderable; b: typeof BoldSpanRenderable; strong: typeof BoldSpanRenderable; i: typeof ItalicSpanRenderable; em: typeof ItalicSpanRenderable; u: typeof UnderlineSpanRenderable; }
++ @opentui/react: const baseComponents: { box: typeof BoxRenderable; text: typeof TextRenderable; code: typeof CodeRenderable; input: typeof InputRenderable; select: typeof SelectRenderable; textarea: typeof TextareaRenderable; scrollbox: typeof ScrollBoxRenderable; "ascii-font": typeof ASCIIFontRenderable; "tab-select": typeof TabSelectRenderable; span: typeof SpanRenderable; br: typeof LineBreakRenderable; b: typeof BoldSpanRenderable; strong: typeof BoldSpanRenderable; i: typeof ItalicSpanRenderable; em: typeof ItalicSpanRenderable; u: typeof UnderlineSpanRenderable; }
++ @opentui/react: function createRoot(renderer: CliRenderer): { render: (node: ReactNode) => void; }
+- @opentui/react: function render(node: ReactNode, rendererConfig?: CliRendererConfig): Promise<void>
++ @opentui/react: deprecated function render(node: ReactNode, rendererConfig?: CliRendererConfig): Promise<void>
++ @opentui/react: type CodeProps = ComponentProps<CodeOptions, CodeRenderable>
+- @opentui/react: type GetNonStyledProperties<TConstructor> = TConstructor extends RenderableConstructor<TextRenderable> ? NonStyledProps | "content" : TConstructor extends RenderableConstructor<BoxRenderable> ? NonStyledProps | "title" : TConstructor extends RenderableConstructor<ASCIIFontRenderable> ? NonStyledProps | "text" | "selectable" : TConstructor extends RenderableConstructor<InputRenderable> ? NonStyledProps | "placeholder" | "value" : NonStyledProps
++ @opentui/react: type GetNonStyledProperties<TConstructor> = TConstructor extends RenderableConstructor<TextRenderable> ? NonStyledProps | "content" : TConstructor extends RenderableConstructor<BoxRenderable> ? NonStyledProps | "title" : TConstructor extends RenderableConstructor<ASCIIFontRenderable> ? NonStyledProps | "text" | "selectable" : TConstructor extends RenderableConstructor<InputRenderable> ? NonStyledProps | "placeholder" | "value" : TConstructor extends RenderableConstructor<TextareaRenderable> ? NonStyledProps | "placeholder" | "initialValue" : TConstructor extends RenderableConstructor<CodeRenderable> ? NonStyledProps | "content" | "filetype" | "syntaxStyle" | "treeSitterClient" | "conceal" | "drawUnstyledText" : NonStyledProps
++ @opentui/react: type TextareaProps = ComponentProps<TextareaOptions, TextareaRenderable> & { focused?: boolean; }
++ @opentui/solid/jsx-dev-runtime: property JSX.IntrinsicElements.textarea: TextareaProps
++ @opentui/solid/jsx-runtime: property JSX.IntrinsicElements.textarea: TextareaProps
++ @opentui/solid: property JSX.IntrinsicElements.textarea: TextareaProps

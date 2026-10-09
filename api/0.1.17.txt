@@ -1,0 +1,3 @@
+base 0.1.16
++ @opentui/core: method MouseEvent.preventDefault(): void
++ @opentui/core: readonly property MouseEvent.defaultPrevented: boolean

@@ -1,0 +1,70 @@
+base 0.1.31
+- @opentui/core/testing: const KeyCodes: { readonly ENTER: "\r"; readonly TAB: "\t"; readonly BACKSPACE: "\b"; readonly DELETE: "\u001B[3~"; readonly HOME: "\u001B[H"; readonly END: "\u001B[F"; readonly ESCAPE: "\u001B"; readonly ARROW_UP: "\u001B[A"; readonly ARROW_DOWN: "\u001B[B"; readonly ARROW_RIGHT: "\u001B[C"; readonly ARROW_LEFT: "\u001B[D"; readonly F1: "\u001BOP"; readonly F2: "\u001BOQ"; readonly F3: "\u001BOR"; readonly F4: "\u001BOS"; readonly F5: "\u001B[15~"; readonly F6: "\u001B[17~"; readonly F7: "\u001B[18~"; readonly F8: "\u001B[19~"; readonly F9: "\u001B[20~"; readonly F10: "\u001B[21~"; readonly F11: "\u001B[23~"; readonly F12: "\u001B[24~"; }
++ @opentui/core/testing: const KeyCodes: { readonly RETURN: "\r"; readonly LINEFEED: "\n"; readonly TAB: "\t"; readonly BACKSPACE: "\b"; readonly DELETE: "\u001B[3~"; readonly HOME: "\u001B[H"; readonly END: "\u001B[F"; readonly ESCAPE: "\u001B"; readonly ARROW_UP: "\u001B[A"; readonly ARROW_DOWN: "\u001B[B"; readonly ARROW_RIGHT: "\u001B[C"; readonly ARROW_LEFT: "\u001B[D"; readonly F1: "\u001BOP"; readonly F2: "\u001BOQ"; readonly F3: "\u001BOR"; readonly F4: "\u001BOS"; readonly F5: "\u001B[15~"; readonly F6: "\u001B[17~"; readonly F7: "\u001B[18~"; readonly F8: "\u001B[19~"; readonly F9: "\u001B[20~"; readonly F10: "\u001B[21~"; readonly F11: "\u001B[23~"; readonly F12: "\u001B[24~"; }
++ @opentui/core: class StdinBuffer extends EventEmitter<StdinBufferEventMap>
++ @opentui/core: constructor StdinBuffer(stdin: NodeJS.ReadStream, options?: StdinBufferOptions)
+- @opentui/core: function treeSitterToStyledText(content: string, filetype: string, syntaxStyle: SyntaxStyle, client: TreeSitterClient): Promise<StyledText>
++ @opentui/core: function treeSitterToStyledText(content: string, filetype: string, syntaxStyle: SyntaxStyle, client: TreeSitterClient, options?: TreeSitterToStyledTextOptions): Promise<StyledText>
+- @opentui/core: function treeSitterToTextChunks(content: string, highlights: SimpleHighlight[], syntaxStyle: SyntaxStyle): TextChunk[]
++ @opentui/core: function treeSitterToTextChunks(content: string, highlights: SimpleHighlight[], syntaxStyle: SyntaxStyle, options?: ConcealOptions): TextChunk[]
++ @opentui/core: interface HighlightMeta
++ @opentui/core: interface InjectionMapping
++ @opentui/core: interface TreeSitterToStyledTextOptions
++ @opentui/core: method CodeRenderable.getLineHighlights(lineIdx: number): Highlight[]
++ @opentui/core: method EditorView.setTabIndicator(indicator: string | number): void
++ @opentui/core: method EditorView.setTabIndicatorColor(color: RGBA): void
++ @opentui/core: method StdinBuffer.clear(): void
++ @opentui/core: method StdinBuffer.destroy(): void
++ @opentui/core: method StdinBuffer.flush(): string[]
++ @opentui/core: method StdinBuffer.getBuffer(): string
++ @opentui/core: method SyntaxStyle.getAllStyles(): Map<string, StyleDefinition>
++ @opentui/core: method SyntaxStyle.getRegisteredNames(): string[]
++ @opentui/core: method TextBuffer.getHighlightCount(): number
++ @opentui/core: method TextBuffer.getTabWidth(): number
++ @opentui/core: method TextBuffer.setTabWidth(width: number): void
++ @opentui/core: method TextBufferView.setTabIndicator(indicator: string | number): void
++ @opentui/core: method TextBufferView.setTabIndicatorColor(color: RGBA): void
++ @opentui/core: method TreeSitterClient.clearCache(): Promise<void>
++ @opentui/core: property CodeOptions.conceal?: boolean
++ @opentui/core: property CodeOptions.drawUnstyledText?: boolean
+- @opentui/core: protected property CodeRenderable._contentDefaultOptions: { content: string; }
++ @opentui/core: protected property CodeRenderable._contentDefaultOptions: { content: string; conceal: true; drawUnstyledText: true; }
++ @opentui/core: property CodeRenderable.conceal: boolean
++ @opentui/core: property CodeRenderable.drawUnstyledText: boolean
++ @opentui/core: property FiletypeParserOptions.injectionMapping?: InjectionMapping
+- @opentui/core: property FiletypeParserOptions.queries: { highlights: string[]; }
++ @opentui/core: property FiletypeParserOptions.queries: { highlights: string[]; injections?: string[]; }
++ @opentui/core: property HighlightMeta.conceal?: string | null
++ @opentui/core: property HighlightMeta.concealLines?: string | null
++ @opentui/core: property HighlightMeta.containsInjection?: boolean
++ @opentui/core: property HighlightMeta.injectionLang?: string
++ @opentui/core: property HighlightMeta.isInjection?: boolean
++ @opentui/core: property InjectionMapping.infoStringMap?: { [infoString: string]: string; }
++ @opentui/core: property InjectionMapping.nodeTypes?: { [nodeType: string]: string; }
++ @opentui/core: property KeyEvent.source: "raw" | "kitty"
+- @opentui/core: protected property KeyHandler.listener: (key: Buffer) => void
++ @opentui/core: property ParsedKey.source: "raw" | "kitty"
++ @opentui/core: property RenderLib.editorViewSetTabIndicator: (view: Pointer, indicator: number) => void
++ @opentui/core: property RenderLib.editorViewSetTabIndicatorColor: (view: Pointer, color: RGBA) => void
++ @opentui/core: property RenderLib.textBufferGetHighlightCount: (buffer: Pointer) => number
++ @opentui/core: property RenderLib.textBufferGetTabWidth: (buffer: Pointer) => number
++ @opentui/core: property RenderLib.textBufferSetTabWidth: (buffer: Pointer, width: number) => void
++ @opentui/core: property RenderLib.textBufferViewSetTabIndicator: (view: Pointer, indicator: number) => void
++ @opentui/core: property RenderLib.textBufferViewSetTabIndicatorColor: (view: Pointer, color: RGBA) => void
++ @opentui/core: property TextBufferOptions.tabIndicator?: string | number
++ @opentui/core: property TextBufferOptions.tabIndicatorColor?: string | RGBA
+- @opentui/core: protected property TextBufferRenderable._defaultOptions: { fg: RGBA; bg: RGBA; selectionBg: undefined; selectionFg: undefined; selectable: true; attributes: number; wrapMode: "none" | "char" | "word"; }
++ @opentui/core: protected property TextBufferRenderable._defaultOptions: { fg: RGBA; bg: RGBA; selectionBg: undefined; selectionFg: undefined; selectable: true; attributes: number; wrapMode: "none" | "char" | "word"; tabIndicator: undefined; tabIndicatorColor: undefined; }
++ @opentui/core: protected property TextBufferRenderable._tabIndicator?: string | number
++ @opentui/core: protected property TextBufferRenderable._tabIndicatorColor?: RGBA
++ @opentui/core: property TextBufferRenderable.tabIndicator: string | number | undefined
++ @opentui/core: property TextBufferRenderable.tabIndicatorColor: RGBA | undefined
+- @opentui/core: readonly property TextareaRenderable.extmarks: any
++ @opentui/core: readonly property TextareaRenderable.extmarks: ExtmarksController
++ @opentui/core: property TreeSitterToStyledTextOptions.conceal?: ConcealOptions
+- @opentui/core: type SimpleHighlight = [ number, number, string ]
++ @opentui/core: type SimpleHighlight = [ number, number, string, HighlightMeta? ]
++ @opentui/core: type StdinBufferEventMap = { data: [ string ]; }
++ @opentui/core: type StdinBufferOptions = { timeout?: number; }
++ @opentui/react/jsx-dev-runtime: interface JSX.IntrinsicAttributes extends React.Attributes
++ @opentui/react/jsx-runtime: interface JSX.IntrinsicAttributes extends React.Attributes

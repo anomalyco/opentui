@@ -1,0 +1,17 @@
+base 0.1.69
++ @opentui/core: method CliRenderer.clearHitGridScissorRects(): void
++ @opentui/core: method CliRenderer.hitTest(x: number, y: number): number
++ @opentui/core: method CliRenderer.popHitGridScissorRect(): void
++ @opentui/core: method CliRenderer.pushHitGridScissorRect(x: number, y: number, width: number, height: number): void
++ @opentui/core: method KeyEvent.stopPropagation(): void
++ @opentui/core: method PasteEvent.stopPropagation(): void
++ @opentui/core: readonly property KeyEvent.propagationStopped: boolean
++ @opentui/core: readonly property PasteEvent.propagationStopped: boolean
++ @opentui/core: property RenderContext.clearHitGridScissorRects: () => void
++ @opentui/core: property RenderContext.popHitGridScissorRect: () => void
++ @opentui/core: property RenderContext.pushHitGridScissorRect: (x: number, y: number, width: number, height: number) => void
++ @opentui/core: property RenderLib.addToCurrentHitGridClipped: (renderer: Pointer, x: number, y: number, width: number, height: number, id: number) => void
++ @opentui/core: property RenderLib.clearCurrentHitGrid: (renderer: Pointer) => void
++ @opentui/core: property RenderLib.hitGridClearScissorRects: (renderer: Pointer) => void
++ @opentui/core: property RenderLib.hitGridPopScissorRect: (renderer: Pointer) => void
++ @opentui/core: property RenderLib.hitGridPushScissorRect: (renderer: Pointer, x: number, y: number, width: number, height: number) => void

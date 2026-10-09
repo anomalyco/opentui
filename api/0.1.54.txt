@@ -1,0 +1,10 @@
+base 0.1.53
+- @opentui/core/testing: constructor MockTreeSitterClient()
++ @opentui/core/testing: constructor MockTreeSitterClient(options?: { autoResolveTimeout?: number; })
++ @opentui/core: method TextBufferView.getVirtualLineCount(): number
++ @opentui/core: property DiffRenderable.conceal: boolean
++ @opentui/core: property DiffRenderableOptions.treeSitterClient?: TreeSitterClient
++ @opentui/core: readonly property LineInfoProvider.virtualLineCount: number
++ @opentui/core: property RenderLib.textBufferViewGetVirtualLineCount: (view: Pointer) => number
++ @opentui/core: protected property Renderable._isDestroyed: boolean
++ @opentui/core: readonly property TextBufferRenderable.virtualLineCount: number

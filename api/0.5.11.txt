@@ -1,0 +1,26 @@
+base 0.5.10
++ @opentui/core: const MAX_LINK_URL_BYTES = 512
+- @opentui/core: const NativeAudioStreamFormat: { readonly Mp3: 1; readonly Flac: 2; }
++ @opentui/core: const NativeAudioStreamFormat: { readonly Mp3: 1; readonly Flac: 2; readonly Pcm: 3; }
+- @opentui/core: function detectLinks(chunks: TextChunk[], context: { content: string; highlights: SimpleHighlight[]; }): TextChunk[]
++ @opentui/core: function detectLinks(chunks: TextChunk[], context: { content: string; highlights: SimpleHighlight[]; sourceRanges?: Array<{ start: number; end: number; }>; }): TextChunk[]
++ @opentui/core: method CliRenderer.getLinkAt(x: number, y: number): string | null
++ @opentui/core: method CliRenderer.getLinkIdAt(x: number, y: number): number
++ @opentui/core: method CodeRenderable.getLineSources(startLine: number, lineCount: number): number[]
++ @opentui/core: method CodeRenderable.updateStreamingPreview(content: string, initialStyledText: StyledText): void
+- @opentui/core: protected method DiffRenderable.onResize(width: number, height: number): void
++ @opentui/core: method LineInfoProvider.getLineSources?(startLine: number, lineCount: number): number[]
++ @opentui/core: protected method MarkdownRenderable.destroySelf(): void
++ @opentui/core: method TextBufferRenderable.getLineSources(startLine: number, lineCount: number): number[]
++ @opentui/core: protected method TextBufferRenderable.needsLineInfoFallback(owner: object): boolean
++ @opentui/core: method TextBufferView.getLineSources(startLine: number, lineCount: number): number[]
++ @opentui/core: property AudioStreamOptions.channels?: 1 | 2
++ @opentui/core: property AudioStreamOptions.sampleFormat?: "f32le"
++ @opentui/core: property AudioStreamOptions.sampleRate?: number
++ @opentui/core: property ChunkRenderContext.sourceRanges?: Array<{ start: number; end: number; }>
++ @opentui/core: property RenderLib.linkGetUrl: (linkId: number, maxLen?: number) => string
++ @opentui/core: property RenderLib.textBufferViewGetLineSources: (view: TextBufferViewHandle, startLine: number, lineCount: number) => number[]
+- @opentui/core: type AudioStreamCreateOptions = { capacityMs: number; startupMs: number; resumeMs: number; volume: number; pan: number; groupId: number; maxProbeBytes: number; format: NativeAudioStreamFormat; }
++ @opentui/core: type AudioStreamCreateOptions = { capacityMs: number; startupMs: number; resumeMs: number; volume: number; pan: number; groupId: number; maxProbeBytes: number; format: NativeAudioStreamFormat; sampleRate?: number; channels?: number; }
+- @opentui/core: type AudioStreamFormat = "mp3" | "flac"
++ @opentui/core: type AudioStreamFormat = "mp3" | "flac" | "pcm"

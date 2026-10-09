@@ -1,0 +1,6 @@
+base 0.1.94
++ @opentui/core/runtime-plugin-support: property CreateRuntimePluginOptions.rewrite?: RuntimePluginRewriteOptions
++ @opentui/core/runtime-plugin: interface RuntimePluginRewriteOptions
++ @opentui/core/runtime-plugin: property CreateRuntimePluginOptions.rewrite?: RuntimePluginRewriteOptions
++ @opentui/core/runtime-plugin: property RuntimePluginRewriteOptions.nodeModulesBareSpecifiers?: boolean
++ @opentui/core/runtime-plugin: property RuntimePluginRewriteOptions.nodeModulesRuntimeSpecifiers?: boolean

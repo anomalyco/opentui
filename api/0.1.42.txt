@@ -1,0 +1,24 @@
+base 0.1.41
+- @opentui/core: function renderFontToFrameBuffer(buffer: OptimizedBuffer, { text, x, y, fg, bg, font, }: { text: string; x?: number; y?: number; fg?: RGBA | RGBA[]; bg?: RGBA; font?: keyof typeof fonts; }): { width: number; height: number; }
++ @opentui/core: function renderFontToFrameBuffer(buffer: OptimizedBuffer, { text, x, y, color, backgroundColor, font, }: { text: string; x?: number; y?: number; color?: ColorInput | ColorInput[]; backgroundColor?: ColorInput; font?: keyof typeof fonts; }): { width: number; height: number; }
++ @opentui/core: property ASCIIFontOptions.backgroundColor?: ColorInput
+- @opentui/core: property ASCIIFontOptions.bg?: RGBA
++ @opentui/core: property ASCIIFontOptions.color?: ColorInput | ColorInput[]
+- @opentui/core: property ASCIIFontOptions.fg?: RGBA | RGBA[]
+- @opentui/core: property ASCIIFontOptions.selectionBg?: string | RGBA
++ @opentui/core: property ASCIIFontOptions.selectionBg?: ColorInput
+- @opentui/core: property ASCIIFontOptions.selectionFg?: string | RGBA
++ @opentui/core: property ASCIIFontOptions.selectionFg?: ColorInput
++ @opentui/core: protected property ASCIIFontRenderable._backgroundColor: ColorInput
++ @opentui/core: protected property ASCIIFontRenderable._color: ColorInput | ColorInput[]
++ @opentui/core: static protected readonly property ASCIIFontRenderable._defaultOptions: { text: string; font: "tiny"; color: string; backgroundColor: string; selectionBg: undefined; selectionFg: undefined; selectable: true; }
++ @opentui/core: protected property ASCIIFontRenderable._font: keyof typeof fonts
++ @opentui/core: protected property ASCIIFontRenderable._selectionBg: ColorInput | undefined
++ @opentui/core: protected property ASCIIFontRenderable._selectionFg: ColorInput | undefined
++ @opentui/core: protected property ASCIIFontRenderable._text: string
++ @opentui/core: property ASCIIFontRenderable.backgroundColor: ColorInput
+- @opentui/core: property ASCIIFontRenderable.bg: RGBA
++ @opentui/core: property ASCIIFontRenderable.color: ColorInput | ColorInput[]
+- @opentui/core: property ASCIIFontRenderable.fg: RGBA[]
++ @opentui/core: protected property ASCIIFontRenderable.lastLocalSelection: LocalSelectionBounds | null
++ @opentui/core: property CliRendererConfig.onDestroy?: () => void

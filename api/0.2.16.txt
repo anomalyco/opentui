@@ -1,0 +1,81 @@
+base 0.2.15
++ @opentui/core/testing: class ManualClock implements Clock
+- @opentui/core/testing: function createTestRenderer(options: TestRendererOptions): Promise<{ renderer: TestRenderer; mockInput: MockInput; mockMouse: MockMouse; renderOnce: () => Promise<void>; captureCharFrame: () => string; captureSpans: () => CapturedFrame; resize: (width: number, height: number) => void; }>
++ @opentui/core/testing: function createTestRenderer(options: TestRendererOptions): Promise<TestRendererSetup>
++ @opentui/core/testing: interface TestExternalOutput
++ @opentui/core/testing: interface TestExternalOutputCommit
++ @opentui/core/testing: interface TestFlushOptions
++ @opentui/core/testing: interface TestRendererSetup
++ @opentui/core/testing: interface TestVisualIdleOptions
++ @opentui/core/testing: interface TestWaitForOptions
++ @opentui/core/testing: method ManualClock.advance(delayMs: number): void
++ @opentui/core/testing: method ManualClock.clearInterval(handle: TimerHandle): void
++ @opentui/core/testing: method ManualClock.clearTimeout(handle: TimerHandle): void
++ @opentui/core/testing: method ManualClock.now(): number
++ @opentui/core/testing: method ManualClock.runAll(): void
++ @opentui/core/testing: method ManualClock.setInterval(fn: () => void, delayMs: number): TimerHandle
++ @opentui/core/testing: method ManualClock.setTime(time: number): void
++ @opentui/core/testing: method ManualClock.setTimeout(fn: () => void, delayMs: number): TimerHandle
++ @opentui/core/testing: method TestExternalOutput.clear(): void
++ @opentui/core/testing: method TestExternalOutput.take(): TestExternalOutputCommit[]
++ @opentui/core/testing: method TestExternalOutput.takeText(): string
++ @opentui/core/testing: property TestExternalOutputCommit.height: number
++ @opentui/core/testing: property TestExternalOutputCommit.rowColumns: number
++ @opentui/core/testing: property TestExternalOutputCommit.rows: string[]
++ @opentui/core/testing: property TestExternalOutputCommit.startOnNewLine: boolean
++ @opentui/core/testing: property TestExternalOutputCommit.text: string
++ @opentui/core/testing: property TestExternalOutputCommit.trailingNewline: boolean
++ @opentui/core/testing: property TestExternalOutputCommit.width: number
++ @opentui/core/testing: property TestFlushOptions.maxPasses?: number
++ @opentui/core/testing: property TestRendererSetup.captureCharFrame: () => string
++ @opentui/core/testing: property TestRendererSetup.captureSpans: () => CapturedFrame
++ @opentui/core/testing: property TestRendererSetup.externalOutput: TestExternalOutput
++ @opentui/core/testing: property TestRendererSetup.flush: (options?: TestFlushOptions) => Promise<void>
++ @opentui/core/testing: property TestRendererSetup.getNativeStats: () => NativeRenderStats
++ @opentui/core/testing: property TestRendererSetup.mockInput: MockInput
++ @opentui/core/testing: property TestRendererSetup.mockMouse: MockMouse
++ @opentui/core/testing: property TestRendererSetup.renderOnce: () => Promise<void>
++ @opentui/core/testing: property TestRendererSetup.renderer: TestRenderer
++ @opentui/core/testing: property TestRendererSetup.resize: (width: number, height: number) => void
++ @opentui/core/testing: property TestRendererSetup.waitFor: (predicate: () => boolean | Promise<boolean>, options?: TestWaitForOptions) => Promise<void>
++ @opentui/core/testing: property TestRendererSetup.waitForFrame: (predicate: (frame: string) => boolean | Promise<boolean>, options?: TestWaitForOptions) => Promise<string>
++ @opentui/core/testing: property TestRendererSetup.waitForVisualIdle: (options?: TestVisualIdleOptions) => Promise<void>
++ @opentui/core/testing: property TestVisualIdleOptions.maxFrames?: number
++ @opentui/core/testing: property TestVisualIdleOptions.quietFrames?: number
++ @opentui/core/testing: property TestWaitForOptions.maxPasses?: number
++ @opentui/core: enum-member CliRenderEvents.EXTERNAL_OUTPUT = "external_output"
++ @opentui/core: enum-member CliRenderEvents.FRAME = "frame"
++ @opentui/core: interface CliRendererExternalOutputEvent
++ @opentui/core: interface CliRendererFrameEvent
++ @opentui/core: interface CliRendererStats extends NativeRenderStats
++ @opentui/core: interface RendererSchedulerState
++ @opentui/core: method CliRenderer.getNativeStats(): NativeRenderStats
++ @opentui/core: method CliRenderer.getSchedulerState(): RendererSchedulerState
+- @opentui/core: method CliRenderer.getStats(): { fps: number; frameCount: number; frameTimes: number[]; averageFrameTime: number; minFrameTime: number; maxFrameTime: number; }
++ @opentui/core: method CliRenderer.getStats(): CliRendererStats
++ @opentui/core: property BlockState.tracksInterBlockMargin?: boolean
++ @opentui/core: property CliRendererExternalOutputEvent.rowColumns: number
++ @opentui/core: property CliRendererExternalOutputEvent.snapshot: OptimizedBuffer
++ @opentui/core: property CliRendererExternalOutputEvent.startOnNewLine: boolean
++ @opentui/core: property CliRendererExternalOutputEvent.trailingNewline: boolean
++ @opentui/core: property CliRendererFrameEvent.frameId: number
++ @opentui/core: property CliRendererStats.averageFrameTime: number
++ @opentui/core: property CliRendererStats.fps: number
++ @opentui/core: property CliRendererStats.frameCallbackTime: number
++ @opentui/core: property CliRendererStats.frameCount: number
++ @opentui/core: property CliRendererStats.frameTimes: number[]
++ @opentui/core: property CliRendererStats.maxFrameTime: number
++ @opentui/core: property CliRendererStats.minFrameTime: number
++ @opentui/core: property InputRenderable.minLength: number
++ @opentui/core: property InputRenderableOptions.minLength?: number
++ @opentui/core: property RenderLib.getRenderStats: (renderer: Pointer) => NativeRenderStats
++ @opentui/core: property RendererSchedulerState.hasScheduledRender: boolean
++ @opentui/core: property RendererSchedulerState.isRendering: boolean
++ @opentui/core: property RendererSchedulerState.isRunning: boolean
++ @opentui/core: type NativeRenderStats = { nativeLastFrameTime: number; nativeAverageFrameTime: number; nativeFrameCount: number; cellsUpdated: number; averageCellsUpdated: number; nativeRenderTime?: number; nativeStdoutWriteTime?: number; }
+- @opentui/react/test-utils: function testRender(node: ReactNode, testRendererOptions: TestRendererOptions): Promise<{ renderer: TestRenderer; mockInput: MockInput; mockMouse: MockMouse; renderOnce: () => Promise<void>; captureCharFrame: () => string; captureSpans: () => CapturedFrame; resize: (width: number, height: number) => void; }>
++ @opentui/react/test-utils: function testRender(node: ReactNode, testRendererOptions: TestRendererOptions): Promise<TestRendererSetup>
+- @opentui/solid: const testRender: (node: () => JSX.Element, renderConfig?: TestRendererOptions) => Promise<{ renderer: TestRenderer; mockInput: MockInput; mockMouse: MockMouse; renderOnce: () => Promise<void>; captureCharFrame: () => string; captureSpans: () => CapturedFrame; resize: (width: number, height: number) => void; }>
++ @opentui/solid: const testRender: (node: () => JSX.Element, renderConfig?: TestRendererOptions) => Promise<TestRendererSetup>
+- @opentui/solid: type GetNonStyledProperties<TConstructor> = TConstructor extends RenderableConstructor<TextRenderable> ? NonStyledProps | "content" : TConstructor extends RenderableConstructor<BoxRenderable> ? NonStyledProps | "title" | "bottomTitle" : TConstructor extends RenderableConstructor<ASCIIFontRenderable> ? NonStyledProps | "text" | "selectable" : TConstructor extends RenderableConstructor<InputRenderable> ? NonStyledProps | "placeholder" | "value" : TConstructor extends RenderableConstructor<CodeRenderable> ? NonStyledProps | "content" | "filetype" | "syntaxStyle" | "treeSitterClient" : TConstructor extends RenderableConstructor<MarkdownRenderable> ? NonStyledProps | "content" | "syntaxStyle" | "treeSitterClient" | "conceal" | "renderNode" : NonStyledProps
++ @opentui/solid: type GetNonStyledProperties<TConstructor> = TConstructor extends RenderableConstructor<TextRenderable> ? NonStyledProps | "content" : TConstructor extends RenderableConstructor<BoxRenderable> ? NonStyledProps | "title" | "bottomTitle" : TConstructor extends RenderableConstructor<ASCIIFontRenderable> ? NonStyledProps | "text" | "selectable" : TConstructor extends RenderableConstructor<InputRenderable> ? NonStyledProps | "minLength" | "maxLength" | "placeholder" | "value" : TConstructor extends RenderableConstructor<CodeRenderable> ? NonStyledProps | "content" | "filetype" | "syntaxStyle" | "treeSitterClient" : TConstructor extends RenderableConstructor<MarkdownRenderable> ? NonStyledProps | "content" | "syntaxStyle" | "treeSitterClient" | "conceal" | "renderNode" : NonStyledProps

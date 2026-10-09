@@ -1,0 +1,39 @@
+base 0.1.106
+- @opentui/core: const COLOR_TAG_DEFAULT = 257
+- @opentui/core: const COLOR_TAG_RGB = 256
+- @opentui/core: constructor RGBA(buffer: Float32Array)
++ @opentui/core: constructor RGBA(buffer: Uint16Array)
+- @opentui/core: function decodeColorTag(tag: number): { kind: ColorKind; index?: number; }
++ @opentui/core: interface StyleDefinitionInput
+- @opentui/core: static method RGBA.fromArray(array: Float32Array): RGBA
++ @opentui/core: static method RGBA.fromArray(array: Uint16Array): RGBA
+- @opentui/core: static method RGBA.fromInts(r: number, g: number, b: number, a?: number, tag?: number): RGBA
++ @opentui/core: static method RGBA.fromInts(r: number, g: number, b: number, a?: number): RGBA
+- @opentui/core: static method RGBA.fromValues(r: number, g: number, b: number, a?: number, tag?: number): RGBA
++ @opentui/core: static method RGBA.fromValues(r: number, g: number, b: number, a?: number): RGBA
+- @opentui/core: static method RGBA.getIntentTag(rgba: RGBA): number
+- @opentui/core: method RGBA.map<R>(fn: (value: number) => R): R[]
++ @opentui/core: method RGBA.map<R>(fn: (value: number) => R): [ R, R, R, R ]
+- @opentui/core: static method SyntaxStyle.fromStyles(styles: Record<string, StyleDefinition>): SyntaxStyle
++ @opentui/core: static method SyntaxStyle.fromStyles(styles: Record<string, StyleDefinitionInput>): SyntaxStyle
+- @opentui/core: method SyntaxStyle.registerStyle(name: string, style: StyleDefinition): number
++ @opentui/core: method SyntaxStyle.registerStyle(name: string, style: StyleDefinitionInput): number
+- @opentui/core: property NormalizedColorValue.tag: number
+- @opentui/core: readonly property OptimizedBuffer.buffers: { char: Uint32Array; fg: Float32Array; bg: Float32Array; attributes: Uint32Array; }
++ @opentui/core: readonly property OptimizedBuffer.buffers: { char: Uint32Array; fg: Uint16Array; bg: Uint16Array; attributes: Uint32Array; }
+- @opentui/core: property RGBA.buffer: Float32Array
++ @opentui/core: property RGBA.buffer: Uint16Array
++ @opentui/core: readonly property RGBA.intent: ColorIntent
++ @opentui/core: readonly property RGBA.meta: number
++ @opentui/core: readonly property RGBA.slot: number
+- @opentui/core: property RGBA.tag: number
+- @opentui/core: property RenderLib.bufferGetBgTagPtr: (buffer: Pointer) => Pointer
+- @opentui/core: property RenderLib.bufferGetFgTagPtr: (buffer: Pointer) => Pointer
++ @opentui/core: property StyleDefinitionInput.bg?: ColorInput
++ @opentui/core: property StyleDefinitionInput.bold?: boolean
++ @opentui/core: property StyleDefinitionInput.dim?: boolean
++ @opentui/core: property StyleDefinitionInput.fg?: ColorInput
++ @opentui/core: property StyleDefinitionInput.italic?: boolean
++ @opentui/core: property StyleDefinitionInput.underline?: boolean
++ @opentui/core: type ColorIntent = "rgb" | "indexed" | "default"
+- @opentui/core: type ColorKind = "rgb" | "indexed" | "default"

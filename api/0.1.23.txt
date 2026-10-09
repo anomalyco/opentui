@@ -1,0 +1,12 @@
+base 0.1.22
+- @opentui/core: constructor ScrollBoxRenderable(ctx: RenderContext, { wrapperOptions, viewportOptions, contentOptions, rootOptions, scrollbarOptions, verticalScrollbarOptions, horizontalScrollbarOptions, ...options }: ScrollBoxOptions)
++ @opentui/core: constructor ScrollBoxRenderable(ctx: RenderContext, { wrapperOptions, viewportOptions, contentOptions, rootOptions, scrollbarOptions, verticalScrollbarOptions, horizontalScrollbarOptions, stickyScroll, stickyStart, ...options }: ScrollBoxOptions)
++ @opentui/core: property ScrollBoxOptions.stickyScroll?: boolean
++ @opentui/core: property ScrollBoxOptions.stickyStart?: "bottom" | "top" | "left" | "right"
++ @opentui/core: property ScrollBoxRenderable.stickyScroll: boolean
++ @opentui/core: property ScrollBoxRenderable.stickyStart: "bottom" | "top" | "left" | "right" | undefined
++ @opentui/solid/jsx-dev-runtime: property JSX.IntrinsicElements.scrollbox: ScrollBoxProps
++ @opentui/solid/jsx-runtime: property JSX.IntrinsicElements.scrollbox: ScrollBoxProps
++ @opentui/solid: property JSX.IntrinsicElements.scrollbox: ScrollBoxProps
+- @opentui/solid: type ScrollBoxProps = ComponentProps<ContainerProps<ScrollBoxOptions>, ScrollBoxRenderable> & { focused?: boolean; }
++ @opentui/solid: type ScrollBoxProps = ComponentProps<ContainerProps<ScrollBoxOptions>, ScrollBoxRenderable> & { focused?: boolean; stickyScroll?: boolean; stickyStart?: "bottom" | "top" | "left" | "right"; }

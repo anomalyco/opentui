@@ -1,0 +1,46 @@
+base 0.1.12
+- @opentui/core: class GroupRenderable extends Renderable
+- @opentui/core: constructor GroupRenderable(ctx: RenderContext, options: RenderableOptions)
+- @opentui/core: function Group(props?: RenderableOptions<any>, ...children: VChild[]): ProxiedVNode<typeof GroupRenderable>
++ @opentui/core: method CliRenderer.setTerminalTitle(title: string): void
++ @opentui/core: property RenderLib.setTerminalTitle: (renderer: Pointer, title: string) => void
+- @opentui/react/jsx-dev-runtime: property JSX.IntrinsicElements.group: GroupProps
+- @opentui/react/jsx-runtime: property JSX.IntrinsicElements.group: GroupProps
+- @opentui/react: const baseComponents: { box: typeof BoxRenderable; text: typeof TextRenderable; group: typeof GroupRenderable; input: typeof InputRenderable; select: typeof SelectRenderable; "ascii-font": typeof ASCIIFontRenderable; "tab-select": typeof TabSelectRenderable; }
++ @opentui/react: const baseComponents: { box: typeof BoxRenderable; text: typeof TextRenderable; input: typeof InputRenderable; select: typeof SelectRenderable; "ascii-font": typeof ASCIIFontRenderable; "tab-select": typeof TabSelectRenderable; }
+- @opentui/react: type GroupProps = ComponentProps<ContainerProps<RenderableOptions>, GroupRenderable>
+- @opentui/solid/jsx-dev-runtime: property JSX.IntrinsicElements.group: GroupElementProps
+- @opentui/solid/jsx-runtime: property JSX.IntrinsicElements.group: GroupElementProps
+- @opentui/solid/reconciler: const _render: (code: () => DomNode, node: DomNode) => () => void
+- @opentui/solid/reconciler: const createComponent: <T>(Comp: (props: T) => DomNode, props: T) => DomNode
+- @opentui/solid/reconciler: const createElement: (tag: string) => DomNode
+- @opentui/solid/reconciler: const createTextNode: (value: string) => DomNode
+- @opentui/solid/reconciler: const effect: <T>(fn: (prev?: T) => T, init?: T) => void
+- @opentui/solid/reconciler: const insert: typeof solidUniversalInsert
+- @opentui/solid/reconciler: const insertNode: (parent: DomNode, node: DomNode, anchor?: DomNode | undefined) => void
+- @opentui/solid/reconciler: const memo: <T>(fn: () => T, equal: boolean) => () => T
+- @opentui/solid/reconciler: const mergeProps: (...sources: unknown[]) => unknown
+- @opentui/solid/reconciler: const setProp: <T>(node: DomNode, name: string, value: T, prev?: T | undefined) => T
+- @opentui/solid/reconciler: const solidUniversalInsert: <T>(parent: any, accessor: T | (() => T), marker?: any | null, initial?: any) => DomNode
+- @opentui/solid/reconciler: const spread: <T>(node: any, accessor: (() => T) | T, skipChildren?: boolean) => void
+- @opentui/solid/reconciler: const use: <A, T>(fn: (element: DomNode, arg: A) => T, element: DomNode, arg: A) => T
+- @opentui/solid/reconciler: type DomNode = Renderable | TextNode
++ @opentui/solid: const _render: (code: () => DomNode, node: DomNode) => () => void
++ @opentui/solid: const createComponent: <T>(Comp: (props: T) => DomNode, props: T) => DomNode
++ @opentui/solid: const createElement: (tag: string) => DomNode
++ @opentui/solid: const createTextNode: (value: string) => DomNode
++ @opentui/solid: const effect: <T>(fn: (prev?: T) => T, init?: T) => void
+- @opentui/solid: const elements: { ascii_font: typeof ASCIIFontRenderable; box: typeof BoxRenderable; group: typeof GroupRenderable; input: typeof InputRenderable; select: typeof SelectRenderable; tab_select: typeof TabSelectRenderable; text: typeof TextRenderable; }
++ @opentui/solid: const elements: { ascii_font: typeof ASCIIFontRenderable; box: typeof BoxRenderable; input: typeof InputRenderable; select: typeof SelectRenderable; tab_select: typeof TabSelectRenderable; text: typeof TextRenderable; }
++ @opentui/solid: const insert: typeof solidUniversalInsert
++ @opentui/solid: const insertNode: (parent: DomNode, node: DomNode, anchor?: DomNode | undefined) => void
++ @opentui/solid: const memo: <T>(fn: () => T, equal: boolean) => () => T
++ @opentui/solid: const mergeProps: (...sources: unknown[]) => unknown
++ @opentui/solid: const setProp: <T>(node: DomNode, name: string, value: T, prev?: T | undefined) => T
++ @opentui/solid: const solidUniversalInsert: <T>(parent: any, accessor: T | (() => T), marker?: any | null, initial?: any) => DomNode
++ @opentui/solid: const spread: <T>(node: any, accessor: (() => T) | T, skipChildren?: boolean) => void
++ @opentui/solid: const use: <A, T>(fn: (element: DomNode, arg: A) => T, element: DomNode, arg: A) => T
+- @opentui/solid: property JSX.IntrinsicElements.group: GroupElementProps
++ @opentui/solid: type DomNode = Renderable | TextNode
+- @opentui/solid: type GroupElementProps = ElementProps<RenderableOptions, GroupRenderable> & ContainerProps
+- @opentui/solid: type GroupStyle = GroupElementProps["style"]

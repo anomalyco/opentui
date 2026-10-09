@@ -1,0 +1,6 @@
+base 0.1.98
++ @opentui/core: protected method Renderable._hasVisibleChildFilter(): boolean
++ @opentui/core: protected property Renderable._screenX: number
++ @opentui/core: protected property Renderable._screenY: number
++ @opentui/core: readonly property Renderable.screenX: number
++ @opentui/core: readonly property Renderable.screenY: number

@@ -1,0 +1,19 @@
+base 0.1.21
++ @opentui/core: method CliRenderer.focusRenderable(renderable: Renderable): void
++ @opentui/core: readonly property CliRenderer.currentFocusedRenderable: Renderable | null
++ @opentui/core: property CliRenderer.stdin: NodeJS.ReadStream
++ @opentui/core: protected property InputRenderable._focusable: boolean
+- @opentui/core: protected property InputRenderable.focusable: boolean
++ @opentui/core: property RenderContext.currentFocusedRenderable: Renderable | null
++ @opentui/core: property RenderContext.focusRenderable: (renderable: Renderable) => void
++ @opentui/core: protected property Renderable._focusable: boolean
+- @opentui/core: protected property Renderable.focusable: boolean
++ @opentui/core: readonly property Renderable.focusable: boolean
++ @opentui/core: protected property ScrollBarRenderable._focusable: boolean
+- @opentui/core: protected property ScrollBarRenderable.focusable: boolean
++ @opentui/core: protected property ScrollBoxRenderable._focusable: boolean
+- @opentui/core: protected property ScrollBoxRenderable.focusable: boolean
++ @opentui/core: protected property SelectRenderable._focusable: boolean
+- @opentui/core: protected property SelectRenderable.focusable: boolean
++ @opentui/core: protected property TabSelectRenderable._focusable: boolean
+- @opentui/core: protected property TabSelectRenderable.focusable: boolean

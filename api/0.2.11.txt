@@ -1,0 +1,12 @@
+base 0.2.10
++ @opentui/core/tree-sitter/update-assets: function runUpdateAssetsCli(): Promise<void>
++ @opentui/core/tree-sitter/update-assets: function updateAssets(options?: Partial<UpdateOptions>): Promise<void>
++ @opentui/core/tree-sitter/update-assets: interface UpdateOptions
++ @opentui/core/tree-sitter/update-assets: property UpdateOptions.assetsDir: string
++ @opentui/core/tree-sitter/update-assets: property UpdateOptions.configPath: string
++ @opentui/core/tree-sitter/update-assets: property UpdateOptions.outputPath: string
+- @opentui/core: function updateAssets(options?: Partial<UpdateOptions>): Promise<void>
+- @opentui/core: interface UpdateOptions
+- @opentui/core: property UpdateOptions.assetsDir: string
+- @opentui/core: property UpdateOptions.configPath: string
+- @opentui/core: property UpdateOptions.outputPath: string

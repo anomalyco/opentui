@@ -1,0 +1,132 @@
+base 0.1.74
+- @opentui/core/testing: function createTestRenderer(options: TestRendererOptions): Promise<{ renderer: TestRenderer; mockInput: MockInput; mockMouse: MockMouse; renderOnce: () => Promise<void>; captureCharFrame: () => string; resize: (width: number, height: number) => void; }>
++ @opentui/core/testing: function createTestRenderer(options: TestRendererOptions): Promise<{ renderer: TestRenderer; mockInput: MockInput; mockMouse: MockMouse; renderOnce: () => Promise<void>; captureCharFrame: () => string; captureSpans: () => CapturedFrame; resize: (width: number, height: number) => void; }>
+- @opentui/core: class InputRenderable extends Renderable
++ @opentui/core: class InputRenderable extends TextareaRenderable
++ @opentui/core: class MarkdownRenderable extends Renderable
++ @opentui/core: constructor MarkdownRenderable(ctx: RenderContext, options: MarkdownOptions)
++ @opentui/core: function Code(props: CodeOptions, ...children: VChild[]): ProxiedVNode<typeof CodeRenderable>
++ @opentui/core: function ScrollBox(props?: ScrollBoxOptions, ...children: VChild[]): ProxiedVNode<typeof ScrollBoxRenderable>
++ @opentui/core: function isValidBorderStyle(value: unknown): value is BorderStyle
++ @opentui/core: function parseBorderStyle(value: unknown, fallback?: BorderStyle): BorderStyle
++ @opentui/core: interface BlockState
++ @opentui/core: interface CapturedFrame
++ @opentui/core: interface CapturedLine
++ @opentui/core: interface CapturedSpan
++ @opentui/core: interface HighlightContext
+- @opentui/core: interface InputRenderableOptions extends RenderableOptions<InputRenderable>
++ @opentui/core: interface InputRenderableOptions extends Omit<TextareaOptions, "height" | "minHeight" | "maxHeight" | "initialValue">
++ @opentui/core: interface MarkdownOptions extends RenderableOptions<MarkdownRenderable>
++ @opentui/core: interface ParseState
++ @opentui/core: interface RenderNodeContext
+- @opentui/core: method EditorView.setLocalSelection(anchorX: number, anchorY: number, focusX: number, focusY: number, bgColor?: RGBA, fgColor?: RGBA, updateCursor?: boolean): boolean
++ @opentui/core: method EditorView.setLocalSelection(anchorX: number, anchorY: number, focusX: number, focusY: number, bgColor?: RGBA, fgColor?: RGBA, updateCursor?: boolean, followCursor?: boolean): boolean
+- @opentui/core: method EditorView.updateLocalSelection(anchorX: number, anchorY: number, focusX: number, focusY: number, bgColor?: RGBA, fgColor?: RGBA, updateCursor?: boolean): boolean
++ @opentui/core: method EditorView.updateLocalSelection(anchorX: number, anchorY: number, focusX: number, focusY: number, bgColor?: RGBA, fgColor?: RGBA, updateCursor?: boolean, followCursor?: boolean): boolean
++ @opentui/core: method InputRenderable.deleteChar(): boolean
++ @opentui/core: method InputRenderable.deleteCharBackward(): boolean
+- @opentui/core: method InputRenderable.handleKeyPress(key: KeyEvent): boolean
++ @opentui/core: method InputRenderable.handlePaste(event: PasteEvent): void
++ @opentui/core: method InputRenderable.newLine(): boolean
+- @opentui/core: protected method InputRenderable.onRemove(): void
+- @opentui/core: protected method InputRenderable.onResize(width: number, height: number): void
+- @opentui/core: protected method InputRenderable.renderSelf(buffer: OptimizedBuffer, deltaTime: number): void
++ @opentui/core: method InputRenderable.submit(): boolean
+- @opentui/core: method InputRenderable.updateFromLayout(): void
++ @opentui/core: method MarkdownRenderable.clearCache(): void
++ @opentui/core: protected method MarkdownRenderable.renderSelf(buffer: OptimizedBuffer, deltaTime: number): void
++ @opentui/core: method OptimizedBuffer.drawGrayscaleBuffer(posX: number, posY: number, intensities: Float32Array, srcWidth: number, srcHeight: number, fg?: RGBA | null, bg?: RGBA | null): void
++ @opentui/core: method OptimizedBuffer.drawGrayscaleBufferSupersampled(posX: number, posY: number, intensities: Float32Array, srcWidth: number, srcHeight: number, fg?: RGBA | null, bg?: RGBA | null): void
++ @opentui/core: method OptimizedBuffer.getSpanLines(): CapturedLine[]
++ @opentui/core: method RGBA.equals(other?: RGBA): boolean
++ @opentui/core: property BlockState.renderable: Renderable
++ @opentui/core: property BlockState.token: MarkedToken
++ @opentui/core: property BlockState.tokenRaw: string
++ @opentui/core: property CapturedFrame.cols: number
++ @opentui/core: property CapturedFrame.cursor: [ number, number ]
++ @opentui/core: property CapturedFrame.lines: CapturedLine[]
++ @opentui/core: property CapturedFrame.rows: number
++ @opentui/core: property CapturedLine.spans: CapturedSpan[]
++ @opentui/core: property CapturedSpan.attributes: number
++ @opentui/core: property CapturedSpan.bg: RGBA
++ @opentui/core: property CapturedSpan.fg: RGBA
++ @opentui/core: property CapturedSpan.text: string
++ @opentui/core: property CapturedSpan.width: number
+- @opentui/core: property CliRenderer.debugOverlay: { enabled: boolean; corner: DebugOverlayCorner; }
++ @opentui/core: property CliRenderer.debugOverlay: { enabled: any; corner: DebugOverlayCorner; }
++ @opentui/core: property CodeOptions.onHighlight?: OnHighlightCallback
++ @opentui/core: property CodeRenderable.onHighlight: OnHighlightCallback | undefined
++ @opentui/core: property HighlightContext.content: string
++ @opentui/core: property HighlightContext.filetype: string
++ @opentui/core: property HighlightContext.syntaxStyle: SyntaxStyle
+- @opentui/core: protected property InputRenderable._defaultOptions: { backgroundColor: string; textColor: string; focusedBackgroundColor: string; focusedTextColor: string; placeholder: string; placeholderColor: string; cursorColor: string; cursorStyle: { style: "block"; blinking: true; }; maxLength: number; value: string; }
+- @opentui/core: protected property InputRenderable._focusable: boolean
+- @opentui/core: property InputRenderable.backgroundColor: ColorInput
+- @opentui/core: property InputRenderable.cursorColor: ColorInput
+- @opentui/core: property InputRenderable.cursorPosition: number
+- @opentui/core: property InputRenderable.cursorStyle: CursorStyleOptions
+- @opentui/core: property InputRenderable.focusedBackgroundColor: ColorInput
+- @opentui/core: property InputRenderable.focusedTextColor: ColorInput
++ @opentui/core: property InputRenderable.initialValue: string
+- @opentui/core: property InputRenderable.keyAliasMap: KeyAliasMap
+- @opentui/core: property InputRenderable.keyBindings: InputKeyBinding[]
+- @opentui/core: property InputRenderable.placeholderColor: ColorInput
+- @opentui/core: property InputRenderable.textColor: ColorInput
+- @opentui/core: property InputRenderableOptions.backgroundColor?: ColorInput
+- @opentui/core: property InputRenderableOptions.cursorColor?: ColorInput
+- @opentui/core: property InputRenderableOptions.cursorStyle?: CursorStyleOptions
+- @opentui/core: property InputRenderableOptions.focusedBackgroundColor?: ColorInput
+- @opentui/core: property InputRenderableOptions.focusedTextColor?: ColorInput
+- @opentui/core: property InputRenderableOptions.keyAliasMap?: KeyAliasMap
+- @opentui/core: property InputRenderableOptions.keyBindings?: InputKeyBinding[]
+- @opentui/core: property InputRenderableOptions.placeholderColor?: ColorInput
+- @opentui/core: property InputRenderableOptions.textColor?: ColorInput
++ @opentui/core: property MarkdownOptions.conceal?: boolean
++ @opentui/core: property MarkdownOptions.content?: string
++ @opentui/core: property MarkdownOptions.renderNode?: (token: Token, context: RenderNodeContext) => Renderable | undefined | null
++ @opentui/core: property MarkdownOptions.streaming?: boolean
++ @opentui/core: property MarkdownOptions.syntaxStyle: SyntaxStyle
++ @opentui/core: property MarkdownOptions.treeSitterClient?: TreeSitterClient
++ @opentui/core: protected property MarkdownRenderable._contentDefaultOptions: { content: string; conceal: true; streaming: false; }
++ @opentui/core: property MarkdownRenderable.conceal: boolean
++ @opentui/core: property MarkdownRenderable.content: string
++ @opentui/core: property MarkdownRenderable.streaming: boolean
++ @opentui/core: property MarkdownRenderable.syntaxStyle: SyntaxStyle
++ @opentui/core: property ParseState.content: string
++ @opentui/core: property ParseState.tokens: MarkedToken[]
++ @opentui/core: property RenderLib.bufferDrawGrayscaleBuffer: (buffer: Pointer, posX: number, posY: number, intensitiesPtr: Pointer, srcWidth: number, srcHeight: number, fg: RGBA | null, bg: RGBA | null) => void
++ @opentui/core: property RenderLib.bufferDrawGrayscaleBufferSupersampled: (buffer: Pointer, posX: number, posY: number, intensitiesPtr: Pointer, srcWidth: number, srcHeight: number, fg: RGBA | null, bg: RGBA | null) => void
+- @opentui/core: property RenderLib.editorViewSetLocalSelection: (view: Pointer, anchorX: number, anchorY: number, focusX: number, focusY: number, bgColor: RGBA | null, fgColor: RGBA | null, updateCursor: boolean) => boolean
++ @opentui/core: property RenderLib.editorViewSetLocalSelection: (view: Pointer, anchorX: number, anchorY: number, focusX: number, focusY: number, bgColor: RGBA | null, fgColor: RGBA | null, updateCursor: boolean, followCursor: boolean) => boolean
+- @opentui/core: property RenderLib.editorViewUpdateLocalSelection: (view: Pointer, anchorX: number, anchorY: number, focusX: number, focusY: number, bgColor: RGBA | null, fgColor: RGBA | null, updateCursor: boolean) => boolean
++ @opentui/core: property RenderLib.editorViewUpdateLocalSelection: (view: Pointer, anchorX: number, anchorY: number, focusX: number, focusY: number, bgColor: RGBA | null, fgColor: RGBA | null, updateCursor: boolean, followCursor: boolean) => boolean
++ @opentui/core: property RenderNodeContext.conceal: boolean
++ @opentui/core: property RenderNodeContext.defaultRender: () => Renderable | null
++ @opentui/core: property RenderNodeContext.syntaxStyle: SyntaxStyle
++ @opentui/core: property RenderNodeContext.treeSitterClient?: TreeSitterClient
++ @opentui/core: property TextareaOptions.placeholderColor?: ColorInput
++ @opentui/core: property TextareaRenderable.placeholderColor: RGBA
+- @opentui/core: type InputAction = "move-left" | "move-right" | "move-home" | "move-end" | "delete-backward" | "delete-forward" | "submit"
++ @opentui/core: type InputAction = TextareaAction
+- @opentui/core: type InputKeyBinding = BaseKeyBinding<InputAction>
++ @opentui/core: type InputKeyBinding = TextareaKeyBinding
++ @opentui/core: type OnHighlightCallback = (highlights: SimpleHighlight[], context: HighlightContext) => SimpleHighlight[] | undefined | Promise<SimpleHighlight[] | undefined>
++ @opentui/react/jsx-dev-runtime: property JSX.IntrinsicElements.markdown: MarkdownProps
++ @opentui/react/jsx-runtime: property JSX.IntrinsicElements.markdown: MarkdownProps
+- @opentui/react/test-utils: function testRender(node: ReactNode, testRendererOptions: TestRendererOptions): Promise<{ renderer: TestRenderer; mockInput: MockInput; mockMouse: MockMouse; renderOnce: () => Promise<void>; captureCharFrame: () => string; resize: (width: number, height: number) => void; }>
++ @opentui/react/test-utils: function testRender(node: ReactNode, testRendererOptions: TestRendererOptions): Promise<{ renderer: TestRenderer; mockInput: MockInput; mockMouse: MockMouse; renderOnce: () => Promise<void>; captureCharFrame: () => string; captureSpans: () => CapturedFrame; resize: (width: number, height: number) => void; }>
+- @opentui/react: const baseComponents: { box: typeof BoxRenderable; text: typeof TextRenderable; code: typeof CodeRenderable; diff: typeof DiffRenderable; input: typeof InputRenderable; select: typeof SelectRenderable; textarea: typeof TextareaRenderable; scrollbox: typeof ScrollBoxRenderable; "ascii-font": typeof ASCIIFontRenderable; "tab-select": typeof TabSelectRenderable; "line-number": typeof LineNumberRenderable; span: typeof SpanRenderable; br: typeof LineBreakRenderable; b: typeof BoldSpanRenderable; strong: typeof BoldSpanRenderable; i: typeof ItalicSpanRenderable; em: typeof ItalicSpanRenderable; u: typeof UnderlineSpanRenderable; a: typeof LinkRenderable; }
++ @opentui/react: const baseComponents: { box: typeof BoxRenderable; text: typeof TextRenderable; code: typeof CodeRenderable; diff: typeof DiffRenderable; markdown: typeof MarkdownRenderable; input: typeof InputRenderable; select: typeof SelectRenderable; textarea: typeof TextareaRenderable; scrollbox: typeof ScrollBoxRenderable; "ascii-font": typeof ASCIIFontRenderable; "tab-select": typeof TabSelectRenderable; "line-number": typeof LineNumberRenderable; span: typeof SpanRenderable; br: typeof LineBreakRenderable; b: typeof BoldSpanRenderable; strong: typeof BoldSpanRenderable; i: typeof ItalicSpanRenderable; em: typeof ItalicSpanRenderable; u: typeof UnderlineSpanRenderable; a: typeof LinkRenderable; }
+- @opentui/react: type GetNonStyledProperties<TConstructor> = TConstructor extends RenderableConstructor<TextRenderable> ? NonStyledProps | "content" : TConstructor extends RenderableConstructor<BoxRenderable> ? NonStyledProps | "title" : TConstructor extends RenderableConstructor<ASCIIFontRenderable> ? NonStyledProps | "text" | "selectable" : TConstructor extends RenderableConstructor<InputRenderable> ? NonStyledProps | "placeholder" | "value" : TConstructor extends RenderableConstructor<TextareaRenderable> ? NonStyledProps | "placeholder" | "initialValue" : TConstructor extends RenderableConstructor<CodeRenderable> ? NonStyledProps | "content" | "filetype" | "syntaxStyle" | "treeSitterClient" | "conceal" | "drawUnstyledText" : NonStyledProps
++ @opentui/react: type GetNonStyledProperties<TConstructor> = TConstructor extends RenderableConstructor<TextRenderable> ? NonStyledProps | "content" : TConstructor extends RenderableConstructor<BoxRenderable> ? NonStyledProps | "title" : TConstructor extends RenderableConstructor<ASCIIFontRenderable> ? NonStyledProps | "text" | "selectable" : TConstructor extends RenderableConstructor<InputRenderable> ? NonStyledProps | "placeholder" | "value" : TConstructor extends RenderableConstructor<TextareaRenderable> ? NonStyledProps | "placeholder" | "initialValue" : TConstructor extends RenderableConstructor<CodeRenderable> ? NonStyledProps | "content" | "filetype" | "syntaxStyle" | "treeSitterClient" | "conceal" | "drawUnstyledText" : TConstructor extends RenderableConstructor<MarkdownRenderable> ? NonStyledProps | "content" | "syntaxStyle" | "treeSitterClient" | "conceal" | "renderNode" : NonStyledProps
++ @opentui/react: type MarkdownProps = ComponentProps<MarkdownOptions, MarkdownRenderable>
++ @opentui/solid/jsx-dev-runtime: property JSX.IntrinsicElements.markdown: MarkdownProps
++ @opentui/solid/jsx-runtime: property JSX.IntrinsicElements.markdown: MarkdownProps
+- @opentui/solid: const baseComponents: { box: typeof BoxRenderable; text: typeof TextRenderable; input: typeof InputRenderable; select: typeof SelectRenderable; textarea: typeof TextareaRenderable; ascii_font: typeof ASCIIFontRenderable; tab_select: typeof TabSelectRenderable; scrollbox: typeof ScrollBoxRenderable; code: typeof CodeRenderable; diff: typeof DiffRenderable; line_number: typeof LineNumberRenderable; span: typeof SpanRenderable; strong: typeof BoldSpanRenderable; b: typeof BoldSpanRenderable; em: typeof ItalicSpanRenderable; i: typeof ItalicSpanRenderable; u: typeof UnderlineSpanRenderable; br: typeof LineBreakRenderable; a: typeof LinkRenderable; }
++ @opentui/solid: const baseComponents: { box: typeof BoxRenderable; text: typeof TextRenderable; input: typeof InputRenderable; select: typeof SelectRenderable; textarea: typeof TextareaRenderable; ascii_font: typeof ASCIIFontRenderable; tab_select: typeof TabSelectRenderable; scrollbox: typeof ScrollBoxRenderable; code: typeof CodeRenderable; diff: typeof DiffRenderable; line_number: typeof LineNumberRenderable; markdown: typeof MarkdownRenderable; span: typeof SpanRenderable; strong: typeof BoldSpanRenderable; b: typeof BoldSpanRenderable; em: typeof ItalicSpanRenderable; i: typeof ItalicSpanRenderable; u: typeof UnderlineSpanRenderable; br: typeof LineBreakRenderable; a: typeof LinkRenderable; }
+- @opentui/solid: const testRender: (node: () => JSX.Element, renderConfig?: TestRendererOptions) => Promise<{ renderer: TestRenderer; mockInput: MockInput; mockMouse: MockMouse; renderOnce: () => Promise<void>; captureCharFrame: () => string; resize: (width: number, height: number) => void; }>
++ @opentui/solid: const testRender: (node: () => JSX.Element, renderConfig?: TestRendererOptions) => Promise<{ renderer: TestRenderer; mockInput: MockInput; mockMouse: MockMouse; renderOnce: () => Promise<void>; captureCharFrame: () => string; captureSpans: () => CapturedFrame; resize: (width: number, height: number) => void; }>
++ @opentui/solid: property JSX.IntrinsicElements.markdown: MarkdownProps
+- @opentui/solid: type GetNonStyledProperties<TConstructor> = TConstructor extends RenderableConstructor<TextRenderable> ? NonStyledProps | "content" : TConstructor extends RenderableConstructor<BoxRenderable> ? NonStyledProps | "title" : TConstructor extends RenderableConstructor<ASCIIFontRenderable> ? NonStyledProps | "text" | "selectable" : TConstructor extends RenderableConstructor<InputRenderable> ? NonStyledProps | "placeholder" | "value" : TConstructor extends RenderableConstructor<CodeRenderable> ? NonStyledProps | "content" | "filetype" | "syntaxStyle" | "treeSitterClient" : NonStyledProps
++ @opentui/solid: type GetNonStyledProperties<TConstructor> = TConstructor extends RenderableConstructor<TextRenderable> ? NonStyledProps | "content" : TConstructor extends RenderableConstructor<BoxRenderable> ? NonStyledProps | "title" : TConstructor extends RenderableConstructor<ASCIIFontRenderable> ? NonStyledProps | "text" | "selectable" : TConstructor extends RenderableConstructor<InputRenderable> ? NonStyledProps | "placeholder" | "value" : TConstructor extends RenderableConstructor<CodeRenderable> ? NonStyledProps | "content" | "filetype" | "syntaxStyle" | "treeSitterClient" : TConstructor extends RenderableConstructor<MarkdownRenderable> ? NonStyledProps | "content" | "syntaxStyle" | "treeSitterClient" | "conceal" | "renderNode" : NonStyledProps
++ @opentui/solid: type MarkdownProps = ComponentProps<MarkdownOptions, MarkdownRenderable>

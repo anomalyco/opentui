@@ -1,0 +1,220 @@
+base 0.1.14
++ @opentui/core: class ArrowRenderable extends Renderable
++ @opentui/core: class ScrollBarRenderable extends Renderable
++ @opentui/core: class ScrollBoxRenderable extends BoxRenderable
+- @opentui/core: class TextSelectionHelper
+- @opentui/core: constructor ASCIIFontSelectionHelper(getX: () => number, getY: () => number, getText: () => string, getFont: () => keyof typeof fonts)
++ @opentui/core: constructor ASCIIFontSelectionHelper(getText: () => string, getFont: () => keyof typeof fonts)
++ @opentui/core: constructor ArrowRenderable(ctx: RenderContext, options: ArrowOptions)
+- @opentui/core: constructor MouseEvent(target: Renderable | null, attributes: RawMouseEvent & { source?: Renderable; })
++ @opentui/core: constructor MouseEvent(target: Renderable | null, attributes: RawMouseEvent & { source?: Renderable; isSelecting?: boolean; })
+- @opentui/core: constructor OptimizedBuffer(lib: RenderLib, ptr: Pointer, buffer: { char: Uint32Array; fg: Float32Array; bg: Float32Array; attributes: Uint8Array; }, width: number, height: number, options: { respectAlpha?: boolean; id?: string; })
++ @opentui/core: constructor OptimizedBuffer(lib: RenderLib, ptr: Pointer, width: number, height: number, options: { respectAlpha?: boolean; id?: string; })
++ @opentui/core: constructor ScrollBarRenderable(ctx: RenderContext, { trackOptions, arrowOptions, orientation, showArrows, ...options }: ScrollBarOptions)
++ @opentui/core: constructor ScrollBoxRenderable(ctx: RenderContext, { wrapperOptions, viewportOptions, contentOptions, rootOptions, scrollbarOptions, verticalScrollbarOptions, horizontalScrollbarOptions, ...options }: ScrollBoxOptions)
+- @opentui/core: constructor Selection(anchor: { x: number; y: number; }, focus: { x: number; y: number; })
++ @opentui/core: constructor Selection(anchorRenderable: Renderable, anchor: { x: number; y: number; }, focus: { x: number; y: number; })
+- @opentui/core: constructor TextBuffer(lib: RenderLib, ptr: Pointer, buffer: { char: Uint32Array; fg: Float32Array; bg: Float32Array; attributes: Uint16Array; }, capacity: number)
++ @opentui/core: constructor TextBuffer(lib: RenderLib, ptr: Pointer, capacity: number)
+- @opentui/core: constructor TextSelectionHelper(getX: () => number, getY: () => number, getTextLength: () => number, getLineInfo?: (() => { lineStarts: number[]; lineWidths: number[]; }) | undefined)
++ @opentui/core: function convertGlobalToLocalSelection(globalSelection: Selection | null, localX: number, localY: number): LocalSelectionBounds | null
++ @opentui/core: function isRenderable(obj: any): obj is Renderable
++ @opentui/core: interface ArrowOptions extends RenderableOptions<ArrowRenderable>
++ @opentui/core: interface LocalSelectionBounds
+- @opentui/core: interface RenderContext
++ @opentui/core: interface RenderContext extends EventEmitter
++ @opentui/core: interface RendererEvents
++ @opentui/core: interface ScrollBarOptions extends RenderableOptions<ScrollBarRenderable>
++ @opentui/core: interface ScrollBoxOptions extends BoxOptions<ScrollBoxRenderable>
+- @opentui/core: interface SelectionState
++ @opentui/core: interface ViewportBounds
+- @opentui/core: method ASCIIFontRenderable.onSelectionChanged(selection: SelectionState | null): boolean
++ @opentui/core: method ASCIIFontRenderable.onSelectionChanged(selection: Selection | null): boolean
++ @opentui/core: method ASCIIFontSelectionHelper.onLocalSelectionChanged(localSelection: LocalSelectionBounds | null, width: number, height: number): boolean
+- @opentui/core: method ASCIIFontSelectionHelper.onSelectionChanged(selection: SelectionState | null, width: number, height: number): boolean
+- @opentui/core: method ASCIIFontSelectionHelper.reevaluateSelection(width: number, height: number): boolean
+- @opentui/core: method ASCIIFontSelectionHelper.shouldStartSelection(x: number, y: number, width: number, height: number): boolean
++ @opentui/core: method ASCIIFontSelectionHelper.shouldStartSelection(localX: number, localY: number, width: number, height: number): boolean
++ @opentui/core: protected method ArrowRenderable.renderSelf(buffer: OptimizedBuffer): void
+- @opentui/core: method CliRenderer.hasSelection(): boolean
++ @opentui/core: method CliRenderer.requestSelectionUpdate(): void
+- @opentui/core: method MouseEvent.preventDefault(): void
++ @opentui/core: method MouseEvent.stopPropagation(): void
+- @opentui/core: method OptimizedBuffer.clear(bg?: RGBA, clearChar?: string): void
++ @opentui/core: method OptimizedBuffer.clear(bg?: RGBA): void
+- @opentui/core: method OptimizedBuffer.clearFFI(bg?: RGBA): void
+- @opentui/core: method OptimizedBuffer.clearLocal(bg?: RGBA, clearChar?: string): void
+- @opentui/core: method OptimizedBuffer.drawFrameBufferFFI(destX: number, destY: number, frameBuffer: OptimizedBuffer, sourceX?: number, sourceY?: number, sourceWidth?: number, sourceHeight?: number): void
+- @opentui/core: method OptimizedBuffer.drawFrameBufferLocal(destX: number, destY: number, frameBuffer: OptimizedBuffer, sourceX?: number, sourceY?: number, sourceWidth?: number, sourceHeight?: number): void
+- @opentui/core: method OptimizedBuffer.drawSuperSampleBufferFFI(x: number, y: number, pixelDataPtr: Pointer, pixelDataLength: number, format: "bgra8unorm" | "rgba8unorm", alignedBytesPerRow: number): void
+- @opentui/core: method OptimizedBuffer.drawTextFFI(text: string, x: number, y: number, fg?: RGBA, bg?: RGBA, attributes?: number): void
+- @opentui/core: method OptimizedBuffer.fillRectFFI(x: number, y: number, width: number, height: number, bg: RGBA): void
+- @opentui/core: method OptimizedBuffer.fillRectLocal(x: number, y: number, width: number, height: number, bg: RGBA): void
+- @opentui/core: method OptimizedBuffer.get(x: number, y: number): { char: number; fg: RGBA; bg: RGBA; attributes: number; } | null
+- @opentui/core: method OptimizedBuffer.setCellWithAlphaBlendingFFI(x: number, y: number, char: string, fg: RGBA, bg: RGBA, attributes?: number): void
+- @opentui/core: method OptimizedBuffer.setCellWithAlphaBlendingLocal(x: number, y: number, char: string, fg: RGBA, bg: RGBA, attributes?: number): void
++ @opentui/core: protected method Renderable._getChildren(): Renderable[]
+- @opentui/core: protected method Renderable.beforeRender(): void
++ @opentui/core: method Renderable.getChildrenCount(): number
++ @opentui/core: method Renderable.getChildrenInViewport(viewport: ViewportBounds, padding?: number, minTriggerSize?: number): Renderable[]
++ @opentui/core: protected method Renderable.getChildrenSortedByPrimaryAxis(): Renderable[]
+- @opentui/core: method Renderable.onSelectionChanged(selection: SelectionState | null): boolean
++ @opentui/core: method Renderable.onSelectionChanged(selection: Selection | null): boolean
++ @opentui/core: protected method Renderable.onUpdate(deltaTime: number): void
+- @opentui/core: method Renderable.setChildHostById(id: string): boolean
+- @opentui/core: protected method RootRenderable.beforeRender(): void
++ @opentui/core: protected method RootRenderable.onUpdate(): void
++ @opentui/core: method ScrollBarRenderable.handleKeyPress(key: ParsedKey | string): boolean
++ @opentui/core: method ScrollBarRenderable.resetVisibilityControl(): void
++ @opentui/core: method ScrollBarRenderable.scrollBy(delta: number, unit?: ScrollUnit): void
++ @opentui/core: method ScrollBoxRenderable.add(obj: Renderable | VNode<any, any[]>, index?: number): number
++ @opentui/core: protected method ScrollBoxRenderable.destroySelf(): void
++ @opentui/core: method ScrollBoxRenderable.getChildren(): Renderable[]
++ @opentui/core: method ScrollBoxRenderable.handleKeyPress(key: ParsedKey | string): boolean
++ @opentui/core: protected method ScrollBoxRenderable.onMouseEvent(event: MouseEvent): void
++ @opentui/core: protected method ScrollBoxRenderable.onUpdate(deltaTime: number): void
++ @opentui/core: method ScrollBoxRenderable.remove(id: string): void
++ @opentui/core: method ScrollBoxRenderable.scrollBy(delta: number | { x: number; y: number; }, unit?: ScrollUnit): void
++ @opentui/core: method ScrollBoxRenderable.scrollTo(position: number | { x: number; y: number; }): void
++ @opentui/core: method ScrollBoxRenderable.startAutoScroll(mouseX: number, mouseY: number): void
++ @opentui/core: method ScrollBoxRenderable.stopAutoScroll(): void
++ @opentui/core: method ScrollBoxRenderable.updateAutoScroll(mouseX: number, mouseY: number): void
++ @opentui/core: method Selection.updateTouchedRenderables(touchedRenderables: Renderable[]): void
+- @opentui/core: method StyledText.toString(): string
+- @opentui/core: method TextBuffer.concat(other: TextBuffer): TextBuffer
++ @opentui/core: method TextBuffer.getSelectedText(): string
++ @opentui/core: method TextBuffer.getSelection(): { start: number; end: number; } | null
++ @opentui/core: method TextBuffer.hasSelection(): boolean
++ @opentui/core: method TextBuffer.resetLocalSelection(): void
++ @opentui/core: method TextBuffer.setLocalSelection(anchorX: number, anchorY: number, focusX: number, focusY: number, bgColor?: RGBA, fgColor?: RGBA): boolean
+- @opentui/core: method TextBuffer.toString(): string
++ @opentui/core: method TextRenderable.getSelection(): { start: number; end: number; } | null
+- @opentui/core: method TextRenderable.onSelectionChanged(selection: SelectionState | null): boolean
++ @opentui/core: method TextRenderable.onSelectionChanged(selection: Selection | null): boolean
+- @opentui/core: method TextSelectionHelper.getSelection(): { start: number; end: number; } | null
+- @opentui/core: method TextSelectionHelper.hasSelection(): boolean
+- @opentui/core: method TextSelectionHelper.onSelectionChanged(selection: SelectionState | null, width: number, height?: number): boolean
+- @opentui/core: method TextSelectionHelper.reevaluateSelection(width: number, height?: number): boolean
+- @opentui/core: method TextSelectionHelper.shouldStartSelection(x: number, y: number, width: number, height: number): boolean
++ @opentui/core: property ArrowOptions.arrowChars?: { up?: string; down?: string; left?: string; right?: string; }
++ @opentui/core: property ArrowOptions.attributes?: number
++ @opentui/core: property ArrowOptions.backgroundColor?: ColorInput
++ @opentui/core: property ArrowOptions.direction: "up" | "down" | "left" | "right"
++ @opentui/core: property ArrowOptions.foregroundColor?: ColorInput
++ @opentui/core: property ArrowRenderable.arrowChars: ArrowOptions["arrowChars"]
++ @opentui/core: property ArrowRenderable.attributes: number
++ @opentui/core: property ArrowRenderable.backgroundColor: RGBA
++ @opentui/core: property ArrowRenderable.direction: "up" | "down" | "left" | "right"
++ @opentui/core: property ArrowRenderable.foregroundColor: RGBA
++ @opentui/core: readonly property CliRenderer.hasSelection: boolean
++ @opentui/core: property LocalSelectionBounds.anchorX: number
++ @opentui/core: property LocalSelectionBounds.anchorY: number
++ @opentui/core: property LocalSelectionBounds.focusX: number
++ @opentui/core: property LocalSelectionBounds.focusY: number
++ @opentui/core: property LocalSelectionBounds.isActive: boolean
+- @opentui/core: readonly property MouseEvent.defaultPrevented: boolean
++ @opentui/core: readonly property MouseEvent.isSelecting?: boolean
++ @opentui/core: readonly property MouseEvent.propagationStopped: boolean
++ @opentui/core: property RenderContext.getSelection: () => Selection | null
++ @opentui/core: property RenderContext.hasSelection: boolean
++ @opentui/core: property RenderContext.requestSelectionUpdate: () => void
+- @opentui/core: property RenderLib.bufferResize: (buffer: Pointer, width: number, height: number) => { char: Uint32Array; fg: Float32Array; bg: Float32Array; attributes: Uint8Array; }
++ @opentui/core: property RenderLib.bufferResize: (buffer: Pointer, width: number, height: number) => void
++ @opentui/core: property RenderLib.bufferSetCell: (buffer: Pointer, x: number, y: number, char: string, color: RGBA, bgColor: RGBA, attributes?: number) => void
++ @opentui/core: readonly property RenderLib.decoder: TextDecoder
++ @opentui/core: property RenderLib.getSelectedTextBytes: (buffer: Pointer, maxLength: number) => Uint8Array | null
+- @opentui/core: property RenderLib.getTextBufferArrays: (buffer: Pointer, size: number) => { char: Uint32Array; fg: Float32Array; bg: Float32Array; attributes: Uint16Array; }
+- @opentui/core: property RenderLib.textBufferConcat: (buffer1: Pointer, buffer2: Pointer) => TextBuffer
+- @opentui/core: property RenderLib.textBufferGetAttributesPtr: (buffer: Pointer) => Pointer
+- @opentui/core: property RenderLib.textBufferGetBgPtr: (buffer: Pointer) => Pointer
+- @opentui/core: property RenderLib.textBufferGetFgPtr: (buffer: Pointer) => Pointer
++ @opentui/core: property RenderLib.textBufferGetLineCount: (buffer: Pointer) => number
++ @opentui/core: property RenderLib.textBufferGetLineInfoDirect: (buffer: Pointer, lineStartsPtr: Pointer, lineWidthsPtr: Pointer) => void
++ @opentui/core: property RenderLib.textBufferGetSelection: (buffer: Pointer) => { start: number; end: number; } | null
++ @opentui/core: property RenderLib.textBufferResetLocalSelection: (buffer: Pointer) => void
+- @opentui/core: property RenderLib.textBufferResize: (buffer: Pointer, newLength: number) => { char: Uint32Array; fg: Float32Array; bg: Float32Array; attributes: Uint16Array; }
++ @opentui/core: property RenderLib.textBufferResize: (buffer: Pointer, newLength: number) => void
+- @opentui/core: property RenderLib.textBufferSetCell: (buffer: Pointer, index: number, char: number, fg: Float32Array, bg: Float32Array, attr: number) => void
++ @opentui/core: property RenderLib.textBufferSetLocalSelection: (buffer: Pointer, anchorX: number, anchorY: number, focusX: number, focusY: number, bgColor: RGBA | null, fgColor: RGBA | null) => boolean
++ @opentui/core: property Renderable.[BrandedRenderable]: boolean
+- @opentui/core: property Renderable.childHost: Renderable
++ @opentui/core: property Renderable.onSizeChange: (() => void) | undefined
++ @opentui/core: protected property Renderable.renderableArray: Renderable[]
++ @opentui/core: property RenderableOptions.onSizeChange?: (this: T) => void
++ @opentui/core: property RendererEvents."debugOverlay:toggle": (enabled: boolean) => void
++ @opentui/core: property RendererEvents."memory:snapshot": (snapshot: { heapUsed: number; heapTotal: number; arrayBuffers: number; }) => void
++ @opentui/core: property RendererEvents.key: (data: Buffer) => void
++ @opentui/core: property RendererEvents.resize: (width: number, height: number) => void
++ @opentui/core: property RendererEvents.selection: (selection: Selection) => void
++ @opentui/core: property ScrollBarOptions.arrowOptions?: Omit<ArrowOptions, "direction">
++ @opentui/core: property ScrollBarOptions.onChange?: (position: number) => void
++ @opentui/core: property ScrollBarOptions.orientation: "vertical" | "horizontal"
++ @opentui/core: property ScrollBarOptions.showArrows?: boolean
++ @opentui/core: property ScrollBarOptions.trackOptions?: Partial<SliderOptions>
++ @opentui/core: property ScrollBarRenderable.arrowOptions: ScrollBarOptions["arrowOptions"]
++ @opentui/core: readonly property ScrollBarRenderable.endArrow: ArrowRenderable
++ @opentui/core: protected property ScrollBarRenderable.focusable: boolean
++ @opentui/core: readonly property ScrollBarRenderable.orientation: "vertical" | "horizontal"
++ @opentui/core: property ScrollBarRenderable.scrollPosition: number
++ @opentui/core: property ScrollBarRenderable.scrollSize: number
++ @opentui/core: property ScrollBarRenderable.scrollStep: number | undefined | null
++ @opentui/core: property ScrollBarRenderable.showArrows: boolean
++ @opentui/core: readonly property ScrollBarRenderable.slider: SliderRenderable
++ @opentui/core: readonly property ScrollBarRenderable.startArrow: ArrowRenderable
++ @opentui/core: property ScrollBarRenderable.trackOptions: ScrollBarOptions["trackOptions"]
++ @opentui/core: property ScrollBarRenderable.viewportSize: number
++ @opentui/core: property ScrollBarRenderable.visible: boolean
++ @opentui/core: property ScrollBoxOptions.contentOptions?: BoxOptions
++ @opentui/core: property ScrollBoxOptions.horizontalScrollbarOptions?: Omit<ScrollBarOptions, "orientation">
++ @opentui/core: property ScrollBoxOptions.rootOptions?: BoxOptions
++ @opentui/core: property ScrollBoxOptions.scrollbarOptions?: Omit<ScrollBarOptions, "orientation">
++ @opentui/core: property ScrollBoxOptions.verticalScrollbarOptions?: Omit<ScrollBarOptions, "orientation">
++ @opentui/core: property ScrollBoxOptions.viewportOptions?: BoxOptions
++ @opentui/core: property ScrollBoxOptions.wrapperOptions?: BoxOptions
++ @opentui/core: readonly property ScrollBoxRenderable.content: ContentRenderable
++ @opentui/core: property ScrollBoxRenderable.contentOptions: ScrollBoxOptions["contentOptions"]
++ @opentui/core: protected property ScrollBoxRenderable.focusable: boolean
++ @opentui/core: readonly property ScrollBoxRenderable.horizontalScrollBar: ScrollBarRenderable
++ @opentui/core: property ScrollBoxRenderable.horizontalScrollbarOptions: ScrollBoxOptions["horizontalScrollbarOptions"]
++ @opentui/core: static property ScrollBoxRenderable.idCounter: number
++ @opentui/core: property ScrollBoxRenderable.rootOptions: ScrollBoxOptions["rootOptions"]
++ @opentui/core: readonly property ScrollBoxRenderable.scrollHeight: number
++ @opentui/core: property ScrollBoxRenderable.scrollLeft: number
++ @opentui/core: property ScrollBoxRenderable.scrollTop: number
++ @opentui/core: readonly property ScrollBoxRenderable.scrollWidth: number
++ @opentui/core: property ScrollBoxRenderable.scrollbarOptions: ScrollBoxOptions["scrollbarOptions"]
++ @opentui/core: readonly property ScrollBoxRenderable.verticalScrollBar: ScrollBarRenderable
++ @opentui/core: property ScrollBoxRenderable.verticalScrollbarOptions: ScrollBoxOptions["verticalScrollbarOptions"]
++ @opentui/core: readonly property ScrollBoxRenderable.viewport: BoxRenderable
++ @opentui/core: property ScrollBoxRenderable.viewportOptions: ScrollBoxOptions["viewportOptions"]
++ @opentui/core: readonly property ScrollBoxRenderable.wrapper: BoxRenderable
++ @opentui/core: property ScrollBoxRenderable.wrapperOptions: ScrollBoxOptions["wrapperOptions"]
+- @opentui/core: readonly property Selection.bounds: { startX: number; startY: number; endX: number; endY: number; }
++ @opentui/core: readonly property Selection.bounds: ViewportBounds
+- @opentui/core: readonly property Selection.focus: { x: number; y: number; }
++ @opentui/core: property Selection.focus: { x: number; y: number; }
++ @opentui/core: property Selection.isActive: boolean
++ @opentui/core: property Selection.isSelecting: boolean
++ @opentui/core: readonly property Selection.selectedRenderables: Renderable[]
++ @opentui/core: readonly property Selection.touchedRenderables: Renderable[]
+- @opentui/core: property SelectionState.anchor: { x: number; y: number; }
+- @opentui/core: property SelectionState.focus: { x: number; y: number; }
+- @opentui/core: property SelectionState.isActive: boolean
+- @opentui/core: property SelectionState.isSelecting: boolean
++ @opentui/core: property ViewportBounds.height: number
++ @opentui/core: property ViewportBounds.width: number
++ @opentui/core: property ViewportBounds.x: number
++ @opentui/core: property ViewportBounds.y: number
++ @opentui/core: type ScrollUnit = "absolute" | "viewport" | "content" | "step"
++ @opentui/core: type Timeout = ReturnType<typeof setTimeout> | undefined
++ @opentui/react/jsx-dev-runtime: property JSX.IntrinsicElements.scrollbox: ScrollBoxProps
++ @opentui/react/jsx-runtime: property JSX.IntrinsicElements.scrollbox: ScrollBoxProps
+- @opentui/react: const baseComponents: { box: typeof BoxRenderable; text: typeof TextRenderable; input: typeof InputRenderable; select: typeof SelectRenderable; "ascii-font": typeof ASCIIFontRenderable; "tab-select": typeof TabSelectRenderable; }
++ @opentui/react: const baseComponents: { box: typeof BoxRenderable; text: typeof TextRenderable; input: typeof InputRenderable; select: typeof SelectRenderable; scrollbox: typeof ScrollBoxRenderable; "ascii-font": typeof ASCIIFontRenderable; "tab-select": typeof TabSelectRenderable; }
++ @opentui/react: type ScrollBoxProps = ComponentProps<ContainerProps<ScrollBoxOptions>, ScrollBoxRenderable> & { focused?: boolean; }
+- @opentui/solid: const baseComponents: { box: typeof BoxRenderable; text: typeof TextRenderable; input: typeof InputRenderable; select: typeof SelectRenderable; ascii_font: typeof ASCIIFontRenderable; tab_select: typeof TabSelectRenderable; }
++ @opentui/solid: const baseComponents: { box: typeof BoxRenderable; text: typeof TextRenderable; input: typeof InputRenderable; select: typeof SelectRenderable; ascii_font: typeof ASCIIFontRenderable; tab_select: typeof TabSelectRenderable; scrollbox: typeof ScrollBoxRenderable; }
+- @opentui/solid: const useKeyHandler: (callback: (key: ParsedKey) => void) => void
++ @opentui/solid: deprecated const useKeyHandler: (callback: (key: ParsedKey) => void) => void
++ @opentui/solid: const useKeyboard: (callback: (key: ParsedKey) => void) => void
++ @opentui/solid: type ScrollBoxProps = ComponentProps<ContainerProps<ScrollBoxOptions>, ScrollBoxRenderable> & { focused?: boolean; }

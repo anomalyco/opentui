@@ -1,0 +1,2 @@
+base 0.1.100
++ @opentui/core: method CliRenderer.waitForThemeMode(timeoutMs?: number): Promise<ThemeMode | null>

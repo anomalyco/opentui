@@ -1,0 +1,3 @@
+base 0.1.68
+- @opentui/solid: const render: (node: () => JSX.Element, renderConfig?: CliRendererConfig) => Promise<void>
++ @opentui/solid: const render: (node: () => JSX.Element, rendererOrConfig?: CliRenderer | CliRendererConfig) => Promise<void>

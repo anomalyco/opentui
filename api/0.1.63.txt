@@ -1,0 +1,13 @@
+base 0.1.62
+- @opentui/core: function buildKittyKeyboardFlags(config: { events?: boolean; } | null | undefined): number
++ @opentui/core: function buildKittyKeyboardFlags(config: KittyKeyboardOptions | null | undefined): number
++ @opentui/core: interface KittyKeyboardOptions
+- @opentui/core: property CliRendererConfig.useKittyKeyboard?: { events?: boolean; } | null
++ @opentui/core: property CliRendererConfig.useKittyKeyboard?: KittyKeyboardOptions | null
++ @opentui/core: property KittyKeyboardOptions.allKeysAsEscapes?: boolean
++ @opentui/core: property KittyKeyboardOptions.alternateKeys?: boolean
++ @opentui/core: property KittyKeyboardOptions.disambiguate?: boolean
++ @opentui/core: property KittyKeyboardOptions.events?: boolean
++ @opentui/core: property KittyKeyboardOptions.reportText?: boolean
++ @opentui/react/renderer: const flushSync: { (): void; <R>(fn: () => R): R; }
++ @opentui/react: const flushSync: { (): void; <R>(fn: () => R): R; }

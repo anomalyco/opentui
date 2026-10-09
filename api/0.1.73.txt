@@ -1,0 +1,10 @@
+base 0.1.72
++ @opentui/core: method TextBufferView.setTruncate(truncate: boolean): void
++ @opentui/core: property RenderLib.getHitGridDirty: (renderer: Pointer) => boolean
++ @opentui/core: property RenderLib.textBufferViewSetTruncate: (view: Pointer, truncate: boolean) => void
++ @opentui/core: property RenderLib.writeOut: (renderer: Pointer, data: string | Uint8Array) => void
++ @opentui/core: property TextBufferOptions.truncate?: boolean
+- @opentui/core: protected property TextBufferRenderable._defaultOptions: { fg: RGBA; bg: RGBA; selectionBg: undefined; selectionFg: undefined; selectable: true; attributes: number; wrapMode: "none" | "char" | "word"; tabIndicator: undefined; tabIndicatorColor: undefined; }
++ @opentui/core: protected property TextBufferRenderable._defaultOptions: { fg: RGBA; bg: RGBA; selectionBg: undefined; selectionFg: undefined; selectable: true; attributes: number; wrapMode: "none" | "char" | "word"; tabIndicator: undefined; tabIndicatorColor: undefined; truncate: false; }
++ @opentui/core: protected property TextBufferRenderable._truncate: boolean
++ @opentui/core: property TextBufferRenderable.truncate: boolean

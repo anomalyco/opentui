@@ -1,0 +1,127 @@
+base 0.1.7
++ @opentui/core: class MouseParser
+- @opentui/core: constructor RootRenderable(width: number, height: number, ctx: RenderContext)
++ @opentui/core: constructor RootRenderable(width: number, height: number, ctx: RenderContext, rootContext: RootContext)
++ @opentui/core: function isPostionTypeType(value: any): value is PositionTypeString
++ @opentui/core: function parseAlign(value: string): Align
++ @opentui/core: function parseBoxSizing(value: string): BoxSizing
++ @opentui/core: function parseDimension(value: string): Dimension
++ @opentui/core: function parseDirection(value: string): Direction
++ @opentui/core: function parseDisplay(value: string): Display
++ @opentui/core: function parseEdge(value: string): Edge
++ @opentui/core: function parseFlexDirection(value: string): FlexDirection
++ @opentui/core: function parseGutter(value: string): Gutter
++ @opentui/core: function parseJustify(value: string): Justify
++ @opentui/core: function parseLogLevel(value: string): LogLevel
++ @opentui/core: function parseMeasureMode(value: string): MeasureMode
++ @opentui/core: function parseOverflow(value: string): Overflow
++ @opentui/core: function parsePositionType(value: string): PositionType
++ @opentui/core: function parseUnit(value: string): Unit
++ @opentui/core: function parseWrap(value: string): Wrap
++ @opentui/core: interface RootContext
++ @opentui/core: interface ScrollInfo
++ @opentui/core: method CliRenderer.dropLive(): void
++ @opentui/core: method CliRenderer.requestLive(): void
++ @opentui/core: method MouseParser.parseMouseEvent(data: Buffer): RawMouseEvent | null
++ @opentui/core: method MouseParser.reset(): void
++ @opentui/core: protected method Renderable.propagateLiveCount(delta: number): void
++ @opentui/core: method RootContext.dropLive(): void
++ @opentui/core: method RootContext.requestLive(): void
++ @opentui/core: protected method RootRenderable.propagateLiveCount(delta: number): void
+- @opentui/core: method StyledText.insert(chunk: TextChunk, index?: number): void
++ @opentui/core: method StyledText.insert(chunk: TextChunk, index?: number): StyledText
+- @opentui/core: method StyledText.remove(chunk: TextChunk): void
++ @opentui/core: method StyledText.remove(chunk: TextChunk): StyledText
+- @opentui/core: method StyledText.replace(chunk: TextChunk, oldChunk: TextChunk): void
++ @opentui/core: method StyledText.replace(chunk: TextChunk, oldChunk: TextChunk): StyledText
++ @opentui/core: readonly property CliRenderer.currentControlState: string
++ @opentui/core: readonly property CliRenderer.liveRequestCount: number
++ @opentui/core: protected property Renderable._heightValue: number
++ @opentui/core: protected property Renderable._liveCount: number
++ @opentui/core: protected property Renderable._widthValue: number
++ @opentui/core: property Renderable.live: boolean
++ @opentui/core: readonly property Renderable.liveCount: number
++ @opentui/core: property Renderable.onKeyDown: ((key: ParsedKey) => void) | undefined
++ @opentui/core: property Renderable.onMouseDown: ((event: MouseEvent) => void) | undefined
++ @opentui/core: property Renderable.onMouseDrag: ((event: MouseEvent) => void) | undefined
++ @opentui/core: property Renderable.onMouseDragEnd: ((event: MouseEvent) => void) | undefined
++ @opentui/core: property Renderable.onMouseDrop: ((event: MouseEvent) => void) | undefined
++ @opentui/core: property Renderable.onMouseMove: ((event: MouseEvent) => void) | undefined
++ @opentui/core: property Renderable.onMouseOut: ((event: MouseEvent) => void) | undefined
++ @opentui/core: property Renderable.onMouseOver: ((event: MouseEvent) => void) | undefined
++ @opentui/core: property Renderable.onMouseScroll: ((event: MouseEvent) => void) | undefined
++ @opentui/core: property Renderable.onMouseUp: ((event: MouseEvent) => void) | undefined
++ @opentui/core: property RenderableOptions.live?: boolean
++ @opentui/core: property RenderableOptions.onKeyDown?: (key: ParsedKey) => void
++ @opentui/core: property RenderableOptions.onMouseDown?: (event: MouseEvent) => void
++ @opentui/core: property RenderableOptions.onMouseDrag?: (event: MouseEvent) => void
++ @opentui/core: property RenderableOptions.onMouseDragEnd?: (event: MouseEvent) => void
++ @opentui/core: property RenderableOptions.onMouseDrop?: (event: MouseEvent) => void
++ @opentui/core: property RenderableOptions.onMouseMove?: (event: MouseEvent) => void
++ @opentui/core: property RenderableOptions.onMouseOut?: (event: MouseEvent) => void
++ @opentui/core: property RenderableOptions.onMouseOver?: (event: MouseEvent) => void
++ @opentui/core: property RenderableOptions.onMouseScroll?: (event: MouseEvent) => void
++ @opentui/core: property RenderableOptions.onMouseUp?: (event: MouseEvent) => void
++ @opentui/core: property ScrollInfo.delta: number
++ @opentui/core: property ScrollInfo.direction: "up" | "down" | "left" | "right"
++ @opentui/core: type AlignString = "auto" | "flex-start" | "center" | "flex-end" | "stretch" | "baseline" | "space-between" | "space-around" | "space-evenly"
++ @opentui/core: type BoxSizingString = "border-box" | "content-box"
++ @opentui/core: type DimensionString = "width" | "height"
++ @opentui/core: type DirectionString = "inherit" | "ltr" | "rtl"
++ @opentui/core: type DisplayString = "flex" | "none" | "contents"
++ @opentui/core: type EdgeString = "left" | "top" | "right" | "bottom" | "start" | "end" | "horizontal" | "vertical" | "all"
++ @opentui/core: type FlexDirectionString = "column" | "column-reverse" | "row" | "row-reverse"
++ @opentui/core: type GutterString = "column" | "row" | "all"
++ @opentui/core: type JustifyString = "flex-start" | "center" | "flex-end" | "space-between" | "space-around" | "space-evenly"
++ @opentui/core: type LogLevelString = "error" | "warn" | "info" | "debug" | "verbose" | "fatal"
++ @opentui/core: type MeasureModeString = "undefined" | "exactly" | "at-most"
++ @opentui/core: type MouseEventType = "down" | "up" | "move" | "drag" | "drag-end" | "drop" | "over" | "out" | "scroll"
++ @opentui/core: type OverflowString = "visible" | "hidden" | "scroll"
++ @opentui/core: type PositionTypeString = "static" | "relative" | "absolute"
++ @opentui/core: type RawMouseEvent = { type: MouseEventType; button: number; x: number; y: number; modifiers: { shift: boolean; alt: boolean; ctrl: boolean; }; scroll?: ScrollInfo; }
++ @opentui/core: type UnitString = "undefined" | "point" | "percent" | "auto"
++ @opentui/core: type WrapString = "no-wrap" | "wrap" | "wrap-reverse"
+- @opentui/react/jsx-dev-runtime: interface JSX.Element extends React.ReactElement<any, any>
+- @opentui/react/jsx-dev-runtime: interface JSX.ElementClass
++ @opentui/react/jsx-dev-runtime: interface JSX.ElementClass extends React.ComponentClass<any>
+- @opentui/react/jsx-dev-runtime: interface JSX.IntrinsicElements extends ExtendedIntrinsicElements<OpenTUIComponents>
++ @opentui/react/jsx-dev-runtime: interface JSX.IntrinsicElements extends React.JSX.IntrinsicElements, ExtendedIntrinsicElements<OpenTUIComponents>
++ @opentui/react/jsx-dev-runtime: method JSX.ElementClass.render(): React.ReactNode
+- @opentui/react/jsx-dev-runtime: property JSX.ElementClass.render: any
++ @opentui/react/jsx-dev-runtime: property JSX.IntrinsicElements."ascii-font": AsciiFontProps
++ @opentui/react/jsx-dev-runtime: type JSX.Element = React.ReactNode
+- @opentui/react/jsx-runtime: interface JSX.Element extends React.ReactElement<any, any>
+- @opentui/react/jsx-runtime: interface JSX.ElementClass
++ @opentui/react/jsx-runtime: interface JSX.ElementClass extends React.ComponentClass<any>
+- @opentui/react/jsx-runtime: interface JSX.IntrinsicElements extends ExtendedIntrinsicElements<OpenTUIComponents>
++ @opentui/react/jsx-runtime: interface JSX.IntrinsicElements extends React.JSX.IntrinsicElements, ExtendedIntrinsicElements<OpenTUIComponents>
++ @opentui/react/jsx-runtime: method JSX.ElementClass.render(): React.ReactNode
+- @opentui/react/jsx-runtime: property JSX.ElementClass.render: any
++ @opentui/react/jsx-runtime: property JSX.IntrinsicElements."ascii-font": AsciiFontProps
++ @opentui/react/jsx-runtime: type JSX.Element = React.ReactNode
+- @opentui/react: const baseComponents: { box: typeof BoxRenderable; text: typeof TextRenderable; group: typeof GroupRenderable; input: typeof InputRenderable; select: typeof SelectRenderable; "tab-select": typeof TabSelectRenderable; }
++ @opentui/react: const baseComponents: { box: typeof BoxRenderable; text: typeof TextRenderable; group: typeof GroupRenderable; input: typeof InputRenderable; select: typeof SelectRenderable; "ascii-font": typeof ASCIIFontRenderable; "tab-select": typeof TabSelectRenderable; }
+- @opentui/react: index OpenTUIComponents[key: string]: RenderableConstructor
++ @opentui/react: index OpenTUIComponents[componentName: string]: RenderableConstructor
++ @opentui/react: type AsciiFontProps = ComponentProps<ASCIIFontOptions, ASCIIFontRenderable>
+- @opentui/react: type BoxProps = ComponentProps<ContainerProps<BoxOptions>, "title">
++ @opentui/react: type BoxProps = ComponentProps<ContainerProps<BoxOptions>, BoxRenderable>
+- @opentui/react: type ExtendedComponentProps<T extends RenderableConstructor> = ExtractRenderableOptions<T> & { children?: React.ReactNode; style?: Partial<ExtractRenderableOptions<T>>; }
++ @opentui/react: type ExtendedComponentProps<TConstructor extends RenderableConstructor, TOptions = ExtractRenderableOptions<TConstructor>> = TOptions & { children?: React.ReactNode; style?: Partial<Omit<TOptions, GetNonStyledProperties<TConstructor>>>; } & ReactProps<ExtractRenderable<TConstructor>>
+- @opentui/react: type ExtendedIntrinsicElements<T extends Record<string, RenderableConstructor>> = { [K in keyof T]: ExtendedComponentProps<T[K]>; }
++ @opentui/react: type ExtendedIntrinsicElements<TComponentCatalogue extends Record<string, RenderableConstructor>> = { [TComponentName in keyof TComponentCatalogue]: ExtendedComponentProps<TComponentCatalogue[TComponentName]>; }
++ @opentui/react: type GetNonStyledProperties<TConstructor> = TConstructor extends RenderableConstructor<TextRenderable> ? NonStyledProps | "content" : TConstructor extends RenderableConstructor<BoxRenderable> ? NonStyledProps | "title" : TConstructor extends RenderableConstructor<ASCIIFontRenderable> ? NonStyledProps | "text" | "selectable" : NonStyledProps
+- @opentui/react: type GroupProps = ComponentProps<ContainerProps<RenderableOptions>>
++ @opentui/react: type GroupProps = ComponentProps<ContainerProps<RenderableOptions>, GroupRenderable>
+- @opentui/react: type InputProps = ComponentProps<InputRenderableOptions> & { focused?: boolean; onInput?: (value: string) => void; onChange?: (value: string) => void; onSubmit?: (value: string) => void; }
++ @opentui/react: type InputProps = ComponentProps<InputRenderableOptions, InputRenderable> & { focused?: boolean; onInput?: (value: string) => void; onChange?: (value: string) => void; onSubmit?: (value: string) => void; }
++ @opentui/react: type NonStyledProps = "buffered" | "live" | "enableLayout" | "selectable"
++ @opentui/react: type ReactProps<TRenderable = unknown> = { key?: React.Key; ref?: React.Ref<TRenderable>; }
+- @opentui/react: type RenderableConstructor<T extends Renderable = Renderable> = new (id: string, options: any) => T
++ @opentui/react: type RenderableConstructor<TRenderable extends Renderable = Renderable> = new (id: string, options: any) => TRenderable
+- @opentui/react: type SelectProps = ComponentProps<SelectRenderableOptions> & { focused?: boolean; onChange?: (index: number, option: SelectOption | null) => void; onSelect?: (index: number, option: SelectOption | null) => void; }
++ @opentui/react: type SelectProps = ComponentProps<SelectRenderableOptions, SelectRenderable> & { focused?: boolean; onChange?: (index: number, option: SelectOption | null) => void; onSelect?: (index: number, option: SelectOption | null) => void; }
+- @opentui/react: type TabSelectProps = ComponentProps<TabSelectRenderableOptions> & { focused?: boolean; onChange?: (index: number, option: TabSelectOption | null) => void; onSelect?: (index: number, option: TabSelectOption | null) => void; }
++ @opentui/react: type TabSelectProps = ComponentProps<TabSelectRenderableOptions, TabSelectRenderable> & { focused?: boolean; onChange?: (index: number, option: TabSelectOption | null) => void; onSelect?: (index: number, option: TabSelectOption | null) => void; }
+- @opentui/react: type TextProps = ComponentProps<TextOptions, "content"> & { children?: TextChildren | StyledText | TextChunk | Array<TextChildren | StyledText | TextChunk>; }
++ @opentui/react: type TextProps = ComponentProps<TextOptions, TextRenderable> & { children?: TextChildren | StyledText | TextChunk | Array<TextChildren | StyledText | TextChunk>; }

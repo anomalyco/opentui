@@ -1,0 +1,6 @@
+base 0.1.6
+- @opentui/core: method CliRenderer.setTerminalSize(width: number, height: number): void
+- @opentui/core: property RenderLib.destroyRenderer: (renderer: Pointer) => void
++ @opentui/core: property RenderLib.destroyRenderer: (renderer: Pointer, useAlternateScreen: boolean, splitHeight: number) => void
++ @opentui/core: property RenderLib.disableMouse: (renderer: Pointer) => void
++ @opentui/core: property RenderLib.enableMouse: (renderer: Pointer, enableMovement: boolean) => void

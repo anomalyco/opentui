@@ -1,0 +1,56 @@
+base 0.1.89
++ @opentui/core: class CRTRollingBarEffect
++ @opentui/core: class CloudsEffect
++ @opentui/core: class DistortionEffect
++ @opentui/core: class FlamesEffect
++ @opentui/core: class RainbowTextEffect
++ @opentui/core: class VignetteEffect
++ @opentui/core: const ACHROMATOPSIA_MATRIX: Float32Array<ArrayBuffer>
++ @opentui/core: const DEUTERANOPIA_COMP_MATRIX: Float32Array<ArrayBuffer>
++ @opentui/core: const DEUTERANOPIA_SIM_MATRIX: Float32Array<ArrayBuffer>
++ @opentui/core: const GRAYSCALE_MATRIX: Float32Array<ArrayBuffer>
++ @opentui/core: const GREENSCALE_MATRIX: Float32Array<ArrayBuffer>
++ @opentui/core: const INVERT_MATRIX: Float32Array<ArrayBuffer>
++ @opentui/core: const PROTANOPIA_COMP_MATRIX: Float32Array<ArrayBuffer>
++ @opentui/core: const PROTANOPIA_SIM_MATRIX: Float32Array<ArrayBuffer>
++ @opentui/core: const SEPIA_MATRIX: Float32Array<ArrayBuffer>
++ @opentui/core: const SOLARIZATION_MATRIX: Float32Array<ArrayBuffer>
++ @opentui/core: const SYNTHWAVE_MATRIX: Float32Array<ArrayBuffer>
++ @opentui/core: const TECHNICOLOR_MATRIX: Float32Array<ArrayBuffer>
++ @opentui/core: const TRITANOPIA_COMP_MATRIX: Float32Array<ArrayBuffer>
++ @opentui/core: const TRITANOPIA_SIM_MATRIX: Float32Array<ArrayBuffer>
++ @opentui/core: constructor CRTRollingBarEffect(speed?: number, height?: number, intensity?: number, fadeDistance?: number)
++ @opentui/core: constructor CloudsEffect(scale?: number, speed?: number, density?: number, darkness?: number)
++ @opentui/core: constructor DistortionEffect(options?: Partial<DistortionEffect>)
++ @opentui/core: constructor FlamesEffect(scale?: number, speed?: number, intensity?: number)
++ @opentui/core: constructor RainbowTextEffect(speed?: number, saturation?: number, value?: number, repeats?: number)
++ @opentui/core: constructor VignetteEffect(strength?: number)
++ @opentui/core: method CRTRollingBarEffect.apply(buffer: OptimizedBuffer, deltaTime: number): void
++ @opentui/core: method CloudsEffect.apply(buffer: OptimizedBuffer, deltaTime: number): void
++ @opentui/core: method DistortionEffect.apply(buffer: OptimizedBuffer, deltaTime: number): void
++ @opentui/core: method FlamesEffect.apply(buffer: OptimizedBuffer, deltaTime: number): void
++ @opentui/core: method RainbowTextEffect.apply(buffer: OptimizedBuffer, deltaTime: number): void
++ @opentui/core: method VignetteEffect.apply(buffer: OptimizedBuffer): void
++ @opentui/core: property CRTRollingBarEffect.fadeDistance: number
++ @opentui/core: property CRTRollingBarEffect.height: number
++ @opentui/core: property CRTRollingBarEffect.intensity: number
++ @opentui/core: property CRTRollingBarEffect.speed: number
++ @opentui/core: property CloudsEffect.darkness: number
++ @opentui/core: property CloudsEffect.density: number
++ @opentui/core: property CloudsEffect.scale: number
++ @opentui/core: property CloudsEffect.speed: number
++ @opentui/core: property DistortionEffect.colorGlitchChance: number
++ @opentui/core: property DistortionEffect.glitchChancePerSecond: number
++ @opentui/core: property DistortionEffect.maxGlitchDuration: number
++ @opentui/core: property DistortionEffect.maxGlitchLines: number
++ @opentui/core: property DistortionEffect.maxShiftAmount: number
++ @opentui/core: property DistortionEffect.minGlitchDuration: number
++ @opentui/core: property DistortionEffect.shiftFlipRatio: number
++ @opentui/core: property FlamesEffect.intensity: number
++ @opentui/core: property FlamesEffect.scale: number
++ @opentui/core: property FlamesEffect.speed: number
++ @opentui/core: property RainbowTextEffect.repeats: number
++ @opentui/core: property RainbowTextEffect.saturation: number
++ @opentui/core: property RainbowTextEffect.speed: number
++ @opentui/core: property RainbowTextEffect.value: number
++ @opentui/core: property VignetteEffect.strength: number

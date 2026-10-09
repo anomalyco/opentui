@@ -1,0 +1,4 @@
+base 0.1.99
++ @opentui/core: method CliRenderer.resetTerminalBgColor(): void
++ @opentui/core: readonly property CliRenderer.frameId: number
++ @opentui/core: property RenderContext.frameId: number

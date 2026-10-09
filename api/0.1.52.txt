@@ -1,0 +1,6 @@
+base 0.1.51
++ @opentui/core: property KeyEvent.repeated?: boolean
++ @opentui/core: property ParsedKey.repeated?: boolean
+- @opentui/core: type KeyHandlerEventMap = { keypress: [ KeyEvent ]; keyrepeat: [ KeyEvent ]; keyrelease: [ KeyEvent ]; paste: [ PasteEvent ]; }
++ @opentui/core: type KeyHandlerEventMap = { keypress: [ KeyEvent ]; keyrelease: [ KeyEvent ]; paste: [ PasteEvent ]; }
+- @opentui/solid: property UseKeyboardOptions.repeat?: boolean

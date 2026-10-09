@@ -1,0 +1,100 @@
+base 0.1.18
++ @opentui/core: abstract class BaseRenderable extends EventEmitter
+- @opentui/core: abstract class Renderable extends EventEmitter
++ @opentui/core: abstract class Renderable extends BaseRenderable
++ @opentui/core: class RootTextNodeRenderable extends TextNodeRenderable
++ @opentui/core: class TextNodeRenderable extends BaseRenderable
++ @opentui/core: const vstyles: { bold: (...children: (string | TextNodeRenderable)[]) => TextNodeRenderable; italic: (...children: (string | TextNodeRenderable)[]) => TextNodeRenderable; underline: (...children: (string | TextNodeRenderable)[]) => TextNodeRenderable; dim: (...children: (string | TextNodeRenderable)[]) => TextNodeRenderable; blink: (...children: (string | TextNodeRenderable)[]) => TextNodeRenderable; inverse: (...children: (string | TextNodeRenderable)[]) => TextNodeRenderable; hidden: (...children: (string | TextNodeRenderable)[]) => TextNodeRenderable; strikethrough: (...children: (string | TextNodeRenderable)[]) => TextNodeRenderable; boldItalic: (...children: (string | TextNodeRenderable)[]) => TextNodeRenderable; boldUnderline: (...children: (string | TextNodeRenderable)[]) => TextNodeRenderable; italicUnderline: (...children: (string | TextNodeRenderable)[]) => TextNodeRenderable; boldItalicUnderline: (...children: (string | TextNodeRenderable)[]) => TextNodeRenderable; color: (color: string | RGBA, ...children: (string | TextNodeRenderable)[]) => TextNodeRenderable; bgColor: (bgColor: string | RGBA, ...children: (string | TextNodeRenderable)[]) => TextNodeRenderable; fg: (color: string | RGBA, ...children: (string | TextNodeRenderable)[]) => TextNodeRenderable; bg: (bgColor: string | RGBA, ...children: (string | TextNodeRenderable)[]) => TextNodeRenderable; styled: (attributes?: number, ...children: (string | TextNodeRenderable)[]) => TextNodeRenderable; }
++ @opentui/core: constructor BaseRenderable(options: BaseRenderableOptions)
++ @opentui/core: constructor RootTextNodeRenderable(ctx: RenderContext, options: TextNodeOptions)
++ @opentui/core: constructor TextNodeRenderable(options: TextNodeOptions)
+- @opentui/core: function Text(props?: TextOptions & { content?: any; }, ...children: VChild[]): ProxiedVNode<typeof TextRenderable>
++ @opentui/core: function Text(props?: TextOptions & { content?: any; }, ...children: VChild[] | TextNodeRenderable[]): ProxiedVNode<typeof TextRenderable>
++ @opentui/core: function isTextNodeRenderable(obj: any): obj is TextNodeRenderable
+- @opentui/core: function tn(strings: TemplateStringsArray, ...values: StylableInput[]): StyledText
++ @opentui/core: interface BaseRenderableOptions
+- @opentui/core: interface LayoutOptions
++ @opentui/core: interface LayoutOptions extends BaseRenderableOptions
+- @opentui/core: interface RenderableOptions<T extends Renderable = Renderable> extends Partial<LayoutOptions>
++ @opentui/core: interface RenderableOptions<T extends BaseRenderable = BaseRenderable> extends Partial<LayoutOptions>
++ @opentui/core: interface TextNodeOptions extends BaseRenderableOptions
++ @opentui/core: abstract method BaseRenderable.add(obj: BaseRenderable | unknown, index?: number): number
++ @opentui/core: abstract method BaseRenderable.getChildren(): BaseRenderable[]
++ @opentui/core: abstract method BaseRenderable.getChildrenCount(): number
++ @opentui/core: abstract method BaseRenderable.getRenderable(id: string): BaseRenderable | undefined
++ @opentui/core: protected method BaseRenderable.markClean(): void
++ @opentui/core: protected method BaseRenderable.markDirty(): void
++ @opentui/core: abstract method BaseRenderable.remove(id: string): void
++ @opentui/core: abstract method BaseRenderable.requestRender(): void
++ @opentui/core: method RootTextNodeRenderable.requestRender(): void
+- @opentui/core: method StyledText.insert(chunk: TextChunk, index?: number): StyledText
++ @opentui/core: deprecated method StyledText.insert(chunk: TextChunk, index?: number): StyledText
++ @opentui/core: method StyledText.mount(textRenderable: TextRenderable): void
+- @opentui/core: method StyledText.remove(chunk: TextChunk): StyledText
++ @opentui/core: deprecated method StyledText.remove(chunk: TextChunk): StyledText
+- @opentui/core: method StyledText.replace(chunk: TextChunk, oldChunk: TextChunk): StyledText
++ @opentui/core: deprecated method StyledText.replace(chunk: TextChunk, oldChunk: TextChunk): StyledText
++ @opentui/core: method TextBuffer.getPlainText(): string
++ @opentui/core: method TextBuffer.insertChunkGroup(index: number, text: string, fg?: RGBA, bg?: RGBA, attributes?: number): void
++ @opentui/core: method TextBuffer.insertEncodedChunkGroup(index: number, textBytes: Uint8Array, fg?: RGBA, bg?: RGBA, attributes?: number): void
++ @opentui/core: method TextBuffer.removeChunkGroup(index: number): void
++ @opentui/core: method TextBuffer.replaceChunkGroup(index: number, text: string, fg?: RGBA, bg?: RGBA, attributes?: number): void
++ @opentui/core: method TextBuffer.replaceEncodedChunkGroup(index: number, textBytes: Uint8Array, fg?: RGBA, bg?: RGBA, attributes?: number): void
++ @opentui/core: method TextNodeRenderable.add(obj: TextNodeRenderable | string, index?: number): number
++ @opentui/core: method TextNodeRenderable.clear(): void
++ @opentui/core: static method TextNodeRenderable.fromNodes(nodes: TextNodeRenderable[], options?: Partial<TextNodeOptions>): TextNodeRenderable
++ @opentui/core: static method TextNodeRenderable.fromString(text: string, options?: Partial<TextNodeOptions>): TextNodeRenderable
++ @opentui/core: method TextNodeRenderable.gatherWithInheritedStyle(parentStyle?: { fg?: RGBA; bg?: RGBA; attributes: number; }): TextChunk[]
++ @opentui/core: method TextNodeRenderable.getChildren(): BaseRenderable[]
++ @opentui/core: method TextNodeRenderable.getChildrenCount(): number
++ @opentui/core: method TextNodeRenderable.getRenderable(id: string): BaseRenderable | undefined
++ @opentui/core: method TextNodeRenderable.insertBefore(child: string | TextNodeRenderable, anchorNode: string | TextNodeRenderable): this
++ @opentui/core: method TextNodeRenderable.mergeStyles(parentStyle: { fg?: RGBA; bg?: RGBA; attributes: number; }): { fg?: RGBA; bg?: RGBA; attributes: number; }
++ @opentui/core: method TextNodeRenderable.remove(child: string | TextNodeRenderable): this
++ @opentui/core: method TextNodeRenderable.requestRender(): void
++ @opentui/core: method TextNodeRenderable.toChunks(parentStyle?: { fg?: RGBA; bg?: RGBA; attributes: number; }): TextChunk[]
++ @opentui/core: method TextRenderable.add(obj: Renderable | any, index?: number): number
++ @opentui/core: method TextRenderable.clear(): void
++ @opentui/core: method TextRenderable.insertBefore(obj: BaseRenderable | any, anchor?: BaseRenderable): number
++ @opentui/core: method TextRenderable.insertChunk(chunk: TextChunk, index?: number): void
++ @opentui/core: method TextRenderable.remove(id: string): void
++ @opentui/core: method TextRenderable.removeChunk(chunk: TextChunk): void
++ @opentui/core: method TextRenderable.render(buffer: OptimizedBuffer, deltaTime: number): void
++ @opentui/core: method TextRenderable.replaceChunk(chunk: TextChunk, oldChunk: TextChunk): void
++ @opentui/core: property BaseRenderable.[BrandedRenderable]: boolean
++ @opentui/core: protected property BaseRenderable._dirty: boolean
++ @opentui/core: readonly property BaseRenderable.id: string
++ @opentui/core: readonly property BaseRenderable.isDirty: boolean
++ @opentui/core: readonly property BaseRenderable.num: number
++ @opentui/core: property BaseRenderableOptions.id?: string
++ @opentui/core: readonly property RenderLib.encoder: TextEncoder
++ @opentui/core: property RenderLib.getArenaAllocatedBytes: () => number
++ @opentui/core: property RenderLib.getPlainTextBytes: (buffer: Pointer, maxLength: number) => Uint8Array | null
++ @opentui/core: property RenderLib.textBufferGetChunkGroupCount: (buffer: Pointer) => number
++ @opentui/core: property RenderLib.textBufferInsertChunkGroup: (buffer: Pointer, index: number, textBytes: Uint8Array, fg: RGBA | null, bg: RGBA | null, attributes: number | null) => number
++ @opentui/core: property RenderLib.textBufferRemoveChunkGroup: (buffer: Pointer, index: number) => number
++ @opentui/core: property RenderLib.textBufferReplaceChunkGroup: (buffer: Pointer, index: number, textBytes: Uint8Array, fg: RGBA | null, bg: RGBA | null, attributes: number | null) => number
+- @opentui/core: property Renderable.[BrandedRenderable]: boolean
+- @opentui/core: readonly property Renderable.id: string
+- @opentui/core: protected readonly property Renderable.isDirty: boolean
+- @opentui/core: readonly property Renderable.num: number
+- @opentui/core: property RenderableOptions.id?: string
+- @opentui/core: readonly property StyledText.chunks: TextChunk[]
++ @opentui/core: property StyledText.chunks: TextChunk[]
++ @opentui/core: property StyledText.textRenderable?: TextRenderable
++ @opentui/core: readonly property TextBuffer.chunkGroupCount: number
+- @opentui/core: property TextChunk.plainText: string
+- @opentui/core: property TextChunk.text: Uint8Array
++ @opentui/core: property TextChunk.text: string
++ @opentui/core: property TextNodeOptions.attributes?: number
++ @opentui/core: property TextNodeOptions.bg?: string | RGBA
++ @opentui/core: property TextNodeOptions.fg?: string | RGBA
++ @opentui/core: property TextNodeRenderable.[BrandedTextNodeRenderable]: boolean
++ @opentui/core: property TextNodeRenderable.attributes: number
++ @opentui/core: property TextNodeRenderable.bg?: RGBA
++ @opentui/core: property TextNodeRenderable.children: (string | TextNodeRenderable)[]
++ @opentui/core: property TextNodeRenderable.fg?: RGBA
++ @opentui/core: property TextNodeRenderable.parent: TextNodeRenderable | null
++ @opentui/core: readonly property TextRenderable.chunks: TextChunk[]
++ @opentui/core: readonly property TextRenderable.plainText: string
++ @opentui/core: readonly property TextRenderable.textLength: number

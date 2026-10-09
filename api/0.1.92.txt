@@ -1,0 +1,2 @@
+base 0.1.91
++ @opentui/core: method SlotRegistry.batch<T>(run: () => T): T

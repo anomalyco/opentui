@@ -1,0 +1,17 @@
+base 0.1.19
++ @opentui/core: function isStyledText(obj: any): obj is StyledText
+- @opentui/core: function maybeMakeRenderable(ctx: RenderContext, node: Renderable | VNode<any, any[]>): Renderable | null
++ @opentui/core: function maybeMakeRenderable(ctx: RenderContext, node: Renderable | VNode<any, any[]> | unknown): Renderable | null
+- @opentui/core: method Renderable.add(obj: Renderable | VNode<any, any[]>, index?: number): number
++ @opentui/core: method Renderable.add(obj: Renderable | VNode<any, any[]> | unknown, index?: number): number
+- @opentui/core: method Renderable.insertBefore(obj: Renderable | VNode<any, any[]>, anchor?: Renderable): number
++ @opentui/core: method Renderable.insertBefore(obj: Renderable | VNode<any, any[]> | unknown, anchor?: Renderable | unknown): number
+- @opentui/core: method TextNodeRenderable.add(obj: TextNodeRenderable | string, index?: number): number
++ @opentui/core: method TextNodeRenderable.add(obj: TextNodeRenderable | StyledText | string, index?: number): number
+- @opentui/core: method TextNodeRenderable.insertBefore(child: string | TextNodeRenderable, anchorNode: string | TextNodeRenderable): this
++ @opentui/core: method TextNodeRenderable.insertBefore(child: string | TextNodeRenderable | StyledText, anchorNode: TextNodeRenderable | string | unknown): this
+- @opentui/core: method TextRenderable.add(obj: Renderable | any, index?: number): number
++ @opentui/core: method TextRenderable.add(obj: TextNodeRenderable | StyledText | string, index?: number): number
+- @opentui/core: method TextRenderable.insertBefore(obj: BaseRenderable | any, anchor?: BaseRenderable): number
++ @opentui/core: method TextRenderable.insertBefore(obj: BaseRenderable | any, anchor?: TextNodeRenderable): number
++ @opentui/core: property StyledText.[BrandedStyledText]: boolean

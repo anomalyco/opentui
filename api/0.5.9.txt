@@ -1,0 +1,4 @@
+base 0.5.8
++ @opentui/core: method EditBuffer.getTabWidth(): number
++ @opentui/core: method EditBuffer.setTabWidth(width: number): void
++ @opentui/core: property RenderLib.editBufferSetTabWidth: (buffer: EditBufferHandle, width: number) => void
