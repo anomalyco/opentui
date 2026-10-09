@@ -223,7 +223,9 @@ const Model = struct {
             vacant = vacant or state == .vacant;
         }
         try std.testing.expectEqual(live, self.table.live_count);
-        if (vacant) try self.table.checkCapacity() else try std.testing.expectError(error.ObjectLimit, self.table.checkCapacity());
+        // Only insert may grow the table; a full table is checked only where it cannot grow.
+        if (self.table.free_head != null) try self.table.checkCapacity() else if (!vacant) try std.testing.expectError(error.ObjectLimit, self.table.checkCapacity());
+        try std.testing.expect(std.mem.findScalar(usize, &.{ 2, 4, 5 }, self.table.slots.len) != null);
         for (kinds) |kind| {
             var cursor: usize = 0;
             var listed: u32 = 0;
