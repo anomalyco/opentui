@@ -114,8 +114,8 @@ function expectationFlags(context: StdinParserProtocolContext): number {
 
 /**
  * Same surface as StdinParser for renderer.ts, without the hooks that coordinated
- * parser and renderer state: a deferred reply has no deadline, so suspension, CPR
- * aborts, and pixel queries need no special handling.
+ * parser and renderer state: a deferred reply has no deadline, so CPR aborts and
+ * pixel queries need no special handling; suspension needs only suspend and resume.
  */
 export class NativeStdinParser {
   private readonly lib: RenderLib

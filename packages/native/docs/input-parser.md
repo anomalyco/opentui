@@ -977,7 +977,7 @@ ot_status ot_session_input_feed(
 
 /* flags is a combination of OT_INPUT_EXPECT_* bits; other bits must be zero.
  * Set REPLIES while any query is outstanding, including the capability queries
- * that setup and resume publish. It keeps a partial CSI reply waiting past the
+ * that setup publishes. It keeps a partial CSI reply waiting past the
  * timeout, and it makes a complete CSI 1 ; N R (N >= 2) a CURSOR_POSITION reply
  * instead of a modified F3 key. KITTY_KEYBOARD keeps a partial Kitty key waiting;
  * the session also applies it while its terminal has Kitty keyboard enabled.
@@ -1036,15 +1036,20 @@ consumed nothing and reported nothing as a bug.
   arrive then) and `suspended`.
 - Suspend does not reset the parser. The adapter stops input time while suspended: no timer runs
   and `now_ns` holds, so a unit pending at suspension (even a lone `ESC` that begins a
-  pixel-resolution reply) still completes with the bytes drained on resume. After that drain, input
-  sent before suspension has arrived, and another process (a shell, an editor) may have read the
-  rest of a pending paste, mouse report, or key. The adapter calls
-  `ot_session_input_reset(…, OT_INPUT_RESET_KEEP_REPLY)`: it drops the pending unit, unless REPLIES
+  pixel-resolution reply) still completes with the bytes drained on resume. The renderer drains the
+  protocol update that suspension makes while it is already suspended, so the units that update ends
+  are dropped like other input while suspended.
+- After the resume drain, the adapter treats a unit still pending as stale: another process (a
+  shell, an editor) may have read the rest of a paste, mouse report, or key. It calls
+  `ot_session_input_reset(…, OT_INPUT_RESET_KEEP_REPLY)`, which drops the pending unit unless REPLIES
   is set and the unit is a CSI that may begin a reply (the shapes §6.3 defers for REPLIES). That unit
-  becomes deferred and waits for its rest. Otherwise an open paste would swallow all later typing,
-  and a deferred mouse prefix would swallow typed digits. This replaces
-  `hasPendingPixelResolutionResponse` and its pause/reset dance; the parser knows reply shapes, not
-  pixel replies.
+  becomes deferred, without an Alt prefix, and waits for its rest. Otherwise an open paste would
+  swallow all later typing, and a deferred mouse prefix would swallow typed digits.
+- This is the native form of the legacy `hasPendingPixelResolutionResponse` rule, with two
+  differences. A reply split before its first `;` (`ESC`, `ESC [`, `ESC [ 4`) whose rest arrives
+  after resume is lost, and its rest becomes typed keys; legacy keeps those pixel prefixes. While
+  REPLIES is set, every reply shape is kept, not only a pixel reply, so a kept prefix can take digits
+  typed after resume, or complete as a Kitty key whose shape it shares.
 - `ot_terminal_flush_input` is unrelated: it discards OS-level unread bytes at shutdown.
 - `ot_session_destroy` frees nothing for the parser.
 
@@ -1241,6 +1246,7 @@ numeric key code.
 | Kitty `CSI u` decodes only when `useKittyKeyboard`.                 | Always decodes.                                                  | A terminal sends it only when asked; the `?`-prefixed flags reply is distinct. |
 | `push(emptyChunk)` emits a key with an empty name.                  | Zero bytes only expires.                                         | Nothing on the wire, nothing to report.                                        |
 | Unknown sequences become a key with an empty `name`.                | Reply events.                                                    | G2.                                                                            |
+| A pixel reply prefix survives resume however short.                 | Only a prefix through its first `;` survives (§11.5).            | Shorter prefixes are indistinguishable from keys.                              |
 | Alt+uppercase sets `shift`.                                         | Same (adapter), native reports the character as sent.            | Wire fidelity in native; Core naming in the adapter.                           |
 | CPR `CSI 1;N R` with N ≥ 2 is a capability signal in TS regexes.    | Native flags `CURSOR_POSITION`; TS keeps `isCapabilityResponse`. | No regex on the hot path; detection logic unchanged.                           |
 | A lone byte that cannot start UTF-8 (`0xFF`) waits for the timeout. | An eight-bit Alt key at once.                                    | Only a lead byte can continue; nothing else can change the result.             |
@@ -1267,7 +1273,7 @@ numeric key code.
 | X10 release reports the last pressed button.                      | Always button 0 (Core).                                                                               | X10 cannot say which; last-pressed is the useful guess and what the Rust port does.                                                                             |
 | Input feeds keep their own monotonic clock.                       | Share the pump's `last_pump_ns`.                                                                      | The host arms input timers on a different clock than its pump (§10.6); deadlines are relative to the parser's own `since_ns`.                                   |
 | The adapter stops input time while suspended.                     | Reset on suspend (Core); expire everything on suspend.                                                | A unit pending at suspension completes with the bytes drained on resume (§11.5).                                                                                |
-| Resume resets the parser but keeps a reply prefix (`KEEP_REPLY`). | Resolve stale units at their deadline (lets a paste or mouse prefix outlive the drain); a full reset. | After the drain nothing from before suspension can complete a paste, mouse report, or key, but an awaited reply may still arrive (§11.5).                       |
+| Resume resets the parser but keeps a reply prefix (`KEEP_REPLY`). | Resolve stale units at their deadline (lets a paste or mouse prefix outlive the drain); a full reset. | After the drain a pending paste, mouse report, or key is stale, but an awaited reply may still arrive (§11.5).                                                  |
 
 ---
 
