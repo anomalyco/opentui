@@ -268,6 +268,15 @@ test.each([
   ["a captured full-width line of wide characters", ["a一二三四\n"], ["a一二三四"]],
   ["a captured short line", ["abc\n"], ["abc"]],
   ["a captured line continued after wide characters", ["你好", "a世界", "x\n"], ["你好a世界", "x"]],
+  ["a continued wide character at the last column", ["abcdefgh", "一x", "y\n"], ["abcdefgh", "一xy"]],
+  ["a wide character at the edge of a continued row", ["abcde", "fghijklm一\n"], ["abcdefghi", "jklm一"]],
+  ["a tab in a continued row", ["abc", "\tX\n"], ["abc     X"]],
+  ["a continued wide character that wraps early", ["abc", "defgh一", "x\n"], ["abcdefgh", "一x"]],
+  [
+    "the same early wrap at the pinned bottom",
+    ["\n".repeat(8), "abc", "defgh一", "x\n"],
+    ["", "", "", "", "abcdefgh", "一x"],
+  ],
   [
     "rows continued at the pinned bottom",
     ["\n".repeat(8), "abcde", { red: "XXXXXX\n" }, "abcd", { red: "YY" }, "efg", "z\n", "ab", { red: "一二三四\n" }],
@@ -306,6 +315,11 @@ test.each([
   ["expands tabs to 8-cell stops within the row", "a\tb\tc\n", ["a       b:9", "c:1\n"]],
   ["ends a line at CRLF", "one\r\ntwo\r\n", ["one:3\n", "two:3\n"]],
   ["restarts a wrapped line at CR", "0123456789%\r60%\n\n", ["60%:3\n", ":0\n"]],
+  // Writes that continue a row are cut where the terminal row ends.
+  ["wraps a wide character at the last column of a continued row", ["abcdefgh", "一x"], ["abcdefgh:8", ":1", "一x:3"]],
+  ["pads at the terminal edge, not at the write width", ["abcde", "fghijklm一\n"], ["abcde:5", "fghi:4", "jklm一:6\n"]],
+  ["counts tab stops from the row, not the write", ["a", "bc", "\tX\n"], ["a:1", "bc:2", "     X:6\n"]],
+  ["keeps a wide character that wraps early", ["abc", "defgh一", "x\n"], ["abc:3", "defgh:6", "一:2", "x:1\n"]],
 ])("captured stdout %s", async (_name, text, commits) => {
   const stdout = createTestStdout(9, 10)
   const { renderer } = await setup({ width: 9, stdout })
@@ -315,14 +329,16 @@ test.each([
     const row = decoder.decode(snapshot.getRealCharBytes(true)).trimEnd()
     written.push(`${row}:${rowColumns}${trailingNewline ? "\n" : ""}`)
   })
-  stdout.write(text)
+  for (const write of [text].flat()) stdout.write(write)
   expect(written).toEqual(commits)
 })
 
+// After the frame the published tail is 4; the queued newline resets it.
 test("the predicted tail column counts every cell of a trailing wide character", async () => {
-  const stdout = createTestStdout(24, 10)
-  const { renderer } = await setup({ stdout })
+  const { renderer, stdout, frame } = await setupTerminal()
   stdout.write("ab二")
+  await frame()
+  stdout.write("\nab二")
   let tailColumn = -1
   renderer.writeToScrollback(({ renderContext, tailColumn: tail }) => {
     tailColumn = tail

@@ -2566,9 +2566,12 @@ export class CliRenderer extends EventEmitter implements RenderContext {
 
   private getPendingSplitTailColumn(): number {
     const width = Math.max(this.width, 1)
+    const commits = this.externalOutputQueue.peek().slice(this.pendingNativeReplay?.remaining ?? 0)
+    // Every stdout write asks: start at the last commit that ends its line, which leaves tail 0.
+    const lastLine = commits.findLastIndex((commit) => commit.trailingNewline)
     let tailColumn = this.pendingNativeReplay ? 0 : this.splitTailColumn
 
-    for (const commit of this.externalOutputQueue.peek().slice(this.pendingNativeReplay?.remaining ?? 0)) {
+    for (const commit of commits.slice(Math.max(0, lastLine))) {
       tailColumn = this.getSplitTailColumnAfterCommit(commit, tailColumn, width)
     }
 
@@ -2622,6 +2625,7 @@ export class CliRenderer extends EventEmitter implements RenderContext {
     // Chunk rows at the renderer width in display cells, never inside a grapheme, so
     // each commit maps to one terminal row append and keeps every cell.
     const width = Math.max(1, this.width)
+    const tailColumn = this.getPendingSplitTailColumn()
     const rows: StdoutRow[] = []
     // Wrapped chunks of the current logical row start at this index; '\r' drops them.
     let rowStart = 0
@@ -2645,13 +2649,15 @@ export class CliRenderer extends EventEmitter implements RenderContext {
         continue
       }
 
+      // The first row of a write continues the terminal row at the tail column; native appends it there.
+      const column = (rows.length === 0 && tailColumn < width ? tailColumn : 0) + cells
       // A tab advances to the next stop, as in a terminal, and never wraps.
-      const tabCells = Math.min(STDOUT_TAB_WIDTH - (cells % STDOUT_TAB_WIDTH), Math.max(0, width - cells))
+      const tabCells = Math.min(STDOUT_TAB_WIDTH - (column % STDOUT_TAB_WIDTH), Math.max(0, width - column))
       const grapheme = segment === "\t" ? " ".repeat(tabCells) : segment
       const graphemeCells = stringWidth(grapheme)
-      if (cells > 0 && cells + graphemeCells > width) {
-        // A wide grapheme that does not fit starts a terminal row; pad to the full width so native counts that row.
-        const padding = Math.max(0, width - cells)
+      if (column > 0 && column + graphemeCells > width) {
+        // A grapheme that does not fit starts a terminal row; pad a wide one's skipped cell so native counts the row.
+        const padding = Math.max(0, width - column)
         rows.push({ line: line + " ".repeat(padding), cells: cells + padding, trailingNewline: false })
         line = ""
         cells = 0
