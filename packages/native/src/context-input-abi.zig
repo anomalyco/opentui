@@ -13,31 +13,31 @@ comptime {
         if (@offsetOf(Event, field.name) != @offsetOf(c.ot_input_event, field.name))
             @compileError("ot_input_event differs from input_parser.Event: " ++ field.name);
     }
-    const Kind = input_parser.Kind;
-    const flags = input_parser.flags;
-    const checks = .{
-        .{ c.OT_INPUT_KEY, @intFromEnum(Kind.key) },
-        .{ c.OT_INPUT_MOUSE, @intFromEnum(Kind.mouse) },
-        .{ c.OT_INPUT_PASTE, @intFromEnum(Kind.paste) },
-        .{ c.OT_INPUT_FOCUS, @intFromEnum(Kind.focus) },
-        .{ c.OT_INPUT_REPLY, @intFromEnum(Kind.reply) },
-        .{ c.OT_INPUT_KEY_RELEASE, @intFromEnum(input_parser.KeyAction.release) },
-        .{ c.OT_INPUT_MOUSE_SCROLL, @intFromEnum(input_parser.MouseAction.scroll) },
-        .{ c.OT_INPUT_MOUSE_BUTTON_NONE, input_parser.mouse_button_none },
-        .{ c.OT_INPUT_MOD_NUM_LOCK, @as(u8, @bitCast(input_parser.Modifiers{ .num_lock = true })) },
-        .{ c.OT_INPUT_KEY_TEXT_TRUNCATED, flags.key_text_truncated },
-        .{ c.OT_INPUT_PASTE_END, flags.paste_end },
-        .{ c.OT_INPUT_REPLY_CURSOR_POSITION, flags.reply_cursor_position },
-        .{ c.OT_INPUT_REPLY_APC, @intFromEnum(input_parser.Protocol.apc) },
-        .{ c.OT_INPUT_KEY_KP_BEGIN, input_parser.key.kp_begin },
-        .{ c.OT_INPUT_KEY_F35, input_parser.key.f(35) },
-        .{ c.OT_INPUT_KEY_ISO_LEVEL5_SHIFT, input_parser.key.functional_last },
-        .{ c.OT_INPUT_EXPECT_KITTY_KEYBOARD, @as(u8, @bitCast(input_parser.Expectations{ .kitty_keyboard = true })) },
-        .{ c.OT_INPUT_EVENTS_MIN, input_parser.events_per_byte_max },
-        .{ c.OT_INPUT_PAYLOAD_BYTES_MIN, input_parser.payload_per_byte_max },
-        .{ c.OT_INPUT_TIMEOUT_NS, input_parser.timeout_ns },
-    };
-    for (checks) |check| if (check[0] != check[1]) @compileError("opentui.h input constant differs from input_parser");
+    @setEvalBranchQuota(20_000);
+    // Every parser constant has an equal header twin named OT_INPUT_<prefix><NAME>.
+    for (std.meta.tags(input_parser.Kind)) |tag| checkTwin("", @tagName(tag), @intFromEnum(tag));
+    for (std.meta.tags(input_parser.KeyAction)) |tag| checkTwin("KEY_", @tagName(tag), @intFromEnum(tag));
+    for (std.meta.tags(input_parser.MouseAction)) |tag| checkTwin("MOUSE_", @tagName(tag), @intFromEnum(tag));
+    for (std.meta.tags(input_parser.Protocol)) |tag| checkTwin("REPLY_", @tagName(tag), @intFromEnum(tag));
+    for (std.meta.fields(input_parser.Modifiers), 0..) |field, bit| checkTwin("MOD_", field.name, 1 << bit);
+    for (std.meta.fields(input_parser.Expectations)[0..2], 0..) |field, bit| checkTwin("EXPECT_", field.name, 1 << bit);
+    for (@typeInfo(input_parser.flags).@"struct".decls) |decl| checkTwin("", decl.name, @field(input_parser.flags, decl.name));
+    for (@typeInfo(input_parser.key).@"struct".decls) |decl| {
+        // Range bounds and the F(n) helper have no twin of their own.
+        if (std.mem.startsWith(u8, decl.name, "functional_") or std.mem.eql(u8, decl.name, "f")) continue;
+        checkTwin("KEY_", decl.name, @field(input_parser.key, decl.name));
+    }
+    checkTwin("", "mouse_button_none", input_parser.mouse_button_none);
+    checkTwin("", "events_min", input_parser.events_per_byte_max);
+    checkTwin("", "payload_bytes_min", input_parser.payload_per_byte_max);
+    checkTwin("", "timeout_ns", input_parser.timeout_ns);
+}
+
+fn checkTwin(comptime prefix: []const u8, comptime name: []const u8, comptime value: u64) void {
+    comptime var upper: [name.len]u8 = undefined;
+    _ = std.ascii.upperString(&upper, name);
+    const twin = "OT_INPUT_" ++ prefix ++ upper;
+    if (!@hasDecl(c, twin) or @field(c, twin) != value) @compileError(twin ++ " differs from input_parser");
 }
 
 const expect_flags: u32 = c.OT_INPUT_EXPECT_REPLIES | c.OT_INPUT_EXPECT_KITTY_KEYBOARD;
@@ -227,7 +227,9 @@ test "Context input ABI rejects malformed calls, foreign handles, and closed ses
     try std.testing.expectEqual(c.OT_CONTEXT_BUSY, f.feed("\x1b", 1));
     context.core.mutating = false;
     try std.testing.expectEqual(c.OT_OK, f.feed("\x1b", 1));
-    try std.testing.expectEqual(@as(u32, 0), f.drain.count);
+    try std.testing.expectEqual(c.OT_OK, f.feed("", 1 + c.OT_INPUT_TIMEOUT_NS));
+    // One plain Escape: a parsed rejected ESC would make this Alt+Escape.
+    try std.testing.expectEqual(@as(u8, 0), f.records[0].modifiers);
     const thread = try std.Thread.spawn(.{}, struct {
         fn run(owner: *abi.ContextHandle, session: *const c.ot_handle) void {
             std.testing.expectEqual(c.OT_WRONG_THREAD, ot_session_input_feed(owner, session, null, 0, 0, null, 0, null, 0, null)) catch unreachable;

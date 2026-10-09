@@ -75,7 +75,7 @@ pub const key = struct {
     pub const end: u32 = 57357;
     pub const menu: u32 = 57363;
     pub const f1: u32 = 57364;
-    pub const kp0: u32 = 57399;
+    pub const kp_0: u32 = 57399;
     pub const kp_begin: u32 = 57427;
     pub const functional_first: u32 = 57344;
     pub const functional_last: u32 = 57454;
@@ -1041,7 +1041,7 @@ fn functionalKey(code: u32) ?u32 {
 /// What a printable keypad key inserts.
 fn keypadText(code: u32) ?u8 {
     return switch (code) {
-        key.kp0...key.kp0 + 9 => @as(u8, @intCast('0' + code - key.kp0)),
+        key.kp_0...key.kp_0 + 9 => @as(u8, @intCast('0' + code - key.kp_0)),
         57409 => '.',
         57410 => '/',
         57411 => '*',
