@@ -583,6 +583,8 @@ describe("StdinParser", () => {
       }
     })
 
+    table([["double-ESC + [A → meta+up", "\x1b\x1b[A", [k("up", { raw: "\x1b\x1b[A", meta: true })]]])
+
     test("meta+uppercase sets shift", () => {
       const p = createParser()
       try {
