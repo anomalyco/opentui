@@ -297,29 +297,30 @@ test "TextBufferView rewrap reuses virtual line allocation without retaining cle
     var pools = TestPools.init(std.testing.allocator);
     defer pools.deinit();
 
-    var tracking = std.testing.FailingAllocator.init(std.testing.allocator, .{});
-    const tb = try TextBuffer.init(tracking.allocator(), &pools.graphemes, &pools.links, .unicode);
-    defer tb.deinit();
-    const view = try TextBufferView.init(tracking.allocator(), tb);
-    defer view.deinit();
-    try tb.setText("OpenTUI text metrics: \u{754c} e\u{301} abcdefghijklmnop " ** 100);
-    view.setWrapMode(.word);
-    view.setWrapWidth(80);
-    _ = view.getVirtualLines();
-    view.setWrapWidth(79);
-    _ = view.getVirtualLines();
-    view.setWrapWidth(80);
-    _ = view.getVirtualLines();
-    const allocated = tracking.allocated_bytes;
-    const capacity = view.virtual_lines_arena.queryCapacity();
-    for (0..20) |i| {
-        view.setWrapWidth(@intCast(79 + i % 2));
-        _ = view.getVirtualLines();
+    for ([_]text_buffer_view.WrapMode{ .char, .word }) |mode| {
+        var tracking = std.testing.FailingAllocator.init(std.testing.allocator, .{});
+        const tb = try TextBuffer.init(tracking.allocator(), &pools.graphemes, &pools.links, .unicode);
+        defer tb.deinit();
+        const view = try TextBufferView.init(tracking.allocator(), tb);
+        defer view.deinit();
+        try tb.setText("OpenTUI text metrics: \u{754c} e\u{301} abcdefghijklmnop " ** 100);
+        view.setWrapMode(mode);
+        for ([_]u32{ 80, 79, 80 }) |width| {
+            view.setWrapWidth(width);
+            _ = view.getVirtualLines();
+        }
+        const allocated = tracking.allocated_bytes;
+        const capacity = view.virtual_lines_arena.queryCapacity();
+        for (0..22) |i| {
+            view.setWrapWidth(if (i == 20) 1 else @intCast(79 + i % 2));
+            _ = view.getVirtualLines();
+            if (i == 19) try std.testing.expectEqual(allocated, tracking.allocated_bytes);
+        }
+        try std.testing.expect(view.virtual_lines_arena.queryCapacity() <= 1024 * tb.getLineCount() + 16 * tb.getByteSize());
+        try tb.clear();
+        try std.testing.expectEqual(@as(u32, 1), view.getVirtualLineCount());
+        try std.testing.expect(view.virtual_lines_arena.queryCapacity() < capacity);
     }
-    try std.testing.expectEqual(allocated, tracking.allocated_bytes);
-    try tb.clear();
-    try std.testing.expectEqual(@as(u32, 1), view.getVirtualLineCount());
-    try std.testing.expect(view.virtual_lines_arena.queryCapacity() < capacity);
 }
 
 test "TextBufferView rewrap matches fresh layout after text and tab changes" {
