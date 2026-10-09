@@ -172,6 +172,86 @@ function assertChunkInvariant(input: Uint8Array, opts?: StdinParserOptions) {
   }
 }
 
+// Input parser conformance vectors, kept as data so that a native port can load them (issue 044).
+// A row is [name, steps, expected, issue?]. A step is UTF-8 text, a byte array, or null: the Escape
+// timeout passes. After the last step the timeout passes once more. `expected` lists every event in
+// order: key("name" ctrl meta shift release), mouse(type x,y bButton), response("sequence"), and
+// paste("text"), with JSON strings. Each row must also hold when every step arrives one byte at a time.
+// A row with an issue id is wrong on main and runs as test.todo until the native port fixes it.
+type ConformanceRow = [name: string, steps: Array<string | number[] | null>, expected: string, issue?: string]
+// oxfmt-ignore
+const CONFORMANCE: ConformanceRow[] = [
+  ["ESC + SGR mouse motion", ["\x1b\x1b[<35;10;5M"], 'key("escape") mouse(move 9,4 b0)', "044"],
+  ["ESC, then SGR mouse motion in a 2nd read", ["\x1b", "\x1b[<35;10;5M"], 'key("escape") mouse(move 9,4 b0)', "044"],
+  ["ESC + X10 press", ["\x1b\x1b[M !!"], 'key("escape") mouse(down 0,0 b0)', "044"],
+  ["ESC + Kitty flags reply", ["\x1b\x1b[?1u"], 'key("escape") response("\\u001b[?1u")', "044"],
+  ["ESC + bracketed paste", ["\x1b\x1b[200~hi\x1b[201~"], 'key("escape") paste("hi")', "044"],
+  ["ESC + OSC 11 reply", ["\x1b\x1b]11;rgb:0000/0000/0000\x07"], 'key("escape") response("\\u001b]11;rgb:0000/0000/0000\\u0007")', "044"],
+  ["ESC + cursor position report", ["\x1b\x1b[12;1R"], 'key("escape") response("\\u001b[12;1R")', "044"],
+  ["ESC + DA1 reply", ["\x1b\x1b[?62;22c"], 'key("escape") response("\\u001b[?62;22c")', "044"],
+  ["ESC + focus-in", ["\x1b\x1b[I"], 'key("escape") response("\\u001b[I")', "044"],
+  ["ESC + Alt+a", ["\x1b\x1ba"], 'key("escape") key("a" meta)', "044"],
+  ["ESC ESC ESC", ["\x1b\x1b\x1b"], 'key("escape") key("escape" meta)', "044"],
+  ["ESC + mouse, ESC + reply", ["\x1b\x1b[<0;1;1M\x1b\x1b[?1u"], 'key("escape") mouse(down 0,0 b0) key("escape") response("\\u001b[?1u")', "044"],
+  ["ESC + Alt+!", ["\x1b\x1b!"], 'key("escape") key("!" meta)', "044"],
+  ["Alt+.", ["\x1b."], 'key("." meta)', "044"],
+  ["Alt+/", ["\x1b/"], 'key("/" meta)', "044"],
+  ["Alt+,", ["\x1b,"], 'key("," meta)', "044"],
+  ["Alt+;", ["\x1b;"], 'key(";" meta)', "044"],
+  ["Alt+<", ["\x1b<"], 'key("<" meta)', "044"],
+  ["Alt+>", ["\x1b>"], 'key(">" meta)', "044"],
+  ["Alt+!", ["\x1b!"], 'key("!" meta)', "044"],
+  ["8-bit Alt+@ (0xC0), then A", [[0xc0, 0x41]], 'key("@" meta) key("a" shift)', "044"],
+  ["Alt+é", ["\x1bé"], 'key("é" meta)', "044"],
+  ["Alt+ж", ["\x1bж"], 'key("ж" meta)', "044"],
+  ["Alt+中", ["\x1b中"], 'key("中" meta)', "044"],
+  ["SGR wheel-up release", ["\x1b[<64;11;6m"], 'response("\\u001b[<64;11;6m")', "044"],
+  ["SGR wheel-down release", ["\x1b[<65;11;6m"], 'response("\\u001b[<65;11;6m")', "044"],
+  ["press, drag, wheel-up, its release, drag", ["\x1b[<0;1;1M\x1b[<32;4;1M\x1b[<64;4;1M\x1b[<64;4;1m\x1b[<32;9;1M"], 'mouse(down 0,0 b0) mouse(drag 3,0 b0) mouse(scroll 3,0 b0) response("\\u001b[<64;4;1m") mouse(drag 8,0 b0)', "044"],
+  ["X10 press at column and row 223 (byte 0)", [[0x1b, 0x5b, 0x4d, 0x20, 0x00, 0x00]], "mouse(down 223,223 b0)", "044"],
+  ["X10 report cut short by ESC [ A", ["\x1b[M \x1b[A"], 'response("\\u001b[M ") key("up")', "044"],
+  ["OSC string cut short by ESC [ A", ["\x1b]foo\x1b[A"], 'response("\\u001b]foo") key("up")', "044"],
+  ["unrecognized CSI ESC [ < 0 M", ["\x1b[<0M"], 'response("\\u001b[<0M")', "044"],
+  ["unrecognized CSI ESC [ h", ["\x1b[h"], 'response("\\u001b[h")', "044"],
+  ["SGR mouse motion", ["\x1b[<35;10;5M"], "mouse(move 9,4 b0)"],
+  ["Alt+a", ["\x1ba"], 'key("a" meta)'],
+  ["ESC ESC (Alt+Escape)", ["\x1b\x1b"], 'key("escape" meta)'],
+  ["ESC ESC [A (Alt+Up)", ["\x1b\x1b[A"], 'key("up" meta)'],
+  ["ESC, timeout, ESC, timeout, ESC", ["\x1b", null, "\x1b", null, "\x1b"], 'key("escape") key("escape") key("escape")'],
+  ["ESC, timeout, SGR wheel-up without ESC", ["\x1b", null, "[<64;38;15M"], 'key("escape") mouse(scroll 37,14 b0)'],
+]
+
+function notation(event: Snap): string {
+  switch (event.type) {
+    case "key": {
+      const flags = (["ctrl", "meta", "shift"] as const).filter((flag) => event[flag]).map((flag) => ` ${flag}`)
+      const kind = event.eventType === "press" ? "" : ` ${event.eventType}`
+      return `key(${JSON.stringify(event.name)}${flags.join("")}${kind})`
+    }
+    case "mouse":
+      return `mouse(${event.event.type} ${event.event.x},${event.event.y} b${event.event.button})`
+    case "response":
+      return `response(${JSON.stringify(event.sequence)})`
+    case "paste":
+      return `paste(${JSON.stringify(Buffer.from(event.bytes).toString())})`
+  }
+}
+
+function runConformance(steps: ConformanceRow[1]): string {
+  const { parser, clock } = createTimedParser()
+  const out: string[] = []
+  try {
+    for (const step of [...steps, null]) {
+      if (step === null) clock.advance(TEST_TIMEOUT_MS)
+      else parser.push(buf(step))
+      out.push(...snap(parser).map(notation))
+    }
+    return out.join(" ")
+  } finally {
+    parser.destroy()
+  }
+}
+
 describe("StdinParser", () => {
   describe("printable ASCII", () => {
     test("lowercase a-z", () => {
@@ -502,8 +582,6 @@ describe("StdinParser", () => {
         parser.destroy()
       }
     })
-
-    table([["double-ESC + [A → meta+up", "\x1b\x1b[A", [k("up", { raw: "\x1b\x1b[A", meta: true })]]])
 
     test("meta+uppercase sets shift", () => {
       const p = createParser()
@@ -2101,25 +2179,6 @@ describe("StdinParser", () => {
       }
     })
 
-    test("multiple sequential timeouts", () => {
-      const { parser, clock } = createTimedParser()
-      try {
-        parser.push(Buffer.from("\x1b"))
-        clock.advance(10)
-        expect(snap(parser)).toEqual([k("escape", { raw: "\x1b" })])
-
-        parser.push(Buffer.from("\x1b"))
-        clock.advance(10)
-        expect(snap(parser)).toEqual([k("escape", { raw: "\x1b" })])
-
-        parser.push(Buffer.from("\x1b"))
-        clock.advance(10)
-        expect(snap(parser)).toEqual([k("escape", { raw: "\x1b" })])
-      } finally {
-        parser.destroy()
-      }
-    })
-
     test("custom timeout delay", () => {
       const { parser, clock } = createTimedParser({ timeoutMs: 50 })
       try {
@@ -2490,6 +2549,7 @@ describe("StdinParser", () => {
       }
     })
 
+    // The first, second, and fourth rows pin behavior on main that the 044 conformance vectors replace.
     table([
       ["CSI with unknown final byte produces empty-name key", "\x1b[h", [k("", { raw: "\x1b[h" })]],
       ["ESC followed by punctuation stays one empty-name key", "\x1b!", [k("", { raw: "\x1b!" })]],
@@ -2521,6 +2581,18 @@ describe("StdinParser", () => {
         p.destroy()
       }
     })
+  })
+
+  describe("conformance vectors", () => {
+    for (const [name, steps, expected, issue] of CONFORMANCE) {
+      const bytewise = steps.flatMap((step) => (step === null ? [null] : Array.from(buf(step), (byte) => [byte])))
+      const run = () => {
+        expect(runConformance(steps)).toBe(expected)
+        expect(runConformance(bytewise)).toBe(expected)
+      }
+      if (issue) test.todo(`${name} (${issue})`, run)
+      else test(name, run)
+    }
   })
 
   describe("timer/clock disagreement race condition", () => {
