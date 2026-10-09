@@ -1813,6 +1813,18 @@ pub const OptimizedBuffer = struct {
         try self.checkDrawState();
         const opacity = self.getCurrentOpacity();
         if (self.skipTransparentCellDraw(opacity, isFullyTransparent(opacity, fg, bg orelse ansi.rgbColor(0, 0, 0, 0)))) return;
+        if (utf8.isAsciiOnly(text)) {
+            // Printable ASCII is one cell per byte and takes no pool or tracker capacity, so it
+            // skips the copy and the prepared runs. The bytes left of column 0 are clipped.
+            const clipped_byte_count: usize = if (x < 0) @min(text.len, @abs(x)) else 0;
+            var column: u32 = @intCast(@max(x, 0));
+            for (text[clipped_byte_count..]) |byte| {
+                if (column >= self.width) break;
+                self.setTextCell(column, row, makeCell(byte, fg, bg orelse self.get(column, row).?.bg, attributes));
+                column += 1;
+            }
+            return;
+        }
 
         var scratch = std.heap.stackFallback(4096, self.allocator);
         const scratch_allocator = scratch.get();
@@ -1957,18 +1969,8 @@ pub const OptimizedBuffer = struct {
             // Each printable ASCII byte is one cell, so the bytes left of column 0 are clipped.
             const clipped_byte_count: usize = if (x < 0) @min(text.len, @abs(x)) else 0;
             var char_x: u32 = @intCast(@max(x, 0));
-            const visible = text[clipped_byte_count..][0..@min(text.len - clipped_byte_count, self.width - char_x)];
-            if (self.scissor_stack.items.len == 0 and !self.grapheme_tracker.hasAny() and
-                !self.link_tracker.hasAny() and ansi.TextAttributes.getLinkId(attributes) == 0)
-            {
-                const row_start = self.coordsToIndex(char_x, y);
-                for (self.buffer.char[row_start .. row_start + visible.len], visible) |*dest, byte| dest.* = byte;
-                @memset(self.buffer.fg[row_start .. row_start + visible.len], fg);
-                @memset(self.buffer.bg[row_start .. row_start + visible.len], background);
-                fillU32(self.buffer.attributes[row_start .. row_start + visible.len], attributes);
-                return;
-            }
-            for (visible) |byte| {
+            for (text[clipped_byte_count..]) |byte| {
+                if (char_x >= self.width) break;
                 self.set(char_x, y, makeCell(byte, fg, background, attributes));
                 char_x += 1;
             }

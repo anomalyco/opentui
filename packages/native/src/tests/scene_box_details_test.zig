@@ -131,8 +131,13 @@ test "Scene box details checked title draw reports allocation failure and defaul
     try repaint(owner, fixture.session, options.background, true, 0);
     try testing.expect(!failing.has_induced_failure);
     state.allocator = scene_allocator;
+    // A printable ASCII title draws without the prepared copy and runs.
+    const ascii_title = [_]u8{'x'} ** 4097;
+    try owner.sceneSetBoxDetails(fixture.box, .{ .title = &ascii_title });
+    try repaint(owner, fixture.session, options.background, true, 0);
+    try testing.expect(!failing.has_induced_failure);
     // Keep a visible title large enough to exercise heap fallback, not the stack path.
-    const title = [_]u8{'x'} ** 4097;
+    const title = [_]u8{'x'} ** 4096 ++ "\u{e9}".*;
     try owner.sceneSetBoxDetails(fixture.box, .{ .title = &title });
     try testing.expectError(error.OutOfMemory, repaint(owner, fixture.session, options.background, true, 0));
     try testing.expect(failing.has_induced_failure);
