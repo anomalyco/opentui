@@ -459,7 +459,7 @@ class ExternalOutputQueue {
     return this.commits.length
   }
 
-  writeSnapshots(commits: readonly ExternalOutputCommit[]): void {
+  writeSnapshots(commits: readonly ExternalOutputCommit[]): readonly QueuedCommit[] {
     // Every frame renders the queue head, so one invalid entry would fail every later frame and the close flush.
     for (const { rowColumns, snapshot } of commits) {
       if (!Number.isInteger(rowColumns) || rowColumns < 0 || rowColumns > snapshot.width) {
@@ -476,6 +476,7 @@ class ExternalOutputQueue {
       rowWidths: snapshotRowWidths(commit.snapshot, commit.rowColumns),
     }))
     for (const entry of entries) this.commits.push(entry)
+    return entries
   }
 
   /** The head commits, at most `limit`, that fit one native split render. Never empty unless the queue is. */
@@ -1037,6 +1038,8 @@ export class CliRenderer extends EventEmitter implements RenderContext {
   private _splitHeight: number = 0
   private renderOffset: number = 0
   private splitTailColumn: number = 0
+  // The tail after the last queued commit, so each captured write reads it in O(1); a reset or a resize voids it.
+  private queuedSplitTail: { column: number; width: number } | null = null
   private pendingSplitFooterTransition: PendingSplitFooterTransition | null = null
   // One-shot latch used to request a full split repaint after transitions
   // (resize/mode/output-path changes). Cleared after completed presentation.
@@ -2566,12 +2569,12 @@ export class CliRenderer extends EventEmitter implements RenderContext {
 
   private getPendingSplitTailColumn(): number {
     const width = Math.max(this.width, 1)
-    const commits = this.externalOutputQueue.peek().slice(this.pendingNativeReplay?.remaining ?? 0)
-    // Every stdout write asks: start at the last commit that ends its line, which leaves tail 0.
-    const lastLine = commits.findLastIndex((commit) => commit.trailingNewline)
+    const skipped = this.pendingNativeReplay?.remaining ?? 0
+    const cached = this.queuedSplitTail
+    if (this.externalOutputQueue.size > skipped && cached?.width === width) return cached.column
     let tailColumn = this.pendingNativeReplay ? 0 : this.splitTailColumn
 
-    for (const commit of commits.slice(Math.max(0, lastLine))) {
+    for (const commit of this.externalOutputQueue.peek().slice(skipped)) {
       tailColumn = this.getSplitTailColumnAfterCommit(commit, tailColumn, width)
     }
 
@@ -2605,7 +2608,12 @@ export class CliRenderer extends EventEmitter implements RenderContext {
 
   private enqueueSplitCommits(commits: readonly ExternalOutputCommit[]): void {
     for (const commit of commits) commit.nativeSnapshot = commit.snapshot._getSceneHandle(this.nativeScene)
-    this.externalOutputQueue.writeSnapshots(commits)
+    const width = Math.max(this.width, 1)
+    let column = this.getPendingSplitTailColumn()
+    for (const entry of this.externalOutputQueue.writeSnapshots(commits)) {
+      column = this.getSplitTailColumnAfterCommit(entry, column, width)
+    }
+    this.queuedSplitTail = { column, width }
     this.requestRender()
     if (this.listenerCount(CliRenderEvents.EXTERNAL_OUTPUT) > 0) {
       for (const commit of commits) this.emit(CliRenderEvents.EXTERNAL_OUTPUT, commit)
@@ -2794,6 +2802,7 @@ export class CliRenderer extends EventEmitter implements RenderContext {
       pinnedRenderOffset: this.getSplitPinnedRenderOffset(),
     })
     this.splitTailColumn = 0
+    this.queuedSplitTail = null
   }
 
   private syncSplitScrollback(): void {
