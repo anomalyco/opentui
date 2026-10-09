@@ -1096,12 +1096,7 @@ pub const OptimizedBuffer = struct {
             self.writeCellAndLinks(index, cell);
             return;
         }
-        self.setClusterInternal(span_cleanup, x, y, index, prev_char, .{
-            .char = cell.char,
-            .fg = cell.fg,
-            .bg = cell.bg,
-            .attributes = cell.attributes,
-        });
+        self.setClusterInternal(span_cleanup, x, y, index, prev_char, cell);
     }
 
     noinline fn setClusterInternal(
