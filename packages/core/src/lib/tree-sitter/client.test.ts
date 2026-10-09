@@ -560,25 +560,26 @@ describeClient("TreeSitterClient", () => {
 
   test("should support local file paths for parser configuration", async () => {
     const testQueryPath = join(dataPath, `test-highlights-${Date.now()}.scm`)
-    // Lua pattern predicate → names and strings of testCode that it captures. Untranslatable patterns stay
-    // #lua-match?, which web-tree-sitter ignores, so they capture everything.
+    // Lua pattern predicate → identifiers of testCode that it captures. A pattern the worker does not translate
+    // (the last rows; the first two are from nvim-treesitter's kitty and clojure queries) stays #lua-match?, which
+    // web-tree-sitter ignores, so it captures everything; the query must still load.
+    const all = "a9 ab A_2 _x $y aXz"
     const luaPredicates: [string, string][] = [
-      ['lua-match? "^%a%d$"', "a9"],
-      ['lua-match? "^%l+$"', "ab"],
-      ['lua-match? "^%u[%w_]*$"', "A_2"],
-      ['lua-match? "^[^%d%u]+$"', "ab _x $y ]^"],
-      ['lua-match? "%A"', "a9 A_2 _x $y ]^"],
-      ['lua-match? "^%$.$"', "$y"],
-      ['lua-match? "^$.$"', "$y"],
-      ['lua-match? "^a.-z$"', "aXz"],
-      ['lua-match? "^[]^]+$"', "]^"],
-      ['lua-match? "]^$"', "]^"],
-      ['not-lua-match? "^%l"', "A_2 _x $y ]^"],
-      ['lua-match? "%f[%a]"', "a9 ab A_2 _x $y aXz ]^"],
-      ['lua-match? "[%U]"', "a9 ab A_2 _x $y aXz ]^"],
+      ['lua-match? "^[a-z][%d]$"', "a9"],
+      ['lua-match? "^[A-Z_][A-Z%d_]+$"', "A_2"],
+      ['lua-match? "^a.z$"', "aXz"],
+      ['not-lua-match? "^a"', "A_2 _x $y"],
+      ['not-any-lua-match? "^a"', "A_2 _x $y"],
+      ['any-lua-match? "b$"', "ab"],
+      ['lua-match? "^-"', all],
+      ['lua-match? "^-%>[^>].*"', all],
+      ['lua-match? "^%u"', all],
+      ['lua-match? "^(a)?$"', all],
+      ['lua-match? "^[a"', all],
+      ['lua-match? "[z-a]"', all],
     ]
     const simpleQuery = luaPredicates
-      .map(([predicate], i) => `([(identifier) (string_fragment)] @p${i} (#${predicate.replace(" ", ` @p${i} `)}))`)
+      .map(([predicate], i) => `((identifier) @p${i} (#${predicate.replace(" ", ` @p${i} `)}))`)
       .join("\n")
     const javascriptParser = (await getParsers()).find((parser) => parser.filetype === "javascript")
     if (!javascriptParser) {
@@ -604,7 +605,7 @@ describeClient("TreeSitterClient", () => {
       const hasAliasParser = await client.preloadParser("test-lang-react")
       expect(hasAliasParser).toBe(true)
 
-      const testCode = 'a9; ab; A_2; _x; $y; aXz; "]^"'
+      const testCode = "a9; ab; A_2; _x; $y; aXz;"
       const result = await client.highlightOnce(testCode, "test-lang")
       const aliasResult = await client.highlightOnce(testCode, "test-lang-react")
       const captured = luaPredicates.map(([predicate], i) => {
