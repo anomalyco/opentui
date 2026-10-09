@@ -984,8 +984,13 @@ ot_status ot_session_input_feed(
  * Changing flags emits nothing; the next feed resolves a unit that may no longer wait. */
 ot_status ot_session_input_expect(ot_context *context, const ot_handle *session, uint32_t flags);
 
-/* Drop any partial unit and mouse button state. Expectations are kept. */
-ot_status ot_session_input_reset(ot_context *context, const ot_handle *session);
+#define OT_INPUT_RESET_KEEP_REPLY UINT32_C(1)
+
+/* Drop any partial unit and mouse button state. Expectations are kept. flags is
+ * 0 or OT_INPUT_RESET_KEEP_REPLY. Call with KEEP_REPLY after feeding the input
+ * drained on resume: then a partial CSI unit that may begin a reply survives
+ * while REPLIES is set, and waits for its rest without a deadline. */
+ot_status ot_session_input_reset(ot_context *context, const ot_handle *session, uint32_t flags);
 ```
 
 ### 11.2 Statuses
@@ -1029,12 +1034,17 @@ consumed nothing and reported nothing as a bug.
 
 - Feed is accepted in every lifecycle phase of an open session, including `setting_up` (replies
   arrive then) and `suspended`.
-- Suspend and resume do not reset the parser. The adapter stops input time while suspended: no
-  timer runs and `now_ns` holds, so a unit pending at suspension (even a lone `ESC` that begins a
-  pixel-resolution reply) still completes with the bytes drained on resume. After that drain, every
-  unit that waits for a deadline is stale and resolves at once, as if its timeout passed; deferred
-  replies keep waiting. This replaces `hasPendingPixelResolutionResponse` and its pause/reset dance
-  without the parser knowing about pixel replies.
+- Suspend does not reset the parser. The adapter stops input time while suspended: no timer runs
+  and `now_ns` holds, so a unit pending at suspension (even a lone `ESC` that begins a
+  pixel-resolution reply) still completes with the bytes drained on resume. After that drain, input
+  sent before suspension has arrived, and another process (a shell, an editor) may have read the
+  rest of a pending paste, mouse report, or key. The adapter calls
+  `ot_session_input_reset(…, OT_INPUT_RESET_KEEP_REPLY)`: it drops the pending unit, unless REPLIES
+  is set and the unit is a CSI that may begin a reply (the shapes §6.3 defers for REPLIES). That unit
+  becomes deferred and waits for its rest. Otherwise an open paste would swallow all later typing,
+  and a deferred mouse prefix would swallow typed digits. This replaces
+  `hasPendingPixelResolutionResponse` and its pause/reset dance; the parser knows reply shapes, not
+  pixel replies.
 - `ot_terminal_flush_input` is unrelated: it discards OS-level unread bytes at shutdown.
 - `ot_session_destroy` frees nothing for the parser.
 
@@ -1242,19 +1252,20 @@ numeric key code.
 
 ## 15. Decision log
 
-| Decision                                                          | Alternatives considered                                              | Reason                                                                                                                                                          |
-| ----------------------------------------------------------------- | -------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Session-owned parser, not a Context resource with its own handle. | `ot_input_parser_create/feed/destroy`.                               | Kitty state lives in `renderer.terminal`; one fewer handle; the pump clock is already there. A standalone object can be added later by lifting the same struct. |
-| Synchronous feed into caller-owned records.                       | Internal event queue plus a drain call.                              | Zero internal event storage, natural backpressure via `consumed`, no overflow policy to invent.                                                                 |
-| Streamed paste records.                                           | One paste event with a native buffer bounded by a `paste_bytes_max`. | G4 without an allocator; the TS side already joins parts.                                                                                                       |
-| Kitty functional codes as the key enum.                           | Private enum above 0x10FFFF; W3C key strings.                        | One table shared by the wire protocol, native, and the existing TS name map.                                                                                    |
-| One `text` span per key event.                                    | One event per Kitty text codepoint (Rust port).                      | Core's `sequence` is the joined text; bounds `events_per_byte_max`.                                                                                             |
-| 20 ms constant timeout.                                           | Option per session.                                                  | Core never exposed a knob; add one only with a user need.                                                                                                       |
-| Deadlines on `discard`.                                           | Wait for the terminator.                                             | A corrupt stream must not swallow typing forever; 20 ms of silence is the signal.                                                                               |
-| Replies stay host-routed.                                         | Native applies capability replies in `feed`.                         | Keeps output admission out of input; §11.6 for later.                                                                                                           |
-| X10 release reports the last pressed button.                      | Always button 0 (Core).                                              | X10 cannot say which; last-pressed is the useful guess and what the Rust port does.                                                                             |
-| Input feeds keep their own monotonic clock.                       | Share the pump's `last_pump_ns`.                                     | The host arms input timers on a different clock than its pump (§10.6); deadlines are relative to the parser's own `since_ns`.                                   |
-| The adapter stops input time while suspended.                     | Reset on suspend (Core); expire everything on suspend.               | A pending prefix of an awaited reply completes after resume; stale units still resolve once the resume drain is fed (§11.5).                                    |
+| Decision                                                          | Alternatives considered                                                                               | Reason                                                                                                                                                          |
+| ----------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Session-owned parser, not a Context resource with its own handle. | `ot_input_parser_create/feed/destroy`.                                                                | Kitty state lives in `renderer.terminal`; one fewer handle; the pump clock is already there. A standalone object can be added later by lifting the same struct. |
+| Synchronous feed into caller-owned records.                       | Internal event queue plus a drain call.                                                               | Zero internal event storage, natural backpressure via `consumed`, no overflow policy to invent.                                                                 |
+| Streamed paste records.                                           | One paste event with a native buffer bounded by a `paste_bytes_max`.                                  | G4 without an allocator; the TS side already joins parts.                                                                                                       |
+| Kitty functional codes as the key enum.                           | Private enum above 0x10FFFF; W3C key strings.                                                         | One table shared by the wire protocol, native, and the existing TS name map.                                                                                    |
+| One `text` span per key event.                                    | One event per Kitty text codepoint (Rust port).                                                       | Core's `sequence` is the joined text; bounds `events_per_byte_max`.                                                                                             |
+| 20 ms constant timeout.                                           | Option per session.                                                                                   | Core never exposed a knob; add one only with a user need.                                                                                                       |
+| Deadlines on `discard`.                                           | Wait for the terminator.                                                                              | A corrupt stream must not swallow typing forever; 20 ms of silence is the signal.                                                                               |
+| Replies stay host-routed.                                         | Native applies capability replies in `feed`.                                                          | Keeps output admission out of input; §11.6 for later.                                                                                                           |
+| X10 release reports the last pressed button.                      | Always button 0 (Core).                                                                               | X10 cannot say which; last-pressed is the useful guess and what the Rust port does.                                                                             |
+| Input feeds keep their own monotonic clock.                       | Share the pump's `last_pump_ns`.                                                                      | The host arms input timers on a different clock than its pump (§10.6); deadlines are relative to the parser's own `since_ns`.                                   |
+| The adapter stops input time while suspended.                     | Reset on suspend (Core); expire everything on suspend.                                                | A unit pending at suspension completes with the bytes drained on resume (§11.5).                                                                                |
+| Resume resets the parser but keeps a reply prefix (`KEEP_REPLY`). | Resolve stale units at their deadline (lets a paste or mouse prefix outlive the drain); a full reset. | After the drain nothing from before suspension can complete a paste, mouse report, or key, but an awaited reply may still arrive (§11.5).                       |
 
 ---
 

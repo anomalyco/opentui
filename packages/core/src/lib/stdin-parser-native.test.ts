@@ -260,14 +260,13 @@ describe("native stdin parser: adapter", () => {
       parser.push(Buffer.from("[4;80;80t"))
       parser.resume()
       expect(events(parser).map(summary)).toEqual([{ response: "csi", sequence: "\x1b[4;80;80t" }])
-      // A unit still waiting at resume is stale and resolves at once; deferred replies keep waiting.
-      parser.push(Buffer.from("\x1b[4;80;"))
-      parser.push(Buffer.from("\x1b["))
+      // After the resume drain, an awaited reply's prefix keeps waiting; other units are stale.
+      parser.push(Buffer.from("\x1b[4;80"))
       parser.suspend()
       parser.resume()
       expect(events(parser).map(summary)).toEqual([
-        { response: "unknown", sequence: "\x1b[4;80;" },
-        { response: "unknown", sequence: "\x1b[" },
+        { response: "csi", sequence: "\x1b[4;80;80t" },
+        { key: "x", raw: "x", ctrl: false, meta: false, shift: false },
       ])
     } finally {
       parser.destroy()
@@ -275,6 +274,11 @@ describe("native stdin parser: adapter", () => {
   })
 
   test("holds input time when the clock steps back", () => {
+      clock.advance(1000)
+      parser.push(Buffer.from(";80t\x1b[200~half"))
+      parser.suspend()
+      parser.resume()
+      parser.push(Buffer.from("x"))
     const clock = new ManualClock()
     const parser = new NativeStdinParser({ clock })
     try {

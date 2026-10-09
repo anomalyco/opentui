@@ -55,7 +55,10 @@ test("OTUI_NATIVE_INPUT_SHADOW delivers one parser's events and logs each differ
     const names: string[] = []
     renderer.keyInput.on("keypress", (key) => names.push(key.name))
     try {
-      // Only Alt+. differs: the legacy parser names it "" (issue 046).
+      // Both parsers survive suspension. Only Alt+. differs: legacy names it "" (issue 046).
+      await renderer.setupTerminal()
+      await renderer.suspend()
+      await renderer.resume()
       renderer.stdin.emit("data", Buffer.from("a\x1b.b"))
       expect(names).toEqual(["a", native ? "." : "", "b"])
       expect(warn.mock.calls.map(([line]) => String(line).split("=")[0])).toEqual([

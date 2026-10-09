@@ -87,11 +87,12 @@ pub fn ot_session_input_expect(context: ?*abi.ContextHandle, session: ?*const c.
     return c.OT_OK;
 }
 
-pub fn ot_session_input_reset(context: ?*abi.ContextHandle, session: ?*const c.ot_handle) callconv(.c) c.ot_status {
+pub fn ot_session_input_reset(context: ?*abi.ContextHandle, session: ?*const c.ot_handle, flags: u32) callconv(.c) c.ot_status {
     const status = abi.sessionContextStatus(context);
     if (status != c.OT_OK) return status;
-    if (session == null) return fail(context, error.InvalidOptions);
-    context.?.core.sessionInputReset(abi.handleFromC(session.?.*)) catch |err| return fail(context, err);
+    if (session == null or flags & ~c.OT_INPUT_RESET_KEEP_REPLY != 0) return fail(context, error.InvalidOptions);
+    const keep_reply = flags & c.OT_INPUT_RESET_KEEP_REPLY != 0;
+    context.?.core.sessionInputReset(abi.handleFromC(session.?.*), keep_reply) catch |err| return fail(context, err);
     return c.OT_OK;
 }
 
@@ -152,16 +153,25 @@ test "Context input ABI parses into caller records and resolves timeouts" {
     // Input time is independent of pump time but must not go backwards.
     try std.testing.expectEqual(c.OT_INVALID_ARGUMENT, f.feed("b", 9));
     try std.testing.expectEqual(@as(u32, 1), f.drain.count);
-    // Expectations defer an awaited reply; reset drops it.
+    // Expectations defer an awaited reply.
     try std.testing.expectEqual(c.OT_OK, ot_session_input_expect(f.context, &f.session, c.OT_INPUT_EXPECT_REPLIES));
     try std.testing.expectEqual(c.OT_OK, f.feed("\x1b[?62", 50_000_000));
     try std.testing.expectEqual(c.OT_OK, f.feed("", 50_000_000 + c.OT_INPUT_TIMEOUT_NS));
     try std.testing.expectEqual(@as(u32, 0), f.drain.count);
     try std.testing.expectEqual(@as(u64, 0), f.drain.deadline_ns);
-    try std.testing.expectEqual(c.OT_OK, ot_session_input_reset(f.context, &f.session));
-    try std.testing.expectEqual(c.OT_OK, f.feed("c", 80_000_000));
-    try std.testing.expectEqual(@as(u32, 1), f.drain.count);
-    try std.testing.expectEqualStrings("c", f.raw(0));
+    // Reset drops a reply prefix, unless KEEP_REPLY asks for it while REPLIES is set.
+    for ([_]struct { u32, u32, []const u8 }{
+        .{ c.OT_INPUT_EXPECT_REPLIES, 0, "c" },
+        .{ c.OT_INPUT_EXPECT_REPLIES, c.OT_INPUT_RESET_KEEP_REPLY, "\x1b[?62c" },
+        .{ 0, c.OT_INPUT_RESET_KEEP_REPLY, "c" },
+    }) |case| {
+        try std.testing.expectEqual(c.OT_OK, ot_session_input_expect(f.context, &f.session, case[0]));
+        try std.testing.expectEqual(c.OT_OK, ot_session_input_reset(f.context, &f.session, case[1]));
+        try std.testing.expectEqual(c.OT_OK, f.feed("c", 80_000_000));
+        try std.testing.expectEqualStrings(case[2], f.raw(0));
+        try std.testing.expectEqual(c.OT_OK, ot_session_input_expect(f.context, &f.session, c.OT_INPUT_EXPECT_REPLIES));
+        try std.testing.expectEqual(c.OT_OK, f.feed("\x1b[?62", 80_000_000));
+    }
     // Overlong units are counted in every drain.
     var long: [300]u8 = @splat('9');
     long[0] = 0x1b;
@@ -216,11 +226,12 @@ test "Context input ABI rejects malformed calls, foreign handles, and closed ses
     try std.testing.expectEqual(c.OT_UNSUPPORTED_VERSION, ot_session_input_feed(context, &f.session, "a", 1, 0, &f.records, f.records.len, &f.payload, f.payload.len, &drain));
     try std.testing.expectEqual(c.OT_INVALID_ARGUMENT, ot_session_input_expect(context, &f.session, 4));
     try std.testing.expectEqual(c.OT_INVALID_ARGUMENT, ot_session_input_expect(context, null, 0));
-    try std.testing.expectEqual(c.OT_INVALID_ARGUMENT, ot_session_input_reset(context, null));
+    try std.testing.expectEqual(c.OT_INVALID_ARGUMENT, ot_session_input_reset(context, null, 0));
+    try std.testing.expectEqual(c.OT_INVALID_ARGUMENT, ot_session_input_reset(context, &f.session, 2));
     var foreign = f.session;
     foreign.context_id += 1;
     try std.testing.expectEqual(c.OT_WRONG_CONTEXT, ot_session_input_feed(context, &foreign, "a", 1, 0, &f.records, f.records.len, &f.payload, f.payload.len, &f.drain));
-    try std.testing.expectEqual(c.OT_WRONG_CONTEXT, ot_session_input_reset(context, &foreign));
+    try std.testing.expectEqual(c.OT_WRONG_CONTEXT, ot_session_input_reset(context, &foreign, 0));
     try std.testing.expectEqual(c.OT_WRONG_CONTEXT, ot_session_input_expect(context, &foreign, 0));
     // A busy Context rejects input without parsing it.
     context.core.mutating = true;
@@ -234,14 +245,14 @@ test "Context input ABI rejects malformed calls, foreign handles, and closed ses
         fn run(owner: *abi.ContextHandle, session: *const c.ot_handle) void {
             std.testing.expectEqual(c.OT_WRONG_THREAD, ot_session_input_feed(owner, session, null, 0, 0, null, 0, null, 0, null)) catch unreachable;
             std.testing.expectEqual(c.OT_WRONG_THREAD, ot_session_input_expect(owner, session, 0)) catch unreachable;
-            std.testing.expectEqual(c.OT_WRONG_THREAD, ot_session_input_reset(owner, session)) catch unreachable;
+            std.testing.expectEqual(c.OT_WRONG_THREAD, ot_session_input_reset(owner, session, 0)) catch unreachable;
         }
     }.run, .{ context, &f.session });
     thread.join();
     try std.testing.expectEqual(c.OT_OK, abi.ot_session_close(context, &f.session));
     try std.testing.expectEqual(c.OT_SESSION_CLOSED, f.feed("a", 2));
     try std.testing.expectEqual(c.OT_SESSION_CLOSED, ot_session_input_expect(context, &f.session, 0));
-    try std.testing.expectEqual(c.OT_SESSION_CLOSED, ot_session_input_reset(context, &f.session));
+    try std.testing.expectEqual(c.OT_SESSION_CLOSED, ot_session_input_reset(context, &f.session, 0));
     try std.testing.expectEqual(c.OT_OK, abi.ot_session_destroy(context, &f.session));
     try std.testing.expectEqual(c.OT_STALE_HANDLE, f.feed("a", 2));
 }

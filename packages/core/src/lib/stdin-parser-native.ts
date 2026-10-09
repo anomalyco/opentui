@@ -217,21 +217,22 @@ export class NativeStdinParser {
   }
 
   /**
-   * Call after feeding the input drained on resume. Units that still wait for
-   * their timeout are stale and resolve now; deferred replies keep waiting.
+   * Call after feeding the input drained on resume. Input sent before suspension has
+   * arrived, so a unit still pending is stale (another process may have read its rest)
+   * and is dropped. Only the prefix of a reply the host still awaits keeps waiting.
    */
   public resume(): void {
     this.ensureAlive()
     this.suspended = false
-    const deadline = this.deadlineNs
-    if (deadline !== null) this.native(() => this.feed(EMPTY, deadline > this.lastNs ? deadline : this.lastNs))
-    this.reconcileTimeout()
+    this.native(() => this.lib.sessionInputReset(this.context, this.session, C.OT_INPUT_RESET_KEEP_REPLY))
+    this.paste = null
+    this.deadlineNs = null
   }
 
   public reset(): void {
     if (this.destroyed) return
     this.clearTimeout()
-    this.native(() => this.lib.sessionInputReset(this.context, this.session))
+    this.native(() => this.lib.sessionInputReset(this.context, this.session, 0))
     this.events.length = 0
     this.paste = null
     this.deadlineNs = null
