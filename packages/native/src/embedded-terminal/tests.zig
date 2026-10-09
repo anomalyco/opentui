@@ -239,15 +239,12 @@ test "embedded terminal exposes cursor state" {
 
     const terminal = try EmbeddedTerminal.init(std.testing.io, std.testing.allocator, .{ .cols = 20, .rows = 4 });
     defer terminal.deinit();
-    try terminal.write("\x1b[2;3H\x1b[5 q");
+    // Without its own color the cursor follows a foreground set by OSC 10 alone.
+    try terminal.write("\x1b]10;rgb:12/34/56\x07\x1b[2;3H\x1b[5 q");
     try terminal.compose(target, 0, 0);
 
-    const cursor = terminal.cursor();
-    try std.testing.expect(cursor.has_value);
-    try std.testing.expect(cursor.visible);
-    try std.testing.expectEqual(@as(u16, 2), cursor.x);
-    try std.testing.expectEqual(@as(u16, 1), cursor.y);
-    try std.testing.expectEqual(@as(u8, 0), cursor.style);
+    const expected: @import("main.zig").Cursor = .{ .x = 2, .y = 1, .has_value = true, .visible = true, .blinking = true, .style = 0, .color = .{ .r = 0x12, .g = 0x34, .b = 0x56 } };
+    try std.testing.expectEqual(expected, terminal.cursor());
 }
 
 test "embedded terminal supports lifecycle, resize, and viewport scroll" {
