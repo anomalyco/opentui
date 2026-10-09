@@ -202,13 +202,23 @@ describe("native stdin parser: differential replay", () => {
         source: "raw",
       },
     })
-    comparator.primary(key("a"))
-    comparator.shadow(key("a"))
-    comparator.primary(key("b"))
-    comparator.shadow(key("c"))
-    expect(lines).toHaveLength(1)
-    expect(lines[0]!.startsWith('[stdin-shadow] native=["key","b"')).toBe(true)
-    expect(lines[0]).toContain('legacy=["key","c"')
+    // Each read reports the primary's events, then the shadow's. A changed event and an extra
+    // event on either side are one line each, and pairing resumes after them.
+    for (const [primary, shadow] of [
+      ["ab", "aB"],
+      ["c", "Xc"],
+      ["Pd", "d"],
+      ["ef", "ef"],
+    ] as const) {
+      for (const name of primary) comparator.primary(key(name))
+      for (const name of shadow) comparator.shadow(key(name))
+    }
+    expect(lines.map((line) => line.replace(/\["key","(\w)"[^\]]*\]/g, "$1"))).toEqual([
+      "[stdin-shadow] native=b legacy=B",
+      "[stdin-shadow] native=none legacy=X",
+      "[stdin-shadow] native=P legacy=none",
+    ])
+    lines.length = 1
     for (let index = 0; index < 300; index++) comparator.primary(key("x"))
     expect(lines).toHaveLength(1 + 300 - 256)
     expect(lines.at(-1)!.endsWith("legacy=none")).toBe(true)
@@ -264,6 +274,11 @@ describe("native stdin parser: adapter", () => {
       parser.push(Buffer.from("\x1b[4;80"))
       parser.suspend()
       parser.resume()
+      clock.advance(1000)
+      parser.push(Buffer.from(";80t\x1b[200~half"))
+      parser.suspend()
+      parser.resume()
+      parser.push(Buffer.from("x"))
       expect(events(parser).map(summary)).toEqual([
         { response: "csi", sequence: "\x1b[4;80;80t" },
         { key: "x", raw: "x", ctrl: false, meta: false, shift: false },
@@ -274,11 +289,6 @@ describe("native stdin parser: adapter", () => {
   })
 
   test("holds input time when the clock steps back", () => {
-      clock.advance(1000)
-      parser.push(Buffer.from(";80t\x1b[200~half"))
-      parser.suspend()
-      parser.resume()
-      parser.push(Buffer.from("x"))
     const clock = new ManualClock()
     const parser = new NativeStdinParser({ clock })
     try {
