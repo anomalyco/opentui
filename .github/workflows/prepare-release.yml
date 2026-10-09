@@ -61,6 +61,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          # The workflow has an Anthropic key, not an OpenCode login, so it names an Anthropic model.
           OPENTUI_RELEASE_NOTES_MODEL: anthropic/claude-opus-4-5
           RELEASE_TARGET: ${{ inputs.version || inputs.bump }}
         run: bun scripts/release.ts "$RELEASE_TARGET" --pr

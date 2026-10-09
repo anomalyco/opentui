@@ -1,22 +1,25 @@
 name: Build Web
 
-# Checks the documentation and builds the site as the Pages deployment does, so a change that breaks the docs or
-# the site fails here instead of in deploy.yml. The site build reads every package's source for /docs/next and
-# builds the latest release's docs with this change's site code, so it runs for every change.
+# Checks the documentation and builds the site as deploy.yml does, so a pull request that breaks the docs or the
+# site fails before it reaches main. Other changes can break the deploy too, for example a package change that the
+# API extraction for /docs/next cannot read; deploy.yml reports those on main and keeps the previous site online.
 on:
-  push:
-    branches: [main, "[0-9]+.[0-9]+.x"]
   pull_request:
-    branches: [main, "[0-9]+.[0-9]+.x"]
+    branches: [main]
+    paths:
+      - "packages/web/**"
+      - "api/**"
+      - "bun.lock"
+      - ".github/workflows/build-web.yml"
+      - ".github/workflows/deploy.yml"
 
 permissions:
   contents: read
 
 concurrency:
-  # Each commit gets its own group. In a shared group, the next push cancels a waiting run, and that
-  # commit gets no CI.
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.sha }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  # A new push to the pull request cancels the run of the previous one.
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
@@ -59,13 +62,5 @@ jobs:
       - name: Test site tooling
         run: bun run test:site
 
-      # Main documents npm's latest release. A maintenance branch, such as 0.5.x, documents its own line.
       - name: Build site
-        env:
-          BRANCH: ${{ github.base_ref || github.ref_name }}
-        run: |
-          if [[ "$BRANCH" =~ ^[0-9]+\.[0-9]+\.x$ ]]; then
-            bun run build:site --out "$RUNNER_TEMP/site" --release "$(jq -r .version ../core/package.json)"
-          else
-            bun run build:site --out "$RUNNER_TEMP/site"
-          fi
+        run: bun run build:site --out "$RUNNER_TEMP/site"

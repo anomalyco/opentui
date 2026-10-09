@@ -121,7 +121,8 @@ The site works like go.dev and tip.golang.org. `scripts/build-site.ts` builds it
 - `/docs` documents the release that npm serves as `latest`. Its content (`RELEASE_CONTENT` in `scripts/build-site.ts`)
   comes from that release's tag. The site code, release notes, and API history come from main.
 - `/docs/next` documents main. It is marked unreleased and is not indexed.
-- Site code on main must build the latest release's docs content. `build-web.yml` checks this on every change.
+- Site code on main must build the latest release's docs content. `build-web.yml` checks this on pull requests that
+  change the site, its content, or the API history.
 - Write documentation links as logical `/docs/...` URLs. Pages map them to their channel with `channelUrl()`. Do not
   link to `/docs/next` from content.
 - `/docs/releases/<version>` shows a release's notes and its API changes. `/docs/api/<module>` lists every export with
