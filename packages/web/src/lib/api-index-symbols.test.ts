@@ -42,6 +42,14 @@ const source = `
 | Package entry point | Symbols | Class | Canonical documentation |
 | --- | --- | --- | --- |
 | \`@opentui/core/runtime-plugin\` | \`createRuntimePlugin\` | Advanced | [Runtime modules](/docs/extend/runtime-plugins) |
+
+## \`opentui.h\`
+
+The npm API and the C ABI are separate surfaces. See [C](/docs/native/c).
+
+| Area | Symbols | Canonical documentation |
+| --- | --- | --- |
+| Contexts | \`ot_context_create\`, \`OT_OK\` | [Resources](/docs/native/resources#contexts) |
 `
 
 test("documented symbols take their module from the section or the row and their page from the row", () => {
@@ -51,5 +59,7 @@ test("documented symbols take their module from the section or the row and their
     { module: "@opentui/core/testing", name: "createTestRenderer", page: "/docs/core-concepts/testing" },
     { module: "@opentui/core/yoga", name: "Node", page: "/docs/reference/yoga" },
     { module: "@opentui/core/runtime-plugin", name: "createRuntimePlugin", page: "/docs/extend/runtime-plugins" },
+    { module: "opentui.h", name: "ot_context_create", page: "/docs/native/resources" },
+    { module: "opentui.h", name: "OT_OK", page: "/docs/native/resources" },
   ])
 })

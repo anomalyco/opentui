@@ -1,5 +1,5 @@
-// The API history of the published @opentui packages, read from the api/<version>.txt files at the
-// repository root. Each file lists the API features that a release added (`+`) and removed (`-`)
+// The API history of the published @opentui packages and the C ABI, read from the api/<version>.txt files at
+// the repository root. Each file lists the API features that a release added (`+`) and removed (`-`)
 // relative to the release on its `base` line. See api/README.md for the format.
 
 export interface ApiFeature {
@@ -40,6 +40,9 @@ export interface ApiKeyHistory {
 
 export const API_MODIFIERS = ["deprecated", "static", "protected", "abstract", "readonly"] as const
 
+/** The module of the C ABI's features. */
+export const C_MODULE = "opentui.h"
+
 export const API_KINDS = [
   "class",
   "interface",
@@ -57,6 +60,8 @@ export const API_KINDS = [
   "construct",
   "index",
   "reexport",
+  "struct",
+  "field",
 ] as const
 
 const VERSION = /^(\d+)\.(\d+)\.(\d+)$/

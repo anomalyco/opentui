@@ -1,14 +1,17 @@
 name: Build Web
 
 # Checks the documentation and builds the site as deploy.yml does, so a pull request that breaks the docs or the
-# site fails before it reaches main. Other changes can break the deploy too, for example a package change that the
-# API extraction for /docs/next cannot read; deploy.yml reports those on main and keeps the previous site online.
+# site fails before it reaches main. That includes the C header, whose API /docs/next lists. Other changes can break
+# the deploy too, for example a package change that the API extraction for /docs/next cannot read; deploy.yml reports
+# those on main and keeps the previous site online.
 on:
   pull_request:
     branches: [main]
     paths:
       - "packages/web/**"
       - "api/**"
+      - "packages/native/include/opentui.h"
+      - "packages/core/src/native-abi.generated.ts"
       - "bun.lock"
       - ".github/workflows/build-web.yml"
       - ".github/workflows/deploy.yml"

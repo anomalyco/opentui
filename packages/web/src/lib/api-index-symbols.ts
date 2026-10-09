@@ -1,11 +1,12 @@
 // Reads which documentation page documents each exported symbol from the tables in reference/api-index.mdx. A
-// "## `@opentui/<package>`" heading names the module of the rows below it. Under a "###" heading, a paragraph
-// that starts with a module name, such as "`@opentui/core/testing` works in Bun", names it instead, and its first
-// /docs link is the page of rows without one. A "Package entry point" column names the row's module. The site uses
-// the result to link API reference entries to guides and to list API changes on the pages that document them.
+// "## `@opentui/<package>`" or "## `opentui.h`" heading names the module of the rows below it. Under a "###"
+// heading, a paragraph that starts with a module name, such as "`@opentui/core/testing` works in Bun", names it
+// instead, and its first /docs link is the page of rows without one. A "Package entry point" column names the row's
+// module. The site uses the result to link API reference entries to guides and to list API changes on the pages that
+// document them.
 
 export interface DocumentedSymbol {
-  /** Module specifier, such as @opentui/core or @opentui/core/testing. */
+  /** Module specifier, such as @opentui/core or @opentui/core/testing, or opentui.h. */
   module: string
   /** Exported name. */
   name: string
@@ -14,6 +15,9 @@ export interface DocumentedSymbol {
 }
 
 const IDENTIFIER = /^[A-Za-z_$][\w$]*$/
+// A module name in backticks: an npm specifier or the C ABI's header.
+const MODULE = /`(@opentui\/[^`]+|opentui\.h)`/
+const LEADING_MODULE = new RegExp(`^${MODULE.source}`)
 
 export function documentedSymbols(source: string): DocumentedSymbol[] {
   const symbols: DocumentedSymbol[] = []
@@ -25,7 +29,7 @@ export function documentedSymbols(source: string): DocumentedSymbol[] {
   for (const line of source.replace(/\r\n/g, "\n").split("\n")) {
     const heading = line.match(/^(##+)\s+(.*)$/)
     if (heading) {
-      if (heading[1] === "##") packageModule = heading[2].match(/`(@opentui\/[^`]+)`/)?.[1]
+      if (heading[1] === "##") packageModule = heading[2].match(MODULE)?.[1]
       module = packageModule
       sectionPage = undefined
       header = undefined
@@ -33,7 +37,7 @@ export function documentedSymbols(source: string): DocumentedSymbol[] {
     }
     if (!line.startsWith("|")) {
       header = undefined
-      const named = line.match(/^`(@opentui\/[^`]+)`/)?.[1]
+      const named = line.match(LEADING_MODULE)?.[1]
       if (named) module = named
       sectionPage ??= firstDocsLink(line)
       continue
@@ -51,7 +55,7 @@ export function documentedSymbols(source: string): DocumentedSymbol[] {
     const entryColumn = header.indexOf("package entry point")
     const docsColumn = header.indexOf("canonical documentation")
 
-    const rowModule = entryColumn === -1 ? module : (cells[entryColumn]?.match(/`(@opentui\/[^`]+)`/)?.[1] ?? module)
+    const rowModule = entryColumn === -1 ? module : (cells[entryColumn]?.match(MODULE)?.[1] ?? module)
     const page = firstDocsLink(docsColumn === -1 ? line : (cells[docsColumn] ?? "")) ?? sectionPage
     if (!rowModule || !page) continue
 

@@ -34,7 +34,8 @@ const SITE = "https://opentui.com"
 const PULL_REQUEST_BODY_LIMIT = 3000
 const DEFAULT_MODEL = "opencode/claude-opus-5-5#high"
 const COMMANDS = ["draft", "context", "github"]
-const USAGE = "Usage: bun run release-notes [draft|context|github] [patch|minor|major|<version>] [--force] [--out <file>]"
+const USAGE =
+  "Usage: bun run release-notes [draft|context|github] [patch|minor|major|<version>] [--force] [--out <file>]"
 
 const { positionals, values } = parseArgs({
   args: Bun.argv.slice(2),
@@ -214,7 +215,8 @@ async function context(version: string, from = previousVersion(version)): Promis
     "",
     "## API changes",
     "",
-    "Lines from the published type declarations: `-` removed, `+` added. A `-` and `+` of the same name is a change.",
+    "Lines from the published type declarations and, for opentui.h, the C ABI header: `-` removed, `+` added. A `-`",
+    "and `+` of the same name is a change.",
     "",
     api ? ["```text", api, "```"].join("\n") : "No API changes.",
     "",

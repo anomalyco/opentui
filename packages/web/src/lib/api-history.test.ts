@@ -66,6 +66,22 @@ describe("parseFeature", () => {
       "[index: number]: string",
     ],
     [`${M}: call Drawable(x: number): string`, [], "call", "Drawable", "(x: number): string"],
+    [`opentui.h: struct ot_handle`, [], "struct", "ot_handle", ""],
+    [`opentui.h: field ot_handle.slot: uint32_t, offset 8`, [], "field", "ot_handle.slot", ": uint32_t, offset 8"],
+    [
+      `opentui.h: function ot_close(ot_context *, const ot_handle *node): ot_status`,
+      [],
+      "function",
+      "ot_close",
+      "(ot_context *, const ot_handle *node): ot_status",
+    ],
+    [
+      `opentui.h: type ot_callback = void (*)(void *user_data)`,
+      [],
+      "type",
+      "ot_callback",
+      " = void (*)(void *user_data)",
+    ],
     [`${M}: property Components."qr-code": typeof QR`, [], "property", 'Components."qr-code"', ": typeof QR"],
     [
       `${M}: method List.[Symbol.iterator](): Iterator<"]">`,

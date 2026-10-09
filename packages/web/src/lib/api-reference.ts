@@ -1,20 +1,21 @@
 import { readFile } from "node:fs/promises"
 import { join } from "node:path"
 import { exportName, UNRELEASED, type ChannelApi } from "./api-docs"
-import { compareText, compareVersions, featureKey, type ApiFeature } from "./api-history"
+import { C_MODULE, compareText, compareVersions, featureKey, type ApiFeature } from "./api-history"
 import { documentedSymbols } from "./api-index-symbols"
 import { REPO_ROOT } from "./repo-root"
 
-// The generated API reference: every export of each published entry point, grouped by kind, with the release
-// that added it, like the index of a pkg.go.dev package page.
+// The generated API reference: every export of each published entry point and of the C ABI, grouped by kind, with
+// the release that added it, like the index of a pkg.go.dev package page.
 
 export const EXPORT_GROUPS = [
   { id: "functions", title: "Functions", kinds: ["function"] },
   { id: "classes", title: "Classes", kinds: ["class"] },
   { id: "interfaces", title: "Interfaces", kinds: ["interface"] },
+  { id: "structs", title: "Structs", kinds: ["struct"] },
   { id: "types", title: "Types", kinds: ["type"] },
   { id: "enums", title: "Enums", kinds: ["enum"] },
-  { id: "variables", title: "Variables", kinds: ["const", "let"] },
+  { id: "variables", title: "Constants and variables", kinds: ["const", "let"] },
   { id: "namespaces", title: "Namespaces and re-exports", kinds: ["namespace", "reexport"] },
 ] as const
 
@@ -36,9 +37,9 @@ export interface ApiModule {
   exports: ApiExport[]
 }
 
-/** The URL path of a module under /docs/api: core/testing for @opentui/core/testing. */
+/** The URL path of a module under /docs/api: core/testing for @opentui/core/testing, and c for the C ABI. */
 export function moduleSlug(module: string): string {
-  return module.replace(/^@opentui\//, "")
+  return module === C_MODULE ? "c" : module.replace(/^@opentui\//, "")
 }
 
 export async function apiModules(api: ChannelApi): Promise<ApiModule[]> {
@@ -59,10 +60,12 @@ export async function apiModules(api: ChannelApi): Promise<ApiModule[]> {
   return [...byModule]
     .sort(([left], [right]) => compareText(left, right))
     .map(([module, features]) => {
-      const first = features
-        .map(since)
-        .filter((version): version is string => version !== undefined && version !== UNRELEASED)
-        .sort(compareVersions)[0]
+      // A module that no release has yet starts with the unreleased changes.
+      const first =
+        features
+          .map(since)
+          .filter((version): version is string => version !== undefined && version !== UNRELEASED)
+          .sort(compareVersions)[0] ?? UNRELEASED
       const label = (feature: ApiFeature) => {
         const version = since(feature)
         return version && version !== first ? version : undefined
@@ -80,6 +83,7 @@ export async function apiModules(api: ChannelApi): Promise<ApiModule[]> {
         else entry.members.push({ feature, label: label(feature) })
       }
       for (const entry of exports.values()) {
+        entry.members.sort((left, right) => compareFields(left.feature, right.feature))
         const labels = entry.declarations.map(label)
         entry.label = labels.includes(undefined) ? undefined : labels.sort(compareLabels)[0]
         entry.deprecated =
@@ -101,6 +105,14 @@ export async function apiModules(api: ChannelApi): Promise<ApiModule[]> {
 export function exportGroup(entry: ApiExport): (typeof EXPORT_GROUPS)[number]["id"] {
   const kind = entry.declarations[0]?.kind ?? entry.members[0]?.feature.kind
   return EXPORT_GROUPS.find((group) => (group.kinds as readonly string[]).includes(kind ?? ""))?.id ?? "namespaces"
+}
+
+// A struct lists its fields in layout order, from lines such as "field ot_handle.slot: uint32_t, offset 8". Other
+// members keep their order.
+function compareFields(left: ApiFeature, right: ApiFeature): number {
+  if (left.kind !== "field" || right.kind !== "field") return 0
+  const offset = (feature: ApiFeature) => Number(/, offset (\d+)$/.exec(feature.signature)?.[1] ?? 0)
+  return offset(left) - offset(right)
 }
 
 function compareLabels(left: string | undefined, right: string | undefined): number {

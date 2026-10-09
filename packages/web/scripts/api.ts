@@ -16,6 +16,7 @@ import {
   loadApiHistory,
 } from "../src/lib/api-history"
 import { extractPackage } from "./api/extract"
+import { headerFeaturesAt, headerFeaturesIn } from "./api/header"
 import { CACHE_DIR, PACKAGES, packageDir, packageVersionFor, publishedVersions, type PublishedVersion } from "./api/npm"
 import { emitDeclarations } from "./api/source"
 
@@ -23,15 +24,16 @@ const repoRoot = resolve(import.meta.dirname, "../../..")
 const USAGE = `Usage: bun packages/web/scripts/api.ts <command> [options]
 
   backfill [--from <version>] [--to <version>] [--dir <dir>]
-      Write <dir>/<version>.txt for each published stable version from the npm tarballs.
+      Write <dir>/<version>.txt for each published stable version from the npm tarballs and its v<version> tag.
   current [--out <file>] [--root <dir>]
       Print the API features of the source tree.
   diff [--base <version>] [--out <file>] [--dir <dir>] [--root <dir>]
       Print the API file that a release of the source tree would add.
   release <version> [--base <version>] [--dir <dir>] [--root <dir>]
       Write <dir>/<version>.txt for the source tree, relative to the latest API file.
-  verify <version> [--dir <dir>]
-      Compare the API that the files record for a release with its packages on npm.
+  verify <version> [--ref <git ref>] [--dir <dir>]
+      Compare the API that the files record for a release with its packages on npm and the C header of its
+      commit, v<version> unless --ref names it.
   check [--dir <dir>]
       Validate the API files.
 
@@ -164,11 +166,16 @@ async function backfill(options: Options): Promise<void> {
   await mkdir(dir, { recursive: true })
   let previous: { version: string; features: string[] } | undefined
   let written = 0
+  // Releases before the C header have no API there; some of the oldest have no tag either.
+  const untagged: string[] = []
   for (const version of needed) {
     const features = new Set<string>()
     for (const job of plan.get(version)!) {
       for (const line of await publishedFeatures(job.name, job.published)) features.add(line)
     }
+    const header = headerFeaturesAt(repoRoot, `v${version}`)
+    if (header === undefined) untagged.push(version)
+    for (const line of header ?? []) features.add(line)
     const sorted = [...features].sort(compareText)
     if (selected.includes(version)) {
       const diff = diffFeatures(previous?.features ?? [], sorted)
@@ -181,6 +188,7 @@ async function backfill(options: Options): Promise<void> {
     }
     previous = { version, features: sorted }
   }
+  if (untagged.length > 0) console.error(`warning: no tag, so no C API, for ${untagged.join(", ")}`)
   const seconds = ((performance.now() - start) / 1000).toFixed(1)
   console.error(`${selected.length} versions, ${written} files written to ${dir} in ${seconds}s`)
 }
@@ -198,6 +206,9 @@ async function currentFeatures(options: Options): Promise<string[]> {
       for (const line of lines) features.add(line)
       console.error(`${emitted.name}: ${lines.length} features, emitted in ${emitted.milliseconds.toFixed(0)}ms`)
     }
+    const header = headerFeaturesIn(root)
+    for (const line of header) features.add(line)
+    console.error(`opentui.h: ${header.length} features`)
     console.error(`source API extracted in ${((performance.now() - start) / 1000).toFixed(1)}s`)
     return [...features].sort(compareText)
   } finally {
@@ -241,13 +252,17 @@ async function release(options: Options): Promise<void> {
   console.error(`wrote ${file} (${textLines(text).length - 1} changes)`)
 }
 
-// Compares the API that api/ records for a release with the API of its packages on npm. A release pull request
-// records the API of the branch it was opened from; a change merged before the pull request makes it wrong.
+// Compares the API that api/ records for a release with the API of its packages on npm and of the C header in its
+// commit. A release pull request records the API of the branch it was opened from; a change merged before the
+// pull request makes it wrong.
 async function verify(options: Options): Promise<void> {
   const [version, ...extra] = options.positional
   if (version === undefined || extra.length > 0 || !isApiVersion(version)) throw new Error(USAGE)
   const recorded = (await loadApiHistory(apiDir(options))).snapshot(version)
-  const features = new Set<string>()
+  const ref = options.values.get("ref") ?? `v${version}`
+  const header = headerFeaturesAt(repoRoot, ref)
+  if (header === undefined) throw new Error(`No commit ${ref}: fetch the release tag, or pass --ref <release commit>`)
+  const features = new Set<string>(header)
   for (const name of PACKAGES) {
     const list = await publishedVersions(name)
     const packageVersion = packageVersionFor(
@@ -262,7 +277,7 @@ async function verify(options: Options): Promise<void> {
   for (const line of added) console.error(`+ ${line}`)
   if (added.length + removed.length > 0) {
     throw new Error(
-      `api/ records a different API for ${version} than npm publishes (- recorded only, + published only). ` +
+      `api/ records a different API for ${version} than npm and ${ref} publish (- recorded only, + published only). ` +
         `Write ${version}.txt again: remove it, then run backfill --from ${version} --to ${version}`,
     )
   }
@@ -284,7 +299,7 @@ const commands: Record<string, { options: string[]; run: (options: Options) => P
   current: { options: ["out", "root"], run: current },
   diff: { options: ["base", "out", "dir", "root"], run: diff },
   release: { options: ["base", "dir", "root"], run: release },
-  verify: { options: ["dir"], run: verify },
+  verify: { options: ["ref", "dir"], run: verify },
   check: { options: ["dir"], run: check },
 }
 

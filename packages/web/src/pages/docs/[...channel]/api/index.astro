@@ -23,9 +23,10 @@ const source = channel.id === "next" ? "the main-branch source" : `the ${channel
 <Docs title="API reference" description={`Every export of each OpenTUI entry point in ${source}.`}>
   <h1>API reference</h1>
   <p>
-    Every export of each published entry point in {source}, from the type declarations, with the release that added
-    it. <a href={channelUrl("/docs/reference/api-index", channel)}>API and symbol index</a> groups the exports by task
-    and links each group to its guide.
+    Every export of each published entry point and of the C ABI in {source}, from the type declarations and the C
+    header, with the release that added it.
+    <a href={channelUrl("/docs/reference/api-index", channel)}>API and symbol index</a> groups the exports by task and
+    links each group to its guide.
   </p>
   <ul class="api-modules">
     {

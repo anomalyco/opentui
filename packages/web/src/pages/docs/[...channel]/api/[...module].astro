@@ -2,6 +2,7 @@
 import ProseH2 from "../../../../components/ProseH2.astro"
 import Docs from "../../../../layouts/Docs.astro"
 import { channelApi, featureText } from "../../../../lib/api-docs"
+import { C_MODULE } from "../../../../lib/api-history"
 import { apiModules, EXPORT_GROUPS, exportGroup, type ApiModule } from "../../../../lib/api-reference"
 import { buildChannels, channelUrl, docsRouteParam, type DocsChannel } from "../../../../lib/docs-channel"
 import { buildDocsIndex } from "../../../../lib/docs-index"
@@ -32,6 +33,7 @@ const groups = EXPORT_GROUPS.map((group) => ({
   exports: module.exports.filter((entry) => exportGroup(entry) === group.id),
 })).filter((group) => group.exports.length > 0)
 const source = channel.id === "next" ? "the main-branch source" : `the ${channel.release} release`
+const declarations = module.module === C_MODULE ? "the header" : "its type declarations"
 ---
 
 <Docs
@@ -41,8 +43,8 @@ const source = channel.id === "next" ? "the main-branch source" : `the ${channel
 >
   <h1><code>{module.module}</code></h1>
   <p>
-    Every export of <code>{module.module}</code> in {source}, from its type declarations. A version names the release
-    that added an export after the entry point's first release.
+    Every export of <code>{module.module}</code> in {source}, from {declarations}. A version names the release that
+    added an export after the module's first release.
   </p>
   {
     groups.map((group) => (
