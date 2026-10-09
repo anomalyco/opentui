@@ -669,29 +669,27 @@ test("Kitty keyboard ctrl+a via keyInput events", async () => {
   })
 })
 
-test("Kitty keyboard Ctrl+C with alternate base layout still exits the renderer", async () => {
+// Kitty adds the base-layout key `c`: Korean Ctrl+ㅊ is Ctrl+C, Dvorak Ctrl+J (QWERTY C key) is not.
+test.each([
+  ["ㅊ", "\x1b[12618::99;5u", true],
+  ["j", "\x1b[106::99;5u", false],
+])("Kitty keyboard Ctrl+%s with base layout c exits the renderer: %p", async (name, sequence, exits) => {
   const clock = new ManualClock()
   const { renderer } = await createTestRenderer({ kittyKeyboard: true, clock })
 
   try {
-    // Simulate Ctrl+C from a non-Latin IME. Kitty reports the produced
-    // character (`ㅊ`) plus the base-layout key (`c`).
     const keypress = new Promise<KeyEvent>((resolve) => {
       renderer.keyInput.once("keypress", resolve)
     })
 
-    renderer.stdin.emit("data", Buffer.from("\x1b[12618::99;5u"))
+    renderer.stdin.emit("data", Buffer.from(sequence))
     clock.advance(20)
 
     const event = await keypress
-    expect(event).toMatchObject({
-      name: "ㅊ",
-      ctrl: true,
-      baseCode: 99,
-    })
+    expect(event).toMatchObject({ name, ctrl: true, baseCode: 99 })
 
     await new Promise<void>((resolve) => process.nextTick(resolve))
-    expect(renderer.isDestroyed).toBe(true)
+    expect(renderer.isDestroyed).toBe(exits)
   } finally {
     if (!renderer.isDestroyed) {
       renderer.destroy()

@@ -76,11 +76,11 @@ export function getKeyBindingKey(binding: KeyBindingLike): string {
 
 // `baseCode` is Kitty's "base layout codepoint": the character for the same
 // physical key on the keyboard's base layout. Example: an event may arrive as
-// `name: "ㅊ", baseCode: 99`, where `99` is Unicode `c`. We normalize that
-// numeric codepoint to the key names we store in key maps so Ctrl+ㅊ can still
-// match a Ctrl+C binding.
-function getBaseCodeKeyName(baseCode: number | undefined): string | undefined {
-  if (baseCode === undefined || baseCode < 32 || baseCode === 127) {
+// `name: "ㅊ", baseCode: 99`, where `99` is Unicode `c`, so Ctrl+ㅊ matches Ctrl+C.
+// Only a typed key that is one non-ASCII character falls back: on a Latin layout,
+// Dvorak Ctrl+J (base `c`) must stay Ctrl+J.
+function getBaseCodeKeyName({ name: typedName, baseCode }: KeyBindingLookup): string | undefined {
+  if (!/^[^\x00-\x7f]$/u.test(typedName) || baseCode === undefined || baseCode < 32 || baseCode === 127) {
     return undefined
   }
 
@@ -98,12 +98,12 @@ function getBaseCodeKeyName(baseCode: number | undefined): string | undefined {
 }
 
 // Return every lookup key that can represent this event. We try the parsed
-// name first, then the base-layout key when Kitty provides one. That keeps
-// direct character bindings precise, and still lets physical-layout
-// shortcuts resolve.
+// name first, then the base-layout key of a non-ASCII character. That keeps
+// direct character bindings precise, and still lets shortcuts resolve on
+// non-Latin layouts.
 export function getKeyBindingKeys(binding: KeyBindingLookup): string[] {
   const names = new Set([binding.name])
-  const baseCodeName = getBaseCodeKeyName(binding.baseCode)
+  const baseCodeName = getBaseCodeKeyName(binding)
 
   if (baseCodeName) {
     names.add(baseCodeName)

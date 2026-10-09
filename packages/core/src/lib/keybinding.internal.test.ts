@@ -43,31 +43,32 @@ describe("keybinding.internal", () => {
     })
   })
 
-  describe("getKeyBindingAction", () => {
-    it("should fall back to baseCode when the parsed name differs", () => {
-      const map = buildKeyBindingsMap([{ name: "c", ctrl: true, action: "copy" as const }])
+  describe("base-layout fallback", () => {
+    // Conformance vectors: lookup (typed key, base-layout codepoint, modifiers) -> matched bindings, in lookup order.
+    const bindings = "ctrl+a ctrl+c ctrl+g ctrl+q ctrl+ㅎ j l meta+a".split(" ").map(parse)
 
-      const action = getKeyBindingAction(map, { name: "ㅊ", baseCode: 99, ctrl: true })
-
-      expect(action).toBe("copy")
+    it.each([
+      ["ㅊ", 99, "ctrl", ["ctrl+c"]],
+      ["ㅁ", 97, "ctrl", ["ctrl+a"]],
+      ["ㅎ", 103, "ctrl", ["ctrl+ㅎ", "ctrl+g"]],
+      ["ㅓ", 106, "", ["j"]],
+      ["ㅣ", 108, "", ["l"]],
+      ["ф", 97, "meta", ["meta+a"]],
+      ["𠀀", 99, "ctrl", ["ctrl+c"]],
+      ["j", 99, "ctrl", []],
+      ["h", 106, "", []],
+      ["a", 113, "ctrl", ["ctrl+a"]],
+    ] as const)("%s/%d %s matches %j", (name, baseCode, modifiers, matches) => {
+      const lookup = { ...parse(`${modifiers}+${name}`), baseCode }
+      const matched = bindings.filter((binding) => matchesKeyBinding(lookup, binding)).map((binding) => binding.action)
+      expect(getKeyBindingAction(buildKeyBindingsMap(bindings), lookup)).toBe(matches[0])
+      expect(matched.sort()).toEqual([...matches].sort())
     })
 
-    it("should prefer a direct name match over the baseCode fallback", () => {
-      const map = buildKeyBindingsMap([
-        { name: "c", ctrl: true, action: "copy" as const },
-        { name: "ㅊ", ctrl: true, action: "insert" as const },
-      ])
-
-      const action = getKeyBindingAction(map, { name: "ㅊ", baseCode: 99, ctrl: true })
-
-      expect(action).toBe("insert")
-    })
-  })
-
-  describe("matchesKeyBinding", () => {
-    it("should match a binding by baseCode when available", () => {
-      expect(matchesKeyBinding({ name: "ㅊ", baseCode: 99, ctrl: true }, { name: "c", ctrl: true })).toBe(true)
-    })
+    function parse(text: string) {
+      const parts = text.split("+")
+      return { name: parts.at(-1)!, ctrl: parts.includes("ctrl"), meta: parts.includes("meta"), action: text }
+    }
   })
 
   describe("mergeKeyBindings", () => {
