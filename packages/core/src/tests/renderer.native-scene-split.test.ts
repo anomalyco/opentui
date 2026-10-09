@@ -266,9 +266,11 @@ test.each(["frames", "suspend", "destroy"] as const)(
 // Old text on the start row (`~`) gives way to the right of a row, and only there. `{ red }` is a 9-cell writer row on a
 // red background that continues the last row, and "\n" ends its line; runs on a red background show in brackets.
 // A row with [terminal rows, footer height] lists its scrollback and screen down to the footer: a pane of one row or
-// none has no valid scroll region (DECSTBM needs two rows), so output must not reach the footer.
+// none has no valid scroll region (DECSTBM needs two rows), so output must not reach the footer. With no row, a row that
+// never ends (`abcde`) has nowhere to stay and is lost (accepted). `{ footer }` sets the footer height.
 const smallPane = ["a\nb\n", { red: "w1\nw2\n" }, "abcde", { red: "XXXXXX\n" }, "abcdefghi", "x\n"] as const
 const smallPaneRows = ["a", "b", "[w1]", "[w2]", "abcde[XXXX]", "[XX]", "abcdefghi", "x", "", "FFFFFFFFF"] as const
+const noRowRows = ["a", "b", "[w1]", "[w2]", "[XXXXXX]", "abcdefghi", "x", "FFFFFFFFF"] as const
 test.each([
   ["a captured ASCII line", ["abcdefghijklmnopqrs\n"], ["abcdefghi", "jklmnopqr", "s"]],
   ["a captured line of wide characters", ["一二三四五六七八九\n"], ["一二三四", "五六七八", "九"]],
@@ -285,13 +287,17 @@ test.each([
   ["output in a two-row pane", smallPane, smallPaneRows, [4, 2]],
   ["output in a one-row pane", smallPane, smallPaneRows, [4, 3]],
   ["output in a one-row pane under the default footer", smallPane, smallPaneRows, [13, 12]],
-  ["output with no row above the footer", smallPane, ["a", "b", "[w1]", "[w2]", "[XXXXXX]", "x", "FFFFFFFFF"], [4, 4]],
+  ["output with no row above the footer", smallPane, noRowRows, [4, 4]],
+  ["output in a one-row pane of a two-row terminal", smallPane, smallPaneRows, [2, 1]],
+  ["output in a one-row terminal", smallPane, noRowRows, [1, 1]],
+  ["output after the footer shrinks", ["abcde", { footer: 2 }, "fghijk", "!\n"], ["fghijk!", "", "FFFFFFFFF"], [4, 4]],
 ] as const)("%s shows its terminal rows above the split footer", async (_name, writes, rows, ...[size]) => {
   const [height, footerHeight] = (size as readonly [number, number] | undefined) ?? [10, 3]
   const terminal = await setupTerminal({ columns: 9, height, footerHeight })
   terminal.renderer.root.add(new TextRenderable(terminal.renderer, { content: "FFFFFFFFF" }))
   for (const write of writes) {
     if (typeof write === "string") terminal.stdout.write(write)
+    else if ("footer" in write) terminal.renderer.footerHeight = write.footer
     else
       terminal.renderer.writeToScrollback(({ renderContext }) => ({
         root: new TextRenderable(renderContext, {

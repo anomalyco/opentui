@@ -1996,6 +1996,7 @@ pub const CliRenderer = struct {
         const starts_mid_line = previousOutputColumn > 0 and start_on_new_line;
         const starts_wrapped_line = previousOutputColumn >= self.width;
         const previousFooterTopLine: u32 = @max(previousSurfaceOffset + 1, @as(u32, 1));
+        var ends_last_row = trailing_newline;
 
         if (snapshot_has_content) {
             // First update logical split scrollback state, then emit terminal I/O.
@@ -2014,6 +2015,10 @@ pub const CliRenderer = struct {
             }
 
             self.splitScrollback.published_rows = @min(self.splitScrollback.published_rows, pinned_render_offset);
+            // With no output row, the footer covers the last row: a full row ends there, and the
+            // next commit starts a new line at column 1 (no CRLF, which would scroll a footer row).
+            ends_last_row = trailing_newline or (pinned_render_offset == 0 and self.splitScrollback.tail_column >= self.width);
+            if (pinned_render_offset == 0) self.splitScrollback.tail_column = 0;
         }
 
         const next_output_offset = self.splitScrollback.renderOffset(pinned_render_offset);
@@ -2025,9 +2030,8 @@ pub const CliRenderer = struct {
         const use_bounded_scroll_region = snapshot_has_content and
             next_render_offset == pinned_render_offset and
             next_output_offset == next_render_offset;
-        // DECSTBM protects footer cells, but terminals can still scroll native graphics
-        // placements, and a pane of one row or none borrows footer rows for its region.
-        // Repaint the footer after those pinned appends.
+        // DECSTBM protects footer cells, but terminals can still scroll native graphics placements, and
+        // a pane of one row or none borrows footer rows. Repaint the footer after those pinned appends.
         const repaint_footer = use_bounded_scroll_region and (pinned_render_offset < 2 or
             self.hasCommittedProtocol(.kitty) or self.hasCommittedProtocol(.sixel));
         const redraw_footer = force or previousSurfaceOffset != next_render_offset or repaint_footer;
@@ -2053,11 +2057,13 @@ pub const CliRenderer = struct {
                 }
 
                 moveToSplitOutputCursor(writer, previousOutputOffset, previousOutputColumn, self.width);
-                if (pinned_render_offset > 0 and (starts_mid_line or starts_wrapped_line)) {
-                    // The prior commit left the cursor mid-row and the caller asked for a new line,
-                    // or it filled the row and moving the cursor back lost the pending autowrap: a
-                    // CRLF keeps the logical row boundary across commit chunks. With no output row,
-                    // the footer covers that row, and a CRLF would scroll a footer row away.
+                if (starts_mid_line or starts_wrapped_line) {
+                    // The prior commit left output cursor mid-row and caller asked
+                    // for newline anchoring. When the prior commit exactly filled the
+                    // row, we also need a CRLF here because moving the cursor back to
+                    // the last column loses the terminal's pending autowrap state.
+                    // Emit CRLF before payload to preserve logical row boundaries
+                    // across commit chunks.
                     writer.writeAll("\r\n") catch {};
                 } else if (previousOutputColumn + snapshotRowEnd(snapshot, 0, normalized_row_columns) > self.width) {
                     // A first row that wraps would scroll its next line in with the wrapping cell's background
@@ -2066,12 +2072,13 @@ pub const CliRenderer = struct {
                 }
 
                 // Serialize payload rows at current output cursor.
-                try self.writeSnapshotCommit(writer, snapshot, normalized_row_columns, trailing_newline, kitty_history_state);
+                try self.writeSnapshotCommit(writer, snapshot, normalized_row_columns, ends_last_row, kitty_history_state);
 
                 if (use_bounded_scroll_region) {
-                    // Restore default full-height scroll region for regular repaint and cursor
-                    // operations. A pane of one row or none first scrolls its last line back to row 1.
-                    writer.writeAll(if (pinned_render_offset < 2) "\x1bD\x1b[r" else "\x1b[r") catch {};
+                    // Restore the full-height region. A pane of one row or none first scrolls its last line
+                    // back to row 1, unless the terminal has one row, where each CRLF already scrolled.
+                    const scroll_back = pinned_render_offset < 2 and pinned_render_offset + self.height > 1;
+                    writer.writeAll(if (scroll_back) "\x1bD\x1b[r" else "\x1b[r") catch {};
                 }
             }
 
