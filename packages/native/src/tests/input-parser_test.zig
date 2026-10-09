@@ -1262,7 +1262,7 @@ test "input parser reset drops the pending unit and X10 button, or keeps a reply
     try testing.expect(harness.parser.expect.kitty_keyboard);
     // Keeping a reply keeps only a CSI unit shaped like one, deferred without a deadline.
     for ([_]struct { []const u8, []const u8, []const Expect }{
-        .{ "\x1b[4;80", ";80t", &.{reply("\x1b[4;80;80t")} },
+        .{ "\x1b[M\"!!\x1b\x1b[4;80", ";80t\x1b[M#!!", &.{ reply("\x1b[4;80;80t"), mouse(.up, 0, 0, 0, NONE) } },
         .{ "\x1b[4;80", "a", &.{ frag("\x1b[4;80"), ch('a') } },
         .{ "\x1b[?62", "c", &.{reply("\x1b[?62c")} },
         .{ "\x1b[24", ";1R", &.{ ch(';'), ch('1'), ch('R') } },

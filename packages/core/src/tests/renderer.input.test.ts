@@ -2440,18 +2440,22 @@ describe("stdin routing", () => {
   })
 
   test("input pending at suspension does not swallow typing after resume", async () => {
-    // While suspended, a child process can read the rest of a paste or mouse report.
+    // While suspended, a child process can read the rest of a paste or mouse report. The
+    // reply prefix defers during the capability probe, and suspension's protocol update ends it.
     for (const experimental_nativeInput of [false, true]) {
-      for (const pending of ["\x1b[", "\x1b[200~first half", "\x1b[<35;10"]) {
+      for (const pending of ["\x1b[", "\x1b[200~first half", "\x1b[<35;10", "\x1b\x1b[?62;"]) {
         const { renderer, clock } = await createRoutingRenderer({ experimental_nativeInput })
         try {
           await renderer.setupTerminal()
           const names: string[] = []
           renderer.keyInput.on("keypress", (event) => names.push(event.name))
+          // The pixel query is answered, so no reply is awaited across suspension.
+          renderer.stdin.emit("data", Buffer.from("\x1b[4;80;80t"))
           renderer.stdin.emit("data", Buffer.from(pending))
-          advanceClock(clock, 5)
+          advanceClock(clock, 25)
           await renderer.suspend()
           await renderer.resume()
+          names.length = 0
           renderer.stdin.emit("data", Buffer.from("42x"))
           advanceClock(clock)
           expect({ experimental_nativeInput, pending, names }).toEqual({

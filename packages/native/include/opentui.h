@@ -2852,7 +2852,7 @@ ot_status ot_session_input_feed(
 
 /* flags is a combination of OT_INPUT_EXPECT_* bits; other bits must be zero.
  * Set REPLIES while any query is outstanding, including the capability queries
- * that setup and resume publish. It keeps a partial CSI reply waiting past the
+ * that setup publishes. It keeps a partial CSI reply waiting past the
  * timeout, and it makes a complete CSI 1 ; N R (N >= 2) a CURSOR_POSITION reply
  * instead of a modified F3 key. KITTY_KEYBOARD keeps a partial Kitty key waiting;
  * the session also applies it while its terminal has Kitty keyboard enabled.

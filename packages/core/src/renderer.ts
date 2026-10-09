@@ -4454,12 +4454,16 @@ export class CliRenderer extends EventEmitter implements RenderContext {
 
     this.disableMouse()
     this.removeExitListeners()
-    this.updateStdinParserProtocolContext({
-      privateCapabilityRepliesActive: false,
-      pixelResolutionQueryActive: this.waitingForPixelResolution,
-      explicitWidthCprActive: false,
-      startupCursorCprActive: false,
-    })
+    // Drained while suspended: what this update resolves is stale and must not wait for resume.
+    this.updateStdinParserProtocolContext(
+      {
+        privateCapabilityRepliesActive: false,
+        pixelResolutionQueryActive: this.waitingForPixelResolution,
+        explicitWidthCprActive: false,
+        startupCursorCprActive: false,
+      },
+      true,
+    )
     this.pauseStdinParsers(false)
     this.stdin.removeListener("data", this.stdinListener)
     this.stopTerminalKeepAlive()

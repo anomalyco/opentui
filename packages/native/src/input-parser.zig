@@ -267,13 +267,14 @@ pub const InputParser = struct {
     /// Drops the pending unit. With `keep_reply`, a CSI unit that may begin a reply is kept
     /// instead, deferred: it waits for its rest without a deadline (docs §11.5).
     pub fn reset(self: *InputParser, keep_reply: bool) void {
+        self.x10_button = 0;
         if (keep_reply and self.state == .csi and self.replyShaped()) {
-            self.state.csi.deferred = true;
+            // An ESC before the unit was a key pressed before the interruption.
+            self.state.csi = .{ .alt = false, .deferred = true };
             return;
         }
         self.state = .ground;
         self.unit_len = 0;
-        self.x10_button = 0;
     }
 
     fn assertValid(self: *const InputParser) void {
