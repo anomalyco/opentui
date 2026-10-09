@@ -288,7 +288,7 @@ describe("EmbeddedTerminalRenderable", () => {
     ["xterm Alt+F5", 0, "\x1b[15;3~", "\x1b[15;3~"],
     ["Kitty F13", 1, "\x1b[57376u", "\x1b[57376u"],
     ["Kitty F25", 1, "\x1b[57388u", "\x1b[57388u"],
-    ["SS3 Up", 0, "\x1bOA", "\x1b[A"],
+    ["SS3 Down", 0, "\x1bOB", "\x1b[B"],
     ["SS3 Up into a DECCKM child", "\x1b[?1h", "\x1bOA", "\x1bOA"],
     ["plain Dvorak u", 1, "\x1b[117::102;1u", "u"],
     ["plain Dvorak d", 1, "\x1b[100::104;1u", "d"],
