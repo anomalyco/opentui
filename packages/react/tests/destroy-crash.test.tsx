@@ -1,4 +1,4 @@
-import { describe, expect, it } from "bun:test"
+import { describe, expect, it, spyOn } from "bun:test"
 import type { BoxRenderable } from "@opentui/core"
 import React, { useEffect, useRef, useState } from "react"
 import { createTestRenderer } from "@opentui/core/testing"
@@ -89,11 +89,15 @@ describe("Renderer Destroy Crash with Pending React Updates", () => {
     // The interval will keep firing setLines() after this
     // React will try to add new <text> elements to destroyed Yoga nodes
     testSetup.renderer.destroy()
+    const errors = spyOn(console, "error")
+    root.render(<App />)
 
     // Wait for interval to fire more updates after destroy
     // This is when the crash occurs if the bug is present
     await Bun.sleep(100)
 
     expect(cleanedUp).toBe(true)
+    expect(errors).not.toHaveBeenCalled()
+    errors.mockRestore()
   })
 })

@@ -73,6 +73,7 @@ describe("Renderer destroy with pending Solid updates", () => {
       destroyCalled = true
       log("calling renderer.destroy()")
       testSetup.renderer.destroy()
+      await render(() => <App />, testSetup.renderer)
 
       await Bun.sleep(30)
       const ticksSoonAfterDestroy = intervalTicks
