@@ -271,6 +271,7 @@ test.each([
   ["a continued wide character at the last column", ["abcdefgh", "一x", "y\n"], ["abcdefgh", "一xy"]],
   ["a wide character at the edge of a continued row", ["abcde", "fghijklm一\n"], ["abcdefghi", "jklm一"]],
   ["a tab in a continued row", ["abc", "\tX\n"], ["abc     X"]],
+  ["a tab that reaches the right margin of a continued row", ["abcdefgh", "\tX\n"], ["abcdefghX"]],
   ["a continued wide character that wraps early", ["abc", "defgh一", "x\n"], ["abcdefgh", "一x"]],
   [
     "the same early wrap at the pinned bottom",
@@ -319,6 +320,7 @@ test.each([
   ["wraps a wide character at the last column of a continued row", ["abcdefgh", "一x"], ["abcdefgh:8", ":1", "一x:3"]],
   ["pads at the terminal edge, not at the write width", ["abcde", "fghijklm一\n"], ["abcde:5", "fghi:4", "jklm一:6\n"]],
   ["counts tab stops from the row, not the write", ["a", "bc", "\tX\n"], ["a:1", "bc:2", "     X:6\n"]],
+  ["stops a tab at the last column", "\t\tb\n", ["        b:9\n"]],
   ["keeps a wide character that wraps early", ["abc", "defgh一", "x\n"], ["abc:3", "defgh:6", "一:2", "x:1\n"]],
 ])("captured stdout %s", async (_name, text, commits) => {
   const stdout = createTestStdout(9, 10)

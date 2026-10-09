@@ -2651,8 +2651,8 @@ export class CliRenderer extends EventEmitter implements RenderContext {
 
       // The first row of a write continues the terminal row at the tail column; native appends it there.
       const column = (rows.length === 0 && tailColumn < width ? tailColumn : 0) + cells
-      // A tab advances to the next stop, as in a terminal, and never wraps.
-      const tabCells = Math.min(STDOUT_TAB_WIDTH - (column % STDOUT_TAB_WIDTH), Math.max(0, width - column))
+      // A tab advances to the next stop, as in a terminal, and stops at the last column.
+      const tabCells = Math.min(STDOUT_TAB_WIDTH - (column % STDOUT_TAB_WIDTH), Math.max(0, width - 1 - column))
       const grapheme = segment === "\t" ? " ".repeat(tabCells) : segment
       const graphemeCells = stringWidth(grapheme)
       if (column > 0 && column + graphemeCells > width) {
