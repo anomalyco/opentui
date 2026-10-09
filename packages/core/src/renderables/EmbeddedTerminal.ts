@@ -427,10 +427,11 @@ function modifiers(input: {
 }
 
 function physicalKey(key: KeyEvent) {
-  if (key.code && !key.code.startsWith("[")) return key.code
+  if (key.code && !/^[[O]/.test(key.code)) return key.code
   const name = key.baseCode === undefined ? key.name : String.fromCodePoint(key.baseCode)
   if (/^[a-z]$/i.test(name)) return `Key${name.toUpperCase()}`
   if (/^[0-9]$/.test(name)) return `Digit${name}`
+  if (/^f([1-9]|1[0-9]|2[0-5])$/i.test(key.name)) return key.name.toUpperCase()
   return (
     {
       backspace: "Backspace",
