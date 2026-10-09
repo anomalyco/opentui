@@ -435,6 +435,7 @@ function physicalKey(key: KeyEvent) {
   return (
     {
       backspace: "Backspace",
+      clear: "NumpadBegin",
       enter: "Enter",
       return: "Enter",
       space: "Space",

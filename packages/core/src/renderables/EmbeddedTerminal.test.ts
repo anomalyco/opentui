@@ -269,14 +269,11 @@ describe("EmbeddedTerminalRenderable", () => {
     }
   })
 
-  // Excluded: Ghostty has no encoding for the keys that "clear" (NumpadClear) and "menu" (ContextMenu) name.
-  test.each([...new Set(nonAlphanumericKeys)].filter((name) => name !== "clear" && name !== "menu"))(
-    "encodes the parser key name %s",
-    (name) => {
-      const terminal = new EmbeddedTerminalRenderable(setup.renderer, { width: 20, height: 4 })
-      expect(terminal.encodeKey(keyEvent({ name, sequence: "" })).length).toBeGreaterThan(0)
-    },
-  )
+  // Only "menu" encodes to nothing: Ghostty has no encoding for ContextMenu or the Kitty MENU key.
+  test.each([...new Set(nonAlphanumericKeys)])("encodes the parser key name %s", (name) => {
+    const terminal = new EmbeddedTerminalRenderable(setup.renderer, { width: 20, height: 4 })
+    expect(terminal.encodeKey(keyEvent({ name, sequence: "" })).length > 0).toBe(name !== "menu")
+  })
 
   test.each([
     ["Kitty Ctrl+c", 3, "\x1b[99;5u", "\x1b[99;5u"],
@@ -289,6 +286,12 @@ describe("EmbeddedTerminalRenderable", () => {
     ["Kitty F13", 1, "\x1b[57376u", "\x1b[57376u"],
     ["Kitty F25", 1, "\x1b[57388u", "\x1b[57388u"],
     ["SS3 Down", 0, "\x1bOB", "\x1b[B"],
+    ["SS3 keypad Begin", 0, "\x1bOE", "\x1b[E"],
+    ["keypad Begin into a DECKPAM child", "\x1b=", "\x1b[E", "\x1b[E"],
+    ["keypad Begin into a DECCKM child", "\x1b[?1h", "\x1b[E", "\x1bOE"],
+    ["xterm Ctrl+keypad Begin", 0, "\x1b[1;5E", "\x1b[1;5E"],
+    ["Kitty keypad Begin", 1, "\x1b[57427u", "\x1b[57427u"],
+    ["Kitty Ctrl+keypad Begin", 1, "\x1b[57427;5u", "\x1b[57427;5u"],
     ["SS3 Up into a DECCKM child", "\x1b[?1h", "\x1bOA", "\x1bOA"],
     ["plain Dvorak u", 1, "\x1b[117::102;1u", "u"],
     ["plain Dvorak d", 1, "\x1b[100::104;1u", "d"],
