@@ -1099,17 +1099,18 @@ arm or clear the timer from drain.deadline_ns
 `now_ns` is the renderer `Clock`'s milliseconds in nanoseconds, held monotonic (a clock that steps
 back keeps the last time). `flushTimeout(now)` is `feed(empty, now)`. `updateProtocolContext` sets the
 expectations and then feeds zero bytes, so a unit that can no longer wait resolves at once, as the
-legacy parser did. Its callers need not drain: when that feed resolves anything, a zero-delay timer
-delivers it through `onTimeoutFlush`, as a legacy timeout would. The timer uses the renderer's `Clock` and calls `onTimeoutFlush` (the renderer's
+legacy parser did. Its callers need not drain: while events are queued after that feed, a zero-delay
+timer delivers them through `onTimeoutFlush`, as a legacy timeout would. The timer uses the renderer's `Clock` and calls `onTimeoutFlush` (the renderer's
 `drainStdinParser`) after a flush. A firing timer is the host's statement that the deadline passed:
 it feeds at `max(now, deadline_ns)`, so a clock sample that disagrees slightly with the timer cannot
 leave a unit stuck.
 
 `OTUI_NATIVE_INPUT_SHADOW` runs the other parser on the same input and logs one
 `[stdin-shadow] legacy=… native=…` line per event that differs (`StdinShadowComparator`). Events pair
-in order, so the two parsers' separate timers cannot misalign them. After a difference, the next event
-on each side tells an extra event (one line with `none` on the other side) from a changed one, and
-pairing resumes. A side that stops producing events is bounded at 256 queued events.
+in order, so the two parsers' separate timers cannot misalign them. Pairing runs through the earliest
+event that both sides report within their next 8; each event before it is a difference (`none` on the
+other side for an extra event). The renderer flushes what is still unpaired at teardown. A side that
+stops producing events is bounded at 256 queued events.
 
 ### 12.2 Event translation
 

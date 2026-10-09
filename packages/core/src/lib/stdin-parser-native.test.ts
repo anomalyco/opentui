@@ -202,29 +202,33 @@ describe("native stdin parser: differential replay", () => {
         source: "raw",
       },
     })
-    // Each read reports the primary's events, then the shadow's. A changed event and an extra
-    // event on either side are one line each, and pairing resumes after them.
+    // Each read reports the primary's events, then the shadow's. Every changed or extra event is
+    // one line, pairing resumes after them, and flush reports what is still unpaired.
     for (const [primary, shadow] of [
       ["ab", "aB"],
       ["c", "Xc"],
       ["Pd", "d"],
-      ["ef", "ef"],
+      ["QRe", "e"],
+      ["fg", "fG"],
     ] as const) {
       for (const name of primary) comparator.primary(key(name))
       for (const name of shadow) comparator.shadow(key(name))
     }
-    expect(lines.map((line) => line.replace(/\["key","(\w)"[^\]]*\]/g, "$1"))).toEqual([
+    comparator.flush()
+    expect(lines.splice(0).map((line) => line.replace(/\["key","(\w)"[^\]]*\]/g, "$1"))).toEqual([
       "[stdin-shadow] native=b legacy=B",
       "[stdin-shadow] native=none legacy=X",
       "[stdin-shadow] native=P legacy=none",
+      "[stdin-shadow] native=Q legacy=none",
+      "[stdin-shadow] native=R legacy=none",
+      "[stdin-shadow] native=g legacy=G",
     ])
-    lines.length = 1
     for (let index = 0; index < 300; index++) comparator.primary(key("x"))
-    expect(lines).toHaveLength(1 + 300 - 256)
+    expect(lines).toHaveLength(300 - 256)
     expect(lines.at(-1)!.endsWith("legacy=none")).toBe(true)
     // The 256 queued events pair up; the next 300 back up on the other side.
     for (let index = 0; index < 256 + 300; index++) comparator.shadow(key("x"))
-    expect(lines).toHaveLength(1 + 2 * (300 - 256))
+    expect(lines).toHaveLength(2 * (300 - 256))
     expect(lines.at(-1)!.startsWith("[stdin-shadow] native=none")).toBe(true)
   })
 })
