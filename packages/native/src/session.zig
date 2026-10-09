@@ -7,6 +7,7 @@ const renderer = @import("renderer.zig");
 const terminal = @import("terminal.zig");
 const scene = @import("scene.zig");
 const buffer = @import("buffer.zig");
+const input_parser = @import("input-parser.zig");
 const Context = @import("context.zig").Context;
 const api = @import("context_abi_c");
 
@@ -196,6 +197,12 @@ pub const Control = union(enum) {
     cursor: CursorOptions,
 };
 
+pub const InputFeed = struct {
+    consumed: u32,
+    discarded: u32,
+    deadline_ns: ?u64,
+};
+
 pub const PumpStatus = enum(u8) { idle, again, output_pending, wait_until, closed };
 pub const PumpResult = struct {
     status: PumpStatus,
@@ -307,6 +314,11 @@ pub const Session = struct {
     last_pump_ns: ?u64 = null,
     // Cancel revokes authority, but outstanding scopes still pin renderer storage.
     frame_lease_count: u32 = 0,
+    input: input_parser.InputParser = .{},
+    /// Host expectations; feeds add the terminal's Kitty keyboard state.
+    input_expect: input_parser.Expectations = .{},
+    // Input feeds keep their own monotonic host clock, separate from pump time.
+    last_input_ns: ?u64 = null,
 
     pub fn deinit(self: *Session) error{Busy}!void {
         if (!self.canDestroy()) return error.Busy;
@@ -851,6 +863,33 @@ pub const Session = struct {
         const result = try self.pumpWork(now_ns, work_budget);
         if (self.renderer) |value| value.kittyTransport.expire(now_ns);
         return result;
+    }
+
+    /// Parses terminal input into caller-owned records in every open lifecycle
+    /// phase. Feeds share one monotonic clock; rejection leaves the parser unchanged.
+    pub fn feedInput(self: *Session, bytes: []const u8, now_ns: u64, sink: *input_parser.Sink) Error!InputFeed {
+        try self.checkOpen();
+        if (self.last_input_ns) |previous| {
+            if (now_ns < previous) return error.InvalidClock;
+        }
+        self.last_input_ns = now_ns;
+        var expect = self.input_expect;
+        // Setup pushes Kitty flags before the terminal can send Kitty-encoded keys.
+        if (self.renderer) |value| expect.kitty_keyboard = expect.kitty_keyboard or value.terminal.state.kitty_keyboard;
+        self.input.setExpectations(expect);
+        const consumed = self.input.feed(bytes, now_ns, sink);
+        return .{ .consumed = consumed, .discarded = self.input.discarded_count, .deadline_ns = self.input.deadlineNs() };
+    }
+
+    /// Emits nothing; the next feed resolves a unit that may no longer wait.
+    pub fn setInputExpectations(self: *Session, expect: input_parser.Expectations) Error!void {
+        try self.checkOpen();
+        self.input_expect = expect;
+    }
+
+    pub fn resetInput(self: *Session) Error!void {
+        try self.checkOpen();
+        self.input.reset();
     }
 
     fn checkClock(self: *const Session, now_ns: u64) Error!void {

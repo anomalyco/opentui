@@ -8,6 +8,12 @@ import { createTestRenderer, type TestRenderer, type TestRendererOptions } from 
 import { RecordingWriteStream } from "../testing/test-streams.js"
 import { ManualClock } from "../testing/manual-clock.js"
 import type { RenderContext } from "../types.js"
+import { env } from "../lib/env.js"
+
+// OTUI_NATIVE_INPUT_PARSER runs this suite through the native parser; a few expectations
+// follow its intentional behavior changes (packages/native/docs/input-parser.md §14.3).
+const nativeInput = env.OTUI_NATIVE_INPUT_PARSER
+const legacyInputTest = nativeInput ? test.skip : test
 
 let currentRenderer: TestRenderer
 let kittyRenderer: TestRenderer
@@ -1275,7 +1281,8 @@ test("high byte UTF-8 lead byte does not stall indefinitely", async () => {
   })
 })
 
-test("empty input via keyInput events", async () => {
+// The native parser reports nothing for zero bytes.
+legacyInputTest("empty input via keyInput events", async () => {
   const result = await triggerInput("")
   expect(result).toMatchObject({
     eventType: "press",
@@ -2385,8 +2392,9 @@ describe("stdin routing", () => {
       renderer.stdin.emit("data", Buffer.from("\x1b[<32;2;2M"))
       advanceClock(clock)
 
-      expect(moveCount).toBe(1)
-      expect(dragCount).toBe(0)
+      // Native decoding is stateless: the wire's held-button bits make this a drag.
+      expect(moveCount).toBe(nativeInput ? 0 : 1)
+      expect(dragCount).toBe(nativeInput ? 1 : 0)
     } finally {
       renderer.destroy()
     }
@@ -2424,8 +2432,8 @@ describe("stdin routing", () => {
       renderer.stdin.emit("data", Buffer.from("\x1b[<32;2;2M"))
       advanceClock(clock)
 
-      expect(moveCount).toBe(1)
-      expect(dragCount).toBe(0)
+      expect(moveCount).toBe(nativeInput ? 0 : 1)
+      expect(dragCount).toBe(nativeInput ? 1 : 0)
     } finally {
       renderer.destroy()
     }

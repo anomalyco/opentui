@@ -13,6 +13,7 @@ const editor_transport = @import("context-editor-abi.zig");
 const text_transport = @import("context-text-abi.zig");
 const unicode_transport = @import("context-unicode-abi.zig");
 const terminal_transport = @import("context-terminal-abi.zig");
+const input_transport = @import("context-input-abi.zig");
 const output_transport = @import("context-output-abi.zig");
 const image_transport = @import("context-image-abi.zig");
 const clipboard_transport = @import("clipboard-abi.zig");
@@ -4794,6 +4795,7 @@ const abi_modules = .{
     text_transport,
     unicode_transport,
     terminal_transport,
+    input_transport,
     output_transport,
     image_transport,
     clipboard_transport,

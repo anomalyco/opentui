@@ -6,6 +6,7 @@ const link = @import("link.zig");
 const yoga = @import("yoga.zig");
 const renderer = @import("renderer.zig");
 const session = @import("session.zig");
+const input_parser = @import("input-parser.zig");
 const scene = @import("scene.zig");
 const native_span_feed = @import("native-span-feed.zig");
 const buf = @import("buffer.zig");
@@ -981,6 +982,24 @@ pub const Context = struct {
         try self.beginMutation();
         defer self.mutating = false;
         return (try self.getSession(handle)).pump(now_ns, work_budget);
+    }
+
+    pub fn sessionInputFeed(self: *Context, handle: Handle, bytes: []const u8, now_ns: u64, sink: *input_parser.Sink) Error!session.InputFeed {
+        try self.beginMutation();
+        defer self.mutating = false;
+        return (try self.getSession(handle)).feedInput(bytes, now_ns, sink);
+    }
+
+    pub fn sessionInputExpect(self: *Context, handle: Handle, expect: input_parser.Expectations) Error!void {
+        try self.beginMutation();
+        defer self.mutating = false;
+        try (try self.getSession(handle)).setInputExpectations(expect);
+    }
+
+    pub fn sessionInputReset(self: *Context, handle: Handle) Error!void {
+        try self.beginMutation();
+        defer self.mutating = false;
+        try (try self.getSession(handle)).resetInput();
     }
 
     pub fn getSessionTerminalState(self: *Context, handle: Handle) Error!session.TerminalState {
