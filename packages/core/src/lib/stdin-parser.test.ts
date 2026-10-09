@@ -1557,24 +1557,22 @@ function defineStdinParserSuite(impl: Implementation): void {
         }
       })
 
-      test("aborting a pending startup cursor CPR swallows a reply that finishes later", () => {
-        const parser = createParser({
-          protocolContext: { startupCursorCprActive: true },
-        })
-
-        try {
-          parser.push(Buffer.from("\x1b[24;80"))
-          expect(snap(parser)).toEqual([])
-          if (!native) asLegacy(parser).abortPendingStartupCursorCpr()
-          parser.updateProtocolContext({ startupCursorCprActive: false })
-
-          expect(snap(parser)).toEqual([])
-
-          // Native has no abort: the stale reply stays a CPR reply, which the renderer ignores.
-          parser.push(Buffer.from("R"))
-          expect(snap(parser)).toEqual(either([], [resp("cpr", "\x1b[24;80R")]))
-        } finally {
-          parser.destroy()
+      test("a startup CPR pending when its probe ends completes as a CPR reply unless aborted", () => {
+        for (const abort of [false, true]) {
+          const parser = createParser({ protocolContext: { startupCursorCprActive: true } })
+          try {
+            parser.push(Buffer.from("\x1b[24;80"))
+            expect(snap(parser)).toEqual([])
+            // Native has no abort: the stale reply stays a CPR reply, which the renderer ignores.
+            const aborted = abort && !native
+            if (aborted) asLegacy(parser).abortPendingStartupCursorCpr()
+            parser.updateProtocolContext({ startupCursorCprActive: false })
+            expect(snap(parser)).toEqual([])
+            parser.push(Buffer.from("R"))
+            expect(snap(parser)).toEqual(aborted ? [] : [resp("cpr", "\x1b[24;80R")])
+          } finally {
+            parser.destroy()
+          }
         }
       })
 

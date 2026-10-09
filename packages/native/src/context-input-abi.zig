@@ -27,6 +27,8 @@ comptime {
         if (std.mem.startsWith(u8, decl.name, "functional_") or std.mem.eql(u8, decl.name, "f")) continue;
         checkTwin("KEY_", decl.name, @field(input_parser.key, decl.name));
     }
+    checkTwin("KEY_", "f35", input_parser.key.f(35));
+    checkTwin("KEY_", "iso_level5_shift", input_parser.key.functional_last);
     checkTwin("", "mouse_button_none", input_parser.mouse_button_none);
     checkTwin("", "events_min", input_parser.events_per_byte_max);
     checkTwin("", "payload_bytes_min", input_parser.payload_per_byte_max);
