@@ -133,9 +133,9 @@ The site works like go.dev and tip.golang.org. `scripts/build-site.ts` builds it
   other docs after a release too; they stay current on both channels.
 - `api/<version>.txt` at the repository root records each release's API changes (`api/README.md`), including the C
   ABI of `opentui.h`. The release process writes it, and the release workflow compares it with the published packages
-  and the release commit's header (`api.ts verify`). Do not edit it by hand.
+  (`api.ts verify`). Do not edit it by hand.
 - The `opentui.h` section of `reference/api-index.mdx` maps C declarations to the native guides, like the package
-  sections do for exports. A test checks that each name in it is declared.
+  sections do for exports.
 - A release from a maintenance branch, such as 0.5.x, writes its API file and release notes on that branch. Copy both
   to main: the site reads them from main.
 - `bun run dev` and `bun run build` render both channels from the working tree. Unreleased API changes need a source

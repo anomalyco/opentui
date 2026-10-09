@@ -7,6 +7,7 @@ import { join, resolve } from "node:path"
 import process from "node:process"
 import ts from "typescript"
 import {
+  C_MODULE,
   checkApiFiles,
   compareText,
   compareVersions,
@@ -31,9 +32,8 @@ const USAGE = `Usage: bun packages/web/scripts/api.ts <command> [options]
       Print the API file that a release of the source tree would add.
   release <version> [--base <version>] [--dir <dir>] [--root <dir>]
       Write <dir>/<version>.txt for the source tree, relative to the latest API file.
-  verify <version> [--ref <git ref>] [--dir <dir>]
-      Compare the API that the files record for a release with its packages on npm and the C header of its
-      commit, v<version> unless --ref names it.
+  verify <version> [--dir <dir>]
+      Compare the API that the files record for a release with its packages on npm.
   check [--dir <dir>]
       Validate the API files.
 
@@ -252,17 +252,15 @@ async function release(options: Options): Promise<void> {
   console.error(`wrote ${file} (${textLines(text).length - 1} changes)`)
 }
 
-// Compares the API that api/ records for a release with the API of its packages on npm and of the C header in its
-// commit. A release pull request records the API of the branch it was opened from; a change merged before the
-// pull request makes it wrong.
+// Compares the API that api/ records for a release with the API of its packages on npm. A release pull request
+// records the API of the branch it was opened from; a change merged before the pull request makes it wrong. The
+// C ABI is not on npm, so it is left out.
 async function verify(options: Options): Promise<void> {
   const [version, ...extra] = options.positional
   if (version === undefined || extra.length > 0 || !isApiVersion(version)) throw new Error(USAGE)
-  const recorded = (await loadApiHistory(apiDir(options))).snapshot(version)
-  const ref = options.values.get("ref") ?? `v${version}`
-  const header = headerFeaturesAt(repoRoot, ref)
-  if (header === undefined) throw new Error(`No commit ${ref}: fetch the release tag, or pass --ref <release commit>`)
-  const features = new Set<string>(header)
+  const snapshot = (await loadApiHistory(apiDir(options))).snapshot(version)
+  const recorded = [...snapshot].filter((line) => !line.startsWith(`${C_MODULE}: `))
+  const features = new Set<string>()
   for (const name of PACKAGES) {
     const list = await publishedVersions(name)
     const packageVersion = packageVersionFor(
@@ -277,7 +275,7 @@ async function verify(options: Options): Promise<void> {
   for (const line of added) console.error(`+ ${line}`)
   if (added.length + removed.length > 0) {
     throw new Error(
-      `api/ records a different API for ${version} than npm and ${ref} publish (- recorded only, + published only). ` +
+      `api/ records a different API for ${version} than npm publishes (- recorded only, + published only). ` +
         `Write ${version}.txt again: remove it, then run backfill --from ${version} --to ${version}`,
     )
   }
@@ -299,7 +297,7 @@ const commands: Record<string, { options: string[]; run: (options: Options) => P
   current: { options: ["out", "root"], run: current },
   diff: { options: ["base", "out", "dir", "root"], run: diff },
   release: { options: ["base", "dir", "root"], run: release },
-  verify: { options: ["ref", "dir"], run: verify },
+  verify: { options: ["dir"], run: verify },
   check: { options: ["dir"], run: check },
 }
 

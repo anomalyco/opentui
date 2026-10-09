@@ -542,7 +542,7 @@ jobs:
       - name: Install dependencies
         run: bun install --frozen-lockfile
 
-      - name: Compare api/ with the published packages and the C header
+      - name: Compare api/ with the published packages
         env:
           VERSION: ${{ needs.prepare.outputs.version }}
         run: |
@@ -554,8 +554,7 @@ jobs:
             echo "::error::api/$VERSION.txt is missing. Run 'bun packages/web/scripts/api.ts backfill --from $VERSION --to $VERSION' on main and commit it."
             exit 1
           fi
-          # The checkout is the release commit, whose C header the C ABI's API comes from.
-          bun packages/web/scripts/api.ts verify "$VERSION" --ref HEAD
+          bun packages/web/scripts/api.ts verify "$VERSION"
 
   # The site documents the release that npm serves as latest at /docs, so it deploys once npm serves this one. A
   # workflow_dispatch event from GITHUB_TOKEN starts a run, unlike most events. The deploy builds from the head

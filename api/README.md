@@ -73,8 +73,7 @@ The lines of `opentui.h` record each declaration whose name starts with `ot_` or
 
 Types keep the header's spelling, with whitespace collapsed. The field offsets and macro values come from
 `packages/core/src/native-abi.generated.ts`, which `bun run check:abi` in `packages/core` derives from the header with
-the C compiler. The extraction fails when that file and the header do not declare the same functions, callbacks,
-structs, fields, and macros.
+the C compiler.
 
 A release's C ABI is its commit's header: the C ABI is used from a source checkout, not from an npm package.
 
@@ -86,8 +85,8 @@ Run these from the repository root.
   file's API and the API of the source tree. `scripts/release.ts` runs it in the release commit. It does not
   overwrite a file with different contents. Pass `--base <version>` for a patch of an older line.
 - `bun packages/web/scripts/api.ts verify <version>` compares the API that the files record for a release with its
-  packages on npm and the header at its tag, `v<version>`. Pass `--ref <commit>` to read another commit. The release
-  workflow runs it with the release commit after npm serves the release.
+  packages on npm. The release workflow runs it after npm serves the release. The C ABI is not on npm, so it is left
+  out.
 - `bun packages/web/scripts/api.ts diff` prints the file that a release of the source tree would add.
 - `bun packages/web/scripts/api.ts current` prints every feature of the source tree.
 - `bun packages/web/scripts/api.ts check` validates the files.
