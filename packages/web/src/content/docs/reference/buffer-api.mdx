@@ -37,8 +37,9 @@ try {
 For renderer-owned resources, pass `renderer.nativeScene`. For standalone work, create a `ResourceContext`.
 
 `ResourceContext` creates a native Context without a renderer or terminal Session. `objectCapacity` sets the initial
-number of native object slots, including the cell leases that `withBuffers()` holds; the Context grows it as needed. `renderCellsMax` limits the cell count
-(`width * height`) of each drawing buffer. Destroy the Context only after every `withBuffers()` callback returns.
+number of native object slots, including the cell leases that `withBuffers()` holds; the Context grows it as needed.
+`renderCellsMax` limits the cell count (`width * height`) of each drawing buffer. Destroy the Context only after every
+`withBuffers()` callback returns.
 Destroying the Context releases its remaining resources.
 
 Read [How Core uses native](/docs/native/core#resources-through-core) for Core resource factories and their native owners.

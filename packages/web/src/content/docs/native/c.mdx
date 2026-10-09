@@ -79,7 +79,7 @@ int main(void) {
     CHECK(ot_session_attach_renderer(context, &session, &renderer));
 ```
 
-The Context allows eight native objects and at most 36 cells in each drawing buffer or renderer.
+The Context starts with eight native object slots and allows at most 36 cells in each drawing buffer or renderer.
 The Session allocates two 4,096-byte output chunks.
 These limits suit this small example. They are not a total memory budget.
 `remote = 1` stops the renderer from inheriting local terminal environment settings.
