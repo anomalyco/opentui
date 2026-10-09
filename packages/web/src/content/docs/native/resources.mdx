@@ -267,7 +267,8 @@ Keep the allocator, `std.Io`, callback data, and borrowed environment state aliv
 
 `ot_context_options` sets two required limits:
 
-- `object_capacity` counts native resource slots, including checked leases.
+- `object_capacity` is the initial count of native resource slots, including checked leases. A full table doubles, up
+  to 4,194,304 slots or `object_capacity`, whichever is larger.
 - `render_cells_max` limits each drawing buffer or renderer size, not the sum of cells across the Context.
 
 Both limits must be positive. Zero does not select a default.

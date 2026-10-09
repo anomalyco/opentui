@@ -2074,9 +2074,11 @@ typedef struct ot_session_pump_result {
 /* Zero-initialize, then set struct_size to sizeof(ot_context_options) and
  * abi_version to OT_CONTEXT_ABI_VERSION. Version 1 requires the exact size,
  * zero flags, zero reserved fields, and positive resource limits.
- * object_capacity counts native object slots, not bytes. render_cells_max
- * bounds each renderer's width * height in terminal cells, not bytes or total
- * context memory. Neither limit uses a default when zero.
+ * object_capacity is the initial count of native object slots, not bytes. A full
+ * table doubles, up to 4194304 slots or object_capacity, whichever is larger;
+ * past that, creation returns OT_OBJECT_LIMIT. render_cells_max bounds each
+ * renderer's width * height in terminal cells, not bytes or total context
+ * memory. Neither limit uses a default when zero.
  * Allocator and I/O injection are available only through the direct Zig API. */
 typedef struct ot_context_options {
     uint32_t struct_size;
@@ -2526,7 +2528,7 @@ ot_status ot_session_get_renderer_state(
  * rendering. A live scene preparation or painted draft returns OT_FRAME_BUSY;
  * use ot_scene_frame_acquire_buffer_lease for painted-frame access.
  * The output requires the exact size/version and zero reserved. Rejection leaves
- * it unchanged and acquires no lease. Leases share object_capacity; C contexts
+ * it unchanged and acquires no lease. Leases take object slots; C contexts
  * allow at most 4096 leases and 64 MiB of distinct leased storage, including
  * retired arrays and tracker capacity. Shared Context pools are not in that charge.
  * Release every accepted lease, even after Session resize or destruction. */

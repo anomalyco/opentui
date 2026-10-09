@@ -22,6 +22,8 @@ import {
   TestRecorder,
 } from "../../testing.js"
 import { ManualClock } from "../../testing/manual-clock.js"
+import { createTestStdout } from "../../testing/test-streams.js"
+import { NativeSession } from "../../NativeSession.js"
 import { TextAttributes, type CapturedFrame } from "../../types.js"
 import type { SimpleHighlight } from "../../lib/tree-sitter/types.js"
 import { stringWidth } from "../../platform/runtime.js"
@@ -917,6 +919,23 @@ test("table with many columns", async () => {
     │1│2│3│4│5│
     └─┴─┴─┴─┴─┘"
   `)
+})
+
+test("a table may hold more native objects than the renderer's initial object capacity", async () => {
+  // Each cell holds a text buffer and a view, so 4 x 21 cells need more than 64 slots.
+  const stdout = createTestStdout(20, 4)
+  const nativeSession = new NativeSession(stdout, { context: { objectCapacity: 64, renderCellsMax: 1_000_000 } })
+  const setup = await createTestRenderer({ width: 20, height: 4, stdout, nativeSession, bufferedOutput: "stdout" })
+  try {
+    const rows = Array.from({ length: 21 }, (_, r) => `|${r}|${r}|${r}|${r}|${r === 0 ? "\n|-|-|-|-|" : ""}`)
+    const syntaxStyle = SyntaxStyle.create(setup.renderer.nativeScene)
+    setup.renderer.root.add(new MarkdownRenderable(setup.renderer, { content: rows.join("\n"), syntaxStyle }))
+    await setup.renderOnce()
+    expect(setup.captureCharFrame()).toContain("│0   │0   │0   │0  │")
+  } finally {
+    setup.renderer.destroy()
+    await setup.renderer.closed
+  }
 })
 
 test("no tables returns original content", async () => {

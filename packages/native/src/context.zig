@@ -426,7 +426,7 @@ pub const SceneTextSelectionOptions = struct {
 };
 
 pub const Options = struct {
-    /// All checked handles, including leases, share this capacity.
+    /// Initial slots for all checked handles, including leases. See handles.Table.init.
     object_capacity: u32 = 4096,
     render_cells_max: u32 = 1_000_000,
     lease_count_max: u32 = buf.BufferLease.count_max_default,

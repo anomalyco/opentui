@@ -278,6 +278,7 @@ test "Scene painted lease limits and failed initialization release all provision
     }, [_]context.Error{ error.ObjectLimit, error.LeaseLimit, error.LeaseBytesLimit }) |limits, expected| {
         const f = try Fixture.init(testing.allocator, 4, 1, .{ .limits = limits, .output = transport });
         defer f.deinit();
+        f.owner.objects.slot_count_max = limits.object_capacity;
         const frame = try f.owner.sceneFrameStep(f.id, null, options);
         try testing.expectError(expected, f.owner.sceneFrameAcquireBufferLease(f.id, frame, .next));
         try testing.expectEqual(@as(u32, 0), f.owner.lease_count);

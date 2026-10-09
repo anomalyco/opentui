@@ -52,18 +52,24 @@ pub const DestroyToken = struct {
     ptr: *anyopaque,
 };
 
+/// Handles could address 2^32 slots, but at 32 bytes each that is 128 GiB. Growth stops at
+/// 2^22 slots (128 MiB): each live slot owns a native object far larger than its slot.
+pub const slot_count_max_default = 1 << 22;
+
 /// Single-owner storage. Different tables may be used on different threads.
 pub const Table = struct {
     allocator: std.mem.Allocator,
     context_id: u64,
-    slots: []Slot,
-    free_head: ?u32,
+    // Growth moves the array, so callers hold slot indexes, not slot pointers, across insert.
+    slots: []Slot = &.{},
+    free_head: ?u32 = null,
     live_count: u32 = 0,
+    slot_count_max: u32,
 
+    /// The table starts with `capacity` slots and doubles when full, up to
+    /// slot_count_max_default or `capacity`, whichever is larger.
     pub fn init(allocator: std.mem.Allocator, capacity: u32) Error!Table {
         std.debug.assert(capacity > 0);
-        const slots = try allocator.alloc(Slot, capacity);
-        errdefer allocator.free(slots);
         var id = last_context_id.load(.monotonic);
         while (true) {
             if (id == std.math.maxInt(u64)) return error.ContextLimit;
@@ -71,15 +77,13 @@ pub const Table = struct {
                 id = current;
             } else break;
         }
-        for (slots, 0..) |*slot, index| {
-            slot.* = .{ .next_free = if (index + 1 < slots.len) @intCast(index + 1) else null };
-        }
-        return .{
+        var table: Table = .{
             .allocator = allocator,
             .context_id = id + 1,
-            .slots = slots,
-            .free_head = 0,
+            .slot_count_max = @max(capacity, slot_count_max_default),
         };
+        try table.grow(capacity);
+        return table;
     }
 
     pub fn deinit(self: *Table) void {
@@ -88,12 +92,26 @@ pub const Table = struct {
         self.* = undefined;
     }
 
-    pub fn checkCapacity(self: *const Table) Error!void {
-        if (self.free_head == null) return error.ObjectLimit;
+    /// Makes a vacant slot available, so the next insert cannot fail.
+    pub fn checkCapacity(self: *Table) Error!void {
+        if (self.free_head != null) return;
+        if (self.slots.len == self.slot_count_max) return error.ObjectLimit;
+        try self.grow(@min(self.slot_count_max, @as(u32, @intCast(self.slots.len)) *| 2));
+    }
+
+    fn grow(self: *Table, count_new: u32) Error!void {
+        std.debug.assert(self.free_head == null and count_new > self.slots.len);
+        const count_old: u32 = @intCast(self.slots.len);
+        self.slots = try self.allocator.realloc(self.slots, count_new);
+        for (self.slots[count_old..], count_old..) |*slot, index| {
+            slot.* = .{ .next_free = if (index + 1 < count_new) @intCast(index + 1) else null };
+        }
+        self.free_head = count_old;
     }
 
     pub fn insert(self: *Table, kind: Kind, ptr: *anyopaque) Error!Handle {
-        const index = self.free_head orelse return error.ObjectLimit;
+        try self.checkCapacity();
+        const index = self.free_head.?;
         const slot = &self.slots[index];
         std.debug.assert(slot.state == .vacant);
         std.debug.assert(self.live_count < self.slots.len);
@@ -159,10 +177,11 @@ pub const Table = struct {
     }
 };
 
-// The model mirrors one slot per table slot. Slots 0 and 1 start one destroy away
-// from generation retirement, so the random walk also covers exhausted slots.
+// The model mirrors one slot per table slot. The table starts with two slots and grows to
+// 4 and then 5 (the clamp). Slots 0 and 1 start one destroy away from generation
+// retirement, so the random walk also covers exhausted slots.
 const Model = struct {
-    const capacity = 4;
+    const capacity = 5;
     const kinds = [_]Kind{ .session, .buffer, .image };
     const State = enum { vacant, alive, destroying, retired };
 
@@ -289,8 +308,9 @@ const Model = struct {
 
 test "Table matches a reference model under seeded random operations" {
     for (0..16) |seed| {
-        var table = try Table.init(std.testing.allocator, Model.capacity);
+        var table = try Table.init(std.testing.allocator, 2);
         defer table.deinit();
+        table.slot_count_max = Model.capacity;
         var model: Model = .{ .table = &table };
         // Runs before table.deinit, so a failed expectation does not trip its live_count assertion.
         defer model.releaseAll();

@@ -111,7 +111,7 @@ describe("NativeImagePool", () => {
   test("failed publications can retry without leaking native images", () => {
     const lib = resolveRenderLib()
     const pixels = Uint8Array.of(1, 2, 3, 255)
-    // One slot and one published handle fill the owner; a leaked object would fail a publication or the refill.
+    // One slot and one published handle fill the owner; a leaked object would make the refill grow the table.
     const owner = new ResourceContext({ objectCapacity: 2, renderCellsMax: 1 })
     const retain = lib.imageRetain
     const pool = new NativeImagePool({ width: 1, height: 1, capacity: 1, owner })
@@ -127,10 +127,8 @@ describe("NativeImagePool", () => {
       frame?.dispose()
       pool.dispose()
     }
-    const fill = () => NativeImage.fromRgba(pixels, 1, 1, 4, { owner })
-    fill()
-    fill()
-    expect(fill).toThrow("ObjectLimit")
+    const fill = () => NativeImage.fromRgba(pixels, 1, 1, 4, { owner }) as unknown as { handle: { slot: number } }
+    expect([fill().handle.slot, fill().handle.slot].sort()).toEqual([0, 1])
     owner.destroy()
   })
 

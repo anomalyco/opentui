@@ -320,6 +320,7 @@ test "Session creation validates finite limits and unwinds every allocation fail
     var failing = testing.FailingAllocator.init(testing.allocator, .{});
     const owner = try context.Context.init(failing.allocator(), std.Io.failing, .{ .object_capacity = 1 });
     defer owner.deinit() catch unreachable;
+    owner.objects.slot_count_max = 1;
     const allocated = failing.allocated_bytes;
     for ([_]session.Options{
         .{ .chunk_size = 0 },

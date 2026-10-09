@@ -422,6 +422,7 @@ test "Scene owns and iteratively destroys registered nodes including detached bo
     var failing = testing.FailingAllocator.init(testing.allocator, .{});
     const f = try Fixture.init(failing.allocator(), 2, 2, .{ .limits = .{ .object_capacity = 513 } });
     defer f.deinit();
+    f.owner.objects.slot_count_max = 513;
     var last = f.root;
     for (1..512) |index| {
         last = try f.owner.sceneCreateNode(f.id, 1, @intCast(index + 1));

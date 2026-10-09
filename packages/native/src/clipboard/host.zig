@@ -1567,7 +1567,7 @@ fn startImmediateOperation(
     selection: Selection,
     out_handle: *Handle,
 ) StartStatus {
-    service.objects.checkCapacity() catch return .limit_exceeded;
+    service.objects.checkCapacity() catch |err| return if (err == error.OutOfMemory) .out_of_memory else .limit_exceeded;
     const owned_request = service.allocator.dupe(u8, request) catch return .out_of_memory;
     const operation = service.allocator.create(Operation) catch {
         if (owned_request.len > 0) service.allocator.free(owned_request);
@@ -1829,13 +1829,18 @@ test "clipboard status values are stable" {
 }
 
 test "clipboard service preserves a configured native operation limit" {
-    var objects = try handles.Table.init(std.testing.allocator, 4);
+    var objects = try handles.Table.init(std.testing.allocator, 1);
     defer objects.deinit();
     const operation_limit = 2;
     const service = try createService(std.testing.allocator, &objects, operation_limit, PROVIDER_TRANSFERS_MAX_DEFAULT, null, 0);
     defer destroyTestService(&objects, service);
 
     var operations: [operation_limit]Handle = undefined;
+    // The full table grows for the first operation; a failed growth reports out_of_memory.
+    var failing = std.testing.FailingAllocator.init(std.testing.allocator, .{ .fail_index = 0, .resize_fail_index = 0 });
+    objects.allocator = failing.allocator();
+    try std.testing.expectEqual(StartStatus.out_of_memory, startClearOperation(&objects, service, 0, 0, &operations[0]));
+    objects.allocator = std.testing.allocator;
     for (&operations) |*operation| {
         try std.testing.expectEqual(StartStatus.ok, startClearOperation(&objects, service, 0, 0, operation));
     }

@@ -215,8 +215,8 @@ The public highlight methods are `addHighlight()`, `addHighlightByCharRange()`, 
 
 ## Resource limits
 
-The Context's `objectCapacity` bounds resource handles, including buffers and views. Native text storage also requires
-memory and can reject allocation. A JavaScript string parameter does not imply unlimited capacity.
+The Context's resource handles, including buffers and views, start at `objectCapacity` slots and grow to at most
+4,194,304. Native text storage also requires memory and can reject allocation. A JavaScript string parameter does not imply unlimited capacity.
 
 Each native text buffer also has 255 byte-source registrations. A Context-owned `TextBuffer` reserves one, and each
 nonempty `append()` uses another. After 254 appends without replacement, further appends reject with `OutOfMemory`,

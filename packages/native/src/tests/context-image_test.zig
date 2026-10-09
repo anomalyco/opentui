@@ -10,6 +10,7 @@ test "Context checked image failed creation leaves capacity identities and admis
     var failing = testing.FailingAllocator.init(testing.allocator, .{});
     const owner = try context.Context.init(failing.allocator(), testing.io, .{ .object_capacity = 1 });
     defer owner.deinit() catch unreachable;
+    owner.objects.slot_count_max = 1;
     const pixels = [_]u8{ 1, 2, 3, 255 };
     for (0..2) |offset| {
         failing.fail_index = failing.alloc_index + offset;
