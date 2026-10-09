@@ -240,15 +240,15 @@ fn checkOne(cases: []const struct { []const u8, Expect }) !void {
     for (cases) |case| try check(case[0], &.{case[1]});
 }
 
-/// Feeds `head`, waits 100 ms, and feeds `tail`; the wait's events come first in `expected`.
-fn checkTimed(expect: ip.Expectations, head: []const u8, tail: []const u8, expected: []const Expect) !void {
+/// Feeds `head`, waits 100 ms, and feeds `tail`. The wait reports the first `at_wait` events of
+/// `expected`: a unit that timed out. A deferred unit reports nothing until `tail`.
+fn checkTimed(expect: ip.Expectations, head: []const u8, at_wait: usize, tail: []const u8, expected: []const Expect) !void {
     var harness = try Harness.create();
     defer harness.deinit();
     harness.parser.setExpectations(expect);
     try expectGot(head, &.{}, try harness.feed(head));
-    _ = try harness.wait(100);
-    _ = try harness.feed(tail);
-    try expectGot(head, expected, harness.out.items);
+    try expectGot(head, expected[0..at_wait], try harness.wait(100));
+    try expectGot(head, expected[at_wait..], try harness.feed(tail));
 }
 
 fn gotEql(a: []const Got, b: []const Got) bool {
@@ -967,56 +967,56 @@ test "input parser times out partial units unless they may be mouse reports, Kit
     const plain: ip.Expectations = .{};
     const kitty: ip.Expectations = .{ .kitty_keyboard = true };
     const replies: ip.Expectations = .{ .replies = true };
-    for ([_]struct { ip.Expectations, []const u8, []const u8, []const Expect }{
+    for ([_]struct { ip.Expectations, []const u8, usize, []const u8, []const Expect }{
         // A fragment, and later input is not swallowed. Legacy Alt+[ and Alt+Shift+P start a CSI and a DCS.
-        .{ plain, "\x1b[", "q", &.{ frag("\x1b["), ch('q') } },
-        .{ plain, "\x1bP", "q", &.{ frag("\x1bP"), ch('q') } },
-        .{ plain, "\x1b]", "q", &.{ frag("\x1b]"), ch('q') } },
-        .{ plain, "\x1bO", "a", &.{ frag("\x1bO"), ch('a') } },
-        .{ plain, "\x1b]incomplete", "a", &.{ frag("\x1b]incomplete"), ch('a') } },
-        .{ plain, "\x1b_partial", "a", &.{ frag("\x1b_partial"), ch('a') } },
-        .{ plain, "\x1b[123", "a", &.{ frag("\x1b[123"), ch('a') } },
-        .{ plain, "\x1b[80;120", "a", &.{ frag("\x1b[80;120"), ch('a') } },
-        .{ plain, "\x1b[1;5", "A", &.{ frag("\x1b[1;5"), ch('A') } },
-        .{ plain, "\x1b[24;80", "R", &.{ frag("\x1b[24;80"), ch('R') } },
-        .{ plain, "\x1b]52;c;", "\x1b[A", &.{ frag("\x1b]52;c;"), k(K.up, NONE) } },
-        .{ plain, "\x1b[118;5", "a", &.{ frag("\x1b[118;5"), ch('a') } },
-        .{ plain, "\x1b[M ", "a", &.{ frag("\x1b[M "), ch('a') } },
-        .{ plain, "\x1b\x1b[1;5", "A", &.{ k(K.escape, NONE), frag("\x1b[1;5"), ch('A') } },
-        .{ plain, "\x1b[?1", "u", &.{ frag("\x1b[?1"), ch('u') } },
+        .{ plain, "\x1b[", 1, "q", &.{ frag("\x1b["), ch('q') } },
+        .{ plain, "\x1bP", 1, "q", &.{ frag("\x1bP"), ch('q') } },
+        .{ plain, "\x1b]", 1, "q", &.{ frag("\x1b]"), ch('q') } },
+        .{ plain, "\x1bO", 1, "a", &.{ frag("\x1bO"), ch('a') } },
+        .{ plain, "\x1b]incomplete", 1, "a", &.{ frag("\x1b]incomplete"), ch('a') } },
+        .{ plain, "\x1b_partial", 1, "a", &.{ frag("\x1b_partial"), ch('a') } },
+        .{ plain, "\x1b[123", 1, "a", &.{ frag("\x1b[123"), ch('a') } },
+        .{ plain, "\x1b[80;120", 1, "a", &.{ frag("\x1b[80;120"), ch('a') } },
+        .{ plain, "\x1b[1;5", 1, "A", &.{ frag("\x1b[1;5"), ch('A') } },
+        .{ plain, "\x1b[24;80", 1, "R", &.{ frag("\x1b[24;80"), ch('R') } },
+        .{ plain, "\x1b]52;c;", 1, "\x1b[A", &.{ frag("\x1b]52;c;"), k(K.up, NONE) } },
+        .{ plain, "\x1b[118;5", 1, "a", &.{ frag("\x1b[118;5"), ch('a') } },
+        .{ plain, "\x1b[M ", 1, "a", &.{ frag("\x1b[M "), ch('a') } },
+        .{ plain, "\x1b\x1b[1;5", 2, "A", &.{ k(K.escape, NONE), frag("\x1b[1;5"), ch('A') } },
+        .{ plain, "\x1b[?1", 1, "u", &.{ frag("\x1b[?1"), ch('u') } },
         // Deferred units, and the bytes that cannot continue them.
-        .{ plain, "\x1b[<35;20", ";5m", &.{mouse(.move, none, 19, 4, NONE)} },
-        .{ plain, "\x1b[<", "0;1;1M", &.{down(0, 0, 0)} },
-        .{ plain, "\x1b[<35;20", "x", &.{ frag("\x1b[<35;20"), ch('x') } },
-        .{ plain, "\x1b\x1b[<35;20", "\x1b", &.{ k(K.escape, NONE), frag("\x1b[<35;20") } },
-        .{ kitty, "\x1b[118;5", ";3u", &.{kt('v', CTRL, "v")} },
-        .{ kitty, "\x1b[97;", "2u", &.{kt('a', SHIFT, "A")} },
-        .{ kitty, "\x1b[97:65;", "6:1u", &.{k('a', mods(&.{ CTRL, SHIFT }))} },
-        .{ kitty, "\x1b[97;9", "u", &.{k('a', SUPER)} },
-        .{ kitty, "\x1b[1;1:", "3A", &.{ka(K.up, NONE, .release)} },
-        .{ kitty, "\x1b[5;1:", "3~", &.{ka(K.page_up, NONE, .release)} },
-        .{ kitty, "\x1b[27;5", "u", &.{k(K.escape, CTRL)} },
-        .{ kitty, "\x1b[118;5", "\x1b[A", &.{ frag("\x1b[118;5"), k(K.up, NONE) } },
-        .{ kitty, "\x1b[118;5", "a", &.{ frag("\x1b[118;5"), ch('a') } },
-        .{ kitty, "\x1b[1;5", "A", &.{ frag("\x1b[1;5"), ch('A') } },
-        .{ kitty, "\x1b\x1b[97;5", "u", &.{k('a', mods(&.{ CTRL, ALT }))} },
-        .{ kitty, "\x1b[97;", "u", &.{ frag("\x1b[97;"), ch('u') } },
-        .{ kitty, "\x1b[1;2;3;4", "u", &.{ frag("\x1b[1;2;3;4"), ch('u') } },
-        .{ replies, "\x1b[?1016;2$", "y", &.{reply("\x1b[?1016;2$y")} },
-        .{ replies, "\x1b[?62;", "c", &.{reply("\x1b[?62;c")} },
-        .{ replies, "\x1b[?997;1", "n", &.{reply("\x1b[?997;1n")} },
-        .{ replies, "\x1b[?5", "u", &.{reply("\x1b[?5u")} },
-        .{ replies, "\x1b[?1", "x", &.{ frag("\x1b[?1"), ch('x') } },
-        .{ replies, "\x1b[1;2", "R", &.{Expect{ .kind = .reply, .raw = "\x1b[1;2R", .flags = ip.flags.reply_cursor_position }} },
-        .{ replies, "\x1b[24;", "80R", &.{Expect{ .kind = .reply, .raw = "\x1b[24;80R", .flags = ip.flags.reply_cursor_position }} },
-        .{ replies, "\x1b[4;600", ";800t", &.{reply("\x1b[4;600;800t")} },
-        .{ replies, "\x1b[4;600;8", "00t", &.{reply("\x1b[4;600;800t")} },
-        .{ replies, "\x1b[1;5", "A", &.{ frag("\x1b[1;5"), ch('A') } },
-        .{ replies, "\x1b[4;600;8", "R", &.{ frag("\x1b[4;600;8"), ch('R') } },
+        .{ plain, "\x1b[<35;20", 0, ";5m", &.{mouse(.move, none, 19, 4, NONE)} },
+        .{ plain, "\x1b[<", 0, "0;1;1M", &.{down(0, 0, 0)} },
+        .{ plain, "\x1b[<35;20", 0, "x", &.{ frag("\x1b[<35;20"), ch('x') } },
+        .{ plain, "\x1b\x1b[<35;20", 0, "\x1b", &.{ k(K.escape, NONE), frag("\x1b[<35;20") } },
+        .{ kitty, "\x1b[118;5", 0, ";3u", &.{kt('v', CTRL, "v")} },
+        .{ kitty, "\x1b[97;", 0, "2u", &.{kt('a', SHIFT, "A")} },
+        .{ kitty, "\x1b[97:65;", 0, "6:1u", &.{k('a', mods(&.{ CTRL, SHIFT }))} },
+        .{ kitty, "\x1b[97;9", 0, "u", &.{k('a', SUPER)} },
+        .{ kitty, "\x1b[1;1:", 0, "3A", &.{ka(K.up, NONE, .release)} },
+        .{ kitty, "\x1b[5;1:", 0, "3~", &.{ka(K.page_up, NONE, .release)} },
+        .{ kitty, "\x1b[27;5", 0, "u", &.{k(K.escape, CTRL)} },
+        .{ kitty, "\x1b[118;5", 0, "\x1b[A", &.{ frag("\x1b[118;5"), k(K.up, NONE) } },
+        .{ kitty, "\x1b[118;5", 0, "a", &.{ frag("\x1b[118;5"), ch('a') } },
+        .{ kitty, "\x1b[1;5", 0, "A", &.{ frag("\x1b[1;5"), ch('A') } },
+        .{ kitty, "\x1b\x1b[97;5", 0, "u", &.{k('a', mods(&.{ CTRL, ALT }))} },
+        .{ kitty, "\x1b[97;", 0, "u", &.{ frag("\x1b[97;"), ch('u') } },
+        .{ kitty, "\x1b[1;2;3;4", 1, "u", &.{ frag("\x1b[1;2;3;4"), ch('u') } },
+        .{ replies, "\x1b[?1016;2$", 0, "y", &.{reply("\x1b[?1016;2$y")} },
+        .{ replies, "\x1b[?62;", 0, "c", &.{reply("\x1b[?62;c")} },
+        .{ replies, "\x1b[?997;1", 0, "n", &.{reply("\x1b[?997;1n")} },
+        .{ replies, "\x1b[?5", 0, "u", &.{reply("\x1b[?5u")} },
+        .{ replies, "\x1b[?1", 0, "x", &.{ frag("\x1b[?1"), ch('x') } },
+        .{ replies, "\x1b[1;2", 0, "R", &.{Expect{ .kind = .reply, .raw = "\x1b[1;2R", .flags = ip.flags.reply_cursor_position }} },
+        .{ replies, "\x1b[24;", 0, "80R", &.{Expect{ .kind = .reply, .raw = "\x1b[24;80R", .flags = ip.flags.reply_cursor_position }} },
+        .{ replies, "\x1b[4;600", 0, ";800t", &.{reply("\x1b[4;600;800t")} },
+        .{ replies, "\x1b[4;600;8", 0, "00t", &.{reply("\x1b[4;600;800t")} },
+        .{ replies, "\x1b[1;5", 0, "A", &.{ frag("\x1b[1;5"), ch('A') } },
+        .{ replies, "\x1b[4;600;8", 0, "R", &.{ frag("\x1b[4;600;8"), ch('R') } },
         // Only the shapes the host waits for defer: `CSI 8 ; h ; w t` is not a pixel reply.
-        .{ replies, "\x1b[8;600;80", "t", &.{ frag("\x1b[8;600;80"), ch('t') } },
-        .{ replies, "\x1b[1;2:3:4:5", "R", &.{ frag("\x1b[1;2:3:4:5"), ch('R') } },
-    }) |case| try checkTimed(case[0], case[1], case[2], case[3]);
+        .{ replies, "\x1b[8;600;80", 1, "t", &.{ frag("\x1b[8;600;80"), ch('t') } },
+        .{ replies, "\x1b[1;2:3:4:5", 1, "R", &.{ frag("\x1b[1;2:3:4:5"), ch('R') } },
+    }) |case| try checkTimed(case[0], case[1], case[2], case[3], case[4]);
     // A deferred unit has no deadline until a byte continues it.
     var harness = try Harness.create();
     defer harness.deinit();
