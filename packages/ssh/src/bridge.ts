@@ -18,6 +18,12 @@ export interface PtyInfo {
 
 export const DEFAULT_PTY: PtyInfo = { term: "xterm-256color", cols: 80, rows: 24, hasPty: false }
 export const MAX_PTY = { cols: 500, rows: 200 } as const
+/** Bounds TERM and each client env value in UTF-8 bytes, the unit of native's 64 KiB renderer environment. */
+export const CLIENT_ENV_VALUE_BYTES_MAX = 256
+
+/** Native rejects a whole environment that holds a NUL or that exceeds its byte limit. */
+export const isClientEnvValue = (value: string): boolean =>
+  !value.includes("\0") && Buffer.byteLength(value) <= CLIENT_ENV_VALUE_BYTES_MAX
 
 const UNKNOWN_REMOTE_ADDRESS: RemoteAddress = { address: "unknown" }
 
@@ -95,6 +101,8 @@ export interface SessionBridge {
 /** What `createSessionBridge` needs to wire one ssh2 shell channel into a session. */
 export interface SessionBridgeOptions {
   pty: PtyInfo
+  /** Accepted client `env` request values; the renderer gets them with TERM when the client sent a PTY request. */
+  env?: Readonly<Record<string, string>>
   identity: Identity
   idleTimeoutMs: number | undefined
   maxTimeoutMs: number | undefined
@@ -114,6 +122,7 @@ export interface SessionBridgeOptions {
 export function createSessionBridge(channel: ServerChannel, options: SessionBridgeOptions): SessionBridge {
   const {
     pty,
+    env,
     identity,
     idleTimeoutMs,
     maxTimeoutMs,
@@ -122,6 +131,7 @@ export function createSessionBridge(channel: ServerChannel, options: SessionBrid
     remoteAddress = UNKNOWN_REMOTE_ADDRESS,
   } = options
   const initialPty = normalizePtyInfo(pty)
+  const environment = initialPty.hasPty && isClientEnvValue(initialPty.term) ? { TERM: initialPty.term, ...env } : {}
   const nativeSession = new NativeSession(channel)
   // Assigned after `destroy` exists; the stream activity hook calls through it.
   let resetIdle = () => {}
@@ -325,6 +335,7 @@ export function createSessionBridge(channel: ServerChannel, options: SessionBrid
       consoleMode: "disabled", // never patch the host's global console per session
       targetFps: 30,
       nativeSession,
+      environment,
       externalOutputMode: "passthrough",
     })
     const createdRenderer = await creatingRenderer

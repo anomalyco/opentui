@@ -236,7 +236,7 @@ The handler passed to `.serve()` receives:
 | `write(data)`        | Send raw `Buffer` or string bytes without frame diffing. No effect after close.        |
 | `end()`              | Close this session                                                                     |
 
-The server limits PTY dimensions to 500 columns and 200 rows. Use `write()` only for terminal control that the renderer does not model, such as a bell or an OSC sequence.
+The server limits PTY dimensions to 500 columns and 200 rows. When the client requests a PTY, the renderer detects terminal capabilities from its `TERM` and from `COLORTERM`, `TERM_PROGRAM`, and `TERM_PROGRAM_VERSION` env requests sent before the shell request. The server rejects other env requests and values over 256 bytes, and a `TERM` over 256 bytes sends none of these values. Use `write()` only for terminal control that the renderer does not model, such as a bell or an OSC sequence.
 
 `write()` accepts all bytes or none. It throws `OutputPressureError` with code `"OUTPUT_PRESSURE"` when the session
 output is temporarily full. It throws `RangeError` when one write is larger than the session output limit. The server

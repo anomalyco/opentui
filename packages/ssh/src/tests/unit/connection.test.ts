@@ -1,7 +1,9 @@
 import { EventEmitter } from "node:events"
 import { expect, test } from "bun:test"
+import type { TerminalCapabilities } from "@opentui/core"
 import type { AuthContext, ClientInfo, Connection } from "ssh2"
 import type { AuthOutcome } from "../../auth.js"
+import { CLIENT_ENV_VALUE_BYTES_MAX } from "../../bridge.js"
 import { createConnectionHandler } from "../../connection.js"
 import { createSafeInvoke } from "../../safe.js"
 import { deferred, TestChannel, waitFor } from "../support.js"
@@ -37,19 +39,24 @@ function testClient(setNoDelay: (this: EventEmitter, enabled: boolean) => void =
   return { client, calls }
 }
 
-/** Requests a shell on a new ssh2 session and returns how the server answered it. */
-function requestShell(client: Connection, channel: unknown = new TestChannel()) {
+/** Sends `shell`, `pty=TERM`, and `KEY=value` env requests on a new ssh2 session and counts the server's answers. */
+function requestShell(client: Connection, channel: unknown = new TestChannel(), requests = "shell") {
   const result = { accepted: 0, rejected: 0 }
   const sshSession = new EventEmitter()
   client.emit("session", () => sshSession)
-  sshSession.emit(
-    "shell",
-    () => {
-      result.accepted++
-      return channel
-    },
-    () => result.rejected++,
-  )
+  for (const request of requests.split(" ")) {
+    const [key, val = ""] = request.split("=")
+    const type = key === "shell" || key === "pty" ? key : "env"
+    sshSession.emit(
+      type,
+      () => {
+        result.accepted++
+        return channel
+      },
+      () => result.rejected++,
+      type === "pty" ? { term: val, cols: 80, rows: 24 } : { key, val },
+    )
+  }
   return result
 }
 
@@ -203,4 +210,39 @@ test("per-connection and global limits reject before accepting a shell", async (
   expect(requestShell(connect())).toEqual({ accepted: 0, rejected: 1 })
 
   await handler.closeAll()
+})
+
+const wide = "é".repeat(CLIENT_ENV_VALUE_BYTES_MAX / 2)
+
+test.each([
+  ["a PTY sends its TERM", "pty=xterm-256color shell", "2/0", "none unicode ansi256"],
+  ["a GNU screen TERM", "pty=screen-256color shell", "2/0", "screen wcwidth ansi256"],
+  ["a tmux TERM", "pty=tmux-256color shell", "2/0", "tmux wcwidth ansi256"],
+  ["repeated COLORTERM", "COLORTERM=0 COLORTERM=truecolor pty=xterm-256color shell", "4/0", "none unicode rgb ansi256"],
+  ["program", "pty=xterm TERM_PROGRAM=vscode TERM_PROGRAM_VERSION=1 shell", "4/0", "none unicode hyperlinks vscode/1"],
+  ["other keys", "pty=xterm TERM=xterm-kitty VTE_VERSION=7600 FORCE_HYPERLINK=1 shell", "2/3", "none unicode"],
+  ["byte bound", `pty=${wide} TERM_PROGRAM=x${wide} COLORTERM=truecolor shell`, "3/1", "none unicode rgb ansi256"],
+  ["TERM over the byte bound", `pty=x${wide} COLORTERM=truecolor shell`, "3/0", "none unicode"],
+  ["no PTY", "COLORTERM=truecolor shell", "2/0", "none unicode"],
+  ["a NUL in TERM", "pty=xterm-256color\0 COLORTERM=truecolor shell", "3/0", "none unicode"],
+  ["a NUL in a value", "pty=xterm-256color COLORTERM=truecolor\0 shell", "2/1", "none unicode ansi256"],
+  ["env after the shell", "pty=xterm-256color shell COLORTERM=truecolor", "2/1", "none unicode ansi256"],
+])("client terminal environment: %s", async (_name, requests, replies, expected) => {
+  let caps: TerminalCapabilities | undefined
+  const { client } = testClient()
+  const handler = testHandler({ handle: accept, handler: (session) => void (caps = session.renderer.capabilities!) })
+  handler.onConnection(client, clientInfo)
+  handler.setAccepting(true)
+  client.emit("ready")
+  try {
+    const { accepted, rejected } = requestShell(client, new TestChannel(), requests)
+    expect(`${accepted}/${rejected}`).toBe(replies)
+    await waitFor(() => caps !== undefined)
+    const { multiplexer, unicode, rgb, ansi256, hyperlinks, terminal } = caps!
+    const enabled = Object.entries({ rgb, ansi256, hyperlinks }).filter(([, on]) => on)
+    const program = terminal.name ? [`${terminal.name}/${terminal.version}`] : []
+    expect([multiplexer, unicode, ...enabled.map(([name]) => name), ...program].join(" ")).toBe(expected)
+  } finally {
+    await handler.closeAll()
+  }
 })

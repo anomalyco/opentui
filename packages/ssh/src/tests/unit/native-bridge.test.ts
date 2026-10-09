@@ -109,9 +109,9 @@ test("raw output pressure on a slow channel delays frames until the channel drai
     })
     await waitFor(() => session !== undefined, 8000, 1)
     const renderer = session!.renderer
+    await renderer.idle()
     let frames = 0
     renderer.on(CliRenderEvents.FRAME, () => frames++)
-    await renderer.idle()
 
     // Raw writes fill most of the Session queue while the client window is closed.
     channel.hold()
