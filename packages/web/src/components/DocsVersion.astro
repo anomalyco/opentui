@@ -1,0 +1,44 @@
+---
+// Switches between the release documentation and the main branch documentation for the same page. The links
+// carry data-docs-channel so the site validator accepts them as the only links between channels.
+import { channelCounterpart, docsChannel } from "../lib/docs-channel"
+
+const channel = docsChannel()
+const path = Astro.url.pathname.replace(/\/+$/, "") || "/"
+const choices = (["stable", "next"] as const).map((id) => {
+  const target = channelCounterpart(path, channel, id)
+  const title =
+    id === "stable"
+      ? `Documentation for the ${channel.release} release`
+      : "Documentation for the main branch, including unreleased changes"
+  return {
+    id,
+    label: id === "stable" ? channel.release : "next",
+    href: target.href,
+    title: target.present ? title : `${title}. It does not have this page.`,
+  }
+})
+---
+
+<nav class="docs-version" aria-label="Documentation version">
+  {
+    choices.map(({ id, label, title, href }) => (
+      <a {href} {title} data-docs-channel={id} aria-current={id === channel.id ? "true" : undefined}>
+        {label}
+      </a>
+    ))
+  }
+</nav>
+
+<style>
+  .docs-version {
+    display: flex;
+    gap: 2ch;
+    margin-block-end: 1.5rem;
+  }
+
+  a[aria-current] {
+    color: inherit;
+    font-weight: 700;
+  }
+</style>

@@ -1,15 +1,10 @@
 import { readFile } from "node:fs/promises"
-import { basename, dirname, join } from "node:path"
+import { join } from "node:path"
 
 import { closesFence, getFenceMarker, slugifyHeading } from "./docs-headings"
 import { buildDocsIndex, type DocPage } from "./docs-index"
 import type { SearchEntry } from "./docs-search"
-
-const WORKING_DIRECTORY = process.cwd()
-const REPO_ROOT =
-  basename(WORKING_DIRECTORY) === "web" && basename(dirname(WORKING_DIRECTORY)) === "packages"
-    ? join(WORKING_DIRECTORY, "../..")
-    : WORKING_DIRECTORY
+import { REPO_ROOT } from "./repo-root"
 
 let searchIndexPromise: Promise<SearchEntry[]> | undefined
 

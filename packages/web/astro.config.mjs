@@ -1,6 +1,8 @@
 import { defineConfig } from "astro/config"
 import mdx from "@astrojs/mdx"
-import sitemap from "@astrojs/sitemap"
+import { channelHasPage, docsChannel, docsRedirects } from "./src/lib/docs-channel.ts"
+
+const channel = docsChannel()
 
 const copyButtonTransformer = {
   name: "copy-button",
@@ -120,28 +122,23 @@ const codeCobalt = {
   ],
 }
 
+// scripts/build-site.ts writes the sitemap after it merges the channels.
 export default defineConfig({
-  integrations: [
-    mdx(),
-    sitemap({
-      filter: (page) => {
-        const path = new URL(page).pathname
-        return path !== "/404/" && !path.startsWith("/lab/")
-      },
-    }),
-  ],
+  integrations: [mdx()],
   site: "https://opentui.com",
+  // Rendered release notes depend on the channel (see release-notes-loader.ts), so each channel keeps its own
+  // content cache.
+  cacheDir: `./node_modules/.astro/${channel.id}`,
+  build: {
+    // The release channel's build keeps its assets under /docs so its tree can be merged into the main build.
+    assets: process.env.OPENTUI_ASTRO_ASSETS || "_astro",
+  },
   vite: {
     server: {
       allowedHosts: true,
     },
   },
-  redirects: {
-    "/docs/getting-started": "/docs",
-    "/docs/core-concepts/constructs": "/docs/core-concepts/renderables",
-    "/docs/core-concepts/renderables-vs-constructs": "/docs/core-concepts/renderables",
-    "/docs/native/c-zig": "/docs/native/c",
-  },
+  redirects: docsRedirects(channel, (url) => channelHasPage(channel.id, url)),
   markdown: {
     shikiConfig: {
       themes: {

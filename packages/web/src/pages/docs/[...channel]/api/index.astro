@@ -1,0 +1,52 @@
+---
+import Docs from "../../../../layouts/Docs.astro"
+import { channelApi } from "../../../../lib/api-docs"
+import { apiModules } from "../../../../lib/api-reference"
+import { channelUrl, docsChannel, docsRouteParam } from "../../../../lib/docs-channel"
+
+export async function getStaticPaths() {
+  const channel = docsChannel()
+  return (await channelApi(channel)) ? [{ params: { channel: docsRouteParam(channel.base) } }] : []
+}
+
+const channel = docsChannel()
+const modules = await apiModules((await channelApi(channel))!)
+const source = channel.id === "next" ? "the main-branch source" : `the ${channel.release} release`
+---
+
+<Docs title="API reference" description={`Every export of each OpenTUI entry point in ${source}.`}>
+  <h1>API reference</h1>
+  <p>
+    Every export of each published entry point in {source}, from the type declarations, with the release that added
+    it. <a href={channelUrl("/docs/reference/api-index", channel)}>API and symbol index</a> groups the exports by task
+    and links each group to its guide.
+  </p>
+  <ul class="api-modules">
+    {
+      modules.map((module) => (
+        <li>
+          <a href={channelUrl(`/docs/api/${module.slug}`, channel)}>
+            <code>{module.module}</code>
+          </a>
+          <span>{module.exports.length} exports</span>
+        </li>
+      ))
+    }
+  </ul>
+</Docs>
+
+<style>
+  .api-modules {
+    list-style: none;
+    padding-inline-start: 0;
+  }
+
+  .api-modules li + li {
+    margin-block-start: 0.375rem;
+  }
+
+  .api-modules span {
+    margin-inline-start: 2ch;
+    color: var(--muted-color);
+  }
+</style>

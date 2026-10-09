@@ -1,5 +1,11 @@
 name: Deploy to GitHub Pages
 
+# Builds the whole site from the current state, not from the event that started the run: the head of main and
+# the release that npm serves as "latest". /docs documents that release and /docs/next documents main (see
+# packages/web/scripts/build-site.ts). A run that waits behind another therefore never deploys an older main.
+#
+# A push to main updates /docs/next, the release notes, and the rest of the site. A release dispatches this
+# workflow after npm serves it, which moves /docs to the new release. The nightly run picks up anything missed.
 on:
   push:
     branches: [main]
@@ -12,25 +18,52 @@ permissions:
   pages: write
   id-token: write
 
+# One deployment at a time. A queued run replaces an older queued run; a running deployment finishes.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
 jobs:
   build:
     runs-on: blacksmith-8vcpu-ubuntu-2404
     steps:
-      - name: Checkout your repository using git
+      - name: Checkout main
         uses: actions/checkout@v6
+        with:
+          ref: main
+
       - name: Checkout package index
         uses: actions/checkout@v6
         with:
           repository: anomalyco/opentui-index
           path: opentui-index
-      - name: Install, build, and upload your site
-        uses: withastro/action@v6
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.1
+
+      - name: Setup Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: 26
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      # Fetches the release tag itself.
+      - name: Build site
+        working-directory: packages/web
         env:
           OPENTUI_INDEX_DIR: ${{ github.workspace }}/opentui-index/packages
+        run: bun run build:site --out "$GITHUB_WORKSPACE/site"
+
+      # Keep dotfiles: the agent skill is published under .well-known.
+      - name: Upload site
+        uses: actions/upload-pages-artifact@v5
         with:
-          path: ./packages/web
-          package-manager: bun@1.4.1
-          node-version: 26
+          path: site
+          include-hidden-files: true
 
   deploy:
     needs: build

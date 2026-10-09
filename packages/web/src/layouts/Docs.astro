@@ -2,30 +2,50 @@
 import type { MarkdownHeading } from "astro"
 import DocsNav from "../components/DocsNav.astro"
 import DocsToc from "../components/DocsToc.astro"
+import PageChanges from "../components/PageChanges.astro"
 import SiteFooter from "../components/SiteFooter.astro"
 import SiteNav from "../components/SiteNav.astro"
+import { channelCounterpart, channelUrl, docsChannel } from "../lib/docs-channel"
 import { buildDocsIndex, getPrevNextDocSequences } from "../lib/docs-index"
+import { pageChanges } from "../lib/page-changes"
 import Minimal from "./Minimal.astro"
 import "../styles/prose.css"
 
 interface Props {
   title: string
   description?: string
-  slug: string
+  /** Docs index slug; pages outside the index, such as release notes, have none. */
+  slug?: string
   headings?: MarkdownHeading[]
 }
 
-const { title, description, slug, headings = [] } = Astro.props
+const { title, description, slug } = Astro.props
+const channel = docsChannel()
 const docsIndex = await buildDocsIndex()
-const sequencePagers = getPrevNextDocSequences(docsIndex, slug).filter(({ prev, next }) => prev || next)
+const page = slug ? docsIndex.pagesBySlug[slug] : undefined
+const sequencePagers = slug
+  ? getPrevNextDocSequences(docsIndex, slug).filter(({ prev, next }) => prev || next)
+  : []
+const changes = page ? await pageChanges(channel, page.url) : []
+const headings = [
+  ...(Astro.props.headings ?? []),
+  ...(changes.length > 0 ? [{ depth: 2, slug: "changes", text: "Changes" }] : []),
+]
 const hasSections = headings.some((heading) => heading.depth === 2)
+const unreleased = channel.id === "next"
+const releasePage = channelCounterpart(Astro.url.pathname.replace(/\/+$/, ""), channel, "stable")
 ---
 
-<Minimal title={`${title} | OpenTUI Docs`} description={description ?? "OpenTUI documentation."} wide>
+<Minimal
+  title={`${title} | OpenTUI Docs${unreleased ? " (next)" : ""}`}
+  description={description ?? "OpenTUI documentation."}
+  robots={unreleased ? "noindex" : undefined}
+  wide
+>
   <Fragment slot="nav">
     <a class="skip" href="#docs-content">Skip to content</a>
 
-    <SiteNav>
+    <SiteNav docs={channel.base}>
       <DocsNav slot="menu" />
       {
         hasSections && (
@@ -54,8 +74,22 @@ const hasSections = headings.some((heading) => heading.depth === 2)
     </aside>
 
     <main id="docs-content">
+      {
+        unreleased && (
+          <p class="channel-note">
+            {releasePage.present
+              ? "These docs describe the main branch, including unreleased changes."
+              : `This page is new on the main branch. ${channel.release} does not have it.`}{" "}
+            <a href={releasePage.href} data-docs-channel="stable">
+              Read the {channel.release} docs
+            </a>
+            .
+          </p>
+        )
+      }
       <article class="prose">
         <slot />
+        {changes.length > 0 && <PageChanges {changes} />}
       </article>
 
       {
@@ -67,12 +101,20 @@ const hasSections = headings.some((heading) => heading.depth === 2)
             hidden={index > 0}
           >
             {prev && (
-              <a rel={index === 0 ? "prev" : undefined} data-direction="prev" href={`${prev.url}?path=${sequence.id}`}>
+              <a
+                rel={index === 0 ? "prev" : undefined}
+                data-direction="prev"
+                href={`${channelUrl(prev.url, channel)}?path=${sequence.id}`}
+              >
                 &larr; {prev.title}
               </a>
             )}
             {next && (
-              <a rel={index === 0 ? "next" : undefined} data-direction="next" href={`${next.url}?path=${sequence.id}`}>
+              <a
+                rel={index === 0 ? "next" : undefined}
+                data-direction="next"
+                href={`${channelUrl(next.url, channel)}?path=${sequence.id}`}
+              >
                 {next.title} &rarr;
               </a>
             )}
@@ -248,6 +290,15 @@ const hasSections = headings.some((heading) => heading.depth === 2)
 
   .docs.has-subnav {
     --subnav-height: 2.75rem;
+  }
+
+  /* The main-branch notice is a callout: the text-color edge carries
+   * content weight, like a blockquote in prose. */
+  .channel-note {
+    max-width: var(--content-width);
+    margin-block: 0 3rem;
+    padding-inline-start: 1rem;
+    border-inline-start: 2px solid;
   }
 
   .pager {

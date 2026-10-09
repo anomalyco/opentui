@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process"
-import { appendFileSync, readFileSync } from "node:fs"
+import { appendFileSync, existsSync, readFileSync } from "node:fs"
 import { dirname, join, resolve } from "node:path"
 import process from "node:process"
 import { setTimeout as sleep } from "node:timers/promises"
@@ -12,12 +12,14 @@ import { compareVersions, registryIntegrity } from "./npm-publish"
 // pushed directly or merged from a pull request. Run it on the branch to release. A maintenance branch
 // must start at a release tag that has this script; the workflows of older tags do not release it.
 //
-//   bun run release <patch|minor|major|version> [--pr | --dry-run] [--no-watch]
+//   bun run release <patch|minor|major|version> [--pr | --dry-run] [--no-watch] [--no-notes]
 //
 // 1. Checks that the branch has no uncommitted changes and matches its origin branch.
-// 2. Runs prepare-release, commits "Release vX.Y.Z", tags it vX.Y.Z, and pushes the commit to the
-//    branch together with the tag. That needs the right to bypass the branch and tag rules. A
-//    maintenance branch takes only versions of its line.
+// 2. Runs prepare-release, records the version's API in api/X.Y.Z.txt, drafts its release notes in
+//    packages/web/src/content/docs/releases/X.Y.Z.md with opencode (see packages/web/scripts/release-notes.ts),
+//    commits "Release vX.Y.Z", tags it vX.Y.Z, and pushes the commit to the branch together with the tag.
+//    That needs the right to bypass the branch and tag rules. A maintenance branch takes only versions of its
+//    line. Notes already in place are kept; --no-notes and dry runs skip the draft.
 // 3. Follows the release.yml run of the tag push, and reports when every package is published and
 //    when npm serves them all.
 //
@@ -34,6 +36,7 @@ interface Options {
   target: string
   mode: Mode
   watch: boolean
+  notes: boolean
 }
 
 interface Release {
@@ -73,7 +76,8 @@ const POLL_MS = 10_000
 const MAX_API_FAILURES = 5
 const RUN_START_TIMEOUT_MS = 3 * 60_000
 const RUN_TIMEOUT_MS = 60 * 60_000
-const USAGE = "Usage: bun run release <patch|minor|major|version> [--pr | --dry-run] [--no-watch]"
+const USAGE = "Usage: bun run release <patch|minor|major|version> [--pr | --dry-run] [--no-watch] [--no-notes]"
+const RELEASE_NOTES = "packages/web/src/content/docs/releases"
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..")
 
@@ -83,7 +87,7 @@ class ReleaseError extends Error {}
 function parseOptions(args: readonly string[]): Options {
   const flags = args.filter((arg) => arg.startsWith("--"))
   const positional = args.filter((arg) => !arg.startsWith("--"))
-  const unknown = flags.filter((flag) => !["--pr", "--dry-run", "--no-watch"].includes(flag))
+  const unknown = flags.filter((flag) => !["--pr", "--dry-run", "--no-watch", "--no-notes"].includes(flag))
   if (unknown.length > 0) throw new ReleaseError(`Unknown option ${unknown.join(", ")}\n${USAGE}`)
   if (flags.includes("--pr") && flags.includes("--dry-run")) throw new ReleaseError(`Use --pr or --dry-run\n${USAGE}`)
   if (positional.length !== 1) throw new ReleaseError(USAGE)
@@ -96,7 +100,12 @@ function parseOptions(args: readonly string[]): Options {
     throw new ReleaseError(`A release version cannot contain "snapshot" or "-dry.": ${target}`)
   }
   const mode = flags.includes("--pr") ? "pr" : flags.includes("--dry-run") ? "dry-run" : "push"
-  return { target, mode, watch: !flags.includes("--no-watch") }
+  return {
+    target,
+    mode,
+    watch: !flags.includes("--no-watch"),
+    notes: mode !== "dry-run" && !flags.includes("--no-notes"),
+  }
 }
 
 function run(command: string, args: readonly string[], options: { inherit?: boolean } = {}): string {
@@ -276,6 +285,17 @@ async function pushRelease(options: Options, branch: string, base: string): Prom
     if ((await registryIntegrity("@opentui/core", version)) !== undefined) {
       throw new ReleaseError(`@opentui/core@${version} is already on npm`)
     }
+    stopIfInterrupted()
+
+    // The docs site reads both files: the API history and the release notes (packages/web/AGENTS.md).
+    console.log(`Recording the API of ${version}...`)
+    run("bun", ["packages/web/scripts/api.ts", "release", version, "--base", previous], { inherit: true })
+    const notes = `${RELEASE_NOTES}/${version}.md`
+    if (options.notes) {
+      console.log(`Drafting the release notes of ${version}...`)
+      run("bun", ["packages/web/scripts/release-notes.ts", "draft", version], { inherit: true })
+    }
+    git("add", "--", `api/${version}.txt`, ...(existsSync(join(repoRoot, notes)) ? [notes] : []))
     // The branch and the tag are recorded only once created, so that a failure never deletes one that
     // existed before.
     if (options.mode === "pr") {

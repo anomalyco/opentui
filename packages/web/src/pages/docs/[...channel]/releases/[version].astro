@@ -1,0 +1,70 @@
+---
+import { render } from "astro:content"
+import ApiChangeList from "../../../../components/ApiChangeList.astro"
+import ProseH2 from "../../../../components/ProseH2.astro"
+import Docs from "../../../../layouts/Docs.astro"
+import { channelApi, groupChanges } from "../../../../lib/api-docs"
+import { docsChannel, docsRouteParam } from "../../../../lib/docs-channel"
+import { channelReleases, type ChannelRelease } from "../../../../lib/release-pages"
+import { slugifyHeading } from "../../../../lib/docs-headings"
+
+export async function getStaticPaths() {
+  const channel = docsChannel()
+  const releases = await channelReleases(channel)
+  return releases.map((release) => ({
+    params: { channel: docsRouteParam(channel.base), version: release.version },
+    props: { release },
+  }))
+}
+
+interface Props {
+  release: ChannelRelease
+}
+
+const { release } = Astro.props
+const channel = docsChannel()
+const api = await channelApi(channel)
+const changes = api?.versions.includes(release.version) ? api.changes(release.version) : []
+const modules = [...new Set(groupChanges(changes).map((group) => group.module))]
+const rendered = release.notes ? await render(release.notes) : undefined
+const title = `OpenTUI ${release.version}`
+const headings = [
+  ...(rendered?.headings ?? []),
+  ...(changes.length > 0 ? [{ depth: 2, slug: "api-changes", text: "API changes" }] : []),
+  ...modules.map((module) => ({ depth: 3, slug: slugifyHeading(module), text: module })),
+]
+---
+
+<Docs {title} description={release.data?.summary ?? `API changes in ${title}.`} {headings}>
+  <h1>{title}</h1>
+  <p class="release-meta">
+    {release.data && <time datetime={release.data.date}>{release.data.date}</time>}
+    <a href={`https://www.npmjs.com/package/@opentui/core/v/${release.version}`}>npm</a>
+    {
+      release.notes && (
+        <a href={`https://github.com/anomalyco/opentui/releases/tag/v${release.version}`}>GitHub release</a>
+      )
+    }
+  </p>
+  {rendered && <rendered.Content />}
+  {!rendered && <p>This release has no release notes. The list below comes from its published type declarations.</p>}
+  {
+    changes.length > 0 ? (
+      <>
+        <ProseH2 id="api-changes">API changes</ProseH2>
+        <ApiChangeList {changes} />
+      </>
+    ) : (
+      api?.versions.includes(release.version) && <p>The published API did not change in this release.</p>
+    )
+  }
+</Docs>
+
+<style>
+  .release-meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0 2ch;
+    color: var(--muted-color);
+  }
+</style>

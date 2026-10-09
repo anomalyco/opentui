@@ -1,0 +1,32 @@
+---
+import ApiChangeList from "../../../../components/ApiChangeList.astro"
+import Docs from "../../../../layouts/Docs.astro"
+import { channelApi, groupChanges } from "../../../../lib/api-docs"
+import { docsChannel, docsRouteParam } from "../../../../lib/docs-channel"
+import { slugifyHeading } from "../../../../lib/docs-headings"
+
+// Like tip.golang.org/doc/next: the main-branch changes that the next release will contain. Only the main-branch
+// build has a source snapshot to compare with the latest release.
+export async function getStaticPaths() {
+  const channel = docsChannel()
+  const api = await channelApi(channel)
+  return api?.unreleased ? [{ params: { channel: docsRouteParam(channel.base) } }] : []
+}
+
+const channel = docsChannel()
+const changes = (await channelApi(channel))?.unreleased ?? []
+const modules = [...new Set(groupChanges(changes).map((group) => group.module))]
+---
+
+<Docs
+  title="Unreleased changes"
+  description={`API changes on the main branch since OpenTUI ${channel.release}.`}
+  headings={modules.map((module) => ({ depth: 3, slug: slugifyHeading(module), text: module }))}
+>
+  <h1>Unreleased changes</h1>
+  <p>
+    These API changes are on the main branch and not in a release yet. They compare the source's type declarations
+    with {channel.release}. The release notes of the next release describe them.
+  </p>
+  {changes.length > 0 ? <ApiChangeList {changes} /> : <p>The API has not changed since {channel.release}.</p>}
+</Docs>

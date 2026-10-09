@@ -114,6 +114,25 @@ Documentation can be dense, but it must use the same restrained design language.
 - Prefer monospace box-drawing diagrams to images. Set them in a `text` fence that starts with a box-drawing corner.
 - Those fences use the article typeface at body size. They have no code frame and no copy control.
 
+## Versions And Releases
+
+The site works like go.dev and tip.golang.org. `scripts/build-site.ts` builds it for deployment.
+
+- `/docs` documents the release that npm serves as `latest`. Its content (`RELEASE_CONTENT` in `scripts/build-site.ts`)
+  comes from that release's tag. The site code, release notes, and API history come from main.
+- `/docs/next` documents main. It is marked unreleased and is not indexed.
+- Site code on main must build the latest release's docs content. `build-web.yml` checks this on every change.
+- Write documentation links as logical `/docs/...` URLs. Pages map them to their channel with `channelUrl()`. Do not
+  link to `/docs/next` from content.
+- `/docs/releases/<version>` shows a release's notes and its API changes. `/docs/api/<module>` lists every export with
+  the release that added it. Each docs page ends with the changes of its documented symbols in recent releases.
+- Release notes are `src/content/docs/releases/<version>.md`. The format is in `src/lib/release-notes.ts`. The release
+  process drafts them with opencode (`scripts/release-notes.ts`). Edit them like other docs; they stay current on both
+  channels.
+- `api/<version>.txt` at the repository root records each release's API changes (`api/README.md`). The release
+  process writes it. Do not edit it by hand.
+- Check a full build with `bun run build:site --release <version>` and `bun run preview:site`.
+
 ## Exceptions
 
 Accessibility, comprehension, and task completion take priority over visual minimalism.

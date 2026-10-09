@@ -1,0 +1,132 @@
+---
+import ProseH2 from "../../../../components/ProseH2.astro"
+import Docs from "../../../../layouts/Docs.astro"
+import { channelApi, featureText } from "../../../../lib/api-docs"
+import { apiModules, EXPORT_GROUPS, exportGroup, type ApiModule } from "../../../../lib/api-reference"
+import { channelUrl, docsChannel, docsRouteParam } from "../../../../lib/docs-channel"
+import { buildDocsIndex } from "../../../../lib/docs-index"
+
+export async function getStaticPaths() {
+  const channel = docsChannel()
+  const api = await channelApi(channel)
+  if (!api) return []
+  return (await apiModules(api)).map((module) => ({
+    params: { channel: docsRouteParam(channel.base), module: module.slug },
+    props: { module },
+  }))
+}
+
+interface Props {
+  module: ApiModule
+}
+
+const { module } = Astro.props
+const channel = docsChannel()
+const docsIndex = await buildDocsIndex()
+const groups = EXPORT_GROUPS.map((group) => ({
+  ...group,
+  exports: module.exports.filter((entry) => exportGroup(entry) === group.id),
+})).filter((group) => group.exports.length > 0)
+const source = channel.id === "next" ? "the main-branch source" : `the ${channel.release} release`
+---
+
+<Docs
+  title={module.module}
+  description={`Every export of ${module.module} in ${source}.`}
+  headings={groups.map((group) => ({ depth: 2, slug: group.id, text: group.title }))}
+>
+  <h1><code>{module.module}</code></h1>
+  <p>
+    Every export of <code>{module.module}</code> in {source}, from its type declarations. A version names the release
+    that added an export after the entry point's first release.
+  </p>
+  {
+    groups.map((group) => (
+      <>
+        <ProseH2 id={group.id}>{group.title}</ProseH2>
+        <dl class="api-exports">
+          {group.exports.map((entry) => {
+            const guide = entry.guide ? docsIndex.pagesByUrl[entry.guide] : undefined
+            return (
+              <>
+                <dt id={entry.name}>
+                  {entry.declarations.map((feature) => (
+                    <code>{featureText(feature)}</code>
+                  ))}
+                </dt>
+                {(entry.label || entry.deprecated || guide) && (
+                  <dd class="api-meta">
+                    {entry.deprecated && <span>Deprecated</span>}
+                    {entry.label && <span>Added in {entry.label}</span>}
+                    {guide && <a href={channelUrl(guide.url, channel)}>{guide.navTitle}</a>}
+                  </dd>
+                )}
+                {entry.members.length > 0 && (
+                  <dd>
+                    <ul class="api-members">
+                      {entry.members.map(({ feature, label }) => (
+                        <li>
+                          <code>{featureText(feature)}</code>
+                          {label && <span class="api-since">{label}</span>}
+                        </li>
+                      ))}
+                    </ul>
+                  </dd>
+                )}
+              </>
+            )
+          })}
+        </dl>
+      </>
+    ))
+  }
+</Docs>
+
+<style>
+  .api-exports {
+    margin-block: 0 1.5rem;
+    font-size: var(--text-small);
+  }
+
+  .api-exports dt {
+    margin-block-start: 1.5rem;
+    scroll-margin-block-start: calc(var(--site-nav-height) + var(--subnav-height, 0rem) + 1rem);
+  }
+
+  .api-exports dt code {
+    display: block;
+    width: fit-content;
+    font-weight: 700;
+    overflow-wrap: anywhere;
+  }
+
+  .api-exports dd {
+    margin-inline-start: 0;
+    margin-block-start: 0.375rem;
+  }
+
+  .api-meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0 2ch;
+    color: var(--muted-color);
+  }
+
+  .api-members {
+    list-style: none;
+    padding-inline-start: 2ch;
+  }
+
+  .api-members li + li {
+    margin-block-start: 0.25rem;
+  }
+
+  .api-members code {
+    overflow-wrap: anywhere;
+  }
+
+  .api-since {
+    margin-inline-start: 2ch;
+    color: var(--muted-color);
+  }
+</style>

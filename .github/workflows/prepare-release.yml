@@ -50,8 +50,13 @@ jobs:
         with:
           bun-version: 1.4.1
 
+      # Drafts the release notes in the pull request (packages/web/scripts/release-notes.ts).
+      - name: Install opencode
+        run: curl -fsSL https://opencode.ai/install | bash
+
       - name: Open release pull request
         env:
           GH_TOKEN: ${{ github.token }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           RELEASE_TARGET: ${{ inputs.version || inputs.bump }}
         run: bun scripts/release.ts "$RELEASE_TARGET" --pr

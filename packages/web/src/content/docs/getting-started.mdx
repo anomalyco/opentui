@@ -56,11 +56,21 @@ On Windows, download the latest release from [GitHub Releases](https://github.co
 
 ## Give an agent the docs
 
-OpenTUI includes a skill that teaches AI coding assistants its APIs and patterns. Install it with
-[`npx skills`](https://skills.sh):
+OpenTUI includes a skill that teaches AI coding assistants its APIs and patterns. It holds these docs and the release
+notes. Install the skill of the latest release with [`npx skills`](https://skills.sh):
 
 ```bash
-npx skills add anomalyco/opentui --skill opentui
+npx skills add https://opentui.com --skill opentui
 ```
 
-Add `-g` to install the skill globally for every project. OpenCode uses the same install command.
+Add `-g` to install the skill globally for every project. OpenCode uses the same install command. `npx skills update`
+moves the skill to the newest release. For the main branch, install from `https://opentui.com/docs/next` instead.
+
+A skill installed with `npx skills add anomalyco/opentui` follows the main branch. Run the command above to switch it
+to releases.
+
+## Versions
+
+These docs describe one release. The version switch above the search box opens the docs of the main branch, which
+include unreleased changes. [Releases](/docs/releases) lists what changed in each release, and the
+[API reference](/docs/api) names the release that added each export. A page also ends with its recent changes.

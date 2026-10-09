@@ -1,0 +1,73 @@
+---
+// The recent changes of a documentation page, newest first. Each release links to its release page; release-note
+// entries come first, then the API changes of the symbols the page documents.
+import { UNRELEASED } from "../lib/api-docs"
+import { channelUrl, docsChannel } from "../lib/docs-channel"
+import type { PageChanges } from "../lib/page-changes"
+import ProseH2 from "./ProseH2.astro"
+
+interface Props {
+  changes: PageChanges[]
+}
+
+// A long list stops after MAX_NAMES names, unless only a few more remain; the release page lists them all.
+const MAX_NAMES = 12
+const shown = (names: string[]) => (names.length > MAX_NAMES + 3 ? MAX_NAMES : names.length)
+const labels = { added: "Added", changed: "Changed", deprecated: "Deprecated", removed: "Removed" }
+const channel = docsChannel()
+const releaseUrl = (version: string) =>
+  channelUrl(version === UNRELEASED ? "/docs/releases/unreleased" : `/docs/releases/${version}`, channel)
+---
+
+<ProseH2 id="changes">Changes</ProseH2>
+<dl class="page-changes">
+  {
+    Astro.props.changes.map((release) => (
+      <>
+        <dt>
+          <a href={releaseUrl(release.version)}>{release.version}</a>
+        </dt>
+        {release.notes.map((html) => (
+          <dd set:html={html} />
+        ))}
+        {release.api.map(({ type, names }) => (
+          <dd>
+            {labels[type]}{" "}
+            {names.slice(0, shown(names)).map((name, index) => (
+              <>
+                {index > 0 && ", "}
+                <code>{name}</code>
+              </>
+            ))}
+            {names.length > shown(names) && (
+              <>
+                {" "}
+                and <a href={releaseUrl(release.version)}>{names.length - shown(names)} more</a>
+              </>
+            )}
+            .
+          </dd>
+        ))}
+      </>
+    ))
+  }
+</dl>
+
+<style>
+  .page-changes {
+    margin-block: 0 1.5rem;
+  }
+
+  .page-changes dt {
+    font-weight: 700;
+  }
+
+  .page-changes dt:not(:first-child) {
+    margin-block-start: 1.5rem;
+  }
+
+  .page-changes dd {
+    margin-inline-start: 0;
+    margin-block-start: 0.375rem;
+  }
+</style>

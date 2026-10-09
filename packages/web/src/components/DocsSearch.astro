@@ -4,11 +4,14 @@
 // The page renders this twice (sidebar and menu), so each copy needs its
 // own control ids. On the sidebar, results overlay the article from
 // the nav's left edge; the overlay is only as large as the hits.
+import { docsChannel } from "../lib/docs-channel"
+
 const searchId = `docs-search-${crypto.randomUUID()}`
 const resultsId = `${searchId}-results`
+const indexUrl = `${docsChannel().base}/search-index.json`
 ---
 
-<search class="docs-search" hidden>
+<search class="docs-search" data-index={indexUrl} hidden>
   <label for={searchId}>
     <span aria-hidden="true">&gt;</span>
     <span class="sr-only">Search the docs</span>
@@ -32,7 +35,7 @@ const resultsId = `${searchId}-results`
 <script>
   import { highlightParts, lookup, preview, type SearchEntry, type SearchMatch } from "../lib/docs-search"
 
-  const INDEX_URL = "/docs/search-index.json"
+  const INDEX_URL = document.querySelector<HTMLElement>("search.docs-search")?.dataset.index ?? "/docs/search-index.json"
   const MAX_RESULTS = 8
 
   let entries: SearchEntry[] | null = null

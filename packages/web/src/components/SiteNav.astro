@@ -1,8 +1,14 @@
 ---
 import OpenTUILogo from "./OpenTUILogo.astro"
 
+interface Props {
+  /** Target of the Docs link: documentation pages keep readers in their channel. */
+  docs?: string
+}
+
+const { docs = "/docs" } = Astro.props
 const links = [
-  { href: "/docs", section: "/docs", label: "Docs" },
+  { href: docs, section: "/docs", label: "Docs" },
   { href: "/packages", section: "/packages", label: "Packages" },
   { href: "/scrollback", section: "/scrollback", label: "Scrollback" },
 ]

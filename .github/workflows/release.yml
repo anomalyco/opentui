@@ -522,6 +522,23 @@ jobs:
       - name: Wait until npm serves every package
         run: bun scripts/npm-publish.ts wait
 
+  # The site documents the release that npm serves as latest at /docs, so it deploys once npm serves this one. A
+  # workflow_dispatch event from GITHUB_TOKEN starts a run, unlike most events. The deploy builds from the head
+  # of main and npm's latest dist-tag, so a release of an older line deploys an unchanged /docs.
+  docs:
+    name: Deploy Docs
+    if: ${{ needs.prepare.outputs.release == 'true' && needs.prepare.outputs.isDryRun == 'false' }}
+    needs: [prepare, npm-served]
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    permissions:
+      actions: write
+
+    steps:
+      - name: Start the Pages deployment
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run deploy.yml --repo "$GITHUB_REPOSITORY" --ref main
+
   # Create GitHub release with assets
   github-release:
     name: Create GitHub Release
@@ -633,6 +650,18 @@ jobs:
           echo "   - 4 example executables (darwin-x64, darwin-arm64, linux-x64, windows-x64)"
           ls -lah release-assets/
 
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.1
+
+      # The release commit carries the release notes (packages/web/src/content/docs/releases). They open the
+      # GitHub release, and GitHub appends its list of pull requests. Without notes the file is empty.
+      - name: Write release notes
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: bun packages/web/scripts/release-notes.ts github "$VERSION" --out release-notes.md
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v3
         with:
@@ -642,6 +671,7 @@ jobs:
           make_latest: ${{ needs.prepare.outputs.makeLatest }}
           previous_tag: ${{ needs.prepare.outputs.previousTag }}
           files: release-assets/*.zip
+          body_path: release-notes.md
           generate_release_notes: true
           draft: false
           prerelease: ${{ needs.prepare.outputs.isDryRun == 'true' }}

@@ -1,0 +1,83 @@
+---
+import ProseH2 from "../../../../components/ProseH2.astro"
+import Docs from "../../../../layouts/Docs.astro"
+import { channelApi } from "../../../../lib/api-docs"
+import { channelUrl, docsChannel, docsRouteParam } from "../../../../lib/docs-channel"
+import { channelReleases } from "../../../../lib/release-pages"
+
+export function getStaticPaths() {
+  return [{ params: { channel: docsRouteParam(docsChannel().base) } }]
+}
+
+const channel = docsChannel()
+const [releases, api] = await Promise.all([channelReleases(channel), channelApi(channel)])
+const lines = [...new Set(releases.map((release) => release.line))]
+const firstNotes = releases.findLast((release) => release.notes)?.version
+const firstApi = api?.versions[0]
+
+function apiSize(version: string): string | undefined {
+  if (!api?.versions.includes(version)) return undefined
+  const { added, removed } = api.size(version)
+  return added + removed === 0 ? "No API changes." : `API: ${added} added, ${removed} removed.`
+}
+---
+
+<Docs
+  title="Releases"
+  description="Release notes and API changes of each OpenTUI release."
+  headings={lines.map((line) => ({ depth: 2, slug: `line-${line}`, text: line }))}
+>
+  <h1>Releases</h1>
+  <p>
+    Each release page has the release notes and the API changes of the published type declarations.
+    {firstNotes && ` Release notes start at ${firstNotes}.`}
+    {firstApi && ` The API history starts at ${firstApi}.`}
+  </p>
+  {
+    api?.unreleased && (
+      <p>
+        <a href={channelUrl("/docs/releases/unreleased", channel)}>Unreleased changes</a> lists the API changes on the
+        main branch since {channel.release}.
+      </p>
+    )
+  }
+  {
+    lines.map((line) => (
+      <>
+        <ProseH2 id={`line-${line}`}>{line}</ProseH2>
+        <ul class="releases">
+          {releases
+            .filter((release) => release.line === line)
+            .map((release) => (
+              <li>
+                <a href={channelUrl(`/docs/releases/${release.version}`, channel)}>{release.version}</a>
+                {release.data && <time datetime={release.data.date}>{release.data.date}</time>}
+                <span>{release.data?.summary ?? apiSize(release.version)}</span>
+              </li>
+            ))}
+        </ul>
+      </>
+    ))
+  }
+</Docs>
+
+<style>
+  .releases {
+    list-style: none;
+    padding-inline-start: 0;
+  }
+
+  .releases li + li {
+    margin-block-start: 0.375rem;
+  }
+
+  .releases a {
+    display: inline-block;
+    min-width: 8ch;
+  }
+
+  .releases time {
+    margin-inline-end: 2ch;
+    color: var(--muted-color);
+  }
+</style>

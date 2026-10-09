@@ -1,0 +1,63 @@
+name: Build Web
+
+# Checks the documentation and builds the site as the Pages deployment does, so a change that breaks the docs or
+# the site fails here instead of in deploy.yml. The site build reads every package's source for /docs/next and
+# builds the latest release's docs with this change's site code, so it runs for every change.
+on:
+  push:
+    branches: [main, "[0-9]+.[0-9]+.x"]
+  pull_request:
+    branches: [main, "[0-9]+.[0-9]+.x"]
+
+permissions:
+  contents: read
+
+concurrency:
+  # Each commit gets its own group. In a shared group, the next push cancels a waiting run, and that
+  # commit gets no CI.
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+  NODE_VERSION: 26.7.0
+
+jobs:
+  site:
+    name: Docs and Site
+    runs-on: blacksmith-8vcpu-ubuntu-2404
+    defaults:
+      run:
+        working-directory: packages/web
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.1
+
+      - name: Setup Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Validate docs
+        run: |
+          bun run validate:docs:metadata
+          bun run validate:docs:links
+          bun run validate:docs:skill
+          bun run validate:docs:releases
+
+      - name: Check API history
+        run: bun run api:check
+
+      - name: Test site tooling
+        run: bun run test:site
+
+      - name: Build site
+        run: bun run build:site --out "$RUNNER_TEMP/site"
