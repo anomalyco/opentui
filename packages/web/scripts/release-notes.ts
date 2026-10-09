@@ -9,7 +9,7 @@
 // the release pull request carries notes to review. The draft is based on the commits and pull requests since
 // the previous release, the API changes, and the changed documentation. opencode reads it and replies with the
 // file; the reply must pass the release notes format check, or the draft is retried once with the problems.
-// Set OPENTUI_RELEASE_NOTES_MODEL to choose the model (provider/model).
+// opencode uses its configured default model; set OPENTUI_RELEASE_NOTES_MODEL (provider/model) to choose another.
 import { spawnSync } from "node:child_process"
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
@@ -24,7 +24,6 @@ import { REPO_ROOT } from "../src/lib/repo-root"
 const NOTES_ROOT = join(REPO_ROOT, "packages/web/src/content/docs/releases")
 const API_ROOT = join(REPO_ROOT, "api")
 const SITE = "https://opentui.com"
-const DEFAULT_MODEL = "anthropic/claude-opus-4-5"
 const PULL_REQUEST_BODY_LIMIT = 3000
 
 const { positionals, values } = parseArgs({
@@ -82,16 +81,17 @@ async function draft(version: string, from?: string) {
 }
 
 function opencode(message: string, file: string): string {
-  const model = process.env.OPENTUI_RELEASE_NOTES_MODEL || DEFAULT_MODEL
-  const result = spawnSync("opencode", ["run", "--model", model, "--file", file, message], {
+  const model = process.env.OPENTUI_RELEASE_NOTES_MODEL
+  const result = spawnSync("opencode", ["run", ...(model ? ["--model", model] : []), "--file", file, message], {
     cwd: REPO_ROOT,
     encoding: "utf8",
     maxBuffer: 16 * 1024 * 1024,
     // The context holds everything the draft needs, so the model gets no tools.
     env: { ...process.env, OPENCODE_PERMISSION: JSON.stringify({ "*": "deny" }) },
   })
-  if (result.error) throw new Error(`opencode is required to draft release notes: ${result.error.message}`)
-  if (result.status !== 0) throw new Error(`opencode run failed:\n${result.stderr}`)
+  const skip = "Write the notes by hand first, or release with --no-notes."
+  if (result.error) throw new Error(`opencode is required to draft release notes: ${result.error.message}. ${skip}`)
+  if (result.status !== 0) throw new Error(`opencode run failed. ${skip}\n${result.stderr}`)
   return result.stdout
 }
 
