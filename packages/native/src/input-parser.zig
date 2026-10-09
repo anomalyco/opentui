@@ -13,6 +13,11 @@ pub const subparams_max: u8 = 8;
 pub const events_per_byte_max: u32 = 4;
 pub const payload_per_byte_max: u32 = unit_bytes_max + sequence_bytes_max + key_text_bytes_max;
 
+comptime {
+    // A Kitty text field keeps at most subparams_max scalars, so key text never truncates by bytes.
+    std.debug.assert(key_text_bytes_max >= @as(u32, subparams_max) * 4);
+}
+
 pub const Expectations = packed struct(u8) {
     replies: bool = false,
     kitty_keyboard: bool = false,
@@ -136,11 +141,12 @@ pub const Sink = struct {
         self.count += 1;
     }
 
-    /// The last record when it is a paste that has not ended.
+    /// The paste in progress, unless this sink has no records yet. Paste state writes only paste
+    /// records, and it starts with a START record, so a nonempty sink ends with the open paste.
     fn openPaste(self: *Sink) ?*Event {
         if (self.count == 0) return null;
         const last = &self.events[self.count - 1];
-        if (last.kind != @intFromEnum(Kind.paste) or last.flags & flags.paste_end != 0) return null;
+        std.debug.assert(last.kind == @intFromEnum(Kind.paste) and last.flags & flags.paste_end == 0);
         return last;
     }
 
@@ -177,20 +183,6 @@ pub const Sink = struct {
     }
 };
 
-const StringKind = enum(u8) {
-    osc,
-    dcs,
-    apc,
-
-    fn protocol(self: StringKind) Protocol {
-        return switch (self) {
-            .osc => .osc,
-            .dcs => .dcs,
-            .apc => .apc,
-        };
-    }
-};
-
 const State = union(enum) {
     ground,
     /// Ground right after a lone Escape timed out; a `[` may continue a mouse report.
@@ -205,7 +197,8 @@ const State = union(enum) {
     ss3: struct { alt: bool },
     /// `recovered`: the unit's ESC was reinstated after a timed-out Escape key.
     x10: struct { alt: bool, recovered: bool },
-    string: struct { kind: StringKind, escaped: bool },
+    /// `kind` is `.osc`, `.dcs`, or `.apc`.
+    string: struct { kind: Protocol, escaped: bool },
     /// `osc`: BEL also ends the discarded string, as it ends only OSC.
     discard: struct { string: bool, escaped: bool, osc: bool },
     paste: struct { matched: u3 },
@@ -326,13 +319,13 @@ pub const InputParser = struct {
             .csi => |csi| {
                 if (!csi.deferred and self.deferrable()) {
                     self.state = .{ .csi = .{ .alt = csi.alt, .deferred = true } };
-                } else self.cutShort(csi.alt, .csi, sink);
+                } else self.cutShort(csi.alt, .csi, 0, sink);
             },
-            .ss3 => |ss3| self.cutShort(ss3.alt, .ss3, sink),
-            .x10 => |x10| self.cutShortX10(x10.alt, x10.recovered, sink),
+            .ss3 => |ss3| self.cutShort(ss3.alt, .ss3, 0, sink),
+            .x10 => |x10| self.cutShort(x10.alt, .csi, @intFromBool(x10.recovered), sink),
             .string => |string| {
                 self.state = .ground;
-                emitReply(sink, self.unit[0..self.unit_len], string.kind.protocol(), flags.reply_fragment);
+                emitReply(sink, self.unit[0..self.unit_len], string.kind, flags.reply_fragment);
             },
             // After 20 ms of silence the rest of the garbage is more likely typing.
             .discard => self.state = .ground,
@@ -382,20 +375,20 @@ pub const InputParser = struct {
                 .csi => |csi| if (csi.deferred) {
                     if (self.continuesDeferred(b)) {
                         self.state = .{ .csi = .{ .alt = csi.alt, .deferred = false } };
-                    } else self.cutShort(csi.alt, .csi, sink);
+                    } else self.cutShort(csi.alt, .csi, 0, sink);
                     pending = b;
                 } else self.sequenceByte(b, csi.alt, true, sink),
                 .ss3 => |ss3| self.sequenceByte(b, ss3.alt, false, sink),
                 .x10 => |x10| if (b >= 0x01 and b <= 0x1f) {
                     // Payload bytes are offset by 32 and 0 is xterm's past-end marker,
                     // so another control byte means the report was cut short.
-                    self.cutShortX10(x10.alt, x10.recovered, sink);
+                    self.cutShort(x10.alt, .csi, @intFromBool(x10.recovered), sink);
                     self.ground(b, false, .of(false, b), sink);
                 } else {
                     self.append(b);
                     if (self.unit_len == 6) {
                         self.state = .ground;
-                        self.dispatchX10(x10.alt, x10.recovered, sink);
+                        self.dispatchX10(x10.alt, sink);
                     }
                 },
                 .string => |string| pending = self.stringByte(b, string.kind, string.escaped, sink),
@@ -521,11 +514,11 @@ pub const InputParser = struct {
     fn sequenceByte(self: *InputParser, b: u8, alt: bool, csi: bool, sink: *Sink) void {
         const protocol: Protocol = if (csi) .csi else .ss3;
         if (b == ESC) {
-            self.cutShort(alt, protocol, sink);
+            self.cutShort(alt, protocol, 0, sink);
             self.escape();
         } else if (b < 0x20 or b == 0x7f) {
             // A control byte cannot continue a sequence: report the fragment and type the byte.
-            self.cutShort(alt, protocol, sink);
+            self.cutShort(alt, protocol, 0, sink);
             self.ground(b, false, .of(false, b), sink);
         } else if (csi and self.unit_len == 2 and b == 'M') {
             self.append(b);
@@ -544,17 +537,17 @@ pub const InputParser = struct {
         } else self.append(b);
     }
 
-    fn stringByte(self: *InputParser, b: u8, kind: StringKind, escaped: bool, sink: *Sink) ?u8 {
+    fn stringByte(self: *InputParser, b: u8, kind: Protocol, escaped: bool, sink: *Sink) ?u8 {
         if (escaped) {
             if (b == '\\') {
                 self.append(b);
                 self.state = .ground;
-                emitReply(sink, self.unit[0..self.unit_len], kind.protocol(), 0);
+                emitReply(sink, self.unit[0..self.unit_len], kind, 0);
                 return null;
             }
             // The Escape starts a new unit: report the unterminated string without it.
             self.unit_len -= 1;
-            emitReply(sink, self.unit[0..self.unit_len], kind.protocol(), flags.reply_fragment);
+            emitReply(sink, self.unit[0..self.unit_len], kind, flags.reply_fragment);
             self.escape();
             return b;
         }
@@ -640,19 +633,12 @@ pub const InputParser = struct {
         self.state = .{ .escape = .{ .alt = false } };
     }
 
-    /// Reports a unit ended by something other than its terminator as a fragment.
-    /// After `ESC ESC`, the first Escape is a key of its own.
-    fn cutShort(self: *InputParser, alt: bool, protocol: Protocol, sink: *Sink) void {
+    /// Reports a unit ended by something other than its terminator as a fragment, from `start`
+    /// (1 skips an ESC that recovery reinstated). After `ESC ESC`, the first Escape is a key.
+    fn cutShort(self: *InputParser, alt: bool, protocol: Protocol, start: u16, sink: *Sink) void {
         self.state = .ground;
         if (alt) emitKey(sink, &.{"\x1b"}, key.escape, .{}, .{});
-        emitReply(sink, self.unit[0..self.unit_len], protocol, flags.reply_fragment);
-    }
-
-    fn cutShortX10(self: *InputParser, alt: bool, recovered: bool, sink: *Sink) void {
-        self.state = .ground;
-        if (alt) emitKey(sink, &.{"\x1b"}, key.escape, .{}, .{});
-        const skip: u16 = @intFromBool(recovered);
-        emitReply(sink, self.unit[skip..self.unit_len], .csi, flags.reply_fragment);
+        emitReply(sink, self.unit[start..self.unit_len], protocol, flags.reply_fragment);
     }
 
     fn dispatchCsi(self: *InputParser, alt: bool, sink: *Sink) void {
@@ -722,7 +708,7 @@ pub const InputParser = struct {
         emitReply(sink, unit, .ss3, 0);
     }
 
-    fn dispatchX10(self: *InputParser, alt: bool, recovered: bool, sink: *Sink) void {
+    fn dispatchX10(self: *InputParser, alt: bool, sink: *Sink) void {
         const unit = self.unit[0..self.unit_len];
         std.debug.assert(unit.len == 6);
         const code: u32 = unit[3] -% 32;
@@ -730,10 +716,8 @@ pub const InputParser = struct {
             // X10 reports every release as button 3: assume the last one pressed.
             Mouse{ .action = .up, .button = self.x10_button }
         else
-            mouseKind(code, false) orelse {
-                if (alt) emitKey(sink, &.{"\x1b"}, key.escape, .{}, .{});
-                return emitReply(sink, unit[@intFromBool(recovered)..], .csi, 0);
-            };
+            // Only a press of button 3 without motion, wheel, or extra bits has no event.
+            mouseKind(code, false).?;
         if (mouse.action == .down) self.x10_button = @intCast(mouse.button);
         mouse.mods = mouseModifiers(code);
         // Coordinates are one-based after the offset; xterm's 0 wraps to cell 223.
@@ -765,13 +749,8 @@ pub const InputParser = struct {
         std.debug.assert(params.len > 0);
         const digit = isDigit(b);
         // Whether the field being read has a digit; a mode report's `$` follows its digits.
-        const has_digit = digit: {
-            var index = params.len;
-            while (index > 0) : (index -= 1) {
-                if (params[index - 1] != '$') break :digit isDigit(params[index - 1]);
-            }
-            break :digit false;
-        };
+        const field = std.mem.trimEnd(u8, params, "$");
+        const has_digit = isDigit(field[field.len - 1]);
         switch (params[0]) {
             '<' => return digit or b == ';' or b == 'M' or b == 'm',
             '?' => {
@@ -876,14 +855,11 @@ const Text = struct {
         return self.bytes[0..self.len];
     }
 
-    /// Appends a whole scalar or returns false when it does not fit.
-    fn append(self: *Text, scalar: u21) bool {
+    fn append(self: *Text, scalar: u21) void {
         var buffer: [4]u8 = undefined;
         const encoded = utf8Encode(scalar, &buffer);
-        if (self.len + encoded.len > key_text_bytes_max) return false;
         @memcpy(self.bytes[self.len..][0..encoded.len], encoded);
         self.len += @intCast(encoded.len);
-        return true;
     }
 };
 
@@ -1082,11 +1058,11 @@ fn codeKey(code: u32, mods: Modifiers) ?Key {
     var value: Key = .{ .code = code, .mods = mods };
     if (functionalKey(code)) |functional| {
         value.code = functional;
-        if (keypadText(functional)) |text| _ = value.text.append(text);
+        if (keypadText(functional)) |text| value.text.append(text);
         return value;
     }
     if (code == 0 or !isScalar(code) or isControl(code)) return null;
-    _ = value.text.append(@intCast(code));
+    value.text.append(@intCast(code));
     return value;
 }
 
@@ -1100,19 +1076,14 @@ fn kittyKey(fields: *const Fields) ?Key {
         for (0..fields.subcounts[2]) |sub| {
             const scalar = fields.get(2, sub) orelse continue;
             if (scalar == 0 or !isScalar(scalar) or isControl(scalar)) continue;
-            if (!value.text.append(@intCast(scalar))) {
-                value.flags |= flags.key_text_truncated;
-                break;
-            }
+            value.text.append(@intCast(scalar));
         }
     }
     // Text without a key, such as input method output.
     if (code == 0) return if (value.text.len == 0) null else value;
     if (functionalKey(code)) |functional| {
         value.code = functional;
-        if (value.text.len == 0) if (keypadText(functional)) |text| {
-            _ = value.text.append(text);
-        };
+        if (value.text.len == 0) if (keypadText(functional)) |text| value.text.append(text);
         return value;
     }
     if (!isScalar(code) or isControl(code)) return null;
@@ -1127,7 +1098,7 @@ fn kittyKey(fields: *const Fields) ?Key {
                 scalar = shifted;
             } else if (upper(code)) |uppercase| scalar = uppercase;
         }
-        _ = value.text.append(@intCast(scalar));
+        value.text.append(@intCast(scalar));
     }
     return value;
 }
@@ -1212,7 +1183,7 @@ fn ss3Key(final: u8, params: []const u8) ?Key {
     };
     if (keypad) |char| {
         value.code = char;
-        _ = value.text.append(char);
+        value.text.append(char);
         return value;
     }
     value.code = switch (final) {
@@ -1293,9 +1264,9 @@ fn upper(scalar: u32) ?u32 {
 
 test "input parser upper maps common scripts to one scalar" {
     const cases = [_][2]u32{
-        .{ 'a', 'A' },      .{ 0xe9, 0xc9 },   .{ 0xff, 0x178 },  .{ 0x101, 0x100 }, .{ 0x13a, 0x139 },
-        .{ 0x3b1, 0x391 },  .{ 0x3c2, 0x3a3 }, .{ 0x3ad, 0x388 }, .{ 0x3cd, 0x38e }, .{ 0x430, 0x410 },
-        .{ 0x451, 0x401 },  .{ 0x561, 0x531 }, .{ 0x17e, 0x17d }, .{ 0x1e01, 0x1e00 },
+        .{ 'a', 'A' },     .{ 0xe9, 0xc9 },   .{ 0xff, 0x178 },  .{ 0x101, 0x100 },   .{ 0x13a, 0x139 },
+        .{ 0x3b1, 0x391 }, .{ 0x3c2, 0x3a3 }, .{ 0x3ad, 0x388 }, .{ 0x3cd, 0x38e },   .{ 0x430, 0x410 },
+        .{ 0x451, 0x401 }, .{ 0x561, 0x531 }, .{ 0x17e, 0x17d }, .{ 0x1e01, 0x1e00 },
     };
     for (cases) |case| try std.testing.expectEqual(case[1], upper(case[0]).?);
     for ([_]u32{ 'A', '1', 0xdf, 0xf7, 0x100, 0x139, 0x4e2d }) |scalar| try std.testing.expect(upper(scalar) == null);

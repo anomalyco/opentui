@@ -527,8 +527,9 @@ Examples: `27;5;13~` = Ctrl+Enter, `27;2;9~` = Shift+Tab, `27;5;27~` = Ctrl+Esca
 - Any other scalar (≤ 0x10FFFF, not a control) → character key with `code` as reported.
   `base_code = f[0][2]` when present and nonzero (the adapter and key bindings decide policy;
   issue 050 lives in `keybinding.internal.ts`). Values above 0x10FFFF → reply.
-- `text`: the text codepoints joined as UTF-8, at most `key_text_bytes_max = 32` bytes (flag
-  `TEXT_TRUNCATED` beyond). When absent, derived as in §7.7.
+- `text`: the text codepoints joined as UTF-8. At most `subparams_max = 8` codepoints are kept, so
+  it always fits `key_text_bytes_max = 32` bytes; more codepoints set `TEXT_TRUNCATED`. When absent,
+  derived as in §7.7.
 
 Functional codes (Kitty's private-use assignments; the native key enum uses them verbatim):
 
@@ -630,7 +631,7 @@ Mouse events use the same byte (Shift, Alt, Ctrl only).
 | Kind    | Flag                                 | Meaning                                                                       |
 | ------- | ------------------------------------ | ----------------------------------------------------------------------------- |
 | `KEY`   | `OT_INPUT_KEY_KITTY` (1)             | Decoded from a Kitty `CSI u` or `mods:event` form (Core's `source: "kitty"`). |
-| `KEY`   | `OT_INPUT_KEY_TEXT_TRUNCATED` (2)    | Text exceeded 32 bytes.                                                       |
+| `KEY`   | `OT_INPUT_KEY_TEXT_TRUNCATED` (2)    | The Kitty text field had more than 8 codepoints.                              |
 | `PASTE` | `OT_INPUT_PASTE_START` (1)           | First record of a paste.                                                      |
 | `PASTE` | `OT_INPUT_PASTE_END` (2)             | Last record of a paste.                                                       |
 | `REPLY` | `OT_INPUT_REPLY_FRAGMENT` (1)        | Cut short by timeout, `ESC`, control byte, or failed recovery.                |
@@ -639,8 +640,9 @@ Mouse events use the same byte (Shift, Alt, Ctrl only).
 ### 8.5 Paste records
 
 Paste is streamed. The parser appends bytes to the _open_ paste record: the last record in the
-sink when it is a `PASTE` without `END`. Otherwise it opens a new `PASTE` record (with `START` only
-immediately after `200~`). `201~` sets `END` on the open record, opening an empty one if needed.
+sink. Paste state writes only paste records and begins with the `START` record, so a nonempty sink
+always ends with it (asserted; a sink must hold only this parser's records). In an empty sink it
+opens a new `PASTE` record without `START`. `201~` sets `END` on the open record, opening an empty one if needed.
 An empty paste is one record with `START | END` and `text_len = 0`. A paste that spans feeds
 produces several records; G1 holds on the joined text.
 

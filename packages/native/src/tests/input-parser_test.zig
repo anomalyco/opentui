@@ -240,13 +240,15 @@ fn checkOne(cases: []const struct { []const u8, Expect }) !void {
     for (cases) |case| try check(case[0], &.{case[1]});
 }
 
-fn checkWith(expect: ip.Expectations, head: []const u8, wait_ms: u64, tail: []const u8, expected: []const Expect) !void {
+/// Feeds `head`, waits 100 ms, and feeds `tail`; the wait's events come first in `expected`.
+fn checkTimed(expect: ip.Expectations, head: []const u8, tail: []const u8, expected: []const Expect) !void {
     var harness = try Harness.create();
     defer harness.deinit();
     harness.parser.setExpectations(expect);
     try expectGot(head, &.{}, try harness.feed(head));
-    try expectGot(head, &.{}, try harness.wait(wait_ms));
-    try expectGot(tail, expected, try harness.feed(tail));
+    _ = try harness.wait(100);
+    _ = try harness.feed(tail);
+    try expectGot(head, expected, harness.out.items);
 }
 
 fn gotEql(a: []const Got, b: []const Got) bool {
@@ -543,7 +545,7 @@ test "input parser legacy navigation, function, and modified keys" {
         .{ "\x1bO;A", reply("\x1bO;A") },
     });
     for ([_]struct { u8, Mods }{
-        .{ '2', SHIFT },                   .{ '3', ALT }, .{ '4', mods(&.{ SHIFT, ALT }) }, .{ '5', CTRL },
+        .{ '2', SHIFT },                   .{ '3', ALT },                   .{ '4', mods(&.{ SHIFT, ALT }) }, .{ '5', CTRL },
         .{ '6', mods(&.{ SHIFT, CTRL }) }, .{ '7', mods(&.{ ALT, CTRL }) },
     }) |modifier| {
         for ([_]struct { u8, u32 }{ .{ 'A', K.up }, .{ 'B', K.down }, .{ 'C', K.right }, .{ 'D', K.left } }) |arrow| {
@@ -567,6 +569,7 @@ test "input parser modifyOtherKeys" {
         .{ "\x1b[27;2;127~", k(K.backspace, SHIFT) },
         .{ "\x1b[27;5;8~", k(K.backspace, CTRL) },
         .{ "\x1b[27;2;53~", k('5', SHIFT) },
+        .{ "\x1b[27;5;57399~", kt(K.kp0, CTRL, "0") },
         .{ "\x1b[27;5;3~", reply("\x1b[27;5;3~") },
         .{ "\x1b[27;5~", reply("\x1b[27;5~") },
     });
@@ -574,12 +577,12 @@ test "input parser modifyOtherKeys" {
 
 test "input parser replies, focus, and mouse reports are not keys" {
     for ([_][]const u8{
-        "\x1b[4;1782;3012t",                "\x1b[8;24;80t",                 "\x1b[?1;2c",        "\x1b[?62;c",
-        "\x1b[?1;0;6;9;15c",                "\x1b[?1;2$y",                   "\x1b[?25;1$y",      "\x1b[>41;1;0c",
-        "\x1b[?2026;2$y",                   "\x1b]11;rgb:0000/0000/0000\x1b\\", "\x1b]10;rgb:ffff/ffff/ffff\x07", "\x1bP>|kitty(0.40)\x1b\\",
-        "\x1b_Gi=1;OK\x1b\\",               "\x1b[201~",                     "\x1b[h",            "\x1b[?997;1n",
-        "\x1b[R",                           "\x1b[1;1:1R",                   "\x1b[<0M",          "\x1b[?1u",
-        "\x1b]4;0;#ffffff\x07",             "\x1bP1+r4d73=1b5b\x1b\\",       "\x1b[=1c",          "\x1b[1 q",
+        "\x1b[4;1782;3012t",    "\x1b[8;24;80t",                    "\x1b[?1;2c",                     "\x1b[?62;c",
+        "\x1b[?1;0;6;9;15c",    "\x1b[?1;2$y",                      "\x1b[?25;1$y",                   "\x1b[>41;1;0c",
+        "\x1b[?2026;2$y",       "\x1b]11;rgb:0000/0000/0000\x1b\\", "\x1b]10;rgb:ffff/ffff/ffff\x07", "\x1bP>|kitty(0.40)\x1b\\",
+        "\x1b_Gi=1;OK\x1b\\",   "\x1b[201~",                        "\x1b[h",                         "\x1b[?997;1n",
+        "\x1b[R",               "\x1b[1;1:1R",                      "\x1b[<0M",                       "\x1b[?1u",
+        "\x1b]4;0;#ffffff\x07", "\x1bP1+r4d73=1b5b\x1b\\",          "\x1b[=1c",                       "\x1b[1 q",
         "\x1b[\x80A",
     }) |bytes| {
         try check(bytes, &.{reply(bytes)});
@@ -692,6 +695,8 @@ test "input parser Kitty keys report modifiers, events, and text" {
         .{ "\x1b[29;1:1~", Expect{ .kind = .key, .action = 1, .code = K.menu, .flags = kitty } },
         .{ "\x1b[1;2A", Expect{ .kind = .key, .action = 1, .code = K.up, .mods = SHIFT, .flags = 0 } },
         .{ "\x1b[97:65:113;5:2;97u", ka('a', CTRL, .repeat) },
+        // Fields past params_max are ignored.
+        .{ "\x1b[97;5;97;1;1;1;1;1;1;1;1;1;1;1;1;1;1:2u", kt('a', CTRL, "a") },
         // Not Unicode scalar values, or control characters.
         .{ "\x1b[1114112u", reply("\x1b[1114112u") },
         .{ "\x1b[55296u", reply("\x1b[55296u") },
@@ -893,32 +898,6 @@ test "input parser separates replies from text and reports partial units as frag
     try expectGot("", &.{reply("\x1b]4;0;#ffffff\x07")}, try split(&harness, &.{ "\x1b]4;0;", "#ffffff\x07" }));
     try expectGot("", &.{reply("\x1bPtest\x1b\\")}, try split(&harness, &.{ "\x1bPtest\x1b", "\\" }));
     try check("\x1b]4;0;#fff\x07\x1bP>|test\x1b\\\x1b_OK\x1b\\", &.{ reply("\x1b]4;0;#fff\x07"), reply("\x1bP>|test\x1b\\"), reply("\x1b_OK\x1b\\") });
-    // A partial unit whose next byte takes longer than the timeout is a fragment,
-    // and later input is not swallowed. Legacy Alt+[ and Alt+Shift+P start a CSI and a DCS.
-    for ([_]struct { []const u8, []const u8, []const Expect }{
-        .{ "\x1b[", "q", &.{ frag("\x1b["), ch('q') } },
-        .{ "\x1bP", "q", &.{ frag("\x1bP"), ch('q') } },
-        .{ "\x1b]", "q", &.{ frag("\x1b]"), ch('q') } },
-        .{ "\x1bO", "a", &.{ frag("\x1bO"), ch('a') } },
-        .{ "\x1b]incomplete", "a", &.{ frag("\x1b]incomplete"), ch('a') } },
-        .{ "\x1b_partial", "a", &.{ frag("\x1b_partial"), ch('a') } },
-        .{ "\x1b[123", "a", &.{ frag("\x1b[123"), ch('a') } },
-        .{ "\x1b[80;120", "a", &.{ frag("\x1b[80;120"), ch('a') } },
-        .{ "\x1b[1;5", "A", &.{ frag("\x1b[1;5"), ch('A') } },
-        .{ "\x1b[24;80", "R", &.{ frag("\x1b[24;80"), ch('R') } },
-        .{ "\x1b]52;c;", "\x1b[A", &.{ frag("\x1b]52;c;"), k(K.up, NONE) } },
-        .{ "\x1b[118;5", "a", &.{ frag("\x1b[118;5"), ch('a') } },
-        .{ "\x1b[M ", "a", &.{ frag("\x1b[M "), ch('a') } },
-        .{ "\x1b\x1b[1;5", "A", &.{ k(K.escape, NONE), frag("\x1b[1;5"), ch('A') } },
-        .{ "\x1b[?1", "u", &.{ frag("\x1b[?1"), ch('u') } },
-    }) |case| {
-        var timed = try Harness.create();
-        defer timed.deinit();
-        try expectGot(case[0], &.{}, try timed.feed(case[0]));
-        try expectGot(case[0], case[2][0 .. case[2].len - 1], try timed.wait(20));
-        try expectGot(case[0], case[2][case[2].len - 1 ..], try timed.feed(case[1]));
-        try testing.expectEqual(null, timed.parser.deadlineNs());
-    }
     // The timeout counts from the latest byte, so a reply that keeps arriving keeps waiting.
     const response = "\x1b[4;1080;1920t";
     var timed = try Harness.create();
@@ -944,73 +923,68 @@ test "input parser ESC, control bytes, and overlong units interrupt a unit" {
     defer harness.deinit();
     try expectGot("", &.{frag("\x1b[123")}, try harness.feed("\x1b[123\x1b"));
     try expectGot("", &.{k(K.escape, NONE)}, try harness.wait(20));
-    // Overlong CSI and strings are discarded through their terminator.
-    var big = try Harness.create();
-    defer big.deinit();
-    _ = try big.feed("\x1b[");
+    // Overlong CSI and strings are discarded through their terminator: one unit each.
     const nines = try testing.allocator.alloc(u8, 100_000);
     defer testing.allocator.free(nines);
     @memset(nines, '9');
-    _ = try big.feed(nines);
-    try expectGot("", &.{ch('q')}, try big.feed("~q"));
-    try testing.expectEqual(@as(u32, 1), big.parser.discarded_count);
-    const xs = try testing.allocator.alloc(u8, 2 * ip.unit_bytes_max);
-    defer testing.allocator.free(xs);
-    @memset(xs, 'x');
-    _ = try big.feed("\x1b]");
-    _ = try big.feed(xs);
-    try expectGot("", &.{ch('q')}, try big.feed("\x07q"));
-    _ = try big.feed("\x1bP");
-    _ = try big.feed(xs);
-    try expectGot("", &.{ch('q')}, try big.feed("\x1b\\q"));
-    _ = try big.feed("\x1b_");
-    _ = try big.feed(xs);
-    try expectGot("", &.{k('q', ALT)}, try big.feed("\x1bq"));
-    _ = try big.feed("\x1b[");
-    _ = try big.feed(nines[0..300]);
-    try expectGot("", &.{k(K.up, NONE)}, try big.feed("\x1b[A"));
-    try testing.expectEqual(@as(u32, 5), big.parser.discarded_count);
-    // A discarded unit times out like any other.
-    _ = try big.feed("\x1b]");
-    _ = try big.feed(xs);
-    try expectGot("", &.{}, try big.wait(20));
-    try expectGot("", &.{ch('q')}, try big.feed("q"));
-    // BEL is payload in an overlong DCS or APC too: only `ESC \` ends their discard.
-    for ([_][]const u8{ "\x1bP", "\x1b_" }) |introducer| {
-        var string = try Harness.create();
-        defer string.deinit();
-        _ = try string.feed(introducer);
-        _ = try string.feed(xs);
-        try expectGot(introducer, &.{}, try string.feed("\x07bc\x1b\\"));
-        try expectGot(introducer, &.{ch('q')}, try string.feed("q"));
-        try testing.expectEqual(@as(u32, 1), string.parser.discarded_count);
+    const xs = nines[0 .. 2 * ip.unit_bytes_max];
+    const fill = nines[0 .. ip.unit_bytes_max - 2];
+    for ([_]struct { []const u8, []const u8, []const u8, []const Expect }{
+        .{ "\x1b[", nines, "~q", &.{ch('q')} },
+        .{ "\x1b[", nines[0..300], "\x1b[A", &.{k(K.up, NONE)} },
+        .{ "\x1b]", xs, "\x07q", &.{ch('q')} },
+        .{ "\x1bP", xs, "\x1b\\q", &.{ch('q')} },
+        .{ "\x1b_", xs, "\x1bq", &.{k('q', ALT)} },
+        // BEL is payload in an overlong DCS or APC too: only `ESC \` ends their discard.
+        .{ "\x1bP", xs, "\x07bc\x1b\\q", &.{ch('q')} },
+        .{ "\x1b_", xs, "\x07bc\x1b\\q", &.{ch('q')} },
+        // At the limit the terminator must fit: ESC needs room for `\`; an OSC BEL drops the string.
+        .{ "\x1b]", fill, "\x1b\\q", &.{ch('q')} },
+        .{ "\x1b]", fill, "zz\x07q", &.{ch('q')} },
+        .{ "\x1b]", fill, "\x07q", &.{ch('q')} },
+    }) |case| {
+        var discard = try Harness.create();
+        defer discard.deinit();
+        _ = try discard.feed(case[0]);
+        _ = try discard.feed(case[1]);
+        try expectGot(case[2], case[3], try discard.feed(case[2]));
+        try testing.expectEqual(@as(u32, 1), discard.parser.discarded_count);
     }
-    // A string that exactly fills the unit still keeps its terminator or drops whole.
-    const fill = try testing.allocator.alloc(u8, ip.unit_bytes_max - 2);
-    defer testing.allocator.free(fill);
-    @memset(fill, 'y');
-    const exact = try std.mem.concat(testing.allocator, u8, &.{ "\x1b]", fill[0 .. fill.len - 1], "\x07" });
-    defer testing.allocator.free(exact);
-    try check(exact, &.{reply(exact)});
-    const st = try std.mem.concat(testing.allocator, u8, &.{ "\x1b]", fill[0 .. fill.len - 2], "\x1b\\" });
-    defer testing.allocator.free(st);
-    try check(st, &.{reply(st)});
-    var full = try Harness.create();
-    defer full.deinit();
-    _ = try full.feed("\x1b]");
-    _ = try full.feed(fill);
-    try expectGot("", &.{ch('q')}, try full.feed("\x1b\\q"));
-    _ = try full.feed("\x1b]");
-    _ = try full.feed(fill);
-    try expectGot("", &.{ch('q')}, try full.feed("zz\x07q"));
-    try testing.expectEqual(@as(u32, 2), full.parser.discarded_count);
+    // A discarded unit times out like any other.
+    _ = try harness.feed("\x1b]");
+    _ = try harness.feed(xs);
+    try expectGot("", &.{}, try harness.wait(20));
+    try expectGot("", &.{ch('q')}, try harness.feed("q"));
+    // A string that just fits the unit keeps its terminator.
+    for ([_][]const u8{ "\x07", "\x1b\\" }) |terminator| {
+        const exact = try std.mem.concat(testing.allocator, u8, &.{ "\x1b]", fill[terminator.len..], terminator });
+        defer testing.allocator.free(exact);
+        try check(exact, &.{reply(exact)});
+    }
 }
 
-test "input parser defers mouse reports, Kitty keys, and awaited replies" {
+test "input parser times out partial units unless they may be mouse reports, Kitty keys, or awaited replies" {
     const plain: ip.Expectations = .{};
     const kitty: ip.Expectations = .{ .kitty_keyboard = true };
     const replies: ip.Expectations = .{ .replies = true };
     for ([_]struct { ip.Expectations, []const u8, []const u8, []const Expect }{
+        // A fragment, and later input is not swallowed. Legacy Alt+[ and Alt+Shift+P start a CSI and a DCS.
+        .{ plain, "\x1b[", "q", &.{ frag("\x1b["), ch('q') } },
+        .{ plain, "\x1bP", "q", &.{ frag("\x1bP"), ch('q') } },
+        .{ plain, "\x1b]", "q", &.{ frag("\x1b]"), ch('q') } },
+        .{ plain, "\x1bO", "a", &.{ frag("\x1bO"), ch('a') } },
+        .{ plain, "\x1b]incomplete", "a", &.{ frag("\x1b]incomplete"), ch('a') } },
+        .{ plain, "\x1b_partial", "a", &.{ frag("\x1b_partial"), ch('a') } },
+        .{ plain, "\x1b[123", "a", &.{ frag("\x1b[123"), ch('a') } },
+        .{ plain, "\x1b[80;120", "a", &.{ frag("\x1b[80;120"), ch('a') } },
+        .{ plain, "\x1b[1;5", "A", &.{ frag("\x1b[1;5"), ch('A') } },
+        .{ plain, "\x1b[24;80", "R", &.{ frag("\x1b[24;80"), ch('R') } },
+        .{ plain, "\x1b]52;c;", "\x1b[A", &.{ frag("\x1b]52;c;"), k(K.up, NONE) } },
+        .{ plain, "\x1b[118;5", "a", &.{ frag("\x1b[118;5"), ch('a') } },
+        .{ plain, "\x1b[M ", "a", &.{ frag("\x1b[M "), ch('a') } },
+        .{ plain, "\x1b\x1b[1;5", "A", &.{ k(K.escape, NONE), frag("\x1b[1;5"), ch('A') } },
+        .{ plain, "\x1b[?1", "u", &.{ frag("\x1b[?1"), ch('u') } },
+        // Deferred units, and the bytes that cannot continue them.
         .{ plain, "\x1b[<35;20", ";5m", &.{mouse(.move, none, 19, 4, NONE)} },
         .{ plain, "\x1b[<", "0;1;1M", &.{down(0, 0, 0)} },
         .{ plain, "\x1b[<35;20", "x", &.{ frag("\x1b[<35;20"), ch('x') } },
@@ -1026,6 +1000,8 @@ test "input parser defers mouse reports, Kitty keys, and awaited replies" {
         .{ kitty, "\x1b[118;5", "a", &.{ frag("\x1b[118;5"), ch('a') } },
         .{ kitty, "\x1b[1;5", "A", &.{ frag("\x1b[1;5"), ch('A') } },
         .{ kitty, "\x1b\x1b[97;5", "u", &.{k('a', mods(&.{ CTRL, ALT }))} },
+        .{ kitty, "\x1b[97;", "u", &.{ frag("\x1b[97;"), ch('u') } },
+        .{ kitty, "\x1b[1;2;3;4", "u", &.{ frag("\x1b[1;2;3;4"), ch('u') } },
         .{ replies, "\x1b[?1016;2$", "y", &.{reply("\x1b[?1016;2$y")} },
         .{ replies, "\x1b[?62;", "c", &.{reply("\x1b[?62;c")} },
         .{ replies, "\x1b[?997;1", "n", &.{reply("\x1b[?997;1n")} },
@@ -1036,13 +1012,11 @@ test "input parser defers mouse reports, Kitty keys, and awaited replies" {
         .{ replies, "\x1b[4;600", ";800t", &.{reply("\x1b[4;600;800t")} },
         .{ replies, "\x1b[4;600;8", "00t", &.{reply("\x1b[4;600;800t")} },
         .{ replies, "\x1b[1;5", "A", &.{ frag("\x1b[1;5"), ch('A') } },
-    }) |case| try checkWith(case[0], case[1], 100, case[2], case[3]);
-    // Only the shapes the host waits for defer: `CSI 8 ; h ; w t` is not a pixel reply.
-    var shaped = try Harness.create();
-    defer shaped.deinit();
-    shaped.parser.setExpectations(replies);
-    _ = try shaped.feed("\x1b[8;600;80");
-    try expectGot("", &.{frag("\x1b[8;600;80")}, try shaped.wait(20));
+        .{ replies, "\x1b[4;600;8", "R", &.{ frag("\x1b[4;600;8"), ch('R') } },
+        // Only the shapes the host waits for defer: `CSI 8 ; h ; w t` is not a pixel reply.
+        .{ replies, "\x1b[8;600;80", "t", &.{ frag("\x1b[8;600;80"), ch('t') } },
+        .{ replies, "\x1b[1;2:3:4:5", "R", &.{ frag("\x1b[1;2:3:4:5"), ch('R') } },
+    }) |case| try checkTimed(case[0], case[1], case[2], case[3]);
     // A deferred unit has no deadline until a byte continues it.
     var harness = try Harness.create();
     defer harness.deinit();
@@ -1082,6 +1056,7 @@ test "input parser recovers mouse reports after a timed-out Escape" {
         .{ &.{"[A"}, &.{ kt('[', NONE, "["), ch('A') } },
         .{ &.{"[M \x01"}, &.{ frag("[M "), k('a', CTRL) } },
         .{ &.{"q[<0;1;1M"}, &.{ ch('q'), ch('['), ch('<'), ch('0'), ch(';'), ch('1'), ch(';'), ch('1'), ch('M') } },
+        .{ &.{"[<" ++ "1" ** 260}, &([_]Expect{frag("[<" ++ "1" ** 253)} ++ [_]Expect{ch('1')} ** 7) },
         .{ &.{"[<35;"}, &.{} },
         .{ &.{"[<"}, &.{} },
     }) |case| {
@@ -1114,11 +1089,12 @@ test "input parser recovers mouse reports after a timed-out Escape" {
 
 test "input parser stays split invariant" {
     for ([_][]const u8{
-        "abc",                     "\x1b[A",            "\x1bOP",                  "\x1b[[A",        "\x1b[[5~",
-        "\x1b[<0;10;20M",          "\x1b[M !!",         "\x1b]4;0;#ffffff\x07",    "\x1bP>|test\x1b\\", "\x1b_OK\x1b\\",
-        "\x1b[200~hello\x1b[201~", "\x1b[I",            "\x1b[1;5A",               "\x1b[97u",       "\x1b[27;2;13~",
-        "\x1b\x1b[A",              "\x1b\x1ba\x1b\x1b[<0;1;1M", "\x1b[2$x\x1bOa\xe9x", "\x1b[0;;104:105u", "\x1b\xe4a\xffb",
-        "\x1b[200~\x1b\x1b[20\x1b[201~", "x\x1b[<64;10;5M\x1b[I\x1b]4;0;#fff\x07\x1b[200~paste\x1b[201~👍",
+        "abc",                                                                                                                         "\x1b[A",                    "\x1bOP",               "\x1b[[A",           "\x1b[[5~",
+        "\x1b[<0;10;20M",                                                                                                              "\x1b[M !!",                 "\x1b]4;0;#ffffff\x07", "\x1bP>|test\x1b\\", "\x1b_OK\x1b\\",
+        "\x1b[200~hello\x1b[201~",                                                                                                     "\x1b[I",                    "\x1b[1;5A",            "\x1b[97u",          "\x1b[27;2;13~",
+        "\x1b\x1b[A",                                                                                                                  "\x1b\x1ba\x1b\x1b[<0;1;1M", "\x1b[2$x\x1bOa\xe9x",  "\x1b[0;;104:105u",  "\x1b\xe4a\xffb",
+        "\x1b[200~\x1b\x1b[20\x1b[201~",
+        "x\x1b[<64;10;5M\x1b[I\x1b]4;0;#fff\x07\x1b[200~paste\x1b[201~👍",
         "\x1b[1;5A\x1b]10;rgb:1/2/3\x1b\\\x1b[<0;3;4M\x1b[200~x\x1b[201~\x1b[M !!\x1b\x1b[A\x1b[[A\x1b[2$\xe9x\x1b[0;;104:105u\x1bOa",
     }) |stream| try expectSplitInvariant(stream);
     const atoms = [_][]const u8{ "xy", "👍", "\x1b[A", "\x1b[<64;10;5M", "\x1b[M !!", "\x1b]4;0;#fff\x07", "\x1b[200~p\x1b[201~", "\x1b[97u", "\x1bé" };
