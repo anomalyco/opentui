@@ -4745,6 +4745,7 @@ export class CliRenderer extends EventEmitter implements RenderContext {
     this.stdinParser?.destroy()
     this.stdinParser = null
     this.stdinShadow?.parser.destroy()
+    this.stdinShadow?.comparator.flush()
     this.stdinShadow = null
     this.oscSubscribers.clear()
     try {

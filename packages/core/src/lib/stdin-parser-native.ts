@@ -174,14 +174,13 @@ export class NativeStdinParser {
   public updateProtocolContext(patch: Partial<StdinParserProtocolContext>): void {
     this.ensureAlive()
     this.protocolContext = { ...this.protocolContext, ...patch }
-    const queued = this.events.length
     this.native(() => {
       this.applyExpectations()
       // Changed expectations can end a deferred unit; native emits it on the next feed.
       this.feed(EMPTY, this.nowNs())
     })
-    // Callers need not drain: what this resolved reaches the host through onTimeoutFlush.
-    this.reconcileTimeout(this.events.length > queued)
+    // Callers need not drain: queued events reach the host through onTimeoutFlush.
+    this.reconcileTimeout(this.events.length > 0)
   }
 
   public push(data: Uint8Array): void {
@@ -507,6 +506,8 @@ function rawMouseEvent(
 }
 
 const SHADOW_BACKLOG_MAX = 256
+// How far ahead the shadow comparator looks for the next event both parsers report.
+const SHADOW_WINDOW = 8
 
 function describeEvent(event: StdinEvent): string {
   switch (event.type) {
@@ -548,21 +549,14 @@ export class StdinShadowComparator {
     this.queue(this.shadowed, event)
   }
 
+  /** Reports every event still unpaired. Call when both parsers have stopped. */
+  public flush(): void {
+    this.pair(true)
+  }
+
   private queue(events: string[], event: StdinEvent): void {
     events.push(describeEvent(event))
-    const { delivered, shadowed } = this
-    while (delivered.length > 0 && shadowed.length > 0) {
-      if (delivered[0] === shadowed[0]) {
-        delivered.shift()
-        shadowed.shift()
-        continue
-      }
-      // The next event on each side tells an extra event from a changed one.
-      if (delivered.length < 2 || shadowed.length < 2) break
-      if (delivered[1] === shadowed[0]) this.report(delivered.shift()!, "")
-      else if (shadowed[1] === delivered[0]) this.report("", shadowed.shift()!)
-      else this.report(delivered.shift()!, shadowed.shift()!)
-    }
+    this.pair(false)
     // A parser that stopped producing events must not grow the other's backlog forever.
     if (events.length > SHADOW_BACKLOG_MAX) {
       const dropped = events.shift()!
@@ -571,8 +565,40 @@ export class StdinShadowComparator {
     }
   }
 
+  // Pairs through the earliest event both sides report; the events before it differ. Without
+  // one in the window, the oldest pair differs once both sides fill it, or at the end.
+  private pair(final: boolean): void {
+    const { delivered, shadowed } = this
+    while (delivered.length > 0 && shadowed.length > 0) {
+      const [i, j] = commonEvent(delivered, shadowed) ?? [-1, -1]
+      if (i >= 0) {
+        for (let k = 0; k < Math.max(i, j); k++) this.report(k < i ? delivered[k]! : "", k < j ? shadowed[k]! : "")
+        delivered.splice(0, i + 1)
+        shadowed.splice(0, j + 1)
+      } else if (final || Math.min(delivered.length, shadowed.length) >= SHADOW_WINDOW) {
+        this.report(delivered.shift()!, shadowed.shift()!)
+      } else return
+    }
+    if (final) {
+      for (const event of delivered.splice(0)) this.report(event, "")
+      for (const event of shadowed.splice(0)) this.report("", event)
+    }
+  }
+
   private report(delivered: string, shadowed: string): void {
     const shadowName = this.primaryName === "native" ? "legacy" : "native"
     this.log(`[stdin-shadow] ${this.primaryName}=${delivered || "none"} ${shadowName}=${shadowed || "none"}`)
   }
+}
+
+/** The indexes of the earliest event, by combined position, that both lists hold within the window. */
+function commonEvent(a: string[], b: string[]): [number, number] | null {
+  const aEnd = Math.min(a.length, SHADOW_WINDOW)
+  const bEnd = Math.min(b.length, SHADOW_WINDOW)
+  for (let sum = 0; sum < aEnd + bEnd - 1; sum++) {
+    for (let i = Math.max(0, sum - bEnd + 1); i <= Math.min(sum, aEnd - 1); i++) {
+      if (a[i] === b[sum - i]) return [i, sum - i]
+    }
+  }
+  return null
 }

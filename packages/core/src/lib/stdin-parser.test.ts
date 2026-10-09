@@ -2573,7 +2573,8 @@ function defineStdinParserSuite(impl: Implementation): void {
           parser.push(Buffer.from("\x1b"))
           // A stalled event loop: now() passes the deadline before any timer runs.
           const now = spyOn(clock, "now").mockImplementation(() => TEST_TIMEOUT_MS + 5)
-          parser.updateProtocolContext({ kittyKeyboardEnabled: true })
+          parser.updateProtocolContext({ pixelResolutionQueryActive: true })
+          parser.updateProtocolContext({ pixelResolutionQueryActive: false })
           now.mockRestore()
           clock.advance(TEST_TIMEOUT_MS)
           expect(delivered).toEqual([k("escape", { raw: "\x1b" })])
