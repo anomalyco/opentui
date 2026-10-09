@@ -867,10 +867,10 @@ pub const UnifiedTextBuffer = struct {
                 remaining_cols -= width;
                 col += width;
             }
-            if (col > 0 and col < line.width_cols) {
+            if (col > 0) {
                 try spans.items[line_index].append(self.global_allocator, .{
                     .col = col,
-                    .next_col = line.width_cols,
+                    .next_col = std.math.maxInt(u32),
                     .style_id = 0,
                 });
             }
@@ -932,21 +932,13 @@ pub const UnifiedTextBuffer = struct {
         const line_count = if (self.getHighlightCount() == 0) 0 else @min(self.line_highlights.items.len, candidate.root.metrics().custom.linestart_count);
         try spans.ensureTotalCapacity(self.global_allocator, line_count);
         try highlights.ensureTotalCapacity(self.global_allocator, line_count);
-        var segment_index: usize = 0;
         for (self.line_highlights.items[0..line_count], 0..) |list, line_idx| {
-            var line_width: u32 = 0;
-            while (segment_index < result.segments.items.len) {
-                const segment = result.segments.items[segment_index];
-                segment_index += 1;
-                if (segment.isBreak()) break;
-                if (segment.asText()) |chunk| line_width += chunk.width_cols;
-            }
             highlights.appendAssumeCapacity(.empty);
             for (list.items) |hl| {
                 if (!hl.internal) try highlights.items[line_idx].append(self.global_allocator, hl);
             }
             spans.appendAssumeCapacity(.empty);
-            try self.buildLineSpans(highlights.items[line_idx].items, line_width, &spans.items[line_idx]);
+            try self.buildLineSpans(highlights.items[line_idx].items, &spans.items[line_idx]);
         }
 
         // History nodes are shared: publish undo on the live rope, after all preparation.
@@ -1310,11 +1302,7 @@ pub const UnifiedTextBuffer = struct {
         // Stage in spare capacity without publishing the new length or copying accepted highlights.
         highlights.unusedCapacitySlice()[0] = hl;
         if (self.highlight_batch_depth == 0) {
-            try self.buildLineSpans(
-                highlights.allocatedSlice()[0 .. highlights.items.len + 1],
-                self.lineWidthAt(@intCast(line_idx)),
-                &addition.spans,
-            );
+            try self.buildLineSpans(highlights.allocatedSlice()[0 .. highlights.items.len + 1], &addition.spans);
         }
         return addition;
     }
@@ -1402,12 +1390,10 @@ pub const UnifiedTextBuffer = struct {
             return TextBufferError.InvalidIndex;
         }
 
-        const highlights = self.getLineHighlights(line_idx);
-        const line_width = if (highlights.len == 0) 0 else self.lineWidthAt(@intCast(line_idx));
-        try self.buildLineSpans(highlights, line_width, &self.line_spans.items[line_idx]);
+        try self.buildLineSpans(self.getLineHighlights(line_idx), &self.line_spans.items[line_idx]);
     }
 
-    fn buildLineSpans(self: *const Self, highlights: []const Highlight, line_width: u32, spans: *std.ArrayListUnmanaged(StyleSpan)) TextBufferError!void {
+    fn buildLineSpans(self: *const Self, highlights: []const Highlight, spans: *std.ArrayListUnmanaged(StyleSpan)) TextBufferError!void {
         spans.clearRetainingCapacity();
         // Collect all boundary columns
         const Event = struct {
@@ -1472,16 +1458,15 @@ pub const UnifiedTextBuffer = struct {
             }
         }
 
-        // Emit final span after last event if there were any highlights
-        // This ensures the line returns to default styling after the last highlight ends
-        if (events.items.len > 0 and active.count() == 0) {
-            if (current_col < line_width) {
-                try spans.append(self.global_allocator, .{
-                    .col = current_col,
-                    .style_id = 0, // No style (default)
-                    .next_col = line_width,
-                });
-            }
+        // The default style runs from the last highlight end to any later column, so text that
+        // grows the line without a rebuild (append, edits, undo) stays unstyled.
+        std.debug.assert(active.count() == 0);
+        if (events.items.len > 0) {
+            try spans.append(self.global_allocator, .{
+                .col = current_col,
+                .style_id = 0,
+                .next_col = std.math.maxInt(u32),
+            });
         }
     }
 
@@ -1593,8 +1578,7 @@ pub const UnifiedTextBuffer = struct {
                 for (hl_list.items) |hl| {
                     if (hl.hl_ref != hl_ref) try retained.append(self.global_allocator, hl);
                 }
-                const line_width = if (retained.items.len == 0) 0 else self.lineWidthAt(@intCast(line_idx));
-                try self.buildLineSpans(retained.items, line_width, &removals.items[removals.items.len - 1].spans);
+                try self.buildLineSpans(retained.items, &removals.items[removals.items.len - 1].spans);
             }
         }
         if (self.highlight_batch_depth > 0) {

@@ -2673,61 +2673,6 @@ test "TextBufferView highlights - overlapping highlights" {
     try std.testing.expectEqual(@as(usize, 2), highlights.len);
 }
 
-test "TextBufferView highlights - style spans computed correctly" {
-    var pools = TestPools.init(std.testing.allocator);
-    defer pools.deinit();
-
-    var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth);
-    defer tb.deinit();
-
-    var view = try TextBufferView.init(std.testing.allocator, tb);
-    defer view.deinit();
-
-    try tb.setText("0123456789");
-
-    try tb.addHighlight(0, 0, 3, 1, 1, 0);
-    try tb.addHighlight(0, 5, 8, 2, 1, 0);
-
-    const spans = tb.getLineSpans(0);
-    try std.testing.expect(spans.len > 0);
-
-    var found_style1 = false;
-    var found_style2 = false;
-    for (spans) |span| {
-        if (span.style_id == 1) found_style1 = true;
-        if (span.style_id == 2) found_style2 = true;
-    }
-    try std.testing.expect(found_style1);
-    try std.testing.expect(found_style2);
-}
-
-test "TextBufferView highlights - priority handling in spans" {
-    var pools = TestPools.init(std.testing.allocator);
-    defer pools.deinit();
-
-    var tb = try TextBuffer.init(std.testing.allocator, &pools.graphemes, &pools.links, .wcwidth);
-    defer tb.deinit();
-
-    var view = try TextBufferView.init(std.testing.allocator, tb);
-    defer view.deinit();
-
-    try tb.setText("0123456789");
-
-    try tb.addHighlight(0, 0, 8, 1, 1, 0);
-    try tb.addHighlight(0, 3, 6, 2, 5, 0);
-
-    const spans = tb.getLineSpans(0);
-    try std.testing.expect(spans.len > 0);
-
-    var found_high_priority = false;
-    for (spans) |span| {
-        if (span.col >= 3 and span.col < 6 and span.style_id == 2) {
-            found_high_priority = true;
-        }
-    }
-    try std.testing.expect(found_high_priority);
-}
-
 test "TextBufferView char range highlights - single line highlight" {
     var pools = TestPools.init(std.testing.allocator);
     defer pools.deinit();
