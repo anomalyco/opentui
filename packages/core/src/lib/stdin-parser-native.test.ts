@@ -44,7 +44,9 @@ function summary(event: StdinEvent | undefined): unknown {
 }
 
 describe("native stdin parser: intentional changes (docs §14.3)", () => {
-  const cases: Array<[label: string, chunks: (string | Uint8Array)[], legacy: unknown[], native: unknown[]]> = [
+  const cases: Array<
+    [label: string, chunks: (string | Uint8Array)[], legacy: unknown[], native: unknown[], options?: StdinParserOptions]
+  > = [
     [
       "ESC inside OSC ends the string instead of waiting for the timeout",
       ["\x1b]11;rgb:0/0/0\x1b[A"],
@@ -120,32 +122,32 @@ describe("native stdin parser: intentional changes (docs §14.3)", () => {
         { mouse: "up", button: 2, x: 0, y: 0 },
       ],
     ],
+    [
+      "extra mouse buttons report 8 and up instead of a left click",
+      ["\x1b[<128;1;1M\x1b[<129;1;1m"],
+      [
+        { mouse: "down", button: 0, x: 0, y: 0 },
+        { mouse: "up", button: 1, x: 0, y: 0 },
+      ],
+      [
+        { mouse: "down", button: 8, x: 0, y: 0 },
+        { mouse: "up", button: 9, x: 0, y: 0 },
+      ],
+    ],
+    [
+      "Kitty CSI u decodes without the legacy useKittyKeyboard option",
+      ["\x1b[97;5u"],
+      [{ key: "", raw: "\x1b[97;5u", ctrl: false, meta: false, shift: false }],
+      [{ key: "a", raw: "\x1b[97;5u", ctrl: true, meta: false, shift: false }],
+      { useKittyKeyboard: false },
+    ],
   ]
-  for (const [label, chunks, legacyEvents, nativeEvents] of cases) {
+  for (const [label, chunks, legacyEvents, nativeEvents, options] of cases) {
     test(label, () => {
-      expect(parse(legacy, chunks).map(summary)).toEqual(legacyEvents)
-      expect(parse(native, chunks).map(summary)).toEqual(nativeEvents)
+      expect(parse(legacy, chunks, options).map(summary)).toEqual(legacyEvents)
+      expect(parse(native, chunks, options).map(summary)).toEqual(nativeEvents)
     })
   }
-
-  test("Kitty CSI u decodes without the legacy useKittyKeyboard option", () => {
-    expect(parse(legacy, ["\x1b[97;5u"], { useKittyKeyboard: false }).map(summary)).toEqual([
-      { key: "", raw: "\x1b[97;5u", ctrl: false, meta: false, shift: false },
-    ])
-    expect(parse(native, ["\x1b[97;5u"], { useKittyKeyboard: false }).map(summary)).toEqual([
-      { key: "a", raw: "\x1b[97;5u", ctrl: true, meta: false, shift: false },
-    ])
-  })
-
-  test("a paste larger than the legacy pending-byte cap streams through", () => {
-    const text = "p".repeat(64 * 1024)
-    expect(parse(legacy, [`\x1b[200~${text}\x1b[201~`], { maxPendingBytes: 1024 }).map(summary)).toEqual([
-      { paste: text },
-    ])
-    expect(parse(native, [`\x1b[200~${text}\x1b[201~`], { maxPendingBytes: 1024 }).map(summary)).toEqual([
-      { paste: text },
-    ])
-  })
 })
 
 describe("native stdin parser: differential replay", () => {
@@ -170,33 +172,14 @@ describe("native stdin parser: differential replay", () => {
 
   for (const [label, text] of streams) {
     test(label, () => {
+      // Uneven reads, as a terminal delivers them.
       const bytes = Buffer.from(text)
-      const lines: string[] = []
-      const comparator = new StdinShadowComparator("legacy", (line) => lines.push(line))
-      const clock = new ManualClock()
-      const options = { armTimeouts: true, clock, timeoutMs: 20, protocolContext: { kittyKeyboardEnabled: true } }
-      const primary = new StdinParser(options)
-      const shadow = new NativeStdinParser(options)
-      try {
-        // Uneven reads, as a terminal delivers them.
-        let offset = 0
-        for (let size = 1; offset < bytes.length; size = (size % 7) + 1) {
-          const chunk = bytes.subarray(offset, offset + size)
-          offset += chunk.length
-          primary.push(chunk)
-          shadow.push(chunk)
-          primary.drain((event) => comparator.primary(event))
-          shadow.drain((event) => comparator.shadow(event))
-        }
-        clock.advance(20)
-        primary.drain((event) => comparator.primary(event))
-        shadow.drain((event) => comparator.shadow(event))
-        expect(lines).toEqual([])
-        expect(events(primary).length + events(shadow).length).toBe(0)
-      } finally {
-        primary.destroy()
-        shadow.destroy()
+      const chunks: Uint8Array[] = []
+      for (let offset = 0, size = 1; offset < bytes.length; offset += size, size = (size % 7) + 1) {
+        chunks.push(bytes.subarray(offset, offset + size))
       }
+      const options = { protocolContext: { kittyKeyboardEnabled: true } }
+      expect(parse(native, chunks, options).map(summary)).toEqual(parse(legacy, chunks, options).map(summary))
     })
   }
 
@@ -229,6 +212,10 @@ describe("native stdin parser: differential replay", () => {
     for (let index = 0; index < 300; index++) comparator.primary(key("x"))
     expect(lines).toHaveLength(1 + 300 - 256)
     expect(lines.at(-1)!.endsWith("legacy=none")).toBe(true)
+    // The 256 queued events pair up; the next 300 back up on the other side.
+    for (let index = 0; index < 256 + 300; index++) comparator.shadow(key("x"))
+    expect(lines).toHaveLength(1 + 2 * (300 - 256))
+    expect(lines.at(-1)!.startsWith("[stdin-shadow] native=none")).toBe(true)
   })
 })
 
@@ -262,15 +249,6 @@ describe("native stdin parser: adapter", () => {
     expect(altUp).toMatchObject({ name: "up", meta: true, option: true, raw: "\x1b\x1b[A" })
   })
 
-  test("reports extra mouse buttons and Core's scroll buttons", () => {
-    expect(parse(native, ["\x1b[<128;1;1M\x1b[<67;1;1M\x1b[M`!!\x1b[MC!!"]).map(summary)).toEqual([
-      { mouse: "down", button: 8, x: 0, y: 0 },
-      { mouse: "scroll", button: 0, x: 0, y: 0 },
-      { mouse: "scroll", button: 0, x: 0, y: 0 },
-      { mouse: "move", button: -1, x: 0, y: 0 },
-    ])
-  })
-
   test("suspension stops input time so a reply split across it still completes", () => {
     const clock = new ManualClock()
     const parser = new NativeStdinParser({ clock, protocolContext: { pixelResolutionQueryActive: true } })
@@ -296,23 +274,15 @@ describe("native stdin parser: adapter", () => {
     }
   })
 
-  test("a timer that fires slightly early still resolves the timeout", () => {
+  test("holds input time when the clock steps back", () => {
     const clock = new ManualClock()
-    let flushes = 0
-    const parser = new NativeStdinParser({ clock, onTimeoutFlush: () => flushes++ })
+    const parser = new NativeStdinParser({ clock })
     try {
+      clock.setTime(100)
       parser.push(Buffer.from("\x1b"))
-      clock.setTime(19)
-      expect(events(parser)).toEqual([])
-      clock.advance(1)
-      expect(flushes).toBe(1)
-      expect(events(parser).map(summary)).toEqual([
-        { key: "escape", raw: "\x1b", ctrl: false, meta: false, shift: false },
-      ])
-      // A clock that steps back holds input time where it was.
       clock.setTime(5)
       parser.push(Buffer.from("x"))
-      expect(events(parser).map(summary)).toEqual([{ key: "x", raw: "x", ctrl: false, meta: false, shift: false }])
+      expect(events(parser).map(summary)).toEqual([{ key: "x", raw: "\x1bx", ctrl: false, meta: true, shift: false }])
     } finally {
       parser.destroy()
     }

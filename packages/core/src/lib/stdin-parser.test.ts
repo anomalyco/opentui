@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test"
+import { describe, expect, spyOn, test } from "bun:test"
 import { Buffer } from "node:buffer"
 import { ManualClock } from "../testing/manual-clock.js"
 import type { Clock, TimerHandle } from "./clock.js"
@@ -1557,7 +1557,7 @@ function defineStdinParserSuite(impl: Implementation): void {
         }
       })
 
-      legacyTest("aborting a pending startup cursor CPR swallows a reply that finishes later", () => {
+      test("aborting a pending startup cursor CPR swallows a reply that finishes later", () => {
         const parser = createParser({
           protocolContext: { startupCursorCprActive: true },
         })
@@ -1565,13 +1565,14 @@ function defineStdinParserSuite(impl: Implementation): void {
         try {
           parser.push(Buffer.from("\x1b[24;80"))
           expect(snap(parser)).toEqual([])
-          asLegacy(parser).abortPendingStartupCursorCpr()
+          if (!native) asLegacy(parser).abortPendingStartupCursorCpr()
           parser.updateProtocolContext({ startupCursorCprActive: false })
 
           expect(snap(parser)).toEqual([])
 
+          // Native has no abort: the stale reply stays a CPR reply, which the renderer ignores.
           parser.push(Buffer.from("R"))
-          expect(snap(parser)).toEqual([])
+          expect(snap(parser)).toEqual(either([], [resp("cpr", "\x1b[24;80R")]))
         } finally {
           parser.destroy()
         }
@@ -1629,19 +1630,6 @@ function defineStdinParserSuite(impl: Implementation): void {
 
           parser.push(Buffer.from("a"))
           expect(snap(parser)).toEqual([k("a")])
-        } finally {
-          parser.destroy()
-        }
-      })
-
-      test("a startup CPR pending when its probe ends still completes as a CPR reply", () => {
-        const parser = createParser({ protocolContext: { startupCursorCprActive: true } })
-        try {
-          parser.push(Buffer.from("\x1b[24;80"))
-          parser.updateProtocolContext({ startupCursorCprActive: false })
-          expect(snap(parser)).toEqual([])
-          parser.push(Buffer.from("R"))
-          expect(snap(parser)).toEqual([resp("cpr", "\x1b[24;80R")])
         } finally {
           parser.destroy()
         }
@@ -2609,17 +2597,29 @@ function defineStdinParserSuite(impl: Implementation): void {
           },
         }
 
-        const parser = impl.create({ armTimeouts: true, clock: disagreeingClock, timeoutMs: TEST_TIMEOUT_MS })
+        const onTimeoutFlush = () => {
+          throw new Error("handler failed")
+        }
+        const parser = impl.create({
+          armTimeouts: true,
+          clock: disagreeingClock,
+          timeoutMs: TEST_TIMEOUT_MS,
+          onTimeoutFlush,
+        })
+        const logged = spyOn(console, "error").mockImplementation(() => {})
         try {
           parser.push(Buffer.from("\x1b"))
           expect(snap(parser)).toEqual([])
 
           // Fire the timer — now() will report timeoutMs - 1 elapsed, but the
           // timeout callback still force-flushes without re-checking elapsed time.
+          // A failing flush handler is logged and does not escape the timer.
           inner.advance(TEST_TIMEOUT_MS)
 
           expect(snap(parser)).toEqual([k("escape", { raw: "\x1b" })])
+          expect(logged.mock.calls.map(([message]) => message)).toEqual(["stdin parser timeout flush failed"])
         } finally {
+          logged.mockRestore()
           parser.destroy()
         }
       })

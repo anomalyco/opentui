@@ -66,8 +66,16 @@ const MOUSE_TYPES: Record<number, MouseEventType> = {
   [C.OT_INPUT_MOUSE_SCROLL]: "scroll",
 }
 const SCROLL_DIRECTIONS = ["up", "down", "left", "right"] as const
+const NO_EXPECTATIONS: StdinParserProtocolContext = {
+  kittyKeyboardEnabled: false,
+  privateCapabilityRepliesActive: false,
+  pixelResolutionQueryActive: false,
+  explicitWidthCprActive: false,
+  startupCursorCprActive: false,
+}
 const REPLY_PROTOCOLS: Record<number, StdinResponseProtocol> = {
   [C.OT_INPUT_REPLY_CSI]: "csi",
+  [C.OT_INPUT_REPLY_SS3]: "unknown",
   [C.OT_INPUT_REPLY_OSC]: "osc",
   [C.OT_INPUT_REPLY_DCS]: "dcs",
   [C.OT_INPUT_REPLY_APC]: "apc",
@@ -138,13 +146,7 @@ export class NativeStdinParser {
     this.clock = options.clock ?? new SystemClock()
     this.armTimeouts = options.armTimeouts ?? true
     this.onTimeoutFlush = options.onTimeoutFlush ?? null
-    this.protocolContext = {
-      kittyKeyboardEnabled: options.protocolContext?.kittyKeyboardEnabled ?? false,
-      privateCapabilityRepliesActive: options.protocolContext?.privateCapabilityRepliesActive ?? false,
-      pixelResolutionQueryActive: options.protocolContext?.pixelResolutionQueryActive ?? false,
-      explicitWidthCprActive: options.protocolContext?.explicitWidthCprActive ?? false,
-      startupCursorCprActive: options.protocolContext?.startupCursorCprActive ?? false,
-    }
+    this.protocolContext = { ...NO_EXPECTATIONS, ...options.protocolContext }
     if (options.session) {
       this.lib = options.session.lib
       this.context = options.session.context
@@ -203,7 +205,6 @@ export class NativeStdinParser {
   /** Resolves a partial unit whose deadline has passed at `nowMsValue`. */
   public flushTimeout(nowMsValue: number = this.clock.now()): void {
     this.ensureAlive()
-    if (this.suspended) return
     this.native(() => this.feed(EMPTY, this.toNs(nowMsValue)))
     this.reconcileTimeout()
   }
@@ -313,8 +314,8 @@ export class NativeStdinParser {
     this.clearTimeout()
     const deadline = this.deadlineNs
     if (deadline === null || this.suspended || this.sessionGone) return
-    const remaining = deadline - this.nowNs()
-    const delayMs = remaining > 0n ? Number((remaining + 999_999n) / 1_000_000n) : 0
+    // The feed that reported the deadline already expired anything due at lastNs.
+    const delayMs = Number((deadline - this.lastNs + 999_999n) / 1_000_000n)
     this.timeoutId = this.clock.setTimeout(() => {
       this.timeoutId = null
       if (this.destroyed) return
@@ -373,11 +374,11 @@ export class NativeStdinParser {
         return
       }
       case C.OT_INPUT_PASTE: {
-        if (flags & C.OT_INPUT_PASTE_START || !this.paste) this.paste = []
+        if (flags & C.OT_INPUT_PASTE_START) this.paste = []
         // The payload buffer is reused by the next feed.
-        if (text.length > 0) this.paste.push(Uint8Array.from(text))
+        if (text.length > 0) this.paste!.push(Uint8Array.from(text))
         if (flags & C.OT_INPUT_PASTE_END) {
-          const parts = this.paste
+          const parts = this.paste!
           this.paste = null
           this.events.push({ type: "paste", bytes: parts.length === 1 ? parts[0]! : concat(parts) })
         }
@@ -393,7 +394,7 @@ export class NativeStdinParser {
             ? "cpr"
             : flags & C.OT_INPUT_REPLY_FRAGMENT
               ? "unknown"
-              : (REPLY_PROTOCOLS[code] ?? "unknown")
+              : REPLY_PROTOCOLS[code]!
         this.events.push({ type: "response", protocol, sequence: latin1(raw) })
         return
       }
@@ -411,8 +412,7 @@ function keyRaw(raw: Uint8Array): string {
 function compatCode(raw: string, code: number, kitty: boolean): string | undefined {
   if (kitty) {
     if (!raw.endsWith("u") || kittyKeyMap[code] === undefined) return undefined
-    const number = /^\x1b\[(\d+)/.exec(raw)
-    return number ? `[${number[1]}u` : undefined
+    return `[${/^\x1b+\[(\d+)/.exec(raw)![1]}u`
   }
   if (kittyKeyMap[code] === undefined && !KEYPAD_TEXT.has(String.fromCodePoint(code))) return undefined
   const match = LEGACY_CODE_RE.exec(raw)

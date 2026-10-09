@@ -705,12 +705,10 @@ export interface NativeSessionPumpResult {
   deadlineNs: bigint | null
 }
 
-/** One `ot_session_input_feed` call: records and payload bytes written, and when to call again. */
+/** One `ot_session_input_feed` call: input consumed, records written, and when to call again. */
 export interface NativeInputDrain {
   consumed: number
   count: number
-  payloadLength: number
-  discarded: number
   deadlineNs: bigint | null
 }
 
@@ -6443,8 +6441,6 @@ export class FFIRenderLib {
     return {
       consumed: words[layout.fields.consumed.offset / 4]!,
       count: words[layout.fields.count.offset / 4]!,
-      payloadLength: words[layout.fields.payload_len.offset / 4]!,
-      discarded: words[layout.fields.discarded.offset / 4]!,
       deadlineNs: deadline === 0n ? null : deadline,
     }
   }
