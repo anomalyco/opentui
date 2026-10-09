@@ -83,6 +83,7 @@
     "src/lib/parse.keypress.test.ts",
     "src/lib/renderable.validations.test.ts",
     "src/lib/stdin-parser.test.ts",
+    "src/lib/stdin-parser-native.test.ts",
     "src/lib/terminal-capability-detection.test.ts",
     "src/lib/terminal-palette.test.ts",
     "src/lib/tree-sitter/cache.test.ts",

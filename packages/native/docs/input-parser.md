@@ -12,6 +12,9 @@ changes.
 
 Branch: `ot-native-input-parser`. Worktree: `/home/simon/src/wt/ot-native-input-parser`.
 
+Status: phases 1 to 3 of §14.1 are implemented. The native parser runs behind
+`experimental_nativeInput` / `OTUI_NATIVE_INPUT_PARSER`; the legacy parser is still the default.
+
 ---
 
 ## 1. Scope
@@ -104,7 +107,7 @@ And three structural costs without a numbered issue:
 | fragment     | A unit ended by something other than its own terminator (timeout, `ESC`, C0 byte, overlong). Reported as a reply with the `FRAGMENT` flag.                 |
 | expectations | Two host-set facts that change timeout behavior: Kitty keyboard is on; the host is waiting for replies.                                                    |
 | sink         | Caller-owned event records plus a caller-owned payload byte buffer that one feed writes into.                                                              |
-| `now_ns`     | The host's monotonic clock in nanoseconds, the same clock `ot_session_pump` uses.                                                                          |
+| `now_ns`     | A host monotonic clock in nanoseconds for input. It is independent of the `ot_session_pump` clock (§10.6).                                                 |
 
 ---
 
@@ -118,7 +121,10 @@ Numbered so tests can cite them.
 - **G2 No protocol bytes become text.** A byte that starts or continues a sequence introducer is
   never reported as a character key unless the timeout proves it was a key. Fragments are replies.
 - **G3 Every input byte is accounted for.** Each byte ends up in exactly one event's `raw` span, in
-  one paste record's text, in the discarded counter, or in the parser's pending unit.
+  one paste record's text or its `200~`/`201~` markers, in a discarded unit, or in the parser's
+  pending unit. The one exception is deliberate: a mouse report recovered after a timed-out Escape
+  reinstates that `ESC` in its `raw` (§6.2 `recover_sgr`), so the `ESC` also appears in the Escape
+  key's `raw`.
 - **G4 Bounded memory.** The parser holds at most `unit_bytes_max` (4096) bytes of pending unit plus
   fixed scalar state. Paste is streamed; nothing grows with input size.
 - **G5 Bounded work.** One byte emits at most `events_per_byte_max` (4) records and at most
@@ -130,8 +136,10 @@ Numbered so tests can cite them.
   (§6.4), and never byte by byte.
 - **G8 `ESC ESC` is never one unit.** A second `ESC` restarts the unit and records an Alt prefix;
   the prefix applies only to a key, otherwise the first `ESC` is an Escape key of its own.
-- **G9 Mouse reports, Kitty keys, and awaited replies never time out mid-way.** They wait without a
-  deadline for bytes that continue them; a byte that cannot continue them flushes a fragment.
+- **G9 Mouse reports, Kitty keys, and awaited replies never time out mid-way.** A CSI whose prefix
+  can still be an SGR mouse report, a Kitty key, or an awaited CSI reply (§6.6) waits without a
+  deadline for bytes that continue it; a byte that cannot continue it flushes a fragment. Shorter
+  prefixes, X10 reports, and OSC/DCS/APC strings keep their deadline, as in Core.
 - **G10 Alt + any character.** `ESC` followed by any printable ASCII, any control byte, or any
   complete UTF-8 scalar is that key with Alt.
 
@@ -209,9 +217,9 @@ Twelve states. Fields are part of the state value (Zig tagged union, §10.2).
 | `recover_sgr` |                                        | yes                 | `[ <` after a timed-out `ESC`; reading SGR parameters.                                                                                      |
 | `csi`         | `alt: bool`, `deferred: bool`          | unless deferred     | Inside `ESC [`. `deferred` means the timeout passed on a unit that may still be a mouse report, a Kitty key, or an awaited reply (§6.6).    |
 | `ss3`         | `alt: bool`                            | yes                 | Inside `ESC O`.                                                                                                                             |
-| `x10`         | `alt: bool`                            | yes                 | Reading the three raw bytes after `ESC [ M`.                                                                                                |
+| `x10`         | `alt: bool`, `recovered: bool`         | yes                 | Reading the three raw bytes after `ESC [ M`. `recovered`: the unit's `ESC` was reinstated by `recover`; fragments omit it.                  |
 | `string`      | `kind: osc\|dcs\|apc`, `escaped: bool` | yes                 | Inside OSC, DCS, or APC until `BEL` (OSC only) or `ST`. `escaped` means the previous byte was `ESC`, which can split across chunks.         |
-| `discard`     | `string: bool`, `escaped: bool`        | yes                 | An overlong CSI (until a `final`) or string (until its terminator) being dropped.                                                           |
+| `discard`     | `string`, `escaped`, `osc: bool`       | yes                 | An overlong CSI (until a `final`) or string (until its terminator) being dropped. `osc`: `BEL` also ends it.                                |
 | `paste`       | `matched: u3` (0..6)                   | no                  | Inside bracketed paste. `matched` counts how many bytes of `ESC [ 2 0 1 ~` the tail of the payload matches so far.                          |
 
 Scalar state outside the union: `unit: [4096]u8`, `unit_len: u16`, `since_ns: u64` (time of the
@@ -225,7 +233,7 @@ States removed relative to `stdin-parser.ts`, and why:
 | `csi_sgr_mouse`, `csi_parametric`, `csi_private_reply` and their `_deferred` twins | One `csi` state with `deferred: bool`; deferral decided by inspecting the parsed prefix (§6.6).                                              |
 | `csi_parametric_ignored`, `abortPendingStartupCursorCpr()`                         | CPR is always a reply (`CSI 1;N R` is F3 only when no replies are expected). The host ignores a stale CPR; the parser does not need to know. |
 | `esc_recovery`, `esc_less_mouse`, `esc_less_x10_mouse`, `justFlushedEsc`           | `expired`, `recover`, `recover_sgr`; X10 recovery reuses `x10`.                                                                              |
-| `pausePendingTimeout`, `resumePendingTimeout`, `hasPendingPixelResolutionResponse` | A deferred unit has no deadline; suspend/resume need no special handling (§11.5).                                                            |
+| `pausePendingTimeout`, `resumePendingTimeout`, `hasPendingPixelResolutionResponse` | A deferred unit has no deadline; the adapter stops input time across suspension (§11.5).                                                     |
 | `maxPendingBytes` (64 MiB) and the paste collector                                 | 4 KiB unit buffer; paste streams through the sink (§8.5).                                                                                    |
 
 ### 6.2 Byte transitions
@@ -259,6 +267,9 @@ enter `S`; `escape(now)` = clear `unit`, enter `escape{alt=false}`, `since = now
 | `cont` | append; if `unit_len == expected`: decode (invalid scalar → U+FFFD), emit key char (+Alt), `ground` |
 | other  | for each buffered byte: eight-bit (as in ground); then `ground`, re-step                            |
 
+The first fallback key's `raw` carries the `ESC` of an Alt prefix (`ESC 0xE4 a` → Alt+d with raw
+`ESC 0xE4`, then `a`), so G3 holds without a fifth event.
+
 **`escape{alt}`:**
 
 | Byte          | `alt = false`                              | `alt = true`                                            |
@@ -279,7 +290,7 @@ on it. Every other `ESC <uppercase>` is Alt + that character (the adapter adds S
 | Byte  | Action                                                                          |
 | ----- | ------------------------------------------------------------------------------- |
 | `<`   | `begin(recover_sgr, '[')`, append `<` (unit is `ESC [ <`, the `ESC` reinstated) |
-| `M`   | `begin(x10{alt=false}, '[')`, append `M`                                        |
+| `M`   | `begin(x10{alt=false, recovered=true}, '[')`, append `M`                        |
 | other | emit key `'['`; `ground`, re-step                                               |
 
 **`recover_sgr`:**
@@ -299,7 +310,7 @@ event's `raw` includes the reinstated `ESC` so that it is a well-formed report f
 | ----------------------------------------------------------- | ----------------------------------------------------- |
 | `ESC`                                                       | `cut_short(alt)`; `escape(now)`                       |
 | `C0` or `DEL`                                               | `cut_short(alt)`; `ground(byte, false)`               |
-| csi only, `unit_len == 2`, `M`                              | append; enter `x10{alt}`                              |
+| csi only, `unit_len == 2`, `M`                              | append; enter `x10{alt, recovered=false}`             |
 | csi only, `unit_len == 2`, `[`                              | append (Linux console / PuTTY)                        |
 | `final`, or csi with `$` after digits only (`unit_len > 2`) | append; `ground`; dispatch (§6.3)                     |
 | `unit_len >= sequence_bytes_max`                            | enter `discard{string=false}`; `discarded_count += 1` |
@@ -308,12 +319,14 @@ event's `raw` includes the reinstated `ESC` so that it is a well-formed report f
 **`csi{alt, deferred=true}`:** if `continues_deferred(byte)` (§6.6): enter `csi{alt, deferred=false}`
 and re-step; else `cut_short(alt)` and re-step in `ground`.
 
-**`x10{alt}`:**
+**`x10{alt, recovered}`:**
 
 | Byte         | Action                                                                                                                 |
 | ------------ | ---------------------------------------------------------------------------------------------------------------------- |
 | `0x01..0x1F` | `cut_short(alt)`; `ground(byte, false)` (a control byte cannot be a payload byte; `0x00` can: xterm's past-end marker) |
 | other        | append; when `unit_len == 6`: decode (§7.8); `ground`                                                                  |
+
+A recovered unit's fragment omits the reinstated `ESC`, like `recover_sgr`.
 
 **`string{kind, escaped}`:**
 
@@ -327,10 +340,15 @@ and re-step; else `cut_short(alt)` and re-step in `ground`.
 
 `BEL` ends only OSC. In DCS and APC it is payload (Core's rule; ECMA-48).
 
+At the `unit_bytes_max` boundary the terminator must still fit: an `ESC` needs room for itself and
+the `\` after it, or the string enters `discard{string=true, escaped=true}`; an OSC `BEL` that does
+not fit drops the whole string (`discarded_count += 1`, `ground`).
+
 **`discard{string=false}`:** `ESC` → `escape(now)`; `final` → `ground`; else stay.
 
-**`discard{string=true, escaped}`:** `(false, BEL)` → `ground`; `(false, ESC)` → `escaped = true`;
-`(true, '\')` → `ground`; `(true, other)` → `escape(now)`, re-step; `(false, other)` → stay.
+**`discard{string=true, escaped, osc}`:** `(false, BEL)` with `osc` → `ground`; `(false, ESC)` →
+`escaped = true`; `(true, '\')` → `ground`; `(true, other)` → `escape(now)`, re-step;
+`(false, other)` → stay. As in a short string, `BEL` is payload in an overlong DCS or APC.
 
 **`paste{matched}`:** with `END = ESC [ 2 0 1 ~`:
 
@@ -417,7 +435,7 @@ of three things the host must never see as text:
 | ----------------------------- | ----------------------------------------------------------------------------------------- | ----------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
 | `<` then `digit`/`;` only     | always                                                                                    | `digit`, `;`      | `M`, `m`                                                                                                                               |
 | `?` then `digit`/`;`/`$` only | `expect.replies`                                                                          | `digit`, `;`, `$` | `y` after `$` and a digit; `c` after a digit or `;`; `n`, `u` after a digit                                                            |
-| numeric `d+(:d*)*(;…){0,2}`   | `expect.kitty_keyboard`; or `expect.replies` and (one `;`, or two `;` with first field 4) | `digit`, `:`, `;` | kitty: `u` after a digit, or `~`/`A..Z` with one `;` and a `:` subfield; replies: `R` with one `;`, `t` with two `;` and first field 4 |
+| numeric `d+(:d*)*(;…){1,2}`   | `expect.kitty_keyboard`; or `expect.replies` and (one `;`, or two `;` with first field 4) | `digit`, `:`, `;` | kitty: `u` after a digit, or `~`/`A..Z` with one `;` and a `:` subfield; replies: `R` with one `;`, `t` with two `;` and first field 4 |
 
 "Numeric" with Kitty on also admits a first field `d+(:d*)*` (alternate keys). The shape checks are
 over the bytes in `unit`, not a second parse.
@@ -447,9 +465,10 @@ re-evaluates a deferred unit and cuts it short if it is no longer deferrable.
 `fields(params)` splits numeric CSI parameters into at most `params_max = 16` fields separated by
 `;`, each with at most `subparams_max = 8` subfields separated by `:`. Each value is `?u32` (absent
 when empty), accumulated with saturating arithmetic. Any byte other than `digit`, `;`, `:` makes
-the parameters non-numeric (→ reply). Field index notation below: `f[i][j]`.
+the parameters non-numeric (→ reply). Extra fields and subfields are ignored; a Kitty text field
+with more than 8 subfields sets `TEXT_TRUNCATED`. Field index notation below: `f[i][j]`.
 
-Modifier parameter: `mods = f[1][0] - 1` (default 0), bits as §8.3. Event subfield
+Modifier parameter: `mods = f[1][0] - 1` (default 0, and 0 when the value exceeds 256), bits as §8.3. Event subfield
 `f[1][1]`: 1 press (default), 2 repeat, 3 release.
 
 ### 7.2 Letter keys: `CSI [1;] mods[:event] LETTER`
@@ -496,8 +515,9 @@ Keypad characters carry `text` so editors insert them (Core's `ss3NumpadPrintabl
 
 ### 7.5 modifyOtherKeys: `CSI 27 ; mods ; codepoint ~`
 
-`codepoint` decodes like a Kitty code (§7.6) without shifted/base/text. Examples: `27;5;13~` =
-Ctrl+Enter, `27;2;9~` = Shift+Tab, `27;5;27~` = Ctrl+Escape.
+`codepoint` decodes like a Kitty code (§7.6) without shifted/base/text fields. A character key's
+text is the character as sent, without Shift applied (xterm already sends the shifted character).
+Examples: `27;5;13~` = Ctrl+Enter, `27;2;9~` = Shift+Tab, `27;5;27~` = Ctrl+Escape.
 
 ### 7.6 Kitty: `CSI code[:shifted[:base]] ; mods[:event] ; text[:text…] u`
 
@@ -539,7 +559,9 @@ because `event` is read from `f[1][1]` there too.
 - Kitty: the text field if present. Else, for a character key or keypad character key: if Shift
   and `shifted` present → `shifted`; else if Shift and the character has a single-scalar uppercase →
   that; else the character. Functional keys get no text; keypad characters do (Core's
-  `printableKeypadText`).
+  `printableKeypadText`). Native has no Unicode case tables: `upper` covers the scripts keyboards
+  type (ASCII, Latin-1 and Latin Extended, Greek, Cyrillic, Armenian, fullwidth Latin). Terminals
+  that report `shifted` codes make it unnecessary.
 - Legacy: a character key without Alt → the character. With Alt → empty (Core's `sequence` stays
   the raw `ESC x`, which stops editors inserting it). Control keys, SS3 keypad characters as §7.4.
 
@@ -656,10 +678,10 @@ Memory per parser: `unit` 4096 + ~32 bytes of scalars. No allocation, ever. Past
   registered in `src/test.zig`. Kebab-case files, `snake_case` functions, 4-space `zig fmt`,
   100 columns. Zig 0.16 (`build.zig.zon` minimum).
 - No allocator. No `std.Io`. No clock. The struct is a value inside `Session`.
-- Hot loop: `step` is a free function over `*InputParser` plus primitives; decoders are free
-  functions over `[]const u8` and return `?Event`.
+- Hot loop: `step` is one switch over `State`; decoders are free functions over parsed fields or
+  `[]const u8` and return `?Key` / `?Mouse`, which dispatch turns into events.
 - Assertions: pair checks at the sink boundary (room before, counts after), state-field invariants
-  (`utf8.expected` in 2..4, `paste.matched` ≤ 6, `unit_len ≤ unit_bytes_max`), re-step iteration
+  (`utf8.expected` in 2..4, `paste.matched` < 6, `unit_len ≤ unit_bytes_max`), re-step iteration
   bound, `comptime` equality of `Event` and `c.ot_input_event` size and field offsets.
 
 ### 10.2 Types
@@ -712,7 +734,7 @@ const State = union(enum) {
     recover_sgr,
     csi: struct { alt: bool, deferred: bool },
     ss3: struct { alt: bool },
-    x10: struct { alt: bool },
+    x10: struct { alt: bool, recovered: bool },
     string: struct { kind: StringKind, escaped: bool },
     discard: struct { string: bool, escaped: bool },
     paste: struct { matched: u3 },
@@ -756,17 +778,18 @@ pub const InputParser = struct {
 ```
 feed, deadlineNs, setExpectations, reset
 expire(self, now_ns, sink)
-step(self, byte, now_ns, sink)                -- one switch over State; bounded re-step loop
-ground(self, byte, now_ns, alt, sink)         -- §6.2 ground table
-eightBit(self, byte, now_ns, sink)
-dispatchCsi(self, alt, sink), dispatchSs3(self, alt, sink), dispatchX10(self, alt, sink)
-cutShort(self, alt, sink), begin(self, state, introducer), escape(self, now_ns)
+step(self, byte, sink)                        -- one switch over State; bounded re-step loop
+ground(self, byte, alt, wire, sink)           -- §6.2 ground table; wire = raw bytes with an Alt ESC
+eightBit(self, byte, wire, sink)
+escapeByte, recoverSgrByte, sequenceByte, stringByte, discardByte, pasteByte  -- one per state arm
+dispatchCsi(self, alt, sink), dispatchSs3(self, alt, sink), dispatchX10(self, alt, recovered, sink)
+cutShort(self, alt, protocol, sink), begin(self, state, introducer), escape(self)
 deferrable(self) bool, continuesDeferred(self, byte) bool  -- §6.6 shape checks over unit
--- pure decoders over []const u8:
-fields(params) ?Fields, modifiersAndAction(fields) …
-letterKey, tildeKey, kittyKey, ss3Key, modifyOtherKey, bracketKey
-sgrMouse(params, pressed) ?Event, x10Mouse(payload, last_button) ?Event
-deriveText(code, shifted, modifiers, kitty) …
+-- pure decoders:
+Fields.parse(params) ?Fields, Shape.of(params, kitty) ?Shape, modsAndAction(fields)
+letterKey, tildeKey, kittyKey, codeKey, ss3Key, bracketKey -> ?Key
+sgrMouse(params, pressed), mouseKind(code, release) -> ?Mouse
+upper(scalar) ?u32                            -- single-scalar uppercase for Kitty text (§7.7)
 ```
 
 Keep each under 70 lines; `step` is the one long switch and should stay a flat table of arms that
@@ -789,7 +812,8 @@ while (pending) |b| {
 
 Longest chain: `string{escaped}` + non-`\` → fragment, `escape(now)`, re-step `b` in `escape` →
 `ground(b, alt=true)` (one more step inside `ground`, not a re-step). `csi{deferred}` + `ESC` →
-cut short, re-step in `ground` → `escape`. Three iterations is the proven bound.
+cut short, re-step in `ground` → `escape`. Every chain is at most two iterations; the assertion
+allows three.
 
 ### 10.5 Per-byte emission bound (G5)
 
@@ -808,11 +832,12 @@ most `sequence_bytes_max` raw plus `key_text_bytes_max` text.
 
 ### 10.6 Session ownership
 
-`Session` gains `input: input_parser.InputParser = .{}`. Effective expectations at feed time:
+`Session` gains `input: input_parser.InputParser = .{}`, the host's `input_expect`, and
+`last_input_ns`. Effective expectations at feed time:
 
 ```
-kitty_keyboard = input.expect.kitty_keyboard or (renderer != null and renderer.terminal.state.kitty_keyboard)
-replies        = input.expect.replies
+kitty_keyboard = input_expect.kitty_keyboard or (renderer != null and renderer.terminal.state.kitty_keyboard)
+replies        = input_expect.replies
 ```
 
 `terminal.state.kitty_keyboard` becomes true when `setKittyKeyboard` writes the push packet, which
@@ -820,8 +845,15 @@ precedes any Kitty-encoded input. The host flag lets Core keep its optimistic `u
 setting. `reset` is called by nothing in Session today; suspend and resume do not touch the parser
 (§11.5). `deinit` has nothing to free.
 
-`Session.feedInput(bytes, now_ns, sink)` checks `checkOpen()` and `checkClock(now_ns)` (the pump's
-monotonic rule, shared `last_pump_ns`), applies the effective expectations, and calls `input.feed`.
+`Session.feedInput(bytes, now_ns, sink)` checks `checkOpen()` and that `now_ns` is not before
+`last_input_ns`, applies the effective expectations, and calls `input.feed`. It returns `consumed`,
+`discarded_count`, and `deadlineNs()` for the drain record.
+
+Input time is its own monotonic clock, not the pump's `last_pump_ns`. The parser's deadlines are
+relative to its own `since_ns`, so nothing needs the two clocks to agree, and the host's input timer
+runs on a different clock than its pump: Core's renderer arms input timeouts on its `Clock`
+(`performance.now()`, or a `ManualClock` in tests) while `NativeSession` pumps with
+`process.hrtime.bigint()`. A shared rule would reject the first feed after any pump.
 
 ---
 
@@ -922,12 +954,13 @@ typedef struct ot_input_drain {
 
 /* Parse terminal input into events written to caller-owned records and payload.
  * bytes may be NULL only when byte_count is zero; zero bytes only resolves the
- * timeout. now_ns shares the monotonic clock of ot_session_pump and must not go
- * backwards across pumps, polls, and feeds. capacity must be at least
- * OT_INPUT_EVENTS_MIN and payload_capacity at least OT_INPUT_PAYLOAD_BYTES_MIN;
- * the call consumes input until either runs low and reports consumed. Records
- * and payload are borrowed for the call and never retained. Accepted in any open
- * session state; closed and cancelled sessions reject. No allocation, no I/O. */
+ * timeout. now_ns is a host monotonic clock in nanoseconds that must not go
+ * backwards across feeds; it is independent of the pump clock. capacity must be
+ * at least OT_INPUT_EVENTS_MIN and payload_capacity at least
+ * OT_INPUT_PAYLOAD_BYTES_MIN; the call consumes input until either runs low and
+ * reports consumed. Records and payload are borrowed for the call and never
+ * retained. Accepted in any open session state; closing, closed, failed, and
+ * cancelled sessions reject. No allocation, no I/O. */
 ot_status ot_session_input_feed(
     ot_context *context,
     const ot_handle *session,
@@ -957,10 +990,16 @@ ot_status ot_session_input_reset(ot_context *context, const ot_handle *session);
 | --------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `OT_INVALID_ARGUMENT`                                                       | null pointers with nonzero counts, `capacity < OT_INPUT_EVENTS_MIN`, `payload_capacity < OT_INPUT_PAYLOAD_BYTES_MIN`, wrong `struct_size`/`abi_version`, unknown `expect` bits, non-monotonic `now_ns`. |
 | `OT_UNSUPPORTED_VERSION`                                                    | `abi_version` mismatch (as other records).                                                                                                                                                              |
-| `OT_SESSION_CLOSED`                                                         | closing or closed session.                                                                                                                                                                              |
+| `OT_SESSION_CLOSED`                                                         | closing, closed, or cancelled session.                                                                                                                                                                  |
+| `OT_OUTPUT_FAILED`                                                          | failed session (`SessionFailed`, as every session call).                                                                                                                                                |
 | `OT_STALE_HANDLE`, `OT_WRONG_CONTEXT`, `OT_WRONG_THREAD`, `OT_CONTEXT_BUSY` | as every session call.                                                                                                                                                                                  |
 
 A rejected call leaves `out_drain`, the records, and parser state unchanged.
+
+With buffers at exactly the minimums, a call makes progress one event at a time: after one event the
+sink no longer has room for a byte's worst case. A call that resolved an expired unit into a full
+sink can consume no bytes; hosts loop until `consumed` covers the input, and treat a call that
+consumed nothing and reported nothing as a bug.
 
 ### 11.3 Expectations mapping from Core
 
@@ -974,20 +1013,24 @@ A rejected call leaves `out_drain`, the records, and parser state unchanged.
 - `src/context-input-abi.zig` with the three exports, following `context-terminal-abi.zig`
   (`abi.sessionContextStatus`, `transport.record`, `fail`). `comptime` assert `@sizeOf(Event) ==
 @sizeOf(c.ot_input_event)` and every `@offsetOf`.
-- Register in `lib.zig`'s export list and in `test.zig`.
+- Register in `context-abi.zig`'s `abi_modules` (the export list `lib.zig` reaches) and in `test.zig`.
 - `scripts/native-abi-pointers.ts`: `ot_session_input_feed: { 0: context, 1: buffer, 2: empty,
 5: buffer, 7: buffer, 9: buffer }`, `ot_session_input_expect: { 0: context, 1: buffer }`,
   `ot_session_input_reset: { 0: context, 1: buffer }`.
 - From `packages/core`: `bun run generate:abi`, `bun run check:abi`, `bun run test:abi`.
-- `src/tests/context-abi.c` fixture: a compile-time check of the new record and prototypes.
+- `src/tests/context-abi.c` fixture: record sizes, prototypes, and a feed/expire/expect/reset run
+  through the static and shared libraries (`zig build test-abi`).
 
 ### 11.5 Lifecycle
 
 - Feed is accepted in every lifecycle phase of an open session, including `setting_up` (replies
-  arrive then) and `suspended` (the host stops feeding; stale bytes drained on resume are fed with
-  the resume time, and `feed`'s leading `expire` resolves any stale unit).
-- Suspend and resume do not reset the parser. A deferred partial reply (no deadline) survives a
-  suspension and completes on resume, which is what `hasPendingPixelResolutionResponse` protected.
+  arrive then) and `suspended`.
+- Suspend and resume do not reset the parser. The adapter stops input time while suspended: no
+  timer runs and `now_ns` holds, so a unit pending at suspension (even a lone `ESC` that begins a
+  pixel-resolution reply) still completes with the bytes drained on resume. After that drain, every
+  unit that waits for a deadline is stale and resolves at once, as if its timeout passed; deferred
+  replies keep waiting. This replaces `hasPendingPixelResolutionResponse` and its pause/reset dance
+  without the parser knowing about pixel replies.
 - `ot_terminal_flush_input` is unrelated: it discards OS-level unread bytes at shutdown.
 - `ot_session_destroy` frees nothing for the parser.
 
@@ -1002,16 +1045,28 @@ this design. Replies stay events.
 
 ## 12. TypeScript adapter
 
-File: `packages/core/src/lib/stdin-parser-native.ts` during migration; it replaces
-`stdin-parser.ts` at the end (§14). It keeps the surface `renderer.ts` uses: `push`, `read`,
-`drain`, `flushTimeout`, `reset`, `destroy`, and `updateProtocolContext`. It drops
-`abortPendingStartupCursorCpr`, `pausePendingTimeout`, `resumePendingTimeout`,
-`hasPendingPixelResolutionResponse`, and `resetMouseState`; the renderer call sites are removed.
+File: `packages/core/src/lib/stdin-parser-native.ts` (`NativeStdinParser`) during migration; it
+replaces `stdin-parser.ts` at the end (§14). It keeps the surface `renderer.ts` uses: `push`, `read`,
+`drain`, `flushTimeout`, `reset`, `destroy`, and `updateProtocolContext`, and adds `suspend` and
+`resume` (§11.5). It drops `abortPendingStartupCursorCpr`, `pausePendingTimeout`,
+`resumePendingTimeout`, `hasPendingPixelResolutionResponse`, and `resetMouseState`; while the legacy
+parser is the default, the renderer calls those only on a legacy parser.
+
+The constructor takes the legacy options it needs (`armTimeouts`, `onTimeoutFlush`,
+`protocolContext`, `clock`) and an optional `session: { lib, context, session }`. The renderer passes
+its `NativeSession`; without one the adapter owns a private Context and Session, which tests and
+benchmarks use. `timeoutMs`, `maxPendingBytes`, and `useKittyKeyboard` are ignored (§6.4, §9,
+§14.3).
+
+A Session or Context that closes, fails, or is destroyed under the adapter ends parsing quietly:
+`SessionClosed`, `OutputFailed`, `StaleHandle`, and `WrongContext` stop the timer, and later calls
+report no events. Renderer teardown updates the protocol context after its Context is gone.
 
 ### 12.1 Buffers and loop
 
-One `Uint8Array` of 64 × 32 bytes for records (a `DataView` over it) and one 16 KiB payload
-`Uint8Array`, allocated once. `push(data)`:
+One `Uint8Array` of 64 × 32 bytes for records (with `Uint32Array`/`Uint16Array` views over it,
+offsets from the generated `ot_input_event` layout) and one 16 KiB payload `Uint8Array`, allocated
+once. `push(data)`:
 
 ```
 offset = 0
@@ -1022,46 +1077,60 @@ while offset < data.length:
 arm or clear the timer from drain.deadline_ns
 ```
 
-`flushTimeout(now)` is `feed(empty, now)`. The timer uses the renderer's `Clock` (as today) and
-calls `drainStdinParser` after a flush.
+`now_ns` is the renderer `Clock`'s milliseconds in nanoseconds, held monotonic (a clock that steps
+back keeps the last time). `flushTimeout(now)` is `feed(empty, now)`. `updateProtocolContext` sets the
+expectations and then feeds zero bytes, so a unit that can no longer wait resolves at once, as the
+legacy parser did. The timer uses the renderer's `Clock` and calls `onTimeoutFlush` (the renderer's
+`drainStdinParser`) after a flush. A firing timer is the host's statement that the deadline passed:
+it feeds at `max(now, deadline_ns)`, so a clock sample that disagrees slightly with the timer cannot
+leave a unit stuck.
+
+`OTUI_NATIVE_INPUT_SHADOW` runs the other parser on the same input and logs one
+`[stdin-shadow] legacy=… native=…` line per event that differs (`StdinShadowComparator`). Events pair
+in order, so the two parsers' separate timers cannot misalign them; a side that stops producing events
+is bounded at 256 queued events.
 
 ### 12.2 Event translation
 
-| Native  | `StdinEvent`                                                                                                                                                                                                                                          |
-| ------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `KEY`   | `{ type: "key", raw, key: ParsedKey }` (§12.3)                                                                                                                                                                                                        |
-| `MOUSE` | `{ type: "mouse", raw, encoding: raw[2] === "<" ? "sgr" : "x10", event: RawMouseEvent }` with `type` from action (`down`/`up`/`move`/`drag`/`scroll`), `button` (255 → 0 for move, as Core), `x`, `y`, `modifiers`, `scroll: { direction, delta: 1 }` |
-| `PASTE` | accumulate text chunks from `START` to `END`; emit one `{ type: "paste", bytes }` at `END`                                                                                                                                                            |
-| `FOCUS` | `{ type: "response", protocol: "csi", sequence: raw }` (the existing `focusHandler` matches the raw string; no behavior change)                                                                                                                       |
-| `REPLY` | `{ type: "response", protocol, sequence: latin1(raw) }`; `protocol` is `"cpr"` when `CURSOR_POSITION`, `"unknown"` when `FRAGMENT`, else the native protocol name                                                                                     |
+| Native  | `StdinEvent`                                                                                                                                                                                                                                                                                                                                                                |
+| ------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `KEY`   | `{ type: "key", raw, key: ParsedKey }` (§12.3)                                                                                                                                                                                                                                                                                                                              |
+| `MOUSE` | `{ type: "mouse", raw, encoding: raw[2] === "<" ? "sgr" : "x10", event: RawMouseEvent }` with `type` from action (`down`/`up`/`move`/`drag`/`scroll`), `button` (Core's numbers: no button is 0 for SGR and -1 for X10; scroll is 0 for X10 and for SGR right, else the direction; extra buttons 8+ pass through), `x`, `y`, `modifiers`, `scroll: { direction, delta: 1 }` |
+| `PASTE` | accumulate text chunks from `START` to `END`; emit one `{ type: "paste", bytes }` at `END`                                                                                                                                                                                                                                                                                  |
+| `FOCUS` | `{ type: "response", protocol: "csi", sequence: raw }` (the existing `focusHandler` matches the raw string; no behavior change)                                                                                                                                                                                                                                             |
+| `REPLY` | `{ type: "response", protocol, sequence: latin1(raw) }`; `protocol` is `"cpr"` when `CURSOR_POSITION`, `"unknown"` when `FRAGMENT` or SS3, else the native protocol name                                                                                                                                                                                                    |
 
 ### 12.3 `ParsedKey` from a native key
 
-| `ParsedKey` field                                        | Rule                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
-| -------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `name`                                                   | Functional code → the Kitty name table already in `parse.keypress-kitty.ts` (`up`, `f1`, `kp0`, `mediaplay`, `leftshift`, …; 57427 → `clear`). `27` → `escape`, `13` → `return`, `9` → `tab`, `127` → `backspace`. Legacy raw `"\n"` → `linefeed` (Core distinguishes it). `32` → `space`. Text-only (`code 0`) → the text. Otherwise the character; a raw (non-Kitty) ASCII uppercase letter → lowercase name and `shift = true` (Core's legacy heuristic). |
-| `ctrl`, `shift`, `super`, `hyper`, `capsLock`, `numLock` | modifier bits                                                                                                                                                                                                                                                                                                                                                                                                                                                |
-| `meta`                                                   | `alt \|\| meta` bits (Core's `meta` is the Alt path)                                                                                                                                                                                                                                                                                                                                                                                                         |
-| `option`                                                 | `alt` bit                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
-| `sequence`                                               | `text` when nonempty, else `raw`                                                                                                                                                                                                                                                                                                                                                                                                                             |
-| `raw`                                                    | `raw` (UTF-8 decoded)                                                                                                                                                                                                                                                                                                                                                                                                                                        |
-| `number`                                                 | `name` is one ASCII digit                                                                                                                                                                                                                                                                                                                                                                                                                                    |
-| `eventType`                                              | `release` for action 3, else `press`; `repeated = action === 2`                                                                                                                                                                                                                                                                                                                                                                                              |
-| `source`                                                 | `KITTY` flag ? `"kitty"` : `"raw"`                                                                                                                                                                                                                                                                                                                                                                                                                           |
-| `baseCode`                                               | `base_code` when nonzero                                                                                                                                                                                                                                                                                                                                                                                                                                     |
-| `code`                                                   | Compatibility only: derived from `raw` as Core did (`[A`, `OP`, `[15~`, `[57364u`). Consumers (`EmbeddedTerminal.physicalKey`, issue 067) should move to the numeric key code.                                                                                                                                                                                                                                                                               |
+| `ParsedKey` field                                        | Rule                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| -------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `name`                                                   | Functional code → the Kitty name table already in `parse.keypress-kitty.ts` (`up`, `f1`, `kp0`, `mediaplay`, `leftshift`, …; 57427 → `clear`). `27` → `escape`, `13` → `return`, `9` → `tab`, `127` → `backspace`. Legacy raw `"\n"` → `linefeed` (Core distinguishes it). `32` → `space`. Text-only (`code 0`) → the text. Otherwise the character; a raw (non-Kitty) ASCII uppercase letter sets `shift = true` and, without Alt, names the lowercase key (Core's legacy heuristic: Alt+`A` stays `A`). |
+| `ctrl`, `shift`, `super`, `hyper`, `capsLock`, `numLock` | modifier bits                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| `meta`                                                   | `alt \|\| meta` bits (Core's `meta` is the Alt path)                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| `option`                                                 | `alt` bit from a Kitty key, a modifier parameter, or an `ESC ESC` key sequence; not from `ESC` + character (Core's rule)                                                                                                                                                                                                                                                                                                                                                                                  |
+| `sequence`                                               | `text` when nonempty, else `raw`                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| `raw`                                                    | `raw` (UTF-8 decoded); a lone eight-bit Alt byte is spelled `ESC` + ASCII, as Core did                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| `number`                                                 | `name` is one ASCII digit                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| `eventType`                                              | `release` for action 3, else `press`; `repeated = action === 2`                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| `source`                                                 | `KITTY` flag ? `"kitty"` : `"raw"`                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| `baseCode`                                               | `base_code` when nonzero                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| `code`                                                   | Compatibility only: derived from `raw` as Core did (`[A`, `OP`, `[15~`, `[57364u`). Consumers (`EmbeddedTerminal.physicalKey`, issue 067) should move to the numeric key code.                                                                                                                                                                                                                                                                                                                            |
 
 `matchesKeyBinding` and `KeyHandler` need no change. Issue 050's fix stays in
 `keybinding.internal.ts` (fall back to `baseCode` only for non-ASCII typed characters).
 
 ### 12.4 Renderer changes
 
-- `setupTerminal`, the 5000 ms capability timeout, `queryPixelResolution`, and the pixel-resolution
-  handler set and clear one boolean, `expectReplies`, through `updateProtocolContext`.
-- Remove `abortSplitStartupCursorSeed`'s parser call: a stale CPR is a `response` that
-  `processCapabilitySequence` already consumes only while a seed is pending.
-- `suspend`/`finishResume`: remove the `pausePendingTimeout`/`reset` dance; keep draining
-  `stdin.read()` into `push` on resume.
+- `CliRendererConfig.experimental_nativeInput` (default `OTUI_NATIVE_INPUT_PARSER`, false) selects
+  the parser. The legacy context fields map to the expectation bits in the adapter (§11.3), so the
+  renderer's `updateProtocolContext` calls stay as they are.
+- `abortSplitStartupCursorSeed` calls `abortPendingStartupCursorCpr` only on a legacy parser: for
+  native, a stale CPR is a `response` that `processCapabilitySequence` consumes only while a seed is
+  pending.
+- `suspend`/`finishResume`: a native parser gets `suspend()` and, after the resume drain of
+  `stdin.read()`, `resume()` (§11.5); a legacy parser keeps its `pausePendingTimeout`/`reset` dance.
+- `disableMouse` and `resize` call `resetMouseState` only on a legacy parser: native mouse decoding
+  is stateless.
 - `enableKittyKeyboard`/`disableKittyKeyboard`: set the expectation bit; native also derives it.
 
 ---
@@ -1095,10 +1164,11 @@ Property checks:
 - **Sink backpressure (G5):** feed with a sink of exactly `OT_INPUT_EVENTS_MIN` records and
   `OT_INPUT_PAYLOAD_BYTES_MIN` bytes; loop on `consumed`; the concatenated output equals the
   unconstrained output.
-- **Accounting (G3):** for random byte streams, `sum(raw_len) + sum(paste text) + pending unit +
-discarded bytes == input length` after a final expire.
-- **Reflection:** every `State` tag is reached by at least one vector (count transitions in a debug
-  hook); every functional key code in §7.6 decodes and names.
+- **Accounting (G3):** for random byte streams fed at one time (so no Escape is recovered),
+  `sum(raw_len) + sum(paste text) + 6 per paste marker + pending unit == input length` after a final
+  expire, with no discarded units.
+- **Reflection:** every `State` tag is reached by the vectors (observed after each byte, without a
+  debug hook in the module); every functional key code in §7.6 decodes (Zig) and names (TypeScript).
 
 ### 13.2 ABI tests (`context-input-abi.zig` test blocks)
 
@@ -1108,12 +1178,19 @@ layout.
 
 ### 13.3 TypeScript
 
-- Port the existing `stdin-parser.test.ts` matrix to run against both implementations behind the
-  flag; expected differences are enumerated in §14.3 and asserted explicitly.
-- Differential shadow test: `OTUI_STDIN_LOG` fixtures (raw byte captures, see
-  `renderer.stdin-log.test.ts`) replayed through legacy and native; compare `StdinEvent` streams.
+- `stdin-parser.test.ts` runs its matrix against both implementations (`defineStdinParserSuite`);
+  expected differences use `either(legacy, native)` and cite §14.3, and tests of the hooks native
+  removed run for the legacy parser only. The shared timeout is 20 ms.
+- `stdin-parser-native.test.ts` asserts every §14.3 difference side by side, replays representative
+  input streams (typing, editing keys, startup replies, selection drags, scrolling, X10, focus,
+  pastes, Kitty, modifyOtherKeys) through both parsers in uneven reads and requires the
+  `StdinShadowComparator` to report nothing, and covers the adapter itself (naming, suspension,
+  closed Sessions, early timers). The repository has no committed `OTUI_STDIN_LOG` captures; new
+  captures can join the replay table.
 - `mock-keys.ts` and `mock-mouse.ts` drive `TestRenderer` through the real parser; the existing
-  renderable test suites are the integration check.
+  renderable test suites are the integration check. `OTUI_NATIVE_INPUT_PARSER=1 bun test` runs them
+  through the native parser; `renderer.input.test.ts` asserts the native side of §14.3 where its
+  expectations differ.
 
 ---
 
@@ -1141,16 +1218,22 @@ numeric key code.
 
 ### 14.3 Intentional behavior changes
 
-| Before (Core)                                                    | After                                                            | Why                                                                            |
-| ---------------------------------------------------------------- | ---------------------------------------------------------------- | ------------------------------------------------------------------------------ |
-| `ESC` inside OSC/DCS/APC waits for the timeout.                  | Ends the string as a fragment; `ESC` starts a new unit.          | No reply contains a bare `ESC`.                                                |
-| SGR motion is `drag` only after a seen press.                    | `drag` whenever the wire button bits say a button is held.       | Wire bits are authoritative; the renderer tracks capture.                      |
-| Kitty `CSI u` decodes only when `useKittyKeyboard`.              | Always decodes.                                                  | A terminal sends it only when asked; the `?`-prefixed flags reply is distinct. |
-| `push(emptyChunk)` emits a key with an empty name.               | Zero bytes only expires.                                         | Nothing on the wire, nothing to report.                                        |
-| Unknown sequences become a key with an empty `name`.             | Reply events.                                                    | G2.                                                                            |
-| Alt+uppercase sets `shift`.                                      | Same (adapter), native reports the character as sent.            | Wire fidelity in native; Core naming in the adapter.                           |
-| CPR `CSI 1;N R` with N ≥ 2 is a capability signal in TS regexes. | Native flags `CURSOR_POSITION`; TS keeps `isCapabilityResponse`. | No regex on the hot path; detection logic unchanged.                           |
-| Paste bytes exceed `maxPendingBytes` (64 MiB) → discard mode.    | Streamed; no limit; host accumulates.                            | G4.                                                                            |
+| Before (Core)                                                       | After                                                            | Why                                                                            |
+| ------------------------------------------------------------------- | ---------------------------------------------------------------- | ------------------------------------------------------------------------------ |
+| `ESC` inside OSC/DCS/APC waits for the timeout.                     | Ends the string as a fragment; `ESC` starts a new unit.          | No reply contains a bare `ESC`.                                                |
+| SGR motion is `drag` only after a seen press.                       | `drag` whenever the wire button bits say a button is held.       | Wire bits are authoritative; the renderer tracks capture.                      |
+| Kitty `CSI u` decodes only when `useKittyKeyboard`.                 | Always decodes.                                                  | A terminal sends it only when asked; the `?`-prefixed flags reply is distinct. |
+| `push(emptyChunk)` emits a key with an empty name.                  | Zero bytes only expires.                                         | Nothing on the wire, nothing to report.                                        |
+| Unknown sequences become a key with an empty `name`.                | Reply events.                                                    | G2.                                                                            |
+| Alt+uppercase sets `shift`.                                         | Same (adapter), native reports the character as sent.            | Wire fidelity in native; Core naming in the adapter.                           |
+| CPR `CSI 1;N R` with N ≥ 2 is a capability signal in TS regexes.    | Native flags `CURSOR_POSITION`; TS keeps `isCapabilityResponse`. | No regex on the hot path; detection logic unchanged.                           |
+| Paste bytes exceed `maxPendingBytes` (64 MiB) → discard mode.       | Streamed; no limit; host accumulates.                            | G4.                                                                            |
+| A lone byte that cannot start UTF-8 (`0xFF`) waits for the timeout. | An eight-bit Alt key at once.                                    | Only a lead byte can continue; nothing else can change the result.             |
+| Only `explicitWidthCprActive` with first field 1 waits for a CPR.   | Any `row ; col` CPR waits while replies are expected.            | One `REPLIES` expectation (§11.3).                                             |
+| X10 releases report button 0; extra buttons report 0 to 2.          | X10 releases report the last pressed button; extra buttons 8+.   | X10 cannot say which button rose; extra buttons are not left clicks.           |
+| Mouse reset on `useMouse` toggle or resize forgets a held button.   | No mouse state to reset; the next report's bits decide.          | Stateless decoding.                                                            |
+| `CSI 25~` and other F13+ legacy forms have no name.                 | Named (`f13`, …) from the Kitty table.                           | One key table.                                                                 |
+| `CSI 1 ; N R` (N ≥ 2) is always a cursor position report.           | Modified F3 unless replies are expected (§6.3).                  | xterm sends modified F3 so; hosts set `REPLIES` while they query the cursor.   |
 
 ---
 
@@ -1167,6 +1250,8 @@ numeric key code.
 | Deadlines on `discard`.                                           | Wait for the terminator.                                             | A corrupt stream must not swallow typing forever; 20 ms of silence is the signal.                                                                               |
 | Replies stay host-routed.                                         | Native applies capability replies in `feed`.                         | Keeps output admission out of input; §11.6 for later.                                                                                                           |
 | X10 release reports the last pressed button.                      | Always button 0 (Core).                                              | X10 cannot say which; last-pressed is the useful guess and what the Rust port does.                                                                             |
+| Input feeds keep their own monotonic clock.                       | Share the pump's `last_pump_ns`.                                     | The host arms input timers on a different clock than its pump (§10.6); deadlines are relative to the parser's own `since_ns`.                                   |
+| The adapter stops input time while suspended.                     | Reset on suspend (Core); expire everything on suspend.               | A pending prefix of an awaited reply completes after resume; stale units still resolve once the resume drain is fed (§11.5).                                    |
 
 ---
 
