@@ -368,11 +368,17 @@ async function confirmNotes(notes: string): Promise<void> {
   console.log(`\n${readFileSync(join(repoRoot, notes), "utf8")}`)
   const answer = await new Promise<string>((resolve, reject) => {
     const prompt = createInterface({ input: process.stdin, output: process.stdout })
+    let replied = false
     prompt.on("SIGINT", () => {
       prompt.close()
       reject(new ReleaseError("Interrupted"))
     })
+    // End of input, such as Ctrl-D, answers no.
+    prompt.on("close", () => {
+      if (!replied) resolve("")
+    })
     prompt.question(`Release with ${notes}? Edit the file first if needed. [y/N] `, (reply) => {
+      replied = true
       prompt.close()
       resolve(reply)
     })
