@@ -1836,7 +1836,11 @@ test "clipboard service preserves a configured native operation limit" {
     defer destroyTestService(&objects, service);
 
     var operations: [operation_limit]Handle = undefined;
-    // The full table grows for the first operation; a failed growth reports out_of_memory.
+    // The full table grows for the first operation; a table at its maximum reports
+    // limit_exceeded, and a failed growth reports out_of_memory.
+    objects.slot_count_max = 1;
+    try std.testing.expectEqual(StartStatus.limit_exceeded, startClearOperation(&objects, service, 0, 0, &operations[0]));
+    objects.slot_count_max = handles.slot_count_max_default;
     var failing = std.testing.FailingAllocator.init(std.testing.allocator, .{ .fail_index = 0, .resize_fail_index = 0 });
     objects.allocator = failing.allocator();
     try std.testing.expectEqual(StartStatus.out_of_memory, startClearOperation(&objects, service, 0, 0, &operations[0]));
