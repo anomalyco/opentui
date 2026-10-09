@@ -698,12 +698,13 @@ test "OptimizedBuffer - drawText with ASCII" {
     try std.testing.expectEqual(bg, buf.get(0, 0).?.bg);
 
     const link_id = try pools.links.acquire("https://example.com");
-    try buf.drawText("\u{4e16}", 1, 0, fg, bg, ansi.TextAttributes.setLinkId(0, link_id));
+    try buf.drawText("\u{4e16}", 1, 0, fg, bg, 0);
+    try buf.drawText("Z", 2, 0, fg, bg, ansi.TextAttributes.setLinkId(0, link_id));
     try pools.links.decref(link_id);
-    try std.testing.expect(buf.grapheme_tracker.hasAny() and buf.link_tracker.hasAny());
-    try buf.drawText("Z", 2, 0, fg, bg, 0);
-    try expectRowChars(buf, 0, "H Zlo!");
-    try std.testing.expect(!buf.grapheme_tracker.hasAny() and !buf.link_tracker.hasAny());
+    try std.testing.expect(!buf.grapheme_tracker.hasAny() and buf.link_tracker.hasAny());
+    try buf.drawText("z", 2, 0, fg, bg, 0);
+    try expectRowChars(buf, 0, "H zlo!");
+    try std.testing.expect(!buf.link_tracker.hasAny());
     try std.testing.expectEqual(@as(u32, 0), try pools.links.getRefcount(link_id));
 }
 

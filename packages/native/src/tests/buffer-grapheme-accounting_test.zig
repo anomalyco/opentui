@@ -87,6 +87,13 @@ test "grapheme accounting - overlapping continuations remove only overwritten st
         try std.testing.expectEqual(@as(u32, 2), target.link_tracker.used_ids.get(new_link).?);
         try std.testing.expectEqual(@as(u32, 1), try links.getRefcount(new_link));
 
+        // Right-edge overflow clears the remaining row cells and updates trackers.
+        write(target, 7, 0, .{ .char = gp.packGraphemeStart(second_id, 1), .fg = cell.fg, .bg = cell.bg, .attributes = 0 });
+        write(target, 5, 0, cell);
+        write(target, 7, 0, .{ .char = gp.packGraphemeStart(second_id, 2), .fg = cell.fg, .bg = cell.bg, .attributes = 0 });
+        try expectTrackedStarts(target);
+        try std.testing.expectEqual(@as(u32, 7), target.link_tracker.used_ids.get(old_link).?);
+
         target.clear(cell.bg, null);
         try expectTrackedStarts(target);
         try std.testing.expectError(error.InvalidId, pool.getRefcount(first_id));
