@@ -485,7 +485,7 @@ describeClient("TreeSitterClient", () => {
       const tokens = highlights.map(([start, end, group]) => `${start}:${source.slice(start, end)}=${group}`)
 
       expect(tokens).toContain("0:const=keyword")
-      expect(tokens).toEqual(expect.arrayContaining(expected))
+      expect(expected.filter((token) => !tokens.includes(token))).toEqual([])
       expect(tokens.filter((token) => token.endsWith("=string.regexp"))).toEqual([])
     }
   })
