@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process"
-import { appendFileSync, existsSync, readFileSync, rmSync } from "node:fs"
+import { appendFileSync, existsSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { dirname, join, resolve } from "node:path"
 import process from "node:process"
 import { createInterface } from "node:readline"
@@ -349,12 +349,18 @@ async function pushRelease(options: Options, branch: string, base: string): Prom
     return release
   } catch (error) {
     try {
-      // A staged new file would not survive the reset. The next run keeps notes that are in place.
-      if (notesFile && existsSync(join(repoRoot, notesFile))) {
-        spawnSync("git", ["rm", "--cached", "--quiet", "--ignore-unmatch", "--", notesFile], { cwd: repoRoot })
-        console.error(`Kept ${notesFile} for the next run. Delete it to draft the notes again.`)
+      // The restore deletes the notes once they are staged or committed. The next run keeps notes in place, so
+      // they are written back.
+      const notesPath = notesFile && join(repoRoot, notesFile)
+      const notes = notesPath && existsSync(notesPath) ? readFileSync(notesPath) : undefined
+      try {
+        restore(branch, base, tag, prBranch)
+      } finally {
+        if (notesPath && notes) {
+          writeFileSync(notesPath, notes)
+          console.error(`Kept ${notesFile} for the next run. Delete it to draft the notes again.`)
+        }
       }
-      restore(branch, base, tag, prBranch)
       // The next run computes the API again, from the source it releases.
       if (newApiFile) rmSync(join(repoRoot, newApiFile), { force: true })
     } catch (restoreError) {
