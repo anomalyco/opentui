@@ -174,12 +174,14 @@ export class NativeStdinParser {
   public updateProtocolContext(patch: Partial<StdinParserProtocolContext>): void {
     this.ensureAlive()
     this.protocolContext = { ...this.protocolContext, ...patch }
+    const queued = this.events.length
     this.native(() => {
       this.applyExpectations()
       // Changed expectations can end a deferred unit; native emits it on the next feed.
       this.feed(EMPTY, this.nowNs())
     })
-    this.reconcileTimeout()
+    // Callers need not drain: what this resolved reaches the host through onTimeoutFlush.
+    this.reconcileTimeout(this.events.length > queued)
   }
 
   public push(data: Uint8Array): void {
@@ -310,13 +312,13 @@ export class NativeStdinParser {
     } while (offset < bytes.length)
   }
 
-  private reconcileTimeout(): void {
+  private reconcileTimeout(flushNow = false): void {
     if (!this.armTimeouts) return
     this.clearTimeout()
-    const deadline = this.deadlineNs
-    if (deadline === null || this.suspended || this.sessionGone) return
+    const deadline = flushNow ? null : this.deadlineNs
+    if ((deadline === null && !flushNow) || this.suspended || this.sessionGone) return
     // The feed that reported the deadline already expired anything due at lastNs.
-    const delayMs = Number((deadline - this.lastNs + 999_999n) / 1_000_000n)
+    const delayMs = deadline === null ? 0 : Number((deadline - this.lastNs + 999_999n) / 1_000_000n)
     this.timeoutId = this.clock.setTimeout(() => {
       this.timeoutId = null
       if (this.destroyed) return
@@ -324,7 +326,7 @@ export class NativeStdinParser {
         // The timer is the host's statement that the deadline passed, even when
         // its clock sample disagrees slightly with the scheduler's.
         const now = this.nowNs()
-        this.native(() => this.feed(EMPTY, now < deadline ? deadline : now))
+        this.native(() => this.feed(EMPTY, deadline !== null && now < deadline ? deadline : now))
         this.reconcileTimeout()
         this.onTimeoutFlush?.()
       } catch (error) {
@@ -526,7 +528,8 @@ function describeEvent(event: StdinEvent): string {
 /**
  * Pairs the events of the delivering parser with the events of a parser that only
  * sees the same input (OTUI_NATIVE_INPUT_SHADOW) and logs one line per difference.
- * Events pair in order, so the parsers' separate timers cannot misalign them.
+ * Events pair in order, so the parsers' separate timers cannot misalign them. After
+ * a difference, pairing resumes once each side has reported its next event.
  */
 export class StdinShadowComparator {
   private readonly delivered: string[] = []
@@ -547,10 +550,18 @@ export class StdinShadowComparator {
 
   private queue(events: string[], event: StdinEvent): void {
     events.push(describeEvent(event))
-    while (this.delivered.length > 0 && this.shadowed.length > 0) {
-      const delivered = this.delivered.shift()!
-      const shadowed = this.shadowed.shift()!
-      if (delivered !== shadowed) this.report(delivered, shadowed)
+    const { delivered, shadowed } = this
+    while (delivered.length > 0 && shadowed.length > 0) {
+      if (delivered[0] === shadowed[0]) {
+        delivered.shift()
+        shadowed.shift()
+        continue
+      }
+      // The next event on each side tells an extra event from a changed one.
+      if (delivered.length < 2 || shadowed.length < 2) break
+      if (delivered[1] === shadowed[0]) this.report(delivered.shift()!, "")
+      else if (shadowed[1] === delivered[0]) this.report("", shadowed.shift()!)
+      else this.report(delivered.shift()!, shadowed.shift()!)
     }
     // A parser that stopped producing events must not grow the other's backlog forever.
     if (events.length > SHADOW_BACKLOG_MAX) {

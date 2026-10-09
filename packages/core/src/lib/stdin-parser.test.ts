@@ -2560,6 +2560,28 @@ function defineStdinParserSuite(impl: Implementation): void {
     })
 
     describe("timer/clock disagreement race condition", () => {
+      test("a protocol update after a missed deadline still delivers through onTimeoutFlush", () => {
+        const clock = new ManualClock()
+        const delivered: Snap[] = []
+        const parser: Parser = impl.create({
+          armTimeouts: true,
+          clock,
+          timeoutMs: TEST_TIMEOUT_MS,
+          onTimeoutFlush: () => parser.drain((event) => delivered.push(snapshotEvent(event))),
+        })
+        try {
+          parser.push(Buffer.from("\x1b"))
+          // A stalled event loop: now() passes the deadline before any timer runs.
+          const now = spyOn(clock, "now").mockImplementation(() => TEST_TIMEOUT_MS + 5)
+          parser.updateProtocolContext({ kittyKeyboardEnabled: true })
+          now.mockRestore()
+          clock.advance(TEST_TIMEOUT_MS)
+          expect(delivered).toEqual([k("escape", { raw: "\x1b" })])
+        } finally {
+          parser.destroy()
+        }
+      })
+
       test("timeout callback flushes even when now() reports slightly less elapsed time than timeoutMs", () => {
         const inner = new ManualClock()
         let insideTimerCallback = false
