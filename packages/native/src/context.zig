@@ -996,10 +996,10 @@ pub const Context = struct {
         try (try self.getSession(handle)).setInputExpectations(expect);
     }
 
-    pub fn sessionInputReset(self: *Context, handle: Handle) Error!void {
+    pub fn sessionInputReset(self: *Context, handle: Handle, keep_reply: bool) Error!void {
         try self.beginMutation();
         defer self.mutating = false;
-        try (try self.getSession(handle)).resetInput();
+        try (try self.getSession(handle)).resetInput(keep_reply);
     }
 
     pub fn getSessionTerminalState(self: *Context, handle: Handle) Error!session.TerminalState {

@@ -887,9 +887,10 @@ pub const Session = struct {
         self.input_expect = expect;
     }
 
-    pub fn resetInput(self: *Session) Error!void {
+    /// With `keep_reply`, a pending reply prefix survives while the host expects replies.
+    pub fn resetInput(self: *Session, keep_reply: bool) Error!void {
         try self.checkOpen();
-        self.input.reset();
+        self.input.reset(keep_reply and self.input_expect.replies);
     }
 
     fn checkClock(self: *const Session, now_ns: u64) Error!void {

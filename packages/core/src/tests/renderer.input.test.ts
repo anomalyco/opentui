@@ -2439,28 +2439,30 @@ describe("stdin routing", () => {
     }
   })
 
-  test("suspend resets parser state before resume", async () => {
-    const { renderer, clock } = await createRoutingRenderer()
-
-    try {
-      await renderer.setupTerminal()
-      const events: Array<{ name: string; meta: boolean }> = []
-      renderer.keyInput.on("keypress", (event) => {
-        events.push({ name: event.name, meta: event.meta })
-      })
-
-      renderer.stdin.emit("data", Buffer.from("\x1b["))
-      advanceClock(clock, 5)
-
-      await renderer.suspend()
-      await renderer.resume()
-
-      renderer.stdin.emit("data", Buffer.from("x"))
-      advanceClock(clock)
-
-      expect(events).toEqual([{ name: "x", meta: false }])
-    } finally {
-      renderer.destroy()
+  test("input pending at suspension does not swallow typing after resume", async () => {
+    // While suspended, a child process can read the rest of a paste or mouse report.
+    for (const experimental_nativeInput of [false, true]) {
+      for (const pending of ["\x1b[", "\x1b[200~first half", "\x1b[<35;10"]) {
+        const { renderer, clock } = await createRoutingRenderer({ experimental_nativeInput })
+        try {
+          await renderer.setupTerminal()
+          const names: string[] = []
+          renderer.keyInput.on("keypress", (event) => names.push(event.name))
+          renderer.stdin.emit("data", Buffer.from(pending))
+          advanceClock(clock, 5)
+          await renderer.suspend()
+          await renderer.resume()
+          renderer.stdin.emit("data", Buffer.from("42x"))
+          advanceClock(clock)
+          expect({ experimental_nativeInput, pending, names }).toEqual({
+            experimental_nativeInput,
+            pending,
+            names: ["4", "2", "x"],
+          })
+        } finally {
+          renderer.destroy()
+        }
+      }
     }
   })
 

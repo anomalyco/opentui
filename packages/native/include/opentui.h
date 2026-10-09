@@ -2859,8 +2859,13 @@ ot_status ot_session_input_feed(
  * Changing flags emits nothing; the next feed resolves a unit that may no longer wait. */
 ot_status ot_session_input_expect(ot_context *context, const ot_handle *session, uint32_t flags);
 
-/* Drop any partial unit and mouse button state. Expectations are kept. */
-ot_status ot_session_input_reset(ot_context *context, const ot_handle *session);
+#define OT_INPUT_RESET_KEEP_REPLY UINT32_C(1)
+
+/* Drop any partial unit and mouse button state. Expectations are kept. flags is
+ * 0 or OT_INPUT_RESET_KEEP_REPLY. Call with KEEP_REPLY after feeding the input
+ * drained on resume: then a partial CSI unit that may begin a reply survives
+ * while REPLIES is set, and waits for its rest without a deadline. */
+ot_status ot_session_input_reset(ot_context *context, const ot_handle *session, uint32_t flags);
 
 /* Maximum ordinary atomic write in an empty queue, excluding control reservations
  * and bounded by both chunk storage and span slots, at most UINT32_MAX bytes.

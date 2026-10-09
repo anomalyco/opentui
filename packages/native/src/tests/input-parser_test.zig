@@ -1251,15 +1251,33 @@ test "input parser reaches every state" {
     try testing.expectEqual(std.EnumSet(Tag).initFull(), seen);
 }
 
-test "input parser reset drops the pending unit and X10 button" {
+test "input parser reset drops the pending unit and X10 button, or keeps a reply" {
     var harness = try Harness.create();
     defer harness.deinit();
     harness.parser.setExpectations(.{ .kitty_keyboard = true });
     _ = try harness.feed("\x1b[M\"!!\x1b[97;");
-    harness.parser.reset();
+    harness.parser.reset(false);
     try testing.expectEqual(null, harness.parser.deadlineNs());
     try expectGot("", &.{ ch('u'), mouse(.up, 0, 0, 0, NONE) }, try harness.feed("u\x1b[M#!!"));
     try testing.expect(harness.parser.expect.kitty_keyboard);
+    // Keeping a reply keeps only a CSI unit shaped like one, deferred without a deadline.
+    for ([_]struct { []const u8, []const u8, []const Expect }{
+        .{ "\x1b[4;80", ";80t", &.{reply("\x1b[4;80;80t")} },
+        .{ "\x1b[4;80", "a", &.{ frag("\x1b[4;80"), ch('a') } },
+        .{ "\x1b[?62", "c", &.{reply("\x1b[?62c")} },
+        .{ "\x1b[24", ";1R", &.{ ch(';'), ch('1'), ch('R') } },
+        .{ "\x1b[<35;10", "42x", &.{ ch('4'), ch('2'), ch('x') } },
+        .{ "\x1b[200~half", "x", &.{ch('x')} },
+        .{ "\x1b", "x", &.{ch('x')} },
+    }) |case| {
+        var kept = try Harness.create();
+        defer kept.deinit();
+        kept.parser.setExpectations(.{ .replies = true });
+        _ = try kept.feed(case[0]);
+        kept.parser.reset(true);
+        try testing.expectEqual(null, kept.parser.deadlineNs());
+        try expectGot(case[0], case[2], try kept.feed(case[1]));
+    }
 }
 
 test "input parser sink stays within its per-byte bounds" {

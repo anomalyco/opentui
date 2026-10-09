@@ -1,7 +1,7 @@
 // Generated from packages/native/include/opentui.h and scripts/native-abi-pointers.ts.
 // Run `bun run generate:abi` in packages/core. Do not edit.
 // Inspect audit input: bun scripts/native-abi.ts --audit
-// ABI audit SHA-256: 98d656fb0f54ec9cd97eb8aa591cfa66909f14b2749460f3379e371ffafb217d
+// ABI audit SHA-256: e55bec02c56afc95fc16ac934a159a709ca790502ac22dc2b89fbc8fa4ebbbdc
 
 export const nativeSymbols = {
   ot_scene_set_hooks: { args: ["ptr", "buffer", "buffer"], returns: "i32" },
@@ -245,7 +245,7 @@ export const nativeSymbols = {
     returns: "i32",
   },
   ot_session_input_expect: { args: ["ptr", "buffer", "u32"], returns: "i32" },
-  ot_session_input_reset: { args: ["ptr", "buffer"], returns: "i32" },
+  ot_session_input_reset: { args: ["ptr", "buffer", "u32"], returns: "i32" },
   ot_session_get_write_limit: { args: ["ptr", "buffer", "buffer"], returns: "i32" },
   ot_session_write: { args: ["ptr", "buffer", "ptr", "u32"], returns: "i32" },
   ot_session_read_output: { args: ["ptr", "buffer", "ptr", "u32", "buffer"], returns: "i32" },
@@ -2009,6 +2009,7 @@ export const nativeConstants = {
   OT_SCENE_RECORD_GRAYSCALE_FOREGROUND: 1,
   OT_SCENE_RECORD_GRAYSCALE_BACKGROUND: 2,
   OT_SCENE_RECORD_GRAYSCALE_SUPERSAMPLED: 4,
+  OT_INPUT_RESET_KEEP_REPLY: 1,
   OT_CLIPBOARD_OPERATION_PENDING: 0,
   OT_CLIPBOARD_OPERATION_READ: 1,
   OT_CLIPBOARD_OPERATION_EMPTY: 2,

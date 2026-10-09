@@ -4460,7 +4460,7 @@ export class CliRenderer extends EventEmitter implements RenderContext {
       explicitWidthCprActive: false,
       startupCursorCprActive: false,
     })
-    this.suspendStdinParsers()
+    this.pauseStdinParsers(false)
     this.stdin.removeListener("data", this.stdinListener)
     this.stopTerminalKeepAlive()
 
@@ -4507,23 +4507,12 @@ export class CliRenderer extends EventEmitter implements RenderContext {
 
   // Legacy parsers drop pending input unless it may be a pixel reply. Native parsers stop
   // input time instead, so stale bytes drained on resume can complete a unit (docs §11.5).
-  private suspendStdinParsers(): void {
+  private pauseStdinParsers(resuming: boolean): void {
     for (const parser of [this.stdinParser, this.stdinShadow?.parser]) {
-      if (parser instanceof NativeStdinParser) parser.suspend()
+      if (parser instanceof NativeStdinParser) resuming ? parser.resume() : parser.suspend()
       else if (parser?.hasPendingPixelResolutionResponse()) parser.pausePendingTimeout()
       else parser?.reset()
     }
-  }
-
-  private resumeStdinParsers(): void {
-    for (const parser of [this.stdinParser, this.stdinShadow?.parser]) {
-      if (parser instanceof NativeStdinParser) parser.resume()
-      else if (parser?.hasPendingPixelResolutionResponse()) parser.pausePendingTimeout()
-      else parser?.reset()
-    }
-    // Still suspended: only pixel resolution replies are dispatched.
-    this.drainStdinParser()
-    this.drainStdinShadow()
   }
 
   private finishResume(): void {
@@ -4533,7 +4522,7 @@ export class CliRenderer extends EventEmitter implements RenderContext {
 
     let drained: Buffer | string | null
     while ((drained = this.stdin.read()) !== null) this.stdinListener(drained)
-    this.resumeStdinParsers()
+    this.pauseStdinParsers(true)
     this.stdin.on("data", this.stdinListener)
     this.stdin.resume()
     this.startTerminalKeepAlive()

@@ -264,7 +264,13 @@ pub const InputParser = struct {
     }
 
     /// Drops the pending unit and mouse state; keeps expectations.
-    pub fn reset(self: *InputParser) void {
+    /// Drops the pending unit. With `keep_reply`, a CSI unit that may begin a reply is kept
+    /// instead, deferred: it waits for its rest without a deadline (docs §11.5).
+    pub fn reset(self: *InputParser, keep_reply: bool) void {
+        if (keep_reply and self.state == .csi and self.replyShaped()) {
+            self.state.csi.deferred = true;
+            return;
+        }
         self.state = .ground;
         self.unit_len = 0;
         self.x10_button = 0;
@@ -732,14 +738,22 @@ pub const InputParser = struct {
     fn deferrable(self: *const InputParser) bool {
         const params = self.unit[2..self.unit_len];
         if (params.len == 0) return false;
+        if (params[0] == '<') return allOf(params[1..], "0123456789;");
+        return (self.expect.replies and self.replyShaped()) or
+            (self.expect.kitty_keyboard and params[0] != '?' and Shape.of(params, true) != null);
+    }
+
+    /// Whether the CSI parameters may begin a cursor position, pixel size, or private reply.
+    fn replyShaped(self: *const InputParser) bool {
+        const params = self.unit[2..self.unit_len];
+        if (params.len == 0) return false;
         return switch (params[0]) {
-            '<' => allOf(params[1..], "0123456789;"),
-            '?' => self.expect.replies and allOf(params[1..], "0123456789;$"),
-            else => {
-                const shape = Shape.of(params, self.expect.kitty_keyboard) orelse return false;
-                return self.expect.kitty_keyboard or
-                    (self.expect.replies and (shape.semicolons == 1 or (shape.semicolons == 2 and shape.first == 4)));
-            },
+            '<' => false,
+            '?' => allOf(params[1..], "0123456789;$"),
+            else => if (Shape.of(params, false)) |shape|
+                shape.semicolons == 1 or (shape.semicolons == 2 and shape.first == 4)
+            else
+                false,
         };
     }
 

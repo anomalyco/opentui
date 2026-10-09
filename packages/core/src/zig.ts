@@ -6453,10 +6453,10 @@ export class FFIRenderLib {
     nativeResult("ot_session_input_expect", this.opentui.symbols.ot_session_input_expect(pointer, handle, value))
   }
 
-  public sessionInputReset(context: NativeContextHandle, session: SessionHandle): void {
+  public sessionInputReset(context: NativeContextHandle, session: SessionHandle, flags: number): void {
     const handle = encodeContextHandle(context, session)
     const pointer = this.nativeContextPointer(context, "ot_session_input_reset")
-    nativeResult("ot_session_input_reset", this.opentui.symbols.ot_session_input_reset(pointer, handle))
+    nativeResult("ot_session_input_reset", this.opentui.symbols.ot_session_input_reset(pointer, handle, flags))
   }
 
   /** Discards terminal input queued on process stdin. Best effort; see `ot_terminal_flush_input`. */
