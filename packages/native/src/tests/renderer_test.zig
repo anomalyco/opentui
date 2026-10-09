@@ -2735,71 +2735,51 @@ test "renderer - explicit_cursor_positioning with CJK characters" {
 }
 
 test "renderer - commitSplitFooterSnapshot writes append before footer repaint in one output" {
-    var pools = TestPools.init(std.testing.allocator);
-    defer pools.deinit();
+    // Terminals ignore a scroll region of fewer than two rows, so a pane of one row or none sets 1;2r too.
+    for ([_]u32{ 2, 1, 0 }) |pinned| {
+        var pools = TestPools.init(std.testing.allocator);
+        defer pools.deinit();
 
-    var test_cli_renderer = try TestRenderer.create(
-        std.testing.allocator,
-        12,
-        3,
-        &pools.graphemes,
-        &pools.links,
-    );
-    defer test_cli_renderer.deinit();
-    const cli_renderer = test_cli_renderer.renderer;
+        var test_cli_renderer = try TestRenderer.create(std.testing.allocator, 12, 3, &pools.graphemes, &pools.links);
+        defer test_cli_renderer.deinit();
+        const cli_renderer = test_cli_renderer.renderer;
 
-    _ = cli_renderer.resetSplitScrollback(2, 2);
+        _ = cli_renderer.resetSplitScrollback(pinned, pinned);
 
-    const next_buffer = cli_renderer.getNextBuffer();
-    const fg = ansi.rgbaFromFloats(1.0, 1.0, 1.0, 1.0);
-    const bg = ansi.rgbaFromFloats(0.0, 0.0, 0.0, 1.0);
-    try next_buffer.drawText("FOOT", 0, 0, fg, bg, 0);
+        const next_buffer = cli_renderer.getNextBuffer();
+        const fg = ansi.rgbaFromFloats(1.0, 1.0, 1.0, 1.0);
+        const bg = ansi.rgbaFromFloats(0.0, 0.0, 0.0, 1.0);
+        try next_buffer.drawText("FOOT", 0, 0, fg, bg, 0);
 
-    var snapshot = try OptimizedBuffer.init(
-        std.testing.allocator,
-        11,
-        1,
-        .{ .link_pool = &pools.links, .pool = &pools.graphemes, .width_method = .unicode, .respectAlpha = false },
-    );
-    defer snapshot.deinit();
+        var snapshot = try OptimizedBuffer.init(
+            std.testing.allocator,
+            11,
+            1,
+            .{ .link_pool = &pools.links, .pool = &pools.graphemes, .width_method = .unicode, .respectAlpha = false },
+        );
+        defer snapshot.deinit();
 
-    snapshot.clear(ansi.rgbaFromFloats(0.0, 0.0, 0.0, 0.0), 32);
-    try snapshot.drawText("append-line", 0, 0, fg, ansi.rgbaFromFloats(0.0, 0.0, 0.0, 0.0), 0);
+        snapshot.clear(ansi.rgbaFromFloats(0.0, 0.0, 0.0, 0.0), 32);
+        try snapshot.drawText("append-line", 0, 0, fg, ansi.rgbaFromFloats(0.0, 0.0, 0.0, 0.0), 0);
 
-    const appended = "append-line";
-    // This test documents the critical ordering contract:
-    // 1) append payload is emitted in the same sync frame as repaint
-    // 2) DECSTBM is active only during append when pinned
-    // 3) footer repaint cursor move happens after append payload
-    _ = cli_renderer.commitSplitFooterSnapshotBatched(snapshot, 11, false, true, 2, false, true, true);
+        // This test documents the critical ordering contract:
+        // 1) append payload is emitted in the same sync frame as repaint
+        // 2) DECSTBM is active only during append when pinned
+        // 3) footer repaint cursor move happens after append payload
+        _ = cli_renderer.commitSplitFooterSnapshotBatched(snapshot, 11, false, true, pinned, false, true, true);
 
-    const output = test_cli_renderer.lastOutput();
-    const append_index = std.mem.find(u8, output, appended);
-    const scroll_region_set_index = std.mem.find(u8, output, "\x1b[1;2r");
-    const scroll_region_reset_index = std.mem.find(u8, output, "\x1b[r");
-    const sync_index = std.mem.find(u8, output, ansi.ANSI.syncSet);
-    const footer_move_after_sync = if (sync_index) |sync_start|
-        std.mem.find(u8, output[sync_start + ansi.ANSI.syncSet.len ..], "\x1b[3;1H")
-    else
-        null;
+        const output = test_cli_renderer.lastOutput();
+        const sync_index = std.mem.find(u8, output, ansi.ANSI.syncSet) orelse return error.TestUnexpectedResult;
+        const region_index = std.mem.find(u8, output, "\x1b[1;2r") orelse return error.TestUnexpectedResult;
+        const append_index = std.mem.find(u8, output, "append-line") orelse return error.TestUnexpectedResult;
+        const reset_index = std.mem.find(u8, output, "\x1b[r") orelse return error.TestUnexpectedResult;
+        var footer_move: [16]u8 = undefined;
+        const footer_move_text = try std.fmt.bufPrint(&footer_move, "\x1b[{d};1H", .{pinned + 1});
 
-    try std.testing.expect(append_index != null);
-    try std.testing.expect(scroll_region_set_index != null);
-    try std.testing.expect(scroll_region_reset_index != null);
-    try std.testing.expect(sync_index != null);
-    try std.testing.expect(footer_move_after_sync != null);
-    try std.testing.expect(sync_index.? < append_index.?);
-    try std.testing.expect(scroll_region_set_index.? < append_index.?);
-    try std.testing.expect(append_index.? < scroll_region_reset_index.?);
-
-    var sync_count: usize = 0;
-    var pos: usize = 0;
-    while (std.mem.find(u8, output[pos..], ansi.ANSI.syncSet)) |found| {
-        sync_count += 1;
-        pos += found + ansi.ANSI.syncSet.len;
+        try std.testing.expect(sync_index < region_index and region_index < append_index and append_index < reset_index);
+        try std.testing.expect(std.mem.find(u8, output[reset_index..], footer_move_text) != null);
+        try std.testing.expectEqual(@as(usize, 1), std.mem.count(u8, output, ansi.ANSI.syncSet));
     }
-
-    try std.testing.expectEqual(@as(usize, 1), sync_count);
 }
 
 test "renderer - pinned split scrollback repaints live native images after append" {

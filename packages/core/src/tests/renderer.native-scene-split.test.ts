@@ -41,9 +41,12 @@ async function setup(options: TestRendererOptions = {}) {
 }
 
 /** A set-up split-footer terminal whose native output reaches `stdout`, so tests can read the scrollback bytes. */
-async function setupTerminal(options: { columns?: number; maxBytes?: bigint } = {}) {
+async function setupTerminal(
+  options: { columns?: number; height?: number; footerHeight?: number; maxBytes?: bigint } = {},
+) {
   const columns = options.columns ?? 40
-  const stdout = new RecordingWriteStream(columns, 10) as RecordingWriteStream & NodeJS.WriteStream
+  const height = options.height ?? 10
+  const stdout = new RecordingWriteStream(columns, height) as RecordingWriteStream & NodeJS.WriteStream
   const nativeSession =
     options.maxBytes === undefined
       ? undefined
@@ -53,6 +56,8 @@ async function setupTerminal(options: { columns?: number; maxBytes?: bigint } = 
   const clock = new ManualClock()
   const result = await setup({
     width: columns,
+    height,
+    footerHeight: options.footerHeight ?? 3,
     stdout,
     nativeSession,
     bufferedOutput: "stdout",
@@ -260,6 +265,10 @@ test.each(["frames", "suspend", "destroy"] as const)(
 // A row that fills the width keeps its last cell (#1580). The footer starts below the empty row after the newline.
 // Old text on the start row (`~`) gives way to the right of a row, and only there. `{ red }` is a 9-cell writer row on a
 // red background that continues the last row, and "\n" ends its line; runs on a red background show in brackets.
+// A row with [terminal rows, footer height] lists its scrollback and screen down to the footer: a pane of one row or
+// none has no valid scroll region (DECSTBM needs two rows), so output must not reach the footer.
+const smallPane = ["a\nb\n", { red: "w1\nw2\n" }, "abcde", { red: "XXXXXX\n" }, "abcdefghi", "x\n"] as const
+const smallPaneRows = ["a", "b", "[w1]", "[w2]", "abcde[XXXX]", "[XX]", "abcdefghi", "x", "", "FFFFFFFFF"] as const
 test.each([
   ["a captured ASCII line", ["abcdefghijklmnopqrs\n"], ["abcdefghi", "jklmnopqr", "s"]],
   ["a captured line of wide characters", ["一二三四五六七八九\n"], ["一二三四", "五六七八", "九"]],
@@ -273,29 +282,41 @@ test.each([
     ["\n".repeat(8), "abcde", { red: "XXXXXX\n" }, "abcd", { red: "YY" }, "efg", "z\n", "ab", { red: "一二三四\n" }],
     ["abcde[XXXX]", "[XX]", "abcd[YY]efg", "z", "ab[一二三]", "[四]"],
   ],
-] as const)("%s shows its terminal rows above the split footer", async (_name, writes, rows) => {
-  const terminal = await setupTerminal({ columns: 9 })
-  terminal.renderer.root.add(new TextRenderable(terminal.renderer, { content: "F" }))
+  ["output in a two-row pane", smallPane, smallPaneRows, [4, 2]],
+  ["output in a one-row pane", smallPane, smallPaneRows, [4, 3]],
+  ["output in a one-row pane under the default footer", smallPane, smallPaneRows, [13, 12]],
+  ["output with no row above the footer", smallPane, ["a", "b", "[w1]", "[w2]", "[XXXXXX]", "x", "FFFFFFFFF"], [4, 4]],
+] as const)("%s shows its terminal rows above the split footer", async (_name, writes, rows, ...[size]) => {
+  const [height, footerHeight] = (size as readonly [number, number] | undefined) ?? [10, 3]
+  const terminal = await setupTerminal({ columns: 9, height, footerHeight })
+  terminal.renderer.root.add(new TextRenderable(terminal.renderer, { content: "FFFFFFFFF" }))
   for (const write of writes) {
     if (typeof write === "string") terminal.stdout.write(write)
     else
       terminal.renderer.writeToScrollback(({ renderContext }) => ({
-        root: new TextRenderable(renderContext, { content: write.red.trimEnd(), width: 9, height: 1, bg: "#ff0000" }),
+        root: new TextRenderable(renderContext, {
+          content: write.red.trimEnd(),
+          width: 9,
+          height: write.red.trimEnd().split("\n").length,
+          bg: "#ff0000",
+        }),
         startOnNewLine: false,
         trailingNewline: write.red.endsWith("\n"),
       }))
     await terminal.frame()
   }
-  const view = await createTestRenderer({ width: 9, height: 10 })
+  const view = await createTestRenderer({ width: 9, height: height + 8 })
   renderers.push(view.renderer)
-  const vt = new EmbeddedTerminalRenderable(view.renderer, { cols: 9, rows: 10 })
+  const vt = new EmbeddedTerminalRenderable(view.renderer, { cols: 9, rows: height })
   view.renderer.root.add(vt)
   vt.write("~".repeat(9) + "\r" + terminal.stdout.text())
+  // With the cursor on the bottom row, a taller VT pulls the scrollback down above the screen.
+  if (size) (vt.write(`\x1b[${height};1H`), (vt.height = height + 8))
   await view.renderOnce()
   const screen = view
     .captureSpans()
     .lines.map(({ spans }) => spans.map((s) => (s.bg.r ? `[${s.text}]` : s.text)).join(""))
-  expect(screen.join("\n").replace(/ +$/gm, "").trimEnd()).toBe([...rows, "", "F"].join("\n"))
+  expect(screen.join("\n").replace(/ +$/gm, "").trimEnd()).toBe((size ? rows : [...rows, "", "FFFFFFFFF"]).join("\n"))
 })
 
 // Each commit is "text:rowColumns", plus "\n" when it ends its line.

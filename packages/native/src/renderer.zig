@@ -2023,14 +2023,14 @@ pub const CliRenderer = struct {
         // appended output must scroll only the upper pane. Without a temporary DECSTBM
         // region, terminals advance into the footer rows and overwrite them in place.
         const use_bounded_scroll_region = snapshot_has_content and
-            pinned_render_offset > 0 and
             next_render_offset == pinned_render_offset and
             next_output_offset == next_render_offset;
-        // DECSTBM protects footer cells, but terminals can still scroll native
-        // graphics placements. Repaint those placements after every pinned append.
-        const repaint_native_images = use_bounded_scroll_region and
-            (self.hasCommittedProtocol(.kitty) or self.hasCommittedProtocol(.sixel));
-        const redraw_footer = force or previousSurfaceOffset != next_render_offset or repaint_native_images;
+        // DECSTBM protects footer cells, but terminals can still scroll native graphics
+        // placements, and a pane of one row or none borrows footer rows for its region.
+        // Repaint the footer after those pinned appends.
+        const repaint_footer = use_bounded_scroll_region and (pinned_render_offset < 2 or
+            self.hasCommittedProtocol(.kitty) or self.hasCommittedProtocol(.sixel));
+        const redraw_footer = force or previousSurfaceOffset != next_render_offset or repaint_footer;
 
         if (snapshot_has_content or force) {
             if (snapshot_has_content) {
@@ -2048,32 +2048,30 @@ pub const CliRenderer = struct {
                 if (use_bounded_scroll_region) {
                     // Temporarily bound scrolling to the upper pane so newline/wrap
                     // from appended payload pushes history upward instead of stepping
-                    // through footer rows.
-                    writer.print("\x1b[1;{d}r", .{pinned_render_offset}) catch {};
+                    // through footer rows. Terminals ignore a region of fewer than two rows.
+                    writer.print("\x1b[1;{d}r", .{@max(pinned_render_offset, 2)}) catch {};
                 }
 
                 moveToSplitOutputCursor(writer, previousOutputOffset, previousOutputColumn, self.width);
-                if (starts_mid_line or starts_wrapped_line) {
-                    // The prior commit left output cursor mid-row and caller asked
-                    // for newline anchoring. When the prior commit exactly filled the
-                    // row, we also need a CRLF here because moving the cursor back to
-                    // the last column loses the terminal's pending autowrap state.
-                    // Emit CRLF before payload to preserve logical row boundaries
-                    // across commit chunks.
+                if (pinned_render_offset > 0 and (starts_mid_line or starts_wrapped_line)) {
+                    // The prior commit left the cursor mid-row and the caller asked for a new line,
+                    // or it filled the row and moving the cursor back lost the pending autowrap: a
+                    // CRLF keeps the logical row boundary across commit chunks. With no output row,
+                    // the footer covers that row, and a CRLF would scroll a footer row away.
                     writer.writeAll("\r\n") catch {};
                 } else if (previousOutputColumn + snapshotRowEnd(snapshot, 0, normalized_row_columns) > self.width) {
-                    // A first row that wraps would scroll its next line in with the background of the
-                    // cell that wraps (BCE). Scroll that line in first, with default attributes.
-                    writer.writeAll(ansi.ANSI.reset ++ "\x1bD\x1b[A") catch {};
+                    // A first row that wraps would scroll its next line in with the wrapping cell's background
+                    // (BCE). Scroll that line in first with default attributes, or clear a borrowed footer row.
+                    writer.writeAll(ansi.ANSI.reset ++ "\x1bD\x1b[2K\x1b[A") catch {};
                 }
 
                 // Serialize payload rows at current output cursor.
                 try self.writeSnapshotCommit(writer, snapshot, normalized_row_columns, trailing_newline, kitty_history_state);
 
                 if (use_bounded_scroll_region) {
-                    // Restore default full-height scroll region for regular repaint
-                    // and cursor operations after append is complete.
-                    writer.writeAll("\x1b[r") catch {};
+                    // Restore default full-height scroll region for regular repaint and cursor
+                    // operations. A pane of one row or none first scrolls its last line back to row 1.
+                    writer.writeAll(if (pinned_render_offset < 2) "\x1bD\x1b[r" else "\x1b[r") catch {};
                 }
             }
 
