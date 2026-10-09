@@ -1688,6 +1688,7 @@ fn checkPlainTextAllocationFailures() !void {
                 try std.testing.expectEqual(before.epoch + 1, tb.getContentEpoch());
                 try std.testing.expect(tb.isViewDirty(view));
                 try std.testing.expectEqual(@as(u32, 0), tb.link_tracker.?.getLinkCount());
+                try std.testing.expectEqual(@as(u32, if (input.len == 0) 1 else 2), tb.getHighlightCount());
                 break;
             }
             try std.testing.expect(succeeded);

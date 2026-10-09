@@ -218,6 +218,7 @@ describe("TextBuffer", () => {
       else target.setText(after)
 
       expect([0, 1].flatMap((i) => target.getLineHighlights(i).map((hl) => hl.hlRef))).toEqual(expected)
+      if (target === buffer) expect(buffer.getHighlightCount()).toBe(expected.length)
       if (target !== buffer) target.destroy()
       syntaxStyle.destroy()
     })
