@@ -45,11 +45,12 @@ describe("keybinding.internal", () => {
 
   describe("base-layout fallback", () => {
     // Conformance vectors: lookup (typed key, base-layout codepoint, modifiers) -> matched bindings, in lookup order.
-    const bindings = "ctrl+a ctrl+c ctrl+g ctrl+q ctrl+ㅎ j l meta+a".split(" ").map(parse)
+    const bindings = "ctrl+- ctrl+c ctrl+g ctrl+q ctrl+ㅎ j l meta+a".split(" ").map(parse)
 
     it.each([
       ["ㅊ", 99, "ctrl", ["ctrl+c"]],
-      ["ㅁ", 97, "ctrl", ["ctrl+a"]],
+      ["ß", 45, "ctrl", ["ctrl+-"]],
+      ["\u0080", 99, "ctrl", ["ctrl+c"]],
       ["ㅎ", 103, "ctrl", ["ctrl+ㅎ", "ctrl+g"]],
       ["ㅓ", 106, "", ["j"]],
       ["ㅣ", 108, "", ["l"]],
@@ -57,8 +58,9 @@ describe("keybinding.internal", () => {
       ["𠀀", 99, "ctrl", ["ctrl+c"]],
       ["j", 99, "ctrl", []],
       ["h", 106, "", []],
-      ["a", 113, "ctrl", ["ctrl+a"]],
-    ] as const)("%s/%d %s matches %j", (name, baseCode, modifiers, matches) => {
+      ["a", 113, "ctrl", []],
+      [";", 113, "ctrl", []],
+    ] as const)("%s/%j %s matches %j", (name, baseCode, modifiers, matches) => {
       const lookup = { ...parse(`${modifiers}+${name}`), baseCode }
       const matched = bindings.filter((binding) => matchesKeyBinding(lookup, binding)).map((binding) => binding.action)
       expect(getKeyBindingAction(buildKeyBindingsMap(bindings), lookup)).toBe(matches[0])

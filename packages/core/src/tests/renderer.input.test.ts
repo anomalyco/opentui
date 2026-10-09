@@ -673,7 +673,7 @@ test("Kitty keyboard ctrl+a via keyInput events", async () => {
 test.each([
   ["ㅊ", "\x1b[12618::99;5u", true],
   ["j", "\x1b[106::99;5u", false],
-])("Kitty keyboard Ctrl+%s with base layout c exits the renderer: %p", async (name, sequence, exits) => {
+])("Kitty keyboard Ctrl+%s with base layout c exits the renderer: %j", async (name, sequence, exits) => {
   const clock = new ManualClock()
   const { renderer } = await createTestRenderer({ kittyKeyboard: true, clock })
 
